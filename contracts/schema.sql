@@ -24,7 +24,10 @@ CREATE TABLE IF NOT EXISTS ideas (
   twist TEXT NOT NULL,
   embedding BLOB,                    -- float32 little-endian vector
   created_at TEXT NOT NULL,
-  used INTEGER NOT NULL DEFAULT 0
+  used INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'new',   -- new | approved | used | rejected (idea bank, spec 20.3a)
+  title TEXT,
+  source TEXT                        -- owner | assistant | generated
 );
 
 CREATE TABLE IF NOT EXISTS stories (
@@ -94,7 +97,9 @@ CREATE TABLE IF NOT EXISTS sources (
   sha256 TEXT,
   imported_at TEXT NOT NULL,
   template TEXT,
-  status TEXT NOT NULL DEFAULT 'imported'
+  status TEXT NOT NULL DEFAULT 'imported',
+  rights_confirmed INTEGER NOT NULL DEFAULT 0,   -- owner confirmed rights to the video (spec 19.1)
+  title TEXT
 );
 
 CREATE TABLE IF NOT EXISTS outputs (
@@ -165,4 +170,13 @@ CREATE TABLE IF NOT EXISTS dashboard_jobs (
   started_at TEXT,
   finished_at TEXT,
   params_json TEXT
+);
+
+-- Dashboard Assistant transcript (spec 20.3a). ns_dashboard may also open it from data/assistant.db.
+CREATE TABLE IF NOT EXISTS assistant_messages (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts TEXT NOT NULL,
+  role TEXT NOT NULL,                -- user | assistant | tool | system
+  content TEXT NOT NULL,
+  tool_calls_json TEXT
 );

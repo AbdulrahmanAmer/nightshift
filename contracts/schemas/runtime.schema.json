@@ -74,6 +74,34 @@
             "spec_draft_n_max": null,
             "threads": null
           }
+        },
+        "story_flags": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LlamaFlags"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Story Flags"
+        },
+        "build": {
+          "anyOf": [
+            {
+              "enum": [
+                "cuda13",
+                "cuda12"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Build"
         }
       },
       "title": "LlamaCfg",
@@ -271,7 +299,9 @@
           "spec_draft_n_max": null,
           "spec_type": null,
           "threads": null
-        }
+        },
+        "story_flags": null,
+        "build": null
       }
     },
     "embed": {

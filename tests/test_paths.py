@@ -30,3 +30,15 @@ def test_ensure_creates_all_dirs(tmp_home: Path):
 def test_repo_root_contains_contracts():
     assert (repo_root() / "pyproject.toml").exists()
     assert contracts_dir().name == "contracts"
+
+
+def test_new_folders_and_files(tmp_home: Path):
+    p = Paths.from_env()
+    assert p.bin_uv == tmp_home / "bin" / "uv"
+    assert p.bin_qwentts == tmp_home / "bin" / "qwentts"
+    assert p.models_cv == tmp_home / "models" / "cv"
+    assert p.stories == tmp_home / "stories"
+    assert p.assistant_db == tmp_home / "data" / "assistant.db"
+    p.ensure()
+    for d in (p.bin_uv, p.bin_qwentts, p.models_cv, p.stories):
+        assert d.is_dir()

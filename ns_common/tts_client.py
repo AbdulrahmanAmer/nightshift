@@ -18,6 +18,14 @@ class TtsItem:
     text: str
     voice: str
     speed: float = 1.0
+    cliff_lines: tuple[str, ...] = ()   # lines that get a 1,200 ms pause before them (spec 7.5)
+
+
+def _item_body(i: TtsItem) -> dict[str, Any]:
+    body: dict[str, Any] = {"id": i.id, "input": i.text, "voice": i.voice, "speed": i.speed}
+    if i.cliff_lines:
+        body["cliff_lines"] = list(i.cliff_lines)
+    return body
 
 
 @dataclass(frozen=True)
@@ -52,11 +60,14 @@ class TtsClient:
         self.client = client or httpx.Client(timeout=timeout_s)
 
     def speak(
-        self, text: str, voice: str, speed: float, out_path: Path, *, seed: int | None = None
+        self, text: str, voice: str, speed: float, out_path: Path, *, seed: int | None = None,
+        cliff_lines: tuple[str, ...] = (),
     ) -> float:
         body: dict[str, Any] = {
             "model": "qwen3-tts", "input": text, "voice": voice, "speed": speed, "response_format": "wav",
         }
+        if cliff_lines:
+            body["cliff_lines"] = list(cliff_lines)
         if seed is not None:
             body["seed"] = seed
         try:
@@ -72,7 +83,7 @@ class TtsClient:
         self, items: list[TtsItem], out_dir: Path, *, seed: int | None = None
     ) -> list[TtsFile]:
         body: dict[str, Any] = {
-            "items": [{"id": i.id, "input": i.text, "voice": i.voice, "speed": i.speed} for i in items],
+            "items": [_item_body(i) for i in items],
             "out_dir": str(out_dir),
         }
         if seed is not None:
