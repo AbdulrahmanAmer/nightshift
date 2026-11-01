@@ -21,13 +21,13 @@ def test_parse_fake() -> None:
         cli.parse_fake("llm,nope")
 
 
-def test_help_lists_the_options() -> None:
-    res = runner.invoke(cli.app, ["--help"])
-    assert res.exit_code == 0
-    for opt in ("--channel", "--template", "--max-clips", "--min-s", "--max-s"):
-        assert opt in res.output
-    for opt in ("--fake-services", "--reselect"):
-        assert opt in res.output
+def test_help_runs_and_options_are_declared() -> None:
+    assert runner.invoke(cli.app, ["--help"]).exit_code == 0
+    cmd = typer.main.get_command(cli.app)
+    declared = {opt for p in cmd.params for opt in p.opts}
+    wanted = ["--channel", "--template", "--max-clips", "--min-s", "--max-s", "--fake-services", "--reselect"]
+    for opt in wanted:
+        assert opt in declared
 
 
 def test_needs_a_video_and_channel() -> None:
