@@ -4,9 +4,9 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
-from types import SimpleNamespace
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
