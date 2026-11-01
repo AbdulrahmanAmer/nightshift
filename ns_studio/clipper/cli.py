@@ -32,7 +32,12 @@ class ClipGroup(TyperGroup):
         return super().parse_args(ctx, ["--fake-services=all" if a == "--fake-services" else a for a in args])
 
 
-app = typer.Typer(help="Clip a video you own into vertical Shorts.", cls=ClipGroup, no_args_is_help=False)
+app = typer.Typer(
+    help="Clip a video you own into vertical Shorts.",
+    cls=ClipGroup,
+    no_args_is_help=False,
+    context_settings={"allow_interspersed_args": True},
+)
 
 
 def parse_fake(value: str | None) -> frozenset[str]:
