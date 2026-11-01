@@ -25,6 +25,7 @@ STAGE_MODULES: tuple[str, ...] = (
     "ns_studio.text.stages_shorts",
     "ns_studio.text.stages_master",
     "ns_studio.media.stages_media",
+    "ns_studio.series.stages",
 )
 KEYRING_SERVICE = "Nightshift"
 # Fixtures served by the fake LLM are written for a 50 s Short at the "standard" pace; validators stay real.
@@ -227,4 +228,6 @@ def prepare_plan(fmt: str, policy: bool | None) -> bool:
     enabled = gate.available() if policy is None else policy
     if enabled:
         gate.install_gates(fmt)
+        if fmt == "master_first":  # series parts run the script-import plan (CR-C11-3)
+            gate.install_gates("master_from_script")
     return enabled

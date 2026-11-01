@@ -1,8 +1,10 @@
+import importlib.util
 import json
 import re
 from pathlib import Path
 
 import pytest
+import typer
 import yaml
 from typer.testing import CliRunner
 
@@ -14,7 +16,7 @@ from ns_common.paths import Paths
 from ns_studio import jobs
 from ns_studio.cli import app
 from ns_studio.orchestrator import FORMAT_STAGES
-from ns_studio.stages import register
+from ns_studio.stages import REGISTRY, register
 from tests.helpers import make_channel
 
 runner = CliRunner()
@@ -243,3 +245,62 @@ def test_real_llm_jobs_are_not_pinned(tmp_home: Path):
     ch = jobs.ensure_demo_channel(env)
     seen = {jobs.make_job(env, ch, "shorts_only").combo.length_bucket for _ in range(30)}
     assert len(seen) > 1
+
+
+# ---------------------------------------------------------------- mounted sub-apps (CR-C8-5, C11-3, C9-7)
+def test_clip_help_is_mounted(tmp_home: Path):
+    res = runner.invoke(app, ["clip", "--help"])
+    assert res.exit_code == 0, res.output
+    assert "--channel" in res.output
+
+
+def test_series_help_is_mounted(tmp_home: Path):
+    res = runner.invoke(app, ["series", "--help"])
+    assert res.exit_code == 0, res.output
+    for word in ("start", "produce", "status"):
+        assert word in res.output
+
+
+@pytest.mark.skipif(importlib.util.find_spec("fastapi") is None, reason="fastapi not installed")
+def test_ask_help_is_mounted(tmp_home: Path):
+    res = runner.invoke(app, ["ask", "--help"])
+    assert res.exit_code == 0, res.output
+    assert "--yes" in res.output
+
+
+def test_ask_without_dashboard_prints_a_plain_message(tmp_home: Path):
+    from ns_studio import cli
+
+    parent = typer.Typer()
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(importlib.util, "find_spec", lambda name, *a, **k: None)
+        assert cli.mount_ask(parent) is False
+    res = runner.invoke(parent, ["what is waiting?"])
+    assert res.exit_code == 1
+    assert "fastapi" in res.output
+
+
+def test_fake_flag_is_rewritten_for_value_commands_only():
+    from ns_studio.cli import normalize_fake_flag
+
+    assert normalize_fake_flag(["run", "--fake-services"]) == ["run", "--fake-services=all"]
+    clip_args = ["clip", "v.mp4", "--fake-services"]
+    assert normalize_fake_flag(clip_args) == ["clip", "v.mp4", "--fake-services=all"]
+    assert normalize_fake_flag(["series", "list", "--fake-services"]) == ["series", "list", "--fake-services"]
+    assert normalize_fake_flag(["ask", "hi", "--fake-services"]) == ["ask", "hi", "--fake-services"]
+
+
+def test_series_stage_module_registers_script_import():
+    assert "ns_studio.series.stages" in jobs.STAGE_MODULES
+    assert "ns_studio.series.stages" in jobs.load_stage_modules()
+    assert "script_import" in REGISTRY
+
+
+def test_policy_gates_also_cover_the_script_plan(monkeypatch: pytest.MonkeyPatch):
+    for fmt in ("master_first", "master_from_script"):
+        monkeypatch.setitem(FORMAT_STAGES, fmt, list(FORMAT_STAGES[fmt]))
+    assert jobs.prepare_plan("master_first", True) is True
+    names = FORMAT_STAGES["master_from_script"]
+    assert names.index("policy_text") == names.index("seo_shorts") + 1
+    assert names.index("policy_final") == names.index("outbox") - 1
+    assert "short_combos" not in names
