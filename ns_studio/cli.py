@@ -195,7 +195,7 @@ def channel_add(
                     }
                 )
             except ValueError as e:
-                raise StudioError("NS-E307", str(e).replace("\n", " ")) from e
+                raise StudioError("NS-E320", str(e).replace("\n", " ")) from e
         f = crud.add_channel(env.paths, env.db, ch)
         for w in crud.pool_warnings(ch.pools):
             typer.echo(f"warning: {w}")

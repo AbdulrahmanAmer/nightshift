@@ -134,7 +134,7 @@ def resolve_channels(env: Env, slug: str | None) -> list[Channel]:
     if not active and env.fake:
         active = [ensure_demo_channel(env)]
     if not active:
-        raise StudioError("NS-E309", "no active channel configured; run 'studio channel add'")
+        raise StudioError("NS-E322", "no active channel configured; run 'studio channel add'")
     return active
 
 
@@ -189,7 +189,7 @@ def load_job(env: Env, job_id: str) -> JobContext:
     job_dir = env.paths.job_dir(job_id)
     f = job_dir / "job.json"
     if not f.exists():
-        raise StudioError("NS-E313", f"job {job_id} has no job.json under {job_dir}")
+        raise StudioError("NS-E326", f"job {job_id} has no job.json under {job_dir}")
     data = json.loads(f.read_text(encoding="utf-8"))
     return JobContext(
         job_id=job_id,

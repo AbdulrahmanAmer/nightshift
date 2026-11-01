@@ -28,10 +28,10 @@ def pending(db: Db, channel: str | None = None) -> list[sqlite3.Row]:
 
 
 def get_output(db: Db, output_id: str) -> sqlite3.Row:
-    """One `outputs` row; `NS-E313` when it does not exist."""
+    """One `outputs` row; `NS-E326` when it does not exist."""
     row = db.one("select * from outputs where output_id=?", (output_id,))
     if row is None:
-        raise StudioError("NS-E313", f"{output_id} is not in the outputs table")
+        raise StudioError("NS-E326", f"{output_id} is not in the outputs table")
     return row
 
 
@@ -72,7 +72,7 @@ def approve(db: Db, output_id: str, note: str = "") -> None:
     """pending -> approved."""
     row = get_output(db, output_id)
     if row["status"] != "pending":
-        raise StudioError("NS-E313", f"{output_id} is {row['status']}, only pending outputs can be approved")
+        raise StudioError("NS-E326", f"{output_id} is {row['status']}, only pending outputs can be approved")
     db.execute(
         "update outputs set status='approved', review_note=? where output_id=?", (note or None, output_id)
     )
@@ -91,10 +91,10 @@ def _destination(paths: Paths, src: Path, row: sqlite3.Row) -> Path:
 def reject(paths: Paths, db: Db, output_id: str, reason: str) -> Path:
     """Reject an output: record the reason and move its files (same stem, thumbnails) to `rejected\\`."""
     if not reason.strip():
-        raise StudioError("NS-E313", "a rejection needs a reason")
+        raise StudioError("NS-E326", "a rejection needs a reason")
     row = get_output(db, output_id)
     if row["status"] not in ("pending", "approved"):
-        raise StudioError("NS-E313", f"{output_id} is {row['status']} and cannot be rejected")
+        raise StudioError("NS-E326", f"{output_id} is {row['status']} and cannot be rejected")
     src = Path(row["path"])
     new_path = src
     if src.exists():
@@ -118,9 +118,9 @@ def mark_uploaded(db: Db, job_id: str, item: str, url: str, now: datetime | None
     output_id = f"{job_id}/{item}"
     row = get_output(db, output_id)
     if not any(h in url for h in _URL_HOSTS):
-        raise StudioError("NS-E313", "the URL must be a youtube.com or youtu.be link")
+        raise StudioError("NS-E326", "the URL must be a youtube.com or youtu.be link")
     if row["status"] != "approved":
-        raise StudioError("NS-E313", f"{output_id} is {row['status']}; approve it in 'studio review' first")
+        raise StudioError("NS-E326", f"{output_id} is {row['status']}; approve it in 'studio review' first")
     stamp = (now or datetime.now(UTC)).isoformat(timespec="seconds")
     db.execute(
         "insert or replace into uploads(output_id, video_url, published_at) values (?,?,?)",
@@ -143,7 +143,7 @@ def open_in_player(path: Path) -> bool:
 def pause(paths: Paths, db: Db, slug: str, reason: str, now: datetime | None = None) -> None:
     """Pause a channel and record an incident; nightly runs skip paused channels."""
     if not reason.strip():
-        raise StudioError("NS-E313", "pausing needs a reason (the notice text)")
+        raise StudioError("NS-E326", "pausing needs a reason (the notice text)")
     get_channel(paths, slug)
     edit_channel(paths, db, slug, {"status": "paused"})
     stamp = (now or datetime.now(UTC)).isoformat(timespec="seconds")
@@ -166,7 +166,7 @@ def resume(paths: Paths, db: Db, slug: str, now: datetime | None = None) -> None
     """Resume a paused channel and record the incident."""
     ch = get_channel(paths, slug)
     if ch.status != "paused":
-        raise StudioError("NS-E313", f"channel {slug} is not paused")
+        raise StudioError("NS-E326", f"channel {slug} is not paused")
     edit_channel(paths, db, slug, {"status": "active"})
     stamp = (now or datetime.now(UTC)).isoformat(timespec="seconds")
     db.execute(

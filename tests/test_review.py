@@ -72,7 +72,7 @@ def test_describe_shows_story_policy_and_advice(tmp_home: Path):
     assert "altered/synthetic content = yes" in text
     with pytest.raises(StudioError) as ei:
         review.describe(paths, db, "nope/s1")
-    assert ei.value.code == "NS-E313"
+    assert ei.value.code == "NS-E326"
 
 
 def test_approve_then_mark_uploaded(tmp_home: Path):
@@ -154,7 +154,7 @@ def test_cli_review_flow(tmp_home: Path):
     assert "[pending]" in runner.invoke(app, ["review", "show", a]).output
     assert runner.invoke(app, ["review", "approve", a, "--note", "ok"]).exit_code == 0
     bad = runner.invoke(app, ["review", "reject", b])
-    assert bad.exit_code == 1 and "NS-E313" in bad.output
+    assert bad.exit_code == 1 and "NS-E326" in bad.output
     assert runner.invoke(app, ["review", "reject", b, "--reason", "boring"]).exit_code == 0
     uploaded = ["mark-uploaded", "after-dark-20261101-abcd", "s1", "https://youtu.be/abcdefghijk"]
     up = runner.invoke(app, uploaded)
@@ -163,7 +163,7 @@ def test_cli_review_flow(tmp_home: Path):
     st = runner.invoke(app, ["status"])
     assert st.exit_code == 0 and "uploaded=1" in st.output and "boring" in st.output
     miss = runner.invoke(app, ["review", "show", "ghost/s1"])
-    assert miss.exit_code == 1 and "NS-E313" in miss.output
+    assert miss.exit_code == 1 and "NS-E326" in miss.output
 
 
 def test_cli_pause_resume_and_status(tmp_home: Path):
@@ -205,7 +205,7 @@ def test_cli_learn_import_and_milestone(tmp_home: Path, tmp_path: Path):
     st = runner.invoke(app, ["status", "--channel", "after-dark"])
     assert "last import" in st.output and "top:" in st.output
     bad = runner.invoke(app, ["learn", "--import", str(tmp_path / "nope.csv")])
-    assert bad.exit_code == 1 and "NS-E310" in bad.output
+    assert bad.exit_code == 1 and "NS-E323" in bad.output
     badmap = runner.invoke(app, ["learn", "--import", str(f), "--map", "oops"])
     assert badmap.exit_code == 2
 

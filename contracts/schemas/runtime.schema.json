@@ -161,10 +161,11 @@
           "type": "integer"
         },
         "engine": {
-          "default": "faster",
+          "default": "qwentts",
           "enum": [
-            "faster",
-            "reference"
+            "qwentts",
+            "reference",
+            "faster"
           ],
           "title": "Engine",
           "type": "string"
@@ -286,7 +287,7 @@
       "default": {
         "host": "127.0.0.1",
         "port": 8091,
-        "engine": "faster",
+        "engine": "qwentts",
         "model_dir": "",
         "device": "cuda"
       }

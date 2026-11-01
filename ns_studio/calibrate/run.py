@@ -255,7 +255,7 @@ def _read_rows(path: Path) -> list[dict[str, str]]:
         with path.open(newline="", encoding="utf-8-sig") as fh:
             return list(csv.DictReader(fh))
     except OSError as e:
-        raise StudioError("NS-E311", f"{path}: {e}") from e
+        raise StudioError("NS-E324", f"{path}: {e}") from e
 
 
 def _num(row: dict[str, str], key: str, where: str) -> float:
@@ -263,9 +263,9 @@ def _num(row: dict[str, str], key: str, where: str) -> float:
     try:
         value = float(raw)
     except ValueError as e:
-        raise StudioError("NS-E311", f"{where}: column {key!r} is not a number ({raw!r})") from e
+        raise StudioError("NS-E324", f"{where}: column {key!r} is not a number ({raw!r})") from e
     if not 1.0 <= value <= 10.0:
-        raise StudioError("NS-E311", f"{where}: column {key!r} must be 1-10 (got {value:g})")
+        raise StudioError("NS-E324", f"{where}: column {key!r} must be 1-10 (got {value:g})")
     return value
 
 
@@ -275,7 +275,7 @@ def score(paths: Paths, db: Db, slug: str, scores_csv: Path) -> CalibrationRepor
     stories_file = d / "stories.csv"
     stories = {r["story_id"]: r for r in _read_rows(stories_file)} if stories_file.exists() else {}
     if not stories:
-        raise StudioError("NS-E311", f"no stories.csv for channel {slug}; run 'studio calibrate' first")
+        raise StudioError("NS-E324", f"no stories.csv for channel {slug}; run 'studio calibrate' first")
     refusals = sum(1 for r in stories.values() if r.get("refusal") == "1")
     refusal_rate = refusals / len(stories)
 
@@ -303,7 +303,7 @@ def score(paths: Paths, db: Db, slug: str, scores_csv: Path) -> CalibrationRepor
         )
     if len(critic_avgs) < MIN_SCORED_ROWS:
         raise StudioError(
-            "NS-E311", f"need at least {MIN_SCORED_ROWS} scored stories, found {len(critic_avgs)}"
+            "NS-E324", f"need at least {MIN_SCORED_ROWS} scored stories, found {len(critic_avgs)}"
         )
     rec = recommend_bar(critic_avgs, human_avgs, human_mins)
     report = CalibrationReport(

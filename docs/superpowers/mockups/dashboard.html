@@ -1,0 +1,610 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Nightshift Dashboard</title>
+<style>
+/* ---------- Tokens: dark-first, light override, manual toggle via data-theme ---------- */
+:root{
+  --bg:#0f141a; --panel:#161d25; --panel2:#1b242e; --line:#26313d; --text:#d7dee6; --muted:#8393a3;
+  --accent:#4fc3d9; --accent-ink:#06222a; --ok:#3fb27f; --warn:#e0a83a; --bad:#e5655f;
+  --ok-bg:#12332a; --warn-bg:#3a2e12; --bad-bg:#3b1a19; --shadow:0 8px 30px rgba(0,0,0,.45);
+  --font:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  --mono:ui-monospace,SFMono-Regular,Consolas,Menlo,monospace;
+}
+@media (prefers-color-scheme: light){
+  :root:not([data-theme="dark"]){
+    --bg:#eef1f4; --panel:#fff; --panel2:#f4f6f8; --line:#d5dbe2; --text:#1b2530; --muted:#5d6b7a;
+    --accent:#0b7f95; --accent-ink:#fff; --ok:#1c7c52; --warn:#9a6a05; --bad:#b83a34;
+    --ok-bg:#dff3ea; --warn-bg:#fbefd2; --bad-bg:#f9e0de; --shadow:0 8px 30px rgba(20,30,40,.18);
+  }
+}
+:root[data-theme="light"]{
+  --bg:#eef1f4; --panel:#fff; --panel2:#f4f6f8; --line:#d5dbe2; --text:#1b2530; --muted:#5d6b7a;
+  --accent:#0b7f95; --accent-ink:#fff; --ok:#1c7c52; --warn:#9a6a05; --bad:#b83a34;
+  --ok-bg:#dff3ea; --warn-bg:#fbefd2; --bad-bg:#f9e0de; --shadow:0 8px 30px rgba(20,30,40,.18);
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 var(--font);min-height:100vh;display:flex}
+h1,h2,h3{margin:0 0 10px;font-weight:600}
+h1{font-size:20px} h2{font-size:15px} h3{font-size:13px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
+a{color:var(--accent)}
+.mono{font-family:var(--mono)} .muted{color:var(--muted)} .small{font-size:12px}
+
+/* ---------- Layout ---------- */
+nav{width:196px;flex:none;background:var(--panel);border-right:1px solid var(--line);padding:14px 10px;position:sticky;top:0;height:100vh;display:flex;flex-direction:column;gap:2px}
+nav .brand{font-weight:700;letter-spacing:.04em;padding:4px 10px 14px;display:flex;align-items:center;gap:8px}
+nav .brand i{width:10px;height:10px;border-radius:50%;background:var(--accent);box-shadow:0 0 10px var(--accent)}
+nav a.nav{color:var(--text);text-decoration:none;padding:8px 10px;border-radius:6px;display:block}
+nav a.nav:hover{background:var(--panel2)}
+nav a.nav.on{background:var(--panel2);color:var(--accent);box-shadow:inset 3px 0 0 var(--accent)}
+nav .grow{flex:1}
+.main{flex:1;min-width:0;display:flex;flex-direction:column}
+.strip{position:sticky;top:0;z-index:5;background:var(--panel);border-bottom:1px solid var(--line);padding:8px 18px;display:flex;flex-wrap:wrap;gap:8px 18px;align-items:center}
+.strip .kv{display:flex;flex-direction:column;line-height:1.2}
+.strip .kv b{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.07em;font-weight:600}
+.strip .sp{flex:1}
+main{padding:18px;flex:1}
+footer{padding:12px 18px;border-top:1px solid var(--line);color:var(--muted);font-size:12px}
+.grid{display:grid;gap:14px}
+.g2{grid-template-columns:repeat(auto-fit,minmax(300px,1fr))}
+.g3{grid-template-columns:repeat(auto-fit,minmax(200px,1fr))}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:14px}
+.row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.row.between{justify-content:space-between}
+
+/* ---------- Controls ---------- */
+button{font:inherit;background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:6px 12px;cursor:pointer}
+button:hover:not(:disabled){border-color:var(--accent)}
+button.primary{background:var(--accent);color:var(--accent-ink);border-color:var(--accent);font-weight:600}
+button.danger{color:var(--bad);border-color:var(--bad)}
+button:disabled{opacity:.45;cursor:not-allowed}
+button.sm{padding:2px 8px;font-size:12px}
+input,select,textarea{font:inherit;background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:6px 8px;width:100%}
+input[type=checkbox]{width:auto}
+input:disabled,select:disabled{opacity:.6}
+label{display:block;font-size:12px;color:var(--muted);margin-bottom:3px}
+.f{margin-bottom:10px}
+.form{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:0 12px}
+:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+
+/* ---------- Pills / badges (semantic colours only on status) ---------- */
+.pill{display:inline-flex;align-items:center;gap:6px;padding:2px 10px;border-radius:999px;font-size:12px;font-weight:600;border:1px solid var(--line);background:var(--panel2);color:var(--muted)}
+.pill::before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor}
+.pill.ok{background:var(--ok-bg);color:var(--ok);border-color:transparent}
+.pill.warn{background:var(--warn-bg);color:var(--warn);border-color:transparent}
+.pill.bad{background:var(--bad-bg);color:var(--bad);border-color:transparent}
+.pill.warn::before{animation:pulse 1.2s infinite}
+@keyframes pulse{50%{opacity:.25}}
+.badge{display:inline-block;padding:1px 7px;border-radius:4px;font-size:11px;font-weight:700;text-transform:uppercase;background:var(--panel2);border:1px solid var(--line);color:var(--muted)}
+
+/* ---------- Tables, bars ---------- */
+table{width:100%;border-collapse:collapse}
+th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);vertical-align:top}
+th{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}
+.bar{height:8px;background:var(--panel2);border-radius:4px;overflow:hidden;border:1px solid var(--line)}
+.bar>i{display:block;height:100%;background:var(--accent);transition:width .4s}
+.stat{font-size:22px;font-weight:700}
+.up{color:var(--ok)} .down{color:var(--bad)}
+
+/* ---------- Review ---------- */
+.split{display:grid;grid-template-columns:minmax(260px,340px) 1fr;gap:14px}
+.q{display:block;width:100%;text-align:left;margin-bottom:6px;padding:8px}
+.q.on{border-color:var(--accent);background:var(--panel2)}
+.vid{aspect-ratio:9/16;max-height:420px;background:linear-gradient(160deg,#1f2a36,#0c1015);border:1px solid var(--line);border-radius:8px;display:flex;align-items:center;justify-content:center;color:#8393a3;position:relative}
+.vid::after{content:"\25B6";font-size:34px;opacity:.7}
+.vid span{position:absolute;bottom:8px;left:10px;font-size:11px}
+.detail{display:grid;grid-template-columns:minmax(150px,230px) 1fr;gap:14px}
+.copy{display:flex;gap:6px;align-items:flex-start}
+.empty{padding:30px;text-align:center;color:var(--muted)}
+
+/* ---------- Clipper ---------- */
+.drop{border:2px dashed var(--line);border-radius:8px;padding:26px;text-align:center;color:var(--muted);cursor:pointer}
+.drop.over,.drop:hover{border-color:var(--accent);color:var(--text)}
+.tpl{cursor:pointer;border:2px solid var(--line);border-radius:8px;padding:8px;background:var(--panel);text-align:center;font-size:12px}
+.tpl.on{border-color:var(--accent)}
+.tpl .t{width:44px;height:78px;margin:0 auto 6px;border:1px solid var(--muted);border-radius:4px;display:flex;flex-direction:column;gap:2px;padding:2px;background:var(--bg)}
+.tpl .t i{flex:1;background:var(--line);border-radius:2px;display:block}
+.tpl .t i.a{background:var(--accent);opacity:.8}
+.tpl .t i.c{background:repeating-linear-gradient(45deg,var(--line),var(--line) 3px,var(--panel2) 3px,var(--panel2) 6px)}
+.clips{display:grid;grid-template-columns:repeat(auto-fill,minmax(110px,1fr));gap:10px}
+.clip{aspect-ratio:9/16;background:linear-gradient(160deg,#243242,#0c1015);border-radius:6px;border:1px solid var(--line);display:flex;align-items:flex-end;padding:6px;font-size:11px;color:#c8d2dc}
+.chips{display:flex;flex-wrap:wrap;gap:6px}
+.chip{padding:3px 10px;border-radius:999px;border:1px solid var(--line);cursor:pointer;background:var(--panel2);font-size:12px;user-select:none}
+.chip.on{background:var(--accent);color:var(--accent-ink);border-color:var(--accent);font-weight:600}
+.warnbox{background:var(--warn-bg);color:var(--warn);border-radius:6px;padding:8px 10px;margin:8px 0;font-size:13px}
+
+/* ---------- Logs ---------- */
+.log{background:#0a0e12;color:#b8c4d0;font:12px/1.5 var(--mono);height:340px;overflow:auto;border:1px solid var(--line);border-radius:8px;padding:8px;white-space:pre-wrap}
+.log .WARNING{color:#e0a83a} .log .ERROR{color:#e5655f}
+
+/* ---------- Modal + toast ---------- */
+.overlay{position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;z-index:50}
+.modal{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:18px;width:min(420px,92vw);box-shadow:var(--shadow)}
+#toast{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);background:var(--panel2);border:1px solid var(--accent);padding:8px 16px;border-radius:8px;box-shadow:var(--shadow);z-index:60;opacity:0;pointer-events:none;transition:opacity .2s}
+#toast.show{opacity:1}
+
+/* ---------- Narrow screens: sidebar becomes a top bar ---------- */
+@media (max-width:720px){
+  body{flex-direction:column}
+  nav{width:100%;height:auto;position:sticky;top:0;z-index:6;flex-direction:row;overflow-x:auto;padding:6px;border-right:0;border-bottom:1px solid var(--line)}
+  nav .brand{padding:6px 8px}
+  nav a.nav{white-space:nowrap}
+  nav a.nav.on{box-shadow:inset 0 -3px 0 var(--accent)}
+  .strip{position:static}
+  .split,.detail{grid-template-columns:1fr}
+}
+</style>
+</head>
+<body>
+<nav id="nav"></nav>
+<div class="main">
+  <div class="strip" id="strip"></div>
+  <main id="view"></main>
+  <footer>Mockup &mdash; static data, no backend</footer>
+</div>
+<div id="toast"></div>
+<div id="modalRoot"></div>
+
+<script>
+"use strict";
+/* ================= Helpers ================= */
+const $ = (s, r=document) => r.querySelector(s);
+const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const pad = n => String(n).padStart(2,'0');
+const fmtDur = s => Math.floor(s/60) + ':' + pad(s%60);
+
+/* Toast */
+let toastTimer;
+function toast(msg){ const t=$('#toast'); t.textContent=msg; t.classList.add('show'); clearTimeout(toastTimer); toastTimer=setTimeout(()=>t.classList.remove('show'),2200); }
+
+/* In-page confirm modal (never window.confirm) */
+function confirmDlg(title, msg, okLabel, onOk, danger=true){
+  $('#modalRoot').innerHTML = `<div class="overlay" role="dialog" aria-modal="true"><div class="modal">
+    <h2>${esc(title)}</h2><p class="muted">${esc(msg)}</p>
+    <div class="row" style="justify-content:flex-end"><button id="mNo">Cancel</button>
+    <button id="mYes" class="${danger?'danger':'primary'}">${esc(okLabel)}</button></div></div></div>`;
+  const close = () => $('#modalRoot').innerHTML = '';
+  $('#mNo').onclick = close; $('#mYes').onclick = () => { close(); onOk(); };
+  $('#mNo').focus();
+}
+
+/* Copy with toast fallback */
+function copyText(text, label){
+  const done = () => toast(label + ' copied');
+  const fail = () => toast('Clipboard unavailable - select and copy manually');
+  if(navigator.clipboard && navigator.clipboard.writeText){ navigator.clipboard.writeText(text).then(done, fail); } else fail();
+}
+
+/* Theme toggle: sets data-theme on <html> (system preference applies until first toggle) */
+function toggleTheme(){
+  const root=document.documentElement;
+  const cur = root.dataset.theme || (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+  root.dataset.theme = cur === 'dark' ? 'light' : 'dark';
+}
+
+/* ================= Fake data / in-memory state ================= */
+const POOLS = {
+  hooks:['Question','Bold claim','Cold open','Contrast','Countdown','Secret'],
+  structures:['Three act','Parable','Escalation','Reversal','Listicle'],
+  caps:['Bold pop','Clean lower','Karaoke','Minimal'],
+  vis:['Slow zoom','Ken Burns','Paper grain','Vignette']
+};
+const S = {
+  engine: {mode:'idle', sec:0, stage:''},      // idle | loading | ready | job
+  paused: false,
+  counts: {approved:14, rejected:3},
+  nextRun: '02:30',
+  disk: {free:412, total:931},
+  incidents: [
+    {t:'Oct 31 03:12', sev:'warn', msg:'NS-W402 template fell back to center_crop (no facecam found)'},
+    {t:'Oct 29 02:47', sev:'bad',  msg:'NS-E407 no clip candidates passed filters - source skipped'}
+  ],
+  services: [
+    {n:'llama',     state:'stopped', note:'LLM, 9 GB VRAM'},
+    {n:'embed',     state:'stopped', note:'embeddings, CPU'},
+    {n:'tts',       state:'stopped', note:'speech, 1.2 GB VRAM'},
+    {n:'dashboard', state:'running', note:'127.0.0.1:8100'}
+  ],
+  channels: [
+    {slug:'stoic-nights', name:'Stoic Nights', niche:'Philosophy stories', lang:'en', voice:'Warm narrator (M)', format:'both', mpw:3, longMin:9, spm:5, win:'18:00-20:00', aud:'Adults 25-44, reflective', paused:false,
+     on:{hooks:[0,1,2,3],structures:[0,1,2],caps:[0,2],vis:[0,1,3]}, sched:'02:30'},
+    {slug:'tiny-mysteries', name:'Tiny Mysteries', niche:'Short mystery tales', lang:'en', voice:'Hushed storyteller (F)', format:'shorts', mpw:5, longMin:6, spm:4, win:'19:00-21:00', aud:'Teens and adults', paused:false,
+     on:{hooks:[0,2],structures:[1,2],caps:[1],vis:[2]}, sched:'03:15'},
+    {slug:'noche-calma', name:'Noche Calma', niche:'Sleep stories', lang:'es', voice:'Soft narrator (F, es)', format:'long', mpw:2, longMin:14, spm:0, win:'21:00-22:30', aud:'Adults, bedtime listening', paused:true,
+     on:{hooks:[0,1,3],structures:[0,1,4],caps:[3],vis:[0,3]}, sched:'04:00'}
+  ],
+  outputs: [
+    {id:101, kind:'long',  dur:552, title:'The Emperor Who Gave Away His Throne', ch:'stoic-nights',
+     story:'In the winter of 305 AD, Diocletian did something no Roman emperor had done: he walked away. The story follows the quiet years in Split, where he grew cabbages and refused every plea to return...',
+     notes:['Historical claims checked against two sources','No real living persons','Narrator voice is synthetic - disclose'],
+     disc:'Altered or synthetic content: YES (AI narration and generated imagery). Tick the disclosure toggle in YouTube Studio.',
+     sheet:{title:'The Emperor Who Gave Away His Throne', desc:'Diocletian ruled the largest empire on Earth, then retired to grow cabbages. A calm retelling of the strangest abdication in history.\n\nNarration and visuals are AI-generated.', tags:'diocletian, roman empire, stoicism, history stories', hash:'#history #stoicism #romanempire'}},
+    {id:102, kind:'short', dur:47, title:'He Quit Being Emperor for Cabbages', ch:'stoic-nights',
+     story:'"Come to Salona and see the cabbages I planted with my own hands, and you will not ask me to return."',
+     notes:['Quote is paraphrased from Historia Augusta - labelled as such'],
+     disc:'Altered or synthetic content: YES (AI narration).',
+     sheet:{title:'He Quit Being Emperor for Cabbages #Shorts', desc:'The most relaxed resignation in Roman history. Full story on the channel.', tags:'diocletian, shorts, history', hash:'#shorts #history #rome'}},
+    {id:103, kind:'short', dur:52, title:'The Lighthouse Keeper Who Counted Wrong', ch:'tiny-mysteries',
+     story:'The logbook said forty-one steps. Every visitor counted forty. On the last night, the keeper wrote one more line...',
+     notes:['Fictional - labelled as fiction in description','No real locations named'],
+     disc:'Altered or synthetic content: YES. Mark the story as fiction.',
+     sheet:{title:'The Lighthouse Keeper Who Counted Wrong #Shorts', desc:'A tiny mystery in under a minute. Fiction.', tags:'mystery, fiction, shorts', hash:'#shorts #mystery #fiction'}},
+    {id:104, kind:'clip',  dur:38, title:'Why most podcasts fail at episode seven', ch:'tiny-mysteries',
+     story:'[00:14:02] "...and that is the moment most people quit. Not because it is hard, but because nobody tells you the plateau is normal."',
+     notes:['Source rights confirmed by operator','No third-party private info detected'],
+     disc:'Clip of operator-owned content - no synthetic media disclosure required.',
+     sheet:{title:'Why most podcasts fail at episode seven', desc:'Clip from the full episode. Link in pinned comment.', tags:'podcast, creator tips, clips', hash:'#podcast #creator #shorts'}},
+    {id:105, kind:'short', dur:44, title:'The Bridge That Was Never Built', ch:'tiny-mysteries',
+     story:'Locals still point to the empty pillars and say the river was never meant to be crossed...',
+     notes:['Folklore framing - not presented as fact'],
+     disc:'Altered or synthetic content: YES.',
+     sheet:{title:'The Bridge That Was Never Built #Shorts', desc:'Folklore, retold.', tags:'folklore, mystery, shorts', hash:'#shorts #folklore'}}
+  ],
+  selOut: 101,
+  runs: [
+    {s:'Nov 01 02:30', f:'Nov 01 03:41', jobs:6, rej:0, t:'llm 18m, tts 9m, render 31m'},
+    {s:'Oct 31 02:30', f:'Oct 31 03:55', jobs:6, rej:1, t:'llm 21m, tts 11m, render 38m'},
+    {s:'Oct 30 02:30', f:'Oct 30 03:29', jobs:4, rej:0, t:'llm 14m, tts 8m, render 27m'},
+    {s:'Oct 29 02:30', f:'Oct 29 03:10', jobs:3, rej:2, t:'llm 12m, tts 6m, render 19m'}
+  ],
+  logs: [],
+  logFilter: {comp:'all', lvl:'all'},
+  jobs: [],       // clipper jobs
+  clipperFile: null, clipperTpl: 'auto',
+  learned: false,
+  unlocked: false
+};
+const STAGES = ['import','transcribe','select','detect','captions','render','qc','outbox'];
+// Template thumbnails: a=active region, c=blurred/cropped fill
+const TEMPLATES = [
+  {k:'auto', d:['a','a']}, {k:'gaming_facecam', d:['a','c']}, {k:'podcast_stacked', d:['a','a']},
+  {k:'podcast_single', d:['a']}, {k:'talking_head', d:['a']}, {k:'center_crop', d:['c']}, {k:'screen_plus_cam', d:['a','c']}
+];
+
+/* ================= Status strip ================= */
+function enginePill(){
+  const e=S.engine;
+  if(e.mode==='loading') return ['warn', `Loading LLM 9 GB\u2026 ${e.sec} s`];
+  if(e.mode==='ready')   return ['ok', 'Ready'];
+  if(e.mode==='job')     return ['warn', `Job running: ${e.stage}`];
+  return ['', 'Services idle'];
+}
+function vramOwner(){
+  const e=S.engine;
+  if(e.mode==='loading' || e.mode==='ready') return 'llama (9.1 GB)';
+  if(e.mode==='job') return e.stage==='Rendering' ? 'ffmpeg NVENC (1.4 GB)' : 'whisper (3.2 GB)';
+  return 'none (0 GB)';
+}
+function renderStrip(){
+  const [cls,txt]=enginePill();
+  const busy = S.engine.mode==='loading' || S.engine.mode==='job';
+  $('#strip').innerHTML = `
+    <div class="kv"><b>Engine</b><span class="pill ${cls}">${esc(txt)}</span></div>
+    <div class="kv"><b>VRAM owner</b><span class="mono">${esc(vramOwner())}</span></div>
+    <div class="kv"><b>Next run</b><span>${S.paused?'paused':'Tonight '+S.nextRun}</span></div>
+    <div class="sp"></div>
+    <button id="warm" ${busy||S.engine.mode==='ready'?'disabled':''}>Warm up</button>
+    <button id="quit" class="danger">Quit Nightshift</button>`;
+  $('#warm').onclick = warmUp;
+  $('#quit').onclick = () => confirmDlg('Quit Nightshift?', 'Services stop. A running job is cancelled after a 30 s grace period.', 'Quit Nightshift', () => {
+    clearInterval(warmTimer); S.engine={mode:'idle',sec:0,stage:''}; S.services.forEach(s=>{ if(s.n!=='dashboard') s.state='stopped'; });
+    renderStrip(); route(); toast('Quit requested (mockup: nothing really stopped)');
+  });
+}
+let warmTimer;
+function warmUp(){
+  S.engine={mode:'loading',sec:0,stage:''}; svc('llama','starting'); renderStrip(); route();
+  clearInterval(warmTimer);
+  warmTimer=setInterval(()=>{
+    S.engine.sec++;
+    if(S.engine.sec>=12){ clearInterval(warmTimer); S.engine={mode:'ready',sec:0,stage:''}; svc('llama','running'); svc('embed','running'); if(curPage()==='overview') route(); }
+    renderStrip();
+  },1000);
+}
+function svc(n,state){ const s=S.services.find(x=>x.n===n); if(s) s.state=state; }
+
+/* ================= Nav ================= */
+const PAGES = [['overview','Overview'],['review','Review'],['clipper','Clipper'],['channels','Channels'],['logs','Runs & Logs'],['learn','Learn'],['settings','Settings']];
+function renderNav(cur){
+  $('#nav').innerHTML = `<div class="brand"><i></i>Nightshift</div>` +
+    PAGES.map(([k,l])=>`<a class="nav ${k===cur?'on':''}" href="#/${k}">${l}${k==='review'&&S.outputs.length?` <span class="badge">${S.outputs.length}</span>`:''}</a>`).join('') +
+    `<div class="grow"></div><button id="theme" class="sm">Toggle theme</button>`;
+  $('#theme').onclick = toggleTheme;
+}
+
+/* ================= Pages ================= */
+const pill = state => `<span class="pill ${({running:'ok',starting:'warn',failed:'bad'})[state]||''}">${state}</span>`;
+
+/* ---- Overview ---- */
+function pageOverview(){
+  const pend=S.outputs.length;
+  const sched = S.channels.map(c=>`<tr><td><b>${esc(c.name)}</b><div class="small muted mono">${c.slug}</div></td><td>${c.sched}</td><td>${c.format}</td>
+    <td>${c.paused?'<span class="pill">paused</span>':'<span class="pill ok">scheduled</span>'}</td>
+    <td><button class="sm" data-pause="${c.slug}">${c.paused?'Resume':'Pause'}</button></td></tr>`).join('');
+  const sv = S.services.map(s=>`<tr><td class="mono">${s.n}</td><td>${pill(s.state)}</td><td class="muted small">${s.note}</td></tr>`).join('');
+  const inc = S.incidents.map(i=>`<tr><td class="small muted">${i.t}</td><td><span class="pill ${i.sev}">${i.sev==='bad'?'error':'warning'}</span></td><td>${esc(i.msg)}</td></tr>`).join('');
+  const pct=Math.round((1-S.disk.free/S.disk.total)*100);
+  return `<h1>Overview</h1>
+  <div class="row" style="margin-bottom:14px">
+    <button class="primary" id="runNow">Run now</button>
+    <button id="pauseAll">${S.paused?'Resume':'Pause'} schedule</button>
+    <button class="danger" id="stopAll">Stop all</button>
+  </div>
+  <div class="grid g2">
+    <div class="card"><h3>Tonight's schedule</h3><table><tr><th>Channel</th><th>Start</th><th>Format</th><th>State</th><th></th></tr>${sched}</table></div>
+    <div class="card"><h3>Last run</h3><div class="stat">1 master + 5 Shorts ready, 0 rejected</div>
+      <p class="muted">Finished Nov 01 03:41 &middot; 71 min &middot; stoic-nights, tiny-mysteries</p>
+      <div class="bar"><i style="width:100%"></i></div></div>
+    <div class="card"><h3>Outbox</h3><div class="grid g3">
+      <div><div class="stat">${pend}</div><span class="pill warn">pending</span></div>
+      <div><div class="stat">${S.counts.approved}</div><span class="pill ok">approved</span></div>
+      <div><div class="stat">${S.counts.rejected}</div><span class="pill bad">rejected</span></div></div></div>
+    <div class="card"><h3>Disk</h3><div class="stat">${S.disk.free} GB free</div><p class="muted small">of ${S.disk.total} GB &middot; D:\\NightShift</p><div class="bar"><i style="width:${pct}%"></i></div></div>
+    <div class="card"><h3>Services</h3><table>${sv}</table></div>
+    <div class="card"><h3>Incidents</h3><table>${inc}</table></div>
+  </div>`;
+}
+function bindOverview(){
+  document.querySelectorAll('[data-pause]').forEach(b=>b.onclick=()=>{ const c=S.channels.find(x=>x.slug===b.dataset.pause); c.paused=!c.paused; route(); });
+  $('#runNow').onclick=()=>{
+    $('#modalRoot').innerHTML=`<div class="overlay"><div class="modal"><h2>Run now</h2>
+      <div class="f"><label>Channel</label><select id="rnCh">${S.channels.filter(c=>!c.paused).map(c=>`<option>${c.slug}</option>`).join('')}</select></div>
+      <div class="f"><label>Format</label><select id="rnFmt"><option>both</option><option>long</option><option>shorts</option></select></div>
+      <div class="row" style="justify-content:flex-end"><button id="mNo">Cancel</button><button id="mYes" class="primary">Start</button></div></div></div>`;
+    $('#mNo').onclick=()=>$('#modalRoot').innerHTML='';
+    $('#mYes').onclick=()=>{ const ch=$('#rnCh').value; $('#modalRoot').innerHTML=''; runStudioJob(ch); };
+  };
+  $('#pauseAll').onclick=()=>{ S.paused=!S.paused; renderStrip(); route(); };
+  $('#stopAll').onclick=()=>confirmDlg('Stop all?','Cancels the running job and stops all GPU services.','Stop all',()=>{
+    clearInterval(warmTimer); S.engine={mode:'idle',sec:0,stage:''}; S.services.forEach(s=>{ if(s.n!=='dashboard') s.state='stopped'; });
+    S.jobs.forEach(j=>{ if(j.state==='running') j.state='cancelled'; }); renderStrip(); route(); toast('All stopped');
+  });
+}
+/* Studio job: walks the engine through a few stages for show, then adds one pending Short */
+function runStudioJob(ch){
+  const stages=['Writing story','Narrating','Rendering'];
+  let i=0; S.engine={mode:'job',sec:0,stage:stages[0]}; svc('llama','running'); renderStrip(); route(); toast('Run started for '+ch);
+  const t=setInterval(()=>{
+    i++;
+    if(i>=stages.length){
+      clearInterval(t); S.engine={mode:'idle',sec:0,stage:''}; svc('llama','stopped');
+      S.outputs.push({id:200+S.outputs.length+Math.floor(Math.random()*900),kind:'short',dur:49,title:'Fresh Short from '+ch,ch,story:'Generated text would appear here...',notes:['No policy flags'],disc:'Altered or synthetic content: YES.',sheet:{title:'Fresh Short from '+ch,desc:'Generated.',tags:'demo',hash:'#shorts'}});
+      toast('Run finished: 1 new Short pending');
+    } else S.engine.stage=stages[i];
+    renderStrip(); renderNav(curPage()); if(curPage()==='overview') route();
+  },3000);
+}
+
+/* ---- Review ---- */
+function pageReview(){
+  const o=S.outputs.find(x=>x.id===S.selOut) || S.outputs[0];
+  if(!o) return `<h1>Review</h1><div class="card empty">Queue is empty - nothing pending.</div>`;
+  S.selOut=o.id;
+  const list = S.outputs.map(x=>`<button class="q ${x.id===S.selOut?'on':''}" data-id="${x.id}">
+    <div class="row between"><span class="badge">${x.kind}</span><span class="muted small mono">${fmtDur(x.dur)}</span></div>
+    <div>${esc(x.title)}</div><div class="muted small">${x.ch}</div></button>`).join('');
+  const cp=(id,label,val,multi)=>`<div class="f"><label>${label}</label><div class="copy">${multi?`<textarea rows="4" readonly>${esc(val)}</textarea>`:`<input readonly value="${esc(val)}">`}<button class="sm" data-copy="${id}">Copy</button></div></div>`;
+  return `<h1>Review</h1><div class="split">
+    <div><h3>Pending (${S.outputs.length})</h3>${list}</div>
+    <div class="card"><div class="detail">
+      <div><div class="vid"><span>${o.kind==='long'?'master (shown 9:16)':'9:16 preview'} &middot; ${fmtDur(o.dur)}</span></div></div>
+      <div>
+        <div class="row"><span class="badge">${o.kind}</span><b>${esc(o.title)}</b></div>
+        <h3 style="margin-top:12px">Story / transcript excerpt</h3><p>${esc(o.story)}</p>
+        <h3>Policy notes</h3><ul>${o.notes.map(n=>`<li>${esc(n)}</li>`).join('')}</ul>
+        <h3>Disclosure advice</h3><p class="warnbox">${esc(o.disc)}</p>
+      </div></div>
+      <h3 style="margin-top:14px">Upload sheet</h3>
+      ${cp('title','Title',o.sheet.title)}${cp('desc','Description',o.sheet.desc,true)}${cp('tags','Tags',o.sheet.tags)}${cp('hash','Hashtags',o.sheet.hash)}
+      <div class="row" style="margin-top:10px">
+        <button class="primary" id="approve">Approve</button>
+        <button class="danger" id="reject">Reject</button>
+        <button id="folder">Open folder</button>
+      </div>
+      <div id="rejBox" class="f" style="display:none;margin-top:10px"><label>Reason</label><div class="copy"><input id="rejWhy" placeholder="e.g. narration glitch at 0:21"><button class="danger sm" id="rejGo">Confirm reject</button></div></div>
+      <div class="f" style="margin-top:10px"><label>Mark uploaded - video URL</label><div class="copy"><input id="upUrl" placeholder="https://youtube.com/watch?v=..."><button class="sm" id="upGo">Mark uploaded</button></div></div>
+    </div></div>`;
+}
+function bindReview(){
+  document.querySelectorAll('.q').forEach(b=>b.onclick=()=>{ S.selOut=+b.dataset.id; route(); });
+  const o=S.outputs.find(x=>x.id===S.selOut); if(!o) return;
+  document.querySelectorAll('[data-copy]').forEach(b=>b.onclick=()=>copyText(o.sheet[b.dataset.copy], b.dataset.copy));
+  // Removing an item updates the Outbox counts shown on Overview
+  const remove=(kind,msg)=>{ S.outputs=S.outputs.filter(x=>x.id!==o.id); S.selOut=null; S.counts[kind]++; toast(msg); route(); };
+  $('#approve').onclick=()=>remove('approved','Approved: '+o.title);
+  $('#reject').onclick=()=>{ $('#rejBox').style.display='block'; $('#rejWhy').focus(); };
+  $('#rejGo').onclick=()=>{ if(!$('#rejWhy').value.trim()) return toast('Give a reason first'); remove('rejected','Rejected'); };
+  $('#upGo').onclick=()=>{ if(!/^https?:\/\//.test($('#upUrl').value)) return toast('Enter a valid URL'); remove('approved','Marked uploaded'); };
+  $('#folder').onclick=()=>toast('Would open D:\\NightShift\\outbox\\'+o.ch+'\\'+o.id);
+}
+
+/* ---- Clipper ---- */
+function pageClipper(){
+  const tpl=TEMPLATES.map(t=>`<div class="tpl ${t.k===S.clipperTpl?'on':''}" data-tpl="${t.k}"><div class="t">${t.d.map(c=>`<i class="${c}"></i>`).join('')}</div>${t.k}</div>`).join('');
+  const jobs=S.jobs.map(j=>{
+    const pct=j.state==='done'?100:Math.round(j.stage/STAGES.length*100);
+    return `<div class="card" style="margin-bottom:10px"><div class="row between"><b>${esc(j.file)}</b>
+      <span class="pill ${j.state==='done'?'ok':j.state==='cancelled'?'bad':'warn'}">${j.state==='running'?STAGES[j.stage]:j.state}</span></div>
+      <div class="bar" style="margin:8px 0"><i style="width:${pct}%"></i></div>
+      <div class="small muted">${j.ch} &middot; ${j.tpl} &middot; ${STAGES.map((s,i)=>i<j.stage||j.state==='done'?'<b>'+s+'</b>':s).join(' \u2192 ')}</div>
+      ${j.state==='running'?`<button class="sm danger" data-cancel="${j.id}" style="margin-top:6px">Cancel</button>`:''}
+      ${j.state==='done'?`<div class="clips" style="margin-top:10px">${[1,2,3].map(n=>`<div class="clip">clip ${n} &middot; 0:${30+n*7}</div>`).join('')}</div>`:''}</div>`;
+  }).join('') || '<div class="empty card">No jobs yet.</div>';
+  return `<h1>Clipper</h1><div class="grid g2">
+    <div class="card"><h3>1. Source</h3>
+      <div class="drop" id="drop">${S.clipperFile?'<b>'+esc(S.clipperFile)+'</b><br>click to change':'Drop a video here, or click to pick a file'}</div>
+      <input type="file" id="file" accept="video/*,audio/*" hidden>
+      <label style="margin-top:10px;display:flex;gap:6px;align-items:center;color:var(--text)"><input type="checkbox" id="rights"> I own this content or have the rights to clip it</label>
+      <div class="form" style="margin-top:10px">
+        <div class="f"><label>Channel</label><select id="clCh">${S.channels.map(c=>`<option>${c.slug}</option>`).join('')}</select></div>
+        <div class="f"><label>Max clips</label><input id="clMax" type="number" value="6" min="1" max="10"></div>
+        <div class="f"><label>Min seconds</label><input id="clMin" type="number" value="20"></div>
+        <div class="f"><label>Max seconds</label><input id="clMaxS" type="number" value="60"></div>
+        <div class="f"><label>Caption style</label><select id="clCap">${POOLS.caps.map(c=>`<option>${c}</option>`).join('')}</select></div></div>
+      <button class="primary" id="start" disabled>Start job</button></div>
+    <div class="card"><h3>2. Template</h3><div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(110px,1fr))">${tpl}</div></div>
+  </div><h3 style="margin-top:18px">Jobs &amp; finished clips</h3>${jobs}`;
+}
+function bindClipper(){
+  const gate=()=>{ $('#start').disabled = !($('#rights').checked && S.clipperFile); };
+  const setFile=f=>{ if(!f) return; S.clipperFile=f.name; route(); };
+  const drop=$('#drop');
+  drop.onclick=()=>$('#file').click();
+  $('#file').onchange=e=>setFile(e.target.files[0]);
+  ['dragenter','dragover'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.add('over');}));
+  ['dragleave','drop'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.remove('over');}));
+  drop.addEventListener('drop',e=>setFile(e.dataTransfer.files[0]));
+  $('#rights').onchange=gate; gate();
+  document.querySelectorAll('[data-tpl]').forEach(t=>t.onclick=()=>{ S.clipperTpl=t.dataset.tpl; document.querySelectorAll('.tpl').forEach(x=>x.classList.toggle('on',x===t)); });
+  document.querySelectorAll('[data-cancel]').forEach(b=>b.onclick=()=>confirmDlg('Cancel job?','The job stops after the current stage.','Cancel job',()=>{ S.jobs.find(j=>j.id==b.dataset.cancel).state='cancelled'; route(); }));
+  $('#start').onclick=()=>{
+    const j={id:Date.now(),file:S.clipperFile,ch:$('#clCh').value,tpl:S.clipperTpl,stage:0,state:'running'};
+    S.jobs.unshift(j); S.clipperFile=null; route(); toast('Clip job started');
+    const t=setInterval(()=>{
+      if(j.state!=='running'){ clearInterval(t); return; }
+      j.stage++;
+      if(j.stage>=STAGES.length){ j.state='done'; clearInterval(t); S.engine={mode:'idle',sec:0,stage:''}; toast('3 clips added to the Outbox'); }
+      else S.engine={mode:'job',sec:0,stage:STAGES[j.stage]==='render'?'Rendering':STAGES[j.stage]};
+      renderStrip(); if(curPage()==='clipper'){ const y=scrollY; route(); scrollTo(0,y); }
+    },1600);
+  };
+}
+
+/* ---- Channels ---- */
+let editSlug = null;
+function pageChannels(){
+  const cards=S.channels.map(c=>`<div class="card"><div class="row between"><b>${esc(c.name)}</b><span class="pill ${c.paused?'':'ok'}">${c.paused?'paused':'active'}</span></div>
+    <div class="muted small mono">${c.slug} &middot; ${c.lang}</div><p>${esc(c.niche)}</p>
+    <div class="small muted">${c.format} &middot; ${c.mpw} masters/wk &middot; ${c.spm} shorts/master</div>
+    <div class="row" style="margin-top:8px"><button class="sm" data-edit="${c.slug}">Edit</button>
+    <button class="sm" data-val="${c.slug}">Validate</button><button class="sm" data-tg="${c.slug}">${c.paused?'Resume':'Pause'}</button></div></div>`).join('');
+  const c=S.channels.find(x=>x.slug===editSlug);
+  return `<h1>Channels</h1><div class="row" style="margin-bottom:12px"><button class="primary" id="addCh">Add channel</button></div>
+  <div class="grid g3">${cards}</div>${c?editor(c):''}`;
+}
+function editor(c){
+  const opt=(arr,v)=>arr.map(x=>`<option ${x===v?'selected':''}>${x}</option>`).join('');
+  const pool=(k,label)=>`<div class="f"><label>${label}</label><div class="chips">${POOLS[k].map((n,i)=>`<span class="chip ${c.on[k].includes(i)?'on':''}" data-pool="${k}" data-i="${i}">${n}</span>`).join('')}</div></div>`;
+  const w=c.on.hooks.length*c.on.structures.length;
+  return `<div class="card" style="margin-top:16px" id="editor"><h2>Edit: ${esc(c.name)}</h2><div class="form">
+    <div class="f"><label>Slug</label><input value="${esc(c.slug)}" readonly></div>
+    <div class="f"><label>Display name</label><input value="${esc(c.name)}"></div>
+    <div class="f"><label>Niche</label><input value="${esc(c.niche)}"></div>
+    <div class="f"><label>Language</label><select>${opt(['en','es','de','fr','pt'],c.lang)}</select></div>
+    <div class="f"><label>Voice preset</label><div class="copy"><select id="voice">${opt(['Warm narrator (M)','Hushed storyteller (F)','Soft narrator (F, es)','Bright explainer (M)'],c.voice)}</select><button class="sm" id="prev">Preview</button></div></div>
+    <div class="f"><label>Format</label><select>${opt(['long','shorts','both'],c.format)}</select></div>
+    <div class="f"><label>Masters / week</label><input type="number" value="${c.mpw}"></div>
+    <div class="f"><label>Long minutes</label><input type="number" value="${c.longMin}"></div>
+    <div class="f"><label>Shorts per master</label><input type="number" value="${c.spm}"></div>
+    <div class="f"><label>Publish window</label><input value="${esc(c.win)}"></div>
+    <div class="f"><label>Audience</label><input value="${esc(c.aud)}"></div></div>
+    <h3>Pools</h3>${pool('hooks','Hooks')}${pool('structures','Structures')}${pool('caps','Caption styles')}${pool('vis','Visual treatments')}
+    ${w<9?`<div class="warnbox">Hooks x structures = ${w} (&lt; 9). Content will feel repetitive; enable more hooks or structures.</div>`:`<p class="small up">Hooks x structures = ${w} - distinctness OK.</p>`}
+    <div class="row"><button class="primary" id="saveCh">Save</button><button id="closeCh">Close</button></div></div>`;
+}
+function bindChannels(){
+  document.querySelectorAll('[data-edit]').forEach(b=>b.onclick=()=>{ editSlug=b.dataset.edit; route(); $('#editor').scrollIntoView({block:'start'}); });
+  document.querySelectorAll('[data-val]').forEach(b=>b.onclick=()=>toast('Validation passed for '+b.dataset.val));
+  document.querySelectorAll('[data-tg]').forEach(b=>b.onclick=()=>{ const c=S.channels.find(x=>x.slug===b.dataset.tg); c.paused=!c.paused; route(); });
+  $('#addCh').onclick=()=>toast('Add channel: a blank editor would open (mockup)');
+  document.querySelectorAll('.chip').forEach(ch=>ch.onclick=()=>{
+    const c=S.channels.find(x=>x.slug===editSlug), k=ch.dataset.pool, i=+ch.dataset.i, a=c.on[k];
+    a.includes(i)?a.splice(a.indexOf(i),1):a.push(i); const y=scrollY; route(); scrollTo(0,y);
+  });
+  if($('#prev')) $('#prev').onclick=()=>toast('Playing voice preview: '+$('#voice').value);
+  if($('#saveCh')){ $('#saveCh').onclick=()=>toast('Saved (in memory only)'); $('#closeCh').onclick=()=>{ editSlug=null; route(); }; }
+}
+
+/* ---- Runs & Logs ---- */
+const COMPS=['supervisor','llama','tts','studio','clipper','dashboard'];
+const MSGS=['health check ok','job queued','VRAM handoff complete','segment 14/52 narrated','ffmpeg encode 62%','slow response from llama (4.1 s)','retrying embed request','render finished','policy check passed','disk free 412 GB'];
+function addLog(){
+  const r=Math.random(), lvl = r<.04?'ERROR':r<.16?'WARNING':'INFO', d=new Date();
+  S.logs.push({t:`${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`,c:COMPS[Math.floor(Math.random()*COMPS.length)],l:lvl,m:MSGS[Math.floor(Math.random()*MSGS.length)]});
+  if(S.logs.length>200) S.logs.shift();
+}
+for(let i=0;i<14;i++) addLog();
+function logHtml(){
+  const f=S.logFilter;
+  return S.logs.filter(x=>(f.comp==='all'||x.c===f.comp)&&(f.lvl==='all'||x.l===f.lvl))
+    .map(x=>`<div class="${x.l}">${x.t} ${x.l.padEnd(7)} ${x.c.padEnd(10)} ${esc(x.m)}</div>`).join('');
+}
+function pageLogs(){
+  const rows=S.runs.map(r=>`<tr><td>${r.s}</td><td>${r.f}</td><td>${r.jobs}</td><td>${r.rej}</td><td class="small muted">${r.t}</td></tr>`).join('');
+  return `<h1>Runs &amp; Logs</h1><div class="card"><div class="row between"><h3>Runs</h3><button id="diag">Download diagnostics</button></div>
+    <table><tr><th>Started</th><th>Finished</th><th>Jobs</th><th>Rejected</th><th>Timings</th></tr>${rows}</table></div>
+    <div class="card" style="margin-top:14px"><div class="row between"><h3>Log tail</h3><div class="row">
+      <select id="fComp" style="width:auto"><option value="all">all components</option>${COMPS.map(c=>`<option ${S.logFilter.comp===c?'selected':''}>${c}</option>`).join('')}</select>
+      <select id="fLvl" style="width:auto"><option value="all">all levels</option>${['INFO','WARNING','ERROR'].map(c=>`<option ${S.logFilter.lvl===c?'selected':''}>${c}</option>`).join('')}</select></div></div>
+      <div class="log" id="log">${logHtml()}</div></div>`;
+}
+function bindLogs(){
+  $('#diag').onclick=()=>toast('Would download nightshift-diagnostics.zip');
+  $('#fComp').onchange=e=>{ S.logFilter.comp=e.target.value; refreshLog(true); };
+  $('#fLvl').onchange=e=>{ S.logFilter.lvl=e.target.value; refreshLog(true); };
+  const l=$('#log'); l.scrollTop=l.scrollHeight;
+}
+function refreshLog(force){ const l=$('#log'); if(!l) return; const stick=force||l.scrollTop+l.clientHeight>=l.scrollHeight-20; l.innerHTML=logHtml(); if(stick) l.scrollTop=l.scrollHeight; }
+setInterval(()=>{ addLog(); if(curPage()==='logs') refreshLog(); },2000);
+
+/* ---- Learn ---- */
+const PERF=[['hooks','Cold open',18,'4.8%'],['structures','Reversal',12,'4.1%'],['caps','Karaoke',9,'3.9%'],['vis','Paper grain',6,'3.5%'],
+            ['hooks','Countdown',-14,'1.2%'],['structures','Listicle',-11,'1.4%'],['caps','Minimal',-7,'1.8%'],['vis','Vignette',-5,'1.9%']];
+function pageLearn(){
+  const rows=PERF.map(p=>`<tr><td class="muted">${p[0]}</td><td>${p[1]}</td><td>${p[3]} avg viewed</td><td class="${p[2]>0?'up':'down'}">${p[2]>0?'\u25B2':'\u25BC'} ${Math.abs(p[2])}%</td></tr>`).join('');
+  return `<h1>Learn</h1><div class="card"><h3>YouTube Analytics CSV</h3>
+    <div class="drop" id="csvDrop">Drop analytics CSV here, or click to pick</div><input type="file" id="csv" accept=".csv" hidden></div>
+    ${S.learned?`<div class="card" style="margin-top:14px"><h3>Import summary</h3><p><b>${esc(S.learned)}</b> &middot; 128 rows parsed, 121 matched to outputs, 7 skipped (unknown video id).</p></div>
+    <div class="card" style="margin-top:14px"><h3>Top / bottom performers</h3><table><tr><th>Pool</th><th>Item</th><th>Metric</th><th>Weight change</th></tr>${rows}</table></div>`:''}`;
+}
+function bindLearn(){
+  const d=$('#csvDrop'), f=$('#csv'); const take=file=>{ if(!file) return; S.learned=file.name; route(); toast('CSV imported'); };
+  d.onclick=()=>f.click(); f.onchange=e=>take(e.target.files[0]);
+  ['dragenter','dragover'].forEach(ev=>d.addEventListener(ev,e=>{e.preventDefault();d.classList.add('over');}));
+  ['dragleave','drop'].forEach(ev=>d.addEventListener(ev,e=>{e.preventDefault();d.classList.remove('over');}));
+  d.addEventListener('drop',e=>take(e.dataTransfer.files[0]));
+}
+
+/* ---- Settings ---- */
+function pageSettings(){
+  const u=S.unlocked?'':'disabled';
+  const keys=['OpenRouter','ElevenLabs','YouTube Data'].map(k=>`<div class="f"><label>${k} API key</label><div class="copy"><input value="\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022sk7f" readonly><button class="sm" data-key="1">Replace</button></div></div>`).join('');
+  return `<h1>Settings</h1><div class="grid g2">
+    <div class="card"><div class="row between"><h3>Profile &amp; flags</h3><label style="display:flex;gap:6px;align-items:center;color:var(--text);margin:0"><input type="checkbox" id="unlock" ${S.unlocked?'checked':''}> Unlock</label></div>
+      <div class="f"><label>Runtime profile</label><select ${u}><option>32gb-gpu16</option><option>16gb-gpu8</option><option>cpu-only</option></select></div>
+      <div class="f"><label>Flags</label><input ${u} value="fake_services=false, nvenc=true, vram_guard=on"></div>
+      <div class="f"><label>Schedule time</label><input type="time" value="02:30"></div>
+      <div class="row"><button class="primary" id="save">Save</button></div></div>
+    <div class="card"><h3>API keys (keyring)</h3>${keys}</div>
+    <div class="card"><h3>Maintenance</h3><div class="f"><label>Update from zip</label><input type="file" accept=".zip" id="zip"></div>
+      <div class="row"><button id="verify">Re-run verify</button><button id="diag2">Download diagnostics</button>
+      <button disabled title="Disabled in mockup">Uninstall</button></div><p id="vres" class="small muted"></p></div>
+  </div>`;
+}
+function bindSettings(){
+  $('#unlock').onchange=e=>{ S.unlocked=e.target.checked; route(); };
+  $('#save').onclick=()=>toast('Settings saved (in memory only)');
+  $('#diag2').onclick=()=>toast('Would download nightshift-diagnostics.zip');
+  $('#zip').onchange=e=>{ if(e.target.files[0]) toast('Would run ns update with '+e.target.files[0].name); };
+  $('#verify').onclick=()=>{ $('#vres').textContent='Running verify\u2026'; setTimeout(()=>{ const v=$('#vres'); if(v) v.innerHTML='<span class="pill ok">verify passed</span> 24 checks, 0 warnings'; },1500); };
+  document.querySelectorAll('[data-key]').forEach(b=>b.onclick=()=>{
+    const inp=b.parentNode.querySelector('input');
+    if(inp.readOnly){ inp.readOnly=false; inp.value=''; inp.placeholder='paste new key'; inp.focus(); b.textContent='Store'; }
+    else { inp.readOnly=true; inp.value='\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022'+Math.random().toString(36).slice(2,6); b.textContent='Replace'; toast('Key stored in keyring (mockup)'); }
+  });
+}
+
+/* ================= Router ================= */
+const ROUTES={overview:[pageOverview,bindOverview],review:[pageReview,bindReview],clipper:[pageClipper,bindClipper],channels:[pageChannels,bindChannels],logs:[pageLogs,bindLogs],learn:[pageLearn,bindLearn],settings:[pageSettings,bindSettings]};
+function curPage(){ const k=(location.hash.replace(/^#\/?/,'')||'overview'); return ROUTES[k]?k:'overview'; }
+function route(){
+  const k=curPage(), [render,bind]=ROUTES[k];
+  renderNav(k); $('#view').innerHTML=render(); bind();
+}
+addEventListener('hashchange',()=>{ route(); scrollTo(0,0); });
+renderStrip(); route();
+</script>
+</body>
+</html>

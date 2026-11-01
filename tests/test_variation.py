@@ -124,7 +124,7 @@ def test_full_combo_not_repeated_within_30_days(tmp_home: Path):
         draw.record_combo(db, ch.slug, f"j{i}", "s1", _combo(h, s, f"c-old{i}"), NOW - timedelta(days=29))
     with pytest.raises(StudioError) as ei:
         draw.draw_combo(db, ch, rng=random.Random(1), now=NOW)
-    assert ei.value.code == "NS-E312"
+    assert ei.value.code == "NS-E325"
 
 
 def test_combo_older_than_30_days_may_repeat(tmp_home: Path):

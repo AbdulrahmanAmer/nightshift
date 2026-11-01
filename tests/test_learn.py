@@ -75,7 +75,7 @@ def test_read_csv_alternate_headers_and_overrides(tmp_path: Path):
 def test_read_csv_errors(tmp_path: Path):
     with pytest.raises(StudioError) as ei:
         importer.read_csv(tmp_path / "missing.csv")
-    assert ei.value.code == "NS-E310"
+    assert ei.value.code == "NS-E323"
     with pytest.raises(StudioError):
         importer.read_csv(_csv(tmp_path, "1,2\n", "Foo,Bar\n"))
     with pytest.raises(StudioError):

@@ -1,6 +1,6 @@
 """LLM judge access for the policy checks (component C7).
 
-The `policy_check` prompt is owned by C5 (CR-2). It is reached through `importlib` so this package
+The `policy_check` prompt is owned by C5 (CR-C7-2). It is reached through `importlib` so this package
 imports cleanly before C5's modules exist, and tests inject their own `JudgeFn`.
 """
 

@@ -60,7 +60,7 @@ def test_pool_minimum_blocks_add(tmp_home: Path):
     bad = make_channel(pools=Pools(hooks=["a", "b"]))
     with pytest.raises(StudioError) as ei:
         crud.add_channel(paths, db, bad)
-    assert ei.value.code == "NS-E307"
+    assert ei.value.code == "NS-E320"
     assert not paths.channel_file("after-dark").exists()
 
 
@@ -71,7 +71,7 @@ def test_distinctness(tmp_home: Path):
     clone = make_channel(slug="clone", display_name="Clone", niche=niche)
     with pytest.raises(StudioError) as ei:
         crud.add_channel(paths, db, clone)
-    assert ei.value.code == "NS-E308"
+    assert ei.value.code == "NS-E321"
     different_voice = clone.model_copy(update={"voice": Voice(speaker="Aiden")})
     crud.add_channel(paths, db, different_voice)
     assert {c.slug for c in crud.all_channels(paths)} == {"after-dark", "clone"}
@@ -98,7 +98,7 @@ def test_edit_persists_and_validates(tmp_home: Path):
     before = paths.channel_file("after-dark").read_text(encoding="utf-8")
     with pytest.raises(StudioError) as ei:
         crud.edit_channel(paths, db, "after-dark", {"pools.hooks": ["a"]})
-    assert ei.value.code == "NS-E307"
+    assert ei.value.code == "NS-E320"
     assert paths.channel_file("after-dark").read_text(encoding="utf-8") == before
     with pytest.raises(StudioError):
         crud.edit_channel(paths, db, "after-dark", {"no.such": 1})
@@ -120,7 +120,7 @@ def test_unknown_channel_is_e309(tmp_home: Path):
     paths, _ = _env(tmp_home)
     with pytest.raises(StudioError) as ei:
         crud.get_channel(paths, "nope")
-    assert ei.value.code == "NS-E309"
+    assert ei.value.code == "NS-E322"
     assert "Unknown channel" in str(ei.value)
 
 
@@ -135,7 +135,7 @@ def test_broken_yaml_is_e307(tmp_home: Path):
     paths.channel_file("bad").write_text("slug: Bad Slug\n", encoding="utf-8")
     with pytest.raises(StudioError) as ei:
         crud.all_channels(paths)
-    assert ei.value.code == "NS-E307"
+    assert ei.value.code == "NS-E320"
 
 
 def test_load_channel_yaml(tmp_path: Path):

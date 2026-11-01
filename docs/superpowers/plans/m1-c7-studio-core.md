@@ -11,7 +11,7 @@
 ## Global constraints for this plan
 
 - C5 and C6 modules (`ns_studio.text.*`, `ns_studio.media.*`) are reached only through `importlib.import_module` inside functions, so ruff and pyright pass while they do not exist yet (pyright reports unresolved imports otherwise) and CI has no Pillow, spaCy or keyring.
-- Error codes: only codes present in `contracts/errors.json` may be raised through `NsError`. Studio-specific conditions that have no code yet (channel profile invalid, channels not distinct, unknown channel, bad analytics CSV, calibration data missing, variation pools exhausted) raise `StudioError` from `ns_studio/errors.py`, a shim that prefers `errors.json` when the code exists and otherwise carries its own message. Codes `NS-E307` to `NS-E312` are requested in `contracts/CHANGE_REQUESTS.md` (CR-1). When the CR lands, the shim table is emptied and nothing else changes.
+- Error codes: only codes present in `contracts/errors.json` may be raised through `NsError`. Studio-specific conditions that have no code yet (channel profile invalid, channels not distinct, unknown channel, bad analytics CSV, calibration data missing, variation pools exhausted) raise `StudioError` from `ns_studio/errors.py`, a shim that prefers `errors.json` when the code exists and otherwise carries its own message. Codes `NS-E320` to `NS-E325` are requested in `contracts/CHANGE_REQUESTS.md` (CR-C7-1). When the CR lands, the shim table is emptied and nothing else changes.
 - Logging only through `NsLogger`; `print` only inside `cli.py` (typer echo).
 - Heavy things stay lazy: `keyring` (API keys), spaCy.
 
@@ -27,7 +27,7 @@ ns_studio/calibrate/__init__.py
 ns_studio/calibrate/run.py     spearman, generate, score, recommend_bar, refusal rate
 ns_studio/cli.py               typer app: run, channel, voice, calibrate
 tests/test_channels.py test_variation.py test_calibrate.py test_cli.py
-contracts/CHANGE_REQUESTS.md   CR-1 (error codes), CR-2 (policy_check prompt, schema, fixture for C5)
+contracts/CHANGE_REQUESTS.md   CR-C7-1 (error codes), CR-C7-2 (policy_check prompt, schema, fixture for C5)
 ```
 
 ---
@@ -58,13 +58,13 @@ def distinct_problems(new: Channel, others: list[Channel]) -> list[str]
 def validate_channel(ch: Channel, others: list[Channel]) -> tuple[list[str], list[str]]  # (problems, warnings)
 def add_channel(paths: Paths, db: Db, ch: Channel, *, now: datetime | None = None) -> Path
 def edit_channel(paths: Paths, db: Db, slug: str, updates: dict[str, Any]) -> Channel     # dotted keys: "pools.hooks"
-def get_channel(paths: Paths, slug: str) -> Channel            # StudioError NS-E309 when missing
+def get_channel(paths: Paths, slug: str) -> Channel            # StudioError NS-E322 when missing
 def all_channels(paths: Paths) -> list[Channel]
 def sync_channel_row(db: Db, ch: Channel, now: datetime) -> None   # channels(slug, display_name, created_at, status)
 ```
 Rules: hooks >= 3, structures >= 3, `len(hooks) * len(structures) >= 9`, caption_styles >= 2, visual_treatments >= 2; every pool entry unique; warning when hooks < 4 or structures < 4. Distinctness (spec 8): two channels fail when niche (case and whitespace normalised), voice (mode, speaker, name, description; speed ignored), caption-style set and visual-treatment set are all equal; slug must be unique; at most 3 channels per install (spec 18.6).
 
-- [x] **Step 1: tests first** (`tests/test_channels.py`): minimum failures each report their rule; 4x4 default pools pass without warnings, 3x3 passes with a warning; add twice with equal everything fails `NS-E308`; different voice passes; fourth channel fails; `edit_channel(..., {"pools.hooks": ["a"]})` fails `NS-E307` and leaves the YAML untouched; `edit_channel` with `critic_bar` persists; `add_channel` writes the YAML and inserts the `channels` row.
+- [x] **Step 1: tests first** (`tests/test_channels.py`): minimum failures each report their rule; 4x4 default pools pass without warnings, 3x3 passes with a warning; add twice with equal everything fails `NS-E321`; different voice passes; fourth channel fails; `edit_channel(..., {"pools.hooks": ["a"]})` fails `NS-E320` and leaves the YAML untouched; `edit_channel` with `critic_bar` persists; `add_channel` writes the YAML and inserts the `channels` row.
 - [x] **Step 2: implement** `errors.py` and `crud.py` (edit applies the updates to `model_dump()`, validates through `Channel.model_validate`, validates pools and distinctness, then saves).
 - [x] **Step 3: Run** (commit, push, CI) then `git commit -m "feat(c7): channel CRUD with pool minimums and distinctness"`.
 
@@ -88,12 +88,12 @@ def draw_combo(db: Db, channel: Channel, *, rng: random.Random, now: datetime | 
 def record_combo(db: Db, channel: str, job_id: str, item: str, combo: Combo, now: datetime | None = None) -> None
 ```
 Algorithm of `draw_combo`:
-1. Candidate pairs = hooks x structures (restricted by `fixed["structure"]` / `fixed["hook"]`), minus `recent_pairs(window)`. Never empty because `window <= pairs - 1`; with `fixed` the exclusion is applied only if something remains, else `StudioError("NS-E312")`.
+1. Candidate pairs = hooks x structures (restricted by `fixed["structure"]` / `fixed["hook"]`), minus `recent_pairs(window)`. Never empty because `window <= pairs - 1`; with `fixed` the exclusion is applied only if something remains, else `StudioError("NS-E325")`.
 2. Weighted choice of a pair with weight `w_hook * w_structure`.
-3. Draw the other six dimensions independently by weights (honouring `fixed`), up to 60 attempts until the full tuple is not in `used_full_combos`; then enumerate the remaining Cartesian product and pick the first unused by weight order; none left means `StudioError("NS-E312")`.
+3. Draw the other six dimensions independently by weights (honouring `fixed`), up to 60 attempts until the full tuple is not in `used_full_combos`; then enumerate the remaining Cartesian product and pick the first unused by weight order; none left means `StudioError("NS-E325")`.
 4. `combo_id = f"c-{rng.getrandbits(32):08x}"` (collision with the `combos` table redraws the id).
 
-- [x] **Step 1: tests first**: `apply_floor({"a": 0.99, "b": 0.01})` gives `b >= 0.05` and sum 1; with weights `{"a": 1000}` stored, option `b` still drawn in about 5 % of 4000 seeded draws (between 3 % and 8 %); ledger: after recording a combo, `draw_combo` 50 times never returns the same `{hook, structure}` while it is inside the window; with 3x3 pools (window 8) nine consecutive recorded draws never repeat a pair inside any window of 8; 30-day rule: a combo recorded 31 days ago may repeat, one recorded 29 days ago may not (shrink pools to one option each to force it); exhaustion raises `NS-E312`; `fixed={"structure": "twist"}` keeps the structure.
+- [x] **Step 1: tests first**: `apply_floor({"a": 0.99, "b": 0.01})` gives `b >= 0.05` and sum 1; with weights `{"a": 1000}` stored, option `b` still drawn in about 5 % of 4000 seeded draws (between 3 % and 8 %); ledger: after recording a combo, `draw_combo` 50 times never returns the same `{hook, structure}` while it is inside the window; with 3x3 pools (window 8) nine consecutive recorded draws never repeat a pair inside any window of 8; 30-day rule: a combo recorded 31 days ago may repeat, one recorded 29 days ago may not (shrink pools to one option each to force it); exhaustion raises `NS-E325`; `fixed={"structure": "twist"}` keeps the structure.
 - [x] **Step 2: implement.**
 - [x] **Step 3: Run** then `git commit -m "feat(c7): weighted combo draw with 30-day and pair ledger"`.
 
@@ -159,6 +159,6 @@ def score(paths, db, channel, scores_csv: Path) -> CalibrationReport      # per-
 
 ### Task 7: Change requests (`sonnet`)
 
-Append CR-1 (error codes NS-E307..E312) and CR-2 (prompt `policy_check`, its schema and fixture, owner C5) to `contracts/CHANGE_REQUESTS.md`.
+Append CR-1 (error codes NS-E320..E312) and CR-C7-2 (prompt `policy_check`, its schema and fixture, owner C5) to `contracts/CHANGE_REQUESTS.md`.
 
 - [x] Commit `docs(c7): change requests for error codes and policy_check prompt`.

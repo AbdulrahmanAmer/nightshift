@@ -159,7 +159,7 @@ def test_score_error_paths(tmp_home: Path):
     paths, db = _env(tmp_home)
     with pytest.raises(StudioError) as ei:
         cal.score(paths, db, "after-dark", tmp_home / "none.csv")
-    assert ei.value.code == "NS-E311"
+    assert ei.value.code == "NS-E324"
     d = cal.write_generation(paths, db, "after-dark", _make_stories([8.0, 7.0, 9.0]))
     few = tmp_home / "few.csv"
     _write_human(few, d / "scores.csv", {"cal-01": 8.0, "cal-02": 7.0})
@@ -208,4 +208,4 @@ def test_cli_score_without_generation_fails(tmp_home: Path):
     add = runner.invoke(app, ["channel", "add", "--slug", "x-ch", "--name", "X", "--niche", "n"])
     assert add.exit_code == 0
     res = runner.invoke(app, ["calibrate", "--channel", "x-ch", "--score", str(tmp_home / "s.csv")])
-    assert res.exit_code == 1 and "NS-E311" in res.output
+    assert res.exit_code == 1 and "NS-E324" in res.output

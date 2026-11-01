@@ -102,7 +102,7 @@ def test_resume_reruns_only_missing_output(tmp_home: Path, stub_stages):
 def test_resume_unknown_job_fails(tmp_home: Path, stub_stages):
     res = runner.invoke(app, ["run", "--resume", "nope-20260101-abcd", "--fake-services"])
     assert res.exit_code == 1
-    assert "NS-E313" in res.output
+    assert "NS-E326" in res.output
 
 
 def test_fake_subset_is_accepted_and_bad_name_rejected(tmp_home: Path, stub_stages):
@@ -129,7 +129,7 @@ def test_no_channel_without_fakes_fails_clearly(tmp_home: Path, stub_stages):
     save_runtime(paths, Runtime.default("cpu-dev"))
     res = runner.invoke(app, ["run", "--format", "shorts_only"])
     assert res.exit_code == 1
-    assert "NS-E309" in res.output
+    assert "NS-E322" in res.output
 
 
 # ---------------------------------------------------------------- channel and voice
@@ -149,7 +149,7 @@ def test_channel_add_list_and_duplicate(tmp_home: Path):
 def test_channel_add_requires_distinct_voice(tmp_home: Path):
     assert runner.invoke(app, _add()).exit_code == 0
     clash = runner.invoke(app, _add("clone"))
-    assert clash.exit_code == 1 and "NS-E308" in clash.output
+    assert clash.exit_code == 1 and "NS-E321" in clash.output
     ok = runner.invoke(app, [*_add("clone"), "--speaker", "Aiden"])
     assert ok.exit_code == 0, ok.output
 
@@ -161,7 +161,7 @@ def test_channel_add_from_yaml_enforces_minimums(tmp_home: Path, tmp_path: Path)
     f.write_text(yaml.safe_dump(data), encoding="utf-8")
     res = runner.invoke(app, ["channel", "add", "--from-yaml", str(f)])
     assert res.exit_code == 1
-    assert "NS-E307" in res.output and "hooks" in res.output
+    assert "NS-E320" in res.output and "hooks" in res.output
 
 
 def test_channel_add_missing_fields_is_usage_error(tmp_home: Path):
@@ -175,7 +175,7 @@ def test_channel_edit_and_validate(tmp_home: Path):
     paths = Paths.from_env()
     assert yaml.safe_load(paths.channel_file("after-dark").read_text(encoding="utf-8"))["critic_bar"] == 8.5
     bad = runner.invoke(app, ["channel", "edit", "after-dark", "--set", 'pools.hooks=["a"]'])
-    assert bad.exit_code == 1 and "NS-E307" in bad.output
+    assert bad.exit_code == 1 and "NS-E320" in bad.output
     small = runner.invoke(
         app,
         ["channel", "edit", "after-dark", "--set", 'pools.hooks=["a","b","c"]', "--set",
@@ -190,7 +190,7 @@ def test_channel_edit_and_validate(tmp_home: Path):
 
 def test_channel_validate_unknown_slug(tmp_home: Path):
     res = runner.invoke(app, ["channel", "validate", "ghost"])
-    assert res.exit_code == 1 and "NS-E309" in res.output
+    assert res.exit_code == 1 and "NS-E322" in res.output
 
 
 def test_voice_list_and_preview_with_fakes(tmp_home: Path):

@@ -112,7 +112,7 @@ def resolve_columns(header: list[str], column_map: dict[str, str] | None) -> dic
         wanted = (column_map or {}).get(fld)
         if wanted is not None:
             if wanted not in header:
-                raise StudioError("NS-E310", f"mapped column {wanted!r} for {fld} not in the CSV header")
+                raise StudioError("NS-E323", f"mapped column {wanted!r} for {fld} not in the CSV header")
             out[fld] = wanted
             continue
         for a in aliases:
@@ -130,12 +130,12 @@ def read_csv(path: Path, column_map: dict[str, str] | None = None) -> list[Row]:
             header = list(reader.fieldnames or [])
             raw_rows = list(reader)
     except (OSError, csv.Error, UnicodeDecodeError) as e:
-        raise StudioError("NS-E310", f"{path}: {e}") from e
+        raise StudioError("NS-E323", f"{path}: {e}") from e
     cols = resolve_columns(header, column_map)
     if not ({"video_id", "url", "title"} & cols.keys()):
-        raise StudioError("NS-E310", "no title, URL or content (video id) column found")
+        raise StudioError("NS-E323", "no title, URL or content (video id) column found")
     if not ({"views", "viewed_pct", "avg_pct_viewed", "avg_view_duration_s"} & cols.keys()):
-        raise StudioError("NS-E310", "no views or retention column found")
+        raise StudioError("NS-E323", "no views or retention column found")
 
     def cell(raw: dict[str, str], fld: str) -> str:
         return (raw.get(cols[fld]) or "").strip() if fld in cols else ""

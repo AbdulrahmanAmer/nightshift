@@ -145,7 +145,7 @@ def draw_combo(
     """Draw one combo for `channel`, honouring weights, the pair window and the 30-day ledger.
 
     `fixed` pins combo fields (for example `structure`, `pov_tone`, `pacing` for a Short derived
-    from a master). Raises StudioError NS-E312 when the ledger leaves nothing to draw.
+    from a master). Raises StudioError NS-E325 when the ledger leaves nothing to draw.
     """
     now = now or datetime.now(UTC)
     fixed = dict(fixed or {})
@@ -164,7 +164,7 @@ def draw_combo(
         # A Short derived from a master shares its structure, so the pair window cannot apply to it.
         pair_weight = all_pairs
     if not pair_weight:
-        raise StudioError("NS-E312", "every hook/structure pair is inside the ledger window")
+        raise StudioError("NS-E325", "every hook/structure pair is inside the ledger window")
 
     used = used_full_combos(db, slug, now)
     others = [p for p in POOLS if p not in ("hooks", "structures")]
@@ -180,7 +180,7 @@ def draw_combo(
     if chosen is None:
         chosen = _enumerate_unused(probs, pair_weight, others, used)
     if chosen is None:
-        raise StudioError("NS-E312", "every combination was used in the last 30 days")
+        raise StudioError("NS-E325", "every combination was used in the last 30 days")
 
     combo_id = _fresh_id(db, rng)
     return Combo(
@@ -224,7 +224,7 @@ def _fresh_id(db: Db, rng: random.Random) -> str:
         cid = f"c-{rng.getrandbits(32):08x}"
         if db.one("select 1 from combos where combo_id=?", (cid,)) is None:
             return cid
-    raise StudioError("NS-E312", "could not mint a unique combo id")
+    raise StudioError("NS-E325", "could not mint a unique combo id")
 
 
 def record_combo(

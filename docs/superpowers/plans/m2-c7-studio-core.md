@@ -10,8 +10,8 @@
 
 ## Global constraints for this plan
 
-- Same as `m1-c7-studio-core.md`: C5/C6 modules only through `importlib`; no `imagehash`, Pillow or spaCy needed by CI; codes not in `errors.json` go through `StudioError` (CR-1).
-- **Prompt names called** (CR-2, C5 writes the files): `policy_check` with `mode` = `unsafe_topics | hook_title_honesty | standalone_short | tag_relevance`. Until `ns_studio/prompts/policy_check.md` exists the CLI leaves the gate stages out (`policy.gate.available()`), so `studio run --fake-services` keeps working. `--policy/--no-policy` overrides.
+- Same as `m1-c7-studio-core.md`: C5/C6 modules only through `importlib`; no `imagehash`, Pillow or spaCy needed by CI; codes not in `errors.json` go through `StudioError` (CR-C7-1).
+- **Prompt names called** (CR-C7-2, C5 writes the files): `policy_check` with `mode` = `unsafe_topics | hook_title_honesty | standalone_short | tag_relevance`. Until `ns_studio/prompts/policy_check.md` exists the CLI leaves the gate stages out (`policy.gate.available()`), so `studio run --fake-services` keeps working. `--policy/--no-policy` overrides.
 - Gate stages are inserted into `FORMAT_STAGES[fmt]` by `install_gates`: `policy_text` after `visual_plan` (else after `shorts_plan`/`seo_shorts`/`seo`/`split`, else before `voice`), `policy_final` before `outbox` (else after `qc`, else last).
 - Fake-service runs skip the two checks that cannot work with fixtures that serve the same story and the same footage to every job: `self_similarity` (skipped when the LLM is `FakeLlm`) and `render_uniqueness` (skipped when every clip source is `fake`). Direct calls with `skip_when_fake=False` exercise them (seeded negatives).
 - Job-directory inputs read by the checks (tolerant of both shapes): `story.json {text | chapters[]}`, `parts.json`, `seo.json` (Shorts-only list) or `seo_long.json` + `seo_shorts.json`, `shorts_plan.json`, `long/master.mp4`, `shorts/s<k>/short.mp4`, `long/chapters.json` (`midroll_suggestions_s`), `clip_usage` rows.

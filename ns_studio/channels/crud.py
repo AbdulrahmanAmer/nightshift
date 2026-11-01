@@ -113,18 +113,18 @@ def all_channels(paths: Paths) -> list[Channel]:
         try:
             out.append(load_channel(paths, slug))
         except (ValidationError, ValueError, OSError) as e:
-            raise StudioError("NS-E307", f"{slug}.yaml: {e}") from e
+            raise StudioError("NS-E320", f"{slug}.yaml: {e}") from e
     return out
 
 
 def get_channel(paths: Paths, slug: str) -> Channel:
-    """Load one channel; `NS-E309` when it does not exist."""
+    """Load one channel; `NS-E322` when it does not exist."""
     if not paths.channel_file(slug).exists():
-        raise StudioError("NS-E309", slug)
+        raise StudioError("NS-E322", slug)
     try:
         return load_channel(paths, slug)
     except (ValidationError, ValueError) as e:
-        raise StudioError("NS-E307", f"{slug}.yaml: {e}") from e
+        raise StudioError("NS-E320", f"{slug}.yaml: {e}") from e
 
 
 def sync_channel_row(db: Db, ch: Channel, now: datetime | None = None) -> None:
@@ -138,17 +138,17 @@ def sync_channel_row(db: Db, ch: Channel, now: datetime | None = None) -> None:
 
 
 def add_channel(paths: Paths, db: Db, ch: Channel, *, now: datetime | None = None) -> Path:
-    """Validate and persist a new channel; raises StudioError NS-E307 or NS-E308."""
+    """Validate and persist a new channel; raises StudioError NS-E320 or NS-E321."""
     now = now or datetime.now(UTC)
     others = all_channels(paths)
     if len(others) >= MAX_CHANNELS:
-        raise StudioError("NS-E307", f"at most {MAX_CHANNELS} channels per install")
+        raise StudioError("NS-E320", f"at most {MAX_CHANNELS} channels per install")
     problems = pool_problems(ch.pools)
     if problems:
-        raise StudioError("NS-E307", "; ".join(problems))
+        raise StudioError("NS-E320", "; ".join(problems))
     clash = distinct_problems(ch, others)
     if clash:
-        code = "NS-E307" if any("already exists" in c for c in clash) else "NS-E308"
+        code = "NS-E320" if any("already exists" in c for c in clash) else "NS-E321"
         raise StudioError(code, "; ".join(clash))
     stamped = ch.model_copy(update={"created_at": ch.created_at or now.isoformat(timespec="seconds")})
     f = save_channel(paths, stamped)
@@ -161,10 +161,10 @@ def _set_dotted(data: dict[str, Any], key: str, value: Any) -> None:
     cur: Any = data
     for p in parts[:-1]:
         if not isinstance(cur, dict) or p not in cur:
-            raise StudioError("NS-E307", f"unknown field {key!r}")
+            raise StudioError("NS-E320", f"unknown field {key!r}")
         cur = cur[p]
     if not isinstance(cur, dict) or parts[-1] not in cur:
-        raise StudioError("NS-E307", f"unknown field {key!r}")
+        raise StudioError("NS-E320", f"unknown field {key!r}")
     cur[parts[-1]] = value
 
 
@@ -177,14 +177,14 @@ def edit_channel(paths: Paths, db: Db, slug: str, updates: dict[str, Any]) -> Ch
     try:
         edited = Channel.model_validate(data)
     except ValidationError as e:
-        raise StudioError("NS-E307", str(e).replace("\n", " ")) from e
+        raise StudioError("NS-E320", str(e).replace("\n", " ")) from e
     if edited.slug != slug:
-        raise StudioError("NS-E307", "the slug cannot be changed")
+        raise StudioError("NS-E320", "the slug cannot be changed")
     problems = pool_problems(edited.pools) + distinct_problems(
         edited, [c for c in all_channels(paths) if c.slug != slug]
     )
     if problems:
-        raise StudioError("NS-E307", "; ".join(problems))
+        raise StudioError("NS-E320", "; ".join(problems))
     save_channel(paths, edited)
     sync_channel_row(db, edited)
     return edited
@@ -195,4 +195,4 @@ def load_channel_yaml(path: Path) -> Channel:
     try:
         return Channel.model_validate(yaml.safe_load(path.read_text(encoding="utf-8")))
     except (ValidationError, OSError, yaml.YAMLError) as e:
-        raise StudioError("NS-E307", f"{path}: {e}") from e
+        raise StudioError("NS-E320", f"{path}: {e}") from e
