@@ -109,26 +109,18 @@ def test_new_format_is_just_a_new_file(tmp_path: Path) -> None:
 
 
 # ---------- channel option formats_allowed (task 4) ----------
-def _channel_yaml(paths, slug: str, text: str) -> None:
-    f = paths.channel_file(slug)
-    f.parent.mkdir(parents=True, exist_ok=True)
-    f.write_text(text, encoding="utf-8")
-
-
-def test_formats_allowed_defaults_to_all_and_reads_the_channel_yaml(tmp_home: Path) -> None:
+def test_formats_allowed_defaults_to_all_and_reads_the_channel_profile(tmp_home: Path) -> None:
+    from ns_common.config import load_channel, save_channel
     from ns_common.paths import Paths
     from tests.helpers import make_channel
 
-    paths, ch = Paths.from_env(), make_channel()
-    assert F.formats_allowed(paths, ch) is None
-    _channel_yaml(paths, ch.slug, "slug: after-dark\nformats_allowed: [short_9x16, clip_center_crop]\n")
-    assert F.formats_allowed(paths, ch) == ["short_9x16", "clip_center_crop"]
-    _channel_yaml(paths, ch.slug, "slug: after-dark\nformats_allowed: []\n")
-    assert F.formats_allowed(paths, ch) is None
-    _channel_yaml(paths, ch.slug, "slug: after-dark\nformats_allowed: short_9x16\n")
-    with pytest.raises(StudioError) as ei:
-        F.formats_allowed(paths, ch)
-    assert ei.value.code == "NS-E320"
+    paths = Paths.from_env()
+    assert F.formats_allowed(make_channel()) is None
+    ch = make_channel(formats_allowed=["short_9x16", "clip_center_crop"])
+    assert F.formats_allowed(ch) == ["short_9x16", "clip_center_crop"]
+    assert F.formats_allowed(make_channel(formats_allowed=[])) is None
+    save_channel(paths, ch)
+    assert F.formats_allowed(load_channel(paths, ch.slug)) == ["short_9x16", "clip_center_crop"]
 
 
 def test_ensure_allowed_names_the_format_and_the_way_out() -> None:
@@ -147,16 +139,14 @@ def test_allowed_ids_filters_by_kind_and_list() -> None:
     assert F.allowed_ids([]) == []
 
 
-def test_series_design_options_follow_the_yaml_list(tmp_home: Path) -> None:
-    from ns_common.paths import Paths
+def test_series_design_options_follow_the_channel_list() -> None:
     from ns_studio.series.workshop import available_formats, design_options
     from tests.helpers import make_channel
 
-    paths, ch = Paths.from_env(), make_channel()
     assert available_formats() == ["long_16x9", "short_9x16", "square_1x1"]
-    assert design_options(ch, paths)["format"] == available_formats()
-    _channel_yaml(paths, ch.slug, "slug: after-dark\nformats_allowed: [long_16x9, clip_center_crop]\n")
-    assert design_options(ch, paths)["format"] == ["long_16x9"]
+    assert design_options(make_channel())["format"] == available_formats()
+    ch = make_channel(formats_allowed=["long_16x9", "clip_center_crop"])
+    assert design_options(ch)["format"] == ["long_16x9"]
 
 
 def test_clip_layout_choice_follows_formats_allowed() -> None:

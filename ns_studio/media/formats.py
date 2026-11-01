@@ -15,9 +15,7 @@ import yaml
 from pydantic import ValidationError
 
 from ns_common.models import Channel, Format
-from ns_common.paths import Paths
 from ns_studio.errors import StudioError
-from ns_studio.media.channel_opts import channel_setting
 from ns_studio.media.presets import PRESETS_DIR, load_caption_styles
 
 FORMATS_DIR = PRESETS_DIR / "formats"
@@ -112,14 +110,9 @@ def validate_all(directory: Path | None = None) -> list[str]:
 
 
 # ---------- channel option `formats_allowed` ----------
-def formats_allowed(paths: Paths, channel: Channel) -> list[str] | None:
-    """The channel's `formats_allowed` list; None (every format allowed) when it has none or an empty one."""
-    raw = channel_setting(paths, channel, "formats_allowed", None)
-    if raw is None or raw == []:
-        return None
-    if not isinstance(raw, list) or not all(isinstance(x, str) for x in raw):
-        raise StudioError("NS-E320", f"{channel.slug}: formats_allowed must be a list of format ids")
-    return list(raw)
+def formats_allowed(channel: Channel) -> list[str] | None:
+    """The channel's `formats_allowed` list; None (every format allowed) when it is empty."""
+    return list(channel.formats_allowed) or None
 
 
 def allowed_ids(

@@ -141,15 +141,10 @@ def _preset_keys(name: str) -> list[str]:
     return sorted(str(k) for k in data)
 
 
-def design_options(channel: Channel, paths: Paths | None = None) -> dict[str, list[str]]:
-    """Allowed values per design field; `formats_allowed` of the channel narrows `format` when it exists.
-
-    With `paths` the channel YAML is consulted too (the Channel model does not carry the list yet).
-    """
+def design_options(channel: Channel) -> dict[str, list[str]]:
+    """Allowed values per design field; the channel's `formats_allowed` narrows `format` when it is set."""
     formats = available_formats()
     allowed = getattr(channel, "formats_allowed", None)
-    if not allowed and paths is not None:
-        allowed = formats_allowed(paths, channel)
     if allowed:
         formats = [f for f in formats if f in allowed]
     return {
@@ -933,10 +928,10 @@ class Workshop:
         except ValidationError as e:
             raise WorkshopError(f"invalid design: {str(e)[:300]}") from e
         try:
-            ensure_allowed(doc.format, formats_allowed(self.paths, ch), channel=ch.slug)
+            ensure_allowed(doc.format, formats_allowed(ch), channel=ch.slug)
         except StudioError as e:
             raise WorkshopError(f"{e.code}: {e.message} {e.detail}") from e
-        options = design_options(ch, self.paths)
+        options = design_options(ch)
         for key, allowed in options.items():
             if getattr(doc, key) not in allowed:
                 raise WorkshopError(f"{key} {getattr(doc, key)!r} is not allowed; choose from {allowed}")
@@ -946,7 +941,7 @@ class Workshop:
     def design_choices(self, slug: str) -> dict[str, list[str]]:
         """The allowed values per design field for the story's channel."""
         _sd, _status, ch = self._open(slug)
-        return design_options(ch, self.paths)
+        return design_options(ch)
 
     def produce(
         self, slug: str, which: int | str = "all", *, enqueue: EnqueueFn | None = None

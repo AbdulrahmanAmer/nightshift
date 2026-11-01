@@ -275,7 +275,7 @@ def run_captions_master(ctx: JobContext) -> None:
     beats: list[dict[str, Any]] = ctx.read_json("visual_plan.json") if plan_file.exists() else []
     base_opts = AssOptions(
         variant="landscape", safe_zones=safe_zones_for("landscape"),
-        mask_profanity=mask_profanity_setting(ctx.paths, ctx.channel),
+        mask_profanity=mask_profanity_setting(ctx.channel),
     )
     report: dict[str, Any] = {}
     failures: list[str] = []

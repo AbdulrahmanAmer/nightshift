@@ -431,7 +431,7 @@ class LayoutStage:
         per_clip: dict[str, str] = {}
         notes: dict[str, str] = {}
         crops: list[Crop] = []
-        allowed = formats_allowed(ctx.paths, ctx.channel)
+        allowed = formats_allowed(ctx.channel)
         explicit = p.template != "auto"
         for clip in plan:
             template, warn = detect.decide_clip_template(
@@ -546,7 +546,7 @@ class CaptionsStage:
         tr, plan, lay = _transcript(ctx), _plan(ctx), _layout(ctx)
         templates = layout.load_templates()
         info = _source(ctx)
-        mask = mask_profanity_setting(ctx.paths, ctx.channel)
+        mask = mask_profanity_setting(ctx.channel)
         seg_speaker = {s.i: s.speaker for s in tr.segments}
         ctx.subdir("captions")
         report: dict[str, Any] = {}
