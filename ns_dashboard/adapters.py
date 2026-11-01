@@ -22,6 +22,7 @@ from ns_common.paths import Paths
 from ns_dashboard.errors import AdapterUnavailable
 from ns_dashboard.jobs import JobControl
 from ns_dashboard.supervisor_link import SupervisorLink, make_acquirer
+from ns_dashboard.updater import RealUpdateAdapter
 
 KEYRING_SERVICE = "Nightshift"
 KEY_NAMES = ("pexels_api_key", "pixabay_api_key")
@@ -84,6 +85,14 @@ class FolderOpener(Protocol):
     def open(self, path: Path) -> None: ...
 
 
+class UpdateAdapter(Protocol):
+    """GitHub update check and apply (`ns update`)."""
+
+    def check(self) -> dict[str, Any]: ...
+
+    def apply(self) -> dict[str, Any]: ...
+
+
 class ScheduleAdapter(Protocol):
     """Applies the nightly run time to the scheduled task."""
 
@@ -92,7 +101,7 @@ class ScheduleAdapter(Protocol):
 
 @dataclass
 class Adapters:
-    """The nine collaborators the service layer and the job handlers use."""
+    """The ten collaborators the service layer and the job handlers use."""
 
     run: RunAdapter
     clip: ClipAdapter
@@ -103,6 +112,7 @@ class Adapters:
     tts: TtsPreviewAdapter
     folder: FolderOpener
     schedule: ScheduleAdapter
+    update: UpdateAdapter
 
 
 def lazy(module: str, attr: str) -> Callable[..., Any]:
@@ -333,4 +343,5 @@ def real_adapters(paths: Paths, link: SupervisorLink, log: NsLogger) -> Adapters
         tts=RealTtsAdapter(paths, link),
         folder=RealFolderOpener(),
         schedule=RealScheduleAdapter(paths),
+        update=RealUpdateAdapter(paths),
     )

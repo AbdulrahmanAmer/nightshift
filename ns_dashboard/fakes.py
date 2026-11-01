@@ -2,6 +2,8 @@
 
 Used by the tests, by `dev/gate_m3_dashboard.py` and by `python -m ns_dashboard.server --fake-services`.
 """
+# Dense descriptor tables and long signatures: wrapping them hurts readability.
+# ruff: noqa: E501
 
 from __future__ import annotations
 
@@ -252,6 +254,25 @@ class FakeScheduleAdapter:
         return {"applied": True, "note": "fake"}
 
 
+class FakeUpdateAdapter:
+    """Canned update results."""
+
+    def __init__(self, available: bool = True) -> None:
+        self.available = available
+        self.applied = 0
+
+    def check(self) -> dict[str, Any]:
+        """Report a newer version (or none)."""
+        return {"ok": True, "returncode": 0, "update_available": self.available,
+                "current": "0.1.0", "latest": "0.2.0" if self.available else "0.1.0", "output": "", "error": ""}
+
+    def apply(self) -> dict[str, Any]:
+        """Pretend to install."""
+        self.applied += 1
+        return {"ok": True, "returncode": 0, "update_available": False, "current": "0.2.0", "latest": "0.2.0",
+                "output": "installed", "error": ""}
+
+
 def fake_adapters(db: LockedDb, paths: Paths) -> Adapters:
     """All fakes wired together."""
     return Adapters(
@@ -264,6 +285,7 @@ def fake_adapters(db: LockedDb, paths: Paths) -> Adapters:
         tts=FakeTtsAdapter(paths),
         folder=FakeFolderOpener(),
         schedule=FakeScheduleAdapter(),
+        update=FakeUpdateAdapter(),
     )
 
 

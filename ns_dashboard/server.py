@@ -11,7 +11,7 @@ import json
 import sys
 import threading
 import webbrowser
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -26,7 +26,9 @@ from ns_common.errors import NsError
 from ns_common.paths import Paths
 from ns_dashboard import DEFAULT_PORT, media
 from ns_dashboard.adapters import Adapters
+from ns_dashboard.assistant.llm import LlmProvider
 from ns_dashboard.errors import AdapterUnavailable, ApiError
+from ns_dashboard.events import sse_frame
 from ns_dashboard.handlers import Dashboard, build_state, default_static_dir
 from ns_dashboard.security import is_loopback_host, is_loopback_origin
 from ns_dashboard.state import AppState
@@ -145,11 +147,12 @@ def create_app(
     state: AppState | None = None,
     static_dir: Path | None = None,
     heartbeat_s: float = 2.0,
+    llm_provider: LlmProvider | None = None,
 ) -> FastAPI:
     """Build the app. `start_worker=False` leaves the job thread and the supervisor relay stopped
     (tests drive `state.worker.run_next()` directly)."""
     st = state or build_state(paths, adapters=adapters, link=link, fake_services=fake_services)
-    dash = Dashboard(st, heartbeat_s=heartbeat_s)
+    dash = Dashboard(st, heartbeat_s=heartbeat_s, llm_provider=llm_provider)
     relay = EventRelay(st.link, st.hub, st.log)
 
     @asynccontextmanager
@@ -447,6 +450,104 @@ def create_app(
     async def voices_preview(request: Request) -> Response:
         data = await run_in_threadpool(dash.settings.voice_preview, await body_json(request))
         return Response(content=data, media_type="audio/wav")
+
+    # ------------------------------------------------------------ library
+    @app.get("/api/library/ideas")
+    async def library_ideas(request: Request) -> SafeJSONResponse:
+        q = request.query_params
+        data = await run_in_threadpool(
+            dash.library.list_ideas, q.get("channel"), q.get("status"), q.get("q"), query_int(request, "limit", 200)
+        )
+        return ok(data)
+
+    @app.post("/api/library/ideas")
+    async def library_ideas_add(request: Request) -> SafeJSONResponse:
+        return ok(await run_in_threadpool(dash.library.add_idea, await body_json(request)), 201)
+
+    @app.put("/api/library/ideas/{idea_id}")
+    async def library_ideas_status(idea_id: str, request: Request) -> SafeJSONResponse:
+        if not idea_id.isdigit():
+            raise ApiError(404, "not_found", "That idea was not found.")
+        body = await body_json(request)
+        return ok(await run_in_threadpool(dash.library.set_idea_status, int(idea_id), body.get("status")))
+
+    @app.get("/api/library/stories")
+    async def library_stories(request: Request) -> SafeJSONResponse:
+        q = request.query_params
+        data = await run_in_threadpool(
+            dash.library.stories, q.get("q"), q.get("channel"), query_int(request, "limit", 50)
+        )
+        return ok(data)
+
+    @app.get("/api/library/footage")
+    async def library_footage(request: Request) -> SafeJSONResponse:
+        data = await run_in_threadpool(
+            dash.library.footage, request.query_params.get("q"), query_int(request, "limit", 60)
+        )
+        return ok(data)
+
+    @app.get("/api/library/formats")
+    async def library_formats() -> SafeJSONResponse:
+        return ok(await run_in_threadpool(dash.library.list_formats))
+
+    @app.post("/api/library/formats")
+    async def library_formats_create(request: Request) -> SafeJSONResponse:
+        return ok(await run_in_threadpool(dash.library.create_format, await body_json(request)), 201)
+
+    @app.put("/api/library/formats/{format_id}")
+    async def library_formats_update(format_id: str, request: Request) -> SafeJSONResponse:
+        return ok(await run_in_threadpool(dash.library.update_format, format_id, await body_json(request)))
+
+    # ------------------------------------------------------------ update
+    @app.get("/api/update/check")
+    async def update_check() -> SafeJSONResponse:
+        return ok(await run_in_threadpool(dash.library.update_check))
+
+    @app.post("/api/update/apply")
+    async def update_apply() -> SafeJSONResponse:
+        return ok(await run_in_threadpool(dash.library.update_apply))
+
+    # ------------------------------------------------------------ assistant
+    @app.post("/api/assistant/chat")
+    async def assistant_chat(request: Request) -> StreamingResponse:
+        body = await body_json(request)
+        context = body.get("context")
+        events = dash.assistant.chat(
+            str(body.get("message") or ""),
+            body.get("conversation_id") or None,
+            context if isinstance(context, dict) else None,
+        )
+
+        def frames() -> Iterator[str]:
+            for e in events:
+                yield sse_frame(e["kind"], e["payload"])
+
+        return StreamingResponse(
+            frames(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+        )
+
+    @app.post("/api/assistant/confirm")
+    async def assistant_confirm(request: Request) -> SafeJSONResponse:
+        body = await body_json(request)
+        return ok(await run_in_threadpool(dash.assistant.confirm, str(body.get("action_id") or "")))
+
+    @app.post("/api/assistant/dismiss")
+    async def assistant_dismiss(request: Request) -> SafeJSONResponse:
+        body = await body_json(request)
+        return ok(await run_in_threadpool(dash.assistant.dismiss, str(body.get("action_id") or "")))
+
+    @app.get("/api/assistant/history")
+    async def assistant_history(request: Request) -> SafeJSONResponse:
+        cid = request.query_params.get("conversation_id") or ""
+        return ok(await run_in_threadpool(dash.assistant.history, cid))
+
+    @app.get("/api/assistant/conversations")
+    async def assistant_conversations() -> SafeJSONResponse:
+        return ok(await run_in_threadpool(dash.assistant_store.conversations))
+
+    @app.post("/api/assistant/queue/run")
+    async def assistant_queue_run() -> SafeJSONResponse:
+        return ok(await run_in_threadpool(dash.assistant.run_queued))
 
     # ------------------------------------------------------------ static UI (served last)
     root = static_dir or default_static_dir()
