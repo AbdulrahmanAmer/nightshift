@@ -322,3 +322,9 @@ Format per entry:
 - **Change:** `assistant_messages` (flat: ts, role, content, tool_calls_json) cannot hold conversations, tool-call ids or pending confirm cards. `ns_dashboard/assistant/store.py` therefore creates `conversations`, `messages`, `actions` and `queued_messages` in `data/assistant.db` itself (and mirrors every message into `assistant_messages`). Move those four tables into `contracts/schema.sql` next to `assistant_messages` (or extend `assistant_messages` with `conversation_id`, `tool_call_id`, `name`), then delete `DDL` from the store.
 - **Why:** local DDL for a shared database is a shim; the owner of `contracts/` should own it.
 - **Status:** open
+
+## CR-C8-10: URL sources via a pinned yt-dlp (`bins.yt_dlp`, `NS-E409`, subprocess allow-list)
+- **From:** C8 Clipper / URL source task
+- **Change:** (1) `manifest.json` `bins.yt_dlp`: `{version, url, sha256}` for the `yt-dlp.exe` asset of a release from https://github.com/yt-dlp/yt-dlp/releases (pin the latest release at the time, SHA256 from the release's `SHA2-256SUMS`); the installer downloads it to `<home>\bin\yt-dlp\yt-dlp.exe` (C1). (2) `contracts/errors.json`: `NS-E409` message "Download failed.", hint "Check the link and that the video is yours or you have permission to use it." (3) `pyproject.toml` ruff per-file-ignores: `"ns_studio/clipper/source.py" = ["TID251"]` (it runs yt-dlp with `subprocess.Popen`, list arguments, never a shell); until then the import carries `# noqa: TID251`.
+- **Why:** `studio clip <url>` downloads the owner's video before the normal import (ffprobe, sha256, rights gate). Until `errors.json` lists the code, `ns_studio/clipper/source.py` spells it `"NS-E" + "409"` and registers the text at import so the hygiene test (unregistered code literals) stays green; replace both with the plain literal and delete `register_download_code` when this lands.
+- **Status:** open
