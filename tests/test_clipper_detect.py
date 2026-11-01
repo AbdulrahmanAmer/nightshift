@@ -29,7 +29,7 @@ def synth_frames(
         if cam is not None:
             x, y, w, h = cam
             bg[y : y + h, x : x + w] = 255  # frame
-            bg[y + 2 : y + h - 2, x + 2 : x + w - 2] = 60  # inside
+            bg[y + 3 : y + h - 3, x + 3 : x + w - 3] = 60  # inside, 3 px frame like the fixture video
             bx = x + 10 + (i * 7) % (w - 30)  # moving blob inside
             bg[y + 12 : y + 28, bx : bx + 14] = 230
         frames.append(bg)

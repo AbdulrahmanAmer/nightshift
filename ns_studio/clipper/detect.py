@@ -342,10 +342,14 @@ def _gradient_edges(gray: np.ndarray, thresh: int = 40) -> np.ndarray:
 
 
 def edge_map(gray: np.ndarray, *, use_cv2: bool = True) -> np.ndarray:
-    """Boolean edge map: OpenCV Canny when available, a pure-numpy gradient threshold otherwise."""
+    """Boolean edge map: OpenCV Canny (united with the gradient map) when available, else gradients only.
+
+    Canny alone thins a 1-2 px overlay border to whichever flank wins non-maximum suppression, which flips
+    from frame to frame; the gradient map marks both flanks every time, so the union stays persistent.
+    """
     cv2 = _cv2() if use_cv2 else None
     if cv2 is not None:
-        return np.asarray(cv2.Canny(gray, 80, 160)) > 0
+        return (np.asarray(cv2.Canny(gray, 80, 160)) > 0) | _gradient_edges(gray)
     return _gradient_edges(gray)
 
 
