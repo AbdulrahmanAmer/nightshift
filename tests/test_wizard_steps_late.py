@@ -390,3 +390,16 @@ def test_s10_verify_names_unfinished_steps(tmp_path: Path):
     with pytest.raises(NsError) as ei:
         S10Summary().verify(ctx)
     assert "s05_opencode_prewarm" in ei.value.detail
+
+
+# ---------------------------------------------------------------------------------------------- updates
+def test_new_app_version_resyncs_venvs_and_retests(tmp_path: Path):
+    from installer.stage2.steps.s04_venvs import S04Venvs
+
+    ctx = resolved(tmp_path)
+    S04Venvs().run(ctx)
+    S08Smoke().run(ctx)
+    assert S04Venvs().check(ctx) is True and S08Smoke().check(ctx) is True
+    ctx.manifest = ctx.manifest.model_copy(update={"version": "0.2.0"})
+    assert S04Venvs().check(ctx) is False        # extract the new zip, run INSTALL.cmd: environments are refreshed
+    assert S08Smoke().check(ctx) is False        # and the quick test runs again

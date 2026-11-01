@@ -33,7 +33,7 @@ class S04Venvs(Step):
 
     def check(self, ctx: StepContext) -> bool:
         """Environments exist and were filled (and the tts venv too when the fallback is flagged)."""
-        if not ctx.flag("venvs_installed", False):
+        if not ctx.flag("venvs_installed", False) or ctx.flag("venvs_version") != ctx.manifest.version:
             return False
         if not (ctx.venv_python("studio").exists() and ctx.venv_python("supervisor").exists()):
             return False
@@ -76,6 +76,7 @@ class S04Venvs(Step):
         if ctx.flag("tts_fallback", False):
             ensure_tts_venv(ctx)
         ctx.set_flag("venvs_installed", True)
+        ctx.set_flag("venvs_version", ctx.manifest.version)
 
     def verify(self, ctx: StepContext) -> None:
         """The venv interpreters exist and the studio venv imports the app."""

@@ -53,7 +53,7 @@ class S08Smoke(Step):
 
     def check(self, ctx: StepContext) -> bool:
         """True after a passing run."""
-        return ctx.flag("smoke") == "passed"
+        return ctx.flag("smoke") == "passed" and ctx.flag("smoke_version") == ctx.manifest.version
 
     def run(self, ctx: StepContext) -> None:
         """Run ``ns verify --quick`` (twice at most: once more after the TTS fallback)."""
@@ -91,6 +91,7 @@ class S08Smoke(Step):
                 raise make_error("NS-E108", "the reference TTS engine also failed its test")
             self._switch_to_reference(ctx)
         ctx.set_flag("smoke", "passed")
+        ctx.set_flag("smoke_version", ctx.manifest.version)
 
     @staticmethod
     def _use_libx264(rt: Any) -> None:
