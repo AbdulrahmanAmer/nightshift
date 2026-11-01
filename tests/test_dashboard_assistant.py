@@ -65,7 +65,7 @@ def test_every_descriptor_validates():
         fields = {f for _, f, _, _ in string.Formatter().parse(s.confirm_text) if f}
         if s.side_effect:
             assert s.confirm_text.strip(), f"{s.name} needs confirm_text"
-            assert fields <= set(props), f"{s.name} confirm_text uses unknown fields {fields - set(props)}"
+            assert fields <= set(props) | {"source"}, f"{s.name} confirm_text uses unknown fields {fields - set(props)}"
         else:
             assert s.confirm_text == "", f"{s.name} is read-only but has confirm_text"
 

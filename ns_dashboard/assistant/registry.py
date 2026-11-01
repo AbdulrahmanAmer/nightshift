@@ -67,6 +67,7 @@ class ToolDef:
     spec: ToolSpec
     call: ToolCall
     route: tuple[str, str] | None = None
+    precheck: Callable[[dict[str, Any]], str | None] | None = None  # extra argument rules a schema cannot say
 
 
 def obj(props: dict[str, Any] | None = None, required: list[str] | None = None) -> dict[str, Any]:
@@ -135,6 +136,7 @@ def _plain(value: Any) -> Any:
 def render_confirm(spec: ToolSpec, args: dict[str, Any]) -> str:
     """The confirm-card text in the owner's words (unknown placeholders render as `(default)`)."""
     flat = _Safe({k: _plain(v) for k, v in args.items()})
+    flat.setdefault("source", args.get("url") or args.get("path") or "(default)")
     return (spec.confirm_text or spec.description).format_map(flat)
 
 
@@ -180,7 +182,10 @@ class Registry:
             return f"unknown tool {name!r}"
         if not isinstance(args, dict):
             return "arguments must be a JSON object"
-        return check_value(t.spec.args_schema, args)
+        bad = check_value(t.spec.args_schema, args)
+        if bad is None and t.precheck is not None:
+            bad = t.precheck(args)
+        return bad
 
     def routes(self) -> dict[tuple[str, str], str]:
         """Map (method, path) -> tool name for route-derived tools."""

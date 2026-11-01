@@ -344,7 +344,8 @@ def create_app(
     @app.post("/api/jobs/clip")
     async def jobs_clip(request: Request) -> SafeJSONResponse:
         uploaded = None
-        if request.headers.get("content-type", "").startswith("multipart/form-data"):
+        form_types = ("multipart/form-data", "application/x-www-form-urlencoded")
+        if request.headers.get("content-type", "").startswith(form_types):
             form = await read_form(request)
             body: dict[str, Any] = {k: v for k, v in form.items() if isinstance(v, str)}
             body["rights_confirmed"] = str(body.get("rights_confirmed", "")).strip().lower() in TRUE_WORDS
