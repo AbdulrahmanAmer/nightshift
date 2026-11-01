@@ -28,15 +28,15 @@ def code_of(fn: Any, *args: Any, **kw: Any) -> str:
         fn(*args, **kw)
     return ei.value.code
 
+
+GOOD_FORMAT: dict[str, Any] = {
     "id": "square_1x1",
     "name": "Square 1x1",
-GOOD_FORMAT: dict[str, Any] = {
-    "label": "Square 1x1",
     "kind": "square",
+    "canvas": {"w": 1080, "h": 1080, "fps": 30},
+    "duration": {"min_s": 15, "max_s": 60},
     "captions": {"styles_allowed": ["clean_white"], "anchor_y_pct": 70, "words_on_screen": 3},
     "layout": {"regions": [{"name": "main", "x": 0, "y": 0, "w": 1080, "h": 1080, "source": "full"}]},
-    "captions": {"styles_allowed": ["clean_white"], "anchor_y_pct": 70, "words_on_screen": 3},
-    "layout": {"regions": [{"name": "main", "x": 0, "y": 0, "w": 1, "h": 1, "source": "full"}]},
     "safe_margins": {"top": 60, "bottom": 60},
     "shots": {"min_s": 1.5, "max_s": 3},
     "encoder": {"preset": "p4"},

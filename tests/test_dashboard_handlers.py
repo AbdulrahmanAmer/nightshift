@@ -395,11 +395,13 @@ def test_clip_job_from_local_path_reaches_the_review_queue(tmp_home: Path):
     p = job["params"]
     assert p["template"] == "gaming_facecam" and p["rights_confirmed"] is True and p["rerun"] is False
     assert p["source_id"].startswith("src-") and p["source_path"] == str(video)
-    assert state.db.one("SELECT 1 FROM sources WHERE source_id = ?", (p["source_id"],)) is None  # the import creates it
+    unseen = state.db.one("SELECT 1 FROM sources WHERE source_id = ?", (p["source_id"],))
+    assert unseen is None  # the Clipper import creates the row
     # the fake Clipper import creates the row with the owner's confirmation (CR-C9-2 column)
     state.worker.run_next()
     assert dash.jobs.get(job["job_id"])["status"] == "done"
-    src_row = state.db.one("SELECT rights_confirmed, title FROM sources WHERE source_id = ?", (p["source_id"],))
+    row_sql = "SELECT rights_confirmed, title FROM sources WHERE source_id = ?"
+    src_row = state.db.one(row_sql, (p["source_id"],))
     assert src_row is not None and src_row["rights_confirmed"] == 1 and src_row["title"] == "talk"
     clips = dash.outputs.list_outputs(status="pending", kind="clip")
     assert len(clips) == 2 and all(c["source_id"] == p["source_id"] for c in clips)
