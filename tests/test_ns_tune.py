@@ -179,3 +179,10 @@ def test_gpu_reservation_holds_and_releases_through_whisper() -> None:
     with tune.gpu_reservation(FakeClient(False)) as held2:
         assert held2 is False
     assert events == []
+
+
+def test_two_model_mode_warns_that_only_the_code_model_is_tuned(tmp_path: Path) -> None:
+    paths, rt = prepared(tmp_path)
+    rt.llama.story_model_path = "C:/m/story.gguf"
+    out = tune.tune(paths, rt, Fake())
+    assert out.ok and any("two-model" in w for w in out.warnings)

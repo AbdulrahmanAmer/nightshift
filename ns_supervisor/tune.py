@@ -116,6 +116,8 @@ def tune(paths: Paths, rt: Runtime, runner: Runner, *, log: NsLogger | None = No
     lg = log or NsLogger("tune", paths.logs)
     out = TuneOutcome(ok=False)
     matrix = plan_matrix(rt)
+    if rt.llama.story_model_path:
+        out.warnings.append("two-model mode: only the primary (code) model was tuned; see CR-C2-5")
     floor = min_ctx_for(rt)
 
     def attempt(stage: str, flags: LlamaFlags) -> float | None:
