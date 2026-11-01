@@ -419,7 +419,10 @@ def run_verify(
 
     # -- idle VRAM -------------------------------------------------------------------------
     def idle_vram() -> Out:
-        ctl.stop_all()
+        try:
+            ctl.stop_all()
+        except NsError as e:  # no supervisor means nothing of ours is loaded; still measure the GPU
+            rec.log.warn("stop_all_failed", e.detail)
         used: int | None = None
         for _ in range(10):
             used = d.vram_used()
