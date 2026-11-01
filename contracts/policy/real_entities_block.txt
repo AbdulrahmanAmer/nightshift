@@ -1,0 +1,27 @@
+# well-known real people, brands and events that must never appear in fiction output. extend over time. lowercase.
+donald trump
+joe biden
+elon musk
+taylor swift
+kim kardashian
+jeffrey epstein
+ted bundy
+jeffrey dahmer
+john wayne gacy
+columbine
+sandy hook
+9/11
+september 11
+world trade center
+boston marathon bombing
+chernobyl
+fukushima
+titanic
+mcdonald's
+walmart
+amazon
+google
+facebook
+tesla
+disney
+netflix
