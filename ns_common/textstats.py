@@ -47,7 +47,7 @@ def syllables(word: str) -> int:
         return _SYLLABLE_EXCEPTIONS[w]
     if len(w) <= 3:
         return 1
-    w = re.sub(r"([^laeiouy])e(ment)$", r"12", w)   # base-ment: silent e before -ment
+    w = re.sub(r"([^laeiouy])e(ment)$", r"\1\2", w)   # base-ment: silent e before -ment
     w = re.sub(r"(?:[^laeiouy]es|ed|[^laeiouy]e)$", "", w)
     w = re.sub(r"^y", "", w)
     groups = re.findall(r"[aeiouy]+", w)
