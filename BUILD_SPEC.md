@@ -540,6 +540,17 @@ rejected\<slug>\<YYYY-MM-DD>\<job_id>\ logs\
 ```
 Coding workspace: `%USERPROFILE%\Projects`.
 
+### 15.2a Outbox layout is organized by content, not by job
+```
+outbox\<channel>\
+  stories\<story-title-slug>\full\<story-title>.mp4 + .json + .txt + thumb_1..3.jpg
+  stories\<story-title-slug>\shorts\<story-title> - Short 01.mp4 + .json + .txt
+  series\<series-title-slug>\part-01\full\<series-title> - Part 01.mp4 + …
+  series\<series-title-slug>\part-01\shorts\<series-title> - Part 01 - Short 01.mp4 + …
+  clips\<source-video-name-slug>\clip-01 <clip-title>.mp4 + .json + .txt
+```
+`outputs.path` in SQLite and `metadata.job_id` in each sheet keep traceability; `data\jobs\<job_id>\` keeps the working files. File names are Windows-safe slugs (≤ 80 chars, no reserved characters); collisions get a `-2` suffix. `rejected\` mirrors the same tree. The Dashboard's "Open folder" opens the item's folder in Explorer. Posted items stay where they are; status lives in the database.
+
 ### 15.3 Ports & supervisor API (127.0.0.1)
 llama **8080** · embed **8081** · TTS **8091** · supervisor **8099** · dashboard **8100**.
 | Method | Path | Body → Response |
@@ -724,6 +735,16 @@ Words per part/chapter within budget ±20 % · banned phrases · no opening line
 Every output shape is a **format preset** in `ns_studio/presets/formats/<id>.yaml`, loaded at runtime; adding a format never touches Python. A format defines: `canvas {w,h,fps}`, `kind: short|long|square|clip`, `duration {min_s,max_s,buckets?}`, `captions {styles_allowed[], anchor_y_pct, words_on_screen}`, `layout {regions:[{name, x,y,w,h, source: full|facecam|face:n|screen|blur_fill}], seam_captions?}`, `safe_margins {top,bottom}`, `shots {min_s,max_s}`, `encoder {preset}`, `sheet {hashtags_required[], description_rules}`. Shipped presets: `short_9x16`, `long_16x9`, `square_1x1`, and the clip layouts of §19.3 (`clip_gaming_facecam`, `clip_podcast_stacked`, `clip_podcast_single`, `clip_talking_head`, `clip_center_crop`, `clip_screen_plus_cam`). The renderer builds its FFmpeg graph from the regions list generically (`ns_studio/media/layout.py`), so split screens, picture-in-picture and new aspect ratios are new YAML files. Channels list `formats_allowed`; the Library → Formats page lets the owner duplicate and edit presets with a live layout thumbnail and validates them against `contracts/schemas/format.schema.json`.
 
 ---
+
+### 17.2 Captions: presets plus smart placement and emphasis
+- **Style is a preset** (`caption_styles.yaml`, §17) and is chosen per video: by the variation engine for story videos, by the model in `clip_select` for clips (returned next to `layout`), or fixed in a series' `design.yaml`.
+- **Placement avoids what matters on screen**: the caption anchor moves away from detected face and facecam regions and from YouTube's UI safe zones (top 220 px, bottom 320 px on 9:16); stacked podcast layouts put captions on the seam; gaming layouts put them on the gameplay region, never over the facecam.
+- **Emphasis**: one word per caption group is highlighted (the active word by default). For clips and story videos the LLM marks up to one **key word per sentence** (`emphasis` in the visual plan / clip plan) that gets the style's accent colour and a slightly larger size; no emoji, no stickers.
+- **Text source**: story and series videos render the script's exact words; clips render cleaned transcript words (casing and punctuation restored by the model in `clip_select`, optional filler removal `um/uh/like` per channel setting, numbers kept as spoken). Never silently change meaning.
+- **Speakers**: in two-speaker layouts each speaker's captions take a distinct colour from the style's palette; speaker change starts a new group.
+- **Profanity**: per-channel option `captions.mask_profanity` masks letters in captions (audio untouched); default off.
+- **Timing**: groups of 2–4 words, 0.9–2.2 s on screen, never spanning a sentence end; drift limit per §7.7.
+- **Accessibility**: minimum contrast 4.5:1 against the style's backing box or outline; the renderer verifies by sampling the frame behind the caption and switches to the boxed variant when contrast is too low.
 
 ## 18. YouTube safety & growth playbook (enforced by WP-H)
 
