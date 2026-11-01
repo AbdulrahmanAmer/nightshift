@@ -111,3 +111,33 @@ Format per entry:
 - **Change:** none to contracts; confirm behaviour in the C2 plan. The wizard calls these from the studio venv (installed with extras `studio,supervisor` so `ns_supervisor` imports resolve there), with `NIGHTSHIFT_HOME` set and the app folder as cwd: `ns tune` (exit 0 on success; a failure only warns), `ns verify --quick` (JSON on stdout or in `logs/verify-report.json`: `{"checks":[{"name","passed"}]}` where names contain `llm`, `embed`, `tts`, `whisper`, `nvenc`, `mtp`), `ns doctor --bundle` (writes `nightshift-diagnostics-<date>.zip` to the Desktop), `ns schedule install --time HH:MM` (a "No such command" answer is tolerated until the scheduler exists), `ns restore <zip>`.
 - **Why:** the smoke step applies NS-W401 / NS-W301 / NS-W302 / NS-E112 from those check names.
 - **Status:** open
+
+## CR-C6-1: move `ensure_gpu_dlls_on_path` into `ns_common`
+- **From:** C6 media / transcribe.py
+- **Change:** add `ns_common/gpu_dlls.py` with `ensure_on_path(search_roots=None) -> list[Path]` (the planned `ns_common.gpu_dlls.ensure_on_path()`). C6 ships a local copy, `ns_studio.media.transcribe.ensure_gpu_dlls_on_path`: it prepends `<site-packages>/nvidia/{cublas,cudnn,cuda_nvrtc}/bin` to `PATH` and calls `os.add_dll_directory`; idempotent, tested with temp folders.
+- **Why:** `ns_common` is frozen for C6, and `ns verify` (C2) needs the same helper. Once the common version lands, C6 deletes its copy and imports it.
+- **Status:** open
+
+## CR-C6-2: Pillow in the `dev` extra
+- **From:** C6 media / thumbnails.py
+- **Change:** add `"Pillow>=10"` to `[project.optional-dependencies].dev` in `pyproject.toml`.
+- **Why:** CI installs only `.[dev]`, so the Pillow thumbnail tests (`tests/test_thumbnails.py`, guarded by `pytest.importorskip("PIL")`) are skipped in CI today. `thumbnails.py` imports Pillow lazily through `importlib`, so pyright is unaffected.
+- **Status:** open
+
+## CR-C6-3: error code for a failed transcription
+- **From:** C6 media / transcribe.py, captions.py
+- **Change:** add to `contracts/errors.json` an `NS-E4xx` "Speech recognition failed (model could not load or transcribe)" with the hint to run `ns verify`.
+- **Why:** C6 currently raises `NS-E202` (service failed to start) when faster-whisper cannot load or run and `NS-E403` when the fake transcriber has no script sidecar; neither message names transcription.
+- **Status:** open
+
+## CR-C6-4: `contracts/policy/profanity.txt`
+- **From:** C6 media / captions.py (spec 17.2 `mask_profanity`)
+- **Change:** C6 created `contracts/policy/profanity.txt` (short list, one lower-case word per line, `#` comments) at the coordinator's request. The orchestrator may own and extend it.
+- **Why:** `build_ass(..., mask_profanity=True)` reads it; the file is display-only masking, not a policy gate.
+- **Status:** open (informational)
+
+## CR-C6-5: `series_context.json` and Outbox layout need a published contract
+- **From:** C6 media / outbox.py (spec 15.2a)
+- **Change:** document in `contracts/CONTRACTS.md` that `data/jobs/<job_id>/series_context.json` is `{series_slug: str, part_n: int, series_title: str}` and that `ns_studio.media.outbox.{outbox_target, safe_slug, safe_filename, rejected_path}` own the Outbox/rejected tree shape (a `.nightshift-job` marker file in each story folder records the owning job for `-2` collision suffixes).
+- **Why:** C7 (series), C8 (`clips/`) and C11 write into the same tree.
+- **Status:** open
