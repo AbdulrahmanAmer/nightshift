@@ -81,3 +81,33 @@ Format per entry:
 - **Why:** C6 (voice, captions, render), C7 (policy gate, orchestrator) and C8 (clipper) read and write these files; the single source of truth must be `ns_common`. C5 uses local copies meanwhile, so nothing blocks.
 - **Migration:** C5 replaces `from ns_studio.text.models_local import X` by `from ns_common.models import X` and deletes `models_local.py` once this lands; field names do not change.
 - **Status:** open
+
+## CR-C1-1: error codes NS-E111, NS-E112, NS-W112 are missing from errors.json
+- **From:** C1 installer / stage1.ps1 and steps s01, s08
+- **Change:** add to `contracts/errors.json`: `NS-E111` ("winget (Windows App Installer) is missing.", hint "Install 'App Installer' from the Microsoft Store (or use the direct installer links shown), then run setup again."), `NS-E112` ("faster-whisper cannot load on the GPU (cuBLAS 12 / cuDNN 9 DLLs not found).", hint "In the studio venv run: uv pip install nvidia-cublas-cu12 nvidia-cudnn-cu12, then re-run 'ns verify --quick'."), `NS-W112` ("Windows long paths are disabled.", hint "Run setup once as administrator to enable them, or keep NIGHTSHIFT_HOME on a short path such as D:/Nightshift.").
+- **Why:** spec 1.2 / 15.12 and ENGINEERING.md section 6 name them; `describe()` raises KeyError for them today. The installer works around it with `installer/stage2/errors.py::make_error` (a pending table with the same text), which becomes a plain `NsError` as soon as the codes exist. `stage1.ps1` has the same texts as a fallback.
+- **Status:** open
+
+## CR-C1-2: Answers model and answers.schema.json lack the installer-only fields
+- **From:** C1 installer / answers.example.json, s01_questions
+- **Change:** add to `Answers`: `home_path: str | None = None`, `models_source: str | None = None`, `llm_tier: Literal["small","balanced","best"] = "small"`, `restore_from: str | None = None`; regenerate `answers.schema.json`. Voice stays as the model has it (`voice` plus flat `voice_ref_audio_path`, `voice_ref_text`, `voice_rights_confirmed`); spec 5 describes it as a nested object, the model is the source of truth.
+- **Why:** spec 5 and 1.3 list these keys for unattended installs. `installer/stage2/answers.py::InstallerAnswers` subclasses `Answers` and adds them, and `tests/test_installer_files.py` accepts exactly these four keys as "not in the schema yet"; delete that allowance when this lands.
+- **Status:** open
+
+## CR-C1-3: record the chosen llama.cpp build, and Paths for bin/uv, bin/qwentts, models/cv
+- **From:** C1 installer / s02_download_bins (coordinator decision: CUDA 13.4 pair when nvidia-smi reports CUDA >= 13.0, else the 12.4 pair)
+- **Change:** `InstallState`: add `cuda: str | None` and `llama_pair: Literal["cuda13","cuda12"] | None`. `Runtime.llama`: add `build: Literal["cuda13","cuda12","cpu"] | None`. `Paths`: add `bin_qwentts`, `bin_uv`, `models_cv`.
+- **Why:** InstallState and Runtime are `extra="forbid"`, so the installer keeps the pair in `config/wizard_flags.json` (`llama_pair`, `cuda`) for now. C2 could read the pair to pick DLL paths. `Paths` is missing three folders the spec lists (21.2, 21.5); the installer builds them from `paths.home` meanwhile.
+- **Status:** open
+
+## CR-C1-4: pins the installer needs in manifest.json / pyproject.toml
+- **From:** C1 installer / s04_venvs, fallback.py
+- **Change:** (a) manifest: spaCy model wheel `en_core_web_md` version and SHA256 (the installer hard-codes 3.8.0 and cannot verify the hash); (b) manifest or `studio` extra: `nvidia-cublas-cu12` and `nvidia-cudnn-cu12` pins (the installer uses ranges `>=12.8,<13` and `>=9,<10`); (c) manifest: the PyTorch fallback HF repos (`Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice`, `-Base`) instead of constants in `installer/stage2/fallback.py`; (d) `studio` extra: `opencv-python-headless` (spec 21.4, needed from M3); (e) a Blackwell-capable CUDA 12.8 llama.cpp pin if one exists, so CUDA 12.4 to 12.7 drivers are not limited to the 12.4 build.
+- **Why:** ENGINEERING.md DoD 6 (no unpinned dependency). The installer runs today with the ranges above.
+- **Status:** open
+
+## CR-C1-5: what the installer expects from the `ns` CLI (C2)
+- **From:** C1 installer / s06, s08, s09, s10
+- **Change:** none to contracts; confirm behaviour in the C2 plan. The wizard calls these from the studio venv (installed with extras `studio,supervisor` so `ns_supervisor` imports resolve there), with `NIGHTSHIFT_HOME` set and the app folder as cwd: `ns tune` (exit 0 on success; a failure only warns), `ns verify --quick` (JSON on stdout or in `logs/verify-report.json`: `{"checks":[{"name","passed"}]}` where names contain `llm`, `embed`, `tts`, `whisper`, `nvenc`, `mtp`), `ns doctor --bundle` (writes `nightshift-diagnostics-<date>.zip` to the Desktop), `ns schedule install --time HH:MM` (a "No such command" answer is tolerated until the scheduler exists), `ns restore <zip>`.
+- **Why:** the smoke step applies NS-W401 / NS-W301 / NS-W302 / NS-E112 from those check names.
+- **Status:** open
