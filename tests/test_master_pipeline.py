@@ -73,13 +73,8 @@ def test_master_first_media_pipeline(tmp_home: Path, monkeypatch: pytest.MonkeyP
     ])
     ctx.write_json("seo_long.json", {
         "title": MASTER_TITLE,
-        "description": "A drive home goes wrong.
-Nothing is as it seems.
-
-[[CHAPTERS]]
-
-"
-                       "Original fiction.",
+        "description": "A drive home goes wrong.\nNothing is as it seems.\n\n[[CHAPTERS]]\n\n"
+        "Original fiction.",
         "tags": [f"tag{i}" for i in range(10)], "hashtags": ["#horror", "#story", "#shorts"], "keywords": [],
         "chapter_titles": [{"n": i, "title": f"Chapter title {i}"} for i in (1, 2, 3)],
     })
