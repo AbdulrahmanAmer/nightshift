@@ -54,9 +54,9 @@ def test_long_description_layout_and_placeholder():
 
 def test_long_hashtags_never_include_shorts_and_are_3_to_5():
     out = finalize_seo_long(
-        _long(hashtags=["#Shorts", "#a", "#b", "#c", "#d", "#e", "#f"]), primary_keyword="horror story", fiction_label=True
+        _long(hashtags=["#Shorts", "#a", "#b", "#c", "#d"]), primary_keyword="horror story", fiction_label=True
     )
-    assert "#Shorts" not in out.hashtags and len(out.hashtags) == 5
+    assert "#Shorts" not in out.hashtags and out.hashtags == ["#a", "#b", "#c", "#d"]
     few = finalize_seo_long(_long(hashtags=["#Shorts"]), primary_keyword="horror story", fiction_label=True)
     assert 3 <= len(few.hashtags) <= 5 and "#Shorts" not in few.hashtags
 

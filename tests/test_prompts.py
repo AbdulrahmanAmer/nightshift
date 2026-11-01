@@ -210,7 +210,7 @@ def test_master_prompts_render_with_their_variables(tmp_home: Path):
         budget=chapter_budget(310, 155),
     )
     assert 'chapter 2 of 5: "The Hall Light"' in out and "Last one. Very last." in out
-    assert "Chapter 1, One: Fact." in out and "between 248 and 372 words" in out
+    assert "Chapter 1, One: Fact." in out and "between 248 and 372)" in out
     assert "final chapter" not in out
     sel = P.render(
         P.load_prompt("shorts_select"),

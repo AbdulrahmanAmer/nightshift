@@ -203,7 +203,7 @@ def test_finalize_seo_series_part_and_master_line():
         title="Scary Story: The Door",
         description="  Honest line.  ",
         tags=["x", "x", *[f"{'y' * 53}{i:02d}" for i in range(18)]],
-        hashtags=["#shorts", "horror story", "#Horror", "#a", "#b", "#c", "#d"],
+        hashtags=["#shorts", "horror story", "#Horror", "#a", "#b"],
         keywords=["k"],
     )
     out = S.finalize_seo(

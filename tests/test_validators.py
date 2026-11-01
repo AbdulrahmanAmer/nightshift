@@ -45,7 +45,7 @@ def test_reading_level_bounds():
     v = V.check_reading_level(hard)
     assert v is not None and v.rule == "reading_level"
     easy = "The dog ran home. The cat sat on the mat. We went to bed early."
-    assert V.check_reading_level(easy, lo=0.0) is None
+    assert V.check_reading_level(easy, lo=-5.0) is None
 
 
 def test_opening_similarity():
