@@ -248,10 +248,15 @@ def test_real_llm_jobs_are_not_pinned(tmp_home: Path):
 
 
 # ---------------------------------------------------------------- mounted sub-apps (CR-C8-5, C11-3, C9-7)
+def _plain(text: str) -> str:
+    """Help output without the colour codes rich puts between the dashes of an option name."""
+    return re.sub(r"\x1b\[[0-9;]*m", "", text)
+
+
 def test_clip_help_is_mounted(tmp_home: Path):
     res = runner.invoke(app, ["clip", "--help"])
     assert res.exit_code == 0, res.output
-    assert "--channel" in res.output
+    assert "--channel" in _plain(res.output)
 
 
 def test_series_help_is_mounted(tmp_home: Path):
@@ -265,7 +270,7 @@ def test_series_help_is_mounted(tmp_home: Path):
 def test_ask_help_is_mounted(tmp_home: Path):
     res = runner.invoke(app, ["ask", "--help"])
     assert res.exit_code == 0, res.output
-    assert "--yes" in res.output
+    assert "--yes" in _plain(res.output)
 
 
 def test_ask_without_dashboard_prints_a_plain_message(tmp_home: Path):
