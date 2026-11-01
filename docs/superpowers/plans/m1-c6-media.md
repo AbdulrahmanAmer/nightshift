@@ -36,8 +36,8 @@ Job files: `audio/{manifest.json,p<n>.wav,p<n>.txt,p<n>_hook.*}`, `words/p<n>[_h
 
 **Files:** `ns_studio/media/audio.py`, `voice.py`, `stages_media.py`, `tests/test_voice_stage.py`
 **Interfaces:** `narration_items`, `loudnorm` (two-pass), `measure_lufs`; `audio.assemble_audio`, `speech_onset_s`, `parse_ebur128`; `VoiceStage` writes `audio/manifest.json` with `{path, seconds, lufs, tp, sig}` and a `<id>.txt` script sidecar; re-run with unchanged text is a no-op (signature match).
-- [ ] Tests written (items, normalization range, sidecar, second run does not call TTS)
-- [ ] Implementation, push, CI green
+- [x] Tests written (items, normalization range, sidecar, second run does not call TTS)
+- [x] Implementation, push, CI green
 
 ### Task 8: Transcribe and captions
 
@@ -53,41 +53,41 @@ def align_words(script, asr, *, total_s=None) -> AlignResult   # difflib over no
 def build_ass(words, style, *, variant="vertical"|"landscape") -> str
 class CaptionsStage  # tenant whisper; NS-E403 if drift > 120 ms or < 60 % words matched
 ```
-- [ ] Tests: alignment (exact, substitution, insertion, numbers, interpolation), drift, ASS (group sizes, first event 0.0, active colour, both variants), whisper with a stubbed module, DLL path injection, stage end to end on fakes
-- [ ] Implementation, push, CI green
+- [x] Tests: alignment (exact, substitution, insertion, numbers, interpolation), drift, ASS (group sizes, first event 0.0, active colour, both variants), whisper with a stubbed module, DLL path injection, stage end to end on fakes
+- [x] Implementation, push, CI green
 
 ### Task 9: Clip sources and cache
 
 **Files:** `clip_sources.py`, `clips.py` (cache part), `tests/test_clip_sources.py`, `tests/fixtures/clips/*.json`
 **Interfaces:** `ClipCandidate`, `ClipSource` protocol (`search(keyword, orientation=, per_page=)`, `download(cand, dest)`), `TokenBucket(capacity, refill_per_s, clock, sleep)`, `PexelsSource(key, cache_dir)` (Authorization header, `orientation`, `size=medium`, 429 handling), `PixabaySource(key, cache_dir)` (24 h cache, ratio filter), `FakeClipSource(root)`; `ClipCache.ensure(cand, keywords)` with the `clips` table and 90-day expiry.
-- [ ] Tests with `httpx.MockTransport` and recorded JSON; bucket with injected clock; 24 h cache hit/expiry; `NS-E501/E502/E503`
-- [ ] Implementation, push, CI green
+- [x] Tests with `httpx.MockTransport` and recorded JSON; bucket with injected clock; 24 h cache hit/expiry; `NS-E501/E502/E503`
+- [x] Implementation, push, CI green
 
 ### Task 10: Clips stage
 
 **Files:** `clips.py`, `shotplan.py`, `tests/test_clips.py`
 **Interfaces:** `normalize_keyword`, `dedupe_keywords`, `blocked_clips(db, channel, job_id, now)`, `Searcher` (memoized), `pick_for_slots`, `select_for_beat` (orientation widening, mood fallback, `NS-E402`), `assign_clips`; `beat_spans`, `plan_slots`, `split_span`, `frame_edges`; `ClipsStage` writes `clips/shots.json`.
-- [ ] Tests: dedupe, 14/30-day rules, face skip, fallback and `NS-E402`, slot lengths 1.5-3 s, one search per keyword
-- [ ] Implementation, push, CI green
+- [x] Tests: dedupe, 14/30-day rules, face skip, fallback and `NS-E402`, slot lengths 1.5-3 s, one search per keyword
+- [x] Implementation, push, CI green
 
 ### Task 11: Vertical render
 
 **Files:** `render.py`, `presets/visual_treatments.yaml`, `tests/test_render.py`
 **Interfaces:** `build_vertical_graph`, `shot_chain`, `post_chain`, `encoder_args`, `render_video`, `build_short_audio` (hook + 150 ms + body, normalized to -14), `RenderStage`.
-- [ ] Tests: graph string content per treatment and clip shape; real render of a 3-shot clip set (size, duration, audio stream, faststart); NVENC fallback
-- [ ] Implementation, push, CI green
+- [x] Tests: graph string content per treatment and clip shape; real render of a 3-shot clip set (size, duration, audio stream, faststart); NVENC fallback
+- [x] Implementation, push, CI green
 
 ### Task 12: QC and outbox
 
 **Files:** `qc.py`, `outbox.py`, `tests/test_qc.py`, `tests/test_outbox.py`
 **Interfaces:** `run_qc(item, video, kind, ...) -> QcResult`, checks per §7.7, `QcStage` (`NS-E404`); `publish_after`, `build_metadata`, `write_sheet_txt`, `OutboxStage` (copies to `paths.outbox_dir`, writes `outputs` and `clip_usage`).
-- [ ] Tests: each check passing and failing (silence, loud, black video, wrong size, missing faststart), metadata validates against `contracts/schemas/metadata.schema.json`, jitter within +-45 min and deterministic, outputs/clip_usage rows, idempotent re-run
-- [ ] Implementation, push, CI green
+- [x] Tests: each check passing and failing (silence, loud, black video, wrong size, missing faststart), metadata validates against `contracts/schemas/metadata.schema.json`, jitter within +-45 min and deterministic, outputs/clip_usage rows, idempotent re-run
+- [x] Implementation, push, CI green
 
 ### Task 13: End-to-end media pipeline test
 
 **Files:** `tests/test_media_pipeline.py`
 Runs `voice, captions, clips, render, qc, outbox` through `run_job` on fakes and asserts the Outbox files.
-- [ ] Test, push, CI green
+- [x] Test, push, CI green
 
 Registration: `stages_media.py` appends the six stage names to `FORMAT_STAGES["shorts_only"]` in order `voice, captions, clips, render, qc, outbox`.
