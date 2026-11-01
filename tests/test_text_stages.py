@@ -9,7 +9,7 @@ from ns_common.llm_client import FakeLlm
 from ns_common.models import Part, Seo, VisualBeat
 from ns_common.textstats import split_sentences, word_count
 from ns_studio.context import FIXTURES_LLM
-from ns_studio.orchestrator import FORMAT_STAGES, run_job
+from ns_studio.orchestrator import FORMAT_STAGES, SHORTS_ONLY_STAGES, run_job
 from ns_studio.stages import REGISTRY
 from ns_studio.text import stages_shorts as S
 from tests.helpers import make_ctx
@@ -30,6 +30,7 @@ def _text_only(monkeypatch: pytest.MonkeyPatch, tmp_home: Path):
 
 def test_registration_order():
     assert FORMAT_STAGES["shorts_only"][:8] == STAGES
+    assert list(SHORTS_ONLY_STAGES[:8]) == STAGES
     assert all(n in REGISTRY for n in STAGES)
     assert all(REGISTRY[n].tenant == "llama" for n in STAGES)
 

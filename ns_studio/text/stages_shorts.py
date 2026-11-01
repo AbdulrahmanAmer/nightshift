@@ -11,7 +11,6 @@ from ns_common.errors import NsError
 from ns_common.models import Idea, Part, Seo, VisualBeat
 from ns_common.textstats import est_seconds, split_sentences, word_count
 from ns_studio.context import JobContext
-from ns_studio.orchestrator import FORMAT_STAGES
 from ns_studio.stages import Tenant, register
 from ns_studio.text.budget import Budget, MasterBudget, master_as_budget, master_budget, short_budget
 from ns_studio.text.prompts import RUBRIC_KEYS, call_json, call_text, parse_model
@@ -343,5 +342,3 @@ for _st in (
     VisualPlanStage(),
 ):
     register(_st)
-    if _st.name not in FORMAT_STAGES["shorts_only"]:
-        FORMAT_STAGES["shorts_only"].append(_st.name)

@@ -1,0 +1,28 @@
+{
+  "home_path": "D:\\Nightshift",
+  "models_source": null,
+  "llm_tier": "small",
+  "channel": {
+    "display_name": "After Dark Tales",
+    "niche": "horror fiction",
+    "language": "en",
+    "seed_keywords": ["haunted house", "night shift", "small town"]
+  },
+  "voice": {
+    "mode": "preset",
+    "speaker": "Ryan",
+    "description": null,
+    "name": null,
+    "speed": 1.0
+  },
+  "voice_ref_audio_path": null,
+  "voice_ref_text": null,
+  "voice_rights_confirmed": false,
+  "pexels_api_key": "",
+  "pixabay_api_key": "",
+  "masters_per_week": 1,
+  "run_time": "03:00",
+  "install_code": true,
+  "allow_cpu": false,
+  "restore_from": null
+}
