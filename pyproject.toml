@@ -23,7 +23,12 @@ dependencies = [
 studio = ["Pillow>=10", "spacy>=3.7,<4", "faster-whisper>=1.0", "imagehash>=4.3", "keyring>=25"]
 tts = ["fastapi>=0.115", "uvicorn>=0.30", "soundfile>=0.12"]
 supervisor = ["fastapi>=0.115", "uvicorn>=0.30", "psutil>=6"]
-dev = ["pytest>=8", "pytest-httpx>=0.32", "ruff>=0.6", "pyright>=1.1.380", "jsonschema>=4.23"]
+# httpx, numpy and pyyaml are base dependencies. The rest let CI import every component (fakes included).
+dev = [
+  "pytest>=8", "pytest-httpx>=0.32", "ruff>=0.6", "pyright>=1.1.380", "jsonschema>=4.23",
+  "fastapi>=0.115", "psutil>=6", "python-multipart>=0.0.9", "opencv-python-headless>=4.9,<5",
+  "Pillow>=10", "imagehash>=4.3",
+]
 
 [project.scripts]
 ns = "ns_supervisor.cli:main"
@@ -45,7 +50,20 @@ line-length = 110
 target-version = "py312"
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "B", "UP"]
+select = ["E", "F", "I", "B", "UP", "TID251"]
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"subprocess".msg = "Use ns_common.ffmpeg.run or the supervisor. subprocess is allowed only in ns_common/ffmpeg.py, ns_supervisor/, installer/, tools/, dev/ and tests/ (docs/ENGINEERING.md section 8)."
+
+[tool.ruff.lint.per-file-ignores]
+"ns_common/ffmpeg.py" = ["TID251"]
+"ns_supervisor/**" = ["TID251"]
+"ns_tts/engine.py" = ["TID251"]
+"ns_dashboard/updater.py" = ["TID251"]
+"installer/**" = ["TID251"]
+"tools/**" = ["TID251"]
+"dev/**" = ["TID251"]
+"tests/**" = ["TID251"]
 
 [tool.pyright]
 pythonVersion = "3.12"

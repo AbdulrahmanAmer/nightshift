@@ -1,0 +1,270 @@
+"""Creating and managing dashboard jobs: run, clip, learn, verify; plus upload plumbing (component C9)."""
+
+from __future__ import annotations
+
+import json
+import re
+from pathlib import Path
+from typing import Any, BinaryIO
+
+from ns_common.db import new_job_id
+from ns_dashboard.adapters import Adapters
+from ns_dashboard.common import FORMATS, now_iso
+from ns_dashboard.errors import ApiError
+from ns_dashboard.jobs import Handler, JobControl
+from ns_dashboard.state import AppState
+from ns_dashboard.svc_channels import ChannelsService
+from ns_dashboard.templates import load_templates
+from ns_dashboard.uploads import ALLOWED_EXT, CHUNK, UploadInfo, UploadManager, find_source, source_dir
+
+CLIP_PARAM_KEYS = ("channel", "template", "max_clips", "min_s", "max_s", "caption_style", "rights_confirmed")
+MAX_CSV_BYTES = 20 * 1024 * 1024
+
+
+def build_handlers(adapters: Adapters) -> dict[str, Handler]:
+    """Job handlers that call the adapters; each returns the job's `result`."""
+
+    def run_handler(ctl: JobControl) -> dict[str, Any]:
+        p = ctl.params
+        ids = adapters.run.run(ctl, str(p["channel"]), str(p["format"]), p.get("count"))
+        return {"output_ids": ids}
+
+    def clip_handler(ctl: JobControl) -> dict[str, Any]:
+        p = ctl.params
+        opts = {k: p.get(k) for k in CLIP_PARAM_KEYS}
+        opts["rerun"] = bool(p.get("rerun"))
+        ids = adapters.clip.clip(ctl, Path(str(p["source_path"])), str(p["source_id"]), opts)
+        return {"output_ids": ids, "source_id": p["source_id"]}
+
+    def learn_handler(ctl: JobControl) -> dict[str, Any]:
+        return adapters.learn.import_csv(ctl, Path(str(ctl.params["csv_path"])))
+
+    def verify_handler(ctl: JobControl) -> dict[str, Any]:
+        return adapters.verify.verify(ctl, bool(ctl.params.get("quick", True)))
+
+    return {"run": run_handler, "clip": clip_handler, "learn": learn_handler, "verify": verify_handler}
+
+
+def _count(value: Any) -> int:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int | float):
+        return int(value)
+    if isinstance(value, list | tuple | dict | set):
+        return len(value)
+    return 0
+
+
+def learn_response(result: dict[str, Any], job_id: str | None = None) -> dict[str, Any]:
+    """Shape an import result as `{matched, unmatched, summary: [str], changes: [{pool, option, delta}]}`."""
+    matched = _count(result.get("matched"))
+    unmatched_raw = result.get("unmatched", [])
+    unmatched = _count(unmatched_raw)
+    changes: list[dict[str, Any]] = []
+    for c in result.get("changes") or result.get("weight_changes") or []:
+        if isinstance(c, dict):
+            delta = c.get("delta", c.get("change", 0))
+            changes.append(
+                {"pool": c.get("pool", ""), "option": c.get("option", ""), "delta": float(delta or 0)}
+            )
+    summary = result.get("summary")
+    if not (isinstance(summary, list) and all(isinstance(s, str) for s in summary)):
+        summary = [
+            f"{matched} row(s) matched videos you uploaded.",
+            f"{unmatched} row(s) had no matching upload yet.",
+        ]
+        for c in sorted(changes, key=lambda x: -abs(x["delta"]))[:3]:
+            word = "up" if c["delta"] > 0 else "down"
+            summary.append(f"'{c['option']}' ({c['pool']}) moved {word} by {abs(c['delta']):.2f}.")
+    out: dict[str, Any] = {"matched": matched, "unmatched": unmatched, "summary": summary, "changes": changes}
+    if isinstance(unmatched_raw, list):
+        out["unmatched_rows"] = unmatched_raw
+    if job_id:
+        out["job_id"] = job_id
+    return out
+
+
+def _int(body: dict[str, Any], key: str, default: int, lo: int, hi: int) -> int:
+    raw = body.get(key)
+    if raw in (None, ""):
+        return default
+    try:
+        val = int(raw)
+    except (TypeError, ValueError) as e:
+        raise ApiError(422, "invalid_options", f"'{key}' must be a whole number.") from e
+    if not lo <= val <= hi:
+        raise ApiError(422, "invalid_options", f"'{key}' must be between {lo} and {hi}.")
+    return val
+
+
+class JobsService:
+    """Validates requests, creates `dashboard_jobs` rows and wakes the worker."""
+
+    def __init__(self, state: AppState, channels: ChannelsService) -> None:
+        self.s = state
+        self.channels = channels
+        self.uploads = UploadManager(state.paths)
+
+    def _accepting(self) -> None:
+        if self.s.draining:
+            raise ApiError(503, "shutting_down", "Nightshift is shutting down and not accepting new jobs.")
+
+    def _enqueue(self, kind: str, channel: str | None, params: dict[str, Any]) -> dict[str, Any]:
+        rec = self.s.store.create(kind, channel, params)
+        self.s.worker.enqueue(rec.job_id)
+        self.s.hub.publish("dashboard_job", rec.to_dict())
+        return rec.to_dict()
+
+    # --- creation ---
+    def create_run(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Queue `studio run` for one channel."""
+        self._accepting()
+        slug = str(body.get("channel") or "")
+        ch = self.channels.load(slug)
+        if ch.status == "paused":
+            raise ApiError(409, "channel_paused", f"'{ch.display_name}' is paused. Resume it first.")
+        fmt = str(body.get("format") or ch.format)
+        if fmt not in FORMATS:
+            raise ApiError(422, "invalid_options", f"Unknown video type '{fmt}'.")
+        count = body.get("count")
+        n = _int(body, "count", 1, 1, 20) if count else None
+        params: dict[str, Any] = {"channel": slug, "format": fmt, "count": n}
+        return self._enqueue("run", slug, params)
+
+    def create_verify(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Queue `ns verify`."""
+        self._accepting()
+        return self._enqueue("verify", None, {"quick": bool(body.get("quick", True))})
+
+    def _save_csv(self, filename: str, fh: BinaryIO) -> dict[str, Any]:
+        """Save an analytics CSV under `imports/analytics` and create its (inline) learn job."""
+        self._accepting()
+        name = re.sub(r"[^A-Za-z0-9._-]+", "_", Path(filename or "analytics.csv").name) or "analytics.csv"
+        if not name.lower().endswith(".csv"):
+            raise ApiError(400, "bad_file_type", "Please choose the .csv file exported from YouTube Studio.")
+        data = fh.read(MAX_CSV_BYTES + 1)
+        if not data:
+            raise ApiError(400, "empty_file", "That file is empty.")
+        if len(data) > MAX_CSV_BYTES:
+            raise ApiError(413, "file_too_large", "That CSV is larger than 20 MB.")
+        dest_dir = self.s.paths.imports_analytics
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        stamp = now_iso().replace(":", "").replace("-", "")[:15]
+        dest = dest_dir / f"{stamp}-{name}"
+        dest.write_bytes(data)
+        rec = self.s.store.create("learn", None, {"csv_path": str(dest), "filename": name})
+        return rec.to_dict()
+
+    def import_learn(self, filename: str, fh: BinaryIO) -> dict[str, Any]:
+        """Import an analytics CSV now (no GPU needed) and answer with the plain-English result.
+
+        The import still runs as a `learn` job so it shows up in the job history.
+        """
+        job = self._save_csv(filename, fh)
+        done = self.s.worker.run_inline(job["job_id"])
+        if done.status != "done":
+            raise ApiError(500, "learn_failed", done.message or "The import failed.")
+        return learn_response(done.result or {}, done.job_id)
+
+    def import_stream(self, filename: str, fh: BinaryIO) -> UploadInfo:
+        """Store a streamed multipart upload through the chunked-upload manager."""
+        fh.seek(0, 2)
+        size = fh.tell()
+        fh.seek(0)
+        info = self.uploads.start(filename, size)
+        offset = 0
+        while offset < size:
+            block = fh.read(CHUNK)
+            if not block:
+                break
+            info = self.uploads.append(info.upload_id, offset, block)
+            offset += len(block)
+        return self.uploads.complete(info.upload_id)
+
+    def require_rights(self, body: dict[str, Any]) -> None:
+        """Refuse to start without the owner's rights confirmation (spec 19.1); also blocks while draining."""
+        self._accepting()
+        if body.get("rights_confirmed") is not True:
+            raise ApiError(
+                400, "rights_required", "Please confirm that you own this video or are licensed to use it.",
+                hint="Tick 'I own or have rights to this video' before starting.",
+            )
+
+    def create_clip(self, body: dict[str, Any], uploaded: UploadInfo | None = None) -> dict[str, Any]:
+        """Queue a Clipper job. `uploaded` is a multipart file already stored via `import_stream`."""
+        self.require_rights(body)
+        slug = str(body.get("channel") or "")
+        self.channels.load(slug)
+        template = str(body.get("template") or "auto")
+        if template not in {t["id"] for t in load_templates(self.s.paths)}:
+            raise ApiError(422, "invalid_options", f"Unknown layout '{template}'.")
+        min_s = _int(body, "min_s", 20, 5, 120)
+        max_s = _int(body, "max_s", 60, 10, 180)
+        if max_s < min_s:
+            raise ApiError(422, "invalid_options", "'max_s' must not be smaller than 'min_s'.")
+        params: dict[str, Any] = {
+            "channel": slug,
+            "template": template,
+            "max_clips": _int(body, "max_clips", 6, 1, 10),
+            "min_s": min_s,
+            "max_s": max_s,
+            "caption_style": body.get("caption_style") or None,
+            "rights_confirmed": True,
+        }
+        source_id, source_path, rerun = self._resolve_source(body, uploaded)
+        params.update({"source_id": source_id, "source_path": str(source_path), "rerun": rerun})
+        folder = source_dir(self.s.paths, source_id)
+        folder.mkdir(parents=True, exist_ok=True)
+        rights = {"rights_confirmed": True, "confirmed_at": now_iso(), "channel": slug}
+        (folder / "rights.json").write_text(json.dumps(rights, indent=2) + "\n", encoding="utf-8")
+        return self._enqueue("clip", slug, params)
+
+    def _registered_source(self, source_id: str) -> Path | None:
+        """Path stored in the `sources` table (set by the Clipper import), if the file still exists."""
+        row = self.s.db.one("SELECT path FROM sources WHERE source_id = ?", (source_id,))
+        if row is None:
+            return None
+        p = Path(row["path"])
+        return p if p.is_file() else None
+
+    def _resolve_source(self, body: dict[str, Any], uploaded: UploadInfo | None) -> tuple[str, Path, bool]:
+        if uploaded is not None and uploaded.path:
+            return uploaded.source_id, Path(uploaded.path), False
+        for key, rerun in (("upload_id", False), ("source_id", True)):
+            sid = body.get(key)
+            if sid:
+                found = find_source(self.s.paths, str(sid)) or self._registered_source(str(sid))
+                if found is None:
+                    code = "upload_incomplete" if key == "upload_id" else "not_found"
+                    status = 409 if key == "upload_id" else 404
+                    raise ApiError(status, code, "That video has not finished uploading.")
+                return str(sid), found, rerun
+        raw = body.get("path")
+        if raw:
+            p = Path(str(raw)).expanduser()
+            if not p.is_file() or p.suffix.lower() not in ALLOWED_EXT:
+                raise ApiError(400, "bad_path", f"'{raw}' is not a video file on this PC.")
+            return new_job_id("src"), p, False
+        raise ApiError(400, "no_source", "Choose a video first (upload it or give a local path).")
+
+    # --- queries / cancel ---
+    def list_jobs(self, status: str | None, kind: str | None, limit: int) -> list[dict[str, Any]]:
+        """Newest first."""
+        return [j.to_dict() for j in self.s.store.list_jobs(status or None, kind or None, limit)]
+
+    def get(self, job_id: str) -> dict[str, Any]:
+        """One job or 404."""
+        rec = self.s.store.get(job_id)
+        if rec is None:
+            raise ApiError(404, "not_found", "That job was not found.")
+        return rec.to_dict()
+
+    def cancel(self, job_id: str) -> dict[str, Any]:
+        """Cancel a queued or running job; 409 when it already ended."""
+        rec = self.s.store.get(job_id)
+        if rec is None:
+            raise ApiError(404, "not_found", "That job was not found.")
+        if rec.status not in ("queued", "running"):
+            raise ApiError(409, "already_finished", f"That job already ended ({rec.status}).")
+        self.s.worker.cancel(job_id)
+        return self.get(job_id)

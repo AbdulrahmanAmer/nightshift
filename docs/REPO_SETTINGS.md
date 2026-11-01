@@ -1,0 +1,105 @@
+# Repository settings
+
+Settings that live in GitHub rather than in files. Owner: C10. Rationale: `docs/ENGINEERING.md` section 7.
+Applied on 2026-11-01 with `gh api` using the owner's token; every command is repeatable.
+
+## Branch protection on `main` (applied)
+
+| Setting | Value | Why |
+|---|---|---|
+| Required status checks | `lint`, `types`, `test`, `powershell-parse`, `scope-check` | The jobs of `.github/workflows/ci.yml` that decide merge safety (`scope-check` runs on pull requests only). `bundle` reports but does not block. Names must equal the job ids in ci.yml. |
+| Require branches to be up to date | off | Builders on disjoint paths would otherwise rebase constantly. |
+| Force pushes | forbidden | History of published branches is never rewritten (ENGINEERING section 5). |
+| Branch deletion | forbidden | |
+| Pull request reviews | not required | A solo orchestrator merges; the checks are the gate. |
+| Include administrators | off | The owner token pushes to `main` directly when file sets are disjoint (ENGINEERING section 5); with this off, admins bypass the required checks. Turn it on once every merge goes through a pull request. |
+
+```powershell
+@'
+{
+  "required_status_checks": {"strict": false, "contexts": ["lint", "types", "test", "powershell-parse", "scope-check"]},
+  "enforce_admins": false,
+  "required_pull_request_reviews": null,
+  "restrictions": null,
+  "allow_force_pushes": false,
+  "allow_deletions": false,
+  "required_linear_history": false,
+  "required_conversation_resolution": false
+}
+'@ | gh api -X PUT repos/AbdulrahmanAmer/nightshift/branches/main/protection --input -
+```
+
+Result of the call: HTTP 200; `required_status_checks.contexts = ["lint","types","test","powershell-parse","scope-check"]`, `allow_force_pushes = false`,
+`allow_deletions = false`, `enforce_admins = false`.
+
+## Tag ruleset (applied)
+
+Ruleset `protect-release-tags` (id 26322610), target `tag`, refs `refs/tags/v*` and `refs/tags/contracts-m*`,
+rules `update`, `deletion`, `non_fast_forward`; the repository admin role bypasses. Effect: a published release tag or
+contract freeze tag cannot be moved or deleted; only the owner can create one.
+
+```powershell
+@'
+{
+  "name": "protect-release-tags", "target": "tag", "enforcement": "active",
+  "conditions": {"ref_name": {"include": ["refs/tags/v*", "refs/tags/contracts-m*"], "exclude": []}},
+  "bypass_actors": [{"actor_id": 5, "actor_type": "RepositoryRole", "bypass_mode": "always"}],
+  "rules": [{"type": "update"}, {"type": "deletion"}, {"type": "non_fast_forward"}]
+}
+'@ | gh api -X POST repos/AbdulrahmanAmer/nightshift/rulesets --input -
+```
+
+## Actions permissions (applied)
+
+Default `GITHUB_TOKEN` permissions are read-only (`default_workflow_permissions=read`); workflows that publish declare
+`contents: write` on the single job that needs it (`release.yml` job `release`, `build-qwentts.yml` job `release-asset`).
+No secrets are stored in the repository.
+
+```powershell
+gh api -X PUT repos/AbdulrahmanAmer/nightshift/actions/permissions/workflow -f default_workflow_permissions=read -F can_approve_pull_request_reviews=false
+```
+
+## Workflows
+
+| File | Trigger | What |
+|---|---|---|
+| `.github/workflows/ci.yml` | push, pull request | `lint`, `types`, `test`, `powershell-parse`, `bundle`; `scope-check` on pull requests only |
+| `.github/workflows/release.yml` | tag `v*` | tests, `dev/make_bundle.ps1`, GitHub Release with `Nightshift-<ver>.zip`, `.sha256`, `nightshift-app-<ver>.zip` |
+| `.github/workflows/build-qwentts.yml` | `workflow_dispatch`, tag `v*` | builds `qwentts-win-cuda-x64.zip` on `windows-2022` (see "qwentts build") |
+
+Cutting a release (orchestrator): move the `## [Unreleased]` entries in `CHANGELOG.md` under `## [x.y.z]`, set `VERSION`,
+`pyproject.toml` and `ns_common.__version__` to `x.y.z`, merge to `main`, wait for green CI, then
+`git tag vX.Y.Z && git push origin vX.Y.Z`. `release.yml` fails when the tag, `VERSION` or the changelog heading disagree.
+
+## qwentts build
+
+Workflow: `.github/workflows/build-qwentts.yml` (triggers: `workflow_dispatch` and tags `v*`; on a tag the zip is also
+attached to the GitHub Release, creating the release first if `release.yml` has not yet).
+
+Last build: run https://github.com/AbdulrahmanAmer/nightshift/actions/runs/41341093235, conclusion `success`
+(build job 19:18 to 20:01 UTC, about 42 minutes: CUDA install 6 min, compile 35 min).
+
+| Item | Value |
+|---|---|
+| Source | `ServeurpersoCom/qwentts.cpp` commit `5916bf7c79dbb4e66fc059cdc507a79a23a28bb4` (master, 2026-10-16), submodule `ggml` fetched recursively; the project has a plain `CMakeLists.txt` |
+| Toolchain | CUDA 12.9.1 via `Jimver/cuda-toolkit@v0.2.36` (network method, sub-packages nvcc, cudart, cublas, cublas_dev, thrust, visual_studio_integration), CMake + Ninja, MSVC 14.4x |
+| Runner | `windows-2022`, not `windows-latest` (see failures below) |
+| CMake flags | `-G Ninja -DCMAKE_BUILD_TYPE=Release -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES="75-virtual;86-real;89-real;120a-real" -DCMAKE_CUDA_FLAGS=-allow-unsupported-compiler -DGGML_NATIVE=OFF -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON`. `120a-real` is the Blackwell (sm_120) SASS the project itself uses for CUDA 12.8+; 89 covers Ada, 86 Ampere, 75-virtual is PTX for anything else. `GGML_NATIVE=OFF` stops the CPU code being tuned to the CI runner's CPU. |
+| Targets | `tts-server`, `qwen-tts`, `qwen-codec` |
+| Output | artifact `qwentts-win-cuda-x64` with `qwentts-win-cuda-x64.zip` (602.7 MB) and `.zip.sha256`. Content: the three exes, `ggml.dll`, `ggml-base.dll`, `ggml-cpu.dll`, `ggml-cuda.dll`, `cudart64_12.dll`, `cublas64_12.dll`, `cublasLt64_12.dll`, the MSVC runtime DLLs, `BUILD-INFO.txt`. |
+| Pin for manifest.json | `bins.qwentts`: URL `https://github.com/AbdulrahmanAmer/nightshift/releases/download/<tag>/qwentts-win-cuda-x64.zip`, SHA256 from the `.sha256` asset of that same release. The zip is not byte-reproducible, so the hash must come from the published asset, never from another build. |
+| Not verified | The exes were not run on a GPU (no GPU in CI). `dumpbin /dependents tts-server.exe` resolves to the shipped DLLs; `tts-server.exe --help` exited 1 without output on the runner (informational step, `continue-on-error`). `ns verify` on the partner PC is the real test (risk 1 in ENGINEERING section 9, wrapper `NS-W301`). |
+
+What failed on the way, exactly:
+
+1. `windows-latest` (run 41339184370): configure failed while identifying the CUDA compiler,
+   `nvcc error : 'cudafe++' died with status 0xC0000005 (ACCESS_VIOLATION)`. `windows-latest` is now the Visual Studio 2026
+   image (MSVC 14.51, `--microsoft_version=1951`), which nvcc 12.9 does not support.
+2. `windows-2025` (run 41339438559): the same image family; `host_config.h(170): fatal error C1189: #error: -- unsupported
+   Microsoft Visual Studio version! Only the versions between 2017 and 2022 (inclusive) are supported!` and the same
+   `cudafe++` crash. `windows-2022` has Visual Studio 2022 and builds cleanly.
+
+Size: `cublasLt64_12.dll` alone is 669 MB, so the zip is large (about 600 MB, below the 2 GB release asset limit). It is
+downloaded once by the installer, never bundled into `Nightshift-<ver>.zip`. If that is too heavy for the partner's link,
+the options are (a) pin the zip to a CUDA 13.x build whose cuBLAS may be smaller, or (b) let the installer fetch the CUDA
+runtime DLLs separately like the llama.cpp `cudart-*` assets. Neither is needed for M0.
