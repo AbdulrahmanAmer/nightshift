@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>UI Sketchpad · NightShift</title>
+  <link rel="stylesheet" href="designer.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand" title="NightShift UI sketchpad">
+      <span class="brand-mark" data-icon="logo"></span>
+      <input id="projectName" class="project-name" spellcheck="false" aria-label="Project name">
+    </div>
+    <div class="tb-group">
+      <button class="tb-btn" data-action="new" data-icon="file" title="New project">New</button>
+      <button class="tb-btn" data-action="open" data-icon="folder" title="Open a project or layout.json file">Open</button>
+      <button class="tb-btn" data-action="save" data-icon="save" title="Save project as .json (Ctrl+S)">Save</button>
+      <button class="tb-btn" data-action="import" data-icon="import" title="Import layout.json">Import</button>
+      <button class="tb-btn tb-btn-strong" data-action="export" data-icon="export" title="Export layout.json and spec.md (Ctrl+E)">Export</button>
+    </div>
+    <div class="tb-sep"></div>
+    <div class="tb-group">
+      <button class="tb-icon" data-action="undo" data-icon="undo" title="Undo (Ctrl+Z)" aria-label="Undo"></button>
+      <button class="tb-icon" data-action="redo" data-icon="redo" title="Redo (Ctrl+Y)" aria-label="Redo"></button>
+    </div>
+    <div class="tb-spacer"></div>
+    <div class="tb-group">
+      <label class="tb-label" for="styleSelect">Style</label>
+      <select id="styleSelect" class="tb-select" title="Style set for the whole project"></select>
+      <button class="tb-icon" data-action="tokens" data-icon="sliders" title="Edit style tokens" aria-label="Edit style tokens"></button>
+    </div>
+    <div class="tb-sep"></div>
+    <div class="tb-group">
+      <button class="tb-icon tb-toggle" data-toggle="tint" data-icon="drop" title="Page tint (uses the style set's tint colour)" aria-label="Page tint"></button>
+      <button class="tb-icon tb-toggle" data-toggle="grid" data-icon="grid" title="Show grid" aria-label="Show grid"></button>
+      <button class="tb-icon tb-toggle" data-toggle="snap" data-icon="magnet" title="Snap to grid and guides" aria-label="Snap"></button>
+      <button class="tb-icon tb-toggle" data-toggle="rulers" data-icon="ruler" title="Rulers" aria-label="Rulers"></button>
+    </div>
+    <div class="tb-sep"></div>
+    <div class="tb-group zoom-group">
+      <button class="tb-icon" data-action="zoomOut" data-icon="minus" title="Zoom out (Ctrl+-)" aria-label="Zoom out"></button>
+      <button class="tb-zoom" id="zoomLabel" data-action="zoom100" title="Reset to 100 % (Ctrl+0)">100%</button>
+      <button class="tb-icon" data-action="zoomIn" data-icon="plus" title="Zoom in (Ctrl+=)" aria-label="Zoom in"></button>
+      <button class="tb-icon" data-action="zoomFit" data-icon="fit" title="Fit page (Shift+1)" aria-label="Fit page"></button>
+    </div>
+    <div class="tb-sep"></div>
+    <button class="tb-icon" data-action="help" data-icon="help" title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts"></button>
+  </header>
+
+  <nav class="pagebar" id="pagebar" aria-label="Pages"></nav>
+
+  <main class="workspace">
+    <aside class="palette" id="palette" aria-label="Components"></aside>
+    <section class="canvas-area" id="canvasArea">
+      <canvas class="ruler ruler-top" id="rulerTop"></canvas>
+      <canvas class="ruler ruler-left" id="rulerLeft"></canvas>
+      <div class="ruler-corner"></div>
+      <div class="viewport" id="viewport">
+        <div class="stage" id="stage">
+          <div class="page-wrap" id="pageWrap">
+            <div class="page" id="page"></div>
+            <div class="grid-layer" id="gridLayer"></div>
+            <div class="empty-hint" id="emptyHint">
+              <div class="empty-hint-inner">
+                <strong>This page is empty</strong>
+                <span>Click a component on the left to add it, or drag it onto the page.<br>Press <kbd>?</kbd> for shortcuts.</span>
+              </div>
+            </div>
+            <div class="overlay" id="overlay"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+    <aside class="inspector" id="inspector" aria-label="Inspector"></aside>
+  </main>
+
+  <footer class="statusbar" id="statusbar"></footer>
+
+  <input type="file" id="fileInput" accept=".json,application/json" hidden>
+  <div id="menuRoot"></div>
+  <div id="modalRoot"></div>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script src="designer.js"></script>
+</body>
+</html>

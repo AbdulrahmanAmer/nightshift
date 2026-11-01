@@ -1,0 +1,1291 @@
+{
+  "format": "nightshift-style-library",
+  "version": 1,
+  "notes": "Each set has tokens (CSS values) and component render rules. In a rule, $name refers to a token and $sp0..$sp6 to the spacing scale. Edit freely; the tool reads this file on start (when served over http).",
+  "tokens": [
+    "background",
+    "pageTint",
+    "surface",
+    "surfaceAlt",
+    "text",
+    "muted",
+    "accent",
+    "accentText",
+    "accentSoft",
+    "border",
+    "track",
+    "mediaBg",
+    "ok",
+    "warn",
+    "danger",
+    "info",
+    "radius",
+    "radiusSm",
+    "radiusXs",
+    "borderWidth",
+    "shadow",
+    "shadowSm",
+    "backdrop",
+    "font",
+    "spacing"
+  ],
+  "sets": [
+    {
+      "id": "bento-light",
+      "name": "Bento light",
+      "scheme": "light",
+      "description": "White cards on white or powder-blue, generous 24 px radii, soft shadow.",
+      "tokens": {
+        "background": "#ffffff",
+        "pageTint": "#e7eff9",
+        "surface": "#ffffff",
+        "surfaceAlt": "#f2f5f9",
+        "text": "#1c2433",
+        "muted": "#6a7385",
+        "accent": "#3a6fe3",
+        "accentText": "#ffffff",
+        "accentSoft": "#e5edfc",
+        "border": "#e3e8f0",
+        "track": "#dde3ec",
+        "mediaBg": "#1f2633",
+        "ok": "#1f9d6b",
+        "warn": "#c98a12",
+        "danger": "#d94848",
+        "info": "#3a6fe3",
+        "radius": "24px",
+        "radiusSm": "12px",
+        "radiusXs": "9px",
+        "borderWidth": "0px",
+        "shadow": "0 1px 2px rgba(22,34,58,.04), 0 10px 28px rgba(22,34,58,.08)",
+        "shadowSm": "0 1px 2px rgba(22,34,58,.08)",
+        "backdrop": "none",
+        "font": "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif",
+        "spacing": [
+          4,
+          8,
+          12,
+          16,
+          24,
+          32,
+          48
+        ]
+      },
+      "components": {
+        "card": {
+          "background": "$surface",
+          "border": "$borderWidth solid $border",
+          "borderRadius": "$radius",
+          "boxShadow": "$shadow",
+          "color": "$text",
+          "padding": "$sp3",
+          "backdropFilter": "$backdrop"
+        },
+        "card.title": {
+          "fontSize": "15px",
+          "fontWeight": "600",
+          "color": "$text"
+        },
+        "button.primary": {
+          "background": "$accent",
+          "color": "$accentText",
+          "border": "none",
+          "borderRadius": "$radiusSm",
+          "fontWeight": "600",
+          "boxShadow": "$shadowSm"
+        },
+        "button.secondary": {
+          "background": "$surfaceAlt",
+          "color": "$text",
+          "border": "none",
+          "borderRadius": "$radiusSm",
+          "fontWeight": "500",
+          "boxShadow": "none"
+        },
+        "button.ghost": {
+          "background": "transparent",
+          "color": "$accent",
+          "border": "none",
+          "borderRadius": "$radiusSm",
+          "fontWeight": "600"
+        },
+        "chip": {
+          "background": "$surfaceAlt",
+          "color": "$text",
+          "border": "1px solid transparent",
+          "borderRadius": "999px",
+          "fontWeight": "500"
+        },
+        "chip.selected": {
+          "background": "$accentSoft",
+          "color": "$accent",
+          "border": "1px solid transparent"
+        },
+        "tabs": {
+          "background": "$surfaceAlt",
+          "borderRadius": "14px",
+          "padding": "4px",
+          "border": "none"
+        },
+        "tab": {
+          "color": "$muted",
+          "borderRadius": "$radiusXs",
+          "fontWeight": "500"
+        },
+        "tab.active": {
+          "background": "$surface",
+          "color": "$text",
+          "boxShadow": "$shadowSm",
+          "fontWeight": "600"
+        },
+        "toggle.track": {
+          "background": "$track",
+          "borderRadius": "999px"
+        },
+        "toggle.trackOn": {
+          "background": "$accent"
+        },
+        "toggle.knob": {
+          "background": "#ffffff",
+          "borderRadius": "999px",
+          "boxShadow": "0 1px 2px rgba(0,0,0,.25)"
+        },
+        "input": {
+          "background": "$surfaceAlt",
+          "color": "$muted",
+          "border": "1px solid transparent",
+          "borderRadius": "$radiusSm"
+        },
+        "text.heading": {
+          "color": "$text",
+          "fontSize": "24px",
+          "fontWeight": "700",
+          "letterSpacing": "-0.01em"
+        },
+        "text.body": {
+          "color": "$text",
+          "fontSize": "14px",
+          "fontWeight": "400"
+        },
+        "text.caption": {
+          "color": "$muted",
+          "fontSize": "12px",
+          "fontWeight": "400"
+        },
+        "media": {
+          "background": "$mediaBg",
+          "color": "#ffffff",
+          "borderRadius": "$radius",
+          "boxShadow": "$shadow"
+        },
+        "listrow": {
+          "background": "transparent",
+          "color": "$text",
+          "borderBottom": "1px solid $border",
+          "borderRadius": "0"
+        },
+        "navrail": {
+          "background": "$surface",
+          "border": "$borderWidth solid $border",
+          "borderRadius": "$radius",
+          "boxShadow": "$shadow",
+          "padding": "$sp1",
+          "backdropFilter": "$backdrop"
+        },
+        "navitem": {
+          "color": "$muted",
+          "borderRadius": "$radiusSm",
+          "fontWeight": "500"
+        },
+        "navitem.active": {
+          "background": "$accentSoft",
+          "color": "$accent",
+          "fontWeight": "600"
+        },
+        "pill": {
+          "borderRadius": "999px",
+          "fontWeight": "600",
+          "fontSize": "12px"
+        },
+        "progress.track": {
+          "background": "$track",
+          "borderRadius": "999px"
+        },
+        "progress.bar": {
+          "background": "$accent",
+          "borderRadius": "999px"
+        },
+        "chart": {
+          "background": "$surface",
+          "border": "$borderWidth solid $border",
+          "borderRadius": "$radius",
+          "boxShadow": "$shadow",
+          "color": "$text",
+          "padding": "$sp3",
+          "backdropFilter": "$backdrop"
+        },
+        "image": {
+          "background": "$surfaceAlt",
+          "color": "$muted",
+          "borderRadius": "$radiusSm",
+          "border": "1px dashed $border"
+        },
+        "divider": {
+          "background": "$border"
+        },
+        "icon": {
+          "color": "$text"
+        }
+      }
+    },
+    {
+      "id": "night-studio",
+      "name": "Night studio",
+      "scheme": "dark",
+      "description": "Dark slate surfaces with a warm amber accent.",
+      "tokens": {
+        "background": "#171b21",
+        "pageTint": "#1d222a",
+        "surface": "#222831",
+        "surfaceAlt": "#2b323c",
+        "text": "#ece8e1",
+        "muted": "#98a1ad",
+        "accent": "#f0a73a",
+        "accentText": "#1f1505",
+        "accentSoft": "rgba(240,167,58,.16)",
+        "border": "#333b46",
+        "track": "#3a424e",
+        "mediaBg": "#0d1015",
+        "ok": "#4cc38a",
+        "warn": "#f0a73a",
+        "danger": "#f06a6a",
+        "info": "#6ea8fe",
+        "radius": "14px",
+        "radiusSm": "8px",
+        "radiusXs": "6px",
+        "borderWidth": "1px",
+        "shadow": "0 1px 0 rgba(255,255,255,.03) inset, 0 8px 24px rgba(0,0,0,.35)",
+        "shadowSm": "0 1px 2px rgba(0,0,0,.4)",
+        "backdrop": "none",
+        "font": "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif",
+        "spacing": [
+          4,
+          8,
+          12,
+          16,
+          24,
+          32,
+          48
+        ]
+      },
+      "components": {
+        "card": {
+          "background": "$surface",
+          "border": "$borderWidth solid $border",
+          "borderRadius": "$radius",
+          "boxShadow": "$shadow",
+          "color": "$text",
+          "padding": "$sp3",
+          "backdropFilter": "$backdrop"
+        },
+        "card.title": {
+          "fontSize": "15px",
+          "fontWeight": "600",
+          "color": "$text"
+        },
+        "button.primary": {
+          "background": "$accent",
+          "color": "$accentText",
+          "border": "none",
+          "borderRadius": "$radiusSm",
+          "fontWeight": "600",
+          "boxShadow": "$shadowSm"
+        },
+        "button.secondary": {
+          "background": "$surface",
+          "color": "$text",
+          "border": "1px solid $border",
+          "borderRadius": "$radiusSm",
+          "fontWeight": "500",
+          "boxShadow": "$shadowSm"
+        },
+        "button.ghost": {
+          "background": "transparent",
+          "color": "$accent",
+          "border": "none",
+          "borderRadius": "$radiusSm",
+          "fontWeight": "600"
+        },
+        "chip": {
+          "background": "$surfaceAlt",
+          "color": "$text",
+          "border": "1px solid transparent",
+          "borderRadius": "999px",
+          "fontWeight": "500"
+        },
+        "chip.selected": {
+          "background": "$accentSoft",
+          "color": "$accent",
+          "border": "1px solid transparent"
+        },
+        "tabs": {
+          "background": "$surfaceAlt",
+          "borderRadius": "$radiusSm",
+          "padding": "4px",
+          "border": "none"
+        },
+        "tab": {
+          "color": "$muted",
+          "borderRadius": "$radiusXs",
+          "fontWeight": "500"
+        },
+        "tab.active": {
+          "background": "#3a424e",
+          "color": "$text",
+          "boxShadow": "$shadowSm",
+          "fontWeight": "600"
+        },
+        "toggle.track": {
+          "background": "$track",
+          "borderRadius": "999px"
+        },
+        "toggle.trackOn": {
+          "background": "$accent"
+        },
+        "toggle.knob": {
+          "background": "#f4f1ec",
+          "borderRadius": "999px",
+          "boxShadow": "0 1px 2px rgba(0,0,0,.25)"
+        },
+        "input": {
+          "background": "$surface",
+          "color": "$muted",
+          "border": "1px solid $border",
+          "borderRadius": "$radiusSm"
+        },
+        "text.heading": {
+          "color": "$text",
+          "fontSize": "24px",
+          "fontWeight": "700",
+          "letterSpacing": "-0.01em"
+        },
+        "text.body": {
+          "color": "$text",
+          "fontSize": "14px",
+          "fontWeight": "400"
+        },
+        "text.caption": {
+          "color": "$muted",
+          "fontSize": "12px",
+          "fontWeight": "400"
+        },
+        "media": {
+          "background": "$mediaBg",
+          "color": "#ffffff",
+          "borderRadius": "$radius",
+          "boxShadow": "$shadow"
+        },
+        "listrow": {
+          "background": "transparent",
+          "color": "$text",
+          "borderBottom": "1px solid $border",
+          "borderRadius": "0"
+        },
+        "navrail": {
+          "background": "$surface",
+          "border": "$borderWidth solid $border",
+          "borderRadius": "$radius",
+          "boxShadow": "$shadow",
+          "padding": "$sp1",
+          "backdropFilter": "$backdrop"
+        },
+        "navitem": {
+          "color": "$muted",
+          "borderRadius": "$radiusSm",
+          "fontWeight": "500"
+        },
+        "navitem.active": {
+          "background": "$accentSoft",
+          "color": "$accent",
+          "fontWeight": "600"
+        },
+        "pill": {
+          "borderRadius": "999px",
+          "fontWeight": "600",
+          "fontSize": "12px"
+        },
+        "progress.track": {
+          "background": "$track",
+          "borderRadius": "999px"
+        },
+        "progress.bar": {
+          "background": "$accent",
+          "borderRadius": "999px"
+        },
+        "chart": {
+          "background": "$surface",
+          "border": "$borderWidth solid $border",
+          "borderRadius": "$radius",
+          "boxShadow": "$shadow",
+          "color": "$text",
+          "padding": "$sp3",
+          "backdropFilter": "$backdrop"
+        },
+        "image": {
+          "background": "$surfaceAlt",
+          "color": "$muted",
+          "borderRadius": "$radiusSm",
+          "border": "1px dashed $border"
+        },
+        "divider": {
+          "background": "$border"
+        },
+        "icon": {
+          "color": "$text"
+        }
+      }
+    },
+    {
+      "id": "flat",
+      "name": "Flat",
+      "scheme": "light",
+      "description": "Solid fills, no shadows, no borders, small radii.",
+      "tokens": {
+        "background": "#ffffff",
+        "pageTint": "#f4f6f8",
+        "surface": "#f1f3f5",
+        "surfaceAlt": "#e6e9ed",
+        "text": "#1e2328",
+        "muted": "#66707a",
+        "accent": "#2d7ff0",
+        "accentText": "#ffffff",
+        "accentSoft": "#dbe9fd",
+        "border": "#dde1e6",
+        "track": "#d3d8de",
+        "mediaBg": "#2a3037",
+        "ok": "#22a06b",
+        "warn": "#d4900f",
+        "danger": "#e04848",
+        "info": "#2d7ff0",
+        "radius": "8px",
+        "radiusSm": "6px",
+        "radiusXs": "4px",
+        "borderWidth": "0px",
+        "shadow": "none",
+        "shadowSm": "none",
+        "backdrop": "none",
+        "font": "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif",
+        "spacing": [
+          4,
+          8,
+          12,
+          16,
+          24,
+          32,
+          48
+        ]
+      },
+      "components": {
+        "card": {
+          "background": "$surface",
+          "border": "$borderWidth solid $border",
+          "borderRadius": "$radius",
+          "boxShadow": "$shadow",
+          "color": "$text",
+          "padding": "$sp3",
+          "backdropFilter": "$backdrop"
+        },
+        "card.title": {
+          "fontSize": "15px",
+          "fontWeight": "600",
+          "color": "$text"
+        },
+        "button.primary": {
+          "background": "$accent",
+          "color": "$accentText",
+          "border": "none",
+          "borderRadius": "$radiusSm",
+          "fontWeight": "600",
+          "boxShadow": "$shadowSm"
+        },
+        "button.secondary": {
+          "background": "$surfaceAlt",
+          "color": "$text",
+          "border": "none",
+          "borderRadius": "$radiusSm",
+          "fontWeight": "500",
+          "boxShadow": "$shadowSm"
+        },
+        "button.ghost": {
+          "background": "transparent",
+          "color": "$accent",
+          "border": "none",
+          "borderRadius": "$radiusSm",
+          "fontWeight": "600"
+        },
+        "chip": {
+          "background": "$surfaceAlt",
+          "color": "$text",
+          "border": "1px solid transparent",
+          "borderRadius": "999px",
+          "fontWeight": "500"
+        },
+        "chip.selected": {
+          "background": "$accentSoft",
+          "color": "$accent",
+          "border": "1px solid transparent"
+        },
+        "tabs": {
+          "background": "$surface",
+          "borderRadius": "$radiusSm",
+          "padding": "4px",
+          "border": "none"
+        },
+        "tab": {
+          "color": "$muted",
+          "borderRadius": "$radiusXs",
+          "fontWeight": "500"
+        },
+        "tab.active": {
+          "background": "$accent",
+          "color": "$accentText",
+          "boxShadow": "$shadowSm",
+          "fontWeight": "600"
+        },
+        "toggle.track": {
+          "background": "$track",
+          "borderRadius": "999px"
+        },
+        "toggle.trackOn": {
+          "background": "$accent"
+        },
+        "toggle.knob": {
+          "background": "#ffffff",
+          "borderRadius": "999px",
+          "boxShadow": "0 1px 2px rgba(0,0,0,.25)"
+        },
+        "input": {
+          "background": "$surface",
+          "color": "$muted",
+          "border": "none",
+          "borderRadius": "$radiusSm"
+        },
+        "text.heading": {
+          "color": "$text",
+          "fontSize": "24px",
+          "fontWeight": "700",
+          "letterSpacing": "-0.01em"
+        },
+        "text.body": {
+          "color": "$text",
+          "fontSize": "14px",
+          "fontWeight": "400"
+        },
+        "text.caption": {
+          "color": "$muted",
+          "fontSize": "12px",
+          "fontWeight": "400"
+        },
+        "media": {
+          "background": "$mediaBg",
+          "color": "#ffffff",
+          "borderRadius": "$radius",
+          "boxShadow": "$shadow"
+        },
+        "listrow": {
+          "background": "$surfaceAlt",
+          "color": "$text",
+          "borderBottom": "2px solid $surface",
+          "borderRadius": "0"
+        },
+        "navrail": {
+          "background": "$surface",
+          "border": "$borderWidth solid $border",
+          "borderRadius": "$radius",
+          "boxShadow": "$shadow",
+          "padding": "$sp1",
+          "backdropFilter": "$backdrop"
+        },
+        "navitem": {
+          "color": "$muted",
+          "borderRadius": "$radiusSm",
+          "fontWeight": "500"
+        },
+        "navitem.active": {
+          "background": "$accentSoft",
+          "color": "$accent",
+          "fontWeight": "600"
+        },
+        "pill": {
+          "borderRadius": "999px",
+          "fontWeight": "600",
+          "fontSize": "12px"
+        },
+        "progress.track": {
+          "background": "$track",
+          "borderRadius": "999px"
+        },
+        "progress.bar": {
+          "background": "$accent",
+          "borderRadius": "999px"
+        },
+        "chart": {
+          "background": "$surface",
+          "border": "$borderWidth solid $border",
+          "borderRadius": "$radius",
+          "boxShadow": "$shadow",
+          "color": "$text",
+          "padding": "$sp3",
+          "backdropFilter": "$backdrop"
+        },
+        "image": {
+          "background": "$surfaceAlt",
+          "color": "$muted",
+          "borderRadius": "$radiusSm",
+          "border": "none"
+        },
+        "divider": {
+          "background": "$border"
+        },
+        "icon": {
+          "color": "$text"
+        }
+      }
+    },
+    {
+      "id": "outlined",
+      "name": "Outlined",
+      "scheme": "light",
+      "description": "Transparent surfaces drawn with crisp 1.5 px outlines.",
+      "tokens": {
+        "background": "#ffffff",
+        "pageTint": "#f7f8fa",
+        "surface": "#ffffff",
+        "surfaceAlt": "#ffffff",
+        "text": "#17181c",
+        "muted": "#6e7079",
+        "accent": "#2457d6",
+        "accentText": "#ffffff",
+        "accentSoft": "#ffffff",
+        "border": "#cfd2d9",
+        "track": "#cfd2d9",
+        "mediaBg": "#ffffff",
+        "ok": "#16855a",
+        "warn": "#b7770b",
+        "danger": "#c93a3a",
+        "info": "#2457d6",
+        "radius": "10px",
+        "radiusSm": "8px",
+        "radiusXs": "6px",
+        "borderWidth": "1.5px",
+        "shadow": "none",
+        "shadowSm": "none",
+        "backdrop": "none",
+        "font": "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif",
+        "spacing": [
+          4,
+          8,
+          12,
+          16,
+          24,
+          32,
+          48
+        ]
+      },
+      "components": {
+        "card": {
+          "background": "$surface",
+          "border": "$borderWidth solid $border",
+          "borderRadius": "$radius",
+          "boxShadow": "$shadow",
+          "color": "$text",
+          "padding": "$sp3",
+          "backdropFilter": "$backdrop"
+        },
+        "card.title": {
+          "fontSize": "15px",
+          "fontWeight": "600",
+          "color": "$text"
+        },
+        "button.primary": {
+          "background": "$accent",
+          "color": "$accentText",
+          "border": "none",
+          "borderRadius": "$radiusSm",
+          "fontWeight": "600",
+          "boxShadow": "$shadowSm"
+        },
+        "button.secondary": {
+          "background": "$surface",
+          "color": "$text",
+          "border": "1.5px solid $text",
+          "borderRadius": "$radiusSm",
+          "fontWeight": "500",
+          "boxShadow": "$shadowSm"
+        },
+        "button.ghost": {
+          "background": "transparent",
+          "color": "$accent",
+          "border": "none",
+          "borderRadius": "$radiusSm",
+          "fontWeight": "600",
+          "textDecoration": "underline"
+        },
+        "chip": {
+          "background": "transparent",
+          "color": "$text",
+          "border": "1.5px solid $border",
+          "borderRadius": "999px",
+          "fontWeight": "500"
+        },
+        "chip.selected": {
+          "background": "$accentSoft",
+          "color": "$accent",
+          "border": "1.5px solid $accent"
+        },
+        "tabs": {
+          "background": "transparent",
+          "borderRadius": "$radiusSm",
+          "padding": "4px",
+          "border": "1.5px solid $border"
+        },
+        "tab": {
+          "color": "$muted",
+          "borderRadius": "$radiusXs",
+          "fontWeight": "500"
+        },
+        "tab.active": {
+          "background": "$surface",
+          "color": "$text",
+          "boxShadow": "none",
+          "fontWeight": "600",
+          "border": "1.5px solid $text"
+        },
+        "toggle.track": {
+          "background": "transparent",
+          "borderRadius": "999px",
+          "border": "1.5px solid $border"
+        },
+        "toggle.trackOn": {
+          "background": "$accent",
+          "border": "1.5px solid $accent"
+        },
+        "toggle.knob": {
+          "background": "$muted",
+          "borderRadius": "999px",
+          "boxShadow": "none"
+        },
+        "input": {
+          "background": "$surface",
+          "color": "$muted",
+          "border": "1.5px solid $border",
+          "borderRadius": "$radiusSm"
+        },
+        "text.heading": {
+          "color": "$text",
+          "fontSize": "24px",
+          "fontWeight": "700",
+          "letterSpacing": "-0.01em"
+        },
+        "text.body": {
+          "color": "$text",
+          "fontSize": "14px",
+          "fontWeight": "400"
+        },
+        "text.caption": {
+          "color": "$muted",
+          "fontSize": "12px",
+          "fontWeight": "400"
+        },
+        "media": {
+          "background": "$mediaBg",
+          "color": "$text",
+          "borderRadius": "$radius",
+          "boxShadow": "none",
+          "border": "1.5px solid $text"
+        },
+        "listrow": {
+          "background": "transparent",
+          "color": "$text",
+          "borderBottom": "1px solid $border",
+          "borderRadius": "0"
+        },
+        "navrail": {
+          "background": "$surface",
+          "border": "$borderWidth solid $border",
+          "borderRadius": "$radius",
+          "boxShadow": "$shadow",
+          "padding": "$sp1",
+          "backdropFilter": "$backdrop"
+        },
+        "navitem": {
+          "color": "$muted",
+          "borderRadius": "$radiusSm",
+          "fontWeight": "500"
+        },
+        "navitem.active": {
+          "background": "$accentSoft",
+          "color": "$accent",
+          "fontWeight": "600",
+          "border": "1.5px solid $accent"
+        },
+        "pill": {
+          "borderRadius": "999px",
+          "fontWeight": "600",
+          "fontSize": "12px"
+        },
+        "progress.track": {
+          "background": "transparent",
+          "borderRadius": "999px",
+          "border": "1.5px solid $border"
+        },
+        "progress.bar": {
+          "background": "$accent",
+          "borderRadius": "999px"
+        },
+        "chart": {
+          "background": "$surface",
+          "border": "$borderWidth solid $border",
+          "borderRadius": "$radius",
+          "boxShadow": "$shadow",
+          "color": "$text",
+          "padding": "$sp3",
+          "backdropFilter": "$backdrop"
+        },
+        "image": {
+          "background": "$surfaceAlt",
+          "color": "$muted",
+          "borderRadius": "$radiusSm",
+          "border": "1.5px dashed $border"
+        },
+        "divider": {
+          "background": "$border"
+        },
+        "icon": {
+          "color": "$text"
+        }
+      }
+    },
+    {
+      "id": "glass",
+      "name": "Glass",
+      "scheme": "light",
+      "description": "Frosted translucent panels over a soft gradient.",
+      "tokens": {
+        "background": "linear-gradient(135deg, #dde8f8 0%, #ece3f6 52%, #def2ea 100%)",
+        "pageTint": "linear-gradient(135deg, #cfe0f7 0%, #d9e6fb 100%)",
+        "surface": "rgba(255,255,255,.55)",
+        "surfaceAlt": "rgba(255,255,255,.38)",
+        "text": "#1b2131",
+        "muted": "#5b6477",
+        "accent": "#4c66e8",
+        "accentText": "#ffffff",
+        "accentSoft": "rgba(76,102,232,.14)",
+        "border": "rgba(255,255,255,.75)",
+        "track": "rgba(27,33,49,.12)",
+        "mediaBg": "rgba(20,26,44,.82)",
+        "ok": "#178c60",
+        "warn": "#b67a0c",
+        "danger": "#cf3f4f",
+        "info": "#4c66e8",
+        "radius": "20px",
+        "radiusSm": "12px",
+        "radiusXs": "9px",
+        "borderWidth": "1px",
+        "shadow": "0 8px 32px rgba(31,38,80,.12)",
+        "shadowSm": "0 1px 3px rgba(31,38,80,.10)",
+        "backdrop": "blur(18px) saturate(1.4)",
+        "font": "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif",
+        "spacing": [
+          4,
+          8,
+          12,
+          16,
+          24,
+          32,
+          48
+        ]
+      },
+      "components": {
+        "card": {
+          "background": "$surface",
+          "border": "$borderWidth solid $border",
+          "borderRadius": "$radius",
+          "boxShadow": "$shadow",
+          "color": "$text",
+          "padding": "$sp3",
+          "backdropFilter": "$backdrop"
+        },
+        "card.title": {
+          "fontSize": "15px",
+          "fontWeight": "600",
+          "color": "$text"
+        },
+        "button.primary": {
+          "background": "$accent",
+          "color": "$accentText",
+          "border": "none",
+          "borderRadius": "$radiusSm",
+          "fontWeight": "600",
+          "boxShadow": "$shadowSm"
+        },
+        "button.secondary": {
+          "background": "rgba(255,255,255,.6)",
+          "color": "$text",
+          "border": "1px solid $border",
+          "borderRadius": "$radiusSm",
+          "fontWeight": "500",
+          "boxShadow": "$shadowSm",
+          "backdropFilter": "$backdrop"
+        },
+        "button.ghost": {
+          "background": "transparent",
+          "color": "$accent",
+          "border": "none",
+          "borderRadius": "$radiusSm",
+          "fontWeight": "600"
+        },
+        "chip": {
+          "background": "rgba(255,255,255,.55)",
+          "color": "$text",
+          "border": "1px solid $border",
+          "borderRadius": "999px",
+          "fontWeight": "500"
+        },
+        "chip.selected": {
+          "background": "$accentSoft",
+          "color": "$accent",
+          "border": "1px solid transparent"
+        },
+        "tabs": {
+          "background": "rgba(255,255,255,.35)",
+          "borderRadius": "$radiusSm",
+          "padding": "4px",
+          "border": "1px solid $border",
+          "backdropFilter": "$backdrop"
+        },
+        "tab": {
+          "color": "$muted",
+          "borderRadius": "$radiusXs",
+          "fontWeight": "500"
+        },
+        "tab.active": {
+          "background": "rgba(255,255,255,.85)",
+          "color": "$text",
+          "boxShadow": "$shadowSm",
+          "fontWeight": "600"
+        },
+        "toggle.track": {
+          "background": "$track",
+          "borderRadius": "999px"
+        },
+        "toggle.trackOn": {
+          "background": "$accent"
+        },
+        "toggle.knob": {
+          "background": "#ffffff",
+          "borderRadius": "999px",
+          "boxShadow": "0 1px 2px rgba(0,0,0,.25)"
+        },
+        "input": {
+          "background": "rgba(255,255,255,.5)",
+          "color": "$muted",
+          "border": "1px solid $border",
+          "borderRadius": "$radiusSm",
+          "backdropFilter": "$backdrop"
+        },
+        "text.heading": {
+          "color": "$text",
+          "fontSize": "24px",
+          "fontWeight": "700",
+          "letterSpacing": "-0.01em"
+        },
+        "text.body": {
+          "color": "$text",
+          "fontSize": "14px",
+          "fontWeight": "400"
+        },
+        "text.caption": {
+          "color": "$muted",
+          "fontSize": "12px",
+          "fontWeight": "400"
+        },
+        "media": {
+          "background": "$mediaBg",
+          "color": "#ffffff",
+          "borderRadius": "$radius",
+          "boxShadow": "$shadow"
+        },
+        "listrow": {
+          "background": "transparent",
+          "color": "$text",
+          "borderBottom": "1px solid rgba(27,33,49,.08)",
+          "borderRadius": "0"
+        },
+        "navrail": {
+          "background": "$surface",
+          "border": "$borderWidth solid $border",
+          "borderRadius": "$radius",
+          "boxShadow": "$shadow",
+          "padding": "$sp1",
+          "backdropFilter": "$backdrop"
+        },
+        "navitem": {
+          "color": "$muted",
+          "borderRadius": "$radiusSm",
+          "fontWeight": "500"
+        },
+        "navitem.active": {
+          "background": "$accentSoft",
+          "color": "$accent",
+          "fontWeight": "600"
+        },
+        "pill": {
+          "borderRadius": "999px",
+          "fontWeight": "600",
+          "fontSize": "12px"
+        },
+        "progress.track": {
+          "background": "$track",
+          "borderRadius": "999px"
+        },
+        "progress.bar": {
+          "background": "$accent",
+          "borderRadius": "999px"
+        },
+        "chart": {
+          "background": "$surface",
+          "border": "$borderWidth solid $border",
+          "borderRadius": "$radius",
+          "boxShadow": "$shadow",
+          "color": "$text",
+          "padding": "$sp3",
+          "backdropFilter": "$backdrop"
+        },
+        "image": {
+          "background": "$surfaceAlt",
+          "color": "$muted",
+          "borderRadius": "$radiusSm",
+          "border": "1px solid $border",
+          "backdropFilter": "$backdrop"
+        },
+        "divider": {
+          "background": "$border"
+        },
+        "icon": {
+          "color": "$text"
+        }
+      }
+    },
+    {
+      "id": "minimal-mono",
+      "name": "Minimal mono",
+      "scheme": "light",
+      "description": "Black on white, monospace type, hairlines, colour only for status.",
+      "tokens": {
+        "background": "#ffffff",
+        "pageTint": "#f6f6f4",
+        "surface": "#ffffff",
+        "surfaceAlt": "#f4f4f4",
+        "text": "#111111",
+        "muted": "#777777",
+        "accent": "#111111",
+        "accentText": "#ffffff",
+        "accentSoft": "#eeeeee",
+        "border": "#e2e2e2",
+        "track": "#e2e2e2",
+        "mediaBg": "#111111",
+        "ok": "#2f7d4f",
+        "warn": "#9a6b00",
+        "danger": "#b33a3a",
+        "info": "#111111",
+        "radius": "2px",
+        "radiusSm": "2px",
+        "radiusXs": "1px",
+        "borderWidth": "1px",
+        "shadow": "none",
+        "shadowSm": "none",
+        "backdrop": "none",
+        "font": "ui-monospace, 'SF Mono', 'Cascadia Mono', 'Cascadia Code', Consolas, 'Courier New', monospace",
+        "spacing": [
+          4,
+          8,
+          12,
+          16,
+          24,
+          32,
+          48
+        ]
+      },
+      "components": {
+        "card": {
+          "background": "$surface",
+          "border": "$borderWidth solid $border",
+          "borderRadius": "$radius",
+          "boxShadow": "$shadow",
+          "color": "$text",
+          "padding": "$sp3",
+          "backdropFilter": "$backdrop"
+        },
+        "card.title": {
+          "fontSize": "15px",
+          "fontWeight": "600",
+          "color": "$text"
+        },
+        "button.primary": {
+          "background": "$accent",
+          "color": "$accentText",
+          "border": "none",
+          "borderRadius": "$radiusSm",
+          "fontWeight": "600",
+          "boxShadow": "$shadowSm"
+        },
+        "button.secondary": {
+          "background": "$surface",
+          "color": "$text",
+          "border": "1px solid $text",
+          "borderRadius": "$radiusSm",
+          "fontWeight": "500",
+          "boxShadow": "$shadowSm"
+        },
+        "button.ghost": {
+          "background": "transparent",
+          "color": "$text",
+          "border": "none",
+          "borderRadius": "$radiusSm",
+          "fontWeight": "600",
+          "textDecoration": "underline"
+        },
+        "chip": {
+          "background": "$surfaceAlt",
+          "color": "$text",
+          "border": "1px solid transparent",
+          "borderRadius": "999px",
+          "fontWeight": "500"
+        },
+        "chip.selected": {
+          "background": "$accentSoft",
+          "color": "$accent",
+          "border": "1px solid transparent"
+        },
+        "tabs": {
+          "background": "transparent",
+          "borderRadius": "0",
+          "padding": "4px",
+          "border": "none",
+          "borderBottom": "1px solid $border"
+        },
+        "tab": {
+          "color": "$muted",
+          "borderRadius": "$radiusXs",
+          "fontWeight": "500"
+        },
+        "tab.active": {
+          "background": "transparent",
+          "color": "$text",
+          "boxShadow": "none",
+          "fontWeight": "600",
+          "borderBottom": "2px solid $text",
+          "borderRadius": "0"
+        },
+        "toggle.track": {
+          "background": "$track",
+          "borderRadius": "999px"
+        },
+        "toggle.trackOn": {
+          "background": "$accent"
+        },
+        "toggle.knob": {
+          "background": "#ffffff",
+          "borderRadius": "999px",
+          "boxShadow": "0 1px 2px rgba(0,0,0,.25)"
+        },
+        "input": {
+          "background": "$surface",
+          "color": "$muted",
+          "border": "1px solid $border",
+          "borderRadius": "$radiusSm"
+        },
+        "text.heading": {
+          "color": "$text",
+          "fontSize": "22px",
+          "fontWeight": "600",
+          "letterSpacing": "0"
+        },
+        "text.body": {
+          "color": "$text",
+          "fontSize": "14px",
+          "fontWeight": "400"
+        },
+        "text.caption": {
+          "color": "$muted",
+          "fontSize": "12px",
+          "fontWeight": "400"
+        },
+        "media": {
+          "background": "$mediaBg",
+          "color": "#ffffff",
+          "borderRadius": "$radius",
+          "boxShadow": "$shadow"
+        },
+        "listrow": {
+          "background": "transparent",
+          "color": "$text",
+          "borderBottom": "1px solid $border",
+          "borderRadius": "0"
+        },
+        "navrail": {
+          "background": "$surface",
+          "border": "$borderWidth solid $border",
+          "borderRadius": "$radius",
+          "boxShadow": "$shadow",
+          "padding": "$sp1",
+          "backdropFilter": "$backdrop"
+        },
+        "navitem": {
+          "color": "$muted",
+          "borderRadius": "$radiusSm",
+          "fontWeight": "500"
+        },
+        "navitem.active": {
+          "background": "$accentSoft",
+          "color": "$accent",
+          "fontWeight": "600"
+        },
+        "pill": {
+          "borderRadius": "999px",
+          "fontWeight": "500",
+          "fontSize": "12px"
+        },
+        "progress.track": {
+          "background": "$track",
+          "borderRadius": "999px"
+        },
+        "progress.bar": {
+          "background": "$accent",
+          "borderRadius": "999px"
+        },
+        "chart": {
+          "background": "$surface",
+          "border": "$borderWidth solid $border",
+          "borderRadius": "$radius",
+          "boxShadow": "$shadow",
+          "color": "$text",
+          "padding": "$sp3",
+          "backdropFilter": "$backdrop"
+        },
+        "image": {
+          "background": "$surfaceAlt",
+          "color": "$muted",
+          "borderRadius": "$radiusSm",
+          "border": "1px dashed $border"
+        },
+        "divider": {
+          "background": "$border"
+        },
+        "icon": {
+          "color": "$text"
+        }
+      }
+    }
+  ]
+}

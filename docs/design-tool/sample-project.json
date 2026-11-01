@@ -1,0 +1,561 @@
+{
+  "format": "nightshift-design-project",
+  "version": 1,
+  "name": "NightShift app (sample)",
+  "styleSetId": "bento-light",
+  "tint": true,
+  "customSets": [],
+  "pages": [
+    {
+      "id": "p-queue",
+      "name": "Queue",
+      "w": 1366,
+      "h": 768,
+      "styleSetId": null,
+      "notes": "Home screen: what is rendering tonight and what needs my approval.",
+      "components": [
+        {
+          "id": "c001",
+          "type": "navrail",
+          "name": "Main navigation",
+          "label": "",
+          "x": 24,
+          "y": 24,
+          "w": 88,
+          "h": 720,
+          "options": {
+            "items": "Queue\nCreate\nLibrary\nAssistant\nChannels\nResults\nSettings",
+            "active": 0,
+            "showLabels": true
+          },
+          "notes": "Switches between the app screens. Queue is highlighted.",
+          "styleSetId": null,
+          "overrides": {},
+          "groupId": null
+        },
+        {
+          "id": "c002",
+          "type": "text",
+          "name": "Page title",
+          "label": "Queue",
+          "x": 136,
+          "y": 28,
+          "w": 320,
+          "h": 36,
+          "options": {
+            "variant": "heading",
+            "align": "left"
+          },
+          "notes": "",
+          "styleSetId": null,
+          "overrides": {},
+          "groupId": null
+        },
+        {
+          "id": "c003",
+          "type": "text",
+          "name": "Page subtitle",
+          "label": "Tonight's renders, newest first",
+          "x": 136,
+          "y": 66,
+          "w": 320,
+          "h": 20,
+          "options": {
+            "variant": "caption",
+            "align": "left"
+          },
+          "notes": "",
+          "styleSetId": null,
+          "overrides": {},
+          "groupId": null
+        },
+        {
+          "id": "c004",
+          "type": "button",
+          "name": "Filters button",
+          "label": "Filters",
+          "x": 1054,
+          "y": 32,
+          "w": 128,
+          "h": 40,
+          "options": {
+            "variant": "secondary"
+          },
+          "notes": "Opens the filter sheet (channel, status, date).",
+          "styleSetId": null,
+          "overrides": {},
+          "groupId": null
+        },
+        {
+          "id": "c005",
+          "type": "button",
+          "name": "New render button",
+          "label": "New render",
+          "x": 1198,
+          "y": 32,
+          "w": 144,
+          "h": 40,
+          "options": {
+            "variant": "primary"
+          },
+          "notes": "Goes to Create with an empty brief.",
+          "styleSetId": null,
+          "overrides": {},
+          "groupId": null
+        },
+        {
+          "id": "c006",
+          "type": "card",
+          "name": "Status strip",
+          "label": "",
+          "x": 136,
+          "y": 104,
+          "w": 1206,
+          "h": 64,
+          "options": {
+            "showTitle": false
+          },
+          "notes": "Live counts for tonight's batch. Each pill filters the list below.",
+          "styleSetId": null,
+          "overrides": {},
+          "groupId": "g-status"
+        },
+        {
+          "id": "c007",
+          "type": "pill",
+          "name": "Rendering count",
+          "label": "Rendering · 3",
+          "x": 160,
+          "y": 124,
+          "w": 120,
+          "h": 24,
+          "options": {
+            "state": "info"
+          },
+          "notes": "",
+          "styleSetId": null,
+          "overrides": {},
+          "groupId": "g-status"
+        },
+        {
+          "id": "c008",
+          "type": "pill",
+          "name": "Ready count",
+          "label": "Ready · 5",
+          "x": 296,
+          "y": 124,
+          "w": 96,
+          "h": 24,
+          "options": {
+            "state": "ok"
+          },
+          "notes": "",
+          "styleSetId": null,
+          "overrides": {},
+          "groupId": "g-status"
+        },
+        {
+          "id": "c009",
+          "type": "pill",
+          "name": "Needs review count",
+          "label": "Needs review · 2",
+          "x": 408,
+          "y": 124,
+          "w": 144,
+          "h": 24,
+          "options": {
+            "state": "warn"
+          },
+          "notes": "",
+          "styleSetId": null,
+          "overrides": {},
+          "groupId": "g-status"
+        },
+        {
+          "id": "c010",
+          "type": "pill",
+          "name": "Failed count",
+          "label": "Failed · 1",
+          "x": 568,
+          "y": 124,
+          "w": 96,
+          "h": 24,
+          "options": {
+            "state": "danger"
+          },
+          "notes": "Click to see the error and retry.",
+          "styleSetId": null,
+          "overrides": {},
+          "groupId": "g-status"
+        },
+        {
+          "id": "c011",
+          "type": "text",
+          "name": "Batch progress label",
+          "label": "Batch progress · 64 %",
+          "x": 1000,
+          "y": 118,
+          "w": 318,
+          "h": 16,
+          "options": {
+            "variant": "caption",
+            "align": "left"
+          },
+          "notes": "",
+          "styleSetId": null,
+          "overrides": {},
+          "groupId": "g-status"
+        },
+        {
+          "id": "c012",
+          "type": "progress",
+          "name": "Batch progress",
+          "label": "",
+          "x": 1000,
+          "y": 142,
+          "w": 318,
+          "h": 8,
+          "options": {
+            "value": 64
+          },
+          "notes": "Overall progress of tonight's batch.",
+          "styleSetId": null,
+          "overrides": {},
+          "groupId": "g-status"
+        },
+        {
+          "id": "c013",
+          "type": "tabs",
+          "name": "Queue filter tabs",
+          "label": "",
+          "x": 136,
+          "y": 192,
+          "w": 456,
+          "h": 40,
+          "options": {
+            "tabs": "All, Rendering, Ready, Needs review",
+            "active": 0
+          },
+          "notes": "Filters the list. Same filters as the status pills.",
+          "styleSetId": null,
+          "overrides": {},
+          "groupId": null
+        },
+        {
+          "id": "c014",
+          "type": "card",
+          "name": "Queue list card",
+          "label": "Up next",
+          "x": 136,
+          "y": 256,
+          "w": 640,
+          "h": 488,
+          "options": {
+            "showTitle": true
+          },
+          "notes": "Scrollable list of queued renders.",
+          "styleSetId": null,
+          "overrides": {},
+          "groupId": null
+        },
+        {
+          "id": "c015",
+          "type": "listrow",
+          "name": "Queue item 1",
+          "label": "Morning news recap",
+          "x": 152,
+          "y": 300,
+          "w": 608,
+          "h": 64,
+          "options": {
+            "subtitle": "Short · 0:42 · Channel A",
+            "meta": "Rendering 72 %",
+            "leading": "icon",
+            "checked": false
+          },
+          "notes": "Click to preview on the right.",
+          "styleSetId": null,
+          "overrides": {},
+          "groupId": null
+        },
+        {
+          "id": "c016",
+          "type": "listrow",
+          "name": "Queue item 2",
+          "label": "Product teaser v3",
+          "x": 152,
+          "y": 364,
+          "w": 608,
+          "h": 64,
+          "options": {
+            "subtitle": "Reel · 0:30 · Channel B",
+            "meta": "Ready",
+            "leading": "icon",
+            "checked": false
+          },
+          "notes": "",
+          "styleSetId": null,
+          "overrides": {},
+          "groupId": null
+        },
+        {
+          "id": "c017",
+          "type": "listrow",
+          "name": "Queue item 3",
+          "label": "Weekly explainer",
+          "x": 152,
+          "y": 428,
+          "w": 608,
+          "h": 64,
+          "options": {
+            "subtitle": "Long · 8:12 · Channel A",
+            "meta": "Needs review",
+            "leading": "icon",
+            "checked": false
+          },
+          "notes": "",
+          "styleSetId": null,
+          "overrides": {},
+          "groupId": null
+        },
+        {
+          "id": "c018",
+          "type": "listrow",
+          "name": "Queue item 4",
+          "label": "Behind the scenes",
+          "x": 152,
+          "y": 492,
+          "w": 608,
+          "h": 64,
+          "options": {
+            "subtitle": "Short · 0:55 · Channel C",
+            "meta": "Queued",
+            "leading": "icon",
+            "checked": false
+          },
+          "notes": "",
+          "styleSetId": null,
+          "overrides": {},
+          "groupId": null
+        },
+        {
+          "id": "c019",
+          "type": "listrow",
+          "name": "Queue item 5",
+          "label": "Listener questions",
+          "x": 152,
+          "y": 556,
+          "w": 608,
+          "h": 64,
+          "options": {
+            "subtitle": "Podcast clip · 2:10 · Channel B",
+            "meta": "Failed",
+            "leading": "icon",
+            "checked": false
+          },
+          "notes": "",
+          "styleSetId": null,
+          "overrides": {},
+          "groupId": null
+        },
+        {
+          "id": "c020",
+          "type": "button",
+          "name": "Load more button",
+          "label": "Load more",
+          "x": 152,
+          "y": 688,
+          "w": 608,
+          "h": 40,
+          "options": {
+            "variant": "ghost"
+          },
+          "notes": "Loads the next 20 items.",
+          "styleSetId": null,
+          "overrides": {},
+          "groupId": null
+        },
+        {
+          "id": "c021",
+          "type": "media",
+          "name": "Preview player",
+          "label": "Preview",
+          "x": 800,
+          "y": 256,
+          "w": 544,
+          "h": 306,
+          "options": {
+            "ratio": "16:9"
+          },
+          "notes": "Plays the selected item. Space toggles play.",
+          "styleSetId": null,
+          "overrides": {},
+          "groupId": null
+        },
+        {
+          "id": "c022",
+          "type": "card",
+          "name": "Checklist card",
+          "label": "Before you approve",
+          "x": 800,
+          "y": 584,
+          "w": 544,
+          "h": 160,
+          "options": {
+            "showTitle": true
+          },
+          "notes": "Owner ticks each line before approving.",
+          "styleSetId": null,
+          "overrides": {},
+          "groupId": null
+        },
+        {
+          "id": "c023",
+          "type": "listrow",
+          "name": "Check: captions",
+          "label": "Captions are correct",
+          "x": 816,
+          "y": 620,
+          "w": 512,
+          "h": 32,
+          "options": {
+            "subtitle": "",
+            "meta": "",
+            "leading": "checkbox",
+            "checked": true
+          },
+          "notes": "",
+          "styleSetId": null,
+          "overrides": {},
+          "groupId": null
+        },
+        {
+          "id": "c024",
+          "type": "listrow",
+          "name": "Check: thumbnail",
+          "label": "Thumbnail chosen",
+          "x": 816,
+          "y": 652,
+          "w": 512,
+          "h": 32,
+          "options": {
+            "subtitle": "",
+            "meta": "",
+            "leading": "checkbox",
+            "checked": false
+          },
+          "notes": "",
+          "styleSetId": null,
+          "overrides": {},
+          "groupId": null
+        },
+        {
+          "id": "c025",
+          "type": "toggle",
+          "name": "Auto-publish toggle",
+          "label": "Auto-publish",
+          "x": 816,
+          "y": 700,
+          "w": 160,
+          "h": 28,
+          "options": {
+            "on": true
+          },
+          "notes": "When on, approved items publish at their scheduled time.",
+          "styleSetId": null,
+          "overrides": {},
+          "groupId": null
+        },
+        {
+          "id": "c026",
+          "type": "button",
+          "name": "Request changes button",
+          "label": "Request changes",
+          "x": 1032,
+          "y": 696,
+          "w": 152,
+          "h": 36,
+          "options": {
+            "variant": "secondary"
+          },
+          "notes": "Sends the item back to Create with a comment box.",
+          "styleSetId": null,
+          "overrides": {},
+          "groupId": null
+        },
+        {
+          "id": "c027",
+          "type": "button",
+          "name": "Approve button",
+          "label": "Approve",
+          "x": 1196,
+          "y": 696,
+          "w": 132,
+          "h": 36,
+          "options": {
+            "variant": "primary"
+          },
+          "notes": "Approves the selected render and moves it to Results.",
+          "styleSetId": null,
+          "overrides": {},
+          "groupId": null
+        }
+      ]
+    },
+    {
+      "id": "p-create",
+      "name": "Create",
+      "w": 1366,
+      "h": 768,
+      "styleSetId": null,
+      "notes": "",
+      "components": []
+    },
+    {
+      "id": "p-library",
+      "name": "Library",
+      "w": 1366,
+      "h": 768,
+      "styleSetId": null,
+      "notes": "",
+      "components": []
+    },
+    {
+      "id": "p-assistant",
+      "name": "Assistant",
+      "w": 1366,
+      "h": 768,
+      "styleSetId": null,
+      "notes": "",
+      "components": []
+    },
+    {
+      "id": "p-channels",
+      "name": "Channels",
+      "w": 1366,
+      "h": 768,
+      "styleSetId": null,
+      "notes": "",
+      "components": []
+    },
+    {
+      "id": "p-results",
+      "name": "Results",
+      "w": 1366,
+      "h": 768,
+      "styleSetId": null,
+      "notes": "",
+      "components": []
+    },
+    {
+      "id": "p-settings",
+      "name": "Settings",
+      "w": 1366,
+      "h": 768,
+      "styleSetId": null,
+      "notes": "",
+      "components": []
+    }
+  ],
+  "activePageId": "p-queue"
+}
