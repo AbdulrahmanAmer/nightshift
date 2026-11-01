@@ -238,7 +238,8 @@ def test_orchestrator_plans_master_from_script_when_a_source_file_exists(
     assert MASTER_FROM_SCRIPT_STAGES[0] == "script_import" and "ideas" not in MASTER_FROM_SCRIPT_STAGES
     assert set(MASTER_FROM_SCRIPT_STAGES) - {"script_import"} <= set(MASTER_FIRST_STAGES)
     monkeypatch.setitem(FORMAT_STAGES, "master_from_script", ["script_import", "visual_plan_long"])
+    monkeypatch.setitem(FORMAT_STAGES, "master_first", ["ideas", "long_plan"])
     ctx = make_ctx(tmp_home, fmt="master_first", channel=make_channel(format="master_first"))
-    assert run_job(ctx, dry_run=True) == list(MASTER_FIRST_STAGES)
+    assert run_job(ctx, dry_run=True) == ["ideas", "long_plan"]
     ctx.write_json("script_source.json", {})
     assert run_job(ctx, dry_run=True) == ["script_import", "visual_plan_long"]
