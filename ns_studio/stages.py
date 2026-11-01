@@ -1,0 +1,93 @@
+"""Stage protocol, idempotent stage state file and registry (component C7)."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any, Literal, Protocol
+
+from ns_studio.context import JobContext
+
+Tenant = Literal["llama", "tts", "whisper"] | None
+STATE_FILE = "stage_state.json"
+
+
+class Stage(Protocol):
+    """One idempotent unit of a job: reads `inputs`, writes `outputs` in the job directory."""
+
+    name: str
+    tenant: Tenant
+    inputs: tuple[str, ...]
+    outputs: tuple[str, ...]
+
+    def run(self, ctx: JobContext) -> None:
+        """Do the work; raise NsError on failure."""
+        ...
+
+
+@dataclass
+class StageState:
+    """Contents of `stage_state.json`: per stage status, finish time and inputs hash."""
+
+    entries: dict[str, dict[str, Any]] = field(default_factory=dict)
+
+    @classmethod
+    def load(cls, job_dir: Path) -> StageState:
+        """Load the state file from `job_dir` (empty state when absent)."""
+        f = job_dir / STATE_FILE
+        return cls(json.loads(f.read_text(encoding="utf-8"))) if f.exists() else cls()
+
+    def save(self, job_dir: Path) -> None:
+        """Write the state file into `job_dir`."""
+        (job_dir / STATE_FILE).write_text(json.dumps(self.entries, indent=2) + "\n", encoding="utf-8")
+
+    def mark_done(self, name: str, h: str) -> None:
+        """Record that stage `name` finished with inputs hash `h`."""
+        self.entries[name] = {
+            "status": "done",
+            "finished_at": datetime.now(UTC).isoformat(),
+            "inputs_hash": h,
+        }
+
+    def is_done(self, name: str, h: str) -> bool:
+        """True when stage `name` finished earlier with the same inputs hash."""
+        e = self.entries.get(name)
+        return bool(e and e.get("status") == "done" and e.get("inputs_hash") == h)
+
+
+def inputs_hash(ctx: JobContext, stage: Stage) -> str:
+    """SHA-256 over the names and bytes of every input file of `stage` that exists."""
+    hsh = hashlib.sha256()
+    for name in stage.inputs:
+        p = ctx.file(name)
+        hsh.update(name.encode())
+        if p.exists():
+            hsh.update(p.read_bytes() if p.is_file() else b"dir")
+    return hsh.hexdigest()
+
+
+def run_stage(ctx: JobContext, stage: Stage, *, force: bool = False) -> bool:
+    """Run `stage` unless its outputs exist and its inputs are unchanged; True when it ran."""
+    h = inputs_hash(ctx, stage)
+    outputs_exist = all(ctx.file(o).exists() for o in stage.outputs)
+    if not force and outputs_exist and StageState.load(ctx.job_dir).is_done(stage.name, h):
+        ctx.log.info("stage_skip", stage=stage.name, job_id=ctx.job_id)
+        return False
+    with ctx.log.timed("stage", stage=stage.name, job_id=ctx.job_id, tenant=stage.tenant):
+        stage.run(ctx)
+    state = StageState.load(ctx.job_dir)
+    state.mark_done(stage.name, h)
+    state.save(ctx.job_dir)
+    return True
+
+
+REGISTRY: dict[str, Stage] = {}
+
+
+def register(stage: Stage) -> Stage:
+    """Add `stage` to the global registry (keyed by name) and return it."""
+    REGISTRY[stage.name] = stage
+    return stage

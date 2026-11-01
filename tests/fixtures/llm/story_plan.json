@@ -1,0 +1,11 @@
+{
+  "beats": [
+    {"name": "Setup", "summary": "A night nurse describes the 3:12 ping from her doorbell camera and the still figure on her porch."},
+    {"name": "Escalation", "summary": "She dismisses it as a prank until she looks closely at the date stamp on the recordings."},
+    {"name": "Turn", "summary": "The date says tomorrow; the recordings are arriving from the future."},
+    {"name": "Payoff", "summary": "She waits on the porch and the new recording shows her from behind, then her own door opening."},
+    {"name": "Loop", "summary": "Something steps out of the empty house, and the camera pings again."}
+  ],
+  "part_breaks": [],
+  "ending_line_idea": "End on the doorbell camera pinging again, echoing the opening line."
+}
