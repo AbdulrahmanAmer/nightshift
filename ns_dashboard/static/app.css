@@ -281,3 +281,25 @@ details.section > .section-body { padding: 0 16px 16px; display: flex; flex-dire
   .row { grid-template-columns: 1fr auto; }
   .row .badge { grid-column: 1 / -1; justify-self: start; }
 }
+
+/* ---------- queue: player + posting checklist ---------- */
+.queue { display: grid; grid-template-columns: minmax(0, 1fr) 420px; gap: 24px; align-items: start; }
+.tabs { display: flex; gap: 6px; border-bottom: 1px solid var(--line); }
+.tabs button { background: none; border: 0; border-bottom: 3px solid transparent; padding: 12px 16px; min-height: 48px; color: var(--muted); font-weight: 600; cursor: pointer; }
+.tabs button[aria-selected="true"] { color: var(--fg); border-bottom-color: var(--accent); }
+.checklist { display: flex; flex-direction: column; gap: 10px; }
+.check { display: grid; grid-template-columns: 36px 1fr auto; gap: 12px; align-items: center; padding: 12px 14px; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; }
+.check .cn { width: 32px; height: 32px; border-radius: 50%; display: grid; place-items: center; font-weight: 700; font-size: 14px; background: var(--surface-2); border: 1px solid var(--line); }
+.check.done .cn { background: var(--ok); color: #06251a; border-color: transparent; }
+.check.done .ct { color: var(--muted); text-decoration: line-through; }
+.check .ct { font-weight: 600; } .check .cs { color: var(--muted); font-size: 14px; }
+.check .btn { min-height: 40px; padding: 8px 14px; }
+.check.wide { grid-template-columns: 36px 1fr; }
+.check.wide .cbody { grid-column: 2; display: flex; flex-direction: column; gap: 8px; }
+.choice { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.choice .tile { min-height: 140px; }
+.choice .tile.on { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.player-wrap { display: flex; flex-direction: column; gap: 12px; }
+.player-meta { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.big-title { font-size: 26px; font-weight: 700; line-height: 1.2; }
+@media (max-width: 1000px) { .queue { grid-template-columns: 1fr; } .choice { grid-template-columns: 1fr; } }

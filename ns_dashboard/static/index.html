@@ -14,12 +14,10 @@
   <nav class="nav" aria-label="Main">
     <a class="brand" href="#/"><span class="brand-dot" aria-hidden="true"></span>Nightshift</a>
     <ul class="nav-list">
-      <li><a href="#/" data-route="today">Today</a></li>
-      <li><a href="#/review" data-route="review">Review <span class="count" id="nav-pending" hidden>0</span></a></li>
-      <li><a href="#/make" data-route="make">Make videos</a></li>
-      <li><a href="#/clips" data-route="clips">Make clips</a></li>
+      <li><a href="#/" data-route="queue">Queue <span class="count" id="nav-pending" hidden>0</span></a></li>
+      <li><a href="#/create" data-route="create">Create</a></li>
       <li><a href="#/channels" data-route="channels">Channels</a></li>
-      <li><a href="#/learn" data-route="learn">Learn</a></li>
+      <li><a href="#/results" data-route="results">Results</a></li>
       <li><a href="#/settings" data-route="settings">Settings</a></li>
     </ul>
     <button class="btn btn-ghost nav-theme" id="theme-toggle" type="button">Switch theme</button>
@@ -32,7 +30,6 @@
     <span class="strip-item" id="next-run"></span>
     <span class="strip-item tag" id="demo-flag" hidden title="No engine reachable; showing sample data">Demo data</span>
     <span class="spacer"></span>
-    <button class="btn btn-ghost" id="warmup-btn" type="button">Warm up</button>
     <button class="btn btn-danger-outline" id="quit-btn" type="button">Quit Nightshift</button>
   </header>
 
