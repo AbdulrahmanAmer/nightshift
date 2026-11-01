@@ -617,7 +617,7 @@ Outbox `outbox\<slug>\<YYYY-MM-DD>\<job_id>\`: `long\master.mp4 + .json + .txt +
 - `studio calibrate --channel <slug> [--n 20]` · `studio calibrate --score <csv>`
 - `studio clip <video> --channel <slug> [--template auto|gaming_facecam|podcast_stacked|podcast_single|talking_head|center_crop] [--max-clips 6] [--min-s 20] [--max-s 60]`
 - `studio dashboard [--port 8100] [--open]`
-- `ns tune` · `ns verify [--quick]` · `ns doctor [--bundle]` · `ns stop` · `ns gate s<N>` · `ns update <zip> | --rollback`
+- `ns tune` · `ns verify [--quick]` · `ns doctor [--bundle]` · `ns stop` · `ns gate <milestone>` · `ns update <zip> | --rollback` · `ns backup [--out <zip>]` · `ns restore <zip>`
 
 | Shortcut | Launcher |
 |---|---|
@@ -1036,6 +1036,12 @@ Each step names the component that serves it, so coverage can be checked against
 ### J8 — Updates and uninstall
 - **Update**: owner receives `nightshift-app-<ver>.zip` (or `git pull` if the repo is cloned), uses the **Update** shortcut or Settings → Update; venvs re-sync, verify runs, a changelog is shown. Models are untouched. **C2 C9**
 - **Uninstall**: `UNINSTALL.cmd` (also in Settings): removes the scheduled task, shortcuts, venvs, binaries and the `NIGHTSHIFT_HOME` env var; asks separately whether to delete **models** (15 GB) and **outbox/data** (your videos and history). Default keeps both. **C1**
+
+### J10 — Backup, transfer, time and notifications
+- **Backup / move to another PC**: Settings → **Export settings** (or `ns backup`) writes `nightshift-backup-<date>.zip` with `config\`, `models\tts\voices\` (embeddings), `data\studio.db`, exemplars and prompt overrides, never models or videos (~ MBs). On a new install, `answers.json` may point `restore_from` at that zip, or Settings → **Import settings**. **C2 C9**
+- **Time**: every schedule and `publish_after` is in the PC's local time zone; the zone name is written to each upload sheet so a reviewer in another zone is not misled. DST shifts are handled by the Windows task scheduler, not by Nightshift. **C7**
+- **Notifications**: at the end of a nightly run (and on failure) the supervisor posts a Windows toast: "Nightshift: 1 master + 5 Shorts ready for review" / "Nightshift: run failed (NS-E203), open Dashboard". Toggle in Settings. Implemented with PowerShell `Windows.UI.Notifications`, no extra package. **C2**
+- **Language**: UI and docs are English in v1; stories can be in any language the LLM and the TTS presets support (channel `language`). **C5**
 
 ### J9 — Optional: Nightshift Code
 Owner opens the **Nightshift Code** shortcut; it acquires the LLM (status shown in the Dashboard strip as `owner: opencode`), opens OpenCode in `%USERPROFILE%\Projects`; closing the terminal releases the GPU. **C2**
