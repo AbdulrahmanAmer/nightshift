@@ -291,7 +291,7 @@ Format per entry:
 - **From:** C8 Clipper / spec 23.5
 - **Change:** `ns_studio/presets/formats/*.yaml` and `ns_studio/media/layout.py` (the generic region renderer) are not on `main`, so C8 keeps `ns_studio/presets/clip_templates.yaml` and its own graph builders (`ns_studio/clipper/render.py`). When the format presets land, `load_templates()` should read `clip_gaming_facecam`, `clip_podcast_stacked`, `clip_podcast_single`, `clip_talking_head`, `clip_center_crop`, `clip_screen_plus_cam` and the render should use the generic region builder. The model's `layout` answers already accept both `gaming_facecam` and `clip_gaming_facecam` ids.
 - **Why:** formats are data, not code (spec 17.1).
-- **Status:** open
+- **Status:** applied on feat/media-finish (clip_templates.yaml is now a thin map from template ids to the six clip_* presets; the render builds its panels with ns_studio/media/layout.py)
 
 ## CR-C8-9: C5-owned files edited by C8 (informational, per coordinator instruction)
 - **From:** C8 Clipper / spec 23.5

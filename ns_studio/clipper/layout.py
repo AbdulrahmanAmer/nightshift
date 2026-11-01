@@ -9,27 +9,89 @@ from __future__ import annotations
 import statistics
 from functools import lru_cache
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import yaml
 
-from ns_studio.clipper.models import CANVAS_H, CANVAS_W, ClipLayout, ClipTemplate, Crop, FaceFrame, Rect
+from ns_common.models import Format
+from ns_studio.clipper.models import (
+    CANVAS_H,
+    CANVAS_W,
+    ClipLayout,
+    ClipTemplate,
+    Crop,
+    FaceFrame,
+    Rect,
+    Region,
+)
 from ns_studio.media.captions import Box
+from ns_studio.media.formats import get_format
 
 TRACK_STEP_S = 0.25
 SPEAKER_HOLD_FRAMES = 2
 
 
 def templates_path() -> Path:
-    """Location of `clip_templates.yaml`."""
+    """Location of `clip_templates.yaml` (the compatibility map from template ids to format presets)."""
     return Path(__file__).resolve().parents[1] / "presets" / "clip_templates.yaml"
 
 
 @lru_cache(maxsize=1)
-def load_templates() -> dict[str, ClipTemplate]:
-    """Parse `clip_templates.yaml` into `ClipTemplate`s keyed by name."""
+def _compat() -> dict[str, dict[str, Any]]:
     raw = yaml.safe_load(templates_path().read_text(encoding="utf-8"))
-    return {name: ClipTemplate(name=name, **body) for name, body in raw.items()}
+    return {str(name): dict(body) for name, body in raw.items()}
+
+
+def format_id_for(template: str) -> str:
+    """Format preset id behind a template name (`gaming_facecam` or already `clip_gaming_facecam`)."""
+    name = template.removeprefix("clip_") if template.removeprefix("clip_") in _compat() else template
+    try:
+        return str(_compat()[name]["format"])
+    except KeyError as e:
+        raise ValueError(f"unknown clip template {template!r}") from e
+
+
+def format_for(template: str) -> Format:
+    """The format preset (`presets/formats/clip_*.yaml`) that draws `template` (spec 17.1, CR-C8-8)."""
+    return get_format(format_id_for(template))
+
+
+def _template_regions(fmt: Format) -> list[Region]:
+    """The format's regions as clipper `Region`s: the facecam height is `auto` (capped), the panel below it `seam`."""
+    cam = next((r for r in fmt.layout.regions if r.source == "facecam"), None)
+    out: list[Region] = []
+    for r in fmt.layout.regions:
+        if cam is not None and r is cam:
+            out.append(Region(id=r.name, x=r.x, y=r.y, w=r.w, h="auto", max_h=r.h))
+        elif cam is not None and r.y == cam.y + cam.h:
+            reaches_bottom = r.y + r.h == fmt.canvas.h
+            out.append(Region(id=r.name, x=r.x, y="seam", w=r.w, h="rest" if reaches_bottom else r.h))
+        else:
+            out.append(Region(id=r.name, x=r.x, y=r.y, w=r.w, h=r.h))
+    return out
+
+
+@lru_cache(maxsize=1)
+def load_templates() -> dict[str, ClipTemplate]:
+    """`ClipTemplate`s keyed by name: the clipper's view of the six `clip_*` format presets.
+
+    Geometry, caption anchor and safe margins come from the preset; `clip_templates.yaml` only adds what a
+    preset does not describe (layout kind, detection needs, tracking constants).
+    """
+    out: dict[str, ClipTemplate] = {}
+    for name, body in _compat().items():
+        fmt = get_format(str(body["format"]))
+        extra = {k: v for k, v in body.items() if k != "format"}
+        out[name] = ClipTemplate(
+            name=name,
+            regions=_template_regions(fmt),
+            caption_anchor_y_pct="seam" if fmt.layout.seam_captions else fmt.captions.anchor_y_pct,
+            safe_top=fmt.safe_margins.top,
+            safe_bottom=fmt.safe_margins.bottom,
+            **extra,
+        )
+    return out
 
 
 # ---------- small geometry helpers ----------
