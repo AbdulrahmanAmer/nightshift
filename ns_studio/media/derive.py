@@ -14,11 +14,17 @@ from ns_common import ffmpeg as ff
 from ns_common.errors import NsError
 from ns_studio.context import JobContext
 from ns_studio.media.audio import assemble_audio, cut_audio, loudnorm
-from ns_studio.media.captions import build_ass, first_event_start, shift_words
+from ns_studio.media.caption_plan import (
+    AssOptions,
+    emphasis_from_beats,
+    mask_profanity_setting,
+    safe_zones_for,
+)
+from ns_studio.media.captions import first_event_start, shift_words
 from ns_studio.media.clips import ClipCache, Searcher, assign_clips, blocked_clips, fallback_beat, utcnow
 from ns_studio.media.master import ShortSpec, load_shorts, load_words
 from ns_studio.media.presets import FONTS_DIR, visual_treatment
-from ns_studio.media.render import FINAL_LUFS, FINAL_TP, VERTICAL, render_video
+from ns_studio.media.render import FINAL_LUFS, FINAL_TP, VERTICAL, fit_caption_contrast, render_video
 from ns_studio.media.shotplan import beat_spans, plan_slots
 from ns_studio.media.transcribe import Word
 from ns_studio.stages import Tenant
@@ -95,12 +101,19 @@ def derive_short(
     total = ff.duration_s(audio)
 
     style = spec.caption_style or ctx.combo.caption_style
-    ass_text = build_ass(words, style, variant="vertical")
+    opts = AssOptions(
+        variant="vertical", safe_zones=safe_zones_for("vertical"),
+        emphasis=emphasis_from_beats(plan, chapter=spec.chapter, shift=spec.sentence_start,
+                                     last=spec.sentence_end),
+        mask_profanity=mask_profanity_setting(ctx.paths, ctx.channel),
+    )
+    ass_text = opts.build(words, style)
     ass = ctx.subdir("captions") / f"{item}.ass"
     ass.write_text(ass_text, encoding="utf-8")
     ctx.write_json(f"captions/{item}.json", {
         "k": spec.k, "style": style, "hook_s": float(hook["seconds"]) if hook else 0.0,
-        "body_offset_s": offset, "audio_s": round(total, 3), "words": [w.to_json() for w in words],
+        "body_offset_s": offset, "audio_s": round(total, 3), "ass_opts": opts.to_json(),
+        "words": [w.to_json() for w in words],
     })
 
     treatment = visual_treatment(spec.visual_treatment or ctx.combo.visual_treatment)
@@ -111,6 +124,10 @@ def derive_short(
     shots = assign_clips(
         beats=beats, slots=slots, searcher=searcher, cache=cache, blocked=blocked, seed=seed,
         wanted="portrait",
+    )
+    luma = fit_caption_contrast(
+        words=words, style=style, opts=opts, shots=shots, total_s=total, size=VERTICAL, ass_path=ass,
+        log=ctx.log,
     )
     out = render_video(
         shots=shots, audio=audio, out=out_dir / "short.mp4", size=VERTICAL, treatment=treatment,
@@ -123,7 +140,7 @@ def derive_short(
         "path": str(out), "audio": str(audio), "duration_s": round(ff.duration_s(out), 3),
         "shots": len(shots),
         "encoder": ctx.runtime.video.encoder, "drift_ms": drift,
-        "first_caption_s": first_event_start(ass_text),
+        "first_caption_s": first_event_start(ass_text), "backdrop_luma": luma,
     }
     return report, {"total_s": total, "treatment": treatment.name, "shots": [s.to_json() for s in shots]}
 

@@ -1,0 +1,16 @@
+# Clip layout (spec 17.1, 19.3). Centre 9:16 crop inside the safe area over a blurred, darkened full-frame fill.
+id: clip_center_crop
+name: "Clip: centre crop"
+kind: clip
+canvas: {w: 1080, h: 1920, fps: 30}
+duration: {min_s: 15, max_s: 90}
+captions: {styles_allowed: [punch_yellow, clean_white, boxed_dark, minimal_lower], anchor_y_pct: 72, words_on_screen: 3}
+layout:
+  seam_captions: false
+  regions:
+    - {name: bg, x: 0, y: 0, w: 1080, h: 1920, source: blur_fill}
+    - {name: fg, x: 152, y: 220, w: 776, h: 1380, source: full}
+safe_margins: {top: 220, bottom: 320}
+shots: {min_s: 2, max_s: 6}
+encoder: {preset: p4}
+sheet: {hashtags_required: ["#Shorts"], description_rules: "Honest description with 'Clip from: <source title>'."}

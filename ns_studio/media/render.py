@@ -16,8 +16,18 @@ from ns_common.logging import NsLogger
 from ns_common.models import VideoCfg
 from ns_studio.context import JobContext
 from ns_studio.media.audio import assemble_audio, loudnorm
-from ns_studio.media.presets import FONTS_DIR, VisualTreatment, ZoomSpec, visual_treatment
+from ns_studio.media.caption_plan import AssOptions
+from ns_studio.media.captions import Box, caption_band, ensure_contrast, sample_luma
+from ns_studio.media.presets import (
+    FONTS_DIR,
+    CaptionStyle,
+    VisualTreatment,
+    ZoomSpec,
+    caption_style,
+    visual_treatment,
+)
 from ns_studio.media.shotplan import Shot, frame_edges
+from ns_studio.media.transcribe import Word
 from ns_studio.stages import Tenant
 
 VERTICAL = (1080, 1920)
@@ -190,6 +200,72 @@ def render_video(
     return out
 
 
+def sample_times(total_s: float, n: int = 3) -> list[float]:
+    """`n` evenly spread moments strictly inside [0, total_s] (at 1/4, 2/4, 3/4 for n = 3)."""
+    return [round(total_s * (i + 1) / (n + 1), 3) for i in range(n)]
+
+
+def shot_at(shots: Sequence[Shot], t: float) -> tuple[Shot, float]:
+    """The shot on screen at timeline second `t` and the matching second inside its clip file."""
+    start = 0.0
+    for s in shots:
+        if t < s.end or s is shots[-1]:
+            return s, s.ss + max(0.0, min(t, s.end) - start)
+        start = s.end
+    raise ValueError("no shots")
+
+
+def backdrop_luma(
+    shots: Sequence[Shot], band: Box, size: tuple[int, int], total_s: float, *, n: int = 3
+) -> list[float]:
+    """Mean luma (16-235) of the frame area behind a caption band at `n` sampled moments (spec 17.2).
+
+    Each moment is read from the clip that is on screen then, scaled to cover the canvas the way `shot_chain`
+    does (wide clips in vertical edits are approximated by the same cover crop), cropped to `band`
+    (canvas pixels) and measured with FFmpeg `signalstats`.
+    """
+    if not shots or total_s <= 0:
+        return []
+    w, h = size
+    pre = f"scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h}"
+    out: list[float] = []
+    for t in sample_times(total_s, n):
+        shot, src_t = shot_at(shots, t)
+        out += sample_luma(Path(shot.path), band, [src_t], pre=pre)
+    return out
+
+
+def fit_caption_contrast(
+    *,
+    words: Sequence[Word],
+    style: CaptionStyle | str,
+    opts: AssOptions,
+    shots: Sequence[Shot],
+    total_s: float,
+    size: tuple[int, int],
+    ass_path: Path,
+    log: NsLogger | None = None,
+) -> list[float]:
+    """Measure the backdrop behind the caption band and rewrite `ass_path` boxed when contrast is below 4.5:1.
+
+    Returns the luma samples (empty when sampling failed; the check is best effort and never fails a render).
+    """
+    st = caption_style(style) if isinstance(style, str) else style
+    band = caption_band(
+        st, opts.variant, avoid_regions=opts.avoid_regions or None, safe_zones=opts.safe_zones,
+        anchor_y_pct=opts.anchor_y_pct,
+    )
+    try:
+        luma = backdrop_luma(shots, band, size, total_s)
+    except (NsError, OSError) as e:
+        if log:
+            log.warn("caption_contrast_skipped", str(e)[:200])
+        return []
+    if luma and ensure_contrast(st, luma) is not st:
+        ass_path.write_text(opts.build(words, st, backdrop_luma=luma), encoding="utf-8")
+    return luma
+
+
 def build_short_audio(hook: Path | None, body: Path, out_raw: Path, out_final: Path, gap_s: float) -> Path:
     """Hook + silence + body, loudness-normalized to -14 LUFS / -1.5 dBTP (spec S1)."""
     segments: list[Path | float] = [hook, gap_s, body] if hook else [body]
@@ -225,6 +301,14 @@ class RenderStage:
                 float(timeline["body_offset_s"]) - float(timeline["hook_s"]),
             )
             shots = [Shot.from_json(s) for s in entry["shots"]]
+            ass_path = ctx.file(f"captions/{item}.ass")
+            luma = fit_caption_contrast(
+                words=[Word.from_json(w) for w in timeline["words"]],
+                style=timeline.get("style", ctx.combo.caption_style),
+                opts=AssOptions.from_json(timeline.get("ass_opts")),
+                shots=shots, total_s=float(timeline["audio_s"]), size=VERTICAL, ass_path=ass_path,
+                log=ctx.log,
+            )
             out = render_video(
                 shots=shots,
                 audio=audio,
@@ -232,12 +316,13 @@ class RenderStage:
                 size=VERTICAL,
                 treatment=treatment,
                 video=ctx.runtime.video,
-                ass_path=ctx.file(f"captions/{item}.ass"),
+                ass_path=ass_path,
                 fonts_dir=FONTS_DIR,
                 log=ctx.log,
             )
             report[item] = {
                 "path": str(out),
+                "backdrop_luma": luma,
                 "audio": str(audio),
                 "duration_s": round(ff.duration_s(out), 3),
                 "shots": len(shots),

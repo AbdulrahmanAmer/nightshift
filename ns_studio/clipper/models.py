@@ -2,7 +2,7 @@
 
 `transcript`, `clip_plan`, `clip_layout` and `clip_template` moved to `ns_common/models.py` (CR-C8-1, applied
 in e0c34f5). They are re-exported here for one release (deprecated; import them from `ns_common.models`) and
-`ClipItem` stays as an alias of `ClipPlanItem`.
+`ClipItem` is `ClipPlanItem` plus the optional `emphasis` list (spec 17.2; see CR-C6-6).
 """
 from __future__ import annotations
 
@@ -64,8 +64,12 @@ TEMPLATE_NAMES: tuple[str, ...] = (
     "screen_plus_cam",
 )
 
-# Deprecated alias (CR-C8-1): the clip plan entry is `ns_common.models.ClipPlanItem`.
-ClipItem = ClipPlanItem
+
+# The clip plan entry is `ns_common.models.ClipPlanItem` (CR-C8-1); this subclass adds the local `emphasis`.
+class ClipItem(ClipPlanItem):
+    """`ClipPlanItem` plus `emphasis`: one key word per sentence in order ("" skips a sentence), spec 17.2."""
+
+    emphasis: list[str] | None = None
 
 
 # ---------- job parameters ----------

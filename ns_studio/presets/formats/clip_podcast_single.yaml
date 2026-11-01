@@ -1,0 +1,15 @@
+# Clip layout (spec 17.1, 19.3). One face-centred crop with smooth tracking, full height.
+id: clip_podcast_single
+name: "Clip: podcast single speaker"
+kind: clip
+canvas: {w: 1080, h: 1920, fps: 30}
+duration: {min_s: 15, max_s: 90}
+captions: {styles_allowed: [punch_yellow, clean_white, boxed_dark, minimal_lower], anchor_y_pct: 72, words_on_screen: 3}
+layout:
+  seam_captions: false
+  regions:
+    - {name: main, x: 0, y: 0, w: 1080, h: 1920, source: "face:0"}
+safe_margins: {top: 220, bottom: 320}
+shots: {min_s: 2, max_s: 6}
+encoder: {preset: p4}
+sheet: {hashtags_required: ["#Shorts"], description_rules: "Honest description with 'Clip from: <source title>'."}

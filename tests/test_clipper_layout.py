@@ -182,3 +182,35 @@ def test_every_template_yields_valid_panels(name: str) -> None:
 def test_crop_model_roundtrip_in_layout() -> None:
     c = Crop(t_start=0, t_end=1, region=FRAME)
     assert ClipLayout(template="center_crop", crops=[c]).crops[0] == c
+
+
+# ---------- templates are views of the format presets (spec 17.1, CR-C8-8) ----------
+def test_templates_are_thin_views_of_the_format_presets() -> None:
+    from ns_studio.media.formats import get_format
+
+    for name in TEMPLATE_NAMES:
+        assert lay.format_id_for(name) == f"clip_{name}" == lay.format_id_for(f"clip_{name}")
+        fmt = lay.format_for(name)
+        assert fmt == get_format(f"clip_{name}") and fmt.kind == "clip"
+        tpl = lay.load_templates()[name]
+        assert [r.id for r in tpl.regions] == [r.name for r in fmt.layout.regions]
+        assert (tpl.safe_top, tpl.safe_bottom) == (fmt.safe_margins.top, fmt.safe_margins.bottom)
+        expected = "seam" if fmt.layout.seam_captions else fmt.captions.anchor_y_pct
+        assert tpl.caption_anchor_y_pct == expected
+    with pytest.raises(ValueError):
+        lay.format_id_for("no_such_template")
+
+
+@pytest.mark.parametrize("cam", [CAM, Rect(x=944, y=16, w=200, h=200), Rect(x=900, y=10, w=360, h=90)])
+@pytest.mark.parametrize("name", ["gaming_facecam", "screen_plus_cam"])
+def test_canvas_panels_agree_with_the_engine(name: str, cam: Rect) -> None:
+    from ns_studio.media.layout import fit_facecam_height
+
+    layout = ClipLayout(template=name, facecam=cam)
+    crop = lay.plan_layout(name, W, H, layout, t_start=0, t_end=10)[0]
+    assert crop.region_b is not None
+    panels = lay.canvas_panels(lay.load_templates()[name], crop)
+    fitted = fit_facecam_height(lay.format_for(name), crop.region_b.w, crop.region_b.h)
+    for r in fitted.layout.regions:
+        p = panels[r.name]
+        assert (p.x, p.y, p.w, p.h) == (r.x, r.y, r.w, r.h)
