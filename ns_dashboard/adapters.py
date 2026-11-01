@@ -42,6 +42,10 @@ class ClipAdapter(Protocol):
         self, ctl: JobControl, source_path: Path, source_id: str, params: dict[str, Any]
     ) -> list[str]: ...
 
+    def fetch_url(self, ctl: JobControl, url: str, source_id: str) -> Path:
+        """Download a video from an http(s) link (C8 `import_url`); reports `ctl.download(percent)`."""
+        ...
+
 
 class LearnAdapter(Protocol):
     """Imports a YouTube Analytics CSV and summarises what the weights learned."""
@@ -177,6 +181,18 @@ class RealClipAdapter:
             acquirer=make_acquirer(self.link.base_url),
         )
         return [str(i) for i in ids]
+
+    def fetch_url(self, ctl: JobControl, url: str, source_id: str) -> Path:
+        """Download `url` into `imports/clipper/<source_id>/` with C8's `import_url`, as `Downloading N%`.
+
+        Expects `ns_studio.clipper.import_url(paths=, url=, source_id=, on_progress=) -> Path`, where
+        `on_progress(percent)` may raise to cancel.
+        """
+        try:
+            fn = lazy("ns_studio.clipper", "import_url")
+        except AdapterUnavailable as e:
+            raise AdapterUnavailable("URL import not available yet") from e
+        return Path(fn(paths=self.paths, url=url, source_id=source_id, on_progress=ctl.download))
 
 
 class RealLearnAdapter:

@@ -450,8 +450,9 @@ def test_library_endpoints(env):
     assert client.get("/api/library/ideas", params={"status": "approved"}).json()[0]["idea_id"] == idea_id
     assert client.get("/api/library/stories", params={"q": "nothing"}).json() == []
     assert client.get("/api/library/footage").json() == []
-    fmt = {"kind": "square", "canvas": {"w": 1080, "h": 1080, "fps": 30}, "duration": {"min_s": 5, "max_s": 30},
-           "layout": {"regions": [{"name": "m", "x": 0, "y": 0, "w": 1, "h": 1, "source": "full"}]}}
+    fmt = {"name": "Square test", "kind": "square", "canvas": {"w": 1080, "h": 1080, "fps": 30},
+           "duration": {"min_s": 5, "max_s": 30}, "captions": {},
+           "layout": {"regions": [{"name": "m", "x": 0, "y": 0, "w": 1080, "h": 1080, "source": "full"}]}}
     created = client.post("/api/library/formats", json={"id": "square_test", "definition": fmt})
     assert created.status_code == 201 and created.json()["id"] == "square_test"
     assert any(f["id"] == "square_test" for f in client.get("/api/library/formats").json())

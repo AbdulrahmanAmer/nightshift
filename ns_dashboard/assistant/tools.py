@@ -9,6 +9,7 @@ new route without a descriptor (or a reason) fails CI.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -66,13 +67,13 @@ def _o(desc: str) -> dict[str, Any]:
 def _t(
     name: str, topic: str, description: str, call: ToolCall, *, route: Route | None = None,
     props: dict[str, Any] | None = None, required: list[str] | None = None,
-    side: bool = False, confirm: str = "",
+    side: bool = False, confirm: str = "", precheck: Callable[[dict[str, Any]], str | None] | None = None,
 ) -> ToolDef:
     spec = ToolSpec(
         name=name, description=description, args_schema=obj(props, required), side_effect=side,
         confirm_text=confirm if side else "", topic=topic,
     )
-    return ToolDef(spec=spec, call=call, route=route)
+    return ToolDef(spec=spec, call=call, route=route, precheck=precheck)
 
 
 def _outputs(c: ToolContext, a: dict[str, Any]) -> Any:
@@ -100,12 +101,20 @@ def _import_analytics(c: ToolContext, a: dict[str, Any]) -> Any:
         return c.dash.jobs.import_learn(p.name, fh)
 
 
+def _clip_source_given(args: dict[str, Any]) -> str | None:
+    if not (args.get("path") or args.get("url")):
+        return "Give the video as a path on this PC (path) or as a web link (url)."
+    return None
+
+
 def _start_clip(c: ToolContext, a: dict[str, Any]) -> Any:
+    if not (a.get("path") or a.get("url")):
+        raise ApiError(422, "invalid_options", "Give the video as a path on this PC or as a web link (url).")
     return c.dash.jobs.create_clip({**a, "rights_confirmed": True})
 
 
 def _formats_brief(c: ToolContext, _a: dict[str, Any]) -> Any:
-    keys = ("id", "label", "kind", "canvas", "source", "valid", "channels_allowed")
+    keys = ("id", "name", "kind", "canvas", "source", "valid")
     return [{k: f[k] for k in keys} for f in c.dash.library.list_formats()]
 
 
@@ -186,16 +195,17 @@ def _tools() -> list[ToolDef]:
                   "count": _i("how many", minimum=1, maximum=20)},
            required=["channel"], side=True,
            confirm="Make a new {format} for {channel} now. This uses the GPU for a while."),
-        _t("start_clip_job", "create", "Cut clips from one of the owner's own videos (a file on this PC).",
+        _t("start_clip_job", "create", "Cut clips from one of the owner's own videos: a file on this PC or a web link.",
            _start_clip, route=("POST", "/api/jobs/clip"),
-           props={"path": _s("full path of the video file"), "channel": _s("channel slug"),
+           props={"path": _s("full path of the video file on this PC"), "url": _s("http or https link to the video"),
+                  "channel": _s("channel slug"),
                   "template": _s("layout id, 'auto' lets Nightshift choose"),
                   "max_clips": _i("most clips", minimum=1, maximum=10),
                   "min_s": _i("shortest clip, seconds", minimum=5, maximum=120),
                   "max_s": _i("longest clip, seconds", minimum=10, maximum=180),
                   "caption_style": _s("caption style name")},
-           required=["path", "channel"], side=True,
-           confirm=("Make up to {max_clips} clips for {channel} from {path} (layout {template}). By pressing Yes "
+           required=["channel"], side=True, precheck=_clip_source_given,
+           confirm=("Make up to {max_clips} clips for {channel} from {source} (layout {template}). By pressing Yes "
                     "you confirm you own this video or are licensed to use it.")),
         _t("start_verify", "create", "Run the machine self-check (ns verify).",
            lambda c, a: c.dash.jobs.create_verify(a), route=("POST", "/api/jobs/verify"),
@@ -251,19 +261,18 @@ def _tools() -> list[ToolDef]:
         _t("list_ideas", "library", "The idea bank, optionally for one channel or status.",
            lambda c, a: c.dash.library.list_ideas(a.get("channel"), a.get("status"), a.get("q"), int(a.get("limit", 30))),
            route=("GET", "/api/library/ideas"),
-           props={"channel": _s("channel slug"), "status": _s("filter", enum=["new", "approved", "used", "dropped"]),
+           props={"channel": _s("channel slug"), "status": _s("filter", enum=["new", "approved", "used", "rejected"]),
                   "q": _s("search words"), "limit": _i("how many", minimum=1, maximum=100)}),
         _t("add_idea", "library", "Add a story idea to the bank for a channel.",
-           lambda c, a: c.dash.library.add_idea(a), route=("POST", "/api/library/ideas"),
+           lambda c, a: c.dash.library.add_idea({**a, "source": "assistant"}), route=("POST", "/api/library/ideas"),
            props={"channel": _s("channel slug"), "premise": _s("the idea in 1-3 sentences"),
-                  "twist": _s("the twist"), "setting": _s("where"), "protagonist": _s("who"),
-                  "keywords": {"type": "array", "items": {"type": "string"}, "description": "up to 8 words"},
+                  "title": _s("short title"), "twist": _s("the twist"),
                   "status": _s("start as", enum=["new", "approved"])},
            required=["channel", "premise"], side=True, confirm="Add this idea for {channel}: {premise}"),
-        _t("set_idea_status", "library", "Mark an idea new, approved for production, used or dropped.",
+        _t("set_idea_status", "library", "Mark an idea new, approved for production, used or rejected.",
            lambda c, a: c.dash.library.set_idea_status(int(a["idea_id"]), a.get("status")),
            route=("PUT", "/api/library/ideas/{idea_id}"),
-           props={"idea_id": _i("idea id"), "status": _s("new status", enum=["new", "approved", "used", "dropped"])},
+           props={"idea_id": _i("idea id"), "status": _s("new status", enum=["new", "approved", "used", "rejected"])},
            required=["idea_id", "status"], side=True, confirm="Mark idea {idea_id} as {status}."),
         _t("search_stories", "library", "Written stories with their videos and where they were posted.",
            lambda c, a: c.dash.library.stories(a.get("q"), a.get("channel"), int(a.get("limit", 10))),
