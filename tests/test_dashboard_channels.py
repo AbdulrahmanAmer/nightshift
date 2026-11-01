@@ -65,7 +65,8 @@ def test_distinctness_against_other_channels():
             niche="cosy cooking",
             seed_keywords=["recipe"],
             pools={
-                "hooks": ["h1", "h2", "h3"], "structures": ["s1", "s2", "s3"], "pov_tones": ["p1", "p2", "p3"],
+                "hooks": ["h1", "h2", "h3"], "structures": ["s1", "s2", "s3"],
+                "pov_tones": ["p1", "p2", "p3"],
                 "pacings": ["k1", "k2", "k3"], "caption_styles": ["c1", "c2", "c3"],
                 "visual_treatments": ["v1", "v2", "v3"], "title_formulas": ["t1", "t2", "t3"],
             },
@@ -83,5 +84,6 @@ def test_same_slug_is_not_compared_with_itself():
 
 def test_shared_seed_keywords_warn():
     other = Channel.model_validate(profile(slug="other", seed_keywords=["horror", "ghost", "night"]))
-    out = validate_profile(profile(niche="different", seed_keywords=["horror", "ghost", "night", "x"]), [other])
+    draft = profile(niche="different", seed_keywords=["horror", "ghost", "night", "x"])
+    out = validate_profile(draft, [other])
     assert "seed_keywords" in fields(out["warnings"])
