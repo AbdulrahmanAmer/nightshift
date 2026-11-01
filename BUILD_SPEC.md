@@ -20,9 +20,9 @@
 >
 > Optionally, it also installs **Nightshift Code**, an AI coding assistant in your terminal, powered by the same model running on your graphics card. No account, no subscription, nothing leaves your PC.
 >
-> **What setup will do:** check your PC (graphics card, driver, memory, disk space), install the free tools Nightshift needs, download the AI models (~30 GB, so allow time), tune them for your hardware, and run a quick test of everything. You'll answer a few questions along the way. You can close and re-run setup at any time; it picks up where it left off.
+> **What setup will do:** check your PC (graphics card, driver, memory, disk space), install the free tools Nightshift needs, download the AI models (~15 GB, or copy them from a folder you already have), tune them for your hardware, and run a quick test of everything. You'll answer a few questions along the way. You can close and re-run setup at any time; it picks up where it left off.
 >
-> **You'll need:** an NVIDIA RTX GPU with 16 GB, ~60 GB of free disk space, an internet connection during setup, and two free stock-footage API keys (Pexels and Pixabay). Setup shows you where to get them.
+> **You'll need:** an NVIDIA RTX GPU with 16 GB, ~40 GB of free disk space, an internet connection during setup (or a folder with the model files), and two free stock-footage API keys (Pexels and Pixabay). Setup shows you where to get them.
 
 ### A.3 How it installs itself
 1. **Checks the PC**: Windows version, NVIDIA GPU, driver, RAM, free disk, internet, power settings. It tells you exactly what to fix if something is missing.
@@ -120,7 +120,7 @@ Therefore every heavy dependency sits behind an interface with a **fake** that p
 | GPU | RTX 5060 Ti 16 GB (Blackwell, **sm_120**) | `nvidia-smi`; block if no NVIDIA GPU (`NS-E102`); warn if VRAM < 16 GB |
 | Driver | `nvidia-smi` reports CUDA ≥ 12.8 | Open the NVIDIA driver page, pause, re-check (`NS-E103`) |
 | RAM | 32 GB recommended, 16 GB minimum | Selects the hardware profile (§3) |
-| Disk | ≥ 60 GB free (≥ 80 GB if two-model mode) | Block if too small (`NS-E104`) |
+| Disk | ≥ 40 GB free for the default install (15 GB models + venvs + working space); +15/+22 GB for Balanced/Best LLM; +20 GB two-model mode | Block if too small (`NS-E104`) |
 | Disk type | NVMe/SSD for `NIGHTSHIFT_HOME` | Warn on HDD (`NS-W106`): load times will miss §14.6 |
 | Network | HF, GitHub, PyTorch, Pexels, Pixabay reachable | `NS-E105` |
 | Power | Scheduled task can wake the PC; sleep allowed, hibernate discouraged | Set task `WakeToRun`; warn if "wake timers" disabled (`NS-W107`) |
@@ -144,14 +144,13 @@ Therefore every heavy dependency sits behind an interface with a **fake** that p
 | Layer | Choice | Notes |
 |---|---|---|
 | LLM runtime | **llama.cpp `llama-server`**, official Windows CUDA release + cudart, build with merged MTP support (PR #22673 or later) | MoE offload, MTP, OpenAI-compatible API, `--alias` |
-| LLM (`code` and `story`, **one file by default**) | **Qwen3.6-35B-A3B MTP GGUF**: prefer `unsloth/Qwen3.6-35B-A3B-MTP-GGUF` UD-Q4_K_XL (~21 GB) or `ggml-org/Qwen3.6-35B-A3B-MTP-GGUF` Q4_K_M; 16 GB-RAM fallback `mudler/Qwen3.6-35B-A3B-APEX-MTP-GGUF` I-Mini (~14 GB) | Slice 0 resolves exact file + SHA |
+| LLM (`code` and `story`, **one file**) | **14B-class dense Qwen GGUF, Q4_K_M, ~9 GB**: `Qwen/Qwen3-14B-GGUF` Q4_K_M by default; Slice 0 Task 14 swaps in a Qwen3.6 14B-class GGUF if one exists. Fits fully in 16 GB VRAM with 16K context. Installer offers **Balanced** (`mudler/Qwen3.6-35B-A3B-APEX-MTP-GGUF` I-Mini, ~14 GB) and **Best** (`unsloth/Qwen3.6-35B-A3B-MTP-GGUF` UD-Q4_K_XL, ~21 GB) as opt-in upgrades | Decision D13: smallest download that keeps story quality acceptable |
 | Story model, two-model mode (opt-in) | `Youssofal/Qwen3.6-35B-A3B-Abliterated-Heretic-GGUF` Q4_K_M (MTP build if available) | Enabled only if calibration (§16.5) shows refusals on fiction; set `models.story` in `manifest.json` |
 | Embeddings (`embed`) | `nomic-ai/nomic-embed-text-v1.5-GGUF` Q8_0 (~150 MB) served by a second `llama-server --embeddings` on **CPU** | For self-similarity and opening-line checks; not a GPU tenant |
 | NER | **spaCy** `en_core_web_md` in the studio venv + curated lists in `contracts/policy/` | `real_entities` check |
 | Coding CLI (optional) | **OpenCode**, pinned Windows binary, local-only lock (§15.9) | Not `npm -g` |
-| TTS | **Qwen3-TTS-12Hz-1.7B** (`-CustomVoice`, `-Base`, `-VoiceDesign`) + tokenizer; engine **`faster-qwen3-tts`** on SDPA (no flash-attn); fallback reference **`qwen-tts`** | Both engines installed; smoke test picks the fastest that passes |
-| Captions (narration) | **faster-whisper** `small.en` (or `small` for non-English) → word timestamps → **aligned to the script** → ASS | Rendered words are the script's, never ASR output |
-| Transcription (Clipper) | **faster-whisper** `distil-large-v3` (fast, accurate on arbitrary speech; `tiny` on `cpu-dev`) → segments + words with speaker-change heuristics | §19 |
+| TTS | **Qwen3-TTS-12Hz-1.7B as GGUF Q8_0** run by **`qwentts.cpp`** (C++/GGML port, CUDA build, no PyTorch): talkers `CustomVoice` (presets) and `Base` (custom voices from a stored speaker embedding) + the shared codec tokenizer GGUF, from `Serveurperso/Qwen3-TTS-GGUF`. `VoiceDesign` Q8_0 is **downloaded on demand** the first time a user designs a voice, then the result is stored as an embedding and VoiceDesign is no longer needed. `ns_tts` wraps the `qwentts` binary. | Fallback if no prebuilt Windows CUDA `qwentts.cpp` binary passes the smoke test: reference `qwen-tts` (PyTorch cu128) with the original safetensors, downloaded only in that case (`NS-W301`) |
+| Captions + transcription | **faster-whisper** `distil-large-v3` (CTranslate2 int8, ~1.5 GB; `tiny` on `cpu-dev`), one model for both narration alignment (word timestamps → **aligned to the script** → ASS) and Clipper transcription (segments + words, VAD, speaker-change heuristic) | Rendered caption words are the script's, never ASR output |
 | Face / facecam detection (Clipper) | **OpenCV** (`opencv-python-headless`) with the **YuNet** face detector ONNX (~230 KB, pinned in manifest) + edge/rectangle scan for a facecam overlay | No mediapipe, no torch |
 | Dashboard | **FastAPI** + static single-page UI (vanilla HTML/CSS/JS, no build step) on **127.0.0.1:8100** | §20; opened by `Nightshift Dashboard.lnk` |
 | Stock footage | **Pexels** + **Pixabay** APIs | Commercial use with no required attribution; no reselling unmodified clips; Pixabay requires 24 h caching |
@@ -162,19 +161,19 @@ Therefore every heavy dependency sits behind an interface with a **fake** that p
 | Data | SQLite `data\studio.db` | WAL mode; nightly backup |
 | Installer | `INSTALL.cmd` → `installer\stage1.ps1` → `wizard.py` | No compiled installer, no code signing, no SmartScreen prompt; Windows may show a "Mark of the Web" warning on the zip, documented in `OPERATOR.md` |
 
-Storage: one LLM (~21 GB) + embed (0.15) + TTS (~4 × 3 variants ≈ 10) + whisper (~0.5) + venvs with PyTorch (~8) ≈ **40 GB**; two-model mode adds ~20 GB.
+Storage (default install): LLM 9 GB + TTS 4.4 GB (two Q8_0 talkers + tokenizer) + whisper 1.5 GB + embed/face/spaCy 0.2 GB ≈ **15 GB of models**, venvs ~1.5 GB (no PyTorch). On-demand extras: VoiceDesign +2.1 GB, Balanced LLM +14 GB, Best LLM +21 GB, two-model story LLM +20 GB.
 
 ---
 
 ## 3. Hardware profiles
 
-| RAM | LLM file | Context | Strategy |
+| Profile | LLM file | Context | Strategy |
 |---|---|---|---|
-| ≥ 32 GB | UD-Q4_K_XL / Q4_K_M (~21 GB) | 16K (story), 32K (code) | `--fit` on; tune `--n-cpu-moe`; KV f16 or q8_0 |
-| 16–31 GB | APEX I-Mini (~14 GB) | **8K** both | Fully on GPU; KV q8_0; the continuity pass (§7.1 M4) runs chapter-pairwise instead of whole-story |
-| **`cpu-dev`** (any machine, no GPU needed) | `Qwen/Qwen3-1.7B-GGUF` Q4_K_M (~1.1 GB), llama.cpp **CPU** build | 8K | TTS: reference `qwen-tts` **0.6B-CustomVoice** on CPU float32; whisper `tiny`; FFmpeg `libx264 -preset ultrafast`; embed model unchanged. Selected by `NIGHTSHIFT_PROFILE=cpu-dev` or `--allow-cpu`. **Not used during the build** (nothing is downloaded on the build laptop, §1.1); it exists so tests and prompt work on the work machine can run without taking the GPU from a nightly job. Never offered by the installer to end users. |
+| **`gpu`** (default; any RTX 16 GB, ≥ 16 GB RAM) | 14B Q4_K_M (~9 GB) | 16K | Fully on GPU, KV f16; one GPU tenant at a time (§0 rule 8) |
+| **`gpu`** with `llm_tier: balanced|best` (≥ 32 GB RAM) | 35B-A3B MoE I-Mini (~14 GB) / UD-Q4_K_XL (~21 GB) | 16K / 32K | `--fit` on; tune `--n-cpu-moe`; KV q8_0 when needed; MTP if faster |
+| **`cpu-dev`** (any machine, no GPU needed) | `Qwen/Qwen3-1.7B-GGUF` Q4_K_M (~1.1 GB), llama.cpp **CPU** build | 8K | TTS: `qwentts.cpp` CPU build with the **0.6B CustomVoice Q8_0** GGUF (~1 GB); whisper `tiny`; FFmpeg `libx264 -preset ultrafast`; embed model unchanged. Selected by `NIGHTSHIFT_PROFILE=cpu-dev` or `--allow-cpu`. **Not used during the build** (nothing is downloaded on the build laptop, §1.1); it exists so tests and prompt work on the work machine can run without taking the GPU from a nightly job. Never offered by the installer to end users. |
 
-`ns tune` sweeps `--n-cpu-moe` (0, 4, 8, 12, 16), ctx (per profile), KV (f16, q8_0) and MTP `--spec-draft-n-max` (2, 3, 4), measuring tok/s on a fixed 400-token prompt and 300-token generation, then writes the winner to `config\runtime.json`. In two-model mode it runs per model.
+`ns tune` sweeps ctx (8K/16K/32K), KV (f16, q8_0), `--n-gpu-layers` (99, then step down only if load fails) and, for MoE files, `--n-cpu-moe` (0, 4, 8, 12, 16) and MTP `--spec-draft-n-max` (2, 3, 4), measuring tok/s on a fixed 400-token prompt and 300-token generation, then writes the winner to `config\runtime.json`. In two-model mode it runs per model.
 
 ---
 
@@ -232,7 +231,7 @@ Work packages: **A** installer+launchers · **B** supervisor+tune+opencode · **
 
 **Stage 1 — `stage1.ps1`:** preflight (§1.2) → winget installs (Git, Windows Terminal, FFmpeg) → uv → Python 3.12 → create `NIGHTSHIFT_HOME` tree → bootstrap venv `venvs\studio` with `uv sync --locked --extra studio` from the repo → run `wizard.py [--answers <path>]`.
 
-**Unattended mode:** the installer looks for `answers.json` next to `INSTALL.cmd`, then in `%NIGHTSHIFT_HOME%\config\`. Every question in `s01_questions` is answered from it when present; missing keys are asked interactively. Schema: `contracts/schemas/answers.schema.json` (`home_path?, channel{display_name,niche,language,seed_keywords[]}, voice{mode,speaker|description|ref_audio_path+ref_text+rights_confirmed}, pexels_api_key?, pixabay_api_key?, masters_per_week, run_time, install_code:bool, allow_cpu:bool`). A template `installer/answers.example.json` ships in the Drive folder.
+**Unattended mode:** the installer looks for `answers.json` next to `INSTALL.cmd`, then in `%NIGHTSHIFT_HOME%\config\`. Every question in `s01_questions` is answered from it when present; missing keys are asked interactively. Schema: `contracts/schemas/answers.schema.json` (`home_path?, models_source?, llm_tier:"small"|"balanced"|"best"="small", channel{display_name,niche,language,seed_keywords[]}, voice{mode,speaker|description|ref_audio_path+ref_text+rights_confirmed}, pexels_api_key?, pixabay_api_key?, masters_per_week, run_time, install_code:bool, allow_cpu:bool`). A template `installer/answers.example.json` ships in the Drive folder.
 
 **Stage 2 — `wizard.py`** (rich TUI; each step = `check()` / `run()` / `verify()`; every step writes its result to `install_state.json` so a crash or reboot resumes at the failed step):
 | Step | Does |
@@ -240,8 +239,8 @@ Work packages: **A** installer+launchers · **B** supervisor+tune+opencode · **
 | `s00_welcome` | Shows A.2 text + the hardware check summary (incl. disk type, wake timers) |
 | `s01_questions` | **Home folder** for models, venvs, config and videos (default: `<drive with most free space, SSD preferred>\Nightshift`, must pass the 60 GB check; written to the user environment variable `NIGHTSHIFT_HOME`, so every later shortcut, task and shell sees it) · Channel (name, niche, language) · voice (preview 4 presets / design / clone, with a rights confirmation for clones) · Pexels + Pixabay keys (validated live, with links to get them, §21.6) · masters/week (default 1 for a new channel, §18.6) · run time (default 03:00) · install Nightshift Code? (default yes) |
 | `s02_download_bins` | llama.cpp + cudart, OpenCode (if chosen) |
-| `s03_download_models` | LLM GGUF(s), embed GGUF, Qwen3-TTS + tokenizer, faster-whisper, spaCy model (resumable, SHA256) |
-| `s04_venvs` | `tts` (PyTorch cu128+, both TTS engines), `studio` (incl. spaCy), `supervisor` |
+| `s03_download_models` | LLM GGUF, embed GGUF, TTS GGUFs (CustomVoice, Base, tokenizer), faster-whisper `distil-large-v3`, YuNet, spaCy wheel (resumable, SHA256). **Local source mode:** if `answers.models_source` (or the wizard's "I have the model files" option) points at a folder, every file whose name and SHA256 match is copied from there instead of downloaded; the rest is downloaded. |
+| `s04_venvs` | `studio` (incl. spaCy, faster-whisper + cuBLAS/cuDNN wheels, OpenCV), `supervisor` (+ dashboard). No `tts` venv unless the PyTorch fallback is triggered (§2). |
 | `s05_opencode_prewarm` | If chosen: run OpenCode once headless; confirm `local/code` |
 | `s06_tune` | `ns tune` |
 | `s07_configs` | runtime, OpenCode, channel profile, secrets (keyring) |
@@ -251,7 +250,7 @@ Work packages: **A** installer+launchers · **B** supervisor+tune+opencode · **
 
 **Error UX:** code + plain message + fix hint from `errors.json` → `[R]etry · [S]kip (optional only) · [L]og · [Q]uit`. In unattended mode, a required step retries 3 times with backoff, then writes the bundle and exits non-zero with the code on screen. Resume state in `config\install_state.json`.
 
-**Install-time verification of the untestable parts (§1.1):** `s04_venvs` runs `python -c "import torch; assert torch.cuda.is_available(); print(torch.version.cuda, torch.cuda.get_device_capability())"` in the `tts` venv and fails `NS-E108` with the exact cu128 reinstall command if capability < (12,0) or CUDA unavailable. `s08_smoke` tests `h264_nvenc` with a 2-second colour source and falls back to `libx264` in `runtime.json` (`NS-W401`) on failure; tests `faster-qwen3-tts` with one sentence and falls back to the reference engine (`NS-W301`); tests `llama-server` with and without `--spec-type draft-mtp` and keeps MTP only if it is faster (`NS-W302` otherwise).
+**Install-time verification of the untestable parts (§1.1):** `s08_smoke` tests `h264_nvenc` with a 2-second colour source and falls back to `libx264` in `runtime.json` (`NS-W401`) on failure; tests `qwentts.cpp` on CUDA with one sentence per installed talker and, on failure, creates the `tts` venv with PyTorch cu128 + `qwen-tts` (checking `torch.cuda.is_available()` and capability ≥ (12,0), else `NS-E108` with the exact cu128 reinstall command), downloads the original safetensors and switches `runtime.tts.engine` to `reference` (`NS-W301`); tests faster-whisper on CUDA (`NS-E112` with the cuBLAS/cuDNN fix hint on failure); for MoE LLM tiers tests `llama-server` with and without `--spec-type draft-mtp` and keeps MTP only if it is faster (`NS-W302` otherwise).
 
 **`ns update <zip>`:** verifies the zip's `VERSION` and SHA256 sidecar, extracts to `<app_path>.new\`, copies `.git\`, `config\` and untracked data over, runs `uv sync --locked` per venv, swaps directories (keeping `<app_path>.prev\` for `ns update --rollback`), re-runs `ns verify --quick`, and re-registers shortcuts and the task. When the repo has a git remote, `git pull` is the simpler path and `ns update` says so.
 
@@ -452,6 +451,8 @@ Deferred to after Slice 9: `series_compilation`, API upload, non-English caption
 | D10 | Dashboard technology | Local FastAPI + vanilla HTML/JS single page on 127.0.0.1:8100, no login | Runs on the same machine as the GPU; no build toolchain; no exposure outside localhost |
 | D11 | Clipper transcription model | faster-whisper `distil-large-v3` on GPU profiles, `tiny` on `cpu-dev` | Accuracy on arbitrary speech matters more than for script alignment |
 | D12 | Active-speaker framing for podcasts | v1: visual heuristic (largest face / mouth-region motion); audio diarization deferred | Avoids a diarization model; good enough for stacked two-speaker layouts |
+| D13 | Download size | **~15 GB default**: 14B Q4 LLM (9), TTS CustomVoice + Base Q8_0 GGUF + tokenizer (4.4), one whisper (1.5), small extras; VoiceDesign (+2.1) and bigger LLM tiers on demand; `models_source` folder mode for offline/pre-downloaded installs | Egyptian bandwidth; quantized GGUF is already the compressed form, zipping gains ≤ 3 % |
+| D14 | TTS engine | `qwentts.cpp` (GGML, CUDA, no PyTorch) with PyTorch `qwen-tts` as automatic fallback | Removes ~2.5 GB of torch and ~6 GB of fp16 weights from the target |
 
 ---
 
@@ -462,7 +463,7 @@ Deferred to after Slice 9: `series_compilation`, API upload, non-English caption
 - Tuned expert offload; KV `q8_0` when needed; fixed system prompts for prefix caching; JSON-schema-constrained output (`response_format` with `json_schema`); `--alias code,story`.
 
 ### 14.2 TTS speed
-`faster-qwen3-tts` (CUDA graphs; reported 2–6× speedups, up to 7.9× faster first audio on an RTX 4060) on SDPA. Batch the job's chunks, bf16. Fallback `qwen-tts` reference must still beat real time.
+`qwentts.cpp` CUDA build with Q8_0 talkers; one process kept warm by the supervisor, chunks streamed through it in order. Target RTF ≤ 0.5 (measured by `ns verify`). Fallback `qwen-tts` reference must still beat real time.
 
 ### 14.3 Pipeline
 Clip fetching overlaps GPU stages; one filter graph per video; NVENC; pre-trimmed proxies for Shorts clips.
@@ -503,7 +504,7 @@ Plan → draft → critique → revise; best-of-5 + judge for hooks and titles; 
 
 ### 15.2 Paths (under `NIGHTSHIFT_HOME`)
 ```
-bin\llama\ bin\opencode\
+bin\llama\ bin\qwentts\ bin\opencode\
 models\llm\ models\embed\ models\tts\ models\tts\voices\ models\whisper\ models\spacy\
 venvs\tts\ venvs\studio\ venvs\supervisor\
 config\runtime.json config\install_state.json config\opencode.json config\channels\<slug>.yaml
@@ -533,7 +534,10 @@ States: `stopped|starting|ready|stopping|error`. Owners: `opencode`, `studio:<jo
 | GET | `/v1/voices` | → `[{name, mode:"preset"|"design"|"clone", source}]` |
 | POST | `/v1/voices/design` | `{name, description}` → `{name, sample_path}` |
 | POST | `/v1/voices/clone` | `{name, ref_audio_path, ref_text, rights_confirmed:true}` → `{name, sample_path}` (400 if `rights_confirmed` false) |
-| GET | `/health` | → `{ok, engine:"faster"|"reference", model_loaded}` |
+| GET | `/health` | → `{ok, engine:"qwentts"|"reference"|"fake", model_loaded}` |
+| GET | `/v1/voices/{name}/embedding` | → the stored speaker-embedding file (bytes) for backup/transfer between machines |
+
+**Voice library = embeddings, not audio.** `models\tts\voices\<name>\{voice.json, speaker.bin, sample.wav}`: `speaker.bin` is the precomputed speaker prompt produced once (from a clone sample via Base, or from a VoiceDesign render that is immediately re-encoded through Base). Every later synthesis passes the stored prompt to the Base talker directly; nothing is re-derived. Presets need no embedding (CustomVoice talker). VoiceDesign is only needed at design time and may be deleted afterwards.
 
 ### 15.5 Embed API (port 8081)
 Standard llama-server `POST /v1/embeddings` `{input:[...]}` → OpenAI-shaped response. `ns_common.embed_client.embed(texts) -> list[list[float]]`, `cosine(a,b)`.
@@ -544,7 +548,7 @@ Standard llama-server `POST /v1/embeddings` `{input:[...]}` → OpenAI-shaped re
 - `clip_plan`: `[{k, start_s, end_s, title, hook_line?, why, score:0-1, speakers?:[..], keywords[]}]`
 - `clip_layout`: `{template, facecam?:{x,y,w,h}, faces:[{t, boxes:[{x,y,w,h}]}], crops:[{t_start, t_end, region:{x,y,w,h}}]}`
 - `metadata.kind` gains `"clip"`; `metadata.source_video` and `metadata.template` are set for clips.
-- `runtime`: `{profile:"32gb"|"16gb"|"cpu-dev", llama:{port, model_path, aliases:["code","story"], flags:{n_gpu_layers, n_cpu_moe, ctx, kv_type, spec_type?, spec_draft_n_max?, threads?}}, embed:{port, model_path}, tts:{port, engine:"faster"|"reference", model_dir, device:"cuda"|"cpu"}, whisper:{model, device, compute_type}, video:{encoder:"h264_nvenc"|"libx264", preset}}`
+- `runtime`: `{profile:"gpu"|"cpu-dev", llama:{port, model_path, aliases:["code","story"], flags:{n_gpu_layers, n_cpu_moe, ctx, kv_type, spec_type?, spec_draft_n_max?, threads?}}, embed:{port, model_path}, tts:{port, engine:"faster"|"reference", model_dir, device:"cuda"|"cpu"}, whisper:{model, device, compute_type}, video:{encoder:"h264_nvenc"|"libx264", preset}}`
 - `manifest`: `{version, profiles:{<profile>:{llm:{repo,file,sha256,bytes}, embed:{...}, tts:[{repo,sha256_index}], whisper:{model}}}, bins:{llama:{url,sha256,version}, cudart:{...}, opencode:{...}}, python:{version}, spacy:{model, version}}`
 - `idea`: `{premise, twist, setting, protagonist, why_chapters, keywords[]}`
 - `plan`: `{target_minutes, target_words, chapters:[{n, title, beats[], cliff, word_budget}]}`
@@ -894,36 +898,43 @@ Everything below is pinned in `manifest.json` (exact versions, URLs, SHA256) by 
 | llama.cpp CUDA build | `https://github.com/ggml-org/llama.cpp/releases/download/<tag>/llama-<tag>-bin-win-cuda-12.8-x64.zip` | Tag pinned to a release with MTP (`--spec-type draft-mtp`) support; unzip to `bin\llama\` |
 | cudart for llama.cpp | `https://github.com/ggml-org/llama.cpp/releases/download/<tag>/cudart-llama-bin-win-cuda-12.8-x64.zip` | Same tag; DLLs next to `llama-server.exe` |
 | llama.cpp CPU build | `…/llama-<tag>-bin-win-cpu-x64.zip` | Only for `cpu-dev` and as the embed server fallback |
+| qwentts.cpp CUDA build | pinned release asset from the `qwentts.cpp` GitHub repo (Windows x64 CUDA zip); if the project publishes no Windows CUDA binary, Slice 0 Task 14 records `bins.qwentts = null` and the installer uses the PyTorch fallback path (§2) | `bin\qwentts\` |
 | OpenCode (optional) | `https://github.com/anomalyco/opencode/releases/download/v<ver>/opencode-windows-x64.zip` | `bin\opencode\` |
 | YuNet face detector | `https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx` | `models\cv\yunet.onnx` (~230 KB) |
 
 ### 21.3 Models (`s03_download_models`, Hugging Face `https://huggingface.co/<repo>/resolve/<revision>/<file>`, public repos, no token; resumable with HTTP Range; SHA256 from the HF tree API)
-| Logical | Repo / file | Folder | Size |
-|---|---|---|---|
-| `llm` (32 GB profile) | `unsloth/Qwen3.6-35B-A3B-MTP-GGUF` UD-Q4_K_XL | `models\llm\` | ~21 GB |
-| `llm` (16 GB profile) | `mudler/Qwen3.6-35B-A3B-APEX-MTP-GGUF` I-Mini | `models\llm\` | ~14 GB |
-| `story_llm` (opt-in) | `Youssofal/Qwen3.6-35B-A3B-Abliterated-Heretic-GGUF` Q4_K_M | `models\llm\` | ~20 GB |
-| `embed` | `nomic-ai/nomic-embed-text-v1.5-GGUF` Q8_0 | `models\embed\` | ~150 MB |
-| TTS | `Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice`, `-VoiceDesign`, `-Base` (whole repos) | `models\tts\<repo name>\` | ~3.5 GB each |
-| Whisper (alignment) | `Systran/faster-whisper-small.en` (CTranslate2) | `models\whisper\small.en\` | ~500 MB |
-| Whisper (Clipper) | `Systran/faster-distil-whisper-large-v3` (CTranslate2) | `models\whisper\distil-large-v3\` | ~1.5 GB |
-| spaCy | `https://github.com/explosion/spacy-models/releases/download/en_core_web_md-<ver>/en_core_web_md-<ver>-py3-none-any.whl` | installed into the studio venv | ~40 MB |
-| `cpu-dev` set | `Qwen/Qwen3-1.7B-GGUF` Q4_K_M, `Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice`, `Systran/faster-whisper-tiny` | same folders | ~3 GB total |
+| Logical | Repo / file | Folder | Size | When |
+|---|---|---|---|---|
+| `llm` (small, default) | `Qwen/Qwen3-14B-GGUF` Q4_K_M (or a Qwen3.6 14B-class GGUF if Task 14 finds one) | `models\llm\` | ~9 GB | always |
+| `llm` (balanced) | `mudler/Qwen3.6-35B-A3B-APEX-MTP-GGUF` I-Mini | `models\llm\` | ~14 GB | `llm_tier: balanced` |
+| `llm` (best) | `unsloth/Qwen3.6-35B-A3B-MTP-GGUF` UD-Q4_K_XL | `models\llm\` | ~21 GB | `llm_tier: best` |
+| `story_llm` (opt-in) | `Youssofal/Qwen3.6-35B-A3B-Abliterated-Heretic-GGUF` Q4_K_M | `models\llm\` | ~20 GB | two-model mode only |
+| `embed` | `nomic-ai/nomic-embed-text-v1.5-GGUF` Q8_0 | `models\embed\` | ~150 MB | always |
+| TTS talker, presets | `Serveurperso/Qwen3-TTS-GGUF` 1.7B CustomVoice Q8_0 | `models\tts\` | ~2.1 GB | always |
+| TTS talker, custom voices | same repo, 1.7B Base Q8_0 | `models\tts\` | ~2.1 GB | always |
+| TTS codec tokenizer | same repo, tokenizer Q8_0 | `models\tts\` | ~0.2 GB | always |
+| TTS talker, voice design | same repo, 1.7B VoiceDesign Q8_0 | `models\tts\` | ~2.1 GB | on demand (first "design a voice") |
+| Whisper | `Systran/faster-distil-whisper-large-v3` (CTranslate2 int8) | `models\whisper\distil-large-v3\` | ~1.5 GB | always |
+| spaCy | `https://github.com/explosion/spacy-models/releases/download/en_core_web_md-<ver>/en_core_web_md-<ver>-py3-none-any.whl` | studio venv | ~40 MB | always |
+| PyTorch fallback set | `Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice`, `-Base` safetensors | `models\tts\hf\` | ~7 GB | only if `qwentts.cpp` fails smoke |
+| `cpu-dev` set | `Qwen/Qwen3-1.7B-GGUF` Q4_K_M, 0.6B CustomVoice Q8_0 GGUF, `Systran/faster-whisper-tiny` | same folders | ~2.5 GB total | dev only |
+
+**Default install total: ~15 GB.** Quantized GGUF/CTranslate2 files are already the compressed form; archiving them gains ≤ 3 %, so the bundle never zips models. For low-bandwidth sites, put the files in a folder (USB or Drive-synced) and set `models_source`; the installer copies and verifies instead of downloading.
 
 ### 21.4 Python environments (`s04_venvs`, `uv venv` + `uv pip install`, under `%NIGHTSHIFT_HOME%\venvs\`)
 | venv | Installs | GPU DLL notes |
 |---|---|---|
 | `studio` | `-e <app_path>[studio]` (pydantic, httpx, jinja2, rich, typer, numpy, Pillow, spaCy + model wheel, faster-whisper, imagehash, keyring, opencv-python-headless) **plus** `nvidia-cublas-cu12` and `nvidia-cudnn-cu12` wheels | faster-whisper (CTranslate2) needs cuBLAS 12 and cuDNN 9 DLLs on Windows. `ns_common.gpu_dlls.ensure_on_path()` prepends `<venv>\Lib\site-packages\nvidia\cublas\bin` and `…\nvidia\cudnn\bin` to `PATH` before `faster_whisper` is imported; `ns verify` checks that `WhisperModel(device="cuda")` loads (`NS-E112` with the fix hint otherwise) |
-| `tts` | `torch==<pin>+cu128` from `https://download.pytorch.org/whl/cu128`, `qwen-tts==<pin>`, `faster-qwen3-tts==<pin>`, `soundfile`, `fastapi`, `uvicorn`, then `-e <app_path>[tts] --no-deps` | torch ships its own CUDA runtime; `s04` runs the `torch.cuda.is_available()` + capability ≥ (12,0) check (`NS-E108`) |
-| `supervisor` | `-e <app_path>[supervisor]` (fastapi, uvicorn, psutil) and the dashboard deps | CPU only |
+| `supervisor` | `-e <app_path>[supervisor]` (fastapi, uvicorn, psutil) and the dashboard deps; also hosts `ns_tts` (which only shells out to `bin\qwentts\`) | CPU only |
+| `tts` (**fallback only**) | created by `s08_smoke` if `qwentts.cpp` fails: `torch==<pin>+cu128` from `https://download.pytorch.org/whl/cu128`, `qwen-tts==<pin>`, `soundfile`, then `-e <app_path>[tts] --no-deps` | `torch.cuda.is_available()` + capability ≥ (12,0) check (`NS-E108`) |
 
-All three are created from the same repo checkout (`install_state.app_path`), so `ns update` can re-sync them with `uv pip install -e …` without re-downloading models.
+All venvs are created from the same repo checkout (`install_state.app_path`), so `ns update` can re-sync them with `uv pip install -e …` without re-downloading models.
 
 ### 21.5 On-disk layout the user sees
 ```
 <NIGHTSHIFT_HOME>\            default <largest free SSD>\Nightshift ; chosen in the wizard; user env var NIGHTSHIFT_HOME
-  bin\llama\  bin\opencode\
-  models\llm\  models\embed\  models\tts\<repo>\  models\tts\voices\  models\whisper\<name>\  models\cv\  models\spacy\
+  bin\llama\  bin\qwentts\  bin\opencode\
+  models\llm\  models\embed\  models\tts\*.gguf  models\tts\voices\<name>\  models\whisper\distil-large-v3\  models\cv\  models\spacy\
   venvs\studio\  venvs\tts\  venvs\supervisor\
   config\runtime.json  config\install_state.json  config\opencode.json  config\channels\<slug>.yaml
   data\studio.db  data\backup\  data\jobs\<job_id>\  data\calibration\
@@ -933,7 +944,7 @@ All three are created from the same repo checkout (`install_state.app_path`), so
   rejected\  logs\
 <app_path>\                   the extracted repo (code only), e.g. D:\NightShift
 ```
-Disk budget: models ~32 GB (32 GB profile) + venvs ~8 GB + working space ≥ 20 GB → the 60 GB check in §1.2; two-model mode +20 GB.
+Disk budget: models ~15 GB + venvs ~1.5 GB + working space ≥ 20 GB → the 40 GB check in §1.2; Balanced/Best LLM +14/+21 GB; two-model mode +20 GB; PyTorch fallback +10 GB.
 
 ### 21.6 Accounts and keys the user needs
 | Key | Where to get it | Stored |
