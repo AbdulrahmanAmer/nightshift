@@ -3,7 +3,7 @@
 `AssOptions` bundles everything `build_ass` takes beyond the words and the style (safe zones, regions to
 avoid, key-word emphasis, speaker colours, profanity masking, an anchor). It round-trips through JSON so the
 renderer can rebuild a caption file with the measured backdrop luma (`captions/<item>.json["ass_opts"]`).
-Everything here is pure except `channel_setting`, which may read the channel YAML.
+Everything here is pure except `mask_profanity_setting`, which may read the channel YAML.
 """
 
 from __future__ import annotations
@@ -12,11 +12,10 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-import yaml
-
 from ns_common.models import Channel
 from ns_common.paths import Paths
 from ns_studio.media.captions import DEFAULT_SAFE_ZONES, Box, Variant, build_ass, group_words
+from ns_studio.media.channel_opts import channel_setting
 from ns_studio.media.presets import CaptionStyle, caption_style
 from ns_studio.media.transcribe import Word
 
@@ -32,40 +31,6 @@ def safe_zones_for(variant: Variant) -> tuple[int, int]:
 # ---------------------------------------------------------------------------------------------------------
 # Channel settings
 # ---------------------------------------------------------------------------------------------------------
-
-
-def _dig(data: Any, parts: Sequence[str]) -> Any:
-    cur = data
-    for p in parts:
-        if isinstance(cur, Mapping):
-            if p not in cur:
-                return None
-            cur = cur[p]
-        else:
-            cur = getattr(cur, p, None)
-        if cur is None:
-            return None
-    return cur
-
-
-def channel_setting(paths: Paths, channel: Channel, dotted: str, default: Any = None) -> Any:
-    """A channel option such as `captions.mask_profanity`: model attribute, else the channel YAML, else `default`.
-
-    The Channel model does not list every per-channel option yet (see contracts/CHANGE_REQUESTS.md CR-C6-6), so
-    the YAML file is read as a plain mapping when the attribute is missing. Unreadable files give `default`.
-    """
-    parts = dotted.split(".")
-    found = _dig(channel, parts)
-    if found is not None:
-        return found
-    try:
-        f = paths.channel_file(channel.slug)
-        if f.exists():
-            raw = yaml.safe_load(f.read_text(encoding="utf-8"))
-            found = _dig(raw, parts) if isinstance(raw, Mapping) else None
-    except (OSError, yaml.YAMLError):
-        found = None
-    return default if found is None else found
 
 
 def mask_profanity_setting(paths: Paths, channel: Channel) -> bool:

@@ -14,7 +14,6 @@ from ns_studio.clipper.models import ClipItem, ClipLayout, Rect, Transcript
 from ns_studio.media.caption_plan import (
     LANDSCAPE_SAFE_ZONES,
     AssOptions,
-    channel_setting,
     emphasis_from_beats,
     emphasis_from_list,
     mask_profanity_setting,
@@ -23,6 +22,7 @@ from ns_studio.media.caption_plan import (
     speaker_plan,
 )
 from ns_studio.media.captions import Box, CaptionsStage, caption_band, caption_placement
+from ns_studio.media.channel_opts import channel_setting
 from ns_studio.media.presets import caption_style
 from ns_studio.media.render import VERTICAL, backdrop_luma, fit_caption_contrast, sample_times, shot_at
 from ns_studio.media.shotplan import Shot
