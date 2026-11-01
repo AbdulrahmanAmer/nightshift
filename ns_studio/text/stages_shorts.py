@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import random
 from datetime import UTC, datetime
 from typing import Any
 
@@ -12,18 +13,25 @@ from ns_common.textstats import est_seconds, split_sentences, word_count
 from ns_studio.context import JobContext
 from ns_studio.orchestrator import FORMAT_STAGES
 from ns_studio.stages import Tenant, register
-from ns_studio.text.budget import Budget, short_budget
+from ns_studio.text.budget import Budget, MasterBudget, master_as_budget, master_budget, short_budget
 from ns_studio.text.prompts import RUBRIC_KEYS, call_json, call_text, parse_model
 from ns_studio.text.seo import finalize_seo
 from ns_studio.text.validators import load_banned, raise_if, validate_story
 
-__all__ = ["finalize_seo", "ideas_budget", "now_iso"]
+__all__ = ["finalize_seo", "ideas_budget", "job_master_budget", "now_iso"]
 
 IDEA_SIMILARITY_LIMIT = 0.85
 
 
+def job_master_budget(ctx: JobContext) -> MasterBudget:
+    """Master budget of this job; the target minutes are drawn from `long_minutes` seeded by the job id."""
+    return master_budget(ctx.channel.long_minutes, ctx.combo.pacing, rng=random.Random(ctx.job_id))
+
+
 def ideas_budget(ctx: JobContext) -> Budget:
-    """Word budget of the story (shorts-only: one part of `combo.length_bucket`, default 50 s)."""
+    """Word budget of the story: the master (master-first) or one part of `combo.length_bucket` (50 s)."""
+    if ctx.fmt == "master_first":
+        return master_as_budget(job_master_budget(ctx))
     return short_budget(ctx.combo.length_bucket or 50, ctx.combo.pacing, parts=1)
 
 

@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from typing import Any
 
 from ns_common.models import Seo
+from ns_studio.text.models_local import SeoLong
 
 TAG_FILLERS = (
     "short story",
@@ -53,7 +55,7 @@ def normalize_hashtags(
         if word and ("#" + word).lower() not in {c.lower() for c in cleaned} and word.lower() != "shorts":
             cleaned.append("#" + word)
     keyword_tag = "#" + re.sub(r"[^A-Za-z0-9]", "", primary_keyword.title())
-    for extra in (keyword_tag, "#ShortStory", "#NarratedStory", "#OriginalFiction"):
+    for extra in (keyword_tag, "#NarratedStory", "#OriginalFiction", "#ShortStory"):
         if len(cleaned) >= 3:
             break
         if len(extra) > 1 and extra.lower() not in {c.lower() for c in cleaned}:
@@ -106,4 +108,72 @@ def finalize_seo(
         tags=normalize_tags(seo.tags, primary_keyword),
         hashtags=normalize_hashtags(seo.hashtags, primary_keyword, shorts=True),
         keywords=seo.keywords,
+    )
+
+
+CHAPTER_LIST_PLACEHOLDER = "[[CHAPTERS]]"
+_PART_RE = re.compile(r"\s*[\(\[]?\bpart\s*\d+\b[\)\]]?", re.IGNORECASE)
+_CHAPTER_LINE_RE = re.compile(r"^\d{1,2}:\d{2}")
+
+
+def format_timestamp(seconds: float) -> str:
+    """`MM:SS` (or `H:MM:SS` from one hour) for a chapter start time."""
+    total = max(0, int(seconds))
+    h, rem = divmod(total, 3600)
+    m, s = divmod(rem, 60)
+    return f"{h}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
+
+
+def render_chapter_list(chapters: Sequence[Mapping[str, Any]]) -> str:
+    """Render `{title, start_s}` mappings as `MM:SS Title` lines; the first entry is always `00:00`."""
+    lines = []
+    for i, c in enumerate(chapters):
+        start = 0.0 if i == 0 else float(c["start_s"])
+        lines.append(f"{format_timestamp(start)} {str(c['title']).strip()}")
+    return "\n".join(lines)
+
+
+def fill_chapter_list(description: str, chapters: Sequence[Mapping[str, Any]]) -> str:
+    """Replace `CHAPTER_LIST_PLACEHOLDER` in a long-form description with the rendered chapter list."""
+    block = render_chapter_list(chapters)
+    if CHAPTER_LIST_PLACEHOLDER in description:
+        return description.replace(CHAPTER_LIST_PLACEHOLDER, block)
+    return f"{description.rstrip()}\n\n{block}"
+
+
+def finalize_seo_long(
+    seo: SeoLong, *, primary_keyword: str, fiction_label: bool, creator_note: str = ""
+) -> SeoLong:
+    """Apply the long-form metadata rules of spec 9.1 to an LLM-written `SeoLong`.
+
+    Title: no "Part n", keyword within the first 40 characters, at most 100 characters.
+    Description: up to 3 summary lines, a blank line, `CHAPTER_LIST_PLACEHOLDER` (filled after rendering,
+    see `fill_chapter_list`), a blank line, "Original fiction." when `fiction_label`, the creator note.
+    Hashtags: 3-5, never `#Shorts`. Tags: 10-20 and at most 500 characters.
+    """
+    title = fit_title(_PART_RE.sub("", seo.title), primary_keyword)
+    summary = [
+        ln.strip()
+        for ln in seo.description.splitlines()
+        if ln.strip()
+        and not ln.strip().startswith("#")
+        and not _CHAPTER_LINE_RE.match(ln.strip())
+        and CHAPTER_LIST_PLACEHOLDER not in ln
+        and ln.strip().lower().rstrip(".") != "original fiction"
+    ][:3]
+    if not summary:
+        summary = [f"An original {primary_keyword} narrated in chapters."]
+    tail = ["Original fiction."] if fiction_label else []
+    if creator_note.strip():
+        tail.append(creator_note.strip())
+    blocks = ["\n".join(summary), CHAPTER_LIST_PLACEHOLDER]
+    if tail:
+        blocks.append("\n".join(tail))
+    return SeoLong(
+        title=title,
+        description="\n\n".join(blocks),
+        tags=normalize_tags(seo.tags, primary_keyword),
+        hashtags=normalize_hashtags(seo.hashtags, primary_keyword, shorts=False),
+        keywords=seo.keywords,
+        chapter_titles=seo.chapter_titles,
     )
