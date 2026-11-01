@@ -8,3 +8,6 @@ build/
 *.egg-info/
 logs/
 tests/_out/
+
+answers.json
+*.sha256

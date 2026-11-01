@@ -124,6 +124,8 @@ Therefore every heavy dependency sits behind an interface with a **fake** that p
 | Disk type | NVMe/SSD for `NIGHTSHIFT_HOME` | Warn on HDD (`NS-W106`): load times will miss §14.6 |
 | Network | HF, GitHub, PyTorch, Pexels, Pixabay reachable | `NS-E105` |
 | Power | Scheduled task can wake the PC; sleep allowed, hibernate discouraged | Set task `WakeToRun`; warn if "wake timers" disabled (`NS-W107`) |
+| winget | `winget --version` works (App Installer present) | If missing: open the Microsoft Store App Installer page and the direct installer links from §21.1, pause, re-check (`NS-E111`) |
+| Long paths | Registry `LongPathsEnabled` = 1 (model file names and job paths can exceed 260 chars) | Set it (needs admin) or warn and keep paths short (`NS-W112`) |
 
 **Blackwell:** PyTorch must be a **CUDA 12.8+ build (2.7+)**, installed from the cu128 (or newer) index URL.
 
@@ -230,13 +232,13 @@ Work packages: **A** installer+launchers · **B** supervisor+tune+opencode · **
 
 **Stage 1 — `stage1.ps1`:** preflight (§1.2) → winget installs (Git, Windows Terminal, FFmpeg) → uv → Python 3.12 → create `NIGHTSHIFT_HOME` tree → bootstrap venv `venvs\studio` with `uv sync --locked --extra studio` from the repo → run `wizard.py [--answers <path>]`.
 
-**Unattended mode:** the installer looks for `answers.json` next to `INSTALL.cmd`, then in `%NIGHTSHIFT_HOME%\config\`. Every question in `s01_questions` is answered from it when present; missing keys are asked interactively. Schema: `contracts/schemas/answers.schema.json` (`channel{display_name,niche,language,seed_keywords[]}, voice{mode,speaker|description|ref_audio_path+ref_text+rights_confirmed}, pexels_api_key?, pixabay_api_key?, masters_per_week, run_time, install_code:bool, allow_cpu:bool`). A template `installer/answers.example.json` ships in the Drive folder.
+**Unattended mode:** the installer looks for `answers.json` next to `INSTALL.cmd`, then in `%NIGHTSHIFT_HOME%\config\`. Every question in `s01_questions` is answered from it when present; missing keys are asked interactively. Schema: `contracts/schemas/answers.schema.json` (`home_path?, channel{display_name,niche,language,seed_keywords[]}, voice{mode,speaker|description|ref_audio_path+ref_text+rights_confirmed}, pexels_api_key?, pixabay_api_key?, masters_per_week, run_time, install_code:bool, allow_cpu:bool`). A template `installer/answers.example.json` ships in the Drive folder.
 
 **Stage 2 — `wizard.py`** (rich TUI; each step = `check()` / `run()` / `verify()`; every step writes its result to `install_state.json` so a crash or reboot resumes at the failed step):
 | Step | Does |
 |---|---|
 | `s00_welcome` | Shows A.2 text + the hardware check summary (incl. disk type, wake timers) |
-| `s01_questions` | Channel (name, niche, language) · voice (preview 4 presets / design / clone, with a rights confirmation for clones) · Pexels + Pixabay keys (validated live, with links to get them) · masters/week (default 1 for a new channel, §18.6) · run time (default 03:00) · install Nightshift Code? (default yes) |
+| `s01_questions` | **Home folder** for models, venvs, config and videos (default: `<drive with most free space, SSD preferred>\Nightshift`, must pass the 60 GB check; written to the user environment variable `NIGHTSHIFT_HOME`, so every later shortcut, task and shell sees it) · Channel (name, niche, language) · voice (preview 4 presets / design / clone, with a rights confirmation for clones) · Pexels + Pixabay keys (validated live, with links to get them, §21.6) · masters/week (default 1 for a new channel, §18.6) · run time (default 03:00) · install Nightshift Code? (default yes) |
 | `s02_download_bins` | llama.cpp + cudart, OpenCode (if chosen) |
 | `s03_download_models` | LLM GGUF(s), embed GGUF, Qwen3-TTS + tokenizer, faster-whisper, spaCy model (resumable, SHA256) |
 | `s04_venvs` | `tts` (PyTorch cu128+, both TTS engines), `studio` (incl. spaCy), `supervisor` |
@@ -621,7 +623,7 @@ Scheduled task `Nightshift Daily` → `studio run --daily`; `WakeToRun=true`, `S
 JSON lines `logs\<component>-YYYYMMDD.jsonl`: `ts, level, component, event, msg, data`. Every stage logs `stage_start`/`stage_end` with `job_id`, duration and tenant.
 
 ### 15.12 Error codes
-`NS-E1xx` install (`NS-W1xx` warnings; `E108` CUDA torch check failed) · `NS-E2xx` runtime/GPU lock · `NS-E3xx` text/LLM (`E305` floor not reached, `E306` not implemented; `W301` TTS fell back to reference engine, `W302` MTP disabled) · `NS-E4xx` media/QC (`E402` clip pool empty, `E403` caption drift; `W401` NVENC unavailable, using libx264) · `NS-E5xx` stock APIs/network · `NS-E6xx` policy gate (one code per check) · `NS-E7xx` update/rollback.
+`NS-E1xx` install (`NS-W1xx` warnings; `E108` CUDA torch check failed; `E111` winget missing; `W112` long paths disabled; `E112` faster-whisper cannot load on CUDA: cuBLAS/cuDNN DLLs) · `NS-E2xx` runtime/GPU lock · `NS-E3xx` text/LLM (`E305` floor not reached, `E306` not implemented; `W301` TTS fell back to reference engine, `W302` MTP disabled) · `NS-E4xx` media/QC (`E402` clip pool empty, `E403` caption drift; `W401` NVENC unavailable, using libx264) · `NS-E5xx` stock APIs/network · `NS-E6xx` policy gate (one code per check) · `NS-E7xx` update/rollback.
 
 ### 15.13 Prompt versioning
 Every prompt file starts with YAML front-matter `{version: int, thinking: bool, schema: <name>}`. `metadata.prompt_versions` records the versions used so learning can attribute results to prompt changes.
@@ -869,6 +871,80 @@ A single background thread drains `dashboard_jobs` (FIFO). Job kinds: `run` (stu
 - Uploads stream to `imports\clipper\<source_id>\` in 8 MB chunks; the UI shows upload progress separately from job progress.
 - All destructive actions (reject, cancel, stop all) confirm in the UI.
 - Tests: FastAPI test client for every route with a fake job worker; a `--fake-services` clip job through `/api/jobs/clip` with the synthetic fixture.
+
+---
+
+## 21. Install sources, dependencies and on-disk layout (what the installer actually pulls)
+
+Everything below is pinned in `manifest.json` (exact versions, URLs, SHA256) by `tools/resolve_manifest.py` in Slice 0 Task 14 and verified by `--check`. This section is the human-readable list; the manifest is the machine-readable truth. Nothing is bundled (§0 rule 1).
+
+### 21.1 System tools (`stage1.ps1`, via winget; direct links shown when winget is unavailable)
+| Tool | winget id | Direct fallback | Used for |
+|---|---|---|---|
+| Git | `Git.Git` | https://git-scm.com/download/win | `ns update`, future `git pull` |
+| Windows Terminal | `Microsoft.WindowsTerminal` | Microsoft Store | Wizard and launchers (optional; falls back to conhost) |
+| FFmpeg (full build) | `Gyan.FFmpeg` | https://www.gyan.dev/ffmpeg/builds/ | Render, probe, loudness, captions (`libass` included in the full build) |
+| uv | manifest `bins.uv` zip from https://github.com/astral-sh/uv/releases | `winget install astral-sh.uv` | Python install + venvs; no system Python needed |
+| Python 3.12 | `uv python install 3.12` (uv-managed, under `%APPDATA%\uv\python`) | python.org 3.12 installer | All venvs |
+| NVIDIA driver | — | https://www.nvidia.com/Download/index.aspx | Must report CUDA ≥ 12.8 in `nvidia-smi` (`NS-E103`) |
+
+### 21.2 Binaries (`s02_download_bins`, into `%NIGHTSHIFT_HOME%\bin\`)
+| What | Source pattern | Notes |
+|---|---|---|
+| llama.cpp CUDA build | `https://github.com/ggml-org/llama.cpp/releases/download/<tag>/llama-<tag>-bin-win-cuda-12.8-x64.zip` | Tag pinned to a release with MTP (`--spec-type draft-mtp`) support; unzip to `bin\llama\` |
+| cudart for llama.cpp | `https://github.com/ggml-org/llama.cpp/releases/download/<tag>/cudart-llama-bin-win-cuda-12.8-x64.zip` | Same tag; DLLs next to `llama-server.exe` |
+| llama.cpp CPU build | `…/llama-<tag>-bin-win-cpu-x64.zip` | Only for `cpu-dev` and as the embed server fallback |
+| OpenCode (optional) | `https://github.com/anomalyco/opencode/releases/download/v<ver>/opencode-windows-x64.zip` | `bin\opencode\` |
+| YuNet face detector | `https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx` | `models\cv\yunet.onnx` (~230 KB) |
+
+### 21.3 Models (`s03_download_models`, Hugging Face `https://huggingface.co/<repo>/resolve/<revision>/<file>`, public repos, no token; resumable with HTTP Range; SHA256 from the HF tree API)
+| Logical | Repo / file | Folder | Size |
+|---|---|---|---|
+| `llm` (32 GB profile) | `unsloth/Qwen3.6-35B-A3B-MTP-GGUF` UD-Q4_K_XL | `models\llm\` | ~21 GB |
+| `llm` (16 GB profile) | `mudler/Qwen3.6-35B-A3B-APEX-MTP-GGUF` I-Mini | `models\llm\` | ~14 GB |
+| `story_llm` (opt-in) | `Youssofal/Qwen3.6-35B-A3B-Abliterated-Heretic-GGUF` Q4_K_M | `models\llm\` | ~20 GB |
+| `embed` | `nomic-ai/nomic-embed-text-v1.5-GGUF` Q8_0 | `models\embed\` | ~150 MB |
+| TTS | `Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice`, `-VoiceDesign`, `-Base` (whole repos) | `models\tts\<repo name>\` | ~3.5 GB each |
+| Whisper (alignment) | `Systran/faster-whisper-small.en` (CTranslate2) | `models\whisper\small.en\` | ~500 MB |
+| Whisper (Clipper) | `Systran/faster-distil-whisper-large-v3` (CTranslate2) | `models\whisper\distil-large-v3\` | ~1.5 GB |
+| spaCy | `https://github.com/explosion/spacy-models/releases/download/en_core_web_md-<ver>/en_core_web_md-<ver>-py3-none-any.whl` | installed into the studio venv | ~40 MB |
+| `cpu-dev` set | `Qwen/Qwen3-1.7B-GGUF` Q4_K_M, `Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice`, `Systran/faster-whisper-tiny` | same folders | ~3 GB total |
+
+### 21.4 Python environments (`s04_venvs`, `uv venv` + `uv pip install`, under `%NIGHTSHIFT_HOME%\venvs\`)
+| venv | Installs | GPU DLL notes |
+|---|---|---|
+| `studio` | `-e <app_path>[studio]` (pydantic, httpx, jinja2, rich, typer, numpy, Pillow, spaCy + model wheel, faster-whisper, imagehash, keyring, opencv-python-headless) **plus** `nvidia-cublas-cu12` and `nvidia-cudnn-cu12` wheels | faster-whisper (CTranslate2) needs cuBLAS 12 and cuDNN 9 DLLs on Windows. `ns_common.gpu_dlls.ensure_on_path()` prepends `<venv>\Lib\site-packages\nvidia\cublas\bin` and `…\nvidia\cudnn\bin` to `PATH` before `faster_whisper` is imported; `ns verify` checks that `WhisperModel(device="cuda")` loads (`NS-E112` with the fix hint otherwise) |
+| `tts` | `torch==<pin>+cu128` from `https://download.pytorch.org/whl/cu128`, `qwen-tts==<pin>`, `faster-qwen3-tts==<pin>`, `soundfile`, `fastapi`, `uvicorn`, then `-e <app_path>[tts] --no-deps` | torch ships its own CUDA runtime; `s04` runs the `torch.cuda.is_available()` + capability ≥ (12,0) check (`NS-E108`) |
+| `supervisor` | `-e <app_path>[supervisor]` (fastapi, uvicorn, psutil) and the dashboard deps | CPU only |
+
+All three are created from the same repo checkout (`install_state.app_path`), so `ns update` can re-sync them with `uv pip install -e …` without re-downloading models.
+
+### 21.5 On-disk layout the user sees
+```
+<NIGHTSHIFT_HOME>\            default <largest free SSD>\Nightshift ; chosen in the wizard; user env var NIGHTSHIFT_HOME
+  bin\llama\  bin\opencode\
+  models\llm\  models\embed\  models\tts\<repo>\  models\tts\voices\  models\whisper\<name>\  models\cv\  models\spacy\
+  venvs\studio\  venvs\tts\  venvs\supervisor\
+  config\runtime.json  config\install_state.json  config\opencode.json  config\channels\<slug>.yaml
+  data\studio.db  data\backup\  data\jobs\<job_id>\  data\calibration\
+  cache\clips\  cache\search\
+  imports\analytics\  imports\clipper\<source_id>\
+  outbox\<slug>\<YYYY-MM-DD>\<job_id>\   ← the folder the user opens; "Nightshift Outbox" shortcut
+  rejected\  logs\
+<app_path>\                   the extracted repo (code only), e.g. D:\NightShift
+```
+Disk budget: models ~32 GB (32 GB profile) + venvs ~8 GB + working space ≥ 20 GB → the 60 GB check in §1.2; two-model mode +20 GB.
+
+### 21.6 Accounts and keys the user needs
+| Key | Where to get it | Stored |
+|---|---|---|
+| Pexels API key (free) | https://www.pexels.com/api/ → "Get Started" | Windows keyring `Nightshift/pexels_api_key` |
+| Pixabay API key (free) | https://pixabay.com/api/docs/ (shown after login) | keyring `Nightshift/pixabay_api_key` |
+| Hugging Face | none needed (public repos) | — |
+| YouTube | none needed in v1 (manual upload) | — |
+
+### 21.7 Download behaviour
+Every download: HEAD for size → stream to `<file>.part` with `Range` resume → SHA256 verify (`NS-E109`) → atomic rename. Concurrency 2 files at a time; progress bar per file and overall; a failed file retries 3 times with backoff; the step is re-runnable and skips verified files. `s03` prints the total to download and an ETA before starting and tells the operator they can close the window and re-run `INSTALL.cmd` to resume.
 
 ---
 
