@@ -117,20 +117,20 @@ def test_restore_rejects_non_backups_and_unsafe_zips(tmp_path: Path) -> None:
         zf.writestr("config/x.json", "{}")
     with pytest.raises(NsError) as e1:
         backup.restore_backup(paths, plain)
-    assert e1.value.code == "NS-E701"
+    assert e1.value.code == "NS-E703"
     evil = tmp_path / "evil.zip"
     with zipfile.ZipFile(evil, "w") as zf:
         zf.writestr(backup.MANIFEST, "{}")
         zf.writestr("config/../../evil.txt", "x")
     with pytest.raises(NsError) as e2:
         backup.restore_backup(paths, evil)
-    assert e2.value.code == "NS-E701"
+    assert e2.value.code == "NS-E703"
     assert not (tmp_path / "evil.txt").exists()
     notzip = tmp_path / "bad.zip"
     notzip.write_text("nope", encoding="utf-8")
     with pytest.raises(NsError) as e3:
         backup.restore_backup(paths, notzip)
-    assert e3.value.code == "NS-E701"
+    assert e3.value.code == "NS-E703"
 
 
 def test_restore_ignores_unlisted_paths(tmp_path: Path) -> None:

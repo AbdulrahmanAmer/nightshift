@@ -128,10 +128,10 @@ def whisper_probe(paths: Paths, rt: Runtime) -> float:
     if r.returncode != 0:
         tail = " | ".join((r.stderr or r.stdout).strip().splitlines()[-3:])
         low = tail.lower()
-        extra = ""
+        code = "NS-E202"
         if "cublas" in low or "cudnn" in low or "dll" in low:
-            extra = " (cuBLAS 12 / cuDNN 9 DLLs missing: install nvidia-cublas-cu12 and nvidia-cudnn-cu12)"
-        raise NsError("NS-E202", f"whisper failed to load on {rt.whisper.device}: {tail}{extra}")
+            code = "NS-E112"
+        raise NsError(code, f"whisper failed to load on {rt.whisper.device}: {tail}")
     try:
         return float(json.loads(r.stdout.strip().splitlines()[-1])["load_s"])
     except (ValueError, KeyError, IndexError) as e:

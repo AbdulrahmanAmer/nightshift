@@ -72,16 +72,16 @@ def restore_backup(
 ) -> list[str]:
     """Restore a backup into NIGHTSHIFT_HOME. Overwritten files are first copied to
     `data\\backup\\pre-restore-<time>\\`. Machine-specific config (runtime, install_state, schedule) is
-    skipped unless `include_machine`. Raises `NS-E701` for a file that is not a Nightshift backup."""
+    skipped unless `include_machine`. Raises `NS-E703` for a file that is not a Nightshift backup."""
     when = now or datetime.now()
     try:
         z = zipfile.ZipFile(zip_path)
     except (OSError, zipfile.BadZipFile) as e:
-        raise NsError("NS-E701", f"{zip_path} is not a readable zip: {e}") from e
+        raise NsError("NS-E703", f"{zip_path} is not a readable zip: {e}") from e
     lines: list[str] = []
     with z:
         if MANIFEST not in z.namelist():
-            raise NsError("NS-E701", f"{zip_path.name} has no {MANIFEST}; not a Nightshift backup")
+            raise NsError("NS-E703", f"{zip_path.name} has no {MANIFEST}; not a Nightshift backup")
         root = paths.home.resolve()
         saved = paths.backup_dir / f"pre-restore-{when:%Y%m%d-%H%M%S}"
         for info in z.infolist():
@@ -90,7 +90,7 @@ def restore_backup(
                 continue
             rel = PurePosixPath(name)
             if rel.is_absolute() or ".." in rel.parts:
-                raise NsError("NS-E701", f"unsafe path in backup: {name}")
+                raise NsError("NS-E703", f"unsafe path in backup: {name}")
             if not (name in RESTORE_ALLOWED or name.startswith(RESTORE_ALLOWED)):
                 lines.append(f"ignored {name}")
                 continue
@@ -99,7 +99,7 @@ def restore_backup(
                 continue
             dest = (paths.home / Path(*rel.parts)).resolve()
             if root not in dest.parents:
-                raise NsError("NS-E701", f"unsafe path in backup: {name}")
+                raise NsError("NS-E703", f"unsafe path in backup: {name}")
             if dest.exists():
                 keep = saved / Path(*rel.parts)
                 keep.parent.mkdir(parents=True, exist_ok=True)

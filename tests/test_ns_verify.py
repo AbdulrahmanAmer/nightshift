@@ -218,3 +218,30 @@ def test_nvenc_probe_error_codes(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_fake_job_is_skipped_without_studio(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(verify.shutil, "which", lambda name: None)
     assert verify.fake_job(Paths(tmp_path / "ns")) is None
+
+
+@pytest.mark.parametrize(
+    "stderr,code",
+    [
+        ("RuntimeError: Library cublas64_12.dll is not found", "NS-E112"),
+        ("Could not load cudnn_ops64_9.dll", "NS-E112"),
+        ("ValueError: unknown model size", "NS-E202"),
+    ],
+)
+def test_whisper_probe_classifies_cuda_dll_failures(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stderr: str, code: str
+) -> None:
+    import subprocess
+
+    paths = Paths(tmp_path / "ns")
+    py = paths.venvs / "studio" / "Scripts" / "python.exe"
+    py.parent.mkdir(parents=True)
+    py.write_text("", encoding="utf-8")
+    monkeypatch.setattr(
+        verify.subprocess,
+        "run",
+        lambda *a, **k: subprocess.CompletedProcess(a, 1, stdout="", stderr=stderr),
+    )
+    with pytest.raises(NsError) as ei:
+        verify.whisper_probe(paths, Runtime.default("gpu"))
+    assert ei.value.code == code

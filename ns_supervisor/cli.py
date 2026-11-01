@@ -203,7 +203,7 @@ def _schedule_call(fn_name: str, time: str | None = None) -> None:
         else:
             msg = schedule.show(paths)
     except schedule.ScheduleError as e:
-        raise _die(f"schedule {fn_name} failed: {e}") from e
+        raise _die(NsError("NS-E204", f"schedule {fn_name}: {e}")) from e
     typer.echo(msg)
 
 

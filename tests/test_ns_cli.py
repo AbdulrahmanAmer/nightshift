@@ -90,7 +90,7 @@ def test_backup_then_restore_roundtrip(tmp_path: Path) -> None:
     r2 = invoke(home, "restore", str(out))
     assert r2.exit_code == 0 and paths.channel_file("a").exists()
     r3 = invoke(home, "restore", str(tmp_path / "missing.zip"))
-    assert r3.exit_code == 1 and "NS-E701" in r3.output
+    assert r3.exit_code == 1 and "NS-E703" in r3.output
 
 
 def test_doctor_bundle_writes_zip(tmp_path: Path) -> None:
@@ -131,3 +131,14 @@ def test_verify_exit_code_follows_report(
     assert r.exit_code == code and seen["quick"] is True
     assert (Paths(home).logs / "verify-report.json").exists()
     assert "Report:" in r.output
+
+
+def test_schedule_failure_uses_e204(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import subprocess
+
+    def refuse(script: str, **kw: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess([], 1, stdout="", stderr="Access is denied")
+
+    monkeypatch.setattr(pwsh, "run_powershell", refuse)
+    r = invoke(tmp_path / "home", "schedule", "install", "--time", "04:00")
+    assert r.exit_code == 1 and "NS-E204" in r.output and "Access is denied" in r.output

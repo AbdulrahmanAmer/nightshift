@@ -56,7 +56,7 @@ Format per entry:
 - **From:** C2 runtime / Tasks 6-10
 - **Change:** add to `contracts/errors.json`: `NS-E112` (faster-whisper cannot load on CUDA: cuBLAS 12 / cuDNN 9 DLLs; named in spec 15.12 and ENGINEERING 6 but missing from the file), `NS-E704` "The scheduled task could not be registered, removed or read" (hint: run PowerShell as the same user; see the detail), `NS-E705` "The file is not a valid Nightshift backup" (restore). Until then `ns verify` reports a failed whisper load as `NS-E202` with the cuBLAS/cuDNN fix in the detail, schedule errors are printed without a code, and `ns restore` raises `NS-E701`.
 - **Why:** the operator should see a code that names the real problem.
-- **Status:** open
+- **Status:** applied on main (NS-E112, NS-E204 scheduled task, NS-E703 restore). C2 now uses them; the proposed NS-E704 and NS-E705 are withdrawn.
 
 ## CR-C2-4: `ruff` TID251 per-file ignores for the supervisor package
 - **From:** C2 runtime / Task 2
