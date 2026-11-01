@@ -6,8 +6,8 @@ import pytest
 
 from ns_common import ffmpeg as ff
 from ns_common.paths import contracts_dir
-from ns_studio.media import stages_media  # noqa: F401
 from ns_studio.media.outbox import job_date
+from ns_studio.media.stages_media import SHORTS_MEDIA_STAGES
 from ns_studio.orchestrator import FORMAT_STAGES, run_job
 from tests.helpers import make_combo, make_ctx
 
@@ -24,7 +24,7 @@ TEXT = " ".join(SENTENCES)
 
 
 def test_media_stages_produce_a_valid_outbox_short(tmp_home: Path, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setitem(FORMAT_STAGES, "media_only", FORMAT_STAGES["shorts_only"][-6:])
+    monkeypatch.setitem(FORMAT_STAGES, "media_only", [s.name for s in SHORTS_MEDIA_STAGES])
     ctx = make_ctx(tmp_home, fmt="media_only", combo=make_combo(length_bucket=23))
     words = len(TEXT.split())
     ctx.write_json("parts.json", [{

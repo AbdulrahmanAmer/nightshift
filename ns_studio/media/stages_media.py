@@ -1,10 +1,11 @@
-"""Registers the media stages and appends them to the `shorts_only` and `master_first` formats (C6).
+"""Registers the media stages (component C6).
 
-Import this module (the CLI does) to make the stages available. Shared names (`voice`, `captions`, `clips`,
-`qc`, `outbox`) are single stage objects that dispatch on `ctx.fmt`.
+Import this module (the CLI does) to register them. The order per format lives in the orchestrator's
+FORMAT_STAGES constants; this module only calls `register`. Names shared by both formats (`voice`,
+`captions`, `clips`, `qc`, `outbox`) are single stage objects that dispatch on `ctx.fmt`.
 
-`master_first` receives the media stages after C5's text stages, in the order
-`voice, duration_check, captions, shorts_timing, clips, render_master, thumbnails, shorts_derive, qc, outbox`.
+Shorts-only media order: voice, captions, clips, render, qc, outbox. Master-first media order:
+voice, duration_check, captions, shorts_timing, clips, render_master, thumbnails, shorts_derive, qc, outbox.
 """
 
 from __future__ import annotations
@@ -19,7 +20,6 @@ from ns_studio.media.qc import QcStage
 from ns_studio.media.render import RenderStage
 from ns_studio.media.thumbnails import ThumbnailsStage
 from ns_studio.media.voice import VoiceStage
-from ns_studio.orchestrator import FORMAT_STAGES
 from ns_studio.stages import Stage, register
 
 SHORTS_MEDIA_STAGES: list[Stage] = [
@@ -37,9 +37,3 @@ MASTER_MEDIA_STAGES: list[Stage] = [
 
 for _st in {s.name: s for s in [*SHORTS_MEDIA_STAGES, *MASTER_MEDIA_STAGES]}.values():
     register(_st)
-for _st in SHORTS_MEDIA_STAGES:
-    if _st.name not in FORMAT_STAGES["shorts_only"]:
-        FORMAT_STAGES["shorts_only"].append(_st.name)
-for _st in MASTER_MEDIA_STAGES:
-    if _st.name not in FORMAT_STAGES["master_first"]:
-        FORMAT_STAGES["master_first"].append(_st.name)

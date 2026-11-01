@@ -4,10 +4,9 @@ from pathlib import Path
 import pytest
 
 from ns_common import ffmpeg as ff
-from ns_studio.media import stages_media  # noqa: F401
 from ns_studio.media.audio import parse_ebur128, parse_silences
+from ns_studio.media.stages_media import MASTER_MEDIA_STAGES, SHORTS_MEDIA_STAGES
 from ns_studio.media.voice import loudnorm, measure_lufs, narration_items
-from ns_studio.orchestrator import FORMAT_STAGES
 from ns_studio.stages import REGISTRY
 from tests.helpers import make_ctx
 
@@ -37,7 +36,8 @@ def test_hook_equal_to_first_sentence_is_not_voiced_twice():
 
 
 def test_media_stages_register_in_order():
-    assert FORMAT_STAGES["shorts_only"][-6:] == ["voice", "captions", "clips", "render", "qc", "outbox"]
+    assert [s.name for s in SHORTS_MEDIA_STAGES] == ["voice", "captions", "clips", "render", "qc", "outbox"]
+    assert all(s.name in REGISTRY for s in [*SHORTS_MEDIA_STAGES, *MASTER_MEDIA_STAGES])
     assert REGISTRY["voice"].tenant == "tts" and REGISTRY["captions"].tenant == "whisper"
 
 
