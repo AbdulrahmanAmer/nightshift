@@ -30,9 +30,9 @@ export default function Create() {
   return (
     <div className="enter flex flex-col gap-5">
       <PageHeader title="Create" sub="Pick what you want made. The result lands in your Queue" />
-      <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_380px]">
+      <div className="grid grid-cols-[minmax(0,1fr)] gap-5 xl:grid-cols-[minmax(0,1fr)_380px]">
         <div className="flex min-w-0 flex-col gap-4">
-          <div role="radiogroup" aria-label="What to make" className="grid gap-4 sm:grid-cols-2">
+          <div role="radiogroup" aria-label="What to make" className="grid grid-cols-[minmax(0,1fr)] gap-4 sm:grid-cols-2">
             <ChoiceTile on={kind === "story"} onClick={() => pick("story")} title="A new story video" sub="An original story for one of your channels, narrated and edited with footage and captions" scene={<Scene seed="The Laundromat That Only Opens at Night" w={1600} h={600} className="size-full" />} />
             <ChoiceTile on={kind === "clips"} onClick={() => pick("clips")} title="Clips from my own video" sub="Drop a stream or podcast, or paste a link. Nightshift finds the best moments and cuts vertical clips" scene={<Scene seed="night-desk stream" kind="clip" w={1600} h={600} className="size-full" />} />
           </div>
@@ -57,8 +57,8 @@ export default function Create() {
         {finishedClips.length ? (
           <div className="grid grid-cols-[repeat(auto-fill,minmax(150px,1fr))] gap-3">
             {finishedClips.map((o) => (
-              <a key={o.output_id} href={`#/?id=${encodeURIComponent(o.output_id)}`} className="group flex flex-col gap-2 rounded-[16px] border border-line bg-card p-2 no-underline shadow-sm hover:border-line-2">
-                <div className="relative aspect-[9/16] overflow-hidden rounded-[10px] bg-[#0b0d14]"><Poster o={o} className="size-full" /><span className="glass-chip absolute right-2 bottom-2 rounded-full px-2 py-0.5 font-mono text-[11px] num">{fmtDur(o.duration_s)}</span></div>
+              <a key={o.output_id} href={`#/?id=${encodeURIComponent(o.output_id)}`} className="group flex flex-col gap-2 rounded-[16px] border border-line bg-card p-2 no-underline shadow-sm transition-colors duration-150 hover:border-line-2">
+                <div className="relative aspect-[9/16] overflow-hidden rounded-[8px] bg-[#0b0d14]"><Poster o={o} className="size-full" /><span className="glass-chip absolute right-2 bottom-2 rounded-full px-2 py-0.5 font-mono text-[11px] num">{fmtDur(o.duration_s)}</span></div>
                 <p className="line-clamp-2 px-1 pb-1 text-[13px] leading-[18px] font-medium">{o.title}</p>
               </a>
             ))}
@@ -72,10 +72,10 @@ export default function Create() {
 function ChoiceTile({ on, onClick, title, sub, scene }: { on: boolean; onClick: () => void; title: string; sub: string; scene: JSX.Element }) {
   return (
     <button type="button" role="radio" aria-checked={on} onClick={onClick} className={cx("card group flex flex-col overflow-hidden p-2 text-left transition-[border-color,box-shadow] duration-150", on ? "border-fill ring-1 ring-fill" : "hover:border-line-2")}>
-      <div className="relative h-[120px] overflow-hidden rounded-[14px] bg-[#0b0d14]">{scene}
-        <span className={cx("absolute top-3 right-3 flex size-7 items-center justify-center rounded-full transition-colors", on ? "bg-accent text-on-accent" : "glass-chip")}>{on && <Check size={16} strokeWidth={2} />}</span>
+      <div className="relative h-[120px] overflow-hidden rounded-[12px] bg-[#0b0d14]">{scene}
+        <span className={cx("absolute top-3 right-3 flex size-7 items-center justify-center rounded-full transition-colors", on ? "bg-accent text-on-accent" : "glass-chip")}>{on && <Check size={16} strokeWidth={1.5} />}</span>
       </div>
-      <div className="px-3 pt-3 pb-2"><p className="text-[16px] font-medium">{title}</p><p className="mt-1 text-[13px] text-text-2">{sub}</p></div>
+      <div className="px-3 pt-3 pb-2"><p className="text-[15px] font-medium">{title}</p><p className="mt-1 text-[13px] text-text-2">{sub}</p></div>
     </button>
   );
 }
@@ -83,7 +83,7 @@ function ChoiceTile({ on, onClick, title, sub, scene }: { on: boolean; onClick: 
 function Step({ n, title, children, done }: { n: number; title: string; children: React.ReactNode; done?: boolean }) {
   return (
     <div className="grid grid-cols-[32px_minmax(0,1fr)] gap-x-4 gap-y-3">
-      <span className={cx("flex size-8 items-center justify-center rounded-full font-mono text-[13px] num", done ? "bg-fill text-on-fill" : "border border-line-2 text-text-2")}>{done ? <Check size={16} strokeWidth={2} /> : n}</span>
+      <span className={cx("flex size-8 items-center justify-center rounded-full font-mono text-[13px] num", done ? "bg-fill text-on-fill" : "border border-line-2 text-text-2")}>{done ? <Check size={16} strokeWidth={1.5} /> : n}</span>
       <h3 className="self-center text-[15px] font-medium">{title}</h3>
       <div className="col-start-2 min-w-0">{children}</div>
     </div>
@@ -94,7 +94,7 @@ function ChannelPick({ value, onChange }: { value: string; onChange: (s: string)
   const { status } = useApp(); const chans = status?.channels || [];
   if (!chans.length) return <Empty title="No channels yet" action={<LinkButton href="#/channels" variant="primary">Add your first channel</LinkButton>} />;
   return (
-    <div role="radiogroup" aria-label="Channel" className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+    <div role="radiogroup" aria-label="Channel" className="grid grid-cols-[minmax(0,1fr)] gap-2 sm:grid-cols-2 lg:grid-cols-3">
       {chans.map((c) => (
         <button key={c.slug} type="button" role="radio" aria-checked={value === c.slug} onClick={() => onChange(c.slug)} className={cx("flex items-center gap-3 rounded-[14px] border p-2 pr-3 text-left transition-colors", value === c.slug ? "border-fill bg-raised" : "border-line-2 hover:bg-raised/60")}>
           <span className="h-10 w-14 shrink-0 overflow-hidden rounded-[8px] bg-[#0b0d14]"><Scene seed={c.display_name + " cover"} kind={c.format === "shorts_only" && /clip|stream/i.test(c.niche || "") ? "clip" : "story"} w={560} h={400} className="size-full" /></span>
@@ -124,7 +124,7 @@ function StoryFlow({ onStarted }: { onStarted: () => void }) {
     <div className="flex flex-col gap-6">
       <Step n={1} title="Which channel" done={!!channel}><ChannelPick value={channel} onChange={setChannel} /></Step>
       <Step n={2} title="What to make" done>
-        <div role="radiogroup" aria-label="Format" className="grid gap-2 sm:grid-cols-2">
+        <div role="radiogroup" aria-label="Format" className="grid grid-cols-[minmax(0,1fr)] gap-2 sm:grid-cols-2">
           <Option on={format === "master_first"} onClick={() => setFormat("master_first")} title="Full video + Shorts" sub="A 10 to 20 minute story with chapters, plus 4 to 6 Shorts cut from it. About an hour" />
           <Option on={format === "shorts_only"} onClick={() => setFormat("shorts_only")} title="One Short" sub="A single short story as a vertical video. A few minutes" />
         </div>
@@ -141,9 +141,9 @@ function Stepper({ value, onChange, min, max, label, suffix }: { value: number; 
     <div className="flex flex-col gap-1.5">
       <span className="text-[13px] font-medium text-text-2">{label}</span>
       <div className="inline-flex h-10 items-center gap-1 self-start rounded-full border border-line-2 bg-card p-1">
-        <button type="button" aria-label={`Fewer: ${label}`} onClick={() => onChange(Math.max(min, value - (max > 30 ? 5 : 1)))} className="flex size-8 items-center justify-center rounded-full text-text-2 hover:bg-raised"><Minus size={14} strokeWidth={1.75} /></button>
+        <button type="button" aria-label={`Fewer: ${label}`} onClick={() => onChange(Math.max(min, value - (max > 30 ? 5 : 1)))} className="flex size-8 items-center justify-center rounded-full text-text-2 hover:bg-raised"><Minus size={14} strokeWidth={1.5} /></button>
         <span className="min-w-[56px] text-center font-mono text-[14px] num" aria-live="polite">{value}{suffix}</span>
-        <button type="button" aria-label={`More: ${label}`} onClick={() => onChange(Math.min(max, value + (max > 30 ? 5 : 1)))} className="flex size-8 items-center justify-center rounded-full text-text-2 hover:bg-raised"><Plus size={14} strokeWidth={1.75} /></button>
+        <button type="button" aria-label={`More: ${label}`} onClick={() => onChange(Math.min(max, value + (max > 30 ? 5 : 1)))} className="flex size-8 items-center justify-center rounded-full text-text-2 hover:bg-raised"><Plus size={14} strokeWidth={1.5} /></button>
       </div>
     </div>
   );
@@ -180,7 +180,7 @@ function ClipFlow({ onStarted }: { onStarted: () => void }) {
           <div className="flex items-center gap-3 rounded-[14px] border border-line-2 p-3">
             <span className="flex size-10 items-center justify-center rounded-full bg-raised text-text-2"><FileVideo size={18} strokeWidth={1.5} /></span>
             <div className="min-w-0 flex-1"><p className="truncate text-[14px] font-medium">{file.name}</p><p className="font-mono text-[12px] text-muted num">{(file.size / 1e9).toFixed(2)} GB</p></div>
-            <Button size="sm" variant="ghost" icon={<X size={14} />} onClick={() => setFile(null)}>Change</Button>
+            <Button size="sm" variant="ghost" icon={<X size={14} strokeWidth={1.5} />} onClick={() => setFile(null)}>Change</Button>
           </div>
         ) : (
           <div className="flex flex-col gap-3">
@@ -246,7 +246,7 @@ function JobRow({ j, channelName, onCancel }: { j: Job; channelName: (s?: string
       </div>
       <Progress value={j.progress ?? 0} />
       <ol className="flex flex-wrap gap-x-3 gap-y-1">
-        {stages.map((s, i) => <li key={s} className={cx("flex items-center gap-1 text-[12px]", i < cur ? "text-text-2" : i === cur ? "font-medium text-text" : "text-muted/70")}>{i < cur ? <Check size={12} strokeWidth={2} className="text-ok" /> : <span className={cx("size-1.5 rounded-full", i === cur ? "bg-accent" : "bg-line-2")} />}{stageWords(s)}</li>)}
+        {stages.map((s, i) => <li key={s} className={cx("flex items-center gap-1 text-[12px]", i < cur ? "text-text-2" : i === cur ? "font-medium text-text" : "text-muted/70")}>{i < cur ? <Check size={12} strokeWidth={1.5} className="text-ok" /> : <span className={cx("size-1.5 rounded-full", i === cur ? "bg-accent" : "bg-line-2")} />}{stageWords(s)}</li>)}
       </ol>
     </div>
   );

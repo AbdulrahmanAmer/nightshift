@@ -46,8 +46,8 @@ export function CardHead({ title, sub, right, className }: { title: ReactNode; s
 export function PageHeader({ title, sub, right }: { title: ReactNode; sub?: ReactNode; right?: ReactNode }) {
   return (
     <header className="flex flex-wrap items-end justify-between gap-x-6 gap-y-3">
-      <div className="min-w-0"><h1 className="text-[30px] leading-9 font-medium tracking-[-0.01em]">{title}</h1>{sub && <p className="mt-1 text-[14px] text-text-2">{sub}</p>}</div>
-      {right && <div className="flex flex-wrap items-center gap-2">{right}</div>}
+      <div className="min-w-0"><h1 className="text-[30px] leading-9 font-medium">{title}</h1>{sub && <p className="mt-1 text-[14px] text-text-2">{sub}</p>}</div>
+      {right && <div className="flex max-w-full min-w-0 flex-wrap items-center gap-2">{right}</div>}
     </header>
   );
 }
@@ -83,7 +83,7 @@ export function CheckChip({ on, onChange, children, warn }: { on: boolean; onCha
   return (
     <button type="button" aria-pressed={on} onClick={() => onChange(!on)}
       className={cx("inline-flex h-9 items-center gap-2 rounded-full border px-3.5 text-[13px] transition-colors duration-150", on ? "border-transparent bg-fill text-on-fill" : cx("bg-card text-text-2 hover:text-text", warn ? "border-bad/40" : "border-line-2"))}>
-      {on && <Check size={14} strokeWidth={2} aria-hidden />}{children}
+      {on && <Check size={14} strokeWidth={1.5} aria-hidden />}{children}
     </button>
   );
 }
@@ -94,7 +94,7 @@ export function Keycap({ children }: { children: ReactNode }) {
 
 export function Progress({ value, tone = "accent", className }: { value: number; tone?: "accent" | "ok" | "bad" | "muted"; className?: string }) {
   const c = { accent: "bg-accent", ok: "bg-ok", bad: "bg-bad", muted: "bg-muted" }[tone];
-  return <div className={cx("h-2 overflow-hidden rounded-full bg-sunken", className)} role="progressbar" aria-valuenow={Math.round(value)} aria-valuemin={0} aria-valuemax={100}><div className={cx("h-full rounded-full transition-[width] duration-500 ease-out", c)} style={{ width: `${Math.max(2, Math.min(100, value))}%` }} /></div>;
+  return <div className={cx("h-2 overflow-hidden rounded-full bg-sunken", className)} role="progressbar" aria-valuenow={Math.round(value)} aria-valuemin={0} aria-valuemax={100}><div className={cx("h-full rounded-full", c)} style={{ width: `${Math.max(2, Math.min(100, value))}%` }} /></div>;
 }
 
 export function Field({ label, hint, children, className, htmlFor }: { label: string; hint?: ReactNode; children: ReactNode; className?: string; htmlFor?: string }) {

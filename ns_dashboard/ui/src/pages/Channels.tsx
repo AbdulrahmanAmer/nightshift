@@ -6,7 +6,6 @@ import { POOL_LABELS } from "../lib/format";
 import type { Channel, Pools, Voice } from "../lib/types";
 import { Button, Card, CheckChip, cx, Empty, Field, PageHeader, SegTabs, StatusDot, Toggle } from "../ui/kit";
 import { Scene } from "../visuals/Scene";
-import { Sparkline } from "../visuals/charts";
 
 const voiceName = (c: Channel) => (typeof c.voice === "string" ? c.voice : c.voice?.name || c.voice?.speaker || "Built-in");
 const isClips = (c: Channel) => /clip|stream|podcast/i.test(c.niche || "");
@@ -28,14 +27,14 @@ export default function Channels() {
   const pendingOf = (slug: string) => status?.channels.find((x) => x.slug === slug)?.pending;
   return (
     <div className="enter flex flex-col gap-5">
-      <PageHeader title="Channels" sub="Each channel has its own voice, style and schedule" right={<Button variant="primary" icon={<Plus size={16} strokeWidth={1.75} />} onClick={() => setEditing("new")}>Add a channel</Button>} />
+      <PageHeader title="Channels" sub="Each channel has its own voice, style and schedule" right={<Button variant="primary" icon={<Plus size={16} strokeWidth={1.5} />} onClick={() => setEditing("new")}>Add a channel</Button>} />
       {chans.data.length ? (
-        <div className="grid grid-cols-[repeat(auto-fill,minmax(340px,1fr))] gap-4">
+        <div className="grid grid-cols-[repeat(auto-fill,minmax(300px,1fr))] gap-4">
           {chans.data.map((c) => {
             const on = c.status === "active"; const st = c.stats || {}; const pending = pendingOf(c.slug) ?? c.pending;
             return (
               <Card key={c.slug} className="flex flex-col overflow-hidden p-2">
-                <div className="relative h-[148px] overflow-hidden rounded-[14px] bg-[#0b0d14]">
+                <div className="relative h-[148px] overflow-hidden rounded-[12px] bg-[#0b0d14]">
                   <Scene seed={c.display_name + " cover"} kind={isClips(c) ? "clip" : "story"} w={1200} h={480} className={cx("size-full transition-opacity", !on && "opacity-50")} />
                   <span className="glass-chip absolute top-3 left-3 inline-flex h-7 items-center gap-2 rounded-full px-3 text-[12px] font-medium"><StatusDot tone={on ? "ok" : "muted"} />{on ? "Runs tonight" : "Paused"}</span>
                   <span className="glass-chip absolute bottom-3 left-3 inline-flex h-7 items-center rounded-full px-3 text-[12px]">{isClips(c) ? "Clips from your videos" : "Original fiction"}</span>
@@ -46,11 +45,11 @@ export default function Channels() {
                     <Toggle on={on} onChange={(v) => toggle(c, v)} label={on ? `Pause ${c.display_name}` : `Resume ${c.display_name}`} />
                   </div>
                   <p className="text-[12px] text-muted">Voice {voiceName(c)} · {c.masters_per_week ?? 1} full video{(c.masters_per_week ?? 1) === 1 ? "" : "s"} a week · posts <span className="font-mono num">{(c.publish_window || "").replace("-", "–")}</span></p>
-                  <div className="grid grid-cols-[1fr_1fr_1fr_auto] items-end gap-3 rounded-[14px] bg-raised p-3">
+                  <div className="grid grid-cols-3 gap-3 rounded-[12px] bg-raised p-3">
                     <Stat n={st.week} label="this week" />
                     <Stat n={pending} label="to review" />
                     <Stat n={st.watched_pct} suffix="%" label="avg watched" />
-                    <div className="flex flex-col items-end gap-1">{st.spark?.length ? <Sparkline values={st.spark} w={84} h={28} label={`Average watched over 14 days for ${c.display_name}`} /> : <span className="h-7" />}<span className="text-[11px] text-muted">14 days</span></div>
+                    <Trend spark={st.spark} />
                   </div>
                   <Button variant="secondary" size="sm" className="self-start" icon={<Pencil size={14} strokeWidth={1.5} />} onClick={() => setEditing(c.slug)}>Edit channel</Button>
                 </div>
@@ -61,6 +60,13 @@ export default function Channels() {
       ) : <Empty title="No channels yet" action={<Button variant="primary" onClick={() => setEditing("new")}>Add a channel</Button>}>Add one to start making videos</Empty>}
     </div>
   );
+}
+
+/** Change in average watched against 14 days ago, as a figure with what it compares to. */
+function Trend({ spark }: { spark?: number[] }) {
+  if (!spark || spark.length < 2) return null;
+  const d = Math.round(spark[spark.length - 1] - spark[0]);
+  return <p className="col-span-3 border-t border-line pt-2 text-[12px] text-muted">Watched to the end <span className={cx("font-mono num", d > 0 ? "text-ok" : d < 0 ? "text-bad" : "text-text-2")}>{d > 0 ? "+" : ""}{d} pts</span> vs 14 days ago</p>;
 }
 
 function Stat({ n, label, suffix = "" }: { n?: number; label: string; suffix?: string }) {
@@ -112,7 +118,7 @@ function Editor({ initial, onDone }: { initial: Channel | null | undefined; onDo
   return (
     <div className="enter flex flex-col gap-5">
       <PageHeader title={isNew ? "New channel" : c.display_name} sub={isNew ? "A YouTube channel Nightshift makes videos for" : "Changes apply from the next run"} right={<><Button variant="ghost" icon={<ArrowLeft size={16} strokeWidth={1.5} />} onClick={onDone}>Back</Button><Button variant="primary" onClick={save} disabled={saving}>Save channel</Button></>} />
-      <div className="grid gap-5 lg:grid-cols-[200px_minmax(0,1fr)]">
+      <div className="grid grid-cols-[minmax(0,1fr)] gap-5 lg:grid-cols-[200px_minmax(0,1fr)]">
         <nav aria-label="Sections" className="hidden lg:block"><ul className="sticky top-4 flex flex-col gap-1">{SECTIONS.map(([id, l]) => <li key={id}><button type="button" onClick={() => jump(id)} className="h-9 w-full rounded-full px-4 text-left text-[14px] text-text-2 hover:bg-card hover:text-text">{l}</button></li>)}</ul></nav>
         <div className="flex min-w-0 flex-col gap-4">
           <Card id="sec-basics" className="scroll-mt-4 p-6">
@@ -161,7 +167,7 @@ function Editor({ initial, onDone }: { initial: Channel | null | undefined; onDo
               ))}
               <div><label htmlFor="f-avoid" className="mb-2 block text-[13px] font-medium text-text-2">Topics to avoid</label>
                 <div className="flex flex-wrap items-center gap-2 rounded-[12px] border border-line-2 p-2">
-                  {(c.avoid_topics || []).map((t) => <span key={t} className="inline-flex h-7 items-center gap-1 rounded-full bg-raised pr-1 pl-3 text-[13px]">{t}<button type="button" aria-label={`Remove ${t}`} onClick={() => set({ avoid_topics: (c.avoid_topics || []).filter((x) => x !== t) })} className="flex size-5 items-center justify-center rounded-full text-muted hover:text-text"><X size={12} /></button></span>)}
+                  {(c.avoid_topics || []).map((t) => <span key={t} className="inline-flex h-7 items-center gap-1 rounded-full bg-raised pr-1 pl-3 text-[13px]">{t}<button type="button" aria-label={`Remove ${t}`} onClick={() => set({ avoid_topics: (c.avoid_topics || []).filter((x) => x !== t) })} className="flex size-5 items-center justify-center rounded-full text-muted hover:text-text"><X size={12} strokeWidth={1.5} /></button></span>)}
                   <input id="f-avoid" className="h-7 min-w-[160px] flex-1 bg-transparent px-1 text-[13px] outline-none placeholder:text-muted" placeholder="Type a topic and press Enter" value={avoid} onChange={(e) => setAvoid(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && avoid.trim()) { e.preventDefault(); set({ avoid_topics: [...new Set([...(c.avoid_topics || []), avoid.trim()])] }); setAvoid(""); } }} />
                 </div>
               </div>

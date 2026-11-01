@@ -47,7 +47,7 @@ export default function Settings() {
   return (
     <div className="enter flex flex-col gap-5">
       <PageHeader title="Settings" sub="The defaults from setup work. Change things here only if you want to" />
-      <div className="grid gap-5 xl:grid-cols-2">
+      <div className="grid grid-cols-[minmax(0,1fr)] gap-5 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
         <div className="flex flex-col gap-5">
           <Card className="px-6 py-2">
             <h2 className="pt-4 text-[17px] font-medium">Overnight work</h2>
@@ -62,7 +62,7 @@ export default function Settings() {
           <Card className="px-6 py-2">
             <h2 className="pt-4 text-[17px] font-medium">Stock footage keys</h2>
             {["pexels", "pixabay"].map((k) => (
-              <Row key={k} title={k[0].toUpperCase() + k.slice(1)} sub={s?.keys?.[k] ? <span className="font-mono tracking-wider">••••••••••••••••</span> : "Missing. Stories may run short of footage"}>
+              <Row key={k} title={k[0].toUpperCase() + k.slice(1)} sub={s?.keys?.[k] ? <span className="font-mono">••••••••••••••••</span> : "Missing. Stories may run short of footage"}>
                 <Button size="sm" variant={s?.keys?.[k] ? "secondary" : "primary"} icon={<KeyRound size={14} strokeWidth={1.5} />} onClick={() => setKey(k)}>{s?.keys?.[k] ? "Replace" : "Add key"}</Button>
               </Row>
             ))}
@@ -104,9 +104,9 @@ export default function Settings() {
               ))}
             </div>
             {unlocked && <div className="pt-4"><Button size="sm" variant="primary" onClick={async () => { const f = Object.fromEntries(Object.entries(flags).map(([k, v]) => [k, v !== "" && !isNaN(Number(v)) ? Number(v) : v])); if (await put({ flags: f, unlock: true }, "Engine settings saved")) setUnlocked(false); }}>Save engine settings</Button></div>}
-            <div className="mt-6 flex items-center justify-between gap-3">
+            <div className="mt-6 flex flex-wrap items-center justify-between gap-3">
               <h3 className="text-[15px] font-medium">Recent log</h3>
-              <div className="flex items-center gap-2"><SegTabs size="sm" label="Log level" value={level || "all"} onChange={(v) => setLevel(v === "all" ? "" : v)} items={[{ id: "all", label: "All" }, { id: "INFO", label: "Info" }, { id: "WARN", label: "Warnings" }, { id: "ERROR", label: "Errors" }]} />
+              <div className="flex max-w-full min-w-0 items-center gap-2"><SegTabs size="sm" label="Log level" value={level || "all"} onChange={(v) => setLevel(v === "all" ? "" : v)} items={[{ id: "all", label: "All" }, { id: "INFO", label: "Info" }, { id: "WARN", label: "Warnings" }, { id: "ERROR", label: "Errors" }]} />
                 <button type="button" aria-label="Refresh log" onClick={logs.reload} className="flex size-8 items-center justify-center rounded-full text-text-2 hover:bg-raised"><RefreshCw size={14} strokeWidth={1.5} /></button></div>
             </div>
             <div className="mt-3 mb-4 max-h-[240px] overflow-auto rounded-[12px] bg-[#0b0d14] p-3 font-mono text-[12px] leading-5 text-[#c9cfdb] scroll-thin">

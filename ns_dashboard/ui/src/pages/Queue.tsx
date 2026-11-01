@@ -128,12 +128,11 @@ function Review({ o, items, onPick, onChanged, channelName }: { o: Output; items
   const total = steps.length + 2;
 
   return (
-    <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_400px]">
+    <div className="grid grid-cols-[minmax(0,1fr)] gap-5 min-[1100px]:grid-cols-[minmax(0,1fr)_360px] 2xl:grid-cols-[minmax(0,1fr)_400px]">
       <div className="flex min-w-0 flex-col gap-4">
         {/* hero player */}
         <div className="relative overflow-hidden rounded-[24px] bg-[#0b0d14] shadow-card">
           <div className={cx("relative", portrait ? "aspect-[16/10]" : "aspect-video")}>
-            {portrait && <div aria-hidden className="absolute inset-0 scale-110 opacity-50 blur-2xl"><Poster o={o} portrait={false} className="size-full" /></div>}
             <div className={cx("absolute inset-0", portrait && "flex justify-center py-5")}>
               {demo ? (
                 <div className={cx("relative overflow-hidden", portrait ? "aspect-[9/16] h-full rounded-[16px] shadow-float" : "size-full")}>
@@ -146,9 +145,7 @@ function Review({ o, items, onPick, onChanged, channelName }: { o: Output; items
               )}
             </div>
             <div className="pointer-events-none absolute top-4 left-4 flex flex-wrap gap-2">
-              <span className="glass-chip inline-flex h-8 items-center rounded-full px-3 text-[13px] font-medium">{kindLabel(o.kind)}{o.k ? ` ${o.k}` : ""}</span>
-              <span className="glass-chip inline-flex h-8 items-center rounded-full px-3 font-mono text-[13px] num">{fmtDur(o.duration_s)}</span>
-              <span className="glass-chip inline-flex h-8 items-center rounded-full px-3 text-[13px]">{channelName(o.channel)}</span>
+              <span className="glass-chip inline-flex h-8 items-center gap-2 rounded-full px-3 text-[13px] font-medium">{kindLabel(o.kind)}{o.k ? ` ${o.k}` : ""}<span className="font-mono font-normal num opacity-70">{fmtDur(o.duration_s)}</span></span>
             </div>
             <span className="glass-chip pointer-events-none absolute top-4 right-4 inline-flex h-8 items-center rounded-full px-3 font-mono text-[13px] num">{idx + 1} of {items.length}</span>
           </div>
@@ -156,7 +153,7 @@ function Review({ o, items, onPick, onChanged, channelName }: { o: Output; items
         <div className="flex flex-wrap items-start justify-between gap-3 px-1">
           <div className="min-w-0">
             <h2 className="text-[22px] leading-7 font-medium">{o.title}</h2>
-            <p className="mt-1 text-[13px] text-muted">Made <span className="font-mono num">{fmtWhen(o.created_at)}</span>{d?.critic_avg ? <> · critic score <span className="font-mono num">{d.critic_avg.toFixed(1)}</span></> : null}{d?.words ? <> · <span className="font-mono num">{d.words.toLocaleString("en-US")}</span> words</> : null}</p>
+            <p className="mt-1 text-[13px] text-muted">{channelName(o.channel)} · made <span className="font-mono num">{fmtWhen(o.created_at)}</span>{d?.critic_avg ? <> · critic score <span className="font-mono num">{d.critic_avg.toFixed(1)}</span></> : null}{d?.words ? <> · <span className="font-mono num">{d.words.toLocaleString("en-US")}</span> words</> : null}</p>
           </div>
           <div className="flex items-center gap-2">
             <Button variant="ghost" size="sm" icon={<MessageSquare size={14} strokeWidth={1.5} />} onClick={() => ask({ page: "queue", output_id: o.output_id }, `Tell me about "${o.title}"`)}>Ask about it</Button>
@@ -173,7 +170,7 @@ function Review({ o, items, onPick, onChanged, channelName }: { o: Output; items
             <div className="fade-in grid gap-5 border-t border-line px-5 py-4 md:grid-cols-[1.4fr_1fr]">
               <p className="text-[15px] leading-6 text-text-2">{d?.story_excerpt || "No excerpt saved for this video"}</p>
               <ul className="flex flex-col gap-2">
-                {(d?.policy_notes || []).map((n) => <li key={n} className="flex gap-2 text-[13px]"><Check size={16} strokeWidth={1.75} className="mt-0.5 shrink-0 text-ok" />{n}</li>)}
+                {(d?.policy_notes || []).map((n) => <li key={n} className="flex gap-2 text-[13px]"><Check size={16} strokeWidth={1.5} className="mt-0.5 shrink-0 text-ok" />{n}</li>)}
               </ul>
             </div>
           )}
@@ -184,9 +181,9 @@ function Review({ o, items, onPick, onChanged, channelName }: { o: Output; items
             <div className="mb-3 flex items-baseline justify-between px-1"><h3 className="text-[15px] font-medium">Also ready</h3><span className="text-[12px] text-muted">{items.length - 1} more</span></div>
             <div className="flex gap-3 overflow-x-auto pb-2 scroll-thin">
               {items.filter((x) => x.output_id !== o.output_id).map((x) => (
-                <button key={x.output_id} type="button" onClick={() => onPick(x.output_id)} className="group flex w-[220px] shrink-0 flex-col gap-2 rounded-[16px] border border-line bg-card p-2 text-left shadow-sm transition-colors hover:border-line-2">
-                  <div className="relative aspect-video overflow-hidden rounded-[10px] bg-[#0b0d14]">
-                    <Poster o={x} portrait={false} className="size-full transition-transform duration-300 group-hover:scale-[1.02]" />
+                <button key={x.output_id} type="button" onClick={() => onPick(x.output_id)} className="group flex w-[220px] shrink-0 flex-col gap-2 rounded-[16px] border border-line bg-card p-2 text-left shadow-sm transition-colors duration-150 hover:border-line-2">
+                  <div className="relative aspect-video overflow-hidden rounded-[8px] bg-[#0b0d14]">
+                    <Poster o={x} portrait={false} className="size-full" />
                     <span className="glass-chip absolute right-2 bottom-2 rounded-full px-2 py-0.5 font-mono text-[11px] num">{fmtDur(x.duration_s)}</span>
                   </div>
                   <div className="px-1 pb-1"><KindTag kind={x.kind} /><p className="mt-0.5 line-clamp-2 text-[13px] leading-[18px] font-medium">{x.title}</p></div>
@@ -198,14 +195,14 @@ function Review({ o, items, onPick, onChanged, channelName }: { o: Output; items
       </div>
 
       {/* posting checklist */}
-      <aside aria-label="Posting checklist" className="xl:sticky xl:top-4 xl:self-start">
+      <aside aria-label="Posting checklist" className="min-[1100px]:sticky min-[1100px]:top-4 min-[1100px]:self-start">
         <Card className="flex flex-col">
           <div className="flex items-center justify-between px-5 pt-5 pb-3">
             <h2 className="text-[17px] font-medium">Post it</h2>
             <span className="font-mono text-[12px] text-muted num">{doneCount} of {total} done</span>
           </div>
           <ol className="flex flex-col px-3 pb-3">
-            <li className={cx("mx-0 mb-1 rounded-[14px] p-3", approved ? "" : "bg-raised")}>
+            <li className={cx("mx-0 mb-1 rounded-[8px] p-3", approved ? "" : "bg-raised")}>
               <div className="flex items-start gap-3">
                 <StepNum n={1} done={approved} />
                 <div className="min-w-0 flex-1">
@@ -221,13 +218,13 @@ function Review({ o, items, onPick, onChanged, channelName }: { o: Output; items
               </div>
             </li>
             {steps.map((s, i) => (
-              <li key={s.key} className={cx("flex items-center gap-3 rounded-[14px] px-3 py-2.5 transition-opacity", !approved && "opacity-45")} aria-disabled={!approved}>
+              <li key={s.key} className={cx("flex items-center gap-3 rounded-[8px] px-3 py-2.5 transition-opacity duration-150", !approved && "opacity-45")} aria-disabled={!approved}>
                 <StepNum n={i + 2} done={!!prog[s.key]} />
                 <div className="min-w-0 flex-1"><p className="text-[14px] leading-5">{s.title}</p>{s.sub && <p className="truncate text-[12px] leading-4 text-muted" title={s.sub}>{s.sub}</p>}</div>
                 <fieldset disabled={!approved} className="contents">{s.action}</fieldset>
               </li>
             ))}
-            <li className={cx("mt-1 rounded-[14px] border border-line p-3", !approved && "opacity-45")}>
+            <li className={cx("mt-1 rounded-[8px] border border-line p-3", !approved && "opacity-45")}>
               <div className="flex items-start gap-3">
                 <StepNum n={steps.length + 2} />
                 <div className="min-w-0 flex-1">
@@ -246,5 +243,5 @@ function Review({ o, items, onPick, onChanged, channelName }: { o: Output; items
 }
 
 function StepNum({ n, done }: { n: number; done?: boolean }) {
-  return <span className={cx("flex size-7 shrink-0 items-center justify-center rounded-full font-mono text-[12px] num transition-colors", done ? "bg-fill text-on-fill" : "border border-line-2 text-text-2")}>{done ? <Check size={14} strokeWidth={2} aria-label="Done" /> : n}</span>;
+  return <span className={cx("flex size-7 shrink-0 items-center justify-center rounded-full font-mono text-[12px] num transition-colors", done ? "bg-fill text-on-fill" : "border border-line-2 text-text-2")}>{done ? <Check size={14} strokeWidth={1.5} aria-label="Done" /> : n}</span>;
 }

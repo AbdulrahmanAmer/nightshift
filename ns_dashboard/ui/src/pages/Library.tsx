@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Copy, MessageSquare, Mic, Play, Plus, RotateCcw, Search, Wand2 } from "lucide-react";
+import { Copy, MessageSquare, Play, Plus, RotateCcw, Search, Wand2 } from "lucide-react";
 import { useApp, useLoad } from "../lib/app";
 import { api } from "../lib/api";
 import { fmtDay, fmtDur, store } from "../lib/format";
@@ -51,11 +51,11 @@ function Ideas() {
   return (
     <div className="flex flex-col gap-4">
       <Card className="p-5">
-        <div className="grid gap-3 lg:grid-cols-[220px_minmax(0,1fr)_200px_auto]">
+        <div className="grid grid-cols-[minmax(0,1fr)] gap-3 lg:grid-cols-[220px_minmax(0,1fr)_200px_auto]">
           <input aria-label="Title" className="field-input" placeholder="Title" value={title} onChange={(e) => setTitle(e.target.value)} />
           <input aria-label="Premise" className="field-input" placeholder="What happens, and the turn, in one or two sentences" value={premise} onChange={(e) => setPremise(e.target.value)} onKeyDown={(e) => e.key === "Enter" && add()} />
           <select aria-label="Channel" className="field-input" value={chan} onChange={(e) => setChan(e.target.value)}>{chans.map((c) => <option key={c.slug} value={c.slug}>{c.display_name}</option>)}</select>
-          <Button variant="primary" icon={<Plus size={16} strokeWidth={1.75} />} onClick={add}>Add idea</Button>
+          <Button variant="primary" icon={<Plus size={16} strokeWidth={1.5} />} onClick={add}>Add idea</Button>
         </div>
       </Card>
       <div className="flex flex-wrap gap-2">
@@ -70,7 +70,7 @@ function Ideas() {
             return (
               <Card key={i.id} className="flex flex-col gap-3 p-5">
                 <div className="flex items-center justify-between gap-2 text-[12px]"><span className="inline-flex items-center gap-2 text-text-2"><StatusDot tone={IDEA_TONE[s]} />{IDEA_LABEL[s] || s}</span><span className="truncate text-muted">{channelName(i.channel)}</span></div>
-                <div><h3 className="text-[16px] leading-6 font-medium">{i.title || "Untitled idea"}</h3><p className="mt-1 text-[14px] leading-[21px] text-text-2">{i.premise}</p></div>
+                <div><h3 className="text-[15px] leading-6 font-medium">{i.title || "Untitled idea"}</h3><p className="mt-1 text-[14px] leading-5 text-text-2">{i.premise}</p></div>
                 <p className="text-[12px] text-muted">{sourceLabel(i.source)}{i.created_at ? ` · ${fmtDay(i.created_at)}` : ""}</p>
                 <div className="mt-auto flex flex-wrap gap-2 pt-1">
                   {s === "new" && <Button size="sm" variant="primary" onClick={() => setStatus(i, "approved")}>Approve for production</Button>}
@@ -137,11 +137,11 @@ function Voices() {
   };
   const mode = (m: string) => (m === "preset" ? "Built-in" : m === "design" ? "Designed from a description" : "Cloned from your sample");
   return (
-    <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
+    <div className="grid grid-cols-[minmax(0,1fr)] gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
       <div className="grid grid-cols-[repeat(auto-fill,minmax(240px,1fr))] content-start gap-4">
         {voices.data.map((v) => (
           <Card key={v.name} className="flex flex-col gap-3 p-5">
-            <div className="flex items-start justify-between gap-2"><div><h3 className="text-[16px] font-medium">{v.name}</h3><p className="text-[12px] text-muted">{mode(v.mode)}</p></div><span className="flex size-9 items-center justify-center rounded-full bg-raised text-text-2"><Mic size={16} strokeWidth={1.5} /></span></div>
+            <div><h3 className="text-[15px] font-medium">{v.name}</h3><p className="text-[12px] text-muted">{mode(v.mode)}</p></div>
             {v.description && <p className="text-[13px] text-text-2">{v.description}</p>}
             <Waveform seed={v.name} active={playing === v.name} />
             <Button size="sm" variant="secondary" className="self-start" icon={<Play size={14} strokeWidth={1.5} />} onClick={() => play(v)}>{playing === v.name ? "Playing" : "Play sample"}</Button>
@@ -175,7 +175,7 @@ function Formats() {
         return (
           <section key={k}>
             <h2 className="mb-3 px-1 text-[15px] font-medium">{label}</h2>
-            <div className="grid grid-cols-[repeat(auto-fill,minmax(340px,1fr))] gap-4">
+            <div className="grid grid-cols-[repeat(auto-fill,minmax(300px,1fr))] gap-4">
               {list.map((f) => {
                 const wide = (f.canvas?.w || 9) > (f.canvas?.h || 16);
                 return (

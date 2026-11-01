@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ArrowUp, Check, FileSearch, Pause, Scissors, Sparkles, Wand2, X } from "lucide-react";
+import { ArrowUp, Check, FileSearch, Pause, Lightbulb, Scissors, Wand2, X } from "lucide-react";
 import { useApp } from "../lib/app";
 import { api } from "../lib/api";
 import { store } from "../lib/format";
@@ -90,7 +90,7 @@ export function Chat({ compact }: { compact?: boolean }) {
           <textarea id={compact ? "ask-text" : "chat-text"} ref={taRef} rows={1} value={text} onChange={(e) => setText(e.target.value)} placeholder="Ask or tell Nightshift"
             onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(text); } }}
             className="max-h-40 min-h-[36px] flex-1 resize-none bg-transparent py-2 text-[14px] leading-5 outline-none placeholder:text-muted" />
-          <button type="submit" aria-label="Send" disabled={busy || !text.trim()} className="flex size-9 shrink-0 items-center justify-center rounded-full bg-fill text-on-fill transition-opacity disabled:opacity-30"><ArrowUp size={18} strokeWidth={1.75} /></button>
+          <button type="submit" aria-label="Send" disabled={busy || !text.trim()} className="flex size-9 shrink-0 items-center justify-center rounded-full bg-fill text-on-fill transition-opacity disabled:opacity-30"><ArrowUp size={18} strokeWidth={1.5} /></button>
         </form>
         <div className="mt-2 flex items-center justify-between px-1 text-[12px] text-muted"><span>Enter to send, Shift+Enter for a new line</span><button type="button" onClick={reset} className="hover:text-text">New conversation</button></div>
       </div>
@@ -107,7 +107,7 @@ function ConfirmCard({ c, onYes, onNo }: { c: Confirm; onYes: () => void; onNo: 
         <div className="mt-3 flex gap-2"><Button size="sm" variant="primary" onClick={onYes}>Yes, do it</Button><Button size="sm" variant="ghost" onClick={onNo}>No</Button></div>
       ) : (
         <p className={cx("mt-2 flex items-center gap-1.5 text-[13px]", c.state === "done" ? "text-ok" : c.state === "failed" ? "text-bad" : "text-muted")}>
-          {c.state === "done" ? <Check size={14} strokeWidth={2} /> : <X size={14} strokeWidth={2} />}
+          {c.state === "done" ? <Check size={14} strokeWidth={1.5} /> : <X size={14} strokeWidth={1.5} />}
           {c.state === "dismissed" ? "Not done" : c.result || (c.state === "done" ? "Done" : "That did not work")}
         </p>
       )}
@@ -117,7 +117,7 @@ function ConfirmCard({ c, onYes, onNo }: { c: Confirm; onYes: () => void; onNo: 
 
 const CAN = [
   { icon: Wand2, t: "Start a story video or clips", s: "For any channel, with the same options as Create" },
-  { icon: Sparkles, t: "Draft story concepts", s: "Three concepts for a series, and redo any of them" },
+  { icon: Lightbulb, t: "Draft story concepts", s: "Three concepts for a series, and redo any of them" },
   { icon: Pause, t: "Pause or resume channels", s: "Skips tonight's run for that channel" },
   { icon: FileSearch, t: "Find files and explain results", s: "Where a video is, why a run stopped, what changed" },
   { icon: Scissors, t: "Cut clips from a link", s: "Paste a link to a video you own" },
@@ -128,12 +128,12 @@ export default function Assistant() {
   return (
     <div className="enter flex flex-col gap-5">
       <PageHeader title="Assistant" sub={demo ? "Scripted answers while the engine is off. On your PC it runs on the local model" : "Runs on the local model. It uses the same tools as the buttons"} />
-      <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_320px]">
+      <div className="grid grid-cols-[minmax(0,1fr)] gap-5 lg:grid-cols-[minmax(0,1fr)_320px]">
         <Card className="flex h-[calc(100vh-196px)] min-h-[520px] flex-col overflow-hidden"><Chat /></Card>
         <div className="flex flex-col gap-4">
           <Card className="p-5">
             <h2 className="text-[15px] font-medium">What it can do</h2>
-            <ul className="mt-3 flex flex-col gap-3.5">
+            <ul className="mt-4 flex flex-col gap-4">
               {CAN.map(({ icon: I, t, s }) => <li key={t} className="flex gap-3"><span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-raised text-text-2"><I size={16} strokeWidth={1.5} /></span><div><p className="text-[13px] font-medium">{t}</p><p className="text-[12px] text-muted">{s}</p></div></li>)}
             </ul>
           </Card>

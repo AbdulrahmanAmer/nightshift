@@ -31,12 +31,12 @@ export default function Results() {
   return (
     <div className="enter flex flex-col gap-5">
       <PageHeader title="Results" sub={<>From the YouTube Studio export imported <span className="font-mono num">{fmtWhen(s.imported_at)}</span>{s.matched != null ? `. ${s.matched} videos matched, ${s.unmatched} not matched` : ""}</>} />
-      <div className="grid gap-4 sm:grid-cols-3">
+      <div className="grid grid-cols-[minmax(0,1fr)] gap-4 sm:grid-cols-3">
         <Figure label="Views, last 14 days" value={total ? fmtNum(total) : "–"} />
         <Figure label="From Shorts" value={shortsShare != null ? `${shortsShare}%` : "–"} />
         <Figure label="Watched to the end, on average" value={avgWatched != null ? `${avgWatched}%` : "–"} />
       </div>
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,2fr)_minmax(300px,1fr)]">
+      <div className="grid grid-cols-[minmax(0,1fr)] gap-4 xl:grid-cols-[minmax(0,2fr)_minmax(300px,1fr)]">
         <Card className="p-5">
           <CardHead title="Views over the last 14 days" right={<div className="flex items-center gap-4 text-[12px] text-text-2"><span className="flex items-center gap-1.5"><span className="h-0.5 w-4 rounded-full bg-accent" />Shorts</span><span className="flex items-center gap-1.5"><span className="h-0.5 w-4 rounded-full bg-text" />Full videos</span></div>} />
           <div className="mt-4">{days.length ? <ViewsChart days={days} height={300} /> : <p className="py-12 text-center text-[13px] text-muted">Daily views appear after the next import</p>}</div>
@@ -54,7 +54,7 @@ export default function Results() {
           </Card>
         )}
       </div>
-      <div className="grid gap-4 lg:grid-cols-2">
+      <div className="grid grid-cols-[minmax(0,1fr)] gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
         <Card className="p-5">
           <CardHead title="Watched to the end" sub="Per video, most watched first" />
           <ul className="mt-4 flex flex-col gap-3.5">
@@ -78,7 +78,7 @@ export default function Results() {
           </table>
         </Card>
       </div>
-      <div className="grid gap-4 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
+      <div className="grid grid-cols-[minmax(0,1fr)] gap-4 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
         <Card className="p-5">
           <CardHead title="What Nightshift learned" />
           <ul className="mt-4 flex flex-col gap-3">{(s.summary || []).map((l) => <li key={l} className="flex gap-3 text-[15px] leading-6"><span className="mt-2.5 size-1.5 shrink-0 rounded-full bg-accent" />{l}</li>)}</ul>
@@ -88,7 +88,7 @@ export default function Results() {
           <CardHead title="What changes next" sub="Applied from tonight's run" />
           <ul className="mt-3 flex flex-col divide-y divide-line">{(s.changes || []).map((c) => (
             <li key={c.pool + c.option} className="flex items-center justify-between gap-3 py-2.5"><div className="min-w-0"><p className="truncate text-[14px]">{optionLabel(c.pool, c.option)}</p><p className="text-[12px] text-muted">{poolLabel(c.pool)}</p></div>
-              <span className={cx("inline-flex shrink-0 items-center gap-1 text-[13px]", c.delta >= 0 ? "text-ok" : "text-text-2")}>{c.delta >= 0 ? <ArrowUp size={14} strokeWidth={1.75} /> : <ArrowDown size={14} strokeWidth={1.75} />}{c.delta >= 0 ? "More often" : "Less often"}</span></li>
+              <span className={cx("inline-flex shrink-0 items-center gap-1 text-[13px]", c.delta >= 0 ? "text-ok" : "text-text-2")}>{c.delta >= 0 ? <ArrowUp size={14} strokeWidth={1.5} /> : <ArrowDown size={14} strokeWidth={1.5} />}{c.delta >= 0 ? "More often" : "Less often"}</span></li>
           ))}</ul>
           {!s.changes?.length && <p className="mt-3 text-[13px] text-muted">No changes yet</p>}
         </Card>
