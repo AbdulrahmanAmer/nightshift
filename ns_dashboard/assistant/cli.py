@@ -67,7 +67,9 @@ def build_dashboard(fake_services: bool = False) -> Any:
 def ask(
     text: Annotated[str, typer.Argument(help="What to ask or tell Nightshift.")],
     yes: Annotated[bool, typer.Option("--yes", "-y", help="Accept every confirm card.")] = False,
-    conversation: Annotated[str | None, typer.Option("--conversation", "-c", help="Continue a conversation.")] = None,
+    conversation: Annotated[
+        str | None, typer.Option("--conversation", "-c", help="Continue a conversation.")
+    ] = None,
     fake_services: Annotated[bool, typer.Option("--fake-services", help="No GPU: use fakes.")] = False,
 ) -> None:
     """Ask the Assistant (it uses the same tools as the dashboard; changes need your OK)."""

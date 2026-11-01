@@ -81,3 +81,21 @@ Format per entry:
 - **Why:** C6 (voice, captions, render), C7 (policy gate, orchestrator) and C8 (clipper) read and write these files; the single source of truth must be `ns_common`. C5 uses local copies meanwhile, so nothing blocks.
 - **Migration:** C5 replaces `from ns_studio.text.models_local import X` by `from ns_common.models import X` and deletes `models_local.py` once this lands; field names do not change.
 - **Status:** open
+
+## CR-C9-6: idea-bank columns and the assistant database
+- **From:** C9 ns_dashboard / Library + Assistant
+- **Change:** (a) `contracts/schema.sql`, table `ideas`: add `status TEXT NOT NULL DEFAULT 'new'` (`new|approved|used|dropped`), `setting TEXT`, `protagonist TEXT`, `keywords TEXT` (JSON array), `source TEXT` (`owner|nightshift|assistant`), `updated_at TEXT`. M1 stage `ideas` (C5/C7) then draws `status='approved'` rows of the channel first (set `status='used'` and `used=1` when consumed) and invents only when none are left. (b) New `contracts/assistant_schema.sql` (or an `assistant.db` section of `schema.sql`) with the tables created by `ns_dashboard/assistant/store.py`: `conversations`, `messages`, `actions`, `queued_messages` (DDL is in that module's `DDL` constant). (c) `ns_common/llm_client.py`: move `chat_tools(messages, tools)` (OpenAI-compatible tool calling, see `ns_dashboard/assistant/llm.py::ToolLlmClient`) into `LlmClient`. (d) `contracts/schemas/format.schema.json` generated from a pydantic `Format` model (the dashboard validates against `ns_dashboard/formats.py::FORMAT_SCHEMA` until then).
+- **Why:** spec 20.2 Library > Ideas and 20.3a. Until then the dashboard adds the idea columns itself with a guarded `ALTER TABLE ... ADD COLUMN` at startup and creates `data/assistant.db` with `CREATE TABLE IF NOT EXISTS`.
+- **Status:** open
+
+## CR-C9-7: mount `studio ask` and ship the prompt
+- **From:** C9 ns_dashboard / Assistant CLI
+- **Change:** C7 mounts the command: in `ns_studio/cli.py` call `from ns_dashboard.assistant.cli import register; register(app)` (it adds `studio ask "<text>" [--yes] [-c conversation] [--fake-services]`). `pyproject.toml` (extends CR-C9-1): `[tool.setuptools.package-data] ns_dashboard = ["static/*", "prompts/*.md"]`.
+- **Why:** spec 20.3a "`studio ask` on the command line for the same loop". The prompt file `ns_dashboard/prompts/assistant.md` must ship with the package.
+- **Status:** open
+
+## CR-C9-8: `ns update --check` / `--github` output and subprocess allow-list
+- **From:** C9 ns_dashboard / Update endpoints
+- **Change:** C2's `ns update --check` should print one JSON line `{"update_available": bool, "current": "x.y.z", "latest": "x.y.z", "notes": "..."}` and exit 0 (non-zero on failure); `ns update --github` downloads, verifies and installs the newest release and rolls back on failure (exit code 0 / non-zero). The dashboard falls back to reading versions and "up to date" out of plain text. C10: add `ns_dashboard/updater.py` to the `subprocess` per-file-ignores and hygiene allow-list (list arguments, never a shell, timeouts of 120 s and 1 h; it runs `venvs\supervisor\Scripts\ns.exe`).
+- **Why:** spec 20.2 Settings > Update and 20.3a `/api/update/check|apply`.
+- **Status:** open

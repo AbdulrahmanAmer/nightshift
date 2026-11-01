@@ -9,7 +9,7 @@ import pytest
 from ns_common.paths import Paths, repo_root
 from ns_dashboard.assistant import docs_index
 from ns_dashboard.assistant.llm import ScriptedToolLlm, StaticProvider, call, calls, say
-from ns_dashboard.assistant.loop import Assistant, fill_from_context, load_prompt
+from ns_dashboard.assistant.loop import fill_from_context, load_prompt
 from ns_dashboard.assistant.orientation import compact_map, system_map
 from ns_dashboard.assistant.registry import TOPICS, ToolContext, check_value, obj, render_confirm
 from ns_dashboard.assistant.store import AssistantStore
