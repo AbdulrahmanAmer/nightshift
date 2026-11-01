@@ -14,6 +14,7 @@ import numpy as np
 import yaml
 
 from ns_studio.clipper.models import CANVAS_H, CANVAS_W, ClipLayout, ClipTemplate, Crop, FaceFrame, Rect
+from ns_studio.media.captions import Box
 
 TRACK_STEP_S = 0.25
 SPEAKER_HOLD_FRAMES = 2
@@ -296,3 +297,91 @@ def plan_layout(
     if tpl.layout == "tracked":
         return _plan_tracked(tpl, source_w, source_h, layout, t_start, t1)
     return _plan_center(source_w, source_h, t_start, t1)
+
+
+# ---------- caption placement inputs (spec 17.2) ----------
+def panel_pairs(tpl: ClipTemplate, crop: Crop) -> list[tuple[str, Rect, Rect]]:
+    """(panel id, panel on the canvas, source region shown in it) for every panel that shows source pixels."""
+    panels = canvas_panels(tpl, crop)
+    pairs: list[tuple[str, Rect, Rect]] = []
+    if tpl.layout in ("gaming", "screen_cam"):
+        main_id = "game" if tpl.layout == "gaming" else "screen"
+        if crop.region_b is not None:
+            pairs.append(("cam", panels["cam"], crop.region_b))
+        pairs.append((main_id, panels[main_id], crop.region))
+    elif tpl.layout == "stacked":
+        pairs.append(("top", panels["top"], crop.region))
+        if crop.region_b is not None:
+            pairs.append(("bottom", panels["bottom"], crop.region_b))
+    elif tpl.layout == "tracked":
+        pairs.append(("main", panels["main"], crop.region))
+    else:
+        pairs.append(("fg", panels["fg"], crop.region))
+    return pairs
+
+
+def _union(boxes: list[Rect]) -> Rect:
+    x0, y0 = min(b.x for b in boxes), min(b.y for b in boxes)
+    x1, y1 = max(b.right for b in boxes), max(b.bottom for b in boxes)
+    return Rect(x=x0, y=y0, w=x1 - x0, h=y1 - y0)
+
+
+def face_tracks(layout: ClipLayout, t0: float, t1: float) -> list[Rect]:
+    """One box per face (left to right): the union of its boxes over the frames around [t0, t1]."""
+    frames = _frames_in(layout, t0, t1)
+    out: list[Rect] = []
+    for k in range(max((len(f.boxes) for f in frames), default=0)):
+        boxes = [f.boxes[k] for f in frames if k < len(f.boxes)]
+        if boxes:
+            out.append(_union(boxes))
+    return out
+
+
+def _to_panel(box: Rect, region: Rect, panel: Rect) -> Rect | None:
+    x0, y0 = max(box.x, region.x), max(box.y, region.y)
+    x1, y1 = min(box.right, region.right), min(box.bottom, region.bottom)
+    if x1 <= x0 or y1 <= y0:
+        return None
+    sx, sy = panel.w / region.w, panel.h / region.h
+    return Rect(
+        x=panel.x + round((x0 - region.x) * sx),
+        y=panel.y + round((y0 - region.y) * sy),
+        w=max(1, round((x1 - x0) * sx)),
+        h=max(1, round((y1 - y0) * sy)),
+    )
+
+
+def avoid_boxes(tpl: ClipTemplate, crop: Crop, layout: ClipLayout, t0: float, t1: float) -> list[Box]:
+    """Canvas rectangles captions must stay off: the facecam panel and every detected face (spec 17.2).
+
+    Faces are mapped from source pixels into the panel that shows them; the facecam is avoided as a whole panel
+    (gaming layouts put captions on the gameplay region, never over the camera).
+    """
+    out: list[Box] = []
+    faces = face_tracks(layout, t0, t1)
+    for panel_id, panel, region in panel_pairs(tpl, crop):
+        if panel_id == "cam":
+            out.append(Box(panel.x, panel.y, panel.w, panel.h))
+            continue
+        for f in faces:
+            mapped = _to_panel(f, region, panel)
+            if mapped is not None:
+                out.append(Box(mapped.x, mapped.y, mapped.w, mapped.h))
+    return out
+
+
+def band_in_source(tpl: ClipTemplate, crop: Crop, band: Box, src_w: int, src_h: int) -> list[Box]:
+    """Where the caption band's pixels come from in the source frame: one box per overlapped panel."""
+    out: list[Box] = []
+    for _pid, panel, region in panel_pairs(tpl, crop):
+        x0, y0 = max(band.x, panel.x), max(band.y, panel.y)
+        x1, y1 = min(band.x + band.w, panel.right), min(band.y + band.h, panel.bottom)
+        if x1 <= x0 or y1 <= y0:
+            continue
+        sx, sy = region.w / panel.w, region.h / panel.h
+        bx = min(max(0, region.x + int((x0 - panel.x) * sx)), src_w - 2)
+        by = min(max(0, region.y + int((y0 - panel.y) * sy)), src_h - 2)
+        bw = max(2, min(int((x1 - x0) * sx), src_w - bx))
+        bh = max(2, min(int((y1 - y0) * sy), src_h - by))
+        out.append(Box(bx, by, bw - bw % 2 or 2, bh - bh % 2 or 2))
+    return out

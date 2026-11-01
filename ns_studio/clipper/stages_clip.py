@@ -39,7 +39,15 @@ from ns_studio.context import FAKEABLE, JobContext, build_services
 from ns_studio.media import captions as media_captions
 from ns_studio.media import outbox as media_outbox
 from ns_studio.media import qc as media_qc
+from ns_studio.media import render as media_render
 from ns_studio.media import transcribe as media_transcribe
+from ns_studio.media.caption_plan import (
+    AssOptions,
+    emphasis_from_list,
+    mask_profanity_setting,
+    safe_zones_for,
+    speaker_plan,
+)
 from ns_studio.orchestrator import FORMAT_STAGES
 from ns_studio.stages import Stage, Tenant, register
 from ns_studio.text.prompts import call_json
@@ -405,8 +413,41 @@ def _crop_at(lay: ClipLayout, t: float) -> Any:
     return lay.crops[0]
 
 
+def sentence_indices(words: list[Word]) -> list[int]:
+    """Sentence number of every word (sentences as `select.sentence_spans` cuts them)."""
+    spans = select.sentence_spans(words)
+    out: list[int] = []
+    idx = 0
+    for w in words:
+        while idx < len(spans) - 1 and w.start > spans[idx][1] + 1e-6:
+            idx += 1
+        out.append(idx)
+    return out
+
+
+def _backdrop_luma(
+    ctx: JobContext, tpl: Any, crop: Any, clip: ClipItem, band: media_captions.Box, info: dict[str, Any]
+) -> list[float]:
+    """Luma behind the caption band at three moments of the clip, read from the source video (best effort)."""
+    boxes = layout.band_in_source(tpl, crop, band, int(info["width"]), int(info["height"]))
+    times = [clip.start_s + t for t in media_render.sample_times(clip.end_s - clip.start_s)]
+    out: list[float] = []
+    try:
+        for box in boxes:
+            out += media_captions.sample_luma(Path(info["path"]), box, times)
+    except (NsError, OSError) as e:
+        ctx.log.warn("caption_contrast_skipped", str(e)[:200], k=clip.k)
+        return []
+    return out
+
+
 class CaptionsStage:
-    """ASS captions per clip from the transcript words (2-4 words on screen, active-word highlight)."""
+    """ASS captions per clip from the transcript words (2-4 words on screen, active-word highlight).
+
+    Smart placement (spec 17.2): captions keep out of the YouTube UI zones and off the facecam and detected
+    faces, sit on the template's anchor, colour speakers differently, accent the plan's key words, mask
+    profanity when the channel asks for it and switch to the boxed variant on a low-contrast backdrop.
+    """
 
     name: str = "clip_captions"
     tenant: Tenant = None
@@ -418,22 +459,38 @@ class CaptionsStage:
         caps, tmod = media_captions, media_transcribe
         tr, plan, lay = _transcript(ctx), _plan(ctx), _layout(ctx)
         templates = layout.load_templates()
+        info = _source(ctx)
+        mask = mask_profanity_setting(ctx.paths, ctx.channel)
+        seg_speaker = {s.i: s.speaker for s in tr.segments}
         ctx.subdir("captions")
         report: dict[str, Any] = {}
         for clip in plan:
             dur = clip.end_s - clip.start_s
+            src_words = select.words_in(tr.words, clip.start_s, clip.end_s)
             words = [
-                tmod.Word(w.w, max(0.0, w.start - clip.start_s), min(dur, max(0.0, w.end - clip.start_s)), 0)
-                for w in select.words_in(tr.words, clip.start_s, clip.end_s)
+                tmod.Word(w.w, max(0.0, w.start - clip.start_s), min(dur, max(0.0, w.end - clip.start_s)), si)
+                for w, si in zip(src_words, sentence_indices(src_words), strict=True)
             ]
             style = (
                 clip.caption_style
                 if clip.caption_style in ctx.channel.pools.caption_styles
                 else ctx.combo.caption_style
             )
-            ass = caps.build_ass(words, style, variant="vertical")
             tpl = templates[template_of(lay, clip.k)]
-            ass = place_captions(ass, layout.caption_y_pct(tpl, _crop_at(lay, clip.start_s)))
+            crop = _crop_at(lay, clip.start_s)
+            y_pct = layout.caption_y_pct(tpl, crop)
+            avoid = layout.avoid_boxes(tpl, crop, lay, clip.start_s, clip.end_s)
+            speakers, breaks = speaker_plan(words, [seg_speaker.get(w.seg) for w in src_words], style)
+            opts = AssOptions(
+                variant="vertical", safe_zones=safe_zones_for("vertical"), avoid_regions=tuple(avoid),
+                emphasis=emphasis_from_list(clip.emphasis), speakers=speakers, speaker_breaks=tuple(breaks),
+                mask_profanity=mask, anchor_y_pct=y_pct,
+            )
+            band = caps.caption_band(
+                style, "vertical", avoid_regions=avoid or None, safe_zones=opts.safe_zones, anchor_y_pct=y_pct
+            )
+            luma = _backdrop_luma(ctx, tpl, crop, clip, band, info)
+            ass = opts.build(words, style, backdrop_luma=luma)
             ctx.file(f"captions/c{clip.k}.ass").write_text(ass, encoding="utf-8")
             report[f"c{clip.k}"] = {
                 "ass": f"captions/c{clip.k}.ass",
@@ -441,6 +498,10 @@ class CaptionsStage:
                 "style": style,
                 "first_caption_s": caps.first_event_start(ass),
                 "drift_ms": 0.0,  # captions are the ASR words themselves
+                "avoid_regions": len(avoid),
+                "speakers": len(set(speakers.values())),
+                "backdrop_luma": luma,
+                "boxed": bool(luma) and caps.ensure_contrast(caps.caption_style(style), luma).box,
             }
         ctx.write_json("captions/report.json", report)
 

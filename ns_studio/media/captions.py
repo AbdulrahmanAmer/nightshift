@@ -20,7 +20,7 @@ from ns_common.errors import NsError
 from ns_common.paths import contracts_dir
 from ns_common.textstats import normalize_tokens, split_sentences
 from ns_studio.context import JobContext
-from ns_studio.media.presets import FONTS_DIR, CaptionStyle, caption_style
+from ns_studio.media.presets import FONTS_DIR, CaptionStyle, CaptionVariant, caption_style
 from ns_studio.media.transcribe import Word
 from ns_studio.stages import Tenant
 
@@ -261,6 +261,52 @@ def choose_margin_v(
     return h_px - (e - pad)
 
 
+def caption_placement(
+    geo: CaptionVariant,
+    variant: Variant,
+    *,
+    avoid_regions: Sequence[Box] | None = None,
+    safe_zones: tuple[int, int] | None = None,
+    anchor_y_pct: float | None = None,
+) -> tuple[int, int]:
+    """(MarginV, block height) in canvas px of the caption block for a style geometry.
+
+    The preferred place is the style's own `margin_v_pct`, or the text centred on `anchor_y_pct` of the
+    canvas height; with avoid regions or safe zones it moves to the largest free band (spec 17.2).
+    """
+    w_px, h_px = (1080, 1920) if variant == "vertical" else (1920, 1080)
+    if anchor_y_pct is None:
+        margin_v = round(h_px * geo.margin_v_pct / 100.0)
+    else:
+        margin_v = max(20, round(h_px * (1 - anchor_y_pct / 100.0) - 0.6 * geo.font_size))
+    block_h = int(geo.font_size * 1.2 * (2 if variant == "vertical" else 1))
+    if avoid_regions or safe_zones:
+        margin_v = choose_margin_v(
+            h_px=h_px, preferred_margin_v=margin_v, block_h=block_h,
+            x_range=(geo.margin_lr, w_px - geo.margin_lr), avoid=avoid_regions or (), safe_zones=safe_zones,
+        )
+    return margin_v, block_h
+
+
+def caption_band(
+    style: CaptionStyle | str,
+    variant: Variant = "vertical",
+    *,
+    avoid_regions: Sequence[Box] | None = None,
+    safe_zones: tuple[int, int] | None = None,
+    anchor_y_pct: float | None = None,
+) -> Box:
+    """The canvas rectangle the caption block occupies (what the contrast check samples behind)."""
+    st = caption_style(style) if isinstance(style, str) else style
+    geo = st.vertical if variant == "vertical" else st.landscape
+    w_px, h_px = (1080, 1920) if variant == "vertical" else (1920, 1080)
+    margin_v, block_h = caption_placement(
+        geo, variant, avoid_regions=avoid_regions, safe_zones=safe_zones, anchor_y_pct=anchor_y_pct
+    )
+    top = min(max(0, h_px - margin_v - block_h), h_px - block_h)
+    return Box(geo.margin_lr, top, w_px - 2 * geo.margin_lr, block_h)
+
+
 def _channel(v: int) -> float:
     c = v / 255.0
     return c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
@@ -306,13 +352,19 @@ def ensure_contrast(style: CaptionStyle, backdrop_luma: Sequence[float]) -> Capt
     return style if worst >= MIN_CONTRAST else boxed_variant(style)
 
 
-def sample_luma(video: Path, box: Box, times: Sequence[float]) -> list[float]:
-    """Mean luma (YAVG) of `box` at each time, via FFmpeg crop + signalstats."""
+def sample_luma(video: Path, box: Box, times: Sequence[float], *, pre: str = "") -> list[float]:
+    """Mean luma (YAVG) of `box` at each time, via FFmpeg crop + signalstats.
+
+    `pre` is an optional filter chain (ending without a comma) applied first, so `box` can be given in the
+    coordinates of the finished frame, for example `scale=1080:1920:force_original_aspect_ratio=increase,
+    crop=1080:1920`.
+    """
     out: list[float] = []
+    head = f"{pre}," if pre else ""
     for t in times:
         proc = ff.run([
             "-ss", f"{t:.2f}", "-i", str(video), "-frames:v", "1", "-an", "-vf",
-            f"crop={box.w}:{box.h}:{box.x}:{box.y},signalstats,"
+            f"{head}crop={box.w}:{box.h}:{box.x}:{box.y},signalstats,"
             "metadata=print:key=lavfi.signalstats.YAVG",
             "-f", "null", "-",
         ])
@@ -438,6 +490,7 @@ def build_ass(
     speaker_breaks: Collection[int] = (),
     backdrop_luma: Sequence[float] | None = None,
     mask_profanity: bool = False,
+    anchor_y_pct: float | None = None,
 ) -> str:
     """Build an ASS document: 2-4 words on screen, the active word in the style's highlight colour.
 
@@ -451,6 +504,8 @@ def build_ass(
       indices where a new speaker starts (they end the current group).
     - `backdrop_luma`: luma samples behind the caption; low contrast (< 4.5:1) switches to the boxed variant.
     - `mask_profanity`: masks listed words (contracts/policy/profanity.txt) in the captions.
+    - `anchor_y_pct`: the style's preferred place becomes "text centred on this % of the canvas height"
+      (layouts with a caption anchor, spec 19.3); the free-band search above still applies.
     """
     st = caption_style(style) if isinstance(style, str) else style
     if backdrop_luma:
@@ -462,13 +517,9 @@ def build_ass(
     outline_col = st.outline_color
     primary = st.active if st.animation == "karaoke" else st.primary
     secondary = st.primary
-    margin_v = round(h_px * geo.margin_v_pct / 100.0)
-    if avoid_regions or safe_zones:
-        block_h = int(geo.font_size * 1.2 * (2 if variant == "vertical" else 1))
-        margin_v = choose_margin_v(
-            h_px=h_px, preferred_margin_v=margin_v, block_h=block_h,
-            x_range=(geo.margin_lr, w_px - geo.margin_lr), avoid=avoid_regions or (), safe_zones=safe_zones,
-        )
+    margin_v, _block_h = caption_placement(
+        geo, variant, avoid_regions=avoid_regions, safe_zones=safe_zones, anchor_y_pct=anchor_y_pct
+    )
     header = [
         "[Script Info]",
         "ScriptType: v4.00+",
@@ -589,8 +640,18 @@ class CaptionsStage:
 
             run_captions_master(ctx)
             return
+        from ns_studio.media.caption_plan import (
+            AssOptions,
+            emphasis_from_beats,
+            mask_profanity_setting,
+            safe_zones_for,
+        )
+
         parts = ctx.read_json("parts.json")
         manifest = ctx.read_json("audio/manifest.json")
+        plan_file = ctx.file("visual_plan.json")
+        beats: list[dict] = ctx.read_json("visual_plan.json") if plan_file.exists() else []
+        mask = mask_profanity_setting(ctx.paths, ctx.channel)
         tr = ctx.services.transcriber
         lang = ctx.channel.language
         ctx.subdir("words")
@@ -620,7 +681,11 @@ class CaptionsStage:
             timeline += shift_words(body_res.words, offset)
             total_s = offset + float(body["seconds"])
             style_name = ctx.combo.caption_style
-            ass = build_ass(timeline, style_name, variant="vertical")
+            opts = AssOptions(
+                variant="vertical", safe_zones=safe_zones_for("vertical"),
+                emphasis=emphasis_from_beats(beats, part=n), mask_profanity=mask,
+            )
+            ass = opts.build(timeline, style_name)
             ctx.file(f"captions/s{n}.ass").write_text(ass, encoding="utf-8")
             ctx.write_json(
                 f"captions/s{n}.json",
@@ -630,6 +695,7 @@ class CaptionsStage:
                     "hook_s": float(hook_entry["seconds"]) if hook_entry else 0.0,
                     "body_offset_s": offset,
                     "audio_s": round(total_s, 3),
+                    "ass_opts": opts.to_json(),
                     "words": [w.to_json() for w in timeline],
                 },
             )
