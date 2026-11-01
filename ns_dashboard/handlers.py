@@ -50,6 +50,11 @@ class Dashboard:
         provider = llm_provider or SupervisorLlmProvider(state.link.status, acquirer)
         self.assistant = Assistant(self, self.registry, self.assistant_store, provider)
 
+    def close(self) -> None:
+        """Close the databases (needed on Windows before a temp folder can be deleted)."""
+        self.assistant_store.close()
+        self.state.db.close()
+
 
 def build_state(
     paths: Paths | None = None,

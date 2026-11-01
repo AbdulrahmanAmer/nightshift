@@ -184,7 +184,7 @@ def test_outputs_list_filters_and_detail(tmp_home: Path):
     assert {"output_id", "kind", "k", "title", "channel", "duration_s", "created_at", "status"} <= set(first)
 
     job_dir = state.paths.job_dir("after-dark-20261101-aaaa")
-    job_dir.mkdir(parents=True)
+    job_dir.mkdir(parents=True, exist_ok=True)
     (job_dir / "policy_final.json").write_text(
         json.dumps(
             {
