@@ -45,62 +45,69 @@ pyproject.toml                    dev extra additions, ruff TID251 + per-file-ig
 
 **Files:** Create `VERSION`, `CHANGELOG.md`; test in `tests/test_hygiene.py` (Task 3).
 
-- [ ] **Step 1:** `VERSION` holds `0.1.0` and a newline. `CHANGELOG.md` follows Keep a Changelog with an `## [Unreleased]` section listing the C10 deliverables.
-- [ ] **Step 2:** `test_version_files_agree` asserts `VERSION == ns_common.__version__ == pyproject project.version`, semver-shaped, and that `CHANGELOG.md` has the Unreleased heading.
-- [ ] **Step 3:** Commit `feat(c10): VERSION, CHANGELOG and version consistency test`.
+- [x] **Step 1:** `VERSION` holds `0.1.0` and a newline. `CHANGELOG.md` follows Keep a Changelog with an `## [Unreleased]` section listing the C10 deliverables.
+- [x] **Step 2:** `test_version_files_agree` asserts `VERSION == ns_common.__version__ == pyproject project.version`, semver-shaped, and that `CHANGELOG.md` has the Unreleased heading.
+- [x] **Step 3:** Commit `feat(c10): VERSION, CHANGELOG and version consistency test`.
 
 ### Task 2: scope check
 
 **Files:** Create `dev/check_scope.py`, `tests/test_check_scope.py`.
 
-- [ ] **Step 1 (tests first):** cases for owned path accepted, foreign path rejected, `ns_common/` and `contracts/` rejected for everyone except `feat/c3-*` and `orchestrator/*`, `contracts/CHANGE_REQUESTS.md` allowed for all, C6 versus C8 on `clip_templates.yaml`, own plan file allowed and other component's plan rejected, `tests/conftest.py` orchestrator-only, unknown branch names only subject to the protected-path rule, `main` unchecked.
-- [ ] **Step 2:** `OWNERSHIP` table from ENGINEERING section 2.1; `check(branch, files) -> list[Violation]`; CLI `--base origin/main --branch <name>` runs `git diff --name-only -z --no-renames <base>...HEAD`, prints one line per violation, exits 1 on any.
-- [ ] **Step 3:** Commit `feat(c10): PR scope check mapping branches to component paths`.
+- [x] **Step 1 (tests first):** cases for owned path accepted, foreign path rejected, `ns_common/` and `contracts/` rejected for everyone except `feat/c3-*` and `orchestrator/*`, `contracts/CHANGE_REQUESTS.md` allowed for all, C6 versus C8 on `clip_templates.yaml`, own plan file allowed and other component's plan rejected, `tests/conftest.py` orchestrator-only, unknown branch names only subject to the protected-path rule, `main` unchecked.
+- [x] **Step 2:** `OWNERSHIP` table from ENGINEERING section 2.1; `check(branch, files) -> list[Violation]`; CLI `--base origin/main --branch <name>` runs `git diff --name-only -z --no-renames <base>...HEAD`, prints one line per violation, exits 1 on any.
+- [x] **Step 3:** Commit `feat(c10): PR scope check mapping branches to component paths`.
 
 ### Task 3: hygiene tests
 
 **Files:** Create `tests/test_hygiene.py`.
 
-- [ ] **Step 1:** Rules: version files agree; no module-level import of `torch`, `faster_whisper`, `spacy`, `cv2`, `qwen_tts`, `faster_qwen3_tts` under `ns_*/` (function-level and `TYPE_CHECKING` imports allowed); no `shell=True` in `ns_*`, `installer`, `tools`, `dev`; no `print(` in `ns_*` outside `cli.py`, `__main__.py`, `if __name__ == "__main__":` blocks and the NsLogger console sink `ns_common/logging.py`; every `.ps1` has `Set-StrictMode -Version Latest` then `$ErrorActionPreference = 'Stop'` as its first statements (after an optional `[CmdletBinding()]`/`param()` block, which PowerShell requires first), is ASCII and avoids `Invoke-Expression`; every `NS-[EW]nnn` literal in source exists in `contracts/errors.json`; `contracts/schemas/*.schema.json` equal `export_schemas` output.
-- [ ] **Step 2:** Add `Set-StrictMode`/`$ErrorActionPreference` to `dev/run_services_dev.ps1` (the one existing script that lacked them).
-- [ ] **Step 3:** Commit `test(c10): repo hygiene tests`.
+- [x] **Step 1:** Rules: version files agree; no module-level import of `torch`, `faster_whisper`, `spacy`, `cv2`, `qwen_tts`, `faster_qwen3_tts` under `ns_*/` (function-level and `TYPE_CHECKING` imports allowed); no `shell=True` in `ns_*`, `installer`, `tools`, `dev`; no `print(` in `ns_*` outside `cli.py`, `__main__.py`, `if __name__ == "__main__":` blocks and the NsLogger console sink `ns_common/logging.py`; every `.ps1` has `Set-StrictMode -Version Latest` then `$ErrorActionPreference = 'Stop'` as its first statements (after an optional `[CmdletBinding()]`/`param()` block, which PowerShell requires first), is ASCII and avoids `Invoke-Expression`; every `NS-[EW]nnn` literal in source exists in `contracts/errors.json`; `contracts/schemas/*.schema.json` equal `export_schemas` output.
+- [x] **Step 2:** Add `Set-StrictMode`/`$ErrorActionPreference` to `dev/run_services_dev.ps1` (the one existing script that lacked them).
+- [x] **Step 3:** Commit `test(c10): repo hygiene tests`.
 
 ### Task 4: bundle script
 
 **Files:** Create `dev/make_bundle.ps1`.
 
-- [ ] **Step 1:** Parameters `-Version`, `-OutDir`, `-DryRun`. Version defaults to `VERSION`; a leading `v` is stripped; a mismatch with `VERSION` is an error.
-- [ ] **Step 2:** `git archive --format=zip HEAD`, extract to a temp stage, delete `.github`, `docs/superpowers/plans/_*`, fixtures above 1 MB; write `VERSION`; lift `installer/answers.example.json` to the root when no root copy exists; report whether `OPERATOR.md` is present.
-- [ ] **Step 3:** Verify: forbidden names and `.venv` segments, zip below 25 MB, required files (`VERSION`, `pyproject.toml`). Write the zip with forward-slash entry names, then `Nightshift-<ver>.zip.sha256` (`<hash>  <name>`) and a copy `nightshift-app-<ver>.zip`. `-DryRun` runs the same flow in a temp folder, prints every entry and writes nothing to `dist`.
-- [ ] **Step 4:** Commit `feat(c10): make_bundle.ps1 with content verification and dry run`.
+- [x] **Step 1:** Parameters `-Version`, `-OutDir`, `-DryRun`. Version defaults to `VERSION`; a leading `v` is stripped; a mismatch with `VERSION` is an error.
+- [x] **Step 2:** `git archive --format=zip HEAD`, extract to a temp stage, delete `.github`, `docs/superpowers/plans/_*`, fixtures above 1 MB; write `VERSION`; lift `installer/answers.example.json` to the root when no root copy exists; report whether `OPERATOR.md` is present.
+- [x] **Step 3:** Verify: forbidden names and `.venv` segments, zip below 25 MB, required files (`VERSION`, `pyproject.toml`). Write the zip with forward-slash entry names, then `Nightshift-<ver>.zip.sha256` (`<hash>  <name>`) and a copy `nightshift-app-<ver>.zip`. `-DryRun` runs the same flow in a temp folder, prints every entry and writes nothing to `dist`.
+- [x] **Step 4:** Commit `feat(c10): make_bundle.ps1 with content verification and dry run`.
 
 ### Task 5: workflows
 
 **Files:** Rewrite `.github/workflows/ci.yml`, create `.github/workflows/release.yml`.
 
-- [ ] **Step 1:** `ci.yml` as in the architecture paragraph. `powershell-parse` runs under Windows PowerShell 5.1 (the target shell): parser check of every tracked `.ps1`, structural check of every `.cmd` (CRLF, ASCII; the PowerShell parser cannot read batch syntax), PSScriptAnalyzer errors, `installer/stage1.ps1 -DryRun` when present, `make_bundle.ps1 -DryRun`. `bundle` builds the real zip with `pwsh` and uploads it as an artifact so the release path is exercised on every push.
-- [ ] **Step 2:** `release.yml`: on tags `v*`, job `test` (pytest), job `release` (`contents: write` only here): tag must equal `VERSION` and `CHANGELOG.md` must contain the version heading, `pwsh dev/make_bundle.ps1 -Version ${{ github.ref_name }}`, `gh release create` with `--generate-notes`.
-- [ ] **Step 3:** Commit `ci(c10): split CI into parallel jobs, add release workflow`; push; read the run with `gh run list --branch feat/c10-delivery --limit 1` and `gh run view <id> --log-failed` until green.
+- [x] **Step 1:** `ci.yml` as in the architecture paragraph. `powershell-parse` runs under Windows PowerShell 5.1 (the target shell): parser check of every tracked `.ps1`, structural check of every `.cmd` (CRLF, ASCII; the PowerShell parser cannot read batch syntax), PSScriptAnalyzer errors, `installer/stage1.ps1 -DryRun` when present, `make_bundle.ps1 -DryRun`. `bundle` builds the real zip with `pwsh` and uploads it as an artifact so the release path is exercised on every push.
+- [x] **Step 2:** `release.yml`: on tags `v*`, job `test` (pytest), job `release` (`contents: write` only here): tag must equal `VERSION` and `CHANGELOG.md` must contain the version heading, `pwsh dev/make_bundle.ps1 -Version ${{ github.ref_name }}`, `gh release create` with `--generate-notes`.
+- [x] **Step 3:** Commit `ci(c10): split CI into parallel jobs, add release workflow`; push; read the run with `gh run list --branch feat/c10-delivery --limit 1` and `gh run view <id> --log-failed` until green.
 
 ### Task 6: pyproject and ruff
 
 **Files:** Modify `pyproject.toml`, `.gitattributes`, `.gitignore`.
 
-- [ ] **Step 1:** `dev` extra gains `fastapi`, `psutil`, `python-multipart`, `opencv-python-headless`, `Pillow`, `imagehash` (httpx, numpy, pyyaml are base dependencies; jsonschema is already present).
-- [ ] **Step 2:** ruff: add `TID251`, banned-api `subprocess`, per-file-ignores for `ns_common/ffmpeg.py`, `ns_supervisor/**`, `installer/**`, `tools/**`, `dev/**`, `tests/**`.
-- [ ] **Step 3:** Apply open dependency CRs from `contracts/CHANGE_REQUESTS.md` (status line `applied in <commit>`).
-- [ ] **Step 4:** Commit `chore(c10): dev dependencies and subprocess ban`.
+- [x] **Step 1:** `dev` extra gains `fastapi`, `psutil`, `python-multipart`, `opencv-python-headless`, `Pillow`, `imagehash` (httpx, numpy, pyyaml are base dependencies; jsonschema is already present).
+- [x] **Step 2:** ruff: add `TID251`, banned-api `subprocess`, per-file-ignores for `ns_common/ffmpeg.py`, `ns_supervisor/**`, `installer/**`, `tools/**`, `dev/**`, `tests/**`.
+- [x] **Step 3:** Apply open dependency CRs from `contracts/CHANGE_REQUESTS.md` (status line `applied in <commit>`).
+- [x] **Step 4:** Commit `chore(c10): dev dependencies and subprocess ban`.
 
 ### Task 7: repository settings
 
 **Files:** Create `docs/REPO_SETTINGS.md`.
 
-- [ ] **Step 1:** Document branch protection for `main` (required checks `lint`, `types`, `test`; no force-push; no deletion; administrators not forced so direct pushes by the owner token keep working), the tag ruleset for `v*` and `contracts-m*`, and default workflow permissions `read`.
-- [ ] **Step 2:** Apply with `gh api` once CI names exist; record the outcome (success or the API error) in the doc and in the final report.
-- [ ] **Step 3:** Commit `docs(c10): repository settings`.
+- [x] **Step 1:** Document branch protection for `main` (required checks `lint`, `types`, `test`; no force-push; no deletion; administrators not forced so direct pushes by the owner token keep working), the tag ruleset for `v*` and `contracts-m*`, and default workflow permissions `read`.
+- [x] **Step 2:** Apply with `gh api` once CI names exist; record the outcome (success or the API error) in the doc and in the final report.
+- [x] **Step 3:** Commit `docs(c10): repository settings`.
 
 ### Task 8: green and PR
 
-- [ ] **Step 1:** CI green on `feat/c10-delivery` (run URL recorded in the report).
-- [ ] **Step 2:** `gh pr create`; read the `scope-check` run on the PR.
-- [ ] **Step 3:** Report: PR URL, CI URLs and conclusions, CRs applied, deviations.
+- [x] **Step 1:** CI green on `feat/c10-delivery` (run URL recorded in the report).
+- [x] **Step 2:** `gh pr create`; read the `scope-check` run on the PR.
+- [x] **Step 3:** Report: PR URL, CI URLs and conclusions, CRs applied, deviations.
+
+### Task 9 (added by the orchestrator): qwentts.cpp CUDA build
+
+**Files:** Create `.github/workflows/build-qwentts.yml`; document the result in `docs/REPO_SETTINGS.md` section "qwentts build".
+
+- [x] **Step 1:** Workflow on `workflow_dispatch` and tags `v*`: pinned commit of `ServeurpersoCom/qwentts.cpp`, CUDA 12.9.1 through `Jimver/cuda-toolkit`, CMake + Ninja + MSVC, `GGML_CUDA=ON`, architectures `75-virtual;86-real;89-real;120a-real`, package `qwentts-win-cuda-x64.zip` + `.sha256`, upload as artifact, attach to the release on tags.
+- [x] **Step 2:** Run it from the feature branch (temporary branch trigger), fix until green: `windows-latest` and `windows-2025` ship Visual Studio 2026 which nvcc 12.9 rejects, so the job runs on `windows-2022`. Remove the temporary trigger.
