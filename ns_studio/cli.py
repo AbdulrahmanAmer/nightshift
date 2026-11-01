@@ -48,7 +48,8 @@ FakeOpt = Annotated[
     str | None,
     typer.Option(
         "--fake-services",
-        help="In-process fakes: bare flag fakes everything, or =llm,tts,whisper,embed,clips.",
+        help="In-process fakes: bare flag fakes all, or =llm,tts,whisper,embed,clips. "
+        "With llm, jobs draw length_bucket 50 and pacing standard (fixtures are written for this budget).",
     ),
 ]
 
