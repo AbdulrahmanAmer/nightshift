@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark light">
+<title>Nightshift</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<div class="app">
+  <nav class="nav" aria-label="Main">
+    <a class="brand" href="#/"><span class="brand-dot" aria-hidden="true"></span>Nightshift</a>
+    <ul class="nav-list">
+      <li><a href="#/" data-route="today">Today</a></li>
+      <li><a href="#/review" data-route="review">Review <span class="count" id="nav-pending" hidden>0</span></a></li>
+      <li><a href="#/make" data-route="make">Make videos</a></li>
+      <li><a href="#/clips" data-route="clips">Make clips</a></li>
+      <li><a href="#/channels" data-route="channels">Channels</a></li>
+      <li><a href="#/learn" data-route="learn">Learn</a></li>
+      <li><a href="#/settings" data-route="settings">Settings</a></li>
+    </ul>
+    <button class="btn btn-ghost nav-theme" id="theme-toggle" type="button">Switch theme</button>
+  </nav>
+
+  <header class="strip" aria-label="Engine status">
+    <span class="pill" id="engine-pill" data-state="idle" role="status" aria-live="polite">
+      <span class="dot" aria-hidden="true"></span><span id="engine-text">Connecting…</span>
+    </span>
+    <span class="strip-item" id="next-run"></span>
+    <span class="strip-item tag" id="demo-flag" hidden title="No engine reachable; showing sample data">Demo data</span>
+    <span class="spacer"></span>
+    <button class="btn btn-ghost" id="warmup-btn" type="button">Warm up</button>
+    <button class="btn btn-danger-outline" id="quit-btn" type="button">Quit Nightshift</button>
+  </header>
+
+  <main class="main" id="main" tabindex="-1"></main>
+</div>
+
+<div class="toasts" id="toasts" aria-live="polite" aria-atomic="false"></div>
+<div class="modal-root" id="modal" hidden></div>
+
+<script src="app.js"></script>
+<script src="app-pages.js"></script>
+</body>
+</html>
