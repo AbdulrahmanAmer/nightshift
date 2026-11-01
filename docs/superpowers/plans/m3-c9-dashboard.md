@@ -209,6 +209,20 @@ The orchestrator writes `ns_dashboard/static/{index.html,app.css,app.js}` on `fe
 - [x] Implement, push, read CI, fix until green, `gh pr create --fill`.
 
 ---
+### Task 10: Library, update and the Assistant (C9, scope added by the coordinator)
+
+**Files:** Create `ns_dashboard/assistant/{__init__,registry,tools,orientation,docs_index,llm,loop,store,cli}.py`, `ns_dashboard/prompts/assistant.md`, `ns_dashboard/{formats,updater,svc_library}.py`; tests `test_dashboard_assistant.py`, `test_dashboard_library.py`, additions to `test_dashboard_api.py`.
+
+- **Tool registry = the API.** `assistant/tools.py` holds one `ToolDef` (`ToolSpec(name, description, args_schema, side_effect, confirm_text, topic)` plus the function that runs it) per route, keyed by `(method, path)`; routes that are deliberately not tools are listed in `NO_TOOL` with the reason (approve/reject/uploaded, keys, update apply, binary streams, uploads, the assistant itself). `test_every_route_has_a_tool_descriptor_or_a_reason` compares the table with the real FastAPI routes in both directions, so a new route without a descriptor fails CI; `test_every_descriptor_validates` checks every descriptor (name, description, JSON-schema via `jsonschema`, `required` subset, `confirm_text` placeholders, `side_effect` bool). Orientation tools (`system_map`, `find`, `where_is`, `describe_tool`, `list_tools`, `search_docs`, `explain_error`) are registered without a route.
+- **Loop.** `POST /api/assistant/chat` (SSE of `{kind, payload}` frames: `conversation`, `tool_call`, `tool_result`, `confirm`, `message`, `busy`, `error`, `done`) runs an OpenAI-compatible tool-calling loop (`assistant/llm.py::ToolLlmClient.chat_tools`, built on `ns_common.llm_client.LlmClient`) against the supervisor's `llama` service. Read-only tools run at once; side-effect tools create a pending action and emit a confirm card; they run only through `POST /api/assistant/confirm {action_id}` (`/dismiss` for No; double confirm is 409). Page/item `context` fills missing ids. When the GPU is held by someone else the request is queued in `assistant.db` (`POST /api/assistant/queue/run` answers queued requests when the engine is free).
+- **Docs search.** `assistant/docs_index.py`: BM25 over passages (table rows and paragraphs) of `BUILD_SPEC.md`, `README.md`, `OPERATOR.md`, `docs/ENGINEERING.md`, `contracts/errors.json`; test: "post to youtube" returns the section 20.2 Queue row.
+- **Library.** `GET/POST /api/library/ideas`, `PUT /api/library/ideas/{id}`, `GET /api/library/stories?q=`, `GET /api/library/footage?q=`, `GET/POST/PUT /api/library/formats` (user copies under `config/formats/`, validated by `formats.FORMAT_SCHEMA`), `GET /api/update/check`, `POST /api/update/apply` (through `updater.RealUpdateAdapter`, which runs `ns update --check` / `--github` from the supervisor venv).
+- **CLI.** `studio ask "<text>"` (`assistant/cli.py::register(app)`, mounted by C7).
+
+- [x] Implemented, tests written; CR-C9-6..8 filed.
+
+---
+
 
 ## API shapes (final; what the UI is told and what the tests assert)
 
@@ -248,3 +262,5 @@ Prefix `/api`. Errors: HTTP 4xx/5xx with `{"error": {"code", "message", "hint", 
 | `POST /diagnostics`, `GET /diagnostics/latest` | | `{path, name, size, download_url}`; the zip |
 | `GET /templates`, `GET /templates/{id}/preview.png` | | `[{id, label, description, when, regions: [{name,x,y,w,h}] (fractions of 1080x1920), caption_y_pct (0-100), title_card, preview_url}]`; PNG drawn with Pillow |
 | `GET /voices`, `POST /voices/preview` | `{voice, text?, speed?}` | `[{name, mode, source}]`; `audio/wav` bytes |
+
+**Added routes (not in the table above):** `GET/POST /library/ideas`, `PUT /library/ideas/{id}`, `GET /library/stories?q=&channel=`, `GET /library/footage?q=`, `GET/POST /library/formats`, `PUT /library/formats/{id}` (`{definition}` or `{changes}`), `GET /update/check`, `POST /update/apply`, `POST /assistant/chat` (SSE), `POST /assistant/confirm|dismiss {action_id}`, `GET /assistant/history?conversation_id=`, `GET /assistant/conversations`, `POST /assistant/queue/run`.

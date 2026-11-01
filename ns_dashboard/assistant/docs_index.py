@@ -76,7 +76,10 @@ def chunk_markdown(file: str, text: str) -> list[Chunk]:
     for n, raw in enumerate(text.splitlines(), start=1):
         line = raw.rstrip()
         if line.startswith("```"):
+            _flush(chunks, file, heading, start, buf)
             in_code = not in_code
+            continue
+        if in_code:
             continue
         if not in_code and line.startswith("#"):
             _flush(chunks, file, heading, start, buf)
