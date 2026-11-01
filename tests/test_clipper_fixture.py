@@ -16,6 +16,7 @@ from tests.fixtures.clipper.make_sample import (
     build_transcript,
     facecam_truth,
     make_sample,
+    shared_sample,
 )
 
 
@@ -54,7 +55,7 @@ def test_json_only_mode_writes_sidecars(tmp_path) -> None:
 
 @pytest.mark.skipif(not ffmpeg.available(), reason="ffmpeg not available")
 def test_sample_video_streams(tmp_path) -> None:
-    paths = make_sample(tmp_path)
+    paths = shared_sample()
     info = ffmpeg.probe(paths.video)
     kinds = [s["codec_type"] for s in info["streams"]]
     assert kinds.count("video") == 1 and kinds.count("audio") == 1

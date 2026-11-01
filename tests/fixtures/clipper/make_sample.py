@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import json
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -155,6 +156,17 @@ def make_sample(out_dir: Path, *, with_video: bool = True) -> SamplePaths:
     if with_video:
         _make_video(video)
     return SamplePaths(video=video, transcript=transcript, truth=truth)
+
+
+_SHARED: list[SamplePaths] = []
+
+
+def shared_sample() -> SamplePaths:
+    """Build the full fixture once per test session (in a temp directory) and reuse it."""
+    if not _SHARED or not _SHARED[0].video.exists():
+        _SHARED.clear()
+        _SHARED.append(make_sample(Path(tempfile.mkdtemp(prefix="ns-clipper-fx-"))))
+    return _SHARED[0]
 
 
 if __name__ == "__main__":  # pragma: no cover - manual use

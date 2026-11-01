@@ -8,7 +8,7 @@ from ns_common import ffmpeg
 from ns_common.errors import NsError
 from ns_studio.clipper import detect as det
 from ns_studio.clipper.models import Rect
-from tests.fixtures.clipper.make_sample import facecam_truth, make_sample
+from tests.fixtures.clipper.make_sample import facecam_truth, shared_sample
 
 needs_ffmpeg = pytest.mark.skipif(not ffmpeg.available(), reason="ffmpeg not available")
 
@@ -203,7 +203,7 @@ def test_fake_detector_counts_calls() -> None:
 # ---------- FFmpeg-backed ----------
 @needs_ffmpeg
 def test_sampling_shapes(tmp_path) -> None:
-    sample = make_sample(tmp_path / "fx")
+    sample = shared_sample()
     size = det.work_size(1280, 720)
     rng = det.sample_range(sample.video, 0.0, 10.0, size, tmp_path / "t")
     assert 9 <= len(rng) <= 11 and rng[0].gray.shape == (360, 640) and rng[0].bgr is None
@@ -213,7 +213,7 @@ def test_sampling_shapes(tmp_path) -> None:
 
 @needs_ffmpeg
 def test_fixture_facecam_found_within_five_percent(tmp_path) -> None:
-    sample = make_sample(tmp_path / "fx")
+    sample = shared_sample()
     res = det.run_detection(
         sample.video, [(0.0, 30.0)], 90.0, (1280, 720), tmp_path / "t", detector=None, use_cv2=False
     )
@@ -229,7 +229,7 @@ def test_fixture_facecam_found_within_five_percent(tmp_path) -> None:
 @needs_ffmpeg
 def test_fixture_facecam_found_with_opencv(tmp_path) -> None:
     pytest.importorskip("cv2")
-    sample = make_sample(tmp_path / "fx")
+    sample = shared_sample()
     res = det.run_detection(
         sample.video, [(0.0, 30.0)], 90.0, (1280, 720), tmp_path / "t", detector=None, use_cv2=True
     )
@@ -240,7 +240,7 @@ def test_fixture_facecam_found_with_opencv(tmp_path) -> None:
 
 @needs_ffmpeg
 def test_run_detection_with_scripted_faces(tmp_path) -> None:
-    sample = make_sample(tmp_path / "fx")
+    sample = shared_sample()
     fake = det.FakeFaceDetector(lambda i: [(100, 100, 60, 60), (440, 100, 60, 60)])
     res = det.run_detection(
         sample.video, [(0.0, 10.0)], 90.0, (1280, 720), tmp_path / "t",
@@ -253,7 +253,7 @@ def test_run_detection_with_scripted_faces(tmp_path) -> None:
 
 @needs_ffmpeg
 def test_requested_stacked_without_faces_warns(tmp_path) -> None:
-    sample = make_sample(tmp_path / "fx")
+    sample = shared_sample()
     res = det.run_detection(
         sample.video, [(0.0, 5.0)], 90.0, (1280, 720), tmp_path / "t",
         detector=None, requested="podcast_stacked", use_cv2=False,
