@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from functools import lru_cache
+from functools import cache
 from pathlib import Path
 from typing import Any
 
@@ -26,7 +26,7 @@ def niche_folder(niche: str) -> str:
     return "wholesome_twist"
 
 
-@lru_cache(maxsize=None)
+@cache
 def _load(folder_name: str) -> tuple[dict[str, str], ...]:
     folder = EXEMPLARS_DIR / folder_name
     meta = yaml.safe_load((folder / "meta.yaml").read_text(encoding="utf-8"))
