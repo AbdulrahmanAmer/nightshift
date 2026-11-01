@@ -1,0 +1,142 @@
+name: build-qwentts
+
+# Compiles qwentts.cpp (ServeurpersoCom/qwentts.cpp) for Windows x64 with the CUDA backend and publishes
+# qwentts-win-cuda-x64.zip (+ .sha256). The installer downloads this asset from the URL and SHA256 pinned in
+# manifest.json (bins.qwentts); nothing here is bundled into Nightshift-<ver>.zip.
+# Owner: C10. Notes and results of the last build: docs/REPO_SETTINGS.md section "qwentts build".
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+    # Lets a change to this file be tested from a feature branch (workflow_dispatch only works for
+    # workflow files that already exist on the default branch).
+    paths: [".github/workflows/build-qwentts.yml"]
+
+concurrency:
+  group: build-qwentts-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  QWENTTS_REPO: ServeurpersoCom/qwentts.cpp
+  # Pinned commit (master on 2026-10-16). Bump deliberately, then update manifest.json bins.qwentts.
+  QWENTTS_SHA: 5916bf7c79dbb4e66fc059cdc507a79a23a28bb4
+  CUDA_VERSION: "12.9.1"
+  # 75 = PTX fallback for newer cards, 86/89 = Ampere/Ada SASS, 120a = Blackwell (RTX 50xx, needs CUDA 12.8+).
+  CUDA_ARCHS: "75-virtual;86-real;89-real;120a-real"
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout qwentts.cpp at the pinned commit (with the ggml submodule)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.QWENTTS_REPO }}
+          ref: ${{ env.QWENTTS_SHA }}
+          submodules: recursive
+          path: qwentts.cpp
+
+      - name: Install CUDA toolkit
+        uses: Jimver/cuda-toolkit@v0.2.36
+        with:
+          cuda: ${{ env.CUDA_VERSION }}
+          method: network
+          sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "thrust", "visual_studio_integration"]'
+
+      - name: MSVC developer environment
+        uses: ilammy/msvc-dev-cmd@v1.13.0
+        with:
+          arch: x64
+
+      - name: Show toolchain
+        run: |
+          nvcc --version
+          cmake --version
+          ninja --version
+          cl 2>&1 | Select-Object -First 2
+
+      - name: Configure
+        run: >
+          cmake -S qwentts.cpp -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl
+          -DGGML_CUDA=ON
+          "-DCMAKE_CUDA_ARCHITECTURES=${{ env.CUDA_ARCHS }}"
+          "-DCMAKE_CUDA_FLAGS=-allow-unsupported-compiler"
+          -DGGML_NATIVE=OFF -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON
+
+      - name: Build
+        run: cmake --build build --target tts-server qwen-tts qwen-codec -j 4
+
+      - name: Package qwentts-win-cuda-x64.zip
+        run: |
+          $stage = Join-Path $PWD 'stage'
+          New-Item -ItemType Directory -Force $stage | Out-Null
+          foreach ($exe in 'tts-server.exe', 'qwen-tts.exe', 'qwen-codec.exe') {
+            $p = Join-Path 'build' $exe
+            if (-not (Test-Path $p)) { throw "missing build output: $p" }
+            Copy-Item $p $stage
+          }
+          Get-ChildItem build -Filter *.dll -File | Copy-Item -Destination $stage
+          # CUDA runtime libraries the exes load (CUDA 13 moved them to bin\x64).
+          $cudaBin = Join-Path $env:CUDA_PATH 'bin'
+          Get-ChildItem $cudaBin -Recurse -File -Include 'cudart64_*.dll', 'cublas64_*.dll', 'cublasLt64_*.dll' |
+            Copy-Item -Destination $stage
+          @(
+            "qwentts.cpp commit: $env:QWENTTS_SHA"
+            "repo: https://github.com/$env:QWENTTS_REPO"
+            "CUDA toolkit: $env:CUDA_VERSION"
+            "CUDA architectures: $env:CUDA_ARCHS"
+            "built: $((Get-Date).ToUniversalTime().ToString('o'))"
+          ) | Set-Content -Encoding ascii (Join-Path $stage 'BUILD-INFO.txt')
+          Get-ChildItem $stage | Sort-Object Name |
+            ForEach-Object { '{0,12:N0}  {1}' -f $_.Length, $_.Name }
+          New-Item -ItemType Directory -Force dist | Out-Null
+          $zip = Join-Path $PWD 'dist/qwentts-win-cuda-x64.zip'
+          Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $zip -CompressionLevel Optimal
+          $h = (Get-FileHash -Algorithm SHA256 $zip).Hash.ToLower()
+          [System.IO.File]::WriteAllText("$zip.sha256", "$h  qwentts-win-cuda-x64.zip`n")
+          Write-Host "sha256 $h"
+          Write-Host ("zip size {0:N1} MB" -f ((Get-Item $zip).Length / 1MB))
+
+      - name: Dependency report (informational)
+        continue-on-error: true
+        run: |
+          dumpbin /dependents stage\tts-server.exe
+          & .\stage\tts-server.exe --help 2>&1 | Select-Object -First 15
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: qwentts-win-cuda-x64
+          path: |
+            dist/qwentts-win-cuda-x64.zip
+            dist/qwentts-win-cuda-x64.zip.sha256
+          retention-days: 30
+
+  release-asset:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: qwentts-win-cuda-x64
+          path: dist
+      - name: Attach to the GitHub Release (create it when release.yml has not yet)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --title "Nightshift $TAG" --generate-notes || gh release view "$TAG" >/dev/null
+          fi
+          gh release upload "$TAG" dist/qwentts-win-cuda-x64.zip dist/qwentts-win-cuda-x64.zip.sha256 --clobber
