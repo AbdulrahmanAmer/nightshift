@@ -1,0 +1,48 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "title": {
+      "maxLength": 100,
+      "title": "Title",
+      "type": "string"
+    },
+    "description": {
+      "maxLength": 5000,
+      "title": "Description",
+      "type": "string"
+    },
+    "tags": {
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 20,
+      "minItems": 1,
+      "title": "Tags",
+      "type": "array"
+    },
+    "hashtags": {
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 5,
+      "title": "Hashtags",
+      "type": "array"
+    },
+    "keywords": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Keywords",
+      "type": "array"
+    }
+  },
+  "required": [
+    "title",
+    "description",
+    "tags",
+    "hashtags"
+  ],
+  "title": "Seo",
+  "type": "object"
+}

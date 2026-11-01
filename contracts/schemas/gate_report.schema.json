@@ -1,0 +1,113 @@
+{
+  "$defs": {
+    "GateCheck": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "passed": {
+          "title": "Passed",
+          "type": "boolean"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Value"
+        },
+        "limit": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Limit"
+        },
+        "log": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Log"
+        }
+      },
+      "required": [
+        "name",
+        "passed"
+      ],
+      "title": "GateCheck",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "slice": {
+      "title": "Slice",
+      "type": "string"
+    },
+    "date": {
+      "title": "Date",
+      "type": "string"
+    },
+    "machine": {
+      "additionalProperties": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "number"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "title": "Machine",
+      "type": "object"
+    },
+    "checks": {
+      "items": {
+        "$ref": "#/$defs/GateCheck"
+      },
+      "title": "Checks",
+      "type": "array"
+    },
+    "benchmarks": {
+      "additionalProperties": {
+        "type": "number"
+      },
+      "default": {},
+      "title": "Benchmarks",
+      "type": "object"
+    }
+  },
+  "required": [
+    "slice",
+    "date",
+    "machine",
+    "checks"
+  ],
+  "title": "GateReport",
+  "type": "object"
+}

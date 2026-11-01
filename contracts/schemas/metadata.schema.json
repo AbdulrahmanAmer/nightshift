@@ -1,0 +1,220 @@
+{
+  "$defs": {
+    "ClipRef": {
+      "additionalProperties": false,
+      "properties": {
+        "source": {
+          "enum": [
+            "pexels",
+            "pixabay",
+            "fake"
+          ],
+          "title": "Source",
+          "type": "string"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "url": {
+          "title": "Url",
+          "type": "string"
+        },
+        "license": {
+          "title": "License",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "id",
+        "url",
+        "license"
+      ],
+      "title": "ClipRef",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "channel": {
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+      "title": "Channel",
+      "type": "string"
+    },
+    "job_id": {
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*-\\d{8}-[0-9a-f]{4}$",
+      "title": "Job Id",
+      "type": "string"
+    },
+    "kind": {
+      "enum": [
+        "long",
+        "short"
+      ],
+      "title": "Kind",
+      "type": "string"
+    },
+    "k": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "K"
+    },
+    "title": {
+      "maxLength": 100,
+      "title": "Title",
+      "type": "string"
+    },
+    "description": {
+      "title": "Description",
+      "type": "string"
+    },
+    "tags": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Tags",
+      "type": "array"
+    },
+    "hashtags": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Hashtags",
+      "type": "array"
+    },
+    "publish_after": {
+      "title": "Publish After",
+      "type": "string"
+    },
+    "chapters": {
+      "anyOf": [
+        {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Chapters"
+    },
+    "midroll_suggestions_s": {
+      "anyOf": [
+        {
+          "items": {
+            "type": "number"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Midroll Suggestions S"
+    },
+    "thumbnails": {
+      "anyOf": [
+        {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Thumbnails"
+    },
+    "related_video_instruction": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Related Video Instruction"
+    },
+    "parent_job_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Parent Job Id"
+    },
+    "ai_disclosure": {
+      "enum": [
+        "yes",
+        "no"
+      ],
+      "title": "Ai Disclosure",
+      "type": "string"
+    },
+    "made_for_kids": {
+      "title": "Made For Kids",
+      "type": "boolean"
+    },
+    "age_restrict_suggested": {
+      "title": "Age Restrict Suggested",
+      "type": "boolean"
+    },
+    "clips": {
+      "items": {
+        "$ref": "#/$defs/ClipRef"
+      },
+      "title": "Clips",
+      "type": "array"
+    },
+    "combo_id": {
+      "title": "Combo Id",
+      "type": "string"
+    },
+    "prompt_versions": {
+      "additionalProperties": {
+        "type": "integer"
+      },
+      "title": "Prompt Versions",
+      "type": "object"
+    }
+  },
+  "required": [
+    "channel",
+    "job_id",
+    "kind",
+    "title",
+    "description",
+    "tags",
+    "hashtags",
+    "publish_after",
+    "ai_disclosure",
+    "made_for_kids",
+    "age_restrict_suggested",
+    "clips",
+    "combo_id",
+    "prompt_versions"
+  ],
+  "title": "Metadata",
+  "type": "object"
+}

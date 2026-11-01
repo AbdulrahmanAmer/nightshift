@@ -1,0 +1,71 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "part": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Part"
+    },
+    "chapter": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Chapter"
+    },
+    "beat": {
+      "minimum": 0,
+      "title": "Beat",
+      "type": "integer"
+    },
+    "sentence_start": {
+      "minimum": 0,
+      "title": "Sentence Start",
+      "type": "integer"
+    },
+    "sentence_end": {
+      "minimum": 0,
+      "title": "Sentence End",
+      "type": "integer"
+    },
+    "keywords": {
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 3,
+      "minItems": 1,
+      "title": "Keywords",
+      "type": "array"
+    },
+    "mood": {
+      "title": "Mood",
+      "type": "string"
+    },
+    "need_vertical": {
+      "default": true,
+      "title": "Need Vertical",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "beat",
+    "sentence_start",
+    "sentence_end",
+    "keywords",
+    "mood"
+  ],
+  "title": "VisualBeat",
+  "type": "object"
+}

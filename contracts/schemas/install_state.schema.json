@@ -1,0 +1,110 @@
+{
+  "$defs": {
+    "StepState": {
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "default": "pending",
+          "enum": [
+            "pending",
+            "done",
+            "failed",
+            "skipped"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Error"
+        },
+        "finished_at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Finished At"
+        }
+      },
+      "title": "StepState",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "default": "0.1.0",
+      "title": "Version",
+      "type": "string"
+    },
+    "app_path": {
+      "default": "",
+      "title": "App Path",
+      "type": "string"
+    },
+    "profile": {
+      "anyOf": [
+        {
+          "enum": [
+            "32gb",
+            "16gb",
+            "cpu-dev"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Profile"
+    },
+    "steps": {
+      "additionalProperties": {
+        "$ref": "#/$defs/StepState"
+      },
+      "default": {},
+      "title": "Steps",
+      "type": "object"
+    },
+    "started_at": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Started At"
+    },
+    "completed_at": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Completed At"
+    }
+  },
+  "title": "InstallState",
+  "type": "object"
+}

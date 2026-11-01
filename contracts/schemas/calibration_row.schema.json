@@ -1,0 +1,39 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "story_id": {
+      "title": "Story Id",
+      "type": "string"
+    },
+    "rubric": {
+      "additionalProperties": {
+        "type": "number"
+      },
+      "title": "Rubric",
+      "type": "object"
+    },
+    "critic_avg": {
+      "title": "Critic Avg",
+      "type": "number"
+    },
+    "human_avg": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Human Avg"
+    }
+  },
+  "required": [
+    "story_id",
+    "rubric",
+    "critic_avg"
+  ],
+  "title": "CalibrationRow",
+  "type": "object"
+}

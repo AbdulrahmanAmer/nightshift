@@ -1,0 +1,86 @@
+{
+  "$defs": {
+    "PolicyAdvice": {
+      "additionalProperties": false,
+      "properties": {
+        "ai_disclosure": {
+          "default": "no",
+          "enum": [
+            "yes",
+            "no"
+          ],
+          "title": "Ai Disclosure",
+          "type": "string"
+        },
+        "made_for_kids": {
+          "default": false,
+          "title": "Made For Kids",
+          "type": "boolean"
+        },
+        "age_restrict_suggested": {
+          "default": false,
+          "title": "Age Restrict Suggested",
+          "type": "boolean"
+        }
+      },
+      "title": "PolicyAdvice",
+      "type": "object"
+    },
+    "PolicyCheck": {
+      "additionalProperties": false,
+      "properties": {
+        "passed": {
+          "title": "Passed",
+          "type": "boolean"
+        },
+        "detail": {
+          "default": "",
+          "title": "Detail",
+          "type": "string"
+        }
+      },
+      "required": [
+        "passed"
+      ],
+      "title": "PolicyCheck",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "stage": {
+      "enum": [
+        "text",
+        "final"
+      ],
+      "title": "Stage",
+      "type": "string"
+    },
+    "passed": {
+      "title": "Passed",
+      "type": "boolean"
+    },
+    "checks": {
+      "additionalProperties": {
+        "$ref": "#/$defs/PolicyCheck"
+      },
+      "title": "Checks",
+      "type": "object"
+    },
+    "advice": {
+      "$ref": "#/$defs/PolicyAdvice",
+      "default": {
+        "ai_disclosure": "no",
+        "made_for_kids": false,
+        "age_restrict_suggested": false
+      }
+    }
+  },
+  "required": [
+    "stage",
+    "passed",
+    "checks"
+  ],
+  "title": "PolicyResult",
+  "type": "object"
+}

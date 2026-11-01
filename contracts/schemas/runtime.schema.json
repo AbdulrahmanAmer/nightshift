@@ -1,0 +1,319 @@
+{
+  "$defs": {
+    "EmbedCfg": {
+      "additionalProperties": false,
+      "properties": {
+        "host": {
+          "default": "127.0.0.1",
+          "title": "Host",
+          "type": "string"
+        },
+        "port": {
+          "default": 8081,
+          "title": "Port",
+          "type": "integer"
+        },
+        "model_path": {
+          "default": "",
+          "title": "Model Path",
+          "type": "string"
+        }
+      },
+      "title": "EmbedCfg",
+      "type": "object"
+    },
+    "LlamaCfg": {
+      "additionalProperties": false,
+      "properties": {
+        "host": {
+          "default": "127.0.0.1",
+          "title": "Host",
+          "type": "string"
+        },
+        "port": {
+          "default": 8080,
+          "title": "Port",
+          "type": "integer"
+        },
+        "model_path": {
+          "default": "",
+          "title": "Model Path",
+          "type": "string"
+        },
+        "story_model_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Story Model Path"
+        },
+        "aliases": {
+          "default": [
+            "code",
+            "story"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "title": "Aliases",
+          "type": "array"
+        },
+        "flags": {
+          "$ref": "#/$defs/LlamaFlags",
+          "default": {
+            "n_gpu_layers": 99,
+            "n_cpu_moe": 0,
+            "ctx": 16384,
+            "kv_type": "f16",
+            "spec_type": null,
+            "spec_draft_n_max": null,
+            "threads": null
+          }
+        }
+      },
+      "title": "LlamaCfg",
+      "type": "object"
+    },
+    "LlamaFlags": {
+      "additionalProperties": false,
+      "properties": {
+        "n_gpu_layers": {
+          "default": 99,
+          "title": "N Gpu Layers",
+          "type": "integer"
+        },
+        "n_cpu_moe": {
+          "default": 0,
+          "title": "N Cpu Moe",
+          "type": "integer"
+        },
+        "ctx": {
+          "default": 16384,
+          "title": "Ctx",
+          "type": "integer"
+        },
+        "kv_type": {
+          "default": "f16",
+          "enum": [
+            "f16",
+            "q8_0"
+          ],
+          "title": "Kv Type",
+          "type": "string"
+        },
+        "spec_type": {
+          "anyOf": [
+            {
+              "const": "draft-mtp",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Spec Type"
+        },
+        "spec_draft_n_max": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Spec Draft N Max"
+        },
+        "threads": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Threads"
+        }
+      },
+      "title": "LlamaFlags",
+      "type": "object"
+    },
+    "TtsCfg": {
+      "additionalProperties": false,
+      "properties": {
+        "host": {
+          "default": "127.0.0.1",
+          "title": "Host",
+          "type": "string"
+        },
+        "port": {
+          "default": 8091,
+          "title": "Port",
+          "type": "integer"
+        },
+        "engine": {
+          "default": "faster",
+          "enum": [
+            "faster",
+            "reference"
+          ],
+          "title": "Engine",
+          "type": "string"
+        },
+        "model_dir": {
+          "default": "",
+          "title": "Model Dir",
+          "type": "string"
+        },
+        "device": {
+          "default": "cuda",
+          "enum": [
+            "cuda",
+            "cpu"
+          ],
+          "title": "Device",
+          "type": "string"
+        }
+      },
+      "title": "TtsCfg",
+      "type": "object"
+    },
+    "VideoCfg": {
+      "additionalProperties": false,
+      "properties": {
+        "encoder": {
+          "default": "h264_nvenc",
+          "enum": [
+            "h264_nvenc",
+            "libx264"
+          ],
+          "title": "Encoder",
+          "type": "string"
+        },
+        "preset": {
+          "default": "p4",
+          "title": "Preset",
+          "type": "string"
+        },
+        "fps": {
+          "default": 30,
+          "title": "Fps",
+          "type": "integer"
+        }
+      },
+      "title": "VideoCfg",
+      "type": "object"
+    },
+    "WhisperCfg": {
+      "additionalProperties": false,
+      "properties": {
+        "model": {
+          "default": "small.en",
+          "title": "Model",
+          "type": "string"
+        },
+        "device": {
+          "default": "cuda",
+          "enum": [
+            "cuda",
+            "cpu"
+          ],
+          "title": "Device",
+          "type": "string"
+        },
+        "compute_type": {
+          "default": "float16",
+          "title": "Compute Type",
+          "type": "string"
+        }
+      },
+      "title": "WhisperCfg",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "profile": {
+      "default": "32gb",
+      "enum": [
+        "32gb",
+        "16gb",
+        "cpu-dev"
+      ],
+      "title": "Profile",
+      "type": "string"
+    },
+    "llama": {
+      "$ref": "#/$defs/LlamaCfg",
+      "default": {
+        "host": "127.0.0.1",
+        "port": 8080,
+        "model_path": "",
+        "story_model_path": null,
+        "aliases": [
+          "code",
+          "story"
+        ],
+        "flags": {
+          "ctx": 16384,
+          "kv_type": "f16",
+          "n_cpu_moe": 0,
+          "n_gpu_layers": 99,
+          "spec_draft_n_max": null,
+          "spec_type": null,
+          "threads": null
+        }
+      }
+    },
+    "embed": {
+      "$ref": "#/$defs/EmbedCfg",
+      "default": {
+        "host": "127.0.0.1",
+        "port": 8081,
+        "model_path": ""
+      }
+    },
+    "tts": {
+      "$ref": "#/$defs/TtsCfg",
+      "default": {
+        "host": "127.0.0.1",
+        "port": 8091,
+        "engine": "faster",
+        "model_dir": "",
+        "device": "cuda"
+      }
+    },
+    "whisper": {
+      "$ref": "#/$defs/WhisperCfg",
+      "default": {
+        "model": "small.en",
+        "device": "cuda",
+        "compute_type": "float16"
+      }
+    },
+    "video": {
+      "$ref": "#/$defs/VideoCfg",
+      "default": {
+        "encoder": "h264_nvenc",
+        "preset": "p4",
+        "fps": 30
+      }
+    },
+    "supervisor_port": {
+      "default": 8099,
+      "title": "Supervisor Port",
+      "type": "integer"
+    }
+  },
+  "title": "Runtime",
+  "type": "object"
+}

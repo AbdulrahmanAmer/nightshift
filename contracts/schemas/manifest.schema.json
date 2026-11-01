@@ -1,0 +1,192 @@
+{
+  "$defs": {
+    "BinPin": {
+      "additionalProperties": false,
+      "properties": {
+        "version": {
+          "title": "Version",
+          "type": "string"
+        },
+        "url": {
+          "title": "Url",
+          "type": "string"
+        },
+        "sha256": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sha256"
+        }
+      },
+      "required": [
+        "version",
+        "url"
+      ],
+      "title": "BinPin",
+      "type": "object"
+    },
+    "HfFile": {
+      "additionalProperties": false,
+      "properties": {
+        "repo": {
+          "title": "Repo",
+          "type": "string"
+        },
+        "file": {
+          "title": "File",
+          "type": "string"
+        },
+        "sha256": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sha256"
+        },
+        "bytes": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Bytes"
+        }
+      },
+      "required": [
+        "repo",
+        "file"
+      ],
+      "title": "HfFile",
+      "type": "object"
+    },
+    "HfRepo": {
+      "additionalProperties": false,
+      "properties": {
+        "repo": {
+          "title": "Repo",
+          "type": "string"
+        },
+        "revision": {
+          "default": "main",
+          "title": "Revision",
+          "type": "string"
+        },
+        "files_sha256": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {},
+          "title": "Files Sha256",
+          "type": "object"
+        }
+      },
+      "required": [
+        "repo"
+      ],
+      "title": "HfRepo",
+      "type": "object"
+    },
+    "ProfileModels": {
+      "additionalProperties": false,
+      "properties": {
+        "llm": {
+          "$ref": "#/$defs/HfFile"
+        },
+        "story_llm": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HfFile"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "embed": {
+          "$ref": "#/$defs/HfFile"
+        },
+        "tts": {
+          "items": {
+            "$ref": "#/$defs/HfRepo"
+          },
+          "title": "Tts",
+          "type": "array"
+        },
+        "whisper_model": {
+          "title": "Whisper Model",
+          "type": "string"
+        }
+      },
+      "required": [
+        "llm",
+        "embed",
+        "tts",
+        "whisper_model"
+      ],
+      "title": "ProfileModels",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "title": "Version",
+      "type": "string"
+    },
+    "profiles": {
+      "additionalProperties": {
+        "$ref": "#/$defs/ProfileModels"
+      },
+      "title": "Profiles",
+      "type": "object"
+    },
+    "bins": {
+      "additionalProperties": {
+        "$ref": "#/$defs/BinPin"
+      },
+      "title": "Bins",
+      "type": "object"
+    },
+    "python_version": {
+      "default": "3.12",
+      "title": "Python Version",
+      "type": "string"
+    },
+    "spacy_model": {
+      "default": "en_core_web_md",
+      "title": "Spacy Model",
+      "type": "string"
+    },
+    "tts_packages": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Tts Packages",
+      "type": "array"
+    }
+  },
+  "required": [
+    "version",
+    "profiles",
+    "bins",
+    "tts_packages"
+  ],
+  "title": "Manifest",
+  "type": "object"
+}

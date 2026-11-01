@@ -1,0 +1,42 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "n": {
+      "minimum": 1,
+      "title": "N",
+      "type": "integer"
+    },
+    "text": {
+      "title": "Text",
+      "type": "string"
+    },
+    "hook": {
+      "default": "",
+      "title": "Hook",
+      "type": "string"
+    },
+    "word_count": {
+      "minimum": 1,
+      "title": "Word Count",
+      "type": "integer"
+    },
+    "est_seconds": {
+      "exclusiveMinimum": 0,
+      "title": "Est Seconds",
+      "type": "number"
+    },
+    "cliffhanger": {
+      "default": false,
+      "title": "Cliffhanger",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "n",
+    "text",
+    "word_count",
+    "est_seconds"
+  ],
+  "title": "Part",
+  "type": "object"
+}

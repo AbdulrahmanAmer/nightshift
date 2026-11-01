@@ -1,0 +1,61 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "combo_id": {
+      "title": "Combo Id",
+      "type": "string"
+    },
+    "hook": {
+      "title": "Hook",
+      "type": "string"
+    },
+    "structure": {
+      "title": "Structure",
+      "type": "string"
+    },
+    "pov_tone": {
+      "title": "Pov Tone",
+      "type": "string"
+    },
+    "pacing": {
+      "title": "Pacing",
+      "type": "string"
+    },
+    "caption_style": {
+      "title": "Caption Style",
+      "type": "string"
+    },
+    "visual_treatment": {
+      "title": "Visual Treatment",
+      "type": "string"
+    },
+    "title_formula": {
+      "title": "Title Formula",
+      "type": "string"
+    },
+    "length_bucket": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Length Bucket"
+    }
+  },
+  "required": [
+    "combo_id",
+    "hook",
+    "structure",
+    "pov_tone",
+    "pacing",
+    "caption_style",
+    "visual_treatment",
+    "title_formula"
+  ],
+  "title": "Combo",
+  "type": "object"
+}

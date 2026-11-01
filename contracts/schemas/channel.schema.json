@@ -1,0 +1,380 @@
+{
+  "$defs": {
+    "Pools": {
+      "additionalProperties": false,
+      "properties": {
+        "hooks": {
+          "default": [
+            "cold_open",
+            "question",
+            "confession",
+            "warning"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "title": "Hooks",
+          "type": "array"
+        },
+        "structures": {
+          "default": [
+            "twist",
+            "reverse_reveal",
+            "slow_burn",
+            "unreliable_narrator"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "title": "Structures",
+          "type": "array"
+        },
+        "pov_tones": {
+          "default": [
+            "first_person_intimate",
+            "narrator_calm"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "title": "Pov Tones",
+          "type": "array"
+        },
+        "pacings": {
+          "default": [
+            "standard",
+            "measured"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "title": "Pacings",
+          "type": "array"
+        },
+        "caption_styles": {
+          "default": [
+            "punch_yellow",
+            "clean_white"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "title": "Caption Styles",
+          "type": "array"
+        },
+        "visual_treatments": {
+          "default": [
+            "dark_slowzoom",
+            "handheld_grit"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "title": "Visual Treatments",
+          "type": "array"
+        },
+        "title_formulas": {
+          "default": [
+            "question",
+            "statement_twist",
+            "i_never"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "title": "Title Formulas",
+          "type": "array"
+        }
+      },
+      "title": "Pools",
+      "type": "object"
+    },
+    "Voice": {
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "default": "preset",
+          "enum": [
+            "preset",
+            "design",
+            "clone"
+          ],
+          "title": "Mode",
+          "type": "string"
+        },
+        "speaker": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": "Ryan",
+          "title": "Speaker"
+        },
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Description"
+        },
+        "name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Name"
+        },
+        "speed": {
+          "default": 1.0,
+          "maximum": 1.3,
+          "minimum": 0.7,
+          "title": "Speed",
+          "type": "number"
+        }
+      },
+      "title": "Voice",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "slug": {
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+      "title": "Slug",
+      "type": "string"
+    },
+    "display_name": {
+      "title": "Display Name",
+      "type": "string"
+    },
+    "status": {
+      "default": "active",
+      "enum": [
+        "active",
+        "paused"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "language": {
+      "default": "en",
+      "title": "Language",
+      "type": "string"
+    },
+    "niche": {
+      "title": "Niche",
+      "type": "string"
+    },
+    "seed_keywords": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Seed Keywords",
+      "type": "array"
+    },
+    "voice_notes": {
+      "default": "",
+      "title": "Voice Notes",
+      "type": "string"
+    },
+    "voice": {
+      "$ref": "#/$defs/Voice",
+      "default": {
+        "mode": "preset",
+        "speaker": "Ryan",
+        "description": null,
+        "name": null,
+        "speed": 1.0
+      }
+    },
+    "format": {
+      "default": "master_first",
+      "enum": [
+        "master_first",
+        "shorts_only",
+        "series_compilation"
+      ],
+      "title": "Format",
+      "type": "string"
+    },
+    "masters_per_week": {
+      "default": 1,
+      "maximum": 3,
+      "minimum": 1,
+      "title": "Masters Per Week",
+      "type": "integer"
+    },
+    "long_minutes": {
+      "default": [
+        10,
+        14
+      ],
+      "maxItems": 2,
+      "minItems": 2,
+      "prefixItems": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "integer"
+        }
+      ],
+      "title": "Long Minutes",
+      "type": "array"
+    },
+    "shorts_per_master": {
+      "default": [
+        4,
+        6
+      ],
+      "maxItems": 2,
+      "minItems": 2,
+      "prefixItems": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "integer"
+        }
+      ],
+      "title": "Shorts Per Master",
+      "type": "array"
+    },
+    "shorts_per_day_max": {
+      "default": 2,
+      "maximum": 3,
+      "minimum": 1,
+      "title": "Shorts Per Day Max",
+      "type": "integer"
+    },
+    "length_buckets": {
+      "default": [
+        35,
+        50,
+        75
+      ],
+      "items": {
+        "type": "integer"
+      },
+      "title": "Length Buckets",
+      "type": "array"
+    },
+    "publish_window": {
+      "default": "18:00-21:00",
+      "pattern": "^\\d{2}:\\d{2}-\\d{2}:\\d{2}$",
+      "title": "Publish Window",
+      "type": "string"
+    },
+    "audience": {
+      "default": "general",
+      "enum": [
+        "general",
+        "mature"
+      ],
+      "title": "Audience",
+      "type": "string"
+    },
+    "made_for_kids": {
+      "default": false,
+      "title": "Made For Kids",
+      "type": "boolean"
+    },
+    "fiction_label": {
+      "default": true,
+      "title": "Fiction Label",
+      "type": "boolean"
+    },
+    "creator_note": {
+      "default": "",
+      "title": "Creator Note",
+      "type": "string"
+    },
+    "critic_bar": {
+      "default": 8.0,
+      "maximum": 10.0,
+      "minimum": 5.0,
+      "title": "Critic Bar",
+      "type": "number"
+    },
+    "pools": {
+      "$ref": "#/$defs/Pools",
+      "default": {
+        "hooks": [
+          "cold_open",
+          "question",
+          "confession",
+          "warning"
+        ],
+        "structures": [
+          "twist",
+          "reverse_reveal",
+          "slow_burn",
+          "unreliable_narrator"
+        ],
+        "pov_tones": [
+          "first_person_intimate",
+          "narrator_calm"
+        ],
+        "pacings": [
+          "standard",
+          "measured"
+        ],
+        "caption_styles": [
+          "punch_yellow",
+          "clean_white"
+        ],
+        "visual_treatments": [
+          "dark_slowzoom",
+          "handheld_grit"
+        ],
+        "title_formulas": [
+          "question",
+          "statement_twist",
+          "i_never"
+        ]
+      }
+    },
+    "avoid_topics": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Avoid Topics",
+      "type": "array"
+    },
+    "created_at": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Created At"
+    }
+  },
+  "required": [
+    "slug",
+    "display_name",
+    "niche"
+  ],
+  "title": "Channel",
+  "type": "object"
+}

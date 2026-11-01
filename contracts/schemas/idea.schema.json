@@ -1,0 +1,44 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "premise": {
+      "title": "Premise",
+      "type": "string"
+    },
+    "twist": {
+      "title": "Twist",
+      "type": "string"
+    },
+    "setting": {
+      "title": "Setting",
+      "type": "string"
+    },
+    "protagonist": {
+      "title": "Protagonist",
+      "type": "string"
+    },
+    "why_chapters": {
+      "default": "",
+      "title": "Why Chapters",
+      "type": "string"
+    },
+    "keywords": {
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 8,
+      "minItems": 1,
+      "title": "Keywords",
+      "type": "array"
+    }
+  },
+  "required": [
+    "premise",
+    "twist",
+    "setting",
+    "protagonist",
+    "keywords"
+  ],
+  "title": "Idea",
+  "type": "object"
+}
