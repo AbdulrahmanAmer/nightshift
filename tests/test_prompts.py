@@ -6,6 +6,7 @@ from jsonschema import validate
 
 from ns_common.llm_client import FakeLlm
 from ns_studio.text import prompts as P
+from ns_studio.text.budget import chapter_budget
 from tests.helpers import make_channel, make_combo, make_ctx
 
 SHORTS_PROMPTS = [
@@ -21,12 +22,26 @@ SHORTS_PROMPTS = [
     "visual_plan",
 ]
 
-# fixture file stem (without a trailing _<n>) -> schema name when it differs from the prompt's front-matter
-FIXTURE_SCHEMA_OVERRIDES: dict[str, str] = {}
+MASTER_PROMPTS = [
+    "long_plan",
+    "chapter_draft",
+    "continuity",
+    "expand",
+    "long_seo",
+    "shorts_select",
+    "short_hook",
+    "policy_check",
+    "clip_select",
+    "clip_seo",
+]
+ALL_PROMPTS = SHORTS_PROMPTS + MASTER_PROMPTS
+
+# fixture stem without a trailing _<n> -> schema name, for fixtures that are not named after a prompt
+FIXTURE_SCHEMA_OVERRIDES: dict[str, str] = {"seo_short": "seo_titles"}
 
 
-def test_all_shorts_prompts_load_with_frontmatter():
-    for n in SHORTS_PROMPTS:
+def test_all_prompts_load_with_frontmatter():
+    for n in ALL_PROMPTS:
         p = P.load_prompt(n)
         assert p.version >= 1 and isinstance(p.thinking, bool), n
         assert p.system.strip() and p.user_template, n
@@ -145,10 +160,15 @@ def test_parse_model_wraps_validation_errors():
     assert ei.value.code == "NS-E302"
 
 
+def _base(stem: str) -> str:
+    head, _, tail = stem.rpartition("_")
+    return head if head and tail.isdigit() else stem
+
+
 def _fixture_schema(stem: str) -> str | None:
-    base = stem.rsplit("_", 1)[0] if stem.rsplit("_", 1)[-1].isdigit() else stem
-    if stem in FIXTURE_SCHEMA_OVERRIDES:
-        return FIXTURE_SCHEMA_OVERRIDES[stem]
+    base = _base(stem)
+    if base in FIXTURE_SCHEMA_OVERRIDES:
+        return FIXTURE_SCHEMA_OVERRIDES[base]
     try:
         return P.load_prompt(base).schema
     except FileNotFoundError:
@@ -156,19 +176,104 @@ def _fixture_schema(stem: str) -> str | None:
 
 
 def test_every_json_fixture_validates_against_its_prompt_schema():
-    checked = []
+    checked = set()
     for f in sorted(P.FIXTURES.glob("*.json")):
         if f.stem.startswith("_"):
             continue
         schema = _fixture_schema(f.stem)
         assert schema, f"{f.name}: no prompt/schema found for this fixture"
         validate(json.loads(f.read_text(encoding="utf-8")), P.PROMPT_SCHEMAS[schema])
-        checked.append(f.stem)
-    for n in SHORTS_PROMPTS:
+        checked.add(_base(f.stem))
+    for n in ALL_PROMPTS:
         if P.load_prompt(n).schema:
             assert n in checked, f"missing fixture for {n}"
 
 
 def test_text_fixtures_exist_for_text_prompts():
-    for n in ("story_draft", "revise"):
+    for n in ("story_draft", "revise", "expand"):
         assert (P.FIXTURES / f"{n}.txt").read_text(encoding="utf-8").strip()
+
+
+def test_master_prompts_render_with_their_variables(tmp_home: Path):
+    ctx = make_ctx(tmp_home)
+    common = P._common_vars(ctx)
+    chapter = {"n": 2, "title": "The Hall Light", "beats": ["a", "b"], "cliff": "A wrong detail."}
+    plan = {"chapters": [chapter] * 5}
+    out = P.render(
+        P.load_prompt("chapter_draft"),
+        **common,
+        idea={"premise": "P.", "twist": "T."},
+        plan=plan,
+        chapter=chapter,
+        summaries=[{"n": 1, "title": "One", "summary": "Fact."}],
+        last_sentences=["Last one.", "Very last."],
+        budget=chapter_budget(310, 155),
+    )
+    assert 'chapter 2 of 5: "The Hall Light"' in out and "Last one. Very last." in out
+    assert "Chapter 1, One: Fact." in out and "between 248 and 372 words" in out
+    assert "final chapter" not in out
+    sel = P.render(
+        P.load_prompt("shorts_select"),
+        **common,
+        count_min=4,
+        count_max=6,
+        buckets=[{"seconds": 35, "body_words": 66, "min_words": 53, "max_words": 79}],
+        chapters=[{"n": 1, "title": "T", "sentences": [{"idx": 0, "text": "Hi.", "words": 1}]}],
+    )
+    assert "[0] (1 words) Hi." in sel and "35 seconds: about 66 words" in sel
+    pol = P.render(P.load_prompt("policy_check"), **common, story="Text.", title="Ti")
+    assert "real_people:" in pol and "Title: Ti" in pol and "Hook:" not in pol
+    exp = P.render(
+        P.load_prompt("expand"),
+        **common,
+        chapter=chapter,
+        beats=["x"],
+        add_words=160,
+        chapter_text="Body.",
+    )
+    assert "Add about 160 words" in exp and "never fewer than 120" in exp
+
+
+def test_schema_name_override_is_used(tmp_home: Path):
+    ctx = make_ctx(tmp_home)
+    kw = {"primary_keyword": "horror story", "part_text": "x", "part_n": None, "parts_total": 1}
+    P.call_json(ctx, "seo", fixture="seo_short_1", schema_name="seo_titles", n_titles=5, **kw)
+    call = ctx.services.llm.calls[-1]  # type: ignore[attr-defined]
+    assert call["prompt_name"] == "seo_short_1"
+    assert call["schema"] is P.PROMPT_SCHEMAS["seo_titles"]
+    assert "5 different title candidates" in call["user"]
+
+
+def test_master_thinking_flags_match_spec():
+    flags = {n: P.load_prompt(n).thinking for n in MASTER_PROMPTS}
+    assert flags == {
+        "long_plan": True,
+        "chapter_draft": False,
+        "continuity": True,
+        "expand": False,
+        "long_seo": False,
+        "shorts_select": True,
+        "short_hook": False,
+        "policy_check": True,
+        "clip_select": True,
+        "clip_seo": False,
+    }
+
+
+def test_master_prompt_schemas():
+    assert P.load_prompt("expand").schema is None
+    expected = {
+        "long_plan": "long_plan",
+        "chapter_draft": "chapter_draft",
+        "continuity": "continuity",
+        "long_seo": "long_seo",
+        "shorts_select": "shorts_select",
+        "short_hook": "short_hook",
+        "policy_check": "policy_check",
+        "clip_select": "clip_plan",
+        "clip_seo": "seo",
+    }
+    assert {n: P.load_prompt(n).schema for n in expected} == expected
+    required = set(P.PROMPT_SCHEMAS["policy_check"]["required"])
+    assert required == {"unsafe_categories", "hook_honest", "title_honest", "standalone", "notes"}
+    assert P.PROMPT_SCHEMAS["policy_check"]["properties"]["standalone"]["anyOf"]

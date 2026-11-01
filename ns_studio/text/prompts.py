@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from functools import lru_cache
+from functools import cache, lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +16,7 @@ from ns_common.models import Idea, Part, Seo, VisualBeat
 from ns_common.paths import contracts_dir, repo_root
 from ns_studio.context import JobContext
 from ns_studio.text.exemplars import load_exemplars
+from ns_studio.text.models_local import ClipPlanItem, PolicyCheckResult
 
 PROMPTS_DIR = Path(__file__).resolve().parents[1] / "prompts"
 FIXTURES = repo_root() / "tests" / "fixtures" / "llm"
@@ -86,6 +87,110 @@ PROMPT_SCHEMAS: dict[str, dict[str, Any]] = {
 }
 
 
+_STR = {"type": "string"}
+_INT = {"type": "integer"}
+_SEO_PROPS = Seo.model_json_schema()["properties"]
+_SEO_TITLES = Seo.model_json_schema()
+_SEO_TITLES["properties"] = {**_SEO_PROPS, "titles": _arr(_STR, minItems=1, maxItems=8)}
+
+PROMPT_SCHEMAS.update(
+    {
+        "seo_titles": _SEO_TITLES,
+        "long_plan": {
+            "type": "object",
+            "properties": {
+                "working_title": _STR,
+                "chapters": _arr(
+                    {
+                        "type": "object",
+                        "properties": {
+                            "n": _INT,
+                            "title": _STR,
+                            "beats": _arr(_STR, minItems=1),
+                            "cliff": _STR,
+                            "word_budget": _INT,
+                        },
+                        "required": ["title", "beats", "cliff"],
+                    },
+                    minItems=5,
+                    maxItems=7,
+                ),
+            },
+            "required": ["working_title", "chapters"],
+        },
+        "chapter_draft": {
+            "type": "object",
+            "properties": {"text": _STR, "summary": _STR},
+            "required": ["text", "summary"],
+        },
+        "continuity": {
+            "type": "object",
+            "properties": {
+                "ok": {"type": "boolean"},
+                "issues": _arr(
+                    {
+                        "type": "object",
+                        "properties": {"chapter": _INT, "problem": _STR, "fix": _STR},
+                        "required": ["chapter", "problem", "fix"],
+                    }
+                ),
+            },
+            "required": ["ok", "issues"],
+        },
+        "long_seo": {
+            "type": "object",
+            "properties": {
+                "titles": _arr(_STR, minItems=5, maxItems=5),
+                "description": _STR,
+                "tags": _arr(_STR, minItems=1),
+                "hashtags": _arr(_STR),
+                "keywords": _arr(_STR),
+                "chapter_titles": _arr(
+                    {
+                        "type": "object",
+                        "properties": {"n": _INT, "title": _STR},
+                        "required": ["n", "title"],
+                    },
+                    minItems=1,
+                ),
+            },
+            "required": ["titles", "description", "tags", "hashtags", "chapter_titles"],
+        },
+        "shorts_select": {
+            "type": "object",
+            "properties": {
+                "moments": _arr(
+                    {
+                        "type": "object",
+                        "properties": {
+                            "chapter": _INT,
+                            "sentence_start": {"type": "integer", "minimum": 0},
+                            "sentence_end": {"type": "integer", "minimum": 0},
+                            "length_bucket": _INT,
+                            "why_standalone": _STR,
+                        },
+                        "required": ["chapter", "sentence_start", "sentence_end", "why_standalone"],
+                    },
+                    minItems=1,
+                )
+            },
+            "required": ["moments"],
+        },
+        "short_hook": {
+            "type": "object",
+            "properties": {"hooks": _arr(_STR, minItems=5, maxItems=5), "closing_line": _STR},
+            "required": ["hooks", "closing_line"],
+        },
+        "policy_check": PolicyCheckResult.model_json_schema(),
+        "clip_plan": {
+            "type": "object",
+            "properties": {"clips": _arr(ClipPlanItem.model_json_schema(), minItems=1)},
+            "required": ["clips"],
+        },
+    }
+)
+
+
 @dataclass(frozen=True)
 class Prompt:
     """A parsed prompt file: front-matter fields, the fixed system text and the user template."""
@@ -98,7 +203,7 @@ class Prompt:
     user_template: jinja2.Template
 
 
-@lru_cache(maxsize=None)
+@cache
 def load_prompt(name: str) -> Prompt:
     """Load `prompts/<name>.md`; raises ValueError when the YAML front-matter is missing or incomplete."""
     raw = (PROMPTS_DIR / f"{name}.md").read_text(encoding="utf-8").replace("\r\n", "\n")

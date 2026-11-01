@@ -1,0 +1,36 @@
+{
+  "clips": [
+    {
+      "k": 1,
+      "start_s": 62.4,
+      "end_s": 101.9,
+      "title": "Why the first draft is always the worst one",
+      "hook_line": "The first draft is supposed to be bad.",
+      "why": "A complete argument with a clear punchline about drafting.",
+      "score": 0.88,
+      "speakers": ["S0"],
+      "keywords": ["writing", "first draft", "advice"]
+    },
+    {
+      "k": 2,
+      "start_s": 214.0,
+      "end_s": 262.5,
+      "title": "The editing trick that cut my word count in half",
+      "hook_line": "I deleted every sentence that began with the word and.",
+      "why": "Concrete story with a payoff and no outside context needed.",
+      "score": 0.81,
+      "speakers": ["S0", "S1"],
+      "keywords": ["editing", "word count", "revision"]
+    },
+    {
+      "k": 3,
+      "start_s": 480.2,
+      "end_s": 521.7,
+      "title": "What a reader actually remembers from your story",
+      "hook_line": "Readers forget plot, but they remember one image.",
+      "why": "Self-contained claim followed by an example and a closing line.",
+      "score": 0.74,
+      "keywords": ["readers", "memory", "storytelling"]
+    }
+  ]
+}
