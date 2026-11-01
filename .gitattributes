@@ -5,3 +5,12 @@
 *.jpg binary
 *.wav binary
 *.mp4 binary
+*.zip binary
+*.gif binary
+*.ico binary
+*.ttf binary
+*.otf binary
+*.woff2 binary
+*.onnx binary
+VERSION text eol=lf
+*.sha256 text eol=lf
