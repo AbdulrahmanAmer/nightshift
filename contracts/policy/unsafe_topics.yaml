@@ -1,0 +1,26 @@
+# spec §18.3. The LLM classifier (policy_check.md) returns the matching category ids; any match fails the text gate.
+categories:
+  - id: real_people
+    label: Real people, brands or events as fact
+    description: Names a real living or dead person, a real brand as a villain, or a real crime/tragedy presented as fact.
+    examples: ["a story about what Elon Musk did last night", "the killer from the 2012 theater shooting"]
+  - id: minors
+    label: Minors in sexual, violent or endangering contexts
+    description: Any minor in a sexual context, graphic violence against a minor, or instructions that endanger minors.
+    examples: ["a 12-year-old is tortured on camera"]
+  - id: graphic_harm
+    label: Graphic gore, self-harm methods, weapon or drug instructions
+    description: Explicit gore descriptions, suicide or self-harm methods, how to make weapons or drugs.
+    examples: ["step by step how he built the device", "she describes exactly how to overdose"]
+  - id: hate
+    label: Hate or harassment of protected groups
+    description: Demeaning content targeting race, religion, ethnicity, gender, sexual orientation, disability, nationality.
+    examples: ["the twist is that all people of X are evil"]
+  - id: advice
+    label: Medical, legal, financial or political advice
+    description: The narrator gives real-world advice on health, law, money or politics.
+    examples: ["and that's why you should never take antibiotics", "vote against them"]
+  - id: fake_news
+    label: Imitates news reports or emergency alerts
+    description: Formatted or voiced as a real news bulletin, emergency broadcast or official warning.
+    examples: ["this is an emergency alert for residents of Ohio"]

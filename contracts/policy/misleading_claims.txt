@@ -1,0 +1,20 @@
+# phrases that claim fiction is real (spec §18.4). matched case-insensitively in titles, descriptions, tags, hooks.
+true story
+based on a true story
+based on true events
+real story
+real footage
+actual footage
+caught on camera
+caught on tape
+this really happened
+happened to me
+my true story
+not fiction
+100% real
+real life
+real events
+police report
+news report
+breaking news
+leaked
