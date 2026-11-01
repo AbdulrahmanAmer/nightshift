@@ -45,7 +45,9 @@ def run_checks(*, skip_slow: bool = False) -> GateReport:
         secs = FakeTts().speak("hello from the gate", "Ryan", 1.0, tmp / "t.wav")
         checks.append(GateCheck(name="fake_tts_wav", passed=secs >= 0.4, value=secs, limit=">=0.4"))
         vec = FakeEmbed().embed(["x"])[0]
-        checks.append(GateCheck(name="fake_embed_vector", passed=len(vec) == 256, value=len(vec), limit="256"))
+        checks.append(
+            GateCheck(name="fake_embed_vector", passed=len(vec) == 256, value=len(vec), limit="256")
+        )
         try:
             clip = ff.make_test_clip(tmp / "c.mp4", width=320, height=180, seconds=2.0)
             dur = ff.duration_s(clip)
