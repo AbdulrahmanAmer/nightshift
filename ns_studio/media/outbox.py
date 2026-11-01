@@ -5,6 +5,7 @@ from __future__ import annotations
 import random
 import re
 import shutil
+import unicodedata
 import zlib
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
@@ -12,12 +13,102 @@ from pathlib import Path
 from typing import Any
 
 from ns_common.models import Channel, ClipRef, Metadata, PolicyAdvice, PolicyResult, Seo
+from ns_common.paths import Paths
 from ns_studio.context import JobContext
 from ns_studio.media.shotplan import Shot
 from ns_studio.stages import Tenant
 
 JITTER_MIN = 45
 _JOB_DATE = re.compile(r"-(\d{8})-[0-9a-f]{4}$")
+MARKER = ".nightshift-job"
+_RESERVED = frozenset({"con", "prn", "aux", "nul", *(f"com{i}" for i in range(1, 10)),
+                       *(f"lpt{i}" for i in range(1, 10))})
+_BAD_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+
+
+def safe_slug(text: str, max_len: int = 80) -> str:
+    """Lower-case, hyphen-separated, ASCII folder slug of at most `max_len` characters (Windows safe).
+
+    Reserved device names (`con`, `nul`, `com1`, ...) get a `-x` suffix; empty input gives `untitled`.
+    """
+    folded = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii").lower()
+    slug = re.sub(r"[^a-z0-9]+", "-", folded).strip("-")[:max_len].rstrip("-") or "untitled"
+    return f"{slug}-x" if slug in _RESERVED else slug
+
+
+def safe_filename(text: str, max_len: int = 80) -> str:
+    """A readable Windows-safe file stem: reserved characters removed, case and spaces kept, <= `max_len`."""
+    cleaned = _BAD_CHARS.sub("", text)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" .")[:max_len].strip(" .")
+    if not cleaned:
+        cleaned = "untitled"
+    return f"_{cleaned}" if cleaned.lower() in _RESERVED else cleaned
+
+
+def unique_dir(parent: Path, slug: str, job_id: str) -> Path:
+    """`parent/slug` for this job, or `slug-2`, `slug-3`... when another job already owns the folder.
+
+    Ownership is recorded in a marker file, so re-running a job reuses its own folder.
+    """
+    n = 1
+    while True:
+        suffix = "" if n == 1 else f"-{n}"
+        d = parent / f"{slug[: 80 - len(suffix)]}{suffix}"
+        marker = d / MARKER
+        if not d.exists():
+            d.mkdir(parents=True)
+            marker.write_text(job_id, encoding="utf-8")
+            return d
+        if marker.exists() and marker.read_text(encoding="utf-8").strip() == job_id:
+            return d
+        n += 1
+
+
+def story_title(ctx: JobContext) -> str:
+    """The story's title: master SEO title, else the first Short's SEO title, else the working title."""
+    for name in ("seo_long.json", "seo.json"):
+        if ctx.file(name).exists():
+            data = ctx.read_json(name)
+            first = data[0] if isinstance(data, list) else data
+            if first.get("title"):
+                return str(first["title"])
+    if ctx.file("story.json").exists():
+        story = ctx.read_json("story.json")
+        if isinstance(story, dict) and story.get("working_title"):
+            return str(story["working_title"])
+    return ctx.job_id
+
+
+def outbox_target(ctx: JobContext, kind: str, k: int | None = None) -> Path:
+    """The Outbox path of a video (spec §15.2a); creates its folder (and the story folder marker).
+
+    - `long` -> `outbox/<channel>/stories/<title-slug>/full/<title>.mp4`
+    - `short` -> `.../stories/<title-slug>/shorts/<title> - Short 01.mp4`
+    - with `series_context.json` {series_slug, part_n, series_title}:
+      `outbox/<channel>/series/<series-slug>/part-NN/{full|shorts}/<series-title> - Part NN[ - Short KK].mp4`
+
+    The `.json` sheet, `.txt` sheet and thumbnails sit next to the mp4. Story folders get a `-2` suffix when
+    another job already used the slug.
+    """
+    base = ctx.paths.outbox / ctx.channel.slug
+    if ctx.file("series_context.json").exists():
+        sc = ctx.read_json("series_context.json")
+        part = int(sc["part_n"])
+        stem = f"{safe_filename(str(sc['series_title']))} - Part {part:02d}"
+        root = base / "series" / safe_slug(str(sc["series_slug"])) / f"part-{part:02d}"
+    else:
+        title = story_title(ctx)
+        stem = safe_filename(title)
+        root = unique_dir(base / "stories", safe_slug(title), ctx.job_id)
+    folder = root / ("full" if kind == "long" else "shorts")
+    folder.mkdir(parents=True, exist_ok=True)
+    name = stem if kind == "long" else f"{stem} - Short {int(k or 1):02d}"
+    return folder / f"{name}.mp4"
+
+
+def rejected_path(paths: Paths, outbox_file: Path) -> Path:
+    """Where a rejected Outbox file goes: `rejected/` mirrors the Outbox tree (spec §15.2a)."""
+    return paths.rejected / outbox_file.relative_to(paths.outbox)
 
 
 def job_date(job_id: str) -> datetime:
@@ -201,8 +292,6 @@ class OutboxStage:
         shots_all: dict[str, Any] = ctx.read_json("clips/shots.json")
         seos = [Seo.model_validate(s) for s in ctx.read_json("seo.json")]
         advice = load_advice(ctx)
-        date = job_date(ctx.job_id).strftime("%Y-%m-%d")
-        dest_dir = ctx.paths.outbox_dir(ctx.channel.slug, date, ctx.job_id) / "shorts"
         manifest: dict[str, Any] = {}
         for item, info in rendered.items():
             k = int(item[1:])
@@ -221,11 +310,11 @@ class OutboxStage:
                     ctx.channel, ctx.job_id, item, day_offset=short_day_offset(ctx.channel, k)
                 ),
             )
-            mp4 = copy_if_changed(Path(info["path"]), dest_dir / f"{item}.mp4")
-            (dest_dir / f"{item}.json").write_text(
+            mp4 = copy_if_changed(Path(info["path"]), outbox_target(ctx, "short", k))
+            mp4.with_suffix(".json").write_text(
                 meta.model_dump_json(indent=2) + "\n", encoding="utf-8"
             )
-            write_sheet_txt(meta, mp4.name, dest_dir / f"{item}.txt")
+            write_sheet_txt(meta, mp4.name, mp4.with_suffix(".txt"))
             record_output(
                 ctx, kind="short", k=k, item=item, meta=meta, path=mp4,
                 duration_s=float(info["duration_s"]), shots=shots,
@@ -285,8 +374,6 @@ def short_description(description: str, master_title: str) -> str:
 def run_outbox_master(ctx: JobContext) -> None:
     """Publish the master (`long/`) and its derived Shorts (`shorts/`) with metadata and upload sheets."""
     advice = load_advice(ctx)
-    date = job_date(ctx.job_id).strftime("%Y-%m-%d")
-    root = ctx.paths.outbox_dir(ctx.channel.slug, date, ctx.job_id)
     chapters_doc: dict[str, Any] = ctx.read_json("long/chapters.json")
     chapters = chapters_doc["chapters"]
     long_info = ctx.read_json("render/long.json")
@@ -299,7 +386,6 @@ def run_outbox_master(ctx: JobContext) -> None:
     thumbs = [f"thumb_{i}.jpg" for i in (1, 2, 3) if ctx.file(f"long/thumb_{i}.jpg").exists()]
     manifest: dict[str, Any] = {}
 
-    long_dir = root / "long"
     meta = build_metadata(
         channel=ctx.channel, job_id=ctx.job_id, kind="long", k=None, seo=long_seo, advice=advice,
         shots=long_shots, combo_id=ctx.combo.combo_id, prompt_versions=ctx.prompt_versions,
@@ -311,18 +397,16 @@ def run_outbox_master(ctx: JobContext) -> None:
             "thumbnails": thumbs,
         },
     )
-    mp4 = copy_if_changed(Path(long_info["path"]), long_dir / "master.mp4")
+    mp4 = copy_if_changed(Path(long_info["path"]), outbox_target(ctx, "long"))
     for t in thumbs:
-        copy_if_changed(ctx.file(f"long/{t}"), long_dir / t)
-    (long_dir / "master.json").write_text(meta.model_dump_json(indent=2) + "\n", encoding="utf-8")
-    write_sheet_txt(meta, mp4.name, long_dir / "master.txt")
+        copy_if_changed(ctx.file(f"long/{t}"), mp4.parent / t)
+    mp4.with_suffix(".json").write_text(meta.model_dump_json(indent=2) + "\n", encoding="utf-8")
+    write_sheet_txt(meta, mp4.name, mp4.with_suffix(".txt"))
     record_output(ctx, kind="long", k=None, item="long", meta=meta, path=mp4,
                   duration_s=float(long_info["duration_s"]), shots=long_shots)
-    manifest["long"] = {
-        "mp4": str(mp4), "json": str(long_dir / "master.json"), "txt": str(long_dir / "master.txt"),
-    }
+    manifest["long"] = {"mp4": str(mp4), "json": str(mp4.with_suffix(".json")),
+                        "txt": str(mp4.with_suffix(".txt"))}
 
-    shorts_dir = root / "shorts"
     has_report = ctx.file("render/report.json").exists()
     rendered: dict[str, Any] = ctx.read_json("render/report.json") if has_report else {}
     shorts_shots: dict[str, Any] = (
@@ -343,9 +427,9 @@ def run_outbox_master(ctx: JobContext) -> None:
             extra={"related_video_instruction": f"Set Related video -> {long_seo.title}",
                    "parent_job_id": ctx.job_id},
         )
-        smp4 = copy_if_changed(Path(info["path"]), shorts_dir / f"{item}.mp4")
-        (shorts_dir / f"{item}.json").write_text(smeta.model_dump_json(indent=2) + "\n", encoding="utf-8")
-        write_sheet_txt(smeta, smp4.name, shorts_dir / f"{item}.txt", related_title=long_seo.title)
+        smp4 = copy_if_changed(Path(info["path"]), outbox_target(ctx, "short", k))
+        smp4.with_suffix(".json").write_text(smeta.model_dump_json(indent=2) + "\n", encoding="utf-8")
+        write_sheet_txt(smeta, smp4.name, smp4.with_suffix(".txt"), related_title=long_seo.title)
         record_output(ctx, kind="short", k=k, item=item, meta=smeta, path=smp4,
                       duration_s=float(info["duration_s"]), shots=shots)
         manifest[item] = {"mp4": str(smp4), "json": str(smp4.with_suffix(".json")),

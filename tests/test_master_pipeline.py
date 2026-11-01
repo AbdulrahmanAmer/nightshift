@@ -9,7 +9,6 @@ from ns_common.paths import contracts_dir
 from ns_studio.media import master as M
 from ns_studio.media import qc as Q
 from ns_studio.media import thumbnails as T
-from ns_studio.media.outbox import job_date
 from ns_studio.media.stages_media import MASTER_MEDIA_STAGES
 from ns_studio.orchestrator import FORMAT_STAGES, run_job
 from tests.helpers import make_combo, make_ctx
@@ -98,25 +97,29 @@ def test_master_first_media_pipeline(tmp_home: Path, monkeypatch: pytest.MonkeyP
     assert set(qc) == {"long", "s1", "s2"} and all(v["passed"] for v in qc.values()), qc
 
     # Outbox
-    date = job_date(ctx.job_id).strftime("%Y-%m-%d")
-    root = ctx.paths.outbox / "after-dark" / date / ctx.job_id
-    for name in ("master.mp4", "master.json", "master.txt", "thumb_1.jpg", "thumb_2.jpg", "thumb_3.jpg"):
-        assert (root / "long" / name).exists(), name
+    man = ctx.read_json("outbox/manifest.json")
+    full = Path(man["long"]["mp4"]).parent
+    story = ctx.paths.outbox / "after-dark" / "stories" / "the-long-night-story"
+    assert full == story / "full" and Path(man["long"]["mp4"]).name == f"{MASTER_TITLE}.mp4"
+    for name in (f"{MASTER_TITLE}.mp4", f"{MASTER_TITLE}.json", f"{MASTER_TITLE}.txt",
+                 "thumb_1.jpg", "thumb_2.jpg", "thumb_3.jpg"):
+        assert (full / name).exists(), name
     schema = json.loads((contracts_dir() / "schemas" / "metadata.schema.json").read_text(encoding="utf-8"))
-    long_meta = json.loads((root / "long" / "master.json").read_text(encoding="utf-8"))
+    long_meta = json.loads(Path(man["long"]["json"]).read_text(encoding="utf-8"))
     jsonschema.validate(long_meta, schema)
     assert long_meta["kind"] == "long" and "00:00 Chapter title 1" in long_meta["description"]
     assert "[[CHAPTERS]]" not in long_meta["description"] and "#shorts" not in long_meta["hashtags"]
     assert long_meta["thumbnails"] == ["thumb_1.jpg", "thumb_2.jpg", "thumb_3.jpg"]
     for k in (1, 2):
-        meta = json.loads((root / "shorts" / f"s{k}.json").read_text(encoding="utf-8"))
+        meta = json.loads(Path(man[f"s{k}"]["json"]).read_text(encoding="utf-8"))
         jsonschema.validate(meta, schema)
         assert meta["kind"] == "short" and meta["k"] == k and meta["parent_job_id"] == ctx.job_id
         assert meta["related_video_instruction"] == f"Set Related video -> {MASTER_TITLE}"
         assert f"From the full story: {MASTER_TITLE}" in meta["description"]
-        sheet = (root / "shorts" / f"s{k}.txt").read_text(encoding="utf-8")
+        sheet = Path(man[f"s{k}"]["txt"]).read_text(encoding="utf-8")
         assert f"Related video: set Related video -> {MASTER_TITLE}" in sheet
-        video = root / "shorts" / f"s{k}.mp4"
+        video = Path(man[f"s{k}"]["mp4"])
+        assert video.parent == story / "shorts" and video.name == f"{MASTER_TITLE} - Short {k:02d}.mp4"
         assert ff.video_size(video) == (1080, 1920)
         tl = ctx.read_json(f"captions/s{k}.json")
         assert abs(ff.duration_s(video) - tl["audio_s"]) < 0.3

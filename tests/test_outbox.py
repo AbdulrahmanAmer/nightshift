@@ -11,7 +11,11 @@ from ns_studio.media.outbox import (
     OutboxStage,
     build_metadata,
     job_date,
+    outbox_target,
     publish_after,
+    rejected_path,
+    safe_filename,
+    safe_slug,
     sheet_text,
     short_day_offset,
     write_sheet_txt,
@@ -122,26 +126,34 @@ def _prepare(ctx, tmp_path: Path) -> Path:
     return video
 
 
+STORY_DIR = "scary-story-the-doorbell-camera"
+SHORT_NAME = "Scary Story The Doorbell Camera - Short 01"
+
+
+def _short_dir(ctx) -> Path:
+    return ctx.paths.outbox / "after-dark" / "stories" / STORY_DIR / "shorts"
+
+
 def test_outbox_stage_copies_files_and_writes_rows(tmp_home: Path, tmp_path: Path):
     ctx = make_ctx(tmp_home)
     ctx.prompt_versions = {"seo": 1}
     _prepare(ctx, tmp_path)
     OutboxStage().run(ctx)
-    date = job_date(ctx.job_id).strftime("%Y-%m-%d")
-    d = ctx.paths.outbox / "after-dark" / date / ctx.job_id / "shorts"
-    assert (d / "s1.mp4").stat().st_size == 2048
-    meta = json.loads((d / "s1.json").read_text(encoding="utf-8"))
+    d = _short_dir(ctx)
+    mp4 = d / f"{SHORT_NAME}.mp4"
+    assert mp4.stat().st_size == 2048
+    meta = json.loads((d / f"{SHORT_NAME}.json").read_text(encoding="utf-8"))
     jsonschema.validate(meta, _schema())
     assert Metadata.model_validate(meta).job_id == ctx.job_id and meta["prompt_versions"] == {"seo": 1}
-    assert (d / "s1.txt").read_text(encoding="utf-8").startswith("FILE: s1.mp4")
+    assert (d / f"{SHORT_NAME}.txt").read_text(encoding="utf-8").startswith(f"FILE: {SHORT_NAME}.mp4")
     out = ctx.db.one("select * from outputs where output_id=?", (f"{ctx.job_id}/s1",))
     assert out["kind"] == "short" and out["k"] == 1 and out["status"] == "pending"
-    assert out["path"] == str(d / "s1.mp4") and out["duration_s"] == 6.0 and out["combo_id"] == "c-test"
+    assert out["path"] == str(mp4) and out["duration_s"] == 6.0 and out["combo_id"] == "c-test"
     usage = ctx.db.query(
         "select source, clip_id, item from clip_usage where job_id=? order by clip_id", (ctx.job_id,)
     )
     assert [(u["clip_id"], u["item"]) for u in usage] == [("a-1", "s1"), ("b-2", "s1")]
-    assert ctx.read_json("outbox/manifest.json")["s1"]["mp4"] == str(d / "s1.mp4")
+    assert ctx.read_json("outbox/manifest.json")["s1"]["mp4"] == str(mp4)
 
 
 def test_outbox_stage_is_idempotent_and_keeps_review_status(tmp_home: Path, tmp_path: Path):
@@ -153,6 +165,7 @@ def test_outbox_stage_is_idempotent_and_keeps_review_status(tmp_home: Path, tmp_
     assert ctx.db.one("select count(*) c from outputs where job_id=?", (ctx.job_id,))["c"] == 1
     assert ctx.db.one("select status from outputs where job_id=?", (ctx.job_id,))["status"] == "approved"
     assert ctx.db.one("select count(*) c from clip_usage where job_id=?", (ctx.job_id,))["c"] == 2
+    assert [p.name for p in (_short_dir(ctx).parent.parent).iterdir()] == [STORY_DIR]  # no -2 folder
 
 
 def test_outbox_uses_policy_advice_when_present(tmp_home: Path, tmp_path: Path):
@@ -163,10 +176,61 @@ def test_outbox_uses_policy_advice_when_present(tmp_home: Path, tmp_path: Path):
         "advice": {"ai_disclosure": "yes", "made_for_kids": False, "age_restrict_suggested": True},
     })
     OutboxStage().run(ctx)
-    date = job_date(ctx.job_id).strftime("%Y-%m-%d")
-    meta = json.loads(
-        (ctx.paths.outbox / "after-dark" / date / ctx.job_id / "shorts" / "s1.json").read_text(
-            encoding="utf-8"
-        )
-    )
+    meta = json.loads((_short_dir(ctx) / f"{SHORT_NAME}.json").read_text(encoding="utf-8"))
     assert meta["ai_disclosure"] == "yes" and meta["age_restrict_suggested"] is True
+
+
+# ---- spec 15.2a path shapes ------------------------------------------------------------------------
+
+
+def test_safe_slug_and_filename_are_windows_safe():
+    assert safe_slug("Scary Story: The Doorbell Camera!") == "scary-story-the-doorbell-camera"
+    assert safe_slug("Café déjà vu") == "cafe-deja-vu"
+    assert safe_slug("   ") == "untitled" and safe_slug("???") == "untitled"
+    assert safe_slug("CON") == "con-x" and safe_slug("com1") == "com1-x"
+    long = safe_slug("word " * 40)
+    assert len(long) <= 80 and not long.endswith("-")
+    assert safe_filename('A: "Title"/with\bad|chars?*<>') == "A Titlewithbadchars"
+    assert safe_filename("Trailing dots...  ") == "Trailing dots"
+    assert safe_filename("nul") == "_nul" and safe_filename("") == "untitled"
+    assert len(safe_filename("x" * 200)) == 80
+
+
+def test_outbox_target_story_shapes_and_collision_suffix(tmp_home: Path):
+    a = make_ctx(tmp_home)
+    a.write_json("seo.json", [SEO])
+    full = outbox_target(a, "long")
+    base = a.paths.outbox / "after-dark" / "stories" / STORY_DIR
+    assert full == base / "full" / "Scary Story The Doorbell Camera.mp4" and full.parent.is_dir()
+    assert outbox_target(a, "short", 2) == base / "shorts" / "Scary Story The Doorbell Camera - Short 02.mp4"
+    assert outbox_target(a, "long") == full  # same job: same folder
+    b = make_ctx(tmp_home)  # another job with the same title
+    b.write_json("seo.json", [SEO])
+    second = outbox_target(b, "short", 1)
+    assert second.parent.parent.name == STORY_DIR + "-2"
+    c = make_ctx(tmp_home)
+    c.write_json("seo.json", [SEO])
+    assert outbox_target(c, "long").parent.parent.name == STORY_DIR + "-3"
+    assert outbox_target(b, "long").parent.parent.name == STORY_DIR + "-2"
+
+
+def test_outbox_target_prefers_master_title_and_series_layout(tmp_home: Path):
+    ctx = make_ctx(tmp_home, fmt="master_first")
+    ctx.write_json("seo_long.json", {"title": "The Long Night"})
+    ctx.write_json("seo.json", [SEO])
+    assert outbox_target(ctx, "long").parent.parent.name == "the-long-night"
+    s = make_ctx(tmp_home, fmt="master_first")
+    s.write_json(
+        "series_context.json", {"series_slug": "Night Bus", "part_n": 3, "series_title": "The Night Bus"}
+    )
+    root = s.paths.outbox / "after-dark" / "series" / "night-bus" / "part-03"
+    assert outbox_target(s, "long") == root / "full" / "The Night Bus - Part 03.mp4"
+    assert outbox_target(s, "short", 1) == root / "shorts" / "The Night Bus - Part 03 - Short 01.mp4"
+
+
+def test_rejected_path_mirrors_the_outbox_tree(tmp_home: Path):
+    ctx = make_ctx(tmp_home)
+    ctx.write_json("seo.json", [SEO])
+    mp4 = outbox_target(ctx, "short", 1)
+    rej = rejected_path(ctx.paths, mp4)
+    assert rej == ctx.paths.rejected / "after-dark" / "stories" / STORY_DIR / "shorts" / mp4.name
