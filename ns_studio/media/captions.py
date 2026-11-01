@@ -8,13 +8,16 @@ from __future__ import annotations
 
 import re
 import statistics
-from collections.abc import Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from difflib import SequenceMatcher
+from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
+from ns_common import ffmpeg as ff
 from ns_common.errors import NsError
+from ns_common.paths import contracts_dir
 from ns_common.textstats import normalize_tokens, split_sentences
 from ns_studio.context import JobContext
 from ns_studio.media.presets import FONTS_DIR, CaptionStyle, caption_style
@@ -193,11 +196,190 @@ def resolve_font(style: CaptionStyle, fonts_dir: Path | None = None) -> str:
     return style.font_fallback
 
 
-def group_words(words: Sequence[Word], style: CaptionStyle, *, max_pause_s: float = 0.6) -> list[list[Word]]:
-    """Split words into on-screen groups of 2 to `style.words_on_screen[1]` words.
+@dataclass(frozen=True)
+class Box:
+    """A rectangle in canvas pixels (a detected face or facecam region)."""
 
-    Groups never span a sentence end or a pause longer than `max_pause_s`; a run is split into evenly sized
-    pages so no page is a lone word unless the sentence is.
+    x: int
+    y: int
+    w: int
+    h: int
+
+
+DEFAULT_SAFE_ZONES = (220, 320)  # YouTube UI on 9:16: top and bottom pixels to keep clear
+MIN_CONTRAST = 4.5
+EMPHASIS_SCALE = 115
+_WORDISH = re.compile(r"[A-Za-z0-9']+")
+
+
+def free_bands(
+    h_px: int, avoid: Sequence[Box], safe_top: int, safe_bottom: int, x0: int, x1: int
+) -> list[tuple[int, int]]:
+    """Vertical bands (top, bottom) inside the safe zones not covered by any region over [x0, x1]."""
+    lo, hi = safe_top, h_px - safe_bottom
+    blocks = sorted(
+        (max(lo, b.y), min(hi, b.y + b.h))
+        for b in avoid
+        if b.x < x1 and b.x + b.w > x0 and b.y < hi and b.y + b.h > lo
+    )
+    bands: list[tuple[int, int]] = []
+    cur = lo
+    for s, e in blocks:
+        if s > cur:
+            bands.append((cur, s))
+        cur = max(cur, e)
+    if cur < hi:
+        bands.append((cur, hi))
+    return bands
+
+
+def choose_margin_v(
+    *,
+    h_px: int,
+    preferred_margin_v: int,
+    block_h: int,
+    x_range: tuple[int, int],
+    avoid: Sequence[Box] = (),
+    safe_zones: tuple[int, int] | None = None,
+) -> int:
+    """Bottom margin (px) for the caption block: the style's own place when it is free, else the largest band.
+
+    A place is free when the block lies inside one free band (outside the safe zones and every region).
+    With no free band tall enough the preferred margin is kept.
+    """
+    top, bottom = safe_zones or (0, 0)
+    bands = free_bands(h_px, avoid, top, bottom, x_range[0], x_range[1])
+    pref_bottom = h_px - preferred_margin_v
+    pref_top = pref_bottom - block_h
+    if any(s <= pref_top and pref_bottom <= e for s, e in bands):
+        return preferred_margin_v
+    fitting = [(e - s, s, e) for s, e in bands if e - s >= block_h]
+    if not fitting:
+        return preferred_margin_v
+    _size, s, e = max(fitting)
+    pad = min(12, (e - s - block_h) // 2)
+    return h_px - (e - pad)
+
+
+def _channel(v: int) -> float:
+    c = v / 255.0
+    return c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
+
+
+def relative_luminance(hex_rgb: str) -> float:
+    """WCAG relative luminance of a #RRGGBB colour."""
+    h = hex_rgb.lstrip("#")
+    r, g, b = (int(h[i : i + 2], 16) for i in (0, 2, 4))
+    return 0.2126 * _channel(r) + 0.7152 * _channel(g) + 0.0722 * _channel(b)
+
+
+def luma_to_luminance(y: float) -> float:
+    """Relative luminance (0-1) of a limited-range luma sample (16-235), gamma 2.2."""
+    return min(1.0, max(0.0, (y - 16.0) / 219.0)) ** 2.2
+
+
+def contrast_ratio(l1: float, l2: float) -> float:
+    """WCAG contrast ratio of two relative luminances (1.0 to 21.0)."""
+    hi, lo = max(l1, l2), min(l1, l2)
+    return (hi + 0.05) / (lo + 0.05)
+
+
+def boxed_variant(style: CaptionStyle) -> CaptionStyle:
+    """The style with an opaque dark box behind the text (spec §17.2 low-contrast fallback)."""
+    return style.model_copy(update={
+        "box": True,
+        "outline_color": "#101010",
+        "vertical": style.vertical.model_copy(update={"outline": max(style.vertical.outline, 12.0)}),
+        "landscape": style.landscape.model_copy(update={"outline": max(style.landscape.outline, 9.0)}),
+    })
+
+
+def ensure_contrast(style: CaptionStyle, backdrop_luma: Sequence[float]) -> CaptionStyle:
+    """`style`, or its boxed variant when the text colour has under 4.5:1 contrast on any sampled backdrop.
+
+    `backdrop_luma` holds luma values (16-235) of the frame region behind the caption (see `sample_luma`).
+    """
+    if style.box or not backdrop_luma:
+        return style
+    text = relative_luminance(style.primary)
+    worst = min(contrast_ratio(text, luma_to_luminance(y)) for y in backdrop_luma)
+    return style if worst >= MIN_CONTRAST else boxed_variant(style)
+
+
+def sample_luma(video: Path, box: Box, times: Sequence[float]) -> list[float]:
+    """Mean luma (YAVG) of `box` at each time, via FFmpeg crop + signalstats."""
+    out: list[float] = []
+    for t in times:
+        proc = ff.run([
+            "-ss", f"{t:.2f}", "-i", str(video), "-frames:v", "1", "-an", "-vf",
+            f"crop={box.w}:{box.h}:{box.x}:{box.y},signalstats,"
+            "metadata=print:key=lavfi.signalstats.YAVG",
+            "-f", "null", "-",
+        ])
+        m = re.search(r"lavfi\.signalstats\.YAVG=([\d.]+)", proc.stdout + proc.stderr)
+        if m:
+            out.append(float(m.group(1)))
+    return out
+
+
+@lru_cache(maxsize=1)
+def profanity_words() -> frozenset[str]:
+    """Lower-case words to mask, from contracts/policy/profanity.txt (blank lines and # comments ignored)."""
+    f = contracts_dir() / "policy" / "profanity.txt"
+    if not f.exists():
+        return frozenset()
+    lines = (ln.strip().lower() for ln in f.read_text(encoding="utf-8").splitlines())
+    return frozenset(ln for ln in lines if ln and not ln.startswith("#"))
+
+
+def mask_text(text: str, words: frozenset[str] | None = None) -> str:
+    """Mask listed words except their first letter: "shit" -> "s***" (display only; audio is untouched)."""
+    bad = profanity_words() if words is None else words
+
+    def repl(m: re.Match[str]) -> str:
+        word = m.group(0)
+        return word[0] + "*" * (len(word) - 1) if word.lower() in bad else word
+
+    return _WORDISH.sub(repl, text)
+
+
+def _split_page(page: list[Word], max_dur_s: float) -> list[list[Word]]:
+    if len(page) > 1 and page[-1].end - page[0].start > max_dur_s:
+        mid = (len(page) + 1) // 2
+        return _split_page(page[:mid], max_dur_s) + _split_page(page[mid:], max_dur_s)
+    return [page]
+
+
+def _merge_pages(
+    pages: list[list[Word]], max_words: int, min_dur_s: float, max_dur_s: float
+) -> list[list[Word]]:
+    out: list[list[Word]] = []
+    for page in pages:
+        if out:
+            prev = out[-1]
+            short = (prev[-1].end - prev[0].start < min_dur_s) or (page[-1].end - page[0].start < min_dur_s)
+            if short and len(prev) + len(page) <= max_words and page[-1].end - prev[0].start <= max_dur_s:
+                out[-1] = prev + page
+                continue
+        out.append(page)
+    return out
+
+
+def group_words(
+    words: Sequence[Word],
+    style: CaptionStyle,
+    *,
+    max_pause_s: float = 0.6,
+    min_dur_s: float = 0.9,
+    max_dur_s: float = 2.2,
+    breaks_before: Collection[int] = (),
+) -> list[list[Word]]:
+    """Split words into on-screen groups of at most `style.words_on_screen[1]` (<= 4) words.
+
+    Groups never span a sentence end, a pause longer than `max_pause_s`, or a word index in `breaks_before`
+    (speaker changes). A run is split into evenly sized pages; pages lasting more than `max_dur_s` are halved
+    and neighbouring pages shorter than `min_dur_s` are merged while the group stays within the word limit
+    (spec §17.2: 0.9-2.2 s on screen).
     """
     max_words = max(1, min(4, style.words_on_screen[1]))
     runs: list[list[Word]] = []
@@ -205,7 +387,12 @@ def group_words(words: Sequence[Word], style: CaptionStyle, *, max_pause_s: floa
     for i, w in enumerate(words):
         cur.append(w)
         nxt = words[i + 1] if i + 1 < len(words) else None
-        if nxt is None or _SENTENCE_END.search(w.w) or nxt.start - w.end > max_pause_s:
+        if (
+            nxt is None
+            or _SENTENCE_END.search(w.w)
+            or nxt.start - w.end > max_pause_s
+            or (i + 1) in breaks_before
+        ):
             runs.append(cur)
             cur = []
     groups: list[list[Word]] = []
@@ -213,11 +400,27 @@ def group_words(words: Sequence[Word], style: CaptionStyle, *, max_pause_s: floa
         pages = -(-len(run) // max_words)
         base, extra = divmod(len(run), pages)
         pos = 0
+        split: list[list[Word]] = []
         for p in range(pages):
             size = base + (1 if p < extra else 0)
-            groups.append(run[pos : pos + size])
+            split += _split_page(run[pos : pos + size], max_dur_s)
             pos += size
+        groups += _merge_pages(split, max_words, min_dur_s, max_dur_s)
     return groups
+
+
+def _is_emphasis(w: Word, emphasis: Mapping[int, str] | None) -> bool:
+    if not emphasis or w.sentence_idx not in emphasis:
+        return False
+    target = normalize_tokens(emphasis[w.sentence_idx])
+    return bool(target) and normalize_tokens(w.w) == target
+
+
+def speaker_palette(style: CaptionStyle) -> list[str]:
+    """Per-speaker text colours: the style's `palette`, else primary, accent and two fixed fallbacks."""
+    if style.palette:
+        return style.palette
+    return [style.primary, style.accent or style.active, "#7CE38B", "#FF8FB1"]
 
 
 def build_ass(
@@ -228,14 +431,30 @@ def build_ass(
     fonts_dir: Path | None = None,
     hold_s: float = 0.35,
     first_at_zero: bool = True,
+    avoid_regions: Sequence[Box] | None = None,
+    safe_zones: tuple[int, int] | None = None,
+    emphasis: Mapping[int, str] | None = None,
+    speakers: Mapping[int, int] | None = None,
+    speaker_breaks: Collection[int] = (),
+    backdrop_luma: Sequence[float] | None = None,
+    mask_profanity: bool = False,
 ) -> str:
     """Build an ASS document: 2-4 words on screen, the active word in the style's highlight colour.
 
     The first event starts at 0.0 s (spec §18.5). 9:16 (`vertical`, 1080x1920) and 16:9 (`landscape`,
     1920x1080) variants come from the style. Animations: `pop` scales the active word, `karaoke` sweeps
-    the highlight, `none` only recolours.
+    the highlight, `none` only recolours. Optional smart features (spec §17.2), all off by default:
+
+    - `avoid_regions` / `safe_zones` (top, bottom px): the caption block moves to the largest free band.
+    - `emphasis`: {sentence_idx: key word} shown in the accent colour at +15 % size.
+    - `speakers`: {group_idx: speaker} gives each speaker's groups a palette colour; `speaker_breaks` are word
+      indices where a new speaker starts (they end the current group).
+    - `backdrop_luma`: luma samples behind the caption; low contrast (< 4.5:1) switches to the boxed variant.
+    - `mask_profanity`: masks listed words (contracts/policy/profanity.txt) in the captions.
     """
     st = caption_style(style) if isinstance(style, str) else style
+    if backdrop_luma:
+        st = ensure_contrast(st, backdrop_luma)
     geo = st.vertical if variant == "vertical" else st.landscape
     w_px, h_px = (1080, 1920) if variant == "vertical" else (1920, 1080)
     font = resolve_font(st, fonts_dir)
@@ -244,6 +463,12 @@ def build_ass(
     primary = st.active if st.animation == "karaoke" else st.primary
     secondary = st.primary
     margin_v = round(h_px * geo.margin_v_pct / 100.0)
+    if avoid_regions or safe_zones:
+        block_h = int(geo.font_size * 1.2 * (2 if variant == "vertical" else 1))
+        margin_v = choose_margin_v(
+            h_px=h_px, preferred_margin_v=margin_v, block_h=block_h,
+            x_range=(geo.margin_lr, w_px - geo.margin_lr), avoid=avoid_regions or (), safe_zones=safe_zones,
+        )
     header = [
         "[Script Info]",
         "ScriptType: v4.00+",
@@ -264,16 +489,22 @@ def build_ass(
         "[Events]",
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
     ]
-    groups = group_words(words, st)
+    groups = group_words(words, st, breaks_before=speaker_breaks)
+    palette = speaker_palette(st)
+    accent = st.accent or st.active
+    masked = profanity_words() if mask_profanity else frozenset()
     events: list[str] = []
-    active_tag = f"{{\\c{_ass_inline_color(st.active)}"
-    base_tag = f"{{\\c{_ass_inline_color(st.primary)}}}"
+    reset = "\\fscx100\\fscy100" if emphasis else ""
 
     def label(w: Word) -> str:
         t = _escape(w.w)
+        if mask_profanity:
+            t = mask_text(t, masked)
         return t.upper() if st.uppercase else t
 
     for gi, g in enumerate(groups):
+        base_col = palette[speakers[gi] % len(palette)] if speakers and gi in speakers else st.primary
+        base_tag = f"{{\\c{_ass_inline_color(base_col)}{reset}}}"
         g_start = 0.0 if (gi == 0 and first_at_zero) else g[0].start
         next_start = groups[gi + 1][0].start if gi + 1 < len(groups) else None
         g_end = g[-1].end + hold_s
@@ -285,7 +516,9 @@ def build_ass(
             for k, w in enumerate(g):
                 nxt_t = g[k + 1].start if k + 1 < len(g) else g_end
                 cs = max(1, round((nxt_t - (g_start if k == 0 else w.start)) * 100))
-                parts.append(f"{{\\kf{cs}}}{label(w)}")
+                size = f"\\fscx{EMPHASIS_SCALE}\\fscy{EMPHASIS_SCALE}" if _is_emphasis(w, emphasis) else ""
+                after = "\\fscx100\\fscy100" if size else ""
+                parts.append(f"{{\\kf{cs}{size}}}{label(w)}" + (f"{{{after}}}" if after else ""))
             events.append(
                 f"Dialogue: 0,{_ass_time(g_start)},{_ass_time(g_end)},Default,,0,0,0,,{' '.join(parts)}"
             )
@@ -296,13 +529,20 @@ def build_ass(
             ev_end = max(ev_end, ev_start + 0.04)
             pieces: list[str] = []
             for j, other in enumerate(g):
+                emph = _is_emphasis(other, emphasis)
+                size = f"\\fscx{EMPHASIS_SCALE}\\fscy{EMPHASIS_SCALE}" if emph else ""
                 if j == k:
+                    col = accent if emph else st.active
                     pop = "\\fscx118\\fscy118\\t(0,90,\\fscx100\\fscy100)" if st.animation == "pop" else ""
-                    pieces.append(f"{active_tag}{pop}}}{label(other)}{base_tag}")
+                    pieces.append(f"{{\\c{_ass_inline_color(col)}{size}{pop}}}{label(other)}{base_tag}")
+                elif emph:
+                    pieces.append(f"{{\\c{_ass_inline_color(accent)}{size}}}{label(other)}{base_tag}")
                 else:
                     pieces.append(label(other))
+            prefix = base_tag if (speakers and gi in speakers) else ""
             events.append(
-                f"Dialogue: 0,{_ass_time(ev_start)},{_ass_time(ev_end)},Default,,0,0,0,,{' '.join(pieces)}"
+                f"Dialogue: 0,{_ass_time(ev_start)},{_ass_time(ev_end)},Default,,0,0,0,,"
+                f"{prefix}{' '.join(pieces)}"
             )
     return "\n".join([*header, *events]) + "\n"
 

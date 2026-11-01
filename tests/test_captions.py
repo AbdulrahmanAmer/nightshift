@@ -3,15 +3,26 @@ from pathlib import Path
 
 import pytest
 
+from ns_common import ffmpeg as ff
 from ns_common.errors import NsError
 from ns_common.tts_client import FakeTts, wav_seconds
 from ns_studio.media.captions import (
+    Box,
     CaptionsStage,
+    _merge_pages,
     align_words,
     build_ass,
+    choose_margin_v,
+    contrast_ratio,
     drift_ms,
+    ensure_contrast,
     first_event_start,
+    free_bands,
     group_words,
+    mask_text,
+    profanity_words,
+    relative_luminance,
+    sample_luma,
     script_words,
 )
 from ns_studio.media.presets import caption_style, load_caption_styles
@@ -221,3 +232,100 @@ def test_captions_stage_fails_with_e403_on_drift(tmp_home: Path):
     with pytest.raises(NsError) as ei:
         CaptionsStage().run(ctx)
     assert ei.value.code == "NS-E403" and "drift" in ei.value.detail
+
+
+# ---- spec 17.2: smart placement, emphasis, speakers, timing, contrast, profanity ------------------------
+
+
+def _style(**kw):
+    return caption_style("clean_white").model_copy(update=kw)
+
+
+def test_free_bands_and_choose_margin_v():
+    face = Box(0, 1000, 1080, 500)
+    assert free_bands(1920, [face], 220, 320, 0, 1080) == [(220, 1000), (1500, 1600)]
+    kw = {"h_px": 1920, "block_h": 220, "x_range": (70, 1010)}
+    # the style's own place collides with the face: move to the largest free band, bottom aligned
+    assert choose_margin_v(preferred_margin_v=576, avoid=[face], safe_zones=(220, 320), **kw) == 932
+    # a region elsewhere leaves the preferred place alone
+    far = Box(0, 100, 1080, 200)
+    assert choose_margin_v(preferred_margin_v=576, avoid=[far], safe_zones=(220, 320), **kw) == 576
+    # a region that does not overlap the caption columns is ignored
+    side = Box(0, 1000, 30, 500)
+    assert choose_margin_v(preferred_margin_v=576, avoid=[side], safe_zones=(220, 320), **kw) == 576
+    # the bottom safe zone pushes a too-low caption up
+    assert choose_margin_v(preferred_margin_v=100, safe_zones=(220, 320), **kw) == 332
+    # nowhere to go: keep the preferred margin
+    wall = Box(0, 0, 1080, 1920)
+    assert choose_margin_v(preferred_margin_v=576, avoid=[wall], safe_zones=(220, 320), **kw) == 576
+
+
+def test_build_ass_moves_anchor_away_from_face_and_is_unchanged_without_regions():
+    plain = build_ass(_words(), "punch_yellow")
+    assert ",2,70,70,576,1" in plain
+    moved = build_ass(
+        _words(), "punch_yellow", avoid_regions=[Box(0, 1000, 1080, 500)], safe_zones=(220, 320)
+    )
+    assert ",2,70,70,932,1" in moved
+    assert plain == build_ass(_words(), "punch_yellow", emphasis=None, speakers=None)
+
+
+def test_emphasis_word_gets_accent_colour_and_larger_size():
+    st = _style(accent="#FF0000")
+    ass = build_ass(_words(), st, emphasis={0: "Quiet"})
+    assert "\\c&H0000FF&\\fscx115\\fscy115" in ass
+    quiet_events = [ln for ln in ass.splitlines() if "quiet" in ln]
+    assert quiet_events and all("\\fscx115" in ln for ln in quiet_events)
+    assert "fscx115" not in build_ass(_words(), st)
+    assert "fscx115" not in build_ass(_words(), st, emphasis={3: "quiet"})  # other sentence: no match
+
+
+def test_speakers_get_palette_colours_and_breaks_split_groups():
+    st = _style(palette=["#FFFFFF", "#00FF00"])
+    ass = build_ass(_words(), st, speakers={0: 1, 1: 0})
+    assert "{\\c&H00FF00&}" in ass
+    words = [Word(t, i * 0.3, i * 0.3 + 0.2) for i, t in enumerate("a b c d e f g.".split())]
+    style = caption_style("punch_yellow")
+    groups = group_words(words, style, breaks_before={3})
+    assert [w.w for w in groups[0]] == ["a", "b", "c"]
+    assert all(not (set(map(id, g)) & {id(words[2])} and set(map(id, g)) & {id(words[3])}) for g in groups)
+
+
+def test_group_timing_halves_long_pages_and_merges_short_neighbours():
+    style = caption_style("clean_white")  # up to 4 words
+    slow = [Word(f"w{i}", i * 1.0, i * 1.0 + 0.3) for i in range(4)]
+    grouped = group_words(slow, style, max_pause_s=2.0)
+    assert [[w.w for w in g] for g in grouped] == [["w0", "w1"], ["w2", "w3"]]
+    quick = [Word("a", 0.0, 0.2), Word("b", 0.3, 0.5)]
+    assert _merge_pages([[quick[0]], [quick[1]]], 3, 0.9, 2.2) == [quick]
+    assert _merge_pages([[quick[0]], [quick[1]]], 1, 0.9, 2.2) == [[quick[0]], [quick[1]]]  # word limit wins
+    long_ = [[Word("a", 0.0, 0.2)], [Word("b", 3.0, 3.2)]]
+    assert len(_merge_pages(long_, 3, 5.0, 2.2)) == 2  # merging may not exceed the 2.2 s maximum
+
+
+def test_contrast_helpers_and_boxed_fallback():
+    assert contrast_ratio(1.0, 0.0) == pytest.approx(21.0)
+    assert relative_luminance("#000000") == 0.0 and relative_luminance("#FFFFFF") == pytest.approx(1.0)
+    st = caption_style("clean_white")
+    assert ensure_contrast(st, [20.0, 30.0]) is st  # white on dark: fine
+    boxed = ensure_contrast(st, [235.0, 40.0])  # one bright backdrop frame is enough
+    assert boxed.box and boxed.vertical.outline >= 12 and not st.box
+    assert ensure_contrast(boxed, [235.0]) is boxed
+    assert re.search(r",3,12", build_ass(_words(), st, backdrop_luma=[235.0]))
+    assert re.search(r",1,5", build_ass(_words(), st, backdrop_luma=[20.0]))
+
+
+@pytest.mark.skipif(not ff.available(), reason="ffmpeg required")
+def test_sample_luma_reads_backdrop_brightness(tmp_path: Path):
+    clip = ff.make_test_clip(tmp_path / "grey.mp4", width=320, height=180, seconds=1.0, kind="color",
+                             color="0x808080")
+    ys = sample_luma(clip, Box(10, 10, 100, 100), [0.1, 0.5])
+    assert len(ys) == 2 and all(100 < y < 150 for y in ys)
+
+
+def test_profanity_masking():
+    assert "shit" in profanity_words()
+    assert mask_text("What the shit, damn it.") == "What the s***, d*** it."
+    words = [Word("Oh", 0.0, 0.2), Word("shit", 0.3, 0.5)]
+    assert "s***" in build_ass(words, "clean_white", mask_profanity=True)
+    assert "shit" in build_ass(words, "clean_white")

@@ -39,6 +39,8 @@ class CaptionStyle(Strict):
     outline_color: str = "#000000"
     shadow_color: str = "#000000"
     box: bool = False
+    accent: str | None = None
+    palette: list[str] = []
     vertical: CaptionVariant
     landscape: CaptionVariant
 
