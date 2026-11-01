@@ -16,7 +16,7 @@ from typing import Any
 
 from ns_common import ffmpeg
 from ns_common.db import Db
-from ns_common.errors import ErrorDef, NsError, load_errors
+from ns_common.errors import NsError
 from ns_common.paths import Paths
 
 MAX_DURATION_S = 4 * 3600.0
@@ -189,28 +189,12 @@ def extract_audio(video: Path, out_wav: Path) -> Path:
 
 
 # ---------- download from a URL (yt-dlp) ----------
-#: Error code "download failed". Spelled in two parts until contracts/errors.json lists it (CR-C8-10):
-#: the hygiene test rejects literals of unregistered codes, and `register_download_code` adds the text.
-DOWNLOAD_FAILED = "NS-E" + "409"
+#: Error code "download failed" (contracts/errors.json).
+DOWNLOAD_FAILED = "NS-E409"
 YTDLP_FORMAT = "bv*[height<=1080]+ba/b"
 _URL = re.compile(r"^https?://\S+$", re.IGNORECASE)
 _PERCENT = re.compile(r"\[download\]\s+([0-9]+(?:\.[0-9]+)?)%")
 _SKIP_SUFFIXES = (".json", ".part", ".ytdl", ".temp", ".txt", ".jpg", ".webp", ".png")
-
-
-def register_download_code() -> None:
-    """Make `DOWNLOAD_FAILED` known to `NsError` until the contract lists it (no-op afterwards)."""
-    table = load_errors()
-    if DOWNLOAD_FAILED not in table:
-        table[DOWNLOAD_FAILED] = ErrorDef(
-            code=DOWNLOAD_FAILED,
-            message="Download failed.",
-            hint="Check the link and that the video is yours or you have permission to use it.",
-            kind="error",
-        )
-
-
-register_download_code()
 
 
 def is_url(text: str) -> bool:

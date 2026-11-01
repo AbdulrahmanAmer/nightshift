@@ -69,7 +69,7 @@ Format per entry:
 - **From:** C9 ns_dashboard / Tasks 5-9
 - **Change:** in `pyproject.toml` (a) add `"fastapi>=0.115"`, `"python-multipart>=0.0.9"` and `"Pillow>=10"` to the `dev` extra (`httpx` is already a core dependency and is what `fastapi.testclient` needs); (b) add an extra `dashboard = ["fastapi>=0.115", "uvicorn>=0.30", "python-multipart>=0.0.9", "Pillow>=10", "keyring>=25"]` for the target machine; (c) add `"ns_dashboard*"` to `[tool.setuptools.packages.find].include` and `ns_dashboard = ["static/*"]` to `[tool.setuptools.package-data]`; (d) add `"ns_dashboard"` to `[tool.pyright].include`.
 - **Why:** CI installs only `.[dev]`, so until (a) lands every `TestClient`, multipart and Pillow test of the dashboard is skipped (the framework-free service layer, job worker, uploads, range parsing, log tail and templates are tested without them). (c) is needed for the bundle to ship the UI; (d) puts the dashboard under pyright like the other packages (the code is written to pass `standard` mode).
-- **Status:** open
+- **Status:** applied on feat/release-readiness: (a) was already in the dev extra, (b) a `dashboard` extra with `python-multipart`, `Pillow`, `keyring` (fastapi and uvicorn come from `supervisor`; installer s04 installs `[supervisor,tts,dashboard]` into the supervisor venv where the dashboard runs), (c) `ns_dashboard*` in the package list and package-data, (d) `ns_dashboard` in the pyright include
 
 ## CR-C9-2: `sources.rights_confirmed` and `dashboard_jobs.result_json`
 - **From:** C9 ns_dashboard / Task 6
@@ -194,7 +194,7 @@ Format per entry:
 - **From:** C9 ns_dashboard / Assistant CLI
 - **Change:** C7 mounts the command: in `ns_studio/cli.py` call `from ns_dashboard.assistant.cli import register; register(app)` (it adds `studio ask "<text>" [--yes] [-c conversation] [--fake-services]`). `pyproject.toml` (extends CR-C9-1): `[tool.setuptools.package-data] ns_dashboard = ["static/*", "prompts/*.md"]`.
 - **Why:** spec 20.3a "`studio ask` on the command line for the same loop". The prompt file `ns_dashboard/prompts/assistant.md` must ship with the package.
-- **Status:** partly applied in 48457df (`studio ask` is mounted through `register`, guarded for a missing fastapi or dashboard package). Still open: the `pyproject.toml` package-data entry
+- **Status:** applied (`studio ask` mounted in 48457df; package-data `ns_dashboard = ["static/**/*", "prompts/*.md"]` on feat/release-readiness)
 
 ## CR-C9-8: `ns update --check` / `--github` output and subprocess allow-list
 - **From:** C9 ns_dashboard / Update endpoints
@@ -321,10 +321,10 @@ Format per entry:
 - **From:** C9 ns_dashboard / Assistant
 - **Change:** `assistant_messages` (flat: ts, role, content, tool_calls_json) cannot hold conversations, tool-call ids or pending confirm cards. `ns_dashboard/assistant/store.py` therefore creates `conversations`, `messages`, `actions` and `queued_messages` in `data/assistant.db` itself (and mirrors every message into `assistant_messages`). Move those four tables into `contracts/schema.sql` next to `assistant_messages` (or extend `assistant_messages` with `conversation_id`, `tool_call_id`, `name`), then delete `DDL` from the store.
 - **Why:** local DDL for a shared database is a shim; the owner of `contracts/` should own it.
-- **Status:** open
+- **Status:** applied on feat/release-readiness: the four tables are in `contracts/schema.sql` next to `assistant_messages` and `DDL` is gone from the store; the flat `assistant_messages` mirror stays
 
 ## CR-C8-10: URL sources via a pinned yt-dlp (`bins.yt_dlp`, `NS-E409`, subprocess allow-list)
 - **From:** C8 Clipper / URL source task
 - **Change:** (1) `manifest.json` `bins.yt_dlp`: `{version, url, sha256}` for the `yt-dlp.exe` asset of a release from https://github.com/yt-dlp/yt-dlp/releases (pin the latest release at the time, SHA256 from the release's `SHA2-256SUMS`); the installer downloads it to `<home>\bin\yt-dlp\yt-dlp.exe` (C1). (2) `contracts/errors.json`: `NS-E409` message "Download failed.", hint "Check the link and that the video is yours or you have permission to use it." (3) `pyproject.toml` ruff per-file-ignores: `"ns_studio/clipper/source.py" = ["TID251"]` (it runs yt-dlp with `subprocess.Popen`, list arguments, never a shell); until then the import carries `# noqa: TID251`.
 - **Why:** `studio clip <url>` downloads the owner's video before the normal import (ffprobe, sha256, rights gate). Until `errors.json` lists the code, `ns_studio/clipper/source.py` spells it `"NS-E" + "409"` and registers the text at import so the hygiene test (unregistered code literals) stays green; replace both with the plain literal and delete `register_download_code` when this lands.
-- **Status:** open
+- **Status:** applied on feat/release-readiness: `errors.json` has `NS-E409` (`NS-E410` was not needed: a missing yt-dlp raises `NS-E409` with the path in the detail), the `TID251` per-file ignore is in `pyproject.toml` and the `noqa` and the split-literal workaround are gone from `ns_studio/clipper/source.py`, `manifest.json` pins `bins.yt_dlp` and installer step s02 downloads it

@@ -11,7 +11,8 @@ def test_migrate_creates_tables(tmp_path: Path):
         names = {r["name"] for r in db.query("select name from sqlite_master where type='table'")}
     assert {"channels", "ideas", "stories", "parts", "clips", "clip_usage", "combos", "outputs", "runs",
             "uploads", "analytics", "pool_weights", "calibration", "incidents", "sources",
-            "dashboard_jobs"} <= names
+            "dashboard_jobs", "assistant_messages", "conversations", "messages", "actions",
+            "queued_messages"} <= names
 
 
 def test_migrate_is_idempotent(tmp_path: Path):

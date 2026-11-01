@@ -1,5 +1,17 @@
 {
   "$defs": {
+    "CaptionsOpts": {
+      "additionalProperties": false,
+      "properties": {
+        "mask_profanity": {
+          "default": false,
+          "title": "Mask Profanity",
+          "type": "boolean"
+        }
+      },
+      "title": "CaptionsOpts",
+      "type": "object"
+    },
     "Pools": {
       "additionalProperties": false,
       "properties": {
@@ -356,6 +368,20 @@
       },
       "title": "Avoid Topics",
       "type": "array"
+    },
+    "formats_allowed": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Formats Allowed",
+      "type": "array"
+    },
+    "captions": {
+      "$ref": "#/$defs/CaptionsOpts",
+      "default": {
+        "mask_profanity": false
+      }
     },
     "created_at": {
       "anyOf": [

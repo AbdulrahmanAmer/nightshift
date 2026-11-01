@@ -24,6 +24,11 @@ class Voice(Strict):
     speed: float = Field(default=1.0, ge=0.7, le=1.3)
 
 
+# Per-channel caption options (spec 17.2). A comment, not a docstring: pydantic would put a docstring in the schema.
+class CaptionsOpts(Strict):
+    mask_profanity: bool = False     # mask listed words in the captions; the audio is untouched
+
+
 class Pools(Strict):
     hooks: list[str] = ["cold_open", "question", "confession", "warning"]
     structures: list[str] = ["twist", "reverse_reveal", "slow_burn", "unreliable_narrator"]
@@ -57,6 +62,8 @@ class Channel(Strict):
     critic_bar: float = Field(default=8.0, ge=5.0, le=10.0)
     pools: Pools = Pools()
     avoid_topics: list[str] = []
+    formats_allowed: list[str] = []     # format preset ids (spec 17.1); empty = every shipped preset
+    captions: CaptionsOpts = CaptionsOpts()
     created_at: str | None = None
 
     @field_validator("long_minutes")
@@ -268,6 +275,7 @@ class VisualBeat(Strict):
     keywords: list[str] = Field(min_length=1, max_length=3)
     mood: str
     need_vertical: bool = True
+    emphasis: dict[str, str] | None = None     # sentence index (as a JSON key) -> one key word (spec 17.2)
 
 
 class Combo(Strict):
@@ -460,6 +468,7 @@ class ClipPlanItem(Strict):
     layout: str | None = None            # format preset id chosen by the model
     layout_reason: str | None = None
     caption_style: str | None = None     # model-chosen caption style (spec 17.2); None = channel default
+    emphasis: list[str] | None = None   # one key word per sentence in order, "" skips a sentence (spec 17.2)
     status: Literal["kept", "dropped"] = "kept"
     reasons: list[str] = []
 

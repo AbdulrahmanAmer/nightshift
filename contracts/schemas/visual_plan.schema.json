@@ -57,6 +57,21 @@
       "default": true,
       "title": "Need Vertical",
       "type": "boolean"
+    },
+    "emphasis": {
+      "anyOf": [
+        {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Emphasis"
     }
   },
   "required": [
