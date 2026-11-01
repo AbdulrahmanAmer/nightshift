@@ -8,8 +8,51 @@ from ns_common.errors import NsError
 from ns_studio.context import JobContext
 from ns_studio.stages import REGISTRY, Stage, Tenant, run_stage
 
-# Filled by stage modules at import time (text/stages_shorts.py, media/*.py append their names in order).
-FORMAT_STAGES: dict[str, list[str]] = {"shorts_only": [], "master_first": [], "series_compilation": []}
+# Canonical stage order per format. Stage modules only `register()` their stages; the order lives here so
+# it never depends on import order. Names not registered yet are reported by `plan_job` (NS-E306).
+SHORTS_ONLY_STAGES: tuple[str, ...] = (
+    "ideas",
+    "plan",
+    "draft",
+    "critic_revise",
+    "split",
+    "hooks",
+    "seo",
+    "visual_plan",
+    "voice",
+    "captions",
+    "clips",
+    "render",
+    "qc",
+    "outbox",
+)
+MASTER_FIRST_STAGES: tuple[str, ...] = (
+    "ideas",
+    "long_plan",
+    "chapters_draft",
+    "chapters_critic",
+    "continuity",
+    "seo_long",
+    "shorts_select",
+    "visual_plan_long",
+    "seo_shorts",
+    "voice",
+    "duration_check",
+    "captions",
+    "shorts_timing",
+    "clips",
+    "render_master",
+    "thumbnails",
+    "shorts_derive",
+    "qc",
+    "outbox",
+)
+FORMAT_STAGES: dict[str, list[str]] = {
+    "shorts_only": list(SHORTS_ONLY_STAGES),
+    "master_first": list(MASTER_FIRST_STAGES),
+    "series_compilation": [],
+    "clip": [],
+}
 
 
 def _tenant_of(stage: Stage) -> Tenant:
