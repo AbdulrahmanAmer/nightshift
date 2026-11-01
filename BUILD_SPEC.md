@@ -44,7 +44,9 @@
   7. writes titles, descriptions, tags and hashtags for every Short
   8. checks quality and YouTube-policy safety on everything
   9. drops the long-form video, its Shorts, and all upload details into the Outbox
-- **You** review each video (`approve` / `reject`) and upload approved ones in YouTube Studio.
+- **Nightshift Clipper** (in the Dashboard): drop in any long video you own (a stream VOD, a podcast episode, a talking-head recording). Nightshift transcribes it, finds the moments that stand on their own, and cuts each into a vertical clip with captions, using a layout template that fits the video: facecam on top of gameplay, stacked or single-speaker framing for podcasts, tracked crop for talking heads. Every clip gets a title, description and tags and lands in the Outbox like everything else.
+- **Nightshift Dashboard** (shortcut, opens in your browser): channels, the review queue with video preview and approve/reject, tonight's run and its log, the Clipper drop zone and templates, analytics import, pause/resume, and settings.
+- **You** review each video (`approve` / `reject`) in the Dashboard and upload approved ones in YouTube Studio.
 - Over time, you can feed it your YouTube Analytics export so it learns which hooks, styles and lengths work best for each channel.
 - **Nightshift Code** (optional shortcut): opens a terminal coding assistant (OpenCode) on the local model. It reads, writes and edits code in your projects folder, fully offline.
 
@@ -57,7 +59,8 @@
 | Masters per week, run time, publish window | Setup | Defaults provided |
 | Optional: seed keywords, topics to avoid, style notes | Channel profile | No |
 | Optional: your own example stories | `studio/exemplars/` | No |
-| Optional: YouTube Analytics CSV export | `studio learn --import` | No |
+| Optional: YouTube Analytics CSV export | Dashboard → Learn, or `studio learn --import` | No |
+| Clipper: a video file you own (MP4/MKV/MOV, up to 4 h), a template choice, a target channel | Dashboard → Clipper (drag and drop), or `studio clip <file>` | For clips |
 | Coding: your project files and instructions | Nightshift Code | — |
 
 ### A.6 What it puts out
@@ -67,7 +70,8 @@
 | **Thumbnails**: 3 variants (1280×720) for the long-form | same folder |
 | **Shorts**: 4–6 vertical 1080×1920 MP4s cut from the master, each with its own voiced hook and vertical edit | `Outbox\<channel>\<date>\<job>\shorts\` |
 | Upload sheet per video (`.json` + copy-ready `.txt`): title, description, tags, hashtags, chapters (long), suggested publish time, suggested mid-roll points (long), "Related video" instruction (Shorts), AI-disclosure answer, "made for kids" answer | next to each MP4 |
-| Daily run report: what was made, what was rejected and why, timings | `logs\` + `studio status` |
+| **Clips** from your own videos: 3–8 vertical 1080×1920 MP4s per source video, captions burned in, template layout, each with an upload sheet | `Outbox\<channel>\<date>\clip-<id>\` |
+| Daily run report: what was made, what was rejected and why, timings | Dashboard → Runs, `logs\`, `studio status` |
 | Coding: code changes in your projects | your Projects folder |
 
 ---
@@ -144,7 +148,10 @@ Therefore every heavy dependency sits behind an interface with a **fake** that p
 | NER | **spaCy** `en_core_web_md` in the studio venv + curated lists in `contracts/policy/` | `real_entities` check |
 | Coding CLI (optional) | **OpenCode**, pinned Windows binary, local-only lock (§15.9) | Not `npm -g` |
 | TTS | **Qwen3-TTS-12Hz-1.7B** (`-CustomVoice`, `-Base`, `-VoiceDesign`) + tokenizer; engine **`faster-qwen3-tts`** on SDPA (no flash-attn); fallback reference **`qwen-tts`** | Both engines installed; smoke test picks the fastest that passes |
-| Captions | **faster-whisper** `small.en` (or `small` for non-English) → word timestamps → **aligned to the script** → ASS | Rendered words are the script's, never ASR output |
+| Captions (narration) | **faster-whisper** `small.en` (or `small` for non-English) → word timestamps → **aligned to the script** → ASS | Rendered words are the script's, never ASR output |
+| Transcription (Clipper) | **faster-whisper** `distil-large-v3` (fast, accurate on arbitrary speech; `tiny` on `cpu-dev`) → segments + words with speaker-change heuristics | §19 |
+| Face / facecam detection (Clipper) | **OpenCV** (`opencv-python-headless`) with the **YuNet** face detector ONNX (~230 KB, pinned in manifest) + edge/rectangle scan for a facecam overlay | No mediapipe, no torch |
+| Dashboard | **FastAPI** + static single-page UI (vanilla HTML/CSS/JS, no build step) on **127.0.0.1:8100** | §20; opened by `Nightshift Dashboard.lnk` |
 | Stock footage | **Pexels** + **Pixabay** APIs | Commercial use with no required attribution; no reselling unmodified clips; Pixabay requires 24 h caching |
 | Render | **FFmpeg**; encoder `h264_nvenc` on GPU profiles, `libx264` on `cpu-dev` or when NVENC fails verify; master 1920×1080, Shorts 1080×1920; 30 fps; AAC 192 kbps 48 kHz | One filter graph per video |
 | Thumbnails | **Pillow** + bundled OFL font (`Anton`) | Font licence file shipped in `presets/fonts/` |
@@ -193,7 +200,10 @@ nightshift/
     policy/ learn/            # WP-H
     variation/ channels/ cli.py orchestrator.py stages.py   # WP-F
     calibrate/                # WP-D: studio calibrate
+    clipper/                  # WP-I: transcribe, select, detect (faces/facecam), templates, cut, stages_clip.py
+    presets/clip_templates.yaml
   ns_tts/                     # WP-C: TTS FastAPI service
+  ns_dashboard/               # WP-J: FastAPI API + static/ (index.html, app.js, app.css), jobs queue, uploads
   ns_supervisor/              # WP-B: supervisor, tune.py, verify.py, doctor.py, gate.py (ns CLI)
   INSTALL.cmd                 # WP-A: double-click bootstrap
   OPERATOR.md                 # WP-A: one page for the person running the install
@@ -210,7 +220,7 @@ nightshift/
 
 Single `pyproject.toml` (setuptools, Python 3.12) with optional-dependency groups `studio`, `tts`, `supervisor`, `dev`. Development uses one venv with all groups; the installer creates the per-component venvs from the same file (`uv pip install -e ".[tts]"` etc.).
 
-Work packages: **A** installer+launchers · **B** supervisor+tune+opencode · **C** TTS server · **D** text+prompts+exemplars+calibrate · **E** media+presets · **F** studio core (variation, channels, orchestrator, CLI) · **G** tests · **H** policy+learn. Which packages are active in each slice: §12.
+Work packages: **A** installer+launchers · **B** supervisor+tune+opencode · **C** TTS server · **D** text+prompts+exemplars+calibrate · **E** media+presets · **F** studio core (variation, channels, orchestrator, CLI) · **G** tests · **H** policy+learn · **I** clipper · **J** dashboard. Which packages are active in each slice: §12.
 
 ---
 
@@ -413,12 +423,14 @@ Each slice: **(a)** main session writes/extends contracts and `ns_common` for th
 | **1 One Short** | Shorts-only text stages (ideas → split → hooks → SEO → visual plan), TTS server (engine abstraction; both engines coded against their documented APIs and unit-tested with a fake engine; server tested with FastAPI's test client), captions + alignment, clip fetch + cache (both APIs coded against their documented responses, tested with recorded fixtures), vertical render, QC, outbox sheet, minimal CLI (`studio run --format shorts_only --count 1`), `studio calibrate` | C, D, E, F, G | `studio run --fake-services --format shorts_only --count 3` produces 3 Shorts: real MP4s with burned captions, QC passing (duration, loudness, drift, file opens, aspect), upload sheets valid against schema; `studio calibrate --n 5 --fake-services` produces the scoring template. If the developer has Pexels/Pixabay keys, the gate additionally runs one job with real clip fetching (`--fake-services=llm,tts,whisper,embed`). |
 | **2 Master-first** | Long plan, chapter draft, critique/revise, continuity, expansion loop, long SEO, per-beat visual plan, Shorts selection + timing, landscape render + chapter cards + mid-roll suggestions, thumbnails, derived Shorts (S1–S2), outbox for both | D, E, F, G | `--fake-services` master job with `long_minutes: [9, 10]`: floor/expansion logic exercised by a fixture that is deliberately short; `chapters.json` timestamps match ffprobe; thumbnails render; mid-roll suggestions respect the 2-minute rule; 4 Shorts cut and rendered. |
 | **3 Safety & growth** | Policy gate (text + final, all §18.8 checks), variation engine + ledger + pool checks, channel CRUD + distinctness, cadence governor, `studio review`, `studio learn --import`, `studio status`, `studio pause`, SQLite backup | F, H, G | One full fake job passes both gates; seeded negative fixtures (true-story claim, real name, duplicate story, music track) are rejected with the right `NS-E6xx`; a sample analytics CSV import reweights pools and `studio status` shows it. |
-| **4 Runtime** | Supervisor + GPU lock + idle unload, `embed` service management, `ns tune`, `ns verify`, `ns doctor --bundle`, `ns stop`, `ns gate`, `ns update`, scheduled task, launchers | B, A (launchers), G | Supervisor manages a **stub service** (a tiny HTTP server standing in for llama-server): two concurrent acquirers serialize; idle unload stops it; crash restart works; scheduled task registers and fires a `--dry-run` at a test time; `ns doctor --bundle` produces a zip with the listed contents; `ns update` swaps the repo directory and rolls back in a temp copy. |
-| **5 Installer** | `INSTALL.cmd`, `stage1.ps1`, wizard + all steps, `--answers`, `OPERATOR.md`, `dev\make_bundle.ps1` | A, G | In a temp `NIGHTSHIFT_HOME`: `stage1.ps1 -DryRun` lists every action it would take; `wizard.py --answers answers.example.json --simulate-downloads` runs all steps with downloads replaced by HEAD checks + tiny fixture files, resumes after a forced kill at step 3, and ends with the summary and a diagnostics zip; `make_bundle.ps1` produces a zip that contains no `.venv`, models or binaries and extracts to a working repo. |
-| **6 Nightshift Code (optional)** | OpenCode pin + download step, `opencode.json`, `AGENTS.md`, prewarm, shortcut | B, A | Config validates against OpenCode's schema; launcher acquires/releases through the supervisor stub; prewarm step is exercised with `--simulate-downloads`. |
-| **7 First run on the work machine** | Upload `Nightshift-<version>.zip` + `answers.json` to Drive; partner extracts and runs `INSTALL.cmd`; `verify-report.json` and the diagnostics zip come back (or the developer continues directly on that machine) | main | `verify-report.json` shows all §14.6 gates measured, one real master job in the Outbox, `ns tune` results recorded. Then the hardware-dependent calibration (§16.5) and the prompt-quality work begin on that machine. |
+| **4 Clipper** | Source import (copy + ffprobe), transcription wrapper (segments + words), `clip_select.md` prompt + stage, face/facecam detection, `clip_templates.yaml` and layout engine, cut + render (reusing the Slice 1 renderer and caption builder), clip SEO + policy text gate on metadata, Outbox `clip-<id>` sheets, `studio clip` CLI | I, E, G | `studio clip tests/fixtures/clipper/sample.mp4 --template auto --fake-services` on a synthetic 90 s fixture (FFmpeg `testsrc2` with a drawn "facecam" rectangle and a tone track) yields ≥ 2 clips: facecam rectangle detected within 5 % of its true position, layouts render at 1080×1920, captions burned, QC passes, sheets valid. |
+| **5 Runtime** | Supervisor + GPU lock + idle unload, `embed` service management, `ns tune`, `ns verify`, `ns doctor --bundle`, `ns stop`, `ns gate`, `ns update`, scheduled task, launchers | B, A (launchers), G | Supervisor manages a **stub service** (a tiny HTTP server standing in for llama-server): two concurrent acquirers serialize; idle unload stops it; crash restart works; scheduled task registers and fires a `--dry-run` at a test time; `ns doctor --bundle` produces a zip with the listed contents; `ns update` swaps the repo directory and rolls back in a temp copy. |
+| **6 Dashboard** | `ns_dashboard` API + static UI (§20): channels, review queue with video streaming, runs + log tail, Clipper drop zone + job progress, learn import, pause/resume, settings; background job worker using the supervisor; `Nightshift Dashboard.lnk` | J, G | API tests with FastAPI's test client against a fake-services job queue; browser smoke via Playwright-free check (`curl` the SPA, exercise each API route); a `--fake-services` clip job started from the UI's upload endpoint finishes and appears in the review queue; approve/reject writes `outputs.status`. |
+| **7 Installer** | `INSTALL.cmd`, `stage1.ps1`, wizard + all steps, `--answers`, `OPERATOR.md`, `dev\make_bundle.ps1` | A, G | In a temp `NIGHTSHIFT_HOME`: `stage1.ps1 -DryRun` lists every action it would take; `wizard.py --answers answers.example.json --simulate-downloads` runs all steps with downloads replaced by HEAD checks + tiny fixture files, resumes after a forced kill at step 3, and ends with the summary and a diagnostics zip; `make_bundle.ps1` produces a zip that contains no `.venv`, models or binaries and extracts to a working repo. |
+| **8 Nightshift Code (optional)** | OpenCode pin + download step, `opencode.json`, `AGENTS.md`, prewarm, shortcut | B, A | Config validates against OpenCode's schema; launcher acquires/releases through the supervisor stub; prewarm step is exercised with `--simulate-downloads`. |
+| **9 First run on the work machine** | Upload `Nightshift-<version>.zip` + `answers.json` to Drive; partner extracts and runs `INSTALL.cmd`; `verify-report.json` and the diagnostics zip come back (or the developer continues directly on that machine) | main | `verify-report.json` shows all §14.6 gates measured, one real master job and one real clip job in the Outbox, `ns tune` results recorded. Then the hardware-dependent calibration (§16.5) and the prompt-quality work begin on that machine. |
 
-Deferred to after Slice 7: `series_compilation`, API upload, non-English caption/NER models beyond spaCy's multilingual set.
+Deferred to after Slice 9: `series_compilation`, API upload, non-English caption/NER models beyond spaCy's multilingual set, active-speaker detection by audio (§19.4 uses a visual heuristic in v1).
 
 ---
 
@@ -435,6 +447,9 @@ Deferred to after Slice 7: `series_compilation`, API upload, non-English caption
 | D7 | Shorts length | Buckets 35 / 50 / 75 s, learned per channel | |
 | D8 | Cadence | Master-first: 1/week for 2 weeks, then up to 2/week | §18.6 |
 | D9 | Go/no-go | Reviewed at week 8 (§18.12) | |
+| D10 | Dashboard technology | Local FastAPI + vanilla HTML/JS single page on 127.0.0.1:8100, no login | Runs on the same machine as the GPU; no build toolchain; no exposure outside localhost |
+| D11 | Clipper transcription model | faster-whisper `distil-large-v3` on GPU profiles, `tiny` on `cpu-dev` | Accuracy on arbitrary speech matters more than for script alignment |
+| D12 | Active-speaker framing for podcasts | v1: visual heuristic (largest face / mouth-region motion); audio diarization deferred | Avoids a diarization model; good enough for stacked two-speaker layouts |
 
 ---
 
@@ -498,7 +513,7 @@ rejected\<slug>\<YYYY-MM-DD>\<job_id>\ logs\
 Coding workspace: `%USERPROFILE%\Projects`.
 
 ### 15.3 Ports & supervisor API (127.0.0.1)
-llama **8080** · embed **8081** · TTS **8091** · supervisor **8099**.
+llama **8080** · embed **8081** · TTS **8091** · supervisor **8099** · dashboard **8100**.
 | Method | Path | Body → Response |
 |---|---|---|
 | GET | `/status` | → `{gpu_owner, services:{<name>:{state,pid,port,vram_mb,model_alias?}}}` |
@@ -522,7 +537,11 @@ States: `stopped|starting|ready|stopping|error`. Owners: `opencode`, `studio:<jo
 Standard llama-server `POST /v1/embeddings` `{input:[...]}` → OpenAI-shaped response. `ns_common.embed_client.embed(texts) -> list[list[float]]`, `cosine(a,b)`.
 
 ### 15.6 JSON schemas (`contracts/schemas/`)
-`channel, runtime, install_state, answers, manifest, idea, plan, story, parts, seo, seo_long, shorts_plan, chapters, visual_plan, qc, policy, metadata, combo, analytics_row, calibration_row, gate_report`.
+`channel, runtime, install_state, answers, manifest, idea, plan, story, parts, seo, seo_long, shorts_plan, chapters, visual_plan, qc, policy, metadata, combo, analytics_row, calibration_row, gate_report, transcript, clip_plan, clip_layout, clip_template, dashboard_job`.
+- `transcript`: `{source, duration_s, language, segments:[{i, start, end, text, speaker?}], words:[{w, start, end, seg}]}`
+- `clip_plan`: `[{k, start_s, end_s, title, hook_line?, why, score:0-1, speakers?:[..], keywords[]}]`
+- `clip_layout`: `{template, facecam?:{x,y,w,h}, faces:[{t, boxes:[{x,y,w,h}]}], crops:[{t_start, t_end, region:{x,y,w,h}}]}`
+- `metadata.kind` gains `"clip"`; `metadata.source_video` and `metadata.template` are set for clips.
 - `runtime`: `{profile:"32gb"|"16gb"|"cpu-dev", llama:{port, model_path, aliases:["code","story"], flags:{n_gpu_layers, n_cpu_moe, ctx, kv_type, spec_type?, spec_draft_n_max?, threads?}}, embed:{port, model_path}, tts:{port, engine:"faster"|"reference", model_dir, device:"cuda"|"cpu"}, whisper:{model, device, compute_type}, video:{encoder:"h264_nvenc"|"libx264", preset}}`
 - `manifest`: `{version, profiles:{<profile>:{llm:{repo,file,sha256,bytes}, embed:{...}, tts:[{repo,sha256_index}], whisper:{model}}}, bins:{llama:{url,sha256,version}, cudart:{...}, opencode:{...}}, python:{version}, spacy:{model, version}}`
 - `idea`: `{premise, twist, setting, protagonist, why_chapters, keywords[]}`
@@ -542,7 +561,7 @@ Standard llama-server `POST /v1/embeddings` `{input:[...]}` → OpenAI-shaped re
 - `gate_report`: `{slice, date, machine:{gpu, ram_gb, disk_type}, checks:[{name, passed, value?, limit?, log?}], benchmarks:{...}}`
 
 ### 15.7 SQLite (`schema.sql`)
-`channels, ideas, stories, parts, clips, clip_usage, combos, outputs, runs, uploads(output_id, video_url, published_at), analytics(output_id, date, views, viewed_pct, avg_pct_viewed, likes, comments, shares, subs_gained), pool_weights(channel, pool, option, weight, updated_at), calibration(channel, story_id, critic_json, human_json), incidents(channel, ts, kind, note)`. WAL mode. `db.backup()` copies to `data\backup\` nightly, keeps 14.
+`channels, ideas, stories, parts, clips, clip_usage, combos, outputs, runs, uploads(output_id, video_url, published_at), analytics(output_id, date, views, viewed_pct, avg_pct_viewed, likes, comments, shares, subs_gained), pool_weights(channel, pool, option, weight, updated_at), calibration(channel, story_id, critic_json, human_json), incidents(channel, ts, kind, note), sources(source_id, channel, path, duration_s, sha256, imported_at, template, status), dashboard_jobs(job_id, kind, channel, status, progress, message, created_at, started_at, finished_at, params_json)`. `outputs.kind` gains `clip`; `outputs.source_id` references `sources`. WAL mode. `db.backup()` copies to `data\backup\` nightly, keeps 14.
 
 ### 15.8 Stage interface & job directory
 ```python
@@ -562,10 +581,13 @@ Outbox `outbox\<slug>\<YYYY-MM-DD>\<job_id>\`: `long\master.mp4 + .json + .txt +
 - `studio channel add|list|edit|validate` · `studio voice list|preview|design|clone`
 - `studio learn --import <csv>` · `studio mark-uploaded <job_id> <long|s<k>> <url>`
 - `studio calibrate --channel <slug> [--n 20]` · `studio calibrate --score <csv>`
+- `studio clip <video> --channel <slug> [--template auto|gaming_facecam|podcast_stacked|podcast_single|talking_head|center_crop] [--max-clips 6] [--min-s 20] [--max-s 60]`
+- `studio dashboard [--port 8100] [--open]`
 - `ns tune` · `ns verify [--quick]` · `ns doctor [--bundle]` · `ns stop` · `ns gate s<N>` · `ns update <zip> | --rollback`
 
 | Shortcut | Launcher |
 |---|---|
+| `Nightshift Dashboard.lnk` | `nightshift-dashboard.ps1`: ensure the dashboard service is running (via supervisor), open `http://127.0.0.1:8100` in the default browser |
 | `Nightshift Studio.lnk` | `nightshift-studio.ps1`: `studio status` + interactive prompt |
 | `Nightshift Outbox.lnk` | `open-outbox.ps1` |
 | `Nightshift - Stop All.lnk` | `stop-all.ps1` → `ns stop` |
@@ -767,6 +789,86 @@ If YouTube issues any warning, strike or monetization notice: `studio pause <slu
 
 ### 18.12 Go/no-go milestone (week 8 after first upload)
 Continue if **either**: Shorts 7-day viewed rate ≥ 55 % and subscribers growing week over week, **or** masters' average view duration ≥ 3:00 and watch hours on a pace to reach 4,000 within 12 months. Otherwise stop, change niche/voice/visual approach, and re-run calibration. `studio status --milestone` computes this from imported analytics.
+
+---
+
+## 19. Nightshift Clipper — clips from videos you own (WP-I)
+
+### 19.1 What it does
+Takes one long video the owner has rights to (stream VOD, podcast episode, lecture, talking-head recording), transcribes it, picks the moments that stand alone, and renders each as a vertical 1080×1920 clip with burned-in captions and a layout template chosen for the kind of video. Output goes through the same QC, text policy gate (metadata only), Outbox and review queue as everything else. **Rights:** the Dashboard asks the user to confirm they own or are licensed to use the video before a job starts; the confirmation is stored on the `sources` row.
+
+### 19.2 Pipeline (per source video)
+| # | Stage | Tenant | Output |
+|---|---|---|---|
+| C1 | Import: copy or link the file into `imports\clipper\<source_id>\source.<ext>`, ffprobe (duration, fps, size, audio streams), sha256; reject > 4 h or no audio (`NS-E405`) | none | `source.json` |
+| C2 | Audio extract to 16 kHz mono WAV | none | `audio.wav` |
+| C3 | Transcribe with faster-whisper (`distil-large-v3`, VAD filter on, word timestamps) → `transcript.json`; speaker-change heuristic: a new segment after ≥ 1.2 s pause or a question/answer boundary starts a new `speaker` index (visual refinement in C5) | `whisper` | `transcript.json` |
+| C4 | **Select**: `clip_select.md` (thinking on) over the transcript in windows of ≤ 12 min with 2 min overlap; returns candidate moments 20–60 s (configurable) with title, why, score; merge overlaps, snap edges to sentence boundaries from `words`, drop candidates whose text is mostly filler (< 2.2 words/s or > 40 % "um/uh/like" tokens), keep the top `max_clips` by score with ≥ 60 s spacing between clip starts | `llama` | `clip_plan.json` |
+| C5 | **Detect**: sample frames at 1 fps inside the chosen ranges (plus 10 frames spread over the whole video for the facecam scan). YuNet face boxes per frame; **facecam scan**: find a stable rectangular region (consistent edges across sampled frames, aspect 4:3–16:9, 8–30 % of frame area, in a corner) → `facecam`. Template `auto` decides: facecam found → `gaming_facecam`; ≥ 2 stable faces → `podcast_stacked`; 1 stable face → `talking_head`; else `center_crop` | none (CPU) | `clip_layout.json` |
+| C6 | **Captions**: words from the transcript in the clip range → ASS with the channel's caption style (same builder as §7.6 step 4), 2–4 words on screen, active-word highlight | none | `captions\c<k>.ass` |
+| C7 | **Cut + render**: per clip, build one FFmpeg filter graph from the template (below), trim, scale, crop, stack, burn captions, audio `loudnorm` to −14 LUFS, `h264_nvenc`/`libx264`, faststart | NVENC | `clips\c<k>.mp4` |
+| C8 | Clip SEO: `clip_seo.md` → title (≤ 70), description (honest, includes "Clip from: <source title or filename>"), tags, hashtags incl. `#Shorts`; policy text gate checks `misleading_claims`, `metadata_spam`, `real_entities` **on metadata only** (the spoken content is the owner's) | `llama` | `seo_clips.json`, `policy_text.json` |
+| C9 | QC (§7.7 Short targets) → Outbox `clip-<source_id>\c<k>.mp4 + .json + .txt` → `outputs` rows (`kind="clip"`) | none | Outbox |
+
+### 19.3 Templates (`ns_studio/presets/clip_templates.yaml`)
+| Template | Layout (1080×1920) | When |
+|---|---|---|
+| `gaming_facecam` | Facecam region scaled to 1080 wide on top (height from its aspect, max 640 px); gameplay below: source frame minus the facecam region, scaled to fill the remaining area with a centre crop; captions on the seam | Facecam detected |
+| `podcast_stacked` | Two speaker crops (face-centred, 1080×960 each) stacked; the speaker currently talking (visual heuristic: largest mouth-region motion in the last 1 s, else the larger face) gets a subtle 2 px border; captions over the lower third | ≥ 2 stable faces |
+| `podcast_single` | One face-centred crop with smooth tracking (box smoothed over 1 s; re-centre only when the face leaves the middle 40 %), full 1080×1920 | ≥ 2 faces but the user picks single |
+| `talking_head` | Same tracked crop as `podcast_single` | 1 stable face |
+| `center_crop` | Centre 9:16 crop over a blurred, darkened full-frame fill | No faces, screen recordings, slides |
+| `screen_plus_cam` | Facecam top (as gaming) + full source frame letterboxed below (for tutorials with a small cam) | User choice |
+
+Each template defines: regions, caption anchor (`y%`), safe margins (top 220 px / bottom 320 px for YouTube UI), and whether to show a 1.2 s title card at 0.0 s (default off; the hook is the speech itself). Caption styles come from `caption_styles.yaml`.
+
+### 19.4 Detection details
+- **Faces:** `cv2.FaceDetectorYN` with the pinned YuNet ONNX, input resized to 640 px wide, score ≥ 0.8. A face is **stable** when it appears in ≥ 70 % of sampled frames within ±15 % of frame width of a cluster centre.
+- **Facecam:** Canny edges on 10 frames spread across the video → accumulate; find axis-aligned rectangles whose four edges persist in ≥ 8/10 frames; keep the candidate in a corner with the most faces detected inside it. If none, `facecam = null`.
+- **Speaking heuristic (podcast_stacked):** for each stable face, mean absolute frame difference inside the lower third of the face box, smoothed over 1 s; the larger value is "speaking". Deferred (D12): audio diarization.
+- Everything here runs on CPU and is tested on synthetic fixtures (`testsrc2` + a drawn rectangle containing a moving ellipse "face").
+
+### 19.5 Clip selection prompt (`clip_select.md`, thinking on, schema `clip_plan`)
+Given transcript segments with timestamps, the kind of video (detected or chosen), and the channel's niche, return 3–10 candidate moments of 20–60 s that: start on a complete sentence that works as an opener, end on a payoff or punchline, need no outside context, contain no private information about third parties, and are not mostly filler. Each with `title` (≤ 70 chars, honest), `why` (one line), `score` (0–1), `keywords`. The judge rule from §16.1 applies: honesty beats flash.
+
+### 19.6 Limits and performance
+- Source ≤ 4 h; transcription on a 16 GB GPU runs at ≥ 20× real time with `distil-large-v3` (expected; measured by `ns verify`).
+- Target: a 60 min podcast → 6 clips in ≤ 12 min wall time on the 32 GB profile.
+- Clips from one source are spaced ≥ 60 s apart and never overlap.
+
+### 19.7 Errors
+`NS-E405` unsupported source (too long, no audio, unreadable) · `NS-E406` transcription produced < 30 words (silence/music) · `NS-E407` no clip candidates passed the filters · `NS-W402` requested template not applicable (facecam not found), fell back to `center_crop`.
+
+---
+
+## 20. Nightshift Dashboard — local web UI (WP-J)
+
+### 20.1 Shape
+`ns_dashboard` is a FastAPI app on **127.0.0.1:8100** serving a static single-page UI (vanilla HTML/CSS/JS from `ns_dashboard/static/`, no bundler) and a JSON API. It is started by the supervisor as service `dashboard` (not a GPU tenant) and opened by `Nightshift Dashboard.lnk`. No authentication: it binds to localhost only and refuses non-loopback `Host` headers.
+
+### 20.2 Pages
+| Page | Shows | Actions |
+|---|---|---|
+| **Overview** | Tonight's schedule per channel, last run summary, Outbox counts (pending / approved / rejected), GPU owner and service states, disk free, incidents | Run now (channel, format), Pause/Resume channel, Stop all |
+| **Review** | Queue of pending outputs (long, short, clip) with thumbnail, duration, title; video player (HTTP range streaming), story text / transcript excerpt, policy notes, disclosure advice, upload sheet copy buttons | Approve, Reject with reason, Mark uploaded (URL), Open folder |
+| **Clipper** | Drop zone (drag and drop or file picker), rights confirmation checkbox, channel and template selectors with template thumbnails, options (max clips, min/max seconds, caption style); job list with progress bar and stage name; finished clips preview grid | Start job, Cancel, Re-run select with different settings |
+| **Channels** | Channel cards; profile editor (every §11 field with validation), voice picker with preview playback, pool editor with distinctness warnings | Add, Edit, Validate, Pause |
+| **Runs & Logs** | Runs table (started, finished, jobs, rejected, timings); live tail of `logs\*.jsonl` filtered by component/level | Download diagnostics bundle |
+| **Learn** | Drop zone for the YouTube Analytics CSV; import result; top/bottom performers per pool; weight changes | Import |
+| **Settings** | Runtime profile and flags (read-only unless unlocked), API keys (masked; set/replace via keyring), schedule time, update from zip | Save, Re-run verify, `ns update` |
+
+### 20.3 API (all JSON, prefix `/api`)
+`GET /status` · `GET/POST /channels`, `GET/PUT /channels/{slug}`, `POST /channels/{slug}/pause|resume|validate` · `GET /outputs?status=pending&kind=` · `GET /outputs/{id}` · `POST /outputs/{id}/approve|reject|uploaded` · `GET /media/{output_id}` (range streaming of the MP4) · `GET /media/{output_id}/thumb.jpg` · `POST /jobs/run {channel, format}` · `POST /jobs/clip` (multipart upload or `{path}` for a local file; `{channel, template, max_clips, min_s, max_s, rights_confirmed}`) · `GET /jobs`, `GET /jobs/{id}`, `POST /jobs/{id}/cancel` · `GET /runs` · `GET /logs/tail?component=&level=&n=` · `POST /learn/import` (multipart CSV) · `GET /learn/summary` · `GET/PUT /settings` · `POST /settings/keys` · `POST /diagnostics` · `GET /templates` (clip templates with preview PNGs) · `GET /voices`, `POST /voices/preview`.
+
+### 20.4 Job worker
+A single background thread drains `dashboard_jobs` (FIFO). Job kinds: `run` (studio job via the orchestrator), `clip` (§19 pipeline), `learn`, `verify`. Progress is written per stage to `dashboard_jobs.progress/message`; the UI polls `GET /jobs/{id}` every 2 s. The worker acquires GPU tenants through the supervisor like the nightly task does; if the GPU is busy with a nightly run, the job waits and the UI says so. Cancel sets a flag checked between stages.
+
+### 20.5 Build notes
+- UI files: `index.html` (shell + nav), `app.js` (hash router, fetch helpers, one module per page), `app.css` (tokens on `:root`, light/dark via `prefers-color-scheme`). No external CDN: the page must work offline.
+- Video streaming implements `Range` requests (206) so the browser player can seek.
+- Uploads stream to `imports\clipper\<source_id>\` in 8 MB chunks; the UI shows upload progress separately from job progress.
+- All destructive actions (reject, cancel, stop all) confirm in the UI.
+- Tests: FastAPI test client for every route with a fake job worker; a `--fake-services` clip job through `/api/jobs/clip` with the synthetic fixture.
 
 ---
 
