@@ -1,0 +1,16 @@
+{
+  "scores": {
+    "hook": 9,
+    "clarity": 9,
+    "pacing": 8,
+    "payoff": 8,
+    "cliffhangers": 9,
+    "originality": 8,
+    "voice_fit": 9
+  },
+  "fixes": [
+    "Cut the sentence about the late shift at the hospital.",
+    "Make the last line echo the first line."
+  ],
+  "verdict": "pass"
+}

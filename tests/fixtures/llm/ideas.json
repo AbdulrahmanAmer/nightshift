@@ -1,0 +1,68 @@
+{
+  "ideas": [
+    {
+      "premise": "Every night at 3:12 my doorbell camera records someone standing on my porch, facing away. Tonight the notification came while I was standing on the porch.",
+      "twist": "The figure in the recording is me, and the recordings are from tomorrow.",
+      "setting": "a suburban porch at night",
+      "protagonist": "a night-shift nurse living alone",
+      "why_chapters": "Each night's recording shows the figure closer to the door, giving five escalating chapters.",
+      "keywords": ["doorbell camera", "porch at night", "phone notification", "empty street", "front door"]
+    },
+    {
+      "premise": "The apartment elevator in my building has a button for a floor that does not exist. Last week it lit up by itself and the doors opened.",
+      "twist": "The extra floor is a copy of my own apartment, with the lights already on.",
+      "setting": "a brick apartment building elevator",
+      "protagonist": "a delivery driver who rents the top-floor unit",
+      "why_chapters": "n/a",
+      "keywords": ["elevator buttons", "apartment hallway", "brick building", "door opening", "night corridor"]
+    },
+    {
+      "premise": "My grandmother's sewing machine starts on its own whenever someone in the house is about to lie. It stitched a single word into a hem this morning.",
+      "twist": "The word is my name, and the hem belongs to the dress I am buried in.",
+      "setting": "a quiet farmhouse sewing room",
+      "protagonist": "a college student home for the holidays",
+      "why_chapters": "n/a",
+      "keywords": ["sewing machine", "thread spool", "farmhouse room", "wooden floor", "window curtains"]
+    },
+    {
+      "premise": "The night janitor at a small library keeps finding one book left open on the same table. Each night the open page is closer to the end.",
+      "twist": "The book is the janitor's own life, and the last page is tonight.",
+      "setting": "a small town library after closing",
+      "protagonist": "a retired teacher working nights as a janitor",
+      "why_chapters": "n/a",
+      "keywords": ["library shelves", "open book", "reading table", "mop bucket", "dim lamp"]
+    },
+    {
+      "premise": "A lifeguard counts swimmers every hour and always gets the same number. Today the count is one higher, and nobody can say who the extra swimmer is.",
+      "twist": "The extra swimmer has been in the pool every day for years, and only she can see it.",
+      "setting": "an indoor community pool",
+      "protagonist": "a teenage lifeguard on her first summer job",
+      "why_chapters": "n/a",
+      "keywords": ["indoor pool", "lifeguard chair", "water ripples", "tile wall", "locker room"]
+    },
+    {
+      "premise": "The bus that stops outside my window at midnight is always empty and always has its lights on. Tonight the driver waved at me.",
+      "twist": "The route number on the bus is my apartment number, and the stop is my front door.",
+      "setting": "a city street at midnight",
+      "protagonist": "an insomniac freelance editor",
+      "why_chapters": "n/a",
+      "keywords": ["night bus", "bus stop", "city street", "apartment window", "streetlight"]
+    },
+    {
+      "premise": "A baby monitor in my new house picks up a lullaby every night at two. We have no baby.",
+      "twist": "The previous owners left the monitor on purpose, and the lullaby is a warning meant for whoever lives in the nursery.",
+      "setting": "a newly bought two-story house",
+      "protagonist": "a couple who just moved in",
+      "why_chapters": "n/a",
+      "keywords": ["baby monitor", "empty nursery", "hallway night", "stairs", "moving boxes"]
+    },
+    {
+      "premise": "Every morning my neighbor's porch light turns on at the exact minute my alarm goes off. Today I checked, and my alarm was set for a different time.",
+      "twist": "My neighbor has been changing my alarm for months so that I am awake when something walks past.",
+      "setting": "a quiet cul-de-sac at dawn",
+      "protagonist": "a bakery worker who wakes before sunrise",
+      "why_chapters": "n/a",
+      "keywords": ["porch light", "alarm clock", "cul-de-sac", "dawn street", "bedroom window"]
+    }
+  ]
+}
