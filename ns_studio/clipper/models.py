@@ -2,7 +2,7 @@
 
 `transcript`, `clip_plan`, `clip_layout` and `clip_template` moved to `ns_common/models.py` (CR-C8-1, applied
 in e0c34f5). They are re-exported here for one release (deprecated; import them from `ns_common.models`) and
-`ClipItem` is `ClipPlanItem` plus the optional `emphasis` list (spec 17.2; see CR-C6-6).
+`ClipItem` is `ClipPlanItem` (which carries the optional `emphasis` list since CR-C6-6, spec 17.2).
 """
 from __future__ import annotations
 
@@ -65,11 +65,8 @@ TEMPLATE_NAMES: tuple[str, ...] = (
 )
 
 
-# The clip plan entry is `ns_common.models.ClipPlanItem` (CR-C8-1); this subclass adds the local `emphasis`.
-class ClipItem(ClipPlanItem):
-    """`ClipPlanItem` plus `emphasis`: one key word per sentence in order ("" skips a sentence), spec 17.2."""
-
-    emphasis: list[str] | None = None
+# The clip plan entry is `ns_common.models.ClipPlanItem` (CR-C8-1), emphasis included (CR-C6-6).
+ClipItem = ClipPlanItem
 
 
 # ---------- job parameters ----------

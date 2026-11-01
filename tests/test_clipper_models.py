@@ -49,13 +49,11 @@ def test_clip_item_bounds() -> None:
         ClipPlanItem(k=1, start_s=1.0, end_s=5.0, title="t", why="w", score=1.5)
 
 
-def test_clip_item_extends_the_shared_model_with_emphasis() -> None:
-    assert issubclass(ClipItem, ClipPlanItem)
+def test_clip_item_is_the_shared_model_and_carries_emphasis() -> None:
+    assert ClipItem is ClipPlanItem
     base = {"k": 1, "start_s": 1.0, "end_s": 5.0, "title": "t", "score": 0.5}
     assert ClipItem.model_validate(base | {"emphasis": ["word"]}).emphasis == ["word"]
     assert ClipItem.model_validate(base).emphasis is None
-    with pytest.raises(ValidationError):
-        ClipPlanItem.model_validate(base | {"emphasis": ["word"]})
 
 
 def test_clip_layout_roundtrip_with_second_panel() -> None:
