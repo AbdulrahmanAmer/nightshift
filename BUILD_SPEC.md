@@ -535,7 +535,7 @@ venvs\tts\ venvs\studio\ venvs\supervisor\
 config\runtime.json config\install_state.json config\opencode.json config\channels\<slug>.yaml
 data\studio.db data\backup\studio-YYYYMMDD.db data\jobs\<job_id>\ data\calibration\<slug>\
 cache\clips\<source>\<id>.mp4 cache\clips\index.sqlite cache\search\   imports\analytics\
-outbox\<slug>\<YYYY-MM-DD>\<job_id>\long\  outbox\<slug>\<YYYY-MM-DD>\<job_id>\shorts\
+stories\<story-slug>\ (§23)  outbox\<slug>\<YYYY-MM-DD>\<job_id>\long\  outbox\<slug>\<YYYY-MM-DD>\<job_id>\shorts\
 rejected\<slug>\<YYYY-MM-DD>\<job_id>\ logs\
 ```
 Coding workspace: `%USERPROFILE%\Projects`.
@@ -1078,6 +1078,47 @@ Owner opens the **Nightshift Code** shortcut; it acquires the LLM (status shown 
 Gaps this section closed in the spec: uninstall flow (new `UNINSTALL.cmd`, §5), reject-reason feedback into the critic bar (§18.6 "Quality drop" now also counts owner rejections), Clipper re-run without re-transcribing (§19.2 C4 is re-runnable from `transcript.json`), VoiceDesign on-demand download surfaced in the UI (§20.2 Channels page).
 
 ---
+
+## 23. Series Workshop — develop stories with the Assistant, then produce them automatically
+
+### 23.1 Purpose
+The owner and the Assistant develop a story together before any video exists: concepts → one chosen → part map → full scripts → approval → design → automatic production. Everything lives as plain files the owner can edit by hand.
+
+### 23.2 Folder = source of truth (`<NIGHTSHIFT_HOME>\stories\<story-slug>\`)
+```
+concept.md        premise, characters, setting, tone, why it works, target audience
+series.md         part map: for each part a title, hook, cliff, runtime target (min), status
+design.yaml       format id (§17.1), visual_treatment, caption_style, voice, thumbnail style, publish cadence
+status.yaml       story status: drafting | approved | producing | published ; per-part status and job ids
+parts\part-01\
+  full\script.md  complete script; chapter cliffs marked [BREAK]; sentences numbered in comments for timing
+  shorts\s01.md   one standalone moment per file: its own first line (hook), span reference into script.md, closing line
+  notes.md        critic scores, continuity notes, owner feedback
+parts\part-02\ …
+```
+Nightshift reads these files; it never needs the chat history to produce. Editing `script.md` by hand and re-running production uses the edited text.
+
+### 23.3 Flow (Assistant tools, each a confirm card when it writes files)
+1. `workshop_start(channel, premise?)` creates the folder and `concept.md` skeleton.
+2. `workshop_concepts(n=3)` writes three concept drafts (`concept-A.md` … `concept-C.md`): premise, cast, arc in 5 beats, series potential, risks against §18.3. `workshop_regenerate(letter, feedback)` rewrites one with the owner's notes. `workshop_choose(letter)` promotes it to `concept.md`.
+3. `workshop_map(parts=N, minutes_per_part=12–25)` writes `series.md`: per-part hook, cliff, what is revealed, runtime target; checks that each part can stand alone for a new viewer (one-line recap allowed) and that the series arc pays off.
+4. `workshop_write_part(n)` writes `full\script.md` through the master-first text stages (§7.1 M2–M4 with the part's runtime budget: 20 min ≈ 3,100 words at 155 wpm, 8–12 chapters) plus `shorts\s*.md` through M7/M8 (4–8 standalone moments with fresh hooks). Owner reads, comments in `notes.md` or chat; `workshop_revise_part(n, feedback)` applies notes only.
+5. `workshop_approve(n | all)` sets status; `workshop_design(...)` writes `design.yaml` from the channel's allowed formats with a rendered preview frame per option.
+6. `workshop_produce(n | all)` enqueues one master-first job per approved part using the script files as the story source (new stage `script_import` replaces M1–M4 when `script.md` exists); Shorts come from `shorts\*.md`. Cadence governor spaces parts (default one part per week per series) and the Queue shows them as they finish.
+7. Library → Stories shows every workshop story with its status; `studio series <cmd>` mirrors the tools on the command line.
+
+### 23.4 Rules
+- Parts are 12–25 minutes (per-series setting; default 15). Longer parts are allowed only after the channel's long-form average view duration exceeds 40 %.
+- Shorts under a part are written as standalone moments (own first line, own closing line pointing to the part) and are validated by the `standalone_short` check.
+- The policy text gate runs on `concept.md` at step 2 and on every script at step 4, so unsafe concepts are rejected before any writing time is spent.
+- Series videos carry "Part N of M" in titles and descriptions (§9) and the end card instruction for the next part.
+
+### 23.5 Clipper, revised flow (replaces the fixed rules in §19.2 C4–C5 order)
+1. **Analyze with FFmpeg first**: scene cuts (`select='gt(scene,0.3)'`), loudness peaks and silences (`ebur128`, `silencedetect`), aspect and resolution, plus face/facecam detection (§19.4) sampled at 1 fps. Output `analysis.json`.
+2. **Transcribe** (distil-large-v3, words + segments).
+3. **Let the model choose the split**: `clip_select.md` receives the transcript windows *and* `analysis.json` (faces, facecam, scene density, peaks) and returns candidate moments **with a layout per candidate** (one of the format presets) and a reason. Auto layout is therefore a model decision informed by detection, with the §19.4 rules as the fallback when the model's choice is not applicable (`NS-W402`).
+4. **One clip at a time with a logic judge**: candidates are produced in score order; before rendering each, `clip_judge.md` checks: starts on a complete sentence, ends on a payoff or punchline, understandable without outside context, no cut mid-word (snapped to word timestamps), speech density above the filler threshold, duration in range. Failing candidates are dropped with the reason in `clip_plan.json`; the next is tried, until `max_clips` or candidates run out (`NS-E407` if none).
+5. Render → QC → SEO → Outbox per clip as in §19.2; the Create page shows each clip appearing as it passes.
 
 ## Sources (verified 1 Nov 2026)
 
