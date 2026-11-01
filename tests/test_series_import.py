@@ -5,14 +5,13 @@ from pathlib import Path
 import pytest
 
 from ns_common.errors import NsError
-from ns_common.models import Idea
+from ns_common.models import Idea, Plan, ShortsPlanItem, Story
 from ns_studio.context import JobContext
 from ns_studio.series import stages as SS
 from ns_studio.series.importer import build_artifacts
 from ns_studio.series.store import ScriptChapter, ScriptDoc, ShortDoc, StoryDir, parse_short
 from ns_studio.stages import REGISTRY, run_stage
 from ns_studio.text import stages_master as M
-from ns_studio.text.models_local import Plan, ShortsPlanItem, Story
 from tests.helpers import make_channel, make_ctx
 from tests.test_series_workshop import Recorder, built, make_workshop
 

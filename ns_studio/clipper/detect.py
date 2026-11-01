@@ -17,7 +17,7 @@ import numpy as np
 
 from ns_common import ffmpeg
 from ns_common.errors import NsError
-from ns_studio.clipper.models import FaceFrame, Rect
+from ns_common.models import FaceFrame, Rect
 
 BoxT = tuple[int, int, int, int]  # x, y, w, h
 

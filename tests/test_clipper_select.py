@@ -8,8 +8,9 @@ from typing import Any
 import pytest
 
 from ns_common.errors import NsError
+from ns_common.models import Transcript, Word
 from ns_studio.clipper import select as sel
-from ns_studio.clipper.models import ClipParams, Transcript, Word
+from ns_studio.clipper.models import ClipParams
 from tests.fixtures.clipper.make_sample import build_transcript
 
 FIXTURE_LLM = Path(__file__).parent / "fixtures" / "clipper" / "llm" / "clip_select.json"

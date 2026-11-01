@@ -12,11 +12,10 @@ import yaml
 from pydantic import BaseModel, ValidationError
 
 from ns_common.errors import NsError
-from ns_common.models import Idea, Part, Seo, VisualBeat
+from ns_common.models import ClipPlanItem, Idea, Part, PolicyCheckResult, Seo, VisualBeat
 from ns_common.paths import contracts_dir, repo_root
 from ns_studio.context import JobContext
 from ns_studio.text.exemplars import load_exemplars
-from ns_studio.text.models_local import ClipPlanItem, PolicyCheckResult
 
 PROMPTS_DIR = Path(__file__).resolve().parents[1] / "prompts"
 FIXTURES = repo_root() / "tests" / "fixtures" / "llm"

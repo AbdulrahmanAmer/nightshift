@@ -13,9 +13,9 @@ from collections.abc import Iterable
 from functools import cache
 
 from ns_common.errors import NsError
+from ns_common.models import PolicyCheckResult
 from ns_common.paths import contracts_dir
 from ns_studio.context import JobContext
-from ns_studio.text.models_local import PolicyCheckResult
 from ns_studio.text.prompts import call_json, parse_model
 
 

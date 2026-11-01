@@ -12,9 +12,8 @@ from collections import Counter
 from typing import Any
 
 from ns_common.errors import NsError
-from ns_common.models import PolicyCheck, PolicyResult, Seo
+from ns_common.models import ClipPlanItem, PolicyCheck, PolicyResult, Seo
 from ns_common.paths import contracts_dir
-from ns_studio.clipper.models import ClipItem
 from ns_studio.context import JobContext
 from ns_studio.text.prompts import call_json
 
@@ -146,7 +145,7 @@ def shorten_title(title: str, limit: int = TITLE_TARGET) -> str:
 
 
 def finalize_seo(
-    raw: dict[str, Any], *, clip: ClipItem, source_title: str, seed_keywords: list[str]
+    raw: dict[str, Any], *, clip: ClipPlanItem, source_title: str, seed_keywords: list[str]
 ) -> Seo:
     """Normalise an LLM answer to the section 9.2 Shorts rules and validate it as `Seo`."""
     title = shorten_title(str(raw.get("title") or clip.title)) or shorten_title(clip.title) or "Clip"
@@ -174,7 +173,7 @@ def finalize_seo(
 
 def generate_seo(
     ctx: JobContext,
-    clip: ClipItem,
+    clip: ClipPlanItem,
     *,
     excerpt: str,
     source_title: str,

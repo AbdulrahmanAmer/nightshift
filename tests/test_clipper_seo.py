@@ -8,12 +8,11 @@ import pytest
 
 from ns_common.errors import NsError
 from ns_common.llm_client import FakeLlm
-from ns_common.models import Seo
+from ns_common.models import ClipPlanItem, Seo
 from ns_studio.clipper import seo as sp
-from ns_studio.clipper.models import ClipItem
 from tests.helpers import make_ctx
 
-CLIP = ClipItem(
+CLIP = ClipPlanItem(
     k=1, start_s=1.0, end_s=31.0, title="The mountain route in one take", why="Clear promise and payoff.",
     score=0.9, keywords=["route", "mountain"],
 )

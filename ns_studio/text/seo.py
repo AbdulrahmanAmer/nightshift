@@ -6,8 +6,7 @@ import re
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from ns_common.models import Seo
-from ns_studio.text.models_local import SeoLong
+from ns_common.models import Seo, SeoLong
 
 TAG_FILLERS = (
     "short story",

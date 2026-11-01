@@ -15,8 +15,8 @@ from pathlib import Path
 from ns_common import ffmpeg
 from ns_common.errors import NsError
 from ns_common.logging import NsLogger
+from ns_common.models import CANVAS_H, CANVAS_W, ClipTemplate, Crop
 from ns_studio.clipper.layout import canvas_panels
-from ns_studio.clipper.models import CANVAS_H, CANVAS_W, ClipTemplate, Crop
 
 TARGET_LUFS = -14.0
 TARGET_TP = -1.5
