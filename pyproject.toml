@@ -23,6 +23,8 @@ dependencies = [
 studio = ["Pillow>=10", "spacy>=3.7,<4", "faster-whisper>=1.0", "imagehash>=4.3", "keyring>=25"]
 tts = ["fastapi>=0.115", "uvicorn>=0.30", "soundfile>=0.12"]
 supervisor = ["fastapi>=0.115", "uvicorn>=0.30", "psutil>=6"]
+# The dashboard runs in the supervisor venv (fastapi and uvicorn come from the supervisor extra): uploads, thumbnails, key storage.
+dashboard = ["python-multipart>=0.0.9", "Pillow>=10", "keyring>=25"]
 # httpx, numpy and pyyaml are base dependencies. The rest let CI import every component (fakes included).
 dev = [
   "pytest>=8", "pytest-httpx>=0.32", "ruff>=0.6", "pyright>=1.1.380", "jsonschema>=4.23",
@@ -35,10 +37,11 @@ ns = "ns_supervisor.cli:main"
 studio = "ns_studio.cli:main"
 
 [tool.setuptools.packages.find]
-include = ["ns_common*", "ns_studio*", "ns_tts*", "ns_supervisor*"]
+include = ["ns_common*", "ns_studio*", "ns_tts*", "ns_supervisor*", "ns_dashboard*"]
 
 [tool.setuptools.package-data]
-ns_studio = ["prompts/*.md", "presets/*.yaml", "presets/fonts/*", "exemplars/**/*"]
+ns_studio = ["prompts/*.md", "presets/*.yaml", "presets/formats/*.yaml", "presets/fonts/*", "exemplars/**/*"]
+ns_dashboard = ["static/**/*", "prompts/*.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -60,6 +63,7 @@ select = ["E", "F", "I", "B", "UP", "TID251"]
 "ns_supervisor/**" = ["TID251"]
 "ns_tts/engine.py" = ["TID251"]
 "ns_dashboard/updater.py" = ["TID251"]
+"ns_studio/clipper/source.py" = ["TID251"]
 "installer/**" = ["TID251"]
 "tools/**" = ["TID251"]
 "dev/**" = ["TID251"]
@@ -68,4 +72,4 @@ select = ["E", "F", "I", "B", "UP", "TID251"]
 [tool.pyright]
 pythonVersion = "3.12"
 typeCheckingMode = "standard"
-include = ["ns_common", "ns_studio", "ns_tts", "ns_supervisor", "tools"]
+include = ["ns_common", "ns_studio", "ns_tts", "ns_supervisor", "ns_dashboard", "tools"]

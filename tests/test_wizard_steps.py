@@ -556,7 +556,7 @@ def test_s04_creates_studio_and_supervisor_venvs_without_torch(tmp_path: Path):
     assert spacy.argv[-1] == spacy_wheel_url("en_core_web_md")
     assert spacy.argv[-1].endswith("en_core_web_md-3.8.0-py3-none-any.whl")
     sup = next(c for c in runner.calls if c.tag == "uv pip install supervisor app")
-    assert f"{ROOT}[supervisor,tts]" in sup.argv
+    assert f"{ROOT}[supervisor,tts,dashboard]" in sup.argv
     assert not any("torch" in a for c in runner.calls for a in c.argv)
     assert not ctx.venv_python("tts").exists()
     assert ctx.venv_python("studio").exists() and step.check(ctx) is True

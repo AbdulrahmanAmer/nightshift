@@ -1,13 +1,12 @@
 """C8 Clipper: source import and audio extraction (spec 19.2 C1, C2)."""
 from __future__ import annotations
 
-# subprocess is only used to run the pinned yt-dlp (import_url); CR-C8-10 asks for a per-file ignore.
 import hashlib
 import json
 import os
 import re
 import shutil
-import subprocess  # noqa: TID251
+import subprocess
 from collections import deque
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
