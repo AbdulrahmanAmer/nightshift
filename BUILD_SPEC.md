@@ -261,7 +261,30 @@ Work packages: **A** installer+launchers · **B** supervisor+tune+opencode · **
 - **Supervisor** (§15.3) handles start/stop, health checks, crash restart (max 3 in 10 min, then `error`), the **GPU lock**, and idle unload after 10 min. `embed` is CPU-only, started on demand, never locked.
 - **Shortcuts** run launchers that acquire the needed service, wait for health, then open (§15.8).
 - **Scheduled task** runs `studio run --daily`. If the GPU is held by `opencode`, it waits up to 2 h, then logs `NS-E201` and retries next cycle.
-- **Slices 1–3 (before the supervisor exists)** use `dev\run_services_dev.ps1`, which starts `llama`, `embed` and `tts` in visible windows with the tuned flags. `ns_common` clients talk to fixed ports either way.
+- **Before the supervisor exists** (M1 development on a GPU machine) `dev\run_services_dev.ps1` starts `llama`, `embed` and `tts` in visible windows with the tuned flags. `ns_common` clients talk to fixed ports either way.
+
+### 6.1 Process model (how models are loaded and unloaded)
+- **Service table** from `runtime.json`: name → command line, port, health URL, GPU flag.
+  - `llama`: `bin\llama\llama-server.exe -m <llm.gguf> --port 8080 --host 127.0.0.1 -ngl <n> -c <ctx> --alias code,story [-ctk/-ctv q8_0] [--n-cpu-moe N] [--spec-type draft-mtp --spec-draft-n-max K -np 1]`
+  - `tts`: `bin\qwentts\qwentts.exe` with the talker + tokenizer GGUFs in server mode on 8091; if the binary has no server mode, `ns_tts` (in the supervisor venv) is the server and spawns `qwentts` per batch.
+  - `embed`: `llama-server.exe -m <embed.gguf> --embeddings --port 8081 -ngl 0` (CPU).
+  - `whisper`: no process; the studio worker loads `WhisperModel(..., device="cuda")` under the GPU lock and drops it on release.
+- **`/acquire`**: FIFO `asyncio.Lock` for the GPU with timeout → if another GPU tenant is resident, terminate it first → `subprocess.Popen` with stdout/stderr to `logs\<service>-YYYYMMDD.jsonl` → poll `/health` every 500 ms until 200 or 120 s (`NS-E203`) → record pid, port, VRAM (`nvidia-smi --query-compute-apps`) → return endpoint.
+- **`/release`**: lock released; idle timer armed; after 10 min without an owner the process gets `terminate()`, then `kill()` after 10 s.
+- **Crash policy**: child exit → restarted on next acquire; 3 crashes in 10 min → state `error`, jobs fail `NS-E202`.
+- **Guaranteed cleanup**: the supervisor creates a **Windows Job Object** with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` and assigns every child to it, so if the supervisor exits for any reason (quit, crash, log-off, shutdown) all model processes die with it. No orphaned VRAM.
+
+### 6.2 App lifecycle (open / warm-up / close)
+| Event | What happens |
+|---|---|
+| **Open** (`Nightshift Dashboard.lnk`) | Launcher starts the supervisor if not running, as a minimized console window titled **"Nightshift Engine"**, waits for `/status`, opens `http://127.0.0.1:8100`. Nothing is loaded yet; opening is instant. |
+| **Warm-up** | Dashboard status strip: `Engine starting` → `Services idle` → `Loading LLM (9 GB)…` with elapsed time from the acquire's health polling → `Ready`. Triggered by the first job or the **Warm up** button. |
+| **Close** | Closing the browser tab stops nothing (it is only a page; the Engine window stays). **Quit Nightshift** (dashboard button), `Nightshift - Stop All.lnk`, or closing the Engine window → `POST /shutdown`: current stage finishes or is cancelled within 30 s, children terminated, VRAM freed, supervisor exits. |
+| **Auto-exit** | Supervisor exits after 30 idle minutes unless a scheduled run is due within 60 min. |
+| **Nightly** | The scheduled task starts the supervisor headless (no window, no browser), runs `studio run --daily`, and the supervisor exits when the run ends. If the dashboard is opened during a run, it attaches to the running supervisor and shows progress. |
+| **OS shutdown / log-off** | Job Object kills children; a stage interrupted mid-way resumes from `stage_state.json` on the next run. |
+
+Supervisor API additions (§15.3): `POST /shutdown {grace_s:30}` · `POST /warmup {service}` · `GET /events` (server-sent events: service state changes, job progress) used by the dashboard status strip.
 
 ---
 
@@ -523,6 +546,9 @@ llama **8080** · embed **8081** · TTS **8091** · supervisor **8099** · dashb
 | POST | `/acquire` | `{service, owner, model_alias?, wait:true, timeout_s:7200}` → `{endpoint, model_alias}` |
 | POST | `/release` | `{service, owner}` → `{ok}` |
 | POST | `/stop_all` | → `{ok}` |
+| POST | `/shutdown` | `{grace_s:30}` → `{ok}`; stops children and exits the supervisor |
+| POST | `/warmup` | `{service}` → `{state}`; starts a service without an owner so the first job is fast |
+| GET | `/events` | server-sent events `{ts, kind:"service"|"job", data}` |
 
 States: `stopped|starting|ready|stopping|error`. Owners: `opencode`, `studio:<job_id>`, `verify`, `gate`. `embed` acquisition always succeeds immediately (no lock). In two-model mode, acquiring `llama` with a different `model_alias` than the loaded one triggers a swap once the current owner releases.
 
@@ -593,7 +619,7 @@ Outbox `outbox\<slug>\<YYYY-MM-DD>\<job_id>\`: `long\master.mp4 + .json + .txt +
 
 | Shortcut | Launcher |
 |---|---|
-| `Nightshift Dashboard.lnk` | `nightshift-dashboard.ps1`: ensure the dashboard service is running (via supervisor), open `http://127.0.0.1:8100` in the default browser |
+| `Nightshift Dashboard.lnk` | `nightshift-dashboard.ps1`: start the supervisor as a minimized "Nightshift Engine" window if not running, wait for `/status`, open `http://127.0.0.1:8100` in the default browser (§6.2) |
 | `Nightshift Studio.lnk` | `nightshift-studio.ps1`: `studio status` + interactive prompt |
 | `Nightshift Outbox.lnk` | `open-outbox.ps1` |
 | `Nightshift - Stop All.lnk` | `stop-all.ps1` → `ns stop` |
@@ -855,7 +881,8 @@ Given transcript segments with timestamps, the kind of video (detected or chosen
 ### 20.2 Pages
 | Page | Shows | Actions |
 |---|---|---|
-| **Overview** | Tonight's schedule per channel, last run summary, Outbox counts (pending / approved / rejected), GPU owner and service states, disk free, incidents | Run now (channel, format), Pause/Resume channel, Stop all |
+| **Status strip** (every page) | Engine state (`starting` / `idle` / `loading <service>` with elapsed seconds / `ready` / `job running: <stage>`), VRAM owner, next scheduled run | Warm up, Quit Nightshift (confirms; cancels a running job after 30 s grace) |
+| **Overview** | Tonight's schedule per channel, last run summary, Outbox counts (pending / approved / rejected), service states, disk free, incidents | Run now (channel, format), Pause/Resume channel, Stop all |
 | **Review** | Queue of pending outputs (long, short, clip) with thumbnail, duration, title; video player (HTTP range streaming), story text / transcript excerpt, policy notes, disclosure advice, upload sheet copy buttons | Approve, Reject with reason, Mark uploaded (URL), Open folder |
 | **Clipper** | Drop zone (drag and drop or file picker), rights confirmation checkbox, channel and template selectors with template thumbnails, options (max clips, min/max seconds, caption style); job list with progress bar and stage name; finished clips preview grid | Start job, Cancel, Re-run select with different settings |
 | **Channels** | Channel cards; profile editor (every §11 field with validation), voice picker with preview playback, pool editor with distinctness warnings | Add, Edit, Validate, Pause |
