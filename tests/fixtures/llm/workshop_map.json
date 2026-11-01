@@ -1,0 +1,37 @@
+{
+  "series_title": "The Doorbell Camera",
+  "parts": [
+    {
+      "n": 1,
+      "title": "Wet Footprints",
+      "hook": "A night nurse's doorbell camera pings at 3:12 and shows a hooded figure on her porch.",
+      "cliff": "The footprints cross the dry porch and stop at her front door; none lead away.",
+      "reveals": "The figure returns every night and leaves wet footprints, and the recordings carry tomorrow's date.",
+      "minutes": 12,
+      "recap": "",
+      "standalone": true
+    },
+    {
+      "n": 2,
+      "title": "Her Own Handwriting",
+      "hook": "Mara tapes a note to her door and the next recording shows an answer on it.",
+      "cliff": "The answer is written in her own handwriting.",
+      "reveals": "The recordings come from tomorrow and someone can answer her from there.",
+      "minutes": 12,
+      "recap": "A night nurse's doorbell camera records a hooded figure from tomorrow.",
+      "standalone": true
+    },
+    {
+      "n": 3,
+      "title": "The Porch",
+      "hook": "Mara drives home to stand where the figure stands.",
+      "cliff": "A second figure steps out of her open front door and reaches for the bell.",
+      "reveals": "The figures take turns waiting on the porch for the next one.",
+      "minutes": 12,
+      "recap": "A night nurse's recordings come from tomorrow and the replies are in her handwriting.",
+      "standalone": true
+    }
+  ],
+  "arc_payoff": "Part 3 shows why the figure always faces away: it is waiting for the next version of Mara, which pays off part 1.",
+  "issues": []
+}

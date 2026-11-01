@@ -1,0 +1,60 @@
+{
+  "working_title": "The Doorbell Camera",
+  "chapters": [
+    {
+      "n": 1,
+      "title": "Wet Footprints",
+      "beats": [
+        "A night nurse describes the 3:12 doorbell camera alert and the still hooded figure on her porch.",
+        "She dismisses it as a prank and deletes the recording, but the alerts keep coming for nine nights.",
+        "She comes home at dawn and finds wet bare footprints on the dry porch."
+      ],
+      "cliff": "The footprints cross the porch and stop at her front door; none lead away.",
+      "word_budget": 310
+    },
+    {
+      "n": 2,
+      "title": "The Hall Light",
+      "beats": [
+        "She talks to her elderly neighbor Hale, who advises a motion light and a second camera.",
+        "She installs both and goes to work.",
+        "The new recordings show the figure and, through the open doorway, her hall light switched on."
+      ],
+      "cliff": "A wrong detail: the hall light is on, and she never leaves it on.",
+      "word_budget": 310
+    },
+    {
+      "n": 3,
+      "title": "Tomorrow's Date",
+      "beats": [
+        "She notices that every recording carries a date stamp one day ahead.",
+        "She tests it by taping a note to her front door.",
+        "The next recording shows an answer written on the note in her own handwriting."
+      ],
+      "cliff": "Reveal: the recordings come from tomorrow and the reply is in her handwriting.",
+      "word_budget": 310
+    },
+    {
+      "n": 4,
+      "title": "White Gauze",
+      "beats": [
+        "She calls in sick and decides that tomorrow can be changed by not being home.",
+        "Packing the car she cuts her left hand on broken glass and bandages it.",
+        "At a motel she opens the 3:12 recording."
+      ],
+      "cliff": "The figure's left hand wears the same white gauze and clips.",
+      "word_budget": 310
+    },
+    {
+      "n": 5,
+      "title": "The Porch",
+      "beats": [
+        "She drives home and decides to stand where the figure stands.",
+        "At 3:12 on the porch her phone shows the live recording from behind her.",
+        "A second figure steps out of her open front door and reaches for the bell."
+      ],
+      "cliff": "She understands the pattern; the story loops back to the nightly ping.",
+      "word_budget": 310
+    }
+  ]
+}
