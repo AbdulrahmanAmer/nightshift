@@ -1,0 +1,56 @@
+{
+  "page": 1,
+  "per_page": 80,
+  "total_results": 3,
+  "url": "https://www.pexels.com/search/videos/dark%20hallway/",
+  "videos": [
+    {
+      "id": 3571264,
+      "width": 1080,
+      "height": 1920,
+      "url": "https://www.pexels.com/video/a-dark-hallway-with-flickering-light-3571264/",
+      "image": "https://images.pexels.com/videos/3571264/free-video-3571264.jpg",
+      "duration": 14,
+      "user": {"id": 1, "name": "Example Author", "url": "https://www.pexels.com/@example"},
+      "video_files": [
+        {"id": 100, "quality": "sd", "file_type": "video/mp4", "width": 540, "height": 960, "fps": 25.0,
+         "link": "https://videos.pexels.com/video-files/3571264/sd.mp4"},
+        {"id": 101, "quality": "hd", "file_type": "video/mp4", "width": 1080, "height": 1920, "fps": 25.0,
+         "link": "https://videos.pexels.com/video-files/3571264/hd.mp4"},
+        {"id": 102, "quality": "uhd", "file_type": "video/mp4", "width": 2160, "height": 3840, "fps": 25.0,
+         "link": "https://videos.pexels.com/video-files/3571264/uhd.mp4"},
+        {"id": 103, "quality": "hls", "file_type": "application/x-mpegURL", "width": null, "height": null,
+         "fps": 0.0, "link": "https://videos.pexels.com/video-files/3571264/playlist.m3u8"}
+      ],
+      "video_pictures": []
+    },
+    {
+      "id": 855564,
+      "width": 1080,
+      "height": 1920,
+      "url": "https://www.pexels.com/video/portrait-of-a-woman-in-the-dark-855564/",
+      "image": "https://images.pexels.com/videos/855564/free-video-855564.jpg",
+      "duration": 9,
+      "user": {"id": 2, "name": "Another Author", "url": "https://www.pexels.com/@another"},
+      "video_files": [
+        {"id": 200, "quality": "hd", "file_type": "video/mp4", "width": 1080, "height": 1920, "fps": 30.0,
+         "link": "https://videos.pexels.com/video-files/855564/hd.mp4"}
+      ],
+      "video_pictures": []
+    },
+    {
+      "id": 4990223,
+      "width": 720,
+      "height": 1280,
+      "url": "https://www.pexels.com/video/rain-on-a-window-4990223/",
+      "image": "https://images.pexels.com/videos/4990223/free-video-4990223.jpg",
+      "duration": 22,
+      "user": {"id": 3, "name": "Third Author", "url": "https://www.pexels.com/@third"},
+      "video_files": [
+        {"id": 300, "quality": "sd", "file_type": "video/mp4", "width": 720, "height": 1280, "fps": 24.0,
+         "link": "https://videos.pexels.com/video-files/4990223/sd.mp4"}
+      ],
+      "video_pictures": []
+    }
+  ]
+}
