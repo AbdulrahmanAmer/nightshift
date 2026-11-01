@@ -21,7 +21,7 @@ from ns_studio.context import JobContext
 from ns_studio.daily import run_daily
 from ns_studio.errors import StudioError
 from ns_studio.learn import importer, reweight, status
-from ns_studio.orchestrator import FORMAT_STAGES, plan_job, run_job
+from ns_studio.orchestrator import plan_job, run_job
 from ns_studio.policy.regen import run_job_guarded
 
 
@@ -131,9 +131,8 @@ def run_cmd(
 def _daily(env: jobs.Env, dry_run: bool, policy: bool | None) -> None:
     """The `--daily` branch of `studio run`."""
     now = datetime.now(UTC)
-    for f in jobs.FORMATS:
-        if FORMAT_STAGES.get(f):
-            jobs.prepare_plan(f, policy)
+    for fmt_name in sorted({c.format for c in crud.all_channels(env.paths) if c.status == "active"}):
+        jobs.prepare_plan(fmt_name, policy)
     if dry_run:
         due = cadence.plan_daily(env.paths, env.db, now)
         if not due:
