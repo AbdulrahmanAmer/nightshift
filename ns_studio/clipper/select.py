@@ -15,7 +15,8 @@ from dataclasses import dataclass, field, replace
 from typing import Any
 
 from ns_common.errors import NsError
-from ns_studio.clipper.models import ClipItem, ClipParams, Transcript, Word
+from ns_common.models import ClipPlanItem, Transcript, Word
+from ns_studio.clipper.models import ClipParams
 
 FILLER_TOKENS = frozenset({"um", "uh", "uhm", "umm", "er", "erm", "like"})
 MIN_WORDS_PER_S = 2.2
@@ -371,8 +372,8 @@ def judge_loop(
     return kept, dropped
 
 
-def _item(tr: Transcript, c: Cand, k: int, status: str, reasons: list[str]) -> ClipItem:
-    return ClipItem(
+def _item(tr: Transcript, c: Cand, k: int, status: str, reasons: list[str]) -> ClipPlanItem:
+    return ClipPlanItem(
         k=k,
         start_s=round(c.start, 3),
         end_s=round(c.end, 3),
@@ -396,7 +397,7 @@ def select_plan(
     ask: Callable[[float, float], Any],
     cache: dict[str, Any] | None = None,
     judge: Judge | None = None,
-) -> list[ClipItem]:
+) -> list[ClipPlanItem]:
     """Full `clip_plan.json` content: kept clips (k from 1, score order), then dropped ones with reasons."""
     ranked, filtered = prepare_candidates(tr, params, ask, cache)
     kept, judged = judge_loop(ranked, params, judge)
@@ -406,7 +407,7 @@ def select_plan(
     return items
 
 
-def ensure_some_kept(items: list[ClipItem]) -> list[ClipItem]:
+def ensure_some_kept(items: list[ClipPlanItem]) -> list[ClipPlanItem]:
     """The kept clips of a plan; NS-E407 (with the drop reasons) when there are none."""
     kept = [i for i in items if i.status == "kept"]
     if not kept:
@@ -421,6 +422,6 @@ def select_clips(
     ask: Callable[[float, float], Any],
     cache: dict[str, Any] | None = None,
     judge: Judge | None = None,
-) -> list[ClipItem]:
+) -> list[ClipPlanItem]:
     """Kept clips only (NS-E407 when none); see `select_plan` for the full plan with drop reasons."""
     return ensure_some_kept(select_plan(tr, params, ask, cache, judge))

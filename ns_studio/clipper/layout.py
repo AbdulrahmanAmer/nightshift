@@ -14,14 +14,14 @@ from typing import Any
 import numpy as np
 import yaml
 
-from ns_common.models import Format
-from ns_studio.clipper.models import (
+from ns_common.models import (
     CANVAS_H,
     CANVAS_W,
     ClipLayout,
     ClipTemplate,
     Crop,
     FaceFrame,
+    Format,
     Rect,
     Region,
 )

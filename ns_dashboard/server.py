@@ -165,6 +165,7 @@ def create_app(
         finally:
             relay.stop()
             st.worker.stop()
+            dash.close()
 
     app = FastAPI(
         title="Nightshift Dashboard", docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan
@@ -343,7 +344,8 @@ def create_app(
     @app.post("/api/jobs/clip")
     async def jobs_clip(request: Request) -> SafeJSONResponse:
         uploaded = None
-        if request.headers.get("content-type", "").startswith("multipart/form-data"):
+        form_types = ("multipart/form-data", "application/x-www-form-urlencoded")
+        if request.headers.get("content-type", "").startswith(form_types):
             form = await read_form(request)
             body: dict[str, Any] = {k: v for k, v in form.items() if isinstance(v, str)}
             body["rights_confirmed"] = str(body.get("rights_confirmed", "")).strip().lower() in TRUE_WORDS
@@ -557,7 +559,9 @@ def create_app(
 
     # ------------------------------------------------------------ static UI (served last)
     root = static_dir or default_static_dir()
-    app.mount("/", StaticFiles(directory=str(root), html=True, check_dir=False), name="static")
+    # StaticFiles raises at request time for a missing folder, so mount it only when it exists
+    if root.is_dir():
+        app.mount("/", StaticFiles(directory=str(root), html=True), name="static")
 
     app.add_middleware(LoopbackMiddleware, log=st.log)
     return app

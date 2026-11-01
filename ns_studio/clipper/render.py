@@ -16,9 +16,8 @@ from pathlib import Path
 from ns_common import ffmpeg
 from ns_common.errors import NsError
 from ns_common.logging import NsLogger
-from ns_common.models import Format
+from ns_common.models import CANVAS_H, CANVAS_W, ClipTemplate, Crop, Format, Rect
 from ns_studio.clipper import layout
-from ns_studio.clipper.models import CANVAS_H, CANVAS_W, ClipTemplate, Crop, Rect
 from ns_studio.media.layout import SourceSpec, build_regions_graph, fit_facecam_height
 
 TARGET_LUFS = -14.0

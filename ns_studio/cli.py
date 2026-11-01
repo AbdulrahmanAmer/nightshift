@@ -1,5 +1,6 @@
 """`studio` command line (component C7). `print` is allowed here: this module is the CLI entry point."""
 
+import importlib.util
 import json
 import random
 from collections.abc import Iterator
@@ -17,16 +18,27 @@ from ns_common.models import Channel, Voice
 from ns_studio import jobs, review
 from ns_studio.calibrate import run as calibration
 from ns_studio.channels import cadence, crud
+from ns_studio.clipper import cli as clipper_cli
 from ns_studio.context import JobContext
 from ns_studio.daily import run_daily
 from ns_studio.errors import StudioError
 from ns_studio.learn import importer, reweight, status
 from ns_studio.orchestrator import plan_job, run_job
 from ns_studio.policy.regen import run_job_guarded
+from ns_studio.series import cli as series_cli
+
+# Sub-apps whose `--fake-services` is a plain on/off flag; their arguments must not be rewritten.
+FLAG_STYLE_COMMANDS: frozenset[str] = frozenset({"series", "ask"})
 
 
 def normalize_fake_flag(args: list[str]) -> list[str]:
-    """Rewrite a bare `--fake-services` to `--fake-services=all` so it can also take `=list`."""
+    """Rewrite a bare `--fake-services` to `--fake-services=all` so it can also take `=list`.
+
+    Arguments of `studio series ...` and `studio ask ...` are left alone (their flag takes no value).
+    """
+    first = next((a for a in args if not a.startswith("-")), None)
+    if first in FLAG_STYLE_COMMANDS:
+        return args
     return ["--fake-services=all" if a == "--fake-services" else a for a in args]
 
 
@@ -43,6 +55,38 @@ channel_app = typer.Typer(help="Manage channel profiles", no_args_is_help=True)
 voice_app = typer.Typer(help="List and preview voices", no_args_is_help=True)
 app.add_typer(channel_app, name="channel")
 app.add_typer(voice_app, name="voice")
+app.add_typer(clipper_cli.app, name="clip")  # CR-C8-5
+app.add_typer(series_cli.app, name="series")  # CR-C11-3
+
+
+def _ask_unavailable(text: Annotated[str, typer.Argument(help="What to ask or tell Nightshift.")]) -> None:
+    """Ask the Assistant (unavailable: the dashboard package or its dependencies are missing)."""
+    typer.echo(
+        "The Assistant needs the dashboard package and its dependencies (fastapi), which are not "
+        "installed here. Install the dashboard extra, then try again.",
+        err=True,
+    )
+    raise typer.Exit(1)
+
+
+def mount_ask(parent: typer.Typer) -> bool:
+    """Add `studio ask` (CR-C9-7); without the dashboard or fastapi it explains what is missing.
+
+    Returns True when the real Assistant command was mounted.
+    """
+    if importlib.util.find_spec("fastapi") is not None:
+        try:
+            from ns_dashboard.assistant.cli import register
+        except ImportError:
+            pass
+        else:
+            register(parent)
+            return True
+    parent.command("ask")(_ask_unavailable)
+    return False
+
+
+ASK_AVAILABLE = mount_ask(app)
 
 FakeOpt = Annotated[
     str | None,

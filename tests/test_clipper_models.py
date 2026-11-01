@@ -5,15 +5,8 @@ import pytest
 from pydantic import ValidationError
 
 from ns_common.errors import NsError
-from ns_studio.clipper.models import (
-    ClipItem,
-    ClipLayout,
-    ClipMetadata,
-    ClipParams,
-    Crop,
-    Rect,
-    Transcript,
-)
+from ns_common.models import ClipLayout, ClipPlanItem, Crop, Rect, Transcript
+from ns_studio.clipper.models import ClipItem, ClipMetadata, ClipParams
 from tests.fixtures.clipper.make_sample import build_transcript
 
 
@@ -48,12 +41,16 @@ def test_transcript_rejects_reversed_word() -> None:
 
 
 def test_clip_item_bounds() -> None:
-    ok = ClipItem(k=1, start_s=1.0, end_s=31.0, title="t", why="w", score=0.5)
+    ok = ClipPlanItem(k=1, start_s=1.0, end_s=31.0, title="t", why="w", score=0.5)
     assert ok.duration_s == 30.0
     with pytest.raises(ValidationError):
-        ClipItem(k=1, start_s=10.0, end_s=10.0, title="t", why="w", score=0.5)
+        ClipPlanItem(k=1, start_s=10.0, end_s=10.0, title="t", why="w", score=0.5)
     with pytest.raises(ValidationError):
-        ClipItem(k=1, start_s=1.0, end_s=5.0, title="t", why="w", score=1.5)
+        ClipPlanItem(k=1, start_s=1.0, end_s=5.0, title="t", why="w", score=1.5)
+
+
+def test_clip_item_is_an_alias_of_the_shared_model() -> None:
+    assert ClipItem is ClipPlanItem
 
 
 def test_clip_layout_roundtrip_with_second_panel() -> None:

@@ -87,7 +87,7 @@ class JobContext:
     job_id: str
     channel: Channel
     combo: Combo
-    fmt: Literal["master_first", "shorts_only", "series_compilation"]
+    fmt: Literal["master_first", "shorts_only", "series_compilation", "clip", "master_from_script"]
     paths: Paths
     job_dir: Path
     db: Db

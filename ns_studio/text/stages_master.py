@@ -10,7 +10,17 @@ from typing import Any
 
 from ns_common.embed_client import to_blob
 from ns_common.errors import NsError
-from ns_common.models import Seo, VisualBeat
+from ns_common.models import (
+    Plan,
+    PlanChapter,
+    Sentence,
+    Seo,
+    SeoLong,
+    ShortsPlanItem,
+    Story,
+    StoryChapter,
+    VisualBeat,
+)
 from ns_common.textstats import split_sentences, word_count
 from ns_studio.context import JobContext
 from ns_studio.stages import Tenant, register
@@ -20,16 +30,7 @@ from ns_studio.text.budget import (
     distribute_words,
     short_body_words,
 )
-from ns_studio.text.models_local import (
-    ChapterDraft,
-    Plan,
-    PlanChapter,
-    Sentence,
-    SeoLong,
-    ShortsPlanItem,
-    Story,
-    StoryChapter,
-)
+from ns_studio.text.models_local import ChapterDraft
 from ns_studio.text.prompts import call_json, call_text, parse_model
 from ns_studio.text.seo import finalize_seo, finalize_seo_long
 from ns_studio.text.stages_shorts import critic_numbers, job_master_budget, now_iso, repair_beats

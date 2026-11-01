@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import random
 from datetime import UTC, datetime
 from typing import Any
@@ -17,7 +18,7 @@ from ns_studio.text.prompts import RUBRIC_KEYS, call_json, call_text, parse_mode
 from ns_studio.text.seo import finalize_seo
 from ns_studio.text.validators import load_banned, raise_if, validate_story
 
-__all__ = ["finalize_seo", "ideas_budget", "job_master_budget", "now_iso"]
+__all__ = ["draw_banked_idea", "finalize_seo", "ideas_budget", "job_master_budget", "now_iso"]
 
 IDEA_SIMILARITY_LIMIT = 0.85
 
@@ -48,8 +49,60 @@ def critic_numbers(critique: dict[str, Any]) -> tuple[float, float]:
     return sum(scores) / len(scores), min(scores)
 
 
+def draw_banked_idea(ctx: JobContext) -> dict[str, Any] | None:
+    """Claim the oldest owner-approved idea of the channel (idea bank, spec 20.2) or return None.
+
+    The row becomes `status='used'`, `used=1` and carries this job id. Columns the shared schema does not
+    have yet (`setting`, `protagonist`, `keywords`, `updated_at`; CR-C9-6) are read and written only when the
+    database has them. A row claimed by another run in the meantime counts as not found.
+    """
+    row = ctx.db.one(
+        "select * from ideas where channel=? and status='approved' order by created_at, idea_id limit 1",
+        (ctx.channel.slug,),
+    )
+    if row is None:
+        return None
+    cols = set(row.keys())
+
+    def text(name: str) -> str:
+        return str(row[name] or "").strip() if name in cols else ""
+
+    keywords: list[str] = []
+    if text("keywords"):
+        try:
+            loaded = json.loads(text("keywords"))
+        except json.JSONDecodeError:
+            loaded = []
+        if isinstance(loaded, list):
+            keywords = [str(k).strip() for k in loaded if str(k).strip()][:8]
+    if not keywords:
+        keywords = list(ctx.channel.seed_keywords[:3]) or ["story"]
+    idea = parse_model(
+        Idea,
+        {
+            "premise": row["premise"],
+            "twist": row["twist"],
+            "setting": text("setting"),
+            "protagonist": text("protagonist"),
+            "keywords": keywords,
+        },
+        "approved idea",
+    ).model_dump()
+    blob = row["embedding"] or to_blob(ctx.services.embed.embed([idea["premise"]])[0])
+    sets, params = "status='used', used=1, job_id=?, embedding=?", [ctx.job_id, blob]
+    if "updated_at" in cols:
+        sets, params = sets + ", updated_at=?", [*params, now_iso()]
+    claimed = ctx.db.execute(
+        f"update ideas set {sets} where idea_id=? and status='approved'", (*params, row["idea_id"])
+    )
+    if claimed.rowcount != 1:
+        return None
+    ctx.log.info("idea_from_bank", job_id=ctx.job_id, idea_id=row["idea_id"], channel=ctx.channel.slug)
+    return idea
+
+
 class IdeasStage:
-    """M1 / shorts 1: draw 8 premises, drop near-duplicates of history, keep the first survivor."""
+    """M1 / shorts 1: an approved idea from the bank, else 8 premises minus near-duplicates of history."""
 
     name: str = "ideas"
     tenant: Tenant = "llama"
@@ -57,7 +110,15 @@ class IdeasStage:
     outputs: tuple[str, ...] = ("idea.json", "ideas_all.json")
 
     def run(self, ctx: JobContext) -> None:
-        """Write `ideas_all.json` and the chosen `idea.json`; record the idea in the `ideas` table."""
+        """Use the owner's oldest approved idea if there is one; else draw 8 premises and keep a survivor.
+
+        Writes `ideas_all.json` and the chosen `idea.json`; an invented idea is recorded in the `ideas` table.
+        """
+        banked = draw_banked_idea(ctx)
+        if banked is not None:
+            ctx.write_json("ideas_all.json", [banked])
+            ctx.write_json("idea.json", banked)
+            return
         rows = ctx.db.query(
             "select premise, embedding from ideas where channel=? order by idea_id desc limit 50",
             (ctx.channel.slug,),

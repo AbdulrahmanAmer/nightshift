@@ -16,7 +16,7 @@ Format per entry:
   `NS-E320` The channel profile is invalid. · `NS-E321` Channels are not distinct enough. · `NS-E322` Unknown channel. · `NS-E323` The analytics CSV could not be read. · `NS-E324` Calibration data is missing or incomplete. · `NS-E325` The variation pools are exhausted. · `NS-E326` Output not found or not in a state that allows this action.
 - **Why:** spec section 8 (pool minimums, distinctness), 16.5 (calibration), 18.9 (CSV import) and section 10 (review, mark-uploaded) have conditions with no code today; builders may not raise a code that is not in `errors.json`.
 - **Workaround until applied:** `ns_studio.errors.StudioError` carries the same codes with a local message table and prefers `errors.json` when the code exists. When this CR is applied, empty `_LOCAL` and nothing else changes. Note: `tests` that scan source for `NS-E` literals will flag these codes until then.
-- **Status:** applied in 95580e6 (errors.json has NS-E320..E326; C7 may empty `_LOCAL` in `ns_studio/errors.py`)
+- **Status:** applied in 95580e6 (errors.json has NS-E320..E326; C7 may empty `_LOCAL` in `ns_studio/errors.py`); `_LOCAL` emptied in 50742f8 and `StudioError` reads `errors.json` via `describe`
 
 ## CR-C7-2: `policy_check` prompt, schema and fixture (owner of the files: C5)
 - **From:** C7 / m2-c7-studio-core (policy gate)
@@ -75,7 +75,7 @@ Format per entry:
 - **From:** C9 ns_dashboard / Task 6
 - **Change:** in `contracts/schema.sql` add to `sources`: `rights_confirmed INTEGER NOT NULL DEFAULT 0, rights_confirmed_at TEXT`; add to `dashboard_jobs`: `result_json TEXT`. Add a pydantic `DashboardJob` model (fields as the API object `J`: job_id, kind, channel, status, progress, message, stage, created_at, started_at, finished_at, params, result) to `ns_common/models.py` and export `dashboard_job.schema.json` (spec 15.6 lists the schema, the file does not exist yet).
 - **Why:** spec 19.1 says the rights confirmation is stored on the `sources` row, which has no column for it. Until then the dashboard writes `imports/clipper/<source_id>/rights.json` and keeps `{"params":..., "result":...}` inside `dashboard_jobs.params_json`; C8 can read `rights.json` and set the column when it creates the `sources` row.
-- **Status:** open
+- **Status:** partly applied on main (PR #15: `sources.rights_confirmed` and `sources.title`). `dashboard_jobs.result_json` is not needed: the dashboard keeps `{"params","result"}` in `params_json`. The `dashboard_job` schema file is still open.
 
 ## CR-C9-3: supervisor service entry for the dashboard
 - **From:** C9 ns_dashboard / Task 7
@@ -105,7 +105,7 @@ Format per entry:
 - **From:** C8 Clipper / Task 1
 - **Change:** move `Transcript`, `Segment`, `Word`, `ClipItem` (`clip_plan` item), `ClipLayout` (+ `Crop`, `FaceFrame`, `Rect`) and `ClipTemplate` from `ns_studio/clipper/models.py` to `ns_common/models.py`, register them in `SCHEMA_MODELS` and export `transcript`, `clip_plan`, `clip_layout`, `clip_template` schemas.
 - **Why:** spec 15.6 lists them as contracts (also read by C9). They are local pydantic models for now.
-- **Status:** applied in e0c34f5 (`Transcript`, `Segment`, `Word`, `Rect`, `FaceFrame`, `Crop`, `ClipLayout`, `Region`, `ClipTemplate` and `ClipPlanItem` in `ns_common.models`; schemas `transcript`, `clip_layout`, `clip_template`, `clip_plan`). C8 may now import them from `ns_common.models` (its `ClipItem` is `ClipPlanItem`) and delete its local copies
+- **Status:** applied in e0c34f5 (`Transcript`, `Segment`, `Word`, `Rect`, `FaceFrame`, `Crop`, `ClipLayout`, `Region`, `ClipTemplate` and `ClipPlanItem` in `ns_common.models`; schemas `transcript`, `clip_layout`, `clip_template`, `clip_plan`). C8 may now import them from `ns_common.models` (its `ClipItem` is `ClipPlanItem`) and delete its local copies; clipper consumers migrated in 9627b9e (`ns_studio/clipper/models.py` re-exports them, `ClipItem` is `ClipPlanItem`)
 
 ## CR-C8-2: OpenCV in the `dev` and `studio` extras
 - **From:** C8 Clipper / Task 3
@@ -129,7 +129,7 @@ Format per entry:
 - **From:** C8 Clipper / Task 7
 - **Change:** in `ns_studio/cli.py` add `app.add_typer(ns_studio.clipper.cli.app, name="clip")` (the entry is `ns_studio.clipper.cli.app`; it takes `studio clip <video> --channel <slug> [--template ...] [--max-clips N] [--min-s S] [--max-s S] [--confirm-rights] [--reselect <job_id>] [--fake-services[=list]]`). `JobContext.fmt` Literal gains `"clip"`; `orchestrator.FORMAT_STAGES` gets `"clip"` from `ns_studio.clipper.stages_clip` (set at import).
 - **Why:** spec 15.9. C8 never edits C7 files.
-- **Status:** open
+- **Status:** applied in 48457df (mount) and 919a915 (`JobContext.fmt` literal). `FORMAT_STAGES["clip"]` is set by `ns_studio.clipper.stages_clip` when `studio clip` imports it
 
 ## CR-C8-6: optional fields on `clip_layout`
 - **From:** C8 Clipper / Task 4
@@ -181,19 +181,20 @@ Format per entry:
   - `policy_check` (prompt answer, used by C7's policy gate): `PolicyCheckResult{unsafe_categories:list[str], hook_honest:bool, title_honest:bool, standalone:bool|None, notes:str}`; the ids in `unsafe_categories` are `id` values of `contracts/policy/unsafe_topics.yaml`.
 - **Why:** C6 (voice, captions, render), C7 (policy gate, orchestrator) and C8 (clipper) read and write these files; the single source of truth must be `ns_common`. C5 uses local copies meanwhile, so nothing blocks.
 - **Migration:** C5 replaces `from ns_studio.text.models_local import X` by `from ns_common.models import X` and deletes `models_local.py` once this lands; field names do not change.
-- **Status:** applied in e0c34f5 (`Plan`, `PlanChapter`, `Story`, `StoryChapter`, `Sentence`, `ShortsPlanItem`, `ShortsPlan`, `SeoLong`, `ChapterTitle`, `ClipPlanItem`, `ClipPlan`, `PolicyCheckResult`; schemas `plan`, `story`, `shorts_plan`, `seo_long`, `clip_plan`, `policy_check`). `clip_plan` reconciles with C8: `speakers` is `list[int] | None`, `why` defaults to empty, plus `layout`, `layout_reason`, `caption_style`, `status`, `reasons`. C5 migrates by importing from `ns_common.models` and deleting `models_local.py`
+- **Status:** applied in e0c34f5 (`Plan`, `PlanChapter`, `Story`, `StoryChapter`, `Sentence`, `ShortsPlanItem`, `ShortsPlan`, `SeoLong`, `ChapterTitle`, `ClipPlanItem`, `ClipPlan`, `PolicyCheckResult`; schemas `plan`, `story`, `shorts_plan`, `seo_long`, `clip_plan`, `policy_check`). `clip_plan` reconciles with C8: `speakers` is `list[int] | None`, `why` defaults to empty, plus `layout`, `layout_reason`, `caption_style`, `status`, `reasons`. C5 migrates by importing from `ns_common.models` and deleting `models_local.py`; consumers migrated in 9627b9e (`ns_studio/text/models_local.py` is now a deprecated alias module; `ChapterDraft`, which has no shared model, stays there)
 
 ## CR-C9-6: idea-bank columns and the assistant database
 - **From:** C9 ns_dashboard / Library + Assistant
 - **Change:** (a) `contracts/schema.sql`, table `ideas`: add `status TEXT NOT NULL DEFAULT 'new'` (`new|approved|used|dropped`), `setting TEXT`, `protagonist TEXT`, `keywords TEXT` (JSON array), `source TEXT` (`owner|nightshift|assistant`), `updated_at TEXT`. M1 stage `ideas` (C5/C7) then draws `status='approved'` rows of the channel first (set `status='used'` and `used=1` when consumed) and invents only when none are left. (b) New `contracts/assistant_schema.sql` (or an `assistant.db` section of `schema.sql`) with the tables created by `ns_dashboard/assistant/store.py`: `conversations`, `messages`, `actions`, `queued_messages` (DDL is in that module's `DDL` constant). (c) `ns_common/llm_client.py`: move `chat_tools(messages, tools)` (OpenAI-compatible tool calling, see `ns_dashboard/assistant/llm.py::ToolLlmClient`) into `LlmClient`. (d) `contracts/schemas/format.schema.json` generated from a pydantic `Format` model (the dashboard validates against `ns_dashboard/formats.py::FORMAT_SCHEMA` until then).
 - **Why:** spec 20.2 Library > Ideas and 20.3a. Until then the dashboard adds the idea columns itself with a guarded `ALTER TABLE ... ADD COLUMN` at startup and creates `data/assistant.db` with `CREATE TABLE IF NOT EXISTS`.
-- **Status:** open
+- **Status (integration pass):** the `ideas` stage draws `status='approved'` rows first and marks them used, applied in e2449f1. The rest of this CR is tracked by the status line below.
+- **Status:** mostly applied on main (PR #15: `ideas.status|title|source`, `assistant_messages`, `Paths.assistant_db`, the `Format` model). The dashboard uses them (status `rejected` instead of `dropped`; `dropped` is accepted as an alias) and no longer adds columns or defines a format schema. Still open: see CR-C9-9.
 
 ## CR-C9-7: mount `studio ask` and ship the prompt
 - **From:** C9 ns_dashboard / Assistant CLI
 - **Change:** C7 mounts the command: in `ns_studio/cli.py` call `from ns_dashboard.assistant.cli import register; register(app)` (it adds `studio ask "<text>" [--yes] [-c conversation] [--fake-services]`). `pyproject.toml` (extends CR-C9-1): `[tool.setuptools.package-data] ns_dashboard = ["static/*", "prompts/*.md"]`.
 - **Why:** spec 20.3a "`studio ask` on the command line for the same loop". The prompt file `ns_dashboard/prompts/assistant.md` must ship with the package.
-- **Status:** open
+- **Status:** partly applied in 48457df (`studio ask` is mounted through `register`, guarded for a missing fastapi or dashboard package). Still open: the `pyproject.toml` package-data entry
 
 ## CR-C9-8: `ns update --check` / `--github` output and subprocess allow-list
 - **From:** C9 ns_dashboard / Update endpoints
@@ -204,7 +205,7 @@ Format per entry:
 - **From:** C1 installer / stage1.ps1 and steps s01, s08
 - **Change:** add to `contracts/errors.json`: `NS-E111` ("winget (Windows App Installer) is missing.", hint "Install 'App Installer' from the Microsoft Store (or use the direct installer links shown), then run setup again."), `NS-E112` ("faster-whisper cannot load on the GPU (cuBLAS 12 / cuDNN 9 DLLs not found).", hint "In the studio venv run: uv pip install nvidia-cublas-cu12 nvidia-cudnn-cu12, then re-run 'ns verify --quick'."), `NS-W112` ("Windows long paths are disabled.", hint "Run setup once as administrator to enable them, or keep NIGHTSHIFT_HOME on a short path such as D:/Nightshift.").
 - **Why:** spec 1.2 / 15.12 and ENGINEERING.md section 6 name them; `describe()` raises KeyError for them today. The installer works around it with `installer/stage2/errors.py::make_error` (a pending table with the same text), which becomes a plain `NsError` as soon as the codes exist. `stage1.ps1` has the same texts as a fallback.
-- **Status:** applied on main earlier (NS-E111, NS-W112, NS-E112 are in errors.json); `installer/stage2/errors.py` can drop its pending table
+- **Status:** applied on main earlier (NS-E111, NS-W112, NS-E112 are in errors.json); `installer/stage2/errors.py` can drop its pending table; the pending table was dropped in 50742f8
 
 ## CR-C1-2: Answers model and answers.schema.json lack the installer-only fields
 - **From:** C1 installer / answers.example.json, s01_questions
@@ -249,7 +250,7 @@ Format per entry:
 - **Change:** (1) In `ns_studio/cli.py`: `from ns_studio.series.cli import app as series_app` and `app.add_typer(series_app, name="series")`. (2) Add `"ns_studio.series.stages"` to `STAGE_MODULES` so stage `script_import` (tenant `None`; inputs `script_source.json`; outputs `idea.json plan.json plan_meta.json story.json shorts_plan.json`) is registered. (3) Add the stage list `master_from_script` = `script_import, visual_plan_long, seo_long, seo_shorts, voice, duration_check, captions, shorts_timing, clips, render_master, thumbnails, shorts_derive, qc, outbox` (names as in C7's `MASTER_FIRST_STAGES`, minus `ideas, long_plan, chapters_draft, chapters_critic, continuity, shorts_select`; `visual_plan_long` stays because `script_import` writes `idea.json` for it) and make `plan_job` / `run_job` use it whenever the job is `master_first` and `ctx.file("script_source.json")` exists. (4) Re-running a finished job after editing `script.md` needs `force`: the stage hash only covers `script_source.json` because the stage reads the live files on purpose. (5) Cadence governor: `script_source.json` carries `publish_not_before_days` (0, 7, 14, ... from the design's `publish_cadence_days`); add it to the part's `publish_after`.
 - **Why:** spec 23.3 step 6; the orchestrator must skip M1-M4 for series parts.
 - **Migration:** none for C11; `--fake-services` works the same way as `studio run`.
-- **Status:** open
+- **Status:** applied in 48457df (mount, `ns_studio.series.stages` in `STAGE_MODULES`, policy gates installed on the `master_from_script` plan too). The stage list and the `run_job` switch were already in `orchestrator.py`; items 4 and 5 are C11 behaviour
 
 ## CR-C11-4: C5 text models and prompts for series parts
 - **From:** C11 series workshop / `ns_studio/series/importer.py`, `ns_studio/series/workshop.py`
@@ -320,4 +321,10 @@ Format per entry:
 - **From:** C6 media finish (spec 17.1, 17.2)
 - **Change:** (1) `ns_common.models.Channel` gains `formats_allowed: list[str] = []` and `captions: {mask_profanity: bool = False}`. `Channel` forbids unknown keys, so `config.load_channel` rejects a profile that carries them today; `ns_studio/media/channel_opts.py` already reads both (model attribute first, YAML second). (2) `VisualBeat` gains optional `emphasis` (mapping sentence index to one key word) and `ClipPlanItem` gains optional `emphasis` (list, one key word per sentence); `ns_studio/clipper/models.py` `ClipItem` has it already and the stages read both when present as plain extra keys. The `visual_plan`, `clip_select` prompts and `text/prompts.py` schemas should ask for and pass it through. (3) `pyproject.toml` `[tool.setuptools.package-data]` needs `presets/formats/*.yaml` for `ns_studio`. (4) `ns_dashboard/templates.py` reads regions and caption anchors from `clip_templates.yaml`; they now live in `ns_studio/presets/formats/clip_*.yaml` (load with `ns_studio.media.formats.load_formats()`), and the Library → Formats page can list every preset.
 - **Why:** spec 17.1 (formats allowed per channel, formats as data) and 17.2 (emphasis, profanity masking) need fields the shared models and packaging do not carry.
+- **Status:** open
+
+## CR-C9-9: assistant conversations and pending actions (shared schema)
+- **From:** C9 ns_dashboard / Assistant
+- **Change:** `assistant_messages` (flat: ts, role, content, tool_calls_json) cannot hold conversations, tool-call ids or pending confirm cards. `ns_dashboard/assistant/store.py` therefore creates `conversations`, `messages`, `actions` and `queued_messages` in `data/assistant.db` itself (and mirrors every message into `assistant_messages`). Move those four tables into `contracts/schema.sql` next to `assistant_messages` (or extend `assistant_messages` with `conversation_id`, `tool_call_id`, `name`), then delete `DDL` from the store.
+- **Why:** local DDL for a shared database is a shim; the owner of `contracts/` should own it.
 - **Status:** open

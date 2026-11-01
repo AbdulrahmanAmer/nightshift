@@ -8,8 +8,9 @@ import numpy as np
 import pytest
 
 from ns_common import ffmpeg
+from ns_common.models import Rect
 from ns_studio.clipper import analyze as an
-from ns_studio.clipper.models import Analysis, LoudPeak, Rect, SilenceSpan
+from ns_studio.clipper.models import Analysis, LoudPeak, SilenceSpan
 from ns_studio.clipper.source import extract_audio
 from tests.fixtures.clipper.make_sample import shared_sample
 

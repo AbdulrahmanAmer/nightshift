@@ -3,16 +3,9 @@ from __future__ import annotations
 
 import pytest
 
+from ns_common.models import CANVAS_H, CANVAS_W, ClipLayout, Crop, FaceFrame, Rect
 from ns_studio.clipper import layout as lay
-from ns_studio.clipper.models import (
-    CANVAS_H,
-    CANVAS_W,
-    TEMPLATE_NAMES,
-    ClipLayout,
-    Crop,
-    FaceFrame,
-    Rect,
-)
+from ns_studio.clipper.models import TEMPLATE_NAMES
 
 W, H = 1280, 720
 CAM = Rect(x=944, y=16, w=320, h=180)
