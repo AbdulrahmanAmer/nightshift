@@ -1,0 +1,144 @@
+from __future__ import annotations
+
+import wave
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Protocol
+
+import httpx
+import numpy as np
+
+from ns_common.errors import NsError
+from ns_common.textstats import word_count
+
+
+@dataclass(frozen=True)
+class TtsItem:
+    id: str
+    text: str
+    voice: str
+    speed: float = 1.0
+
+
+@dataclass(frozen=True)
+class TtsFile:
+    id: str
+    path: Path
+    seconds: float
+
+
+class Tts(Protocol):
+    def speak(
+        self, text: str, voice: str, speed: float, out_path: Path, *, seed: int | None = None
+    ) -> float: ...
+
+    def speak_batch(
+        self, items: list[TtsItem], out_dir: Path, *, seed: int | None = None
+    ) -> list[TtsFile]: ...
+
+    def voices(self) -> list[dict]: ...
+
+    def health(self) -> bool: ...
+
+
+def wav_seconds(path: Path) -> float:
+    with wave.open(str(path), "rb") as w:
+        return w.getnframes() / w.getframerate()
+
+
+class TtsClient:
+    def __init__(self, base_url: str, *, timeout_s: float = 1800, client: httpx.Client | None = None) -> None:
+        self.base_url = base_url.rstrip("/")
+        self.client = client or httpx.Client(timeout=timeout_s)
+
+    def speak(
+        self, text: str, voice: str, speed: float, out_path: Path, *, seed: int | None = None
+    ) -> float:
+        body: dict[str, Any] = {
+            "model": "qwen3-tts", "input": text, "voice": voice, "speed": speed, "response_format": "wav",
+        }
+        if seed is not None:
+            body["seed"] = seed
+        try:
+            r = self.client.post(f"{self.base_url}/v1/audio/speech", json=body)
+            r.raise_for_status()
+        except httpx.HTTPError as e:
+            raise NsError("NS-E301", f"tts: {e}") from e
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_bytes(r.content)
+        return wav_seconds(out_path)
+
+    def speak_batch(
+        self, items: list[TtsItem], out_dir: Path, *, seed: int | None = None
+    ) -> list[TtsFile]:
+        body: dict[str, Any] = {
+            "items": [{"id": i.id, "input": i.text, "voice": i.voice, "speed": i.speed} for i in items],
+            "out_dir": str(out_dir),
+        }
+        if seed is not None:
+            body["seed"] = seed
+        try:
+            r = self.client.post(f"{self.base_url}/v1/audio/speech/batch", json=body)
+            r.raise_for_status()
+        except httpx.HTTPError as e:
+            raise NsError("NS-E301", f"tts batch: {e}") from e
+        return [TtsFile(f["id"], Path(f["path"]), float(f["seconds"])) for f in r.json()["files"]]
+
+    def voices(self) -> list[dict]:
+        try:
+            r = self.client.get(f"{self.base_url}/v1/voices")
+            r.raise_for_status()
+            return list(r.json())
+        except httpx.HTTPError as e:
+            raise NsError("NS-E301", f"tts voices: {e}") from e
+
+    def health(self) -> bool:
+        try:
+            r = self.client.get(f"{self.base_url}/health", timeout=5)
+            return r.status_code == 200 and bool(r.json().get("ok"))
+        except (httpx.HTTPError, ValueError):
+            return False
+
+
+class FakeTts:
+    def __init__(self, *, wpm: float = 155, sr: int = 24000) -> None:
+        self.wpm = wpm
+        self.sr = sr
+
+    def speak(
+        self, text: str, voice: str, speed: float, out_path: Path, *, seed: int | None = None
+    ) -> float:
+        words = max(1, word_count(text))
+        seconds = max(0.4, words / (self.wpm * speed) * 60.0)
+        n = int(seconds * self.sr)
+        burst = int(0.08 * self.sr)
+        step = n / words
+        idx = np.arange(n)
+        pos = np.mod(idx, step)
+        tone = 0.3 * np.sin(2 * np.pi * 440.0 * idx / self.sr)
+        samples = (np.where(pos < burst, tone, 0.0) * 32767).astype("<i2")
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        with wave.open(str(out_path), "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(self.sr)
+            w.writeframes(samples.tobytes())
+        return round(n / self.sr, 3)
+
+    def speak_batch(
+        self, items: list[TtsItem], out_dir: Path, *, seed: int | None = None
+    ) -> list[TtsFile]:
+        out: list[TtsFile] = []
+        for it in items:
+            p = out_dir / f"{it.id}.wav"
+            out.append(TtsFile(it.id, p, self.speak(it.text, it.voice, it.speed, p, seed=seed)))
+        return out
+
+    def voices(self) -> list[dict]:
+        return [
+            {"name": "Ryan", "mode": "preset", "source": "fake"},
+            {"name": "Aiden", "mode": "preset", "source": "fake"},
+        ]
+
+    def health(self) -> bool:
+        return True
