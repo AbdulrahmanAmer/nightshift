@@ -11,7 +11,7 @@ from __future__ import annotations
 import re
 import string
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from ns_common.errors import NsError
@@ -42,6 +42,8 @@ class Cand:
     score: float = 0.5
     keywords: list[str] = field(default_factory=list)
     speakers: list[int] = field(default_factory=list)
+    layout: str | None = None
+    layout_reason: str | None = None
 
     @property
     def duration(self) -> float:
@@ -114,6 +116,10 @@ def _num(d: dict[str, Any], *keys: str) -> float | None:
     return None
 
 
+def _opt_str(v: Any) -> str | None:
+    return v.strip() if isinstance(v, str) and v.strip() else None
+
+
 def to_cand(d: dict[str, Any], duration_s: float) -> Cand | None:
     """Convert one raw LLM item to a `Cand` clamped to the video; None when it has no usable span."""
     start = _num(d, "start_s", "start")
@@ -137,6 +143,8 @@ def to_cand(d: dict[str, Any], duration_s: float) -> Cand | None:
         score=min(1.0, max(0.0, 0.5 if score is None else score)),
         keywords=[str(k) for k in kws] if isinstance(kws, list) else [],
         speakers=[int(s) for s in spk if isinstance(s, int)] if isinstance(spk, list) else [],
+        layout=_opt_str(d.get("layout")),
+        layout_reason=_opt_str(d.get("layout_reason") or d.get("reason")),
     )
 
 
@@ -180,6 +188,8 @@ def _merge_pair(a: Cand, b: Cand, max_s: float) -> Cand:
         score=best.score,
         keywords=list(dict.fromkeys([*best.keywords, *other.keywords])),
         speakers=sorted({*best.speakers, *other.speakers}),
+        layout=best.layout or other.layout,
+        layout_reason=best.layout_reason or other.layout_reason,
     )
 
 
@@ -248,15 +258,10 @@ def snap_to_sentences(
     pad_a, pad_b = PAD_BEFORE_S, PAD_AFTER_S
     if end + pad_b - (start - pad_a) > max_s:
         pad_a = pad_b = 0.0
-    return Cand(
+    return replace(
+        c,
         start=max(0.0, round(start - pad_a, 3)),
         end=min(duration_s, round(end + pad_b, 3)),
-        title=c.title,
-        hook_line=c.hook_line,
-        why=c.why,
-        score=c.score,
-        keywords=c.keywords,
-        speakers=c.speakers,
     )
 
 
@@ -304,38 +309,114 @@ def _speakers(tr: Transcript, start: float, end: float) -> list[int]:
     return sorted(found)
 
 
+@dataclass
+class Dropped:
+    """A candidate that did not make the plan and why."""
+
+    cand: Cand
+    reasons: list[str]
+
+
+Judge = Callable[[Cand], tuple[bool, list[str]]]
+
+
+def prepare_candidates(
+    tr: Transcript,
+    params: ClipParams,
+    ask: Callable[[float, float], Any],
+    cache: dict[str, Any] | None = None,
+) -> tuple[list[Cand], list[Dropped]]:
+    """Ask per window, merge, snap and filter. Returns survivors in score order plus the filtered-out ones."""
+    tag = f"{params.min_s:g}-{params.max_s:g}"
+    raw = collect_candidates(tr, ask, cache, cache_tag=tag)
+    merged = merge_overlaps(raw, params.max_s)
+    ranked: list[Cand] = []
+    dropped: list[Dropped] = []
+    for c in merged:
+        s = snap_to_sentences(c, tr.words, min_s=params.min_s, max_s=params.max_s, duration_s=tr.duration_s)
+        if s is None:
+            dropped.append(Dropped(c, ["no sentence boundary fits the length range"]))
+        elif not passes_filler_filter(s, tr.words):
+            dropped.append(Dropped(s, ["mostly filler or fewer than 2.2 words per second"]))
+        else:
+            ranked.append(s)
+    ranked.sort(key=lambda x: (-x.score, x.start))
+    return ranked, dropped
+
+
+def judge_loop(
+    ranked: list[Cand], params: ClipParams, judge: Judge | None = None
+) -> tuple[list[Cand], list[Dropped]]:
+    """Walk candidates in score order; skip clashes, ask `judge` (ok, reasons) and stop at `max_clips`."""
+    kept: list[Cand] = []
+    dropped: list[Dropped] = []
+    for c in ranked:
+        if len(kept) >= params.max_clips:
+            break
+        clash = any(
+            abs(c.start - k.start) < params.spacing_s or (c.start < k.end and k.start < c.end) for k in kept
+        )
+        if clash:
+            dropped.append(Dropped(c, [f"overlaps or starts within {params.spacing_s:g} s of a better clip"]))
+            continue
+        if judge is not None:
+            ok, reasons = judge(c)
+            if not ok:
+                dropped.append(Dropped(c, reasons or ["rejected by the judge"]))
+                continue
+        kept.append(c)
+    return kept, dropped
+
+
+def _item(tr: Transcript, c: Cand, k: int, status: str, reasons: list[str]) -> ClipItem:
+    return ClipItem(
+        k=k,
+        start_s=round(c.start, 3),
+        end_s=round(c.end, 3),
+        title=c.title,
+        hook_line=c.hook_line,
+        why=c.why,
+        score=c.score,
+        speakers=c.speakers or _speakers(tr, c.start, c.end) or None,
+        keywords=c.keywords,
+        layout=c.layout,
+        layout_reason=c.layout_reason,
+        status="kept" if status == "kept" else "dropped",
+        reasons=reasons,
+    )
+
+
+def select_plan(
+    tr: Transcript,
+    params: ClipParams,
+    ask: Callable[[float, float], Any],
+    cache: dict[str, Any] | None = None,
+    judge: Judge | None = None,
+) -> list[ClipItem]:
+    """Full `clip_plan.json` content: kept clips (k from 1, score order), then dropped ones with reasons."""
+    ranked, filtered = prepare_candidates(tr, params, ask, cache)
+    kept, judged = judge_loop(ranked, params, judge)
+    items = [_item(tr, c, i, "kept", []) for i, c in enumerate(kept, start=1)]
+    extra = [*judged, *filtered]
+    items += [_item(tr, d.cand, len(kept) + j, "dropped", d.reasons) for j, d in enumerate(extra, start=1)]
+    return items
+
+
+def ensure_some_kept(items: list[ClipItem]) -> list[ClipItem]:
+    """The kept clips of a plan; NS-E407 (with the drop reasons) when there are none."""
+    kept = [i for i in items if i.status == "kept"]
+    if not kept:
+        why = "; ".join(f"{i.start_s:.0f}-{i.end_s:.0f}s: {', '.join(i.reasons)}" for i in items[:5])
+        raise NsError("NS-E407", why or "the model returned no candidates")
+    return kept
+
+
 def select_clips(
     tr: Transcript,
     params: ClipParams,
     ask: Callable[[float, float], Any],
     cache: dict[str, Any] | None = None,
+    judge: Judge | None = None,
 ) -> list[ClipItem]:
-    """Run the whole selection; `ask(window_start, window_end)` returns the raw LLM answer for a window."""
-    tag = f"{params.min_s:g}-{params.max_s:g}"
-    raw = collect_candidates(tr, ask, cache, cache_tag=tag)
-    merged = merge_overlaps(raw, params.max_s)
-    snapped: list[Cand] = []
-    for c in merged:
-        s = snap_to_sentences(c, tr.words, min_s=params.min_s, max_s=params.max_s, duration_s=tr.duration_s)
-        if s is not None and passes_filler_filter(s, tr.words):
-            snapped.append(s)
-    top = pick_top(snapped, max_clips=params.max_clips, spacing_s=params.spacing_s)
-    if not top:
-        raise NsError(
-            "NS-E407",
-            f"{len(raw)} candidates, {len(merged)} after merge, {len(snapped)} after snap and filler filter",
-        )
-    return [
-        ClipItem(
-            k=i,
-            start_s=round(c.start, 3),
-            end_s=round(c.end, 3),
-            title=c.title,
-            hook_line=c.hook_line,
-            why=c.why,
-            score=c.score,
-            speakers=c.speakers or _speakers(tr, c.start, c.end) or None,
-            keywords=c.keywords,
-        )
-        for i, c in enumerate(top, start=1)
-    ]
+    """Kept clips only (NS-E407 when none); see `select_plan` for the full plan with drop reasons."""
+    return ensure_some_kept(select_plan(tr, params, ask, cache, judge))

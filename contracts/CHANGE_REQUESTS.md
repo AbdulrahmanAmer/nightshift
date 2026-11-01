@@ -157,3 +157,15 @@ Format per entry:
 - **Change:** none to contracts; confirm behaviour in the C2 plan. The wizard calls these from the studio venv (installed with extras `studio,supervisor` so `ns_supervisor` imports resolve there), with `NIGHTSHIFT_HOME` set and the app folder as cwd: `ns tune` (exit 0 on success; a failure only warns), `ns verify --quick` (JSON on stdout or in `logs/verify-report.json`: `{"checks":[{"name","passed"}]}` where names contain `llm`, `embed`, `tts`, `whisper`, `nvenc`, `mtp`), `ns doctor --bundle` (writes `nightshift-diagnostics-<date>.zip` to the Desktop), `ns schedule install --time HH:MM` (a "No such command" answer is tolerated until the scheduler exists), `ns restore <zip>`.
 - **Why:** the smoke step applies NS-W401 / NS-W301 / NS-W302 / NS-E112 from those check names.
 - **Status:** open
+
+## CR-C8-8: migrate clip layouts to format presets (spec 17.1)
+- **From:** C8 Clipper / spec 23.5
+- **Change:** `ns_studio/presets/formats/*.yaml` and `ns_studio/media/layout.py` (the generic region renderer) are not on `main`, so C8 keeps `ns_studio/presets/clip_templates.yaml` and its own graph builders (`ns_studio/clipper/render.py`). When the format presets land, `load_templates()` should read `clip_gaming_facecam`, `clip_podcast_stacked`, `clip_podcast_single`, `clip_talking_head`, `clip_center_crop`, `clip_screen_plus_cam` and the render should use the generic region builder. The model's `layout` answers already accept both `gaming_facecam` and `clip_gaming_facecam` ids.
+- **Why:** formats are data, not code (spec 17.1).
+- **Status:** open
+
+## CR-C8-9: C5-owned files edited by C8 (informational, per coordinator instruction)
+- **From:** C8 Clipper / spec 23.5
+- **Change:** `ns_studio/prompts/clip_select.md` (v2: `analysis` input, `layout` and `layout_reason` output), new `ns_studio/prompts/clip_judge.md` (thinking on, schema `clip_judge` = `{ok, reasons[]}`), `ns_studio/text/prompts.py` (`clip_plan` items accept `layout` / `layout_reason`; new `clip_judge` schema), fixture `tests/fixtures/llm/clip_judge.json`.
+- **Why:** the revised clipper flow lets the model choose a layout per candidate and adds a logic judge before each clip.
+- **Status:** applied on feat/c8-clipper

@@ -119,6 +119,10 @@ class ClipItem(Strict):
     score: float = Field(ge=0.0, le=1.0)
     speakers: list[int] | None = None
     keywords: list[str] = []
+    layout: str | None = None  # format preset chosen by the model (CR-C8-8), final one is in clip_layout
+    layout_reason: str | None = None
+    status: Literal["kept", "dropped"] = "kept"
+    reasons: list[str] = []  # why a candidate was dropped (judge, filters)
 
     @model_validator(mode="after")
     def _ordered(self) -> ClipItem:
@@ -164,6 +168,8 @@ class ClipLayout(Strict):
     faces: list[FaceFrame] = []
     crops: list[Crop] = []
     note: str | None = None
+    per_clip: dict[str, str] = {}  # clip k -> template used for that clip
+    notes: dict[str, str] = {}  # clip k -> NS-W402 fallback text
 
 
 # ---------- clip template (presets/clip_templates.yaml) ----------
@@ -266,3 +272,44 @@ class ClipMetadata(Strict):
     clips: list[ClipRef] = []
     combo_id: str = ""
     prompt_versions: dict[str, int] = {}
+
+
+# ---------- analysis.json (spec 23.5 step 1) ----------
+class SilenceSpan(Strict):
+    """A stretch of silence found by `silencedetect`."""
+
+    start: float = Field(ge=0)
+    end: float = Field(ge=0)
+
+
+class LoudPeak(Strict):
+    """A loudness peak: second `t` and its level in dBFS."""
+
+    t: float = Field(ge=0)
+    db: float
+
+
+class Loudness(Strict):
+    """Integrated loudness / range from `ebur128` and the loudest seconds."""
+
+    integrated_lufs: float | None = None
+    lra: float | None = None
+    peaks: list[LoudPeak] = []
+
+
+class Analysis(Strict):
+    """`analysis.json`: what FFmpeg and the face detector saw in the whole source video."""
+
+    width: int
+    height: int
+    aspect: float
+    duration_s: float
+    fps: float
+    scene_cuts: list[float] = []
+    scene_cuts_per_min: float = 0.0
+    silences: list[SilenceSpan] = []
+    loudness: Loudness = Loudness()
+    facecam: Rect | None = None
+    faces: list[FaceFrame] = []  # one entry per sampled second (1 fps), stable faces only
+    n_stable_faces: int = 0
+    faces_detected: bool = False  # False when OpenCV or the YuNet model was missing

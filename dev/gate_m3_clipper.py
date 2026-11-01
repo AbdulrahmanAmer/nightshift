@@ -67,8 +67,7 @@ def run_gate(work: Path) -> GateReport:
         add("job_completed", False, str(e))
         return _report(checks, benchmarks)
 
-    info = ctx.read_json("source.json")
-    mp4s = sorted(paths.outbox.glob(f"{channel.slug}/*/clip-{info['source_id']}/c*.mp4"))
+    mp4s = sorted((paths.outbox / channel.slug / "clips").glob("*/clip-*.mp4"))
     add("clips_at_least_2", len(mp4s) >= 2, len(mp4s), ">= 2")
     sizes = [ffmpeg.video_size(p) for p in mp4s]
     add("clips_1080x1920", bool(sizes) and all(s == (1080, 1920) for s in sizes), str(sizes[:1]), "1080x1920")
@@ -86,6 +85,27 @@ def run_gate(work: Path) -> GateReport:
         )
     add("facecam_within_5pct", cam is not None and err <= TOLERANCE, round(err, 4), "<= 0.05")
     add("template_gaming_facecam", layout.template == "gaming_facecam", layout.template)
+    add(
+        "templates_per_clip",
+        layout.per_clip == {"1": "gaming_facecam", "2": "gaming_facecam"},
+        json.dumps(layout.per_clip),
+    )
+    noted = "2" in layout.notes and "NS-W402" in layout.notes["2"]
+    add("layout_fallback_noted", noted, json.dumps(layout.notes)[:120])
+
+    analysis = ctx.read_json("analysis.json")
+    lufs = analysis.get("loudness", {}).get("integrated_lufs")
+    add("analysis_json", isinstance(analysis.get("scene_cuts"), list) and lufs is not None, lufs)
+    plan = ctx.read_json("clip_plan.json")
+    dropped = [c for c in plan if c["status"] == "dropped"]
+    add("plan_records_drops", bool(dropped) and all(c["reasons"] for c in dropped), len(dropped))
+    numbered = all(p.name.startswith(f"clip-{i:02d} ") for i, p in enumerate(mp4s, start=1))
+    add(
+        "outbox_layout",
+        bool(mp4s) and numbered and all(p.parent.name == "sample" for p in mp4s),
+        mp4s[0].parent.name if mp4s else None,
+        "clips/<source name>/clip-NN <title>",
+    )
 
     ass_files = sorted(ctx.job_dir.glob("captions/c*.ass"))
     texts = [p.read_text(encoding="utf-8") for p in ass_files]

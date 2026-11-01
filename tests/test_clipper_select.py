@@ -222,3 +222,66 @@ def test_select_all_filler_is_e407() -> None:
     with pytest.raises(NsError) as ei:
         sel.select_clips(tr, params(), Asker(fixture_raw()))
     assert ei.value.code == "NS-E407"
+
+
+# ---------- plan with judge, layouts and drop reasons (spec 23.5) ----------
+def always(ok: bool, *reasons: str):
+    calls: list[sel.Cand] = []
+
+    def judge(c: sel.Cand) -> tuple[bool, list[str]]:
+        calls.append(c)
+        return ok, list(reasons)
+
+    judge.calls = calls  # type: ignore[attr-defined]
+    return judge
+
+
+def test_plan_lists_kept_clips_then_dropped_ones_with_reasons() -> None:
+    items = sel.select_plan(sample(), params(), Asker(fixture_raw()), judge=always(True))
+    assert [(i.k, i.status) for i in items] == [(1, "kept"), (2, "kept"), (3, "dropped")]
+    assert "within 60 s" in items[2].reasons[0]
+    assert items[0].layout == "gaming_facecam" and items[0].layout_reason
+    assert items[1].layout == "clip_podcast_stacked"
+
+
+def test_judge_rejection_is_recorded_and_the_next_candidate_is_tried() -> None:
+    seen: list[str] = []
+
+    def judge(c: sel.Cand) -> tuple[bool, list[str]]:
+        seen.append(c.title)
+        return (c.title.startswith("Beat"), ["ends mid-thought"])
+
+    items = sel.select_plan(sample(), params(), Asker(fixture_raw()), judge=judge)
+    kept = [i for i in items if i.status == "kept"]
+    dropped = [i for i in items if i.status == "dropped"]
+    assert [k.title for k in kept] == ["Beat the boss with four laps"] and kept[0].k == 1
+    assert any(d.reasons == ["ends mid-thought"] for d in dropped)
+    assert seen[0] == "The mountain route in one take"  # best score is judged first
+
+
+def test_loop_stops_at_max_clips_without_judging_the_rest() -> None:
+    judge = always(True)
+    items = sel.select_plan(sample(), params(max_clips=1), Asker(fixture_raw()), judge=judge)
+    assert [i.status for i in items][:1] == ["kept"]
+    assert len(judge.calls) == 1  # type: ignore[attr-defined]
+
+
+def test_everything_rejected_is_e407_with_the_reasons() -> None:
+    items = sel.select_plan(sample(), params(), Asker(fixture_raw()), judge=always(False, "not standalone"))
+    assert items and all(i.status == "dropped" for i in items)
+    with pytest.raises(NsError) as ei:
+        sel.ensure_some_kept(items)
+    assert ei.value.code == "NS-E407" and "not standalone" in ei.value.detail
+
+
+def test_select_clips_uses_the_judge_too() -> None:
+    clips = sel.select_clips(sample(), params(), Asker(fixture_raw()), judge=always(True))
+    assert [c.k for c in clips] == [1, 2] and all(c.status == "kept" for c in clips)
+
+
+def test_filtered_candidates_are_reported_as_dropped() -> None:
+    raw = {"clips": [{"start_s": 0.6, "end_s": 3.0, "title": "tiny", "why": "x", "score": 0.99}]}
+    # the first sentence ends near 6 s and the next one near 10 s: no end fits 8 to 9 s
+    items = sel.select_plan(sample(), params(min_s=8, max_s=9), Asker(raw), judge=always(True))
+    assert [i.status for i in items] == ["dropped"]
+    assert "sentence boundary" in items[0].reasons[0]

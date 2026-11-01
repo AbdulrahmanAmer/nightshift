@@ -1,12 +1,14 @@
 """C8 Clipper: the clip job stages, registered as `FORMAT_STAGES["clip"]` (spec 19.2).
 
-import -> audio -> transcribe (whisper) -> select (llama) -> detect -> captions -> render -> seo (llama)
--> qc -> outbox. Job parameters live in `<job_dir>/clip_params.json` (`ClipParams`). Every stage is
-idempotent through the C7 stage runner (inputs hash + outputs exist).
+import -> audio -> analyze -> transcribe (whisper) -> select + judge (llama) -> layout -> captions -> render
+-> seo (llama) -> qc -> outbox. Job parameters live in `<job_dir>/clip_params.json` (`ClipParams`).
+Every stage is idempotent through the C7 stage runner (inputs hash + outputs exist).
 """
 from __future__ import annotations
 
 import json
+import os
+import re
 import shutil
 from collections.abc import Collection
 from dataclasses import asdict
@@ -21,14 +23,17 @@ from ns_common.errors import NsError
 from ns_common.logging import NsLogger
 from ns_common.models import Channel, Combo, PolicyAdvice, PolicyCheck, PolicyResult, Runtime
 from ns_common.paths import Paths
-from ns_studio.clipper import detect, layout, render, select, seo, source, transcribe_stage
+from ns_studio.clipper import analyze, detect, layout, render, select, seo, source, transcribe_stage
 from ns_studio.clipper.models import (
     CANVAS_H,
+    Analysis,
     ClipItem,
     ClipLayout,
     ClipMetadata,
     ClipParams,
+    Crop,
     Transcript,
+    Word,
 )
 from ns_studio.context import FAKEABLE, JobContext, build_services
 from ns_studio.media import captions as media_captions
@@ -53,7 +58,8 @@ def _source(ctx: JobContext) -> dict[str, Any]:
 
 
 def _plan(ctx: JobContext) -> list[ClipItem]:
-    return [ClipItem.model_validate(d) for d in ctx.read_json("clip_plan.json")]
+    items = [ClipItem.model_validate(d) for d in ctx.read_json("clip_plan.json")]
+    return [i for i in items if i.status == "kept"]
 
 
 def _transcript(ctx: JobContext) -> Transcript:
@@ -188,19 +194,83 @@ class TranscribeStage:
         source.set_source_status(ctx.db, info["source_id"], "transcribed")
 
 
-# ---------- C4 select ----------
+# ---------- analyze (spec 23.5 step 1) ----------
+def _analysis(ctx: JobContext) -> Analysis:
+    return Analysis.model_validate(ctx.read_json("analysis.json"))
+
+
+class AnalyzeStage:
+    """FFmpeg and face analysis of the whole video: `analysis.json` (cuts, silences, loudness, faces)."""
+
+    name: str = "clip_analyze"
+    tenant: Tenant = None
+    inputs: tuple[str, ...] = ("source.json", "audio.wav")
+    outputs: tuple[str, ...] = ("analysis.json",)
+
+    def run(self, ctx: JobContext) -> None:
+        """Scene cuts, silences, loudness peaks, facecam scan and faces at 1 fps over the whole video."""
+        info = _source(ctx)
+        video, wav = Path(info["path"]), ctx.file("audio.wav")
+        dur, w, h = float(info["duration_s"]), int(info["width"]), int(info["height"])
+        cuts = analyze.scene_cuts(video)
+        silences, lufs, lra = analyze.audio_events(wav, dur)
+        model = ctx.paths.home / "models" / "cv" / "yunet.onnx"
+        detector = detect.load_detector(model)
+        if detector is None:
+            ctx.log.warn("faces_skipped", "OpenCV or the YuNet model is missing", model=str(model))
+        tmp = ctx.subdir("tmp_detect")
+        try:
+            res = detect.detect_video(video, dur, (w, h), tmp, detector=detector)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+        result = Analysis(
+            width=w,
+            height=h,
+            aspect=round(w / h, 3),
+            duration_s=dur,
+            fps=round(float(info["fps"]), 2),
+            scene_cuts=cuts,
+            scene_cuts_per_min=round(len(cuts) / max(dur / 60.0, 1e-6), 2),
+            silences=silences,
+            loudness=analyze.media_loudness(wav, lufs, lra),
+            facecam=res.facecam,
+            faces=res.faces,
+            n_stable_faces=res.n_stable_faces,
+            faces_detected=res.faces_detected,
+        )
+        ctx.write_json("analysis.json", result.model_dump(mode="json"))
+        source.set_source_status(ctx.db, info["source_id"], "analyzed")
+
+
+# ---------- C4 select + judge ----------
+def edge_sentences(words: list[Word]) -> tuple[str, str]:
+    """First and last sentence text of a clip's words (sentences end at terminal punctuation or a pause)."""
+    spans = select.sentence_spans(words)
+    if not spans:
+        return "", ""
+    first_end, last_start = spans[0][1], spans[-1][0]
+    first = " ".join(w.w for w in words if w.end <= first_end + 1e-6)
+    last = " ".join(w.w for w in words if w.start >= last_start - 1e-6)
+    return first, last
+
+
 class SelectStage:
-    """Pick the clips: `clip_plan.json` (raw LLM answers are cached in `clip_candidates.json`)."""
+    """Pick and judge the clips: `clip_plan.json` lists kept clips (k in score order) and dropped ones.
+
+    The model sees transcript windows and the analysis and proposes candidates with a layout each. Candidates
+    are processed in score order; `clip_judge` checks each one before it can enter the plan, failures stay in
+    the file with their reasons, until `max_clips` clips pass (NS-E407 when none do). Raw answers are cached
+    in `clip_candidates.json`, so re-running with new options does not repeat the window calls.
+    """
 
     name: str = "clip_select"
     tenant: Tenant = "llama"
-    inputs: tuple[str, ...] = ("transcript.json", "clip_params.json")
+    inputs: tuple[str, ...] = ("transcript.json", "analysis.json", "clip_params.json")
     outputs: tuple[str, ...] = ("clip_plan.json",)
 
     def run(self, ctx: JobContext) -> None:
-        """Window, ask, merge, snap, filter, rank; NS-E407 when nothing survives."""
-        tr = _transcript(ctx)
-        p = _params(ctx)
+        """Window, ask, merge, snap, filter, then judge in score order."""
+        tr, p, an = _transcript(ctx), _params(ctx), _analysis(ctx)
         cache: dict[str, Any] = (
             json.loads(ctx.file("clip_candidates.json").read_text(encoding="utf-8"))
             if ctx.file("clip_candidates.json").exists()
@@ -218,70 +288,97 @@ class SelectStage:
                 clip_max_s=p.max_s,
                 max_candidates=10,
                 video_kind=p.video_kind if p.template == "auto" else p.template,
+                analysis=analyze.prompt_view(an, ws, we),
             )
 
+        judged = {"n": 0}
+
+        def judge(c: select.Cand) -> tuple[bool, list[str]]:
+            judged["n"] += 1
+            words = select.words_in(tr.words, c.start, c.end)
+            first, last = edge_sentences(words)
+            raw = call_json(
+                ctx,
+                "clip_judge",
+                clip={
+                    "k": judged["n"],
+                    "title": c.title,
+                    "start_s": round(c.start, 1),
+                    "end_s": round(c.end, 1),
+                    "duration_s": round(c.duration, 1),
+                },
+                clip_min_s=p.min_s,
+                clip_max_s=p.max_s,
+                words_per_s=round(len(words) / max(c.duration, 1e-6), 2),
+                snapped=True,
+                first_sentence=first,
+                last_sentence=last,
+                clip_text=" ".join(w.w for w in words)[:3000],
+            )
+            return bool(raw.get("ok")), [str(r) for r in raw.get("reasons", [])]
+
         try:
-            clips = select.select_clips(tr, p, ask, cache)
+            items = select.select_plan(tr, p, ask, cache, judge)
         finally:
             ctx.write_json("clip_candidates.json", cache)
-        ctx.write_json("clip_plan.json", [c.model_dump(mode="json") for c in clips])
+        ctx.write_json("clip_plan.json", [c.model_dump(mode="json") for c in items])
+        select.ensure_some_kept(items)
 
 
-# ---------- C5 detect ----------
-def plan_all(template: str, w: int, h: int, base: ClipLayout, plan: list[ClipItem]) -> list[Any]:
-    """Crops of every clip for `template` (ValueError when the detection data cannot support it)."""
-    crops: list[Any] = []
-    for c in plan:
-        crops += layout.plan_layout(template, w, h, base, t_start=c.start_s, t_end=c.end_s)
-    return crops
+# ---------- C5 layout per clip ----------
+def template_of(lay: ClipLayout, k: int) -> str:
+    """Template used for clip `k` (falls back to the job-level template)."""
+    return lay.per_clip.get(str(k), lay.template)
 
 
-class DetectStage:
-    """Sample frames, find the facecam and stable faces, choose the template, plan per-clip crops."""
+class LayoutStage:
+    """Choose each clip's template (model layout, else the section 19.4 rule) and plan its crops."""
 
-    name: str = "clip_detect"
+    name: str = "clip_layout"
     tenant: Tenant = None
-    inputs: tuple[str, ...] = ("source.json", "clip_plan.json", "clip_params.json")
+    inputs: tuple[str, ...] = ("analysis.json", "clip_plan.json", "clip_params.json")
     outputs: tuple[str, ...] = ("clip_layout.json",)
 
     def run(self, ctx: JobContext) -> None:
-        """Write `clip_layout.json`; a template that does not apply falls back to center_crop (NS-W402)."""
-        info = _source(ctx)
-        p = _params(ctx)
-        plan = _plan(ctx)
-        w, h = int(info["width"]), int(info["height"])
-        model = ctx.paths.home / "models" / "cv" / "yunet.onnx"
-        detector = detect.load_detector(model)
-        if detector is None:
-            ctx.log.warn("faces_skipped", "OpenCV or the YuNet model is missing", model=str(model))
-        tmp = ctx.subdir("tmp_detect")
-        try:
-            res = detect.run_detection(
-                Path(info["path"]),
-                [(c.start_s, c.end_s) for c in plan],
-                float(info["duration_s"]),
-                (w, h),
-                tmp,
-                detector=detector,
-                requested=p.template,
+        """Write `clip_layout.json`; a layout that does not apply falls back with NS-W402."""
+        an, plan, p = _analysis(ctx), _plan(ctx), _params(ctx)
+        w, h = an.width, an.height
+        base = ClipLayout(template="center_crop", facecam=an.facecam, faces=an.faces)
+        per_clip: dict[str, str] = {}
+        notes: dict[str, str] = {}
+        crops: list[Crop] = []
+        for clip in plan:
+            template, warn = detect.decide_clip_template(
+                p.template, clip.layout, an.facecam, an.n_stable_faces
             )
-        finally:
-            shutil.rmtree(tmp, ignore_errors=True)
-        template, note = res.template, None
-        if res.warning:
-            note = f"{res.warning}: {p.template} does not apply here, using center_crop"
-        base = ClipLayout(template=template, facecam=res.facecam, faces=res.faces)
-        try:
-            crops = plan_all(template, w, h, base, plan)
-        except ValueError as e:
-            template, note = "center_crop", f"NS-W402: {e}; using center_crop"
-            base = base.model_copy(update={"template": template})
-            crops = plan_all(template, w, h, base, plan)
-        if note:
-            ctx.log.warn("template_fallback", note, code="NS-W402", job_id=ctx.job_id)
-        out = base.model_copy(update={"template": template, "crops": crops, "note": note})
+            wanted = clip.layout or p.template
+            note = f"{warn}: {wanted} does not apply here, used {template}" if warn else None
+            try:
+                got = layout.plan_layout(template, w, h, base, t_start=clip.start_s, t_end=clip.end_s)
+            except ValueError as e:
+                template, note = "center_crop", f"NS-W402: {e}; used center_crop"
+                got = layout.plan_layout(template, w, h, base, t_start=clip.start_s, t_end=clip.end_s)
+            crops += got
+            per_clip[str(clip.k)] = template
+            if note:
+                notes[str(clip.k)] = note
+                ctx.log.warn("template_fallback", note, code="NS-W402", job_id=ctx.job_id, k=clip.k)
+        spans = [(c.start_s - 1.0, c.end_s + 1.0) for c in plan]
+        faces = [f for f in an.faces if any(a <= f.t <= b for a, b in spans)]
+        used = list(per_clip.values())
+        main = max(set(used), key=used.count)
+        out = ClipLayout(
+            template=main,
+            facecam=an.facecam,
+            faces=faces,
+            crops=crops,
+            note="; ".join(notes.values()) or None,
+            per_clip=per_clip,
+            notes=notes,
+        )
         ctx.write_json("clip_layout.json", out.model_dump(mode="json"))
-        source.set_source_status(ctx.db, info["source_id"], "detected", template)
+        info = _source(ctx)
+        source.set_source_status(ctx.db, info["source_id"], "laid_out", main)
 
 
 # ---------- C6 captions ----------
@@ -320,7 +417,7 @@ class CaptionsStage:
         """Build `captions/c<k>.ass` with C6's builder, anchored per template."""
         caps, tmod = media_captions, media_transcribe
         tr, plan, lay = _transcript(ctx), _plan(ctx), _layout(ctx)
-        tpl = layout.load_templates()[lay.template]
+        templates = layout.load_templates()
         ctx.subdir("captions")
         report: dict[str, Any] = {}
         for clip in plan:
@@ -330,6 +427,7 @@ class CaptionsStage:
                 for w in select.words_in(tr.words, clip.start_s, clip.end_s)
             ]
             ass = caps.build_ass(words, ctx.combo.caption_style, variant="vertical")
+            tpl = templates[template_of(lay, clip.k)]
             ass = place_captions(ass, layout.caption_y_pct(tpl, _crop_at(lay, clip.start_s)))
             ctx.file(f"captions/c{clip.k}.ass").write_text(ass, encoding="utf-8")
             report[f"c{clip.k}"] = {
@@ -353,7 +451,7 @@ class RenderStage:
     def run(self, ctx: JobContext) -> None:
         """Render every clip and write `render/report.json`."""
         info, plan, lay = _source(ctx), _plan(ctx), _layout(ctx)
-        tpl = layout.load_templates()[lay.template]
+        templates = layout.load_templates()
         ctx.subdir("clips")
         report: dict[str, Any] = {}
         for clip in plan:
@@ -363,7 +461,7 @@ class RenderStage:
                 out=out,
                 start=clip.start_s,
                 end=clip.end_s,
-                template=tpl,
+                template=templates[template_of(lay, clip.k)],
                 crops=lay.crops,
                 src_w=int(info["width"]),
                 src_h=int(info["height"]),
@@ -375,7 +473,7 @@ class RenderStage:
             report[f"c{clip.k}"] = {
                 "path": str(out),
                 "duration_s": round(ffmpeg.duration_s(out), 3),
-                "template": lay.template,
+                "template": template_of(lay, clip.k),
             }
         ctx.write_json("render/report.json", report)
 
@@ -480,8 +578,50 @@ def clip_sheet_text(meta: ClipMetadata, video_name: str) -> str:
     )
 
 
+_RESERVED_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+_RESERVED_NAMES = frozenset(
+    {"con", "prn", "aux", "nul", *(f"com{i}" for i in range(1, 10)), *(f"lpt{i}" for i in range(1, 10))}
+)
+
+
+def _local_safe_slug(text: str, max_len: int = 80) -> str:
+    """Windows-safe file or folder name: no reserved characters or device names, at most 80 chars."""
+    s = _RESERVED_CHARS.sub(" ", text)
+    s = re.sub(r"\s+", " ", s).strip(" .")
+    if s.lower() in _RESERVED_NAMES:
+        s = f"{s}_"
+    return s[:max_len].rstrip(" .")
+
+
+def safe_slug(text: str, max_len: int = 80) -> str:
+    """C6's `safe_slug` when `ns_studio.media.outbox` has one, else the local equivalent (spec 15.2a)."""
+    fn = getattr(media_outbox, "safe_slug", None)
+    out = str(fn(text)) if callable(fn) else _local_safe_slug(text, max_len)
+    return out[:max_len].rstrip(" .")
+
+
+def clip_folder(ctx: JobContext, source_id: str, original_name: str) -> Path:
+    """`outbox/<channel>/clips/<source-video-name-slug>`; a different source with the same name gets `-2`."""
+    base = ctx.paths.outbox / ctx.channel.slug / "clips"
+    stem = safe_slug(Path(original_name).stem) or source_id
+    cand, n = base / stem, 2
+    while ctx.db.one(
+        "SELECT 1 FROM outputs WHERE source_id != ? AND path LIKE ? LIMIT 1",
+        (source_id, f"{cand}{os.sep}%"),
+    ):
+        cand = base / f"{stem}-{n}"
+        n += 1
+    return cand
+
+
+def clip_file_stem(k: int, title: str) -> str:
+    """`clip-01 <clip title>`: numbered in production order, at most 80 characters."""
+    prefix = f"clip-{k:02d}"
+    return f"{prefix} {safe_slug(title, 80 - len(prefix) - 1)}".strip()
+
+
 class OutboxStage:
-    """Copy clips to `outbox/<channel>/<date>/clip-<source_id>/c<k>.{mp4,json,txt}`; record `outputs` rows."""
+    """Copy clips to `outbox/<channel>/clips/<source name>/clip-01 <title>.{mp4,json,txt}` (spec 15.2a)."""
 
     name: str = "clip_outbox"
     tenant: Tenant = None
@@ -495,13 +635,13 @@ class OutboxStage:
         rendered: dict[str, Any] = ctx.read_json("render/report.json")
         seos = {int(s["k"]): s for s in ctx.read_json("seo_clips.json")}
         advice = ctx.read_json("policy_text.json")["advice"]
-        date = ob.job_date(ctx.job_id).strftime("%Y-%m-%d")
-        dest_dir = ctx.paths.outbox_dir(ctx.channel.slug, date, f"clip-{info['source_id']}")
+        dest_dir = clip_folder(ctx, str(info["source_id"]), str(info["original_name"]))
         manifest: dict[str, Any] = {}
         now = datetime.now(UTC).isoformat()
         for item, rinfo in rendered.items():
             k = int(item[1:])
             s = seos[k]
+            stem = clip_file_stem(k, s["title"])
             meta = ClipMetadata(
                 channel=ctx.channel.slug,
                 job_id=ctx.job_id,
@@ -514,16 +654,17 @@ class OutboxStage:
                     ctx.channel, ctx.job_id, item, day_offset=ob.short_day_offset(ctx.channel, k)
                 ),
                 source_video=str(info["original_name"]),
-                template=lay.template,
+                template=template_of(lay, k),
                 ai_disclosure=advice["ai_disclosure"],
                 made_for_kids=bool(advice["made_for_kids"]),
                 age_restrict_suggested=bool(advice["age_restrict_suggested"]),
                 combo_id=ctx.combo.combo_id,
                 prompt_versions=ctx.prompt_versions,
             )
-            mp4 = ob.copy_if_changed(Path(rinfo["path"]), dest_dir / f"{item}.mp4")
-            (dest_dir / f"{item}.json").write_text(meta.model_dump_json(indent=2) + "\n", encoding="utf-8")
-            (dest_dir / f"{item}.txt").write_text(clip_sheet_text(meta, mp4.name), encoding="utf-8")
+            mp4 = ob.copy_if_changed(Path(rinfo["path"]), dest_dir / f"{stem}.mp4")
+            json_path, txt_path = dest_dir / f"{stem}.json", dest_dir / f"{stem}.txt"
+            json_path.write_text(meta.model_dump_json(indent=2) + "\n", encoding="utf-8")
+            txt_path.write_text(clip_sheet_text(meta, mp4.name), encoding="utf-8")
             ctx.db.execute(
                 "INSERT INTO outputs(output_id, job_id, channel, kind, k, title, path, duration_s, combo_id,"
                 " status, source_id, created_at) VALUES (?,?,?,?,?,?,?,?,?,'pending',?,?)"
@@ -532,12 +673,13 @@ class OutboxStage:
                 (f"{ctx.job_id}/{item}", ctx.job_id, ctx.channel.slug, "clip", k, meta.title, str(mp4),
                  float(rinfo["duration_s"]), meta.combo_id, info["source_id"], now),
             )
-            manifest[item] = {"mp4": str(mp4), "json": str(dest_dir / f"{item}.json"),
-                              "txt": str(dest_dir / f"{item}.txt")}
-        keep = {f"{item}.{ext}" for item in manifest for ext in ("mp4", "json", "txt")}
-        for stale in dest_dir.glob("c*.*"):
-            if stale.name not in keep:
-                stale.unlink(missing_ok=True)
+            manifest[item] = {"mp4": str(mp4), "json": str(json_path), "txt": str(txt_path)}
+        keep = {Path(p).name for v in manifest.values() for p in v.values()}
+        for row in ctx.db.query("SELECT path FROM outputs WHERE job_id=? AND kind='clip'", (ctx.job_id,)):
+            old = Path(row["path"])
+            if old.name not in keep:
+                for ext in (".mp4", ".json", ".txt"):
+                    old.with_suffix(ext).unlink(missing_ok=True)
         ctx.db.execute(
             "DELETE FROM outputs WHERE job_id=? AND kind='clip' AND output_id NOT IN "
             f"({','.join('?' * len(manifest)) or 'NULL'})",
@@ -552,9 +694,10 @@ class OutboxStage:
 CLIP_STAGES: list[Stage] = [
     ImportStage(),
     AudioStage(),
+    AnalyzeStage(),
     TranscribeStage(),
     SelectStage(),
-    DetectStage(),
+    LayoutStage(),
     CaptionsStage(),
     RenderStage(),
     SeoStage(),

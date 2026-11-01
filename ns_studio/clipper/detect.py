@@ -493,38 +493,83 @@ def decide_template(requested: str, facecam: Rect | None, n_faces: int) -> tuple
     return (requested, None) if ok else ("center_crop", "NS-W402")
 
 
-# ---------- orchestration ----------
+# ---------- whole-video detection (analysis step) ----------
+CHUNK_S = 120.0
+
+
 @dataclass
 class DetectResult:
-    """Outcome of `run_detection`; all coordinates are in source pixels and source seconds."""
+    """Outcome of `detect_video`; coordinates are source pixels and source seconds."""
 
-    template: str
-    warning: str | None
     facecam: Rect | None
-    faces: list[FaceFrame]
+    faces: list[FaceFrame]  # one entry per sampled second; boxes follow the stable tracks, left to right
     n_stable_faces: int
+    faces_detected: bool  # False when no face detector was available
+
+
+@dataclass
+class _Det:
+    box: BoxT
+    motion: float  # mean abs difference of the face's lower third to the previous sampled frame
 
 
 def _scale_box(b: BoxT, f: float) -> Rect:
     return Rect(x=int(b[0] * f), y=int(b[1] * f), w=max(1, int(b[2] * f)), h=max(1, int(b[3] * f)))
 
 
-def run_detection(
+def lower_third_motion(prev: np.ndarray, cur: np.ndarray, box: BoxT) -> float:
+    """Mean absolute grey difference inside the lower third of `box` between two frames."""
+    x, y, w, h = box
+    y0, y1 = max(0, y + (2 * h) // 3), min(cur.shape[0], y + h)
+    x0, x1 = max(0, x), min(cur.shape[1], x + w)
+    if y1 <= y0 or x1 <= x0:
+        return 0.0
+    a = prev[y0:y1, x0:x1].astype(np.int16)
+    b = cur[y0:y1, x0:x1].astype(np.int16)
+    return float(np.mean(np.abs(b - a)))
+
+
+def speaking_from_motion(rows: list[list[float]]) -> list[int | None]:
+    """Per frame, the track with the most lower-third motion (smoothed over the last two samples)."""
+    if not rows:
+        return []
+    arr = np.array(rows, dtype=np.float32)
+    smooth = arr.copy()
+    smooth[1:] = (arr[1:] + arr[:-1]) / 2.0
+    out: list[int | None] = []
+    for row in smooth:
+        top = int(np.argmax(row))
+        out.append(top if float(row[top]) > 0.5 else None)
+    return out
+
+
+def _closest(dets: list[_Det], track: FaceTrack, radius: float) -> _Det | None:
+    """The detection nearest the track centre within `radius`, else None."""
+    best: _Det | None = None
+    best_d = radius
+    for d in dets:
+        cx, cy = _center(d.box)
+        dist = math.hypot(cx - track.cx, cy - track.cy)
+        if dist < best_d:
+            best, best_d = d, dist
+    return best
+
+
+def detect_video(
     video: Path,
-    ranges: Sequence[tuple[float, float]],
     duration_s: float,
     src_size: tuple[int, int],
     tmp_dir: Path,
     *,
     detector: FaceDetector | None,
-    requested: str = "auto",
     params: FacecamParams = DEFAULT_FACECAM,
     use_cv2: bool = True,
+    chunk_s: float = CHUNK_S,
 ) -> DetectResult:
-    """Sample frames, find the facecam and stable faces, and decide the template.
+    """Facecam scan on 10 spread frames, then (with a detector) faces at 1 fps over the whole video.
 
-    Frames: 1 fps inside `ranges` plus 10 spread over the whole video (the facecam scan uses the spread
-    frames only). Without a detector no faces are looked for.
+    Stable faces are clustered over every sampled frame; the speaking face per second comes from the
+    lower-third motion measured in the same pass.
     """
     size = work_size(*src_size)
     scale = src_size[0] / size[0]
@@ -532,56 +577,73 @@ def run_detection(
     spread = sample_points(video, spread_times(duration_s), size, tmp_dir, color=color)
     spread_dets = [detector.detect(f.bgr) for f in spread if f.bgr is not None] if detector else []
     flat_boxes = [b for boxes in spread_dets for b in boxes]
-    facecam_work = scan_facecam([f.gray for f in spread], params, face_boxes=flat_boxes, use_cv2=use_cv2)
+    fc = scan_facecam([f.gray for f in spread], params, face_boxes=flat_boxes, use_cv2=use_cv2)
     facecam = (
-        Rect(
-            x=int(facecam_work.x * scale),
-            y=int(facecam_work.y * scale),
-            w=int(facecam_work.w * scale),
-            h=int(facecam_work.h * scale),
-        )
-        if facecam_work
+        Rect(x=int(fc.x * scale), y=int(fc.y * scale), w=int(fc.w * scale), h=int(fc.h * scale))
+        if fc
         else None
     )
+    if detector is None:
+        return DetectResult(facecam=facecam, faces=[], n_stable_faces=0, faces_detected=False)
 
-    range_frames: list[list[Frame]] = []
-    total = 0
-    for s, e in ranges:
-        if total >= MAX_RANGE_FRAMES:
-            break
-        frames = sample_range(video, s, e, size, tmp_dir, color=color)
-        total += len(frames)
-        range_frames.append(frames)
+    times: list[float] = []
+    per_frame: list[list[_Det]] = []
+    prev: np.ndarray | None = None
+    start = 0.0
+    while start < duration_s:
+        end = min(duration_s, start + chunk_s)
+        for f in sample_range(video, start, end, size, tmp_dir, color=True):
+            if f.bgr is None:
+                continue
+            dets = [
+                _Det(b, lower_third_motion(prev, f.gray, b) if prev is not None else 0.0)
+                for b in detector.detect(f.bgr)
+            ]
+            times.append(f.t)
+            per_frame.append(dets)
+            prev = f.gray
+        start = end
+    tracks = cluster_faces([*spread_dets, *[[d.box for d in fr] for fr in per_frame]], size[0])
+    if not tracks:
+        return DetectResult(facecam=facecam, faces=[], n_stable_faces=0, faces_detected=True)
+    radius = FACE_RADIUS_FRAC * size[0]
+    matched = [[_closest(fr, tr, radius) for tr in tracks] for fr in per_frame]
+    rows = [[m.motion if m else 0.0 for m in row] for row in matched]
+    speaking = speaking_from_motion(rows) if len(tracks) >= 2 else [None] * len(rows)
+    faces = [
+        FaceFrame(
+            t=times[i],
+            boxes=[_scale_box(m.box if m else tr.box, scale) for m, tr in zip(row, tracks, strict=True)],
+            speaking=speaking[i],
+        )
+        for i, row in enumerate(matched)
+    ]
+    return DetectResult(facecam=facecam, faces=faces, n_stable_faces=len(tracks), faces_detected=True)
 
-    all_frames: list[Frame] = [f for grp in range_frames for f in grp]
-    tracks: list[FaceTrack] = []
-    faces: list[FaceFrame] = []
-    if detector is not None:
-        rng_dets = [detector.detect(f.bgr) for f in all_frames if f.bgr is not None]
-        tracks = cluster_faces([*spread_dets, *rng_dets], size[0])
-        if tracks:
-            speaking: list[int | None] = []
-            for grp in range_frames:
-                speaking.extend(speaking_series(grp, tracks))
-            for i, f in enumerate(all_frames):
-                radius = FACE_RADIUS_FRAC * size[0]
-                boxes = [_scale_box(_closest(rng_dets[i], tr, radius), scale) for tr in tracks]
-                faces.append(
-                    FaceFrame(t=f.t, boxes=boxes, speaking=speaking[i] if i < len(speaking) else None)
-                )
-    template, warning = decide_template(requested, facecam, len(tracks))
-    return DetectResult(
-        template=template, warning=warning, facecam=facecam, faces=faces, n_stable_faces=len(tracks)
-    )
+
+# ---------- per-clip layout choice (spec 23.5 step 3) ----------
+def normalize_layout_id(name: str | None) -> str | None:
+    """`clip_gaming_facecam` (format preset id) or `gaming_facecam` -> the template name; None if unknown."""
+    if not name:
+        return None
+    n = name.strip().lower().removeprefix("clip_")
+    return n if n in TEMPLATE_NEEDS else None
 
 
-def _closest(dets: list[BoxT], track: FaceTrack, radius: float) -> BoxT:
-    """The detection nearest the track centre (within the cluster radius), else the track's mean box."""
-    best = track.box
-    best_d = radius
-    for b in dets:
-        cx, cy = _center(b)
-        d = math.hypot(cx - track.cx, cy - track.cy)
-        if d < best_d:
-            best, best_d = b, d
-    return best
+def decide_clip_template(
+    user_template: str, model_layout: str | None, facecam: Rect | None, n_faces: int
+) -> tuple[str, str | None]:
+    """Template for one clip and a warning code.
+
+    An explicit user template follows `decide_template` (not applicable -> center_crop, NS-W402). With
+    `auto`, the model's layout wins when it applies; when it does not, the section 19.4 auto rule is the
+    fallback and the warning is NS-W402.
+    """
+    if user_template != "auto":
+        return decide_template(user_template, facecam, n_faces)
+    auto, _ = decide_template("auto", facecam, n_faces)
+    wanted = normalize_layout_id(model_layout)
+    if wanted is None:
+        return auto, ("NS-W402" if model_layout else None)
+    chosen, warn = decide_template(wanted, facecam, n_faces)
+    return (chosen, None) if warn is None else (auto, "NS-W402")

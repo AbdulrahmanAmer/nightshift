@@ -214,48 +214,77 @@ def test_sampling_shapes(tmp_path) -> None:
 @needs_ffmpeg
 def test_fixture_facecam_found_within_five_percent(tmp_path) -> None:
     sample = shared_sample()
-    res = det.run_detection(
-        sample.video, [(0.0, 30.0)], 90.0, (1280, 720), tmp_path / "t", detector=None, use_cv2=False
-    )
+    res = det.detect_video(sample.video, 90.0, (1280, 720), tmp_path / "t", detector=None, use_cv2=False)
     truth = facecam_truth()
     assert res.facecam is not None
     assert abs(res.facecam.x - truth["x"]) <= 0.05 * 1280
     assert abs(res.facecam.y - truth["y"]) <= 0.05 * 720
     assert abs(res.facecam.w - truth["w"]) <= 0.05 * 1280
     assert abs(res.facecam.h - truth["h"]) <= 0.05 * 720
-    assert (res.template, res.warning, res.n_stable_faces) == ("gaming_facecam", None, 0)
+    assert (res.faces, res.n_stable_faces, res.faces_detected) == ([], 0, False)
 
 
 @needs_ffmpeg
 def test_fixture_facecam_found_with_opencv(tmp_path) -> None:
     pytest.importorskip("cv2")
     sample = shared_sample()
-    res = det.run_detection(
-        sample.video, [(0.0, 30.0)], 90.0, (1280, 720), tmp_path / "t", detector=None, use_cv2=True
-    )
+    res = det.detect_video(sample.video, 90.0, (1280, 720), tmp_path / "t", detector=None, use_cv2=True)
     truth = facecam_truth()
     assert res.facecam is not None
     assert abs(res.facecam.x - truth["x"]) <= 0.05 * 1280 and abs(res.facecam.y - truth["y"]) <= 0.05 * 720
 
 
 @needs_ffmpeg
-def test_run_detection_with_scripted_faces(tmp_path) -> None:
+def test_detect_video_with_scripted_faces_samples_every_second(tmp_path) -> None:
     sample = shared_sample()
     fake = det.FakeFaceDetector(lambda i: [(100, 100, 60, 60), (440, 100, 60, 60)])
-    res = det.run_detection(
-        sample.video, [(0.0, 10.0)], 90.0, (1280, 720), tmp_path / "t",
-        detector=fake, requested="podcast_stacked", use_cv2=False,
+    res = det.detect_video(
+        sample.video, 20.0, (1280, 720), tmp_path / "t", detector=fake, use_cv2=False, chunk_s=8.0
     )
-    assert res.n_stable_faces == 2 and res.template == "podcast_stacked" and res.warning is None
-    assert 9 <= len(res.faces) <= 11
+    assert res.faces_detected and res.n_stable_faces == 2
+    assert 19 <= len(res.faces) <= 21  # 1 fps over the whole (20 s) range, three chunks
     assert [b.x for b in res.faces[0].boxes] == [200, 880]  # scaled x2 to source pixels
+    assert [f.t for f in res.faces] == sorted(f.t for f in res.faces)
 
 
-@needs_ffmpeg
-def test_requested_stacked_without_faces_warns(tmp_path) -> None:
-    sample = shared_sample()
-    res = det.run_detection(
-        sample.video, [(0.0, 5.0)], 90.0, (1280, 720), tmp_path / "t",
-        detector=None, requested="podcast_stacked", use_cv2=False,
-    )
-    assert (res.template, res.warning) == ("center_crop", "NS-W402")
+# ---------- motion and speaking ----------
+def test_lower_third_motion() -> None:
+    a = np.zeros((100, 100), dtype=np.uint8)
+    b = a.copy()
+    b[60:70, 10:50] = 80  # lower third of the box (10, 30, 40, 40) spans rows 56..70
+    assert det.lower_third_motion(a, b, (10, 30, 40, 40)) > 5.0
+    assert det.lower_third_motion(a, a, (10, 30, 40, 40)) == 0.0
+    assert det.lower_third_motion(a, b, (200, 200, 10, 10)) == 0.0  # outside the frame
+
+
+def test_speaking_from_motion_picks_the_moving_face_and_smooths() -> None:
+    rows = [[0.0, 0.0], [4.0, 0.1], [4.0, 0.1], [0.2, 0.1]]
+    assert det.speaking_from_motion(rows) == [None, 0, 0, 0]  # last row still carries half of the previous
+    assert det.speaking_from_motion([]) == []
+
+
+# ---------- per-clip layout choice ----------
+def test_normalize_layout_id() -> None:
+    assert det.normalize_layout_id("clip_gaming_facecam") == "gaming_facecam"
+    assert det.normalize_layout_id(" Podcast_Stacked ") == "podcast_stacked"
+    assert det.normalize_layout_id("nope") is None and det.normalize_layout_id(None) is None
+
+
+def test_model_layout_wins_when_it_applies() -> None:
+    assert det.decide_clip_template("auto", "clip_screen_plus_cam", CAMRECT, 0) == ("screen_plus_cam", None)
+    assert det.decide_clip_template("auto", "podcast_stacked", None, 2) == ("podcast_stacked", None)
+
+
+def test_inapplicable_model_layout_falls_back_to_the_auto_rule_with_w402() -> None:
+    assert det.decide_clip_template("auto", "clip_podcast_stacked", CAMRECT, 0) == (
+        "gaming_facecam", "NS-W402")
+    assert det.decide_clip_template("auto", "bogus", None, 1) == ("talking_head", "NS-W402")
+
+
+def test_no_model_layout_uses_the_auto_rule_silently() -> None:
+    assert det.decide_clip_template("auto", None, None, 0) == ("center_crop", None)
+
+
+def test_explicit_user_template_beats_the_model() -> None:
+    assert det.decide_clip_template("center_crop", "gaming_facecam", CAMRECT, 0) == ("center_crop", None)
+    assert det.decide_clip_template("gaming_facecam", "center_crop", None, 0) == ("center_crop", "NS-W402")
