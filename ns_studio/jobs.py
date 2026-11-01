@@ -90,12 +90,18 @@ class Env:
     fake: frozenset[str]
 
 
-def open_env(fake: frozenset[str] = frozenset()) -> Env:
-    """Open the studio environment from `NIGHTSHIFT_HOME`; real services are built but not contacted."""
+def open_env(fake: frozenset[str] = frozenset(), *, light: bool = False) -> Env:
+    """Open the studio environment from `NIGHTSHIFT_HOME`; real services are built but not contacted.
+
+    `light=True` is for commands that never call a service (channel, review, status, learn): a missing
+    `runtime.json` is tolerated and every service is a fake.
+    """
     paths = Paths.from_env()
     paths.ensure()
     db = Db(paths.db_path)
     db.migrate()
+    if light:
+        fake = FAKEABLE
     if paths.runtime_file.exists() or not fake:
         runtime = load_runtime(paths)
     else:
@@ -140,14 +146,16 @@ def make_job(
     now: datetime | None = None,
     rng: random.Random | None = None,
     fixed: dict[str, str] | None = None,
+    record: bool = True,
 ) -> JobContext:
-    """Draw a combo, record it in the ledger, create the job directory and return its context."""
+    """Draw a combo, record it in the ledger unless `record` is False, create the job dir and context."""
     now = now or datetime.now(UTC)
     rng = rng or random.Random()
     combo = draw_combo(env.db, channel, rng=rng, now=now, fixed=fixed)
     job_id = new_job_id(channel.slug, now)
     item = "long" if fmt == "master_first" else "s1"
-    record_combo(env.db, channel.slug, job_id, item, combo, now)
+    if record:
+        record_combo(env.db, channel.slug, job_id, item, combo, now)
     job_dir = env.paths.job_dir(job_id)
     job_dir.mkdir(parents=True, exist_ok=True)
     ctx = JobContext(

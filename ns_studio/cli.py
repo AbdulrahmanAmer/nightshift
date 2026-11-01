@@ -7,17 +7,35 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Annotated, Any
 
+import click
 import typer
+from typer.core import TyperGroup
 
 from ns_common import __version__
 from ns_common.errors import NsError
 from ns_common.models import Channel, Voice
 from ns_studio import jobs
+from ns_studio.calibrate import run as calibration
 from ns_studio.channels import crud
+from ns_studio.context import JobContext
 from ns_studio.errors import StudioError
 from ns_studio.orchestrator import plan_job, run_job
 
-app = typer.Typer(help="Nightshift Studio", no_args_is_help=False)
+
+def normalize_fake_flag(args: list[str]) -> list[str]:
+    """Rewrite a bare `--fake-services` to `--fake-services=all` so it can also take `=list`."""
+    return ["--fake-services=all" if a == "--fake-services" else a for a in args]
+
+
+class StudioGroup(TyperGroup):
+    """Top-level group that accepts `--fake-services` with or without a value."""
+
+    def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
+        """Normalise the optional-value flag, then parse as usual."""
+        return super().parse_args(ctx, normalize_fake_flag(list(args)))
+
+
+app = typer.Typer(help="Nightshift Studio", no_args_is_help=False, cls=StudioGroup)
 channel_app = typer.Typer(help="Manage channel profiles", no_args_is_help=True)
 voice_app = typer.Typer(help="List and preview voices", no_args_is_help=True)
 app.add_typer(channel_app, name="channel")
@@ -27,9 +45,7 @@ FakeOpt = Annotated[
     str | None,
     typer.Option(
         "--fake-services",
-        is_flag=False,
-        flag_value="all",
-        help="In-process fakes: bare flag fakes everything, or a list such as llm,tts,whisper,embed,clips.",
+        help="In-process fakes: bare flag fakes everything, or =llm,tts,whisper,embed,clips.",
     ),
 ]
 
@@ -119,7 +135,7 @@ def channel_add(
 ) -> None:
     """Add a channel (pool minimums and cross-channel distinctness are enforced)."""
     with guarded():
-        env = jobs.open_env(frozenset())
+        env = jobs.open_env(light=True)
         if from_yaml is not None:
             ch = crud.load_channel_yaml(from_yaml)
         else:
@@ -149,7 +165,7 @@ def channel_add(
 def channel_list() -> None:
     """List configured channels."""
     with guarded():
-        env = jobs.open_env(frozenset())
+        env = jobs.open_env(light=True)
         chans = crud.all_channels(env.paths)
         if not chans:
             typer.echo("no channels configured")
@@ -176,7 +192,7 @@ def channel_edit(
             updates[key.strip()] = _parse_value(raw)
         if not updates:
             raise typer.BadParameter("give at least one --set key=value")
-        env = jobs.open_env(frozenset())
+        env = jobs.open_env(light=True)
         crud.edit_channel(env.paths, env.db, slug, updates)
         typer.echo(f"channel {slug} updated ({', '.join(updates)})")
 
@@ -185,7 +201,7 @@ def channel_edit(
 def channel_validate(slug: Annotated[str | None, typer.Argument()] = None) -> None:
     """Check pool minimums and cross-channel distinctness for one or all channels."""
     with guarded():
-        env = jobs.open_env(frozenset())
+        env = jobs.open_env(light=True)
         every = crud.all_channels(env.paths)
         targets = [crud.get_channel(env.paths, slug)] if slug else every
         failed = False
@@ -238,6 +254,55 @@ def voice_preview(
         finally:
             env.services.acquirer.release("tts", owner)
         typer.echo(f"{target} ({seconds:.1f} s)")
+
+
+# ---------------------------------------------------------------- calibrate
+def _calibration_job(env: jobs.Env, ch: Channel, rng: random.Random) -> JobContext:
+    """A throw-away job context for one calibration story (its combo is not written to the ledger)."""
+    return jobs.make_job(env, ch, "shorts_only", rng=rng, record=False)
+
+
+@app.command("calibrate")
+def calibrate_cmd(
+    channel: Annotated[str, typer.Option("--channel", help="Channel slug.")],
+    n: Annotated[int, typer.Option("--n", min=1, help="Stories to generate.")] = 20,
+    score_csv: Annotated[Path | None, typer.Option("--score", help="Filled-in scores.csv.")] = None,
+    fake_services: FakeOpt = None,
+) -> None:
+    """Generate stories for human scoring, or (with --score) correlate scores and set critic_bar."""
+    with guarded():
+        light = score_csv is not None
+        env = jobs.open_env(light=True) if light else jobs.open_env(fake_set(fake_services))
+        if score_csv is not None:
+            rep = calibration.score(env.paths, env.db, channel, score_csv)
+            typer.echo(f"scored stories: {rep.rows}")
+            for item, rho in rep.per_item_spearman.items():
+                typer.echo(f"spearman {item}: {rho:+.3f}")
+            typer.echo(f"spearman overall: {rep.overall_spearman:+.3f}")
+            typer.echo(f"critic mean bias: {rep.mean_bias:+.2f}")
+            typer.echo(
+                f"recommended critic_bar: {rep.recommended_bar:.1f} "
+                f"(good pass {rep.good_pass_rate:.0%}, bad pass {rep.bad_pass_rate:.0%}, "
+                f"{'meets' if rep.satisfied else 'does NOT meet'} the 80/20 target)"
+            )
+            typer.echo(f"refusal rate: {rep.refusal_rate:.1%}")
+            if rep.two_model_recommended:
+                typer.echo("refusal rate is above 2 %: switch to two-model mode (spec decision D3)")
+            return
+        jobs.load_stage_modules()
+        ch = crud.get_channel(env.paths, channel)
+        rng = random.Random()
+        owner = "studio:calibrate"
+        env.services.acquirer.acquire("llama", owner)
+        try:
+            stories = calibration.generate(lambda _i: _calibration_job(env, ch, rng), n)
+        finally:
+            env.services.acquirer.release("llama", owner)
+        out = calibration.write_generation(env.paths, env.db, channel, stories)
+        refused = sum(1 for s in stories if s.refusal)
+        typer.echo(f"wrote {len(stories)} stories to {out}")
+        typer.echo(f"fill in {out / 'scores.csv'}, then: studio calibrate --channel {channel} --score FILE")
+        typer.echo(f"refusal rate so far: {refused / len(stories):.1%}")
 
 
 def main() -> None:
