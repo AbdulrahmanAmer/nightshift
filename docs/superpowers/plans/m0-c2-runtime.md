@@ -197,5 +197,5 @@ class Supervisor:
 
 ### Task 12: Close-out (C2, `sonnet`)
 
-- [ ] Append CRs (`fastapi`/`uvicorn` in `dev`, `POST /events`, missing error codes) to `contracts/CHANGE_REQUESTS.md`.
-- [ ] CI green on the branch; `gh pr create --fill`; report with run URLs.
+- [x] Append CRs (`fastapi`/`uvicorn` in `dev`, `POST /events`, missing error codes) to `contracts/CHANGE_REQUESTS.md`.
+- [x] CI green on the branch; `gh pr create --fill`; report with run URLs.
