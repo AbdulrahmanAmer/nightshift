@@ -37,24 +37,24 @@ tests/test_budget.py test_text_stages_master.py test_seo_long.py (+ prompt/valid
 ## Tasks
 
 ### Task 6: Budget additions, local models, validators
-- [ ] Tests: `tests/test_budget.py` (10 min at 155 = 1550 words, 5 chapters of 310; 14 min brisk gives 7 chapters; sums exact; `min_words = 1395`; tuple draw is deterministic for a seeded rng), model round-trips, `validate_chapter`, `check_cliff_variety`.
-- [ ] Code: `budget.py` additions, `models_local.py`, `validators.py` additions.
-- [ ] Commit `feat(c5): master budgets, local plan/story models, chapter validators`.
+- [x] Tests: `tests/test_budget.py` (10 min at 155 = 1550 words, 5 chapters of 310; 14 min brisk gives 7 chapters; sums exact; `min_words = 1395`; tuple draw is deterministic for a seeded rng), model round-trips, `validate_chapter`, `check_cliff_variety`.
+- [x] Code: `budget.py` additions, `models_local.py`, `validators.py` additions.
+- [x] Commit `feat(c5): master budgets, local plan/story models, chapter validators`.
 
 ### Task 7: Long-form, policy and clipper prompts with fixtures
-- [ ] Ten prompt files with the thinking flags of spec 16.1 / 19.5; schemas added to `PROMPT_SCHEMAS`.
-- [ ] Fixtures: a coherent 5-chapter "The Doorbell Camera" (1,550-1,650 words, each chapter inside 248-372 words, grade 5-8) and the metadata/selection fixtures keyed to its real sentence indices.
-- [ ] Tests: thinking flags, schemas validate fixtures, `chapter_draft_<n>` texts equal the validated story, shorts spans index real sentences.
-- [ ] Commit `feat(c5): long-form, policy and clipper prompts with coherent fixtures`.
+- [x] Ten prompt files with the thinking flags of spec 16.1 / 19.5; schemas added to `PROMPT_SCHEMAS`.
+- [x] Fixtures: a coherent 5-chapter "The Doorbell Camera" (1,550-1,650 words, each chapter inside 248-372 words, grade 5-8) and the metadata/selection fixtures keyed to its real sentence indices.
+- [x] Tests: thinking flags, schemas validate fixtures, `chapter_draft_<n>` texts equal the validated story, shorts spans index real sentences.
+- [x] Commit `feat(c5): long-form, policy and clipper prompts with coherent fixtures`.
 
 ### Task 8: Master text stages
-- [ ] Tests (`tests/test_text_stages_master.py`): registration order; full pipeline on fixtures (plan -> story -> seo_long -> shorts -> beats -> shorts SEO); run twice is a no-op; pairwise continuity on `cpu-dev`; continuity issues trigger one `revise`; selection resolver edge cases; `expand_chapter` keeps indices consistent; `finalize_seo_long` rules.
-- [ ] Code: `stages_master.py`, `seo.py`.
-- [ ] Commit `feat(c5): master-first text stages with expand helper`.
+- [x] Tests (`tests/test_text_stages_master.py`): registration order; full pipeline on fixtures (plan -> story -> seo_long -> shorts -> beats -> shorts SEO); run twice is a no-op; pairwise continuity on `cpu-dev`; continuity issues trigger one `revise`; selection resolver edge cases; `expand_chapter` keeps indices consistent; `finalize_seo_long` rules.
+- [x] Code: `stages_master.py`, `seo.py`.
+- [x] Commit `feat(c5): master-first text stages with expand helper`.
 
 ### Task 9: Change request and plan ticks
-- [ ] Append `CR` for `plan`, `story`, `shorts_plan`, `seo_long`, `clip_plan`, `policy_check` models/schemas to `contracts/CHANGE_REQUESTS.md`.
-- [ ] Commit `docs(c5): change request for master-first text schemas`.
+- [x] Append `CR` for `plan`, `story`, `shorts_plan`, `seo_long`, `clip_plan`, `policy_check` models/schemas to `contracts/CHANGE_REQUESTS.md`.
+- [x] Commit `docs(c5): change request for master-first text schemas`.
 
 ## Done when
 CI green on the PR branch; fixtures validate against `PROMPT_SCHEMAS` and the local models; the master pipeline test passes on `FakeLlm` fixtures only.
