@@ -4,12 +4,13 @@ from pathlib import Path
 
 import pytest
 
+import ns_studio.text.stages_shorts  # noqa: F401
 from ns_common.errors import NsError
 from ns_common.llm_client import FakeLlm
 from ns_common.models import LlamaCfg, LlamaFlags, Runtime, Seo, VisualBeat
 from ns_common.textstats import split_sentences, word_count
 from ns_studio.context import FIXTURES_LLM
-from ns_studio.orchestrator import FORMAT_STAGES, run_job
+from ns_studio.orchestrator import FORMAT_STAGES, MASTER_FIRST_STAGES, run_job
 from ns_studio.stages import REGISTRY
 from ns_studio.text import stages_master as M
 from ns_studio.text.models_local import Plan, SeoLong, ShortsPlanItem, Story
@@ -55,6 +56,7 @@ def _master_ctx(monkeypatch: pytest.MonkeyPatch, tmp_home: Path, stages: list[st
 
 def test_registration_order():
     assert FORMAT_STAGES["master_first"][:9] == M.MASTER_STAGES
+    assert list(MASTER_FIRST_STAGES[:9]) == M.MASTER_STAGES
     assert all(n in REGISTRY for n in M.MASTER_STAGES)
     assert all(REGISTRY[n].tenant == "llama" for n in M.MASTER_STAGES)
     assert len(set(M.MASTER_STAGES)) == 9

@@ -72,3 +72,7 @@
 - Hook and closing-line alignment happens in the master `captions` stage (tenant `whisper`) so `shorts_derive` needs no GPU tenant.
 - `stages_media.py` only registers stages; the order per format is owned by the orchestrator constants (coordinator decision).
 - Spec 17.2 (smart captions) and 15.2a (Outbox by content: `outbox_target`, `safe_slug`) were added after the plan was written; see `captions.py` and `outbox.py`.
+
+## Follow-up tasks (not done yet)
+
+- [ ] **Wire the spec 17.2 caption features into the stages.** `build_ass` already accepts `avoid_regions`, `safe_zones`, `emphasis`, `speakers`/`speaker_breaks`, `backdrop_luma` and `mask_profanity`, but `CaptionsStage` (shorts_only and master), `shorts_derive` and the renderer call it without them. To do: pass `safe_zones=DEFAULT_SAFE_ZONES` for 9:16; feed `emphasis` from the visual plan / clip plan once C5/C8 emit it; feed `avoid_regions` from the clipper's face/facecam analysis; sample `backdrop_luma` with `sample_luma` (3 frames behind the caption) from the shots before the ASS is built; read the channel's `captions.mask_profanity` option; add tests that the stages produce the moved anchor, emphasis tags and boxed style.

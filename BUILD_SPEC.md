@@ -956,6 +956,13 @@ A single background thread drains `dashboard_jobs` (FIFO). Job kinds: `run` (stu
 
 ---
 
+### 20.6 Visual direction (owner reference: a smart-home "bento" dashboard)
+- **Bento grid with one hero per screen**: on Queue the hero is the video (9:16 or 16:9) with floating chips over it (kind, duration, channel, status); the posting checklist is the tall side card. Create, Library and Results use the same grid of rounded cards, one card per task or object.
+- **Soft two-tone surfaces**: a tinted page background with lighter cards, 24 px radii, generous padding, no hairline tables. Light theme is the reference; the dark theme keeps the same shapes with deep slate surfaces and one warm accent.
+- **Big obvious controls**: pill buttons ≥ 44 px, large toggles for channel on/off and settings, one primary action per card.
+- **Keep labels on the nav**: icon + label in the left rail; icon-only rails are not allowed. Body text stays 16 px; chips 13 px minimum.
+- **Media first**: thumbnails and players get the space; numbers appear as chips on media, not as separate stat tiles.
+
 ## 21. Install sources, dependencies and on-disk layout (what the installer actually pulls)
 
 Everything below is pinned in `manifest.json` (exact versions, URLs, SHA256) by `tools/resolve_manifest.py` in Slice 0 Task 14 and verified by `--check`. This section is the human-readable list; the manifest is the machine-readable truth. Nothing is bundled (§0 rule 1).
