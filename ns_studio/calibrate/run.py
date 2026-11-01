@@ -321,7 +321,6 @@ def score(paths: Paths, db: Db, slug: str, scores_csv: Path) -> CalibrationRepor
     )
     bar = min(10.0, max(5.0, rec.bar))
     edit_channel(paths, db, slug, {"critic_bar": bar})
-    text = json.dumps(report.as_dict(), indent=2) + "
-"
+    text = json.dumps(report.as_dict(), indent=2) + "\n"
     (d / "calibration_report.json").write_text(text, encoding="utf-8")
     return report
