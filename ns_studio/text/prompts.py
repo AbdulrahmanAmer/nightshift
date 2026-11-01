@@ -88,6 +88,11 @@ PROMPT_SCHEMAS: dict[str, dict[str, Any]] = {
 
 
 _STR = {"type": "string"}
+
+# clip_select also returns the layout (a format preset id) the model picked per candidate, and why (C8).
+_CLIP_ITEM = ClipPlanItem.model_json_schema()
+_CLIP_EXTRA = {"layout": _STR, "layout_reason": _STR, "caption_style": _STR}
+_CLIP_ITEM["properties"] = {**_CLIP_ITEM["properties"], **_CLIP_EXTRA}
 _INT = {"type": "integer"}
 _SEO_PROPS = Seo.model_json_schema()["properties"]
 _SEO_TITLES = Seo.model_json_schema()
@@ -182,9 +187,14 @@ PROMPT_SCHEMAS.update(
             "required": ["hooks", "closing_line"],
         },
         "policy_check": PolicyCheckResult.model_json_schema(),
+        "clip_judge": {
+            "type": "object",
+            "properties": {"ok": {"type": "boolean"}, "reasons": _arr(_STR)},
+            "required": ["ok", "reasons"],
+        },
         "clip_plan": {
             "type": "object",
-            "properties": {"clips": _arr(ClipPlanItem.model_json_schema(), minItems=1)},
+            "properties": {"clips": _arr(_CLIP_ITEM, minItems=1)},
             "required": ["clips"],
         },
     }
