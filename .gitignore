@@ -11,3 +11,5 @@ tests/_out/
 
 answers.json
 *.sha256
+report.xml
+stage/

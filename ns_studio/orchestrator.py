@@ -8,8 +8,70 @@ from ns_common.errors import NsError
 from ns_studio.context import JobContext
 from ns_studio.stages import REGISTRY, Stage, Tenant, run_stage
 
-# Filled by stage modules at import time (text/stages_shorts.py, media/*.py append their names in order).
-FORMAT_STAGES: dict[str, list[str]] = {"shorts_only": [], "master_first": [], "series_compilation": []}
+# Canonical stage order per format. Stage modules only `register()` their stages; the order lives here so
+# it never depends on import order. Names not registered yet are reported by `plan_job` (NS-E306).
+SHORTS_ONLY_STAGES: tuple[str, ...] = (
+    "ideas",
+    "plan",
+    "draft",
+    "critic_revise",
+    "split",
+    "hooks",
+    "seo",
+    "visual_plan",
+    "voice",
+    "captions",
+    "clips",
+    "render",
+    "qc",
+    "outbox",
+)
+MASTER_FIRST_STAGES: tuple[str, ...] = (
+    "ideas",
+    "long_plan",
+    "chapters_draft",
+    "chapters_critic",
+    "continuity",
+    "seo_long",
+    "shorts_select",
+    "visual_plan_long",
+    "seo_shorts",
+    "voice",
+    "duration_check",
+    "captions",
+    "shorts_timing",
+    "clips",
+    "render_master",
+    "thumbnails",
+    "shorts_derive",
+    "qc",
+    "outbox",
+)
+# Series parts (C11, CR-C11-3): `script_import` replaces ideas..continuity and shorts_select; chosen
+# by `run_job` when a master_first job directory holds `script_source.json`.
+MASTER_FROM_SCRIPT_STAGES: tuple[str, ...] = (
+    "script_import",
+    "visual_plan_long",
+    "seo_long",
+    "seo_shorts",
+    "voice",
+    "duration_check",
+    "captions",
+    "shorts_timing",
+    "clips",
+    "render_master",
+    "thumbnails",
+    "shorts_derive",
+    "qc",
+    "outbox",
+)
+FORMAT_STAGES: dict[str, list[str]] = {
+    "shorts_only": list(SHORTS_ONLY_STAGES),
+    "master_first": list(MASTER_FIRST_STAGES),
+    "master_from_script": list(MASTER_FROM_SCRIPT_STAGES),
+    "series_compilation": [],
+    "clip": [],
+}
 
 
 def _tenant_of(stage: Stage) -> Tenant:
@@ -33,7 +95,10 @@ def run_job(ctx: JobContext, *, resume: bool = True, dry_run: bool = False) -> l
 
     Consecutive stages with the same GPU tenant share one acquisition; `dry_run` only lists the plan.
     """
-    stages = plan_job(ctx.fmt)
+    fmt = ctx.fmt
+    if fmt == "master_first" and ctx.file("script_source.json").exists():
+        fmt = "master_from_script"
+    stages = plan_job(fmt)
     if dry_run:
         return [s.name for s in stages]
     owner = f"studio:{ctx.job_id}"

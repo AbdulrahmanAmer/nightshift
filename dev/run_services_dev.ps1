@@ -2,6 +2,8 @@
 # Usage: .\dev\run_services_dev.ps1   (on a machine where the installer has already placed models and venvs)
 # Not run on the authoring laptop (nothing executes there); for GPU / target machines only.
 param([string]$NsHome = $(if ($env:NIGHTSHIFT_HOME) { $env:NIGHTSHIFT_HOME } else { "$env:LOCALAPPDATA\Nightshift" }))
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
 $rt = Get-Content "$NsHome\config\runtime.json" -Raw | ConvertFrom-Json
 $llama = "$NsHome\bin\llama\llama-server.exe"
 $f = $rt.llama.flags

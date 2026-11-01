@@ -540,6 +540,17 @@ rejected\<slug>\<YYYY-MM-DD>\<job_id>\ logs\
 ```
 Coding workspace: `%USERPROFILE%\Projects`.
 
+### 15.2a Outbox layout is organized by content, not by job
+```
+outbox\<channel>\
+  stories\<story-title-slug>\full\<story-title>.mp4 + .json + .txt + thumb_1..3.jpg
+  stories\<story-title-slug>\shorts\<story-title> - Short 01.mp4 + .json + .txt
+  series\<series-title-slug>\part-01\full\<series-title> - Part 01.mp4 + …
+  series\<series-title-slug>\part-01\shorts\<series-title> - Part 01 - Short 01.mp4 + …
+  clips\<source-video-name-slug>\clip-01 <clip-title>.mp4 + .json + .txt
+```
+`outputs.path` in SQLite and `metadata.job_id` in each sheet keep traceability; `data\jobs\<job_id>\` keeps the working files. File names are Windows-safe slugs (≤ 80 chars, no reserved characters); collisions get a `-2` suffix. `rejected\` mirrors the same tree. The Dashboard's "Open folder" opens the item's folder in Explorer. Posted items stay where they are; status lives in the database.
+
 ### 15.3 Ports & supervisor API (127.0.0.1)
 llama **8080** · embed **8081** · TTS **8091** · supervisor **8099** · dashboard **8100**.
 | Method | Path | Body → Response |
@@ -944,6 +955,13 @@ A single background thread drains `dashboard_jobs` (FIFO). Job kinds: `run` (stu
 - Tests: FastAPI test client for every route with a fake job worker; a `--fake-services` clip job through `/api/jobs/clip` with the synthetic fixture.
 
 ---
+
+### 20.6 Visual direction (owner reference: a smart-home "bento" dashboard)
+- **Bento grid with one hero per screen**: on Queue the hero is the video (9:16 or 16:9) with floating chips over it (kind, duration, channel, status); the posting checklist is the tall side card. Create, Library and Results use the same grid of rounded cards, one card per task or object.
+- **Soft two-tone surfaces**: a tinted page background with lighter cards, 24 px radii, generous padding, no hairline tables. Light theme is the reference; the dark theme keeps the same shapes with deep slate surfaces and one warm accent.
+- **Big obvious controls**: pill buttons ≥ 44 px, large toggles for channel on/off and settings, one primary action per card.
+- **Keep labels on the nav**: icon + label in the left rail; icon-only rails are not allowed. Body text stays 16 px; chips 13 px minimum.
+- **Media first**: thumbnails and players get the space; numbers appear as chips on media, not as separate stat tiles.
 
 ## 21. Install sources, dependencies and on-disk layout (what the installer actually pulls)
 

@@ -228,3 +228,17 @@ def test_build_artifacts_checks_shorts_against_the_script():
         build_artifacts(script, [ok.model_copy(update={"span": [5, 4]})], wpm=155, combo_id="c")
     with pytest.raises(NsError, match="duplicate"):
         build_artifacts(script, [ok, ok.model_copy(update={"k": 3})], wpm=155, combo_id="c")
+
+
+def test_orchestrator_plans_master_from_script_when_a_source_file_exists(
+    tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from ns_studio.orchestrator import FORMAT_STAGES, MASTER_FIRST_STAGES, MASTER_FROM_SCRIPT_STAGES, run_job
+
+    assert MASTER_FROM_SCRIPT_STAGES[0] == "script_import" and "ideas" not in MASTER_FROM_SCRIPT_STAGES
+    assert set(MASTER_FROM_SCRIPT_STAGES) - {"script_import"} <= set(MASTER_FIRST_STAGES)
+    monkeypatch.setitem(FORMAT_STAGES, "master_from_script", ["script_import", "visual_plan_long"])
+    ctx = make_ctx(tmp_home, fmt="master_first", channel=make_channel(format="master_first"))
+    assert run_job(ctx, dry_run=True) == list(MASTER_FIRST_STAGES)
+    ctx.write_json("script_source.json", {})
+    assert run_job(ctx, dry_run=True) == ["script_import", "visual_plan_long"]

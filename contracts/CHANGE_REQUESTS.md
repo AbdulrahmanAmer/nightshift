@@ -10,11 +10,36 @@ Format per entry:
 
 (none yet)
 
+## CR-C7-1: studio error codes NS-E320 to NS-E326
+- **From:** C7 / m1-c7-studio-core Task 2 (also used by the M2 learn, review and cadence tasks)
+- **Change:** add to `contracts/errors.json` (message and hint exactly as in the local shim `ns_studio/errors.py`, table `_LOCAL`):
+  `NS-E320` The channel profile is invalid. · `NS-E321` Channels are not distinct enough. · `NS-E322` Unknown channel. · `NS-E323` The analytics CSV could not be read. · `NS-E324` Calibration data is missing or incomplete. · `NS-E325` The variation pools are exhausted. · `NS-E326` Output not found or not in a state that allows this action.
+- **Why:** spec section 8 (pool minimums, distinctness), 16.5 (calibration), 18.9 (CSV import) and section 10 (review, mark-uploaded) have conditions with no code today; builders may not raise a code that is not in `errors.json`.
+- **Workaround until applied:** `ns_studio.errors.StudioError` carries the same codes with a local message table and prefers `errors.json` when the code exists. When this CR is applied, empty `_LOCAL` and nothing else changes. Note: `tests` that scan source for `NS-E` literals will flag these codes until then.
+- **Status:** open
+
+## CR-C7-2: `policy_check` prompt, schema and fixture (owner of the files: C5)
+- **From:** C7 / m2-c7-studio-core (policy gate)
+- **Change:** C5 adds `ns_studio/prompts/policy_check.md` (front-matter `version: 1`, `thinking: true`, `schema: policy_check`), a `policy_check` entry in `PROMPT_SCHEMAS`, and a fixture `tests/fixtures/llm/policy_check.json` that passes every mode. C7 calls it as `call_json(ctx, "policy_check", mode=<mode>, ...)`.
+  Template variables per `mode`:
+  - `unsafe_topics`: `story` (str), `categories` (list of `{id, label, description, examples}` from `contracts/policy/unsafe_topics.yaml`), `audience` (`general|mature`).
+  - `hook_title_honesty`: `story`, `items` (list of `{item, title, hook}`).
+  - `standalone_short`: `story`, `moments` (list of `{k, text, hook}`).
+  - `tag_relevance`: `story`, `items` (list of `{item, title, tags}`).
+  Response schema (all modes, keys not relevant to a mode may be empty): `{"verdict": "pass"|"fail", "reason": str, "flags": [{"category": str, "reason": str}], "intensity": "low"|"medium"|"high", "failed_items": [str]}`. `flags[].category` is an id from `unsafe_topics.yaml`; `failed_items` holds item names (`long`, `s1`, ...) or Short numbers as strings.
+- **Why:** spec section 18.8 checks `unsafe_topics`, `hook_title_honesty`, `standalone_short` and the tag relevance half of `metadata_spam` are judged by the LLM (section 16.1 lists `policy_check.md`, thinking on). C7 cannot add files to C5's directories.
+- **Workaround until applied:** C7 imports `ns_studio.text.prompts` only through `importlib` inside `ns_studio/policy/judge.py`; with no `policy_check.md` present the CLI leaves the policy gate stages out of the plan (`policy.available()` is false) so `studio run --fake-services` keeps working.
+- **Status:** open
+
+## CR-C7-3: nothing new in pyproject (informational)
+- **From:** C7
+- **Change:** none. Perceptual hashing is implemented with FFmpeg and numpy (both already available), so `imagehash` and Pillow are not needed by C7. spaCy and keyring are only imported lazily from the existing `studio` extra.
+- **Status:** informational
 ## CR-C4-1: fastapi (and httpx test client) in the `dev` extra
 - **From:** C4 ns_tts / Task 4
 - **Change:** add `"fastapi>=0.115"` to `[project.optional-dependencies].dev` in `pyproject.toml`. `numpy` is already a core dependency, so no change for it. After it lands, delete the `# pyright: reportMissingImports=false` line in `ns_tts/server.py` and the `pytest.importorskip("fastapi")` in `tests/test_tts_server.py`.
 - **Why:** CI installs only `.[dev]`; without fastapi the server tests are skipped and pyright cannot resolve the imports. `uvicorn` is not needed in CI (only `ns_tts.server.main` imports it, lazily).
-- **Status:** open
+- **Status:** applied in fb54431 (fastapi, psutil, python-multipart, opencv-python-headless, Pillow, imagehash added to the dev extra; C4 may now drop the importorskip and the pyright pragma)
 
 ## CR-C4-2: `TtsCfg.engine` must accept `"qwentts"`
 - **From:** C4 ns_tts / Task 3
@@ -26,7 +51,7 @@ Format per entry:
 - **From:** C4 ns_tts / Task 3
 - **Change:** when `ruff` gets `TID251` banning `subprocess` (ENGINEERING.md section 8), add `ns_tts/engine.py` to the per-file-ignores list and to the hygiene-test allow-list, next to `ns_common/ffmpeg.py`.
 - **Why:** `QwenttsEngine` runs the `qwentts.exe` CLI with `subprocess.run` (list args, never `shell=True`, with a timeout), as spec 6.1 describes.
-- **Status:** open
+- **Status:** applied in the C10 pyproject commit (per-file-ignore for ns_tts/engine.py; the hygiene test bans only shell=True, so it needs no allow-list)
 
 ## CR-C4-4: TTS-specific error codes
 - **From:** C4 ns_tts / Task 3
@@ -40,11 +65,57 @@ Format per entry:
 - **Why:** spec 7.5 wants 1,200 ms before a cliff line; the spec 15.4 request has no field to carry which lines are cliffs.
 - **Status:** open
 
+## CR-C8-0: register the clipper error codes in `errors.json`
+- **From:** C8 Clipper / Task 1
+- **Change:** add `NS-E405` (unsupported source: too long, no audio, unreadable, or rights not confirmed), `NS-E406` (transcription produced fewer than 30 words), `NS-E407` (no clip candidates passed the filters) and `NS-W402` (requested template not applicable, fell back to center_crop). 
+- **Why:** spec 19.7 defines them but `contracts/errors.json` lacks them, so `NsError` raised `KeyError`.
+- **Status:** applied on main (2a3d772); C8's local registration shim was removed
+
+## CR-C8-1: move the clipper schemas into `ns_common`
+- **From:** C8 Clipper / Task 1
+- **Change:** move `Transcript`, `Segment`, `Word`, `ClipItem` (`clip_plan` item), `ClipLayout` (+ `Crop`, `FaceFrame`, `Rect`) and `ClipTemplate` from `ns_studio/clipper/models.py` to `ns_common/models.py`, register them in `SCHEMA_MODELS` and export `transcript`, `clip_plan`, `clip_layout`, `clip_template` schemas.
+- **Why:** spec 15.6 lists them as contracts (also read by C9). They are local pydantic models for now.
+- **Status:** open
+
+## CR-C8-2: OpenCV in the `dev` and `studio` extras
+- **From:** C8 Clipper / Task 3
+- **Change:** add `"opencv-python-headless>=4.9"` to `[project.optional-dependencies].dev` and `.studio` in `pyproject.toml` (`numpy` is already core).
+- **Why:** with it CI runs the YuNet/Canny paths (`pytest.importorskip("cv2")` tests are skipped without it). The YuNet ONNX also needs a `manifest.json` pin (`models\cv\yunet.onnx`) so the installer downloads it.
+- **Status:** open
+
+## CR-C8-3: `sources` row stores the rights confirmation
+- **From:** C8 Clipper / Task 5
+- **Change:** `contracts/schema.sql` `sources` gains `rights_confirmed INTEGER NOT NULL DEFAULT 0` and `title TEXT`.
+- **Why:** spec 19.1 says the owner's rights confirmation is stored on the `sources` row; the table has no column. C8 keeps it in `imports/clipper/<source_id>/source.json` and the job's `source.json` meanwhile.
+- **Status:** open
+
+## CR-C8-4: `metadata.kind` accepts `"clip"`
+- **From:** C8 Clipper / Task 7
+- **Change:** `Metadata.kind` becomes `Literal["long","short","clip"]` and gains optional `source_video: str | None` and `template: str | None` (spec 15.6).
+- **Why:** clip upload sheets use `ClipMetadata` (local) until then.
+- **Status:** open
+
+## CR-C8-5: mount `studio clip`
+- **From:** C8 Clipper / Task 7
+- **Change:** in `ns_studio/cli.py` add `app.add_typer(ns_studio.clipper.cli.app, name="clip")` (the entry is `ns_studio.clipper.cli.app`; it takes `studio clip <video> --channel <slug> [--template ...] [--max-clips N] [--min-s S] [--max-s S] [--confirm-rights] [--reselect <job_id>] [--fake-services[=list]]`). `JobContext.fmt` Literal gains `"clip"`; `orchestrator.FORMAT_STAGES` gets `"clip"` from `ns_studio.clipper.stages_clip` (set at import).
+- **Why:** spec 15.9. C8 never edits C7 files.
+- **Status:** open
+
+## CR-C8-6: optional fields on `clip_layout`
+- **From:** C8 Clipper / Task 4
+- **Change:** `crops[]` gains optional `region_b` (second panel: camera, or the lower speaker) and `speaking` (0 top, 1 bottom); `faces[]` gains optional `speaking`; `clip_layout` gains optional `note` (NS-W402 fallback text).
+- **Why:** `gaming_facecam`, `screen_plus_cam` and `podcast_stacked` need two source regions per time slice.
+- **Status:** open
+
+## CR-C8-7: facecam area lower bound
+- **From:** C8 Clipper / Task 3
+- **Change:** spec 19.2 C5/19.4 say 8-30 % of the frame; the prescribed fixture facecam (320x180 in 1280x720) is 6.25 %. C8 uses 5-30 % (`FacecamParams.min_area_frac`). Spec text should say 5 %.
+- **Why:** small overlay cams are common (about 3-8 % of a 1080p stream frame).
 ## CR-C2-1: fastapi in the `dev` extra (same need as CR-C4-1)
 - **From:** C2 runtime / Task 5
 - **Change:** add `"fastapi>=0.115"` to `[project.optional-dependencies].dev` in `pyproject.toml`. `httpx` is already a core dependency (the starlette `TestClient` and `SupervisorClient` use it), `uvicorn` is only imported by `python -m ns_supervisor.app` (lazily), and `psutil` is not used by C2 (process control is `subprocess` + Job Object + `taskkill`), so neither is requested. After it lands, delete the `# pyright: ignore[reportMissingImports]` comments in `ns_supervisor/app.py` and the `pytest.importorskip("fastapi")` in `tests/test_supervisor_app.py`.
 - **Why:** CI installs only `.[dev]`; without fastapi the HTTP-layer tests (`tests/test_supervisor_app.py`) are skipped and pyright cannot resolve the imports. All supervisor logic is tested without it through `ns_supervisor.core`.
-- **Status:** open
+- **Status:** applied in fb54431 (fastapi, psutil, python-multipart, opencv-python-headless, Pillow, imagehash are in the dev extra)
 
 ## CR-C2-2: supervisor `POST /events` (publish a job event)
 - **From:** C2 runtime / Task 5
@@ -62,7 +133,7 @@ Format per entry:
 - **From:** C2 runtime / Task 2
 - **Change:** when TID251 bans `subprocess` (ENGINEERING 8), add `ns_supervisor/*.py` to the per-file-ignores and to the hygiene allow-lists for subprocess and `httpx`. C2 starts services, runs `taskkill`, `nvidia-smi`, `uv`, `powershell`, `studio` and `git`.
 - **Why:** section 8 names the supervisor as the place services are spawned; the listed exception paths do not yet include the extra tools.
-- **Status:** open
+- **Status:** applied in fb54431 (ruff per-file-ignore `ns_supervisor/**` for TID251; the hygiene test bans only shell=True and has no subprocess or httpx allow-list)
 
 ## CR-C2-5: per-model llama flags for two-model mode (`ns tune`)
 - **From:** C2 runtime / Task 9
@@ -139,3 +210,15 @@ Format per entry:
 - **Why:** series parts are longer than the master the C5 models were sized for.
 - **Migration:** C11 needs no change when (1)-(3) land.
 - **Status:** open
+
+## CR-C8-8: migrate clip layouts to format presets (spec 17.1)
+- **From:** C8 Clipper / spec 23.5
+- **Change:** `ns_studio/presets/formats/*.yaml` and `ns_studio/media/layout.py` (the generic region renderer) are not on `main`, so C8 keeps `ns_studio/presets/clip_templates.yaml` and its own graph builders (`ns_studio/clipper/render.py`). When the format presets land, `load_templates()` should read `clip_gaming_facecam`, `clip_podcast_stacked`, `clip_podcast_single`, `clip_talking_head`, `clip_center_crop`, `clip_screen_plus_cam` and the render should use the generic region builder. The model's `layout` answers already accept both `gaming_facecam` and `clip_gaming_facecam` ids.
+- **Why:** formats are data, not code (spec 17.1).
+- **Status:** open
+
+## CR-C8-9: C5-owned files edited by C8 (informational, per coordinator instruction)
+- **From:** C8 Clipper / spec 23.5
+- **Change:** `ns_studio/prompts/clip_select.md` (v2: `analysis` input, `layout` and `layout_reason` output), new `ns_studio/prompts/clip_judge.md` (thinking on, schema `clip_judge` = `{ok, reasons[]}`), `ns_studio/text/prompts.py` (`clip_plan` items accept `layout` / `layout_reason`; new `clip_judge` schema), fixture `tests/fixtures/llm/clip_judge.json`.
+- **Why:** the revised clipper flow lets the model choose a layout per candidate and adds a logic judge before each clip.
+- **Status:** applied on feat/c8-clipper
