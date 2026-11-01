@@ -1,0 +1,92 @@
+"""Hard validators for generated text (component C5; spec 16.3)."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from functools import lru_cache
+
+from ns_common.embed_client import Embed, cosine
+from ns_common.errors import NsError
+from ns_common.paths import contracts_dir
+from ns_common.textstats import fk_grade, split_sentences, word_count
+from ns_studio.text.budget import Budget
+
+
+@dataclass(frozen=True)
+class Violation:
+    """One failed validator rule with a human-readable detail."""
+
+    rule: str
+    detail: str
+
+
+@lru_cache(maxsize=1)
+def load_banned() -> list[str]:
+    """Lower-cased banned phrases from `contracts/policy/banned_phrases.txt`."""
+    lines = (contracts_dir() / "policy" / "banned_phrases.txt").read_text(encoding="utf-8").splitlines()
+    return [ln.strip().lower() for ln in lines if ln.strip() and not ln.startswith("#")]
+
+
+def check_length(text: str, budget: Budget) -> Violation | None:
+    """Word count of `text` must lie in `[budget.min_words, budget.max_words]`."""
+    n = word_count(text)
+    if n < budget.min_words or n > budget.max_words:
+        return Violation("length", f"{n} words, allowed {budget.min_words}-{budget.max_words}")
+    return None
+
+
+def check_banned(text: str, banned: list[str]) -> Violation | None:
+    """No banned phrase may occur (case-insensitive substring match)."""
+    low = text.lower()
+    hits = [b for b in banned if b in low]
+    return Violation("banned_phrase", ", ".join(hits)) if hits else None
+
+
+def check_reading_level(text: str, lo: float = 5.0, hi: float = 8.0) -> Violation | None:
+    """Flesch-Kincaid grade of `text` must lie in `[lo, hi]`."""
+    g = fk_grade(text)
+    if g < lo or g > hi:
+        return Violation("reading_level", f"grade {g}, allowed {lo}-{hi}")
+    return None
+
+
+def check_sentence_length(text: str, max_words: int = 35) -> Violation | None:
+    """No sentence may exceed `max_words` words (spoken rhythm)."""
+    for s in split_sentences(text):
+        if word_count(s) > max_words:
+            return Violation("sentence_length", f"{word_count(s)} words: {s[:60]}")
+    return None
+
+
+def check_opening_similarity(
+    opening: str, past_openings: list[str], embed: Embed, threshold: float = 0.8
+) -> Violation | None:
+    """The opening line must differ (cosine < `threshold`) from every past opening."""
+    if not past_openings:
+        return None
+    vecs = embed.embed([opening, *past_openings])
+    best = max(cosine(vecs[0], v) for v in vecs[1:])
+    if best >= threshold:
+        return Violation("opening_similarity", f"cosine {best:.2f} >= {threshold}")
+    return None
+
+
+def validate_story(
+    text: str, budget: Budget, *, past_openings: list[str], embed: Embed
+) -> list[Violation]:
+    """Run every story validator and return the violations (empty when the text passes)."""
+    opening = split_sentences(text)[0] if text.strip() else ""
+    checks = [
+        check_length(text, budget),
+        check_banned(text, load_banned()),
+        check_reading_level(text),
+        check_sentence_length(text),
+        check_opening_similarity(opening, past_openings, embed),
+    ]
+    return [c for c in checks if c is not None]
+
+
+def raise_if(violations: list[Violation]) -> None:
+    """Raise NS-E303 listing every violation; do nothing for an empty list."""
+    if violations:
+        raise NsError("NS-E303", "; ".join(f"{v.rule}: {v.detail}" for v in violations))
