@@ -21,6 +21,7 @@ are exported from `ns_common/models.py` and must match (test `test_every_schema_
 
 ## Freeze tags
 - `contracts-m0` — everything above as of milestone M0 completion (component C3).
+- `contracts-m1` — M0 plus the M1 amendments (C3): master-first, clipper and format schemas, installer and runtime fields, error codes NS-E320..E326 and NS-E408, `sources` and `ideas` columns, `assistant_messages`, `ns_common.gpu_dlls`.
 
 ## Rules
 Only the main session edits `contracts/` and `ns_common/`. Workers file requests in `CHANGE_REQUESTS.md`.
