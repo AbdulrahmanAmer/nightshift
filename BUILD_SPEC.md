@@ -206,7 +206,7 @@ nightshift/
   ns_tts/                     # WP-C: TTS FastAPI service
   ns_dashboard/               # WP-J: FastAPI API + static/ (index.html, app.js, app.css), jobs queue, uploads
   ns_supervisor/              # WP-B: supervisor, tune.py, verify.py, doctor.py, gate.py (ns CLI)
-  INSTALL.cmd                 # WP-A: double-click bootstrap
+  INSTALL.cmd  UNINSTALL.cmd  # WP-A: double-click bootstrap / removal
   OPERATOR.md                 # WP-A: one page for the person running the install
   CLAUDE.md                   # main session: how to develop in this repo (tests, fakes, contracts rules, gates)
   installer/                  # WP-A
@@ -251,6 +251,8 @@ Work packages: **A** installer+launchers · **B** supervisor+tune+opencode · **
 **Error UX:** code + plain message + fix hint from `errors.json` → `[R]etry · [S]kip (optional only) · [L]og · [Q]uit`. In unattended mode, a required step retries 3 times with backoff, then writes the bundle and exits non-zero with the code on screen. Resume state in `config\install_state.json`.
 
 **Install-time verification of the untestable parts (§1.1):** `s08_smoke` tests `h264_nvenc` with a 2-second colour source and falls back to `libx264` in `runtime.json` (`NS-W401`) on failure; tests `qwentts.cpp` on CUDA with one sentence per installed talker and, on failure, creates the `tts` venv with PyTorch cu128 + `qwen-tts` (checking `torch.cuda.is_available()` and capability ≥ (12,0), else `NS-E108` with the exact cu128 reinstall command), downloads the original safetensors and switches `runtime.tts.engine` to `reference` (`NS-W301`); tests faster-whisper on CUDA (`NS-E112` with the cuBLAS/cuDNN fix hint on failure); for MoE LLM tiers tests `llama-server` with and without `--spec-type draft-mtp` and keeps MTP only if it is faster (`NS-W302` otherwise).
+
+**`UNINSTALL.cmd` → `installer\uninstall.ps1`:** removes the scheduled task, desktop shortcuts, `venvs\`, `bin\` and the `NIGHTSHIFT_HOME` user env var; asks separately (default **No**) whether to delete `models\` and whether to delete `outbox\`, `data\`, `imports\`, `cache\`; prints what was kept and where. Idempotent. Also reachable from Dashboard → Settings → Uninstall (opens the console).
 
 **`ns update <zip>`:** verifies the zip's `VERSION` and SHA256 sidecar, extracts to `<app_path>.new\`, copies `.git\`, `config\` and untracked data over, runs `uv sync --locked` per venv, swaps directories (keeping `<app_path>.prev\` for `ns update --rollback`), re-runs `ns verify --quick`, and re-registers shortcuts and the task. When the repo has a git remote, `git pull` is the simpler path and `ns update` says so.
 
@@ -779,7 +781,7 @@ Horror and dark themes are allowed **as fiction** with implied, not graphic, vio
 | Weeks 3–6 | 2 masters/week; up to 2 Shorts/day if the last 14 days' average viewed rate ≥ 60 % (from imported analytics; without analytics, stay at 1/day) |
 | Any time | Never more than 3 Shorts/day or 3 masters/week; publish times jittered ±45 min inside `publish_window` |
 | Release order | Master first; its Shorts over the next 2–4 days, interleaved with other masters' Shorts so consecutive Shorts never come from the same story |
-| Quality drop | If the 7-day viewed rate falls under 50 %, drop to 1 Short/day and raise `critic_bar` by 0.5 |
+| Quality drop | If the 7-day viewed rate falls under 50 %, **or the owner rejected ≥ 40 % of the last 10 outputs**, drop to 1 Short/day and raise `critic_bar` by 0.5 (reject reasons are shown in `studio status` and the Dashboard) |
 | Paused | `status: paused` channels are skipped by `--daily` |
 | Multi-channel | Max 3 channels per install; each must pass the distinctness check |
 
@@ -983,6 +985,62 @@ Disk budget: models ~15 GB + venvs ~1.5 GB + working space ≥ 20 GB → the 40 
 
 ### 21.7 Download behaviour
 Every download: HEAD for size → stream to `<file>.part` with `Range` resume → SHA256 verify (`NS-E109`) → atomic rename. Concurrency 2 files at a time; progress bar per file and overall; a failed file retries 3 times with backoff; the step is re-runnable and skips verified files. `s03` prints the total to download and an ETA before starting and tells the operator they can close the window and re-run `INSTALL.cmd` to resume.
+
+---
+
+## 22. User journeys (what the owner actually does, step by step)
+
+Each step names the component that serves it, so coverage can be checked against §12/§20. "Owner" is the person running the GPU PC.
+
+### J1 — Install (day 0, ~1 hour mostly waiting)
+1. Owner downloads `Nightshift-<ver>.zip` (and, if provided, the `models\` folder) from the Drive link, extracts to `D:\NightShift`. **C10**
+2. Double-clicks `INSTALL.cmd`. A console opens with the welcome text (§A.2) and the **machine check table**: each row green/red with a fix hint; red blocks. **C1**
+3. Tools install (Git, FFmpeg, uv, Python) with "already present, skipped" lines. **C1**
+4. Questions (skipped when `answers.json` is present): home folder (default suggested with free space shown), channel name/niche/language, voice (plays 4 preset samples, pick one), Pexels/Pixabay keys (links shown; validated live), masters per week, run time, install Nightshift Code. **C1**
+5. Download screen: list of files with sizes, one progress bar per file and one overall, speed and ETA; "you can close this window and re-run INSTALL.cmd to resume". Files found in `models_source` are copied, not downloaded. **C1**
+6. Venvs created; tuning runs (1–3 min; shows tokens/s found); smoke test table (NVENC, TTS, whisper, LLM) with fallbacks noted. **C1 C2**
+7. Summary: where things live, the three shortcuts created, the nightly time, and "Next: open Nightshift Dashboard and press Run now to make your first video." A diagnostics zip is written to the Desktop. **C1**
+
+### J2 — First video (day 0, ~20 min)
+1. Owner opens **Nightshift Dashboard** from the desktop. Engine window appears minimized; browser opens on Overview with the status strip `Services idle`. **C2 C9**
+2. Presses **Run now → shorts_only** (fast first result) or **master_first**. Status strip: `Loading LLM…` → `Writing story` → `Voicing` → `Captions` → `Clips` → `Rendering` → `QC` → `Done`. **C7 C9**
+3. Review page shows the new item(s). Owner plays the video in the browser, reads the story and policy notes, presses **Approve** (or Reject with a reason, which feeds the next run's critic bar). **C9**
+4. **Upload**: owner opens the Outbox folder (button), drags the MP4 into YouTube Studio, pastes title/description/tags from the sheet's Copy buttons, sets the disclosure/made-for-kids answers shown, publishes, then pastes the YouTube URL into **Mark uploaded** so analytics can match later. **C9 C7**
+
+### J3 — Nightly automation (every night, zero touch)
+1. 03:00: the scheduled task wakes the PC, starts the supervisor headless, runs the cadence governor's plan per active channel (§18.6). **C2 C7**
+2. Each job: text → policy gate → voice → captions → clips → render → QC → final gate → Outbox. Failures go to `rejected\` with a reason; one regeneration attempt. **C5 C6 C7**
+3. Supervisor exits when done; PC may sleep. **C2**
+4. Morning: owner opens the Dashboard; Overview shows "Last night: 1 master + 5 Shorts ready, 0 rejected" and the Review queue. Owner approves and uploads per the sheet's recommended order and dates (master first, Shorts spread over the next days). **C9**
+
+### J4 — Clipper (whenever)
+1. Clipper page: owner drags a VOD/podcast file onto the drop zone, ticks "I own or have rights to this video", picks channel and template (`auto` default), presses **Start**. Upload progress, then job progress by stage. **C9 C8**
+2. Finished clips appear in the grid with thumbnails; each has Approve/Reject and its sheet; approved clips sit in `Outbox\<channel>\<date>\clip-<id>\`. **C8 C9**
+3. If the template guess was wrong (e.g., no facecam found), the job note says so and the owner can re-run selection with another template without re-transcribing. **C8**
+
+### J5 — Learning loop (weekly, 5 min)
+1. In YouTube Studio: Analytics → Content → Export CSV (Shorts and Videos). **owner**
+2. Dashboard → Learn → drop the CSV. Import summary: matched / unmatched rows, top and bottom hooks, structures, lengths, caption styles; weight changes shown as arrows. Unmatched rows list which uploads lack a URL. **C7 C9**
+3. Cadence governor may raise Shorts per day when the viewed rate is healthy; the Overview shows the new plan. **C7**
+
+### J6 — Voices and channels (occasionally)
+- **New channel**: Channels → Add; the distinctness check warns if it overlaps an existing one; a validation summary (pool sizes, publish window) appears before Save. **C7 C9**
+- **Custom voice**: Channels → Voice → Design (type a description; VoiceDesign downloads on first use, 2.1 GB, with progress) or Clone (drop a 3–10 s sample, confirm rights). A sample plays; Save stores the embedding. From then on that voice loads instantly. **C4 C9**
+
+### J7 — Something goes wrong
+- **A run failed**: Overview shows a red card with the error code and plain message; Runs & Logs shows the stage; one click downloads the diagnostics zip to send to the developer. **C2 C9**
+- **YouTube sends a warning/strike**: owner presses **Pause** on the channel with a note; nothing is produced until Resume; README/Operator doc lists the review checklist (§18.11). **C7 C9**
+- **GPU busy** (owner coding with Nightshift Code at 03:00): the nightly run waits up to 2 h, then skips with `NS-E201` and retries the next night; Overview explains. **C2**
+- **PC was off**: the task runs as soon as the PC is on (`StartWhenAvailable`); the governor never doubles up to "catch up". **C2 C7**
+
+### J8 — Updates and uninstall
+- **Update**: owner receives `nightshift-app-<ver>.zip` (or `git pull` if the repo is cloned), uses the **Update** shortcut or Settings → Update; venvs re-sync, verify runs, a changelog is shown. Models are untouched. **C2 C9**
+- **Uninstall**: `UNINSTALL.cmd` (also in Settings): removes the scheduled task, shortcuts, venvs, binaries and the `NIGHTSHIFT_HOME` env var; asks separately whether to delete **models** (15 GB) and **outbox/data** (your videos and history). Default keeps both. **C1**
+
+### J9 — Optional: Nightshift Code
+Owner opens the **Nightshift Code** shortcut; it acquires the LLM (status shown in the Dashboard strip as `owner: opencode`), opens OpenCode in `%USERPROFILE%\Projects`; closing the terminal releases the GPU. **C2**
+
+Gaps this section closed in the spec: uninstall flow (new `UNINSTALL.cmd`, §5), reject-reason feedback into the critic bar (§18.6 "Quality drop" now also counts owner rejections), Clipper re-run without re-transcribing (§19.2 C4 is re-runnable from `transcript.json`), VoiceDesign on-demand download surfaced in the UI (§20.2 Channels page).
 
 ---
 
