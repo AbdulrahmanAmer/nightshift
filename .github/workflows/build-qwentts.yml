@@ -30,7 +30,9 @@ env:
 
 jobs:
   build:
-    runs-on: windows-latest
+    # Pinned to windows-2025 (Visual Studio 2022, MSVC 14.4x), not windows-latest: windows-latest moved to
+    # Visual Studio 2026 (MSVC 14.51) and nvcc 12.9's cudafe++ crashes on it (ACCESS_VIOLATION 0xC0000005).
+    runs-on: windows-2025
     timeout-minutes: 90
     steps:
       - name: Checkout qwentts.cpp at the pinned commit (with the ggml submodule)
@@ -87,6 +89,12 @@ jobs:
           $cudaBin = Join-Path $env:CUDA_PATH 'bin'
           Get-ChildItem $cudaBin -Recurse -File -Include 'cudart64_*.dll', 'cublas64_*.dll', 'cublasLt64_*.dll' |
             Copy-Item -Destination $stage
+          # App-local copy of the MSVC runtime so the exes start on a PC without the VC++ redistributable.
+          if ($env:VCToolsRedistDir) {
+            Get-ChildItem (Join-Path $env:VCToolsRedistDir 'x64') -Recurse -File -Include 'vcruntime140*.dll', 'msvcp140*.dll', 'concrt140.dll' |
+              Where-Object { $_.FullName -match 'Microsoft\.VC\d+\.CRT' } |
+              Copy-Item -Destination $stage
+          }
           @(
             "qwentts.cpp commit: $env:QWENTTS_SHA"
             "repo: https://github.com/$env:QWENTTS_REPO"
