@@ -147,7 +147,7 @@ def test_tracked_crop_follows_the_face() -> None:
     assert all(c.region.w / c.region.h == pytest.approx(9 / 16, abs=0.01) for c in crops)
     assert crops[0].region.x == pytest.approx(300 - 202, abs=3)
     assert crops[-1].region.x == pytest.approx(900 - 202, abs=3)
-    assert len({c.region.x for c in crops if c.t_end <= 3.0}) == 1
+    assert crops[0].t_start == 0 and crops[0].t_end >= 3.0  # one merged crop until the face moves
     assert all(a.t_end == b.t_start for a, b in zip(crops, crops[1:], strict=False))
 
 

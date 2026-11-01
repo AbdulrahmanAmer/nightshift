@@ -168,6 +168,9 @@ def extract_audio(video: Path, out_wav: Path) -> Path:
     """16 kHz mono PCM WAV of the first audio stream."""
     out_wav.parent.mkdir(parents=True, exist_ok=True)
     ffmpeg.run(
-        ["-i", str(video), "-vn", "-map", "0:a:0", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", str(out_wav)]
+        [
+            "-i", str(video), "-vn", "-map", "0:a:0", "-ac", "1", "-ar", "16000",
+            "-c:a", "pcm_s16le", str(out_wav),
+        ]
     )
     return out_wav

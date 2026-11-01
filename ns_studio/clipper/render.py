@@ -104,7 +104,8 @@ def _speaker_borders(crops: list[Crop], border_px: int) -> list[str]:
             continue
         enable = "+".join(f"between(t,{a:.3f},{b:.3f})" for a, b in spans)
         out.append(
-            f"drawbox=x=0:y={y}:w={CANVAS_W}:h={CANVAS_H // 2}:color=white@0.9:t={border_px}:enable='{enable}'"
+            f"drawbox=x=0:y={y}:w={CANVAS_W}:h={CANVAS_H // 2}:color=white@0.9:t={border_px}"
+            f":enable='{enable}'"
         )
     return out
 
@@ -188,7 +189,8 @@ def parse_loudnorm(stderr: str) -> dict[str, float] | None:
         return None
     try:
         raw = json.loads(blocks[-1])
-        vals = {k: float(raw[k]) for k in ("input_i", "input_tp", "input_lra", "input_thresh", "target_offset")}
+        keys = ("input_i", "input_tp", "input_lra", "input_thresh", "target_offset")
+        vals = {k: float(raw[k]) for k in keys}
     except (ValueError, KeyError):
         return None
     return vals if all(math.isfinite(v) for v in vals.values()) else None
