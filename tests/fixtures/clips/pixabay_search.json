@@ -1,0 +1,69 @@
+{
+  "total": 4,
+  "totalHits": 4,
+  "hits": [
+    {
+      "id": 125,
+      "pageURL": "https://pixabay.com/videos/id-125/",
+      "type": "film",
+      "tags": "rain, window, night",
+      "duration": 12,
+      "videos": {
+        "large": {"url": "https://cdn.pixabay.com/video/125_large.mp4", "width": 1920, "height": 1080,
+                  "size": 9000000, "thumbnail": "https://cdn.pixabay.com/video/125_large.jpg"},
+        "medium": {"url": "https://cdn.pixabay.com/video/125_medium.mp4", "width": 1280, "height": 720,
+                   "size": 4000000, "thumbnail": ""},
+        "small": {"url": "https://cdn.pixabay.com/video/125_small.mp4", "width": 640, "height": 360,
+                  "size": 1500000, "thumbnail": ""},
+        "tiny": {"url": "https://cdn.pixabay.com/video/125_tiny.mp4", "width": 480, "height": 270,
+                 "size": 700000, "thumbnail": ""}
+      },
+      "views": 1000,
+      "user": "someone"
+    },
+    {
+      "id": 126,
+      "pageURL": "https://pixabay.com/videos/id-126/",
+      "type": "film",
+      "tags": "forest, fog, trees",
+      "duration": 20,
+      "videos": {
+        "large": {"url": "", "width": 0, "height": 0, "size": 0, "thumbnail": ""},
+        "medium": {"url": "https://cdn.pixabay.com/video/126_medium.mp4", "width": 1080, "height": 1920,
+                   "size": 5000000, "thumbnail": ""},
+        "small": {"url": "https://cdn.pixabay.com/video/126_small.mp4", "width": 540, "height": 960,
+                  "size": 1000000, "thumbnail": ""},
+        "tiny": {"url": "https://cdn.pixabay.com/video/126_tiny.mp4", "width": 360, "height": 640,
+                 "size": 500000, "thumbnail": ""}
+      },
+      "views": 2000,
+      "user": "someone"
+    },
+    {
+      "id": 127,
+      "pageURL": "https://pixabay.com/videos/id-127/",
+      "type": "film",
+      "tags": "city, square, aerial",
+      "duration": 8,
+      "videos": {
+        "large": {"url": "https://cdn.pixabay.com/video/127_large.mp4", "width": 1080, "height": 1080,
+                  "size": 5000000, "thumbnail": ""}
+      },
+      "views": 30,
+      "user": "someone"
+    },
+    {
+      "id": 128,
+      "pageURL": "https://pixabay.com/videos/id-128/",
+      "type": "film",
+      "tags": "portrait, woman, face",
+      "duration": 10,
+      "videos": {
+        "large": {"url": "https://cdn.pixabay.com/video/128_large.mp4", "width": 1080, "height": 1920,
+                  "size": 6000000, "thumbnail": ""}
+      },
+      "views": 50,
+      "user": "someone"
+    }
+  ]
+}

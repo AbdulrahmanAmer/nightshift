@@ -1,0 +1,39 @@
+{
+  "moments": [
+    {
+      "chapter": 1,
+      "sentence_start": 15,
+      "sentence_end": 19,
+      "length_bucket": 35,
+      "why_standalone": "A narrator comes home at dawn to wet footprints on a dry porch that lead only to her door."
+    },
+    {
+      "chapter": 2,
+      "sentence_start": 14,
+      "sentence_end": 21,
+      "length_bucket": 50,
+      "why_standalone": "Two cameras go up and the new recording shows a light on inside her house that she never leaves on."
+    },
+    {
+      "chapter": 3,
+      "sentence_start": 11,
+      "sentence_end": 20,
+      "length_bucket": 75,
+      "why_standalone": "A nurse tests an impossible date stamp by taping a note to her door and gets a reply in her own handwriting."
+    },
+    {
+      "chapter": 4,
+      "sentence_start": 7,
+      "sentence_end": 13,
+      "length_bucket": 50,
+      "why_standalone": "She tries to outrun tomorrow, cuts her hand on broken glass and bandages it."
+    },
+    {
+      "chapter": 5,
+      "sentence_start": 11,
+      "sentence_end": 19,
+      "length_bucket": 50,
+      "why_standalone": "On the porch at 3:12 the live recording shows a second figure stepping out of her own front door."
+    }
+  ]
+}
