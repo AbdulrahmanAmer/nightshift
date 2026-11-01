@@ -227,7 +227,7 @@ def test_fake_learn_and_tts_and_seed(tmp_home: Path):
     learn = FakeLearnAdapter()
     worker.handlers["learn"] = lambda ctl: learn.import_csv(ctl, csv)
     job = store.create("learn", None, {})
-    worker.run_next()
+    worker.run_inline(job.job_id)
     rec = store.get(job.job_id)
     assert rec is not None and rec.result is not None and rec.result["rows"] == 2
     tts = FakeTtsAdapter(paths)
