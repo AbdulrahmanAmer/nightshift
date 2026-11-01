@@ -279,7 +279,7 @@ Work packages: **A** installer+launchers · **B** supervisor+tune+opencode · **
 ### 6.2 App lifecycle (open / warm-up / close)
 | Event | What happens |
 |---|---|
-| **Open** (`Nightshift Dashboard.lnk`) | Launcher starts the supervisor if not running, as a minimized console window titled **"Nightshift Engine"**, waits for `/status`, opens `http://127.0.0.1:8100`. Nothing is loaded yet; opening is instant. |
+| **Open** (`Nightshift Dashboard.lnk`) | Launcher starts the supervisor if not running, as a minimized console window titled **"Nightshift Engine"**, waits for `/status`, opens `http://127.0.0.1:8100` as an app window (`msedge.exe --app=...` or `chrome.exe --app=...`, else the default browser). Nothing is loaded yet; opening is instant. |
 | **Warm-up** | Dashboard status strip: `Engine starting` → `Services idle` → `Loading LLM (9 GB)…` with elapsed time from the acquire's health polling → `Ready`. Triggered by the first job or the **Warm up** button. |
 | **Close** | Closing the browser tab stops nothing (it is only a page; the Engine window stays). **Quit Nightshift** (dashboard button), `Nightshift - Stop All.lnk`, or closing the Engine window → `POST /shutdown`: current stage finishes or is cancelled within 30 s, children terminated, VRAM freed, supervisor exits. |
 | **Auto-exit** | Supervisor exits after 30 idle minutes unless a scheduled run is due within 60 min. |
@@ -632,7 +632,7 @@ Outbox `outbox\<slug>\<YYYY-MM-DD>\<job_id>\`: `long\master.mp4 + .json + .txt +
 
 | Shortcut | Launcher |
 |---|---|
-| `Nightshift Dashboard.lnk` | `nightshift-dashboard.ps1`: start the supervisor as a minimized "Nightshift Engine" window if not running, wait for `/status`, open `http://127.0.0.1:8100` in the default browser (§6.2) |
+| `Nightshift Dashboard.lnk` | `nightshift-dashboard.ps1`: start the supervisor as a minimized "Nightshift Engine" window if not running, wait for `/status`, open `http://127.0.0.1:8100` as an app window (`msedge.exe --app=...`, else `chrome.exe --app=...`) when Edge or Chrome is installed, otherwise in the default browser (§6.2) |
 | `Nightshift Studio.lnk` | `nightshift-studio.ps1`: `studio status` + interactive prompt |
 | `Nightshift Outbox.lnk` | `open-outbox.ps1` |
 | `Nightshift - Stop All.lnk` | `stop-all.ps1` → `ns stop` |
