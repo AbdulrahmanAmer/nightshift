@@ -1,0 +1,469 @@
+import asyncio
+import contextlib
+import json
+import time
+from collections.abc import AsyncIterator, Callable
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+
+import httpx
+import pytest
+
+from ns_common.errors import NsError
+from ns_common.models import Runtime
+from ns_common.paths import Paths
+from ns_supervisor.core import Supervisor
+from ns_supervisor.schedule_cfg import write_run_time
+from ns_supervisor.testing import StubTable, fast_config
+
+
+def make(
+    tmp_path: Path,
+    *,
+    extra: dict[str, list[str]] | None = None,
+    gpu: dict[str, bool] | None = None,
+    two_model: bool = False,
+    now: Callable[[], datetime] = datetime.now,
+    **cfg: Any,
+) -> tuple[Supervisor, StubTable, Paths]:
+    paths = Paths(tmp_path / "ns")
+    table = StubTable(extra=extra, gpu=gpu, two_model=two_model)
+    sup = Supervisor(paths, Runtime.default("gpu"), config=fast_config(**cfg), resolver=table, now=now)
+    return sup, table, paths
+
+
+@contextlib.asynccontextmanager
+async def running(sup: Supervisor) -> AsyncIterator[Supervisor]:
+    mon = asyncio.create_task(sup.run_monitor())
+    try:
+        yield sup
+    finally:
+        mon.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await mon
+        await sup.stop_all(include_persistent=True)
+        sup.close_job()
+
+
+async def until(pred: Callable[[], bool], timeout: float = 25.0) -> bool:
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        if pred():
+            return True
+        await asyncio.sleep(0.05)
+    return pred()
+
+
+def state(sup: Supervisor, name: str) -> str:
+    return str(sup.status()["services"][name]["state"])
+
+
+def pid(sup: Supervisor, name: str) -> int | None:
+    return sup.status()["services"][name]["pid"]
+
+
+def test_acquire_starts_service_and_returns_endpoint(tmp_path: Path) -> None:
+    sup, table, _ = make(tmp_path)
+
+    async def main() -> None:
+        async with running(sup):
+            r = await sup.acquire("llama", "studio:j1")
+            assert r == {"endpoint": f"http://127.0.0.1:{table.ports['llama']}", "model_alias": "story"}
+            st = sup.status()
+            assert st["gpu_owner"] == "studio:j1" and st["gpu_service"] == "llama"
+            assert st["services"]["llama"]["state"] == "ready"
+            assert st["services"]["llama"]["owners"] == ["studio:j1"]
+            async with httpx.AsyncClient() as http:
+                assert (await http.get(f"{r['endpoint']}/health")).status_code == 200
+            assert await sup.release("llama", "studio:j1") is True
+            assert sup.status()["gpu_owner"] is None
+            assert state(sup, "llama") == "ready"  # stays warm until the idle timer fires
+
+    asyncio.run(main())
+
+
+def test_second_owner_waits_for_first_and_reuses_warm_process(tmp_path: Path) -> None:
+    sup, _, _ = make(tmp_path, idle_unload_s=60)
+
+    async def main() -> None:
+        async with running(sup):
+            await sup.acquire("llama", "A")
+            first_pid = pid(sup, "llama")
+            task_b = asyncio.create_task(sup.acquire("llama", "B"))
+            await asyncio.sleep(0.3)
+            assert not task_b.done()
+            assert sup.status()["waiting"] == [{"owner": "B", "service": "llama"}]
+            await sup.release("llama", "A")
+            await task_b
+            assert sup.status()["gpu_owner"] == "B"
+            assert pid(sup, "llama") == first_pid
+
+    asyncio.run(main())
+
+
+def test_tenant_swap_terminates_resident_service(tmp_path: Path) -> None:
+    sup, _, _ = make(tmp_path, idle_unload_s=60)
+
+    async def main() -> None:
+        async with running(sup):
+            await sup.acquire("llama", "A")
+            llama = sup.services["llama"].proc
+            assert llama is not None
+            await sup.release("llama", "A")
+            r = await sup.acquire("tts", "B")
+            assert r["model_alias"] is None
+            assert not llama.alive()
+            assert state(sup, "llama") == "stopped" and state(sup, "tts") == "ready"
+            tts = sup.services["tts"].proc
+            assert tts is not None
+            await sup.release("tts", "B")
+            w = await sup.acquire("whisper", "C")
+            assert w == {"endpoint": "inproc", "model_alias": None}
+            assert not tts.alive()
+            st = sup.status()
+            assert st["services"]["whisper"]["state"] == "ready"
+            assert st["services"]["whisper"]["owners"] == ["C"]
+            assert st["gpu_service"] == "whisper"
+            await sup.release("whisper", "C")
+            assert sup.status()["services"]["whisper"]["state"] == "stopped"
+
+    asyncio.run(main())
+
+
+def test_idle_unload_after_release(tmp_path: Path) -> None:
+    sup, _, _ = make(tmp_path, idle_unload_s=0.6)
+
+    async def main() -> None:
+        async with running(sup):
+            await sup.acquire("llama", "A")
+            proc = sup.services["llama"].proc
+            assert proc is not None
+            await sup.release("llama", "A")
+            assert await until(lambda: state(sup, "llama") == "stopped")
+            assert not proc.alive()
+
+    asyncio.run(main())
+
+
+def test_held_service_is_not_unloaded(tmp_path: Path) -> None:
+    sup, _, _ = make(tmp_path, idle_unload_s=0.4)
+
+    async def main() -> None:
+        async with running(sup):
+            await sup.acquire("llama", "A")
+            await asyncio.sleep(1.5)
+            assert state(sup, "llama") == "ready"
+
+    asyncio.run(main())
+
+
+def test_embed_never_takes_the_gpu_lock_and_refcounts(tmp_path: Path) -> None:
+    sup, _, _ = make(tmp_path, idle_unload_s=0.8)
+
+    async def main() -> None:
+        async with running(sup):
+            await sup.acquire("llama", "A")
+            await sup.acquire("embed", "B")
+            await sup.acquire("embed", "C")
+            st = sup.status()
+            assert st["gpu_owner"] == "A"
+            assert st["services"]["embed"]["owners"] == ["B", "C"]
+            await sup.release("embed", "B")
+            await asyncio.sleep(1.6)  # longer than the idle timer, but C still holds it
+            assert state(sup, "embed") == "ready"
+            await sup.release("embed", "C")
+            assert await until(lambda: state(sup, "embed") == "stopped")
+            assert state(sup, "llama") == "ready"  # still held by A
+
+    asyncio.run(main())
+
+
+def test_crash_is_restarted_on_next_acquire(tmp_path: Path) -> None:
+    sup, _, _ = make(tmp_path, idle_unload_s=60)
+
+    async def main() -> None:
+        async with running(sup):
+            await sup.acquire("llama", "A")
+            first = sup.services["llama"].proc
+            assert first is not None
+            await sup.release("llama", "A")
+            first.popen.kill()
+            assert await until(lambda: state(sup, "llama") == "stopped")
+            assert sup.status()["services"]["llama"]["crashes"] == 1
+            await sup.acquire("llama", "B")
+            assert state(sup, "llama") == "ready"
+            assert pid(sup, "llama") != first.pid
+
+    asyncio.run(main())
+
+
+def test_three_crashes_in_window_put_service_in_error(tmp_path: Path) -> None:
+    sup, _, _ = make(tmp_path, idle_unload_s=60)
+
+    async def main() -> None:
+        async with running(sup):
+            for i in range(3):
+                await sup.acquire("llama", "A")
+                proc = sup.services["llama"].proc
+                assert proc is not None
+                await sup.release("llama", "A")
+                proc.popen.kill()
+                want = "error" if i == 2 else "stopped"
+                assert await until(lambda w=want: state(sup, "llama") == w)
+            with pytest.raises(NsError) as ei:
+                await sup.acquire("llama", "A")
+            assert ei.value.code == "NS-E202"
+            assert pid(sup, "llama") is None
+            assert sup.status()["gpu_owner"] is None
+            await sup.stop_all()
+            assert state(sup, "llama") == "stopped"
+            await sup.acquire("llama", "A")
+            assert state(sup, "llama") == "ready"
+
+    asyncio.run(main())
+
+
+def test_start_failure_is_e202_and_frees_the_lock(tmp_path: Path) -> None:
+    sup, _, _ = make(tmp_path, extra={"llama": ["--exit-immediately"]})
+
+    async def main() -> None:
+        async with running(sup):
+            with pytest.raises(NsError) as ei:
+                await sup.acquire("llama", "A")
+            assert ei.value.code == "NS-E202"
+            assert sup.status()["gpu_owner"] is None
+            assert sup.status()["services"]["llama"]["crashes"] == 1
+
+    asyncio.run(main())
+
+
+def test_health_timeout_is_e203_and_child_is_killed(tmp_path: Path) -> None:
+    sup, _, _ = make(tmp_path, extra={"llama": ["--never-ready"]}, health_timeout_s=1.5)
+
+    async def main() -> None:
+        async with running(sup):
+            with pytest.raises(NsError) as ei:
+                await sup.acquire("llama", "A")
+            assert ei.value.code == "NS-E203"
+            assert pid(sup, "llama") is None
+            assert sup.status()["gpu_owner"] is None
+
+    asyncio.run(main())
+
+
+def test_lock_timeout_is_e201(tmp_path: Path) -> None:
+    sup, _, _ = make(tmp_path, idle_unload_s=60)
+
+    async def main() -> None:
+        async with running(sup):
+            await sup.acquire("llama", "A")
+            with pytest.raises(NsError) as ei:
+                await sup.acquire("tts", "B", timeout_s=0.3)
+            assert ei.value.code == "NS-E201"
+            with pytest.raises(NsError) as ei2:
+                await sup.acquire("tts", "B", wait=False)
+            assert ei2.value.code == "NS-E201"
+            assert sup.status()["gpu_owner"] == "A" and sup.status()["waiting"] == []
+
+    asyncio.run(main())
+
+
+def test_two_model_mode_swaps_on_alias_change(tmp_path: Path) -> None:
+    sup, _, _ = make(tmp_path, two_model=True, idle_unload_s=60)
+
+    async def main() -> None:
+        async with running(sup):
+            r = await sup.acquire("llama", "A", model_alias="story")
+            assert r["model_alias"] == "story"
+            story_pid = pid(sup, "llama")
+            story_proc = sup.services["llama"].proc
+            assert story_proc is not None
+            await sup.release("llama", "A")
+            r2 = await sup.acquire("llama", "B", model_alias="code")
+            assert r2["model_alias"] == "code"
+            assert pid(sup, "llama") != story_pid
+            assert not story_proc.alive()
+            code_pid = pid(sup, "llama")
+            await sup.release("llama", "B")
+            await sup.acquire("llama", "C", model_alias="code")
+            assert pid(sup, "llama") == code_pid
+
+    asyncio.run(main())
+
+
+def test_non_gpu_llama_takes_no_lock(tmp_path: Path) -> None:
+    sup, _, _ = make(tmp_path, gpu={"llama": False}, idle_unload_s=60)
+
+    async def main() -> None:
+        async with running(sup):
+            await asyncio.gather(sup.acquire("llama", "A"), sup.acquire("llama", "B"))
+            st = sup.status()
+            assert st["gpu_owner"] is None
+            assert st["services"]["llama"]["owners"] == ["A", "B"]
+
+    asyncio.run(main())
+
+
+def test_stop_all_clears_everything(tmp_path: Path) -> None:
+    sup, _, _ = make(tmp_path, idle_unload_s=60)
+
+    async def main() -> None:
+        async with running(sup):
+            await sup.acquire("llama", "A")
+            await sup.acquire("embed", "B")
+            await sup.stop_all()
+            st = sup.status()
+            assert st["gpu_owner"] is None
+            for name in ("llama", "embed", "tts"):
+                assert st["services"][name]["state"] == "stopped"
+                assert st["services"][name]["owners"] == []
+
+    asyncio.run(main())
+
+
+def test_dashboard_is_persistent_and_survives_stop_all(tmp_path: Path) -> None:
+    sup, _, _ = make(tmp_path, idle_unload_s=0.4)
+
+    async def main() -> None:
+        async with running(sup):
+            assert await sup.warmup("dashboard") == "ready"
+            await asyncio.sleep(1.2)
+            assert state(sup, "dashboard") == "ready"
+            await sup.stop_all()
+            assert state(sup, "dashboard") == "ready"
+            await sup.stop_all(include_persistent=True)
+            assert state(sup, "dashboard") == "stopped"
+
+    asyncio.run(main())
+
+
+def test_warmup_starts_without_owner_and_yields_to_busy_gpu(tmp_path: Path) -> None:
+    sup, _, _ = make(tmp_path, idle_unload_s=60)
+
+    async def main() -> None:
+        async with running(sup):
+            assert await sup.warmup("llama") == "ready"
+            assert sup.status()["gpu_owner"] is None
+            await sup.acquire("tts", "A")
+            assert await sup.warmup("llama") == "stopped"  # GPU is busy: nothing is touched
+            assert state(sup, "tts") == "ready"
+
+    asyncio.run(main())
+
+
+def test_shutdown_stops_children_requests_exit_and_refuses_new_work(tmp_path: Path) -> None:
+    sup, _, paths = make(tmp_path, idle_unload_s=60)
+
+    async def main() -> None:
+        async with running(sup):
+            await sup.acquire("llama", "A")
+            proc = sup.services["llama"].proc
+            assert proc is not None
+            assert (paths.home / "run" / "supervisor.json").exists()
+            await sup.shutdown(grace_s=0.2)
+            assert sup.exit_requested.is_set()
+            assert not proc.alive()
+            assert not (paths.home / "run" / "supervisor.json").exists()
+            with pytest.raises(NsError) as ei:
+                await sup.acquire("llama", "B")
+            assert ei.value.code == "NS-E202"
+
+    asyncio.run(main())
+
+
+def test_auto_exit_when_idle_and_no_run_scheduled(tmp_path: Path) -> None:
+    now = datetime(2026, 11, 2, 2, 30)
+    sup, _, paths = make(tmp_path, auto_exit_idle_s=0.4, now=lambda: now)
+    write_run_time(paths, "10:00")  # 7.5 h away: not "due soon"
+
+    async def main() -> None:
+        async with running(sup):
+            assert await until(sup.exit_requested.is_set)
+
+    asyncio.run(main())
+
+
+def test_no_auto_exit_when_run_due_within_an_hour(tmp_path: Path) -> None:
+    now = datetime(2026, 11, 2, 2, 30)
+    sup, _, paths = make(tmp_path, auto_exit_idle_s=0.4, now=lambda: now)
+    write_run_time(paths, "03:00")  # 30 minutes away
+
+    async def main() -> None:
+        async with running(sup):
+            await asyncio.sleep(1.5)
+            assert not sup.exit_requested.is_set()
+            assert sup.run_due_soon() is True
+
+    asyncio.run(main())
+
+
+def test_activity_defers_auto_exit(tmp_path: Path) -> None:
+    sup, _, _ = make(tmp_path, auto_exit_idle_s=0.8, idle_unload_s=60)
+
+    async def main() -> None:
+        async with running(sup):
+            await sup.acquire("llama", "A")
+            await asyncio.sleep(1.6)  # held the whole time: busy, so never idle
+            assert not sup.exit_requested.is_set()
+
+    asyncio.run(main())
+
+
+def test_events_are_published(tmp_path: Path) -> None:
+    sup, _, _ = make(tmp_path, idle_unload_s=60)
+
+    async def main() -> None:
+        q = sup.subscribe()
+        async with running(sup):
+            await sup.acquire("llama", "A")
+            await sup.release("llama", "A")
+        sup.unsubscribe(q)
+        seen: list[dict[str, Any]] = []
+        while not q.empty():
+            seen.append(q.get_nowait())
+        pairs = {(e["data"].get("service"), e["data"].get("event")) for e in seen}
+        want = {("llama", "starting"), ("llama", "ready"), ("llama", "acquired"), ("llama", "released")}
+        assert want <= pairs
+        assert all(e["kind"] == "service" and "ts" in e for e in seen)
+
+    asyncio.run(main())
+
+
+def test_state_file_records_child_pids(tmp_path: Path) -> None:
+    sup, _, paths = make(tmp_path, idle_unload_s=60)
+
+    async def main() -> None:
+        async with running(sup):
+            await sup.acquire("llama", "A")
+            data = json.loads((paths.home / "run" / "supervisor.json").read_text(encoding="utf-8"))
+            assert data["children"]["llama"] == pid(sup, "llama")
+            assert data["port"] == 8099 and isinstance(data["pid"], int)
+
+    asyncio.run(main())
+
+
+def test_unknown_service_is_e202(tmp_path: Path) -> None:
+    sup, _, _ = make(tmp_path)
+
+    async def main() -> None:
+        async with running(sup):
+            with pytest.raises(NsError) as ei:
+                await sup.acquire("bogus", "A")
+            assert ei.value.code == "NS-E202"
+            assert await sup.release("llama", "nobody") is False
+
+    asyncio.run(main())
+
+
+def test_process_output_reaches_the_service_log(tmp_path: Path) -> None:
+    sup, _, paths = make(tmp_path, idle_unload_s=60)
+
+    async def main() -> None:
+        async with running(sup):
+            await sup.acquire("llama", "A")
+
+    asyncio.run(main())
+    files = list(paths.logs.glob("llama-*.jsonl"))
+    assert files, "service output should be logged"
+    assert list(paths.logs.glob("supervisor-*.jsonl")), "supervisor events should be logged"
