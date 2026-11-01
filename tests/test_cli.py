@@ -48,6 +48,7 @@ def stub_stages(monkeypatch: pytest.MonkeyPatch):
     register(StubB())
     monkeypatch.setitem(FORMAT_STAGES, "shorts_only", ["stub_a", "stub_b"])
     monkeypatch.setattr(jobs, "STAGE_MODULES", ())
+    monkeypatch.setattr("ns_studio.policy.gate.available", lambda: False)
 
 
 def _job_ids(output: str) -> list[str]:

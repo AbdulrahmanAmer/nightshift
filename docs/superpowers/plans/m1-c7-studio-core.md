@@ -64,9 +64,9 @@ def sync_channel_row(db: Db, ch: Channel, now: datetime) -> None   # channels(sl
 ```
 Rules: hooks >= 3, structures >= 3, `len(hooks) * len(structures) >= 9`, caption_styles >= 2, visual_treatments >= 2; every pool entry unique; warning when hooks < 4 or structures < 4. Distinctness (spec 8): two channels fail when niche (case and whitespace normalised), voice (mode, speaker, name, description; speed ignored), caption-style set and visual-treatment set are all equal; slug must be unique; at most 3 channels per install (spec 18.6).
 
-- [ ] **Step 1: tests first** (`tests/test_channels.py`): minimum failures each report their rule; 4x4 default pools pass without warnings, 3x3 passes with a warning; add twice with equal everything fails `NS-E308`; different voice passes; fourth channel fails; `edit_channel(..., {"pools.hooks": ["a"]})` fails `NS-E307` and leaves the YAML untouched; `edit_channel` with `critic_bar` persists; `add_channel` writes the YAML and inserts the `channels` row.
-- [ ] **Step 2: implement** `errors.py` and `crud.py` (edit applies the updates to `model_dump()`, validates through `Channel.model_validate`, validates pools and distinctness, then saves).
-- [ ] **Step 3: Run** (commit, push, CI) then `git commit -m "feat(c7): channel CRUD with pool minimums and distinctness"`.
+- [x] **Step 1: tests first** (`tests/test_channels.py`): minimum failures each report their rule; 4x4 default pools pass without warnings, 3x3 passes with a warning; add twice with equal everything fails `NS-E308`; different voice passes; fourth channel fails; `edit_channel(..., {"pools.hooks": ["a"]})` fails `NS-E307` and leaves the YAML untouched; `edit_channel` with `critic_bar` persists; `add_channel` writes the YAML and inserts the `channels` row.
+- [x] **Step 2: implement** `errors.py` and `crud.py` (edit applies the updates to `model_dump()`, validates through `Channel.model_validate`, validates pools and distinctness, then saves).
+- [x] **Step 3: Run** (commit, push, CI) then `git commit -m "feat(c7): channel CRUD with pool minimums and distinctness"`.
 
 ---
 
@@ -93,9 +93,9 @@ Algorithm of `draw_combo`:
 3. Draw the other six dimensions independently by weights (honouring `fixed`), up to 60 attempts until the full tuple is not in `used_full_combos`; then enumerate the remaining Cartesian product and pick the first unused by weight order; none left means `StudioError("NS-E312")`.
 4. `combo_id = f"c-{rng.getrandbits(32):08x}"` (collision with the `combos` table redraws the id).
 
-- [ ] **Step 1: tests first**: `apply_floor({"a": 0.99, "b": 0.01})` gives `b >= 0.05` and sum 1; with weights `{"a": 1000}` stored, option `b` still drawn in about 5 % of 4000 seeded draws (between 3 % and 8 %); ledger: after recording a combo, `draw_combo` 50 times never returns the same `{hook, structure}` while it is inside the window; with 3x3 pools (window 8) nine consecutive recorded draws never repeat a pair inside any window of 8; 30-day rule: a combo recorded 31 days ago may repeat, one recorded 29 days ago may not (shrink pools to one option each to force it); exhaustion raises `NS-E312`; `fixed={"structure": "twist"}` keeps the structure.
-- [ ] **Step 2: implement.**
-- [ ] **Step 3: Run** then `git commit -m "feat(c7): weighted combo draw with 30-day and pair ledger"`.
+- [x] **Step 1: tests first**: `apply_floor({"a": 0.99, "b": 0.01})` gives `b >= 0.05` and sum 1; with weights `{"a": 1000}` stored, option `b` still drawn in about 5 % of 4000 seeded draws (between 3 % and 8 %); ledger: after recording a combo, `draw_combo` 50 times never returns the same `{hook, structure}` while it is inside the window; with 3x3 pools (window 8) nine consecutive recorded draws never repeat a pair inside any window of 8; 30-day rule: a combo recorded 31 days ago may repeat, one recorded 29 days ago may not (shrink pools to one option each to force it); exhaustion raises `NS-E312`; `fixed={"structure": "twist"}` keeps the structure.
+- [x] **Step 2: implement.**
+- [x] **Step 3: Run** then `git commit -m "feat(c7): weighted combo draw with 30-day and pair ledger"`.
 
 ---
 
@@ -115,9 +115,9 @@ def load_job(paths, db, runtime, services, job_id) -> JobContext                
 ```
 Behaviour: `--fake-services` with no channel on disk creates a `demo` channel (logged). `--dry-run` prints stage names, no job dir. `--resume job_id` reads `job.json` (channel, combo, fmt) and calls `run_job(resume=True)`. An `NsError`/`StudioError` prints `CODE: message` plus hint and exits 1. `--format` defaults to the channel's format. `job.json` = `{"job_id", "channel", "combo", "fmt", "created_at"}`. One `studio run` summary line per job. The runtime comes from `load_runtime(paths)`; when the file is missing and fakes are on, `Runtime.default("cpu-dev")`.
 
-- [ ] **Step 1: tests first** (`tests/test_cli.py`, typer `CliRunner`, fixture registers two stub stages into `FORMAT_STAGES["shorts_only"]` and disables `STAGE_MODULES`): `studio --help` lists run/channel/voice/calibrate; `run --fake-services --format shorts_only --count 2` creates two job dirs with `stage_state.json` and two `combos` rows and prints both job ids; `--dry-run` creates no job dir; `--resume` after deleting a stage output re-runs only that stage; `--fake-services=llm,tts` builds a Services with real (unconnected) whisper; bad fake name exits 2; `NsError` exit code 1 with the code in the output.
-- [ ] **Step 2: implement.**
-- [ ] **Step 3: Run** then `git commit -m "feat(c7): studio run with fake services, dry run and resume"`.
+- [x] **Step 1: tests first** (`tests/test_cli.py`, typer `CliRunner`, fixture registers two stub stages into `FORMAT_STAGES["shorts_only"]` and disables `STAGE_MODULES`): `studio --help` lists run/channel/voice/calibrate; `run --fake-services --format shorts_only --count 2` creates two job dirs with `stage_state.json` and two `combos` rows and prints both job ids; `--dry-run` creates no job dir; `--resume` after deleting a stage output re-runs only that stage; `--fake-services=llm,tts` builds a Services with real (unconnected) whisper; bad fake name exits 2; `NsError` exit code 1 with the code in the output.
+- [x] **Step 2: implement.**
+- [x] **Step 3: Run** then `git commit -m "feat(c7): studio run with fake services, dry run and resume"`.
 
 ---
 
@@ -127,9 +127,9 @@ Behaviour: `--fake-services` with no channel on disk creates a `demo` channel (l
 
 Commands: `channel add --slug --name --niche [--keywords a,b] [--voice-notes] [--speaker] [--format] [--from-yaml file]`, `channel list` (slug, status, format, pairs), `channel edit <slug> --set key=value ...` (value parsed as JSON, falling back to string; dotted keys), `channel validate [slug]` (prints problems and warnings, exit 1 on problems), `voice list [--fake-services]` (name, mode), `voice preview <name> [--text] [--out file] [--fake-services]` (acquires `tts` through the acquirer, calls `Tts.speak`, prints the path and duration).
 
-- [ ] **Step 1: tests first**: add then list shows the channel; add with 2 hooks exits 1 with the minimum rule in the output; duplicate add exits 1; edit changes `critic_bar` and rejects `pools.hooks=["a"]`; validate shows the 3x3 warning; `voice preview --fake-services` writes a WAV and the acquirer events show acquire/release `tts`.
-- [ ] **Step 2: implement.**
-- [ ] **Step 3: Run** then `git commit -m "feat(c7): studio channel and voice commands"`.
+- [x] **Step 1: tests first**: add then list shows the channel; add with 2 hooks exits 1 with the minimum rule in the output; duplicate add exits 1; edit changes `critic_bar` and rejects `pools.hooks=["a"]`; validate shows the 3x3 warning; `voice preview --fake-services` writes a WAV and the acquirer events show acquire/release `tts`.
+- [x] **Step 2: implement.**
+- [x] **Step 3: Run** then `git commit -m "feat(c7): studio channel and voice commands"`.
 
 ---
 
@@ -151,9 +151,9 @@ def score(paths, db, channel, scores_csv: Path) -> CalibrationReport      # per-
 ```
 `default_generator` runs the registered stages `ideas`, `plan`, `draft` (C5) for a fresh job and returns `story.json["text"]`; `default_critic` calls `ns_studio.text.prompts.call_json(ctx, "critic", story=..., banned=...)` through `importlib`. Both are replaceable so the tests need no C5 code. Rows go to the `calibration` table (`critic_json`, `human_json`). Refusal rate above 2 % prints the two-model-mode recommendation.
 
-- [ ] **Step 1: tests first**: Spearman of perfectly ordered series = 1, reversed = -1, ties handled (`[1,1,2]` vs `[1,2,3]` = 0.866...), constant series = 0; bar recommendation on a crafted set satisfies >= 80 % good and <= 20 % bad; generation with stub generator/critic writes `stories.csv`, 3 `.txt`, `scores.csv` header; score() round trip updates `critic_bar` in the YAML and reports refusal rate (one stub story answers "I'm sorry, I can't help with that").
-- [ ] **Step 2: implement.**
-- [ ] **Step 3: Run** then `git commit -m "feat(c7): studio calibrate harness with Spearman and bar recommendation"`.
+- [x] **Step 1: tests first**: Spearman of perfectly ordered series = 1, reversed = -1, ties handled (`[1,1,2]` vs `[1,2,3]` = 0.866...), constant series = 0; bar recommendation on a crafted set satisfies >= 80 % good and <= 20 % bad; generation with stub generator/critic writes `stories.csv`, 3 `.txt`, `scores.csv` header; score() round trip updates `critic_bar` in the YAML and reports refusal rate (one stub story answers "I'm sorry, I can't help with that").
+- [x] **Step 2: implement.**
+- [x] **Step 3: Run** then `git commit -m "feat(c7): studio calibrate harness with Spearman and bar recommendation"`.
 
 ---
 
@@ -161,4 +161,4 @@ def score(paths, db, channel, scores_csv: Path) -> CalibrationReport      # per-
 
 Append CR-1 (error codes NS-E307..E312) and CR-2 (prompt `policy_check`, its schema and fixture, owner C5) to `contracts/CHANGE_REQUESTS.md`.
 
-- [ ] Commit `docs(c7): change requests for error codes and policy_check prompt`.
+- [x] Commit `docs(c7): change requests for error codes and policy_check prompt`.

@@ -203,3 +203,17 @@ def load_job(env: Env, job_id: str) -> JobContext:
         services=env.services,
         log=env.log,
     )
+
+
+def prepare_policy(fmt: str, policy: bool | None) -> bool:
+    """Insert the policy gate stages into the plan of `fmt`.
+
+    `policy=None` means automatic: on when C5's `policy_check` prompt exists. Returns whether the gates
+    are part of the plan.
+    """
+    from ns_studio.policy import gate
+
+    enabled = gate.available() if policy is None else policy
+    if enabled:
+        gate.install_gates(fmt)
+    return enabled

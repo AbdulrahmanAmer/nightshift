@@ -4,6 +4,7 @@ import json
 import random
 from collections.abc import Iterator
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -14,12 +15,15 @@ from typer.core import TyperGroup
 from ns_common import __version__
 from ns_common.errors import NsError
 from ns_common.models import Channel, Voice
-from ns_studio import jobs
+from ns_studio import jobs, review
 from ns_studio.calibrate import run as calibration
-from ns_studio.channels import crud
+from ns_studio.channels import cadence, crud
 from ns_studio.context import JobContext
+from ns_studio.daily import run_daily
 from ns_studio.errors import StudioError
-from ns_studio.orchestrator import plan_job, run_job
+from ns_studio.learn import importer, reweight, status
+from ns_studio.orchestrator import FORMAT_STAGES, plan_job, run_job
+from ns_studio.policy.regen import run_job_guarded
 
 
 def normalize_fake_flag(args: list[str]) -> list[str]:
@@ -80,11 +84,15 @@ def _root(ctx: typer.Context) -> None:
 # ---------------------------------------------------------------- run
 @app.command("run")
 def run_cmd(
+    daily: Annotated[bool, typer.Option("--daily", help="Cadence-planned nightly run.")] = False,
     channel: Annotated[str | None, typer.Option("--channel", help="Channel slug (default: all).")] = None,
     count: Annotated[int, typer.Option("--count", min=1, help="Jobs to create per channel.")] = 1,
     fmt: Annotated[str | None, typer.Option("--format", help="master_first | shorts_only | ...")] = None,
     dry_run: Annotated[bool, typer.Option("--dry-run", help="Print the stage plan and exit.")] = False,
     resume: Annotated[str | None, typer.Option("--resume", help="Resume the job with this id.")] = None,
+    policy: Annotated[
+        bool | None, typer.Option("--policy/--no-policy", help="Policy gates (default: on when available).")
+    ] = None,
     fake_services: FakeOpt = None,
 ) -> None:
     """Create and run jobs through the stage pipeline."""
@@ -93,25 +101,59 @@ def run_cmd(
         raise typer.BadParameter(f"--format must be one of {', '.join(jobs.FORMATS)}")
     with guarded():
         jobs.load_stage_modules()
-        if dry_run and resume is None:
+        if dry_run and resume is None and not daily:
+            jobs.prepare_policy(fmt or "shorts_only", policy)
             names = [s.name for s in plan_job(fmt or "shorts_only")]
             typer.echo("plan: " + " -> ".join(names))
             return
         env = jobs.open_env(fake)
+        if daily:
+            _daily(env, dry_run, policy)
+            return
         if resume is not None:
             ctx = jobs.load_job(env, resume)
+            jobs.prepare_policy(ctx.fmt, policy)
             if dry_run:
                 typer.echo("plan: " + " -> ".join(run_job(ctx, dry_run=True)))
                 return
-            ran = run_job(ctx, resume=True)
+            ran = run_job_guarded(ctx, resume=True)
             typer.echo(f"job {ctx.job_id} resumed: {len(ran)} stages visited")
             return
         rng = random.Random()
         for ch in jobs.resolve_channels(env, channel):
+            job_fmt = fmt or ch.format
+            jobs.prepare_policy(job_fmt, policy)
             for _ in range(count):
-                ctx = jobs.make_job(env, ch, fmt or ch.format, rng=rng)
-                ran = run_job(ctx)
+                ctx = jobs.make_job(env, ch, job_fmt, rng=rng)
+                ran = run_job_guarded(ctx)
                 typer.echo(f"job {ctx.job_id} done: {len(ran)} stages ({ch.slug}, {ctx.fmt})")
+
+
+def _daily(env: jobs.Env, dry_run: bool, policy: bool | None) -> None:
+    """The `--daily` branch of `studio run`."""
+    now = datetime.now(UTC)
+    for f in jobs.FORMATS:
+        if FORMAT_STAGES.get(f):
+            jobs.prepare_policy(f, policy)
+    if dry_run:
+        due = cadence.plan_daily(env.paths, env.db, now)
+        if not due:
+            typer.echo("nothing due today")
+        for dj in due:
+            typer.echo(f"{dj.channel.slug}: {dj.count} x {dj.fmt} ({dj.plan.describe()})")
+        return
+    report = run_daily(env, now=now)
+    for c in report["channels"]:
+        typer.echo(f"{c['channel']}: {c['jobs']} job(s), {c['plan']}")
+    for j in report["jobs"]:
+        typer.echo(f"job {j['job_id']} done: {j['stages']} stages ({j['channel']})")
+    for f in report["failures"]:
+        typer.echo(f"job {f['job_id']} FAILED {f['code']}: {f['error']}")
+    typer.echo(f"backup: {report['backup']}")
+    if report["failures"]:
+        raise typer.Exit(1)
+
+
 
 
 # ---------------------------------------------------------------- channel
@@ -254,6 +296,159 @@ def voice_preview(
         finally:
             env.services.acquirer.release("tts", owner)
         typer.echo(f"{target} ({seconds:.1f} s)")
+
+
+# ---------------------------------------------------------------- review, status, learn, pause
+review_app = typer.Typer(help="Review queue: list, show, approve, reject", invoke_without_command=True)
+app.add_typer(review_app, name="review")
+
+
+@review_app.callback(invoke_without_command=True)
+def review_list(
+    ctx: typer.Context,
+    channel: Annotated[str | None, typer.Option("--channel", help="Only this channel.")] = None,
+) -> None:
+    """List outputs waiting for review (with no sub-command)."""
+    if ctx.invoked_subcommand is not None:
+        return
+    with guarded():
+        env = jobs.open_env(light=True)
+        rows = review.pending(env.db, channel)
+        if not rows:
+            typer.echo("nothing pending")
+        for r in rows:
+            typer.echo(f"{r['output_id']}\t{r['channel']}\t{r['kind']}\t{r['title']}")
+
+
+@review_app.command("show")
+def review_show(
+    output_id: Annotated[str, typer.Argument()],
+    play: Annotated[bool, typer.Option("--play", help="Open the video in the default player.")] = False,
+) -> None:
+    """Show story text, policy notes and disclosure advice of one output."""
+    with guarded():
+        env = jobs.open_env(light=True)
+        for line in review.describe(env.paths, env.db, output_id):
+            typer.echo(line)
+        if play and not review.open_in_player(Path(review.get_output(env.db, output_id)["path"])):
+            typer.echo("could not open a player for this file")
+
+
+@review_app.command("approve")
+def review_approve(
+    output_id: Annotated[str, typer.Argument()],
+    note: Annotated[str, typer.Option("--note")] = "",
+) -> None:
+    """Approve a pending output."""
+    with guarded():
+        env = jobs.open_env(light=True)
+        review.approve(env.db, output_id, note)
+        typer.echo(f"approved {output_id}")
+
+
+@review_app.command("reject")
+def review_reject(
+    output_id: Annotated[str, typer.Argument()],
+    reason: Annotated[str, typer.Option("--reason", help="Why (shown in 'studio status').")] = "",
+) -> None:
+    """Reject an output and move its files to rejected/."""
+    with guarded():
+        env = jobs.open_env(light=True)
+        dest = review.reject(env.paths, env.db, output_id, reason)
+        typer.echo(f"rejected {output_id}: {dest}")
+
+
+@app.command("mark-uploaded")
+def mark_uploaded_cmd(
+    job_id: Annotated[str, typer.Argument()],
+    item: Annotated[str, typer.Argument(help="long or s<k>")],
+    url: Annotated[str, typer.Argument()],
+) -> None:
+    """Record the public URL of an approved output so analytics rows can be matched."""
+    with guarded():
+        env = jobs.open_env(light=True)
+        out = review.mark_uploaded(env.db, job_id, item, url)
+        typer.echo(f"{out} marked uploaded")
+
+
+@app.command("pause")
+def pause_cmd(
+    slug: Annotated[str, typer.Argument()],
+    reason: Annotated[str, typer.Option("--reason", help="The notice text.")] = "",
+) -> None:
+    """Pause a channel after a YouTube warning, strike or monetization notice."""
+    with guarded():
+        env = jobs.open_env(light=True)
+        review.pause(env.paths, env.db, slug, reason)
+        typer.echo(f"channel {slug} paused; nightly runs skip it")
+
+
+@app.command("resume")
+def resume_cmd(
+    slug: Annotated[str, typer.Argument()],
+    yes: Annotated[bool, typer.Option("--yes", help="Skip the confirmation prompt.")] = False,
+) -> None:
+    """Resume a paused channel after reviewing its last 10 outputs."""
+    with guarded():
+        env = jobs.open_env(light=True)
+        for r in review.last_outputs(env.db, slug):
+            typer.echo(f"{r['output_id']}\t{r['status']}\t{r['title']}\t{r['review_note'] or ''}")
+        typer.echo("Check these against spec sections 18.2-18.4; raise critic_bar or trim pools if needed.")
+        if not yes and not typer.confirm(f"Resume {slug}?"):
+            raise typer.Exit(1)
+        review.resume(env.paths, env.db, slug)
+        typer.echo(f"channel {slug} resumed")
+
+
+@app.command("status")
+def status_cmd(
+    channel: Annotated[str | None, typer.Option("--channel")] = None,
+    milestone: Annotated[bool, typer.Option("--milestone", help="Week-8 go/no-go (spec 18.12).")] = False,
+) -> None:
+    """Per-channel status, performers, rejections, incidents, or the go/no-go verdict."""
+    with guarded():
+        env = jobs.open_env(light=True)
+        chans = [crud.get_channel(env.paths, channel)] if channel else crud.all_channels(env.paths)
+        if not chans:
+            typer.echo("no channels configured")
+        for ch in chans:
+            if milestone:
+                lines = status.format_milestone(status.milestone(env.db, ch.slug))
+            else:
+                plan = cadence.plan_channel(env.db, ch, datetime.now(UTC))
+                lines = status.format_status(status.channel_status(env.db, env.paths, ch), plan.describe())
+            for line in lines:
+                typer.echo(line)
+
+
+@app.command("learn")
+def learn_cmd(
+    import_csv: Annotated[Path, typer.Option("--import", help="YouTube Studio CSV export.")],
+    date: Annotated[str | None, typer.Option("--date", help="Export date YYYY-MM-DD.")] = None,
+    column_map: Annotated[
+        list[str] | None, typer.Option("--map", help="field=CSV column, e.g. viewed_pct=Stayed")
+    ] = None,
+) -> None:
+    """Import analytics, match rows to outputs and reweight the variation pools."""
+    with guarded():
+        env = jobs.open_env(light=True)
+        overrides: dict[str, str] = {}
+        for item in column_map or []:
+            if "=" not in item:
+                raise typer.BadParameter(f"--map expects field=column, got {item!r}")
+            k, v = item.split("=", 1)
+            overrides[k.strip()] = v.strip()
+        day = date or datetime.now(UTC).date().isoformat()
+        rows = importer.read_csv(import_csv, overrides or None)
+        result = importer.import_rows(env.db, rows, day)
+        typer.echo(f"matched {len(result.matched)} of {len(rows)} rows")
+        for r in result.unmatched:
+            typer.echo(f"unmatched: {r.title or r.video_id or r.url}")
+        for slug in sorted(set(result.matched.values())):
+            ch = crud.get_channel(env.paths, slug)
+            changes = reweight.reweight(env.db, ch)
+            reweight.save_snapshot(env.paths, slug, changes)
+            typer.echo(f"{slug}: {sum(len(c) for c in changes.values())} pool weights changed")
 
 
 # ---------------------------------------------------------------- calibrate
