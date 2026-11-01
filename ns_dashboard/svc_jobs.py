@@ -216,9 +216,16 @@ class JobsService:
         folder = source_dir(self.s.paths, source_id)
         folder.mkdir(parents=True, exist_ok=True)
         rights = {"rights_confirmed": True, "confirmed_at": now_iso(), "channel": slug}
-        (folder / "rights.json").write_text(json.dumps(rights, indent=2) + "
-", encoding="utf-8")
+        (folder / "rights.json").write_text(json.dumps(rights, indent=2) + "\n", encoding="utf-8")
         return self._enqueue("clip", slug, params)
+
+    def _registered_source(self, source_id: str) -> Path | None:
+        """Path stored in the `sources` table (set by the Clipper import), if the file still exists."""
+        row = self.s.db.one("SELECT path FROM sources WHERE source_id = ?", (source_id,))
+        if row is None:
+            return None
+        p = Path(row["path"])
+        return p if p.is_file() else None
 
     def _resolve_source(self, body: dict[str, Any], uploaded: UploadInfo | None) -> tuple[str, Path, bool]:
         if uploaded is not None and uploaded.path:
@@ -226,7 +233,7 @@ class JobsService:
         for key, rerun in (("upload_id", False), ("source_id", True)):
             sid = body.get(key)
             if sid:
-                found = find_source(self.s.paths, str(sid))
+                found = find_source(self.s.paths, str(sid)) or self._registered_source(str(sid))
                 if found is None:
                     code = "upload_incomplete" if key == "upload_id" else "not_found"
                     status = 409 if key == "upload_id" else 404
