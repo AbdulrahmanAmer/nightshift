@@ -104,7 +104,7 @@ class EmbedCfg(Strict):
 class TtsCfg(Strict):
     host: str = "127.0.0.1"
     port: int = 8091
-    engine: Literal["faster", "reference"] = "faster"
+    engine: Literal["qwentts", "reference", "faster"] = "qwentts"
     model_dir: str = ""
     device: Literal["cuda", "cpu"] = "cuda"
 
