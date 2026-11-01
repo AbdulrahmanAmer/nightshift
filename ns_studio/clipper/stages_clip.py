@@ -114,7 +114,7 @@ def create_clip_job(
         job_id=jid,
         channel=channel,
         combo=default_combo(channel),
-        fmt="clip",  # type: ignore[arg-type]
+        fmt="clip",
         paths=paths,
         job_dir=job_dir,
         db=db,
