@@ -59,9 +59,11 @@ class ShortCombosStage:
 
 def install_short_combos(fmt: str) -> bool:
     """Register the stage and place it right after `shorts_select`; True when the plan changed."""
-    names = FORMAT_STAGES.get(fmt)
-    if not names or AFTER not in names or STAGE_NAME in names:
+    current = FORMAT_STAGES.get(fmt)
+    if not current or AFTER not in current or STAGE_NAME in current:
         return False
     register(ShortCombosStage())
+    names = list(current)
     names.insert(names.index(AFTER) + 1, STAGE_NAME)
+    FORMAT_STAGES[fmt] = names
     return True

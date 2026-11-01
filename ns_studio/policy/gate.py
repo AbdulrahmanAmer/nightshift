@@ -121,9 +121,10 @@ def install_gates(fmt: str) -> bool:
     The text gate goes after the last of `_TEXT_AFTER` found, else before `voice`; the final gate
     goes before `outbox`, else after `qc`, else at the end. Returns True when the plan changed.
     """
-    names = FORMAT_STAGES.get(fmt)
-    if not names:
+    current = FORMAT_STAGES.get(fmt)
+    if not current:
         return False
+    names = list(current)  # never mutate a list another module may hold
     register(PolicyTextStage())
     register(PolicyFinalStage())
     changed = False
@@ -141,4 +142,5 @@ def install_gates(fmt: str) -> bool:
         if not placed:
             names.append(FINAL_STAGE)
         changed = True
+    FORMAT_STAGES[fmt] = names
     return changed

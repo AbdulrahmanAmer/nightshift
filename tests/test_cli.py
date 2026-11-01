@@ -204,17 +204,13 @@ def test_voice_list_and_preview_with_fakes(tmp_home: Path):
     assert out.exists() and out.stat().st_size > 1000
 
 
-def test_master_first_plan_includes_short_combos_and_gates(tmp_home: Path, monkeypatch: pytest.MonkeyPatch):
-    jobs.load_stage_modules()
+def test_master_first_plan_includes_short_combos_and_gates(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setitem(FORMAT_STAGES, "master_first", list(FORMAT_STAGES["master_first"]))
-    monkeypatch.setattr(jobs, "STAGE_MODULES", ())
-    res = runner.invoke(app, ["run", "--dry-run", "--format", "master_first", "--policy"])
-    assert res.exit_code == 0, res.output
-    plan = res.output.split("plan:")[1].split("->")
-    names = [p.strip() for p in plan]
+    assert jobs.prepare_plan("master_first", True) is True
+    names = FORMAT_STAGES["master_first"]
     assert names.index("short_combos") == names.index("shorts_select") + 1
-    assert names.index("policy_text") > names.index("seo_shorts")
-    assert "policy_final" in names
+    assert names.index("policy_text") == names.index("seo_shorts") + 1
+    assert names.index("policy_final") == names.index("outbox") - 1
 
 
 @pytest.mark.skipif(not ffmpeg.available(), reason="ffmpeg not installed")

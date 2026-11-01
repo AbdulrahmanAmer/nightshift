@@ -7,8 +7,9 @@ from ns_common import ffmpeg as ff
 from ns_studio.media import stages_media  # noqa: F401
 from ns_studio.media.audio import parse_ebur128, parse_silences
 from ns_studio.media.voice import loudnorm, measure_lufs, narration_items
-from ns_studio.orchestrator import FORMAT_STAGES
+from ns_studio.orchestrator import FORMAT_STAGES, SHORTS_ONLY_STAGES
 from ns_studio.stages import REGISTRY
+from ns_studio.text import stages_shorts  # noqa: F401
 from tests.helpers import make_ctx
 
 needs_ffmpeg = pytest.mark.skipif(not ff.available(), reason="ffmpeg required")
@@ -37,7 +38,9 @@ def test_hook_equal_to_first_sentence_is_not_voiced_twice():
 
 
 def test_media_stages_register_in_order():
+    assert FORMAT_STAGES["shorts_only"] == list(SHORTS_ONLY_STAGES)
     assert FORMAT_STAGES["shorts_only"][-6:] == ["voice", "captions", "clips", "render", "qc", "outbox"]
+    assert all(n in REGISTRY for n in SHORTS_ONLY_STAGES)
     assert REGISTRY["voice"].tenant == "tts" and REGISTRY["captions"].tenant == "whisper"
 
 

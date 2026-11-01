@@ -9,6 +9,7 @@ from ns_common.paths import contracts_dir
 from ns_studio.media import stages_media  # noqa: F401
 from ns_studio.media.outbox import job_date
 from ns_studio.orchestrator import FORMAT_STAGES, run_job
+from ns_studio.text import stages_shorts  # noqa: F401
 from tests.helpers import make_combo, make_ctx
 
 pytestmark = pytest.mark.skipif(not ff.available(), reason="ffmpeg required")

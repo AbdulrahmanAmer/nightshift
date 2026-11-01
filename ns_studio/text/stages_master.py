@@ -13,7 +13,6 @@ from ns_common.errors import NsError
 from ns_common.models import Seo, VisualBeat
 from ns_common.textstats import split_sentences, word_count
 from ns_studio.context import JobContext
-from ns_studio.orchestrator import FORMAT_STAGES
 from ns_studio.stages import Tenant, register
 from ns_studio.text.budget import (
     PACING_WPM,
@@ -787,6 +786,3 @@ for _st in (
     SeoShortsStage(),
 ):
     register(_st)
-for _name in MASTER_STAGES:
-    if _name not in FORMAT_STAGES["master_first"]:
-        FORMAT_STAGES["master_first"].append(_name)
