@@ -426,13 +426,19 @@ class CaptionsStage:
                 tmod.Word(w.w, max(0.0, w.start - clip.start_s), min(dur, max(0.0, w.end - clip.start_s)), 0)
                 for w in select.words_in(tr.words, clip.start_s, clip.end_s)
             ]
-            ass = caps.build_ass(words, ctx.combo.caption_style, variant="vertical")
+            style = (
+                clip.caption_style
+                if clip.caption_style in ctx.channel.pools.caption_styles
+                else ctx.combo.caption_style
+            )
+            ass = caps.build_ass(words, style, variant="vertical")
             tpl = templates[template_of(lay, clip.k)]
             ass = place_captions(ass, layout.caption_y_pct(tpl, _crop_at(lay, clip.start_s)))
             ctx.file(f"captions/c{clip.k}.ass").write_text(ass, encoding="utf-8")
             report[f"c{clip.k}"] = {
                 "ass": f"captions/c{clip.k}.ass",
                 "words": len(words),
+                "style": style,
                 "first_caption_s": caps.first_event_start(ass),
                 "drift_ms": 0.0,  # captions are the ASR words themselves
             }

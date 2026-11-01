@@ -1,6 +1,6 @@
 {
   "clips": [
-    {"k": 1, "start_s": 0.6, "end_s": 29.0, "title": "The mountain route in one take", "hook_line": "Welcome back everyone, today we are going to test the brand new route", "why": "Opens on a clear promise and ends on the door sequence payoff.", "score": 0.9, "keywords": ["route", "mountain", "ledge"], "layout": "gaming_facecam", "layout_reason": "A facecam sits in the top right corner."},
+    {"k": 1, "start_s": 0.6, "end_s": 29.0, "title": "The mountain route in one take", "hook_line": "Welcome back everyone, today we are going to test the brand new route", "why": "Opens on a clear promise and ends on the door sequence payoff.", "score": 0.9, "keywords": ["route", "mountain", "ledge"], "layout": "gaming_facecam", "layout_reason": "A facecam sits in the top right corner.", "caption_style": "clean_white"},
     {"k": 2, "start_s": 20.0, "end_s": 50.0, "title": "Why the ledge forgives you", "hook_line": "Why does this work at all, you might ask?", "why": "Explains the collision trick but overlaps the first clip.", "score": 0.6, "keywords": ["ledge", "collision"], "layout": "gaming_facecam", "layout_reason": "Same footage, facecam on top."},
     {"k": 3, "start_s": 64.3, "end_s": 89.0, "title": "Beat the boss with four laps", "hook_line": "The boss only attacks when you stand still", "why": "Self-contained boss tip with a clear finish.", "score": 0.85, "keywords": ["boss", "shield", "laps"], "layout": "clip_podcast_stacked", "layout_reason": "Two people talk over the boss fight."}
   ]

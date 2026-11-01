@@ -44,6 +44,7 @@ class Cand:
     speakers: list[int] = field(default_factory=list)
     layout: str | None = None
     layout_reason: str | None = None
+    caption_style: str | None = None  # chosen by the model among the channel's caption styles
 
     @property
     def duration(self) -> float:
@@ -145,6 +146,7 @@ def to_cand(d: dict[str, Any], duration_s: float) -> Cand | None:
         speakers=[int(s) for s in spk if isinstance(s, int)] if isinstance(spk, list) else [],
         layout=_opt_str(d.get("layout")),
         layout_reason=_opt_str(d.get("layout_reason") or d.get("reason")),
+        caption_style=_opt_str(d.get("caption_style")),
     )
 
 
@@ -190,6 +192,7 @@ def _merge_pair(a: Cand, b: Cand, max_s: float) -> Cand:
         speakers=sorted({*best.speakers, *other.speakers}),
         layout=best.layout or other.layout,
         layout_reason=best.layout_reason or other.layout_reason,
+        caption_style=best.caption_style or other.caption_style,
     )
 
 
@@ -381,6 +384,7 @@ def _item(tr: Transcript, c: Cand, k: int, status: str, reasons: list[str]) -> C
         keywords=c.keywords,
         layout=c.layout,
         layout_reason=c.layout_reason,
+        caption_style=c.caption_style,
         status="kept" if status == "kept" else "dropped",
         reasons=reasons,
     )

@@ -121,6 +121,7 @@ class ClipItem(Strict):
     keywords: list[str] = []
     layout: str | None = None  # format preset chosen by the model (CR-C8-8), final one is in clip_layout
     layout_reason: str | None = None
+    caption_style: str | None = None  # model-chosen caption style (spec 17.2); None = channel default
     status: Literal["kept", "dropped"] = "kept"
     reasons: list[str] = []  # why a candidate was dropped (judge, filters)
 

@@ -150,3 +150,12 @@ Filled in as they arise; mirrored in `contracts/CHANGE_REQUESTS.md` when that fi
 - `--confirm-rights` flag (or an interactive prompt) records the rights confirmation; it is stored in `source.json` until CR-C8-3.
 - Speaker heuristic toggles between two indexes (0/1); it is a heuristic, the visual refinement is deferred (spec 19.2).
 - `main` is red since the C5 and C6 merges (5 tests in test_text_stages, test_media_pipeline, test_voice_stage disagree on `FORMAT_STAGES["shorts_only"]` order). Not caused by C8; no C8 test is in that failure set.
+
+### Revised flow (spec 23.5, 15.2a, 17.2 clip style) - builder notes
+
+- New stage order: import, audio, **analyze**, transcribe, select (+ judge), **layout**, captions, render, seo, qc, outbox. `analyze` writes `analysis.json` (scene cuts, silences, loudness, peaks, facecam, faces at 1 fps over the whole video); `detect.detect_video` replaced `run_detection`.
+- `clip_select` receives the analysis window view and returns `layout` + `layout_reason` (+ `caption_style`) per candidate; `decide_clip_template` applies the model's layout when it fits and otherwise the section 19.4 rule with NS-W402. An explicit `--template` still falls back to center_crop.
+- `clip_judge` runs inside the select stage (tenant `llama`) in score order, before any rendering; failures stay in `clip_plan.json` with `status: "dropped"` and `reasons`. Deviation: clips are then rendered, checked and filed as a batch per stage, not one clip at a time through render/QC/SEO/outbox, because stages are grouped by GPU tenant.
+- Outbox: `outbox/<channel>/clips/<source name>/clip-NN <title>.{mp4,json,txt}` with a local `safe_slug` (C6's is used when it exists). `rejected\` mirroring is C9/C7's.
+- Formats: `ns_studio/presets/formats/` is not on `main`; `clip_templates.yaml` stays (CR-C8-8).
+- Not done: spec 17.2 placement avoiding faces, emphasis words, speaker colours and cleaned transcript text.

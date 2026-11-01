@@ -16,4 +16,4 @@ Transcript segments (index, start s, end s, text):
 {% for s in segments %}
 [{{ s.i }}] {{ s.start }} - {{ s.end }}: {{ s.text }}
 {% endfor %}
-Return clips: k (1-based), start_s, end_s, title, hook_line (the opening line, optional), why (one line), score (0 to 1), speakers (optional), keywords (3-6), layout (one of the layout names above), layout_reason (one line).
+Return clips: k (1-based), start_s, end_s, title, hook_line (the opening line, optional), why (one line), score (0 to 1), speakers (optional), keywords (3-6), layout (one of the layout names above), layout_reason (one line), caption_style (one of: {{ channel.pools.caption_styles | join(", ") }}, the one that suits the moment).

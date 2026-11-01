@@ -91,7 +91,8 @@ _STR = {"type": "string"}
 
 # clip_select also returns the layout (a format preset id) the model picked per candidate, and why (C8).
 _CLIP_ITEM = ClipPlanItem.model_json_schema()
-_CLIP_ITEM["properties"] = {**_CLIP_ITEM["properties"], "layout": _STR, "layout_reason": _STR}
+_CLIP_EXTRA = {"layout": _STR, "layout_reason": _STR, "caption_style": _STR}
+_CLIP_ITEM["properties"] = {**_CLIP_ITEM["properties"], **_CLIP_EXTRA}
 _INT = {"type": "integer"}
 _SEO_PROPS = Seo.model_json_schema()["properties"]
 _SEO_TITLES = Seo.model_json_schema()

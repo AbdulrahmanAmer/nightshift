@@ -141,6 +141,7 @@ def test_import_to_layout(tmp_home: Path, tmp_path: Path) -> None:
     plan = ctx.read_json("clip_plan.json")
     kept = [c for c in plan if c["status"] == "kept"]
     assert [c["k"] for c in kept] == [1, 2] and kept[1]["layout"] == "clip_podcast_stacked"
+    assert kept[0]["caption_style"] == "clean_white" and kept[1]["caption_style"] is None
     assert any(c["status"] == "dropped" and c["reasons"] for c in plan)
     lay = ClipLayout.model_validate(ctx.read_json("clip_layout.json"))
     assert lay.per_clip == {"1": "gaming_facecam", "2": "gaming_facecam"}
@@ -234,4 +235,6 @@ def test_full_clip_job(tmp_home: Path, tmp_path: Path) -> None:
     assert {Path(r["path"]) for r in rows} == set(outbox)
     ass = ctx.file("captions/c1.ass").read_text(encoding="utf-8")
     assert "Dialogue:" in ass
+    styles = {k: v["style"] for k, v in ctx.read_json("captions/report.json").items()}
+    assert styles == {"c1": "clean_white", "c2": ctx.combo.caption_style}
     assert all(v["passed"] for v in ctx.read_json("qc/report.json").values())
