@@ -320,3 +320,12 @@ def gpu_memory_used_mb() -> int | None:
 def nvidia_smi_report() -> str | None:
     """Full `nvidia-smi` text (for the diagnostics bundle); None if absent."""
     return _nvsmi([])
+
+
+def gpu_name() -> str | None:
+    """Name of the first GPU per `nvidia-smi`; None if absent."""
+    out = _nvsmi(["--query-gpu=name", "--format=csv,noheader"])
+    if out is None:
+        return None
+    lines = [ln.strip() for ln in out.splitlines() if ln.strip()]
+    return lines[0] if lines else None

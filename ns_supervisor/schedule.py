@@ -54,7 +54,8 @@ def build_install_script(paths: Paths, run_time: str, app_path: Path, task_name:
             "-UserId ([System.Security.Principal.WindowsIdentity]::GetCurrent().Name) "
             "-LogonType S4U -RunLevel Limited",
             f"Register-ScheduledTask -TaskName {_q(task_name)} -Action $action -Trigger $trigger "
-            "-Settings $settings -Principal $principal -Description 'Nightshift nightly run' -Force | Out-Null",
+            "-Settings $settings -Principal $principal -Description 'Nightshift nightly run' "
+            "-Force | Out-Null",
             "Write-Output 'registered'",
         ]
     )
