@@ -243,10 +243,9 @@
   "additionalProperties": false,
   "properties": {
     "profile": {
-      "default": "32gb",
+      "default": "gpu",
       "enum": [
-        "32gb",
-        "16gb",
+        "gpu",
         "cpu-dev"
       ],
       "title": "Profile",

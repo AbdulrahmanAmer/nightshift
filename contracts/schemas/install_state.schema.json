@@ -59,8 +59,7 @@
       "anyOf": [
         {
           "enum": [
-            "32gb",
-            "16gb",
+            "gpu",
             "cpu-dev"
           ],
           "type": "string"

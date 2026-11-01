@@ -21,7 +21,7 @@ class Voice(Strict):
     speaker: str | None = "Ryan"
     description: str | None = None
     name: str | None = None          # library name for design/clone voices
-    speed: float = Field(1.0, ge=0.7, le=1.3)
+    speed: float = Field(default=1.0, ge=0.7, le=1.3)
 
 
 class Pools(Strict):
@@ -44,17 +44,17 @@ class Channel(Strict):
     voice_notes: str = ""
     voice: Voice = Voice()
     format: Literal["master_first", "shorts_only", "series_compilation"] = "master_first"
-    masters_per_week: int = Field(1, ge=1, le=3)
+    masters_per_week: int = Field(default=1, ge=1, le=3)
     long_minutes: tuple[int, int] = (10, 14)
     shorts_per_master: tuple[int, int] = (4, 6)
-    shorts_per_day_max: int = Field(2, ge=1, le=3)
+    shorts_per_day_max: int = Field(default=2, ge=1, le=3)
     length_buckets: list[int] = [35, 50, 75]
-    publish_window: str = Field("18:00-21:00", pattern=r"^\d{2}:\d{2}-\d{2}:\d{2}$")
+    publish_window: str = Field(default="18:00-21:00", pattern=r"^\d{2}:\d{2}-\d{2}:\d{2}$")
     audience: Literal["general", "mature"] = "general"
     made_for_kids: bool = False
     fiction_label: bool = True
     creator_note: str = ""
-    critic_bar: float = Field(8.0, ge=5.0, le=10.0)
+    critic_bar: float = Field(default=8.0, ge=5.0, le=10.0)
     pools: Pools = Pools()
     avoid_topics: list[str] = []
     created_at: str | None = None
@@ -126,7 +126,7 @@ class VideoCfg(Strict):
 
 
 class Runtime(Strict):
-    profile: Literal["32gb", "16gb", "cpu-dev"] = "32gb"
+    profile: Literal["gpu", "cpu-dev"] = "gpu"
     llama: LlamaCfg = LlamaCfg()
     embed: EmbedCfg = EmbedCfg()
     tts: TtsCfg = TtsCfg()
@@ -135,11 +135,9 @@ class Runtime(Strict):
     supervisor_port: int = 8099
 
     @classmethod
-    def default(cls, profile: Literal["32gb", "16gb", "cpu-dev"]) -> Runtime:
-        if profile == "32gb":
+    def default(cls, profile: Literal["gpu", "cpu-dev"]) -> Runtime:
+        if profile == "gpu":
             return cls(profile=profile)
-        if profile == "16gb":
-            return cls(profile=profile, llama=LlamaCfg(flags=LlamaFlags(ctx=8192, kv_type="q8_0")))
         return cls(
             profile=profile,
             llama=LlamaCfg(flags=LlamaFlags(n_gpu_layers=0, ctx=8192, threads=4)),
@@ -159,7 +157,7 @@ class StepState(Strict):
 class InstallState(Strict):
     version: str = "0.1.0"
     app_path: str = ""
-    profile: Literal["32gb", "16gb", "cpu-dev"] | None = None
+    profile: Literal["gpu", "cpu-dev"] | None = None
     steps: dict[str, StepState] = {}
     started_at: str | None = None
     completed_at: str | None = None
@@ -181,7 +179,7 @@ class Answers(Strict):
     pexels_api_key: str | None = None
     pixabay_api_key: str | None = None
     masters_per_week: int = 1
-    run_time: str = Field("03:00", pattern=r"^\d{2}:\d{2}$")
+    run_time: str = Field(default="03:00", pattern=r"^\d{2}:\d{2}$")
     install_code: bool = True
     allow_cpu: bool = False
 

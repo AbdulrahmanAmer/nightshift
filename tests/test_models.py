@@ -34,7 +34,7 @@ def test_runtime_default_profiles():
     rt = m.Runtime.default("cpu-dev")
     assert rt.video.encoder == "libx264"
     assert rt.llama.port == 8080 and rt.embed.port == 8081 and rt.tts.port == 8091
-    gpu = m.Runtime.default("32gb")
+    gpu = m.Runtime.default("gpu")
     assert gpu.video.encoder == "h264_nvenc"
     assert gpu.llama.flags.ctx == 16384
 
