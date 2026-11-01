@@ -1,0 +1,93 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "k": {
+      "minimum": 1,
+      "title": "K",
+      "type": "integer"
+    },
+    "chapter": {
+      "minimum": 1,
+      "title": "Chapter",
+      "type": "integer"
+    },
+    "sentence_start": {
+      "minimum": 0,
+      "title": "Sentence Start",
+      "type": "integer"
+    },
+    "sentence_end": {
+      "minimum": 0,
+      "title": "Sentence End",
+      "type": "integer"
+    },
+    "start_s": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Start S"
+    },
+    "end_s": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "End S"
+    },
+    "hooks": {
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 5,
+      "minItems": 1,
+      "title": "Hooks",
+      "type": "array"
+    },
+    "chosen_hook": {
+      "title": "Chosen Hook",
+      "type": "string"
+    },
+    "closing_line": {
+      "title": "Closing Line",
+      "type": "string"
+    },
+    "length_bucket": {
+      "minimum": 1,
+      "title": "Length Bucket",
+      "type": "integer"
+    },
+    "combo_id": {
+      "title": "Combo Id",
+      "type": "string"
+    },
+    "why_standalone": {
+      "title": "Why Standalone",
+      "type": "string"
+    }
+  },
+  "required": [
+    "k",
+    "chapter",
+    "sentence_start",
+    "sentence_end",
+    "hooks",
+    "chosen_hook",
+    "closing_line",
+    "length_bucket",
+    "combo_id",
+    "why_standalone"
+  ],
+  "title": "ShortsPlanItem",
+  "type": "object"
+}

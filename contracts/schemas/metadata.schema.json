@@ -50,7 +50,8 @@
     "kind": {
       "enum": [
         "long",
-        "short"
+        "short",
+        "clip"
       ],
       "title": "Kind",
       "type": "string"
@@ -197,6 +198,30 @@
       },
       "title": "Prompt Versions",
       "type": "object"
+    },
+    "source_video": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Source Video"
+    },
+    "template": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Template"
     }
   },
   "required": [

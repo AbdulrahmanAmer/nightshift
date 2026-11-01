@@ -1,0 +1,133 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "k": {
+      "minimum": 1,
+      "title": "K",
+      "type": "integer"
+    },
+    "start_s": {
+      "minimum": 0,
+      "title": "Start S",
+      "type": "number"
+    },
+    "end_s": {
+      "exclusiveMinimum": 0,
+      "title": "End S",
+      "type": "number"
+    },
+    "title": {
+      "maxLength": 100,
+      "title": "Title",
+      "type": "string"
+    },
+    "hook_line": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Hook Line"
+    },
+    "why": {
+      "default": "",
+      "title": "Why",
+      "type": "string"
+    },
+    "score": {
+      "maximum": 1,
+      "minimum": 0,
+      "title": "Score",
+      "type": "number"
+    },
+    "speakers": {
+      "anyOf": [
+        {
+          "items": {
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Speakers"
+    },
+    "keywords": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Keywords",
+      "type": "array"
+    },
+    "layout": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Layout"
+    },
+    "layout_reason": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Layout Reason"
+    },
+    "caption_style": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Caption Style"
+    },
+    "status": {
+      "default": "kept",
+      "enum": [
+        "kept",
+        "dropped"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "reasons": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Reasons",
+      "type": "array"
+    }
+  },
+  "required": [
+    "k",
+    "start_s",
+    "end_s",
+    "title",
+    "score"
+  ],
+  "title": "ClipPlanItem",
+  "type": "object"
+}

@@ -1,0 +1,185 @@
+{
+  "$defs": {
+    "Crop": {
+      "additionalProperties": false,
+      "properties": {
+        "t_start": {
+          "minimum": 0,
+          "title": "T Start",
+          "type": "number"
+        },
+        "t_end": {
+          "minimum": 0,
+          "title": "T End",
+          "type": "number"
+        },
+        "region": {
+          "$ref": "#/$defs/Rect"
+        },
+        "region_b": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Rect"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "speaking": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Speaking"
+        }
+      },
+      "required": [
+        "t_start",
+        "t_end",
+        "region"
+      ],
+      "title": "Crop",
+      "type": "object"
+    },
+    "FaceFrame": {
+      "additionalProperties": false,
+      "properties": {
+        "t": {
+          "minimum": 0,
+          "title": "T",
+          "type": "number"
+        },
+        "boxes": {
+          "items": {
+            "$ref": "#/$defs/Rect"
+          },
+          "title": "Boxes",
+          "type": "array"
+        },
+        "speaking": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Speaking"
+        }
+      },
+      "required": [
+        "t",
+        "boxes"
+      ],
+      "title": "FaceFrame",
+      "type": "object"
+    },
+    "Rect": {
+      "additionalProperties": false,
+      "properties": {
+        "x": {
+          "title": "X",
+          "type": "integer"
+        },
+        "y": {
+          "title": "Y",
+          "type": "integer"
+        },
+        "w": {
+          "exclusiveMinimum": 0,
+          "title": "W",
+          "type": "integer"
+        },
+        "h": {
+          "exclusiveMinimum": 0,
+          "title": "H",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "x",
+        "y",
+        "w",
+        "h"
+      ],
+      "title": "Rect",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "template": {
+      "title": "Template",
+      "type": "string"
+    },
+    "facecam": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Rect"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "faces": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/FaceFrame"
+      },
+      "title": "Faces",
+      "type": "array"
+    },
+    "crops": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/Crop"
+      },
+      "title": "Crops",
+      "type": "array"
+    },
+    "note": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Note"
+    },
+    "per_clip": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "default": {},
+      "title": "Per Clip",
+      "type": "object"
+    },
+    "notes": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "default": {},
+      "title": "Notes",
+      "type": "object"
+    }
+  },
+  "required": [
+    "template"
+  ],
+  "title": "ClipLayout",
+  "type": "object"
+}

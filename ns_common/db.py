@@ -14,6 +14,14 @@ def new_job_id(slug: str, when: datetime | None = None) -> str:
     return f"{slug}-{when:%Y%m%d}-{secrets.token_hex(2)}"
 
 
+# Columns added to existing tables after the first release (CR-C8-3, idea bank). `CREATE TABLE IF NOT EXISTS`
+# does not alter a database made by an older schema.sql, so `migrate()` adds what is missing.
+_ADDED_COLUMNS: dict[str, tuple[tuple[str, str], ...]] = {
+    "sources": (("rights_confirmed", "INTEGER NOT NULL DEFAULT 0"), ("title", "TEXT")),
+    "ideas": (("status", "TEXT NOT NULL DEFAULT 'new'"), ("title", "TEXT"), ("source", "TEXT")),
+}
+
+
 class Db:
     def __init__(self, path: Path) -> None:
         self.path = path
@@ -32,7 +40,13 @@ class Db:
 
     def migrate(self) -> None:
         sql = (contracts_dir() / "schema.sql").read_text(encoding="utf-8")
-        self.connect().executescript(sql)
+        conn = self.connect()
+        conn.executescript(sql)
+        for table, columns in _ADDED_COLUMNS.items():
+            have = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+            for name, decl in columns:
+                if name not in have:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
 
     def execute(self, sql: str, params: Sequence | Mapping = ()) -> sqlite3.Cursor:
         return self.connect().execute(sql, params)

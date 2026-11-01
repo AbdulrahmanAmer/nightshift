@@ -1,0 +1,170 @@
+{
+  "$defs": {
+    "Region": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "x": {
+          "default": 0,
+          "title": "X",
+          "type": "integer"
+        },
+        "y": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "const": "seam",
+              "type": "string"
+            }
+          ],
+          "default": 0,
+          "title": "Y"
+        },
+        "w": {
+          "default": 1080,
+          "title": "W",
+          "type": "integer"
+        },
+        "h": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "enum": [
+                "auto",
+                "rest"
+              ],
+              "type": "string"
+            }
+          ],
+          "default": "rest",
+          "title": "H"
+        },
+        "max_h": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max H"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "title": "Region",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "name": {
+      "title": "Name",
+      "type": "string"
+    },
+    "layout": {
+      "enum": [
+        "gaming",
+        "stacked",
+        "tracked",
+        "center",
+        "screen_cam"
+      ],
+      "title": "Layout",
+      "type": "string"
+    },
+    "description": {
+      "title": "Description",
+      "type": "string"
+    },
+    "needs": {
+      "default": "none",
+      "enum": [
+        "none",
+        "facecam",
+        "faces_1",
+        "faces_2"
+      ],
+      "title": "Needs",
+      "type": "string"
+    },
+    "when": {
+      "default": "",
+      "title": "When",
+      "type": "string"
+    },
+    "regions": {
+      "items": {
+        "$ref": "#/$defs/Region"
+      },
+      "title": "Regions",
+      "type": "array"
+    },
+    "caption_anchor_y_pct": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "const": "seam",
+          "type": "string"
+        }
+      ],
+      "title": "Caption Anchor Y Pct"
+    },
+    "safe_top": {
+      "default": 220,
+      "title": "Safe Top",
+      "type": "integer"
+    },
+    "safe_bottom": {
+      "default": 320,
+      "title": "Safe Bottom",
+      "type": "integer"
+    },
+    "title_card": {
+      "default": false,
+      "title": "Title Card",
+      "type": "boolean"
+    },
+    "title_card_s": {
+      "default": 1.2,
+      "title": "Title Card S",
+      "type": "number"
+    },
+    "speaker_border_px": {
+      "default": 0,
+      "title": "Speaker Border Px",
+      "type": "integer"
+    },
+    "track_deadband": {
+      "default": 0.2,
+      "title": "Track Deadband",
+      "type": "number"
+    },
+    "track_ramp_s": {
+      "default": 1,
+      "title": "Track Ramp S",
+      "type": "number"
+    }
+  },
+  "required": [
+    "name",
+    "layout",
+    "description",
+    "regions",
+    "caption_anchor_y_pct"
+  ],
+  "title": "ClipTemplate",
+  "type": "object"
+}

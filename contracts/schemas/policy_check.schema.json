@@ -1,0 +1,44 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "unsafe_categories": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Unsafe Categories",
+      "type": "array"
+    },
+    "hook_honest": {
+      "title": "Hook Honest",
+      "type": "boolean"
+    },
+    "title_honest": {
+      "title": "Title Honest",
+      "type": "boolean"
+    },
+    "standalone": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Standalone"
+    },
+    "notes": {
+      "title": "Notes",
+      "type": "string"
+    }
+  },
+  "required": [
+    "unsafe_categories",
+    "hook_honest",
+    "title_honest",
+    "standalone",
+    "notes"
+  ],
+  "title": "PolicyCheckResult",
+  "type": "object"
+}
