@@ -151,7 +151,7 @@
     if (pageCleanup) { try { pageCleanup(); } catch {} pageCleanup = null; }
     const main = $("#main"); main.innerHTML = `<div class="page"><p class="muted">Loading…</p></div>`;
     try { const page = NS.pages[route]; pageCleanup = (await page(main)) || null; }
-    catch (err) { main.innerHTML = `<div class="page"><h1>Something went wrong</h1><p class="lead">${esc(err.message)}</p><div class="btn-row"><button class="btn" onclick="location.reload()">Reload</button></div></div>`; }
+    catch (err) { main.innerHTML = `<div class="page"><h1>Something went wrong</h1><p class="lead">${esc(err.message)}</p><div class="btn-row"><button class="btn" id="reload-btn" type="button">Reload</button></div></div>`; $("#reload-btn", main).onclick = () => location.reload(); }
     main.focus({ preventScroll: true });
   }
 
