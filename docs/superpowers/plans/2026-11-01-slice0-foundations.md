@@ -10,6 +10,17 @@
 
 **Spec:** `D:\NightShift\BUILD_SPEC.md` (v2). Read §0, §1.1, §2, §4, §15 before starting.
 
+## Execution rules override (2026-11-01)
+
+These rules take precedence over anything below. Process details: `docs/ENGINEERING.md`.
+
+- **No local execution.** Do not create `.venv`, and do not run `pip`, `uv`, `pytest`, `ruff` or `pyright` on the authoring laptop. The "Global Constraints" lines about `py -3.12 -m venv .venv` and the repo's `.venv` no longer apply.
+- **Every "Run:" step means: commit, push, and check CI** (GitHub Actions, `windows-latest`). Where a step says "FAIL expected" or "N passed", the CI log is the evidence; a task is done only with a CI run URL whose conclusion is `success`.
+- **Task 14 manifest follows spec §21.3**: default LLM is the 14B Q4 GGUF (`Qwen/Qwen3-14B-GGUF` Q4_K_M, or a Qwen3.6 14B-class GGUF if one exists) with `balanced` (`mudler/Qwen3.6-35B-A3B-APEX-MTP-GGUF` I-Mini) and `best` (`unsloth/Qwen3.6-35B-A3B-MTP-GGUF` UD-Q4_K_XL) as opt-in tiers; TTS is Qwen3-TTS GGUF Q8_0 from `Serveurperso/Qwen3-TTS-GGUF` with the CustomVoice and Base talkers plus the codec tokenizer, and VoiceDesign downloaded on demand; one whisper model, `Systran/faster-distil-whisper-large-v3` (`distil-large-v3`); the YuNet face detector ONNX; the `qwentts.cpp` Windows CUDA binary pinned, or `bins.qwentts = null` when no prebuilt asset exists. The `cpu-dev` set stays as listed in spec §21.3.
+- **`Runtime.profile` is now `"gpu" | "cpu-dev"`** (replacing `"32gb" | "16gb" | "cpu-dev"`). Task 5 is already committed with the old literal; the follow-up change to `ns_common/models.py`, the exported `runtime.schema.json`, `default_runtime()` and the Task 6 config tests is orchestrator work (plan `m0-c3-amendments.md`). Tasks 6 to 16 are written against the new literal.
+- **Task 1 CI workflow stays as is** (`.github/workflows/ci.yml`, single `test` job running ruff, pyright, pytest on `windows-latest`). Splitting it into `lint`, `types`, `test`, `gate`, `bundle` belongs to plan `m0-c10-ci-bundle.md`.
+- **Names:** read `contracts-s1` as `contracts-m0` and `dev/gate_s0.py` as `dev/gate_m0.py`. Status: Tasks 1-5 implemented and committed; Tasks 6-16 pending.
+
 ## Global Constraints
 
 - Python `>=3.12,<3.13`; run everything with the repo's `.venv` (`D:\NightShift\.venv`). Create it with `py -3.12 -m venv .venv`.
