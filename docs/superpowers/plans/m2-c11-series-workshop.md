@@ -36,48 +36,48 @@ tests/test_series_import.py test_series_tools.py
 
 **Files:** Create `ns_studio/series/__init__.py`, `store.py`, `tests/test_series_store.py`.
 
-- [ ] Write tests: front-matter round trip, concept render/parse, script render/parse (breaks, numbering, paragraph fallback), short file round trip, span relocation by anchor, status/series/design models, bounds (12-25).
-- [ ] Implement `StoryDir`, `SeriesDoc`, `StatusDoc`, `DesignDoc`, `ConceptDoc`, `ScriptChapter`, `ShortDoc`, md helpers.
-- [ ] Commit `feat(c11): story folder model`.
+- [x] Write tests: front-matter round trip, concept render/parse, script render/parse (breaks, numbering, paragraph fallback), short file round trip, span relocation by anchor, status/series/design models, bounds (12-25).
+- [x] Implement `StoryDir`, `SeriesDoc`, `StatusDoc`, `DesignDoc`, `ConceptDoc`, `ScriptChapter`, `ShortDoc`, md helpers.
+- [x] Commit `feat(c11): story folder model`.
 
 ### Task 2: Prompts, schemas, fixtures
 
 **Files:** Create `schemas.py`, the five prompts, fixtures, `tests/test_series_prompts.py`.
 
-- [ ] Tests: front-matter loads, every `workshop_*.json` fixture validates against its schema, prompts render with their variables.
-- [ ] Write prompts (`workshop_concepts` thinking on, `workshop_regenerate`, `workshop_map` on, `workshop_part_outline` on, `workshop_revise` off) and fixtures (copies of the C5 doorbell story chapters and Shorts so spans are known to resolve).
-- [ ] Commit `feat(c11): workshop prompts, schemas and fixtures`.
+- [x] Tests: front-matter loads, every `workshop_*.json` fixture validates against its schema, prompts render with their variables.
+- [x] Write prompts (`workshop_concepts` thinking on, `workshop_regenerate`, `workshop_map` on, `workshop_part_outline` on, `workshop_revise` off) and fixtures (copies of the C5 doorbell story chapters and Shorts so spans are known to resolve).
+- [x] Commit `feat(c11): workshop prompts, schemas and fixtures`.
 
 ### Task 3: Policy text gate (`policy.py`)
 
-- [ ] Tests: block-list name -> NS-E602, "true story" in a title -> NS-E603, LLM category -> NS-E601, clean text passes, short not standalone -> NS-E607.
-- [ ] Implement `text_gate`, `claims_gate`, `check_standalone`.
-- [ ] Commit `feat(c11): workshop policy gate`.
+- [x] Tests: block-list name -> NS-E602, "true story" in a title -> NS-E603, LLM category -> NS-E601, clean text passes, short not standalone -> NS-E607.
+- [x] Implement `text_gate`, `claims_gate`, `check_standalone`.
+- [x] Commit `feat(c11): workshop policy gate`.
 
 ### Task 4: Workshop part 1 (`start`, `concepts`, `regenerate`, `choose`, `map_parts`)
 
-- [ ] Tests: full tree after start/concepts/choose/map, regenerate replaces one draft only, map enforces 12-25, gate rejection writes nothing.
-- [ ] Implement `Workshop` (env, scratch ctx, channel loader), these five methods, `default_workshop`.
-- [ ] Commit `feat(c11): workshop concepts and series map`.
+- [x] Tests: full tree after start/concepts/choose/map, regenerate replaces one draft only, map enforces 12-25, gate rejection writes nothing.
+- [x] Implement `Workshop` (env, scratch ctx, channel loader), these five methods, `default_workshop`.
+- [x] Commit `feat(c11): workshop concepts and series map`.
 
 ### Task 5: Workshop part 2 (`write_part`, `revise_part`, `approve`, `design`, `produce`, `status`, `list`)
 
-- [ ] Tests: script.md with [BREAK], >= 4 Shorts with distinct hooks <= 12 words, notes.md scores, revise keeps unrelated chapters, approve/status transitions, design validation vs formats_allowed, produce via fake enqueue and `series_context.json`.
-- [ ] Implement them plus `default_enqueue`.
-- [ ] Commit `feat(c11): part writing, approval, design and produce`.
+- [x] Tests: script.md with [BREAK], >= 4 Shorts with distinct hooks <= 12 words, notes.md scores, revise keeps unrelated chapters, approve/status transitions, design validation vs formats_allowed, produce via fake enqueue and `series_context.json`.
+- [x] Implement them plus `default_enqueue`.
+- [x] Commit `feat(c11): part writing, approval, design and produce`.
 
 ### Task 6: `script_import` stage (`stages.py`)
 
-- [ ] Tests: story.json/plan.json/plan_meta.json/idea.json/shorts_plan.json consistent with the files; hand edit uses edited text; moved span relocates; cross-chapter span -> NS-E303.
-- [ ] Implement and register `ScriptImportStage` (tenant None).
-- [ ] Commit `feat(c11): script_import stage`.
+- [x] Tests: story.json/plan.json/plan_meta.json/idea.json/shorts_plan.json consistent with the files; hand edit uses edited text; moved span relocates; cross-chapter span -> NS-E303.
+- [x] Implement and register `ScriptImportStage` (tenant None).
+- [x] Commit `feat(c11): script_import stage`.
 
 ### Task 7: Tools and CLI
 
-- [ ] Tests: `TOOLS` descriptors valid (`ToolSpec` fields, JSON schemas), read-only flags, a tool call runs; CLI `--help` lists the commands and a fake-services smoke run works.
-- [ ] Implement `tools.py`, `cli.py`.
-- [ ] Commit `feat(c11): assistant tools and series CLI`.
+- [x] Tests: `TOOLS` descriptors valid (`ToolSpec` fields, JSON schemas), read-only flags, a tool call runs; CLI `--help` lists the commands and a fake-services smoke run works.
+- [x] Implement `tools.py`, `cli.py`.
+- [x] Commit `feat(c11): assistant tools and series CLI`.
 
 ### Task 8: Change requests and CI
 
-- [ ] Append CR-C11-1..n to `contracts/CHANGE_REQUESTS.md`; push; read CI; fix until green; `gh pr create --fill`.
+- [x] Append CR-C11-1..n to `contracts/CHANGE_REQUESTS.md`; push; read CI; fix until green; `gh pr create --fill`.
