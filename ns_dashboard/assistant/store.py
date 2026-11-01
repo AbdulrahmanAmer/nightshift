@@ -2,7 +2,7 @@
 
 The shared schema (`contracts/schema.sql`) provides `assistant_messages`, a flat transcript that every message
 is also written to. Conversations, pending actions and the busy queue need more than that table offers, so
-their DDL stays here (CR-C9-9); every statement is idempotent.
+they live in the same schema file (CR-C9-9); `Db.migrate()` creates them.
 """
 # Dense descriptor tables and long signatures: wrapping them hurts readability.
 # ruff: noqa: E501
@@ -18,47 +18,6 @@ from typing import Any
 from ns_common.db import Db
 from ns_common.paths import Paths
 
-DDL = """
-CREATE TABLE IF NOT EXISTS conversations (
-  conversation_id TEXT PRIMARY KEY,
-  title TEXT,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS messages (
-  msg_id INTEGER PRIMARY KEY AUTOINCREMENT,
-  conversation_id TEXT NOT NULL REFERENCES conversations(conversation_id),
-  role TEXT NOT NULL,                 -- system | user | assistant | tool
-  content TEXT,
-  tool_calls_json TEXT,
-  tool_call_id TEXT,
-  name TEXT,
-  context_json TEXT,
-  created_at TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_messages_conv ON messages(conversation_id, msg_id);
-CREATE TABLE IF NOT EXISTS actions (
-  action_id TEXT PRIMARY KEY,
-  conversation_id TEXT NOT NULL REFERENCES conversations(conversation_id),
-  tool TEXT NOT NULL,
-  args_json TEXT NOT NULL,
-  confirm_text TEXT NOT NULL,
-  context_json TEXT,
-  status TEXT NOT NULL DEFAULT 'pending',   -- pending | done | failed | dismissed
-  result_json TEXT,
-  created_at TEXT NOT NULL,
-  decided_at TEXT
-);
-CREATE TABLE IF NOT EXISTS queued_messages (
-  queue_id INTEGER PRIMARY KEY AUTOINCREMENT,
-  conversation_id TEXT NOT NULL REFERENCES conversations(conversation_id),
-  text TEXT NOT NULL,
-  context_json TEXT,
-  status TEXT NOT NULL DEFAULT 'queued',    -- queued | done
-  created_at TEXT NOT NULL
-);
-"""
-
 
 def _now() -> str:
     return datetime.now(UTC).isoformat()
@@ -71,8 +30,7 @@ class AssistantStore:
         self.db = Db(paths.assistant_db)
         self._lock = threading.RLock()
         with self._lock:
-            self.db.migrate()  # shared schema: includes the contract's `assistant_messages`
-            self.db.connect().executescript(DDL)  # conversations, actions and the busy queue are ours
+            self.db.migrate()  # contracts/schema.sql: assistant_messages, conversations, messages, actions, queued_messages
 
     # --- conversations / messages ---
     def new_conversation(self, title: str | None = None) -> str:

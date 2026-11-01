@@ -57,6 +57,25 @@ jobs:
           if (-not $m.Success) { throw "CHANGELOG.md has no '## [$version]' heading; move the Unreleased entries under it before tagging" }
           Set-Content -Path release-notes.md -Value $m.Groups['body'].Value.Trim() -Encoding utf8
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: ns_dashboard/ui/package-lock.json
+
+      - name: Build the dashboard UI and check the committed build
+        shell: pwsh
+        run: |
+          Push-Location ns_dashboard/ui
+          npm ci --no-audit --no-fund
+          if ($LASTEXITCODE -ne 0) { throw 'npm ci failed' }
+          npm run build
+          if ($LASTEXITCODE -ne 0) { throw 'npm run build failed' }
+          Pop-Location
+          # make_bundle.ps1 archives HEAD, so the committed ns_dashboard/static is what ships; it must equal this build.
+          $changes = @(git status --porcelain ns_dashboard/static)
+          if ($changes.Count -gt 0) { $changes; throw 'ns_dashboard/static differs from a fresh build of ns_dashboard/ui' }
+
       - name: Build bundle
         shell: pwsh
         run: ./dev/make_bundle.ps1 -Version $env:TAG

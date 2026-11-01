@@ -3,7 +3,8 @@
 A branch named ``feat/c<K>-<slug>`` may change only the paths owned by component C<K>
 (``docs/ENGINEERING.md`` section 2.1), plus a few shared places every builder may touch
 (``tests/`` except ``tests/conftest.py``, ``contracts/CHANGE_REQUESTS.md``, its own plan file).
-``ns_common/`` and ``contracts/`` may be changed only from ``feat/c3-*`` or ``orchestrator/*`` branches.
+``ns_common/`` and ``contracts/`` may be changed only from ``feat/c3-*``, ``feat/release-*`` or
+``orchestrator/*`` branches.
 
 Usage (CI, pull requests only)::
 
@@ -22,12 +23,13 @@ import sys
 from dataclasses import dataclass
 
 #: Branch prefixes that may edit everything (the main session / component C3).
-ORCHESTRATOR_PREFIXES = ("feat/c3-", "orchestrator/")
+# feat/release-* is the release-readiness builder (packaging, pins, contracts applied for the release).
+ORCHESTRATOR_PREFIXES = ("feat/c3-", "feat/release-", "orchestrator/")
 
 #: Paths nobody but the orchestrator edits, as prefixes (ending in "/") or exact paths.
 PROTECTED = ("ns_common/", "contracts/", "manifest.json", "uv.lock", "tests/conftest.py", "pyproject.toml")
 
-PROTECTED_REASON = "protected path: only feat/c3-* or orchestrator/* branches may change it"
+PROTECTED_REASON = "protected path: only feat/c3-*, feat/release-* or orchestrator/* branches may change it"
 
 #: Protected paths that remain open to everyone.
 PROTECTED_EXCEPTIONS = ("contracts/CHANGE_REQUESTS.md",)

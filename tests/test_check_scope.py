@@ -75,6 +75,7 @@ def test_orchestrator_branches_may_edit_everything():
     files = ["ns_common/paths.py", "contracts/errors.json", "ns_tts/server.py", "manifest.json"]
     assert paths("feat/c3-contracts", files) == []
     assert paths("orchestrator/amend", files) == []
+    assert paths("feat/release-readiness", files) == []
 
 
 def test_main_is_unchecked():

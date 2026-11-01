@@ -26,4 +26,31 @@ while (-not $up -and (Get-Date) -lt $deadline) {
     }
 }
 
+# Prefer an app window (no tabs or address bar) in Edge or Chrome when one is installed; otherwise the default browser.
+function Find-NsAppBrowser {
+    foreach ($leaf in @('Microsoft\Edge\Application\msedge.exe', 'Google\Chrome\Application\chrome.exe')) {
+        foreach ($root in @($env:ProgramFiles, ${env:ProgramFiles(x86)}, $env:LOCALAPPDATA)) {
+            if ($root) {
+                $candidate = Join-Path $root $leaf
+                if (Test-Path -LiteralPath $candidate) { return $candidate }
+            }
+        }
+    }
+    foreach ($name in @('msedge.exe', 'chrome.exe')) {
+        $cmd = Get-Command $name -ErrorAction SilentlyContinue
+        if ($cmd) { return $cmd.Source }
+    }
+    return $null
+}
+
+$browser = Find-NsAppBrowser
+if ($browser) {
+    try {
+        Start-Process -FilePath $browser -ArgumentList @("--app=$url")
+        return
+    }
+    catch {
+        # fall through to the default browser
+    }
+}
 Start-Process $url

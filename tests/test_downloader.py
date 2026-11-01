@@ -425,9 +425,20 @@ def test_plan_tiers_pick_the_right_llm(manifest, tmp_path: Path):
 
 def test_plan_cuda13_pair_and_code(manifest, tmp_path: Path):
     items = dl.plan_bins(manifest, "gpu", tmp_path, include_code=True, llama_pair="cuda13")
-    assert _names(items) == ["llama_cuda13", "cudart13", "opencode"]
+    assert _names(items) == ["llama_cuda13", "cudart13", "opencode", "yt_dlp"]
     assert "cuda-13.4" in items[0].url
     assert items[2].extract_to == tmp_path / "bin" / "opencode"
+
+
+def test_plan_includes_the_pinned_ytdlp_for_every_profile(manifest, tmp_path: Path):
+    pin = manifest.bins["yt_dlp"]
+    assert pin is not None and pin.url.endswith("/yt-dlp.exe") and pin.sha256 and len(pin.sha256) == 64
+    assert pin.version in pin.url and "github.com/yt-dlp/yt-dlp/releases/download/" in pin.url
+    for profile, pair in (("gpu", "cuda13"), ("gpu", "cuda12"), ("cpu-dev", None)):
+        by = {i.name: i for i in dl.plan_bins(manifest, profile, tmp_path, llama_pair=pair)}
+        item = by["yt_dlp"]
+        assert item.kind == "file" and item.sha256 == pin.sha256 and item.url == pin.url
+        assert item.dest == tmp_path / "bin" / "yt-dlp" / "yt-dlp.exe"
 
 
 def test_plan_cpu_dev(manifest, tmp_path: Path):

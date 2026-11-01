@@ -57,6 +57,8 @@ def test_dashboard_launcher_opens_port_8100_after_waiting_for_the_engine() -> No
     text = read("nightshift-dashboard.ps1")
     assert "http://127.0.0.1:8100" in text
     assert text.index("Wait-NsSupervisor") < text.index("Start-Process $url")
+    assert text.index("Wait-NsSupervisor") < text.index("--app=$url")
+    assert "msedge.exe" in text and "chrome.exe" in text
     common = read("_common.ps1")
     assert "-WindowStyle $style" in common and "'Minimized'" in common and "ns_supervisor.app" in common
     assert "/status" in common

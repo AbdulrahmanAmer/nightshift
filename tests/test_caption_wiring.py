@@ -22,12 +22,11 @@ from ns_studio.media.caption_plan import (
     speaker_plan,
 )
 from ns_studio.media.captions import Box, CaptionsStage, caption_band, caption_placement
-from ns_studio.media.channel_opts import channel_setting
 from ns_studio.media.presets import caption_style
 from ns_studio.media.render import VERTICAL, backdrop_luma, fit_caption_contrast, sample_times, shot_at
 from ns_studio.media.shotplan import Shot
 from ns_studio.media.transcribe import Word
-from tests.helpers import make_combo, make_ctx
+from tests.helpers import make_channel, make_combo, make_ctx
 
 needs_ffmpeg = pytest.mark.skipif(not ff.available(), reason="ffmpeg required")
 SCRIPT = "The doorbell camera pings at 3:12 every night. I stopped checking the clips a week ago."
@@ -130,17 +129,16 @@ def test_sample_times_and_shot_at() -> None:
     assert shot_at(shots, 99.0)[0].clip_id == "b"
 
 
-def test_channel_setting_reads_the_model_then_the_yaml_then_the_default(tmp_home: Path) -> None:
+def test_mask_profanity_is_a_channel_model_field_that_a_profile_can_set(tmp_home: Path) -> None:
+    from ns_common.config import load_channel, save_channel
+
     ctx = make_ctx(tmp_home)
-    assert channel_setting(ctx.paths, ctx.channel, "captions.mask_profanity", False) is False
-    assert mask_profanity_setting(ctx.paths, ctx.channel) is False
-    assert channel_setting(ctx.paths, ctx.channel, "slug") == "after-dark"
+    assert mask_profanity_setting(ctx.channel) is False
+    assert mask_profanity_setting(make_channel(captions={"mask_profanity": True})) is True
     f = ctx.paths.channel_file(ctx.channel.slug)
-    f.parent.mkdir(parents=True, exist_ok=True)
-    f.write_text("slug: after-dark\ncaptions:\n  mask_profanity: true\n", encoding="utf-8")
-    assert mask_profanity_setting(ctx.paths, ctx.channel) is True
-    f.write_text(": : not yaml [", encoding="utf-8")
-    assert mask_profanity_setting(ctx.paths, ctx.channel) is False
+    save_channel(ctx.paths, make_channel(captions={"mask_profanity": True}))
+    assert "mask_profanity: true" in f.read_text(encoding="utf-8")
+    assert mask_profanity_setting(load_channel(ctx.paths, ctx.channel.slug)) is True
 
 
 # ---------- shorts_only captions stage ----------
@@ -155,15 +153,15 @@ def _prepare_audio(ctx, text: str) -> None:
 
 
 def test_shorts_captions_pass_safe_zones_emphasis_and_mask(tmp_home: Path) -> None:
-    ctx = make_ctx(tmp_home, combo=make_combo(caption_style="clean_white"))
+    ctx = make_ctx(
+        tmp_home, combo=make_combo(caption_style="clean_white"),
+        channel=make_channel(captions={"mask_profanity": True}),
+    )
     _prepare_audio(ctx, "The doorbell camera pings at night. Then the damn light goes out.")
     ctx.write_json("visual_plan.json", [
         {"part": 1, "beat": 0, "sentence_start": 0, "sentence_end": 1, "keywords": ["door"], "mood": "dark",
          "emphasis": {"0": "doorbell", "1": "light"}},
     ])
-    f = ctx.paths.channel_file(ctx.channel.slug)
-    f.parent.mkdir(parents=True, exist_ok=True)
-    f.write_text("slug: after-dark\ncaptions:\n  mask_profanity: true\n", encoding="utf-8")
     CaptionsStage().run(ctx)
     ass = ctx.file("captions/s1.ass").read_text(encoding="utf-8")
     assert "fscx115" in ass  # emphasised key words
@@ -193,7 +191,10 @@ CAM = Rect(x=944, y=16, w=320, h=180)
 
 
 def _clip_job(tmp_home: Path, *, mask: bool = False):
-    ctx = make_ctx(tmp_home, fmt="clip", combo=make_combo(caption_style="clean_white"))
+    ctx = make_ctx(
+        tmp_home, fmt="clip", combo=make_combo(caption_style="clean_white"),
+        channel=make_channel(captions={"mask_profanity": mask}),
+    )
     words = []
     segs = []
     texts = ["Hello there damn friend.", "This is truly great."]
@@ -215,10 +216,6 @@ def _clip_job(tmp_home: Path, *, mask: bool = False):
     crops = lay.plan_layout("gaming_facecam", 1280, 720, base, t_start=0.0, t_end=8.0)
     out = ClipLayout(template="gaming_facecam", facecam=CAM, crops=crops, per_clip={"1": "gaming_facecam"})
     ctx.write_json("clip_layout.json", out.model_dump(mode="json"))
-    if mask:
-        f = ctx.paths.channel_file(ctx.channel.slug)
-        f.parent.mkdir(parents=True, exist_ok=True)
-        f.write_text("slug: after-dark\ncaptions:\n  mask_profanity: true\n", encoding="utf-8")
     return ctx
 
 

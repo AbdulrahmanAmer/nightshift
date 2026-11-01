@@ -180,3 +180,44 @@ CREATE TABLE IF NOT EXISTS assistant_messages (
   content TEXT NOT NULL,
   tool_calls_json TEXT
 );
+
+-- Dashboard Assistant conversations, pending confirm cards and the busy queue (CR-C9-9). Same file as
+-- assistant_messages (data/assistant.db); ns_dashboard/assistant/store.py no longer defines them itself.
+CREATE TABLE IF NOT EXISTS conversations (
+  conversation_id TEXT PRIMARY KEY,
+  title TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS messages (
+  msg_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  conversation_id TEXT NOT NULL REFERENCES conversations(conversation_id),
+  role TEXT NOT NULL,                 -- system | user | assistant | tool
+  content TEXT,
+  tool_calls_json TEXT,
+  tool_call_id TEXT,
+  name TEXT,
+  context_json TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_messages_conv ON messages(conversation_id, msg_id);
+CREATE TABLE IF NOT EXISTS actions (
+  action_id TEXT PRIMARY KEY,
+  conversation_id TEXT NOT NULL REFERENCES conversations(conversation_id),
+  tool TEXT NOT NULL,
+  args_json TEXT NOT NULL,
+  confirm_text TEXT NOT NULL,
+  context_json TEXT,
+  status TEXT NOT NULL DEFAULT 'pending',   -- pending | done | failed | dismissed
+  result_json TEXT,
+  created_at TEXT NOT NULL,
+  decided_at TEXT
+);
+CREATE TABLE IF NOT EXISTS queued_messages (
+  queue_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  conversation_id TEXT NOT NULL REFERENCES conversations(conversation_id),
+  text TEXT NOT NULL,
+  context_json TEXT,
+  status TEXT NOT NULL DEFAULT 'queued',    -- queued | done
+  created_at TEXT NOT NULL
+);

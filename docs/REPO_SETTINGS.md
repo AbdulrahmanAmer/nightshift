@@ -7,7 +7,7 @@ Applied on 2026-11-01 with `gh api` using the owner's token; every command is re
 
 | Setting | Value | Why |
 |---|---|---|
-| Required status checks | `lint`, `types`, `test`, `powershell-parse`, `scope-check` | The jobs of `.github/workflows/ci.yml` that decide merge safety (`scope-check` runs on pull requests only). `bundle` reports but does not block. Names must equal the job ids in ci.yml. |
+| Required status checks | `lint`, `types`, `test`, `ui-build`, `powershell-parse`, `scope-check` | The jobs of `.github/workflows/ci.yml` that decide merge safety (`scope-check` runs on pull requests only; `ui-build` rebuilds `ns_dashboard/ui` with node 20 and fails when the committed `ns_dashboard/static` differs). `bundle` reports but does not block. Names must equal the job ids in ci.yml. |
 | Require branches to be up to date | off | Builders on disjoint paths would otherwise rebase constantly. |
 | Force pushes | forbidden | History of published branches is never rewritten (ENGINEERING section 5). |
 | Branch deletion | forbidden | |
@@ -17,7 +17,7 @@ Applied on 2026-11-01 with `gh api` using the owner's token; every command is re
 ```powershell
 @'
 {
-  "required_status_checks": {"strict": false, "contexts": ["lint", "types", "test", "powershell-parse", "scope-check"]},
+  "required_status_checks": {"strict": false, "contexts": ["lint", "types", "test", "ui-build", "powershell-parse", "scope-check"]},
   "enforce_admins": false,
   "required_pull_request_reviews": null,
   "restrictions": null,
@@ -31,6 +31,10 @@ Applied on 2026-11-01 with `gh api` using the owner's token; every command is re
 
 Result of the call: HTTP 200; `required_status_checks.contexts = ["lint","types","test","powershell-parse","scope-check"]`, `allow_force_pushes = false`,
 `allow_deletions = false`, `enforce_admins = false`.
+
+`ui-build` was added to the required checks on 2026-11-02 (PR #24, release readiness) by re-running the PUT above with the
+`contexts` list shown (response: `["lint","types","test","powershell-parse","scope-check","ui-build"]`). The check only exists on branches that carry the job, so PRs opened before #24 merges need `main`
+merged in (or an admin merge).
 
 ## Tag ruleset (applied)
 
@@ -63,8 +67,8 @@ gh api -X PUT repos/AbdulrahmanAmer/nightshift/actions/permissions/workflow -f d
 
 | File | Trigger | What |
 |---|---|---|
-| `.github/workflows/ci.yml` | push, pull request | `lint`, `types`, `test`, `powershell-parse`, `bundle`; `scope-check` on pull requests only |
-| `.github/workflows/release.yml` | tag `v*` | tests, `dev/make_bundle.ps1`, GitHub Release with `Nightshift-<ver>.zip`, `.sha256`, `nightshift-app-<ver>.zip` |
+| `.github/workflows/ci.yml` | push, pull request | `lint`, `types`, `test`, `ui-build`, `powershell-parse`, `bundle`; `scope-check` on pull requests only |
+| `.github/workflows/release.yml` | tag `v*` | tests, UI build (node 20) and check, `dev/make_bundle.ps1`, GitHub Release with `Nightshift-<ver>.zip`, `.sha256`, `nightshift-app-<ver>.zip` |
 | `.github/workflows/build-qwentts.yml` | `workflow_dispatch`, tag `v*` | builds `qwentts-win-cuda-x64.zip` on `windows-2022` (see "qwentts build") |
 
 Cutting a release (orchestrator): move the `## [Unreleased]` entries in `CHANGELOG.md` under `## [x.y.z]`, set `VERSION`,
@@ -103,3 +107,12 @@ Size: `cublasLt64_12.dll` alone is 669 MB, so the zip is large (about 600 MB, be
 downloaded once by the installer, never bundled into `Nightshift-<ver>.zip`. If that is too heavy for the partner's link,
 the options are (a) pin the zip to a CUDA 13.x build whose cuBLAS may be smaller, or (b) let the installer fetch the CUDA
 runtime DLLs separately like the llama.cpp `cudart-*` assets. Neither is needed for M0.
+
+## manifest.json binary pins
+
+`manifest.json` `bins` entries carry `{version, url, sha256}`; the `Manifest` model is strict, so notes live here, not in the file.
+
+| Key | Source | Notes |
+|---|---|---|
+| `yt_dlp` | `https://github.com/yt-dlp/yt-dlp/releases/download/<tag>/yt-dlp.exe` | Pinned to `2026.10.26`. The sha256 is the `digest` field of the asset in `gh api repos/yt-dlp/yt-dlp/releases/latest` (the same value as the release's `SHA2-256SUMS`), so nothing was downloaded to compute it. Installer step `s02_download_bins` places it at `bin\yt-dlp\yt-dlp.exe`; the Clipper runs it for `studio clip <url>`. To bump: read the new tag and asset digest the same way and edit the three fields. |
+| `qwentts` | `null` on purpose | Filled from our own release asset `qwentts-win-cuda-x64.zip` of the `v*` release (see "qwentts build"): URL `https://github.com/AbdulrahmanAmer/nightshift/releases/download/<tag>/qwentts-win-cuda-x64.zip` and the sha256 from that release's `.sha256` asset (`gh api repos/AbdulrahmanAmer/nightshift/releases/tags/<tag> --jq '.assets[]|{name,digest}'`). Until then the installer probes `releases/latest/download/qwentts-win-cuda-x64.zip` and falls back to the PyTorch engine (`NS-W301`). |

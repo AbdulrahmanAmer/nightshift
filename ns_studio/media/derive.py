@@ -105,7 +105,7 @@ def derive_short(
         variant="vertical", safe_zones=safe_zones_for("vertical"),
         emphasis=emphasis_from_beats(plan, chapter=spec.chapter, shift=spec.sentence_start,
                                      last=spec.sentence_end),
-        mask_profanity=mask_profanity_setting(ctx.paths, ctx.channel),
+        mask_profanity=mask_profanity_setting(ctx.channel),
     )
     ass_text = opts.build(words, style)
     ass = ctx.subdir("captions") / f"{item}.ass"

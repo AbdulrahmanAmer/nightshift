@@ -2,7 +2,7 @@
 
 ``studio`` gets the app with the ``studio`` extra (plus ``supervisor`` so ``ns`` imports resolve there),
 the cuBLAS/cuDNN wheels faster-whisper needs on Windows, and the spaCy model wheel. ``supervisor`` gets
-``[supervisor,tts]``. The PyTorch ``tts`` venv is created only when s02 or s08 flagged the fallback.
+``[supervisor,tts,dashboard]``. The PyTorch ``tts`` venv is created only when s02 or s08 flagged the fallback.
 """
 
 from __future__ import annotations
@@ -71,7 +71,7 @@ class S04Venvs(Step):
         self._pip(ctx, "studio", [wheel], "studio spacy model")
 
         self._venv(ctx, "supervisor")
-        self._pip(ctx, "supervisor", ["-e", f"{app}[supervisor,tts]"], "supervisor app")
+        self._pip(ctx, "supervisor", ["-e", f"{app}[supervisor,tts,dashboard]"], "supervisor app")
 
         if ctx.flag("tts_fallback", False):
             ensure_tts_venv(ctx)

@@ -128,7 +128,7 @@ def test_repo_manifest_validates():
     assert gpu.whisper_model == "distil-large-v3"
     assert gpu.whisper_repo.repo == "Systran/faster-distil-whisper-large-v3"
     assert mf.profiles["cpu-dev"].llm.repo == "Qwen/Qwen3-1.7B-GGUF"
-    for key in ("llama_cuda", "cudart", "llama_cpu", "qwentts", "opencode", "uv", "yunet"):
+    for key in ("llama_cuda", "cudart", "llama_cpu", "qwentts", "opencode", "uv", "yt_dlp", "yunet"):
         assert key in mf.bins
     assert any(p.startswith("torch==") for p in mf.tts_packages)
 

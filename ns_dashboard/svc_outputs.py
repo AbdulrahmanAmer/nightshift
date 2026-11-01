@@ -58,7 +58,7 @@ class OutputsService:
     # --- queries ---
     def counts(self) -> dict[str, int]:
         """Number of outputs per status (all four keys present)."""
-        out = dict.fromkeys(OUTPUT_STATUSES, 0)
+        out: dict[str, int] = dict.fromkeys(OUTPUT_STATUSES, 0)
         for r in self.s.db.query("SELECT status, COUNT(*) AS n FROM outputs GROUP BY status"):
             out[r["status"]] = int(r["n"])
         return out

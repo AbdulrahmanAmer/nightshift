@@ -9,6 +9,7 @@ import pytest
 
 from installer.stage2 import sysinfo, winenv
 from installer.stage2.answers import AnswersError
+from installer.stage2.downloader import is_verified
 from installer.stage2.fallback import parse_pin
 from installer.stage2.runner import RunResult
 from installer.stage2.simulate import FakeRunner
@@ -340,6 +341,10 @@ def test_s02_cuda13_default_pair_and_qwentts_fallback(tmp_path: Path):
     assert load_runtime(ctx.paths).tts.engine == "reference"
     assert [c for c, _ in ctx.warnings] == ["NS-W301"]
     assert (ctx.paths.bin_opencode / "opencode.exe").exists()          # install_code is true
+    ytdlp = ctx.paths.home / "bin" / "yt-dlp" / "yt-dlp.exe"
+    ytdlp_pin = ctx.manifest.bins["yt_dlp"]
+    assert ytdlp_pin is not None
+    assert ytdlp.is_file() and is_verified(ytdlp, ytdlp_pin.sha256)
     assert step.check(ctx) is True
 
 
@@ -556,7 +561,7 @@ def test_s04_creates_studio_and_supervisor_venvs_without_torch(tmp_path: Path):
     assert spacy.argv[-1] == spacy_wheel_url("en_core_web_md")
     assert spacy.argv[-1].endswith("en_core_web_md-3.8.0-py3-none-any.whl")
     sup = next(c for c in runner.calls if c.tag == "uv pip install supervisor app")
-    assert f"{ROOT}[supervisor,tts]" in sup.argv
+    assert f"{ROOT}[supervisor,tts,dashboard]" in sup.argv
     assert not any("torch" in a for c in runner.calls for a in c.argv)
     assert not ctx.venv_python("tts").exists()
     assert ctx.venv_python("studio").exists() and step.check(ctx) is True

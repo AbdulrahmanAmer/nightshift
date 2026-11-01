@@ -414,7 +414,7 @@ class FakeSupervisor:
         outer = self
 
         class Handler(BaseHTTPRequestHandler):
-            def log_message(self, *args: Any) -> None:  # silence request logging
+            def log_message(self, format: str, *args: Any) -> None:  # silence request logging
                 return
 
             def _send(self, code: int, body: dict[str, Any]) -> None:

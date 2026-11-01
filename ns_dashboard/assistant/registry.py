@@ -80,12 +80,17 @@ def obj(props: dict[str, Any] | None = None, required: list[str] | None = None) 
     }
 
 
+def _is_bool(value: Any) -> bool:
+    """isinstance(value, bool) without narrowing `value` for the type checker (its `Any` must stay `Any`)."""
+    return isinstance(value, bool)
+
+
 def check_value(schema: dict[str, Any], value: Any, path: str = "args") -> str | None:
     """Validate `value` against the small JSON-schema subset the descriptors use; returns an error or None."""
     typ = schema.get("type")
     if typ is not None:
         expected = JSON_TYPES[typ]
-        if isinstance(value, bool) and typ in ("integer", "number"):
+        if _is_bool(value) and typ in ("integer", "number"):
             return f"{path} must be {typ}"
         if not isinstance(value, expected):
             return f"{path} must be {typ}"

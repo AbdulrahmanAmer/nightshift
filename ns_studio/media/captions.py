@@ -651,7 +651,7 @@ class CaptionsStage:
         manifest = ctx.read_json("audio/manifest.json")
         plan_file = ctx.file("visual_plan.json")
         beats: list[dict] = ctx.read_json("visual_plan.json") if plan_file.exists() else []
-        mask = mask_profanity_setting(ctx.paths, ctx.channel)
+        mask = mask_profanity_setting(ctx.channel)
         tr = ctx.services.transcriber
         lang = ctx.channel.language
         ctx.subdir("words")

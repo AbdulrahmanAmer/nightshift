@@ -103,6 +103,21 @@
       "default": null,
       "title": "Caption Style"
     },
+    "emphasis": {
+      "anyOf": [
+        {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Emphasis"
+    },
     "status": {
       "default": "kept",
       "enum": [

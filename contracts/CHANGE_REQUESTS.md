@@ -69,7 +69,7 @@ Format per entry:
 - **From:** C9 ns_dashboard / Tasks 5-9
 - **Change:** in `pyproject.toml` (a) add `"fastapi>=0.115"`, `"python-multipart>=0.0.9"` and `"Pillow>=10"` to the `dev` extra (`httpx` is already a core dependency and is what `fastapi.testclient` needs); (b) add an extra `dashboard = ["fastapi>=0.115", "uvicorn>=0.30", "python-multipart>=0.0.9", "Pillow>=10", "keyring>=25"]` for the target machine; (c) add `"ns_dashboard*"` to `[tool.setuptools.packages.find].include` and `ns_dashboard = ["static/*"]` to `[tool.setuptools.package-data]`; (d) add `"ns_dashboard"` to `[tool.pyright].include`.
 - **Why:** CI installs only `.[dev]`, so until (a) lands every `TestClient`, multipart and Pillow test of the dashboard is skipped (the framework-free service layer, job worker, uploads, range parsing, log tail and templates are tested without them). (c) is needed for the bundle to ship the UI; (d) puts the dashboard under pyright like the other packages (the code is written to pass `standard` mode).
-- **Status:** open
+- **Status:** applied on feat/release-readiness: (a) was already in the dev extra, (b) a `dashboard` extra with `python-multipart`, `Pillow`, `keyring` (fastapi and uvicorn come from `supervisor`; installer s04 installs `[supervisor,tts,dashboard]` into the supervisor venv where the dashboard runs), (c) `ns_dashboard*` in the package list and package-data, (d) `ns_dashboard` in the pyright include
 
 ## CR-C9-2: `sources.rights_confirmed` and `dashboard_jobs.result_json`
 - **From:** C9 ns_dashboard / Task 6
@@ -111,7 +111,7 @@ Format per entry:
 - **From:** C8 Clipper / Task 3
 - **Change:** add `"opencv-python-headless>=4.9"` to `[project.optional-dependencies].dev` and `.studio` in `pyproject.toml` (`numpy` is already core).
 - **Why:** with it CI runs the YuNet/Canny paths (`pytest.importorskip("cv2")` tests are skipped without it). The YuNet ONNX also needs a `manifest.json` pin (`models\cv\yunet.onnx`) so the installer downloads it.
-- **Status:** open
+- **Status:** applied (`dev` extra earlier; `studio` extra and the `bins.yunet` manifest pin on feat/release-readiness)
 
 ## CR-C8-3: `sources` row stores the rights confirmation
 - **From:** C8 Clipper / Task 5
@@ -194,7 +194,7 @@ Format per entry:
 - **From:** C9 ns_dashboard / Assistant CLI
 - **Change:** C7 mounts the command: in `ns_studio/cli.py` call `from ns_dashboard.assistant.cli import register; register(app)` (it adds `studio ask "<text>" [--yes] [-c conversation] [--fake-services]`). `pyproject.toml` (extends CR-C9-1): `[tool.setuptools.package-data] ns_dashboard = ["static/*", "prompts/*.md"]`.
 - **Why:** spec 20.3a "`studio ask` on the command line for the same loop". The prompt file `ns_dashboard/prompts/assistant.md` must ship with the package.
-- **Status:** partly applied in 48457df (`studio ask` is mounted through `register`, guarded for a missing fastapi or dashboard package). Still open: the `pyproject.toml` package-data entry
+- **Status:** applied (`studio ask` mounted in 48457df; package-data `ns_dashboard = ["static/**/*", "prompts/*.md"]` on feat/release-readiness)
 
 ## CR-C9-8: `ns update --check` / `--github` output and subprocess allow-list
 - **From:** C9 ns_dashboard / Update endpoints
@@ -223,7 +223,7 @@ Format per entry:
 - **From:** C1 installer / s04_venvs, fallback.py
 - **Change:** (a) manifest: spaCy model wheel `en_core_web_md` version and SHA256 (the installer hard-codes 3.8.0 and cannot verify the hash); (b) manifest or `studio` extra: `nvidia-cublas-cu12` and `nvidia-cudnn-cu12` pins (the installer uses ranges `>=12.8,<13` and `>=9,<10`); (c) manifest: the PyTorch fallback HF repos (`Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice`, `-Base`) instead of constants in `installer/stage2/fallback.py`; (d) `studio` extra: `opencv-python-headless` (spec 21.4, needed from M3); (e) a Blackwell-capable CUDA 12.8 llama.cpp pin if one exists, so CUDA 12.4 to 12.7 drivers are not limited to the 12.4 build.
 - **Why:** ENGINEERING.md DoD 6 (no unpinned dependency). The installer runs today with the ranges above.
-- **Status:** open
+- **Status:** partly applied on feat/release-readiness: (d) `opencv-python-headless>=4.9,<5` is in the `studio` extra. Still open: (a) spaCy wheel hash, (b) cuBLAS/cuDNN pins, (c) PyTorch fallback repos in the manifest, (e) a CUDA 12.8 llama.cpp pin; each needs an upstream lookup that cannot be done from the authoring laptop
 
 ## CR-C1-5: what the installer expects from the `ns` CLI (C2)
 - **From:** C1 installer / s06, s08, s09, s10
@@ -321,16 +321,16 @@ Format per entry:
 - **From:** C6 media finish (spec 17.1, 17.2)
 - **Change:** (1) `ns_common.models.Channel` gains `formats_allowed: list[str] = []` and `captions: {mask_profanity: bool = False}`. `Channel` forbids unknown keys, so `config.load_channel` rejects a profile that carries them today; `ns_studio/media/channel_opts.py` already reads both (model attribute first, YAML second). (2) `VisualBeat` gains optional `emphasis` (mapping sentence index to one key word) and `ClipPlanItem` gains optional `emphasis` (list, one key word per sentence); `ns_studio/clipper/models.py` `ClipItem` has it already and the stages read both when present as plain extra keys. The `visual_plan`, `clip_select` prompts and `text/prompts.py` schemas should ask for and pass it through. (3) `pyproject.toml` `[tool.setuptools.package-data]` needs `presets/formats/*.yaml` for `ns_studio`. (4) `ns_dashboard/templates.py` reads regions and caption anchors from `clip_templates.yaml`; they now live in `ns_studio/presets/formats/clip_*.yaml` (load with `ns_studio.media.formats.load_formats()`), and the Library → Formats page can list every preset.
 - **Why:** spec 17.1 (formats allowed per channel, formats as data) and 17.2 (emphasis, profanity masking) need fields the shared models and packaging do not carry.
-- **Status:** open
+- **Status:** applied on feat/release-readiness: `Channel.formats_allowed` and `Channel.captions` (`mask_profanity`) exist and the channel schema is regenerated; `VisualBeat.emphasis` is a mapping (`dict[str, str]`, sentence index as the JSON key) and `ClipPlanItem.emphasis` a list (`list[str]`), both optional, in the `visual_plan` and `clip_plan` schemas; `presets/formats/*.yaml` is in the `ns_studio` package-data. `ns_studio/media/channel_opts.py` is gone: the stages read `channel.captions.mask_profanity` and `channel.formats_allowed` directly. Still open: the `visual_plan`, `clip_select` prompts and `text/prompts.py` schemas do not ask the model for `emphasis` yet; `ns_dashboard/templates.py` still reads `clip_templates.yaml`
 
 ## CR-C9-9: assistant conversations and pending actions (shared schema)
 - **From:** C9 ns_dashboard / Assistant
 - **Change:** `assistant_messages` (flat: ts, role, content, tool_calls_json) cannot hold conversations, tool-call ids or pending confirm cards. `ns_dashboard/assistant/store.py` therefore creates `conversations`, `messages`, `actions` and `queued_messages` in `data/assistant.db` itself (and mirrors every message into `assistant_messages`). Move those four tables into `contracts/schema.sql` next to `assistant_messages` (or extend `assistant_messages` with `conversation_id`, `tool_call_id`, `name`), then delete `DDL` from the store.
 - **Why:** local DDL for a shared database is a shim; the owner of `contracts/` should own it.
-- **Status:** open
+- **Status:** applied on feat/release-readiness: the four tables are in `contracts/schema.sql` next to `assistant_messages` and `DDL` is gone from the store; the flat `assistant_messages` mirror stays
 
 ## CR-C8-10: URL sources via a pinned yt-dlp (`bins.yt_dlp`, `NS-E409`, subprocess allow-list)
 - **From:** C8 Clipper / URL source task
 - **Change:** (1) `manifest.json` `bins.yt_dlp`: `{version, url, sha256}` for the `yt-dlp.exe` asset of a release from https://github.com/yt-dlp/yt-dlp/releases (pin the latest release at the time, SHA256 from the release's `SHA2-256SUMS`); the installer downloads it to `<home>\bin\yt-dlp\yt-dlp.exe` (C1). (2) `contracts/errors.json`: `NS-E409` message "Download failed.", hint "Check the link and that the video is yours or you have permission to use it." (3) `pyproject.toml` ruff per-file-ignores: `"ns_studio/clipper/source.py" = ["TID251"]` (it runs yt-dlp with `subprocess.Popen`, list arguments, never a shell); until then the import carries `# noqa: TID251`.
 - **Why:** `studio clip <url>` downloads the owner's video before the normal import (ffprobe, sha256, rights gate). Until `errors.json` lists the code, `ns_studio/clipper/source.py` spells it `"NS-E" + "409"` and registers the text at import so the hygiene test (unregistered code literals) stays green; replace both with the plain literal and delete `register_download_code` when this lands.
-- **Status:** open
+- **Status:** applied on feat/release-readiness: `errors.json` has `NS-E409` (`NS-E410` was not needed: a missing yt-dlp raises `NS-E409` with the path in the detail), the `TID251` per-file ignore is in `pyproject.toml` and the `noqa` and the split-literal workaround are gone from `ns_studio/clipper/source.py`, `manifest.json` pins `bins.yt_dlp` and installer step s02 downloads it

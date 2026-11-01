@@ -3,7 +3,7 @@
 `AssOptions` bundles everything `build_ass` takes beyond the words and the style (safe zones, regions to
 avoid, key-word emphasis, speaker colours, profanity masking, an anchor). It round-trips through JSON so the
 renderer can rebuild a caption file with the measured backdrop luma (`captions/<item>.json["ass_opts"]`).
-Everything here is pure except `mask_profanity_setting`, which may read the channel YAML.
+Everything here is pure.
 """
 
 from __future__ import annotations
@@ -13,9 +13,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ns_common.models import Channel
-from ns_common.paths import Paths
 from ns_studio.media.captions import DEFAULT_SAFE_ZONES, Box, Variant, build_ass, group_words
-from ns_studio.media.channel_opts import channel_setting
 from ns_studio.media.presets import CaptionStyle, caption_style
 from ns_studio.media.transcribe import Word
 
@@ -33,9 +31,9 @@ def safe_zones_for(variant: Variant) -> tuple[int, int]:
 # ---------------------------------------------------------------------------------------------------------
 
 
-def mask_profanity_setting(paths: Paths, channel: Channel) -> bool:
+def mask_profanity_setting(channel: Channel) -> bool:
     """The channel's `captions.mask_profanity` option (default off)."""
-    return bool(channel_setting(paths, channel, "captions.mask_profanity", False))
+    return channel.captions.mask_profanity
 
 
 # ---------------------------------------------------------------------------------------------------------
