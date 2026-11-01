@@ -5,15 +5,14 @@ C7's `ns_studio/cli.py` mounts it with `app.add_typer(ns_studio.clipper.cli.app,
 """
 from __future__ import annotations
 
+import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 from typing import Annotated
 
-import click
 import typer
-from typer.core import TyperGroup
 
 from ns_common.config import load_channel
 from ns_common.errors import NsError
@@ -24,17 +23,13 @@ from ns_studio.context import FAKEABLE
 from ns_studio.orchestrator import run_job
 
 
-class ClipGroup(TyperGroup):
-    """Accepts `--fake-services` with or without a value (bare means all)."""
-
-    def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
-        """Rewrite a bare `--fake-services` to `--fake-services=all`, then parse as usual."""
-        return super().parse_args(ctx, ["--fake-services=all" if a == "--fake-services" else a for a in args])
+def normalize_fake_flag(args: list[str]) -> list[str]:
+    """Rewrite a bare `--fake-services` to `--fake-services=all` so the option can also take a list."""
+    return ["--fake-services=all" if a == "--fake-services" else a for a in args]
 
 
 app = typer.Typer(
     help="Clip a video you own into vertical Shorts.",
-    cls=ClipGroup,
     no_args_is_help=False,
     context_settings={"allow_interspersed_args": True},
 )
@@ -150,7 +145,7 @@ def _reselect(
 
 def main() -> None:
     """Console entry point for standalone use."""
-    app()
+    app(args=normalize_fake_flag(sys.argv[1:]))
 
 
 if __name__ == "__main__":

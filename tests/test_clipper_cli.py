@@ -48,7 +48,10 @@ def test_unknown_channel_is_a_clean_error(tmp_home: Path) -> None:
 
 
 def test_bare_fake_services_flag_is_accepted(tmp_home: Path) -> None:
-    res = runner.invoke(cli.app, ["movie.mp4", "--fake-services", "--channel", "nope", "--confirm-rights"])
+    res = runner.invoke(
+        cli.app,
+        cli.normalize_fake_flag(["movie.mp4", "--fake-services", "--channel", "nope", "--confirm-rights"]),
+    )
     assert res.exit_code == 1  # reaches the channel lookup, so the flag parsed
     assert "not found" in res.output
 
