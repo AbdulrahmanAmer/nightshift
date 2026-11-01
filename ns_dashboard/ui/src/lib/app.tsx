@@ -33,8 +33,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [theme, setThemeState] = useState<"light" | "dark">(() => store.get<"light" | "dark" | null>("ns-theme", null) ?? (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"));
   const tid = useRef(0);
 
+  const lastStatus = useRef("");
   const refresh = useCallback(async () => {
-    try { const s = await api.status(); setStatus(s); setDemo(api.demo); } catch { /* keep last status */ }
+    try {
+      const s = await api.status(); const key = JSON.stringify(s);
+      // Only publish a new status when something changed, so the 1.5 s demo poll does not re-render every page.
+      if (key !== lastStatus.current) { lastStatus.current = key; setStatus(s); }
+      setDemo(api.demo);
+    } catch { /* keep last status */ }
   }, []);
   const toast = useCallback((text: string, tone?: Toast["tone"]) => {
     const id = ++tid.current; setToasts((t) => [...t, { id, text, tone }]);

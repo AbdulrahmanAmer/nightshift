@@ -30,7 +30,7 @@
   --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.05);
   --shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 8px 24px rgba(15, 23, 42, 0.05);
   --shadow-float: 0 8px 24px rgba(8, 12, 24, 0.18);
-  --chip-glass: rgba(255, 255, 255, 0.86);
+  --chip-glass: rgba(255, 255, 255, 0.92);
   --chip-glass-text: #111827;
   color-scheme: light;
 }
@@ -43,7 +43,7 @@
     --accent: #f2b33d; --on-accent: #1d1503; --accent-ink: #f2b33d; --accent-soft: rgba(242, 179, 61, 0.12);
     --ok: #4cc38a; --ok-soft: rgba(76, 195, 138, 0.12); --bad: #e5484d; --bad-soft: rgba(229, 72, 77, 0.12);
     --shadow-sm: none; --shadow: none; --shadow-float: 0 8px 24px rgba(0, 0, 0, 0.4);
-    --chip-glass: rgba(17, 20, 28, 0.82); --chip-glass-text: #eef0f5;
+    --chip-glass: rgba(17, 20, 28, 0.88); --chip-glass-text: #eef0f5;
     color-scheme: dark;
   }
 }
@@ -55,7 +55,7 @@
   --accent: #f2b33d; --on-accent: #1d1503; --accent-ink: #f2b33d; --accent-soft: rgba(242, 179, 61, 0.12);
   --ok: #4cc38a; --ok-soft: rgba(76, 195, 138, 0.12); --bad: #e5484d; --bad-soft: rgba(229, 72, 77, 0.12);
   --shadow-sm: none; --shadow: none; --shadow-float: 0 8px 24px rgba(0, 0, 0, 0.4);
-  --chip-glass: rgba(17, 20, 28, 0.82); --chip-glass-text: #eef0f5;
+  --chip-glass: rgba(17, 20, 28, 0.88); --chip-glass-text: #eef0f5;
   color-scheme: dark;
 }
 
@@ -114,7 +114,7 @@
   .field-input:focus { border-color: var(--text-2); box-shadow: 0 0 0 3px var(--accent-soft); }
   .field-input::placeholder { color: var(--muted); }
   .scroll-thin { scrollbar-width: thin; scrollbar-color: var(--line-2) transparent; }
-  .glass-chip { background: var(--chip-glass); color: var(--chip-glass-text); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); }
+  .glass-chip { background: var(--chip-glass); color: var(--chip-glass-text); }
 }
 
 @keyframes rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }

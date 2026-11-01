@@ -70,11 +70,11 @@ function Strip() {
         <span className="relative flex size-2 shrink-0">{eng.live && <span className="absolute inset-0 animate-ping rounded-full bg-accent opacity-60" />}<span className={cx("relative size-2 rounded-full", dot)} /></span>
         <span className="truncate font-medium">{eng.text}</span>
       </span>
-      <span className="hidden items-center gap-1.5 text-[13px] text-text-2 sm:inline-flex">
+      <span className="hidden items-center gap-1.5 text-[13px] whitespace-nowrap text-text-2 lg:inline-flex">
         <Moon size={14} strokeWidth={1.5} className="text-muted" aria-hidden />
         {status?.next_run ? <>Next automatic run <span className="font-mono num text-text">{fmtWhen(status.next_run)}</span></> : "Automatic runs off"}
       </span>
-      {demo && <span title="No engine answered, so this is sample data" className="hidden rounded-full border border-line-2 px-2.5 py-0.5 text-[12px] text-text-2 md:inline">Demo data</span>}
+      {demo && <span title="No engine answered, so this is sample data" className="hidden text-[12px] whitespace-nowrap text-muted xl:inline">Demo data</span>}
       <span className="flex-1" />
       {quitting ? (
         <span className="fade-in flex items-center gap-2 text-[13px]">
@@ -84,11 +84,11 @@ function Strip() {
         </span>
       ) : (
         <>
-          <Button size="sm" variant="secondary" className="h-10 px-4" icon={<MessageSquare size={16} strokeWidth={1.5} aria-hidden />} onClick={() => ask({})}>Ask Nightshift</Button>
+          <Button size="sm" variant="secondary" className="h-10 px-4 max-sm:px-3" icon={<MessageSquare size={16} strokeWidth={1.5} aria-hidden />} onClick={() => ask({})} aria-label="Ask Nightshift"><span className="hidden sm:inline">Ask Nightshift</span></Button>
           <IconButton label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"} className="size-10" onClick={() => setTheme(theme === "dark" ? "light" : "dark")}>
             {theme === "dark" ? <Sun size={18} strokeWidth={1.5} /> : <Moon size={18} strokeWidth={1.5} />}
           </IconButton>
-          <Button size="sm" variant="ghost" className="h-10" icon={<Power size={16} strokeWidth={1.5} aria-hidden />} onClick={() => setQuitting(true)} aria-label="Quit Nightshift">Quit</Button>
+          <Button size="sm" variant="ghost" className="h-10 max-sm:px-3" icon={<Power size={16} strokeWidth={1.5} aria-hidden />} onClick={() => setQuitting(true)} aria-label="Quit Nightshift"><span className="hidden sm:inline">Quit</span></Button>
         </>
       )}
     </header>
@@ -117,7 +117,7 @@ function ConfirmDialog() {
   return (
     <div className="fade-in fixed inset-0 z-50 flex items-center justify-center bg-[rgba(8,12,24,0.35)] p-4" onMouseDown={(e) => e.target === e.currentTarget && closeConfirm(null)} onKeyDown={(e) => { if (e.key === "Escape") closeConfirm(null); if (e.key === "Enter" && c.input) ok(); }}>
       <div ref={ref} role="dialog" aria-modal="true" aria-labelledby="dlg-t" className="enter card w-full max-w-md p-6">
-        <h2 id="dlg-t" className="text-[18px] font-medium">{c.title}</h2>
+        <h2 id="dlg-t" className="text-[17px] font-medium">{c.title}</h2>
         {c.body && <p className="mt-2 text-[14px] text-text-2">{c.body}</p>}
         {c.input && <div className="mt-4"><label className="mb-1.5 block text-[13px] font-medium text-text-2" htmlFor="dlg-in">{c.input.label}</label><input id="dlg-in" className="field-input" value={val} placeholder={c.input.placeholder} onChange={(e) => setVal(e.target.value)} /></div>}
         <div className="mt-6 flex justify-end gap-2">
@@ -136,8 +136,8 @@ function AskDrawer() {
   if (!askOpen) return null;
   return (
     <div className="fixed inset-0 z-40 flex justify-end bg-[rgba(8,12,24,0.25)]" onMouseDown={(e) => e.target === e.currentTarget && setAskOpen(false)}>
-      <aside aria-label="Ask Nightshift" className="enter card m-3 flex w-full max-w-[460px] flex-col overflow-hidden">
-        <div className="flex items-center justify-between border-b border-line px-5 py-3.5">
+      <aside aria-label="Ask Nightshift" className="enter card flex w-full flex-col overflow-hidden max-sm:rounded-none max-sm:border-0 sm:m-3 sm:max-w-[460px]">
+        <div className="flex items-center justify-between border-b border-line px-5 py-3">
           <div className="flex items-center gap-2.5"><Mark size={24} /><span className="text-[15px] font-medium">Ask Nightshift</span></div>
           <div className="flex items-center gap-1"><a href="#/assistant" className="rounded-full px-3 py-1.5 text-[13px] text-text-2 no-underline hover:bg-raised">Open full page</a><IconButton label="Close" onClick={() => setAskOpen(false)}><X size={18} strokeWidth={1.5} /></IconButton></div>
         </div>

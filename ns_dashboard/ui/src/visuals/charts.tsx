@@ -11,19 +11,6 @@ const smooth = (pts: [number, number][]) => {
   return d;
 };
 
-export function Sparkline({ values, w = 120, h = 32, label }: { values: number[]; w?: number; h?: number; label?: string }) {
-  if (!values?.length) return null;
-  const max = Math.max(...values), min = Math.min(...values), span = max - min || 1;
-  const pts = values.map((v, i) => [(i / (values.length - 1)) * (w - 4) + 2, h - 3 - ((v - min) / span) * (h - 6)] as [number, number]);
-  const last = pts[pts.length - 1];
-  return (
-    <svg width={w} height={h} viewBox={`0 0 ${w} ${h}`} role="img" aria-label={label || "Trend"} className="block overflow-visible">
-      <path d={smooth(pts)} fill="none" stroke="var(--text-2)" strokeWidth={1.5} strokeLinecap="round" />
-      <circle cx={last[0]} cy={last[1]} r={3} fill="var(--accent)" stroke="var(--card)" strokeWidth={1.5} />
-    </svg>
-  );
-}
-
 /** Main Results chart: Shorts (accent, leading) against full videos (ink), smooth lines, muted grid. */
 export function ViewsChart({ days, height = 300 }: { days: { date: string; shorts: number; long: number }[]; height?: number }) {
   const id = useId().replace(/:/g, ""); const [hover, setHover] = useState<number | null>(null);
@@ -42,8 +29,8 @@ export function ViewsChart({ days, height = 300 }: { days: { date: string; short
         {days.map((d, i) => (i % 2 === 1 || i === days.length - 1) && i !== days.length - 2 ? <text key={d.date} x={X(i)} y={H - 8} textAnchor={i === days.length - 1 ? "end" : "middle"} fontSize="11" fill="var(--muted)" fontFamily="var(--font-mono)">{label(d.date)}</text> : null)}
         <path d={`${smooth(sp)} L ${X(days.length - 1)} ${pt + ih} L ${pl} ${pt + ih} Z`} fill={`url(#${id}a)`} />
         <path d={smooth(sp)} fill="none" stroke="var(--accent)" strokeWidth={2.5} strokeLinecap="round" />
-        <path d={smooth(lp)} fill="none" stroke="var(--text)" strokeWidth={2} strokeLinecap="round" />
-        {hover != null && <g><line x1={X(hover)} x2={X(hover)} y1={pt} y2={pt + ih} stroke="var(--line-2)" /><circle cx={X(hover)} cy={Y(days[hover].shorts)} r={4.5} fill="var(--accent)" stroke="var(--card)" strokeWidth={2} /><circle cx={X(hover)} cy={Y(days[hover].long)} r={4} fill="var(--text)" stroke="var(--card)" strokeWidth={2} /></g>}
+        <path d={smooth(lp)} fill="none" stroke="var(--text)" strokeWidth={1.5} strokeLinecap="round" />
+        {hover != null && <g><line x1={X(hover)} x2={X(hover)} y1={pt} y2={pt + ih} stroke="var(--line-2)" /><circle cx={X(hover)} cy={Y(days[hover].shorts)} r={4.5} fill="var(--accent)" stroke="var(--card)" strokeWidth={1.5} /><circle cx={X(hover)} cy={Y(days[hover].long)} r={4} fill="var(--text)" stroke="var(--card)" strokeWidth={1.5} /></g>}
       </svg>
       {hover != null && (
         <div className="pointer-events-none absolute top-2 rounded-[12px] border border-line bg-card px-3 py-2 text-[12px] shadow-float" style={{ left: `clamp(8px, calc(${(X(hover) / W) * 100}% - 70px), calc(100% - 150px))` }}>
