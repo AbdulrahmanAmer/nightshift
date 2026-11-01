@@ -9,26 +9,89 @@ from __future__ import annotations
 import statistics
 from functools import lru_cache
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import yaml
 
-from ns_common.models import CANVAS_H, CANVAS_W, ClipLayout, ClipTemplate, Crop, FaceFrame, Rect
+from ns_common.models import (
+    CANVAS_H,
+    CANVAS_W,
+    ClipLayout,
+    ClipTemplate,
+    Crop,
+    FaceFrame,
+    Format,
+    Rect,
+    Region,
+)
+from ns_studio.media.captions import Box
+from ns_studio.media.formats import get_format
 
 TRACK_STEP_S = 0.25
 SPEAKER_HOLD_FRAMES = 2
 
 
 def templates_path() -> Path:
-    """Location of `clip_templates.yaml`."""
+    """Location of `clip_templates.yaml` (the compatibility map from template ids to format presets)."""
     return Path(__file__).resolve().parents[1] / "presets" / "clip_templates.yaml"
 
 
 @lru_cache(maxsize=1)
-def load_templates() -> dict[str, ClipTemplate]:
-    """Parse `clip_templates.yaml` into `ClipTemplate`s keyed by name."""
+def _compat() -> dict[str, dict[str, Any]]:
     raw = yaml.safe_load(templates_path().read_text(encoding="utf-8"))
-    return {name: ClipTemplate(name=name, **body) for name, body in raw.items()}
+    return {str(name): dict(body) for name, body in raw.items()}
+
+
+def format_id_for(template: str) -> str:
+    """Format preset id behind a template name (`gaming_facecam` or already `clip_gaming_facecam`)."""
+    name = template.removeprefix("clip_") if template.removeprefix("clip_") in _compat() else template
+    try:
+        return str(_compat()[name]["format"])
+    except KeyError as e:
+        raise ValueError(f"unknown clip template {template!r}") from e
+
+
+def format_for(template: str) -> Format:
+    """The format preset (`presets/formats/clip_*.yaml`) that draws `template` (spec 17.1, CR-C8-8)."""
+    return get_format(format_id_for(template))
+
+
+def _template_regions(fmt: Format) -> list[Region]:
+    """The format regions as clipper `Region`s: facecam height `auto` (capped), the panel below it `seam`."""
+    cam = next((r for r in fmt.layout.regions if r.source == "facecam"), None)
+    out: list[Region] = []
+    for r in fmt.layout.regions:
+        if cam is not None and r is cam:
+            out.append(Region(id=r.name, x=r.x, y=r.y, w=r.w, h="auto", max_h=r.h))
+        elif cam is not None and r.y == cam.y + cam.h:
+            reaches_bottom = r.y + r.h == fmt.canvas.h
+            out.append(Region(id=r.name, x=r.x, y="seam", w=r.w, h="rest" if reaches_bottom else r.h))
+        else:
+            out.append(Region(id=r.name, x=r.x, y=r.y, w=r.w, h=r.h))
+    return out
+
+
+@lru_cache(maxsize=1)
+def load_templates() -> dict[str, ClipTemplate]:
+    """`ClipTemplate`s keyed by name: the clipper's view of the six `clip_*` format presets.
+
+    Geometry, caption anchor and safe margins come from the preset; `clip_templates.yaml` only adds what a
+    preset does not describe (layout kind, detection needs, tracking constants).
+    """
+    out: dict[str, ClipTemplate] = {}
+    for name, body in _compat().items():
+        fmt = get_format(str(body["format"]))
+        extra = {k: v for k, v in body.items() if k != "format"}
+        out[name] = ClipTemplate(
+            name=name,
+            regions=_template_regions(fmt),
+            caption_anchor_y_pct="seam" if fmt.layout.seam_captions else fmt.captions.anchor_y_pct,
+            safe_top=fmt.safe_margins.top,
+            safe_bottom=fmt.safe_margins.bottom,
+            **extra,
+        )
+    return out
 
 
 # ---------- small geometry helpers ----------
@@ -296,3 +359,91 @@ def plan_layout(
     if tpl.layout == "tracked":
         return _plan_tracked(tpl, source_w, source_h, layout, t_start, t1)
     return _plan_center(source_w, source_h, t_start, t1)
+
+
+# ---------- caption placement inputs (spec 17.2) ----------
+def panel_pairs(tpl: ClipTemplate, crop: Crop) -> list[tuple[str, Rect, Rect]]:
+    """(panel id, panel on the canvas, source region shown in it) for every panel that shows source pixels."""
+    panels = canvas_panels(tpl, crop)
+    pairs: list[tuple[str, Rect, Rect]] = []
+    if tpl.layout in ("gaming", "screen_cam"):
+        main_id = "game" if tpl.layout == "gaming" else "screen"
+        if crop.region_b is not None:
+            pairs.append(("cam", panels["cam"], crop.region_b))
+        pairs.append((main_id, panels[main_id], crop.region))
+    elif tpl.layout == "stacked":
+        pairs.append(("top", panels["top"], crop.region))
+        if crop.region_b is not None:
+            pairs.append(("bottom", panels["bottom"], crop.region_b))
+    elif tpl.layout == "tracked":
+        pairs.append(("main", panels["main"], crop.region))
+    else:
+        pairs.append(("fg", panels["fg"], crop.region))
+    return pairs
+
+
+def _union(boxes: list[Rect]) -> Rect:
+    x0, y0 = min(b.x for b in boxes), min(b.y for b in boxes)
+    x1, y1 = max(b.right for b in boxes), max(b.bottom for b in boxes)
+    return Rect(x=x0, y=y0, w=x1 - x0, h=y1 - y0)
+
+
+def face_tracks(layout: ClipLayout, t0: float, t1: float) -> list[Rect]:
+    """One box per face (left to right): the union of its boxes over the frames around [t0, t1]."""
+    frames = _frames_in(layout, t0, t1)
+    out: list[Rect] = []
+    for k in range(max((len(f.boxes) for f in frames), default=0)):
+        boxes = [f.boxes[k] for f in frames if k < len(f.boxes)]
+        if boxes:
+            out.append(_union(boxes))
+    return out
+
+
+def _to_panel(box: Rect, region: Rect, panel: Rect) -> Rect | None:
+    x0, y0 = max(box.x, region.x), max(box.y, region.y)
+    x1, y1 = min(box.right, region.right), min(box.bottom, region.bottom)
+    if x1 <= x0 or y1 <= y0:
+        return None
+    sx, sy = panel.w / region.w, panel.h / region.h
+    return Rect(
+        x=panel.x + round((x0 - region.x) * sx),
+        y=panel.y + round((y0 - region.y) * sy),
+        w=max(1, round((x1 - x0) * sx)),
+        h=max(1, round((y1 - y0) * sy)),
+    )
+
+
+def avoid_boxes(tpl: ClipTemplate, crop: Crop, layout: ClipLayout, t0: float, t1: float) -> list[Box]:
+    """Canvas rectangles captions must stay off: the facecam panel and every detected face (spec 17.2).
+
+    Faces are mapped from source pixels into the panel that shows them; the facecam is avoided as a whole
+    panel (gaming layouts put captions on the gameplay region, never over the camera).
+    """
+    out: list[Box] = []
+    faces = face_tracks(layout, t0, t1)
+    for panel_id, panel, region in panel_pairs(tpl, crop):
+        if panel_id == "cam":
+            out.append(Box(panel.x, panel.y, panel.w, panel.h))
+            continue
+        for f in faces:
+            mapped = _to_panel(f, region, panel)
+            if mapped is not None:
+                out.append(Box(mapped.x, mapped.y, mapped.w, mapped.h))
+    return out
+
+
+def band_in_source(tpl: ClipTemplate, crop: Crop, band: Box, src_w: int, src_h: int) -> list[Box]:
+    """Where the caption band's pixels come from in the source frame: one box per overlapped panel."""
+    out: list[Box] = []
+    for _pid, panel, region in panel_pairs(tpl, crop):
+        x0, y0 = max(band.x, panel.x), max(band.y, panel.y)
+        x1, y1 = min(band.x + band.w, panel.right), min(band.y + band.h, panel.bottom)
+        if x1 <= x0 or y1 <= y0:
+            continue
+        sx, sy = region.w / panel.w, region.h / panel.h
+        bx = min(max(0, region.x + int((x0 - panel.x) * sx)), src_w - 2)
+        by = min(max(0, region.y + int((y0 - panel.y) * sy)), src_h - 2)
+        bw = max(2, min(int((x1 - x0) * sx), src_w - bx))
+        bh = max(2, min(int((y1 - y0) * sy), src_h - by))
+        out.append(Box(bx, by, bw - bw % 2 or 2, bh - bh % 2 or 2))
+    return out

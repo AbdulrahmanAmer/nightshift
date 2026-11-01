@@ -1,8 +1,9 @@
 """C8 Clipper: per-template FFmpeg render (spec 19.2 C7).
 
-`build_filter_graph` is pure: it turns a template plus crops into one `-filter_complex` string (vstack,
-crop + scale, blurred fill, camera overlay, speaker border, burned `ass=` captions). `render_clip` adds
-the two-pass loudnorm to -14 LUFS and runs FFmpeg through `ns_common.ffmpeg.run`.
+`build_filter_graph` is pure: it turns a template plus crops into one `-filter_complex` string. The panels
+come from the template's format preset through the generic engine in `ns_studio.media.layout` (crop + scale
++ overlay, blurred fill); this module adds the speaker border and the burned `ass=` captions.
+`render_clip` adds the two-pass loudnorm to -14 LUFS and runs FFmpeg through `ns_common.ffmpeg.run`.
 """
 from __future__ import annotations
 
@@ -15,8 +16,9 @@ from pathlib import Path
 from ns_common import ffmpeg
 from ns_common.errors import NsError
 from ns_common.logging import NsLogger
-from ns_common.models import CANVAS_H, CANVAS_W, ClipTemplate, Crop
-from ns_studio.clipper.layout import canvas_panels
+from ns_common.models import CANVAS_H, CANVAS_W, ClipTemplate, Crop, Format, Rect
+from ns_studio.clipper import layout
+from ns_studio.media.layout import SourceSpec, build_regions_graph, fit_facecam_height
 
 TARGET_LUFS = -14.0
 TARGET_TP = -1.5
@@ -110,64 +112,57 @@ def _speaker_borders(crops: list[Crop], border_px: int) -> list[str]:
     return out
 
 
+def _rect(r: Rect) -> tuple[int, int, int, int]:
+    return r.x, r.y, r.w, r.h
+
+
+def region_sources(spec: RenderSpec, crops: list[Crop]) -> dict[str, SourceSpec]:
+    """What each region source of the template's format shows, from the planned crops (clip-relative)."""
+    first = crops[0]
+    w, h = spec.src_w, spec.src_h
+    kind = spec.template.layout
+    if kind in ("gaming", "screen_cam"):
+        assert first.region_b is not None
+        cam = SourceSpec(w, h, crop=_rect(first.region_b))
+        if kind == "gaming":
+            return {"facecam": cam, "full": SourceSpec(w, h, crop=_rect(first.region))}
+        return {"facecam": cam, "screen": SourceSpec(w, h, fit="contain"), "full": SourceSpec(w, h)}
+    if kind == "stacked":
+        assert first.region_b is not None
+        return {"face:0": SourceSpec(w, h, crop=_rect(first.region)),
+                "face:1": SourceSpec(w, h, crop=_rect(first.region_b)), "full": SourceSpec(w, h)}
+    if kind == "tracked":
+        pts = [((c.t_start + c.t_end) / 2.0, float(c.region.x)) for c in crops]
+        pts = [(0.0, pts[0][1]), *pts, (spec.duration, pts[-1][1])]
+        window = SourceSpec(w, h, crop=_rect(first.region), x_expr=lerp_expr(pts))
+        return {"face:0": window, "full": window}
+    return {"full": SourceSpec(w, h, crop=_rect(first.region))}  # center: the blurred fill ignores the crop
+
+
+def clip_format(spec: RenderSpec, first: Crop) -> Format:
+    """The template's format preset with the facecam panel sized to the camera's aspect (spec 19.3)."""
+    fmt = layout.format_for(spec.template.name)
+    if first.region_b is not None and any(r.source == "facecam" for r in fmt.layout.regions):
+        fmt = fit_facecam_height(fmt, first.region_b.w, first.region_b.h)
+    return fmt
+
+
 # ---------- graph ----------
 def build_filter_graph(spec: RenderSpec) -> str:
-    """The video part of `-filter_complex`; its output pad is `[vout]`."""
+    """The video part of `-filter_complex`; its output pad is `[vout]`.
+
+    The regions come from the template's format preset and are drawn by the generic engine
+    (`ns_studio.media.layout`); this function only supplies the sources, the speaker border and the captions.
+    """
     tpl = spec.template
     crops = relative_crops(spec.crops, spec.start, spec.end)
     if not crops:
         raise NsError("NS-E401", "no crops for the clip")
     first = crops[0]
+    fmt = clip_format(spec, first)
     parts: list[str] = [f"[0:v]setpts=PTS-STARTPTS,fps={FPS},setsar=1[src]"]
-    panels = canvas_panels(tpl, first)
-    layout = tpl.layout
-    tail = ""
-    if layout in ("gaming", "screen_cam"):
-        assert first.region_b is not None
-        main_id = "game" if layout == "gaming" else "screen"
-        cam_p, main_p = panels["cam"], panels[main_id]
-        cb = first.region_b
-        parts.append("[src]split=2[s1][s2]")
-        parts.append(f"[s1]{_crop(cb.x, cb.y, cb.w, cb.h)},scale={cam_p.w}:{cam_p.h}:flags=lanczos[cam]")
-        if layout == "gaming":
-            m = first.region
-            parts.append(f"[s2]{_crop(m.x, m.y, m.w, m.h)},scale={main_p.w}:{main_p.h}:flags=lanczos[main]")
-        else:
-            parts.append(
-                f"[s2]scale={main_p.w}:{main_p.h}:force_original_aspect_ratio=decrease:flags=lanczos,"
-                f"pad={main_p.w}:{main_p.h}:(ow-iw)/2:(oh-ih)/2:color=black[main]"
-            )
-        parts.append("[cam][main]vstack=inputs=2[v0]")
-    elif layout == "stacked":
-        assert first.region_b is not None
-        top_p, bot_p = panels["top"], panels["bottom"]
-        a, b = first.region, first.region_b
-        parts.append("[src]split=2[s1][s2]")
-        parts.append(f"[s1]{_crop(a.x, a.y, a.w, a.h)},scale={top_p.w}:{top_p.h}:flags=lanczos[top]")
-        parts.append(f"[s2]{_crop(b.x, b.y, b.w, b.h)},scale={bot_p.w}:{bot_p.h}:flags=lanczos[bot]")
-        parts.append("[top][bot]vstack=inputs=2[v0]")
-        tail = ",".join(_speaker_borders(crops, tpl.speaker_border_px))
-    elif layout == "tracked":
-        main_p = panels["main"]
-        cw, ch = first.region.w, first.region.h
-        pts = [((c.t_start + c.t_end) / 2.0, float(c.region.x)) for c in crops]
-        pts = [(0.0, pts[0][1]), *pts, (spec.duration, pts[-1][1])]
-        x_expr = lerp_expr(pts)
-        parts.append(
-            f"[src]crop=w={cw}:h={ch}:x='clip({x_expr},0,{spec.src_w - cw})':y={first.region.y}:exact=1,"
-            f"scale={main_p.w}:{main_p.h}:flags=lanczos[v0]"
-        )
-    else:  # center
-        bg_p, fg_p = panels["bg"], panels["fg"]
-        m = first.region
-        parts.append("[src]split=2[s1][s2]")
-        parts.append(
-            f"[s1]scale={bg_p.w // 4}:{bg_p.h // 4}:force_original_aspect_ratio=increase,"
-            f"crop={bg_p.w // 4}:{bg_p.h // 4},boxblur=10:2,eq=brightness=-0.2,"
-            f"scale={bg_p.w}:{bg_p.h}[bg]"
-        )
-        parts.append(f"[s2]{_crop(m.x, m.y, m.w, m.h)},scale={fg_p.w}:{fg_p.h}:flags=lanczos[fg]")
-        parts.append(f"[bg][fg]overlay={fg_p.x}:{fg_p.y}[v0]")
+    parts += build_regions_graph(fmt, region_sources(spec, crops), out_label="v0", duration_s=spec.duration)
+    tail = ",".join(_speaker_borders(crops, tpl.speaker_border_px)) if tpl.layout == "stacked" else ""
     chain = ["[v0]"]
     if tail:
         chain.append(tail + ",")

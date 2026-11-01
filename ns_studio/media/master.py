@@ -7,6 +7,7 @@ seconds followed by that chapter's audio. Chapter timestamps in `chapters.json` 
 
 from __future__ import annotations
 
+import dataclasses
 import importlib
 import math
 from collections.abc import Callable, Iterator, Mapping, Sequence
@@ -20,6 +21,12 @@ from ns_common.errors import NsError
 from ns_common.textstats import split_sentences
 from ns_common.tts_client import TtsItem
 from ns_studio.context import JobContext
+from ns_studio.media.caption_plan import (
+    AssOptions,
+    emphasis_from_beats,
+    mask_profanity_setting,
+    safe_zones_for,
+)
 from ns_studio.media.captions import (
     DRIFT_LIMIT_MS,
     MIN_MATCH_RATIO,
@@ -264,6 +271,12 @@ def run_captions_master(ctx: JobContext) -> None:
     ctx.subdir("words")
     ctx.subdir("captions")
     style = long_caption_style(ctx)
+    plan_file = ctx.file("visual_plan.json")
+    beats: list[dict[str, Any]] = ctx.read_json("visual_plan.json") if plan_file.exists() else []
+    base_opts = AssOptions(
+        variant="landscape", safe_zones=safe_zones_for("landscape"),
+        mask_profanity=mask_profanity_setting(ctx.paths, ctx.channel),
+    )
     report: dict[str, Any] = {}
     failures: list[str] = []
     all_words: list[Word] = []
@@ -279,11 +292,14 @@ def run_captions_master(ctx: JobContext) -> None:
         all_words += shift_words(res.words, t.audio_start)
         local = shift_words(res.words, t.audio_start - t.seg_start)
         ass_name = f"captions/long_c{ch.n}.ass"
-        local_ass = build_ass(local, style, variant="landscape", first_at_zero=t.audio_start == t.seg_start)
+        opts = dataclasses.replace(base_opts, emphasis=emphasis_from_beats(beats, chapter=ch.n))
+        local_ass = build_ass(
+            local, style, first_at_zero=t.audio_start == t.seg_start, **opts.kwargs()
+        )
         ctx.file(ass_name).write_text(local_ass, encoding="utf-8")
         segs.append({"n": ch.n, "title": ch.title, "seg_start": t.seg_start, "audio_start": t.audio_start,
                      "end": t.end, "ass": ass_name})
-    long_ass = build_ass(all_words, style, variant="landscape")
+    long_ass = base_opts.build(all_words, style)
     ctx.file("captions/long.ass").write_text(long_ass, encoding="utf-8")
     ctx.write_json("captions/long.json", {
         "style": style, "audio_s": timeline[-1].end if timeline else 0.0, "chapters": segs,

@@ -292,7 +292,7 @@ Format per entry:
 - **From:** C8 Clipper / spec 23.5
 - **Change:** `ns_studio/presets/formats/*.yaml` and `ns_studio/media/layout.py` (the generic region renderer) are not on `main`, so C8 keeps `ns_studio/presets/clip_templates.yaml` and its own graph builders (`ns_studio/clipper/render.py`). When the format presets land, `load_templates()` should read `clip_gaming_facecam`, `clip_podcast_stacked`, `clip_podcast_single`, `clip_talking_head`, `clip_center_crop`, `clip_screen_plus_cam` and the render should use the generic region builder. The model's `layout` answers already accept both `gaming_facecam` and `clip_gaming_facecam` ids.
 - **Why:** formats are data, not code (spec 17.1).
-- **Status:** open
+- **Status:** applied on feat/media-finish (clip_templates.yaml is now a thin map from template ids to the six clip_* presets; the render builds its panels with ns_studio/media/layout.py)
 
 ## CR-C8-9: C5-owned files edited by C8 (informational, per coordinator instruction)
 - **From:** C8 Clipper / spec 23.5
@@ -316,6 +316,12 @@ Format per entry:
 - **From:** coordinator (spec 17.1, 20.3a)
 - **Change:** `ns_common.models.Format` (+ `FormatCanvas`, `FormatDuration`, `FormatCaptions`, `FormatRegion`, `FormatLayout`, `FormatMargins`, `FormatShots`, `FormatEncoder`, `FormatSheet`) exported as `format.schema.json`; `ideas` gains `status TEXT NOT NULL DEFAULT 'new'`, `title TEXT`, `source TEXT` (`owner|assistant|generated`); new table `assistant_messages(id, ts, role, content, tool_calls_json)`. `Db.migrate()` adds missing columns to databases made by an older `schema.sql`.
 - **Status:** applied in e0c34f5
+
+## CR-C6-6: per-channel options, `emphasis` fields and packaging of the format presets
+- **From:** C6 media finish (spec 17.1, 17.2)
+- **Change:** (1) `ns_common.models.Channel` gains `formats_allowed: list[str] = []` and `captions: {mask_profanity: bool = False}`. `Channel` forbids unknown keys, so `config.load_channel` rejects a profile that carries them today; `ns_studio/media/channel_opts.py` already reads both (model attribute first, YAML second). (2) `VisualBeat` gains optional `emphasis` (mapping sentence index to one key word) and `ClipPlanItem` gains optional `emphasis` (list, one key word per sentence); `ns_studio/clipper/models.py` `ClipItem` has it already and the stages read both when present as plain extra keys. The `visual_plan`, `clip_select` prompts and `text/prompts.py` schemas should ask for and pass it through. (3) `pyproject.toml` `[tool.setuptools.package-data]` needs `presets/formats/*.yaml` for `ns_studio`. (4) `ns_dashboard/templates.py` reads regions and caption anchors from `clip_templates.yaml`; they now live in `ns_studio/presets/formats/clip_*.yaml` (load with `ns_studio.media.formats.load_formats()`), and the Library → Formats page can list every preset.
+- **Why:** spec 17.1 (formats allowed per channel, formats as data) and 17.2 (emphasis, profanity masking) need fields the shared models and packaging do not carry.
+- **Status:** open
 
 ## CR-C9-9: assistant conversations and pending actions (shared schema)
 - **From:** C9 ns_dashboard / Assistant

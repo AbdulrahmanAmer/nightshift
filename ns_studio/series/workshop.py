@@ -27,6 +27,8 @@ from ns_common.models import Channel, Combo, Runtime
 from ns_common.paths import Paths
 from ns_common.textstats import split_sentences, word_count
 from ns_studio.context import FAKEABLE, JobContext, Services, build_services
+from ns_studio.errors import StudioError
+from ns_studio.media.formats import design_formats, ensure_allowed, formats_allowed
 from ns_studio.media.presets import PRESETS_DIR
 from ns_studio.series.importer import build_artifacts
 from ns_studio.series.policy import is_standalone, text_gate
@@ -123,9 +125,14 @@ def chapter_count(target_words: int) -> int:
 
 
 def available_formats() -> list[str]:
-    """Format ids: the preset files in `presets/formats/` when present, else the three shipped ones."""
-    d = PRESETS_DIR / "formats"
-    found = sorted(p.stem for p in d.glob("*.yaml")) if d.is_dir() else []
+    """Format ids a design can pick: the short, long and square presets (else the three shipped ids).
+
+    Per-clip layouts (`clip_*`) are chosen by the clipper, not by a series design.
+    """
+    try:
+        found = design_formats()
+    except StudioError:
+        found = []
     return found or list(DEFAULT_FORMATS)
 
 
@@ -134,10 +141,15 @@ def _preset_keys(name: str) -> list[str]:
     return sorted(str(k) for k in data)
 
 
-def design_options(channel: Channel) -> dict[str, list[str]]:
-    """Allowed values per design field; `formats_allowed` of the channel narrows `format` when it exists."""
+def design_options(channel: Channel, paths: Paths | None = None) -> dict[str, list[str]]:
+    """Allowed values per design field; `formats_allowed` of the channel narrows `format` when it exists.
+
+    With `paths` the channel YAML is consulted too (the Channel model does not carry the list yet).
+    """
     formats = available_formats()
     allowed = getattr(channel, "formats_allowed", None)
+    if not allowed and paths is not None:
+        allowed = formats_allowed(paths, channel)
     if allowed:
         formats = [f for f in formats if f in allowed]
     return {
@@ -920,7 +932,11 @@ class Workshop:
             doc = DesignDoc.model_validate(data)
         except ValidationError as e:
             raise WorkshopError(f"invalid design: {str(e)[:300]}") from e
-        options = design_options(ch)
+        try:
+            ensure_allowed(doc.format, formats_allowed(self.paths, ch), channel=ch.slug)
+        except StudioError as e:
+            raise WorkshopError(f"{e.code}: {e.message} {e.detail}") from e
+        options = design_options(ch, self.paths)
         for key, allowed in options.items():
             if getattr(doc, key) not in allowed:
                 raise WorkshopError(f"{key} {getattr(doc, key)!r} is not allowed; choose from {allowed}")
@@ -930,7 +946,7 @@ class Workshop:
     def design_choices(self, slug: str) -> dict[str, list[str]]:
         """The allowed values per design field for the story's channel."""
         _sd, _status, ch = self._open(slug)
-        return design_options(ch)
+        return design_options(ch, self.paths)
 
     def produce(
         self, slug: str, which: int | str = "all", *, enqueue: EnqueueFn | None = None

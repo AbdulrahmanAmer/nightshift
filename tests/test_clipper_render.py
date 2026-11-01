@@ -108,12 +108,12 @@ def test_encoder_args() -> None:
 
 def test_graph_per_layout_contains_the_expected_filters(tmp_path: Path) -> None:
     g = {n: rd.build_filter_graph(spec_for(n, tmp_path / f"{n}.mp4")) for n in TEMPLATE_NAMES}
-    assert "vstack=inputs=2" in g["gaming_facecam"] and "crop=320:180:944:16" in g["gaming_facecam"]
-    assert "vstack=inputs=2" in g["podcast_stacked"] and "drawbox=" in g["podcast_stacked"]
+    assert "overlay=0:608" in g["gaming_facecam"] and "crop=320:180:944:16" in g["gaming_facecam"]
+    assert "overlay=0:960" in g["podcast_stacked"] and "drawbox=" in g["podcast_stacked"]
     assert "between(t," in g["podcast_stacked"]
     assert "crop=w=404:h=720:x='clip(" in g["talking_head"] and "[src]crop=w=404" in g["podcast_single"]
     assert "boxblur" in g["center_crop"] and "overlay=152:220" in g["center_crop"]
-    assert "pad=1080:" in g["screen_plus_cam"] and "vstack=inputs=2" in g["screen_plus_cam"]
+    assert "pad=1080:" in g["screen_plus_cam"] and "overlay=0:608" in g["screen_plus_cam"]
     assert all(v.endswith("[vout]") for v in g.values())
 
 
