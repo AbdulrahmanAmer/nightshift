@@ -401,5 +401,5 @@ def test_new_app_version_resyncs_venvs_and_retests(tmp_path: Path):
     S08Smoke().run(ctx)
     assert S04Venvs().check(ctx) is True and S08Smoke().check(ctx) is True
     ctx.manifest = ctx.manifest.model_copy(update={"version": "0.2.0"})
-    assert S04Venvs().check(ctx) is False        # extract the new zip, run INSTALL.cmd: environments are refreshed
+    assert S04Venvs().check(ctx) is False        # new zip + INSTALL.cmd: environments are refreshed
     assert S08Smoke().check(ctx) is False        # and the quick test runs again
