@@ -26,7 +26,8 @@ def _make_home(tmp_path: Path) -> Path:
 def _run(home: Path, *extra: str) -> subprocess.CompletedProcess:
     env = {k: v for k, v in os.environ.items() if k != "NIGHTSHIFT_HOME"}
     env["NS_NONINTERACTIVE"] = "1"
-    cmd = [str(PS), "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(UNINSTALL), "-HomeDir", str(home)]
+    cmd = [str(PS), "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(UNINSTALL)]
+    cmd += ["-HomeDir", str(home)]
     cmd.extend(extra)
     return subprocess.run(cmd, capture_output=True, text=True, timeout=300, env=env)
 
