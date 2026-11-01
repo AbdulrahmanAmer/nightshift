@@ -110,12 +110,12 @@ jobs:
             $bad += @(Invoke-ScriptAnalyzer -Path $f -Severity Error)
           }
           if ($bad.Count -gt 0) { $bad | Format-List RuleName, ScriptName, Line, Message; throw "$($bad.Count) analyzer error(s)" }
-      - name: installer/stage1.ps1 -DryRun
+      - name: installer/stage1.ps1 -AppPath $PWD.Path -DryRun
         shell: powershell
         run: |
           if (Test-Path installer/stage1.ps1) {
             $env:NIGHTSHIFT_HOME = Join-Path $env:RUNNER_TEMP 'ns-home'
-            powershell -NoProfile -ExecutionPolicy Bypass -File installer/stage1.ps1 -DryRun
+            powershell -NoProfile -ExecutionPolicy Bypass -File installer/stage1.ps1 -AppPath $PWD.Path -DryRun
             if ($LASTEXITCODE -ne 0) { throw "stage1.ps1 -DryRun exited with $LASTEXITCODE" }
           }
           else {
