@@ -11,7 +11,6 @@ from ns_studio.media.outbox import OutboxStage
 from ns_studio.media.qc import QcStage
 from ns_studio.media.render import RenderStage
 from ns_studio.media.voice import VoiceStage
-from ns_studio.orchestrator import FORMAT_STAGES
 from ns_studio.stages import Stage, register
 
 SHORTS_MEDIA_STAGES: list[Stage] = [
@@ -20,5 +19,3 @@ SHORTS_MEDIA_STAGES: list[Stage] = [
 
 for _st in SHORTS_MEDIA_STAGES:
     register(_st)
-    if _st.name not in FORMAT_STAGES["shorts_only"]:
-        FORMAT_STAGES["shorts_only"].append(_st.name)
