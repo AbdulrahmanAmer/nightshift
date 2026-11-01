@@ -9,9 +9,13 @@
   "NS-E108": {"message": "PyTorch cannot see the GPU (CUDA unavailable or compute capability too old).", "hint": "In the tts venv run: uv pip install --force-reinstall torch --index-url https://download.pytorch.org/whl/cu128"},
   "NS-E109": {"message": "A downloaded file failed its SHA256 check.", "hint": "Delete the file and re-run setup. If it fails again, the pin in manifest.json is wrong; report it."},
   "NS-E110": {"message": "A required tool failed to install via winget.", "hint": "Install it manually (Git, Windows Terminal, FFmpeg) and re-run setup."},
+  "NS-E111": {"message": "winget (App Installer) is not available on this PC.", "hint": "Install 'App Installer' from the Microsoft Store, or install Git, Windows Terminal and FFmpeg manually from the links shown, then re-run INSTALL.cmd."},
+  "NS-W112": {"message": "Windows long paths are disabled.", "hint": "Run as administrator: reg add HKLM\\SYSTEM\\CurrentControlSet\\Control\\FileSystem /v LongPathsEnabled /t REG_DWORD /d 1 /f, then reboot. Nightshift keeps paths short meanwhile."},
+  "NS-E112": {"message": "faster-whisper cannot run on the GPU (cuBLAS/cuDNN DLLs missing).", "hint": "In the studio venv run: uv pip install nvidia-cublas-cu12 nvidia-cudnn-cu12, then 'ns verify --quick'. Nightshift adds their bin folders to PATH automatically."},
   "NS-E201": {"message": "GPU is busy with another task; the nightly run gave up after waiting.", "hint": "Close Nightshift Code or wait; the next scheduled run will retry."},
   "NS-E202": {"message": "A service failed to start or crashed repeatedly.", "hint": "Run 'ns doctor' and check logs\\supervisor-*.jsonl."},
   "NS-E203": {"message": "Service health check timed out.", "hint": "The model may be too large for this profile. Run 'ns tune' or check runtime.json."},
+  "NS-E204": {"message": "The nightly scheduled task could not be registered.", "hint": "Run 'ns schedule install' from an elevated PowerShell, or create the task manually in Task Scheduler (program: the Nightshift launcher, trigger: daily at your run time, wake the computer)."},
   "NS-E301": {"message": "The language model did not return a usable answer.", "hint": "Check that llama-server is healthy (ns doctor). The job will retry once."},
   "NS-E302": {"message": "The model's answer did not match the required JSON schema.", "hint": "Usually transient; the stage retries with a repair prompt. If persistent, the prompt or schema needs a fix."},
   "NS-E303": {"message": "A text validator rejected the story.", "hint": "See the detail for which rule (length, banned phrase, repeated opening, reading level)."},
@@ -27,6 +31,10 @@
   "NS-E402": {"message": "No usable stock clip found for a beat.", "hint": "The keywords were too narrow or the clip pool is exhausted. The beat falls back to a mood-only search; if that fails, widen seed_keywords."},
   "NS-E403": {"message": "Captions drift too far from the audio.", "hint": "The transcription did not match the script. Check the voice's speed setting."},
   "NS-E404": {"message": "QC check failed.", "hint": "See qc\\*.json in the job folder for the failing check and value."},
+  "NS-E405": {"message": "This video cannot be used for clips (too long, no audio, or unreadable).", "hint": "Use an MP4/MKV/MOV under 4 hours with an audio track."},
+  "NS-E406": {"message": "The video has too little speech to clip (under 30 words transcribed).", "hint": "Clips need spoken content. Music-only or silent videos are not supported."},
+  "NS-E407": {"message": "No moments passed the clip filters.", "hint": "Try a longer length range, more clips, or a different channel niche; the transcript is kept so re-running is fast."},
+  "NS-W402": {"message": "The requested clip layout did not apply (for example no facecam found); used center crop instead.", "hint": "Pick a different layout in Create → Clips, or leave it on Auto."},
   "NS-E501": {"message": "Pexels API error.", "hint": "Check the API key and the hourly limit (200 requests/hour)."},
   "NS-E502": {"message": "Pixabay API error.", "hint": "Check the API key and the per-minute limit (100 requests/minute)."},
   "NS-E503": {"message": "Network request failed.", "hint": "Check the connection; the stage will retry."},
@@ -42,5 +50,6 @@
   "NS-E613": {"message": "Policy gate: stock clip reuse rule violated.", "hint": "See spec §7.4 reuse windows."},
   "NS-E614": {"message": "Policy gate: non-voice audio detected.", "hint": "Nightshift videos carry narration only, no music."},
   "NS-E701": {"message": "Update package failed verification.", "hint": "Re-download nightshift-app-<version>.zip and its .sha256 file."},
-  "NS-E702": {"message": "Update failed; rolled back to the previous version.", "hint": "Run 'ns doctor --bundle' and send the diagnostics."}
+  "NS-E702": {"message": "Update failed; rolled back to the previous version.", "hint": "Run 'ns doctor --bundle' and send the diagnostics."},
+  "NS-E703": {"message": "Restore from backup failed.", "hint": "Check that the zip was made by 'ns backup' and is not corrupted; nothing was changed."}
 }
