@@ -4,7 +4,7 @@
 > The target device needs **no Claude account, no paid AI keys, and no cloud CLI**. Claude Code is only the *builder*.
 > The build runs in **slices** (§12). Each slice is proven on the target PC before the next one starts. The main session owns every shared contract (§15). Worker agents build their packages in parallel inside a slice and never edit shared files.
 
-**Changes from v1** (summary; details inline): sliced build order replaces the one-shot parallel build · one LLM by default, abliterated model is opt-in · word budgets derived from runtime · Shorts selection by sentence span, timed after captions · combo-ledger window bounded by pool size · embedding + NER tools added to the stack · clip budget and relaxed reuse rules · long-form SEO rules split from Shorts · `story` schema and per-beat visual plan defined · QC targets set · captions aligned to the script, not ASR text · TTS sentence chunking · 16 GB RAM profile constrained · scheduler wake-to-run · calibration harness · pause/incident procedure · go/no-go milestone · two-machine dev workflow.
+**Changes from v1** (summary; details inline): **no-hardware build**: a `cpu-dev` profile runs the whole pipeline on the build laptop with tiny models, the installer is distributed through Google Drive and run by a remote operator with no developer present, and `ns doctor --bundle` ships diagnostics back · sliced build order replaces the one-shot parallel build · one LLM by default, abliterated model is opt-in · word budgets derived from runtime · Shorts selection by sentence span, timed after captions · combo-ledger window bounded by pool size · embedding + NER tools added to the stack · clip budget and relaxed reuse rules · long-form SEO rules split from Shorts · `story` schema and per-beat visual plan defined · QC targets set · captions aligned to the script, not ASR text · TTS sentence chunking · 16 GB RAM profile constrained · scheduler wake-to-run · calibration harness · pause/incident procedure · go/no-go milestone · two-machine dev workflow.
 
 ---
 
@@ -13,7 +13,7 @@
 ### A.1 One line
 **Nightshift works while you sleep: it writes an original story, turns it into a full long-form YouTube video, then cuts the best moments into Shorts that send viewers back to it. Everything runs on your own PC.**
 
-### A.2 Installer welcome screen (exact text for `Nightshift-Setup.exe`)
+### A.2 Installer welcome screen (exact text shown by `INSTALL.cmd`)
 > **Welcome to Nightshift**
 >
 > Nightshift sets up a story-to-video factory on this PC. It writes an original story, narrates it, adds captions and matching stock footage, and produces **one long-form video (10+ minutes, with chapters and ad-break points)** plus **several vertical Shorts cut from it**, each with its own hook. Everything lands in your Outbox, ready for you to review and post.
@@ -92,7 +92,22 @@
 ## 1. Machines
 
 ### 1.1 Build machine (where Claude Code runs)
-The developer laptop (no NVIDIA GPU, 8 GB RAM). Everything here runs **mocked**: unit tests, schema validation, prompt rendering, FFmpeg filter-graph construction (with tiny synthetic inputs), and CLI tests. Nothing GPU-bound runs here.
+The developer laptop (no NVIDIA GPU, 8 GB RAM, Windows 11). **Nothing heavy is installed here**: no models, no llama.cpp, no PyTorch, no whisper. The only additions are a lightweight dev venv inside the repo (`.venv\`, pytest + pydantic + httpx + jinja2 + Pillow + pyyaml, ~200 MB) and the FFmpeg that is already present. **The target PC is never available to the developer during the build.**
+
+Therefore every heavy dependency sits behind an interface with a **fake** that produces real files:
+| Component | Interface | Fake used on the build machine |
+|---|---|---|
+| LLM | `LlmClient.complete_json/complete_text` | `FakeLlm`: returns fixture JSON per prompt name (`tests/fixtures/llm/<prompt>.json`), validated against the same schemas |
+| TTS | `TtsClient.speak/speak_batch` | `FakeTts`: writes a 24 kHz WAV of `words/wpm` seconds containing a tone burst per word |
+| Whisper | `Transcriber.words(wav) -> list[Word]` | `FakeTranscriber`: evenly spaces the script's words over the WAV duration |
+| Stock clips | `ClipSource.search/download` | `FakeClipSource`: generates `testsrc2`/`color` clips with FFmpeg, tagged with the keywords |
+| Embeddings | `EmbedClient.embed` | `FakeEmbed`: hashed bag-of-words vectors (deterministic, cosine-meaningful) |
+| GPU lock | `Acquirer.acquire/release` | `DevAcquirer`: fixed endpoints, no locking |
+| Encoder | `runtime.video.encoder` | `libx264 -preset ultrafast` |
+
+`studio run --fake-services` wires all fakes at once. The output is a **real MP4 with real captions and a valid upload sheet**, produced by the real stages, orchestrator, validators, QC and outbox code. That run is the local gate for every slice (§12). Story quality is never judged on the build machine.
+
+**What cannot be tested before shipping** (and is therefore wrapped in the strongest install-time checks and clearest error messages): CUDA 12.8 PyTorch on Blackwell, `faster-qwen3-tts` CUDA graphs, NVENC, llama.cpp CUDA offload and MTP speed, `ns tune` results, real model output quality. Each has an explicit verify step and a documented fallback: TTS → reference engine; NVENC → `libx264`; MTP → plain decoding; tune failure → safe default flags.
 
 ### 1.2 Target machine (detected, not assumed)
 | Item | Expectation | Wizard behaviour |
@@ -108,8 +123,13 @@ The developer laptop (no NVIDIA GPU, 8 GB RAM). Everything here runs **mocked**:
 
 **Blackwell:** PyTorch must be a **CUDA 12.8+ build (2.7+)**, installed from the cu128 (or newer) index URL.
 
-### 1.3 Two-machine workflow (decision D1, §13)
-The repo lives on the build machine and in a **private git remote**. The target PC has a clone at `%NIGHTSHIFT_HOME%\app` (installer) or `%USERPROFILE%\nightshift-dev` (slice gates). Gate runs use `dev\sync.ps1` (`git pull` + `uv sync`) and write results to `logs\gate-<slice>-<date>.json`, which the developer pastes back into the Claude Code session. No automation across machines in v1.
+### 1.3 Shipping and the first run (decision D1, §13)
+- **The bundle is the repository.** `dev\make_bundle.ps1` produces `Nightshift-<version>.zip`: the full codebase (code, tests, contracts, prompts, presets, docs, plans, `CLAUDE.md`, `uv.lock`), `INSTALL.cmd` at the root, `answers.example.json`, and `OPERATOR.md`. No models, no binaries, no venvs (§0 rule 1). It is uploaded to a **Google Drive folder**.
+- **The partner** extracts the zip to a folder of their choice (recommended `D:\NightShift`) and double-clicks `INSTALL.cmd`. That runs `installer\stage1.ps1` with execution policy bypassed for that process only, which installs tools, creates `NIGHTSHIFT_HOME` (`%LOCALAPPDATA%\Nightshift`) for models, venvs, config and outputs, records the repo path as `app_path` in `install_state.json`, and runs the wizard. Every model and tool is downloaded from pinned sources on that machine.
+- Setup needs **zero decisions** when `answers.json` is present next to `INSTALL.cmd`; questions are asked only for missing answers.
+- At the end of setup, and on demand, **`ns doctor --bundle`** writes `%USERPROFILE%\Desktop\nightshift-diagnostics-<date>.zip` (logs, `install_state.json`, `runtime.json`, `verify-report.json`, `nvidia-smi` output, `pip freeze` per venv, the last 3 job directories without media) for upload to Drive if the developer is not at the machine.
+- **The codebase stays on the work machine as the development checkout.** After the first run, further work (hardware gates, tuning, prompt iteration, Slices 2+ if they were not finished) continues there with Claude Code against the real GPU. `ns update <zip>` exists for the case where fixes are shipped from elsewhere: it replaces the repo contents (keeping `.git`, `config`, and untracked data), re-syncs venvs from `uv.lock`, and re-runs `ns verify --quick`.
+- Secrets (Pexels/Pixabay keys) may be placed in `answers.json`; the wizard moves them into the Windows keyring and blanks them in the file.
 
 ---
 
@@ -126,12 +146,12 @@ The repo lives on the build machine and in a **private git remote**. The target 
 | TTS | **Qwen3-TTS-12Hz-1.7B** (`-CustomVoice`, `-Base`, `-VoiceDesign`) + tokenizer; engine **`faster-qwen3-tts`** on SDPA (no flash-attn); fallback reference **`qwen-tts`** | Both engines installed; smoke test picks the fastest that passes |
 | Captions | **faster-whisper** `small.en` (or `small` for non-English) → word timestamps → **aligned to the script** → ASS | Rendered words are the script's, never ASR output |
 | Stock footage | **Pexels** + **Pixabay** APIs | Commercial use with no required attribution; no reselling unmodified clips; Pixabay requires 24 h caching |
-| Render | **FFmpeg** `h264_nvenc`; master 1920×1080, Shorts 1080×1920; 30 fps; AAC 192 kbps 48 kHz | One filter graph per video |
+| Render | **FFmpeg**; encoder `h264_nvenc` on GPU profiles, `libx264` on `cpu-dev` or when NVENC fails verify; master 1920×1080, Shorts 1080×1920; 30 fps; AAC 192 kbps 48 kHz | One filter graph per video |
 | Thumbnails | **Pillow** + bundled OFL font (`Anton`) | Font licence file shipped in `presets/fonts/` |
 | Audio measure | FFmpeg `ebur128` / `loudnorm` | QC loudness |
 | Python | **uv**, Python 3.12, venv per component | |
 | Data | SQLite `data\studio.db` | WAL mode; nightly backup |
-| Installer | **Inno Setup** `Nightshift-Setup.exe` → `stage1.ps1` → `wizard.py` | Unsigned exe triggers SmartScreen; document "More info → Run anyway" |
+| Installer | `INSTALL.cmd` → `installer\stage1.ps1` → `wizard.py` | No compiled installer, no code signing, no SmartScreen prompt; Windows may show a "Mark of the Web" warning on the zip, documented in `OPERATOR.md` |
 
 Storage: one LLM (~21 GB) + embed (0.15) + TTS (~4 × 3 variants ≈ 10) + whisper (~0.5) + venvs with PyTorch (~8) ≈ **40 GB**; two-model mode adds ~20 GB.
 
@@ -143,6 +163,7 @@ Storage: one LLM (~21 GB) + embed (0.15) + TTS (~4 × 3 variants ≈ 10) + whisp
 |---|---|---|---|
 | ≥ 32 GB | UD-Q4_K_XL / Q4_K_M (~21 GB) | 16K (story), 32K (code) | `--fit` on; tune `--n-cpu-moe`; KV f16 or q8_0 |
 | 16–31 GB | APEX I-Mini (~14 GB) | **8K** both | Fully on GPU; KV q8_0; the continuity pass (§7.1 M4) runs chapter-pairwise instead of whole-story |
+| **`cpu-dev`** (any machine, no GPU needed) | `Qwen/Qwen3-1.7B-GGUF` Q4_K_M (~1.1 GB), llama.cpp **CPU** build | 8K | TTS: reference `qwen-tts` **0.6B-CustomVoice** on CPU float32; whisper `tiny`; FFmpeg `libx264 -preset ultrafast`; embed model unchanged. Selected by `NIGHTSHIFT_PROFILE=cpu-dev` or `--allow-cpu`. **Not used during the build** (nothing is downloaded on the build laptop, §1.1); it exists so tests and prompt work on the work machine can run without taking the GPU from a nightly job. Never offered by the installer to end users. |
 
 `ns tune` sweeps `--n-cpu-moe` (0, 4, 8, 12, 16), ctx (per profile), KV (f16, q8_0) and MTP `--spec-draft-n-max` (2, 3, 4), measuring tok/s on a fixed 400-token prompt and 300-token generation, then writes the winner to `config\runtime.json`. In two-model mode it runs per model.
 
@@ -164,24 +185,30 @@ nightshift/
   ns_common/                  # main session only
     paths.py config.py logging.py errors.py db.py llm_client.py tts_client.py
     embed_client.py supervisor_client.py models.py textstats.py
-  dev/                        # main session: sync.ps1, run_services_dev.ps1 (hand-start llama/tts/embed for slices 1–3)
-  studio/                     # ns_studio
+  dev/                        # main session: make_bundle.ps1, run_services_dev.ps1 (hand-start llama/tts/embed on a GPU machine), gate scripts
+  tools/                      # main session: resolve_manifest.py
+  ns_studio/                  # package ns_studio (directory name == import name)
     text/ prompts/ exemplars/ # WP-D
     media/ presets/           # WP-E
     policy/ learn/            # WP-H
     variation/ channels/ cli.py orchestrator.py stages.py   # WP-F
     calibrate/                # WP-D: studio calibrate
-  services/tts_server/        # WP-C (ns_tts)
-  supervisor/                 # WP-B (ns_supervisor)
-  tune/                       # WP-B: ns tune, ns verify, ns doctor
+  ns_tts/                     # WP-C: TTS FastAPI service
+  ns_supervisor/              # WP-B: supervisor, tune.py, verify.py, doctor.py, gate.py (ns CLI)
+  INSTALL.cmd                 # WP-A: double-click bootstrap
+  OPERATOR.md                 # WP-A: one page for the person running the install
+  CLAUDE.md                   # main session: how to develop in this repo (tests, fakes, contracts rules, gates)
   installer/                  # WP-A
-    setup.iss stage1.ps1 build_installer.ps1 welcome.txt (A.2)
+    stage1.ps1 welcome.txt (A.2) answers.example.json
     stage2/wizard.py stage2/steps/*.py
   launchers/                  # WP-A
     nightshift-code.ps1 nightshift-studio.ps1 open-outbox.ps1 stop-all.ps1
   opencode/                   # WP-B: opencode.json AGENTS.md
   tests/                      # WP-G: unit + mocked e2e; fixtures/ holds tiny synthetic media
+  docs/superpowers/plans/     # implementation plans, one per slice
 ```
+
+Single `pyproject.toml` (setuptools, Python 3.12) with optional-dependency groups `studio`, `tts`, `supervisor`, `dev`. Development uses one venv with all groups; the installer creates the per-component venvs from the same file (`uv pip install -e ".[tts]"` etc.).
 
 Work packages: **A** installer+launchers · **B** supervisor+tune+opencode · **C** TTS server · **D** text+prompts+exemplars+calibrate · **E** media+presets · **F** studio core (variation, channels, orchestrator, CLI) · **G** tests · **H** policy+learn. Which packages are active in each slice: §12.
 
@@ -189,9 +216,13 @@ Work packages: **A** installer+launchers · **B** supervisor+tune+opencode · **
 
 ## 5. Installer / wizard (WP-A, Slice 5)
 
-**Stage 1 — `stage1.ps1`:** preflight (§1.2) → winget installs (Git, Windows Terminal, FFmpeg) → uv → Python 3.12 → copy payload to `%NIGHTSHIFT_HOME%\app` → run `wizard.py`.
+**Stage 0 — `INSTALL.cmd`:** `powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0installer\stage1.ps1" -AppPath "%~dp0."` and pauses on exit so the window stays readable.
 
-**Stage 2 — `wizard.py`** (rich TUI; each step = `check()` / `run()` / `verify()`):
+**Stage 1 — `stage1.ps1`:** preflight (§1.2) → winget installs (Git, Windows Terminal, FFmpeg) → uv → Python 3.12 → create `NIGHTSHIFT_HOME` tree → bootstrap venv `venvs\studio` with `uv sync --locked --extra studio` from the repo → run `wizard.py [--answers <path>]`.
+
+**Unattended mode:** the installer looks for `answers.json` next to `INSTALL.cmd`, then in `%NIGHTSHIFT_HOME%\config\`. Every question in `s01_questions` is answered from it when present; missing keys are asked interactively. Schema: `contracts/schemas/answers.schema.json` (`channel{display_name,niche,language,seed_keywords[]}, voice{mode,speaker|description|ref_audio_path+ref_text+rights_confirmed}, pexels_api_key?, pixabay_api_key?, masters_per_week, run_time, install_code:bool, allow_cpu:bool`). A template `installer/answers.example.json` ships in the Drive folder.
+
+**Stage 2 — `wizard.py`** (rich TUI; each step = `check()` / `run()` / `verify()`; every step writes its result to `install_state.json` so a crash or reboot resumes at the failed step):
 | Step | Does |
 |---|---|
 | `s00_welcome` | Shows A.2 text + the hardware check summary (incl. disk type, wake timers) |
@@ -204,9 +235,13 @@ Work packages: **A** installer+launchers · **B** supervisor+tune+opencode · **
 | `s07_configs` | runtime, OpenCode, channel profile, secrets (keyring) |
 | `s08_smoke` | `ns verify --quick` (§12 Slice 5 gate list) incl. TTS engine selection |
 | `s09_shortcuts_scheduler` | §15.8; task has `WakeToRun`, `StartWhenAvailable`, runs whether user is logged on or not |
-| `s10_summary` | Status table, where things live, next steps (A.4) |
+| `s10_summary` | Status table, where things live, next steps (A.4); runs `ns doctor --bundle` and tells the operator exactly which file to upload to the Drive folder |
 
-**Error UX:** code + plain message + fix hint from `errors.json` → `[R]etry · [S]kip (optional only) · [L]og · [Q]uit`. Resume state in `config\install_state.json`.
+**Error UX:** code + plain message + fix hint from `errors.json` → `[R]etry · [S]kip (optional only) · [L]og · [Q]uit`. In unattended mode, a required step retries 3 times with backoff, then writes the bundle and exits non-zero with the code on screen. Resume state in `config\install_state.json`.
+
+**Install-time verification of the untestable parts (§1.1):** `s04_venvs` runs `python -c "import torch; assert torch.cuda.is_available(); print(torch.version.cuda, torch.cuda.get_device_capability())"` in the `tts` venv and fails `NS-E108` with the exact cu128 reinstall command if capability < (12,0) or CUDA unavailable. `s08_smoke` tests `h264_nvenc` with a 2-second colour source and falls back to `libx264` in `runtime.json` (`NS-W401`) on failure; tests `faster-qwen3-tts` with one sentence and falls back to the reference engine (`NS-W301`); tests `llama-server` with and without `--spec-type draft-mtp` and keeps MTP only if it is faster (`NS-W302` otherwise).
+
+**`ns update <zip>`:** verifies the zip's `VERSION` and SHA256 sidecar, extracts to `<app_path>.new\`, copies `.git\`, `config\` and untracked data over, runs `uv sync --locked` per venv, swaps directories (keeping `<app_path>.prev\` for `ns update --rollback`), re-runs `ns verify --quick`, and re-registers shortcuts and the task. When the repo has a git remote, `git pull` is the simpler path and `ns update` says so.
 
 ---
 
@@ -368,21 +403,22 @@ avoid_topics: []
 
 ---
 
-## 12. Build plan — slices with hardware gates
+## 12. Build plan — slices with fake-services gates, then the first run on the work machine
 
-Each slice: **(a)** main session writes/extends contracts and `ns_common` for the slice, freezes them (`contracts-s<N>` git tag) · **(b)** worker agents build their packages in parallel (Sonnet-class workers for standard code, Opus-class only for prompt design, policy logic and orchestrator design; Haiku for mechanical sweeps) · **(c)** main session integrates, runs lint + typecheck + mocked tests · **(d)** developer runs the gate on the target PC and pastes `logs\gate-s<N>-*.json` back · **(e)** fix pass until the gate passes. Only then does the next slice start.
+Each slice: **(a)** main session writes/extends contracts and `ns_common` for the slice, freezes them (`contracts-s<N>` git tag) · **(b)** worker agents build their packages in parallel (Sonnet-class workers for standard code, Opus-class only for prompt design, policy logic and orchestrator design; Haiku for mechanical sweeps) · **(c)** main session integrates, runs lint + typecheck + unit tests · **(d)** the **local gate** runs on the build laptop with `--fake-services` (§1.1) via `dev\gate_s<N>.py` (or `ns gate s<N>` from Slice 4 on) and writes `logs\gate-s<N>-*.json` · **(e)** fix pass until the gate passes. Only then does the next slice start. Nothing is uploaded to Drive before Slice 5's gate passes.
 
-| Slice | Builds | Active WPs | Gate on target PC (`ns gate s<N>` where it exists; manual before Slice 4) |
+| Slice | Builds | Active WPs | Local gate (build laptop, fakes + real FFmpeg) |
 |---|---|---|---|
-| **0 Foundations** | Repo tree, `manifest.json` with verified pins, `ns_common`, all Slice 1 contracts and schemas, policy lists, `pyproject.toml`, CI config, `dev\` scripts, `README.md` | main | `dev\run_services_dev.ps1` starts llama + embed + tts; `/health` on all three; `llm_client` completes a JSON-schema call; `tts_client` returns a WAV; `embed_client` returns a vector. Record tok/s and TTS RTF. |
-| **1 One Short** | Shorts-only text stages (ideas → split → hooks → SEO → visual plan), TTS server (both engines, presets, design, clone), captions + alignment, clip fetch + cache, vertical render, QC, outbox sheet, minimal CLI (`studio run --format shorts_only --count 1`), `studio calibrate` | C, D, E, F, G | 3 Shorts produced end-to-end, each ≤ 3 min wall time, QC passing; owner reviews all 3; `studio calibrate` run on 20 stories, correlation report produced and critic bar set (§16.5); TTS engine chosen and recorded. |
-| **2 Master-first** | Long plan, chapter draft, critique/revise, continuity, expansion loop, long SEO, per-beat visual plan, Shorts selection + timing, landscape render + chapter cards + mid-roll suggestions, thumbnails, derived Shorts (S1–S2), outbox for both | D, E, F, G | 1 master (≥ 8:30, chapters correct) + 4–6 Shorts in ≤ 60 min; owner reviews; thumbnails render with the bundled font; chapters.json timestamps match the video. |
-| **3 Safety & growth** | Policy gate (text + final, all §18.8 checks), variation engine + ledger + pool checks, channel CRUD + distinctness, cadence governor, `studio review`, `studio learn --import`, `studio status`, `studio pause`, SQLite backup | F, H, G | One full job passes both gates; seeded negative fixtures (true-story claim, real name, duplicate story, music track) are rejected with the right `NS-E6xx`; analytics CSV import reweights pools and `studio status` shows it. |
-| **4 Runtime** | Supervisor + GPU lock + idle unload, `embed` service management, `ns tune`, `ns verify`, `ns doctor`, `ns stop`, `ns gate`, scheduled task, launchers | B, A (launchers), G | `ns tune` writes `runtime.json`; two concurrent acquirers serialize correctly; idle unload frees VRAM; scheduled task wakes the PC at a test time and runs `studio run --daily --dry-run`; `ns verify` passes all §14.6 gates. |
-| **5 Installer** | `stage1.ps1`, wizard + all steps, Inno script, `Nightshift-Setup.exe`, SmartScreen docs | A, G | Clean Windows VM or fresh user profile: installer runs end-to-end, resumes after a forced interruption, produces a first job within 2 h of finishing. |
-| **6 Nightshift Code (optional)** | OpenCode pin + download step, `opencode.json`, `AGENTS.md`, prewarm, shortcut | B, A | OpenCode edits a file in `%USERPROFILE%\Projects` via `local/code`; studio's nightly run waits and then proceeds when OpenCode releases. |
+| **0 Foundations** | Repo tree, `manifest.json` with verified pins (GPU and `cpu-dev` model sets; SHA256 resolved from the Hugging Face API, files **not** downloaded), `ns_common` incl. all fakes, all Slice 1 contracts and schemas, policy lists, `pyproject.toml` + `uv.lock`, CI config, `dev\` scripts, `CLAUDE.md`, `README.md` | main | Unit tests green; `tools\resolve_manifest.py --check` confirms every pinned URL answers a HEAD request and every HF file has a SHA; fakes produce a WAV, a vector and a JSON that validate against the schemas; FFmpeg renders a 2 s test clip with `libx264`. |
+| **1 One Short** | Shorts-only text stages (ideas → split → hooks → SEO → visual plan), TTS server (engine abstraction; both engines coded against their documented APIs and unit-tested with a fake engine; server tested with FastAPI's test client), captions + alignment, clip fetch + cache (both APIs coded against their documented responses, tested with recorded fixtures), vertical render, QC, outbox sheet, minimal CLI (`studio run --format shorts_only --count 1`), `studio calibrate` | C, D, E, F, G | `studio run --fake-services --format shorts_only --count 3` produces 3 Shorts: real MP4s with burned captions, QC passing (duration, loudness, drift, file opens, aspect), upload sheets valid against schema; `studio calibrate --n 5 --fake-services` produces the scoring template. If the developer has Pexels/Pixabay keys, the gate additionally runs one job with real clip fetching (`--fake-services=llm,tts,whisper,embed`). |
+| **2 Master-first** | Long plan, chapter draft, critique/revise, continuity, expansion loop, long SEO, per-beat visual plan, Shorts selection + timing, landscape render + chapter cards + mid-roll suggestions, thumbnails, derived Shorts (S1–S2), outbox for both | D, E, F, G | `--fake-services` master job with `long_minutes: [9, 10]`: floor/expansion logic exercised by a fixture that is deliberately short; `chapters.json` timestamps match ffprobe; thumbnails render; mid-roll suggestions respect the 2-minute rule; 4 Shorts cut and rendered. |
+| **3 Safety & growth** | Policy gate (text + final, all §18.8 checks), variation engine + ledger + pool checks, channel CRUD + distinctness, cadence governor, `studio review`, `studio learn --import`, `studio status`, `studio pause`, SQLite backup | F, H, G | One full fake job passes both gates; seeded negative fixtures (true-story claim, real name, duplicate story, music track) are rejected with the right `NS-E6xx`; a sample analytics CSV import reweights pools and `studio status` shows it. |
+| **4 Runtime** | Supervisor + GPU lock + idle unload, `embed` service management, `ns tune`, `ns verify`, `ns doctor --bundle`, `ns stop`, `ns gate`, `ns update`, scheduled task, launchers | B, A (launchers), G | Supervisor manages a **stub service** (a tiny HTTP server standing in for llama-server): two concurrent acquirers serialize; idle unload stops it; crash restart works; scheduled task registers and fires a `--dry-run` at a test time; `ns doctor --bundle` produces a zip with the listed contents; `ns update` swaps the repo directory and rolls back in a temp copy. |
+| **5 Installer** | `INSTALL.cmd`, `stage1.ps1`, wizard + all steps, `--answers`, `OPERATOR.md`, `dev\make_bundle.ps1` | A, G | In a temp `NIGHTSHIFT_HOME`: `stage1.ps1 -DryRun` lists every action it would take; `wizard.py --answers answers.example.json --simulate-downloads` runs all steps with downloads replaced by HEAD checks + tiny fixture files, resumes after a forced kill at step 3, and ends with the summary and a diagnostics zip; `make_bundle.ps1` produces a zip that contains no `.venv`, models or binaries and extracts to a working repo. |
+| **6 Nightshift Code (optional)** | OpenCode pin + download step, `opencode.json`, `AGENTS.md`, prewarm, shortcut | B, A | Config validates against OpenCode's schema; launcher acquires/releases through the supervisor stub; prewarm step is exercised with `--simulate-downloads`. |
+| **7 First run on the work machine** | Upload `Nightshift-<version>.zip` + `answers.json` to Drive; partner extracts and runs `INSTALL.cmd`; `verify-report.json` and the diagnostics zip come back (or the developer continues directly on that machine) | main | `verify-report.json` shows all §14.6 gates measured, one real master job in the Outbox, `ns tune` results recorded. Then the hardware-dependent calibration (§16.5) and the prompt-quality work begin on that machine. |
 
-Deferred to after Slice 6: `series_compilation`, API upload, non-English caption/NER models beyond spaCy's multilingual set.
+Deferred to after Slice 7: `series_compilation`, API upload, non-English caption/NER models beyond spaCy's multilingual set.
 
 ---
 
@@ -390,7 +426,7 @@ Deferred to after Slice 6: `series_compilation`, API upload, non-English caption
 
 | # | Question | Default | Why |
 |---|---|---|---|
-| D1 | Where does testing happen? | Separate RTX 5060 Ti PC, reachable at each gate; laptop builds; private git remote syncs | Laptop cannot run anything GPU-bound |
+| D1 | Where does testing happen? | Entirely on the build laptop in the `cpu-dev` profile; the target PC is reached only through Google Drive (installer out, diagnostics zip back, update zips out) | Developer has no access to the target PC at any time |
 | D2 | Nightshift Code in scope? | Yes, as the last optional slice; the installer asks | Keeps the money-making path unblocked |
 | D3 | One LLM or two? | One (standard MTP GGUF) for both aliases; abliterated story model only if calibration shows fiction refusals | Saves ~20 GB, half the tuning, no model swap between coding and studio |
 | D4 | First niche / language | Horror fiction, English, 1 channel | Matches the example profile |
@@ -420,7 +456,7 @@ One LLM runtime, no Ollama or Docker, supervisor-only background process, idle u
 ### 14.5 Quality
 Plan → draft → critique → revise; best-of-5 + judge for hooks and titles; exemplars; thinking on for plan/critique/judge/continuity/select only; hard validators; critic bar calibrated against human scores (§16.5). No cloud fallback.
 
-### 14.6 Benchmark gates (`ns verify`, 32 GB profile; 16 GB profile targets in brackets)
+### 14.6 Benchmark gates (`ns verify`, 32 GB profile; 16 GB profile targets in brackets; measured on the target PC by the operator's run and reported in the diagnostics bundle — never asserted by the developer)
 | Metric | Target |
 |---|---|
 | `code` generation, 16K ctx | ≥ 40 tok/s [≥ 30] |
@@ -445,11 +481,12 @@ Plan → draft → critique → revise; best-of-5 + judge for hooks and titles; 
 | Logical models | `code`, `story` (aliases; same file in one-model mode) |
 | Services | `llama`, `embed`, `tts`, `whisper` (whisper is in-process in the studio venv but takes the GPU lock) |
 | Keyring | service `Nightshift`; keys `pexels_api_key`, `pixabay_api_key`, `yt_oauth_<slug>` |
-| Installer | `Nightshift-Setup.exe` |
+| Installer | `INSTALL.cmd` (bundle `Nightshift-<version>.zip`) |
+| App path | `install_state.app_path` (the extracted repo, e.g. `D:\NightShift`) |
 
 ### 15.2 Paths (under `NIGHTSHIFT_HOME`)
 ```
-app\ bin\llama\ bin\opencode\
+bin\llama\ bin\opencode\
 models\llm\ models\embed\ models\tts\ models\tts\voices\ models\whisper\ models\spacy\
 venvs\tts\ venvs\studio\ venvs\supervisor\
 config\runtime.json config\install_state.json config\opencode.json config\channels\<slug>.yaml
@@ -485,7 +522,9 @@ States: `stopped|starting|ready|stopping|error`. Owners: `opencode`, `studio:<jo
 Standard llama-server `POST /v1/embeddings` `{input:[...]}` → OpenAI-shaped response. `ns_common.embed_client.embed(texts) -> list[list[float]]`, `cosine(a,b)`.
 
 ### 15.6 JSON schemas (`contracts/schemas/`)
-`channel, runtime, install_state, idea, plan, story, parts, seo, seo_long, shorts_plan, chapters, visual_plan, qc, policy, metadata, combo, analytics_row, calibration_row, gate_report`.
+`channel, runtime, install_state, answers, manifest, idea, plan, story, parts, seo, seo_long, shorts_plan, chapters, visual_plan, qc, policy, metadata, combo, analytics_row, calibration_row, gate_report`.
+- `runtime`: `{profile:"32gb"|"16gb"|"cpu-dev", llama:{port, model_path, aliases:["code","story"], flags:{n_gpu_layers, n_cpu_moe, ctx, kv_type, spec_type?, spec_draft_n_max?, threads?}}, embed:{port, model_path}, tts:{port, engine:"faster"|"reference", model_dir, device:"cuda"|"cpu"}, whisper:{model, device, compute_type}, video:{encoder:"h264_nvenc"|"libx264", preset}}`
+- `manifest`: `{version, profiles:{<profile>:{llm:{repo,file,sha256,bytes}, embed:{...}, tts:[{repo,sha256_index}], whisper:{model}}}, bins:{llama:{url,sha256,version}, cudart:{...}, opencode:{...}}, python:{version}, spacy:{model, version}}`
 - `idea`: `{premise, twist, setting, protagonist, why_chapters, keywords[]}`
 - `plan`: `{target_minutes, target_words, chapters:[{n, title, beats[], cliff, word_budget}]}`
 - `story`: `{working_title, chapters:[{n, title, text, summary, word_count, est_seconds, cliff_line_idx?, sentences:[{idx, text}]}], revisions:int}`
@@ -523,13 +562,15 @@ Outbox `outbox\<slug>\<YYYY-MM-DD>\<job_id>\`: `long\master.mp4 + .json + .txt +
 - `studio channel add|list|edit|validate` · `studio voice list|preview|design|clone`
 - `studio learn --import <csv>` · `studio mark-uploaded <job_id> <long|s<k>> <url>`
 - `studio calibrate --channel <slug> [--n 20]` · `studio calibrate --score <csv>`
-- `ns tune` · `ns verify [--quick]` · `ns doctor` · `ns stop` · `ns gate s<N>`
+- `ns tune` · `ns verify [--quick]` · `ns doctor [--bundle]` · `ns stop` · `ns gate s<N>` · `ns update <zip> | --rollback`
 
 | Shortcut | Launcher |
 |---|---|
 | `Nightshift Studio.lnk` | `nightshift-studio.ps1`: `studio status` + interactive prompt |
 | `Nightshift Outbox.lnk` | `open-outbox.ps1` |
 | `Nightshift - Stop All.lnk` | `stop-all.ps1` → `ns stop` |
+| `Nightshift - Update.lnk` | `update.ps1`: file picker for `nightshift-app-*.zip` → `ns update` |
+| `Nightshift - Diagnostics.lnk` | `diagnostics.ps1` → `ns doctor --bundle`, then opens the Desktop folder |
 | `Nightshift Code.lnk` (optional) | `nightshift-code.ps1`: acquire `llama` as `code`, set `OPENCODE_CONFIG`, open OpenCode in Projects; release on exit |
 
 Scheduled task `Nightshift Daily` → `studio run --daily`; `WakeToRun=true`, `StartWhenAvailable=true`, run whether user is logged on or not, stop if running > 6 h.
@@ -558,7 +599,7 @@ Scheduled task `Nightshift Daily` → `studio run --daily`; `WakeToRun=true`, `S
 JSON lines `logs\<component>-YYYYMMDD.jsonl`: `ts, level, component, event, msg, data`. Every stage logs `stage_start`/`stage_end` with `job_id`, duration and tenant.
 
 ### 15.12 Error codes
-`NS-E1xx` install (`NS-W1xx` warnings) · `NS-E2xx` runtime/GPU lock · `NS-E3xx` text/LLM (`E305` floor not reached, `E306` not implemented) · `NS-E4xx` media/QC (`E402` clip pool empty, `E403` caption drift) · `NS-E5xx` stock APIs/network · `NS-E6xx` policy gate (one code per check).
+`NS-E1xx` install (`NS-W1xx` warnings; `E108` CUDA torch check failed) · `NS-E2xx` runtime/GPU lock · `NS-E3xx` text/LLM (`E305` floor not reached, `E306` not implemented; `W301` TTS fell back to reference engine, `W302` MTP disabled) · `NS-E4xx` media/QC (`E402` clip pool empty, `E403` caption drift; `W401` NVENC unavailable, using libx264) · `NS-E5xx` stock APIs/network · `NS-E6xx` policy gate (one code per check) · `NS-E7xx` update/rollback.
 
 ### 15.13 Prompt versioning
 Every prompt file starts with YAML front-matter `{version: int, thinking: bool, schema: <name>}`. `metadata.prompt_versions` records the versions used so learning can attribute results to prompt changes.
