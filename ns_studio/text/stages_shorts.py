@@ -1,0 +1,347 @@
+"""Shorts-only text stages: ideas to visual plan (component C5; spec 7.3, 16.2, 16.3, 9.2)."""
+
+from __future__ import annotations
+
+import random
+from datetime import UTC, datetime
+from typing import Any
+
+from ns_common.embed_client import cosine, from_blob, to_blob
+from ns_common.errors import NsError
+from ns_common.models import Idea, Part, Seo, VisualBeat
+from ns_common.textstats import est_seconds, split_sentences, word_count
+from ns_studio.context import JobContext
+from ns_studio.orchestrator import FORMAT_STAGES
+from ns_studio.stages import Tenant, register
+from ns_studio.text.budget import Budget, MasterBudget, master_as_budget, master_budget, short_budget
+from ns_studio.text.prompts import RUBRIC_KEYS, call_json, call_text, parse_model
+from ns_studio.text.seo import finalize_seo
+from ns_studio.text.validators import load_banned, raise_if, validate_story
+
+__all__ = ["finalize_seo", "ideas_budget", "job_master_budget", "now_iso"]
+
+IDEA_SIMILARITY_LIMIT = 0.85
+
+
+def job_master_budget(ctx: JobContext) -> MasterBudget:
+    """Master budget of this job; the target minutes are drawn from `long_minutes` seeded by the job id."""
+    return master_budget(ctx.channel.long_minutes, ctx.combo.pacing, rng=random.Random(ctx.job_id))
+
+
+def ideas_budget(ctx: JobContext) -> Budget:
+    """Word budget of the story: the master (master-first) or one part of `combo.length_bucket` (50 s)."""
+    if ctx.fmt == "master_first":
+        return master_as_budget(job_master_budget(ctx))
+    return short_budget(ctx.combo.length_bucket or 50, ctx.combo.pacing, parts=1)
+
+
+def now_iso() -> str:
+    """Current UTC time as an ISO-8601 string (for DB rows)."""
+    return datetime.now(UTC).isoformat()
+
+
+def critic_numbers(critique: dict[str, Any]) -> tuple[float, float]:
+    """Average and minimum of the seven rubric scores of a critic answer."""
+    try:
+        scores = [float(critique["scores"][k]) for k in RUBRIC_KEYS]
+    except (KeyError, TypeError, ValueError) as e:
+        raise NsError("NS-E302", f"critic answer lacks rubric scores: {e}") from e
+    return sum(scores) / len(scores), min(scores)
+
+
+class IdeasStage:
+    """M1 / shorts 1: draw 8 premises, drop near-duplicates of history, keep the first survivor."""
+
+    name: str = "ideas"
+    tenant: Tenant = "llama"
+    inputs: tuple[str, ...] = ()
+    outputs: tuple[str, ...] = ("idea.json", "ideas_all.json")
+
+    def run(self, ctx: JobContext) -> None:
+        """Write `ideas_all.json` and the chosen `idea.json`; record the idea in the `ideas` table."""
+        rows = ctx.db.query(
+            "select premise, embedding from ideas where channel=? order by idea_id desc limit 50",
+            (ctx.channel.slug,),
+        )
+        out = call_json(
+            ctx, "ideas", n=8, budget=ideas_budget(ctx), avoid_premises=[r["premise"] for r in rows]
+        )
+        ideas = [parse_model(Idea, i, "idea").model_dump() for i in out["ideas"]]
+        ctx.write_json("ideas_all.json", ideas)
+        vecs = ctx.services.embed.embed([i["premise"] for i in ideas])
+        past = [from_blob(r["embedding"]) for r in rows if r["embedding"]]
+        survivors = [
+            (i, v)
+            for i, v in zip(ideas, vecs, strict=True)
+            if not past or max(cosine(v, p) for p in past) < IDEA_SIMILARITY_LIMIT
+        ]
+        if not survivors:
+            raise NsError("NS-E304", f"all {len(ideas)} ideas too similar to history")
+        idea, vec = survivors[0]
+        ctx.db.execute(
+            "insert into ideas(channel, job_id, premise, twist, embedding, created_at, used) "
+            "values (?,?,?,?,?,?,1)",
+            (ctx.channel.slug, ctx.job_id, idea["premise"], idea["twist"], to_blob(vec), now_iso()),
+        )
+        ctx.write_json("idea.json", idea)
+
+
+class PlanStage:
+    """Shorts 2: beat sheet from the chosen idea."""
+
+    name: str = "plan"
+    tenant: Tenant = "llama"
+    inputs: tuple[str, ...] = ("idea.json",)
+    outputs: tuple[str, ...] = ("plan.json",)
+
+    def run(self, ctx: JobContext) -> None:
+        """Write `plan.json` (beats, part_breaks, ending_line_idea)."""
+        plan = call_json(ctx, "story_plan", idea=ctx.read_json("idea.json"), budget=ideas_budget(ctx))
+        ctx.write_json("plan.json", plan)
+
+
+class DraftStage:
+    """Shorts 3: full story text from the beat sheet."""
+
+    name: str = "draft"
+    tenant: Tenant = "llama"
+    inputs: tuple[str, ...] = ("plan.json",)
+    outputs: tuple[str, ...] = ("story.json",)
+
+    def run(self, ctx: JobContext) -> None:
+        """Write `story.json` = {text, word_count, revisions: 0}."""
+        plan = ctx.read_json("plan.json")
+        text = call_text(ctx, "story_draft", plan=plan, budget=ideas_budget(ctx)).strip()
+        ctx.write_json("story.json", {"text": text, "word_count": word_count(text), "revisions": 0})
+
+
+class CriticReviseStage:
+    """Shorts 4: critic loop (at most 2 revisions), hard validators, `stories` row."""
+
+    name: str = "critic_revise"
+    tenant: Tenant = "llama"
+    inputs: tuple[str, ...] = ("story.json",)
+    outputs: tuple[str, ...] = ("story.json", "critic.json")
+
+    def run(self, ctx: JobContext) -> None:
+        """Critique, revise up to twice, validate (NS-E303) and persist; NS-E304 if the bar is not met."""
+        story = ctx.read_json("story.json")
+        if story.get("critic_avg") is not None and ctx.file("critic.json").exists():
+            return  # already critiqued: story.json is its own output
+        text: str = story["text"]
+        bar = ctx.channel.critic_bar
+        revisions = 0
+        critique: dict[str, Any] = {}
+        for attempt in range(3):
+            critique = call_json(ctx, "critic", story=text, banned=load_banned())
+            avg, low = critic_numbers(critique)
+            ctx.log.info("critic", avg=avg, low=low, attempt=attempt, job_id=ctx.job_id)
+            if avg >= bar and low >= 6:
+                break
+            if attempt == 2:
+                raise NsError("NS-E304", f"critic avg {avg:.1f} low {low:.0f} after {revisions} revisions")
+            text = call_text(ctx, "revise", story=text, fixes=critique["fixes"]).strip()
+            revisions += 1
+        past = [
+            r["opening_line"]
+            for r in ctx.db.query(
+                "select opening_line from stories where channel=? and job_id!=? "
+                "order by created_at desc limit 50",
+                (ctx.channel.slug, ctx.job_id),
+            )
+        ]
+        raise_if(validate_story(text, ideas_budget(ctx), past_openings=past, embed=ctx.services.embed))
+        avg, _ = critic_numbers(critique)
+        vec = ctx.services.embed.embed([text])[0]
+        ctx.db.execute(
+            "insert or replace into stories(job_id, channel, format, working_title, text, word_count, "
+            "opening_line, embedding, critic_avg, revisions, created_at) values (?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                ctx.job_id,
+                ctx.channel.slug,
+                ctx.fmt,
+                None,
+                text,
+                word_count(text),
+                split_sentences(text)[0],
+                to_blob(vec),
+                avg,
+                revisions,
+                now_iso(),
+            ),
+        )
+        ctx.write_json("critic.json", critique)
+        ctx.write_json(
+            "story.json",
+            {"text": text, "word_count": word_count(text), "revisions": revisions, "critic_avg": avg},
+        )
+
+
+class SplitStage:
+    """Shorts 5: cut the story into parts; counts and durations are recomputed locally."""
+
+    name: str = "split"
+    tenant: Tenant = "llama"
+    inputs: tuple[str, ...] = ("story.json",)
+    outputs: tuple[str, ...] = ("parts.json",)
+
+    def run(self, ctx: JobContext) -> None:
+        """Write `parts.json` (list of `Part`); the last part is never a cliffhanger."""
+        budget = ideas_budget(ctx)
+        out = call_json(ctx, "split", story=ctx.read_json("story.json")["text"], budget=budget)
+        parts: list[dict[str, Any]] = []
+        for i, p in enumerate(out["parts"], start=1):
+            text = str(p["text"]).strip()
+            part = Part(
+                n=i,
+                text=text,
+                hook=p.get("hook") or split_sentences(text)[0],
+                word_count=max(1, word_count(text)),
+                est_seconds=max(0.01, est_seconds(text, budget.wpm)),
+                cliffhanger=bool(p.get("cliffhanger", False)),
+            )
+            parts.append(part.model_dump())
+        parts[-1]["cliffhanger"] = False
+        ctx.file("hooks_all.json").unlink(missing_ok=True)  # parts changed: hooks must be redone
+        ctx.write_json("parts.json", parts)
+
+
+class HooksStage:
+    """Shorts 6: five hooks per part, a judge picks one; all candidates go to `hooks_all.json`."""
+
+    name: str = "hooks"
+    tenant: Tenant = "llama"
+    inputs: tuple[str, ...] = ("parts.json",)
+    outputs: tuple[str, ...] = ("parts.json", "hooks_all.json")
+
+    def run(self, ctx: JobContext) -> None:
+        """Set `hook` on every part; skip when `hooks_all.json` already exists for these parts."""
+        if ctx.file("hooks_all.json").exists():
+            return
+        parts: list[dict[str, Any]] = ctx.read_json("parts.json")
+        all_hooks: list[list[str]] = []
+        for i, p in enumerate(parts):
+            nxt = parts[i + 1]["text"] if i + 1 < len(parts) else None
+            raw = call_json(ctx, "hook", part_text=p["text"], next_part_text=nxt)["hooks"]
+            hooks = [str(h).strip() for h in raw if 0 < len(str(h).split()) <= 12]
+            hooks = hooks or [split_sentences(p["text"])[0]]
+            j = call_json(
+                ctx,
+                "judge",
+                purpose="Pick the hook most likely to stop a scroll while staying strictly true to the part.",
+                constraints="Max 12 words. No overpromising. Style: " + ctx.combo.hook,
+                options=hooks,
+            )
+            idx = max(0, min(int(j["index"]), len(hooks) - 1))
+            p["hook"] = hooks[idx]
+            all_hooks.append(hooks)
+        ctx.write_json("hooks_all.json", all_hooks)
+        ctx.write_json("parts.json", parts)
+
+
+class SeoStage:
+    """Shorts 7: one `Seo` per part, finalized by `finalize_seo` (spec 9.2)."""
+
+    name: str = "seo"
+    tenant: Tenant = "llama"
+    inputs: tuple[str, ...] = ("parts.json",)
+    outputs: tuple[str, ...] = ("seo.json",)
+
+    def run(self, ctx: JobContext) -> None:
+        """Write `seo.json` as a list with one entry per part."""
+        parts = ctx.read_json("parts.json")
+        kw = ctx.channel.seed_keywords[0] if ctx.channel.seed_keywords else ctx.channel.niche.split()[0]
+        out: list[dict[str, Any]] = []
+        for p in parts:
+            part_n = p["n"] if len(parts) > 1 else None
+            raw = parse_model(
+                Seo,
+                call_json(
+                    ctx, "seo", primary_keyword=kw, part_text=p["text"], part_n=part_n, parts_total=len(parts)
+                ),
+                "seo",
+            )
+            final = finalize_seo(
+                raw,
+                primary_keyword=kw,
+                fiction_label=ctx.channel.fiction_label,
+                part_n=part_n,
+                parts_total=len(parts),
+            )
+            out.append(final.model_dump())
+        ctx.write_json("seo.json", out)
+
+
+def repair_beats(
+    raw_beats: list[VisualBeat], sentence_count: int, *, group: int, default: VisualBeat
+) -> list[VisualBeat]:
+    """Make `raw_beats` cover sentences 0..sentence_count-1 exactly once, in order.
+
+    Out-of-range or overlapping beats are dropped; gaps are filled with beats of up to `group` sentences
+    that reuse the previous beat's keywords and mood (`default` when none exists). Beats are renumbered.
+    """
+    covered: set[int] = set()
+    kept: list[VisualBeat] = []
+    for b in sorted(raw_beats, key=lambda x: x.sentence_start):
+        s, e = max(0, b.sentence_start), min(sentence_count - 1, b.sentence_end)
+        if s > e or any(i in covered for i in range(s, e + 1)):
+            continue
+        kept.append(b.model_copy(update={"sentence_start": s, "sentence_end": e}))
+        covered.update(range(s, e + 1))
+    missing = [i for i in range(sentence_count) if i not in covered]
+    runs: list[list[int]] = []
+    for i in missing:
+        if runs and runs[-1][-1] == i - 1 and len(runs[-1]) < group:
+            runs[-1].append(i)
+        else:
+            runs.append([i])
+    for run in runs:
+        before = [b for b in kept if b.sentence_end < run[0]]
+        src = max(before, key=lambda b: b.sentence_end) if before else (kept[0] if kept else default)
+        kept.append(src.model_copy(update={"sentence_start": run[0], "sentence_end": run[-1]}))
+    kept.sort(key=lambda x: x.sentence_start)
+    return [b.model_copy(update={"beat": n}) for n, b in enumerate(kept)]
+
+
+class VisualPlanStage:
+    """Shorts 8: keyword beats covering every sentence of every part."""
+
+    name: str = "visual_plan"
+    tenant: Tenant = "llama"
+    inputs: tuple[str, ...] = ("parts.json", "idea.json")
+    outputs: tuple[str, ...] = ("visual_plan.json",)
+
+    def run(self, ctx: JobContext) -> None:
+        """Write `visual_plan.json` (list of `VisualBeat`, repaired to cover each sentence once)."""
+        setting = ctx.read_json("idea.json").get("setting", "")
+        beats_out: list[dict[str, Any]] = []
+        for p in ctx.read_json("parts.json"):
+            sentences = split_sentences(p["text"])
+            raw = call_json(ctx, "visual_plan", sentences=sentences, setting=setting, part_n=p["n"])["beats"]
+            beats = [parse_model(VisualBeat, b | {"part": p["n"]}, "visual_plan") for b in raw]
+            default = VisualBeat(
+                part=p["n"],
+                beat=0,
+                sentence_start=0,
+                sentence_end=0,
+                keywords=["empty room", "dim light", "window"],
+                mood="eerie",
+            )
+            fixed = repair_beats(beats, len(sentences), group=3, default=default)
+            beats_out += [b.model_dump() for b in fixed]
+        ctx.write_json("visual_plan.json", beats_out)
+
+
+for _st in (
+    IdeasStage(),
+    PlanStage(),
+    DraftStage(),
+    CriticReviseStage(),
+    SplitStage(),
+    HooksStage(),
+    SeoStage(),
+    VisualPlanStage(),
+):
+    register(_st)
+    if _st.name not in FORMAT_STAGES["shorts_only"]:
+        FORMAT_STAGES["shorts_only"].append(_st.name)
