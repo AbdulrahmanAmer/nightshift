@@ -73,9 +73,10 @@ class EventHub:
             return len(self._subs)
 
 
-def sse_frame(kind: str, data: Any) -> str:
-    """One server-sent-events frame."""
-    return f"event: {kind}\ndata: {json.dumps(data, ensure_ascii=False, default=str)}\n\n"
+def sse_frame(kind: str, payload: Any) -> str:
+    """One server-sent-events frame: a default `message` event whose data is `{kind, payload}`."""
+    body = json.dumps({"kind": kind, "payload": payload}, ensure_ascii=False, default=str)
+    return f"data: {body}\n\n"
 
 
 def iter_sse(
@@ -86,10 +87,12 @@ def iter_sse(
     limit: int | None = None,
     stop: threading.Event | None = None,
 ) -> Iterator[str]:
-    """Yield SSE frames: a `status` frame first, every relayed event followed by a fresh `status`
-    frame, and a `status` frame whenever `heartbeat_s` passes without events.
+    """Yield SSE frames of kind `status` (payload = the `/api/status` object) and `job`.
 
-    Stops after `limit` frames (tests) or when `stop` is set; always detaches the subscription.
+    A `status` frame comes first, after every relayed event, and whenever `heartbeat_s` passes
+    without events. Hub kind `dashboard_job` and supervisor `job` events become `job` frames;
+    supervisor `service` events only trigger a fresh `status` frame. Stops after `limit` frames
+    (tests) or when `stop` is set; always detaches the subscription.
     """
     stop = stop or threading.Event()
     sent = 0
@@ -98,8 +101,8 @@ def iter_sse(
         sent += 1
         while not stop.is_set() and (limit is None or sent < limit):
             item = sub.get(heartbeat_s)
-            if item is not None and item["kind"] != "status":
-                yield sse_frame(item["kind"], item["data"])
+            if item is not None and item["kind"] in ("dashboard_job", "job"):
+                yield sse_frame("job", item["data"])
                 sent += 1
                 if limit is not None and sent >= limit:
                     break

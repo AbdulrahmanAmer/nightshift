@@ -33,9 +33,9 @@ def stage_handler(seen: list[str]):
 
 def test_fifo_and_done_result(tmp_home: Path):
     seen: list[str] = []
-    store, worker, _hub, _ = build(tmp_home, {"clip": stage_handler(seen), "learn": lambda ctl: {"n": 2}})
+    store, worker, _hub, _ = build(tmp_home, {"clip": stage_handler(seen), "verify": lambda ctl: {"n": 2}})
     a = store.create("clip", "after-dark", {"path": "a.mp4"})
-    b = store.create("learn", None, {})
+    b = store.create("verify", None, {})
     c = store.create("clip", "after-dark", {"path": "c.mp4"})
     assert worker.run_next() and worker.run_next() and worker.run_next()
     assert not worker.run_next()
@@ -212,7 +212,7 @@ def test_gpu_gate_ignores_missing_supervisor_and_non_gpu_kinds(tmp_home: Path):
         calls.append(ctl.kind)
 
     handlers = {"learn": lambda ctl: None, "clip": lambda ctl: None}
-    store, worker, _hub, _ = build(tmp_home, handlers, gpu_gate=gate)
+    store, worker, _hub, _ = build(tmp_home, handlers, gpu_gate=gate, inline_kinds=frozenset())
     store.create("learn", None, {})
     store.create("clip", None, {})
     worker.run_next()
@@ -240,3 +240,43 @@ def test_params_json_layout_and_list_filters(tmp_home: Path):
     store.db.execute(sql, ('{"path": "z"}', a.job_id))
     got = store.get(a.job_id)
     assert got is not None and got.params == {"path": "z"} and got.result is None
+
+
+def test_to_dict_uses_percent_and_stage(tmp_home: Path):
+    store, worker, _hub, _ = build(tmp_home, {"clip": stage_handler([])})
+    job = store.create("clip", "c", {})
+    d0 = job.to_dict()
+    assert d0["progress"] == 0 and d0["stage"] is None and d0["status"] == "queued"
+    worker.run_next()
+    done = store.get(job.job_id)
+    assert done is not None
+    d = done.to_dict()
+    assert d["progress"] == 100.0 and d["status"] == "done" and d["result"] == {"output_ids": ["x/1"]}
+    store.update_progress(job.job_id, 0.5, "select (3/6)")
+    mid = store.get(job.job_id)
+    assert mid is not None and mid.to_dict()["progress"] == 50.0 and mid.to_dict()["stage"] == "select"
+
+
+def test_run_inline_executes_a_specific_job(tmp_home: Path):
+    store, worker, _hub, _ = build(tmp_home, {"learn": lambda ctl: {"matched": 3}, "clip": lambda ctl: None})
+    first = store.create("clip", None, {})
+    learn = store.create("learn", None, {})
+    rec = worker.run_inline(learn.job_id)
+    assert rec.status == "done" and rec.result == {"matched": 3}
+    first_rec = store.get(first.job_id)
+    assert first_rec is not None and first_rec.status == "queued"  # the FIFO job was not touched
+    assert worker.running_job_id is None
+    assert worker.run_inline(learn.job_id).status == "done"  # already finished: returned as is
+    with pytest.raises(LookupError):
+        worker.run_inline("nope-20260101-abcd")
+
+
+def test_worker_leaves_inline_kinds_to_run_inline(tmp_home: Path):
+    store, worker, _hub, _ = build(tmp_home, {"learn": lambda ctl: {"ok": 1}, "clip": lambda ctl: None})
+    learn = store.create("learn", None, {})
+    assert worker.run_next() is False  # the only queued job is a learn import
+    clip = store.create("clip", None, {})
+    assert worker.run_next() is True
+    clip_rec, learn_rec = store.get(clip.job_id), store.get(learn.job_id)
+    assert clip_rec is not None and clip_rec.status == "done"
+    assert learn_rec is not None and learn_rec.status == "queued"

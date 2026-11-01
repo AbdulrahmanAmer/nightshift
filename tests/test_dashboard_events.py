@@ -36,7 +36,7 @@ def test_slow_consumer_drops_oldest():
 
 def test_sse_frame_format():
     f = sse_frame("status", {"a": 1})
-    assert f == 'event: status\ndata: {"a": 1}\n\n'
+    assert f == 'data: {"kind": "status", "payload": {"a": 1}}\n\n'
 
 
 def test_iter_sse_initial_status_event_then_status_and_limit():
@@ -44,10 +44,9 @@ def test_iter_sse_initial_status_event_then_status_and_limit():
     sub = hub.subscribe()
     hub.publish("dashboard_job", {"job_id": "j1"})
     frames = list(iter_sse(sub, lambda: {"state": "idle"}, heartbeat_s=0.01, limit=3))
-    assert frames[0].startswith("event: status")
-    assert frames[1].startswith("event: dashboard_job")
-    assert json.loads(frames[1].split("data: ", 1)[1])["job_id"] == "j1"
-    assert frames[2].startswith("event: status")
+    kinds = [json.loads(f.split("data: ", 1)[1])["kind"] for f in frames]
+    assert kinds == ["status", "job", "status"]
+    assert json.loads(frames[1].split("data: ", 1)[1])["payload"] == {"job_id": "j1"}
     assert len(frames) == 3
     assert hub.subscriber_count == 0
 
@@ -55,7 +54,7 @@ def test_iter_sse_initial_status_event_then_status_and_limit():
 def test_iter_sse_heartbeat_when_idle():
     hub = EventHub()
     frames = list(iter_sse(hub.subscribe(), lambda: {"s": 1}, heartbeat_s=0.01, limit=3))
-    assert [f.split("\n", 1)[0] for f in frames] == ["event: status"] * 3
+    assert [json.loads(f.split("data: ", 1)[1])["kind"] for f in frames] == ["status"] * 3
 
 
 def test_iter_sse_stops_on_event():

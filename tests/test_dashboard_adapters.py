@@ -79,7 +79,6 @@ def test_real_adapters_report_unavailable_collaborators(tmp_home: Path, monkeypa
         RealKeyringAdapter().get("pexels_api_key")
     out = RealScheduleAdapter(paths).apply("04:00")
     assert out["applied"] is False and "Saved" in out["note"]
-    assert worker.run_next() is False
     assert real_adapters(paths, link, NsLogger("dashboard", paths.logs)).folder is not None
 
 

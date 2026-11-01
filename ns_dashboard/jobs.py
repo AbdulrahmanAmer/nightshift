@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import threading
 import time
@@ -48,13 +49,14 @@ class JobRecord:
     cancel_requested: bool = False
 
     def to_dict(self) -> dict[str, Any]:
-        """API shape (Appendix A, `J`)."""
+        """API shape: `progress` is a percentage (0-100), `stage` the current stage name."""
         return {
             "job_id": self.job_id,
             "kind": self.kind,
             "channel": self.channel,
             "status": self.status,
-            "progress": self.progress,
+            "progress": round(self.progress * 100, 1),
+            "stage": _stage_of(self.message),
             "message": self.message,
             "created_at": self.created_at,
             "started_at": self.started_at,
@@ -63,6 +65,15 @@ class JobRecord:
             "result": self.result,
             "cancel_requested": self.cancel_requested,
         }
+
+
+_STAGE_RE = re.compile(r"^(.*) \(\d+/\d+\)$")
+
+
+def _stage_of(message: str) -> str | None:
+    """Stage name from a `name (i/n)` progress message, else None."""
+    m = _STAGE_RE.match(message or "")
+    return m.group(1) if m else None
 
 
 def _unpack(raw: str | None) -> tuple[dict[str, Any], dict[str, Any] | None]:
@@ -152,9 +163,13 @@ class JobStore:
         args.append(max(1, min(limit, 500)))
         return [self._record(r) for r in self.db.query(sql, args)]
 
-    def next_queued(self) -> JobRecord | None:
-        """Oldest queued job (FIFO by insertion order)."""
-        row = self.db.one("SELECT * FROM dashboard_jobs WHERE status = 'queued' ORDER BY rowid LIMIT 1")
+    def next_queued(self, exclude: Iterable[str] = ()) -> JobRecord | None:
+        """Oldest queued job (FIFO by insertion order), skipping kinds in `exclude`."""
+        skip = tuple(exclude)
+        marks = ",".join("?" for _ in skip)
+        extra = f" AND kind NOT IN ({marks})" if skip else ""
+        sql = f"SELECT * FROM dashboard_jobs WHERE status = 'queued'{extra} ORDER BY rowid LIMIT 1"
+        row = self.db.one(sql, skip)
         return self._record(row) if row else None
 
     def running(self) -> JobRecord | None:
@@ -329,12 +344,14 @@ class JobWorker:
         log: NsLogger,
         *,
         gpu_gate: GpuGate | None = None,
+        inline_kinds: frozenset[str] = frozenset({"learn"}),
     ) -> None:
         self.store = store
         self.handlers = handlers
         self.hub = hub
         self.log = log
         self.gpu_gate = gpu_gate
+        self.inline_kinds = inline_kinds
         self._cv = threading.Condition()
         self._wake = False
         self._stopping = False
@@ -420,13 +437,34 @@ class JobWorker:
 
     def run_next(self) -> bool:
         """Run exactly one queued job to completion; False when the queue is empty."""
-        rec = self.store.next_queued()
+        rec = self.store.next_queued(self.inline_kinds)
         if rec is None:
             return False
-        self._running_id = rec.job_id
+        self._execute(rec)
+        return True
+
+    def run_inline(self, job_id: str) -> JobRecord:
+        """Run one specific queued job on the calling thread (used for the quick, GPU-free `learn` import).
+
+        Returns the finished record. Raises LookupError for an unknown id.
+        """
+        rec = self.store.get(job_id)
+        if rec is None:
+            raise LookupError(job_id)
+        if rec.status == "queued":
+            self._execute(rec, track=False)
+        done = self.store.get(job_id)
+        assert done is not None
+        return done
+
+    def _execute(self, rec: JobRecord, *, track: bool = True) -> None:
+        """Mark `rec` running, call its handler and record the outcome."""
+        if track:
+            self._running_id = rec.job_id
         if not self.store.mark_running(rec.job_id):
-            self._running_id = None
-            return True
+            if track:
+                self._running_id = None
+            return
         self._publish(rec.job_id)
         ctl = JobControl(rec, self.store, self.hub)
         self.log.info("job_start", job_id=rec.job_id, kind=rec.kind, channel=rec.channel)
@@ -453,11 +491,11 @@ class JobWorker:
             self.log.error("job_failed", msg, job_id=rec.job_id)
         finally:
             self.store.clear_cancel(rec.job_id)
-            self._running_id = None
+            if track:
+                self._running_id = None
             self._publish(rec.job_id)
             with self._cv:
                 self._cv.notify_all()
-        return True
 
     def _loop(self) -> None:
         while not self._stopping:
