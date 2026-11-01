@@ -79,3 +79,60 @@ def make_ctx(
         log=NsLogger("studio", paths.logs, echo=False),
         prompt_versions={},
     )
+
+
+def add_output(
+    db: Db,
+    job_id: str,
+    item: str,
+    *,
+    channel: str = "after-dark",
+    title: str = "A title",
+    status: str = "pending",
+    created_at: str = "2026-10-20T10:00:00+00:00",
+    combo: Combo | None = None,
+    duration_s: float = 40.0,
+    path: str = "",
+    note: str | None = None,
+) -> str:
+    """Insert an `outputs` row (and its combo) and return the output id."""
+    kind = "long" if item == "long" else "short"
+    cmb = combo or make_combo(combo_id=f"c-{job_id}-{item}")
+    db.execute(
+        "insert or ignore into channels(slug, display_name, created_at) values (?,?,?)",
+        (channel, channel, "2026-10-01T00:00:00"),
+    )
+    db.execute(
+        "insert or replace into combos(combo_id, channel, job_id, item, hook, structure, pov_tone, pacing, "
+        "caption_style, visual_treatment, title_formula, length_bucket, created_at) "
+        "values (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (cmb.combo_id, channel, job_id, item, cmb.hook, cmb.structure, cmb.pov_tone, cmb.pacing,
+         cmb.caption_style, cmb.visual_treatment, cmb.title_formula, cmb.length_bucket, created_at),
+    )
+    output_id = f"{job_id}/{item}"
+    db.execute(
+        "insert into outputs(output_id, job_id, channel, kind, k, title, path, duration_s, combo_id, status, "
+        "review_note, created_at) values (?,?,?,?,?,?,?,?,?,?,?,?)",
+        (output_id, job_id, channel, kind, None if item == "long" else int(item[1:]), title, path, duration_s,
+         cmb.combo_id, status, note, created_at),
+    )
+    return output_id
+
+
+def add_analytics(
+    db: Db,
+    output_id: str,
+    date: str,
+    *,
+    views: int = 1000,
+    viewed_pct: float | None = 70.0,
+    avg_pct_viewed: float | None = 80.0,
+    avg_view_duration_s: float | None = 30.0,
+    subs_gained: int = 0,
+) -> None:
+    """Insert an `analytics` row."""
+    db.execute(
+        "insert or replace into analytics(output_id, date, views, viewed_pct, avg_pct_viewed, "
+        "avg_view_duration_s, likes, comments, shares, subs_gained) values (?,?,?,?,?,?,?,?,?,?)",
+        (output_id, date, views, viewed_pct, avg_pct_viewed, avg_view_duration_s, 0, 0, 0, subs_gained),
+    )

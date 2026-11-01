@@ -1,0 +1,42 @@
+# Visual treatments (spec §17): zoom, cut length range, colour filter, vignette, grain.
+# zoom.mode: in | out | static | handheld.  rate is the zoom step per frame (in/out), amount the
+# handheld drift in pixels.  cut_range_s applies to Shorts (spec §7.4: 1.5-3 s); long_cut_range_s to masters
+# (5-9 s).  eq values are FFmpeg eq filter arguments; curves is an FFmpeg curves preset; colorbalance is a
+# map of colorbalance filter arguments; vignette is the PI divisor of the angle (higher = weaker); grain is
+# the noise strength (0 = off).
+dark_slowzoom:
+  zoom: {mode: in, rate: 0.0007, max: 1.12}
+  cut_range_s: [1.8, 3.0]
+  long_cut_range_s: [6.0, 9.0]
+  eq: {brightness: -0.06, contrast: 1.12, saturation: 0.72, gamma: 0.95}
+  curves: darker
+  colorbalance: null
+  vignette: 4
+  grain: 10
+handheld_grit:
+  zoom: {mode: handheld, base: 1.07, amount: 14}
+  cut_range_s: [1.5, 2.4]
+  long_cut_range_s: [5.0, 7.5]
+  eq: {brightness: -0.03, contrast: 1.2, saturation: 0.6}
+  curves: increase_contrast
+  colorbalance: null
+  vignette: 5
+  grain: 22
+clean_bright:
+  zoom: {mode: out, rate: 0.0005, max: 1.08}
+  cut_range_s: [2.0, 3.0]
+  long_cut_range_s: [6.0, 9.0]
+  eq: {brightness: 0.02, contrast: 1.05, saturation: 1.1}
+  curves: null
+  colorbalance: null
+  vignette: null
+  grain: 0
+cinematic_teal:
+  zoom: {mode: static}
+  cut_range_s: [2.0, 3.0]
+  long_cut_range_s: [6.5, 9.0]
+  eq: {brightness: -0.02, contrast: 1.1, saturation: 0.95}
+  curves: null
+  colorbalance: {rs: -0.08, gs: 0.03, bs: 0.12, rh: 0.1, bh: -0.08}
+  vignette: 5
+  grain: 6

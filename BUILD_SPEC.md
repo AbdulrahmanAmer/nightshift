@@ -254,7 +254,7 @@ Work packages: **A** installer+launchers · **B** supervisor+tune+opencode · **
 
 **`UNINSTALL.cmd` → `installer\uninstall.ps1`:** removes the scheduled task, desktop shortcuts, `venvs\`, `bin\` and the `NIGHTSHIFT_HOME` user env var; asks separately (default **No**) whether to delete `models\` and whether to delete `outbox\`, `data\`, `imports\`, `cache\`; prints what was kept and where. Idempotent. Also reachable from Dashboard → Settings → Uninstall (opens the console).
 
-**`ns update <zip>`:** verifies the zip's `VERSION` and SHA256 sidecar, extracts to `<app_path>.new\`, copies `.git\`, `config\` and untracked data over, runs `uv sync --locked` per venv, swaps directories (keeping `<app_path>.prev\` for `ns update --rollback`), re-runs `ns verify --quick`, and re-registers shortcuts and the task. When the repo has a git remote, `git pull` is the simpler path and `ns update` says so.
+**`ns update`** (three sources, same safety): `ns update --github [--channel stable|main]` asks the GitHub Releases API for the latest `v*` release (or the tip of `main` when `--channel main`), downloads `nightshift-app-<ver>.zip` + `.sha256` from https://github.com/AbdulrahmanAmer/nightshift/releases, verifies, and applies; `ns update <zip>` applies a file received by other means; `ns update --git` runs `git pull --ff-only` when the install is a clone. Apply = extract to `<app_path>.new\` → copy `.git\`, `config\` and untracked data over → `uv pip install -e` per venv → swap directories keeping `<app_path>.prev\` (`ns update --rollback`) → `ns verify --quick` → re-register shortcuts and the task → show the changelog section for the new version. `ns update --check` only reports current vs latest; the supervisor runs it weekly and posts a notification, never auto-installs. The Dashboard's Settings → Update button calls the same code. The UI (`ns_dashboard/static`) and prompts/presets update this way too, so quality work on them can ship any time without touching the engine or models.
 
 ---
 
@@ -535,10 +535,21 @@ venvs\tts\ venvs\studio\ venvs\supervisor\
 config\runtime.json config\install_state.json config\opencode.json config\channels\<slug>.yaml
 data\studio.db data\backup\studio-YYYYMMDD.db data\jobs\<job_id>\ data\calibration\<slug>\
 cache\clips\<source>\<id>.mp4 cache\clips\index.sqlite cache\search\   imports\analytics\
-outbox\<slug>\<YYYY-MM-DD>\<job_id>\long\  outbox\<slug>\<YYYY-MM-DD>\<job_id>\shorts\
+stories\<story-slug>\ (§23)  outbox\<slug>\<YYYY-MM-DD>\<job_id>\long\  outbox\<slug>\<YYYY-MM-DD>\<job_id>\shorts\
 rejected\<slug>\<YYYY-MM-DD>\<job_id>\ logs\
 ```
 Coding workspace: `%USERPROFILE%\Projects`.
+
+### 15.2a Outbox layout is organized by content, not by job
+```
+outbox\<channel>\
+  stories\<story-title-slug>\full\<story-title>.mp4 + .json + .txt + thumb_1..3.jpg
+  stories\<story-title-slug>\shorts\<story-title> - Short 01.mp4 + .json + .txt
+  series\<series-title-slug>\part-01\full\<series-title> - Part 01.mp4 + …
+  series\<series-title-slug>\part-01\shorts\<series-title> - Part 01 - Short 01.mp4 + …
+  clips\<source-video-name-slug>\clip-01 <clip-title>.mp4 + .json + .txt
+```
+`outputs.path` in SQLite and `metadata.job_id` in each sheet keep traceability; `data\jobs\<job_id>\` keeps the working files. File names are Windows-safe slugs (≤ 80 chars, no reserved characters); collisions get a `-2` suffix. `rejected\` mirrors the same tree. The Dashboard's "Open folder" opens the item's folder in Explorer. Posted items stay where they are; status lives in the database.
 
 ### 15.3 Ports & supervisor API (127.0.0.1)
 llama **8080** · embed **8081** · TTS **8091** · supervisor **8099** · dashboard **8100**.
@@ -720,7 +731,20 @@ Words per part/chapter within budget ±20 % · banned phrases · no opening line
 **Thumbnail templates** (`thumbnails.yaml`): 3 layouts, bundled `Anton` font, ≤ 4 words, high-contrast frame pick by luminance variance.
 **Clip rules:** §7.4.
 
+### 17.1 Formats are data, not code (modularity rule)
+Every output shape is a **format preset** in `ns_studio/presets/formats/<id>.yaml`, loaded at runtime; adding a format never touches Python. A format defines: `canvas {w,h,fps}`, `kind: short|long|square|clip`, `duration {min_s,max_s,buckets?}`, `captions {styles_allowed[], anchor_y_pct, words_on_screen}`, `layout {regions:[{name, x,y,w,h, source: full|facecam|face:n|screen|blur_fill}], seam_captions?}`, `safe_margins {top,bottom}`, `shots {min_s,max_s}`, `encoder {preset}`, `sheet {hashtags_required[], description_rules}`. Shipped presets: `short_9x16`, `long_16x9`, `square_1x1`, and the clip layouts of §19.3 (`clip_gaming_facecam`, `clip_podcast_stacked`, `clip_podcast_single`, `clip_talking_head`, `clip_center_crop`, `clip_screen_plus_cam`). The renderer builds its FFmpeg graph from the regions list generically (`ns_studio/media/layout.py`), so split screens, picture-in-picture and new aspect ratios are new YAML files. Channels list `formats_allowed`; the Library → Formats page lets the owner duplicate and edit presets with a live layout thumbnail and validates them against `contracts/schemas/format.schema.json`.
+
 ---
+
+### 17.2 Captions: presets plus smart placement and emphasis
+- **Style is a preset** (`caption_styles.yaml`, §17) and is chosen per video: by the variation engine for story videos, by the model in `clip_select` for clips (returned next to `layout`), or fixed in a series' `design.yaml`.
+- **Placement avoids what matters on screen**: the caption anchor moves away from detected face and facecam regions and from YouTube's UI safe zones (top 220 px, bottom 320 px on 9:16); stacked podcast layouts put captions on the seam; gaming layouts put them on the gameplay region, never over the facecam.
+- **Emphasis**: one word per caption group is highlighted (the active word by default). For clips and story videos the LLM marks up to one **key word per sentence** (`emphasis` in the visual plan / clip plan) that gets the style's accent colour and a slightly larger size; no emoji, no stickers.
+- **Text source**: story and series videos render the script's exact words; clips render cleaned transcript words (casing and punctuation restored by the model in `clip_select`, optional filler removal `um/uh/like` per channel setting, numbers kept as spoken). Never silently change meaning.
+- **Speakers**: in two-speaker layouts each speaker's captions take a distinct colour from the style's palette; speaker change starts a new group.
+- **Profanity**: per-channel option `captions.mask_profanity` masks letters in captions (audio untouched); default off.
+- **Timing**: groups of 2–4 words, 0.9–2.2 s on screen, never spanning a sentence end; drift limit per §7.7.
+- **Accessibility**: minimum contrast 4.5:1 against the style's backing box or outline; the renderer verifies by sampling the frame behind the caption and switches to the boxed variant when contrast is too low.
 
 ## 18. YouTube safety & growth playbook (enforced by WP-H)
 
@@ -880,20 +904,45 @@ Given transcript segments with timestamps, the kind of video (detected or chosen
 ### 20.1 Shape
 `ns_dashboard` is a FastAPI app on **127.0.0.1:8100** serving a static single-page UI (vanilla HTML/CSS/JS from `ns_dashboard/static/`, no bundler) and a JSON API. It is started by the supervisor as service `dashboard` (not a GPU tenant) and opened by `Nightshift Dashboard.lnk`. No authentication: it binds to localhost only and refuses non-loopback `Host` headers.
 
-### 20.2 Pages
-| Page | Shows | Actions |
-|---|---|---|
-| **Status strip** (every page) | Engine state (`starting` / `idle` / `loading <service>` with elapsed seconds / `ready` / `job running: <stage>`), VRAM owner, next scheduled run | Warm up, Quit Nightshift (confirms; cancels a running job after 30 s grace) |
-| **Overview** | Tonight's schedule per channel, last run summary, Outbox counts (pending / approved / rejected), service states, disk free, incidents | Run now (channel, format), Pause/Resume channel, Stop all |
-| **Review** | Queue of pending outputs (long, short, clip) with thumbnail, duration, title; video player (HTTP range streaming), story text / transcript excerpt, policy notes, disclosure advice, upload sheet copy buttons | Approve, Reject with reason, Mark uploaded (URL), Open folder |
-| **Clipper** | Drop zone (drag and drop or file picker), rights confirmation checkbox, channel and template selectors with template thumbnails, options (max clips, min/max seconds, caption style); job list with progress bar and stage name; finished clips preview grid | Start job, Cancel, Re-run select with different settings |
-| **Channels** | Channel cards; profile editor (every §11 field with validation), voice picker with preview playback, pool editor with distinctness warnings | Add, Edit, Validate, Pause |
-| **Runs & Logs** | Runs table (started, finished, jobs, rejected, timings); live tail of `logs\*.jsonl` filtered by component/level | Download diagnostics bundle |
-| **Learn** | Drop zone for the YouTube Analytics CSV; import result; top/bottom performers per pool; weight changes | Import |
-| **Settings** | Runtime profile and flags (read-only unless unlocked), API keys (masked; set/replace via keyring), schedule time, update from zip | Save, Re-run verify, `ns update` |
+### 20.2 Pages: purpose and functionality
 
+The dashboard follows the owner's loop: things get made overnight → watch → approve → post → learn. Every page has one purpose; its primary action is visible without scrolling at 1366×768. Plain words on primary surfaces, technical detail behind "Advanced".
+
+| Page | Purpose (one sentence) | Functionality |
+|---|---|---|
+| **Queue** (home) | Get finished videos onto YouTube correctly, one at a time. | Tabs Ready / Approved & posted / Rejected. Lands on the first ready video playing. Right side is a **posting checklist in YouTube's upload order**: 1 Approve or Reject (reason) · 2 Open the video file (Outbox folder) · 3 Open YouTube Studio · 4 Title (copy) · 5 Description incl. chapters and hashtags (copy) · 6 Thumbnail (long-form) · 7 Audience answer · 8 Altered-content answer · 9 Tags (copy) · 10 Schedule and Related-video instruction · 11 Paste the YouTube link → Done. Progress per video is remembered. Filmstrip of the other ready items; keys A / R / →. "Why it passed" and the story text under a disclosure. "Ask about this video" opens the Assistant with this item as context. |
+| **Create** | Start new work without waiting for tonight. | Two choices: *A new story video* (channel → Full video + Shorts or One Short → Start) or *Clips from my own video* (drop file → channel + layout format → options → rights → Start). One progress bar per job with plain stage names and step count; cancel; "Review it" when done. Working-now and Earlier lists with plain failure reasons. Story ideas can be picked from the Library's idea bank instead of letting Nightshift invent one. |
+| **Library** | Everything Nightshift knows and can reuse, organized. | Tabs: **Ideas** (the story bank: add ideas by typing or via the Assistant; statuses New / Approved for production / Used / Dropped; Nightshift draws approved ideas first, invents only when the bank is empty; per channel) · **Stories** (every written story with its outputs, critic score, where it was posted; search; "make a Short from this" / "reuse as a series") · **Voices** (presets, designed and cloned voices; play sample; design or clone a new one; VoiceDesign downloads on demand) · **Formats** (video formats and clip layouts as editable presets, §17.1: duplicate, edit, preview thumbnail; which channels may use each) · **Footage** (cached stock clips by keyword, licence, last used; delete). |
+| **Assistant** | Drive Nightshift by talking to it, with safety. | Chat with the local Qwen (through the supervisor's `llama` service; nothing leaves the PC). It can: explain any video, failure or result; add ideas to the bank; start story or clip jobs; pause/resume channels; change schedule; search the Library; draft channel style notes. Every state-changing action appears as a **confirm card** in the chat (what will happen, Yes/No) before it runs; Approve/Reject of videos are never done by the Assistant. Available as a drawer on every page (context = current page/item) and as a full page with history. Offline-safe: when the engine is busy with a nightly run the Assistant says so and queues the request. |
+| **Channels** | Set up and adjust each YouTube channel. | Cards; editor in sections Basics / Voice / Schedule / Content style (pools as chips with plain warnings) / Formats allowed. Pause/Resume. |
+| **Results** | See what works and what Nightshift will change. | Doing well / Not landing lists, plain-English learnings, "what changes next" per pool, drop zone for the YouTube Studio export, unmatched videos with a link to fix them in the Queue. Go/no-go milestone card (§18.12). |
+| **Settings** | Keep the machine running. | Run time, notifications, stock-footage keys (keyring), storage location, **Update** (check GitHub for a new version, one-click install with rollback, §5), diagnostics report, Advanced: engine flags (unlock to edit), recent log with level filter, uninstall. |
+| **Status strip** (every page) | Know what the engine is doing right now. | One pill: Idle / Loading model 9 GB · 12 s / Ready / Working: Rendering (step 6 of 9); next run time; Quit Nightshift (in-page confirm, 30 s grace). |
 ### 20.3 API (all JSON, prefix `/api`)
 `GET /status` · `GET/POST /channels`, `GET/PUT /channels/{slug}`, `POST /channels/{slug}/pause|resume|validate` · `GET /outputs?status=pending&kind=` · `GET /outputs/{id}` · `POST /outputs/{id}/approve|reject|uploaded` · `GET /media/{output_id}` (range streaming of the MP4) · `GET /media/{output_id}/thumb.jpg` · `POST /jobs/run {channel, format}` · `POST /jobs/clip` (multipart upload or `{path}` for a local file; `{channel, template, max_clips, min_s, max_s, rights_confirmed}`) · `GET /jobs`, `GET /jobs/{id}`, `POST /jobs/{id}/cancel` · `GET /runs` · `GET /logs/tail?component=&level=&n=` · `POST /learn/import` (multipart CSV) · `GET /learn/summary` · `GET/PUT /settings` · `POST /settings/keys` · `POST /diagnostics` · `GET /templates` (clip templates with preview PNGs) · `GET /voices`, `POST /voices/preview`.
+
+### 20.3a Assistant: a real operator over the whole system
+
+**Goal:** the owner can run Nightshift by talking to it. The Assistant is a tool-using agent on the local Qwen (`llama` service via the supervisor, OpenAI-compatible tool calling), not a chat box with canned answers.
+
+**Tool registry = the API.** Every `/api/*` route declares a `tool` descriptor next to its handler (`name`, one-line `description`, JSON-schema `args`, `side_effect: bool`, `confirm_text` template). `ns_dashboard/assistant/registry.py` collects them at startup, so any new feature is usable by the Assistant the moment its route exists. Read-only tools (`side_effect=false`) run immediately; side-effect tools return a **confirm card** (what will happen, in the owner's words) and run only after the owner clicks Yes (`POST /api/assistant/confirm {action_id}`). Never registered as tools: approve/reject outputs, keys, uninstall, engine flags, update apply.
+
+**Orientation tools (so it knows where things are fast):**
+- `system_map()` → compact JSON: pages and their purpose (§20.2), folders under `NIGHTSHIFT_HOME` and what lives in each (§21.5), services and ports, channels, formats, error-code ranges, current engine state. Also injected once into the system prompt (≤ 1,500 tokens).
+- `find(query)` → one call that searches outputs, stories, ideas, channels, jobs, logs and docs and returns typed hits with ids and paths.
+- `where_is(thing)` → the absolute path or page for an output, job, channel, model, log or setting.
+- `describe_tool(name)` / `list_tools(topic?)` → the registry itself, grouped by topic (queue, create, library, channels, results, settings, engine, diagnostics).
+- `search_docs(query)` → ranked passages from `BUILD_SPEC.md`, `README.md`, `OPERATOR.md`, `docs/ENGINEERING.md`, `contracts/errors.json` and prompt front-matter (local full-text index built at startup; no embeddings needed, optional `embed` reranking when the service is idle).
+- `explain_error(code)` → message + hint + last log lines carrying that code.
+- `status()` → the same as `/api/status`.
+
+**Operating tools (examples; all derived from routes):** `list_queue`, `get_output`, `open_folder`, `start_story_job`, `start_clip_job`, `cancel_job`, `list_jobs`, `pause_channel`, `resume_channel`, `edit_channel`, `set_schedule`, `add_idea`, `set_idea_status`, `search_library`, `list_formats`, `duplicate_format`, `import_analytics`, `summary_results`, `tail_logs`, `make_diagnostics`, `check_update`, `warmup_engine`, `shutdown_engine`.
+
+**Behaviour contract (`ns_dashboard/prompts/assistant.md`, versioned):** answer in plain English in 1–4 sentences; call `system_map`/`find` before guessing; when asked to do something, do it with tools and report what happened with ids and paths; never claim a result it did not read back; when the engine is busy, say what is running and queue the request; refuse the never-registered actions with the one-line reason and point to the page.
+
+**Everywhere:** drawer on every page (context: current page and selected item ids are passed as `context` and offered as the first tool arguments), full page with history, and `studio ask "<text>"` on the command line for the same loop. Transcripts in `data\assistant.db`. Tests: a fake LLM that emits scripted tool calls proves the loop, confirm gating, and that every route's descriptor validates; a hygiene test fails CI if a new route lacks a descriptor or a `side_effect` flag.
+
+**Library endpoints:** `GET/POST /api/library/ideas`, `PUT /api/library/ideas/{id}` (status), `GET /api/library/stories?q=`, `GET /api/library/footage?q=`, `GET/POST/PUT /api/library/formats`, `GET /api/update/check`, `POST /api/update/apply`. Ideas feed M1 stage `ideas`: approved bank entries for the channel are consumed first (status → Used); invention happens only when none are left.
 
 ### 20.4 Job worker
 A single background thread drains `dashboard_jobs` (FIFO). Job kinds: `run` (studio job via the orchestrator), `clip` (§19 pipeline), `learn`, `verify`. Progress is written per stage to `dashboard_jobs.progress/message`; the UI polls `GET /jobs/{id}` every 2 s. The worker acquires GPU tenants through the supervisor like the nightly task does; if the GPU is busy with a nightly run, the job waits and the UI says so. Cancel sets a flag checked between stages.
@@ -906,6 +955,13 @@ A single background thread drains `dashboard_jobs` (FIFO). Job kinds: `run` (stu
 - Tests: FastAPI test client for every route with a fake job worker; a `--fake-services` clip job through `/api/jobs/clip` with the synthetic fixture.
 
 ---
+
+### 20.6 Visual direction (owner reference: a smart-home "bento" dashboard)
+- **Bento grid with one hero per screen**: on Queue the hero is the video (9:16 or 16:9) with floating chips over it (kind, duration, channel, status); the posting checklist is the tall side card. Create, Library and Results use the same grid of rounded cards, one card per task or object.
+- **Soft two-tone surfaces**: a tinted page background with lighter cards, 24 px radii, generous padding, no hairline tables. Light theme is the reference; the dark theme keeps the same shapes with deep slate surfaces and one warm accent.
+- **Big obvious controls**: pill buttons ≥ 44 px, large toggles for channel on/off and settings, one primary action per card.
+- **Keep labels on the nav**: icon + label in the left rail; icon-only rails are not allowed. Body text stays 16 px; chips 13 px minimum.
+- **Media first**: thumbnails and players get the space; numbers appear as chips on media, not as separate stat tiles.
 
 ## 21. Install sources, dependencies and on-disk layout (what the installer actually pulls)
 
@@ -1050,6 +1106,47 @@ Owner opens the **Nightshift Code** shortcut; it acquires the LLM (status shown 
 Gaps this section closed in the spec: uninstall flow (new `UNINSTALL.cmd`, §5), reject-reason feedback into the critic bar (§18.6 "Quality drop" now also counts owner rejections), Clipper re-run without re-transcribing (§19.2 C4 is re-runnable from `transcript.json`), VoiceDesign on-demand download surfaced in the UI (§20.2 Channels page).
 
 ---
+
+## 23. Series Workshop — develop stories with the Assistant, then produce them automatically
+
+### 23.1 Purpose
+The owner and the Assistant develop a story together before any video exists: concepts → one chosen → part map → full scripts → approval → design → automatic production. Everything lives as plain files the owner can edit by hand.
+
+### 23.2 Folder = source of truth (`<NIGHTSHIFT_HOME>\stories\<story-slug>\`)
+```
+concept.md        premise, characters, setting, tone, why it works, target audience
+series.md         part map: for each part a title, hook, cliff, runtime target (min), status
+design.yaml       format id (§17.1), visual_treatment, caption_style, voice, thumbnail style, publish cadence
+status.yaml       story status: drafting | approved | producing | published ; per-part status and job ids
+parts\part-01\
+  full\script.md  complete script; chapter cliffs marked [BREAK]; sentences numbered in comments for timing
+  shorts\s01.md   one standalone moment per file: its own first line (hook), span reference into script.md, closing line
+  notes.md        critic scores, continuity notes, owner feedback
+parts\part-02\ …
+```
+Nightshift reads these files; it never needs the chat history to produce. Editing `script.md` by hand and re-running production uses the edited text.
+
+### 23.3 Flow (Assistant tools, each a confirm card when it writes files)
+1. `workshop_start(channel, premise?)` creates the folder and `concept.md` skeleton.
+2. `workshop_concepts(n=3)` writes three concept drafts (`concept-A.md` … `concept-C.md`): premise, cast, arc in 5 beats, series potential, risks against §18.3. `workshop_regenerate(letter, feedback)` rewrites one with the owner's notes. `workshop_choose(letter)` promotes it to `concept.md`.
+3. `workshop_map(parts=N, minutes_per_part=12–25)` writes `series.md`: per-part hook, cliff, what is revealed, runtime target; checks that each part can stand alone for a new viewer (one-line recap allowed) and that the series arc pays off.
+4. `workshop_write_part(n)` writes `full\script.md` through the master-first text stages (§7.1 M2–M4 with the part's runtime budget: 20 min ≈ 3,100 words at 155 wpm, 8–12 chapters) plus `shorts\s*.md` through M7/M8 (4–8 standalone moments with fresh hooks). Owner reads, comments in `notes.md` or chat; `workshop_revise_part(n, feedback)` applies notes only.
+5. `workshop_approve(n | all)` sets status; `workshop_design(...)` writes `design.yaml` from the channel's allowed formats with a rendered preview frame per option.
+6. `workshop_produce(n | all)` enqueues one master-first job per approved part using the script files as the story source (new stage `script_import` replaces M1–M4 when `script.md` exists); Shorts come from `shorts\*.md`. Cadence governor spaces parts (default one part per week per series) and the Queue shows them as they finish.
+7. Library → Stories shows every workshop story with its status; `studio series <cmd>` mirrors the tools on the command line.
+
+### 23.4 Rules
+- Parts are 12–25 minutes (per-series setting; default 15). Longer parts are allowed only after the channel's long-form average view duration exceeds 40 %.
+- Shorts under a part are written as standalone moments (own first line, own closing line pointing to the part) and are validated by the `standalone_short` check.
+- The policy text gate runs on `concept.md` at step 2 and on every script at step 4, so unsafe concepts are rejected before any writing time is spent.
+- Series videos carry "Part N of M" in titles and descriptions (§9) and the end card instruction for the next part.
+
+### 23.5 Clipper, revised flow (replaces the fixed rules in §19.2 C4–C5 order)
+1. **Analyze with FFmpeg first**: scene cuts (`select='gt(scene,0.3)'`), loudness peaks and silences (`ebur128`, `silencedetect`), aspect and resolution, plus face/facecam detection (§19.4) sampled at 1 fps. Output `analysis.json`.
+2. **Transcribe** (distil-large-v3, words + segments).
+3. **Let the model choose the split**: `clip_select.md` receives the transcript windows *and* `analysis.json` (faces, facecam, scene density, peaks) and returns candidate moments **with a layout per candidate** (one of the format presets) and a reason. Auto layout is therefore a model decision informed by detection, with the §19.4 rules as the fallback when the model's choice is not applicable (`NS-W402`).
+4. **One clip at a time with a logic judge**: candidates are produced in score order; before rendering each, `clip_judge.md` checks: starts on a complete sentence, ends on a payoff or punchline, understandable without outside context, no cut mid-word (snapped to word timestamps), speech density above the filler threshold, duration in range. Failing candidates are dropped with the reason in `clip_plan.json`; the next is tried, until `max_clips` or candidates run out (`NS-E407` if none).
+5. Render → QC → SEO → Outbox per clip as in §19.2; the Create page shows each clip appearing as it passes.
 
 ## Sources (verified 1 Nov 2026)
 
