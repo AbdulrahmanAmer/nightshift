@@ -31,13 +31,13 @@ class RealishT:
 
     name = "whisper"
 
-    def segments(self, wav: Path) -> list[Any]:
+    def segments(self, wav: Path, language: str = "en") -> list[Any]:
         return [
             SimpleNamespace(start=0.0, end=6.0, text=" Hello there. "),
             SimpleNamespace(start=8.0, end=14.0, text="General Kenobi."),
         ]
 
-    def words(self, wav: Path) -> list[Any]:
+    def words(self, wav: Path, language: str = "en") -> list[Any]:
         out = []
         for k in range(40):
             t = k * 0.35

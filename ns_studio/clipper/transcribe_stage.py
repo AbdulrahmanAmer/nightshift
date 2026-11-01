@@ -69,8 +69,8 @@ def transcribe_with(
     transcriber: Any, wav: Path, *, source_name: str, duration_s: float, language: str = "en"
 ) -> Transcript:
     """Run a Transcriber (`segments(wav)` and `words(wav)`) and assemble a `Transcript`."""
-    raw_segs: Iterable[Any] = transcriber.segments(wav)
-    raw_words: Iterable[Any] = transcriber.words(wav)
+    raw_segs: Iterable[Any] = transcriber.segments(wav, language)
+    raw_words: Iterable[Any] = transcriber.words(wav, language)
     segments = [
         Segment(
             i=i,
