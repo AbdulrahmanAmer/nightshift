@@ -20,8 +20,8 @@ STATUS_ALIASES = {"dropped": "rejected"}  # the UI says "Dropped"; the shared sc
 
 
 def like(q: str) -> str:
-    """`%q%` with LIKE wildcards in `q` escaped (use with `ESCAPE '\'`)."""
-    esc = q.replace("\\", "\\\\").replace("%", "\%").replace("_", "\_")
+    """`%q%` with the LIKE wildcards in `q` escaped with a backslash (use with ESCAPE)."""
+    esc = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
     return f"%{esc}%"
 
 
@@ -68,7 +68,7 @@ class LibraryService:
             where.append("status = ?")
             args.append(status)
         if q:
-            where.append("(premise LIKE ? ESCAPE '\' OR twist LIKE ? ESCAPE '\' OR title LIKE ? ESCAPE '\')")
+            where.append("(premise LIKE ? ESCAPE '\\' OR twist LIKE ? ESCAPE '\\' OR title LIKE ? ESCAPE '\\')")
             args += [like(q)] * 3
         clause = (" WHERE " + " AND ".join(where)) if where else ""
         rows = self.s.db.query(
