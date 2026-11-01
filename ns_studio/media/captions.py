@@ -227,6 +227,7 @@ def build_ass(
     variant: Variant = "vertical",
     fonts_dir: Path | None = None,
     hold_s: float = 0.35,
+    first_at_zero: bool = True,
 ) -> str:
     """Build an ASS document: 2-4 words on screen, the active word in the style's highlight colour.
 
@@ -273,7 +274,7 @@ def build_ass(
         return t.upper() if st.uppercase else t
 
     for gi, g in enumerate(groups):
-        g_start = 0.0 if gi == 0 else g[0].start
+        g_start = 0.0 if (gi == 0 and first_at_zero) else g[0].start
         next_start = groups[gi + 1][0].start if gi + 1 < len(groups) else None
         g_end = g[-1].end + hold_s
         if next_start is not None:
@@ -338,11 +339,16 @@ class CaptionsStage:
 
     name: str = "captions"
     tenant: Tenant = "whisper"
-    inputs: tuple[str, ...] = ("audio/manifest.json",)
+    inputs: tuple[str, ...] = ("audio/manifest.json", "story.json")
     outputs: tuple[str, ...] = ("captions/report.json",)
 
     def run(self, ctx: JobContext) -> None:
         """Transcribe, align and write captions for every part; fail with NS-E403 on drift."""
+        if ctx.fmt == "master_first":
+            from ns_studio.media.master import run_captions_master
+
+            run_captions_master(ctx)
+            return
         parts = ctx.read_json("parts.json")
         manifest = ctx.read_json("audio/manifest.json")
         tr = ctx.services.transcriber

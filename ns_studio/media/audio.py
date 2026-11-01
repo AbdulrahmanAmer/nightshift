@@ -148,3 +148,11 @@ def speech_onset_s(path: Path, *, noise_db: float = -35.0, min_silence_s: float 
         end = sil[0][1]
         return end if end is not None else ff.duration_s(path)
     return 0.0
+
+
+def cut_audio(src: Path, out_wav: Path, start_s: float, end_s: float, *, sr: int = 48000) -> Path:
+    """Cut [start_s, end_s) of `src` into a mono 16-bit WAV at `sr` Hz."""
+    out_wav.parent.mkdir(parents=True, exist_ok=True)
+    ff.run(["-i", str(src), "-ss", f"{start_s:.3f}", "-to", f"{end_s:.3f}", "-ar", str(sr), "-ac", "1",
+            "-c:a", "pcm_s16le", str(out_wav)])
+    return out_wav

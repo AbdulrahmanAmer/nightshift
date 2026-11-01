@@ -241,6 +241,7 @@ def select_for_beat(
     used: set[tuple[str, str]],
     blocked: set[tuple[str, str]],
     wanted: Orientation = "portrait",
+    allow_other: bool = True,
 ) -> list[tuple[ClipCandidate, str]]:
     """Fill a beat's slots; widen the search in steps and finally fall back to the mood (spec §7.4).
 
@@ -254,6 +255,8 @@ def select_for_beat(
     steps: list[tuple[Orientation, list[str]]] = [
         (wanted, kws), (other, kws), (wanted, mood_kws), (other, mood_kws)
     ]
+    if not allow_other:  # landscape edits never use portrait clips
+        steps = [s for s in steps if s[0] == wanted]
     pool: list[tuple[ClipCandidate, str]] = []
     seen: set[tuple[str, str]] = set()
     for orient, step_kws in steps:
@@ -282,10 +285,12 @@ def assign_clips(
     blocked: set[tuple[str, str]],
     seed: int,
     wanted: Orientation = "portrait",
+    used: set[tuple[str, str]] | None = None,
+    allow_other: bool = True,
 ) -> list[Shot]:
     """Choose, download and time-place one clip per slot; clips are never repeated within the video."""
     rng = random.Random(seed)
-    used: set[tuple[str, str]] = set()
+    used = used if used is not None else set()
     shots: list[Shot] = []
     for bi, beat in enumerate(beats):
         beat_slots = [s for s in slots if s.beat == bi]
@@ -293,7 +298,7 @@ def assign_clips(
             continue
         picks = select_for_beat(
             searcher, beat["keywords"], str(beat.get("mood", "")), beat_slots,
-            used=used, blocked=blocked, wanted=wanted,
+            used=used, blocked=blocked, wanted=wanted, allow_other=allow_other,
         )
         for slot, (cand, kw) in zip(beat_slots, picks, strict=True):
             used.add((cand.source, cand.id))
@@ -320,11 +325,16 @@ class ClipsStage:
 
     name: str = "clips"
     tenant: Tenant = None
-    inputs: tuple[str, ...] = ("visual_plan.json", "captions/report.json")
+    inputs: tuple[str, ...] = ("visual_plan.json", "captions/report.json", "story.json")
     outputs: tuple[str, ...] = ("clips/shots.json",)
 
     def run(self, ctx: JobContext) -> None:
-        """Select clips for every part of the job."""
+        """Select clips for every part of the job (landscape clips for the master in master-first jobs)."""
+        if ctx.fmt == "master_first":
+            from ns_studio.media.longform import run_clips_master
+
+            run_clips_master(ctx)
+            return
         parts = ctx.read_json("parts.json")
         plan = ctx.read_json("visual_plan.json")
         treatment = visual_treatment(ctx.combo.visual_treatment)

@@ -393,7 +393,7 @@ class FakeClipSource:
                 download_url=f"fake://{slug}-{tag}-{i}",
                 width=w,
                 height=h,
-                duration=5.0 + (i % 3),
+                duration=10.0 + (i % 3),
                 tags=(*words, "fake"),
                 title=f"fake {keyword} {i}",
                 license="fake",

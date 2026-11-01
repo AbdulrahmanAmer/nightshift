@@ -189,11 +189,14 @@ class OutboxStage:
 
     name: str = "outbox"
     tenant: Tenant = None
-    inputs: tuple[str, ...] = ("qc/report.json", "seo.json")
+    inputs: tuple[str, ...] = ("qc/report.json", "seo.json", "seo_long.json", "seo_shorts.json")
     outputs: tuple[str, ...] = ("outbox/manifest.json",)
 
     def run(self, ctx: JobContext) -> None:
-        """Publish every item listed in `render/report.json`."""
+        """Publish every item listed in `render/report.json` (master and Shorts in master-first jobs)."""
+        if ctx.fmt == "master_first":
+            run_outbox_master(ctx)
+            return
         rendered: dict[str, Any] = ctx.read_json("render/report.json")
         shots_all: dict[str, Any] = ctx.read_json("clips/shots.json")
         seos = [Seo.model_validate(s) for s in ctx.read_json("seo.json")]
@@ -231,3 +234,121 @@ class OutboxStage:
                               "txt": str(mp4.with_suffix(".txt"))}
         ctx.write_json("outbox/manifest.json", manifest)
         ctx.log.info("outbox_done", job_id=ctx.job_id, items=list(manifest))
+
+
+# ---------------------------------------------------------------------------------------------------------
+# Master-first Outbox (M2): long/ + shorts/
+# ---------------------------------------------------------------------------------------------------------
+
+CHAPTERS_PLACEHOLDER = "[[CHAPTERS]]"
+
+
+def seo_from(d: dict[str, Any]) -> Seo:
+    """A `Seo` from a SEO document that may carry extra fields (chapter titles, thumbnail text)."""
+    return Seo(
+        title=str(d["title"])[:100],
+        description=str(d["description"]),
+        tags=list(d["tags"]),
+        hashtags=list(d.get("hashtags", []))[:5],
+        keywords=list(d.get("keywords", [])),
+    )
+
+
+def chapter_list(chapters: Sequence[dict[str, Any]]) -> str:
+    """`MM:SS Title` lines; the first entry is `00:00` (spec §9.1)."""
+    return "\n".join(f"{c['timestamp']} {c['title']}" for c in chapters)
+
+
+def long_description(description: str, chapters: Sequence[dict[str, Any]]) -> str:
+    """Master description (spec §9.1): summary lines, blank, chapter list, then the rest.
+
+    The `[[CHAPTERS]]` placeholder is replaced; without one the list goes after the first paragraph.
+    """
+    block = chapter_list(chapters)
+    if CHAPTERS_PLACEHOLDER in description:
+        return description.replace(CHAPTERS_PLACEHOLDER, block)
+    head, sep, rest = description.partition("\n\n")
+    return f"{head}\n\n{block}" + (f"\n\n{rest}" if sep else "")
+
+
+def short_description(description: str, master_title: str) -> str:
+    """Short description (spec §9.2): adds "From the full story: <master title>" before the fiction line."""
+    line = f"From the full story: {master_title}"
+    if line in description:
+        return description
+    lines = description.rstrip().split("\n")
+    at = next((i for i, ln in enumerate(lines) if ln.strip() == "Original fiction."), len(lines))
+    lines.insert(at, line)
+    return "\n".join(lines)
+
+
+def run_outbox_master(ctx: JobContext) -> None:
+    """Publish the master (`long/`) and its derived Shorts (`shorts/`) with metadata and upload sheets."""
+    advice = load_advice(ctx)
+    date = job_date(ctx.job_id).strftime("%Y-%m-%d")
+    root = ctx.paths.outbox_dir(ctx.channel.slug, date, ctx.job_id)
+    chapters_doc: dict[str, Any] = ctx.read_json("long/chapters.json")
+    chapters = chapters_doc["chapters"]
+    long_info = ctx.read_json("render/long.json")
+    long_shots = [Shot.from_json(s) for s in ctx.read_json("clips/shots.json")["long"]["shots"]]
+    long_seo = seo_from(ctx.read_json("seo_long.json"))
+    long_seo = long_seo.model_copy(update={
+        "description": long_description(long_seo.description, chapters),
+        "hashtags": [h for h in long_seo.hashtags if h.lower() != "#shorts"][:5],
+    })
+    thumbs = [f"thumb_{i}.jpg" for i in (1, 2, 3) if ctx.file(f"long/thumb_{i}.jpg").exists()]
+    manifest: dict[str, Any] = {}
+
+    long_dir = root / "long"
+    meta = build_metadata(
+        channel=ctx.channel, job_id=ctx.job_id, kind="long", k=None, seo=long_seo, advice=advice,
+        shots=long_shots, combo_id=ctx.combo.combo_id, prompt_versions=ctx.prompt_versions,
+        publish_at=publish_after(ctx.channel, ctx.job_id, "long", day_offset=1),
+        extra={
+            "chapters": [{"timestamp": c["timestamp"], "title": c["title"], "start_s": c["start_s"]}
+                         for c in chapters],
+            "midroll_suggestions_s": chapters_doc.get("midroll_suggestions_s", []),
+            "thumbnails": thumbs,
+        },
+    )
+    mp4 = copy_if_changed(Path(long_info["path"]), long_dir / "master.mp4")
+    for t in thumbs:
+        copy_if_changed(ctx.file(f"long/{t}"), long_dir / t)
+    (long_dir / "master.json").write_text(meta.model_dump_json(indent=2) + "\n", encoding="utf-8")
+    write_sheet_txt(meta, mp4.name, long_dir / "master.txt")
+    record_output(ctx, kind="long", k=None, item="long", meta=meta, path=mp4,
+                  duration_s=float(long_info["duration_s"]), shots=long_shots)
+    manifest["long"] = {
+        "mp4": str(mp4), "json": str(long_dir / "master.json"), "txt": str(long_dir / "master.txt"),
+    }
+
+    shorts_dir = root / "shorts"
+    has_report = ctx.file("render/report.json").exists()
+    rendered: dict[str, Any] = ctx.read_json("render/report.json") if has_report else {}
+    shorts_shots: dict[str, Any] = (
+        ctx.read_json("clips/shorts_shots.json") if ctx.file("clips/shorts_shots.json").exists() else {}
+    )
+    seos = ctx.read_json("seo_shorts.json") if ctx.file("seo_shorts.json").exists() else []
+    for item, info in rendered.items():
+        k = int(item[1:])
+        shots = [Shot.from_json(s) for s in shorts_shots[item]["shots"]]
+        base = seo_from(seos[min(k, len(seos)) - 1])
+        seo = base.model_copy(update={"description": short_description(base.description, long_seo.title)})
+        smeta = build_metadata(
+            channel=ctx.channel, job_id=ctx.job_id, kind="short", k=k, seo=seo, advice=advice, shots=shots,
+            combo_id=ctx.combo.combo_id, prompt_versions=ctx.prompt_versions,
+            publish_at=publish_after(
+                ctx.channel, ctx.job_id, item, day_offset=1 + short_day_offset(ctx.channel, k)
+            ),
+            extra={"related_video_instruction": f"Set Related video -> {long_seo.title}",
+                   "parent_job_id": ctx.job_id},
+        )
+        smp4 = copy_if_changed(Path(info["path"]), shorts_dir / f"{item}.mp4")
+        (shorts_dir / f"{item}.json").write_text(smeta.model_dump_json(indent=2) + "\n", encoding="utf-8")
+        write_sheet_txt(smeta, smp4.name, shorts_dir / f"{item}.txt", related_title=long_seo.title)
+        record_output(ctx, kind="short", k=k, item=item, meta=smeta, path=smp4,
+                      duration_s=float(info["duration_s"]), shots=shots)
+        manifest[item] = {"mp4": str(smp4), "json": str(smp4.with_suffix(".json")),
+                          "txt": str(smp4.with_suffix(".txt"))}
+    ctx.write_json("outbox/manifest.json", manifest)
+    ctx.log.info("outbox_done", job_id=ctx.job_id, items=list(manifest))

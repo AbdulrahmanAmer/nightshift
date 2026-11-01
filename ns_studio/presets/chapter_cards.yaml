@@ -1,0 +1,26 @@
+# Chapter title cards (spec §17): 3 styles, at most 1.5 s, no sound. Shown between chapters of the master.
+# Colours are #RRGGBB. `show_number` adds a small "CHAPTER n" line above the title.
+midnight:
+  background: "#2A3350"
+  text: "#F2F2F2"
+  accent: "#8FA8FF"
+  font_size: 84
+  number_size: 34
+  show_number: true
+  fade_ms: 250
+ember:
+  background: "#4A2A1E"
+  text: "#FFE9D6"
+  accent: "#FF7A3D"
+  font_size: 90
+  number_size: 32
+  show_number: true
+  fade_ms: 200
+slate:
+  background: "#3A4650"
+  text: "#FFFFFF"
+  accent: "#9AA7B1"
+  font_size: 80
+  number_size: 30
+  show_number: false
+  fade_ms: 300
