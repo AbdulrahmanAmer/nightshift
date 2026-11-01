@@ -501,16 +501,17 @@ class ReferenceEngine:
         """Move the tensor fields of each prompt item to the GPU (items are dataclasses)."""
         if self.device == "cpu" or not isinstance(items, list):
             return items
-        moved = []
+        moved: list[Any] = []
         for item in items:
-            if dataclasses.is_dataclass(item):
+            current: Any = item
+            if dataclasses.is_dataclass(current) and not isinstance(current, type):
                 changes = {
-                    f.name: getattr(item, f.name).to("cuda:0")
-                    for f in dataclasses.fields(item)
-                    if torch.is_tensor(getattr(item, f.name))
+                    f.name: getattr(current, f.name).to("cuda:0")
+                    for f in dataclasses.fields(current)
+                    if torch.is_tensor(getattr(current, f.name))
                 }
-                item = dataclasses.replace(item, **changes)
-            moved.append(item)
+                current = dataclasses.replace(current, **changes)  # type: ignore[type-var]
+            moved.append(current)
         return moved
 
     # ---- engine API ----
