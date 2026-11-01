@@ -44,7 +44,10 @@ class LlmClient:
             "chat_template_kwargs": {"enable_thinking": thinking},
         }
         if schema is not None:
-            body["response_format"] = {"type": "json_schema", "json_schema": {"name": "out", "schema": schema}}
+            body["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {"name": "out", "schema": schema},
+            }
         try:
             r = self.client.post(f"{self.base_url}/v1/chat/completions", json=body)
             r.raise_for_status()
@@ -69,7 +72,7 @@ class LlmClient:
             {"role": "assistant", "content": raw},
             {
                 "role": "user",
-                "content": "Repair: your previous answer was not valid JSON. Reply with only the JSON object.",
+                "content": "Repair: your previous answer was not valid JSON. Reply with only the JSON.",
             },
         ]
         raw2 = self._chat(messages, thinking=False, temperature=0.2, max_tokens=max_tokens, schema=schema)
