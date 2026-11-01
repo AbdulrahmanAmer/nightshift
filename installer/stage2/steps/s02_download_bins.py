@@ -35,6 +35,8 @@ def choose_pair(ctx: StepContext) -> str | None:
 
 def probe_release(ctx: StepContext, url: str) -> bool:
     """HEAD the qwentts release asset. True on a 2xx answer (redirects followed); False on 404/unreachable."""
+    if ctx.simulate and not ctx.head_checks:
+        return False                      # pure simulation never touches the network
     client = ctx.http_factory()
     try:
         return client.head(url).status_code < 400
