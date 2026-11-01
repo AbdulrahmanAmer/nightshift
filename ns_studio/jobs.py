@@ -27,7 +27,7 @@ STAGE_MODULES: tuple[str, ...] = (
     "ns_studio.media.stages_media",
 )
 KEYRING_SERVICE = "Nightshift"
-# The fake LLM serves fixtures written for a 50 s Short at the "standard" pace (155 wpm); validators stay real.
+# Fixtures served by the fake LLM are written for a 50 s Short at the "standard" pace; validators stay real.
 FAKE_LLM_COMBO: dict[str, str] = {"length_bucket": "50", "pacing": "standard"}
 Fmt = Literal["master_first", "shorts_only", "series_compilation"]
 FORMATS: tuple[str, ...] = ("master_first", "shorts_only", "series_compilation")
