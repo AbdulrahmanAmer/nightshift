@@ -321,3 +321,25 @@ def test_missing_clip_file_never_fails_the_contrast_check(tmp_path: Path) -> Non
         ass_path=ass,
     )
     assert got == [] and ass.read_text(encoding="utf-8") == "x"
+
+
+# ---------- master captions ----------
+@needs_ffmpeg
+def test_master_captions_use_chapter_emphasis_and_keep_landscape_geometry(tmp_home: Path) -> None:
+    from ns_studio.media.master import run_captions_master, run_voice_master
+    from tests.test_master import write_shorts_plan, write_story
+
+    ctx = make_ctx(tmp_home, fmt="master_first")
+    write_story(ctx)
+    write_shorts_plan(ctx)
+    ctx.write_json("visual_plan.json", [
+        {"chapter": 2, "beat": 0, "sentence_start": 0, "sentence_end": 0, "keywords": ["x"], "mood": "m",
+         "emphasis": {"0": "wab"}},
+    ])
+    run_voice_master(ctx)
+    run_captions_master(ctx)
+    ch1 = ctx.file("captions/long_c1.ass").read_text(encoding="utf-8")
+    ch2 = ctx.file("captions/long_c2.ass").read_text(encoding="utf-8")
+    assert "fscx115" in ch2 and "fscx115" not in ch1
+    assert "PlayResX: 1920" in ch2
+    assert "fscx115" not in ctx.file("captions/long.ass").read_text(encoding="utf-8")
