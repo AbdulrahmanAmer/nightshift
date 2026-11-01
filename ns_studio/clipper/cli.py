@@ -18,6 +18,7 @@ from ns_common.config import load_channel
 from ns_common.errors import NsError
 from ns_common.paths import Paths
 from ns_studio.clipper.models import TEMPLATE_NAMES, ClipParams
+from ns_studio.clipper.source import is_url
 from ns_studio.clipper.stages_clip import create_clip_job, resume_clip_job
 from ns_studio.context import FAKEABLE
 from ns_studio.orchestrator import run_job
@@ -64,7 +65,9 @@ def guarded() -> Iterator[None]:
 
 @app.callback(invoke_without_command=True)
 def clip(
-    video: Annotated[Path | None, typer.Argument(help="The video file to clip (you must own it).")] = None,
+    video: Annotated[
+        str | None, typer.Argument(help="Video file or http(s) link to clip (you must own it).")
+    ] = None,
     channel: Annotated[str, typer.Option("--channel", help="Channel slug the clips belong to.")] = "",
     template: Annotated[
         str | None, typer.Option("--template", help="auto or " + ", ".join(TEMPLATE_NAMES))
@@ -96,7 +99,7 @@ def clip(
             raise typer.Exit(1)
         ch = load_channel(paths, channel)
         params = ClipParams(
-            source=str(video.resolve()),
+            source=video.strip() if is_url(video) else str(Path(video).resolve()),
             channel=channel,
             template=template or "auto",
             max_clips=max_clips or 6,

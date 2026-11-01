@@ -6,6 +6,7 @@ Every stage is idempotent through the C7 stage runner (inputs hash + outputs exi
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -126,8 +127,22 @@ def create_clip_job(
 
 
 # ---------- C1 import ----------
+def _same_origin(prev: Any, source_ref: str) -> bool:
+    """True when `source.json` was written for `source_ref` (same URL, or same local path)."""
+    origin = prev.get("origin")
+    if not origin:
+        return False
+    if source.is_url(source_ref):
+        return bool(origin == source_ref)
+    return Path(str(origin)) == Path(source_ref)
+
+
 class ImportStage:
-    """Copy the video into `imports/clipper/<source_id>/`, probe it, hash it, record the `sources` row."""
+    """Copy the video (or download it from a URL), probe, hash, record the `sources` row.
+
+    A URL source runs the pinned yt-dlp into `imports/clipper/_downloads/<id>/`, then goes through the same
+    import; the video title becomes `sources.title` and the display name of the source.
+    """
 
     name: str = "clip_import"
     tenant: Tenant = None
@@ -135,24 +150,50 @@ class ImportStage:
     outputs: tuple[str, ...] = ("source.json",)
 
     def run(self, ctx: JobContext) -> None:
-        """Import the source (NS-E405 for unsupported files or unconfirmed rights)."""
+        """Import the source (NS-E405 for unsupported files or unconfirmed rights, NS-E409 for downloads)."""
         p = _params(ctx)
         if not p.rights_confirmed:
             raise NsError("NS-E405", "the owner has not confirmed rights to this video")
         existing = ctx.file("source.json")
         if existing.exists():
             prev = json.loads(existing.read_text(encoding="utf-8"))
-            if prev.get("original_name") == Path(p.source).name and Path(prev["path"]).exists():
+            if _same_origin(prev, p.source) and Path(prev["path"]).exists():
                 return  # re-run with new options: keep source.json byte-identical so nothing re-transcribes
+        title: str | None = None
+        dl_dir: Path | None = None
+        if source.is_url(p.source):
+            dl_dir = ctx.paths.home / "imports" / "clipper" / "_downloads" / f"dl-{_short_hash(p.source)}"
+            last = {"bucket": -1}
+
+            def progress(pct: float) -> None:
+                bucket = int(pct // 10)
+                if bucket != last["bucket"]:
+                    last["bucket"] = bucket
+                    ctx.log.info("download_progress", job_id=ctx.job_id, percent=round(pct, 1))
+
+            video = source.import_url(p.source, dl_dir, progress)
+            title = source.read_download_title(dl_dir)
+        else:
+            video = Path(p.source)
         info = source.import_source(
             ctx.paths,
             ctx.db,
-            Path(p.source),
+            video,
             channel=ctx.channel.slug,
             rights_confirmed=True,
             template=p.template,
+            link=dl_dir is not None,
+            title=title,
+            original_name=f"{title}{video.suffix}" if title else None,
+            origin=p.source,
         )
+        if dl_dir is not None:
+            shutil.rmtree(dl_dir, ignore_errors=True)
         ctx.write_json("source.json", asdict(info))
+
+
+def _short_hash(text: str) -> str:
+    return hashlib.sha1(text.encode("utf-8"), usedforsecurity=False).hexdigest()[:10]
 
 
 # ---------- C2 audio ----------
