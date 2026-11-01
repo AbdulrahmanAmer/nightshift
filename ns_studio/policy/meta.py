@@ -70,7 +70,7 @@ def collect_items(ctx: JobContext) -> list[MetaItem]:
     plan_hooks = {}
     for i, mom in enumerate(_as_list(_read(ctx, "shorts_plan.json"), "shorts"), 1):
         if isinstance(mom, dict):
-            plan_hooks[i] = str(mom.get("hook", ""))
+            plan_hooks[i] = str(mom.get("chosen_hook") or mom.get("hook", ""))
     for i, seo in enumerate(short_seos, 1):
         hook = ""
         if i - 1 < len(parts) and isinstance(parts[i - 1], dict):
@@ -93,14 +93,28 @@ def story_text(ctx: JobContext) -> str:
     return "\n\n".join(str(p.get("text", "")) for p in parts if isinstance(p, dict))
 
 
+def _span(ctx: JobContext, mom: dict[str, Any]) -> str:
+    """Sentence-span text of a master moment (`chapter`, `sentence_start`, `sentence_end`)."""
+    story = _read(ctx, "story.json")
+    if not isinstance(story, dict) or "chapter" not in mom:
+        return ""
+    for ch in story.get("chapters", []):
+        if isinstance(ch, dict) and ch.get("n") == mom["chapter"]:
+            sentences = ch.get("sentences", [])
+            lo, hi = int(mom.get("sentence_start", 0)), int(mom.get("sentence_end", 0))
+            return " ".join(str(s.get("text", "")) for s in sentences[lo : hi + 1] if isinstance(s, dict))
+    return ""
+
+
 def short_moments(ctx: JobContext) -> list[dict[str, Any]]:
     """Selected Short moments (`shorts_plan.json`) as `{k, text, hook}` dicts."""
     out: list[dict[str, Any]] = []
     for i, mom in enumerate(_as_list(_read(ctx, "shorts_plan.json"), "shorts"), 1):
         if not isinstance(mom, dict):
             continue
-        text = mom.get("text") or " ".join(str(s) for s in mom.get("sentences", []))
-        out.append({"k": mom.get("k", i), "text": str(text), "hook": str(mom.get("hook", ""))})
+        text = mom.get("text") or " ".join(str(s) for s in mom.get("sentences", [])) or _span(ctx, mom)
+        hook = str(mom.get("chosen_hook") or mom.get("hook", ""))
+        out.append({"k": mom.get("k", i), "text": str(text), "hook": hook})
     return out
 
 

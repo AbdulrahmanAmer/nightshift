@@ -16,7 +16,16 @@ from ns_studio.stages import Tenant, register
 
 TEXT_STAGE = "policy_text"
 FINAL_STAGE = "policy_final"
-_TEXT_AFTER = ("visual_plan", "shorts_plan", "seo_shorts", "seo", "split")
+_TEXT_AFTER = (
+    "visual_plan",
+    "visual_plan_long",
+    "shorts_plan",
+    "shorts_select",
+    "short_combos",
+    "seo_shorts",
+    "seo",
+    "split",
+)
 _TEXT_BEFORE = ("voice",)
 _FINAL_BEFORE = ("outbox",)
 _FINAL_AFTER = ("qc",)
@@ -90,11 +99,12 @@ def available() -> bool:
 
 
 def _insert_after(names: list[str], new: str, anchors: Sequence[str]) -> bool:
-    for a in anchors:
-        if a in names:
-            names.insert(max(i for i, n in enumerate(names) if n == a) + 1, new)
-            return True
-    return False
+    """Insert `new` after the last stage of the plan that is one of `anchors`."""
+    positions = [i for i, n in enumerate(names) if n in anchors]
+    if not positions:
+        return False
+    names.insert(max(positions) + 1, new)
+    return True
 
 
 def _insert_before(names: list[str], new: str, anchors: Sequence[str]) -> bool:

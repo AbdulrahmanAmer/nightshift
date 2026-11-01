@@ -1,3 +1,4 @@
+import json
 import re
 from pathlib import Path
 
@@ -5,6 +6,7 @@ import pytest
 import yaml
 from typer.testing import CliRunner
 
+from ns_common import ffmpeg
 from ns_common.config import save_runtime
 from ns_common.db import Db
 from ns_common.models import Runtime
@@ -200,3 +202,31 @@ def test_voice_list_and_preview_with_fakes(tmp_home: Path):
     res = runner.invoke(app, ["voice", "preview", "Ryan", "--fake-services", "--out", str(out)])
     assert res.exit_code == 0, res.output
     assert out.exists() and out.stat().st_size > 1000
+
+
+def test_master_first_plan_includes_short_combos_and_gates(tmp_home: Path, monkeypatch: pytest.MonkeyPatch):
+    jobs.load_stage_modules()
+    monkeypatch.setitem(FORMAT_STAGES, "master_first", list(FORMAT_STAGES["master_first"]))
+    monkeypatch.setattr(jobs, "STAGE_MODULES", ())
+    res = runner.invoke(app, ["run", "--dry-run", "--format", "master_first", "--policy"])
+    assert res.exit_code == 0, res.output
+    plan = res.output.split("plan:")[1].split("->")
+    names = [p.strip() for p in plan]
+    assert names.index("short_combos") == names.index("shorts_select") + 1
+    assert names.index("policy_text") > names.index("seo_shorts")
+    assert "policy_final" in names
+
+
+@pytest.mark.skipif(not ffmpeg.available(), reason="ffmpeg not installed")
+def test_full_fake_shorts_pipeline_with_policy_gates(tmp_home: Path, monkeypatch: pytest.MonkeyPatch):
+    jobs.load_stage_modules()
+    monkeypatch.setitem(FORMAT_STAGES, "shorts_only", list(FORMAT_STAGES["shorts_only"]))
+    monkeypatch.setattr(jobs, "STAGE_MODULES", ())
+    res = runner.invoke(app, ["run", "--fake-services", "--format", "shorts_only", "--policy"])
+    assert res.exit_code == 0, res.output
+    paths = Paths.from_env()
+    job_dir = next(paths.jobs_dir.iterdir())
+    for name in ("policy_text.json", "policy_final.json"):
+        data = json.loads((job_dir / name).read_text(encoding="utf-8"))
+        assert data["passed"] is True, data
+    assert list(paths.outbox.rglob("*.mp4"))

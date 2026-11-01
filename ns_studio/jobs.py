@@ -21,7 +21,11 @@ from ns_studio.errors import StudioError
 from ns_studio.variation.draw import draw_combo, record_combo
 
 # Imported lazily by `load_stage_modules`; each registers its stages and appends them to FORMAT_STAGES.
-STAGE_MODULES: tuple[str, ...] = ("ns_studio.text.stages_shorts", "ns_studio.media.stages_media")
+STAGE_MODULES: tuple[str, ...] = (
+    "ns_studio.text.stages_shorts",
+    "ns_studio.text.stages_master",
+    "ns_studio.media.stages_media",
+)
 KEYRING_SERVICE = "Nightshift"
 Fmt = Literal["master_first", "shorts_only", "series_compilation"]
 FORMATS: tuple[str, ...] = ("master_first", "shorts_only", "series_compilation")
@@ -205,13 +209,16 @@ def load_job(env: Env, job_id: str) -> JobContext:
     )
 
 
-def prepare_policy(fmt: str, policy: bool | None) -> bool:
-    """Insert the policy gate stages into the plan of `fmt`.
+def prepare_plan(fmt: str, policy: bool | None) -> bool:
+    """Add the per-Short combo stage (master-first) and the policy gates to the plan of `fmt`.
 
     `policy=None` means automatic: on when C5's `policy_check` prompt exists. Returns whether the gates
     are part of the plan.
     """
     from ns_studio.policy import gate
+    from ns_studio.variation.stages import install_short_combos
+
+    install_short_combos(fmt)
 
     enabled = gate.available() if policy is None else policy
     if enabled:

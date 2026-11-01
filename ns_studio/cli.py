@@ -101,7 +101,7 @@ def run_cmd(
     with guarded():
         jobs.load_stage_modules()
         if dry_run and resume is None and not daily:
-            jobs.prepare_policy(fmt or "shorts_only", policy)
+            jobs.prepare_plan(fmt or "shorts_only", policy)
             names = [s.name for s in plan_job(fmt or "shorts_only")]
             typer.echo("plan: " + " -> ".join(names))
             return
@@ -111,7 +111,7 @@ def run_cmd(
             return
         if resume is not None:
             ctx = jobs.load_job(env, resume)
-            jobs.prepare_policy(ctx.fmt, policy)
+            jobs.prepare_plan(ctx.fmt, policy)
             if dry_run:
                 typer.echo("plan: " + " -> ".join(run_job(ctx, dry_run=True)))
                 return
@@ -121,7 +121,7 @@ def run_cmd(
         rng = random.Random()
         for ch in jobs.resolve_channels(env, channel):
             job_fmt = fmt or ch.format
-            jobs.prepare_policy(job_fmt, policy)
+            jobs.prepare_plan(job_fmt, policy)
             for _ in range(count):
                 ctx = jobs.make_job(env, ch, job_fmt, rng=rng)
                 ran = run_job_guarded(ctx)
@@ -133,7 +133,7 @@ def _daily(env: jobs.Env, dry_run: bool, policy: bool | None) -> None:
     now = datetime.now(UTC)
     for f in jobs.FORMATS:
         if FORMAT_STAGES.get(f):
-            jobs.prepare_policy(f, policy)
+            jobs.prepare_plan(f, policy)
     if dry_run:
         due = cadence.plan_daily(env.paths, env.db, now)
         if not due:

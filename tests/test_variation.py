@@ -168,3 +168,51 @@ def test_record_combo_roundtrip_and_unique_ids(tmp_home: Path):
 def test_ledger_window_formula():
     assert draw.ledger_window(Pools(hooks=["a", "b", "c"], structures=["x", "y", "z"])) == 8
     assert draw.ledger_window(Pools()) == 10
+
+
+# ---------------------------------------------------------------- per-Short combos (master-first)
+def _plan(ctx):
+    items = [
+        {"k": 1, "length_bucket": 50, "combo_id": ctx.combo.combo_id, "chosen_hook": "h1"},
+        {"k": 2, "length_bucket": 35, "combo_id": ctx.combo.combo_id, "chosen_hook": "h2"},
+    ]
+    ctx.write_json("shorts_plan.json", items)
+
+
+def test_short_combos_stage_assigns_own_combos(tmp_home: Path):
+    from ns_studio.stages import run_stage
+    from ns_studio.variation.stages import ShortCombosStage
+    from tests.helpers import make_ctx
+
+    ctx = make_ctx(tmp_home, fmt="master_first")
+    _plan(ctx)
+    stage = ShortCombosStage()
+    assert run_stage(ctx, stage) is True
+    combos = ctx.read_json("short_combos.json")
+    assert set(combos) == {"1", "2"}
+    for k, bucket in (("1", 50), ("2", 35)):
+        c = combos[k]
+        assert (c["structure"], c["pov_tone"], c["pacing"]) == (
+            ctx.combo.structure, ctx.combo.pov_tone, ctx.combo.pacing,
+        )
+        assert c["length_bucket"] == bucket and c["combo_id"] != ctx.combo.combo_id
+    plan = ctx.read_json("shorts_plan.json")
+    assert [p["combo_id"] for p in plan] == [combos["1"]["combo_id"], combos["2"]["combo_id"]]
+    rows = ctx.db.query("select item from combos where job_id=? order by item", (ctx.job_id,))
+    assert [r["item"] for r in rows] == ["s1", "s2"]
+    assert run_stage(ctx, stage) in (True, False)  # the plan file changed, so it may rerun ...
+    n_rows = len(ctx.db.query("select * from combos where job_id=?", (ctx.job_id,)))
+    assert n_rows == 2  # ... without redrawing
+    assert ctx.read_json("short_combos.json") == combos
+
+
+def test_install_short_combos_places_stage_after_shorts_select(monkeypatch):
+    from ns_studio import orchestrator as orch
+    from ns_studio.variation.stages import install_short_combos
+
+    monkeypatch.setitem(orch.FORMAT_STAGES, "mf", ["seo_long", "shorts_select", "visual_plan_long"])
+    assert install_short_combos("mf") is True
+    assert orch.FORMAT_STAGES["mf"] == ["seo_long", "shorts_select", "short_combos", "visual_plan_long"]
+    assert install_short_combos("mf") is False
+    monkeypatch.setitem(orch.FORMAT_STAGES, "so", ["ideas"])
+    assert install_short_combos("so") is False

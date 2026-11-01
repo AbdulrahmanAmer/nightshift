@@ -194,3 +194,50 @@ def test_invalidate_from_drops_later_stage_state(tmp_home: Path):
     st.save(ctx.job_dir)
     regen.invalidate_from(ctx, ["a", "b", "c"], "b")
     assert set(StageState.load(ctx.job_dir).entries) == {"a"}
+
+
+# ---------------------------------------------------------------- default judge (C5 policy_check)
+def _llm(answers):
+    from ns_common.llm_client import FakeLlm
+    from ns_studio.context import FIXTURES_LLM
+
+    return FakeLlm(FIXTURES_LLM, overrides={"policy_check": answers})
+
+
+def _pc(**kw):
+    base = {
+        "unsafe_categories": [], "hook_honest": True, "title_honest": True, "standalone": None, "notes": "",
+    }
+    return base | kw
+
+
+def test_default_judge_unsafe_topics(tmp_home: Path):
+    ctx = make_ctx(tmp_home)
+    ctx.services.llm = _llm(_pc(unsafe_categories=["minors"], notes="child in danger"))
+    ans = judge.default_judge(ctx, "unsafe_topics", story="A story.")
+    assert judge.verdict_failed(ans) and ans["flags"][0]["category"] == "minors"
+    ctx.services.llm = _llm(_pc())
+    assert not judge.verdict_failed(judge.default_judge(ctx, "unsafe_topics", story="A story."))
+
+
+def test_default_judge_hook_title_and_standalone_per_item(tmp_home: Path):
+    ctx = make_ctx(tmp_home)
+    items = [{"item": "s1", "title": "T1", "hook": "H1"}, {"item": "s2", "title": "T2", "hook": ""}]
+    ctx.services.llm = _llm([_pc(hook_honest=False, notes="bait"), _pc()])
+    ans = judge.default_judge(ctx, "hook_title_honesty", story="S", items=items)
+    assert ans["failed_items"] == ["s1"] and "bait" in ans["reason"]
+    moments = [{"k": 1, "text": "m1", "hook": ""}, {"k": 2, "text": "m2", "hook": ""}]
+    ctx.services.llm = _llm([_pc(standalone=True), _pc(standalone=False, notes="needs context")])
+    ans2 = judge.default_judge(ctx, "standalone_short", story="S", moments=moments)
+    assert ans2["failed_items"] == ["2"]
+    assert not judge.verdict_failed(judge.default_judge(ctx, "tag_relevance", story="S", items=[]))
+    with pytest.raises(ValueError):
+        judge.default_judge(ctx, "bogus", story="S")
+
+
+def test_default_judge_passes_with_shipped_fixture(tmp_home: Path):
+    from ns_studio.policy.text_checks import UnsafeTopics
+
+    ctx = make_ctx(tmp_home)
+    ctx.write_json("story.json", {"text": "A quiet house at night."})
+    assert UnsafeTopics().run(ctx).passed

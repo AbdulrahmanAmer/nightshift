@@ -94,23 +94,25 @@ def reject_artifacts(ctx: JobContext, err: NsError, attempt: int) -> Path:
 
 def run_job_guarded(ctx: JobContext, *, resume: bool = True) -> list[str]:
     """`run_job` with regenerate-once handling of NS-E601 to NS-E614 policy failures."""
-    try:
-        return run_job(ctx, resume=resume)
-    except NsError as e:
-        if e.code not in POLICY_CODES:
-            raise
-        att = _attempts(ctx)
-        n = int(att["regenerations"])
-        dest = reject_artifacts(ctx, e, n + 1)
-        att["history"].append({"code": e.code, "detail": e.detail, "rejected_to": str(dest)})
-        if n >= MAX_REGENERATIONS:
+    first = True
+    while True:
+        try:
+            return run_job(ctx, resume=resume if first else True)
+        except NsError as e:
+            if e.code not in POLICY_CODES:
+                raise
+            att = _attempts(ctx)
+            n = int(att["regenerations"])
+            dest = reject_artifacts(ctx, e, n + 1)
+            att["history"].append({"code": e.code, "detail": e.detail, "rejected_to": str(dest)})
+            if n >= MAX_REGENERATIONS:
+                ctx.write_json(ATTEMPTS_FILE, att)
+                ctx.log.error("policy_fail_final", code=e.code, job_id=ctx.job_id, detail=e.detail)
+                raise
+            att["regenerations"] = n + 1
             ctx.write_json(ATTEMPTS_FILE, att)
-            ctx.log.error("policy_fail_final", code=e.code, job_id=ctx.job_id, detail=e.detail)
-            raise
-        att["regenerations"] = n + 1
-        ctx.write_json(ATTEMPTS_FILE, att)
-        names = [s.name for s in plan_job(ctx.fmt)]
-        start = earliest_stage(e.code, names)
-        ctx.log.warn("policy_regenerate", code=e.code, restart_at=start, job_id=ctx.job_id)
-        invalidate_from(ctx, names, start)
-    return run_job(ctx, resume=True)
+            names = [s.name for s in plan_job(ctx.fmt)]
+            start = earliest_stage(e.code, names)
+            ctx.log.warn("policy_regenerate", code=e.code, restart_at=start, job_id=ctx.job_id)
+            invalidate_from(ctx, names, start)
+            first = False
