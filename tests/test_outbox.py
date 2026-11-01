@@ -14,7 +14,7 @@ from ns_studio.media.outbox import (
     outbox_target,
     publish_after,
     rejected_path,
-    safe_filename,
+
     safe_slug,
     sheet_text,
     short_day_offset,
@@ -126,7 +126,7 @@ def _prepare(ctx, tmp_path: Path) -> Path:
     return video
 
 
-STORY_DIR = "scary-story-the-doorbell-camera"
+STORY_DIR = "Scary Story The Doorbell Camera"
 SHORT_NAME = "Scary Story The Doorbell Camera - Short 01"
 
 
@@ -183,17 +183,16 @@ def test_outbox_uses_policy_advice_when_present(tmp_home: Path, tmp_path: Path):
 # ---- spec 15.2a path shapes ------------------------------------------------------------------------
 
 
-def test_safe_slug_and_filename_are_windows_safe():
-    assert safe_slug("Scary Story: The Doorbell Camera!") == "scary-story-the-doorbell-camera"
-    assert safe_slug("Café déjà vu") == "cafe-deja-vu"
-    assert safe_slug("   ") == "untitled" and safe_slug("???") == "untitled"
-    assert safe_slug("CON") == "con-x" and safe_slug("com1") == "com1-x"
+def test_safe_slug_is_windows_safe():
+    assert safe_slug("Scary Story: The Doorbell Camera") == "Scary Story The Doorbell Camera"
+    assert safe_slug('A: "Title"/with|bad?*<>') == "A Title with bad"
+    assert safe_slug("   ") == "" and safe_slug("???") == ""
+    assert safe_slug("CON") == "CON_" and safe_slug("com1") == "com1_"
+    assert safe_slug("Trailing dots...  ") == "Trailing dots"
+    assert len(safe_slug("x" * 200)) == 80
     long = safe_slug("word " * 40)
-    assert len(long) <= 80 and not long.endswith("-")
-    assert safe_filename('A: "Title"/with\\bad|chars?*<>') == "A Titlewithbadchars"
-    assert safe_filename("Trailing dots...  ") == "Trailing dots"
-    assert safe_filename("nul") == "_nul" and safe_filename("") == "untitled"
-    assert len(safe_filename("x" * 200)) == 80
+    assert len(long) <= 80 and not long.endswith(" ")
+    assert safe_slug("tab\tand\nnewline") == "tab and newline"
 
 
 def test_outbox_target_story_shapes_and_collision_suffix(tmp_home: Path):
@@ -218,12 +217,12 @@ def test_outbox_target_prefers_master_title_and_series_layout(tmp_home: Path):
     ctx = make_ctx(tmp_home, fmt="master_first")
     ctx.write_json("seo_long.json", {"title": "The Long Night"})
     ctx.write_json("seo.json", [SEO])
-    assert outbox_target(ctx, "long").parent.parent.name == "the-long-night"
+    assert outbox_target(ctx, "long").parent.parent.name == "The Long Night"
     s = make_ctx(tmp_home, fmt="master_first")
     s.write_json(
         "series_context.json", {"series_slug": "Night Bus", "part_n": 3, "series_title": "The Night Bus"}
     )
-    root = s.paths.outbox / "after-dark" / "series" / "night-bus" / "part-03"
+    root = s.paths.outbox / "after-dark" / "series" / "Night Bus" / "part-03"
     assert outbox_target(s, "long") == root / "full" / "The Night Bus - Part 03.mp4"
     assert outbox_target(s, "short", 1) == root / "shorts" / "The Night Bus - Part 03 - Short 01.mp4"
 

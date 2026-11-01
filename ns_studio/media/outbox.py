@@ -5,7 +5,6 @@ from __future__ import annotations
 import random
 import re
 import shutil
-import unicodedata
 import zlib
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
@@ -23,26 +22,21 @@ _JOB_DATE = re.compile(r"-(\d{8})-[0-9a-f]{4}$")
 MARKER = ".nightshift-job"
 _RESERVED = frozenset({"con", "prn", "aux", "nul", *(f"com{i}" for i in range(1, 10)),
                        *(f"lpt{i}" for i in range(1, 10))})
-_BAD_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+_BAD_CHARS = re.compile(r'[<>:"/\|?*\x00-\x1f]')
 
 
 def safe_slug(text: str, max_len: int = 80) -> str:
-    """Lower-case, hyphen-separated, ASCII folder slug of at most `max_len` characters (Windows safe).
+    """Windows-safe, readable file or folder name of at most `max_len` characters (spec 15.2a).
 
-    Reserved device names (`con`, `nul`, `com1`, ...) get a `-x` suffix; empty input gives `untitled`.
+    Reserved characters become spaces, whitespace is collapsed, leading and trailing dots and spaces are
+    dropped, and a reserved device name (`con`, `nul`, `com1`, ...) gets a `_` suffix. Case is kept. Empty
+    input gives an empty string, so callers can fall back to an id. C8 and C11 import this function.
     """
-    folded = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii").lower()
-    slug = re.sub(r"[^a-z0-9]+", "-", folded).strip("-")[:max_len].rstrip("-") or "untitled"
-    return f"{slug}-x" if slug in _RESERVED else slug
-
-
-def safe_filename(text: str, max_len: int = 80) -> str:
-    """A readable Windows-safe file stem: reserved characters removed, case and spaces kept, <= `max_len`."""
-    cleaned = _BAD_CHARS.sub("", text)
-    cleaned = re.sub(r"\s+", " ", cleaned).strip(" .")[:max_len].strip(" .")
-    if not cleaned:
-        cleaned = "untitled"
-    return f"_{cleaned}" if cleaned.lower() in _RESERVED else cleaned
+    s = _BAD_CHARS.sub(" ", text)
+    s = re.sub(r"\s+", " ", s).strip(" .")
+    if s.lower() in _RESERVED:
+        s = f"{s}_"
+    return s[:max_len].rstrip(" .")
 
 
 def unique_dir(parent: Path, slug: str, job_id: str) -> Path:
@@ -94,12 +88,13 @@ def outbox_target(ctx: JobContext, kind: str, k: int | None = None) -> Path:
     if ctx.file("series_context.json").exists():
         sc = ctx.read_json("series_context.json")
         part = int(sc["part_n"])
-        stem = f"{safe_filename(str(sc['series_title']))} - Part {part:02d}"
+        series_title = safe_slug(str(sc["series_title"]))
+        stem = f"{series_title} - Part {part:02d}"
         root = base / "series" / safe_slug(str(sc["series_slug"])) / f"part-{part:02d}"
     else:
         title = story_title(ctx)
-        stem = safe_filename(title)
-        root = unique_dir(base / "stories", safe_slug(title), ctx.job_id)
+        stem = safe_slug(title) or ctx.job_id
+        root = unique_dir(base / "stories", stem, ctx.job_id)
     folder = root / ("full" if kind == "long" else "shorts")
     folder.mkdir(parents=True, exist_ok=True)
     name = stem if kind == "long" else f"{stem} - Short {int(k or 1):02d}"

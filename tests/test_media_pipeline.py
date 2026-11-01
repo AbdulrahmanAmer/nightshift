@@ -56,7 +56,7 @@ def test_media_stages_produce_a_valid_outbox_short(tmp_home: Path, monkeypatch: 
 
     man = ctx.read_json("outbox/manifest.json")["s1"]
     mp4 = Path(man["mp4"])
-    story = ctx.paths.outbox / "after-dark" / "stories" / "scary-story-the-doorbell-camera"
+    story = ctx.paths.outbox / "after-dark" / "stories" / "Scary Story The Doorbell Camera"
     assert mp4.parent == story / "shorts" and mp4.name == "Scary Story The Doorbell Camera - Short 01.mp4"
     assert ff.video_size(mp4) == (1080, 1920) and ff.has_faststart(mp4)
     meta = json.loads(Path(man["json"]).read_text(encoding="utf-8"))

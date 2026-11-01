@@ -99,7 +99,7 @@ def test_master_first_media_pipeline(tmp_home: Path, monkeypatch: pytest.MonkeyP
     # Outbox
     man = ctx.read_json("outbox/manifest.json")
     full = Path(man["long"]["mp4"]).parent
-    story = ctx.paths.outbox / "after-dark" / "stories" / "the-long-night-story"
+    story = ctx.paths.outbox / "after-dark" / "stories" / "The Long Night Story"
     assert full == story / "full" and Path(man["long"]["mp4"]).name == f"{MASTER_TITLE}.mp4"
     for name in (f"{MASTER_TITLE}.mp4", f"{MASTER_TITLE}.json", f"{MASTER_TITLE}.txt",
                  "thumb_1.jpg", "thumb_2.jpg", "thumb_3.jpg"):
