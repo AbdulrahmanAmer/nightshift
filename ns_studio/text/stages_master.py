@@ -454,21 +454,22 @@ def resolve_moments(
         ch = chapters.get(int(m.get("chapter", 0)))
         if ch is None or len(kept) >= count_max:
             continue
-        last = len(ch.sentences) - 1
+        sentences = ch.sentences
+        last = len(sentences) - 1
         start = max(0, min(int(m["sentence_start"]), last))
         end = max(start, min(int(m["sentence_end"]), last))
         if overlaps(ch.n, start, end):
             continue
         hint = int(m.get("length_bucket") or 0)
-        words = _span_words(ch.sentences, start, end)
+        words = _span_words(sentences, start, end)
         order = ([hint] if hint in targets else []) + sorted(targets, key=lambda b: abs(words - targets[b]))
         bucket = next((b for b in order if _within(words, targets[b])), None)
         if bucket is None and order:
             nearest = order[0]
             target = targets[nearest]
             ends = range(start, last + 1)
-            best = min(ends, key=lambda e: abs(_span_words(ch.sentences, start, e) - target))
-            if _within(_span_words(ch.sentences, start, best), target) and not overlaps(ch.n, start, best):
+            best = min(ends, key=lambda e: abs(_span_words(sentences, start, e) - target))
+            if _within(_span_words(sentences, start, best), target) and not overlaps(ch.n, start, best):
                 end, bucket = best, nearest
         if bucket is None:
             continue
@@ -479,7 +480,7 @@ def resolve_moments(
                 "sentence_end": end,
                 "length_bucket": bucket,
                 "why_standalone": str(m.get("why_standalone", "")).strip(),
-                "words": _span_words(ch.sentences, start, end),
+                "words": _span_words(sentences, start, end),
             }
         )
     if len(kept) < count_min:
