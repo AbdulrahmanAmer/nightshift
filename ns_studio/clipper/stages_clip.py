@@ -150,7 +150,7 @@ class ImportStage:
     outputs: tuple[str, ...] = ("source.json",)
 
     def run(self, ctx: JobContext) -> None:
-        """Import the source (NS-E405 for unsupported files or unconfirmed rights, NS-E409 for downloads)."""
+        """Import the source (NS-E405 for bad files or unconfirmed rights; download errors for URLs)."""
         p = _params(ctx)
         if not p.rights_confirmed:
             raise NsError("NS-E405", "the owner has not confirmed rights to this video")

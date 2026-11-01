@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import json
 import shutil
+import subprocess
+from types import SimpleNamespace
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -70,6 +72,11 @@ def fake_popen(
 
     return FakePopen
 
+def patch_popen(monkeypatch: pytest.MonkeyPatch, popen: Any) -> None:
+    """Replace `subprocess` inside ns_studio.clipper.source only (ffprobe elsewhere keeps the real one)."""
+    proxy = SimpleNamespace(Popen=popen, PIPE=subprocess.PIPE, STDOUT=subprocess.STDOUT)
+    monkeypatch.setattr(src, "subprocess", proxy)
+
 
 def fake_exe(home: Path) -> Path:
     exe = Paths(home=home).home / "bin" / "yt-dlp" / "yt-dlp.exe"
@@ -110,7 +117,7 @@ def test_import_url_reports_progress_and_returns_the_file(
 ) -> None:
     exe = fake_exe(tmp_path / "home")
     popen = fake_popen()
-    monkeypatch.setattr(src.subprocess, "Popen", popen)
+    patch_popen(monkeypatch, popen)
     seen: list[float] = []
     out = src.import_url(URL, tmp_path / "dl", seen.append, exe=exe)
     assert out == tmp_path / "dl" / "source.mp4" and out.read_bytes() == b"video"
@@ -122,14 +129,14 @@ def test_import_url_reports_progress_and_returns_the_file(
 
 def test_progress_callback_is_optional(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     exe = fake_exe(tmp_path / "home")
-    monkeypatch.setattr(src.subprocess, "Popen", fake_popen())
+    patch_popen(monkeypatch, fake_popen())
     assert src.import_url(URL, tmp_path / "dl", exe=exe).name == "source.mp4"
 
 
 def test_nonzero_exit_is_e409_with_the_log_tail(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     exe = fake_exe(tmp_path / "home")
     lines = ["[youtube] abc: Downloading webpage", "ERROR: Video unavailable"]
-    monkeypatch.setattr(src.subprocess, "Popen", fake_popen(lines, code=1, write=False))
+    patch_popen(monkeypatch, fake_popen(lines, code=1, write=False))
     with pytest.raises(NsError) as ei:
         src.import_url(URL, tmp_path / "dl", exe=exe)
     assert ei.value.code == "NS-E409"
@@ -150,7 +157,7 @@ def test_non_http_link_is_e409(tmp_path: Path) -> None:
 
 def test_no_file_written_is_e409(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     exe = fake_exe(tmp_path / "home")
-    monkeypatch.setattr(src.subprocess, "Popen", fake_popen(write=False))
+    patch_popen(monkeypatch, fake_popen(write=False))
     with pytest.raises(NsError) as ei:
         src.import_url(URL, tmp_path / "dl", exe=exe)
     assert ei.value.code == "NS-E409" and "no video file" in ei.value.detail
@@ -162,7 +169,7 @@ def test_cannot_start_the_process_is_e409(tmp_path: Path, monkeypatch: pytest.Mo
     def boom(*a: Any, **k: Any) -> None:
         raise OSError("blocked")
 
-    monkeypatch.setattr(src.subprocess, "Popen", boom)
+    patch_popen(monkeypatch, boom)
     with pytest.raises(NsError) as ei:
         src.import_url(URL, tmp_path / "dl", exe=exe)
     assert ei.value.code == "NS-E409" and "blocked" in ei.value.detail
@@ -196,7 +203,7 @@ def test_import_stage_downloads_then_imports(
 ) -> None:
     fake_exe(tmp_home)
     popen = fake_popen(payload=shared_sample().video, title="Raid Night: Part 1")
-    monkeypatch.setattr(src.subprocess, "Popen", popen)
+    patch_popen(monkeypatch, popen)
     ctx = url_job(tmp_path)
     assert run_stage(ctx, sc.ImportStage()) is True
     info = ctx.read_json("source.json")
@@ -226,7 +233,7 @@ def test_import_stage_reports_a_failed_download(
     tmp_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     fake_exe(tmp_home)
-    monkeypatch.setattr(src.subprocess, "Popen", fake_popen(["ERROR: 404"], code=1, write=False))
+    patch_popen(monkeypatch, fake_popen(["ERROR: 404"], code=1, write=False))
     ctx = url_job(tmp_path)
     with pytest.raises(NsError) as ei:
         run_stage(ctx, sc.ImportStage())

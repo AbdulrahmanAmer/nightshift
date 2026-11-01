@@ -270,8 +270,8 @@ def import_url(
     """Download `url` with the pinned yt-dlp into `dest_dir` and return the video file.
 
     `progress_cb` gets the percentage (0-100) of every `[download] ...%` line. The title is left in
-    `dest_dir/source.info.json` (see `read_download_title`). Raises NS-E409 when the link is not http(s),
-    yt-dlp is missing, exits non-zero, or leaves no video behind.
+    `dest_dir/source.info.json` (see `read_download_title`). Raises the download-failed error (CR-C8-10)
+    when the link is not http(s), yt-dlp is missing, exits non-zero, or leaves no video behind.
     """
     if not is_url(url):
         raise NsError(DOWNLOAD_FAILED, "not an http(s) link")
