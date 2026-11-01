@@ -1,8 +1,17 @@
+import importlib.util
 import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
+if importlib.util.find_spec("fastapi") is None and os.environ.get("CI") == "true":
+    # Temporary, until CR-C2-1 puts fastapi into the dev extra: CI installs only .[dev], so install it
+    # here to exercise app.py. Local runs without fastapi skip this module.
+    subprocess.run([sys.executable, "-m", "pip", "install", "-q", "fastapi>=0.115"], check=False)
+    importlib.invalidate_caches()
 pytest.importorskip("fastapi")
 
 from fastapi.testclient import TestClient  # noqa: E402

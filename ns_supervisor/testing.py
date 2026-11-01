@@ -6,6 +6,7 @@ Used by the supervisor, verify, tune and doctor tests. Not imported by productio
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import socket
 import sys
 import threading
@@ -173,6 +174,8 @@ class SyncSupervisor:
             self._run(self.sup.stop_all(), 60)
         finally:
             self._monitor.cancel()
+            with contextlib.suppress(Exception):
+                self._run(asyncio.sleep(0.1), 10)  # let the cancelled monitor task finish
             self.loop.call_soon_threadsafe(self.loop.stop)
             self._thread.join(timeout=10)
             self.loop.close()
