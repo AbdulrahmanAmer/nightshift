@@ -39,7 +39,7 @@ Format per entry:
 - **From:** C4 ns_tts / Task 4
 - **Change:** add `"fastapi>=0.115"` to `[project.optional-dependencies].dev` in `pyproject.toml`. `numpy` is already a core dependency, so no change for it. After it lands, delete the `# pyright: reportMissingImports=false` line in `ns_tts/server.py` and the `pytest.importorskip("fastapi")` in `tests/test_tts_server.py`.
 - **Why:** CI installs only `.[dev]`; without fastapi the server tests are skipped and pyright cannot resolve the imports. `uvicorn` is not needed in CI (only `ns_tts.server.main` imports it, lazily).
-- **Status:** open
+- **Status:** applied in fb54431 (fastapi, psutil, python-multipart, opencv-python-headless, Pillow, imagehash added to the dev extra; C4 may now drop the importorskip and the pyright pragma)
 
 ## CR-C4-2: `TtsCfg.engine` must accept `"qwentts"`
 - **From:** C4 ns_tts / Task 3
@@ -51,7 +51,7 @@ Format per entry:
 - **From:** C4 ns_tts / Task 3
 - **Change:** when `ruff` gets `TID251` banning `subprocess` (ENGINEERING.md section 8), add `ns_tts/engine.py` to the per-file-ignores list and to the hygiene-test allow-list, next to `ns_common/ffmpeg.py`.
 - **Why:** `QwenttsEngine` runs the `qwentts.exe` CLI with `subprocess.run` (list args, never `shell=True`, with a timeout), as spec 6.1 describes.
-- **Status:** open
+- **Status:** applied in the C10 pyproject commit (per-file-ignore for ns_tts/engine.py; the hygiene test bans only shell=True, so it needs no allow-list)
 
 ## CR-C4-4: TTS-specific error codes
 - **From:** C4 ns_tts / Task 3
@@ -115,7 +115,7 @@ Format per entry:
 - **From:** C2 runtime / Task 5
 - **Change:** add `"fastapi>=0.115"` to `[project.optional-dependencies].dev` in `pyproject.toml`. `httpx` is already a core dependency (the starlette `TestClient` and `SupervisorClient` use it), `uvicorn` is only imported by `python -m ns_supervisor.app` (lazily), and `psutil` is not used by C2 (process control is `subprocess` + Job Object + `taskkill`), so neither is requested. After it lands, delete the `# pyright: ignore[reportMissingImports]` comments in `ns_supervisor/app.py` and the `pytest.importorskip("fastapi")` in `tests/test_supervisor_app.py`.
 - **Why:** CI installs only `.[dev]`; without fastapi the HTTP-layer tests (`tests/test_supervisor_app.py`) are skipped and pyright cannot resolve the imports. All supervisor logic is tested without it through `ns_supervisor.core`.
-- **Status:** open
+- **Status:** applied in fb54431 (fastapi, psutil, python-multipart, opencv-python-headless, Pillow, imagehash are in the dev extra)
 
 ## CR-C2-2: supervisor `POST /events` (publish a job event)
 - **From:** C2 runtime / Task 5
@@ -133,7 +133,7 @@ Format per entry:
 - **From:** C2 runtime / Task 2
 - **Change:** when TID251 bans `subprocess` (ENGINEERING 8), add `ns_supervisor/*.py` to the per-file-ignores and to the hygiene allow-lists for subprocess and `httpx`. C2 starts services, runs `taskkill`, `nvidia-smi`, `uv`, `powershell`, `studio` and `git`.
 - **Why:** section 8 names the supervisor as the place services are spawned; the listed exception paths do not yet include the extra tools.
-- **Status:** open
+- **Status:** applied in fb54431 (ruff per-file-ignore `ns_supervisor/**` for TID251; the hygiene test bans only shell=True and has no subprocess or httpx allow-list)
 
 ## CR-C2-5: per-model llama flags for two-model mode (`ns tune`)
 - **From:** C2 runtime / Task 9
