@@ -101,6 +101,5 @@ What failed on the way, exactly:
 
 Size: `cublasLt64_12.dll` alone is 669 MB, so the zip is large (about 600 MB, below the 2 GB release asset limit). It is
 downloaded once by the installer, never bundled into `Nightshift-<ver>.zip`. If that is too heavy for the partner's link,
-the options are (a) pin the zip to a CUDA 13.x build whose cuBLAS is smaller, (b) build with `-DGGML_CUDA_FORCE_CUBLAS=OFF
--DGGML_CUDA_NO_VMM=OFF` variants and drop cuBLAS if the project allows it, or (c) let the installer fetch the CUDA runtime
-DLLs separately like the llama.cpp `cudart-*` assets. Neither is needed for M0.
+the options are (a) pin the zip to a CUDA 13.x build whose cuBLAS may be smaller, or (b) let the installer fetch the CUDA
+runtime DLLs separately like the llama.cpp `cudart-*` assets. Neither is needed for M0.
