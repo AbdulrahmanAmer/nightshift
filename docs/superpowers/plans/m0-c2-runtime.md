@@ -69,9 +69,9 @@ def build_service_table(rt, paths) -> dict[str, ServiceDef]
 def llama_variant(rt, alias) -> str     # "default" in one-model mode, else the alias
 ```
 
-- [ ] Write tests: llama command line exactly as spec 6.1 (`-m`, `--port`, `--host`, `-ngl`, `-c`, `--alias code,story`), q8_0 adds `-ctk q8_0 -ctv q8_0`, `n_cpu_moe` adds `--n-cpu-moe N` only when > 0, MTP adds `--spec-type draft-mtp --spec-draft-n-max K -np 1`; two-model mode picks `story_model_path` for alias `story`; embed has `--embeddings -ngl 0`; tts is `<python> -m ns_tts.server --port 8091`; dashboard `-m ns_dashboard.server`; GPU flags; whisper absent.
-- [ ] Implement `services.py`.
-- [ ] Commit `feat(c2): service table from runtime.json`.
+- [x] Write tests: llama command line exactly as spec 6.1 (`-m`, `--port`, `--host`, `-ngl`, `-c`, `--alias code,story`), q8_0 adds `-ctk q8_0 -ctv q8_0`, `n_cpu_moe` adds `--n-cpu-moe N` only when > 0, MTP adds `--spec-type draft-mtp --spec-draft-n-max K -np 1`; two-model mode picks `story_model_path` for alias `story`; embed has `--embeddings -ngl 0`; tts is `<python> -m ns_tts.server --port 8091`; dashboard `-m ns_dashboard.server`; GPU flags; whisper absent.
+- [x] Implement `services.py`.
+- [x] Commit `feat(c2): service table from runtime.json`.
 
 ### Task 2: Process helpers and Job Object (C2, `sonnet`)
 
@@ -91,10 +91,10 @@ def vram_mb(pid: int) -> int | None
 def gpu_memory_used_mb() -> int | None
 ```
 
-- [ ] Stub service script: `/health` (optional ready delay, 503 until), `POST /completion` with `timings`, `/v1/chat/completions`, `/v1/embeddings`, `/v1/audio/speech` (WAV), `/v1/voices`; flags `--die-after`, `--die-once-marker`, `--ready-delay`, `--tok-s`.
-- [ ] Tests: start stub, health 200, stdout lines land in `logs\<service>-YYYYMMDD.jsonl`; `terminate` ends the process; Job Object smoke test (Windows only): assign a sleeping child, close the job handle, child dies; `vram_mb` parsing with `nvidia-smi` mocked and `None` when absent.
-- [ ] Implement `procs.py`, `testing.py`.
-- [ ] Commit `feat(c2): process start/terminate with Job Object and VRAM probe`.
+- [x] Stub service script: `/health` (optional ready delay, 503 until), `POST /completion` with `timings`, `/v1/chat/completions`, `/v1/embeddings`, `/v1/audio/speech` (WAV), `/v1/voices`; flags `--die-after`, `--die-once-marker`, `--ready-delay`, `--tok-s`.
+- [x] Tests: start stub, health 200, stdout lines land in `logs\<service>-YYYYMMDD.jsonl`; `terminate` ends the process; Job Object smoke test (Windows only): assign a sleeping child, close the job handle, child dies; `vram_mb` parsing with `nvidia-smi` mocked and `None` when absent.
+- [x] Implement `procs.py`, `testing.py`.
+- [x] Commit `feat(c2): process start/terminate with Job Object and VRAM probe`.
 
 ### Task 3: GPU lock (C2, `sonnet`)
 
@@ -111,9 +111,9 @@ class GpuLock:
     def waiters(self) -> list[tuple[str, str]]
 ```
 
-- [ ] Tests: FIFO order with three waiters; per-waiter timeout raises `NS-E201` and does not break the queue; release by a non-owner is a no-op; same owner re-acquire swaps the service; cancelled waiter is skipped; `timeout_s=0` fails immediately when busy.
-- [ ] Implement `lock.py`.
-- [ ] Commit `feat(c2): FIFO GPU lock with per-waiter timeout`; push; read CI.
+- [x] Tests: FIFO order with three waiters; per-waiter timeout raises `NS-E201` and does not break the queue; release by a non-owner is a no-op; same owner re-acquire swaps the service; cancelled waiter is skipped; `timeout_s=0` fails immediately when busy.
+- [x] Implement `lock.py`.
+- [x] Commit `feat(c2): FIFO GPU lock with per-waiter timeout`; push; read CI.
 
 ### Task 4: Supervisor core (C2, `opus`)
 
@@ -134,66 +134,66 @@ class Supervisor:
     async def run_monitor() -> None; exit_requested: asyncio.Event
 ```
 
-- [ ] Tests against stub processes with injected short timers: acquire starts and returns the endpoint; second owner blocks until the first releases (serialization); tenant swap terminates the resident service (llama to tts, tts to whisper); idle unload after release; embed never locks and refcounts owners; crash then restart on next acquire; three crashes inside the window gives state `error` and `NS-E202`; health timeout gives `NS-E203` and kills the child; lock timeout gives `NS-E201`; two-model mode swap on alias change; `stop_all` clears errors; auto-exit decision with and without a schedule within 60 minutes; events published on state changes; state file written with child pids.
-- [ ] Implement `core.py`, `schedule_cfg.py`.
-- [ ] Commit `feat(c2): supervisor core (lock, swap, health, crash policy, idle, auto-exit)`.
+- [x] Tests against stub processes with injected short timers: acquire starts and returns the endpoint; second owner blocks until the first releases (serialization); tenant swap terminates the resident service (llama to tts, tts to whisper); idle unload after release; embed never locks and refcounts owners; crash then restart on next acquire; three crashes inside the window gives state `error` and `NS-E202`; health timeout gives `NS-E203` and kills the child; lock timeout gives `NS-E201`; two-model mode swap on alias change; `stop_all` clears errors; auto-exit decision with and without a schedule within 60 minutes; events published on state changes; state file written with child pids.
+- [x] Implement `core.py`, `schedule_cfg.py`.
+- [x] Commit `feat(c2): supervisor core (lock, swap, health, crash policy, idle, auto-exit)`.
 
 ### Task 5: FastAPI app and client (C2, `sonnet`)
 
 **Files:** Create `ns_supervisor/app.py`, `ns_supervisor/client.py`, `tests/test_supervisor_app.py`, `tests/test_supervisor_client.py`; append CR for `fastapi`/`uvicorn`.
 
-- [ ] App tests (`pytest.importorskip("fastapi")`): `/status`, `/acquire`, `/release`, `/stop_all`, `/warmup`, `/shutdown`, `/events?limit=1`, error mapping (E201 409, E202 502, E203 504).
-- [ ] Client tests with `httpx.MockTransport` (no FastAPI needed): request bodies, `Endpoint` mapping, error body to `NsError`, `ensure_running` fast path.
-- [ ] Implement both; `python -m ns_supervisor.app [--headless]`.
-- [ ] Commit `feat(c2): FastAPI supervisor app and SupervisorClient`; push; read CI.
+- [x] App tests (`pytest.importorskip("fastapi")`): `/status`, `/acquire`, `/release`, `/stop_all`, `/warmup`, `/shutdown`, `/events?limit=1`, error mapping (E201 409, E202 502, E203 504).
+- [x] Client tests with `httpx.MockTransport` (no FastAPI needed): request bodies, `Endpoint` mapping, error body to `NsError`, `ensure_running` fast path.
+- [x] Implement both; `python -m ns_supervisor.app [--headless]`.
+- [x] Commit `feat(c2): FastAPI supervisor app and SupervisorClient`; push; read CI.
 
 ### Task 6: CLI skeleton, `ns stop`, `ns gate`, `ns schedule`, `ns notify` (C2, `sonnet`)
 
 **Files:** Modify `ns_supervisor/cli.py`; create `schedule.py`, `notify.py`, `tests/test_ns_cli.py`, `tests/test_ns_schedule.py`.
 
-- [ ] Tests: `--help` lists every command; bare `ns` prints the version (existing scaffold test); `ns stop` falls back to the recorded pid file when the supervisor is down; schedule script text carries `WakeToRun`, `StartWhenAvailable`, 6 h limit, S4U, the time; remove and show; notify passes title/message through the environment and is a no-op without PowerShell.
-- [ ] Implement.
-- [ ] Commit `feat(c2): ns stop, gate, schedule and notify`.
+- [x] Tests: `--help` lists every command; bare `ns` prints the version (existing scaffold test); `ns stop` falls back to the recorded pid file when the supervisor is down; schedule script text carries `WakeToRun`, `StartWhenAvailable`, 6 h limit, S4U, the time; remove and show; notify passes title/message through the environment and is a no-op without PowerShell.
+- [x] Implement.
+- [x] Commit `feat(c2): ns stop, gate, schedule and notify`.
 
 ### Task 7: `ns verify` (C2, `sonnet`)
 
 **Files:** Create `ns_supervisor/verify.py`, `tests/test_ns_verify.py`.
 
-- [ ] Tests: report validates as `GateReport`; every check present and failing with an NS code and hint when components are missing; benchmark checks carry the 14.6 limits; `--quick` skips benchmarks; full flow against stub services through `SyncSupervisor`.
-- [ ] Implement checks: supervisor health per service, LLM JSON completion + tok/s, TTS per voice mode + RTF, whisper load (studio venv subprocess), embed vector, NVENC probe, idle VRAM, optional fake-services job. Write `logs\verify-report.json`.
-- [ ] Commit `feat(c2): ns verify with 14.6 benchmark table`.
+- [x] Tests: report validates as `GateReport`; every check present and failing with an NS code and hint when components are missing; benchmark checks carry the 14.6 limits; `--quick` skips benchmarks; full flow against stub services through `SyncSupervisor`.
+- [x] Implement checks: supervisor health per service, LLM JSON completion + tok/s, TTS per voice mode + RTF, whisper load (studio venv subprocess), embed vector, NVENC probe, idle VRAM, optional fake-services job. Write `logs\verify-report.json`.
+- [x] Commit `feat(c2): ns verify with 14.6 benchmark table`.
 
 ### Task 8: `ns doctor [--bundle]` (C2, `sonnet`)
 
 **Files:** Create `ns_supervisor/doctor.py`, `tests/test_ns_doctor.py`.
 
-- [ ] Tests: bundle contains logs, install_state, runtime, verify-report, nvidia-smi output, pip freeze per present venv (skipped when absent), last 3 job dirs without media, VERSION; no media.
-- [ ] Implement; default output `Desktop\nightshift-diagnostics-<date>.zip` (registry Desktop path, `--out-dir` override).
-- [ ] Commit `feat(c2): ns doctor and diagnostics bundle`; push; read CI.
+- [x] Tests: bundle contains logs, install_state, runtime, verify-report, nvidia-smi output, pip freeze per present venv (skipped when absent), last 3 job dirs without media, VERSION; no media.
+- [x] Implement; default output `Desktop\nightshift-diagnostics-<date>.zip` (registry Desktop path, `--out-dir` override).
+- [x] Commit `feat(c2): ns doctor and diagnostics bundle`; push; read CI.
 
 ### Task 9: `ns tune` (C2, `sonnet`)
 
 **Files:** Create `ns_supervisor/tune.py`, `tests/test_ns_tune.py`.
 
-- [ ] Tests: staged matrix (ngl step-down, ctx x KV, MoE `--n-cpu-moe`, MTP); `--dry-run` prints the matrix and writes nothing; winner selection (within 5 % prefers larger ctx then f16); all-fail keeps `runtime.json`; real runner against the stub `/completion` timings.
-- [ ] Implement; sweep log `logs\tune-<date>.json`; MTP kept only if faster (`NS-W302` otherwise).
-- [ ] Commit `feat(c2): ns tune sweep`.
+- [x] Tests: staged matrix (ngl step-down, ctx x KV, MoE `--n-cpu-moe`, MTP); `--dry-run` prints the matrix and writes nothing; winner selection (within 5 % prefers larger ctx then f16); all-fail keeps `runtime.json`; real runner against the stub `/completion` timings.
+- [x] Implement; sweep log `logs\tune-<date>.json`; MTP kept only if faster (`NS-W302` otherwise).
+- [x] Commit `feat(c2): ns tune sweep`.
 
 ### Task 10: `ns update`, `ns backup`, `ns restore` (C2, `sonnet`)
 
 **Files:** Create `ns_supervisor/update.py`, `ns_supervisor/backup.py`, `tests/test_ns_update.py`, `tests/test_ns_backup.py`.
 
-- [ ] Tests (temp directory trees): VERSION and `.sha256` verification (`NS-E701`), zip-slip rejection, extract to `<app>.new`, preserved `.git`/`config`/untracked, swap with `<app>.prev`, step failure rolls back (`NS-E702`), `--rollback`; backup contents and exclusions, DB snapshot, restore skipping machine files.
-- [ ] Implement.
-- [ ] Commit `feat(c2): ns update with rollback, backup and restore`; push; read CI.
+- [x] Tests (temp directory trees): VERSION and `.sha256` verification (`NS-E701`), zip-slip rejection, extract to `<app>.new`, preserved `.git`/`config`/untracked, swap with `<app>.prev`, step failure rolls back (`NS-E702`), `--rollback`; backup contents and exclusions, DB snapshot, restore skipping machine files.
+- [x] Implement.
+- [x] Commit `feat(c2): ns update with rollback, backup and restore`; push; read CI.
 
 ### Task 11: Launchers (C2, `sonnet`)
 
 **Files:** Create `launchers/*.ps1`, `tests/test_launchers.py`.
 
-- [ ] Test: parse each script with `[System.Management.Automation.Language.Parser]::ParseFile` via `powershell` (skip if absent); head lines, ASCII, no `Invoke-Expression`.
-- [ ] Write the scripts.
-- [ ] Commit `feat(c2): PowerShell launchers`.
+- [x] Test: parse each script with `[System.Management.Automation.Language.Parser]::ParseFile` via `powershell` (skip if absent); head lines, ASCII, no `Invoke-Expression`.
+- [x] Write the scripts.
+- [x] Commit `feat(c2): PowerShell launchers`.
 
 ### Task 12: Close-out (C2, `sonnet`)
 
