@@ -88,6 +88,8 @@ Rules the diagram encodes:
 
 ## 3. Milestones
 
+A milestone means: code complete, tests green in GitHub Actions on a Windows runner with fake models and real FFmpeg, bundle published. Nothing runs on the authoring laptop. The first real execution of every milestone happens on the partner's GPU PC through the shipped bundle, and its `verify-report.json` closes the milestone.
+
 Spec §12 slices map onto milestones as follows. The spec's slice gates become CI gates. Its "first run on the work machine" (Slice 9) is the partner loop of section 10 and repeats at every milestone.
 
 | Spec slices | Milestone |
@@ -98,21 +100,21 @@ Spec §12 slices map onto milestones as follows. The spec's slice gates become C
 | 4 Clipper, 6 Dashboard | M3 |
 | `ns tune` from 5, spec §16.5 calibration, 8 Nightshift Code, operator docs | M4 |
 
-### M0 "Engine installs"
+### M0 "Provisioning (installer + runtime)"
 - **Scope:** C3 contracts v1 (all spec §15.6 schemas needed by M0 and M1, SQL schema, error codes, clients and fakes, manifest with verified pins). C10 CI, gate script, `make_bundle.ps1`, release job. C1 machine check (spec §1.2 table, `NS-E1xx`), downloader (HEAD, Range resume, SHA256, `models_source` mode), venv creation, `answers.json` handling. C2 supervisor (acquire, release, status, shutdown, GPU lock, Job Object, idle unload), service definitions for `llama`, `embed`, `tts`, whisper load check, `ns verify`, `ns doctor --bundle`, `ns stop`.
 - **Exit criteria (CI):** `dev/gate_m0.py` green on `windows-latest`: pytest, ruff, pyright, manifest check, fakes validate against schemas, FFmpeg test clip, `stage1.ps1 -DryRun`, wizard `--simulate-downloads` with kill-and-resume, stub-service supervisor tests, bundle content check.
 - **Exit criteria (partner):** the partner installs v0.1, all services start (`llama`, `embed`, `tts` healthy, whisper loads on CUDA) and the returned `verify-report.json` is green. A red item starts a fix pass (section 10); it is not an exit.
 - **Release tag:** `contracts-m0` (cut at the end of the C3 plan; replaces `contracts-s1`), then `v0.1.0`.
 - **Partner receives:** `Nightshift-0.1.0.zip`, `.sha256`, `answers.json`, `OPERATOR.md`, optional `models\` folder. Nothing that produces a video yet.
 
-### M1 "First Short"
+### M1 "Shorts pipeline"
 - **Scope:** C4 TTS service (engines, voice library, chunking, API). C5 shorts-only text stages (ideas to visual plan), validators, exemplars. C6 voice, captions with script alignment, clip sources and cache, vertical render, QC, outbox and upload sheet. C7 minimal CLI (`studio run --format shorts_only`, `studio channel add`, `studio voice`), orchestrator, `--fake-services`. C1 adds config writing, keyring and the smoke step (NVENC, TTS, whisper, LLM).
 - **Exit criteria (CI):** `dev/gate_m1.py`: `studio run --fake-services --format shorts_only --count 3` yields 3 real MP4s with burned captions, QC passing (duration, loudness, drift, file opens, aspect) and upload sheets valid against schema.
 - **Exit criteria (partner):** `studio run --format shorts_only --count 1` on the partner PC produces a Short in the Outbox, and `verify-report.json` shows the TTS, whisper and NVENC results.
 - **Release tag:** `v0.2.0`.
 - **Partner receives:** `Nightshift-0.2.0.zip` (applied with the Update shortcut) and a one-page "make your first Short" note in `OPERATOR.md`.
 
-### M2 "Nightly channel"
+### M2 "Long-form nightly pipeline"
 - **Scope:** master-first pipeline (long plan, chapter drafts, critique and revise, continuity, expansion loop, long SEO, Shorts selection and timing, landscape render, chapter cards, mid-roll suggestions, thumbnails, derived Shorts). Policy gate (text and final, all spec §18.8 checks). Variation engine and combo ledger. Cadence governor. `studio review`, `status`, `pause`, `resume`, `mark-uploaded`, `learn --import`. Scheduler: C2 registers the `Nightshift Daily` task (`WakeToRun`, `StartWhenAvailable`), C7 provides `studio run --daily`. C1 adds shortcuts and the summary step.
 - **Exit criteria (CI):** `dev/gate_m2.py`: fake master job with `long_minutes: [9, 10]` exercises the floor and expansion loop; `chapters.json` timestamps match ffprobe; mid-roll suggestions respect the 2-minute rule; 4 Shorts cut and rendered; seeded negative fixtures (true-story claim, real name, duplicate story, music track) fail with the right `NS-E6xx`; a sample analytics CSV reweights pools.
 - **Exit criteria (partner):** one unattended night yields a long-form master of at least 8:30 plus its Shorts in the Outbox, with the nightly report in `logs\`.
@@ -126,7 +128,7 @@ Spec §12 slices map onto milestones as follows. The spec's slice gates become C
 - **Release tag:** `contracts-m3` (adds `transcript`, `clip_plan`, `clip_layout`, `clip_template`, `dashboard_job` if not already in v1), then `v0.4.0`.
 - **Partner receives:** `Nightshift-0.4.0.zip`.
 
-### M4 "Hardening"
+### M4 "Release hardening"
 - **Scope:** `ns tune` sweep, `studio calibrate` with the human scoring loop and refusal rate, `ns update` with rollback, `ns backup` and `ns restore`, `UNINSTALL.cmd`, toast notifications, `OPERATOR.md` finalized, optional Nightshift Code (OpenCode pin, `opencode.json`, launcher), performance work against spec §14.6 using data measured on the partner PC.
 - **Exit criteria (CI):** `dev/gate_m4.py`: update and rollback in a temp copy, uninstall idempotence, tune sweep against the stub service, all earlier gates still green.
 - **Exit criteria (partner):** `verify-report.json` meets the spec §14.6 targets or records measured misses with a decision; calibration scores returned; the week-8 go/no-go (spec §18.12) is scheduled.

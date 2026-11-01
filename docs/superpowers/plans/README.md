@@ -12,7 +12,7 @@ Plan filename pattern for new plans: `m<N>-c<K>-<kebab>.md`. Existing files keep
 
 ---
 
-## M0 "Engine installs" (release v0.1.0)
+## M0 "Provisioning (installer + runtime)" (release v0.1.0)
 
 Exit: partner installs v0.1, all services start, `verify-report.json` green. CI gate: `dev/gate_m0.py`.
 
@@ -24,7 +24,7 @@ Exit: partner installs v0.1, all services start, `verify-report.json` green. CI 
 | C1 Installer | `m0-c1-installer-core.md` | to write | `INSTALL.cmd`, `stage1.ps1` (preflight, `-DryRun`), wizard framework, machine-check step (`NS-E1xx`), downloader (Range, SHA256, `models_source`), venv step, `answers.json`. |
 | C2 Runtime | `m0-c2-supervisor-verify.md` | to write | Supervisor API (`/status /acquire /release /stop_all /shutdown /warmup /events`), GPU lock, Job Object, idle unload, service table, stub service, `ns verify`, `ns doctor --bundle`, `ns stop`, `SupervisorClient`. |
 
-## M1 "First Short" (release v0.2.0)
+## M1 "Shorts pipeline" (release v0.2.0)
 
 Exit: `studio run` produces a Short on the partner PC. CI gate: `dev/gate_m1.py` (`studio run --fake-services --format shorts_only --count 3` yields 3 QC-passing MP4s with valid sheets).
 
@@ -37,7 +37,7 @@ Exit: `studio run` produces a Short on the partner PC. CI gate: `dev/gate_m1.py`
 | C7 + C5 + C10 | `_s1_part5.md` | to write | Task 13 minimal CLI (`studio run`, `channel`, `voice`), `studio calibrate` harness (C5), `dev/gate_m1.py`, README/CLAUDE.md touch-ups. |
 | C1 Installer | `m1-c1-config-smoke.md` | to write | Config writing, keyring, channel creation from `answers.json`, `s08_smoke` (NVENC, qwentts, whisper, LLM) with the fallbacks and warnings. |
 
-## M2 "Nightly channel" (release v0.3.0)
+## M2 "Long-form nightly pipeline" (release v0.3.0)
 
 Exit: an unattended night yields a long-form master and its Shorts. CI gate: `dev/gate_m2.py` (floor and expansion loop, `chapters.json` vs ffprobe, 2-minute mid-roll rule, 4 Shorts, seeded negative fixtures with `NS-E6xx`, analytics reweighting).
 
@@ -68,7 +68,7 @@ Exit: drop a video, review clips in the Dashboard. C8 and C9 are built in parall
 | C3 | `m3-c3-contracts.md` | to write after M2 gate | Clipper and dashboard schemas, SQL additions (`sources`, `dashboard_jobs`); tag `contracts-m3`. Orchestrator work. |
 | C10 | `m3-c10-gate.md` | to write after M2 gate | `dev/gate_m3.py`. |
 
-## M4 "Hardening" (release v1.0.0)
+## M4 "Release hardening" (release v1.0.0)
 
 Exit: spec §14.6 targets measured on the partner PC, calibration returned, operator docs final. CI gate: `dev/gate_m4.py`.
 
