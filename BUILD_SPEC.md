@@ -725,6 +725,16 @@ Every output shape is a **format preset** in `ns_studio/presets/formats/<id>.yam
 
 ---
 
+### 17.2 Captions: presets plus smart placement and emphasis
+- **Style is a preset** (`caption_styles.yaml`, §17) and is chosen per video: by the variation engine for story videos, by the model in `clip_select` for clips (returned next to `layout`), or fixed in a series' `design.yaml`.
+- **Placement avoids what matters on screen**: the caption anchor moves away from detected face and facecam regions and from YouTube's UI safe zones (top 220 px, bottom 320 px on 9:16); stacked podcast layouts put captions on the seam; gaming layouts put them on the gameplay region, never over the facecam.
+- **Emphasis**: one word per caption group is highlighted (the active word by default). For clips and story videos the LLM marks up to one **key word per sentence** (`emphasis` in the visual plan / clip plan) that gets the style's accent colour and a slightly larger size; no emoji, no stickers.
+- **Text source**: story and series videos render the script's exact words; clips render cleaned transcript words (casing and punctuation restored by the model in `clip_select`, optional filler removal `um/uh/like` per channel setting, numbers kept as spoken). Never silently change meaning.
+- **Speakers**: in two-speaker layouts each speaker's captions take a distinct colour from the style's palette; speaker change starts a new group.
+- **Profanity**: per-channel option `captions.mask_profanity` masks letters in captions (audio untouched); default off.
+- **Timing**: groups of 2–4 words, 0.9–2.2 s on screen, never spanning a sentence end; drift limit per §7.7.
+- **Accessibility**: minimum contrast 4.5:1 against the style's backing box or outline; the renderer verifies by sampling the frame behind the caption and switches to the boxed variant when contrast is too low.
+
 ## 18. YouTube safety & growth playbook (enforced by WP-H)
 
 ### 18.1 The money math (plan for it honestly)
