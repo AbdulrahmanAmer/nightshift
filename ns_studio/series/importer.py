@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ns_common.errors import NsError
-from ns_common.models import Idea
+from ns_common.models import Idea, Plan, PlanChapter, ShortsPlanItem, Story
 from ns_common.textstats import word_count
 from ns_studio.series.store import (
     CLOSING_MAX_WORDS,
@@ -22,7 +22,6 @@ from ns_studio.series.store import (
     ShortDoc,
     resolve_span,
 )
-from ns_studio.text.models_local import Plan, PlanChapter, ShortsPlanItem, Story
 from ns_studio.text.stages_master import build_chapter
 
 

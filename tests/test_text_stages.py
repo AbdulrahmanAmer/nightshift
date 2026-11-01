@@ -248,3 +248,88 @@ def test_repair_beats_uses_default_when_nothing_valid():
     fixed = S.repair_beats([], 4, group=3, default=_beat(0, 0, "default"))
     assert [(b.sentence_start, b.sentence_end) for b in fixed] == [(0, 2), (3, 3)]
     assert fixed[0].keywords == ["default"]
+
+
+# --- idea bank (CR-C9-6, spec 20.2): approved ideas are drawn before the model is asked --------------------
+
+
+def _bank(ctx, premise: str, *, status: str, created_at: str, channel: str | None = None, **extra) -> None:
+    cols = ["channel", "premise", "twist", "created_at", "status", *extra]
+    ctx.db.execute(
+        f"insert into ideas({', '.join(cols)}) values ({', '.join('?' * len(cols))})",
+        (channel or ctx.channel.slug, premise, f"twist of {premise}", created_at, status, *extra.values()),
+    )
+
+
+@pytest.mark.parametrize("fmt", ["shorts_only", "master_first"])
+def test_ideas_uses_the_oldest_approved_idea_without_the_llm(tmp_home: Path, fmt: str):
+    ctx = make_ctx(tmp_home, fmt=fmt)
+    _bank(ctx, "newer approved premise", status="approved", created_at="2026-10-02")
+    _bank(ctx, "older approved premise", status="approved", created_at="2026-10-01")
+    _bank(ctx, "not approved premise", status="new", created_at="2026-09-01")
+    REGISTRY["ideas"].run(ctx)
+    assert ctx.services.llm.calls == []  # type: ignore[attr-defined]
+    idea = ctx.read_json("idea.json")
+    assert idea["premise"] == "older approved premise" and idea["twist"] == "twist of older approved premise"
+    assert idea["keywords"]  # falls back to the channel's seed keywords
+    assert ctx.read_json("ideas_all.json") == [idea]
+    used = ctx.db.one("select * from ideas where premise=?", ("older approved premise",))
+    assert (used["status"], used["used"], used["job_id"]) == ("used", 1, ctx.job_id)
+    assert used["embedding"]
+    states = {
+        r["premise"]: (r["status"], r["used"])
+        for r in ctx.db.query(
+            "select premise, status, used from ideas where premise != ?", (idea["premise"],)
+        )
+    }
+    assert states == {"newer approved premise": ("approved", 0), "not approved premise": ("new", 0)}
+
+
+def test_ideas_drains_the_bank_then_invents(tmp_home: Path):
+    first = make_ctx(tmp_home)
+    _bank(first, "only approved premise", status="approved", created_at="2026-10-01")
+    REGISTRY["ideas"].run(first)
+    assert first.read_json("idea.json")["premise"] == "only approved premise"
+    second = make_ctx(tmp_home)
+    REGISTRY["ideas"].run(second)
+    assert second.services.llm.calls  # type: ignore[attr-defined]
+    assert second.read_json("idea.json")["premise"] != "only approved premise"
+    assert len(second.read_json("ideas_all.json")) == 8
+
+
+def test_ideas_ignores_approved_ideas_of_other_channels(tmp_home: Path):
+    ctx = make_ctx(tmp_home)
+    ctx.db.execute(
+        "insert into channels(slug, display_name, created_at) values ('other', 'Other', '2026-11-01')"
+    )
+    _bank(ctx, "someone else's premise", status="approved", created_at="2026-10-01", channel="other")
+    REGISTRY["ideas"].run(ctx)
+    assert ctx.services.llm.calls  # type: ignore[attr-defined]
+    row = ctx.db.one("select status from ideas where premise=?", ("someone else's premise",))
+    assert row["status"] == "approved"
+
+
+def test_ideas_reads_the_dashboard_columns_when_present(tmp_home: Path):
+    ctx = make_ctx(tmp_home)
+    for col in ("setting", "protagonist", "keywords", "updated_at"):
+        ctx.db.execute(f"alter table ideas add column {col} TEXT")
+    _bank(
+        ctx,
+        "a premise from the dashboard",
+        status="approved",
+        created_at="2026-10-01",
+        setting="a night ferry",
+        protagonist="the deckhand",
+        keywords='["ferry", "night"]',
+    )
+    REGISTRY["ideas"].run(ctx)
+    idea = ctx.read_json("idea.json")
+    assert (idea["setting"], idea["protagonist"], idea["keywords"]) == (
+        "a night ferry",
+        "the deckhand",
+        ["ferry", "night"],
+    )
+    row = ctx.db.one(
+        "select status, updated_at from ideas where premise=?", ("a premise from the dashboard",)
+    )
+    assert row["status"] == "used" and row["updated_at"]

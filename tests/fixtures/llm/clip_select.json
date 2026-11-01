@@ -8,7 +8,7 @@
       "hook_line": "The first draft is supposed to be bad.",
       "why": "A complete argument with a clear punchline about drafting.",
       "score": 0.88,
-      "speakers": ["S0"],
+      "speakers": [0],
       "keywords": ["writing", "first draft", "advice"]
     },
     {
@@ -19,7 +19,7 @@
       "hook_line": "I deleted every sentence that began with the word and.",
       "why": "Concrete story with a payoff and no outside context needed.",
       "score": 0.81,
-      "speakers": ["S0", "S1"],
+      "speakers": [0, 1],
       "keywords": ["editing", "word count", "revision"]
     },
     {

@@ -10,10 +10,11 @@ import pytest
 from ns_common import ffmpeg
 from ns_common.errors import NsError
 from ns_common.llm_client import FakeLlm
+from ns_common.models import ClipLayout, Transcript
 from ns_common.paths import Paths
 from ns_studio import orchestrator
 from ns_studio.clipper import stages_clip as sc
-from ns_studio.clipper.models import Analysis, ClipLayout, ClipMetadata, ClipParams, Transcript
+from ns_studio.clipper.models import Analysis, ClipMetadata, ClipParams
 from ns_studio.context import FAKEABLE, JobContext
 from ns_studio.stages import REGISTRY, run_stage
 from tests.fixtures.clipper.make_sample import build_transcript, facecam_truth, shared_sample

@@ -7,9 +7,10 @@ import pytest
 
 from ns_common import ffmpeg
 from ns_common.errors import NsError
+from ns_common.models import ClipLayout, Crop, FaceFrame, Rect
 from ns_studio.clipper import layout as lay
 from ns_studio.clipper import render as rd
-from ns_studio.clipper.models import TEMPLATE_NAMES, ClipLayout, Crop, FaceFrame, Rect
+from ns_studio.clipper.models import TEMPLATE_NAMES
 from tests.fixtures.clipper.make_sample import facecam_truth, shared_sample
 
 needs_ffmpeg = pytest.mark.skipif(not ffmpeg.available(), reason="ffmpeg not available")

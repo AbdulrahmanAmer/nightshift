@@ -6,7 +6,7 @@ import json
 import pytest
 
 from ns_common import ffmpeg
-from ns_studio.clipper.models import Transcript
+from ns_common.models import Transcript
 from tests.fixtures.clipper.make_sample import (
     CAM_H,
     CAM_W,

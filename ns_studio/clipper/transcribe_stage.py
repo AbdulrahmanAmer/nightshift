@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from ns_common.errors import NsError
-from ns_studio.clipper.models import Segment, Transcript, Word
+from ns_common.models import Segment, Transcript, Word
 
 MIN_WORDS = 30
 SPEAKER_PAUSE_S = 1.2

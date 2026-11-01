@@ -7,7 +7,7 @@ import pytest
 
 from installer.stage2.answers import AnswersError
 from installer.stage2.base import Step
-from installer.stage2.errors import InstallerError, make_error
+from installer.stage2.errors import make_error
 from installer.stage2.secrets import MemoryStore
 from installer.stage2.simulate import FakeRunner
 from installer.stage2.steps import default_steps
@@ -251,14 +251,13 @@ def test_describe_failure_variants():
     assert h.code == "unexpected" and "ValueError" in h.detail
 
 
-def test_missing_codes_fall_back_to_the_pending_table():
+def test_formerly_pending_codes_come_from_errors_json():
     for code, kind in (("NS-E111", "error"), ("NS-E112", "error"), ("NS-W112", "warning")):
         err = make_error(code, "detail")
         assert isinstance(err, NsError) and err.code == code
         assert err.definition.kind == kind and err.definition.hint
         assert str(err).startswith(f"{code}: ")
-    assert isinstance(make_error("NS-E111"), (NsError, InstallerError))
-    assert type(make_error("NS-E101")) is NsError          # published codes stay plain NsError
+    assert type(make_error("NS-E101")) is NsError
 
 
 def test_parse_args_defaults_and_flags():

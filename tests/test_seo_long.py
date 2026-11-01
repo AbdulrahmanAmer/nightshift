@@ -1,8 +1,7 @@
 # ruff: noqa: E501
 import pytest
 
-from ns_common.models import Seo
-from ns_studio.text.models_local import ChapterTitle, SeoLong
+from ns_common.models import ChapterTitle, Seo, SeoLong
 from ns_studio.text.seo import (
     CHAPTER_LIST_PLACEHOLDER,
     fill_chapter_list,

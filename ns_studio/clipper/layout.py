@@ -13,7 +13,7 @@ from pathlib import Path
 import numpy as np
 import yaml
 
-from ns_studio.clipper.models import CANVAS_H, CANVAS_W, ClipLayout, ClipTemplate, Crop, FaceFrame, Rect
+from ns_common.models import CANVAS_H, CANVAS_W, ClipLayout, ClipTemplate, Crop, FaceFrame, Rect
 
 TRACK_STEP_S = 0.25
 SPEAKER_HOLD_FRAMES = 2

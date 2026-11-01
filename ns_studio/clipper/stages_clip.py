@@ -21,20 +21,23 @@ from ns_common.config import load_runtime
 from ns_common.db import Db, new_job_id
 from ns_common.errors import NsError
 from ns_common.logging import NsLogger
-from ns_common.models import Channel, Combo, PolicyAdvice, PolicyCheck, PolicyResult, Runtime
-from ns_common.paths import Paths
-from ns_studio.clipper import analyze, detect, layout, render, select, seo, source, transcribe_stage
-from ns_studio.clipper.models import (
+from ns_common.models import (
     CANVAS_H,
-    Analysis,
-    ClipItem,
+    Channel,
     ClipLayout,
-    ClipMetadata,
-    ClipParams,
+    ClipPlanItem,
+    Combo,
     Crop,
+    PolicyAdvice,
+    PolicyCheck,
+    PolicyResult,
+    Runtime,
     Transcript,
     Word,
 )
+from ns_common.paths import Paths
+from ns_studio.clipper import analyze, detect, layout, render, select, seo, source, transcribe_stage
+from ns_studio.clipper.models import Analysis, ClipMetadata, ClipParams
 from ns_studio.context import FAKEABLE, JobContext, build_services
 from ns_studio.media import captions as media_captions
 from ns_studio.media import outbox as media_outbox
@@ -57,8 +60,8 @@ def _source(ctx: JobContext) -> dict[str, Any]:
     return info
 
 
-def _plan(ctx: JobContext) -> list[ClipItem]:
-    items = [ClipItem.model_validate(d) for d in ctx.read_json("clip_plan.json")]
+def _plan(ctx: JobContext) -> list[ClipPlanItem]:
+    items = [ClipPlanItem.model_validate(d) for d in ctx.read_json("clip_plan.json")]
     return [i for i in items if i.status == "kept"]
 
 
@@ -114,7 +117,7 @@ def create_clip_job(
         job_id=jid,
         channel=channel,
         combo=default_combo(channel),
-        fmt="clip",  # type: ignore[arg-type]
+        fmt="clip",
         paths=paths,
         job_dir=job_dir,
         db=db,

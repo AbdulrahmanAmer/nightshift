@@ -7,13 +7,22 @@ import pytest
 import ns_studio.text.stages_shorts  # noqa: F401
 from ns_common.errors import NsError
 from ns_common.llm_client import FakeLlm
-from ns_common.models import LlamaCfg, LlamaFlags, Runtime, Seo, VisualBeat
+from ns_common.models import (
+    LlamaCfg,
+    LlamaFlags,
+    Plan,
+    Runtime,
+    Seo,
+    SeoLong,
+    ShortsPlanItem,
+    Story,
+    VisualBeat,
+)
 from ns_common.textstats import split_sentences, word_count
 from ns_studio.context import FIXTURES_LLM
 from ns_studio.orchestrator import FORMAT_STAGES, MASTER_FIRST_STAGES, run_job
 from ns_studio.stages import REGISTRY
 from ns_studio.text import stages_master as M
-from ns_studio.text.models_local import Plan, SeoLong, ShortsPlanItem, Story
 from tests.helpers import make_channel, make_ctx
 
 RUBRIC = ("hook", "clarity", "pacing", "payoff", "cliffhangers", "originality", "voice_fit")
@@ -363,7 +372,7 @@ def test_expand_fixture_keeps_every_sentence_of_chapter_one():
 def test_local_models_enforce_spec_constraints():
     from pydantic import ValidationError
 
-    from ns_studio.text.models_local import ClipPlanItem, PolicyCheckResult
+    from ns_common.models import ClipPlanItem, PolicyCheckResult
 
     plan = json.loads((FIXTURES_LLM / "long_plan.json").read_text(encoding="utf-8"))
     chapters = plan["chapters"]
@@ -398,3 +407,13 @@ def test_policy_check_prompt_runs_through_call_json(tmp_home: Path):
     assert out["hook_honest"] is True
     call = ctx.services.llm.calls[-1]  # type: ignore[attr-defined]
     assert call["thinking"] is True and "fake_news:" in call["user"] and "Selected moment" in call["user"]
+
+
+def test_models_local_is_a_thin_alias_of_ns_common_models():
+    import ns_common.models as shared
+    from ns_studio.text import models_local
+
+    for name in ("Plan", "PlanChapter", "Story", "StoryChapter", "Sentence", "ShortsPlanItem", "SeoLong"):
+        assert getattr(models_local, name) is getattr(shared, name), name
+    assert models_local.ClipPlanItem is shared.ClipPlanItem
+    assert models_local.PolicyCheckResult is shared.PolicyCheckResult

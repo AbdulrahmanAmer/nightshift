@@ -8,8 +8,8 @@ from typing import Any
 import pytest
 
 from ns_common.errors import NsError
+from ns_common.models import Segment, Transcript, Word
 from ns_studio.clipper import transcribe_stage as ts
-from ns_studio.clipper.models import Segment, Transcript, Word
 from tests.fixtures.clipper.make_sample import build_transcript, make_sample
 
 
