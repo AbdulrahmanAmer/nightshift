@@ -344,7 +344,7 @@ def plan_bins(
     include_code: bool = False,
     llama_pair: str | None = None,
 ) -> list[DownloadItem]:
-    """Binary zips for s02: llama.cpp build + cudart (or the CPU build) and OpenCode when chosen."""
+    """Binaries for s02: llama.cpp build + cudart (or the CPU build), OpenCode when chosen, yt-dlp.exe."""
     paths = Paths(Path(home))
     dl = paths.home / "bin" / "_downloads"
     keys: list[tuple[str, tuple[str, ...]]]
@@ -370,6 +370,14 @@ def plan_bins(
             DownloadItem(
                 name="opencode", url=pin.url, dest=dl / Path(pin.url).name, sha256=pin.sha256, kind="zip",
                 extract_to=paths.bin_opencode, expect=("opencode.exe",),
+            )
+        )
+    if (pin := manifest.bins.get("yt_dlp")) is not None:
+        # One exe, not a zip: the Clipper's URL sources run bin\yt-dlp\yt-dlp.exe (CR-C8-10).
+        items.append(
+            DownloadItem(
+                name="yt_dlp", url=pin.url, dest=paths.home / "bin" / "yt-dlp" / "yt-dlp.exe",
+                sha256=pin.sha256,
             )
         )
     return items

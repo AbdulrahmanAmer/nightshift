@@ -111,7 +111,7 @@ Format per entry:
 - **From:** C8 Clipper / Task 3
 - **Change:** add `"opencv-python-headless>=4.9"` to `[project.optional-dependencies].dev` and `.studio` in `pyproject.toml` (`numpy` is already core).
 - **Why:** with it CI runs the YuNet/Canny paths (`pytest.importorskip("cv2")` tests are skipped without it). The YuNet ONNX also needs a `manifest.json` pin (`models\cv\yunet.onnx`) so the installer downloads it.
-- **Status:** open
+- **Status:** applied (`dev` extra earlier; `studio` extra and the `bins.yunet` manifest pin on feat/release-readiness)
 
 ## CR-C8-3: `sources` row stores the rights confirmation
 - **From:** C8 Clipper / Task 5
@@ -223,7 +223,7 @@ Format per entry:
 - **From:** C1 installer / s04_venvs, fallback.py
 - **Change:** (a) manifest: spaCy model wheel `en_core_web_md` version and SHA256 (the installer hard-codes 3.8.0 and cannot verify the hash); (b) manifest or `studio` extra: `nvidia-cublas-cu12` and `nvidia-cudnn-cu12` pins (the installer uses ranges `>=12.8,<13` and `>=9,<10`); (c) manifest: the PyTorch fallback HF repos (`Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice`, `-Base`) instead of constants in `installer/stage2/fallback.py`; (d) `studio` extra: `opencv-python-headless` (spec 21.4, needed from M3); (e) a Blackwell-capable CUDA 12.8 llama.cpp pin if one exists, so CUDA 12.4 to 12.7 drivers are not limited to the 12.4 build.
 - **Why:** ENGINEERING.md DoD 6 (no unpinned dependency). The installer runs today with the ranges above.
-- **Status:** open
+- **Status:** partly applied on feat/release-readiness: (d) `opencv-python-headless>=4.9,<5` is in the `studio` extra. Still open: (a) spaCy wheel hash, (b) cuBLAS/cuDNN pins, (c) PyTorch fallback repos in the manifest, (e) a CUDA 12.8 llama.cpp pin; each needs an upstream lookup that cannot be done from the authoring laptop
 
 ## CR-C1-5: what the installer expects from the `ns` CLI (C2)
 - **From:** C1 installer / s06, s08, s09, s10

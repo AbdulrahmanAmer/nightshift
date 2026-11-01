@@ -20,7 +20,10 @@ dependencies = [
 [project.optional-dependencies]
 # Installed on the target machine only (spec §1.1). torch + TTS engines are installed by the
 # installer from manifest.json pins, not from here, because the cu128 index cannot be locked here.
-studio = ["Pillow>=10", "spacy>=3.7,<4", "faster-whisper>=1.0", "imagehash>=4.3", "keyring>=25"]
+studio = [
+  "Pillow>=10", "spacy>=3.7,<4", "faster-whisper>=1.0", "imagehash>=4.3", "keyring>=25",
+  "opencv-python-headless>=4.9,<5",
+]
 tts = ["fastapi>=0.115", "uvicorn>=0.30", "soundfile>=0.12"]
 supervisor = ["fastapi>=0.115", "uvicorn>=0.30", "psutil>=6"]
 # The dashboard runs in the supervisor venv (fastapi and uvicorn come from the supervisor extra): uploads, thumbnails, key storage.

@@ -107,3 +107,12 @@ Size: `cublasLt64_12.dll` alone is 669 MB, so the zip is large (about 600 MB, be
 downloaded once by the installer, never bundled into `Nightshift-<ver>.zip`. If that is too heavy for the partner's link,
 the options are (a) pin the zip to a CUDA 13.x build whose cuBLAS may be smaller, or (b) let the installer fetch the CUDA
 runtime DLLs separately like the llama.cpp `cudart-*` assets. Neither is needed for M0.
+
+## manifest.json binary pins
+
+`manifest.json` `bins` entries carry `{version, url, sha256}`; the `Manifest` model is strict, so notes live here, not in the file.
+
+| Key | Source | Notes |
+|---|---|---|
+| `yt_dlp` | `https://github.com/yt-dlp/yt-dlp/releases/download/<tag>/yt-dlp.exe` | Pinned to `2026.10.26`. The sha256 is the `digest` field of the asset in `gh api repos/yt-dlp/yt-dlp/releases/latest` (the same value as the release's `SHA2-256SUMS`), so nothing was downloaded to compute it. Installer step `s02_download_bins` places it at `bin\yt-dlp\yt-dlp.exe`; the Clipper runs it for `studio clip <url>`. To bump: read the new tag and asset digest the same way and edit the three fields. |
+| `qwentts` | `null` on purpose | Filled from our own release asset `qwentts-win-cuda-x64.zip` of the `v*` release (see "qwentts build"): URL `https://github.com/AbdulrahmanAmer/nightshift/releases/download/<tag>/qwentts-win-cuda-x64.zip` and the sha256 from that release's `.sha256` asset (`gh api repos/AbdulrahmanAmer/nightshift/releases/tags/<tag> --jq '.assets[]|{name,digest}'`). Until then the installer probes `releases/latest/download/qwentts-win-cuda-x64.zip` and falls back to the PyTorch engine (`NS-W301`). |

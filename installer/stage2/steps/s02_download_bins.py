@@ -1,8 +1,9 @@
-"""s02_download_bins: llama.cpp (+ cudart) and OpenCode; qwentts.cpp when a binary exists (component C1).
+"""s02_download_bins: llama.cpp (+ cudart), OpenCode, yt-dlp; qwentts.cpp when a binary exists (component C1).
 
 The llama.cpp pair follows the driver: CUDA 13.0 or newer takes the CUDA 13.4 build (Blackwell needs it),
 CUDA 12.4 to 12.x the CUDA 12.4 build, anything older is NS-E103. ``bins.qwentts`` is null in the manifest,
 so the GitHub Releases asset is probed; without a binary the PyTorch fallback is scheduled (NS-W301).
+yt-dlp.exe (pinned in ``bins.yt_dlp``) goes to ``bin/yt-dlp/yt-dlp.exe`` for the Clipper link sources.
 """
 
 from __future__ import annotations
