@@ -206,19 +206,23 @@ class BinPin(Strict):
 
 class ProfileModels(Strict):
     llm: HfFile
+    llm_balanced: HfFile | None = None     # opt-in tier (spec 21.3)
+    llm_best: HfFile | None = None         # opt-in tier
     story_llm: HfFile | None = None
     embed: HfFile
-    tts: list[HfRepo]
+    tts: list[HfFile]                      # always-installed qwentts.cpp GGUFs (talkers + tokenizer)
+    tts_optional: list[HfFile] = []        # downloaded on demand (VoiceDesign)
     whisper_model: str
+    whisper_repo: HfRepo                   # CTranslate2 repo for whisper_model
 
 
 class Manifest(Strict):
     version: str
     profiles: dict[str, ProfileModels]
-    bins: dict[str, BinPin]
+    bins: dict[str, BinPin | None]         # None = no usable upstream binary (qwentts)
     python_version: str = "3.12"
     spacy_model: str = "en_core_web_md"
-    tts_packages: list[str]     # exact pip specs installed into the tts venv by the installer
+    tts_packages: list[str]     # PyTorch fallback set: exact pip specs for the fallback tts venv
 
 
 # ---------- text stages ----------

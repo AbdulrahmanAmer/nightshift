@@ -1,0 +1,164 @@
+{
+  "version": "0.1.0",
+  "python_version": "3.12",
+  "spacy_model": "en_core_web_md",
+  "tts_packages": [
+    "torch==2.9.1+cu128 --index-url https://download.pytorch.org/whl/cu128",
+    "torchaudio==2.9.1+cu128 --index-url https://download.pytorch.org/whl/cu128",
+    "qwen-tts==0.1.1",
+    "soundfile==0.14.0",
+    "fastapi==0.162.0",
+    "uvicorn==0.54.0"
+  ],
+  "profiles": {
+    "gpu": {
+      "llm": {
+        "repo": "Qwen/Qwen3-14B-GGUF",
+        "file": "Qwen3-14B-Q4_K_M.gguf",
+        "sha256": "500a8806e85ee9c83f3ae08420295592451379b4f8cf2d0f41c15dffeb6b81f0",
+        "bytes": 9001752960
+      },
+      "llm_balanced": {
+        "repo": "mudler/Qwen3.6-35B-A3B-APEX-MTP-GGUF",
+        "file": "Qwen3.6-35B-A3B-APEX-MTP-I-Mini.gguf",
+        "sha256": "6c2092ff43056701fdf431f01fb62334d60500953dc270dea2a387f1bb53d99b",
+        "bytes": 14272220768
+      },
+      "llm_best": {
+        "repo": "unsloth/Qwen3.6-35B-A3B-MTP-GGUF",
+        "file": "Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf",
+        "sha256": "55983c5a75a1ab969824077b3bb3de4146e82a9234072b48ad4e8f92ad3fe9f1",
+        "bytes": 22853663008
+      },
+      "story_llm": {
+        "repo": "Youssofal/Qwen3.6-35B-A3B-Abliterated-Heretic-GGUF",
+        "file": "Qwen3.6-35B-A3B-Abliterated-Heretic-Q4_K_M/Qwen3.6-35B-A3B-Abliterated-Heretic-Q4_K_M.gguf",
+        "sha256": "ae2fb73ac0da875640269f1e65e9c7fb415b066c6d544c3eef9adb0d03f04792",
+        "bytes": 21166758336
+      },
+      "embed": {
+        "repo": "nomic-ai/nomic-embed-text-v1.5-GGUF",
+        "file": "nomic-embed-text-v1.5.Q8_0.gguf",
+        "sha256": "3e24342164b3d94991ba9692fdc0dd08e3fd7362e0aacc396a9a5c54a544c3b7",
+        "bytes": 146146432
+      },
+      "tts": [
+        {
+          "repo": "Serveurperso/Qwen3-TTS-GGUF",
+          "file": "qwen-talker-1.7b-customvoice-Q8_0.gguf",
+          "sha256": "cab2cff67a0a557310febe558dc83076b28ed790e491867eb2751759f4cd89fa",
+          "bytes": 2042834304
+        },
+        {
+          "repo": "Serveurperso/Qwen3-TTS-GGUF",
+          "file": "qwen-talker-1.7b-base-Q8_0.gguf",
+          "sha256": "4b9a33a236908dd9435a42f7a396e38038329d053b704342a6413c08544c4fda",
+          "bytes": 2079448256
+        },
+        {
+          "repo": "Serveurperso/Qwen3-TTS-GGUF",
+          "file": "qwen-tokenizer-12hz-Q8_0.gguf",
+          "sha256": "1883beeed99348fc35e23dd225e9082f93f6f8c109330a33d935baa8acdbfd94",
+          "bytes": 291150624
+        }
+      ],
+      "tts_optional": [
+        {
+          "repo": "Serveurperso/Qwen3-TTS-GGUF",
+          "file": "qwen-talker-1.7b-voicedesign-Q8_0.gguf",
+          "sha256": "575610ab1ddcca4dca6bd9a64bcd859d93bbad8764f9cab24e1dbc0c51f62276",
+          "bytes": 2042833824
+        }
+      ],
+      "whisper_model": "distil-large-v3",
+      "whisper_repo": {
+        "repo": "Systran/faster-distil-whisper-large-v3",
+        "revision": "main",
+        "files_sha256": {
+          "model.bin": "b79368e19b6623813609431a6e5ee309a71506701ebc49fd7820e692dec7c5f5"
+        }
+      }
+    },
+    "cpu-dev": {
+      "llm": {
+        "repo": "Qwen/Qwen3-1.7B-GGUF",
+        "file": "Qwen3-1.7B-Q8_0.gguf",
+        "sha256": "061b54daade076b5d3362dac252678d17da8c68f07560be70818cace6590cb1a",
+        "bytes": 1834426016
+      },
+      "story_llm": null,
+      "embed": {
+        "repo": "nomic-ai/nomic-embed-text-v1.5-GGUF",
+        "file": "nomic-embed-text-v1.5.Q8_0.gguf",
+        "sha256": "3e24342164b3d94991ba9692fdc0dd08e3fd7362e0aacc396a9a5c54a544c3b7",
+        "bytes": 146146432
+      },
+      "tts": [
+        {
+          "repo": "Serveurperso/Qwen3-TTS-GGUF",
+          "file": "qwen-talker-0.6b-customvoice-Q8_0.gguf",
+          "sha256": "4eb38675c736ed6ac72012846ac8d6ef80e5af8bc05726870f0b3a6569588519",
+          "bytes": 968588544
+        },
+        {
+          "repo": "Serveurperso/Qwen3-TTS-GGUF",
+          "file": "qwen-tokenizer-12hz-Q8_0.gguf",
+          "sha256": "1883beeed99348fc35e23dd225e9082f93f6f8c109330a33d935baa8acdbfd94",
+          "bytes": 291150624
+        }
+      ],
+      "tts_optional": [],
+      "whisper_model": "tiny",
+      "whisper_repo": {
+        "repo": "Systran/faster-whisper-tiny",
+        "revision": "main",
+        "files_sha256": {
+          "model.bin": "dcb76c6586fc06cbdac6dd21f14cfd129cc4cdd9dce19bf4ffa62e59cbe6e6d1"
+        }
+      }
+    }
+  },
+  "bins": {
+    "llama_cuda": {
+      "version": "b12032",
+      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b12032/llama-b12032-bin-win-cuda-12.4-x64.zip",
+      "sha256": "36c7e24ad048cceabf00c1b49d0f0411b954c6a410a7ff4300af8721a94fd00a"
+    },
+    "cudart": {
+      "version": "b12032",
+      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b12032/cudart-llama-bin-win-cuda-12.4-x64.zip",
+      "sha256": "8c79a9b226de4b3cacfd1f83d24f962d0773be79f1e7b75c6af4ded7e32ae1d6"
+    },
+    "llama_cuda13": {
+      "version": "b12032",
+      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b12032/llama-b12032-bin-win-cuda-13.4-x64.zip",
+      "sha256": "4b2d4c4678192fbadc443e2c406fef06356d1b064ae9ab79b9f67e4329903511"
+    },
+    "cudart13": {
+      "version": "b12032",
+      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b12032/cudart-llama-bin-win-cuda-13.4-x64.zip",
+      "sha256": "738f8c251ac22b70c3ae6f83a10cf222725df0395246a2cf58f32bdb85fbe668"
+    },
+    "llama_cpu": {
+      "version": "b12032",
+      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b12032/llama-b12032-bin-win-cpu-x64.zip",
+      "sha256": "5296f5d18bb7d422c7c26f4bb9bc796d9d4f41e1312a8c296cff475bdc60d0d4"
+    },
+    "qwentts": null,
+    "opencode": {
+      "version": "1.19.5",
+      "url": "https://github.com/anomalyco/opencode/releases/download/v1.19.5/opencode-windows-x64.zip",
+      "sha256": "09a6e693157f0887e504f2cf4357a8cbddc5ead5d0dffb9a269dcc47c48640f5"
+    },
+    "uv": {
+      "version": "0.13.6",
+      "url": "https://github.com/astral-sh/uv/releases/download/0.13.6/uv-x86_64-pc-windows-msvc.zip",
+      "sha256": "a2a8820d5eea32f08ef467ef3b7f66883a9b076d5737a2fc2fbb5f458d1bb50f"
+    },
+    "yunet": {
+      "version": "2023mar",
+      "url": "https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx",
+      "sha256": "8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4"
+    }
+  }
+}

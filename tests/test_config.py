@@ -41,7 +41,6 @@ def test_install_state_default_and_save(tmp_home: Path):
     assert c.load_install_state(p).app_path == "D:/NightShift"
 
 
-@pytest.mark.xfail(strict=True, reason="manifest written in Task 14")
 def test_load_manifest_from_repo():
     mf = c.load_manifest()
     assert "gpu" in mf.profiles and "cpu-dev" in mf.profiles

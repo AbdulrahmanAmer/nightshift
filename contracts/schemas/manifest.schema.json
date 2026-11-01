@@ -107,6 +107,28 @@
         "llm": {
           "$ref": "#/$defs/HfFile"
         },
+        "llm_balanced": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HfFile"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "llm_best": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HfFile"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "story_llm": {
           "anyOf": [
             {
@@ -123,21 +145,33 @@
         },
         "tts": {
           "items": {
-            "$ref": "#/$defs/HfRepo"
+            "$ref": "#/$defs/HfFile"
           },
           "title": "Tts",
+          "type": "array"
+        },
+        "tts_optional": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/HfFile"
+          },
+          "title": "Tts Optional",
           "type": "array"
         },
         "whisper_model": {
           "title": "Whisper Model",
           "type": "string"
+        },
+        "whisper_repo": {
+          "$ref": "#/$defs/HfRepo"
         }
       },
       "required": [
         "llm",
         "embed",
         "tts",
-        "whisper_model"
+        "whisper_model",
+        "whisper_repo"
       ],
       "title": "ProfileModels",
       "type": "object"
@@ -158,7 +192,14 @@
     },
     "bins": {
       "additionalProperties": {
-        "$ref": "#/$defs/BinPin"
+        "anyOf": [
+          {
+            "$ref": "#/$defs/BinPin"
+          },
+          {
+            "type": "null"
+          }
+        ]
       },
       "title": "Bins",
       "type": "object"

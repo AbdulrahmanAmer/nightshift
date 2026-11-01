@@ -37,6 +37,7 @@ ns_studio = ["prompts/*.md", "presets/*.yaml", "presets/fonts/*", "exemplars/**/
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]
 addopts = "-q"
 
 [tool.ruff]
