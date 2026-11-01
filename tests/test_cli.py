@@ -226,3 +226,20 @@ def test_full_fake_shorts_pipeline_with_policy_gates(tmp_home: Path, monkeypatch
         data = json.loads((job_dir / name).read_text(encoding="utf-8"))
         assert data["passed"] is True, data
     assert list(paths.outbox.rglob("*.mp4"))
+
+
+def test_fake_llm_jobs_pin_the_fixture_budget(tmp_home: Path):
+    env = jobs.open_env(frozenset({"llm"}))
+    ch = jobs.ensure_demo_channel(env)
+    for _ in range(12):
+        ctx = jobs.make_job(env, ch, "shorts_only")
+        assert ctx.combo.length_bucket == 50 and ctx.combo.pacing == "standard"
+    explicit = jobs.make_job(env, ch, "shorts_only", fixed={"length_bucket": "35"})
+    assert explicit.combo.length_bucket == 35 and explicit.combo.pacing == "standard"
+
+
+def test_real_llm_jobs_are_not_pinned(tmp_home: Path):
+    env = jobs.open_env(frozenset({"tts"}))
+    ch = jobs.ensure_demo_channel(env)
+    seen = {jobs.make_job(env, ch, "shorts_only").combo.length_bucket for _ in range(30)}
+    assert len(seen) > 1

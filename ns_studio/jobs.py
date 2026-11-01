@@ -27,6 +27,8 @@ STAGE_MODULES: tuple[str, ...] = (
     "ns_studio.media.stages_media",
 )
 KEYRING_SERVICE = "Nightshift"
+# The fake LLM serves fixtures written for a 50 s Short at the "standard" pace (155 wpm); validators stay real.
+FAKE_LLM_COMBO: dict[str, str] = {"length_bucket": "50", "pacing": "standard"}
 Fmt = Literal["master_first", "shorts_only", "series_compilation"]
 FORMATS: tuple[str, ...] = ("master_first", "shorts_only", "series_compilation")
 
@@ -155,6 +157,8 @@ def make_job(
     """Draw a combo, record it in the ledger unless `record` is False, create the job dir and context."""
     now = now or datetime.now(UTC)
     rng = rng or random.Random()
+    if "llm" in env.fake:
+        fixed = {**FAKE_LLM_COMBO, **(fixed or {})}  # the fixtures are written for this budget
     combo = draw_combo(env.db, channel, rng=rng, now=now, fixed=fixed)
     job_id = new_job_id(channel.slug, now)
     item = "long" if fmt == "master_first" else "s1"
