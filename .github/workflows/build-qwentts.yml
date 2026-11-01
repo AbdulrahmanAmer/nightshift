@@ -9,9 +9,9 @@ on:
   workflow_dispatch:
   push:
     tags: ["v*"]
-    # Lets a change to this file be tested from a feature branch (workflow_dispatch only works for
-    # workflow files that already exist on the default branch).
-    paths: [".github/workflows/build-qwentts.yml"]
+    # TEMPORARY: lets this file be tested from the feature branch (workflow_dispatch only works for
+    # workflow files that already exist on the default branch). Removed before the PR is marked ready.
+    branches: ["feat/c10-delivery"]
 
 concurrency:
   group: build-qwentts-${{ github.ref }}
