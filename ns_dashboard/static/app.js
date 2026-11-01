@@ -2,7 +2,8 @@
    Create, Channels, Results and Settings live in app-pages.js and register on window.NS.pages. */
 (function () {
   "use strict";
-  const NS = (window.NS = { pages: {}, state: {}, util: {} });
+  const NS = (window.NS = Object.assign(window.NS || {}, { pages: {}, state: {}, util: {} }));
+  const vis = NS.vis;
 
   // ---------------------------------------------------------------- utilities
   const $ = (sel, root) => (root || document).querySelector(sel);
@@ -219,7 +220,10 @@
     const cls = job.status === "done" ? "done" : ["failed", "cancelled"].includes(job.status) ? "bad" : "";
     const label = job.status === "done" ? "Done" : job.status === "failed" ? `Stopped: ${job.message || "something failed"}` : job.status === "cancelled" ? "Cancelled" : stageWords(job.stage || job.status);
     const step = job.step && job.steps ? ` · step ${job.step} of ${job.steps}` : "";
-    return `<div class="card" data-job="${esc(job.job_id)}"><div class="stage-line"><span class="stage">${esc(label)}</span><span class="muted num">${job.kind === "clip" ? "Clips" : "Story video"}${step}</span></div><div class="progress ${cls}" style="margin-top:10px"><span style="width:${job.progress ?? 0}%"></span></div><div class="btn-row" style="margin-top:14px">${job.status === "done" ? `<a class="btn btn-primary" href="#/">Review it</a>` : ""}${["running", "queued"].includes(job.status) ? `<button class="btn btn-ghost" data-cancel="${esc(job.job_id)}" type="button">Cancel</button>` : ""}</div></div>`;
+    const STEPS = job.kind === "clip" ? ["import", "audio", "transcribe", "select", "detect", "captions", "render", "qc", "outbox"] : ["ideas", "plan", "draft", "critic_revise", "hooks", "seo", "visual_plan", "voice", "captions", "clips", "render", "qc", "outbox"];
+    const curIdx = STEPS.indexOf(job.stage);
+    const mini = `<div class="steps-mini">${STEPS.map((s, i) => `<span class="${job.status === "done" || i < curIdx ? "done" : i === curIdx && job.status === "running" ? "now" : ""}">${esc(stageWords(s))}</span>`).join("")}</div>`;
+    return `<div class="card" data-job="${esc(job.job_id)}"><div class="stage-line"><span class="stage">${esc(label)}</span><span class="muted num">${job.kind === "clip" ? "Clips" : "Story video"}${step}</span></div><div class="progress ${cls}" style="margin-top:10px"><span style="width:${job.progress ?? 0}%"></span></div>${mini}<div class="btn-row" style="margin-top:14px">${job.status === "done" ? `<a class="btn btn-primary" href="#/">Review it</a>` : ""}${["running", "queued"].includes(job.status) ? `<button class="btn btn-ghost" data-cancel="${esc(job.job_id)}" type="button">Cancel</button>` : ""}</div></div>`;
   }
   function watchJob(jobId, onUpdate) {
     let stopped = false;
@@ -241,7 +245,7 @@
 
     const drawList = () => {
       main.innerHTML = `<div class="page">${header(tab === "posted" ? "Approved and posted" : "Rejected", tab === "posted" ? "Approved videos wait in the Outbox folder until you post them. Posted ones have a YouTube link." : "Rejected videos are kept for 7 days in the rejected folder, then deleted.")}${tabsHtml()}
-        ${items.length ? `<div class="list">${items.map((o) => `<div class="row"><span class="badge ${esc(o.kind)}">${kindLabel(o.kind)}</span><div><div class="row-title">${esc(o.title)}</div><div class="row-sub">${esc(channelName(o.channel))} · ${fmtWhen(o.created_at)}${o.status === "uploaded" && o.url ? ` · <a href="${esc(o.url)}" target="_blank" rel="noopener">on YouTube</a>` : o.status === "approved" ? " · not posted yet" : ""}${o.reason ? ` · reason: ${esc(o.reason)}` : ""}</div></div>${o.status === "approved" ? `<button class="btn" data-resume="${esc(o.output_id)}" type="button">Finish posting</button>` : `<span class="num muted">${fmtDur(o.duration_s)}</span>`}</div>`).join("")}</div>` : `<div class="empty"><strong>Nothing here</strong></div>`}</div>`;
+        ${items.length ? `<div class="list">${items.map((o) => `<div class="row media"><span class="thumb-sm ${o.kind === "long" ? "" : "thumb-9"}"><img alt="" src="${vis.poster(o.title, o.kind, o.kind === "long" ? 112 : 84, o.kind === "long" ? 112 : 144)}"></span><span class="badge ${esc(o.kind)}">${kindLabel(o.kind)}</span><div><div class="row-title">${esc(o.title)}</div><div class="row-sub">${esc(channelName(o.channel))} · ${fmtWhen(o.created_at)}${o.status === "uploaded" && o.url ? ` · <a href="${esc(o.url)}" target="_blank" rel="noopener">on YouTube</a>` : o.status === "approved" ? " · not posted yet" : ""}${o.reason ? ` · reason: ${esc(o.reason)}` : ""}</div></div>${o.status === "approved" ? `<button class="btn" data-resume="${esc(o.output_id)}" type="button">Finish posting</button>` : `<span class="num muted">${fmtDur(o.duration_s)}</span>`}</div>`).join("")}</div>` : `<div class="empty"><strong>Nothing here</strong></div>`}</div>`;
     };
 
     const drawReady = async () => {
@@ -263,7 +267,8 @@
         <div class="queue">
           <div class="player-wrap" style="display:flex;flex-direction:column;gap:12px">
             <div class="hero ${o.kind === "long" ? "" : "portrait"}">
-              ${api.demo ? `<div class="placeholder">Video plays here<br><span class="small">(demo: no engine connected)</span></div>` : `<video controls preload="metadata" src="${api.mediaUrl(o.output_id)}" poster="${api.mediaUrl(o.output_id)}/thumb.jpg"></video>`}
+              <img class="backdrop" alt="" src="${vis.poster(o.title, o.kind, 320, 180, { noText: true })}">
+              ${api.demo ? `<img class="poster-main" alt="" src="${vis.poster(o.title, o.kind, o.kind === "long" ? 1280 : 540, o.kind === "long" ? 720 : 960, { label: kindLabel(o.kind) })}">` : `<video controls preload="metadata" src="${api.mediaUrl(o.output_id)}" poster="${api.mediaUrl(o.output_id)}/thumb.jpg" style="position:relative"></video>`}
               <span class="chip-float tl">${kindLabel(o.kind)}</span>
               <span class="chip-float tr num">${fmtDur(o.duration_s)}</span>
               <span class="chip-float bl">${esc(channelName(o.channel))}</span>
@@ -271,7 +276,7 @@
             <div class="big-title">${esc(o.title)}</div>
             <div class="btn-row"><span class="muted">made ${fmtWhen(o.created_at)}</span><span class="spacer"></span><a class="btn btn-ghost" href="#/assistant?about=${encodeURIComponent(o.output_id)}">Ask about this video</a><button class="btn btn-ghost" data-act="skip" type="button">Next video →</button></div>
             <details class="section"><summary>The story and why it passed checks</summary><div class="section-body"><p style="margin:0">${esc(d.story_excerpt || "")}</p><ul style="margin:0;padding-left:18px">${(d.policy_notes || []).map((n) => `<li>${esc(n)}</li>`).join("")}</ul></div></details>
-            <div class="filmstrip">${items.map((it) => `<button type="button" data-pick="${esc(it.output_id)}" aria-current="${it.output_id === current}"><span class="badge ${esc(it.kind)}">${kindLabel(it.kind)}</span><span class="ft">${esc(it.title)}</span><span class="small muted num">${fmtDur(it.duration_s)}</span></button>`).join("")}</div>
+            <div class="filmstrip">${items.map((it) => `<button type="button" data-pick="${esc(it.output_id)}" aria-current="${it.output_id === current}"><span class="fs-thumb ${it.kind === "long" ? "wide" : ""}"><img alt="" src="${vis.poster(it.title, it.kind, it.kind === "long" ? 144 : 84, it.kind === "long" ? 84 : 128)}"></span><span class="fs-body"><span class="badge ${esc(it.kind)}">${kindLabel(it.kind)}</span><span class="ft">${esc(it.title)}</span><span class="small muted num">${fmtDur(it.duration_s)}</span></span></button>`).join("")}</div>
           </div>
           <aside class="checklist">
             ${approved
