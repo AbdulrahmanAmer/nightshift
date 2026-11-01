@@ -1,0 +1,59 @@
+# Caption styles (spec §17). Colours are #RRGGBB. `font` is used when its file is present in presets/fonts/
+# (the installer places Anton there); otherwise `font_fallback`, a Windows system font, is used.
+# `margin_v_pct` is the distance of the bottom edge of the text block from the bottom, in % of video height.
+punch_yellow:
+  font: Anton
+  font_fallback: Impact
+  bold: false
+  uppercase: true
+  animation: pop
+  words_on_screen: [2, 3]
+  primary: "#FFFFFF"
+  active: "#FFD400"
+  outline_color: "#000000"
+  shadow_color: "#000000"
+  box: false
+  vertical: {font_size: 92, margin_v_pct: 30, margin_lr: 70, outline: 6, shadow: 2}
+  landscape: {font_size: 58, margin_v_pct: 9, margin_lr: 160, outline: 4, shadow: 2}
+clean_white:
+  font: Arial
+  font_fallback: Arial
+  bold: true
+  uppercase: false
+  animation: none
+  words_on_screen: [3, 4]
+  primary: "#FFFFFF"
+  active: "#8FE3FF"
+  outline_color: "#000000"
+  shadow_color: "#000000"
+  box: false
+  vertical: {font_size: 74, margin_v_pct: 26, margin_lr: 80, outline: 5, shadow: 1}
+  landscape: {font_size: 48, margin_v_pct: 8, margin_lr: 200, outline: 3, shadow: 1}
+boxed_dark:
+  font: Arial
+  font_fallback: Arial
+  bold: true
+  uppercase: false
+  animation: karaoke
+  words_on_screen: [2, 4]
+  primary: "#FFD84D"
+  active: "#FFFFFF"
+  outline_color: "#101010"
+  shadow_color: "#000000"
+  box: true
+  vertical: {font_size: 70, margin_v_pct: 28, margin_lr: 90, outline: 14, shadow: 0}
+  landscape: {font_size: 46, margin_v_pct: 8, margin_lr: 220, outline: 10, shadow: 0}
+minimal_lower:
+  font: Arial
+  font_fallback: Arial
+  bold: false
+  uppercase: false
+  animation: none
+  words_on_screen: [3, 4]
+  primary: "#E8E8E8"
+  active: "#FFB347"
+  outline_color: "#000000"
+  shadow_color: "#000000"
+  box: false
+  vertical: {font_size: 58, margin_v_pct: 14, margin_lr: 90, outline: 3, shadow: 1}
+  landscape: {font_size: 42, margin_v_pct: 6, margin_lr: 240, outline: 2, shadow: 1}
