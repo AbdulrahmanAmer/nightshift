@@ -6,10 +6,15 @@ from itertools import groupby
 
 from ns_common.errors import NsError
 from ns_studio.context import JobContext
-from ns_studio.stages import REGISTRY, Stage, run_stage
+from ns_studio.stages import REGISTRY, Stage, Tenant, run_stage
 
 # Filled by stage modules at import time (text/stages_shorts.py, media/*.py append their names in order).
 FORMAT_STAGES: dict[str, list[str]] = {"shorts_only": [], "master_first": [], "series_compilation": []}
+
+
+def _tenant_of(stage: Stage) -> Tenant:
+    """GPU tenant of `stage` (grouping key)."""
+    return stage.tenant
 
 
 def plan_job(fmt: str) -> list[Stage]:
@@ -33,7 +38,7 @@ def run_job(ctx: JobContext, *, resume: bool = True, dry_run: bool = False) -> l
         return [s.name for s in stages]
     owner = f"studio:{ctx.job_id}"
     ran: list[str] = []
-    for tenant, group in groupby(stages, key=lambda s: s.tenant):
+    for tenant, group in groupby(stages, key=_tenant_of):
         group_list = list(group)
         if tenant is not None:
             ctx.services.acquirer.acquire(tenant, owner, model_alias="story" if tenant == "llama" else None)
