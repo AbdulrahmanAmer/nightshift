@@ -3,7 +3,8 @@
   Builds the Nightshift partner bundle (BUILD_SPEC section 1.3, docs/ENGINEERING.md section 7).
 
 .DESCRIPTION
-  git archive of HEAD, minus .github, docs/superpowers/plans/_* and test fixtures over 1 MB, plus a VERSION
+  git archive of HEAD (so the committed dashboard build ns_dashboard/static/** is included and a local
+  ns_dashboard/ui/node_modules never is), minus .github, docs/superpowers/plans/_* and test fixtures over 1 MB, plus a VERSION
   file and the operator files at the root. The finished zip is verified (no .venv, models, binaries or videos;
   under 25 MB) and written as
     <OutDir>\Nightshift-<ver>.zip
@@ -39,8 +40,9 @@ $Repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $MaxZipBytes = 25MB
 $MaxFixtureBytes = 1MB
 $ForbiddenNames = @('*.gguf', '*.onnx', '*.safetensors', '*.mp4', '*.exe')
-$ForbiddenDirs = @('.venv', 'venv', '__pycache__', '.git', '.github')
-$RequiredEntries = @('VERSION', 'pyproject.toml', 'ns_common/__init__.py')
+$ForbiddenDirs = @('.venv', 'venv', '__pycache__', '.git', '.github', 'node_modules')
+# The dashboard build is committed (CI job ui-build keeps it equal to ns_dashboard/ui); the partner PC has no node.
+$RequiredEntries = @('VERSION', 'pyproject.toml', 'ns_common/__init__.py', 'ns_dashboard/static/index.html', 'ns_dashboard/static/app.js')
 
 function Invoke-Git {
     param([string[]]$GitArgs)
@@ -174,6 +176,12 @@ try {
     if (Test-Path -LiteralPath $github) {
         Remove-Item -LiteralPath $github -Recurse -Force
         $removed.Add('.github/')
+    }
+    # git archive only holds tracked files, so node_modules cannot appear; drop it anyway in case it was ever committed.
+    $nodeModules = Join-Path $stage 'ns_dashboard/ui/node_modules'
+    if (Test-Path -LiteralPath $nodeModules) {
+        Remove-Item -LiteralPath $nodeModules -Recurse -Force
+        $removed.Add('ns_dashboard/ui/node_modules/')
     }
     $plans = Join-Path $stage 'docs/superpowers/plans'
     if (Test-Path -LiteralPath $plans) {

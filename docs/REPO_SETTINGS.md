@@ -7,7 +7,7 @@ Applied on 2026-11-01 with `gh api` using the owner's token; every command is re
 
 | Setting | Value | Why |
 |---|---|---|
-| Required status checks | `lint`, `types`, `test`, `powershell-parse`, `scope-check` | The jobs of `.github/workflows/ci.yml` that decide merge safety (`scope-check` runs on pull requests only). `bundle` reports but does not block. Names must equal the job ids in ci.yml. |
+| Required status checks | `lint`, `types`, `test`, `ui-build`, `powershell-parse`, `scope-check` | The jobs of `.github/workflows/ci.yml` that decide merge safety (`scope-check` runs on pull requests only; `ui-build` rebuilds `ns_dashboard/ui` with node 20 and fails when the committed `ns_dashboard/static` differs). `bundle` reports but does not block. Names must equal the job ids in ci.yml. |
 | Require branches to be up to date | off | Builders on disjoint paths would otherwise rebase constantly. |
 | Force pushes | forbidden | History of published branches is never rewritten (ENGINEERING section 5). |
 | Branch deletion | forbidden | |
@@ -17,7 +17,7 @@ Applied on 2026-11-01 with `gh api` using the owner's token; every command is re
 ```powershell
 @'
 {
-  "required_status_checks": {"strict": false, "contexts": ["lint", "types", "test", "powershell-parse", "scope-check"]},
+  "required_status_checks": {"strict": false, "contexts": ["lint", "types", "test", "ui-build", "powershell-parse", "scope-check"]},
   "enforce_admins": false,
   "required_pull_request_reviews": null,
   "restrictions": null,
@@ -31,6 +31,10 @@ Applied on 2026-11-01 with `gh api` using the owner's token; every command is re
 
 Result of the call: HTTP 200; `required_status_checks.contexts = ["lint","types","test","powershell-parse","scope-check"]`, `allow_force_pushes = false`,
 `allow_deletions = false`, `enforce_admins = false`.
+
+`ui-build` (added with the release-readiness change, after its PR merged) is applied by re-running the PUT above with the
+`contexts` list shown; the check only exists on branches that carry the job, so PRs opened before the merge need `main`
+merged in (or an admin merge).
 
 ## Tag ruleset (applied)
 
@@ -63,8 +67,8 @@ gh api -X PUT repos/AbdulrahmanAmer/nightshift/actions/permissions/workflow -f d
 
 | File | Trigger | What |
 |---|---|---|
-| `.github/workflows/ci.yml` | push, pull request | `lint`, `types`, `test`, `powershell-parse`, `bundle`; `scope-check` on pull requests only |
-| `.github/workflows/release.yml` | tag `v*` | tests, `dev/make_bundle.ps1`, GitHub Release with `Nightshift-<ver>.zip`, `.sha256`, `nightshift-app-<ver>.zip` |
+| `.github/workflows/ci.yml` | push, pull request | `lint`, `types`, `test`, `ui-build`, `powershell-parse`, `bundle`; `scope-check` on pull requests only |
+| `.github/workflows/release.yml` | tag `v*` | tests, UI build (node 20) and check, `dev/make_bundle.ps1`, GitHub Release with `Nightshift-<ver>.zip`, `.sha256`, `nightshift-app-<ver>.zip` |
 | `.github/workflows/build-qwentts.yml` | `workflow_dispatch`, tag `v*` | builds `qwentts-win-cuda-x64.zip` on `windows-2022` (see "qwentts build") |
 
 Cutting a release (orchestrator): move the `## [Unreleased]` entries in `CHANGELOG.md` under `## [x.y.z]`, set `VERSION`,

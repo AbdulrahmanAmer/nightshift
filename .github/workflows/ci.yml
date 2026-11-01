@@ -1,6 +1,6 @@
 name: ci
 
-# Owner: C10 (docs/ENGINEERING.md section 7). Required status checks on main: lint, types, test.
+# Owner: C10 (docs/ENGINEERING.md section 7). Required status checks on main: lint, types, test, ui-build, powershell-parse, scope-check.
 on:
   push:
   pull_request:
@@ -66,6 +66,42 @@ jobs:
           path: report.xml
           if-no-files-found: ignore
           retention-days: 14
+
+  # The dashboard front-end sources live in ns_dashboard/ui; the build output is committed in ns_dashboard/static
+  # (the bundle is a git archive and the partner PC has no node). This job rebuilds it and fails on any difference.
+  ui-build:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: ns_dashboard/ui/package-lock.json
+      - name: npm ci
+        working-directory: ns_dashboard/ui
+        run: npm ci --no-audit --no-fund
+      - name: npm run build
+        working-directory: ns_dashboard/ui
+        run: npm run build
+      - name: Committed build equals the sources
+        shell: bash
+        run: |
+          changes="$(git status --porcelain ns_dashboard/static)"
+          if [ -n "$changes" ]; then
+            echo "::error::ns_dashboard/static differs from a fresh build of ns_dashboard/ui; run npm ci and npm run build in ns_dashboard/ui and commit the result"
+            echo "$changes"
+            exit 1
+          fi
+      - name: Upload the CI build
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-static-ci-build
+          path: ns_dashboard/static
+          if-no-files-found: ignore
+          retention-days: 7
 
   powershell-parse:
     runs-on: windows-latest
