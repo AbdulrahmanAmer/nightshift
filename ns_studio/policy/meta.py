@@ -7,7 +7,7 @@ jobs write `seo_long.json`, `seo_shorts.json` and `shorts_plan.json`.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from functools import lru_cache
+from functools import cache, lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -113,7 +113,7 @@ def _lines(path: Path) -> list[str]:
     ]
 
 
-@lru_cache(maxsize=None)
+@cache
 def policy_list(name: str) -> tuple[str, ...]:
     """Lower-cased entries of `contracts/policy/<name>` (comments and blanks removed)."""
     return tuple(_lines(contracts_dir() / "policy" / name))

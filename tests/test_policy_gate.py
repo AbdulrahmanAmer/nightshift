@@ -9,7 +9,7 @@ from ns_studio import orchestrator as orch
 from ns_studio.policy import gate, judge, regen
 from ns_studio.policy.base import Check, fail, ok
 from ns_studio.policy.text_checks import MisleadingClaims
-from ns_studio.stages import REGISTRY, StageState, register, run_stage
+from ns_studio.stages import REGISTRY, StageState, run_stage
 from tests.helpers import make_ctx
 
 

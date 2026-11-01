@@ -8,7 +8,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any
 
-import click
 import typer
 from typer.core import TyperGroup
 
@@ -34,7 +33,7 @@ def normalize_fake_flag(args: list[str]) -> list[str]:
 class StudioGroup(TyperGroup):
     """Top-level group that accepts `--fake-services` with or without a value."""
 
-    def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
+    def parse_args(self, ctx: Any, args: list[str]) -> list[str]:
         """Normalise the optional-value flag, then parse as usual."""
         return super().parse_args(ctx, normalize_fake_flag(list(args)))
 

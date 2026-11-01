@@ -11,7 +11,7 @@ from ns_studio import review
 from ns_studio.channels import crud
 from ns_studio.cli import app
 from ns_studio.errors import StudioError
-from tests.helpers import add_analytics, add_output, make_channel
+from tests.helpers import add_output, make_channel
 
 runner = CliRunner()
 JOB = "after-dark-20261101-abcd"
