@@ -1,0 +1,142 @@
+"""s07_configs: runtime.json, opencode.json, channel profile and secrets (component C1, spec 5).
+
+runtime.json was written as a baseline before tuning; here it is validated, not overwritten. API keys move
+into the Windows keyring and are blanked in every answers.json.
+"""
+
+from __future__ import annotations
+
+import json
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+from installer.stage2.answers import InstallerAnswers, blank_secrets_in_file, slugify
+from installer.stage2.base import Step
+from installer.stage2.context import StepContext
+from installer.stage2.errors import make_error
+from installer.stage2.runtime_cfg import ensure_baseline
+from installer.stage2.secrets import KEY_NAMES
+from ns_common.config import load_channel, load_runtime, save_channel
+from ns_common.models import Channel, Voice
+
+OPENCODE_CONFIG: dict[str, Any] = {
+    "$schema": "https://opencode.ai/config.json",
+    "enabled_providers": ["local"],
+    "provider": {
+        "local": {
+            "npm": "@ai-sdk/openai-compatible",
+            "name": "Nightshift Local Qwen",
+            "options": {"baseURL": "http://127.0.0.1:8080/v1", "apiKey": "local"},
+            "models": {"code": {"name": "Qwen3.6 35B-A3B (local)"}},
+        }
+    },
+    "model": "local/code",
+    "small_model": "local/code",
+    "autoupdate": False,
+    "share": "disabled",
+}
+
+
+def channel_from_answers(ans: InstallerAnswers) -> Channel:
+    """Channel profile for the first channel (spec 5 s07)."""
+    voice = ans.voice
+    if voice.mode != "preset" and not voice.name:
+        name = f"{slugify(ans.channel.display_name)}-voice"
+        voice = Voice.model_validate(voice.model_dump() | {"name": name})
+    return Channel(
+        slug=slugify(ans.channel.display_name),
+        display_name=ans.channel.display_name,
+        language=ans.channel.language,
+        niche=ans.channel.niche,
+        seed_keywords=list(ans.channel.seed_keywords),
+        voice=voice,
+        masters_per_week=ans.masters_per_week,
+        created_at=datetime.now(UTC).isoformat(timespec="seconds"),
+    )
+
+
+def answer_files(ctx: StepContext) -> list[Path]:
+    """Every answers.json that may still hold a key."""
+    files = [ctx.app_path / "answers.json", ctx.paths.config / "answers.json"]
+    if ctx.answers_path is not None:
+        files.append(ctx.answers_path)
+    return list(dict.fromkeys(files))
+
+
+def _file_has_keys(f: Path) -> bool:
+    if not f.is_file():
+        return False
+    try:
+        data = json.loads(f.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(data, dict) and any(data.get(k) for k in KEY_NAMES)
+
+
+class S07Configs(Step):
+    """Write the configuration files and move the secrets."""
+
+    id = "s07_configs"
+    title = "Settings and secrets"
+
+    def check(self, ctx: StepContext) -> bool:
+        """True when every config exists and no answers file still holds a key."""
+        ans = ctx.ensure_answers()
+        slug = slugify(ans.channel.display_name)
+        if not (ctx.paths.runtime_file.exists() and ctx.paths.channel_file(slug).exists()):
+            return False
+        if ans.install_code and not ctx.paths.opencode_file.exists():
+            return False
+        return not any(_file_has_keys(f) for f in answer_files(ctx))
+
+    def run(self, ctx: StepContext) -> None:
+        """Complete runtime.json, write opencode.json and the channel, store and blank the secrets."""
+        ans = ctx.ensure_answers()
+        ensure_baseline(ctx)
+
+        channel = channel_from_answers(ans)
+        if ctx.paths.channel_file(channel.slug).exists():
+            ctx.ui.say(f"Channel '{channel.slug}' already exists; left unchanged.")
+        else:
+            save_channel(ctx.paths, channel)
+            ctx.ui.say(f"Channel '{channel.slug}' created.")
+
+        if ans.install_code:
+            ctx.paths.opencode_file.parent.mkdir(parents=True, exist_ok=True)
+            ctx.paths.opencode_file.write_text(json.dumps(OPENCODE_CONFIG, indent=2) + "\n", encoding="utf-8")
+
+        for key in KEY_NAMES:
+            value = getattr(ans, key)
+            if value:
+                ctx.store.set(key, value)
+        for f in answer_files(ctx):
+            if blank_secrets_in_file(f):
+                ctx.ui.say(f"Removed the API keys from {f.name} (they are in the Windows keyring now).")
+        ans.pexels_api_key = None
+        ans.pixabay_api_key = None
+
+        if ans.restore_from:
+            res = ctx.run_tool("ns", ["restore", ans.restore_from], timeout=900)
+            if res.ok:
+                ctx.ui.say(f"Settings restored from {ans.restore_from}.")
+            else:
+                ctx.ui.say("Could not restore your earlier settings; continuing with fresh ones.", "yellow")
+                ctx.log.warn("restore_failed", f"exit {res.returncode}")
+        if ans.voice.mode != "preset":
+            ctx.ui.say(f"Your {ans.voice.mode} voice is created after setup (studio voice).")
+
+    def verify(self, ctx: StepContext) -> None:
+        """Configs validate; keys are in the store; no answers file keeps a key."""
+        ans = ctx.ensure_answers()
+        load_runtime(ctx.paths)
+        load_channel(ctx.paths, slugify(ans.channel.display_name))
+        if ans.install_code and not ctx.paths.opencode_file.exists():
+            raise make_error("NS-E110", "config/opencode.json was not written")
+        if not ctx.simulate:
+            for key in KEY_NAMES:
+                if not ctx.store.get(key):
+                    raise make_error("NS-E501" if key.startswith("pexels") else "NS-E502", "key not stored")
+        leaking = [f.name for f in answer_files(ctx) if _file_has_keys(f)]
+        if leaking:
+            raise make_error("NS-E501", f"API keys are still written in {', '.join(leaking)}")

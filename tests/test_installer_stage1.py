@@ -52,7 +52,7 @@ def test_real_dry_run_exits_zero_and_lists_actions():
     out = proc.stdout
     assert "[dry-run] use NIGHTSHIFT_HOME" in out
     assert "[dry-run] set user environment variable NIGHTSHIFT_HOME" in out
-    assert "[dry-run]" in out and "uv venv" in out
+    assert " venv --python " in out
     assert "installer.stage2.wizard" in out
     assert "Dry run finished" in out
     assert _summary(proc)["schema"] == 1

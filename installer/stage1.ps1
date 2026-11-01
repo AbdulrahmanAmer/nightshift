@@ -96,6 +96,11 @@ function Update-SessionPath {
     $env:Path = (@($machine, $user) | Where-Object { $_ }) -join ';'
 }
 
+function Join-Str {
+    param([string]$Base, [string]$Leaf)
+    return ($Base.TrimEnd('\') + '\' + $Leaf)
+}
+
 function Test-Tool {
     param([string]$Name)
     return [bool](Get-Command $Name -ErrorAction SilentlyContinue)
@@ -537,7 +542,7 @@ function Find-Uv {
     param([string]$NsHome)
     $c = Get-Command 'uv.exe' -ErrorAction SilentlyContinue
     if ($null -ne $c) { return $c.Source }
-    $p = Join-Path $NsHome 'bin\uv\uv.exe'
+    $p = Join-Str $NsHome 'bin\uv\uv.exe'
     if (Test-Path -LiteralPath $p) { return $p }
     return $null
 }
@@ -545,10 +550,10 @@ function Find-Uv {
 function Install-Uv {
     param([string]$NsHome, $Manifest)
     $pin = $Manifest.bins.uv
-    $dir = Join-Path $NsHome 'bin\uv'
+    $dir = Join-Str $NsHome 'bin\uv'
     if ($script:IsDry) {
         Show-Action "download $($pin.url) (sha256 $($pin.sha256)) and extract to $dir"
-        return (Join-Path $dir 'uv.exe')
+        return (Join-Str $dir 'uv.exe')
     }
     Write-Host "  uv : downloading $($pin.version) ..."
     New-Item -ItemType Directory -Force -Path $dir | Out-Null
@@ -564,7 +569,7 @@ function Install-Uv {
             Get-ChildItem -LiteralPath $found.DirectoryName -File | Move-Item -Destination $dir -Force
         }
         Remove-Item -LiteralPath $zip -Force
-        return (Join-Path $dir 'uv.exe')
+        return (Join-Str $dir 'uv.exe')
     }
     catch {
         Write-Host "  uv : direct download failed ($($_.Exception.Message)); trying winget" -ForegroundColor Yellow
@@ -685,7 +690,7 @@ if ($script:IsDry) {
     Show-Action "set user environment variable NIGHTSHIFT_HOME = $NsHome"
 }
 else {
-    foreach ($d in $topDirs) { New-Item -ItemType Directory -Force -Path (Join-Path $NsHome $d) | Out-Null }
+    foreach ($d in $topDirs) { New-Item -ItemType Directory -Force -Path (Join-Str $NsHome $d) | Out-Null }
     [Environment]::SetEnvironmentVariable('NIGHTSHIFT_HOME', $NsHome, 'User')
     $env:NIGHTSHIFT_HOME = $NsHome
 }
@@ -708,8 +713,8 @@ else {
 }
 
 # studio venv
-$venv = Join-Path $NsHome 'venvs\studio'
-$py = Join-Path $venv 'Scripts\python.exe'
+$venv = Join-Str $NsHome 'venvs\studio'
+$py = Join-Str $venv 'Scripts\python.exe'
 if ($script:IsDry) {
     Show-Action "$uv venv --python $pyVersion $venv"
     Show-Action "$uv pip install --python $py -e `"${App}[studio]`""
