@@ -11,32 +11,17 @@ from typing import Any
 from ns_dashboard import formats
 from ns_dashboard.common import now_iso
 from ns_dashboard.errors import ApiError
-from ns_dashboard.state import AppState, LockedDb
+from ns_dashboard.state import AppState
 from ns_dashboard.svc_channels import ChannelsService
 
-IDEA_STATUSES = ("new", "approved", "used", "dropped")
-IDEA_COLUMNS = {
-    "status": "TEXT NOT NULL DEFAULT 'new'",
-    "setting": "TEXT",
-    "protagonist": "TEXT",
-    "keywords": "TEXT",
-    "source": "TEXT",
-    "updated_at": "TEXT",
-}
-
-
-def ensure_idea_columns(db: LockedDb) -> None:
-    """Add the idea-bank columns to `ideas` when the shared schema does not have them yet (CR-C9-6)."""
-    with db.lock:
-        have = {r["name"] for r in db.query("PRAGMA table_info(ideas)")}
-        for col, decl in IDEA_COLUMNS.items():
-            if col not in have:
-                db.execute(f"ALTER TABLE ideas ADD COLUMN {col} {decl}")
+IDEA_STATUSES = ("new", "approved", "used", "rejected")
+IDEA_SOURCES = ("owner", "assistant", "generated")
+STATUS_ALIASES = {"dropped": "rejected"}  # the UI says "Dropped"; the shared schema says "rejected"
 
 
 def like(q: str) -> str:
-    """`%q%` with LIKE wildcards in `q` escaped (use with `ESCAPE '\\'`)."""
-    esc = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    """`%q%` with LIKE wildcards in `q` escaped (use with `ESCAPE '\'`)."""
+    esc = q.replace("\\", "\\\\").replace("%", "\%").replace("_", "\_")
     return f"%{esc}%"
 
 
@@ -44,23 +29,16 @@ def _idea(row: sqlite3.Row) -> dict[str, Any]:
     status = row["status"] or "new"
     if status == "new" and row["used"]:
         status = "used"
-    try:
-        keywords = json.loads(row["keywords"]) if row["keywords"] else []
-    except ValueError:
-        keywords = []
     return {
         "idea_id": row["idea_id"],
         "channel": row["channel"],
+        "title": row["title"] or row["premise"][:60],
         "premise": row["premise"],
         "twist": row["twist"],
-        "setting": row["setting"],
-        "protagonist": row["protagonist"],
-        "keywords": keywords,
         "status": status,
-        "source": row["source"] or "nightshift",
+        "source": row["source"] or "generated",
         "job_id": row["job_id"],
         "created_at": row["created_at"],
-        "updated_at": row["updated_at"],
     }
 
 
@@ -75,6 +53,7 @@ class LibraryService:
     def list_ideas(self, channel: str | None = None, status: str | None = None, q: str | None = None,
                    limit: int = 200) -> list[dict[str, Any]]:
         """Idea bank entries, newest first."""
+        status = STATUS_ALIASES.get(status or "", status)
         if status and status not in IDEA_STATUSES:
             raise ApiError(422, "bad_filter", f"Unknown idea status '{status}'.")
         where, args = [], []
@@ -82,15 +61,15 @@ class LibraryService:
             where.append("channel = ?")
             args.append(channel)
         if status == "used":
-            where.append("(status = 'used' OR (COALESCE(status, 'new') = 'new' AND used = 1))")
+            where.append("(status = 'used' OR (status = 'new' AND used = 1))")
         elif status == "new":
-            where.append("COALESCE(status, 'new') = 'new' AND used = 0")
+            where.append("status = 'new' AND used = 0")
         elif status:
             where.append("status = ?")
             args.append(status)
         if q:
-            where.append("(premise LIKE ? ESCAPE '\\' OR twist LIKE ? ESCAPE '\\')")
-            args += [like(q), like(q)]
+            where.append("(premise LIKE ? ESCAPE '\' OR twist LIKE ? ESCAPE '\' OR title LIKE ? ESCAPE '\')")
+            args += [like(q)] * 3
         clause = (" WHERE " + " AND ".join(where)) if where else ""
         rows = self.s.db.query(
             f"SELECT * FROM ideas{clause} ORDER BY idea_id DESC LIMIT ?", [*args, max(1, min(limit, 500))]
@@ -107,9 +86,10 @@ class LibraryService:
         status = str(body.get("status") or "new")
         if status not in ("new", "approved"):
             raise ApiError(422, "invalid_idea", "A new idea starts as 'new' or 'approved'.")
-        keywords = body.get("keywords") or []
-        if not isinstance(keywords, list) or len(keywords) > 8:
-            raise ApiError(422, "invalid_idea", "'keywords' must be a list of at most 8 words.")
+        source = str(body.get("source") or "owner")
+        if source not in IDEA_SOURCES:
+            raise ApiError(422, "invalid_idea", f"'source' must be one of {', '.join(IDEA_SOURCES)}.")
+        title = str(body.get("title") or "").strip()[:100] or premise[:60]
         now = now_iso()
         with self.s.db.tx() as db:
             db.execute(
@@ -117,17 +97,13 @@ class LibraryService:
                 (ch.slug, ch.display_name, ch.created_at or now, ch.status),
             )
             db.execute(
-                "INSERT INTO ideas(channel, premise, twist, created_at, used, status, setting, protagonist,"
-                " keywords, source, updated_at) VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, 'owner', ?)",
-                (
-                    slug, premise, str(body.get("twist") or "").strip(), now, status,
-                    body.get("setting"), body.get("protagonist"),
-                    json.dumps([str(k) for k in keywords]), now,
-                ),
+                "INSERT INTO ideas(channel, premise, twist, created_at, used, status, title, source)"
+                " VALUES (?, ?, ?, ?, 0, ?, ?, ?)",
+                (slug, premise, str(body.get("twist") or "").strip(), now, status, title, source),
             )
             new_id = db.one("SELECT last_insert_rowid() AS id")
         assert new_id is not None
-        self.s.log.info("idea_added", idea_id=new_id["id"], channel=slug)
+        self.s.log.info("idea_added", idea_id=new_id["id"], channel=slug, source=source)
         return self.get_idea(int(new_id["id"]))
 
     def get_idea(self, idea_id: int) -> dict[str, Any]:
@@ -138,13 +114,13 @@ class LibraryService:
         return _idea(row)
 
     def set_idea_status(self, idea_id: int, status: str | None) -> dict[str, Any]:
-        """new | approved | used | dropped; approved ideas are drawn first by the `ideas` stage."""
+        """new | approved | used | rejected (`dropped` is accepted); approved ideas are drawn first."""
+        status = STATUS_ALIASES.get(status or "", status)
         if status not in IDEA_STATUSES:
             raise ApiError(422, "invalid_idea", f"Status must be one of {', '.join(IDEA_STATUSES)}.")
         self.get_idea(idea_id)
         self.s.db.execute(
-            "UPDATE ideas SET status = ?, used = ?, updated_at = ? WHERE idea_id = ?",
-            (status, 1 if status == "used" else 0, now_iso(), idea_id),
+            "UPDATE ideas SET status = ?, used = ? WHERE idea_id = ?", (status, 1 if status == "used" else 0, idea_id)
         )
         return self.get_idea(idea_id)
 

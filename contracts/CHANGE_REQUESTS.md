@@ -75,7 +75,7 @@ Format per entry:
 - **From:** C9 ns_dashboard / Task 6
 - **Change:** in `contracts/schema.sql` add to `sources`: `rights_confirmed INTEGER NOT NULL DEFAULT 0, rights_confirmed_at TEXT`; add to `dashboard_jobs`: `result_json TEXT`. Add a pydantic `DashboardJob` model (fields as the API object `J`: job_id, kind, channel, status, progress, message, stage, created_at, started_at, finished_at, params, result) to `ns_common/models.py` and export `dashboard_job.schema.json` (spec 15.6 lists the schema, the file does not exist yet).
 - **Why:** spec 19.1 says the rights confirmation is stored on the `sources` row, which has no column for it. Until then the dashboard writes `imports/clipper/<source_id>/rights.json` and keeps `{"params":..., "result":...}` inside `dashboard_jobs.params_json`; C8 can read `rights.json` and set the column when it creates the `sources` row.
-- **Status:** open
+- **Status:** partly applied on main (PR #15: `sources.rights_confirmed` and `sources.title`). `dashboard_jobs.result_json` is not needed: the dashboard keeps `{"params","result"}` in `params_json`. The `dashboard_job` schema file is still open.
 
 ## CR-C9-3: supervisor service entry for the dashboard
 - **From:** C9 ns_dashboard / Task 7
@@ -187,7 +187,7 @@ Format per entry:
 - **From:** C9 ns_dashboard / Library + Assistant
 - **Change:** (a) `contracts/schema.sql`, table `ideas`: add `status TEXT NOT NULL DEFAULT 'new'` (`new|approved|used|dropped`), `setting TEXT`, `protagonist TEXT`, `keywords TEXT` (JSON array), `source TEXT` (`owner|nightshift|assistant`), `updated_at TEXT`. M1 stage `ideas` (C5/C7) then draws `status='approved'` rows of the channel first (set `status='used'` and `used=1` when consumed) and invents only when none are left. (b) New `contracts/assistant_schema.sql` (or an `assistant.db` section of `schema.sql`) with the tables created by `ns_dashboard/assistant/store.py`: `conversations`, `messages`, `actions`, `queued_messages` (DDL is in that module's `DDL` constant). (c) `ns_common/llm_client.py`: move `chat_tools(messages, tools)` (OpenAI-compatible tool calling, see `ns_dashboard/assistant/llm.py::ToolLlmClient`) into `LlmClient`. (d) `contracts/schemas/format.schema.json` generated from a pydantic `Format` model (the dashboard validates against `ns_dashboard/formats.py::FORMAT_SCHEMA` until then).
 - **Why:** spec 20.2 Library > Ideas and 20.3a. Until then the dashboard adds the idea columns itself with a guarded `ALTER TABLE ... ADD COLUMN` at startup and creates `data/assistant.db` with `CREATE TABLE IF NOT EXISTS`.
-- **Status:** open
+- **Status:** mostly applied on main (PR #15: `ideas.status|title|source`, `assistant_messages`, `Paths.assistant_db`, the `Format` model). The dashboard uses them (status `rejected` instead of `dropped`; `dropped` is accepted as an alias) and no longer adds columns or defines a format schema. Still open: see CR-C9-9.
 
 ## CR-C9-7: mount `studio ask` and ship the prompt
 - **From:** C9 ns_dashboard / Assistant CLI
@@ -288,3 +288,9 @@ Format per entry:
 - **From:** coordinator (spec 17.1, 20.3a)
 - **Change:** `ns_common.models.Format` (+ `FormatCanvas`, `FormatDuration`, `FormatCaptions`, `FormatRegion`, `FormatLayout`, `FormatMargins`, `FormatShots`, `FormatEncoder`, `FormatSheet`) exported as `format.schema.json`; `ideas` gains `status TEXT NOT NULL DEFAULT 'new'`, `title TEXT`, `source TEXT` (`owner|assistant|generated`); new table `assistant_messages(id, ts, role, content, tool_calls_json)`. `Db.migrate()` adds missing columns to databases made by an older `schema.sql`.
 - **Status:** applied in e0c34f5
+
+## CR-C9-9: assistant conversations and pending actions (shared schema)
+- **From:** C9 ns_dashboard / Assistant
+- **Change:** `assistant_messages` (flat: ts, role, content, tool_calls_json) cannot hold conversations, tool-call ids or pending confirm cards. `ns_dashboard/assistant/store.py` therefore creates `conversations`, `messages`, `actions` and `queued_messages` in `data/assistant.db` itself (and mirrors every message into `assistant_messages`). Move those four tables into `contracts/schema.sql` next to `assistant_messages` (or extend `assistant_messages` with `conversation_id`, `tool_call_id`, `name`), then delete `DDL` from the store.
+- **Why:** local DDL for a shared database is a shim; the owner of `contracts/` should own it.
+- **Status:** open

@@ -155,10 +155,10 @@ class FakeClipAdapter:
         channel = str(params.get("channel") or ctl.channel or "clips")
         now = datetime.now(UTC).isoformat()
         self.db.execute(
-            "INSERT OR IGNORE INTO sources(source_id, channel, path, duration_s, imported_at, template,"
-            " status)"
-            " VALUES (?, ?, ?, ?, ?, ?, 'imported')",
-            (source_id, channel, str(source_path), 1.0, now, params.get("template")),
+            "INSERT OR IGNORE INTO sources(source_id, channel, path, duration_s, imported_at, template, status,"
+            " rights_confirmed, title) VALUES (?, ?, ?, ?, ?, ?, 'imported', ?, ?)",
+            (source_id, channel, str(source_path), 1.0, now, params.get("template"),
+             1 if params.get("rights_confirmed") else 0, source_path.stem),
         )
         job_id = new_job_id(channel)
         ids: list[str] = []

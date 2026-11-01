@@ -21,21 +21,6 @@ if TYPE_CHECKING:
     from ns_dashboard.jobs import JobStore, JobWorker
     from ns_dashboard.supervisor_link import SupervisorLink
 
-DASHBOARD_JOBS_DDL = """
-CREATE TABLE IF NOT EXISTS dashboard_jobs (
-  job_id TEXT PRIMARY KEY,
-  kind TEXT NOT NULL,
-  channel TEXT,
-  status TEXT NOT NULL DEFAULT 'queued',
-  progress REAL NOT NULL DEFAULT 0,
-  message TEXT,
-  created_at TEXT NOT NULL,
-  started_at TEXT,
-  finished_at TEXT,
-  params_json TEXT
-);
-"""
-
 DEFAULT_SETTINGS: dict[str, Any] = {"run_time": "03:00", "notifications": True}
 
 
@@ -80,10 +65,9 @@ class LockedDb:
 
 
 def open_db(paths: Paths) -> LockedDb:
-    """Open and migrate `studio.db`, with the `dashboard_jobs` DDL as a safety net."""
+    """Open and migrate `studio.db` (the shared schema already has `dashboard_jobs`)."""
     db = Db(paths.db_path)
     db.migrate()
-    db.connect().executescript(DASHBOARD_JOBS_DDL)
     return LockedDb(db)
 
 

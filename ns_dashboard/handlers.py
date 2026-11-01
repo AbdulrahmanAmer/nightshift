@@ -21,7 +21,7 @@ from ns_dashboard.supervisor_link import SupervisorLink, make_acquirer, supervis
 from ns_dashboard.svc_channels import ChannelsService
 from ns_dashboard.svc_engine import EngineService
 from ns_dashboard.svc_jobs import JobsService, build_handlers
-from ns_dashboard.svc_library import LibraryService, ensure_idea_columns
+from ns_dashboard.svc_library import LibraryService
 from ns_dashboard.svc_outputs import OutputsService
 from ns_dashboard.svc_settings import SettingsService
 
@@ -67,7 +67,6 @@ def build_state(
     paths = paths or Paths.from_env()
     paths.ensure()
     db = open_db(paths)
-    ensure_idea_columns(db)
     log = NsLogger("dashboard", paths.logs)
     hub = EventHub()
     link = link or SupervisorLink(supervisor_url(paths))
