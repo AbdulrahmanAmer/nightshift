@@ -1,0 +1,27 @@
+{
+  "concepts": [
+    {
+      "letter": "B",
+      "title": "The Last Ferry Light",
+      "premise": "A ferry pilot finds that the lighthouse on the far shore blinks the names of people who have not been born yet, and the owner wants a warmer, less bleak tone.",
+      "cast": [
+        "Ines Moreau: ferry pilot who keeps a logbook of every crossing",
+        "Dov Aldren: lighthouse keeper who has not left the island in years",
+        "Tilda: Ines's niece, who hums the pattern before she can talk"
+      ],
+      "setting": "A foggy island ferry route and a stone lighthouse",
+      "tone": "Eerie but hopeful",
+      "beats": [
+        "Ines notices the light blinking a pattern that is not on any chart.",
+        "She decodes it as names and finds her niece's name already written.",
+        "Dov admits that the light only blinks names it intends to protect.",
+        "Ines tries to switch the light off and the fog closes around the ferry.",
+        "She learns the light is guiding the ferry home, and the last name on the list is hers."
+      ],
+      "why_it_works": "The decoding puzzle stays, and the ending now rewards the listener instead of punishing the pilot.",
+      "audience": "Listeners who like mystery with a human heart.",
+      "series_potential": "Each part decodes one more name and shows whom the light is protecting.",
+      "risks": []
+    }
+  ]
+}

@@ -1,0 +1,26 @@
+{
+  "concepts": [
+    {
+      "letter": "A",
+      "title": "The Night Taylor Swift Vanished",
+      "premise": "A night nurse finds Taylor Swift asleep in a hospital corridor and learns what she saw on the stage that night.",
+      "cast": [
+        "Mara Quill: night nurse",
+        "Taylor Swift: a famous singer who hides in the hospital"
+      ],
+      "setting": "A county hospital at night",
+      "tone": "Tense",
+      "beats": [
+        "Mara finds a stranger asleep in a corridor.",
+        "The stranger asks her to hide something.",
+        "Mara learns what the stranger is running from.",
+        "The hospital locks down.",
+        "Mara decides whether to keep the secret."
+      ],
+      "why_it_works": "A celebrity hook.",
+      "audience": "Fans.",
+      "series_potential": "Each part reveals another secret.",
+      "risks": []
+    }
+  ]
+}
