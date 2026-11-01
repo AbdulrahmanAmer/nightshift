@@ -84,8 +84,7 @@
               "type": "null"
             }
           ],
-          "default": null,
-          "title": "Story Flags"
+          "default": null
         },
         "build": {
           "anyOf": [
