@@ -42,9 +42,9 @@ Format per entry:
 
 ## CR-C8-0: register the clipper error codes in `errors.json`
 - **From:** C8 Clipper / Task 1
-- **Change:** add `NS-E405` (unsupported source: too long, no audio, unreadable, or rights not confirmed), `NS-E406` (transcription produced fewer than 30 words), `NS-E407` (no clip candidates passed the filters) and `NS-W402` (requested template not applicable, fell back to center_crop). Texts are in `ns_studio/clipper/errors.py`.
-- **Why:** spec 19.7 defines them but `contracts/errors.json` lacks them, so `NsError` raised `KeyError`. C8 registers them at import (`setdefault`) until this lands; then `ns_studio/clipper/errors.py` is deleted.
-- **Status:** open
+- **Change:** add `NS-E405` (unsupported source: too long, no audio, unreadable, or rights not confirmed), `NS-E406` (transcription produced fewer than 30 words), `NS-E407` (no clip candidates passed the filters) and `NS-W402` (requested template not applicable, fell back to center_crop). 
+- **Why:** spec 19.7 defines them but `contracts/errors.json` lacks them, so `NsError` raised `KeyError`.
+- **Status:** applied on main (2a3d772); C8's local registration shim was removed
 
 ## CR-C8-1: move the clipper schemas into `ns_common`
 - **From:** C8 Clipper / Task 1
