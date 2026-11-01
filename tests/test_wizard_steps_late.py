@@ -164,7 +164,7 @@ def test_s07_restore_from_calls_ns_restore(tmp_path: Path):
     ctx2, _ = keyed_context(tmp_path / "bad", restore_from="D:\\backup.zip")
     ctx2.runner = FakeRunner(tmp_path / "d2", results={"ns restore D:\\backup.zip": RunResult(2)})
     S07Configs().run(ctx2)
-    assert "Could not restore" in ctx2.ui.text
+    assert "NS-E703" in ctx2.ui.text
 
 
 def test_s07_verify_fails_when_a_key_is_still_in_a_file(tmp_path: Path):
@@ -329,7 +329,7 @@ def test_s09_real_scheduler_failure_is_e202(tmp_path: Path):
     )
     with pytest.raises(NsError) as ei:
         S09ShortcutsScheduler().run(ctx)
-    assert ei.value.code == "NS-E202" and "access denied" in ei.value.detail
+    assert ei.value.code == "NS-E204" and "access denied" in ei.value.detail
 
 
 def test_s09_shortcut_failure_and_desktop_override(tmp_path: Path):

@@ -88,7 +88,7 @@ class S09ShortcutsScheduler(Step):
             ctx.log.warn("schedule_unavailable", res.text[-200:])
         else:
             detail = f"ns schedule install failed (exit {res.returncode}): {res.text[-200:]}"
-            raise make_error("NS-E202", detail)
+            raise make_error("NS-E204", detail)
 
     def verify(self, ctx: StepContext) -> None:
         """Every expected shortcut file exists and the task decision is recorded."""
@@ -97,4 +97,4 @@ class S09ShortcutsScheduler(Step):
             if not (folder / f"{name}.lnk").exists():
                 raise make_error("NS-E110", f"shortcut '{name}' was not created")
         if ctx.flag("schedule") not in ("installed", "unavailable"):
-            raise make_error("NS-E202", "the nightly task was not registered")
+            raise make_error("NS-E204", "the nightly task was not registered")

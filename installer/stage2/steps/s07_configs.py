@@ -121,7 +121,7 @@ class S07Configs(Step):
             if res.ok:
                 ctx.ui.say(f"Settings restored from {ans.restore_from}.")
             else:
-                ctx.ui.say("Could not restore your earlier settings; continuing with fresh ones.", "yellow")
+                ctx.ui.say("NS-E703: could not restore your earlier settings; continuing with fresh ones.", "yellow")
                 ctx.log.warn("restore_failed", f"exit {res.returncode}")
         if ans.voice.mode != "preset":
             ctx.ui.say(f"Your {ans.voice.mode} voice is created after setup (studio voice).")
