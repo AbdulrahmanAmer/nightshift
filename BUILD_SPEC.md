@@ -254,7 +254,7 @@ Work packages: **A** installer+launchers · **B** supervisor+tune+opencode · **
 
 **`UNINSTALL.cmd` → `installer\uninstall.ps1`:** removes the scheduled task, desktop shortcuts, `venvs\`, `bin\` and the `NIGHTSHIFT_HOME` user env var; asks separately (default **No**) whether to delete `models\` and whether to delete `outbox\`, `data\`, `imports\`, `cache\`; prints what was kept and where. Idempotent. Also reachable from Dashboard → Settings → Uninstall (opens the console).
 
-**`ns update <zip>`:** verifies the zip's `VERSION` and SHA256 sidecar, extracts to `<app_path>.new\`, copies `.git\`, `config\` and untracked data over, runs `uv sync --locked` per venv, swaps directories (keeping `<app_path>.prev\` for `ns update --rollback`), re-runs `ns verify --quick`, and re-registers shortcuts and the task. When the repo has a git remote, `git pull` is the simpler path and `ns update` says so.
+**`ns update`** (three sources, same safety): `ns update --github [--channel stable|main]` asks the GitHub Releases API for the latest `v*` release (or the tip of `main` when `--channel main`), downloads `nightshift-app-<ver>.zip` + `.sha256` from https://github.com/AbdulrahmanAmer/nightshift/releases, verifies, and applies; `ns update <zip>` applies a file received by other means; `ns update --git` runs `git pull --ff-only` when the install is a clone. Apply = extract to `<app_path>.new\` → copy `.git\`, `config\` and untracked data over → `uv pip install -e` per venv → swap directories keeping `<app_path>.prev\` (`ns update --rollback`) → `ns verify --quick` → re-register shortcuts and the task → show the changelog section for the new version. `ns update --check` only reports current vs latest; the supervisor runs it weekly and posts a notification, never auto-installs. The Dashboard's Settings → Update button calls the same code. The UI (`ns_dashboard/static`) and prompts/presets update this way too, so quality work on them can ship any time without touching the engine or models.
 
 ---
 
@@ -720,6 +720,9 @@ Words per part/chapter within budget ±20 % · banned phrases · no opening line
 **Thumbnail templates** (`thumbnails.yaml`): 3 layouts, bundled `Anton` font, ≤ 4 words, high-contrast frame pick by luminance variance.
 **Clip rules:** §7.4.
 
+### 17.1 Formats are data, not code (modularity rule)
+Every output shape is a **format preset** in `ns_studio/presets/formats/<id>.yaml`, loaded at runtime; adding a format never touches Python. A format defines: `canvas {w,h,fps}`, `kind: short|long|square|clip`, `duration {min_s,max_s,buckets?}`, `captions {styles_allowed[], anchor_y_pct, words_on_screen}`, `layout {regions:[{name, x,y,w,h, source: full|facecam|face:n|screen|blur_fill}], seam_captions?}`, `safe_margins {top,bottom}`, `shots {min_s,max_s}`, `encoder {preset}`, `sheet {hashtags_required[], description_rules}`. Shipped presets: `short_9x16`, `long_16x9`, `square_1x1`, and the clip layouts of §19.3 (`clip_gaming_facecam`, `clip_podcast_stacked`, `clip_podcast_single`, `clip_talking_head`, `clip_center_crop`, `clip_screen_plus_cam`). The renderer builds its FFmpeg graph from the regions list generically (`ns_studio/media/layout.py`), so split screens, picture-in-picture and new aspect ratios are new YAML files. Channels list `formats_allowed`; the Library → Formats page lets the owner duplicate and edit presets with a live layout thumbnail and validates them against `contracts/schemas/format.schema.json`.
+
 ---
 
 ## 18. YouTube safety & growth playbook (enforced by WP-H)
@@ -880,20 +883,11 @@ Given transcript segments with timestamps, the kind of video (detected or chosen
 ### 20.1 Shape
 `ns_dashboard` is a FastAPI app on **127.0.0.1:8100** serving a static single-page UI (vanilla HTML/CSS/JS from `ns_dashboard/static/`, no bundler) and a JSON API. It is started by the supervisor as service `dashboard` (not a GPU tenant) and opened by `Nightshift Dashboard.lnk`. No authentication: it binds to localhost only and refuses non-loopback `Host` headers.
 
-### 20.2 Pages
-| Page | Shows | Actions |
-|---|---|---|
-| **Status strip** (every page) | Engine state (`starting` / `idle` / `loading <service>` with elapsed seconds / `ready` / `job running: <stage>`), VRAM owner, next scheduled run | Warm up, Quit Nightshift (confirms; cancels a running job after 30 s grace) |
-| **Overview** | Tonight's schedule per channel, last run summary, Outbox counts (pending / approved / rejected), service states, disk free, incidents | Run now (channel, format), Pause/Resume channel, Stop all |
-| **Review** | Queue of pending outputs (long, short, clip) with thumbnail, duration, title; video player (HTTP range streaming), story text / transcript excerpt, policy notes, disclosure advice, upload sheet copy buttons | Approve, Reject with reason, Mark uploaded (URL), Open folder |
-| **Clipper** | Drop zone (drag and drop or file picker), rights confirmation checkbox, channel and template selectors with template thumbnails, options (max clips, min/max seconds, caption style); job list with progress bar and stage name; finished clips preview grid | Start job, Cancel, Re-run select with different settings |
-| **Channels** | Channel cards; profile editor (every §11 field with validation), voice picker with preview playback, pool editor with distinctness warnings | Add, Edit, Validate, Pause |
-| **Runs & Logs** | Runs table (started, finished, jobs, rejected, timings); live tail of `logs\*.jsonl` filtered by component/level | Download diagnostics bundle |
-| **Learn** | Drop zone for the YouTube Analytics CSV; import result; top/bottom performers per pool; weight changes | Import |
-| **Settings** | Runtime profile and flags (read-only unless unlocked), API keys (masked; set/replace via keyring), schedule time, update from zip | Save, Re-run verify, `ns update` |
-
 ### 20.3 API (all JSON, prefix `/api`)
 `GET /status` · `GET/POST /channels`, `GET/PUT /channels/{slug}`, `POST /channels/{slug}/pause|resume|validate` · `GET /outputs?status=pending&kind=` · `GET /outputs/{id}` · `POST /outputs/{id}/approve|reject|uploaded` · `GET /media/{output_id}` (range streaming of the MP4) · `GET /media/{output_id}/thumb.jpg` · `POST /jobs/run {channel, format}` · `POST /jobs/clip` (multipart upload or `{path}` for a local file; `{channel, template, max_clips, min_s, max_s, rights_confirmed}`) · `GET /jobs`, `GET /jobs/{id}`, `POST /jobs/{id}/cancel` · `GET /runs` · `GET /logs/tail?component=&level=&n=` · `POST /learn/import` (multipart CSV) · `GET /learn/summary` · `GET/PUT /settings` · `POST /settings/keys` · `POST /diagnostics` · `GET /templates` (clip templates with preview PNGs) · `GET /voices`, `POST /voices/preview`.
+
+### 20.3a Assistant API and safety
+`POST /api/assistant/chat` (SSE stream) with `{messages:[{role,content}], context:{page, output_id?, channel?}}`. The dashboard backend calls the supervisor for `llama` (alias `code` or `story`, whichever is loaded; waits if a job holds it) and runs a tool-use loop with a fixed tool list: `search_library`, `add_idea`, `start_story_job`, `start_clip_job`, `pause_channel`, `resume_channel`, `set_schedule`, `explain_output`, `explain_failure`, `draft_style_notes`. Read-only tools run immediately; every state-changing tool returns a `confirm` event rendered as a card, and runs only after `POST /api/assistant/confirm {action_id}`. Never exposed: approve/reject outputs, keys, uninstall, engine flags. Chat history is stored per owner in `data\assistant.db` and shown on the Assistant page. The system prompt is `ns_dashboard/prompts/assistant.md` (versioned like other prompts). Library endpoints: `GET/POST /api/library/ideas`, `PUT /api/library/ideas/{id}` (status), `GET /api/library/stories?q=`, `GET /api/library/footage?q=`, `GET/POST/PUT /api/library/formats`, `GET /api/update/check`, `POST /api/update/apply`. Ideas feed M1 stage `ideas`: approved bank entries for the channel are consumed first (status → Used), invention happens only when none are left.
 
 ### 20.4 Job worker
 A single background thread drains `dashboard_jobs` (FIFO). Job kinds: `run` (studio job via the orchestrator), `clip` (§19 pipeline), `learn`, `verify`. Progress is written per stage to `dashboard_jobs.progress/message`; the UI polls `GET /jobs/{id}` every 2 s. The worker acquires GPU tenants through the supervisor like the nightly task does; if the GPU is busy with a nightly run, the job waits and the UI says so. Cancel sets a flag checked between stages.
