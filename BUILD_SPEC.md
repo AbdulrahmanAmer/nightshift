@@ -540,6 +540,17 @@ rejected\<slug>\<YYYY-MM-DD>\<job_id>\ logs\
 ```
 Coding workspace: `%USERPROFILE%\Projects`.
 
+### 15.2a Outbox layout is organized by content, not by job
+```
+outbox\<channel>\
+  stories\<story-title-slug>\full\<story-title>.mp4 + .json + .txt + thumb_1..3.jpg
+  stories\<story-title-slug>\shorts\<story-title> - Short 01.mp4 + .json + .txt
+  series\<series-title-slug>\part-01\full\<series-title> - Part 01.mp4 + …
+  series\<series-title-slug>\part-01\shorts\<series-title> - Part 01 - Short 01.mp4 + …
+  clips\<source-video-name-slug>\clip-01 <clip-title>.mp4 + .json + .txt
+```
+`outputs.path` in SQLite and `metadata.job_id` in each sheet keep traceability; `data\jobs\<job_id>\` keeps the working files. File names are Windows-safe slugs (≤ 80 chars, no reserved characters); collisions get a `-2` suffix. `rejected\` mirrors the same tree. The Dashboard's "Open folder" opens the item's folder in Explorer. Posted items stay where they are; status lives in the database.
+
 ### 15.3 Ports & supervisor API (127.0.0.1)
 llama **8080** · embed **8081** · TTS **8091** · supervisor **8099** · dashboard **8100**.
 | Method | Path | Body → Response |
