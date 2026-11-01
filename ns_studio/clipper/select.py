@@ -78,6 +78,15 @@ def format_window(tr: Transcript, w_start: float, w_end: float) -> str:
     return "\n".join(lines)
 
 
+def window_segments(tr: Transcript, w_start: float, w_end: float) -> list[dict[str, Any]]:
+    """Segments inside a window as `{i, start, end, text}` dicts, the shape `clip_select.md` iterates."""
+    return [
+        {"i": s.i, "start": round(s.start, 1), "end": round(s.end, 1), "text": s.text.strip()}
+        for s in tr.segments
+        if s.end >= w_start and s.start <= w_end
+    ]
+
+
 def extract_items(raw: Any) -> list[dict[str, Any]]:
     """Tolerantly pull the candidate list out of an LLM answer (a list or an object holding one)."""
     items: list[Any] = []

@@ -21,7 +21,7 @@ from ns_common.errors import NsError
 from ns_common.logging import NsLogger
 from ns_common.models import Channel, Combo, PolicyAdvice, PolicyCheck, PolicyResult, Runtime
 from ns_common.paths import Paths
-from ns_studio.clipper import deps, detect, layout, render, select, seo, source, transcribe_stage
+from ns_studio.clipper import detect, layout, render, select, seo, source, transcribe_stage
 from ns_studio.clipper.models import (
     CANVAS_H,
     ClipItem,
@@ -31,8 +31,13 @@ from ns_studio.clipper.models import (
     Transcript,
 )
 from ns_studio.context import FAKEABLE, JobContext, build_services
+from ns_studio.media import captions as media_captions
+from ns_studio.media import outbox as media_outbox
+from ns_studio.media import qc as media_qc
+from ns_studio.media import transcribe as media_transcribe
 from ns_studio.orchestrator import FORMAT_STAGES
 from ns_studio.stages import Stage, Tenant, register
+from ns_studio.text.prompts import call_json
 
 CAPTION_STYLE_FALLBACK = "clean_white"
 
@@ -196,7 +201,6 @@ class SelectStage:
         """Window, ask, merge, snap, filter, rank; NS-E407 when nothing survives."""
         tr = _transcript(ctx)
         p = _params(ctx)
-        title = str(_source(ctx).get("title", ""))
         cache: dict[str, Any] = (
             json.loads(ctx.file("clip_candidates.json").read_text(encoding="utf-8"))
             if ctx.file("clip_candidates.json").exists()
@@ -204,17 +208,16 @@ class SelectStage:
         )
 
         def ask(ws: float, we: float) -> dict[str, Any]:
-            return deps.call_json(
+            return call_json(
                 ctx,
                 "clip_select",
-                segments=select.format_window(tr, ws, we),
-                window_start=ws,
-                window_end=we,
-                min_s=p.min_s,
-                max_s=p.max_s,
+                segments=select.window_segments(tr, ws, we),
+                window_start_s=round(ws, 1),
+                window_end_s=round(we, 1),
+                clip_min_s=p.min_s,
+                clip_max_s=p.max_s,
                 max_candidates=10,
                 video_kind=p.video_kind if p.template == "auto" else p.template,
-                source_title=title,
             )
 
         try:
@@ -315,7 +318,7 @@ class CaptionsStage:
 
     def run(self, ctx: JobContext) -> None:
         """Build `captions/c<k>.ass` with C6's builder, anchored per template."""
-        caps, tmod = deps.media("captions"), deps.media("transcribe")
+        caps, tmod = media_captions, media_transcribe
         tr, plan, lay = _transcript(ctx), _plan(ctx), _layout(ctx)
         tpl = layout.load_templates()[lay.template]
         ctx.subdir("captions")
@@ -383,20 +386,18 @@ class SeoStage:
 
     name: str = "clip_seo"
     tenant: Tenant = "llama"
-    inputs: tuple[str, ...] = ("clip_plan.json", "transcript.json", "source.json", "clip_layout.json")
+    inputs: tuple[str, ...] = ("clip_plan.json", "transcript.json", "source.json")
     outputs: tuple[str, ...] = ("seo_clips.json", "policy_text.json")
 
     def run(self, ctx: JobContext) -> None:
         """Generate, normalise and check the metadata of every clip (NS-E602/E603/E606 on failure)."""
-        tr, plan, info, lay = _transcript(ctx), _plan(ctx), _source(ctx), _layout(ctx)
+        tr, plan, info = _transcript(ctx), _plan(ctx), _source(ctx)
         sheets: list[dict[str, Any]] = []
         merged: dict[str, list[tuple[bool, str]]] = {}
         for clip in plan:
             words = select.words_in(tr.words, clip.start_s, clip.end_s)
             excerpt = " ".join(w.w for w in words)[:1500]
-            result, policy = seo.generate_seo(
-                ctx, clip, excerpt=excerpt, source_title=str(info["title"]), template=lay.template
-            )
+            result, policy = seo.generate_seo(ctx, clip, excerpt=excerpt, source_title=str(info["title"]))
             sheets.append({"k": clip.k, **result.model_dump(mode="json")})
             for name, chk in policy.checks.items():
                 detail = f"c{clip.k}: {chk.detail}" if chk.detail else ""
@@ -426,7 +427,7 @@ class QcStage:
 
     def run(self, ctx: JobContext) -> None:
         """Write `qc/c<k>.json` and `qc/report.json` before raising on failures."""
-        qc = deps.media("qc")
+        qc = media_qc
         rendered: dict[str, Any] = ctx.read_json("render/report.json")
         captions: dict[str, Any] = ctx.read_json("captions/report.json")
         summary: dict[str, Any] = {}
@@ -489,7 +490,7 @@ class OutboxStage:
 
     def run(self, ctx: JobContext) -> None:
         """Publish every clip; `outputs.kind` is "clip" and `outputs.source_id` references the source."""
-        ob = deps.media("outbox")
+        ob = media_outbox
         info, lay = _source(ctx), _layout(ctx)
         rendered: dict[str, Any] = ctx.read_json("render/report.json")
         seos = {int(s["k"]): s for s in ctx.read_json("seo_clips.json")}

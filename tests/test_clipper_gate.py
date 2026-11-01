@@ -9,10 +9,6 @@ import pytest
 from ns_common import ffmpeg
 
 ROOT = Path(__file__).resolve().parents[1]
-HAS_C6 = all(
-    importlib.util.find_spec(m) is not None
-    for m in ("ns_studio.media.captions", "ns_studio.media.qc", "ns_studio.media.outbox")
-)
 
 
 def load_gate():
@@ -29,7 +25,6 @@ def test_gate_module_imports() -> None:
 
 
 @pytest.mark.skipif(not ffmpeg.available(), reason="ffmpeg not available")
-@pytest.mark.skipif(not HAS_C6, reason="C6 media modules have not landed on this branch yet")
 def test_gate_passes(tmp_path: Path) -> None:
     report = load_gate().run_gate(tmp_path)
     failed = [(c.name, c.value) for c in report.checks if not c.passed]

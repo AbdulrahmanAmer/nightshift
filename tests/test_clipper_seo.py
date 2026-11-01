@@ -108,7 +108,7 @@ def with_llm(ctx: Any, tmp_path: Path, answers: list[dict[str, Any]]) -> FakeLlm
 def test_generate_seo_uses_the_llm_once_when_clean(tmp_home: Path, tmp_path: Path) -> None:
     ctx = make_ctx(tmp_home, fmt="clip")
     llm = with_llm(ctx, tmp_path, [GOOD])
-    s, policy = sp.generate_seo(ctx, CLIP, excerpt="text", source_title="vod", template="center_crop")
+    s, policy = sp.generate_seo(ctx, CLIP, excerpt="text", source_title="vod")
     assert policy.passed and s.hashtags[0] == "#Shorts"
     assert [c["prompt_name"] for c in llm.calls] == ["clip_seo"]
 
@@ -116,7 +116,7 @@ def test_generate_seo_uses_the_llm_once_when_clean(tmp_home: Path, tmp_path: Pat
 def test_generate_seo_retries_once_then_passes(tmp_home: Path, tmp_path: Path) -> None:
     ctx = make_ctx(tmp_home, fmt="clip")
     llm = with_llm(ctx, tmp_path, [dict(GOOD, title="My true story on the mountain"), GOOD])
-    s, policy = sp.generate_seo(ctx, CLIP, excerpt="text", source_title="vod", template="center_crop")
+    s, policy = sp.generate_seo(ctx, CLIP, excerpt="text", source_title="vod")
     assert policy.passed and "true story" not in s.title.lower() and len(llm.calls) == 2
 
 
@@ -124,5 +124,5 @@ def test_generate_seo_fails_with_the_check_code(tmp_home: Path, tmp_path: Path) 
     ctx = make_ctx(tmp_home, fmt="clip")
     with_llm(ctx, tmp_path, [dict(GOOD, title="Caught on camera: the route")])
     with pytest.raises(NsError) as ei:
-        sp.generate_seo(ctx, CLIP, excerpt="text", source_title="vod", template="center_crop")
+        sp.generate_seo(ctx, CLIP, excerpt="text", source_title="vod")
     assert ei.value.code == "NS-E603"

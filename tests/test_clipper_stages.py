@@ -1,7 +1,6 @@
 """C8 Clipper: the clip stages on the synthetic fixture (fake services, real FFmpeg)."""
 from __future__ import annotations
 
-import importlib.util
 import shutil
 from dataclasses import replace
 from pathlib import Path
@@ -21,10 +20,6 @@ from tests.helpers import make_channel
 
 needs_ffmpeg = pytest.mark.skipif(not ffmpeg.available(), reason="ffmpeg not available")
 LLM_FIXTURES = Path(__file__).parent / "fixtures" / "clipper" / "llm"
-HAS_C6 = all(
-    importlib.util.find_spec(m) is not None
-    for m in ("ns_studio.media.captions", "ns_studio.media.qc", "ns_studio.media.outbox")
-)
 
 
 def make_job(tmp_path: Path, **param_kw: object) -> JobContext:
@@ -143,7 +138,6 @@ def test_requested_template_without_faces_falls_back_with_a_note(tmp_home: Path,
 
 # ---------- whole job (needs C6's captions, QC and outbox) ----------
 @needs_ffmpeg
-@pytest.mark.skipif(not HAS_C6, reason="C6 media modules have not landed on this branch yet")
 def test_full_clip_job(tmp_home: Path, tmp_path: Path) -> None:
     ctx = make_job(tmp_path)
     ran = orchestrator.run_job(ctx)

@@ -14,9 +14,9 @@ from typing import Any
 from ns_common.errors import NsError
 from ns_common.models import PolicyCheck, PolicyResult, Seo
 from ns_common.paths import contracts_dir
-from ns_studio.clipper import deps
 from ns_studio.clipper.models import ClipItem
 from ns_studio.context import JobContext
+from ns_studio.text.prompts import call_json
 
 TITLE_TARGET = 70
 TAGS_MAX = 20
@@ -178,27 +178,18 @@ def generate_seo(
     *,
     excerpt: str,
     source_title: str,
-    template: str,
 ) -> tuple[Seo, PolicyResult]:
     """Ask `clip_seo` (retry once when a policy check fails) and return the metadata and its check record."""
     last: PolicyResult | None = None
     seo: Seo | None = None
-    for attempt in range(2):
-        raw = deps.call_json(
+    for _ in range(2):
+        raw = call_json(
             ctx,
             "clip_seo",
-            clip={
-                "k": clip.k,
-                "title": clip.title,
-                "hook_line": clip.hook_line,
-                "why": clip.why,
-                "keywords": clip.keywords,
-            },
-            excerpt=excerpt,
             source_title=source_title,
-            template=template,
-            duration_s=round(clip.duration_s, 1),
-            attempt=attempt,
+            primary_keyword=(clip.keywords[0] if clip.keywords else clip.title.split()[0]),
+            clip_title=clip.title,
+            clip_text=excerpt,
         )
         seo = finalize_seo(raw, clip=clip, source_title=source_title, seed_keywords=ctx.channel.seed_keywords)
         last = check_metadata(seo)
