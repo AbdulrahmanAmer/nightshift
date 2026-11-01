@@ -32,8 +32,8 @@ Applied on 2026-11-01 with `gh api` using the owner's token; every command is re
 Result of the call: HTTP 200; `required_status_checks.contexts = ["lint","types","test","powershell-parse","scope-check"]`, `allow_force_pushes = false`,
 `allow_deletions = false`, `enforce_admins = false`.
 
-`ui-build` (added with the release-readiness change, after its PR merged) is applied by re-running the PUT above with the
-`contexts` list shown; the check only exists on branches that carry the job, so PRs opened before the merge need `main`
+`ui-build` was added to the required checks on 2026-11-02 (PR #24, release readiness) by re-running the PUT above with the
+`contexts` list shown (response: `["lint","types","test","powershell-parse","scope-check","ui-build"]`). The check only exists on branches that carry the job, so PRs opened before #24 merges need `main`
 merged in (or an admin merge).
 
 ## Tag ruleset (applied)
