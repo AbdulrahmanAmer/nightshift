@@ -1,3 +1,4 @@
+# ruff: noqa: E501
 import hashlib
 import importlib.util
 import json
@@ -8,6 +9,8 @@ import pytest
 
 from ns_common import ffmpeg
 from ns_common.paths import Paths
+from ns_dashboard.assistant.llm import ScriptedToolLlm, StaticProvider, call, say
+from ns_dashboard.assistant.tools import NO_TOOL, build_registry
 from ns_dashboard.fakes import FakeSupervisor, seed_channel, seed_output
 from ns_dashboard.handlers import build_state
 from ns_dashboard.state import AppState
@@ -24,7 +27,9 @@ needs_ffmpeg = pytest.mark.skipif(not ffmpeg.available(), reason="FFmpeg not ins
 BASE = "http://127.0.0.1:8100"
 
 
-def make_env(tmp_home: Path, link: SupervisorLink | None = None) -> tuple[TestClient, AppState]:
+def make_env(
+    tmp_home: Path, link: SupervisorLink | None = None, llm: ScriptedToolLlm | None = None
+) -> tuple[TestClient, AppState]:
     static = tmp_home / "static"
     static.mkdir(exist_ok=True)
     (static / "index.html").write_text("<!doctype html><title>Nightshift</title>", encoding="utf-8")
@@ -32,7 +37,8 @@ def make_env(tmp_home: Path, link: SupervisorLink | None = None) -> tuple[TestCl
     state = build_state(
         Paths.from_env(), fake_services=True, link=link or SupervisorLink("http://127.0.0.1:9", timeout_s=0.2)
     )
-    app = create_app(state=state, start_worker=False, static_dir=static, heartbeat_s=0.01)
+    provider = StaticProvider(llm or ScriptedToolLlm([]))
+    app = create_app(state=state, start_worker=False, static_dir=static, heartbeat_s=0.01, llm_provider=provider)
     return TestClient(app, base_url=BASE), state
 
 
@@ -408,3 +414,102 @@ def test_every_api_path_used_by_app_js_has_a_route(env):
     used = set(re.findall(r"""['"`](/api/[A-Za-z0-9_\-./]*)""", js.read_text(encoding="utf-8")))
     missing = sorted(u for u in used if not any(u.startswith(p) or p.startswith(u) for p in prefixes if p))
     assert not missing, f"app.js calls API paths without a route: {missing}"
+
+
+# ------------------------------------------------------------------ tool registry hygiene, library, update, assistant
+
+
+def test_every_route_has_a_tool_descriptor_or_a_reason(env):
+    """A new `/api` route without a descriptor in assistant/tools.py (or an entry in NO_TOOL) fails CI."""
+    from fastapi.routing import APIRoute
+
+    client, _ = env
+    actual = {
+        (m, r.path)
+        for r in client.app.routes  # type: ignore[attr-defined]
+        if isinstance(r, APIRoute)
+        for m in r.methods
+        if m not in ("HEAD", "OPTIONS")
+    }
+    declared = set(build_registry().routes()) | set(NO_TOOL)
+    assert actual - declared == set(), f"routes without a tool descriptor or NO_TOOL reason: {sorted(actual - declared)}"
+    assert declared - actual == set(), f"descriptors for routes that do not exist: {sorted(declared - actual)}"
+
+
+def test_library_endpoints(env):
+    client, state = env
+    seed_channel(state.db, state.paths)
+    made = client.post("/api/library/ideas", json={"channel": "after-dark", "premise": "A doorbell films tomorrow night."})
+    assert made.status_code == 201 and made.json()["status"] == "new"
+    idea_id = made.json()["idea_id"]
+    assert client.get("/api/library/ideas", params={"channel": "after-dark"}).json()[0]["idea_id"] == idea_id
+    put = client.put(f"/api/library/ideas/{idea_id}", json={"status": "approved"})
+    assert put.json()["status"] == "approved"
+    assert client.put(f"/api/library/ideas/{idea_id}", json={"status": "maybe"}).status_code == 422
+    assert client.put("/api/library/ideas/abc", json={"status": "new"}).status_code == 404
+    assert client.get("/api/library/ideas", params={"status": "approved"}).json()[0]["idea_id"] == idea_id
+    assert client.get("/api/library/stories", params={"q": "nothing"}).json() == []
+    assert client.get("/api/library/footage").json() == []
+    fmt = {"kind": "square", "canvas": {"w": 1080, "h": 1080, "fps": 30}, "duration": {"min_s": 5, "max_s": 30},
+           "layout": {"regions": [{"name": "m", "x": 0, "y": 0, "w": 1, "h": 1, "source": "full"}]}}
+    created = client.post("/api/library/formats", json={"id": "square_test", "definition": fmt})
+    assert created.status_code == 201 and created.json()["id"] == "square_test"
+    assert any(f["id"] == "square_test" for f in client.get("/api/library/formats").json())
+    upd = client.put("/api/library/formats/square_test", json={"changes": {"duration": {"max_s": 45}}})
+    assert upd.json()["definition"]["duration"]["max_s"] == 45
+    bad = client.put("/api/library/formats/square_test", json={"changes": {"kind": "poster"}})
+    assert bad.status_code == 422 and err(bad)["code"] == "invalid_format"
+
+
+def test_update_endpoints(env):
+    client, state = env
+    chk = client.get("/api/update/check").json()
+    assert chk["update_available"] is True and chk["latest"] == "0.2.0"
+    assert client.post("/api/update/apply").json()["ok"] is True
+    assert state.adapters.update.applied == 1  # type: ignore[attr-defined]
+
+
+def sse_events(resp: Any) -> list[dict[str, Any]]:
+    return [json.loads(chunk[len("data: "):]) for chunk in resp.text.strip().split("\n\n") if chunk.startswith("data: ")]
+
+
+def test_assistant_chat_confirm_and_history_over_http(tmp_home: Path):
+    llm = ScriptedToolLlm([
+        call("list_queue", {"status": "pending"}), say("One video is waiting."),
+        call("pause_channel", {"slug": "after-dark"}), say("Please confirm."),
+    ])
+    client, state = make_env(tmp_home, llm=llm)
+    seed_channel(state.db, state.paths)
+    seed_output(state.db, state.paths)
+    r = client.post("/api/assistant/chat", json={"message": "what is waiting?", "context": {"page": "Queue"}})
+    assert r.status_code == 200 and r.headers["content-type"].startswith("text/event-stream")
+    events = sse_events(r)
+    assert [e["kind"] for e in events] == ["conversation", "tool_call", "tool_result", "message", "done"]
+    cid = events[0]["payload"]["conversation_id"]
+
+    r2 = client.post("/api/assistant/chat", json={"message": "pause after-dark", "conversation_id": cid})
+    ev2 = sse_events(r2)
+    card = next(e["payload"] for e in ev2 if e["kind"] == "confirm")
+    assert card["tool"] == "pause_channel" and "Pause channel after-dark" in card["text"]
+    assert client.get("/api/channels/after-dark").json()["profile"]["status"] == "active"  # not yet
+    done = client.post("/api/assistant/confirm", json={"action_id": card["action_id"]})
+    assert done.status_code == 200 and done.json()["status"] == "done"
+    assert client.get("/api/channels/after-dark").json()["profile"]["status"] == "paused"
+    again = client.post("/api/assistant/confirm", json={"action_id": card["action_id"]})
+    assert again.status_code == 409 and err(again)["code"] == "already_decided"
+    assert client.post("/api/assistant/dismiss", json={"action_id": "nope"}).status_code == 404
+
+    hist = client.get("/api/assistant/history", params={"conversation_id": cid}).json()
+    assert hist["messages"][0]["role"] == "user" and hist["pending_actions"] == []
+    assert client.get("/api/assistant/history", params={"conversation_id": "zzz"}).status_code == 404
+    convs = client.get("/api/assistant/conversations").json()
+    assert convs[0]["conversation_id"] == cid
+    assert client.post("/api/assistant/queue/run").json() == []
+
+
+def test_assistant_busy_engine_over_http(tmp_home: Path):
+    client, state = make_env(tmp_home)
+    client.app.state.dashboard.assistant.provider.busy_owner = "studio:x"  # type: ignore[attr-defined]
+    events = sse_events(client.post("/api/assistant/chat", json={"message": "hello"}))
+    assert [e["kind"] for e in events] == ["conversation", "busy", "done"]
+    assert events[1]["payload"]["queued"] is True

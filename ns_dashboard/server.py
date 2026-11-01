@@ -456,7 +456,11 @@ def create_app(
     async def library_ideas(request: Request) -> SafeJSONResponse:
         q = request.query_params
         data = await run_in_threadpool(
-            dash.library.list_ideas, q.get("channel"), q.get("status"), q.get("q"), query_int(request, "limit", 200)
+            dash.library.list_ideas,
+            q.get("channel"),
+            q.get("status"),
+            q.get("q"),
+            query_int(request, "limit", 200),
         )
         return ok(data)
 
@@ -523,7 +527,9 @@ def create_app(
                 yield sse_frame(e["kind"], e["payload"])
 
         return StreamingResponse(
-            frames(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+            frames(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
 
     @app.post("/api/assistant/confirm")

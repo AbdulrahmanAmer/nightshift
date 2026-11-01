@@ -120,10 +120,11 @@ class Assistant:
         try:
             llm = self.provider.acquire()
         except EngineBusy as e:
-            self.store.queue_message(cid, text, context)
             note = (f"Nightshift is busy right now ({e.owner}). I saved your request and will answer "
                     "when the engine is free.")
-            self.store.add_message(cid, "assistant", note)
+            if record_user:  # a request replayed from the queue stays queued, not queued twice
+                self.store.queue_message(cid, text, context)
+                self.store.add_message(cid, "assistant", note)
             yield {"kind": "busy", "payload": {"owner": e.owner, "message": note, "queued": True}}
             yield {"kind": "done", "payload": {"conversation_id": cid}}
             return

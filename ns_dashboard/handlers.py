@@ -46,7 +46,8 @@ class Dashboard:
         self.library = LibraryService(state, self.channels)
         self.registry = build_registry()
         self.assistant_store = AssistantStore(state.paths)
-        provider = llm_provider or SupervisorLlmProvider(state.link.status, make_acquirer(state.link.base_url))
+        acquirer = make_acquirer(state.link.base_url)
+        provider = llm_provider or SupervisorLlmProvider(state.link.status, acquirer)
         self.assistant = Assistant(self, self.registry, self.assistant_store, provider)
 
 

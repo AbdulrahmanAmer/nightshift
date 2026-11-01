@@ -176,3 +176,12 @@ class ScriptedToolLlm:
             return say("(script finished)")
         item = self.script.pop(0)
         return item(messages) if callable(item) else item
+
+
+class EchoToolLlm:
+    """Offline stand-in for `--fake-services`: answers with the last thing the owner said."""
+
+    def chat_tools(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> dict[str, Any]:
+        """Echo the latest user message."""
+        last = next((m["content"] for m in reversed(messages) if m.get("role") == "user"), "")
+        return say(f"(fake assistant) I heard: {last}")
