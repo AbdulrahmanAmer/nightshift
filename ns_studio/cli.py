@@ -27,7 +27,6 @@ from ns_studio.orchestrator import plan_job, run_job
 from ns_studio.policy.regen import run_job_guarded
 from ns_studio.series import cli as series_cli
 
-
 # Sub-apps whose `--fake-services` is a plain on/off flag; their arguments must not be rewritten.
 FLAG_STYLE_COMMANDS: frozenset[str] = frozenset({"series", "ask"})
 
