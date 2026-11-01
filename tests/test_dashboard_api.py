@@ -1,0 +1,410 @@
+import hashlib
+import importlib.util
+import json
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from ns_common import ffmpeg
+from ns_common.paths import Paths
+from ns_dashboard.fakes import FakeSupervisor, seed_channel, seed_output
+from ns_dashboard.handlers import build_state
+from ns_dashboard.state import AppState
+from ns_dashboard.supervisor_link import SupervisorLink
+
+pytest.importorskip("fastapi")
+from fastapi.testclient import TestClient  # noqa: E402
+
+from ns_dashboard.server import create_app  # noqa: E402
+
+HAS_MULTIPART = bool(importlib.util.find_spec("python_multipart") or importlib.util.find_spec("multipart"))
+needs_multipart = pytest.mark.skipif(not HAS_MULTIPART, reason="python-multipart not installed")
+needs_ffmpeg = pytest.mark.skipif(not ffmpeg.available(), reason="FFmpeg not installed")
+BASE = "http://127.0.0.1:8100"
+
+
+def make_env(tmp_home: Path, link: SupervisorLink | None = None) -> tuple[TestClient, AppState]:
+    static = tmp_home / "static"
+    static.mkdir(exist_ok=True)
+    (static / "index.html").write_text("<!doctype html><title>Nightshift</title>", encoding="utf-8")
+    (static / "app.js").write_text("// ui", encoding="utf-8")
+    state = build_state(
+        Paths.from_env(), fake_services=True, link=link or SupervisorLink("http://127.0.0.1:9", timeout_s=0.2)
+    )
+    app = create_app(state=state, start_worker=False, static_dir=static, heartbeat_s=0.01)
+    return TestClient(app, base_url=BASE), state
+
+
+@pytest.fixture
+def env(tmp_home: Path) -> tuple[TestClient, AppState]:
+    return make_env(tmp_home)
+
+
+def err(resp: Any) -> dict[str, Any]:
+    body = resp.json()
+    assert set(body) == {"error"}
+    return body["error"]
+
+
+# ------------------------------------------------------------------ security / static
+
+
+def test_non_loopback_host_is_refused(env):
+    client, _ = env
+    r = client.get("/api/status", headers={"host": "evil.example.com"})
+    assert r.status_code == 403 and err(r)["code"] == "forbidden_host"
+    assert client.get("/", headers={"host": "192.168.1.9:8100"}).status_code == 403
+    assert client.get("/api/status", headers={"host": "localhost:8100"}).status_code == 200
+    assert client.get("/api/status", headers={"host": "[::1]:8100"}).status_code == 200
+
+
+def test_foreign_origin_is_refused(env):
+    client, _ = env
+    r = client.post("/api/engine/stop_all", headers={"origin": "https://evil.example"})
+    assert r.status_code == 403
+    assert client.get("/api/status", headers={"origin": "null"}).status_code == 403
+    assert client.get("/api/status", headers={"origin": BASE}).status_code == 200
+
+
+def test_static_index_and_headers(env):
+    client, _ = env
+    r = client.get("/")
+    assert r.status_code == 200 and "Nightshift" in r.text
+    assert "default-src 'self'" in r.headers["content-security-policy"]
+    assert r.headers["x-content-type-options"] == "nosniff"
+    assert client.get("/app.js").text == "// ui"
+    api = client.get("/api/status")
+    assert api.headers["cache-control"] == "no-store" and "content-security-policy" not in api.headers
+
+
+def test_unknown_api_path_is_a_json_404(env):
+    client, _ = env
+    r = client.get("/api/nothing-here")
+    assert r.status_code == 404 and err(r)["code"] == "not_found"
+
+
+def test_missing_static_folder_does_not_break_the_api(tmp_home: Path):
+    link = SupervisorLink("http://127.0.0.1:9", timeout_s=0.2)
+    state = build_state(Paths.from_env(), fake_services=True, link=link)
+    app = create_app(state=state, start_worker=False, static_dir=tmp_home / "absent")
+    client = TestClient(app, base_url=BASE)
+    assert client.get("/api/status").status_code == 200
+    assert client.get("/").status_code == 404
+
+
+def test_status_shape(env):
+    client, state = env
+    seed_channel(state.db, state.paths)
+    seed_output(state.db, state.paths)
+    body = client.get("/api/status").json()
+    assert set(body["engine"]) >= {"state", "detail", "elapsed_s", "vram_owner"}
+    assert body["engine"]["state"] == "idle" and body["outbox"]["pending"] == 1
+    assert body["channels"][0]["slug"] == "after-dark"
+    assert set(body["disk"]) == {"free_gb", "total_gb", "home"}
+    assert isinstance(body["services"], dict) and "next_run" in body
+
+
+def test_route_table_matches_the_contract(env):
+    client, _ = env
+    paths = {getattr(r, "path", "") for r in client.app.routes}  # type: ignore[attr-defined]
+    expected = {
+        "/api/status", "/api/events", "/api/engine/warmup", "/api/engine/shutdown", "/api/channels",
+        "/api/channels/{slug}", "/api/channels/{slug}/pause", "/api/channels/{slug}/resume",
+        "/api/channels/{slug}/validate", "/api/outputs", "/api/outputs/{output_id:path}",
+        "/api/outputs/{output_id:path}/approve", "/api/outputs/{output_id:path}/reject",
+        "/api/outputs/{output_id:path}/uploaded", "/api/media/{output_id:path}",
+        "/api/media/{output_id:path}/thumb.jpg", "/api/jobs/run", "/api/jobs/clip", "/api/jobs",
+        "/api/jobs/{job_id}", "/api/jobs/{job_id}/cancel", "/api/runs", "/api/logs/tail",
+        "/api/learn/import", "/api/learn/summary", "/api/settings", "/api/settings/keys",
+        "/api/diagnostics", "/api/templates", "/api/voices", "/api/voices/preview", "/api/uploads",
+    }
+    assert expected <= paths
+
+
+# ------------------------------------------------------------------ outputs and media
+
+
+def clip_file(tmp_home: Path) -> Path:
+    if ffmpeg.available():
+        return ffmpeg.make_test_clip(tmp_home / "fixtures" / "c.mp4", width=320, height=180, seconds=2.0)
+    f = tmp_home / "fixtures" / "c.mp4"
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_bytes(bytes(i % 251 for i in range(20000)))
+    return f
+
+
+def test_review_flow_over_http(env, tmp_home: Path):
+    client, state = env
+    oid = seed_output(state.db, state.paths, video=clip_file(tmp_home), title="The Doorbell Camera")
+    listed = client.get("/api/outputs", params={"status": "pending"}).json()
+    assert isinstance(listed, list) and listed[0]["output_id"] == oid and listed[0]["kind"] == "short"
+    detail = client.get(f"/api/outputs/{oid}").json()
+    assert detail["title"] == "The Doorbell Camera" and detail["tags"] and detail["policy_notes"] == []
+    assert client.post(f"/api/outputs/{oid}/reject", json={}).status_code == 400
+    r = client.post(f"/api/outputs/{oid}/reject", json={"reason": "Too slow"})
+    assert r.json()["status"] == "rejected" and r.json()["review_note"] == "Too slow"
+    assert client.post(f"/api/outputs/{oid}/approve").json()["status"] == "approved"
+    bad = client.post(f"/api/outputs/{oid}/uploaded", json={"url": "nope"})
+    assert bad.status_code == 400 and err(bad)["code"] == "bad_url"
+    done = client.post(f"/api/outputs/{oid}/uploaded", json={"url": "https://youtu.be/abc"})
+    assert done.json()["status"] == "uploaded"
+    assert client.post(f"/api/outputs/{oid}/open-folder").json()["ok"] is True
+    assert client.get("/api/outputs", params={"status": "uploaded"}).json()[0]["output_id"] == oid
+    assert client.get("/api/outputs/nope/s1").status_code == 404
+    assert client.get("/api/outputs", params={"status": "bogus"}).status_code == 422
+
+
+def test_media_range_streaming(env, tmp_home: Path):
+    client, state = env
+    src = clip_file(tmp_home)
+    data = src.read_bytes()
+    oid = seed_output(state.db, state.paths, video=src)
+    url = f"/api/media/{oid}"
+
+    full = client.get(url)
+    assert full.status_code == 200 and full.content == data
+    assert full.headers["accept-ranges"] == "bytes" and full.headers["content-type"] == "video/mp4"
+    assert int(full.headers["content-length"]) == len(data)
+
+    part = client.get(url, headers={"Range": "bytes=0-99"})
+    assert part.status_code == 206 and part.content == data[:100]
+    assert part.headers["content-range"] == f"bytes 0-99/{len(data)}"
+    assert part.headers["content-length"] == "100"
+
+    mid = client.get(url, headers={"Range": "bytes=100-199"})
+    assert mid.status_code == 206 and mid.content == data[100:200]
+    open_end = client.get(url, headers={"Range": "bytes=150-"})
+    assert open_end.status_code == 206 and open_end.content == data[150:]
+    suffix = client.get(url, headers={"Range": "bytes=-10"})
+    assert suffix.status_code == 206 and suffix.content == data[-10:]
+
+    bad = client.get(url, headers={"Range": f"bytes={len(data) + 50}-"})
+    assert bad.status_code == 416 and bad.headers["content-range"] == f"bytes */{len(data)}"
+    assert client.get(url, headers={"Range": "bytes=oops"}).status_code == 200
+
+    head = client.head(url)
+    assert head.status_code == 200 and head.content == b""
+    assert int(head.headers["content-length"]) == len(data)
+    assert client.get("/api/media/no/such").status_code == 404
+
+
+@needs_ffmpeg
+def test_thumbnail_is_generated_and_cached(env, tmp_home: Path):
+    client, state = env
+    oid = seed_output(state.db, state.paths, video=clip_file(tmp_home))
+    r = client.get(f"/api/media/{oid}/thumb.jpg")
+    assert r.status_code == 200 and r.headers["content-type"] == "image/jpeg"
+    assert r.content[:3] == b"\xff\xd8\xff"
+    thumbs = list((state.paths.home / "cache" / "dashboard" / "thumbs").glob("*.jpg"))
+    assert len(thumbs) == 1
+    mtime = thumbs[0].stat().st_mtime_ns
+    again = client.get(f"/api/media/{oid}/thumb.jpg")
+    assert again.content == r.content and thumbs[0].stat().st_mtime_ns == mtime
+
+
+# ------------------------------------------------------------------ channels
+
+
+def test_channels_over_http(env):
+    client, _ = env
+    body = {"slug": "night-owl", "display_name": "Night Owl", "niche": "cosy mysteries"}
+    r = client.post("/api/channels", json=body)
+    assert r.status_code == 201 and r.json()["profile"]["slug"] == "night-owl"
+    assert client.post("/api/channels", json=body).status_code == 409
+    bad = client.post("/api/channels", json={**body, "slug": "Bad Slug"})
+    assert bad.status_code == 422 and err(bad)["code"] == "invalid_profile" and err(bad)["details"]
+    cards = client.get("/api/channels").json()
+    assert isinstance(cards, list) and cards[0]["slug"] == "night-owl"
+    assert client.get("/api/channels/night-owl").json()["profile"]["niche"] == "cosy mysteries"
+    put = client.put("/api/channels/night-owl", json={**body, "niche": "cosy crime"})
+    assert put.json()["profile"]["niche"] == "cosy crime"
+    paused = client.post("/api/channels/night-owl/pause", json={"note": "warning"})
+    assert paused.json()["profile"]["status"] == "paused"
+    assert client.post("/api/channels/night-owl/resume").json()["profile"]["status"] == "active"
+    v = client.post("/api/channels/night-owl/validate", json={**body, "critic_bar": 1}).json()
+    assert v["ok"] is False and v["errors"] == ["Must be at least 5.0."]
+    saved = client.post("/api/channels/night-owl/validate").json()
+    assert saved["ok"] is True and isinstance(saved["warnings"], list)
+    assert client.get("/api/channels/ghost").status_code == 404
+    broken = client.post("/api/channels", content=b"{not json", headers={"content-type": "application/json"})
+    assert broken.status_code == 400
+
+
+# ------------------------------------------------------------------ jobs
+
+
+def test_run_and_clip_jobs_over_http(env, tmp_home: Path):
+    client, state = env
+    seed_channel(state.db, state.paths)
+    r = client.post("/api/jobs/run", json={"channel": "after-dark", "format": "shorts_only"})
+    assert r.status_code == 201
+    job_id = r.json()["job_id"]
+    state.worker.run_next()
+    job = client.get(f"/api/jobs/{job_id}").json()
+    assert job["status"] == "done" and job["progress"] == 100.0 and len(job["result"]["output_ids"]) == 1
+    assert client.post(f"/api/jobs/{job_id}/cancel").status_code == 409
+
+    video = clip_file(tmp_home)
+    no_rights = client.post("/api/jobs/clip", json={"path": str(video), "channel": "after-dark"})
+    assert no_rights.status_code == 400 and err(no_rights)["code"] == "rights_required"
+    ok = client.post(
+        "/api/jobs/clip",
+        json={"path": str(video), "channel": "after-dark", "template": "auto", "max_clips": 2,
+              "min_s": 20, "max_s": 60, "rights_confirmed": True},
+    )
+    assert ok.status_code == 201
+    clip_job = ok.json()["job_id"]
+    jobs = client.get("/api/jobs").json()
+    assert isinstance(jobs, list) and jobs[0]["job_id"] == clip_job and jobs[0]["status"] == "queued"
+    state.worker.run_next()
+    final = client.get("/api/jobs", params={"kind": "clip"}).json()[0]
+    assert final["status"] == "done" and final["stage"] is None and final["progress"] == 100.0
+    clips = client.get("/api/outputs", params={"status": "pending", "kind": "clip"}).json()
+    assert {c["output_id"] for c in clips} == set(final["result"]["output_ids"])
+    run_body = {"channel": "after-dark", "format": "shorts_only"}
+    cancel_target = client.post("/api/jobs/run", json=run_body).json()
+    assert client.post(f"/api/jobs/{cancel_target['job_id']}/cancel").json()["status"] == "cancelled"
+    assert client.get("/api/jobs/nope-20260101-abcd").status_code == 404
+    assert client.post("/api/jobs/verify", json={}).status_code == 201
+
+
+@needs_multipart
+def test_clip_job_multipart_upload(env):
+    client, state = env
+    seed_channel(state.db, state.paths)
+    data = {"channel": "after-dark", "template": "auto", "max_clips": "3", "min_s": "20", "max_s": "60",
+            "caption_style": "punch_yellow", "rights_confirmed": "true"}
+    files = {"file": ("My VOD.mp4", b"not really a video" * 50, "video/mp4")}
+    r = client.post("/api/jobs/clip", data=data, files=files)
+    assert r.status_code == 201
+    params = r.json()["params"]
+    assert params["max_clips"] == 3 and params["rights_confirmed"] is True
+    assert Path(params["source_path"]).read_bytes() == b"not really a video" * 50
+    refused = client.post("/api/jobs/clip", data={**data, "rights_confirmed": "false"}, files=files)
+    assert refused.status_code == 400 and err(refused)["code"] == "rights_required"
+
+
+@needs_multipart
+def test_learn_import_multipart(env):
+    client, _ = env
+    csv = b"title,views\nA,10\nB,20\n"
+    r = client.post("/api/learn/import", files={"file": ("export.csv", csv, "text/csv")})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["matched"] == 2 and body["unmatched"] == 0 and isinstance(body["summary"], list)
+    assert body["changes"] == []
+    not_csv = client.post("/api/learn/import", files={"file": ("notes.txt", b"x", "text/plain")})
+    assert not_csv.status_code == 400
+    summary = client.get("/api/learn/summary").json()
+    assert "pools" in summary and "unmatched_uploads" in summary
+
+
+def test_chunked_upload_over_http(env):
+    client, state = env
+    payload = bytes(range(256)) * 8
+    start = client.post("/api/uploads", json={"filename": "talk.mp4", "size": len(payload)})
+    assert start.status_code == 201 and start.json()["chunk_size"] == 8 * 1024 * 1024
+    up = start.json()["upload_id"]
+    first = client.put(f"/api/uploads/{up}", params={"offset": 0}, content=payload[:1000])
+    assert first.json()["offset"] == 1000
+    clash = client.put(f"/api/uploads/{up}", params={"offset": 0}, content=payload[:1000])
+    assert clash.status_code == 409 and err(clash)["details"] == {"offset": 1000}
+    assert client.get(f"/api/uploads/{up}").json()["offset"] == 1000
+    client.put(f"/api/uploads/{up}", params={"offset": 1000}, content=payload[1000:])
+    done = client.post(f"/api/uploads/{up}/complete").json()
+    assert done["status"] == "complete" and done["sha256"] == hashlib.sha256(payload).hexdigest()
+    assert Path(done["path"]).read_bytes() == payload
+    assert client.post("/api/uploads", json={"filename": "evil.exe", "size": 5}).status_code == 400
+    assert client.put("/api/uploads/not-an-id", params={"offset": 0}, content=b"x").status_code == 404
+
+
+# ------------------------------------------------------------------ settings, tools, lists
+
+
+def test_settings_keys_diagnostics(env):
+    client, state = env
+    s = client.get("/api/settings").json()
+    assert s["schedule_time"] == "03:00" and s["keys"] == {"pexels": False, "pixabay": False}
+    put = client.put("/api/settings", json={"schedule_time": "05:00", "notifications": False}).json()
+    assert put["schedule_time"] == "05:00" and put["notifications"] is False
+    assert client.put("/api/settings", json={"schedule_time": "5pm"}).status_code == 422
+    assert client.put("/api/settings", json={"flags": {}}).status_code == 409
+    key = client.post("/api/settings/keys", json={"name": "pexels", "value": "TOP-SECRET-VALUE"})
+    assert key.json() == {"name": "pexels_api_key", "set": True} and "TOP-SECRET" not in key.text
+    assert client.get("/api/settings").json()["keys"]["pexels"] is True
+    assert client.get("/api/diagnostics/latest").status_code == 404
+    diag = client.post("/api/diagnostics").json()
+    assert Path(diag["path"]).is_file()
+    zipped = client.get("/api/diagnostics/latest")
+    assert zipped.status_code == 200 and zipped.headers["content-type"] == "application/zip"
+    assert zipped.content[:2] == b"PK"
+
+
+def test_templates_voices_logs_runs(env):
+    client, state = env
+    templates = client.get("/api/templates").json()
+    assert isinstance(templates, list) and {"id", "label", "description"} <= set(templates[0])
+    voices = client.get("/api/voices").json()
+    assert isinstance(voices, list) and voices[0]["name"] == "Ryan"
+    wav = client.post("/api/voices/preview", json={"voice": "Ryan", "text": "Hello from Nightshift."})
+    assert wav.status_code == 200 and wav.headers["content-type"] == "audio/wav"
+    assert wav.content[:4] == b"RIFF"
+    assert client.post("/api/voices/preview", json={}).status_code == 400
+    state.log.warn("probe_event", "from the test")
+    lines = client.get("/api/logs/tail", params={"n": 50, "level": "WARN"}).json()
+    assert isinstance(lines, list) and any(r["event"] == "probe_event" for r in lines)
+    assert "dashboard" in client.get("/api/logs/components").json()
+    assert client.get("/api/runs").json() == []
+    assert client.get("/api/templates/nope/preview.png").status_code == 404
+
+
+def test_template_preview_png(env):
+    pytest.importorskip("PIL")
+    client, _ = env
+    r = client.get("/api/templates/gaming_facecam/preview.png")
+    assert r.status_code == 200 and r.content[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_events_stream(env):
+    client, state = env
+    r = client.get("/api/events", params={"limit": 2})
+    assert r.status_code == 200 and r.headers["content-type"].startswith("text/event-stream")
+    frames = [json.loads(chunk[len("data: "):]) for chunk in r.text.strip().split("\n\n")]
+    assert [f["kind"] for f in frames] == ["status", "status"]
+    assert "engine" in frames[0]["payload"] and "outbox" in frames[0]["payload"]
+
+
+def test_engine_commands_over_http(tmp_home: Path):
+    with FakeSupervisor() as sup:
+        sup.state = {"gpu_owner": "studio:j", "services": {"llama": {"state": "ready"}}}
+        client, state = make_env(tmp_home, SupervisorLink(sup.url))
+        assert client.post("/api/engine/warmup", json={"service": "llama"}).json() == {"state": "starting"}
+        st = client.get("/api/status").json()
+        assert st["engine"]["state"] == "ready" and st["engine"]["vram_owner"] == "studio:j"
+        assert st["services"]["llama"]["state"] == "ready"
+        assert client.post("/api/engine/shutdown", json={"grace_s": 30}).json()["ok"] is True
+        assert state.draining is True
+        assert client.get("/api/status").json()["engine"]["detail"] == "Shutting down..."
+        assert any(p == "/shutdown" for _m, p, _b in sup.calls)
+
+
+def test_engine_commands_when_engine_is_off(env):
+    client, _ = env
+    r = client.post("/api/engine/warmup", json={})
+    assert r.status_code == 503 and err(r)["code"] == "engine_offline"
+    assert client.post("/api/engine/shutdown", json={}).status_code == 503
+
+
+def test_every_api_path_used_by_app_js_has_a_route(env):
+    import re
+
+    js = Path(__file__).resolve().parents[1] / "ns_dashboard" / "static" / "app.js"
+    if not js.exists():
+        pytest.skip("ns_dashboard/static/app.js not present on this branch")
+    client, _ = env
+    routes = client.app.routes  # type: ignore[attr-defined]
+    prefixes = {getattr(r, "path", "").split("{", 1)[0] for r in routes}
+    used = set(re.findall(r"""['"`](/api/[A-Za-z0-9_\-./]*)""", js.read_text(encoding="utf-8")))
+    missing = sorted(u for u in used if not any(u.startswith(p) or p.startswith(u) for p in prefixes if p))
+    assert not missing, f"app.js calls API paths without a route: {missing}"

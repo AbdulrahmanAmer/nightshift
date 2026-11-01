@@ -14,7 +14,7 @@
 
 - Everything in the Slice 0 plan's Global Constraints and ENGINEERING.md sections 4, 5, 6, 8 apply. Pinned to the `contracts-m0` tag; anything missing is a CR in `contracts/CHANGE_REQUESTS.md`.
 - **Nothing executes locally.** Verification is the CI run URL of branch `feat/c9-dashboard`.
-- Owned paths: `ns_dashboard/` (including `static/`), `tests/test_dashboard_*.py`, `dev/gate_m3_dashboard.py`, this plan. Never edit `ns_common/`, `contracts/` (except appending to `CHANGE_REQUESTS.md`), `pyproject.toml`, `.github/`, `launchers/` or other components' directories.
+- Owned paths: `ns_dashboard/` EXCEPT `ns_dashboard/static/` (the UI is written by the orchestrator on `feat/c9-ui`; the server only mounts that folder at `/`), `tests/test_dashboard_*.py`, `dev/gate_m3_dashboard.py`, this plan. Never edit `ns_common/`, `contracts/` (except appending to `CHANGE_REQUESTS.md`), `pyproject.toml`, `.github/`, `launchers/` or other components' directories.
 - Loopback only: bind `127.0.0.1`; reject any request whose `Host` (or `Origin`) is not `127.0.0.1`, `localhost` or `[::1]`. No authentication.
 - No `print(` outside the `__main__` entry; logging through `NsLogger("dashboard", paths.logs)`. Secrets (API keys) are never logged and never returned by the API; only `{set: bool}`.
 - No subprocess in `ns_dashboard` except through `ns_common.ffmpeg.run`; opening a folder uses `os.startfile` behind the `FolderOpener` adapter.
@@ -22,7 +22,7 @@
 - No literal `NS-E`/`NS-W` codes in dashboard source that are not in `contracts/errors.json`; API errors use `{"error": {"code", "message", "hint"}}` where `code` is an `NS-` code carried from an `NsError`, or a lowercase dashboard code (`not_found`, `rights_required`, ...).
 - Heavy imports (`PIL`, `keyring`, `fastapi` outside `server.py`) only inside functions.
 - UI: no external URL in any `src`/`href`, no inline event handlers or inline `<script>` (the server sends a CSP of `default-src 'self'`), no `window.confirm/alert/prompt`, dark default with light via `prefers-color-scheme` and `data-theme`, usable at 360 px width.
-- Worker allocation: Tasks 1-7, 9 -> `sonnet`-grade engineering (written by the C9 builder); Task 8 (static UI) -> delegated to a `sonnet` agent against Appendix A.
+- Worker allocation: all tasks written by the C9 builder (`sonnet`-grade engineering). Task 8 (static UI) is out of scope for this branch.
 
 ---
 
@@ -43,9 +43,11 @@ ns_dashboard/
   logs_tail.py        # tail logs\*.jsonl with component/level filters
   templates.py        # clip templates (yaml or builtin), normalisation, Pillow previews
   channels.py         # profile validation + distinctness warnings
-  handlers.py         # Dashboard service layer: every /api operation as a method
+  errors.py common.py # ApiError, AdapterUnavailable; shared helpers (output item shape, urls)
+  svc_outputs.py svc_channels.py svc_jobs.py svc_engine.py svc_settings.py   # one service class per area
+  handlers.py         # Dashboard = the five services; build_state() wires DB, adapters, worker
   server.py           # FastAPI app factory, middleware, routes, SSE, __main__
-  static/index.html app.css app.js
+  static/                (not ours: index.html app.css app.js arrive from feat/c9-ui)
 tests/
   test_dashboard_security.py test_dashboard_events.py test_dashboard_jobs.py test_dashboard_adapters.py
   test_dashboard_uploads.py test_dashboard_media.py test_dashboard_logs.py test_dashboard_templates.py
@@ -192,73 +194,57 @@ Engine strip state machine: supervisor unreachable -> `offline` "Engine not runn
 - [ ] Tests: TestClient (base_url `http://127.0.0.1:8100`) for every route; Host `evil.example` -> 403 and `Origin: http://evil.example` on POST -> 403; media 206 partial bytes, 416, `Accept-Ranges`, full 200, thumb 200 `image/jpeg` + cached second call (skip without FFmpeg; MP4 from `ns_common.ffmpeg.make_test_clip`); upload two chunks through the HTTP endpoints; multipart clip job and learn import (skip without `python_multipart`); `/api/events?limit=2` yields frames; every `api('...')` path used by `app.js` resolves to a registered route.
 - [ ] Implement; **Commit** `feat(c9): dashboard FastAPI app and routes`.
 
-### Task 8: Static UI (C9, delegated to `sonnet`)
+### Task 8: Static UI (moved out of C9's branch)
 
-**Files:** Create `ns_dashboard/static/index.html app.css app.js`, `tests/test_dashboard_static.py`.
+The orchestrator writes `ns_dashboard/static/{index.html,app.css,app.js}` on `feat/c9-ui`. C9 only mounts the folder at `/` (`StaticFiles(html=True, check_dir=False)`, registered after every `/api` route) and sends `Content-Security-Policy: default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; script-src 'self'` on non-API responses. `tests/test_dashboard_static.py` is skipped while the folder is empty and, once the UI is merged, checks: no external `src`/`href`, local assets exist, no inline `<script>` bodies or `on*=` handlers (CSP), nothing loaded from the network. `test_every_api_path_used_by_app_js_has_a_route` (in `test_dashboard_api.py`) cross-checks the UI's `/api/...` literals against the registered routes.
 
-Pages per spec 20.2 (Overview, Review, Clipper, Channels, Runs & Logs, Learn, Settings) plus the status strip, driven by Appendix A only. Tests (no FastAPI): regex that `index.html` has no `http(s)://` in any `src`/`href`, loads only `app.css` and `app.js`, has no inline `<script>` body, no `on*=` attributes; `app.js` contains no `confirm(`/`alert(`/`prompt(`, no `https?://` literals other than comments, defines the seven routes, and every `/api/...` string literal in it matches a route pattern from Appendix A (a static table in the test, plus the registered-route check in Task 7).
-
-- [ ] Delegate with the Appendix A contract; review output; **Commit** `feat(c9): offline dashboard UI`.
+- [x] Server mounts the folder; tests written; the UI itself is not part of this branch.
 
 ### Task 9: Gate script, CRs, CI (C9)
 
-**Files:** Create `dev/gate_m3_dashboard.py`, `tests/test_dashboard_gate.py`; append to `contracts/CHANGE_REQUESTS.md`.
+**Files:** Create `dev/gate_m3_dashboard.py`, `tests/test_dashboard_gate.py`; append `CR-C9-1..5` to `contracts/CHANGE_REQUESTS.md`.
 
-`dev/gate_m3_dashboard.py` starts the app in-process with `TestClient`, makes a fixture MP4 with `ns_common.ffmpeg.make_test_clip`, POSTs `/api/jobs/clip {path, channel, template, rights_confirmed:true}` with the fake clip adapter, waits for the job to be `done`, asserts the clip is in `/api/outputs?status=pending&kind=clip`, approves it and asserts `status == "approved"`; writes a `GateReport` JSON to `logs\gate-m3-dashboard-<ts>.json`; `--fake-services` accepted (always fake). The same logic is exposed as `run_checks()` so `test_dashboard_gate.py` runs it when `fastapi` is installed.
+`dev/gate_m3_dashboard.py` starts the app in-process with `TestClient` (worker thread on), makes a fixture MP4 with `ns_common.ffmpeg.make_test_clip`, POSTs `/api/jobs/clip {path, channel, template, rights_confirmed:true}` with the fake clip adapter, waits for `done`, asserts the clips are in `/api/outputs?status=pending&kind=clip`, checks a `Range` request (206), approves one and asserts `approved`; it also checks Host-header rejection and the rights gate. It writes a `GateReport` to `logs\gate-m3-dashboard-<ts>.json`. `run_checks()` is reused by `tests/test_dashboard_gate.py` (skipped without `fastapi`).
 
-- [ ] Implement, push, read CI (`gh run list --branch feat/c9-dashboard --limit 1`, `gh run view <id> --log-failed`), fix until green, `gh pr create --fill`.
+- [x] Implement, push, read CI, fix until green, `gh pr create --fill`.
 
 ---
 
-## Appendix A - API contract (prefix `/api`, all JSON unless stated)
+## API shapes (final; what the UI is told and what the tests assert)
 
-Errors: HTTP 4xx/5xx with `{"error": {"code": str, "message": str, "hint": str | null}}`.
+Prefix `/api`. Errors: HTTP 4xx/5xx with `{"error": {"code", "message", "hint", "details"?}}`; `code` is a lowercase dashboard code or an `NS-` code from an `NsError`. Lists are bare JSON arrays. A job's `progress` is a percentage 0-100.
 
-**Job summary** `J`: `{job_id, kind: "run"|"clip"|"learn"|"verify", channel, status: "queued"|"running"|"done"|"failed"|"cancelled", progress: 0..1, message, created_at, started_at, finished_at, params: {...}, result: {...}|null, cancel_requested: bool}`. Clip results: `{output_ids: [...], source_id}`; run results: `{output_ids: [...]}`; learn result: the import summary; verify: `{checks: [...]}`.
+**Job `J`:** `{job_id, kind: run|clip|learn|verify, channel, status: queued|running|done|failed|cancelled, progress, stage, message, created_at, started_at, finished_at, params, result, cancel_requested}`. `result.output_ids` for run and clip jobs.
 
-**Output item** `O`: `{output_id, job_id, channel, kind: "long"|"short"|"clip", k, title, duration_s, status: "pending"|"approved"|"rejected"|"uploaded", review_note, source_id, combo_id, created_at, media_url, thumb_url}`. Output ids contain a `/` (e.g. `ana-20261101-ab12/s2`); URLs carry them unescaped as extra path segments: `/api/outputs/{output_id}`, `/api/media/{output_id}`, `/api/media/{output_id}/thumb.jpg`.
+**Output `O`:** `{output_id, job_id, channel, kind: long|short|clip, k, title, duration_s, status: pending|approved|rejected|uploaded, review_note, source_id, combo_id, created_at, media_url, thumb_url}`. Output ids contain a `/` and are used unescaped as extra path segments.
 
-| Method + path | Request | Response |
+| Route | Request | Response |
 |---|---|---|
-| `GET /status` | - | `{version, strip, engine: {reachable, state, gpu_owner, services: {name: {state,pid,port,vram_mb,model_alias}}}, job: J\|null, queue: {queued, running}, next_run, disk_free_gb, outbox: {pending,approved,rejected,uploaded}, channels: [{slug, display_name, status, niche, format, pending, tonight}], last_run: R\|null, incidents: [{channel,ts,kind,note}], last_error: {job_id,message}\|null}` |
-| `GET /events` (SSE) | - | frames `event: <kind>\ndata: <json>\n\n`; kinds: `status` (data = `strip`, sent on every change and every 2 s), `service` / `job` (supervisor relay: `{ts, kind, data}`), `dashboard_job` (data = J). Query `limit=N` closes after N frames (tests). UI falls back to polling `GET /status` every 3 s when the stream errors. |
-| `POST /engine/warmup` | `{service?: "llama"}` | `{state}` |
-| `POST /engine/shutdown` | `{grace_s?: 30}` | `{ok}`; cancels the running job at its next stage boundary, stops accepting jobs (`strip.draining = true`) |
-| `POST /engine/stop_all` | - | `{ok}` |
-| `GET /channels` | - | `{channels: [Card]}`, `Card = {slug, display_name, status, niche, language, format, voice, pending, approved, last_output_at}` |
-| `POST /channels` | full channel profile (spec 11 / `ns_common.models.Channel`) | 201 `{profile, warnings}`; 409 if exists; 422 `error.code="invalid_profile"` with `error.details = [{field,message}]` |
-| `GET /channels/{slug}` | - | `{profile, warnings}` |
-| `PUT /channels/{slug}` | full profile (slug immutable) | `{profile, warnings}` |
-| `POST /channels/{slug}/pause` / `resume` | `{note?: str}` | `{profile}` |
-| `POST /channels/{slug}/validate` | optional draft profile | `{ok, errors: [{field,message}], warnings: [{field,message}]}` (always 200) |
-| `GET /outputs` | `?status=&kind=&channel=&limit=100&offset=0` | `{items: [O], total, counts: {pending,approved,rejected,uploaded}}` |
-| `GET /outputs/{id}` | - | `O + {sheet: {...}\|null, sheet_text: str\|null, policy: {...}\|null, advice: {ai_disclosure, made_for_kids, age_restrict_suggested}\|null, story_excerpt, transcript_excerpt, folder, upload: {video_url, published_at}\|null, file_exists}` |
-| `POST /outputs/{id}/approve` | - | `O` |
-| `POST /outputs/{id}/reject` | `{reason}` (required, non-empty) | `O` |
-| `POST /outputs/{id}/uploaded` | `{url}` (http/https) | `O` |
-| `POST /outputs/{id}/open-folder` | - | `{ok, folder}` |
-| `GET /media/{id}` | `Range` header | MP4 bytes: 200 / 206 / 416; `Accept-Ranges: bytes` |
-| `GET /media/{id}/thumb.jpg` | - | JPEG (generated on first request, cached) |
-| `POST /uploads` | `{filename, size}` | 201 `{upload_id, source_id, chunk_size, offset: 0, size, status}` |
-| `GET /uploads/{upload_id}` | - | `{upload_id, source_id, offset, size, status: "uploading"\|"complete"}` |
-| `PUT /uploads/{upload_id}?offset=N` | raw body (<= 8 MB chunk, `Content-Type: application/octet-stream`) | `{offset, size, status}`; 409 `error.code="offset_mismatch"` with `error.details = {offset}` |
-| `POST /uploads/{upload_id}/complete` | - | `{upload_id, source_id, path, bytes, sha256}` |
-| `POST /jobs/run` | `{channel, format: "master_first"\|"shorts_only"\|"series_compilation", count?}` | 201 `J` |
-| `POST /jobs/clip` | JSON `{upload_id\|source_id\|path, channel, template: "auto"\|..., max_clips, min_s, max_s, caption_style?, rights_confirmed}`; or multipart with the same fields plus `file` | 201 `J`; 400 `rights_required` unless `rights_confirmed` is true |
-| `POST /jobs/verify` | `{quick?: bool}` | 201 `J` |
-| `GET /jobs` | `?status=&kind=&limit=50` | `{jobs: [J]}` newest first |
-| `GET /jobs/{id}` | - | `J` |
-| `POST /jobs/{id}/cancel` | - | `J` (`cancel_requested` true while the current stage finishes) |
-| `GET /runs` | `?limit=30` | `{runs: [R]}`, `R = {run_id, started_at, finished_at, mode, duration_s, summary: {...}}` |
-| `GET /logs/tail` | `?component=&level=&n=200&after=<iso ts>` | `{lines: [{ts,level,component,event,msg,data}], components: [str]}`; `level` is a minimum (`WARN` -> WARN and ERROR) |
-| `POST /learn/import` | multipart `file` (CSV) | 201 `J` (kind `learn`); progress and the import summary arrive via the job |
-| `GET /learn/summary` | - | `{pools: {pool: {top: [{option,score,n}], bottom: [...]}}, weights: [{channel,pool,option,weight,updated_at}], last_import: {...}\|null, unmatched_uploads: [str]}` |
-| `GET /settings` | - | `{version, runtime: {...}\|null, runtime_locked: true, schedule: {run_time}, notifications: bool, keys: {pexels_api_key: {set}, pixabay_api_key: {set}}, install: {version, app_path, profile}, next_run}` |
-| `PUT /settings` | `{unlock?: bool, schedule?: {run_time: "HH:MM"}, notifications?: bool, runtime?: {...}}` | `GET /settings` shape; changing `runtime` without `unlock: true` -> 409 `runtime_locked` |
-| `POST /settings/keys` | `{name: "pexels_api_key"\|"pixabay_api_key", value}` | `{name, set: true}` (value is never returned) |
-| `POST /diagnostics` | - | `{path, name, size, download_url: "/api/diagnostics/latest"}` |
-| `GET /diagnostics/latest` | - | the latest bundle zip (`application/zip`) |
-| `GET /templates` | - | `{templates: [{id, label, description, when, regions: [{name, x, y, w, h}], caption_y_pct, title_card, preview_url}]}`; `x,y,w,h` are fractions of the 1080x1920 frame |
-| `GET /templates/{id}/preview.png` | - | PNG drawn with Pillow (503 `pillow_missing` otherwise); the UI draws its own CSS cards from `regions` and may ignore the PNG |
-| `GET /voices` | - | `{voices: [{name, mode, source}], available: bool, note}` |
-| `POST /voices/preview` | `{voice, text?, speed?}` | `audio/wav` bytes |
+| `GET /status` | - | `{version, engine: {state: idle\|starting\|loading\|ready\|working, detail, elapsed_s: int\|null, vram_owner, reachable, service, draining, progress}, next_run: iso\|null, next_run_in_s, schedule_time, outbox: {pending,approved,rejected,uploaded}, channels: [{slug, display_name, status, niche, voice, masters_per_week, publish_window, format, pending, tonight}], services: {name: {state, vram_mb}}, disk: {free_gb, total_gb, home}, job: J\|null, queue: {queued, running}, last_run, incidents, last_error}`. Deviation: an unreachable supervisor is `state: "idle"`, `detail: "Engine not running"`, `reachable: false`. |
+| `GET /events` (SSE, default `message` events) | `?limit=N` closes after N frames (tests) | `data: {"kind": "status", "payload": <GET /status>}` every 2 s and after each event; `data: {"kind": "job", "payload": J}` on job progress (supervisor job events are relayed too) |
+| `POST /engine/warmup`, `/engine/shutdown`, `/engine/stop_all` | `{service?}`, `{grace_s?}`, - | `{state}`, `{ok, cancelled_job}`, `{ok, cancelled_job}`; 503 `engine_offline` when the supervisor is down |
+| `GET /channels` | - | `[{slug, display_name, status, niche, language, format, voice, pending, approved, last_output_at}]` |
+| `POST /channels`, `PUT /channels/{slug}`, `GET /channels/{slug}` | full profile | `{profile, warnings: [str], warning_fields: [{field, message}]}`; 422 `invalid_profile` with `details: [{field, message}]`; 409 `channel_exists` |
+| `POST /channels/{slug}/pause`, `/resume` | `{note?}` | `{profile}` |
+| `POST /channels/{slug}/validate` | draft profile, or empty body for the saved one | `{ok, errors: [str], warnings: [str], error_fields, warning_fields}` (always 200) |
+| `GET /outputs` | `?status=&kind=&channel=&limit=&offset=` | `[O]` newest first |
+| `GET /outputs/{id}` | - | `O + {description, tags, hashtags, publish_after, ai_disclosure, made_for_kids, age_restrict_suggested, story_excerpt, transcript_excerpt, policy_notes: [str], chapters, related_video_instruction, thumbnails, sheet, sheet_text, policy, advice, folder, upload, file_exists}` |
+| `POST /outputs/{id}/approve`, `/reject {reason}`, `/uploaded {url}`, `/open-folder` | | `O`, `O`, `O`, `{ok, folder}` |
+| `GET /media/{id}` (GET, HEAD) | `Range` | 200 / 206 / 416 MP4 bytes, `Accept-Ranges: bytes` |
+| `GET /media/{id}/thumb.jpg` | - | JPEG (ffmpeg first frame, cached under `cache/dashboard/thumbs`) |
+| `POST /uploads {filename, size}`, `GET /uploads/{id}`, `PUT /uploads/{id}?offset=N` (raw body <= 8 MB), `POST /uploads/{id}/complete` | | `{upload_id, source_id, filename, size, offset, status, path, sha256, chunk_size?}`; 409 `offset_mismatch` with `details: {offset}` |
+| `POST /jobs/run` | `{channel, format, count?}` | 201 `J` |
+| `POST /jobs/clip` | JSON `{path\|upload_id\|source_id, channel, template, max_clips, min_s, max_s, caption_style, rights_confirmed}` or multipart with the same fields plus `file` | 201 `J`; 400 `rights_required` unless `rights_confirmed` is true; `source_id` re-runs selection on an existing source |
+| `POST /jobs/verify` | `{quick?}` | 201 `J` |
+| `GET /jobs` | `?status=&kind=&limit=` | `[J]` newest first |
+| `GET /jobs/{id}`, `POST /jobs/{id}/cancel` | | `J`; cancelling a finished job is 409 `already_finished` |
+| `GET /runs` | `?limit=` | `[{run_id, started_at, finished_at, mode, duration_s, summary}]` |
+| `GET /logs/tail` | `?component=&level=&n=&after=` | `[{ts, level, component, event, msg, data}]` oldest first; `level` is a minimum |
+| `GET /logs/components` | - | `[str]` |
+| `POST /learn/import` | multipart `file` (CSV) | `{matched: int, unmatched: int, summary: [str], changes: [{pool, option, delta}], unmatched_rows?, job_id}`; runs inline as a `learn` job (never queued behind GPU work) |
+| `GET /learn/summary` | - | `{pools: {pool: {top: [{option, score, n}], bottom}}, weights, last_import, unmatched_uploads: [output_id], summary: [str]}` |
+| `GET /settings`, `PUT /settings` | PUT `{schedule_time?, notifications?, flags?, profile?, unlock?}` | `{schedule_time, home, profile, flags, keys: {pexels: bool, pixabay: bool}, notifications, runtime_locked, install, next_run, schedule_result?}`; `flags`/`profile` without `unlock: true` (or `?unlock=true`) -> 409 `runtime_locked` |
+| `POST /settings/keys` | `{name: pexels\|pixabay, value}` | `{name, set: true}` (the value is never returned or logged) |
+| `POST /diagnostics`, `GET /diagnostics/latest` | | `{path, name, size, download_url}`; the zip |
+| `GET /templates`, `GET /templates/{id}/preview.png` | | `[{id, label, description, when, regions: [{name,x,y,w,h}] (fractions of 1080x1920), caption_y_pct (0-100), title_card, preview_url}]`; PNG drawn with Pillow |
+| `GET /voices`, `POST /voices/preview` | `{voice, text?, speed?}` | `[{name, mode, source}]`; `audio/wav` bytes |
