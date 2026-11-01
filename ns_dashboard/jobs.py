@@ -15,6 +15,7 @@ from typing import Any
 from ns_common.db import new_job_id
 from ns_common.errors import NsError
 from ns_common.logging import NsLogger
+from ns_dashboard.errors import AdapterUnavailable
 from ns_dashboard.events import EventHub
 from ns_dashboard.state import LockedDb
 
@@ -71,7 +72,9 @@ _STAGE_RE = re.compile(r"^(.*) \(\d+/\d+\)$")
 
 
 def _stage_of(message: str) -> str | None:
-    """Stage name from a `name (i/n)` progress message, else None."""
+    """Stage name from a `name (i/n)` progress message (or `Downloading NN%` -> `download`), else None."""
+    if (message or "").startswith("Downloading"):
+        return "download"
     m = _STAGE_RE.match(message or "")
     return m.group(1) if m else None
 
@@ -275,6 +278,12 @@ class JobControl:
         self._progress = max(0.0, min(1.0, float(fraction)))
         self._store.update_progress(self.job_id, self._progress, message)
         self._publish()
+
+    def download(self, percent: float) -> None:
+        """Report download progress: stage `download`, message `Downloading 42%`."""
+        pct = int(max(0, min(100, percent)))
+        self.check_cancel()
+        self.progress(pct / 100, f"Downloading {pct}%")
 
     def waiting(self, message: str) -> None:
         """Show a waiting message without changing the progress value."""
@@ -480,6 +489,9 @@ class JobWorker:
         except JobCancelled:
             self.store.finish(rec.job_id, "cancelled", "Cancelled")
             self.log.info("job_cancelled", job_id=rec.job_id)
+        except AdapterUnavailable as e:  # a collaborator that has not landed yet: say so plainly
+            self.store.finish(rec.job_id, "failed", str(e), {"error": {"code": "unavailable", "hint": None}})
+            self.log.warn("job_unavailable", str(e), job_id=rec.job_id)
         except NsError as e:
             self.store.finish(
                 rec.job_id, "failed", str(e), {"error": {"code": e.code, "hint": e.definition.hint}}

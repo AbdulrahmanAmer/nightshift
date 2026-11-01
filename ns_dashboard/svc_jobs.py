@@ -20,6 +20,23 @@ CLIP_PARAM_KEYS = ("channel", "template", "max_clips", "min_s", "max_s", "captio
 MAX_CSV_BYTES = 20 * 1024 * 1024
 
 
+URL_RE = re.compile(r"^https?://[^\s/@:]+(?::\d+)?(?:[/?#]\S*)?$", re.IGNORECASE)
+MAX_URL_CHARS = 2000
+
+
+def clean_url(value: Any) -> str | None:
+    """A validated http(s) link (no credentials, no spaces), or None when no link was given."""
+    if value in (None, ""):
+        return None
+    text = str(value).strip()
+    if len(text) > MAX_URL_CHARS or not URL_RE.match(text):
+        raise ApiError(
+            400, "bad_url", "Paste a full web link that starts with http:// or https://",
+            hint="Links with a user name or password in them are not accepted.",
+        )
+    return text
+
+
 def build_handlers(adapters: Adapters) -> dict[str, Handler]:
     """Job handlers that call the adapters; each returns the job's `result`."""
 
@@ -32,7 +49,11 @@ def build_handlers(adapters: Adapters) -> dict[str, Handler]:
         p = ctl.params
         opts = {k: p.get(k) for k in CLIP_PARAM_KEYS}
         opts["rerun"] = bool(p.get("rerun"))
-        ids = adapters.clip.clip(ctl, Path(str(p["source_path"])), str(p["source_id"]), opts)
+        if p.get("url"):  # download first (stage "download"), then run the usual pipeline on the file
+            source = adapters.clip.fetch_url(ctl, str(p["url"]), str(p["source_id"]))
+        else:
+            source = Path(str(p["source_path"]))
+        ids = adapters.clip.clip(ctl, source, str(p["source_id"]), opts)
         return {"output_ids": ids, "source_id": p["source_id"]}
 
     def learn_handler(ctl: JobControl) -> dict[str, Any]:
@@ -210,8 +231,16 @@ class JobsService:
             "caption_style": body.get("caption_style") or None,
             "rights_confirmed": True,
         }
-        source_id, source_path, rerun = self._resolve_source(body, uploaded)
-        params.update({"source_id": source_id, "source_path": str(source_path), "rerun": rerun})
+        url = clean_url(body.get("url"))
+        if url:
+            if uploaded is not None or any(body.get(k) for k in ("path", "upload_id", "source_id")):
+                raise ApiError(422, "invalid_options", "Give either a link, a file, or a path, not several.")
+            source_id, source_path, rerun = new_job_id("src"), None, False
+            params["url"] = url
+        else:
+            source_id, source_path, rerun = self._resolve_source(body, uploaded)
+        params.update({"source_id": source_id, "source_path": str(source_path) if source_path else None,
+                       "rerun": rerun})
         # the Clipper import creates the `sources` row; for a re-run it exists, so record the rights now
         self.s.db.execute("UPDATE sources SET rights_confirmed = 1 WHERE source_id = ?", (source_id,))
         return self._enqueue("clip", slug, params)
@@ -242,7 +271,7 @@ class JobsService:
             if not p.is_file() or p.suffix.lower() not in ALLOWED_EXT:
                 raise ApiError(400, "bad_path", f"'{raw}' is not a video file on this PC.")
             return new_job_id("src"), p, False
-        raise ApiError(400, "no_source", "Choose a video first (upload it or give a local path).")
+        raise ApiError(400, "no_source", "Choose a video first: upload it, give a local path, or paste a link.")
 
     # --- queries / cancel ---
     def list_jobs(self, status: str | None, kind: str | None, limit: int) -> list[dict[str, Any]]:

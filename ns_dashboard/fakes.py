@@ -146,6 +146,17 @@ class FakeClipAdapter:
         self.paths = paths
         self.stages = stages
         self.calls: list[dict[str, Any]] = []
+        self.urls: list[str] = []
+        self.fail_url_with: Exception | None = None
+
+    def fetch_url(self, ctl: JobControl, url: str, source_id: str) -> Path:
+        """Pretend to download: report 0, 25, 50, 75, 100 percent and write a small video file."""
+        self.urls.append(url)
+        if self.fail_url_with is not None:
+            raise self.fail_url_with
+        for pct in (0, 25, 50, 75, 100):
+            ctl.download(pct)
+        return write_fake_video(self.paths.home / "imports" / "clipper" / source_id / "source.mp4")
 
     def clip(self, ctl: JobControl, source_path: Path, source_id: str, params: dict[str, Any]) -> list[str]:
         """Produce `min(max_clips, 2)` clips."""
