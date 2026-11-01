@@ -163,8 +163,9 @@ def test_centre_crop_overlays_the_foreground_on_the_blurred_fill() -> None:
 
 
 def test_screen_plus_cam_letterboxes_the_screen() -> None:
-    graph = ";".join(L.build_regions_graph(F.get_format("clip_screen_plus_cam"), std_sources()))
-    assert "pad=1080:1280" in graph and "crop=320:180:944:16" in graph
+    fmt = L.fit_facecam_height(F.get_format("clip_screen_plus_cam"), 320, 180)
+    graph = ";".join(L.build_regions_graph(fmt, std_sources()))
+    assert "pad=1080:1312" in graph and "crop=320:180:944:16" in graph
 
 
 def test_a_new_layout_is_only_data() -> None:
