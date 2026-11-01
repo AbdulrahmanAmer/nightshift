@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import pytest
+import yaml
 
 from ns_common.paths import Paths
 from ns_dashboard import templates
@@ -89,3 +90,41 @@ def test_preview_png_drawn_and_cached(tmp_home: Path, monkeypatch: pytest.Monkey
     assert render_preview(paths, "gaming_facecam") == png and png.stat().st_mtime_ns == mtime
     with pytest.raises(KeyError):
         render_preview(paths, "nope")
+
+
+def test_real_clip_templates_yaml_shape(tmp_home: Path, monkeypatch: pytest.MonkeyPatch):
+    from ns_common.models import ClipTemplate
+
+    f = tmp_home / "clip_templates.yaml"
+    f.write_text(
+        "gaming_facecam:\n"
+        "  layout: gaming\n"
+        "  description: Facecam on top.\n"
+        "  needs: facecam\n"
+        "  when: A facecam was found.\n"
+        "  regions:\n"
+        "    - {id: cam, x: 0, y: 0, w: 1080, h: auto, max_h: 640}\n"
+        "    - {id: game, x: 0, y: seam, w: 1080, h: rest}\n"
+        "  caption_anchor_y_pct: seam\n"
+        "podcast_stacked:\n"
+        "  layout: stacked\n"
+        "  description: Two speakers.\n"
+        "  regions:\n"
+        "    - {id: top, x: 0, y: 0, w: 1080, h: 960}\n"
+        "    - {id: bottom, x: 0, y: 960, w: 1080, h: 960}\n"
+        "  caption_anchor_y_pct: 75\n",
+        encoding="utf-8",
+    )
+    # the file is valid for the shared model, so C8 and the dashboard read the same thing
+    for name, raw in yaml.safe_load(f.read_text(encoding="utf-8")).items():
+        ClipTemplate.model_validate({"name": name, **raw})
+    monkeypatch.setattr(templates, "yaml_path", lambda: f)
+    by_id = {t["id"]: t for t in load_templates(Paths.from_env())}
+    gaming = by_id["gaming_facecam"]
+    assert gaming["label"] == "Gameplay with face cam"  # built-in friendly label survives the overlay
+    cam, game = gaming["regions"]
+    assert (cam["name"], cam["y"], cam["h"]) == ("cam", 0.0, 0.3333)
+    assert (game["name"], game["y"], game["h"]) == ("game", 0.3333, 0.6667)
+    assert gaming["caption_y_pct"] == 33.3
+    assert by_id["podcast_stacked"]["caption_y_pct"] == 75.0
+    assert [r["name"] for r in by_id["podcast_stacked"]["regions"]] == ["top", "bottom"]

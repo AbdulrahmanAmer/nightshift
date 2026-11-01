@@ -132,7 +132,7 @@ def run_checks() -> GateReport:
         _check(checks, "fastapi_installed", False, e)
         return _report(checks)
     saved = os.environ.get("NIGHTSHIFT_HOME")
-    with tempfile.TemporaryDirectory(prefix="ns-gate-m3-") as td:
+    with tempfile.TemporaryDirectory(prefix="ns-gate-m3-", ignore_cleanup_errors=True) as td:
         home = Path(td) / "home"
         home.mkdir()
         os.environ["NIGHTSHIFT_HOME"] = str(home)

@@ -122,15 +122,44 @@ def _normalise_box(name: str, raw: Any) -> dict[str, Any] | None:
         return None
 
 
-def normalise_template(template_id: str, raw: dict[str, Any]) -> dict[str, Any]:
+def _resolve_list(regions: list[Any]) -> tuple[list[dict[str, Any]], float | None]:
+    """Pixel-resolve a region list: `y: seam` follows the previous panel, `h: auto|rest` fill the rest."""
+    out: list[dict[str, Any]] = []
+    seam: float | None = None
+    cursor = 0.0
+    for i, r in enumerate(regions):
+        if not isinstance(r, dict):
+            continue
+        y: Any = r.get("y", 0)
+        if y == "seam":
+            y, seam = cursor, cursor
+        h: Any = r.get("h")
+        try:
+            if h == "auto":
+                h = r.get("max_h") or 640
+            elif h == "rest":
+                h = FRAME_H - float(y)
+            cursor = float(y) + float(h)
+        except (TypeError, ValueError):
+            pass
+        out.append({**r, "y": y, "h": h, "name": r.get("name") or r.get("id") or f"region {i + 1}"})
+    return out, seam
+
+
+def _titled(template_id: str) -> str:
+    return template_id.replace("_", " ").title()
+
+
+def normalise_template(template_id: str, raw: dict[str, Any], *, auto_label: bool = True) -> dict[str, Any]:
     """Convert one yaml template (several shapes accepted) into the API shape."""
     regions: list[dict[str, Any]] = []
+    seam_y: float | None = None
     raw_regions = raw.get("regions") or {}
     if isinstance(raw_regions, dict):
         items = list(raw_regions.items())
     elif isinstance(raw_regions, list):
-        items = [(str(r.get("name", f"region {i + 1}")) if isinstance(r, dict) else f"region {i + 1}", r)
-                 for i, r in enumerate(raw_regions)]
+        resolved, seam_y = _resolve_list(raw_regions)
+        items = [(str(d["name"]), d) for d in resolved]
     else:
         items = []
     for name, value in items:
@@ -139,6 +168,8 @@ def normalise_template(template_id: str, raw: dict[str, Any]) -> dict[str, Any]:
             regions.append(box)
     caption = raw.get("caption")
     cap = raw.get("caption_y_pct", raw.get("caption_anchor_y_pct"))
+    if cap == "seam":
+        cap = (seam_y / FRAME_H * 100) if seam_y is not None else 33.0
     if cap is None and isinstance(caption, dict):
         cap = caption.get("y_pct", caption.get("y"))
     try:
@@ -152,7 +183,7 @@ def normalise_template(template_id: str, raw: dict[str, Any]) -> dict[str, Any]:
         title_card = bool(title_card.get("enabled", False))
     return {
         "id": template_id,
-        "label": str(raw.get("label") or template_id.replace("_", " ").title()),
+        "label": str(raw.get("label") or raw.get("name") or (_titled(template_id) if auto_label else "")),
         "description": str(raw.get("description") or ""),
         "when": str(raw.get("when") or ""),
         "regions": regions,
@@ -169,11 +200,11 @@ def _from_yaml(f: Path) -> list[dict[str, Any]]:
     if isinstance(data, dict):
         for tid, raw in data.items():
             if isinstance(raw, dict):
-                out.append(normalise_template(str(tid), raw))
+                out.append(normalise_template(str(tid), raw, auto_label=False))
     elif isinstance(data, list):
         for raw in data:
             if isinstance(raw, dict) and raw.get("id"):
-                out.append(normalise_template(str(raw["id"]), raw))
+                out.append(normalise_template(str(raw["id"]), raw, auto_label=False))
     return out
 
 
@@ -192,6 +223,8 @@ def load_templates(paths: Paths | None = None) -> list[dict[str, Any]]:
     out = []
     for t in by_id.values():
         t.setdefault("regions", [])
+        if not t.get("label"):
+            t["label"] = t["id"].replace("_", " ").title()
         t["preview_url"] = f"/api/templates/{t['id']}/preview.png"
         out.append(t)
     return out
