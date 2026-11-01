@@ -48,3 +48,19 @@ def test_client_batch_and_voices(tmp_path: Path):
     out = cli.speak_batch([TtsItem("a", "x", "Ryan")], tmp_path)
     assert out[0].seconds == 1.5 and out[0].path == tmp_path / "a.wav"
     assert cli.voices()[0]["name"] == "Ryan"
+
+
+def test_cliff_lines_are_sent_per_item_only_when_set(tmp_path: Path):
+    bodies: list[dict] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        bodies.append(json.loads(req.content))
+        return httpx.Response(200, json={"files": []})
+
+    cli = TtsClient("http://127.0.0.1:8091", client=httpx.Client(transport=httpx.MockTransport(handler)))
+    assert TtsItem("a", "x", "Ryan", 1.1).cliff_lines == ()
+    with_cliff = TtsItem("a", "x", "Ryan", 1.0, ("The door opened.",))
+    cli.speak_batch([with_cliff, TtsItem("b", "y", "Ryan")], tmp_path)
+    first, second = bodies[0]["items"]
+    assert first["cliff_lines"] == ["The door opened."]
+    assert "cliff_lines" not in second

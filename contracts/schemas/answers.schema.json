@@ -181,6 +181,52 @@
       "default": false,
       "title": "Allow Cpu",
       "type": "boolean"
+    },
+    "home_path": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Home Path"
+    },
+    "models_source": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Models Source"
+    },
+    "llm_tier": {
+      "default": "small",
+      "enum": [
+        "small",
+        "balanced",
+        "best"
+      ],
+      "title": "Llm Tier",
+      "type": "string"
+    },
+    "restore_from": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Restore From"
     }
   },
   "required": [

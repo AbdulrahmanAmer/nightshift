@@ -1,0 +1,115 @@
+{
+  "$defs": {
+    "Sentence": {
+      "additionalProperties": false,
+      "properties": {
+        "idx": {
+          "minimum": 0,
+          "title": "Idx",
+          "type": "integer"
+        },
+        "text": {
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "idx",
+        "text"
+      ],
+      "title": "Sentence",
+      "type": "object"
+    },
+    "StoryChapter": {
+      "additionalProperties": false,
+      "properties": {
+        "n": {
+          "minimum": 1,
+          "title": "N",
+          "type": "integer"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "text": {
+          "title": "Text",
+          "type": "string"
+        },
+        "summary": {
+          "title": "Summary",
+          "type": "string"
+        },
+        "word_count": {
+          "minimum": 1,
+          "title": "Word Count",
+          "type": "integer"
+        },
+        "est_seconds": {
+          "exclusiveMinimum": 0,
+          "title": "Est Seconds",
+          "type": "number"
+        },
+        "cliff_line_idx": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cliff Line Idx"
+        },
+        "sentences": {
+          "items": {
+            "$ref": "#/$defs/Sentence"
+          },
+          "minItems": 1,
+          "title": "Sentences",
+          "type": "array"
+        }
+      },
+      "required": [
+        "n",
+        "title",
+        "text",
+        "summary",
+        "word_count",
+        "est_seconds",
+        "sentences"
+      ],
+      "title": "StoryChapter",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "working_title": {
+      "title": "Working Title",
+      "type": "string"
+    },
+    "chapters": {
+      "items": {
+        "$ref": "#/$defs/StoryChapter"
+      },
+      "minItems": 1,
+      "title": "Chapters",
+      "type": "array"
+    },
+    "revisions": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Revisions",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "working_title",
+    "chapters"
+  ],
+  "title": "Story",
+  "type": "object"
+}

@@ -35,3 +35,10 @@ def test_unknown_code_raises():
     with pytest.raises(KeyError):
         describe("NS-E999")
     assert "NS-E999" in load_errors() or True  # load_errors never raises
+
+
+def test_studio_and_transcription_codes_exist():
+    for code in ("NS-E320", "NS-E321", "NS-E322", "NS-E323", "NS-E324", "NS-E325", "NS-E326", "NS-E408"):
+        d = describe(code)
+        assert d.kind == "error" and d.message and d.hint, code
+    assert describe("NS-E408").message == "Transcription failed."
