@@ -34,12 +34,15 @@ def test_media_stages_produce_a_valid_outbox_short(tmp_home: Path, monkeypatch: 
     ctx.write_json("visual_plan.json", [
         {"part": 1, "beat": 0, "sentence_start": 0, "sentence_end": 2, "keywords": ["doorbell", "dark porch"],
          "mood": "eerie", "need_vertical": True},
-        {"part": 1, "beat": 1, "sentence_start": 3, "sentence_end": 4, "keywords": ["open door", "night street"],
+        {"part": 1, "beat": 1, "sentence_start": 3, "sentence_end": 4,
+         "keywords": ["open door", "night street"],
          "mood": "horror", "need_vertical": True},
     ])
     ctx.write_json("seo.json", [{
-        "title": "Scary Story: The Doorbell Camera", "description": "A camera records someone.\nOriginal fiction.",
-        "tags": [f"tag{i}" for i in range(10)], "hashtags": ["#Shorts", "#horror", "#scarystory"], "keywords": [],
+        "title": "Scary Story: The Doorbell Camera",
+        "description": "A camera records someone. Original fiction.",
+        "tags": [f"tag{i}" for i in range(10)], "keywords": [],
+        "hashtags": ["#Shorts", "#horror", "#scarystory"],
     }])
 
     ran = run_job(ctx)
