@@ -20,7 +20,7 @@ Format per entry:
 - **From:** C4 ns_tts / Task 3
 - **Change:** in `ns_common/models.py` change `TtsCfg.engine` to `Literal["qwentts", "reference"]` with default `"qwentts"` (spec 15.4 `/health` engine names; the old `"faster"` engine was dropped). `select_engine` already treats a legacy `"faster"` value as qwentts, so the change is backward compatible. `Runtime.default("cpu-dev")` keeps `engine="reference"`. Also update the tests that assert the default.
 - **Why:** with the current Literal a config cannot name the default engine, so `ns verify` cannot write `qwentts`/`reference` choices symmetrically (NS-W301 fallback writes `reference`; the happy path writes nothing).
-- **Status:** open
+- **Status:** applied on main (engine literal qwentts|reference|faster, default qwentts; NS-E310/E311 added)
 
 ## CR-C4-3: allow `subprocess` in `ns_tts/engine.py` once TID251 is enabled
 - **From:** C4 ns_tts / Task 3
@@ -32,7 +32,7 @@ Format per entry:
 - **From:** C4 ns_tts / Task 3
 - **Change:** add to `contracts/errors.json`: `NS-E31x` "The TTS engine failed (qwentts exited, timed out, or produced no audio)" and "A stored voice embedding is missing or was made by another engine". Until then `ns_tts` raises `NS-E202` (engine process/model failure) and `NS-E301` (bad voice data), whose messages do not fit well.
 - **Why:** error messages shown to the operator should name TTS, not the language model.
-- **Status:** open
+- **Status:** applied on main (engine literal qwentts|reference|faster, default qwentts; NS-E310/E311 added)
 
 ## CR-C4-5: optional `cliff_lines` on `TtsItem`
 - **From:** C4 ns_tts / Task 4
