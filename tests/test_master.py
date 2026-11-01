@@ -68,9 +68,9 @@ def test_load_story_and_shorts_shapes(tmp_home: Path):
 def test_master_timeline_puts_cards_between_chapters():
     chs = [Chapter(1, "A", ""), Chapter(2, "B", ""), Chapter(3, "C", "")]
     tl = master_timeline(chs, {1: 100.0, 2: 80.0, 3: 60.0}, card_s=1.2)
-    assert (tl[0].seg_start, tl[0].audio_start, tl[0].end) == (0.0, 0.0, 100.0)
-    assert (tl[1].seg_start, tl[1].audio_start, tl[1].end) == (100.0, 101.2, 181.2)
-    assert (tl[2].seg_start, tl[2].audio_start, tl[2].end) == (181.2, 182.4, pytest.approx(242.4))
+    got = [(t.seg_start, t.audio_start, t.end) for t in tl]
+    want = [(0.0, 0.0, 100.0), (100.0, 101.2, 181.2), (181.2, 182.4, 242.4)]
+    assert got == [pytest.approx(w) for w in want]
 
 
 def _words(ss: list[int]) -> list[Word]:
