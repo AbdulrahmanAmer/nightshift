@@ -144,11 +144,14 @@ class QcStage:
 
     name: str = "qc"
     tenant: Tenant = None
-    inputs: tuple[str, ...] = ("render/report.json", "captions/report.json")
+    inputs: tuple[str, ...] = ("render/report.json", "captions/report.json", "render/long.json")
     outputs: tuple[str, ...] = ("qc/report.json",)
 
     def run(self, ctx: JobContext) -> None:
-        """Check every item in `render/report.json`."""
+        """Check every item in `render/report.json` (master and Shorts in master-first jobs)."""
+        if ctx.fmt == "master_first":
+            run_qc_master(ctx)
+            return
         rendered: dict[str, Any] = ctx.read_json("render/report.json")
         captions: dict[str, Any] = ctx.read_json("captions/report.json")
         bucket = float(ctx.combo.length_bucket) if ctx.combo.length_bucket else None
@@ -172,3 +175,69 @@ class QcStage:
         ctx.log.info("qc_done", job_id=ctx.job_id, results=summary)
         if failed:
             raise NsError("NS-E404", "; ".join(failed))
+
+
+# ---------------------------------------------------------------------------------------------------------
+# Master-first QC (M2)
+# ---------------------------------------------------------------------------------------------------------
+
+
+def chapters_check(doc: dict[str, Any]) -> QcCheck:
+    """Spec §9.1: at least 3 chapters, the first at 00:00, increasing starts, each at least 10 s."""
+    ch = doc.get("chapters", [])
+    starts = [float(c["start_s"]) for c in ch]
+    ends = [float(c["end_s"]) for c in ch]
+    ok = (
+        len(ch) >= 3
+        and starts[0] == 0.0
+        and ch[0]["timestamp"] in ("00:00", "0:00:00")
+        and all(b > a for a, b in zip(starts, starts[1:], strict=False))
+        and all(e - s >= 10.0 for s, e in zip(starts, ends, strict=True))
+    )
+    return QcCheck(passed=ok, value=len(ch), limit=">= 3 chapters from 00:00, each >= 10 s")
+
+
+def midroll_check(doc: dict[str, Any]) -> QcCheck:
+    """Mid-roll suggestions sit on chapter breaks and never in the first or last 2 minutes."""
+    total = float(doc["total_s"])
+    breaks = {round(float(c["start_s"]), 3) for c in doc.get("chapters", [])[1:]}
+    marks = [float(m) for m in doc.get("midroll_suggestions_s", [])]
+    ok = all(120.0 <= m <= total - 120.0 and round(m, 3) in breaks for m in marks)
+    return QcCheck(passed=ok, value=len(marks), limit="at chapter breaks, 120 s from both ends")
+
+
+def with_checks(res: QcResult, extra: dict[str, QcCheck]) -> QcResult:
+    """`res` plus extra checks, with `passed` and `reason` recomputed."""
+    checks = {**res.checks, **extra}
+    failed = [k for k, c in checks.items() if not c.passed]
+    return QcResult(item=res.item, passed=not failed, checks=checks, reason=", ".join(failed) or None)
+
+
+def run_qc_master(ctx: JobContext) -> None:
+    """QC of the master (8:30-15:00, chapters, mid-rolls) and of every derived Short; NS-E404 on failure."""
+    from ns_studio.media.master import load_shorts
+
+    captions: dict[str, Any] = ctx.read_json("captions/report.json")
+    long_info = ctx.read_json("render/long.json")
+    doc = ctx.read_json("long/chapters.json")
+    drift = captions.get("long", {}).get("drift_ms")
+    long_res = run_qc("long", Path(long_info["path"]), "long", drift_ms=drift)
+    results = [with_checks(long_res, {"chapters": chapters_check(doc), "midroll": midroll_check(doc)})]
+    has_report = ctx.file("render/report.json").exists()
+    rendered: dict[str, Any] = ctx.read_json("render/report.json") if has_report else {}
+    buckets = {f"s{s.k}": s.length_bucket for s in load_shorts(ctx)}
+    for item, info in rendered.items():
+        bucket = buckets.get(item)
+        results.append(run_qc(item, Path(info["path"]), "short", bucket_s=float(bucket) if bucket else None,
+                              drift_ms=info.get("drift_ms"), first_caption_s=info.get("first_caption_s")))
+    summary: dict[str, Any] = {}
+    failed: list[str] = []
+    for r in results:
+        ctx.write_json(f"qc/{r.item}.json", r.model_dump(mode="json"))
+        summary[r.item] = {"passed": r.passed, "reason": r.reason}
+        if not r.passed:
+            failed.append(f"{r.item}: {r.reason}")
+    ctx.write_json("qc/report.json", summary)
+    ctx.log.info("qc_done", job_id=ctx.job_id, results=summary)
+    if failed:
+        raise NsError("NS-E404", "; ".join(failed))

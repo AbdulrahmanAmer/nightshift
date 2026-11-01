@@ -42,6 +42,42 @@ def clip_stage_names() -> list[str]:
     return list(DEFAULT_CLIP_STAGES)
 
 
+def fake_outbox_path(paths: Paths, channel: str, job_id: str, kind: str, k: int, story_title: str) -> Path:
+    """Where C6's `outbox_target` (spec 15.2a) puts a story video; `kind` is `long` or `short`.
+
+    The story title comes from a `seo.json` in the job folder, exactly as in the real pipeline.
+    """
+    from ns_common.config import load_channel
+    from ns_common.models import Channel
+    from ns_studio.context import JobContext
+    from ns_studio.media.outbox import outbox_target
+
+    try:
+        ch = load_channel(paths, channel)
+    except (OSError, ValueError):
+        ch = Channel(slug=channel, display_name=channel, niche="fake channel")
+    job_dir = paths.job_dir(job_id)
+    job_dir.mkdir(parents=True, exist_ok=True)
+    seo = job_dir / "seo.json"
+    if not seo.exists():
+        seo.write_text(json.dumps([{"title": story_title}]), encoding="utf-8")
+    ctx = JobContext(
+        job_id=job_id, channel=ch, combo=None, fmt="shorts_only", paths=paths,  # type: ignore[arg-type]
+        job_dir=job_dir, db=None, runtime=None, services=None, log=None,  # type: ignore[arg-type]
+    )
+    return outbox_target(ctx, kind, k)
+
+
+def fake_clip_path(paths: Paths, channel: str, source_name: str, k: int, title: str) -> Path:
+    """`outbox/<channel>/clips/<source-name-slug>/clip-01 <title>.mp4` (spec 15.2a)."""
+    from ns_studio.media.outbox import safe_slug
+
+    folder = paths.outbox / channel / "clips" / (safe_slug(source_name) or "source")
+    folder.mkdir(parents=True, exist_ok=True)
+    prefix = f"clip-{k:02d}"
+    return folder / f"{prefix} {safe_slug(title, 80 - len(prefix) - 1)}.mp4"
+
+
 def write_fake_video(path: Path, source: Path | None = None) -> Path:
     """Write a playable MP4 when FFmpeg exists (or copy `source`), else placeholder bytes."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -86,11 +122,11 @@ class FakeRunAdapter:
         for _ in ctl.stages(self.stages):
             pass
         job_id = new_job_id(channel)
-        date = datetime.now(UTC).strftime("%Y-%m-%d")
         ids: list[str] = []
         for k in range(1, (count or 1) + 1):
-            video = write_fake_video(self.paths.outbox_dir(channel, date, job_id) / "shorts" / f"s{k}.mp4")
             title = f"Fake short {k} for {channel}"
+            target = fake_outbox_path(self.paths, channel, job_id, "short", k, f"Fake story for {channel}")
+            video = write_fake_video(target)
             write_sheet(video, title=title, channel=channel, kind="short")
             oid = f"{job_id}/s{k}"
             self.db.execute(
@@ -119,18 +155,16 @@ class FakeClipAdapter:
         channel = str(params.get("channel") or ctl.channel or "clips")
         now = datetime.now(UTC).isoformat()
         self.db.execute(
-            "INSERT OR IGNORE INTO sources(source_id, channel, path, duration_s, imported_at, template,"
-            " status)"
-            " VALUES (?, ?, ?, ?, ?, ?, 'imported')",
-            (source_id, channel, str(source_path), 1.0, now, params.get("template")),
+            "INSERT OR IGNORE INTO sources(source_id, channel, path, duration_s, imported_at, template, status,"
+            " rights_confirmed, title) VALUES (?, ?, ?, ?, ?, ?, 'imported', ?, ?)",
+            (source_id, channel, str(source_path), 1.0, now, params.get("template"),
+             1 if params.get("rights_confirmed") else 0, source_path.stem),
         )
         job_id = new_job_id(channel)
-        date = datetime.now(UTC).strftime("%Y-%m-%d")
-        folder = self.paths.outbox_dir(channel, date, f"clip-{source_id}")
         ids: list[str] = []
         for k in range(1, max(1, min(int(params.get("max_clips") or 2), 2)) + 1):
-            video = write_fake_video(folder / f"c{k}.mp4", source_path)
             title = f"Fake clip {k} from {source_path.stem}"
+            video = write_fake_video(fake_clip_path(self.paths, channel, source_path.stem, k, title), source_path)
             write_sheet(video, title=title, channel=channel, kind="clip")
             oid = f"{job_id}/c{k}"
             self.db.execute(
@@ -327,15 +361,16 @@ def seed_output(
 ) -> str:
     """Insert an `outputs` row (and a video plus sheet in the outbox); returns the output id."""
     job_id = job_id or new_job_id(channel)
-    date = datetime.now(UTC).strftime("%Y-%m-%d")
-    sub = {"long": "long", "short": "shorts", "clip": "clips"}[kind]
-    name = {"long": "master", "short": f"s{k}", "clip": f"c{k}"}[kind]
-    path = paths.outbox_dir(channel, date, job_id) / sub / f"{name}.mp4"
     title = title or f"Seeded {kind} {k}"
+    if kind == "clip":
+        path = fake_clip_path(paths, channel, f"source {job_id[-4:]}", k, title)
+    else:
+        path = fake_outbox_path(paths, channel, job_id, kind, k, title)
     if with_files:
         write_fake_video(path, video)
         write_sheet(path, title=title, channel=channel, kind=kind)
-    oid = f"{job_id}/{'long' if kind == 'long' else name}"
+    name = {"long": "long", "short": f"s{k}", "clip": f"c{k}"}[kind]
+    oid = f"{job_id}/{name}"
     db.execute(
         "INSERT INTO outputs(output_id, job_id, channel, kind, k, title, path, duration_s, status, source_id,"
         " created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 1.0, ?, ?, ?)",

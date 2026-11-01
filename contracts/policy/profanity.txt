@@ -1,0 +1,10 @@
+# Words masked in captions when a channel enables captions.mask_profanity (display only). One per line.
+damn
+shit
+fuck
+bitch
+bastard
+asshole
+crap
+piss
+dick

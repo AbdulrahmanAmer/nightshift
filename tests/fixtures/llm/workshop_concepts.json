@@ -1,0 +1,80 @@
+{
+  "concepts": [
+    {
+      "letter": "A",
+      "title": "The Doorbell Camera",
+      "premise": "A night nurse's doorbell camera records a hooded figure on her porch every night at 3:12. The recordings carry tomorrow's date.",
+      "cast": [
+        "Mara Quill: night nurse who lives alone and wants a rational answer",
+        "Hale Prentiss: elderly neighbor who sees more than he says",
+        "The figure: someone who always stands with its back to the door"
+      ],
+      "setting": "A quiet suburban street and the county hospital where Mara works nights",
+      "tone": "Slow dread, plain and intimate",
+      "beats": [
+        "The camera pings at 3:12 and shows a motionless hooded figure on the porch.",
+        "The alerts continue, and wet footprints appear on the dry porch.",
+        "Mara learns the recordings come from tomorrow and that the reply to her note is in her own handwriting.",
+        "She runs, hurts her hand, and sees the same bandage on the figure.",
+        "She stands on the porch herself and learns the figures take turns waiting for the next one."
+      ],
+      "why_it_works": "One ordinary object, one clear rule, and every part can answer one question while raising another.",
+      "audience": "Listeners who like quiet, rule-based horror they can follow while doing something else.",
+      "series_potential": "Each part follows one night of the loop and reveals one more rule, so the series can run many parts and pay off when Mara breaks the pattern.",
+      "risks": [
+        "Surveillance footage could read as real: never call the recordings real or leaked.",
+        "Hospital setting: keep medical details vague so it never reads as advice."
+      ]
+    },
+    {
+      "letter": "B",
+      "title": "The Last Ferry Light",
+      "premise": "A ferry pilot finds that the lighthouse on the far shore blinks a pattern that spells the names of people who have not been born yet.",
+      "cast": [
+        "Ines Moreau: ferry pilot who keeps a logbook of every crossing",
+        "Dov Aldren: lighthouse keeper who has not left the island in years",
+        "A child's voice on the radio: asks for a name to be added"
+      ],
+      "setting": "A foggy island ferry route and a stone lighthouse",
+      "tone": "Eerie and melancholy",
+      "beats": [
+        "Ines notices the light blinking a pattern that is not on any chart.",
+        "She decodes it as names and finds her own sister's unborn child among them.",
+        "Dov admits that the light only blinks names it intends to keep.",
+        "Ines tries to switch the light off and the names on the list start to change.",
+        "She chooses to add a name of her own to save one from the list."
+      ],
+      "why_it_works": "A decoding puzzle gives every part a concrete discovery and an emotional stake.",
+      "audience": "Listeners who like mystery with a human heart.",
+      "series_potential": "Each part decodes one more name, and the list gives the series a built-in countdown.",
+      "risks": [
+        "Unborn children and death: keep it implied and never graphic."
+      ]
+    },
+    {
+      "letter": "C",
+      "title": "Night Shift Backup",
+      "premise": "A data-center technician discovers that the nightly backup contains tomorrow's files, and that one of them is a recording of her own funeral.",
+      "cast": [
+        "Priya Landon: technician on the lonely night shift",
+        "Gus Whitlow: day manager who insists nothing is wrong",
+        "The backup: a file set that grows by one each night"
+      ],
+      "setting": "A windowless server room and the empty office floor above it",
+      "tone": "Cold, tense and dry",
+      "beats": [
+        "Priya finds a folder dated tomorrow in the nightly backup.",
+        "The files match events that then happen exactly as written.",
+        "She finds a file named after her and cannot open it.",
+        "She tries to corrupt the backup and the files rewrite themselves.",
+        "She opens the file and learns the backup is trying to warn her, not predict her."
+      ],
+      "why_it_works": "A workplace setting that is easy to film and a rule that escalates cleanly.",
+      "audience": "Listeners who like techno-thrillers with a human twist.",
+      "series_potential": "Each part opens one more file, which gives a clear unit of story per part.",
+      "risks": [
+        "Funeral content: keep it to a quiet implied scene."
+      ]
+    }
+  ]
+}

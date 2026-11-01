@@ -165,6 +165,7 @@ def create_app(
         finally:
             relay.stop()
             st.worker.stop()
+            dash.close()
 
     app = FastAPI(
         title="Nightshift Dashboard", docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan
@@ -557,7 +558,9 @@ def create_app(
 
     # ------------------------------------------------------------ static UI (served last)
     root = static_dir or default_static_dir()
-    app.mount("/", StaticFiles(directory=str(root), html=True, check_dir=False), name="static")
+    # StaticFiles raises at request time for a missing folder, so mount it only when it exists
+    if root.is_dir():
+        app.mount("/", StaticFiles(directory=str(root), html=True), name="static")
 
     app.add_middleware(LoopbackMiddleware, log=st.log)
     return app

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import re
 from pathlib import Path
 from typing import Any, BinaryIO
@@ -15,7 +14,7 @@ from ns_dashboard.jobs import Handler, JobControl
 from ns_dashboard.state import AppState
 from ns_dashboard.svc_channels import ChannelsService
 from ns_dashboard.templates import load_templates
-from ns_dashboard.uploads import ALLOWED_EXT, CHUNK, UploadInfo, UploadManager, find_source, source_dir
+from ns_dashboard.uploads import ALLOWED_EXT, CHUNK, UploadInfo, UploadManager, find_source
 
 CLIP_PARAM_KEYS = ("channel", "template", "max_clips", "min_s", "max_s", "caption_style", "rights_confirmed")
 MAX_CSV_BYTES = 20 * 1024 * 1024
@@ -213,10 +212,8 @@ class JobsService:
         }
         source_id, source_path, rerun = self._resolve_source(body, uploaded)
         params.update({"source_id": source_id, "source_path": str(source_path), "rerun": rerun})
-        folder = source_dir(self.s.paths, source_id)
-        folder.mkdir(parents=True, exist_ok=True)
-        rights = {"rights_confirmed": True, "confirmed_at": now_iso(), "channel": slug}
-        (folder / "rights.json").write_text(json.dumps(rights, indent=2) + "\n", encoding="utf-8")
+        # the Clipper import creates the `sources` row; for a re-run it exists, so record the rights now
+        self.s.db.execute("UPDATE sources SET rights_confirmed = 1 WHERE source_id = ?", (source_id,))
         return self._enqueue("clip", slug, params)
 
     def _registered_source(self, source_id: str) -> Path | None:

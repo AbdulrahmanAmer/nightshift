@@ -105,7 +105,7 @@ def _start_clip(c: ToolContext, a: dict[str, Any]) -> Any:
 
 
 def _formats_brief(c: ToolContext, _a: dict[str, Any]) -> Any:
-    keys = ("id", "label", "kind", "canvas", "source", "valid", "channels_allowed")
+    keys = ("id", "name", "kind", "canvas", "source", "valid")
     return [{k: f[k] for k in keys} for f in c.dash.library.list_formats()]
 
 
@@ -251,19 +251,18 @@ def _tools() -> list[ToolDef]:
         _t("list_ideas", "library", "The idea bank, optionally for one channel or status.",
            lambda c, a: c.dash.library.list_ideas(a.get("channel"), a.get("status"), a.get("q"), int(a.get("limit", 30))),
            route=("GET", "/api/library/ideas"),
-           props={"channel": _s("channel slug"), "status": _s("filter", enum=["new", "approved", "used", "dropped"]),
+           props={"channel": _s("channel slug"), "status": _s("filter", enum=["new", "approved", "used", "rejected"]),
                   "q": _s("search words"), "limit": _i("how many", minimum=1, maximum=100)}),
         _t("add_idea", "library", "Add a story idea to the bank for a channel.",
-           lambda c, a: c.dash.library.add_idea(a), route=("POST", "/api/library/ideas"),
+           lambda c, a: c.dash.library.add_idea({**a, "source": "assistant"}), route=("POST", "/api/library/ideas"),
            props={"channel": _s("channel slug"), "premise": _s("the idea in 1-3 sentences"),
-                  "twist": _s("the twist"), "setting": _s("where"), "protagonist": _s("who"),
-                  "keywords": {"type": "array", "items": {"type": "string"}, "description": "up to 8 words"},
+                  "title": _s("short title"), "twist": _s("the twist"),
                   "status": _s("start as", enum=["new", "approved"])},
            required=["channel", "premise"], side=True, confirm="Add this idea for {channel}: {premise}"),
-        _t("set_idea_status", "library", "Mark an idea new, approved for production, used or dropped.",
+        _t("set_idea_status", "library", "Mark an idea new, approved for production, used or rejected.",
            lambda c, a: c.dash.library.set_idea_status(int(a["idea_id"]), a.get("status")),
            route=("PUT", "/api/library/ideas/{idea_id}"),
-           props={"idea_id": _i("idea id"), "status": _s("new status", enum=["new", "approved", "used", "dropped"])},
+           props={"idea_id": _i("idea id"), "status": _s("new status", enum=["new", "approved", "used", "rejected"])},
            required=["idea_id", "status"], side=True, confirm="Mark idea {idea_id} as {status}."),
         _t("search_stories", "library", "Written stories with their videos and where they were posted.",
            lambda c, a: c.dash.library.stories(a.get("q"), a.get("channel"), int(a.get("limit", 10))),

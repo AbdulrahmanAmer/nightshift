@@ -6,8 +6,7 @@ import pytest
 
 from ns_common import ffmpeg as ff
 from ns_common.paths import contracts_dir
-from ns_studio.media import stages_media  # noqa: F401
-from ns_studio.media.outbox import job_date
+from ns_studio.media.stages_media import SHORTS_MEDIA_STAGES
 from ns_studio.orchestrator import FORMAT_STAGES, run_job
 from ns_studio.text import stages_shorts  # noqa: F401
 from tests.helpers import make_combo, make_ctx
@@ -25,7 +24,7 @@ TEXT = " ".join(SENTENCES)
 
 
 def test_media_stages_produce_a_valid_outbox_short(tmp_home: Path, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setitem(FORMAT_STAGES, "media_only", FORMAT_STAGES["shorts_only"][-6:])
+    monkeypatch.setitem(FORMAT_STAGES, "media_only", [s.name for s in SHORTS_MEDIA_STAGES])
     ctx = make_ctx(tmp_home, fmt="media_only", combo=make_combo(length_bucket=23))
     words = len(TEXT.split())
     ctx.write_json("parts.json", [{
@@ -55,10 +54,12 @@ def test_media_stages_produce_a_valid_outbox_short(tmp_home: Path, monkeypatch: 
     assert qc["passed"], qc
     assert 19.5 <= ff.duration_s(Path(ctx.read_json("render/report.json")["s1"]["path"])) <= 26.5
 
-    date = job_date(ctx.job_id).strftime("%Y-%m-%d")
-    d = ctx.paths.outbox / "after-dark" / date / ctx.job_id / "shorts"
-    assert ff.video_size(d / "s1.mp4") == (1080, 1920) and ff.has_faststart(d / "s1.mp4")
-    meta = json.loads((d / "s1.json").read_text(encoding="utf-8"))
+    man = ctx.read_json("outbox/manifest.json")["s1"]
+    mp4 = Path(man["mp4"])
+    story = ctx.paths.outbox / "after-dark" / "stories" / "Scary Story The Doorbell Camera"
+    assert mp4.parent == story / "shorts" and mp4.name == "Scary Story The Doorbell Camera - Short 01.mp4"
+    assert ff.video_size(mp4) == (1080, 1920) and ff.has_faststart(mp4)
+    meta = json.loads(Path(man["json"]).read_text(encoding="utf-8"))
     schema = json.loads((contracts_dir() / "schemas" / "metadata.schema.json").read_text(encoding="utf-8"))
     jsonschema.validate(meta, schema)
     assert len(meta["clips"]) >= 6 and meta["kind"] == "short" and meta["k"] == 1
@@ -67,5 +68,5 @@ def test_media_stages_produce_a_valid_outbox_short(tmp_home: Path, monkeypatch: 
 
     # second run is a no-op for the stages and leaves the Outbox intact
     run_job(ctx)
-    assert (d / "s1.mp4").exists()
+    assert mp4.exists()
     assert ctx.db.one("select count(*) c from outputs")["c"] == 1

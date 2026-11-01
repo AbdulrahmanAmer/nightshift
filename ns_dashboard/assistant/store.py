@@ -1,6 +1,8 @@
 """Assistant transcripts and pending actions in `data/assistant.db` (component C9).
 
-The DDL lives here until `contracts/` adopts it (CR-C9-6); every statement is idempotent.
+The shared schema (`contracts/schema.sql`) provides `assistant_messages`, a flat transcript that every message
+is also written to. Conversations, pending actions and the busy queue need more than that table offers, so
+their DDL stays here (CR-C9-9); every statement is idempotent.
 """
 # Dense descriptor tables and long signatures: wrapping them hurts readability.
 # ruff: noqa: E501
@@ -66,10 +68,11 @@ class AssistantStore:
     """Thread-safe access to the assistant database."""
 
     def __init__(self, paths: Paths) -> None:
-        self.db = Db(paths.data / "assistant.db")
+        self.db = Db(paths.assistant_db)
         self._lock = threading.RLock()
         with self._lock:
-            self.db.connect().executescript(DDL)
+            self.db.migrate()  # shared schema: includes the contract's `assistant_messages`
+            self.db.connect().executescript(DDL)  # conversations, actions and the busy queue are ours
 
     # --- conversations / messages ---
     def new_conversation(self, title: str | None = None) -> str:
@@ -104,6 +107,10 @@ class AssistantStore:
                 ),
             )
             self.db.execute("UPDATE conversations SET updated_at = ? WHERE conversation_id = ?", (_now(), cid))
+            self.db.execute(
+                "INSERT INTO assistant_messages(ts, role, content, tool_calls_json) VALUES (?, ?, ?, ?)",
+                (_now(), role, content or "", json.dumps(tool_calls) if tool_calls else None),
+            )
             return int(cur.lastrowid or 0)
 
     def set_title(self, cid: str, title: str) -> None:

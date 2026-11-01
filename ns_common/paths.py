@@ -33,6 +33,10 @@ class Paths:
     @property
     def bin_opencode(self) -> Path: return self.home / "bin" / "opencode"
     @property
+    def bin_uv(self) -> Path: return self.home / "bin" / "uv"
+    @property
+    def bin_qwentts(self) -> Path: return self.home / "bin" / "qwentts"
+    @property
     def models_llm(self) -> Path: return self.home / "models" / "llm"
     @property
     def models_embed(self) -> Path: return self.home / "models" / "embed"
@@ -44,6 +48,8 @@ class Paths:
     def models_whisper(self) -> Path: return self.home / "models" / "whisper"
     @property
     def models_spacy(self) -> Path: return self.home / "models" / "spacy"
+    @property
+    def models_cv(self) -> Path: return self.home / "models" / "cv"
     @property
     def venvs(self) -> Path: return self.home / "venvs"
     @property
@@ -69,6 +75,8 @@ class Paths:
     @property
     def rejected(self) -> Path: return self.home / "rejected"
     @property
+    def stories(self) -> Path: return self.home / "stories"
+    @property
     def logs(self) -> Path: return self.home / "logs"
 
     # --- files ---
@@ -80,6 +88,8 @@ class Paths:
     def opencode_file(self) -> Path: return self.config / "opencode.json"
     @property
     def db_path(self) -> Path: return self.data / "studio.db"
+    @property
+    def assistant_db(self) -> Path: return self.data / "assistant.db"
     @property
     def clips_index(self) -> Path: return self.cache_clips / "index.sqlite"
 
@@ -97,11 +107,12 @@ class Paths:
 
     def all_dirs(self) -> list[Path]:
         return [
-            self.bin_llama, self.bin_opencode, self.models_llm, self.models_embed, self.models_tts,
-            self.models_tts_voices, self.models_whisper, self.models_spacy, self.venvs, self.config,
+            self.bin_llama, self.bin_opencode, self.bin_uv, self.bin_qwentts,
+            self.models_llm, self.models_embed, self.models_tts, self.models_tts_voices,
+            self.models_whisper, self.models_spacy, self.models_cv, self.venvs, self.config,
             self.channels_dir, self.data, self.backup_dir, self.jobs_dir, self.calibration_dir,
             self.cache_clips, self.cache_search, self.imports_analytics, self.outbox, self.rejected,
-            self.logs,
+            self.stories, self.logs,
         ]
 
     def ensure(self) -> None:

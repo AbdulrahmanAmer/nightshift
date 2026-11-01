@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 SLUG_RE = r"^[a-z0-9]+(?:-[a-z0-9]+)*$"
 JOB_ID_RE = r"^[a-z0-9]+(?:-[a-z0-9]+)*-\d{8}-[0-9a-f]{4}$"
@@ -85,6 +85,8 @@ class LlamaCfg(Strict):
     story_model_path: str | None = None     # two-model mode only
     aliases: list[str] = ["code", "story"]
     flags: LlamaFlags = LlamaFlags()
+    story_flags: LlamaFlags | None = None     # two-model mode: flags for the story model (None = use `flags`)
+    build: Literal["cuda13", "cuda12"] | None = None   # llama.cpp pair chosen by the installer
 
     @property
     def base_url(self) -> str:
@@ -182,6 +184,11 @@ class Answers(Strict):
     run_time: str = Field(default="03:00", pattern=r"^\d{2}:\d{2}$")
     install_code: bool = True
     allow_cpu: bool = False
+    # installer-only keys for unattended installs (spec 5 and 1.3)
+    home_path: str | None = None
+    models_source: str | None = None
+    llm_tier: Literal["small", "balanced", "best"] = "small"
+    restore_from: str | None = None
 
 
 # ---------- manifest ----------
@@ -317,7 +324,7 @@ class ClipRef(Strict):
 class Metadata(Strict):
     channel: str = Field(pattern=SLUG_RE)
     job_id: str = Field(pattern=JOB_ID_RE)
-    kind: Literal["long", "short"]
+    kind: Literal["long", "short", "clip"]
     k: int | None = None
     title: str = Field(max_length=100)
     description: str
@@ -335,6 +342,8 @@ class Metadata(Strict):
     clips: list[ClipRef]
     combo_id: str
     prompt_versions: dict[str, int]
+    source_video: str | None = None      # set for clips (spec 15.6)
+    template: str | None = None          # clip layout template used
 
 
 class CalibrationRow(Strict):
@@ -364,11 +373,323 @@ class GateReport(Strict):
         return all(c.passed for c in self.checks)
 
 
+# ---------- master-first text artifacts (spec 15.6; CR-C5-1) ----------
+# Chapter plan of the long form (`plan.json`): 5-7 chapters, each with beats, a cliff and a word budget.
+class PlanChapter(Strict):
+    n: int = Field(ge=1)
+    title: str
+    beats: list[str] = Field(min_length=1)
+    cliff: str
+    word_budget: int = Field(ge=1)
+
+
+class Plan(Strict):
+    target_minutes: int = Field(ge=9)
+    target_words: int = Field(ge=1)
+    chapters: list[PlanChapter] = Field(min_length=5, max_length=7)
+
+
+# A sentence of a chapter with its 0-based index (the unit Shorts selection and beats address).
+class Sentence(Strict):
+    idx: int = Field(ge=0)
+    text: str
+
+
+class StoryChapter(Strict):
+    n: int = Field(ge=1)
+    title: str
+    text: str
+    summary: str
+    word_count: int = Field(ge=1)
+    est_seconds: float = Field(gt=0)
+    cliff_line_idx: int | None = Field(default=None, ge=0)
+    sentences: list[Sentence] = Field(min_length=1)
+
+
+# `story.json`: the master story by chapter.
+class Story(Strict):
+    working_title: str
+    chapters: list[StoryChapter] = Field(min_length=1)
+    revisions: int = Field(default=0, ge=0)
+
+
+# One derived Short: a sentence span of one chapter plus hook candidates (1..5: hooks over 12 words
+# are dropped in code) and the closing line. `shorts_plan.json` is the bare list of these.
+class ShortsPlanItem(Strict):
+    k: int = Field(ge=1)
+    chapter: int = Field(ge=1)
+    sentence_start: int = Field(ge=0)
+    sentence_end: int = Field(ge=0)
+    start_s: float | None = None
+    end_s: float | None = None
+    hooks: list[str] = Field(min_length=1, max_length=5)
+    chosen_hook: str
+    closing_line: str
+    length_bucket: int = Field(ge=1)
+    combo_id: str
+    why_standalone: str
+
+
+# Wrapper form of the plan, for prompts that answer {"shorts": [...]}.
+class ShortsPlan(Strict):
+    shorts: list[ShortsPlanItem] = Field(min_length=1)
+
+
+class ChapterTitle(Strict):
+    n: int = Field(ge=1)
+    title: str
+
+
+# `seo_long.json`: `Seo` plus the chapter titles (timestamps are filled in after rendering).
+class SeoLong(Seo):
+    chapter_titles: list[ChapterTitle] = Field(min_length=1)
+
+
+# One entry of `clip_plan.json` (the bare list). `clip_select` fills layout, layout_reason and
+# caption_style; status/reasons record why a candidate was dropped by the judge or the filters.
+class ClipPlanItem(Strict):
+    k: int = Field(ge=1)
+    start_s: float = Field(ge=0)
+    end_s: float = Field(gt=0)
+    title: str = Field(max_length=100)
+    hook_line: str | None = None
+    why: str = ""
+    score: float = Field(ge=0, le=1)
+    speakers: list[int] | None = None
+    keywords: list[str] = []
+    layout: str | None = None            # format preset id chosen by the model
+    layout_reason: str | None = None
+    caption_style: str | None = None     # model-chosen caption style (spec 17.2); None = channel default
+    status: Literal["kept", "dropped"] = "kept"
+    reasons: list[str] = []
+
+    @model_validator(mode="after")
+    def _ordered(self) -> ClipPlanItem:
+        if self.end_s <= self.start_s:
+            raise ValueError("end_s must be greater than start_s")
+        return self
+
+    @property
+    def duration_s(self) -> float:
+        return self.end_s - self.start_s
+
+
+# Wrapper form of the plan: the `clip_select` prompt answers {"clips": [...]}.
+class ClipPlan(Strict):
+    clips: list[ClipPlanItem] = Field(min_length=1)
+
+
+# Answer of `policy_check.md`; `unsafe_categories` holds ids of contracts/policy/unsafe_topics.yaml.
+class PolicyCheckResult(Strict):
+    unsafe_categories: list[str]
+    hook_honest: bool
+    title_honest: bool
+    standalone: bool | None
+    notes: str
+
+
+# ---------- clipper (spec 15.6; CR-C8-1, CR-C8-6) ----------
+CANVAS_W = 1080
+CANVAS_H = 1920
+
+
+# Axis-aligned rectangle in pixels of the frame it refers to.
+class Rect(Strict):
+    x: int
+    y: int
+    w: int = Field(gt=0)
+    h: int = Field(gt=0)
+
+    @property
+    def right(self) -> int:
+        return self.x + self.w
+
+    @property
+    def bottom(self) -> int:
+        return self.y + self.h
+
+    @property
+    def area(self) -> int:
+        return self.w * self.h
+
+    @property
+    def center(self) -> tuple[float, float]:
+        return self.x + self.w / 2.0, self.y + self.h / 2.0
+
+    def inside(self, outer: Rect, tol: int = 0) -> bool:
+        return (
+            self.x >= outer.x - tol
+            and self.y >= outer.y - tol
+            and self.right <= outer.right + tol
+            and self.bottom <= outer.bottom + tol
+        )
+
+
+class Segment(Strict):
+    i: int = Field(ge=0)
+    start: float = Field(ge=0)
+    end: float = Field(ge=0)
+    text: str
+    speaker: int | None = None
+
+
+# One timed word; `w` keeps the transcript's spelling and punctuation.
+class Word(Strict):
+    w: str
+    start: float = Field(ge=0)
+    end: float = Field(ge=0)
+    seg: int = Field(ge=0)
+
+
+class Transcript(Strict):
+    source: str
+    duration_s: float = Field(gt=0)
+    language: str = "en"
+    segments: list[Segment]
+    words: list[Word]
+
+    @model_validator(mode="after")
+    def _ordered(self) -> Transcript:
+        for s in self.segments:
+            if s.end < s.start:
+                raise ValueError(f"segment {s.i} ends before it starts")
+        for w in self.words:
+            if w.end < w.start:
+                raise ValueError(f"word {w.w!r} ends before it starts")
+        return self
+
+
+# Face boxes seen at time `t`; `speaking` indexes `boxes` (sorted left to right).
+class FaceFrame(Strict):
+    t: float = Field(ge=0)
+    boxes: list[Rect]
+    speaking: int | None = None
+
+
+# Source region(s) shown during [t_start, t_end] (source seconds): `region` is the main panel,
+# `region_b` the second panel (camera, or the lower speaker), `speaking` 0 top / 1 bottom.
+class Crop(Strict):
+    t_start: float = Field(ge=0)
+    t_end: float = Field(ge=0)
+    region: Rect
+    region_b: Rect | None = None
+    speaking: int | None = None
+
+
+# `clip_layout.json`; `note` records fallbacks such as NS-W402, `per_clip` maps clip k to its template.
+class ClipLayout(Strict):
+    template: str
+    facecam: Rect | None = None
+    faces: list[FaceFrame] = []
+    crops: list[Crop] = []
+    note: str | None = None
+    per_clip: dict[str, str] = {}
+    notes: dict[str, str] = {}
+
+
+# A panel of the 1080x1920 canvas; `y="seam"` and `h="auto"|"rest"` are resolved from the camera.
+class Region(Strict):
+    id: str
+    x: int = 0
+    y: int | Literal["seam"] = 0
+    w: int = CANVAS_W
+    h: int | Literal["auto", "rest"] = "rest"
+    max_h: int | None = None
+
+
+# One entry of presets/clip_templates.yaml.
+class ClipTemplate(Strict):
+    name: str
+    layout: Literal["gaming", "stacked", "tracked", "center", "screen_cam"]
+    description: str
+    needs: Literal["none", "facecam", "faces_1", "faces_2"] = "none"
+    when: str = ""
+    regions: list[Region]
+    caption_anchor_y_pct: float | Literal["seam"]
+    safe_top: int = 220
+    safe_bottom: int = 320
+    title_card: bool = False
+    title_card_s: float = 1.2
+    speaker_border_px: int = 0
+    track_deadband: float = 0.2
+    track_ramp_s: float = 1.0
+
+
+# ---------- format presets (spec 17.1; presets/formats/<id>.yaml) ----------
+class FormatCanvas(Strict):
+    w: int = Field(ge=1)
+    h: int = Field(ge=1)
+    fps: int = Field(default=30, ge=1)
+
+
+class FormatDuration(Strict):
+    min_s: float = Field(ge=0)
+    max_s: float = Field(gt=0)
+    buckets: list[int] | None = None
+
+
+class FormatCaptions(Strict):
+    styles_allowed: list[str] = []
+    anchor_y_pct: float = Field(default=70.0, ge=0, le=100)
+    words_on_screen: int = Field(default=4, ge=1)
+
+
+# One panel of the output frame. `source`: full | facecam | face:<n> | screen | blur_fill.
+class FormatRegion(Strict):
+    name: str
+    x: int = Field(default=0, ge=0)
+    y: int = Field(default=0, ge=0)
+    w: int = Field(ge=1)
+    h: int = Field(ge=1)
+    source: str = Field(default="full", pattern=r"^(full|facecam|screen|blur_fill|face:\d+)$")
+
+
+class FormatLayout(Strict):
+    regions: list[FormatRegion] = Field(min_length=1)
+    seam_captions: bool = False
+
+
+class FormatMargins(Strict):
+    top: int = Field(default=0, ge=0)
+    bottom: int = Field(default=0, ge=0)
+
+
+class FormatShots(Strict):
+    min_s: float = Field(gt=0)
+    max_s: float = Field(gt=0)
+
+
+class FormatEncoder(Strict):
+    preset: str = "p4"
+
+
+class FormatSheet(Strict):
+    hashtags_required: list[str] = []
+    description_rules: str = ""
+
+
+class Format(Strict):
+    id: str = Field(pattern=r"^[a-z][a-z0-9_]*$")
+    name: str
+    kind: Literal["short", "long", "square", "clip"]
+    canvas: FormatCanvas
+    duration: FormatDuration
+    captions: FormatCaptions
+    layout: FormatLayout
+    safe_margins: FormatMargins = FormatMargins()
+    shots: FormatShots | None = None
+    encoder: FormatEncoder | None = None
+    sheet: FormatSheet | None = None
+
+
 SCHEMA_MODELS: dict[str, type[BaseModel]] = {
     "channel": Channel, "runtime": Runtime, "install_state": InstallState, "answers": Answers,
     "manifest": Manifest, "idea": Idea, "parts": Part, "seo": Seo, "visual_plan": VisualBeat,
     "combo": Combo, "qc": QcResult, "policy": PolicyResult, "metadata": Metadata,
     "calibration_row": CalibrationRow, "gate_report": GateReport,
+    "plan": Plan, "story": Story, "shorts_plan": ShortsPlanItem, "seo_long": SeoLong,
+    "clip_plan": ClipPlanItem, "policy_check": PolicyCheckResult, "transcript": Transcript,
+    "clip_layout": ClipLayout, "clip_template": ClipTemplate, "format": Format,
 }
 
 

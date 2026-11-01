@@ -39,6 +39,8 @@ class CaptionStyle(Strict):
     outline_color: str = "#000000"
     shadow_color: str = "#000000"
     box: bool = False
+    accent: str | None = None
+    palette: list[str] = []
     vertical: CaptionVariant
     landscape: CaptionVariant
 
@@ -95,3 +97,50 @@ def visual_treatment(name: str) -> VisualTreatment:
     if name not in items:
         raise ValueError(f"unknown visual treatment {name!r}; known: {sorted(items)}")
     return items[name]
+
+
+class ChapterCard(Strict):
+    """One entry of chapter_cards.yaml (spec §17)."""
+
+    name: str = ""
+    background: str
+    text: str
+    accent: str
+    font_size: int
+    number_size: int = 32
+    show_number: bool = True
+    fade_ms: int = 250
+
+
+@lru_cache(maxsize=1)
+def load_chapter_cards() -> dict[str, ChapterCard]:
+    """All chapter card styles keyed by name."""
+    raw = yaml.safe_load((PRESETS_DIR / "chapter_cards.yaml").read_text(encoding="utf-8"))
+    return {k: ChapterCard.model_validate(v | {"name": k}) for k, v in raw.items()}
+
+
+def chapter_card(name: str) -> ChapterCard:
+    """Look up a chapter card style; ValueError for an unknown name."""
+    cards = load_chapter_cards()
+    if name not in cards:
+        raise ValueError(f"unknown chapter card {name!r}; known: {sorted(cards)}")
+    return cards[name]
+
+
+class ThumbnailLayout(Strict):
+    """One entry of thumbnails.yaml (spec §17)."""
+
+    name: str = ""
+    position: Literal["bottom_left", "center", "top_left"]
+    size_pct: float
+    color: str
+    stroke: str
+    stroke_pct: float
+    shade: float = 0.4
+
+
+@lru_cache(maxsize=1)
+def load_thumbnail_layouts() -> dict[str, ThumbnailLayout]:
+    """All thumbnail layouts keyed by name (file order)."""
+    raw = yaml.safe_load((PRESETS_DIR / "thumbnails.yaml").read_text(encoding="utf-8"))
+    return {k: ThumbnailLayout.model_validate(v | {"name": k}) for k, v in raw.items()}

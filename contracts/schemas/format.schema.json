@@ -1,0 +1,319 @@
+{
+  "$defs": {
+    "FormatCanvas": {
+      "additionalProperties": false,
+      "properties": {
+        "w": {
+          "minimum": 1,
+          "title": "W",
+          "type": "integer"
+        },
+        "h": {
+          "minimum": 1,
+          "title": "H",
+          "type": "integer"
+        },
+        "fps": {
+          "default": 30,
+          "minimum": 1,
+          "title": "Fps",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "w",
+        "h"
+      ],
+      "title": "FormatCanvas",
+      "type": "object"
+    },
+    "FormatCaptions": {
+      "additionalProperties": false,
+      "properties": {
+        "styles_allowed": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Styles Allowed",
+          "type": "array"
+        },
+        "anchor_y_pct": {
+          "default": 70,
+          "maximum": 100,
+          "minimum": 0,
+          "title": "Anchor Y Pct",
+          "type": "number"
+        },
+        "words_on_screen": {
+          "default": 4,
+          "minimum": 1,
+          "title": "Words On Screen",
+          "type": "integer"
+        }
+      },
+      "title": "FormatCaptions",
+      "type": "object"
+    },
+    "FormatDuration": {
+      "additionalProperties": false,
+      "properties": {
+        "min_s": {
+          "minimum": 0,
+          "title": "Min S",
+          "type": "number"
+        },
+        "max_s": {
+          "exclusiveMinimum": 0,
+          "title": "Max S",
+          "type": "number"
+        },
+        "buckets": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "integer"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Buckets"
+        }
+      },
+      "required": [
+        "min_s",
+        "max_s"
+      ],
+      "title": "FormatDuration",
+      "type": "object"
+    },
+    "FormatEncoder": {
+      "additionalProperties": false,
+      "properties": {
+        "preset": {
+          "default": "p4",
+          "title": "Preset",
+          "type": "string"
+        }
+      },
+      "title": "FormatEncoder",
+      "type": "object"
+    },
+    "FormatLayout": {
+      "additionalProperties": false,
+      "properties": {
+        "regions": {
+          "items": {
+            "$ref": "#/$defs/FormatRegion"
+          },
+          "minItems": 1,
+          "title": "Regions",
+          "type": "array"
+        },
+        "seam_captions": {
+          "default": false,
+          "title": "Seam Captions",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "regions"
+      ],
+      "title": "FormatLayout",
+      "type": "object"
+    },
+    "FormatMargins": {
+      "additionalProperties": false,
+      "properties": {
+        "top": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Top",
+          "type": "integer"
+        },
+        "bottom": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Bottom",
+          "type": "integer"
+        }
+      },
+      "title": "FormatMargins",
+      "type": "object"
+    },
+    "FormatRegion": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "x": {
+          "default": 0,
+          "minimum": 0,
+          "title": "X",
+          "type": "integer"
+        },
+        "y": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Y",
+          "type": "integer"
+        },
+        "w": {
+          "minimum": 1,
+          "title": "W",
+          "type": "integer"
+        },
+        "h": {
+          "minimum": 1,
+          "title": "H",
+          "type": "integer"
+        },
+        "source": {
+          "default": "full",
+          "pattern": "^(full|facecam|screen|blur_fill|face:\\d+)$",
+          "title": "Source",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "w",
+        "h"
+      ],
+      "title": "FormatRegion",
+      "type": "object"
+    },
+    "FormatShots": {
+      "additionalProperties": false,
+      "properties": {
+        "min_s": {
+          "exclusiveMinimum": 0,
+          "title": "Min S",
+          "type": "number"
+        },
+        "max_s": {
+          "exclusiveMinimum": 0,
+          "title": "Max S",
+          "type": "number"
+        }
+      },
+      "required": [
+        "min_s",
+        "max_s"
+      ],
+      "title": "FormatShots",
+      "type": "object"
+    },
+    "FormatSheet": {
+      "additionalProperties": false,
+      "properties": {
+        "hashtags_required": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Hashtags Required",
+          "type": "array"
+        },
+        "description_rules": {
+          "default": "",
+          "title": "Description Rules",
+          "type": "string"
+        }
+      },
+      "title": "FormatSheet",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "pattern": "^[a-z][a-z0-9_]*$",
+      "title": "Id",
+      "type": "string"
+    },
+    "name": {
+      "title": "Name",
+      "type": "string"
+    },
+    "kind": {
+      "enum": [
+        "short",
+        "long",
+        "square",
+        "clip"
+      ],
+      "title": "Kind",
+      "type": "string"
+    },
+    "canvas": {
+      "$ref": "#/$defs/FormatCanvas"
+    },
+    "duration": {
+      "$ref": "#/$defs/FormatDuration"
+    },
+    "captions": {
+      "$ref": "#/$defs/FormatCaptions"
+    },
+    "layout": {
+      "$ref": "#/$defs/FormatLayout"
+    },
+    "safe_margins": {
+      "$ref": "#/$defs/FormatMargins",
+      "default": {
+        "top": 0,
+        "bottom": 0
+      }
+    },
+    "shots": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/FormatShots"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "encoder": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/FormatEncoder"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "sheet": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/FormatSheet"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    }
+  },
+  "required": [
+    "id",
+    "name",
+    "kind",
+    "canvas",
+    "duration",
+    "captions",
+    "layout"
+  ],
+  "title": "Format",
+  "type": "object"
+}

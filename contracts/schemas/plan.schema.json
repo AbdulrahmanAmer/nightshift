@@ -1,0 +1,73 @@
+{
+  "$defs": {
+    "PlanChapter": {
+      "additionalProperties": false,
+      "properties": {
+        "n": {
+          "minimum": 1,
+          "title": "N",
+          "type": "integer"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "beats": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Beats",
+          "type": "array"
+        },
+        "cliff": {
+          "title": "Cliff",
+          "type": "string"
+        },
+        "word_budget": {
+          "minimum": 1,
+          "title": "Word Budget",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "n",
+        "title",
+        "beats",
+        "cliff",
+        "word_budget"
+      ],
+      "title": "PlanChapter",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "target_minutes": {
+      "minimum": 9,
+      "title": "Target Minutes",
+      "type": "integer"
+    },
+    "target_words": {
+      "minimum": 1,
+      "title": "Target Words",
+      "type": "integer"
+    },
+    "chapters": {
+      "items": {
+        "$ref": "#/$defs/PlanChapter"
+      },
+      "maxItems": 7,
+      "minItems": 5,
+      "title": "Chapters",
+      "type": "array"
+    }
+  },
+  "required": [
+    "target_minutes",
+    "target_words",
+    "chapters"
+  ],
+  "title": "Plan",
+  "type": "object"
+}

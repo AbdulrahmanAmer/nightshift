@@ -1,0 +1,24 @@
+# Thumbnail templates (spec §17): 3 layouts, 1280x720, at most 4 words, high-contrast frame pick.
+# position: where the text block sits; size_pct: font height as a fraction of the image height;
+# shade: strength of the darkening gradient behind the text (0 = none); stroke_pct: outline width.
+bottom_left:
+  position: bottom_left
+  size_pct: 0.20
+  color: "#FFFFFF"
+  stroke: "#000000"
+  stroke_pct: 0.012
+  shade: 0.55
+center_punch:
+  position: center
+  size_pct: 0.24
+  color: "#FFE14A"
+  stroke: "#000000"
+  stroke_pct: 0.016
+  shade: 0.35
+top_left:
+  position: top_left
+  size_pct: 0.18
+  color: "#FF4A3D"
+  stroke: "#FFFFFF"
+  stroke_pct: 0.010
+  shade: 0.30

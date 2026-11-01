@@ -12,12 +12,98 @@ from pathlib import Path
 from typing import Any
 
 from ns_common.models import Channel, ClipRef, Metadata, PolicyAdvice, PolicyResult, Seo
+from ns_common.paths import Paths
 from ns_studio.context import JobContext
 from ns_studio.media.shotplan import Shot
 from ns_studio.stages import Tenant
 
 JITTER_MIN = 45
 _JOB_DATE = re.compile(r"-(\d{8})-[0-9a-f]{4}$")
+MARKER = ".nightshift-job"
+_RESERVED = frozenset({"con", "prn", "aux", "nul", *(f"com{i}" for i in range(1, 10)),
+                       *(f"lpt{i}" for i in range(1, 10))})
+_BAD_CHARS = re.compile(r'[<>:"/\|?*\x00-\x1f]')
+
+
+def safe_slug(text: str, max_len: int = 80) -> str:
+    """Windows-safe, readable file or folder name of at most `max_len` characters (spec 15.2a).
+
+    Reserved characters become spaces, whitespace is collapsed, leading and trailing dots and spaces are
+    dropped, and a reserved device name (`con`, `nul`, `com1`, ...) gets a `_` suffix. Case is kept. Empty
+    input gives an empty string, so callers can fall back to an id. C8 and C11 import this function.
+    """
+    s = _BAD_CHARS.sub(" ", text)
+    s = re.sub(r"\s+", " ", s).strip(" .")
+    if s.lower() in _RESERVED:
+        s = f"{s}_"
+    return s[:max_len].rstrip(" .")
+
+
+def unique_dir(parent: Path, slug: str, job_id: str) -> Path:
+    """`parent/slug` for this job, or `slug-2`, `slug-3`... when another job already owns the folder.
+
+    Ownership is recorded in a marker file, so re-running a job reuses its own folder.
+    """
+    n = 1
+    while True:
+        suffix = "" if n == 1 else f"-{n}"
+        d = parent / f"{slug[: 80 - len(suffix)]}{suffix}"
+        marker = d / MARKER
+        if not d.exists():
+            d.mkdir(parents=True)
+            marker.write_text(job_id, encoding="utf-8")
+            return d
+        if marker.exists() and marker.read_text(encoding="utf-8").strip() == job_id:
+            return d
+        n += 1
+
+
+def story_title(ctx: JobContext) -> str:
+    """The story's title: master SEO title, else the first Short's SEO title, else the working title."""
+    for name in ("seo_long.json", "seo.json"):
+        if ctx.file(name).exists():
+            data = ctx.read_json(name)
+            first = data[0] if isinstance(data, list) else data
+            if first.get("title"):
+                return str(first["title"])
+    if ctx.file("story.json").exists():
+        story = ctx.read_json("story.json")
+        if isinstance(story, dict) and story.get("working_title"):
+            return str(story["working_title"])
+    return ctx.job_id
+
+
+def outbox_target(ctx: JobContext, kind: str, k: int | None = None) -> Path:
+    """The Outbox path of a video (spec §15.2a); creates its folder (and the story folder marker).
+
+    - `long` -> `outbox/<channel>/stories/<title-slug>/full/<title>.mp4`
+    - `short` -> `.../stories/<title-slug>/shorts/<title> - Short 01.mp4`
+    - with `series_context.json` {series_slug, part_n, series_title}:
+      `outbox/<channel>/series/<series-slug>/part-NN/{full|shorts}/<series-title> - Part NN[ - Short KK].mp4`
+
+    The `.json` sheet, `.txt` sheet and thumbnails sit next to the mp4. Story folders get a `-2` suffix when
+    another job already used the slug.
+    """
+    base = ctx.paths.outbox / ctx.channel.slug
+    if ctx.file("series_context.json").exists():
+        sc = ctx.read_json("series_context.json")
+        part = int(sc["part_n"])
+        series_title = safe_slug(str(sc["series_title"]))
+        stem = f"{series_title} - Part {part:02d}"
+        root = base / "series" / safe_slug(str(sc["series_slug"])) / f"part-{part:02d}"
+    else:
+        title = story_title(ctx)
+        stem = safe_slug(title) or ctx.job_id
+        root = unique_dir(base / "stories", stem, ctx.job_id)
+    folder = root / ("full" if kind == "long" else "shorts")
+    folder.mkdir(parents=True, exist_ok=True)
+    name = stem if kind == "long" else f"{stem} - Short {int(k or 1):02d}"
+    return folder / f"{name}.mp4"
+
+
+def rejected_path(paths: Paths, outbox_file: Path) -> Path:
+    """Where a rejected Outbox file goes: `rejected/` mirrors the Outbox tree (spec §15.2a)."""
+    return paths.rejected / outbox_file.relative_to(paths.outbox)
 
 
 def job_date(job_id: str) -> datetime:
@@ -189,17 +275,18 @@ class OutboxStage:
 
     name: str = "outbox"
     tenant: Tenant = None
-    inputs: tuple[str, ...] = ("qc/report.json", "seo.json")
+    inputs: tuple[str, ...] = ("qc/report.json", "seo.json", "seo_long.json", "seo_shorts.json")
     outputs: tuple[str, ...] = ("outbox/manifest.json",)
 
     def run(self, ctx: JobContext) -> None:
-        """Publish every item listed in `render/report.json`."""
+        """Publish every item listed in `render/report.json` (master and Shorts in master-first jobs)."""
+        if ctx.fmt == "master_first":
+            run_outbox_master(ctx)
+            return
         rendered: dict[str, Any] = ctx.read_json("render/report.json")
         shots_all: dict[str, Any] = ctx.read_json("clips/shots.json")
         seos = [Seo.model_validate(s) for s in ctx.read_json("seo.json")]
         advice = load_advice(ctx)
-        date = job_date(ctx.job_id).strftime("%Y-%m-%d")
-        dest_dir = ctx.paths.outbox_dir(ctx.channel.slug, date, ctx.job_id) / "shorts"
         manifest: dict[str, Any] = {}
         for item, info in rendered.items():
             k = int(item[1:])
@@ -218,11 +305,11 @@ class OutboxStage:
                     ctx.channel, ctx.job_id, item, day_offset=short_day_offset(ctx.channel, k)
                 ),
             )
-            mp4 = copy_if_changed(Path(info["path"]), dest_dir / f"{item}.mp4")
-            (dest_dir / f"{item}.json").write_text(
+            mp4 = copy_if_changed(Path(info["path"]), outbox_target(ctx, "short", k))
+            mp4.with_suffix(".json").write_text(
                 meta.model_dump_json(indent=2) + "\n", encoding="utf-8"
             )
-            write_sheet_txt(meta, mp4.name, dest_dir / f"{item}.txt")
+            write_sheet_txt(meta, mp4.name, mp4.with_suffix(".txt"))
             record_output(
                 ctx, kind="short", k=k, item=item, meta=meta, path=mp4,
                 duration_s=float(info["duration_s"]), shots=shots,
@@ -231,3 +318,116 @@ class OutboxStage:
                               "txt": str(mp4.with_suffix(".txt"))}
         ctx.write_json("outbox/manifest.json", manifest)
         ctx.log.info("outbox_done", job_id=ctx.job_id, items=list(manifest))
+
+
+# ---------------------------------------------------------------------------------------------------------
+# Master-first Outbox (M2): long/ + shorts/
+# ---------------------------------------------------------------------------------------------------------
+
+CHAPTERS_PLACEHOLDER = "[[CHAPTERS]]"
+
+
+def seo_from(d: dict[str, Any]) -> Seo:
+    """A `Seo` from a SEO document that may carry extra fields (chapter titles, thumbnail text)."""
+    return Seo(
+        title=str(d["title"])[:100],
+        description=str(d["description"]),
+        tags=list(d["tags"]),
+        hashtags=list(d.get("hashtags", []))[:5],
+        keywords=list(d.get("keywords", [])),
+    )
+
+
+def chapter_list(chapters: Sequence[dict[str, Any]]) -> str:
+    """`MM:SS Title` lines; the first entry is `00:00` (spec §9.1)."""
+    return "\n".join(f"{c['timestamp']} {c['title']}" for c in chapters)
+
+
+def long_description(description: str, chapters: Sequence[dict[str, Any]]) -> str:
+    """Master description (spec §9.1): summary lines, blank, chapter list, then the rest.
+
+    The `[[CHAPTERS]]` placeholder is replaced; without one the list goes after the first paragraph.
+    """
+    block = chapter_list(chapters)
+    if CHAPTERS_PLACEHOLDER in description:
+        return description.replace(CHAPTERS_PLACEHOLDER, block)
+    head, sep, rest = description.partition("\n\n")
+    return f"{head}\n\n{block}" + (f"\n\n{rest}" if sep else "")
+
+
+def short_description(description: str, master_title: str) -> str:
+    """Short description (spec §9.2): adds "From the full story: <master title>" before the fiction line."""
+    line = f"From the full story: {master_title}"
+    if line in description:
+        return description
+    lines = description.rstrip().split("\n")
+    at = next((i for i, ln in enumerate(lines) if ln.strip() == "Original fiction."), len(lines))
+    lines.insert(at, line)
+    return "\n".join(lines)
+
+
+def run_outbox_master(ctx: JobContext) -> None:
+    """Publish the master (`long/`) and its derived Shorts (`shorts/`) with metadata and upload sheets."""
+    advice = load_advice(ctx)
+    chapters_doc: dict[str, Any] = ctx.read_json("long/chapters.json")
+    chapters = chapters_doc["chapters"]
+    long_info = ctx.read_json("render/long.json")
+    long_shots = [Shot.from_json(s) for s in ctx.read_json("clips/shots.json")["long"]["shots"]]
+    long_seo = seo_from(ctx.read_json("seo_long.json"))
+    long_seo = long_seo.model_copy(update={
+        "description": long_description(long_seo.description, chapters),
+        "hashtags": [h for h in long_seo.hashtags if h.lower() != "#shorts"][:5],
+    })
+    thumbs = [f"thumb_{i}.jpg" for i in (1, 2, 3) if ctx.file(f"long/thumb_{i}.jpg").exists()]
+    manifest: dict[str, Any] = {}
+
+    meta = build_metadata(
+        channel=ctx.channel, job_id=ctx.job_id, kind="long", k=None, seo=long_seo, advice=advice,
+        shots=long_shots, combo_id=ctx.combo.combo_id, prompt_versions=ctx.prompt_versions,
+        publish_at=publish_after(ctx.channel, ctx.job_id, "long", day_offset=1),
+        extra={
+            "chapters": [{"timestamp": c["timestamp"], "title": c["title"], "start_s": c["start_s"]}
+                         for c in chapters],
+            "midroll_suggestions_s": chapters_doc.get("midroll_suggestions_s", []),
+            "thumbnails": thumbs,
+        },
+    )
+    mp4 = copy_if_changed(Path(long_info["path"]), outbox_target(ctx, "long"))
+    for t in thumbs:
+        copy_if_changed(ctx.file(f"long/{t}"), mp4.parent / t)
+    mp4.with_suffix(".json").write_text(meta.model_dump_json(indent=2) + "\n", encoding="utf-8")
+    write_sheet_txt(meta, mp4.name, mp4.with_suffix(".txt"))
+    record_output(ctx, kind="long", k=None, item="long", meta=meta, path=mp4,
+                  duration_s=float(long_info["duration_s"]), shots=long_shots)
+    manifest["long"] = {"mp4": str(mp4), "json": str(mp4.with_suffix(".json")),
+                        "txt": str(mp4.with_suffix(".txt"))}
+
+    has_report = ctx.file("render/report.json").exists()
+    rendered: dict[str, Any] = ctx.read_json("render/report.json") if has_report else {}
+    shorts_shots: dict[str, Any] = (
+        ctx.read_json("clips/shorts_shots.json") if ctx.file("clips/shorts_shots.json").exists() else {}
+    )
+    seos = ctx.read_json("seo_shorts.json") if ctx.file("seo_shorts.json").exists() else []
+    for item, info in rendered.items():
+        k = int(item[1:])
+        shots = [Shot.from_json(s) for s in shorts_shots[item]["shots"]]
+        base = seo_from(seos[min(k, len(seos)) - 1])
+        seo = base.model_copy(update={"description": short_description(base.description, long_seo.title)})
+        smeta = build_metadata(
+            channel=ctx.channel, job_id=ctx.job_id, kind="short", k=k, seo=seo, advice=advice, shots=shots,
+            combo_id=ctx.combo.combo_id, prompt_versions=ctx.prompt_versions,
+            publish_at=publish_after(
+                ctx.channel, ctx.job_id, item, day_offset=1 + short_day_offset(ctx.channel, k)
+            ),
+            extra={"related_video_instruction": f"Set Related video -> {long_seo.title}",
+                   "parent_job_id": ctx.job_id},
+        )
+        smp4 = copy_if_changed(Path(info["path"]), outbox_target(ctx, "short", k))
+        smp4.with_suffix(".json").write_text(smeta.model_dump_json(indent=2) + "\n", encoding="utf-8")
+        write_sheet_txt(smeta, smp4.name, smp4.with_suffix(".txt"), related_title=long_seo.title)
+        record_output(ctx, kind="short", k=k, item=item, meta=smeta, path=smp4,
+                      duration_s=float(info["duration_s"]), shots=shots)
+        manifest[item] = {"mp4": str(smp4), "json": str(smp4.with_suffix(".json")),
+                          "txt": str(smp4.with_suffix(".txt"))}
+    ctx.write_json("outbox/manifest.json", manifest)
+    ctx.log.info("outbox_done", job_id=ctx.job_id, items=list(manifest))
