@@ -54,6 +54,29 @@
     settings: { schedule_time: "03:00", home: "D:\\Nightshift", profile: "gpu", flags: { ctx: 16384, kv_type: "f16", n_gpu_layers: 99, encoder: "h264_nvenc", tts_engine: "qwentts" }, keys: { pexels: true, pixabay: true }, notifications: true },
     learn: { imported_at: "2026-10-28T09:12:00", matched: 41, unmatched: 3, summary: ["Shorts that open mid-scene are watched 23% longer than ones that open with a question.", "50-second Shorts keep more viewers than 75-second ones on After Dark Stories.", "Yellow and clean white captions perform the same; both stay in rotation."], changes: [{ pool: "hooks", option: "cold_open", delta: 0.08 }, { pool: "hooks", option: "question", delta: -0.05 }, { pool: "length_buckets", option: "50", delta: 0.06 }, { pool: "length_buckets", option: "75", delta: -0.04 }], top: [{ title: "The Laundromat That Only Opens at Night", views: 18400, viewed_pct: 71 }, { title: "The dryer was still warm when I got there", views: 9200, viewed_pct: 66 }], bottom: [{ title: "The night bus that skips my stop", views: 410, viewed_pct: 38 }] },
     logs: [{ ts: "03:12:04", level: "INFO", component: "studio", event: "stage_start", msg: "voice after-dark-20261101-a1f2" }, { ts: "03:14:40", level: "INFO", component: "studio", event: "stage_end", msg: "voice 156.2 s" }, { ts: "03:14:41", level: "WARN", component: "media", event: "clip_pool", msg: "no portrait clip for 'porch light flicker', using mood search" }],
+    ideas: [
+      { id: 1, channel: "after-dark", title: "The Laundromat That Only Opens at Night", premise: "A student finds a laundromat that is open only between 2 and 4 a.m. and never has the same machines twice.", status: "used", source: "generated", created_at: "2026-10-29T03:00:00" },
+      { id: 2, channel: "after-dark", title: "The Substitute", premise: "A substitute teacher takes over a class whose real teacher has been dead for a year, according to the kids.", status: "approved", source: "owner", created_at: "2026-10-30T19:10:00" },
+      { id: 3, channel: "after-dark", title: "Floor 13 Exists", premise: "An elevator technician keeps being called to a floor the building's plans say was never built.", status: "new", source: "assistant", created_at: "2026-11-01T10:00:00" },
+      { id: 4, channel: "tiny-mysteries", title: "The Bakery's Second Receipt", premise: "Every receipt from the town bakery has a second, faint receipt printed underneath, from a day that has not happened yet.", status: "new", source: "owner", created_at: "2026-11-01T11:00:00" },
+    ],
+    stories: [
+      { job_id: "after-dark-20261101-a1f2", title: "The Doorbell Camera That Recorded Tomorrow", channel: "after-dark", format: "master_first", words: 1652, critic_avg: 8.4, created_at: "2026-11-01T03:41:00", outputs: 6, status: "pending" },
+      { job_id: "after-dark-20261031-9c0d", title: "The Laundromat That Only Opens at Night", channel: "after-dark", format: "master_first", words: 1598, critic_avg: 8.1, created_at: "2026-10-31T03:40:00", outputs: 5, status: "posted" },
+      { job_id: "after-dark-20261030-7b1e", title: "The Night Bus That Skips My Stop", channel: "after-dark", format: "shorts_only", words: 121, critic_avg: 7.9, created_at: "2026-10-30T03:55:00", outputs: 1, status: "rejected" },
+    ],
+    footage: [
+      { source: "pexels", id: "8451234", keywords: ["empty hallway night"], license: "Pexels License", duration: 12.4, last_used: "2026-11-01", uses: 2 },
+      { source: "pixabay", id: "22318", keywords: ["kitchen window rain"], license: "Pixabay Content License", duration: 9.1, last_used: "2026-10-31", uses: 1 },
+      { source: "pexels", id: "7765001", keywords: ["porch light", "front door"], license: "Pexels License", duration: 15.0, last_used: "2026-11-01", uses: 1 },
+    ],
+    formats: [
+      { id: "short_9x16", name: "Short (9:16)", kind: "short", canvas: { w: 1080, h: 1920, fps: 30 }, channels: ["after-dark", "tiny-mysteries"] },
+      { id: "long_16x9", name: "Full video (16:9)", kind: "long", canvas: { w: 1920, h: 1080, fps: 30 }, channels: ["after-dark", "tiny-mysteries"] },
+      { id: "clip_gaming_facecam", name: "Gaming with facecam", kind: "clip", canvas: { w: 1080, h: 1920, fps: 30 }, channels: ["tiny-mysteries"] },
+      { id: "clip_podcast_stacked", name: "Podcast, two speakers", kind: "clip", canvas: { w: 1080, h: 1920, fps: 30 }, channels: ["tiny-mysteries"] },
+    ],
+    chat: [],
   };
   const DEMO_POOLS = { hooks: ["cold_open", "question", "confession", "warning"], structures: ["twist", "reverse_reveal", "slow_burn", "unreliable_narrator"], caption_styles: ["punch_yellow", "clean_white"], visual_treatments: ["dark_slowzoom", "handheld_grit"] };
 
@@ -102,7 +125,41 @@
     if (p === "/learn/summary") return structuredClone(DEMO.learn);
     if (p === "/learn/import") { DEMO.learn.imported_at = new Date().toISOString(); return structuredClone(DEMO.learn); }
     if (p.startsWith("/logs/tail")) return DEMO.logs;
+    // ---- library ----
+    if (p === "/library/ideas" && method === "GET") { const ch = sp.get("channel"); return DEMO.ideas.filter((i) => !ch || i.channel === ch).map((i) => ({ ...i })); }
+    if (p === "/library/ideas" && method === "POST") { const idea = { id: DEMO.ideas.length + 1, status: "new", source: "owner", created_at: new Date().toISOString(), ...body }; DEMO.ideas.unshift(idea); return idea; }
+    if (parts[0] === "library" && parts[1] === "ideas" && method === "PUT") { const i = DEMO.ideas.find((x) => String(x.id) === parts[2]); if (i) Object.assign(i, body); return i; }
+    if (p === "/library/stories") { const q = (sp.get("q") || "").toLowerCase(); return DEMO.stories.filter((s) => !q || s.title.toLowerCase().includes(q)); }
+    if (p === "/library/footage") { const q = (sp.get("q") || "").toLowerCase(); return DEMO.footage.filter((f) => !q || f.keywords.join(" ").includes(q)); }
+    if (p === "/library/formats" && method === "GET") return DEMO.formats.map((f) => ({ ...f }));
+    if (p === "/library/formats" && method === "POST") { DEMO.formats.push({ ...body }); return body; }
+    if (p === "/update/check") return { current: "0.1.0", latest: "0.1.0", up_to_date: true, notes: "" };
+    // ---- assistant (scripted demo) ----
+    if (p === "/assistant/chat" && method === "POST") return demoAssistant(body);
+    if (p === "/assistant/confirm" && method === "POST") { const a = DEMO.pendingActions?.[body.action_id]; if (!a) throw new Error("Nothing to confirm"); delete DEMO.pendingActions[body.action_id]; return a.run(); }
     throw new Error(`Not available in demo: ${method} ${path}`);
+  }
+  // Scripted demo assistant: recognises a few intents and returns the same shapes the real API uses
+  // ({reply, actions:[{action_id, title, detail}]}). Real engine: tool-using Qwen behind /api/assistant/chat.
+  async function demoAssistant(body) {
+    const last = (body.messages || []).filter((m) => m.role === "user").at(-1)?.content?.toLowerCase() || "";
+    DEMO.pendingActions = DEMO.pendingActions || {};
+    const pend = (title, detail, run) => { const id = "a" + Math.random().toString(16).slice(2, 8); DEMO.pendingActions[id] = { run }; return { action_id: id, title, detail }; };
+    if (/draft|series|story idea|concept/.test(last)) {
+      return { reply: "Here are three series concepts for After Dark Stories. Say which one to keep, or ask me to redo any of them.\n\nA. The Night Shift Nurse: a nurse's doorbell camera records tomorrow. Six parts, each a new night.\nB. Floor 13 Exists: an elevator technician keeps getting called to a floor that was never built.\nC. The Substitute: a class whose real teacher has been dead for a year, according to the kids.", actions: [pend("Save these three concepts to the Library as drafts?", "Creates a story folder with concept-A, B and C under stories/after-dark/.", () => { DEMO.ideas.unshift({ id: 90, channel: "after-dark", title: "Series: Night Shift / Floor 13 / The Substitute", premise: "Three concept drafts saved from the Assistant.", status: "new", source: "assistant", created_at: new Date().toISOString() }); return { ok: true, message: "Saved. Open Library → Ideas to see them." }; })] };
+    }
+    if (/pause|stop .*channel/.test(last)) {
+      const ch = DEMO.status.channels.find((c) => last.includes(c.slug) || last.includes(c.display_name.toLowerCase())) || DEMO.status.channels[0];
+      return { reply: `I can pause ${ch.display_name}. It will be skipped tonight until you resume it.`, actions: [pend(`Pause ${ch.display_name}?`, "No videos will be made for this channel until you resume it.", () => { ch.status = "paused"; return { ok: true, message: `${ch.display_name} is paused.` }; })] };
+    }
+    if (/clip|youtube\.com|youtu\.be|http/.test(last)) {
+      const url = last.match(/https?:\/\/\S+/)?.[0];
+      return { reply: url ? `I can make clips from that link for Tiny Mysteries using the Auto layout. It downloads the video first (you confirm it is yours), then transcribes it and picks the moments.` : "Paste the link to your video (or drop the file in Create → Clips) and I'll make clips from it.", actions: url ? [pend("Start making clips from this link?", `${url} → Tiny Mysteries, Auto layout, up to 6 clips.`, () => { const job = { job_id: "j" + Math.random().toString(16).slice(2, 8), kind: "clip", channel: "tiny-mysteries", status: "queued", progress: 0, stage: "queued", message: "Waiting", created_at: new Date().toISOString() }; DEMO.jobs.unshift(job); simulateJob(job); return { ok: true, message: "Started. Watch progress in Create, results land in the Queue." }; })] : [] };
+    }
+    if (/where|folder|path|find/.test(last)) return { reply: `Videos ready to post are in ${DEMO.status.disk.home}\\outbox\\<channel>\\stories\\<title>\\. Models live in ${DEMO.status.disk.home}\\models\\. Tonight's run starts at 03:00.`, actions: [] };
+    if (/status|what.*doing|engine/.test(last)) return { reply: `Engine: ${DEMO.status.engine.detail}. ${DEMO.status.outbox.pending} videos are waiting for review. Next automatic run ${fmtWhen(DEMO.status.next_run)}.`, actions: [] };
+    if (/make|create|new video|story/.test(last)) return { reply: "I can start a new story video for After Dark Stories now (full video + Shorts, about an hour).", actions: [pend("Start a new story video for After Dark Stories?", "Full video + Shorts. Shows up in the Queue when done.", () => { const job = { job_id: "j" + Math.random().toString(16).slice(2, 8), kind: "run", channel: "after-dark", status: "queued", progress: 0, stage: "queued", message: "Waiting", created_at: new Date().toISOString() }; DEMO.jobs.unshift(job); simulateJob(job); return { ok: true, message: "Started." }; })] };
+    return { reply: "I can start videos or clips, draft story concepts, pause channels, find files, or explain any result. (Demo mode: scripted answers; the real Assistant runs on your local Qwen model.)", actions: [] };
   }
   function simulateJob(job) {
     const stages = job.kind === "clip" ? ["import", "audio", "transcribe", "select", "detect", "captions", "render", "qc", "outbox"] : ["ideas", "plan", "draft", "critic_revise", "hooks", "seo", "visual_plan", "voice", "captions", "clips", "render", "qc", "outbox"];
@@ -142,7 +199,7 @@
   }
 
   // ---------------------------------------------------------------- router
-  const ROUTES = { "": "queue", queue: "queue", review: "queue", create: "create", channels: "channels", results: "results", settings: "settings" };
+  const ROUTES = { "": "queue", queue: "queue", review: "queue", create: "create", library: "library", assistant: "assistant", channels: "channels", results: "results", settings: "settings" };
   let pageCleanup = null;
   async function render() {
     const [name, query] = location.hash.replace(/^#\/?/, "").split("?");
@@ -204,10 +261,15 @@
         ${header(`${items.length} ready to post`, `${idx + 1} of ${items.length} · ${kindLabel(o.kind)} for ${channelName(o.channel)}`)}
         ${tabsHtml()}
         <div class="queue">
-          <div class="player-wrap">
+          <div class="player-wrap" style="display:flex;flex-direction:column;gap:12px">
+            <div class="hero ${o.kind === "long" ? "" : "portrait"}">
+              ${api.demo ? `<div class="placeholder">Video plays here<br><span class="small">(demo: no engine connected)</span></div>` : `<video controls preload="metadata" src="${api.mediaUrl(o.output_id)}" poster="${api.mediaUrl(o.output_id)}/thumb.jpg"></video>`}
+              <span class="chip-float tl">${kindLabel(o.kind)}</span>
+              <span class="chip-float tr num">${fmtDur(o.duration_s)}</span>
+              <span class="chip-float bl">${esc(channelName(o.channel))}</span>
+            </div>
             <div class="big-title">${esc(o.title)}</div>
-            <div class="player ${o.kind === "long" ? "landscape" : ""}">${api.demo ? `<div class="muted" style="padding:20px;text-align:center">Video plays here<br><span class="small">(demo: no engine connected)</span></div>` : `<video controls preload="metadata" src="${api.mediaUrl(o.output_id)}" poster="${api.mediaUrl(o.output_id)}/thumb.jpg"></video>`}</div>
-            <div class="player-meta"><span class="num muted">${fmtDur(o.duration_s)}</span><span class="muted">made ${fmtWhen(o.created_at)}</span><span class="spacer"></span><button class="btn btn-ghost" data-act="skip" type="button">Next video →</button></div>
+            <div class="btn-row"><span class="muted">made ${fmtWhen(o.created_at)}</span><span class="spacer"></span><a class="btn btn-ghost" href="#/assistant?about=${encodeURIComponent(o.output_id)}">Ask about this video</a><button class="btn btn-ghost" data-act="skip" type="button">Next video →</button></div>
             <details class="section"><summary>The story and why it passed checks</summary><div class="section-body"><p style="margin:0">${esc(d.story_excerpt || "")}</p><ul style="margin:0;padding-left:18px">${(d.policy_notes || []).map((n) => `<li>${esc(n)}</li>`).join("")}</ul></div></details>
             <div class="filmstrip">${items.map((it) => `<button type="button" data-pick="${esc(it.output_id)}" aria-current="${it.output_id === current}"><span class="badge ${esc(it.kind)}">${kindLabel(it.kind)}</span><span class="ft">${esc(it.title)}</span><span class="small muted num">${fmtDur(it.duration_s)}</span></button>`).join("")}</div>
           </div>

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="color-scheme" content="dark light">
+<meta name="color-scheme" content="light dark">
 <title>Nightshift</title>
 <link rel="stylesheet" href="app.css">
 </head>
@@ -12,13 +12,15 @@
 
 <div class="app">
   <nav class="nav" aria-label="Main">
-    <a class="brand" href="#/"><span class="brand-dot" aria-hidden="true"></span>Nightshift</a>
+    <a class="brand" href="#/"><span class="brand-dot" aria-hidden="true"></span><span>Nightshift</span></a>
     <ul class="nav-list">
-      <li><a href="#/" data-route="queue">Queue <span class="count" id="nav-pending" hidden>0</span></a></li>
-      <li><a href="#/create" data-route="create">Create</a></li>
-      <li><a href="#/channels" data-route="channels">Channels</a></li>
-      <li><a href="#/results" data-route="results">Results</a></li>
-      <li><a href="#/settings" data-route="settings">Settings</a></li>
+      <li><a href="#/" data-route="queue"><span class="ico" aria-hidden="true">▶</span><span class="lbl">Queue</span><span class="count" id="nav-pending" hidden>0</span></a></li>
+      <li><a href="#/create" data-route="create"><span class="ico" aria-hidden="true">✚</span><span class="lbl">Create</span></a></li>
+      <li><a href="#/library" data-route="library"><span class="ico" aria-hidden="true">▤</span><span class="lbl">Library</span></a></li>
+      <li><a href="#/assistant" data-route="assistant"><span class="ico" aria-hidden="true">✦</span><span class="lbl">Assistant</span></a></li>
+      <li><a href="#/channels" data-route="channels"><span class="ico" aria-hidden="true">◉</span><span class="lbl">Channels</span></a></li>
+      <li><a href="#/results" data-route="results"><span class="ico" aria-hidden="true">▲</span><span class="lbl">Results</span></a></li>
+      <li><a href="#/settings" data-route="settings"><span class="ico" aria-hidden="true">⚙</span><span class="lbl">Settings</span></a></li>
     </ul>
     <button class="btn btn-ghost nav-theme" id="theme-toggle" type="button">Switch theme</button>
   </nav>
@@ -30,7 +32,8 @@
     <span class="strip-item" id="next-run"></span>
     <span class="strip-item tag" id="demo-flag" hidden title="No engine reachable; showing sample data">Demo data</span>
     <span class="spacer"></span>
-    <button class="btn btn-danger-outline" id="quit-btn" type="button">Quit Nightshift</button>
+    <a class="btn btn-ghost" id="ask-btn" href="#/assistant">Ask Nightshift</a>
+    <button class="btn btn-danger-outline" id="quit-btn" type="button">Quit</button>
   </header>
 
   <main class="main" id="main" tabindex="-1"></main>
@@ -41,5 +44,6 @@
 
 <script src="app.js"></script>
 <script src="app-pages.js"></script>
+<script src="app-library.js"></script>
 </body>
 </html>

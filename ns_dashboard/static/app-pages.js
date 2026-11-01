@@ -25,7 +25,7 @@
     await refreshStatus();
     const chans = state.status.channels || [];
     let kind = state.query.get("kind") || store.get("ns-create-kind") || "story";
-    let file = null; let templates = await safe(() => api.get("/templates"), []);
+    let file = null; let url = ""; let templates = await safe(() => api.get("/templates"), []);
     let jobs = await safe(() => api.get("/jobs"), []);
     const stops = [];
     const track = (id) => stops.push(watchJob(id, (j) => { const el = $(`[data-job="${CSS.escape(j.job_id)}"]`, main); if (el) el.outerHTML = progressBlock(j); }));
@@ -37,7 +37,7 @@
         <label class="select-card"><input type="radio" name="format" value="shorts_only"><span class="sc-title">One Short</span><span class="sc-desc">A single short story as a vertical video. A few minutes.</span></label></div></div></div>
       <div class="step"><div class="step-n">3</div><div class="step-body"><button class="btn btn-primary btn-lg" id="start" type="button" ${chans.length ? "" : "disabled"}>Start</button><div class="muted small">You can leave this page. The result shows up in the Queue.</div></div></div></div>`;
     const flowClips = () => `<div class="steps">
-      <div class="step ${file ? "done" : ""}"><div class="step-n">1</div><div class="step-body"><div class="step-title">Your video</div>${file ? `<div class="file-pick"><div><strong>${esc(file.name)}</strong><div class="muted small">${(file.size / 1e9).toFixed(2)} GB</div></div><button class="btn btn-ghost" id="change-file" type="button">Change</button></div>` : `<label class="dropzone" id="dz"><span class="dz-title">Drop a video here</span><span class="muted">A stream, podcast or recording you own. MP4, MKV or MOV, up to 4 hours.</span><span class="btn">or choose a file</span><input type="file" id="file-input" accept="video/*,.mkv"></label>`}</div></div>
+      <div class="step ${file || url ? "done" : ""}"><div class="step-n">1</div><div class="step-body"><div class="step-title">Your video</div>${file ? `<div class="file-pick"><div><strong>${esc(file.name)}</strong><div class="muted small">${(file.size / 1e9).toFixed(2)} GB</div></div><button class="btn btn-ghost" id="change-file" type="button">Change</button></div>` : `<label class="dropzone" id="dz"><span class="dz-title">Drop a video here</span><span class="muted">A stream, podcast or recording you own. MP4, MKV or MOV, up to 4 hours.</span><span class="btn">or choose a file</span><input type="file" id="file-input" accept="video/*,.mkv"></label><div class="or">or paste a link</div><div class="btn-row"><input class="input" id="url-input" type="url" placeholder="https://youtu.be/… (a video you own or have permission to use)" value="${esc(url)}" style="flex:1;min-width:260px"></div>`}</div></div>
       <div class="step"><div class="step-n">2</div><div class="step-body"><div class="step-title">Channel and layout</div>${channelCards(chans, chans[0]?.slug)}<div class="select-cards">${templates.map((t) => `<label class="select-card ${t.id === "auto" ? "on" : ""}"><input type="radio" name="template" value="${esc(t.id)}" ${t.id === "auto" ? "checked" : ""}><span class="sc-head">${thumbHtml(t.id)}<span class="sc-title">${esc(t.label)}</span></span><span class="sc-desc">${esc(t.description)}</span></label>`).join("")}</div>
         <details class="section"><summary>Options</summary><div class="section-body"><div class="field-row"><div class="field"><label for="max-clips">How many clips, at most</label><input class="input" id="max-clips" type="number" min="1" max="10" value="6"></div><div class="field"><label for="min-s">Shortest clip, seconds</label><input class="input" id="min-s" type="number" min="10" max="120" value="20"></div><div class="field"><label for="max-s">Longest clip, seconds</label><input class="input" id="max-s" type="number" min="15" max="179" value="60"></div><div class="field"><label for="cap-style">Caption look</label><select class="input" id="cap-style"><option value="punch_yellow">Bold yellow</option><option value="clean_white">Clean white</option><option value="boxed_dark">Boxed dark</option><option value="minimal_lower">Minimal</option></select></div></div></div></details></div></div>
       <div class="step"><div class="step-n">3</div><div class="step-body"><label class="chip" style="align-self:flex-start"><input type="checkbox" id="rights"> I own this video or have permission to use it</label><div class="btn-row"><button class="btn btn-primary btn-lg" id="start" type="button" disabled>Start</button><span class="muted small" id="upload-note"></span></div></div></div></div>`;
@@ -59,8 +59,8 @@
       const dz = $("#dz", main);
       if (dz) { ["dragenter", "dragover"].forEach((ev) => dz.addEventListener(ev, (e) => { e.preventDefault(); dz.classList.add("over"); })); ["dragleave", "drop"].forEach((ev) => dz.addEventListener(ev, (e) => { e.preventDefault(); dz.classList.remove("over"); })); dz.addEventListener("drop", (e) => { const f = e.dataTransfer.files?.[0]; if (f) { file = f; draw(); } }); $("#file-input", main).addEventListener("change", (e) => { const f = e.target.files?.[0]; if (f) { file = f; draw(); } }); }
       $("#change-file", main)?.addEventListener("click", () => { file = null; draw(); });
-      const gate = () => { if (kind !== "clips") return; const b = $("#start", main); if (b) b.disabled = !(file && $("#rights", main)?.checked && $('input[name="channel"]:checked', main)); };
-      main.onchange = gate; gate();
+      const gate = () => { if (kind !== "clips") return; const u = $("#url-input", main); if (u) url = u.value.trim(); const b = $("#start", main); if (b) b.disabled = !((file || /^https?:\/\//.test(url)) && $("#rights", main)?.checked && $('input[name="channel"]:checked', main)); };
+      main.onchange = gate; main.oninput = gate; gate();
     };
 
     main.onclick = async (e) => {
@@ -73,6 +73,7 @@
       try {
         let job_id;
         if (kind === "story") ({ job_id } = await api.post("/jobs/run", { channel, format: $('input[name="format"]:checked', main).value }));
+        else if (!file && url) { ({ job_id } = await api.post("/jobs/clip", { url, channel, template: $('input[name="template"]:checked', main)?.value || "auto", max_clips: Number($("#max-clips", main).value), min_s: Number($("#min-s", main).value), max_s: Number($("#max-s", main).value), caption_style: $("#cap-style", main).value, rights_confirmed: true })); url = ""; }
         else { const fd = new FormData(); fd.append("channel", channel); fd.append("template", $('input[name="template"]:checked', main)?.value || "auto"); fd.append("max_clips", $("#max-clips", main).value); fd.append("min_s", $("#min-s", main).value); fd.append("max_s", $("#max-s", main).value); fd.append("caption_style", $("#cap-style", main).value); fd.append("rights_confirmed", "true"); fd.append("file", file, file.name); ({ job_id } = await uploadWithProgress(api.base + "/jobs/clip", fd, (p) => { const n = $("#upload-note", main); if (n) n.textContent = p < 100 ? `Uploading ${p}%` : "Upload done, starting"; })); file = null; }
         jobs = await safe(() => api.get("/jobs"), jobs); toast("Started", "ok"); draw(); track(job_id);
       } catch (err) { toast(err.message, "bad"); t.disabled = false; }
