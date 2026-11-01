@@ -1,0 +1,27 @@
+# common first names that NER tags as PERSON but are fine in fiction. lowercase.
+sarah
+emma
+olivia
+ava
+mia
+nora
+ellie
+hannah
+grace
+lily
+maya
+clara
+james
+liam
+noah
+ethan
+owen
+caleb
+daniel
+sam
+ben
+jack
+leo
+eli
+mr. hale
+mrs. park
