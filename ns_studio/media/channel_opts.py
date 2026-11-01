@@ -1,8 +1,9 @@
-"""Per-channel options that the Channel model does not list yet (spec 17.1 `formats_allowed`, 17.2 `captions`).
+"""Per-channel options that the Channel model does not list yet (spec 17.1 and 17.2).
 
-The Channel model forbids unknown keys, so `config.load_channel` rejects a profile that carries them until
-CR-C6-6 lands in `ns_common.models`. These readers look at the model attribute first (so they keep working once
-the field exists) and fall back to the channel YAML read as a plain mapping.
+The options are `formats_allowed` and `captions.mask_profanity`. The Channel model forbids unknown keys, so
+`config.load_channel` rejects a profile that carries them until CR-C6-6 lands in `ns_common.models`. These
+readers look at the model attribute first (so they keep working once the field exists) and fall back to the
+channel YAML read as a plain mapping.
 """
 
 from __future__ import annotations
@@ -31,7 +32,7 @@ def _dig(data: Any, parts: Sequence[str]) -> Any:
 
 
 def channel_setting(paths: Paths, channel: Channel, dotted: str, default: Any = None) -> Any:
-    """A channel option such as `captions.mask_profanity`: model attribute, else the channel YAML, else `default`.
+    """A channel option such as `captions.mask_profanity`: model attribute, else channel YAML, else `default`.
 
     Unreadable or malformed files give `default`.
     """

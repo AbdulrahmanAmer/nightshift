@@ -59,7 +59,8 @@ def test_clip_layouts_match_spec_19_3() -> None:
     assert [(r.name, r.source) for r in gaming.layout.regions] == [("cam", "facecam"), ("game", "full")]
     assert gaming.layout.seam_captions is True and gaming.layout.regions[0].h == 640
     stacked = F.get_format("clip_podcast_stacked")
-    assert [(r.source, r.y, r.h) for r in stacked.layout.regions] == [("face:0", 0, 960), ("face:1", 960, 960)]
+    got = [(r.source, r.y, r.h) for r in stacked.layout.regions]
+    assert got == [("face:0", 0, 960), ("face:1", 960, 960)]
     centre = F.get_format("clip_center_crop")
     assert [r.source for r in centre.layout.regions] == ["blur_fill", "full"]
     assert (centre.layout.regions[1].x, centre.layout.regions[1].y) == (152, 220)
@@ -156,3 +157,28 @@ def test_series_design_options_follow_the_yaml_list(tmp_home: Path) -> None:
     assert design_options(ch, paths)["format"] == available_formats()
     _channel_yaml(paths, ch.slug, "slug: after-dark\nformats_allowed: [long_16x9, clip_center_crop]\n")
     assert design_options(ch, paths)["format"] == ["long_16x9"]
+
+
+def test_clip_layout_choice_follows_formats_allowed() -> None:
+    from ns_studio.clipper import stages_clip as sc
+    from ns_studio.clipper.models import Rect
+
+    cam = Rect(x=944, y=16, w=320, h=180)
+    apply = sc.apply_formats_allowed
+    assert apply("gaming_facecam", None, cam, 0, explicit=False, channel="c") == ("gaming_facecam", None)
+    ok = ["clip_gaming_facecam", "clip_center_crop"]
+    assert apply("gaming_facecam", ok, cam, 0, explicit=False, channel="c") == ("gaming_facecam", None)
+    # not allowed: the model's pick is replaced by an allowed layout that applies, with an NS-W402 note
+    template, note = apply("gaming_facecam", ["clip_center_crop"], cam, 0, explicit=False, channel="c")
+    assert template == "center_crop" and note is not None and note.startswith("NS-W402")
+    # the section 19.4 auto choice wins when it is allowed
+    both = ["clip_talking_head", "clip_center_crop"]
+    assert apply("podcast_stacked", both, None, 1, explicit=False, channel="c")[0] == "talking_head"
+    # an explicit owner choice is never swapped silently
+    with pytest.raises(StudioError) as ei:
+        apply("gaming_facecam", ["clip_center_crop"], cam, 0, explicit=True, channel="after-dark")
+    assert ei.value.code == "NS-E320" and "clip_gaming_facecam" in ei.value.detail
+    # nothing allowed fits this video: plain message that names the way out
+    with pytest.raises(StudioError) as ei2:
+        apply("center_crop", ["clip_gaming_facecam"], None, 0, explicit=False, channel="after-dark")
+    assert ei2.value.code == "NS-E320" and "clip_center_crop" in ei2.value.detail

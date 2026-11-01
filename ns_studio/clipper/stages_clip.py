@@ -36,6 +36,7 @@ from ns_studio.clipper.models import (
     Word,
 )
 from ns_studio.context import FAKEABLE, JobContext, build_services
+from ns_studio.errors import StudioError
 from ns_studio.media import captions as media_captions
 from ns_studio.media import outbox as media_outbox
 from ns_studio.media import qc as media_qc
@@ -48,6 +49,7 @@ from ns_studio.media.caption_plan import (
     safe_zones_for,
     speaker_plan,
 )
+from ns_studio.media.formats import ensure_allowed, formats_allowed
 from ns_studio.orchestrator import FORMAT_STAGES
 from ns_studio.stages import Stage, Tenant, register
 from ns_studio.text.prompts import call_json
@@ -339,6 +341,37 @@ def template_of(lay: ClipLayout, k: int) -> str:
     return lay.per_clip.get(str(k), lay.template)
 
 
+_FALLBACK_ORDER = (
+    "talking_head", "podcast_single", "center_crop", "podcast_stacked", "gaming_facecam", "screen_plus_cam",
+)
+
+
+def apply_formats_allowed(
+    template: str, allowed: list[str] | None, facecam: Any, n_faces: int, *, explicit: bool, channel: str
+) -> tuple[str, str | None]:
+    """`template`, or a layout the channel's `formats_allowed` permits, plus a note when it was replaced.
+
+    The replacement is the section 19.4 auto choice when allowed, else the first applicable layout of
+    `_FALLBACK_ORDER`. A layout the owner asked for explicitly is never swapped: NS-E320 says which formats
+    are allowed. NS-E320 also when no allowed layout fits the video.
+    """
+    if allowed is None or layout.format_id_for(template) in allowed:
+        return template, None
+    if explicit:
+        ensure_allowed(layout.format_id_for(template), allowed, channel=channel)
+    auto = detect.decide_template("auto", facecam, n_faces)[0]
+    for cand in (auto, *_FALLBACK_ORDER):
+        applies = detect.decide_template(cand, facecam, n_faces)[1] is None
+        if applies and layout.format_id_for(cand) in allowed:
+            fmt_id = layout.format_id_for(template)
+            return cand, f"NS-W402: {fmt_id} is not in formats_allowed of {channel}, used {cand}"
+    raise StudioError(
+        "NS-E320",
+        f"no clip layout in formats_allowed of {channel} fits this video (allowed: {sorted(allowed)}); "
+        "add clip_center_crop to formats_allowed, it works for any picture.",
+    )
+
+
 class LayoutStage:
     """Choose each clip's template (model layout, else the section 19.4 rule) and plan its crops."""
 
@@ -355,16 +388,26 @@ class LayoutStage:
         per_clip: dict[str, str] = {}
         notes: dict[str, str] = {}
         crops: list[Crop] = []
+        allowed = formats_allowed(ctx.paths, ctx.channel)
+        explicit = p.template != "auto"
         for clip in plan:
             template, warn = detect.decide_clip_template(
                 p.template, clip.layout, an.facecam, an.n_stable_faces
             )
             wanted = clip.layout or p.template
             note = f"{warn}: {wanted} does not apply here, used {template}" if warn else None
+            template, moved = apply_formats_allowed(
+                template, allowed, an.facecam, an.n_stable_faces, explicit=explicit, channel=ctx.channel.slug
+            )
+            note = moved or note
             try:
                 got = layout.plan_layout(template, w, h, base, t_start=clip.start_s, t_end=clip.end_s)
             except ValueError as e:
                 template, note = "center_crop", f"NS-W402: {e}; used center_crop"
+                template, moved = apply_formats_allowed(
+                    template, allowed, an.facecam, an.n_stable_faces, explicit=False, channel=ctx.channel.slug
+                )
+                note = moved or note
                 got = layout.plan_layout(template, w, h, base, t_start=clip.start_s, t_end=clip.end_s)
             crops += got
             per_clip[str(clip.k)] = template

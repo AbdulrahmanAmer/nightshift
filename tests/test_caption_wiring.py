@@ -49,7 +49,8 @@ def test_safe_zones_per_variant() -> None:
 
 def test_parse_emphasis_accepts_mapping_and_lists_and_skips_junk() -> None:
     assert parse_emphasis({"0": "knife", 2: "door", "x": "bad", "3": ""}) == {0: "knife", 2: "door"}
-    assert parse_emphasis([{"sentence": 1, "word": "blood"}, [4, "run"], {"word": "x"}, 7]) == {1: "blood", 4: "run"}
+    mixed = [{"sentence": 1, "word": "blood"}, [4, "run"], {"word": "x"}, 7]
+    assert parse_emphasis(mixed) == {1: "blood", 4: "run"}
     assert parse_emphasis(None) == {} and parse_emphasis("nope") == {}
 
 
@@ -109,8 +110,9 @@ def test_anchor_places_text_centre_and_free_band_search_still_applies() -> None:
     margin, block = caption_placement(geo, "vertical", anchor_y_pct=50.0)
     assert margin == round(1920 * 0.5 - 0.6 * geo.font_size) and block == int(geo.font_size * 1.2 * 2)
     cam = Box(0, 0, 1080, 800)
-    moved, _ = caption_placement(geo, "vertical", avoid_regions=[cam], safe_zones=(220, 320), anchor_y_pct=20.0)
-    band = caption_band("clean_white", "vertical", avoid_regions=[cam], safe_zones=(220, 320), anchor_y_pct=20.0)
+    kw = {"avoid_regions": [cam], "safe_zones": (220, 320), "anchor_y_pct": 20.0}
+    moved, _ = caption_placement(geo, "vertical", **kw)
+    band = caption_band("clean_white", "vertical", **kw)
     assert band.y >= 800 and band.y + band.h <= 1600 and 1920 - moved == band.y + band.h
     assert band.x == geo.margin_lr and band.w == 1080 - 2 * geo.margin_lr
 
@@ -172,7 +174,8 @@ def test_shorts_captions_pass_safe_zones_emphasis_and_mask(tmp_home: Path) -> No
     assert tl["ass_opts"]["mask_profanity"] is True and tl["ass_opts"]["avoid_regions"] == []
     # the same options rebuild the same file (the renderer relies on this)
     words = [Word.from_json(w) for w in tl["words"]]
-    assert AssOptions.from_json(tl["ass_opts"]).build(words, tl["style"]).count("fscx115") == ass.count("fscx115")
+    rebuilt = AssOptions.from_json(tl["ass_opts"]).build(words, tl["style"])
+    assert rebuilt.count("fscx115") == ass.count("fscx115")
 
 
 def test_shorts_captions_without_plan_or_channel_options_stay_plain(tmp_home: Path) -> None:
@@ -294,7 +297,8 @@ def test_backdrop_luma_and_boxed_fallback_on_a_bright_backdrop(tmp_path: Path) -
         words=words, style="clean_white", opts=opts, shots=[shot], total_s=3.0, size=VERTICAL, ass_path=ass
     )
     assert got == lumas
-    assert _style_line(ass.read_text(encoding="utf-8"))[15] == "3"  # opaque box: white text on white is unreadable
+    # opaque box: white text on a white backdrop is unreadable
+    assert _style_line(ass.read_text(encoding="utf-8"))[15] == "3"
 
 
 @needs_ffmpeg

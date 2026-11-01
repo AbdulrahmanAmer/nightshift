@@ -21,7 +21,8 @@ from ns_studio.media.channel_opts import channel_setting
 from ns_studio.media.presets import PRESETS_DIR, load_caption_styles
 
 FORMATS_DIR = PRESETS_DIR / "formats"
-DESIGN_KINDS = ("short", "long", "square")  # kinds a series design may pick (clip layouts are chosen per clip)
+# Kinds a series design may pick (clip layouts are chosen per clip by the clipper).
+DESIGN_KINDS = ("short", "long", "square")
 
 
 def _load_file(path: Path) -> Format:
@@ -112,7 +113,7 @@ def validate_all(directory: Path | None = None) -> list[str]:
 
 # ---------- channel option `formats_allowed` ----------
 def formats_allowed(paths: Paths, channel: Channel) -> list[str] | None:
-    """The channel's `formats_allowed` list, or None when it has none or an empty one (every format is allowed)."""
+    """The channel's `formats_allowed` list; None (every format allowed) when it has none or an empty one."""
     raw = channel_setting(paths, channel, "formats_allowed", None)
     if raw is None or raw == []:
         return None

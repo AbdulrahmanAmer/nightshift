@@ -109,8 +109,8 @@ def speaker_plan(
 ) -> tuple[dict[int, int], list[int]]:
     """({group index: speaker}, word indices where a new speaker starts) for `build_ass`.
 
-    Words without a speaker continue the previous one. Fewer than two distinct speakers give ({}, []): a single
-    speaker keeps the style's own colours.
+    Words without a speaker continue the previous one. Fewer than two distinct speakers give ({}, []): a
+    single speaker keeps the style's own colours.
     """
     st = caption_style(style) if isinstance(style, str) else style
     if len(speaker_of) != len(words):

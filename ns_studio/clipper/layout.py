@@ -58,7 +58,7 @@ def format_for(template: str) -> Format:
 
 
 def _template_regions(fmt: Format) -> list[Region]:
-    """The format's regions as clipper `Region`s: the facecam height is `auto` (capped), the panel below it `seam`."""
+    """The format regions as clipper `Region`s: facecam height `auto` (capped), the panel below it `seam`."""
     cam = next((r for r in fmt.layout.regions if r.source == "facecam"), None)
     out: list[Region] = []
     for r in fmt.layout.regions:
@@ -416,8 +416,8 @@ def _to_panel(box: Rect, region: Rect, panel: Rect) -> Rect | None:
 def avoid_boxes(tpl: ClipTemplate, crop: Crop, layout: ClipLayout, t0: float, t1: float) -> list[Box]:
     """Canvas rectangles captions must stay off: the facecam panel and every detected face (spec 17.2).
 
-    Faces are mapped from source pixels into the panel that shows them; the facecam is avoided as a whole panel
-    (gaming layouts put captions on the gameplay region, never over the camera).
+    Faces are mapped from source pixels into the panel that shows them; the facecam is avoided as a whole
+    panel (gaming layouts put captions on the gameplay region, never over the camera).
     """
     out: list[Box] = []
     faces = face_tracks(layout, t0, t1)

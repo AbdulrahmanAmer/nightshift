@@ -125,7 +125,7 @@ def chapter_count(target_words: int) -> int:
 
 
 def available_formats() -> list[str]:
-    """Format ids a design can pick: the short, long and square presets of `presets/formats/` (else the shipped three).
+    """Format ids a design can pick: the short, long and square presets (else the three shipped ids).
 
     Per-clip layouts (`clip_*`) are chosen by the clipper, not by a series design.
     """

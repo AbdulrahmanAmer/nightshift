@@ -37,7 +37,7 @@ def std_sources() -> dict[str, SourceSpec]:
 
 
 def check_pads(fragments: list[str], external: set[str], out_label: str = "v0") -> None:
-    """Every consumed pad is produced before it is used, each is used once, and `out_label` is the last result."""
+    """Each consumed pad exists before use and is used once; `out_label` is the only leftover result."""
     produced = set(external)
     consumed: list[str] = []
     for frag in fragments:
@@ -68,9 +68,10 @@ def test_cover_without_a_crop_trims_the_centre_to_the_region_aspect() -> None:
 
 def test_cover_keeps_an_explicit_crop_that_is_close_to_the_aspect() -> None:
     cam = F.get_format("clip_gaming_facecam").layout.regions[0]
-    near = L.region_chain(cam.model_copy(update={"h": 608}), SourceSpec(SRC_W, SRC_H, crop=(944, 16, 320, 180)))
+    spec = SourceSpec(SRC_W, SRC_H, crop=(944, 16, 320, 180))
+    near = L.region_chain(cam.model_copy(update={"h": 608}), spec)
     assert near.startswith("crop=320:180:944:16,scale=1080:608")
-    far = L.region_chain(cam, SourceSpec(SRC_W, SRC_H, crop=(944, 16, 320, 180)))  # 1080x640 is wider
+    far = L.region_chain(cam, spec)  # 1080x640 is wider
     assert far.startswith("crop=304:180:952:16,scale=1080:640")
 
 

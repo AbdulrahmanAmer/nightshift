@@ -1,9 +1,9 @@
 """C8 Clipper: per-template FFmpeg render (spec 19.2 C7).
 
-`build_filter_graph` is pure: it turns a template plus crops into one `-filter_complex` string. The panels come
-from the template's format preset through the generic engine in `ns_studio.media.layout` (crop + scale +
-overlay, blurred fill); this module adds the speaker border and the burned `ass=` captions. `render_clip` adds
-the two-pass loudnorm to -14 LUFS and runs FFmpeg through `ns_common.ffmpeg.run`.
+`build_filter_graph` is pure: it turns a template plus crops into one `-filter_complex` string. The panels
+come from the template's format preset through the generic engine in `ns_studio.media.layout` (crop + scale
++ overlay, blurred fill); this module adds the speaker border and the burned `ass=` captions.
+`render_clip` adds the two-pass loudnorm to -14 LUFS and runs FFmpeg through `ns_common.ffmpeg.run`.
 """
 from __future__ import annotations
 
@@ -118,7 +118,7 @@ def _rect(r: Rect) -> tuple[int, int, int, int]:
 
 
 def region_sources(spec: RenderSpec, crops: list[Crop]) -> dict[str, SourceSpec]:
-    """What each region source of the template's format shows, from the planned crops (clip-relative seconds)."""
+    """What each region source of the template's format shows, from the planned crops (clip-relative)."""
     first = crops[0]
     w, h = spec.src_w, spec.src_h
     kind = spec.template.layout

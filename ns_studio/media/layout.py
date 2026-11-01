@@ -26,10 +26,10 @@ class SourceSpec:
     """How one region source maps onto an input stream.
 
     `w`/`h` are the pixel size of the input stream behind pad `label`. `crop` (x, y, w, h in source pixels) is
-    the part of the frame the region shows (default: the whole frame). `fit` is `cover` (scale to fill, trimming
-    the excess; the default) or `contain` (letterbox on black; the default for the `screen` source).
-    `x_expr` is an FFmpeg expression of `t` for the crop's x position, which makes the crop window slide (smooth
-    face tracking); it needs `crop` for the window size and row.
+    the part of the frame the region shows (default: the whole frame). `fit` is `cover` (scale to fill,
+    trimming the excess; the default) or `contain` (letterbox on black; the default for the `screen` source).
+    `x_expr` is an FFmpeg expression of `t` for the crop's x position, which makes the crop window slide
+    (smooth face tracking); it needs `crop` for the window size and row.
     """
 
     w: int
@@ -79,7 +79,7 @@ def fit_facecam_height(fmt: Format, cam_w: int, cam_h: int) -> Format:
 
 
 def caption_anchor_pct(fmt: Format) -> float:
-    """Caption anchor as a percentage of the canvas height: the seam below the first region, or the preset's."""
+    """Caption anchor in % of the canvas height: the seam below the first region, or the preset's value."""
     if fmt.layout.seam_captions and len(fmt.layout.regions) > 1:
         first = fmt.layout.regions[0]
         return 100.0 * (first.y + first.h) / fmt.canvas.h
@@ -141,11 +141,11 @@ def build_regions_graph(
     out_label: str = "v0",
     duration_s: float | None = None,
 ) -> list[str]:
-    """`filter_complex` fragments that draw every region of `fmt` onto its canvas; the result pad is `out_label`.
+    """`filter_complex` fragments drawing every region of `fmt` onto its canvas; the result is `[out_label]`.
 
-    The input pads named by the `SourceSpec`s (default `[src]`) must be produced by the caller. A source used by
-    several regions is split first. Regions are overlaid in list order over the first region when it fills the
-    canvas, else over a black canvas (`duration_s` ends that canvas with the video).
+    The input pads named by the `SourceSpec`s (default `[src]`) must be produced by the caller. A source
+    used by several regions is split first. Regions are overlaid in list order over the first region when
+    it fills the canvas, else over a black canvas (`duration_s` ends that canvas with the video).
     """
     regions = fmt.layout.regions
     specs = [_spec_for(r, sources) for r in regions]
