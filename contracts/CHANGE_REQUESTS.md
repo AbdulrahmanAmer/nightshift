@@ -65,6 +65,52 @@ Format per entry:
 - **Why:** spec 7.5 wants 1,200 ms before a cliff line; the spec 15.4 request has no field to carry which lines are cliffs.
 - **Status:** open
 
+## CR-C8-0: register the clipper error codes in `errors.json`
+- **From:** C8 Clipper / Task 1
+- **Change:** add `NS-E405` (unsupported source: too long, no audio, unreadable, or rights not confirmed), `NS-E406` (transcription produced fewer than 30 words), `NS-E407` (no clip candidates passed the filters) and `NS-W402` (requested template not applicable, fell back to center_crop). 
+- **Why:** spec 19.7 defines them but `contracts/errors.json` lacks them, so `NsError` raised `KeyError`.
+- **Status:** applied on main (2a3d772); C8's local registration shim was removed
+
+## CR-C8-1: move the clipper schemas into `ns_common`
+- **From:** C8 Clipper / Task 1
+- **Change:** move `Transcript`, `Segment`, `Word`, `ClipItem` (`clip_plan` item), `ClipLayout` (+ `Crop`, `FaceFrame`, `Rect`) and `ClipTemplate` from `ns_studio/clipper/models.py` to `ns_common/models.py`, register them in `SCHEMA_MODELS` and export `transcript`, `clip_plan`, `clip_layout`, `clip_template` schemas.
+- **Why:** spec 15.6 lists them as contracts (also read by C9). They are local pydantic models for now.
+- **Status:** open
+
+## CR-C8-2: OpenCV in the `dev` and `studio` extras
+- **From:** C8 Clipper / Task 3
+- **Change:** add `"opencv-python-headless>=4.9"` to `[project.optional-dependencies].dev` and `.studio` in `pyproject.toml` (`numpy` is already core).
+- **Why:** with it CI runs the YuNet/Canny paths (`pytest.importorskip("cv2")` tests are skipped without it). The YuNet ONNX also needs a `manifest.json` pin (`models\cv\yunet.onnx`) so the installer downloads it.
+- **Status:** open
+
+## CR-C8-3: `sources` row stores the rights confirmation
+- **From:** C8 Clipper / Task 5
+- **Change:** `contracts/schema.sql` `sources` gains `rights_confirmed INTEGER NOT NULL DEFAULT 0` and `title TEXT`.
+- **Why:** spec 19.1 says the owner's rights confirmation is stored on the `sources` row; the table has no column. C8 keeps it in `imports/clipper/<source_id>/source.json` and the job's `source.json` meanwhile.
+- **Status:** open
+
+## CR-C8-4: `metadata.kind` accepts `"clip"`
+- **From:** C8 Clipper / Task 7
+- **Change:** `Metadata.kind` becomes `Literal["long","short","clip"]` and gains optional `source_video: str | None` and `template: str | None` (spec 15.6).
+- **Why:** clip upload sheets use `ClipMetadata` (local) until then.
+- **Status:** open
+
+## CR-C8-5: mount `studio clip`
+- **From:** C8 Clipper / Task 7
+- **Change:** in `ns_studio/cli.py` add `app.add_typer(ns_studio.clipper.cli.app, name="clip")` (the entry is `ns_studio.clipper.cli.app`; it takes `studio clip <video> --channel <slug> [--template ...] [--max-clips N] [--min-s S] [--max-s S] [--confirm-rights] [--reselect <job_id>] [--fake-services[=list]]`). `JobContext.fmt` Literal gains `"clip"`; `orchestrator.FORMAT_STAGES` gets `"clip"` from `ns_studio.clipper.stages_clip` (set at import).
+- **Why:** spec 15.9. C8 never edits C7 files.
+- **Status:** open
+
+## CR-C8-6: optional fields on `clip_layout`
+- **From:** C8 Clipper / Task 4
+- **Change:** `crops[]` gains optional `region_b` (second panel: camera, or the lower speaker) and `speaking` (0 top, 1 bottom); `faces[]` gains optional `speaking`; `clip_layout` gains optional `note` (NS-W402 fallback text).
+- **Why:** `gaming_facecam`, `screen_plus_cam` and `podcast_stacked` need two source regions per time slice.
+- **Status:** open
+
+## CR-C8-7: facecam area lower bound
+- **From:** C8 Clipper / Task 3
+- **Change:** spec 19.2 C5/19.4 say 8-30 % of the frame; the prescribed fixture facecam (320x180 in 1280x720) is 6.25 %. C8 uses 5-30 % (`FacecamParams.min_area_frac`). Spec text should say 5 %.
+- **Why:** small overlay cams are common (about 3-8 % of a 1080p stream frame).
 ## CR-C2-1: fastapi in the `dev` extra (same need as CR-C4-1)
 - **From:** C2 runtime / Task 5
 - **Change:** add `"fastapi>=0.115"` to `[project.optional-dependencies].dev` in `pyproject.toml`. `httpx` is already a core dependency (the starlette `TestClient` and `SupervisorClient` use it), `uvicorn` is only imported by `python -m ns_supervisor.app` (lazily), and `psutil` is not used by C2 (process control is `subprocess` + Job Object + `taskkill`), so neither is requested. After it lands, delete the `# pyright: ignore[reportMissingImports]` comments in `ns_supervisor/app.py` and the `pytest.importorskip("fastapi")` in `tests/test_supervisor_app.py`.
@@ -136,3 +182,15 @@ Format per entry:
 - **Change:** none to contracts; confirm behaviour in the C2 plan. The wizard calls these from the studio venv (installed with extras `studio,supervisor` so `ns_supervisor` imports resolve there), with `NIGHTSHIFT_HOME` set and the app folder as cwd: `ns tune` (exit 0 on success; a failure only warns), `ns verify --quick` (JSON on stdout or in `logs/verify-report.json`: `{"checks":[{"name","passed"}]}` where names contain `llm`, `embed`, `tts`, `whisper`, `nvenc`, `mtp`), `ns doctor --bundle` (writes `nightshift-diagnostics-<date>.zip` to the Desktop), `ns schedule install --time HH:MM` (a "No such command" answer is tolerated until the scheduler exists), `ns restore <zip>`.
 - **Why:** the smoke step applies NS-W401 / NS-W301 / NS-W302 / NS-E112 from those check names.
 - **Status:** open
+
+## CR-C8-8: migrate clip layouts to format presets (spec 17.1)
+- **From:** C8 Clipper / spec 23.5
+- **Change:** `ns_studio/presets/formats/*.yaml` and `ns_studio/media/layout.py` (the generic region renderer) are not on `main`, so C8 keeps `ns_studio/presets/clip_templates.yaml` and its own graph builders (`ns_studio/clipper/render.py`). When the format presets land, `load_templates()` should read `clip_gaming_facecam`, `clip_podcast_stacked`, `clip_podcast_single`, `clip_talking_head`, `clip_center_crop`, `clip_screen_plus_cam` and the render should use the generic region builder. The model's `layout` answers already accept both `gaming_facecam` and `clip_gaming_facecam` ids.
+- **Why:** formats are data, not code (spec 17.1).
+- **Status:** open
+
+## CR-C8-9: C5-owned files edited by C8 (informational, per coordinator instruction)
+- **From:** C8 Clipper / spec 23.5
+- **Change:** `ns_studio/prompts/clip_select.md` (v2: `analysis` input, `layout` and `layout_reason` output), new `ns_studio/prompts/clip_judge.md` (thinking on, schema `clip_judge` = `{ok, reasons[]}`), `ns_studio/text/prompts.py` (`clip_plan` items accept `layout` / `layout_reason`; new `clip_judge` schema), fixture `tests/fixtures/llm/clip_judge.json`.
+- **Why:** the revised clipper flow lets the model choose a layout per candidate and adds a logic judge before each clip.
+- **Status:** applied on feat/c8-clipper

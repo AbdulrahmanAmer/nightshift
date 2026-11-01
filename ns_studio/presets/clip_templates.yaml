@@ -1,0 +1,72 @@
+# Clipper layout templates (spec 19.3). Canvas is 1080x1920; safe margins keep captions and faces clear of the
+# YouTube UI (top 220 px, bottom 320 px). Region h "auto" is derived from the camera's aspect (capped by
+# max_h), "rest" fills what is left below. caption_anchor_y_pct is the caption's vertical anchor in percent
+# of the canvas height; "seam" puts it on the boundary between the top and bottom panels.
+gaming_facecam:
+  layout: gaming
+  description: Facecam on top at full width, gameplay (frame minus the facecam) below.
+  needs: facecam
+  when: A facecam rectangle was found.
+  regions:
+    - {id: cam, x: 0, y: 0, w: 1080, h: auto, max_h: 640}
+    - {id: game, x: 0, y: seam, w: 1080, h: rest}
+  caption_anchor_y_pct: seam
+  title_card: false
+
+podcast_stacked:
+  layout: stacked
+  description: Two face-centred speaker crops stacked, the active speaker gets a thin border.
+  needs: faces_2
+  when: Two or more stable faces.
+  regions:
+    - {id: top, x: 0, y: 0, w: 1080, h: 960}
+    - {id: bottom, x: 0, y: 960, w: 1080, h: 960}
+  caption_anchor_y_pct: 75
+  speaker_border_px: 2
+  title_card: false
+
+podcast_single:
+  layout: tracked
+  description: One face-centred crop with smooth tracking, full height.
+  needs: faces_1
+  when: Two or more faces but the user picks a single speaker view.
+  regions:
+    - {id: main, x: 0, y: 0, w: 1080, h: 1920}
+  caption_anchor_y_pct: 72
+  track_deadband: 0.2
+  track_ramp_s: 1.0
+  title_card: false
+
+talking_head:
+  layout: tracked
+  description: Same tracked crop as podcast_single.
+  needs: faces_1
+  when: One stable face.
+  regions:
+    - {id: main, x: 0, y: 0, w: 1080, h: 1920}
+  caption_anchor_y_pct: 72
+  track_deadband: 0.2
+  track_ramp_s: 1.0
+  title_card: false
+
+center_crop:
+  layout: center
+  description: Centre 9:16 crop inside the safe area over a blurred, darkened full-frame fill.
+  needs: none
+  when: No faces, screen recordings, slides.
+  regions:
+    - {id: bg, x: 0, y: 0, w: 1080, h: 1920}
+    - {id: fg, x: 152, y: 220, w: 776, h: 1380}
+  caption_anchor_y_pct: 72
+  title_card: false
+
+screen_plus_cam:
+  layout: screen_cam
+  description: Facecam on top as in gaming_facecam, the whole source frame letterboxed below.
+  needs: facecam
+  when: User choice, for tutorials with a small camera.
+  regions:
+    - {id: cam, x: 0, y: 0, w: 1080, h: auto, max_h: 640}
+    - {id: screen, x: 0, y: seam, w: 1080, h: rest}
+  caption_anchor_y_pct: seam
+  title_card: false
