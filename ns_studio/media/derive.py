@@ -1,4 +1,4 @@
-"""Derived Shorts of a master-first job: audio cut, voiced hook, closing line, fresh vertical edit (C6)."""
+"""Derived Shorts of a master-first job: audio cut, voiced hook, closing line, fresh edit (C6, M2).
 
 Each Short is a new edit: its own vertical clips (never a crop of the master), its own caption style and
 treatment when the plan carries them, a freshly voiced hook and a closing line that points to the master.
