@@ -1,0 +1,52 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nightshift"
+version = "0.1.0"
+description = "Nightshift: local story-to-video studio for YouTube long-form + Shorts"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "pydantic>=2.9,<3",
+  "httpx>=0.27",
+  "pyyaml>=6",
+  "jinja2>=3.1",
+  "rich>=13",
+  "typer>=0.12",
+  "numpy>=1.26,<3",
+]
+
+[project.optional-dependencies]
+# Installed on the target machine only (spec §1.1). torch + TTS engines are installed by the
+# installer from manifest.json pins, not from here, because the cu128 index cannot be locked here.
+studio = ["Pillow>=10", "spacy>=3.7,<4", "faster-whisper>=1.0", "imagehash>=4.3", "keyring>=25"]
+tts = ["fastapi>=0.115", "uvicorn>=0.30", "soundfile>=0.12"]
+supervisor = ["fastapi>=0.115", "uvicorn>=0.30", "psutil>=6"]
+dev = ["pytest>=8", "pytest-httpx>=0.32", "ruff>=0.6", "pyright>=1.1.380", "jsonschema>=4.23"]
+
+[project.scripts]
+ns = "ns_supervisor.cli:main"
+studio = "ns_studio.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["ns_common*", "ns_studio*", "ns_tts*", "ns_supervisor*"]
+
+[tool.setuptools.package-data]
+ns_studio = ["prompts/*.md", "presets/*.yaml", "presets/fonts/*", "exemplars/**/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+
+[tool.pyright]
+pythonVersion = "3.12"
+typeCheckingMode = "standard"
+include = ["ns_common", "ns_studio", "ns_tts", "ns_supervisor", "tools"]
