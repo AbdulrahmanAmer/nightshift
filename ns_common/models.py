@@ -24,7 +24,7 @@ class Voice(Strict):
     speed: float = Field(default=1.0, ge=0.7, le=1.3)
 
 
-# Per-channel caption options (spec 17.2). A comment, not a docstring: pydantic would put a docstring in the schema.
+# Per-channel caption options (spec 17.2). A comment, not a docstring: pydantic would put it in the schema.
 class CaptionsOpts(Strict):
     mask_profanity: bool = False     # mask listed words in the captions; the audio is untouched
 

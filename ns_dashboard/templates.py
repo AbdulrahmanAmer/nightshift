@@ -104,6 +104,7 @@ def _fraction(value: Any, full: int) -> float:
 
 
 def _normalise_box(name: str, raw: Any) -> dict[str, Any] | None:
+    d: dict[str, Any]
     if isinstance(raw, dict):
         d = raw
     elif isinstance(raw, list | tuple) and len(raw) == 4:

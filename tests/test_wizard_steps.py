@@ -8,8 +8,8 @@ import httpx
 import pytest
 
 from installer.stage2 import sysinfo, winenv
-from installer.stage2.downloader import is_verified
 from installer.stage2.answers import AnswersError
+from installer.stage2.downloader import is_verified
 from installer.stage2.fallback import parse_pin
 from installer.stage2.runner import RunResult
 from installer.stage2.simulate import FakeRunner

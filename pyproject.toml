@@ -32,7 +32,7 @@ dashboard = ["python-multipart>=0.0.9", "Pillow>=10", "keyring>=25"]
 dev = [
   "pytest>=8", "pytest-httpx>=0.32", "ruff>=0.6", "pyright>=1.1.380", "jsonschema>=4.23",
   "fastapi>=0.115", "psutil>=6", "python-multipart>=0.0.9", "opencv-python-headless>=4.9,<5",
-  "Pillow>=10", "imagehash>=4.3",
+  "Pillow>=10", "imagehash>=4.3", "uvicorn>=0.30",
 ]
 
 [project.scripts]
