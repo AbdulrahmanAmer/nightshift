@@ -271,7 +271,7 @@ class JobsService:
             if not p.is_file() or p.suffix.lower() not in ALLOWED_EXT:
                 raise ApiError(400, "bad_path", f"'{raw}' is not a video file on this PC.")
             return new_job_id("src"), p, False
-        raise ApiError(400, "no_source", "Choose a video first: upload it, give a local path, or paste a link.")
+        raise ApiError(400, "no_source", "Choose a video: upload it, give a local path, or paste a link.")
 
     # --- queries / cancel ---
     def list_jobs(self, status: str | None, kind: str | None, limit: int) -> list[dict[str, Any]]:
