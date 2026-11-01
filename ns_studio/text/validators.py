@@ -90,3 +90,38 @@ def raise_if(violations: list[Violation]) -> None:
     """Raise NS-E303 listing every violation; do nothing for an empty list."""
     if violations:
         raise NsError("NS-E303", "; ".join(f"{v.rule}: {v.detail}" for v in violations))
+
+
+def validate_chapter(
+    text: str,
+    budget: Budget,
+    *,
+    chapter_n: int,
+    past_openings: list[str],
+    embed: Embed,
+) -> list[Violation]:
+    """Validators for one chapter: length against its budget, banned phrases, reading level, rhythm.
+
+    The opening-similarity rule applies to chapter 1 only (the story's opening line).
+    """
+    opening = split_sentences(text)[0] if text.strip() else ""
+    checks = [
+        check_length(text, budget),
+        check_banned(text, load_banned()),
+        check_reading_level(text),
+        check_sentence_length(text),
+        check_opening_similarity(opening, past_openings, embed) if chapter_n == 1 else None,
+    ]
+    return [c for c in checks if c is not None]
+
+
+def check_cliff_variety(endings: list[str], embed: Embed, threshold: float = 0.92) -> Violation | None:
+    """No two consecutive chapters may end on (near) the same line: cosine of endings < `threshold`."""
+    if len(endings) < 2:
+        return None
+    vecs = embed.embed(endings)
+    for i in range(len(vecs) - 1):
+        sim = cosine(vecs[i], vecs[i + 1])
+        if sim >= threshold:
+            return Violation("cliff_repeat", f"chapters {i + 1} and {i + 2} end alike (cosine {sim:.2f})")
+    return None
