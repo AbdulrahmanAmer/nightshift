@@ -51,5 +51,13 @@
   "NS-E614": {"message": "Policy gate: non-voice audio detected.", "hint": "Nightshift videos carry narration only, no music."},
   "NS-E701": {"message": "Update package failed verification.", "hint": "Re-download nightshift-app-<version>.zip and its .sha256 file."},
   "NS-E702": {"message": "Update failed; rolled back to the previous version.", "hint": "Run 'ns doctor --bundle' and send the diagnostics."},
-  "NS-E703": {"message": "Restore from backup failed.", "hint": "Check that the zip was made by 'ns backup' and is not corrupted; nothing was changed."}
+  "NS-E703": {"message": "Restore from backup failed.", "hint": "Check that the zip was made by 'ns backup' and is not corrupted; nothing was changed."},
+  "NS-E320": {"message": "The channel profile is invalid.", "hint": "Fix the listed rule in config/channels/<slug>.yaml or via 'studio channel edit'."},
+  "NS-E321": {"message": "Channels are not distinct enough.", "hint": "Change the niche, voice, caption styles or visual treatments of one channel."},
+  "NS-E322": {"message": "Unknown channel.", "hint": "Run 'studio channel list' to see the configured channels."},
+  "NS-E323": {"message": "The analytics CSV could not be read.", "hint": "Export the table from YouTube Studio again and keep its header row."},
+  "NS-E324": {"message": "Calibration data is missing or incomplete.", "hint": "Run 'studio calibrate --channel <slug>' first and fill in every score."},
+  "NS-E325": {"message": "The variation pools are exhausted.", "hint": "Widen the pools with 'studio channel edit' or wait for the 30-day ledger to clear."},
+  "NS-E326": {"message": "Output not found or not in a state that allows this action.", "hint": "Run 'studio review' to list the outputs and their status."},
+  "NS-E408": {"message": "Transcription failed.", "hint": "Check that the video has an audio track and that the whisper model is installed; run 'ns verify --quick'. For GPU errors see NS-E112."}
 }

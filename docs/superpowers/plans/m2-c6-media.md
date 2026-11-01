@@ -28,39 +28,51 @@
 ### Task 14: Master voice, duration check and expansion loop
 **Files:** `ns_studio/media/master.py`, `tests/test_master_voice.py`
 **Interfaces:** `load_chapters(ctx)`, `chapter_items(...)`, `VoiceStage` master branch (items `c<n>`, `h<k>`, `x<k>`), `DurationCheckStage` (sum of chapter seconds + gaps; < 540 s -> `expand_chapter` on the shortest chapter, re-voice only that chapter, max 2, else `NS-E305`).
-- [ ] Tests (floor passes; one expansion; two expansions then E305; only the changed chapter re-voiced)
-- [ ] Implementation, push, CI green
+- [x] Tests (floor passes; one expansion; two expansions then E305; only the changed chapter re-voiced)
+- [x] Implementation, push, CI green
 
 ### Task 15: Master captions and Shorts timing (M11b)
 **Files:** `master.py` (captions branch), `shorts_timing` in `master.py`, `tests/test_master_captions.py`
 **Interfaces:** `words/c<n>.json`, `captions/long.ass` (landscape, chapter-offset timeline), `captions/long.json`; `ShortsTimingStage` resolves sentence spans to `start_s/end_s`, snapped to sentence boundaries.
-- [ ] Tests (timeline offsets with chapter gaps, span snapping, drift per chapter)
-- [ ] Implementation, push, CI green
+- [x] Tests (timeline offsets with chapter gaps, span snapping, drift per chapter)
+- [x] Implementation, push, CI green
 
 ### Task 16: Landscape clips, chapter cards, render_master, chapters.json
 **Files:** `presets/chapter_cards.yaml`, `ns_studio/media/longform.py`, `tests/test_longform.py`
 **Interfaces:** `build_landscape_graph` (in `render.py`), `card_graph`, `chapters_json(...)`, `midroll_suggestions(chapters, total_s)`, `RenderMasterStage` (renders per chapter segment to stay under the Windows command length, then concat-copies).
-- [ ] Tests (mid-roll rules, chapters.json timestamps equal ffprobe segment sums, card <= 1.5 s, real render of a 2-chapter fake master)
-- [ ] Implementation, push, CI green
+- [x] Tests (mid-roll rules, chapters.json timestamps equal ffprobe segment sums, card <= 1.5 s, real render of a 2-chapter fake master)
+- [x] Implementation, push, CI green
 
 ### Task 17: Thumbnails
 **Files:** `presets/thumbnails.yaml`, `ns_studio/media/thumbnails.py`, `tests/test_thumbnails.py`
 **Interfaces:** `pick_frames(video, n)` (luminance variance via FFmpeg `signalstats`/sampled frames), `make_thumbnails(frame_paths, text, layouts, out_dir)` (Pillow, <= 4 words, three layouts), `ThumbnailsStage`.
-- [ ] Tests (word limit, three files at 1280x720, layout differences) behind `importorskip("PIL")`
-- [ ] Implementation, push, CI green
+- [x] Tests (word limit, three files at 1280x720, layout differences) behind `importorskip("PIL")`
+- [x] Implementation, push, CI green
 
 ### Task 18: Derived Shorts (S1, S2)
 **Files:** `ns_studio/media/derive.py`, `tests/test_derive.py`
 **Interfaces:** `cut_master_audio(...)`, `ShortsDeriveStage` per Short: audio cut + voiced hook + closing line -> `shorts/s<k>/audio.wav`, captions (hook, body from master words, closing aligned via transcriber), vertical clips for beats inside the span, render with the M1 renderer -> `shorts/s<k>/short.mp4`.
-- [ ] Tests (audio duration = hook + gap + span + gap + closing; caption timeline; render of one derived Short)
-- [ ] Implementation, push, CI green
+- [x] Tests (audio duration = hook + gap + span + gap + closing; caption timeline; render of one derived Short)
+- [x] Implementation, push, CI green
 
 ### Task 19: QC for long and outbox for `long/` + `shorts/`
 **Files:** `qc.py`, `outbox.py` (extensions), `tests/test_qc.py`, `tests/test_outbox.py`
 **Interfaces:** `QcStage`/`OutboxStage` master branches; `long_description(...)` per §9.1; `shorts_description(...)` per §9.2; `long/master.{mp4,json,txt}`, `long/thumb_[1-3].jpg`, `shorts/s<k>.{mp4,json,txt}`.
-- [ ] Tests (8:30-15:00 window, chapter rule, descriptions, related-video line, schema validation)
-- [ ] Implementation, push, CI green
+- [x] Tests (8:30-15:00 window, chapter rule, descriptions, related-video line, schema validation)
+- [x] Implementation, push, CI green
 
 ### Task 20: Master pipeline test
 **Files:** `tests/test_master_pipeline.py` — all ten stages on fakes with a 9-minute fake story (FakeTts at 155 wpm), asserting the Outbox.
-- [ ] Test, push, CI green
+- [x] Test, push, CI green
+
+## Deviations recorded while building (all covered by tests)
+
+- `shorts_timing` writes `shorts_timing.json` and leaves `shorts_plan.json` untouched (a stage that rewrites its own input re-runs on every resume); derived Short audio is cut from the per-chapter wavs (same audio as the master before the final -14 LUFS pass) instead of from `long/audio.wav`.
+- `duration_check` has tenant `tts` and borrows `llama` for `expand_chapter(ctx, n, add_words)` (C5, `ns_studio.text.stages_master`) through `swapped_tenant`; it then re-voices only the changed chapter.
+- Hook and closing-line alignment happens in the master `captions` stage (tenant `whisper`) so `shorts_derive` needs no GPU tenant.
+- `stages_media.py` only registers stages; the order per format is owned by the orchestrator constants (coordinator decision).
+- Spec 17.2 (smart captions) and 15.2a (Outbox by content: `outbox_target`, `safe_slug`) were added after the plan was written; see `captions.py` and `outbox.py`.
+
+## Follow-up tasks (not done yet)
+
+- [ ] **Wire the spec 17.2 caption features into the stages.** `build_ass` already accepts `avoid_regions`, `safe_zones`, `emphasis`, `speakers`/`speaker_breaks`, `backdrop_luma` and `mask_profanity`, but `CaptionsStage` (shorts_only and master), `shorts_derive` and the renderer call it without them. To do: pass `safe_zones=DEFAULT_SAFE_ZONES` for 9:16; feed `emphasis` from the visual plan / clip plan once C5/C8 emit it; feed `avoid_regions` from the clipper's face/facecam analysis; sample `backdrop_luma` with `sample_luma` (3 frames behind the caption) from the shots before the ASS is built; read the channel's `captions.mask_profanity` option; add tests that the stages produce the moved anchor, emphasis tags and boxed style.

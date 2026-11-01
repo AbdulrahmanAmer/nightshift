@@ -65,6 +65,36 @@ Format per entry:
 - **Why:** spec 7.5 wants 1,200 ms before a cliff line; the spec 15.4 request has no field to carry which lines are cliffs.
 - **Status:** open
 
+## CR-C9-1: dashboard dependencies, packaging and type-check scope
+- **From:** C9 ns_dashboard / Tasks 5-9
+- **Change:** in `pyproject.toml` (a) add `"fastapi>=0.115"`, `"python-multipart>=0.0.9"` and `"Pillow>=10"` to the `dev` extra (`httpx` is already a core dependency and is what `fastapi.testclient` needs); (b) add an extra `dashboard = ["fastapi>=0.115", "uvicorn>=0.30", "python-multipart>=0.0.9", "Pillow>=10", "keyring>=25"]` for the target machine; (c) add `"ns_dashboard*"` to `[tool.setuptools.packages.find].include` and `ns_dashboard = ["static/*"]` to `[tool.setuptools.package-data]`; (d) add `"ns_dashboard"` to `[tool.pyright].include`.
+- **Why:** CI installs only `.[dev]`, so until (a) lands every `TestClient`, multipart and Pillow test of the dashboard is skipped (the framework-free service layer, job worker, uploads, range parsing, log tail and templates are tested without them). (c) is needed for the bundle to ship the UI; (d) puts the dashboard under pyright like the other packages (the code is written to pass `standard` mode).
+- **Status:** open
+
+## CR-C9-2: `sources.rights_confirmed` and `dashboard_jobs.result_json`
+- **From:** C9 ns_dashboard / Task 6
+- **Change:** in `contracts/schema.sql` add to `sources`: `rights_confirmed INTEGER NOT NULL DEFAULT 0, rights_confirmed_at TEXT`; add to `dashboard_jobs`: `result_json TEXT`. Add a pydantic `DashboardJob` model (fields as the API object `J`: job_id, kind, channel, status, progress, message, stage, created_at, started_at, finished_at, params, result) to `ns_common/models.py` and export `dashboard_job.schema.json` (spec 15.6 lists the schema, the file does not exist yet).
+- **Why:** spec 19.1 says the rights confirmation is stored on the `sources` row, which has no column for it. Until then the dashboard writes `imports/clipper/<source_id>/rights.json` and keeps `{"params":..., "result":...}` inside `dashboard_jobs.params_json`; C8 can read `rights.json` and set the column when it creates the `sources` row.
+- **Status:** open
+
+## CR-C9-3: supervisor service entry for the dashboard
+- **From:** C9 ns_dashboard / Task 7
+- **Change:** C2 adds service `dashboard` (not a GPU tenant, no idle unload, health `GET http://127.0.0.1:8100/api/status`) with the exact command line `python -m ns_dashboard.server --port 8100` run from the supervisor/studio venv (needs the `dashboard` extra of CR-C9-1). The dashboard talks to the supervisor only over HTTP (`NS_SUPERVISOR_URL` overrides `http://127.0.0.1:<runtime.supervisor_port>`).
+- **Why:** spec 20.1: the supervisor starts the dashboard; `Nightshift Dashboard.lnk` only opens the browser.
+- **Status:** open
+
+## CR-C9-4: hygiene allow-list for the dashboard
+- **From:** C9 ns_dashboard / Task 3
+- **Change:** add `ns_dashboard/supervisor_link.py` to the HTTP-client import allow-list (it is the only dashboard module that imports `httpx`, loopback supervisor only). `ns_dashboard` uses no `subprocess` (thumbnails go through `ns_common.ffmpeg.run`; the diagnostics bundle is an in-process call into C2), so no TID251 exemption is needed. Static UI files must not load anything from the network (the server sends `Content-Security-Policy: default-src 'self'`).
+- **Why:** spec section 8 "Network" rule.
+- **Status:** open
+
+## CR-C9-5: dashboard integration points other components must provide
+- **From:** C9 ns_dashboard / Task 3 (adapters import these lazily; a missing one fails only that job or action, with a plain message)
+- **Change:** C7: `ns_studio.orchestrator.run_job_with_progress(paths=, channel=, fmt=, count=, on_stage=, acquirer=) -> list[str]` (new `outputs` ids; call `on_stage(name, index, total)` before each stage, let its exceptions propagate so cancel unwinds between stages), `ns_studio.learn.import_csv(paths, csv_path) -> dict` (`matched`, `unmatched`, `weight_changes[{pool,option,delta}]`, optional `summary[str]`) and `ns_studio.learn.summary(paths) -> dict`. C8: `ns_studio.clipper.run_clip_job(paths=, source_path=, source_id=, params=, on_stage=, acquirer=) -> list[str]` inserting `outputs` rows with `kind='clip'` and `source_id`, plus `FORMAT_STAGES["clip"]` and `ns_studio/presets/clip_templates.yaml` (regions as fractions or pixels of 1080x1920, `caption_y_pct`). C2: `ns_supervisor.client.SupervisorClient(base_url)` implementing `ns_common.acquire.Acquirer`; `ns_supervisor.doctor.make_bundle(paths) -> Path`; `ns_supervisor.verify.run_verify(paths=, quick=, on_stage=) -> dict`; `ns_supervisor.scheduler.set_daily_time(paths, "HH:MM")`.
+- **Why:** see spec 20.4; the dashboard cannot reimplement these.
+
+
 ## CR-C8-0: register the clipper error codes in `errors.json`
 - **From:** C8 Clipper / Task 1
 - **Change:** add `NS-E405` (unsupported source: too long, no audio, unreadable, or rights not confirmed), `NS-E406` (transcription produced fewer than 30 words), `NS-E407` (no clip candidates passed the filters) and `NS-W402` (requested template not applicable, fell back to center_crop). 
@@ -153,6 +183,23 @@ Format per entry:
 - **Migration:** C5 replaces `from ns_studio.text.models_local import X` by `from ns_common.models import X` and deletes `models_local.py` once this lands; field names do not change.
 - **Status:** open
 
+## CR-C9-6: idea-bank columns and the assistant database
+- **From:** C9 ns_dashboard / Library + Assistant
+- **Change:** (a) `contracts/schema.sql`, table `ideas`: add `status TEXT NOT NULL DEFAULT 'new'` (`new|approved|used|dropped`), `setting TEXT`, `protagonist TEXT`, `keywords TEXT` (JSON array), `source TEXT` (`owner|nightshift|assistant`), `updated_at TEXT`. M1 stage `ideas` (C5/C7) then draws `status='approved'` rows of the channel first (set `status='used'` and `used=1` when consumed) and invents only when none are left. (b) New `contracts/assistant_schema.sql` (or an `assistant.db` section of `schema.sql`) with the tables created by `ns_dashboard/assistant/store.py`: `conversations`, `messages`, `actions`, `queued_messages` (DDL is in that module's `DDL` constant). (c) `ns_common/llm_client.py`: move `chat_tools(messages, tools)` (OpenAI-compatible tool calling, see `ns_dashboard/assistant/llm.py::ToolLlmClient`) into `LlmClient`. (d) `contracts/schemas/format.schema.json` generated from a pydantic `Format` model (the dashboard validates against `ns_dashboard/formats.py::FORMAT_SCHEMA` until then).
+- **Why:** spec 20.2 Library > Ideas and 20.3a. Until then the dashboard adds the idea columns itself with a guarded `ALTER TABLE ... ADD COLUMN` at startup and creates `data/assistant.db` with `CREATE TABLE IF NOT EXISTS`.
+- **Status:** open
+
+## CR-C9-7: mount `studio ask` and ship the prompt
+- **From:** C9 ns_dashboard / Assistant CLI
+- **Change:** C7 mounts the command: in `ns_studio/cli.py` call `from ns_dashboard.assistant.cli import register; register(app)` (it adds `studio ask "<text>" [--yes] [-c conversation] [--fake-services]`). `pyproject.toml` (extends CR-C9-1): `[tool.setuptools.package-data] ns_dashboard = ["static/*", "prompts/*.md"]`.
+- **Why:** spec 20.3a "`studio ask` on the command line for the same loop". The prompt file `ns_dashboard/prompts/assistant.md` must ship with the package.
+- **Status:** open
+
+## CR-C9-8: `ns update --check` / `--github` output and subprocess allow-list
+- **From:** C9 ns_dashboard / Update endpoints
+- **Change:** C2's `ns update --check` should print one JSON line `{"update_available": bool, "current": "x.y.z", "latest": "x.y.z", "notes": "..."}` and exit 0 (non-zero on failure); `ns update --github` downloads, verifies and installs the newest release and rolls back on failure (exit code 0 / non-zero). The dashboard falls back to reading versions and "up to date" out of plain text. C10: add `ns_dashboard/updater.py` to the `subprocess` per-file-ignores and hygiene allow-list (list arguments, never a shell, timeouts of 120 s and 1 h; it runs `venvs\supervisor\Scripts\ns.exe`).
+- **Why:** spec 20.2 Settings > Update and 20.3a `/api/update/check|apply`.
+
 ## CR-C1-1: error codes NS-E111, NS-E112, NS-W112 are missing from errors.json
 - **From:** C1 installer / stage1.ps1 and steps s01, s08
 - **Change:** add to `contracts/errors.json`: `NS-E111` ("winget (Windows App Installer) is missing.", hint "Install 'App Installer' from the Microsoft Store (or use the direct installer links shown), then run setup again."), `NS-E112` ("faster-whisper cannot load on the GPU (cuBLAS 12 / cuDNN 9 DLLs not found).", hint "In the studio venv run: uv pip install nvidia-cublas-cu12 nvidia-cudnn-cu12, then re-run 'ns verify --quick'."), `NS-W112` ("Windows long paths are disabled.", hint "Run setup once as administrator to enable them, or keep NIGHTSHIFT_HOME on a short path such as D:/Nightshift.").
@@ -209,6 +256,35 @@ Format per entry:
 - **Change:** (1) `Plan.chapters` allows 5..12 chapters (today 5..7): a 20-minute part has 9 chapters and a 25-minute part 11. C11 writes `plan.json` with the master shape and only validates it with `Plan` when it has 5-7 chapters; `expand_chapter` calls `parse_model(Plan, ...)` and would fail on a longer plan. (2) `chapter_draft.md` gets an optional `series` variable (`{title, part_n, parts_total}`): when defined, skip "first sentence is the story's hook" for part > 1 and "pay off the twist and echo the first line" for parts before the last. C11 passes the series context inside `idea.premise` meanwhile. (3) `seo_long` / `seo` (and `long_seo.md`) should read `script_source.json` when present and use `series_title`, `part_n`, `parts_total` and `end_card` for "Part N of M" in titles and descriptions (spec 9) and the next-part end-card line; titles are "<series title> - Part NN" and "<series title> - Part NN - Short 01". (4) `tests/test_prompts.py::test_every_json_fixture_validates_against_its_prompt_schema` maps each `tests/fixtures/llm/<name>[_n].json` to a prompt of the same name; C11's fixtures follow that rule (`workshop_concepts`, `workshop_concepts_2`, `workshop_regenerate`, `workshop_map`, `workshop_part_outline`) and need `ns_studio.series.schemas` imported (the full suite does; running that single test file alone would not).
 - **Why:** series parts are longer than the master the C5 models were sized for.
 - **Migration:** C11 needs no change when (1)-(3) land.
+
+## CR-C6-1: move `ensure_gpu_dlls_on_path` into `ns_common`
+- **From:** C6 media / transcribe.py
+- **Change:** add `ns_common/gpu_dlls.py` with `ensure_on_path(search_roots=None) -> list[Path]` (the planned `ns_common.gpu_dlls.ensure_on_path()`). C6 ships a local copy, `ns_studio.media.transcribe.ensure_gpu_dlls_on_path`: it prepends `<site-packages>/nvidia/{cublas,cudnn,cuda_nvrtc}/bin` to `PATH` and calls `os.add_dll_directory`; idempotent, tested with temp folders.
+- **Why:** `ns_common` is frozen for C6, and `ns verify` (C2) needs the same helper. Once the common version lands, C6 deletes its copy and imports it.
+- **Status:** open
+
+## CR-C6-2: Pillow in the `dev` extra
+- **From:** C6 media / thumbnails.py
+- **Change:** add `"Pillow>=10"` to `[project.optional-dependencies].dev` in `pyproject.toml`.
+- **Why:** CI installs only `.[dev]`, so the Pillow thumbnail tests (`tests/test_thumbnails.py`, guarded by `pytest.importorskip("PIL")`) are skipped in CI today. `thumbnails.py` imports Pillow lazily through `importlib`, so pyright is unaffected.
+- **Status:** open
+
+## CR-C6-3: error code for a failed transcription
+- **From:** C6 media / transcribe.py, captions.py
+- **Change:** add to `contracts/errors.json` an `NS-E4xx` "Speech recognition failed (model could not load or transcribe)" with the hint to run `ns verify`.
+- **Why:** C6 currently raises `NS-E202` (service failed to start) when faster-whisper cannot load or run and `NS-E403` when the fake transcriber has no script sidecar; neither message names transcription.
+- **Status:** open
+
+## CR-C6-4: `contracts/policy/profanity.txt`
+- **From:** C6 media / captions.py (spec 17.2 `mask_profanity`)
+- **Change:** C6 created `contracts/policy/profanity.txt` (short list, one lower-case word per line, `#` comments) at the coordinator's request. The orchestrator may own and extend it.
+- **Why:** `build_ass(..., mask_profanity=True)` reads it; the file is display-only masking, not a policy gate.
+- **Status:** open (informational)
+
+## CR-C6-5: `series_context.json` and Outbox layout need a published contract
+- **From:** C6 media / outbox.py (spec 15.2a)
+- **Change:** document in `contracts/CONTRACTS.md` that `data/jobs/<job_id>/series_context.json` is `{series_slug: str, part_n: int, series_title: str}` and that `ns_studio.media.outbox.{outbox_target, safe_slug, safe_filename, rejected_path}` own the Outbox/rejected tree shape (a `.nightshift-job` marker file in each story folder records the owning job for `-2` collision suffixes).
+- **Why:** C7 (series), C8 (`clips/`) and C11 write into the same tree.
 - **Status:** open
 
 ## CR-C8-8: migrate clip layouts to format presets (spec 17.1)
