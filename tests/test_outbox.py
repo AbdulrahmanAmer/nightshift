@@ -190,7 +190,7 @@ def test_safe_slug_and_filename_are_windows_safe():
     assert safe_slug("CON") == "con-x" and safe_slug("com1") == "com1-x"
     long = safe_slug("word " * 40)
     assert len(long) <= 80 and not long.endswith("-")
-    assert safe_filename('A: "Title"/with\bad|chars?*<>') == "A Titlewithbadchars"
+    assert safe_filename('A: "Title"/with\\bad|chars?*<>') == "A Titlewithbadchars"
     assert safe_filename("Trailing dots...  ") == "Trailing dots"
     assert safe_filename("nul") == "_nul" and safe_filename("") == "untitled"
     assert len(safe_filename("x" * 200)) == 80
