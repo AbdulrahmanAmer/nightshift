@@ -442,3 +442,57 @@ def test_an_old_assistant_database_gets_the_claim_columns(tmp_home: Path):
     store = AssistantStore(paths)
     cols = {r["name"] for r in store.db.query("PRAGMA table_info(queued_messages)")}
     assert {"claimed_at", "claimed_by"} <= cols
+
+
+# ---------------------------------------------------------------- rows 5, 6, 13, 14 (re-review): the pages
+
+
+SRC = Path(__file__).resolve().parents[1] / "ns_dashboard" / "ui" / "src"
+
+
+def page(name: str) -> str:
+    return (SRC / "pages" / name).read_text(encoding="utf-8")
+
+
+def test_create_has_an_automatic_caption_look_that_sends_nothing():
+    src = page("Create.tsx")
+    assert 'useState("punch_yellow")' not in src
+    assert 'const [caption, setCaption] = useState("")' in src
+    assert src.count("caption_style: caption || null") == 2  # upload and link
+    assert ">Automatic</ChoiceChip>" in src
+
+
+@pytest.mark.parametrize("given", [None, ""])
+def test_a_clip_job_without_a_caption_style_stores_none(tmp_home: Path, given: Any):
+    from ns_dashboard.fakes import seed_channel
+    from tests.test_dashboard_api import make_env
+
+    client, state = make_env(tmp_home)
+    seed_channel(state.db, state.paths)
+    video = tmp_home / "talk.mp4"
+    video.write_bytes(b"x" * 64)
+    r = client.post("/api/jobs/clip", json={"channel": "after-dark", "path": str(video), "rights_confirmed": True,
+                                             "caption_style": given})
+    assert r.status_code == 201 and r.json()["params"]["caption_style"] is None
+
+
+def test_the_thumbnail_picker_reads_the_digit_of_the_file_name():
+    src = page("Queue.tsx")
+    assert "/\d/.exec(t)" in src and "/d/.exec" not in src
+
+
+def test_no_page_has_a_regex_that_matches_a_bare_letter_where_a_class_was_meant():
+    """`/d/` for `/\d/` and `s` for `\s` after a lookbehind went unnoticed twice (Queue thumbnails, Assistant labels)."""
+    import re
+
+    bad = re.compile(r"\]\)[dsw]/|\.(?:exec|test|match|split)\(?/[dsw]/|/[dsw]/[gimsuy]*\.(?:exec|test)\(")
+    hits = []
+    for f in sorted(SRC.rglob("*.ts*")):
+        for n, line in enumerate(f.read_text(encoding="utf-8").splitlines(), 1):
+            if bad.search(line):
+                hits.append(f"{f.name}:{n}")
+    assert hits == []
+
+
+def test_the_assistant_words_a_tool_by_its_first_sentence_only():
+    assert r"t.split(/(?<=[.!?])\s/)" in page("Assistant.tsx")

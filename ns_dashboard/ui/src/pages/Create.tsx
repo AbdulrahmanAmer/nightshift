@@ -52,7 +52,8 @@ export default function Create() {
   const [clipChannel, setClipChannel] = useState(chans.find(isClipChannel)?.slug || chans[0]?.slug || "");
   const [template, setTemplate] = useState("auto");
   const [maxClips, setMaxClips] = useState(6); const [minS, setMinS] = useState(20); const [maxS, setMaxS] = useState(60);
-  const [caption, setCaption] = useState("punch_yellow");
+  // "" = Automatic: nothing is sent and the Clipper picks a look per clip from the channel's caption styles.
+  const [caption, setCaption] = useState("");
   const [rights, setRights] = useState(false);
   const [upload, setUpload] = useState<number | null>(null);
   // When: "now" sends schedule_at null; "later" sends the picked local time as an ISO instant (UTC, with Z).
@@ -74,9 +75,9 @@ export default function Create() {
       if (file) {
         // chunked and resumable like the voice samples (8 MB pieces, then one small request): nothing is spooled to the system drive
         setUpload(0); const up = await api.uploadFile(file, setUpload);
-        await api.post("/jobs/clip", { upload_id: up.upload_id, channel: clipChannel, template, max_clips: maxClips, min_s: minS, max_s: maxS, caption_style: caption, rights_confirmed: true, schedule_at: scheduleIso }); setFile(null);
+        await api.post("/jobs/clip", { upload_id: up.upload_id, channel: clipChannel, template, max_clips: maxClips, min_s: minS, max_s: maxS, caption_style: caption || null, rights_confirmed: true, schedule_at: scheduleIso }); setFile(null);
       } else {
-        await api.post("/jobs/clip", { url: url.trim(), channel: clipChannel, template, max_clips: maxClips, min_s: minS, max_s: maxS, caption_style: caption, rights_confirmed: true, schedule_at: scheduleIso }); setUrl("");
+        await api.post("/jobs/clip", { url: url.trim(), channel: clipChannel, template, max_clips: maxClips, min_s: minS, max_s: maxS, caption_style: caption || null, rights_confirmed: true, schedule_at: scheduleIso }); setUrl("");
       }
       setRights(false); started();
     } catch (e: any) { toast(e.message, "bad"); }
@@ -132,7 +133,7 @@ export default function Create() {
             <Stepper label="Shortest" value={minS} onChange={(v) => setMinS(Math.min(v, maxS - 5))} min={10} max={120} suffix=" s" />
             <Stepper label="Longest" value={maxS} onChange={(v) => setMaxS(Math.max(v, minS + 5))} min={15} max={179} suffix=" s" />
           </div>
-          <Field label="Caption look"><div className="flex flex-wrap gap-2">{Object.entries(POOL_LABELS.caption_styles.opts).map(([k, l]) => <ChoiceChip key={k} on={caption === k} onChange={() => setCaption(k)}>{l}</ChoiceChip>)}</div></Field>
+          <Field label="Caption look"><div className="flex flex-wrap gap-2"><ChoiceChip on={caption === ""} onChange={() => setCaption("")}>Automatic</ChoiceChip>{Object.entries(POOL_LABELS.caption_styles.opts).map(([k, l]) => <ChoiceChip key={k} on={caption === k} onChange={() => setCaption(k)}>{l}</ChoiceChip>)}</div></Field>
         </div>
       );
     }
@@ -141,7 +142,7 @@ export default function Create() {
     const ch = channelName(channel);
     const rows: [string, ReactNode][] = kind === "story"
       ? [["Make", format === "master_first" ? "Full video + Shorts" : "One Short"], ["Channel", ch || "None picked"], ["Voice", voiceOf(chans.find((c) => c.slug === storyChannel))], ["Starts", scheduleIso ? fmtWhen(scheduleIso) : "Now, after the model loads"]]
-      : [["Video", file ? file.name : url.trim() || "None yet"], ["Channel", ch || "None picked"], ["Layout", templates.data.find((t) => t.id === template)?.label || template], ["Clips", `Up to ${maxClips}, ${minS} to ${maxS} s`], ["Captions", POOL_LABELS.caption_styles.opts[caption] || caption], ["Starts", scheduleIso ? fmtWhen(scheduleIso) : "After the upload"]];
+      : [["Video", file ? file.name : url.trim() || "None yet"], ["Channel", ch || "None picked"], ["Layout", templates.data.find((t) => t.id === template)?.label || template], ["Clips", `Up to ${maxClips}, ${minS} to ${maxS} s`], ["Captions", caption ? POOL_LABELS.caption_styles.opts[caption] || caption : "Automatic"], ["Starts", scheduleIso ? fmtWhen(scheduleIso) : "After the upload"]];
     return (
       <div className="flex flex-col gap-5">
         <dl className="grid grid-cols-[max-content_minmax(0,1fr)] gap-x-6 gap-y-3 rounded-ds-lg bg-ds-sunken p-4 shadow-ds-inset-sm">

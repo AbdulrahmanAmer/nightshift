@@ -18,7 +18,7 @@ type Msg = { id: number; role: "user" | "assistant" | "note" | "error"; text: st
 type Saved = { cid: string | null; msgs: Msg[] };
 
 /** Registry entry of one tool (GET /assistant/tools). The page words its busy line and Yes/No cards from these, never from a list of its own. */
-const firstSentence = (t: string) => t.split(/(?<=[.!?])s/)[0]!.replace(/[.!?]+$/, "");
+const firstSentence = (t: string) => t.split(/(?<=[.!?])\s/)[0]!.replace(/[.!?]+$/, "");
 const toolWords = (tools: ToolInfo[], name: string) => { const d = tools.find((t) => t.name === name)?.description; return d ? firstSentence(d) : name.replace(/_/g, " "); };
 const WELCOME: Msg = { id: 0, role: "assistant", text: "I run on this PC with the local model. I can start videos or clips, draft story concepts, pause or resume channels, find files and explain results. Anything that changes something shows you a Yes or No card first." };
 let mid = Date.now();
