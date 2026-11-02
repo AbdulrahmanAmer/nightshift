@@ -198,6 +198,11 @@ export async function demoHandle(method: string, path: string, body?: any): Prom
     const job: Job = { job_id: "j" + Math.random().toString(16).slice(2, 8), kind, channel: fdGet(body, "channel") || "after-dark", status: "queued", progress: 0, stage: "queued", message: later ? "Scheduled" : "Waiting for the engine", created_at: new Date().toISOString(), schedule_at: later ? sched!.toISOString() : null, title: kind === "clip" ? (fdGet(body, "file")?.name || fdGet(body, "url") || "Your video") : undefined };
     DEMO.jobs.unshift(job); if (!later) simulateJob(job); return { job_id: job.job_id, schedule_at: job.schedule_at };
   }
+  if (p === "/jobs/clip/rerun" && method === "POST") {
+    const src = DEMO.jobs.find((x: Job) => x.job_id === body?.job_id);
+    const job: Job = { job_id: "j" + Math.random().toString(16).slice(2, 8), kind: "clip", channel: src?.channel || "night-desk", status: "queued", progress: 0, stage: "queued", message: "Waiting for the engine", created_at: new Date().toISOString(), title: src?.title };
+    DEMO.jobs.unshift(job); simulateJob(job); return { job_id: job.job_id };
+  }
   if (parts[0] === "jobs" && parts.length === 2) { const j = DEMO.jobs.find((x: Job) => x.job_id === parts[1]); if (!j) throw new Error("Not found"); return { ...j }; }
   if (parts[0] === "jobs" && parts[2] === "cancel") { const j = DEMO.jobs.find((x: Job) => x.job_id === parts[1]); if (j) { j.status = "cancelled"; j.message = "Cancelled"; } return { ok: true }; }
   if (p === "/channels" && method === "GET") return DEMO.status.channels.map((c: any) => ({ ...c, pools: structuredClone(POOLS), language: "en", long_minutes: [10, 14], shorts_per_master: [4, 6], audience: "general", fiction_label: true, avoid_topics: ["real crimes", "self-harm"], voice: { mode: "preset", speaker: c.voice, speed: 1 }, stats: DEMO.channelStats[c.slug] }));

@@ -241,3 +241,47 @@ def test_settings_export_import_uninstall_routes(tmp_home: Path):
     assert refused.status_code == 422 and err(refused)["code"] == "restore_failed"
     info = client.get("/api/settings/uninstall").json()
     assert info["path"].endswith("UNINSTALL.cmd") and info["exists"] is False
+
+
+# ---------------------------------------------------------------- gap 18: clip re-run with another template
+
+
+def test_clip_rerun_route_resumes_the_clip_job_with_the_new_template(tmp_home: Path):
+    from ns_dashboard.fakes import FakeClipAdapter, seed_channel
+    from tests.test_dashboard_api import clip_file
+
+    client, state = make_env(tmp_home)
+    seed_channel(state.db, state.paths)
+    video = clip_file(tmp_home)
+    first = client.post(
+        "/api/jobs/clip",
+        json={"path": str(video), "channel": "after-dark", "template": "auto", "max_clips": 2, "rights_confirmed": True},
+    ).json()["job_id"]
+    assert client.post("/api/jobs/clip/rerun", json={"job_id": first, "template": "talking_head"}).status_code == 409  # not finished
+    state.worker.run_next()
+    done = state.store.get(first)
+    assert done is not None and done.status == "done" and done.result is not None
+    studio_job = done.result["studio_job_id"]
+    r = client.post("/api/jobs/clip/rerun", json={"job_id": first, "template": "talking_head"})
+    assert r.status_code == 201, r.text
+    state.worker.run_next()
+    again = state.store.get(r.json()["job_id"])
+    assert again is not None and again.status == "done"
+    assert again.params["studio_job_id"] == studio_job and again.params["rerun_of"] == first
+    assert again.result is not None and again.result["output_ids"] == done.result["output_ids"]
+    assert isinstance(state.adapters.clip, FakeClipAdapter)
+    assert state.adapters.clip.reruns[0]["studio_job_id"] == studio_job
+    assert state.adapters.clip.reruns[0]["template"] == "talking_head"
+
+
+def test_clip_rerun_route_rejects_bad_requests(tmp_home: Path):
+    client, state = make_env(tmp_home)
+    assert client.post("/api/jobs/clip/rerun", json={"job_id": "nope", "template": "auto"}).status_code == 404
+    job = state.store.create("run", "after-dark", {})
+    assert client.post("/api/jobs/clip/rerun", json={"job_id": job.job_id, "template": "auto"}).status_code == 404
+    clip = state.store.create("clip", "after-dark", {})
+    state.store.finish(clip.job_id, "done", "Done", {"output_ids": []})
+    bad = client.post("/api/jobs/clip/rerun", json={"job_id": clip.job_id, "template": "nope"})
+    assert bad.status_code == 422
+    old = client.post("/api/jobs/clip/rerun", json={"job_id": clip.job_id, "template": "auto"})
+    assert old.status_code == 409 and err(old)["code"] == "cannot_rerun"

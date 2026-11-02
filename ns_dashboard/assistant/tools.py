@@ -214,6 +214,12 @@ def _tools() -> list[ToolDef]:
            required=["channel"], side=True, precheck=_clip_source_given,
            confirm=("Make up to {max_clips} clips for {channel} from {source} (layout {template}). By pressing Yes "
                     "you confirm you own this video or are licensed to use it.")),
+        _t("rerun_clips", "create", "Make the clips of a finished clip job again with another layout, without transcribing again.",
+           lambda c, a: c.dash.jobs.create_clip_rerun(a), route=("POST", "/api/jobs/clip/rerun"),
+           props={"job_id": _s("id of the finished clip job"), "template": _s("layout id, 'auto' lets Nightshift choose"),
+                  "max_clips": _i("most clips", minimum=1, maximum=10)},
+           required=["job_id", "template"], side=True,
+           confirm="Make the clips of job {job_id} again with the {template} layout. The old clips are replaced."),
         _t("start_verify", "create", "Run the machine self-check (ns verify).",
            lambda c, a: c.dash.jobs.create_verify(a), route=("POST", "/api/jobs/verify"),
            props={"quick": _b("quick check only")}, side=True, confirm="Run the Nightshift self-check."),

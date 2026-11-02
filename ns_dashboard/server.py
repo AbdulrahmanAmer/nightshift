@@ -358,6 +358,10 @@ def create_app(
             body = await body_json(request)
         return ok(await run_in_threadpool(dash.jobs.create_clip, body, uploaded), 201)
 
+    @app.post("/api/jobs/clip/rerun")
+    async def jobs_clip_rerun(request: Request) -> SafeJSONResponse:
+        return ok(await run_in_threadpool(dash.jobs.create_clip_rerun, await body_json(request)), 201)
+
     @app.get("/api/jobs")
     async def jobs_list(request: Request) -> SafeJSONResponse:
         q = request.query_params
