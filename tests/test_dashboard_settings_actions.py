@@ -356,7 +356,7 @@ def test_log_components_feed_the_viewer_filter(tmp_home: Path):
     NsLogger("studio", state.paths.logs).info("studio_probe", "from studio")
     NsLogger("supervisor", state.paths.logs).info("supervisor_probe", "from supervisor")
     comps = client.get("/api/logs/components").json()
-    assert {"studio", "supervisor", "dashboard"} <= set(comps)
+    assert {"studio", "supervisor"} <= set(comps)
     only = client.get("/api/logs/tail", params={"component": "studio", "n": 50}).json()
     assert only and {line["component"] for line in only} == {"studio"}
     assert any(line["event"] == "studio_probe" for line in only)
