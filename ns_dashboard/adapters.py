@@ -29,7 +29,7 @@ from ns_dashboard import studio_bridge
 from ns_dashboard.errors import AdapterUnavailable, ApiError
 from ns_dashboard.jobs import JobControl
 from ns_dashboard.supervisor_link import SupervisorLink, make_acquirer, supervisor_url
-from ns_dashboard.updater import RealUpdateAdapter
+from ns_dashboard.updater import RealBackupAdapter, RealUpdateAdapter
 
 KEYRING_SERVICE = "Nightshift"
 KEY_NAMES = ("pexels_api_key", "pixabay_api_key")
@@ -142,6 +142,22 @@ class SeriesAdapter(Protocol):
         ...
 
 
+class BackupAdapter(Protocol):
+    """Export and import of settings (`ns backup`, `ns restore`) and where UNINSTALL.cmd is."""
+
+    def export(self) -> Path:
+        """Write the backup zip and return its path."""
+        ...
+
+    def restore(self, zip_path: Path) -> list[str]:
+        """Restore a backup zip; returns the lines the command printed."""
+        ...
+
+    def uninstall_path(self) -> Path:
+        """Full path of UNINSTALL.cmd."""
+        ...
+
+
 class ScheduleAdapter(Protocol):
     """Applies the nightly run time to the scheduled task."""
 
@@ -150,7 +166,7 @@ class ScheduleAdapter(Protocol):
 
 @dataclass
 class Adapters:
-    """The twelve collaborators the service layer and the job handlers use."""
+    """The thirteen collaborators the service layer and the job handlers use."""
 
     run: RunAdapter
     clip: ClipAdapter
@@ -164,6 +180,7 @@ class Adapters:
     update: UpdateAdapter
     voice_maker: VoiceMakerAdapter
     series: SeriesAdapter
+    backup: BackupAdapter
 
 
 def lazy(module: str, attr: str) -> Callable[..., Any]:
@@ -648,4 +665,5 @@ def real_adapters(paths: Paths, link: SupervisorLink, log: NsLogger) -> Adapters
         update=RealUpdateAdapter(paths),
         voice_maker=RealVoiceMaker(paths, link),
         series=RealSeriesAdapter(paths, link),
+        backup=RealBackupAdapter(paths),
     )

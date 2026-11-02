@@ -228,6 +228,9 @@ export async function demoHandle(method: string, path: string, body?: any): Prom
   if (p === "/settings") { if (method === "PUT") Object.assign(DEMO.settings, body); return structuredClone(DEMO.settings); }
   if (p === "/settings/keys") { DEMO.settings.keys[body.name] = true; return { ok: true }; }
   if (p === "/diagnostics") return { path: "C:\\Users\\you\\Desktop\\nightshift-diagnostics-2026-11-02.zip" };
+  if (p === "/settings/export") return { path: "C:\Users\you\Desktop\nightshift-backup-2026-11-02.zip", name: "nightshift-backup-2026-11-02.zip" };
+  if (p === "/settings/import") return { restored: true, note: "Settings restored. Restart Nightshift to use them" };
+  if (p === "/settings/uninstall") return { path: "D:\Nightshift\app\UNINSTALL.cmd", exists: true };
   if (p === "/engine/shutdown") { DEMO.status.engine = { state: "idle", detail: "Engine stopped" }; return { ok: true }; }
   if (p === "/learn/summary") return structuredClone(DEMO.learn);
   if (p === "/learn/import") { DEMO.learn.imported_at = new Date().toISOString(); return structuredClone(DEMO.learn); }

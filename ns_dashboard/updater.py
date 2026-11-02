@@ -77,9 +77,7 @@ class RealUpdateAdapter:
         self.runner = runner
 
     def _command(self, *args: str) -> list[str]:
-        exe = self.paths.venvs / "supervisor" / "Scripts" / "ns.exe"
-        base = [str(exe)] if exe.exists() else [sys.executable, "-m", "ns_supervisor.cli"]
-        return [*base, *args]
+        return ns_command(self.paths, *args)
 
     def check(self) -> dict[str, Any]:
         """Is a newer version on GitHub? (`ns update --check`)"""
@@ -126,3 +124,46 @@ def classify_update(result: dict[str, Any]) -> dict[str, Any]:
     else:
         state, message = "unknown", "The update check finished but did not say whether a new version exists."
     return {**result, "state": state, "up_to_date": state == "up_to_date", "message": message}
+
+
+def ns_command(paths: Paths, *args: str) -> list[str]:
+    """The `ns` command line (`ns.exe` of the supervisor venv, else `python -m ns_supervisor.cli`) plus `args`."""
+    exe = paths.venvs / "supervisor" / "Scripts" / "ns.exe"
+    base = [str(exe)] if exe.exists() else [sys.executable, "-m", "ns_supervisor.cli"]
+    return [*base, *args]
+
+
+WRITTEN_RE = re.compile(r"Backup written to (.+)")
+
+
+class RealBackupAdapter:
+    """Export / import of settings through `ns backup` and `ns restore`, and the place of UNINSTALL.cmd."""
+
+    def __init__(self, paths: Paths, runner: Runner = default_runner) -> None:
+        self.paths = paths
+        self.runner = runner
+
+    def export(self) -> Path:
+        """`ns backup`: settings, voices, the database and exemplars into a zip on the Desktop; returns its path."""
+        from ns_dashboard.errors import ApiError
+
+        code, out, err = self.runner(ns_command(self.paths, "backup"), 600)
+        m = WRITTEN_RE.search(out)
+        if code != 0 or m is None:
+            raise ApiError(500, "backup_failed", "The backup could not be made.", hint=(err or out).strip()[-300:])
+        return Path(m.group(1).strip())
+
+    def restore(self, zip_path: Path) -> list[str]:
+        """`ns restore <zip>`: puts the settings back (what it replaces is kept in data\backup\pre-restore-*)."""
+        from ns_dashboard.errors import ApiError
+
+        code, out, err = self.runner(ns_command(self.paths, "restore", str(zip_path)), 600)
+        if code != 0:
+            raise ApiError(422, "restore_failed", "That file could not be restored.", hint=(err or out).strip()[-300:])
+        return [ln for ln in out.splitlines() if ln.strip()]
+
+    def uninstall_path(self) -> Path:
+        """`UNINSTALL.cmd` in the Nightshift app folder (`ns_supervisor.control.app_path`)."""
+        from ns_supervisor.control import app_path
+
+        return app_path(self.paths) / "UNINSTALL.cmd"

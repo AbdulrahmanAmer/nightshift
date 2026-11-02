@@ -115,4 +115,5 @@ class AppState:
     draining: bool = False
     loading_since: dict[str, float] = field(default_factory=dict)
     last_bundle: Path | None = None
+    last_backup: Path | None = None
     fake_services: bool = False

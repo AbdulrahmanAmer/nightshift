@@ -38,6 +38,14 @@ export default function Settings() {
   };
   const [report, setReport] = useState<{ path?: string; name?: string; download_url?: string } | null>(null);
   const diag = async () => { try { const r = await api.post("/diagnostics"); setReport(r); toast(`Report saved to ${r?.path || "your Desktop"}`, "ok"); } catch (e: any) { toast(e.message, "bad"); } };
+  const [backup, setBackup] = useState<{ path?: string; name?: string; download_url?: string } | null>(null);
+  const exportSettings = async () => { try { const r = await api.post("/settings/export"); setBackup(r); toast(`Settings saved to ${r?.path || "your Desktop"}`, "ok"); } catch (e: any) { toast(e.message, "bad"); } };
+  const importSettings = async (f: File) => {
+    const ok = await confirm({ title: "Restore these settings?", body: `${f.name} replaces your channels, voices and settings. What it replaces is kept in a backup folder first`, ok: "Restore" });
+    if (!ok) return;
+    const fd = new FormData(); fd.append("file", f);
+    try { const r = await api.upload("/settings/import", fd, () => {}); toast(r?.note || "Settings restored", "ok"); st.reload(); } catch (e: any) { toast(e.message, "bad"); }
+  };
   const copy = async (t: string) => { try { await navigator.clipboard.writeText(t); toast("Path copied", "ok"); } catch { toast("Copy was blocked", "warn"); } };
   const home = s?.home || status?.disk?.home || "";
   const version = s?.version || status?.version || upd?.current;
@@ -69,6 +77,20 @@ export default function Settings() {
                 <Button size="sm" variant={s?.keys?.[k] ? "soft" : "primary"} leadingIcon="key" onClick={() => setKey(k)}>{s?.keys?.[k] ? "Replace" : "Add key"}</Button>
               </SettingRow>
             ))}
+          </Card>
+
+          <Card as="section" aria-labelledby="s-backup">
+            <CardHeader id="s-backup" title="Your settings" className="!mb-1" />
+            <SettingRow title="Export settings" sub={backup?.path ? <>Saved as <span className="font-mono break-all">{backup.path}</span></> : "A zip with your channels, voices, schedule and learned weights. Models and videos are not included"}>
+              <Button variant="soft" leadingIcon="archive" onClick={exportSettings}>Export</Button>
+              {backup?.download_url && <LinkButton href={backup.download_url} download={backup.name} variant="soft" leadingIcon="download">Download</LinkButton>}
+            </SettingRow>
+            <SettingRow title="Import settings" sub="Restore a zip made by Export settings, for example on a new PC. What it replaces is kept in a backup folder first">
+              <label className="ds-focus inline-flex h-9 cursor-pointer items-center gap-2 rounded-ds-md bg-ds-accent-soft px-4 text-ds-sm font-semibold shadow-ds-control hover:bg-ds-soft-hover focus-within:shadow-ds-focus">
+                <Icon name="upload" size={15} />
+                Choose zip<input type="file" accept=".zip" className="sr-only" onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; if (f) importSettings(f); }} />
+              </label>
+            </SettingRow>
           </Card>
 
           <Card as="section" aria-labelledby="s-paths">
@@ -132,7 +154,7 @@ export default function Settings() {
             <div className="flex justify-center py-3"><Lockup width={200} /></div>
             <SettingRow title="Nightshift" sub={`Version ${version || "unknown"}. Runs fully offline on this PC${demo ? ". Showing demo data because no engine answered" : ""}`} />
             <SettingRow title="Uninstall" sub="Run UNINSTALL.cmd in the Nightshift folder. It asks before deleting models or videos">
-              <Button size="sm" variant="danger" leadingIcon="trash" onClick={() => copy(home ? `${home}\\UNINSTALL.cmd` : "UNINSTALL.cmd")}>Copy its path</Button>
+              <Button size="sm" variant="danger" leadingIcon="trash" onClick={async () => { try { const r = await api.get("/settings/uninstall"); await copy(r.path); } catch { await copy("UNINSTALL.cmd"); } }}>Copy its path</Button>
             </SettingRow>
           </Card>
         </div>

@@ -447,6 +447,37 @@ class FakeSeriesAdapter:
         return [oid]
 
 
+class FakeBackupAdapter:
+    """Writes a small zip as the 'backup' and records restores."""
+
+    def __init__(self, paths: Paths) -> None:
+        self.paths = paths
+        self.restored: list[Path] = []
+        self.fail_restore = False
+
+    def export(self) -> Path:
+        """Create `exports/nightshift-backup-<ts>.zip`."""
+        stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+        out = self.paths.home / "exports" / f"nightshift-backup-{stamp}.zip"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(out, "w") as z:
+            z.writestr("manifest.json", "{}")
+        return out
+
+    def restore(self, zip_path: Path) -> list[str]:
+        """Remember the file; fail when asked to."""
+        from ns_dashboard.errors import ApiError
+
+        if self.fail_restore:
+            raise ApiError(422, "restore_failed", "That file could not be restored.", hint="not a backup")
+        self.restored.append(zip_path)
+        return [f"restored {zip_path.name}"]
+
+    def uninstall_path(self) -> Path:
+        """A path under the temp home."""
+        return self.paths.home / "app" / "UNINSTALL.cmd"
+
+
 def fake_adapters(db: LockedDb, paths: Paths) -> Adapters:
     """All fakes wired together."""
     return Adapters(
@@ -462,6 +493,7 @@ def fake_adapters(db: LockedDb, paths: Paths) -> Adapters:
         update=FakeUpdateAdapter(),
         voice_maker=FakeVoiceMaker(paths),
         series=FakeSeriesAdapter(db, paths),
+        backup=FakeBackupAdapter(paths),
     )
 
 

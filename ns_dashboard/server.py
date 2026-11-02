@@ -434,6 +434,29 @@ def create_app(
         path = await run_in_threadpool(dash.settings.latest_bundle)
         return FileResponse(path, media_type="application/zip", filename=path.name)
 
+    @app.post("/api/settings/export")
+    async def settings_export() -> SafeJSONResponse:
+        return ok(await run_in_threadpool(dash.settings.export_settings))
+
+    @app.get("/api/settings/export/latest")
+    async def settings_export_latest() -> FileResponse:
+        path = await run_in_threadpool(dash.settings.latest_backup)
+        return FileResponse(path, media_type="application/zip", filename=path.name)
+
+    @app.post("/api/settings/import")
+    async def settings_import(request: Request) -> SafeJSONResponse:
+        form = await read_form(request)
+        upload = form.get("file")
+        if upload is None or not getattr(upload, "filename", None):
+            raise ApiError(400, "no_file", "Choose the nightshift-backup zip that Export settings made.")
+        result = await run_in_threadpool(dash.settings.import_settings, upload.filename, upload.file)
+        await form.close()
+        return ok(result)
+
+    @app.get("/api/settings/uninstall")
+    async def settings_uninstall() -> SafeJSONResponse:
+        return ok(await run_in_threadpool(dash.settings.uninstall_info))
+
     # ------------------------------------------------------------ templates / voices
     @app.get("/api/templates")
     async def templates() -> SafeJSONResponse:

@@ -194,3 +194,50 @@ def test_a_refused_task_update_keeps_the_time_and_says_so(tmp_home: Path, monkey
     body = client.put("/api/settings", json={"schedule_time": "05:00"}).json()
     assert body["schedule_time"] == "05:00"
     assert body["schedule_result"]["applied"] is False and "Access is denied" in body["schedule_result"]["note"]
+
+
+# ---------------------------------------------------------------- gap 17: export, import, uninstall -> ns backup / restore
+
+
+def test_backup_adapter_runs_ns_backup_and_ns_restore(tmp_home: Path):
+    from ns_dashboard.errors import ApiError
+
+    paths = Paths.from_env()
+    run, calls = runner_returning(0, "Backup written to C:\Users\me\Desktop\nightshift-backup-2026-11-02.zip\n")
+    adapter = updater.RealBackupAdapter(paths, run)
+    assert adapter.export() == Path("C:\Users\me\Desktop\nightshift-backup-2026-11-02.zip")
+    assert calls[0][-1:] == ["backup"]
+    run2, calls2 = runner_returning(0, "restored settings\nrestored voices\n")
+    lines = updater.RealBackupAdapter(paths, run2).restore(tmp_home / "b.zip")
+    assert calls2[0][-2:] == ["restore", str(tmp_home / "b.zip")] and lines == ["restored settings", "restored voices"]
+    with pytest.raises(ApiError) as bad:
+        updater.RealBackupAdapter(paths, runner_returning(1, "", "not a backup")[0]).restore(tmp_home / "b.zip")
+    assert bad.value.code == "restore_failed" and bad.value.hint == "not a backup"
+    with pytest.raises(ApiError) as nothing:
+        updater.RealBackupAdapter(paths, runner_returning(1, "", "boom")[0]).export()
+    assert nothing.value.code == "backup_failed"
+    assert updater.RealBackupAdapter(paths).uninstall_path().name == "UNINSTALL.cmd"
+
+
+def test_settings_export_import_uninstall_routes(tmp_home: Path):
+    from ns_dashboard.fakes import FakeBackupAdapter
+
+    client, state = make_env(tmp_home)
+    assert isinstance(state.adapters.backup, FakeBackupAdapter)
+    assert client.get("/api/settings/export/latest").status_code == 404
+    made = client.post("/api/settings/export").json()
+    assert made["name"].startswith("nightshift-backup-") and made["download_url"] == "/api/settings/export/latest"
+    assert client.get(made["download_url"]).content[:2] == b"PK"
+    r = client.post("/api/settings/import", files={"file": ("nightshift-backup-2026-11-02.zip", b"PK\x03\x04data", "application/zip")})
+    assert r.status_code == 200 and r.json()["restored"] is True
+    saved = state.adapters.backup.restored[0]
+    assert saved.read_bytes() == b"PK\x03\x04data" and saved.parent == tmp_home / "imports" / "restore"
+    wrong = client.post("/api/settings/import", files={"file": ("notes.txt", b"hello", "text/plain")})
+    assert wrong.status_code == 400 and err(wrong)["code"] == "bad_file_type"
+    empty = client.post("/api/settings/import", files={"file": ("empty.zip", b"", "application/zip")})
+    assert empty.status_code == 400
+    state.adapters.backup.fail_restore = True
+    refused = client.post("/api/settings/import", files={"file": ("b.zip", b"PK", "application/zip")})
+    assert refused.status_code == 422 and err(refused)["code"] == "restore_failed"
+    info = client.get("/api/settings/uninstall").json()
+    assert info["path"].endswith("UNINSTALL.cmd") and info["exists"] is False
