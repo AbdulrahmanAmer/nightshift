@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
 
@@ -784,6 +785,14 @@ class Status(Strict):
     gpu: GpuStatus | None = None         # optional live GPU readout (CR-C3-UI-4)
 
 
+# `POST /api/jobs/run`: queue a story for one channel (Create wizard, "When" step).
+class JobRunRequest(Strict):
+    channel: str
+    format: str | None = None            # None = the channel's own format
+    count: int | None = Field(default=None, ge=1, le=20)
+    schedule_at: datetime | None = None  # null = run now; a naive time is the PC's local time (CR-C3-UI-5)
+
+
 SCHEMA_MODELS: dict[str, type[BaseModel]] = {
     "channel": Channel, "runtime": Runtime, "install_state": InstallState, "answers": Answers,
     "manifest": Manifest, "idea": Idea, "parts": Part, "seo": Seo, "visual_plan": VisualBeat,
@@ -792,7 +801,7 @@ SCHEMA_MODELS: dict[str, type[BaseModel]] = {
     "plan": Plan, "story": Story, "shorts_plan": ShortsPlanItem, "seo_long": SeoLong,
     "clip_plan": ClipPlanItem, "policy_check": PolicyCheckResult, "transcript": Transcript,
     "clip_layout": ClipLayout, "clip_template": ClipTemplate, "format": Format,
-    "status": Status,
+    "status": Status, "job_run_request": JobRunRequest,
 }
 
 

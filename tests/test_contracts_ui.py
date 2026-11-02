@@ -148,3 +148,22 @@ def test_the_dashboard_status_object_validates_against_the_model(tmp_home):
     status = m.Status.model_validate(client.get("/api/status").json())
     assert status.channels and status.channels[0].slug == "after-dark"
     assert status.gpu is None
+
+
+# --- CR-C3-UI-5: job request schedule_at ----------------------------------------------------------------
+
+
+def test_job_run_request_schedule_at_null_means_run_now():
+    req = m.JobRunRequest.model_validate({"channel": "after-dark"})
+    assert req.schedule_at is None and req.format is None and req.count is None
+    assert m.JobRunRequest.model_validate({"channel": "a", "schedule_at": None}).schedule_at is None
+
+
+def test_job_run_request_parses_an_iso_time():
+    body = {"channel": "a", "format": "shorts_only", "schedule_at": "2026-11-05T21:30:00"}
+    req = m.JobRunRequest.model_validate(body)
+    assert req.schedule_at is not None and (req.schedule_at.hour, req.schedule_at.minute) == (21, 30)
+    with pytest.raises(ValidationError):
+        m.JobRunRequest.model_validate({"channel": "a", "schedule_at": "tomorrow evening"})
+    with pytest.raises(ValidationError):
+        m.JobRunRequest.model_validate({"channel": "a", "count": 0})

@@ -362,3 +362,10 @@ Format per entry:
 - **Why:** the Home and Queue GPU meters need load, VRAM used and total, and temperature; there was no schema for the status object at all.
 - **Not done here:** `ns_dashboard/svc_engine.py` does not fill `gpu` yet (it needs a GPU probe in the supervisor; C9/C2 follow-up), and `ns_dashboard/static` is not rebuilt (the TypeScript change is type-only; the next UI PR rebuilds).
 - **Status:** applied in @@CR_C3_UI_4@@
+
+## CR-C3-UI-5: job request `schedule_at` (null = run now)
+- **From:** dashboard Create wizard, "When" step; owner decisions of 2026-11-02
+- **Change:** new `ns_common.models.JobRunRequest` (`contracts/schemas/job_run_request.schema.json`) for `POST /api/jobs/run`: `channel: str`, `format: str | None = None`, `count: int | None = None` (1..20), and the new optional `schedule_at: datetime | None = None`. Rule: **`null` (or absent) = run now**. A time without a zone is the PC's local time.
+- **Why:** the wizard's last-but-one step lets the owner pick a start time; the request had no field for it.
+- **Not done here:** `ns_dashboard.svc_jobs.JobsService.create_run` still ignores the key (it reads the body as a dict), so the UI must not send `schedule_at` until C9 honours it (hold the job until that time, then enqueue). The clip request (`POST /api/jobs/clip`, multipart) gets the same field when its model is written.
+- **Status:** applied in @@CR_C3_UI_5@@
