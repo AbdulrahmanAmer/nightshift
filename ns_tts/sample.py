@@ -74,7 +74,7 @@ def to_wav(src: Path, dst: Path) -> Path:
 
 
 def prepare_sample(src: Path, work_dir: Path) -> tuple[Path, SampleReport]:
-    """A checked WAV for cloning: `src` itself when it is a WAV of 3-30 s, else a converted copy in `work_dir`.
+    """A checked WAV for cloning: `src` itself if it is a 3-30 s WAV, else a converted copy in `work_dir`.
 
     Raises `NsError("NS-E312")` with the reason in the detail when the sample is too short, too quiet,
     clipped or noisy.
