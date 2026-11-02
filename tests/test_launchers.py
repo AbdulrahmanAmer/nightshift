@@ -126,3 +126,9 @@ def test_host_script_sets_the_window_icon_from_the_shipped_brand_ico() -> None:
 def test_bundle_script_requires_the_brand_icon() -> None:
     bundle = (Path(__file__).resolve().parents[1] / "dev" / "make_bundle.ps1").read_text(encoding="utf-8")
     assert "ns_dashboard/static/brand/nightshift.ico" in bundle
+
+
+def test_update_launcher_steps_out_of_the_app_folder_before_calling_ns_update() -> None:
+    text = read("update.ps1")
+    assert "Set-Location -LiteralPath (Get-NsHome)" in text
+    assert text.index("Set-Location") < text.index("& $ns update")

@@ -9,9 +9,11 @@ the swap restores `<app>.prev` and raises `NS-E702`.
 from __future__ import annotations
 
 import hashlib
+import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import zipfile
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -164,6 +166,23 @@ def current_version(app: Path) -> str:
         return __version__
 
 
+def leave_app(app: Path, paths: Paths) -> None:
+    """Move this process out of `app` (to the install home, else the temp dir) before it is renamed.
+
+    Windows refuses to rename a directory that is any process's working directory (WinError 32); the
+    shortcuts start `ns.exe` with `<app>` as cwd, so without this every update fails with `NS-E702`.
+    """
+    try:
+        here = Path.cwd().resolve()
+    except OSError:
+        here = None
+    root = app.resolve()
+    if here is not None and here != root and root not in here.parents:
+        return
+    target = paths.home if paths.home.is_dir() else Path(tempfile.gettempdir())
+    os.chdir(target)
+
+
 def _restore(app: Path, prev: Path, log: NsLogger) -> None:
     """Put `<app>.prev` back in place of a failed new tree."""
     failed = _sibling(app, ".failed")
@@ -177,7 +196,9 @@ def _restore(app: Path, prev: Path, log: NsLogger) -> None:
 
 def update_app(zip_path: Path, app: Path, env: UpdateEnv, *, paths: Paths) -> UpdateResult:
     """Apply a release zip to `app`. `NS-E701` before any change, `NS-E702` (rolled back) after."""
+    zip_path, app = zip_path.resolve(), app.absolute()
     log = NsLogger("update", paths.logs)
+    leave_app(app, paths)
     new_version, prefix = verify_package(zip_path)
     old_version = current_version(app)
     new, prev = _sibling(app, ".new"), _sibling(app, ".prev")
@@ -221,6 +242,8 @@ def update_app(zip_path: Path, app: Path, env: UpdateEnv, *, paths: Paths) -> Up
 
 def rollback_app(app: Path, env: UpdateEnv, *, paths: Paths) -> UpdateResult:
     """Swap `<app>` and `<app>.prev` (so a second rollback rolls forward) and re-sync the venvs."""
+    app = app.absolute()
+    leave_app(app, paths)
     log = NsLogger("update", paths.logs)
     prev = _sibling(app, ".prev")
     if not prev.is_dir():
