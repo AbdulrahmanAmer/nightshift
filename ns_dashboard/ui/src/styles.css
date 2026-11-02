@@ -481,7 +481,7 @@
   }
 }
 @media (prefers-reduced-motion: reduce) { .ds-root * { transition-duration: 0ms !important; } }
-/* SideTab: the navigation rail (left edge from md up on tall viewports, bottom bar otherwise).
+/* SideTab: the navigation rail (left edge from md up at any height, bottom bar below md).
    Colour: one variable, same in both themes. The default is dark purple; to switch to the Planify violet use
    --rail-bg: #7466EE (light) / #8073F3 (dark), with --rail-bar: #7466EE and --rail-ink: #5b4bd6. */
 :root {
@@ -526,7 +526,7 @@
 .app-frame { padding-bottom: calc(64px + env(safe-area-inset-bottom)); }
 
 /* Rail */
-@media (min-width: 768px) and (min-height: 600px) {
+@media (min-width: 768px) {
   .sidetab { display: block; left: 0; right: auto; bottom: auto; top: calc(50% - var(--h) / 2); width: var(--rail-w); height: var(--h); padding: 0; background: none; border-radius: 0; box-shadow: none; pointer-events: none; animation-name: tab-in-x; }
   /* The shape: a gradient fill masked by cap / body / cap, so the caps keep their 2:3 aspect and the gradient runs the full height. */
   .sidetab-shape { display: block; position: absolute; inset: 0; filter: drop-shadow(var(--rail-shadow)); }
@@ -537,6 +537,9 @@
   .sidetab-items { display: flex; flex-direction: column; gap: var(--gap); position: relative; }
   .sidetab[data-brand="off"] .sidetab-item.sidetab-brand { display: none; }
   .sidetab-item.sidetab-brand { display: flex; }
+  .sidetab-item.sidetab-more { display: none; }
+  .sidetab[data-more="on"] .sidetab-item.sidetab-more { display: flex; }
+  .sidetab[data-more="on"] .sidetab-item.sidetab-fold { display: none; }
   .sidetab-item { width: 40px; height: 40px; pointer-events: auto; }
   .sidetab-item:not(.is-on):hover { background: rgba(255, 255, 255, 0.14); }
   .sidetab-cell { width: 40px; height: 40px; transform: translateY(calc(var(--i) * (40px + var(--gap)))); }
@@ -549,7 +552,7 @@
   .sidetab-menu button:hover, .sidetab-menu button:focus-visible { background: rgba(255, 255, 255, 0.14); outline: none; }
   .app-frame { padding-bottom: 0; padding-left: var(--rail-w); }
 }
-@media (min-width: 768px) and (min-height: 600px) and (hover: hover) { .sidetab-item:hover .sidetab-tip { opacity: 1; transform: none; } }
+@media (min-width: 768px) and (hover: hover) { .sidetab-item:hover .sidetab-tip { opacity: 1; transform: none; } }
 @media (prefers-reduced-motion: reduce) { .sidetab, .sidetab-badge, .sidetab-menu { animation: none; } .sidetab-cell, .sidetab-item, .sidetab-item svg, .sidetab-tip { transition: none; } }
 
 /* App host window controls (shell/TitleBar.tsx): drag regions for WebView2 and the rail-coloured notches. */
