@@ -326,7 +326,9 @@ def test_s09_keeps_the_default_icon_when_the_ico_is_missing(tmp_path: Path):
     )
     S09ShortcutsScheduler().run(ctx)
     call = runner.called("ps:shortcut")[0]
-    assert "icon" not in call.meta and "IconLocation" not in _script_of(call)
+    script = _script_of(call)
+    assert "icon" not in call.meta and "$s.IconLocation" not in script   # the fallback sets none
+    assert ", '')" in script.split("[NsLink]::Create(")[1].splitlines()[0]    # and the helper gets an empty icon
 
 
 def test_s09_nightshift_code_shortcut_only_with_install_code(tmp_path: Path):
