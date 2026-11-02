@@ -101,8 +101,8 @@ run instead.
 In the Dashboard open **Library**, then **Voices**. Two ways to make a new voice:
 
 - **Design**: type how the voice should sound ("a warm, slow baritone"), a name, and a sentence to hear it say.
-  The first time, Nightshift needs the 2 GB voice-design model; if it says the model is missing, run INSTALL.cmd
-  again and tick the voice design option.
+  The first time, Nightshift needs the 2 GB voice-design model; if it says the model is missing, get it in
+  **Settings, Models** (see "Get the voice design model" below).
 - **Clone**: pick a recording of **one** speaker, 3 to 30 seconds, quiet room, no music. Tick the box saying you have
   the right to use that voice. Only clone your own voice or one you have written permission for.
   Nightshift refuses a recording that is too short, too quiet, distorted or noisy (code `NS-E312`): record a longer,
@@ -124,12 +124,36 @@ Code `NS-E311` means a stored voice was made by the other voice engine: make tha
 `tts-server.exe` in `bin\qwentts`) and switches to the slower PyTorch engine (`NS-W301`) only when the first one
 cannot run on your PC. Code `NS-E310` means one sentence could not be spoken: the message names the program and the last
 lines it printed (often "out of memory": close other programs that use the graphics card and run it again).
-Code `NS-E314` means the voice design model is not installed: open Settings, Models, Get voice design.
+Code `NS-E314` means the voice design model is not installed: see "Get the voice design model" below.
 Code `NS-E315` means a new voice could not be built from your recording or description: use a clean 3 to 30 second
 recording of one speaker and type exactly the words that are said in it. With the PyTorch engine the voices are stored
 as one `speaker.bin`; with `qwentts` as `speaker.spk`, `speaker.rvq` and `ref.txt` in the voice folder. If you switch
 engine, make the voices again (`NS-E311`). The speed setting of a channel (0.7 to 1.3) changes how fast the narrator
 talks, not how high the voice is.
+
+## If the voice engine fell back
+
+A yellow `NS-W301` ("the voice engine fell back", in the setup summary or in `ns verify`) means the fast `qwentts` programs
+could not run on your PC, so Nightshift speaks with the slower PyTorch engine instead. Videos still get a voice, only
+the voice step takes longer. Nothing to fix right away: update the NVIDIA driver, restart, and run `ns verify` again to
+see whether `qwentts` works now. If the warning stays, send the diagnostics zip. Voices made with one engine are not
+read by the other (`NS-E311`): after the engine changes, make those voices again.
+
+## Get the voice design model
+
+Designing a voice from a description needs a 2 GB model that is not part of setup. In the Dashboard open
+**Settings, Models** and press **Get voice design** (or run `ns models get voicedesign`). It is checked against the
+published SHA256 and resumes if stopped. When it is done, design the voice again: the voice service notices the new file
+on the next request, there is nothing to restart. Code `NS-E314` ("the voice design model is not installed") means this
+step is still to do.
+
+## If stock footage stops at night
+
+Your Pexels and Pixabay keys are kept in Windows Credential Manager. The night run may start in a Windows session that
+cannot read it, so setup also stores the keys in `config\secrets.dpapi`, a file Windows encrypts for this PC. The night run
+uses that file when Credential Manager has nothing. The file is useless on another PC and never goes into the
+diagnostics zip. If footage is missing after you moved to another PC, or after you changed a key in Settings (which updates Credential
+Manager only), run INSTALL.cmd again and enter the keys there: setup writes both places.
 
 ## Start a video later
 

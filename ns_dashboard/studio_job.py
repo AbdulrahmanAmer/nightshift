@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import threading
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -109,14 +110,43 @@ def do_series(args: dict[str, Any]) -> dict[str, Any]:
     return {"output_ids": ids, "job_ids": [str(args["params"]["job_id"])]}
 
 
+def watch_cancel_file(
+    cancel_file: Any, token: Any, stop: threading.Event, poll_s: float = 0.2
+) -> threading.Thread | None:
+    """Cancel `token` (kills yt-dlp, removes its folder) once `cancel_file` exists; ends on `stop`."""
+    if not cancel_file:
+        return None
+    flag = Path(str(cancel_file))
+
+    def watch() -> None:
+        while not stop.is_set():
+            if flag.exists():
+                token.cancel()
+                return
+            stop.wait(poll_s)
+
+    thread = threading.Thread(target=watch, daemon=True)
+    thread.start()
+    return thread
+
+
 def do_download(args: dict[str, Any]) -> dict[str, Any]:
-    """Download a link with the pinned yt-dlp; the whole process tree dies with this process on cancel."""
+    """Download a link with the pinned yt-dlp; the `cancel_file` flag (made on Cancel) cancels the token."""
     from ns_dashboard import studio_bridge
+    from ns_studio.clipper.source import CancelToken
 
     def progress(percent: float) -> None:
         emit("download", percent=percent)
 
-    path = studio_bridge.download_source(_paths(), str(args["url"]), str(args["source_id"]), progress)
+    token = CancelToken()
+    stop = threading.Event()
+    watch_cancel_file(args.get("cancel_file"), token, stop)
+    try:
+        path = studio_bridge.download_source(
+            _paths(), str(args["url"]), str(args["source_id"]), progress, cancel_token=token
+        )
+    finally:
+        stop.set()
     return {"path": str(path)}
 
 

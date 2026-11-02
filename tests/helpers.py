@@ -171,6 +171,7 @@ class InProcessRunner:
         *,
         on_event: Any = lambda _e: None,
         check_cancel: Any = lambda: None,
+        on_cancel: Any = None,
     ) -> dict[str, Any]:
         """Run `kind` here; returns the same payload the child's `result` event would carry."""
         from unittest import mock

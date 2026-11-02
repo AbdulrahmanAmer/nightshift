@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from installer.stage2.answers import wants_voicedesign
 from installer.stage2.base import Step
 from installer.stage2.context import StepContext
 from installer.stage2.downloader import (
@@ -36,7 +37,7 @@ class S03DownloadModels(Step):
     def _items(self, ctx: StepContext, *, with_fallback: bool = True) -> list[DownloadItem]:
         items = plan_models(
             ctx.manifest, ctx.profile, ctx.tier, ctx.paths.home, custom=ctx.llm_custom,
-            include_voicedesign=ctx.ensure_answers().include_voicedesign,
+            include_voicedesign=wants_voicedesign(ctx.ensure_answers()),
         )
         if with_fallback and ctx.flag("tts_fallback", False):
             items += fallback_items(ctx)
