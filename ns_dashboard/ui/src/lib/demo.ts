@@ -87,27 +87,27 @@ export const DEMO: any = {
     { ts: "04:58:31", level: "INFO", component: "studio", event: "outbox", msg: "tiny-mysteries-20261102-77c1 long" },
   ],
   ideas: [
-    { id: 1, channel: "after-dark", title: "The Laundromat That Only Opens at Night", premise: "A student finds a laundromat that is open only between 2 and 4 a.m. and never has the same machines twice.", status: "used", source: "Generated", created_at: at(4, 3, 0) },
-    { id: 2, channel: "after-dark", title: "The Substitute", premise: "A substitute teacher takes over a class whose real teacher has been dead for a year, according to the kids.", status: "approved", source: "You", created_at: at(3, 19, 10) },
-    { id: 3, channel: "after-dark", title: "Floor 13 Exists", premise: "An elevator technician keeps being called to a floor the building's plans say was never built.", status: "new", source: "Assistant", created_at: at(1, 10, 0) },
-    { id: 4, channel: "tiny-mysteries", title: "The Bakery's Second Receipt", premise: "Every receipt from the town bakery has a faint second receipt printed underneath, from a day that has not happened yet.", status: "used", source: "You", created_at: at(5, 11, 0) },
-    { id: 5, channel: "tiny-mysteries", title: "Lost Dog, Found Twice", premise: "The same dog is returned to the same family by two different neighbours on the same afternoon.", status: "new", source: "Generated", created_at: at(0, 3, 2) },
-    { id: 6, channel: "after-dark", title: "The Hotel Wake-Up Call", premise: "A guest keeps getting wake-up calls for a room that was bricked up in 1974.", status: "rejected", source: "Generated", created_at: at(6, 3, 1) },
+    { idea_id: 1, channel: "after-dark", title: "The Laundromat That Only Opens at Night", premise: "A student finds a laundromat that is open only between 2 and 4 a.m. and never has the same machines twice.", status: "used", source: "Generated", created_at: at(4, 3, 0) },
+    { idea_id: 2, channel: "after-dark", title: "The Substitute", premise: "A substitute teacher takes over a class whose real teacher has been dead for a year, according to the kids.", status: "approved", source: "You", created_at: at(3, 19, 10) },
+    { idea_id: 3, channel: "after-dark", title: "Floor 13 Exists", premise: "An elevator technician keeps being called to a floor the building's plans say was never built.", status: "new", source: "Assistant", created_at: at(1, 10, 0) },
+    { idea_id: 4, channel: "tiny-mysteries", title: "The Bakery's Second Receipt", premise: "Every receipt from the town bakery has a faint second receipt printed underneath, from a day that has not happened yet.", status: "used", source: "You", created_at: at(5, 11, 0) },
+    { idea_id: 5, channel: "tiny-mysteries", title: "Lost Dog, Found Twice", premise: "The same dog is returned to the same family by two different neighbours on the same afternoon.", status: "new", source: "Generated", created_at: at(0, 3, 2) },
+    { idea_id: 6, channel: "after-dark", title: "The Hotel Wake-Up Call", premise: "A guest keeps getting wake-up calls for a room that was bricked up in 1974.", status: "rejected", source: "Generated", created_at: at(6, 3, 1) },
   ],
   stories: [
-    { job_id: "after-dark-20261102-a1f2", title: "The Doorbell Camera That Recorded Tomorrow", channel: "after-dark", format: "master_first", words: 1652, critic_avg: 8.4, created_at: at(0, 3, 41), outputs: 3, status: "pending" },
-    { job_id: "tiny-mysteries-20261102-77c1", title: "The Bakery That Prints Two Receipts", channel: "tiny-mysteries", format: "master_first", words: 1890, critic_avg: 8.1, created_at: at(0, 4, 58), outputs: 1, status: "pending" },
-    { job_id: "after-dark-20261031-9c0d", title: "The Laundromat That Only Opens at Night", channel: "after-dark", format: "master_first", words: 1598, critic_avg: 8.1, created_at: at(2, 3, 40), outputs: 5, status: "posted" },
-    { job_id: "tiny-mysteries-20261030-2b8e", title: "Nobody Ordered the Thirteenth Pizza", channel: "tiny-mysteries", format: "master_first", words: 1744, critic_avg: 7.8, created_at: at(3, 4, 12), outputs: 4, status: "posted" },
-    { job_id: "after-dark-20261030-7b1e", title: "The Night Bus That Skips My Stop", channel: "after-dark", format: "shorts_only", words: 121, critic_avg: 7.2, created_at: at(3, 3, 55), outputs: 1, status: "rejected" },
+    { job_id: "after-dark-20261102-a1f2", title: "The Doorbell Camera That Recorded Tomorrow", channel: "after-dark", format: "master_first", words: 1652, critic_avg: 8.4, created_at: at(0, 3, 41), outputs: Array.from({ length: 3 }, (_, i) => ({ output_id: "demo/" + i, kind: "short" as const, k: i, status: "pending", video_url: null })), status: "pending" },
+    { job_id: "tiny-mysteries-20261102-77c1", title: "The Bakery That Prints Two Receipts", channel: "tiny-mysteries", format: "master_first", words: 1890, critic_avg: 8.1, created_at: at(0, 4, 58), outputs: Array.from({ length: 1 }, (_, i) => ({ output_id: "demo/" + i, kind: "short" as const, k: i, status: "pending", video_url: null })), status: "pending" },
+    { job_id: "after-dark-20261031-9c0d", title: "The Laundromat That Only Opens at Night", channel: "after-dark", format: "master_first", words: 1598, critic_avg: 8.1, created_at: at(2, 3, 40), outputs: Array.from({ length: 5 }, (_, i) => ({ output_id: "demo/" + i, kind: "short" as const, k: i, status: "pending", video_url: null })), status: "posted" },
+    { job_id: "tiny-mysteries-20261030-2b8e", title: "Nobody Ordered the Thirteenth Pizza", channel: "tiny-mysteries", format: "master_first", words: 1744, critic_avg: 7.8, created_at: at(3, 4, 12), outputs: Array.from({ length: 4 }, (_, i) => ({ output_id: "demo/" + i, kind: "short" as const, k: i, status: "pending", video_url: null })), status: "posted" },
+    { job_id: "after-dark-20261030-7b1e", title: "The Night Bus That Skips My Stop", channel: "after-dark", format: "shorts_only", words: 121, critic_avg: 7.2, created_at: at(3, 3, 55), outputs: Array.from({ length: 1 }, (_, i) => ({ output_id: "demo/" + i, kind: "short" as const, k: i, status: "pending", video_url: null })), status: "rejected" },
   ],
   footage: [
-    { source: "pexels", id: "8451234", keywords: ["empty hallway", "night"], license: "Pexels License", duration: 12.4, last_used: at(0, 3, 20), uses: 2 },
-    { source: "pexels", id: "7765001", keywords: ["porch light", "front door"], license: "Pexels License", duration: 15.0, last_used: at(0, 3, 21), uses: 1 },
-    { source: "pixabay", id: "22318", keywords: ["kitchen window", "rain"], license: "Pixabay Content License", duration: 9.1, last_used: at(2, 3, 30), uses: 1 },
-    { source: "pexels", id: "9120440", keywords: ["laundromat", "neon sign"], license: "Pexels License", duration: 18.2, last_used: at(2, 3, 31), uses: 3 },
-    { source: "pixabay", id: "40417", keywords: ["bakery", "early morning"], license: "Pixabay Content License", duration: 11.6, last_used: at(0, 4, 40), uses: 1 },
-    { source: "pexels", id: "6603318", keywords: ["street lamp", "fog"], license: "Pexels License", duration: 14.3, last_used: at(3, 4, 0), uses: 4 },
+    { source: "pexels", clip_id: "8451234", keywords: ["empty hallway", "night"], license: "Pexels License", duration: 12.4, last_used: at(0, 3, 20), uses: 2 },
+    { source: "pexels", clip_id: "7765001", keywords: ["porch light", "front door"], license: "Pexels License", duration: 15.0, last_used: at(0, 3, 21), uses: 1 },
+    { source: "pixabay", clip_id: "22318", keywords: ["kitchen window", "rain"], license: "Pixabay Content License", duration: 9.1, last_used: at(2, 3, 30), uses: 1 },
+    { source: "pexels", clip_id: "9120440", keywords: ["laundromat", "neon sign"], license: "Pexels License", duration: 18.2, last_used: at(2, 3, 31), uses: 3 },
+    { source: "pixabay", clip_id: "40417", keywords: ["bakery", "early morning"], license: "Pixabay Content License", duration: 11.6, last_used: at(0, 4, 40), uses: 1 },
+    { source: "pexels", clip_id: "6603318", keywords: ["street lamp", "fog"], license: "Pexels License", duration: 14.3, last_used: at(3, 4, 0), uses: 4 },
   ],
   formats: [
     { id: "long_16x9", name: "Full video", kind: "long", canvas: { w: 1920, h: 1080, fps: 30 }, channels: ["after-dark", "tiny-mysteries"] },
@@ -255,8 +255,8 @@ export async function demoHandle(method: string, path: string, body?: any): Prom
   if (p === "/logs/components") return [...new Set<string>(DEMO.logs.map((l: any) => l.component))].sort();
   if (p.startsWith("/logs/tail")) { const lvl = sp.get("level"); const comp = sp.get("component"); return DEMO.logs.filter((l: any) => (!lvl || l.level === lvl) && (!comp || l.component === comp)); }
   if (p === "/library/ideas" && method === "GET") return DEMO.ideas.map((i: any) => ({ ...i }));
-  if (p === "/library/ideas" && method === "POST") { const idea = { id: Date.now(), status: "new", source: "You", created_at: new Date().toISOString(), ...body }; DEMO.ideas.unshift(idea); return idea; }
-  if (parts[0] === "library" && parts[1] === "ideas" && method === "PUT") { const i = DEMO.ideas.find((x: any) => String(x.id) === parts[2]); if (i) Object.assign(i, body); return i; }
+  if (p === "/library/ideas" && method === "POST") { const idea = { idea_id: Date.now(), status: "new", source: "You", created_at: new Date().toISOString(), ...body }; DEMO.ideas.unshift(idea); return idea; }
+  if (parts[0] === "library" && parts[1] === "ideas" && method === "PUT") { const i = DEMO.ideas.find((x: any) => String(x.idea_id) === parts[2]); if (i) Object.assign(i, body); return i; }
   if (p === "/library/stories") { const qq = (sp.get("q") || "").toLowerCase(); return DEMO.stories.filter((s: any) => !qq || s.title.toLowerCase().includes(qq)); }
   if (p === "/library/footage") { const qq = (sp.get("q") || "").toLowerCase(); return DEMO.footage.filter((f: any) => !qq || f.keywords.join(" ").includes(qq)); }
   if (p === "/library/formats" && method === "GET") return DEMO.formats.map((f: any) => ({ ...f }));
@@ -287,7 +287,7 @@ export async function* demoChat(message: string): AsyncGenerator<ChatEvent> {
   await sleep(700);
   if (/draft|series|concept/.test(last)) {
     yield { kind: "message", payload: { text: "Three concepts for an After Dark Stories series. Keep one, or ask me to redo any of them.\n\nA. The Night Shift Nurse. Her doorbell camera records tomorrow. Six parts, each a new night.\nB. Floor 13 Exists. An elevator technician keeps getting called to a floor that was never built.\nC. The Substitute. A class whose real teacher has been dead for a year, according to the kids." } };
-    yield pend("Save these three concepts to Library, Ideas as new ideas", "save_ideas", () => { DEMO.ideas.unshift({ id: Date.now(), channel: "after-dark", title: "Series: The Night Shift Nurse", premise: "Her doorbell camera records tomorrow. Six parts, each a new night.", status: "new", source: "Assistant", created_at: new Date().toISOString() }); return { message: "Saved to Library, Ideas." }; });
+    yield pend("Save these three concepts to Library, Ideas as new ideas", "save_ideas", () => { DEMO.ideas.unshift({ idea_id: Date.now(), channel: "after-dark", title: "Series: The Night Shift Nurse", premise: "Her doorbell camera records tomorrow. Six parts, each a new night.", status: "new", source: "Assistant", created_at: new Date().toISOString() }); return { message: "Saved to Library, Ideas." }; });
   } else if (/regenerate|redo/.test(last)) {
     yield { kind: "message", payload: { text: "New take on B. Floor 13 Exists becomes The Service Lift: a night porter's lift stops between floors, and the intercom answers in his own voice from tomorrow." } };
   } else if (/pause|resume/.test(last)) {
