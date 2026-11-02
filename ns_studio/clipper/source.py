@@ -89,13 +89,35 @@ def probe_source(video: Path) -> dict[str, Any]:
     if duration > MAX_DURATION_S:
         raise NsError("NS-E405", f"{duration / 3600:.1f} h is longer than 4 h", path=str(video))
     v = vids[0]
+    width, height = int(v["width"]), int(v["height"])
+    rotation = stream_rotation(v)
+    if rotation in (90, 270):  # a phone clip: coded 1920x1080 but shown 1080x1920 (FFmpeg autorotates)
+        width, height = height, width
     return {
         "duration_s": duration,
         "fps": _fps(str(v.get("avg_frame_rate") or v.get("r_frame_rate") or "0/1")),
-        "width": int(v["width"]),
-        "height": int(v["height"]),
+        "width": width,
+        "height": height,
+        "rotation": rotation,
         "audio_streams": len(auds),
     }
+
+
+def stream_rotation(stream: dict[str, Any]) -> int:
+    """Clockwise display rotation of a video stream in degrees (0, 90, 180 or 270).
+
+    Read from the `Display Matrix` side data (`rotation` is counter-clockwise in FFprobe, so -90 means a
+    quarter turn clockwise) or from the older `rotate` tag.
+    """
+    raw: Any = None
+    for side in stream.get("side_data_list") or []:
+        if isinstance(side, dict) and "rotation" in side:
+            raw = -float(side["rotation"])  # FFprobe: counter-clockwise; we want clockwise
+            break
+    if raw is None:
+        tag = (stream.get("tags") or {}).get("rotate")
+        raw = float(tag) if tag not in (None, "") else 0.0
+    return int(round(raw / 90.0)) * 90 % 360
 
 
 def import_source(
