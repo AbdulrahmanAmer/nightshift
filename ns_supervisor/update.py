@@ -25,6 +25,7 @@ from ns_common.errors import NsError
 from ns_common.logging import NsLogger
 from ns_common.paths import Paths
 from ns_common.uv import find_uv, home_uv
+from ns_common.venv_extras import NO_DEPS, extras_suffix
 
 PRESERVE = (".git", "config", "answers.json")
 RENAME_TRIES = 20
@@ -33,7 +34,7 @@ BUSY_HINT = (
     "another program still has the Nightshift folder open (a Dashboard, Studio or terminal window?). "
     "Close those windows and run the update again; your previous version is still in place."
 )
-VENV_EXTRAS = (("studio", "[studio]", False), ("supervisor", "[supervisor]", False), ("tts", "[tts]", True))
+UPDATE_VENVS = ("studio", "supervisor", "tts")      # extras come from ns_common.venv_extras (shared with setup)
 
 
 @dataclass
@@ -303,7 +304,8 @@ def resync_venvs(
     runner = run or _run
     exe = uv if uv is not None else find_uv(paths)
     done: list[str] = []
-    for venv, extras, no_deps in VENV_EXTRAS:
+    for venv in UPDATE_VENVS:
+        extras, no_deps = extras_suffix(venv), venv in NO_DEPS
         py = paths.venvs / venv / "Scripts" / "python.exe"
         if not py.exists():
             continue

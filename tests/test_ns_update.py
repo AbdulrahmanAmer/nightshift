@@ -201,7 +201,7 @@ def test_resync_venvs_builds_uv_commands_for_existing_venvs(tmp_path: Path) -> N
     app = tmp_path / "app"
     done = update.resync_venvs(app, paths, uv="uv", run=run)
     assert done == ["studio", "tts"]
-    assert cmds[0][:5] == ["uv", "pip", "install", "-e", f"{app}[studio]"] and "--no-deps" not in cmds[0]
+    assert cmds[0][:5] == ["uv", "pip", "install", "-e", f"{app}[studio,supervisor]"] and "--no-deps" not in cmds[0]
     assert cmds[1][4] == f"{app}[tts]" and cmds[1][-1] == "--no-deps"
 
 
@@ -268,3 +268,30 @@ def test_rollback_also_leaves_the_app_directory(tmp_path: Path, monkeypatch: pyt
     update.rollback_app(app, Env().env(), paths=paths)
     assert not _inside(Path.cwd(), app) and not _inside(Path(os.getcwd()), tmp_path / "NightShift.prev")
     assert (app / "VERSION").read_text(encoding="utf-8").strip() == "0.1.0"
+
+
+def test_update_resync_installs_exactly_the_extras_setup_installed(tmp_path: Path) -> None:
+    """s04 (setup) and resync_venvs (update) must agree per venv, tts included."""
+    from installer.stage2.simulate import FakeRunner
+    from installer.stage2.steps.s04_venvs import S04Venvs
+    from installer.stage2.testing import example_answers, make_test_context
+
+    setup_runner = FakeRunner(tmp_path / "desktop")
+    ctx = make_test_context(tmp_path, raw_answers=example_answers(), resolve=True, runner=setup_runner)
+    ctx.set_flag("tts_fallback", True)
+    S04Venvs().run(ctx)
+
+    def installed(tag: str) -> str:
+        argv = next(c for c in setup_runner.calls if c.tag == tag).argv
+        spec = argv[argv.index("-e") + 1]
+        return spec[spec.index("[") :]
+
+    paths = ctx.paths
+    for venv in ("studio", "supervisor", "tts"):
+        assert paths.venvs.joinpath(venv, "Scripts", "python.exe").exists()
+    cmds: list[list[str]] = []
+    update.resync_venvs(tmp_path / "app", paths, uv="uv", run=lambda c: (cmds.append(c) or 0, ""))
+    by_venv = {Path(c[c.index("--python") + 1]).parts[-3]: c[4] for c in cmds}
+    assert by_venv["studio"].endswith(installed("uv pip install studio app"))
+    assert by_venv["supervisor"].endswith(installed("uv pip install supervisor app"))
+    assert by_venv["tts"].endswith(installed("uv pip install tts app"))
