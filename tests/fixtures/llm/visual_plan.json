@@ -5,36 +5,64 @@
       "beat": 0,
       "sentence_start": 0,
       "sentence_end": 2,
-      "keywords": ["doorbell camera", "porch at night", "front door"],
+      "keywords": [
+        "doorbell camera",
+        "porch at night",
+        "front door"
+      ],
       "mood": "eerie",
-      "need_vertical": true
+      "need_vertical": true,
+      "emphasis": {
+        "0": "doorbell"
+      }
     },
     {
       "part": 1,
       "beat": 1,
       "sentence_start": 3,
       "sentence_end": 4,
-      "keywords": ["phone screen", "calendar date", "hands holding phone"],
+      "keywords": [
+        "phone screen",
+        "calendar date",
+        "hands holding phone"
+      ],
       "mood": "tense",
-      "need_vertical": true
+      "need_vertical": true,
+      "emphasis": {
+        "3": "phone"
+      }
     },
     {
       "part": 1,
       "beat": 2,
       "sentence_start": 5,
       "sentence_end": 6,
-      "keywords": ["porch steps", "phone notification", "empty street"],
+      "keywords": [
+        "porch steps",
+        "phone notification",
+        "empty street"
+      ],
       "mood": "dread",
-      "need_vertical": true
+      "need_vertical": true,
+      "emphasis": {
+        "5": "porch"
+      }
     },
     {
       "part": 1,
       "beat": 3,
       "sentence_start": 7,
       "sentence_end": 8,
-      "keywords": ["open front door", "dark hallway", "cold breath"],
+      "keywords": [
+        "open front door",
+        "dark hallway",
+        "cold breath"
+      ],
       "mood": "dread",
-      "need_vertical": true
+      "need_vertical": true,
+      "emphasis": {
+        "7": "open"
+      }
     }
   ]
 }

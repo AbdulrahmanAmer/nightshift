@@ -333,3 +333,15 @@ def test_ideas_reads_the_dashboard_columns_when_present(tmp_home: Path):
         "select status, updated_at from ideas where premise=?", ("a premise from the dashboard",)
     )
     assert row["status"] == "used" and row["updated_at"]
+
+
+def test_visual_plan_asks_for_and_keeps_emphasis(tmp_home: Path, monkeypatch: pytest.MonkeyPatch):
+    """Review row 16: the prompt never asked for `emphasis`, so no caption ever got a key word."""
+    from ns_studio.text.prompts import load_prompt, render
+
+    p = load_prompt("visual_plan")
+    assert "emphasis" in render(p, combo=make_ctx(tmp_home).combo, setting="a porch", sentences=["One."], part_n=1)
+    ctx = _text_only(monkeypatch, tmp_home)
+    run_job(ctx)
+    beats = ctx.read_json("visual_plan.json")
+    assert any(b.get("emphasis") for b in beats)
