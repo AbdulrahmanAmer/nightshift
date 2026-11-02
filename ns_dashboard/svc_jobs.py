@@ -55,7 +55,7 @@ def build_handlers(adapters: Adapters) -> dict[str, Handler]:
         else:
             source = Path(str(p["source_path"]))
         ids = adapters.clip.clip(ctl, source, str(p["source_id"]), opts)
-        return {"output_ids": ids, "source_id": p["source_id"]}
+        return {"output_ids": ids, "source_id": p["source_id"], **ctl.extras}
 
     def learn_handler(ctl: JobControl) -> dict[str, Any]:
         return adapters.learn.import_csv(ctl, Path(str(ctl.params["csv_path"])))

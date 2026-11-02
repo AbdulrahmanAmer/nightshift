@@ -48,6 +48,10 @@ class ClipAdapter(Protocol):
         self, ctl: JobControl, source_path: Path, source_id: str, params: dict[str, Any]
     ) -> list[str]: ...
 
+    def rerun(self, ctl: JobControl, studio_job_id: str, changes: dict[str, Any]) -> list[str]:
+        """Run the later stages of an earlier clip job again with other options (transcript kept)."""
+        ...
+
     def fetch_url(self, ctl: JobControl, url: str, source_id: str) -> Path:
         """Download a video from an http(s) link (C8 `import_url`); reports `ctl.download(percent)`."""
         ...
@@ -183,7 +187,7 @@ def job_reporter(ctl: JobControl) -> studio_bridge.Report:
 
 
 class StudioAdapter:
-    """Shared wiring of the adapters that run studio code in-process: home, supervisor link, fakes, GPU owner."""
+    """Shared wiring of the adapters that run studio code in-process: home, link, fakes, GPU owner."""
 
     def __init__(
         self,
@@ -206,7 +210,7 @@ class StudioAdapter:
 class RealRunAdapter(StudioAdapter):
     """Runs `studio run` jobs in-process through `ns_dashboard.studio_bridge.run_story_jobs` (C7).
 
-    The bridge calls `ns_studio.jobs` and `run_job_guarded`; progress comes from the stage runner's log events,
+    The bridge calls `ns_studio.jobs` and `run_job_guarded`; progress comes from the runner's log events,
     and the GPU tenants are acquired through the supervisor.
     """
 
@@ -227,37 +231,40 @@ class RealRunAdapter(StudioAdapter):
         return ids
 
 
-class RealClipAdapter:
-    """Expects `ns_studio.clipper.run_clip_job` (C8)."""
-
-    def __init__(self, paths: Paths, link: SupervisorLink) -> None:
-        self.paths = paths
-        self.link = link
+class RealClipAdapter(StudioAdapter):
+    """Runs the Clipper in-process: the clip job's stages (`studio clip`) and `import_url` for links."""
 
     def clip(self, ctl: JobControl, source_path: Path, source_id: str, params: dict[str, Any]) -> list[str]:
         """Run the Clipper for `source_path`; returns the output ids it inserted."""
-        fn = lazy("ns_studio.clipper", "run_clip_job")
-        ids = fn(
+        seen: list[str] = []
+        ids = studio_bridge.run_clip(
+            source_path,
+            {**params, "channel": params.get("channel") or ctl.channel},
+            job_reporter(ctl),
+            acquirer=self.acquirer(),
+            fake=self.fake,
             paths=self.paths,
-            source_path=source_path,
-            source_id=source_id,
-            params=params,
-            on_stage=stage_reporter(ctl),
-            acquirer=make_acquirer(self.link.base_url),
+            seen=seen,
         )
-        return [str(i) for i in ids]
+        ctl.extras["studio_job_id"] = seen[0] if seen else None
+        return ids
+
+    def rerun(self, ctl: JobControl, studio_job_id: str, changes: dict[str, Any]) -> list[str]:
+        """Run the later stages of `studio_job_id` again with other options; keeps the transcript."""
+        ids = studio_bridge.rerun_clip(
+            studio_job_id,
+            changes,
+            job_reporter(ctl),
+            acquirer=self.acquirer(),
+            fake=self.fake,
+            paths=self.paths,
+        )
+        ctl.extras["studio_job_id"] = studio_job_id
+        return ids
 
     def fetch_url(self, ctl: JobControl, url: str, source_id: str) -> Path:
-        """Download `url` into `imports/clipper/<source_id>/` with C8's `import_url`, as `Downloading N%`.
-
-        Expects `ns_studio.clipper.import_url(paths=, url=, source_id=, on_progress=) -> Path`, where
-        `on_progress(percent)` may raise to cancel.
-        """
-        try:
-            fn = lazy("ns_studio.clipper", "import_url")
-        except AdapterUnavailable as e:
-            raise AdapterUnavailable("URL import not available yet") from e
-        return Path(fn(paths=self.paths, url=url, source_id=source_id, on_progress=ctl.download))
+        """Download `url` with the pinned yt-dlp (`clipper.source.import_url`), shown as `Downloading N%`."""
+        return studio_bridge.download_source(self.paths, url, source_id, ctl.download)
 
 
 class RealLearnAdapter:

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import ast
 import importlib
+import json
 from pathlib import Path
 from typing import Any
 
@@ -37,8 +38,6 @@ OWNED = ("ns_studio", "ns_supervisor", "ns_tts", "ns_common")
 #: Calls that are known to point at nothing yet, with the gap that fixes them. Fixing a gap removes its entry
 #: (the test is strict: an entry that now resolves fails, and so does an entry nobody calls any more).
 KNOWN_UNWIRED: dict[tuple[str, str], str] = {
-    ("ns_studio.clipper", "run_clip_job"): "gap 3",
-    ("ns_studio.clipper", "import_url"): "gap 3",
     ("ns_studio.learn", "import_csv"): "gap 12",
     ("ns_studio.learn", "summary"): "gap 12",
     ("ns_supervisor.doctor", "make_bundle"): "gap 10",
@@ -216,3 +215,106 @@ def test_run_now_unknown_format_is_a_coded_error(two_stage_plan: Paths):
     with pytest.raises(NsError) as err:
         adapter(two_stage_plan).run(ctl, "after-dark", "series_compilation", 1)
     assert err.value.code == "NS-E306"
+
+
+# ----------------------------------------------------------- gap 3: Clipper -> the clip job and import_url
+
+
+class ClipStub:
+    """Stands in for the heavy clip stages: records the parameters it was given and files one clip."""
+
+    name = "clip_stub"
+    tenant = None
+    inputs = ("clip_params.json",)
+    outputs = ("done.json",)
+
+    def run(self, ctx: Any) -> None:
+        from ns_studio.clipper.models import ClipParams
+
+        p = ClipParams.load(ctx.job_dir)
+        ctx.write_json("done.json", {"source": p.source, "template": p.template, "max_clips": p.max_clips})
+        ctx.db.execute(
+            "insert or replace into outputs(output_id, job_id, channel, kind, k, title, path, status,"
+            " created_at) values (?,?,?,?,?,?,?,?,?)",
+            (f"{ctx.job_id}/c1", ctx.job_id, ctx.channel.slug, "clip", 1, "A clip", "c.mp4", "pending",
+             "2026-11-02T00:00:00+00:00"),
+        )
+
+
+@pytest.fixture
+def clip_plan(tmp_home: Path, monkeypatch: pytest.MonkeyPatch):
+    from ns_studio.clipper import stages_clip  # noqa: F401  (registers the real clip stages first)
+
+    register(ClipStub())
+    monkeypatch.setitem(FORMAT_STAGES, "clip", ["clip_stub"])
+    paths = Paths.from_env()
+    paths.ensure()
+    db = Db(paths.db_path)
+    db.migrate()
+    add_channel(paths, db, make_channel())
+    return paths
+
+
+def clip_adapter(paths: Paths):
+    from ns_dashboard.adapters import RealClipAdapter
+
+    return RealClipAdapter(
+        paths,
+        SupervisorLink("http://127.0.0.1:9", timeout_s=0.2),
+        fake=FAKEABLE,
+        acquirer=DevAcquirer(Runtime.default("cpu-dev")),
+    )
+
+
+OPTIONS = {"channel": "after-dark", "template": "podcast_single", "max_clips": 3, "min_s": 20, "max_s": 45,
+           "rights_confirmed": True}
+
+
+def test_clipper_runs_the_clip_job_with_the_owners_options(clip_plan: Paths):
+    paths = clip_plan
+    video = paths.home / "talk.mp4"
+    store, ctl = make_ctl(paths)
+    ids = clip_adapter(paths).clip(ctl, video, "src-dash", dict(OPTIONS))
+    job_id = ctl.extras["studio_job_id"]
+    assert ids == [f"{job_id}/c1"]
+    done = json.loads((paths.job_dir(job_id) / "done.json").read_text(encoding="utf-8"))
+    assert done == {"source": str(video), "template": "podcast_single", "max_clips": 3}
+    rec = store.get(ctl.job_id)
+    assert rec is not None and rec.message == "clip_stub (1/1)"
+
+
+def test_clipper_rerun_keeps_the_job_and_changes_the_template(clip_plan: Paths):
+    paths = clip_plan
+    _store, ctl = make_ctl(paths)
+    adapter_ = clip_adapter(paths)
+    first = adapter_.clip(ctl, paths.home / "talk.mp4", "src-dash", dict(OPTIONS))
+    job_id = ctl.extras["studio_job_id"]
+    _store2, ctl2 = make_ctl(paths)
+    again = adapter_.rerun(ctl2, job_id, {"template": "talking_head", "max_clips": 2})
+    assert again == first and ctl2.extras["studio_job_id"] == job_id
+    done = json.loads((paths.job_dir(job_id) / "done.json").read_text(encoding="utf-8"))
+    assert done["template"] == "talking_head" and done["max_clips"] == 2
+
+
+def test_clipper_removes_the_download_after_the_import(clip_plan: Paths):
+    paths = clip_plan
+    from ns_dashboard import studio_bridge
+
+    downloaded = studio_bridge.download_dir(paths, "src-link") / "source.mp4"
+    downloaded.parent.mkdir(parents=True)
+    downloaded.write_bytes(b"x")
+    _store, ctl = make_ctl(paths)
+    clip_adapter(paths).clip(ctl, downloaded, "src-link", dict(OPTIONS))
+    assert not downloaded.parent.exists()
+
+
+def test_clipper_link_download_reaches_import_url(tmp_home: Path):
+    from ns_common.errors import NsError
+    from ns_dashboard.adapters import RealClipAdapter
+
+    paths = Paths.from_env()
+    _store, ctl = make_ctl(paths)
+    adapter_ = RealClipAdapter(paths, SupervisorLink("http://127.0.0.1:9", timeout_s=0.2))
+    with pytest.raises(NsError) as err:  # the real import_url runs and reports the missing yt-dlp (NS-E409)
+        adapter_.fetch_url(ctl, "https://example.com/watch?v=abc", "src-link")
+    assert err.value.code == "NS-E409" and "yt-dlp" in err.value.detail

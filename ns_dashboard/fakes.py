@@ -147,6 +147,7 @@ class FakeClipAdapter:
         self.stages = stages
         self.calls: list[dict[str, Any]] = []
         self.urls: list[str] = []
+        self.reruns: list[dict[str, Any]] = []
         self.fail_url_with: Exception | None = None
 
     def fetch_url(self, ctl: JobControl, url: str, source_id: str) -> Path:
@@ -172,6 +173,7 @@ class FakeClipAdapter:
              1 if params.get("rights_confirmed") else 0, source_path.stem),
         )
         job_id = new_job_id(channel)
+        ctl.extras["studio_job_id"] = job_id
         ids: list[str] = []
         for k in range(1, max(1, min(int(params.get("max_clips") or 2), 2)) + 1):
             title = f"Fake clip {k} from {source_path.stem}"
@@ -185,6 +187,21 @@ class FakeClipAdapter:
             )
             ids.append(oid)
         return ids
+
+    def rerun(self, ctl: JobControl, studio_job_id: str, changes: dict[str, Any]) -> list[str]:
+        """Pretend to run the later stages again: retitle the job's clips and keep their ids."""
+        self.reruns.append({"studio_job_id": studio_job_id, **changes})
+        for _ in ctl.stages(["select", "layout", "captions", "render", "qc", "outbox"]):
+            pass
+        tag = str(changes.get("template") or "auto")
+        rows = self.db.query("SELECT output_id FROM outputs WHERE job_id = ? ORDER BY k", (studio_job_id,))
+        for r in rows:
+            self.db.execute(
+                "UPDATE outputs SET title = ? WHERE output_id = ?",
+                (f"Fake clip ({tag}) {r['output_id']}", r["output_id"]),
+            )
+        ctl.extras["studio_job_id"] = studio_job_id
+        return [str(r["output_id"]) for r in rows]
 
 
 class FakeLearnAdapter:
