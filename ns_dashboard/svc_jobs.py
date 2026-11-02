@@ -50,11 +50,6 @@ def read_clip_layout(paths: Paths | None, studio_job_id: Any) -> dict[str, Any] 
         return None
     if not isinstance(raw, dict) or not isinstance(raw.get("template"), str):
         return None
-    def apply_voice_handler(ctl: JobControl) -> dict[str, Any]:
-        """Library > Voices > Create it now: the setup voice, with progress and Cancel."""
-        name = adapters.voice_maker.apply_pending(ctl)
-        return {"created": name, "name": ctl.params.get("name")}
-
     return {
         "template": raw["template"],
         "per_clip": raw.get("per_clip") or {},
