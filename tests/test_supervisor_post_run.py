@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from pathlib import Path
 
 import httpx
@@ -75,7 +74,6 @@ def test_client_posts_run_finished() -> None:
 
     c = SupervisorClient("http://sup:8099", client=httpx.Client(transport=httpx.MockTransport(handler)))
     assert c.run_finished() is True and seen == [("POST", "/run_finished")]
-    json.dumps(seen)
 
 
 def test_the_route_exists_and_tells_the_dashboard_state(tmp_path: Path) -> None:

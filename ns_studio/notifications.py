@@ -35,7 +35,8 @@ def output_counts(db: Db, job_ids: Sequence[str]) -> tuple[int, int]:
     if not job_ids:
         return 0, 0
     marks = ",".join("?" for _ in job_ids)
-    rows = db.query(f"select kind, count(*) as n from outputs where job_id in ({marks}) group by kind", job_ids)
+    sql = f"select kind, count(*) as n from outputs where job_id in ({marks}) group by kind"
+    rows = db.query(sql, job_ids)
     by_kind = {r["kind"]: int(r["n"]) for r in rows}
     return by_kind.get("long", 0), by_kind.get("short", 0)
 

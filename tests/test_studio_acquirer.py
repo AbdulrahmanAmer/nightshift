@@ -98,7 +98,9 @@ def test_first_use_starts_the_supervisor_once_then_forwards(tmp_home: Path):
     assert acq.warmup("embed") == "ready" and client.calls[-1] == ("warmup", "embed")
 
 
-def test_default_connection_uses_ns_supervisor_ensure_running(tmp_home: Path, monkeypatch: pytest.MonkeyPatch):
+def test_default_connection_uses_ns_supervisor_ensure_running(
+    tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+):
     import ns_supervisor.client as sc
 
     seen: list = []
@@ -121,7 +123,8 @@ def test_supervisor_client_is_built_from_runtime_when_not_injected(tmp_home: Pat
     acq = StudioAcquirer(rt, paths)
     assert acq.client is None
     acq._connect()
-    assert acq.client is not None and acq.client.base_url == "http://127.0.0.1:18099"  # type: ignore[attr-defined]
+    assert acq.client is not None
+    assert acq.client.base_url == "http://127.0.0.1:18099"  # type: ignore[attr-defined]
 
 
 def test_wait_for_a_busy_gpu_is_capped_at_two_hours(tmp_home: Path):
@@ -176,7 +179,9 @@ def _stage(name: str, tenant):
     return S()
 
 
-def test_run_job_acquires_and_releases_through_the_supervisor(tmp_home: Path, monkeypatch: pytest.MonkeyPatch):
+def test_run_job_acquires_and_releases_through_the_supervisor(
+    tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+):
     for n, t in (("g1", "llama"), ("g2", "tts"), ("g3", "whisper")):
         register(_stage(n, t))
     monkeypatch.setitem(orch.FORMAT_STAGES, "gap1_fmt", ["g1", "g2", "g3"])

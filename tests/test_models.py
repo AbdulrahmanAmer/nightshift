@@ -44,7 +44,7 @@ def test_whisper_code_default_matches_setup_and_spec():
     w = m.WhisperCfg()
     assert (w.model, w.device, w.compute_type) == ("distil-large-v3", "cuda", "int8")
     assert m.Runtime().whisper == w
-    assert m.WhisperCfg(compute_type="float16").compute_type == "float16"  # the installer's override still works
+    assert m.WhisperCfg(compute_type="float16").compute_type == "float16"  # the installer's override
 
 
 def test_every_schema_file_matches_models():

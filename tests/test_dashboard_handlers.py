@@ -627,8 +627,10 @@ def test_logs_tail_is_a_bare_list(tmp_home: Path):
     assert "dashboard" in dash.settings.log_components()
 
 
-def test_series_compilation_is_not_offered_until_it_has_stages(tmp_home: Path, monkeypatch: pytest.MonkeyPatch):
-    """Gap 29: the empty-stage format is hidden from Run now (API and Assistant) instead of failing NS-E306."""
+def test_series_compilation_is_not_offered_until_it_has_stages(
+    tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Gap 29: the empty-stage format is hidden from Run now (API, Assistant) instead of failing NS-E306."""
     from ns_dashboard import common
     from ns_dashboard.assistant.tools import build_registry
     from ns_studio.orchestrator import FORMAT_STAGES
