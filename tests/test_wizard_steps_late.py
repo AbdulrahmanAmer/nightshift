@@ -311,7 +311,9 @@ def test_s09_points_every_shortcut_at_the_brand_icon_when_the_build_ships_it(tmp
     icon.parent.mkdir(parents=True)
     icon.write_bytes(b"ico")
     runner = FakeRunner(tmp_path / "desktop")
-    ctx = make_test_context(tmp_path, raw_answers=example_answers(), resolve=True, app_path=app, runner=runner)
+    ctx = make_test_context(
+        tmp_path, raw_answers=example_answers(), resolve=True, app_path=app, runner=runner
+    )
     S09ShortcutsScheduler().run(ctx)
     calls = runner.called("ps:shortcut")
     assert len(calls) == 2
@@ -323,7 +325,9 @@ def test_s09_points_every_shortcut_at_the_brand_icon_when_the_build_ships_it(tmp
 def test_s09_keeps_the_default_icon_when_the_ico_is_missing(tmp_path: Path):
     app = launcher_app(tmp_path, ["nightshift-dashboard.ps1"])
     runner = FakeRunner(tmp_path / "desktop")
-    ctx = make_test_context(tmp_path, raw_answers=example_answers(), resolve=True, app_path=app, runner=runner)
+    ctx = make_test_context(
+        tmp_path, raw_answers=example_answers(), resolve=True, app_path=app, runner=runner
+    )
     S09ShortcutsScheduler().run(ctx)
     call = runner.called("ps:shortcut")[0]
     assert "icon" not in call.meta and "IconLocation" not in _script_of(call)

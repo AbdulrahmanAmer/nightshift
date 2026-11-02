@@ -232,7 +232,8 @@ def test_job_clip_request_defaults_mirror_the_dashboard_route():
 
 
 def test_job_clip_request_needs_rights_and_a_sane_length_range():
-    for bad in (CLIP | {"rights_confirmed": False}, {k: v for k, v in CLIP.items() if k != "rights_confirmed"}):
+    missing = {k: v for k, v in CLIP.items() if k != "rights_confirmed"}
+    for bad in (CLIP | {"rights_confirmed": False}, missing):
         with pytest.raises(ValidationError):
             m.JobClipRequest.model_validate(bad)
     with pytest.raises(ValidationError):

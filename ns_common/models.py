@@ -61,7 +61,7 @@ class Channel(Strict):
     fiction_label: bool = True
     creator_note: str = ""
     critic_bar: float = Field(default=8.0, ge=5.0, le=10.0)
-    qc_pass_target: float = Field(default=0.9, ge=0, le=1)   # the QC pass-rate line the dashboard draws (CR-C9-1)
+    qc_pass_target: float = Field(default=0.9, ge=0, le=1)   # QC pass-rate line (CR-C9-1)
     pools: Pools = Pools()
     avoid_topics: list[str] = []
     formats_allowed: list[str] = []     # format preset ids (spec 17.1); empty = every shipped preset
@@ -783,7 +783,7 @@ class JobRunRequest(Strict):
 
 
 # `POST /api/jobs/clip` (JSON body; the multipart variant sends the same fields as text plus a `file` part).
-# Exactly one video source is expected: `url`, `path`, `upload_id`, `source_id` (re-run) or the multipart file.
+# One video source is expected: `url`, `path`, `upload_id`, `source_id` (re-run) or the multipart file.
 class JobClipRequest(Strict):
     channel: str
     rights_confirmed: Literal[True]       # the owner owns the video or is licensed to use it (spec 19.1)
