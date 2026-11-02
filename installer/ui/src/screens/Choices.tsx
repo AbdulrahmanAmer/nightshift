@@ -1,21 +1,21 @@
 // 2.3 Choices: everything s01_questions asks, on one screen. Validated here for instant feedback with the rules of the spec;
 // the server's FieldError[] stays authoritative.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Badge, Button, Card, CardHeader, SegmentedControl, TimeChip } from "@ref12";
+import { Button, Card, CardHeader, SegmentedControl, TimeChip } from "@ref12";
 import { cx } from "@dash/ui/kit";
 import { choices as t } from "../copy";
 import { gbNum, parseRunTime } from "../format";
 import { useLiveState } from "../api/useSetup";
-import type { ChoicesDraft, ChoicesField, DiskCheck, PresetVoice, Tier } from "../api/types";
+import type { ChoicesDraft, ChoicesField, DiskCheck, PresetVoice } from "../api/types";
 import { openExternal } from "../host";
 import { Area, Screen } from "../parts/Screen";
 import { ChoiceRow } from "../parts/ChoiceRow";
+import { ModelPicker } from "../parts/ModelPicker";
 import { LabeledField } from "../parts/LabeledField";
 import { SetupIcon } from "../parts/icons";
 
 const VOICES: PresetVoice[] = ["Ryan", "Aiden", "Serena", "Vivian"];
 const RUN_PRESETS = ["01:00", "03:00", "05:00"];
-const TIER_NAME: Record<Tier, string> = { small: "Small", balanced: "Balanced", best: "Best" };
 
 type KeyStatus = { status: "idle" | "checking" | "ok" | "bad"; message?: string; checked?: string };
 type Errors = Partial<Record<ChoicesField, string>>;
@@ -90,7 +90,7 @@ export function Choices() {
     const p = d.homePath.trim();
     if (!/^[A-Za-z]:\\/.test(p) || p.includes("%") || p.length > 80) e.homePath = t.errors.homePathShape;
     else if (disk && !diskBusy && !disk.ok) e.homePath = t.errors.homePath(tierInfo.needFreeGb, Math.round(disk.freeGb ?? 0));
-    if (!tierInfo.allowed) e.llmTier = t.errors.llmTier(TIER_NAME[d.llmTier], ram);
+    if (!tierInfo.allowed) e.llmTier = t.errors.llmTier(t.picker.names[d.llmTier], ram);
     if (d.modelsSource.kind !== "internet" && (!d.modelsSource.path?.trim() || (folder && !folder.exists))) e["modelsSource.path"] = t.errors.folder;
     if (!parseRunTime(d.runTime)) e.runTime = t.errors.runTime;
     if (!d.pexelsKey?.trim() && !keySet.pexels) e.pexelsKey = t.errors.key("Pexels");
@@ -206,17 +206,13 @@ export function Choices() {
           </div>
         </Card>
       </Area>
-      <Area area="tier">
-        <Card as="section" padding="lg" aria-label={t.tier.title}>
-          <CardHeader title={t.tier.title} level={2} />
-          <SegmentedControl label={t.tier.label} variant="filled" size="md" value={d.llmTier} onChange={(v) => { set("llmTier", v); touch("llmTier"); }} options={t.tier.options} />
-          <div className="mt-4 flex flex-col gap-1 text-ds-sm ds-num">
-            <p className="font-medium">{t.tier.line1[d.llmTier](gbNum(tierInfo.llmBytes))}</p>
-            <p className="text-ds-text-2">{t.tier.line2[d.llmTier]}</p>
-            <p className="text-ds-muted">{t.tier.line3(gbNum(tierInfo.totalBytes), tierInfo.needFreeGb)}</p>
-          </div>
-          {state.plan.recommendedTier === "small" && ram < 31 && <p className="mt-3 text-ds-xs leading-ds-normal text-ds-text-2">{t.tier.lowRam(ram)}</p>}
-          {!tierInfo.allowed && <Badge tone="danger" size="sm" className="mt-3">{tierInfo.reason ?? t.tier.notAllowedFallback}</Badge>}
+      <Area area="model">
+        <Card as="section" padding="lg" aria-label={t.picker.title}>
+          <CardHeader title={t.picker.title} level={2} />
+          <ModelPicker tiers={state.plan.tiers} value={d.llmTier} disabled={locked} onChange={(v) => { set("llmTier", v); touch("llmTier"); }}>
+            {state.plan.recommendedTier === "small" && ram < 31 && <p className="text-ds-sm text-ds-text-2">{t.picker.lowRam(ram)}</p>}
+            <p className="text-ds-xs text-ds-muted ds-num">{t.picker.need(gbNum(tierInfo.totalBytes), tierInfo.needFreeGb)}</p>
+          </ModelPicker>
         </Card>
       </Area>
       <Area area="run">

@@ -601,13 +601,13 @@ Purpose: everything `s01_questions` asks, on one screen, next to the sizes that 
 ╰─────────────────────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
-Grid areas: `chan chan tier tier run run` / `voice voice src src keys keys`.
+Grid areas: `chan chan chan run run run` / `model model model model model model` / `voice voice src src keys keys` (four columns: `chan chan run run` / `model model model model` / `voice voice src src` / `keys keys keys keys`). The model picker is a full-width row so its four cards sit side by side.
 
 | Region | Component and props |
 |---|---|
 | Header | `Greeting salutation="Your choices" question="" description="You can change the channel, voice and time later in the dashboard."` |
 | chan | `Card padding="lg"` with `CardHeader title="Channel" level={2}` and three fields: `TextField label="Channel name" maxLength={60} required`; `TextField label="What it is about" placeholder="horror fiction" required`; `TextField label="Your name" placeholder="Shown on the dashboard" maxLength={40}` |
-| tier | `Card padding="lg"`, `CardHeader title="Model size"`. `SegmentedControl label="Model size" options={[{value: "small", label: "Small"}, {value: "balanced", label: "Balanced"}, {value: "best", label: "Best"}]} variant="filled" size="md"`. Under it, three lines for the selected tier in `ds-num`: size and fit, a description, then `Download {totalGb} GB · needs {needGb} GB free`. A tier with `allowed: false` stays selectable. Selecting it shows `Badge tone="danger" size="sm"` with its `reason` and disables Install |
+| model | `Card padding="lg"`, `CardHeader title="Story model"`, then a `role="radiogroup"` of four option cards (`ModelPicker`, `installer\/ui\/src\/parts\/ModelPicker.tsx`; 2 columns, 4 from 1020 px). The first three are the tiers Small, Balanced and Best, read from `plan.tiers` (which the server builds from `manifest.json`); the fourth is **Other** (below). Every tier card shows: the **tier name** with a `Badge tone="accent"` "Recommended" on Balanced; the **model** (`file` without `.gguf` in mono, its Hugging Face `repo` under it in muted); the **download size** (`{llmBytes} GB download`); the **video memory it leaves for context on a 16 GB card** (`vramLeftGb`, computed as 16 GB minus the file size minus 0.6 GB of runtime, for example `6.4 GB of video memory left for context`; when the model fills the card, `No video memory left for context, part of the model runs from memory`); and a **one-line "good for"**. A tier with `allowed: false` stays selectable, shows its `reason` in `Badge tone="danger"` and disables Install. Under the cards: on a PC under 32 GB, "This PC has 16 GB of memory, so Small is selected. Balanced needs 32 GB", and always `Download {totalGb} GB, needs {needGb} GB free` for the selected card |
 | run | `Card padding="lg"`, `CardHeader title="Night run"`. `<p className="flex gap-2">` with `TimeChip value={hh} unit="h"` and `TimeChip value={mm} unit="m"` (ported, §5.2). Then `SegmentedControl label="Run time" options={["01:00", "03:00", "05:00", "other"]}`. "Other" reveals `TextField label="Time, 24 hour clock" inputMode="numeric" pattern="([01]\d\|2[0-3]):[0-5]\d"`. Caption in `text-ds-xs text-ds-muted`: "The PC wakes itself at this time, makes a video and goes back to sleep" |
 | voice | `Card padding="lg"` with `CardHeader title="Narrator"`, then `SegmentedControl label="Narrator voice" variant="plain" options={PRESET_VOICES.map(v => ({value: v, label: v}))}`, then the voice line for the selection, then the caption "You hear it in the test step. Designed and cloned voices are made later in the dashboard" |
 | src | `Card padding="lg"`, `CardHeader title="Model files come from"`, and a radio group of three `ChoiceRow`s. `ChoiceRow` (installer component) is a native `<input type="radio">` (or `checkbox`) styled as a 40 px row, `rounded-ds-md`, `bg-ds-sunken` when checked. The folder and Drive zip options reveal `TextField label="Folder"`, followed by the `DiskCheck` (`source=1`) result line: `Found 7 of 9 model files, 13.4 GB`, or the error |
@@ -624,14 +624,14 @@ Voice lines. The presets are `s01_questions.PRESET_VOICES`. These lines are UI c
 | Serena | Warm female voice |
 | Vivian | Clear, steady female voice |
 
-Tier readouts. Sizes come from `manifest.json` at runtime. The values below are what the 0.1.0
-manifest gives:
+Model cards. Everything but the "good for" line comes from `manifest.json` at runtime (the table shows what the
+0.1.0 manifest gives); the "good for" lines are UI copy.
 
-| Tier | Line 1 | Line 2 | Allowed when |
-|---|---|---|---|
-| Small | `9.0 GB · fits 16 GB of video memory` | Fastest. Good stories and Shorts | always |
-| Balanced | `14.3 GB · needs 32 GB of memory` | Better long stories. A little slower | `ramGb >= 31` |
-| Best | `22.9 GB · needs 32 GB of memory` | Best writing. Slowest, largest download | `ramGb >= 31` |
+| Tier | Model (repo, file) | Download | Video memory left for context (16 GB card) | Good for | Allowed when |
+|---|---|---|---|---|---|
+| Small | `Qwen/Qwen3-14B-GGUF`, `Qwen3-14B-Q4_K_M` | 9.0 GB | 6.4 GB | Shorts and simple stories; light coding | always |
+| Balanced, **Recommended** | `mudler/Qwen3.6-35B-A3B-APEX-MTP-GGUF`, `Qwen3.6-35B-A3B-APEX-MTP-I-Mini` | 14.3 GB | 1.1 GB | Recommended: better long stories and a usable coding assistant | `ramGb >= 31` |
+| Best | `unsloth/Qwen3.6-35B-A3B-MTP-GGUF`, `Qwen3.6-35B-A3B-UD-Q4_K_XL` | 22.9 GB | none (larger than the card) | Highest quality; needs 32 GB RAM and leaves little VRAM headroom; slower | `ramGb >= 31` |
 
 **Default tier (owner decision 2026-11-02).** Balanced is the recommended default, so `answers.json` ships with `"llm_tier": "balanced"` and the Choices screen starts on Balanced (`plan.recommendedTier`). On a PC with less than 32 GB of memory (`ramGb < 31`) the screen starts on Small instead and says why in one line under the selector: "This PC has 16 GB of memory, so Small is selected. Balanced needs 32 GB". An unattended `answers.json` that asks for Balanced or Best on such a PC still fails with "llm_tier 'balanced' needs 32 GB of RAM". The Welcome screen's size, free-space and time figures follow the selected tier (default download about 20 GB with Balanced, about 15 GB with Small), and its plan card names the tier.
 

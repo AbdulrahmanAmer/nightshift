@@ -61,10 +61,10 @@ export function checkRows(homeDrive: string, o: { blocking?: boolean } = {}): Ch
 
 const item = (key: string, label: string, file: string | null, bytes: number | null, via: PlanItem["via"] = "download"): PlanItem => ({ key, label, file, bytes, via });
 
-const TIER_LLM: Record<Tier, { label: string; file: string; bytes: number }> = {
-  small: { label: "Story model (Small)", file: "Qwen3-14B-Q4_K_M.gguf", bytes: 9.0e9 },
-  balanced: { label: "Story model (Balanced)", file: "Qwen3-14B-Q8_0.gguf", bytes: 14.3e9 },
-  best: { label: "Story model (Best)", file: "Qwen3-32B-Q5_K_M.gguf", bytes: 22.9e9 },
+const TIER_LLM: Record<Tier, { label: string; repo: string; file: string; bytes: number }> = {
+  small: { label: "Story model (Small)", repo: "Qwen/Qwen3-14B-GGUF", file: "Qwen3-14B-Q4_K_M.gguf", bytes: 9001752960 },
+  balanced: { label: "Story model (Balanced)", repo: "mudler/Qwen3.6-35B-A3B-APEX-MTP-GGUF", file: "Qwen3.6-35B-A3B-APEX-MTP-I-Mini.gguf", bytes: 14272220768 },
+  best: { label: "Story model (Best)", repo: "unsloth/Qwen3.6-35B-A3B-MTP-GGUF", file: "Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf", bytes: 22853663008 },
 };
 
 export function planGroups(tier: Tier): PlanGroup[] {
@@ -94,11 +94,14 @@ export function planGroups(tier: Tier): PlanGroup[] {
   ];
 }
 
-const TIERS: Record<Tier, TierInfo> = {
-  small: { llmBytes: 9.0e9, totalBytes: 17.3e9, needFreeGb: 60, needsRamGb: 16, allowed: true, reason: null },
-  balanced: { llmBytes: 14.3e9, totalBytes: 22.6e9, needFreeGb: 66, needsRamGb: 32, allowed: true, reason: null },
-  best: { llmBytes: 22.9e9, totalBytes: 31.2e9, needFreeGb: 76, needsRamGb: 32, allowed: true, reason: null },
+/** What a 16 GB card has left for context: 16 GB minus the file minus 0.6 GB of runtime (the same formula as plan.vram_left_gb). */
+export const vramLeftGb = (bytes: number): number => Math.round((16 - bytes / 1e9 - 0.6) * 10) / 10;
+const BASE_BYTES = 8.3e9; // everything except the story model
+const tierInfo = (tier: Tier, needFreeGb: number, needsRamGb: number): TierInfo => {
+  const m = TIER_LLM[tier];
+  return { repo: m.repo, file: m.file, llmBytes: m.bytes, totalBytes: BASE_BYTES + m.bytes, vramLeftGb: vramLeftGb(m.bytes), recommended: tier === "balanced", needFreeGb, needsRamGb, allowed: true, reason: null };
 };
+const TIERS: Record<Tier, TierInfo> = { small: tierInfo("small", 60, 16), balanced: tierInfo("balanced", 74, 32), best: tierInfo("best", 81, 32) };
 
 export function estimateLabel(totalBytes: number): { downloadMin: number; installMin: number; label: string } {
   const downloadMin = Math.ceil((totalBytes * 8) / (50e6 * 60));
@@ -144,7 +147,7 @@ export function steps(firstOpen: StepId | "all-done", o: { failed?: StepId; runn
 
 export function answers(o: Partial<AnswersView> = {}): AnswersView {
   return {
-    ownerName: "Abdo", channel: { displayName: "After Dark Tales", niche: "horror fiction", language: "en" }, homePath: "D:\\Nightshift", llmTier: "small",
+    ownerName: "Abdo", channel: { displayName: "After Dark Tales", niche: "horror fiction", language: "en" }, homePath: "D:\\Nightshift", llmTier: "balanced",
     voice: { speaker: "Ryan" }, modelsSource: { kind: "internet", path: null }, runTime: "03:00", mastersPerWeek: 1, installCode: true, theme: "dark",
     pexelsKeySet: true, pixabayKeySet: true, ...o,
   };

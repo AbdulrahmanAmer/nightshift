@@ -994,7 +994,7 @@ Everything below is pinned in `manifest.json` (exact versions, URLs, SHA256) by 
 | `llm` (small, fallback) | `Qwen/Qwen3-14B-GGUF` Q4_K_M (or a Qwen3.6 14B-class GGUF if Task 14 finds one) | `models\llm\` | ~9 GB | `llm_tier: small` (preselected when RAM < 32 GB) |
 | `llm` (balanced, **recommended default**) | `mudler/Qwen3.6-35B-A3B-APEX-MTP-GGUF` I-Mini | `models\llm\` | ~14 GB | `llm_tier: balanced` (needs 32 GB RAM) |
 | `llm` (best) | `unsloth/Qwen3.6-35B-A3B-MTP-GGUF` UD-Q4_K_XL | `models\llm\` | ~21 GB | `llm_tier: best` |
-| `llm` (custom, opt-in) | any public Hugging Face repo and `.gguf` file the user names (`llm_custom: {repo, file, size}`), at most 15.5 GB; no pinned SHA256 (`NS-W113`) | `modelslm` | ≤ 15.5 GB | `llm_custom` set |
+| `llm` (custom, opt-in) | any public Hugging Face repo and `.gguf` file the user names (`llm_custom: {repo, file, size}`), at most 15.5 GB; no pinned SHA256 (`NS-W113`) | `models\llm\` | ≤ 15.5 GB | `llm_custom` set |
 | `story_llm` (opt-in) | `Youssofal/Qwen3.6-35B-A3B-Abliterated-Heretic-GGUF` Q4_K_M | `models\llm\` | ~20 GB | two-model mode only |
 | `embed` | `nomic-ai/nomic-embed-text-v1.5-GGUF` Q8_0 | `models\embed\` | ~150 MB | always |
 | TTS talker, presets | `Serveurperso/Qwen3-TTS-GGUF` 1.7B CustomVoice Q8_0 | `models\tts\` | ~2.1 GB | always |

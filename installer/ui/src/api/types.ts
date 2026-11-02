@@ -77,7 +77,18 @@ export interface CheckRow {
 
 export interface PlanItem { key: string; label: string; file: string | null; bytes: number | null; via: "download" | "winget" | "uv" }
 export interface PlanGroup { id: "tools" | "python" | "programs" | "models"; label: string; bytes: number | null; items: PlanItem[] }
-export interface TierInfo { llmBytes: number; totalBytes: number; needFreeGb: number; needsRamGb: number; allowed: boolean; reason: string | null }
+export interface TierInfo {
+  repo: string | null;               // Hugging Face repository of the model (manifest.json)
+  file: string | null;               // GGUF file name
+  llmBytes: number;                  // download size of the model file
+  totalBytes: number;                // whole download for this tier
+  vramLeftGb: number | null;         // video memory a 16 GB card has left for context: 16 GB - file - 0.6 GB (negative = larger than the card)
+  recommended: boolean;              // Balanced
+  needFreeGb: number;
+  needsRamGb: number;
+  allowed: boolean;
+  reason: string | null;
+}
 export interface InstallPlan {
   tier: Tier;
   profile: "gpu" | "cpu-dev";

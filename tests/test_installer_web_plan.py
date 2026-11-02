@@ -131,3 +131,24 @@ def test_the_default_download_is_about_20_gb_and_small_is_the_lighter_fallback(r
                                vram_mb=16311)
     assert 13e9 <= fallback["totalBytes"] <= 15e9, fallback["totalBytes"]
     assert p["totalBytes"] - fallback["totalBytes"] > 5e9
+
+
+def test_vram_left_is_the_card_minus_the_file_minus_the_runtime():
+    assert plan.vram_left_gb(9_000_000_000) == 6.4
+    assert plan.vram_left_gb(14_272_220_768) == 1.1
+    assert plan.vram_left_gb(22_853_663_008) == -7.5          # larger than the card: negative
+    assert plan.vram_left_gb(0) == 15.4
+
+
+def test_each_tier_card_carries_the_manifest_model_and_the_facts_from_it(raw):
+    infos = plan.tier_infos(raw, "gpu", ram_gb=32.0, vram_mb=16311)
+    gpu = raw["profiles"]["gpu"]
+    for tier, key in (("small", "llm"), ("balanced", "llm_balanced"), ("best", "llm_best")):
+        assert infos[tier]["repo"] == gpu[key]["repo"] and infos[tier]["file"] == gpu[key]["file"]
+        assert infos[tier]["llmBytes"] == gpu[key]["bytes"]
+        assert infos[tier]["vramLeftGb"] == plan.vram_left_gb(gpu[key]["bytes"])
+    assert infos["small"]["vramLeftGb"] == 6.4 and infos["balanced"]["vramLeftGb"] == 1.1
+    assert infos["best"]["vramLeftGb"] < 0
+    assert [t for t, i in infos.items() if i["recommended"]] == ["balanced"]
+    cpu = plan.tier_infos(raw, "cpu-dev", ram_gb=32.0, vram_mb=None)
+    assert cpu["small"]["vramLeftGb"] is None and cpu["balanced"]["repo"] is None

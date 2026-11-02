@@ -16,6 +16,8 @@ from installer.stage2.web.labels import GROUP_LABELS, llm_label
 BASE_FREE_GB = 60
 TIER_EXTRA_GB = {"small": 0, "balanced": 14, "best": 21}
 LINE_MBIT = 50.0
+CARD_GB = 16.0               # the graphics card the product is built for
+RUNTIME_GB = 0.6            # what the runtime itself keeps in video memory
 INSTALL_MIN = 15
 TIER_KEYS = {"small": "llm", "balanced": "llm_balanced", "best": "llm_best"}
 GROUP_ORDER = ("tools", "python", "programs", "models")
@@ -164,6 +166,15 @@ def _group(group_id: str, items: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def vram_left_gb(file_bytes: int | float) -> float:
+    """Video memory a 16 GB card has left for context: 16 GB minus the model file minus 0.6 GB of runtime.
+
+    Decimal gigabytes, one decimal. Negative when the file is larger than the card (part of it then runs from
+    system memory).
+    """
+    return round(CARD_GB - float(file_bytes) / 1e9 - RUNTIME_GB, 1)
+
+
 def tier_infos(
     manifest: dict[str, Any], profile: str, *, ram_gb: float, vram_mb: int | None
 ) -> dict[str, Any]:
@@ -183,6 +194,10 @@ def tier_infos(
             elif vram_mb is not None and vram_mb < 15000:
                 allowed, reason = False, "Needs a 16 GB graphics card"
         out[tier] = {
+            "repo": entry.get("repo") if entry else None,
+            "file": entry.get("file") if entry else None,
+            "vramLeftGb": vram_left_gb(llm_bytes) if llm_bytes and profile == "gpu" else None,
+            "recommended": tier == "balanced",
             "llmBytes": llm_bytes,
             "totalBytes": llm_bytes + base_bytes,
             "needFreeGb": required_free_gb(tier),

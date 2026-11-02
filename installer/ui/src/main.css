@@ -37,7 +37,7 @@ dialog.ns-dialog::backdrop { background: color-mix(in srgb, var(--ds-bg-canvas) 
 .ns-grid { align-content: start; }
 .ns-welcome { grid-template-areas: "f1 f2 f3 time" "plan plan plan plan"; }
 .ns-checks { grid-template-areas: "rows rows rows rows" "meters meters cards cards"; }
-.ns-choices { grid-template-areas: "chan chan tier tier" "run run keys keys" "voice voice src src"; }
+.ns-choices { grid-template-areas: "chan chan run run" "model model model model" "voice voice src src" "keys keys keys keys"; }
 .ns-downloading { grid-template-areas: "list list list list" "eta eta src src"; }
 .ns-installing { grid-template-areas: "stepper stepper log log" "list list list list"; }
 .ns-verifying { grid-template-areas: "checks checks render render" "voice voice notes notes"; }
@@ -49,7 +49,7 @@ dialog.ns-dialog::backdrop { background: color-mix(in srgb, var(--ds-bg-canvas) 
 @container (min-width: 1020px) {
   .ns-welcome { grid-template-areas: "f1 f2 f3 . plan plan" "time time time . plan plan"; height: 100%; grid-template-rows: minmax(0, 1fr) auto; max-height: 440px; }
   .ns-checks { grid-template-areas: "rows rows rows rows meters meters" "rows rows rows rows cards cards"; height: 100%; grid-template-rows: auto minmax(0, 1fr); }
-  .ns-choices { grid-template-areas: "chan chan tier tier run run" "voice voice src src keys keys"; }
+  .ns-choices { grid-template-areas: "chan chan chan run run run" "model model model model model model" "voice voice src src keys keys"; }
   .ns-downloading { grid-template-areas: "list list list list list eta" "list list list list list src"; height: 100%; grid-template-rows: auto minmax(0, 1fr); }
   .ns-installing { grid-template-areas: "stepper stepper list list list list" "stepper stepper log log log log"; }
   .ns-verifying { grid-template-areas: "checks checks render render voice voice" "checks checks render render notes notes"; height: 100%; grid-template-rows: auto minmax(0, 1fr); }
