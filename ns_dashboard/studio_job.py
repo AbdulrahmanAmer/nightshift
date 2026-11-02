@@ -147,7 +147,7 @@ HANDLERS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
 
 
 def error_event(e: BaseException) -> dict[str, Any]:
-    """Fields of the `error` event: the `NS-` code and detail of a coded condition, else the exception text."""
+    """Fields of the `error` event: the `NS-` code and detail of a coded condition, else the exception."""
     code = getattr(e, "code", None)
     coded = isinstance(code, str) and code.startswith("NS-")
     return {
@@ -158,7 +158,7 @@ def error_event(e: BaseException) -> dict[str, Any]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """`python -m ns_dashboard.studio_job <kind> --args <file.json>`; exit 0 after a `result`, 1 after an `error`."""
+    """`python -m ns_dashboard.studio_job <kind> --args <file.json>`; 0 after a `result`, 1 after an `error`."""
     ap = argparse.ArgumentParser(prog="python -m ns_dashboard.studio_job", description=__doc__)
     ap.add_argument("kind", choices=KINDS)
     ap.add_argument("--args", required=True, type=Path, help="JSON file with the arguments of the kind")

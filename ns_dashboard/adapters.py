@@ -280,7 +280,7 @@ class RealRunAdapter(StudioAdapter):
 
 
 class RealClipAdapter(StudioAdapter):
-    """Runs the Clipper in the studio venv: the clip job's stages (`studio clip`) and `import_url` for links."""
+    """Runs the Clipper in the studio venv: the clip job's stages (`studio clip`) and `import_url`."""
 
     def clip(self, ctl: JobControl, source_path: Path, source_id: str, params: dict[str, Any]) -> list[str]:
         """Run the Clipper for `source_path`; returns the output ids it inserted."""

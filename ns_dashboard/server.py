@@ -610,8 +610,8 @@ def create_app(
 def configure_tmp(paths: Paths) -> Path:
     """Point Starlette's upload spooling and Python's temporary files at the `tmp` folder of the home.
 
-    A multipart upload is spooled to a temporary file before the route sees it; by default that is `%TEMP%` on C:,
-    so a 30 GB recording needed that much room there as well as on the Nightshift drive. Leftovers from a
+    A multipart upload is spooled to a temporary file before the route sees it; by default that is `%TEMP%`
+    on C:, so a 30 GB recording needed that much room there as well as on the Nightshift drive. Leftovers from a
     crashed run are removed.
     """
     folder = tmp_dir(paths)

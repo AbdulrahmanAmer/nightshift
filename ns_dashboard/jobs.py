@@ -413,7 +413,7 @@ class JobWorker:
         self.gpu_gate = gpu_gate
         self.inline_kinds = inline_kinds
         self.on_recover = on_recover or {}
-        #: Called on the worker thread when a job has ended and nothing else is queued (the Assistant answers saved requests).
+        #: Called on the worker thread when a job ended and nothing else is queued (saved Assistant requests).
         self.on_idle: Callable[[], None] | None = None
         self._ended = False
         self._cv = threading.Condition()

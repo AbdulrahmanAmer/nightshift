@@ -7,12 +7,12 @@ clip job, a series part, the transcript of a voice sample, a link download) is t
     <home>\\venvs\\studio\\Scripts\\python.exe -m ns_dashboard.studio_job <kind> --args <file.json>
 
 with the app folder as working directory and `NIGHTSHIFT_HOME` in the environment (UTF-8 on). The child prints
-one JSON object per line behind the prefix `NSJOB ` (see `ns_dashboard.studio_job`); the runner turns them into
-callbacks and the final payload. Cancelling kills the whole process tree with the supervisor's own helper
+one JSON object per line behind the prefix `NSJOB ` (see `ns_dashboard.studio_job`); the runner turns them
+into callbacks and the final payload. Cancelling kills the whole process tree with the supervisor's own helper
 (`ns_supervisor.procs.kill_tree`), so a stage, FFmpeg or yt-dlp never outlives the job.
 
 The interpreter comes from the paths the installer writes (`ns_supervisor.services.venv_python`) and is
-`sys.executable` when that venv does not exist (CI, development). Tests pass `python=[sys.executable, fake.py]`.
+`sys.executable` when that venv does not exist (CI, development). Tests pass `python=[sys.executable, f.py]`.
 """
 
 from __future__ import annotations
