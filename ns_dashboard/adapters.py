@@ -14,6 +14,7 @@ import os
 import time
 from collections.abc import Callable, Collection, Iterator
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -316,23 +317,50 @@ class RealSeriesAdapter(StudioAdapter):
 
 
 class RealLearnAdapter:
-    """Expects `ns_studio.learn.import_csv` and `ns_studio.learn.summary` (C7)."""
+    """Imports an analytics CSV (`learn.importer.read_csv`, `import_rows`) and reweights the pools."""
 
     def __init__(self, paths: Paths) -> None:
         self.paths = paths
 
     def import_csv(self, ctl: JobControl, csv_path: Path) -> dict[str, Any]:
-        """Import `csv_path`; returns the import summary."""
-        fn = lazy("ns_studio.learn", "import_csv")
+        """Match the rows to uploads, store them, update `pool_weights`; returns the plain-English counts."""
+        from ns_common.db import Db
+        from ns_studio.channels.crud import get_channel
+        from ns_studio.errors import StudioError
+        from ns_studio.learn.importer import import_rows, read_csv
+        from ns_studio.learn.reweight import reweight, save_snapshot
+
         ctl.progress(0.1, "Reading the analytics file")
-        out = fn(self.paths, csv_path)
-        return out if isinstance(out, dict) else {"result": out}
+        db = Db(self.paths.db_path)
+        db.migrate()
+        try:
+            try:
+                rows = read_csv(csv_path)
+                ctl.progress(0.4, "Matching videos")
+                result = import_rows(db, rows, datetime.now(UTC).date().isoformat())
+            except StudioError as e:  # NS-E323 and friends: show the code and the fix hint like the CLI
+                raise NsError(e.code, e.detail) from e
+            ctl.progress(0.7, "Updating what Nightshift learns")
+            changes: list[dict[str, Any]] = []
+            for slug in sorted(set(result.matched.values())):
+                moved = reweight(db, get_channel(self.paths, slug))
+                save_snapshot(self.paths, slug, moved)
+                for pool, options in moved.items():
+                    changes.extend(
+                        {"pool": pool, "option": o, "delta": new - old} for o, (old, new) in options.items()
+                    )
+        finally:
+            db.close()
+        return {
+            "rows": len(rows),
+            "matched": len(result.matched),
+            "unmatched": [r.title or r.video_id or r.url for r in result.unmatched],
+            "changes": changes,
+        }
 
     def summary(self) -> dict[str, Any]:
-        """Summary of learned weights."""
-        fn = lazy("ns_studio.learn", "summary")
-        out = fn(self.paths)
-        return out if isinstance(out, dict) else {}
+        """Nothing extra: the Results page computes the summary from `pool_weights` (SettingsService)."""
+        return {}
 
 
 class RealVerifyAdapter:

@@ -117,3 +117,46 @@ def test_verify_job_runs_the_real_checks_with_the_real_signature(tmp_home: Path)
     assert {"supervisor.status", "llama.start", "tts.start", "nvenc.probe"} <= names
     assert "llama.tok_s" not in names  # quick
     assert Path(out["report"]) == paths.logs / "verify-report.json" and Path(out["report"]).exists()
+
+
+# ---------------------------------------------------------------- gap 12: Results CSV import -> learn.importer
+
+
+CSV = (
+    "Content,Video title,Views,Average percentage viewed (%)\n"
+    "Total,,110,50\n"
+    "abc12345678,A title,100,62.5\n"
+    "zzz12345678,Not ours,10,30\n"
+)
+
+
+def test_csv_import_matches_rows_and_reports_in_plain_words(tmp_home: Path):
+    from ns_common.db import Db
+    from ns_dashboard.adapters import RealLearnAdapter
+    from ns_studio.channels.crud import add_channel
+    from tests.helpers import add_output, make_channel
+
+    client, state = make_env(tmp_home)
+    paths = Paths.from_env()
+    db = Db(paths.db_path)
+    add_channel(paths, db, make_channel())
+    oid = add_output(db, "after-dark-20261020-aaaa", "s1", title="A title")
+    state.adapters.learn = RealLearnAdapter(paths)
+    r = client.post("/api/learn/import", files={"file": ("export.csv", CSV.encode(), "text/csv")})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["matched"] == 1 and body["unmatched"] == 1 and body["unmatched_rows"] == ["Not ours"]
+    assert any("1 row(s) matched" in line for line in body["summary"])
+    row = db.one("select views, avg_pct_viewed from analytics where output_id = ?", (oid,))
+    assert row is not None and row["views"] == 100 and row["avg_pct_viewed"] == 62.5
+    summary = client.get("/api/learn/summary")
+    assert summary.status_code == 200 and "pools" in summary.json()
+
+
+def test_csv_with_no_known_columns_is_a_coded_error(tmp_home: Path):
+    from ns_dashboard.adapters import RealLearnAdapter
+
+    client, state = make_env(tmp_home)
+    state.adapters.learn = RealLearnAdapter(Paths.from_env())
+    r = client.post("/api/learn/import", files={"file": ("export.csv", b"a,b\n1,2\n", "text/csv")})
+    assert r.status_code == 500 and "NS-E323" in err(r)["message"]

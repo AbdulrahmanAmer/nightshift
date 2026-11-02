@@ -11,7 +11,6 @@ from ns_common.paths import Paths
 from ns_dashboard.adapters import (
     RealDoctorAdapter,
     RealKeyringAdapter,
-    RealLearnAdapter,
     RealScheduleAdapter,
     RealVerifyAdapter,
     lazy,
@@ -59,10 +58,6 @@ def test_real_adapters_report_unavailable_collaborators(tmp_home: Path, monkeypa
     link = SupervisorLink("http://127.0.0.1:9", timeout_s=0.2)
     rec = store.create("clip", "c", {})
     ctl = JobControl(rec, store, EventHub())
-    with pytest.raises(AdapterUnavailable):
-        RealLearnAdapter(paths).import_csv(ctl, tmp_home / "a.csv")
-    with pytest.raises(AdapterUnavailable):
-        RealLearnAdapter(paths).summary()
     with pytest.raises(AdapterUnavailable):
         RealVerifyAdapter(paths).verify(ctl, True)
     with pytest.raises(AdapterUnavailable):

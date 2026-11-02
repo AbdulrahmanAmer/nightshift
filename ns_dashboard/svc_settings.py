@@ -216,6 +216,8 @@ class SettingsService:
         try:
             base = dict(self.s.adapters.learn.summary())
         except AdapterUnavailable:
+            base = {}
+        if not base:  # the real adapter has nothing extra: compute it from pool_weights
             base = self._db_summary()
         last = self.s.store.list_jobs(status="done", kind="learn", limit=1)
         base.setdefault("last_import", last[0].result if last else None)
