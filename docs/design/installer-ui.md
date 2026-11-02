@@ -288,6 +288,7 @@ type EngineEvent =
   | { type: "plan"; items: { key: string; file: string; bytes: number | null; via: "download" | "copy" }[]; totalBytes: number }
   | { type: "file"; key: string; event: "start"; total: number | null }
   | { type: "file"; key: string; event: "progress"; done: number; total: number | null }   // at most 4 per second per file
+  | { type: "file"; key: string; event: "retry"; attempt: number; reason: "stall" | "network" | "hash"; waitS: number }   // before the backoff wait
   | { type: "file"; key: string; event: "finish"; outcome: "downloaded" | "copied" | "skipped" | "missing" | "failed" }
   | { type: "warn"; code: string; detail: string }
   | { type: "failure"; step: StepId; code: string; message: string; hint: string; detail: string; optional: boolean; attempt: number }
@@ -326,6 +327,11 @@ Wizard changes (all additive):
   on it before each attempt. An attempt that failed while the gate was cleared does not count, so a
   long pause that drops the connection cannot use up the three retries. `StepContext.download` passes
   `ctx.gate`.
+- **Stall timeout.** A transfer that receives no bytes for 60 s (`downloader.STALL_TIMEOUT_S`, the httpx read
+  timeout of every request) is aborted and counts as a network error, not as a pause: the downloader waits
+  the usual backoff (2 s, then 4 s), reconnects with `Range` and carries on. `BridgeReporter.retrying()` emits
+  the `retry` event so the row can say "No data for 60 s, trying again in 2 s"; the next `progress` event
+  clears the note.
 - **Stop.** The `stop` command sets `ctx.stop_requested`, and `BridgeReporter.update()` raises
   `SetupStopped` on its next call. `Wizard.run` catches `SetupStopped` the way it catches
   `KeyboardInterrupt`: it marks the running step `pending` and exits 130.

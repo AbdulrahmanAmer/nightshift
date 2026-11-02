@@ -38,6 +38,19 @@ SHORTCUTS = ("Nightshift Dashboard", "Nightshift Studio", "Nightshift Outbox", "
              "Nightshift - Update", "Nightshift - Diagnostics")
 
 
+RETRY_NOTES = {
+    "stall": "No data for 60 s, trying again",
+    "network": "The connection dropped, trying again",
+    "hash": "The file failed its check, downloading it again",
+}
+
+
+def retry_note(reason: str, wait_s: float) -> str:
+    """The row note while a transfer waits to be retried: what happened and how long until the next try."""
+    text = RETRY_NOTES.get(reason, "The download stopped, trying again")
+    return f"{text} in {int(wait_s)} s" if wait_s >= 1 else text
+
+
 def now_iso() -> str:
     """Local time, to the second."""
     return datetime.now().isoformat(timespec="seconds")
@@ -1126,6 +1139,8 @@ class SetupController:
         elif event == "finish":
             self._finished.add(key)
             self.meter.drop(key)
+        elif event == "retry":
+            self.meter.drop(key)
         outcome = ev.get("outcome")
 
         def fn(s: dict[str, Any]) -> None:
@@ -1148,6 +1163,9 @@ class SetupController:
                 remaining = (row["bytesTotal"] or 0) - row["bytesDone"]
                 row["etaS"] = rows.eta_seconds(remaining, speed) if row["bytesTotal"] and speed else None
                 row["note"] = None
+            elif event == "retry":
+                row["speedBps"], row["etaS"] = None, None
+                row["note"] = retry_note(str(ev.get("reason")), float(ev.get("waitS") or 0))
             elif event == "finish":
                 all_done = all(k in self._finished for k, _v in subs)
                 if outcome == "failed":

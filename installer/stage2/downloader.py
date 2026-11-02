@@ -29,7 +29,9 @@ from ns_common.paths import Paths
 HF = "https://huggingface.co"
 CHUNK = 1 << 20                  # hashing and copying
 STREAM_CHUNK = 1 << 16           # download loop: the pause switch is checked after every 64 KiB
+STALL_TIMEOUT_S = 60.0           # no bytes for this long aborts the attempt (network error, retried)
 ProgressFn = Callable[[int, int | None], None]
+RetryFn = Callable[[int, str, float], None]
 Tier = Literal["small", "balanced", "best"]
 
 # Whisper (CTranslate2) side files next to model.bin. The manifest pins only model.bin.
@@ -76,6 +78,9 @@ class Reporter(Protocol):
 
     def finish(self, name: str, outcome: str) -> None:
         """A file ended with outcome downloaded, copied, skipped, missing or failed."""
+
+    # Optional: ``retrying(name, attempt, reason, wait_s)`` is called before a retry wait (reason stall,
+    # network or hash). A reporter without it simply is not told.
 
 
 # --------------------------------------------------------------------------------------------------------
@@ -147,7 +152,7 @@ def eta_text(total_bytes: int, mbit_per_s: float = 50.0) -> str:
 
 
 def _new_client() -> httpx.Client:
-    return httpx.Client(follow_redirects=True, timeout=httpx.Timeout(30.0, read=120.0))
+    return httpx.Client(follow_redirects=True, timeout=httpx.Timeout(30.0, read=STALL_TIMEOUT_S))
 
 
 # --------------------------------------------------------------------------------------------------------
@@ -181,6 +186,7 @@ def _fetch_once(
     size: int | None,
     chunk: int,
     gate: threading.Event | None = None,
+    stall_timeout: float = STALL_TIMEOUT_S,
 ) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
     part = _part(dest)
@@ -203,10 +209,12 @@ def _fetch_once(
 
     if progress:
         progress(have, total)
+    # No bytes for ``stall_timeout`` seconds raises httpx.ReadTimeout: the attempt is a network error.
+    timeout = httpx.Timeout(30.0, read=stall_timeout)
     while total is None or have < total:
         paused = False
         headers = {"Range": f"bytes={have}-"} if have else {}
-        with http.stream("GET", url, headers=headers) as r:
+        with http.stream("GET", url, headers=headers, timeout=timeout) as r:
             if r.status_code == 404:
                 raise make_error("NS-E105", f"{url}: HTTP 404", status=404)
             if r.status_code == 416:
@@ -258,6 +266,8 @@ def download(
     sleep: Callable[[float], None] = time.sleep,
     chunk: int = STREAM_CHUNK,
     gate: threading.Event | None = None,
+    stall_timeout: float = STALL_TIMEOUT_S,
+    on_retry: RetryFn | None = None,
 ) -> Path:
     """Download ``url`` to ``dest`` with resume, SHA256 check and atomic rename.
 
@@ -269,6 +279,9 @@ def download(
     reopened with ``Range`` from the bytes on disk. It is also waited on before every attempt, and an attempt
     that failed while it was cleared does not count, so a long pause cannot use up the retries.
 
+    A transfer that delivers no bytes for ``stall_timeout`` seconds (60 by default) is aborted and counts as a
+    network error: the next attempt follows after the backoff and resumes with ``Range``. ``on_retry`` is
+    told ``(attempt, reason, wait seconds)`` before each wait; reason is ``stall``, ``network`` or ``hash``.
     """
     dest = Path(dest)
     if is_verified(dest, sha256):
@@ -278,6 +291,7 @@ def download(
         return dest
     http = client or _new_client()
     last: NsError | None = None
+    reason = "network"
     attempt = 0
     try:
         while attempt < retries:
@@ -286,20 +300,26 @@ def download(
             try:
                 _fetch_once(
                     http, url, dest, sha256, resume=resume, progress=progress, size=size, chunk=chunk,
-                    gate=gate,
+                    gate=gate, stall_timeout=stall_timeout,
                 )
                 return dest
             except NsError as e:
                 if e.code != "NS-E109":
                     raise
-                last = e
+                last, reason = e, "hash"
+            except httpx.ReadTimeout:
+                last = make_error("NS-E105", f"{url}: no data for {stall_timeout:g} s")
+                reason = "stall"
             except (httpx.HTTPError, OSError) as e:
-                last = make_error("NS-E105", f"{url}: {e}")
+                last, reason = make_error("NS-E105", f"{url}: {e}"), "network"
             if gate is not None and not gate.is_set():
                 continue  # failed while paused: not a real attempt
             attempt += 1
             if attempt < retries:
-                sleep(2**attempt)
+                wait = 2**attempt
+                if on_retry is not None:
+                    on_retry(attempt, reason, float(wait))
+                sleep(wait)
     finally:
         if client is None:
             http.close()
@@ -683,6 +703,11 @@ def run_plan(
         def progress(done: int, total: int | None) -> None:
             rep.update(item.name, done, total)
 
+        retrying = getattr(rep, "retrying", None)
+
+        def on_retry(attempt: int, reason: str, wait_s: float) -> None:
+            if retrying is not None:
+                retrying(item.name, attempt, reason, wait_s)
 
         try:
             copied = False
@@ -693,7 +718,7 @@ def run_plan(
                 return
             do_fetch(
                 item.url, item.dest, item.sha256, progress=progress, client=http, size=item.size,
-                retries=retries, sleep=sleep, **extra,
+                retries=retries, sleep=sleep, on_retry=on_retry, **extra,
             )
             if item.kind in ("zip", "nupkg"):
                 _extract_item(item)

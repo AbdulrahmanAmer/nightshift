@@ -117,6 +117,15 @@ def test_progress_is_throttled_but_the_last_update_is_always_sent():
     assert events[-2]["outcome"] == "downloaded" and events[-1]["outcome"] == "missing"
 
 
+def test_a_retry_is_reported_as_a_file_event():
+    out = io.StringIO()
+    rep = BridgeReporter(BridgeUi(out=out, inp=io.StringIO("")), 10)
+    rep.retrying("a.bin", 1, "stall", 2.0)
+    assert lines(out) == [
+        {"type": "file", "key": "a.bin", "event": "retry", "attempt": 1, "reason": "stall", "waitS": 2.0}
+    ]
+
+
 def test_pause_holds_progress_until_resume_and_stop_raises():
     ui = BridgeUi(out=io.StringIO(), inp=io.StringIO(""))
     rep = BridgeReporter(ui, 10)

@@ -581,3 +581,26 @@ def test_a_pc_under_32_gb_starts_on_small_and_the_plan_says_so(tmp_path, monkeyp
     assert state["plan"]["tier"] == "small" and state["plan"]["recommendedTier"] == "small"
     assert state["plan"]["tiers"]["balanced"]["allowed"] is False
     assert state["plan"]["tiers"]["small"]["allowed"] is True
+
+
+def test_a_stall_retry_shows_on_the_row_and_clears_when_the_bytes_flow_again(tmp_path, monkeypatch):
+    s = Setup(tmp_path, monkeypatch)
+    s.accept()
+    size = 9001752960
+    ctl = s.ctl
+    ctl._ev_file({"type": "file", "key": LLM, "event": "start", "total": size})
+    ctl._ev_file({"type": "file", "key": LLM, "event": "progress", "done": 1000, "total": size})
+    retry = {"type": "file", "key": LLM, "event": "retry", "attempt": 1, "reason": "stall", "waitS": 2.0}
+    ctl._ev_file(retry)
+    row = next(r for r in s.snap()["downloads"]["items"] if r["key"] == LLM)
+    assert row["status"] == "active" and row["speedBps"] is None and row["etaS"] is None
+    assert row["note"] == "No data for 60 s, trying again in 2 s"
+    ctl._ev_file({"type": "file", "key": LLM, "event": "progress", "done": 5000, "total": size})
+    row = next(r for r in s.snap()["downloads"]["items"] if r["key"] == LLM)
+    assert row["note"] is None and row["bytesDone"] == 5000
+
+
+def test_retry_notes_name_the_reason():
+    assert controller.retry_note("network", 4.0) == "The connection dropped, trying again in 4 s"
+    assert controller.retry_note("hash", 0.0) == "The file failed its check, downloading it again"
+    assert controller.retry_note("???", 2.0) == "The download stopped, trying again in 2 s"
