@@ -1,5 +1,5 @@
 # ruff: noqa: E501
-"""Dashboard re-review fixes (`D:\NightShift-refs\rereview-dashboard.md`), one section per row."""
+"""Dashboard re-review fixes (rereview-dashboard.md in NightShift-refs), one section per row."""
 
 from __future__ import annotations
 
