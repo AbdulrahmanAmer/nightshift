@@ -904,8 +904,8 @@ def queue_setup_voice(paths: Paths, **kw: Any) -> None:
 
 
 def test_the_pending_setup_voice_is_listed_and_created_by_one_button(tmp_home: Path):
-    from tests.test_dashboard_api import make_env
     from tests.test_api_ui_contract import check_payload
+    from tests.test_dashboard_api import make_env
 
     client, state = make_env(tmp_home)
     assert client.get("/api/voices/pending").json() == {"pending": None}
