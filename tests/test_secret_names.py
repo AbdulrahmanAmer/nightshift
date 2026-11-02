@@ -85,3 +85,44 @@ def test_the_nightly_toast_falls_back_to_a_morning_note(monkeypatch: pytest.Monk
     assert notifications.default_notifier() is mod.toast_or_note  # type: ignore[attr-defined]
     del mod.toast_or_note  # an older supervisor
     assert notifications.default_notifier() is mod.toast  # type: ignore[attr-defined]
+
+
+def test_a_keyring_that_raises_any_exception_falls_back_to_the_file(monkeypatch: pytest.MonkeyPatch):
+    """Nightly review row 1: in the S4U session CredRead error 1312 is not a KeyringError; open_env crashed."""
+
+    class CredReadError(OSError):  # pywin32-style: neither a KeyringError nor an ImportError
+        pass
+
+    kr = types.ModuleType("keyring")
+    errors = types.ModuleType("keyring.errors")
+    errors.KeyringError = type("KeyringError", (Exception,), {})  # type: ignore[attr-defined]
+
+    def boom(service: str, name: str) -> str:
+        raise CredReadError(1312, "A specified logon session does not exist.")
+
+    kr.get_password = boom  # type: ignore[attr-defined]
+    kr.errors = errors  # type: ignore[attr-defined]
+    sf = types.ModuleType("ns_common.secret_file")
+    sf.load_secret = lambda paths, name: {"pexels_api_key": "FILEKEY"}.get(name)  # type: ignore[attr-defined]
+    for mod in (kr, errors, sf):
+        monkeypatch.setitem(sys.modules, mod.__name__, mod)
+    assert jobs.load_keys() == {"pexels": "FILEKEY"}
+
+
+def test_no_key_anywhere_is_empty_not_an_error_and_the_source_raises_e501_later(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    from ns_common.errors import NsError
+    from ns_studio.media.clip_sources import PexelsSource
+
+    kr = types.ModuleType("keyring")
+    kr.get_password = lambda service, name: (_ for _ in ()).throw(RuntimeError("no logon session"))  # type: ignore[attr-defined]
+    sf = types.ModuleType("ns_common.secret_file")
+    sf.load_secret = lambda paths, name: (_ for _ in ()).throw(RuntimeError("dpapi unavailable"))  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "keyring", kr)
+    monkeypatch.setitem(sys.modules, "ns_common.secret_file", sf)
+    keys = jobs.load_keys()  # must not raise at start
+    assert keys == {}
+    with pytest.raises(NsError) as ei:
+        PexelsSource(keys.get("pexels", ""), tmp_path).search("forest", orientation="landscape")
+    assert ei.value.code == "NS-E501"
