@@ -306,3 +306,41 @@ def test_format_edit_form_saves_a_patch_over_http(tmp_home: Path):
     assert bad.status_code == 422 and err(bad)["code"] == "invalid_format" and err(bad)["details"]
     dup = client.post("/api/library/formats", json={"duplicate_of": "square_1x1"})
     assert dup.status_code == 201 and dup.json()["id"] == "square_1x1_copy"
+
+
+# ---------------------------------------------------------------- gap 26: GET /api/runs feeds the "Last night" card
+
+
+def test_runs_route_gives_the_last_night_card_its_numbers(tmp_home: Path):
+    import json
+
+    client, state = make_env(tmp_home)
+    report = {"jobs": [{"job_id": "after-dark-20261102-a1f2", "channel": "after-dark", "stages": 19}],
+              "failures": [{"job_id": "tiny-20261102-77c3", "channel": "tiny", "code": "NS-E203", "error": "no GPU"}]}
+    state.db.execute(
+        "insert into runs(run_id, started_at, finished_at, mode, summary_json) values (?,?,?,?,?)",
+        ("daily-20261102-a1f2", "2026-11-02T01:00:00+00:00", "2026-11-02T03:52:00+00:00", "daily", json.dumps(report)),
+    )
+    rows = client.get("/api/runs", params={"limit": 1}).json()
+    assert len(rows) == 1 and rows[0]["mode"] == "daily" and rows[0]["duration_s"] == 10320.0
+    assert rows[0]["summary"]["jobs"][0]["channel"] == "after-dark" and rows[0]["summary"]["failures"][0]["code"] == "NS-E203"
+
+
+# ---------------------------------------------------------------- gap 27: Settings > Engine buttons -> existing routes
+
+
+def test_engine_buttons_reach_the_supervisor_and_the_verify_job(tmp_home: Path):
+    from ns_dashboard.fakes import FakeSupervisor
+    from ns_dashboard.supervisor_link import SupervisorLink
+
+    with FakeSupervisor() as sup:
+        client, state = make_env(tmp_home, link=SupervisorLink(sup.url))
+        assert client.post("/api/engine/warmup", json={"service": "llama"}).json() == {"state": "starting"}
+        stopped = client.post("/api/engine/stop_all")
+        assert stopped.status_code == 200 and stopped.json()["ok"] is True
+        queued = client.post("/api/jobs/verify", json={"quick": True})
+        assert queued.status_code == 201 and queued.json()["kind"] == "verify"
+        assert state.worker.run_next()
+        job = client.get("/api/jobs", params={"kind": "verify", "limit": 1}).json()[0]
+        assert job["status"] == "done" and job["result"]["checks"]
+        assert client.post("/api/engine/warmup", json={"service": "banana"}).status_code == 422

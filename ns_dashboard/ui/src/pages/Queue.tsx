@@ -8,8 +8,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useApp, useLoad } from "../lib/app";
 import { api } from "../lib/api";
-import { dayInline, fmtClock, fmtDay, fmtDur, fmtWhen, kindLabel, stageWords, store } from "../lib/format";
-import type { ChannelSummary, Job, Output, OutputDetail } from "../lib/types";
+import { dayInline, fmtClock, fmtDay, fmtDur, fmtWhen, kindLabel, plural, stageWords, store } from "../lib/format";
+import type { ChannelSummary, Job, Output, OutputDetail, Run } from "../lib/types";
 import { cx } from "../ui/kit";
 import { Scene } from "../visuals/Scene";
 import {
@@ -81,6 +81,7 @@ export default function Queue() {
           </Card>
         )}
 
+        <LastNight className={SPAN["6/4"]} pending={pending} onReview={() => pick("ready")} channelName={channelName} />
         <JobEvents jobs={jobs.data} loading={jobs.loading} channelName={channelName} className={SPAN["2/2"]} onReview={() => pick("ready")} />
         <TonightPlan chans={chans} status={status} className={SPAN["2/2"]} />
         <PostingCalendar chans={chans} ready={tab === "ready" ? items : []} className={SPAN["2/2"]} onOpen={(id) => { setTab("ready"); setCurrent(id); }} />
@@ -447,4 +448,25 @@ function MachineMeters({ className }: { className?: string }) {
   const gpuLine = gpu ? `${gpu.name}${temp != null ? ` · ${Math.round(temp)} °C` : ""}` : null;
   return <MeterGroup className={className} title="This PC" meters={meters}
     caption={gpuLine ? [gpuLine, diskLine].filter(Boolean).join(". ") : diskLine ? `${diskLine}. GPU load appears once the engine reports it` : "Readings appear once the engine answers"} />;
+}
+
+/** "Last night": what the newest nightly run made and what stopped, from GET /runs. Shown only after a run has happened. */
+function LastNight({ className, pending, onReview, channelName }: { className?: string; pending: number; onReview: () => void; channelName: (s?: string) => string }) {
+  const runs = useLoad<Run[]>(() => api.get("/runs?limit=1"), [], []);
+  const r = runs.data[0];
+  if (!r) return null;
+  const made = r.summary?.jobs?.length ?? 0; const failed = r.summary?.failures ?? [];
+  const took = r.duration_s ? (r.duration_s >= 3600 ? `${Math.floor(r.duration_s / 3600)} h ${Math.round((r.duration_s % 3600) / 60)} min` : `${Math.max(1, Math.round(r.duration_s / 60))} min`) : null;
+  const when = r.mode === "daily" ? "Last night" : "Last run";
+  return (
+    <Card as="section" aria-labelledby="q-last" className={className}>
+      <CardHeader id="q-last" title={when} adornment={failed.length ? <StatusDot tone="danger" label="Something stopped" /> : <StatusDot tone="online" label="Finished" />}
+        actions={pending > 0 ? <Button size="sm" variant="soft" onClick={onReview}>Review {pending}</Button> : undefined} />
+      <p className="text-ds-md leading-ds-normal">
+        {made ? `${plural(made, "video")} made` : "Nothing was made"}{took ? `, in ${took}` : ""}, {fmtDay(r.started_at).toLowerCase()} at <span className="ds-num">{fmtClock(r.started_at)}</span>.
+        {failed.length ? ` ${plural(failed.length, "job")} stopped.` : ""}
+      </p>
+      {failed.length > 0 && <ul className="mt-2 flex flex-col gap-1 text-ds-xs text-ds-danger">{failed.slice(0, 3).map((f) => <li key={f.job_id}>{channelName(f.channel)}: {f.code ? `${f.code}. ` : ""}{f.error || "stopped"}</li>)}</ul>}
+    </Card>
+  );
 }

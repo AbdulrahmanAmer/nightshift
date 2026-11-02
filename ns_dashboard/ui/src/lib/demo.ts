@@ -191,7 +191,7 @@ export async function demoHandle(method: string, path: string, body?: any): Prom
     const ch = out.channel === "tiny-mysteries";
     return { ...out, ...DEMO.detail, ...(ch ? { description: "Every receipt from the town bakery has a faint second receipt underneath, dated next Thursday.\n\nOriginal fiction.", story_excerpt: "Mrs. Penhallow kept every receipt in a biscuit tin. It was her grandson who noticed the second line of print, fainter than the first, and the date on it.", related_video_instruction: "Set Related video to The Bakery That Prints Two Receipts" } : {}), ...(out.kind === "clip" ? { description: "From my 31 October stream.", chapters: [], story_excerpt: "Cut from your own stream at 1:12:40. The moment was picked because chat activity tripled and you laughed.", policy_notes: ["Your own video, rights confirmed when the job started", "No music from the stream kept in the clip"] } : {}) };
   }
-  if (p === "/jobs" && method === "GET") return DEMO.jobs.map((j: Job) => ({ ...j }));
+  if (p === "/jobs" && method === "GET") return DEMO.jobs.filter((j: Job) => !sp.get("kind") || j.kind === sp.get("kind")).map((j: Job) => ({ ...j }));
   if ((p === "/jobs/run" || p === "/jobs/clip") && method === "POST") {
     const kind = p.endsWith("run") ? "run" : "clip";
     const sched = fdGet(body, "schedule_at") ? new Date(String(fdGet(body, "schedule_at"))) : null; const later = !!sched && +sched > Date.now();
@@ -202,6 +202,10 @@ export async function demoHandle(method: string, path: string, body?: any): Prom
     const src = DEMO.jobs.find((x: Job) => x.job_id === body?.job_id);
     const job: Job = { job_id: "j" + Math.random().toString(16).slice(2, 8), kind: "clip", channel: src?.channel || "night-desk", status: "queued", progress: 0, stage: "queued", message: "Waiting for the engine", created_at: new Date().toISOString(), title: src?.title };
     DEMO.jobs.unshift(job); simulateJob(job); return { job_id: job.job_id };
+  }
+  if (p === "/jobs/verify" && method === "POST") {
+    const job: Job = { job_id: "v" + Math.random().toString(16).slice(2, 8), kind: "verify", status: "done", progress: 100, stage: "verify", message: "Done", created_at: new Date().toISOString(), result: { passed: true, checks: [{ passed: true }, { passed: true }, { passed: true }] } as any };
+    DEMO.jobs.unshift(job); return { job_id: job.job_id };
   }
   if (parts[0] === "jobs" && parts.length === 2) { const j = DEMO.jobs.find((x: Job) => x.job_id === parts[1]); if (!j) throw new Error("Not found"); return { ...j }; }
   if (parts[0] === "jobs" && parts[2] === "cancel") { const j = DEMO.jobs.find((x: Job) => x.job_id === parts[1]); if (j) { j.status = "cancelled"; j.message = "Cancelled"; } return { ok: true }; }
@@ -236,7 +240,10 @@ export async function demoHandle(method: string, path: string, body?: any): Prom
   if (p === "/settings/export") return { path: "C:\Users\you\Desktop\nightshift-backup-2026-11-02.zip", name: "nightshift-backup-2026-11-02.zip" };
   if (p === "/settings/import") return { restored: true, note: "Settings restored. Restart Nightshift to use them" };
   if (p === "/settings/uninstall") return { path: "D:\Nightshift\app\UNINSTALL.cmd", exists: true };
+  if (p === "/engine/warmup") { DEMO.status.engine = { state: "loading", detail: "Loading the language model" }; return { state: "starting" }; }
+  if (p === "/engine/stop_all") { DEMO.status.engine = { state: "idle", detail: "Engine stopped" }; return { ok: true, cancelled_job: null }; }
   if (p === "/engine/shutdown") { DEMO.status.engine = { state: "idle", detail: "Engine stopped" }; return { ok: true }; }
+  if (p === "/runs") return [{ run_id: "daily-20261102-a1f2", started_at: new Date(Date.now() - 9 * 3600e3).toISOString(), finished_at: new Date(Date.now() - 6 * 3600e3).toISOString(), mode: "daily", duration_s: 10320, summary: { jobs: [{ job_id: "after-dark-20261102-a1f2", channel: "after-dark", stages: 19 }, { job_id: "tiny-mysteries-20261102-77c3", channel: "tiny-mysteries", stages: 19 }], failures: [] } }];
   if (p === "/learn/summary") return structuredClone(DEMO.learn);
   if (p === "/learn/import") { DEMO.learn.imported_at = new Date().toISOString(); return structuredClone(DEMO.learn); }
   if (p.startsWith("/logs/tail")) { const lvl = sp.get("level"); return DEMO.logs.filter((l: any) => !lvl || l.level === lvl); }

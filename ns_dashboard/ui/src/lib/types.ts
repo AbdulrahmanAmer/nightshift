@@ -34,3 +34,5 @@ export type ChatEvent =
 export interface SeriesPart { n: number; title: string; minutes: number; status: "planned" | "written" | "approved" | "producing" | "published" | string; job_id?: string | null; words: number; shorts: number }
 /** A workshop story with its part table (GET /library/series reads the story folders under stories/). */
 export interface SeriesStory { slug: string; channel: string; title: string; status: string; next_step: string; has_design: boolean; chosen?: string | null; parts: SeriesPart[] }
+/** One row of GET /runs: a nightly (daily) or manual run with the report the studio wrote. */
+export interface Run { run_id: string; started_at: string; finished_at?: string | null; mode: string; duration_s?: number | null; summary?: { jobs?: { job_id: string; channel: string; stages?: number }[]; failures?: { job_id: string; channel: string; code?: string; error?: string }[] } }

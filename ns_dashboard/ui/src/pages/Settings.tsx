@@ -4,10 +4,11 @@
 import { useEffect, useState } from "react";
 import { useApp, useLoad } from "../lib/app";
 import { api } from "../lib/api";
-import type { LogLine, Settings as S } from "../lib/types";
+import type { Job, LogLine, Settings as S } from "../lib/types";
+import { dayInline, plural } from "../lib/format";
 import { cx } from "../ui/kit";
 import { Lockup } from "../ui/Lockup";
-import { Badge, Button, Icon, Card, CardHeader, DashGrid, IconButton, Input, LinkButton, ProgressBar, SegmentedControl, SettingRow, SPAN, Switch, type SegmentOption } from "../components/ref12";
+import { Badge, Button, Icon, Card, CardHeader, DashGrid, IconButton, Input, LinkButton, ProgressBar, SegmentedControl, SettingRow, SPAN, StatusDot, Switch, type SegmentOption } from "../components/ref12";
 
 const THEMES: SegmentOption<"light" | "dark" | "soft">[] = [{ value: "light", label: "Light", icon: "sun" }, { value: "dark", label: "Dark", icon: "moon" }, { value: "soft", label: "Soft", icon: "blend" }];
 
@@ -46,6 +47,19 @@ export default function Settings() {
     const fd = new FormData(); fd.append("file", f);
     try { const r = await api.upload("/settings/import", fd, () => {}); toast(r?.note || "Settings restored", "ok"); st.reload(); } catch (e: any) { toast(e.message, "bad"); }
   };
+  const [warming, setWarming] = useState(false);
+  const warmUp = async () => { setWarming(true); try { await api.post("/engine/warmup", { service: "llama" }); toast("The language model is starting. It is ready in about a minute", "ok"); } catch (e: any) { toast(e.message, "bad"); } setWarming(false); };
+  const stopAll = async () => {
+    const ok = await confirm({ title: "Stop everything?", body: "This stops the models and cancels the job that is running. Videos already finished stay in the Queue", ok: "Stop all", danger: true });
+    if (!ok) return; try { await api.post("/engine/stop_all"); toast("Everything is stopped", "ok"); } catch (e: any) { toast(e.message, "bad"); }
+  };
+  const selfCheck = useLoad<Job[]>(() => api.get("/jobs?kind=verify&limit=1"), [], []);
+  const lastCheck = selfCheck.data[0]; const checkBusy = lastCheck?.status === "queued" || lastCheck?.status === "running";
+  useEffect(() => { if (!checkBusy) return; const t = setInterval(selfCheck.reload, 2500); return () => clearInterval(t); }, [checkBusy]); // eslint-disable-line react-hooks/exhaustive-deps
+  const runCheck = async (quick: boolean) => { try { await api.post("/jobs/verify", { quick }); toast(quick ? "Quick self-check started" : "Full self-check started. It takes several minutes", "ok"); selfCheck.reload(); } catch (e: any) { toast(e.message, "bad"); } };
+  const res = lastCheck?.result as { passed?: boolean; checks?: { passed: boolean }[] } | null | undefined;
+  const bad = res?.checks?.filter((c) => !c.passed).length ?? 0;
+  const checkSub = !lastCheck ? "Checks the models, the voice and the video encoder, and writes a report" : checkBusy ? `Running. ${lastCheck.message || ""}` : lastCheck.status === "failed" ? `The check could not run. ${lastCheck.message || ""}` : lastCheck.status === "cancelled" ? "Cancelled" : res?.passed ? `Passed ${dayInline(lastCheck.created_at)}. Everything answered` : `${plural(bad, "item")} need attention. The report is in the logs folder`;
   const copy = async (t: string) => { try { await navigator.clipboard.writeText(t); toast("Path copied", "ok"); } catch { toast("Copy was blocked", "warn"); } };
   const home = s?.home || status?.disk?.home || "";
   const version = s?.version || status?.version || upd?.current;
@@ -122,6 +136,20 @@ export default function Settings() {
             <SettingRow title="Diagnostics report" sub={report?.path ? <>Saved as <span className="font-mono break-all">{report.path}</span></> : "A zip on your Desktop with logs and settings, without keys, to send for help"}>
               <Button variant="soft" leadingIcon="archive" onClick={diag}>Make report</Button>
               {report?.download_url && <LinkButton href={report.download_url} download={report.name} variant="soft" leadingIcon="download">Download</LinkButton>}
+            </SettingRow>
+          </Card>
+
+          <Card as="section" aria-labelledby="s-engine">
+            <CardHeader id="s-engine" title="Engine" className="!mb-1" adornment={status?.engine ? <StatusDot tone={status.engine.state === "error" ? "danger" : status.engine.state === "idle" ? "attention" : "online"} label={status.engine.detail || status.engine.state} /> : undefined} />
+            <SettingRow title="Warm up" sub="Loads the language model now, so the first job of the day starts fast">
+              <Button variant="soft" leadingIcon="power" disabled={warming} onClick={warmUp}>{warming ? "Starting" : "Warm up"}</Button>
+            </SettingRow>
+            <SettingRow title="Stop everything" sub="Stops the models and cancels the job that is running. Use it when the PC feels stuck">
+              <Button variant="danger" leadingIcon="x" onClick={stopAll}>Stop all</Button>
+            </SettingRow>
+            <SettingRow title="Self-check" sub={checkSub}>
+              <Button variant="soft" leadingIcon="checklist" disabled={checkBusy} onClick={() => runCheck(true)}>Quick check</Button>
+              <Button variant="ghost" disabled={checkBusy} onClick={() => runCheck(false)}>Full check</Button>
             </SettingRow>
           </Card>
 
