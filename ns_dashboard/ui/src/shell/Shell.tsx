@@ -11,6 +11,7 @@ import { Chat } from "../pages/Assistant";
 import { jobTitle } from "../pages/Queue";
 import { Mark } from "../ui/Mark";
 import { Button, Card, CardMenu, DigitalClock, Field, Icon, IconButton, Input, Kbd, SegmentedControl, StatusChip, StatusDot, type SegmentOption } from "../components/ref12";
+import { startAutoTitle } from "../lib/autoTitle";
 import { SideTab } from "./SideTab";
 import { TitleBar } from "./TitleBar";
 import { host } from "../lib/host";
@@ -245,6 +246,7 @@ function AskDrawer() {
 }
 
 export function Shell({ children }: { children: ReactNode }) {
+  useEffect(() => startAutoTitle(), []);
   return (
     <div className="app-frame ds-root relative min-h-dvh">
       <Canvas />
