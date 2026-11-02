@@ -156,3 +156,33 @@ def test_saved_assistant_request_is_answered_when_the_job_ends(tmp_home: Path):
     assert dash.assistant_store.queued() == []
     texts = [m["content"] for m in dash.assistant_store.messages(cid) if m["role"] == "assistant"]
     assert "It is Tuesday." in texts
+
+
+# ------------------------------------------------------------------ row 11: the Caption look reaches the clip job
+
+
+def test_caption_look_chosen_in_create_reaches_clipparams(monkeypatch: pytest.MonkeyPatch):
+    """`caption_style` was stored in the job row and never read by the studio."""
+    import dataclasses
+
+    from ns_dashboard import studio_bridge
+    from ns_studio.clipper import models
+
+    @dataclasses.dataclass
+    class WithStyle(models.ClipParams):  # what ClipParams looks like once the Clipper has the field
+        caption_style: str | None = None
+
+    monkeypatch.setattr(models, "ClipParams", WithStyle)
+    p = studio_bridge.clip_params_of(
+        Path("a.mp4"), "after-dark",
+        {"template": "podcast_single", "max_clips": 3, "min_s": 20, "max_s": 45, "caption_style": "boxed_dark", "rights_confirmed": True},
+    )
+    assert p.caption_style == "boxed_dark" and p.template == "podcast_single" and p.max_clips == 3
+    assert studio_bridge.clip_params_of(Path("a.mp4"), "c", {}).caption_style is None  # type: ignore[attr-defined]
+
+
+def test_clip_params_without_a_caption_field_still_build(monkeypatch: pytest.MonkeyPatch):
+    from ns_dashboard import studio_bridge
+
+    p = studio_bridge.clip_params_of(Path("a.mp4"), "after-dark", {"caption_style": "boxed_dark", "rights_confirmed": True})
+    assert p.channel == "after-dark" and p.rights_confirmed

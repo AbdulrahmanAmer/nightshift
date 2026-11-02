@@ -158,6 +158,29 @@ def download_source(
     return source.import_url(url, download_dir(paths, source_id), on_progress)
 
 
+def clip_params_of(source_path: Path, channel_slug: str, params: dict[str, Any]) -> Any:
+    """`ClipParams` for a dashboard clip job: the options the owner picked in Create, caption look included.
+
+    `caption_style` is the Caption look chosen in Create. `ClipParams` takes it once the Clipper has the
+    field (it overrides the style the selector would pick); until then it is left out instead of failing.
+    """
+    from ns_studio.clipper.models import ClipParams
+
+    kw: dict[str, Any] = {
+        "source": str(source_path),
+        "channel": channel_slug,
+        "template": str(params.get("template") or "auto"),
+        "max_clips": int(params.get("max_clips") or 6),
+        "min_s": float(params.get("min_s") or 20),
+        "max_s": float(params.get("max_s") or 60),
+        "rights_confirmed": bool(params.get("rights_confirmed")),
+    }
+    style = params.get("caption_style")
+    if style and "caption_style" in {f.name for f in dataclasses.fields(ClipParams)}:
+        kw["caption_style"] = str(style)
+    return ClipParams(**kw)
+
+
 def run_clip(
     source_path: Path,
     params: dict[str, Any],
@@ -174,21 +197,12 @@ def run_clip(
     dashboard stores them. A video that was downloaded for the job is deleted once it has been imported.
     """
     from ns_studio.channels.crud import get_channel
-    from ns_studio.clipper.models import ClipParams
     from ns_studio.clipper.stages_clip import create_clip_job
     from ns_studio.orchestrator import run_job
 
     home = paths or Paths.from_env()
     channel = get_channel(home, str(params["channel"]))
-    clip_params = ClipParams(
-        source=str(source_path),
-        channel=channel.slug,
-        template=str(params.get("template") or "auto"),
-        max_clips=int(params.get("max_clips") or 6),
-        min_s=float(params.get("min_s") or 20),
-        max_s=float(params.get("max_s") or 60),
-        rights_confirmed=bool(params.get("rights_confirmed")),
-    )
+    clip_params = clip_params_of(source_path, channel.slug, params)
     clip_params.validate()
     ctx = with_acquirer(create_clip_job(home, channel, clip_params, fake=frozenset(fake)), acquirer)
     if seen is not None:
@@ -227,6 +241,9 @@ def rerun_clip(
         min_s=float(changes.get("min_s") or old.min_s),
         max_s=float(changes.get("max_s") or old.max_s),
     )
+    style = changes.get("caption_style")
+    if style and "caption_style" in {f.name for f in dataclasses.fields(ClipParams)}:
+        new = dataclasses.replace(new, caption_style=str(style))
     new.validate()
     ctx = with_acquirer(
         resume_clip_job(home, studio_job_id, get_channel(home, old.channel), fake=frozenset(fake)), acquirer
