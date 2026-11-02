@@ -226,7 +226,7 @@ def test_url_import_still_needs_the_rights_confirmation(tmp_home: Path, tmp_path
     ctx = sc.create_clip_job(Paths.from_env(), make_channel(), params, fake=FAKEABLE)
     with pytest.raises(NsError) as ei:
         run_stage(ctx, sc.ImportStage())
-    assert ei.value.code == "NS-E405"
+    assert ei.value.code == "NS-E410"
 
 
 def test_import_stage_reports_a_failed_download(

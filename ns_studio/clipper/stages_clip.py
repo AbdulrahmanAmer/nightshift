@@ -160,10 +160,10 @@ class ImportStage:
     outputs: tuple[str, ...] = ("source.json",)
 
     def run(self, ctx: JobContext) -> None:
-        """Import the source (NS-E405 for bad files or unconfirmed rights; download errors for URLs)."""
+        """Import the source (NS-E405 for bad files, NS-E410 for unconfirmed rights; download errors for URLs)."""
         p = _params(ctx)
         if not p.rights_confirmed:
-            raise NsError("NS-E405", "the owner has not confirmed rights to this video")
+            raise NsError("NS-E410", "the rights box was not ticked for this video")
         existing = ctx.file("source.json")
         if existing.exists():
             prev = json.loads(existing.read_text(encoding="utf-8"))
@@ -646,14 +646,27 @@ class SeoStage:
         tr, plan, info = _transcript(ctx), _plan(ctx), _source(ctx)
         sheets: list[dict[str, Any]] = []
         merged: dict[str, list[tuple[bool, str]]] = {}
+        last_error: NsError | None = None
         for clip in plan:
             words = select.words_in(tr.words, clip.start_s, clip.end_s)
             excerpt = " ".join(w.w for w in words)[:1500]
-            result, policy = seo.generate_seo(ctx, clip, excerpt=excerpt, source_title=str(info["title"]))
+            try:
+                result, policy = seo.generate_seo(
+                    ctx, clip, excerpt=excerpt, source_title=str(info["title"]),
+                    creator_note=ctx.channel.creator_note,
+                )
+            except NsError as e:  # one clip's metadata must not cost the owner the others
+                last_error = e
+                detail = str(e.detail)[:200]
+                ctx.log.warn("clip_skipped", job_id=ctx.job_id, k=clip.k, code=e.code, detail=detail)
+                sheets.append({"k": clip.k, "skipped": f"{e.code}: {e.detail}"})
+                continue
             sheets.append({"k": clip.k, **result.model_dump(mode="json")})
             for name, chk in policy.checks.items():
                 detail = f"c{clip.k}: {chk.detail}" if chk.detail else ""
                 merged.setdefault(name, []).append((chk.passed, detail))
+        if last_error is not None and all("skipped" in s for s in sheets):
+            raise last_error  # every clip failed its checks: nothing to publish
         checks = {
             name: PolicyCheck(passed=all(ok for ok, _ in rows), detail="; ".join(d for _, d in rows if d))
             for name, rows in merged.items()
@@ -670,7 +683,7 @@ class SeoStage:
 
 # ---------- C9 qc + outbox ----------
 class QcStage:
-    """Run the spec 7.7 Short checks (C6) on every clip; NS-E404 when any fails."""
+    """Run the spec 7.7 Short checks (C6) on every clip; a failing clip is left out, NS-E404 when all fail."""
 
     name: str = "clip_qc"
     tenant: Tenant = None
@@ -699,8 +712,10 @@ class QcStage:
             if not result.passed:
                 failed.append(f"{item}: {result.reason}")
         ctx.write_json("qc/report.json", summary)
-        if failed:
+        if failed and len(failed) == len(rendered):
             raise NsError("NS-E404", "; ".join(failed))
+        for line in failed:  # the passing clips go on to the Outbox; the owner sees why the others did not
+            ctx.log.warn("clip_skipped", job_id=ctx.job_id, code="NS-E404", detail=line[:200])
 
 
 def clip_sheet_text(meta: ClipMetadata, video_name: str) -> str:
@@ -787,13 +802,19 @@ class OutboxStage:
         ob = media_outbox
         info, lay = _source(ctx), _layout(ctx)
         rendered: dict[str, Any] = ctx.read_json("render/report.json")
-        seos = {int(s["k"]): s for s in ctx.read_json("seo_clips.json")}
+        seos = {int(s["k"]): s for s in ctx.read_json("seo_clips.json") if "skipped" not in s}
+        qc_report: dict[str, Any] = ctx.read_json("qc/report.json")
+        skipped: dict[str, str] = {}
         advice = ctx.read_json("policy_text.json")["advice"]
         dest_dir = clip_folder(ctx, str(info["source_id"]), str(info["original_name"]))
         manifest: dict[str, Any] = {}
         now = datetime.now(UTC).isoformat()
         for item, rinfo in rendered.items():
             k = int(item[1:])
+            if k not in seos or not qc_report.get(item, {}).get("passed", False):
+                reason = qc_report.get(item, {}).get("reason")
+                skipped[item] = str(reason) if k in seos else "metadata check failed"
+                continue
             s = seos[k]
             stem = clip_file_stem(k, s["title"])
             meta = ClipMetadata(
@@ -840,6 +861,7 @@ class OutboxStage:
             (ctx.job_id, *[f"{ctx.job_id}/{i}" for i in manifest]),
         )
         ctx.write_json("outbox/manifest.json", manifest)
+        ctx.write_json("outbox/skipped.json", skipped)  # clips left out, with the reason
         source.set_source_status(ctx.db, info["source_id"], "done")
         ctx.log.info("clip_outbox_done", job_id=ctx.job_id, items=list(manifest))
 

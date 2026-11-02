@@ -44,3 +44,8 @@ def test_studio_and_transcription_codes_exist():
         d = describe(code)
         assert d.kind == "error" and d.message and d.hint, code
     assert describe("NS-E408").message == "Transcription failed."
+
+
+def test_clip_rights_and_unexpected_codes_exist():
+    assert describe("NS-E410").kind == "error" and "right" in describe("NS-E410").message
+    assert describe("NS-E327").kind == "error"

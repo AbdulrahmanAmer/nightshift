@@ -1,0 +1,15 @@
+# phrases that make the metadata of a clip from the owner's own video deceptive (spec 19.2 C8).
+# The fiction list (misleading_claims.txt) does not apply to clips: real footage may say "caught on camera".
+# matched case-insensitively in the LLM-written title, description, tags and hashtags.
+100% real
+not clickbait
+you won't believe
+before it gets deleted
+before it's deleted
+they don't want you to see
+banned video
+leaked footage
+leaked video
+free giveaway
+guaranteed results
+shocking truth

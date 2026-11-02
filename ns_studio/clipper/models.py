@@ -115,10 +115,10 @@ class ClipParams:
 
     @classmethod
     def load(cls, job_dir: Path) -> ClipParams:
-        """Read `clip_params.json`; raises NS-E405 when the job has none."""
+        """Read `clip_params.json`; raises NS-E326 when the job has none."""
         p = job_dir / cls.FILE
         if not p.exists():
-            raise NsError("NS-E405", f"{cls.FILE} missing in {job_dir}")
+            raise NsError("NS-E326", f"{cls.FILE} missing in {job_dir}")
         raw: dict[str, Any] = json.loads(p.read_text(encoding="utf-8"))
         return cls(**raw)
 

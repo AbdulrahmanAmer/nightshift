@@ -78,16 +78,35 @@ def test_clean_metadata_passes() -> None:
 
 
 def test_misleading_claim_fails() -> None:
-    res = sp.check_misleading_claims(seo_of(title="This is a TRUE STORY"))
-    assert not res.passed and "true story" in res.detail
+    res = sp.check_misleading_claims(seo_of(title="This is 100% REAL, not clickbait"))
+    assert not res.passed and "100% real" in res.detail
+    # the fiction list does not apply to the owner's own footage
+    assert sp.check_misleading_claims(seo_of(title="Caught on camera: my true story")).passed
 
 
-def test_real_entity_block_list_and_regex_fallbacks() -> None:
-    assert not sp.check_real_entities(seo_of(description="Elon Musk plays it\n\nClip from: x")).passed
-    assert not sp.check_real_entities(seo_of(title="Dr. Smith reacts")).passed
+def test_real_entities_only_flags_links_and_handles() -> None:
     assert not sp.check_real_entities(seo_of(description="follow @someone\n\nClip from: x")).passed
     assert not sp.check_real_entities(seo_of(description="see https://example.com")).passed
+    # the owner's guests and games may be named; the source line is never checked
+    assert sp.check_real_entities(seo_of(description="Elon Musk plays it\n\nClip from: x")).passed
+    assert sp.check_real_entities(seo_of(title="Dr. Smith reacts")).passed
     assert sp.check_real_entities(seo_of(title="Mountain Level Route")).passed
+
+
+def test_a_source_title_with_honorifics_brands_and_handles_never_blocks_the_clip() -> None:
+    """Review clipper row 6: "Interview with Dr. Smith" / "Podcast #12 @mychannel" failed every attempt."""
+    for source in ("Interview with Dr. Smith", "My Tesla review", "Podcast #12 @mychannel https://x.tv"):
+        s = sp.finalize_seo(GOOD, clip=CLIP, source_title=source, seed_keywords=[])
+        res = sp.check_metadata(s)
+        assert res.passed, (source, res.model_dump())
+        assert f"Clip from: {source}" in s.description
+
+
+def test_creator_note_follows_the_source_line_and_is_not_checked() -> None:
+    note = "More at https://me.tv"
+    s = sp.finalize_seo(GOOD, clip=CLIP, source_title="vod", seed_keywords=[], creator_note=note)
+    assert s.description.splitlines()[-2:] == ["Clip from: vod", "More at https://me.tv"]
+    assert sp.check_metadata(s).passed
 
 
 def test_metadata_spam_rules() -> None:
@@ -114,14 +133,14 @@ def test_generate_seo_uses_the_llm_once_when_clean(tmp_home: Path, tmp_path: Pat
 
 def test_generate_seo_retries_once_then_passes(tmp_home: Path, tmp_path: Path) -> None:
     ctx = make_ctx(tmp_home, fmt="clip")
-    llm = with_llm(ctx, tmp_path, [dict(GOOD, title="My true story on the mountain"), GOOD])
+    llm = with_llm(ctx, tmp_path, [dict(GOOD, title="Leaked footage from the mountain"), GOOD])
     s, policy = sp.generate_seo(ctx, CLIP, excerpt="text", source_title="vod")
-    assert policy.passed and "true story" not in s.title.lower() and len(llm.calls) == 2
+    assert policy.passed and "leaked" not in s.title.lower() and len(llm.calls) == 2
 
 
 def test_generate_seo_fails_with_the_check_code(tmp_home: Path, tmp_path: Path) -> None:
     ctx = make_ctx(tmp_home, fmt="clip")
-    with_llm(ctx, tmp_path, [dict(GOOD, title="Caught on camera: the route")])
+    with_llm(ctx, tmp_path, [dict(GOOD, title="Banned video: the route")])
     with pytest.raises(NsError) as ei:
         sp.generate_seo(ctx, CLIP, excerpt="text", source_title="vod")
     assert ei.value.code == "NS-E603"

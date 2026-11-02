@@ -203,7 +203,7 @@ def test_unconfirmed_rights_are_refused(tmp_home: Path, tmp_path: Path) -> None:
     ctx = make_job(tmp_path, rights_confirmed=False)
     with pytest.raises(NsError) as ei:
         run_stage(ctx, sc.CLIP_STAGES[0])
-    assert ei.value.code == "NS-E405"
+    assert ei.value.code == "NS-E410"  # not NS-E405: the video is fine, the box was not ticked
 
 
 @needs_ffmpeg
@@ -277,3 +277,54 @@ def test_run_clip_passes_the_caption_style_on(
     with pytest.raises(RuntimeError):
         studio_bridge.run_clip(video, params, lambda *_a, **_k: None, fake=FAKEABLE)
     assert seen and seen[0].caption_style == "boxed_dark"
+
+
+@needs_ffmpeg
+def test_one_failing_clip_does_not_cost_the_others(
+    tmp_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review clipper row 9: one clip failing QC raised NS-E404 before the Outbox and lost all of them."""
+    ctx = make_job(tmp_path)
+    real = sc.media_qc.run_qc
+
+    def flaky(item, *a, **kw):
+        res = real(item, *a, **kw)
+        return res.model_copy(update={"passed": False, "reason": "black_frames"}) if item == "c2" else res
+
+    monkeypatch.setattr(sc.media_qc, "run_qc", flaky)
+    orchestrator.run_job(ctx)
+    assert list(ctx.read_json("outbox/manifest.json")) == ["c1"]
+    assert ctx.read_json("outbox/skipped.json") == {"c2": "black_frames"}
+    rows = ctx.db.query("SELECT output_id FROM outputs WHERE job_id=? AND kind='clip'", (ctx.job_id,))
+    assert [r["output_id"] for r in rows] == [f"{ctx.job_id}/c1"]
+
+
+@needs_ffmpeg
+def test_every_clip_failing_qc_is_still_an_error(
+    tmp_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx = make_job(tmp_path)
+    real = sc.media_qc.run_qc
+
+    def failing(item, *a, **kw):
+        return real(item, *a, **kw).model_copy(update={"passed": False, "reason": "duration"})
+
+    monkeypatch.setattr(sc.media_qc, "run_qc", failing)
+    with pytest.raises(NsError) as ei:
+        orchestrator.run_job(ctx)
+    assert ei.value.code == "NS-E404"
+
+
+@needs_ffmpeg
+def test_a_clip_whose_metadata_fails_is_skipped_not_the_job(tmp_home: Path, tmp_path: Path) -> None:
+    import json
+
+    good = json.loads((LLM_FIXTURES / "clip_seo.json").read_text(encoding="utf-8"))
+    bad = dict(good, title="Banned video: the route")
+    ctx = make_job(tmp_path)
+    ctx.services.llm = FakeLlm(LLM_FIXTURES, overrides={"clip_seo": [good, bad, bad]})
+    orchestrator.run_job(ctx)
+    sheets = ctx.read_json("seo_clips.json")
+    assert "skipped" not in sheets[0] and sheets[1]["skipped"].startswith("NS-E603")
+    assert list(ctx.read_json("outbox/manifest.json")) == ["c1"]
+    assert ctx.read_json("outbox/skipped.json") == {"c2": "metadata check failed"}
