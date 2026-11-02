@@ -167,3 +167,15 @@ def test_job_run_request_parses_an_iso_time():
         m.JobRunRequest.model_validate({"channel": "a", "schedule_at": "tomorrow evening"})
     with pytest.raises(ValidationError):
         m.JobRunRequest.model_validate({"channel": "a", "count": 0})
+
+
+# --- CR-C3-UI-6: channel stats qc_pass_rate -------------------------------------------------------------
+
+
+def test_channel_stats_qc_fields_default_and_range():
+    s = m.ChannelStats.model_validate({"week": 2, "watched_pct": 64, "spark": [38, 44]})
+    assert s.qc_pass_rate is None and s.qc_pass_target == 0.9
+    assert m.ChannelStats.model_validate({"qc_pass_rate": 0.75, "qc_pass_target": 0.8}).qc_pass_rate == 0.75
+    for bad in ({"qc_pass_rate": 1.2}, {"qc_pass_rate": -0.1}, {"qc_pass_target": 90}):
+        with pytest.raises(ValidationError):
+            m.ChannelStats.model_validate(bad)

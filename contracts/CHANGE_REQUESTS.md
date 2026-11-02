@@ -369,3 +369,10 @@ Format per entry:
 - **Why:** the wizard's last-but-one step lets the owner pick a start time; the request had no field for it.
 - **Not done here:** `ns_dashboard.svc_jobs.JobsService.create_run` still ignores the key (it reads the body as a dict), so the UI must not send `schedule_at` until C9 honours it (hold the job until that time, then enqueue). The clip request (`POST /api/jobs/clip`, multipart) gets the same field when its model is written.
 - **Status:** applied in @@CR_C3_UI_5@@
+
+## CR-C3-UI-6: channel stats `qc_pass_rate` and `qc_pass_target`
+- **From:** dashboard Channels page (QC pass-rate meter); owner decisions of 2026-11-02
+- **Change:** new `ns_common.models.ChannelStats` (`contracts/schemas/channel_stats.schema.json`), the `stats` object of a channel: `week`, `watched_pct`, `spark` (as the page already reads them) plus `qc_pass_rate: float | None = None` (0..1; `None` = no finished videos yet) and `qc_pass_target: float = 0.9` (0..1). `ns_dashboard/ui/src/lib/types.ts` `Channel.stats` gets both fields.
+- **Why:** the Channels page shows how many of a channel's videos passed QC against a target line; the stats object had no field for it.
+- **Not done here:** `GET /api/channels` does not fill `stats` at all yet (the page only has demo data), so C9 fills `qc_pass_rate` from the `outputs`/QC tables when it adds the stats object.
+- **Status:** applied in @@CR_C3_UI_6@@

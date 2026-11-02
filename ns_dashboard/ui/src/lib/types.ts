@@ -10,7 +10,7 @@ export interface Job { job_id: string; kind: string; channel?: string; status: s
 export interface Template { id: string; label: string; description: string }
 export interface Voice { name: string; mode: string; description?: string }
 export interface Pools { hooks: string[]; structures: string[]; caption_styles: string[]; visual_treatments: string[] }
-export interface Channel extends ChannelSummary { language?: string; audience?: string; voice_notes?: string; pools?: Pools; avoid_topics?: string[]; fiction_label?: boolean; long_minutes?: number[]; shorts_per_master?: number[]; stats?: { week?: number; watched_pct?: number; spark?: number[] } }
+export interface Channel extends ChannelSummary { language?: string; audience?: string; voice_notes?: string; pools?: Pools; avoid_topics?: string[]; fiction_label?: boolean; long_minutes?: number[]; shorts_per_master?: number[]; stats?: { week?: number; watched_pct?: number; spark?: number[]; qc_pass_rate?: number | null; qc_pass_target?: number } }
 export interface Settings { schedule_time?: string; home?: string; profile?: string; flags?: Record<string, string | number>; keys?: Record<string, boolean>; notifications?: boolean; version?: string; [k: string]: any }
 export interface LearnRow { title: string; views: number; viewed_pct: number; kind?: Kind }
 export interface Learn { imported_at?: string; matched?: number; unmatched?: number; summary?: string[]; changes?: { pool: string; option: string; delta: number }[]; top?: LearnRow[]; bottom?: LearnRow[]; daily?: { date: string; shorts: number; long: number }[]; milestone?: { label: string; rule: string; current: number; target: number; weeks: number; weeks_needed: number } }

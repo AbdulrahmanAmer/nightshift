@@ -793,6 +793,15 @@ class JobRunRequest(Strict):
     schedule_at: datetime | None = None  # null = run now; a naive time is the PC's local time (CR-C3-UI-5)
 
 
+# The `stats` object of a channel in `GET /api/channels` (Channels page, Home cards).
+class ChannelStats(Strict):
+    week: int | None = None
+    watched_pct: float | None = None
+    spark: list[float] = []
+    qc_pass_rate: float | None = Field(default=None, ge=0, le=1)   # share of videos that passed QC, 0..1
+    qc_pass_target: float = Field(default=0.9, ge=0, le=1)          # the line the page draws (CR-C3-UI-6)
+
+
 SCHEMA_MODELS: dict[str, type[BaseModel]] = {
     "channel": Channel, "runtime": Runtime, "install_state": InstallState, "answers": Answers,
     "manifest": Manifest, "idea": Idea, "parts": Part, "seo": Seo, "visual_plan": VisualBeat,
@@ -802,6 +811,7 @@ SCHEMA_MODELS: dict[str, type[BaseModel]] = {
     "clip_plan": ClipPlanItem, "policy_check": PolicyCheckResult, "transcript": Transcript,
     "clip_layout": ClipLayout, "clip_template": ClipTemplate, "format": Format,
     "status": Status, "job_run_request": JobRunRequest,
+    "channel_stats": ChannelStats,
 }
 
 
