@@ -104,6 +104,11 @@ class SupervisorClient:
         r = self._call("POST", "/warmup", body={"service": service}, timeout_s=300)
         return str(r["state"])
 
+    def run_finished(self) -> bool:
+        """`POST /run_finished`: the nightly run is done; True when the engine will now leave on its own
+        (it stays when the dashboard is open)."""
+        return bool(self._call("POST", "/run_finished", timeout_s=10).get("exit_scheduled"))
+
     def publish_event(self, kind: str, data: dict[str, Any]) -> None:
         """`POST /events`: publish job progress to the dashboard status strip."""
         self._call("POST", "/events", body={"kind": kind, "data": data}, timeout_s=10)

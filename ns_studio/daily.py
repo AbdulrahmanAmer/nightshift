@@ -125,4 +125,7 @@ def run_daily(
     env.log.info("daily_done", run_id=run_id, jobs=len(done), failures=len(report["failures"]))
     masters, shorts = notifications.output_counts(env.db, done)
     notifications.send(env.paths, env.log, notifier, notifications.nightly_message(report, masters, shorts))
+    finish = getattr(env.services.acquirer, "run_finished", None)
+    if finish is not None:  # gap 25: the engine this run needed leaves once nobody else uses it
+        finish()
     return report

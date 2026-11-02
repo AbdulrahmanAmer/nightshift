@@ -44,6 +44,7 @@ class SupervisorConfig:
     crash_max: int = 3
     monitor_interval_s: float = 1.0
     auto_exit_idle_s: float = 1800.0
+    post_run_grace_s: float = 60.0  # after the nightly run reports it is done, before the engine leaves
     schedule_lookahead_s: float = 3600.0
 
 
@@ -102,6 +103,7 @@ class Supervisor:
         self.started_at = clock()
         self.started_wall = datetime.now().isoformat(timespec="seconds")
         self.last_activity = clock()
+        self.run_finished_at: float | None = None  # set by the nightly run (gap 25); cleared by new work
         self._subs: set[asyncio.Queue[dict[str, Any]]] = set()
 
     # ------------------------------------------------------------------ events
@@ -332,6 +334,7 @@ class Supervisor:
         if self.shutting_down:
             raise NsError("NS-E202", "supervisor is shutting down")
         self._touch()
+        self.run_finished_at = None  # somebody is working again: back to the plain idle rule
         if service == "whisper":
             if not self._whisper_gpu():
                 return self._endpoint("whisper", None, None)
@@ -531,11 +534,33 @@ class Supervisor:
             return False
         return seconds_until_next_run(self.now(), run_time) <= self.cfg.schedule_lookahead_s
 
+    def dashboard_open(self) -> bool:
+        """True while the dashboard service runs (the Dashboard shortcut starts it; Stop All ends it)."""
+        return self.services["dashboard"].state in ("starting", "ready")
+
+    def note_run_finished(self) -> dict[str, Any]:
+        """The nightly run reports it is done (`POST /run_finished`): the engine now leaves after
+        `post_run_grace_s` unless the dashboard is open or somebody starts new work (gap 25)."""
+        self._touch()
+        self.run_finished_at = self.clock()
+        self.publish("run", {"event": "finished"})
+        self.log.info("run_finished", dashboard_open=self.dashboard_open())
+        return {"exit_scheduled": not self.dashboard_open()}
+
     async def _check_auto_exit(self, now: float) -> None:
         if self.exit_requested.is_set() or self.shutting_down:
             return
         if self._busy():
             self.last_activity = now
+            return
+        if (
+            self.run_finished_at is not None
+            and not self.dashboard_open()
+            and now - self.run_finished_at >= self.cfg.post_run_grace_s
+        ):
+            waited = round(now - self.run_finished_at, 1)
+            self.log.info("auto_exit", reason="nightly run finished", after_s=waited)
+            await self.shutdown(0)
             return
         if now - self.last_activity < self.cfg.auto_exit_idle_s:
             return

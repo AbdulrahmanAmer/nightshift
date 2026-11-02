@@ -219,3 +219,41 @@ def test_daily_stops_when_the_gpu_stayed_busy_and_reports_it(tmp_home: Path):
     assert [f["code"] for f in report["failures"]] == ["NS-E201"]
     assert report["jobs"] == [] and report["skipped"] == [{"channel": "after-dark", "jobs": 3}]
     assert Path(report["backup"]).exists()  # the night still ends with its backup and report
+
+
+# ---------------------------------------------------------------- gap 25: the end-of-run signal
+
+
+def test_acquirer_signals_run_finished_only_once_connected(tmp_home: Path):
+    acq, client, _ = make(tmp_home)
+    client.run_finished = lambda: True  # type: ignore[attr-defined]
+    assert acq.run_finished() is False  # this run never used the supervisor: nothing to tell it
+    acq.acquire("llama", "o")
+    assert acq.run_finished() is True
+
+
+def test_acquirer_run_finished_swallows_a_dead_supervisor(tmp_home: Path):
+    acq, client, _ = make(tmp_home)
+    acq.acquire("llama", "o")
+
+    def gone() -> bool:
+        raise NsError("NS-E202", "gone")
+
+    client.run_finished = gone  # type: ignore[attr-defined]
+    assert acq.run_finished() is False
+
+
+def test_daily_tells_the_supervisor_the_night_is_over(tmp_home: Path):
+    _channels(tmp_home)
+    env = jobs.open_env(light=True)
+
+    class Spy(DevAcquirer):
+        told = 0
+
+        def run_finished(self) -> bool:
+            Spy.told += 1
+            return True
+
+    env.services.acquirer = Spy(env.runtime)
+    daily.run_daily(env, now=NOW, rng=random.Random(1), run_fn=lambda ctx: [])
+    assert Spy.told == 1

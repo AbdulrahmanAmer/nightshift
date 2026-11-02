@@ -121,6 +121,19 @@ class StudioAcquirer:
         except NsError as e:
             self.log.warn("release_failed", str(e), service=service, owner=owner)
 
+    def run_finished(self) -> bool:
+        """Tell the supervisor the nightly run is done so the engine can leave (gap 25). Best effort; False
+        when this run never used the supervisor or it is gone."""
+        client = self.client
+        signal = getattr(client, "run_finished", None)
+        if signal is None:
+            return False
+        try:
+            return bool(signal())
+        except NsError as e:
+            self.log.warn("run_finished_failed", str(e))
+            return False
+
     def warmup(self, service: str) -> str:
         """Start `service` ahead of time (`POST /warmup`); the state, or `unavailable` when it cannot."""
         try:

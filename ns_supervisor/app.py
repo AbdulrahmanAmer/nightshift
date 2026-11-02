@@ -139,6 +139,10 @@ def create_app(sup: Supervisor, *, start_dashboard: bool = False, run_monitor: b
     async def warmup(body: WarmupBody) -> dict[str, Any]:
         return {"state": await sup.warmup(body.service)}
 
+    @app.post("/run_finished")
+    async def run_finished() -> dict[str, Any]:
+        return sup.note_run_finished()
+
     @app.post("/events")
     async def post_event(body: EventBody) -> dict[str, Any]:
         sup.publish(body.kind, body.data)
