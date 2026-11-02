@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 
 from ns_common.errors import NsError
+from ns_common.tts_timeout import tts_timeout_s
 from ns_tts.audio import split_wav_stream
 from ns_tts.engine import QwenttsEngine
 from ns_tts.voices import VoiceLibrary
@@ -100,19 +101,22 @@ def test_a_failing_batch_process_is_ns_e310(eng: QwenttsEngine, calls: Path, mon
     assert ei.value.code == "NS-E310" and "exited 3" in ei.value.detail
 
 
-def test_the_process_time_limit_grows_with_the_batch(eng: QwenttsEngine, calls: Path, monkeypatch: pytest.MonkeyPatch):
-    import subprocess
-
+def test_the_process_time_limit_follows_the_shared_formula(
+    eng: QwenttsEngine, calls: Path, monkeypatch: pytest.MonkeyPatch
+):
     seen: list[float] = []
-    real = subprocess.run
+    real = eng._run_stream
 
     def spy(cmd, **kw):  # type: ignore[no-untyped-def]
-        seen.append(kw["timeout"])
+        seen.append(kw["timeout_s"])
         return real(cmd, **kw)
 
-    monkeypatch.setattr(subprocess, "run", spy)
+    monkeypatch.setattr(eng, "_run_stream", spy)
     eng.synth_batch(SENTENCES, RYAN)
-    assert seen[0] > eng.timeout_s
+    assert seen[0] == tts_timeout_s(len(SENTENCES)) == 120 + 3 * len(SENTENCES)
+    eng.batch_timeout_floor_s = 900.0  # the server raises it to the client's own timeout
+    eng.synth_batch(SENTENCES, RYAN)
+    assert seen[1] == 900.0
 
 
 # ---------------------------------------------------------------- the stream format

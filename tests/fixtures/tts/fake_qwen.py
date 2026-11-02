@@ -19,6 +19,7 @@ import math
 import os
 import struct
 import sys
+import time
 import wave
 from pathlib import Path
 
@@ -159,7 +160,13 @@ def run_tts(argv: list[str]) -> int:
         if os.environ.get("NS_FAKE_QWEN_SHORT"):
             lines = lines[:-1]  # a binary that drops an utterance
         out = sys.stdout.buffer
-        for ln in lines:
+        hang_after = os.environ.get("NS_FAKE_QWEN_HANG_AFTER")  # finish N utterances, open the next, then stall
+        for k, ln in enumerate(lines):
+            if hang_after is not None and k == int(hang_after):
+                out.write(stream_header())
+                out.flush()
+                time.sleep(120)
+                return 1
             out.write(stream_header() + tone_bytes(max(0.3, 0.2 * len(ln.split())), freq))
         out.flush()
         return 0

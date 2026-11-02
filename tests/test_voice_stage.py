@@ -108,9 +108,9 @@ def test_voice_stage_resynthesizes_only_changed_items(tmp_home: Path):
     seen: list[list[str]] = []
     real = ctx.services.tts.speak_batch
 
-    def spy(items, out_dir, *, seed=None):
+    def spy(items, out_dir, *, seed=None, timeout_s=None):
         seen.append([i.id for i in items])
-        return real(items, out_dir, seed=seed)
+        return real(items, out_dir, seed=seed, timeout_s=timeout_s)
 
     ctx.services.tts.speak_batch = spy  # type: ignore[method-assign]
     parts = [dict(PARTS[0], hook="Someone keeps ringing my bell at 3:12.")]

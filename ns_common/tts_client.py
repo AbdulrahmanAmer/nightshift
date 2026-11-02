@@ -11,6 +11,7 @@ import numpy as np
 from ns_common.errors import NsError
 from ns_common.pacing import pause_plan
 from ns_common.textstats import word_count
+from ns_common.tts_timeout import batch_timeout_s
 
 
 @dataclass(frozen=True)
@@ -46,7 +47,8 @@ class Tts(Protocol):
     ) -> float: ...
 
     def speak_batch(
-        self, items: list[TtsItem], out_dir: Path, *, seed: int | None = None
+        self, items: list[TtsItem], out_dir: Path, *, seed: int | None = None,
+        timeout_s: float | None = None,
     ) -> list[TtsFile]: ...
 
     def voices(self) -> list[dict]: ...
@@ -112,21 +114,44 @@ class TtsClient:
         return wav_seconds(out_path)
 
     def speak_batch(
-        self, items: list[TtsItem], out_dir: Path, *, seed: int | None = None
+        self, items: list[TtsItem], out_dir: Path, *, seed: int | None = None,
+        timeout_s: float | None = None,
     ) -> list[TtsFile]:
+        """Speak the whole batch in one request that may take `timeout_s` (default: the shared formula).
+
+        The limit grows with the batch (`ns_common.tts_timeout`) and travels to the service, which never
+        stops a process before it. When it passes without an answer the service is asked to cancel the batch
+        (that frees the GPU before a retry) and NS-E310 is raised; a retry resumes from the items the service
+        had already written to `out_dir` (`resume`).
+        """
+        limit = timeout_s if timeout_s is not None else batch_timeout_s(i.text for i in items)
         body: dict[str, Any] = {
             "items": [_item_body(i) for i in items],
             "out_dir": str(out_dir),
+            "timeout_s": limit,
+            "resume": True,
         }
         if seed is not None:
             body["seed"] = seed
         try:
-            r = self.client.post(f"{self.base_url}/v1/audio/speech/batch", json=body)
+            r = self.client.post(f"{self.base_url}/v1/audio/speech/batch", json=body, timeout=limit)
             _raise_voice_mismatch(r)
             r.raise_for_status()
+        except httpx.TimeoutException as e:
+            stopped = self.cancel_batch()
+            note = "asked the service to cancel it" if stopped else "could not ask the service to cancel it"
+            raise NsError("NS-E310", f"tts batch: no answer after {limit:.0f}s ({note}): {e}") from e
         except httpx.HTTPError as e:
             raise NsError("NS-E310", f"tts batch: {e}") from e
         return [TtsFile(f["id"], Path(f["path"]), float(f["seconds"])) for f in r.json()["files"]]
+
+    def cancel_batch(self) -> bool:
+        """Ask the service to stop the batch it is running (kills its `qwen-tts` process); True if it did."""
+        try:
+            r = self.client.post(f"{self.base_url}/v1/audio/speech/cancel", timeout=10)
+            return r.status_code == 200 and bool(r.json().get("cancelled"))
+        except (httpx.HTTPError, ValueError):
+            return False
 
     def voices(self) -> list[dict]:
         try:
@@ -190,7 +215,8 @@ class FakeTts:
         return np.concatenate(parts)
 
     def speak_batch(
-        self, items: list[TtsItem], out_dir: Path, *, seed: int | None = None
+        self, items: list[TtsItem], out_dir: Path, *, seed: int | None = None,
+        timeout_s: float | None = None,
     ) -> list[TtsFile]:
         out: list[TtsFile] = []
         for it in items:
