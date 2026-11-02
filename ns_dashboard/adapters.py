@@ -120,8 +120,8 @@ class VoiceMakerAdapter(Protocol):
         """The voice setup asked for (`config/pending_voice.json`) while it does not exist yet, else None."""
         ...
 
-    def apply_pending(self) -> str | None:
-        """Create that voice now; returns its name, or None when there was nothing to do."""
+    def apply_pending(self, ctl: JobControl | None = None) -> str | None:
+        """Create that voice now (inside an `apply_voice` job when `ctl` is given); its name, or None."""
         ...
 
 
@@ -734,9 +734,28 @@ class RealVoiceMaker:
         """The queued setup voice (name, mode, description, channel), or None when none waits or it exists."""
         return read_pending_voice(self.paths)
 
-    def apply_pending(self) -> str | None:
-        """Create the setup voice in the studio venv (`voice_setup.apply_pending`), which holds `tts`."""
-        done = self._runner.run("apply_voice", {"supervisor_url": self.link.base_url})
+    def apply_pending(self, ctl: JobControl | None = None) -> str | None:
+        """Create the setup voice in the studio venv (`voice_setup.apply_pending`), which holds `tts`.
+
+        Called with the `JobControl` of an `apply_voice` job (Library > Voices > Create it now), it reports
+        progress and honours Cancel: the child is stopped and the lease `studio:voice-<name>` it may still
+        hold is released at once.
+        """
+        args = {"supervisor_url": self.link.base_url}
+        if ctl is None:
+            done = self._runner.run("apply_voice", args)
+        else:
+            want = self.pending()
+            owner = f"studio:voice-{want['name']}" if want else None
+            ctl.progress(0.1, "Making the voice: loading the voice engine")
+            try:
+                done = self._runner.run("apply_voice", args, check_cancel=ctl.check_cancel)
+            except BaseException:
+                if owner:
+                    with contextlib.suppress(Exception):  # an engine that is down holds nothing
+                        self.link.release_owner(owner)
+                raise
+            ctl.progress(1.0, "The voice is ready")
         name = done.get("name")
         return str(name) if name else None
 

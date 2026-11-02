@@ -89,4 +89,4 @@ export interface LearnImported { matched: number; unmatched: number; summary: st
 /** GET /voices/pending and POST /voices/apply-pending: the voice that setup queued and could not make yet. */
 export interface PendingVoiceInfo { name: string; mode: "design" | "clone"; description: string; channel: string | null }
 export interface PendingVoice { pending: PendingVoiceInfo | null }
-export interface VoiceApplied { created: string | null; pending: PendingVoiceInfo | null }
+export interface VoiceApplied { created: string | null; pending: PendingVoiceInfo | null; /** The `apply_voice` job that makes it (null when nothing was queued by setup). */ job_id?: string | null }

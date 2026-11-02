@@ -344,9 +344,12 @@ class FakeVoiceMaker:
 
         return read_pending_voice(self.paths)
 
-    def apply_pending(self) -> str | None:
+    def apply_pending(self, ctl: JobControl | None = None) -> str | None:
         """Make the queued voice with the fake engine and forget the request."""
         want = self.pending()
+        if ctl is not None:
+            ctl.progress(0.1, "Making the voice: loading the voice engine")
+            ctl.check_cancel()
         if self.fail_with is not None:
             raise self.fail_with
         if want is None:

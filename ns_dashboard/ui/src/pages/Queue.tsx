@@ -29,6 +29,7 @@ export function Poster({ o, className, portrait }: { o: Pick<Output, "title" | "
 }
 
 export function jobTitle(j: Job, channelName: (s?: string | null) => string) {
+  if (j.kind === "apply_voice") return j.params?.name ? `Making the voice ${j.params.name}` : "Making the setup voice";
   if (j.kind === "clip") return (j.params?.title ?? j.title) ? `Clips from ${j.params?.title ?? j.title}` : `Clips for ${channelName(j.channel)}`;
   return (j.params?.title ?? j.title) || `Story video for ${channelName(j.channel)}`;
 }

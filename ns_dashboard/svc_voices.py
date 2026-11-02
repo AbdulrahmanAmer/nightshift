@@ -81,11 +81,26 @@ class VoicesService:
         return {"pending": self.s.adapters.voice_maker.pending()}
 
     def apply_pending(self) -> dict[str, Any]:
-        """Create the voice that setup queued. A missing VoiceDesign model comes back as `NS-E314`."""
+        """Queue the job that creates the voice setup asked for (kind `apply_voice`) and wake the worker.
+
+        The job shows progress and can be cancelled from the Queue. Asking again while one is queued or
+        running answers with that job. `{created: null, pending, job_id}`; `job_id` is null when nothing was
+        queued by setup. A missing VoiceDesign model ends the job with `NS-E314` and the request stays queued.
+        """
         self._accepting()
-        name = self.s.adapters.voice_maker.apply_pending()
-        self.s.log.info("voice_setup_applied", voice=name)
-        return {"created": name, "pending": self.s.adapters.voice_maker.pending()}
+        pending = self.s.adapters.voice_maker.pending()
+        if pending is None:
+            return {"created": None, "pending": None, "job_id": None}
+        busy = self.s.db.one(
+            "SELECT job_id FROM dashboard_jobs WHERE kind = 'apply_voice' AND status IN ('queued', 'running')"
+        )
+        if busy is not None:
+            return {"created": None, "pending": pending, "job_id": str(busy["job_id"])}
+        rec = self.s.store.create("apply_voice", pending.get("channel"), {"name": pending["name"]})
+        self.s.worker.enqueue(rec.job_id)
+        self.s.hub.publish("dashboard_job", rec.to_dict())
+        self.s.log.info("voice_setup_queued", voice=pending["name"], job_id=rec.job_id)
+        return {"created": None, "pending": pending, "job_id": rec.job_id}
 
     def design(self, body: dict[str, Any]) -> dict[str, Any]:
         """New voice from a plain-English description (VoiceDesign), previewed with `test_line`."""

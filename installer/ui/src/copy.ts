@@ -266,7 +266,7 @@ export const choices = {
     perWeekCaption: "Start with 1 for a new channel",
     code: "Also install Nightshift Code, an offline coding assistant",
     voicedesign: "Also download the voice design model now",
-    voicedesignHint: "About 2 GB. Without it, the first voice you design downloads it then.",
+    voicedesignHint: "About 2 GB. Without it, nothing downloads it by itself: get it later in Settings › Models › Get voice design model.",
     voicedesignOn: "Adds about 2 GB to the download. Your designed voice can be made as soon as setup ends.",
     theme: "Theme",
     dark: "Dark",
