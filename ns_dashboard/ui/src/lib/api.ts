@@ -34,6 +34,8 @@ export const api = {
   put<T = any>(p: string, b: unknown) { return this.request<T>("PUT", p, b); },
   mediaUrl(id: string) { return `${BASE}/media/${id.split("/").map(encodeURIComponent).join("/")}`; },
   thumbUrl(id: string) { return `${this.mediaUrl(id)}/thumb.jpg`; },
+  /** One of the three thumbnails the studio made for a long video (thumb_1.jpg to thumb_3.jpg). */
+  thumbChoiceUrl(n: number, id: string) { return `${BASE}/thumbs/${n}/${id.split("/").map(encodeURIComponent).join("/")}`; },
   enc(id: string) { return id.split("/").map(encodeURIComponent).join("/"); },
 
   /** True once /status has answered. Only the very first call can switch to demo data (no backend at all, as in DEMO.cmd);
