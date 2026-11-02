@@ -116,7 +116,9 @@ class NullGpuProbe:
 class FakeGpuProbe:
     """Test probe: returns `value` (or the next of `values`, repeating the last) and counts calls."""
 
-    def __init__(self, value: GpuStatus | None = None, *, values: list[GpuStatus | None] | None = None) -> None:
+    def __init__(
+        self, value: GpuStatus | None = None, *, values: list[GpuStatus | None] | None = None
+    ) -> None:
         self._values = list(values) if values is not None else [value]
         self.calls = 0
 

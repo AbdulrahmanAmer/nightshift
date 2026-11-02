@@ -86,7 +86,11 @@ def test_fake_probe_sequence_repeats_the_last_value() -> None:
 
 def _sup(tmp_path: Path, runtime: Runtime, **kw: object) -> Supervisor:
     return Supervisor(
-        Paths(tmp_path / "ns"), runtime, config=fast_config(), resolver=StubTable(), **kw  # type: ignore[arg-type]
+        Paths(tmp_path / "ns"),
+        runtime,
+        config=fast_config(),
+        resolver=StubTable(),
+        **kw,  # type: ignore[arg-type]
     )
 
 
