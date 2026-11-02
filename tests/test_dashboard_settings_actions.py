@@ -285,3 +285,24 @@ def test_clip_rerun_route_rejects_bad_requests(tmp_home: Path):
     assert bad.status_code == 422
     old = client.post("/api/jobs/clip/rerun", json={"job_id": clip.job_id, "template": "auto"})
     assert old.status_code == 409 and err(old)["code"] == "cannot_rerun"
+
+
+# ---------------------------------------------------------------- gap 23: Library > Formats edit form -> PUT
+
+
+def test_format_edit_form_saves_a_patch_over_http(tmp_home: Path):
+    client, _state = make_env(tmp_home)
+    listed = {f["id"]: f for f in client.get("/api/library/formats").json()}
+    assert listed["short_9x16"]["source"] == "shipped" and listed["short_9x16"]["definition"]["duration"]["max_s"] == 90
+    patch = {"changes": {"name": "Short, calmer", "duration": {"min_s": 25, "max_s": 80}, "captions": {"anchor_y_pct": 65}}}
+    r = client.put("/api/library/formats/short_9x16", json=patch)
+    assert r.status_code == 200, r.text
+    saved = r.json()
+    assert saved["source"] == "edited" and saved["name"] == "Short, calmer"
+    assert saved["definition"]["duration"]["min_s"] == 25 and saved["definition"]["captions"]["anchor_y_pct"] == 65
+    assert saved["definition"]["captions"]["styles_allowed"]  # fields the form did not touch are kept
+    assert (Paths.from_env().config / "formats" / "short_9x16.yaml").exists()
+    bad = client.put("/api/library/formats/short_9x16", json={"changes": {"duration": {"min_s": 99, "max_s": 30}}})
+    assert bad.status_code == 422 and err(bad)["code"] == "invalid_format" and err(bad)["details"]
+    dup = client.post("/api/library/formats", json={"duplicate_of": "square_1x1"})
+    assert dup.status_code == 201 and dup.json()["id"] == "square_1x1_copy"

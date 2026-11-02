@@ -287,10 +287,13 @@ function Voices() {
 
 function Formats() {
   const { toast, channelName } = useApp(); const formats = useLoad<Format[]>(() => api.get("/library/formats"), [], []);
-  const dup = async (f: Format) => { try { await api.post("/library/formats", { ...f, id: f.id + "_copy", name: (f.name || f.id) + " copy", channels: [] }); toast("Duplicated. Edit the preset file to change it", "ok"); formats.reload(); } catch (e: any) { toast(e.message, "bad"); } };
+  const dup = async (f: Format) => { try { await api.post("/library/formats", { duplicate_of: f.id }); toast("Duplicated. Edit the copy to change it", "ok"); formats.reload(); } catch (e: any) { toast(e.message, "bad"); } };
+  const [editing, setEditing] = useState<string | null>(null);
+  const editF = formats.data.find((x) => x.id === editing);
   const groups: [string, string][] = [["video", "Video formats"], ["clip", "Clip layouts"]];
   return (
     <div className="flex flex-col gap-8">
+      {editF && <DashGrid label="Edit format"><FormatEditor key={editF.id} f={editF} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); formats.reload(); }} /></DashGrid>}
       {groups.map(([k, label]) => {
         const list = formats.data.filter((f) => (k === "video" ? f.kind !== "clip" : f.kind === "clip"));
         return (
@@ -306,7 +309,7 @@ function Formats() {
                       <h3 className="text-ds-md font-semibold">{f.name || f.id}</h3>
                       <p className="text-ds-2xs text-ds-muted ds-num">{f.canvas?.w} × {f.canvas?.h} · {f.canvas?.fps} fps</p>
                       <p className="text-ds-xs text-ds-text-2">{f.channels?.length ? `Used by ${f.channels.map(channelName).join(", ")}` : "Not used by a channel"}</p>
-                      <Button size="sm" variant="ghost" className="mt-auto -ml-2 self-start" leadingIcon="copy" onClick={() => dup(f)}>Duplicate</Button>
+                      <div className="mt-auto -ml-2 flex gap-1 self-start"><Button size="sm" variant="ghost" leadingIcon="edit" onClick={() => setEditing(f.id)}>Edit</Button><Button size="sm" variant="ghost" leadingIcon="copy" onClick={() => dup(f)}>Duplicate</Button></div>
                     </div>
                   </Card>
                 );
@@ -317,6 +320,52 @@ function Formats() {
         );
       })}
     </div>
+  );
+}
+
+/** Edit form of one format: name, length, caption position and shot length. Saves with PUT /library/formats/{id}
+ *  as a patch; a shipped preset is saved as the owner's own copy of the same id and the server validates the result. */
+function FormatEditor({ f, onClose, onSaved }: { f: Format; onClose: () => void; onSaved: () => void }) {
+  const { toast } = useApp();
+  const d = f.definition || {};
+  const [name, setName] = useState<string>(d.name ?? f.name ?? f.id);
+  const [minS, setMinS] = useState(String(d.duration?.min_s ?? ""));
+  const [maxS, setMaxS] = useState(String(d.duration?.max_s ?? ""));
+  const [anchor, setAnchor] = useState(String(d.captions?.anchor_y_pct ?? ""));
+  const [words, setWords] = useState(String(d.captions?.words_on_screen ?? ""));
+  const [shotMin, setShotMin] = useState(String(d.shots?.min_s ?? ""));
+  const [shotMax, setShotMax] = useState(String(d.shots?.max_s ?? ""));
+  const [busy, setBusy] = useState(false); const [problems, setProblems] = useState<string[]>([]);
+  const num = (v: string) => (v.trim() === "" || isNaN(Number(v)) ? undefined : Number(v));
+  const save = async () => {
+    const changes: Record<string, any> = { name: name.trim() || f.id };
+    const dur = { min_s: num(minS), max_s: num(maxS) }; if (dur.min_s != null || dur.max_s != null) changes.duration = Object.fromEntries(Object.entries(dur).filter(([, v]) => v != null));
+    const cap = { anchor_y_pct: num(anchor), words_on_screen: num(words) }; if (cap.anchor_y_pct != null || cap.words_on_screen != null) changes.captions = Object.fromEntries(Object.entries(cap).filter(([, v]) => v != null));
+    const shots = { min_s: num(shotMin), max_s: num(shotMax) }; if (d.shots && (shots.min_s != null || shots.max_s != null)) changes.shots = Object.fromEntries(Object.entries(shots).filter(([, v]) => v != null));
+    setBusy(true); setProblems([]);
+    try { await api.put(`/library/formats/${encodeURIComponent(f.id)}`, { changes }); toast(f.source === "shipped" ? "Saved as your own version of this format" : "Format saved", "ok"); onSaved(); }
+    catch (e: any) { setProblems([e.message]); toast("That format was not saved", "bad"); }
+    setBusy(false);
+  };
+  const row = "grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3";
+  return (
+    <Card as="section" aria-labelledby="fmt-edit" className={SPAN["6/4"]}>
+      <CardHeader id="fmt-edit" title={`Edit ${f.name || f.id}`} actions={<Button size="sm" variant="ghost" leadingIcon="x" onClick={onClose}>Close</Button>} />
+      <div className={row}>
+        <Field label="Name" htmlFor="fmt-name"><Input id="fmt-name" value={name} onChange={(e) => setName(e.target.value)} /></Field>
+        <Field label="Shortest, seconds" htmlFor="fmt-min"><Input id="fmt-min" inputMode="numeric" value={minS} onChange={(e) => setMinS(e.target.value)} /></Field>
+        <Field label="Longest, seconds" htmlFor="fmt-max"><Input id="fmt-max" inputMode="numeric" value={maxS} onChange={(e) => setMaxS(e.target.value)} /></Field>
+        <Field label="Caption height, % from the top" htmlFor="fmt-anchor" hint="0 is the top edge, 100 the bottom"><Input id="fmt-anchor" inputMode="numeric" value={anchor} onChange={(e) => setAnchor(e.target.value)} /></Field>
+        <Field label="Words on screen at once" htmlFor="fmt-words"><Input id="fmt-words" inputMode="numeric" value={words} onChange={(e) => setWords(e.target.value)} /></Field>
+        {d.shots && <><Field label="Shortest shot, seconds" htmlFor="fmt-smin"><Input id="fmt-smin" inputMode="decimal" value={shotMin} onChange={(e) => setShotMin(e.target.value)} /></Field>
+          <Field label="Longest shot, seconds" htmlFor="fmt-smax"><Input id="fmt-smax" inputMode="decimal" value={shotMax} onChange={(e) => setShotMax(e.target.value)} /></Field></>}
+      </div>
+      {problems.length > 0 && <p role="alert" className="mt-3 text-ds-sm text-ds-danger">{problems.join(". ")}</p>}
+      <div className="mt-4 flex items-center gap-3">
+        <Button leadingIcon="check" disabled={busy} onClick={save}>{busy ? "Saving" : "Save format"}</Button>
+        <span className="text-ds-xs text-ds-muted">{f.source === "shipped" ? "A shipped format is saved as your own copy, so updates never overwrite it" : "Saved in your formats folder"}</span>
+      </div>
+    </Card>
   );
 }
 

@@ -19,7 +19,7 @@ export interface Learn { imported_at?: string; matched?: number; unmatched?: num
 export interface Idea { id: number | string; channel: string; title: string; premise: string; status: string; source?: string; created_at?: string }
 export interface Story { job_id: string; title: string; channel: string; format: string; words: number; critic_avg: number; created_at: string; outputs: number; status: string }
 export interface Footage { source: string; id: string; keywords: string[]; license: string; duration: number; last_used: string; uses: number }
-export interface Format { id: string; name?: string; kind: string; canvas?: { w: number; h: number; fps: number }; channels?: string[] }
+export interface Format { id: string; name?: string; kind: string; canvas?: { w: number; h: number; fps: number }; channels?: string[]; source?: "shipped" | "edited" | "yours"; valid?: boolean; errors?: string[]; definition?: any }
 export interface LogLine { ts: string; level: string; component: string; event: string; msg?: string }
 export type ChatEvent =
   | { kind: "conversation"; payload: { conversation_id: string } }

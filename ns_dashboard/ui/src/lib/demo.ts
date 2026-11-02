@@ -247,6 +247,7 @@ export async function demoHandle(method: string, path: string, body?: any): Prom
   if (p === "/library/footage") { const qq = (sp.get("q") || "").toLowerCase(); return DEMO.footage.filter((f: any) => !qq || f.keywords.join(" ").includes(qq)); }
   if (p === "/library/formats" && method === "GET") return DEMO.formats.map((f: any) => ({ ...f }));
   if (p === "/library/formats" && method === "POST") { DEMO.formats.push({ ...body }); return body; }
+  if (parts[0] === "library" && parts[1] === "formats" && method === "PUT") { const f = DEMO.formats.find((x: any) => x.id === parts[2]); if (!f) throw new Error("Not found"); if (body?.changes?.name) f.name = body.changes.name; return { ...f }; }
   if (p === "/library/series" && method === "GET") return structuredClone(DEMO_SERIES);
   if (parts[0] === "library" && parts[1] === "series" && parts[3] === "produce") {
     const s = DEMO_SERIES.find((x) => x.slug === parts[2]); const part = s?.parts.find((x: any) => x.status === "approved");
