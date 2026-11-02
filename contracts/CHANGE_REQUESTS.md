@@ -353,7 +353,7 @@ Format per entry:
 - **Change:** `bins.webview2` is pinned exactly as `CR-C2-host` below specifies (real sha256, keys `{version, url, sha256}`; members and destination in `downloader.py`). In addition `BinPin` gains `optional: bool = False`, and the placeholder `sha256` `"TBD-release"` is accepted only on entries marked `optional: true` (`BinPin` validator; `tools/resolve_manifest.py --check` skips the hash test for such an entry; `tests/test_resolve_manifest.py` accepts it for no other). Rule documented in `docs/REPO_SETTINGS.md` after the `bins.qwentts` row. `manifest.schema.json` regenerated.
 - **Why:** the owner asked for the TBD rule to be enforced rather than implied; the real hash for `webview2` arrived (CR-C2-host) so the entry does not use it today.
 - **Differences from the design doc:** the doc sketched a `files` map of per-DLL hashes; the whole `.nupkg` is hash-checked instead. An earlier draft of this CR added `extract` and `dest` to `BinPin`; dropped because `CR-C2-host` keeps them in code.
-- **Status:** applied in @@CR_C1_UI_3@@
+- **Status:** applied in ccf6c7b
 
 ## CR-C3-UI-4: `Status` model with an optional `gpu` object
 - **From:** dashboard UI (GPU and VRAM meters, HANDOFF "UI gaps"); owner decisions of 2026-11-02
@@ -396,4 +396,4 @@ Format per entry:
   ```
   The installer verifies the `.nupkg` (a zip, 8,769,233 bytes) and extracts only `lib/net462/Microsoft.Web.WebView2.Wpf.dll`, `lib/net462/Microsoft.Web.WebView2.Core.dll` and `runtimes/win-x64/native/WebView2Loader.dll` into `<home>\bin\webview2\` (this package version has no `lib/net45`; the code falls back to it for older versions).
 - **Why:** the host needs the three DLLs; nothing binary is committed. The sha256 was computed from the downloaded package inside a GitHub Actions run (not on the authoring laptop); the package listing was read in the same run (`lib/net462/*.dll`, `runtimes/win-x64/native/WebView2Loader.dll` present).
-- **Status:** applied in @@CR_C2_HOST@@ (`manifest.json` `bins.webview2`, on `feat/c3-ui-contracts`). Before it landed, a missing `bins.webview2` entry is treated like a `TBD-release` hash: the installer skips the package and `nightshift-dashboard.ps1` uses the Edge/Chrome `--app=` window (host exits 3).
+- **Status:** applied in ccf6c7b (`manifest.json` `bins.webview2`, on `feat/c3-ui-contracts`). Before it landed, a missing `bins.webview2` entry is treated like a `TBD-release` hash: the installer skips the package and `nightshift-dashboard.ps1` uses the Edge/Chrome `--app=` window (host exits 3).
