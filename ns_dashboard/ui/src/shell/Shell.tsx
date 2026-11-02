@@ -163,7 +163,7 @@ export function Shell({ children }: { children: ReactNode }) {
       <a href="#main" className="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-50 focus:rounded-ds-md focus:bg-ds-surface focus:px-4 focus:py-2">Skip to content</a>
       <SideTab />
       <div className="relative z-[1] p-2 md:py-4 md:pr-4 md:pl-3">
-        <AppWindow className="mx-auto min-h-[calc(100dvh-16px)] max-w-[1600px] px-4 pt-4 pb-6 md:min-h-[calc(100dvh-32px)] md:px-6 lg:px-8 lg:pt-5">
+        <AppWindow glass className="mx-auto min-h-[calc(100dvh-16px)] max-w-[1600px] px-4 pt-4 pb-6 md:min-h-[calc(100dvh-32px)] md:px-6 lg:px-8 lg:pt-5">
           <TopBar />
           <main id="main" tabIndex={-1} className="mt-6 min-w-0 outline-none">{children}</main>
         </AppWindow>
