@@ -602,6 +602,13 @@ def create_app(
     async def assistant_conversations() -> SafeJSONResponse:
         return ok(await run_in_threadpool(dash.assistant_store.conversations))
 
+    @app.get("/api/assistant/tools")
+    async def assistant_tools() -> SafeJSONResponse:
+        return ok([
+            {"name": t.spec.name, "description": t.spec.description, "side_effect": t.spec.side_effect, "topic": t.spec.topic}
+            for t in dash.registry.all()
+        ])
+
     @app.post("/api/assistant/queue/run")
     async def assistant_queue_run() -> SafeJSONResponse:
         return ok(await run_in_threadpool(dash.assistant.run_queued))

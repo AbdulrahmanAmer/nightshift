@@ -438,3 +438,20 @@ def test_story_status_words():
 
     assert story_status([]) == "none" and story_status(["rejected", "rejected"]) == "rejected"
     assert story_status(["rejected", "approved"]) == "approved" and story_status(["uploaded", "pending"]) == "pending"
+
+
+# ------------------------------------------------------------------ row 23: the Assistant's labels come from the registry
+
+
+def test_assistant_tools_route_lists_the_registry(tmp_home: Path):
+    from tests.test_dashboard_api import make_env
+
+    client, _state = make_env(tmp_home)
+    tools = client.get("/api/assistant/tools").json()
+    by_name = {t["name"]: t for t in tools}
+    # the names the page used to guess (list_outputs, start_run, start_clips, save_ideas, library_ideas) do not exist
+    for real in ("list_queue", "start_story_job", "start_clip_job", "add_idea", "list_ideas", "pause_channel"):
+        assert real in by_name and by_name[real]["description"]
+    assert by_name["start_story_job"]["side_effect"] is True and by_name["list_queue"]["side_effect"] is False
+    for guessed in ("list_outputs", "start_run", "start_clips", "save_ideas", "library_ideas"):
+        assert guessed not in by_name

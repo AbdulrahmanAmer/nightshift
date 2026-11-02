@@ -221,6 +221,7 @@ export async function demoHandle(method: string, path: string, body?: any): Prom
     if (method === "GET" && ch && parts.length === 2) return { profile: profileOf(ch), warnings: [], warning_fields: [] };
     return { ok: true };
   }
+  if (p === "/assistant/tools") return [];
   if (p === "/templates") return DEMO.templates;
   if (p === "/voices") return DEMO.voices;
   if (p === "/voices/preview") throw new Error("Voice samples need the engine running");
