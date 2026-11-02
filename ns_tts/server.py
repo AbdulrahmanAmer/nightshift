@@ -28,7 +28,7 @@ from ns_common.logging import NsLogger
 from ns_common.models import Runtime
 from ns_common.paths import Paths
 from ns_tts.audio import chunk_text, stitch, trim_silence, wav_bytes, write_wav
-from ns_tts.engine import Engine, select_engine
+from ns_tts.engine import Engine, design_model_message, select_engine
 from ns_tts.voices import VoiceLibrary, VoiceSpec
 
 _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
@@ -82,6 +82,11 @@ class CloneReq(BaseModel):
     language: str = "English"
 
 
+def missing_body(missing: str, code: str, detail: str) -> dict[str, str]:
+    """409 body for an absent model: `missing_model` (what callers test for) plus the code and plain text."""
+    return {"missing_model": missing, "error": code, "detail": detail}
+
+
 def voice_seed(voice_name: str) -> int:
     """Fixed per-voice seed so the timbre of one voice is stable across calls (spec 7.5)."""
     return zlib.crc32(voice_name.encode("utf-8")) & 0x7FFFFFFF
@@ -118,14 +123,20 @@ def create_app(engine: Engine, library: VoiceLibrary, *, log: NsLogger | None = 
     async def ns_error_handler(request: Request, exc: NsError) -> JSONResponse:
         missing = exc.data.get("missing_model")
         if missing:
-            return JSONResponse(status_code=409, content={"missing_model": missing})
+            return JSONResponse(status_code=409, content=missing_body(missing, exc.code, str(exc)))
         if log:
             log.error("tts_error", str(exc), code=exc.code)
         return JSONResponse(status_code=500, content={"error": exc.code, "detail": str(exc)})
 
     @app.get("/health")
     def health() -> dict[str, Any]:
-        return {"ok": True, "engine": engine.name, "model_loaded": bool(engine.loaded)}
+        # engine_kind: "qwentts", "reference" (PyTorch fallback: `ns verify` reports NS-W301) or "fake"
+        return {
+            "ok": True,
+            "engine": engine.name,
+            "engine_kind": engine.name,
+            "model_loaded": bool(engine.loaded),
+        }
 
     @app.get("/v1/voices")
     def voices() -> list[dict[str, str]]:
@@ -169,8 +180,11 @@ def create_app(engine: Engine, library: VoiceLibrary, *, log: NsLogger | None = 
     @app.post("/v1/voices/design", response_model=None)
     def design(req: DesignReq) -> Any:
         missing = engine.missing_model("design")
-        if missing:  # the dashboard/installer downloads it; nothing is fetched here
-            return JSONResponse(status_code=409, content={"missing_model": missing})
+        if missing:  # the installer or `ns models get voicedesign` downloads it; nothing is fetched here
+            return JSONResponse(
+                status_code=409,
+                content=missing_body(missing, "NS-E314", design_model_message(missing)),
+            )
         try:
             with lock:
                 ensure_loaded()
@@ -205,13 +219,18 @@ def create_app(engine: Engine, library: VoiceLibrary, *, log: NsLogger | None = 
     def embedding(name: str) -> Response:
         get_voice(name)
         try:
+            files = library.embedding_files(name)
             blob = library.export_embedding(name)
         except ValueError as e:
             raise HTTPException(404, str(e)) from e
+        if len(files) > 1:  # qwentts voices: speaker.spk + speaker.rvq + ref.txt travel as one zip
+            media, fname = "application/zip", f"{name}.voice.zip"
+        else:
+            media, fname = "application/octet-stream", f"{name}.{files[0].name}"
         return Response(
             content=blob,
-            media_type="application/octet-stream",
-            headers={"Content-Disposition": f'attachment; filename="{name}.speaker.bin"'},
+            media_type=media,
+            headers={"Content-Disposition": f'attachment; filename="{fname}"'},
         )
 
     return app

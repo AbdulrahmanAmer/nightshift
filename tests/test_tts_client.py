@@ -88,4 +88,36 @@ def test_client_keeps_ns_e311_from_the_service(tmp_path: Path):
     cli2 = TtsClient("http://127.0.0.1:8091", client=httpx.Client(transport=httpx.MockTransport(other)))
     with pytest.raises(NsError) as generic:
         cli2.speak("hi", "v", 1.0, tmp_path / "o.wav")
-    assert generic.value.code == "NS-E301"
+    assert generic.value.code == "NS-E310"  # the service's own TTS code is kept (was a generic NS-E301)
+
+
+def test_client_failures_are_tts_codes_not_llm_codes(tmp_path: Path):
+    import pytest
+
+    from ns_common.errors import NsError
+
+    def down(req: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("refused")
+
+    def boom(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text="oops")
+
+    for handler in (down, boom):
+        cli = TtsClient("http://127.0.0.1:8091", client=httpx.Client(transport=httpx.MockTransport(handler)))
+        for call in (
+            lambda: cli.speak("hi", "v", 1.0, tmp_path / "o.wav"),
+            lambda: cli.speak_batch([TtsItem("a", "x", "v")], tmp_path),
+            cli.voices,
+        ):
+            with pytest.raises(NsError) as ei:
+                call()
+            assert ei.value.code == "NS-E310"
+
+    def build_failed(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, json={"error": "NS-E315", "detail": "qwen-codec exited 1"})
+
+    transport = httpx.MockTransport(build_failed)
+    cli2 = TtsClient("http://127.0.0.1:8091", client=httpx.Client(transport=transport))
+    with pytest.raises(NsError) as built:
+        cli2.speak("hi", "v", 1.0, tmp_path / "o.wav")
+    assert built.value.code == "NS-E315"

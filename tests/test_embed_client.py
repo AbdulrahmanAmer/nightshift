@@ -27,3 +27,22 @@ def test_client_parses_openai_shape():
     out = cli.embed(["a", "b"])
     assert out == [[1.0, 0.0], [0.0, 1.0]]
     assert round(cosine(out[0], out[1]), 6) == 0.0
+
+
+def test_embed_failures_have_their_own_code_not_the_llm_one():
+    import pytest
+
+    from ns_common.errors import NsError
+
+    def down(req: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("refused")
+
+    def junk(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"nope": 1})
+
+    for handler in (down, junk):
+        transport = httpx.MockTransport(handler)
+        cli = EmbedClient("http://127.0.0.1:8081", client=httpx.Client(transport=transport))
+        with pytest.raises(NsError) as ei:
+            cli.embed(["a"])
+        assert ei.value.code == "NS-E316"
