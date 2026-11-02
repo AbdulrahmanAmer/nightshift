@@ -318,7 +318,7 @@ class QwenttsEngine:
         with Path(voice.embedding_path).open("rb") as fh:
             if fh.read(len(REFERENCE_MAGIC)) == REFERENCE_MAGIC:
                 raise NsError(
-                    "NS-E301", f"voice {voice.name!r} was created by the reference engine; re-create it"
+                    "NS-E311", f"voice {voice.name!r} was created by the reference engine; re-create it"
                 )
         return "clone", {"embedding": Path(voice.embedding_path)}
 
@@ -488,7 +488,7 @@ class ReferenceEngine:
             raw = path.read_bytes()
             if not raw.startswith(REFERENCE_MAGIC):
                 raise NsError(
-                    "NS-E301", f"voice {voice.name!r} was not created by the reference engine; re-create it"
+                    "NS-E311", f"voice {voice.name!r} was not created by the reference engine; re-create it"
                 )
             torch = importlib.import_module("torch")
             # Pickle based (VoiceClonePromptItem dataclasses): library files are local and trusted.
