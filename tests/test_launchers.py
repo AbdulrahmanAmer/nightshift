@@ -234,3 +234,36 @@ def test_open_dashboard_action_runs_the_launcher_that_does_the_warmup() -> None:
     body = src[src.index("def _act_open_dashboard") :][:600]
     assert "nightshift-dashboard.ps1" in body        # one implementation of the warmup: the launcher
     assert "Start-NsDashboardService" in read("nightshift-dashboard.ps1")
+
+
+# --- the console the launcher hid is always restored ---
+AST_PROBE = """
+$errs = $null; $tokens = $null
+$ast = [System.Management.Automation.Language.Parser]::ParseFile($env:NS_PS1, [ref]$tokens, [ref]$errs)
+$kind = [System.Management.Automation.Language.TryStatementAst]
+$tries = $ast.FindAll({ param($n) $n -is $kind }, $true)
+$hit = @($tries | Where-Object {
+    $null -ne $_.Finally -and
+    $_.Finally.Extent.Text.Contains('ShowWindow($consoleHandle, 5)') -and
+    $_.Body.Extent.Text.Contains('& $hostScript')
+})
+Write-Output ('FINALLY_AROUND_HOST=' + $hit.Count)
+"""
+
+
+@needs_powershell
+def test_dashboard_launcher_restores_its_console_in_a_finally_around_the_host_call() -> None:
+    r = pwsh.run_powershell(AST_PROBE, env_extra={"NS_PS1": str(LAUNCHERS / "nightshift-dashboard.ps1")})
+    assert r.returncode == 0 and "FINALLY_AROUND_HOST=1" in r.stdout, r.stdout + r.stderr
+
+
+def test_dashboard_launcher_only_trusts_a_clean_exit_from_the_host() -> None:
+    text = read("nightshift-dashboard.ps1")
+    assert "if ($hostCode -eq 0) { return }" in text
+    assert "if ($hostCode -ne 3) { return }" not in text
+    # nothing between the host call and the restore can return early
+    host_call = text.index("& $hostScript")
+    finally_at = text.index("finally", host_call)
+    assert "return" not in text[host_call:finally_at]
+    assert text.index("ShowWindow($consoleHandle, 5)") > finally_at
+    assert text.index("if ($hostCode -eq 0) { return }") > text.index("ShowWindow($consoleHandle, 5)")
