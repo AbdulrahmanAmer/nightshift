@@ -180,13 +180,26 @@ function VoiceCard({ v, active, onPlay, line = SAMPLE_LINE }: { v: Voice; active
 }
 
 const VOICE_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]{0,39}$/;
-interface Fail { title: string; text: string; hint?: string; code?: string }
+interface Fail { title: string; text: string; hint?: string; code?: string; /** The voice design model is not installed: offer to get it. */ getModel?: boolean }
+/** Voice errors by code: NS-E310 engine failure, NS-E311 stored voice data missing, NS-E312 bad sample, NS-E314 design model missing, NS-E315 voice could not be built, NS-E316 search service failure. */
+const VOICE_TITLES: Record<string, string> = { "NS-E310": "The voice engine did not answer", "NS-E311": "This voice's stored data is missing", "NS-E312": "That recording will not work for cloning", "NS-E315": "The voice could not be built", "NS-E316": "The search service failed" };
 /** What went wrong, in words the owner can act on. NS-E312 (a clone sample that is too short, quiet, clipped or noisy) gets its own heading. */
 const failOf = (e: unknown): Fail => {
-  if (e instanceof ApiError && e.code === "model_missing") return { title: "Install the voice-design model first", text: e.reason, hint: "Install the voice-design model from Settings, Models, then try again", code: undefined };
-  if (e instanceof ApiError) return { title: e.code === "NS-E312" ? "That recording will not work for cloning" : "The voice was not made", text: e.reason, hint: e.hint, code: e.code && e.code.startsWith("NS-") ? e.code : undefined };
+  if (e instanceof ApiError && (e.code === "model_missing" || e.code === "NS-E314")) return { title: "The voice design model is not installed", text: e.reason, hint: "Get it with the button below (it is a large download), then try again", code: e.code === "NS-E314" ? e.code : undefined, getModel: true };
+  if (e instanceof ApiError) return { title: (e.code && VOICE_TITLES[e.code]) || "The voice was not made", text: e.reason, hint: e.hint, code: e.code && e.code.startsWith("NS-") ? e.code : undefined };
   return { title: "The voice was not made", text: (e as Error)?.message || "Something went wrong" };
 };
+
+function GetModelButton() {
+  const { toast } = useApp(); const [busy, setBusy] = useState(false);
+  const get = async () => {
+    setBusy(true);
+    try { await api.post("/models/get", { name: "voicedesign" }); toast("Downloading the voice design model. You can follow it in Settings, Models", "ok"); }
+    catch (e: any) { toast(e instanceof ApiError && e.code === "models_unavailable" ? "Getting it from here is not available yet. Run the installer's model step again with voice design ticked" : e.message, "warn"); }
+    setBusy(false);
+  };
+  return <div className="mt-2"><Button size="sm" variant="soft" leadingIcon="download" disabled={busy} onClick={get}>Get voice design model</Button></div>;
+}
 
 function FailNote({ f, children }: { f: Fail; children?: ReactNode }) {
   return (
@@ -197,6 +210,7 @@ function FailNote({ f, children }: { f: Fail; children?: ReactNode }) {
         <p className="mt-1">{f.text}</p>
         {f.hint && <p className="mt-1 text-ds-text">{f.hint}</p>}
         {f.code && <p className="mt-1 text-ds-2xs text-ds-muted ds-num">{f.code}</p>}
+        {f.getModel && <GetModelButton />}
         {children && <div className="mt-2">{children}</div>}
       </div>
     </div>
