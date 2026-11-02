@@ -613,7 +613,6 @@ def test_templates_voices_and_preview_cache(tmp_home: Path):
     assert len(state.adapters.tts.previews) == 2  # type: ignore[attr-defined]
     assert code_of(dash.settings.voice_preview, {}) == "no_voice"
     assert code_of(dash.settings.voice_preview, {"voice": "Ryan", "speed": 5}) == "invalid_options"
-    assert code_of(dash.settings.template_preview, "nope") == "not_found"
 
 
 def test_logs_tail_is_a_bare_list(tmp_home: Path):

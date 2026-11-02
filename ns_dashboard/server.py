@@ -466,11 +466,6 @@ def create_app(
     async def templates() -> SafeJSONResponse:
         return ok(await run_in_threadpool(dash.settings.templates))
 
-    @app.get("/api/templates/{template_id}/preview.png")
-    async def template_preview(template_id: str) -> FileResponse:
-        path = await run_in_threadpool(dash.settings.template_preview, template_id)
-        return FileResponse(path, media_type="image/png", headers={"Cache-Control": "private, max-age=3600"})
-
     @app.get("/api/voices")
     async def voices() -> SafeJSONResponse:
         return ok(await run_in_threadpool(dash.settings.voices))

@@ -43,7 +43,6 @@ NO_TOOL: dict[Route, str] = {
     ("POST", "/api/uploads/{upload_id}/complete"): "chunked file upload plumbing for the browser",
     ("GET", "/api/logs/components"): "UI filter list; tail_logs covers the content",
     ("GET", "/api/diagnostics/latest"): "binary zip download",
-    ("GET", "/api/templates/{template_id}/preview.png"): "binary image",
     ("POST", "/api/voices/preview"): "audio playback in the browser",
     ("POST", "/api/assistant/chat"): "the Assistant itself",
     ("POST", "/api/assistant/confirm"): "the Assistant itself (owner's Yes)",

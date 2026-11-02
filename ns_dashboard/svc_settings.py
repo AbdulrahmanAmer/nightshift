@@ -19,7 +19,7 @@ from ns_dashboard.common import now_iso
 from ns_dashboard.errors import AdapterUnavailable, ApiError
 from ns_dashboard.state import AppState, load_dashboard_settings, save_dashboard_settings
 from ns_dashboard.svc_engine import EngineService
-from ns_dashboard.templates import load_templates, render_preview
+from ns_dashboard.templates import load_templates
 
 TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 KEY_ALIASES = {"pexels": "pexels_api_key", "pixabay": "pixabay_api_key"}
@@ -158,15 +158,6 @@ class SettingsService:
     def templates(self) -> list[dict[str, Any]]:
         """Clip templates (bare list)."""
         return load_templates(self.s.paths)
-
-    def template_preview(self, template_id: str) -> Path:
-        """PNG drawn with Pillow."""
-        try:
-            return render_preview(self.s.paths, template_id)
-        except KeyError as e:
-            raise ApiError(404, "not_found", "Unknown layout.") from e
-        except AdapterUnavailable as e:
-            raise ApiError(503, "pillow_missing", str(e)) from e
 
     def voices(self) -> list[dict[str, Any]]:
         """Voices as `[{name, mode, source}]` (bare list)."""

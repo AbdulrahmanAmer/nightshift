@@ -2,15 +2,12 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 from pathlib import Path
 from typing import Any
 
 import yaml
 
 from ns_common.paths import Paths
-from ns_dashboard.errors import AdapterUnavailable
 
 FRAME_W = 1080
 FRAME_H = 1920
@@ -210,7 +207,7 @@ def _from_yaml(f: Path) -> list[dict[str, Any]]:
 
 
 def load_templates(paths: Paths | None = None) -> list[dict[str, Any]]:
-    """Built-in templates overlaid with the C8 yaml (by id), each with its `preview_url`."""
+    """Built-in templates overlaid with the C8 yaml (by id)."""
     by_id: dict[str, dict[str, Any]] = {t["id"]: dict(t) for t in BUILTIN}
     f = yaml_path()
     if f is not None:
@@ -226,42 +223,5 @@ def load_templates(paths: Paths | None = None) -> list[dict[str, Any]]:
         t.setdefault("regions", [])
         if not t.get("label"):
             t["label"] = t["id"].replace("_", " ").title()
-        t["preview_url"] = f"/api/templates/{t['id']}/preview.png"
         out.append(t)
-    return out
-
-
-PALETTE = ["#3b82f6", "#f59e0b", "#10b981", "#ef4444", "#8b5cf6"]
-
-
-def render_preview(paths: Paths, template_id: str, *, scale: int = 5) -> Path:
-    """PNG of the layout (regions plus caption bar) drawn with Pillow; cached by content hash.
-
-    Raises KeyError for an unknown template and AdapterUnavailable when Pillow is missing.
-    """
-    tpl = next((t for t in load_templates(paths) if t["id"] == template_id), None)
-    if tpl is None:
-        raise KeyError(template_id)
-    key = hashlib.sha1(json.dumps(tpl, sort_keys=True).encode()).hexdigest()[:10]
-    out = paths.home / "cache" / "dashboard" / "templates" / f"{template_id}-{key}.png"
-    if out.exists():
-        return out
-    try:
-        from PIL import Image, ImageDraw
-    except ImportError as e:
-        raise AdapterUnavailable("Pillow is not installed") from e
-    w, h = FRAME_W // scale, FRAME_H // scale
-    img = Image.new("RGB", (w, h), "#0f141a")
-    draw = ImageDraw.Draw(img)
-    for i, r in enumerate(tpl["regions"]):
-        x0, y0 = int(r["x"] * w), int(r["y"] * h)
-        x1, y1 = int((r["x"] + r["w"]) * w) - 1, int((r["y"] + r["h"]) * h) - 1
-        draw.rectangle([x0, y0, x1, y1], fill=PALETTE[i % len(PALETTE)], outline="#ffffff")
-        draw.text((x0 + 4, y0 + 4), str(r["name"]), fill="#ffffff")
-    cy = int(tpl["caption_y_pct"] / 100 * h)
-    draw.rectangle([int(w * 0.1), cy - 6, int(w * 0.9), cy + 6], fill="#ffffff")
-    out.parent.mkdir(parents=True, exist_ok=True)
-    tmp = out.with_name(out.stem + ".tmp.png")
-    img.save(tmp, "PNG")
-    tmp.replace(out)
     return out
