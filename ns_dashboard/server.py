@@ -618,7 +618,8 @@ def create_app(
     @app.get("/api/assistant/tools")
     async def assistant_tools() -> SafeJSONResponse:
         return ok([
-            {"name": t.spec.name, "description": t.spec.description, "side_effect": t.spec.side_effect, "topic": t.spec.topic}
+            {"name": t.spec.name, "description": t.spec.description, "side_effect": t.spec.side_effect,
+             "topic": t.spec.topic}
             for t in dash.registry.all()
         ])
 

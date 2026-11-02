@@ -15,7 +15,8 @@ from ns_dashboard.errors import ApiError
 from ns_dashboard.state import AppState
 from ns_dashboard.svc_channels import ChannelsService
 
-MODEL_NAMES = ("voice_design", "story")
+#: The names `ns models get` takes: the VoiceDesign talker and the story LLM.
+MODEL_NAMES = ("voicedesign", "story_llm")
 IDEA_STATUSES = ("new", "approved", "used", "rejected")
 IDEA_SOURCES = ("owner", "assistant", "generated")
 STATUS_ALIASES = {"dropped": "rejected"}  # the UI says "Dropped"; the shared schema says "rejected"
@@ -272,13 +273,17 @@ class LibraryService:
 
         def work() -> None:
             try:
-                code, line = self.s.adapters.update.get_model(name)
+                def progress(line: str) -> None:
+                    self.s.model_downloads[name] = {"state": "running", "message": line[-200:]}
+
+                code, line = self.s.adapters.update.get_model(name, progress)
                 self.s.model_downloads[name] = {"state": "done" if code == 0 else "failed", "message": line}
             except Exception as e:  # a failing download must not leave the page waiting forever
                 self.s.model_downloads[name] = {"state": "failed", "message": str(e)}
 
+        started = {"name": name, **self.s.model_downloads[name]}
         threading.Thread(target=work, name=f"ns-model-{name}", daemon=True).start()
-        return {"name": name, **self.s.model_downloads[name]}
+        return started
 
     def models_state(self) -> dict[str, dict[str, str]]:
         """Downloads started in this session: name -> {state, message}."""

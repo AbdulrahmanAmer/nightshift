@@ -197,12 +197,12 @@ export default function Settings() {
               ))}
             </div>
             <div className="mt-3 flex flex-wrap items-center gap-2">
-              {([["voice_design", "voice design model"], ["story", "story model"]] as const).map(([name, label]) => (
+              {([["voicedesign", "voice design model"], ["story_llm", "story model"]] as const).map(([name, label]) => (
                 <Button key={name} size="sm" variant="soft" leadingIcon="download" disabled={models.data[name]?.state === "running"} onClick={() => getModel(name, label)}>
                   {models.data[name]?.state === "running" ? `Getting the ${label}` : `Get ${label}`}
                 </Button>
               ))}
-              {Object.entries(models.data).filter(([, m]) => m.state !== "running").map(([k, m]) => <span key={k} className={cx("text-ds-2xs", m.state === "failed" ? "text-ds-danger" : "text-ds-success-ink")}>{k.replace("_", " ")}: {m.state === "done" ? "ready" : m.message || "failed"}</span>)}
+              {Object.entries(models.data).filter(([, m]) => m.state !== "running").map(([k, m]) => <span key={k} className={cx("text-ds-2xs", m.state === "failed" ? "text-ds-danger" : "text-ds-success-ink")}>{k}: {m.state === "done" ? "ready" : m.message || "failed"}</span>)}
             </div>
             {unlocked && <div className="pt-4"><Button onClick={async () => { const f = Object.fromEntries(Object.entries(flags).map(([k, v]) => [k, v !== "" && !isNaN(Number(v)) ? Number(v) : v])); if (await put({ flags: f, unlock: true }, "Engine settings saved")) setUnlocked(false); }}>Save engine settings</Button></div>}
             <div className="mt-6 flex flex-wrap items-center justify-between gap-3">

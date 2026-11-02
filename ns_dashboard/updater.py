@@ -24,6 +24,24 @@ VERSION_RE = re.compile(r"\b(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.]+)?)\b")
 TAIL = 2000
 
 
+def stream_command(cmd: list[str], on_line: Callable[[str], None]) -> tuple[int, str]:
+    """Run `cmd` and hand each output line (stdout and stderr together) to `on_line` as it appears."""
+    try:
+        proc = subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace"
+        )
+    except OSError as e:
+        return 127, str(e)
+    last = ""
+    assert proc.stdout is not None
+    for raw in proc.stdout:
+        line = raw.strip()
+        if line:
+            last = line
+            on_line(line)
+    return proc.wait(), last
+
+
 def default_runner(cmd: list[str], timeout_s: int) -> tuple[int, str, str]:
     """Run `cmd` and return (returncode, stdout, stderr); a timeout is reported as returncode 124."""
     try:
@@ -99,11 +117,9 @@ class RealUpdateAdapter:
         code, out, err = self.runner(self._command("models", "--help"), 60)
         return code == 0 and "no such command" not in (out + err).lower()
 
-    def get_model(self, name: str) -> tuple[int, str]:
-        """`ns models get <name>` (a long download); returns (exit code, last output line)."""
-        code, out, err = self.runner(self._command("models", "get", name), 6 * 3600)
-        text = (err or out).strip().splitlines()
-        return code, (text[-1] if text else "")
+    def get_model(self, name: str, on_line: Callable[[str], None] = lambda _l: None) -> tuple[int, str]:
+        """`ns models get <name>` (a long download); every output line goes to `on_line`. Returns (exit code, last line)."""
+        return stream_command(self._command("models", "get", name), on_line)
 
 
 def venv_python(paths: Paths) -> Path:

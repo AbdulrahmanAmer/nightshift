@@ -469,16 +469,16 @@ def test_model_download_is_unavailable_until_ns_models_exists_then_runs_in_the_b
     update = state.adapters.update
     assert isinstance(update, FakeUpdateAdapter)
     with pytest.raises(ApiError) as err:
-        dash.library.models_get("voice_design")
+        dash.library.models_get("voicedesign")
     assert err.value.status == 501 and err.value.code == "models_unavailable"
     assert code_of(dash.library.models_get, "nope") == "unknown_model"
     update.models_command = True  # type: ignore[attr-defined]
-    assert dash.library.models_get("voice_design")["state"] == "running"
+    assert dash.library.models_get("voicedesign")["state"] == "running"
     deadline = time.monotonic() + 10
-    while dash.library.models_state()["voice_design"]["state"] == "running" and time.monotonic() < deadline:
+    while dash.library.models_state()["voicedesign"]["state"] == "running" and time.monotonic() < deadline:
         time.sleep(0.02)
-    assert dash.library.models_state()["voice_design"] == {"state": "done", "message": "voice_design is ready"}
-    assert update.downloaded == ["voice_design"]  # type: ignore[attr-defined]
+    assert dash.library.models_state()["voicedesign"] == {"state": "done", "message": "voicedesign is ready"}
+    assert update.downloaded == ["voicedesign"]  # type: ignore[attr-defined]
 
 
 # ------------------------------------------------------------------ gap 26: Library > Footage delete

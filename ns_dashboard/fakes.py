@@ -385,9 +385,10 @@ class FakeUpdateAdapter:
         """Tests set `models_command` to switch the command on."""
         return getattr(self, "models_command", False)
 
-    def get_model(self, name: str) -> tuple[int, str]:
+    def get_model(self, name: str, on_line: Callable[[str], None] = lambda _l: None) -> tuple[int, str]:
         """Pretend to download."""
         self.downloaded = [*getattr(self, "downloaded", []), name]
+        on_line(f"fetching {name} 50%")
         return 0, f"{name} is ready"
 
     def apply(self) -> dict[str, Any]:

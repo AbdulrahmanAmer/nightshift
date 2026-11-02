@@ -134,8 +134,8 @@ class UpdateAdapter(Protocol):
         """False until `ns models get` exists."""
         ...
 
-    def get_model(self, name: str) -> tuple[int, str]:
-        """Download the model `name` (blocks); returns (exit code, last line)."""
+    def get_model(self, name: str, on_line: Callable[[str], None] = ...) -> tuple[int, str]:
+        """Download the model `name` (blocks); progress lines go to `on_line`. Returns (code, last line)."""
         ...
 
 
