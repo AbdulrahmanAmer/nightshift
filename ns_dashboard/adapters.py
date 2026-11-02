@@ -733,7 +733,7 @@ class RealScheduleAdapter:
         try:
             message = install(self.paths, run_time, app_path(self.paths))
         except ScheduleError as e:
-            return {"applied": False, "note": f"Saved, but Windows did not update the nightly task: {e}"}
+            return {"applied": False, "note": f"Not saved: Windows refused to change the nightly task ({e})"}
         return {"applied": True, "note": f"Scheduled task updated. {message}"}
 
 

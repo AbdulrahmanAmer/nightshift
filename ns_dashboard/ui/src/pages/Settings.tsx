@@ -37,18 +37,35 @@ export default function Settings() {
   const check = async () => { setChecking(true); try { setUpd(await api.get("/update/check")); } catch (e: any) { toast(e.message, "bad"); } setChecking(false); };
   // The updater runs detached and stops this very service, so the POST may never be answered. What is shown comes from the
   // updater's own state file (GET /update/state), polled across the restart: "Installing", "restarting", then "Now on X (was Y)".
+  const UPDATE_WAIT_MS = 10 * 60_000;
   const [updating, setUpdating] = useState<string | null>(null);
+  // After the swap the engine starts Nightshift again (the runtime does that); this page then asks /status until the NEW version answers.
+  // It gives up after 10 minutes and says plainly what to do, instead of polling for ever.
+  const [updateNote, setUpdateNote] = useState<string | null>(null);
   const follow = (fresh: boolean) => {
-    setUpdating("Installing the update"); let seen = !fresh; const began = Date.now(); let n = 0;
+    setUpdating("Installing the update"); setUpdateNote(null); let seen = !fresh; const began = Date.now();
     const t = setInterval(async () => {
-      n++; if (n > 1200) { clearInterval(t); setUpdating(null); return; }
+      if (Date.now() - began > UPDATE_WAIT_MS) {
+        clearInterval(t); setUpdating(null);
+        setUpdateNote("Nightshift did not come back by itself. Close this window and open Nightshift again from the shortcut on your desktop. If it still does not start, make a diagnostics report from there.");
+        return;
+      }
       try {
         const u = await api.get<UpdateState>("/update/state");
         if (u.state === "running") { seen = true; setUpdating(u.message || "Installing the update"); }
         else if ((u.state === "done" || u.state === "failed") && (seen || Date.now() - began > 90_000)) {
+          if (u.state === "failed") {
+            clearInterval(t); setUpdating(null); setUpd(null);
+            toast(`The update did not work and nothing was changed. ${u.message || ""}`, "bad");
+            return;
+          }
+          // done: the service that answers must be the new version before the page says so
+          const now = await api.get<{ version?: string }>("/status");
+          if (u.new && now.version && now.version !== u.new) { setUpdating("Waiting for the new version to start"); return; }
           clearInterval(t); setUpdating(null); setUpd(null);
-          if (u.state === "done") { toast(`Now on ${u.new || "the newest version"} (was ${u.old || "the old one"})`, "ok"); st.reload(); }
-          else toast(`The update did not work and nothing was changed. ${u.message || ""}`, "bad");
+          toast(`Now on ${now.version || u.new || "the newest version"} (was ${u.old || "the old one"})`, "ok");
+          // this page still holds the old version's scripts: load the new ones
+          setTimeout(() => location.reload(), 2500);
         }
       } catch { seen = true; setUpdating("Nightshift is restarting. This page reconnects by itself"); }
     }, 3000);
@@ -159,6 +176,7 @@ export default function Settings() {
                 : upd?.state === "available" ? <Button leadingIcon="download" onClick={apply}>Install {upd.latest}</Button>
                 : <Button variant="soft" leadingIcon="github" onClick={check} disabled={checking}>{checking ? "Checking" : "Check now"}</Button>}
             </SettingRow>
+            {updateNote && <p role="alert" className="mx-1 mb-2 rounded-ds-md bg-ds-danger-soft px-3 py-2 text-ds-sm">{updateNote}</p>}
             <SettingRow title="From a file" sub="The nightshift-app zip you were given, for a PC without internet">
               <label className="ds-focus inline-flex h-9 cursor-pointer items-center gap-2 rounded-ds-md bg-ds-accent-soft px-4 text-ds-sm font-semibold shadow-ds-control hover:bg-ds-soft-hover focus-within:shadow-ds-focus">
                 <Icon name="archive" size={15} />

@@ -602,3 +602,54 @@ def test_without_a_known_process_only_age_makes_a_running_state_stale(tmp_home: 
     assert updater.read_update_state(paths, alive=lambda _p: None, now=lambda: now)["state"] == "failed"  # unknown: age decides
     write_update_state(paths, state="done", new="0.1.1", updated_at=(now - timedelta(days=3)).isoformat())
     assert updater.read_update_state(paths, alive=lambda _p: False, now=lambda: now)["state"] == "done"  # only `running` goes stale
+
+
+# ---------------------------------------------------------------- rows 2, 13, 15 (re-review): the page after an update, demo mode, schedule
+
+
+def test_the_settings_page_follows_an_update_to_the_new_version_and_gives_up_after_ten_minutes():
+    src = page("Settings.tsx")
+    assert "const UPDATE_WAIT_MS = 10 * 60_000" in src and "Date.now() - began > UPDATE_WAIT_MS" in src
+    assert 'api.get<{ version?: string }>("/status")' in src and "now.version !== u.new" in src  # the NEW version must answer
+    assert "location.reload()" in src  # and the page loads its scripts
+    assert "from the shortcut on your desktop" in src  # the plain message when it never answers
+    assert "n > 1200" not in src  # the silent one-hour poll is gone
+
+
+def test_demo_mode_starts_only_when_there_is_no_backend():
+    src = (SRC / "lib" / "api.ts").read_text(encoding="utf-8")
+    assert "if (this.answered || !noBackend(e)) throw e;" in src
+    assert "e instanceof TypeError" in src and "e.status === 404" in src  # nothing listens; the static demo server says 404
+    assert 'throw new Error(String(res.status))' not in src  # a 500/503 while the service restarts is no reason for sample data
+
+
+def test_a_time_windows_refused_is_not_saved_and_the_page_says_so(tmp_home: Path):
+    from tests.test_dashboard_api import make_env
+
+    client, state = make_env(tmp_home)
+
+    class Refuse:
+        def apply(self, run_time: str) -> dict[str, Any]:
+            return {"applied": False, "note": "Not saved: Windows refused to change the nightly task (access denied)"}
+
+    before = client.get("/api/settings").json()["schedule_time"]
+    state.adapters.schedule = Refuse()  # type: ignore[assignment]
+    r = client.put("/api/settings", json={"schedule_time": "02:00", "notifications": False})
+    body = r.json()
+    assert r.status_code == 200 and body["schedule_result"]["applied"] is False
+    assert body["schedule_time"] == before  # the field does not move
+    assert not (state.paths.config / "dashboard.json").exists() or json.loads((state.paths.config / "dashboard.json").read_text(encoding="utf-8")).get("run_time", before) == before
+    assert body["notifications"] is False  # the other fields were saved
+
+
+def test_a_time_the_task_accepts_is_saved(tmp_home: Path):
+    from tests.test_dashboard_api import make_env
+
+    client, _state = make_env(tmp_home)
+    body = client.put("/api/settings", json={"schedule_time": "02:00"}).json()
+    assert body["schedule_result"]["applied"] is True and body["schedule_time"] == "02:00"
+
+
+def test_the_refusal_note_says_not_saved():
+    src = (Path(__file__).resolve().parents[1] / "ns_dashboard" / "adapters.py").read_text(encoding="utf-8")
+    assert "Saved, but Windows did not update the nightly task" not in src and "Not saved: Windows refused" in src

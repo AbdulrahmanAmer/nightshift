@@ -95,10 +95,12 @@ class SettingsService:
             if not isinstance(body["notifications"], bool):
                 raise ApiError(422, "invalid_options", "'notifications' must be true or false.")
             updates["notifications"] = body["notifications"]
+        if "run_time" in updates:  # the task first: a time Windows refused must not be remembered as the schedule
+            schedule_result = self.s.adapters.schedule.apply(updates["run_time"])
+            if schedule_result.get("applied") is False:
+                del updates["run_time"]
         if updates:
             save_dashboard_settings(self.s.paths, updates)
-        if "run_time" in updates:
-            schedule_result = self.s.adapters.schedule.apply(updates["run_time"])
         out = self.get_settings()
         if schedule_result is not None:
             out["schedule_result"] = schedule_result
