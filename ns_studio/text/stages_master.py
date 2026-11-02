@@ -46,6 +46,7 @@ from ns_studio.text.validators import (
     raise_if,
     validate_chapter,
 )
+from ns_studio.variation.short_draw import draw_short_combos, load_short_combos
 
 __all__ = ["expand_chapter", "expansion_plan", "resolve_moments"]
 
@@ -542,8 +543,14 @@ class ShortsSelectStage:
         moments = resolve_moments(
             raw["moments"], story, buckets=buckets, wpm=wpm, count_min=count_min, count_max=count_max
         )
+        # Each Short has its own combo (hook style, caption style, visual treatment, title formula): draw them
+        # now so the hook prompt and the judge use the Short's hook style, not the master's.
+        short_combos = draw_short_combos(
+            ctx, [{"k": k, "length_bucket": m["length_bucket"]} for k, m in enumerate(moments, start=1)]
+        )
         items: list[dict[str, Any]] = []
         for k, m in enumerate(moments, start=1):
+            short_combo = short_combos[str(k)]
             text = span_text(story, m["chapter"], m["sentence_start"], m["sentence_end"])
             chapter_title = next(c.title for c in story.chapters if c.n == m["chapter"])
             out = call_json(
@@ -553,6 +560,7 @@ class ShortsSelectStage:
                 span_text=text,
                 why_standalone=m["why_standalone"],
                 chapter_title=chapter_title,
+                combo=short_combo,
             )
             hooks = [str(h).strip() for h in out["hooks"] if 0 < len(str(h).split()) <= HOOK_MAX_WORDS]
             hooks = hooks or [" ".join(split_sentences(text)[0].split()[:HOOK_MAX_WORDS])]
@@ -560,7 +568,7 @@ class ShortsSelectStage:
                 ctx,
                 "judge",
                 purpose="Pick the hook most likely to stop a scroll while staying true to the moment.",
-                constraints=HOOK_CONSTRAINTS.format(max=HOOK_MAX_WORDS, style=ctx.combo.hook),
+                constraints=HOOK_CONSTRAINTS.format(max=HOOK_MAX_WORDS, style=short_combo.hook),
                 options=hooks,
             )
             chosen = hooks[max(0, min(int(judged["index"]), len(hooks) - 1))]
@@ -576,7 +584,7 @@ class ShortsSelectStage:
                 chosen_hook=chosen,
                 closing_line=closing,
                 length_bucket=m["length_bucket"],
-                combo_id=ctx.combo.combo_id,
+                combo_id=short_combo.combo_id,
                 why_standalone=m["why_standalone"],
             )
             items.append(item.model_dump())
@@ -625,7 +633,7 @@ class SeoShortsStage:
 
     name: str = "seo_shorts"
     tenant: Tenant = "llama"
-    inputs: tuple[str, ...] = ("shorts_plan.json", "seo_long.json", "story.json")
+    inputs: tuple[str, ...] = ("shorts_plan.json", "seo_long.json", "story.json", "short_combos.json")
     outputs: tuple[str, ...] = ("seo_shorts.json",)
 
     def run(self, ctx: JobContext) -> None:
@@ -633,6 +641,7 @@ class SeoShortsStage:
         story = load_story(ctx)
         master_title = ctx.read_json("seo_long.json")["title"]
         kw = _kw(ctx)
+        short_combos = load_short_combos(ctx)
         out: list[dict[str, Any]] = []
         for item in ctx.read_json("shorts_plan.json"):
             text = span_text(story, item["chapter"], item["sentence_start"], item["sentence_end"])
@@ -641,6 +650,7 @@ class SeoShortsStage:
                 "seo",
                 fixture=f"seo_short_{item['k']}",
                 schema_name="seo_titles",
+                combo=short_combos.get(str(item["k"]), ctx.combo),  # the Short's own title formula
                 primary_keyword=kw,
                 part_text=text,
                 part_n=None,

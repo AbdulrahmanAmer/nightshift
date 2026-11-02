@@ -228,10 +228,12 @@ def prepare_plan(fmt: str, policy: bool | None) -> bool:
     from ns_studio.variation.stages import install_short_combos
 
     install_short_combos(fmt)
+    if fmt == "master_first":  # series parts run the script-import plan (CR-C11-3) with their own combos
+        install_short_combos("master_from_script")
 
     enabled = gate.available() if policy is None else policy
     if enabled:
         gate.install_gates(fmt)
-        if fmt == "master_first":  # series parts run the script-import plan (CR-C11-3)
+        if fmt == "master_first":
             gate.install_gates("master_from_script")
     return enabled

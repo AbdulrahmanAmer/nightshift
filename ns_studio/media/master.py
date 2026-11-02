@@ -69,6 +69,7 @@ class ShortSpec:
     length_bucket: int | None = None
     caption_style: str | None = None
     visual_treatment: str | None = None
+    combo_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -114,12 +115,15 @@ def load_shorts(ctx: JobContext) -> list[ShortSpec]:
         return []
     data = ctx.read_json("shorts_plan.json")
     raw = data.get("shorts", data.get("moments", [])) if isinstance(data, dict) else data
+    # Each Short's own combo (drawn by `shorts_select` / `short_combos`) is the one applied and recorded.
+    stored = ctx.read_json("short_combos.json") if ctx.file("short_combos.json").exists() else {}
     out: list[ShortSpec] = []
     for i, s in enumerate(raw, start=1):
-        combo = s.get("combo") or {}
+        k = int(s.get("k", i))
+        combo = s.get("combo") or stored.get(str(k)) or {}
         out.append(
             ShortSpec(
-                k=int(s.get("k", i)),
+                k=k,
                 chapter=int(s["chapter"]),
                 sentence_start=int(s["sentence_start"]),
                 sentence_end=int(s["sentence_end"]),
@@ -128,6 +132,7 @@ def load_shorts(ctx: JobContext) -> list[ShortSpec]:
                 length_bucket=s.get("length_bucket", combo.get("length_bucket")),
                 caption_style=s.get("caption_style", combo.get("caption_style")),
                 visual_treatment=s.get("visual_treatment", combo.get("visual_treatment")),
+                combo_id=s.get("combo_id") or combo.get("combo_id"),
             )
         )
     return out

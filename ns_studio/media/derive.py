@@ -154,7 +154,9 @@ class ShortsDeriveStage:
 
     name: str = "shorts_derive"
     tenant: Tenant = None
-    inputs: tuple[str, ...] = ("shorts_timing.json", "visual_plan.json", "captions/report.json")
+    inputs: tuple[str, ...] = (
+        "shorts_timing.json", "visual_plan.json", "captions/report.json", "short_combos.json",
+    )
     outputs: tuple[str, ...] = ("render/report.json",)
 
     def run(self, ctx: JobContext) -> None:

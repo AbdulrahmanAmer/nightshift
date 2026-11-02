@@ -14,6 +14,7 @@ from typing import Any
 from ns_common.models import Channel, ClipRef, Metadata, PolicyAdvice, PolicyResult, Seo
 from ns_common.paths import Paths
 from ns_studio.context import JobContext
+from ns_studio.media.master import load_shorts
 from ns_studio.media.shotplan import Shot
 from ns_studio.stages import Tenant
 
@@ -275,7 +276,9 @@ class OutboxStage:
 
     name: str = "outbox"
     tenant: Tenant = None
-    inputs: tuple[str, ...] = ("qc/report.json", "seo.json", "seo_long.json", "seo_shorts.json")
+    inputs: tuple[str, ...] = (
+        "qc/report.json", "seo.json", "seo_long.json", "seo_shorts.json", "short_combos.json",
+    )
     outputs: tuple[str, ...] = ("outbox/manifest.json",)
 
     def run(self, ctx: JobContext) -> None:
@@ -408,14 +411,17 @@ def run_outbox_master(ctx: JobContext) -> None:
         ctx.read_json("clips/shorts_shots.json") if ctx.file("clips/shorts_shots.json").exists() else {}
     )
     seos = ctx.read_json("seo_shorts.json") if ctx.file("seo_shorts.json").exists() else []
+    specs = {s.k: s for s in load_shorts(ctx)}
     for item, info in rendered.items():
         k = int(item[1:])
         shots = [Shot.from_json(s) for s in shorts_shots[item]["shots"]]
+        spec = specs.get(k)
         base = seo_from(seos[min(k, len(seos)) - 1])
         seo = base.model_copy(update={"description": short_description(base.description, long_seo.title)})
         smeta = build_metadata(
             channel=ctx.channel, job_id=ctx.job_id, kind="short", k=k, seo=seo, advice=advice, shots=shots,
-            combo_id=ctx.combo.combo_id, prompt_versions=ctx.prompt_versions,
+            combo_id=(spec.combo_id if spec else None) or ctx.combo.combo_id,
+            prompt_versions=ctx.prompt_versions,
             publish_at=publish_after(
                 ctx.channel, ctx.job_id, item, day_offset=1 + short_day_offset(ctx.channel, k)
             ),
