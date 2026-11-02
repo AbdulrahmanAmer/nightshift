@@ -245,3 +245,36 @@ def test_whisper_probe_classifies_cuda_dll_failures(
     with pytest.raises(NsError) as ei:
         verify.whisper_probe(paths, Runtime.default("gpu"))
     assert ei.value.code == code
+
+
+def test_verify_warns_ns_w301_when_the_voice_service_runs_the_reference_engine(
+    engine: tuple[Paths, Runtime, SyncSupervisor],
+) -> None:
+    paths, rt, sync = engine
+    report = verify.run_verify(
+        paths, rt, sync, quick=True, deps=good_deps(tts_engine=lambda url: "reference")
+    )
+    warn = next(c for c in report.checks if c.name == "tts.engine")
+    assert warn.passed is True and warn.value == "reference" and "NS-W301" in (warn.log or "")
+    assert any("NS-W301" in line for line in verify.format_lines(report))      # shown although it passes
+    assert report.passed is True
+
+
+def test_no_warning_when_the_engine_is_qwentts_or_unknown(
+    engine: tuple[Paths, Runtime, SyncSupervisor],
+) -> None:
+    paths, rt, sync = engine
+    for kind in ("qwentts", None):
+        deps = good_deps(tts_engine=lambda url, k=kind: k)
+        report = verify.run_verify(paths, rt, sync, quick=True, deps=deps)
+        assert "tts.engine" not in [c.name for c in report.checks]
+
+
+def test_engine_kind_is_read_from_the_health_body(monkeypatch: pytest.MonkeyPatch) -> None:
+    import httpx
+
+    body = {"ok": True, "engine_kind": "reference"}
+    monkeypatch.setattr(httpx, "get", lambda url, timeout=0: httpx.Response(200, json=body))
+    assert verify.tts_engine_kind("http://127.0.0.1:8091") == "reference"
+    monkeypatch.setattr(httpx, "get", lambda url, timeout=0: httpx.Response(200, json={"ok": True}))
+    assert verify.tts_engine_kind("http://127.0.0.1:8091") is None

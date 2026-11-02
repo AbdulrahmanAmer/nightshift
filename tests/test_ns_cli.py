@@ -33,7 +33,7 @@ def test_bare_ns_prints_version(tmp_path: Path) -> None:
 def test_help_lists_every_command(tmp_path: Path) -> None:
     r = invoke(tmp_path, "--help")
     assert r.exit_code == 0
-    names = ("stop", "doctor", "verify", "tune", "gate", "update", "backup", "restore", "schedule", "notify")
+    names = ("stop", "doctor", "verify", "tune", "update", "backup", "restore", "schedule", "notify")
     for cmd in names:
         assert cmd in r.output, cmd
     r2 = invoke(tmp_path, "schedule", "--help")
@@ -61,11 +61,6 @@ def test_tune_dry_run_prints_matrix_and_writes_nothing(tmp_path: Path) -> None:
 def test_tune_without_runtime_json_fails_with_code(tmp_path: Path) -> None:
     r = invoke(tmp_path / "home", "tune")
     assert r.exit_code == 1 and "NS-E203" in r.output
-
-
-def test_gate_without_script_exits_2(tmp_path: Path) -> None:
-    r = invoke(tmp_path / "home", "gate", "m42")
-    assert r.exit_code == 2 and "gate_m42.py" in r.output
 
 
 def test_update_needs_zip_or_rollback(tmp_path: Path) -> None:
@@ -199,3 +194,9 @@ def test_verify_leaves_an_engine_that_was_already_running(
     monkeypatch.setattr(verify, "run_verify", _passing_report)
     r = invoke(tmp_path / "home", "verify", "--quick")
     assert r.exit_code == 0 and fake.shutdowns == [] and fake.up is True
+
+
+def test_the_dead_gate_command_is_gone(tmp_path: Path) -> None:
+    """`ns gate m1..m4` looked for dev/gate_m1.py ... that never existed; the command is removed."""
+    assert "gate" not in invoke(tmp_path, "--help").output.split()
+    assert invoke(tmp_path / "home", "gate", "m0").exit_code == 2       # "No such command"

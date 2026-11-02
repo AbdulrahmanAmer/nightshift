@@ -43,7 +43,8 @@ function Get-NsVenvExe {
 
 function Test-NsSupervisor {
     try {
-        Invoke-RestMethod -Uri ((Get-NsSupervisorUrl) + '/status') -TimeoutSec 3 | Out-Null
+        # the liveness route answers at once; the status route runs nvidia-smi on every call
+        Invoke-RestMethod -Uri ((Get-NsSupervisorUrl) + '/health') -TimeoutSec 3 | Out-Null
         return $true
     }
     catch {

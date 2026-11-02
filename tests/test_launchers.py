@@ -73,7 +73,7 @@ def test_dashboard_launcher_opens_port_8100_after_waiting_for_the_engine() -> No
     assert "msedge.exe" in text and "chrome.exe" in text
     common = read("_common.ps1")
     assert "-WindowStyle $style" in common and "'Minimized'" in common and "ns_supervisor.app" in common
-    assert "/status" in common
+    assert "/health" in common and "/status" not in common    # the cheap liveness route has a caller
 
 
 def test_dashboard_launcher_tries_the_webview2_host_before_the_browser_fallback() -> None:
@@ -325,3 +325,13 @@ def test_host_validates_the_role_and_the_launchers_pass_the_right_one() -> None:
 
     argv = launch.host_argv(Path("C:/app"), "http://127.0.0.1:1/")
     assert argv[argv.index("-Role") + 1] == "setup"
+
+
+def test_the_liveness_probe_asks_a_route_the_engine_really_has() -> None:
+    """Test-NsSupervisor must call /health; the engine serves it (and not a made-up path)."""
+    import re
+
+    probe = re.search(r"'(/\w+)'\) -TimeoutSec 3", read("_common.ps1"))
+    assert probe is not None
+    app_src = (Path(__file__).resolve().parents[1] / "ns_supervisor" / "app.py").read_text(encoding="utf-8")
+    assert f'@app.get("{probe.group(1)}")' in app_src

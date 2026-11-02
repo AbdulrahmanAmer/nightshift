@@ -143,16 +143,6 @@ def cmd_tune(
     typer.echo("Saved to runtime.json.")
 
 
-@app.command("gate")
-def cmd_gate(milestone: Annotated[str, typer.Argument(help="m0, m1, ...")]) -> None:
-    """Run dev/gate_<milestone>.py of the installed app."""
-    paths = Paths.from_env()
-    code, msg = control.run_gate(milestone, control.app_path(paths))
-    typer.echo(msg)
-    if code != 0:
-        raise typer.Exit(code)
-
-
 def _stop_engine(paths: Paths) -> None:
     control.stop(paths, _client(paths))
 

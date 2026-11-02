@@ -37,7 +37,7 @@ def test_baseline_runtime_small_tier(tmp_path: Path):
     assert rt.embed.model_path == str(p.models_embed / "nomic-embed-text-v1.5.Q8_0.gguf")
     assert rt.tts.model_dir == str(p.models_tts) and rt.tts.engine == "qwentts"
     assert (rt.whisper.model, rt.whisper.device, rt.whisper.compute_type) == (
-        str(p.models_whisper / "distil-large-v3"), "cuda", "float16")
+        str(p.models_whisper / "distil-large-v3"), "cuda", "int8")   # spec 153
     assert rt.llama.flags.kv_type == "f16" and rt.llama.flags.spec_type is None
 
 
