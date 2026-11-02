@@ -37,7 +37,7 @@ export function Choices() {
     const theme = (document.documentElement.dataset.theme === "light" ? "light" : "dark") as "dark" | "light";
     return a
       ? { ownerName: a.ownerName, channel: a.channel, homePath: a.homePath, llmTier: a.llmTier, voice: a.voice, modelsSource: a.modelsSource, runTime: a.runTime, mastersPerWeek: a.mastersPerWeek, installCode: a.installCode, theme: a.theme ?? theme, pexelsKey: null, pixabayKey: null }
-      : { ownerName: null, channel: { displayName: "", niche: "", language: "en" }, homePath: state.machine.meters.disk.path, llmTier: "small", voice: { speaker: "Ryan" }, modelsSource: { kind: "internet", path: null }, runTime: "03:00", mastersPerWeek: 1, installCode: true, theme, pexelsKey: null, pixabayKey: null };
+      : { ownerName: null, channel: { displayName: "", niche: "", language: "en" }, homePath: state.machine.meters.disk.path, llmTier: state.plan.recommendedTier, voice: { speaker: "Ryan" }, modelsSource: { kind: "internet", path: null }, runTime: "03:00", mastersPerWeek: 1, installCode: true, theme, pexelsKey: null, pixabayKey: null };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   const [d, setD] = useState<ChoicesDraft>(initial);
@@ -215,6 +215,7 @@ export function Choices() {
             <p className="text-ds-text-2">{t.tier.line2[d.llmTier]}</p>
             <p className="text-ds-muted">{t.tier.line3(gbNum(tierInfo.totalBytes), tierInfo.needFreeGb)}</p>
           </div>
+          {state.plan.recommendedTier === "small" && ram < 31 && <p className="mt-3 text-ds-xs leading-ds-normal text-ds-text-2">{t.tier.lowRam(ram)}</p>}
           {!tierInfo.allowed && <Badge tone="danger" size="sm" className="mt-3">{tierInfo.reason ?? t.tier.notAllowedFallback}</Badge>}
         </Card>
       </Area>

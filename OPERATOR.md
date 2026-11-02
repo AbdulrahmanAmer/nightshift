@@ -5,8 +5,11 @@ Keep this file next to `INSTALL.cmd`.
 
 ## What you need
 
-- A Windows 10 or 11 PC with an NVIDIA RTX graphics card (16 GB) and about 60 GB of free disk space.
-- An internet connection (setup downloads about 15 GB), or a `models` folder you were given on Drive.
+- A Windows 10 or 11 PC with an NVIDIA RTX graphics card (16 GB) and 32 GB of memory for the recommended
+  Balanced model. With less memory setup picks the smaller Small model for you.
+- About 75 GB of free disk space (60 GB with the Small model).
+- An internet connection: setup downloads about 20 GB with Balanced (about 15 GB with Small), or use a
+  `models` folder you were given on Drive.
 - Two free keys for stock footage: Pexels and Pixabay. Setup shows you where to get them.
   If you were given an `answers.json` file they may already be filled in.
 
@@ -24,7 +27,8 @@ Keep this file next to `INSTALL.cmd`.
    **Nightshift setup window**. Keep the black window open: it does the work and is the log. If no setup window
    appears, the black window prints an address (`http://127.0.0.1:...`): paste it into Edge or Chrome.
 7. In the setup window: read the PC check (green and yellow rows are fine, red rows say what to do), choose
-   your channel, narrator, model size and night run time, paste the two stock footage keys, and press **Install**.
+   your channel, narrator, model and night run time (Balanced is
+   preselected; on a PC with less than 32 GB of memory Small is, and the window says why), paste the two stock footage keys, and press **Install**.
    Setup then downloads the AI models (you see every file, the speed and the time left; **Pause** and **Resume**
    work), installs, tunes itself for 1 to 3 minutes and plays you a test voice and a short test video.
 8. At the end the window says **Nightshift is ready** and names a **diagnostics zip** on your Desktop. Send it back

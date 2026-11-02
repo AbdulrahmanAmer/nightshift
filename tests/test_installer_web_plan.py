@@ -107,3 +107,27 @@ def test_pinned_and_llama_pair_helpers():
     assert plan.pinned("a" * 64) and not plan.pinned("TBD-release") and not plan.pinned(None)
     assert [plan.llama_pair_for(c) for c in ("13.4", "12.8", "12.4", "12.2", "", None)] == [
         "cuda13", "cuda12", "cuda12", None, None, None]
+
+
+def test_balanced_is_recommended_from_32_gb_and_small_is_the_fallback(raw):
+    from installer.stage2.sysinfo import recommended_tier
+
+    for ram in (8.0, 16.0, 30.9, 31.0, 32.0, 64.0):
+        assert plan.recommended_tier(ram) == recommended_tier(ram)
+    assert plan.recommended_tier(32.0) == "balanced" and plan.recommended_tier(16.0) == "small"
+    big = plan.build_plan(raw, profile="gpu", tier="balanced", include_code=True, cuda="13.0", ram_gb=32.0,
+                          vram_mb=16311)
+    small = plan.build_plan(raw, profile="gpu", tier="small", include_code=True, cuda="13.0", ram_gb=16.0,
+                            vram_mb=16311)
+    assert big["recommendedTier"] == "balanced" and small["recommendedTier"] == "small"
+
+
+def test_the_default_download_is_about_20_gb_and_small_is_the_lighter_fallback(raw):
+    # Known sizes only: Whisper (1.5 GB) and the programs are measured when their downloads start.
+    p = plan.build_plan(raw, profile="gpu", tier="balanced", include_code=True, cuda="13.0", ram_gb=32.0,
+                        vram_mb=16311)
+    assert 18e9 <= p["totalBytes"] <= 20e9, p["totalBytes"]
+    fallback = plan.build_plan(raw, profile="gpu", tier="small", include_code=True, cuda="13.0", ram_gb=16.0,
+                               vram_mb=16311)
+    assert 13e9 <= fallback["totalBytes"] <= 15e9, fallback["totalBytes"]
+    assert p["totalBytes"] - fallback["totalBytes"] > 5e9

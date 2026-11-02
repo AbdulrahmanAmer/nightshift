@@ -21,6 +21,11 @@ TIER_KEYS = {"small": "llm", "balanced": "llm_balanced", "best": "llm_best"}
 GROUP_ORDER = ("tools", "python", "programs", "models")
 
 
+def recommended_tier(ram_gb: float) -> str:
+    """The tier setup preselects: Balanced (recommended) from 32 GB of RAM, else Small (the fallback)."""
+    return "balanced" if ram_gb >= 31 else "small"
+
+
 def required_free_gb(tier: str) -> int:
     """Free space the install needs on the home drive."""
     return BASE_FREE_GB + TIER_EXTRA_GB.get(tier, 0)
@@ -213,6 +218,7 @@ def build_plan(
         "unknownCount": unknown,
         "needFreeGb": required_free_gb(tier),
         "estimate": estimate(total),
+        "recommendedTier": recommended_tier(ram_gb),
         "tiers": tier_infos(manifest, profile, ram_gb=ram_gb, vram_mb=vram_mb),
     }
 

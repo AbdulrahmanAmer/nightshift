@@ -627,6 +627,8 @@ manifest gives:
 | Balanced | `14.3 GB · needs 32 GB of memory` | Better long stories. A little slower | `ramGb >= 31` |
 | Best | `22.9 GB · needs 32 GB of memory` | Best writing. Slowest, largest download | `ramGb >= 31` |
 
+**Default tier (owner decision 2026-11-02).** Balanced is the recommended default, so `answers.json` ships with `"llm_tier": "balanced"` and the Choices screen starts on Balanced (`plan.recommendedTier`). On a PC with less than 32 GB of memory (`ramGb < 31`) the screen starts on Small instead and says why in one line under the selector: "This PC has 16 GB of memory, so Small is selected. Balanced needs 32 GB". An unattended `answers.json` that asks for Balanced or Best on such a PC still fails with "llm_tier 'balanced' needs 32 GB of RAM". The Welcome screen's size, free-space and time figures follow the selected tier (default download about 20 GB with Balanced, about 15 GB with Small), and its plan card names the tier.
+
 "More options" opens a `Card elevation={3} padding="lg"` popover, anchored above the footer, with:
 
 - **Install folder.** `TextField label="Install folder"`, followed by the `/api/disk` result (debounced

@@ -190,10 +190,27 @@ def test_s01_asks_only_what_is_missing_and_plays_four_voice_samples(tmp_path: Pa
     assert ans is not None
     assert ans.channel.niche == "cosy mystery" and ans.channel.language == "en"
     assert ans.voice.speaker == "Aiden" and ans.install_code is False
-    assert ans.masters_per_week == 1 and ans.run_time == "03:00" and ans.llm_tier == "small"
+    assert ans.masters_per_week == 1 and ans.run_time == "03:00" and ans.llm_tier == "balanced"
     assert len(ui.played) == 4
     assert not any("home" in p.lower() and "Install folder" in p for p in ui.asked)   # home was provided
     assert not any("Channel name" in p for p in ui.asked)                              # name was provided
+
+
+def test_s01_balanced_is_the_default_and_small_the_fallback_under_32_gb(tmp_path: Path):
+    raw = provided(tmp_path)
+    del raw["llm_tier"]
+    ctx = make_test_context(tmp_path, raw_answers=raw, ui=FakeUi(interactive=False))
+    S01Questions().run(ctx)
+    assert ctx.answers is not None and ctx.answers.llm_tier == "balanced"
+    pf = sysinfo.sample_preflight(tmp_path / "b" / "home", ROOT)
+    pf["ram_gb"] = 16
+    raw2 = provided(tmp_path / "b")
+    del raw2["llm_tier"]
+    ui = FakeUi(interactive=False)
+    ctx2 = make_test_context(tmp_path / "b", raw_answers=raw2, ui=ui, preflight=pf)
+    S01Questions().run(ctx2)
+    assert ctx2.answers is not None and ctx2.answers.llm_tier == "small"
+    assert "16 GB of memory, so Small is selected" in ui.text
 
 
 def test_s01_unattended_missing_required_answer_fails_clearly(tmp_path: Path):

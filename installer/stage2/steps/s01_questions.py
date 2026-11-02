@@ -30,6 +30,7 @@ from installer.stage2.sysinfo import (
     drive_type,
     drives_from_preflight,
     local_drives,
+    recommended_tier,
     required_free_gb,
 )
 from installer.stage2.winenv import HOME_VAR, get_user_env, set_user_env
@@ -217,10 +218,15 @@ class S01Questions(Step):
         raw = ctx.raw_answers
         merged: dict[str, Any] = {k: v for k, v in raw.items() if k not in KEY_NAMES}
 
-        tier = str(self._asked(ctx, "llm_tier", "LLM size: small, balanced or best?", "small") or "small")
+        ram = float((ctx.preflight or {}).get("ram_gb") or 32)
+        # Balanced is the recommended default; a PC under 32 GB of RAM starts on Small (the fallback).
+        default_tier = recommended_tier(ram)
+        if default_tier == "small" and raw.get("llm_tier") in (None, ""):
+            ctx.ui.say(f"This PC has {ram:.0f} GB of memory, so Small is selected. Balanced needs 32 GB.")
+        asked = self._asked(ctx, "llm_tier", "LLM size: small, balanced or best?", default_tier)
+        tier = str(asked or default_tier)
         if tier not in ("small", "balanced", "best"):
             raise AnswersError(f"llm_tier must be small, balanced or best, not {tier!r}")
-        ram = float((ctx.preflight or {}).get("ram_gb") or 32)
         if tier != "small" and ram < 31:
             raise AnswersError(f"llm_tier '{tier}' needs 32 GB of RAM; this PC has {ram:.0f} GB")
         merged["llm_tier"] = tier

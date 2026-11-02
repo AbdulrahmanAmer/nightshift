@@ -111,7 +111,7 @@ export function estimateLabel(totalBytes: number): { downloadMin: number; instal
   return { downloadMin, installMin, label };
 }
 
-export function plan(tier: Tier = "small", ramGb = 32): InstallPlan {
+export function plan(tier: Tier = "balanced", ramGb = 32): InstallPlan {
   const groups = planGroups(tier);
   const totalBytes = TIERS[tier].totalBytes;
   const tiers = { ...TIERS };
@@ -119,7 +119,7 @@ export function plan(tier: Tier = "small", ramGb = 32): InstallPlan {
     tiers.balanced = { ...tiers.balanced, allowed: false, reason: "Needs 32 GB of memory" };
     tiers.best = { ...tiers.best, allowed: false, reason: "Needs 32 GB of memory" };
   }
-  return { tier, profile: "gpu", groups, totalBytes, unknownCount: 4, needFreeGb: TIERS[tier].needFreeGb, estimate: estimateLabel(totalBytes), tiers };
+  return { tier, profile: "gpu", groups, totalBytes, unknownCount: 4, needFreeGb: TIERS[tier].needFreeGb, estimate: estimateLabel(totalBytes), recommendedTier: ramGb < 31 ? "small" : "balanced", tiers };
 }
 
 /* ------------------------------------------------------------------ steps, downloads, verify */
@@ -248,7 +248,7 @@ export function failureView(): FailureView {
 
 export function baseState(over: Partial<SetupState> = {}): SetupState {
   const m = machine("D");
-  const p = plan("small");
+  const p = plan("balanced");
   return {
     schema: 1, rev: 1, version: "0.3.0", appPath: "D:\\NightShift", phase: "checks", run: "idle", uiStep: "welcome", resumed: false, prefilledFrom: null,
     startedAt: null, updatedAt: iso(), host: "webview2", machine: m, checks: checkRows("D"), checkedAt: iso(-60), checking: false, blocking: false, plan: p,

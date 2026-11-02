@@ -127,7 +127,8 @@ export const welcome = {
   planTitleResume: "Still to do",
   sizeUnknown: "size shown when the download starts",
   sizeApprox: (gb: string) => `about ${gb}`,
-  totals: { download: "To download", free: "Free space needed", time: "Time" },
+  totals: { model: "Story model", download: "To download", free: "Free space needed", time: "Time" },
+  recommended: "recommended",
   timeExplain: (dl: number, inst: number) => `${dl} min downloading at 50 Mbit/s, ${inst} min installing and testing. You can close this window and run INSTALL.cmd again any time`,
   footer: (version: string, path: string) => `Version ${version} · ${path}`,
   footerPrefilled: (path: string) => `Answers loaded from ${path}`,
@@ -189,6 +190,7 @@ export const choices = {
     line2: { small: "Fastest. Good stories and Shorts", balanced: "Better long stories. A little slower", best: "Best writing. Slowest, largest download" } satisfies Record<Tier, string>,
     line3: (total: string, need: number) => `Download ${total} GB · needs ${need} GB free`,
     notAllowedFallback: "Needs a 16 GB graphics card",
+    lowRam: (ram: number) => `This PC has ${ram} GB of memory, so Small is selected. Balanced needs 32 GB`,
   },
   run: {
     title: "Night run",

@@ -9,7 +9,7 @@ import pytest
 
 from installer.stage2.web import answers_view, controller, samples
 from installer.stage2.web.controller import Config, SetupController
-from installer.stage2.web.fakes import ScriptedEngine, fake_effects
+from installer.stage2.web.fakes import ScriptedEngine, fake_effects, sample_handover
 from installer.stage2.web.model import ENGINE_STEPS, STEP_ORDER
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -90,7 +90,8 @@ def test_the_first_state_is_the_welcome_screen_of_a_green_pc(tmp_path, monkeypat
     assert state["blocking"] is False and state["resumed"] is False and state["answers"] is None
     assert state["answersLocked"] is False and state["failure"] is None and state["result"] is None
     assert state["machine"]["gpuName"] == "NVIDIA GeForce RTX 5060 Ti" and len(state["checks"]) == 10
-    assert state["plan"]["tier"] == "small" and state["plan"]["estimate"]["label"]
+    assert state["plan"]["tier"] == "balanced" and state["plan"]["recommendedTier"] == "balanced"
+    assert state["plan"]["estimate"]["label"]
     assert state["version"] == (ROOT / "VERSION").read_text(encoding="utf-8").strip()
     assert state["rev"] >= 1 and state["host"] == "none"
     keys = {"schema", "rev", "version", "appPath", "phase", "run", "uiStep", "resumed", "prefilledFrom",
@@ -101,7 +102,8 @@ def test_the_first_state_is_the_welcome_screen_of_a_green_pc(tmp_path, monkeypat
     json.dumps(state)                                   # everything is JSON
     rows = {r["key"]: r for r in state["downloads"]["items"]}
     assert rows["git"]["status"] == "done" and rows["git"]["note"] == "already here"
-    assert rows["llama_cuda13"]["status"] == "queued" and rows["Qwen3-14B-Q4_K_M.gguf"]["bytesTotal"] > 9e9
+    assert rows["llama_cuda13"]["status"] == "queued"
+    assert rows["Qwen3.6-35B-A3B-APEX-MTP-I-Mini.gguf"]["bytesTotal"] > 14e9    # Balanced is the default
 
 
 def test_ui_step_moves_between_the_pre_start_screens(tmp_path, monkeypatch):
@@ -565,3 +567,17 @@ def test_the_sample_helpers_and_labels_cover_every_step():
     assert labels.verify_label("tts.preset") == "Voice engine" and labels.verify_label("mtp") == "mtp"
     assert labels.verify_label("odd_check") == "odd_check"
     assert labels.row_key("whisper/config.json") == "whisper" and labels.row_key("yunet") == "yunet"
+
+
+
+def test_a_pc_under_32_gb_starts_on_small_and_the_plan_says_so(tmp_path, monkeypatch):
+    s = Setup(tmp_path, monkeypatch)
+    pf = sample_handover(ROOT, home=str(s.home))
+    pf["ram_gb"] = 16.0
+    pf_file = tmp_path / "pf.json"
+    pf_file.write_text(json.dumps(pf), encoding="utf-8")
+    cfg = Config(app_path=ROOT, data_dir=tmp_path / "data2", simulate=True, home=s.home, preflight=pf_file)
+    state = SetupController(cfg, s.fx).snapshot()
+    assert state["plan"]["tier"] == "small" and state["plan"]["recommendedTier"] == "small"
+    assert state["plan"]["tiers"]["balanced"]["allowed"] is False
+    assert state["plan"]["tiers"]["small"]["allowed"] is True

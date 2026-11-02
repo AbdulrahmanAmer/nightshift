@@ -176,9 +176,9 @@ def draft_to_answers(
 
 
 def answers_to_view(
-    raw: dict[str, Any], *, pexels_set: bool = False, pixabay_set: bool = False
+    raw: dict[str, Any], *, pexels_set: bool = False, pixabay_set: bool = False, default_tier: str = "small"
 ) -> dict[str, Any]:
-    """AnswersView (camelCase) from an answers.json dict."""
+    """AnswersView (camelCase) from an answers.json dict; ``default_tier`` fills a missing ``llm_tier``."""
     channel = raw.get("channel") or {}
     voice = raw.get("voice") or {}
     kind = kind_from_file(str(raw.get("models_source_kind") or "internet"))
@@ -190,7 +190,7 @@ def answers_to_view(
             "language": channel.get("language", "en"),
         },
         "homePath": raw.get("home_path") or "",
-        "llmTier": raw.get("llm_tier", "small"),
+        "llmTier": raw.get("llm_tier") or default_tier,
         "voice": {"speaker": voice.get("speaker") or PRESET_VOICES[0]},
         "modelsSource": {"kind": kind if kind in KINDS_UI else "internet", "path": raw.get("models_source")},
         "runTime": raw.get("run_time", "03:00"),

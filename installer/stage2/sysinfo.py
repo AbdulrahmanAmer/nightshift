@@ -22,6 +22,11 @@ class Drive:
     type: str = "Unknown"
 
 
+def recommended_tier(ram_gb: float) -> str:
+    """The tier setup preselects: Balanced (recommended) from 32 GB of RAM, else Small (the fallback)."""
+    return "balanced" if ram_gb >= 31 else "small"
+
+
 def required_free_gb(tier: str) -> int:
     """Free space the install needs on the home drive (spec 5: 60 GB check, plus the tier's larger model)."""
     return BASE_FREE_GB + TIER_EXTRA_GB.get(tier, 0)

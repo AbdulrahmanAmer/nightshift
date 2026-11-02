@@ -86,6 +86,7 @@ export interface InstallPlan {
   unknownCount: number;              // items whose size is learned when the download starts
   needFreeGb: number;
   estimate: { downloadMin: number; installMin: number; label: string };   // label: "About 1 hour"
+  recommendedTier: Tier;             // balanced from 32 GB of memory, else small (the fallback)
   tiers: Record<Tier, TierInfo>;
 }
 

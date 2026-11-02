@@ -281,12 +281,15 @@ class SetupController:
                 raw = answers_view.read_answers(saved_answers)
             except (OSError, ValueError):
                 raw = prefill
+        default_tier = plan.recommended_tier(float(self.pf.get("ram_gb") or 0))
         view = None
         if raw:
-            view = answers_view.answers_to_view(raw, pexels_set=locked, pixabay_set=locked)
+            view = answers_view.answers_to_view(
+                raw, pexels_set=locked, pixabay_set=locked, default_tier=default_tier
+            )
             if locked:
                 self._keys_stored = {"pexelsKey": True, "pixabayKey": True}
-        tier = (view or {}).get("llmTier", "small")
+        tier = (view or {}).get("llmTier") or default_tier
         code = bool((view or {}).get("installCode", True))
         pf = self.pf
         gpu = pf.get("gpu") or {}
@@ -464,7 +467,8 @@ class SetupController:
         except (OSError, ValueError) as e:
             return {"ok": False, "errors": [{"field": "homePath", "code": None,
                                              "message": f"That answers file could not be read: {e}"}]}
-        view = answers_view.answers_to_view(raw)
+        default_tier = plan.recommended_tier(float(self.pf.get("ram_gb") or 0))
+        view = answers_view.answers_to_view(raw, default_tier=default_tier)
         draft = {k: v for k, v in view.items() if k not in ("pexelsKeySet", "pixabayKeySet")}
         keys = answers_view.keys_in(raw)
         draft["pexelsKey"] = keys["pexels_api_key"]
@@ -628,7 +632,8 @@ class SetupController:
     def _recheck(self) -> None:
         out = self.cfg.data_dir / "bootstrap" / "preflight.json"
         out.parent.mkdir(parents=True, exist_ok=True)
-        tier = (self.snapshot().get("answers") or {}).get("llmTier", "small")
+        ram = float(self.pf.get("ram_gb") or 0)
+        tier = (self.snapshot().get("answers") or {}).get("llmTier") or plan.recommended_tier(ram)
         new = self.fx.probe(self.cfg.app_path, out, str(self.home))
         if new is None:
             self.log("warn", "The PC check could not run. Press Check again")

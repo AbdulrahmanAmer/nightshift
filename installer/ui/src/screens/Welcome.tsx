@@ -5,9 +5,11 @@ import { cx } from "@dash/ui/kit";
 import { welcome as t, stepTitle } from "../copy";
 import { estimateFor, gb } from "../format";
 import { useLiveState } from "../api/useSetup";
-import type { DownloadRow, FieldError, PlanGroup } from "../api/types";
+import type { DownloadRow, FieldError, PlanGroup, Tier } from "../api/types";
 import { Area, Screen } from "../parts/Screen";
 import { LabeledField } from "../parts/LabeledField";
+
+const TIER_NAME: Record<Tier, string> = { small: "Small", balanced: "Balanced", best: "Best" };
 
 interface PlanLine { id: string; label: string; size: string; muted?: boolean }
 
@@ -124,6 +126,7 @@ export function Welcome({ resume }: { resume: boolean }) {
             </dl>
             <div className="mt-auto flex pt-4 pb-4"><DottedRule /></div>
             <dl className="flex flex-col gap-2.5">
+              <div className="flex items-baseline justify-between gap-4 text-ds-sm"><dt>{t.totals.model}</dt><dd className="ds-num">{TIER_NAME[state.plan.tier]}{state.plan.tier === state.plan.recommendedTier ? ` (${t.recommended})` : ""}</dd></div>
               <div className="flex items-baseline justify-between gap-4 text-ds-sm"><dt className="font-medium">{t.totals.download}</dt><dd className="ds-num font-semibold">{gb(left)}</dd></div>
               <div className="flex items-baseline justify-between gap-4 text-ds-sm"><dt>{t.totals.free}</dt><dd className="ds-num">{state.plan.needFreeGb} GB</dd></div>
               <div className="flex items-baseline justify-between gap-4 text-ds-sm"><dt>{t.totals.time}</dt><dd className="ds-num">{est.label.replace("About ", "about ")}</dd></div>
