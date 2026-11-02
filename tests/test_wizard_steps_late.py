@@ -519,3 +519,38 @@ def test_s05_no_longer_pretends_to_check_the_model_before_the_config_exists():
 
     doc = s05_opencode_prewarm.__doc__ or ""
     assert "confirm_local_code" in doc and "after this step" in doc
+
+
+# ---------------------------------------------------------------- qwentts binary names (CR-C4-6)
+def test_the_qwentts_zip_must_hold_the_real_programs(tmp_path: Path):
+    from installer.stage2 import downloader as dl
+
+    item = dl.release_zip_item("qwentts", "https://x/q.zip", None, tmp_path)
+    assert item.expect == ("qwen-tts.exe", "qwen-codec.exe")           # there is no qwentts.exe
+
+
+def test_the_installer_and_the_reference_engine_use_one_hf_folder(tmp_path: Path):
+    from installer.stage2.fallback import fallback_items
+
+    ctx = resolved(tmp_path)
+    for item in fallback_items(ctx):
+        assert ctx.paths.models_tts_hf in item.dest.parents or item.dest.parent == ctx.paths.models_tts_hf
+
+
+def test_s08_falls_back_to_the_reference_engine_when_the_unpacked_zip_lacks_qwen_tts(tmp_path: Path):
+    ctx, runner = smoke_ctx(tmp_path)
+    ctx.set_flag("qwentts", "binary")
+    ctx.paths.bin_qwentts.mkdir(parents=True)
+    (ctx.paths.bin_qwentts / "tts-server.exe").write_bytes(b"MZ")     # only the old, wrong program is there
+    S08Smoke().run(ctx)
+    assert ctx.flag("tts_fallback") is True and [c for c, _ in ctx.warnings] == ["NS-W301"]
+
+
+def test_s08_keeps_qwentts_when_both_programs_are_there(tmp_path: Path):
+    ctx, _ = smoke_ctx(tmp_path)
+    ctx.set_flag("qwentts", "binary")
+    ctx.paths.bin_qwentts.mkdir(parents=True)
+    for exe in ("qwen-tts.exe", "qwen-codec.exe"):
+        (ctx.paths.bin_qwentts / exe).write_bytes(b"MZ")
+    S08Smoke().run(ctx)
+    assert ctx.flag("tts_fallback", False) is False and ctx.warnings == []

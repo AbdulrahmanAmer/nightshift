@@ -17,7 +17,7 @@ INDEX_SEP = " --index-url "
 
 def fallback_items(ctx: StepContext) -> list[DownloadItem]:
     """Safetensors files of the reference TTS repos under models\\tts\\hf (listed through the HF tree API)."""
-    dest_root = ctx.paths.models_tts / "hf"
+    dest_root = ctx.paths.models_tts_hf
     if ctx.simulate:
         items: list[DownloadItem] = []
         for repo in FALLBACK_REPOS:

@@ -14,12 +14,18 @@ from typing import Any
 
 from installer.stage2.base import Step
 from installer.stage2.context import StepContext
+from installer.stage2.downloader import QWENTTS_EXES
 from installer.stage2.errors import make_error
 from installer.stage2.fallback import ensure_tts_venv, fallback_items
 from installer.stage2.runner import RunResult
 from installer.stage2.runtime_cfg import ensure_baseline, update_runtime
 from installer.stage2.steps.s05_opencode_prewarm import confirm_local_code
 from ns_supervisor import check_names as names
+
+
+def qwentts_binaries_ok(ctx: StepContext) -> bool:
+    """True when the unpacked qwentts.cpp folder holds the two programs the voice service starts."""
+    return all((ctx.paths.bin_qwentts / exe).is_file() for exe in QWENTTS_EXES)
 
 
 def load_report_rows(ctx: StepContext, res: RunResult) -> list[dict[str, Any]] | None:
@@ -69,6 +75,10 @@ class S08Smoke(Step):
         """Run ``ns verify --quick`` (twice at most: once more after the TTS fallback)."""
         ensure_baseline(ctx)
         warned: set[str] = set()
+        wants_binary = ctx.flag("qwentts") == "binary" and not ctx.flag("tts_fallback", False)
+        if wants_binary and not qwentts_binaries_ok(ctx):
+            ctx.ui.say("The voice program (qwen-tts.exe) is missing from the download.", "yellow")
+            self._switch_to_reference(ctx)
         for attempt in (1, 2):
             ctx.ui.say("Testing the language model, voice, captions and video encoder ...")
             res = ctx.run_tool("ns", ["verify", "--quick"], timeout=3600)

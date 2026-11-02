@@ -522,12 +522,16 @@ def qwentts_item(manifest: Manifest, home: Path) -> DownloadItem | None:
     return release_zip_item("qwentts", pin.url, pin.sha256, Path(home))
 
 
+#: Executables the qwentts.cpp release zip holds (build-qwentts.yml packages them flat; there is no qwentts.exe).
+QWENTTS_EXES = ("qwen-tts.exe", "qwen-codec.exe")
+
+
 def release_zip_item(name: str, url: str, sha256: str | None, home: Path) -> DownloadItem:
     """A qwentts zip item (pinned or from the GitHub Releases fallback URL) extracted to bin\\qwentts."""
     root = Path(home) / "bin"
     return DownloadItem(
         name=name, url=url, dest=root / "_downloads" / f"{name}.zip", sha256=sha256, kind="zip",
-        extract_to=root / "qwentts", expect=(),
+        extract_to=root / "qwentts", expect=QWENTTS_EXES,
     )
 
 
