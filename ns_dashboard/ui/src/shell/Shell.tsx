@@ -245,6 +245,12 @@ function AskDrawer() {
   );
 }
 
+function OfflineBanner() {
+  const { offline, demo } = useApp();
+  if (!offline || demo) return null;
+  return <p role="status" className="mt-4 rounded-ds-md bg-ds-danger-soft px-4 py-3 text-ds-sm"><strong className="font-semibold">Engine not answering.</strong> Nightshift keeps trying and will carry on by itself. What you see below is the last thing it told us.</p>;
+}
+
 export function Shell({ children }: { children: ReactNode }) {
   useEffect(() => startAutoTitle(), []);
   return (
@@ -255,6 +261,7 @@ export function Shell({ children }: { children: ReactNode }) {
       <SideTab brand={!host.available()} />
       <div className={cx("relative z-[1] mx-auto max-w-[1600px] px-3 pb-6 md:px-6", host.available() ? "pt-11" : "pt-3 md:pt-4")}>
         <TopBar />
+        <OfflineBanner />
         <main id="main" tabIndex={-1} className="mt-6 min-w-0 outline-none">{children}</main>
       </div>
       <Toasts />

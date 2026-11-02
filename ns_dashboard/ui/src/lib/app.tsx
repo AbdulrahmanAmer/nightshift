@@ -8,7 +8,7 @@ export type Toast = { id: number; text: string; tone?: "ok" | "bad" | "warn" };
 export type ConfirmReq = { title: string; body?: string; ok?: string; danger?: boolean; input?: { label: string; placeholder?: string }; /** A second choice next to OK; picking it resolves to "alt". */ alt?: string; resolve: (v: string | boolean | null) => void };
 
 interface AppCtx {
-  status: Status | null; demo: boolean; refresh: () => Promise<void>;
+  status: Status | null; demo: boolean; /** The engine stopped answering after it had answered before: show it and keep retrying. */ offline: boolean; refresh: () => Promise<void>;
   toast: (text: string, tone?: Toast["tone"]) => void; toasts: Toast[];
   confirm: (r: Omit<ConfirmReq, "resolve">) => Promise<string | boolean | null>; confirmReq: ConfirmReq | null; closeConfirm: (v: string | boolean | null) => void;
   route: { name: string; query: URLSearchParams }; go: (hash: string) => void;
@@ -38,14 +38,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const tid = useRef(0);
 
   const lastStatus = useRef("");
-  const refresh = useCallback(async () => {
-    try {
-      const s = await api.status(); const key = JSON.stringify(s);
-      // Only publish a new status when something changed, so the 1.5 s demo poll does not re-render every page.
-      if (key !== lastStatus.current) { lastStatus.current = key; setStatus(s); }
-      setDemo(api.demo);
-    } catch { /* keep last status */ }
-  }, []);
+  const [offline, setOffline] = useState(false);
+  // Only publish a new status when something changed, so neither the demo poll nor the 2 s heartbeat re-renders every page.
+  const publish = useCallback((s: Status) => { const key = JSON.stringify(s); if (key !== lastStatus.current) { lastStatus.current = key; setStatus(s); } }, []);
+  /** One status call; true when the engine answered. A failure keeps the last status (never swaps in sample data). */
+  const poll = useCallback(async () => {
+    try { publish(await api.status()); setDemo(api.demo); setOffline(false); return true; }
+    catch { setOffline(true); return false; }
+  }, [publish]);
+  const refresh = useCallback(async () => { await poll(); }, [poll]);
   const toast = useCallback((text: string, tone?: Toast["tone"]) => {
     const id = ++tid.current; setToasts((t) => [...t, { id, text, tone }]);
     setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 4200);
@@ -69,18 +70,26 @@ export function AppProvider({ children }: { children: ReactNode }) {
   useEffect(() => { document.documentElement.dataset.theme = theme; }, [theme]);
   useEffect(() => { const on = () => setRoute(parseHash()); addEventListener("hashchange", on); return () => removeEventListener("hashchange", on); }, []);
   useEffect(() => {
-    let es: EventSource | null = null; let timer: number;
-    refresh().then(() => {
+    let es: EventSource | null = null; let timer = 0; let stopped = false; let fails = 0;
+    // Poll every 10 s (1.5 s for the demo); after a failure retry with backoff (2, 4, 8 ... up to 30 s) instead of giving up.
+    const tick = async () => {
+      const visible = document.visibilityState === "visible";
+      if (visible || fails > 0) fails = (await poll()) ? 0 : fails + 1;
+      if (!stopped) timer = window.setTimeout(tick, api.demo ? 1500 : fails ? Math.min(30000, 1000 * 2 ** Math.min(fails, 5)) : 10000);
+    };
+    poll().then((ok) => {
+      if (stopped) return;
+      fails = ok ? 0 : 1;
       if (!api.demo && "EventSource" in window) {
-        try { es = new EventSource("/api/events"); es.onmessage = (ev) => { try { const m = JSON.parse(ev.data); if (m.kind === "status") setStatus(m.payload); } catch { /* ignore */ } }; } catch { /* polling covers it */ }
+        try { es = new EventSource("/api/events"); es.onmessage = (ev) => { try { const m = JSON.parse(ev.data); if (m.kind === "status") { publish(m.payload); setOffline(false); fails = 0; } } catch { /* ignore */ } }; } catch { /* polling covers it */ }
       }
-      timer = window.setInterval(() => { if (document.visibilityState === "visible") refresh(); }, api.demo ? 1500 : 10000);
+      timer = window.setTimeout(tick, api.demo ? 1500 : fails ? 2000 : 10000);
     });
-    return () => { es?.close(); clearInterval(timer); };
-  }, [refresh]);
+    return () => { stopped = true; es?.close(); clearTimeout(timer); };
+  }, [poll, publish]);
 
-  const value = useMemo<AppCtx>(() => ({ status, demo, refresh, toast, toasts, confirm, confirmReq, closeConfirm, route, go, askOpen, setAskOpen, askContext, ask, askPrompt, clearAskPrompt: () => setAskPrompt(null), theme, setTheme, channelName, ownerName }),
-    [status, demo, refresh, toast, toasts, confirm, confirmReq, closeConfirm, route, go, askOpen, askContext, ask, askPrompt, theme, setTheme, channelName, ownerName]);
+  const value = useMemo<AppCtx>(() => ({ status, demo, offline, refresh, toast, toasts, confirm, confirmReq, closeConfirm, route, go, askOpen, setAskOpen, askContext, ask, askPrompt, clearAskPrompt: () => setAskPrompt(null), theme, setTheme, channelName, ownerName }),
+    [status, demo, offline, refresh, toast, toasts, confirm, confirmReq, closeConfirm, route, go, askOpen, askContext, ask, askPrompt, theme, setTheme, channelName, ownerName]);
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
 

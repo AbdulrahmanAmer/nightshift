@@ -1,4 +1,4 @@
-/* API client. Talks to the FastAPI app under /api. When /api/status does not answer, it switches
+/* API client. Talks to the FastAPI app under /api. When the very first /api/status call does not answer, it switches
    to the demo layer for the rest of the session so the UI is viewable without a backend. */
 import type { ChatEvent, VoiceMade } from "./types";
 import { demoChat, demoHandle } from "./demo";
@@ -36,13 +36,19 @@ export const api = {
   thumbUrl(id: string) { return `${this.mediaUrl(id)}/thumb.jpg`; },
   enc(id: string) { return id.split("/").map(encodeURIComponent).join("/"); },
 
-  /** First status call decides real vs demo. */
+  /** True once /status has answered. Only the very first call can switch to demo data (no backend at all, as in DEMO.cmd);
+   *  after that a failed call throws, so a restarting service or one slow answer never swaps the real lists for sample ones. */
+  answered: false,
   async status() {
-    if (!this.demo) {
-      try { const res = await fetch(BASE + "/status"); if (!res.ok) throw new Error(String(res.status)); return await res.json(); }
-      catch { this.demo = true; }
+    if (this.demo) return demoHandle("GET", "/status");
+    try {
+      const res = await fetch(BASE + "/status"); if (!res.ok) throw new Error(String(res.status));
+      const j = await res.json(); this.answered = true; return j;
+    } catch (e) {
+      if (this.answered) throw e;
+      this.demo = true;
+      return demoHandle("GET", "/status");
     }
-    return demoHandle("GET", "/status");
   },
 
   async voicePreview(voice: string, text: string) {
