@@ -137,7 +137,7 @@ class SeriesAdapter(Protocol):
         ...
 
     def queue_next(self, slug: str) -> list[dict[str, Any]]:
-        """Queue the next approved part of `slug`; returns `[{part, job_id, title}]`, 409 when none is ready."""
+        """Queue the next approved part of `slug`: `[{part, job_id, title}]`; 409 when none is ready."""
         ...
 
 
@@ -311,7 +311,8 @@ class RealSeriesAdapter(StudioAdapter):
             return studio_bridge.queue_next_part(slug)
         except WorkshopError as e:
             missing = str(e).startswith("no story")
-            raise ApiError(404 if missing else 409, "not_found" if missing else "cannot_produce", str(e)) from e
+            code = "not_found" if missing else "cannot_produce"
+            raise ApiError(404 if missing else 409, code, str(e)) from e
 
 
 class RealLearnAdapter:
@@ -348,15 +349,20 @@ class RealVerifyAdapter:
 
 
 class RealDoctorAdapter:
-    """Calls C2's doctor bundle in-process (`ns_supervisor.doctor.make_bundle(paths) -> Path`)."""
+    """Calls C2's doctor in-process: `ns_supervisor.doctor.build_bundle` (what `ns doctor --bundle` runs)."""
 
-    def __init__(self, paths: Paths) -> None:
+    def __init__(
+        self, paths: Paths, *, out_dir: Path | None = None, options: dict[str, Any] | None = None
+    ) -> None:
         self.paths = paths
+        self.out_dir = out_dir  # None: the Desktop, like the command line
+        self.options = options or {}
 
     def bundle(self) -> Path:
-        """Create the diagnostics zip and return its path."""
-        fn = lazy("ns_supervisor.doctor", "make_bundle")
-        return Path(fn(self.paths))
+        """Create the diagnostics zip (logs, reports, settings without keys) and return its path."""
+        build = lazy("ns_supervisor.doctor", "build_bundle")
+        app_path = lazy("ns_supervisor.control", "app_path")
+        return Path(build(self.paths, out_dir=self.out_dir, app=app_path(self.paths), **self.options))
 
 
 class RealKeyringAdapter:

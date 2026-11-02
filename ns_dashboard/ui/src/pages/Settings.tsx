@@ -7,7 +7,7 @@ import { api } from "../lib/api";
 import type { LogLine, Settings as S } from "../lib/types";
 import { cx } from "../ui/kit";
 import { Lockup } from "../ui/Lockup";
-import { Badge, Button, Icon, Card, CardHeader, DashGrid, IconButton, Input, ProgressBar, SegmentedControl, SettingRow, SPAN, Switch, type SegmentOption } from "../components/ref12";
+import { Badge, Button, Icon, Card, CardHeader, DashGrid, IconButton, Input, LinkButton, ProgressBar, SegmentedControl, SettingRow, SPAN, Switch, type SegmentOption } from "../components/ref12";
 
 const THEMES: SegmentOption<"light" | "dark" | "soft">[] = [{ value: "light", label: "Light", icon: "sun" }, { value: "dark", label: "Dark", icon: "moon" }, { value: "soft", label: "Soft", icon: "blend" }];
 
@@ -36,7 +36,8 @@ export default function Settings() {
     const ok = await confirm({ title: "Install the update?", body: "Nightshift stops the engine, installs the new version and starts again. If anything fails it goes back to this version", ok: "Install" });
     if (!ok) return; try { await api.post("/update/apply"); toast("Updating. The page reconnects when it is done", "ok"); } catch (e: any) { toast(e.message, "bad"); }
   };
-  const diag = async () => { try { const r = await api.post("/diagnostics"); toast(`Report saved to ${r?.path || "your Desktop"}`, "ok"); } catch (e: any) { toast(e.message, "bad"); } };
+  const [report, setReport] = useState<{ path?: string; name?: string; download_url?: string } | null>(null);
+  const diag = async () => { try { const r = await api.post("/diagnostics"); setReport(r); toast(`Report saved to ${r?.path || "your Desktop"}`, "ok"); } catch (e: any) { toast(e.message, "bad"); } };
   const copy = async (t: string) => { try { await navigator.clipboard.writeText(t); toast("Path copied", "ok"); } catch { toast("Copy was blocked", "warn"); } };
   const home = s?.home || status?.disk?.home || "";
   const version = s?.version || status?.version || upd?.current;
@@ -96,8 +97,9 @@ export default function Settings() {
                 Choose zip<input type="file" accept=".zip" className="sr-only" onChange={(e) => { if (e.target.files?.[0]) toast("Run the Update shortcut on your desktop and pick this zip. Installing from the browser is not available yet", "warn"); e.target.value = ""; }} />
               </label>
             </SettingRow>
-            <SettingRow title="Diagnostics report" sub="A zip on your Desktop with logs and settings, without keys, to send for help">
+            <SettingRow title="Diagnostics report" sub={report?.path ? <>Saved as <span className="font-mono break-all">{report.path}</span></> : "A zip on your Desktop with logs and settings, without keys, to send for help"}>
               <Button variant="soft" leadingIcon="archive" onClick={diag}>Make report</Button>
+              {report?.download_url && <LinkButton href={report.download_url} download={report.name} variant="soft" leadingIcon="download">Download</LinkButton>}
             </SettingRow>
           </Card>
 

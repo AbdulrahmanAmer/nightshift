@@ -40,7 +40,6 @@ OWNED = ("ns_studio", "ns_supervisor", "ns_tts", "ns_common")
 KNOWN_UNWIRED: dict[tuple[str, str], str] = {
     ("ns_studio.learn", "import_csv"): "gap 12",
     ("ns_studio.learn", "summary"): "gap 12",
-    ("ns_supervisor.doctor", "make_bundle"): "gap 10",
     ("ns_supervisor.scheduler", "set_daily_time"): "gap 13",
 }
 

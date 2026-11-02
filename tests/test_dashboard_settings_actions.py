@@ -63,3 +63,29 @@ def test_update_routes_report_the_unavailable_state(tmp_home: Path):
     assert chk["state"] == "unavailable" and chk["message"]
     r = client.post("/api/update/apply")
     assert r.status_code == 501 and err(r)["code"] == "update_unavailable"
+
+
+# ---------------------------------------------------------------- gap 10: diagnostics -> doctor.build_bundle
+
+
+def test_diagnostics_bundle_is_built_by_doctor_and_downloadable(tmp_home: Path):
+    import zipfile
+
+    from ns_dashboard.adapters import RealDoctorAdapter
+
+    client, state = make_env(tmp_home)
+    paths = Paths.from_env()
+    state.adapters.doctor = RealDoctorAdapter(
+        paths, out_dir=tmp_home / "out", options={"freeze": lambda _p, _v: None, "smi": lambda: None}
+    )
+    assert client.get("/api/diagnostics/latest").status_code == 404  # nothing made yet
+    made = client.post("/api/diagnostics")
+    assert made.status_code == 200, made.text
+    body = made.json()
+    assert body["name"].startswith("nightshift-diagnostics-") and body["download_url"] == "/api/diagnostics/latest"
+    assert Path(body["path"]).parent == tmp_home / "out"
+    got = client.get(body["download_url"])
+    assert got.status_code == 200 and got.content[:2] == b"PK"
+    assert body["name"] in got.headers["content-disposition"]
+    with zipfile.ZipFile(body["path"]) as z:
+        assert "bundle-info.json" in z.namelist() and "VERSION" in z.namelist()
