@@ -15,6 +15,7 @@ from ns_common.db import Db, new_job_id
 from ns_common.logging import NsLogger
 from ns_common.models import Channel, Combo, Runtime
 from ns_common.paths import Paths
+from ns_common.secrets_names import KEYRING_SERVICE, SHORT_NAMES
 from ns_studio.channels.crud import (
     add_channel,
     all_channels,
@@ -33,7 +34,6 @@ STAGE_MODULES: tuple[str, ...] = (
     "ns_studio.media.stages_media",
     "ns_studio.series.stages",
 )
-KEYRING_SERVICE = "Nightshift"
 # Fixtures served by the fake LLM are written for a 50 s Short at the "standard" pace; validators stay real.
 FAKE_LLM_COMBO: dict[str, str] = {"length_bucket": "50", "pacing": "standard"}
 Fmt = Literal["master_first", "shorts_only", "series_compilation", "clip", "master_from_script"]
@@ -81,13 +81,13 @@ def load_keys() -> dict[str, str]:
         return {}
     keyring_error = importlib.import_module("keyring.errors").KeyringError
     keys: dict[str, str] = {}
-    for name in ("pexels", "pixabay"):
+    for name, short in SHORT_NAMES.items():  # the names setup and Settings store, not the short ones
         try:
             value = keyring.get_password(KEYRING_SERVICE, name)
         except keyring_error:
             value = None  # a broken backend must not stop a text-only run
         if value:
-            keys[name] = str(value)
+            keys[short] = str(value)
     return keys
 
 
