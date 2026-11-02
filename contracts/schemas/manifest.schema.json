@@ -23,26 +23,6 @@
           "default": null,
           "title": "Sha256"
         },
-        "extract": {
-          "default": [],
-          "items": {
-            "type": "string"
-          },
-          "title": "Extract",
-          "type": "array"
-        },
-        "dest": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Dest"
-        },
         "optional": {
           "default": false,
           "title": "Optional",

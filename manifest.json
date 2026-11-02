@@ -163,14 +163,7 @@
     "webview2": {
       "version": "1.0.2903.40",
       "url": "https://api.nuget.org/v3-flatcontainer/microsoft.web.webview2/1.0.2903.40/microsoft.web.webview2.1.0.2903.40.nupkg",
-      "sha256": "TBD-release",
-      "optional": true,
-      "extract": [
-        "lib/net462/Microsoft.Web.WebView2.Core.dll",
-        "lib/net462/Microsoft.Web.WebView2.Wpf.dll",
-        "runtimes/win-x64/native/WebView2Loader.dll"
-      ],
-      "dest": "bin\\webview2"
+      "sha256": "ef128016dd1e51c59178c827ed5b8aa3322c57afa8675d930f8109505542ad74"
     },
     "yunet": {
       "version": "2023mar",
