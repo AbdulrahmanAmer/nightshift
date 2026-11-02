@@ -58,6 +58,7 @@ class PolicyTextStage:
 
     name = TEXT_STAGE
     tenant: Tenant = "llama"
+    uses_embed: bool = True  # calls the embed service; the orchestrator leases it around run()
     inputs: tuple[str, ...] = (
         "story.json",
         "parts.json",

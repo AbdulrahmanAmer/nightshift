@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from itertools import groupby
 
 from ns_common.errors import NsError
 from ns_studio.context import JobContext
-from ns_studio.stages import REGISTRY, Stage, Tenant, run_stage
+from ns_studio.stages import REGISTRY, Stage, Tenant, needs_embed, run_stage
 
 # Canonical stage order per format. Stage modules only `register()` their stages; the order lives here so
 # it never depends on import order. Names not registered yet are reported by `plan_job` (NS-E306).
@@ -90,6 +92,24 @@ def plan_job(fmt: str) -> list[Stage]:
     return [REGISTRY[n] for n in names]
 
 
+@contextmanager
+def embed_lease(ctx: JobContext, stage: Stage, owner: str) -> Iterator[None]:
+    """Hold the `embed` service while `stage` runs when the stage embeds text (gap 4).
+
+    `embed` is a CPU service outside the GPU lock: the supervisor starts it on acquire and unloads it after
+    10 idle minutes, so nothing has to start it by hand. Without a lease idea dedupe and the text policy
+    check called :8081 while nobody had started it.
+    """
+    if not needs_embed(stage):
+        yield
+        return
+    ctx.services.acquirer.acquire("embed", owner)
+    try:
+        yield
+    finally:
+        ctx.services.acquirer.release("embed", owner)
+
+
 def run_job(ctx: JobContext, *, resume: bool = True, dry_run: bool = False) -> list[str]:
     """Run every stage of `ctx.fmt` in order and return the names that were visited.
 
@@ -109,7 +129,8 @@ def run_job(ctx: JobContext, *, resume: bool = True, dry_run: bool = False) -> l
             ctx.services.acquirer.acquire(tenant, owner, model_alias="story" if tenant == "llama" else None)
         try:
             for st in group_list:
-                run_stage(ctx, st, force=not resume)
+                with embed_lease(ctx, st, owner):
+                    run_stage(ctx, st, force=not resume)
                 ran.append(st.name)
         finally:
             if tenant is not None:

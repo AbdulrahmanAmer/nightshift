@@ -200,6 +200,7 @@ class ChaptersCriticStage:
 
     name: str = "chapters_critic"
     tenant: Tenant = "llama"
+    uses_embed: bool = True  # calls the embed service; the orchestrator leases it around run()
     inputs: tuple[str, ...] = ("story_draft.json", "plan.json")
     outputs: tuple[str, ...] = ("story_revised.json", "critic.json")
 
@@ -271,6 +272,7 @@ class ContinuityStage:
 
     name: str = "continuity"
     tenant: Tenant = "llama"
+    uses_embed: bool = True  # calls the embed service; the orchestrator leases it around run()
     inputs: tuple[str, ...] = ("story_revised.json", "critic.json")
     outputs: tuple[str, ...] = ("story.json", "continuity.json")
 
