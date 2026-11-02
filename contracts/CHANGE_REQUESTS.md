@@ -355,3 +355,10 @@ Format per entry:
 - **Differences from the design doc:** the design doc sketched `files` (a map of DLL name to SHA256). This uses `extract` + `dest` + `optional` as the owner asked; per-file hashes are not needed because the whole `.nupkg` is hash-checked.
 - **Note for the app-host PR (#28):** it already pins `bins.webview2` with a real sha256 and no `extract`/`dest`/`optional`, and its `tests/test_webview2_pin.py` asserts the entry has exactly `{version, url, sha256}`. When both land, keep the real hash, add the three new keys, and update that test.
 - **Status:** applied in @@CR_C1_UI_3@@
+
+## CR-C3-UI-4: `Status` model with an optional `gpu` object
+- **From:** dashboard UI (GPU and VRAM meters, HANDOFF "UI gaps"); owner decisions of 2026-11-02
+- **Change:** new `ns_common.models.Status` (exported as `contracts/schemas/status.schema.json`) describes `GET /api/status` and the `status` SSE event, with sub-models `StatusEngine`, `StatusService`, `StatusDisk`, `StatusChannel`, `StatusLastError` and the new `GpuStatus` `{name: str, load_pct: float|None, vram_used_mb: int|None, vram_total_mb: int|None, temp_c: float|None}`. `Status.gpu` is optional (`None` = not reported). `engine.vram_gb` and `services[].vram_mb` are kept unchanged. The hand-written TypeScript in `ns_dashboard/ui/src/lib/types.ts` gets `GpuStatus` and `Status.gpu?`.
+- **Why:** the Home and Queue GPU meters need load, VRAM used and total, and temperature; there was no schema for the status object at all.
+- **Not done here:** `ns_dashboard/svc_engine.py` does not fill `gpu` yet (it needs a GPU probe in the supervisor; C9/C2 follow-up), and `ns_dashboard/static` is not rebuilt (the TypeScript change is type-only; the next UI PR rebuilds).
+- **Status:** applied in @@CR_C3_UI_4@@

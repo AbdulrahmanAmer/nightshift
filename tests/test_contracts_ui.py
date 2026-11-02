@@ -114,3 +114,38 @@ def test_resolve_manifest_check_tolerates_tbd_only_when_optional():
     assert ok == []
     bad = rm.check({"profiles": {}, "bins": {"webview2": entry()}}, client)
     assert any("webview2" in p and "sha256" in p for p in bad)
+
+
+# --- CR-C3-UI-4: Status.gpu ----------------------------------------------------------------------------
+
+
+def test_status_gpu_is_optional_and_old_fields_stay():
+    base = {
+        "engine": {"state": "ready", "vram_gb": 11.5},
+        "services": {"llama": {"state": "ready", "vram_mb": 9100}},
+    }
+    old = m.Status.model_validate(base)
+    assert old.gpu is None
+    assert old.engine.vram_gb == 11.5 and old.services["llama"].vram_mb == 9100
+    gpu = {"name": "NVIDIA GeForce RTX 4080", "load_pct": 37.5, "vram_used_mb": 9300, "vram_total_mb": 16376}
+    new = m.Status.model_validate(base | {"gpu": gpu})
+    assert new.gpu is not None and new.gpu.temp_c is None and new.gpu.vram_total_mb == 16376
+    assert m.Status.model_validate(base | {"gpu": {"name": "x"}}).gpu == m.GpuStatus(name="x")
+
+
+def test_status_gpu_needs_a_name():
+    with pytest.raises(ValidationError):
+        m.Status.model_validate({"engine": {}, "gpu": {"load_pct": 1.0}})
+
+
+def test_the_dashboard_status_object_validates_against_the_model(tmp_home):
+    from tests.test_dashboard_api import make_env
+
+    from ns_dashboard.fakes import seed_channel, seed_output
+
+    client, state = make_env(tmp_home)
+    seed_channel(state.db, state.paths)
+    seed_output(state.db, state.paths)
+    status = m.Status.model_validate(client.get("/api/status").json())
+    assert status.channels and status.channels[0].slug == "after-dark"
+    assert status.gpu is None
