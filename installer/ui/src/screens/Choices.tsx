@@ -205,7 +205,7 @@ export function Choices() {
                   <span className="text-ds-xs text-ds-muted">{t.more.perWeekCaption}</span>
                 </div>
                 <ChoiceRow type="checkbox" checked={d.installCode} onChange={(v) => set("installCode", v)} label={t.more.code} className="-mx-3" />
-                <ChoiceRow type="checkbox" checked={d.includeVoicedesign} disabled={locked} onChange={(v) => set("includeVoicedesign", v)} label={t.more.voicedesign} hint={t.more.voicedesignHint} className="-mx-3" />
+                <ChoiceRow type="checkbox" checked={d.includeVoicedesign} disabled={locked} onChange={(v) => set("includeVoicedesign", v)} label={t.more.voicedesign} hint={d.includeVoicedesign ? t.more.voicedesignOn : t.more.voicedesignHint} className="-mx-3" />
                 <div className="flex flex-col gap-1.5">
                   <span className="text-ds-sm font-medium text-ds-text-2">{t.more.theme}</span>
                   <SegmentedControl label={t.more.theme} value={d.theme} onChange={(v) => { document.documentElement.dataset.theme = v; set("theme", v); }}

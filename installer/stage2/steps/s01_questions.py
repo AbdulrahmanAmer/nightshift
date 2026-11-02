@@ -19,10 +19,12 @@ from installer.stage2.answers import (
     build_answers,
     load_raw,
     slugify,
+    wants_voicedesign,
     write_answers,
 )
 from installer.stage2.base import Step
 from installer.stage2.context import StepContext
+from installer.stage2.downloader import human_bytes
 from installer.stage2.errors import make_error
 from installer.stage2.secrets import KEY_NAMES, PEXELS_KEY, PIXABAY_KEY
 from installer.stage2.sysinfo import (
@@ -91,6 +93,14 @@ def preview_voice(ctx: StepContext, name: str) -> None:
 # ---------------------------------------------------------------------------------------------------------
 # the step
 # ---------------------------------------------------------------------------------------------------------
+def voicedesign_row(ctx: StepContext, ans: InstallerAnswers) -> str:
+    """What the summary says about the VoiceDesign talker: fetched now (with its size) or later."""
+    if not wants_voicedesign(ans):
+        return "later: Settings, Models"
+    size = sum(f.bytes or 0 for f in ctx.manifest.profiles[ctx.profile].tts_optional)
+    return f"yes (+{human_bytes(size)} to download)"
+
+
 class S01Questions(Step):
     """Ask (or read) every setup choice and write the blanked answers file."""
 
@@ -284,7 +294,8 @@ class S01Questions(Step):
         else:
             merged["install_code"] = ctx.ui.confirm("Install Nightshift Code (offline assistant)?", True)
 
-        merged["include_voicedesign"] = bool(raw.get("include_voicedesign") or False)
+        flag = raw.get("include_voicedesign")
+        merged["include_voicedesign"] = None if flag is None else bool(flag)
 
         source = self._asked(ctx, "models_source", "Folder with the model files (blank to download)", "")
         if source and not Path(source).is_dir():
@@ -300,6 +311,8 @@ class S01Questions(Step):
 
         self._keys(ctx)
         ctx.answers = ans
+        if ans.voice.mode == "design" and ans.include_voicedesign is False:
+            ctx.warn("NS-W114", ans.voice.name or ans.voice.description or "")
         write_answers(self._answers_file(ctx), ans)
         ctx.log.info("answers_saved", channel=slugify(ans.channel.display_name), tier=tier)
         self._summary(ctx, ans)
@@ -315,6 +328,7 @@ class S01Questions(Step):
                 ["Long videos per week", str(ans.masters_per_week)],
                 ["Nightly run time", ans.run_time],
                 ["Nightshift Code", "yes" if ans.install_code else "no"],
+                ["Voice design model", voicedesign_row(ctx, ans)],
                 ["LLM size", f"custom: {ans.llm_custom.file}" if ans.llm_custom else ans.llm_tier],
                 ["Model files", ans.models_source or "download"],
             ],

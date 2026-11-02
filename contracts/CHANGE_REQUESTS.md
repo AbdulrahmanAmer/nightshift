@@ -489,3 +489,9 @@ Format per entry:
 - **For C1 / C2 (installer, supervisor; not done here):** (a) `installer/stage2/fallback.py` should build its destination from `ctx.paths.models_tts_hf` instead of the literal `"hf"` (same folder today; `tests/test_tts_engine.py::test_installer_downloads_where_the_reference_engine_reads` fails if they drift). (b) `ns verify` / s08 should keep treating `qwen-tts.exe` as the binary to probe (`bin\qwentts`), not `qwentts.exe`. (c) The `tts` venv gets numpy, pydantic and pyyaml through torch, fastapi and transformers; `ffmpeg` must be on PATH for the service (speed change), as for the studio.
 - **Why:** `QwenttsEngine` started a `qwentts.exe` that is not in the release zip with flags the upstream tools do not have, the fallback then ran in a venv without torch looking in a folder the installer never fills, and speed changed pitch.
 - **Status:** applied on `feat/release-review-tts`.
+
+## CR-LOOSE-1: `NS-W114` and `include_voicedesign` inference (`feat/release-loose-ends`)
+- **From:** release builder, loose ends after the review round (coordinator addition to item 4)
+- **Change:** `contracts/errors.json` gains `NS-W114` ("A designed voice was chosen but the voice design model is not being downloaded."). `installer.stage2.answers.InstallerAnswers.include_voicedesign` becomes `bool | None = None` (installer-only field, not in `ns_common.models.Answers`): absent means "infer", so a designed voice fetches the VoiceDesign talker in `s03_download_models`; an explicit `false` with a designed voice is honoured and warns `NS-W114`.
+- **Why:** a designed voice cannot be created without the model; an unattended answers file that forgot the flag should not leave the partner with a voice that fails on first use.
+- **Status:** applied on `feat/release-loose-ends`.
