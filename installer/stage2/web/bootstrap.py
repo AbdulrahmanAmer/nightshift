@@ -1,9 +1,9 @@
-"""The three bootstrap steps that used to live in stage1 (docs/design/installer-ui.md 1.6). Standard library only.
+"""The three bootstrap steps that used to live in stage1 (docs/design/installer-ui.md 1.6).
 
 ``b01_tools`` installs Git, FFmpeg and Windows Terminal with winget, ``b02_home`` creates the install folder
 and the NIGHTSHIFT_HOME user variable, ``b03_setup_env`` creates ``venvs\\studio`` with uv. Each step has
 ``check`` (already satisfied?), ``run`` and ``verify`` like the wizard's ``Step``. Every outside effect goes
-through the ``Boot`` object, so ``fakes.FakeBoot`` runs all of it in CI.
+through the ``Boot`` object, so ``fakes.FakeCmd`` runs all of it in CI.
 """
 
 from __future__ import annotations
@@ -133,6 +133,18 @@ def classify(text: str, default: str) -> str:
     return "NS-E113" if any(h in low for h in BLOCKED_HINTS) else default
 
 
+def ignore_row(key: str, status: str, note: str | None) -> None:
+    """Default row callback: nothing listens."""
+
+
+def ignore_text(text: str) -> None:
+    """Default log callback: nothing listens."""
+
+
+def ignore_call() -> None:
+    """Default hook: nothing to do."""
+
+
 @dataclass
 class Boot:
     """Everything the bootstrap steps touch."""
@@ -146,9 +158,9 @@ class Boot:
     refresh_path: Callable[[], None] = refresh_path_from_registry
     set_home_var: Callable[[str, str], bool] = set_user_variable
     get_home_var: Callable[[str], str | None] = get_user_variable
-    on_row: Callable[[str, str, str | None], None] = lambda key, status, note: None
-    say: Callable[[str], None] = lambda text: None
-    write_answers: Callable[[], None] = lambda: None
+    on_row: Callable[[str, str, str | None], None] = ignore_row
+    say: Callable[[str], None] = ignore_text
+    write_answers: Callable[[], None] = ignore_call
     gate: threading.Event = field(default_factory=threading.Event)
     stop: threading.Event = field(default_factory=threading.Event)
 
@@ -195,7 +207,8 @@ class B01Tools:
                 boot.say(f"{label}: already here")
                 continue
             if required and not boot.which("winget.exe"):
-                raise BootstrapError("NS-E111", f"{label} is missing and winget (App Installer) is not available")
+                msg = f"{label} is missing and winget (App Installer) is not available"
+                raise BootstrapError("NS-E111", msg)
             boot.on_row(key, "active", "installing with winget, Windows may ask for permission")
             boot.say(f"{label}: installing with winget")
             res = boot.cmd(["winget.exe", "install", "--id", winget_id, "-e", *WINGET_ARGS], timeout=1800)
@@ -258,8 +271,6 @@ class B02Home:
             raise BootstrapError("NS-E104", f"{boot.home} lacks {', '.join(missing)}")
         if boot.get_home_var(HOME_VAR) != str(boot.home):
             raise BootstrapError("NS-E104", "NIGHTSHIFT_HOME does not point at the install folder")
-        if not (boot.home / "config" / "answers.json").is_file():
-            raise BootstrapError("NS-E104", "config\\answers.json was not written")
 
 
 class B03SetupEnv:
@@ -283,7 +294,8 @@ class B03SetupEnv:
         boot.on_row("setup_env", "active", "installing")
         if not boot.venv_python.is_file():
             boot.say("Creating the setup environment")
-            res = boot.cmd([boot.uv, "venv", "--python", boot.python_version, str(boot.home / "venvs" / "studio")],
+            venv_dir = str(boot.home / "venvs" / "studio")
+            res = boot.cmd([boot.uv, "venv", "--python", boot.python_version, venv_dir],
                            env, boot.app_path, 900)
             if res.returncode != 0:
                 text = last_lines(res.stdout + "\n" + res.stderr)

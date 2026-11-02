@@ -25,13 +25,14 @@ def wizard_argv(
 ) -> list[str]:
     """The wizard command line (with ``--ui-bridge stdio`` for the window, without it for headless runs)."""
     argv = [
-        python, "-X", "utf8", "-m", "installer.stage2.wizard", "--app-path", str(app_path), "--home", str(home),
+        python, "-X", "utf8", "-m", "installer.stage2.wizard", "--app-path", str(app_path),
+        "--home", str(home),
         "--answers", str(answers), "--preflight", str(preflight),
     ]
     if bridge:
         argv += ["--ui-bridge", "stdio"]
     if simulate:
-        argv.append("--simulate-downloads")
+        argv += ["--simulate-downloads", "--no-head-checks"]
     if halt_after:
         argv += ["--halt-after", halt_after]
     return argv

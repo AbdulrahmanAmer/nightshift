@@ -1,4 +1,4 @@
-"""One frozen SetupState per screen, for design review (docs/design/installer-ui.md 5.7). Standard library only.
+"""One frozen SetupState per screen, for design review (docs/design/installer-ui.md 5.7).
 
 ``python -m installer.stage2.web --simulate --fixture downloading --no-window --port 8765`` serves one of them
 unchanged, so the UI can be reviewed (``npm run dev`` proxies ``/api`` to it) without running a setup. The
@@ -24,7 +24,8 @@ NAMES = (
 )
 GB = 1024 ** 3
 DRAFT = {
-    "ownerName": "Abdo", "channel": {"displayName": "After Dark Tales", "niche": "horror fiction", "language": "en"},
+    "ownerName": "Abdo",
+    "channel": {"displayName": "After Dark Tales", "niche": "horror fiction", "language": "en"},
     "homePath": "D:\\Nightshift", "llmTier": "small", "voice": {"speaker": "Ryan"},
     "modelsSource": {"kind": "internet", "path": None}, "runTime": "03:00", "mastersPerWeek": 1,
     "installCode": True, "theme": "dark", "pexelsKey": "demo-pexels-key", "pixabayKey": "demo-pixabay-key",
@@ -118,14 +119,18 @@ def build(name: str, app_path: Path | None = None) -> dict[str, Any]:
             _set_steps(state, "s07_configs", "s08_smoke")
             state["run"] = "running"
             state["verify"] = {"checks": [
-                {"name": "llm", "label": "Story model", "status": "passed", "value": "54 tokens/s", "note": None},
-                {"name": "embed", "label": "Memory index", "status": "passed", "value": "ready", "note": None},
+                {"name": "llm", "label": "Story model", "status": "passed", "value": "54 tokens/s",
+                 "note": None},
+                {"name": "embed", "label": "Memory index", "status": "passed", "value": "ready",
+                 "note": None},
                 {"name": "tts", "label": "Voice engine", "status": "passed", "value": "Ryan, 0.31 RTF",
                  "note": None},
                 {"name": "whisper", "label": "Captions", "status": "passed", "value": "graphics card",
                  "note": None},
-                {"name": "nvenc", "label": "Video encoder", "status": "passed", "value": "NVENC", "note": None},
-                {"name": "mtp", "label": "Faster decoding", "status": "fallback", "value": "off", "note": None},
+                {"name": "nvenc", "label": "Video encoder", "status": "passed", "value": "NVENC",
+                 "note": None},
+                {"name": "mtp", "label": "Faster decoding", "status": "fallback", "value": "off",
+                 "note": None},
             ], "voice": None, "render": None, "renderNote": None, "reportReady": True}
         elif name == "done":
             _set_steps(state, None)
@@ -135,7 +140,8 @@ def build(name: str, app_path: Path | None = None) -> dict[str, Any]:
                 "installed": [{"label": "Story model (Small)", "detail": "9.0 GB"},
                               {"label": "Voices: presets and your own", "detail": "4.4 GB"},
                               {"label": "Captions, memory, faces", "detail": "1.7 GB"},
-                              {"label": "Nightshift Code", "detail": "yes"}, {"label": "Night run", "detail": "03:00"},
+                              {"label": "Nightshift Code", "detail": "yes"},
+                              {"label": "Night run", "detail": "03:00"},
                               {"label": "Everything else", "detail": "D:\\Nightshift"}],
                 "shortcuts": ["Nightshift Dashboard", "Nightshift Outbox", "Nightshift - Diagnostics"],
                 "runTime": "03:00", "scheduled": True,
@@ -149,15 +155,18 @@ def build(name: str, app_path: Path | None = None) -> dict[str, Any]:
             state["failure"] = {
                 "step": "s03_download_models", "stepTitle": "Download AI models", "code": "NS-E109",
                 "title": "A downloaded file is damaged",
-                "whatToDo": "Press Retry. Setup downloads that file again. If the same error comes back, send "
+                "whatToDo": "Press Retry. Setup downloads that file again. If the same error comes back, "
+                            "send "
                             "the diagnostics zip",
-                "detail": "qwen-talker-1.7b-base-Q8_0.gguf: expected 4b9a33a2..., got 0c1d...", "canSkip": False,
+                "detail": "qwen-talker-1.7b-base-Q8_0.gguf: expected 4b9a33a2..., got 0c1d...",
+                "canSkip": False,
                 "attempts": 3, "at": "21:52",
             }
             _download_rows(state)
     state["phase"] = {
         "welcome": "checks", "welcome-resume": "choices", "checks-ok": "checks", "checks-blocking": "checks",
-        "choices": "choices", "downloading": "downloading", "paused": "downloading", "installing": "installing",
+        "choices": "choices", "downloading": "downloading", "paused": "downloading",
+        "installing": "installing",
         "verifying": "verifying", "done": "done", "failed": "failed",
     }[name]
     state["rev"] = 1
@@ -197,7 +206,8 @@ class FixtureController:
 
     def disk(self, path: str, tier: str, source: bool) -> dict[str, Any]:
         """A roomy drive."""
-        return {"path": path, "exists": True, "drive": path[:1].upper() or "D", "freeGb": 412.0, "type": "SSD",
+        return {"path": path, "exists": True, "drive": path[:1].upper() or "D", "freeGb": 412.0,
+                "type": "SSD",
                 "needGb": 60, "ok": True, "message": "412 GB free on D: (SSD)", "modelsFound": None}
 
     def do_action(self, name: str, body: dict[str, Any] | None = None) -> tuple[int, dict[str, Any]]:

@@ -10,7 +10,7 @@ from typing import Any, Literal, TypedDict
 
 SCHEMA = 1
 
-# Run order of every step the window shows. b01 to b03 run in the server (bootstrap.py), the rest in the wizard.
+# Run order of every step the window shows. b01 to b03 run in the server, the rest in the wizard.
 STEP_ORDER: tuple[str, ...] = (
     "b01_tools", "b02_home", "b03_setup_env",
     "s01_questions", "s02_download_bins", "s03_download_models",

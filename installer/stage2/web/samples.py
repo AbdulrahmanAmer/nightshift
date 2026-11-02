@@ -94,7 +94,9 @@ def newest_file(root: Path, pattern: str) -> Path | None:
 
 def frame_grab_argv(ffmpeg: str, video: Path, out: Path) -> list[str]:
     """ffmpeg command line that saves one frame (at 2 s, else the first) of ``video`` as a JPEG."""
-    return [ffmpeg, "-y", "-v", "error", "-ss", "2", "-i", str(video), "-frames:v", "1", "-q:v", "3", str(out)]
+    return [
+        ffmpeg, "-y", "-v", "error", "-ss", "2", "-i", str(video), "-frames:v", "1", "-q:v", "3", str(out),
+    ]
 
 
 def duration_argv(ffprobe: str, video: Path) -> list[str]:

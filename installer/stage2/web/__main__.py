@@ -29,8 +29,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     p.add_argument("--app-path", help="the extracted Nightshift folder (default: this checkout)")
     p.add_argument("--preflight", help="stage 1 hand-over JSON")
     p.add_argument("--answers", help="answers.json (prefilled, or the unattended answers with --headless)")
-    p.add_argument("--home", help="install folder (default: NIGHTSHIFT_HOME, answers.json, then stage 1's pick)")
-    p.add_argument("--headless", action="store_true", help="no window: run the same steps with console output")
+    p.add_argument("--home", help="install folder (default: NIGHTSHIFT_HOME, answers.json, stage 1's pick)")
+    p.add_argument("--headless", action="store_true", help="no window: same steps, console output only")
     p.add_argument("--no-window", action="store_true", help="serve, but do not open a window (dev server)")
     p.add_argument("--uninstall", action="store_true", help="the uninstall window")
     p.add_argument("--simulate", action="store_true", help="CI mode: fake winget and uv, simulated downloads")
@@ -115,7 +115,8 @@ def run_ui(args: argparse.Namespace, cfg: Config) -> int:
         code = _exit_code(controller)
     server.stop()
     launch.remove_server_files(folder)
-    if code == EXIT_OK and isinstance(controller, SetupController) and controller.snapshot()["run"] == "finished":
+    finished = isinstance(controller, SetupController) and controller.snapshot()["run"] == "finished"
+    if code == EXIT_OK and finished:
         say("Setup is done. You can close this window.")
     return code
 

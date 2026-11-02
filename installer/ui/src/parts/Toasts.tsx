@@ -18,7 +18,7 @@ export function Toasts({ items }: { items: ToastItem[] }) {
 export function ConnectionBanner({ show }: { show: boolean }) {
   if (!show) return null;
   return (
-    <div className="pointer-events-none fixed top-12 left-1/2 z-40 -translate-x-1/2">
+    <div className="pointer-events-none fixed top-2 left-1/2 z-40 -translate-x-1/2">
       <Card elevation={3} radius="lg" padding="sm" className="ns-toast flex items-center gap-3 text-ds-sm">
         <SetupIcon name="offline" size={16} className="shrink-0 text-ds-text-2" />
         <span>{shell.connectionLost}</span>

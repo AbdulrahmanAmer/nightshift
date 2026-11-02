@@ -5,12 +5,14 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 
 // The setup wizard UI (installer/ui) is built by this project, so there is one npm install and one lockfile.
-// Builds into installer/ui/static (served by installer/stage2/web/server.py). Fixed names (app.js, app.css), no inline
-// scripts (CSP script-src 'self').
+// Builds into installer/ui/<out> (served by installer/stage2/web/server.py). Fixed names (app.js, app.css), no inline
+// scripts (CSP script-src 'self'). The folder name is spelled in two parts because the dashboard build's Tailwind scanner reads
+// every file in this project and would turn the plain word into a utility class, changing ns_dashboard/<out>/app.css.
 const ui = path.dirname(fileURLToPath(import.meta.url)); // ns_dashboard/ui
 const repo = path.resolve(ui, "../..");
 const root = path.join(repo, "installer/ui");
 const dash = path.join(ui, "src");
+const OUT = ["sta", "tic"].join("");
 const nm = (p: string) => path.join(ui, "node_modules", p);
 
 export default defineConfig({
@@ -34,7 +36,7 @@ export default defineConfig({
     dedupe: ["react", "react-dom", "lucide-react"],
   },
   build: {
-    outDir: path.join(root, "static"),
+    outDir: path.join(root, OUT),
     emptyOutDir: true,
     assetsDir: "assets",
     modulePreload: { polyfill: false },

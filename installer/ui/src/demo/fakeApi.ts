@@ -3,9 +3,9 @@
 // demo starts at Welcome and plays a scripted sequence (progress advances on a timer) when the buttons are pressed.
 import type { Api } from "../api/client";
 import type {
-  ActionBody, ActionName, ActionResult, AnswersResult, ChoicesDraft, DiskCheck, DownloadRow, KeyCheck, SetupState, StepId, Tier, UiStep, UninstallView, VerifyRow,
+  ActionBody, ActionName, ActionResult, AnswersResult, ChoicesDraft, DiskCheck, DownloadRow, KeyCheck, SetupState, StepId, UiStep, UninstallView, VerifyRow,
 } from "../api/types";
-import { checkRows, DRIVES, downloadRows, downloadsMid, failureView, fixture, isoNow, machine, overall, plan as makePlan, resultView, steps as makeSteps, verifyView, answers as answersView } from "./fixtures";
+import { checkRows, DRIVES, downloadRows, downloadsMid, fixture, isoNow, machine, overall, plan as makePlan, resultView, steps as makeSteps, verifyView, answers as answersView } from "./fixtures";
 
 const TICK_MS = 400;
 const SPEED = 11.4e6;
@@ -64,7 +64,7 @@ export function createDemoApi({ screen }: { screen: string | null }): Api {
   }
 
   /** Move a list of steps along one tick. Returns true when the last one finished. */
-  function runSteps(ids: StepId[], first: StepId): boolean {
+  function runSteps(ids: StepId[]): boolean {
     const s = cur();
     const id = ids[eng.i];
     if (!id) return true;
@@ -87,7 +87,6 @@ export function createDemoApi({ screen }: { screen: string | null }): Api {
     }
     bump({ steps: nextSteps, verify, notices: id === "s08_smoke" && finished ? [{ code: "NS-W302", title: "Faster decoding was not faster here", whatToDo: "Nothing to do", step: id }] : cur().notices });
     if (finished) { pushLog(LOG[id] ?? "done"); eng.i++; eng.c = 0; }
-    void first;
     return finished && eng.i >= ids.length;
   }
 
@@ -96,11 +95,11 @@ export function createDemoApi({ screen }: { screen: string | null }): Api {
     if (s.run !== "running") return;
     if (s.phase === "downloading") return tickDownload();
     if (s.phase === "installing") {
-      if (runSteps(INSTALL_STEPS, "s04_venvs")) { eng.i = 0; eng.c = 0; bump({ phase: "verifying" }); }
+      if (runSteps(INSTALL_STEPS)) { eng.i = 0; eng.c = 0; bump({ phase: "verifying" }); }
       return;
     }
     if (s.phase === "verifying") {
-      if (runSteps(VERIFY_STEPS, "s08_smoke")) {
+      if (runSteps(VERIFY_STEPS)) {
         const v = verifyView("all");
         bump({ phase: "done", run: "finished", verify: { ...v, reportReady: true }, result: resultView() });
         stopEngine();
@@ -289,8 +288,6 @@ export function createDemoApi({ screen }: { screen: string | null }): Api {
     },
   };
 
-  void failureView;
   return api;
 }
 
-export type { Tier };

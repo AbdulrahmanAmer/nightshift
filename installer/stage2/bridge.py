@@ -229,9 +229,7 @@ class BridgeUi(Ui):
                 if self.stop.is_set():
                     return "quit"
                 continue
-            if action == "skip" and not optional:
-                continue
-            return action
+            return action                   # the wizard turns a skip of a required step into quit
 
     def notice(self, code: str, detail: str = "") -> None:
         """A warning code was raised."""

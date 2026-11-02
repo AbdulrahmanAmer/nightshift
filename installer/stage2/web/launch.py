@@ -110,7 +110,7 @@ def open_window(
     e = dict(env if env is not None else os.environ)
     handle = WindowHandle("none")
 
-    # 1. the WebView2 host. Exit code 3 (quickly) means WebView2 is unavailable; a window that stays up is a win.
+    # 1. the WebView2 host. Exit code 3 (quickly) means WebView2 is unavailable; a window that stays up wins.
     host_script = app_path / "launchers" / "nightshift-host.ps1"
     if exists(host_script):
         handle.tried.append("webview2")

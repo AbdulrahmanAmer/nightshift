@@ -23,7 +23,7 @@ export function Uninstall({ view }: { view: UninstallView }) {
     return (
       <Screen name="uninstall-done" salutation={t.doneSalutation} description={t.doneDescription}
         footerLeft={view.home ?? ""} footerRight={<Button variant="primary" size="lg" data-primary onClick={() => void close()}>{t.close}</Button>}>
-        <Area area="kept">
+        <Area area="kept" fit>
           <Card as="section" padding="lg" aria-label={t.keptTitle}>
             <CardHeader title={t.keptTitle} level={2} />
             {r.kept.length === 0 ? <p className="text-ds-sm text-ds-text-2">{t.keptNone}</p> : (

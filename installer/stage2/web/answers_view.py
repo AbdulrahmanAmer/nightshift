@@ -20,6 +20,7 @@ from installer.stage2.web.plan import required_free_gb
 
 RUN_TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 DRIVE_PATH_RE = re.compile(r"^[A-Za-z]:\\")
+MAX_HOME_LEN = 80
 KINDS_UI = ("internet", "folder", "drive-zip")
 THEMES = ("dark", "light", "soft")
 TIER_NAMES = {"small": "Small", "balanced": "Balanced", "best": "Best"}
@@ -120,8 +121,8 @@ def _home_errors(home: str, tier: str, env: Env) -> list[dict[str, Any]]:
     need = required_free_gb(tier)
     if not DRIVE_PATH_RE.match(home) or "%" in home:
         return [_err("homePath", "Use a full path on a drive of this PC, such as D:\\Nightshift")]
-    if len(home) > 80:
-        return [_err("homePath", "Use a path of 80 characters or fewer")]
+    if len(home) > MAX_HOME_LEN:
+        return [_err("homePath", f"Use a path of {MAX_HOME_LEN} characters or fewer")]
     if env.drive_letters is not None and home[0].upper() not in env.drive_letters:
         return [_err("homePath", "Pick a folder on a fixed drive of this PC")]
     free = env.free_gb(home)
@@ -134,7 +135,9 @@ def _home_errors(home: str, tier: str, env: Env) -> list[dict[str, Any]]:
 # ---------------------------------------------------------------------------------------------------------
 # answers.json
 # ---------------------------------------------------------------------------------------------------------
-def draft_to_answers(draft: dict[str, Any], *, allow_cpu: bool = False, models_source: str | None = None) -> dict[str, Any]:
+def draft_to_answers(
+    draft: dict[str, Any], *, allow_cpu: bool = False, models_source: str | None = None
+) -> dict[str, Any]:
     """The answers.json content for an accepted draft: snake_case, with blank API keys.
 
     ``models_source`` replaces the draft's folder (the Drive zips are unpacked into a cache folder first).
@@ -172,7 +175,9 @@ def draft_to_answers(draft: dict[str, Any], *, allow_cpu: bool = False, models_s
     }
 
 
-def answers_to_view(raw: dict[str, Any], *, pexels_set: bool = False, pixabay_set: bool = False) -> dict[str, Any]:
+def answers_to_view(
+    raw: dict[str, Any], *, pexels_set: bool = False, pixabay_set: bool = False
+) -> dict[str, Any]:
     """AnswersView (camelCase) from an answers.json dict."""
     channel = raw.get("channel") or {}
     voice = raw.get("voice") or {}

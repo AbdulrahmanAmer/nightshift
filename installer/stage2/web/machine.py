@@ -109,7 +109,7 @@ def revealable(state: dict[str, Any]) -> set[str]:
         out.update(p for p in (result.get("outbox"), result.get("home"), result.get("diagnosticsZip")) if p)
     answers = state.get("answers")
     if answers and answers.get("homePath"):
-        out.add(answers["homePath"].rstrip("\\") + "\logs")
+        out.add(answers["homePath"].rstrip("\\") + "\\logs")
     return out
 
 

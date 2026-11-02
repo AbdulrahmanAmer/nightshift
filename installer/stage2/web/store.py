@@ -15,7 +15,9 @@ LONG_POLL_S = 15.0
 class SetupStore:
     """Holds the SetupState dict. Every change bumps ``rev`` and wakes the long pollers."""
 
-    def __init__(self, state: dict[str, Any], finalize: Callable[[dict[str, Any]], None] | None = None) -> None:
+    def __init__(
+        self, state: dict[str, Any], finalize: Callable[[dict[str, Any]], None] | None = None
+    ) -> None:
         self._cond = threading.Condition()
         self._state = state
         self._finalize = finalize

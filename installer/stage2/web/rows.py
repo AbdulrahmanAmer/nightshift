@@ -1,4 +1,4 @@
-"""Download rows: building them, measuring speed and time left (docs/design/installer-ui.md 2.4). Pure helpers."""
+"""Download rows: building them, measuring speed and time left (docs/design/installer-ui.md 2.4)."""
 
 from __future__ import annotations
 
@@ -29,7 +29,7 @@ class SpeedMeter:
         self._first: float | None = None
 
     def update(self, key: str, done: int) -> float | None:
-        """Feed the bytes done so far; returns the current average speed for the file (None until measured)."""
+        """Feed the bytes done so far; returns the file's current average speed (None until measured)."""
         now = self._clock()
         if self._first is None:
             self._first = now

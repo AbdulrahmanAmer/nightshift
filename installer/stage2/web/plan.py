@@ -1,7 +1,7 @@
 """What setup installs, from manifest.json (docs/design/installer-ui.md 2.1, 2.3, 5.6). Standard library only.
 
 A stdlib mirror of ``downloader.plan_bins`` and ``plan_models``: the server has no pydantic yet, so it reads
-the manifest as plain JSON. ``tests/test_installer_web_plan.py`` proves the byte totals match the real planner.
+the manifest as plain JSON. ``tests/test_installer_web_plan.py`` proves the byte totals match the planner.
 """
 
 from __future__ import annotations

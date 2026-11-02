@@ -21,6 +21,9 @@ TOOL_EXE = {"Git.Git": "git.exe", "Gyan.FFmpeg": "ffmpeg.exe", "Microsoft.Window
 
 def sample_handover(app_path: Path, *, cuda: str = "13.0", home: str = r"C:\Nightshift") -> dict[str, Any]:
     """A green, RTX-5060-Ti-like hand-over JSON, the shape ``stage1.ps1`` writes."""
+    letters = set("CDEFGH")
+    if len(home) > 1 and home[1] == ":":
+        letters.add(home[0].upper())
     rows = [
         ("os", "Windows 10/11, 64-bit", "Windows 11 Pro 10.0.26200"),
         ("gpu", "NVIDIA RTX GPU, 16 GB", "NVIDIA GeForce RTX 5060 Ti, 16311 MB"),
@@ -38,7 +41,7 @@ def sample_handover(app_path: Path, *, cuda: str = "13.0", home: str = r"C:\Nigh
         "llama_pair": "cuda13", "cuda": cuda, "ram_gb": 32.0, "is_admin": False,
         "os_caption": "Windows 11 Pro", "os_version": "10.0.26200",
         "gpu": {"name": "NVIDIA GeForce RTX 5060 Ti", "vram_mb": 16311, "driver": "581.57"},
-        "drives": [{"letter": c, "free_gb": 500.0, "type": "SSD"} for c in "CDEFGH"],
+        "drives": [{"letter": c, "free_gb": 500.0, "type": "SSD"} for c in sorted(letters)],
         "winget": True, "unreachable": [],
         "tools": {"git": True, "ffmpeg": True, "wt": True, "uv": True},
         "checks": [{"id": i, "label": label, "status": "ok", "code": "", "value": value, "hint": ""}
@@ -98,11 +101,12 @@ def fake_effects(base: Path, present: set[str] | None = None, **overrides: Any) 
 
     fx = Effects(
         cmd=cmd, which=cmd.which, refresh_path=lambda: None, set_home_var=set_var, get_home_var=var.get,
-        probe=lambda app, out, home: sample_handover(app), free_gb=lambda _p: 500.0,
+        probe=lambda app, out, home: sample_handover(app, home=home or r"C:\Nightshift"),
+        free_gb=lambda _p: 500.0,
         key_check=lambda service, key: {"ok": bool(key), "code": None if key else "NS-E501", "message": None},
         launch=lambda argv, env=None: launched.append(list(argv)),
         elevate_longpaths=lambda: True, console=lambda text, level: console.append(text),
-        uv_path=lambda home: str(uv),
+        uv_path=lambda home: str(uv), clipboard=lambda text: None,
     )
     for k, v in overrides.items():
         setattr(fx, k, v)

@@ -77,3 +77,62 @@ def test_answers_example_matches_exported_schema():
     # Keys the published schema does not know yet are the ones filed in CR-C1-2.
     pending = set(example) - known
     assert pending <= {"home_path", "models_source", "llm_tier", "restore_from"}
+
+
+def test_installer_ui_build_is_committed():
+    static = ROOT / "installer" / "ui" / "static"
+    for name in ("index.html", "app.js", "app.css"):
+        assert (static / name).is_file(), name
+    html = (static / "index.html").read_text(encoding="utf-8")
+    assert 'data-theme="dark"' in html                      # dark is the installer's default theme
+    assert re.search(r'<script[^>]*src="\./app\.js"', html)
+    assert not re.search(r"<script(?![^>]*\bsrc=)[^>]*>\s*\S", html), "no inline scripts (CSP)"
+
+
+def test_operator_copy_covers_every_code_the_installer_can_raise():
+    copy = json.loads((ROOT / "installer" / "stage2" / "web" / "operator_copy.json").read_text("utf-8"))
+    steps_dir = ROOT / "installer" / "stage2" / "steps"
+    files = [ROOT / "installer" / "stage1.ps1", *sorted(steps_dir.glob("*.py")),
+             ROOT / "installer" / "stage2" / "web" / "bootstrap.py"]
+    used = set()
+    for f in files:
+        used |= set(re.findall(r"NS-[EW]\d{3}", f.read_text(encoding="utf-8")))
+    assert {"NS-E113", "NS-W403"} <= used
+    missing = used - set(copy) - {"NS-E703"}      # NS-E703 is s07's restore message, not a failure
+    assert not missing, f"operator_copy.json lacks {sorted(missing)}"
+    for code, entry in copy.items():
+        assert entry["title"] and entry["whatToDo"], code
+        assert not entry["whatToDo"].endswith("!") and "!" not in entry["title"], code
+
+
+def test_web_package_imports_only_the_standard_library():
+    import ast
+    import sys
+
+    allowed_first_party = "installer.stage2.web"
+    offenders = []
+    for path in sorted((ROOT / "installer" / "stage2" / "web").glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            names: list[str] = []
+            if isinstance(node, ast.Import):
+                names = [a.name for a in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                names = [node.module]
+            for name in names:
+                top = name.split(".")[0]
+                if top in sys.stdlib_module_names or top == "__future__":
+                    continue
+                if name == allowed_first_party or name.startswith(allowed_first_party + "."):
+                    continue
+                offenders.append(f"{path.name}: {name}")
+    assert not offenders, "the setup server runs on the bare Python: " + ", ".join(offenders)
+
+
+def test_only_the_samples_helpers_are_shared_with_the_wizard():
+    # P2 may import installer.stage2.web.samples (stdlib only); the rest of the web package is P1's.
+    wizard_side = [ROOT / "installer" / "stage2" / "wizard.py", ROOT / "installer" / "stage2" / "bridge.py",
+                   *sorted((ROOT / "installer" / "stage2" / "steps").glob("*.py"))]
+    for f in wizard_side:
+        for m in re.findall(r"installer\.stage2\.web(?:\.\w+)?", f.read_text(encoding="utf-8")):
+            assert m in ("installer.stage2.web", "installer.stage2.web.samples"), f"{f.name} imports {m}"

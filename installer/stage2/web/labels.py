@@ -1,4 +1,4 @@
-"""Friendly names for steps, downloads and checks (docs/design/installer-ui.md 2.4, 2.5, 2.6). Standard library only."""
+"""Friendly names for steps, downloads and checks (docs/design/installer-ui.md 2.4 to 2.6)."""
 
 from __future__ import annotations
 
@@ -55,7 +55,7 @@ def llm_label(tier: str) -> str:
 
 
 def label_for_file(key: str) -> str:
-    """Best label for a download key P1 did not plan itself (a row the wizard added, such as a fallback file)."""
+    """Best label for a download key P1 did not plan itself (a row the wizard added, such as a fallback)."""
     low = key.lower()
     if key in DOWNLOAD_LABELS:
         return DOWNLOAD_LABELS[key]

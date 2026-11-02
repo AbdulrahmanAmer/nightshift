@@ -40,7 +40,8 @@ def check_key(service: str, key: str, fetch: Fetch | None = None) -> dict[str, A
         return {"ok": False, "code": REJECTED[service], "message": copy_for(REJECTED[service])[1]}
     if service == "pexels":
         query = urllib.parse.urlencode({"query": "nature", "per_page": 1})
-        req = urllib.request.Request(f"https://api.pexels.com/v1/search?{query}", headers={"Authorization": key})
+        url = f"https://api.pexels.com/v1/search?{query}"
+        req = urllib.request.Request(url, headers={"Authorization": key})
     else:
         query = urllib.parse.urlencode({"key": key, "q": "nature", "per_page": 3})
         req = urllib.request.Request(f"https://pixabay.com/api/?{query}")

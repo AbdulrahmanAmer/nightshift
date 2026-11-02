@@ -1,8 +1,8 @@
 """The setup controller: state, actions and the pipeline (docs/design/installer-ui.md 1.5 to 1.8).
 
-``SetupController`` owns the SetupState dict (in a ``SetupStore``), runs the bootstrap steps b01 to b03, starts
-the wizard as a child process with ``--ui-bridge stdio``, maps its events into the state, and answers the
-actions the window sends. Standard library only. Every outside effect (winget, the wizard process, probes,
+``SetupController`` owns the SetupState dict (in a ``SetupStore``), runs the bootstrap steps b01 to b03,
+starts the wizard as a child process with ``--ui-bridge stdio``, maps its events into the state, and answers
+the actions the window sends. Standard library only. Every outside effect (winget, the wizard process, probes,
 Explorer) comes in through ``Effects`` so the tests run it with fakes.
 """
 
@@ -106,7 +106,8 @@ def elevate_longpaths() -> bool:
     """Turn long paths on through a UAC prompt. True when the registry value is 1 afterwards."""
     script = (
         "Start-Process powershell -Verb RunAs -Wait -ArgumentList '-NoProfile','-Command',"
-        "'Set-ItemProperty HKLM:\\SYSTEM\\CurrentControlSet\\Control\\FileSystem LongPathsEnabled 1 -Type DWord'"
+        "'Set-ItemProperty HKLM:\\SYSTEM\\CurrentControlSet\\Control\\FileSystem "
+        "LongPathsEnabled 1 -Type DWord'"
     )
     subprocess.run(["powershell.exe", "-NoProfile", "-Command", script], capture_output=True, check=False,
                    timeout=300)
@@ -117,6 +118,23 @@ def elevate_longpaths() -> bool:
             return int(winreg.QueryValueEx(key, "LongPathsEnabled")[0]) == 1
     except (ImportError, OSError):
         return False
+
+
+def ignore_console(text: str, level: str) -> None:
+    """Default console hook: print nothing."""
+
+
+def copy_to_clipboard(text: str) -> None:
+    """Put text on the Windows clipboard (clip.exe); silently does nothing when that fails."""
+    try:
+        subprocess.run(["clip.exe"], input=text, text=True, check=False, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return
+
+
+def default_uv_path(home: Path) -> str:
+    """uv from PATH, else the copy b02 puts under the install folder."""
+    return shutil.which("uv") or str(home / "bin" / "uv" / "uv.exe")
 
 
 @dataclass
@@ -134,8 +152,9 @@ class Effects:
     key_check: Callable[[str, str], dict[str, Any]] = check_key
     launch: Callable[..., None] = launch_detached
     elevate_longpaths: Callable[[], bool] = elevate_longpaths
-    console: Callable[[str, str], None] = lambda text, level: None
-    uv_path: Callable[[Path], str] = lambda home: shutil.which("uv") or str(home / "bin" / "uv" / "uv.exe")
+    console: Callable[[str, str], None] = ignore_console
+    uv_path: Callable[[Path], str] = default_uv_path
+    clipboard: Callable[[str], None] = copy_to_clipboard
 
 
 # ---------------------------------------------------------------------------------------------------------
@@ -150,7 +169,9 @@ def read_install_state(home: Path) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
-def write_step(home: Path, version: str, app_path: Path, step_id: str, status: str, error: str | None) -> None:
+def write_step(
+    home: Path, version: str, app_path: Path, step_id: str, status: str, error: str | None
+) -> None:
     """Record one step in install_state.json the way the wizard's StateStore does."""
     data = read_install_state(home)
     steps = data.get("steps") if isinstance(data.get("steps"), dict) else {}
@@ -171,7 +192,9 @@ def write_step(home: Path, version: str, app_path: Path, step_id: str, status: s
 class SetupController:
     """Everything the server needs: state, actions, pipeline."""
 
-    def __init__(self, cfg: Config, fx: Effects | None = None, *, clock: Callable[[], float] = time.monotonic):
+    def __init__(
+        self, cfg: Config, fx: Effects | None = None, *, clock: Callable[[], float] = time.monotonic
+    ) -> None:
         self.cfg = cfg
         self.fx = fx or Effects()
         self.meter = rows.SpeedMeter(clock)
@@ -217,7 +240,8 @@ class SetupController:
                 raise FileNotFoundError("no hardware summary (stage 1 hand-over file) was given")
             from installer.stage2.web.fakes import sample_handover
 
-            pf = sample_handover(self.cfg.app_path)
+            home = str(self.cfg.home) if self.cfg.home else r"C:\Nightshift"
+            pf = sample_handover(self.cfg.app_path, home=home)
         return pf
 
     def _initial_home(self) -> Path:
@@ -263,7 +287,8 @@ class SetupController:
         pf = self.pf
         gpu = pf.get("gpu") or {}
         the_plan = plan.build_plan(
-            self.manifest, profile=pf.get("profile", "gpu"), tier=tier, include_code=code, cuda=pf.get("cuda"),
+            self.manifest, profile=pf.get("profile", "gpu"), tier=tier, include_code=code,
+            cuda=pf.get("cuda"),
             ram_gb=float(pf.get("ram_gb") or 0), vram_mb=gpu.get("vram_mb"),
         )
         steps = []
@@ -388,6 +413,8 @@ class SetupController:
 
     def submit_answers(self, draft: dict[str, Any]) -> dict[str, Any]:
         """``POST /api/answers``: validate, accept, rebuild the plan. Returns an AnswersResult."""
+        if "path" in draft and "channel" not in draft:
+            return self._load_answers_file(str(draft["path"]))
         state = self.snapshot()
         if state["answersLocked"] or self._started:
             return {"ok": False, "errors": [{"field": "homePath", "code": None,
@@ -410,8 +437,10 @@ class SetupController:
         )
         pf = self.pf
         new_plan = plan.build_plan(
-            self.manifest, profile=pf.get("profile", "gpu"), tier=raw["llm_tier"], include_code=raw["install_code"],
-            cuda=pf.get("cuda"), ram_gb=float(pf.get("ram_gb") or 0), vram_mb=(pf.get("gpu") or {}).get("vram_mb"),
+            self.manifest, profile=pf.get("profile", "gpu"), tier=raw["llm_tier"],
+            include_code=raw["install_code"],
+            cuda=pf.get("cuda"), ram_gb=float(pf.get("ram_gb") or 0),
+            vram_mb=(pf.get("gpu") or {}).get("vram_mb"),
         )
 
         def fn(s: dict[str, Any]) -> None:
@@ -423,6 +452,20 @@ class SetupController:
         self.store.update(fn)
         self.log("info", f"Choices saved for {view['channel']['displayName']}")
         return {"ok": True, "answers": view, "plan": new_plan}
+
+    def _load_answers_file(self, path: str) -> dict[str, Any]:
+        """Welcome > Advanced > "Use answers from a file": read it and run it through the same validation."""
+        try:
+            raw = answers_view.read_answers(Path(path.strip().strip('"')))
+        except (OSError, ValueError) as e:
+            return {"ok": False, "errors": [{"field": "homePath", "code": None,
+                                             "message": f"That answers file could not be read: {e}"}]}
+        view = answers_view.answers_to_view(raw)
+        draft = {k: v for k, v in view.items() if k not in ("pexelsKeySet", "pixabayKeySet")}
+        keys = answers_view.keys_in(raw)
+        draft["pexelsKey"] = keys["pexels_api_key"]
+        draft["pixabayKey"] = keys["pixabay_api_key"]
+        return self.submit_answers(draft)
 
     def _allow_cpu(self) -> bool:
         prefill = self._prefill_raw() or {}
@@ -472,7 +515,7 @@ class SetupController:
         return self._reply(200, True, message)
 
     def _accept_prefill(self) -> str | None:
-        """-Ui with answers.json: accept the loaded answers on Start when they are valid. Returns a problem."""
+        """-Ui with answers.json: accept the loaded answers on Start when valid. Returns a problem."""
         state = self.snapshot()
         view = state.get("answers")
         if not view or not self._prefill_raw():
@@ -568,7 +611,8 @@ class SetupController:
         pipeline_alive = self._pipeline is not None and self._pipeline.is_alive()
         if alive and engine is not None:
             engine.send({"cmd": "stop"})
-        self.store.update(lambda s: s.__setitem__("run", "stopping" if (alive or pipeline_alive) else "stopped"))
+        stopping = alive or pipeline_alive
+        self.store.update(lambda s: s.__setitem__("run", "stopping" if stopping else "stopped"))
         self.log("info", "Stopping setup. Everything finished so far is kept.")
         return None
 
@@ -633,6 +677,7 @@ class SetupController:
         path = self.write_diagnostics()
         if path is None:
             return "The diagnostics zip could not be written. Use the Nightshift Diagnostics shortcut."
+        self.fx.clipboard(str(path))
         return str(path)
 
     def _act_close_setup(self, _path: str | None) -> str | None:
@@ -642,7 +687,7 @@ class SetupController:
 
     # ---- diagnostics ----
     def write_diagnostics(self) -> Path | None:
-        """The diagnostics zip on the Desktop: ``ns doctor --bundle`` when the studio venv exists, else a plain zip."""
+        """The diagnostics zip on the Desktop (``ns doctor --bundle`` when the studio venv exists)."""
         py = self.home / "venvs" / "studio" / "Scripts" / "python.exe"
         desktop = desktop_dir()
         if py.is_file() and not self.cfg.simulate:
@@ -678,7 +723,9 @@ class SetupController:
 
         self.store.update(fn)
 
-    def _set_failure(self, step: str, code: str, message: str, hint: str, detail: str, optional: bool) -> None:
+    def _set_failure(
+        self, step: str, code: str, message: str, hint: str, detail: str, optional: bool
+    ) -> None:
         title, what = preflight.copy_for(code, message, hint)
         self._attempts[step] = self._attempts.get(step, 0) + 1
         view = {
@@ -703,6 +750,9 @@ class SetupController:
 
     # ---- pipeline ----
     def _begin_pipeline(self) -> None:
+        old = self._pipeline
+        if old is not None and old.is_alive() and old is not threading.current_thread():
+            old.join(timeout=5.0)           # a pipeline that just failed may still be unwinding
         with self._lock:
             self._started = True
             self._stop.clear()
@@ -760,8 +810,18 @@ class SetupController:
         if step.id == "b02_home":
             self._switch_log_to_home()
         self._set_step(step.id, "done", None)
+        if step.id == "b02_home":
+            self._flush_earlier_steps()
+
+    def _flush_earlier_steps(self) -> None:
+        """b01 finished before the install folder existed: record it in install_state.json now."""
+        for st in self.snapshot()["steps"]:
+            if st["id"] in BOOTSTRAP_STEPS and st["id"] != "b02_home" and st["status"] == "done":
+                self._persist_step(st["id"], "done", None)
 
     def _write_answers(self) -> None:
+        if self.cfg.headless:
+            return                          # the unattended wizard reads the answers file it was given
         if self._accepted is None:
             raw = self._prefill_raw()
             if raw is None:
@@ -868,7 +928,8 @@ class SetupController:
             if self._engine is not None:
                 self._engine.send({"cmd": "pause"})
             step = next((s["id"] for s in state["steps"] if s["status"] == "running"), "s03_download_models")
-            self._set_failure(step, "NS-E104", "Not enough free disk space.", "", f"{free:.1f} GB free at {self.home}",
+            self._set_failure(step, "NS-E104", "Not enough free disk space.", "",
+                              f"{free:.1f} GB free at {self.home}",
                               False)
             self._waiting_on = "disk"
 
@@ -882,7 +943,8 @@ class SetupController:
             state = self.snapshot()
             if not state["failure"]:
                 tail = "\n".join(self._stderr_tail[-20:]) or f"The setup program exited with code {code}."
-                step = next((s["id"] for s in state["steps"] if s["status"] in ("running", "pending")), "s01_questions")
+                running = (s["id"] for s in state["steps"] if s["status"] in ("running", "pending"))
+                step = next(running, "s01_questions")
                 self._set_failure(step, "unexpected", "An unexpected error stopped setup.", "", tail, False)
             self._waiting_on = "pipeline"
             self.store.update(lambda s: s.__setitem__("run", "waiting"))
@@ -950,7 +1012,8 @@ class SetupController:
                 self._gate.wait()
                 out = (root / info.filename).resolve()
                 if out != root and root not in out.parents:
-                    raise bootstrap.BootstrapError("NS-E109", f"unsafe path in {archive.name}: {info.filename}")
+                    msg = f"unsafe path in {archive.name}: {info.filename}"
+                    raise bootstrap.BootstrapError("NS-E109", msg)
                 if info.is_dir():
                     out.mkdir(parents=True, exist_ok=True)
                     continue
@@ -1025,7 +1088,8 @@ class SetupController:
                 row = by_key.get(rk)
                 if row is None:
                     row = rows.make_row({"key": rk, "label": labels.label_for_file(str(it["key"])),
-                                         "file": it.get("file"), "group": self._group_for(rk), "via": "download",
+                                         "file": it.get("file"), "group": self._group_for(rk),
+                                         "via": "download",
                                          "bytes": it.get("bytes")})
                     s["downloads"]["items"].append(row)
                     by_key[rk] = row
@@ -1173,10 +1237,12 @@ class SetupController:
                                "reportReady": False}
             v = s["verify"]
             if kind == "voice":
-                v["voice"] = {"url": "/api/file/voice-sample.wav", "speaker": speaker, "seconds": round(seconds, 2),
+                v["voice"] = {"url": "/api/file/voice-sample.wav", "speaker": speaker,
+                              "seconds": round(seconds, 2),
                               "text": SAMPLE_TEXT, "bars": samples.wav_bars(path)}
             elif kind == "render":
-                v["render"] = {"videoUrl": "/api/file/render-test.mp4", "thumbUrl": "/api/file/render-test.jpg",
+                v["render"] = {"videoUrl": "/api/file/render-test.mp4",
+                               "thumbUrl": "/api/file/render-test.jpg",
                                "seconds": round(seconds, 2) or 6.0, "width": 1080, "height": 1920,
                                "encoder": self._encoder()}
                 v["renderNote"] = None
@@ -1193,7 +1259,8 @@ class SetupController:
 
     def _note_render_failed(self, s: dict[str, Any]) -> None:
         if s["verify"] is None:
-            s["verify"] = {"checks": [], "voice": None, "render": None, "renderNote": None, "reportReady": False}
+            s["verify"] = {"checks": [], "voice": None, "render": None, "renderNote": None,
+                           "reportReady": False}
         if s["verify"]["render"] is None:
             title, what = preflight.copy_for("NS-W403")
             s["verify"]["renderNote"] = f"{title}. {what}"
@@ -1234,11 +1301,13 @@ class SetupController:
         warnings = list(state["notices"])
         if state["machine"].get("isAdmin"):
             user = os.environ.get("USERNAME", "this user")
-            warnings.append({"code": "admin", "title": f"Setup ran as administrator. Shortcuts were made for {user}",
+            title = f"Setup ran as administrator. Shortcuts were made for {user}"
+            warnings.append({"code": "admin", "title": title,
                              "whatToDo": "", "step": None})
         for c in state["checks"]:
             if c["status"] == "warn" and c["id"] == "longpaths":
-                warnings.append({"code": c["code"] or "", "title": c["title"] or "", "whatToDo": c["whatToDo"] or "",
+                warnings.append({"code": c["code"] or "", "title": c["title"] or "",
+                                 "whatToDo": c["whatToDo"] or "",
                                  "step": None})
         started = state.get("startedAt")
         duration = 0
@@ -1250,7 +1319,8 @@ class SetupController:
         return {
             "home": str(self.home), "outbox": str(self.home / "outbox"), "appPath": str(self.cfg.app_path),
             "installed": installed, "shortcuts": list(SHORTCUTS), "runTime": answers.get("runTime", "03:00"),
-            "scheduled": flags.get("schedule") == "installed", "diagnosticsZip": self._bundle or flags.get("bundle"),
+            "scheduled": flags.get("schedule") == "installed",
+            "diagnosticsZip": self._bundle or flags.get("bundle"),
             "durationS": duration, "warnings": warnings,
         }
 
@@ -1286,11 +1356,13 @@ class SetupController:
         out = self.cfg.data_dir / "bootstrap" / "preflight.json"
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(json.dumps(self.pf, indent=2), encoding="utf-8")
-        python = self.cfg.python if self.cfg.simulate else str(self.home / "venvs" / "studio" / "Scripts" / "python.exe")
+        venv_python = self.home / "venvs" / "studio" / "Scripts" / "python.exe"
+        python = self.cfg.python if self.cfg.simulate else str(venv_python)
         argv = [python, "-X", "utf8", "-m", "installer.stage2.wizard", "--app-path", str(self.cfg.app_path),
                 "--answers", str(self.cfg.answers), "--preflight", str(out)]
         if self.cfg.simulate:
-            argv += ["--simulate-downloads", "--home", str(self.home)]
+            argv += ["--simulate-downloads", "--no-head-checks", "--non-interactive",
+                     "--home", str(self.home)]
         if self.cfg.halt_after:
             argv += ["--halt-after", self.cfg.halt_after]
         env = wizard_env(self.cfg.app_path)

@@ -31,7 +31,7 @@ function Notch({ width, side, children, label }: { width: number; side: "left" |
 function NotchButton({ icon, label, onClick, danger }: { icon: IconName; label: string; onClick: () => void; danger?: boolean }) {
   return (
     <button type="button" aria-label={label} title={label} onClick={onClick}
-      className={`grid size-7 place-items-center rounded-full text-white/85 outline-none transition-colors duration-[120ms] hover:text-white focus-visible:shadow-[0_0_0_2px_#fff] ${danger ? "hover:bg-ds-danger" : "hover:bg-white/15"}`}>
+      className={`grid size-7 place-items-center rounded-full text-ds-on-accent/85 outline-none transition-colors duration-[120ms] hover:text-ds-on-accent focus-visible:shadow-[0_0_0_2px_var(--ds-text-on-accent)] ${danger ? "hover:bg-ds-danger" : "hover:bg-ds-on-accent/15"}`}>
       <Icon name={icon} size={14} strokeWidth={2} />
     </button>
   );

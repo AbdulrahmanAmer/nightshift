@@ -81,6 +81,9 @@ function Advanced({ open, onClose }: { open: boolean; onClose: () => void }) {
 export function Welcome({ resume }: { resume: boolean }) {
   const { state, act, setUiStep, busy } = useLiveState();
   const [open, setOpen] = useState(false);
+  // Resume variant: the checks run again in the background; the Checks screen only interrupts when a row blocks.
+  useEffect(() => { if (resume && state.run === "idle" && !state.checking) void act("recheck"); // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resume]);
   const rows = resume ? state.downloads.items : null;
   const lines = planLines(state.plan.groups, rows);
   const left = rows ? Math.max(0, state.downloads.overall.bytesTotal - state.downloads.overall.bytesDone) : state.plan.totalBytes;

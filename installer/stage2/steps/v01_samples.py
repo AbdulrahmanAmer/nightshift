@@ -1,8 +1,8 @@
 """v01_samples: a spoken sample and a short test render for the setup window's Verify screen (component C1).
 
 Optional, and it never blocks: when either part fails the step ends with the warning ``NS-W403`` and setup
-continues. The voice part runs ``studio voice preview``; the render part runs the same fake-services render the
-slice gates use (``studio run --fake-services --format shorts_only --count 1``) in a scratch home under
+continues. The voice part runs ``studio voice preview``; the render part runs the same fake-services render
+the slice gates use (``studio run --fake-services --format shorts_only --count 1``) in a scratch home under
 ``cache/setup-test``, so the real outbox and database stay clean (docs/design/installer-ui.md 2.6).
 """
 

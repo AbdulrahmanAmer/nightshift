@@ -74,12 +74,14 @@ ROW_COPY: dict[tuple[str, str], tuple[str, str]] = {
     ),
     ("network", "warn"): (
         "A download site cannot be reached",
-        "Setup can continue. If Hugging Face is blocked, choose \"A folder on this PC\" or \"A zip from Google "
+        "Setup can continue. If Hugging Face is blocked, choose \"A folder on this PC\" or "
+        "\"A zip from Google "
         "Drive\" for the model files in the next step",
     ),
 }
 NETWORK_FAIL_TEXT = (
-    "Check the internet, switch off any VPN or proxy, then press Check again. If only Hugging Face is blocked: "
+    "Check the internet, switch off any VPN or proxy, then press Check again. "
+    "If only Hugging Face is blocked: "
     "in the next step, choose \"A folder on this PC\" or \"A zip from Google Drive\" for the model files"
 )
 
@@ -125,7 +127,7 @@ def raw_disk_rows(pf: dict[str, Any], home: str) -> list[dict[str, Any]]:
 def check_rows(pf: dict[str, Any], home: str | None = None) -> list[dict[str, Any]]:
     """One CheckRow per line of the hand-over JSON, in screen order.
 
-    With ``home`` the disk lines are worked out again for that install folder (the drive picker, a typed path).
+    With ``home`` the disk lines are worked out again for that install folder (drive picker, typed path).
     """
     rows: list[dict[str, Any]] = []
     source = list(pf.get("checks") or [])
@@ -168,7 +170,9 @@ def check_rows(pf: dict[str, Any], home: str | None = None) -> list[dict[str, An
 
 SHORT_LABELS = {
     "os": "Windows 10/11, 64-bit", "gpu": "Graphics card", "driver": "NVIDIA driver", "ram": "Memory",
-    "disk": "Free disk space", "disktype": "Disk type", "network": "Internet", "winget": "winget (App Installer)",
+    "os": "Windows 10/11, 64-bit", "gpu": "Graphics card", "driver": "NVIDIA driver", "ram": "Memory",
+    "disk": "Free disk space", "disktype": "Disk type", "network": "Internet",
+    "winget": "winget (App Installer)",
     "longpaths": "Long file paths", "waketimers": "Wake timers",
 }
 
@@ -207,7 +211,8 @@ def machine_summary(pf: dict[str, Any], home: str, tier: str) -> dict[str, Any]:
     vram_mb = gpu.get("vram_mb")
     caption = str(pf.get("os_caption") or "").strip()
     os_row = next((c for c in pf.get("checks") or [] if c.get("id") == "os"), {})
-    windows = f"{caption} {pf.get('os_version', '')}".strip() if caption else str(os_row.get("value", "Windows"))
+    default_os = str(os_row.get("value", "Windows"))
+    windows = f"{caption} {pf.get('os_version', '')}".strip() if caption else default_os
     return {
         "windows": windows,
         "gpuName": gpu.get("name") or None,

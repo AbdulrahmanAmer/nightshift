@@ -38,7 +38,9 @@ class SetupHTTPServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
-    def __init__(self, address: tuple[str, int], handler: type[BaseHTTPRequestHandler], app: SetupServer) -> None:
+    def __init__(
+        self, address: tuple[str, int], handler: type[BaseHTTPRequestHandler], app: SetupServer
+    ) -> None:
         super().__init__(address, handler)
         self.app = app
 
@@ -76,7 +78,8 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if path.startswith("/api/"):
                 if not self._cookie_ok():
-                    self._json(HTTPStatus.UNAUTHORIZED, {"ok": False, "message": "Open the setup window again"})
+                    message = "Open the setup window again"
+                    self._json(HTTPStatus.UNAUTHORIZED, {"ok": False, "message": message})
                     return
                 self._api(method, path[len("/api/"):], query)
                 return
@@ -88,7 +91,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         except Exception as e:  # noqa: BLE001 - the window must get a JSON answer, not a dropped connection
             try:
-                self._json(HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "message": f"{type(e).__name__}: {e}"})
+                message = f"{type(e).__name__}: {e}"
+                self._json(HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "message": message})
             except OSError:
                 return
 
@@ -99,7 +103,9 @@ class Handler(BaseHTTPRequestHandler):
     def _cookie_ok(self) -> bool:
         jar = SimpleCookie(self.headers.get("Cookie", ""))
         morsel = jar.get(COOKIE)
-        return bool(morsel) and secrets.compare_digest(morsel.value, self.server.app.token)  # type: ignore[union-attr]
+        if not morsel:
+            return False
+        return secrets.compare_digest(morsel.value, self.server.app.token)
 
     def _body(self) -> dict[str, Any] | None:
         """The JSON body, or None after an error answer was sent."""
@@ -112,7 +118,8 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError:
             length = -1
         if length < 0 or length > MAX_BODY:
-            self._json(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"ok": False, "message": "That request is too big"})
+            message = "That request is too big"
+            self._json(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"ok": False, "message": message})
             return None
         raw = self.rfile.read(length) if length else b"{}"
         try:
@@ -186,7 +193,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def _file(self, target: Path, *, no_store: bool = False) -> None:
         size = target.stat().st_size
-        ctype = MIME.get(target.suffix.lower()) or mimetypes.guess_type(target.name)[0] or "application/octet-stream"
+        ctype = MIME.get(target.suffix.lower()) or mimetypes.guess_type(target.name)[0]
+        ctype = ctype or "application/octet-stream"
         start, end, status = 0, size - 1, HTTPStatus.OK
         rng = self.headers.get("Range", "")
         if rng.startswith("bytes=") and "," not in rng:
@@ -252,7 +260,8 @@ class Handler(BaseHTTPRequestHandler):
         elif name == "check-key" and method == "POST" and ctl is not None:
             body = self._body()
             if body is not None:
-                self._json(HTTPStatus.OK, ctl.check_key(str(body.get("service", "")), str(body.get("key", ""))))
+                service, key = str(body.get("service", "")), str(body.get("key", ""))
+                self._json(HTTPStatus.OK, ctl.check_key(service, key))
         elif name == "disk" and method == "GET" and ctl is not None:
             self._json(HTTPStatus.OK, ctl.disk(query.get("path", [""])[0], query.get("tier", ["small"])[0],
                                                query.get("source", ["0"])[0] == "1"))
@@ -277,7 +286,8 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 body = self._body()
                 if body is not None:
-                    status, payload = app.uninstall.run(bool(body.get("deleteModels")), bool(body.get("deleteData")))
+                    models, data = bool(body.get("deleteModels")), bool(body.get("deleteData"))
+                    status, payload = app.uninstall.run(models, data)
                     self._json(status, payload)
         elif name.startswith("action/") and method == "POST" and app.uninstall is not None:
             body = self._body()
