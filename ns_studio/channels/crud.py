@@ -84,6 +84,23 @@ def pool_name_problems(pools: Pools) -> list[str]:
     ]
 
 
+def design_name_problems(series: dict[str, Any]) -> list[str]:
+    """Caption style and visual treatment of a series design (`series_context.json`) that name no preset.
+
+    `Workshop.design` checks them, but `design.yaml` can be edited by hand afterwards and the unknown name
+    would otherwise surface mid-render as NS-E327.
+    """
+    from ns_studio.media.presets import load_caption_styles, load_visual_treatments
+
+    design = series.get("design") or {}
+    known = {"caption_style": set(load_caption_styles()), "visual_treatment": set(load_visual_treatments())}
+    return [
+        f"series design {field} {design[field]!r} is not a preset (known: {', '.join(sorted(ok))})"
+        for field, ok in known.items()
+        if design.get(field) and design[field] not in ok
+    ]
+
+
 def pool_warnings(pools: Pools) -> list[str]:
     """Soft warnings: fewer than 4 hooks or 4 structures (spec section 8 'warn below 4x4')."""
     out: list[str] = []

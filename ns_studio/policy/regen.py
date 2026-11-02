@@ -132,8 +132,17 @@ def run_job_guarded(ctx: JobContext, *, resume: bool = True) -> list[str]:
     The voice setup queued (`config/pending_voice.json`) is created first, so every path that runs a job
     (`studio run`, the dashboard's Run now, a series part) has it before the voice stage asks for it.
     """
+    from ns_studio.channels.crud import design_name_problems, pool_name_problems, sync_channel_row
+    from ns_studio.errors import StudioError
     from ns_studio.voice_setup import apply_pending_voices
 
+    # A series part is created by the dashboard without `make_job`: give its channel the display name of its
+    # profile (a YAML-only channel was left with its slug) and refuse unknown preset names up front (NS-E320).
+    sync_channel_row(ctx.db, ctx.channel)
+    if ctx.series:
+        problems = [*pool_name_problems(ctx.channel.pools), *design_name_problems(ctx.series)]
+        if problems:
+            raise StudioError("NS-E320", "; ".join(problems))
     apply_pending_voices(ctx)
     first = True
     while True:
