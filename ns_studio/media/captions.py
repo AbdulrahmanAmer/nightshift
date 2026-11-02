@@ -126,22 +126,16 @@ def _interpolate(
     return result
 
 
-def drift_ms(starts: Sequence[float], matched: Sequence[bool]) -> float:
-    """Median |ASR start - start interpolated from the nearest matched neighbours| over matched words, in ms.
+def drift_ms(caption_starts: Sequence[float], asr_starts: Sequence[float]) -> float:
+    """Median |caption word start - ASR word start| over the words that matched an ASR word, in ms.
 
-    Words without a matched neighbour on each side are skipped; fewer than three matched words give 0.0
-    (no evidence); no matched word at all gives infinity.
+    The two sequences are paired by position (the i-th matched script word). Natural speech rhythm (short
+    words, pauses) does not count: only the offset between where a caption word is shown and where the
+    recogniser heard that word. No matched word at all gives infinity (no evidence of any alignment).
     """
-    idx = [i for i, m in enumerate(matched) if m]
-    if not idx:
+    if not caption_starts:
         return float("inf")
-    errors: list[float] = []
-    for pos in range(1, len(idx) - 1):
-        lo, mid, hi = idx[pos - 1], idx[pos], idx[pos + 1]
-        frac = (mid - lo) / (hi - lo)
-        predicted = starts[lo] + (starts[hi] - starts[lo]) * frac
-        errors.append(abs(starts[mid] - predicted) * 1000.0)
-    return statistics.median(errors) if errors else 0.0
+    return statistics.median(abs(c - a) * 1000.0 for c, a in zip(caption_starts, asr_starts, strict=True))
 
 
 def align_words(script: str, asr: Sequence[Word], *, total_s: float | None = None) -> AlignResult:
@@ -155,10 +149,11 @@ def align_words(script: str, asr: Sequence[Word], *, total_s: float | None = Non
     if total_s is None:
         total_s = max((w.end for w in asr), default=0.0)
     times = _word_times_from_tokens(words, asr)
-    matched = [t is not None for t in times]
     filled = _interpolate(words, times, max(total_s, 0.0))
     out = [Word(w, s, e, si) for (w, si), (s, e) in zip(words, filled, strict=True)]
-    return AlignResult(out, sum(matched), len(words), drift_ms([s for s, _e in filled], matched))
+    pairs = [(f[0], t[0]) for f, t in zip(filled, times, strict=True) if t is not None]
+    drift = drift_ms([c for c, _a in pairs], [a for _c, a in pairs])
+    return AlignResult(out, len(pairs), len(words), drift)
 
 
 # ---------------------------------------------------------------------------------------------------------

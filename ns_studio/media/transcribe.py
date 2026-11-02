@@ -81,11 +81,30 @@ def _audio_seconds(wav: Path) -> float:
         return ff.duration_s(wav)
 
 
-class FakeTranscriber:
-    """Spreads the words of the `<wav>.txt` sidecar evenly over the WAV duration.
+_TOKEN_TRAIL = re.compile(r"([A-Za-z0-9']+)([^A-Za-z0-9'\s]*)")
+# Pause after a word, in "letters" of speaking time: sentence ends are long, clause marks short.
+_PAUSE_LETTERS = {".": 9.0, "!": 9.0, "?": 9.0, "…": 9.0, ",": 4.0, ";": 4.0, ":": 3.0, "-": 3.0}
 
-    Word count follows `ns_common.textstats.word_count`, the same count `FakeTts` uses for its tone bursts,
-    so fake timings line up with the fake audio.
+
+def _speech_weights(text: str) -> tuple[list[str], list[float], list[float]]:
+    """Tokens of `text` with the speaking weight of each word and the pause weight that follows it."""
+    tokens: list[str] = []
+    speak: list[float] = []
+    pause: list[float] = []
+    for m in _TOKEN_TRAIL.finditer(text):
+        tokens.append(m.group(1))
+        speak.append(len(m.group(1)) + 2.0)
+        pause.append(max((_PAUSE_LETTERS.get(c, 0.0) for c in m.group(2)), default=0.0))
+    return tokens, speak, pause
+
+
+class FakeTranscriber:
+    """Spreads the words of the `<wav>.txt` sidecar over the WAV duration with uneven, speech-like timing.
+
+    Long words take longer than short ones and sentence ends are followed by a pause, so word starts are not
+    evenly spaced (evenly spaced fakes hid the caption drift bug). Word count follows
+    `ns_common.textstats.word_count`, the same count `FakeTts` uses for its tone bursts, so fake timings
+    line up with the fake audio.
     """
 
     name = "fake"
@@ -95,12 +114,16 @@ class FakeTranscriber:
         side = sidecar_path(wav)
         if not side.exists():
             raise NsError("NS-E403", f"fake transcriber needs the script sidecar {side.name}")
-        tokens = _TOKEN.findall(side.read_text(encoding="utf-8"))
+        tokens, speak, pause = _speech_weights(side.read_text(encoding="utf-8"))
         if not tokens:
             return []
-        dur = _audio_seconds(wav)
-        step = dur / len(tokens)
-        return [Word(t, i * step, i * step + step * 0.8) for i, t in enumerate(tokens)]
+        scale = _audio_seconds(wav) / (sum(speak) + sum(pause))
+        out: list[Word] = []
+        cursor = 0.0
+        for t, sp, pa in zip(tokens, speak, pause, strict=True):
+            out.append(Word(t, cursor * scale, (cursor + sp * 0.9) * scale))
+            cursor += sp + pa
+        return out
 
     def segments(self, wav: Path, language: str = "en") -> list[Segment]:
         """One Segment per sentence of the sidecar, built from the evenly spaced words."""
