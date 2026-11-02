@@ -594,17 +594,28 @@ def calibrate_cmd(
             )
             typer.echo(f"refusal rate: {rep.refusal_rate:.1%}")
             if rep.two_model_recommended:
-                typer.echo("refusal rate is above 2 %: switch to two-model mode (spec decision D3)")
+                if env.runtime.llama.story_model_path:
+                    typer.echo("refusal rate is above 2 %: switch to two-model mode (spec decision D3)")
+                else:
+                    typer.echo(
+                        "refusal rate is above 2 %, but no story model is configured "
+                        "(llama.story_model_path is empty): two-model mode is not available on this install"
+                    )
             return
         jobs.load_stage_modules()
         ch = crud.get_channel(env.paths, channel)
         rng = random.Random()
         owner = "studio:calibrate"
-        env.services.acquirer.acquire("llama", owner)
+        acq = env.services.acquirer
+        acq.acquire("llama", owner)
         try:
-            stories = calibration.generate(lambda _i: _calibration_job(env, ch, rng), n)
+            acq.acquire("embed", owner)  # ideas embeds its premises; with embed stopped every story "refused"
+            try:
+                stories = calibration.generate(lambda _i: _calibration_job(env, ch, rng), n)
+            finally:
+                acq.release("embed", owner)
         finally:
-            env.services.acquirer.release("llama", owner)
+            acq.release("llama", owner)
         out = calibration.write_generation(env.paths, env.db, channel, stories)
         refused = sum(1 for s in stories if s.refusal)
         typer.echo(f"wrote {len(stories)} stories to {out}")
