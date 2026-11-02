@@ -81,7 +81,7 @@ class VoicesService:
         return {"pending": self.s.adapters.voice_maker.pending()}
 
     def apply_pending(self) -> dict[str, Any]:
-        """Create the voice that setup queued. `NS-E314` (the VoiceDesign model) comes back as a coded error."""
+        """Create the voice that setup queued. A missing VoiceDesign model comes back as `NS-E314`."""
         self._accepting()
         name = self.s.adapters.voice_maker.apply_pending()
         self.s.log.info("voice_setup_applied", voice=name)

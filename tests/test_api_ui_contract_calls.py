@@ -41,7 +41,7 @@ def assert_clean(type_name: str, payload: Any, where: str, many: bool = False) -
 
 
 @pytest.fixture
-def seeded(world: Any) -> Any:
+def seeded(world: Any) -> Any:  # noqa: F811
     """`world` plus a conversation, a model download and a finished clip job that can be re-run."""
     client, state, ids = world
     dash = client.app.state.dashboard

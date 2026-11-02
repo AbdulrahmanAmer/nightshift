@@ -66,7 +66,7 @@ class JobRecord:
         return at if at.tzinfo is not None else at.astimezone()
 
     def failed_stage(self) -> str | None:
-        """The stage a failed job stopped at (kept in `result.error.stage`, because the message becomes the error)."""
+        """The stage a failed job stopped at (kept in `result.error.stage`: the message becomes the error)."""
         err = (self.result or {}).get("error")
         stage = err.get("stage") if isinstance(err, dict) else None
         return stage if isinstance(stage, str) and stage else None
@@ -417,7 +417,7 @@ class JobWorker:
         inline_kinds: frozenset[str] = frozenset({"learn"}),
         on_recover: dict[str, Callable[[JobRecord], None]] | None = None,
         on_end: dict[str, Callable[[JobRecord], None]] | None = None,
-        sweep: Callable[[set[str]], None] | None = None,
+        sweep: Callable[[set[str]], object] | None = None,
         idle_poll_s: float = 30.0,
     ) -> None:
         self.store = store
@@ -427,13 +427,13 @@ class JobWorker:
         self.gpu_gate = gpu_gate
         self.inline_kinds = inline_kinds
         self.on_recover = on_recover or {}
-        #: Per kind: called when a job of that kind ends without finishing (cancelled in the queue, cancelled or failed
-        #: before or inside its handler), so work it had reserved (a series part) is given back.
+        #: Per kind: called when a job of that kind ends without finishing (cancelled in the queue, cancelled
+        #: or failed before or inside its handler), so work it had reserved (a series part) is given back.
         self.on_end = on_end or {}
-        #: Called once at start with the ids of the queued and running jobs, after interrupted ones were failed.
+        #: Called once at start with the ids of the queued and running jobs, after interrupted ones failed.
         self.sweep = sweep
-        #: While nothing runs, `on_idle` is also called this often (a request saved during the nightly run, which is
-        #: not a dashboard job, has no job end to wait for).
+        #: While nothing runs, `on_idle` is also called this often (a request saved during the nightly run,
+        #: which is not a dashboard job, has no job end to wait for).
         self.idle_poll_s = idle_poll_s
         #: Called on the worker thread when a job ended and nothing else is queued (saved Assistant requests).
         self.on_idle: Callable[[], None] | None = None
@@ -450,7 +450,7 @@ class JobWorker:
         """Start the worker thread (idempotent) after failing jobs a crashed process left running."""
         t = self._thread
         if t is not None and t.is_alive():
-            if self._stopping:  # stop() timed out (the thread is inside a long answer): let it carry on, never start a second
+            if self._stopping:  # stop() timed out (thread in a long answer): carry on, never start a second
                 with self._cv:
                     if not self._exited:
                         self._stopping = False

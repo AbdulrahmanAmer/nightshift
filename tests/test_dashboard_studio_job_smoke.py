@@ -1,3 +1,4 @@
+# ruff: noqa: E501
 """A real `python -m ns_dashboard.studio_job` process, with fake services (dashboard re-review, incomplete row 1).
 
 Every other runner test swaps the interpreter for a script or runs the handler in this process, so a break in

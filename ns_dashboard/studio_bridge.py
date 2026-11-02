@@ -409,7 +409,8 @@ def sweep_parts(active_job_ids: Collection[str]) -> int:
                     sd = StoryDir.open(ws.paths, str(story["slug"]))
                     status = sd.read_status()
                     for n, state in sorted(status.parts.items()):
-                        if state.status == "producing" and (state.job_id is None or state.job_id not in active):
+                        orphan = state.job_id is None or state.job_id not in active
+                        if state.status == "producing" and orphan:
                             try:
                                 ws._set_part(sd, status, n, "approved")
                             except WorkshopError:  # series.md has no such part: status.yaml is saved already
@@ -445,10 +446,10 @@ def _voice_post(base_url: str, route: str, body: dict[str, Any]) -> dict[str, An
 def apply_pending_voice(
     *, acquirer: Acquirer | None = None, fake: Collection[str] = (), paths: Paths | None = None
 ) -> str | None:
-    """Create the voice that setup queued in `config/pending_voice.json` (`ns_studio.voice_setup.apply_pending`).
+    """Create the voice that setup queued in `config/pending_voice.json` (`voice_setup.apply_pending`).
 
-    Returns its name, or None when nothing was queued or the voice exists already. A failure leaves the request
-    queued and propagates (`NS-E314` when the VoiceDesign model is missing).
+    Returns its name, or None when nothing was queued or the voice exists already. A failure leaves the
+    request queued and propagates (`NS-E314` when the VoiceDesign model is missing).
     """
     from ns_studio import voice_setup
 

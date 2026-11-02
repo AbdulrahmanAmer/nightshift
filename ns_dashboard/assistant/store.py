@@ -18,7 +18,6 @@ from typing import Any
 from ns_common.db import Db
 from ns_common.paths import Paths
 
-
 #: A claim this old was left by a caller that died while answering; another caller may take it over.
 CLAIM_STALE_S = 900.0
 

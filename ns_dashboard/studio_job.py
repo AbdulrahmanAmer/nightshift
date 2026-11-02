@@ -93,7 +93,8 @@ def _acquirer(args: dict[str, Any]) -> Any:
         runtime = load_runtime(paths)
     except Exception:  # no or unreadable runtime.json: the defaults
         runtime = Runtime.default("gpu")
-    return StudioAcquirer(runtime, paths, client=make_acquirer(str(url)), ensure=lambda _client: None)
+    client: Any = make_acquirer(str(url))  # a SupervisorClient (has `heartbeat`) or the HTTP fallback
+    return StudioAcquirer(runtime, paths, client=client, ensure=lambda _client: None)
 
 
 def _common(args: dict[str, Any]) -> dict[str, Any]:
@@ -197,7 +198,7 @@ def do_transcribe(args: dict[str, Any]) -> dict[str, Any]:
 
 
 def do_apply_voice(args: dict[str, Any]) -> dict[str, Any]:
-    """Create the voice that setup queued (`config/pending_voice.json`); `name` is None when there was nothing to do."""
+    """Create the voice that setup queued (`config/pending_voice.json`); `name` is None if none was queued."""
     from ns_dashboard import studio_bridge
 
     return {"name": studio_bridge.apply_pending_voice(**_common(args))}

@@ -179,9 +179,9 @@ def adopt_upload(paths: Paths, source_path: Path) -> Path:
     """Move a finished upload to the place the Clipper import would copy it to, and drop the upload folder.
 
     `imports/clipper/src-YYYYMMDD-xxxx/source.mp4` becomes `imports/clipper/src-<sha256[:10]>/source.mp4`, the
-    folder `import_source` fills. It finds the file already there and skips its copy, so a 25 GB stream is stored
-    once and written once. Anything that is not an upload of ours (a path on another drive, a download) is
-    returned unchanged.
+    folder `import_source` fills. It finds the file already there and skips its copy, so a 25 GB stream is
+    stored once and written once. Anything that is not an upload of ours (a path on another drive, a
+    download) is returned unchanged.
     """
     folder = source_path.parent
     meta_file = folder / META

@@ -52,12 +52,6 @@ class ClipAdapter(Protocol):
         self, ctl: JobControl, source_path: Path, source_id: str, params: dict[str, Any]
     ) -> list[str]: ...
 
-    def _drop_download(self, source_path: Path, source_id: str) -> None:
-        """A linked video is deleted when its clip job ends, whatever the ending (done, failed or cancelled)."""
-        folder = studio_bridge.download_dir(self.paths, source_id)
-        if source_path.parent == folder:
-            shutil.rmtree(folder, ignore_errors=True)
-
     def rerun(self, ctl: JobControl, studio_job_id: str, changes: dict[str, Any]) -> list[str]:
         """Run the later stages of an earlier clip job again with other options (transcript kept)."""
         ...
@@ -171,7 +165,7 @@ class SeriesAdapter(Protocol):
         ...
 
     def sweep(self, active_job_ids: Collection[str]) -> int:
-        """Put every `producing` part that has no queued or running job back to `approved`; returns how many."""
+        """Put every `producing` part without a queued or running job back to `approved`; returns how many."""
         ...
 
 
@@ -311,14 +305,15 @@ class StudioAdapter:
                 kind, full, on_event=on_event, check_cancel=ctl.check_cancel, on_cancel=on_cancel
             )
         except BaseException:
-            self.release_leases(ctl, full)  # the child is gone (it stopped itself or was killed): free its lease
+            self.release_leases(ctl, full)  # the child is gone (stopped itself or killed): free its lease
             raise
 
     def release_leases(self, ctl: JobControl, args: dict[str, Any]) -> None:
         """Tell the supervisor that the studio owners of this job are gone, whatever they still held.
 
-        A child that stopped between stages already released its services; one that was killed in the middle of
-        a stage did not, and the lock would stay with a dead owner. Releasing is harmless when nothing is held.
+        A child that stopped between stages already released its services; one that was killed in the middle
+        of a stage did not, and the lock would stay with a dead owner. Releasing is harmless when nothing is
+        held.
         """
         for owner in studio_owners(ctl, args):
             with contextlib.suppress(Exception):  # an engine that is down holds nothing
@@ -344,7 +339,8 @@ class RealClipAdapter(StudioAdapter):
 
     def clip(self, ctl: JobControl, source_path: Path, source_id: str, params: dict[str, Any]) -> list[str]:
         """Run the Clipper for `source_path`; returns the output ids it inserted."""
-        source_path = adopt_upload(self.paths, source_path)  # an upload is moved to where the import wants it, not copied
+        # an upload is moved to where the import wants it, not copied
+        source_path = adopt_upload(self.paths, source_path)
         args = {
             "source_path": str(source_path),
             "params": {**params, "channel": params.get("channel") or ctl.channel},
@@ -357,6 +353,12 @@ class RealClipAdapter(StudioAdapter):
         ctl.extras["studio_job_id"] = seen[0] if seen else None
         ctl.extras.pop("studio_job_ids", None)  # a clip job reports the single `studio_job_id`
         return [str(i) for i in done.get("output_ids") or []]
+
+    def _drop_download(self, source_path: Path, source_id: str) -> None:
+        """A linked video is deleted when its clip job ends, whatever the ending (done, failed, cancelled)."""
+        folder = studio_bridge.download_dir(self.paths, source_id)
+        if source_path.parent == folder:
+            shutil.rmtree(folder, ignore_errors=True)
 
     def rerun(self, ctl: JobControl, studio_job_id: str, changes: dict[str, Any]) -> list[str]:
         """Run the later stages of `studio_job_id` again with other options; keeps the transcript."""
@@ -531,10 +533,10 @@ class RealDoctorAdapter:
 class RealKeyringAdapter:
     """The stock-footage keys: Windows Credential Manager (service `Nightshift`) AND the DPAPI file.
 
-    The nightly task may run in a session that cannot read the owner's Credential Manager (the studio then falls
-    back to `config/secrets.dpapi`, `ns_common.secret_file`), so a key saved here must reach both places or the
-    nightly run would keep an old key. `set` fails only when neither accepted the value, like the installer's
-    `ResilientStore`; `get` asks the keyring first and the file second.
+    The nightly task may run in a session that cannot read the owner's Credential Manager (the studio then
+    falls back to `config/secrets.dpapi`, `ns_common.secret_file`), so a key saved here must reach both places
+    or the nightly run would keep an old key. `set` fails only when neither accepted the value, like the
+    installer's `ResilientStore`; `get` asks the keyring first and the file second.
     """
 
     def __init__(
@@ -729,11 +731,11 @@ class RealVoiceMaker:
         return str(done.get("text") or "").strip()
 
     def pending(self) -> dict[str, Any] | None:
-        """The queued setup voice (name, mode, description, channel), or None when nothing waits or it exists."""
+        """The queued setup voice (name, mode, description, channel), or None when none waits or it exists."""
         return read_pending_voice(self.paths)
 
     def apply_pending(self) -> str | None:
-        """Create the setup voice in the studio venv (`ns_studio.voice_setup.apply_pending`), which holds `tts`."""
+        """Create the setup voice in the studio venv (`voice_setup.apply_pending`), which holds `tts`."""
         done = self._runner.run("apply_voice", {"supervisor_url": self.link.base_url})
         name = done.get("name")
         return str(name) if name else None
@@ -754,6 +756,9 @@ class RealVoiceMaker:
             return self._preview(url, name, test_line)
 
 
+CLONE_NOTE = "Cloned from your recording"
+
+
 def read_pending_voice(paths: Paths) -> dict[str, Any] | None:
     """`config/pending_voice.json` as the page shows it; None when absent, unreadable or already made."""
     try:
@@ -767,13 +772,13 @@ def read_pending_voice(paths: Paths) -> dict[str, Any] | None:
     return {
         "name": name,
         "mode": mode,
-        "description": str(raw.get("description") or "") if mode == "design" else "Cloned from your recording",
+        "description": str(raw.get("description") or "") if mode == "design" else CLONE_NOTE,
         "channel": raw.get("channel") if isinstance(raw.get("channel"), str) else None,
     }
 
 
 def _service_code(r: httpx.Response) -> str | None:
-    """The `NS-` code in a TTS service answer (`{"error": "NS-E315", "detail": ...}`) when it is a known one."""
+    """The `NS-` code in a TTS service answer (`{"error": "NS-E315", ...}`) when it is a known one."""
     try:
         code = r.json().get("error")
     except (ValueError, AttributeError):
@@ -790,8 +795,8 @@ def _service_code(r: httpx.Response) -> str | None:
 def _missing_model(r: httpx.Response) -> ApiError:
     """The 409 for an absent model file, naming the model the owner can actually get.
 
-    Only the VoiceDesign talker has a download (`ns models get voicedesign`); a missing Base talker or tokenizer
-    belongs to the base install, so offering the design download for it would not help.
+    Only the VoiceDesign talker has a download (`ns models get voicedesign`); a missing Base talker or
+    tokenizer belongs to the base install, so offering the design download for it would not help.
     """
     try:
         missing = str(r.json().get("missing_model") or "")

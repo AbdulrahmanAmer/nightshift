@@ -10,7 +10,8 @@ with the app folder as working directory and `NIGHTSHIFT_HOME` in the environmen
 one JSON object per line behind the prefix `NSJOB ` (see `ns_dashboard.studio_job`); the runner turns them
 into callbacks and the final payload. Cancelling first asks the child to stop (it checks a flag file between
 stages and releases its GPU lease itself), waits `grace_s` seconds, and then kills the whole process tree with
-the supervisor's own helper (`ns_supervisor.procs.kill_tree`), so a stage, FFmpeg or yt-dlp never outlives the job.
+the supervisor's own helper (`ns_supervisor.procs.kill_tree`), so a stage, FFmpeg or yt-dlp never outlives
+the job.
 
 The interpreter comes from the paths the installer writes (`ns_supervisor.services.venv_python`) and is
 `sys.executable` when that venv does not exist (CI, development). Tests pass `python=[sys.executable, f.py]`.
@@ -162,11 +163,11 @@ class StudioRunner:
     ) -> None:
         """Ask the child to stop by itself, wait a little, then kill what is left (always).
 
-        Every child is asked the same way: the flag file named by `NS_JOB_CANCEL_FILE` is created, which the child
-        sees between stages (`studio_job.report`), so its `finally` blocks give the GPU lease back; it has
-        `grace_s` (10 s). A kind with its own signal (`on_cancel`, the link download's flag that cancels the
-        Clipper token) gets that signal too and `cancel_grace_s` (3 s). The caller releases the lease through the
-        supervisor afterwards, for a child that was in the middle of a stage and had to be killed.
+        Every child is asked the same way: the flag file named by `NS_JOB_CANCEL_FILE` is created, which the
+        child sees between stages (`studio_job.report`), so its `finally` blocks give the GPU lease back; it
+        has `grace_s` (10 s). A kind with its own signal (`on_cancel`, the link download's flag that cancels
+        the Clipper token) gets that signal too and `cancel_grace_s` (3 s). The caller releases the lease
+        through the supervisor afterwards, for a child that was in the middle of a stage and had to be killed.
         """
         if proc.poll() is None:
             grace = self.grace_s
