@@ -12,6 +12,7 @@ HF = "https://huggingface.co"
 GH = "https://api.github.com"
 RAW_GH = "https://raw.githubusercontent.com"
 SHA_RE = re.compile(r"^[0-9a-f]{64}$")
+TBD_SHA = "TBD-release"
 HF_FILE_KEYS = ("llm", "llm_balanced", "llm_best", "story_llm", "embed")
 HF_FILE_LIST_KEYS = ("tts", "tts_optional")
 
@@ -135,7 +136,8 @@ def check(manifest: dict, client: httpx.Client) -> list[str]:
     for name, b in manifest.get("bins", {}).items():
         if b is None:
             continue
-        _check_sha(f"bins.{name}", b.get("sha256"), problems)
+        if not (b.get("optional") and b.get("sha256") == TBD_SHA):  # optional pins may wait
+            _check_sha(f"bins.{name}", b.get("sha256"), problems)
         err = _head(b["url"], client)
         if err:
             problems.append(f"bins.{name}: {err}")

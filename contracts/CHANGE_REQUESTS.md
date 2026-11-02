@@ -347,3 +347,11 @@ Format per entry:
 - **Change:** add to `contracts/errors.json`: `NS-E113` "Antivirus or another program blocked a file Nightshift needs." (fix: add the Nightshift folder to the antivirus allow list, then retry) and `NS-W403` "The setup test video did not finish." (fix: setup can continue; run Diagnostics after install).
 - **Why:** the setup window maps a file that was blocked or removed right after download (zip item missing after extraction, `PermissionError`, winerror 225) to a single code with a fix, and the final test video is allowed to fail without failing setup.
 - **Status:** applied in @@CR_C1_UI_2@@
+
+## CR-C1-UI-3: manifest `bins.webview2` (and the `TBD-release` rule)
+- **From:** installer UI design (`docs/design/installer-ui.md` section 5.5) and the app host (`launchers/nightshift-host.ps1`); owner decisions of 2026-11-02
+- **Change:** `BinPin` gains `extract: list[str] = []`, `dest: str | None = None`, `optional: bool = False`; `manifest.schema.json` regenerated. `manifest.json` gains `bins.webview2`: version `1.0.2903.40`, the NuGet `.nupkg` URL, `sha256` `"TBD-release"`, `optional: true`, `extract` = the three DLL paths (`lib/net462/Microsoft.Web.WebView2.Core.dll`, `lib/net462/Microsoft.Web.WebView2.Wpf.dll`, `runtimes/win-x64/native/WebView2Loader.dll`), `dest` `bin\webview2`. `BinPin` rejects `"TBD-release"` unless `optional` is true; `tools/resolve_manifest.py --check` and `tests/test_resolve_manifest.py` accept it for optional entries only. Rule documented in `docs/REPO_SETTINGS.md` next to `bins.qwentts`.
+- **Why:** the window runs in WebView2; the three DLLs are not committed, so the release job and the installer need a pin. Hash is computed in CI, not on the authoring laptop.
+- **Differences from the design doc:** the design doc sketched `files` (a map of DLL name to SHA256). This uses `extract` + `dest` + `optional` as the owner asked; per-file hashes are not needed because the whole `.nupkg` is hash-checked.
+- **Note for the app-host PR (#28):** it already pins `bins.webview2` with a real sha256 and no `extract`/`dest`/`optional`, and its `tests/test_webview2_pin.py` asserts the entry has exactly `{version, url, sha256}`. When both land, keep the real hash, add the three new keys, and update that test.
+- **Status:** applied in @@CR_C1_UI_3@@
