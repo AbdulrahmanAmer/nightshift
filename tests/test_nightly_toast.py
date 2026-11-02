@@ -115,7 +115,7 @@ def test_notifications_enabled_reads_the_dashboard_settings(tmp_home: Path):
     assert notifications_enabled(paths) is True
 
 
-def test_default_notifier_is_the_supervisor_toast():
-    from ns_supervisor.notify import toast
+def test_default_notifier_is_the_supervisor_toast_or_note():
+    from ns_supervisor.notify import toast_or_note
 
-    assert notifications.default_notifier() is toast
+    assert notifications.default_notifier() is toast_or_note
