@@ -1,6 +1,7 @@
-"""C4 ns_tts: text chunking and PCM helpers (pure numpy + stdlib, spec 7.5).
+"""C4 ns_tts: text chunking and PCM helpers (numpy + stdlib, FFmpeg for the speed change, spec 7.5).
 
 Audio is float32 mono in [-1, 1] everywhere inside the service; WAV files are 16-bit PCM.
+`time_stretch` is the one place that calls FFmpeg (through `ns_common.ffmpeg.run`).
 """
 
 from __future__ import annotations
@@ -8,6 +9,7 @@ from __future__ import annotations
 import io
 import re
 import struct
+import tempfile
 import wave
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -15,6 +17,7 @@ from pathlib import Path
 
 import numpy as np
 
+from ns_common import ffmpeg
 from ns_common.textstats import split_sentences
 
 PAUSE_CLAUSE_MS = 120  # between the pieces of one sentence that had to be split (not in the spec)
@@ -245,3 +248,56 @@ def read_wav(path: Path) -> tuple[np.ndarray, int]:
     if ch > 1:
         x = x[: len(x) // ch * ch].reshape(-1, ch).mean(axis=1)
     return np.ascontiguousarray(x, dtype=np.float32), int(rate)
+
+
+# ---------------------------------------------------------------- speed without pitch change
+
+ATEMPO_MIN = 0.5  # FFmpeg's atempo accepts 0.5-2.0 per instance; wider factors are chained
+ATEMPO_MAX = 2.0
+
+
+def atempo_chain(speed: float) -> list[float]:
+    """Factors for an FFmpeg `atempo` chain whose product is `speed` (>1 faster, <1 slower).
+
+    Each factor stays inside FFmpeg's 0.5-2.0 per-filter range, so the 0.7-1.3 channel window is one filter
+    and a factor like 4.0 becomes [2.0, 2.0]. An empty list means "no change".
+    Raises ValueError for speed <= 0.
+    """
+    if speed <= 0 or speed != speed:
+        raise ValueError(f"speed must be positive, got {speed}")
+    if abs(speed - 1.0) < 1e-3:
+        return []
+    factors: list[float] = []
+    rest = speed
+    while rest > ATEMPO_MAX:
+        factors.append(ATEMPO_MAX)
+        rest /= ATEMPO_MAX
+    while rest < ATEMPO_MIN:
+        factors.append(ATEMPO_MIN)
+        rest /= ATEMPO_MIN
+    if abs(rest - 1.0) >= 1e-3:
+        factors.append(round(rest, 6))
+    return factors
+
+
+def atempo_filter(speed: float) -> str:
+    """The `-filter:a` argument for `speed`, e.g. `atempo=0.8` or `atempo=2,atempo=1.5`; "" for none."""
+    return ",".join(f"atempo={f:g}" for f in atempo_chain(speed))
+
+
+def time_stretch(x: np.ndarray, sr: int, speed: float) -> np.ndarray:
+    """Change the speaking rate by `speed` without moving the pitch (FFmpeg `atempo` chain).
+
+    Resampling would shift the pitch (0.8 sounds slurred, 1.2 like a chipmunk). Audio is float32 mono at `sr`;
+    the result has the same sample rate. Raises NsError NS-E401 when FFmpeg is missing or fails.
+    """
+    flt = atempo_filter(speed)
+    if not flt or x.size == 0:
+        return x
+    with tempfile.TemporaryDirectory(prefix="ns-tempo-") as td:
+        src, dst = Path(td) / "in.wav", Path(td) / "out.wav"
+        write_wav(src, x, sr)
+        args = ["-i", str(src), "-filter:a", flt, "-ar", str(sr), "-ac", "1", "-c:a", "pcm_s16le", str(dst)]
+        ffmpeg.run(args, timeout_s=300)
+        y, _ = read_wav(dst)
+    return y

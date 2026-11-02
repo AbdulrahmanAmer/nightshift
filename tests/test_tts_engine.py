@@ -10,14 +10,13 @@ import pytest
 
 from ns_common.errors import NsError
 from ns_common.models import TtsCfg
-from ns_common.paths import Paths
+from ns_common.paths import TTS_HF_SUBDIR, Paths
 from ns_tts.audio import write_wav
 from ns_tts.engine import (
     REFERENCE_MAGIC,
     FakeEngine,
     QwenttsEngine,
     ReferenceEngine,
-    change_speed,
     select_engine,
 )
 from ns_tts.voices import VoiceLibrary, VoiceSpec
@@ -65,7 +64,7 @@ def test_fake_engine_uses_the_stored_embedding(tmp_path: Path):
     Path(voice.embedding_path or "").unlink()
     with pytest.raises(NsError) as ei:
         e.synth("hello there friend", voice)
-    assert ei.value.code == "NS-E301"
+    assert ei.value.code == "NS-E311"
     with pytest.raises(NsError):
         e.synth("hi", VoiceSpec(name="x", mode="clone"))
 
@@ -75,13 +74,6 @@ def test_fake_batch_and_missing_model():
     out = e.synth_batch(["one two", "three four five"], RYAN)
     assert len(out) == 2 and len(out[1]) > len(out[0])
     assert e.missing_model("design") is None
-
-
-def test_change_speed():
-    x = np.ones(24000, dtype=np.float32)
-    assert change_speed(x, 1.0) is x
-    assert abs(len(change_speed(x, 2.0)) - 12000) <= 2
-    assert abs(len(change_speed(x, 0.5)) - 48000) <= 2
 
 
 # ---------------------------------------------------------------- select_engine
@@ -101,8 +93,9 @@ def test_select_engine_default_is_qwentts(monkeypatch: pytest.MonkeyPatch, tmp_p
     paths = Paths(tmp_path)
     e = select_engine(TtsCfg(), paths)  # config default "faster" is the legacy name for qwentts
     assert isinstance(e, QwenttsEngine) and e.name == "qwentts"
-    assert e.exe == tmp_path / "bin" / "qwentts" / "qwentts.exe"
-    assert e.models_dir == paths.models_tts and e.size == "1.7b"
+    assert e.bin_dir == paths.bin_qwentts == tmp_path / "bin" / "qwentts"
+    assert e.exe("qwen-tts") == tmp_path / "bin" / "qwentts" / "qwen-tts.exe"
+    assert e.models_dir == paths.models_tts and e.size == "1.7b" and e.device is None
     assert select_engine(TtsCfg(engine="reference"), paths, prefer="qwentts").name == "qwentts"
 
 
@@ -110,10 +103,14 @@ def test_select_engine_reference(monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     monkeypatch.delenv("NS_TTS_FAKE", raising=False)
     paths = Paths(tmp_path)
     e = select_engine(TtsCfg(engine="reference"), paths)
-    assert isinstance(e, ReferenceEngine) and e.models_dir == paths.models_tts / "hf"
+    assert isinstance(e, ReferenceEngine)
+    assert e.models_dir == paths.models_tts_hf == paths.models_tts / TTS_HF_SUBDIR
     assert e.size == "1.7B" and e.device == "cuda"
+    # model_dir is the TTS models root (the installer writes models	ts): the checkouts sit in its hf folder
+    same = select_engine(TtsCfg(engine="reference", model_dir=str(paths.models_tts)), paths)
+    assert isinstance(same, ReferenceEngine) and same.models_dir == paths.models_tts_hf
     cpu = select_engine(TtsCfg(engine="reference", device="cpu", model_dir=str(tmp_path / "m")), paths)
-    assert isinstance(cpu, ReferenceEngine) and cpu.size == "0.6B" and cpu.models_dir == tmp_path / "m"
+    assert isinstance(cpu, ReferenceEngine) and cpu.size == "0.6B" and cpu.models_dir == tmp_path / "m" / "hf"
     assert isinstance(select_engine(TtsCfg(), paths, prefer="reference"), ReferenceEngine)
 
 
@@ -255,7 +252,7 @@ def test_reference_rejects_foreign_embedding(ref_env: _Env, tmp_path: Path):
 def test_qwentts_rejects_reference_embedding(tmp_path: Path):
     bin_path = tmp_path / "speaker.bin"
     bin_path.write_bytes(REFERENCE_MAGIC + b"xyz")
-    e = QwenttsEngine(tmp_path / "q.exe", tmp_path)
+    e = QwenttsEngine(tmp_path / "bin", tmp_path)
     with pytest.raises(NsError) as ei:
         e.synth("hi", VoiceSpec(name="v", mode="clone", embedding_path=str(bin_path)))
     assert ei.value.code == "NS-E311"
@@ -287,3 +284,29 @@ def test_reference_load_failure_is_wrapped(monkeypatch: pytest.MonkeyPatch, tmp_
     with pytest.raises(NsError) as ei:
         ReferenceEngine(_models(tmp_path), device="cuda").load()
     assert ei.value.code == "NS-E202" and "out of memory" in ei.value.detail
+
+
+def test_cpu_profile_runs_qwentts_on_the_cpu(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    monkeypatch.delenv("NS_TTS_FAKE", raising=False)
+    e = select_engine(TtsCfg(device="cpu", model_dir=str(tmp_path / "m")), Paths(tmp_path))
+    assert isinstance(e, QwenttsEngine) and e.device == "CPU" and e.size == "0.6b"
+    assert e.models_dir == tmp_path / "m"
+
+
+def test_installer_downloads_where_the_reference_engine_reads(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    """Row 4 of the review: the installer wrote models\tts\hf\..., the engine looked in models\tts\..."""
+    from installer.stage2.fallback import fallback_items
+    from installer.stage2.runtime_cfg import build_runtime
+    from installer.stage2.testing import example_answers, make_test_context
+
+    monkeypatch.delenv("NS_TTS_FAKE", raising=False)
+    ctx = make_test_context(tmp_path, raw_answers=example_answers(), resolve=True)
+    rt = build_runtime(ctx)
+    rt.tts.engine = "reference"
+    engine = select_engine(rt.tts, ctx.paths)
+    assert isinstance(engine, ReferenceEngine)
+    dests = {item.dest.parent for item in fallback_items(ctx)}
+    assert dests == {engine.model_dir("preset"), engine.model_dir("clone")}
+    assert engine.models_dir == ctx.paths.models_tts_hf

@@ -121,7 +121,7 @@ def test_empty_embedding_is_an_error(tmp_path: Path, ref_wav: Path):
 
     with pytest.raises(NsError) as ei:
         VoiceLibrary(tmp_path / "voices").add_clone("me", str(ref_wav), "hi", True, engine=EmptyEmbedding())
-    assert ei.value.code == "NS-E202"
+    assert ei.value.code == "NS-E315"
 
 
 def test_voicespec_defaults():

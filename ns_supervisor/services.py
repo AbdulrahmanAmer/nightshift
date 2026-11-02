@@ -112,7 +112,10 @@ def _embed(rt: Runtime, paths: Paths) -> ServiceDef:
 
 def _tts(rt: Runtime, paths: Paths) -> ServiceDef:
     cfg = rt.tts
-    cmd = [venv_python(paths, "supervisor"), "-m", "ns_tts.server", "--port", str(cfg.port)]
+    # The PyTorch fallback imports torch and qwen_tts, which exist only in the `tts` venv (installer
+    # fallback.py); the qwentts engine needs just numpy and FastAPI and runs in the supervisor venv.
+    venv = "tts" if cfg.engine == "reference" else "supervisor"
+    cmd = [venv_python(paths, venv), "-m", "ns_tts.server", "--port", str(cfg.port)]
     return ServiceDef(
         name="tts", cmd=cmd, host=cfg.host, port=cfg.port, gpu=cfg.device == "cuda", env=_env(paths)
     )
