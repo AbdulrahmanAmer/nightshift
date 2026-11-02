@@ -14,8 +14,8 @@ def test_short_budget_math():
     b = short_budget(50, "standard")
     assert b.wpm == 155
     assert b.words == 129 - 12
-    assert b.min_words == round(b.words * 0.8)
-    assert b.max_words == round(b.words * 1.2)
+    assert b.min_words == round(b.words * 0.85)  # +-15 %: the band QC applies to seconds
+    assert b.max_words == round(b.words * 1.15)
     two = short_budget(75, "brisk", parts=2)
     assert two.words_per_part == two.words // 2
 

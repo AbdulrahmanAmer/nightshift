@@ -9,7 +9,7 @@ from ns_common.embed_client import Embed, cosine
 from ns_common.errors import NsError
 from ns_common.paths import contracts_dir
 from ns_common.textstats import fk_grade, split_sentences, word_count
-from ns_studio.text.budget import Budget
+from ns_studio.text.budget import Budget, master_max_words
 
 
 @dataclass(frozen=True)
@@ -32,6 +32,14 @@ def check_length(text: str, budget: Budget) -> Violation | None:
     n = word_count(text)
     if n < budget.min_words or n > budget.max_words:
         return Violation("length", f"{n} words, allowed {budget.min_words}-{budget.max_words}")
+    return None
+
+
+def check_master_length(total_words: int, wpm: int) -> Violation | None:
+    """A master may hold at most 14 minutes of narration at `wpm`: QC fails anything over 15:00 (NS-E404)."""
+    cap = master_max_words(wpm)
+    if total_words > cap:
+        return Violation("master_length", f"{total_words} words, at most {cap} at {wpm} wpm")
     return None
 
 

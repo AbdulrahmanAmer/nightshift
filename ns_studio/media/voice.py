@@ -7,6 +7,7 @@ import zlib
 from pathlib import Path
 
 from ns_common import ffmpeg as ff
+from ns_common.pacing import pacing_speed
 from ns_common.textstats import split_sentences
 from ns_common.tts_client import TtsItem
 from ns_studio.context import JobContext
@@ -14,6 +15,11 @@ from ns_studio.media.audio import loudnorm, measure_lufs
 from ns_studio.stages import Tenant
 
 __all__ = ["VoiceStage", "loudnorm", "measure_lufs", "narration_items", "synthesize"]
+
+
+def job_speed(ctx: JobContext) -> float:
+    """TTS speed of every item of the job: the voice's speed scaled to the combo's pacing (spec 7.0)."""
+    return pacing_speed(ctx.channel.voice.speed, ctx.combo.pacing)
 
 
 def narration_items(parts: list[dict], voice_name: str, speed: float) -> list[TtsItem]:
@@ -94,7 +100,7 @@ class VoiceStage:
         parts = ctx.read_json("parts.json")
         voice = ctx.channel.voice
         voice_name = voice.name or voice.speaker or "Ryan"
-        items = narration_items(parts, voice_name, voice.speed)
+        items = narration_items(parts, voice_name, job_speed(ctx))
         manifest, synthesized = synthesize(ctx, items)
         changed = False
         for p in parts:

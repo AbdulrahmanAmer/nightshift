@@ -54,7 +54,13 @@ from ns_studio.series.store import (
     normalize_text,
     stories_dir,
 )
-from ns_studio.text.budget import PACING_WPM, chapter_budget, distribute_words, short_body_words
+from ns_studio.text.budget import (
+    PACING_WPM,
+    chapter_budget,
+    distribute_words,
+    moment_limits,
+    short_body_words,
+)
 from ns_studio.text.models_local import ChapterDraft
 from ns_studio.text.prompts import call_json, call_text, parse_model
 from ns_studio.text.stages_master import (
@@ -481,8 +487,8 @@ class Workshop:
                 {
                     "seconds": b,
                     "body_words": short_body_words(b, wpm),
-                    "min_words": round(short_body_words(b, wpm) * 0.8),
-                    "max_words": round(short_body_words(b, wpm) * 1.2),
+                    "min_words": moment_limits(short_body_words(b, wpm))[0],
+                    "max_words": moment_limits(short_body_words(b, wpm))[1],
                 }
                 for b in buckets
             ],

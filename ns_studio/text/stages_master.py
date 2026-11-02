@@ -26,8 +26,10 @@ from ns_studio.context import JobContext
 from ns_studio.stages import Tenant, register
 from ns_studio.text.budget import (
     PACING_WPM,
+    SHORT_TOLERANCE,
     chapter_budget,
     distribute_words,
+    moment_limits,
     short_body_words,
 )
 from ns_studio.text.models_local import ChapterDraft
@@ -37,6 +39,7 @@ from ns_studio.text.stages_shorts import critic_numbers, job_master_budget, now_
 from ns_studio.text.validators import (
     check_banned,
     check_cliff_variety,
+    check_master_length,
     check_reading_level,
     check_sentence_length,
     load_banned,
@@ -59,7 +62,7 @@ MASTER_STAGES = [
 ]
 HOOK_MAX_WORDS = 12
 CLOSING_MAX_WORDS = 15
-SIZE_TOLERANCE = 0.2
+SIZE_TOLERANCE = SHORT_TOLERANCE  # a Short moment fits its bucket when within the QC band (+-15 %)
 HOOK_CONSTRAINTS = "Max {max} words. Must make sense without the rest of the story. Style: {style}"
 TITLE_CONSTRAINTS ="At most 70 characters. {kw!r} in the first 40 characters. Never claim the story is real."
 DEFAULT_CLOSINGS = (
@@ -332,6 +335,8 @@ class ContinuityStage:
         )
         full_text = "\n\n".join(c.text for c in built)
         total_words = sum(c.word_count for c in built)
+        # Chapters may each run 20 % over; together they must still fit the 15:00 QC ceiling.
+        raise_if([v for v in [check_master_length(total_words, wpm)] if v is not None])
         if total_words < plan.target_words * 0.8:
             ctx.log.warn("story_short", words=total_words, target=plan.target_words, job_id=ctx.job_id)
         vec = ctx.services.embed.embed([embed_window(full_text)])[0]
@@ -518,8 +523,8 @@ class ShortsSelectStage:
                 {
                     "seconds": b,
                     "body_words": short_body_words(b, wpm),
-                    "min_words": round(short_body_words(b, wpm) * 0.8),
-                    "max_words": round(short_body_words(b, wpm) * 1.2),
+                    "min_words": moment_limits(short_body_words(b, wpm))[0],
+                    "max_words": moment_limits(short_body_words(b, wpm))[1],
                 }
                 for b in buckets
             ],

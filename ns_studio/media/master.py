@@ -18,6 +18,7 @@ from typing import Any
 
 from ns_common.acquire import Service
 from ns_common.errors import NsError
+from ns_common.pacing import PACING_WPM
 from ns_common.textstats import split_sentences
 from ns_common.tts_client import TtsItem
 from ns_studio.context import JobContext
@@ -36,13 +37,12 @@ from ns_studio.media.captions import (
     shift_words,
 )
 from ns_studio.media.transcribe import Word
-from ns_studio.media.voice import synthesize
+from ns_studio.media.voice import job_speed, synthesize
 from ns_studio.stages import Tenant
 
 CARD_S = 1.2
 FLOOR_S = 540.0  # planning floor 9:00 (spec §7.0)
 MAX_EXPANSIONS = 2
-PACING_WPM = {"brisk": 175.0, "standard": 155.0, "measured": 140.0}
 CLEAN_STYLES = ("clean_white", "minimal_lower")
 
 
@@ -158,12 +158,13 @@ def voice_items(ctx: JobContext) -> list[TtsItem]:
     """TTS items: `c<n>` chapters, `h<k>` hooks and `x<k>` closing lines of the selected Shorts."""
     voice = ctx.channel.voice
     name = voice.name or voice.speaker or "Ryan"
-    items = [TtsItem(f"c{c.n}", c.text, name, voice.speed, c.cliff_lines) for c in load_chapters(ctx)]
+    speed = job_speed(ctx)
+    items = [TtsItem(f"c{c.n}", c.text, name, speed, c.cliff_lines) for c in load_chapters(ctx)]
     for s in load_shorts(ctx):
         if s.hook:
-            items.append(TtsItem(f"h{s.k}", s.hook, name, voice.speed))
+            items.append(TtsItem(f"h{s.k}", s.hook, name, speed))
         if s.closing_line:
-            items.append(TtsItem(f"x{s.k}", s.closing_line, name, voice.speed))
+            items.append(TtsItem(f"x{s.k}", s.closing_line, name, speed))
     return items
 
 
@@ -217,7 +218,7 @@ class DurationCheckStage:
 
     def run(self, ctx: JobContext) -> None:
         """Measure, expand and re-voice until the floor is met or the budget of expansions is spent."""
-        wpm = PACING_WPM.get(ctx.combo.pacing, 155.0)
+        wpm = float(PACING_WPM.get(ctx.combo.pacing, 155))
         expansions: list[dict[str, Any]] = []
         while True:
             timeline = timeline_from_manifest(ctx)

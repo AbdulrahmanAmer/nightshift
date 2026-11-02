@@ -71,8 +71,8 @@ class Channel(Strict):
     @field_validator("long_minutes")
     @classmethod
     def _floor(cls, v: tuple[int, int]) -> tuple[int, int]:
-        if v[0] < 9 or v[1] < v[0]:
-            raise ValueError("long_minutes must be [>=9, >=min]")
+        if v[0] < 9 or v[1] < v[0] or v[1] > 14:
+            raise ValueError("long_minutes must be [>=9, >=min, <=14] (QC fails a master over 15:00)")
         return v
 
 
