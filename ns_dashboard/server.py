@@ -292,6 +292,11 @@ def create_app(
         return ok(await run_in_threadpool(dash.outputs.detail, output_id))
 
     # ------------------------------------------------------------ media
+    @app.get("/api/thumbs/{n}/{output_id:path}")
+    async def media_thumb_choice(n: int, output_id: str) -> FileResponse:
+        path = await run_in_threadpool(dash.outputs.thumb_choice_path, output_id, n)
+        return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=3600"})
+
     @app.get("/api/media/{output_id:path}/thumb.jpg")
     async def media_thumb(output_id: str) -> FileResponse:
         path = await run_in_threadpool(dash.outputs.thumb_path, output_id)

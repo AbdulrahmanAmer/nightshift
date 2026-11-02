@@ -364,3 +364,22 @@ def test_channel_put_accepts_the_profile_the_get_returned(tmp_home: Path):
     with pytest.raises(ApiError) as err:  # the card is not a profile
         dash.channels.update("after-dark", card)
     assert err.value.code == "invalid_profile"
+
+
+# ------------------------------------------------------------------ gap 23: the three thumbnails of a long video are served
+
+
+def test_thumbnail_choices_are_served(tmp_home: Path):
+    from tests.test_dashboard_api import make_env
+
+    client, state = make_env(tmp_home)
+    seed_channel(state.db, state.paths)
+    long_ = seed_output(state.db, state.paths, kind="long", k=1)
+    folder = Path(state.db.one("SELECT path FROM outputs WHERE output_id = ?", (long_,))["path"]).parent
+    (folder / "thumb_1.jpg").write_bytes(b"\xff\xd8jpeg1")
+    (folder / "thumb_3.jpg").write_bytes(b"\xff\xd8jpeg3")
+    r = client.get(f"/api/thumbs/1/{long_}")
+    assert r.status_code == 200 and r.headers["content-type"] == "image/jpeg" and r.content.endswith(b"jpeg1")
+    assert client.get(f"/api/thumbs/2/{long_}").status_code == 404  # not made
+    assert client.get(f"/api/thumbs/4/{long_}").status_code == 404
+    assert client.get("/api/thumbs/1/nope-20260101-abcd/long").status_code == 404

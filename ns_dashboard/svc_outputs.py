@@ -251,6 +251,16 @@ class OutputsService:
             raise ApiError(404, "file_missing", "The video file is missing from disk.")
         return path
 
+    def thumb_choice_path(self, output_id: str, n: int) -> Path:
+        """`thumb_<n>.jpg` (1 to 3) that the studio put next to a long video in the Outbox."""
+        if n not in (1, 2, 3):
+            raise ApiError(404, "not_found", "There are three thumbnails, numbered 1 to 3.")
+        video = self.media_path(output_id)
+        path = video.parent / f"thumb_{n}.jpg"
+        if not path.is_file():
+            raise ApiError(404, "file_missing", "That thumbnail was not made for this video.")
+        return path
+
     def thumb_path(self, output_id: str) -> Path:
         """Cached first-frame JPEG (generated on first request)."""
         video = self.media_path(output_id)
