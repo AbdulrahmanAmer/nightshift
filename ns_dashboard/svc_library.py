@@ -213,3 +213,21 @@ class LibraryService:
             raise ApiError(503, "shutting_down", "Nightshift is shutting down.")
         self.s.log.warn("update_apply", "update started from the dashboard")
         return self.s.adapters.update.apply()
+
+    # --- series workshop (read-only list plus "Produce next part") ---
+    def series(self) -> list[dict[str, Any]]:
+        """Workshop stories with per-part status, read from the story folders."""
+        return self.s.adapters.series.listing()
+
+    def produce_next_part(self, slug: str) -> dict[str, Any]:
+        """Queue the next approved part of `slug` as a `series_part` job and wake the worker."""
+        if self.s.draining:
+            raise ApiError(503, "shutting_down", "Nightshift is shutting down and not accepting new jobs.")
+        queued = self.s.adapters.series.queue_next(slug)
+        for item in queued:
+            self.s.worker.enqueue(str(item["job_id"]))
+            rec = self.s.store.get(str(item["job_id"]))
+            if rec is not None:
+                self.s.hub.publish("dashboard_job", rec.to_dict())
+        self.s.log.info("series_part_queued", slug=slug, parts=[q["part"] for q in queued])
+        return {"slug": slug, "queued": queued}

@@ -388,6 +388,33 @@ class FakeSeriesAdapter:
         self.paths = paths
         self.produced: list[dict[str, Any]] = []
         self.fail_with: Exception | None = None
+        self.stories: list[dict[str, Any]] = []
+
+    def listing(self) -> list[dict[str, Any]]:
+        """The stories a test put in `stories`."""
+        return [dict(s) for s in self.stories]
+
+    def queue_next(self, slug: str) -> list[dict[str, Any]]:
+        """Queue the first approved part of `slug` as a `series_part` row and mark it producing."""
+        from ns_dashboard.errors import ApiError
+
+        story = next((s for s in self.stories if s["slug"] == slug), None)
+        if story is None:
+            raise ApiError(404, "not_found", f"no story {slug!r}")
+        part = next((p for p in story["parts"] if p["status"] == "approved"), None)
+        if part is None:
+            raise ApiError(409, "cannot_produce", f"story {slug!r} has no approved part waiting")
+        job_id = new_job_id(str(story["channel"]))
+        title = f"{story['title']} - Part {part['n']:02d}"
+        self.db.execute(
+            "INSERT INTO dashboard_jobs(job_id, kind, channel, status, message, created_at, params_json)"
+            " VALUES (?, 'series_part', ?, 'queued', ?, ?, ?)",
+            (job_id, story["channel"], title, datetime.now(UTC).isoformat(),
+             json.dumps({"job_id": job_id, "channel": story["channel"], "story_slug": slug,
+                         "part_n": part["n"], "title": title})),
+        )
+        part["status"], part["job_id"] = "producing", job_id
+        return [{"part": part["n"], "job_id": job_id, "title": title}]
 
     def produce(self, ctl: JobControl, params: dict[str, Any]) -> list[str]:
         """Run the stages, then insert a `long` output for the part."""

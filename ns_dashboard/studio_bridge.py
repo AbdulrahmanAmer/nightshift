@@ -347,3 +347,19 @@ def run_series_part(
     names = [s.name for s in plan_job("master_from_script")]
     run_job_guarded(watched(ctx, names, 0, 1, report))
     return output_ids(env.db, job_id)
+
+
+def queue_next_part(slug: str) -> list[dict[str, Any]]:
+    """Queue production of the lowest approved part of story `slug` (`Workshop.produce`); no model is called.
+
+    Returns `[{part, job_id, title}]`. Raises `WorkshopError` when the story is unknown, has no design yet
+    or has no approved part.
+    """
+    from ns_studio.series.store import WorkshopError
+
+    with workshop_session(fake=READ_ONLY) as ws:
+        parts = ws.status(slug)["parts"]
+        nxt = next((int(p["n"]) for p in parts if p["status"] == "approved"), None)
+        if nxt is None:
+            raise WorkshopError(f"story {slug!r} has no approved part waiting; approve a written part first")
+        return ws.produce(slug, nxt)

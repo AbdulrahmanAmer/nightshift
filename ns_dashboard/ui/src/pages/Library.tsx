@@ -7,7 +7,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useApp, useLoad } from "../lib/app";
 import { api, ApiError } from "../lib/api";
 import { fmtDay, fmtDur, plural, store } from "../lib/format";
-import type { Footage, Format, Idea, Story, Voice, VoiceMade } from "../lib/types";
+import type { Footage, Format, Idea, SeriesStory, Story, Voice, VoiceMade } from "../lib/types";
 import { cx } from "../ui/kit";
 import { Scene } from "../visuals/Scene";
 import { LayoutDiagram } from "../visuals/charts";
@@ -343,12 +343,62 @@ function FootageTab() {
 
 /* ---------------------------------------------------------------- Series */
 
+const PART_LABEL: Record<string, [string, Tone]> = {
+  planned: ["Planned", "neutral"], written: ["Written, waiting for your OK", "neutral"], approved: ["Approved", "accent"],
+  producing: ["Being made", "accent"], published: ["Posted", "success"],
+};
+const NEXT_STEP: Record<string, string> = {
+  concepts: "Ask the Assistant for concepts", choose: "Choose a concept", map: "Plan the parts", design: "Pick the look of the series",
+  produce: "Produce the next part", "wait for production": "Waiting for the part being made", done: "All parts are made",
+};
+const nextWords = (s: string) => NEXT_STEP[s] ?? (s.startsWith("write part") ? `Write ${s.slice(6)}` : s.startsWith("approve part") ? `Read and approve ${s.slice(8)}` : s);
+
 function Series() {
-  const { ask, go } = useApp();
+  const { ask, go, toast, channelName } = useApp();
+  const list = useLoad<SeriesStory[]>(() => api.get("/library/series"), [], []);
+  const [busy, setBusy] = useState<string | null>(null);
   const start = () => { ask({ page: "library", tab: "series" }, "Draft 3 story concepts for a series", false); go("#/assistant"); };
-  const steps: [string, string][] = [["Concepts", "Three concepts from the Assistant; keep one or ask for a redo"], ["Part map", "Each part's hook, cliffhanger and length"], ["Scripts", "Full scripts and the Shorts cut from each part, for you to read"], ["Produce", "Approved parts are made one a week and land in the Queue"]];
+  const about = (s: SeriesStory) => { ask({ page: "library", tab: "series", story_slug: s.slug }, `What is the next step for the series ${s.title}?`, false); go("#/assistant"); };
+  const produce = async (s: SeriesStory) => {
+    setBusy(s.slug);
+    try {
+      const r = await api.post<{ queued: { part: number }[] }>(`/library/series/${encodeURIComponent(s.slug)}/produce`);
+      toast(`Part ${r.queued.map((q) => q.part).join(", ")} of ${s.title} is queued. It lands in the Queue when it is made`, "ok");
+      list.reload();
+    } catch (e: any) { toast(e.message, "bad"); }
+    setBusy(null);
+  };
+  const steps: [string, string][] = [["Concepts", "Three concepts from the Assistant; keep one or ask for a redo"], ["Part map", "Each part's hook, cliffhanger and length"], ["Scripts", "Full scripts and the Shorts cut from each part, for you to read"], ["Produce", "Approved parts are made one at a time and land in the Queue"]];
   return (
     <DashGrid label="Series">
+      {list.data.map((s) => {
+        const ready = s.parts.some((p) => p.status === "approved") && s.has_design;
+        return (
+          <Card as="article" key={s.slug} aria-labelledby={`ser-${s.slug}`} className={cx("self-stretch", SPAN["4/4"])}>
+            <CardHeader id={`ser-${s.slug}`} title={s.title} adornment={<Badge tone={s.status === "done" ? "success" : "neutral"}>{s.status}</Badge>} />
+            <p className="-mt-2 mb-3 text-ds-xs text-ds-muted">{channelName(s.channel)} · {plural(s.parts.length, "part")} · Next: {nextWords(s.next_step)}</p>
+            {s.parts.length ? (
+              <ol className="flex flex-col gap-2" aria-label={`Parts of ${s.title}`}>
+                {s.parts.map((p) => {
+                  const [label, tone] = PART_LABEL[p.status] || [p.status, "neutral" as Tone];
+                  return (
+                    <li key={p.n} className="flex flex-wrap items-center gap-3 rounded-ds-lg bg-ds-sunken px-4 py-3 shadow-ds-inset-sm">
+                      <span className="grid size-7 shrink-0 place-items-center rounded-full bg-ds-accent-soft text-ds-xs font-semibold text-ds-accent-ink ds-num">{p.n}</span>
+                      <span className="min-w-0 flex-1"><span className="block truncate text-ds-sm font-semibold">{p.title}</span><span className="block text-ds-2xs text-ds-muted">{p.minutes} min · {plural(p.shorts, "Short")} · {p.words.toLocaleString()} words</span></span>
+                      <Badge tone={tone}>{label}</Badge>
+                    </li>
+                  );
+                })}
+              </ol>
+            ) : <p className="text-ds-sm text-ds-text-2">No parts planned yet. The Assistant plans them with you</p>}
+            <div className="mt-4 flex flex-wrap items-center gap-3">
+              <Button leadingIcon="play" disabled={!ready || busy === s.slug} onClick={() => produce(s)}>{busy === s.slug ? "Queuing" : "Produce next part"}</Button>
+              <Button variant="soft" leadingIcon="chat" onClick={() => about(s)}>Ask the Assistant</Button>
+              {!ready && <span className="text-ds-xs text-ds-muted">{s.has_design ? "Approve a written part first" : "Choose the look of the series first"}</span>}
+            </div>
+          </Card>
+        );
+      })}
       <Card as="section" aria-labelledby="s-how" className={cx("self-stretch", SPAN["4/4"])}>
         <CardHeader id="s-how" title="How a series is made" />
         <ol className="grid grid-cols-1 gap-3 @container sm:grid-cols-2">
@@ -359,7 +409,7 @@ function Series() {
             </li>
           ))}
         </ol>
-        <EmptyState icon="integrations" className="mt-5" title="No series yet" action={<Button leadingIcon="chat" onClick={start}>Draft a series with the Assistant</Button>}>Series you develop show up here with each part's status. The series workshop files arrive with the next update; until then the Assistant drafts concepts and saves them to Ideas</EmptyState>
+        {!list.data.length && !list.loading && <EmptyState icon="integrations" className="mt-5" title="No series yet" action={<Button leadingIcon="chat" onClick={start}>Draft a series with the Assistant</Button>}>Series you develop with the Assistant show up here with each part's status</EmptyState>}
       </Card>
       <PromoCard className={cx("self-stretch", SPAN["2/4"])} illustration={<SeriesIllustration />} title="Start a series" description="Tell the Assistant the premise. It drafts three concepts you can keep or redo" ctaLabel="Open the Assistant" onCta={start} />
     </DashGrid>

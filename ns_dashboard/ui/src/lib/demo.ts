@@ -161,6 +161,16 @@ export function simulateJob(job: Job) {
   }, 1400);
 }
 
+const DEMO_SERIES: any[] = [{
+  slug: "the-service-lift", channel: "after-dark", title: "The Service Lift", status: "producing", next_step: "produce", has_design: true, chosen: "B",
+  parts: [
+    { n: 1, title: "Floor 13", minutes: 15, status: "published", job_id: "j-demo1", words: 2310, shorts: 3 },
+    { n: 2, title: "The Intercom", minutes: 15, status: "approved", job_id: null, words: 2240, shorts: 3 },
+    { n: 3, title: "The Service Stair", minutes: 14, status: "written", job_id: null, words: 2180, shorts: 3 },
+    { n: 4, title: "Tomorrow's Voice", minutes: 16, status: "planned", job_id: null, words: 0, shorts: 0 },
+  ],
+}];
+
 export async function demoHandle(method: string, path: string, body?: any): Promise<any> {
   await sleep(80);
   const [p, q] = path.split("?"); const parts = p.split("/").filter(Boolean); const sp = new URLSearchParams(q || "");
@@ -229,6 +239,12 @@ export async function demoHandle(method: string, path: string, body?: any): Prom
   if (p === "/library/footage") { const qq = (sp.get("q") || "").toLowerCase(); return DEMO.footage.filter((f: any) => !qq || f.keywords.join(" ").includes(qq)); }
   if (p === "/library/formats" && method === "GET") return DEMO.formats.map((f: any) => ({ ...f }));
   if (p === "/library/formats" && method === "POST") { DEMO.formats.push({ ...body }); return body; }
+  if (p === "/library/series" && method === "GET") return structuredClone(DEMO_SERIES);
+  if (parts[0] === "library" && parts[1] === "series" && parts[3] === "produce") {
+    const s = DEMO_SERIES.find((x) => x.slug === parts[2]); const part = s?.parts.find((x: any) => x.status === "approved");
+    if (!part) throw new ApiError("That story has no approved part waiting.", "cannot_produce");
+    part.status = "producing"; return { slug: s.slug, queued: [{ part: part.n, job_id: "j" + Math.random().toString(16).slice(2, 8), title: `${s.title} - Part ${part.n}` }] };
+  }
   if (p === "/update/check") return { current: "0.9.2", latest: "0.9.2", up_to_date: true, notes: "" };
   if (p === "/update/apply") throw new Error("Updating needs the engine running");
   if (p === "/assistant/confirm") { const run = DEMO.pending[body.action_id]; if (!run) throw new Error("Nothing to confirm"); delete DEMO.pending[body.action_id]; return run(); }

@@ -28,6 +28,8 @@ NO_TOOL: dict[Route, str] = {
     ("POST", "/api/settings/keys"): "never: API keys are entered by the owner (Settings page)",
     ("POST", "/api/update/apply"): "never: installing an update is the owner's decision (Settings page)",
     ("POST", "/api/engine/stop_all"): "destructive button for the owner (Settings page)",
+    ("GET", "/api/library/series"): "the workshop_list and workshop_status tools read the same files",
+    ("POST", "/api/library/series/{slug}/produce"): "the workshop_produce tool queues parts (with a confirm card)",
     ("GET", "/api/events"): "event stream, not a request/response call",
     ("GET", "/api/media/{output_id:path}"): "binary video stream",
     ("GET", "/api/media/{output_id:path}/thumb.jpg"): "binary image",

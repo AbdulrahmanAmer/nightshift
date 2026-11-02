@@ -132,6 +132,14 @@ class SeriesAdapter(Protocol):
 
     def produce(self, ctl: JobControl, params: dict[str, Any]) -> list[str]: ...
 
+    def listing(self) -> list[dict[str, Any]]:
+        """Every workshop story with its parts and next step (read-only)."""
+        ...
+
+    def queue_next(self, slug: str) -> list[dict[str, Any]]:
+        """Queue the next approved part of `slug`; returns `[{part, job_id, title}]`, 409 when none is ready."""
+        ...
+
 
 class ScheduleAdapter(Protocol):
     """Applies the nightly run time to the scheduled task."""
@@ -290,6 +298,20 @@ class RealSeriesAdapter(StudioAdapter):
         except BaseException:
             studio_bridge.release_part({**params, "job_id": ctl.job_id})
             raise
+
+    def listing(self) -> list[dict[str, Any]]:
+        """Stories and parts read from the workshop files under `stories/`."""
+        return studio_bridge.list_series()
+
+    def queue_next(self, slug: str) -> list[dict[str, Any]]:
+        """Queue the next approved part (`Workshop.produce`); workshop usage errors become 409/404 answers."""
+        from ns_studio.series.store import WorkshopError
+
+        try:
+            return studio_bridge.queue_next_part(slug)
+        except WorkshopError as e:
+            missing = str(e).startswith("no story")
+            raise ApiError(404 if missing else 409, "not_found" if missing else "cannot_produce", str(e)) from e
 
 
 class RealLearnAdapter:

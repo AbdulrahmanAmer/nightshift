@@ -512,6 +512,14 @@ def create_app(
     async def library_formats_update(format_id: str, request: Request) -> SafeJSONResponse:
         return ok(await run_in_threadpool(dash.library.update_format, format_id, await body_json(request)))
 
+    @app.get("/api/library/series")
+    async def library_series() -> SafeJSONResponse:
+        return ok(await run_in_threadpool(dash.library.series))
+
+    @app.post("/api/library/series/{slug}/produce")
+    async def library_series_produce(slug: str) -> SafeJSONResponse:
+        return ok(await run_in_threadpool(dash.library.produce_next_part, slug), 201)
+
     # ------------------------------------------------------------ update
     @app.get("/api/update/check")
     async def update_check() -> SafeJSONResponse:
