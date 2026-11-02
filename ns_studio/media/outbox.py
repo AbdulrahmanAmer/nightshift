@@ -74,6 +74,20 @@ def story_title(ctx: JobContext) -> str:
     return ctx.job_id
 
 
+MAX_PATH = 200  # longest Outbox path we create; Windows stops at 260 without LongPathsEnabled (NS-W112)
+MIN_STEM = 16
+
+
+def fit_stem(base: Path, fixed: int, wanted: int) -> int:
+    """Longest name stem (at most `wanted`) that keeps the longest sheet path under `MAX_PATH`.
+
+    The stem occurs twice in a path (folder and file name); `fixed` counts every other character below
+    `base`. Never shorter than `MIN_STEM`, so a very deep home yields short but still readable names.
+    """
+    room = (MAX_PATH - len(str(base)) - fixed) // 2
+    return max(MIN_STEM, min(wanted, room))
+
+
 def outbox_target(ctx: JobContext, kind: str, k: int | None = None) -> Path:
     """The Outbox path of a video (spec §15.2a); creates its folder (and the story folder marker).
 
@@ -89,12 +103,14 @@ def outbox_target(ctx: JobContext, kind: str, k: int | None = None) -> Path:
     if ctx.file("series_context.json").exists():
         sc = ctx.read_json("series_context.json")
         part = int(sc["part_n"])
-        series_title = safe_slug(str(sc["series_title"]))
+        fit = fit_stem(base, 50, 80)  # <base>/series/<slug>/part-NN/shorts/<title> - Part NN - Short KK.json
+        series_title = safe_slug(str(sc["series_title"]), fit)
         stem = f"{series_title} - Part {part:02d}"
-        root = base / "series" / safe_slug(str(sc["series_slug"])) / f"part-{part:02d}"
+        root = base / "series" / safe_slug(str(sc["series_slug"]), fit) / f"part-{part:02d}"
     else:
         title = story_title(ctx)
-        stem = safe_slug(title) or ctx.job_id
+        # <base>/stories/<title>/shorts/<title> - Short KK.json: the title is in the path twice
+        stem = safe_slug(title, fit_stem(base, 33, 80)) or ctx.job_id
         root = unique_dir(base / "stories", stem, ctx.job_id)
     folder = root / ("full" if kind == "long" else "shorts")
     folder.mkdir(parents=True, exist_ok=True)
