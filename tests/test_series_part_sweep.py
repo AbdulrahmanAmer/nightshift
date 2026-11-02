@@ -10,7 +10,6 @@ from pathlib import Path
 
 import pytest
 
-from ns_dashboard.state import open_db
 from ns_common.logging import NsLogger
 from ns_common.paths import Paths
 from ns_dashboard import studio_bridge
@@ -18,6 +17,7 @@ from ns_dashboard.errors import ApiError
 from ns_dashboard.events import EventHub
 from ns_dashboard.fakes import FakeSeriesAdapter, seed_channel
 from ns_dashboard.jobs import JobRecord, JobStore, JobWorker
+from ns_dashboard.state import open_db
 from ns_studio.series.store import PartState, StoryDir
 
 
