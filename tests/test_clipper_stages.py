@@ -239,3 +239,41 @@ def test_full_clip_job(tmp_home: Path, tmp_path: Path) -> None:
     styles = {k: v["style"] for k, v in ctx.read_json("captions/report.json").items()}
     assert styles == {"c1": "clean_white", "c2": ctx.combo.caption_style}
     assert all(v["passed"] for v in ctx.read_json("qc/report.json").values())
+
+
+@needs_ffmpeg
+def test_the_owners_caption_style_applies_to_every_clip(tmp_home: Path, tmp_path: Path) -> None:
+    """System gap 21: Create sent `caption_style`, ClipParams had no such field and run_clip dropped it."""
+    ctx = make_job(tmp_path, caption_style="boxed_dark")
+    run_through(ctx, "clip_captions")
+    styles = {k: v["style"] for k, v in ctx.read_json("captions/report.json").items()}
+    assert styles == {"c1": "boxed_dark", "c2": "boxed_dark"}
+    with pytest.raises(ValueError):
+        ClipParams(source="x", channel="after-dark", caption_style="neon").validate()
+
+
+def test_run_clip_passes_the_caption_style_on(
+    tmp_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from ns_common.db import Db
+    from ns_dashboard import studio_bridge
+    from ns_studio.channels import crud
+
+    seen: list[ClipParams] = []
+
+    def fake_create(paths, channel, params, **kw):
+        seen.append(params)
+        raise RuntimeError("stop here")
+
+    monkeypatch.setattr(sc, "create_clip_job", fake_create)
+    paths = Paths.from_env()
+    paths.ensure()
+    db = Db(paths.db_path)
+    db.migrate()
+    crud.add_channel(paths, db, make_channel())
+    video = tmp_path / "v.mp4"
+    video.write_bytes(b"x")
+    params = {"channel": "after-dark", "caption_style": "boxed_dark", "rights_confirmed": True}
+    with pytest.raises(RuntimeError):
+        studio_bridge.run_clip(video, params, lambda *_a, **_k: None, fake=FAKEABLE)
+    assert seen and seen[0].caption_style == "boxed_dark"

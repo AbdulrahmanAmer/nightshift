@@ -85,6 +85,7 @@ class ClipParams:
     video_kind: str = "unknown"
     source_id: str | None = None
     source_title: str | None = None
+    caption_style: str | None = None  # the owner's pick on Create; None lets the model choose per clip
 
     FILE: ClassVar[str] = "clip_params.json"
 
@@ -98,6 +99,11 @@ class ClipParams:
             raise ValueError("need 5 <= min_s < max_s <= 179")
         if self.spacing_s < 0:
             raise ValueError("spacing_s must be >= 0")
+        if self.caption_style:
+            from ns_studio.media.presets import load_caption_styles
+
+            if self.caption_style not in load_caption_styles():
+                raise ValueError(f"unknown caption style {self.caption_style!r}")
 
     def save(self, job_dir: Path) -> Path:
         """Write `clip_params.json`."""

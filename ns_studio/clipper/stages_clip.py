@@ -545,6 +545,7 @@ class CaptionsStage:
         templates = layout.load_templates()
         info = _source(ctx)
         mask = mask_profanity_setting(ctx.channel)
+        picked = ClipParams.load(ctx.job_dir).caption_style  # the owner's choice on Create wins
         seg_speaker = {s.i: s.speaker for s in tr.segments}
         ctx.subdir("captions")
         report: dict[str, Any] = {}
@@ -555,7 +556,7 @@ class CaptionsStage:
                 tmod.Word(w.w, max(0.0, w.start - clip.start_s), min(dur, max(0.0, w.end - clip.start_s)), si)
                 for w, si in zip(src_words, sentence_indices(src_words), strict=True)
             ]
-            style = (
+            style = picked or (
                 clip.caption_style
                 if clip.caption_style in ctx.channel.pools.caption_styles
                 else ctx.combo.caption_style

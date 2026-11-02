@@ -188,6 +188,7 @@ def run_clip(
         min_s=float(params.get("min_s") or 20),
         max_s=float(params.get("max_s") or 60),
         rights_confirmed=bool(params.get("rights_confirmed")),
+        caption_style=str(params["caption_style"]) if params.get("caption_style") else None,
     )
     clip_params.validate()
     ctx = with_acquirer(create_clip_job(home, channel, clip_params, fake=frozenset(fake)), acquirer)
