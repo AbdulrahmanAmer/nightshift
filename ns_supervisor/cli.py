@@ -336,8 +336,8 @@ def schedule_show() -> None:
 
 @app.command("notify")
 def cmd_notify(title: str, message: str) -> None:
-    """Show a Windows toast (does nothing where toasts are unavailable)."""
-    notify.toast(title, message)
+    """Show a Windows toast; without a desktop (a scheduled run) leave a morning note for the dashboard."""
+    notify.toast_or_note(title, message)
 
 
 def main() -> None:
