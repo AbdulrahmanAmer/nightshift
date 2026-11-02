@@ -370,7 +370,7 @@ def test_captions_align_a_russian_script(tmp_path: Path):
 
 
 def test_cjk_characters_are_separate_caption_words():
-    assert [w for w, _ in script_words("夜中にドアが開いた。")] == [*"夜中にドアが開い", "た 。"]
+    assert [w for w, _ in script_words("夜中にドアが開いた。")] == [*"夜中にドアが開い", "た。"]
 
 
 JA = "私は猫です。名前はまだありません。どこで生まれたかとんと見当がつきません。"
@@ -463,3 +463,28 @@ def test_caption_drift_works_for_cjk_and_survives_a_backwards_asr_word():
     res = align_words(JA, asr)
     shifted = [Word(w.w, w.start + 0.2, w.end + 0.2, w.sentence_idx) for w in res.words]
     assert caption_drift(shifted, asr) == pytest.approx(200.0, abs=15.0)
+
+
+def _visible(ass: str) -> list[str]:
+    """The text of each Dialogue event with the override tags removed."""
+    return [re.sub(r"{[^}]*}", "", line.split(",,", 2)[2]) for line in ass.splitlines()
+            if line.startswith("Dialogue:")]  # fmt: skip
+
+
+def test_cjk_captions_are_not_burned_with_a_space_between_characters():
+    """Re-review row 15: CJK characters were joined with spaces, so the video said '私 は 猫 で す 。'."""
+    res = align_words(JA, _pieces(JA, (2, 1, 3, 2)))
+    assert res.words[0].w == "私" and res.words[4].w == "す。"  # the full stop stays with its character
+    for name in sorted(load_caption_styles()):
+        shown = _visible(build_ass(res.words, name))
+        assert shown, name
+        for text in shown:
+            assert not re.search(r"[぀-ヿ一-鿿。] [぀-ヿ一-鿿。]", text), (name, text)
+    tokens = ["the", "doorbell", "camera", "pings", "at", "three", "twelve", "every", "night"]
+    latin = align_words(SCRIPT, _even_asr(tokens))
+    assert any(" " in t for t in _visible(build_ass(latin.words, "clean_white")))  # Latin keeps its spaces
+
+
+def test_a_cjk_word_next_to_a_latin_one_keeps_the_space():
+    ws = [Word("猫", 0.0, 0.2), Word("cat", 0.3, 0.5), Word("です", 0.6, 0.9)]
+    assert any("猫 cat" in t for t in _visible(build_ass(ws, "clean_white")))

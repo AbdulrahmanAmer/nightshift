@@ -57,6 +57,28 @@ def _display_tokens(sentence: str) -> list[str]:
     return out
 
 
+_CJK_TEXT = re.compile(rf"[{CJK_RANGES}\u3000-\u303f\uff00-\uffef]")
+
+
+def _cjk_edge(text: str, *, last: bool) -> bool:
+    """True when the last (or first) character of `text` is a CJK character or CJK/fullwidth punctuation."""
+    stripped = text.strip()
+    return bool(stripped) and bool(_CJK_TEXT.match(stripped[-1] if last else stripped[0]))
+
+
+def _join_words(parts: Sequence[str], words: Sequence[Word]) -> str:
+    """Join rendered caption words: a space between words, none between two CJK neighbours.
+
+    Every CJK character is its own display word, and joining them with spaces burned "私 は 猫 で す 。".
+    `words` are the plain words behind `parts` (the rendered ones carry override tags).
+    """
+    out = parts[0] if parts else ""
+    for k in range(1, len(parts)):
+        glue = "" if _cjk_edge(words[k - 1].w, last=True) and _cjk_edge(words[k].w, last=False) else " "
+        out += glue + parts[k]
+    return out
+
+
 def script_words(text: str) -> list[tuple[str, int]]:
     """Split a script into display words with sentence indices; punctuation-only tokens join a neighbour."""
     out: list[tuple[str, int]] = []
@@ -65,7 +87,8 @@ def script_words(text: str) -> list[tuple[str, int]]:
         for tok in _display_tokens(sentence):
             if not normalize_tokens(tok):
                 if out:
-                    out[-1] = (f"{out[-1][0]} {tok}", out[-1][1])
+                    glue = "" if _cjk_edge(out[-1][0], last=True) and _cjk_edge(tok, last=False) else " "
+                    out[-1] = (f"{out[-1][0]}{glue}{tok}", out[-1][1])
                 else:
                     pending = f"{pending} {tok}".strip()
                 continue
@@ -597,7 +620,7 @@ def build_ass(
                 after = "\\fscx100\\fscy100" if size else ""
                 parts.append(f"{{\\kf{cs}{size}}}{label(w)}" + (f"{{{after}}}" if after else ""))
             events.append(
-                f"Dialogue: 0,{_ass_time(g_start)},{_ass_time(g_end)},Default,,0,0,0,,{' '.join(parts)}"
+                f"Dialogue: 0,{_ass_time(g_start)},{_ass_time(g_end)},Default,,0,0,0,,{_join_words(parts, g)}"
             )
             continue
         for k, w in enumerate(g):
@@ -619,7 +642,7 @@ def build_ass(
             prefix = base_tag if (speakers and gi in speakers) else ""
             events.append(
                 f"Dialogue: 0,{_ass_time(ev_start)},{_ass_time(ev_end)},Default,,0,0,0,,"
-                f"{prefix}{' '.join(pieces)}"
+                f"{prefix}{_join_words(pieces, g)}"
             )
     return "\n".join([*header, *events]) + "\n"
 
