@@ -49,3 +49,16 @@ def test_answers_example_lists_the_ui_fields():
     assert example["owner_name"] is None
     assert example["ui_theme"] == "dark"
     assert example["models_source_kind"] == "internet"
+
+
+# --- CR-C1-UI-2: error codes --------------------------------------------------------------------------
+
+
+def test_installer_ui_error_codes_exist_with_message_and_fix():
+    from ns_common.errors import describe
+
+    av = describe("NS-E113")
+    assert av.kind == "error" and "Antivirus" in av.message and "allow list" in av.hint
+    video = describe("NS-W403")
+    assert video.kind == "warning" and "test video" in video.message
+    assert "Diagnostics" in video.hint

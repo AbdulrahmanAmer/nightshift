@@ -341,3 +341,9 @@ Format per entry:
 - **Why:** the setup window asks for the owner's first name (dashboard greeting), the theme, and where the models come from (download, a folder, or the zips from the Google Drive models folder).
 - **Differences from the design doc:** `ui_theme` also allows `"soft"` (the third dashboard theme) and the Drive kind is spelled `drive_zip` (snake case, like every other value in this file), not `drive-zip`.
 - **Status:** applied in @@CR_C1_UI_1@@
+
+## CR-C1-UI-2: error codes NS-E113 and NS-W403
+- **From:** installer UI design (`docs/design/installer-ui.md` section 5.5 and the error table); owner decisions of 2026-11-02
+- **Change:** add to `contracts/errors.json`: `NS-E113` "Antivirus or another program blocked a file Nightshift needs." (fix: add the Nightshift folder to the antivirus allow list, then retry) and `NS-W403` "The setup test video did not finish." (fix: setup can continue; run Diagnostics after install).
+- **Why:** the setup window maps a file that was blocked or removed right after download (zip item missing after extraction, `PermissionError`, winerror 225) to a single code with a fix, and the final test video is allowed to fail without failing setup.
+- **Status:** applied in @@CR_C1_UI_2@@
