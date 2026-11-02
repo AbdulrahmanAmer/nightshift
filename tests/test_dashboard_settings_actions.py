@@ -203,9 +203,9 @@ def test_backup_adapter_runs_ns_backup_and_ns_restore(tmp_home: Path):
     from ns_dashboard.errors import ApiError
 
     paths = Paths.from_env()
+    run, calls = runner_returning(0, "Backup written to C:/Users/me/Desktop/nightshift-backup-2026-11-02.zip\n")
     adapter = updater.RealBackupAdapter(paths, run)
     assert adapter.export() == Path("C:/Users/me/Desktop/nightshift-backup-2026-11-02.zip")
-    assert adapter.export() == Path("C:\Users\me\Desktop\nightshift-backup-2026-11-02.zip")
     assert calls[0][-1:] == ["backup"]
     run2, calls2 = runner_returning(0, "restored settings\nrestored voices\n")
     lines = updater.RealBackupAdapter(paths, run2).restore(tmp_home / "b.zip")
