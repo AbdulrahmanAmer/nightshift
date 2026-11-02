@@ -13,6 +13,9 @@ from installer.stage2.context import StepContext
 from installer.stage2.errors import make_error
 from installer.stage2.winenv import create_shortcut, desktop_dir
 
+# The brand icon ships with the dashboard build; without it a shortcut keeps PowerShell's own icon.
+ICON_RELATIVE = Path("ns_dashboard") / "static" / "brand" / "nightshift.ico"
+
 # (shortcut name, launcher script, only with Nightshift Code)
 SHORTCUTS = (
     ("Nightshift Dashboard", "nightshift-dashboard.ps1", False),
@@ -36,6 +39,12 @@ def wanted_shortcuts(ctx: StepContext) -> list[tuple[str, Path]]:
         if path.is_file():
             out.append((name, path))
     return out
+
+
+def shortcut_icon(ctx: StepContext) -> Path | None:
+    """The brand .ico under the app folder, or None when this build does not ship it."""
+    icon = ctx.app_path / ICON_RELATIVE
+    return icon if icon.is_file() else None
 
 
 def desktop(ctx: StepContext) -> Path:
@@ -67,11 +76,12 @@ class S09ShortcutsScheduler(Step):
         have = {p.name for _, p in shortcuts}
         for script in sorted(known - have):
             ctx.ui.say(f"  launcher {script} is not part of this version yet; no shortcut for it.", "dim")
+        icon = shortcut_icon(ctx)
         for name, launcher in shortcuts:
             args = f'-NoProfile -ExecutionPolicy Bypass -File "{launcher}"'
             ok = create_shortcut(
                 ctx.runner, folder / f"{name}.lnk", "powershell.exe", args, ctx.app_path,
-                f"Nightshift: {name}",
+                f"Nightshift: {name}", icon,
             )
             if not ok:
                 raise make_error("NS-E110", f"could not create the shortcut '{name}'")

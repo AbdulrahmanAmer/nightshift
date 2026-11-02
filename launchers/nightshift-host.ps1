@@ -12,6 +12,9 @@
     Messages from the page (window.chrome.webview.postMessage), all JSON:
       {cmd: 'minimize'} {cmd: 'toggle-maximize'} {cmd: 'drag-start'} {cmd: 'close'} {cmd: 'close-ack'}
       {cmd: 'ready'} {cmd: 'open-external', url: 'https://...'}
+    The window icon is <AppPath>
+s_dashboardstaticrand
+ightshift.ico when that file exists.
     Messages to the page: {event: 'window-state', state: 'normal|maximized|minimized', maximized: bool}
     and {event: 'close-requested'}.
 #>
@@ -298,6 +301,22 @@ try {
     $script:win.AllowsTransparency = $false
     $script:win.ResizeMode = [System.Windows.ResizeMode]::CanResize
     $script:win.Background = $brush
+
+    # Window and taskbar icon: the brand icon shipped with the dashboard build; no icon when the file is missing.
+    $iconFile = Join-Path $AppPath 'ns_dashboardstaticrand
+ightshift.ico'
+    if (Test-Path -LiteralPath $iconFile) {
+        try {
+            $dec = [System.Windows.Media.Imaging.BitmapDecoder]::Create(
+                (New-Object System.Uri $iconFile),
+                [System.Windows.Media.Imaging.BitmapCreateOptions]::None,
+                [System.Windows.Media.Imaging.BitmapCacheOption]::OnLoad)
+            $script:win.Icon = @($dec.Frames | Sort-Object { $_.PixelWidth } -Descending)[0]   # the largest size in the .ico
+        }
+        catch {
+            Write-Verbose 'window icon could not be loaded'
+        }
+    }
 
     $chrome = New-Object System.Windows.Shell.WindowChrome
     $chrome.CaptionHeight = 0

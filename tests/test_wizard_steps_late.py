@@ -299,6 +299,36 @@ def test_s09_creates_shortcuts_for_existing_launchers_and_registers_the_task(tmp
     assert step.check(ctx) is True
 
 
+def _script_of(call) -> str:
+    import base64
+
+    return base64.b64decode(call.argv[call.argv.index("-EncodedCommand") + 1]).decode("utf-16-le")
+
+
+def test_s09_points_every_shortcut_at_the_brand_icon_when_the_build_ships_it(tmp_path: Path):
+    app = launcher_app(tmp_path, ["nightshift-dashboard.ps1", "open-outbox.ps1"])
+    icon = app / "ns_dashboard" / "static" / "brand" / "nightshift.ico"
+    icon.parent.mkdir(parents=True)
+    icon.write_bytes(b"ico")
+    runner = FakeRunner(tmp_path / "desktop")
+    ctx = make_test_context(tmp_path, raw_answers=example_answers(), resolve=True, app_path=app, runner=runner)
+    S09ShortcutsScheduler().run(ctx)
+    calls = runner.called("ps:shortcut")
+    assert len(calls) == 2
+    for call in calls:
+        assert call.meta["icon"] == str(icon)
+        assert f"$s.IconLocation = '{icon},0'" in _script_of(call)
+
+
+def test_s09_keeps_the_default_icon_when_the_ico_is_missing(tmp_path: Path):
+    app = launcher_app(tmp_path, ["nightshift-dashboard.ps1"])
+    runner = FakeRunner(tmp_path / "desktop")
+    ctx = make_test_context(tmp_path, raw_answers=example_answers(), resolve=True, app_path=app, runner=runner)
+    S09ShortcutsScheduler().run(ctx)
+    call = runner.called("ps:shortcut")[0]
+    assert "icon" not in call.meta and "IconLocation" not in _script_of(call)
+
+
 def test_s09_nightshift_code_shortcut_only_with_install_code(tmp_path: Path):
     app = launcher_app(tmp_path, ["nightshift-code.ps1"])
     ctx = make_test_context(tmp_path, raw_answers=example_answers(install_code=False), resolve=True,
