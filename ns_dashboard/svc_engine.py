@@ -13,6 +13,7 @@ from typing import Any
 import ns_common
 from ns_common.config import load_install_state, load_runtime
 from ns_common.errors import NsError
+from ns_common.models import GpuStatus
 from ns_dashboard.errors import ApiError
 from ns_dashboard.events import iter_sse
 from ns_dashboard.state import AppState, load_dashboard_settings
@@ -179,7 +180,18 @@ class EngineService:
             "last_run": self._run_row(runs[0]) if runs else None,
             "incidents": [dict(r) for r in incidents],
             "last_error": last_error,
+            "gpu": self._gpu((st or {}).get("gpu")),
         }
+
+    @staticmethod
+    def _gpu(raw: Any) -> dict[str, Any] | None:
+        """The supervisor's `gpu` block as `GpuStatus`, or None when it is absent or malformed."""
+        if not isinstance(raw, dict):
+            return None
+        try:
+            return GpuStatus.model_validate(raw).model_dump(mode="json")
+        except ValueError:
+            return None
 
     @staticmethod
     def _tonight(status: str, fmt: str, run_time: str) -> str:

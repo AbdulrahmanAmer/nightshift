@@ -109,7 +109,7 @@ def create_app(sup: Supervisor, *, start_dashboard: bool = False, run_monitor: b
 
     @app.get("/status")
     async def status() -> dict[str, Any]:
-        return sup.status()
+        return await asyncio.to_thread(sup.status)  # the GPU probe may spawn nvidia-smi
 
     @app.post("/acquire")
     async def acquire(body: AcquireBody) -> dict[str, Any]:
@@ -145,7 +145,7 @@ def create_app(sup: Supervisor, *, start_dashboard: bool = False, run_monitor: b
         async def gen() -> AsyncIterator[str]:
             q = sup.subscribe()
             try:
-                data = {"event": "snapshot", **sup.status()}
+                data = {"event": "snapshot", **await asyncio.to_thread(sup.status)}
                 snap = {"ts": sup.now().isoformat(), "kind": "service", "data": data}
                 yield _sse(snap)
                 sent = 1
