@@ -175,7 +175,7 @@ export default function Create() {
               </div>
               {body}
               {step < 5 && (
-                <div className="flex items-center justify-between gap-3 border-t border-ds-border-subtle pt-4">
+                <div className="sticky bottom-[calc(72px+env(safe-area-inset-bottom))] z-10 -mx-2 flex items-center justify-between gap-3 rounded-b-ds-lg border-t border-ds-border-subtle bg-ds-surface px-2 py-3 md:bottom-0">
                   <Button variant="ghost" leadingIcon="chevronLeft" disabled={step === 0} onClick={() => go(step - 1)}>Back</Button>
                   <Button trailingIcon="chevronRight" disabled={!canNext} onClick={() => go(step + 1)}>Next</Button>
                 </div>
@@ -333,7 +333,7 @@ function EarlierRow({ j, channelName, templates, onChanged }: { j: Job; channelN
       <NotificationItem title={jobTitle(j, channelName)}
         titleAdornment={<StatusDot tone={failed ? "danger" : cancelled ? "attention" : "online"} label={failed ? "Stopped" : cancelled ? "Cancelled" : "Done"} />}
         subtitle={<span className={failed ? "text-ds-danger" : undefined}>{failed ? `Stopped at ${stageWords(j.stage).toLowerCase()}. ${j.message || ""}` : cancelled ? "Cancelled" : `Done ${dayInline(j.created_at)} · ${j.result?.output_ids?.length ? `${j.result.output_ids.length} videos` : "1 video"}`}</span>}
-        meta={j.status === "done" ? <MetaItem icon="play"><a href="#/" className="font-semibold text-ds-accent-ink">Review it</a></MetaItem> : undefined} />
+        meta={j.status === "done" ? <MetaItem icon="play"><a href="#/" className="inline-flex items-center font-semibold text-ds-accent-ink [@media(max-width:820px)]:min-h-10">Review it</a></MetaItem> : undefined} />
       {canRerun && (open ? (
         <div className="mt-2 flex flex-wrap items-center gap-2 pl-1">
           <Select aria-label="Layout for the new clips" className="!h-9 !w-auto" value={tpl} onChange={(e) => setTpl(e.target.value)}>
