@@ -8,7 +8,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useApp, useLoad } from "../lib/app";
 import { api } from "../lib/api";
-import { dayInline, doneWords, MAKES_VIDEO, fmtClock, fmtDay, fmtDur, fmtWhen, kindLabel, plural, stageWords, store } from "../lib/format";
+import { dayInline, doneWords, MAKES_VIDEO, fmtClock, fmtDay, fmtDur, fmtWhen, kindLabel, plural, stageWords, stoppedAt, store } from "../lib/format";
 import type { ChannelSummary, Job, MorningNote, Output, OutputDetail, Run } from "../lib/types";
 import { cx } from "../ui/kit";
 import { JobError } from "../ui/JobError";
@@ -326,7 +326,7 @@ function JobEvents({ jobs, loading, channelName, className, onReview }: { jobs: 
               <li key={j.job_id}>
                 <NotificationItem title={title} moreLabel={`Options for ${title}`} menu={menu}
                     titleAdornment={<StatusDot tone={failed ? "danger" : cancelled ? "attention" : "online"} label={failed ? "Stopped" : cancelled ? "Cancelled" : "Done"} />}
-                    subtitle={failed ? `Stopped at ${stageWords(j.stage).toLowerCase()}. ${j.message || ""}` : cancelled ? "Cancelled" : doneWords(j)}
+                    subtitle={failed ? `${stoppedAt(j.stage)}. ${j.message || ""}` : cancelled ? "Cancelled" : doneWords(j)}
                     meta={<><MetaItem icon="calendarDays">{fmtDay(j.created_at)}</MetaItem><MetaItem icon="clock">{fmtClock(j.created_at)}</MetaItem><MetaItem icon="channels">{channelName(j.channel)}</MetaItem></>} />
                 {failed && <JobError j={j} />}
               </li>
@@ -349,13 +349,19 @@ function TonightPlan({ chans, status, className }: { chans: ChannelSummary[]; st
     if (ok !== true) return;
     try { await api.post(`/channels/${encodeURIComponent(c.slug)}/pause`); toast(`${c.display_name} is paused`, "ok"); refresh(); } catch (e: any) { toast(e.message, "bad"); }
   };
+  // A video job that was stopped hard can leave the card reserved; the engine frees it by itself after 10 minutes, this is the way to do it now.
+  const releaseGpu = async (owner: string) => {
+    const ok = await confirm({ title: "Release the graphics card?", body: "Use this only when no video is being made. Anything still running on it is stopped", ok: "Release" });
+    if (ok !== true) return;
+    try { await api.post("/engine/release_gpu", { owner }); toast("The graphics card is free", "ok"); refresh(); } catch (e: any) { toast(e.message, "bad"); }
+  };
   const plan = chans.filter((c) => c.status === "active" && c.tonight !== false).slice(0, 2);
   const at = fmtClock(status?.next_run) || status?.schedule_time || "";
   const voice = (c: ChannelSummary) => (typeof c.voice === "string" ? c.voice : c.voice?.name || c.voice?.speaker || "Built-in voice");
   return (
     <Card as="section" aria-labelledby="q-plan" className={cx("self-stretch", className)}>
       <CardHeader id="q-plan" title="Tonight's plan" actions={<Button variant="ghost" size="sm" leadingIcon="edit" onClick={() => go("#/channels")}>Edit</Button>} />
-      {status?.engine?.vram_owner && <p role="status" className="mb-3 flex items-center gap-2 rounded-ds-md bg-ds-accent-subtle px-3 py-2 text-ds-xs"><StatusDot tone="accent" />The graphics card is held by <strong className="font-semibold">{ownerWords(status.engine.vram_owner)}</strong>. Tonight's run waits for it.</p>}
+      {status?.engine?.vram_owner && <p role="status" className="mb-3 flex flex-wrap items-center gap-2 rounded-ds-md bg-ds-accent-subtle px-3 py-2 text-ds-xs"><StatusDot tone="accent" />GPU held by <strong className="font-semibold" title={status.engine.vram_owner}>{ownerWords(status.engine.vram_owner)}</strong>. Tonight's run waits for it.{status.engine.vram_owner.startsWith("studio:") && !status.job && <Button size="sm" variant="soft" onClick={() => releaseGpu(status.engine.vram_owner!)}>Release</Button>}</p>}
       <div className="flex flex-col gap-4">
         {plan.length ? plan.map((c) => (
           <AssignmentCard key={c.slug} categories={[c.display_name]} moreLabel={`Options for ${c.display_name}`} menu={[{ icon: "edit", label: "Edit channel", onSelect: () => go(`#/channels?edit=${encodeURIComponent(c.slug)}`) }, { icon: "pause", label: "Skip tonight and pause", onSelect: () => pause(c) }]}

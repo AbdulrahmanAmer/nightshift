@@ -4,7 +4,7 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
 import { useApp, useLoad } from "../lib/app";
 import { api } from "../lib/api";
-import { fmtDay, fmtClock, stageWords, store } from "../lib/format";
+import { fmtDay, fmtClock, stageWords, stoppedAt, store } from "../lib/format";
 import type { Job, ToolInfo } from "../lib/types";
 import { cx } from "../ui/kit";
 import { Mark } from "../ui/Mark";
@@ -248,7 +248,7 @@ export default function Assistant() {
                       <li key={j.job_id}>
                         <NotificationItem title={title} moreLabel={`Options for ${title}`} menu={menu}
                           titleAdornment={<StatusDot tone={failed ? "danger" : live ? "accent" : j.status === "cancelled" ? "attention" : "online"} label={failed ? "Stopped" : live ? "Running" : j.status === "cancelled" ? "Cancelled" : "Done"} />}
-                          subtitle={live ? stageWords(j.stage) : failed ? `Stopped at ${stageWords(j.stage).toLowerCase()}` : j.status === "cancelled" ? "Cancelled" : "Done"}
+                          subtitle={live ? stageWords(j.stage) : failed ? `${stoppedAt(j.stage)}` : j.status === "cancelled" ? "Cancelled" : "Done"}
                           meta={<><MetaItem icon="calendarDays">{fmtDay(j.created_at)}</MetaItem><MetaItem icon="clock">{fmtClock(j.created_at)}</MetaItem></>} />
                       </li>
                     );

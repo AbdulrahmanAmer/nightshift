@@ -219,6 +219,11 @@ def create_app(
         body = await body_json(request)
         return ok(await run_in_threadpool(dash.engine.shutdown, body.get("grace_s")))
 
+    @app.post("/api/engine/release_gpu")
+    async def engine_release_gpu(request: Request) -> SafeJSONResponse:
+        body = await body_json(request)
+        return ok(await run_in_threadpool(dash.engine.release_gpu, body.get("owner")))
+
     @app.post("/api/engine/stop_all")
     async def engine_stop_all() -> SafeJSONResponse:
         return ok(await run_in_threadpool(dash.engine.stop_all))

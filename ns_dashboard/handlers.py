@@ -15,7 +15,7 @@ from ns_dashboard.assistant.store import AssistantStore
 from ns_dashboard.assistant.tools import build_registry
 from ns_dashboard.events import EventHub
 from ns_dashboard.fakes import fake_adapters
-from ns_dashboard.jobs import JobStore, JobWorker, make_gpu_gate
+from ns_dashboard.jobs import JobRecord, JobStore, JobWorker, make_gpu_gate
 from ns_dashboard.state import AppState, open_db
 from ns_dashboard.supervisor_link import SupervisorLink, make_acquirer, supervisor_url
 from ns_dashboard.svc_channels import ChannelsService
@@ -79,10 +79,15 @@ def build_state(
     hub = EventHub()
     link = link or SupervisorLink(supervisor_url(paths))
     adapters = adapters or (fake_adapters(db, paths) if fake_services else real_adapters(paths, link, log))
+    def release_part_of(rec: JobRecord) -> None:
+        adapters.series.release({**rec.params, "job_id": rec.job_id})
+
     store = JobStore(db)
     worker = JobWorker(
         store, build_handlers(adapters, paths), hub, log, gpu_gate=make_gpu_gate(link.status),
-        on_recover={"series_part": lambda rec: adapters.series.release({**rec.params, "job_id": rec.job_id})},
+        on_recover={"series_part": release_part_of},
+        on_end={"series_part": release_part_of},
+        sweep=adapters.series.sweep,
     )
     return AppState(
         paths=paths, db=db, log=log, hub=hub, link=link, adapters=adapters, store=store, worker=worker,

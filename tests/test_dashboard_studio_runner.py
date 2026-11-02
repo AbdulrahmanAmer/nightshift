@@ -90,6 +90,7 @@ def recorded(tmp_path: Path) -> dict[str, Any]:
 def runner_for(fake: Path, tmp_path: Path, **kw: Any) -> StudioRunner:
     app = tmp_path / "app"
     app.mkdir(exist_ok=True)
+    kw.setdefault("grace_s", 0.3)  # the stand-in never stops by itself: do not sit out the real 10 s
     return StudioRunner(Paths.from_env(), python=[sys.executable, str(fake)], cwd=app, poll_s=0.05, **kw)
 
 

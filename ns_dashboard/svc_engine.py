@@ -274,6 +274,21 @@ class EngineService:
         self.s.hub.publish("job", {"draining": True})
         return {"ok": True, "cancelled_job": cancelled}
 
+    def release_gpu(self, owner: Any) -> dict[str, Any]:
+        """Free the GPU from `owner` (shown as "GPU held by ..." when a job died without giving it back).
+
+        Only the current holder can be released, so a stale click cannot free somebody else's lease. A job of
+        this dashboard that still runs is asked to stop first; this is the way out when it cannot.
+        """
+        holder = (self.s.link.status() or {}).get("gpu_owner")
+        if not isinstance(owner, str) or not owner:
+            raise ApiError(422, "invalid_options", "'owner' is the name shown in \"GPU held by ...\".")
+        if holder != owner:
+            raise ApiError(409, "not_holding", "That owner no longer holds the GPU.")
+        freed = self.s.link.release_owner(owner)
+        self.s.log.info("engine_release_gpu", owner=owner, freed=freed)
+        return {"ok": True, "released": freed, "owner": owner}
+
     def stop_all(self) -> dict[str, Any]:
         """Stop every model process and cancel the running job."""
         self.s.link.stop_all()

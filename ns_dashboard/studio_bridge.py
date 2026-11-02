@@ -390,3 +390,33 @@ def queue_next_part(slug: str) -> list[dict[str, Any]]:
         if nxt is None:
             raise WorkshopError(f"story {slug!r} has no approved part waiting; approve a written part first")
         return ws.produce(slug, nxt)
+
+
+def sweep_parts(active_job_ids: Collection[str]) -> int:
+    """Put every part that says `producing` but has no queued or running dashboard job back to `approved`.
+
+    Covers what the per-job hooks cannot: a row that was removed, a restore of the database, a part whose
+    job was cancelled while the dashboard was down. Returns how many parts were freed.
+    """
+    from ns_studio.series.store import StoryDir, WorkshopError
+
+    freed = 0
+    active = set(active_job_ids)
+    try:
+        with workshop_session(fake=READ_ONLY) as ws:
+            for story in ws.list_stories():
+                try:
+                    sd = StoryDir.open(ws.paths, str(story["slug"]))
+                    status = sd.read_status()
+                    for n, state in sorted(status.parts.items()):
+                        if state.status == "producing" and (state.job_id is None or state.job_id not in active):
+                            try:
+                                ws._set_part(sd, status, n, "approved")
+                            except WorkshopError:  # series.md has no such part: status.yaml is saved already
+                                pass
+                            freed += 1
+                except (WorkshopError, KeyError, ValueError):
+                    continue
+    except (WorkshopError, OSError):
+        return freed
+    return freed

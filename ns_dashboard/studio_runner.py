@@ -8,8 +8,9 @@ clip job, a series part, the transcript of a voice sample, a link download) is t
 
 with the app folder as working directory and `NIGHTSHIFT_HOME` in the environment (UTF-8 on). The child prints
 one JSON object per line behind the prefix `NSJOB ` (see `ns_dashboard.studio_job`); the runner turns them
-into callbacks and the final payload. Cancelling kills the whole process tree with the supervisor's own helper
-(`ns_supervisor.procs.kill_tree`), so a stage, FFmpeg or yt-dlp never outlives the job.
+into callbacks and the final payload. Cancelling first asks the child to stop (it checks a flag file between
+stages and releases its GPU lease itself), waits `grace_s` seconds, and then kills the whole process tree with
+the supervisor's own helper (`ns_supervisor.procs.kill_tree`), so a stage, FFmpeg or yt-dlp never outlives the job.
 
 The interpreter comes from the paths the installer writes (`ns_supervisor.services.venv_python`) and is
 `sys.executable` when that venv does not exist (CI, development). Tests pass `python=[sys.executable, f.py]`.
@@ -31,13 +32,14 @@ from typing import IO, Any
 from ns_common.errors import NsError
 from ns_common.paths import Paths
 from ns_dashboard.lazyimport import lazy
-from ns_dashboard.studio_job import PREFIX
+from ns_dashboard.studio_job import CANCEL_ENV, PREFIX
 from ns_dashboard.uploads import tmp_dir
 
 ENTRY = "ns_dashboard.studio_job"
 #: Variables of the dashboard's own interpreter that must not leak into the studio venv.
 DROP_ENV = ("PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP", "VIRTUAL_ENV", "__PYVENV_LAUNCHER__")
 TAIL_LINES = 30
+GRACE_S = 10.0
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 Event = dict[str, Any]
@@ -105,12 +107,14 @@ class StudioRunner:
         python: Sequence[str] | str | None = None,
         cwd: Path | None = None,
         poll_s: float = 0.25,
+        grace_s: float = GRACE_S,
         kill: Callable[[subprocess.Popen[str]], None] = kill_tree,
     ) -> None:
         self.paths = paths
         self._python = python
         self._cwd = cwd
         self.poll_s = poll_s
+        self.grace_s = grace_s
         self._kill = kill
 
     # --- how the child is started ---
@@ -124,8 +128,9 @@ class StudioRunner:
         """Full argv of the child."""
         return [*self.interpreter(), "-m", ENTRY, kind, "--args", str(args_file)]
 
-    def environment(self) -> dict[str, str]:
-        """Environment of the child: the dashboard's own, without its interpreter variables, plus the home."""
+    def environment(self, cancel_file: Path | None = None) -> dict[str, str]:
+        """Environment of the child: the dashboard's own, without its interpreter variables, plus the home
+        and, when given, the flag file that asks it to stop."""
         env = {k: v for k, v in os.environ.items() if k not in DROP_ENV}
         env.update(
             {
@@ -135,6 +140,8 @@ class StudioRunner:
                 "PYTHONUNBUFFERED": "1",
             }
         )
+        if cancel_file is not None:
+            env[CANCEL_ENV] = str(cancel_file)
         return env
 
     def workdir(self) -> Path:
@@ -147,6 +154,20 @@ class StudioRunner:
         f = folder / f"studio-{kind}-{os.getpid()}-{threading.get_ident()}-{os.urandom(3).hex()}.json"
         f.write_text(json.dumps(args, ensure_ascii=False, default=str), encoding="utf-8")
         return f
+
+    def _stop(self, proc: subprocess.Popen[str], cancel_file: Path) -> None:
+        """Ask the child to stop at its next stage boundary, wait `grace_s`, then kill what is left.
+
+        A child that stops by itself runs its `finally` blocks, so it gives its GPU lease back. One that is
+        in the middle of a long stage does not notice in time and is killed; the caller then releases the
+        lease through the supervisor.
+        """
+        if proc.poll() is None and self.grace_s > 0:
+            with contextlib.suppress(OSError):
+                cancel_file.write_text("cancel", encoding="utf-8")
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                proc.wait(timeout=self.grace_s)
+        self._kill(proc)
 
     # --- running ---
     def run(
@@ -165,6 +186,7 @@ class StudioRunner:
         when it carries an `NS-` code, else `RuntimeError`.
         """
         args_file = self._args_file(kind, args)
+        cancel_file = args_file.with_suffix(".cancel")
         lines: queue.Queue[str | None] = queue.Queue()
         tail: collections.deque[str] = collections.deque(maxlen=TAIL_LINES)
         result: Event | None = None
@@ -173,7 +195,7 @@ class StudioRunner:
             proc = subprocess.Popen(
                 self.command(kind, args_file),
                 cwd=str(self.workdir()),
-                env=self.environment(),
+                env=self.environment(cancel_file),
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
@@ -212,11 +234,12 @@ class StudioRunner:
                 check_cancel()
             proc.wait(timeout=60)
         except BaseException:
-            self._kill(proc)
+            self._stop(proc, cancel_file)
             raise
         finally:
             reader.join(timeout=5)
             args_file.unlink(missing_ok=True)
+            cancel_file.unlink(missing_ok=True)
         if failure is not None:
             raise failure_error(failure)
         if result is None or proc.returncode != 0:

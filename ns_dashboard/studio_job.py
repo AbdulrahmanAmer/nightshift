@@ -11,6 +11,12 @@ cannot be mistaken for an event. The events are
 - `download`: link download progress (`percent`),
 - `result`: the work is done (the payload, for example `output_ids`),
 - `error`: the work failed (`code` of an `NS-E...` condition or None, `detail`, `message`).
+- `cancelled`: the dashboard asked the job to stop (see below) and it did, after releasing what it held.
+
+Stopping: the runner creates the file named by the environment variable `NS_JOB_CANCEL_FILE` when the owner
+presses Cancel. `report` looks for it before each stage and raises `CancelRequested`, so the orchestrator
+unwinds through its `finally` blocks and the GPU lease goes back to the supervisor. A stage that does not end
+within the runner's grace period is killed; the dashboard then releases the lease itself.
 
 The functions behind the kinds are the ones in `ns_dashboard.studio_bridge`, so a job runs exactly the code
 that `studio run` and `studio clip` run, with the same regenerate-once policy. Imports of anything but the
@@ -21,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -28,6 +35,17 @@ from typing import Any
 
 PREFIX = "NSJOB "
 KINDS = ("run", "clip", "rerun", "series", "download", "transcribe")
+CANCEL_ENV = "NS_JOB_CANCEL_FILE"
+
+
+class CancelRequested(Exception):
+    """The dashboard asked this job to stop (raised between stages)."""
+
+
+def cancel_requested() -> bool:
+    """True when the flag file that the runner created for this process exists."""
+    name = os.environ.get(CANCEL_ENV)
+    return bool(name) and os.path.exists(name)
 
 
 def emit(ev: str, **data: Any) -> None:
@@ -47,6 +65,8 @@ class SeenJobs(list[str]):
 
 def report(stage: str, index: int, total: int, job_index: int, job_total: int) -> None:
     """`studio_bridge.Report`: announce a stage."""
+    if cancel_requested():
+        raise CancelRequested()
     emit("stage", stage=stage, index=index, total=total, job_index=job_index, job_total=job_total)
 
 
@@ -57,12 +77,22 @@ def _paths() -> Any:
 
 
 def _acquirer(args: dict[str, Any]) -> Any:
+    """The supervisor as GPU owner, wrapped in `StudioAcquirer` so a held service is renewed on a thread
+    (the supervisor reclaims a lease that stays silent) and released with the same code as `studio run`."""
     url = args.get("supervisor_url")
     if not url:
         return None
+    from ns_common.config import load_runtime
+    from ns_common.models import Runtime
     from ns_dashboard.supervisor_link import make_acquirer
+    from ns_studio.acquirer import StudioAcquirer
 
-    return make_acquirer(str(url))
+    paths = _paths()
+    try:
+        runtime = load_runtime(paths)
+    except Exception:  # no or unreadable runtime.json: the defaults
+        runtime = Runtime.default("gpu")
+    return StudioAcquirer(runtime, paths, client=make_acquirer(str(url)), ensure=lambda _client: None)
 
 
 def _common(args: dict[str, Any]) -> dict[str, Any]:
@@ -166,6 +196,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         args = json.loads(ns.args.read_text(encoding="utf-8"))
         result = HANDLERS[ns.kind](args)
+    except CancelRequested:
+        emit("cancelled")
+        return 0
     except Exception as e:  # report every failure to the dashboard; it decides what the owner sees
         emit("error", **error_event(e))
         return 1

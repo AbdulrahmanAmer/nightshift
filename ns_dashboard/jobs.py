@@ -65,6 +65,12 @@ class JobRecord:
             return None
         return at if at.tzinfo is not None else at.astimezone()
 
+    def failed_stage(self) -> str | None:
+        """The stage a failed job stopped at (kept in `result.error.stage`, because the message becomes the error)."""
+        err = (self.result or {}).get("error")
+        stage = err.get("stage") if isinstance(err, dict) else None
+        return stage if isinstance(stage, str) and stage else None
+
     def to_dict(self) -> dict[str, Any]:
         """API shape: `progress` is a percentage (0-100), `stage` the current stage name."""
         return {
@@ -73,7 +79,7 @@ class JobRecord:
             "channel": self.channel,
             "status": self.status,
             "progress": round(self.progress * 100, 1),
-            "stage": _stage_of(self.message),
+            "stage": _stage_of(self.message) or self.failed_stage(),
             "step": _steps_of(self.message)[0],
             "steps": _steps_of(self.message)[1],
             "message": self.message,
@@ -228,6 +234,11 @@ class JobStore:
         """Every job whose row says `running` (more than one only after a crash)."""
         rows = self.db.query("SELECT * FROM dashboard_jobs WHERE status = 'running' ORDER BY rowid")
         return [self._record(r) for r in rows]
+
+    def active_ids(self) -> set[str]:
+        """Ids of the jobs that are queued or running."""
+        rows = self.db.query("SELECT job_id FROM dashboard_jobs WHERE status IN ('queued', 'running')")
+        return {str(r["job_id"]) for r in rows}
 
     def counts(self) -> dict[str, int]:
         """Number of queued and running jobs."""
@@ -405,6 +416,8 @@ class JobWorker:
         gpu_gate: GpuGate | None = None,
         inline_kinds: frozenset[str] = frozenset({"learn"}),
         on_recover: dict[str, Callable[[JobRecord], None]] | None = None,
+        on_end: dict[str, Callable[[JobRecord], None]] | None = None,
+        sweep: Callable[[set[str]], None] | None = None,
     ) -> None:
         self.store = store
         self.handlers = handlers
@@ -413,6 +426,11 @@ class JobWorker:
         self.gpu_gate = gpu_gate
         self.inline_kinds = inline_kinds
         self.on_recover = on_recover or {}
+        #: Per kind: called when a job of that kind ends without finishing (cancelled in the queue, cancelled or failed
+        #: before or inside its handler), so work it had reserved (a series part) is given back.
+        self.on_end = on_end or {}
+        #: Called once at start with the ids of the queued and running jobs, after interrupted ones were failed.
+        self.sweep = sweep
         #: Called on the worker thread when a job ended and nothing else is queued (saved Assistant requests).
         self.on_idle: Callable[[], None] | None = None
         self._ended = False
@@ -438,6 +456,11 @@ class JobWorker:
                     hook(rec)
                 except Exception as e:  # recovery must never stop the worker from starting
                     self.log.warn("recover_failed", str(e), job_id=rec.job_id, kind=rec.kind)
+        if self.sweep is not None:
+            try:
+                self.sweep(self.store.active_ids())
+            except Exception as e:  # a sweep that fails must never stop the worker from starting
+                self.log.warn("sweep_failed", str(e))
         self._stopping = False
         self._thread = threading.Thread(target=self._loop, name="ns-dashboard-worker", daemon=True)
         self._thread.start()
@@ -471,6 +494,7 @@ class JobWorker:
         if rec.status == "queued":
             if self.store.cancel_queued(job_id):
                 self.log.info("job_cancelled", job_id=job_id)
+                self._end_hook(rec)
                 self._publish(job_id)
                 return "cancelled"
             # the worker started it between our read and the update: look again, so it is cancelled as running
@@ -558,20 +582,22 @@ class JobWorker:
             self.store.finish(rec.job_id, "done", "Done", result)
             self.log.info("job_done", job_id=rec.job_id, kind=rec.kind)
         except JobCancelled:
-            self.store.finish(rec.job_id, "cancelled", "Cancelled")
+            self.store.finish(rec.job_id, "cancelled", "Cancelled", dict(ctl.extras) or None)
             self.log.info("job_cancelled", job_id=rec.job_id)
+            self._end_hook(rec)
         except AdapterUnavailable as e:  # a collaborator that has not landed yet: say so plainly
-            self.store.finish(rec.job_id, "failed", str(e), {"error": {"code": "unavailable", "hint": None}})
+            self.store.finish(rec.job_id, "failed", str(e), self._failure(ctl, "unavailable", None))
             self.log.warn("job_unavailable", str(e), job_id=rec.job_id)
+            self._end_hook(rec)
         except NsError as e:
-            self.store.finish(
-                rec.job_id, "failed", str(e), {"error": {"code": e.code, "hint": e.definition.hint}}
-            )
+            self.store.finish(rec.job_id, "failed", str(e), self._failure(ctl, e.code, e.definition.hint))
             self.log.error("job_failed", str(e), job_id=rec.job_id, code=e.code)
+            self._end_hook(rec)
         except Exception as e:  # the worker thread must survive any handler failure
             msg = f"{type(e).__name__}: {e}"
-            self.store.finish(rec.job_id, "failed", msg, {"error": {"code": "job_failed", "hint": None}})
+            self.store.finish(rec.job_id, "failed", msg, self._failure(ctl, "job_failed", None))
             self.log.error("job_failed", msg, job_id=rec.job_id)
+            self._end_hook(rec)
         finally:
             self.store.clear_cancel(rec.job_id)
             if track:
@@ -579,6 +605,23 @@ class JobWorker:
             self._publish(rec.job_id)
             with self._cv:
                 self._cv.notify_all()
+
+    def _end_hook(self, rec: JobRecord) -> None:
+        """Run the `on_end` hook of the job's kind; it must never break the worker."""
+        hook = self.on_end.get(rec.kind)
+        if hook is None:
+            return
+        try:
+            hook(rec)
+        except Exception as e:
+            self.log.warn("end_hook_failed", str(e), job_id=rec.job_id, kind=rec.kind)
+
+    def _failure(self, ctl: JobControl, code: str, hint: str | None) -> dict[str, Any]:
+        """Result of a failed job: the error with the stage it stopped at, plus what the handler had noted
+        (the studio job ids, so the logs of the failed run can be found)."""
+        rec = self.store.get(ctl.job_id)
+        stage = _stage_of(rec.message) if rec is not None else None
+        return {**ctl.extras, "error": {"code": code, "hint": hint, "stage": stage}}
 
     def _idle(self) -> None:
         if self.on_idle is None:

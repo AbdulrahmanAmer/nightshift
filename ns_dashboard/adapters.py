@@ -155,6 +155,10 @@ class SeriesAdapter(Protocol):
         """Put a part whose job was interrupted back to `approved` so it can be queued again."""
         ...
 
+    def sweep(self, active_job_ids: Collection[str]) -> int:
+        """Put every `producing` part that has no queued or running job back to `approved`; returns how many."""
+        ...
+
 
 class BackupAdapter(Protocol):
     """Export and import of settings (`ns backup`, `ns restore`) and where UNINSTALL.cmd is."""
@@ -224,6 +228,18 @@ def job_reporter(ctl: JobControl) -> studio_bridge.Report:
     return report
 
 
+def studio_owners(ctl: JobControl, args: dict[str, Any]) -> list[str]:
+    """The GPU owners (`studio:<job id>`) a job may have used: announced ids, and those the arguments name."""
+    ids: list[Any] = list(ctl.extras.get("studio_job_ids") or [])
+    params = args.get("params")
+    ids += [
+        ctl.extras.get("studio_job_id"),
+        args.get("studio_job_id"),  # a re-run
+        params.get("job_id") if isinstance(params, dict) else None,  # a series part
+    ]
+    return sorted({f"studio:{i}" for i in ids if i})
+
+
 class StudioAdapter:
     """Shared wiring of the adapters that run studio work: home, link, fakes, and the child process.
 
@@ -269,7 +285,21 @@ class StudioAdapter:
                 ctl.extras.setdefault("studio_job_ids", []).append(str(event.get("job_id", "")))
 
         full = {**args, "fake": sorted(self.fake), "supervisor_url": self.link.base_url}
-        return self.runner.run(kind, full, on_event=on_event, check_cancel=ctl.check_cancel)
+        try:
+            return self.runner.run(kind, full, on_event=on_event, check_cancel=ctl.check_cancel)
+        except BaseException:
+            self.release_leases(ctl, full)  # the child is gone (it stopped itself or was killed): free its lease
+            raise
+
+    def release_leases(self, ctl: JobControl, args: dict[str, Any]) -> None:
+        """Tell the supervisor that the studio owners of this job are gone, whatever they still held.
+
+        A child that stopped between stages already released its services; one that was killed in the middle of
+        a stage did not, and the lock would stay with a dead owner. Releasing is harmless when nothing is held.
+        """
+        for owner in studio_owners(ctl, args):
+            with contextlib.suppress(Exception):  # an engine that is down holds nothing
+                self.link.release_owner(owner)
 
 
 class RealRunAdapter(StudioAdapter):
@@ -337,6 +367,10 @@ class RealSeriesAdapter(StudioAdapter):
     def release(self, params: dict[str, Any]) -> None:
         """A part left `producing` by a crash or a Quit goes back to `approved`."""
         studio_bridge.release_part(params)
+
+    def sweep(self, active_job_ids: Collection[str]) -> int:
+        """Parts left `producing` with no job behind them (found at start) go back to `approved`."""
+        return studio_bridge.sweep_parts(active_job_ids)
 
     def listing(self) -> list[dict[str, Any]]:
         """Stories and parts read from the workshop files under `stories/`."""

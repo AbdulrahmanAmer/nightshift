@@ -4,7 +4,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useApp, useLoad } from "../lib/app";
 import { api } from "../lib/api";
-import { doneWords, fmtClock, fmtDay, fmtWhen, plural, stageWords, store } from "../lib/format";
+import { doneWords, fmtClock, fmtDay, fmtWhen, plural, stageWords, stoppedAt, store } from "../lib/format";
 import type { Job, MorningNote, Status } from "../lib/types";
 import { cx } from "../ui/kit";
 import { Chat } from "../pages/Assistant";
@@ -127,7 +127,7 @@ function Notifications() {
                     <StatusDot tone={failed ? "danger" : j.status === "cancelled" ? "attention" : "online"} className="mt-1.5" />
                     <div className="min-w-0 flex-1">
                       <p className="truncate text-ds-sm font-semibold">{jobTitle(j, channelName)}</p>
-                      <p className="line-clamp-2 text-ds-2xs text-ds-text-2">{failed ? `Stopped at ${stageWords(j.stage).toLowerCase()}. ${j.message || ""}` : j.status === "cancelled" ? "Cancelled" : doneWords(j)}</p>
+                      <p className="line-clamp-2 text-ds-2xs text-ds-text-2">{failed ? `${stoppedAt(j.stage)}. ${j.message || ""}` : j.status === "cancelled" ? "Cancelled" : doneWords(j)}</p>
                       <p className="text-ds-2xs text-ds-muted ds-num">{fmtDay(j.created_at)} {fmtClock(j.created_at)}</p>
                     </div>
                   </li>
