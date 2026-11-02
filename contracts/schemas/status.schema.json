@@ -1,0 +1,550 @@
+{
+  "$defs": {
+    "GpuStatus": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "load_pct": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Load Pct"
+        },
+        "vram_used_mb": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Vram Used Mb"
+        },
+        "vram_total_mb": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Vram Total Mb"
+        },
+        "temp_c": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Temp C"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "GpuStatus",
+      "type": "object"
+    },
+    "StatusChannel": {
+      "additionalProperties": false,
+      "properties": {
+        "slug": {
+          "title": "Slug",
+          "type": "string"
+        },
+        "display_name": {
+          "title": "Display Name",
+          "type": "string"
+        },
+        "status": {
+          "title": "Status",
+          "type": "string"
+        },
+        "niche": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Niche"
+        },
+        "voice": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Voice"
+        },
+        "masters_per_week": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Masters Per Week"
+        },
+        "publish_window": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Publish Window"
+        },
+        "format": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Format"
+        },
+        "pending": {
+          "default": 0,
+          "title": "Pending",
+          "type": "integer"
+        },
+        "tonight": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tonight"
+        }
+      },
+      "required": [
+        "slug",
+        "display_name",
+        "status"
+      ],
+      "title": "StatusChannel",
+      "type": "object"
+    },
+    "StatusDisk": {
+      "additionalProperties": false,
+      "properties": {
+        "free_gb": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Free Gb"
+        },
+        "total_gb": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Total Gb"
+        },
+        "home": {
+          "default": "",
+          "title": "Home",
+          "type": "string"
+        }
+      },
+      "title": "StatusDisk",
+      "type": "object"
+    },
+    "StatusEngine": {
+      "additionalProperties": false,
+      "properties": {
+        "state": {
+          "default": "idle",
+          "enum": [
+            "idle",
+            "starting",
+            "loading",
+            "ready",
+            "working",
+            "error"
+          ],
+          "title": "State",
+          "type": "string"
+        },
+        "detail": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Detail"
+        },
+        "elapsed_s": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Elapsed S"
+        },
+        "vram_owner": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Vram Owner"
+        },
+        "reachable": {
+          "default": true,
+          "title": "Reachable",
+          "type": "boolean"
+        },
+        "service": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Service"
+        },
+        "draining": {
+          "default": false,
+          "title": "Draining",
+          "type": "boolean"
+        },
+        "progress": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Progress"
+        },
+        "step": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Step"
+        },
+        "steps": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Steps"
+        },
+        "vram_gb": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Vram Gb"
+        }
+      },
+      "title": "StatusEngine",
+      "type": "object"
+    },
+    "StatusLastError": {
+      "additionalProperties": false,
+      "properties": {
+        "job_id": {
+          "title": "Job Id",
+          "type": "string"
+        },
+        "message": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Message"
+        },
+        "kind": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Kind"
+        }
+      },
+      "required": [
+        "job_id"
+      ],
+      "title": "StatusLastError",
+      "type": "object"
+    },
+    "StatusService": {
+      "additionalProperties": false,
+      "properties": {
+        "state": {
+          "default": "stopped",
+          "title": "State",
+          "type": "string"
+        },
+        "vram_mb": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Vram Mb"
+        }
+      },
+      "title": "StatusService",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Version"
+    },
+    "engine": {
+      "$ref": "#/$defs/StatusEngine"
+    },
+    "next_run": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Next Run"
+    },
+    "next_run_in_s": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Next Run In S"
+    },
+    "schedule_time": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Schedule Time"
+    },
+    "outbox": {
+      "additionalProperties": {
+        "type": "integer"
+      },
+      "default": {},
+      "title": "Outbox",
+      "type": "object"
+    },
+    "channels": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StatusChannel"
+      },
+      "title": "Channels",
+      "type": "array"
+    },
+    "services": {
+      "additionalProperties": {
+        "$ref": "#/$defs/StatusService"
+      },
+      "default": {},
+      "title": "Services",
+      "type": "object"
+    },
+    "disk": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StatusDisk"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "job": {
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Job"
+    },
+    "queue": {
+      "additionalProperties": {
+        "type": "integer"
+      },
+      "default": {},
+      "title": "Queue",
+      "type": "object"
+    },
+    "last_run": {
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Last Run"
+    },
+    "incidents": {
+      "default": [],
+      "items": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "title": "Incidents",
+      "type": "array"
+    },
+    "last_error": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StatusLastError"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "gpu": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/GpuStatus"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    }
+  },
+  "required": [
+    "engine"
+  ],
+  "title": "Status",
+  "type": "object"
+}

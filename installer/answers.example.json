@@ -1,6 +1,7 @@
 {
   "home_path": "D:\\Nightshift",
   "models_source": null,
+  "models_source_kind": "internet",
   "llm_tier": "small",
   "channel": {
     "display_name": "After Dark Tales",
@@ -24,5 +25,7 @@
   "run_time": "03:00",
   "install_code": true,
   "allow_cpu": false,
-  "restore_from": null
+  "restore_from": null,
+  "owner_name": null,
+  "ui_theme": "dark"
 }

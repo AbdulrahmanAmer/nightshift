@@ -1,0 +1,19 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "voice_id": {
+      "title": "Voice Id",
+      "type": "string"
+    },
+    "preview_wav_path": {
+      "title": "Preview Wav Path",
+      "type": "string"
+    }
+  },
+  "required": [
+    "voice_id",
+    "preview_wav_path"
+  ],
+  "title": "VoiceMakeResponse",
+  "type": "object"
+}
