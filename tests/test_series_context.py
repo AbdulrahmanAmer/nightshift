@@ -1,10 +1,10 @@
-"""A series part uses its design: voice, styles, title, end card, cadence and runtime (review rows 5 and 7)."""
+"""A series part uses its design: voice, styles, title, end card, cadence and runtime."""
 
 from pathlib import Path
 
 import pytest
 
-from ns_common.models import Seo, SeoLong
+from ns_common.models import ChapterTitle, Seo, SeoLong
 from ns_studio.media.outbox import publish_after, series_delay_days
 from ns_studio.media.qc import LONG_RANGE_S, duration_check, series_max_s
 from ns_studio.media.voice import job_speed, job_voice
@@ -61,7 +61,7 @@ def test_the_design_pins_caption_style_and_treatment(tmp_home: Path):
 
 def test_master_title_description_and_end_card():
     raw = SeoLong(title="The Driver Who Never Spoke", description="A bus.\nA driver.", tags=["a"] * 10,
-                  hashtags=["#a", "#b", "#c"], keywords=[], chapter_titles=[])
+                  hashtags=["#a", "#b", "#c"], keywords=[], chapter_titles=[ChapterTitle(n=1, title="One")])
     out = finalize_seo_long(raw, primary_keyword="night bus", fiction_label=True, series=CONTEXT)
     assert out.title.startswith("The Night Bus - Part 03: ") and len(out.title) <= 100
     summary = out.description.split("\n\n")[0].splitlines()
@@ -71,7 +71,8 @@ def test_master_title_description_and_end_card():
 
 
 def test_short_titles_and_descriptions_carry_the_part():
-    raw = Seo(title="He never spoke", description="A hook.", tags=["a"] * 10, hashtags=["#Shorts", "#a", "#b"], keywords=[])
+    raw = Seo(title="He never spoke", description="A hook.", tags=["a"] * 10,
+              hashtags=["#Shorts", "#a", "#b"], keywords=[])
     out = finalize_seo(raw, primary_keyword="night bus", fiction_label=True, part_n=3, parts_total=8,
                        master_title="The Night Bus - Part 03: X")
     assert "(Part 3)" in out.title and "Part 3 of 8." in out.description

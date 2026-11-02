@@ -104,7 +104,8 @@ def transcribe_with(
         raw_words: Iterable[Any] = transcriber.words(wav, language)
         for raw in raw_words:
             w = _make_word(raw, 0)
-            words.append(w.model_copy(update={"seg": _segment_index(segments, starts, (w.start + w.end) / 2.0)}))
+            seg = _segment_index(segments, starts, (w.start + w.end) / 2.0)
+            words.append(w.model_copy(update={"seg": seg}))
     return Transcript(
         source=source_name, duration_s=duration_s, language=language, segments=segments, words=words
     )

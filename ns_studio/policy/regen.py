@@ -60,14 +60,14 @@ def earliest_stage(code: str, names: list[str]) -> str:
 #: Files a stage keeps as its own memo and returns early on; the retry would reproduce them unchanged.
 STAGE_MEMOS: dict[str, tuple[str, ...]] = {
     "hooks": ("hooks_all.json",),  # HooksStage skips when this exists
-    "voice": ("audio/manifest.json",),  # synthesize() reuses every WAV whose text/voice/speed signature matches
+    "voice": ("audio/manifest.json",),  # synthesize() reuses every WAV with an unchanged signature
 }
 
 
 def invalidate_from(ctx: JobContext, names: list[str], stage: str) -> None:
     """Forget `stage` and every later stage, and their memo files, so the next `run_job` really redoes them.
 
-    The retry also differs from the first pass: prompts run hotter (`ns_studio.text.prompts.attempt_temperature`),
+    The retry also differs from the first pass: prompts run hotter (`text.prompts.attempt_temperature`),
     TTS gets another seed and clip draws another seed with the rejected clips blocked.
     """
     state = StageState.load(ctx.job_dir)

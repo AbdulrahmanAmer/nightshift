@@ -26,8 +26,8 @@ from ns_studio.media.master import (
     CARD_S,
     ChapterTiming,
     load_chapters,
-    long_caption_style,
     load_words,
+    long_caption_style,
     timeline_from_manifest,
 )
 from ns_studio.media.presets import (
@@ -214,7 +214,7 @@ def build_segment_graph(
 def fit_chapter_contrast(ctx: JobContext, t: ChapterTiming, shots: Sequence[Shot]) -> list[float]:
     """Rewrite a chapter's caption file in the boxed variant when the footage behind it is too bright (17.2).
 
-    The captions stage built `captions/long_c<n>.ass` without looking at the footage; here the clips are known.
+    The captions stage built `captions/long_c<n>.ass` blind; here the clips are known.
     Returns the luma samples (empty when sampling failed: best effort, a render never fails on it).
     """
     plan_file = ctx.file("visual_plan.json")

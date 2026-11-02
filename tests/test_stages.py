@@ -105,7 +105,8 @@ def test_voice_leaves_parts_json_alone(tmp_home):
     from ns_studio.media.voice import VoiceStage
 
     ctx = make_ctx(tmp_home)
-    ctx.write_json("parts.json", [{"n": 1, "text": "One two three four five.", "hook": "", "est_seconds": 1.0}])
+    part = {"n": 1, "text": "One two three four five.", "hook": "", "est_seconds": 1.0}
+    ctx.write_json("parts.json", [part])
     before = ctx.file("parts.json").read_bytes()
     VoiceStage().run(ctx)
     assert ctx.file("parts.json").read_bytes() == before

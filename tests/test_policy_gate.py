@@ -244,7 +244,7 @@ def test_default_judge_passes_with_shipped_fixture(tmp_home: Path):
 
 
 def test_tag_relevance_really_asks_the_model(tmp_home: Path):
-    """System gap 13: the mode returned PASS without a call, so NS-E606 could never fire on irrelevant tags."""
+    """System gap 13: the mode returned PASS without a call, so NS-E606 could never fire."""
     ctx = make_ctx(tmp_home)
     items = [{"item": "s1", "title": "T", "tags": ["horror story", "crypto giveaway"]}]
     ctx.services.llm = _llm(_pc(tags_relevant=False, notes="crypto giveaway is unrelated"))

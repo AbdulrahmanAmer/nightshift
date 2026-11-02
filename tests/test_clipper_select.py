@@ -289,7 +289,7 @@ def test_filtered_candidates_are_reported_as_dropped() -> None:
 
 
 def test_hesitations_can_be_left_out_of_the_captions():
-    """System gap 39: filler removal (spec 17.2) is a channel setting, off by default; "like" is never dropped."""
+    """System gap 39: filler removal (spec 17.2) is a channel setting, off by default; "like" stays."""
     from ns_studio.clipper.select import is_filler_word
     from tests.helpers import make_channel
 

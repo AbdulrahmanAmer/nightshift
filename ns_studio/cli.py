@@ -9,7 +9,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any
 
-import click
 import typer
 from typer.core import TyperGroup
 
@@ -110,11 +109,9 @@ def guarded() -> Iterator[None]:
         if hint:
             typer.echo(f"hint: {hint}", err=True)
         raise typer.Exit(1) from e
-    except click.ClickException:
-        raise  # usage errors keep their own message and exit code
-    except click.exceptions.Exit:
-        raise
     except Exception as e:  # an uncoded bug or corrupt file: coded, logged, no traceback wall
+        if type(e).__module__.split(".")[0] in ("click", "typer"):
+            raise  # usage errors and Exit keep their own message and exit code
         err = StudioError(UNEXPECTED, describe_unexpected(e))
         typer.echo(f"error {err}", err=True)
         typer.echo(f"hint: {err.hint}", err=True)

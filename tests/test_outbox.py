@@ -234,10 +234,12 @@ def test_rejected_path_mirrors_the_outbox_tree(tmp_home: Path):
     assert rej == ctx.paths.rejected / "after-dark" / "stories" / STORY_DIR / "shorts" / mp4.name
 
 
-def test_outbox_paths_stay_under_200_characters(tmp_home: Path):
+def test_outbox_paths_stay_under_200_characters(tmp_home: Path, monkeypatch: pytest.MonkeyPatch):
     """Review row 15: an 80-character title was in every path twice; with a longish home it passed 260."""
-    from ns_studio.media.outbox import MAX_PATH, MIN_STEM
+    from ns_studio.media import outbox as outbox_mod
+    from ns_studio.media.outbox import MIN_STEM
 
+    monkeypatch.setattr(outbox_mod, "MAX_PATH", 200)  # the real limit (conftest relaxes it for CI temp paths)
     long_title = "The Night Bus That Never Stopped At Harrow Street And What The Driver Said To Me At 3 AM"
     ctx = make_ctx(tmp_home)
     ctx.write_json("seo.json", [{**SEO, "title": long_title}])
@@ -245,7 +247,7 @@ def test_outbox_paths_stay_under_200_characters(tmp_home: Path):
     for kind, k in (("long", None), ("short", 1)):
         target = outbox_target(ctx, kind, k)
         longest = target.with_suffix(".json")
-        assert len(str(longest)) <= max(MAX_PATH, len(str(ctx.paths.outbox)) + 80), str(longest)
+        assert len(str(longest)) <= max(outbox_mod.MAX_PATH, len(str(ctx.paths.outbox)) + 80), str(longest)
         assert len(target.parent.parent.name) >= MIN_STEM
     # the series layout has the slug and the title in the path; both are cut
     s = make_ctx(tmp_home, fmt="master_first")
@@ -254,7 +256,7 @@ def test_outbox_paths_stay_under_200_characters(tmp_home: Path):
         {"series_slug": "x" * 60, "part_n": 3, "series_title": "The Very Long Series Title " * 4},
     )
     sheet = outbox_target(s, "short", 2).with_suffix(".json")
-    assert len(str(sheet)) <= max(MAX_PATH, len(str(s.paths.outbox)) + 120), str(sheet)
+    assert len(str(sheet)) <= max(outbox_mod.MAX_PATH, len(str(s.paths.outbox)) + 120), str(sheet)
 
 
 def test_sheets_name_the_time_zone():

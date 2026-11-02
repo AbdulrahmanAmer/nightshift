@@ -8,7 +8,6 @@ from __future__ import annotations
 
 from ns_common.errors import describe
 
-
 #: Code used when a job dies on an exception that carries no code of its own (a bug or a corrupt file).
 UNEXPECTED = "NS-E327"
 

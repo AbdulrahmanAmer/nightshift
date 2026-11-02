@@ -212,7 +212,8 @@ def _finished_job(paths: Paths, job: str, story: str, shorts: int, *, master: bo
               hashtags=["#Shorts", "#horror", "#story"], keywords=[])
     root = paths.outbox / ch.slug / "stories" / story
     manifest: dict[str, dict[str, str]] = {}
-    items = ([("long", "long", None)] if master else []) + [(f"s{k}", "short", k) for k in range(1, shorts + 1)]
+    items = [("long", "long", None)] if master else []
+    items += [(f"s{k}", "short", k) for k in range(1, shorts + 1)]
     for item, kind, k in items:
         folder = root / ("full" if kind == "long" else "shorts")
         folder.mkdir(parents=True, exist_ok=True)
@@ -268,7 +269,7 @@ def test_shorts_only_jobs_of_one_night_get_different_slots(tmp_home: Path):
         datetime.fromisoformat(json.loads(Path(m["s1"]["json"]).read_text(encoding="utf-8"))["publish_after"])
         for m in mans
     )
-    assert times[0].date() == times[1].date() == date(2026, 11, 21)  # two a day, from tomorrow on
+    assert times[0].date() == times[1].date() == date(2026, 11, 20)  # no master that night: two Shorts a day from today
 
 
 def test_uncoded_exception_fails_only_that_job(tmp_home: Path):

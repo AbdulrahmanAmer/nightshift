@@ -91,7 +91,8 @@ def test_validate_chapter_checks_budget_and_skips_opening_after_chapter_one():
     cb = chapter_budget(310, 155)
     ok = _chapter_text(310)
     assert V.validate_chapter(ok, cb, chapter_n=2, past_openings=[ok.split(".")[0] + "."], embed=e) == []
-    rules = {v.rule for v in V.validate_chapter(ok, cb, chapter_n=1, past_openings=[ok.split(".")[0] + "."], embed=e)}
+    first = [ok.split(".")[0] + "."]
+    rules = {v.rule for v in V.validate_chapter(ok, cb, chapter_n=1, past_openings=first, embed=e)}
     assert rules == {"opening_similarity"}
     short = {v.rule for v in V.validate_chapter("Short text.", cb, chapter_n=2, past_openings=[], embed=e)}
     assert "length" in short

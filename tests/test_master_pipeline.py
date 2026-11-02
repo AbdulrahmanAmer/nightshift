@@ -66,8 +66,10 @@ def test_master_first_media_pipeline(tmp_home: Path, monkeypatch: pytest.MonkeyP
          "combo_id": "c-test", "why_standalone": "x"},
     ])
     short_combos = {
-        "1": make_combo(combo_id="c-s1", caption_style="clean_white", visual_treatment="handheld_grit"),
-        "2": make_combo(combo_id="c-s2", caption_style="boxed_dark", visual_treatment="clean_bright"),
+        "1": make_combo(combo_id="c-s1", caption_style="clean_white", visual_treatment="handheld_grit",
+                   length_bucket=None),
+        "2": make_combo(combo_id="c-s2", caption_style="boxed_dark", visual_treatment="clean_bright",
+                   length_bucket=None),
     }
     ctx.write_json("short_combos.json", {k: c.model_dump(mode="json") for k, c in short_combos.items()})
     ctx.write_json("visual_plan.json", [

@@ -160,7 +160,10 @@ def download_source(
     """
     from ns_studio.clipper import source
 
-    return source.import_url(url, download_dir(paths, source_id), on_progress, cancel_token=cancel_token)
+    target = download_dir(paths, source_id)
+    if cancel_token is None:
+        return source.import_url(url, target, on_progress)
+    return source.import_url(url, target, on_progress, cancel_token=cancel_token)
 
 
 def run_clip(

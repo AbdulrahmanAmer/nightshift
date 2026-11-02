@@ -50,7 +50,8 @@ def test_words_are_counted_in_any_script():
 
 
 def test_sentences_split_on_arabic_and_cjk_stops():
-    assert split_sentences("كان الباب مفتوحا. من هناك؟ لا أحد.") == ["كان الباب مفتوحا.", "من هناك؟", "لا أحد."]
+    text = "كان الباب مفتوحا. من هناك؟ لا أحد."
+    assert split_sentences(text) == ["كان الباب مفتوحا.", "من هناك؟", "لا أحد."]
     assert split_sentences("ドアが開いた。誰もいない。") == ["ドアが開いた。", "誰もいない。"]
 
 

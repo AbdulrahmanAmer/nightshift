@@ -9,8 +9,9 @@ _SENT_END = re.compile(
 )
 # Kana and CJK ideographs are written without spaces: each character counts as one word.
 CJK_RANGES = r"\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff"
-# A word is a run of letters or digits in any script (an apostrophe may sit inside it), or one CJK character.
-WORD_PATTERN = rf"[{CJK_RANGES}]|[^\W_{CJK_RANGES}][^\W_{CJK_RANGES}'\u2019]*(?:['\u2019][^\W_{CJK_RANGES}'\u2019]+)*"
+# A word: a run of letters or digits in any script (an apostrophe may sit inside it), or one CJK character.
+_NOT_CJK = rf"[^\W_{CJK_RANGES}"
+WORD_PATTERN = rf"[{CJK_RANGES}]|{_NOT_CJK}]{_NOT_CJK}'\u2019]*(?:['\u2019]{_NOT_CJK}'\u2019]+)*"
 _WORD = re.compile(WORD_PATTERN)
 _ONES = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven",
          "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen"]

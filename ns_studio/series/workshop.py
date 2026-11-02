@@ -924,7 +924,8 @@ class Workshop:
             if value is None:
                 continue
             if key == "voice":
-                data["voice"] = {**(data["voice"] or {}), **({"speaker": value} if isinstance(value, str) else value)}
+                patch = {"speaker": value} if isinstance(value, str) else value
+                data["voice"] = {**(data["voice"] or {}), **patch}
             elif key in DesignDoc.model_fields:
                 data[key] = value
             else:

@@ -160,7 +160,7 @@ class ImportStage:
     outputs: tuple[str, ...] = ("source.json",)
 
     def run(self, ctx: JobContext) -> None:
-        """Import the source (NS-E405 for bad files, NS-E410 for unconfirmed rights; download errors for URLs)."""
+        """Import the source (NS-E405 bad file, NS-E410 rights not confirmed, NS-E409 download failed)."""
         p = _params(ctx)
         if not p.rights_confirmed:
             raise NsError("NS-E410", "the rights box was not ticked for this video")
@@ -525,6 +525,13 @@ def _backdrop_luma(
     return out
 
 
+def _picked_caption_style(ctx: JobContext) -> str | None:
+    """`caption_style` of `clip_params.json`, or None when the job has no params file."""
+    if not (ctx.job_dir / ClipParams.FILE).exists():
+        return None
+    return ClipParams.load(ctx.job_dir).caption_style
+
+
 class CaptionsStage:
     """ASS captions per clip from the transcript words (2-4 words on screen, active-word highlight).
 
@@ -545,7 +552,7 @@ class CaptionsStage:
         templates = layout.load_templates()
         info = _source(ctx)
         mask = mask_profanity_setting(ctx.channel)
-        picked = ClipParams.load(ctx.job_dir).caption_style  # the owner's choice on Create wins
+        picked = _picked_caption_style(ctx)  # the owner's choice on Create wins
         drop_fillers = ctx.channel.captions.remove_fillers
         seg_speaker = {s.i: s.speaker for s in tr.segments}
         ctx.subdir("captions")

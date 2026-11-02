@@ -131,7 +131,7 @@ class JobContext:
 
     @property
     def series(self) -> dict[str, Any]:
-        """`series_context.json` of a series part (title, part numbers, end card, design...); empty otherwise."""
+        """`series_context.json` of a series part (title, part numbers, end card, design); empty otherwise."""
         f = self.job_dir / "series_context.json"
         try:
             data = json.loads(f.read_text(encoding="utf-8"))
