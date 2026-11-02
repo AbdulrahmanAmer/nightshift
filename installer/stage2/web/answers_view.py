@@ -1,0 +1,223 @@
+"""The Choices form: validation, and the camelCase <-> snake_case mapping to answers.json.
+
+Standard library only (docs/design/installer-ui.md 2.3 and 5.6). The wizard validates again with pydantic
+(``installer.stage2.answers.build_answers``), so this module only has to be strict enough to give the window
+instant, plain-spoken field errors. API keys are never written here: they live in memory until the wizard
+moves them into the Windows keyring.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+from collections.abc import Callable
+from pathlib import Path
+from typing import Any
+
+from installer.stage2.web.model import PRESET_VOICES, TIERS
+from installer.stage2.web.plan import required_free_gb
+
+RUN_TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
+DRIVE_PATH_RE = re.compile(r"^[A-Za-z]:\\")
+KINDS_UI = ("internet", "folder", "drive-zip")
+THEMES = ("dark", "light", "soft")
+TIER_NAMES = {"small": "Small", "balanced": "Balanced", "best": "Best"}
+SERVICES = {"pexelsKey": "Pexels", "pixabayKey": "Pixabay"}
+
+
+def kind_to_file(kind: str) -> str:
+    """UI spelling (drive-zip) to the answers.json spelling (drive_zip)."""
+    return kind.replace("-", "_")
+
+
+def kind_from_file(kind: str) -> str:
+    """answers.json spelling to the UI spelling."""
+    return kind.replace("_", "-")
+
+
+def _err(field: str, message: str, code: str | None = None) -> dict[str, Any]:
+    return {"field": field, "message": message, "code": code}
+
+
+def _text(value: Any) -> str:
+    return value.strip() if isinstance(value, str) else ""
+
+
+class Env:
+    """What validation needs to know about this PC (injectable for tests)."""
+
+    def __init__(
+        self,
+        *,
+        ram_gb: float,
+        tiers: dict[str, Any],
+        drive_letters: set[str] | None = None,
+        free_gb: Callable[[str], float | None] | None = None,
+        isdir: Callable[[str], bool] = os.path.isdir,
+        keys_stored: dict[str, bool] | None = None,
+    ) -> None:
+        self.ram_gb = ram_gb
+        self.tiers = tiers
+        self.drive_letters = drive_letters
+        self.free_gb = free_gb or (lambda _p: None)
+        self.isdir = isdir
+        self.keys_stored = keys_stored or {}
+
+
+def validate(draft: dict[str, Any], env: Env) -> list[dict[str, Any]]:
+    """Every problem with the draft, in form order. An empty list means the draft is acceptable."""
+    errors: list[dict[str, Any]] = []
+    channel = draft.get("channel") if isinstance(draft.get("channel"), dict) else {}
+    owner = draft.get("ownerName")
+    if owner is not None and len(_text(owner)) > 40:
+        errors.append(_err("ownerName", "Use 40 characters or fewer"))
+    name = _text(channel.get("displayName"))
+    if not 1 <= len(name) <= 60:
+        errors.append(_err("channel.displayName", "Give the channel a name"))
+    niche = _text(channel.get("niche"))
+    if not 2 <= len(niche) <= 60:
+        errors.append(_err("channel.niche", "Say in a few words what the channel is about"))
+    language = _text(channel.get("language")) or "en"
+    if not re.fullmatch(r"[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})?", language):
+        errors.append(_err("channel.language", "Use a language code such as en"))
+
+    tier = draft.get("llmTier")
+    if tier not in TIERS:
+        errors.append(_err("llmTier", "Pick Small, Balanced or Best"))
+        tier = "small"
+    errors += _home_errors(_text(draft.get("homePath")), str(tier), env)
+    info = env.tiers.get(str(tier), {})
+    if tier != "small" and not info.get("allowed", True):
+        reason = info.get("reason") or "Not available on this PC"
+        message = (
+            f"{TIER_NAMES[str(tier)]} needs 32 GB of memory. This PC has {env.ram_gb:g} GB"
+            if "memory" in reason.lower() else reason
+        )
+        errors.append(_err("llmTier", message))
+
+    voice = draft.get("voice") if isinstance(draft.get("voice"), dict) else {}
+    if voice.get("speaker") not in PRESET_VOICES:
+        errors.append(_err("voice.speaker", "Pick one of the four narrators"))
+    source = draft.get("modelsSource") if isinstance(draft.get("modelsSource"), dict) else {}
+    kind = source.get("kind", "internet")
+    if kind not in KINDS_UI:
+        errors.append(_err("modelsSource.path", "Pick where the model files come from"))
+    elif kind != "internet" and not (_text(source.get("path")) and env.isdir(_text(source.get("path")))):
+        errors.append(_err("modelsSource.path", "That folder was not found"))
+    if not RUN_TIME_RE.match(_text(draft.get("runTime"))):
+        errors.append(_err("runTime", "Use the 24 hour clock, for example 03:00"))
+    if draft.get("mastersPerWeek") not in (1, 2, 3):
+        errors.append(_err("mastersPerWeek", "Pick 1, 2 or 3 long videos per week"))
+    for field, label in SERVICES.items():
+        stored = env.keys_stored.get(field, False)
+        if not _text(draft.get(field)) and not stored:
+            errors.append(_err(field, f"Paste the {label} key. Setup needs it to find stock footage"))
+    return errors
+
+
+def _home_errors(home: str, tier: str, env: Env) -> list[dict[str, Any]]:
+    need = required_free_gb(tier)
+    if not DRIVE_PATH_RE.match(home) or "%" in home:
+        return [_err("homePath", "Use a full path on a drive of this PC, such as D:\\Nightshift")]
+    if len(home) > 80:
+        return [_err("homePath", "Use a path of 80 characters or fewer")]
+    if env.drive_letters is not None and home[0].upper() not in env.drive_letters:
+        return [_err("homePath", "Pick a folder on a fixed drive of this PC")]
+    free = env.free_gb(home)
+    if free is not None and free < need:
+        return [_err("homePath", f"Pick a folder on a drive with {need} GB free. This one has {free:.0f} GB",
+                     "NS-E104")]
+    return []
+
+
+# ---------------------------------------------------------------------------------------------------------
+# answers.json
+# ---------------------------------------------------------------------------------------------------------
+def draft_to_answers(draft: dict[str, Any], *, allow_cpu: bool = False, models_source: str | None = None) -> dict[str, Any]:
+    """The answers.json content for an accepted draft: snake_case, with blank API keys.
+
+    ``models_source`` replaces the draft's folder (the Drive zips are unpacked into a cache folder first).
+    """
+    channel = draft["channel"]
+    source = draft.get("modelsSource") or {"kind": "internet", "path": None}
+    kind = kind_to_file(str(source.get("kind", "internet")))
+    path = models_source if models_source is not None else (_text(source.get("path")) or None)
+    owner = _text(draft.get("ownerName")) or None
+    return {
+        "home_path": _text(draft["homePath"]),
+        "models_source": path if kind != "internet" else None,
+        "models_source_kind": kind,
+        "llm_tier": draft["llmTier"],
+        "channel": {
+            "display_name": _text(channel["displayName"]),
+            "niche": _text(channel["niche"]),
+            "language": _text(channel.get("language")) or "en",
+            "seed_keywords": [],
+        },
+        "voice": {"mode": "preset", "speaker": draft["voice"]["speaker"], "description": None, "name": None,
+                  "speed": 1.0},
+        "voice_ref_audio_path": None,
+        "voice_ref_text": None,
+        "voice_rights_confirmed": False,
+        "pexels_api_key": "",
+        "pixabay_api_key": "",
+        "masters_per_week": int(draft.get("mastersPerWeek", 1)),
+        "run_time": _text(draft["runTime"]),
+        "install_code": bool(draft.get("installCode", True)),
+        "allow_cpu": bool(allow_cpu),
+        "restore_from": None,
+        "owner_name": owner,
+        "ui_theme": draft.get("theme", "dark") if draft.get("theme") in THEMES else "dark",
+    }
+
+
+def answers_to_view(raw: dict[str, Any], *, pexels_set: bool = False, pixabay_set: bool = False) -> dict[str, Any]:
+    """AnswersView (camelCase) from an answers.json dict."""
+    channel = raw.get("channel") or {}
+    voice = raw.get("voice") or {}
+    kind = kind_from_file(str(raw.get("models_source_kind") or "internet"))
+    return {
+        "ownerName": raw.get("owner_name"),
+        "channel": {
+            "displayName": channel.get("display_name", ""),
+            "niche": channel.get("niche", ""),
+            "language": channel.get("language", "en"),
+        },
+        "homePath": raw.get("home_path") or "",
+        "llmTier": raw.get("llm_tier", "small"),
+        "voice": {"speaker": voice.get("speaker") or PRESET_VOICES[0]},
+        "modelsSource": {"kind": kind if kind in KINDS_UI else "internet", "path": raw.get("models_source")},
+        "runTime": raw.get("run_time", "03:00"),
+        "mastersPerWeek": int(raw.get("masters_per_week", 1)),
+        "installCode": bool(raw.get("install_code", True)),
+        "theme": raw.get("ui_theme", "dark"),
+        "pexelsKeySet": pexels_set or bool(raw.get("pexels_api_key")),
+        "pixabayKeySet": pixabay_set or bool(raw.get("pixabay_api_key")),
+    }
+
+
+def read_answers(path: Path) -> dict[str, Any]:
+    """Read an answers.json (UTF-8, with or without a BOM). Raises ValueError when it is not an object."""
+    data = json.loads(path.read_text(encoding="utf-8-sig"))
+    if not isinstance(data, dict):
+        raise ValueError(f"{path} must contain a JSON object")
+    return data
+
+
+def write_answers(path: Path, data: dict[str, Any]) -> Path:
+    """Write an answers.json. The keys are always blank."""
+    clean = dict(data)
+    clean["pexels_api_key"] = ""
+    clean["pixabay_api_key"] = ""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(clean, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    return path
+
+
+def keys_in(raw: dict[str, Any]) -> dict[str, str | None]:
+    """The API keys an answers.json carries (unattended runs); empty strings count as absent."""
+    return {
+        "pexels_api_key": (raw.get("pexels_api_key") or None),
+        "pixabay_api_key": (raw.get("pixabay_api_key") or None),
+    }

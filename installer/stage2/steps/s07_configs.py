@@ -56,6 +56,19 @@ def channel_from_answers(ans: InstallerAnswers) -> Channel:
     )
 
 
+def ui_prefs_file(ctx: StepContext) -> Path:
+    """config/ui_prefs.json: the greeting name and default theme chosen in the setup window."""
+    return ctx.paths.config / "ui_prefs.json"
+
+
+def write_ui_prefs(ctx: StepContext, ans: InstallerAnswers) -> None:
+    """Save owner_name and ui_theme for the dashboard (CR-C1-UI-8: C9 reads this file)."""
+    f = ui_prefs_file(ctx)
+    f.parent.mkdir(parents=True, exist_ok=True)
+    prefs = {"owner_name": ans.owner_name, "theme": ans.ui_theme}
+    f.write_text(json.dumps(prefs, indent=2) + "\n", encoding="utf-8")
+
+
 def answer_files(ctx: StepContext) -> list[Path]:
     """Every answers.json that may still hold a key."""
     files = [ctx.app_path / "answers.json", ctx.paths.config / "answers.json"]
@@ -86,6 +99,8 @@ class S07Configs(Step):
         slug = slugify(ans.channel.display_name)
         if not (ctx.paths.runtime_file.exists() and ctx.paths.channel_file(slug).exists()):
             return False
+        if not ui_prefs_file(ctx).exists():
+            return False
         if ans.install_code and not ctx.paths.opencode_file.exists():
             return False
         return not any(_file_has_keys(f) for f in answer_files(ctx))
@@ -101,6 +116,8 @@ class S07Configs(Step):
         else:
             save_channel(ctx.paths, channel)
             ctx.ui.say(f"Channel '{channel.slug}' created.")
+
+        write_ui_prefs(ctx, ans)
 
         if ans.install_code:
             ctx.paths.opencode_file.parent.mkdir(parents=True, exist_ok=True)

@@ -9,8 +9,10 @@ three times with backoff, write the diagnostics bundle and exit non-zero.
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import tempfile
+import threading
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -18,13 +20,15 @@ from pathlib import Path
 
 from installer.stage2.answers import AnswersError, find_answers, load_raw
 from installer.stage2.base import Step
+from installer.stage2.bridge import BridgeUi, SetupStopped
 from installer.stage2.context import StepContext
 from installer.stage2.runner import SubprocessRunner
-from installer.stage2.secrets import KeyringStore, MemoryStore
+from installer.stage2.secrets import KEY_NAMES, KeyringStore, MemoryStore
 from installer.stage2.simulate import FakeRunner
 from installer.stage2.state import StateStore
 from installer.stage2.sysinfo import free_gb, load_preflight, sample_preflight
 from installer.stage2.ui import Ui
+from ns_common import __version__
 from ns_common.config import load_manifest
 from ns_common.errors import NsError
 from ns_common.logging import NsLogger
@@ -83,12 +87,17 @@ class Wizard:
         self.steps = list(steps)
         self.halt_after = halt_after
         self.backoff = tuple(backoff)
+        self._current: Step | None = None
 
     def run(self) -> int:
         """Run all steps. Exit codes: 0 ok, 2 quit, 3 unattended failure, 75 halted, 130 interrupted."""
         try:
             return self._run()
-        except KeyboardInterrupt:
+        except (KeyboardInterrupt, SetupStopped):
+            current, self._current = self._current, None
+            if current is not None:
+                self.ctx.state.mark(current.id, "pending")
+                self.ctx.ui.step_status(current.id, "pending", current.title, None)
             self.ctx.ui.say("")
             self.ctx.ui.say("Setup paused. Run INSTALL.cmd again to carry on where it stopped.")
             return EXIT_INTERRUPTED
@@ -99,6 +108,8 @@ class Wizard:
         ctx.state.begin(ctx.profile)
         ctx.log.info("wizard_start", resumed=ctx.resumed, simulate=ctx.simulate, unattended=ctx.unattended)
         for step in self.steps:
+            if ctx.stop_requested.is_set():
+                raise SetupStopped()
             code = self._step(step)
             if code is not None:
                 return code
@@ -123,13 +134,17 @@ class Wizard:
         reason = step.skip_reason(ctx)
         if reason:
             ctx.state.mark(step.id, "skipped")
+            ui.step_status(step.id, "skipped", step.title, reason)
             ui.say(f"[skip] {step.title}: {reason}", style="dim")
             ctx.log.info("stage_skip", step=step.id, reason=reason)
             return None
         if ctx.state.is_done(step.id) and self._safe_check(step):
+            ui.step_status(step.id, "done", step.title, "already complete")
             ui.say(f"[done] {step.title} (already complete)", style="green")
             return None
         ui.rule(step.title)
+        ui.step_status(step.id, "running", step.title, None)
+        self._current = step
         attempts = 0
         while True:
             ctx.log.info("stage_start", step=step.id)
@@ -146,18 +161,26 @@ class Wizard:
                 if isinstance(exc, NsError) and exc.code.startswith("NS-W"):
                     ctx.warn(exc.code, exc.detail)
                     ctx.state.mark(step.id, "done")
+                    ui.step_status(step.id, "warning", step.title, exc.code)
+                    self._current = None
                     return None
                 attempts += 1
                 action = self._on_failure(step, failure, attempts)
                 if action == "retry":
+                    ui.step_status(step.id, "running", step.title, None)
                     continue
+                self._current = None
                 if action == "skip":
                     ctx.state.mark(step.id, "skipped", error=f"{failure.code}: {failure.detail}")
+                    ui.step_status(step.id, "skipped", step.title, failure.code)
                     return None
                 ctx.state.mark(step.id, "failed", error=f"{failure.code}: {failure.detail}")
+                ui.step_status(step.id, "failed", step.title, failure.code)
                 return self._give_up(failure)
             ctx.log.info("stage_end", step=step.id, duration_s=round(time.perf_counter() - t0, 3))
             ctx.state.mark(step.id, "done")
+            ui.step_status(step.id, "done", step.title, None)
+            self._current = None
             return None
 
     def _show_failure(self, step: Step, failure: Failure) -> None:
@@ -170,6 +193,9 @@ class Wizard:
     def _on_failure(self, step: Step, failure: Failure, attempts: int) -> str:
         """Decide retry / skip / quit for a failed step."""
         ctx, ui = self.ctx, self.ctx.ui
+        decision = ui.decide_failure(step.id, failure, step.optional, attempts)
+        if decision in ("retry", "skip", "quit"):
+            return decision if decision != "skip" or step.optional else "quit"
         self._show_failure(step, failure)
         if ctx.unattended or not ui.interactive:
             if attempts <= len(self.backoff):
@@ -203,6 +229,8 @@ class Wizard:
 
     def _give_up(self, failure: Failure) -> int:
         ctx, ui = self.ctx, self.ctx.ui
+        if ui.bridge:
+            return EXIT_QUIT                # the setup window already showed the failure and the choices
         if ctx.unattended or not ui.interactive:
             ui.say(f"Setup stopped: {failure.code}. Writing the diagnostics bundle ...")
             res = ctx.run_tool("ns", ["doctor", "--bundle"], timeout=600)
@@ -230,6 +258,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     p.add_argument("--halt-after", metavar="STEP", help="stop with exit code 75 after this step (tests)")
     p.add_argument("--preflight", help="stage 1 hardware summary (default: the temp-folder JSON)")
     p.add_argument("--no-head-checks", action="store_true", help="simulate mode: skip HEAD checks")
+    p.add_argument("--ui-bridge", choices=["stdio"], help="talk JSON lines to the setup window (P1) on stdio")
     return p.parse_args(list(argv) if argv is not None else None)
 
 
@@ -241,8 +270,11 @@ def build_context(args: argparse.Namespace, ui: Ui | None = None) -> StepContext
     answers_path = find_answers(app_path, paths, explicit)
     raw = load_raw(answers_path) if answers_path else {}
     in_config = answers_path is not None and answers_path == paths.config / "answers.json"
+    bridge = getattr(args, "ui_bridge", None) == "stdio"
     non_interactive = bool(args.non_interactive) or not sys.stdin.isatty()
     unattended = non_interactive or (answers_path is not None and not in_config)
+    if bridge:
+        unattended = False      # the setup window decides failures; nobody retries on a timer
 
     default_pf = Path(tempfile.gettempdir()) / "nightshift-preflight.json"
     pf_path = Path(args.preflight) if args.preflight else default_pf
@@ -250,12 +282,14 @@ def build_context(args: argparse.Namespace, ui: Ui | None = None) -> StepContext
     if preflight is None and args.simulate_downloads:
         preflight = sample_preflight(paths.home, app_path)
 
+    if bridge and not isinstance(ui, BridgeUi):
+        ui = BridgeUi()
     ui = ui or Ui(interactive=not non_interactive)
     if args.simulate_downloads:
         runner = FakeRunner(paths.home / "_simulated_desktop")
         store = MemoryStore()
     else:
-        runner = SubprocessRunner()
+        runner = SubprocessRunner(bridge=bridge)
         store = KeyringStore()
     return StepContext(
         app_path=app_path,
@@ -274,14 +308,18 @@ def build_context(args: argparse.Namespace, ui: Ui | None = None) -> StepContext
         home_forced=bool(args.home),
         head_checks=not args.no_head_checks,
         free_gb_fn=(lambda _p: 500.0) if args.simulate_downloads else free_gb,
+        gate=ui.gate if isinstance(ui, BridgeUi) else None,
+        stop_requested=ui.stop if isinstance(ui, BridgeUi) else threading.Event(),
     )
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     """Entry point: ``python -m installer.stage2.wizard``."""
-    from installer.stage2.steps import default_steps
+    from installer.stage2.steps import bridge_steps, default_steps
 
     args = parse_args(argv)
+    if args.ui_bridge == "stdio":
+        return _main_bridge(args, bridge_steps())
     ui = Ui(interactive=False)
     try:
         ctx = build_context(args)
@@ -289,6 +327,26 @@ def main(argv: Sequence[str] | None = None) -> int:
         ui.say(f"answers.json problem: {e}", style="red")
         return EXIT_QUIT
     return Wizard(ctx, default_steps(), halt_after=args.halt_after).run()
+
+
+def _main_bridge(args: argparse.Namespace, steps: Sequence[Step]) -> int:
+    """Run the wizard for the setup window: JSON lines on stdout, commands on stdin (design doc 1.7)."""
+    ui = BridgeUi()
+    ui.start_reader()
+    try:
+        ctx = build_context(args, ui)
+    except AnswersError as e:
+        ui.say(f"answers.json problem: {e}", style="red")
+        ui.emit({"type": "bye", "exitCode": EXIT_QUIT})
+        return EXIT_QUIT
+    ui.emit({"type": "hello", "pid": os.getpid(), "version": __version__, "resumed": ctx.state.any_done()})
+    keys = ui.wait_keys()
+    for name in KEY_NAMES:
+        if keys.get(name):
+            ctx.raw_answers[name] = keys[name]      # memory only; s01 validates it, then the keyring
+    code = Wizard(ctx, steps, halt_after=args.halt_after).run()
+    ui.emit({"type": "bye", "exitCode": code})
+    return code
 
 
 if __name__ == "__main__":

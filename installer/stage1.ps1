@@ -1,22 +1,30 @@
 <#
 .SYNOPSIS
-    Nightshift installer, stage 1 (component C1).
+    Nightshift installer, stage 1 (component C1): the splash.
 
 .DESCRIPTION
-    Checks the PC (spec 1.2 table), installs the free tools (Git, Windows Terminal, FFmpeg, uv, Python 3.12),
-    creates the NIGHTSHIFT_HOME folder tree and user environment variable, bootstraps venvs\studio and hands
-    over to the Python wizard (installer.stage2.wizard).
+    Probes the PC (spec 1.2 table), gets uv and Python 3.12, starts the setup server
+    (python -m installer.stage2.web) and waits on it. The server opens the setup window and does the rest:
+    the free tools, the install folder, the setup environment and the wizard (docs/design/installer-ui.md).
 
-    -DryRun   prints every action as "[dry-run] <action>", changes nothing and exits 0.
-    -Answers  path of an answers.json (default: next to INSTALL.cmd, then <home>\config\answers.json).
-    -FakeProbe  (CI only, requires -DryRun) JSON file that replaces the machine probes.
+    -DryRun     prints every action as "[dry-run] <action>", changes nothing and exits 0.
+    -Answers    path of an answers.json (default: next to INSTALL.cmd). With one, setup runs headless.
+    -Ui         open the setup window even though an answers.json exists (it prefills the choices).
+    -NoUi       headless, even without an answers.json (same as NS_NONINTERACTIVE=1).
+    -ProbeOnly  with -Out <file> [-HomePath <dir>]: write the hand-over JSON and exit 0, nothing else.
+    -FakeProbe  (CI only, requires -DryRun or -ProbeOnly) JSON file that replaces the machine probes.
 #>
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][string]$AppPath,
     [switch]$DryRun,
     [string]$Answers = '',
-    [string]$FakeProbe = ''
+    [string]$FakeProbe = '',
+    [switch]$Ui,
+    [switch]$NoUi,
+    [switch]$ProbeOnly,
+    [string]$Out = '',
+    [string]$HomePath = ''
 )
 
 Set-StrictMode -Version Latest
@@ -35,9 +43,10 @@ $script:MinRamGb = 15
 $script:MinVramMb = 15000
 $script:NetworkHosts = @(
     'https://huggingface.co', 'https://github.com', 'https://download.pytorch.org',
-    'https://api.pexels.com', 'https://pixabay.com'
+    'https://api.pexels.com', 'https://pixabay.com', 'https://pypi.org', 'https://files.pythonhosted.org'
 )
-$script:DriverUrl = 'https://www.nvidia.com/Download/index.aspx'
+# Setup cannot work without these (programs and Python packages come from them); any other site is a warning.
+$script:CriticalHosts = @('github.com', 'pypi.org', 'files.pythonhosted.org')
 $script:FallbackErrors = @{
     'NS-E101' = @('Unsupported Windows architecture (ARM64 or 32-bit).', 'Nightshift needs 64-bit Windows 10 or 11 on an x64 PC.')
     'NS-E102' = @('No NVIDIA GPU detected.', 'Nightshift needs an NVIDIA RTX GPU with 16 GB. Check that the GPU driver is installed (nvidia-smi must work).')
@@ -50,6 +59,9 @@ $script:FallbackErrors = @{
     'NS-E111' = @('winget (Windows App Installer) is missing.', 'Install App Installer from the Microsoft Store (or use the direct links shown), then re-run setup.')
     'NS-W112' = @('Windows long paths are disabled.', 'Run setup once as administrator to enable them, or keep NIGHTSHIFT_HOME on a short path such as D:\Nightshift.')
 }
+$script:SplashLabels = @('This PC', 'uv', 'Python', 'Setup window')
+$script:SplashTop = -1
+$script:CanMove = $false
 
 function Show-Action {
     param([Parameter(Mandatory = $true)][string]$Text)
@@ -110,6 +122,12 @@ function Test-IsAdmin {
     $id = [Security.Principal.WindowsIdentity]::GetCurrent()
     $principal = New-Object Security.Principal.WindowsPrincipal($id)
     return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+function Get-DataDir {
+    $base = $env:LOCALAPPDATA
+    if (-not $base) { $base = Join-Path ([Environment]::GetFolderPath('UserProfile')) 'AppData\Local' }
+    return (Join-Path $base 'Nightshift')
 }
 
 # ---------------------------------------------------------------------------------------------------------
@@ -270,6 +288,7 @@ function Get-RealProbe {
         os_arch      = $arch
         os_caption   = $caption
         os_version   = [string][Environment]::OSVersion.Version
+        is_admin     = (Test-IsAdmin)
         nvidia_smi   = ($null -ne $smi)
         smi_text     = $smiText
         gpu_name     = $gpuName
@@ -298,6 +317,7 @@ function Get-FakeProbe {
         os_arch      = [string](Get-Prop $j 'os_arch' 'AMD64')
         os_caption   = [string](Get-Prop $j 'os_caption' 'Windows 11 Pro (fake)')
         os_version   = [string](Get-Prop $j 'os_version' '10.0.26200')
+        is_admin     = [bool](Get-Prop $j 'is_admin' $false)
         nvidia_smi   = [bool](Get-Prop $j 'nvidia_smi' $true)
         smi_text     = [string](Get-Prop $j 'smi_text' 'NVIDIA-SMI 572.16   Driver Version: 572.16   CUDA Version: 12.8')
         gpu_name     = [string](Get-Prop $j 'gpu_name' 'NVIDIA GeForce RTX 5060 Ti')
@@ -408,13 +428,17 @@ function Get-PreflightRows {
         }
     }
 
-    # network
+    # network: GitHub, PyPI and the PyPI file host block setup; any other unreachable site is a warning
     $unreachable = @($Probe.unreachable)
+    $blocked = @($unreachable | Where-Object { $script:CriticalHosts -contains $_ })
     if ($unreachable.Count -eq 0) {
-        $rows.Add((New-Row 'network' 'Internet (Hugging Face, GitHub, PyTorch, Pexels, Pixabay)' 'ok' '' 'all reachable'))
+        $rows.Add((New-Row 'network' 'Internet (Hugging Face, GitHub, PyPI, PyTorch, Pexels, Pixabay)' 'ok' '' 'all reachable'))
+    }
+    elseif ($blocked.Count -gt 0) {
+        $rows.Add((New-Row 'network' 'Internet (Hugging Face, GitHub, PyPI, PyTorch, Pexels, Pixabay)' 'fail' 'NS-E105' ('unreachable: ' + ($unreachable -join ', '))))
     }
     else {
-        $rows.Add((New-Row 'network' 'Internet (Hugging Face, GitHub, PyTorch, Pexels, Pixabay)' 'fail' 'NS-E105' ('unreachable: ' + ($unreachable -join ', '))))
+        $rows.Add((New-Row 'network' 'Internet (Hugging Face, GitHub, PyPI, PyTorch, Pexels, Pixabay)' 'warn' 'NS-E105' ('unreachable: ' + ($unreachable -join ', '))))
     }
 
     # winget (only needed when Git or FFmpeg must be installed)
@@ -470,23 +494,66 @@ function Show-Rows {
 }
 
 # ---------------------------------------------------------------------------------------------------------
-# Actions
+# The splash (docs/design/installer-ui.md 1.2). ASCII only: Windows PowerShell 5.1 consoles use the OEM code page.
 # ---------------------------------------------------------------------------------------------------------
-function Open-FixPage {
-    param([string]$Code)
-    if ($Code -eq 'NS-E103' -or $Code -eq 'NS-E102') {
-        Write-Host "Opening the NVIDIA driver page: $script:DriverUrl"
-        Start-Process $script:DriverUrl
+function Show-Splash {
+    param([string]$Version)
+    $art = @'
+
+      _.._
+    .' .-'`     N I G H T S H I F T
+   /  /         setup __VERSION__
+   |  |
+   \  '.___.;   This window is the setup log. Keep it open until setup says it is done.
+    '._  _.'
+       ``
+
+'@
+    Write-Host ($art.Replace('__VERSION__', $Version)).TrimEnd()
+    Write-Host ''
+    $script:CanMove = $false
+    try {
+        if (-not [Console]::IsOutputRedirected) {
+            $null = [Console]::CursorTop
+            $script:CanMove = $true
+        }
     }
-    elseif ($Code -eq 'NS-E111') {
-        Write-Host 'Opening the Microsoft Store App Installer page.'
-        Write-Host '  Direct links: Git https://git-scm.com/download/win'
-        Write-Host '                FFmpeg https://www.gyan.dev/ffmpeg/builds/'
-        Write-Host '                winget https://github.com/microsoft/winget-cli/releases/latest'
-        Start-Process 'ms-windows-store://pdp/?productid=9NBLGGH4NNS1'
+    catch { $script:CanMove = $false }
+    if ($script:CanMove) {
+        for ($i = 0; $i -lt 4; $i++) { Write-Host ('  [    ] {0}' -f $script:SplashLabels[$i]) }
+        Write-Host ''
+        $script:SplashTop = [Console]::CursorTop - 5
     }
 }
 
+function Set-Status {
+    # Index 0..3 is the status line; Tag is waiting, working, ok, warn or fail.
+    param([int]$Index, [string]$Tag, [string]$Text)
+    $tags = @{ waiting = '[    ]'; working = '[ .. ]'; ok = '[ ok ]'; warn = '[warn]'; fail = '[FAIL]' }
+    $colors = @{ waiting = $null; working = $null; ok = 'Green'; warn = 'Yellow'; fail = 'Red' }
+    $line = '  {0} {1,-13} {2}' -f $tags[$Tag], $script:SplashLabels[$Index], $Text
+    $color = $colors[$Tag]
+    if ($script:CanMove -and $script:SplashTop -ge 0) {
+        try {
+            $left = [Console]::CursorLeft
+            $top = [Console]::CursorTop
+            [Console]::SetCursorPosition(0, $script:SplashTop + $Index)
+            $width = [Console]::BufferWidth - 1
+            $padded = $line.PadRight($width)
+            if ($padded.Length -gt $width) { $padded = $padded.Substring(0, $width) }
+            if ($color) { Write-Host $padded -NoNewline -ForegroundColor $color } else { Write-Host $padded -NoNewline }
+            [Console]::SetCursorPosition($left, $top)
+            return
+        }
+        catch { $script:CanMove = $false }
+    }
+    if ($Tag -eq 'waiting') { return }
+    if ($color) { Write-Host $line -ForegroundColor $color } else { Write-Host $line }
+}
+
+# ---------------------------------------------------------------------------------------------------------
+# Actions
+# ---------------------------------------------------------------------------------------------------------
 function Read-AnswersFile {
     param([string]$Path)
     try {
@@ -500,62 +567,37 @@ function Read-AnswersFile {
 }
 
 function Resolve-NsHome {
-    param($Drives, $AnswersObj)
+    # The default install folder; the setup window lets the partner change it. Never asks a question.
+    param($Drives, $AnswersObj, [string]$Forced)
+    if ($Forced) { return $Forced }
     $fromAnswers = [string](Get-Prop $AnswersObj 'home_path' '')
     if ($fromAnswers) { return $fromAnswers }
     $existing = [Environment]::GetEnvironmentVariable('NIGHTSHIFT_HOME', 'User')
     if ($existing) { return $existing }
     if ($env:NIGHTSHIFT_HOME) { return $env:NIGHTSHIFT_HOME }
     $default = Select-DefaultHome -Drives $Drives
-    if (-not $default) { $default = Join-Path $env:LOCALAPPDATA 'Nightshift' }
-    if ($script:IsDry -or $script:Unattended) { return $default }
-    Write-Host ''
-    Write-Host 'Nightshift keeps its models, environments, settings and videos in one folder.'
-    $reply = Read-Host "Install folder [$default]"
-    if ($reply -and $reply.Trim()) { return $reply.Trim().Trim('"') }
+    if (-not $default) { $default = Join-Path (Get-DataDir) 'Home' }
     return $default
-}
-
-function Install-WingetTool {
-    param([string]$Id, [string]$Cmd, [string]$Label, [bool]$Required)
-    if (Test-Tool $Cmd) {
-        Write-Host "  $Label : already present, skipped"
-        return
-    }
-    $wingetArgs = @('install', '--id', $Id, '-e', '--silent', '--accept-package-agreements', '--accept-source-agreements')
-    if ($script:IsDry) {
-        Show-Action ("winget " + ($wingetArgs -join ' '))
-        return
-    }
-    Write-Host "  $Label : installing with winget (this can take a few minutes) ..."
-    & winget.exe @wingetArgs
-    Update-SessionPath
-    if (-not (Test-Tool $Cmd)) {
-        if ($Required) {
-            Stop-Setup -Code 'NS-E110' -Detail "$Label ($Id) is still not available after the winget install." -ExitCode 12
-        }
-        Write-Host "  $Label : could not be installed; continuing without it (optional)." -ForegroundColor Yellow
-    }
 }
 
 function Find-Uv {
     param([string]$NsHome)
     $c = Get-Command 'uv.exe' -ErrorAction SilentlyContinue
     if ($null -ne $c) { return $c.Source }
-    $p = Join-Str $NsHome 'bin\uv\uv.exe'
-    if (Test-Path -LiteralPath $p) { return $p }
+    foreach ($p in @((Join-Str (Get-DataDir) 'bootstrap\uv\uv.exe'), (Join-Str $NsHome 'bin\uv\uv.exe'))) {
+        if (Test-Path -LiteralPath $p) { return $p }
+    }
     return $null
 }
 
 function Install-Uv {
-    param([string]$NsHome, $Manifest)
+    param($Manifest)
     $pin = $Manifest.bins.uv
-    $dir = Join-Str $NsHome 'bin\uv'
+    $dir = Join-Str (Get-DataDir) 'bootstrap\uv'
     if ($script:IsDry) {
         Show-Action "download $($pin.url) (sha256 $($pin.sha256)) and extract to $dir"
         return (Join-Str $dir 'uv.exe')
     }
-    Write-Host "  uv : downloading $($pin.version) ..."
     New-Item -ItemType Directory -Force -Path $dir | Out-Null
     $zip = Join-Path $env:TEMP 'nightshift-uv.zip'
     try {
@@ -572,15 +614,74 @@ function Install-Uv {
         return (Join-Str $dir 'uv.exe')
     }
     catch {
-        Write-Host "  uv : direct download failed ($($_.Exception.Message)); trying winget" -ForegroundColor Yellow
-        & winget.exe install --id astral-sh.uv -e --silent --accept-package-agreements --accept-source-agreements | Out-Host
+        Write-Verbose "uv direct download failed: $($_.Exception.Message); trying winget"
+        $null = & winget.exe install --id astral-sh.uv -e --silent --accept-package-agreements --accept-source-agreements
         Update-SessionPath
         $c = Get-Command 'uv.exe' -ErrorAction SilentlyContinue
         if ($null -eq $c) {
+            Set-Status -Index 1 -Tag 'fail' -Text 'could not be downloaded or installed'
             Stop-Setup -Code 'NS-E110' -Detail 'uv could not be installed (direct download and winget both failed).' -ExitCode 13
         }
         return $c.Source
     }
+}
+
+function Get-UvVersion {
+    param([string]$Uv)
+    try {
+        $text = (& $Uv --version | Out-String).Trim()
+        if ($text -match 'uv\s+(\S+)') { return $Matches[1] }
+    }
+    catch { Write-Verbose "uv --version failed: $($_.Exception.Message)" }
+    return '?'
+}
+
+function Find-PythonExe {
+    param([string]$Uv, [string]$Version)
+    try {
+        $found = (& $Uv python find $Version 2>$null | Out-String).Trim()
+        if ($LASTEXITCODE -eq 0 -and $found -and (Test-Path -LiteralPath $found.Split("`n")[0].Trim())) {
+            return $found.Split("`n")[0].Trim()
+        }
+    }
+    catch { Write-Verbose "uv python find failed: $($_.Exception.Message)" }
+    return $null
+}
+
+function Read-ServerInfo {
+    $f = Join-Path (Get-DataDir) 'setup-server.json'
+    if (-not (Test-Path -LiteralPath $f)) { return $null }
+    try { return (Get-Content -Raw -LiteralPath $f | ConvertFrom-Json) }
+    catch { return $null }
+}
+
+function Invoke-ServerPing {
+    param($Info, [int]$TimeoutSec = 2)
+    try {
+        $uri = 'http://127.0.0.1:{0}/api/ping' -f $Info.port
+        $headers = @{ Cookie = ('ns_setup=' + $Info.token) }
+        $r = Invoke-RestMethod -Uri $uri -Headers $headers -TimeoutSec $TimeoutSec -UseBasicParsing
+        return [bool]$r.ok
+    }
+    catch { return $false }
+}
+
+function Open-RunningWindow {
+    # A second INSTALL.cmd: when a setup server is alive, only bring its window back.
+    $info = Read-ServerInfo
+    if ($null -eq $info) { return $false }
+    $alive = $null -ne (Get-Process -Id ([int]$info.pid) -ErrorAction SilentlyContinue)
+    if ($alive -and (Invoke-ServerPing -Info $info)) {
+        Write-Host 'Setup is already running. Opening its window.'
+        try {
+            $uri = 'http://127.0.0.1:{0}/api/internal/open-window' -f $info.port
+            $null = Invoke-RestMethod -Uri $uri -Method Post -Headers @{ 'X-NS-Token' = [string]$info.token } -TimeoutSec 5 -UseBasicParsing
+        }
+        catch { Write-Verbose "open-window failed: $($_.Exception.Message)" }
+        return $true
+    }
+    Remove-Item -LiteralPath (Join-Path (Get-DataDir) 'setup-server.json') -Force -ErrorAction SilentlyContinue
+    return $false
 }
 
 function Invoke-Native {
@@ -592,16 +693,38 @@ function Invoke-Native {
     }
 }
 
+function Get-HandOver {
+    param($Probe, $Rows, [string]$App, [string]$NsHome, [string]$ProfileName, [string]$LlamaPair, [string]$CudaString)
+    return [ordered]@{
+        schema      = 1
+        created     = (Get-Date).ToString('s')
+        app_path    = $App
+        home        = $NsHome
+        profile     = $ProfileName
+        llama_pair  = $LlamaPair
+        cuda        = $CudaString
+        ram_gb      = $Probe.ram_gb
+        is_admin    = $Probe.is_admin
+        os_caption  = $Probe.os_caption
+        os_version  = $Probe.os_version
+        gpu         = [ordered]@{ name = $Probe.gpu_name; vram_mb = $Probe.vram_mb; driver = $Probe.driver }
+        drives      = @($Probe.drives)
+        winget      = $Probe.winget
+        tools       = $Probe.tools
+        unreachable = @($Probe.unreachable)
+        checks      = @($Rows)
+    }
+}
+
 # =========================================================================================================
 # Main
 # =========================================================================================================
-if ($FakeProbe -and -not $script:IsDry) {
+if ($FakeProbe -and -not $script:IsDry -and -not $ProbeOnly) {
     throw '-FakeProbe is a CI test hook and can only be used together with -DryRun.'
 }
-
-Write-Host ''
-Write-Host 'Nightshift setup - stage 1' -ForegroundColor Cyan
-if ($script:IsDry) { Write-Host 'Dry run: nothing will be changed on this PC.' }
+if ($ProbeOnly -and -not $Out) {
+    throw '-ProbeOnly needs -Out <file>.'
+}
 
 try {
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
@@ -620,153 +743,219 @@ if (Test-Path -LiteralPath $errorsPath) {
     try { $script:ErrorsJson = Get-Content -Raw -LiteralPath $errorsPath | ConvertFrom-Json }
     catch { Write-Verbose 'errors.json unreadable; using built-in messages' }
 }
+$versionPath = Join-Path $App 'VERSION'
+$Version = '0.0.0'
+if (Test-Path -LiteralPath $versionPath) { $Version = (Get-Content -Raw -LiteralPath $versionPath).Trim() }
 
 # answers.json (unattended mode)
 $answersPath = ''
 if ($Answers) { $answersPath = $Answers }
 elseif (Test-Path -LiteralPath (Join-Path $App 'answers.json')) { $answersPath = Join-Path $App 'answers.json' }
 $answersObj = $null
-if ($answersPath) {
-    $answersObj = Read-AnswersFile -Path $answersPath
-    $script:Unattended = $true
-    Write-Host "Using answers from $answersPath (unattended mode)."
-}
-if ($env:NS_NONINTERACTIVE -eq '1') { $script:Unattended = $true }
+if ($answersPath) { $answersObj = Read-AnswersFile -Path $answersPath }
 $allowCpu = [bool](Get-Prop $answersObj 'allow_cpu' $false)
 
-# probe, home, preflight table with fix-and-recheck loop
-if ($FakeProbe) { $probe = Get-FakeProbe -Path $FakeProbe } else { $probe = Get-RealProbe }
-$NsHome = Resolve-NsHome -Drives @($probe.drives) -AnswersObj $answersObj
-if ($script:IsDry) { Show-Action "use NIGHTSHIFT_HOME = $NsHome" }
+# headless: answers.json without -Ui, -NoUi, or NS_NONINTERACTIVE=1 (the unattended path CI and the operator use)
+$script:Headless = (($answersPath -and -not $Ui) -or [bool]$NoUi -or ($env:NS_NONINTERACTIVE -eq '1'))
+$showSplash = (-not $script:Headless) -and (-not $ProbeOnly)
 
-while ($true) {
-    $rows = Get-PreflightRows -Probe $probe -NsHome $NsHome -AllowCpu $allowCpu
-    Show-Rows -Rows $rows
-    $fails = @($rows | Where-Object { $_.status -eq 'fail' })
-    if ($fails.Count -eq 0) { break }
-    if ($script:IsDry) {
-        Write-Host ('Preflight would block setup: ' + (($fails | ForEach-Object { $_.code }) -join ', '))
-        break
-    }
-    $blocking = $fails[0]
-    if ($script:Unattended -or $blocking.code -eq 'NS-E101' -or $blocking.code -eq 'NS-E104' -or $blocking.code -eq 'NS-E105') {
-        Write-Host 'Setup cannot continue until the red items are fixed.' -ForegroundColor Red
-        exit 10
-    }
-    Open-FixPage -Code $blocking.code
-    $reply = Read-Host 'Fix the red item, then press Enter to check again (or type Q to quit)'
-    if ($reply -match '^[Qq]') { exit 10 }
-    $probe = Get-RealProbe
+# a second INSTALL.cmd while the first one is alive only reopens the window
+if ($showSplash -and -not $script:IsDry) {
+    if (Open-RunningWindow) { exit 0 }
 }
 
+if ($showSplash) {
+    Show-Splash -Version $Version
+    Set-Status -Index 0 -Tag 'working' -Text 'looking at this PC'
+}
+elseif (-not $ProbeOnly) {
+    Write-Host ''
+    Write-Host 'Nightshift setup - stage 1' -ForegroundColor Cyan
+    if ($script:IsDry) { Write-Host 'Dry run: nothing will be changed on this PC.' }
+    if ($answersPath) { Write-Host "Using answers from $answersPath (unattended mode)." }
+}
+
+# probe and the default install folder
+if ($FakeProbe) { $probe = Get-FakeProbe -Path $FakeProbe } else { $probe = Get-RealProbe }
+$NsHome = Resolve-NsHome -Drives @($probe.drives) -AnswersObj $answersObj -Forced $HomePath
+if ($script:IsDry -and -not $ProbeOnly) { Show-Action "use NIGHTSHIFT_HOME = $NsHome" }
+
+$rows = Get-PreflightRows -Probe $probe -NsHome $NsHome -AllowCpu $allowCpu
 $cuda = Get-CudaVersion -Text $probe.smi_text
 $llamaPair = Get-LlamaPair -Cuda $cuda
 $profileName = 'gpu'
 if ((-not $probe.nvidia_smi) -or (-not $probe.gpu_name)) { $profileName = 'cpu-dev' }
 $cudaString = ''
 if ($null -ne $cuda) { $cudaString = [string]$cuda }
+$handOver = Get-HandOver -Probe $probe -Rows $rows -App $App -NsHome $NsHome -ProfileName $profileName -LlamaPair $llamaPair -CudaString $cudaString
 
-# long paths: set it when we are allowed to
-if (-not $probe.long_paths) {
-    if ($script:IsDry) {
-        Show-Action 'set HKLM\SYSTEM\CurrentControlSet\Control\FileSystem LongPathsEnabled = 1 (only when run as administrator)'
-    }
-    elseif (Test-IsAdmin) {
-        Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' -Name 'LongPathsEnabled' -Value 1 -Type DWord
-        Write-Host 'Enabled Windows long paths.'
-    }
+if ($ProbeOnly) {
+    $outDir = Split-Path -Parent $Out
+    if ($outDir -and -not (Test-Path -LiteralPath $outDir)) { New-Item -ItemType Directory -Force -Path $outDir | Out-Null }
+    [IO.File]::WriteAllText($Out, ($handOver | ConvertTo-Json -Depth 6), (New-Object System.Text.UTF8Encoding($false)))
+    exit 0
 }
 
-# tools
-Write-Host 'Installing free tools (anything already present is skipped)'
-Install-WingetTool -Id 'Git.Git' -Cmd 'git.exe' -Label 'Git' -Required $true
-Install-WingetTool -Id 'Microsoft.WindowsTerminal' -Cmd 'wt.exe' -Label 'Windows Terminal' -Required $false
-Install-WingetTool -Id 'Gyan.FFmpeg' -Cmd 'ffmpeg.exe' -Label 'FFmpeg' -Required $true
-
-# home folder tree and user environment variable
-$topDirs = @('bin', 'models', 'venvs', 'config', 'data', 'cache', 'imports', 'outbox', 'rejected', 'logs')
-if ($script:IsDry) {
-    Show-Action "create folder $NsHome with sub-folders $($topDirs -join ', ')"
-    Show-Action "set user environment variable NIGHTSHIFT_HOME = $NsHome"
+# the first status line, or the old console table when running headless
+if ($showSplash) {
+    $osRow = $rows | Where-Object { $_.id -eq 'os' } | Select-Object -First 1
+    if ($osRow.status -eq 'fail') {
+        Set-Status -Index 0 -Tag 'fail' -Text 'this PC cannot run Nightshift'
+        Stop-Setup -Code 'NS-E101' -Detail 'This PC cannot run Nightshift. Tell the developer.' -ExitCode 10
+    }
+    $ramText = '{0:0.#} GB memory' -f ([double]$probe.ram_gb)
+    if ($probe.gpu_name) {
+        $gpuGb = [int][math]::Round(([double]$probe.vram_mb) / 1024)
+        Set-Status -Index 0 -Tag 'ok' -Text ("{0}, {1} ({2} GB), {3}" -f $probe.os_caption, $probe.gpu_name, $gpuGb, $ramText)
+    }
+    else {
+        Set-Status -Index 0 -Tag 'warn' -Text ("{0}, no NVIDIA graphics card found, {1}" -f $probe.os_caption, $ramText)
+    }
 }
 else {
-    foreach ($d in $topDirs) { New-Item -ItemType Directory -Force -Path (Join-Str $NsHome $d) | Out-Null }
-    [Environment]::SetEnvironmentVariable('NIGHTSHIFT_HOME', $NsHome, 'User')
-    $env:NIGHTSHIFT_HOME = $NsHome
+    Show-Rows -Rows $rows
+    $fails = @($rows | Where-Object { $_.status -eq 'fail' })
+    if ($fails.Count -gt 0) {
+        if ($script:IsDry) {
+            Write-Host ('Preflight would block setup: ' + (($fails | ForEach-Object { $_.code }) -join ', '))
+        }
+        else {
+            Write-Host 'Setup cannot continue until the red items are fixed.' -ForegroundColor Red
+            exit 10
+        }
+    }
 }
 
-# uv and Python
+# uv
+if ($showSplash) { Set-Status -Index 1 -Tag 'working' -Text 'looking for it' }
 $uv = Find-Uv -NsHome $NsHome
 if ($null -ne $uv) {
-    Write-Host "  uv : already present, skipped ($uv)"
+    if ($script:IsDry) { Show-Action "uv already present: $uv" }
+    elseif ($showSplash) { Set-Status -Index 1 -Tag 'ok' -Text ('{0}, already here' -f (Get-UvVersion -Uv $uv)) }
+    else { Write-Host "  uv : already present, skipped ($uv)" }
 }
 else {
-    $uv = Install-Uv -NsHome $NsHome -Manifest $Manifest
+    if ($showSplash) { Set-Status -Index 1 -Tag 'working' -Text ('{0}, downloading' -f $Manifest.bins.uv.version) }
+    $uv = Install-Uv -Manifest $Manifest
+    if ($showSplash -and -not $script:IsDry) { Set-Status -Index 1 -Tag 'ok' -Text ('{0}, downloaded' -f (Get-UvVersion -Uv $uv)) }
 }
+
+# Python
 $pyVersion = [string]$Manifest.python_version
+$env:UV_LINK_MODE = 'copy'
 if ($script:IsDry) {
     Show-Action "$uv python install $pyVersion"
+    $py = Join-Str (Get-DataDir) 'python\python.exe'
 }
 else {
-    $env:UV_LINK_MODE = 'copy'
-    Invoke-Native -Exe $uv -Arguments @('python', 'install', $pyVersion) -ExitCode 13 -What 'Installing Python'
-}
-
-# studio venv
-$venv = Join-Str $NsHome 'venvs\studio'
-$py = Join-Str $venv 'Scripts\python.exe'
-if ($script:IsDry) {
-    Show-Action "$uv venv --python $pyVersion $venv"
-    Show-Action "$uv pip install --python $py -e `"${App}[studio]`""
-}
-else {
-    if (-not (Test-Path -LiteralPath $py)) {
-        Invoke-Native -Exe $uv -Arguments @('venv', '--python', $pyVersion, $venv) -ExitCode 14 -What 'Creating the studio environment'
+    if ($showSplash) { Set-Status -Index 2 -Tag 'working' -Text ('{0}, looking for it' -f $pyVersion) }
+    $py = Find-PythonExe -Uv $uv -Version $pyVersion
+    $pyNote = 'already here'
+    if ($null -eq $py) {
+        if ($showSplash) { Set-Status -Index 2 -Tag 'working' -Text ('{0}, downloading (about 30 MB)' -f $pyVersion) }
+        $pyNote = 'downloaded'
+        $null = & $uv python install $pyVersion
+        if ($LASTEXITCODE -ne 0) {
+            if ($showSplash) { Set-Status -Index 2 -Tag 'fail' -Text 'could not be installed' }
+            Stop-Setup -Code 'NS-E105' -Detail "uv python install $pyVersion failed (exit code $LASTEXITCODE)." -ExitCode 13
+        }
+        $py = Find-PythonExe -Uv $uv -Version $pyVersion
+        if ($null -eq $py) {
+            if ($showSplash) { Set-Status -Index 2 -Tag 'fail' -Text 'could not be found after the install' }
+            Stop-Setup -Code 'NS-E105' -Detail "uv python find $pyVersion found nothing after the install." -ExitCode 13
+        }
     }
-    Invoke-Native -Exe $uv -Arguments @('pip', 'install', '--python', $py, '-e', "${App}[studio]") -ExitCode 14 -What 'Installing the studio environment'
+    if ($showSplash) { Set-Status -Index 2 -Tag 'ok' -Text ('{0}, {1}' -f $pyVersion, $pyNote) }
 }
 
-# hand-over file for the wizard (hardware summary)
-$payload = [ordered]@{
-    schema      = 1
-    created     = (Get-Date).ToString('s')
-    app_path    = $App
-    home        = $NsHome
-    profile     = $profileName
-    llama_pair  = $llamaPair
-    cuda        = $cudaString
-    ram_gb      = $probe.ram_gb
-    gpu         = [ordered]@{ name = $probe.gpu_name; vram_mb = $probe.vram_mb; driver = $probe.driver }
-    drives      = @($probe.drives)
-    winget      = $probe.winget
-    checks      = @($rows)
-}
-$json = $payload | ConvertTo-Json -Depth 6
+# hand-over file for the setup server (hardware summary)
 $preflightFile = Join-Path ([IO.Path]::GetTempPath()) 'nightshift-preflight.json'
+$handJson = $handOver | ConvertTo-Json -Depth 6
 if ($script:IsDry) {
     Show-Action "write hardware summary to $preflightFile"
-    Show-Action ('preflight-json: ' + ($payload | ConvertTo-Json -Depth 6 -Compress))
+    Show-Action ('preflight-json: ' + ($handOver | ConvertTo-Json -Depth 6 -Compress))
 }
 else {
-    [IO.File]::WriteAllText($preflightFile, $json, (New-Object System.Text.UTF8Encoding($false)))
+    [IO.File]::WriteAllText($preflightFile, $handJson, (New-Object System.Text.UTF8Encoding($false)))
 }
 
-# wizard
-$wizardArgs = @('-m', 'installer.stage2.wizard', '--app-path', $App)
-if ($answersPath) { $wizardArgs += @('--answers', $answersPath) }
+# the setup server
+$serverArgs = @('-X', 'utf8', '-m', 'installer.stage2.web', '--app-path', ('"{0}"' -f $App), '--preflight', ('"{0}"' -f $preflightFile))
+if ($answersPath) { $serverArgs += @('--answers', ('"{0}"' -f $answersPath)) }
+if ($script:Headless) { $serverArgs += '--headless' }
 if ($script:IsDry) {
-    Show-Action "cd $App; $py $($wizardArgs -join ' ')"
+    Show-Action "start setup server: $py $($serverArgs -join ' ')"
     Write-Host 'Dry run finished. Nothing was changed.'
     exit 0
 }
+
 $env:PYTHONUTF8 = '1'
 $env:PYTHONPATH = $App
-Push-Location $App
-try {
-    & $py @wizardArgs
-    $wizardExit = $LASTEXITCODE
+if ($script:Headless) {
+    Push-Location $App
+    try {
+        & $py @serverArgs
+        $serverExit = $LASTEXITCODE
+    }
+    finally {
+        Pop-Location
+    }
+    exit $serverExit
 }
-finally {
-    Pop-Location
+
+# window mode: start the server on this console, wait for it, show the address, then wait until it ends
+$dataDir = Get-DataDir
+New-Item -ItemType Directory -Force -Path $dataDir | Out-Null
+$errFile = Join-Path $dataDir 'setup-server.err'
+Remove-Item -LiteralPath (Join-Path $dataDir 'setup-server.json') -Force -ErrorAction SilentlyContinue
+Set-Status -Index 3 -Tag 'working' -Text 'starting the setup program'
+$proc = Start-Process -FilePath $py -ArgumentList $serverArgs -WorkingDirectory $App -NoNewWindow -PassThru -RedirectStandardError $errFile
+$null = $proc.Handle
+
+$info = $null
+$deadline = (Get-Date).AddSeconds(20)
+while ((Get-Date) -lt $deadline -and -not $proc.HasExited) {
+    $info = Read-ServerInfo
+    if ($null -ne $info -and [int]$info.pid -eq $proc.Id -and (Invoke-ServerPing -Info $info)) { break }
+    $info = $null
+    Start-Sleep -Milliseconds 250
 }
-exit $wizardExit
+if ($null -eq $info) {
+    Set-Status -Index 3 -Tag 'fail' -Text 'the setup program did not start'
+    if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue }
+    if (Test-Path -LiteralPath $errFile) {
+        Write-Host ''
+        Get-Content -LiteralPath $errFile -Tail 20 | ForEach-Object { Write-Host $_ }
+    }
+    exit 14
+}
+
+# the server opens the window; it records which launcher worked in setup-server.json
+$hostText = $null
+$deadline = (Get-Date).AddSeconds(25)
+while ((Get-Date) -lt $deadline -and -not $proc.HasExited) {
+    $info = Read-ServerInfo
+    if ($null -ne $info -and $null -ne $info.PSObject.Properties['host_text']) { $hostText = [string]$info.host_text; break }
+    Start-Sleep -Milliseconds 250
+}
+$tag = 'ok'
+if (-not $hostText -or $info.host -eq 'none') { $tag = 'warn'; $hostText = 'open the address below in Edge or Chrome' }
+Set-Status -Index 3 -Tag $tag -Text $hostText
+$addressFile = Join-Path $dataDir 'setup-address.txt'
+$address = ''
+if (Test-Path -LiteralPath $addressFile) { $address = (Get-Content -LiteralPath $addressFile -TotalCount 1).Trim() }
+Write-Host ''
+Write-Host ('         Setup address: {0}' -f $address)
+Write-Host '         If no window appeared, paste that address into Edge or Chrome.'
+Write-Host ''
+
+$proc.WaitForExit()
+$code = $proc.ExitCode
+if ($code -ne 0 -and $code -ne 130 -and (Test-Path -LiteralPath $errFile)) {
+    $tail = @(Get-Content -LiteralPath $errFile -Tail 20)
+    if ($tail.Count -gt 0) {
+        Write-Host ''
+        $tail | ForEach-Object { Write-Host $_ }
+    }
+}
+exit $code

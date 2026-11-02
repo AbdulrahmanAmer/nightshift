@@ -5,8 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
-    "typecheck": "tsc -b"
+    "build": "tsc -b && vite build && npm run build:installer",
+    "build:installer": "tsc -p tsconfig.installer.json && vite build -c vite.installer.config.ts",
+    "typecheck": "tsc -b && tsc -p tsconfig.installer.json"
   },
   "dependencies": {
     "@fontsource-variable/geist": "^5.3.0",

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import shutil
+import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -56,6 +57,9 @@ class StepContext:
     free_gb_fn: Callable[[Path], float] = free_gb
     desktop_override: Path | None = None
     warnings: list[tuple[str, str]] = field(default_factory=list)
+    # setup window (bridge mode): the pause gate (set = running) and the stop request
+    gate: threading.Event | None = None
+    stop_requested: threading.Event = field(default_factory=threading.Event)
 
     # ---- messages ----
     def warn(self, code: str, detail: str = "") -> None:
@@ -67,6 +71,7 @@ class StepContext:
             self.ui.say(f"    {info.hint}", style="dim")
         self.log.warn("warning", text, code=code)
         self.warnings.append((code, detail))
+        self.ui.notice(code, detail)
 
     # ---- flags (wizard-internal, persisted in config/wizard_flags.json) ----
     def flag(self, name: str, default: Any = None) -> Any:
@@ -150,6 +155,7 @@ class StepContext:
         from installer.stage2.simulate import simulated_fetch
 
         fetch = None
+        self.ui.plan(items)
         client = self.http_factory()
         if self.simulate:
             fetch = simulated_fetch(items, head_checks=self.head_checks, log=self.log)
@@ -157,7 +163,7 @@ class StepContext:
             with self.ui.reporter(total_bytes(pending(items))) as rep:
                 return run_plan(
                     items, client=client, models_source=models_source, reporter=rep, sleep=self.sleep,
-                    fetch=fetch,
+                    fetch=fetch, gate=self.gate,
                 )
         finally:
             client.close()
