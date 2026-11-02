@@ -626,7 +626,7 @@ def test_the_age_fallback_when_the_supervisor_package_is_missing(tmp_home: Path,
 
 def test_the_settings_page_follows_an_update_to_the_new_version_and_gives_up_after_ten_minutes():
     src = page("Settings.tsx")
-    assert "const UPDATE_WAIT_MS = 10 * 60_000" in src and "Date.now() - began > UPDATE_WAIT_MS" in src
+    assert "const UPDATE_WAIT_MS = 10 * 60_000" in src and "Date.now() - quietSince > UPDATE_WAIT_MS" in src
     assert 'api.get<{ version?: string }>("/status")' in src and "now.version !== u.new" in src  # the NEW version must answer
     assert "location.reload()" in src  # and the page loads its scripts
     assert "from the shortcut on your desktop" in src  # the plain message when it never answers
@@ -1056,3 +1056,20 @@ def test_the_pages_show_the_no_task_message_and_a_try_again_button():
     settings = page("Settings.tsx")
     assert "s.schedule_registered === false" in settings and ">Try again</Button>" in settings
     assert "put({ schedule_time: s.schedule_time }" in settings
+
+
+def test_the_update_reconnect_cap_starts_when_the_state_leaves_running_not_at_the_click():
+    """Final-dashboard row 4: the worker installs for longer than ten minutes on a slow disk."""
+    src = page("Settings.tsx")
+    follow = src[src.index("const follow = "):src.index("const apply = ")]
+    assert "Date.now() - began > UPDATE_WAIT_MS" not in follow  # not from the click any more
+    assert "let quietSince: number | null = null" in follow
+    # running resets the clock and says so; the clock starts only once the state is something else
+    assert 'if (u.state === "running") { seen = true; sawRunning = true; quietSince = null;' in follow
+    assert "quietSince = quietSince ?? Date.now()" in follow
+    # a lost connection after "running" was seen is the engine being stopped by the worker: no clock
+    assert "if (!sawRunning) quietSince = quietSince ?? Date.now();" in follow
+    assert "Nightshift is installing the update. This page reconnects by itself" in follow
+    # the give-up text for that case does not tell the owner to start a second copy
+    assert "Wait for its window to finish" in follow and "UPDATE_HARD_STOP_MS" in follow
+    assert follow.count("from the shortcut on your desktop") == 2

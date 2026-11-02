@@ -38,36 +38,49 @@ export default function Settings() {
   // The updater runs detached and stops this very service, so the POST may never be answered. What is shown comes from the
   // updater's own state file (GET /update/state), polled across the restart: "Installing", "restarting", then "Now on X (was Y)".
   const UPDATE_WAIT_MS = 10 * 60_000;
+  const UPDATE_HARD_STOP_MS = 3 * 60 * 60_000; // a worker that died leaves the state on "running" for ever: stop looking after this
   const [updating, setUpdating] = useState<string | null>(null);
   // After the swap the engine starts Nightshift again (the runtime does that); this page then asks /status until the NEW version answers.
-  // It gives up after 10 minutes and says plainly what to do, instead of polling for ever.
+  // The 10 minutes count from the moment update_state.json stops saying "running" (or from the first lost connection when it never did),
+  // not from the click: the worker downloads, installs into every venv and verifies first, which can take longer than that.
   const [updateNote, setUpdateNote] = useState<string | null>(null);
   const follow = (fresh: boolean) => {
     setUpdating("Installing the update"); setUpdateNote(null); let seen = !fresh; const began = Date.now();
+    let quietSince: number | null = null; let sawRunning = false;
     const t = setInterval(async () => {
-      if (Date.now() - began > UPDATE_WAIT_MS) {
+      if ((quietSince !== null && Date.now() - quietSince > UPDATE_WAIT_MS) || Date.now() - began > UPDATE_HARD_STOP_MS) {
         clearInterval(t); setUpdating(null);
-        setUpdateNote("Nightshift did not come back by itself. Close this window and open Nightshift again from the shortcut on your desktop. If it still does not start, make a diagnostics report from there.");
+        setUpdateNote(sawRunning
+          ? "The update is still being installed. Wait for its window to finish, then open Nightshift from the shortcut on your desktop if this page does not reconnect."
+          : "Nightshift did not come back by itself. Close this window and open Nightshift again from the shortcut on your desktop. If it still does not start, make a diagnostics report from there.");
         return;
       }
       try {
         const u = await api.get<UpdateState>("/update/state");
-        if (u.state === "running") { seen = true; setUpdating(u.message || "Installing the update"); }
-        else if ((u.state === "done" || u.state === "failed") && (seen || Date.now() - began > 90_000)) {
-          if (u.state === "failed") {
+        if (u.state === "running") { seen = true; sawRunning = true; quietSince = null; setUpdating(u.message || "Installing the update"); }
+        else {
+          sawRunning = false; quietSince = quietSince ?? Date.now();
+          if ((u.state === "done" || u.state === "failed") && (seen || Date.now() - began > 90_000)) {
+            if (u.state === "failed") {
+              clearInterval(t); setUpdating(null); setUpd(null);
+              toast(`The update did not work and nothing was changed. ${u.message || ""}`, "bad");
+              return;
+            }
+            // done: the service that answers must be the new version before the page says so
+            const now = await api.get<{ version?: string }>("/status");
+            if (u.new && now.version && now.version !== u.new) { setUpdating("Waiting for the new version to start"); return; }
             clearInterval(t); setUpdating(null); setUpd(null);
-            toast(`The update did not work and nothing was changed. ${u.message || ""}`, "bad");
-            return;
+            toast(`Now on ${now.version || u.new || "the newest version"} (was ${u.old || "the old one"})`, "ok");
+            // this page still holds the old version's scripts: load the new ones
+            setTimeout(() => location.reload(), 2500);
           }
-          // done: the service that answers must be the new version before the page says so
-          const now = await api.get<{ version?: string }>("/status");
-          if (u.new && now.version && now.version !== u.new) { setUpdating("Waiting for the new version to start"); return; }
-          clearInterval(t); setUpdating(null); setUpd(null);
-          toast(`Now on ${now.version || u.new || "the newest version"} (was ${u.old || "the old one"})`, "ok");
-          // this page still holds the old version's scripts: load the new ones
-          setTimeout(() => location.reload(), 2500);
         }
-      } catch { seen = true; setUpdating("Nightshift is restarting. This page reconnects by itself"); }
+      } catch {
+        seen = true;
+        // While the worker was installing the engine is stopped and nothing answers: that is not "did not come back".
+        if (!sawRunning) quietSince = quietSince ?? Date.now();
+        setUpdating(sawRunning ? "Nightshift is installing the update. This page reconnects by itself" : "Nightshift is restarting. This page reconnects by itself");
+      }
     }, 3000);
   };
   useEffect(() => { api.get<UpdateState>("/update/state").then((u) => { if (u.state === "running") follow(false); }).catch(() => undefined); }, []); // eslint-disable-line react-hooks/exhaustive-deps
