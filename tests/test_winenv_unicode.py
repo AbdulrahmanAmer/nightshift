@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 from installer.stage2 import winenv
-from installer.stage2.runner import Runner
+from installer.stage2.runner import SubprocessRunner
 from installer.stage2.simulate import ps_b64
 
 PS = shutil.which("powershell")
@@ -28,7 +28,7 @@ def test_decode_round_trip_and_garbage() -> None:
 
 @real_ps
 def test_a_non_ascii_value_comes_back_exactly_from_real_powershell() -> None:
-    value = winenv.eval_ps_text(Runner(), f"'{winenv.ps_quote(NON_ASCII)}'", tag="ps:test")
+    value = winenv.eval_ps_text(SubprocessRunner(), f"'{winenv.ps_quote(NON_ASCII)}'", tag="ps:test")
     assert value == NON_ASCII
 
 
@@ -36,7 +36,7 @@ def test_a_non_ascii_value_comes_back_exactly_from_real_powershell() -> None:
 def test_user_env_and_shortcut_in_a_non_ascii_folder(tmp_path: Path) -> None:
     desktop = tmp_path / NON_ASCII / "Desktop"
     desktop.mkdir(parents=True)
-    runner = Runner()
+    runner = SubprocessRunner()
     lnk = desktop / "Nightshift Dashboard.lnk"
     assert winenv.create_shortcut(runner, lnk, "powershell.exe", "-NoProfile", desktop, "Nightshift")
     assert lnk.is_file()
