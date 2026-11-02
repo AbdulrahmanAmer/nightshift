@@ -232,7 +232,7 @@ class EngineService:
 
     # --- morning notes ---
     def notes(self) -> list[dict[str, Any]]:
-        """Notes the nightly run left because no toast could be shown (`run/morning_note.json`), oldest first."""
+        """Notes the nightly run left when no toast could show (`run/morning_note.json`), oldest first."""
         try:
             raw = json.loads((self.s.paths.home / "run" / "morning_note.json").read_text(encoding="utf-8"))
         except (OSError, ValueError):
@@ -241,7 +241,8 @@ class EngineService:
         if not isinstance(items, list):
             return []
         return [
-            {"at": str(n.get("at") or ""), "title": str(n.get("title") or ""), "message": str(n.get("message") or "")}
+            {"at": str(n.get("at") or ""), "title": str(n.get("title") or ""),
+             "message": str(n.get("message") or "")}
             for n in items
             if isinstance(n, dict)
         ]
