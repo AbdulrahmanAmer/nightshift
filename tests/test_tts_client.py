@@ -102,16 +102,20 @@ def test_client_failures_are_tts_codes_not_llm_codes(tmp_path: Path):
     def boom(req: httpx.Request) -> httpx.Response:
         return httpx.Response(500, text="oops")
 
-    for handler in (down, boom):
-        cli = TtsClient("http://127.0.0.1:8091", client=httpx.Client(transport=httpx.MockTransport(handler)))
-        for call in (
+    def check(cli: TtsClient) -> None:
+        calls = (
             lambda: cli.speak("hi", "v", 1.0, tmp_path / "o.wav"),
             lambda: cli.speak_batch([TtsItem("a", "x", "v")], tmp_path),
             cli.voices,
-        ):
+        )
+        for call in calls:
             with pytest.raises(NsError) as ei:
                 call()
             assert ei.value.code == "NS-E310"
+
+    for handler in (down, boom):
+        transport = httpx.MockTransport(handler)
+        check(TtsClient("http://127.0.0.1:8091", client=httpx.Client(transport=transport)))
 
     def build_failed(req: httpx.Request) -> httpx.Response:
         return httpx.Response(500, json={"error": "NS-E315", "detail": "qwen-codec exited 1"})
