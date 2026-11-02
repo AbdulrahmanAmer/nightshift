@@ -221,7 +221,26 @@ class SettingsService:
         base.setdefault("last_import", last[0].result if last else None)
         base.setdefault("unmatched_uploads", self._unmatched_uploads())
         base.setdefault("summary", self._sentences(base))
-        return base
+        return {**base, **self._results_page(last[0] if last else None)}
+
+    def _results_page(self, last: Any) -> dict[str, Any]:
+        """The fields the Results page draws: the last import, top and bottom videos, daily views, milestone."""
+        from ns_dashboard import learn_view
+        from ns_dashboard.svc_jobs import learn_response
+
+        shown = learn_response(last.result or {}) if last is not None else {}
+        top, bottom = learn_view.top_bottom(self.s.db)
+        channels = [c.slug for c in self.engine.channels.load_all()]
+        return {
+            "imported_at": last.finished_at if last is not None else None,
+            "matched": shown.get("matched"),
+            "unmatched": shown.get("unmatched"),
+            "changes": shown.get("changes", []),
+            "top": top,
+            "bottom": bottom,
+            "daily": learn_view.daily(self.s.db),
+            "milestone": learn_view.milestone(self.s.db, channels),
+        }
 
     def _unmatched_uploads(self) -> list[str]:
         rows = self.s.db.query(

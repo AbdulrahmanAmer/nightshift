@@ -273,3 +273,37 @@ def test_run_time_is_read_from_the_registered_schedule(tmp_home: Path):
     write_run_time(state.paths, "04:30")  # `ns schedule install --time 04:30` ran
     assert dash.settings.get_settings()["schedule_time"] == "04:30"
     assert dash.engine.status()["schedule_time"] == "04:30"
+
+
+# ------------------------------------------------------------------ row 17: Results after a reload
+
+
+def test_learn_summary_has_what_the_results_page_draws(tmp_home: Path):
+    """The page read imported_at, matched, top, bottom, daily, milestone and changes; the API had none of them."""
+    dash, state = make(tmp_home)
+    seed_channel(state.db, state.paths)
+    short = seed_output(state.db, state.paths, kind="short", k=1, title="Floor 13")
+    long_ = seed_output(state.db, state.paths, kind="long", k=1, title="The Lift")
+    for oid, day, views, pct in ((short, "2026-11-01", 900, 61.5), (short, "2026-11-02", 100, 58.0), (long_, "2026-11-02", 40, 33.0)):
+        state.db.execute(
+            "INSERT INTO analytics(output_id, date, views, viewed_pct, avg_view_duration_s, subs_gained) VALUES (?, ?, ?, ?, 120, 2)",
+            (oid, day, views, pct),
+        )
+    job = state.store.create("learn", None, {})
+    state.store.mark_running(job.job_id)
+    state.store.finish(job.job_id, "done", "Done", {"rows": 2, "matched": 2, "unmatched": ["x"], "changes": [{"pool": "hooks", "option": "question", "delta": 0.2}]})
+    s = dash.settings.learn_summary()
+    assert s["imported_at"] and s["matched"] == 2 and s["unmatched"] == 1
+    assert s["changes"] == [{"pool": "hooks", "option": "question", "delta": 0.2}]
+    assert [r["title"] for r in s["top"]] == ["Floor 13", "The Lift"] and s["top"][0]["views"] == 100
+    assert s["bottom"] == []
+    assert len(s["daily"]) == 14 and s["daily"][-1] == {"date": "2026-11-02", "shorts": 100, "long": 40}
+    assert s["daily"][-2]["shorts"] == 900
+    assert s["summary"] and set(s["milestone"]) == {"label", "rule", "current", "target", "weeks", "weeks_needed"}
+    assert s["milestone"]["weeks_needed"] == 8
+
+
+def test_learn_summary_without_an_import_is_empty_but_complete(tmp_home: Path):
+    dash, _state = make(tmp_home)
+    s = dash.settings.learn_summary()
+    assert s["imported_at"] is None and s["top"] == [] and s["daily"] == [] and s["milestone"] is None
