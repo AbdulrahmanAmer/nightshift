@@ -286,6 +286,8 @@ export const choices = {
 
 export const download = {
   salutation: (total: string) => `Downloading ${total} GB`,
+  /** The hero: the size, then the time left from the running average ("estimating" for the first 20 s, "paused" while paused). */
+  hero: (total: string, left: string | null, paused: boolean) => `Downloading ${total} GB · ${paused ? "paused" : left ? `${left} on this connection` : "estimating…"}`,
   description: "You can close this window. Keep the black setup window open, it is doing the work.",
   pause: "Pause",
   pausing: "Pausing",

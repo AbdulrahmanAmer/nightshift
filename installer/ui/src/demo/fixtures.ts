@@ -23,12 +23,12 @@ export const DRIVES: DriveView[] = [
   { letter: "E", freeGb: 1830, type: "HDD" },
 ];
 
-export function machine(homeDrive: string): MachineSummary {
+export function machine(homeDrive: string, ramGb = 32): MachineSummary {
   const d = DRIVES.find((x) => x.letter === homeDrive) ?? DRIVES[1]!;
   return {
-    windows: "Windows 11 Pro 10.0.26200", gpuName: "NVIDIA GeForce RTX 5060 Ti", vramMb: 16311, driver: "581.57", cuda: "13.0", ramGb: 32,
+    windows: "Windows 11 Pro 10.0.26200", gpuName: "NVIDIA GeForce RTX 5060 Ti", vramMb: 16311, driver: "581.57", cuda: "13.0", ramGb,
     profile: "gpu", isAdmin: false, drives: DRIVES,
-    meters: { vram: { haveGb: 16, needGb: 16, hardMinGb: 12 }, ram: { haveGb: 32, needGb: 16, hardMinGb: 8 }, disk: { haveGb: d.freeGb, needGb: 60, hardMinGb: 40, path: `${d.letter}:\\Nightshift` } },
+    meters: { vram: { haveGb: 16, needGb: 16, hardMinGb: 12 }, ram: { haveGb: ramGb, needGb: 16, hardMinGb: 8 }, disk: { haveGb: d.freeGb, needGb: 60, hardMinGb: 40, path: `${d.letter}:\\Nightshift` } },
   };
 }
 
@@ -169,7 +169,8 @@ export function overall(rows: DownloadRow[], plan0: InstallPlan, speedBps: numbe
   return { bytesTotal, bytesDone, filesTotal: rows.length, filesDone: rows.filter((r) => r.status === "done" || r.status === "skipped").length, speedBps, etaS };
 }
 
-export function downloadsMid(plan0: InstallPlan, paused = false): DownloadsView {
+/** Mid-download rows. `stall`: the model file got no bytes for 60 s and waits to retry (no speed, a note on the row). */
+export function downloadsMid(plan0: InstallPlan, paused = false, stall = false): DownloadsView {
   const rows = downloadRows(plan0.groups).map((r): DownloadRow => {
     const done = (note: string | null): DownloadRow => ({ ...r, status: "done", bytesDone: r.bytesTotal ?? 0, note });
     switch (r.key) {
@@ -179,14 +180,17 @@ export function downloadsMid(plan0: InstallPlan, paused = false): DownloadsView 
       case "setup_env": return { ...r, status: "queued", note: null };
       case "llama_cuda13": return done(null);
       case "cudart13": return { ...r, status: paused ? "paused" : "active", bytesDone: Math.round(290e6 * 0.62), speedBps: paused ? null : 4.2e6, etaS: paused ? null : 26 };
-      case "llm": return { ...r, status: paused ? "paused" : "active", bytesDone: 2.1e9, speedBps: paused ? null : 11.4e6, etaS: paused ? null : 605 };
+      case "llm":
+        return stall
+          ? { ...r, status: "active", bytesDone: 2.1e9, speedBps: null, etaS: null, note: "No data for 60 s, trying again in 2 s" }
+          : { ...r, status: paused ? "paused" : "active", bytesDone: 2.1e9, speedBps: paused ? null : 11.4e6, etaS: paused ? null : 605 };
       case "tts_base": return { ...r, status: "queued", bytesDone: 0.4e9, note: "will continue from 0.4 GB" };
       default: return r;
     }
   });
-  const speed = paused ? null : 11.4e6;
+  const speed = paused ? null : stall ? 4.2e6 : 11.4e6;
   const o = overall(rows, plan0, speed);
-  const view = { items: rows, overall: { ...o, bytesDone: 6.2e9, etaS: paused ? null : 2460 }, source: "internet" as const, paused };
+  const view = { items: rows, overall: { ...o, bytesDone: 6.2e9, etaS: paused ? null : stall ? null : 2460 }, source: "internet" as const, paused };
   return view;
 }
 
@@ -267,7 +271,7 @@ const LOGS = [
   { t: iso(-2), level: "info" as const, text: "Qwen3-14B-Q4_K_M.gguf  2.1 of 9.0 GB  11.4 MB/s  10 min left" },
 ];
 
-export const SCREENS = ["welcome", "welcome-resume", "checks", "checks-blocking", "choices", "downloading", "paused", "installing", "verifying", "done", "failed", "uninstall", "uninstall-done", "stop-dialog", "close-dialog"] as const;
+export const SCREENS = ["welcome", "welcome-resume", "checks", "checks-blocking", "choices", "choices-lowram", "downloading", "paused", "download-stall", "installing", "verifying", "done", "failed", "uninstall", "uninstall-done", "stop-dialog", "close-dialog"] as const;
 export type ScreenName = (typeof SCREENS)[number];
 
 export function uninstallView(over: Partial<UninstallView> = {}): UninstallView {
@@ -279,11 +283,11 @@ export function uninstallView(over: Partial<UninstallView> = {}): UninstallView 
 }
 
 export function fixture(name: string): { state: SetupState | null; uninstall: UninstallView | null } {
-  const dl = (paused: boolean, run: SetupState["run"]): SetupState => {
+  const dl = (paused: boolean, run: SetupState["run"], stall = false): SetupState => {
     const p = plan("small");
     return baseState({
-      phase: "downloading", run, uiStep: null, startedAt: iso(-1500), answers: answers(), answersLocked: true, plan: p, steps: steps("s03_download_models", { detail: "Downloading AI models" }),
-      downloads: downloadsMid(p, paused), log: LOGS, checks: checkRows("D"),
+      phase: "downloading", run, uiStep: null, startedAt: iso(-1500), answers: answers({ llmTier: "small" }), answersLocked: true, plan: p, steps: steps("s03_download_models", { detail: "Downloading AI models" }),
+      downloads: downloadsMid(p, paused, stall), log: LOGS, checks: checkRows("D"),
     });
   };
   switch (name) {
@@ -299,7 +303,9 @@ export function fixture(name: string): { state: SetupState | null; uninstall: Un
       return { state: baseState({ uiStep: "checks", machine: machine("C"), checks: rows, blocking: true }), uninstall: null };
     }
     case "choices": return { state: baseState({ phase: "choices", uiStep: "choices" }), uninstall: null };
+    case "choices-lowram": return { state: baseState({ phase: "choices", uiStep: "choices", machine: machine("D", 16), plan: plan("small", 16) }), uninstall: null };
     case "downloading": return { state: dl(false, "running"), uninstall: null };
+    case "download-stall": return { state: dl(false, "running", true), uninstall: null };
     case "paused": return { state: dl(true, "paused"), uninstall: null };
     case "stop-dialog": return { state: dl(false, "running"), uninstall: null };
     case "close-dialog": return { state: dl(false, "running"), uninstall: null };

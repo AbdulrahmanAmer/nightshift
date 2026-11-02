@@ -30,6 +30,13 @@ export function hhmm(v: string | Date | null | undefined): string {
   return `${two(d.getHours())}:${two(d.getMinutes())}`;
 }
 
+/** Seconds -> "about 41 min", "about 1 h 05 min" (rounded up to the whole minute): the time left in the Downloading hero. */
+export function aboutDuration(seconds: number): string {
+  const m = Math.max(1, Math.ceil(seconds / 60));
+  if (m < 60) return `about ${m} min`;
+  return `about ${Math.floor(m / 60)} h ${String(m % 60).padStart(2, "0")} min`;
+}
+
 /** Seconds -> "41 s", "3 min 12 s", "58 min", "1 h 05 min". */
 export function duration(seconds: number): string {
   const s = Math.max(0, Math.round(seconds));
