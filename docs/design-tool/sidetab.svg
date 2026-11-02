@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="260" height="760" viewBox="0 0 260 760">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#e9ebf3"/>
+      <stop offset="1" stop-color="#f6f7fb"/>
+    </linearGradient>
+    <linearGradient id="tab" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#4b3fa8"/>
+      <stop offset="1" stop-color="#2d2366"/>
+    </linearGradient>
+    <filter id="glow" x="-50%" y="-10%" width="250%" height="130%">
+      <feDropShadow dx="10" dy="14" stdDeviation="16" flood-color="#1a1340" flood-opacity="0.45"/>
+    </filter>
+  </defs>
+
+  <rect width="260" height="760" fill="#15131d"/>
+
+  <!-- tab: pinned to the left edge, slanted top, long convex right side, softer rounded bottom -->
+  <path filter="url(#glow)" fill="url(#tab)"
+        d="M 0 70
+           L 50 112
+           C 70 128, 80 152, 80 190
+           L 80 560
+           C 80 598, 70 620, 52 636
+           L 0 678
+           Z"/>
+
+  <g stroke="#ffffff" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <!-- active: white rounded square with grid -->
+    <g transform="translate(22 182)">
+      <rect width="36" height="36" rx="11" fill="#ffffff" stroke="none"/>
+      <g fill="#2d2366" stroke="none">
+        <rect x="10" y="10" width="7" height="7" rx="2"/><rect x="19" y="10" width="7" height="7" rx="2"/>
+        <rect x="10" y="19" width="7" height="7" rx="2"/><rect x="19" y="19" width="7" height="7" rx="2"/>
+      </g>
+    </g>
+    <!-- user -->
+    <g transform="translate(22 240)">
+      <circle cx="18" cy="13" r="5.5"/><path d="M7 29c2.5-7 19.5-7 22 0"/>
+    </g>
+    <!-- clock + green badge -->
+    <g transform="translate(22 296)">
+      <circle cx="18" cy="18" r="10"/><path d="M18 12v6l4 3"/>
+      <rect x="30" y="8" width="14" height="7" rx="3.5" fill="#43d39a" stroke="none"/>
+    </g>
+    <!-- bell -->
+    <g transform="translate(22 352)">
+      <path d="M11 24h14M12.5 24v-7a5.5 5.5 0 0 1 11 0v7M16 27a2 2 0 0 0 4 0"/>
+    </g>
+    <!-- calendar -->
+    <g transform="translate(22 408)">
+      <rect x="8" y="10" width="20" height="18" rx="4"/><path d="M8 16h20M13 7v5M23 7v5"/>
+    </g>
+    <!-- mail -->
+    <g transform="translate(22 464)">
+      <rect x="8" y="11" width="20" height="15" rx="4"/><path d="M8 14l10 7 10-7"/>
+    </g>
+    <!-- clipboard -->
+    <g transform="translate(22 520)">
+      <rect x="10" y="9" width="16" height="20" rx="3"/><path d="M14 9h8M14 17h8M14 22h5"/>
+    </g>
+    <!-- refresh -->
+    <g transform="translate(22 576)">
+      <path d="M26 18a8 8 0 1 1-2.4-5.7M26 9v4h-4"/>
+    </g>
+  </g>
+</svg>
