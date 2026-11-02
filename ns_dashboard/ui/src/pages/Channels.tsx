@@ -158,7 +158,7 @@ function Editor({ initial, onDone }: { initial: Channel | null | undefined; onDo
             <div className="flex flex-wrap gap-x-10 gap-y-5">
               <Field label="Full videos per week" hint="New channels start at 1"><DayChips label="Full videos per week" days={[1, 2, 3].map((n) => ({ value: n, label: String(n), ariaLabel: `${n} a week` }))} selected={[c.masters_per_week ?? 1]} onToggle={(n) => set({ masters_per_week: n })} /></Field>
               <Field label="Post between" hint="Your local time">
-                <div className="flex items-center gap-2"><Input aria-label="From" type="time" className="w-[120px] font-mono" value={from} onChange={(e) => set({ publish_window: `${e.target.value}-${to}` })} /><span className="text-ds-muted">to</span><Input aria-label="To" type="time" className="w-[120px] font-mono" value={to} onChange={(e) => set({ publish_window: `${from}-${e.target.value}` })} /></div>
+                <div className="flex items-center gap-2"><Input aria-label="From" type="time" className="!w-[120px] font-mono" value={from} onChange={(e) => set({ publish_window: `${e.target.value}-${to}` })} /><span className="text-ds-muted">to</span><Input aria-label="To" type="time" className="!w-[120px] font-mono" value={to} onChange={(e) => set({ publish_window: `${from}-${e.target.value}` })} /></div>
               </Field>
               <Field label="Default type"><SegmentedControl label="Default type" value={c.format || "master_first"} onChange={(v) => set({ format: v })} options={[{ value: "master_first", label: "Full video + Shorts" }, { value: "shorts_only", label: "Shorts only" }]} /></Field>
             </div>
