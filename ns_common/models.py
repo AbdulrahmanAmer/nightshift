@@ -224,10 +224,7 @@ class BinPin(Strict):
     version: str
     url: str
     sha256: str | None = None
-    # CR-C1-UI-3: pins that are an archive of which only some members are wanted (a NuGet package)
-    extract: list[str] = []          # archive members to unpack; empty = the whole archive
-    dest: str | None = None          # folder below NIGHTSHIFT_HOME to unpack into
-    optional: bool = False           # only optional pins may carry sha256 "TBD-release" (skipped then)
+    optional: bool = False           # only optional pins may carry sha256 "TBD-release" (CR-C1-UI-3)
 
     @model_validator(mode="after")
     def _tbd_only_when_optional(self) -> BinPin:

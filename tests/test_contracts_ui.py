@@ -66,14 +66,7 @@ def test_installer_ui_error_codes_exist_with_message_and_fix():
 
 # --- CR-C1-UI-3: bins.webview2 and the TBD-release rule -------------------------------------------------
 
-DLLS = [
-    "lib/net462/Microsoft.Web.WebView2.Core.dll",
-    "lib/net462/Microsoft.Web.WebView2.Wpf.dll",
-    "runtimes/win-x64/native/WebView2Loader.dll",
-]
-
-
-def test_manifest_pins_webview2_as_an_optional_nupkg():
+def test_manifest_pins_webview2_with_a_real_hash():
     from ns_common.config import load_manifest
 
     pin = load_manifest().bins["webview2"]
@@ -83,15 +76,13 @@ def test_manifest_pins_webview2_as_an_optional_nupkg():
         "https://api.nuget.org/v3-flatcontainer/microsoft.web.webview2/1.0.2903.40/"
         "microsoft.web.webview2.1.0.2903.40.nupkg"
     )
-    assert pin.extract == DLLS
-    assert pin.dest == "bin\\webview2"
-    assert pin.optional is True
-    assert pin.sha256 == "TBD-release" or len(pin.sha256 or "") == 64
+    assert pin.sha256 == "ef128016dd1e51c59178c827ed5b8aa3322c57afa8675d930f8109505542ad74"
+    assert pin.optional is False
 
 
 def test_binpin_old_entries_stay_valid():
     pin = m.BinPin.model_validate({"version": "1", "url": "https://x/y.zip", "sha256": "ab" * 32})
-    assert pin.extract == [] and pin.dest is None and pin.optional is False
+    assert pin.optional is False
 
 
 def test_tbd_release_is_accepted_only_for_optional_pins():

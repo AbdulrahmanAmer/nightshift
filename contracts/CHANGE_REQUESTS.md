@@ -348,13 +348,12 @@ Format per entry:
 - **Why:** the setup window maps a file that was blocked or removed right after download (zip item missing after extraction, `PermissionError`, winerror 225) to a single code with a fix, and the final test video is allowed to fail without failing setup.
 - **Status:** applied in 3342839
 
-## CR-C1-UI-3: manifest `bins.webview2` (and the `TBD-release` rule)
-- **From:** installer UI design (`docs/design/installer-ui.md` section 5.5) and the app host (`launchers/nightshift-host.ps1`); owner decisions of 2026-11-02
-- **Change:** `BinPin` gains `extract: list[str] = []`, `dest: str | None = None`, `optional: bool = False`; `manifest.schema.json` regenerated. `manifest.json` gains `bins.webview2`: version `1.0.2903.40`, the NuGet `.nupkg` URL, `sha256` `"TBD-release"`, `optional: true`, `extract` = the three DLL paths (`lib/net462/Microsoft.Web.WebView2.Core.dll`, `lib/net462/Microsoft.Web.WebView2.Wpf.dll`, `runtimes/win-x64/native/WebView2Loader.dll`), `dest` `bin\webview2`. `BinPin` rejects `"TBD-release"` unless `optional` is true; `tools/resolve_manifest.py --check` and `tests/test_resolve_manifest.py` accept it for optional entries only. Rule documented in `docs/REPO_SETTINGS.md` next to `bins.qwentts`.
-- **Why:** the window runs in WebView2; the three DLLs are not committed, so the release job and the installer need a pin. Hash is computed in CI, not on the authoring laptop.
-- **Differences from the design doc:** the design doc sketched `files` (a map of DLL name to SHA256). This uses `extract` + `dest` + `optional` as the owner asked; per-file hashes are not needed because the whole `.nupkg` is hash-checked.
-- **Note for the app-host PR (#28):** it already pins `bins.webview2` with a real sha256 and no `extract`/`dest`/`optional`, and its `tests/test_webview2_pin.py` asserts the entry has exactly `{version, url, sha256}`. When both land, keep the real hash, add the three new keys, and update that test.
-- **Status:** applied in bcba0c6
+## CR-C1-UI-3: manifest `bins.webview2` and the `TBD-release` rule
+- **From:** installer UI design (`docs/design/installer-ui.md` section 5.5) and the app host; owner decisions of 2026-11-02
+- **Change:** `bins.webview2` is pinned exactly as `CR-C2-host` below specifies (real sha256, keys `{version, url, sha256}`; members and destination in `downloader.py`). In addition `BinPin` gains `optional: bool = False`, and the placeholder `sha256` `"TBD-release"` is accepted only on entries marked `optional: true` (`BinPin` validator; `tools/resolve_manifest.py --check` skips the hash test for such an entry; `tests/test_resolve_manifest.py` accepts it for no other). Rule documented in `docs/REPO_SETTINGS.md` after the `bins.qwentts` row. `manifest.schema.json` regenerated.
+- **Why:** the owner asked for the TBD rule to be enforced rather than implied; the real hash for `webview2` arrived (CR-C2-host) so the entry does not use it today.
+- **Differences from the design doc:** the doc sketched a `files` map of per-DLL hashes; the whole `.nupkg` is hash-checked instead. An earlier draft of this CR added `extract` and `dest` to `BinPin`; dropped because `CR-C2-host` keeps them in code.
+- **Status:** applied in @@CR_C1_UI_3@@
 
 ## CR-C3-UI-4: `Status` model with an optional `gpu` object
 - **From:** dashboard UI (GPU and VRAM meters, HANDOFF "UI gaps"); owner decisions of 2026-11-02
@@ -384,3 +383,17 @@ Format per entry:
 - **Why:** the endpoints are planned but had no contract; the Library UI cannot be wired until request, response and the failure code are fixed.
 - **Not done here:** the endpoints themselves (C9 route plus C4 `ns_tts` VoiceDesign / Base calls). `sample_path` is a path on this PC, so the UI uploads the recording first (existing chunked upload) and sends the stored path; the multipart variant in the `api.ts` stub is superseded.
 - **Status:** applied in 23f3377
+
+## CR-C2-host: `bins.webview2` (Microsoft.Web.WebView2 NuGet package for the frameless app host)
+- **From:** app host builder (`launchers/nightshift-host.ps1`, `docs/design/installer-ui.md` section 6)
+- **Change:** `manifest.json` gains `bins.webview2`, shape `{version, url, sha256}` (`BinPin` is strict, so the extract list and destination live in `installer/stage2/downloader.py` `WEBVIEW2_MEMBERS`, not in the file):
+  ```json
+  "webview2": {
+    "version": "1.0.2903.40",
+    "url": "https://api.nuget.org/v3-flatcontainer/microsoft.web.webview2/1.0.2903.40/microsoft.web.webview2.1.0.2903.40.nupkg",
+    "sha256": "ef128016dd1e51c59178c827ed5b8aa3322c57afa8675d930f8109505542ad74"
+  }
+  ```
+  The installer verifies the `.nupkg` (a zip, 8,769,233 bytes) and extracts only `lib/net462/Microsoft.Web.WebView2.Wpf.dll`, `lib/net462/Microsoft.Web.WebView2.Core.dll` and `runtimes/win-x64/native/WebView2Loader.dll` into `<home>\bin\webview2\` (this package version has no `lib/net45`; the code falls back to it for older versions).
+- **Why:** the host needs the three DLLs; nothing binary is committed. The sha256 was computed from the downloaded package inside a GitHub Actions run (not on the authoring laptop); the package listing was read in the same run (`lib/net462/*.dll`, `runtimes/win-x64/native/WebView2Loader.dll` present).
+- **Status:** applied in @@CR_C2_HOST@@ (`manifest.json` `bins.webview2`, on `feat/c3-ui-contracts`). Before it landed, a missing `bins.webview2` entry is treated like a `TBD-release` hash: the installer skips the package and `nightshift-dashboard.ps1` uses the Edge/Chrome `--app=` window (host exits 3).
