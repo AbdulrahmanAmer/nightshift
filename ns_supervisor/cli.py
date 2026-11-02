@@ -165,7 +165,14 @@ def _reregister(paths: Paths, app_dir: Path) -> list[str]:
     return notes
 
 
-def _apply_update(paths: Paths, zip_path: Path | None, rollback: bool, github: bool) -> update_job.Outcome:
+def _apply_update(
+    paths: Paths,
+    zip_path: Path | None,
+    rollback: bool,
+    github: bool,
+    git: bool = False,
+    channel: str = "stable",
+) -> update_job.Outcome:
     """Do the update in this process (the worker). Prints progress; its last line is a JSON result."""
     app_dir = control.app_path(paths)
     env = update.UpdateEnv(
@@ -176,6 +183,8 @@ def _apply_update(paths: Paths, zip_path: Path | None, rollback: bool, github: b
     )
     if rollback:
         res = update.rollback_app(app_dir, env, paths=paths)
+    elif git:
+        res = update.git_update(app_dir, env, paths=paths, channel=channel)
     elif github:
         rel = releases.fetch_latest()
         current = update.current_version(app_dir)
@@ -205,6 +214,12 @@ def cmd_update(
     github: Annotated[
         bool, typer.Option("--github", help="Download the newest GitHub release, verify it and apply it.")
     ] = False,
+    git: Annotated[
+        bool, typer.Option("--git", help="Cloned-repo install: pull the newest release or main, re-sync.")
+    ] = False,
+    channel: Annotated[
+        str, typer.Option("--channel", help="With --git: stable (newest release tag) or main.")
+    ] = "stable",
     detach: Annotated[
         bool,
         typer.Option("--detach", help="Start the update in the background and return at once."),
@@ -219,8 +234,12 @@ def cmd_update(
     The update runs in a detached worker process, so stopping the engine (or closing the dashboard that
     started it) cannot kill it half way through the swap.
     """
-    if sum([zip_path is not None, rollback, check, github]) != 1:
-        raise _die("give exactly one of: a zip file, --rollback, --check, --github", 2)
+    if sum([zip_path is not None, rollback, check, github, git]) != 1:
+        raise _die("give exactly one of: a zip file, --rollback, --check, --github, --git", 2)
+    if channel not in update.CHANNELS:
+        raise _die("--channel must be one of: " + ", ".join(update.CHANNELS), 2)
+    if channel != "stable" and not git:
+        raise _die("--channel main works with --git only", 2)
     if home is not None:
         os.environ["NIGHTSHIFT_HOME"] = str(home)
     paths = Paths.from_env()
@@ -229,7 +248,8 @@ def cmd_update(
         return
     if worker:
         code = update_job.run_worker(
-            paths, lambda: _apply_update(paths, zip_path, rollback, github), log=log, wait_pid=wait_pid,
+            paths, lambda: _apply_update(paths, zip_path, rollback, github, git, channel), log=log,
+            wait_pid=wait_pid,
             old_version=update.current_version(control.app_path(paths)),
         )
         raise typer.Exit(code)
@@ -244,6 +264,8 @@ def cmd_update(
         forwarded.append("--rollback")
     if github:
         forwarded.append("--github")
+    if git:
+        forwarded += ["--git", "--channel", channel]
     background = detach or update_job.under_engine()
     try:
         pid, log_file = update_job.launch(paths, forwarded, wait_pid=os.getpid() if background else None)

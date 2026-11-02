@@ -337,3 +337,94 @@ def verify_quick(app: Path) -> bool:
         [sys.executable, "-m", "ns_supervisor.cli", "verify", "--quick"], cwd=str(app), check=False
     )
     return r.returncode == 0
+
+
+# --------------------------------------------------------------------------------------------------------
+# a cloned-repo install: `ns update --git [--channel stable|main]`
+# --------------------------------------------------------------------------------------------------------
+CHANNELS = ("stable", "main")
+GitRun = Callable[[list[str]], tuple[int, str]]
+
+
+def _git_run(app: Path) -> GitRun:
+    exe = shutil.which("git")
+
+    def run(args: list[str]) -> tuple[int, str]:
+        if exe is None:
+            return 127, "git was not found on PATH"
+        try:
+            r = subprocess.run(
+                [exe, "-C", str(app), *args], capture_output=True, text=True, timeout=900, check=False
+            )
+        except (OSError, subprocess.SubprocessError) as e:
+            return 1, str(e)
+        return r.returncode, (r.stdout.strip() or r.stderr.strip())
+
+    return run
+
+
+def git_update(
+    app: Path,
+    env: UpdateEnv,
+    *,
+    paths: Paths,
+    channel: str = "stable",
+    latest_tag: Callable[[], str] | None = None,
+    git: GitRun | None = None,
+) -> UpdateResult:
+    """Update a cloned-repo install: fetch, move to the newest release tag (`stable`) or `origin/main`
+    (`main`), re-sync the venvs, verify, and go back to the previous commit if any step fails (`NS-E702`).
+
+    Refuses when the working tree has local changes to tracked files (nothing is touched then).
+    """
+    if channel not in CHANNELS:
+        raise NsError("NS-E702", f"unknown channel {channel!r}; choose stable or main")
+    app = app.absolute()
+    if not (app / ".git").exists():
+        raise NsError("NS-E702", f"{app} is not a git clone; use --github or an update zip instead")
+    run = git or _git_run(app)
+    log = NsLogger("update", paths.logs)
+    old_version = current_version(app)
+    code, head = run(["rev-parse", "HEAD"])
+    if code != 0:
+        raise NsError("NS-E702", f"git rev-parse failed: {head}")
+    code, dirty = run(["status", "--porcelain", "--untracked-files=no"])
+    if code != 0 or dirty:
+        raise NsError("NS-E702", "this copy has local changes to tracked files; commit or discard them first")
+    code, out = run(["fetch", "--tags", "--prune", "origin"])
+    if code != 0:
+        raise NsError("NS-E105", f"git fetch failed: {out}")
+    if channel == "stable":
+        tag = (latest_tag or (lambda: _latest_release_tag()))()
+        target = ["checkout", "--detach", tag]
+    else:
+        target = ["checkout", "--detach", "origin/main"]
+    leave_app(app, paths)
+    log.info("git_update_start", channel=channel, old=old_version, head=head[:12])
+    env.stop()
+    code, out = run(target)
+    if code != 0:
+        raise NsError("NS-E702", f"git {' '.join(target)} failed: {out}")
+    try:
+        env.sync(app)
+        if not env.verify(app):
+            raise NsError("NS-E702", "ns verify --quick failed on the new version")
+        notes = env.reregister(app)
+    except Exception as e:  # any step failing after the move goes back to the previous commit
+        log.error("git_update_failed", str(e))
+        run(["checkout", "--detach", head])
+        try:
+            env.sync(app)
+        except Exception as e2:  # best effort: the old tree is back
+            log.error("rollback_sync_failed", str(e2))
+        detail = e.detail if isinstance(e, NsError) else f"{type(e).__name__}: {e}"
+        raise NsError("NS-E702", detail) from e
+    new_version = current_version(app)
+    log.info("git_update_done", old=old_version, new=new_version)
+    return UpdateResult(old_version, new_version, [f"channel {channel}", *notes])
+
+
+def _latest_release_tag() -> str:
+    from ns_supervisor import releases
+
+    return releases.fetch_latest().tag
