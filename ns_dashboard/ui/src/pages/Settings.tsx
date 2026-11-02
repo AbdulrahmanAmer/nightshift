@@ -79,7 +79,7 @@ export default function Settings() {
               <Button disabled={time === s?.schedule_time} onClick={() => put({ schedule_time: time }, `Runs at ${time} from tonight`)}>Save</Button>
             </SettingRow>
             <SettingRow title="Notifications" sub="A Windows notification when a run finishes or stops">
-              <Switch checked={!!s?.notifications} onChange={(v) => { st.setData({ ...s, notifications: v }); put({ notifications: v }, v ? "Notifications on" : "Notifications off"); }} label="Notifications" />
+              <Switch checked={!!s?.notifications} onChange={(v) => { st.setData(s ? { ...s, notifications: v } : s); put({ notifications: v }, v ? "Notifications on" : "Notifications off"); }} label="Notifications" />
             </SettingRow>
             <SettingRow title="Theme" sub="Saved in this browser">
               <SegmentedControl label="Theme" value={theme} onChange={setTheme} options={THEMES} />
@@ -114,7 +114,7 @@ export default function Settings() {
             {[["Everything", home], ["Videos waiting for you", home && `${home}\\outbox`], ["Models", home && `${home}\\models`], ["Logs", home && `${home}\\logs`]].map(([l, p]) => (
               <SettingRow key={l} title={l!} sub={<span className="font-mono text-ds-2xs break-all">{p || "Unknown until the engine answers"}</span>}>{p && <Button size="sm" variant="ghost" leadingIcon="copy" onClick={() => copy(p)}>Copy</Button>}</SettingRow>
             ))}
-            {disk && (
+            {disk && disk.total_gb != null && disk.free_gb != null && (
               <SettingRow title="Free space" sub={`On the drive that holds ${home}`}>
                 <div className="flex w-56 flex-col gap-1"><span className="text-right text-ds-xs font-semibold ds-num">{disk.free_gb} GB of {disk.total_gb} GB free</span><ProgressBar showValue={false} value={((disk.total_gb - disk.free_gb) / Math.max(1, disk.total_gb)) * 100} label="Disk used" /></div>
               </SettingRow>

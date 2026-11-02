@@ -42,6 +42,19 @@ def _idea(row: sqlite3.Row) -> dict[str, Any]:
     }
 
 
+def story_status(statuses: list[str]) -> str:
+    """One word for a story from the states of its videos: pending, approved, posted, rejected or none."""
+    if not statuses:
+        return "none"
+    if "pending" in statuses:
+        return "pending"
+    if "uploaded" in statuses:
+        return "posted"
+    if "approved" in statuses:
+        return "approved"
+    return "rejected"
+
+
 class LibraryService:
     """Reads and writes what Nightshift remembers."""
 
@@ -156,6 +169,10 @@ class LibraryService:
                 by_job[o["job_id"]]["outputs"].append(
                     {k: o[k] for k in ("output_id", "kind", "k", "status", "video_url")}
                 )
+        for s in out:  # what the Stories tab shows: a title, a word count and one status for the whole story
+            s["title"] = s["working_title"] or s["opening_line"]
+            s["words"] = s["word_count"]
+            s["status"] = story_status([o["status"] for o in s["outputs"]])
         return out
 
     # --- footage ---

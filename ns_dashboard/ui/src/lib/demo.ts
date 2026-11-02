@@ -51,7 +51,7 @@ export const DEMO: any = {
     { job_id: "j9a41c", kind: "clip", channel: "night-desk", status: "done", progress: 100, stage: "outbox", message: "Done", created_at: at(1, 22, 40), title: "Stream, 31 October", result: { output_ids: ["clip-7f3a/c1", "clip-7f3a/c2", "clip-7f3a/c3", "clip-7f3a/c4"] } },
     { job_id: "j77b02", kind: "run", channel: "tiny-mysteries", status: "failed", progress: 62, stage: "clips", message: "No footage matched three scenes. Add a Pexels key in Settings or widen the footage look.", created_at: at(2, 3, 0) },
     { job_id: "j51e9d", kind: "run", channel: "after-dark", status: "done", progress: 100, stage: "outbox", message: "Done", created_at: at(2, 3, 0), title: "The Laundromat That Only Opens at Night" },
-  ] as Job[],
+  ] as unknown as Job[],
   templates: [
     { id: "auto", label: "Auto", description: "Nightshift looks at the video and picks the layout" },
     { id: "gaming_facecam", label: "Gaming with facecam", description: "Your camera on top, the game below" },
@@ -195,28 +195,30 @@ export async function demoHandle(method: string, path: string, body?: any): Prom
   if ((p === "/jobs/run" || p === "/jobs/clip") && method === "POST") {
     const kind = p.endsWith("run") ? "run" : "clip";
     const sched = fdGet(body, "schedule_at") ? new Date(String(fdGet(body, "schedule_at"))) : null; const later = !!sched && +sched > Date.now();
-    const job: Job = { job_id: "j" + Math.random().toString(16).slice(2, 8), kind, channel: fdGet(body, "channel") || "after-dark", status: "queued", progress: 0, stage: "queued", message: later ? "Scheduled" : "Waiting for the engine", created_at: new Date().toISOString(), schedule_at: later ? sched!.toISOString() : null, title: kind === "clip" ? (fdGet(body, "file")?.name || fdGet(body, "url") || "Your video") : undefined };
+    const job: any = { job_id: "j" + Math.random().toString(16).slice(2, 8), kind, channel: fdGet(body, "channel") || "after-dark", status: "queued", progress: 0, stage: "queued", message: later ? "Scheduled" : "Waiting for the engine", created_at: new Date().toISOString(), schedule_at: later ? sched!.toISOString() : null, title: kind === "clip" ? (fdGet(body, "file")?.name || fdGet(body, "url") || "Your video") : undefined };
     DEMO.jobs.unshift(job); if (!later) simulateJob(job); return { job_id: job.job_id, schedule_at: job.schedule_at };
   }
   if (p === "/jobs/clip/rerun" && method === "POST") {
     const src = DEMO.jobs.find((x: Job) => x.job_id === body?.job_id);
-    const job: Job = { job_id: "j" + Math.random().toString(16).slice(2, 8), kind: "clip", channel: src?.channel || "night-desk", status: "queued", progress: 0, stage: "queued", message: "Waiting for the engine", created_at: new Date().toISOString(), title: src?.title };
+    const job: any = { job_id: "j" + Math.random().toString(16).slice(2, 8), kind: "clip", channel: src?.channel || "night-desk", status: "queued", progress: 0, stage: "queued", message: "Waiting for the engine", created_at: new Date().toISOString(), title: src?.title };
     DEMO.jobs.unshift(job); simulateJob(job); return { job_id: job.job_id };
   }
   if (p === "/jobs/verify" && method === "POST") {
-    const job: Job = { job_id: "v" + Math.random().toString(16).slice(2, 8), kind: "verify", status: "done", progress: 100, stage: "verify", message: "Done", created_at: new Date().toISOString(), result: { passed: true, checks: [{ passed: true }, { passed: true }, { passed: true }] } as any };
+    const job: any = { job_id: "v" + Math.random().toString(16).slice(2, 8), kind: "verify", status: "done", progress: 100, stage: "verify", message: "Done", created_at: new Date().toISOString(), result: { passed: true, checks: [{ passed: true }, { passed: true }, { passed: true }] } as any };
     DEMO.jobs.unshift(job); return { job_id: job.job_id };
   }
   if (parts[0] === "jobs" && parts.length === 2) { const j = DEMO.jobs.find((x: Job) => x.job_id === parts[1]); if (!j) throw new Error("Not found"); return { ...j }; }
   if (parts[0] === "jobs" && parts[2] === "cancel") { const j = DEMO.jobs.find((x: Job) => x.job_id === parts[1]); if (j) { j.status = "cancelled"; j.message = "Cancelled"; } return { ok: true }; }
-  if (p === "/channels" && method === "GET") return DEMO.status.channels.map((c: any) => ({ ...c, pools: structuredClone(POOLS), language: "en", long_minutes: [10, 14], shorts_per_master: [4, 6], audience: "general", fiction_label: true, avoid_topics: ["real crimes", "self-harm"], voice: { mode: "preset", speaker: c.voice, speed: 1 }, stats: DEMO.channelStats[c.slug] }));
-  if (p === "/channels" && method === "POST") { DEMO.status.channels.push({ ...body, voice: body.voice?.speaker, status: "active" }); return { ok: true }; }
+  const profileOf = (c: any) => ({ slug: c.slug, display_name: c.display_name, status: c.status, language: "en", niche: c.niche, seed_keywords: [], voice_notes: "", voice: { mode: "preset", speaker: c.voice, description: null, name: null, speed: 1 }, format: c.format, masters_per_week: c.masters_per_week, long_minutes: [10, 14], shorts_per_master: [4, 6], shorts_per_day_max: 2, length_buckets: [35, 50, 75], publish_window: c.publish_window, audience: "general", made_for_kids: false, fiction_label: true, creator_note: "", critic_bar: 8, qc_pass_target: 0.9, pools: { ...structuredClone(POOLS), pov_tones: ["first_person_intimate"], pacings: ["standard"], title_formulas: ["question"] }, avoid_topics: ["real crimes", "self-harm"], formats_allowed: [], captions: { mask_profanity: false }, created_at: null });
+  if (p === "/channels" && method === "GET") return DEMO.status.channels.map((c: any) => ({ slug: c.slug, display_name: c.display_name, status: c.status, niche: c.niche, language: "en", format: c.format, voice: c.voice, pending: c.pending, approved: 0, last_output_at: null, stats: DEMO.channelStats[c.slug] ?? null, masters_per_week: c.masters_per_week, publish_window: c.publish_window, caption_styles: POOLS.caption_styles, formats_allowed: [] }));
+  if (p === "/channels" && method === "POST") { DEMO.status.channels.push({ ...body, voice: body.voice?.speaker, status: "active" }); return { profile: body, warnings: [], warning_fields: [] }; }
   if (parts[0] === "channels" && parts.length >= 2) {
     const ch = DEMO.status.channels.find((c: any) => c.slug === parts[1]);
     if (parts[2] === "pause" && ch) ch.status = "paused";
     if (parts[2] === "resume" && ch) ch.status = "active";
-    if (parts[2] === "validate") return { ok: true, warnings: [] };
+    if (parts[2] === "validate") return { ok: true, errors: [], warnings: [], error_fields: [], warning_fields: [] };
     if (method === "PUT" && ch) Object.assign(ch, body, { voice: body.voice?.speaker || ch.voice });
+    if (method === "GET" && ch && parts.length === 2) return { profile: profileOf(ch), warnings: [], warning_fields: [] };
     return { ok: true };
   }
   if (p === "/templates") return DEMO.templates;
@@ -276,7 +278,7 @@ export async function demoHandle(method: string, path: string, body?: any): Prom
 export async function* demoChat(message: string): AsyncGenerator<ChatEvent> {
   const last = message.toLowerCase();
   const pend = (text: string, tool: string, run: () => any): ChatEvent => { const id = "a" + Math.random().toString(16).slice(2, 8); DEMO.pending[id] = run; return { kind: "confirm", payload: { action_id: id, tool, text } }; };
-  const startJob = (kind: string, channel: string) => () => { const job: Job = { job_id: "j" + Math.random().toString(16).slice(2, 8), kind, channel, status: "queued", progress: 0, stage: "queued", message: "Waiting", created_at: new Date().toISOString() }; DEMO.jobs.unshift(job); simulateJob(job); return { message: "Started. Progress is on the Create page, and the result lands in the Queue." }; };
+  const startJob = (kind: string, channel: string) => () => { const job: any = { job_id: "j" + Math.random().toString(16).slice(2, 8), kind, channel, status: "queued", progress: 0, stage: "queued", message: "Waiting", created_at: new Date().toISOString() }; DEMO.jobs.unshift(job); simulateJob(job); return { message: "Started. Progress is on the Create page, and the result lands in the Queue." }; };
   yield { kind: "conversation", payload: { conversation_id: "demo" } };
   await sleep(700);
   if (/draft|series|concept/.test(last)) {

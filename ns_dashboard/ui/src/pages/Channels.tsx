@@ -6,7 +6,7 @@ import { useMemo, useState } from "react";
 import { useApp, useLoad } from "../lib/app";
 import { api } from "../lib/api";
 import { POOL_LABELS } from "../lib/format";
-import type { Channel, Format, Pools, Voice } from "../lib/types";
+import type { ChannelCard, ChannelDetail, ChannelProfile, Format, Pools, Voice } from "../lib/types";
 import { cx } from "../ui/kit";
 import { Scene } from "../visuals/Scene";
 import {
@@ -14,8 +14,8 @@ import {
   SPAN, StatCard, Switch, TextArea,
 } from "../components/ref12";
 
-const voiceName = (c: Channel) => (typeof c.voice === "string" ? c.voice : c.voice?.name || c.voice?.speaker || "Built-in");
-const isClips = (c: Channel) => /clip|stream|podcast/i.test(c.niche || "");
+const voiceName = (c: ChannelCard) => c.voice || "Built-in";
+const isClips = (c: { niche?: string }) => /clip|stream|podcast/i.test(c.niche || "");
 /** Watched-to-the-end level below which a style counts against itself (Results page rule). */
 const RETENTION_TARGET = 55;
 /** QC pass-rate target when the channel stats do not carry one (the API's default). */
@@ -23,18 +23,17 @@ const QC_TARGET = 0.9;
 
 export default function Channels() {
   const { route, refresh, toast, status } = useApp();
-  const chans = useLoad<Channel[]>(() => api.get("/channels"), [], []);
+  const chans = useLoad<ChannelCard[]>(() => api.get("/channels"), [], []);
   const formats = useLoad<Format[]>(() => api.get("/library/formats"), [], []);
   const [editing, setEditing] = useState<string | null>(route.query.get("edit"));
-  const toggle = async (c: Channel, on: boolean) => {
+  const toggle = async (c: ChannelCard, on: boolean) => {
     chans.setData((l) => l.map((x) => (x.slug === c.slug ? { ...x, status: on ? "active" : "paused" } : x)));
     try { await api.post(`/channels/${encodeURIComponent(c.slug)}/${on ? "resume" : "pause"}`); toast(on ? `${c.display_name} runs again from tonight` : `${c.display_name} is paused`, "ok"); refresh(); }
     catch (e: any) { toast(e.message, "bad"); chans.reload(); }
   };
   if (editing) {
-    const c = editing === "new" ? null : chans.data.find((x) => x.slug === editing);
-    if (editing !== "new" && !c) return chans.loading ? null : <EmptyState icon="channels" title="Channel not found" action={<Button variant="soft" onClick={() => setEditing(null)}>Back to channels</Button>} />;
-    return <Editor initial={c} onDone={() => { setEditing(null); chans.reload(); refresh(); }} />;
+    const done = () => { setEditing(null); chans.reload(); refresh(); };
+    return editing === "new" ? <Editor initial={null} onDone={done} /> : <EditLoader slug={editing} onDone={done} onBack={() => setEditing(null)} />;
   }
   const pendingOf = (slug: string) => status?.channels.find((x) => x.slug === slug)?.pending;
   return (
@@ -47,7 +46,7 @@ export default function Channels() {
         <DashGrid label="Channels">
           {chans.data.map((c) => {
             const on = c.status === "active"; const st = c.stats || {}; const pending = pendingOf(c.slug) ?? c.pending;
-            const plan = c.masters_per_week ?? 1; const week = st.week ?? 0;
+            const plan = c.masters_per_week; const week = st.week ?? 0;
             const spark = st.spark; const delta = spark && spark.length > 1 ? Math.round(spark[spark.length - 1]! - spark[0]!) : null;
             const allowed = formats.data.filter((f) => f.channels?.includes(c.slug));
             return (
@@ -74,9 +73,9 @@ export default function Channels() {
                   </div>
                 </div>
                 <div className="-my-2">
-                  <SettingRow title="Voice" sub={`${voiceName(c)}${typeof c.voice === "object" && c.voice?.speed && c.voice.speed !== 1 ? `, speed ${c.voice.speed}` : ""}`} />
-                  <SettingRow title="Caption looks" sub={(c.pools?.caption_styles || []).map((k) => POOL_LABELS.caption_styles.opts[k] || k).join(", ") || "Default"} />
-                  <SettingRow title="Posts between" sub={<span className="ds-num">{(c.publish_window || "").replace("-", " – ")}</span>} />
+                  <SettingRow title="Voice" sub={voiceName(c)} />
+                  <SettingRow title="Caption looks" sub={c.caption_styles.map((k) => POOL_LABELS.caption_styles.opts[k] || k).join(", ") || "Default"} />
+                  <SettingRow title="Posts between" sub={<span className="ds-num">{c.publish_window.replace("-", " – ")}</span>} />
                 </div>
                 <Button variant="soft" leadingIcon="edit" className="mt-auto self-start" onClick={() => setEditing(c.slug)}>Edit channel</Button>
               </Card>
@@ -88,18 +87,26 @@ export default function Channels() {
   );
 }
 
-const BLANK: Channel = { slug: "", display_name: "", status: "active", niche: "", language: "en", voice: { mode: "preset", speaker: "Ryan", speed: 1 }, format: "master_first", masters_per_week: 1, publish_window: "18:00-21:00", audience: "general", fiction_label: true, voice_notes: "", pools: { hooks: ["cold_open", "question", "confession"], structures: ["twist", "reverse_reveal", "slow_burn"], caption_styles: ["punch_yellow", "clean_white"], visual_treatments: ["dark_slowzoom", "handheld_grit"] }, avoid_topics: [], long_minutes: [10, 14], shorts_per_master: [4, 6] };
+const BLANK: ChannelProfile = { slug: "", display_name: "", status: "active", language: "en", niche: "", seed_keywords: [], voice_notes: "", voice: { mode: "preset", speaker: "Ryan", description: null, name: null, speed: 1 }, format: "master_first", masters_per_week: 1, long_minutes: [10, 14], shorts_per_master: [4, 6], shorts_per_day_max: 2, length_buckets: [35, 50, 75], publish_window: "18:00-21:00", audience: "general", made_for_kids: false, fiction_label: true, creator_note: "", critic_bar: 8, qc_pass_target: 0.9, pools: { hooks: ["cold_open", "question", "confession"], structures: ["twist", "reverse_reveal", "slow_burn"], pov_tones: ["first_person_intimate", "narrator_calm"], pacings: ["standard", "measured"], caption_styles: ["punch_yellow", "clean_white"], visual_treatments: ["dark_slowzoom", "handheld_grit"], title_formulas: ["question", "statement_twist", "i_never"] }, avoid_topics: [], formats_allowed: [], captions: { mask_profanity: false }, created_at: null };
 const SECTIONS = [["basics", "Basics"], ["voice", "Voice"], ["schedule", "Schedule"], ["style", "Content style"]] as const;
 
-function Editor({ initial, onDone }: { initial: Channel | null | undefined; onDone: () => void }) {
-  const { toast } = useApp(); const isNew = !initial;
+/** Loads the whole profile (GET /channels/{slug}) before the editor opens: the card does not carry the pools, voice or window. */
+function EditLoader({ slug, onDone, onBack }: { slug: string; onDone: () => void; onBack: () => void }) {
+  const detail = useLoad<ChannelDetail | null>(() => api.get(`/channels/${encodeURIComponent(slug)}`), [slug], null);
+  if (detail.loading) return <div aria-busy="true" className="h-[320px] rounded-ds-lg bg-ds-sunken" />;
+  if (!detail.data) return <EmptyState icon="channels" title="Channel not found" action={<Button variant="soft" onClick={onBack}>Back to channels</Button>}>{detail.error}</EmptyState>;
+  return <Editor initial={detail.data.profile} onDone={onDone} />;
+}
+
+function Editor({ initial, onDone }: { initial: ChannelProfile | null; onDone: () => void }) {
+  const { toast, confirm } = useApp(); const isNew = !initial;
   const voices = useLoad<Voice[]>(() => api.get("/voices"), [], []);
-  const [c, setC] = useState<Channel>(() => ({ ...BLANK, ...(initial || {}), pools: { ...BLANK.pools!, ...(initial?.pools || {}) } as Pools, voice: typeof initial?.voice === "object" ? initial.voice : { mode: "preset", speaker: initial?.voice || "Ryan", speed: 1 } }));
+  const [c, setC] = useState<ChannelProfile>(() => initial ?? BLANK);
   const [avoid, setAvoid] = useState("");
   const [saving, setSaving] = useState(false);
-  const set = (p: Partial<Channel>) => setC((x) => ({ ...x, ...p }));
+  const set = (p: Partial<ChannelProfile>) => setC((x) => ({ ...x, ...p }));
   const [from, to] = (c.publish_window || "18:00-21:00").split("-");
-  const pools = c.pools!;
+  const pools = c.pools;
   const togglePool = (pool: keyof Pools, k: string, on: boolean) => set({ pools: { ...pools, [pool]: on ? [...pools[pool], k] : pools[pool].filter((x) => x !== k) } });
   const warnings = useMemo(() => {
     const w: string[] = []; const h = pools.hooks.length, s = pools.structures.length;
@@ -111,19 +118,23 @@ function Editor({ initial, onDone }: { initial: Channel | null | undefined; onDo
     return w;
   }, [pools]);
   const hear = async () => {
-    try { const url = await api.voicePreview(c.voice?.speaker, "The doorbell camera pings at three twelve every night. I stopped checking the clips a week ago."); new Audio(url).play(); }
+    try { const url = await api.voicePreview(c.voice.speaker ?? "Ryan", "The doorbell camera pings at three twelve every night. I stopped checking the clips a week ago."); new Audio(url).play(); }
     catch (e: any) { toast(e.message, "warn"); }
   };
   const save = async () => {
     if (!c.display_name.trim() || !c.slug.trim() || !c.niche?.trim()) { toast("Fill in the name, short id and what the channel is about", "warn"); return; }
     if (!/^[a-z0-9]+(-[a-z0-9]+)*$/.test(c.slug)) { toast("The short id can only have lowercase letters, numbers and dashes", "warn"); return; }
     setSaving(true);
-    const payload: any = { ...c, voice: { mode: "preset", speaker: c.voice?.speaker, name: null, description: null, speed: Number(c.voice?.speed || 1) } };
-    delete payload.status; delete payload.stats; delete payload.pending; delete payload.tonight;
+    // the distinctness and settings check runs before anything is written, and a problem stops the save in a dialog
+    try {
+      const v = await api.post<{ ok: boolean; errors: string[]; warnings: string[] }>(`/channels/${encodeURIComponent(c.slug)}/validate`, c);
+      if (!v.ok) { await confirm({ title: "This channel cannot be saved yet", body: v.errors.join(". "), ok: "Back to editing" }); setSaving(false); return; }
+      if (v.warnings.length && !(await confirm({ title: "Check this before saving", body: v.warnings.join(". "), ok: "Save anyway" }))) { setSaving(false); return; }
+    } catch (e: any) { toast(e.message, "bad"); setSaving(false); return; }
+    // the whole profile goes back as it was loaded: pools, window, cadence and notes the page does not show stay as they are
+    const payload: ChannelProfile = { ...c, voice: { ...c.voice, speed: Number(c.voice.speed || 1) } };
     try {
       if (isNew) await api.post("/channels", payload); else await api.put(`/channels/${encodeURIComponent(c.slug)}`, payload);
-      const v = await api.post(`/channels/${encodeURIComponent(c.slug)}/validate`).catch(() => ({ warnings: [] }));
-      (v?.warnings || []).forEach((w: string) => toast(w, "warn"));
       toast("Channel saved", "ok"); onDone();
     } catch (e: any) { toast(e.message, "bad"); }
     setSaving(false);
@@ -146,14 +157,14 @@ function Editor({ initial, onDone }: { initial: Channel | null | undefined; onDo
               <Field label="Short id" htmlFor="f-slug" hint="Used for folder names. Can't change later"><Input id="f-slug" className="font-mono" value={c.slug} readOnly={!isNew} onChange={(e) => set({ slug: e.target.value })} /></Field>
               <Field label="What the channel is about" htmlFor="f-niche" hint="One sentence. Every story is written to fit it" className="md:col-span-2"><Input id="f-niche" value={c.niche} placeholder="Original short horror fiction set in everyday places" onChange={(e) => set({ niche: e.target.value })} /></Field>
               <Field label="Language" htmlFor="f-lang"><Select id="f-lang" value={c.language} onChange={(e) => set({ language: e.target.value })}>{[["en", "English"], ["es", "Spanish"], ["pt", "Portuguese"], ["fr", "French"], ["de", "German"], ["it", "Italian"], ["ja", "Japanese"]].map(([k, l]) => <option key={k} value={k}>{l}</option>)}</Select></Field>
-              <Field label="Audience" htmlFor="f-aud" hint={c.audience === "mature" ? "Adds an age-restriction note when a story gets intense" : undefined}><Select id="f-aud" value={c.audience} onChange={(e) => set({ audience: e.target.value })}><option value="general">General</option><option value="mature">Mature</option></Select></Field>
+              <Field label="Audience" htmlFor="f-aud" hint={c.audience === "mature" ? "Adds an age-restriction note when a story gets intense" : undefined}><Select id="f-aud" value={c.audience} onChange={(e) => set({ audience: e.target.value as ChannelProfile["audience"] })}><option value="general">General</option><option value="mature">Mature</option></Select></Field>
               <Field label="Style notes" htmlFor="f-notes" className="md:col-span-2"><TextArea id="f-notes" rows={2} placeholder="Plain, intimate first person. Short sentences. Dread over gore" value={c.voice_notes} onChange={(e) => set({ voice_notes: e.target.value })} /></Field>
             </div>
           </Card>
 
           <Card as="section" id="sec-voice" aria-labelledby="h-voice" className="scroll-mt-4">
             <CardHeader id="h-voice" title="Voice" actions={<Button size="sm" variant="soft" leadingIcon="play" onClick={hear}>Hear a sample</Button>} />
-            <AppGrid bare choice label="Narrator" apps={voices.data.map((v) => ({ id: v.name, icon: "voice", label: v.name, caption: v.description || (v.mode === "preset" ? "Built-in" : "Custom"), selected: c.voice?.speaker === v.name, onClick: () => set({ voice: { ...c.voice, speaker: v.name } }) }))} />
+            <AppGrid bare choice label="Narrator" apps={voices.data.map((v) => ({ id: v.name, icon: "voice", label: v.name, caption: v.description || (v.mode === "preset" ? "Built-in" : "Custom"), selected: (c.voice.mode === "preset" ? c.voice.speaker : c.voice.name) === v.name, onClick: () => set({ voice: v.mode === "preset" ? { ...c.voice, mode: "preset", speaker: v.name, name: null } : { ...c.voice, mode: v.mode === "design" ? "design" : "clone", name: v.name } }) }))} />
             <Field label="Speed" className="mt-5"><SegmentedControl label="Speed" value={String(c.voice?.speed ?? 1)} onChange={(v) => set({ voice: { ...c.voice, speed: Number(v) } })} options={[{ value: "0.9", label: "A little slower" }, { value: "1", label: "Normal" }, { value: "1.1", label: "A little faster" }]} /></Field>
           </Card>
 
@@ -164,7 +175,7 @@ function Editor({ initial, onDone }: { initial: Channel | null | undefined; onDo
               <Field label="Post between" hint="Your local time">
                 <div className="flex items-center gap-2"><Input aria-label="From" type="time" className="!w-[120px] font-mono" value={from} onChange={(e) => set({ publish_window: `${e.target.value}-${to}` })} /><span className="text-ds-muted">to</span><Input aria-label="To" type="time" className="!w-[120px] font-mono" value={to} onChange={(e) => set({ publish_window: `${from}-${e.target.value}` })} /></div>
               </Field>
-              <Field label="Default type"><SegmentedControl label="Default type" value={c.format || "master_first"} onChange={(v) => set({ format: v })} options={[{ value: "master_first", label: "Full video + Shorts" }, { value: "shorts_only", label: "Shorts only" }]} /></Field>
+              <Field label="Default type"><SegmentedControl label="Default type" value={c.format || "master_first"} onChange={(v) => set({ format: v as ChannelProfile["format"] })} options={[{ value: "master_first", label: "Full video + Shorts" }, { value: "shorts_only", label: "Shorts only" }]} /></Field>
             </div>
           </Card>
 

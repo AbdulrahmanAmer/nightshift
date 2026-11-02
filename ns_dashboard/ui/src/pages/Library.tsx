@@ -71,7 +71,7 @@ function Ideas() {
     try { await api.post("/library/ideas", { title: title.trim() || premise.trim().slice(0, 60), premise: premise.trim(), channel: chan, status: "new", source: "owner" }); setTitle(""); setPremise(""); toast("Idea added", "ok"); ideas.reload(); } catch (e: any) { toast(e.message, "bad"); }
   };
   const setStatus = async (i: Idea, s: string) => {
-    try { await api.put(`/library/ideas/${encodeURIComponent(String(i.id))}`, { status: s }); toast(s === "approved" ? "Approved. It will be used on the next run" : s === "rejected" ? "Dropped" : "Back to new", "ok"); ideas.reload(); } catch (e: any) { toast(e.message, "bad"); }
+    try { await api.put(`/library/ideas/${encodeURIComponent(String(i.idea_id))}`, { status: s }); toast(s === "approved" ? "Approved. It will be used on the next run" : s === "rejected" ? "Dropped" : "Back to new", "ok"); ideas.reload(); } catch (e: any) { toast(e.message, "bad"); }
   };
   return (
     <DashGrid label="Ideas">
@@ -88,7 +88,7 @@ function Ideas() {
       {shown.length ? shown.map((i) => {
         const s = norm(i.status);
         return (
-          <Card as="article" key={i.id} padding="md" className={cx("flex flex-col gap-3 self-stretch", SPAN["2/2"])}>
+          <Card as="article" key={i.idea_id} padding="md" className={cx("flex flex-col gap-3 self-stretch", SPAN["2/2"])}>
             <header className="flex items-center justify-between gap-2"><Badge tone={IDEA_TONE[s] || "neutral"}>{IDEA_LABEL[s] || s}</Badge><span className="truncate text-ds-2xs font-semibold text-ds-text-2">{channelName(i.channel)}</span></header>
             <div><h3 className="text-ds-md leading-ds-snug font-semibold">{i.title || "Untitled idea"}</h3><p className="mt-1 text-ds-sm leading-ds-normal text-ds-text-2">{i.premise}</p></div>
             <p className="text-ds-2xs text-ds-muted">{sourceLabel(i.source)}{i.created_at ? ` · ${fmtDay(i.created_at)}` : ""}</p>
@@ -96,7 +96,7 @@ function Ideas() {
               {s === "new" && <Button size="sm" onClick={() => setStatus(i, "approved")}>Approve for production</Button>}
               {(s === "new" || s === "approved") && <Button size="sm" variant="ghost" onClick={() => setStatus(i, "rejected")}>Drop</Button>}
               {s === "rejected" && <Button size="sm" variant="soft" leadingIcon="restore" onClick={() => setStatus(i, "new")}>Restore</Button>}
-              <Button size="sm" variant="ghost" leadingIcon="chat" onClick={() => ask({ page: "library", idea_id: i.id }, `Develop this idea into a story for ${channelName(i.channel)}: ${i.title}. ${i.premise}`)}>Develop with Assistant</Button>
+              <Button size="sm" variant="ghost" leadingIcon="chat" onClick={() => ask({ page: "library", idea_id: i.idea_id }, `Develop this idea into a story for ${channelName(i.channel)}: ${i.title}. ${i.premise}`)}>Develop with Assistant</Button>
             </div>
           </Card>
         );
@@ -115,7 +115,7 @@ function Search({ value, onChange, placeholder }: { value: string; onChange: (s:
 function Stories() {
   const { channelName, ask } = useApp(); const [q, setQ] = useState("");
   const stories = useLoad<Story[]>(() => api.get(`/library/stories?q=${encodeURIComponent(q)}`), [q], []);
-  const st: Record<string, [string, Tone]> = { pending: ["Waiting for review", "accent"], posted: ["Posted", "success"], approved: ["Approved", "success"], rejected: ["Rejected", "danger"] };
+  const st: Record<string, [string, Tone]> = { none: ["No video yet", "neutral"], pending: ["Waiting for review", "accent"], posted: ["Posted", "success"], approved: ["Approved", "success"], rejected: ["Rejected", "danger"] };
   return (
     <DashGrid label="Stories">
       <div className={cx("flex flex-wrap items-center justify-between gap-3", SPAN["6/4"])}><Search value={q} onChange={setQ} placeholder="Search stories" /><span className="text-ds-2xs text-ds-muted ds-num">{stories.data.length} stories</span></div>
@@ -128,7 +128,7 @@ function Stories() {
               <div className="flex items-center justify-between gap-2"><Badge tone={tone}>{label}</Badge><span className="text-ds-2xs text-ds-muted">{fmtDay(s.created_at)}</span></div>
               <h3 className="mt-2 text-ds-md leading-ds-snug font-semibold">{s.title}</h3>
               <p className="text-ds-2xs text-ds-text-2">{channelName(s.channel)}</p>
-              <p className="mt-3 flex flex-wrap gap-x-4 gap-y-1"><MetaItem icon="file">{s.words.toLocaleString("en-US")} words</MetaItem><MetaItem icon="target">Critic {s.critic_avg.toFixed(1)}</MetaItem><MetaItem icon="film">{plural(s.outputs, "video")}</MetaItem></p>
+              <p className="mt-3 flex flex-wrap gap-x-4 gap-y-1"><MetaItem icon="file">{s.words.toLocaleString("en-US")} words</MetaItem><MetaItem icon="target">{s.critic_avg != null ? `Critic ${s.critic_avg.toFixed(1)}` : "Not scored"}</MetaItem><MetaItem icon="film">{plural(s.outputs.length, "video")}</MetaItem></p>
             </div>
             <div className="mt-auto flex gap-1 px-1 pb-1">
               <Button size="sm" variant="soft" onClick={() => { location.hash = `#/?tab=${s.status === "pending" ? "ready" : s.status === "rejected" ? "rejected" : "posted"}`; }}>Open</Button>
@@ -377,11 +377,11 @@ function FootageTab() {
     <DashGrid label="Footage">
       <div className={cx("flex flex-wrap items-center justify-between gap-3", SPAN["6/4"])}><Search value={q} onChange={setQ} placeholder="Search footage by keyword" /><span className="text-ds-2xs text-ds-muted ds-num">{clips.data.length} clips cached</span></div>
       {clips.data.length ? clips.data.map((c) => (
-        <Card as="article" key={c.source + c.id} padding="sm" className={cx("flex flex-col gap-3 self-stretch", SPAN["2/2"])}>
+        <Card as="article" key={c.source + c.clip_id} padding="sm" className={cx("flex flex-col gap-3 self-stretch", SPAN["2/2"])}>
           <div className="relative aspect-[16/7] overflow-hidden rounded-ds-md bg-ds-media"><Scene seed={c.keywords.join(" ")} w={1600} h={700} className="size-full" /><Badge tone="overlay" size="xs" className="absolute right-2 bottom-2 ds-num">{fmtDur(c.duration)}</Badge></div>
           <div className="flex flex-col gap-2 px-1 pb-1">
             <h3 className="text-ds-md leading-ds-snug font-semibold">{c.keywords.join(", ")}</h3>
-            <p className="flex flex-wrap gap-x-4 gap-y-1"><MetaItem icon="external"><span className="capitalize">{c.source}</span>&nbsp;#{c.id}</MetaItem><MetaItem icon="refresh">{plural(c.uses, "use")}</MetaItem><MetaItem icon="calendarDays">{fmtDay(c.last_used)}</MetaItem></p>
+            <p className="flex flex-wrap gap-x-4 gap-y-1"><MetaItem icon="external"><span className="capitalize">{c.source}</span>&nbsp;#{c.clip_id}</MetaItem><MetaItem icon="refresh">{plural(c.uses, "use")}</MetaItem><MetaItem icon="calendarDays">{fmtDay(c.last_used)}</MetaItem></p>
             <p className="text-ds-2xs text-ds-muted">{c.license}</p>
           </div>
         </Card>

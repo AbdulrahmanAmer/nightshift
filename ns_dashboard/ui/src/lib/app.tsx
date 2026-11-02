@@ -14,7 +14,7 @@ interface AppCtx {
   route: { name: string; query: URLSearchParams }; go: (hash: string) => void;
   askOpen: boolean; setAskOpen: (v: boolean) => void; askContext: Record<string, unknown>; ask: (ctx?: Record<string, unknown>, prompt?: string, openDrawer?: boolean) => void; askPrompt: string | null; clearAskPrompt: () => void;
   theme: Theme; setTheme: (t: Theme) => void;
-  channelName: (slug?: string) => string;
+  channelName: (slug?: string | null) => string;
   /** The name chosen in the setup window (config/ui_prefs.json), or null. */
   ownerName: string | null;
 }
@@ -56,7 +56,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // openDrawer=false hands the prompt to the Assistant page instead (the top bar search routes there).
   const ask = useCallback((ctx?: Record<string, unknown>, prompt?: string, openDrawer = true) => { setAskContext(ctx || {}); if (prompt) setAskPrompt(prompt); if (openDrawer) setAskOpen(true); }, []);
   const setTheme = useCallback((t: Theme) => { setThemeState(t); store.set("ns-theme", t); }, []);
-  const channelName = useCallback((slug?: string) => status?.channels?.find((c) => c.slug === slug)?.display_name || slug || "", [status]);
+  const channelName = useCallback((slug?: string | null) => status?.channels?.find((c) => c.slug === slug)?.display_name || slug || "", [status]);
 
   // First start: the setup window's choices (config/ui_prefs.json, served with /settings). The name is shown in the greeting; the
   // theme is applied only while this browser has no saved choice, and is saved then, so a later pick in Settings always wins.

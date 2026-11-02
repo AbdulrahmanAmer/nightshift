@@ -1,4 +1,4 @@
-export const fmtDur = (s: number | undefined) => {
+export const fmtDur = (s: number | null | undefined) => {
   const n = Math.round(Number(s) || 0); const h = Math.floor(n / 3600); const m = Math.floor((n % 3600) / 60); const sec = String(n % 60).padStart(2, "0");
   return h ? `${h}:${String(m).padStart(2, "0")}:${sec}` : `${m}:${sec}`;
 };
@@ -28,7 +28,7 @@ export const STAGE_WORDS: Record<string, string> = {
   outbox: "Saving", import: "Importing the video", audio: "Extracting audio", transcribe: "Transcribing", select: "Choosing moments", detect: "Finding faces",
   seo_clip: "Writing titles", queued: "Waiting for the engine",
 };
-export const stageWords = (k?: string) => (k && STAGE_WORDS[k]) || (k ? k.replace(/_/g, " ") : "Working");
+export const stageWords = (k?: string | null) => (k && STAGE_WORDS[k]) || (k ? k.replace(/_/g, " ") : "Working");
 export const RUN_STAGES = ["ideas", "plan", "draft", "critic_revise", "hooks", "seo", "visual_plan", "voice", "captions", "clips", "render", "qc", "outbox"];
 export const CLIP_STAGES = ["import", "audio", "transcribe", "select", "detect", "captions", "render", "qc", "outbox"];
 

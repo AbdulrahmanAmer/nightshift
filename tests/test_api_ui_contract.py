@@ -326,6 +326,9 @@ def seed(tmp_home: Path) -> Any:
     approved = seed_output(state.db, state.paths, kind="short", k=2, status="approved", title="Approved one")
     rejected = seed_output(state.db, state.paths, kind="short", k=3, title="Rejected one")
     uploaded = seed_output(state.db, state.paths, kind="short", k=4, title="Posted one")
+    state.db.execute(
+        "INSERT INTO sources(source_id, channel, path, imported_at) VALUES ('src-20261101-aaaa', 'after-dark', 'x.mp4', ?)", (now,)
+    )
     seed_output(state.db, state.paths, kind="clip", k=1, title="A clip", source_id="src-20261101-aaaa")
     assert client.post(f"/api/outputs/{rejected}/reject", json={"reason": "bad audio"}).status_code == 200
     assert client.post(f"/api/outputs/{approved}/approve").status_code == 200

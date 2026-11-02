@@ -27,9 +27,9 @@ export function Poster({ o, className, portrait }: { o: Pick<Output, "title" | "
   return <Scene seed={o.title} kind={o.kind === "clip" ? "clip" : "story"} w={p ? 900 : 1600} h={p ? 1600 : 900} className={className} title={`Still for ${o.title}`} />;
 }
 
-export function jobTitle(j: Job, channelName: (s?: string) => string) {
-  if (j.kind === "clip") return j.title ? `Clips from ${j.title}` : `Clips for ${channelName(j.channel)}`;
-  return j.title || `Story video for ${channelName(j.channel)}`;
+export function jobTitle(j: Job, channelName: (s?: string | null) => string) {
+  if (j.kind === "clip") return (j.params?.title ?? j.title) ? `Clips from ${j.params?.title ?? j.title}` : `Clips for ${channelName(j.channel)}`;
+  return (j.params?.title ?? j.title) || `Story video for ${channelName(j.channel)}`;
 }
 const kindIcon = (k: string): IconName => (k === "long" ? "monitor" : k === "short" ? "phone" : "scissors");
 const partOfDay = () => { const h = new Date().getHours(); return h < 5 ? "Good night" : h < 12 ? "Good morning" : h < 18 ? "Good afternoon" : "Good evening"; };
@@ -99,7 +99,7 @@ function QueueTabs({ tab, onTab }: { tab: Tab; onTab: (t: Tab) => void }) {
   return <SegmentedControl label="Queue" size="sm" value={tab} onChange={onTab} options={[{ value: "ready", label: `Ready${n(c?.pending)}` }, { value: "posted", label: `Approved and posted${n(c?.approved)}` }, { value: "rejected", label: `Rejected${n(c?.rejected)}` }]} />;
 }
 
-function ListView({ items, tab, onResume, channelName }: { items: Output[]; tab: Tab; onResume: (id: string) => void; channelName: (s?: string) => string }) {
+function ListView({ items, tab, onResume, channelName }: { items: Output[]; tab: Tab; onResume: (id: string) => void; channelName: (s?: string | null) => string }) {
   if (!items.length) return <EmptyState icon="film" title="Nothing here yet">{tab === "posted" ? "Approved videos show up here until you paste their YouTube link" : "Rejected videos and your reasons show up here"}</EmptyState>;
   return (
     <div className="@container">
@@ -125,7 +125,7 @@ function ListView({ items, tab, onResume, channelName }: { items: Output[]; tab:
 }
 
 type Prog = Record<string, boolean>;
-function Review({ o, items, tab, onTab, onPick, onChanged, channelName }: { o: Output; items: Output[]; tab: Tab; onTab: (t: Tab) => void; onPick: (id: string) => void; onChanged: (nextId: string | null) => Promise<void>; channelName: (s?: string) => string }) {
+function Review({ o, items, tab, onTab, onPick, onChanged, channelName }: { o: Output; items: Output[]; tab: Tab; onTab: (t: Tab) => void; onPick: (id: string) => void; onChanged: (nextId: string | null) => Promise<void>; channelName: (s?: string | null) => string }) {
   const { toast, confirm, ask, demo } = useApp();
   const detail = useLoad<OutputDetail | null>(() => api.get(`/outputs/${api.enc(o.output_id)}`), [o.output_id], null);
   const d = detail.data;
@@ -299,7 +299,7 @@ function Review({ o, items, tab, onTab, onPick, onChanged, channelName }: { o: O
 
 /* ---------------------------------------------------------------- job events */
 
-function JobEvents({ jobs, loading, channelName, className, onReview }: { jobs: Job[]; loading: boolean; channelName: (s?: string) => string; className?: string; onReview: () => void }) {
+function JobEvents({ jobs, loading, channelName, className, onReview }: { jobs: Job[]; loading: boolean; channelName: (s?: string | null) => string; className?: string; onReview: () => void }) {
   const { ask, go, toast } = useApp();
   // Dismissed events are hidden in this browser only (there is no server-side dismiss).
   const [hidden, setHidden] = useState<string[]>(() => store.get<string[]>("ns-dismissed-events", []));
@@ -396,7 +396,7 @@ function PostingCalendar({ chans, ready, className, onOpen }: { chans: ChannelSu
 
 /* ---------------------------------------------------------------- render jobs */
 
-function RenderJobs({ jobs, chans, channelName, className }: { jobs: Job[]; chans: ChannelSummary[]; channelName: (s?: string) => string; className?: string }) {
+function RenderJobs({ jobs, chans, channelName, className }: { jobs: Job[]; chans: ChannelSummary[]; channelName: (s?: string | null) => string; className?: string }) {
   const { go } = useApp();
   const live = jobs.filter((j) => ["queued", "running"].includes(j.status));
   // A scheduled job is queued with a future schedule_at: it shows its start time, not "Waiting", and sorts after the running ones.
@@ -442,7 +442,7 @@ function MachineMeters({ className }: { className?: string }) {
     vramPct != null
       ? { label: "VRAM", value: vramPct, display: `${gb(used!)} GB`, source: `${gb(used!)} of ${gb(total!)} GB in use` }
       : { label: "VRAM", value: null, display: used != null ? `${gb(used)} GB` : vramGb ? `${vramGb} GB` : undefined, source: used != null ? `${gb(used)} GB in use, total not reported` : vramGb ? `${vramGb} GB in use` : "no model loaded" },
-    { label: "Disk", value: disk ? Math.round(((disk.total_gb - disk.free_gb) / Math.max(1, disk.total_gb)) * 100) : null, source: disk ? `${disk.free_gb} GB free of ${disk.total_gb} GB` : "unknown until the engine answers" },
+    { label: "Disk", value: disk && disk.total_gb != null && disk.free_gb != null ? Math.round(((disk.total_gb - disk.free_gb) / Math.max(1, disk.total_gb)) * 100) : null, source: disk ? `${disk.free_gb} GB free of ${disk.total_gb} GB` : "unknown until the engine answers" },
   ];
   const diskLine = disk ? `${disk.free_gb} GB free on ${disk.home}` : null;
   const gpuLine = gpu ? `${gpu.name}${temp != null ? ` · ${Math.round(temp)} °C` : ""}` : null;
@@ -451,7 +451,7 @@ function MachineMeters({ className }: { className?: string }) {
 }
 
 /** "Last night": what the newest nightly run made and what stopped, from GET /runs. Shown only after a run has happened. */
-function LastNight({ className, pending, onReview, channelName }: { className?: string; pending: number; onReview: () => void; channelName: (s?: string) => string }) {
+function LastNight({ className, pending, onReview, channelName }: { className?: string; pending: number; onReview: () => void; channelName: (s?: string | null) => string }) {
   const runs = useLoad<Run[]>(() => api.get("/runs?limit=1"), [], []);
   const r = runs.data[0];
   if (!r) return null;

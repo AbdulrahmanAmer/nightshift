@@ -232,7 +232,7 @@ function IdeasFor({ channel }: { channel: string }) {
       {mine.length ? (
         <>
           <p className="mt-1 text-ds-xs text-ds-text-2">Approved ideas are used first, in this order</p>
-          <ol className="mt-3 flex flex-col gap-2">{mine.map((i) => <li key={i.id} className="flex items-start gap-2 text-ds-sm"><Icon name="lightbulb" size={16} className="mt-0.5 shrink-0 text-ds-accent-ink" /><span><span className="font-semibold">{i.title}</span><span className="text-ds-text-2">. {i.premise}</span></span></li>)}</ol>
+          <ol className="mt-3 flex flex-col gap-2">{mine.map((i) => <li key={i.idea_id} className="flex items-start gap-2 text-ds-sm"><Icon name="lightbulb" size={16} className="mt-0.5 shrink-0 text-ds-accent-ink" /><span><span className="font-semibold">{i.title}</span><span className="text-ds-text-2">. {i.premise}</span></span></li>)}</ol>
         </>
       ) : <p className="mt-1 text-ds-xs text-ds-text-2">No approved idea for this channel, so Nightshift writes a new one. <a href="#/library?tab=ideas" className="font-semibold text-ds-accent-ink">Approve one in Library</a></p>}
     </div>
@@ -305,7 +305,7 @@ function Stepper({ value, onChange, min, max, label, suffix }: { value: number; 
   );
 }
 
-function JobRow({ j, channelName, onCancel }: { j: Job; channelName: (s?: string) => string; onCancel: (id: string) => void }) {
+function JobRow({ j, channelName, onCancel }: { j: Job; channelName: (s?: string | null) => string; onCancel: (id: string) => void }) {
   const stages = j.kind === "clip" ? CLIP_STAGES : RUN_STAGES; const cur = stages.indexOf(j.stage || "");
   const held = j.status === "queued" && !!j.schedule_at && new Date(j.schedule_at).getTime() > Date.now();
   return (
@@ -322,7 +322,7 @@ function JobRow({ j, channelName, onCancel }: { j: Job; channelName: (s?: string
   );
 }
 
-function EarlierRow({ j, channelName, templates, onChanged }: { j: Job; channelName: (s?: string) => string; templates: Template[]; onChanged: () => void }) {
+function EarlierRow({ j, channelName, templates, onChanged }: { j: Job; channelName: (s?: string | null) => string; templates: Template[]; onChanged: () => void }) {
   const { toast } = useApp();
   const [open, setOpen] = useState(false); const [tpl, setTpl] = useState("");
   const canRerun = j.kind === "clip" && j.status === "done";

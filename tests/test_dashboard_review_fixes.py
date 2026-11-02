@@ -408,3 +408,33 @@ def test_engine_flags_round_trip_as_dotted_plain_values(tmp_home: Path):
     assert rt.tts.port == flags["tts.port"] and rt.llama.flags.kv_type == flags["llama.flags.kv_type"]
     assert out["flags"]["llama.flags.ctx"] == 8192
     assert code_of(dash.settings.put_settings, {"flags": {"video.encoder": "divx"}}, unlock=True) == "invalid_runtime"
+
+
+# ------------------------------------------------------------------ row 2: Library > Stories rows
+
+
+def test_story_rows_have_title_words_status_and_a_nullable_critic(tmp_home: Path):
+    """The page called `s.words.toLocaleString()` and `s.critic_avg.toFixed()` on rows that had neither."""
+    dash, state = make(tmp_home)
+    seed_channel(state.db, state.paths)
+    oid = seed_output(state.db, state.paths, kind="short", k=1, title="Floor 13")
+    job = oid.split("/")[0]
+    now = "2026-11-02T00:00:00+00:00"
+    state.db.execute(
+        "INSERT INTO stories(job_id, channel, format, working_title, text, word_count, opening_line, critic_avg, revisions, created_at)"
+        " VALUES (?, 'after-dark', 'shorts_only', NULL, 't', 120, 'It began at three.', NULL, 0, ?)", (job, now),
+    )
+    (row,) = dash.library.stories()
+    assert row["title"] == "It began at three." and row["words"] == 120 and row["critic_avg"] is None
+    assert row["status"] == "pending" and [o["output_id"] for o in row["outputs"]] == [oid]
+    dash.outputs.approve(oid)
+    assert dash.library.stories()[0]["status"] == "approved"
+    dash.outputs.mark_uploaded(oid, "https://youtu.be/x")
+    assert dash.library.stories()[0]["status"] == "posted"
+
+
+def test_story_status_words():
+    from ns_dashboard.svc_library import story_status
+
+    assert story_status([]) == "none" and story_status(["rejected", "rejected"]) == "rejected"
+    assert story_status(["rejected", "approved"]) == "approved" and story_status(["uploaded", "pending"]) == "pending"
