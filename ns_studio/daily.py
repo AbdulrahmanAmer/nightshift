@@ -7,7 +7,7 @@ import random
 import secrets
 import traceback
 from collections.abc import Callable
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta, tzinfo
 from pathlib import Path
 from typing import Any
 
@@ -36,8 +36,45 @@ def _series_delay(env: jobs.Env, job_id: str) -> int:
         return 0
 
 
-def apply_publish_times(env: jobs.Env, job_ids: list[str], rng: random.Random, now: datetime) -> int:
+SCHEDULE_LOOKBACK_DAYS = 14
+
+
+def scheduled_shorts(
+    env: jobs.Env, slug: str, today: date, skip_jobs: set[str], now: datetime
+) -> dict[date, int]:
+    """Shorts of `slug` that earlier nights already gave a publish day on or after `today`, by day.
+
+    Read from the `publish_after` of the sheet beside each pending or approved Short in the Outbox (uploaded
+    and rejected ones no longer occupy a slot). `skip_jobs` are tonight's jobs, which are being slotted now.
+    """
+    since = (now - timedelta(days=SCHEDULE_LOOKBACK_DAYS)).isoformat()
+    rows = env.db.query(
+        "select job_id, path from outputs where channel=? and kind='short'"
+        " and status in ('pending', 'approved') and created_at >= ?",
+        (slug, since),
+    )
+    taken: dict[date, int] = {}
+    for r in rows:
+        if r["job_id"] in skip_jobs:
+            continue
+        try:
+            data = json.loads(Path(r["path"]).with_suffix(".json").read_text(encoding="utf-8"))
+            day = datetime.fromisoformat(str(data["publish_after"])).date()
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+        if day >= today:
+            taken[day] = taken.get(day, 0) + 1
+    return taken
+
+
+def apply_publish_times(
+    env: jobs.Env, job_ids: list[str], rng: random.Random, now: datetime, tz: tzinfo | None = None
+) -> int:
     """Rewrite `publish_after` in the outbox sheets of `job_ids` with jittered slots (spec 18.6).
+
+    Slots are local wall-clock times, so the calendar starts at the *local* date of `now` (`tz`, default the
+    PC's own zone); the UTC date is up to a day off at night. Shorts that earlier nights scheduled count
+    against `shorts_per_day_max` (`scheduled_shorts`).
 
     Each finished job lists its files in `<job dir>/outbox/manifest.json` (the Outbox itself is organised by
     story, with no job id in the path). Both the `.json` and the `.txt` sheet of every item are rewritten.
@@ -68,8 +105,10 @@ def apply_publish_times(env: jobs.Env, job_ids: list[str], rng: random.Random, n
             ch = get_channel(env.paths, slug)
         except StudioError:
             continue
+        today = now.astimezone(tz).date()
         times = cadence.assign_publish_times(
-            [e[0] for e in entries], now.date(), ch.publish_window, ch.shorts_per_day_max, rng
+            [e[0] for e in entries], today, ch.publish_window, ch.shorts_per_day_max, rng,
+            taken=scheduled_shorts(env, slug, today, set(job_ids), now),
         )
         for release, entry in entries:
             when = times[release.output_id] + timedelta(days=int(entry.get("delay", 0)))

@@ -235,3 +235,26 @@ def test_a_real_run_creates_the_queued_voice_first_and_only_warns_on_failure(
     env.fake = frozenset({"llm"})
     monkeypatch.setattr(voice_setup, "apply_pending", lambda e: pytest.fail("fake runs skip it"))
     cli._setup_voice(env)
+
+
+def test_http_post_keeps_the_code_the_service_answered_with(monkeypatch: pytest.MonkeyPatch):
+    """Re-review row 14: a missing Base (clone) model said 'get voice design' under NS-E310."""
+    import httpx
+
+    def answer(body: dict[str, Any]):
+        def fake_post(url: str, **kw: Any) -> httpx.Response:
+            return httpx.Response(409, json=body, request=httpx.Request("POST", url))
+
+        return fake_post
+
+    clone = {"missing_model": "qwen-talker-1.7b-base-Q8_0.gguf", "error": "NS-E202",
+             "detail": "the voice cloning model is not installed (qwen-talker-1.7b-base-Q8_0.gguf)"}
+    design = {"missing_model": "voicedesign", "error": "NS-E314", "detail": "Get voice design"}
+    monkeypatch.setattr(httpx, "post", answer(clone))
+    with pytest.raises(NsError) as ei:
+        voice_setup.http_post("http://127.0.0.1:8091", "/v1/voices/clone", {"name": "x"})
+    assert ei.value.code == "NS-E202" and "cloning model" in ei.value.detail
+    monkeypatch.setattr(httpx, "post", answer(design))
+    with pytest.raises(NsError) as ei2:
+        voice_setup.http_post("http://127.0.0.1:8091", "/v1/voices/design", {"name": "x"})
+    assert ei2.value.code == "NS-E314"

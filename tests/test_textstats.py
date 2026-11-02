@@ -59,3 +59,29 @@ def test_normalize_tokens_folds_case_in_any_script():
     assert normalize_tokens("Это ОЧЕНЬ Длинная") == ["это", "очень", "длинная"]
     assert normalize_tokens("Straße") == ["strasse"]
     assert normalize_tokens("It’s 3 PM") == ["its", "three", "pm"]
+
+
+def test_combining_marks_stay_inside_their_word():
+    """Re-review row 11: the regex word class leaves out Mn/Mc: Hindi counted 2-3x, NFD 'cafe' twice."""
+    assert word_count("किताब पढ़ो") == 2  # Devanagari with vowel signs and a nukta
+    assert word_count("café au lait") == 3  # decomposed e + acute accent
+    assert word_count("café au lait") == 3  # the same text, precomposed
+    assert word_count("வணக்கம் உலகம்") == 2  # Tamil
+    assert normalize_tokens("किताब पढ़ो") == ["किताब", "पढ़ो"]
+    assert normalize_tokens("café") == normalize_tokens("café") == ["café"]
+    assert word_count("كَانَ البَابُ مَفْتُوحًا") == 3  # Arabic with harakat
+
+
+def test_danda_and_ellipsis_end_a_sentence():
+    first, second = "यह पहला वाक्य है।", "यह दूसरा वाक्य है।"
+    assert split_sentences(f"{first} {second}") == [first, second]
+    assert split_sentences("पहली पंक्ति॥ दूसरी पंक्ति॥") == ["पहली पंक्ति॥", "दूसरी पंक्ति॥"]
+    assert split_sentences("Wait… what? Yes.") == ["Wait…", "what?", "Yes."]
+    long_hindi = " ".join(["यह एक छोटा वाक्य है।"] * 12)
+    assert len(split_sentences(long_hindi)) == 12  # was one 60-word 'sentence': NS-E303 on every story
+
+
+def test_scripts_without_spaces_are_not_counted_per_fragment():
+    """Thai gave 6 fragments for two words; about four base letters now make one counted word."""
+    assert word_count("สวัสดีครับ ผมชื่อ") == 3
+    assert 1 <= word_count("สวัสดีครับ") <= 3

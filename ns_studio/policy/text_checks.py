@@ -199,7 +199,7 @@ class SelfSimilarity(Check):
         text = story_text(ctx)
         if not text.strip():
             return ok("no story text")
-        vec = ctx.services.embed.embed([embed_window(text)])[0]  # the opening, as the stored vectors are
+        vec = ctx.services.embed.embed([embed_window(text, ctx.runtime.embed.batch_size)])[0]
         rows = ctx.db.query(
             "select job_id, channel, embedding from stories where job_id != ? and embedding is not null",
             (ctx.job_id,),

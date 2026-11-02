@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import lru_cache
 
 from ns_common.embed_client import Embed, cosine
 from ns_common.errors import NsError
+from ns_common.pacing import master_seconds
 from ns_common.paths import contracts_dir
 from ns_common.textstats import fk_grade, split_sentences, word_count
-from ns_studio.text.budget import Budget, master_max_words
+from ns_studio.text.budget import MASTER_MAX_SECONDS, Budget
 
 
 @dataclass(frozen=True)
@@ -35,11 +37,17 @@ def check_length(text: str, budget: Budget) -> Violation | None:
     return None
 
 
-def check_master_length(total_words: int, wpm: int) -> Violation | None:
-    """A master may hold at most 14 minutes of narration at `wpm`: QC fails anything over 15:00 (NS-E404)."""
-    cap = master_max_words(wpm)
-    if total_words > cap:
-        return Violation("master_length", f"{total_words} words, at most {cap} at {wpm} wpm")
+def check_master_length(chapters: Sequence[str], wpm: int) -> Violation | None:
+    """The chapters may add up to at most 14:30 of audio at `wpm`: QC fails anything over 15:00 (NS-E404).
+
+    The estimate counts the TTS pauses (350 ms per sentence, 700 ms per paragraph, 1.2 s before each cliff
+    line) and the 1.2 s title cards, not just the words.
+    """
+    seconds = master_seconds(chapters, wpm)
+    if seconds > MASTER_MAX_SECONDS:
+        return Violation(
+            "master_length", f"about {seconds:.0f} s of audio at {wpm} wpm, at most {MASTER_MAX_SECONDS} s"
+        )
     return None
 
 

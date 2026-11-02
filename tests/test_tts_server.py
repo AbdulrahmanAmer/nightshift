@@ -253,3 +253,15 @@ def test_engine_failure_is_a_coded_500(tmp_path: Path):
     )
     assert r.status_code == 500
     assert r.json()["error"] == "NS-E310" and "qwen-tts exited 1" in r.json()["detail"]
+
+
+def test_clone_with_the_base_model_missing_answers_409_with_a_code(tmp_path: Path):
+    class NoBase(FakeEngine):
+        def missing_model(self, op):  # type: ignore[no-untyped-def]
+            return "qwen-talker-1.7b-base-Q8_0.gguf" if op == "clone" else None
+
+    c = make_client(tmp_path, NoBase())
+    r = c.post("/v1/voices/clone", json={"name": "me", "ref_audio_path": "x.wav", "ref_text": "hi",
+                                         "rights_confirmed": True})
+    assert r.status_code == 409 and r.json()["error"] == "NS-E202"
+    assert r.json()["missing_model"].endswith("base-Q8_0.gguf") and "cloning model" in r.json()["detail"]

@@ -30,6 +30,12 @@ TTS_VALUE_FLAGS = {
 TTS_BOOL_FLAGS = {"--greedy", "--stream-by-line", "--no-fa", "--clamp-fp16"}
 CODEC_VALUE_FLAGS = {"--model", "--device", "-i", "--talker", "--format"}
 DEVICES = {"CUDA0", "Vulkan0", "MTL0", "CPU"}
+# qwen3-tts.codec.language_names of the talker GGUF; matched case-insensitively, anything else is fatal
+# ("[Prompt] FATAL: unknown language"), "auto" lets the model guess from the text.
+LANGUAGES = {
+    "auto", "chinese", "english", "german", "italian", "portuguese", "spanish", "japanese", "korean",
+    "french", "russian",
+}
 SPEAKERS = {"serena", "vivian", "uncle_fu", "ryan", "aiden", "ono_anna", "sohee", "eric", "dylan"}
 HOP = 1920  # samples per codec frame at 24 kHz
 
@@ -70,6 +76,18 @@ def must_exist(path: str, what: str) -> None:
         die(f"cannot open {what} '{path}'")
 
 
+def tone_bytes(seconds: float, freq: float) -> bytes:
+    n = int(24000 * seconds)
+    return b"".join(struct.pack("<h", int(9000 * math.sin(2 * math.pi * freq * i / 24000))) for i in range(n))
+
+
+def stream_header() -> bytes:
+    """qwentts.cpp `wav_stream_write_header`: 44 bytes, RIFF and data sizes 0x7FFFFFFF (24 kHz, 16-bit)."""
+    fmt = struct.pack("<IHHIIHH", 16, 1, 1, 24000, 48000, 2, 16)
+    live = struct.pack("<I", 0x7FFFFFFF)
+    return b"RIFF" + live + b"WAVEfmt " + fmt + b"data" + live
+
+
 def write_tone(path: str, seconds: float, freq: float) -> None:
     n = int(24000 * seconds)
     frames = b"".join(
@@ -87,12 +105,12 @@ def run_tts(argv: list[str]) -> int:
     for req in ("--model", "--codec", "-o"):
         if req not in a:
             die(f"missing required {req}")
-    if a["-o"] == "-":
-        die("this stand-in writes files only")
     must_exist(a["--model"], "--model")
     must_exist(a["--codec"], "--codec")
     if "--device" in a and a["--device"] not in DEVICES:
         die(f"unknown device {a['--device']!r}")
+    if "--lang" in a and a["--lang"].lower() not in LANGUAGES:
+        die(f"unknown language {a['--lang']!r}")
     raw = sys.stdin.buffer.read().decode("utf-8")
     text = raw.rstrip("\r\n")
     if not text:
@@ -132,6 +150,19 @@ def run_tts(argv: list[str]) -> int:
     log("qwen-tts", argv, raw)
     who = (a.get("--speaker", "") + a.get("--ref-spk", "")).encode()
     freq = 200.0 + int(hashlib.sha256(who).hexdigest(), 16) % 300
+    if a["-o"] == "-":
+        # `-o -` streams to stdout: one wide RIFF header, then the samples; with --stream-by-line every
+        # non-empty stdin line is its own utterance, each after the first opening with a fresh header.
+        lines = [text]
+        if "--stream-by-line" in a:
+            lines = [ln.rstrip("\r") for ln in raw.split("\n") if ln.strip()]
+        if os.environ.get("NS_FAKE_QWEN_SHORT"):
+            lines = lines[:-1]  # a binary that drops an utterance
+        out = sys.stdout.buffer
+        for ln in lines:
+            out.write(stream_header() + tone_bytes(max(0.3, 0.2 * len(ln.split())), freq))
+        out.flush()
+        return 0
     write_tone(a["-o"], max(0.3, 0.2 * len(text.split())), freq)
     return 0
 

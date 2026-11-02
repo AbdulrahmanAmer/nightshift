@@ -54,7 +54,7 @@ class ScriptImportStage:
         art = build_artifacts(script, shorts, wpm=wpm, combo_id=ctx.combo.combo_id, concept=concept)
         full_text = "\n\n".join(c.text for c in art.story.chapters)
         total_words = sum(c.word_count for c in art.story.chapters)
-        vec = ctx.services.embed.embed([embed_window(full_text)])[0]
+        vec = ctx.services.embed.embed([embed_window(full_text, ctx.runtime.embed.batch_size)])[0]
         ctx.db.execute(
             "insert or ignore into channels(slug, display_name, created_at) values (?,?,?)",
             (ctx.channel.slug, ctx.channel.display_name, now_iso()),

@@ -20,19 +20,28 @@ from ns_studio.stages import StageState
 ATTEMPTS_FILE = "policy_attempts.json"
 MAX_REGENERATIONS = 1
 
-# Candidate restart stages per code, earliest sensible first; the first one present in the plan wins.
+# Candidate restart stages per code, earliest sensible first; the first one present in the plan wins. Each
+# tuple names the stages of every plan: shorts_only (`draft`, `hooks`, `seo`), master_first (`chapters_draft`,
+# `shorts_select`, `seo_long`, `seo_shorts`) and master_from_script (`seo_long`, `seo_shorts`). A name that is
+# in no plan sends the job back to `ideas`: an hour of LLM work for one disliked tag.
 REGEN_FROM: dict[str, tuple[str, ...]] = {
     "NS-E601": ("ideas",),
-    "NS-E602": ("draft", "ideas"),
-    "NS-E603": ("seo", "long_seo", "ideas"),
-    "NS-E604": ("hooks", "seo", "ideas"),
+    "NS-E602": ("draft", "chapters_draft", "ideas"),
+    "NS-E603": ("seo", "seo_long", "ideas"),
+    "NS-E604": ("hooks", "shorts_select", "seo", "seo_long", "ideas"),
     "NS-E605": ("ideas",),
-    "NS-E606": ("seo", "long_seo", "ideas"),
+    "NS-E606": ("seo", "seo_long", "ideas"),
     "NS-E607": ("shorts_select", "shorts_plan", "ideas"),
     "NS-E611": ("clips", "visual_plan", "ideas"),
-    "NS-E612": ("expand", "draft", "plan", "ideas"),
+    "NS-E612": ("expand", "chapters_draft", "draft", "plan", "long_plan", "ideas"),
     "NS-E613": ("clips", "visual_plan", "ideas"),
     "NS-E614": ("voice", "render", "ideas"),
+}
+# Metadata failures are fixed by rewriting the metadata alone: only these stages are redone (everything after
+# them is gated on its input hashes and follows when the SEO files change), never the chapters.
+REGEN_ONLY: dict[str, tuple[str, ...]] = {
+    "NS-E603": ("seo", "seo_long", "seo_shorts"),
+    "NS-E606": ("seo", "seo_long", "seo_shorts"),
 }
 _SMALL_FILES = (
     "idea.json",
@@ -78,6 +87,18 @@ def invalidate_from(ctx: JobContext, names: list[str], stage: str) -> None:
     state.save(ctx.job_dir)
 
 
+def invalidate_only(ctx: JobContext, names: list[str], only: tuple[str, ...]) -> list[str]:
+    """Forget just the stages of `names` that are in `only` (and their memos); returns those stages."""
+    state = StageState.load(ctx.job_dir)
+    hit = [n for n in names if n in only]
+    for n in hit:
+        state.entries.pop(n, None)
+        for memo in STAGE_MEMOS.get(n, ()):
+            ctx.file(memo).unlink(missing_ok=True)
+    state.save(ctx.job_dir)
+    return hit
+
+
 def _attempts(ctx: JobContext) -> dict:
     f = ctx.file(ATTEMPTS_FILE)
     return json.loads(f.read_text(encoding="utf-8")) if f.exists() else {"regenerations": 0, "history": []}
@@ -106,7 +127,23 @@ def reject_artifacts(ctx: JobContext, err: NsError, attempt: int) -> Path:
 
 
 def run_job_guarded(ctx: JobContext, *, resume: bool = True) -> list[str]:
-    """`run_job` with regenerate-once handling of NS-E601 to NS-E614 policy failures."""
+    """`run_job` with regenerate-once handling of NS-E601 to NS-E614 policy failures.
+
+    The voice setup queued (`config/pending_voice.json`) is created first, so every path that runs a job
+    (`studio run`, the dashboard's Run now, a series part) has it before the voice stage asks for it.
+    """
+    from ns_studio.channels.crud import design_name_problems, pool_name_problems, sync_channel_row
+    from ns_studio.errors import StudioError
+    from ns_studio.voice_setup import apply_pending_voices
+
+    # A series part is created by the dashboard without `make_job`: give its channel the display name of its
+    # profile (a YAML-only channel was left with its slug) and refuse unknown preset names up front (NS-E320).
+    sync_channel_row(ctx.db, ctx.channel)
+    if ctx.series:
+        problems = [*pool_name_problems(ctx.channel.pools), *design_name_problems(ctx.series)]
+        if problems:
+            raise StudioError("NS-E320", "; ".join(problems))
+    apply_pending_voices(ctx)
     first = True
     while True:
         try:
@@ -127,5 +164,7 @@ def run_job_guarded(ctx: JobContext, *, resume: bool = True) -> list[str]:
             names = [s.name for s in plan_job(ctx.fmt)]
             start = earliest_stage(e.code, names)
             ctx.log.warn("policy_regenerate", code=e.code, restart_at=start, job_id=ctx.job_id)
-            invalidate_from(ctx, names, start)
+            only = REGEN_ONLY.get(e.code)
+            if not (only and invalidate_only(ctx, names, only)):
+                invalidate_from(ctx, names, start)
             first = False

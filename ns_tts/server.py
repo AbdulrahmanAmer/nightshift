@@ -8,6 +8,7 @@ Loudness normalization is NOT done here (C6 does it). `python -m ns_tts.server -
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import os
 import re
 import sys
@@ -24,6 +25,7 @@ from pydantic import BaseModel, Field
 
 from ns_common.config import load_runtime
 from ns_common.errors import NsError
+from ns_common.languages import qwen_language
 from ns_common.logging import NsLogger
 from ns_common.models import Runtime
 from ns_common.paths import Paths
@@ -44,6 +46,7 @@ class SpeechReq(BaseModel):
     response_format: str = "wav"
     seed: int | None = None
     cliff_lines: list[str] = []
+    language: str | None = None  # ISO code or name; the channel's language (default: the voice's own)
 
 
 class BatchItem(BaseModel):
@@ -54,6 +57,7 @@ class BatchItem(BaseModel):
     voice: str
     speed: float = Field(default=1.0, ge=0.5, le=2.0)
     cliff_lines: list[str] = []
+    language: str | None = None
 
 
 class BatchReq(BaseModel):
@@ -96,6 +100,20 @@ def create_app(engine: Engine, library: VoiceLibrary, *, log: NsLogger | None = 
     """Build the app around an engine and a voice library. Engine access is serialized by a lock."""
     app = FastAPI(title="Nightshift TTS")
     lock = threading.Lock()
+    warned: set[str] = set()
+
+    def language_name(code: str | None) -> str:
+        """The `--lang` name for a request's language; unknown is English, with one warning per code."""
+        name, known = qwen_language(code)
+        if not known and (code or "") not in warned:
+            warned.add(code or "")
+            if log:
+                log.warn("tts_language_unknown", f"{code!r} is not a Qwen3-TTS language; using English")
+        return name
+
+    def with_language(voice: VoiceSpec, code: str | None) -> VoiceSpec:
+        """`voice` speaking the request's language (the voice's own when the request names none)."""
+        return dataclasses.replace(voice, language=language_name(code)) if code else voice
 
     def ensure_loaded() -> None:
         if not engine.loaded:
@@ -107,17 +125,39 @@ def create_app(engine: Engine, library: VoiceLibrary, *, log: NsLogger | None = 
         except KeyError:
             raise HTTPException(404, f"unknown voice {name!r}") from None
 
-    def render(text: str, voice: VoiceSpec, speed: float, seed: int | None, cliffs: list[str]) -> np.ndarray:
-        chunks = chunk_text(text, cliff_lines=cliffs)
-        if not chunks:
+    def render_many(
+        entries: list[tuple[str, VoiceSpec, float, list[str]]], seed: int | None
+    ) -> list[np.ndarray]:
+        """Narration for each (text, voice, speed, cliff lines), in order.
+
+        Every sentence chunk of the request that shares a voice, language and speed goes to the engine in ONE
+        `synth_batch` call, so qwentts starts one `qwen-tts` process for a whole job instead of one per
+        sentence (each start loads the 1.7B talker and the codec).
+        """
+        plans = [chunk_text(text, cliff_lines=cliffs) for text, _v, _s, cliffs in entries]
+        if any(not chunks for chunks in plans):
             raise HTTPException(400, "input has no speakable text")
-        use_seed = voice_seed(voice.name) if seed is None else seed
         ensure_loaded()
-        audios = engine.synth_batch([c.text for c in chunks], voice, speed=speed, seed=use_seed)
+        groups: dict[tuple[str, str, float], list[tuple[int, int]]] = {}
+        for i, (_text, voice, speed, _cliffs) in enumerate(entries):
+            for j in range(len(plans[i])):
+                groups.setdefault((voice.name, voice.language, speed), []).append((i, j))
+        audio: dict[tuple[int, int], np.ndarray] = {}
+        for refs in groups.values():
+            _t, voice, speed, _c = entries[refs[0][0]]
+            use_seed = voice_seed(voice.name) if seed is None else seed
+            texts = [plans[i][j].text for i, j in refs]
+            made = engine.synth_batch(texts, voice, speed=speed, seed=use_seed)
+            for ref, a in zip(refs, made, strict=True):
+                audio[ref] = a
         sr = engine.sr
-        return stitch(
-            [(trim_silence(a, sr), c.pause_after_ms) for a, c in zip(audios, chunks, strict=True)], sr
-        )
+        return [
+            stitch([(trim_silence(audio[(i, j)], sr), c.pause_after_ms) for j, c in enumerate(chunks)], sr)
+            for i, chunks in enumerate(plans)
+        ]
+
+    def render(text: str, voice: VoiceSpec, speed: float, seed: int | None, cliffs: list[str]) -> np.ndarray:
+        return render_many([(text, voice, speed, cliffs)], seed)[0]
 
     @app.exception_handler(NsError)
     async def ns_error_handler(request: Request, exc: NsError) -> JSONResponse:
@@ -149,7 +189,7 @@ def create_app(engine: Engine, library: VoiceLibrary, *, log: NsLogger | None = 
     def speech(req: SpeechReq) -> Response:
         if req.response_format != "wav":
             raise HTTPException(400, "only response_format 'wav' is supported")
-        voice = get_voice(req.voice)
+        voice = with_language(get_voice(req.voice), req.language)
         with lock:
             x = render(req.input, voice, req.speed, req.seed, req.cliff_lines)
             sr = engine.sr
@@ -166,8 +206,11 @@ def create_app(engine: Engine, library: VoiceLibrary, *, log: NsLogger | None = 
         total = 0.0
         t0 = time.perf_counter()
         with lock:
-            for it in req.items:
-                x = render(it.input, voices_by_name[it.voice], it.speed, req.seed, it.cliff_lines)
+            entries = [
+                (it.input, with_language(voices_by_name[it.voice], it.language), it.speed, it.cliff_lines)
+                for it in req.items
+            ]
+            for it, x in zip(req.items, render_many(entries, req.seed), strict=True):
                 path = out_dir / f"{it.id}.wav"
                 seconds = write_wav(path, x, engine.sr)
                 total += seconds
@@ -188,7 +231,9 @@ def create_app(engine: Engine, library: VoiceLibrary, *, log: NsLogger | None = 
         try:
             with lock:
                 ensure_loaded()
-                v = library.add_design(req.name, req.description, engine=engine, language=req.language)
+                v = library.add_design(
+                    req.name, req.description, engine=engine, language=language_name(req.language)
+                )
         except ValueError as e:
             raise HTTPException(400, str(e)) from e
         return {"name": v.name, "sample_path": str(library.sample_path(v.name))}
@@ -199,7 +244,14 @@ def create_app(engine: Engine, library: VoiceLibrary, *, log: NsLogger | None = 
             raise HTTPException(400, "rights_confirmed must be true: you must be allowed to clone this voice")
         missing = engine.missing_model("clone")
         if missing:
-            return JSONResponse(status_code=409, content={"missing_model": missing})
+            return JSONResponse(
+                status_code=409,
+                content=missing_body(
+                    missing, "NS-E202",
+                    f"the voice cloning model is not installed ({missing}): "
+                    "run the installer's model step again",
+                ),
+            )
         try:
             with lock:
                 ensure_loaded()
@@ -209,7 +261,7 @@ def create_app(engine: Engine, library: VoiceLibrary, *, log: NsLogger | None = 
                     req.ref_text,
                     req.rights_confirmed,
                     engine=engine,
-                    language=req.language,
+                    language=language_name(req.language),
                 )
         except ValueError as e:
             raise HTTPException(400, str(e)) from e

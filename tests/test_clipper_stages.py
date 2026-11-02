@@ -328,3 +328,28 @@ def test_a_clip_whose_metadata_fails_is_skipped_not_the_job(tmp_home: Path, tmp_
     assert "skipped" not in sheets[0] and sheets[1]["skipped"].startswith("NS-E603")
     assert list(ctx.read_json("outbox/manifest.json")) == ["c1"]
     assert ctx.read_json("outbox/skipped.json") == {"c2": "metadata check failed"}
+
+
+@needs_ffmpeg
+def test_clips_lost_one_to_seo_and_one_to_qc_are_an_error_with_the_reasons(
+    tmp_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Re-review row 12: neither stage raised, so the job ended 'done' with an empty Outbox."""
+    import json
+
+    good = json.loads((LLM_FIXTURES / "clip_seo.json").read_text(encoding="utf-8"))
+    bad = dict(good, title="Banned video: the route")
+    ctx = make_job(tmp_path)
+    ctx.services.llm = FakeLlm(LLM_FIXTURES, overrides={"clip_seo": [bad, bad, good]})  # c1 skipped twice
+    real = sc.media_qc.run_qc
+
+    def flaky(item, *a, **kw):
+        res = real(item, *a, **kw)
+        return res.model_copy(update={"passed": False, "reason": "black_frames"}) if item == "c2" else res
+
+    monkeypatch.setattr(sc.media_qc, "run_qc", flaky)
+    with pytest.raises(NsError) as ei:
+        orchestrator.run_job(ctx)
+    assert ei.value.code == "NS-E404" and "c1: metadata check failed" in ei.value.detail
+    assert "c2: black_frames" in ei.value.detail
+    assert ctx.read_json("outbox/skipped.json") == {"c1": "metadata check failed", "c2": "black_frames"}
