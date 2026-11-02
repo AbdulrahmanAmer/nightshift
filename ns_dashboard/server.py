@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import tempfile
 import threading
 import webbrowser
 from collections.abc import AsyncIterator, Iterator
@@ -33,6 +34,7 @@ from ns_dashboard.handlers import Dashboard, build_state, default_static_dir
 from ns_dashboard.security import is_loopback_host, is_loopback_origin
 from ns_dashboard.state import AppState
 from ns_dashboard.supervisor_link import EventRelay, SupervisorLink
+from ns_dashboard.uploads import tmp_dir
 
 TRUE_WORDS = {"true", "1", "on", "yes"}
 CSP = (
@@ -605,6 +607,22 @@ def create_app(
     return app
 
 
+def configure_tmp(paths: Paths) -> Path:
+    """Point Starlette's upload spooling and Python's temporary files at the `tmp` folder of the home.
+
+    A multipart upload is spooled to a temporary file before the route sees it; by default that is `%TEMP%` on C:,
+    so a 30 GB recording needed that much room there as well as on the Nightshift drive. Leftovers from a
+    crashed run are removed.
+    """
+    folder = tmp_dir(paths)
+    folder.mkdir(parents=True, exist_ok=True)
+    for old in folder.iterdir():
+        if old.is_file():
+            old.unlink(missing_ok=True)
+    tempfile.tempdir = str(folder)
+    return folder
+
+
 def main(argv: list[str] | None = None) -> int:
     """`python -m ns_dashboard.server [--port 8100] [--open] [--fake-services]`."""
     ap = argparse.ArgumentParser(prog="python -m ns_dashboard.server", description="Nightshift Dashboard")
@@ -614,6 +632,7 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     import uvicorn
 
+    configure_tmp(Paths.from_env())
     app = create_app(fake_services=args.fake_services)
     url = f"http://127.0.0.1:{args.port}"
     sys.stdout.write(f"Nightshift Dashboard: {url}\n")

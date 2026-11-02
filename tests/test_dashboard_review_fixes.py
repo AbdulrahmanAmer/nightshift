@@ -238,3 +238,25 @@ def test_job_dict_has_step_and_steps_from_the_progress_message(tmp_home: Path):
     d = state.store.get(job.job_id).to_dict()  # type: ignore[union-attr]
     assert (d["stage"], d["step"], d["steps"]) == ("download", None, None)
     assert dash.jobs.get(job.job_id)["steps"] is None
+
+
+# ------------------------------------------------------------------ row 16: uploads are spooled under <home>\tmp
+
+
+def test_server_spools_uploads_under_the_home_tmp(tmp_home: Path, monkeypatch: pytest.MonkeyPatch):
+    """Starlette spooled every multipart upload to %TEMP% on C: before `import_stream` copied it again."""
+    import tempfile
+
+    from ns_common.paths import Paths
+    from ns_dashboard.server import configure_tmp
+
+    monkeypatch.setattr(tempfile, "tempdir", None)
+    stale = tmp_home / "tmp" / "old.part"
+    stale.parent.mkdir()
+    stale.write_bytes(b"x")
+    folder = configure_tmp(Paths.from_env())
+    assert folder == tmp_home / "tmp" and tempfile.gettempdir() == str(folder)
+    assert not stale.exists()
+    with tempfile.SpooledTemporaryFile(max_size=1) as f:  # what Starlette's multipart parser uses
+        f.write(b"abc")
+        assert Path(f._file.name).parent == folder  # type: ignore[attr-defined]
