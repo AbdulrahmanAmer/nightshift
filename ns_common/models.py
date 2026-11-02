@@ -778,6 +778,7 @@ class Status(Strict):
     next_run: str | None = None
     next_run_in_s: int | None = None
     schedule_time: str | None = None
+    schedule_registered: bool | None = None  # False: Windows has no 'Nightshift Daily' task (NS-W206)
     outbox: dict[str, int] = {}
     channels: list[StatusChannel] = []
     services: dict[str, StatusService] = {}

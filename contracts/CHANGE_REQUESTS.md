@@ -495,3 +495,9 @@ Format per entry:
 - **Change:** `contracts/errors.json` gains `NS-W114` ("A designed voice was chosen but the voice design model is not being downloaded."). `installer.stage2.answers.InstallerAnswers.include_voicedesign` becomes `bool | None = None` (installer-only field, not in `ns_common.models.Answers`): absent means "infer", so a designed voice fetches the VoiceDesign talker in `s03_download_models`; an explicit `false` with a designed voice is honoured and warns `NS-W114`.
 - **Why:** a designed voice cannot be created without the model; an unattended answers file that forgot the flag should not leave the partner with a voice that fails on first use.
 - **Status:** applied on `feat/release-loose-ends`.
+
+## CR-REREVIEW-C9-1: `Status.schedule_registered` (`feat/release-rereview-dashboard`)
+- **From:** release builder, dashboard re-review (runtime re-review item: no nightly task, NS-W206)
+- **Change:** `ns_common.models.Status` gains `schedule_registered: bool | None = None` and `contracts/schemas/status.schema.json` the same property. `GET /api/status` and `GET /api/settings` carry it: False when `config/schedule.json` does not exist, so Windows has no `Nightshift Daily` task.
+- **Why:** the top-bar next-run chip and the Schedule card say "No nightly task; videos are made only while Nightshift is open" and offer Try again, instead of showing a run time nothing will start.
+- **Status:** applied on `feat/release-rereview-dashboard`.

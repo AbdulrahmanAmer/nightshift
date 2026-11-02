@@ -441,6 +441,18 @@
       "default": null,
       "title": "Schedule Time"
     },
+    "schedule_registered": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Schedule Registered"
+    },
     "outbox": {
       "additionalProperties": {
         "type": "integer"
