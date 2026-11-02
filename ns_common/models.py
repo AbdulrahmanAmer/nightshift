@@ -779,6 +779,8 @@ class Status(Strict):
     next_run_in_s: int | None = None
     schedule_time: str | None = None
     schedule_registered: bool | None = None  # False: Windows has no 'Nightshift Daily' task (NS-W206)
+    # interactive_only: Windows refused the unattended mode (NS-W205); it runs only while signed in
+    schedule_mode: Literal["registered", "interactive_only", "none"] | None = None
     outbox: dict[str, int] = {}
     channels: list[StatusChannel] = []
     services: dict[str, StatusService] = {}

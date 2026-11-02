@@ -35,11 +35,27 @@ def read_run_time(paths: Paths) -> str | None:
     return run_time if isinstance(run_time, str) and valid_time(run_time) else None
 
 
-def write_run_time(paths: Paths, run_time: str) -> None:
-    """Persist the schedule so the supervisor knows when the next run is due."""
+def write_run_time(paths: Paths, run_time: str, mode: str = "registered") -> None:
+    """Persist the schedule so the supervisor knows when the next run is due.
+
+    `mode` is `registered` (the task runs unattended) or `interactive_only` (Windows refused the unattended
+    mode, NS-W205: it runs only while the owner is signed in).
+    """
     f = schedule_file(paths)
     f.parent.mkdir(parents=True, exist_ok=True)
-    f.write_text(json.dumps({"run_time": run_time, "task_name": TASK_NAME}, indent=2) + "\n", "utf-8")
+    data = {"run_time": run_time, "task_name": TASK_NAME, "mode": mode}
+    f.write_text(json.dumps(data, indent=2) + "\n", "utf-8")
+
+
+def read_schedule_mode(paths: Paths) -> str:
+    """`registered`, `interactive_only` or `none` (no task). A file without `mode` counts as `registered`."""
+    if read_run_time(paths) is None:
+        return "none"
+    try:
+        mode = json.loads(schedule_file(paths).read_text(encoding="utf-8")).get("mode")
+    except (OSError, ValueError, AttributeError):
+        return "registered"
+    return "interactive_only" if mode == "interactive_only" else "registered"
 
 
 def clear_run_time(paths: Paths) -> None:

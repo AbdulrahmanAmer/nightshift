@@ -134,8 +134,9 @@ def install(paths: Paths, run_time: str | None, app_path: Path) -> str:
     if not valid_time(when):
         raise ScheduleError(f"time must be HH:MM (24 h), got {when!r}")
     out = _run(build_install_script(paths, when, app_path))
-    write_run_time(paths, when)
-    note = f"; {INTERACTIVE_NOTE}" if "registered:interactive" in out else ""
+    interactive = "registered:interactive" in out
+    write_run_time(paths, when, "interactive_only" if interactive else "registered")
+    note = f"; {INTERACTIVE_NOTE}" if interactive else ""
     return f"registered ({TASK_NAME} daily at {when}{note})"
 
 

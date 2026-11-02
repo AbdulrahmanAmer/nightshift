@@ -501,3 +501,9 @@ Format per entry:
 - **Change:** `ns_common.models.Status` gains `schedule_registered: bool | None = None` and `contracts/schemas/status.schema.json` the same property. `GET /api/status` and `GET /api/settings` carry it: False when `config/schedule.json` does not exist, so Windows has no `Nightshift Daily` task.
 - **Why:** the top-bar next-run chip and the Schedule card say "No nightly task; videos are made only while Nightshift is open" and offer Try again, instead of showing a run time nothing will start.
 - **Status:** applied on `feat/release-rereview-dashboard`.
+
+## CR-PRETAG-C9-1: `Status.schedule_mode` (`feat/release-0.1.1-pretag`)
+- **From:** release builder, system-gaps row 3 (NS-W205: the task is registered "run only when the user is logged on")
+- **Change:** `ns_common.models.Status` gains `schedule_mode: Literal["registered", "interactive_only", "none"] | None = None` and `contracts/schemas/status.schema.json` the same property. `schedule_registered` stays (true for `registered` and `interactive_only`). `config/schedule.json` gains `mode` (`registered` | `interactive_only`, written by `ns schedule install` from the PowerShell result; a file without it reads as `registered`); `ns_supervisor.schedule_cfg.read_schedule_mode` returns `none` without a valid file. `GET /api/status` and `GET /api/settings` carry it.
+- **Why:** the top-bar chip and Settings say "Runs at 03:00 only while you are signed in" in a warning style; without it an owner who signs out instead of locking the screen gets no run and no hint. The next-run countdown is unchanged.
+- **Status:** applied on `feat/release-0.1.1-pretag`.

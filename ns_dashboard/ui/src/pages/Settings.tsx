@@ -5,7 +5,7 @@ import { useEffect, useState } from "react";
 import { useApp, useLoad } from "../lib/app";
 import { api, ApiError } from "../lib/api";
 import type { Job, LogLine, ModelsState, Settings as S, UpdateState } from "../lib/types";
-import { dayInline, NO_TASK, plural } from "../lib/format";
+import { dayInline, interactiveOnly, NO_TASK, plural } from "../lib/format";
 import { cx } from "../ui/kit";
 import { Lockup } from "../ui/Lockup";
 import { Badge, Button, Icon, Card, CardHeader, DashGrid, IconButton, Input, LinkButton, ProgressBar, SegmentedControl, Select, SettingRow, SPAN, StatusDot, Switch, type SegmentOption } from "../components/ref12";
@@ -126,6 +126,11 @@ export default function Settings() {
             </SettingRow>
             {s && s.schedule_registered === false && (
               <SettingRow title="No nightly task" sub={<>{NO_TASK}. Windows did not accept the scheduled task, so {s.schedule_time} is only a preference</>}>
+                <Button variant="soft" leadingIcon="refresh" onClick={() => put({ schedule_time: s.schedule_time }, `Nightly task set for ${s.schedule_time}`)}>Try again</Button>
+              </SettingRow>
+            )}
+            {s && s.schedule_mode === "interactive_only" && (
+              <SettingRow title={interactiveOnly(s.schedule_time)} sub="Windows would not run the task while you are signed out. Lock the screen instead of signing out, or the night's run will not start">
                 <Button variant="soft" leadingIcon="refresh" onClick={() => put({ schedule_time: s.schedule_time }, `Nightly task set for ${s.schedule_time}`)}>Try again</Button>
               </SettingRow>
             )}

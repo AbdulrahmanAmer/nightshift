@@ -100,6 +100,15 @@ def scheduled_run_time(paths: Paths) -> str | None:
     return read_run_time(paths)
 
 
+def scheduled_mode(paths: Paths) -> str:
+    """`registered`, `interactive_only` (NS-W205: runs only while signed in) or `none` (no nightly task)."""
+    try:
+        from ns_supervisor.schedule_cfg import read_schedule_mode
+    except ImportError:
+        return "none"
+    return read_schedule_mode(paths)
+
+
 def load_dashboard_settings(paths: Paths) -> dict[str, Any]:
     """Settings with defaults filled in; a missing or corrupt file yields the defaults.
 

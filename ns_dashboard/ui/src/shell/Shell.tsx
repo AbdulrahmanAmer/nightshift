@@ -4,7 +4,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useApp, useLoad } from "../lib/app";
 import { api } from "../lib/api";
-import { NO_TASK, doneWords, fmtClock, fmtDay, fmtWhen, plural, stoppedAt, store } from "../lib/format";
+import { NO_TASK, interactiveOnly, doneWords, fmtClock, fmtDay, fmtWhen, plural, stoppedAt, store } from "../lib/format";
 import type { Job, MorningNote, Status } from "../lib/types";
 import { cx } from "../ui/kit";
 import { Chat } from "../pages/Assistant";
@@ -146,6 +146,7 @@ function TopBar() {
   const { status, demo, ask, route, theme, setTheme, confirm, toast, refresh } = useApp();
   const eng = engineText(status);
   const noTask = !demo && status?.schedule_registered === false; // Windows has no nightly task (NS-W206)
+  const interactive = !demo && status?.schedule_mode === "interactive_only"; // the task runs only while signed in (NS-W205)
   const [title, sub] = TITLES[route.name] || TITLES.queue!;
   const waiting = status?.queue?.scheduled ?? 0;
   const quit = async () => {
@@ -164,6 +165,7 @@ function TopBar() {
         <div className="hidden min-w-0 items-center gap-2 @min-[760px]:flex @min-[1100px]:ml-auto">
           <StatusChip tone={DOT[eng.tone]} live title="What the engine is doing">{eng.text}</StatusChip>
           <span className="hidden @min-[960px]:contents"><StatusChip tone={noTask ? "attention" : "muted"} title={noTask ? NO_TASK : "Next automatic run"}>{noTask ? "No nightly task" : status?.next_run ? <>Next run <span className="ds-num">{fmtWhen(status.next_run)}</span></> : "Automatic runs off"}</StatusChip></span>
+          {interactive && <span className="hidden @min-[960px]:contents"><StatusChip tone="attention" title="Windows would not run the nightly task while you are signed out (NS-W205)">{interactiveOnly(status?.schedule_time)}</StatusChip></span>}
         </div>
         <span className="hidden @min-[1180px]:contents"><DigitalClock variant="inline" /></span>
         <span className="hidden @min-[760px]:contents"><SegmentedControl label="Theme" value={theme} onChange={setTheme} options={THEMES} /></span>
