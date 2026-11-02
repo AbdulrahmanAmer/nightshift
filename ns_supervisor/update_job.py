@@ -9,8 +9,8 @@ the engine's job allows), with the install home as its working directory (a proc
 folder blocks the folder swap). When the engine's job does not allow breakaway (an engine started by an
 older version), the worker is created through WMI (`Win32_Process.Create`), which starts it outside the job.
 
-Progress is visible in two places: the log file (`logs\\update-<time>.log`) and `run\\update-status.json`
-(`starting`, `running`, then `done`, `uptodate` or `failed`).
+Progress is visible in two places: the log file (`logs\\update-<time>.log`) and `run\\update_state.json`
+(`running`, then `done` or `failed`; the dashboard serves it at /api/update/state).
 """
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, TextIO
@@ -39,7 +40,7 @@ DETACH_FLAGS = CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS
 PARENT_GRACE_S = 2.0
 PARENT_WAIT_MAX_S = 120.0
 
-DONE_STATES = ("done", "uptodate", "failed")
+DONE_STATES = ("done", "failed")
 
 PopenFn = Callable[..., Any]
 
@@ -50,14 +51,17 @@ def under_engine(env: Mapping[str, str] | None = None) -> bool:
 
 
 def status_file(paths: Paths) -> Path:
-    """`run\\update-status.json`."""
-    return paths.home / "run" / "update-status.json"
+    """`run\\update_state.json`."""
+    return paths.home / "run" / "update_state.json"
 
 
 def write_status(paths: Paths, state: str, message: str = "", **extra: Any) -> None:
-    """Replace the status file atomically (temp file, then rename)."""
+    """Replace the state file atomically: `{state, old, new, message, updated_at}` plus log/pid extras."""
     target = status_file(paths)
-    data = {"state": state, "message": message, "at": datetime.now().isoformat(timespec="seconds"), **extra}
+    data = {
+        "state": state, "old": "", "new": "", "message": message,
+        "updated_at": datetime.now().isoformat(timespec="seconds"), **extra,
+    }
     target.parent.mkdir(parents=True, exist_ok=True)
     tmp = target.with_name(target.name + ".tmp")
     tmp.write_text(json.dumps(data), encoding="utf-8")
@@ -176,11 +180,11 @@ def launch(
     spawn: Callable[..., int] | None = None,
     now: datetime | None = None,
 ) -> tuple[int, Path]:
-    """Start the worker for `forwarded` arguments; returns (pid, log path). Writes the `starting` status."""
+    """Start the worker for `forwarded` arguments; returns (pid, log path). Writes the `running` state."""
     log = new_log_path(paths, now)
     log.parent.mkdir(parents=True, exist_ok=True)
     argv = worker_argv(forwarded, log=log, home=paths.home, wait_pid=wait_pid)
-    write_status(paths, "starting", "Starting the update.", log=str(log))
+    write_status(paths, "running", "Starting the update.", log=str(log))
     cwd = paths.home if paths.home.is_dir() else Path(os.path.expanduser("~"))
     pid = (spawn or spawn_detached)(argv, cwd=cwd)
     return pid, log
@@ -229,18 +233,30 @@ def _echo_new(log: Path, offset: int, echo: Callable[[str], None]) -> int:
     return offset + len(chunk)
 
 
+@dataclass
+class Outcome:
+    """What an update did: a one-line sentence, the versions, and whether anything changed."""
+
+    message: str
+    old: str = ""
+    new: str = ""
+    updated: bool = True
+
+
 def run_worker(
     paths: Paths,
-    body: Callable[[], str],
+    body: Callable[[], Outcome],
     *,
     log: Path | None = None,
     wait_pid: int | None = None,
     wait: Callable[[int], None] | None = None,
+    old_version: str = "",
 ) -> int:
     """Run the update in this (detached) process; returns the exit code.
 
-    stdout and stderr go to `log` first thing: a detached process has no console. `body` returns a one-line
-    summary and raises `NsError` on failure.
+    stdout and stderr go to `log` first thing: a detached process has no console. `body` returns an `Outcome`
+    and raises `NsError` on failure. The state file says `running` BEFORE the engine is stopped, then `done`
+    or `failed` (`{state, old, new, message, updated_at}`, read by the dashboard).
     """
     sink: TextIO | None = None
     saved = (sys.stdout, sys.stderr)
@@ -249,14 +265,14 @@ def run_worker(
         sink = log.open("a", encoding="utf-8", buffering=1)
         sys.stdout = sink
         sys.stderr = sink
-    base: dict[str, Any] = {"log": str(log) if log else "", "pid": os.getpid()}
+    base: dict[str, Any] = {"log": str(log) if log else "", "pid": os.getpid(), "old": old_version}
     try:
         write_status(paths, "running", "Waiting for Nightshift to close.", **base)
         if wait_pid is not None:
             (wait or wait_for_parent)(wait_pid)
         write_status(paths, "running", "Updating.", **base)
         try:
-            summary = body()
+            out = body()
         except NsError as e:
             sys.stderr.write(f"{e}\nHint: {e.definition.hint}\n")
             write_status(paths, "failed", f"{e.code}: {e.detail}", exit_code=1, **base)
@@ -265,8 +281,8 @@ def run_worker(
             sys.stderr.write(f"{type(e).__name__}: {e}\n")
             write_status(paths, "failed", f"{type(e).__name__}: {e}", exit_code=1, **base)
             return 1
-        state = "uptodate" if summary.startswith("Already") else "done"
-        write_status(paths, state, summary, exit_code=0, **base)
+        write_status(paths, "done", out.message, exit_code=0, **{**base, "old": out.old or old_version,
+                                                                  "new": out.new, "updated": out.updated})
         return 0
     finally:
         if sink is not None:

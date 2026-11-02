@@ -127,7 +127,8 @@ def test_detach_starts_a_worker_and_returns_at_once(tmp_path: Path, monkeypatch:
     assert cwd == home                                   # never the app folder
     assert str(z.resolve()) in argv and "--worker" in argv and "--wait-pid" in argv
     assert argv[argv.index("--home") + 1] == str(home)
-    assert update_job.read_status(Paths(home))["state"] == "starting"
+    st = update_job.read_status(Paths(home))
+    assert st["state"] == "running" and update_job.status_file(Paths(home)).name == "update_state.json"
 
 
 def test_below_the_engine_the_update_detaches_without_being_asked(
@@ -177,18 +178,21 @@ def test_the_worker_logs_reports_and_waits_for_the_caller(tmp_path: Path) -> Non
     waited: list[int] = []
     log = paths.logs / "u.log"
     code = update_job.run_worker(
-        paths, lambda: "Now on 0.2.0 (was 0.1.0).", log=log, wait_pid=1234, wait=waited.append
+        paths, lambda: update_job.Outcome("Now on 0.2.0 (was 0.1.0).", "0.1.0", "0.2.0"), log=log,
+        wait_pid=1234, wait=waited.append, old_version="0.1.0",
     )
     st = update_job.read_status(paths)
     assert code == 0 and waited == [1234]
     assert st["state"] == "done" and st["exit_code"] == 0 and st["log"] == str(log)
+    assert (st["old"], st["new"], st["message"]) == ("0.1.0", "0.2.0", "Now on 0.2.0 (was 0.1.0).")
+    assert st["updated_at"]                                   # the contract the dashboard reads
 
 
 def test_a_failing_worker_exits_one_and_says_why(tmp_path: Path) -> None:
     paths = Paths(tmp_path / "home")
     log = paths.logs / "u.log"
 
-    def boom() -> str:
+    def boom() -> update_job.Outcome:
         raise NsError("NS-E702", "could not swap directories")
 
     code = update_job.run_worker(paths, boom, log=log)
@@ -199,8 +203,10 @@ def test_a_failing_worker_exits_one_and_says_why(tmp_path: Path) -> None:
 
 def test_an_up_to_date_answer_is_not_a_failure(tmp_path: Path) -> None:
     paths = Paths(tmp_path / "home")
-    assert update_job.run_worker(paths, lambda: "Already on the newest version (0.1.0).") == 0
-    assert update_job.read_status(paths)["state"] == "uptodate"
+    out = update_job.Outcome("Already on the newest version (0.1.0).", "0.1.0", "0.1.0", updated=False)
+    assert update_job.run_worker(paths, lambda: out) == 0
+    st = update_job.read_status(paths)
+    assert st["state"] == "done" and st["updated"] is False
 
 
 def test_wait_for_parent_polls_until_it_is_gone() -> None:
@@ -252,3 +258,35 @@ def test_a_worker_started_below_the_engine_survives_the_job_closing(tmp_path: Pa
         job.close()
         if worker:
             subprocess.run(["taskkill", "/PID", str(worker), "/T", "/F"], capture_output=True, check=False)
+
+
+def test_state_says_running_before_the_engine_is_stopped(tmp_path: Path) -> None:
+    paths = Paths(tmp_path / "home")
+    seen: list[str] = []
+
+    def body() -> update_job.Outcome:
+        seen.append(str(update_job.read_status(paths)["state"]))      # what the dashboard would read now
+        return update_job.Outcome("Now on 0.2.0 (was 0.1.0).", "0.1.0", "0.2.0")
+
+    update_job.run_worker(paths, body, old_version="0.1.0")
+    assert seen == ["running"]
+    assert update_job.read_status(paths)["state"] == "done"
+
+
+def test_a_github_update_ends_with_a_json_result_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.test_ns_update_github import pin_latest
+
+    home = tmp_path / "home"
+    pin_latest(monkeypatch, "99.0.0")
+    monkeypatch.setattr(
+        cli.releases, "download", lambda rel, dest, client=None: dest / rel.zip_name
+    )
+    done = update.UpdateResult("0.1.0", "99.0.0", ["scheduled task re-registered"])
+    monkeypatch.setattr(update, "update_app", lambda *a, **k: done)
+    r = invoke(home, "update", "--github", "--worker")
+    lines = r.output.strip().splitlines()
+    assert r.exit_code == 0 and "Now on 99.0.0 (was 0.1.0)." in r.output
+    assert json.loads(lines[-1]) == {"updated": True, "old": "0.1.0", "new": "99.0.0"}
+    assert update_job.read_status(Paths(home))["new"] == "99.0.0"

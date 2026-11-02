@@ -172,8 +172,8 @@ def _reregister(paths: Paths, app_dir: Path) -> list[str]:
     return notes
 
 
-def _apply_update(paths: Paths, zip_path: Path | None, rollback: bool, github: bool) -> str:
-    """Do the update in this process (the worker). Prints progress; returns a one-line summary."""
+def _apply_update(paths: Paths, zip_path: Path | None, rollback: bool, github: bool) -> update_job.Outcome:
+    """Do the update in this process (the worker). Prints progress; its last line is a JSON result."""
     app_dir = control.app_path(paths)
     env = update.UpdateEnv(
         stop=lambda: _stop_engine(paths),
@@ -185,23 +185,26 @@ def _apply_update(paths: Paths, zip_path: Path | None, rollback: bool, github: b
         res = update.rollback_app(app_dir, env, paths=paths)
     elif github:
         rel = releases.fetch_latest()
-        if not releases.is_newer(rel.version, update.current_version(app_dir)):
-            msg = f"Already on the newest version ({update.current_version(app_dir)})."
+        current = update.current_version(app_dir)
+        if not releases.is_newer(rel.version, current):
+            msg = f"Already on the newest version ({current})."
             typer.echo(msg)
-            typer.echo(json.dumps({"update_available": False, "latest": rel.version}))
-            return msg
+            typer.echo(json.dumps({"updated": False, "old": current, "new": current}))
+            return update_job.Outcome(msg, current, current, updated=False)
         typer.echo(f"Downloading {rel.zip_name} ...")
         res = update.update_app(releases.download(rel, paths.data / "updates"), app_dir, env, paths=paths)
     else:
         assert zip_path is not None
         res = update.update_app(zip_path, app_dir, env, paths=paths)
-    typer.echo(f"Now on {res.new_version} (was {res.old_version}).")
+    msg = f"Now on {res.new_version} (was {res.old_version})."
+    typer.echo(msg)
     for n in res.notes:
         typer.echo(f"  {n}")
-    return f"Now on {res.new_version} (was {res.old_version})."
+    typer.echo(json.dumps({"updated": True, "old": res.old_version, "new": res.new_version}))
+    return update_job.Outcome(msg, res.old_version, res.new_version, updated=True)
 
 
-@app.command("update")
+.command("update")
 def cmd_update(
     zip_path: Annotated[Path | None, typer.Argument(help="Nightshift-<version>.zip")] = None,
     rollback: Annotated[bool, typer.Option("--rollback", help="Restore the previous version.")] = False,
@@ -233,7 +236,8 @@ def cmd_update(
         return
     if worker:
         code = update_job.run_worker(
-            paths, lambda: _apply_update(paths, zip_path, rollback, github), log=log, wait_pid=wait_pid
+            paths, lambda: _apply_update(paths, zip_path, rollback, github), log=log, wait_pid=wait_pid,
+            old_version=update.current_version(control.app_path(paths)),
         )
         raise typer.Exit(code)
     forwarded: list[str] = []
