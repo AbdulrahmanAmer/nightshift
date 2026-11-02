@@ -441,14 +441,25 @@ class JobWorker:
         self._cv = threading.Condition()
         self._wake = False
         self._stopping = False
+        self._exited = False
         self._thread: threading.Thread | None = None
         self._running_id: str | None = None
 
     # --- control ---
     def start(self) -> None:
         """Start the worker thread (idempotent) after failing jobs a crashed process left running."""
-        if self._thread is not None and self._thread.is_alive():
-            return
+        t = self._thread
+        if t is not None and t.is_alive():
+            if self._stopping:  # stop() timed out (the thread is inside a long answer): let it carry on, never start a second
+                with self._cv:
+                    if not self._exited:
+                        self._stopping = False
+                        return
+                t.join(2.0)
+                if t.is_alive():
+                    return
+            else:
+                return
         interrupted = self.store.running_all()
         n = self.store.recover_interrupted()
         if n:
@@ -466,18 +477,26 @@ class JobWorker:
             except Exception as e:  # a sweep that fails must never stop the worker from starting
                 self.log.warn("sweep_failed", str(e))
         self._stopping = False
+        self._exited = False
         self._thread = threading.Thread(target=self._loop, name="ns-dashboard-worker", daemon=True)
         self._thread.start()
 
-    def stop(self, timeout: float = 5.0) -> None:
-        """Ask the thread to exit and wait up to `timeout` seconds."""
+    def stop(self, timeout: float = 5.0) -> bool:
+        """Ask the thread to exit and wait up to `timeout` seconds; True when it has ended.
+
+        A thread that is still inside a job or an Assistant answer is kept (not forgotten), so `start()` can
+        resume it and there are never two workers.
+        """
         with self._cv:
             self._stopping = True
             self._cv.notify_all()
         t = self._thread
         if t is not None:
             t.join(timeout)
+            if t.is_alive():
+                return False
         self._thread = None
+        return True
 
     def enqueue(self, job_id: str) -> None:
         """Wake the worker; the job must already be in the store."""
@@ -636,8 +655,19 @@ class JobWorker:
             self.log.warn("idle_hook_failed", str(e))
 
     def _loop(self) -> None:
+        try:
+            self._run_loop()
+        finally:
+            with self._cv:
+                self._exited = True
+
+    def _run_loop(self) -> None:
         next_poll = time.monotonic() + self.idle_poll_s
-        while not self._stopping:
+        while True:
+            with self._cv:  # the decision to leave is taken under the lock `start()` uses to resume us
+                if self._stopping:
+                    self._exited = True
+                    return
             if self.run_next():
                 self._ended = True
                 continue
@@ -651,6 +681,6 @@ class JobWorker:
                 continue
             with self._cv:
                 if self._stopping:
-                    break
+                    continue
                 self._cv.wait_for(lambda: self._wake or self._stopping, timeout=1.0)
                 self._wake = False

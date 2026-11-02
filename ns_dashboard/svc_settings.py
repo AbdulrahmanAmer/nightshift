@@ -33,6 +33,8 @@ POOL_COLUMNS = {
     "title_formulas": "title_formula",
 }
 MAX_BACKUP_BYTES = 1024 * 1024 * 1024
+#: How long an import waits for the job thread to finish an Assistant answer before it is refused.
+WORKER_STOP_WAIT_S = 120.0
 PREVIEW_TEXT = "This is how I will sound when I read your story."
 
 
@@ -311,7 +313,13 @@ class SettingsService:
         starts again, whether the restore worked or not.
         """
         was_started = self.s.worker.started
-        self.s.worker.stop()
+        if was_started and not self.s.worker.stop(WORKER_STOP_WAIT_S):
+            # the thread is inside an Assistant answer: carry on with it (no second worker) and ask again later
+            self.s.worker.start()
+            raise ApiError(
+                409, "assistant_busy", "Nightshift is still answering a saved request.",
+                hint="Wait a minute for the answer to finish, then import the settings again.",
+            )
         try:
             with self.s.db.released():
                 return self.s.adapters.backup.restore(zip_path)

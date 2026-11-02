@@ -653,3 +653,84 @@ def test_a_time_the_task_accepts_is_saved(tmp_home: Path):
 def test_the_refusal_note_says_not_saved():
     src = (Path(__file__).resolve().parents[1] / "ns_dashboard" / "adapters.py").read_text(encoding="utf-8")
     assert "Saved, but Windows did not update the nightly task" not in src and "Not saved: Windows refused" in src
+
+
+# ---------------------------------------------------------------- row 11: never two workers
+
+
+def worker_threads() -> list[threading.Thread]:
+    return [t for t in threading.enumerate() if t.name == "ns-dashboard-worker" and t.is_alive()]
+
+
+def test_stop_that_times_out_keeps_the_thread_and_start_resumes_it(tmp_home: Path):
+    from ns_common.logging import NsLogger
+    from ns_dashboard.jobs import JobWorker
+
+    paths = Paths.from_env()
+    store = JobStore(open_db(paths))
+    worker = JobWorker(store, {"verify": lambda ctl: {}}, EventHub(), NsLogger("dashboard", paths.logs))
+    gate, entered = threading.Event(), threading.Event()
+
+    def slow_answer() -> None:  # the Assistant answering a saved request
+        entered.set()
+        gate.wait(20)
+
+    worker.on_idle = slow_answer
+    store.create("verify", None, {})
+    worker.start()
+    try:
+        assert entered.wait(10)
+        assert worker.stop(0.2) is False  # still inside the answer
+        first = worker._thread
+        worker.start()
+        assert worker._thread is first and len(worker_threads()) == 1  # resumed, not doubled
+        gate.set()
+        job = store.create("verify", None, {})
+        worker.enqueue(job.job_id)
+        end = time.monotonic() + 10
+        while time.monotonic() < end and (store.get(job.job_id) or job).status != "done":
+            time.sleep(0.05)
+        assert store.get(job.job_id).status == "done"  # type: ignore[union-attr]  # the resumed thread works
+        assert worker.stop(5) is True and worker_threads() == []
+        worker.start()  # a clean restart after a clean stop starts exactly one
+        assert len(worker_threads()) == 1
+    finally:
+        gate.set()
+        worker.stop(5)
+
+
+def test_import_settings_refuses_while_an_answer_runs_and_never_adds_a_worker(tmp_home: Path, monkeypatch: pytest.MonkeyPatch):
+    import io
+    import zipfile
+
+    from ns_dashboard import svc_settings
+    from ns_dashboard.errors import ApiError
+    from tests.test_dashboard_api import make_env
+
+    client, state = make_env(tmp_home)
+    dash = client.app.state.dashboard  # type: ignore[attr-defined]
+    gate, entered = threading.Event(), threading.Event()
+    state.worker.on_idle = lambda: (entered.set(), gate.wait(20))[0]
+    state.store.create("verify", None, {})
+    monkeypatch.setattr(svc_settings, "WORKER_STOP_WAIT_S", 0.2)
+    restored: list[Any] = []
+    state.adapters.backup.restore = lambda z: restored.append(z) or ["ok"]  # type: ignore[method-assign]
+    state.worker.start()
+    try:
+        assert entered.wait(10)
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as z:
+            z.writestr("config/x.json", "{}")
+        buf.seek(0)
+        with pytest.raises(ApiError) as err:
+            dash.settings.import_settings("nightshift-backup.zip", buf)
+        assert err.value.status == 409 and err.value.code == "assistant_busy"
+        assert restored == [] and len(worker_threads()) == 1
+        gate.set()
+        time.sleep(0.5)
+        buf.seek(0)
+        out = dash.settings.import_settings("nightshift-backup.zip", buf)  # now it goes through
+        assert out["restored"] is True and len(restored) == 1 and len(worker_threads()) == 1
+    finally:
+        gate.set()
+        state.worker.stop(5)
