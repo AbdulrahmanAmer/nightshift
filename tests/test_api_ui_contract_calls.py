@@ -207,7 +207,9 @@ def test_assistant_confirm_and_dismiss_answer_an_action(tmp_home: Path):
 
 @needs_multipart
 def test_learn_and_settings_imports_answer_what_the_page_reads(seeded: Any):
-    client, _state, _ids = seeded
+    client, state, _ids = seeded
+    for running in state.store.running_all():  # a restore is refused while a job runs
+        state.store.finish(running.job_id, "done", "Done")
     learn = client.post("/api/learn/import", files={"file": ("export.csv", b"title,views\nA,10\nB,20\n", "text/csv")})
     assert learn.status_code == 200, learn.text
     assert_clean("LearnImported", learn.json(), "POST /learn/import")
@@ -224,6 +226,8 @@ def declared_chat_kinds() -> dict[str, str]:
     _ifaces, aliases = TYPES
     out: dict[str, str] = {}
     for alt in split_top(aliases["ChatEvent"], "|"):
+        if 'kind: "' not in alt:  # the alias starts with a `|`
+            continue
         kind = alt.split('kind: "', 1)[1].split('"', 1)[0]
         out[kind] = alt
     return out

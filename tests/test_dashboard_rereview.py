@@ -225,8 +225,7 @@ def series_worker(tmp_home: Path, **kw: Any):
 
 
 def queue_part(store: JobStore, series: Any) -> str:
-    (queued,) = series.queue_next("the-lift")
-    store.create("series_part", "after-dark", {"story_slug": "the-lift", "part_n": 2, "job_id": queued["job_id"]})
+    (queued,) = series.queue_next("the-lift")  # the fake inserts the `series_part` row itself, like the workshop
     return str(queued["job_id"])
 
 
