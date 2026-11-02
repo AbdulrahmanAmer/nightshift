@@ -130,3 +130,23 @@ def test_unknown_service_is_an_error(tmp_path: Path) -> None:
     with pytest.raises(NsError) as ei:
         services.build_service(_rt(), _paths(tmp_path), "whisper")
     assert ei.value.code == "NS-E202"
+
+
+def test_embed_launch_argv_carries_the_batch_flags(tmp_path: Path) -> None:
+    # Without -c/-b/-ub llama-server rejects inputs over 512 tokens; the 1,500-char windows need the full batch.
+    rt = Runtime.model_validate(
+        {
+            "llama": {"model_path": "C:/m/llm.gguf"},
+            "embed": {"model_path": "C:/m/embed.gguf", "ctx_size": 4096, "batch_size": 3072},
+        }
+    )
+    cmd = services.build_service(rt, _paths(tmp_path), "embed").cmd
+    assert cmd[cmd.index("-c") + 1] == "4096"
+    assert cmd[cmd.index("-b") + 1] == "3072"
+    assert cmd[cmd.index("-ub") + 1] == "3072"
+
+
+def test_embed_launch_argv_defaults_cover_the_window(tmp_path: Path) -> None:
+    cmd = services.build_service(_rt(), _paths(tmp_path), "embed").cmd
+    assert cmd[cmd.index("-c") + 1] == "2048"
+    assert cmd[cmd.index("-ub") + 1] == "2048"
