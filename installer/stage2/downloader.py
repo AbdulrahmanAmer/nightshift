@@ -522,7 +522,7 @@ def qwentts_item(manifest: Manifest, home: Path) -> DownloadItem | None:
     return release_zip_item("qwentts", pin.url, pin.sha256, Path(home))
 
 
-#: Executables the qwentts.cpp release zip holds (build-qwentts.yml packages them flat; there is no qwentts.exe).
+#: Programs in the qwentts.cpp release zip (build-qwentts.yml packages them flat; there is no qwentts.exe).
 QWENTTS_EXES = ("qwen-tts.exe", "qwen-codec.exe")
 
 

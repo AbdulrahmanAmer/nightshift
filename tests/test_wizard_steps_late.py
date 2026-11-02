@@ -540,7 +540,7 @@ def test_the_installer_and_the_reference_engine_use_one_hf_folder(tmp_path: Path
 def test_s08_falls_back_to_the_reference_engine_when_the_unpacked_zip_lacks_qwen_tts(tmp_path: Path):
     ctx, runner = smoke_ctx(tmp_path)
     ctx.set_flag("qwentts", "binary")
-    ctx.paths.bin_qwentts.mkdir(parents=True)
+    ctx.paths.bin_qwentts.mkdir(parents=True, exist_ok=True)
     (ctx.paths.bin_qwentts / "tts-server.exe").write_bytes(b"MZ")     # only the old, wrong program is there
     S08Smoke().run(ctx)
     assert ctx.flag("tts_fallback") is True and [c for c, _ in ctx.warnings] == ["NS-W301"]
@@ -549,7 +549,7 @@ def test_s08_falls_back_to_the_reference_engine_when_the_unpacked_zip_lacks_qwen
 def test_s08_keeps_qwentts_when_both_programs_are_there(tmp_path: Path):
     ctx, _ = smoke_ctx(tmp_path)
     ctx.set_flag("qwentts", "binary")
-    ctx.paths.bin_qwentts.mkdir(parents=True)
+    ctx.paths.bin_qwentts.mkdir(parents=True, exist_ok=True)
     for exe in ("qwen-tts.exe", "qwen-codec.exe"):
         (ctx.paths.bin_qwentts / exe).write_bytes(b"MZ")
     S08Smoke().run(ctx)

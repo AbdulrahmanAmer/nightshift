@@ -80,22 +80,107 @@ def desktop_dir(runner: Runner) -> Path | None:
     return Path(text) if text else None
 
 
+# WScript.Shell goes through the ANSI code page: a shortcut path with Arabic letters on an English-locale PC
+# (or any character outside the system code page) fails or is saved with '?'. IShellLinkW/IPersistFile are
+# the Unicode interfaces behind it; WScript.Shell stays as the fallback.
+_SHELL_LINK_CSHARP = """
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+
+public static class NsLink
+{
+    [ComImport, Guid("000214F9-0000-0000-C000-000000000046")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IShellLinkW
+    {
+        void GetPath([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder pszFile, int cch,
+            IntPtr pfd, int fFlags);
+        void GetIDList(out IntPtr ppidl);
+        void SetIDList(IntPtr pidl);
+        void GetDescription([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder pszName, int cch);
+        void SetDescription([MarshalAs(UnmanagedType.LPWStr)] string pszName);
+        void GetWorkingDirectory([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder pszDir, int cch);
+        void SetWorkingDirectory([MarshalAs(UnmanagedType.LPWStr)] string pszDir);
+        void GetArguments([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder pszArgs, int cch);
+        void SetArguments([MarshalAs(UnmanagedType.LPWStr)] string pszArgs);
+        void GetHotkey(out short pwHotkey);
+        void SetHotkey(short wHotkey);
+        void GetShowCmd(out int piShowCmd);
+        void SetShowCmd(int iShowCmd);
+        void GetIconLocation([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder pszIconPath, int cch,
+            out int piIcon);
+        void SetIconLocation([MarshalAs(UnmanagedType.LPWStr)] string pszIconPath, int iIcon);
+        void SetRelativePath([MarshalAs(UnmanagedType.LPWStr)] string pszPathRel, int dwReserved);
+        void Resolve(IntPtr hwnd, int fFlags);
+        void SetPath([MarshalAs(UnmanagedType.LPWStr)] string pszFile);
+    }
+
+    [ComImport, Guid("0000010B-0000-0000-C000-000000000046")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IPersistFile
+    {
+        void GetClassID(out Guid pClassID);
+        [PreserveSig] int IsDirty();
+        void Load([MarshalAs(UnmanagedType.LPWStr)] string pszFileName, int dwMode);
+        void Save([MarshalAs(UnmanagedType.LPWStr)] string pszFileName,
+            [MarshalAs(UnmanagedType.Bool)] bool fRemember);
+        void SaveCompleted([MarshalAs(UnmanagedType.LPWStr)] string pszFileName);
+        void GetCurFile([MarshalAs(UnmanagedType.LPWStr)] out string ppszFileName);
+    }
+
+    [ComImport, Guid("00021401-0000-0000-C000-000000000046")]
+    class ShellLinkObject { }
+
+    public static void Create(string lnk, string target, string args, string workdir, string desc,
+        string icon)
+    {
+        IShellLinkW link = (IShellLinkW)new ShellLinkObject();
+        try
+        {
+            link.SetPath(target);
+            link.SetArguments(args);
+            link.SetWorkingDirectory(workdir);
+            link.SetDescription(desc);
+            if (!string.IsNullOrEmpty(icon)) { link.SetIconLocation(icon, 0); }
+            ((IPersistFile)link).Save(lnk, true);
+        }
+        finally { Marshal.ReleaseComObject(link); }
+    }
+}
+"""
+
+
 def create_shortcut(
     runner: Runner, lnk: Path, target: str, arguments: str, workdir: Path, description: str,
     icon: Path | None = None,
 ) -> bool:
-    """Create a .lnk with WScript.Shell (`icon`, an .ico, becomes its IconLocation). True on success."""
+    """Create a .lnk (`icon`, an .ico, becomes its icon). True on success.
+
+    Unicode-safe through IShellLinkW; falls back to WScript.Shell when the compiled helper is unavailable.
+    """
+    icon_arg = ps_quote(str(icon)) if icon is not None else ""
     icon_part = f"$s.IconLocation = '{ps_quote(str(icon))},0'; " if icon is not None else ""
-    script = (
-        "$s = (New-Object -ComObject WScript.Shell).CreateShortcut("
+    script = "\n".join([
+        "$ErrorActionPreference = 'Stop'",
+        "try {",
+        "  Add-Type -TypeDefinition @'",
+        _SHELL_LINK_CSHARP,
+        "'@",
+        f"  [NsLink]::Create('{ps_quote(str(lnk))}', '{ps_quote(target)}', '{ps_quote(arguments)}', "
+        f"'{ps_quote(str(workdir))}', '{ps_quote(description)}', "
+        f"'{icon_arg}')",
+        "} catch {",
+        "  $s = (New-Object -ComObject WScript.Shell).CreateShortcut("
         f"'{ps_quote(str(lnk))}'); "
         f"$s.TargetPath = '{ps_quote(target)}'; "
         f"$s.Arguments = '{ps_quote(arguments)}'; "
         f"$s.WorkingDirectory = '{ps_quote(str(workdir))}'; "
         f"$s.Description = '{ps_quote(description)}'; "
         f"{icon_part}"
-        "$s.Save()"
-    )
+        "$s.Save()",
+        "}",
+    ])
     meta = {"lnk": str(lnk), "target": target, "arguments": arguments}
     if icon is not None:
         meta["icon"] = str(icon)
