@@ -78,7 +78,7 @@ def queue_voice(ctx: StepContext, ans: InstallerAnswers, channel: Channel) -> bo
     """Queue the designed or cloned voice chosen in setup; `studio` creates it on its first real run.
 
     It cannot be made here: the TTS engine (qwentts or the PyTorch fallback) is only settled by the smoke test
-    after this step, and a voice made by one engine is refused by the other (NS-E311). The request is plain
+    after this step, and a voice made by one engine is refused by the other. The request is plain
     JSON read by `ns_studio.voice_setup` (the studio venv imports no installer code). Returns False for a
     preset voice or when the voice already exists.
     """
