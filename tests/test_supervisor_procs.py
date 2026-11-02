@@ -1,6 +1,7 @@
 import json
 import subprocess
 import sys
+import types
 from pathlib import Path
 
 import httpx
@@ -142,3 +143,103 @@ def test_gpu_memory_used_sums_gpus(monkeypatch: pytest.MonkeyPatch) -> None:
     assert procs.gpu_memory_used_mb() == 300
     monkeypatch.setattr(procs, "_nvsmi", lambda args: "")
     assert procs.gpu_memory_used_mb() is None
+
+
+class FakePopen:
+    """Records what terminate() does to a process; `exits_on` says which call makes it exit."""
+
+    def __init__(self, calls: list[str], *, exits_on: str | None) -> None:
+        self.calls, self.exits_on, self.alive = calls, exits_on, True
+
+    def poll(self) -> int | None:
+        return None if self.alive else 0
+
+    def wait(self, timeout: float | None = None) -> int:
+        self.calls.append(f"wait({timeout})")
+        if self.exits_on == "soft":
+            self.alive = False
+        if self.alive and timeout is not None and timeout != 10:
+            raise subprocess.TimeoutExpired("fake", timeout)
+        self.alive = False
+        return 0
+
+    def kill(self) -> None:
+        self.calls.append("popen.kill")
+        self.alive = False
+
+
+def fake_proc(calls: list[str], *, exits_on: str | None) -> procs.Proc:
+    popen = FakePopen(calls, exits_on=exits_on)
+    return procs.Proc("tts", popen, Path("x.jsonl"), 0.0)  # type: ignore[arg-type]
+
+
+def run_terminate(*, soft_accepted: bool, exits_on: str | None, grace_s: float = 7) -> list[str]:
+    calls: list[str] = []
+    proc = fake_proc(calls, exits_on=exits_on)
+
+    def soft(pid: int) -> bool:
+        calls.append("soft")
+        return soft_accepted
+
+    def kill(pid: int) -> None:
+        calls.append("kill_tree")
+
+    procs.terminate(proc, grace_s, soft=soft, kill=kill)
+    return calls
+
+
+def test_terminate_asks_politely_and_waits_the_grace_before_the_hard_kill() -> None:
+    # a service that accepts the request but does not exit in time: soft, wait(grace), then kill
+    calls = run_terminate(soft_accepted=True, exits_on=None)
+    assert calls == ["soft", "wait(7)", "kill_tree", "popen.kill", "wait(10)"]
+
+
+def test_terminate_does_not_kill_a_service_that_exits_within_the_grace() -> None:
+    calls = run_terminate(soft_accepted=True, exits_on="soft")
+    assert calls == ["soft", "wait(7)"]
+    assert "kill_tree" not in calls
+
+
+def test_terminate_kills_at_once_when_the_polite_request_is_refused() -> None:
+    calls = run_terminate(soft_accepted=False, exits_on=None)
+    assert calls == ["soft", "kill_tree", "popen.kill", "wait(10)"]
+
+
+def test_terminate_of_an_exited_process_does_nothing() -> None:
+    calls: list[str] = []
+    proc = fake_proc(calls, exits_on=None)
+    proc.popen.alive = False  # type: ignore[attr-defined]
+    procs.terminate(proc, 5, soft=lambda pid: bool(calls.append("soft")), kill=lambda pid: calls.append("k"))
+    assert calls == []
+
+
+def test_soft_stop_never_uses_the_force_flag_and_kill_tree_always_does(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: list[list[str]] = []
+
+    class Done:
+        returncode = 0
+
+    def fake_run(cmd: list[str], **kw: object) -> Done:
+        seen.append(cmd)
+        return Done()
+
+    monkeypatch.setattr(procs, "sys", types.SimpleNamespace(platform="win32"))
+    monkeypatch.setattr(procs.subprocess, "run", fake_run)
+    monkeypatch.setattr(procs, "_NO_WINDOW", 0)
+    assert procs.soft_stop(321) is True
+    procs.kill_tree(321)
+    assert seen[0] == ["taskkill", "/PID", "321", "/T"]
+    assert seen[1] == ["taskkill", "/PID", "321", "/T", "/F"]
+
+
+@win_only
+def test_a_real_windowless_service_is_stopped_even_if_it_refuses_the_polite_request(
+    tmp_path: Path,
+) -> None:
+    d = stub_def("tts", free_port())
+    proc = procs.start(d, tmp_path / "logs")
+    assert wait_until(lambda: _healthy(d.health_url))
+    procs.terminate(proc, grace_s=5)
+    assert not proc.alive()
