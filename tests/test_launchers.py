@@ -87,7 +87,7 @@ def test_host_script_follows_the_app_host_protocol() -> None:
     text = read("nightshift-host.ps1")
     for needle in (
         "{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}", "WOW6432Node", "HKCU:", "bin\\webview2", "state\\webview2",
-        "config\\window.json", "run\\apphost.json", "Global\\Nightshift.AppHost", "#15131d",
+        "config\\window.json", "apphost-", "-Role", "Global\\Nightshift.AppHost", "#15131d",
         "CaptionHeight = 0", "ResizeBorderThickness = New-Object System.Windows.Thickness 6",
         "GlassFrameThickness = New-Object System.Windows.Thickness 0", "UseAeroCaptionButtons = $false",
         "WindowStyle]::None", "ResizeMode]::CanResize", "$MinWidth = 1024", "$MinHeight = 640",
@@ -267,3 +267,59 @@ def test_dashboard_launcher_only_trusts_a_clean_exit_from_the_host() -> None:
     assert "return" not in text[host_call:finally_at]
     assert text.index("ShowWindow($consoleHandle, 5)") > finally_at
     assert text.index("if ($hostCode -eq 0) { return }") > text.index("ShowWindow($consoleHandle, 5)")
+
+
+# --- host roles: the setup window and the dashboard window are separate single instances ---
+BS = chr(92)
+
+ROLE_PROBE = """
+$errs = $null; $tokens = $null
+$ast = [System.Management.Automation.Language.Parser]::ParseFile($env:NS_PS1, [ref]$tokens, [ref]$errs)
+$fn = $ast.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+    $n.Name -eq 'Get-HostHome' }, $true)
+. ([scriptblock]::Create($fn.Extent.Text))
+$assign = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+    $n.Left.Extent.Text -in @('$MutexName', '$runFile') }, $true)
+$names = @{}
+foreach ($role in @('setup', 'dashboard')) {
+    $Role = $role
+    foreach ($a in $assign) { . ([scriptblock]::Create($a.Extent.Text)) }
+    $names[$role] = @($MutexName, $runFile)
+}
+$param = $ast.ParamBlock.Parameters | Where-Object { $_.Name.VariablePath.UserPath -eq 'Role' }
+Write-Output ('DEFAULT=' + $param.DefaultValue.Extent.Text)
+foreach ($k in @('setup', 'dashboard')) {
+    Write-Output ('ROLE ' + $k + ' ' + $names[$k][0] + ' ' + $names[$k][1])
+}
+$c1 = $false; $c2 = $false; $c3 = $true
+$m1 = New-Object System.Threading.Mutex($true, $names['setup'][0], [ref]$c1)
+$m2 = New-Object System.Threading.Mutex($true, $names['dashboard'][0], [ref]$c2)
+$m3 = New-Object System.Threading.Mutex($true, $names['setup'][0], [ref]$c3)
+Write-Output ('CREATED ' + $c1 + ' ' + $c2 + ' ' + $c3)
+$m1.Dispose(); $m2.Dispose(); $m3.Dispose()
+"""
+
+
+@needs_powershell
+def test_host_roles_get_their_own_mutex_and_state_file(tmp_path: Path) -> None:
+    env = {"NS_PS1": str(LAUNCHERS / "nightshift-host.ps1"), "NIGHTSHIFT_HOME": str(tmp_path)}
+    r = pwsh.run_powershell(ROLE_PROBE, env_extra=env)
+    assert r.returncode == 0, r.stdout + r.stderr
+    out = r.stdout
+    assert "DEFAULT='dashboard'" in out                      # the dashboard launcher passes no -Role
+    assert f"ROLE setup Global{BS}Nightshift.AppHost.setup {tmp_path}{BS}run{BS}apphost-setup.json" in out
+    dash_mutex = f"Global{BS}Nightshift.AppHost.dashboard"
+    assert f"ROLE dashboard {dash_mutex} {tmp_path}{BS}run{BS}apphost-dashboard.json" in out
+    # two roles can both hold their mutex at once; the same role cannot be created twice
+    assert "CREATED True True False" in out
+
+
+def test_host_validates_the_role_and_the_launchers_pass_the_right_one() -> None:
+    host = read("nightshift-host.ps1")
+    assert "[ValidateSet('setup', 'dashboard')][string]$Role = 'dashboard'" in host
+    assert f"{BS}apphost.json" not in host
+    assert "-Role" not in read("nightshift-dashboard.ps1")     # default: dashboard
+    from installer.stage2.web import launch
+
+    argv = launch.host_argv(Path("C:/app"), "http://127.0.0.1:1/")
+    assert argv[argv.index("-Role") + 1] == "setup"
