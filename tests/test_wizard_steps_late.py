@@ -365,8 +365,10 @@ def test_s09_a_refused_scheduler_never_blocks_the_install(tmp_path: Path):
     step.verify(ctx)
     assert ctx.flag("schedule") == "failed"
     assert ("NS-W206", "access denied") in ctx.warnings
-    from ns_supervisor.schedule_cfg import read_run_time
-    assert read_run_time(ctx.paths) == "03:00"           # the dashboard still shows the chosen time
+    from ns_supervisor.schedule_cfg import read_run_time, schedule_file
+    assert not schedule_file(ctx.paths).exists() and read_run_time(ctx.paths) is None   # no task, no file
+    saved = json.loads((ctx.paths.config / "dashboard.json").read_text(encoding="utf-8"))
+    assert saved["run_time"] == "03:00"                  # the chosen time stays a preference
 
 
 def test_s09_an_interactive_only_task_is_registered_and_the_owner_is_told(tmp_path: Path):

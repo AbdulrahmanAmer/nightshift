@@ -230,6 +230,12 @@ def read_update_state(paths: Paths) -> dict[str, Any]:
         return out
     if not isinstance(raw, dict) or raw.get("state") not in UPDATE_STATES:
         return out
+    try:
+        from ns_supervisor.update_job import effective_status
+
+        raw = effective_status(raw)      # a `running` state whose worker died (power loss, killed) is `failed`
+    except ImportError:
+        pass
     for key in ("old", "new", "message", "updated_at"):
         value = raw.get(key)
         out[key] = str(value) if value is not None else None

@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import tempfile
 import threading
 import time
 from collections.abc import Callable
@@ -25,6 +26,11 @@ ALWAYS = (
     ("The install folder setting", None),
 )
 DATA_DIRS = ("outbox", "rejected", "data", "imports", "cache")
+#: `launchers\\nightshift-host.ps1` holds this named mutex for as long as a dashboard window is open.
+HOST_MUTEX = "Global\\Nightshift.AppHost.dashboard"
+HOST_WAIT_MIN = 10
+SETUP_WAIT_S = 1800
+LEFTOVERS_FILE = "Nightshift-uninstall-leftovers.txt"
 
 
 def dir_bytes(path: Path, budget_s: float = SIZE_BUDGET_S) -> int:
@@ -68,29 +74,82 @@ def ps_quote(value: str) -> str:
     return value.replace("'", "''")
 
 
-def deferred_script(home: Path, wait_pids: list[int]) -> str:
-    """PowerShell for the last deletion: wait for the window's processes, then remove ``bin``.
+def leftovers_path() -> Path:
+    """Where the deferred script lists what it could not remove."""
+    return Path(tempfile.gettempdir()) / LEFTOVERS_FILE
+
+
+def deferred_script(home: Path, wait_pids: list[int], local_root: Path | None = None) -> str:
+    """PowerShell for the last deletion: wait for every window, then remove ``bin`` (and the browser files).
 
     The WebView2 host (a PowerShell process) keeps its DLLs under ``bin`` loaded while it runs, so the
-    uninstall script cannot delete them. This script runs detached, after the window has exited.
+    uninstall script cannot delete them. This script runs detached, after the window has exited. It waits
+    for the setup window's processes (up to 30 minutes) and then for a *dashboard* window, which loads the
+    same DLLs, by polling its named mutex (up to ``HOST_WAIT_MIN`` minutes). What still exists after the
+    retries is written to ``LEFTOVERS_FILE`` in the temp folder, so nothing is silently left behind.
+
+    ``local_root`` is ``%LOCALAPPDATA%\\Nightshift``: its ``browser`` profile (the setup window may run in
+    Edge from it) and ``webview2`` folder go here too, not in the uninstall script.
     """
     ids = ",".join(str(p) for p in wait_pids) or "0"
-    bin_dir = ps_quote(str(home / "bin"))
+    targets = [home / "bin"]
+    if local_root is not None:
+        targets += [local_root / "browser", local_root / "webview2"]
+    listed = ", ".join(f"'{ps_quote(str(t))}'" for t in targets)
     home_dir = ps_quote(str(home))
-    return "\n".join([
+    lines = [
         "$ErrorActionPreference = 'SilentlyContinue'",
-        f"foreach ($id in @({ids})) {{ if ($id -gt 0) {{ Wait-Process -Id $id -Timeout 180 }} }}",
-        f"$bin = '{bin_dir}'",
-        "for ($i = 0; $i -lt 90; $i++) {",
-        "    if (-not (Test-Path -LiteralPath $bin)) { break }",
-        "    Remove-Item -LiteralPath $bin -Recurse -Force",
-        "    if (Test-Path -LiteralPath $bin) { Start-Sleep -Seconds 1 }",
+        f"foreach ($id in @({ids})) {{ if ($id -gt 0) {{ Wait-Process -Id $id -Timeout {SETUP_WAIT_S} }} }}",
+        f"$mutexName = '{HOST_MUTEX}'",
+        f"$until = (Get-Date).AddMinutes({HOST_WAIT_MIN})",
+        "while ((Get-Date) -lt $until) {",
+        "    $m = $null",
+        "    try { $open = [System.Threading.Mutex]::TryOpenExisting($mutexName, [ref]$m) }",
+        "    catch { $open = $true }",
+        "    if ($m) { $m.Dispose() }",
+        "    if (-not $open) { break }",
+        "    Start-Sleep -Seconds 2",
         "}",
+        f"$targets = @({listed})",
+        "foreach ($t in $targets) {",
+        "    for ($i = 0; $i -lt 90; $i++) {",
+        "        if (-not (Test-Path -LiteralPath $t)) { break }",
+        "        Remove-Item -LiteralPath $t -Recurse -Force",
+        "        if (Test-Path -LiteralPath $t) { Start-Sleep -Seconds 1 }",
+        "    }",
+        "}",
+    ]
+    if local_root is not None:
+        root = ps_quote(str(local_root))
+        lines += [
+            f"$localRoot = '{root}'",
+            "if ((Test-Path -LiteralPath $localRoot) -and -not (Get-ChildItem -LiteralPath $localRoot -Force)) {",
+            "    Remove-Item -LiteralPath $localRoot -Force",
+            "}",
+        ]
+    lines += [
         f"$home_ = '{home_dir}'",
         "if ((Test-Path -LiteralPath $home_) -and -not (Get-ChildItem -LiteralPath $home_ -Force)) {",
         "    Remove-Item -LiteralPath $home_ -Force",
         "}",
-    ])
+        "$left = @($targets | Where-Object { Test-Path -LiteralPath $_ })",
+        f"$report = Join-Path $env:TEMP '{LEFTOVERS_FILE}'",
+        "if ($left.Count -gt 0) {",
+        "    $text = @('Nightshift could not remove these folders because a Nightshift window or program was "
+        "still using them. Close it and delete them by hand:') + $left",
+        "    Set-Content -LiteralPath $report -Value $text -Encoding UTF8",
+        "} else {",
+        "    Remove-Item -LiteralPath $report -Force",
+        "}",
+        "exit 0",          # a failed Remove-Item above (no report to delete) must not become the exit code
+    ]
+    return "\n".join(lines)
+
+
+def local_nightshift() -> Path | None:
+    """``%LOCALAPPDATA%\\Nightshift`` (bootstrap, browser profile, webview2), or None without LOCALAPPDATA."""
+    base = os.environ.get("LOCALAPPDATA")
+    return Path(base) / "Nightshift" if base else None
 
 
 def host_pids(home: Path) -> list[int]:
@@ -108,7 +167,7 @@ def spawn_deferred(home: Path, popen: Callable[..., Any] = subprocess.Popen) -> 
     """Start the detached PowerShell that finishes the removal after this window exits. True if started."""
     import base64
 
-    script = deferred_script(home, host_pids(home))
+    script = deferred_script(home, host_pids(home), local_nightshift())
     encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
     flags = 0x00000008 | 0x00000200 | 0x08000000      # DETACHED_PROCESS | NEW_PROCESS_GROUP | NO_WINDOW
     try:
@@ -228,7 +287,10 @@ class UninstallApp:
         if (home / "bin").exists():
             # The window itself holds bin\webview2 DLLs: hand the last deletion to a detached PowerShell.
             if self._deferred(home):
-                removed.append(f"{programs} (the last files go as soon as this window closes)")
+                removed.append(
+                    f"{programs} (the last files go as soon as every Nightshift window is closed; "
+                    f"anything still in use then is listed in {leftovers_path()})"
+                )
             else:
                 kept.append({"label": "Programs (delete this folder by hand)", "path": str(home / "bin")})
         elif not (home / "venvs").exists():

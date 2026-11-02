@@ -26,6 +26,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Protocol, TextIO
 
+import psutil
+
+from ns_common.atomic import write_text_atomic
 from ns_common.errors import NsError
 from ns_common.paths import Paths
 from ns_supervisor import pwsh
@@ -68,16 +71,43 @@ def status_file(paths: Paths) -> Path:
 
 
 def write_status(paths: Paths, state: str, message: str = "", **extra: Any) -> None:
-    """Replace the state file atomically: `{state, old, new, message, updated_at}` plus log/pid extras."""
-    target = status_file(paths)
+    """Replace the state file atomically: `{state, old, new, message, updated_at}` plus log/pid extras.
+
+    Goes through `write_text_atomic`, which retries `os.replace` while Windows refuses it because the
+    dashboard has the file open for its 3-second poll.
+    """
     data = {
         "state": state, "old": "", "new": "", "message": message,
         "updated_at": datetime.now().isoformat(timespec="seconds"), **extra,
     }
-    target.parent.mkdir(parents=True, exist_ok=True)
-    tmp = target.with_name(target.name + ".tmp")
-    tmp.write_text(json.dumps(data), encoding="utf-8")
-    os.replace(tmp, target)
+    write_text_atomic(status_file(paths), json.dumps(data))
+
+
+def _progress(paths: Paths, state: str, message: str, **extra: Any) -> None:
+    """A progress line in the state file. Failing to write it must not stop the update."""
+    try:
+        write_status(paths, state, message, **extra)
+    except OSError as e:
+        sys.stderr.write(f"could not write {status_file(paths).name}: {e}\n")
+
+
+FINAL_TRIES = 10
+FINAL_PAUSE_S = 0.3
+
+
+def _final(
+    paths: Paths, state: str, message: str, *, sleep: Callable[[float], None] = time.sleep, **extra: Any
+) -> None:
+    """The `done` / `failed` line: retried for a few seconds, then given up on (readers notice a dead pid)."""
+    for attempt in range(FINAL_TRIES):
+        try:
+            write_status(paths, state, message, **extra)
+            return
+        except OSError as e:
+            if attempt == FINAL_TRIES - 1:
+                sys.stderr.write(f"could not write {status_file(paths).name}: {e}\n")
+                return
+            sleep(FINAL_PAUSE_S)
 
 
 def read_status(paths: Paths) -> dict[str, Any]:
@@ -87,6 +117,58 @@ def read_status(paths: Paths) -> dict[str, Any]:
     except (OSError, ValueError):
         return {}
     return data if isinstance(data, dict) else {}
+
+
+#: A `running` state without a worker pid (written by `launch`) older than this means the worker never started.
+START_GRACE_S = 120.0
+STOPPED_MESSAGE = "The update process stopped before it finished. Your previous version is still in place."
+
+
+def worker_alive(pid: int) -> bool:
+    """True while `pid` is a live Python process of ours (a reused pid of another program counts as gone)."""
+    try:
+        proc = psutil.Process(pid)
+        if not proc.is_running() or proc.status() == psutil.STATUS_ZOMBIE:
+            return False
+        cmd = " ".join(proc.cmdline())
+    except psutil.NoSuchProcess:
+        return False
+    except psutil.Error:
+        return True                  # access denied and the like: do not call a live worker dead
+    return not cmd or "ns_supervisor" in cmd or "python" in cmd.lower()
+
+
+def effective_status(
+    raw: dict[str, Any],
+    *,
+    alive: Callable[[int], bool] | None = None,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """The state a reader should believe: a `running` state whose worker is gone is `failed`.
+
+    A worker killed hard (power loss, Task Manager) leaves `running` behind for ever, and the next dashboard
+    start used to show "Installing the update" indefinitely. With a recorded pid the process must exist; a
+    state `launch` wrote before the worker started (no pid) is believed for `START_GRACE_S`.
+    """
+    if raw.get("state") != "running":
+        return raw
+    pid = raw.get("pid")
+    if isinstance(pid, int) and not isinstance(pid, bool) and pid > 0:
+        gone = not (alive or worker_alive)(pid)
+    else:
+        try:
+            wrote = datetime.fromisoformat(str(raw.get("updated_at")))
+        except ValueError:
+            return raw                # nothing to judge by
+        gone = ((now or datetime.now()) - wrote).total_seconds() > START_GRACE_S
+    if not gone:
+        return raw
+    return {**raw, "state": "failed", "exit_code": 1, "message": STOPPED_MESSAGE}
+
+
+def read_status_checked(paths: Paths, **kw: Any) -> dict[str, Any]:
+    """`read_status` with `effective_status` applied (what the dashboard shows)."""
+    return effective_status(read_status(paths), **kw)
 
 
 def new_log_path(paths: Paths, now: datetime | None = None) -> Path:
@@ -196,7 +278,7 @@ def launch(
     log = new_log_path(paths, now)
     log.parent.mkdir(parents=True, exist_ok=True)
     argv = worker_argv(forwarded, log=log, home=paths.home, wait_pid=wait_pid)
-    write_status(paths, "running", "Starting the update.", log=str(log))
+    _progress(paths, "running", "Starting the update.", log=str(log))
     cwd = paths.home if paths.home.is_dir() else Path(os.path.expanduser("~"))
     pid = (spawn or spawn_detached)(argv, cwd=cwd)
     return pid, log
@@ -288,9 +370,9 @@ def run_worker(
 
     With `relaunch`, the engine (and the dashboard window, when one was open) is started again after the
     update, whether it applied or was rolled back, and `done` / `failed` is written only after the engine
-    answers `/status`, so a page that reconnects finds a live dashboard and the final state. When the engine does not
-    come back the state is `failed` with `restart_failed` set (and `updated` true when the new version is in
-    place), so the page can say what happened instead of waiting for ever.
+    answers `/status`, so a page that reconnects finds a live dashboard and the final state. When the engine
+    does not come back the state is `failed` with `restart_failed` set (and `updated` true when the new
+    version is in place), so the page can say what happened instead of waiting for ever.
     """
     sink: TextIO | None = None
     saved = (sys.stdout, sys.stderr)
@@ -301,12 +383,12 @@ def run_worker(
         sys.stderr = sink
     base: dict[str, Any] = {"log": str(log) if log else "", "pid": os.getpid(), "old": old_version}
     try:
-        write_status(paths, "running", "Waiting for Nightshift to close.", **base)
+        _progress(paths, "running", "Waiting for Nightshift to close.", **base)
         if wait_pid is not None:
             (wait or wait_for_parent)(wait_pid)
         if relaunch is not None:
             _guarded(relaunch.observe)
-        write_status(paths, "running", "Updating.", **base)
+        _progress(paths, "running", "Updating.", **base)
         try:
             out = body()
         except NsError as e:
@@ -318,17 +400,16 @@ def run_worker(
         else:
             versions = {**base, "old": out.old or old_version, "new": out.new, "updated": out.updated}
             if _restart(relaunch):
-                write_status(paths, "failed", f"{out.message} {RESTART_HINT}", exit_code=1,
-                             restart_failed=True, **versions)
+                _final(paths, "failed", f"{out.message} {RESTART_HINT}", exit_code=1,
+                       restart_failed=True, **versions)
                 return 1
-            write_status(paths, "done", out.message, exit_code=0, **versions)
+            _final(paths, "done", out.message, exit_code=0, **versions)
             return 0
         # rolled back (or never started): the old version comes back up
         if _restart(relaunch):
-            write_status(paths, "failed", f"{message} {RESTART_HINT}", exit_code=1,
-                         restart_failed=True, **base)
+            _final(paths, "failed", f"{message} {RESTART_HINT}", exit_code=1, restart_failed=True, **base)
         else:
-            write_status(paths, "failed", message, exit_code=1, **base)
+            _final(paths, "failed", message, exit_code=1, **base)
         return 1
     finally:
         if sink is not None:
