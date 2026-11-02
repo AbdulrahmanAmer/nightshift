@@ -45,10 +45,12 @@ class DownloadItem:
     dest: Path
     sha256: str | None = None
     size: int | None = None
-    kind: Literal["file", "zip"] = "file"
+    kind: Literal["file", "zip", "nupkg"] = "file"
     extract_to: Path | None = None
     expect: tuple[str, ...] = ()
     optional: bool = False
+    # kind="nupkg": (file name written into ``extract_to``, candidate archive paths in preference order).
+    members: tuple[tuple[str, tuple[str, ...]], ...] = ()
 
 
 @dataclass
@@ -326,6 +328,43 @@ def extract_zip(zip_path: Path, target: Path) -> list[str]:
     return names
 
 
+def extract_members(archive: Path, target: Path, members: Iterable[tuple[str, tuple[str, ...]]]) -> list[str]:
+    """Write only the named files of a zip/nupkg into ``target`` (flat). Returns the file names written.
+
+    ``members`` is ``(file name, candidate archive paths)``; the first candidate present wins (archive paths
+    compare case-insensitively). A missing file is NS-E109. Nothing else in the archive is touched.
+    """
+    target.mkdir(parents=True, exist_ok=True)
+    written: list[str] = []
+    with zipfile.ZipFile(archive) as zf:
+        index = {n.lower(): n for n in zf.namelist()}
+        for name, candidates in members:
+            found = next((index[c.lower()] for c in candidates if c.lower() in index), None)
+            if found is None:
+                raise make_error("NS-E109", f"{archive.name}: lacks {' or '.join(candidates)}")
+            (target / name).write_bytes(zf.read(found))
+            written.append(name)
+    return written
+
+
+def pinned_sha256(value: str | None) -> str | None:
+    """The pin's hash when it is a real 64-digit SHA256, else None (``TBD-release`` and friends)."""
+    if value is not None and len(value) == 64 and all(c in "0123456789abcdefABCDEF" for c in value):
+        return value.lower()
+    return None
+
+
+# NuGet package Microsoft.Web.WebView2: managed assemblies and the native loader the frameless host needs.
+WEBVIEW2_MEMBERS: tuple[tuple[str, tuple[str, ...]], ...] = tuple(
+    (name, tuple(f"{folder}/{name}" for folder in folders))
+    for name, folders in (
+        ("Microsoft.Web.WebView2.Core.dll", ("lib/net462", "lib/net45")),
+        ("Microsoft.Web.WebView2.Wpf.dll", ("lib/net462", "lib/net45")),
+        ("WebView2Loader.dll", ("runtimes/win-x64/native",)),
+    )
+)
+
+
 # --------------------------------------------------------------------------------------------------------
 # plans
 # --------------------------------------------------------------------------------------------------------
@@ -380,7 +419,26 @@ def plan_bins(
                 sha256=pin.sha256,
             )
         )
+    if (item := webview2_item(manifest, paths.home)) is not None:
+        items.append(item)
     return items
+
+
+def webview2_item(manifest: Manifest, home: Path) -> DownloadItem | None:
+    """The WebView2 NuGet package, unpacked to ``bin\\webview2`` (three DLLs only).
+
+    None when ``bins.webview2`` is absent or its sha256 is not pinned yet (``TBD-release``): the installer
+    then skips it and the dashboard launcher uses the Edge/Chrome ``--app=`` window instead.
+    """
+    pin = manifest.bins.get("webview2")
+    if pin is None or pinned_sha256(pin.sha256) is None:
+        return None
+    root = Path(home) / "bin"
+    return DownloadItem(
+        name="webview2", url=pin.url, dest=root / "_downloads" / f"microsoft.web.webview2.{pin.version}.nupkg",
+        sha256=pin.sha256, kind="nupkg", extract_to=root / "webview2",
+        expect=tuple(name for name, _ in WEBVIEW2_MEMBERS), members=WEBVIEW2_MEMBERS,
+    )
 
 
 def qwentts_item(manifest: Manifest, home: Path) -> DownloadItem | None:
@@ -501,7 +559,7 @@ def total_bytes(items: Iterable[DownloadItem]) -> int:
 
 def is_done(item: DownloadItem) -> bool:
     """True when the item is already in place (verified file, or zip extracted with its files present)."""
-    if item.kind == "zip":
+    if item.kind in ("zip", "nupkg"):
         target = item.extract_to
         if target is None:
             return False
@@ -531,7 +589,10 @@ class _NullReporter:
 
 def _extract_item(item: DownloadItem) -> None:
     assert item.extract_to is not None
-    extract_zip(item.dest, item.extract_to)
+    if item.kind == "nupkg":
+        extract_members(item.dest, item.extract_to, item.members)
+    else:
+        extract_zip(item.dest, item.extract_to)
     missing = [e for e in item.expect if not (item.extract_to / e).exists()]
     if missing:
         raise make_error("NS-E109", f"{item.name}: archive lacks {', '.join(missing)}")
@@ -587,7 +648,7 @@ def run_plan(
                 item.url, item.dest, item.sha256, progress=progress, client=http, size=item.size,
                 retries=retries, sleep=sleep,
             )
-            if item.kind == "zip":
+            if item.kind in ("zip", "nupkg"):
                 _extract_item(item)
             outcome(item, "downloaded")
         except NsError as e:

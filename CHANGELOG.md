@@ -48,6 +48,10 @@ All notable changes to Nightshift are recorded here. The format follows
   `ns_dashboard/static`, `ns_dashboard/prompts` and `ns_studio/presets/formats`; a `dashboard` extra
   (`python-multipart`, `Pillow`, `keyring`) is installed into the supervisor venv; `opencv-python-headless`
   joins the `studio` extra.
+- `launchers/nightshift-host.ps1`: single-instance frameless WPF window around WebView2 (title bar protocol, size and
+  position kept in `config/window.json`); `nightshift-dashboard.ps1` tries it first and falls back to the
+  Edge/Chrome app window, then the default browser. `bins.webview2` pins the Microsoft.Web.WebView2 NuGet package;
+  the installer unpacks only its three DLLs to `bin/webview2`.
 
 ### Changed
 - ruff bans `import subprocess` outside `ns_common/ffmpeg.py`, `ns_supervisor/`, `installer/`, `tools/`,

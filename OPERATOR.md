@@ -59,8 +59,9 @@ If the same red error comes back after one retry, do not guess: send the diagnos
 
 ## Make your first video (about 20 minutes)
 
-1. Open **Nightshift Dashboard** on your Desktop. A small "Nightshift Engine" window appears and your browser
-   opens.
+1. Open **Nightshift Dashboard** on your Desktop. A small "Nightshift Engine" window appears and the dashboard opens
+   in its own Nightshift window (no browser tabs; it opens once, a second click brings it to the front). If that window
+   cannot start on this PC, Nightshift opens a browser app window instead by itself and you do nothing.
 2. Press **Run now**, then **shorts_only** (fastest) or **master_first** (a full long video plus Shorts).
    The bar at the top shows the stages: loading, writing, voicing, captions, clips, rendering, checking, done.
 3. Open **Review**. Watch the video, read the notes, press **Approve** or **Reject** (add a reason).

@@ -425,7 +425,7 @@ def test_plan_tiers_pick_the_right_llm(manifest, tmp_path: Path):
 
 def test_plan_cuda13_pair_and_code(manifest, tmp_path: Path):
     items = dl.plan_bins(manifest, "gpu", tmp_path, include_code=True, llama_pair="cuda13")
-    assert _names(items) == ["llama_cuda13", "cudart13", "opencode", "yt_dlp"]
+    assert _names(items) == ["llama_cuda13", "cudart13", "opencode", "yt_dlp", "webview2"]
     assert "cuda-13.4" in items[0].url
     assert items[2].extract_to == tmp_path / "bin" / "opencode"
 
