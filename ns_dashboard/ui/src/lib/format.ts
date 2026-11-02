@@ -43,3 +43,12 @@ export const POOL_LABELS: Record<string, { label: string; opts: Record<string, s
   caption_styles: { label: "Caption look", opts: { punch_yellow: "Bold yellow", clean_white: "Clean white", boxed_dark: "Boxed dark", minimal_lower: "Minimal, lower third" } },
   visual_treatments: { label: "Footage look", opts: { dark_slowzoom: "Dark, slow zoom", handheld_grit: "Handheld grit", clean_bright: "Clean and bright", cinematic_teal: "Cinematic teal" } },
 };
+
+/** Job kinds whose result is video. A finished self-check or analytics import has no videos to count. */
+export const MAKES_VIDEO = ["run", "clip", "series_part"];
+/** "Done", with the number of videos only for the kinds that make video. */
+export const doneWords = (j: { kind: string; result?: { output_ids?: string[] } | null }) => {
+  if (!MAKES_VIDEO.includes(j.kind)) return "Done";
+  const n = j.result?.output_ids?.length ?? 0;
+  return n ? `Done · ${plural(n, "video")}` : "Done · no videos";
+};

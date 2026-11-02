@@ -8,7 +8,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useApp, useLoad } from "../lib/app";
 import { api } from "../lib/api";
-import { dayInline, fmtClock, fmtDay, fmtDur, fmtWhen, kindLabel, plural, stageWords, store } from "../lib/format";
+import { dayInline, doneWords, MAKES_VIDEO, fmtClock, fmtDay, fmtDur, fmtWhen, kindLabel, plural, stageWords, store } from "../lib/format";
 import type { ChannelSummary, Job, Output, OutputDetail, Run } from "../lib/types";
 import { cx } from "../ui/kit";
 import { Scene } from "../visuals/Scene";
@@ -39,8 +39,9 @@ export default function Queue() {
   const [tab, setTab] = useState<Tab>((route.query.get("tab") as Tab) || "ready");
   const list = useLoad<Output[]>(() => api.get(`/outputs?status=${STATUS[tab]}`), [tab], []);
   const [current, setCurrent] = useState<string | null>(route.query.get("id"));
-  // Job history for the events and render cards: loaded once and again whenever the engine changes state (no extra polling).
-  const jobs = useLoad<Job[]>(() => api.get("/jobs"), [status?.engine?.state], []);
+  // Job history for the events and render cards: loaded again whenever the engine changes state or the running job moves on
+  // (its progress or stage), so the bars follow the job instead of freezing at the value read when it started.
+  const jobs = useLoad<Job[]>(() => api.get("/jobs"), [status?.engine?.state, status?.job?.job_id, status?.job?.progress, status?.job?.message, status?.queue?.queued], []);
   const items = list.data;
   const o = items.find((x) => x.output_id === current) || items[0];
   const counts = status?.outbox;
@@ -324,7 +325,7 @@ function JobEvents({ jobs, loading, channelName, className, onReview }: { jobs: 
               <li key={j.job_id}>
                 <NotificationItem title={title} moreLabel={`Options for ${title}`} menu={menu}
                     titleAdornment={<StatusDot tone={failed ? "danger" : cancelled ? "attention" : "online"} label={failed ? "Stopped" : cancelled ? "Cancelled" : "Done"} />}
-                    subtitle={failed ? `Stopped at ${stageWords(j.stage).toLowerCase()}. ${j.message || ""}` : cancelled ? "Cancelled" : `Done · ${j.result?.output_ids?.length ? `${j.result.output_ids.length} videos` : "1 video"}`}
+                    subtitle={failed ? `Stopped at ${stageWords(j.stage).toLowerCase()}. ${j.message || ""}` : cancelled ? "Cancelled" : doneWords(j)}
                     meta={<><MetaItem icon="calendarDays">{fmtDay(j.created_at)}</MetaItem><MetaItem icon="clock">{fmtClock(j.created_at)}</MetaItem><MetaItem icon="channels">{channelName(j.channel)}</MetaItem></>} />
               </li>
             );
@@ -410,7 +411,7 @@ function RenderJobs({ jobs, chans, channelName, className }: { jobs: Job[]; chan
       id: j.job_id, title, date: sched ? `Scheduled for ${fmtWhen(j.schedule_at)}` : running ? `Started ${fmtWhen(j.created_at)}` : fmtWhen(j.created_at),
       metricLabel: sched ? "Starts" : "Stage", metric: sched ? fmtWhen(j.schedule_at) : j.status === "queued" ? "Waiting" : running ? stageWords(j.stage) : failed ? "Stopped" : j.status === "cancelled" ? "Cancelled" : "Done",
       progress: j.progress ?? (j.status === "done" ? 100 : 0), progressLabel: `${title} progress`, tone: failed ? "danger" : j.status === "done" ? "success" : "accent",
-      meta: [{ icon: "clock", value: j.step && j.steps ? `${j.step}/${j.steps}` : "–", label: "steps" }, { icon: "film", value: j.result?.output_ids?.length ?? (j.status === "done" ? 1 : 0), label: "videos" }],
+      meta: [{ icon: "clock", value: j.step && j.steps ? `${j.step}/${j.steps}` : "–", label: "steps" }, { icon: "film", value: MAKES_VIDEO.includes(j.kind) ? (j.result?.output_ids?.length ?? 0) : "–", label: "videos" }],
     };
   });
   return (

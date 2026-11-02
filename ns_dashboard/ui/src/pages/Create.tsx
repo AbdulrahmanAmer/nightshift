@@ -6,7 +6,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { useApp, useLoad } from "../lib/app";
 import { api } from "../lib/api";
-import { CLIP_STAGES, dayInline, fmtClock, fmtDur, fmtWhen, POOL_LABELS, RUN_STAGES, stageWords, store } from "../lib/format";
+import { CLIP_STAGES, dayInline, doneWords, fmtClock, fmtDur, fmtWhen, POOL_LABELS, RUN_STAGES, stageWords, store } from "../lib/format";
 import type { ChannelSummary, Idea, Job, Output, Template } from "../lib/types";
 import { cx } from "../ui/kit";
 import { LayoutDiagram } from "../visuals/charts";
@@ -332,7 +332,7 @@ function EarlierRow({ j, channelName, templates, onChanged }: { j: Job; channelN
     <li>
       <NotificationItem title={jobTitle(j, channelName)}
         titleAdornment={<StatusDot tone={failed ? "danger" : cancelled ? "attention" : "online"} label={failed ? "Stopped" : cancelled ? "Cancelled" : "Done"} />}
-        subtitle={<span className={failed ? "text-ds-danger" : undefined}>{failed ? `Stopped at ${stageWords(j.stage).toLowerCase()}. ${j.message || ""}` : cancelled ? "Cancelled" : `Done ${dayInline(j.created_at)} · ${j.result?.output_ids?.length ? `${j.result.output_ids.length} videos` : "1 video"}`}</span>}
+        subtitle={<span className={failed ? "text-ds-danger" : undefined}>{failed ? `Stopped at ${stageWords(j.stage).toLowerCase()}. ${j.message || ""}` : cancelled ? "Cancelled" : `${doneWords(j)} ${dayInline(j.created_at)}`}</span>}
         meta={j.status === "done" ? <MetaItem icon="play"><a href="#/" className="inline-flex items-center font-semibold text-ds-accent-ink [@media(max-width:820px)]:min-h-10">Review it</a></MetaItem> : undefined} />
       {canRerun && (open ? (
         <div className="mt-2 flex flex-wrap items-center gap-2 pl-1">
