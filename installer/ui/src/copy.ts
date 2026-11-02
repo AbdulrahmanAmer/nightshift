@@ -264,6 +264,8 @@ export const choices = {
     perWeek: "Long videos per week",
     perWeekCaption: "Start with 1 for a new channel",
     code: "Also install Nightshift Code, an offline coding assistant",
+    voicedesign: "Also download the voice design model now",
+    voicedesignHint: "About 2 GB. Without it, the first voice you design downloads it then.",
     theme: "Theme",
     dark: "Dark",
     light: "Light",

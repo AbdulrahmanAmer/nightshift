@@ -147,7 +147,7 @@ export function steps(firstOpen: StepId | "all-done", o: { failed?: StepId; runn
 export function answers(o: Partial<AnswersView> = {}): AnswersView {
   return {
     ownerName: "Abdo", channel: { displayName: "After Dark Tales", niche: "horror fiction", language: "en" }, homePath: "D:\\Nightshift", llmTier: "balanced", llmCustom: null,
-    voice: { speaker: "Ryan" }, modelsSource: { kind: "internet", path: null }, runTime: "03:00", mastersPerWeek: 1, installCode: true, theme: "dark",
+    voice: { speaker: "Ryan" }, modelsSource: { kind: "internet", path: null }, runTime: "03:00", mastersPerWeek: 1, installCode: true, includeVoicedesign: false, theme: "dark",
     pexelsKeySet: true, pixabayKeySet: true, ...o,
   };
 }
