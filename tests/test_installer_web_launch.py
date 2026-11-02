@@ -37,8 +37,13 @@ class Popen:
         return Proc(self.codes.pop(0) if self.codes else None)
 
 
-def go(popen: Popen, present: set[Path], startfile=None):
+DLL = Path(ENV["LOCALAPPDATA"]) / "Nightshift" / "bin" / "webview2" / "Microsoft.Web.WebView2.Core.dll"
+
+
+def go(popen: Popen, present: set[Path], startfile=None, *, ready: bool = True, dlls: bool = True, **kw):
     opened: list[str] = []
+    if dlls and HOST_SCRIPT in present:
+        present = present | {DLL}
 
     def default_browser(url: str) -> None:
         opened.append(url)
@@ -46,6 +51,7 @@ def go(popen: Popen, present: set[Path], startfile=None):
     handle = launch.open_window(
         URL, app_path=APP, env=ENV, popen=popen, exists=lambda p: p in present,
         startfile=default_browser if startfile is None else startfile, sleep=lambda _s: None, wait_s=0.0,
+        ready=lambda: ready, **kw,
     )
     return handle, opened
 
@@ -134,3 +140,111 @@ def test_server_files_let_a_second_install_cmd_find_the_first(tmp_path: Path):
 def test_data_dir_is_under_local_app_data():
     assert launch.data_dir({"LOCALAPPDATA": "C:\\Users\\x\\AppData\\Local"}) == Path(
         "C:\\Users\\x\\AppData\\Local") / "Nightshift"
+
+
+# ------------------------------------------------------------- review rows 8 and P4
+def test_without_the_webview2_dlls_the_host_is_not_even_started():
+    """First run: the DLLs arrive in step s02, so the host would only exit 3 after a slow PowerShell start."""
+    popen = Popen(None)
+    handle, _ = go(popen, {HOST_SCRIPT, EDGE}, dlls=False)
+    assert handle.host == "browser-app" and [c[0] for c in popen.calls] == [str(EDGE)]
+    assert "webview2" not in handle.tried
+
+
+def test_a_host_that_is_alive_but_never_shows_a_window_is_replaced_by_the_browser():
+    class Hanging(Proc):
+        killed = False
+
+        def kill(self):
+            Hanging.killed = True
+
+    class P(Popen):
+        def __call__(self, argv, **kw):
+            self.calls.append(list(argv))
+            return Hanging(None) if len(self.calls) == 1 else Proc(None)
+
+    popen = P()
+    handle, _ = go(popen, {HOST_SCRIPT, EDGE}, ready=False)
+    assert handle.host == "browser-app" and Hanging.killed
+
+
+def test_a_slow_cold_start_gets_twenty_seconds_to_show_the_window():
+    assert launch.HOST_WAIT_S == 20.0
+    clock = {"t": 0.0}
+    state = {"ready": False}
+
+    def sleep(s: float) -> None:
+        clock["t"] += s
+        if clock["t"] >= 5.0:                      # the host shows its window after five seconds
+            state["ready"] = True
+
+    popen = Popen(None)
+    handle = launch.open_window(
+        URL, app_path=APP, env=ENV, popen=popen, exists=lambda p: p in {HOST_SCRIPT, DLL, EDGE},
+        startfile=None, sleep=sleep, ready=lambda: state["ready"],
+    )
+    assert handle.host == "webview2" and len(popen.calls) == 1
+
+
+def test_a_host_that_exits_with_an_error_falls_back_to_the_browser():
+    handle, _ = go(Popen(1, None), {HOST_SCRIPT, EDGE})
+    assert handle.host == "browser-app"
+
+
+def test_browser_windows_skip_the_first_run_and_default_browser_pages():
+    popen = Popen(None)
+    go(popen, {EDGE})
+    assert "--no-first-run" in popen.calls[0] and "--no-default-browser-check" in popen.calls[0]
+    handle, _ = go(Popen(None), {HOST_SCRIPT, EDGE}, skip_host=True)
+    assert handle.host == "browser-app" and "webview2" not in handle.tried
+
+
+class Waiting:
+    def __init__(self, code: int) -> None:
+        self.code = code
+
+    def wait(self) -> int:
+        return self.code
+
+
+class Ctl:
+    def __init__(self, run: str) -> None:
+        self.run = run
+
+    def snapshot(self) -> dict:
+        return {"run": self.run}
+
+
+def watched(code: int, run: str, host: str = "webview2"):
+    import importlib
+    import threading
+
+    m = importlib.import_module("installer.stage2.web.__main__")
+    said: list[str] = []
+    fell_back = threading.Event()
+    done = threading.Event()
+    real_say = m.say
+    m.say = lambda text, level="info": (said.append(text), done.set())
+    try:
+        handle = launch.WindowHandle(host, proc=Waiting(code))
+        m.watch_window(handle, Ctl(run), fallback=lambda: (fell_back.set(), done.set()))
+        assert done.wait(5)
+        done.wait(0.1)
+    finally:
+        m.say = real_say
+    return said, fell_back.is_set()
+
+
+def test_a_host_that_dies_during_setup_is_replaced_by_the_browser_window():
+    said, fell_back = watched(3, "running")
+    assert fell_back and "opening it in the browser" in said[0]
+
+
+def test_closing_the_window_after_stop_tells_the_console_how_to_come_back():
+    said, fell_back = watched(0, "stopped")
+    assert not fell_back and "closed after Stop" in said[0] and "INSTALL.cmd" in said[0]
+
+
+def test_closing_the_window_while_setup_runs_says_it_keeps_running():
+    said, fell_back = watched(0, "running")
+    assert not fell_back and "keeps running" in said[0]

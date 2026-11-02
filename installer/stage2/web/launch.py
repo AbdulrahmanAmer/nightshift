@@ -18,7 +18,9 @@ from pathlib import Path
 from typing import Any
 
 HOST_UNAVAILABLE = 3
-HOST_WAIT_S = 3.0
+HOST_WAIT_S = 20.0
+WEBVIEW2_CORE_DLL = "Microsoft.Web.WebView2.Core.dll"
+BROWSER_FLAGS = ("--no-first-run", "--no-default-browser-check")   # else Edge/Chrome may open a welcome page
 WINDOW_SIZE = "1366,768"
 SERVER_FILE = "setup-server.json"
 ADDRESS_FILE = "setup-address.txt"
@@ -97,6 +99,22 @@ def host_argv(app_path: Path, url: str) -> list[str]:
     ]
 
 
+def home_of(env: Mapping[str, str]) -> Path:
+    """The install folder the host looks in (NIGHTSHIFT_HOME, else the Nightshift folder in LOCALAPPDATA)."""
+    raw = env.get("NIGHTSHIFT_HOME")
+    return Path(raw) if raw else data_dir(env)
+
+
+def webview2_dirs(app_path: Path, env: Mapping[str, str]) -> list[Path]:
+    """Where ``nightshift-host.ps1`` looks for the WebView2 DLLs, in its order."""
+    return [home_of(env) / "bin" / "webview2", app_path / "bin" / "webview2"]
+
+
+def host_ready_file(env: Mapping[str, str]) -> Path:
+    """``run/apphost-setup.json``: written by the host once its window exists (hwnd and pid)."""
+    return home_of(env) / "run" / "apphost-setup.json"
+
+
 def open_window(
     url: str,
     *,
@@ -107,25 +125,39 @@ def open_window(
     startfile: Callable[[str], None] | None = DEFAULT_STARTFILE,
     sleep: Callable[[float], None] = time.sleep,
     wait_s: float = HOST_WAIT_S,
+    ready: Callable[[], bool] | None = None,
+    skip_host: bool = False,
 ) -> WindowHandle:
-    """Open ``url`` in the first launcher that works and say which one it was."""
+    """Open ``url`` in the first launcher that works and say which one it was.
+
+    The WebView2 host is tried only when its DLLs exist (on the first run they arrive in step s02, so the
+    window opens in Edge or Chrome and the host takes over from the next run). It must show its window
+    (``ready``: the host wrote its state file) within ``wait_s`` seconds, or exit 0 (it raised a window that
+    was already open). Exit 3, any other exit, or silence until the deadline falls through to the browser.
+    """
     e = dict(env if env is not None else os.environ)
     handle = WindowHandle("none")
+    is_ready = ready or (lambda: exists(host_ready_file(e)))
 
-    # 1. the WebView2 host. Exit code 3 (quickly) means WebView2 is unavailable; a window that stays up wins.
+    # 1. the WebView2 host.
     host_script = app_path / "launchers" / "nightshift-host.ps1"
-    if exists(host_script):
+    have_dlls = any(exists(d / WEBVIEW2_CORE_DLL) for d in webview2_dirs(app_path, e))
+    if not skip_host and exists(host_script) and have_dlls:
         handle.tried.append("webview2")
         try:
             proc = popen(host_argv(app_path, url), cwd=str(app_path))
             deadline = time.monotonic() + wait_s
             code = proc.poll()
-            while code is None and time.monotonic() < deadline:
+            while code is None and not is_ready() and time.monotonic() < deadline:
                 sleep(0.1)
                 code = proc.poll()
-            if code is None or code == 0:
+            if code == 0 or (code is None and is_ready()):
                 handle.host, handle.proc = "webview2", proc
                 return handle
+            if code is None:                  # silent for the whole wait: do not leave a second window to appear
+                kill = getattr(proc, "kill", None)
+                if kill is not None:
+                    kill()
         except OSError:
             pass
 
@@ -137,7 +169,8 @@ def open_window(
         handle.tried.append(name.lower())
         try:
             proc = popen(
-                [str(exe), f"--app={url}", f"--window-size={WINDOW_SIZE}", f"--user-data-dir={profile}"]
+                [str(exe), f"--app={url}", f"--window-size={WINDOW_SIZE}", f"--user-data-dir={profile}",
+                 *BROWSER_FLAGS]
             )
         except OSError:
             continue

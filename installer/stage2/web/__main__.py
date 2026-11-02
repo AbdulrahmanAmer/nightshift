@@ -11,7 +11,7 @@ import argparse
 import sys
 import threading
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 from installer.stage2.web import launch
@@ -52,17 +52,36 @@ def app_path_of(args: argparse.Namespace) -> Path:
     return Path(args.app_path).resolve() if args.app_path else Path(__file__).resolve().parents[3]
 
 
-def watch_window(handle: launch.WindowHandle, controller: SetupController) -> None:
-    """Tell the console when the window closes while setup keeps running."""
+ACTIVE_RUNS = ("running", "pausing", "paused", "waiting")
+
+
+def watch_window(
+    handle: launch.WindowHandle,
+    controller: SetupController,
+    fallback: Callable[[], None] | None = None,
+) -> None:
+    """Tell the console when the window closes while setup goes on, and replace a host that died.
+
+    Exit 0 is a closed window. Any other exit while setup is unfinished (the host crashed, or exit 3 after a
+    late WebView2 failure) opens the browser window instead, so setup never has a server and no window.
+    """
     proc = handle.proc
     if proc is None:
         return
 
     def wait() -> None:
         code = proc.wait()
-        if code == 0 and controller.snapshot()["run"] in ("running", "pausing", "paused", "waiting"):
+        run = controller.snapshot()["run"]
+        if code != 0 and handle.host == "webview2" and run != "finished" and fallback is not None:
+            say(f"{time.strftime('%H:%M:%S')}  The setup window stopped (exit code {code}); "
+                "opening it in the browser instead.")
+            fallback()
+        elif run in ACTIVE_RUNS:
             say(f"{time.strftime('%H:%M:%S')}  The setup window was closed. Setup keeps running. "
                 "Run INSTALL.cmd to open it again.")
+        elif run == "stopped":
+            say(f"{time.strftime('%H:%M:%S')}  The setup window was closed after Stop. "
+                "Run INSTALL.cmd to open it again, or close this window to end setup.")
 
     threading.Thread(target=wait, name="window-watch", daemon=True).start()
 
@@ -83,11 +102,12 @@ def run_ui(args: argparse.Namespace, cfg: Config) -> int:
         controller = SetupController(cfg, fx)
     holder: dict[str, launch.WindowHandle] = {}
 
-    def reopen() -> None:
-        handle = launch.open_window(server.url, app_path=cfg.app_path)
+    def reopen(skip_host: bool = False) -> None:
+        handle = launch.open_window(server.url, app_path=cfg.app_path, skip_host=skip_host)
         holder["h"] = handle
         if isinstance(controller, SetupController):
             controller.set_host(handle.host)
+            watch_window(handle, controller, lambda: reopen(skip_host=True))
 
     server = SetupServer(
         controller, static_dir=cfg.app_path / "installer" / "ui" / "static", port=cfg.port,
@@ -103,7 +123,7 @@ def run_ui(args: argparse.Namespace, cfg: Config) -> int:
         holder["h"] = handle
         if isinstance(controller, SetupController):
             controller.set_host(handle.host)
-            watch_window(handle, controller)
+            watch_window(handle, controller, lambda: reopen(skip_host=True))
         launch.update_server_info(folder, host=handle.host, host_text=launch.host_label(handle))
         say("Setup window: " + launch.host_label(handle))
     try:
