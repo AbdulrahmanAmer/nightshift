@@ -26,7 +26,7 @@ export function DownloadRowItem({ row, onRetry }: { row: DownloadRow; onRetry: (
       ? `${mbps(row.speedBps)}${row.etaS ? ` · ${minutesLeft(row.etaS)}` : ""}`
       : row.status === "paused" ? t.rowStatus.paused : null;
   const showTwo = failed || !!second;
-  const mark = failed ? <StatusDot tone="danger" size={8} /> : done ? <StatusDot tone="success" size={8} /> : live ? <StatusDot tone="online" size={8} /> : <Ring />;
+  const mark = failed ? <StatusDot tone="danger" size={8} /> : done ? <StatusDot tone="success" size={8} /> : live ? <StatusDot tone="online" size={8} className="shadow-[0_0_0_3px_var(--ds-bg-success-soft)]" /> : <Ring />;
   const right = noSize
     ? <span className="w-[170px] shrink-0 text-right text-ds-xs text-ds-text-2">{done ? t.rowStatus.done : live ? t.installing : row.status === "paused" ? t.rowStatus.paused : failed ? "" : t.rowStatus.queued}</span>
     : done

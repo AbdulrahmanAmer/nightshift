@@ -20,17 +20,29 @@ Keep this file next to `INSTALL.cmd`.
 4. Put `answers.json` in that same folder, next to `INSTALL.cmd`. With it, setup asks almost nothing.
 5. Double-click **INSTALL.cmd**. If Windows says "Windows protected your PC", press **More info**, then
    **Run anyway**. Windows may ask for permission to install programs: say **Yes**.
-6. Watch the window. First you see a table of green and red rows (your PC check), then setup installs tools,
-   asks a few questions (skipped when `answers.json` is there), downloads the AI models with progress bars,
-   tunes itself for 1 to 3 minutes and runs a test table.
-7. At the end you see a summary and the name of a **diagnostics zip** on your Desktop. Send it back (see below).
+6. A black window with a small crescent appears first. It looks at your PC, gets Python, and then opens the
+   **Nightshift setup window**. Keep the black window open: it does the work and is the log. If no setup window
+   appears, the black window prints an address (`http://127.0.0.1:...`): paste it into Edge or Chrome.
+7. In the setup window: read the PC check (green and yellow rows are fine, red rows say what to do), choose
+   your channel, narrator, model size and night run time, paste the two stock footage keys, and press **Install**.
+   Setup then downloads the AI models (you see every file, the speed and the time left; **Pause** and **Resume**
+   work), installs, tunes itself for 1 to 3 minutes and plays you a test voice and a short test video.
+8. At the end the window says **Nightshift is ready** and names a **diagnostics zip** on your Desktop. Send it back
+   (see below). **Open dashboard** starts the dashboard.
 
-You can close the window at any time. Run **INSTALL.cmd** again and it carries on where it stopped.
-Do not turn the PC off while a download bar is moving; if you do, just run INSTALL.cmd again.
+With an `answers.json` next to `INSTALL.cmd` setup runs without a window, as before (add `-Ui` after
+`INSTALL.cmd` to open the window with your answers filled in; `-NoUi` forces the no-window run).
+
+You can close the setup window at any time: setup keeps running in the black window, and running **INSTALL.cmd**
+again opens the window again. If you close the black window, setup stops; run **INSTALL.cmd** again and it carries on
+where it stopped. Do not turn the PC off while a download is moving; if you do, just run INSTALL.cmd again.
+
+The model files can also come from a folder on this PC or from the zip files in the Google Drive models folder:
+choose that under **Model files come from** in the window.
 
 ## If a row is red or a message shows an error code
 
-Every message has a code like `NS-E104`, a sentence and a "What to do". The usual ones:
+Every message has a code like `NS-E104`, a sentence and a "What to do". In the setup window press **Retry** where this table says "run INSTALL.cmd again". The usual ones:
 
 | Code | What it means | What to do |
 |---|---|---|
@@ -40,11 +52,12 @@ Every message has a code like `NS-E104`, a sentence and a "What to do". The usua
 | NS-E104 | Not enough free disk space | Free 60 GB, or choose another drive when asked for the install folder. |
 | NS-E105 | A download site cannot be reached | Check the internet, switch off any VPN or proxy, run INSTALL.cmd again. |
 | NS-E109 | A downloaded file is damaged | Run INSTALL.cmd again. If it repeats, send the diagnostics zip. |
-| NS-E110 / NS-E111 | A tool or winget (App Installer) is missing | Install "App Installer" from the Microsoft Store, then run INSTALL.cmd again. |
+| NS-E110 / NS-E111 | A tool or winget (App Installer) is missing | Install "App Installer" from the Microsoft Store, then press Check again (or Retry). |
+| NS-E113 | Antivirus blocked a file | Open Windows Security, Protection history, allow the Nightshift file and press Retry. |
 | NS-E501 / NS-E502 | Pexels or Pixabay key rejected | Copy the key again from the website (no spaces) and paste it. |
 | NS-E108 / NS-E112 | Graphics card libraries not found | Send the diagnostics zip. Nothing else to do. |
 
-Yellow rows (codes starting `NS-W`) are warnings. Setup carries on. Examples: the install folder is on a hard
+Yellow rows (codes starting `NS-W`) are warnings. `NS-W403` means the setup test video could not be made: setup is complete, make your first video from the dashboard. Setup carries on. Examples: the install folder is on a hard
 disk (slow), the PC cannot wake itself at night (turn on "Allow wake timers" in Power Options), long Windows
 paths are off (run setup once as administrator), or a fallback was used for the voice or video encoder.
 
@@ -89,6 +102,6 @@ it on. Do not use Nightshift Code while a night run is due: the graphics card ca
 
 ## Uninstall
 
-Double-click **UNINSTALL.cmd**. It removes the nightly task, shortcuts, programs and environments. It asks
+Double-click **UNINSTALL.cmd**. A window shows what goes and lets you tick the two things to delete. It removes the nightly task, shortcuts, programs and environments. It asks
 separately whether to delete the AI models (15 GB) and your videos and history. The default answer to both is
 **No**. At the end it tells you what it kept and where.

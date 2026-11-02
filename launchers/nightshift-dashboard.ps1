@@ -26,11 +26,12 @@ while (-not $up -and (Get-Date) -lt $deadline) {
     }
 }
 
+# NS_DASHBOARD_NO_HOST=1 (set by the setup window) skips it: a running host window would be raised instead.
 # First choice: the frameless WebView2 window (nightshift-host.ps1). It exits 3 after printing one line when
 # WebView2 or its DLLs are missing, and 0 when the window closed or an open window was brought to the front.
 # Closing that window never stops the engine.
 $hostScript = Join-Path $PSScriptRoot 'nightshift-host.ps1'
-if (Test-Path -LiteralPath $hostScript) {
+if ((Test-Path -LiteralPath $hostScript) -and ($env:NS_DASHBOARD_NO_HOST -ne '1')) {
     $hostCode = 3
     $hidden = $false
     try {

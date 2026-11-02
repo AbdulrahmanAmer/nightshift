@@ -76,7 +76,7 @@ const STEP_DOT: Record<StepView["status"], DotTone | "ring"> = { done: "success"
 export function StepItem({ step, compact, current }: { step: StepView; compact?: boolean; current?: boolean }) {
   const dot = STEP_DOT[step.status];
   const title = step.title || stepTitles[step.id];
-  const mark = dot === "ring" ? <Ring /> : <StatusDot tone={dot} size={8} />;
+  const mark = dot === "ring" ? <Ring /> : <StatusDot tone={dot} size={8} className={step.status === "running" ? "shadow-[0_0_0_3px_var(--ds-bg-success-soft)]" : undefined} />;
   if (compact) {
     return (
       <li className={cx("flex h-8 items-center gap-3 rounded-ds-md px-2 text-ds-sm", step.status === "pending" && "text-ds-text-2", current && "font-medium")} aria-current={current ? "step" : undefined}>

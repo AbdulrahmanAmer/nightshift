@@ -397,3 +397,9 @@ Format per entry:
   The installer verifies the `.nupkg` (a zip, 8,769,233 bytes) and extracts only `lib/net462/Microsoft.Web.WebView2.Wpf.dll`, `lib/net462/Microsoft.Web.WebView2.Core.dll` and `runtimes/win-x64/native/WebView2Loader.dll` into `<home>\bin\webview2\` (this package version has no `lib/net45`; the code falls back to it for older versions).
 - **Why:** the host needs the three DLLs; nothing binary is committed. The sha256 was computed from the downloaded package inside a GitHub Actions run (not on the authoring laptop); the package listing was read in the same run (`lib/net462/*.dll`, `runtimes/win-x64/native/WebView2Loader.dll` present).
 - **Status:** applied in ccf6c7b (`manifest.json` `bins.webview2`, on `feat/c3-ui-contracts`). Before it landed, a missing `bins.webview2` entry is treated like a `TBD-release` hash: the installer skips the package and `nightshift-dashboard.ps1` uses the Edge/Chrome `--app=` window (host exits 3).
+
+## CR-C1-UI-8: the setup window's UI preferences file (`config/ui_prefs.json`)
+- **From:** installer web wizard (`docs/design/installer-ui.md` section 5.5; the `ui` block of `runtime.json` was not added)
+- **Change:** step `s07_configs` writes `<home>\config\ui_prefs.json`: `{"owner_name": str | null, "theme": "dark" | "light" | "soft"}`, copied from `owner_name` and `ui_theme` of the answers. The file is installer-owned and not part of any schema. The dashboard (C9) may read it for the greeting name and the default theme; until it does, nothing breaks.
+- **Why:** the setup window asks for the owner's first name and the theme, and the dashboard has nowhere else to find them.
+- **Status:** open (C9 to read it; no contract change needed).
