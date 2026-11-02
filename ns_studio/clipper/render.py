@@ -19,6 +19,7 @@ from ns_common.logging import NsLogger
 from ns_common.models import CANVAS_H, CANVAS_W, ClipTemplate, Crop, Format, Rect
 from ns_studio.clipper import layout
 from ns_studio.media.layout import SourceSpec, build_regions_graph, fit_facecam_height
+from ns_studio.media.render import escape_filter_path
 
 TARGET_LUFS = -14.0
 TARGET_TP = -1.5
@@ -51,8 +52,7 @@ class RenderSpec:
 # ---------- helpers ----------
 def filter_path(p: Path) -> str:
     """Escape a path for use inside a single-quoted FFmpeg filter option (Windows drive colons)."""
-    s = str(p).replace("\\", "/").replace(":", r"\:").replace("'", r"\'")
-    return s
+    return escape_filter_path(p)[1:-1]  # the quoting is added by the caller; apostrophes handled once, in C6
 
 
 def relative_crops(crops: list[Crop], start: float, end: float) -> list[Crop]:

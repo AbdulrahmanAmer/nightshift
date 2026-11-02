@@ -248,8 +248,10 @@ def render_segment(
 
 
 def concat_list_text(paths: Sequence[Path]) -> str:
-    """Body of an FFmpeg concat-demuxer list file."""
-    return "".join(f"file '{p.as_posix().replace(chr(39), '')}'\n" for p in paths)
+    """Body of an FFmpeg concat-demuxer list file; a quote in a path is written close-escape-reopen."""
+    quote = chr(39)
+    escaped = quote + chr(92) + quote + quote
+    return "".join(f"file {quote}{p.as_posix().replace(quote, escaped)}{quote}\n" for p in paths)
 
 
 class RenderMasterStage:
