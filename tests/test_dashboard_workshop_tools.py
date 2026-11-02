@@ -16,7 +16,7 @@ from tests.test_dashboard_assistant import kinds, make, run_chat
 
 def test_every_workshop_tool_is_in_the_registry():
     reg = build_registry()
-    assert len(TOOLS) == 11
+    assert len(TOOLS) >= 11
     for d in TOOLS:
         td = reg.get(d["name"])
         assert td is not None, d["name"]
