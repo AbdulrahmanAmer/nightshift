@@ -16,6 +16,7 @@ section 2.2); the client and the spawn helper are injectable so tests never star
 from __future__ import annotations
 
 import importlib
+import threading
 from collections.abc import Callable
 from typing import Any, Protocol
 
@@ -26,6 +27,7 @@ from ns_common.models import Runtime
 from ns_common.paths import Paths
 
 WAIT_CAP_S = 7200  # J7: the nightly run waits up to 2 h for a busy GPU
+BEAT_S = 30.0  # how often a held lease is renewed; the supervisor reclaims it after 10 minutes of silence
 # Services that dev/fake runs take in process; faking any of them means there is nothing for the supervisor
 # to start, so `build_services` keeps `DevAcquirer` for those runs.
 SUPERVISED: frozenset[str] = frozenset({"llm", "tts", "whisper", "embed"})
@@ -59,11 +61,16 @@ class StudioAcquirer:
         client: SupervisorApi | None = None,
         ensure: Callable[[Any], None] | None = None,
         wait_cap_s: int = WAIT_CAP_S,
+        beat_s: float = BEAT_S,
         log: NsLogger | None = None,
     ) -> None:
         self.runtime = runtime
         self.paths = paths
         self.wait_cap_s = wait_cap_s
+        self.beat_s = beat_s
+        self._held: set[tuple[str, str]] = set()
+        self._beat: threading.Thread | None = None
+        self._beat_mu = threading.Lock()
         self.log = log or NsLogger("studio", paths.logs, echo=False)
         self._client: SupervisorApi | None = client
         self._ensure = ensure
@@ -109,6 +116,7 @@ class StudioAcquirer:
         except NsError as e:
             self.log.warn("acquire_failed", str(e), service=service, owner=owner, code=e.code, wait_s=wait)
             raise
+        self._hold(service, owner)
         self.log.info("acquired", service=service, owner=owner)
         return ep
 
@@ -116,10 +124,47 @@ class StudioAcquirer:
         """Give the service back. A supervisor that is gone must not hide the error that got us here."""
         if not self._ready or self._client is None:
             return
+        self._drop(service, owner)
         try:
             self._client.release(service, owner)
         except NsError as e:
             self.log.warn("release_failed", str(e), service=service, owner=owner)
+
+    # ------------------------------------------------------------------ lease heartbeat
+    def _hold(self, service: str, owner: str) -> None:
+        """Remember a held service and make sure the heartbeat thread runs."""
+        with self._beat_mu:
+            self._held.add((service, owner))
+            if self._beat is None or not self._beat.is_alive():
+                self._beat = threading.Thread(target=self._beat_loop, name="ns-lease-beat", daemon=True)
+                self._beat.start()
+
+    def _drop(self, service: str, owner: str) -> None:
+        with self._beat_mu:
+            self._held.discard((service, owner))
+
+    def _beat_loop(self) -> None:
+        """Renew the lease of every owner that holds a service until none is held.
+
+        This runs on its own thread so a stage that takes an hour still beats. A failed beat is only logged:
+        the supervisor may be restarting, and the next beat will tell.
+        """
+        while True:
+            threading.Event().wait(self.beat_s)
+            with self._beat_mu:
+                owners = sorted({o for _s, o in self._held})
+                if not owners:
+                    self._beat = None
+                    return
+            beat = getattr(self._client, "heartbeat", None)
+            if beat is None:
+                continue
+            for owner in owners:
+                try:
+                    if not beat(owner):
+                        self.log.debug("lease_beat_unheld", owner=owner)
+                except NsError as e:
+                    self.log.warn("lease_beat_failed", str(e), owner=owner)
 
     def run_finished(self) -> bool:
         """Tell the supervisor the nightly run is done so the engine can leave (gap 25). Best effort; False

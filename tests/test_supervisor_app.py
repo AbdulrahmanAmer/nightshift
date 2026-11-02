@@ -113,3 +113,15 @@ def test_events_stream_starts_with_a_snapshot_and_accepts_posted_events(tmp_path
         ev = json.loads(lines[0][len("data:") :])
         assert ev["kind"] == "service" and ev["data"]["event"] == "snapshot"
         assert "services" in ev["data"]
+
+
+def test_heartbeat_and_release_owner_routes(tmp_path: Path) -> None:
+    _, tc = build(tmp_path)
+    with tc:
+        c = SupervisorClient("http://testserver", client=tc)
+        c.acquire("llama", "studio:j1")
+        assert tc.post("/heartbeat", json={"owner": "studio:j1"}).json() == {"ok": True}
+        assert c.heartbeat("studio:j1") is True and c.heartbeat("studio:other") is False
+        assert tc.post("/release_owner", json={"owner": "studio:j1"}).json() == {"ok": True}
+        assert c.status()["gpu_owner"] is None
+        assert c.release_owner("studio:j1") is False  # already free

@@ -47,6 +47,13 @@ class SupervisorConfig:
     post_run_grace_s: float = 60.0  # after the nightly run reports it is done, before the engine leaves
     update_poll_s: float = 3600.0  # how often the weekly update check is asked whether it is due
     schedule_lookahead_s: float = 3600.0
+    lease_expiry_s: float = 600.0  # a `studio:` GPU lease with no heartbeat for this long is reclaimed
+    suspend_gap_s: float = 60.0  # a monitor pass this late means the PC slept: leases start over
+
+
+#: Owners that must heartbeat while they hold the GPU (the studio does; see `ns_studio.acquirer`). Other
+#: owners (the Assistant, voice previews, `ns verify`) hold the lock for one short call and never expire.
+LEASED_PREFIXES: tuple[str, ...] = ("studio:",)
 
 
 @dataclass
@@ -116,6 +123,11 @@ class Supervisor:
             lambda: presence.dashboard_in_use(self.paths, self.services["dashboard"].definition.port)
         )
         self._next_update_poll = 0.0
+        # GPU lease: who held the lock at the last look, when it last showed a sign of life, and when the
+        # monitor last ran (a long gap means the PC slept, which must not expire a live lease).
+        self._lease_owner: str | None = None
+        self._lease_beat = clock()
+        self._last_tick: float | None = None
         self._update_task: asyncio.Task[None] | None = None
         self._subs: set[asyncio.Queue[dict[str, Any]]] = set()
 
@@ -405,6 +417,68 @@ class Supervisor:
             return True
         return False
 
+    async def release_owner(self, owner: str) -> bool:
+        """Free everything `owner` holds or waits for, whatever the service (its process is gone or stuck).
+
+        The lock if it holds it, a place in the queue, and the non-GPU services it leased (`embed`). The idle
+        timer of a service nobody holds starts now. False when `owner` held and awaited nothing.
+        """
+        self._touch()
+        freed = False
+        st = self.lock.state
+        if st.owner == owner:
+            service = st.service
+            self.lock.release(owner)
+            rt = self.services.get(service or "")
+            if rt is not None:
+                rt.idle_since = self.clock()
+            freed = True
+        if self.lock.drop_waiters(owner):
+            freed = True
+        for rt in self.services.values():
+            if owner in rt.owners:
+                rt.owners.discard(owner)
+                if not rt.owners:
+                    rt.idle_since = self.clock()
+                freed = True
+        if freed:
+            self.log.warn("owner_released", f"released everything held by {owner}", owner=owner)
+            self.publish("service", {"event": "owner_released", "owner": owner})
+        return freed
+
+    def heartbeat(self, owner: str) -> bool:
+        """The holder of the GPU lease is alive. False when `owner` does not hold the lock (any more)."""
+        if self.lock.state.owner != owner:
+            return False
+        self._lease_owner = owner
+        self._lease_beat = self.clock()
+        return True
+
+    async def _expire_lease(self, now: float) -> None:
+        """Reclaim the GPU from a `studio:` owner that has sent no heartbeat for `lease_expiry_s`.
+
+        The studio child sends one every few seconds while it holds a service (also during a long stage).
+        Silence means the process was killed, crashed or hung; without this the lock would stay with a dead
+        owner and every later job would wait two hours for nothing.
+        """
+        st = self.lock.state
+        owner = st.owner
+        if owner != self._lease_owner:  # the lock changed hands: the new lease starts now
+            self._lease_owner = owner
+            self._lease_beat = now
+            return
+        if owner is None or not owner.startswith(LEASED_PREFIXES):
+            return
+        if any(r.state == "starting" for r in self.services.values()):  # a model load is not silence
+            self._lease_beat = now
+            return
+        silent = now - self._lease_beat
+        if silent < self.cfg.lease_expiry_s:
+            return
+        self.log.warn("lease_expired", f"{owner} sent no heartbeat for {silent:.0f}s", owner=owner)
+        await self.release_owner(owner)
+        self.publish("service", {"event": "lease_expired", "owner": owner, "silent_s": round(silent, 1)})
+
     async def stop_all(self, *, include_persistent: bool = False) -> None:
         """Terminate every model service and clear crash state, owners and the GPU lock holder."""
         targets = [
@@ -512,6 +586,10 @@ class Supervisor:
     async def tick(self) -> None:
         """One monitor pass: reap crashes, idle-unload, auto-exit."""
         now = self.clock()
+        if self._last_tick is not None and now - self._last_tick > self.cfg.suspend_gap_s:
+            self._lease_beat = now  # the PC slept: the studio could not beat either
+        self._last_tick = now
+        await self._expire_lease(now)
         for rt in self.services.values():
             if rt.op_lock.locked():
                 continue
