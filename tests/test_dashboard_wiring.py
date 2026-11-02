@@ -38,7 +38,6 @@ OWNED = ("ns_studio", "ns_supervisor", "ns_tts", "ns_common")
 #: Calls that are known to point at nothing yet, with the gap that fixes them. Fixing a gap removes its entry
 #: (the test is strict: an entry that now resolves fails, and so does an entry nobody calls any more).
 KNOWN_UNWIRED: dict[tuple[str, str], str] = {
-    ("ns_supervisor.scheduler", "set_daily_time"): "gap 13",
 }
 
 

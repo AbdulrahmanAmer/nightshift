@@ -615,22 +615,21 @@ class RealFolderOpener:
 
 
 class RealScheduleAdapter:
-    """Applies the run time to the scheduled task when C2 provides `ns_supervisor.scheduler`."""
+    """Re-registers the 'Nightshift Daily' task at the new time (`ns_supervisor.schedule.install`)."""
 
     def __init__(self, paths: Paths) -> None:
         self.paths = paths
 
     def apply(self, run_time: str) -> dict[str, Any]:
-        """Update the 'Nightshift Daily' trigger; reports `applied: False` while C2 has no hook."""
+        """Register the task at `run_time`; when Windows refuses, the time stays saved and the note says why."""
+        from ns_supervisor.control import app_path
+        from ns_supervisor.schedule import ScheduleError, install
+
         try:
-            fn = lazy("ns_supervisor.scheduler", "set_daily_time")
-        except AdapterUnavailable:
-            return {
-                "applied": False,
-                "note": "Saved. The scheduled task picks the new time up after the next update.",
-            }
-        fn(self.paths, run_time)
-        return {"applied": True, "note": "Scheduled task updated."}
+            message = install(self.paths, run_time, app_path(self.paths))
+        except ScheduleError as e:
+            return {"applied": False, "note": f"Saved, but Windows did not update the nightly task: {e}"}
+        return {"applied": True, "note": f"Scheduled task updated. {message}"}
 
 
 def real_adapters(paths: Paths, link: SupervisorLink, log: NsLogger) -> Adapters:

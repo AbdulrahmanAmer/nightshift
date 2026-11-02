@@ -160,3 +160,37 @@ def test_csv_with_no_known_columns_is_a_coded_error(tmp_home: Path):
     state.adapters.learn = RealLearnAdapter(Paths.from_env())
     r = client.post("/api/learn/import", files={"file": ("export.csv", b"a,b\n1,2\n", "text/csv")})
     assert r.status_code == 500 and "NS-E323" in err(r)["message"]
+
+
+# ---------------------------------------------------------------- gap 13: run time -> schedule.install
+
+
+def test_changing_the_run_time_reregisters_the_windows_task(tmp_home: Path, monkeypatch: pytest.MonkeyPatch):
+    from ns_dashboard.adapters import RealScheduleAdapter
+    from ns_supervisor import schedule
+    from ns_supervisor.schedule_cfg import read_run_time
+
+    scripts: list[str] = []
+    monkeypatch.setattr(schedule, "_run", lambda script: scripts.append(script) or "registered")
+    client, state = make_env(tmp_home)
+    state.adapters.schedule = RealScheduleAdapter(Paths.from_env())
+    r = client.put("/api/settings", json={"schedule_time": "04:30"})
+    assert r.status_code == 200, r.text
+    assert r.json()["schedule_result"]["applied"] is True
+    assert len(scripts) == 1 and "Register-ScheduledTask" in scripts[0] and "'04:30'" in scripts[0]
+    assert read_run_time(Paths.from_env()) == "04:30"  # the supervisor's own copy of the time moved too
+
+
+def test_a_refused_task_update_keeps_the_time_and_says_so(tmp_home: Path, monkeypatch: pytest.MonkeyPatch):
+    from ns_dashboard.adapters import RealScheduleAdapter
+    from ns_supervisor import schedule
+
+    def refuse(_script: str) -> str:
+        raise schedule.ScheduleError("Access is denied")
+
+    monkeypatch.setattr(schedule, "_run", refuse)
+    client, state = make_env(tmp_home)
+    state.adapters.schedule = RealScheduleAdapter(Paths.from_env())
+    body = client.put("/api/settings", json={"schedule_time": "05:00"}).json()
+    assert body["schedule_time"] == "05:00"
+    assert body["schedule_result"]["applied"] is False and "Access is denied" in body["schedule_result"]["note"]

@@ -11,7 +11,6 @@ from ns_common.paths import Paths
 from ns_dashboard.adapters import (
     RealDoctorAdapter,
     RealKeyringAdapter,
-    RealScheduleAdapter,
     RealVerifyAdapter,
     lazy,
     real_adapters,
@@ -64,8 +63,6 @@ def test_real_adapters_report_unavailable_collaborators(tmp_home: Path, monkeypa
         RealDoctorAdapter(paths).bundle()
     with pytest.raises(AdapterUnavailable):
         RealKeyringAdapter().get("pexels_api_key")
-    out = RealScheduleAdapter(paths).apply("04:00")
-    assert out["applied"] is False and "Saved" in out["note"]
     assert real_adapters(paths, link, NsLogger("dashboard", paths.logs)).folder is not None
 
 
