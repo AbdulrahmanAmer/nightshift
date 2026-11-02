@@ -95,6 +95,12 @@ def fake_effects(base: Path, present: set[str] | None = None, **overrides: Any) 
     var: dict[str, str] = {}
     launched: list[list[str]] = []
     console: list[str] = []
+    downloads: list[tuple[str, str]] = []
+
+    def fetch_uv(url: str, sha256: str, dest: Path) -> None:
+        downloads.append((url, sha256))
+        dest.mkdir(parents=True, exist_ok=True)
+        (dest / "uv.exe").write_bytes(b"MZ")
 
     def set_var(name: str, value: str) -> bool:
         var[name] = value
@@ -109,13 +115,14 @@ def fake_effects(base: Path, present: set[str] | None = None, **overrides: Any) 
         launch=lambda argv, env=None: launched.append(list(argv)),
         launch_captured=lambda argv, env=None, **kw: (launched.append(list(argv)), (0, ""))[1],
         elevate_longpaths=lambda: True, console=lambda text, level: console.append(text),
-        uv_path=lambda home: str(uv), clipboard=lambda text: None,
+        uv_path=lambda home: str(uv), clipboard=lambda text: None, fetch_uv=fetch_uv,
     )
     for k, v in overrides.items():
         setattr(fx, k, v)
     fx.launched = launched          # type: ignore[attr-defined]
     fx.console_lines = console      # type: ignore[attr-defined]
     fx.home_var = var               # type: ignore[attr-defined]
+    fx.uv_downloads = downloads     # type: ignore[attr-defined]
     return fx, cmd
 
 
