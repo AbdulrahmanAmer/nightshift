@@ -208,7 +208,7 @@ def test_a_dashboard_window_delays_the_deferred_delete_until_it_closes(
         kernel32.CloseHandle(ctypes.c_void_p(handle))
     assert with_window >= 6                                              # it polled until the limit
     assert (home / "bin").exists() is False                              # then removed what it could
-    (home / "bin").mkdir()
+    (home / "bin").mkdir(parents=True)             # the script removed the empty home too
     assert run() < with_window                                           # no window: no waiting
 
 
