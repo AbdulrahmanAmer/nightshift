@@ -344,3 +344,20 @@ def test_engine_buttons_reach_the_supervisor_and_the_verify_job(tmp_home: Path):
         job = client.get("/api/jobs", params={"kind": "verify", "limit": 1}).json()[0]
         assert job["status"] == "done" and job["result"]["checks"]
         assert client.post("/api/engine/warmup", json={"service": "banana"}).status_code == 422
+
+
+# ---------------------------------------------------------------- gap 28: the log viewer filters by component
+
+
+def test_log_components_feed_the_viewer_filter(tmp_home: Path):
+    from ns_common.logging import NsLogger
+
+    client, state = make_env(tmp_home)
+    NsLogger("studio", state.paths.logs).info("studio_probe", "from studio")
+    NsLogger("supervisor", state.paths.logs).info("supervisor_probe", "from supervisor")
+    comps = client.get("/api/logs/components").json()
+    assert {"studio", "supervisor", "dashboard"} <= set(comps)
+    only = client.get("/api/logs/tail", params={"component": "studio", "n": 50}).json()
+    assert only and {line["component"] for line in only} == {"studio"}
+    assert any(line["event"] == "studio_probe" for line in only)
+    assert client.get("/api/logs/tail", params={"component": "supervisor"}).json()[-1]["event"] == "supervisor_probe"

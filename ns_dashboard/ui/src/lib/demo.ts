@@ -246,7 +246,8 @@ export async function demoHandle(method: string, path: string, body?: any): Prom
   if (p === "/runs") return [{ run_id: "daily-20261102-a1f2", started_at: new Date(Date.now() - 9 * 3600e3).toISOString(), finished_at: new Date(Date.now() - 6 * 3600e3).toISOString(), mode: "daily", duration_s: 10320, summary: { jobs: [{ job_id: "after-dark-20261102-a1f2", channel: "after-dark", stages: 19 }, { job_id: "tiny-mysteries-20261102-77c3", channel: "tiny-mysteries", stages: 19 }], failures: [] } }];
   if (p === "/learn/summary") return structuredClone(DEMO.learn);
   if (p === "/learn/import") { DEMO.learn.imported_at = new Date().toISOString(); return structuredClone(DEMO.learn); }
-  if (p.startsWith("/logs/tail")) { const lvl = sp.get("level"); return DEMO.logs.filter((l: any) => !lvl || l.level === lvl); }
+  if (p === "/logs/components") return [...new Set<string>(DEMO.logs.map((l: any) => l.component))].sort();
+  if (p.startsWith("/logs/tail")) { const lvl = sp.get("level"); const comp = sp.get("component"); return DEMO.logs.filter((l: any) => (!lvl || l.level === lvl) && (!comp || l.component === comp)); }
   if (p === "/library/ideas" && method === "GET") return DEMO.ideas.map((i: any) => ({ ...i }));
   if (p === "/library/ideas" && method === "POST") { const idea = { id: Date.now(), status: "new", source: "You", created_at: new Date().toISOString(), ...body }; DEMO.ideas.unshift(idea); return idea; }
   if (parts[0] === "library" && parts[1] === "ideas" && method === "PUT") { const i = DEMO.ideas.find((x: any) => String(x.id) === parts[2]); if (i) Object.assign(i, body); return i; }

@@ -8,7 +8,7 @@ import type { Job, LogLine, Settings as S } from "../lib/types";
 import { dayInline, plural } from "../lib/format";
 import { cx } from "../ui/kit";
 import { Lockup } from "../ui/Lockup";
-import { Badge, Button, Icon, Card, CardHeader, DashGrid, IconButton, Input, LinkButton, ProgressBar, SegmentedControl, SettingRow, SPAN, StatusDot, Switch, type SegmentOption } from "../components/ref12";
+import { Badge, Button, Icon, Card, CardHeader, DashGrid, IconButton, Input, LinkButton, ProgressBar, SegmentedControl, Select, SettingRow, SPAN, StatusDot, Switch, type SegmentOption } from "../components/ref12";
 
 const THEMES: SegmentOption<"light" | "dark" | "soft">[] = [{ value: "light", label: "Light", icon: "sun" }, { value: "dark", label: "Dark", icon: "moon" }, { value: "soft", label: "Soft", icon: "blend" }];
 
@@ -20,11 +20,13 @@ export default function Settings() {
   const [unlocked, setUnlocked] = useState(false);
   const [flags, setFlags] = useState<Record<string, string>>({});
   const [level, setLevel] = useState("");
+  const [component, setComponent] = useState("");
+  const components = useLoad<string[]>(() => api.get("/logs/components"), [], []);
   const [upd, setUpd] = useState<{ current?: string; latest?: string; up_to_date?: boolean; notes?: string; state?: "up_to_date" | "available" | "unavailable" | "error" | "unknown"; message?: string } | null>(null);
   const [checking, setChecking] = useState(false);
-  const logs = useLoad<LogLine[]>(() => api.get(`/logs/tail?n=200&level=${encodeURIComponent(level)}`), [level], []);
+  const logs = useLoad<LogLine[]>(() => api.get(`/logs/tail?n=200&level=${encodeURIComponent(level)}&component=${encodeURIComponent(component)}`), [level, component], []);
   useEffect(() => { if (s) { setTime(s.schedule_time || "03:00"); setFlags(Object.fromEntries(Object.entries(s.flags || {}).map(([k, v]) => [k, String(v)]))); } }, [s]);
-  useEffect(() => { const t = setInterval(() => document.visibilityState === "visible" && logs.reload(), 5000); return () => clearInterval(t); }, [level]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { const t = setInterval(() => document.visibilityState === "visible" && logs.reload(), 5000); return () => clearInterval(t); }, [level, component]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const put = async (body: Record<string, unknown>, ok: string) => { try { const r = await api.put("/settings", body); if (r && typeof r === "object") st.setData({ ...s, ...r }); toast(ok, "ok"); return true; } catch (e: any) { toast(e.message, "bad"); return false; } };
   const setKey = async (name: string) => {
@@ -169,6 +171,7 @@ export default function Settings() {
               <h3 className="text-ds-md font-semibold">Recent log</h3>
               <div className="flex max-w-full min-w-0 items-center gap-2">
                 <SegmentedControl size="sm" label="Log level" value={level || "all"} onChange={(v) => setLevel(v === "all" ? "" : v)} options={[{ value: "all", label: "All" }, { value: "INFO", label: "Info" }, { value: "WARN", label: "Warnings" }, { value: "ERROR", label: "Errors" }]} />
+                <Select aria-label="Log component" className="!h-8 !w-auto !text-ds-xs" value={component} onChange={(e) => setComponent(e.target.value)}><option value="">All parts</option>{components.data.map((c) => <option key={c} value={c}>{c}</option>)}</Select>
                 <IconButton icon="refresh" label="Refresh log" size="sm" onClick={logs.reload} />
               </div>
             </div>
