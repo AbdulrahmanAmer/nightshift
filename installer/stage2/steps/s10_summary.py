@@ -38,7 +38,7 @@ class S10Summary(Step):
     def run(self, ctx: StepContext) -> None:
         """Print results, locations and next steps; write the diagnostics zip."""
         ui = ctx.ui
-        rows = [[s.id, ctx.state.status(s.id)] for s in _all_steps()]
+        rows = [[s.id, ctx.state.status(s.id)] for s in _all_steps(ctx)]
         ui.table("Setup result", ["Step", "Result"], rows, status_col=1)
         if ctx.warnings:
             ui.say("Warnings (setup works, but read these):", "yellow")
@@ -63,6 +63,7 @@ class S10Summary(Step):
         res = ctx.run_tool("ns", ["doctor", "--bundle"], timeout=900)
         folder = ctx.desktop_override or desktop_dir(ctx.runner)
         bundle = newest_bundle(folder) if res.ok else None
+        ui.bundle(bundle)
         if bundle is not None:
             ctx.set_flag("bundle", str(bundle))
             ui.panel(
@@ -76,13 +77,13 @@ class S10Summary(Step):
 
     def verify(self, ctx: StepContext) -> None:
         """All earlier steps ended done or skipped."""
-        earlier = [s.id for s in _all_steps() if s.id != self.id]
+        earlier = [s.id for s in _all_steps(ctx) if s.id != self.id]
         bad = [i for i in earlier if ctx.state.status(i) not in ("done", "skipped")]
         if bad:
             raise make_error("NS-E202", f"steps not finished: {', '.join(bad)}")
 
 
-def _all_steps() -> list[Step]:
-    from installer.stage2.steps import default_steps
+def _all_steps(ctx: StepContext) -> list[Step]:
+    from installer.stage2.steps import bridge_steps, default_steps
 
-    return default_steps()
+    return bridge_steps() if ctx.ui.bridge else default_steps()

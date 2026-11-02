@@ -50,7 +50,10 @@ class StateStore:
 
     def any_done(self) -> bool:
         """True when a previous run finished at least one step (this run is a resume)."""
-        return any(s.status in ("done", "skipped") for s in self.state.steps.values())
+        return any(
+            s.status in ("done", "skipped") for step_id, s in self.state.steps.items()
+            if not step_id.startswith("b0")    # the setup window's bootstrap steps are not wizard progress
+        )
 
     def mark(self, step_id: str, status: str, error: str | None = None) -> None:
         """Set a step's status and persist."""

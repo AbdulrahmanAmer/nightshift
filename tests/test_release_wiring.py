@@ -25,17 +25,28 @@ def test_changelog_has_a_heading_for_the_version_file():
 def test_release_workflow_builds_the_uis_before_the_bundle():
     wf = read(".github/workflows/release.yml")
     dash = wf.index("npm run build")
-    installer = wf.index("installer/ui")
     bundle = wf.index("./dev/make_bundle.ps1")
-    assert dash < installer < bundle
-    # the installer UI step is conditional on the folder existing
-    assert "hashFiles('installer/ui/package.json')" in wf
+    assert dash < bundle
+    # one `npm run build` in ns_dashboard/ui writes both ns_dashboard/static and installer/ui/static
+    assert "git status --porcelain ns_dashboard/static" in wf
     assert "git status --porcelain installer/ui/static" in wf
+    assert wf.index("git status --porcelain installer/ui/static") < bundle
 
 
-def test_bundle_requires_the_installer_ui_build_once_it_exists():
+def test_ci_ui_build_checks_both_committed_builds():
+    ci = read(".github/workflows/ci.yml")
+    assert "git status --porcelain ns_dashboard/static" in ci
+    assert "git status --porcelain installer/ui/static" in ci
+
+
+def test_bundle_requires_the_installer_ui_build():
     bundle = read("dev/make_bundle.ps1")
     assert "installer/ui/static/index.html" in bundle and "installer/ui/static/app.js" in bundle
+
+
+def test_changelog_lists_the_installer_wizard_as_shipped():
+    text = read("CHANGELOG.md")
+    assert "Installer web wizard" in text and "in progress" not in text
 
 
 def test_the_qwentts_pin_is_still_open_or_a_real_release_asset():

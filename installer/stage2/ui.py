@@ -9,6 +9,7 @@ from __future__ import annotations
 import threading
 from collections.abc import Sequence
 from pathlib import Path
+from typing import Any
 
 from rich.console import Console
 from rich.markdown import Markdown
@@ -82,6 +83,31 @@ class Ui:
     def __init__(self, console: Console | None = None, *, interactive: bool = True) -> None:
         self.console = console or Console()
         self.interactive = interactive
+
+    # ---- bridge hooks (no-ops here; installer.stage2.bridge.BridgeUi forwards them to the setup window) ----
+    bridge = False
+
+    def step_status(self, step_id: str, status: str, title: str, detail: str | None = None) -> None:
+        """A step started or ended (running, done, skipped, failed, warning, pending)."""
+
+    def decide_failure(self, step_id: str, failure: Any, optional: bool, attempt: int) -> str | None:
+        """Return retry, skip or quit to decide a failure for the caller; None keeps the console menu."""
+        return None
+
+    def notice(self, code: str, detail: str = "") -> None:
+        """A warning (NS-W code) was raised."""
+
+    def plan(self, items: Sequence[Any]) -> None:
+        """A download plan is about to run (``DownloadItem`` objects)."""
+
+    def verify_checks(self, checks: Sequence[dict[str, Any]]) -> None:
+        """The ``ns verify`` result rows (name, passed, value, limit)."""
+
+    def sample(self, kind: str, path: Path, seconds: float | None = None) -> None:
+        """A test sample (voice, render, thumb) was written."""
+
+    def bundle(self, path: Path | None) -> None:
+        """The diagnostics zip was written (None when it could not be)."""
 
     # ---- output ----
     def say(self, msg: str = "", style: str | None = None) -> None:

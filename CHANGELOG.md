@@ -19,8 +19,11 @@ First release (milestone M0, code complete). Highlights since the pipeline lande
   both previewed in the Library.
 - **Scheduling:** Create can hold a story or clip job until a chosen time (`schedule_at`).
 - **QC pass rate:** each channel shows how many videos passed QC against a target line (`Channel.qc_pass_target`).
-- **Installer wizard:** the console wizard ships; the graphical setup window is in progress and is not part of this
-  release.
+- **Installer web wizard:** `INSTALL.cmd` opens a setup window (stage 1 splash with `-Ui`, `-NoUi` and `-ProbeOnly`; a
+  stdlib web server and state machine with resume). Screens: Welcome, This PC, Choices, Download, Installing, Verify, Done,
+  Failed and Uninstall; `UNINSTALL.cmd -Ui` opens the Uninstall screen. The console wizard still runs with an
+  `answers.json`. The window is built with `npm run build` in `ns_dashboard/ui` (`vite.installer.config.ts`) into the
+  committed `installer/ui/static`.
 
 ### Added
 - Foundation and contracts (C3): shared pydantic models in `ns_common.models` with generated JSON schemas,

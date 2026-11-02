@@ -41,8 +41,8 @@ $MaxZipBytes = 25MB
 $MaxFixtureBytes = 1MB
 $ForbiddenNames = @('*.gguf', '*.onnx', '*.safetensors', '*.mp4', '*.exe')
 $ForbiddenDirs = @('.venv', 'venv', '__pycache__', '.git', '.github', 'node_modules')
-# The dashboard build is committed (CI job ui-build keeps it equal to ns_dashboard/ui); the partner PC has no node.
-$RequiredEntries = @('VERSION', 'pyproject.toml', 'ns_common/__init__.py', 'ns_dashboard/static/index.html', 'ns_dashboard/static/app.js', 'ns_dashboard/static/brand/nightshift.ico', 'DEMO.cmd', 'dev/demo/serve.js')
+# The dashboard and installer builds are committed (CI job ui-build keeps them equal to ns_dashboard/ui); the partner PC has no node.
+$RequiredEntries = @('VERSION', 'pyproject.toml', 'ns_common/__init__.py', 'ns_dashboard/static/index.html', 'ns_dashboard/static/app.js', 'ns_dashboard/static/brand/nightshift.ico', 'installer/ui/static/index.html', 'installer/ui/static/app.js', 'DEMO.cmd', 'dev/demo/serve.js')
 
 function Invoke-Git {
     param([string[]]$GitArgs)
@@ -118,14 +118,6 @@ function Test-BundleZip {
     foreach ($req in $RequiredEntries) {
         if (-not ($entries | Where-Object { $_.Name -eq $req })) {
             $problems.Add("required entry missing: $req")
-        }
-    }
-    # The installer's setup window keeps a committed build in installer/ui/static; once installer/ui is in the tree it must ship.
-    if (@($entries | Where-Object { $_.Name -like 'installer/ui/*' }).Count -gt 0) {
-        foreach ($req in @('installer/ui/static/index.html', 'installer/ui/static/app.js')) {
-            if (-not ($entries | Where-Object { $_.Name -eq $req })) {
-                $problems.Add("required entry missing: $req")
-            }
         }
     }
     $size = (Get-Item -LiteralPath $ZipPath).Length

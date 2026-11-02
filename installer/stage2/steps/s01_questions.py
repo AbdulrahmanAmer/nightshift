@@ -113,6 +113,8 @@ class S01Questions(Step):
 
     def check(self, ctx: StepContext) -> bool:
         """True when a valid answers file from an earlier run exists and its secrets are stored."""
+        if ctx.ui.bridge and not ctx.state.is_done(self.id):
+            return False        # the setup window writes a first answers.json before this step has run
         f = self._answers_file(ctx)
         if not f.is_file():
             return False

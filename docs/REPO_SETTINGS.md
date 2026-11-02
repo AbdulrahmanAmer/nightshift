@@ -84,8 +84,8 @@ Release tags cannot be moved or deleted (tag ruleset above), so each step is don
    `## [0.1.0] - <date>` with the entries under it.
 2. **Tag.** `git tag v0.1.0 && git push origin v0.1.0` on the green `main` commit.
 3. **Two workflows start on the tag, independently.**
-   - `release.yml` (about 10 minutes): tests, the tag/`VERSION`/changelog check, `ns_dashboard/ui` build and a diff against
-     the committed `ns_dashboard/static`, the same for `installer/ui` once that folder exists, `dev/make_bundle.ps1`, then a
+   - `release.yml` (about 10 minutes): tests, the tag/`VERSION`/changelog check, `ns_dashboard/ui` build (`npm run build` also builds the installer
+     UI) and a diff against the committed `ns_dashboard/static` and `installer/ui/static`, `dev/make_bundle.ps1`, then a
      GitHub Release `Nightshift v0.1.0` with `Nightshift-0.1.0.zip`, `Nightshift-0.1.0.zip.sha256` and `nightshift-app-0.1.0.zip`.
    - `build-qwentts.yml` (about 45 minutes, `windows-2022`): builds qwentts.cpp with CUDA and attaches
      `qwentts-win-cuda-x64.zip` and `qwentts-win-cuda-x64.zip.sha256` to the same release (it creates the release when

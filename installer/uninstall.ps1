@@ -10,6 +10,8 @@
     -HomeDir     folder to clean (default: NIGHTSHIFT_HOME, then %LOCALAPPDATA%\Nightshift).
     -DryRun      print "[dry-run] <action>" lines, change nothing, exit 0.
     -SkipSystem  leave the scheduled task, shortcuts and environment variable alone (used by CI).
+    -Ui          open the setup window for the questions (UNINSTALL.cmd passes it). Falls back to the console
+                 questions when no uv Python is found.
 #>
 [CmdletBinding()]
 param(
@@ -17,7 +19,8 @@ param(
     [switch]$DryRun,
     [switch]$DeleteModels,
     [switch]$DeleteData,
-    [switch]$SkipSystem
+    [switch]$SkipSystem,
+    [switch]$Ui
 )
 
 Set-StrictMode -Version Latest
@@ -73,6 +76,31 @@ Write-Host ''
 Write-Host 'Nightshift uninstall' -ForegroundColor Cyan
 if ($script:IsDry) { Write-Host 'Dry run: nothing will be changed on this PC.' }
 Write-Host "Install folder: $nsHome"
+
+if ($Ui -and -not $script:IsDry) {
+    $uvCandidates = @()
+    $cmd = Get-Command 'uv.exe' -ErrorAction SilentlyContinue
+    if ($null -ne $cmd) { $uvCandidates += $cmd.Source }
+    $uvCandidates += (Join-Path $env:LOCALAPPDATA 'Nightshift\bootstrap\uv\uv.exe')
+    $uvCandidates += (Join-Path $nsHome 'bin\uv\uv.exe')
+    $appRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+    foreach ($uvExe in $uvCandidates) {
+        if (-not (Test-Path -LiteralPath $uvExe)) { continue }
+        $py = $null
+        try { $py = ((& $uvExe python find 3.12 | Out-String).Trim().Split("`n")[0]).Trim() } catch { $py = $null }
+        if ($py -and (Test-Path -LiteralPath $py)) {
+            $env:PYTHONUTF8 = '1'
+            $env:PYTHONPATH = $appRoot
+            Push-Location $appRoot
+            try {
+                & $py -X utf8 -m installer.stage2.web --uninstall --app-path $appRoot --home $nsHome
+                exit $LASTEXITCODE
+            }
+            finally { Pop-Location }
+        }
+    }
+    Write-Host 'The setup window is not available (no Python found); asking here instead.'
+}
 
 # ---- questions (default No) -----------------------------------------------------------------------------
 $wipeModels = [bool]$DeleteModels
@@ -131,6 +159,11 @@ if (-not $SkipSystem) {
 Remove-Tree -Path (Join-Path $nsHome 'venvs')
 Remove-Tree -Path (Join-Path $nsHome 'bin')
 if ($wipeModels) { Remove-Tree -Path (Join-Path $nsHome 'models') }
+if (-not $SkipSystem) {
+    foreach ($leaf in @('bootstrap', 'browser', 'webview2')) {
+        Remove-Tree -Path (Join-Path (Join-Path $env:LOCALAPPDATA 'Nightshift') $leaf)
+    }
+}
 if ($wipeData) {
     foreach ($d in @('outbox', 'rejected', 'data', 'imports', 'cache')) { Remove-Tree -Path (Join-Path $nsHome $d) }
 }
