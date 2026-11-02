@@ -35,7 +35,8 @@ BUSY_HINT = (
     "Close those windows and run the update again; your previous version is still in place."
 )
 RESTORE_HINT = (
-    "the previous version could not be put back because another program still has the Nightshift folder open. "
+    "the previous version could not be put back because another program still has the Nightshift "
+    "folder open. "
     "Close every Nightshift window, then run `ns update --rollback` (the previous version is in the folder "
     "ending in .prev)."
 )
@@ -55,7 +56,7 @@ class UpdateEnv:
     reregister: Callable[[Path], list[str]]
     untracked: Callable[[Path], list[str]] = field(default=lambda app: git_untracked(app))
     #: Called before a rollback renames folders: waits until the processes `verify` started have exited.
-    settle: Callable[[], None] = field(default=lambda: None)
+    settle: Callable[[], object] = field(default=lambda: None)
 
 
 @dataclass
@@ -223,7 +224,7 @@ def rename_with_retry(
             sleep(pause_s)
 
 
-def _restore(app: Path, prev: Path, log: NsLogger, settle: Callable[[], None] | None = None) -> None:
+def _restore(app: Path, prev: Path, log: NsLogger, settle: Callable[[], object] | None = None) -> None:
     """Put `<app>.prev` back in place of a failed new tree.
 
     The failure that brought us here is usually `ns verify --quick` failing: the engine it started (and its

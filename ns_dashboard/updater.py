@@ -233,7 +233,7 @@ def read_update_state(paths: Paths) -> dict[str, Any]:
     try:
         from ns_supervisor.update_job import effective_status
 
-        raw = effective_status(raw)      # a `running` state whose worker died (power loss, killed) is `failed`
+        raw = effective_status(raw)      # `running` with a dead worker (power loss, killed) is `failed`
     except ImportError:
         pass
     for key in ("old", "new", "message", "updated_at"):

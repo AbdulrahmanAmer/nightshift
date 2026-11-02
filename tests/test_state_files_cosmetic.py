@@ -64,7 +64,7 @@ def test_a_state_file_that_stays_locked_does_not_kill_the_worker(
         return update_job.Outcome("Now on 0.2.0 (was 0.1.0).", "0.1.0", "0.2.0")
 
     log = paths.logs / "u.log"
-    assert update_job.run_worker(paths, body, log=log) == 0        # the first write used to be outside the try
+    assert update_job.run_worker(paths, body, log=log) == 0     # the first write used to be outside the try
     assert ran == [1]
     assert calls.count("running") == 2 and calls.count("done") == update_job.FINAL_TRIES
     assert "could not write update_state.json" in log.read_text(encoding="utf-8")
@@ -169,7 +169,8 @@ def test_the_deferred_script_is_valid_powershell(tmp_path: Path) -> None:
     if exe is None:
         pytest.skip("needs Windows PowerShell")
     script = tmp_path / "deferred.ps1"
-    script.write_text(uninstall.deferred_script(tmp_path / "ns", [1, 2], tmp_path / "Local"), encoding="utf-8")
+    text = uninstall.deferred_script(tmp_path / "ns", [1, 2], tmp_path / "Local")
+    script.write_text(text, encoding="utf-8")
     probe = (
         "$e = $null; [void][System.Management.Automation.Language.Parser]::ParseFile("
         f"'{script}', [ref]$null, [ref]$e); exit $e.Count"

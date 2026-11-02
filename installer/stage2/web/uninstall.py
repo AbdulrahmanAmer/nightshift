@@ -123,7 +123,8 @@ def deferred_script(home: Path, wait_pids: list[int], local_root: Path | None = 
         root = ps_quote(str(local_root))
         lines += [
             f"$localRoot = '{root}'",
-            "if ((Test-Path -LiteralPath $localRoot) -and -not (Get-ChildItem -LiteralPath $localRoot -Force)) {",
+            "if ((Test-Path -LiteralPath $localRoot) -and "
+            "-not (Get-ChildItem -LiteralPath $localRoot -Force)) {",
             "    Remove-Item -LiteralPath $localRoot -Force",
             "}",
         ]

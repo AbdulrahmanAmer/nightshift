@@ -49,7 +49,8 @@ def test_the_worker_python_is_a_copy_outside_venvs(tmp_path: Path) -> None:
     assert updater_copy.is_inside(py, updater_copy.updater_root(paths))
     assert not updater_copy.is_inside(py, paths.venvs)
     copy = py.parent.parent
-    assert (copy / "pyvenv.cfg").is_file() and (copy / "Lib" / "site-packages" / "pkg" / "__init__.py").is_file()
+    assert (copy / "pyvenv.cfg").is_file()
+    assert (copy / "Lib" / "site-packages" / "pkg" / "__init__.py").is_file()
 
 
 def test_older_copies_are_removed_and_a_missing_venv_means_no_copy(tmp_path: Path) -> None:
@@ -107,7 +108,7 @@ class World:
 
 
 def run_update(tmp_path: Path, stage: Any) -> tuple[World, list[list[str]], list[str]]:
-    """The dashboard/shortcut story: the caller (a venv python) starts the worker and exits; the worker syncs."""
+    """The caller (a venv python) starts the worker and exits; then the worker syncs."""
     paths = Paths(tmp_path / "home")
     make_venv(paths)
     app = tmp_path / "app"

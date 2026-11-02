@@ -158,7 +158,8 @@ def download_uv(url: str, sha256: str, dest_dir: Path) -> None:
         except OSError as e:
             raise BootstrapError("NS-E105", f"could not download uv from {url}: {e}") from e
         if digest.hexdigest().lower() != sha256.lower():
-            raise BootstrapError("NS-E105", f"SHA256 mismatch for the uv download ({digest.hexdigest()[:12]})")
+            got = digest.hexdigest()[:12]
+            raise BootstrapError("NS-E105", f"SHA256 mismatch for the uv download ({got})")
         try:
             with zipfile.ZipFile(tmp) as z:
                 for info in z.infolist():

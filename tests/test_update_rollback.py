@@ -1,8 +1,8 @@
 """C2: the rollback after a failed update waits for the verify engine and retries its renames.
 
 `ns verify --quick` starts a detached engine with the new tree open. When verify fails, `_restore` used to
-rename the folder at once and raise WinError 32 inside the `except`, which replaced the real error and left the
-install on the new, failing tree.
+rename the folder at once and raise WinError 32 inside the `except`, which replaced the real error and left
+the install on the new, failing tree.
 """
 
 from __future__ import annotations

@@ -119,7 +119,9 @@ def fake_tree(calls: list[tuple[str, Path]]):  # type: ignore[no-untyped-def]
     def tree(repo: str, revision: str, dest_dir: Path) -> list[DownloadItem]:
         calls.append((repo, dest_dir))
         return [
-            DownloadItem(name=f"{repo}/{f}", url=hf_url(repo, revision, f), dest=dest_dir / f, sha256="a" * 64)
+            DownloadItem(
+                name=f"{repo}/{f}", url=hf_url(repo, revision, f), dest=dest_dir / f, sha256="a" * 64
+            )
             for f in ("config.json", "model.safetensors")
         ]
 

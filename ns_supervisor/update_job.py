@@ -119,7 +119,7 @@ def read_status(paths: Paths) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
-#: A `running` state without a worker pid (written by `launch`) older than this means the worker never started.
+#: A `running` state without a worker pid (written by `launch`) older than this: the worker never started.
 START_GRACE_S = 120.0
 STOPPED_MESSAGE = "The update process stopped before it finished. Your previous version is still in place."
 
