@@ -13,7 +13,7 @@ export function AvatarGroup({ people, max = 3, size = "sm", onAdd, addLabel, cla
       {extra > 0 && <span className={cx("-ml-[7px] inline-grid place-items-center rounded-full bg-ds-sunken leading-none font-bold text-ds-text-2", AVATAR_SIZE[size], ring)}>+{extra}</span>}
       {onAdd && (
         <button type="button" onClick={onAdd} aria-label={addLabel} title={addLabel}
-          className={cx("ds-focus -ml-1 inline-grid scale-[0.8] place-items-center rounded-full bg-ds-accent text-ds-on-accent", AVATAR_SIZE[size], ring)}>
+          className={cx("ds-focus -ml-1 inline-grid scale-[0.8] [@media(max-width:820px)]:scale-100 place-items-center rounded-full bg-ds-accent text-ds-on-accent", AVATAR_SIZE[size], ring)}>
           <Icon name="plus" size={10} strokeWidth={2.5} />
         </button>
       )}

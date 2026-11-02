@@ -559,3 +559,10 @@
 .ds-drag { -webkit-app-region: drag; app-region: drag; user-select: none; }
 .ds-nodrag { -webkit-app-region: no-drag; app-region: no-drag; }
 .ds-notch { filter: drop-shadow(var(--rail-shadow)); }
+
+/* Touch targets: at 820 px and narrower every button, field and tab is at least 40 px in both directions (WCAG 2.5.8 and
+   the comfortable-thumb rule). Checkboxes, radios and sliders keep their own size; their label row carries the target. */
+@media (max-width: 820px) {
+  .ds-root :is(button, select, textarea, input:not([type="checkbox"], [type="radio"], [type="range"], [type="file"]), [role="tab"], [role="radio"], [role="menuitem"], a.ds-focus) { min-height: 40px; }
+  .ds-root :is(button, [role="tab"], [role="radio"], [role="menuitem"]):not(.sidetab-item) { min-width: 40px; }
+}
