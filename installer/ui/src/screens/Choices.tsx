@@ -37,8 +37,8 @@ export function Choices() {
     const a = state.answers;
     const theme = (document.documentElement.dataset.theme === "light" ? "light" : "dark") as "dark" | "light";
     return a
-      ? { ownerName: a.ownerName, channel: a.channel, homePath: a.homePath, llmTier: a.llmTier, llmCustom: a.llmCustom, voice: a.voice, modelsSource: a.modelsSource, runTime: a.runTime, mastersPerWeek: a.mastersPerWeek, installCode: a.installCode, theme: a.theme ?? theme, pexelsKey: null, pixabayKey: null }
-      : { ownerName: null, channel: { displayName: "", niche: "", language: "en" }, homePath: state.machine.meters.disk.path, llmTier: state.plan.recommendedTier, llmCustom: null, voice: { speaker: "Ryan" }, modelsSource: { kind: "internet", path: null }, runTime: "03:00", mastersPerWeek: 1, installCode: true, theme, pexelsKey: null, pixabayKey: null };
+      ? { ownerName: a.ownerName, channel: a.channel, homePath: a.homePath, llmTier: a.llmTier, llmCustom: a.llmCustom, voice: a.voice, modelsSource: a.modelsSource, runTime: a.runTime, mastersPerWeek: a.mastersPerWeek, installCode: a.installCode, includeVoicedesign: a.includeVoicedesign ?? false, theme: a.theme ?? theme, pexelsKey: null, pixabayKey: null }
+      : { ownerName: null, channel: { displayName: "", niche: "", language: "en" }, homePath: state.machine.meters.disk.path, llmTier: state.plan.recommendedTier, llmCustom: null, voice: { speaker: "Ryan" }, modelsSource: { kind: "internet", path: null }, runTime: "03:00", mastersPerWeek: 1, installCode: true, includeVoicedesign: false, theme, pexelsKey: null, pixabayKey: null };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   const [d, setD] = useState<ChoicesDraft>(initial);
@@ -205,6 +205,7 @@ export function Choices() {
                   <span className="text-ds-xs text-ds-muted">{t.more.perWeekCaption}</span>
                 </div>
                 <ChoiceRow type="checkbox" checked={d.installCode} onChange={(v) => set("installCode", v)} label={t.more.code} className="-mx-3" />
+                <ChoiceRow type="checkbox" checked={d.includeVoicedesign} disabled={locked} onChange={(v) => set("includeVoicedesign", v)} label={t.more.voicedesign} hint={d.includeVoicedesign ? t.more.voicedesignOn : t.more.voicedesignHint} className="-mx-3" />
                 <div className="flex flex-col gap-1.5">
                   <span className="text-ds-sm font-medium text-ds-text-2">{t.more.theme}</span>
                   <SegmentedControl label={t.more.theme} value={d.theme} onChange={(v) => { document.documentElement.dataset.theme = v; set("theme", v); }}

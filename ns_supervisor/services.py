@@ -9,6 +9,7 @@ from __future__ import annotations
 import sys
 from dataclasses import dataclass, field
 
+from ns_common.config import embed_server_args
 from ns_common.errors import NsError
 from ns_common.models import Runtime
 from ns_common.paths import Paths
@@ -106,7 +107,7 @@ def _embed(rt: Runtime, paths: Paths) -> ServiceDef:
         "--port", str(cfg.port),
         "--host", cfg.host,
         "-ngl", "0",
-    ]  # fmt: skip
+    ] + embed_server_args(cfg)  # fmt: skip
     return ServiceDef(name="embed", cmd=cmd, host=cfg.host, port=cfg.port, gpu=False, env=_env(paths))
 
 
