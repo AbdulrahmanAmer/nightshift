@@ -652,3 +652,65 @@ def test_the_written_answers_file_carries_the_custom_model(tmp_path, monkeypatch
     s.until(lambda st: st["run"] == "finished", what="the run to finish")
     written = json.loads((s.home / "config" / "answers.json").read_text(encoding="utf-8"))
     assert written["llm_custom"] == CUSTOM and written["llm_tier"] == "small"
+
+
+# ------------------------------------------------------------------ "Open dashboard" shows what went wrong
+def finished_setup(tmp_path, monkeypatch):
+    s = Setup(tmp_path, monkeypatch)
+    s.ctl._started = True
+
+    def finish(st: dict) -> None:
+        for step in st["steps"]:
+            step["status"] = "done"
+        st["run"] = "finished"
+        st["result"] = {"home": str(s.home), "outbox": str(s.home / "outbox"), "diagnosticsZip": None}
+
+    s.ctl.store.update(finish)
+    return s
+
+
+def test_a_launcher_that_fails_is_reported_in_the_window_with_its_own_message(tmp_path, monkeypatch):
+    s = finished_setup(tmp_path, monkeypatch)
+    s.fx.launch_captured = lambda argv, env=None, **kw: (
+        1, "The Nightshift engine did not start. Run \"Nightshift - Diagnostics\" and send the zip.")
+    status, body = s.ctl.do_action("open-dashboard")
+    assert status == 200 and body["ok"] is False
+    assert "engine did not start" in body["message"]
+
+
+class FakeLauncher:
+    """A launcher process: prints its lines, exits with a code (or keeps running)."""
+
+    def __init__(self, text: str, code: int | None) -> None:
+        import io
+
+        self.stdout = io.StringIO(text)
+        self.code = code
+
+    def poll(self):
+        return self.code
+
+
+def test_launch_captured_reads_the_output_of_a_failed_launcher():
+    seen = {}
+
+    def popen(argv, **kw):
+        seen.update(kw)
+        return FakeLauncher("The dashboard did not start.\nRun Diagnostics.\n", 1)
+
+    code, tail = controller.launch_captured(["x"], popen=popen, sleep=lambda s: None, up=lambda: False)
+    assert code == 1 and "did not start" in tail and "Run Diagnostics." in tail
+    assert seen["stdout"] is not None and seen["stdin"] is not None      # captured, and no console to wait on
+
+
+def test_launch_captured_succeeds_when_the_dashboard_answers_while_the_launcher_is_busy():
+    code, tail = controller.launch_captured(
+        ["x"], popen=lambda argv, **kw: FakeLauncher("", None), sleep=lambda s: None, up=lambda: True)
+    assert code is None
+
+
+def test_launch_captured_gives_up_waiting_but_not_on_the_launcher():
+    code, _ = controller.launch_captured(
+        ["x"], popen=lambda argv, **kw: FakeLauncher("", None), sleep=lambda s: None, up=lambda: False,
+        wait_s=0.0)
+    assert code is None

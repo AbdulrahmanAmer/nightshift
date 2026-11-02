@@ -127,6 +127,64 @@ def launch_detached(argv: list[str], env: dict[str, str] | None = None) -> None:
     )
 
 
+class ActionFailed(Exception):
+    """An action could not do what it was asked; the message goes to the window."""
+
+
+def dashboard_answers(url: str = "http://127.0.0.1:8100/") -> bool:
+    """True when the dashboard answers on its port."""
+    import urllib.error
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen(url, timeout=1.5) as r:  # noqa: S310 - fixed loopback URL
+            return 200 <= r.status < 500
+    except (OSError, urllib.error.URLError, ValueError):
+        return False
+
+
+def launch_captured(
+    argv: list[str],
+    env: dict[str, str] | None = None,
+    *,
+    wait_s: float = 150.0,
+    sleep: Callable[[float], None] = time.sleep,
+    popen: Callable[..., Any] = subprocess.Popen,
+    up: Callable[[], bool] = dashboard_answers,
+) -> tuple[int | None, str]:
+    """Run a launcher with its output captured; returns (exit code or None while it still runs, output tail).
+
+    A launcher started with DETACHED_PROCESS has no console, so its error text and its closing ``Read-Host``
+    went nowhere and the window said "opening" forever. Here the output is read by a thread, the launcher gets
+    no window, and the caller sees how it ended: exit 0 (done), an exit code with the text, or None when the
+    dashboard answers while the launcher is still busy.
+    """
+    flags = 0x08000000 if os.name == "nt" else 0          # CREATE_NO_WINDOW
+    proc = popen(
+        argv, env={**os.environ, **(env or {})}, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace", creationflags=flags,
+    )
+    lines: list[str] = []
+
+    def pump() -> None:
+        for line in proc.stdout or ():
+            if line.strip():
+                lines.append(line.rstrip())
+
+    reader = threading.Thread(target=pump, name="launcher-output", daemon=True)
+    reader.start()
+    deadline = time.monotonic() + wait_s
+    code = proc.poll()
+    while code is None and time.monotonic() < deadline:
+        if up():
+            return None, "\n".join(lines[-12:])
+        sleep(0.5)
+        code = proc.poll()
+    if code is not None:
+        reader.join(timeout=2)
+    return code, "\n".join(lines[-12:])
+
+
 def elevate_longpaths() -> bool:
     """Turn long paths on through a UAC prompt. True when the registry value is 1 afterwards."""
     script = (
@@ -180,6 +238,7 @@ class Effects:
     key_check: Callable[[str, str], dict[str, Any]] = check_key
     head: modelcheck.Head = modelcheck.urllib_head
     launch: Callable[..., None] = launch_detached
+    launch_captured: Callable[..., tuple[int | None, str]] = launch_captured
     elevate_longpaths: Callable[[], bool] = elevate_longpaths
     console: Callable[[str, str], None] = ignore_console
     uv_path: Callable[[Path], str] = default_uv_path
@@ -553,7 +612,10 @@ class SetupController:
         handler = getattr(self, "_act_" + name.replace("-", "_"), None)
         if handler is None:
             return self._reply(404, False, f"Unknown action {name}")
-        message = handler(path)
+        try:
+            message = handler(path)
+        except ActionFailed as e:
+            return self._reply(200, False, str(e))
         return self._reply(200, True, message)
 
     def _accept_prefill(self) -> str | None:
@@ -691,10 +753,16 @@ class SetupController:
 
     def _act_open_dashboard(self, _path: str | None) -> str | None:
         script = self.cfg.app_path / "launchers" / "nightshift-dashboard.ps1"
-        self.fx.launch(
+        code, tail = self.fx.launch_captured(
             ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script)],
             {bootstrap.HOME_VAR: str(self.home), "NS_DASHBOARD_NO_HOST": "1"},
         )
+        if code not in (None, 0):
+            self.log("error", f"The dashboard launcher stopped with exit code {code}: {tail}")
+            raise ActionFailed(
+                tail or f"The dashboard did not start (exit code {code}). "
+                "Use the Nightshift Diagnostics shortcut and send the zip."
+            )
         return "Opening the dashboard"
 
     def _act_reveal(self, path: str | None) -> str | None:
