@@ -22,6 +22,7 @@ from ns_dashboard.errors import ApiError, SupervisorUnavailable
 from ns_dashboard.events import EventHub
 
 DEFAULT_SUPERVISOR_PORT = 8099
+GPU_IN_USE = "A video job is still using the GPU; stop it from the Queue instead."
 
 
 def supervisor_url(paths: Paths) -> str:
@@ -82,9 +83,19 @@ class SupervisorLink:
         """`POST /stop_all`."""
         return self._post("/stop_all", {})
 
-    def release_owner(self, owner: str) -> bool:
-        """`POST /release_owner`: free the lease and queue place of `owner`; True if it freed something."""
-        return bool(self._post("/release_owner", {"owner": owner}).get("ok"))
+    def release_owner(self, owner: str, *, unless_alive: bool = False) -> bool:
+        """`POST /release_owner`: free the lease and queue place of `owner`; True if it freed something.
+
+        With `unless_alive` (the Release button) the supervisor refuses while `owner` still sends heartbeats,
+        and this raises ApiError 409 `gpu_in_use`.
+        """
+        body: dict[str, Any] = {"owner": owner}
+        if unless_alive:
+            body["unless_alive"] = True
+        data = self._post("/release_owner", body)
+        if data.get("refused"):
+            raise ApiError(409, "gpu_in_use", GPU_IN_USE)
+        return bool(data.get("ok"))
 
     def events(self, stop: threading.Event) -> Iterator[dict[str, Any]]:
         """Parse the `/events` SSE stream into dicts until `stop` is set or the stream ends.

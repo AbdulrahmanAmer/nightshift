@@ -444,6 +444,7 @@ class JobWorker:
         self._exited = False
         self._thread: threading.Thread | None = None
         self._running_id: str | None = None
+        self._running_ctl: JobControl | None = None
 
     # --- control ---
     def start(self) -> None:
@@ -548,6 +549,11 @@ class JobWorker:
         """Id of the job being executed by this worker."""
         return self._running_id
 
+    @property
+    def running_control(self) -> JobControl | None:
+        """The `JobControl` of the job being executed (its `extras` name the studio jobs it announced)."""
+        return self._running_ctl
+
     def wait_idle(self, timeout: float) -> bool:
         """Block until nothing is queued or running (thread mode); False on timeout."""
         with self._cv:
@@ -594,6 +600,8 @@ class JobWorker:
             return
         self._publish(rec.job_id)
         ctl = JobControl(rec, self.store, self.hub)
+        if track:
+            self._running_ctl = ctl
         self.log.info("job_start", job_id=rec.job_id, kind=rec.kind, channel=rec.channel)
         try:
             handler = self.handlers.get(rec.kind)
@@ -624,6 +632,7 @@ class JobWorker:
         finally:
             self.store.clear_cancel(rec.job_id)
             if track:
+                self._running_ctl = None
                 self._running_id = None
             self._publish(rec.job_id)
             with self._cv:

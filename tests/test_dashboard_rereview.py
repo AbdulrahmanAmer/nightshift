@@ -193,8 +193,12 @@ def test_release_gpu_frees_only_the_current_holder(tmp_home: Path):
         assert stale.status_code == 409 and stale.json()["error"]["code"] == "not_holding"
         assert client.post("/api/engine/release_gpu", json={}).status_code == 422
         r = client.post("/api/engine/release_gpu", json={"owner": "studio:after-dark-20261102-aaaa"})
-        assert r.json() == {"ok": True, "released": True, "owner": "studio:after-dark-20261102-aaaa"}
-        assert ("POST", "/release_owner", {"owner": "studio:after-dark-20261102-aaaa"}) in sup.calls
+        assert r.json() == {
+            "ok": True, "released": True, "owner": "studio:after-dark-20261102-aaaa",
+            "stopped_job": None, "foreign": False,
+        }
+        owner = "studio:after-dark-20261102-aaaa"
+        assert ("POST", "/release_owner", {"owner": owner, "unless_alive": True}) in sup.calls
         assert client.get("/api/status").json()["engine"]["vram_owner"] is None
 
 

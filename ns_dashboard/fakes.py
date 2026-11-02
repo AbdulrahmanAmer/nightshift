@@ -670,6 +670,9 @@ class FakeSupervisor:
                     self._send(200, {"ok": True})
                 elif self.path == "/release_owner":
                     held = outer.state.get("gpu_owner") == body.get("owner")
+                    if held and body.get("unless_alive") and outer.state.get("lease_alive"):
+                        self._send(200, {"ok": False, "refused": "alive", "silent_s": 3.0})
+                        return
                     if held:
                         outer.state["gpu_owner"] = None
                     self._send(200, {"ok": held})
