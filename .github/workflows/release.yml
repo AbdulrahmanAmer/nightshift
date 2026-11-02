@@ -76,6 +76,21 @@ jobs:
           $changes = @(git status --porcelain ns_dashboard/static)
           if ($changes.Count -gt 0) { $changes; throw 'ns_dashboard/static differs from a fresh build of ns_dashboard/ui' }
 
+      # The installer's setup window (installer/ui) is its own Vite project with a committed build in
+      # installer/ui/static (docs/design/installer-ui.md U8). Skipped until that folder exists.
+      - name: Build the installer UI and check the committed build
+        if: ${{ hashFiles('installer/ui/package.json') != '' }}
+        shell: pwsh
+        run: |
+          Push-Location installer/ui
+          npm ci --no-audit --no-fund
+          if ($LASTEXITCODE -ne 0) { throw 'npm ci failed' }
+          npm run build
+          if ($LASTEXITCODE -ne 0) { throw 'npm run build failed' }
+          Pop-Location
+          $changes = @(git status --porcelain installer/ui/static)
+          if ($changes.Count -gt 0) { $changes; throw 'installer/ui/static differs from a fresh build of installer/ui' }
+
       - name: Build bundle
         shell: pwsh
         run: ./dev/make_bundle.ps1 -Version $env:TAG

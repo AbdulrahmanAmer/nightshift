@@ -120,6 +120,14 @@ function Test-BundleZip {
             $problems.Add("required entry missing: $req")
         }
     }
+    # The installer's setup window keeps a committed build in installer/ui/static; once installer/ui is in the tree it must ship.
+    if (@($entries | Where-Object { $_.Name -like 'installer/ui/*' }).Count -gt 0) {
+        foreach ($req in @('installer/ui/static/index.html', 'installer/ui/static/app.js')) {
+            if (-not ($entries | Where-Object { $_.Name -eq $req })) {
+                $problems.Add("required entry missing: $req")
+            }
+        }
+    }
     $size = (Get-Item -LiteralPath $ZipPath).Length
     if ($size -gt $MaxZipBytes) {
         $problems.Add(('zip is {0:N1} MB, limit is {1} MB' -f ($size / 1MB), ($MaxZipBytes / 1MB)))

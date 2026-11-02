@@ -7,6 +7,21 @@ All notable changes to Nightshift are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-11-02
+
+First release (milestone M0, code complete). Highlights since the pipeline landed:
+
+- **Dashboard UI rebuilt** on the ref12 card language: side tab rail, marbled canvas, three themes (light, dark, soft),
+  top bar with the inline Assistant, redesigned pages, GPU and VRAM meters, brand assets and a new app icon.
+- **Host window:** the dashboard opens in a frameless WebView2 window (single instance, remembered size), with the
+  Edge/Chrome app window as the fallback.
+- **Voice tools:** design a voice from a description and clone one from a recording (with a consent check, `NS-E313`),
+  both previewed in the Library.
+- **Scheduling:** Create can hold a story or clip job until a chosen time (`schedule_at`).
+- **QC pass rate:** each channel shows how many videos passed QC against a target line (`Channel.qc_pass_target`).
+- **Installer wizard:** the console wizard ships; the graphical setup window is in progress and is not part of this
+  release.
+
 ### Added
 - Foundation and contracts (C3): shared pydantic models in `ns_common.models` with generated JSON schemas,
   `contracts/errors.json`, `contracts/schema.sql`, config/paths/db/logging helpers, the `contracts-m0` and
@@ -55,6 +70,14 @@ All notable changes to Nightshift are recorded here. The format follows
   position kept in `config/window.json`); `nightshift-dashboard.ps1` tries it first and falls back to the
   Edge/Chrome app window, then the default browser. `bins.webview2` (change request CR-C2-host) pins the Microsoft.Web.WebView2 NuGet package;
   the installer unpacks only its three DLLs to `bin/webview2`.
+
+- Release 0.1.0 prep: `NS-E313` (voice cloning without consent; `POST /api/voices/clone` now answers it instead of
+  `consent_required`), optional `Channel.qc_pass_target` (default 0.9, read by the channel stats), `JobClipRequest` for
+  `POST /api/jobs/clip` (with `schedule_at`) and its schema.
+- Voice-sample uploads accept `.wav`, `.mp3`, `.m4a`, `.flac`, `.ogg` and `.webm`; the dashboard no longer renames
+  recordings to `recording.webm`.
+- The brand icon (`ns_dashboard/static/brand/nightshift.ico`) is the host window icon and the icon of the shortcuts the
+  installer creates; `dev/make_bundle.ps1` requires it in the bundle.
 
 ### Changed
 - ruff bans `import subprocess` outside `ns_common/ffmpeg.py`, `ns_supervisor/`, `installer/`, `tools/`,
