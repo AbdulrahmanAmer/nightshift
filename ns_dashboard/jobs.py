@@ -418,6 +418,7 @@ class JobWorker:
         on_recover: dict[str, Callable[[JobRecord], None]] | None = None,
         on_end: dict[str, Callable[[JobRecord], None]] | None = None,
         sweep: Callable[[set[str]], None] | None = None,
+        idle_poll_s: float = 30.0,
     ) -> None:
         self.store = store
         self.handlers = handlers
@@ -431,6 +432,9 @@ class JobWorker:
         self.on_end = on_end or {}
         #: Called once at start with the ids of the queued and running jobs, after interrupted ones were failed.
         self.sweep = sweep
+        #: While nothing runs, `on_idle` is also called this often (a request saved during the nightly run, which is
+        #: not a dashboard job, has no job end to wait for).
+        self.idle_poll_s = idle_poll_s
         #: Called on the worker thread when a job ended and nothing else is queued (saved Assistant requests).
         self.on_idle: Callable[[], None] | None = None
         self._ended = False
@@ -632,12 +636,17 @@ class JobWorker:
             self.log.warn("idle_hook_failed", str(e))
 
     def _loop(self) -> None:
+        next_poll = time.monotonic() + self.idle_poll_s
         while not self._stopping:
             if self.run_next():
                 self._ended = True
                 continue
             if self._ended:
                 self._ended = False
+                self._idle()
+                continue
+            if self.on_idle is not None and time.monotonic() >= next_poll:
+                next_poll = time.monotonic() + self.idle_poll_s
                 self._idle()
                 continue
             with self._cv:

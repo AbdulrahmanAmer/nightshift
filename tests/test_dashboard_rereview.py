@@ -331,3 +331,114 @@ def test_a_cancelled_job_keeps_its_studio_job_ids(tmp_home: Path):
     worker.run_next()
     rec = store.get(job.job_id)
     assert rec is not None and rec.status == "cancelled" and rec.result == {"studio_job_ids": ["after-dark-20261102-bbbb"]}
+
+
+# ---------------------------------------------------------------- row 3: a saved request is answered once
+
+
+class Provider:
+    """Base of the test providers: the loop hands the model back after each turn."""
+
+    def release(self) -> None:
+        return None
+
+
+def assistant_env(tmp_home: Path):
+    from ns_dashboard.assistant.llm import ScriptedToolLlm, say
+    from tests.test_dashboard_api import make_env
+
+    client, state = make_env(tmp_home, llm=ScriptedToolLlm([say("Here is the answer.")] * 5))
+    return client, state, client.app.state.dashboard  # type: ignore[attr-defined]
+
+
+def test_two_callers_answer_a_saved_request_only_once(tmp_home: Path):
+    from ns_dashboard.assistant.llm import ScriptedToolLlm, say
+
+    _client, _state, dash = assistant_env(tmp_home)
+    store = dash.assistant_store
+    cid = store.new_conversation("clips")
+    store.queue_message(cid, "make 2 clips from my stream", {})
+    answers: list[str] = []
+    gate = threading.Event()
+    entered = threading.Event()
+
+    class Slow(Provider):
+        def acquire(self) -> Any:
+            entered.set()
+            gate.wait(10)  # the first answer takes its time; the second caller arrives meanwhile
+            return ScriptedToolLlm([say("Done once.")])
+
+    dash.assistant.provider = Slow()
+    first: list[Any] = []
+    t = threading.Thread(target=lambda: first.append(dash.assistant.run_queued()), daemon=True)
+    t.start()
+    assert entered.wait(10)
+    assert dash.assistant.run_queued() == []  # the second caller finds it claimed and does nothing
+    gate.set()
+    t.join(10)
+    assert len(first[0]) == 1 and store.queued() == []
+    texts = [m["content"] for m in store.messages(cid) if m["role"] == "assistant"]
+    answers.extend(texts)
+    assert answers.count("Done once.") == 1
+
+
+def test_a_request_is_given_back_when_the_engine_is_busy_or_the_answer_fails(tmp_home: Path):
+    from ns_dashboard.assistant.llm import EngineBusy
+
+    _client, _state, dash = assistant_env(tmp_home)
+    store = dash.assistant_store
+    cid = store.new_conversation("x")
+    qid = store.queue_message(cid, "hello", {})
+
+    class Busy(Provider):
+        def acquire(self) -> Any:
+            raise EngineBusy("studio:j1")
+
+    dash.assistant.provider = Busy()
+    assert dash.assistant.run_queued() == []
+    assert [q["queue_id"] for q in store.queued()] == [qid]  # still saved
+    assert store.claim_queued(qid, "someone") is True  # and free to be claimed again
+    store.release_queued(qid, "someone")
+
+    class Boom(Provider):
+        def acquire(self) -> Any:
+            raise RuntimeError("model fell over")
+
+    dash.assistant.provider = Boom()
+    with pytest.raises(RuntimeError):
+        dash.assistant.run_queued()
+    assert store.claim_queued(qid, "someone-else") is True
+
+
+def test_claims_are_one_statement_and_a_dead_claim_can_be_taken_over(tmp_home: Path):
+    from ns_dashboard.assistant.store import AssistantStore
+
+    store = AssistantStore(Paths.from_env())
+    cid = store.new_conversation("x")
+    qid = store.queue_message(cid, "hello", {})
+    assert store.claim_queued(qid, "a") is True
+    assert store.claim_queued(qid, "b") is False
+    store.release_queued(qid, "b")  # not the claimer: changes nothing
+    assert store.claim_queued(qid, "c") is False
+    assert store.claim_queued(qid, "c", stale_s=0.0) is True  # a claim older than the limit is taken over
+    store.mark_queued_done(qid)
+    assert store.claim_queued(qid, "d") is False and store.queued() == []
+
+
+def test_an_old_assistant_database_gets_the_claim_columns(tmp_home: Path):
+    import sqlite3
+
+    from ns_dashboard.assistant.store import AssistantStore
+
+    paths = Paths.from_env()
+    paths.assistant_db.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(paths.assistant_db)
+    conn.execute(
+        "CREATE TABLE queued_messages (queue_id INTEGER PRIMARY KEY AUTOINCREMENT, conversation_id TEXT NOT NULL,"
+        " text TEXT NOT NULL, context_json TEXT, status TEXT NOT NULL DEFAULT 'queued', created_at TEXT NOT NULL)"
+    )
+    conn.commit()
+    conn.close()
+    store = AssistantStore(paths)
+    cols = {r["name"] for r in store.db.query("PRAGMA table_info(queued_messages)")}
+    assert {"claimed_at", "claimed_by"} <= cols
