@@ -1,21 +1,55 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 
 _ABBREV = {"mr", "mrs", "ms", "dr", "st", "jr", "sr", "vs", "etc", "a.m", "p.m", "e.g", "i.e"}
-# A sentence ends at . ! ? or the Arabic question mark; the CJK full stops end one with no space after them.
+# A sentence ends at . ! ? the Arabic question mark, the Devanagari danda (U+0964, U+0965) or an ellipsis; the
+# CJK full stops end one with no space after them.
 _SENT_END = re.compile(
-    r"([.!?\u061f]+[\"'\u201d\u2019)]*)(\s+|$)|([\u3002\uff01\uff1f]+[\u300d\u300f\uff09\"'\u201d\u2019)]*)"
+    r"([.!?؟।॥…]+[\"'”’)]*)(\s+|$)"
+    r"|([。！？]+[」』）\"'”’)]*)"
 )
 # Kana and CJK ideographs are written without spaces: each character counts as one word.
-CJK_RANGES = r"\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff"
-# A word: a run of letters or digits in any script (an apostrophe may sit inside it), or one CJK character.
-_NOT_CJK = rf"[^\W_{CJK_RANGES}"
-WORD_PATTERN = rf"[{CJK_RANGES}]|{_NOT_CJK}]{_NOT_CJK}'\u2019]*(?:['\u2019]{_NOT_CJK}'\u2019]+)*"
+CJK_RANGES = r"぀-ヿ㐀-䶿一-鿿"
+# Thai, Lao, Myanmar and Khmer have no spaces either, but a character is far less than a word: about four base
+# letters (with their vowel and tone marks) count as one.
+NOSPACE_RANGES = r"฀-໿က-႟ក-៿"
+NOSPACE_CHUNK = 4
+
+
+def _mark_ranges() -> str:
+    """Character-class body of the combining marks (Mn, Mc, Me) of the basic plane.
+
+    `\\w` leaves them out, so Hindi 'kitab' fell apart at every vowel sign and NFD 'cafe + accent' counted twice.
+    """
+    out: list[str] = []
+    start = prev = -2
+    for cp in range(0x300, 0x10000):
+        if unicodedata.category(chr(cp)) in ("Mn", "Mc", "Me"):
+            if cp != prev + 1:
+                if start >= 0:
+                    out.append(f"\\u{start:04x}-\\u{prev:04x}")
+                start = cp
+            prev = cp
+    out.append(f"\\u{start:04x}-\\u{prev:04x}")
+    return "".join(out)
+
+
+MARKS = _mark_ranges()
+_LETTER = rf"[^\W_{CJK_RANGES}{NOSPACE_RANGES}]"
+_LETTER_OR_MARK = rf"(?:{_LETTER}|[{MARKS}])"
+# A word: a run of letters or digits in any script with its combining marks (an apostrophe may sit inside it),
+# one CJK character, or up to four base letters of a script written without spaces.
+WORD_PATTERN = (
+    rf"[{CJK_RANGES}]"
+    rf"|(?:[{NOSPACE_RANGES}][{MARKS}]*){{1,{NOSPACE_CHUNK}}}"
+    rf"|{_LETTER}(?:{_LETTER_OR_MARK}|['’])*"
+)
 _WORD = re.compile(WORD_PATTERN)
 # Alignment tokens: every CJK character on its own (a recogniser returns Japanese/Chinese as multi-character
-# pieces; the script is shown character by character), other scripts as runs of letters and digits.
-_NORM_TOKEN = re.compile(rf"[{CJK_RANGES}]|[^\W_{CJK_RANGES}]+")
+# pieces; the script is shown character by character), other scripts as runs of letters, digits and marks.
+_NORM_TOKEN = re.compile(rf"[{CJK_RANGES}]|(?:[^\W_{CJK_RANGES}]|[{MARKS}])+")
 _ONES = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven",
          "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen"]
 _TENS = ["", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety"]
@@ -43,7 +77,7 @@ def split_sentences(text: str) -> list[str]:
 
 
 def word_count(text: str) -> int:
-    return len(_WORD.findall(text))
+    return len(_WORD.findall(unicodedata.normalize("NFC", text)))
 
 
 def est_seconds(text: str, wpm: float) -> float:
@@ -85,7 +119,7 @@ def _num_words(n: int) -> str:
 
 
 def normalize_tokens(text: str) -> list[str]:
-    text = text.casefold().replace("\u2019", "'")
+    text = unicodedata.normalize("NFC", text).casefold().replace("\u2019", "'")
     text = re.sub(r"(?<=\w)\.(?=\w\.)", "", text)   # a.m. -> am.
     text = re.sub(r"\b(\d{1,2})\b", lambda m: _num_words(int(m.group(1))), text)
     text = text.replace("'", "")
