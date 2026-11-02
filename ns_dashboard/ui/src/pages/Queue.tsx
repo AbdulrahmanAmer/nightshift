@@ -5,7 +5,7 @@
                 renders  renders  renders promo meters meters
    4 columns: greeting x4 / f1 f2 f3 countdown / review x4 / post x4 / events plan / cal meters / renders x3 promo.
    Behaviour is unchanged from the previous page: same API calls, posting checklist, remembered progress, keys A / R / →. */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useApp, useLoad } from "../lib/app";
 import { api } from "../lib/api";
 import { dayInline, fmtClock, fmtDay, fmtDur, fmtWhen, kindLabel, stageWords, store } from "../lib/format";
@@ -15,8 +15,8 @@ import { Scene } from "../visuals/Scene";
 import {
   AssignmentCard, AvatarGroup, Badge, Button, CalendarCard, Card, CardHeader, ClipsIllustration, CountdownCard, CreateTile, DashGrid, EmptyState,
   FeatureCard, Greeting, Icon, Input, Kbd, LinkButton, MeterGroup, MetaItem, NotificationItem, PromoCard, SegmentedControl, SeriesIllustration,
-  SPAN, StatusDot, StepItem, StoryIllustration, SwipeActions, TaskList, VoiceIllustration, WorkspaceTokens,
-  type AgendaSlot, type IconName, type MeterDatum, type Task, type WeekDay,
+  SPAN, StatusDot, StepItem, StoryIllustration, TaskList, VoiceIllustration, WorkspaceTokens,
+  type AgendaSlot, type IconName, type MenuItem, type MeterDatum, type Task, type WeekDay,
 } from "../components/ref12";
 
 type Tab = "ready" | "posted" | "rejected";
@@ -186,6 +186,15 @@ function Review({ o, items, tab, onTab, onPick, onChanged, channelName }: { o: O
   ];
   const doneCount = (approved ? 1 : 0) + steps.filter((s) => prog[s.key]).length;
   const total = steps.length + 2;
+  const nextKey = !approved ? "approve" : steps.find((s) => !prog[s.key])?.key ?? "link";
+  // The checklist scrolls inside its own card on wide screens; keep the next step in view as steps get ticked.
+  const aside = useRef<HTMLElement>(null);
+  useEffect(() => {
+    const box = aside.current; if (!box || box.scrollHeight <= box.clientHeight + 1) return;
+    const el = box.querySelector<HTMLElement>(".is-next"); if (!el) return;
+    const top = el.offsetTop; const bottom = top + el.offsetHeight;
+    if (top < box.scrollTop + 64 || bottom > box.scrollTop + box.clientHeight - 16) box.scrollTo({ top: Math.max(0, top - 80), behavior: "smooth" });
+  }, [nextKey]);
 
   return (
     <>
@@ -260,10 +269,10 @@ function Review({ o, items, tab, onTab, onPick, onChanged, channelName }: { o: O
       </Card>
 
       {/* posting checklist, in YouTube's upload order */}
-      <Card as="aside" aria-labelledby="q-post" padding="md" className={cx("@min-[1020px]:sticky @min-[1020px]:top-4", SPAN["2/4"])}>
+      <Card ref={aside} as="aside" aria-labelledby="q-post" padding="md" className={cx("scroll-thin @min-[1020px]:sticky @min-[1020px]:top-4 @min-[1020px]:max-h-[calc(100dvh-40px)] @min-[1020px]:overflow-y-auto", SPAN["2/4"])}>
         <CardHeader id="q-post" title="Post it" className="!mb-3" actions={<span className="mr-2 text-ds-2xs text-ds-muted ds-num">{doneCount} of {total} done</span>} />
         <ol className="-mx-2 flex flex-col gap-1">
-          <StepItem n={1} done={approved} current={!approved} title={approved ? "Approved" : "Watch it, then decide"} sub={approved ? "Ready to post" : undefined}
+          <StepItem n={1} className={nextKey === "approve" ? "is-next" : undefined} done={approved} current={!approved} title={approved ? "Approved" : "Watch it, then decide"} sub={approved ? "Ready to post" : undefined}
             action={approved && o.status === "pending" ? <Button size="sm" variant="ghost" leadingIcon="undo" onClick={() => mark("approved", false)}>Undo</Button> : undefined}>
             {!approved && (
               <>
@@ -272,8 +281,8 @@ function Review({ o, items, tab, onTab, onPick, onChanged, channelName }: { o: O
               </>
             )}
           </StepItem>
-          {steps.map((s, i) => <StepItem key={s.key} n={i + 2} done={!!prog[s.key]} dimmed={!approved} title={s.title} sub={s.sub} action={s.action} />)}
-          <StepItem n={steps.length + 2} dimmed={!approved} title={<label htmlFor="yt-url">Paste the YouTube link</label>}>
+          {steps.map((s, i) => <StepItem key={s.key} n={i + 2} className={nextKey === s.key ? "is-next" : undefined} done={!!prog[s.key]} dimmed={!approved} title={s.title} sub={prog[s.key] ? undefined : s.sub} action={s.action} />)}
+          <StepItem n={steps.length + 2} className={nextKey === "link" ? "is-next" : undefined} dimmed={!approved} title={<label htmlFor="yt-url">Paste the YouTube link</label>}>
             <div className="flex gap-2">
               <Input id="yt-url" className="!h-9" placeholder="https://youtu.be/" value={url} onChange={(e) => setUrl(e.target.value)} disabled={!approved} onKeyDown={(e) => e.key === "Enter" && done()} />
               <Button onClick={done} disabled={!approved}>Done</Button>
@@ -290,28 +299,32 @@ function Review({ o, items, tab, onTab, onPick, onChanged, channelName }: { o: O
 /* ---------------------------------------------------------------- job events */
 
 function JobEvents({ jobs, loading, channelName, className, onReview }: { jobs: Job[]; loading: boolean; channelName: (s?: string) => string; className?: string; onReview: () => void }) {
-  const { ask, go } = useApp();
-  const [open, setOpen] = useState<string | null>(null);
-  const events = jobs.filter((j) => !["queued", "running"].includes(j.status)).slice(0, 3);
+  const { ask, go, toast } = useApp();
+  // Dismissed events are hidden in this browser only (there is no server-side dismiss).
+  const [hidden, setHidden] = useState<string[]>(() => store.get<string[]>("ns-dismissed-events", []));
+  const dismiss = (id: string) => setHidden((h) => { const n = [...h, id].slice(-50); store.set("ns-dismissed-events", n); return n; });
+  const events = jobs.filter((j) => !["queued", "running"].includes(j.status) && !hidden.includes(j.job_id)).slice(0, 3);
   return (
     <Card as="section" aria-labelledby="q-events" className={cx("self-stretch overflow-visible", className)}>
       <CardHeader id="q-events" title="Job events" actions={<Button variant="ghost" size="sm" leadingIcon="scenes" onClick={() => go("#/create")}>All jobs</Button>} />
       {events.length ? (
         <ul className="flex flex-col gap-3">
           {events.map((j) => {
-            const failed = j.status === "failed"; const cancelled = j.status === "cancelled"; const on = open === j.job_id;
+            const failed = j.status === "failed"; const cancelled = j.status === "cancelled";
             const title = jobTitle(j, channelName);
-            const actions = failed
-              ? [{ icon: "chat" as const, label: `Ask why ${title} stopped`, onClick: () => ask({ page: "queue", job_id: j.job_id }, "Why did the last run stop?") }, { icon: "settings" as const, label: "Open Settings", onClick: () => go("#/settings") }]
-              : [{ icon: "play" as const, label: "Review it", onClick: onReview }, { icon: "chat" as const, label: `Ask about ${title}`, onClick: () => ask({ page: "queue", job_id: j.job_id }) }];
+            const copy = async () => { try { await navigator.clipboard.writeText(`${title}: ${j.status}${j.message ? `, ${j.message}` : ""} (job ${j.job_id})`); toast("Details copied", "ok"); } catch { toast("Copy was blocked", "warn"); } };
+            const menu: MenuItem[] = [
+              ...(failed ? [{ icon: "chat" as const, label: "Ask why it stopped", onSelect: () => ask({ page: "queue", job_id: j.job_id }, "Why did the last run stop?") }, { icon: "settings" as const, label: "Open Settings", onSelect: () => go("#/settings") }]
+                : cancelled ? [] : [{ icon: "play" as const, label: "Review it", onSelect: onReview }, { icon: "chat" as const, label: "Ask about it", onSelect: () => ask({ page: "queue", job_id: j.job_id }) }]),
+              { icon: "copy", label: "Copy details", onSelect: copy },
+              { icon: "x", label: "Dismiss", onSelect: () => dismiss(j.job_id) },
+            ];
             return (
               <li key={j.job_id}>
-                <SwipeActions open={on} actions={actions}>
-                  <NotificationItem state={on ? "raised" : "resting"} title={title} moreLabel={on ? "Hide actions" : "Show actions"} onMore={() => setOpen(on ? null : j.job_id)}
+                <NotificationItem title={title} moreLabel={`Options for ${title}`} menu={menu}
                     titleAdornment={<StatusDot tone={failed ? "danger" : cancelled ? "attention" : "online"} label={failed ? "Stopped" : cancelled ? "Cancelled" : "Done"} />}
                     subtitle={failed ? `Stopped at ${stageWords(j.stage).toLowerCase()}. ${j.message || ""}` : cancelled ? "Cancelled" : `Done · ${j.result?.output_ids?.length ? `${j.result.output_ids.length} videos` : "1 video"}`}
                     meta={<><MetaItem icon="calendarDays">{fmtDay(j.created_at)}</MetaItem><MetaItem icon="clock">{fmtClock(j.created_at)}</MetaItem><MetaItem icon="channels">{channelName(j.channel)}</MetaItem></>} />
-                </SwipeActions>
               </li>
             );
           })}
@@ -324,7 +337,12 @@ function JobEvents({ jobs, loading, channelName, className, onReview }: { jobs: 
 /* ---------------------------------------------------------------- tonight's plan */
 
 function TonightPlan({ chans, status, className }: { chans: ChannelSummary[]; status: ReturnType<typeof useApp>["status"]; className?: string }) {
-  const { go } = useApp();
+  const { go, confirm, toast, refresh } = useApp();
+  const pause = async (c: ChannelSummary) => {
+    const ok = await confirm({ title: `Pause ${c.display_name}?`, body: "It is skipped from tonight until you resume it in Channels. Videos already made stay in the Queue", ok: "Pause" });
+    if (ok !== true) return;
+    try { await api.post(`/channels/${encodeURIComponent(c.slug)}/pause`); toast(`${c.display_name} is paused`, "ok"); refresh(); } catch (e: any) { toast(e.message, "bad"); }
+  };
   const plan = chans.filter((c) => c.status === "active" && c.tonight !== false).slice(0, 2);
   const at = fmtClock(status?.next_run) || status?.schedule_time || "";
   const voice = (c: ChannelSummary) => (typeof c.voice === "string" ? c.voice : c.voice?.name || c.voice?.speaker || "Built-in voice");
@@ -333,7 +351,7 @@ function TonightPlan({ chans, status, className }: { chans: ChannelSummary[]; st
       <CardHeader id="q-plan" title="Tonight's plan" actions={<Button variant="ghost" size="sm" leadingIcon="edit" onClick={() => go("#/channels")}>Edit</Button>} />
       <div className="flex flex-col gap-4">
         {plan.length ? plan.map((c) => (
-          <AssignmentCard key={c.slug} categories={[c.display_name]} moreLabel={`Options for ${c.display_name}`} onMore={() => go(`#/channels?edit=${encodeURIComponent(c.slug)}`)}
+          <AssignmentCard key={c.slug} categories={[c.display_name]} moreLabel={`Options for ${c.display_name}`} menu={[{ icon: "edit", label: "Edit channel", onSelect: () => go(`#/channels?edit=${encodeURIComponent(c.slug)}`) }, { icon: "pause", label: "Skip tonight and pause", onSelect: () => pause(c) }]}
             title={typeof c.tonight === "string" ? c.tonight : c.format === "shorts_only" ? "Shorts only" : "Full video and Shorts"}
             priority={{ label: at || "Off", tone: "accent" }} tag={status?.next_run ? `Runs ${dayInline(status.next_run)}` : "Not scheduled"} assignee={{ name: voice(c) }} />
         )) : <EmptyState icon="moon" title="No channel runs tonight">Resume a channel or start something now</EmptyState>}
@@ -348,6 +366,7 @@ function TonightPlan({ chans, status, className }: { chans: ChannelSummary[]; st
 const isoDay = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 
 function PostingCalendar({ chans, ready, className, onOpen }: { chans: ChannelSummary[]; ready: Output[]; className?: string; onOpen: (id: string) => void }) {
+  const { go, ask } = useApp();
   const [offset, setOffset] = useState(0);
   const today = new Date(); today.setHours(12, 0, 0, 0);
   const days: WeekDay[] = Array.from({ length: 7 }, (_, i) => {
@@ -363,14 +382,14 @@ function PostingCalendar({ chans, ready, className, onOpen }: { chans: ChannelSu
     return {
       time: (c.publish_window || "").replace("-", " – "),
       events: mine.length
-        ? mine.map((o) => ({ id: o.output_id, icon: kindIcon(o.kind), title: o.title, time: `${kindLabel(o.kind)} · ${fmtDur(o.duration_s)}`, tag: c.display_name }))
-        : [{ id: "window-" + c.slug, icon: "calendar" as IconName, title: "Posting window", time: `${c.masters_per_week ?? 1} full video${(c.masters_per_week ?? 1) === 1 ? "" : "s"} a week`, tag: c.display_name, tagTone: "success" as const }],
+        ? mine.map((o) => ({ id: o.output_id, icon: kindIcon(o.kind), title: o.title, time: `${kindLabel(o.kind)} · ${fmtDur(o.duration_s)}`, tag: c.display_name, menu: [{ icon: "play" as const, label: "Open in the review card", onSelect: () => onOpen(o.output_id) }, { icon: "chat" as const, label: "Ask about it", onSelect: () => ask({ page: "queue", output_id: o.output_id }, `Tell me about "${o.title}"`) }] }))
+        : [{ id: "window-" + c.slug, icon: "calendar" as IconName, title: "Posting window", time: `${c.masters_per_week ?? 1} full video${(c.masters_per_week ?? 1) === 1 ? "" : "s"} a week`, tag: c.display_name, tagTone: "success" as const, menu: [{ icon: "edit" as const, label: "Change the posting window", onSelect: () => go(`#/channels?edit=${encodeURIComponent(c.slug)}`) }] }],
     };
   });
   return (
     <CalendarCard className={cx("self-stretch", className)} monthLabel={`Posting · ${month}`} days={days} selected={selected} onSelect={setSel} slots={slots}
-      onPrev={() => setOffset((x) => x - 1)} onNext={() => setOffset((x) => x + 1)} onEventMore={(id) => { if (!id.startsWith("window-")) onOpen(id); }}
-      prevLabel="Previous week" nextLabel="Next week" weekLabel="Posting days" moreLabel="Open in the review card" />
+      onPrev={() => setOffset((x) => x - 1)} onNext={() => setOffset((x) => x + 1)}
+      prevLabel="Previous week" nextLabel="Next week" weekLabel="Posting days" moreLabel="Options" />
   );
 }
 
