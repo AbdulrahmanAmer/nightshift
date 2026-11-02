@@ -124,6 +124,269 @@
 .fade-in { animation: fade 200ms var(--ease-out) both; }
 @media (prefers-reduced-motion: reduce) { .enter, .fade-in { animation: none; } * { transition-duration: 0ms !important; } }
 
+/* ==========================================================================
+   ref12 / Planify design tokens (ported from D:\NightShift-tools\planify-ui\src\tokens\tokens.css)
+   Layer 1: primitives (raw palette, never used by components directly).
+   Layer 2: semantic --ds-* tokens, re-mapped per theme. Components read only these,
+   through the Tailwind names in the @theme block below (bg-ds-surface, shadow-ds-2, ...).
+   Map and per-component spec: docs/design/ref12-map.md.
+   The app tokens above (--bg, --card, ...) are unchanged; pages that do not use ds-* are unaffected.
+   Theme: the semantic block follows [data-theme] on <html>, and on any element, so the design
+   sheet can show a light and a dark panel side by side.
+   ========================================================================== */
+:root {
+  --violet-50: #f4f3fe;
+  --violet-100: #ebe9fd;
+  --violet-200: #d9d5fb;
+  --violet-300: #bdb6f7;
+  --violet-400: #988df2;
+  --violet-500: #7466ee; /* brand */
+  --violet-600: #6253df;
+  --violet-700: #4f42c3;
+  --navy-950: #0f0f2e;
+  --navy-900: #15153b; /* ink */
+  --navy-800: #23234b;
+  --navy-700: #3a3a60;
+  --gray-0: #ffffff;
+  --gray-25: #f7f7fb;
+  --gray-50: #f2f2f8;
+  --gray-100: #eaeaf2;
+  --gray-200: #dcdce8;
+  --gray-300: #c6c7d6;
+  --gray-400: #a9aac0;
+  --gray-500: #8d8ea7;
+  --gray-600: #6c6d88;
+  --gray-canvas: #e7e7f1;
+  --mint-100: #def4eb;
+  --mint-400: #7dcbab;
+  --mint-500: #5fbd97;
+  --mint-600: #3fae80;
+  --rose-100: #fde7eb;
+  --rose-400: #ee7489;
+  --rose-500: #e14b66;
+  --rose-600: #c93a55;
+  --amber-400: #f6b545;
+
+  /* Urbanist is Planify's face; it is not bundled yet (the dashboard is offline-only), so the stack
+     falls back to Geist. Adding @fontsource-variable/urbanist makes it the live face. */
+  --ds-font-sans: "Urbanist Variable", "Urbanist", "Geist Variable", ui-sans-serif, system-ui, "Segoe UI", sans-serif;
+
+  --ds-text-2xs: 0.6875rem;  /* 11 meta, weekday labels, chip text */
+  --ds-text-xs: 0.75rem;     /* 12 captions, durations, timestamps */
+  --ds-text-sm: 0.8125rem;   /* 13 buttons, nav, secondary body */
+  --ds-text-md: 0.875rem;    /* 14 body, list titles */
+  --ds-text-lg: 1rem;        /* 16 item titles */
+  --ds-text-xl: 1.25rem;     /* 20 card titles */
+  --ds-text-2xl: 1.625rem;   /* 26 promo title */
+  --ds-text-display: 2.5rem; /* 40 greeting */
+  --ds-leading-tight: 1.2;
+  --ds-leading-snug: 1.35;
+  --ds-leading-normal: 1.5;
+
+  --ds-space-1: 4px; --ds-space-2: 8px; --ds-space-3: 12px; --ds-space-4: 16px; --ds-space-5: 20px; --ds-space-6: 24px;
+  --ds-space-7: 28px; --ds-space-8: 32px; --ds-space-10: 40px; --ds-space-12: 48px; --ds-space-16: 64px;
+
+  --ds-radius-xs: 6px;
+  --ds-radius-sm: 8px;
+  --ds-radius-md: 10px;
+  --ds-radius-lg: 16px;
+  --ds-radius-xl: 24px;
+  --ds-radius-2xl: 32px;
+  --ds-radius-pill: 999px;
+
+  --ds-control-sm: 28px;
+  --ds-control-md: 36px;
+  --ds-control-lg: 40px;
+  --ds-icon-sm: 14px;
+  --ds-icon-md: 18px;
+  --ds-icon-lg: 22px;
+
+  --ds-ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ds-duration-fast: 120ms;
+  --ds-duration-base: 200ms;
+
+  --ds-z-raised: 2;
+  --ds-z-floating: 10;
+}
+
+:root, [data-theme="light"] {
+  --ds-bg-canvas: var(--gray-canvas);
+  --ds-bg-app: var(--gray-25);
+  --ds-bg-surface: var(--gray-0);
+  --ds-bg-sunken: var(--gray-50);
+  --ds-bg-hover: var(--gray-50);
+  --ds-bg-inverse: var(--navy-900);
+  --ds-bg-accent: var(--violet-500);
+  --ds-bg-accent-hover: var(--violet-600);
+  --ds-bg-accent-soft: var(--violet-100);
+  --ds-bg-accent-subtle: var(--violet-50);
+  --ds-bg-soft-hover: var(--violet-200);
+  --ds-bg-success: var(--mint-500);
+  --ds-bg-success-soft: var(--mint-100);
+  --ds-bg-danger-soft: var(--rose-100);
+  --ds-text-primary: var(--navy-900);
+  --ds-text-secondary: var(--gray-600);
+  --ds-text-muted: var(--gray-400);
+  --ds-text-inverse: var(--gray-0);
+  --ds-text-on-accent: var(--gray-0);
+  --ds-text-accent: var(--violet-500);
+  --ds-text-success: var(--mint-600);
+  --ds-text-danger: var(--rose-500);
+  --ds-border-subtle: var(--gray-100);
+  --ds-border-default: var(--gray-200);
+  --ds-border-dashed: var(--violet-300);
+  --ds-border-focus: var(--violet-500);
+  --ds-status-online: var(--mint-600);
+  --ds-status-new: var(--mint-500);
+  --ds-status-attention: var(--amber-400);
+  --ds-chart-track: var(--gray-100);
+  --ds-backdrop-line: rgba(255, 255, 255, 0.7);
+  --ds-shadow-0: 0 0 0 1px rgba(21, 21, 59, 0.02);
+  --ds-shadow-1: 0 1px 2px rgba(21, 21, 59, 0.03), 0 4px 14px -4px rgba(21, 21, 59, 0.05);
+  --ds-shadow-2: 0 2px 4px rgba(21, 21, 59, 0.03), 0 14px 32px -10px rgba(40, 36, 110, 0.16);
+  --ds-shadow-3: 0 4px 8px rgba(21, 21, 59, 0.04), 0 24px 48px -14px rgba(40, 36, 110, 0.26);
+  --ds-shadow-frame: 0 50px 100px -40px rgba(40, 36, 110, 0.28);
+  --ds-shadow-accent: 0 10px 22px -8px rgba(116, 102, 238, 0.6);
+  --ds-focus-ring: 0 0 0 3px rgba(116, 102, 238, 0.35);
+  --ds-illus-paper: var(--ds-bg-surface);
+  --ds-illus-accent: var(--ds-bg-accent);
+}
+
+[data-theme="dark"] {
+  --ds-bg-canvas: #0b0b1c;
+  --ds-bg-app: #12122a;
+  --ds-bg-surface: #1b1b36;
+  --ds-bg-sunken: #23234a;
+  --ds-bg-hover: #26264e;
+  --ds-bg-inverse: #f3f3fb;
+  --ds-bg-accent: #8073f3;
+  --ds-bg-accent-hover: #9186f5;
+  --ds-bg-accent-soft: #2d2a5e;
+  --ds-bg-accent-subtle: #222048;
+  --ds-bg-soft-hover: #26264e;
+  --ds-bg-success: #4fb08a;
+  --ds-bg-success-soft: #1d3b33;
+  --ds-bg-danger-soft: #45202d;
+  --ds-text-primary: #f1f1fa;
+  --ds-text-secondary: #a6a7c4;
+  --ds-text-muted: #6f7093;
+  --ds-text-inverse: var(--navy-900);
+  --ds-text-on-accent: #ffffff;
+  --ds-text-accent: #a79ef7;
+  --ds-text-success: #6fd1a8;
+  --ds-text-danger: #f07d92;
+  --ds-border-subtle: #262649;
+  --ds-border-default: #33335a;
+  --ds-border-dashed: #4d47a0;
+  --ds-border-focus: #a79ef7;
+  --ds-chart-track: #2c2c52;
+  --ds-backdrop-line: rgba(255, 255, 255, 0.06);
+  --ds-shadow-0: 0 0 0 1px rgba(255, 255, 255, 0.03);
+  --ds-shadow-1: 0 1px 2px rgba(0, 0, 0, 0.3), 0 4px 14px -4px rgba(0, 0, 0, 0.35);
+  --ds-shadow-2: 0 2px 4px rgba(0, 0, 0, 0.3), 0 14px 32px -10px rgba(0, 0, 0, 0.55);
+  --ds-shadow-3: 0 4px 8px rgba(0, 0, 0, 0.35), 0 24px 48px -14px rgba(0, 0, 0, 0.7);
+  --ds-shadow-frame: 0 50px 100px -40px rgba(0, 0, 0, 0.8);
+  --ds-shadow-accent: 0 10px 22px -8px rgba(128, 115, 243, 0.55);
+  --ds-focus-ring: 0 0 0 3px rgba(167, 158, 247, 0.4);
+}
+[data-theme="light"] { color-scheme: light; }
+[data-theme="dark"] { color-scheme: dark; }
+
+@theme inline {
+  --font-ds: var(--ds-font-sans);
+  --color-ds-canvas: var(--ds-bg-canvas);
+  --color-ds-app: var(--ds-bg-app);
+  --color-ds-surface: var(--ds-bg-surface);
+  --color-ds-sunken: var(--ds-bg-sunken);
+  --color-ds-hover: var(--ds-bg-hover);
+  --color-ds-inverse: var(--ds-bg-inverse);
+  --color-ds-accent: var(--ds-bg-accent);
+  --color-ds-accent-hover: var(--ds-bg-accent-hover);
+  --color-ds-accent-soft: var(--ds-bg-accent-soft);
+  --color-ds-accent-subtle: var(--ds-bg-accent-subtle);
+  --color-ds-soft-hover: var(--ds-bg-soft-hover);
+  --color-ds-success: var(--ds-bg-success);
+  --color-ds-success-soft: var(--ds-bg-success-soft);
+  --color-ds-danger-soft: var(--ds-bg-danger-soft);
+  --color-ds-text: var(--ds-text-primary);
+  --color-ds-text-2: var(--ds-text-secondary);
+  --color-ds-muted: var(--ds-text-muted);
+  --color-ds-on-inverse: var(--ds-text-inverse);
+  --color-ds-on-accent: var(--ds-text-on-accent);
+  --color-ds-accent-ink: var(--ds-text-accent);
+  --color-ds-success-ink: var(--ds-text-success);
+  --color-ds-danger: var(--ds-text-danger);
+  --color-ds-border-subtle: var(--ds-border-subtle);
+  --color-ds-border: var(--ds-border-default);
+  --color-ds-dashed: var(--ds-border-dashed);
+  --color-ds-focus: var(--ds-border-focus);
+  --color-ds-online: var(--ds-status-online);
+  --color-ds-new: var(--ds-status-new);
+  --color-ds-attention: var(--ds-status-attention);
+  --color-ds-track: var(--ds-chart-track);
+  --color-ds-navy: var(--navy-900);
+  --color-ds-backdrop-line: var(--ds-backdrop-line);
+  --text-ds-2xs: var(--ds-text-2xs);
+  --text-ds-xs: var(--ds-text-xs);
+  --text-ds-sm: var(--ds-text-sm);
+  --text-ds-md: var(--ds-text-md);
+  --text-ds-lg: var(--ds-text-lg);
+  --text-ds-xl: var(--ds-text-xl);
+  --text-ds-2xl: var(--ds-text-2xl);
+  --text-ds-display: var(--ds-text-display);
+  --leading-ds-tight: var(--ds-leading-tight);
+  --leading-ds-snug: var(--ds-leading-snug);
+  --leading-ds-normal: var(--ds-leading-normal);
+  --radius-ds-xs: var(--ds-radius-xs);
+  --radius-ds-sm: var(--ds-radius-sm);
+  --radius-ds-md: var(--ds-radius-md);
+  --radius-ds-lg: var(--ds-radius-lg);
+  --radius-ds-xl: var(--ds-radius-xl);
+  --radius-ds-2xl: var(--ds-radius-2xl);
+  --shadow-ds-0: var(--ds-shadow-0);
+  --shadow-ds-1: var(--ds-shadow-1);
+  --shadow-ds-2: var(--ds-shadow-2);
+  --shadow-ds-3: var(--ds-shadow-3);
+  --shadow-ds-frame: var(--ds-shadow-frame);
+  --shadow-ds-accent: var(--ds-shadow-accent);
+  --shadow-ds-focus: var(--ds-focus-ring);
+  --ease-ds-out: var(--ds-ease-out);
+  --z-ds-raised: var(--ds-z-raised);
+}
+
+@layer components {
+  /* Focus ring for every ds control (Planify draws it as a box-shadow ring). */
+  .ds-focus:focus-visible { outline: none; box-shadow: var(--ds-focus-ring); }
+  /* Root of a ds surface: font, ink and tabular numbers. */
+  .ds-root { font-family: var(--ds-font-sans); color: var(--ds-text-primary); }
+  .ds-root .num, .ds-num { font-variant-numeric: tabular-nums; }
+  /* Spot illustrations: strokes are currentColor, fills read the two --ds-illus-* variables. */
+  .ds-illus { display: block; width: 100%; height: auto; color: var(--ds-text-primary); }
+  .ds-illus-on-accent { --ds-illus-paper: #ffffff; --ds-illus-accent: var(--violet-500); }
+  .ds-illus-on-accent .ds-illus { color: var(--navy-900); }
+
+  /* Dashboard grid from Planify's Dashboard.css: 6 named columns, 4 under 1280 px, 1 under 860 px.
+     Container queries (not media queries) so the grid reflows inside the scaled review frame too. */
+  .ds-dash-wrap { container-type: inline-size; }
+  .ds-dash {
+    display: grid; gap: var(--ds-space-5); align-items: start;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas: "greeting" "create" "f1" "f2" "f3" "notif" "assign" "cal" "tasks" "promo" "side";
+  }
+  @container (min-width: 600px) {
+    .ds-dash {
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      grid-template-areas: "greeting greeting greeting create" "f1 f2 f3 f3" "notif notif assign assign" "cal cal side side" "tasks tasks tasks promo";
+    }
+  }
+  @container (min-width: 1020px) {
+    .ds-dash {
+      grid-template-columns: repeat(6, minmax(0, 1fr));
+      grid-template-areas: "greeting greeting create f1 f2 f3" "notif notif assign assign cal cal" "tasks tasks tasks promo side side";
+    }
+  }
+}
+@media (prefers-reduced-motion: reduce) { .ds-root * { transition-duration: 0ms !important; } }
 /* SideTab: the navigation rail (left edge from md up on tall viewports, bottom bar otherwise).
    Colour: one variable, same in both themes. The default is dark purple; to switch to the Planify violet use
    --rail-bg: #7466EE (light) / #8073F3 (dark), with --rail-bar: #7466EE and --rail-ink: #5b4bd6. */
