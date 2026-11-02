@@ -406,6 +406,8 @@ CASES = [
     Case("/api/library/series", "SeriesStory", many=True),
     Case("/api/runs", "Run", many=True),
     Case("/api/logs/tail", "LogLine", many=True),
+    Case("/api/update/state", "UpdateState"),
+    Case("/api/assistant/tools", "ToolInfo", many=True),
 ]
 
 

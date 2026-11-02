@@ -54,3 +54,5 @@ export interface ChannelPools { hooks: string[]; structures: string[]; pov_tones
 export interface ChannelDetail { profile: ChannelProfile; warnings: string[]; warning_fields: { field: string; message: string }[] }
 /** GET /update/state: what the detached updater writes to run/update_state.json (idle when it never ran). */
 export interface UpdateState { state: "idle" | "running" | "done" | "failed"; old: string | null; new: string | null; message: string | null; updated_at: string | null }
+/** One entry of GET /assistant/tools: the registry the Assistant works from. */
+export interface ToolInfo { name: string; description: string; side_effect: boolean; topic: string }
