@@ -202,3 +202,23 @@ def test_formats_list_the_channels_that_may_use_them(tmp_home: Path):
     assert by_id["short_9x16"]["channels"] == ["after-dark", "open-door"]
     other = next(f for f in shipped if f["id"] != "short_9x16")
     assert other["channels"] == ["open-door"]
+
+
+# ------------------------------------------------------------------ row 21: footage rows carry clip_id and a use count
+
+
+def test_footage_rows_count_their_uses(tmp_home: Path):
+    dash, state = make(tmp_home)
+    now = "2026-11-02T00:00:00+00:00"
+    for cid in ("1", "2"):
+        state.db.execute(
+            "INSERT INTO clips(source, clip_id, url, license, width, height, duration, local_path, fetched_at, keywords)"
+            " VALUES ('pexels', ?, 'https://x', 'Pexels', 1920, 1080, 9.5, 'c.mp4', ?, '[]')", (cid, now),
+        )
+    for item in ("long", "s1"):
+        state.db.execute(
+            "INSERT INTO clip_usage(source, clip_id, channel, job_id, item, used_at) VALUES ('pexels', '1', 'c', 'j', ?, ?)",
+            (item, now),
+        )
+    rows = {r["clip_id"]: r for r in dash.library.footage()}
+    assert rows["1"]["uses"] == 2 and rows["2"]["uses"] == 0 and rows["2"]["last_used"] is None

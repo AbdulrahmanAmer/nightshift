@@ -170,7 +170,9 @@ class LibraryService:
         clause = (" WHERE " + " AND ".join(where)) if where else ""
         rows = self.s.db.query(
             "SELECT c.*, (SELECT MAX(used_at) FROM clip_usage u WHERE u.source = c.source"
-            f" AND u.clip_id = c.clip_id) AS last_used FROM clips c{clause} ORDER BY c.fetched_at DESC LIMIT ?",
+            " AND u.clip_id = c.clip_id) AS last_used,"
+            " (SELECT COUNT(*) FROM clip_usage n WHERE n.source = c.source AND n.clip_id = c.clip_id) AS uses"
+            f" FROM clips c{clause} ORDER BY c.fetched_at DESC LIMIT ?",
             [*args, max(1, min(limit, 200))],
         )
         out = []
@@ -184,7 +186,7 @@ class LibraryService:
                     "source": r["source"], "clip_id": r["clip_id"], "url": r["url"], "license": r["license"],
                     "width": r["width"], "height": r["height"], "duration": r["duration"],
                     "local_path": r["local_path"], "keywords": kw, "fetched_at": r["fetched_at"],
-                    "last_used": r["last_used"],
+                    "last_used": r["last_used"], "uses": int(r["uses"]),
                 }
             )
         return out
