@@ -1,4 +1,4 @@
-"""App host: the pinned WebView2 NuGet package, its manifest entry and how the installer unpacks it."""
+"""App host: the WebView2 NuGet pin (manifest entry or its open CR) and how the installer unpacks it."""
 
 import hashlib
 import json
@@ -11,19 +11,29 @@ import pytest
 from installer.stage2 import downloader as dl
 from ns_common.config import load_manifest
 from ns_common.errors import NsError
+from ns_common.models import BinPin
 
 ROOT = Path(__file__).resolve().parents[1]
 DLLS = ["Microsoft.Web.WebView2.Core.dll", "Microsoft.Web.WebView2.Wpf.dll", "WebView2Loader.dll"]
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
+CR_TITLE = "## CR-C2-host: `bins.webview2`"
 
 
-def raw_entry() -> dict:
+def manifest_entry() -> dict | None:
     data = json.loads((ROOT / "manifest.json").read_text(encoding="utf-8"))
-    return data["bins"]["webview2"]
+    return data["bins"].get("webview2")
 
 
-def test_manifest_has_the_webview2_entry_shape() -> None:
-    entry = raw_entry()
+def cr_entry() -> dict:
+    """The JSON block of the change request that asks the contracts builder to add the manifest entry."""
+    text = (ROOT / "contracts" / "CHANGE_REQUESTS.md").read_text(encoding="utf-8")
+    section = text[text.index(CR_TITLE):]
+    block = re.search(r'"webview2": (\{.*?\n  \})', section, re.S)
+    assert block, "CR-C2-host lacks the JSON entry"
+    return json.loads(block.group(1))
+
+
+def assert_entry_shape(entry: dict) -> None:
     assert set(entry) == {"version", "url", "sha256"}
     assert re.fullmatch(r"1\.0\.\d+\.\d+", entry["version"]), "pin a stable version, not a -prerelease"
     assert entry["url"] == (
@@ -34,35 +44,51 @@ def test_manifest_has_the_webview2_entry_shape() -> None:
     assert HEX64.fullmatch(entry["sha256"]) or entry["sha256"] == "TBD-release"
 
 
-def test_manifest_model_accepts_the_entry() -> None:
-    pin = load_manifest().bins["webview2"]
-    assert pin is not None and pin.version == raw_entry()["version"]
+def test_manifest_entry_shape_when_present() -> None:
+    entry = manifest_entry()
+    if entry is not None:
+        assert_entry_shape(entry)
+        pin = load_manifest().bins["webview2"]
+        assert pin is not None and pin.version == entry["version"]
 
 
-def test_plan_includes_the_nupkg_for_every_profile(tmp_path: Path) -> None:
+def test_change_request_carries_a_valid_entry() -> None:
+    entry = cr_entry()
+    assert_entry_shape(entry)
+    assert HEX64.fullmatch(entry["sha256"])
+
+
+def test_plan_includes_the_nupkg_only_when_pinned(tmp_path: Path) -> None:
     manifest = load_manifest()
-    pin = manifest.bins["webview2"]
-    assert pin is not None
-    expected = dl.pinned_sha256(pin.sha256) is not None
+    pin = manifest.bins.get("webview2")
+    expected = pin is not None and dl.pinned_sha256(pin.sha256) is not None
     for profile, pair in (("gpu", "cuda13"), ("gpu", "cuda12"), ("cpu-dev", None)):
         by = {i.name: i for i in dl.plan_bins(manifest, profile, tmp_path, llama_pair=pair)}
         assert ("webview2" in by) is expected
         if expected:
+            assert pin is not None
             item = by["webview2"]
             assert item.kind == "nupkg" and item.url == pin.url and item.sha256 == pin.sha256
             assert item.extract_to == tmp_path / "bin" / "webview2"
             assert item.expect == tuple(DLLS)
 
 
-def test_tbd_hash_is_skipped(tmp_path: Path) -> None:
+def with_pin(sha256: str):
     manifest = load_manifest()
-    pin = manifest.bins["webview2"]
-    assert pin is not None
-    manifest.bins["webview2"] = pin.model_copy(update={"sha256": "TBD-release"})
+    base = cr_entry()
+    manifest.bins["webview2"] = BinPin(version=base["version"], url=base["url"], sha256=sha256)
+    return manifest
+
+
+def test_missing_or_tbd_pin_is_skipped(tmp_path: Path) -> None:
+    manifest = with_pin("TBD-release")
     assert dl.webview2_item(manifest, tmp_path) is None
     assert "webview2" not in [i.name for i in dl.plan_bins(manifest, "gpu", tmp_path, llama_pair="cuda12")]
     manifest.bins["webview2"] = None
     assert dl.webview2_item(manifest, tmp_path) is None
+    del manifest.bins["webview2"]
+    assert dl.webview2_item(manifest, tmp_path) is None
+    assert "webview2" not in [i.name for i in dl.plan_bins(manifest, "gpu", tmp_path, llama_pair="cuda12")]
 
 
 def make_nupkg(path: Path, *, folder: str = "lib/net462") -> None:
@@ -99,10 +125,9 @@ def test_run_plan_unpacks_a_pinned_nupkg(tmp_path: Path) -> None:
     pkg = tmp_path / "src.nupkg"
     make_nupkg(pkg)
     digest = hashlib.sha256(pkg.read_bytes()).hexdigest()
-    manifest = load_manifest()
+    manifest = with_pin(digest)
     pin = manifest.bins["webview2"]
     assert pin is not None
-    manifest.bins["webview2"] = pin.model_copy(update={"sha256": digest})
     home = tmp_path / "home"
     item = dl.webview2_item(manifest, home)
     assert item is not None

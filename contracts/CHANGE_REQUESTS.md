@@ -334,3 +334,17 @@ Format per entry:
 - **Change:** (1) `manifest.json` `bins.yt_dlp`: `{version, url, sha256}` for the `yt-dlp.exe` asset of a release from https://github.com/yt-dlp/yt-dlp/releases (pin the latest release at the time, SHA256 from the release's `SHA2-256SUMS`); the installer downloads it to `<home>\bin\yt-dlp\yt-dlp.exe` (C1). (2) `contracts/errors.json`: `NS-E409` message "Download failed.", hint "Check the link and that the video is yours or you have permission to use it." (3) `pyproject.toml` ruff per-file-ignores: `"ns_studio/clipper/source.py" = ["TID251"]` (it runs yt-dlp with `subprocess.Popen`, list arguments, never a shell); until then the import carries `# noqa: TID251`.
 - **Why:** `studio clip <url>` downloads the owner's video before the normal import (ffprobe, sha256, rights gate). Until `errors.json` lists the code, `ns_studio/clipper/source.py` spells it `"NS-E" + "409"` and registers the text at import so the hygiene test (unregistered code literals) stays green; replace both with the plain literal and delete `register_download_code` when this lands.
 - **Status:** applied on feat/release-readiness: `errors.json` has `NS-E409` (`NS-E410` was not needed: a missing yt-dlp raises `NS-E409` with the path in the detail), the `TID251` per-file ignore is in `pyproject.toml` and the `noqa` and the split-literal workaround are gone from `ns_studio/clipper/source.py`, `manifest.json` pins `bins.yt_dlp` and installer step s02 downloads it
+
+## CR-C2-host: `bins.webview2` (Microsoft.Web.WebView2 NuGet package for the frameless app host)
+- **From:** app host builder (`launchers/nightshift-host.ps1`, `docs/design/installer-ui.md` section 6)
+- **Change:** `manifest.json` gains `bins.webview2`, shape `{version, url, sha256}` (`BinPin` is strict, so the extract list and destination live in `installer/stage2/downloader.py` `WEBVIEW2_MEMBERS`, not in the file):
+  ```json
+  "webview2": {
+    "version": "1.0.2903.40",
+    "url": "https://api.nuget.org/v3-flatcontainer/microsoft.web.webview2/1.0.2903.40/microsoft.web.webview2.1.0.2903.40.nupkg",
+    "sha256": "ef128016dd1e51c59178c827ed5b8aa3322c57afa8675d930f8109505542ad74"
+  }
+  ```
+  The installer verifies the `.nupkg` (a zip, 8,769,233 bytes) and extracts only `lib/net462/Microsoft.Web.WebView2.Wpf.dll`, `lib/net462/Microsoft.Web.WebView2.Core.dll` and `runtimes/win-x64/native/WebView2Loader.dll` into `<home>\bin\webview2\` (this package version has no `lib/net45`; the code falls back to it for older versions).
+- **Why:** the host needs the three DLLs; nothing binary is committed. The sha256 was computed from the downloaded package inside a GitHub Actions run (not on the authoring laptop); the package listing was read in the same run (`lib/net462/*.dll`, `runtimes/win-x64/native/WebView2Loader.dll` present).
+- **Status:** open. Until it lands, a missing `bins.webview2` entry is treated like a `TBD-release` hash: the installer skips the package and `nightshift-dashboard.ps1` uses the Edge/Chrome `--app=` window (host exits 3).
