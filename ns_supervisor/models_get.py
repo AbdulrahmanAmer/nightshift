@@ -77,7 +77,7 @@ def get_model(
     manifest: Manifest | None = None,
 ) -> dict[str, Any]:
     """Download `kind` (resumable, verified) and wire it into `runtime.json`. Returns a result dict."""
-    from installer.stage2.downloader import is_done, run_plan as real_run_plan
+    from installer.stage2 import downloader
 
     man = manifest or load_manifest(app / "manifest.json")
     try:
@@ -85,9 +85,9 @@ def get_model(
     except NsError:
         profile = "gpu"
     items = plan_items(kind, man, profile, paths)
-    todo = [i for i in items if not is_done(i)]
+    todo = [i for i in items if not downloader.is_done(i)]
     if todo:
-        (run_plan or real_run_plan)(todo, reporter=EchoReporter(echo))
+        (run_plan or downloader.run_plan)(todo, reporter=EchoReporter(echo))
     else:
         echo("Already downloaded and verified.")
     if kind == "story_llm":

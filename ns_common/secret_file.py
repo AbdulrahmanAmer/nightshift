@@ -1,13 +1,13 @@
 """C3: the API keys in a file Windows encrypts (DPAPI), for runs where Credential Manager is out of reach.
 
 The nightly task may run in a logon session that has no access to the user's Credential Manager (an S4U
-session: "run whether the user is logged on or not", no stored password). `keyring` then finds nothing, stock
-footage silently turned off. Setup therefore also writes the keys here, and the nightly path reads this file
-when `keyring` has no answer.
+session: "run whether the user is logged on or not", no stored password). `keyring` then finds nothing and
+stock footage is silently off. Setup therefore also writes the keys here, and the nightly path reads this
+file when `keyring` has no answer.
 
-The blob is protected with DPAPI in *machine* scope (`CRYPTPROTECT_LOCAL_MACHINE`): user-scope DPAPI needs the
-user's master key, which an S4U session does not have either. The file lives under `config/` and the
-installer restricts its ACL to the current user; the blob alone is useless on another PC. Standard library only.
+The blob is protected with DPAPI in *machine* scope (`CRYPTPROTECT_LOCAL_MACHINE`): user-scope DPAPI needs
+the user's master key, which an S4U session does not have either. The file lives under `config/` and the
+installer restricts its ACL to the current user; the blob is useless on another PC. Standard library only.
 """
 
 from __future__ import annotations
