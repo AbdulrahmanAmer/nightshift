@@ -5,15 +5,16 @@ from pathlib import Path
 
 import yaml
 
+from ns_common.atomic import BACKUP_SUFFIX, quarantine, write_text_atomic
 from ns_common.errors import NsError
 from ns_common.models import Channel, InstallState, Manifest, Runtime
 from ns_common.paths import Paths, repo_root
 
 
-def _write_json(path: Path, data: dict) -> Path:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    return path
+def _write_json(path: Path, data: dict, *, keep_backup: bool = False) -> Path:
+    return write_text_atomic(
+        path, json.dumps(data, indent=2, ensure_ascii=False) + "\n", keep_backup=keep_backup
+    )
 
 
 def load_runtime(paths: Paths) -> Runtime:
@@ -50,13 +51,31 @@ def list_channels(paths: Paths) -> list[str]:
 
 
 def load_install_state(paths: Paths) -> InstallState:
-    if not paths.install_state_file.exists():
+    """`install_state.json`, tolerant of a torn file.
+
+    A crash or power loss mid-write used to leave truncated JSON, and every later start died on the parse
+    error. Now an unreadable file falls back to the last good copy (`.bak`, written before each save), and
+    failing that to an empty state; the broken file is kept as `.bad` for the diagnostics zip.
+    """
+    f = paths.install_state_file
+    if not f.exists():
         return InstallState()
-    return InstallState.model_validate_json(paths.install_state_file.read_text(encoding="utf-8"))
+    try:
+        return InstallState.model_validate_json(f.read_text(encoding="utf-8-sig"))
+    except ValueError:
+        pass
+    quarantine(f)
+    try:
+        return InstallState.model_validate_json(
+            f.with_name(f.name + BACKUP_SUFFIX).read_text(encoding="utf-8-sig")
+        )
+    except (OSError, ValueError):
+        return InstallState()
 
 
 def save_install_state(paths: Paths, st: InstallState) -> Path:
-    return _write_json(paths.install_state_file, st.model_dump(mode="json"))
+    """Atomic write; the previous file becomes the `.bak` the reader falls back to."""
+    return _write_json(paths.install_state_file, st.model_dump(mode="json"), keep_backup=True)
 
 
 def load_manifest(path: Path | None = None) -> Manifest:

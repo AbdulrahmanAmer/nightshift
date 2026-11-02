@@ -37,6 +37,7 @@ from installer.stage2.web.engine import EngineProcess, wizard_argv, wizard_env
 from installer.stage2.web.keys import check_key
 from installer.stage2.web.model import BOOTSTRAP_STEPS, FILE_NAMES, STEP_ORDER, STEP_PHASE
 from installer.stage2.web.store import SetupStore
+from ns_common.atomic import BACKUP_SUFFIX, write_text_atomic
 from ns_common.uv import find_uv
 
 LOG_KEEP = 50
@@ -189,12 +190,16 @@ class Effects:
 # install_state.json helpers (read and write only the steps this module owns)
 # ---------------------------------------------------------------------------------------------------------
 def read_install_state(home: Path) -> dict[str, Any]:
-    """install_state.json as a dict (empty when absent or unreadable)."""
-    try:
-        data = json.loads((home / "config" / "install_state.json").read_text(encoding="utf-8-sig"))
-    except (OSError, ValueError):
-        return {}
-    return data if isinstance(data, dict) else {}
+    """install_state.json as a dict; a torn file falls back to the last good copy, then to empty."""
+    main = home / "config" / "install_state.json"
+    for candidate in (main, main.with_name(main.name + BACKUP_SUFFIX)):
+        try:
+            data = json.loads(candidate.read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(data, dict):
+            return data
+    return {}
 
 
 def write_step(
@@ -209,9 +214,7 @@ def write_step(
     data.setdefault("profile", None)
     data.setdefault("started_at", now_iso())
     data.setdefault("completed_at", None)
-    path = home / "config" / "install_state.json"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    write_text_atomic(home / "config" / "install_state.json", json.dumps(data, indent=2) + "\n", keep_backup=True)
 
 
 # ---------------------------------------------------------------------------------------------------------
