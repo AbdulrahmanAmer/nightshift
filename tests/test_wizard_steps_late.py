@@ -18,6 +18,7 @@ from installer.stage2.sysinfo import sample_preflight
 from installer.stage2.testing import example_answers, make_test_context
 from ns_common.config import load_channel, load_runtime, save_runtime
 from ns_common.errors import NsError
+from ns_supervisor import check_names as names
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -195,29 +196,23 @@ def test_s08_all_green(tmp_path: Path):
 
 
 def test_s08_nvenc_failure_switches_to_libx264(tmp_path: Path):
-    ctx, _ = smoke_ctx(tmp_path, {"nvenc"})
+    ctx, _ = smoke_ctx(tmp_path, {names.NVENC_PROBE})
     S08Smoke().run(ctx)
     rt = load_runtime(ctx.paths)
     assert (rt.video.encoder, rt.video.preset) == ("libx264", "veryfast")
     assert [c for c, _ in ctx.warnings] == ["NS-W401"]
 
 
-def test_s08_mtp_that_is_not_faster_is_turned_off(tmp_path: Path):
-    ctx, _ = smoke_ctx(tmp_path, {"mtp"}, llm_tier="balanced")
+def test_s08_has_no_mtp_branch_because_verify_has_no_mtp_check(tmp_path: Path):
+    # MTP is decided by `ns tune` (tests/test_ns_tune.py); `ns verify --quick` reports no such check.
+    assert not any("mtp" in n for n in names.QUICK_CHECKS)
+    ctx, _ = smoke_ctx(tmp_path, llm_tier="balanced")
     S08Smoke().run(ctx)
-    flags = load_runtime(ctx.paths).llama.flags
-    assert flags.spec_type is None and flags.spec_draft_n_max is None
-    assert [c for c, _ in ctx.warnings] == ["NS-W302"]
-
-
-def test_s08_mtp_failure_on_a_plain_model_changes_nothing(tmp_path: Path):
-    ctx, _ = smoke_ctx(tmp_path, {"mtp"})
-    S08Smoke().run(ctx)
-    assert ctx.warnings == []
+    assert load_runtime(ctx.paths).llama.flags.spec_type == "draft-mtp" and ctx.warnings == []
 
 
 def test_s08_tts_failure_switches_to_the_pytorch_engine(tmp_path: Path):
-    ctx, runner = smoke_ctx(tmp_path, {"tts"})
+    ctx, runner = smoke_ctx(tmp_path, {names.TTS_VOICES})
     S08Smoke().run(ctx)
     assert load_runtime(ctx.paths).tts.engine == "reference"
     assert ctx.flag("tts_fallback") is True and ctx.flag("tts_venv_installed") is True
@@ -228,7 +223,7 @@ def test_s08_tts_failure_switches_to_the_pytorch_engine(tmp_path: Path):
 
 
 def test_s08_tts_failing_even_in_the_fallback_is_e108(tmp_path: Path):
-    ctx, _ = smoke_ctx(tmp_path, {"tts"})
+    ctx, _ = smoke_ctx(tmp_path, {names.TTS_VOICES})
     ctx.set_flag("tts_fallback", True)
     with pytest.raises(NsError) as ei:
         S08Smoke().run(ctx)
@@ -236,14 +231,15 @@ def test_s08_tts_failing_even_in_the_fallback_is_e108(tmp_path: Path):
 
 
 def test_s08_whisper_and_service_failures_stop_the_install(tmp_path: Path):
-    ctx, _ = smoke_ctx(tmp_path, {"whisper"})
+    ctx, _ = smoke_ctx(tmp_path, {names.WHISPER_LOAD})
     with pytest.raises(NsError) as ei:
         S08Smoke().run(ctx)
     assert ei.value.code == "NS-E112" and "cuBLAS" in ei.value.definition.message + ei.value.definition.hint
-    ctx2, _ = smoke_ctx(tmp_path / "b", {"llm"})
-    with pytest.raises(NsError) as e2:
-        S08Smoke().run(ctx2)
-    assert e2.value.code == "NS-E203"
+    for i, bad in enumerate((names.LLAMA_START, names.LLAMA_HEALTH, names.LLAMA_JSON, names.EMBED_VECTOR)):
+        ctx2, _ = smoke_ctx(tmp_path / f"b{i}", {bad})
+        with pytest.raises(NsError) as e2:
+            S08Smoke().run(ctx2)
+        assert e2.value.code == "NS-E203" and bad in e2.value.detail
 
 
 def test_s08_no_report_is_e202_and_report_file_is_a_fallback(tmp_path: Path):

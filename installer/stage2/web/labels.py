@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from typing import Any
+
+from ns_supervisor import check_names as names
+
 STEP_TITLES: dict[str, str] = {
     "b01_tools": "Free tools",
     "b02_home": "Install folder",
@@ -83,43 +87,86 @@ def row_key(key: str) -> str:
     return "whisper" if key.lower().startswith("whisper") else key
 
 
-# Names in verify-report.json: prefix -> label (spec 2.6). Anything else shows as it is.
-VERIFY_LABELS: tuple[tuple[str, str], ...] = (
-    ("llm", "Story model"),
-    ("embed", "Memory index"),
-    ("tts", "Voice engine"),
-    ("whisper", "Captions"),
-    ("nvenc", "Video encoder"),
-    ("mtp", "Faster decoding"),
+# Names in verify-report.json (the real ones, `ns_supervisor.check_names`): prefix -> (row key, label).
+# One setup row per area: llama.start, llama.health and llama.json_completion all report into "Story model".
+VERIFY_AREAS: tuple[tuple[str, str, str], ...] = (
+    (names.LLAMA_PREFIX, "llm", "Story model"),
+    (names.EMBED_PREFIX, "embed", "Memory index"),
+    (names.TTS_PREFIX, "tts", "Voice engine"),
+    (names.WHISPER_PREFIX, "whisper", "Captions"),
+    (names.NVENC_PREFIX, "nvenc", "Video encoder"),
+    ("supervisor.", "engine", "Engine"),
+    ("vram.", "vram", "Graphics memory"),
+    ("job.", "job", "Test job"),
 )
+#: Areas where a failure is a handled fallback (libx264, the PyTorch voice engine), not a stop.
+VERIFY_FALLBACK_ROWS = frozenset({"nvenc", "tts"})
 VERIFY_HIDDEN_PREFIXES = ("bench",)
+
+
+def _area(name: str) -> tuple[str, str] | None:
+    low = name.lower()
+    for prefix, key, label in VERIFY_AREAS:
+        if low.startswith(prefix):
+            return key, label
+    return None
 
 
 def verify_label(name: str) -> str | None:
     """Label for a verify check name, or None when the check is not shown (``bench.*``)."""
-    low = name.lower()
-    if low.startswith(VERIFY_HIDDEN_PREFIXES):
+    if name.lower().startswith(VERIFY_HIDDEN_PREFIXES):
         return None
-    for prefix, label in VERIFY_LABELS:
-        if low.startswith(prefix):
-            return label
-    return name
+    area = _area(name)
+    return area[1] if area else name
+
+
+def verify_key(name: str) -> str:
+    """The setup row a check reports into (``llama.health`` -> ``llm``); unknown names are their own row."""
+    area = _area(name)
+    return area[0] if area else name
 
 
 def verify_value(name: str, passed: bool, value: str | None, speaker: str | None = None) -> str | None:
-    """The value column of a verify row (spec 2.6)."""
+    """The value column contribution of one verify check (spec 2.6); None when it has nothing to say."""
     low = name.lower()
-    if low.startswith("llm"):
+    if low == names.LLAMA_TOK_S:
         return f"{value} tokens/s" if value else None
-    if low.startswith("embed"):
+    if low == names.EMBED_VECTOR:
         return "ready" if passed else None
-    if low.startswith("tts"):
-        who = speaker or "voice"
+    if low.startswith(names.TTS_MODE_PREFIX) and low not in (names.TTS_START, names.TTS_VOICES):
+        who = speaker or "voice"      # tts.preset / tts.design / tts.clone carry the real-time factor
         return f"{who}, {value} RTF" if value else who
-    if low.startswith("whisper"):
+    if low == names.WHISPER_LOAD:
         return "graphics card" if passed else "processor"
-    if low.startswith("nvenc"):
+    if low == names.NVENC_PROBE:
         return "NVENC" if passed else "libx264 (slower)"
-    if low.startswith("mtp"):
-        return "on" if passed else "off"
-    return value
+    return None
+
+
+def verify_rows(checks: list[dict[str, Any]], speaker: str | None = None) -> list[dict[str, Any]]:
+    """Setup rows from the check rows of verify-report.json: one row per area, in first-seen order.
+
+    A row passes when all its checks pass; a failed nvenc or tts row is a ``fallback``, anything else
+    ``failed``. ``bench.*`` checks are not shown.
+    """
+    rows: dict[str, dict[str, Any]] = {}
+    for c in checks:
+        name = str(c.get("name", ""))
+        label = verify_label(name)
+        if label is None:
+            continue
+        key = verify_key(name)
+        passed = bool(c.get("passed"))
+        row = rows.setdefault(
+            key, {"name": key, "label": label, "status": "passed", "value": None, "note": None}
+        )
+        if not passed:
+            row["status"] = "fallback" if key in VERIFY_FALLBACK_ROWS else "failed"
+        value = verify_value(name, passed, c.get("value"), speaker)
+        if value is not None and (row["value"] is None or not passed):
+            row["value"] = value
+    return list(rows.values())
+
+
+#: The rows the setup screen shows (as "running") before the first verify report arrives.
+VERIFY_PENDING_ROWS: tuple[tuple[str, str], ...] = tuple((key, label) for _, key, label in VERIFY_AREAS[:5])

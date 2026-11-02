@@ -1193,32 +1193,20 @@ class SetupController:
                           str(ev.get("hint", "")), str(ev.get("detail", "")), bool(ev.get("optional")))
 
     def _verify_pending(self) -> None:
-        names = ("llm", "embed", "tts", "whisper", "nvenc", "mtp")
+        rows = labels.VERIFY_PENDING_ROWS
 
         def fn(s: dict[str, Any]) -> None:
             if s["verify"] is None:
                 s["verify"] = {"checks": [], "voice": None, "render": None, "renderNote": None,
                                "reportReady": False}
-            s["verify"]["checks"] = [{"name": n, "label": labels.verify_label(n) or n, "status": "running",
-                                      "value": None, "note": None} for n in names]
+            s["verify"]["checks"] = [{"name": n, "label": label, "status": "running", "value": None, "note": None}
+                                     for n, label in rows]
 
         self.store.update(fn)
 
     def _ev_verify(self, ev: dict[str, Any]) -> None:
         speaker = ((self.snapshot().get("answers") or {}).get("voice") or {}).get("speaker")
-        checks = []
-        for c in ev.get("checks") or []:
-            label = labels.verify_label(str(c.get("name", "")))
-            if label is None:
-                continue
-            name = str(c["name"])
-            passed = bool(c.get("passed"))
-            fallback = not passed and name.lower().startswith(("nvenc", "mtp", "tts"))
-            checks.append({
-                "name": name, "label": label,
-                "status": "passed" if passed else ("fallback" if fallback else "failed"),
-                "value": labels.verify_value(name, passed, c.get("value"), speaker), "note": None,
-            })
+        checks = labels.verify_rows([c for c in ev.get("checks") or [] if isinstance(c, dict)], speaker)
 
         def fn(s: dict[str, Any]) -> None:
             if s["verify"] is None:
