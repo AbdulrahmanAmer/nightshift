@@ -433,7 +433,7 @@ def test_types_ts_is_readable():
     for case in CASES:
         assert case.type in ifaces or case.type in aliases, f"types.ts has no `{case.type}` (route {case.path})"
     members, index = all_members(ifaces, "Settings")
-    assert "schedule_time" in members and index == "any"
+    assert "schedule_time" in members and index is None  # Settings is closed: every key is declared
 
 
 def test_the_reader_flags_a_renamed_field_and_a_null():

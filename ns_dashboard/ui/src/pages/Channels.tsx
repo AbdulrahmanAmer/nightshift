@@ -6,7 +6,7 @@ import { useMemo, useState } from "react";
 import { useApp, useLoad } from "../lib/app";
 import { api } from "../lib/api";
 import { POOL_LABELS } from "../lib/format";
-import type { ChannelCard, ChannelDetail, ChannelProfile, Format, Pools, Voice } from "../lib/types";
+import type { ChannelCard, ChannelDetail, ChannelStats, ChannelProfile, Format, Pools, Voice } from "../lib/types";
 import { cx } from "../ui/kit";
 import { Scene } from "../visuals/Scene";
 import {
@@ -45,7 +45,7 @@ export default function Channels() {
       {chans.data.length ? (
         <DashGrid label="Channels">
           {chans.data.map((c) => {
-            const on = c.status === "active"; const st = c.stats || {}; const pending = pendingOf(c.slug) ?? c.pending;
+            const on = c.status === "active"; const st: Partial<ChannelStats> = c.stats || {}; const pending = pendingOf(c.slug) ?? c.pending;
             const plan = c.masters_per_week; const week = st.week ?? 0;
             const spark = st.spark; const delta = spark && spark.length > 1 ? Math.round(spark[spark.length - 1]! - spark[0]!) : null;
             const allowed = formats.data.filter((f) => f.channels?.includes(c.slug));

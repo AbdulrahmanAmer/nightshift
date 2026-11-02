@@ -51,6 +51,14 @@ NO_TOOL: dict[Route, str] = {
     ("GET", "/api/assistant/history"): "the Assistant itself",
     ("GET", "/api/assistant/conversations"): "the Assistant itself",
     ("POST", "/api/assistant/queue/run"): "the Assistant itself",
+    ("GET", "/api/assistant/tools"): "the Assistant itself (the page words its cards from the registry)",
+    ("GET", "/api/thumbs/{n}/{output_id:path}"): "binary image",
+    ("GET", "/api/update/state"): "progress of the detached updater, polled by the Settings page",
+    ("POST", "/api/models/get"): "never: model downloads are the owner's decision (Settings page)",
+    ("GET", "/api/models/state"): "progress of a model download, polled by the Settings page",
+    ("GET", "/api/notes"): "notes for the bell and Last night (the owner reads them)",
+    ("POST", "/api/notes/clear"): "the owner has read the notes",
+    ("DELETE", "/api/library/footage/{source}/{clip_id}"): "never: deleting files is the owner's decision (Library page)",
 }
 
 
