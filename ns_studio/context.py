@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from ns_studio.media.clip_sources import ClipSource
     from ns_studio.media.transcribe import Transcriber
 
+PROMPT_VERSIONS_FILE = "prompt_versions.json"
 FAKEABLE: frozenset[str] = frozenset({"llm", "tts", "whisper", "embed", "clips"})
 FIXTURES_LLM = repo_root() / "tests" / "fixtures" / "llm"
 
@@ -104,6 +105,29 @@ class JobContext:
     services: Services
     log: NsLogger
     prompt_versions: dict[str, int] = field(default_factory=dict)
+
+    def _saved_prompt_versions(self) -> dict[str, int]:
+        f = self.job_dir / PROMPT_VERSIONS_FILE
+        try:
+            data = json.loads(f.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        return {str(k): int(v) for k, v in data.items()} if isinstance(data, dict) else {}
+
+    def note_prompt(self, name: str, version: int) -> None:
+        """Remember that prompt `name` at `version` produced output for this job, in memory and on disk.
+
+        `prompt_versions.json` keeps the lineage across `--resume` and regeneration, when the process that
+        called the earlier prompts is gone.
+        """
+        saved = self._saved_prompt_versions()
+        self.prompt_versions[name] = version
+        if saved.get(name) != version:
+            self.write_json(PROMPT_VERSIONS_FILE, {**saved, **self.prompt_versions})
+
+    def versions(self) -> dict[str, int]:
+        """Every prompt version used by this job so far: the saved ones plus this process's."""
+        return {**self._saved_prompt_versions(), **self.prompt_versions}
 
     @property
     def attempt(self) -> int:

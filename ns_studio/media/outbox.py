@@ -325,7 +325,7 @@ class OutboxStage:
                 advice=advice,
                 shots=shots,
                 combo_id=ctx.combo.combo_id,
-                prompt_versions=ctx.prompt_versions,
+                prompt_versions=ctx.versions(),
                 publish_at=publish_after(
                     ctx.channel, ctx.job_id, item, day_offset=short_day_offset(ctx.channel, k)
                 ),
@@ -408,7 +408,7 @@ def run_outbox_master(ctx: JobContext) -> None:
 
     meta = build_metadata(
         channel=ctx.channel, job_id=ctx.job_id, kind="long", k=None, seo=long_seo, advice=advice,
-        shots=long_shots, combo_id=ctx.combo.combo_id, prompt_versions=ctx.prompt_versions,
+        shots=long_shots, combo_id=ctx.combo.combo_id, prompt_versions=ctx.versions(),
         publish_at=publish_after(ctx.channel, ctx.job_id, "long", day_offset=1),
         extra={
             "chapters": [{"timestamp": c["timestamp"], "title": c["title"], "start_s": c["start_s"]}
@@ -443,7 +443,7 @@ def run_outbox_master(ctx: JobContext) -> None:
         smeta = build_metadata(
             channel=ctx.channel, job_id=ctx.job_id, kind="short", k=k, seo=seo, advice=advice, shots=shots,
             combo_id=(spec.combo_id if spec else None) or ctx.combo.combo_id,
-            prompt_versions=ctx.prompt_versions,
+            prompt_versions=ctx.versions(),
             publish_at=publish_after(
                 ctx.channel, ctx.job_id, item, day_offset=1 + short_day_offset(ctx.channel, k)
             ),

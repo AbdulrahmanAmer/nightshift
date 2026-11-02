@@ -300,7 +300,7 @@ def call_json(
     schema_key = schema_name or p.schema
     if not schema_key:
         raise ValueError(f"prompt {name} has no schema")
-    ctx.prompt_versions[name] = p.version
+    ctx.note_prompt(name, p.version)
     user = render(p, **(_common_vars(ctx) | vars))
     return ctx.services.llm.complete_json(
         prompt_name=fixture or name,
@@ -315,7 +315,7 @@ def call_json(
 def call_text(ctx: JobContext, name: str, *, fixture: str | None = None, **vars: Any) -> str:
     """Render prompt `name` and return the LLM's plain-text answer; records the prompt version."""
     p = load_prompt(name)
-    ctx.prompt_versions[name] = p.version
+    ctx.note_prompt(name, p.version)
     user = render(p, **(_common_vars(ctx) | vars))
     return ctx.services.llm.complete_text(
         prompt_name=fixture or name, system=p.system, user=user, thinking=p.thinking, **attempt_kwargs(ctx)

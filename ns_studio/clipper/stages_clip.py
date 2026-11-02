@@ -810,7 +810,7 @@ class OutboxStage:
                 made_for_kids=bool(advice["made_for_kids"]),
                 age_restrict_suggested=bool(advice["age_restrict_suggested"]),
                 combo_id=ctx.combo.combo_id,
-                prompt_versions=ctx.prompt_versions,
+                prompt_versions=ctx.versions(),
             )
             mp4 = ob.copy_if_changed(Path(rinfo["path"]), dest_dir / f"{stem}.mp4")
             json_path, txt_path = dest_dir / f"{stem}.json", dest_dir / f"{stem}.txt"

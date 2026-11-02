@@ -46,3 +46,22 @@ def test_job_context_format_literal_names_every_registered_format():
 def test_clip_and_script_contexts_build(tmp_home: Path):
     for fmt in ("clip", "master_from_script"):
         assert make_ctx(tmp_home, fmt=fmt).fmt == fmt
+
+
+def test_prompt_versions_survive_a_resume(tmp_home):
+    """Review row 12: the lineage lived in memory only, so a resumed job's metadata listed a few prompts."""
+    from ns_studio import jobs
+    from ns_studio.text.prompts import call_json
+    from ns_studio.text.stages_shorts import ideas_budget
+    from tests.helpers import yaml_only_channel
+
+    env = jobs.open_env(frozenset(FAKEABLE))
+    ctx = jobs.make_job(env, yaml_only_channel(Paths.from_env()), "shorts_only")
+    call_json(ctx, "ideas", n=8, budget=ideas_budget(ctx), avoid_premises=[])
+    assert ctx.file("prompt_versions.json").exists()
+    resumed = jobs.load_job(env, ctx.job_id)  # a new process: nothing in memory
+    assert resumed.prompt_versions == {}
+    assert resumed.versions() == ctx.versions() and "ideas" in resumed.versions()
+    resumed.note_prompt("hook", 3)
+    assert set(resumed.versions()) == {"ideas", "hook"} and resumed.versions()["hook"] == 3
+    assert jobs.load_job(env, ctx.job_id).versions() == resumed.versions()
