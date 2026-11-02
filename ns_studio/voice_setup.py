@@ -114,9 +114,15 @@ def _local_engine_make(env: Env, kind: str, **kw: Any) -> None:
         raise NsError("NS-E310", str(e)) from e
 
 
-def _make(env: Env, route: str, body: dict[str, Any], post: Post | None) -> None:
-    """Hold the `tts` tenant, call the service, release."""
-    owner = f"studio:voice-{body['name']}"
+def _make(
+    env: Env, route: str, body: dict[str, Any], post: Post | None, owner: str | None = None
+) -> None:
+    """Hold the `tts` tenant, call the service, release.
+
+    `owner` is the GPU owner name: a job passes its own `studio:<job id>`, so the dashboard's Cancel (which
+    frees the owners of the job) frees this lease too; alone it is `studio:voice-<name>`.
+    """
+    owner = owner or f"studio:voice-{body['name']}"
     endpoint = env.services.acquirer.acquire("tts", owner, timeout_s=600)
     try:
         (post or http_post)(endpoint.base_url, route, body)
@@ -125,7 +131,8 @@ def _make(env: Env, route: str, body: dict[str, Any], post: Post | None) -> None
 
 
 def design_voice(
-    env: Env, name: str, description: str, *, language: str = "English", post: Post | None = None
+    env: Env, name: str, description: str, *, language: str = "English", post: Post | None = None,
+    owner: str | None = None,
 ) -> Path:
     """New voice from a plain-English description (VoiceDesign). Returns the folder of the stored voice."""
     _check_name(env.paths, name)
@@ -135,7 +142,7 @@ def design_voice(
         _local_engine_make(env, "design", name=name, description=description, language=language)
     else:
         body = {"name": name, "description": description, "language": language}
-        _make(env, "/v1/voices/design", body, post)
+        _make(env, "/v1/voices/design", body, post, owner)
     return env.paths.models_tts_voices / name
 
 
@@ -148,6 +155,7 @@ def clone_voice(
     rights_confirmed: bool,
     language: str = "English",
     post: Post | None = None,
+    owner: str | None = None,
 ) -> Path:
     """New voice cloned from a 3 to 30 s recording and the words said in it (`NS-E313` without consent,
     `NS-E312` when the recording is too short or noisy)."""
@@ -172,7 +180,7 @@ def clone_voice(
         if "tts" in env.fake and post is None:
             _local_engine_make(env, "clone", **{k: v for k, v in body.items() if k != "rights_confirmed"})
         else:
-            _make(env, "/v1/voices/clone", body, post)
+            _make(env, "/v1/voices/clone", body, post, owner)
     return env.paths.models_tts_voices / name
 
 
@@ -198,7 +206,7 @@ def apply_pending_voices(ctx: JobContext) -> str | None:
         return None
     env = Env(ctx.paths, ctx.db, ctx.runtime, ctx.services, ctx.log, frozenset())
     try:
-        made = apply_pending(env)
+        made = apply_pending(env, owner=f"studio:{ctx.job_id}")
     except (NsError, StudioError) as e:
         ctx.log.warn("pending_voice_failed", str(e), job_id=ctx.job_id)
         return None
@@ -207,7 +215,7 @@ def apply_pending_voices(ctx: JobContext) -> str | None:
     return made
 
 
-def apply_pending(env: Env, *, post: Post | None = None) -> str | None:
+def apply_pending(env: Env, *, post: Post | None = None, owner: str | None = None) -> str | None:
     """Create the voice setup queued, then forget the request. Returns its name, or None when nothing was
     queued or the voice already exists. On a failure the request stays queued and the error propagates."""
     req = read_pending(env.paths)
@@ -227,9 +235,12 @@ def apply_pending(env: Env, *, post: Post | None = None) -> str | None:
             rights_confirmed=bool(req.get("rights_confirmed")),
             language=language,
             post=post,
+            owner=owner,
         )
     else:
-        design_voice(env, name, str(req.get("description") or ""), language=language, post=post)
+        design_voice(
+            env, name, str(req.get("description") or ""), language=language, post=post, owner=owner
+        )
     pending_file(env.paths).unlink(missing_ok=True)
     env.log.info("voice_created_from_setup", voice=name, mode=req.get("mode"))
     return name

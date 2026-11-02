@@ -12,7 +12,7 @@ import shutil
 import tempfile
 import threading
 import zipfile
-from collections.abc import Callable, Collection
+from collections.abc import Callable, Collection, Mapping
 from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -344,9 +344,12 @@ class FakeVoiceMaker:
 
         return read_pending_voice(self.paths)
 
-    def apply_pending(self) -> str | None:
+    def apply_pending(self, ctl: JobControl | None = None) -> str | None:
         """Make the queued voice with the fake engine and forget the request."""
         want = self.pending()
+        if ctl is not None:
+            ctl.progress(0.1, "Making the voice: loading the voice engine")
+            ctl.check_cancel()
         if self.fail_with is not None:
             raise self.fail_with
         if want is None:
@@ -446,15 +449,26 @@ class FakeSeriesAdapter:
                 if part["n"] == params.get("part_n") and part["status"] == "producing":
                     part["status"] = "approved"
 
-    def sweep(self, active_job_ids: Collection[str]) -> int:
-        """Put every `producing` part without a queued or running job back to `approved`."""
+    def sweep(self, active_job_ids: Collection[str], job_statuses: Mapping[str, str] | None = None) -> int:
+        """Settle every `producing` part with no queued or running job (`produced` when its job is done)."""
         freed = 0
         for story in self.stories:
             for part in story["parts"]:
-                if part["status"] == "producing" and part.get("job_id") not in set(active_job_ids):
-                    part["status"] = "approved"
-                    freed += 1
+                if part["status"] != "producing" or part.get("job_id") in set(active_job_ids):
+                    continue
+                done = job_statuses is not None and job_statuses.get(str(part.get("job_id"))) == "done"
+                part["status"] = "produced" if done else "approved"
+                freed += 1
         return freed
+
+    def finish(self, params: dict[str, Any]) -> None:
+        """Mark the part `produced` when it is still `producing`."""
+        for story in self.stories:
+            if story["slug"] != params.get("story_slug"):
+                continue
+            for part in story["parts"]:
+                if part["n"] == params.get("part_n") and part["status"] == "producing":
+                    part["status"] = "produced"
 
     def queue_next(self, slug: str) -> list[dict[str, Any]]:
         """Queue the first approved part of `slug` as a `series_part` row and mark it producing."""
@@ -670,6 +684,9 @@ class FakeSupervisor:
                     self._send(200, {"ok": True})
                 elif self.path == "/release_owner":
                     held = outer.state.get("gpu_owner") == body.get("owner")
+                    if held and body.get("unless_alive") and outer.state.get("lease_alive"):
+                        self._send(200, {"ok": False, "refused": "alive", "silent_s": 3.0})
+                        return
                     if held:
                         outer.state["gpu_owner"] = None
                     self._send(200, {"ok": held})

@@ -552,7 +552,7 @@ class Workshop:
         sd, status, ch = self._open(slug)
         series = sd.read_series()
         entry = series.entry(n)
-        if status.parts.get(n, PartState()).status in ("producing", "published"):
+        if status.parts.get(n, PartState()).status in ("producing", "produced", "published"):
             raise WorkshopError(f"part {n} is already in production; it cannot be rewritten")
         concept = sd.read_concept()
         with self._llm(slug):
@@ -812,7 +812,7 @@ class Workshop:
         if not feedback:
             raise WorkshopError("feedback is empty; say what should change")
         sd, status, ch = self._open(slug)
-        if status.parts.get(n, PartState()).status in ("producing", "published"):
+        if status.parts.get(n, PartState()).status in ("producing", "produced", "published"):
             raise WorkshopError(f"part {n} is already in production; it cannot be revised")
         script = sd.read_script(n)
         old_flat = [t for _, _, t in script.sentences()]

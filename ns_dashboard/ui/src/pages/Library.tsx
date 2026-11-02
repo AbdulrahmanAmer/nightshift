@@ -7,7 +7,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useApp, useLoad } from "../lib/app";
 import { api, ApiError } from "../lib/api";
 import { fmtDay, fmtDur, plural, store } from "../lib/format";
-import type { Footage, Format, Idea, PendingVoice, SeriesStory, Story, Voice, VoiceMade } from "../lib/types";
+import type { Footage, Format, Idea, Job, PendingVoice, SeriesStory, Story, Voice, VoiceApplied, VoiceMade } from "../lib/types";
 import { cx } from "../ui/kit";
 import { Scene } from "../visuals/Scene";
 import { LayoutDiagram } from "../visuals/charts";
@@ -217,28 +217,64 @@ function FailNote({ f, children }: { f: Fail; children?: ReactNode }) {
   );
 }
 
-/** The voice the installer's setup asked for and could not make yet (it needs the TTS engine that the smoke test settles): one button makes it. */
+/** The voice the installer's setup asked for and could not make yet (it needs the TTS engine that the smoke test settles): one button queues the job that makes it. The card follows the job (progress, Cancel); the same job shows in the Queue. */
+
+const DONE_STATES = ["done", "failed", "cancelled"];
+/** A failed job as the card words it: its code (NS-E314 offers the model download) and message. */
+const failOfJob = (j: Job): Fail => {
+  const code = j.result?.error?.code;
+  if (code === "NS-E314") return { title: "The voice design model is not installed", text: j.message, hint: "Get it with the button below (it is a large download), then try again", code, getModel: true };
+  return { title: (code && VOICE_TITLES[code]) || "The voice was not made", text: j.message, hint: j.result?.error?.hint ?? undefined, code: code && code.startsWith("NS-") ? code : undefined };
+};
 
 function PendingVoiceCard({ onMade }: { onMade: () => void }) {
   const { toast } = useApp();
   const pending = useLoad<PendingVoice>(() => api.get("/voices/pending"), [], { pending: null });
-  const [busy, setBusy] = useState(false); const [fail, setFail] = useState<Fail | null>(null);
+  const [jobId, setJobId] = useState<string | null>(null);
+  const [job, setJob] = useState<Job | null>(null);
+  const [fail, setFail] = useState<Fail | null>(null);
   const p = pending.data.pending;
+  const busy = !!jobId;
+  // A job that was started before a reload is still running: pick it up.
+  useEffect(() => { api.get<Job[]>("/jobs?kind=apply_voice&limit=1").then((l) => { const j = l[0]; if (j && !DONE_STATES.includes(j.status)) { setJob(j); setJobId(j.job_id); } }).catch(() => {}); }, []);
+  useEffect(() => {
+    if (!jobId) return;
+    let alive = true;
+    const tick = async () => {
+      try {
+        const j = await api.get<Job>(`/jobs/${encodeURIComponent(jobId)}`);
+        if (!alive) return;
+        setJob(j);
+        if (!DONE_STATES.includes(j.status)) return;
+        setJobId(null);
+        if (j.status === "done") { toast(`Voice ${j.result?.created ?? j.params?.name ?? ""} created`.replace("  ", " "), "ok"); onMade(); }
+        else if (j.status === "failed") setFail(failOfJob(j));
+        else toast("Stopped. The voice was not made", "warn");
+        pending.reload();
+      } catch { /* the engine is busy for a moment: ask again */ }
+    };
+    tick();
+    const t = setInterval(tick, 1500);
+    return () => { alive = false; clearInterval(t); };
+  }, [jobId]);
   if (!p) return null;
   const create = async () => {
-    setBusy(true); setFail(null);
-    try { await api.post("/voices/apply-pending"); toast(`Voice ${p.name} created`, "ok"); pending.reload(); onMade(); }
-    catch (e) { setFail(failOf(e)); }
-    setBusy(false);
+    setFail(null);
+    try {
+      const r = await api.post<VoiceApplied>("/voices/apply-pending");
+      if (r.job_id) setJobId(r.job_id); else pending.reload();
+    } catch (e) { setFail(failOf(e)); }
   };
+  const stop = async () => { if (!jobId) return; try { await api.post(`/jobs/${encodeURIComponent(jobId)}/cancel`); toast("Stopping", "warn"); } catch (e: any) { toast(e.message, "bad"); } };
   return (
     <Card as="section" aria-labelledby="v-pending" className="flex flex-col gap-3 @min-[600px]:col-span-2">
       <CardHeader id="v-pending" title="Pending voice from setup" className="!mb-0" adornment={<Badge tone="accent">{p.mode === "clone" ? "Clone" : "Design"}</Badge>} />
       <p className="text-ds-sm leading-ds-normal"><span className="font-semibold">{p.name}</span>{p.mode === "design" && p.description ? `: ${p.description}` : ": cloned from the recording you gave in setup"}. Setup could not make it yet, so videos for {p.channel || "your channel"} use another voice until it exists.</p>
       {fail && <FailNote f={fail} />}
+      {busy && <div role="status" className="flex flex-col gap-2 text-ds-xs text-ds-muted"><span>{job?.message || "Waiting to start"}. This takes up to a minute while the model loads; you can follow it in the Queue</span><ProgressBar value={job?.progress ?? 0} label="Voice progress" /></div>}
       <div className="flex flex-wrap items-center gap-3">
         <Button leadingIcon="wand" disabled={busy} onClick={create}>{busy ? "Creating" : "Create it now"}</Button>
-        {busy && <span role="status" className="text-ds-xs text-ds-muted">This takes up to a minute while the model loads</span>}
+        {busy && <Button variant="ghost" onClick={stop}>Cancel</Button>}
       </div>
     </Card>
   );
@@ -444,7 +480,7 @@ function FootageTab() {
 
 const PART_LABEL: Record<string, [string, Tone]> = {
   planned: ["Planned", "neutral"], written: ["Written, waiting for your OK", "neutral"], approved: ["Approved", "accent"],
-  producing: ["Being made", "accent"], published: ["Posted", "success"],
+  producing: ["Being made", "accent"], produced: ["Made, in the Queue", "success"], published: ["Posted", "success"],
 };
 const NEXT_STEP: Record<string, string> = {
   concepts: "Ask the Assistant for concepts", choose: "Choose a concept", map: "Plan the parts", design: "Pick the look of the series",

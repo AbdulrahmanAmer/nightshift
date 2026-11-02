@@ -453,6 +453,23 @@
       "default": null,
       "title": "Schedule Registered"
     },
+    "schedule_mode": {
+      "anyOf": [
+        {
+          "enum": [
+            "registered",
+            "interactive_only",
+            "none"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Schedule Mode"
+    },
     "outbox": {
       "additionalProperties": {
         "type": "integer"

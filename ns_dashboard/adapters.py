@@ -13,7 +13,7 @@ import json
 import os
 import shutil
 import time
-from collections.abc import Callable, Collection, Iterator
+from collections.abc import Callable, Collection, Iterator, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -120,8 +120,8 @@ class VoiceMakerAdapter(Protocol):
         """The voice setup asked for (`config/pending_voice.json`) while it does not exist yet, else None."""
         ...
 
-    def apply_pending(self) -> str | None:
-        """Create that voice now; returns its name, or None when there was nothing to do."""
+    def apply_pending(self, ctl: JobControl | None = None) -> str | None:
+        """Create that voice now (inside an `apply_voice` job when `ctl` is given); its name, or None."""
         ...
 
 
@@ -164,8 +164,15 @@ class SeriesAdapter(Protocol):
         """Put a part whose job was interrupted back to `approved` so it can be queued again."""
         ...
 
-    def sweep(self, active_job_ids: Collection[str]) -> int:
-        """Put every `producing` part without a queued or running job back to `approved`; returns how many."""
+    def sweep(
+        self, active_job_ids: Collection[str], job_statuses: Mapping[str, str] | None = None
+    ) -> int:
+        """Settle every `producing` part with no queued or running job: `produced` when its job is `done`,
+        else `approved` (the job is missing, failed or cancelled); returns how many."""
+        ...
+
+    def finish(self, params: dict[str, Any]) -> None:
+        """A part whose job finished goes from `producing` to `produced`."""
         ...
 
 
@@ -410,9 +417,16 @@ class RealSeriesAdapter(StudioAdapter):
         """A part left `producing` by a crash or a Quit goes back to `approved`."""
         studio_bridge.release_part(params)
 
-    def sweep(self, active_job_ids: Collection[str]) -> int:
-        """Parts left `producing` with no job behind them (found at start) go back to `approved`."""
-        return studio_bridge.sweep_parts(active_job_ids)
+    def sweep(
+        self, active_job_ids: Collection[str], job_statuses: Mapping[str, str] | None = None
+    ) -> int:
+        """`producing` parts with no live job behind them (found at start): finished ones become `produced`,
+        the others go back to `approved`."""
+        return studio_bridge.sweep_parts(active_job_ids, job_statuses)
+
+    def finish(self, params: dict[str, Any]) -> None:
+        """A part whose job is done becomes `produced`, so the start sweep leaves it alone."""
+        studio_bridge.finish_part(params)
 
     def listing(self) -> list[dict[str, Any]]:
         """Stories and parts read from the workshop files under `stories/`."""
@@ -734,9 +748,28 @@ class RealVoiceMaker:
         """The queued setup voice (name, mode, description, channel), or None when none waits or it exists."""
         return read_pending_voice(self.paths)
 
-    def apply_pending(self) -> str | None:
-        """Create the setup voice in the studio venv (`voice_setup.apply_pending`), which holds `tts`."""
-        done = self._runner.run("apply_voice", {"supervisor_url": self.link.base_url})
+    def apply_pending(self, ctl: JobControl | None = None) -> str | None:
+        """Create the setup voice in the studio venv (`voice_setup.apply_pending`), which holds `tts`.
+
+        Called with the `JobControl` of an `apply_voice` job (Library > Voices > Create it now), it reports
+        progress and honours Cancel: the child is stopped and the lease `studio:voice-<name>` it may still
+        hold is released at once.
+        """
+        args = {"supervisor_url": self.link.base_url}
+        if ctl is None:
+            done = self._runner.run("apply_voice", args)
+        else:
+            want = self.pending()
+            owner = f"studio:voice-{want['name']}" if want else None
+            ctl.progress(0.1, "Making the voice: loading the voice engine")
+            try:
+                done = self._runner.run("apply_voice", args, check_cancel=ctl.check_cancel)
+            except BaseException:
+                if owner:
+                    with contextlib.suppress(Exception):  # an engine that is down holds nothing
+                        self.link.release_owner(owner)
+                raise
+            ctl.progress(1.0, "The voice is ready")
         name = done.get("name")
         return str(name) if name else None
 

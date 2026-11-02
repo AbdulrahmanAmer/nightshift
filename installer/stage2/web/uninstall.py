@@ -22,7 +22,7 @@ SIZE_BUDGET_S = 5.0
 ALWAYS = (
     ("The nightly task", None),
     ("Desktop shortcuts", None),
-    ("Programs and Python environments", ("venvs", "bin")),
+    ("Programs and Python environments", ("venvs", "bin", "run")),
     ("The install folder setting", None),
 )
 DATA_DIRS = ("outbox", "rejected", "data", "imports", "cache")
@@ -80,7 +80,8 @@ def leftovers_path() -> Path:
 
 
 def deferred_script(home: Path, wait_pids: list[int], local_root: Path | None = None) -> str:
-    """PowerShell for the last deletion: wait for every window, then remove ``bin`` (and the browser files).
+    """PowerShell for the last deletion: wait for every window, then remove ``bin`` and ``run`` (and the
+    browser files).
 
     The WebView2 host (a PowerShell process) keeps its DLLs under ``bin`` loaded while it runs, so the
     uninstall script cannot delete them. This script runs detached, after the window has exited. It waits
@@ -92,7 +93,7 @@ def deferred_script(home: Path, wait_pids: list[int], local_root: Path | None = 
     Edge from it) and ``webview2`` folder go here too, not in the uninstall script.
     """
     ids = ",".join(str(p) for p in wait_pids) or "0"
-    targets = [home / "bin"]
+    targets = [home / "bin", home / "run"]
     if local_root is not None:
         targets += [local_root / "browser", local_root / "webview2"]
     listed = ", ".join(f"'{ps_quote(str(t))}'" for t in targets)
@@ -206,13 +207,14 @@ class UninstallApp:
         self._lock = threading.Lock()
         self._running = False
         self._result: dict[str, Any] | None = None
+        self._had_updater_copy = False
         self._sizes = self._measure()
 
     def _measure(self) -> dict[str, Any]:
         if self.home is None or not self.home.is_dir():
             return {"programs": 0, "models": 0, "data": 0}
         return {
-            "programs": sum(dir_bytes(self.home / d) for d in ("venvs", "bin")),
+            "programs": sum(dir_bytes(self.home / d) for d in ("venvs", "bin", "run")),
             "models": dir_bytes(self.home / "models"),
             "data": sum(dir_bytes(self.home / d) for d in DATA_DIRS),
         }
@@ -246,6 +248,7 @@ class UninstallApp:
     def _work(self, delete_models: bool, delete_data: bool) -> None:
         assert self.home is not None
         home = self.home
+        self._had_updater_copy = (home / "run" / "updater").exists()
         env = {**os.environ, "NS_NONINTERACTIVE": "1"}
         failure = ""
         try:
@@ -296,6 +299,12 @@ class UninstallApp:
                 kept.append({"label": "Programs (delete this folder by hand)", "path": str(home / "bin")})
         elif not (home / "venvs").exists():
             removed.append(programs)
+        if self._had_updater_copy:  # the private venv copy of the update worker (150-300 MB)
+            if (home / "run" / "updater").exists():
+                where = str(home / "run" / "updater")
+                kept.append({"label": "Update files (a file is in use)", "path": where})
+            else:
+                removed.append("Update files (the private Python copy that updates use)")
         for name, wiped, folder, label in (
             ("models", delete_models, "models", "AI models"),
             ("outbox", delete_data, "outbox", "Videos and history"),

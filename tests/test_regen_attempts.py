@@ -84,9 +84,9 @@ def test_voice_is_resynthesized_with_another_seed_on_a_retry(tmp_home: Path):
     seeds: list[int | None] = []
     real = ctx.services.tts.speak_batch
 
-    def spy(items, out_dir, *, seed=None):
+    def spy(items, out_dir, *, seed=None, timeout_s=None):
         seeds.append(seed)
-        return real(items, out_dir, seed=seed)
+        return real(items, out_dir, seed=seed, timeout_s=timeout_s)
 
     ctx.services.tts.speak_batch = spy  # type: ignore[method-assign]
     items = [TtsItem("p1", "One two three four.", "Ryan", 1.0)]

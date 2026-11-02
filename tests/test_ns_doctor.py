@@ -6,6 +6,7 @@ from pathlib import Path
 
 import httpx
 
+from ns_common import __version__
 from ns_common.paths import Paths
 from ns_supervisor import doctor
 from ns_supervisor.client import SupervisorClient
@@ -59,7 +60,7 @@ def test_bundle_contains_the_diagnostic_files(tmp_path: Path) -> None:
     } <= names
     assert z.read("nvidia-smi.txt").decode() == "NVIDIA-SMI 570 | RTX 5060 Ti"
     assert z.read("pip-freeze/studio.txt").decode() == "pkg==1.0\n"
-    assert z.read("VERSION").decode().strip() == "0.1.0"
+    assert z.read("VERSION").decode().strip() == __version__  # the shipped VERSION file
 
 
 def test_bundle_skips_absent_venvs_and_says_so(tmp_path: Path) -> None:

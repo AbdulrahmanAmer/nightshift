@@ -167,3 +167,69 @@ def test_a_file_held_open_blocks_deletion_until_the_deferred_script_runs_after_e
     finally:
         holder.kill()
     assert not (home / "bin").exists()
+
+
+def _remove_and_wait(app: uninstall.UninstallApp) -> dict:
+    assert app.run(delete_models=False, delete_data=False)[0] == 200
+    deadline = time.monotonic() + 10
+    while app.view()["result"] is None and time.monotonic() < deadline:
+        time.sleep(0.02)
+    return app.view()["result"]
+
+
+def _updater_copy(home: Path) -> Path:
+    copy = home / "run" / "updater" / "venv-20261103-030000" / "Scripts" / "python.exe"
+    copy.parent.mkdir(parents=True)
+    copy.write_bytes(b"x" * 300)
+    (home / "run" / "apphost-setup.json").write_text('{"pid": 7}', encoding="utf-8")
+    return home / "run" / "updater"
+
+
+def test_the_update_workers_venv_copy_counts_as_a_program_and_is_in_the_report(tmp_path: Path):
+    home = make_home(tmp_path)
+    updater = _updater_copy(home)
+    assert uninstall.UninstallApp(APP, home).view()["always"][2]["bytes"] == 150 + 300 + len(
+        '{"pid": 7}'
+    )  # venvs + bin + the whole run folder
+
+    def popen(argv, **kw):
+        shutil.rmtree(updater)                         # what uninstall.ps1 removes now (run itself waits)
+        shutil.rmtree(home / "venvs")
+        return FakeProc("")
+
+    app = uninstall.UninstallApp(APP, home, popen=popen, deferred=lambda h: True, env_var=lambda n: None)
+    result = _remove_and_wait(app)
+    assert "Update files (the private Python copy that updates use)" in result["removed"]
+    assert not any("Update files" in k["label"] for k in result["kept"])
+
+
+def test_a_copy_that_could_not_be_removed_is_reported_as_kept(tmp_path: Path):
+    home = make_home(tmp_path)
+    updater = _updater_copy(home)
+
+    def popen(argv, **kw):
+        shutil.rmtree(home / "venvs")
+        return FakeProc("")                            # the updater folder stays (a file is in use)
+
+    app = uninstall.UninstallApp(APP, home, popen=popen, deferred=lambda h: True, env_var=lambda n: None)
+    result = _remove_and_wait(app)
+    assert {"label": "Update files (a file is in use)", "path": str(updater)} in result["kept"]
+    assert "Update files (the private Python copy that updates use)" not in result["removed"]
+
+
+def test_no_update_ever_made_means_no_update_files_line(tmp_path: Path):
+    home = make_home(tmp_path)
+
+    def popen(argv, **kw):
+        shutil.rmtree(home / "venvs")
+        return FakeProc("")
+
+    app = uninstall.UninstallApp(APP, home, popen=popen, deferred=lambda h: True, env_var=lambda n: None)
+    result = _remove_and_wait(app)
+    assert not any("Update files" in r for r in result["removed"])
+
+
+def test_the_deferred_script_also_removes_the_run_folder_after_the_windows_are_gone(tmp_path: Path):
+    script = uninstall.deferred_script(tmp_path / "ns", [1])
+    assert str(tmp_path / "ns" / "run").replace("'", "''") in script
+    assert str(tmp_path / "ns" / "bin").replace("'", "''") in script

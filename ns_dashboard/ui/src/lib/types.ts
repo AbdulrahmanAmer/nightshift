@@ -3,7 +3,8 @@ export interface Engine { state: EngineState; detail?: string; elapsed_s?: numbe
 export interface ChannelSummary { slug: string; display_name: string; status: string; niche?: string; voice?: any; masters_per_week?: number; publish_window?: string; format?: string; pending?: number; tonight?: boolean | string }
 export interface GpuStatus { name: string; load_pct?: number | null; vram_used_mb?: number | null; vram_total_mb?: number | null; temp_c?: number | null }
 export interface Incident { channel: string; ts: string; kind: string; note: string | null }
-export interface Status { version?: string; schedule_registered?: boolean; engine: Engine; next_run?: string | null; next_run_in_s?: number | null; schedule_time?: string; outbox?: { pending: number; approved: number; rejected: number; uploaded?: number }; channels: ChannelSummary[]; services?: Record<string, { state: string; vram_mb?: number | null }>; disk?: { free_gb: number | null; total_gb: number | null; home: string }; job?: Job | null; queue?: { queued: number; running: number; scheduled: number }; last_run?: Run | null; incidents?: Incident[]; last_error?: { job_id: string; message: string; kind: string } | null; gpu?: GpuStatus | null }
+export type ScheduleMode = "registered" | "interactive_only" | "none";
+export interface Status { version?: string; schedule_registered?: boolean; schedule_mode?: ScheduleMode; engine: Engine; next_run?: string | null; next_run_in_s?: number | null; schedule_time?: string; outbox?: { pending: number; approved: number; rejected: number; uploaded?: number }; channels: ChannelSummary[]; services?: Record<string, { state: string; vram_mb?: number | null }>; disk?: { free_gb: number | null; total_gb: number | null; home: string }; job?: Job | null; queue?: { queued: number; running: number; scheduled: number }; last_run?: Run | null; incidents?: Incident[]; last_error?: { job_id: string; message: string; kind: string } | null; gpu?: GpuStatus | null }
 export type Kind = "long" | "short" | "clip";
 /** One video: GET /outputs items. `reason` is the reject note, `url` the YouTube link once posted, `path` the video file. */
 export interface Output { output_id: string; job_id: string; kind: Kind; k: number | null; title: string; channel: string; duration_s: number | null; created_at: string; status: string; review_note: string | null; reason: string | null; url: string | null; path: string; source_id: string | null; combo_id: string | null; media_url: string; thumb_url: string }
@@ -18,7 +19,7 @@ export interface Pools { hooks: string[]; structures: string[]; caption_styles: 
 /** The channel as the editor holds it: a profile (ChannelProfile) in the fields it edits. */
 export interface Channel extends ChannelSummary { language?: string; audience?: string; voice_notes?: string; pools?: Pools; avoid_topics?: string[]; fiction_label?: boolean; long_minutes?: number[]; shorts_per_master?: number[] }
 /** GET /settings. `flags` are the engine settings as flat dotted keys with plain values ("llama.flags.ctx": 16384). */
-export interface Settings { schedule_time: string; schedule_registered?: boolean; home: string; profile: string | null; flags: Record<string, string | number | boolean>; keys: Record<string, boolean>; notifications: boolean; runtime_locked: boolean; install: { version: string | null; app_path: string | null; profile: string | null }; owner_name: string | null; ui_theme: string | null; next_run: string | null; schedule_result?: { applied: boolean; note: string }; version?: string }
+export interface Settings { schedule_time: string; schedule_registered?: boolean; schedule_mode?: ScheduleMode; home: string; profile: string | null; flags: Record<string, string | number | boolean>; keys: Record<string, boolean>; notifications: boolean; runtime_locked: boolean; install: { version: string | null; app_path: string | null; profile: string | null }; owner_name: string | null; ui_theme: string | null; next_run: string | null; schedule_result?: { applied: boolean; note: string }; version?: string }
 export interface LearnRow { title: string; views: number; viewed_pct: number; kind?: Kind }
 /** GET /learn/summary: the last import, the best and worst videos, 14 days of views and the week-8 check. */
 export interface Learn { imported_at: string | null; matched: number | null; unmatched: number | null; summary: string[]; changes: { pool: string; option: string; delta: number }[]; top: LearnRow[]; bottom: LearnRow[]; daily: { date: string; shorts: number; long: number }[]; milestone: { label: string; rule: string; current: number; target: number; weeks: number; weeks_needed: number } | null; pools: Record<string, any>; weights: any[]; last_import: any; unmatched_uploads: string[] }
@@ -39,7 +40,7 @@ export type ChatEvent =
   | { kind: "error"; payload: { code?: string; message: string; hint?: string } }
   | { kind: "done"; payload: { conversation_id?: string } };
 /** One part of a workshop story (GET /library/series). */
-export interface SeriesPart { n: number; title: string; minutes: number; status: "planned" | "written" | "approved" | "producing" | "published" | string; job_id?: string | null; words: number; shorts: number }
+export interface SeriesPart { n: number; title: string; minutes: number; status: "planned" | "written" | "approved" | "producing" | "produced" | "published" | string; job_id?: string | null; words: number; shorts: number }
 /** A workshop story with its part table (GET /library/series reads the story folders under stories/). */
 export interface SeriesStory { slug: string; channel: string; title: string; status: string; next_step: string; has_design: boolean; chosen?: string | null; parts: SeriesPart[]; [k: string]: any }
 /** One row of GET /runs: a nightly (daily) or manual run with the report the studio wrote. */
@@ -88,4 +89,4 @@ export interface LearnImported { matched: number; unmatched: number; summary: st
 /** GET /voices/pending and POST /voices/apply-pending: the voice that setup queued and could not make yet. */
 export interface PendingVoiceInfo { name: string; mode: "design" | "clone"; description: string; channel: string | null }
 export interface PendingVoice { pending: PendingVoiceInfo | null }
-export interface VoiceApplied { created: string | null; pending: PendingVoiceInfo | null }
+export interface VoiceApplied { created: string | null; pending: PendingVoiceInfo | null; /** The `apply_voice` job that makes it (null when nothing was queued by setup). */ job_id?: string | null }

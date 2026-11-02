@@ -203,9 +203,9 @@ def test_duration_check_expands_shortest_chapter_and_revoices_only_it(
     seen: list[list[str]] = []
     real = ctx.services.tts.speak_batch
 
-    def spy(items, out_dir, *, seed=None):
+    def spy(items, out_dir, *, seed=None, timeout_s=None):
         seen.append([i.id for i in items])
-        return real(items, out_dir, seed=seed)
+        return real(items, out_dir, seed=seed, timeout_s=timeout_s)
 
     ctx.services.tts.speak_batch = spy  # type: ignore[method-assign]
     DurationCheckStage().run(ctx)
@@ -281,9 +281,9 @@ def test_master_voice_sends_cliff_lines_to_tts(tmp_home: Path):
     seen: dict[str, tuple[str, ...]] = {}
     real = ctx.services.tts.speak_batch
 
-    def spy(items, out_dir, *, seed=None):
+    def spy(items, out_dir, *, seed=None, timeout_s=None):
         seen.update({i.id: i.cliff_lines for i in items})
-        return real(items, out_dir, seed=seed)
+        return real(items, out_dir, seed=seed, timeout_s=timeout_s)
 
     ctx.services.tts.speak_batch = spy  # type: ignore[method-assign]
     run_voice_master(ctx)

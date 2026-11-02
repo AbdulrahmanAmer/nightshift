@@ -9,11 +9,13 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import hashlib
 import os
 import re
 import sys
 import threading
 import time
+import wave
 import zlib
 from pathlib import Path
 from typing import Any
@@ -29,8 +31,9 @@ from ns_common.languages import qwen_language
 from ns_common.logging import NsLogger
 from ns_common.models import Runtime
 from ns_common.paths import Paths
+from ns_common.tts_timeout import TTS_TIMEOUT_CAP_S, tts_timeout_s
 from ns_tts.audio import chunk_text, stitch, trim_silence, wav_bytes, write_wav
-from ns_tts.engine import Engine, design_model_message, select_engine
+from ns_tts.engine import BatchInterrupted, Engine, design_model_message, select_engine
 from ns_tts.voices import VoiceLibrary, VoiceSpec
 
 _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
@@ -66,6 +69,10 @@ class BatchReq(BaseModel):
     items: list[BatchItem]
     out_dir: str
     seed: int | None = None
+    # the studio client's own timeout (`ns_common.tts_timeout`): no process is stopped before it gives up
+    timeout_s: float | None = Field(default=None, ge=1, le=TTS_TIMEOUT_CAP_S)
+    # reuse the `<id>.wav` files an interrupted earlier attempt left in out_dir (same text, voice, speed)
+    resume: bool = False
 
 
 class DesignReq(BaseModel):
@@ -126,7 +133,11 @@ def create_app(engine: Engine, library: VoiceLibrary, *, log: NsLogger | None = 
             raise HTTPException(404, f"unknown voice {name!r}") from None
 
     def render_many(
-        entries: list[tuple[str, VoiceSpec, float, list[str]]], seed: int | None
+        entries: list[tuple[str, VoiceSpec, float, list[str]]],
+        seed: int | None,
+        *,
+        min_timeout_s: float = 0.0,
+        salvage: dict[int, np.ndarray] | None = None,
     ) -> list[np.ndarray]:
         """Narration for each (text, voice, speed, cliff lines), in order.
 
@@ -143,18 +154,35 @@ def create_app(engine: Engine, library: VoiceLibrary, *, log: NsLogger | None = 
             for j in range(len(plans[i])):
                 groups.setdefault((voice.name, voice.language, speed), []).append((i, j))
         audio: dict[tuple[int, int], np.ndarray] = {}
-        for refs in groups.values():
-            _t, voice, speed, _c = entries[refs[0][0]]
-            use_seed = voice_seed(voice.name) if seed is None else seed
-            texts = [plans[i][j].text for i, j in refs]
-            made = engine.synth_batch(texts, voice, speed=speed, seed=use_seed)
-            for ref, a in zip(refs, made, strict=True):
-                audio[ref] = a
-        sr = engine.sr
-        return [
-            stitch([(trim_silence(audio[(i, j)], sr), c.pause_after_ms) for j, c in enumerate(chunks)], sr)
-            for i, chunks in enumerate(plans)
-        ]
+        # No process may be stopped before the studio's client gives up (one formula, ns_common.tts_timeout).
+        engine.batch_timeout_floor_s = max(min_timeout_s, tts_timeout_s(sum(len(p) for p in plans)))
+
+        def stitched(i: int) -> np.ndarray:
+            return stitch(
+                [(trim_silence(audio[(i, j)], engine.sr), c.pause_after_ms) for j, c in enumerate(plans[i])],
+                engine.sr,
+            )
+
+        try:
+            for refs in groups.values():
+                _t, voice, speed, _c = entries[refs[0][0]]
+                use_seed = voice_seed(voice.name) if seed is None else seed
+                texts = [plans[i][j].text for i, j in refs]
+                try:
+                    made = engine.synth_batch(texts, voice, speed=speed, seed=use_seed)
+                except BatchInterrupted as e:  # keep what was finished: a retry resumes from it
+                    for k, a in e.done.items():
+                        audio[refs[k]] = a
+                    if salvage is not None:
+                        for i, chunks in enumerate(plans):
+                            if all((i, j) in audio for j in range(len(chunks))):
+                                salvage[i] = stitched(i)
+                    raise
+                for ref, a in zip(refs, made, strict=True):
+                    audio[ref] = a
+        finally:
+            engine.batch_timeout_floor_s = 0.0
+        return [stitched(i) for i in range(len(plans))]
 
     def render(text: str, voice: VoiceSpec, speed: float, seed: int | None, cliffs: list[str]) -> np.ndarray:
         return render_many([(text, voice, speed, cliffs)], seed)[0]
@@ -195,6 +223,21 @@ def create_app(engine: Engine, library: VoiceLibrary, *, log: NsLogger | None = 
             sr = engine.sr
         return Response(content=wav_bytes(x, sr), media_type="audio/wav")
 
+    def item_signature(text: str, voice: VoiceSpec, speed: float, cliffs: list[str]) -> str:
+        """What makes two renders of an item interchangeable (the seed is left out on purpose)."""
+        base = "\x1f".join([voice.name, voice.language, f"{speed}", text, "\x1e".join(cliffs)])
+        return hashlib.sha256(base.encode("utf-8")).hexdigest()
+
+    def kept_seconds(wav: Path, sig_file: Path, sig: str) -> float | None:
+        """Seconds of a WAV an earlier interrupted attempt left with the same signature, else None."""
+        try:
+            if wav.is_file() and sig_file.read_text(encoding="utf-8").strip() == sig:
+                with wave.open(str(wav), "rb") as w:
+                    return w.getnframes() / w.getframerate()
+        except (OSError, EOFError, wave.Error):
+            pass
+        return None
+
     @app.post("/v1/audio/speech/batch")
     def speech_batch(req: BatchReq) -> dict[str, Any]:
         ids = [it.id for it in req.items]
@@ -202,7 +245,7 @@ def create_app(engine: Engine, library: VoiceLibrary, *, log: NsLogger | None = 
             raise HTTPException(400, "item ids must be unique and file-name safe (letters, digits, . _ -)")
         voices_by_name = {name: get_voice(name) for name in {it.voice for it in req.items}}
         out_dir = Path(req.out_dir)
-        files: list[dict[str, Any]] = []
+        found: dict[str, dict[str, Any]] = {}
         total = 0.0
         t0 = time.perf_counter()
         with lock:
@@ -210,15 +253,60 @@ def create_app(engine: Engine, library: VoiceLibrary, *, log: NsLogger | None = 
                 (it.input, with_language(voices_by_name[it.voice], it.language), it.speed, it.cliff_lines)
                 for it in req.items
             ]
-            for it, x in zip(req.items, render_many(entries, req.seed), strict=True):
-                path = out_dir / f"{it.id}.wav"
-                seconds = write_wav(path, x, engine.sr)
-                total += seconds
-                files.append({"id": it.id, "path": str(path), "seconds": round(seconds, 3)})
+            sigs = [item_signature(*e) for e in entries]
+            todo: list[int] = []
+            for k, it in enumerate(req.items):
+                wav, sig_file = out_dir / f"{it.id}.wav", out_dir / f"{it.id}.sig"
+                kept = kept_seconds(wav, sig_file, sigs[k]) if req.resume else None
+                if kept is None:
+                    todo.append(k)
+                else:  # chunks an interrupted attempt already wrote
+                    found[it.id] = {"id": it.id, "path": str(wav), "seconds": round(kept, 3)}
+            if log and len(todo) < len(req.items):
+                log.info("tts_resume", reused=len(req.items) - len(todo), remaining=len(todo))
+            salvage: dict[int, np.ndarray] = {}
+
+            def write_item(k: int, x: np.ndarray) -> float:
+                wav = out_dir / f"{req.items[k].id}.wav"
+                seconds = write_wav(wav, x, engine.sr)
+                (out_dir / f"{req.items[k].id}.sig").write_text(sigs[k], encoding="utf-8")
+                info = {"id": req.items[k].id, "path": str(wav), "seconds": round(seconds, 3)}
+                found[req.items[k].id] = info
+                return seconds
+
+            try:
+                made = render_many(
+                    [entries[k] for k in todo], req.seed,
+                    min_timeout_s=req.timeout_s or 0.0, salvage=salvage,
+                ) if todo else []  # fmt: skip
+            except BatchInterrupted as e:
+                for pos, x in salvage.items():  # whole items finished before the stop stay on disk
+                    write_item(todo[pos], x)
+                if log:
+                    log.warn(
+                        "tts_batch_interrupted", str(e), kept=len(salvage), cancelled=e.cancelled,
+                        remaining=len(todo) - len(salvage),
+                    )
+                raise
+            for pos, x in enumerate(made):
+                write_item(todo[pos], x)
+            for it in req.items:  # a finished batch leaves no resume markers behind
+                (out_dir / f"{it.id}.sig").unlink(missing_ok=True)
+            files = [found[it.id] for it in req.items]
+            total = sum(float(f["seconds"]) for f in files)
         rtf = (time.perf_counter() - t0) / total if total > 0 else 0.0
         if log:
             log.info("tts_batch", items=len(files), audio_s=round(total, 2), rtf=round(rtf, 3))
         return {"files": files, "engine": engine.name, "rtf": round(rtf, 3)}
+
+    @app.post("/v1/audio/speech/cancel")
+    def speech_cancel() -> dict[str, bool]:
+        """Stop the batch that is running (the studio's client timed out): kills its `qwen-tts` process."""
+        cancel = getattr(engine, "cancel", None)
+        stopped = bool(cancel()) if callable(cancel) else False
+        if log:
+            log.warn("tts_cancel", "the studio asked to cancel the running batch", stopped=stopped)
+        return {"cancelled": stopped}
 
     @app.post("/v1/voices/design", response_model=None)
     def design(req: DesignReq) -> Any:

@@ -12,6 +12,7 @@ from ns_common.models import Voice
 from ns_common.pacing import pacing_speed
 from ns_common.textstats import split_sentences
 from ns_common.tts_client import TtsItem
+from ns_common.tts_timeout import batch_timeout_s
 from ns_studio.context import JobContext
 from ns_studio.media.audio import loudnorm, measure_lufs
 from ns_studio.stages import Tenant
@@ -80,7 +81,9 @@ def synthesize(ctx: JobContext, items: list[TtsItem]) -> tuple[dict[str, dict], 
     manifest: dict[str, dict] = {it.id: prev[it.id] for it in items if it.id not in todo_ids}
     if todo:
         seed = (zlib.crc32(ctx.job_id.encode()) + ctx.attempt) & 0x7FFFFFFF  # a retry sounds different
-        files = ctx.services.tts.speak_batch(todo, raw_dir, seed=seed)
+        limit = batch_timeout_s(it.text for it in todo)  # 120 s + 3 s per line, at most 2 h
+        ctx.log.info("voice_batch", job_id=ctx.job_id, items=len(todo), timeout_s=round(limit))
+        files = ctx.services.tts.speak_batch(todo, raw_dir, seed=seed, timeout_s=limit)
         by_id = {it.id: it for it in todo}
         for f in files:
             out = ctx.file(f"audio/{f.id}.wav")

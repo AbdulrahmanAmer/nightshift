@@ -29,6 +29,7 @@ export function Poster({ o, className, portrait }: { o: Pick<Output, "title" | "
 }
 
 export function jobTitle(j: Job, channelName: (s?: string | null) => string) {
+  if (j.kind === "apply_voice") return j.params?.name ? `Making the voice ${j.params.name}` : "Making the setup voice";
   if (j.kind === "clip") return (j.params?.title ?? j.title) ? `Clips from ${j.params?.title ?? j.title}` : `Clips for ${channelName(j.channel)}`;
   return (j.params?.title ?? j.title) || `Story video for ${channelName(j.channel)}`;
 }
@@ -351,9 +352,9 @@ function TonightPlan({ chans, status, className }: { chans: ChannelSummary[]; st
   };
   // A video job that was stopped hard can leave the card reserved; the engine frees it by itself after 10 minutes, this is the way to do it now.
   const releaseGpu = async (owner: string) => {
-    const ok = await confirm({ title: "Release the graphics card?", body: "Use this only when no video is being made. Anything still running on it is stopped", ok: "Release" });
+    const ok = await confirm({ title: "Release the graphics card?", body: "This frees the card for the next job and stops the Nightshift video job that holds it. If another program holds it (for example opencode), only Nightshift's claim is released: that program may still be using the card", ok: "Release" });
     if (ok !== true) return;
-    try { await api.post("/engine/release_gpu", { owner }); toast("The graphics card is free", "ok"); refresh(); } catch (e: any) { toast(e.message, "bad"); }
+    try { const r = await api.post<{ note?: string }>("/engine/release_gpu", { owner }); toast(r?.note || "The graphics card is free", "ok"); refresh(); } catch (e: any) { toast(e.message, "bad"); }
   };
   const plan = chans.filter((c) => c.status === "active" && c.tonight !== false).slice(0, 2);
   const at = fmtClock(status?.next_run) || status?.schedule_time || "";
@@ -361,7 +362,7 @@ function TonightPlan({ chans, status, className }: { chans: ChannelSummary[]; st
   return (
     <Card as="section" aria-labelledby="q-plan" className={cx("self-stretch", className)}>
       <CardHeader id="q-plan" title="Tonight's plan" actions={<Button variant="ghost" size="sm" leadingIcon="edit" onClick={() => go("#/channels")}>Edit</Button>} />
-      {status?.engine?.vram_owner && <p role="status" className="mb-3 flex flex-wrap items-center gap-2 rounded-ds-md bg-ds-accent-subtle px-3 py-2 text-ds-xs"><StatusDot tone="accent" />GPU held by <strong className="font-semibold" title={status.engine.vram_owner}>{ownerWords(status.engine.vram_owner)}</strong>. Tonight's run waits for it.{status.engine.vram_owner.startsWith("studio:") && !status.job && <Button size="sm" variant="soft" onClick={() => releaseGpu(status.engine.vram_owner!)}>Release</Button>}</p>}
+      {status?.engine?.vram_owner && <p role="status" className="mb-3 flex flex-wrap items-center gap-2 rounded-ds-md bg-ds-accent-subtle px-3 py-2 text-ds-xs"><StatusDot tone="accent" />GPU held by <strong className="font-semibold" title={status.engine.vram_owner}>{ownerWords(status.engine.vram_owner)}</strong>. Tonight's run waits for it.{!status.job && <Button size="sm" variant="soft" onClick={() => releaseGpu(status.engine.vram_owner!)}>Release</Button>}</p>}
       <div className="flex flex-col gap-4">
         {plan.length ? plan.map((c) => (
           <AssignmentCard key={c.slug} categories={[c.display_name]} moreLabel={`Options for ${c.display_name}`} menu={[{ icon: "edit", label: "Edit channel", onSelect: () => go(`#/channels?edit=${encodeURIComponent(c.slug)}`) }, { icon: "pause", label: "Skip tonight and pause", onSelect: () => pause(c) }]}

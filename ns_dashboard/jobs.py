@@ -19,9 +19,9 @@ from ns_dashboard.errors import AdapterUnavailable
 from ns_dashboard.events import EventHub
 from ns_dashboard.state import LockedDb
 
-KINDS = ("run", "clip", "learn", "verify", "series_part")
+KINDS = ("run", "clip", "learn", "verify", "series_part", "apply_voice")
 STATUSES = ("queued", "running", "done", "failed", "cancelled")
-GPU_KINDS = frozenset({"run", "clip", "verify", "series_part"})
+GPU_KINDS = frozenset({"run", "clip", "verify", "series_part", "apply_voice"})
 
 
 class JobCancelled(Exception):
@@ -240,6 +240,11 @@ class JobStore:
         rows = self.db.query("SELECT job_id FROM dashboard_jobs WHERE status IN ('queued', 'running')")
         return {str(r["job_id"]) for r in rows}
 
+    def statuses_of(self, kind: str) -> dict[str, str]:
+        """Job id -> status of every job of `kind` (the start sweep tells finished work from lost work)."""
+        rows = self.db.query("SELECT job_id, status FROM dashboard_jobs WHERE kind = ?", (kind,))
+        return {str(r["job_id"]): str(r["status"]) for r in rows}
+
     def counts(self) -> dict[str, int]:
         """Number of queued and running jobs."""
         out = {"queued": 0, "running": 0}
@@ -417,7 +422,8 @@ class JobWorker:
         inline_kinds: frozenset[str] = frozenset({"learn"}),
         on_recover: dict[str, Callable[[JobRecord], None]] | None = None,
         on_end: dict[str, Callable[[JobRecord], None]] | None = None,
-        sweep: Callable[[set[str]], object] | None = None,
+        on_done: dict[str, Callable[[JobRecord], None]] | None = None,
+        sweep: Callable[[set[str], dict[str, str]], object] | None = None,
         idle_poll_s: float = 30.0,
     ) -> None:
         self.store = store
@@ -430,6 +436,8 @@ class JobWorker:
         #: Per kind: called when a job of that kind ends without finishing (cancelled in the queue, cancelled
         #: or failed before or inside its handler), so work it had reserved (a series part) is given back.
         self.on_end = on_end or {}
+        #: Per kind: called when a job of that kind finished (a series part becomes `produced`).
+        self.on_done = on_done or {}
         #: Called once at start with the ids of the queued and running jobs, after interrupted ones failed.
         self.sweep = sweep
         #: While nothing runs, `on_idle` is also called this often (a request saved during the nightly run,
@@ -444,6 +452,7 @@ class JobWorker:
         self._exited = False
         self._thread: threading.Thread | None = None
         self._running_id: str | None = None
+        self._running_ctl: JobControl | None = None
 
     # --- control ---
     def start(self) -> None:
@@ -473,7 +482,7 @@ class JobWorker:
                     self.log.warn("recover_failed", str(e), job_id=rec.job_id, kind=rec.kind)
         if self.sweep is not None:
             try:
-                self.sweep(self.store.active_ids())
+                self.sweep(self.store.active_ids(), self.store.statuses_of("series_part"))
             except Exception as e:  # a sweep that fails must never stop the worker from starting
                 self.log.warn("sweep_failed", str(e))
         self._stopping = False
@@ -548,6 +557,11 @@ class JobWorker:
         """Id of the job being executed by this worker."""
         return self._running_id
 
+    @property
+    def running_control(self) -> JobControl | None:
+        """The `JobControl` of the job being executed (its `extras` name the studio jobs it announced)."""
+        return self._running_ctl
+
     def wait_idle(self, timeout: float) -> bool:
         """Block until nothing is queued or running (thread mode); False on timeout."""
         with self._cv:
@@ -594,6 +608,8 @@ class JobWorker:
             return
         self._publish(rec.job_id)
         ctl = JobControl(rec, self.store, self.hub)
+        if track:
+            self._running_ctl = ctl
         self.log.info("job_start", job_id=rec.job_id, kind=rec.kind, channel=rec.channel)
         try:
             handler = self.handlers.get(rec.kind)
@@ -604,6 +620,7 @@ class JobWorker:
             result = handler(ctl) or {}
             self.store.finish(rec.job_id, "done", "Done", result)
             self.log.info("job_done", job_id=rec.job_id, kind=rec.kind)
+            self._done_hook(rec)
         except JobCancelled:
             self.store.finish(rec.job_id, "cancelled", "Cancelled", dict(ctl.extras) or None)
             self.log.info("job_cancelled", job_id=rec.job_id)
@@ -624,10 +641,21 @@ class JobWorker:
         finally:
             self.store.clear_cancel(rec.job_id)
             if track:
+                self._running_ctl = None
                 self._running_id = None
             self._publish(rec.job_id)
             with self._cv:
                 self._cv.notify_all()
+
+    def _done_hook(self, rec: JobRecord) -> None:
+        """Run the `on_done` hook of the job's kind; it must never break the worker."""
+        hook = self.on_done.get(rec.kind)
+        if hook is None:
+            return
+        try:
+            hook(rec)
+        except Exception as e:
+            self.log.warn("done_hook_failed", str(e), job_id=rec.job_id, kind=rec.kind)
 
     def _end_hook(self, rec: JobRecord) -> None:
         """Run the `on_end` hook of the job's kind; it must never break the worker."""

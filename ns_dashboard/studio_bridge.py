@@ -10,7 +10,7 @@ from __future__ import annotations
 import dataclasses
 import random
 import shutil
-from collections.abc import Callable, Collection, Iterator
+from collections.abc import Callable, Collection, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -314,6 +314,27 @@ def release_part(params: dict[str, Any]) -> None:
         return
 
 
+def finish_part(params: dict[str, Any]) -> None:
+    """A part whose job finished goes from `producing` to `produced` (its video is in the Queue).
+
+    Without this a finished part stayed `producing` with a `done` job behind it, and the start sweep put it
+    back to `approved`, so "Produce next part" made the same video twice.
+    """
+    from ns_studio.series.store import StoryDir, WorkshopError
+
+    try:
+        with workshop_session(fake=READ_ONLY) as ws:
+            sd = StoryDir.open(ws.paths, str(params["story_slug"]))
+            status = sd.read_status()
+            n = int(params["part_n"])
+            state = status.parts.get(n)
+            mine = state is not None and state.job_id in (None, params.get("job_id"))
+            if state is not None and state.status == "producing" and mine:
+                ws._set_part(sd, status, n, "produced")
+    except (WorkshopError, KeyError, ValueError):
+        return
+
+
 def run_series_part(
     params: dict[str, Any],
     report: Report,
@@ -392,11 +413,16 @@ def queue_next_part(slug: str) -> list[dict[str, Any]]:
         return ws.produce(slug, nxt)
 
 
-def sweep_parts(active_job_ids: Collection[str]) -> int:
-    """Put every part that says `producing` but has no queued or running dashboard job back to `approved`.
+def sweep_parts(
+    active_job_ids: Collection[str], job_statuses: Mapping[str, str] | None = None
+) -> int:
+    """Settle every part that says `producing` but has no queued or running dashboard job behind it.
 
     Covers what the per-job hooks cannot: a row that was removed, a restore of the database, a part whose
-    job was cancelled while the dashboard was down. Returns how many parts were freed.
+    job was cancelled while the dashboard was down. With `job_statuses` (job id -> status of every
+    `series_part` job) a part is put back to `approved` only when its job is missing, `failed` or
+    `cancelled`; one whose job is `done` is finished work and becomes `produced`. Without it every part
+    without an active job is put back (the old rule). Returns how many parts were changed.
     """
     from ns_studio.series.store import StoryDir, WorkshopError
 
@@ -409,13 +435,19 @@ def sweep_parts(active_job_ids: Collection[str]) -> int:
                     sd = StoryDir.open(ws.paths, str(story["slug"]))
                     status = sd.read_status()
                     for n, state in sorted(status.parts.items()):
-                        orphan = state.job_id is None or state.job_id not in active
-                        if state.status == "producing" and orphan:
-                            try:
-                                ws._set_part(sd, status, n, "approved")
-                            except WorkshopError:  # series.md has no such part: status.yaml is saved already
-                                pass
-                            freed += 1
+                        alive = state.job_id is not None and state.job_id in active
+                        if state.status != "producing" or alive:
+                            continue
+                        done = (
+                            job_statuses is not None
+                            and state.job_id is not None
+                            and job_statuses.get(state.job_id) == "done"
+                        )
+                        try:
+                            ws._set_part(sd, status, n, "produced" if done else "approved")
+                        except WorkshopError:  # series.md has no such part: status.yaml is saved already
+                            pass
+                        freed += 1
                 except (WorkshopError, KeyError, ValueError):
                     continue
     except (WorkshopError, OSError):

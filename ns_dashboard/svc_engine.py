@@ -16,10 +16,12 @@ from ns_common.errors import NsError
 from ns_common.models import GpuStatus
 from ns_dashboard.errors import ApiError
 from ns_dashboard.events import iter_sse
-from ns_dashboard.state import AppState, load_dashboard_settings, scheduled_run_time
+from ns_dashboard.state import AppState, load_dashboard_settings, scheduled_mode, scheduled_run_time
 from ns_dashboard.svc_channels import ChannelsService
 from ns_dashboard.svc_outputs import OutputsService
 
+#: GPU owner names that are Nightshift's own (a foreign holder such as `opencode` has none of these prefixes).
+NIGHTSHIFT_OWNERS = ("studio:", "dashboard:", "workshop:")
 SERVICE_LABELS = {
     "llama": "the language model (LLM, 9 GB)",
     "tts": "the voice engine",
@@ -154,6 +156,7 @@ class EngineService:
             "next_run_in_s": int((nxt - self.clock()).total_seconds()) if nxt else None,
             "schedule_time": settings["run_time"],
             "schedule_registered": scheduled_run_time(self.s.paths) is not None,
+            "schedule_mode": scheduled_mode(self.s.paths),
             "outbox": counts,
             "channels": [
                 {
@@ -278,17 +281,38 @@ class EngineService:
     def release_gpu(self, owner: Any) -> dict[str, Any]:
         """Free the GPU from `owner` (shown as "GPU held by ..." when a job died without giving it back).
 
-        Only the current holder can be released, so a stale click cannot free somebody else's lease. A job of
-        this dashboard that still runs is asked to stop first; this is the way out when it cannot.
+        Only the current holder can be released, so a stale click cannot free somebody else's lease. The
+        supervisor refuses (409 `gpu_in_use`) while a Nightshift job is still sending heartbeats: stop it
+        from the Queue instead. Otherwise a Nightshift holder (`studio:`, `dashboard:`, `workshop:`) is
+        stopped as well: when it is the job this dashboard runs, that job is cancelled through the worker.
+        A foreign holder (for example `opencode`) is only released and the answer says the other program may
+        still be using the GPU.
         """
         holder = (self.s.link.status() or {}).get("gpu_owner")
         if not isinstance(owner, str) or not owner:
             raise ApiError(422, "invalid_options", "'owner' is the name shown in \"GPU held by ...\".")
         if holder != owner:
             raise ApiError(409, "not_holding", "That owner no longer holds the GPU.")
-        freed = self.s.link.release_owner(owner)
-        self.s.log.info("engine_release_gpu", owner=owner, freed=freed)
-        return {"ok": True, "released": freed, "owner": owner}
+        ours = owner.startswith(NIGHTSHIFT_OWNERS)
+        freed = self.s.link.release_owner(owner, unless_alive=ours)  # refuses while it still beats
+        stopped = self._stop_job_holding(owner) if ours else None
+        self.s.log.info("engine_release_gpu", owner=owner, freed=freed, stopped_job=stopped, foreign=not ours)
+        out: dict[str, Any] = {
+            "ok": True, "released": freed, "owner": owner, "stopped_job": stopped, "foreign": not ours,
+        }
+        if not ours:
+            out["note"] = f"The GPU lock is released, but {owner} may still be using the GPU."
+        return out
+
+    def _stop_job_holding(self, owner: str) -> str | None:
+        """Cancel the job this dashboard runs when `owner` is one of its studio owners; its id or None."""
+        from ns_dashboard.adapters import studio_owners  # adapters import this module's neighbours
+
+        ctl = self.s.worker.running_control
+        if ctl is None or owner not in studio_owners(ctl, ctl.params):
+            return None
+        self.s.worker.cancel(ctl.job_id)
+        return ctl.job_id
 
     def stop_all(self) -> dict[str, Any]:
         """Stop every model process and cancel the running job."""

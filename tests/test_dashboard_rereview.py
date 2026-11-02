@@ -193,8 +193,12 @@ def test_release_gpu_frees_only_the_current_holder(tmp_home: Path):
         assert stale.status_code == 409 and stale.json()["error"]["code"] == "not_holding"
         assert client.post("/api/engine/release_gpu", json={}).status_code == 422
         r = client.post("/api/engine/release_gpu", json={"owner": "studio:after-dark-20261102-aaaa"})
-        assert r.json() == {"ok": True, "released": True, "owner": "studio:after-dark-20261102-aaaa"}
-        assert ("POST", "/release_owner", {"owner": "studio:after-dark-20261102-aaaa"}) in sup.calls
+        assert r.json() == {
+            "ok": True, "released": True, "owner": "studio:after-dark-20261102-aaaa",
+            "stopped_job": None, "foreign": False,
+        }
+        owner = "studio:after-dark-20261102-aaaa"
+        assert ("POST", "/release_owner", {"owner": owner, "unless_alive": True}) in sup.calls
         assert client.get("/api/status").json()["engine"]["vram_owner"] is None
 
 
@@ -622,7 +626,7 @@ def test_the_age_fallback_when_the_supervisor_package_is_missing(tmp_home: Path,
 
 def test_the_settings_page_follows_an_update_to_the_new_version_and_gives_up_after_ten_minutes():
     src = page("Settings.tsx")
-    assert "const UPDATE_WAIT_MS = 10 * 60_000" in src and "Date.now() - began > UPDATE_WAIT_MS" in src
+    assert "const UPDATE_WAIT_MS = 10 * 60_000" in src and "Date.now() - quietSince > UPDATE_WAIT_MS" in src
     assert 'api.get<{ version?: string }>("/status")' in src and "now.version !== u.new" in src  # the NEW version must answer
     assert "location.reload()" in src  # and the page loads its scripts
     assert "from the shortcut on your desktop" in src  # the plain message when it never answers
@@ -926,27 +930,33 @@ def test_the_pending_setup_voice_is_listed_and_created_by_one_button(tmp_home: P
     shown = client.get("/api/voices/pending").json()
     assert shown == {"pending": {"name": "Hollow", "mode": "design", "description": "a slow, low voice", "channel": "after-dark"}}
     assert check_payload("PendingVoice", shown, False, "GET /voices/pending") == []
-    made = client.post("/api/voices/apply-pending")
-    assert made.status_code == 200 and made.json() == {"created": "Hollow", "pending": None}
+    made = client.post("/api/voices/apply-pending")  # queues the apply_voice job (see tests/test_pending_voice_job.py)
+    assert made.status_code == 200 and made.json()["created"] is None and made.json()["job_id"]
     assert check_payload("VoiceApplied", made.json(), False, "POST /voices/apply-pending") == []
+    assert state.worker.run_next() is True
+    job = state.store.get(made.json()["job_id"])
+    assert job is not None and job.status == "done" and job.result == {"created": "Hollow", "name": "Hollow"}
     assert (state.paths.models_tts_voices / "Hollow" / "voice.json").is_file()
     assert not (state.paths.config / "pending_voice.json").exists()
-    assert client.post("/api/voices/apply-pending").json() == {"created": None, "pending": None}  # nothing left to do
+    assert client.post("/api/voices/apply-pending").json() == {"created": None, "pending": None, "job_id": None}
 
 
-def test_a_missing_design_model_comes_back_as_ns_e314_and_the_request_stays_queued(tmp_home: Path):
+def test_a_missing_design_model_ends_the_job_with_ns_e314_and_the_request_stays_queued(tmp_home: Path):
     from ns_common.errors import NsError
     from tests.test_dashboard_api import make_env
 
     client, state = make_env(tmp_home)
     queue_setup_voice(state.paths)
     state.adapters.voice_maker.fail_with = NsError("NS-E314")  # type: ignore[attr-defined]
-    r = client.post("/api/voices/apply-pending")
-    assert r.status_code == 500 and r.json()["error"]["code"] == "NS-E314"
+    job_id = client.post("/api/voices/apply-pending").json()["job_id"]
+    state.worker.run_next()
+    job = client.get(f"/api/jobs/{job_id}").json()
+    assert job["status"] == "failed" and job["result"]["error"]["code"] == "NS-E314"
     assert client.get("/api/voices/pending").json()["pending"]["name"] == "Hollow"
     src = page("Library.tsx")
     assert "Pending voice from setup" in src and "Create it now" in src and '"/voices/apply-pending"' in src
     assert 'e.code === "NS-E314"' in src  # the same failure card offers "Get voice design model"
+    assert 'code === "NS-E314"' in src and "failOfJob" in src  # and so does the card of a failed job
 
 
 def test_a_voice_that_exists_is_not_pending(tmp_home: Path):
@@ -1046,3 +1056,20 @@ def test_the_pages_show_the_no_task_message_and_a_try_again_button():
     settings = page("Settings.tsx")
     assert "s.schedule_registered === false" in settings and ">Try again</Button>" in settings
     assert "put({ schedule_time: s.schedule_time }" in settings
+
+
+def test_the_update_reconnect_cap_starts_when_the_state_leaves_running_not_at_the_click():
+    """Final-dashboard row 4: the worker installs for longer than ten minutes on a slow disk."""
+    src = page("Settings.tsx")
+    follow = src[src.index("const follow = "):src.index("const apply = ")]
+    assert "Date.now() - began > UPDATE_WAIT_MS" not in follow  # not from the click any more
+    assert "let quietSince: number | null = null" in follow
+    # running resets the clock and says so; the clock starts only once the state is something else
+    assert 'if (u.state === "running") { seen = true; sawRunning = true; quietSince = null;' in follow
+    assert "quietSince = quietSince ?? Date.now()" in follow
+    # a lost connection after "running" was seen is the engine being stopped by the worker: no clock
+    assert "if (!sawRunning) quietSince = quietSince ?? Date.now();" in follow
+    assert "Nightshift is installing the update. This page reconnects by itself" in follow
+    # the give-up text for that case does not tell the owner to start a second copy
+    assert "Wait for its window to finish" in follow and "UPDATE_HARD_STOP_MS" in follow
+    assert follow.count("from the shortcut on your desktop") == 2

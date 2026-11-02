@@ -169,8 +169,13 @@ if (-not $SkipSystem) {
 
 # ---- folders --------------------------------------------------------------------------------------------
 Remove-Tree -Path (Join-Path $nsHome 'venvs')
-if ($KeepBin) { Write-Host '  bin is removed when the uninstall window closes' }
-else { Remove-Tree -Path (Join-Path $nsHome 'bin') }
+# The update worker's private copy of the supervisor venv (150-300 MB after any update) lives in run, under updater.
+Remove-Tree -Path (Join-Path (Join-Path $nsHome 'run') 'updater')
+if ($KeepBin) { Write-Host '  bin and run are removed when the uninstall window closes' }
+else {
+    Remove-Tree -Path (Join-Path $nsHome 'bin')
+    Remove-Tree -Path (Join-Path $nsHome 'run')
+}
 if ($wipeModels) { Remove-Tree -Path (Join-Path $nsHome 'models') }
 if (-not $SkipSystem) {
     # With -KeepBin the window that runs this may be using the browser profile and webview2: those go with bin.

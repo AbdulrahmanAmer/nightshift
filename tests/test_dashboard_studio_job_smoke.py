@@ -44,27 +44,7 @@ def child(kind: str, args: dict[str, Any], tmp_path: Path) -> tuple[int, list[di
     return proc.returncode, events, other + proc.stderr
 
 
-def test_the_child_runs_a_fake_services_shorts_job_and_exits_0(tmp_home: Path, tmp_path: Path):
-    paths = Paths.from_env()
-    paths.ensure()
-    ch = yaml_only_channel(paths)
-    code, events, noise = child(
-        "run", {"channel": ch.slug, "fmt": "shorts_only", "count": 1, "fake": sorted(FAKEABLE)}, tmp_path
-    )
-    assert code == 0, noise[-2000:]
-    names = [e["ev"] for e in events]
-    assert names[0] == "job" and names[-1] == "result"  # the studio job id first, the payload last
-    stages = [e for e in events if e["ev"] == "stage"]
-    seen = [e["stage"] for e in stages]
-    assert set(SHORTS_MEDIA) <= set(seen), seen
-    assert [e["index"] for e in stages] == sorted(e["index"] for e in stages)  # progress only moves forward
-    assert {e["total"] for e in stages} == {len(seen)} and {(e["job_index"], e["job_total"]) for e in stages} == {(0, 1)}
-    result = events[-1]
-    assert result["output_ids"] and result["job_ids"] == [events[0]["job_id"]]
-    assert not any(e["ev"] == "error" for e in events)
-
-
-def test_the_same_run_through_the_runner_reports_the_same_events(tmp_home: Path):
+def test_the_runner_starts_the_real_child_and_reports_its_events(tmp_home: Path):
     """The path the dashboard takes: `StudioRunner` starts the child, parses its lines and returns the payload."""
     paths = Paths.from_env()
     paths.ensure()
@@ -74,7 +54,13 @@ def test_the_same_run_through_the_runner_reports_the_same_events(tmp_home: Path)
         "run", {"channel": ch.slug, "fmt": "shorts_only", "count": 1, "fake": sorted(FAKEABLE)}, on_event=seen.append
     )
     assert done["output_ids"] and seen[0]["ev"] == "job"
-    assert {e["stage"] for e in seen if e["ev"] == "stage"} >= set(SHORTS_MEDIA)
+    stages = [e for e in seen if e["ev"] == "stage"]
+    names = [e["stage"] for e in stages]
+    assert set(SHORTS_MEDIA) <= set(names), names
+    assert [e["index"] for e in stages] == sorted(e["index"] for e in stages)  # progress only moves forward
+    assert {e["total"] for e in stages} == {len(names)}
+    assert {(e["job_index"], e["job_total"]) for e in stages} == {(0, 1)}
+    assert not any(e["ev"] == "error" for e in seen)
 
 
 def test_the_child_exits_1_with_a_coded_error_for_an_unknown_channel(tmp_home: Path, tmp_path: Path):

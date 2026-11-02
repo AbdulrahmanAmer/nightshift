@@ -5,6 +5,7 @@ import httpx
 import pytest
 from typer.testing import CliRunner
 
+from ns_common import __version__
 from ns_common.config import save_runtime
 from ns_common.models import GateCheck, GateReport, Runtime
 from ns_common.paths import Paths
@@ -27,7 +28,7 @@ def down_client(paths: Paths) -> SupervisorClient:
 
 def test_bare_ns_prints_version(tmp_path: Path) -> None:
     r = invoke(tmp_path)
-    assert r.exit_code == 0 and "ns 0.1.0" in r.output
+    assert r.exit_code == 0 and f"ns {__version__}" in r.output
 
 
 def test_help_lists_every_command(tmp_path: Path) -> None:

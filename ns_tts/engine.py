@@ -59,6 +59,7 @@ import math
 import os
 import subprocess
 import tempfile
+import threading
 import zlib
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -71,6 +72,7 @@ from ns_common.logging import NsLogger
 from ns_common.models import TtsCfg
 from ns_common.paths import TTS_HF_SUBDIR, Paths
 from ns_common.textstats import word_count
+from ns_common.tts_timeout import tts_timeout_s
 from ns_tts.audio import read_wav, split_wav_stream, time_stretch, write_wav
 from ns_tts.voices import PRESETS, SAMPLE_TEXT, EmbeddingData, Mode, VoiceSpec
 
@@ -95,10 +97,26 @@ TOKENIZER_FILE = "qwen-tokenizer-12hz-Q8_0.gguf"
 REFERENCE_MAGIC = b"NSREF1\n"
 REFERENCE_DIRS: dict[str, str] = {"preset": "CustomVoice", "design": "VoiceDesign", "clone": "Base"}
 
-BATCH_SECONDS_PER_LINE = 60.0  # added to the process time limit for every chunk of a batch
 EMPTY_AUDIO = np.zeros(0, dtype=np.float32)
 
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)  # no console flash when the service has none
+
+
+class BatchInterrupted(NsError):
+    """A batch process was cancelled, timed out or failed after writing some utterances.
+
+    `done` maps the index (into the `texts` of `synth_batch`) of every utterance that was finished before the
+    process stopped to its audio, so the server can keep those chunks and a retry can skip them. `partial` is
+    the raw stdout the process had written; `cancelled` is true when `cancel()` stopped it.
+    """
+
+    def __init__(
+        self, code: str, detail: str = "", *, partial: bytes = b"", cancelled: bool = False, **data: Any
+    ) -> None:
+        super().__init__(code, detail, **data)
+        self.partial = partial
+        self.cancelled = cancelled
+        self.done: dict[int, np.ndarray] = {}
 
 
 def design_model_message(missing: str) -> str:
@@ -112,6 +130,7 @@ class Engine(Protocol):
     name: str
     sr: int
     loaded: bool
+    batch_timeout_floor_s: float  # the server raises it to the studio client's timeout during a batch
 
     def load(self) -> None:
         """Prepare the engine; raises NsError (NS-E202) when it cannot run."""
@@ -167,6 +186,7 @@ class FakeEngine:
 
     def __init__(self) -> None:
         self.loaded = False
+        self.batch_timeout_floor_s = 0.0
         self.languages: list[str] = []  # the language of every synth call, so tests can see what reached it
 
     def load(self) -> None:
@@ -248,6 +268,26 @@ class QwenttsEngine:
         self.launcher = dict(launcher or {})
         self.sr = 24000
         self.loaded = False
+        # the server raises this to the studio client's own timeout while it holds a batch request, so a
+        # process is never killed before the client gives up (`ns_common.tts_timeout`)
+        self.batch_timeout_floor_s = 0.0
+        self._proc_lock = threading.Lock()
+        self._proc: subprocess.Popen[bytes] | None = None
+        self._cancelled = False
+
+    def cancel(self) -> bool:
+        """Kill the batch process that is running, if any (the studio's client timed out and asked for it).
+
+        Returns True when a process was stopped. `synth_batch` then raises `BatchInterrupted(cancelled=True)`
+        carrying the utterances finished so far.
+        """
+        with self._proc_lock:
+            proc = self._proc
+            if proc is None or proc.poll() is not None:
+                return False
+            self._cancelled = True
+        proc.kill()
+        return True
 
     # ---- files ----
     def exe(self, tool: str) -> Path:
@@ -362,6 +402,66 @@ class QwenttsEngine:
             raise NsError(code, f"{tool} exited {proc.returncode}: {tail}", cmd=cmd)
         return proc.stdout or b""
 
+    def _run_stream(
+        self, cmd: list[str], *, tool: str, code: str, stdin_text: str, timeout_s: float
+    ) -> bytes:
+        """Like `_run` for a `--stream-by-line` batch, but `cancel()` can stop it and a stop keeps its output.
+
+        A timeout, a cancel or a non-zero exit raises `BatchInterrupted` (an `NsError` with `code`) whose
+        `partial` holds what the process had already written to stdout.
+        """
+        if self.log:
+            self.log.debug("qwentts_run", cmd=" ".join(cmd), stdin_chars=len(stdin_text))
+        try:
+            proc = subprocess.Popen(
+                cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                creationflags=_NO_WINDOW,
+            )  # fmt: skip
+        except OSError as e:
+            raise NsError(code, f"cannot start {tool}: {e}", cmd=cmd) from e
+        with self._proc_lock:
+            self._proc = proc
+            self._cancelled = False
+        try:
+            try:
+                out, err = proc.communicate(stdin_text.encode("utf-8"), timeout=timeout_s)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                out, err = proc.communicate()
+                raise BatchInterrupted(
+                    code, f"{tool} timed out after {timeout_s:.0f}s", partial=out or b"", cmd=cmd
+                ) from None
+            with self._proc_lock:
+                cancelled = self._cancelled
+        finally:
+            with self._proc_lock:
+                self._proc = None
+        if cancelled:
+            raise BatchInterrupted(code, f"{tool} was cancelled", partial=out or b"", cancelled=True, cmd=cmd)
+        if proc.returncode != 0:
+            raw = (err or out or b"").decode("utf-8", errors="replace")
+            tail = "\n".join(raw.strip().splitlines()[-8:])
+            raise BatchInterrupted(
+                code, f"{tool} exited {proc.returncode}: {tail}", partial=out or b"", cmd=cmd
+            )
+        return out or b""
+
+    @staticmethod
+    def _finished(partial: bytes, todo: list[int], speed: float) -> dict[int, np.ndarray]:
+        """The utterances of a stopped stream that are certainly complete, by index into the batch's texts.
+
+        The last segment may have been cut short by the kill, so it is dropped; a damaged stream keeps none.
+        """
+        try:
+            segments = split_wav_stream(partial, drop_last=True)
+        except ValueError:
+            return {}
+        return {
+            i: time_stretch(x, sr, speed)
+            for i, (x, sr) in zip(todo, segments, strict=False)
+            if x.size > 0
+        }
+
     def _read(self, path: Path, code: str) -> np.ndarray:
         if not path.is_file():
             raise NsError(code, f"qwentts wrote no output file: {path.name}")
@@ -420,13 +520,17 @@ class QwenttsEngine:
         op, args = self._voice_args(voice)
         cmd = self.tts_command(op, out=Path("-"), seed=seed, language=voice.language, **args)
         cmd.insert(-2, "--stream-by-line")  # before `-o -`
-        stdout = self._run(
-            cmd,
-            tool=QWEN_TTS,
-            code="NS-E310",
-            stdin_text="\n".join(lines[i] for i in todo) + "\n",
-            timeout_s=self.timeout_s + BATCH_SECONDS_PER_LINE * len(todo),
-        )
+        try:
+            stdout = self._run_stream(
+                cmd,
+                tool=QWEN_TTS,
+                code="NS-E310",
+                stdin_text="\n".join(lines[i] for i in todo) + "\n",
+                timeout_s=max(tts_timeout_s(len(todo)), self.batch_timeout_floor_s),
+            )
+        except BatchInterrupted as e:
+            e.done = self._finished(e.partial, todo, speed)
+            raise
         try:
             segments = split_wav_stream(stdout)
         except ValueError as e:
@@ -510,6 +614,7 @@ class ReferenceEngine:
         self.device = device
         self.sr = 24000
         self.loaded = False
+        self.batch_timeout_floor_s = 0.0  # unused: one call per chunk
         self._models: dict[str, Any] = {}
         self._prompts: dict[tuple[str, float], Any] = {}
 

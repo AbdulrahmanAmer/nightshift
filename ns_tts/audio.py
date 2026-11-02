@@ -244,16 +244,17 @@ def _read_riff(data: bytes) -> tuple[np.ndarray, int, int]:
 _STREAM_HEAD = re.compile(rb"RIFF.{4}WAVEfmt .{20}data", re.DOTALL)
 
 
-def split_wav_stream(blob: bytes) -> list[tuple[np.ndarray, int]]:
+def split_wav_stream(blob: bytes, *, drop_last: bool = False) -> list[tuple[np.ndarray, int]]:
     """Split the stdout of `qwen-tts --stream-by-line -o -` into one (float32 mono samples, rate) per line.
 
     Each utterance after the first opens with a fresh RIFF header (qwentts.cpp `wav_stream_write_header`), so
     the stream is cut where a complete header starts; bytes before the first header are ignored. Raises
-    ValueError when a segment is not a readable WAV.
+    ValueError when a segment is not a readable WAV. `drop_last` leaves out the final segment, which a killed
+    process may have cut short (it is never parsed).
     """
     starts = [m.start() for m in _STREAM_HEAD.finditer(blob)]
     out: list[tuple[np.ndarray, int]] = []
-    for i, start in enumerate(starts):
+    for i, start in enumerate(starts[: len(starts) - 1 if drop_last else len(starts)]):
         end = starts[i + 1] if i + 1 < len(starts) else len(blob)
         x, ch, rate = _read_riff(blob[start:end])
         if ch > 1:

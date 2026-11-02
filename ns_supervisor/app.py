@@ -50,6 +50,7 @@ class OwnerBody(BaseModel):
     """`POST /heartbeat` and `POST /release_owner` body."""
 
     owner: str
+    unless_alive: bool = False  # /release_owner only: refuse while the owner still sends heartbeats
 
 
 class ShutdownBody(BaseModel):
@@ -138,6 +139,8 @@ def create_app(sup: Supervisor, *, start_dashboard: bool = False, run_monitor: b
 
     @app.post("/release_owner")
     async def release_owner(body: OwnerBody) -> dict[str, Any]:
+        if body.unless_alive:
+            return await sup.release_unless_alive(body.owner)
         return {"ok": await sup.release_owner(body.owner)}
 
     @app.post("/stop_all")

@@ -49,6 +49,7 @@ class SupervisorConfig:
     schedule_lookahead_s: float = 3600.0
     lease_expiry_s: float = 600.0  # a `studio:` GPU lease with no heartbeat for this long is reclaimed
     suspend_gap_s: float = 60.0  # a monitor pass this late means the PC slept: leases start over
+    release_alive_s: float = 90.0  # the dashboard's Release is refused while the holder beat this recently
 
 
 #: Owners that must heartbeat while they hold the GPU (the studio does; see `ns_studio.acquirer`). Other
@@ -445,6 +446,31 @@ class Supervisor:
             self.log.warn("owner_released", f"released everything held by {owner}", owner=owner)
             self.publish("service", {"event": "owner_released", "owner": owner})
         return freed
+
+    def beat_age(self, owner: str) -> float | None:
+        """Seconds since `owner` last sent a heartbeat while holding the GPU.
+
+        None when `owner` does not hold the lock or is not a leased owner (a foreign program such as
+        `opencode` never beats). A lease the monitor has not seen yet counts as just started (0).
+        """
+        if self.lock.state.owner != owner or not owner.startswith(LEASED_PREFIXES):
+            return None
+        if self._lease_owner != owner:
+            return 0.0
+        return max(0.0, self.clock() - self._lease_beat)
+
+    async def release_unless_alive(self, owner: str) -> dict[str, Any]:
+        """The dashboard's Release button: `release_owner`, but refused while `owner` is still beating.
+
+        A nightly run that overruns into the morning is not a dashboard job and shows nothing in the Queue;
+        freeing its lease would let the next tenant load beside it (or llama idle-unload under it). Refused
+        means a heartbeat arrived within `release_alive_s`: `{ok: False, refused: "alive", silent_s}`.
+        """
+        age = self.beat_age(owner)
+        if age is not None and age < self.cfg.release_alive_s:
+            self.log.warn("release_refused", f"{owner} sent a heartbeat {age:.0f}s ago", owner=owner)
+            return {"ok": False, "refused": "alive", "silent_s": round(age, 1)}
+        return {"ok": await self.release_owner(owner)}
 
     def heartbeat(self, owner: str) -> bool:
         """The holder of the GPU lease is alive. False when `owner` does not hold the lock (any more)."""

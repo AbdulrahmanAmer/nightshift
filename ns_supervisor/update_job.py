@@ -370,6 +370,7 @@ def run_worker(
     wait: Callable[[int], None] | None = None,
     old_version: str = "",
     relaunch: Relauncher | None = None,
+    cleanup: Callable[[], None] | None = None,
 ) -> int:
     """Run the update in this (detached) process; returns the exit code.
 
@@ -382,6 +383,10 @@ def run_worker(
     answers `/status`, so a page that reconnects finds a live dashboard and the final state. When the engine
     does not come back the state is `failed` with `restart_failed` set (and `updated` true when the new
     version is in place), so the page can say what happened instead of waiting for ever.
+
+    `cleanup` runs once the engine is back (the update applied, or was rolled back and the old version is up):
+    the worker cannot delete the private venv copy it runs from, so this starts a detached helper that does
+    it after the worker exits (`updater_copy.discard_own_copy`).
     """
     sink: TextIO | None = None
     saved = (sys.stdout, sys.stderr)
@@ -413,12 +418,16 @@ def run_worker(
                        restart_failed=True, **versions)
                 return 1
             _final(paths, "done", out.message, exit_code=0, **versions)
+            if cleanup is not None:
+                _guarded(cleanup)
             return 0
         # rolled back (or never started): the old version comes back up
         if _restart(relaunch):
             _final(paths, "failed", f"{message} {RESTART_HINT}", exit_code=1, restart_failed=True, **base)
         else:
             _final(paths, "failed", message, exit_code=1, **base)
+            if cleanup is not None and relaunch is not None:
+                _guarded(cleanup)
         return 1
     finally:
         if sink is not None:

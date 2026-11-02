@@ -97,12 +97,18 @@ def build_handlers(adapters: Adapters, paths: Paths | None = None) -> dict[str, 
         ids = adapters.series.produce(ctl, p)
         return {"output_ids": ids, "story_slug": p.get("story_slug"), "part_n": p.get("part_n")}
 
+    def apply_voice_handler(ctl: JobControl) -> dict[str, Any]:
+        """Library > Voices > Create it now: the setup voice, with progress and Cancel."""
+        name = adapters.voice_maker.apply_pending(ctl)
+        return {"created": name, "name": ctl.params.get("name")}
+
     return {
         "run": run_handler,
         "clip": clip_handler,
         "learn": learn_handler,
         "verify": verify_handler,
         "series_part": series_part_handler,
+        "apply_voice": apply_voice_handler,
     }
 
 

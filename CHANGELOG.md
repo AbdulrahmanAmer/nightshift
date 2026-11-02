@@ -7,6 +7,62 @@ All notable changes to Nightshift are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-11-03
+
+Second code-complete release. It carries the clean-clone review fixes, the re-review rounds (pull requests #48 to #51),
+the pre-tag polish (this release's last pull request) and the `bins.qwentts` pin to the v0.1.0 release asset.
+
+### Pre-tag polish (`feat/release-0.1.1-pretag`; `docs/design/system-gaps.md` and the final engine and dashboard checks)
+- **Voice stage timeout** (gap 1): the studio's wait for a whole job's narration is 120 s + 3 s per line, at most 2 h
+  (`ns_common.tts_timeout`, one formula for `ns_studio/media/voice.py`, `TtsClient` and the TTS service, which never stops a
+  `qwen-tts` process before the client gives up). When the client times out it asks `POST /v1/audio/speech/cancel` to kill
+  the process, so the GPU is free before the retry; whole items the service had finished stay on disk and the retry
+  (`resume`) skips them. Was a fixed 30 minutes against a service that kept the GPU busy for up to 3.6 hours.
+- **Queue, Release the graphics card** (gap 2): the supervisor refuses while the holder sent a heartbeat in the last 90 s
+  (a nightly run that overran shows nothing in the Queue); otherwise a Nightshift holder is stopped through the jobs worker,
+  and for a foreign holder such as `opencode` it only releases and says the other program may still be using the GPU. The
+  confirm text says so.
+- **Nightly task that runs only while you are signed in** (gap 3, NS-W205): `Status.schedule_mode` (`registered`,
+  `interactive_only`, `none`; contract change `CR-PRETAG-C9-1`). The top bar and Settings say "Runs at 03:00 only while you
+  are signed in" in a warning style; the next-run countdown stays.
+- **Setup voice** (gaps 4, 5, 6): it is made under the job's own GPU owner, so Cancel frees it at once; Library, Voices,
+  Create it now is a job (`apply_voice`) with progress and Cancel in the card and in the Queue; the setup window no longer
+  promises an automatic voice design download (Settings, Models, Get voice design model).
+- **Series parts stay produced**: a finished `series_part` job moves its part to `produced`, and the start sweep resets a
+  part to `approved` only when its job is missing, failed or cancelled (it also settles parts 0.1.0 left on `producing`).
+  Before, reopening the dashboard offered Part 1 again and made the video twice.
+- **Update page**: the 10-minute "did not come back" wait starts when `update_state.json` leaves `running`, not at the
+  click; during a long install the page keeps saying it is installing.
+- **Uninstall removes `<home>\run`** (the update worker's private venv copy, 150-300 MB) and lists it in its report; the
+  update worker deletes its own copy after a relaunch that worked.
+- **CI**: the test job may take 40 minutes (`ci.yml`, `release.yml`); the duplicate 70 s child smoke run is gone.
+
+### Fixed (re-review round, pull requests #48 to #51)
+- **Loose ends (#48)**: the embed service gets `-c/-b/-ub` from `EmbedCfg`; link-download Cancel reaches the Clipper
+  `CancelToken` (flag file, 3 s grace, then the process tree); the drift gate is described as it works (median offset
+  between caption and ASR word starts, 120 ms); the setup window has an "Also download the voice design model" checkbox
+  (a designed voice implies it; `NS-W114` when ticked off); `OPERATOR.md` explains the PyTorch fallback (`NS-W301`), Get
+  voice design model and the DPAPI key file.
+- **Runtime (#49)**: the update worker starts the engine (and the dashboard window, if one was open) again after the update
+  or a rollback and writes `done` or `failed` only after `/status` answers; the rollback retries its renames and waits for
+  the verify engine; browser presence uses `psutil.net_connections`; a uv shim is replaced by the real exe; Get voice design
+  follows `runtime.tts.engine` (PyTorch gets the Hugging Face weights); `update_state.json` is written atomically and a
+  dead worker is shown as failed; the deferred uninstall waits for the dashboard window and lists leftovers in
+  `%TEMP%\Nightshift-uninstall-leftovers.txt`; `schedule.json` is not written when Windows refused the task (NS-W206); the
+  worker runs from a private copy of the supervisor venv so uv can rewrite `venvs\supervisor`.
+- **Dashboard (#50)**: Cancel releases the GPU lease (flag file, 10 s grace, kill, `POST /release_owner`); `studio:` leases
+  are renewed by a 30 s heartbeat and a silent lease is reclaimed after 10 minutes; the Queue shows "GPU held by ..." with a
+  Release button; Settings follows the update across the restart and reloads on the new version; saved Assistant requests
+  are claimed in one statement and answered when a job ends; series parts go back to `approved` when cancelled or failed;
+  caption look "Automatic"; failed jobs keep their stage and studio job ids; stock-footage keys also go to the DPAPI file;
+  Library, Voices, "Pending voice from setup" with Create it now; a real `studio_job` child process is run in CI.
+- **Studio and TTS (#51)**: embed windows are token-aware per script; CJK captions are joined without spaces and aligned per
+  character; channel languages reach `qwen-tts --lang`; series parts keep their pacing; publish slots use the PC's local date
+  and count Shorts already scheduled; master and Short budgets count the pauses; the regenerate-once table has the master
+  names; **one `qwen-tts --stream-by-line -o -` process per batch** instead of one per sentence; pending voices are created
+  by every job (`apply_pending_voices`); `NS-E311` for an unknown voice; the clip Outbox with nothing in it is `NS-E404`;
+  `load_keys` falls back to the DPAPI file on any keyring error.
+
 ### Fixed (studio, from the clean-clone review `D:\NightShift-refs\review-studio.md` and `review-clipper-tts-common.md`)
 - **First run**: a channel that exists only as YAML (what setup writes) gets its `channels` row before the first insert
   (`make_job`, `load_job`, clips, ledger); the policy gate and every story embed use a 1,500-character opening window and
