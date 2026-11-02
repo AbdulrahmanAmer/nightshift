@@ -244,7 +244,13 @@ def create_app(engine: Engine, library: VoiceLibrary, *, log: NsLogger | None = 
             raise HTTPException(400, "rights_confirmed must be true: you must be allowed to clone this voice")
         missing = engine.missing_model("clone")
         if missing:
-            return JSONResponse(status_code=409, content={"missing_model": missing})
+            return JSONResponse(
+                status_code=409,
+                content=missing_body(
+                    missing, "NS-E202",
+                    f"the voice cloning model is not installed ({missing}): run the installer's models step again",
+                ),
+            )
         try:
             with lock:
                 ensure_loaded()

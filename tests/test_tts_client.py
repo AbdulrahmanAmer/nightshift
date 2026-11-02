@@ -139,3 +139,19 @@ def test_fake_tts_inserts_the_service_pauses(tmp_path: Path):
     )
     assert two - 2 * one == pytest.approx(0.35, abs=0.02)  # 350 ms between sentences
     assert para - 2 * one == pytest.approx(0.70, abs=0.02)  # 700 ms between paragraphs
+
+
+def test_client_keeps_the_missing_model_codes_of_the_409_answers(tmp_path: Path):
+    from ns_common.errors import NsError
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        code = "NS-E314" if req.url.path.endswith("/batch") else "NS-E202"
+        return httpx.Response(409, json={"missing_model": "x.gguf", "error": code, "detail": "d"})
+
+    cli = TtsClient("http://x", client=httpx.Client(transport=httpx.MockTransport(handler)))
+    with pytest.raises(NsError) as ei:
+        cli.speak_batch([TtsItem("a", "hi", "Ryan")], tmp_path)
+    assert ei.value.code == "NS-E314"
+    with pytest.raises(NsError) as ei2:
+        cli.speak("hi", "Ryan", 1.0, tmp_path / "a.wav")
+    assert ei2.value.code == "NS-E202"

@@ -59,14 +59,15 @@ def wav_seconds(path: Path) -> float:
         return w.getnframes() / w.getframerate()
 
 
-_SERVICE_CODES = ("NS-E310", "NS-E311", "NS-E315")
+_SERVICE_CODES = ("NS-E202", "NS-E310", "NS-E311", "NS-E314", "NS-E315")
 
 
 def _raise_voice_mismatch(r: httpx.Response) -> None:
     """Keep the TTS code the service answered with.
 
     `NS-E310` synthesis failed, `NS-E311` a voice of another engine or missing files, `NS-E315` a voice could
-    not be built. Anything else is raised by the caller.
+    not be built, `NS-E314` the voice design model is not installed, `NS-E202` another model file is missing
+    (the 409 answers carry `error` beside `missing_model`). Anything else is raised by the caller.
     """
     if r.status_code < 400:
         return

@@ -69,6 +69,13 @@ def http_post(base_url: str, route: str, body: dict[str, Any]) -> dict[str, Any]
     except httpx.HTTPError as e:
         raise NsError("NS-E310", f"voice service: {e}") from e
     if r.status_code == 409 and "missing_model" in r.text:
+        try:
+            answer = r.json()
+        except ValueError:
+            answer = {}
+        code = answer.get("error") if isinstance(answer, dict) else None
+        if code in ("NS-E314", "NS-E202", "NS-E315"):  # the service says which model is absent
+            raise NsError(str(code), str(answer.get("detail", "")))
         raise NsError(
             "NS-E310",
             "the model for this voice tool is not downloaded; open Settings > Models > Get voice design "
