@@ -15,7 +15,13 @@ from ns_common.db import Db, new_job_id
 from ns_common.logging import NsLogger
 from ns_common.models import Channel, Combo, Runtime
 from ns_common.paths import Paths
-from ns_studio.channels.crud import add_channel, all_channels, get_channel, sync_channel_row
+from ns_studio.channels.crud import (
+    add_channel,
+    all_channels,
+    get_channel,
+    pool_name_problems,
+    sync_channel_row,
+)
 from ns_studio.context import FAKEABLE, JobContext, Services, build_services
 from ns_studio.errors import StudioError
 from ns_studio.variation.draw import draw_combo, record_combo
@@ -160,6 +166,9 @@ def make_job(
     rng = rng or random.Random()
     # The setup channel exists only as YAML; `ideas`, `stories`, `combos` and `outputs` reference its row.
     sync_channel_row(env.db, channel, now)
+    unknown = pool_name_problems(channel.pools)
+    if unknown:
+        raise StudioError("NS-E320", "; ".join(unknown))
     if "llm" in env.fake:
         fixed = {**FAKE_LLM_COMBO, **(fixed or {})}  # the fixtures are written for this budget
     combo = draw_combo(env.db, channel, rng=rng, now=now, fixed=fixed)

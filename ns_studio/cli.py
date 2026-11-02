@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any
 
+import click
 import typer
 from typer.core import TyperGroup
 
@@ -21,7 +22,7 @@ from ns_studio.channels import cadence, crud
 from ns_studio.clipper import cli as clipper_cli
 from ns_studio.context import JobContext
 from ns_studio.daily import run_daily
-from ns_studio.errors import StudioError
+from ns_studio.errors import UNEXPECTED, StudioError, describe_unexpected
 from ns_studio.learn import importer, reweight, status
 from ns_studio.orchestrator import plan_job, run_job
 from ns_studio.policy.regen import run_job_guarded
@@ -108,6 +109,15 @@ def guarded() -> Iterator[None]:
         typer.echo(f"error {e}", err=True)
         if hint:
             typer.echo(f"hint: {hint}", err=True)
+        raise typer.Exit(1) from e
+    except click.ClickException:
+        raise  # usage errors keep their own message and exit code
+    except click.exceptions.Exit:
+        raise
+    except Exception as e:  # an uncoded bug or corrupt file: coded, logged, no traceback wall
+        err = StudioError(UNEXPECTED, describe_unexpected(e))
+        typer.echo(f"error {err}", err=True)
+        typer.echo(f"hint: {err.hint}", err=True)
         raise typer.Exit(1) from e
 
 

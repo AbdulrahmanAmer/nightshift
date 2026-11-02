@@ -62,6 +62,28 @@ def pool_problems(pools: Pools) -> list[str]:
     return problems
 
 
+def pool_name_problems(pools: Pools) -> list[str]:
+    """Pool options that name no shipped preset (caption style, visual treatment, pacing).
+
+    Checked when a job starts, not when the profile is saved: the profile editor allows free text, and an
+    unknown name used to surface mid-render as an uncoded ValueError.
+    """
+    from ns_common.pacing import PACING_WPM
+    from ns_studio.media.presets import load_caption_styles, load_visual_treatments
+
+    known = {
+        "caption_styles": set(load_caption_styles()),
+        "visual_treatments": set(load_visual_treatments()),
+        "pacings": set(PACING_WPM),
+    }
+    return [
+        f"pools.{name} has no preset called {opt!r} (known: {', '.join(sorted(ok))})"
+        for name, ok in known.items()
+        for opt in getattr(pools, name)
+        if opt not in ok
+    ]
+
+
 def pool_warnings(pools: Pools) -> list[str]:
     """Soft warnings: fewer than 4 hooks or 4 structures (spec section 8 'warn below 4x4')."""
     out: list[str] = []

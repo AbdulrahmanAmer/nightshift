@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import random
 import secrets
+import traceback
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -14,7 +15,7 @@ from ns_studio import jobs, notifications
 from ns_studio.channels import cadence
 from ns_studio.channels.crud import get_channel
 from ns_studio.context import JobContext
-from ns_studio.errors import StudioError
+from ns_studio.errors import UNEXPECTED, StudioError, describe_unexpected
 from ns_studio.media.outbox import retime_sheet
 from ns_studio.policy.regen import run_job_guarded
 
@@ -102,18 +103,24 @@ def run_daily(
              "reasons": dj.plan.reasons}
         )
         for n in range(dj.count):
-            ctx = jobs.make_job(env, ch, dj.fmt, now=now, rng=rng)
+            job_id = "(not created)"
             try:
+                ctx = jobs.make_job(env, ch, dj.fmt, now=now, rng=rng)
+                job_id = ctx.job_id
                 ran = run(ctx)
-                report["jobs"].append({"job_id": ctx.job_id, "channel": ch.slug, "stages": len(ran)})
+                report["jobs"].append({"job_id": job_id, "channel": ch.slug, "stages": len(ran)})
+                continue
             except (NsError, StudioError) as e:
-                env.log.error("daily_job_failed", job_id=ctx.job_id, code=e.code, detail=str(e))
-                failure = {"job_id": ctx.job_id, "channel": ch.slug, "code": e.code, "error": str(e)}
-                report["failures"].append(failure)
-                if e.code == "NS-E201":
-                    gpu_busy = True
-                    report.setdefault("skipped", []).append({"channel": ch.slug, "jobs": dj.count - n})
-                    break
+                code, detail = e.code, str(e)
+            except Exception as e:  # an uncoded bug or corrupt file ends this job, never the night
+                code, detail = UNEXPECTED, f"{UNEXPECTED}: {describe_unexpected(e)}"
+                env.log.error("daily_job_crashed", job_id=job_id, traceback=traceback.format_exc())
+            env.log.error("daily_job_failed", job_id=job_id, code=code, detail=detail)
+            report["failures"].append({"job_id": job_id, "channel": ch.slug, "code": code, "error": detail})
+            if code == "NS-E201":
+                gpu_busy = True
+                report.setdefault("skipped", []).append({"channel": ch.slug, "jobs": dj.count - n})
+                break
     done = [j["job_id"] for j in report["jobs"]]
     report["publish_times_set"] = apply_publish_times(env, done, rng, now)
     backup = env.db.backup(env.paths.backup_dir, today=now.date())

@@ -65,5 +65,7 @@
   "NS-E325": {"message": "The variation pools are exhausted.", "hint": "Widen the pools with 'studio channel edit' or wait for the 30-day ledger to clear."},
   "NS-E326": {"message": "Output not found or not in a state that allows this action.", "hint": "Run 'studio review' to list the outputs and their status."},
   "NS-E408": {"message": "Transcription failed.", "hint": "Check that the video has an audio track and that the whisper model is installed; run 'ns verify --quick'. For GPU errors see NS-E112."},
-  "NS-E409": {"message": "Download failed.", "hint": "Check the link and that the video is yours or you have permission to use it; yt-dlp must be installed by setup."}
+  "NS-E409": {"message": "Download failed.", "hint": "Check the link and that the video is yours or you have permission to use it; yt-dlp must be installed by setup."},
+  "NS-E327": {"message": "A job stopped on an unexpected problem.", "hint": "Other jobs were not affected. Open the log named in the report (logs folder) or run 'ns doctor --bundle' and send the zip."},
+  "NS-E410": {"message": "Confirm that you have the right to use this video.", "hint": "Tick the box that says the video is yours or licensed to you, then start the clip job again."}
 }

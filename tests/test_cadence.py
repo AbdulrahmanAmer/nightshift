@@ -270,3 +270,37 @@ def test_shorts_only_jobs_of_one_night_get_different_slots(tmp_home: Path):
         for m in mans
     )
     assert times[0].date() == times[1].date() == date(2026, 11, 21)  # two a day, from tomorrow on
+
+
+def test_uncoded_exception_fails_only_that_job(tmp_home: Path):
+    """Review row 8: one bad job (KeyError, sqlite error, OSError...) aborted the night, backup and report."""
+    paths, db = _env(tmp_home)
+    _channel(paths, db, 9)
+    env = jobs.open_env(light=True)
+    calls: list[str] = []
+
+    def run(ctx):
+        calls.append(ctx.job_id)
+        if len(calls) == 1:
+            raise KeyError("fixes")
+        return ["ideas"]
+
+    report = daily.run_daily(env, now=NOW, rng=random.Random(1), run_fn=run)
+    assert len(calls) >= 2, "the next job must still run"
+    assert report["failures"][0]["code"] == "NS-E327" and "KeyError" in report["failures"][0]["error"]
+    assert report["jobs"], "later jobs are reported"
+    assert Path(report["backup"]).exists() and (paths.logs / "nightly-20261120.json").exists()
+    row = env.db.query("select finished_at from runs")[0]
+    assert row["finished_at"]
+
+
+def test_unknown_preset_in_a_pool_is_a_coded_error_at_job_start(tmp_home: Path):
+    from ns_common.models import Pools
+    from ns_studio.errors import StudioError
+
+    paths, db = _env(tmp_home)
+    ch = make_channel(pools=Pools(caption_styles=["punch_yellow", "neon_pink"]))
+    env = jobs.open_env(light=True)
+    with pytest.raises(StudioError) as ei:
+        jobs.make_job(env, ch, "shorts_only")
+    assert ei.value.code == "NS-E320" and "neon_pink" in ei.value.detail
