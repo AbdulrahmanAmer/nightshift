@@ -1,5 +1,5 @@
 /* Window controls for the frameless WebView2 app host (docs/design/installer-ui.md §6). Not a full-width bar: two
-   notches that hang from the top edge in the rail's colour and shadow, their ends drawn with the rail's wave-cap curve
+   notches that hang from the top edge in the rail's fill (--rail-bg, per theme) and shadow, their ends drawn with the rail's wave-cap curve
    turned 90 degrees (flat against the top, shoulders curving down into the pill). Top right: minimize,
    maximize/restore and close. Top left: the brand mark. An invisible 36 px strip across the top is the drag region
    (-webkit-app-region: drag, and drag-start is also posted on a primary press). Renders nothing in a normal browser.
@@ -26,10 +26,7 @@ function notchPath(w: number) {
 function Notch({ width, side, children, label }: { width: number; side: "left" | "right"; children: ReactNode; label: string }) {
   return (
     <div role="group" aria-label={label} className="ds-notch fixed top-0 z-50" style={{ width, height: H, [side]: 12 } as React.CSSProperties}>
-      <svg aria-hidden width={width} height={H} viewBox={`0 0 ${width} ${H}`} className="absolute inset-0">
-        <defs><linearGradient id={`ns-notch-${side}`} x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#4b3fa8" /><stop offset="1" stopColor="#2d2366" /></linearGradient></defs>
-        <path d={notchPath(width)} fill={`url(#ns-notch-${side})`} />
-      </svg>
+      <div aria-hidden className="absolute inset-0" style={{ background: "var(--rail-bg)", clipPath: `path("${notchPath(width)}")` }} />
       <div className="ds-nodrag relative flex h-full items-center justify-center gap-1 pb-0.5">{children}</div>
     </div>
   );

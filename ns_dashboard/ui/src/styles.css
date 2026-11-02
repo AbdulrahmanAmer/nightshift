@@ -485,7 +485,7 @@
    Colour: one variable, same in both themes. The default is dark purple; to switch to the Planify violet use
    --rail-bg: #7466EE (light) / #8073F3 (dark), with --rail-bar: #7466EE and --rail-ink: #5b4bd6. */
 :root {
-  --rail-bg: linear-gradient(180deg, #4b3fa8 0%, #2d2366 100%);
+  --rail-bg: linear-gradient(180deg, rgba(75, 63, 168, 0.94) 0%, rgba(45, 35, 102, 0.94) 100%);
   --rail-bar: #35296f;
   --rail-ink: #2d2366;
   --rail-ring: #3a2f86;
@@ -496,6 +496,11 @@
   --rail-w: 88px;
   --cap: calc(var(--rail-w) * 1.2);
 }
+/* Rail and window-notch fill per theme: plain alpha so the canvas faintly shows through (no backdrop-filter).
+   White icons on the dark variant stay well above AA (about 12:1). The active tile stays opaque white. */
+[data-theme="light"] { --rail-bg: linear-gradient(180deg, rgba(75, 63, 168, 0.94) 0%, rgba(45, 35, 102, 0.94) 100%); }
+[data-theme="dark"] { --rail-bg: linear-gradient(180deg, rgba(58, 47, 133, 0.92) 0%, rgba(36, 27, 82, 0.92) 100%); }
+[data-theme="soft"] { --rail-bg: linear-gradient(180deg, rgba(75, 63, 168, 0.9) 0%, rgba(45, 35, 102, 0.9) 100%); }
 @keyframes tab-in-x { from { transform: translateX(-100%); } to { transform: none; } }
 @keyframes tab-in-y { from { transform: translateY(100%); } to { transform: none; } }
 @keyframes badge-pop { from { opacity: 0; transform: scale(0.6); } to { opacity: 1; transform: none; } }
