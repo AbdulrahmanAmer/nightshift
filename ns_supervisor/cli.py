@@ -363,13 +363,20 @@ def cmd_notify(title: str, message: str) -> None:
 @models_app.command("get")
 def models_get_cmd(
     what: Annotated[str, typer.Argument(help="voicedesign | story_llm")],
+    everything: Annotated[
+        bool, typer.Option("--all", help="voicedesign: the GGUF talker and the PyTorch engine's weights.")
+    ] = False,
 ) -> None:
-    """Download an optional model (pinned in manifest.json, resumable, SHA256-checked)."""
+    """Download an optional model (pinned in manifest.json, resumable, SHA256-checked).
+
+    voicedesign follows the voice engine in runtime.json: the GGUF talker for qwentts, the Hugging Face
+    weights for the PyTorch (reference) engine. --all fetches both.
+    """
     if what not in models_get.KINDS:
         raise _die(f"unknown model {what!r}; choose one of: {', '.join(models_get.KINDS)}", 2)
     paths = Paths.from_env()
     try:
-        result = models_get.get_model(what, paths, control.app_path(paths), typer.echo)
+        result = models_get.get_model(what, paths, control.app_path(paths), typer.echo, everything=everything)
     except NsError as e:
         raise _die(e) from e
     typer.echo(json.dumps(result))

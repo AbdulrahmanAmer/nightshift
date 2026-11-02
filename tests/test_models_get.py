@@ -109,3 +109,104 @@ def test_the_installer_is_part_of_the_installed_packages() -> None:
     """ns.exe in the supervisor venv must be able to import the downloader."""
     text = (repo_root() / "pyproject.toml").read_text(encoding="utf-8")
     assert '"installer*"' in text
+
+
+# ------------------------------------------------------------------------- the PyTorch (reference) engine
+def fake_tree(calls: list[tuple[str, Path]]):  # type: ignore[no-untyped-def]
+    """A Hugging Face listing with a config and one weights file per repo."""
+    from installer.stage2.downloader import DownloadItem, hf_url
+
+    def tree(repo: str, revision: str, dest_dir: Path) -> list[DownloadItem]:
+        calls.append((repo, dest_dir))
+        return [
+            DownloadItem(name=f"{repo}/{f}", url=hf_url(repo, revision, f), dest=dest_dir / f, sha256="a" * 64)
+            for f in ("config.json", "model.safetensors")
+        ]
+
+    return tree
+
+
+def test_the_reference_engine_gets_the_hf_weights_in_models_tts_hf_not_the_gguf(tmp_path: Path) -> None:
+    paths = Paths(tmp_path)
+    calls: list[tuple[str, Path]] = []
+    items = models_get.plan_items(
+        "voicedesign", manifest(), "gpu", paths, engine="reference", tree=fake_tree(calls)
+    )
+    design_dir = paths.models_tts_hf / "Qwen3-TTS-12Hz-1.7B-VoiceDesign"
+    assert calls[0] == ("Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign", design_dir)
+    assert all(paths.models_tts_hf in i.dest.parents for i in items)
+    assert not any(i.dest.suffix == ".gguf" for i in items)
+    assert (design_dir / "model.safetensors") in [i.dest for i in items]
+    # the engine's design mode also loads Base: it is planned only when it is missing
+    assert [c[0] for c in calls] == [models_get.REFERENCE_VOICEDESIGN, models_get.REFERENCE_BASE]
+    calls.clear()
+    (paths.models_tts_hf / "Qwen3-TTS-12Hz-1.7B-Base").mkdir(parents=True)
+    models_get.plan_items("voicedesign", manifest(), "gpu", paths, engine="reference", tree=fake_tree(calls))
+    assert [c[0] for c in calls] == [models_get.REFERENCE_VOICEDESIGN]
+
+
+def test_the_qwentts_engine_still_gets_only_the_gguf_and_never_lists_hugging_face(tmp_path: Path) -> None:
+    paths = Paths(tmp_path)
+
+    def no_tree(*a: Any) -> Any:
+        pytest.fail("the GGUF plan must not call the Hugging Face tree API")
+
+    (item,) = models_get.plan_items("voicedesign", manifest(), "gpu", paths, engine="qwentts", tree=no_tree)
+    assert item.dest == paths.models_tts / VOICEDESIGN
+
+
+def test_all_plans_both_sets(tmp_path: Path) -> None:
+    paths = Paths(tmp_path)
+    items = models_get.plan_items(
+        "voicedesign", manifest(), "gpu", paths, engine="qwentts", everything=True, tree=fake_tree([])
+    )
+    dests = [i.dest for i in items]
+    assert paths.models_tts / VOICEDESIGN in dests
+    assert paths.models_tts_hf / "Qwen3-TTS-12Hz-1.7B-VoiceDesign" / "model.safetensors" in dests
+
+
+def test_the_story_model_ignores_the_engine(tmp_path: Path) -> None:
+    paths = Paths(tmp_path)
+    (item,) = models_get.plan_items("story_llm", manifest(), "gpu", paths, engine="reference")
+    assert item.dest.parent == paths.models_llm
+
+
+def test_get_reads_the_engine_from_runtime_json(tmp_path: Path) -> None:
+    paths = Paths(tmp_path)
+    paths.ensure()
+    rt = Runtime.default("gpu")
+    rt.tts.engine = "reference"
+    save_runtime(paths, rt)
+    seen: list[Any] = []
+
+    def fake_run_plan(items: list[Any], *, reporter: Any = None, **kw: Any) -> PlanResult:
+        seen.extend(items)
+        return PlanResult(downloaded=[i.name for i in items])
+
+    out = models_get.get_model(
+        "voicedesign", paths, repo_root(), lambda line: None, run_plan=fake_run_plan, tree=fake_tree([])
+    )
+    assert out["engine"] == "reference" and out["downloaded"] == len(seen) > 0
+    assert all(paths.models_tts_hf in Path(f).parents for f in out["files"])
+    # a second run finds every file verified or planned the same way, and --all adds the talker
+    out_all = models_get.get_model(
+        "voicedesign", paths, repo_root(), lambda line: None, run_plan=fake_run_plan, tree=fake_tree([]),
+        everything=True,
+    )
+    assert any(f.endswith(VOICEDESIGN) for f in out_all["files"])
+
+
+def test_the_all_flag_reaches_get_model(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: dict[str, Any] = {}
+
+    def fake_get(kind: str, paths: Paths, app: Path, echo: Any, **kw: Any) -> dict[str, Any]:
+        seen.update(kw)
+        return {"ok": True, "model": kind, "files": []}
+
+    monkeypatch.setattr(models_get, "get_model", fake_get)
+    env = {"NIGHTSHIFT_HOME": str(tmp_path)}
+    assert runner.invoke(cli.app, ["models", "get", "voicedesign", "--all"], env=env).exit_code == 0
+    assert seen == {"everything": True}
+    seen.clear()
+    assert runner.invoke(cli.app, ["models", "get", "voicedesign"], env=env).exit_code == 0
+    assert seen == {"everything": False}
