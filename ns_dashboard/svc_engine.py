@@ -176,7 +176,7 @@ class EngineService:
             },
             "disk": disk_info(self.s.paths.home),
             "job": running.to_dict() if running else None,
-            "queue": self.s.store.counts(),
+            "queue": {**self.s.store.counts(), "scheduled": len(self.s.store.scheduled())},
             "last_run": self._run_row(runs[0]) if runs else None,
             "incidents": [dict(r) for r in incidents],
             "last_error": last_error,

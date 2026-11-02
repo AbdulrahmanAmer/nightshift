@@ -192,9 +192,10 @@ def _tools() -> list[ToolDef]:
            lambda c, a: c.dash.jobs.create_run(a), route=("POST", "/api/jobs/run"),
            props={"channel": _s("channel slug"), "format": _s(
                "what to make", enum=["master_first", "shorts_only", "series_compilation"]),
-                  "count": _i("how many", minimum=1, maximum=20)},
+                  "count": _i("how many", minimum=1, maximum=20),
+                  "schedule_at": _s("start later: local date and time such as 2026-11-03T02:00; leave out to start now")},
            required=["channel"], side=True,
-           confirm="Make a new {format} for {channel} now. This uses the GPU for a while."),
+           confirm="Make a new {format} for {channel}, start: {schedule_at}. This uses the GPU for a while."),
         _t("start_clip_job", "create", "Cut clips from one of the owner's own videos: a file on this PC or a web link.",
            _start_clip, route=("POST", "/api/jobs/clip"),
            props={"path": _s("full path of the video file on this PC"), "url": _s("http or https link to the video"),
