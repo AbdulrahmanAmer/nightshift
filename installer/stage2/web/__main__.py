@@ -43,8 +43,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 def say(text: str, level: str = "info") -> None:
     """One console line (the console window is the log)."""
-    sys.stdout.write(text + "
-")      # the repo bans print() in installer code
+    sys.stdout.write(text + "\n")      # the repo bans print() in installer code
     sys.stdout.flush()
 
 
