@@ -102,7 +102,9 @@ class AssistantStore:
         """Recent conversations, newest first."""
         with self._lock:
             rows = self.db.query(
-                "SELECT conversation_id, title, created_at, updated_at FROM conversations"
+                "SELECT conversation_id, title, created_at, updated_at,"
+                " (SELECT COUNT(*) FROM queued_messages q WHERE q.conversation_id = c.conversation_id"
+                "  AND q.status = 'queued') AS queued FROM conversations c"
                 " ORDER BY updated_at DESC LIMIT ?",
                 (max(1, min(limit, 200)),),
             )

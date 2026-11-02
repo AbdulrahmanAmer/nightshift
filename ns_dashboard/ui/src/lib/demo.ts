@@ -255,6 +255,8 @@ export async function demoHandle(method: string, path: string, body?: any): Prom
   }
   if (p === "/update/check") return { current: "0.9.2", latest: "0.9.2", up_to_date: true, notes: "" };
   if (p === "/update/apply") throw new Error("Updating needs the engine running");
+  if (p === "/assistant/conversations") return [];
+  if (p === "/assistant/queue/run") return [];
   if (p === "/assistant/confirm") { const run = DEMO.pending[body.action_id]; if (!run) throw new Error("Nothing to confirm"); delete DEMO.pending[body.action_id]; return run(); }
   if (p === "/assistant/dismiss") { delete DEMO.pending[body.action_id]; return { ok: true }; }
   throw new Error(`Not available with demo data: ${method} ${path}`);
