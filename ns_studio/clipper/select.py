@@ -19,6 +19,15 @@ from ns_common.models import ClipPlanItem, Transcript, Word
 from ns_studio.clipper.models import ClipParams
 
 FILLER_TOKENS = frozenset({"um", "uh", "uhm", "umm", "er", "erm", "like"})
+# What `captions.remove_fillers` leaves out of the captions: hesitations only. "like" stays (it is a word).
+HESITATIONS = frozenset({"um", "uh", "uhm", "umm", "er", "erm", "hmm"})
+
+
+def is_filler_word(word: str) -> bool:
+    """True for a hesitation (um, uh, er...) that a channel may drop from its clip captions."""
+    return word.strip(" .,!?;:…-\"'").lower() in HESITATIONS
+
+
 MIN_WORDS_PER_S = 2.2
 MAX_FILLER_RATIO = 0.4
 SNAP_TOL_S = 5.0
