@@ -1,10 +1,10 @@
 """C2: is somebody looking at the dashboard? (the engine's idle exit must not pull the page away)
 
-The 30-minute idle exit only counted GPU work. Reading the Library or Settings for half an hour made the engine
-shut down and kill the dashboard under an open window. Two signs of a person at the dashboard, neither of
-which needs the dashboard's cooperation:
+The 30-minute idle exit only counted GPU work. Reading the Library or Settings for half an hour made the
+engine shut down and kill the dashboard under an open window. Two signs of a person at the dashboard,
+neither of which needs the dashboard's cooperation:
 
-* the app window host (`launchers\nightshift-host.ps1`) is running: `run\apphost-dashboard.json` names a live
+* the app window host (launchers/nightshift-host.ps1) is running: `run/apphost-dashboard.json` names a live
   process;
 * a browser holds an established connection to the dashboard port (any open page keeps one: its event stream,
   or at least a keep-alive connection while it polls).
@@ -24,7 +24,7 @@ _NO_WINDOW: int = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
 def host_window_open(paths: Paths, image: Callable[[int], str | None] | None = None) -> bool:
-    """True when the dashboard window host named in `run\apphost-dashboard.json` is still running."""
+    """True when the dashboard window host named in `run/apphost-dashboard.json` is still running."""
     if image is None:
         from ns_supervisor.control import image_name as image
     try:

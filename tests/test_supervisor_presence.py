@@ -27,7 +27,7 @@ Active Connections
 
 
 def test_only_established_connections_to_the_dashboard_port_count() -> None:
-    assert presence.count_established(NETSTAT, 8100) == 1       # the browser's end (local port 53211) is not ours
+    assert presence.count_established(NETSTAT, 8100) == 1  # the browser's own end (53211) is not ours
     assert presence.count_established(NETSTAT, 8099) == 1
     assert presence.count_established(NETSTAT, 9999) == 0
     assert presence.count_established("", 8100) == 0

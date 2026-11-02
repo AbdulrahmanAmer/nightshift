@@ -80,7 +80,7 @@ def test_installer_context_uv_is_the_home_copy_with_an_empty_path(
     assert ctx.uv() == str(exe)
 
 
-# --- the stage 1 hand-over: uv lives in %LOCALAPPDATA%\Nightshift\bootstrap\uv, never in the home or on PATH ---
+# --- the stage 1 hand-over: uv lives in %LOCALAPPDATA%/Nightshift/bootstrap/uv, not in the home or on PATH
 def put_bootstrap_uv(local: Path) -> Path:
     exe = local / "Nightshift" / "bootstrap" / "uv" / "uv.exe"
     exe.parent.mkdir(parents=True)
@@ -99,20 +99,20 @@ def test_handover_env_beats_path_and_the_bootstrap_folder(tmp_path: Path) -> Non
 
 def test_bootstrap_folder_is_found_without_env_or_path(tmp_path: Path) -> None:
     exe = put_bootstrap_uv(tmp_path / "local")
-    assert find_uv(tmp_path / "home", which=lambda n: None, env={"LOCALAPPDATA": str(tmp_path / "local")}) == str(
-        exe
-    )
+    env = {"LOCALAPPDATA": str(tmp_path / "local")}
+    assert find_uv(tmp_path / "home", which=lambda n: None, env=env) == str(exe)
 
 
 def test_missing_handover_file_is_ignored(tmp_path: Path) -> None:
-    env = {"NIGHTSHIFT_BOOTSTRAP_UV": str(tmp_path / "gone" / "uv.exe"), "LOCALAPPDATA": str(tmp_path / "none")}
+    gone = str(tmp_path / "gone" / "uv.exe")
+    env = {"NIGHTSHIFT_BOOTSTRAP_UV": gone, "LOCALAPPDATA": str(tmp_path / "none")}
     assert find_uv(tmp_path / "home", which=lambda n: None, env=env) is None
 
 
 def test_setup_server_default_uv_finds_the_stage1_download(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The real lookup the setup window uses, with the real folder layout stage 1 produces (no fake uv_path)."""
+    """The real lookup the setup window uses, on the folder layout stage 1 produces (no fake uv_path)."""
     from installer.stage2.web import controller
 
     monkeypatch.setattr("shutil.which", lambda name, *a, **k: None)
@@ -125,7 +125,9 @@ def test_setup_server_default_uv_finds_the_stage1_download(
     assert controller.default_uv_path(tmp_path / "home") == str(exe)
 
 
-def test_b02_copies_the_stage1_uv_and_b03_runs_the_copy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_b02_copies_the_stage1_uv_and_b03_runs_the_copy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from installer.stage2.web import bootstrap, controller
     from installer.stage2.web.fakes import FakeCmd
 

@@ -34,7 +34,7 @@ BUSY_HINT = (
     "another program still has the Nightshift folder open (a Dashboard, Studio or terminal window?). "
     "Close those windows and run the update again; your previous version is still in place."
 )
-UPDATE_VENVS = ("studio", "supervisor", "tts")      # extras come from ns_common.venv_extras (shared with setup)
+UPDATE_VENVS = ("studio", "supervisor", "tts")      # extras: ns_common.venv_extras (shared with setup)
 
 
 @dataclass

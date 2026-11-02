@@ -59,7 +59,7 @@ def uninstall_argv(app_path: Path, home: Path, delete_models: bool, delete_data:
         argv.append("-DeleteModels")
     if delete_data:
         argv.append("-DeleteData")
-    argv.append("-KeepBin")         # this window has bin\webview2\*.dll loaded: bin goes after the window exits
+    argv.append("-KeepBin")  # the window holds bin DLLs: bin goes after it exits
     return argv
 
 
@@ -69,9 +69,9 @@ def ps_quote(value: str) -> str:
 
 
 def deferred_script(home: Path, wait_pids: list[int]) -> str:
-    """PowerShell for the last deletion: wait for the window's processes, then remove ``bin`` and an empty home.
+    """PowerShell for the last deletion: wait for the window's processes, then remove ``bin``.
 
-    The WebView2 host (a PowerShell process) keeps ``bin\\webview2\\*.dll`` loaded for as long as it runs, so the
+    The WebView2 host (a PowerShell process) keeps its DLLs under ``bin`` loaded while it runs, so the
     uninstall script cannot delete them. This script runs detached, after the window has exited.
     """
     ids = ",".join(str(p) for p in wait_pids) or "0"
@@ -94,7 +94,7 @@ def deferred_script(home: Path, wait_pids: list[int]) -> str:
 
 
 def host_pids(home: Path) -> list[int]:
-    """Pids that may still hold files under ``bin``: this server and the setup window host (if it recorded one)."""
+    """Pids that may hold files under ``bin``: this server and the setup window host (if it recorded one)."""
     pids = [os.getpid()]
     try:
         data = json.loads((home / "run" / "apphost-setup.json").read_text(encoding="utf-8-sig"))
@@ -105,7 +105,7 @@ def host_pids(home: Path) -> list[int]:
 
 
 def spawn_deferred(home: Path, popen: Callable[..., Any] = subprocess.Popen) -> bool:
-    """Start the detached PowerShell that finishes the removal after this window has exited. True if started."""
+    """Start the detached PowerShell that finishes the removal after this window exits. True if started."""
     import base64
 
     script = deferred_script(home, host_pids(home))

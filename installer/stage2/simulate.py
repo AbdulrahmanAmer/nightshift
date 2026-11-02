@@ -24,6 +24,7 @@ from installer.stage2.runner import RunResult
 from ns_common.logging import NsLogger
 from ns_supervisor import check_names as names
 
+
 def ps_b64(text: str) -> str:
     """What ``winenv.utf8_b64_script`` prints for ``text``: base64 of its UTF-8 bytes."""
     return base64.b64encode(text.encode("utf-8")).decode("ascii")

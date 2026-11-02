@@ -1,7 +1,8 @@
 """C3: which optional-dependency groups of the app each venv gets.
 
 Setup (installer s04) and `ns update` (re-sync) both read this table, so an update installs exactly what setup
-installed. A release that adds a dependency to the `dashboard` or `tts` extra then reaches the venv that runs it.
+installed. A release that adds a dependency to the `dashboard` or `tts` extra then reaches the venv
+that runs it.
 """
 
 from __future__ import annotations

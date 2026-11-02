@@ -101,7 +101,7 @@ def test_close_and_reveal_rules(tmp_path: Path):
 
 
 
-# ------------------------------------------------------------- the DLLs the window itself holds (review row 7)
+# ------------------------------------------------------ the DLLs the window itself holds (review row 7)
 def finished(app: uninstall.UninstallApp) -> dict:
     app.run(False, False)
     deadline = time.monotonic() + 10
@@ -111,7 +111,7 @@ def finished(app: uninstall.UninstallApp) -> dict:
 
 
 def test_a_file_that_could_not_be_removed_is_reported_as_kept_not_removed(tmp_path: Path):
-    home = make_home(tmp_path)                       # the fake script removes nothing: venvs and bin both stay
+    home = make_home(tmp_path)  # the fake script removes nothing
     app = uninstall.UninstallApp(
         APP, home, popen=lambda argv, **kw: FakeProc(""), deferred=lambda h: False, env_var=lambda n: "x")
     result = finished(app)

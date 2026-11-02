@@ -177,7 +177,7 @@ class Boot:
 
     @property
     def uv_exe(self) -> str:
-        """uv for the later steps: the copy under the install folder once b02 placed it, else the hand-over."""
+        """uv for the later steps: the copy in the install folder once b02 placed it, else the hand-over."""
         local = self.home / "bin" / "uv" / "uv.exe"
         return str(local) if local.is_file() else self.uv
 
@@ -266,7 +266,7 @@ class B02Home:
         if not target.is_file():
             if not source.is_file():
                 raise BootstrapError(
-                    "NS-E105", f"uv was not found at {source}; run INSTALL.cmd again so stage 1 can download it"
+                    "NS-E105", f"uv was not found at {source}; run INSTALL.cmd again so stage 1 downloads it"
                 )
             target.parent.mkdir(parents=True, exist_ok=True)
             for item in source.parent.iterdir():
@@ -316,7 +316,8 @@ class B03SetupEnv:
         boot.checkpoint()
         boot.say("Installing the Python packages for setup")
         res = boot.cmd(
-            [boot.uv_exe, "pip", "install", "--python", str(boot.venv_python), "-e", f"{boot.app_path}[studio]"],
+            [boot.uv_exe, "pip", "install", "--python", str(boot.venv_python), "-e",
+             f"{boot.app_path}[studio]"],
             env, boot.app_path, 3600,
         )
         if res.returncode != 0:

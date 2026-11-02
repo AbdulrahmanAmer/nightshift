@@ -181,7 +181,8 @@ def launch(
     log.parent.mkdir(parents=True, exist_ok=True)
     argv = worker_argv(forwarded, log=log, home=paths.home, wait_pid=wait_pid)
     write_status(paths, "starting", "Starting the update.", log=str(log))
-    pid = (spawn or spawn_detached)(argv, cwd=paths.home if paths.home.is_dir() else Path(os.path.expanduser("~")))
+    cwd = paths.home if paths.home.is_dir() else Path(os.path.expanduser("~"))
+    pid = (spawn or spawn_detached)(argv, cwd=cwd)
     return pid, log
 
 

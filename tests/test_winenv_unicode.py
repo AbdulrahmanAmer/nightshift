@@ -1,8 +1,8 @@
 """C1: user and Desktop paths with non-ASCII characters survive the PowerShell round trip.
 
-Windows PowerShell 5.1 writes redirected stdout in the OEM code page, so the old plain-text read of the Desktop
-path turned `C:\Users\José\Desktop` into U+FFFD and made shortcut creation (NS-E110) fail. These tests run the
-real `powershell.exe` on a non-ASCII temp folder.
+Windows PowerShell 5.1 writes redirected stdout in the OEM code page, so the old plain-text read of the
+Desktop path turned a user folder with an accent into U+FFFD and made shortcut creation (NS-E110) fail.
+These tests run the real `powershell.exe` on a non-ASCII temp folder.
 """
 
 import shutil

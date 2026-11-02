@@ -87,7 +87,8 @@ def _decoded_scripts(runner: FakeRunner) -> list[str]:
     out = []
     for call in runner.calls:
         if call.argv and call.argv[0] == "powershell.exe" and "-EncodedCommand" in call.argv:
-            out.append(base64.b64decode(call.argv[call.argv.index("-EncodedCommand") + 1]).decode("utf-16-le"))
+            encoded = call.argv[call.argv.index("-EncodedCommand") + 1]
+            out.append(base64.b64decode(encoded).decode("utf-16-le"))
     return out
 
 
@@ -97,7 +98,9 @@ def test_every_shortcut_starts_in_the_install_home_not_the_app_folder(tmp_path: 
     for n in ("nightshift-dashboard.ps1", "update.ps1", "open-outbox.ps1"):
         (app / "launchers" / n).write_text("# launcher", encoding="utf-8")
     runner = FakeRunner(tmp_path / "desktop")
-    ctx = make_test_context(tmp_path, raw_answers=example_answers(), resolve=True, app_path=app, runner=runner)
+    ctx = make_test_context(
+        tmp_path, raw_answers=example_answers(), resolve=True, app_path=app, runner=runner
+    )
     S09ShortcutsScheduler().run(ctx)
     shortcut_scripts = [s for s in _decoded_scripts(runner) if "CreateShortcut" in s]
     assert len(shortcut_scripts) == 3

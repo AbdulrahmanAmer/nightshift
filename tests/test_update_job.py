@@ -105,8 +105,11 @@ def invoke(home: Path, *args: str, env: dict[str, str] | None = None) -> Any:
 
 
 def forbid_in_process_update(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(update, "update_app", lambda *a, **k: pytest.fail("the caller must not update itself"))
-    monkeypatch.setattr(update, "rollback_app", lambda *a, **k: pytest.fail("the caller must not update itself"))
+    def no(*a: Any, **k: Any) -> None:
+        pytest.fail("the caller must not update itself")
+
+    monkeypatch.setattr(update, "update_app", no)
+    monkeypatch.setattr(update, "rollback_app", no)
 
 
 def test_detach_starts_a_worker_and_returns_at_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -159,7 +162,7 @@ def test_from_a_shortcut_the_caller_waits_and_relays_the_result(
     monkeypatch.setattr(update_job, "pid_alive", lambda pid: False)
     r = invoke(home, "update", "--github")
     assert r.exit_code == 0 and "Now on 0.2.0" in r.output
-    assert "--wait-pid" not in argvs[0]                  # the worker must not wait for a caller that waits for it
+    assert "--wait-pid" not in argvs[0]  # it must not wait for a caller that waits for it
 
     def failing(argv: list[str], cwd: Path) -> int:
         update_job.write_status(paths, "failed", "NS-E702: x", exit_code=1)

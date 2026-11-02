@@ -35,7 +35,7 @@ if sys.platform == "win32":
     from ctypes import wintypes
 
     _KILL_ON_JOB_CLOSE = 0x2000
-    _BREAKAWAY_OK = 0x0800          # a child created with CREATE_BREAKAWAY_FROM_JOB leaves the job (ns update)
+    _BREAKAWAY_OK = 0x0800          # CREATE_BREAKAWAY_FROM_JOB children leave the job (ns update)
     _EXTENDED_LIMIT_INFO_CLASS = 9
     _PROCESS_SET_QUOTA = 0x0100
     _PROCESS_TERMINATE = 0x0001

@@ -201,7 +201,8 @@ def test_resync_venvs_builds_uv_commands_for_existing_venvs(tmp_path: Path) -> N
     app = tmp_path / "app"
     done = update.resync_venvs(app, paths, uv="uv", run=run)
     assert done == ["studio", "tts"]
-    assert cmds[0][:5] == ["uv", "pip", "install", "-e", f"{app}[studio,supervisor]"] and "--no-deps" not in cmds[0]
+    assert cmds[0][:5] == ["uv", "pip", "install", "-e", f"{app}[studio,supervisor]"]
+    assert "--no-deps" not in cmds[0]
     assert cmds[1][4] == f"{app}[tts]" and cmds[1][-1] == "--no-deps"
 
 

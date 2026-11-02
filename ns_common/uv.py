@@ -2,7 +2,8 @@
 
 The installer puts uv at `<home>/bin/uv/uv.exe` and never adds it to PATH. Before that copy exists (the
 setup window runs the bootstrap steps first) the only uv is the one stage 1 downloaded to
-`%LOCALAPPDATA%\Nightshift\bootstrap\uv\uv.exe`; stage 1 hands that path over in `NIGHTSHIFT_BOOTSTRAP_UV`.
+`%LOCALAPPDATA%/Nightshift/bootstrap/uv/uv.exe`; stage 1 hands that path over in
+`NIGHTSHIFT_BOOTSTRAP_UV`.
 Every caller (installer context, setup window, `ns update`, `ns doctor`) therefore looks, in order, at the
 install folder's copy, the hand-over path, the bootstrap folder and only then PATH.
 """

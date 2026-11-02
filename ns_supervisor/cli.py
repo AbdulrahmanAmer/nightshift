@@ -211,7 +211,7 @@ def cmd_update(
     ] = False,
     detach: Annotated[
         bool,
-        typer.Option("--detach", help="Start the update in the background and return at once (the dashboard)."),
+        typer.Option("--detach", help="Start the update in the background and return at once."),
     ] = False,
     worker: Annotated[bool, typer.Option("--worker", hidden=True)] = False,
     log: Annotated[Path | None, typer.Option("--log", hidden=True)] = None,
