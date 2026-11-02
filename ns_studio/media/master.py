@@ -53,6 +53,7 @@ class Chapter:
     n: int
     title: str
     text: str
+    cliff_lines: tuple[str, ...] = ()  # the chapter's cliffhanger sentence; TTS pauses 1,200 ms before it
 
 
 @dataclass(frozen=True)
@@ -81,6 +82,21 @@ class ChapterTiming:
     end: float
 
 
+def cliff_lines_of(raw: Mapping[str, Any]) -> tuple[str, ...]:
+    """The cliff line of a `story.json` chapter: its sentence number `cliff_line_idx` (the last chapter has
+    none). Empty when the chapter carries no index or the index points nowhere."""
+    idx = raw.get("cliff_line_idx")
+    if not isinstance(idx, int) or idx < 0:
+        return ()
+    sentences = raw.get("sentences")
+    if isinstance(sentences, list) and idx < len(sentences) and isinstance(sentences[idx], Mapping):
+        text = str(sentences[idx].get("text", "")).strip()
+    else:
+        found = split_sentences(str(raw.get("text", raw.get("body", ""))))
+        text = found[idx].strip() if idx < len(found) else ""
+    return (text,) if text else ()
+
+
 def load_chapters(ctx: JobContext) -> list[Chapter]:
     """Chapters from `story.json` (`chapters` list of {n, title, text}); numbering falls back to position."""
     data = ctx.read_json("story.json")
@@ -88,7 +104,7 @@ def load_chapters(ctx: JobContext) -> list[Chapter]:
     out: list[Chapter] = []
     for i, c in enumerate(raw, start=1):
         out.append(Chapter(int(c.get("n", c.get("chapter", i))), str(c.get("title", f"Chapter {i}")),
-                           str(c.get("text", c.get("body", "")))))
+                           str(c.get("text", c.get("body", ""))), cliff_lines_of(c)))
     return sorted(out, key=lambda c: c.n)
 
 
@@ -142,7 +158,7 @@ def voice_items(ctx: JobContext) -> list[TtsItem]:
     """TTS items: `c<n>` chapters, `h<k>` hooks and `x<k>` closing lines of the selected Shorts."""
     voice = ctx.channel.voice
     name = voice.name or voice.speaker or "Ryan"
-    items = [TtsItem(f"c{c.n}", c.text, name, voice.speed) for c in load_chapters(ctx)]
+    items = [TtsItem(f"c{c.n}", c.text, name, voice.speed, c.cliff_lines) for c in load_chapters(ctx)]
     for s in load_shorts(ctx):
         if s.hook:
             items.append(TtsItem(f"h{s.k}", s.hook, name, voice.speed))

@@ -131,3 +131,21 @@ def test_loudnorm_hits_target_on_sparse_tone_bursts(tmp_path: Path):
     loudnorm(src, out, i=-14.0, tp=-1.5)
     lufs, tp = measure_lufs(out)
     assert abs(lufs - (-14.0)) <= 0.8 and tp <= -1.0
+
+
+def test_cliffhanger_part_sends_its_last_sentence_as_cliff_line():
+    """Gap 15: a part flagged cliffhanger gets 1,200 ms before its closing sentence."""
+    parts = [dict(PARTS[0], cliffhanger=True), dict(PARTS[0], n=2, cliffhanger=False)]
+    one, two = (i for i in narration_items(parts, "Ryan", 1.0) if i.id in ("p1", "p2"))
+    assert one.cliff_lines == ("Tonight my phone buzzed while I was standing on the porch.",)
+    assert two.cliff_lines == ()
+
+
+def test_cliff_line_changes_the_cache_signature_only_when_present():
+    from ns_common.tts_client import TtsItem
+    from ns_studio.media.voice import _signature
+
+    plain = TtsItem("a", "One. Two.", "Ryan", 1.0)
+    with_cliff = TtsItem("a", "One. Two.", "Ryan", 1.0, ("Two.",))
+    assert _signature(plain) != _signature(with_cliff)
+    assert _signature(plain) == _signature(TtsItem("b", "One. Two.", "Ryan", 1.0))
