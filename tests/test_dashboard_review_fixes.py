@@ -307,3 +307,35 @@ def test_learn_summary_without_an_import_is_empty_but_complete(tmp_home: Path):
     dash, _state = make(tmp_home)
     s = dash.settings.learn_summary()
     assert s["imported_at"] is None and s["top"] == [] and s["daily"] == [] and s["milestone"] is None
+
+
+# ------------------------------------------------------------------ row 3: the update runs detached; the page follows it
+
+
+def test_update_output_of_ns_update_github_is_understood():
+    """`parse_update_output` read 'Now on X (was Y)' as latest=old, current=new, state unknown."""
+    from ns_dashboard.updater import classify_update, parse_update_output
+
+    text = classify_update(parse_update_output(0, "downloading...\nNow on 0.2.0 (was 0.1.0)\n", ""))
+    assert text["state"] == "updated" and (text["old"], text["new"]) == ("0.1.0", "0.2.0")
+    assert "0.2.0" in text["message"] and "0.1.0" in text["message"]
+    js = classify_update(parse_update_output(0, 'x\n{"updated": true, "old": "0.1.0", "new": "0.1.1"}\n', ""))
+    assert js["state"] == "updated" and js["new"] == "0.1.1"
+    started = classify_update(parse_update_output(0, '{"started": true}', ""))
+    assert started["state"] == "started"
+
+
+def test_update_state_file_is_read_from_run_update_state_json(tmp_home: Path):
+    import json
+
+    dash, state = make(tmp_home)
+    assert dash.library.update_state()["state"] == "idle"
+    f = state.paths.home / "run" / "update_state.json"
+    f.parent.mkdir(parents=True)
+    f.write_text(json.dumps({"state": "running", "old": "0.1.0", "new": "0.1.1", "message": "Installing"}), encoding="utf-8")
+    assert dash.library.update_state() == {"state": "running", "old": "0.1.0", "new": "0.1.1", "message": "Installing", "updated_at": None}
+    f.write_text("{not json", encoding="utf-8")
+    assert dash.library.update_state()["state"] == "idle"
+    f.write_text(json.dumps({"state": "done", "old": "0.1.0", "new": "0.1.1"}), encoding="utf-8")
+    client_state = dash.library.update_state()
+    assert client_state["state"] == "done" and client_state["new"] == "0.1.1"

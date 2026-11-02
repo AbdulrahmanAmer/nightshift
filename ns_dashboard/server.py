@@ -549,6 +549,10 @@ def create_app(
     async def update_check() -> SafeJSONResponse:
         return ok(await run_in_threadpool(dash.library.update_check))
 
+    @app.get("/api/update/state")
+    async def update_state() -> SafeJSONResponse:
+        return ok(await run_in_threadpool(dash.library.update_state))
+
     @app.post("/api/update/apply")
     async def update_apply() -> SafeJSONResponse:
         return ok(await run_in_threadpool(dash.library.update_apply))

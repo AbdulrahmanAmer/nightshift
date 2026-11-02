@@ -8,7 +8,7 @@ import json
 import sqlite3
 from typing import Any
 
-from ns_dashboard import formats
+from ns_dashboard import formats, updater
 from ns_dashboard.common import now_iso
 from ns_dashboard.errors import ApiError
 from ns_dashboard.state import AppState
@@ -212,6 +212,10 @@ class LibraryService:
     def update_check(self) -> dict[str, Any]:
         """Is a newer version on GitHub? (structured result of `ns update --check`)"""
         return self.s.adapters.update.check()
+
+    def update_state(self) -> dict[str, Any]:
+        """Progress of the detached updater (`run/update_state.json`): idle, running, done or failed."""
+        return updater.read_update_state(self.s.paths)
 
     def update_apply(self) -> dict[str, Any]:
         """Install the newest version (`ns update --github`, rolls back on failure)."""

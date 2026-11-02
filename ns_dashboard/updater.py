@@ -19,6 +19,7 @@ from typing import Any
 from ns_common.paths import Paths
 
 Runner = Callable[[list[str], int], tuple[int, str, str]]
+NOW_ON_RE = re.compile(r"Now on (\S+) \(was (\S+?)\)")
 VERSION_RE = re.compile(r"\b(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.]+)?)\b")
 TAIL = 2000
 
@@ -54,9 +55,15 @@ def parse_update_output(code: int, stdout: str, stderr: str) -> dict[str, Any]:
             except ValueError:
                 continue
             if isinstance(data, dict):
-                out.update({k: v for k, v in data.items() if k in ("update_available", "current", "latest", "notes")})
+                out.update(
+                    {k: v for k, v in data.items() if k in ("update_available", "current", "latest", "notes", "updated", "started", "old", "new")}
+                )
                 return out
     low = stdout.lower()
+    done = NOW_ON_RE.search(stdout)
+    if done:  # `ns update --github` prints "Now on X (was Y)" when it finished
+        out.update({"updated": True, "new": done.group(1), "old": done.group(2)})
+        return out
     versions = VERSION_RE.findall(stdout)
     if "up to date" in low or "no update" in low:
         out["update_available"] = False
@@ -117,6 +124,10 @@ def classify_update(result: dict[str, Any]) -> dict[str, Any]:
         state, message = "unavailable", UNAVAILABLE_NOTE
     elif code != 0:
         state, message = "error", (str(result.get("error") or "").strip().splitlines() or ["The update check failed."])[-1]
+    elif result.get("updated") is True:
+        state, message = "updated", f"Now on {result.get('new') or 'the newest version'} (was {result.get('old') or 'older'})."
+    elif result.get("started") is True:
+        state, message = "started", "The update is running. Nightshift restarts by itself when it is done."
     elif result.get("update_available") is True:
         state, message = "available", f"Version {result.get('latest') or 'newer'} is ready."
     elif result.get("update_available") is False:
@@ -167,3 +178,33 @@ class RealBackupAdapter:
         from ns_supervisor.control import app_path
 
         return app_path(self.paths) / "UNINSTALL.cmd"
+
+
+UPDATE_STATE_FILE = "update_state.json"
+UPDATE_STATES = ("running", "done", "failed")
+
+
+def update_state_path(paths: Paths) -> Path:
+    """`<home>\run\update_state.json`, written by the detached updater (`ns update --github`)."""
+    return paths.home / "run" / UPDATE_STATE_FILE
+
+
+def read_update_state(paths: Paths) -> dict[str, Any]:
+    """What the detached updater says it is doing: `{state, old, new, message, updated_at}`.
+
+    The updater (which outlives the dashboard it replaces) writes `{"state": "running" | "done" | "failed",
+    "old": "0.1.0", "new": "0.1.1", "message": "...", "updated_at": "<ISO time>"}`; the Settings page polls
+    this after Install, also across the dashboard restart. No file, or one that cannot be read, is `idle`.
+    """
+    out: dict[str, Any] = {"state": "idle", "old": None, "new": None, "message": None, "updated_at": None}
+    try:
+        raw = json.loads(update_state_path(paths).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return out
+    if not isinstance(raw, dict) or raw.get("state") not in UPDATE_STATES:
+        return out
+    for key in ("old", "new", "message", "updated_at"):
+        value = raw.get(key)
+        out[key] = str(value) if value is not None else None
+    out["state"] = raw["state"]
+    return out
