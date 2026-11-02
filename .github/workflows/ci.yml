@@ -46,7 +46,7 @@ jobs:
 
   test:
     runs-on: windows-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - run: git config --global core.longpaths true
       - uses: actions/checkout@v4
@@ -94,12 +94,20 @@ jobs:
             echo "$changes"
             exit 1
           fi
+          changes="$(git status --porcelain installer/ui/static)"
+          if [ -n "$changes" ]; then
+            echo "::error::installer/ui/static differs from a fresh build of ns_dashboard/ui (npm run build also builds the installer UI); run npm ci and npm run build in ns_dashboard/ui and commit the result"
+            echo "$changes"
+            exit 1
+          fi
       - name: Upload the CI build
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: ui-static-ci-build
-          path: ns_dashboard/static
+          path: |
+            ns_dashboard/static
+            installer/ui/static
           if-no-files-found: ignore
           retention-days: 7
 

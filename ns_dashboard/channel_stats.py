@@ -99,11 +99,8 @@ def qc_tallies(paths: Paths, now: datetime | None = None, days: int = QC_WINDOW_
 
 
 def qc_pass_target(channel: Channel) -> float:
-    """The line the Channels page draws: the profile's own `qc_pass_target` when it has one, else 0.9."""
-    value = getattr(channel, "qc_pass_target", None)
-    if isinstance(value, int | float) and not isinstance(value, bool) and 0 <= value <= 1:
-        return float(value)
-    return DEFAULT_QC_PASS_TARGET
+    """The line the Channels page draws: the profile's `qc_pass_target` (0.9 unless the profile sets it)."""
+    return float(channel.qc_pass_target)
 
 
 def _retention(db: LockedDb, slug: str, now: datetime) -> tuple[float | None, list[float]]:

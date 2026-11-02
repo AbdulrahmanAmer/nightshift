@@ -42,7 +42,7 @@ $MaxFixtureBytes = 1MB
 $ForbiddenNames = @('*.gguf', '*.onnx', '*.safetensors', '*.mp4', '*.exe')
 $ForbiddenDirs = @('.venv', 'venv', '__pycache__', '.git', '.github', 'node_modules')
 # The dashboard and installer builds are committed (CI job ui-build keeps them equal to ns_dashboard/ui); the partner PC has no node.
-$RequiredEntries = @('VERSION', 'pyproject.toml', 'ns_common/__init__.py', 'ns_dashboard/static/index.html', 'ns_dashboard/static/app.js', 'installer/ui/static/index.html', 'installer/ui/static/app.js', 'DEMO.cmd', 'dev/demo/serve.js')
+$RequiredEntries = @('VERSION', 'pyproject.toml', 'ns_common/__init__.py', 'ns_dashboard/static/index.html', 'ns_dashboard/static/app.js', 'ns_dashboard/static/brand/nightshift.ico', 'installer/ui/static/index.html', 'installer/ui/static/app.js', 'DEMO.cmd', 'dev/demo/serve.js')
 
 function Invoke-Git {
     param([string[]]$GitArgs)

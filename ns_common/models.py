@@ -61,6 +61,7 @@ class Channel(Strict):
     fiction_label: bool = True
     creator_note: str = ""
     critic_bar: float = Field(default=8.0, ge=5.0, le=10.0)
+    qc_pass_target: float = Field(default=0.9, ge=0, le=1)   # QC pass-rate line (CR-C9-1)
     pools: Pools = Pools()
     avoid_topics: list[str] = []
     formats_allowed: list[str] = []     # format preset ids (spec 17.1); empty = every shipped preset
@@ -781,6 +782,29 @@ class JobRunRequest(Strict):
     schedule_at: datetime | None = None  # null = run now; a naive time is the PC's local time (CR-C3-UI-5)
 
 
+# `POST /api/jobs/clip` (JSON body; the multipart variant sends the same fields as text plus a `file` part).
+# One video source is expected: `url`, `path`, `upload_id`, `source_id` (re-run) or the multipart file.
+class JobClipRequest(Strict):
+    channel: str
+    rights_confirmed: Literal[True]       # the owner owns the video or is licensed to use it (spec 19.1)
+    url: str | None = None
+    path: str | None = None
+    upload_id: str | None = None
+    source_id: str | None = None
+    template: str = "auto"                # a clip layout / format preset id, "auto" = the model chooses
+    max_clips: int = Field(default=6, ge=1, le=10)
+    min_s: int = Field(default=20, ge=5, le=120)
+    max_s: int = Field(default=60, ge=10, le=180)
+    caption_style: str | None = None
+    schedule_at: datetime | None = None   # null = run now; a naive time is the PC's local time (CR-C3-UI-5)
+
+    @model_validator(mode="after")
+    def _lengths(self) -> JobClipRequest:
+        if self.max_s < self.min_s:
+            raise ValueError("max_s must not be smaller than min_s")
+        return self
+
+
 # The `stats` object of a channel in `GET /api/channels` (Channels page, Home cards).
 class ChannelStats(Strict):
     week: int | None = None
@@ -817,7 +841,7 @@ SCHEMA_MODELS: dict[str, type[BaseModel]] = {
     "plan": Plan, "story": Story, "shorts_plan": ShortsPlanItem, "seo_long": SeoLong,
     "clip_plan": ClipPlanItem, "policy_check": PolicyCheckResult, "transcript": Transcript,
     "clip_layout": ClipLayout, "clip_template": ClipTemplate, "format": Format,
-    "status": Status, "job_run_request": JobRunRequest,
+    "status": Status, "job_run_request": JobRunRequest, "job_clip_request": JobClipRequest,
     "channel_stats": ChannelStats, "voice_design_request": VoiceDesignRequest,
     "voice_clone_request": VoiceCloneRequest, "voice_make_response": VoiceMakeResponse,
 }

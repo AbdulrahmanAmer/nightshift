@@ -113,3 +113,16 @@ def test_other_launchers_call_the_right_tools() -> None:
     assert "doctor --bundle" in read("diagnostics.ps1")
     assert "outbox" in read("open-outbox.ps1")
     assert "studio.exe" in read("nightshift-studio.ps1")
+
+
+def test_host_script_sets_the_window_icon_from_the_shipped_brand_ico() -> None:
+    text = read("nightshift-host.ps1")
+    assert "ns_dashboard\\static\\brand\\nightshift.ico" in text
+    assert "$script:win.Icon" in text and "Test-Path -LiteralPath $iconFile" in text    # skipped when missing
+    ico = Path(__file__).resolve().parents[1] / "ns_dashboard" / "static" / "brand" / "nightshift.ico"
+    assert ico.is_file() and ico.read_bytes()[:4] == b"\x00\x00\x01\x00"                 # a real .ico
+
+
+def test_bundle_script_requires_the_brand_icon() -> None:
+    bundle = (Path(__file__).resolve().parents[1] / "dev" / "make_bundle.ps1").read_text(encoding="utf-8")
+    assert "ns_dashboard/static/brand/nightshift.ico" in bundle

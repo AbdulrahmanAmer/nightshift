@@ -208,7 +208,7 @@ export async function demoHandle(method: string, path: string, body?: any): Prom
     if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,39}$/.test(name)) throw new ApiError("Voice names are 1 to 40 letters, digits, - or _, starting with a letter or digit.", "invalid_voice");
     if (DEMO.voices.some((v: any) => v.name.toLowerCase() === name.toLowerCase())) throw new ApiError(`A voice called '${name}' already exists. Pick another name.`, "voice_exists", `A voice called '${name}' already exists`, "Pick another name.");
     if (p === "/voices/clone") {
-      if (body?.consent !== true) throw new ApiError("Please confirm that you have the right to clone this voice.", "consent_required");
+      if (body?.consent !== true) throw new ApiError("Voice cloning needs the owner's consent. Tick the box that says you have the right to use this voice, then try again.", "NS-E313", "Voice cloning needs the owner's consent", "Tick the box that says you have the right to use this voice, then try again");
       const size = Number(/sample-(d+)./.exec(String(body?.sample_path))?.[1] || 0);
       if (size < 60_000) throw new ApiError("The recording is too short: it needs 3 seconds of clear speech. Record a longer, clean sample of one speaker, with no music or background noise, and try again.", "NS-E312", "The recording is too short: it needs 3 seconds of clear speech", "Record a longer, clean sample of one speaker, with no music or background noise, and try again");
     }

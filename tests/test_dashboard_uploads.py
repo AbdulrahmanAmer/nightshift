@@ -5,7 +5,16 @@ import pytest
 
 from ns_common.paths import Paths
 from ns_dashboard.errors import ApiError
-from ns_dashboard.uploads import CHUNK, MAX_CHUNK, UploadManager, find_source, source_dir
+from ns_dashboard.uploads import (
+    ALLOWED_EXT,
+    AUDIO_EXT,
+    CHUNK,
+    MAX_CHUNK,
+    UPLOAD_EXT,
+    UploadManager,
+    find_source,
+    source_dir,
+)
 
 
 def test_chunk_size_is_8_mb():
@@ -34,6 +43,21 @@ def test_two_chunks_complete_with_sha256(tmp_home: Path):
     with pytest.raises(ApiError) as ei:
         mgr.append(info.upload_id, len(payload), b"x")
     assert ei.value.code == "already_complete"
+
+
+@pytest.mark.parametrize("name", ["me.wav", "me.MP3", "me.m4a", "me.flac", "me.ogg", "recording.webm"])
+def test_voice_sample_audio_extensions_are_accepted(tmp_home: Path, name: str):
+    mgr = UploadManager(Paths.from_env())
+    info = mgr.start(name, 4)
+    mgr.append(info.upload_id, 0, b"RIFF")
+    done = mgr.complete(info.upload_id)
+    assert done.status == "complete" and Path(done.path or "").name == "source" + Path(name).suffix.lower()
+
+
+def test_audio_extensions_are_not_video_extensions():
+    assert {".wav", ".mp3", ".m4a", ".flac", ".ogg"} <= AUDIO_EXT
+    assert not ({".wav", ".mp3", ".m4a", ".flac", ".ogg"} & ALLOWED_EXT)
+    assert UPLOAD_EXT == ALLOWED_EXT | AUDIO_EXT
 
 
 def test_resume_after_dropped_chunk(tmp_home: Path):

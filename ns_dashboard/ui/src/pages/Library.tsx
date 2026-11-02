@@ -255,7 +255,7 @@ function Voices() {
             <IntakeStepper bare title={CLONE_STEPS[step - 1]} caption={`Step ${step} of 4`} value={step} max={4} onChange={(v) => { setStep(v); setFail(null); }} decLabel="Previous step" incLabel="Next step" canIncrement={canNext && busy == null} />
             {step === 1 && (sample
               ? <div className="flex items-center gap-3 rounded-ds-lg bg-ds-sunken p-3 shadow-ds-inset-sm"><Icon name="voice" size={18} className="text-ds-accent-ink" /><span className="min-w-0 flex-1 truncate text-ds-sm font-semibold">{sample.name}</span><Button size="sm" variant="ghost" leadingIcon="x" onClick={() => { setSample(null); setFail(null); }}>Change</Button></div>
-              : <DropTile compact title="Drop a 3 to 30 second sample" sub="One speaker, no music or background noise. A voice you have the rights to" accept="audio/*,video/webm" onFile={(f) => { setSample(f); setFail(null); }} />)}
+              : <DropTile compact title="Drop a 3 to 30 second sample" sub="One speaker, no music or background noise. A voice you have the rights to" accept=".wav,.mp3,.m4a,.flac,.ogg,.webm" onFile={(f) => { setSample(f); setFail(null); }} />)}
             {step === 2 && <Field label="Name" htmlFor="voice-cname" hint="Letters, digits, - or _, no spaces. How it shows in Channels and here"><Input id="voice-cname" placeholder="My-narrator" value={name} onChange={(e) => setName(e.target.value)} aria-invalid={!!name.trim() && !nameOk(name)} /></Field>}
             {step === 3 && <Field label="Test line" htmlFor="voice-line" hint="Nightshift reads this in the new voice before you save"><TextArea id="voice-line" rows={3} value={line} onChange={(e) => setLine(e.target.value)} /></Field>}
             {step === 4 && (

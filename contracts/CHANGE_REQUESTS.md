@@ -366,7 +366,7 @@ Format per entry:
 - **From:** dashboard Create wizard, "When" step; owner decisions of 2026-11-02
 - **Change:** new `ns_common.models.JobRunRequest` (`contracts/schemas/job_run_request.schema.json`) for `POST /api/jobs/run`: `channel: str`, `format: str | None = None`, `count: int | None = None` (1..20), and the new optional `schedule_at: datetime | None = None`. Rule: **`null` (or absent) = run now**. A time without a zone is the PC's local time.
 - **Why:** the wizard's last-but-one step lets the owner pick a start time; the request had no field for it.
-- **Not done here:** `ns_dashboard.svc_jobs.JobsService.create_run` still ignores the key (it reads the body as a dict), so the UI must not send `schedule_at` until C9 honours it (hold the job until that time, then enqueue). The clip request (`POST /api/jobs/clip`, multipart) gets the same field when its model is written.
+- **Not done here:** `ns_dashboard.svc_jobs.JobsService.create_run` still ignores the key (it reads the body as a dict), so the UI must not send `schedule_at` until C9 honours it (hold the job until that time, then enqueue). The clip request (`POST /api/jobs/clip`, multipart) gets the same field when its model is written (done: `JobClipRequest`, CR-C9-1).
 - **Status:** applied in d2a6f4f
 
 ## CR-C3-UI-6: channel stats `qc_pass_rate` and `qc_pass_target`
@@ -396,7 +396,7 @@ Format per entry:
   ```
   The installer verifies the `.nupkg` (a zip, 8,769,233 bytes) and extracts only `lib/net462/Microsoft.Web.WebView2.Wpf.dll`, `lib/net462/Microsoft.Web.WebView2.Core.dll` and `runtimes/win-x64/native/WebView2Loader.dll` into `<home>\bin\webview2\` (this package version has no `lib/net45`; the code falls back to it for older versions).
 - **Why:** the host needs the three DLLs; nothing binary is committed. The sha256 was computed from the downloaded package inside a GitHub Actions run (not on the authoring laptop); the package listing was read in the same run (`lib/net462/*.dll`, `runtimes/win-x64/native/WebView2Loader.dll` present).
-- **Status:** applied in ccf6c7b (`manifest.json` `bins.webview2`, on `feat/c3-ui-contracts`). Before it landed, a missing `bins.webview2` entry is treated like a `TBD-release` hash: the installer skips the package and `nightshift-dashboard.ps1` uses the Edge/Chrome `--app=` window (host exits 3).
+- **Status:** applied in ccf6c7b (`manifest.json` `bins.webview2`, on `feat/c3-ui-contracts`). The pin, the installer unpack (`WEBVIEW2_MEMBERS`) and the host are all on main; a PC where the DLLs or the runtime are missing still falls back to the Edge/Chrome `--app=` window (host exits 3). Nothing left open; the window icon is covered by CR-C9-brand-icon.
 
 ## CR-C1-UI-8: the setup window's UI preferences file (`config/ui_prefs.json`)
 - **From:** installer web wizard (`docs/design/installer-ui.md` section 5.5; the `ui` block of `runtime.json` was not added)
@@ -409,6 +409,7 @@ Format per entry:
 - **Change:** C2 sets `Window.Icon` in `launchers/nightshift-host.ps1` and C1 sets the icon of every shortcut the installer creates (Dashboard, Studio, Outbox, Update, Uninstall) to `ns_dashboard\static\brand\nightshift.ico` (7 sizes, 16 to 256 px, 372 KB; the mark on the `#0b0b1c` squircle). The file ships in the bundle with the static UI; resolve it relative to the install folder, and fall back to the shortcut's default icon when it is missing. The same folder holds `favicon.svg` and the PNG set (`icon-16` to `icon-256`) if a PNG is easier for WPF (`BitmapFrame` from `icon-256.png` also works).
 - **Why:** the brand slot, favicon and in-page marks are done in the UI; the window icon and shortcut icons are the remaining places the old placeholder shows, and they live in C1/C2 files (`launchers/`, `installer/`) that a C9 branch may not edit.
 - **Not done here:** the PowerShell and installer edits. The owner asked for a copy at `launchers/nightshift.ico`; `dev/check_scope.py` rejects `launchers/` on a `feat/c9-*` branch, so the file was not copied there. If C1/C2 prefer it next to the launcher, copy it from `ns_dashboard/static/brand/nightshift.ico` in their own branch.
+- **Status:** applied on `feat/release-0.1.0`: `launchers/nightshift-host.ps1` sets `Window.Icon` from `<app>\ns_dashboard\static\brand\nightshift.ico` (largest frame; no icon when the file is missing); installer step `s09_shortcuts_scheduler` passes the same file to `winenv.create_shortcut`, which sets `IconLocation` (every shortcut the installer creates is a Desktop shortcut; there are no Start-menu shortcuts yet, and a missing file keeps the default icon); `dev/make_bundle.ps1` lists the `.ico` in its required entries. No copy at `launchers/nightshift.ico`: the host and the installer read the one in `static/brand`.
 
 ## CR-C9-1: backend gaps behind the UI contracts (GPU status, voices, scheduling, QC pass rate)
 - **From:** C9 backend builder (`feat/c9-backend-gaps`); implements CR-C3-UI-4 to CR-C3-UI-7
@@ -420,4 +421,4 @@ Format per entry:
   5. The owner suggested `NS-E330` for a bad voice sample; CR-C3-UI-7 already landed `NS-E312` ("Voice sample too short or noisy."), which is what the code raises.
   6. Scope guard: `dev/check_scope.py` allows branch `feat/c9-*` only `ns_dashboard/` plus `tests/`. This work also changes `ns_supervisor/` (GPU probe, scheduled-job wake-up), `ns_tts/` (clone sample checks), `OPERATOR.md` and `docs/OPERATOR_CLI.md`, as the task asked. The PR's scope-check job reports those paths until the orchestrator accepts or re-scopes them.
 - **Why:** the four UI gaps of CR-C3-UI-4..7 needed backend fields and routes; the points above are the contract-side edges found while building them.
-- **Status:** open
+- **Status:** applied on `feat/release-0.1.0`: points 1, 2 and 4 landed (`NS-E313` in `errors.json`, and `POST /api/voices/clone` answers it with 422 instead of `consent_required`; optional `Channel.qc_pass_target` with `ns_dashboard.channel_stats.qc_pass_target` reading it directly; new `ns_common.models.JobClipRequest` with `schedule_at` and `contracts/schemas/job_clip_request.schema.json`). Point 3 stays as written: voice making is synchronous, so `VoiceMakeResponse` keeps `{voice_id, preview_wav_path}` until it becomes a job. Point 5 is informational. Point 6 is the orchestrator's call.

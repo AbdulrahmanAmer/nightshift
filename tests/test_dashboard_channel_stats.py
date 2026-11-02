@@ -4,9 +4,9 @@
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
+from pydantic import ValidationError
 
 from ns_common.models import Channel, ChannelStats
 from ns_common.paths import Paths
@@ -100,9 +100,18 @@ def test_nothing_checked_means_none_and_junk_is_ignored(tmp_home: Path):
 def test_target_defaults_to_0_9_and_honours_a_channel_value():
     ch = Channel(slug="a-b", display_name="A", niche="n")
     assert qc_pass_target(ch) == DEFAULT_QC_PASS_TARGET == 0.9
-    assert qc_pass_target(SimpleNamespace(qc_pass_target=0.75)) == 0.75  # type: ignore[arg-type]
-    for bad in (1.5, -0.1, True, "0.8", None):
-        assert qc_pass_target(SimpleNamespace(qc_pass_target=bad)) == 0.9  # type: ignore[arg-type]
+    assert qc_pass_target(ch.model_copy(update={"qc_pass_target": 0.75})) == 0.75
+    assert Channel(slug="a-b", display_name="A", niche="n", qc_pass_target=0.75).qc_pass_target == 0.75
+    for bad in (1.5, -0.1, "high"):
+        with pytest.raises(ValidationError):
+            Channel(slug="a-b", display_name="A", niche="n", qc_pass_target=bad)
+
+
+def test_a_channel_profile_target_reaches_the_stats_card(tmp_home: Path):
+    client, state = make_env(tmp_home)
+    seed_channel(state.db, state.paths, "after-dark", qc_pass_target=0.8)
+    cards = {c["slug"]: c for c in client.get("/api/channels").json()}
+    assert cards["after-dark"]["stats"]["qc_pass_target"] == 0.8
 
 
 def test_channel_stats_object_has_the_contract_shape(tmp_home: Path):

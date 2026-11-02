@@ -58,7 +58,7 @@ Some actions exist in the Dashboard and for the Assistant (`studio ask`) but hav
 | Action | Where | Notes |
 |---|---|---|
 | Design a voice from a description | Library -> Voices -> Design, `POST /api/voices/design`, Assistant tool `design_voice` | Needs the VoiceDesign model; stores the voice in `models\tts\voices\<name>\` and writes `preview.wav`. `studio voice list` shows it afterwards. |
-| Clone a voice from a recording | Library -> Voices -> Clone, `POST /api/voices/clone`, Assistant tool `clone_voice` | Needs `consent: true` (the Yes on the Assistant's card counts). A 3-30 s clean single-speaker recording; otherwise `NS-E312`. |
+| Clone a voice from a recording | Library -> Voices -> Clone, `POST /api/voices/clone`, Assistant tool `clone_voice` | Needs `consent: true` (the Yes on the Assistant's card counts). A 3-30 s clean single-speaker recording; otherwise `NS-E312`. Without consent the answer is `NS-E313`. |
 | Start a job at a chosen time | Create -> When, `POST /api/jobs/run` and `POST /api/jobs/clip` with `schedule_at`, Assistant tool `start_story_job` | `null` or a past time starts now; a time without a zone is PC local time; at most 31 days ahead. The job stays `queued` with its `schedule_at` until due. `ns schedule` (the nightly task) is unchanged. |
 
 ## ns

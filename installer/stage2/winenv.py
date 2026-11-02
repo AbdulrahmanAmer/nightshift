@@ -50,9 +50,11 @@ def desktop_dir(runner: Runner) -> Path | None:
 
 
 def create_shortcut(
-    runner: Runner, lnk: Path, target: str, arguments: str, workdir: Path, description: str
+    runner: Runner, lnk: Path, target: str, arguments: str, workdir: Path, description: str,
+    icon: Path | None = None,
 ) -> bool:
-    """Create a .lnk with WScript.Shell. True when PowerShell reported success."""
+    """Create a .lnk with WScript.Shell (`icon`, an .ico, becomes its IconLocation). True on success."""
+    icon_part = f"$s.IconLocation = '{ps_quote(str(icon))},0'; " if icon is not None else ""
     script = (
         "$s = (New-Object -ComObject WScript.Shell).CreateShortcut("
         f"'{ps_quote(str(lnk))}'); "
@@ -60,7 +62,10 @@ def create_shortcut(
         f"$s.Arguments = '{ps_quote(arguments)}'; "
         f"$s.WorkingDirectory = '{ps_quote(str(workdir))}'; "
         f"$s.Description = '{ps_quote(description)}'; "
+        f"{icon_part}"
         "$s.Save()"
     )
     meta = {"lnk": str(lnk), "target": target, "arguments": arguments}
+    if icon is not None:
+        meta["icon"] = str(icon)
     return run_ps(runner, script, tag="ps:shortcut", meta=meta).ok

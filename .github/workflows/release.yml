@@ -20,7 +20,7 @@ env:
 jobs:
   test:
     runs-on: windows-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - run: git config --global core.longpaths true
       - uses: actions/checkout@v4
@@ -36,7 +36,7 @@ jobs:
   release:
     needs: test
     runs-on: windows-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     permissions:
       contents: write
     env:
@@ -72,9 +72,12 @@ jobs:
           npm run build
           if ($LASTEXITCODE -ne 0) { throw 'npm run build failed' }
           Pop-Location
-          # make_bundle.ps1 archives HEAD, so the committed ns_dashboard/static is what ships; it must equal this build.
+          # make_bundle.ps1 archives HEAD, so the committed ns_dashboard/static and installer/ui/static are what ships; it must equal this build.
           $changes = @(git status --porcelain ns_dashboard/static)
           if ($changes.Count -gt 0) { $changes; throw 'ns_dashboard/static differs from a fresh build of ns_dashboard/ui' }
+          # the same build writes the installer's setup window to installer/ui/static (vite.installer.config.ts)
+          $changes = @(git status --porcelain installer/ui/static)
+          if ($changes.Count -gt 0) { $changes; throw 'installer/ui/static differs from a fresh build of ns_dashboard/ui' }
 
       - name: Build bundle
         shell: pwsh

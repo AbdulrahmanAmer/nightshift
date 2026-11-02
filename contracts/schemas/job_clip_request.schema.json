@@ -1,0 +1,119 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "channel": {
+      "title": "Channel",
+      "type": "string"
+    },
+    "rights_confirmed": {
+      "const": true,
+      "title": "Rights Confirmed",
+      "type": "boolean"
+    },
+    "url": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Url"
+    },
+    "path": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Path"
+    },
+    "upload_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Upload Id"
+    },
+    "source_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Source Id"
+    },
+    "template": {
+      "default": "auto",
+      "title": "Template",
+      "type": "string"
+    },
+    "max_clips": {
+      "default": 6,
+      "maximum": 10,
+      "minimum": 1,
+      "title": "Max Clips",
+      "type": "integer"
+    },
+    "min_s": {
+      "default": 20,
+      "maximum": 120,
+      "minimum": 5,
+      "title": "Min S",
+      "type": "integer"
+    },
+    "max_s": {
+      "default": 60,
+      "maximum": 180,
+      "minimum": 10,
+      "title": "Max S",
+      "type": "integer"
+    },
+    "caption_style": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Caption Style"
+    },
+    "schedule_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Schedule At"
+    }
+  },
+  "required": [
+    "channel",
+    "rights_confirmed"
+  ],
+  "title": "JobClipRequest",
+  "type": "object"
+}

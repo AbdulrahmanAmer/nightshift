@@ -71,9 +71,35 @@ gh api -X PUT repos/AbdulrahmanAmer/nightshift/actions/permissions/workflow -f d
 | `.github/workflows/release.yml` | tag `v*` | tests, UI build (node 20) and check, `dev/make_bundle.ps1`, GitHub Release with `Nightshift-<ver>.zip`, `.sha256`, `nightshift-app-<ver>.zip` |
 | `.github/workflows/build-qwentts.yml` | `workflow_dispatch`, tag `v*` | builds `qwentts-win-cuda-x64.zip` on `windows-2022` (see "qwentts build") |
 
-Cutting a release (orchestrator): move the `## [Unreleased]` entries in `CHANGELOG.md` under `## [x.y.z]`, set `VERSION`,
+Cutting a release (orchestrator; the full loop including the qwentts pin is under "Release loop" below): move the `## [Unreleased]` entries in `CHANGELOG.md` under `## [x.y.z]`, set `VERSION`,
 `pyproject.toml` and `ns_common.__version__` to `x.y.z`, merge to `main`, wait for green CI, then
 `git tag vX.Y.Z && git push origin vX.Y.Z`. `release.yml` fails when the tag, `VERSION` or the changelog heading disagree.
+
+## Release loop: tag, release workflow, `bins.qwentts` pin
+
+`bins.qwentts` in `manifest.json` is `null` until a release carries `qwentts-win-cuda-x64.zip`; the loop below fills it.
+Release tags cannot be moved or deleted (tag ruleset above), so each step is done once, in this order.
+
+1. **Before tagging.** `main` CI is green; `VERSION`, `pyproject.toml` and `ns_common.__version__` say `0.1.0`; `CHANGELOG.md` has
+   `## [0.1.0] - <date>` with the entries under it.
+2. **Tag.** `git tag v0.1.0 && git push origin v0.1.0` on the green `main` commit.
+3. **Two workflows start on the tag, independently.**
+   - `release.yml` (about 10 minutes): tests, the tag/`VERSION`/changelog check, `ns_dashboard/ui` build (`npm run build` also builds the installer
+     UI) and a diff against the committed `ns_dashboard/static` and `installer/ui/static`, `dev/make_bundle.ps1`, then a
+     GitHub Release `Nightshift v0.1.0` with `Nightshift-0.1.0.zip`, `Nightshift-0.1.0.zip.sha256` and `nightshift-app-0.1.0.zip`.
+   - `build-qwentts.yml` (about 45 minutes, `windows-2022`): builds qwentts.cpp with CUDA and attaches
+     `qwentts-win-cuda-x64.zip` and `qwentts-win-cuda-x64.zip.sha256` to the same release (it creates the release when
+     `release.yml` has not yet; the other workflow then only uploads its assets).
+4. **Pin.** When both are green, read the digest of the published asset (never of another build; the zip is not reproducible):
+   `gh api repos/AbdulrahmanAmer/nightshift/releases/tags/v0.1.0 --jq '.assets[]|{name,digest}'`. Set in `manifest.json`:
+   `"qwentts": {"version": "0.1.0", "url": "https://github.com/AbdulrahmanAmer/nightshift/releases/download/v0.1.0/qwentts-win-cuda-x64.zip", "sha256": "<digest without the sha256: prefix>"}`.
+   Open a PR (`tools/resolve_manifest.py --check` and the manifest tests run in CI) and merge it.
+5. **What the pin changes.** `Nightshift-0.1.0.zip` was built from the tagged commit, so its manifest still has `qwentts: null`:
+   the installer then probes `releases/latest/download/qwentts-win-cuda-x64.zip` and uses it unverified when it exists. The
+   verified pin ships in the next bundle (cut `v0.1.1` with the pin, or any later release). If the qwentts build fails, fix
+   `build-qwentts.yml`, run it with `workflow_dispatch` (it uploads a workflow artifact only; attach the zip to the release by
+   hand with `gh release upload v0.1.0 <zip> <zip>.sha256`) and continue at step 4. To bump qwentts.cpp later, change
+   `QWENTTS_SHA` in the workflow, tag the next release, and repeat step 4.
 
 ## qwentts build
 

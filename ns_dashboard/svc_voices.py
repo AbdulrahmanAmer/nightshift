@@ -3,8 +3,9 @@
 `POST /api/voices/design` and `POST /api/voices/clone` validate the request, check a clone sample with the
 `ns_tts.sample` utilities (`NS-E312` when it is too short or noisy) and hand the work to the
 `VoiceMakerAdapter`: the real one calls the TTS service through the supervisor, the fake uses `FakeEngine`.
-Both answer `{voice_id, preview_wav_path}` once the voice is stored under `models/tts/voices/<name>/` and
-its `preview.wav` (the test line) exists. The calls are synchronous: the response contract has no job id.
+A clone without `consent: true` answers `NS-E313` (422). Both answer `{voice_id, preview_wav_path}` once the
+voice is stored under `models/tts/voices/<name>/` and its `preview.wav` (the test line) exists. The calls are
+synchronous: the response contract has no job id.
 """
 
 from __future__ import annotations
@@ -14,7 +15,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from ns_common.errors import NsError
+from ns_common.errors import NsError, describe
 from ns_common.models import VoiceMakeResponse
 from ns_dashboard.adapters import MadeVoice
 from ns_dashboard.errors import ApiError
@@ -88,12 +89,8 @@ class VoicesService:
         """New voice cloned from a recording on this PC; needs `consent: true`."""
         self._accepting()
         if body.get("consent") is not True:
-            raise ApiError(
-                422,
-                "consent_required",
-                "Please confirm that you have the right to clone this voice.",
-                hint="Only clone your own voice or one you have written permission to use.",
-            )
+            d = describe("NS-E313")
+            raise ApiError(422, "NS-E313", d.message, hint=d.hint)
         name = self._new_name(body)
         test_line = _text(body, "test_line", "The test line", MAX_TEST_LINE)
         raw = str(body.get("sample_path") or "").strip()
