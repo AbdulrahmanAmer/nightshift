@@ -133,8 +133,12 @@ def copy_to_clipboard(text: str) -> None:
 
 
 def default_uv_path(home: Path) -> str:
-    """uv from PATH, else the copy b02 puts under the install folder."""
-    return shutil.which("uv") or str(home / "bin" / "uv" / "uv.exe")
+    """uv: the copy under the install folder first (the installer never puts it on PATH), else PATH.
+
+    Same order as ns_common.uv.find_uv; this module stays stdlib-only so it does not import it.
+    """
+    local = home / "bin" / "uv" / "uv.exe"
+    return str(local) if local.is_file() else (shutil.which("uv") or str(local))
 
 
 @dataclass

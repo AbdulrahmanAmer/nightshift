@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import shutil
 import threading
 import time
 from collections.abc import Callable
@@ -24,6 +23,7 @@ from installer.stage2.winenv import HOME_VAR
 from ns_common.logging import NsLogger
 from ns_common.models import Manifest
 from ns_common.paths import Paths
+from ns_common.uv import find_uv
 
 
 def default_http() -> httpx.Client:
@@ -115,10 +115,7 @@ class StepContext:
 
     def uv(self) -> str:
         """uv executable: the one stage 1 put under bin\\uv, else PATH, else plain ``uv``."""
-        local = self.paths.home / "bin" / "uv" / "uv.exe"
-        if local.exists():
-            return str(local)
-        return shutil.which("uv") or "uv"
+        return find_uv(self.paths) or "uv"
 
     def tool_argv(self, tool: str, args: list[str]) -> list[str]:
         """Command line for the ``ns`` or ``studio`` console script of the studio venv."""

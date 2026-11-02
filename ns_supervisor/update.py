@@ -23,6 +23,7 @@ from ns_common import __version__
 from ns_common.errors import NsError
 from ns_common.logging import NsLogger
 from ns_common.paths import Paths
+from ns_common.uv import find_uv, home_uv
 
 PRESERVE = (".git", "config", "answers.json")
 VENV_EXTRAS = (("studio", "[studio]", False), ("supervisor", "[supervisor]", False), ("tts", "[tts]", True))
@@ -272,14 +273,16 @@ def resync_venvs(
 ) -> list[str]:
     """`uv pip install -e <app>[extras]` in every venv that exists; raises `NS-E702` on failure."""
     runner = run or _run
-    exe = uv if uv is not None else shutil.which("uv")
+    exe = uv if uv is not None else find_uv(paths)
     done: list[str] = []
     for venv, extras, no_deps in VENV_EXTRAS:
         py = paths.venvs / venv / "Scripts" / "python.exe"
         if not py.exists():
             continue
         if exe is None:
-            raise NsError("NS-E702", "uv was not found on PATH; cannot re-sync the venvs")
+            raise NsError(
+                "NS-E702", f"uv was not found at {home_uv(paths.home)} or on PATH; cannot re-sync the venvs"
+            )
         cmd = [exe, "pip", "install", "-e", f"{app}{extras}", "--python", str(py)]
         if no_deps:
             cmd.append("--no-deps")
