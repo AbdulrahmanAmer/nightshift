@@ -24,6 +24,7 @@ from ns_common.logging import NsLogger
 from ns_common.models import Runtime
 from ns_common.paths import Paths
 from ns_supervisor import procs
+from ns_supervisor.gpu import GpuProbe, NullGpuProbe, NvidiaSmiGpuProbe
 from ns_supervisor.lock import GpuLock
 from ns_supervisor.schedule_cfg import read_run_time, seconds_until_next_run
 from ns_supervisor.services import SERVICES, ServiceDef, build_service
@@ -78,6 +79,7 @@ class Supervisor:
         clock: Callable[[], float] = time.monotonic,
         now: Callable[[], datetime] = datetime.now,
         starter: Callable[..., procs.Proc] | None = None,
+        gpu_probe: GpuProbe | None = None,
     ) -> None:
         self.paths = paths
         self.runtime = runtime
@@ -87,6 +89,9 @@ class Supervisor:
         self.clock = clock
         self.now = now
         self._start_proc = starter or procs.start
+        self.gpu_probe: GpuProbe = gpu_probe or (
+            NvidiaSmiGpuProbe() if runtime.profile == "gpu" else NullGpuProbe()
+        )
         self.log = NsLogger("supervisor", paths.logs)
         self.lock = GpuLock()
         self.services: dict[str, ServiceRuntime] = {
@@ -434,6 +439,7 @@ class Supervisor:
         """The `/status` payload."""
         now = self.clock()
         st = self.lock.state
+        gpu = self.gpu_probe.sample()
         services: dict[str, Any] = {}
         for n, r in self.services.items():
             info: dict[str, Any] = {
@@ -467,6 +473,7 @@ class Supervisor:
             "shutting_down": self.shutting_down,
             "uptime_s": round(now - self.started_at, 1),
             "services": services,
+            "gpu": gpu.model_dump(mode="json") if gpu is not None else None,
         }
 
     # ------------------------------------------------------------------ monitor

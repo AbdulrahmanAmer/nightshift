@@ -453,6 +453,14 @@ def create_app(
         data = await run_in_threadpool(dash.settings.voice_preview, await body_json(request))
         return Response(content=data, media_type="audio/wav")
 
+    @app.post("/api/voices/design")
+    async def voices_design(request: Request) -> SafeJSONResponse:
+        return ok(await run_in_threadpool(dash.voices.design, await body_json(request)))
+
+    @app.post("/api/voices/clone")
+    async def voices_clone(request: Request) -> SafeJSONResponse:
+        return ok(await run_in_threadpool(dash.voices.clone, await body_json(request)))
+
     # ------------------------------------------------------------ library
     @app.get("/api/library/ideas")
     async def library_ideas(request: Request) -> SafeJSONResponse:
