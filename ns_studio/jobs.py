@@ -15,7 +15,7 @@ from ns_common.db import Db, new_job_id
 from ns_common.logging import NsLogger
 from ns_common.models import Channel, Combo, Runtime
 from ns_common.paths import Paths
-from ns_studio.channels.crud import add_channel, all_channels, get_channel
+from ns_studio.channels.crud import add_channel, all_channels, get_channel, sync_channel_row
 from ns_studio.context import FAKEABLE, JobContext, Services, build_services
 from ns_studio.errors import StudioError
 from ns_studio.variation.draw import draw_combo, record_combo
@@ -158,6 +158,8 @@ def make_job(
     """Draw a combo, record it in the ledger unless `record` is False, create the job dir and context."""
     now = now or datetime.now(UTC)
     rng = rng or random.Random()
+    # The setup channel exists only as YAML; `ideas`, `stories`, `combos` and `outputs` reference its row.
+    sync_channel_row(env.db, channel, now)
     if "llm" in env.fake:
         fixed = {**FAKE_LLM_COMBO, **(fixed or {})}  # the fixtures are written for this budget
     combo = draw_combo(env.db, channel, rng=rng, now=now, fixed=fixed)
@@ -200,9 +202,11 @@ def load_job(env: Env, job_id: str) -> JobContext:
     if not f.exists():
         raise StudioError("NS-E326", f"job {job_id} has no job.json under {job_dir}")
     data = json.loads(f.read_text(encoding="utf-8"))
+    channel = get_channel(env.paths, data["channel"])
+    sync_channel_row(env.db, channel)
     return JobContext(
         job_id=job_id,
-        channel=get_channel(env.paths, data["channel"]),
+        channel=channel,
         combo=Combo.model_validate(data["combo"]),
         fmt=cast(Fmt, data["fmt"]),
         paths=env.paths,

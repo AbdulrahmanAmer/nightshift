@@ -36,6 +36,7 @@ from ns_common.models import (
     Word,
 )
 from ns_common.paths import Paths
+from ns_studio.channels.crud import sync_channel_row
 from ns_studio.clipper import analyze, detect, layout, render, select, seo, source, transcribe_stage
 from ns_studio.clipper.models import Analysis, ClipItem, ClipMetadata, ClipParams
 from ns_studio.context import FAKEABLE, JobContext, build_services
@@ -115,10 +116,7 @@ def create_clip_job(
     services = build_services(rt, fake=set(fake), paths=paths, keys=keys, llm_fixtures=llm_fixtures)
     db = Db(paths.db_path)
     db.migrate()
-    db.execute(
-        "INSERT OR IGNORE INTO channels(slug, display_name, created_at) VALUES (?,?,?)",
-        (channel.slug, channel.display_name, datetime.now(UTC).isoformat(timespec="seconds")),
-    )
+    sync_channel_row(db, channel)
     jid = job_id or new_job_id(channel.slug)
     job_dir = paths.job_dir(jid)
     job_dir.mkdir(parents=True, exist_ok=True)
