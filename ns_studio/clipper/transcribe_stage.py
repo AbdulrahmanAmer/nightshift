@@ -7,6 +7,7 @@ speaker) and must hold at least 30 words (NS-E406).
 """
 from __future__ import annotations
 
+from bisect import bisect_right
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
@@ -58,19 +59,35 @@ def assign_speakers(tr: Transcript) -> Transcript:
     return tr.model_copy(update={"segments": out})
 
 
-def _segment_index(segments: list[Segment], t: float) -> int:
-    for s in segments:
-        if s.start <= t <= s.end:
-            return s.i
-    return min(segments, key=lambda s: min(abs(s.start - t), abs(s.end - t))).i if segments else 0
+def _segment_index(segments: list[Segment], starts: list[float], t: float) -> int:
+    """Index (`Segment.i`) of the segment holding time `t`, else the nearest one; bisect over the starts."""
+    if not segments:
+        return 0
+    pos = max(0, bisect_right(starts, t) - 1)
+
+    def gap(s: Segment) -> float:
+        return 0.0 if s.start <= t <= s.end else min(abs(s.start - t), abs(s.end - t))
+
+    return min(segments[max(0, pos - 1) : pos + 2], key=gap).i
+
+
+def _make_word(raw: Any, seg: int) -> Word:
+    start = float(_get(raw, "start", default=0.0))
+    end = float(_get(raw, "end", default=start))
+    return Word(
+        w=str(_get(raw, "w", "word", "text", default="")).strip(), start=start, end=max(end, start), seg=seg
+    )
 
 
 def transcribe_with(
     transcriber: Any, wav: Path, *, source_name: str, duration_s: float, language: str = "en"
 ) -> Transcript:
-    """Run a Transcriber (`segments(wav)` and `words(wav)`) and assemble a `Transcript`."""
-    raw_segs: Iterable[Any] = transcriber.segments(wav, language)
-    raw_words: Iterable[Any] = transcriber.words(wav, language)
+    """Run a Transcriber once and assemble a `Transcript` (segments, and the words each segment carries).
+
+    `WhisperTranscriber.segments()` already returns the word timestamps, so a second `words()` pass over a
+    4 h source (the longest stage) is only made for a transcriber whose segments hold no words.
+    """
+    raw_segs: list[Any] = list(transcriber.segments(wav, language))
     segments = [
         Segment(
             i=i,
@@ -81,18 +98,13 @@ def transcribe_with(
         )
         for i, s in enumerate(raw_segs)
     ]
-    words: list[Word] = []
-    for w in raw_words:
-        start = float(_get(w, "start", default=0.0))
-        end = float(_get(w, "end", default=start))
-        words.append(
-            Word(
-                w=str(_get(w, "w", "word", "text", default="")).strip(),
-                start=start,
-                end=max(end, start),
-                seg=_segment_index(segments, (start + end) / 2.0),
-            )
-        )
+    words = [_make_word(w, i) for i, s in enumerate(raw_segs) for w in (_get(s, "words", default=()) or ())]
+    if not words:
+        starts = [s.start for s in segments]
+        raw_words: Iterable[Any] = transcriber.words(wav, language)
+        for raw in raw_words:
+            w = _make_word(raw, 0)
+            words.append(w.model_copy(update={"seg": _segment_index(segments, starts, (w.start + w.end) / 2.0)}))
     return Transcript(
         source=source_name, duration_s=duration_s, language=language, segments=segments, words=words
     )
