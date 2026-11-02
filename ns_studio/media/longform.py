@@ -12,13 +12,21 @@ from ns_common import ffmpeg as ff
 from ns_common.errors import NsError
 from ns_studio.context import JobContext
 from ns_studio.media.audio import assemble_audio, loudnorm
+from ns_studio.media.caption_plan import (
+    AssOptions,
+    emphasis_from_beats,
+    mask_profanity_setting,
+    safe_zones_for,
+)
 from ns_studio.media.captions import _ass_color as ass_color
 from ns_studio.media.captions import _ass_time as ass_time
+from ns_studio.media.captions import build_ass, caption_band, ensure_contrast, shift_words
 from ns_studio.media.clips import ClipCache, Searcher, assign_clips, blocked_for_job, clip_seed, fallback_beat
 from ns_studio.media.master import (
     CARD_S,
     ChapterTiming,
     load_chapters,
+    long_caption_style,
     load_words,
     timeline_from_manifest,
 )
@@ -26,6 +34,7 @@ from ns_studio.media.presets import (
     FONTS_DIR,
     ChapterCard,
     VisualTreatment,
+    caption_style,
     chapter_card,
     load_chapter_cards,
     visual_treatment,
@@ -34,6 +43,7 @@ from ns_studio.media.render import (
     FINAL_LUFS,
     FINAL_TP,
     LANDSCAPE,
+    backdrop_luma,
     encoder_args,
     escape_filter_path,
     post_chain,
@@ -201,6 +211,37 @@ def build_segment_graph(
     return ";".join(chains)
 
 
+def fit_chapter_contrast(ctx: JobContext, t: ChapterTiming, shots: Sequence[Shot]) -> list[float]:
+    """Rewrite a chapter's caption file in the boxed variant when the footage behind it is too bright (17.2).
+
+    The captions stage built `captions/long_c<n>.ass` without looking at the footage; here the clips are known.
+    Returns the luma samples (empty when sampling failed: best effort, a render never fails on it).
+    """
+    plan_file = ctx.file("visual_plan.json")
+    beats: list[dict[str, Any]] = ctx.read_json("visual_plan.json") if plan_file.exists() else []
+    style = long_caption_style(ctx)
+    st = caption_style(style)
+    opts = AssOptions(
+        variant="landscape", safe_zones=safe_zones_for("landscape"),
+        mask_profanity=mask_profanity_setting(ctx.channel), emphasis=emphasis_from_beats(beats, chapter=t.n),
+    )
+    band = caption_band(st, opts.variant, safe_zones=opts.safe_zones)
+    local_shots = [_shift(s, -t.seg_start) for s in shots]
+    try:
+        luma = backdrop_luma(local_shots, band, LANDSCAPE, t.end - t.seg_start)
+    except (NsError, OSError) as e:
+        ctx.log.warn("caption_contrast_skipped", str(e)[:200])
+        return []
+    if luma and ensure_contrast(st, luma) is not st:
+        words = shift_words(load_words(ctx, f"c{t.n}"), t.audio_start - t.seg_start)
+        ctx.file(f"captions/long_c{t.n}.ass").write_text(
+            build_ass(words, style, first_at_zero=t.audio_start == t.seg_start, backdrop_luma=luma,
+                      **opts.kwargs()),
+            encoding="utf-8",
+        )
+    return luma
+
+
 def render_segment(
     ctx: JobContext,
     t: ChapterTiming,
@@ -216,6 +257,7 @@ def render_segment(
     if not shots:
         raise NsError("NS-E401", f"chapter {t.n} has no shots")
     edges = segment_edges(shots, aud_f, content, fps)
+    fit_chapter_contrast(ctx, t, shots)
     card_path = None
     inputs: list[str] = []
     if card_frames > 0:
