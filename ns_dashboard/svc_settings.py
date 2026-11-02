@@ -13,7 +13,7 @@ from pydantic import ValidationError
 
 from ns_common.config import save_runtime
 from ns_common.models import Runtime
-from ns_dashboard import logs_tail
+from ns_dashboard import logs_tail, runtime_flags
 from ns_dashboard.adapters import KEY_NAMES
 from ns_dashboard.common import now_iso
 from ns_dashboard.errors import AdapterUnavailable, ApiError
@@ -57,7 +57,7 @@ class SettingsService:
         """`{schedule_time, home, profile, flags, keys, notifications, ...}`."""
         stored = load_dashboard_settings(self.s.paths)
         runtime = self.engine.runtime_summary()
-        flags = {k: v for k, v in (runtime or {}).items() if k not in ("profile", "supervisor_port")}
+        flags = runtime_flags.flatten(runtime or {})
         nxt = self.engine.next_run()
         prefs = load_ui_prefs(self.s.paths)
         return {
@@ -109,7 +109,7 @@ class SettingsService:
         current = self.engine.runtime_summary()
         if current is None:
             raise ApiError(409, "no_runtime", "runtime.json does not exist yet; run the installer first.")
-        merged = {**current, **(body.get("flags") or {})}
+        merged = runtime_flags.apply_flags(current, body.get("flags") or {})
         if body.get("profile"):
             merged["profile"] = body["profile"]
         try:

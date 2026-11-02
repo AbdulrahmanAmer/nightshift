@@ -557,13 +557,14 @@ def test_runtime_flags_locked_until_unlocked(tmp_home: Path):
     dash, state = make(tmp_home)
     save_runtime(state.paths, Runtime.default("cpu-dev"))
     s = dash.settings.get_settings()
-    assert s["profile"] == "cpu-dev" and s["flags"]["video"]["encoder"] == "libx264"
+    assert s["profile"] == "cpu-dev" and s["flags"]["video.encoder"] == "libx264"
     assert "profile" not in s["flags"] and "supervisor_port" not in s["flags"]
+    assert all(isinstance(v, str | int | float | bool) for v in s["flags"].values())
     change = {"flags": {"video": {"encoder": "libx264", "preset": "fast", "fps": 30}}}
     assert code_of(dash.settings.put_settings, change) == "runtime_locked"
     assert load_runtime(state.paths).video.preset == "ultrafast"
     out = dash.settings.put_settings({**change, "unlock": True})
-    assert out["flags"]["video"]["preset"] == "fast" and load_runtime(state.paths).video.preset == "fast"
+    assert out["flags"]["video.preset"] == "fast" and load_runtime(state.paths).video.preset == "fast"
     bad = {"flags": {"video": {"encoder": "divx"}}, "unlock": True}
     assert code_of(dash.settings.put_settings, bad) == "invalid_runtime"
     assert dash.settings.put_settings({"profile": "gpu"}, unlock=True)["profile"] == "gpu"

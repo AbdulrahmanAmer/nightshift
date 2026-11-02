@@ -383,3 +383,28 @@ def test_thumbnail_choices_are_served(tmp_home: Path):
     assert client.get(f"/api/thumbs/2/{long_}").status_code == 404  # not made
     assert client.get(f"/api/thumbs/4/{long_}").status_code == 404
     assert client.get("/api/thumbs/1/nope-20260101-abcd/long").status_code == 404
+
+
+# ------------------------------------------------------------------ row 8: Settings > Models edits plain values
+
+
+def test_engine_flags_round_trip_as_dotted_plain_values(tmp_home: Path):
+    """Every value was a nested object shown as `[object Object]` and saved back as that text (422)."""
+    from ns_common.config import load_runtime, save_runtime
+    from ns_common.models import Runtime
+
+    dash, state = make(tmp_home)
+    save_runtime(state.paths, Runtime.default("cpu-dev"))
+    flags = dash.settings.get_settings()["flags"]
+    assert flags and all(isinstance(v, str | int | float | bool) for v in flags.values())
+    assert {"llama.flags.ctx", "video.encoder", "tts.port", "whisper.model"} <= set(flags)
+    # what the page sends: every value as text, only one changed
+    sent = {k: str(v) for k, v in flags.items()}
+    sent["llama.flags.ctx"] = "8192"
+    sent["video.fps"] = "24"
+    out = dash.settings.put_settings({"flags": sent}, unlock=True)
+    rt = load_runtime(state.paths)
+    assert rt.llama.flags.ctx == 8192 and rt.video.fps == 24
+    assert rt.tts.port == flags["tts.port"] and rt.llama.flags.kv_type == flags["llama.flags.kv_type"]
+    assert out["flags"]["llama.flags.ctx"] == 8192
+    assert code_of(dash.settings.put_settings, {"flags": {"video.encoder": "divx"}}, unlock=True) == "invalid_runtime"
