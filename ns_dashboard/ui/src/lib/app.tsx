@@ -5,7 +5,7 @@ import type { Status } from "./types";
 
 export type Theme = "light" | "dark" | "soft";
 export type Toast = { id: number; text: string; tone?: "ok" | "bad" | "warn" };
-export type ConfirmReq = { title: string; body?: string; ok?: string; danger?: boolean; input?: { label: string; placeholder?: string }; resolve: (v: string | boolean | null) => void };
+export type ConfirmReq = { title: string; body?: string; ok?: string; danger?: boolean; input?: { label: string; placeholder?: string }; /** A second choice next to OK; picking it resolves to "alt". */ alt?: string; resolve: (v: string | boolean | null) => void };
 
 interface AppCtx {
   status: Status | null; demo: boolean; refresh: () => Promise<void>;
