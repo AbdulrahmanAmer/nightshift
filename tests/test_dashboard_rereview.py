@@ -563,3 +563,42 @@ def test_the_library_titles_the_new_voice_states():
     src = page("Library.tsx")
     for code in ("NS-E311", "NS-E315", "base_model_missing"):
         assert f'"{code}":' in src
+
+
+# ---------------------------------------------------------------- row 9: a stale "running" update state
+
+
+def write_update_state(paths: Paths, **fields: Any) -> None:
+    f = paths.home / "run" / "update_state.json"
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text(json.dumps({"state": "running", "old": "0.1.0", "new": None, "message": "Updating.", **fields}), encoding="utf-8")
+
+
+def test_a_running_update_whose_process_is_gone_is_shown_as_failed(tmp_home: Path):
+    from datetime import datetime
+
+    from ns_dashboard import updater
+
+    paths = Paths.from_env()
+    write_update_state(paths, pid=4242, updated_at=datetime.now().isoformat())
+    now = updater.read_update_state(paths, alive=lambda _pid: False)
+    assert now["state"] == "failed" and now["stale"] is True and "update-" in now["message"]
+    alive = updater.read_update_state(paths, alive=lambda _pid: True)
+    assert alive["state"] == "running" and "stale" not in alive and alive["message"] == "Updating."
+
+
+def test_without_a_known_process_only_age_makes_a_running_state_stale(tmp_home: Path):
+    from datetime import datetime, timedelta
+
+    from ns_dashboard import updater
+
+    paths = Paths.from_env()
+    now = datetime(2026, 11, 2, 12, 0, 0)
+    write_update_state(paths, updated_at=(now - timedelta(minutes=5)).isoformat())
+    assert updater.read_update_state(paths, alive=lambda _p: None, now=lambda: now)["state"] == "running"
+    write_update_state(paths, updated_at=(now - timedelta(minutes=31)).isoformat())
+    assert updater.read_update_state(paths, alive=lambda _p: None, now=lambda: now)["state"] == "failed"
+    write_update_state(paths, pid=7, updated_at=(now - timedelta(minutes=45)).isoformat())
+    assert updater.read_update_state(paths, alive=lambda _p: None, now=lambda: now)["state"] == "failed"  # unknown: age decides
+    write_update_state(paths, state="done", new="0.1.1", updated_at=(now - timedelta(days=3)).isoformat())
+    assert updater.read_update_state(paths, alive=lambda _p: False, now=lambda: now)["state"] == "done"  # only `running` goes stale

@@ -13,6 +13,7 @@ import re
 import subprocess
 import sys
 from collections.abc import Callable
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -216,12 +217,36 @@ def update_state_path(paths: Paths) -> Path:
     return paths.home / "run" / UPDATE_STATE_FILE
 
 
-def read_update_state(paths: Paths) -> dict[str, Any]:
+#: A `running` state that has not changed for this long, with no updater process behind it, is not running.
+STALE_AFTER = timedelta(minutes=30)
+STALE_MESSAGE = "The update stopped without finishing. Nothing was lost; see the newest update-....log in the logs folder."
+
+
+def updater_alive(pid: int) -> bool | None:
+    """True when `pid` is a Python process (the detached updater), False when it is gone, None when unknown."""
+    try:
+        from ns_supervisor.control import image_name
+    except ImportError:
+        return None
+    name = image_name(pid)
+    return name is not None and "python" in name
+
+
+def read_update_state(
+    paths: Paths,
+    *,
+    alive: Callable[[int], bool | None] = updater_alive,
+    now: Callable[[], datetime] = datetime.now,
+) -> dict[str, Any]:
     """What the detached updater says it is doing: `{state, old, new, message, updated_at}`.
 
     The updater (which outlives the dashboard it replaces) writes `{"state": "running" | "done" | "failed",
     "old": "0.1.0", "new": "0.1.1", "message": "...", "updated_at": "<ISO time>"}`; the Settings page polls
     this after Install, also across the dashboard restart. No file, or one that cannot be read, is `idle`.
+
+    A `running` state whose updater process is gone (the PC lost power, the worker was killed), or that has not
+    been touched for 30 minutes and names no process, is reported as `failed` with `stale: true`, so the page
+    does not show "Installing the update" for ever.
     """
     out: dict[str, Any] = {"state": "idle", "old": None, "new": None, "message": None, "updated_at": None}
     try:
@@ -234,4 +259,22 @@ def read_update_state(paths: Paths) -> dict[str, Any]:
         value = raw.get(key)
         out[key] = str(value) if value is not None else None
     out["state"] = raw["state"]
+    if out["state"] == "running" and _stale(raw, alive, now):
+        out["state"], out["message"], out["stale"] = "failed", STALE_MESSAGE, True
     return out
+
+
+def _stale(raw: dict[str, Any], alive: Callable[[int], bool | None], now: Callable[[], datetime]) -> bool:
+    """True when a `running` state has no updater behind it."""
+    pid = raw.get("pid")
+    if isinstance(pid, int) and not isinstance(pid, bool):
+        verdict = alive(pid)
+        if verdict is not None:
+            return not verdict
+    try:
+        touched = datetime.fromisoformat(str(raw.get("updated_at")))
+    except ValueError:
+        return False
+    if touched.tzinfo is not None:
+        touched = touched.astimezone().replace(tzinfo=None)
+    return now() - touched > STALE_AFTER
