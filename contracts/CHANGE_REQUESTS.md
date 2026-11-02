@@ -376,3 +376,11 @@ Format per entry:
 - **Why:** the Channels page shows how many of a channel's videos passed QC against a target line; the stats object had no field for it.
 - **Not done here:** `GET /api/channels` does not fill `stats` at all yet (the page only has demo data), so C9 fills `qc_pass_rate` from the `outputs`/QC tables when it adds the stats object.
 - **Status:** applied in @@CR_C3_UI_6@@
+
+## CR-C3-UI-7: voice design and clone endpoints, and `NS-E312`
+- **From:** dashboard Library (voice design and clone, `api.voiceDesign` / `api.voiceClone` stubs, BUILD_SPEC J6); owner decisions of 2026-11-02
+- **Change:** new models (schemas `voice_design_request`, `voice_clone_request`, `voice_make_response` under `contracts/schemas/`): `POST /api/voices/design` takes `VoiceDesignRequest {name, description, test_line}`; `POST /api/voices/clone` takes `VoiceCloneRequest {name, sample_path, consent: true, test_line}` (`consent` is `Literal[True]`, so `false` or a missing value fails validation); both answer `VoiceMakeResponse {voice_id, preview_wav_path}`. New error code `NS-E312` "Voice sample too short or noisy." (fix: record a longer, clean sample of one speaker, no music or background noise, and try again).
+- **Code number:** the owner suggested `NS-E330` "if the 33x range is TTS". It is not: `errors.json` uses 30x for text, 31x for TTS (`NS-E310`, `NS-E311`, `NS-W301`, `NS-W302`), 32x for studio, and 33x is unused. The code therefore takes the next free TTS number, `NS-E312`.
+- **Why:** the endpoints are planned but had no contract; the Library UI cannot be wired until request, response and the failure code are fixed.
+- **Not done here:** the endpoints themselves (C9 route plus C4 `ns_tts` VoiceDesign / Base calls). `sample_path` is a path on this PC, so the UI uploads the recording first (existing chunked upload) and sends the stored path; the multipart variant in the `api.ts` stub is superseded.
+- **Status:** applied in @@CR_C3_UI_7@@

@@ -25,6 +25,7 @@
   "NS-E306": {"message": "This format is not implemented yet.", "hint": "Use --format master_first or shorts_only."},
   "NS-E310": {"message": "The TTS engine failed to synthesize.", "hint": "Check logs\\tts-*.jsonl; run 'ns verify --quick' to re-test the engine. The installer falls back to the reference engine if qwentts keeps failing."},
   "NS-E311": {"message": "Stored voice data is invalid or was made by a different TTS engine.", "hint": "Re-create the voice (design or clone) with the current engine; voices are stored under models\\tts\\voices."},
+  "NS-E312": {"message": "Voice sample too short or noisy.", "hint": "Record a longer, clean sample of one speaker (no music or background noise) and try again."},
   "NS-W301": {"message": "faster-qwen3-tts failed its smoke test; using the reference qwen-tts engine.", "hint": "Slower but equivalent output. See logs\\tts-*.jsonl for the failure."},
   "NS-W302": {"message": "MTP speculative decoding was not faster on this machine; disabled.", "hint": "No action needed."},
   "NS-E401": {"message": "FFmpeg render failed.", "hint": "See the detail for FFmpeg's error. Run 'ns verify --quick' to test the encoder."},

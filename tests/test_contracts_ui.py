@@ -84,7 +84,7 @@ def test_manifest_pins_webview2_as_an_optional_nupkg():
         "microsoft.web.webview2.1.0.2903.40.nupkg"
     )
     assert pin.extract == DLLS
-    assert pin.dest == "bin\webview2"
+    assert pin.dest == "bin\\webview2"
     assert pin.optional is True
     assert pin.sha256 == "TBD-release" or len(pin.sha256 or "") == 64
 
@@ -179,3 +179,32 @@ def test_channel_stats_qc_fields_default_and_range():
     for bad in ({"qc_pass_rate": 1.2}, {"qc_pass_rate": -0.1}, {"qc_pass_target": 90}):
         with pytest.raises(ValidationError):
             m.ChannelStats.model_validate(bad)
+
+
+# --- CR-C3-UI-7: voice design and clone endpoints -------------------------------------------------------
+
+
+def test_voice_design_request_and_response():
+    body = {"name": "Mara", "description": "calm, low, a bit hoarse", "test_line": "Hi."}
+    assert m.VoiceDesignRequest.model_validate(body).name == "Mara"
+    res = m.VoiceMakeResponse.model_validate({"voice_id": "mara", "preview_wav_path": "cache/mara.wav"})
+    assert res.voice_id == "mara" and res.preview_wav_path == "cache/mara.wav"
+    with pytest.raises(ValidationError):
+        m.VoiceDesignRequest.model_validate(body | {"name": ""})
+    with pytest.raises(ValidationError):
+        m.VoiceDesignRequest.model_validate({"name": "Mara", "description": "x"})
+
+
+def test_voice_clone_needs_consent_true():
+    ok = {"name": "Me", "sample_path": "voices/me.wav", "consent": True, "test_line": "Hello there."}
+    assert m.VoiceCloneRequest.model_validate(ok).consent is True
+    for bad in (ok | {"consent": False}, {k: v for k, v in ok.items() if k != "consent"}):
+        with pytest.raises(ValidationError):
+            m.VoiceCloneRequest.model_validate(bad)
+
+
+def test_voice_sample_error_code_is_in_the_tts_block():
+    from ns_common.errors import describe
+
+    d = describe("NS-E312")
+    assert d.kind == "error" and "too short or noisy" in d.message and d.hint

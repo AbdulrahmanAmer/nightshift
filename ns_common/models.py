@@ -802,6 +802,25 @@ class ChannelStats(Strict):
     qc_pass_target: float = Field(default=0.9, ge=0, le=1)          # the line the page draws (CR-C3-UI-6)
 
 
+# `POST /api/voices/design` (VoiceDesign) and `POST /api/voices/clone` (Base model), CR-C3-UI-7.
+class VoiceDesignRequest(Strict):
+    name: str = Field(min_length=1)          # library name of the new voice
+    description: str = Field(min_length=1)   # plain-English description of the voice
+    test_line: str = Field(min_length=1)     # sentence spoken for the preview
+
+
+class VoiceCloneRequest(Strict):
+    name: str = Field(min_length=1)
+    sample_path: str = Field(min_length=1)   # recording of the voice, already on this PC
+    consent: Literal[True]                   # the owner confirmed they may clone this voice
+    test_line: str = Field(min_length=1)
+
+
+class VoiceMakeResponse(Strict):
+    voice_id: str
+    preview_wav_path: str
+
+
 SCHEMA_MODELS: dict[str, type[BaseModel]] = {
     "channel": Channel, "runtime": Runtime, "install_state": InstallState, "answers": Answers,
     "manifest": Manifest, "idea": Idea, "parts": Part, "seo": Seo, "visual_plan": VisualBeat,
@@ -811,7 +830,8 @@ SCHEMA_MODELS: dict[str, type[BaseModel]] = {
     "clip_plan": ClipPlanItem, "policy_check": PolicyCheckResult, "transcript": Transcript,
     "clip_layout": ClipLayout, "clip_template": ClipTemplate, "format": Format,
     "status": Status, "job_run_request": JobRunRequest,
-    "channel_stats": ChannelStats,
+    "channel_stats": ChannelStats, "voice_design_request": VoiceDesignRequest,
+    "voice_clone_request": VoiceCloneRequest, "voice_make_response": VoiceMakeResponse,
 }
 
 
