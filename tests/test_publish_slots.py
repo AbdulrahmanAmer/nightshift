@@ -51,7 +51,7 @@ def test_later_nights_count_the_shorts_already_scheduled(tmp_home: Path):
     paths, db = _env(tmp_home)
     _channel(paths, db, 9, shorts_per_day_max=2)
     env = jobs.open_env(light=True)
-    utc = timezone.utc
+    utc = UTC
     night1, night2 = datetime(2026, 11, 20, 12, 0, tzinfo=UTC), datetime(2026, 11, 21, 12, 0, tzinfo=UTC)
 
     a = "after-dark-20261120-aaaa"
