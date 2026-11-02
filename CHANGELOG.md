@@ -7,6 +7,31 @@ All notable changes to Nightshift are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed (installer and runtime, clean-clone review)
+One commit per row of `D:\NightShift-refs\review-installer-runtime.md` (see the pull request), each with a test that fails
+without it.
+- **Setup could not find uv** (row 1): stage 1 hands the uv it downloaded over in `NIGHTSHIFT_BOOTSTRAP_UV`; the one
+  resolver (`ns_common.uv.find_uv`) checks the install folder, that hand-over, the bootstrap folder, then PATH; b02 copies
+  uv and verifies the copy; b03 runs the copy.
+- **Non-ASCII user or Desktop path** (row 2): PowerShell values are read as base64 UTF-8, so the Desktop path and
+  NIGHTSHIFT_HOME survive any console code page.
+- **Update swap** (rows 3, 4): shortcuts start in the install home, the Update/Dashboard/Studio launchers also change the
+  Win32 working directory, the swap retries a busy rename; `ns update` runs as a detached worker outside the engine's Job
+  Object (`CREATE_BREAKAWAY_FROM_JOB`, WMI fallback) and writes `run/update_state.json`.
+- **Idle exit with the Dashboard open** (row 5): an open window host or a browser connected to the Dashboard keeps the engine.
+- **Update re-sync** (row 6, gap 18): setup and `ns update` read one table of extras (`ns_common.venv_extras`).
+- **Uninstall** (row 7): the last deletion (`bin\webview2`) runs from a detached PowerShell after the window exits, and the
+  result lists what really went.
+- **Setup window** (rows 8, 12, P4): the host starts only when its DLLs exist, has 20 s to show a window, else Edge or
+  Chrome opens with `--no-first-run --no-default-browser-check`; Stop and a dying host are explained on the console.
+- **install_state.json** (row 9): atomic write, `.bak` copy, tolerant read.
+- **Open dashboard** (row 10): the launcher runs with its output captured and its error reaches the window.
+- **Stage 1 without winget** (row 11): NS-E105/NS-E110 instead of a raw PowerShell error.
+- **Nightly task** (P1, P2, P3): S4U first, interactive logon when Windows refuses (NS-W205), never blocks setup
+  (NS-W206); API keys also in a DPAPI file the nightly run can read; a message without a desktop becomes a morning note.
+- **Gaps 10, 14, 19, 27, 28, 37, 38, 39**: `ns models get voicedesign|story_llm`, `ns update --git --channel`, launchers use
+  `/health`, whisper `int8`, `ns gate` removed, NS-W301 in `ns verify`, the `local/code` check runs after s07.
+
 Fixes from the v0.1.0 code review (installer, launchers, supervisor), found by reading the paths no test had run.
 
 ### Fixed (dashboard side of `docs/design/system-gaps.md`)
