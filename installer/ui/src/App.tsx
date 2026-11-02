@@ -1,7 +1,6 @@
 // The shell (docs/design/installer-ui.md section 2.0) and the screen switch on (phase, run, failure, uiStep).
-// Layers, bottom to top: canvas, AppWindow frame, step rail, window notches, toasts and dialogs.
+// Layers, bottom to top: canvas (pages sit directly on it, no window block), step rail, window notches, toasts and dialogs.
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AppWindow } from "@ref12";
 import { SetupContext, demoScreen, useSetupProvider, useSetup } from "./api/useSetup";
 import type { Phase, SetupState, UiStep } from "./api/types";
 import { closeDialog, phaseLabel, shell, stopDialog } from "./copy";
@@ -150,12 +149,12 @@ function Frame() {
     <div className="ds-root fixed inset-0 overflow-hidden">
       <SetupBackdrop />
       <a href="#main" className="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-16 focus:z-50 focus:rounded-ds-md focus:bg-ds-surface focus:px-4 focus:py-2">{shell.skipToContent}</a>
-      <AppWindow className="absolute! inset-4 overflow-hidden">
+      <div className="ds-root absolute inset-4 overflow-hidden">
         {/* key restarts the screen entrance when the screen changes */}
         <div key={uninstallMode ? `u-${uninstall?.result ? "done" : "ask"}` : screen ?? "boot"} className="h-full">
           {body ?? <p className="grid h-full place-items-center text-ds-sm text-ds-text-2">{shell.connecting}</p>}
         </div>
-      </AppWindow>
+      </div>
       {rail.length > 0 && <StepRail steps={rail} />}
       <WindowNotches onCloseRequest={requestClose} />
       <ConnectionBanner show={conn === "lost"} />
