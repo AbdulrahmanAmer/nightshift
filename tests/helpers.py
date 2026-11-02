@@ -169,6 +169,6 @@ class InProcessRunner:
             on_event({"ev": ev, **data})
             check_cancel()
 
-        no_supervisor = {**args, "supervisor_url": None}  # fakes never acquire; no HTTP to a missing supervisor
+        no_supervisor = {**args, "supervisor_url": None}  # fakes never acquire: no supervisor HTTP
         with mock.patch.object(studio_job, "emit", capture):
             return studio_job.HANDLERS[kind](no_supervisor)
