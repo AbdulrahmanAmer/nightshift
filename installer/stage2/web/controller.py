@@ -37,6 +37,7 @@ from installer.stage2.web.engine import EngineProcess, wizard_argv, wizard_env
 from installer.stage2.web.keys import check_key
 from installer.stage2.web.model import BOOTSTRAP_STEPS, FILE_NAMES, STEP_ORDER, STEP_PHASE
 from installer.stage2.web.store import SetupStore
+from ns_common.uv import find_uv
 
 LOG_KEEP = 50
 SAMPLE_TEXT = "This is how your channel will sound at night."
@@ -156,12 +157,11 @@ def copy_to_clipboard(text: str) -> None:
 
 
 def default_uv_path(home: Path) -> str:
-    """uv: the copy under the install folder first (the installer never puts it on PATH), else PATH.
+    """uv for the bootstrap steps: the one resolver (install folder, stage-1 hand-over, bootstrap, PATH).
 
-    Same order as ns_common.uv.find_uv; this module stays stdlib-only so it does not import it.
+    Falls back to the (missing) install-folder path so b02 can say clearly that uv was not found.
     """
-    local = home / "bin" / "uv" / "uv.exe"
-    return str(local) if local.is_file() else (shutil.which("uv") or str(local))
+    return find_uv(home) or str(home / "bin" / "uv" / "uv.exe")
 
 
 @dataclass

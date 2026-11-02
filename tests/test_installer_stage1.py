@@ -228,3 +228,9 @@ def test_window_mode_stops_on_an_unsupported_windows(tmp_path: Path):
     proc = _run("-FakeProbe", str(_probe(tmp_path, os_arch="ARM64")), window=True)
     assert proc.returncode == 10
     assert "NS-E101" in proc.stdout and "[FAIL] This PC" in proc.stdout
+
+
+def test_stage1_hands_the_uv_path_to_the_setup_server():
+    proc = _run()
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "NIGHTSHIFT_BOOTSTRAP_UV=" in proc.stdout

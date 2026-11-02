@@ -863,6 +863,10 @@ else {
     if ($showSplash -and -not $script:IsDry) { Set-Status -Index 1 -Tag 'ok' -Text ('{0}, downloaded' -f (Get-UvVersion -Uv $uv)) }
 }
 
+# Hand the uv path to the setup server: its window copies uv into <home>\bin\uv and ns_common.uv reads this.
+if ($script:IsDry) { Show-Action "set NIGHTSHIFT_BOOTSTRAP_UV=$uv for the setup server" }
+else { $env:NIGHTSHIFT_BOOTSTRAP_UV = $uv }
+
 # Python
 $pyVersion = [string]$Manifest.python_version
 $env:UV_LINK_MODE = 'copy'
