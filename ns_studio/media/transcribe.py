@@ -5,6 +5,7 @@ faster-whisper is imported lazily inside `WhisperTranscriber` so this module imp
 
 from __future__ import annotations
 
+import gc
 import importlib
 import os
 import re
@@ -67,6 +68,10 @@ class Transcriber(Protocol):
         """Segment-level transcript (with words) of `wav`."""
         ...
 
+    def unload(self) -> None:
+        """Free the model (GPU memory included); a later call loads it again. Safe when nothing is loaded."""
+        ...
+
 
 def sidecar_path(wav: Path) -> Path:
     """Script sidecar of an audio file: `p1.wav` -> `p1.txt` (written by the voice stage)."""
@@ -108,6 +113,11 @@ class FakeTranscriber:
     """
 
     name = "fake"
+    unloads = 0  # how often `unload` ran (tests check the orchestrator calls it)
+
+    def unload(self) -> None:
+        """Nothing is loaded; counted so tests can see the call."""
+        self.unloads += 1
 
     def words(self, wav: Path, language: str = "en") -> list[Word]:
         """One Word per script token, evenly spaced; NS-E403 when the sidecar is missing."""
@@ -210,6 +220,23 @@ class WhisperTranscriber:
             )
             out.append(Segment(float(s.start), float(s.end), str(s.text).strip(), words))
         return out
+
+    def unload(self) -> None:
+        """Drop the faster-whisper model and give its memory back to the GPU.
+
+        Releasing the `whisper` tenant frees the supervisor's lock but not the weights (about 1.5 GB plus the
+        CUDA context) held by this process; the llama-server that starts next is sized for the whole card.
+        """
+        if self._model is None:
+            return
+        self._model = None
+        gc.collect()
+        try:  # torch is only present in venvs that also run the reference TTS engine
+            torch = importlib.import_module("torch")
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except ImportError:
+            pass
 
     def words(self, wav: Path, language: str = "en") -> list[Word]:
         """All words of `wav` with timestamps (VAD on)."""
