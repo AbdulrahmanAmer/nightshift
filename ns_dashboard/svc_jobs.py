@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, BinaryIO
 
@@ -104,6 +105,34 @@ def learn_response(result: dict[str, Any], job_id: str | None = None) -> dict[st
     return out
 
 
+MAX_SCHEDULE_AHEAD = timedelta(days=31)
+
+
+def parse_schedule_at(value: Any, now: datetime) -> datetime | None:
+    """The start time of a job request as an aware local datetime, or None to start now.
+
+    `null`, an empty value and a time that has already passed all mean "now". A time without a zone is the
+    PC's local time (CR-C3-UI-5). Raises 422 for text that is not a date and time, or one over 31 days away.
+    """
+    if value in (None, ""):
+        return None
+    if isinstance(value, datetime):
+        at = value
+    elif isinstance(value, str):
+        try:
+            at = datetime.fromisoformat(value.strip())
+        except ValueError as e:
+            raise ApiError(
+                422, "invalid_options", "'schedule_at' must be a date and time such as 2026-11-03T02:00."
+            ) from e
+    else:
+        raise ApiError(422, "invalid_options", "'schedule_at' must be a date and time or null.")
+    at = at.astimezone()
+    if at - now > MAX_SCHEDULE_AHEAD:
+        raise ApiError(422, "invalid_options", "'schedule_at' can be at most 31 days from now.")
+    return at if at > now else None
+
+
 def _int(body: dict[str, Any], key: str, default: int, lo: int, hi: int) -> int:
     raw = body.get(key)
     if raw in (None, ""):
@@ -129,15 +158,26 @@ class JobsService:
         if self.s.draining:
             raise ApiError(503, "shutting_down", "Nightshift is shutting down and not accepting new jobs.")
 
-    def _enqueue(self, kind: str, channel: str | None, params: dict[str, Any]) -> dict[str, Any]:
+    def _schedule(self, body: dict[str, Any]) -> datetime | None:
+        return parse_schedule_at(body.get("schedule_at"), self.s.store.clock())
+
+    def _enqueue(
+        self, kind: str, channel: str | None, params: dict[str, Any], schedule_at: datetime | None = None
+    ) -> dict[str, Any]:
+        """Insert the job; with `schedule_at` it stays `queued` (message "Scheduled for ...") until then."""
+        if schedule_at is not None:
+            params = {**params, "schedule_at": schedule_at.isoformat(timespec="seconds")}
         rec = self.s.store.create(kind, channel, params)
+        if schedule_at is not None:
+            self.s.store.update_progress(rec.job_id, 0.0, f"Scheduled for {schedule_at:%a %d %b %H:%M}")
+            rec = self.s.store.get(rec.job_id) or rec
         self.s.worker.enqueue(rec.job_id)
         self.s.hub.publish("dashboard_job", rec.to_dict())
         return rec.to_dict()
 
     # --- creation ---
     def create_run(self, body: dict[str, Any]) -> dict[str, Any]:
-        """Queue `studio run` for one channel."""
+        """Queue `studio run` for one channel; `schedule_at` (null = now) holds it until that time."""
         self._accepting()
         slug = str(body.get("channel") or "")
         ch = self.channels.load(slug)
@@ -149,7 +189,7 @@ class JobsService:
         count = body.get("count")
         n = _int(body, "count", 1, 1, 20) if count else None
         params: dict[str, Any] = {"channel": slug, "format": fmt, "count": n}
-        return self._enqueue("run", slug, params)
+        return self._enqueue("run", slug, params, self._schedule(body))
 
     def create_verify(self, body: dict[str, Any]) -> dict[str, Any]:
         """Queue `ns verify`."""
@@ -213,6 +253,7 @@ class JobsService:
     def create_clip(self, body: dict[str, Any], uploaded: UploadInfo | None = None) -> dict[str, Any]:
         """Queue a Clipper job. `uploaded` is a multipart file already stored via `import_stream`."""
         self.require_rights(body)
+        schedule_at = self._schedule(body)
         slug = str(body.get("channel") or "")
         self.channels.load(slug)
         template = str(body.get("template") or "auto")
@@ -243,7 +284,7 @@ class JobsService:
                        "rerun": rerun})
         # the Clipper import creates the `sources` row; for a re-run it exists, so record the rights now
         self.s.db.execute("UPDATE sources SET rights_confirmed = 1 WHERE source_id = ?", (source_id,))
-        return self._enqueue("clip", slug, params)
+        return self._enqueue("clip", slug, params, schedule_at)
 
     def _registered_source(self, source_id: str) -> Path | None:
         """Path stored in the `sources` table (set by the Clipper import), if the file still exists."""

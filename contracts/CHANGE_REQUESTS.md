@@ -397,3 +397,15 @@ Format per entry:
   The installer verifies the `.nupkg` (a zip, 8,769,233 bytes) and extracts only `lib/net462/Microsoft.Web.WebView2.Wpf.dll`, `lib/net462/Microsoft.Web.WebView2.Core.dll` and `runtimes/win-x64/native/WebView2Loader.dll` into `<home>\bin\webview2\` (this package version has no `lib/net45`; the code falls back to it for older versions).
 - **Why:** the host needs the three DLLs; nothing binary is committed. The sha256 was computed from the downloaded package inside a GitHub Actions run (not on the authoring laptop); the package listing was read in the same run (`lib/net462/*.dll`, `runtimes/win-x64/native/WebView2Loader.dll` present).
 - **Status:** applied in ccf6c7b (`manifest.json` `bins.webview2`, on `feat/c3-ui-contracts`). Before it landed, a missing `bins.webview2` entry is treated like a `TBD-release` hash: the installer skips the package and `nightshift-dashboard.ps1` uses the Edge/Chrome `--app=` window (host exits 3).
+
+## CR-C9-1: backend gaps behind the UI contracts (GPU status, voices, scheduling, QC pass rate)
+- **From:** C9 backend builder (`feat/c9-backend-gaps`); implements CR-C3-UI-4 to CR-C3-UI-7
+- **Change (request, nothing applied here):**
+  1. `contracts/errors.json`: add `NS-E313` "Voice cloning needs the owner's consent." (hint: "Tick the box that says you have the right to use this voice, then try again."). `POST /api/voices/clone` answers `422` with the dashboard code `consent_required` until it exists, because no existing code fits and `errors.json` is protected.
+  2. `ns_common.models.Channel`: optional `qc_pass_target: float = Field(default=0.9, ge=0, le=1)`. `ns_dashboard.channel_stats.qc_pass_target` already reads the attribute when a profile has it (`Channel` forbids extra keys, so a profile cannot carry it today) and falls back to 0.9.
+  3. `ns_common.models.VoiceMakeResponse`: if voice making should become a job later (VoiceDesign model load plus synthesis can take about a minute), add `job_id: str | None = None`. Today the two routes are synchronous and answer exactly `{voice_id, preview_wav_path}`.
+  4. `POST /api/jobs/clip` also honours `schedule_at` (same rules as `JobRunRequest`); the clip request has no model yet, so please add `schedule_at: datetime | None = None` to it when one is written.
+  5. The owner suggested `NS-E330` for a bad voice sample; CR-C3-UI-7 already landed `NS-E312` ("Voice sample too short or noisy."), which is what the code raises.
+  6. Scope guard: `dev/check_scope.py` allows branch `feat/c9-*` only `ns_dashboard/` plus `tests/`. This work also changes `ns_supervisor/` (GPU probe, scheduled-job wake-up), `ns_tts/` (clone sample checks), `OPERATOR.md` and `docs/OPERATOR_CLI.md`, as the task asked. The PR's scope-check job reports those paths until the orchestrator accepts or re-scopes them.
+- **Why:** the four UI gaps of CR-C3-UI-4..7 needed backend fields and routes; the points above are the contract-side edges found while building them.
+- **Status:** open

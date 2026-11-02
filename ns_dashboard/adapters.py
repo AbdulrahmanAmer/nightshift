@@ -7,19 +7,24 @@ Fakes that write real files live in `ns_dashboard.fakes`.
 
 from __future__ import annotations
 
+import contextlib
 import importlib
 import json
 import os
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
+import httpx
+
+from ns_common.acquire import Acquirer, Service
 from ns_common.config import load_runtime
+from ns_common.errors import NsError
 from ns_common.logging import NsLogger
 from ns_common.paths import Paths
-from ns_dashboard.errors import AdapterUnavailable
+from ns_dashboard.errors import AdapterUnavailable, ApiError
 from ns_dashboard.jobs import JobControl
 from ns_dashboard.supervisor_link import SupervisorLink, make_acquirer
 from ns_dashboard.updater import RealUpdateAdapter
@@ -83,6 +88,26 @@ class TtsPreviewAdapter(Protocol):
     def preview(self, voice: str, text: str, speed: float) -> bytes: ...
 
 
+@dataclass(frozen=True)
+class MadeVoice:
+    """A voice that now exists in the Library bank, with the rendered test line next to it."""
+
+    voice_id: str
+    preview_wav_path: str
+
+
+class VoiceMakerAdapter(Protocol):
+    """Designs or clones a narration voice and renders a preview of `test_line` (CR-C3-UI-7).
+
+    `sample_wav` is a checked WAV (3-30 s, see `ns_tts.sample`). Both calls block until the voice and its
+    `preview.wav` exist under `models/tts/voices/<name>/`.
+    """
+
+    def design(self, name: str, description: str, test_line: str) -> MadeVoice: ...
+
+    def clone(self, name: str, sample_wav: Path, test_line: str) -> MadeVoice: ...
+
+
 class FolderOpener(Protocol):
     """Opens a folder in Explorer."""
 
@@ -105,7 +130,7 @@ class ScheduleAdapter(Protocol):
 
 @dataclass
 class Adapters:
-    """The ten collaborators the service layer and the job handlers use."""
+    """The eleven collaborators the service layer and the job handlers use."""
 
     run: RunAdapter
     clip: ClipAdapter
@@ -117,6 +142,7 @@ class Adapters:
     folder: FolderOpener
     schedule: ScheduleAdapter
     update: UpdateAdapter
+    voice_maker: VoiceMakerAdapter
 
 
 def lazy(module: str, attr: str) -> Callable[..., Any]:
@@ -316,6 +342,117 @@ class RealTtsAdapter:
             acquirer.release("tts", owner)
 
 
+class RealVoiceMaker:
+    """Talks to the TTS service (`/v1/voices/design`, `/v1/voices/clone`) through the supervisor.
+
+    Design needs the VoiceDesign talker; clone first transcribes the sample with whisper (the Base model
+    wants the words that are spoken in the reference) while holding the `whisper` tenant, then holds `tts`.
+    """
+
+    def __init__(
+        self,
+        paths: Paths,
+        link: SupervisorLink,
+        *,
+        acquirer: Acquirer | None = None,
+        http: httpx.Client | None = None,
+        transcribe: Callable[[Path], str] | None = None,
+    ) -> None:
+        self.paths = paths
+        self.link = link
+        self._acquirer = acquirer
+        self._http = http
+        self._transcribe = transcribe
+
+    def _acq(self) -> Acquirer:
+        return self._acquirer or make_acquirer(self.link.base_url)
+
+    def _client(self) -> httpx.Client:
+        if self._http is None:
+            self._http = httpx.Client(timeout=1800)
+        return self._http
+
+    @contextlib.contextmanager
+    def _tenant(self, service: Service, timeout_s: int = 600) -> Iterator[str]:
+        acq = self._acq()
+        owner = f"dashboard:voice-{int(time.time() * 1000)}"
+        endpoint = acq.acquire(service, owner, timeout_s=timeout_s)
+        try:
+            yield endpoint.base_url
+        finally:
+            acq.release(service, owner)
+
+    def _post(self, base_url: str, route: str, body: dict[str, Any]) -> None:
+        try:
+            r = self._client().post(f"{base_url.rstrip('/')}{route}", json=body)
+        except httpx.HTTPError as e:
+            raise NsError("NS-E310", f"voice service: {e}") from e
+        if r.status_code == 409 and "missing_model" in r.text:
+            raise ApiError(
+                409,
+                "model_missing",
+                "The model for this voice tool is not downloaded yet.",
+                hint="Run the installer's model step again with the voice design option ticked.",
+            )
+        if r.status_code == 400:
+            raise ApiError(400, "voice_rejected", _detail(r))
+        if r.status_code >= 400:
+            raise NsError("NS-E310", f"voice service answered {r.status_code}: {_detail(r)}")
+
+    def _preview(self, base_url: str, name: str, test_line: str) -> MadeVoice:
+        from ns_common.tts_client import TtsClient
+
+        out = self.paths.models_tts_voices / name / "preview.wav"
+        TtsClient(base_url, client=self._client()).speak(test_line, name, 1.0, out)
+        return MadeVoice(voice_id=name, preview_wav_path=str(out))
+
+    def design(self, name: str, description: str, test_line: str) -> MadeVoice:
+        """VoiceDesign from the description, stored as an embedding, then the test line spoken."""
+        with self._tenant("tts") as url:
+            self._post(url, "/v1/voices/design", {"name": name, "description": description})
+            return self._preview(url, name, test_line)
+
+    def _words_in(self, wav: Path) -> str:
+        if self._transcribe is not None:
+            return self._transcribe(wav)
+        from ns_studio.media.transcribe import WhisperTranscriber
+
+        try:
+            cfg = load_runtime(self.paths).whisper
+        except Exception:  # no runtime.json yet: the default whisper settings
+            from ns_common.models import Runtime
+
+            cfg = Runtime.default("gpu").whisper
+        with self._tenant("whisper"):
+            segs = WhisperTranscriber(cfg, self.paths).segments(wav, "")
+        return " ".join(seg.text for seg in segs).strip()
+
+    def clone(self, name: str, sample_wav: Path, test_line: str) -> MadeVoice:
+        """Base-model embedding from the sample (its words found by whisper), then the test line spoken."""
+        ref_text = self._words_in(sample_wav)
+        if len(ref_text.split()) < 2:
+            raise NsError("NS-E312", "no speech could be found in the recording")
+        body = {
+            "name": name,
+            "ref_audio_path": str(sample_wav),
+            "ref_text": ref_text,
+            "rights_confirmed": True,
+        }
+        with self._tenant("tts") as url:
+            self._post(url, "/v1/voices/clone", body)
+            return self._preview(url, name, test_line)
+
+
+def _detail(r: httpx.Response) -> str:
+    """Error text of a TTS service answer (FastAPI `{"detail": ...}`), shortened."""
+    try:
+        data = r.json()
+        text = data.get("detail") or data.get("error") or r.text
+    except ValueError:
+        text = r.text
+    return str(text)[:300]
+
+
 class RealFolderOpener:
     """`os.startfile` (Windows Explorer)."""
 
@@ -360,4 +497,5 @@ def real_adapters(paths: Paths, link: SupervisorLink, log: NsLogger) -> Adapters
         folder=RealFolderOpener(),
         schedule=RealScheduleAdapter(paths),
         update=RealUpdateAdapter(paths),
+        voice_maker=RealVoiceMaker(paths, link),
     )

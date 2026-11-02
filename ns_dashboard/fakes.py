@@ -21,7 +21,7 @@ from ns_common import ffmpeg
 from ns_common.db import new_job_id
 from ns_common.paths import Paths
 from ns_common.tts_client import FakeTts
-from ns_dashboard.adapters import Adapters, scan_voice_library
+from ns_dashboard.adapters import Adapters, MadeVoice, scan_voice_library
 from ns_dashboard.jobs import JobControl
 from ns_dashboard.state import LockedDb
 
@@ -276,6 +276,51 @@ class FakeTtsAdapter:
             return out.read_bytes()
 
 
+class FakeVoiceMaker:
+    """Designs and clones voices with `ns_tts.engine.FakeEngine` into the real voice library layout
+    (`models/tts/voices/<name>/{voice.json, speaker.bin, sample.wav}`) and writes `preview.wav`."""
+
+    def __init__(self, paths: Paths) -> None:
+        self.paths = paths
+        self.calls: list[tuple[str, str, str]] = []  # (kind, name, test_line)
+        self.fail_with: Exception | None = None
+
+    def _library(self) -> Any:
+        from ns_tts.voices import VoiceLibrary
+
+        return VoiceLibrary(self.paths.models_tts_voices)
+
+    def _preview(self, name: str, test_line: str, engine: Any) -> MadeVoice:
+        from ns_tts.audio import write_wav
+
+        lib = self._library()
+        out = self.paths.models_tts_voices / name / "preview.wav"
+        write_wav(out, engine.synth(test_line, lib.get(name)), engine.sr)
+        return MadeVoice(voice_id=name, preview_wav_path=str(out))
+
+    def design(self, name: str, description: str, test_line: str) -> MadeVoice:
+        """Fake VoiceDesign: deterministic embedding from the description."""
+        from ns_tts.engine import FakeEngine
+
+        self.calls.append(("design", name, test_line))
+        if self.fail_with is not None:
+            raise self.fail_with
+        engine = FakeEngine()
+        self._library().add_design(name, description, engine=engine)
+        return self._preview(name, test_line, engine)
+
+    def clone(self, name: str, sample_wav: Path, test_line: str) -> MadeVoice:
+        """Fake Base clone: deterministic embedding from the sample bytes."""
+        from ns_tts.engine import FakeEngine
+
+        self.calls.append(("clone", name, test_line))
+        if self.fail_with is not None:
+            raise self.fail_with
+        engine = FakeEngine()
+        self._library().add_clone(name, str(sample_wav), "fake words of the sample", True, engine=engine)
+        return self._preview(name, test_line, engine)
+
+
 class FakeFolderOpener:
     """Records the folders it was asked to open."""
 
@@ -331,6 +376,7 @@ def fake_adapters(db: LockedDb, paths: Paths) -> Adapters:
         folder=FakeFolderOpener(),
         schedule=FakeScheduleAdapter(),
         update=FakeUpdateAdapter(),
+        voice_maker=FakeVoiceMaker(paths),
     )
 
 

@@ -72,6 +72,31 @@ If the same red error comes back after one retry, do not guess: send the diagnos
 Until the Dashboard is part of your version (it arrives in a later release) the developer will tell you what to
 run instead.
 
+## Make a narrator voice
+
+In the Dashboard open **Library**, then **Voices**. Two ways to make a new voice:
+
+- **Design**: type how the voice should sound ("a warm, slow baritone"), a name, and a sentence to hear it say.
+  The first time, Nightshift needs the 2 GB voice-design model; if it says the model is missing, run INSTALL.cmd
+  again and tick the voice design option.
+- **Clone**: pick a recording of **one** speaker, 3 to 30 seconds, quiet room, no music. Tick the box saying you have
+  the right to use that voice. Only clone your own voice or one you have written permission for.
+  Nightshift refuses a recording that is too short, too quiet, distorted or noisy (code `NS-E312`): record a longer,
+  cleaner one and try again.
+
+It takes up to a minute (the graphics card is used, so it waits for a running video). When it finishes you hear the
+sentence in the new voice, and the voice shows up in the voice list of every channel. The voice files are in
+`models\tts\voices\<name>\` (`preview.wav` is the sentence you heard); `ns backup` keeps them.
+You can also ask the Assistant ("make me a deep calm voice called Narrator2"); it shows a confirmation card first.
+
+## Start a video later
+
+In **Create**, the **When** step lets you choose a start time instead of "now". The job waits in the queue
+(Queue shows "Scheduled for ...") and starts at that time or as soon as Nightshift is running after it.
+You can cancel it any time before. A waiting job does not keep Nightshift awake: if the PC is asleep or Nightshift
+was closed at that time, the job starts the next time the Dashboard opens or the nightly run begins.
+The nightly run itself is unchanged: **Settings -> Run time**.
+
 ## Every night
 
 Nightshift wakes the PC at the time you chose (default 03:00), makes a video, saves it in the Outbox and the PC
