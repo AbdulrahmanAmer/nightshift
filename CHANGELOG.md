@@ -57,6 +57,27 @@ and routes and buttons that nothing used. A table-driven test (`tests/test_dashb
   Formats** (gap 23) has an edit form (and Duplicate works again). **Queue** (gap 26) shows a "Last night" card.
 - **First start** (gap 30) greets the owner by the name chosen in setup and starts in the chosen theme.
 
+### Fixed (voice engine, `feat/release-review-tts`: review rows 1-4, 12, 13)
+The four stacked blockers that left the partner PC with no working voice (qwentts failed, the PyTorch fallback failed
+too, install stopped at `NS-E108`), plus pitch and error codes. Contract and exact command lines: top of `ns_tts/engine.py`.
+- **qwentts runs the programs the release zip contains.** `qwentts.exe` does not exist; the engine now starts
+  `bin\qwentts\qwen-tts.exe` (text on stdin, `--model --codec --speaker|--ref-spk --ref-rvq --ref-text --lang --seed -o`,
+  lowercase speaker names) and `qwen-codec.exe` (`--model --talker -i`) for new voices, using the flags of the pinned
+  qwentts.cpp `--help`. The old guessed flags (`--text`, `--out`, `--tokenizer`, `--language`, `--ref-audio`,
+  `--save-speaker-embedding`, `--batch-file`) are gone. `tts-server.exe` is shipped but not used (one talker per process).
+- **Voice format.** qwentts voices are `speaker.spk` + `speaker.rvq` + `ref.txt` in the voice folder; `voice.json` gains
+  `files` (additive, the dashboard still reads `name` and `mode`). Voices with only `speaker.bin` (PyTorch engine, older
+  fakes) still load. `GET /v1/voices/{name}/embedding` returns a zip when a voice has several files.
+- **PyTorch fallback.** The supervisor starts the voice service with the `tts` venv's Python when `runtime.tts.engine` is
+  `reference` (torch lives only there), and the engine reads the models where the installer puts them: `<model_dir>\hf`
+  (`ns_common.paths.TTS_HF_SUBDIR`, `Paths.models_tts_hf`).
+- **Speed no longer changes pitch.** Narration speed (0.7 to 1.3) is an FFmpeg `atempo` chain per chunk instead of
+  resampling; neither qwentts tool has a speed control.
+- **Error codes.** Synthesis and TTS HTTP failures are `NS-E310`, a stored voice that is missing files or belongs to the
+  other engine is `NS-E311`, a missing VoiceDesign model is the new `NS-E314` ("run Settings > Models > Get voice design"), a voice that
+  cannot be built is the new `NS-E315`, and embed-service failures are the new `NS-E316`. `NS-E301` stays the language model's code; `NS-E202` is used only while the voice service starts.
+- **`/health` of the voice service** now reports `engine_kind` (`qwentts`, `reference` or `fake`) so `ns verify` can warn
+  `NS-W301` when the PyTorch fallback is in use.
 ### Removed
 - `GET /api/templates/{id}/preview.png` and the Pillow preview drawing: nothing called them (gap 28).
 - `Paths.outbox_dir`, the old date/job Outbox layout, which no code used (gap 24).
