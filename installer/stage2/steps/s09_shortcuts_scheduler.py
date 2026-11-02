@@ -55,6 +55,14 @@ def wanted_shortcuts(ctx: StepContext) -> list[tuple[str, Path]]:
     return out
 
 
+def shortcut_workdir(ctx: StepContext) -> Path:
+    """Working directory of every shortcut: the install home, never the app folder.
+
+    A process whose current directory is the app folder blocks the folder swap of ``ns update`` (WinError 32).
+    """
+    return ctx.paths.home
+
+
 def shortcut_icon(ctx: StepContext) -> Path | None:
     """The brand .ico under the app folder, or None when this build does not ship it."""
     icon = ctx.app_path / ICON_RELATIVE
@@ -94,7 +102,7 @@ class S09ShortcutsScheduler(Step):
         for name, launcher in shortcuts:
             args = f'-NoProfile -ExecutionPolicy Bypass -File "{launcher}"'
             ok = create_shortcut(
-                ctx.runner, folder / f"{name}.lnk", "powershell.exe", args, ctx.app_path,
+                ctx.runner, folder / f"{name}.lnk", "powershell.exe", args, shortcut_workdir(ctx),
                 f"Nightshift: {name}", icon,
             )
             if not ok:

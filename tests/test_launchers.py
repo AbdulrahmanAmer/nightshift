@@ -135,8 +135,10 @@ def test_bundle_script_requires_the_brand_icon() -> None:
 
 def test_update_launcher_steps_out_of_the_app_folder_before_calling_ns_update() -> None:
     text = read("update.ps1")
-    assert "Set-Location -LiteralPath (Get-NsHome)" in text
-    assert text.index("Set-Location") < text.index("& $ns update")
+    assert "Set-NsHomeLocation" in text
+    assert text.index("Set-NsHomeLocation") < text.index("& $ns update")
+    common = read("_common.ps1")
+    assert "[Environment]::CurrentDirectory = $nsHome" in common   # the Win32 cwd, not just PowerShell's
 
 
 # --- dashboard warmup ---

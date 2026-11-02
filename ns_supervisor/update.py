@@ -14,6 +14,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import zipfile
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -26,6 +27,12 @@ from ns_common.paths import Paths
 from ns_common.uv import find_uv, home_uv
 
 PRESERVE = (".git", "config", "answers.json")
+RENAME_TRIES = 20
+RENAME_PAUSE_S = 1.0
+BUSY_HINT = (
+    "another program still has the Nightshift folder open (a Dashboard, Studio or terminal window?). "
+    "Close those windows and run the update again; your previous version is still in place."
+)
 VENV_EXTRAS = (("studio", "[studio]", False), ("supervisor", "[supervisor]", False), ("tts", "[tts]", True))
 
 
@@ -184,6 +191,27 @@ def leave_app(app: Path, paths: Paths) -> None:
     os.chdir(target)
 
 
+def rename_with_retry(
+    src: Path, dst: Path, *, tries: int | None = None, pause_s: float | None = None,
+    sleep: Callable[[float], None] = time.sleep,
+) -> None:
+    """Rename a folder, retrying while Windows still reports it in use (WinError 32 or 5).
+
+    Processes that were just told to stop (the engine, the dashboard service, a closing window) release the
+    folder a moment later, so the first attempt can fail although nothing is wrong.
+    """
+    tries = RENAME_TRIES if tries is None else tries
+    pause_s = RENAME_PAUSE_S if pause_s is None else pause_s
+    for attempt in range(1, tries + 1):
+        try:
+            src.rename(dst)
+            return
+        except OSError:
+            if attempt >= tries:
+                raise
+            sleep(pause_s)
+
+
 def _restore(app: Path, prev: Path, log: NsLogger) -> None:
     """Put `<app>.prev` back in place of a failed new tree."""
     failed = _sibling(app, ".failed")
@@ -211,13 +239,13 @@ def update_app(zip_path: Path, app: Path, env: UpdateEnv, *, paths: Paths) -> Up
         safe_extract(zip_path, new, prefix)
         notes = [f"kept {n}" for n in carry_over(app, new, env.untracked(app))]
         shutil.rmtree(prev, ignore_errors=True)
-        app.rename(prev)
+        rename_with_retry(app, prev)
     except NsError:
         shutil.rmtree(new, ignore_errors=True)
         raise
     except OSError as e:
         shutil.rmtree(new, ignore_errors=True)
-        raise NsError("NS-E702", f"could not stage the update: {e}") from e
+        raise NsError("NS-E702", f"could not stage the update: {e}. {BUSY_HINT}") from e
     try:
         new.rename(app)
     except OSError as e:
@@ -254,7 +282,7 @@ def rollback_app(app: Path, env: UpdateEnv, *, paths: Paths) -> UpdateResult:
     tmp = _sibling(app, ".swap")
     try:
         shutil.rmtree(tmp, ignore_errors=True)
-        app.rename(tmp)
+        rename_with_retry(app, tmp)
         prev.rename(app)
         tmp.rename(prev)
     except OSError as e:
