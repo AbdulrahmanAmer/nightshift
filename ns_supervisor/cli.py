@@ -23,6 +23,7 @@ from ns_supervisor import (
     tune,
     update,
     update_job,
+    updater_copy,
     verify,
 )
 from ns_supervisor.client import SupervisorClient, ensure_running
@@ -252,11 +253,16 @@ def cmd_update(
         _update_check(update.current_version(control.app_path(paths)))
         return
     if worker:
+        def discard_copy() -> None:
+            """After a successful relaunch: have a helper delete the venv copy this worker runs from."""
+            updater_copy.discard_own_copy(paths, spawn=update_job.spawn_detached)
+
         code = update_job.run_worker(
             paths, lambda: _apply_update(paths, zip_path, rollback, github, git, channel), log=log,
             wait_pid=wait_pid,
             old_version=update.current_version(control.app_path(paths)),
             relaunch=relaunch.default_relaunch(paths),
+            cleanup=discard_copy,
         )
         raise typer.Exit(code)
     forwarded: list[str] = []
