@@ -33,6 +33,7 @@ from ns_dashboard.jobs import JobControl
 from ns_dashboard.lazyimport import lazy
 from ns_dashboard.studio_runner import StudioRunner
 from ns_dashboard.supervisor_link import SupervisorLink, make_acquirer, supervisor_url
+from ns_dashboard.uploads import adopt_upload
 from ns_dashboard.updater import RealBackupAdapter, RealUpdateAdapter
 
 PRESET_VOICES = [{"name": "Ryan", "mode": "preset", "source": "builtin"}]
@@ -50,6 +51,12 @@ class ClipAdapter(Protocol):
     def clip(
         self, ctl: JobControl, source_path: Path, source_id: str, params: dict[str, Any]
     ) -> list[str]: ...
+
+    def _drop_download(self, source_path: Path, source_id: str) -> None:
+        """A linked video is deleted when its clip job ends, whatever the ending (done, failed or cancelled)."""
+        folder = studio_bridge.download_dir(self.paths, source_id)
+        if source_path.parent == folder:
+            shutil.rmtree(folder, ignore_errors=True)
 
     def rerun(self, ctl: JobControl, studio_job_id: str, changes: dict[str, Any]) -> list[str]:
         """Run the later stages of an earlier clip job again with other options (transcript kept)."""
@@ -321,11 +328,15 @@ class RealClipAdapter(StudioAdapter):
 
     def clip(self, ctl: JobControl, source_path: Path, source_id: str, params: dict[str, Any]) -> list[str]:
         """Run the Clipper for `source_path`; returns the output ids it inserted."""
+        source_path = adopt_upload(self.paths, source_path)  # an upload is moved to where the import wants it, not copied
         args = {
             "source_path": str(source_path),
             "params": {**params, "channel": params.get("channel") or ctl.channel},
         }
-        done = self.child(ctl, "clip", args)
+        try:
+            done = self.child(ctl, "clip", args)
+        finally:
+            self._drop_download(source_path, source_id)
         seen = [str(i) for i in done.get("job_ids") or []]
         ctl.extras["studio_job_id"] = seen[0] if seen else None
         ctl.extras.pop("studio_job_ids", None)  # a clip job reports the single `studio_job_id`

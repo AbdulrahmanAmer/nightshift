@@ -734,3 +734,90 @@ def test_import_settings_refuses_while_an_answer_runs_and_never_adds_a_worker(tm
     finally:
         gate.set()
         state.worker.stop(5)
+
+
+# ---------------------------------------------------------------- row 10: a clip source is stored once, failed downloads are cleaned
+
+
+def finished_upload(paths: Paths, payload: bytes = b"v" * 5000) -> Path:
+    from ns_dashboard.uploads import UploadManager
+
+    mgr = UploadManager(paths)
+    info = mgr.start("stream.mp4", len(payload))
+    mgr.append(info.upload_id, 0, payload)
+    done = mgr.complete(info.upload_id)
+    assert done.path
+    return Path(done.path)
+
+
+def test_an_upload_is_moved_to_the_import_folder_not_copied(tmp_home: Path):
+    import hashlib
+
+    from ns_dashboard.uploads import adopt_upload, clipper_dir
+
+    paths = Paths.from_env()
+    upload = finished_upload(paths)
+    moved = adopt_upload(paths, upload)
+    digest = hashlib.sha256(b"v" * 5000).hexdigest()
+    assert moved == clipper_dir(paths) / f"src-{digest[:10]}" / "source.mp4" and moved.read_bytes() == b"v" * 5000
+    assert not upload.parent.exists()  # no second copy left behind
+    assert [p.name for p in clipper_dir(paths).iterdir()] == [f"src-{digest[:10]}"]
+    again = finished_upload(paths)  # the same video uploaded again
+    assert adopt_upload(paths, again) == moved and not again.parent.exists()
+
+
+def test_a_path_that_is_not_an_upload_is_left_alone(tmp_home: Path, tmp_path: Path):
+    from ns_dashboard.uploads import adopt_upload
+
+    mine = tmp_path / "my-stream.mp4"
+    mine.write_bytes(b"x")
+    assert adopt_upload(Paths.from_env(), mine) == mine and mine.exists()
+
+
+FINISH = r'''
+import json, os, sys
+mode = os.environ.get("CHILD_MODE", "ok")
+with open(os.environ["CHILD_ARGS_OUT"], "w", encoding="utf-8") as fh:
+    json.dump(json.load(open(sys.argv[sys.argv.index("--args") + 1], encoding="utf-8")), fh)
+if mode == "ok":
+    print("NSJOB " + json.dumps({"ev": "job", "job_id": "clip-1"}), flush=True)
+    print("NSJOB " + json.dumps({"ev": "result", "output_ids": ["clip-1/c1"], "job_ids": ["clip-1"]}), flush=True)
+else:
+    sys.exit(3)
+'''
+
+
+def test_the_clip_adapter_hands_the_moved_upload_to_the_studio(tmp_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    from ns_dashboard.adapters import RealClipAdapter
+
+    script = tmp_path / "finish.py"
+    script.write_text(FINISH, encoding="utf-8")
+    monkeypatch.setenv("CHILD_ARGS_OUT", str(tmp_path / "args.json"))
+    paths = Paths.from_env()
+    upload = finished_upload(paths)
+    _store, ctl = make_ctl(paths, "clip")
+    adapter = RealClipAdapter(paths, RecordingLink(), runner=runner_for(script, tmp_path))
+    ids = adapter.clip(ctl, upload, "src-20261102-aaaa", {"template": "auto"})
+    assert ids == ["clip-1/c1"]
+    sent = json.loads((tmp_path / "args.json").read_text(encoding="utf-8"))["source_path"]
+    assert "src-20261102" not in sent and Path(sent).is_file() and not upload.parent.exists()
+
+
+def test_a_failed_link_download_job_leaves_nothing_behind(tmp_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    from ns_dashboard import studio_bridge
+    from ns_dashboard.adapters import RealClipAdapter
+
+    script = tmp_path / "finish.py"
+    script.write_text(FINISH, encoding="utf-8")
+    monkeypatch.setenv("CHILD_ARGS_OUT", str(tmp_path / "args.json"))
+    monkeypatch.setenv("CHILD_MODE", "crash")
+    paths = Paths.from_env()
+    folder = studio_bridge.download_dir(paths, "src-20261102-bbbb")
+    folder.mkdir(parents=True)
+    video = folder / "video.mp4"
+    video.write_bytes(b"d" * 100)
+    _store, ctl = make_ctl(paths, "clip")
+    adapter = RealClipAdapter(paths, RecordingLink(), runner=runner_for(script, tmp_path))
+    with pytest.raises(RuntimeError):
+        adapter.clip(ctl, video, "src-20261102-bbbb", {"template": "auto"})
+    assert not folder.exists()
