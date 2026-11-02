@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from ns_supervisor import check_names as names
-
 STEP_TITLES: dict[str, str] = {
     "b01_tools": "Free tools",
     "b02_home": "Install folder",
@@ -87,14 +85,28 @@ def row_key(key: str) -> str:
     return "whisper" if key.lower().startswith("whisper") else key
 
 
-# Names in verify-report.json (the real ones, `ns_supervisor.check_names`): prefix -> (row key, label).
+# Names in verify-report.json (the real ones). This module runs on the bare Python of the setup server and
+# cannot import ns_supervisor.check_names; tests/test_verify_check_names.py asserts each name below equals it.
+LLAMA_PREFIX = "llama."
+EMBED_PREFIX = "embed."
+TTS_PREFIX = "tts."
+WHISPER_PREFIX = "whisper."
+NVENC_PREFIX = "nvenc."
+LLAMA_TOK_S = "llama.tok_s"
+EMBED_VECTOR = "embed.vector"
+TTS_START = "tts.start"
+TTS_VOICES = "tts.voices"
+WHISPER_LOAD = "whisper.load"
+NVENC_PROBE = "nvenc.probe"
+
+# prefix -> (row key, label)
 # One setup row per area: llama.start, llama.health and llama.json_completion all report into "Story model".
 VERIFY_AREAS: tuple[tuple[str, str, str], ...] = (
-    (names.LLAMA_PREFIX, "llm", "Story model"),
-    (names.EMBED_PREFIX, "embed", "Memory index"),
-    (names.TTS_PREFIX, "tts", "Voice engine"),
-    (names.WHISPER_PREFIX, "whisper", "Captions"),
-    (names.NVENC_PREFIX, "nvenc", "Video encoder"),
+    (LLAMA_PREFIX, "llm", "Story model"),
+    (EMBED_PREFIX, "embed", "Memory index"),
+    (TTS_PREFIX, "tts", "Voice engine"),
+    (WHISPER_PREFIX, "whisper", "Captions"),
+    (NVENC_PREFIX, "nvenc", "Video encoder"),
     ("supervisor.", "engine", "Engine"),
     ("vram.", "vram", "Graphics memory"),
     ("job.", "job", "Test job"),
@@ -129,16 +141,16 @@ def verify_key(name: str) -> str:
 def verify_value(name: str, passed: bool, value: str | None, speaker: str | None = None) -> str | None:
     """The value column contribution of one verify check (spec 2.6); None when it has nothing to say."""
     low = name.lower()
-    if low == names.LLAMA_TOK_S:
+    if low == LLAMA_TOK_S:
         return f"{value} tokens/s" if value else None
-    if low == names.EMBED_VECTOR:
+    if low == EMBED_VECTOR:
         return "ready" if passed else None
-    if low.startswith(names.TTS_MODE_PREFIX) and low not in (names.TTS_START, names.TTS_VOICES):
+    if low.startswith(TTS_PREFIX) and low not in (TTS_START, TTS_VOICES):
         who = speaker or "voice"      # tts.preset / tts.design / tts.clone carry the real-time factor
         return f"{who}, {value} RTF" if value else who
-    if low == names.WHISPER_LOAD:
+    if low == WHISPER_LOAD:
         return "graphics card" if passed else "processor"
-    if low == names.NVENC_PROBE:
+    if low == NVENC_PROBE:
         return "NVENC" if passed else "libx264 (slower)"
     return None
 

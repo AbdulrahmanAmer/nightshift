@@ -72,3 +72,16 @@ def test_every_real_check_gets_a_setup_row() -> None:
     rows = labels.verify_rows(checks)
     assert [r["name"] for r in rows] == ["engine", "llm", "embed", "tts", "whisper", "nvenc", "vram"]
     assert all(r["label"] != r["name"] and r["status"] == "passed" for r in rows)
+
+
+def test_the_setup_labels_use_the_same_names_as_check_names() -> None:
+    # labels.py runs on the bare Python of the setup server and cannot import check_names, so it repeats them
+    for const in (
+        "LLAMA_PREFIX", "EMBED_PREFIX", "TTS_PREFIX", "WHISPER_PREFIX", "NVENC_PREFIX",
+        "LLAMA_TOK_S", "EMBED_VECTOR", "TTS_START", "TTS_VOICES", "WHISPER_LOAD", "NVENC_PROBE",
+    ):  # fmt: skip
+        assert getattr(labels, const) == getattr(names, const), const
+    assert names.SUPERVISOR_STATUS.startswith("supervisor.") and names.VRAM_IDLE.startswith("vram.")
+    assert names.JOB_FAKE_SERVICES.startswith("job.")
+    prefixes = {p for p, _, _ in labels.VERIFY_AREAS}
+    assert {"supervisor.", "vram.", "job."} <= prefixes
