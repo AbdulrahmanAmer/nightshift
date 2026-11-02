@@ -189,11 +189,11 @@ def test_missing_manifest_is_reported(tmp_path: Path):
 
 def test_probe_only_writes_the_hand_over_json_and_nothing_else(tmp_path: Path):
     out = tmp_path / "sub" / "handover.json"
-    proc = _run("-FakeProbe", str(_probe(tmp_path)), "-ProbeOnly", "-Out", str(out), "-HomePath", "D:\Studio",
-                dry=False)
+    proc = _run("-FakeProbe", str(_probe(tmp_path)), "-ProbeOnly", "-Out", str(out), "-HomePath",
+                "D:\\Studio", dry=False)
     assert proc.returncode == 0, proc.stdout + proc.stderr
     data = json.loads(out.read_text(encoding="utf-8-sig"))
-    assert data["schema"] == 1 and data["home"] == "D:\Studio"
+    assert data["schema"] == 1 and data["home"] == "D:\\Studio"
     assert {"is_admin", "os_caption", "os_version", "tools", "unreachable", "checks"} <= set(data)
     assert [r["id"] for r in data["checks"]][:3] == ["os", "gpu", "driver"]
     assert "Nightshift setup" not in proc.stdout                     # no splash
@@ -206,7 +206,7 @@ def test_probe_only_needs_out():
 
 def test_answers_json_and_no_ui_select_headless(tmp_path: Path):
     answers = tmp_path / "answers.json"
-    answers.write_text(json.dumps({"home_path": "C:\Studio"}), encoding="utf-8")
+    answers.write_text(json.dumps({"home_path": "C:\\Studio"}), encoding="utf-8")
     probe = str(_probe(tmp_path))
     assert "--headless" in _run("-FakeProbe", probe, "-Answers", str(answers), window=True).stdout
     assert "--headless" in _run("-FakeProbe", probe, "-NoUi", window=True).stdout

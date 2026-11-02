@@ -63,7 +63,6 @@ class SubprocessRunner:
     def __init__(self, *, bridge: bool = False) -> None:
         self.bridge = bridge
 
-
     def run(
         self,
         argv: Sequence[str],

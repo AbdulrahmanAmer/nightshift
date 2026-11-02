@@ -103,7 +103,7 @@ def run_ui(args: argparse.Namespace, cfg: Config) -> int:
         if isinstance(controller, SetupController):
             controller.set_host(handle.host)
             watch_window(handle, controller)
-        launch.update_server_info(folder, host=handle.host)
+        launch.update_server_info(folder, host=handle.host, host_text=launch.host_label(handle))
         say("Setup window: " + launch.host_label(handle))
     try:
         while not controller.shutdown.wait(0.5):

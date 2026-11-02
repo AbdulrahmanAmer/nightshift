@@ -82,7 +82,9 @@ def build(name: str, app_path: Path | None = None) -> dict[str, Any]:
     state = ctl.snapshot()
     state["machine"]["drives"] = [{"letter": "D", "freeGb": 412.0, "type": "SSD"},
                                   {"letter": "C", "freeGb": 97.0, "type": "SSD"}]
-    if name == "welcome-resume":
+    if name == "welcome":
+        pass
+    elif name == "welcome-resume":
         state["resumed"] = True
         state["uiStep"] = "welcome"
         _set_steps(state, "s02_download_bins")
@@ -133,7 +135,7 @@ def build(name: str, app_path: Path | None = None) -> dict[str, Any]:
                  "note": None},
             ], "voice": None, "render": None, "renderNote": None, "reportReady": True}
         elif name == "done":
-            _set_steps(state, None)
+            _set_steps(state, STEP_ORDER[-1])
             state["run"] = "finished"
             state["result"] = {
                 "home": "D:\\Nightshift", "outbox": "D:\\Nightshift\\outbox", "appPath": str(app),

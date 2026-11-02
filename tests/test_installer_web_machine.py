@@ -64,7 +64,7 @@ def test_a_failure_only_wins_while_the_engine_waits_for_a_decision():
 
 
 def state(**over) -> dict:
-    base = {"run": "idle", "phase": "choices", "answers": {"homePath": "D:\Nightshift"}, "blocking": False,
+    base = {"run": "idle", "phase": "choices", "answers": {"homePath": "D:\\Nightshift"}, "blocking": False,
             "failure": None, "checking": False, "result": None,
             "checks": [{"id": "longpaths", "status": "ok"}]}
     base.update(over)
@@ -104,11 +104,11 @@ def test_diagnostics_is_always_allowed_and_unknown_actions_are_not():
 
 
 def test_reveal_only_opens_paths_the_state_lists():
-    result = {"outbox": "D:\Nightshift\outbox", "home": "D:\Nightshift", "diagnosticsZip": None}
+    result = {"outbox": "D:\\Nightshift\\outbox", "home": "D:\\Nightshift", "diagnosticsZip": None}
     s = state(phase="done", run="finished", result=result)
-    assert machine.check("reveal", s, "D:\Nightshift\outbox") is None
-    assert machine.check("reveal", s, "D:\Nightshift\logs") is None          # the logs folder of the install
-    assert machine.check("reveal", s, "C:\Windows")
+    assert machine.check("reveal", s, "D:\\Nightshift\\outbox") is None
+    assert machine.check("reveal", s, "D:\\Nightshift\\logs") is None        # the logs folder of the install
+    assert machine.check("reveal", s, "C:\\Windows")
     assert machine.check("reveal", s, None)
 
 

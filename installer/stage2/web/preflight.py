@@ -170,7 +170,6 @@ def check_rows(pf: dict[str, Any], home: str | None = None) -> list[dict[str, An
 
 SHORT_LABELS = {
     "os": "Windows 10/11, 64-bit", "gpu": "Graphics card", "driver": "NVIDIA driver", "ram": "Memory",
-    "os": "Windows 10/11, 64-bit", "gpu": "Graphics card", "driver": "NVIDIA driver", "ram": "Memory",
     "disk": "Free disk space", "disktype": "Disk type", "network": "Internet",
     "winget": "winget (App Installer)",
     "longpaths": "Long file paths", "waketimers": "Wake timers",

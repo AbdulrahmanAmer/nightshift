@@ -27,24 +27,27 @@ def row(pf: dict, row_id: str, home: str | None = None) -> dict:
 def test_a_good_pc_has_ten_ok_rows_and_nothing_blocks():
     rows = preflight.check_rows(handover(), "D:\\Nightshift")
     assert [r["id"] for r in rows] == list(preflight.CHECK_IDS)
-    assert all(r["status"] == "ok" and not r["blocking"] and r["title"] is None and r["fix"] is None for r in rows)
+    assert all(r["status"] == "ok" and not r["blocking"] for r in rows)
+    assert all(r["title"] is None and r["fix"] is None for r in rows)
     assert row(handover(), "gpu")["label"] == "Graphics card"
 
 
 @pytest.mark.parametrize(
     ("row_id", "change", "title", "fix_kind", "blocking"),
     [
-        ("gpu", ("fail", "NS-E102", "nvidia-smi found no GPU"), "No NVIDIA graphics card found", "open-url", True),
+        ("gpu", ("fail", "NS-E102", "nvidia-smi found no GPU"), "No NVIDIA graphics card found",
+         "open-url", True),
         ("driver", ("fail", "NS-E103", "CUDA 12.2"), "NVIDIA driver too old", "open-url", True),
         ("driver", ("warn", "NS-E103", "CUDA 12.4"), "NVIDIA driver too old", "open-url", False),
         ("disk", ("fail", "NS-E104", "31 GB free on D:"), "Not enough free disk space", "choose-drive", True),
         ("disktype", ("warn", "NS-W106", "D: is a hard disk"), "The install drive is a hard disk",
          "choose-drive", False),
-        ("winget", ("fail", "NS-E111", "winget --version failed"), "App Installer is missing", "open-url", True),
+        ("winget", ("fail", "NS-E111", "winget --version failed"), "App Installer is missing",
+         "open-url", True),
         ("longpaths", ("warn", "NS-W112", "LongPathsEnabled is not 1"), "Long file paths are off",
          "elevate-longpaths", False),
-        ("waketimers", ("warn", "NS-W107", "disabled in the power plan"), "The PC cannot wake itself at night",
-         None, False),
+        ("waketimers", ("warn", "NS-W107", "disabled in the power plan"),
+         "The PC cannot wake itself at night", None, False),
         ("os", ("fail", "NS-E101", "architecture ARM64"), "This PC cannot run Nightshift", None, True),
     ],
 )
@@ -85,9 +88,12 @@ def test_only_hugging_face_offline_is_a_warning_and_everything_offline_blocks():
 
 def test_disk_rows_are_worked_out_again_for_another_install_folder():
     pf = handover()
-    pf["drives"] = [{"letter": "C", "free_gb": 31.0, "type": "SSD"}, {"letter": "D", "free_gb": 412.0, "type": "HDD"},
-                    {"letter": "E", "free_gb": 50.0, "type": "SSD"}]
-    assert row(pf, "disk", "C:\\Nightshift")["status"] == "fail" and row(pf, "disk", "C:\\Nightshift")["blocking"]
+    pf["drives"] = [
+        {"letter": "C", "free_gb": 31.0, "type": "SSD"}, {"letter": "D", "free_gb": 412.0, "type": "HDD"},
+        {"letter": "E", "free_gb": 50.0, "type": "SSD"},
+    ]
+    c_disk = row(pf, "disk", "C:\\Nightshift")
+    assert c_disk["status"] == "fail" and c_disk["blocking"]
     assert row(pf, "disk", "E:\\Nightshift")["status"] == "warn"
     assert row(pf, "disk", "D:\\Nightshift")["status"] == "ok"
     assert row(pf, "disktype", "D:\\Nightshift")["status"] == "warn"
@@ -113,7 +119,8 @@ def test_machine_summary_and_meters():
 def test_disk_check_messages():
     drives = [{"letter": "D", "freeGb": 412.0, "type": "SSD"}, {"letter": "C", "freeGb": 31.0, "type": "HDD"}]
     ok = preflight.disk_check("D:\\Nightshift", "small", drives, lambda _p: 0.0)
-    assert ok["ok"] and ok["message"] == "412 GB free on D: (SSD)" and ok["drive"] == "D" and ok["needGb"] == 60
+    assert ok["ok"] and ok["message"] == "412 GB free on D: (SSD)"
+    assert ok["drive"] == "D" and ok["needGb"] == 60
     low = preflight.disk_check("C:\\Nightshift", "small", drives, lambda _p: 0.0)
     assert not low["ok"] and low["message"] == "Only 31 GB free on C:. Nightshift needs 60 GB"
     asked = preflight.disk_check("F:\\x", "small", drives, lambda _p: 77.0)

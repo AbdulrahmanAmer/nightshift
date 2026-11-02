@@ -639,7 +639,8 @@ class SetupController:
             s["checking"] = False
 
         self.store.update(fn)
-        self.log("info", "Checks done: %d ok, %d warnings" % self._counts())
+        ok, warnings = self._counts()
+        self.log("info", f"Checks done: {ok} ok, {warnings} warnings")
 
     def _counts(self) -> tuple[int, int]:
         checks = self.snapshot()["checks"]
@@ -928,10 +929,10 @@ class SetupController:
             if self._engine is not None:
                 self._engine.send({"cmd": "pause"})
             step = next((s["id"] for s in state["steps"] if s["status"] == "running"), "s03_download_models")
+            self._waiting_on = "disk"
             self._set_failure(step, "NS-E104", "Not enough free disk space.", "",
                               f"{free:.1f} GB free at {self.home}",
                               False)
-            self._waiting_on = "disk"
 
     def _after_engine(self) -> None:
         code = self._engine_code
@@ -1183,9 +1184,9 @@ class SetupController:
         self.log("warn", f"{code}  {title}")
 
     def _ev_failure(self, ev: dict[str, Any]) -> None:
+        self._waiting_on = "engine"         # before the state shows "waiting": a quick Retry must find it
         self._set_failure(str(ev.get("step")), str(ev.get("code")), str(ev.get("message", "")),
                           str(ev.get("hint", "")), str(ev.get("detail", "")), bool(ev.get("optional")))
-        self._waiting_on = "engine"
 
     def _verify_pending(self) -> None:
         names = ("llm", "embed", "tts", "whisper", "nvenc", "mtp")

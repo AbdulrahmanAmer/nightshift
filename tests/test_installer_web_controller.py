@@ -73,11 +73,11 @@ def finish_script(e: ScriptedEngine, extra=None) -> None:
     """A wizard that does everything and exits 0."""
     assert e.wait_command("keys", 10)
     e.emit({"type": "hello", "pid": 1, "version": "0.1.0", "resumed": False})
-    if extra:
-        extra(e)
     for sid in ENGINE_STEPS:
         e.emit({"type": "step", "id": sid, "status": "running", "title": sid, "detail": None})
         e.emit({"type": "step", "id": sid, "status": "done", "title": sid, "detail": None})
+    if extra:
+        extra(e)        # after s08 started: its "running" rows would otherwise replace the verify result
     e.exit(0)
 
 

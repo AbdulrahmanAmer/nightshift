@@ -22,6 +22,7 @@ HOST_WAIT_S = 3.0
 WINDOW_SIZE = "1366,768"
 SERVER_FILE = "setup-server.json"
 ADDRESS_FILE = "setup-address.txt"
+DEFAULT_STARTFILE: Callable[[str], None] | None = getattr(os, "startfile", None)   # Windows only
 
 
 def data_dir(env: Mapping[str, str] | None = None) -> Path:
@@ -102,7 +103,7 @@ def open_window(
     env: Mapping[str, str] | None = None,
     popen: Callable[..., Any] = subprocess.Popen,
     exists: Callable[[Path], bool] = lambda p: p.is_file(),
-    startfile: Callable[[str], None] | None = getattr(os, "startfile", None),
+    startfile: Callable[[str], None] | None = DEFAULT_STARTFILE,
     sleep: Callable[[float], None] = time.sleep,
     wait_s: float = HOST_WAIT_S,
 ) -> WindowHandle:
@@ -162,7 +163,6 @@ def host_label(handle: WindowHandle) -> str:
     if handle.host == "browser":
         return "opened in your browser"
     return "open the address below in Edge or Chrome"
-
 
 
 def update_server_info(folder: Path, **values: Any) -> None:

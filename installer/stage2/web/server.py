@@ -51,6 +51,7 @@ class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     server_version = "NightshiftSetup"
     server: SetupHTTPServer
+    _body_read = False
 
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A002 - signature of the base class
         return None
@@ -63,7 +64,7 @@ class Handler(BaseHTTPRequestHandler):
         self._dispatch("POST")
 
     def _dispatch(self, method: str) -> None:
-        app = self.server.app
+        self._body_read = False
         try:
             if not self._host_ok():
                 self._text(HTTPStatus.MISDIRECTED_REQUEST, "Wrong host")
@@ -121,6 +122,7 @@ class Handler(BaseHTTPRequestHandler):
             message = "That request is too big"
             self._json(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"ok": False, "message": message})
             return None
+        self._body_read = True
         raw = self.rfile.read(length) if length else b"{}"
         try:
             data = json.loads(raw.decode("utf-8") or "{}")
@@ -153,6 +155,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("Content-Length", str(length))
+        if self.command == "POST" and not self._body_read:
+            self.send_header("Connection", "close")     # the request body was not read: do not reuse
         self.end_headers()
 
     def _token_landing(self, token: str) -> None:
@@ -342,5 +346,6 @@ class SetupServer:
 
     def stop(self) -> None:
         """Stop serving."""
-        self.httpd.shutdown()
+        if self._thread is not None:
+            self.httpd.shutdown()
         self.httpd.server_close()
