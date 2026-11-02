@@ -340,13 +340,13 @@ Format per entry:
 - **Change:** add to `Answers` (and `answers.schema.json`, `installer/answers.example.json`): `owner_name: str | None = None` (max 40), `ui_theme: Literal["light","dark","soft"] = "dark"`, `models_source_kind: Literal["internet","folder","drive_zip"] = "internet"`. All three are optional, so every existing answers file stays valid. `InstallerAnswers` inherits them.
 - **Why:** the setup window asks for the owner's first name (dashboard greeting), the theme, and where the models come from (download, a folder, or the zips from the Google Drive models folder).
 - **Differences from the design doc:** `ui_theme` also allows `"soft"` (the third dashboard theme) and the Drive kind is spelled `drive_zip` (snake case, like every other value in this file), not `drive-zip`.
-- **Status:** applied in @@CR_C1_UI_1@@
+- **Status:** applied in 060cbe0
 
 ## CR-C1-UI-2: error codes NS-E113 and NS-W403
 - **From:** installer UI design (`docs/design/installer-ui.md` section 5.5 and the error table); owner decisions of 2026-11-02
 - **Change:** add to `contracts/errors.json`: `NS-E113` "Antivirus or another program blocked a file Nightshift needs." (fix: add the Nightshift folder to the antivirus allow list, then retry) and `NS-W403` "The setup test video did not finish." (fix: setup can continue; run Diagnostics after install).
 - **Why:** the setup window maps a file that was blocked or removed right after download (zip item missing after extraction, `PermissionError`, winerror 225) to a single code with a fix, and the final test video is allowed to fail without failing setup.
-- **Status:** applied in @@CR_C1_UI_2@@
+- **Status:** applied in 3342839
 
 ## CR-C1-UI-3: manifest `bins.webview2` (and the `TBD-release` rule)
 - **From:** installer UI design (`docs/design/installer-ui.md` section 5.5) and the app host (`launchers/nightshift-host.ps1`); owner decisions of 2026-11-02
@@ -354,28 +354,28 @@ Format per entry:
 - **Why:** the window runs in WebView2; the three DLLs are not committed, so the release job and the installer need a pin. Hash is computed in CI, not on the authoring laptop.
 - **Differences from the design doc:** the design doc sketched `files` (a map of DLL name to SHA256). This uses `extract` + `dest` + `optional` as the owner asked; per-file hashes are not needed because the whole `.nupkg` is hash-checked.
 - **Note for the app-host PR (#28):** it already pins `bins.webview2` with a real sha256 and no `extract`/`dest`/`optional`, and its `tests/test_webview2_pin.py` asserts the entry has exactly `{version, url, sha256}`. When both land, keep the real hash, add the three new keys, and update that test.
-- **Status:** applied in @@CR_C1_UI_3@@
+- **Status:** applied in bcba0c6
 
 ## CR-C3-UI-4: `Status` model with an optional `gpu` object
 - **From:** dashboard UI (GPU and VRAM meters, HANDOFF "UI gaps"); owner decisions of 2026-11-02
 - **Change:** new `ns_common.models.Status` (exported as `contracts/schemas/status.schema.json`) describes `GET /api/status` and the `status` SSE event, with sub-models `StatusEngine`, `StatusService`, `StatusDisk`, `StatusChannel`, `StatusLastError` and the new `GpuStatus` `{name: str, load_pct: float|None, vram_used_mb: int|None, vram_total_mb: int|None, temp_c: float|None}`. `Status.gpu` is optional (`None` = not reported). `engine.vram_gb` and `services[].vram_mb` are kept unchanged. The hand-written TypeScript in `ns_dashboard/ui/src/lib/types.ts` gets `GpuStatus` and `Status.gpu?`.
 - **Why:** the Home and Queue GPU meters need load, VRAM used and total, and temperature; there was no schema for the status object at all.
 - **Not done here:** `ns_dashboard/svc_engine.py` does not fill `gpu` yet (it needs a GPU probe in the supervisor; C9/C2 follow-up), and `ns_dashboard/static` is not rebuilt (the TypeScript change is type-only; the next UI PR rebuilds).
-- **Status:** applied in @@CR_C3_UI_4@@
+- **Status:** applied in c175bdd
 
 ## CR-C3-UI-5: job request `schedule_at` (null = run now)
 - **From:** dashboard Create wizard, "When" step; owner decisions of 2026-11-02
 - **Change:** new `ns_common.models.JobRunRequest` (`contracts/schemas/job_run_request.schema.json`) for `POST /api/jobs/run`: `channel: str`, `format: str | None = None`, `count: int | None = None` (1..20), and the new optional `schedule_at: datetime | None = None`. Rule: **`null` (or absent) = run now**. A time without a zone is the PC's local time.
 - **Why:** the wizard's last-but-one step lets the owner pick a start time; the request had no field for it.
 - **Not done here:** `ns_dashboard.svc_jobs.JobsService.create_run` still ignores the key (it reads the body as a dict), so the UI must not send `schedule_at` until C9 honours it (hold the job until that time, then enqueue). The clip request (`POST /api/jobs/clip`, multipart) gets the same field when its model is written.
-- **Status:** applied in @@CR_C3_UI_5@@
+- **Status:** applied in d2a6f4f
 
 ## CR-C3-UI-6: channel stats `qc_pass_rate` and `qc_pass_target`
 - **From:** dashboard Channels page (QC pass-rate meter); owner decisions of 2026-11-02
 - **Change:** new `ns_common.models.ChannelStats` (`contracts/schemas/channel_stats.schema.json`), the `stats` object of a channel: `week`, `watched_pct`, `spark` (as the page already reads them) plus `qc_pass_rate: float | None = None` (0..1; `None` = no finished videos yet) and `qc_pass_target: float = 0.9` (0..1). `ns_dashboard/ui/src/lib/types.ts` `Channel.stats` gets both fields.
 - **Why:** the Channels page shows how many of a channel's videos passed QC against a target line; the stats object had no field for it.
 - **Not done here:** `GET /api/channels` does not fill `stats` at all yet (the page only has demo data), so C9 fills `qc_pass_rate` from the `outputs`/QC tables when it adds the stats object.
-- **Status:** applied in @@CR_C3_UI_6@@
+- **Status:** applied in b97b36d
 
 ## CR-C3-UI-7: voice design and clone endpoints, and `NS-E312`
 - **From:** dashboard Library (voice design and clone, `api.voiceDesign` / `api.voiceClone` stubs, BUILD_SPEC J6); owner decisions of 2026-11-02
@@ -383,4 +383,4 @@ Format per entry:
 - **Code number:** the owner suggested `NS-E330` "if the 33x range is TTS". It is not: `errors.json` uses 30x for text, 31x for TTS (`NS-E310`, `NS-E311`, `NS-W301`, `NS-W302`), 32x for studio, and 33x is unused. The code therefore takes the next free TTS number, `NS-E312`.
 - **Why:** the endpoints are planned but had no contract; the Library UI cannot be wired until request, response and the failure code are fixed.
 - **Not done here:** the endpoints themselves (C9 route plus C4 `ns_tts` VoiceDesign / Base calls). `sample_path` is a path on this PC, so the UI uploads the recording first (existing chunked upload) and sends the stored path; the multipart variant in the `api.ts` stub is superseded.
-- **Status:** applied in @@CR_C3_UI_7@@
+- **Status:** applied in 23f3377
