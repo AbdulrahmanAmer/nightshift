@@ -125,7 +125,7 @@ Code `NS-E311` means a stored voice was made by the other voice engine: make tha
 In **Create**, the **When** step lets you choose a start time instead of "now". The job waits in the queue
 (Queue shows "Scheduled for ...") and starts at that time or as soon as Nightshift is running after it.
 You can cancel it any time before. A waiting job does not keep Nightshift awake: if the PC is asleep or Nightshift
-was closed at that time, the job starts the next time the Dashboard opens or the nightly run begins.
+was closed at that time, the job starts the next time the Dashboard opens or the nightly run begins. Nothing wakes a closed Nightshift at that time, and **Quit Nightshift** warns you when jobs are waiting.
 The nightly run itself is unchanged: **Settings -> Run time**.
 
 ## Every night

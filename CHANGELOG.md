@@ -32,6 +32,32 @@ and routes and buttons that nothing used. A table-driven test (`tests/test_dashb
   Formats** (gap 23) has an edit form (and Duplicate works again). **Queue** (gap 26) shows a "Last night" card.
 - **First start** (gap 30) greets the owner by the name chosen in setup and starts in the chosen theme.
 
+### Fixed (dashboard, from the clean-clone review)
+- **Jobs run in the studio venv.** The dashboard service lives in the supervisor venv, which has no faster-whisper, GPU DLL
+  wheels, spaCy or OpenCV, so Run now, Clipper jobs, series parts and Library, Voices, Clone failed at the first whisper or
+  spaCy use. Each of them now starts `<home>\venvs\studio\Scripts\python.exe -m ns_dashboard.studio_job` (cwd = the app
+  folder, `NIGHTSHIFT_HOME`, UTF-8; `sys.executable` when that venv does not exist) and reads its progress as JSON lines
+  (`ns_dashboard/studio_runner.py`). Cancel kills the process tree with `ns_supervisor.procs.kill_tree`: a link download
+  (yt-dlp) no longer outlives a cancelled job and its half-file folder is deleted.
+- **API and UI agree.** `tests/test_api_ui_contract.py` seeds a dashboard, calls every route the UI calls and compares the
+  JSON field for field with `ui/src/lib/types.ts`. That found and fixed: Library > Stories (white screen: `words`,
+  `critic_avg`), Ideas (Approve/Drop/Restore sent `/ideas/undefined`), Footage cards, the Queue's Approved and posted tab
+  (`status=approved,uploaded` was a 422; rejected videos had no reason, posted ones no link or path), the Channels editor
+  (it sent the card, so every save was a 422; it now loads and saves the whole profile), Settings > Models
+  (`[object Object]`; engine settings are flat dotted keys now), Results after a reload, formats' channels, job step/steps.
+- **Every page has an error boundary**; a crash resets the remembered Library tab. Demo data appears only when the very
+  first status call fails; later the page shows "Engine not answering" and retries with backoff. The 2 s heartbeat no
+  longer re-renders every page. The Queue's job bars follow the running job.
+- **Settings > Updates > Install** follows the detached updater through `run/update_state.json` across the dashboard's own
+  restart. **Import settings** closes the database for the restore and restarts the worker (refused while a job runs).
+- **Saved Assistant requests are answered** when a job ends and show in the open chat. Cancel at job start no longer
+  loses the race. An interrupted series part goes back to approved. Clip length limits equal `ClipParams`. The Caption
+  look picked in Create reaches the clip job. Big uploads use the chunked `/api/uploads` and spool under `<home>/tmp`.
+- Also: failed jobs show a red card with code, hint and a Diagnostics button; morning notes (a toast that could not show) in
+  the bell and Last night; the three thumbnails of a long video; footage delete; Make a Short / Reuse as series on a
+  story; clip results say which layout was used; the run time is the registered task's; `#/design` pages are dev-only;
+  Settings > Models can fetch the voice design and story models (`ns models get`).
+
 ### Removed
 - `GET /api/templates/{id}/preview.png` and the Pillow preview drawing: nothing called them (gap 28).
 - `Paths.outbox_dir`, the old date/job Outbox layout, which no code used (gap 24).
