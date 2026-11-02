@@ -15,8 +15,8 @@ $ns = Get-NsVenvExe 'supervisor' 'ns.exe'
 if (-not (Test-Path -LiteralPath $ns)) { Exit-NsWithPause ('Nightshift is not installed (missing ' + $ns + ').') }
 
 # The swap renames the app folder, and Windows refuses while any process has it as its working directory.
-# Shortcuts start this script with the app folder as cwd, so step out first (ns.exe also chdirs itself).
-Set-Location -LiteralPath (Get-NsHome)
+# Older shortcuts start this script with the app folder as cwd, so step out of it for real (Win32 cwd too).
+Set-NsHomeLocation
 & $ns update $dlg.FileName
 $code = $LASTEXITCODE
 if ($code -ne 0) {

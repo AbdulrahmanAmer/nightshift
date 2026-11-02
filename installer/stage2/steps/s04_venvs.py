@@ -11,6 +11,7 @@ from installer.stage2.base import Step
 from installer.stage2.context import StepContext
 from installer.stage2.errors import make_error
 from installer.stage2.fallback import ensure_tts_venv
+from ns_common.venv_extras import extras_suffix
 
 # Ranges, not pins: the manifest has no entries for these yet (change request CR-C1-4).
 GPU_DLL_WHEELS = ("nvidia-cublas-cu12>=12.8,<13", "nvidia-cudnn-cu12>=9,<10")
@@ -64,14 +65,14 @@ class S04Venvs(Step):
         """Create the venvs and install the packages."""
         app = str(ctx.app_path)
         self._venv(ctx, "studio")
-        self._pip(ctx, "studio", ["-e", f"{app}[studio,supervisor]"], "studio app")
+        self._pip(ctx, "studio", ["-e", f"{app}{extras_suffix('studio')}"], "studio app")
         if ctx.profile == "gpu":
             self._pip(ctx, "studio", list(GPU_DLL_WHEELS), "studio gpu dlls")
         wheel = spacy_wheel_url(ctx.manifest.spacy_model)
         self._pip(ctx, "studio", [wheel], "studio spacy model")
 
         self._venv(ctx, "supervisor")
-        self._pip(ctx, "supervisor", ["-e", f"{app}[supervisor,tts,dashboard]"], "supervisor app")
+        self._pip(ctx, "supervisor", ["-e", f"{app}{extras_suffix('supervisor')}"], "supervisor app")
 
         if ctx.flag("tts_fallback", False):
             ensure_tts_venv(ctx)

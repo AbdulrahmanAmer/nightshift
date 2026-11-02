@@ -86,7 +86,7 @@ def run_check(
     f.write_text(json.dumps(saved, indent=2) + "\n", encoding="utf-8")
     log.info("update_check", current=here, latest=result["latest"], available=result["update_available"])
     if result["update_available"] and notifications_enabled(paths):
-        (toaster or notify.toast)(TITLE, message(result))
+        (toaster or notify.toast_or_note)(TITLE, message(result))
     return result
 
 

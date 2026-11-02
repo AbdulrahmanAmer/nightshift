@@ -26,6 +26,7 @@ class InstallerAnswers(Answers):
     models_source: str | None = None
     llm_tier: Literal["small", "balanced", "best"] = "small"
     restore_from: str | None = None
+    include_voicedesign: bool = False       # download the VoiceDesign talker now (else: ns models get)
 
 
 def find_answers(app_path: Path, paths: Paths, explicit: Path | None = None) -> Path | None:

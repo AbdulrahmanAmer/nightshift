@@ -76,7 +76,7 @@ def test_answers_example_matches_exported_schema():
     jsonschema.validate({k: v for k, v in example.items() if k in known}, schema)
     # Keys the published schema does not know yet are the ones filed in CR-C1-2.
     pending = set(example) - known
-    assert pending <= {"home_path", "models_source", "llm_tier", "restore_from"}
+    assert pending <= {"home_path", "models_source", "llm_tier", "restore_from", "include_voicedesign"}
 
 
 def test_installer_ui_build_is_committed():
@@ -105,6 +105,27 @@ def test_operator_copy_covers_every_code_the_installer_can_raise():
         assert not entry["whatToDo"].endswith("!") and "!" not in entry["title"], code
 
 
+# ns_common modules with only standard-library imports (and each other): the bare-Python server may use them.
+STDLIB_ONLY_NS_COMMON = {"ns_common.atomic", "ns_common.paths", "ns_common.uv"}
+
+
+def test_the_ns_common_modules_the_setup_server_uses_are_really_stdlib_only():
+    import ast
+    import sys
+
+    for name in STDLIB_ONLY_NS_COMMON:
+        tree = ast.parse((ROOT / (name.replace(".", "/") + ".py")).read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            mods: list[str] = []
+            if isinstance(node, ast.Import):
+                mods = [a.name for a in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                mods = [node.module]
+            for m in mods:
+                ok = m.split(".")[0] in sys.stdlib_module_names or m in STDLIB_ONLY_NS_COMMON
+                assert ok or m == "__future__", f"{name} imports {m}"
+
+
 def test_web_package_imports_only_the_standard_library():
     import ast
     import sys
@@ -124,6 +145,8 @@ def test_web_package_imports_only_the_standard_library():
                 if top in sys.stdlib_module_names or top == "__future__":
                     continue
                 if name == allowed_first_party or name.startswith(allowed_first_party + "."):
+                    continue
+                if name in STDLIB_ONLY_NS_COMMON:
                     continue
                 offenders.append(f"{path.name}: {name}")
     assert not offenders, "the setup server runs on the bare Python: " + ", ".join(offenders)

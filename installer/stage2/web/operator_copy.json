@@ -14,6 +14,8 @@
   "NS-E202": {"title": "A Nightshift service did not start", "whatToDo": "Press Retry once. If it stops again, send the diagnostics zip"},
   "NS-E203": {"title": "A model took too long to start", "whatToDo": "Press Retry once. If it stops again, send the diagnostics zip"},
   "NS-E204": {"title": "The nightly task could not be set up", "whatToDo": "Setup still works. Start videos from the dashboard and send the diagnostics zip"},
+  "NS-W205": {"title": "The nightly task runs only while you are logged on", "whatToDo": "Windows refused the unattended mode. Stay logged in overnight (lock the screen, do not sign out). Nothing else to do"},
+  "NS-W206": {"title": "The nightly task was not set up", "whatToDo": "Setup carried on without it. Start videos from the dashboard, or ask for help with the nightly task later"},
   "NS-E501": {"title": "The Pexels key was not accepted", "whatToDo": "Copy the key again from the website (no spaces) and paste it"},
   "NS-E502": {"title": "The Pixabay key was not accepted", "whatToDo": "Copy the key again from the website (no spaces) and paste it"},
   "NS-E503": {"title": "The internet dropped", "whatToDo": "Check the connection, then press Retry"},
