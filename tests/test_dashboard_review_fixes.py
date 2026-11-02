@@ -186,3 +186,19 @@ def test_clip_params_without_a_caption_field_still_build(monkeypatch: pytest.Mon
 
     p = studio_bridge.clip_params_of(Path("a.mp4"), "after-dark", {"caption_style": "boxed_dark", "rights_confirmed": True})
     assert p.channel == "after-dark" and p.rights_confirmed
+
+
+# ------------------------------------------------------------------ row 22: formats say which channels use them
+
+
+def test_formats_list_the_channels_that_may_use_them(tmp_home: Path):
+    dash, state = make(tmp_home)
+    seed_channel(state.db, state.paths, "after-dark", formats_allowed=["short_9x16"])
+    seed_channel(state.db, state.paths, "open-door")  # empty list: every preset
+    shipped = dash.library.list_formats()
+    assert shipped
+    by_id = {f["id"]: f for f in shipped}
+    assert all("channels" in f for f in shipped)
+    assert by_id["short_9x16"]["channels"] == ["after-dark", "open-door"]
+    other = next(f for f in shipped if f["id"] != "short_9x16")
+    assert other["channels"] == ["open-door"]

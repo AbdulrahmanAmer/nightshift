@@ -191,8 +191,12 @@ class LibraryService:
 
     # --- formats ---
     def list_formats(self) -> list[dict[str, Any]]:
-        """Shipped and user formats."""
-        return formats.list_formats(self.s.paths)
+        """Shipped and user formats, each with the channels that may use it (an empty `formats_allowed` is all)."""
+        found = formats.list_formats(self.s.paths)
+        chans = self.channels.load_all()
+        for f in found:
+            f["channels"] = [c.slug for c in chans if not c.formats_allowed or f["id"] in c.formats_allowed]
+        return found
 
     def create_format(self, body: dict[str, Any]) -> dict[str, Any]:
         """New format or a duplicate of an existing one."""
