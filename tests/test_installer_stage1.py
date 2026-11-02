@@ -17,9 +17,14 @@ GOOD_SMI = "NVIDIA-SMI 572.16   Driver Version: 572.16   CUDA Version: 12.8"
 DRIVES_OK = [{"letter": "C", "free_gb": 500, "type": "SSD"}]
 
 
-def _run(*extra: str, app: Path = ROOT, cwd: Path = ROOT, dry: bool = True) -> subprocess.CompletedProcess:
+def _run(
+    *extra: str, app: Path = ROOT, cwd: Path = ROOT, dry: bool = True, window: bool = False
+) -> subprocess.CompletedProcess:
     env = {k: v for k, v in os.environ.items() if k != "NIGHTSHIFT_HOME"}
-    env["NS_NONINTERACTIVE"] = "1"
+    if window:
+        env.pop("NS_NONINTERACTIVE", None)      # no answers.json and no NS_NONINTERACTIVE: the window mode
+    else:
+        env["NS_NONINTERACTIVE"] = "1"
     cmd = [str(PS), "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(STAGE1), "-AppPath", str(app)]
     if dry:
         cmd.append("-DryRun")
@@ -51,9 +56,9 @@ def test_real_dry_run_exits_zero_and_lists_actions():
     assert proc.returncode == 0, proc.stdout + proc.stderr
     out = proc.stdout
     assert "[dry-run] use NIGHTSHIFT_HOME" in out
-    assert "[dry-run] set user environment variable NIGHTSHIFT_HOME" in out
-    assert " venv --python " in out
-    assert "installer.stage2.wizard" in out
+    assert "[dry-run] start setup server" in out and "installer.stage2.web" in out
+    assert "--headless" in out                  # NS_NONINTERACTIVE=1 selects the unattended path
+    assert "set user environment variable" not in out and " venv --python " not in out   # moved to the server
     assert "Dry run finished" in out
     assert _summary(proc)["schema"] == 1
 
@@ -85,7 +90,9 @@ def test_all_green_fake_probe(tmp_path: Path):
         ({"drives": [{"letter": "C", "free_gb": 30, "type": "SSD"}]}, "disk", "fail", "NS-E104"),
         ({"drives": [{"letter": "C", "free_gb": 50, "type": "SSD"}]}, "disk", "warn", ""),
         ({"drives": [{"letter": "C", "free_gb": 500, "type": "HDD"}]}, "disktype", "warn", "NS-W106"),
-        ({"unreachable": ["huggingface.co"]}, "network", "fail", "NS-E105"),
+        ({"unreachable": ["huggingface.co"]}, "network", "warn", "NS-E105"),
+        ({"unreachable": ["github.com"]}, "network", "fail", "NS-E105"),
+        ({"unreachable": ["huggingface.co", "pypi.org"]}, "network", "fail", "NS-E105"),
         ({"winget": False, "tools": {"git": False}}, "winget", "fail", "NS-E111"),
         ({"winget": False}, "winget", "ok", ""),
         ({"long_paths": False}, "longpaths", "warn", "NS-W112"),
@@ -178,3 +185,46 @@ def test_missing_manifest_is_reported(tmp_path: Path):
     proc = _run("-FakeProbe", str(_probe(tmp_path)), app=empty_app)
     assert proc.returncode == 11
     assert "manifest.json not found" in proc.stdout
+
+
+def test_probe_only_writes_the_hand_over_json_and_nothing_else(tmp_path: Path):
+    out = tmp_path / "sub" / "handover.json"
+    proc = _run("-FakeProbe", str(_probe(tmp_path)), "-ProbeOnly", "-Out", str(out), "-HomePath",
+                "D:\\Studio", dry=False)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    data = json.loads(out.read_text(encoding="utf-8-sig"))
+    assert data["schema"] == 1 and data["home"] == "D:\\Studio"
+    assert {"is_admin", "os_caption", "os_version", "tools", "unreachable", "checks"} <= set(data)
+    assert [r["id"] for r in data["checks"]][:3] == ["os", "gpu", "driver"]
+    assert "Nightshift setup" not in proc.stdout                     # no splash
+
+
+def test_probe_only_needs_out():
+    proc = _run("-ProbeOnly", dry=False)
+    assert proc.returncode != 0 and "-Out" in proc.stdout + proc.stderr
+
+
+def test_answers_json_and_no_ui_select_headless(tmp_path: Path):
+    answers = tmp_path / "answers.json"
+    answers.write_text(json.dumps({"home_path": "C:\\Studio"}), encoding="utf-8")
+    probe = str(_probe(tmp_path))
+    assert "--headless" in _run("-FakeProbe", probe, "-Answers", str(answers), window=True).stdout
+    assert "--headless" in _run("-FakeProbe", probe, "-NoUi", window=True).stdout
+    with_ui = _run("-FakeProbe", probe, "-Answers", str(answers), "-Ui", window=True).stdout
+    assert "--headless" not in with_ui and "--answers" in with_ui     # -Ui: the window, answers prefilled
+
+
+def test_window_mode_prints_the_splash_and_starts_the_server(tmp_path: Path):
+    proc = _run("-FakeProbe", str(_probe(tmp_path)), window=True)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    out = proc.stdout
+    assert "N I G H T S H I F T" in out and "setup 0." in out
+    assert "[ ok ] This PC" in out
+    assert "Windows 11 Pro (fake), NVIDIA GeForce RTX 5060 Ti (16 GB), 32 GB memory" in out
+    assert "[dry-run] start setup server" in out and "--headless" not in out
+
+
+def test_window_mode_stops_on_an_unsupported_windows(tmp_path: Path):
+    proc = _run("-FakeProbe", str(_probe(tmp_path, os_arch="ARM64")), window=True)
+    assert proc.returncode == 10
+    assert "NS-E101" in proc.stdout and "[FAIL] This PC" in proc.stdout

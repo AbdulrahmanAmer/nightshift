@@ -398,6 +398,12 @@ Format per entry:
 - **Why:** the host needs the three DLLs; nothing binary is committed. The sha256 was computed from the downloaded package inside a GitHub Actions run (not on the authoring laptop); the package listing was read in the same run (`lib/net462/*.dll`, `runtimes/win-x64/native/WebView2Loader.dll` present).
 - **Status:** applied in ccf6c7b (`manifest.json` `bins.webview2`, on `feat/c3-ui-contracts`). Before it landed, a missing `bins.webview2` entry is treated like a `TBD-release` hash: the installer skips the package and `nightshift-dashboard.ps1` uses the Edge/Chrome `--app=` window (host exits 3).
 
+## CR-C1-UI-8: the setup window's UI preferences file (`config/ui_prefs.json`)
+- **From:** installer web wizard (`docs/design/installer-ui.md` section 5.5; the `ui` block of `runtime.json` was not added)
+- **Change:** step `s07_configs` writes `<home>\config\ui_prefs.json`: `{"owner_name": str | null, "theme": "dark" | "light" | "soft"}`, copied from `owner_name` and `ui_theme` of the answers. The file is installer-owned and not part of any schema. The dashboard (C9) may read it for the greeting name and the default theme; until it does, nothing breaks.
+- **Why:** the setup window asks for the owner's first name and the theme, and the dashboard has nowhere else to find them.
+- **Status:** open (C9 to read it; no contract change needed).
+
 ## CR-C9-brand-icon: app icon for the host window and the shortcuts
 - **From:** dashboard brand pass (branch `feat/c9-brand-and-wiring`); owner decision of 2026-11-02 (owner logo vectorized, see `D:\NightShift-refs\logo-work\owner-vector\README.md`)
 - **Change:** C2 sets `Window.Icon` in `launchers/nightshift-host.ps1` and C1 sets the icon of every shortcut the installer creates (Dashboard, Studio, Outbox, Update, Uninstall) to `ns_dashboard\static\brand\nightshift.ico` (7 sizes, 16 to 256 px, 372 KB; the mark on the `#0b0b1c` squircle). The file ships in the bundle with the static UI; resolve it relative to the install folder, and fall back to the shortcut's default icon when it is missing. The same folder holds `favicon.svg` and the PNG set (`icon-16` to `icon-256`) if a PNG is easier for WPF (`BitmapFrame` from `icon-256.png` also works).

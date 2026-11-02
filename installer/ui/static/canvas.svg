@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1920 1080" preserveAspectRatio="xMidYMid slice">
+<!-- Nightshift canvas: generated marbled swirl (licence-free). Diagonal colour bands from the token palette are pushed
+     around by fractal noise (fixed seed), then a dark vignette. Rasterised once; the app shows it behind the window. -->
+<defs>
+<linearGradient id="b" x1="0" y1="0" x2="1" y2="1" spreadMethod="reflect" gradientTransform="scale(.34)">
+<stop offset="0" stop-color="#0b0b1c"/><stop offset=".14" stop-color="#15153b"/><stop offset=".26" stop-color="#2d2366"/>
+<stop offset=".34" stop-color="#4f42c3"/><stop offset=".39" stop-color="#c93a55"/><stop offset=".42" stop-color="#f6b545"/>
+<stop offset=".45" stop-color="#e14b66"/><stop offset=".52" stop-color="#3a2f86"/><stop offset=".64" stop-color="#12122a"/>
+<stop offset=".74" stop-color="#23234b"/><stop offset=".8" stop-color="#7466ee"/><stop offset=".83" stop-color="#988df2"/>
+<stop offset=".86" stop-color="#2d2366"/><stop offset="1" stop-color="#0b0b1c"/>
+</linearGradient>
+<radialGradient id="g1" cx=".72" cy=".3" r=".45"><stop offset="0" stop-color="#e14b66" stop-opacity=".55"/><stop offset="1" stop-color="#e14b66" stop-opacity="0"/></radialGradient>
+<radialGradient id="g2" cx=".22" cy=".78" r=".5"><stop offset="0" stop-color="#7466ee" stop-opacity=".5"/><stop offset="1" stop-color="#7466ee" stop-opacity="0"/></radialGradient>
+<radialGradient id="g3" cx=".5" cy=".55" r=".75"><stop offset=".45" stop-color="#0b0b1c" stop-opacity="0"/><stop offset="1" stop-color="#05050f" stop-opacity=".85"/></radialGradient>
+<filter id="m" x="-10%" y="-10%" width="120%" height="120%">
+<feTurbulence type="fractalNoise" baseFrequency=".0045 .006" numOctaves="4" seed="12" result="n"/>
+<feDisplacementMap in="SourceGraphic" in2="n" scale="190" xChannelSelector="R" yChannelSelector="G" result="d"/>
+<feTurbulence type="fractalNoise" baseFrequency=".011" numOctaves="3" seed="4" result="n2"/>
+<feDisplacementMap in="d" in2="n2" scale="70" xChannelSelector="G" yChannelSelector="B"/>
+</filter>
+</defs>
+<rect width="1920" height="1080" fill="#0b0b1c"/>
+<g filter="url(#m)"><rect x="-200" y="-200" width="2320" height="1480" fill="url(#b)"/><rect x="-200" y="-200" width="2320" height="1480" fill="url(#g1)"/><rect x="-200" y="-200" width="2320" height="1480" fill="url(#g2)"/></g>
+<rect width="1920" height="1080" fill="url(#g3)"/>
+</svg>

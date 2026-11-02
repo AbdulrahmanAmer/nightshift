@@ -1,0 +1,78 @@
+/* Setup window styles (docs/design/installer-ui.md section 3.2). No colour values here: everything reads the --ds-* tokens.
+   styles.css (the dashboard's) imports tailwindcss, the fonts, the tokens, the themes and the .sidetab rail CSS; Tailwind's
+   utility scanner also needs to see the shared ref12 sources and this project, but not the build output. */
+@import "../../../ns_dashboard/ui/src/styles.css";
+@source "../../../ns_dashboard/ui/src/components/ref12";
+@source "./";
+@source not "../static";
+@source not "../public";
+
+html, body, #root { height: 100%; }
+html { overflow: hidden; }
+body { overflow: hidden; }
+#root { position: fixed; inset: 0; }
+
+/* One entrance per screen: the body fades in and rises 4 px over 200 ms, 30 ms apart per grid area. Never sideways, never looping. */
+@keyframes ns-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+.ns-grid > * { animation: ns-in 200ms var(--ds-ease-out) both; }
+.ns-grid > :nth-child(2) { animation-delay: 30ms; }
+.ns-grid > :nth-child(3) { animation-delay: 60ms; }
+.ns-grid > :nth-child(4) { animation-delay: 90ms; }
+.ns-grid > :nth-child(5) { animation-delay: 120ms; }
+.ns-grid > :nth-child(6) { animation-delay: 150ms; }
+.ns-toast { animation: ns-in 200ms var(--ds-ease-out) both; }
+dialog.ns-dialog[open] { animation: ns-in 200ms var(--ds-ease-out) both; }
+.ns-pop { animation: ns-in 160ms var(--ds-ease-out) both; }
+@media (prefers-reduced-motion: reduce) {
+  .ns-grid > *, .ns-toast, dialog.ns-dialog[open], .ns-pop { animation: none; }
+  .ns-drawer { transition: none; }
+}
+
+/* Native dialog: no browser chrome, a veil in the canvas colour behind it. */
+dialog.ns-dialog { padding: 0; border: 0; background: transparent; color: var(--ds-text-primary); max-width: none; max-height: none; overflow: visible; }
+dialog.ns-dialog::backdrop { background: color-mix(in srgb, var(--ds-bg-canvas) 72%, transparent); }
+
+/* Grid areas, per screen. The grid sits in a container (the scrolling body): 4 columns by default, 6 from 1020 px of content width
+   (docs/design/installer-ui.md section 3.3). In the 4 column layout the body scrolls and rows are as tall as their content. */
+.ns-grid { align-content: start; }
+.ns-welcome { grid-template-areas: "f1 f2 f3 time" "plan plan plan plan"; }
+.ns-checks { grid-template-areas: "rows rows rows rows" "meters meters cards cards"; }
+.ns-choices { grid-template-areas: "chan chan tier tier" "run run keys keys" "voice voice src src"; }
+.ns-downloading { grid-template-areas: "list list list list" "eta eta src src"; }
+.ns-installing { grid-template-areas: "stepper stepper log log" "list list list list"; }
+.ns-verifying { grid-template-areas: "checks checks render render" "voice voice notes notes"; }
+.ns-done { grid-template-areas: "inst inst out out" "send send send send"; }
+.ns-failed { grid-template-areas: "err err err err" "steps steps steps steps"; }
+.ns-uninstall { grid-template-areas: "gone gone keep keep"; }
+.ns-uninstall-done { grid-template-areas: "kept kept kept kept"; }
+
+@container (min-width: 1020px) {
+  .ns-welcome { grid-template-areas: "f1 f2 f3 . plan plan" "time time time . plan plan"; height: 100%; grid-template-rows: minmax(0, 1fr) auto; max-height: 440px; }
+  .ns-checks { grid-template-areas: "rows rows rows rows meters meters" "rows rows rows rows cards cards"; height: 100%; grid-template-rows: auto minmax(0, 1fr); }
+  .ns-choices { grid-template-areas: "chan chan tier tier run run" "voice voice src src keys keys"; }
+  .ns-downloading { grid-template-areas: "list list list list list eta" "list list list list list src"; height: 100%; grid-template-rows: auto minmax(0, 1fr); }
+  .ns-installing { grid-template-areas: "stepper stepper list list list list" "stepper stepper log log log log"; }
+  .ns-verifying { grid-template-areas: "checks checks render render voice voice" "checks checks render render notes notes"; height: 100%; grid-template-rows: auto minmax(0, 1fr); }
+  .ns-done { grid-template-areas: "inst inst out out send send"; }
+  .ns-failed { grid-template-areas: "err err err err steps steps"; height: 100%; grid-template-rows: minmax(0, 1fr); }
+  .ns-uninstall { grid-template-areas: "gone gone gone keep keep keep"; }
+  .ns-uninstall-done { grid-template-areas: "kept kept kept kept . ."; }
+}
+
+/* Tailwind's preflight zeroes margins, which would pin a modal dialog to the top left: centre it again. */
+dialog.ns-dialog[open] { position: fixed; inset: 0; margin: auto; width: fit-content; height: fit-content; }
+
+/* A short rail (one step, uninstall) is centred in its wave. */
+.ns-rail-short .sidetab-list { justify-content: center; padding-block: 0; }
+
+/* Cards that scroll inside their cell fade out at the bottom edge instead of cutting a card in half. */
+.ns-cards, .ns-notes { -webkit-mask-image: linear-gradient(to bottom, var(--ds-text-primary) calc(100% - 20px), transparent); mask-image: linear-gradient(to bottom, var(--ds-text-primary) calc(100% - 20px), transparent); }
+
+@container (min-width: 1020px) {
+  .ns-installing { height: 100%; max-height: 440px; grid-template-rows: minmax(0, 1fr) auto; }
+  .ns-done { height: 100%; max-height: 440px; grid-template-rows: minmax(0, 1fr); }
+  .ns-uninstall { height: 100%; max-height: 440px; grid-template-rows: minmax(0, 1fr); }
+}
+
+/* The scrolling body fades into the footer when a smaller window makes it scroll. */
+.ns-scroll { -webkit-mask-image: linear-gradient(to bottom, var(--ds-text-primary) calc(100% - 12px), transparent); mask-image: linear-gradient(to bottom, var(--ds-text-primary) calc(100% - 12px), transparent); }

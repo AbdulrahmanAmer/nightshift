@@ -18,8 +18,8 @@ from installer.stage2.runner import RunResult
 from installer.stage2.runtime_cfg import ensure_baseline, update_runtime
 
 
-def parse_report(ctx: StepContext, res: RunResult) -> dict[str, bool] | None:
-    """Check name -> passed from the ``ns verify`` JSON (stdout, else logs/verify-report.json)."""
+def load_report_rows(ctx: StepContext, res: RunResult) -> list[dict[str, Any]] | None:
+    """The check rows of the ``ns verify`` JSON (stdout, else logs/verify-report.json)."""
     candidates = [res.stdout.strip()]
     report_file = ctx.paths.logs / "verify-report.json"
     if report_file.is_file():
@@ -34,10 +34,16 @@ def parse_report(ctx: StepContext, res: RunResult) -> dict[str, bool] | None:
             continue
         checks = data.get("checks") if isinstance(data, dict) else None
         if isinstance(checks, list):
-            return {
-                str(c.get("name", "")).lower(): bool(c.get("passed")) for c in checks if isinstance(c, dict)
-            }
+            return [c for c in checks if isinstance(c, dict)]
     return None
+
+
+def parse_report(ctx: StepContext, res: RunResult) -> dict[str, bool] | None:
+    """Check name -> passed from the ``ns verify`` JSON (stdout, else logs/verify-report.json)."""
+    rows = load_report_rows(ctx, res)
+    if rows is None:
+        return None
+    return {str(c.get("name", "")).lower(): bool(c.get("passed")) for c in rows}
 
 
 def failing(report: dict[str, bool], part: str) -> bool:
@@ -62,7 +68,10 @@ class S08Smoke(Step):
         for attempt in (1, 2):
             ctx.ui.say("Testing the language model, voice, captions and video encoder ...")
             res = ctx.run_tool("ns", ["verify", "--quick"], timeout=3600)
+            rows = load_report_rows(ctx, res)
             report = parse_report(ctx, res)
+            if rows is not None:
+                ctx.ui.verify_checks(rows)
             if report is None:
                 raise make_error(
                     "NS-E202", f"ns verify --quick gave no report (exit {res.returncode}): {res.text[-300:]}"

@@ -228,11 +228,16 @@ def download(
     retries: int = 3,
     sleep: Callable[[float], None] = time.sleep,
     chunk: int = CHUNK,
+    gate: threading.Event | None = None,
 ) -> Path:
     """Download ``url`` to ``dest`` with resume, SHA256 check and atomic rename.
 
     Raises NS-E109 when the hash is wrong after ``retries`` attempts and NS-E105 when the site cannot be
     reached (or answers 404, which is not retried).
+
+    ``gate`` is the setup window's pause switch (set = running, cleared = paused). It is waited on before
+    every attempt, and an attempt that failed while it was cleared does not count, so a long pause that
+    drops the connection cannot use up the retries.
     """
     dest = Path(dest)
     if is_verified(dest, sha256):
@@ -242,8 +247,11 @@ def download(
         return dest
     http = client or _new_client()
     last: NsError | None = None
+    attempt = 0
     try:
-        for attempt in range(1, retries + 1):
+        while attempt < retries:
+            if gate is not None:
+                gate.wait()
             try:
                 _fetch_once(
                     http, url, dest, sha256, resume=resume, progress=progress, size=size, chunk=chunk
@@ -255,6 +263,9 @@ def download(
                 last = e
             except (httpx.HTTPError, OSError) as e:
                 last = make_error("NS-E105", f"{url}: {e}")
+            if gate is not None and not gate.is_set():
+                continue  # failed while paused: not a real attempt
+            attempt += 1
             if attempt < retries:
                 sleep(2**attempt)
     finally:
@@ -612,17 +623,19 @@ def run_plan(
     sleep: Callable[[float], None] = time.sleep,
     retries: int = 3,
     fetch: Callable[..., Any] | None = None,
+    gate: threading.Event | None = None,
 ) -> PlanResult:
     """Fetch every item (copy from ``models_source`` when possible), two at a time, then extract zips.
 
     All items are attempted even if one fails; the first failure is raised afterwards so a rerun resumes.
-    ``fetch`` replaces ``download`` (simulate mode and tests).
+    ``fetch`` replaces ``download`` (simulate mode and tests). ``gate`` is the pause switch.
     """
     rep: Reporter = reporter or _NullReporter()
     result = PlanResult()
     lock = threading.Lock()
     http = client or _new_client()
     do_fetch = fetch or download
+    extra: dict[str, Any] = {"gate": gate} if gate is not None else {}
 
     def outcome(item: DownloadItem, kind: str) -> None:
         with lock:
@@ -647,7 +660,7 @@ def run_plan(
                 return
             do_fetch(
                 item.url, item.dest, item.sha256, progress=progress, client=http, size=item.size,
-                retries=retries, sleep=sleep,
+                retries=retries, sleep=sleep, **extra,
             )
             if item.kind in ("zip", "nupkg"):
                 _extract_item(item)
