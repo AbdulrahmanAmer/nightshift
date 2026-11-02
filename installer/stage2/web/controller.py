@@ -1199,8 +1199,10 @@ class SetupController:
             if s["verify"] is None:
                 s["verify"] = {"checks": [], "voice": None, "render": None, "renderNote": None,
                                "reportReady": False}
-            s["verify"]["checks"] = [{"name": n, "label": label, "status": "running", "value": None, "note": None}
-                                     for n, label in rows]
+            s["verify"]["checks"] = [
+                {"name": n, "label": label, "status": "running", "value": None, "note": None}
+                for n, label in rows
+            ]
 
         self.store.update(fn)
 

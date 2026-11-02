@@ -560,7 +560,8 @@ def test_the_sample_helpers_and_labels_cover_every_step():
 
     assert set(labels.STEP_TITLES) == set(STEP_ORDER) == set(STEP_PHASE)
     assert labels.verify_label("bench.idle_vram_mb") is None
-    assert labels.verify_label("nvenc.probe") == "Video encoder" and labels.verify_label("llama.health") == "Story model"
+    assert labels.verify_label("nvenc.probe") == "Video encoder"
+    assert labels.verify_label("llama.health") == "Story model"
     assert labels.verify_label("tts.preset") == "Voice engine" and labels.verify_label("mtp") == "mtp"
     assert labels.verify_label("odd_check") == "odd_check"
     assert labels.row_key("whisper/config.json") == "whisper" and labels.row_key("yunet") == "yunet"

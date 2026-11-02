@@ -45,8 +45,8 @@ class FakeRunner:
     """Answers installer commands without running anything.
 
     ``verify_failures`` names the ``ns verify --quick`` checks that report a failure, spelled as ``ns verify``
-    spells them (``ns_supervisor.check_names``, for example ``tts.voices``). Failing ``tts.*`` checks pass again
-    once a ``torch`` package was installed through uv (the PyTorch fallback venv).
+    spells them (``ns_supervisor.check_names``, for example ``tts.voices``). Failing ``tts.*`` checks
+    pass again once a ``torch`` package was installed through uv (the PyTorch fallback venv).
     ``results`` maps a tag to a RunResult or a handler and wins over the defaults.
     """
 
