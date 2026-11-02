@@ -1,10 +1,12 @@
 /* Sample data shown when no engine answers /api/status. Same shapes as the real API.
    Ported from the vanilla dashboard's demo layer and filled out so every page has content. */
+import { ApiError } from "./errors";
 import type { ChatEvent, Job } from "./types";
 import { CLIP_STAGES, RUN_STAGES, stageWords } from "./format";
 
 const iso = (hoursFromNow: number) => new Date(Date.now() + hoursFromNow * 3600e3).toISOString();
 const at = (daysAgo: number, hh: number, mm: number) => { const d = new Date(); d.setDate(d.getDate() - daysAgo); d.setHours(hh, mm, 0, 0); return d.toISOString(); };
+const tomorrowAt = (hh: number, mm: number) => { const d = new Date(); d.setDate(d.getDate() + 1); d.setHours(hh, mm, 0, 0); return d.toISOString(); };
 const tonight = () => { const d = new Date(); d.setHours(3, 0, 0, 0); if (d.getTime() < Date.now()) d.setDate(d.getDate() + 1); return d.toISOString(); };
 
 const POOLS = { hooks: ["cold_open", "question", "confession", "warning"], structures: ["twist", "reverse_reveal", "slow_burn", "unreliable_narrator"], caption_styles: ["punch_yellow", "clean_white"], visual_treatments: ["dark_slowzoom", "handheld_grit"] };
@@ -45,6 +47,7 @@ export const DEMO: any = {
     related_video_instruction: "Set Related video to The Doorbell Camera That Recorded Tomorrow",
   },
   jobs: [
+    { job_id: "j3c5e1", kind: "run", channel: "tiny-mysteries", status: "queued", progress: 0, stage: "queued", message: "Scheduled", created_at: at(0, 5, 10), schedule_at: tomorrowAt(2, 0) },
     { job_id: "j9a41c", kind: "clip", channel: "night-desk", status: "done", progress: 100, stage: "outbox", message: "Done", created_at: at(1, 22, 40), title: "Stream, 31 October", result: { output_ids: ["clip-7f3a/c1", "clip-7f3a/c2", "clip-7f3a/c3", "clip-7f3a/c4"] } },
     { job_id: "j77b02", kind: "run", channel: "tiny-mysteries", status: "failed", progress: 62, stage: "clips", message: "No footage matched three scenes. Add a Pexels key in Settings or widen the footage look.", created_at: at(2, 3, 0) },
     { job_id: "j51e9d", kind: "run", channel: "after-dark", status: "done", progress: 100, stage: "outbox", message: "Done", created_at: at(2, 3, 0), title: "The Laundromat That Only Opens at Night" },
@@ -114,12 +117,19 @@ export const DEMO: any = {
     { id: "clip_screen_plus_cam", name: "Screen + camera", kind: "clip", canvas: { w: 1080, h: 1920, fps: 30 }, channels: [] },
   ],
   channelStats: {
-    "after-dark": { week: 2, watched_pct: 64, spark: [38, 44, 41, 52, 58, 55, 63, 61, 66, 70, 68, 72, 74, 71] },
-    "tiny-mysteries": { week: 1, watched_pct: 58, spark: [30, 33, 31, 40, 42, 39, 47, 46, 50, 52, 51, 55, 57, 58] },
-    "night-desk": { week: 0, watched_pct: 49, spark: [22, 25, 30, 28, 34, 33, 31, 36, 40, 38, 41, 44, 43, 45] },
+    "after-dark": { week: 2, watched_pct: 64, qc_pass_rate: 0.94, qc_pass_target: 0.9, spark: [38, 44, 41, 52, 58, 55, 63, 61, 66, 70, 68, 72, 74, 71] },
+    "tiny-mysteries": { week: 1, watched_pct: 58, qc_pass_rate: 0.82, qc_pass_target: 0.9, spark: [30, 33, 31, 40, 42, 39, 47, 46, 50, 52, 51, 55, 57, 58] },
+    "night-desk": { week: 0, watched_pct: 49, qc_pass_rate: null, qc_pass_target: 0.9, spark: [22, 25, 30, 28, 34, 33, 31, 36, 40, 38, 41, 44, 43, 45] },
   },
   pending: {} as Record<string, () => any>,
 };
+
+/** Plausible GPU readings that follow the simulated engine state (an RTX 4080, 16 GB). */
+function demoGpu() {
+  const s = DEMO.status.engine?.state; const wob = (n: number) => Math.sin(Date.now() / 2300 + n);
+  const busy = s === "working"; const loading = s === "loading"; const ready = s === "ready";
+  return { name: "NVIDIA GeForce RTX 4080", load_pct: Math.round(busy ? 74 + 12 * wob(1) : loading ? 18 + 8 * wob(2) : 3 + 2 * wob(3)), vram_used_mb: busy ? 11840 : loading ? 6900 : ready ? 9320 : 1120, vram_total_mb: 16376, temp_c: Math.round(busy ? 66 + 3 * wob(4) : loading ? 54 : 42 + wob(5)) };
+}
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const recount = () => {
@@ -154,7 +164,7 @@ export function simulateJob(job: Job) {
 export async function demoHandle(method: string, path: string, body?: any): Promise<any> {
   await sleep(80);
   const [p, q] = path.split("?"); const parts = p.split("/").filter(Boolean); const sp = new URLSearchParams(q || "");
-  if (p === "/status") { recount(); return structuredClone(DEMO.status); }
+  if (p === "/status") { recount(); return { ...structuredClone(DEMO.status), gpu: demoGpu() }; }
   if (p === "/outputs") { const st = (sp.get("status") || "").split(",").filter(Boolean); return DEMO.outputs.filter((o: any) => !st.length || st.includes(o.status)).map((o: any) => ({ ...o })); }
   if (parts[0] === "outputs" && parts.length >= 2) {
     const isAct = ["approve", "reject", "uploaded", "open-folder"].includes(parts[parts.length - 1]);
@@ -174,8 +184,9 @@ export async function demoHandle(method: string, path: string, body?: any): Prom
   if (p === "/jobs" && method === "GET") return DEMO.jobs.map((j: Job) => ({ ...j }));
   if ((p === "/jobs/run" || p === "/jobs/clip") && method === "POST") {
     const kind = p.endsWith("run") ? "run" : "clip";
-    const job: Job = { job_id: "j" + Math.random().toString(16).slice(2, 8), kind, channel: fdGet(body, "channel") || "after-dark", status: "queued", progress: 0, stage: "queued", message: "Waiting for the engine", created_at: new Date().toISOString(), title: kind === "clip" ? (fdGet(body, "file")?.name || fdGet(body, "url") || "Your video") : undefined };
-    DEMO.jobs.unshift(job); simulateJob(job); return { job_id: job.job_id };
+    const sched = fdGet(body, "schedule_at") ? new Date(String(fdGet(body, "schedule_at"))) : null; const later = !!sched && +sched > Date.now();
+    const job: Job = { job_id: "j" + Math.random().toString(16).slice(2, 8), kind, channel: fdGet(body, "channel") || "after-dark", status: "queued", progress: 0, stage: "queued", message: later ? "Scheduled" : "Waiting for the engine", created_at: new Date().toISOString(), schedule_at: later ? sched!.toISOString() : null, title: kind === "clip" ? (fdGet(body, "file")?.name || fdGet(body, "url") || "Your video") : undefined };
+    DEMO.jobs.unshift(job); if (!later) simulateJob(job); return { job_id: job.job_id, schedule_at: job.schedule_at };
   }
   if (parts[0] === "jobs" && parts.length === 2) { const j = DEMO.jobs.find((x: Job) => x.job_id === parts[1]); if (!j) throw new Error("Not found"); return { ...j }; }
   if (parts[0] === "jobs" && parts[2] === "cancel") { const j = DEMO.jobs.find((x: Job) => x.job_id === parts[1]); if (j) { j.status = "cancelled"; j.message = "Cancelled"; } return { ok: true }; }
@@ -192,6 +203,18 @@ export async function demoHandle(method: string, path: string, body?: any): Prom
   if (p === "/templates") return DEMO.templates;
   if (p === "/voices") return DEMO.voices;
   if (p === "/voices/preview") throw new Error("Voice samples need the engine running");
+  if (p === "/voices/design" || p === "/voices/clone") {
+    const name = String(body?.name || "").trim();
+    if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,39}$/.test(name)) throw new ApiError("Voice names are 1 to 40 letters, digits, - or _, starting with a letter or digit.", "invalid_voice");
+    if (DEMO.voices.some((v: any) => v.name.toLowerCase() === name.toLowerCase())) throw new ApiError(`A voice called '${name}' already exists. Pick another name.`, "voice_exists", `A voice called '${name}' already exists`, "Pick another name.");
+    if (p === "/voices/clone") {
+      if (body?.consent !== true) throw new ApiError("Please confirm that you have the right to clone this voice.", "consent_required");
+      const size = Number(/sample-(d+)./.exec(String(body?.sample_path))?.[1] || 0);
+      if (size < 60_000) throw new ApiError("The recording is too short: it needs 3 seconds of clear speech. Record a longer, clean sample of one speaker, with no music or background noise, and try again.", "NS-E312", "The recording is too short: it needs 3 seconds of clear speech", "Record a longer, clean sample of one speaker, with no music or background noise, and try again");
+    }
+    DEMO.voices.push({ name, mode: p === "/voices/clone" ? "clone" : "design", description: p === "/voices/design" ? String(body?.description || "") : "Cloned from your recording" });
+    return { voice_id: name, preview_wav_path: `D:\Nightshift\models\tts\voices\${name}\preview.wav` };
+  }
   if (p === "/settings") { if (method === "PUT") Object.assign(DEMO.settings, body); return structuredClone(DEMO.settings); }
   if (p === "/settings/keys") { DEMO.settings.keys[body.name] = true; return { ok: true }; }
   if (p === "/diagnostics") return { path: "C:\\Users\\you\\Desktop\\nightshift-diagnostics-2026-11-02.zip" };

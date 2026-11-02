@@ -1,6 +1,6 @@
 /* Channels: one card per channel in the 6-column grid (two across, one under 600 px of container). Each card has the
-   cover still, a pause switch, two StatCards (videos this week against the plan, watched to the end against the 55%
-   target), the formats it may use as Badges, and its voice and caption settings as a settings list.
+   cover still, a pause switch, two StatCards (videos this week against the plan, then the share of videos that passed QC against the
+   channel's target, or watched to the end against the 55% target while no video has been checked yet), the formats it may use as Badges, and its voice and caption settings as a settings list.
    The editor keeps every field and the same calls (GET /channels, POST/PUT, pause/resume, validate). */
 import { useMemo, useState } from "react";
 import { useApp, useLoad } from "../lib/app";
@@ -18,6 +18,8 @@ const voiceName = (c: Channel) => (typeof c.voice === "string" ? c.voice : c.voi
 const isClips = (c: Channel) => /clip|stream|podcast/i.test(c.niche || "");
 /** Watched-to-the-end level below which a style counts against itself (Results page rule). */
 const RETENTION_TARGET = 55;
+/** QC pass-rate target when the channel stats do not carry one (the API's default). */
+const QC_TARGET = 0.9;
 
 export default function Channels() {
   const { route, refresh, toast, status } = useApp();
@@ -60,7 +62,9 @@ export default function Channels() {
                 </header>
                 <div className="grid grid-cols-1 gap-4 @container sm:grid-cols-2">
                   <StatCard tone="accent" value={Math.min(100, (week / Math.max(1, plan)) * 100)} eyebrow="This week" title={`${week} of ${plan} made`} caption={`${pending ?? 0} waiting for review`} detail={`${plan} full video${plan === 1 ? "" : "s"} a week`} />
-                  <StatCard tone={(st.watched_pct ?? 0) >= RETENTION_TARGET ? "success" : "danger"} value={st.watched_pct ?? 0} eyebrow="Retention" title="Watched to the end" caption={`Target ${RETENTION_TARGET}%`} detail={delta == null ? "No trend yet" : `${delta > 0 ? "+" : ""}${delta} pts vs 14 days ago`} />
+                  {st.qc_pass_rate != null
+                    ? <StatCard tone={st.qc_pass_rate >= (st.qc_pass_target ?? QC_TARGET) ? "success" : "danger"} value={Math.round(st.qc_pass_rate * 100)} eyebrow="Quality" title="Passed the quality check" caption={`Target ${Math.round((st.qc_pass_target ?? QC_TARGET) * 100)}%`} detail="Videos from the last 30 days" />
+                    : <StatCard tone={(st.watched_pct ?? 0) >= RETENTION_TARGET ? "success" : "danger"} value={st.watched_pct ?? 0} eyebrow="Retention" title="Watched to the end" caption={`Target ${RETENTION_TARGET}%`} detail={delta == null ? "No trend yet" : `${delta > 0 ? "+" : ""}${delta} pts vs 14 days ago`} />}
                 </div>
                 <div>
                   <p className="mb-2 text-ds-xs font-semibold text-ds-text-2">Formats allowed</p>

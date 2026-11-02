@@ -1,17 +1,18 @@
 /* Library: one NavTabs row per bank, then the bank's items as cards in the 6-column grid (3 across, 2 at 4 columns).
    Voices gets the full treatment: voice cards with Waveform + TransportControls, and a maker card with a KnobSwitch
-   (Design / Clone) and an IntakeStepper for the clone steps. Design and clone endpoints are not in the backend yet:
-   the steps say so and call the typed stubs in lib/api (never a fake success). All other calls are unchanged. */
-import { useEffect, useRef, useState } from "react";
+   (Design / Clone) and an IntakeStepper for the clone steps. Design and clone call POST /voices/design and /voices/clone
+   (CR-C3-UI-7): the clone stepper needs the rights box ticked before Save, NS-E312 shows as a readable error with a way
+   back to the sample step, and a made voice appears under the form with its test line ready on the same transport. */
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useApp, useLoad } from "../lib/app";
-import { api } from "../lib/api";
+import { api, ApiError } from "../lib/api";
 import { fmtDay, fmtDur, plural, store } from "../lib/format";
-import type { Footage, Format, Idea, Story, Voice } from "../lib/types";
+import type { Footage, Format, Idea, Story, Voice, VoiceMade } from "../lib/types";
 import { cx } from "../ui/kit";
 import { Scene } from "../visuals/Scene";
 import { LayoutDiagram } from "../visuals/charts";
 import {
-  Badge, Button, Card, CardHeader, DashGrid, DropTile, EmptyState, Field, Icon, Input, IntakeStepper, KnobSwitch, MetaItem, NavTabs, PromoCard,
+  Badge, Button, Card, CardHeader, Checkbox, DashGrid, DropTile, EmptyState, Field, Icon, Input, IntakeStepper, KnobSwitch, MetaItem, NavTabs, ProgressBar, PromoCard,
   sampleWaveform, SearchInput, SegmentedControl, Select, SeriesIllustration, SPAN, TextArea, TransportControls, Waveform,
   type NavTab, type Tone,
 } from "../components/ref12";
@@ -144,7 +145,7 @@ function Stories() {
 
 const modeLabel = (m: string) => (m === "preset" ? "Built-in" : m === "design" ? "Designed" : "Cloned");
 
-function VoiceCard({ v, active, onPlay }: { v: Voice; active: boolean; onPlay: (name: string | null) => void }) {
+function VoiceCard({ v, active, onPlay, line = SAMPLE_LINE }: { v: Voice; active: boolean; onPlay: (name: string | null) => void; line?: string }) {
   const { toast } = useApp();
   const audio = useRef<HTMLAudioElement | null>(null);
   const [progress, setProgress] = useState(0);
@@ -156,7 +157,7 @@ function VoiceCard({ v, active, onPlay }: { v: Voice; active: boolean; onPlay: (
     if (active) { audio.current?.pause(); onPlay(null); return; }
     try {
       setLoading(true); onPlay(v.name);
-      const url = await api.voicePreview(v.name, SAMPLE_LINE);
+      const url = await api.voicePreview(v.name, line);
       const a = new Audio(url); audio.current = a;
       a.ontimeupdate = () => setProgress(a.duration ? a.currentTime / a.duration : 0);
       a.onended = () => { setProgress(0); onPlay(null); };
@@ -176,6 +177,30 @@ function VoiceCard({ v, active, onPlay }: { v: Voice; active: boolean; onPlay: (
   );
 }
 
+const VOICE_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]{0,39}$/;
+interface Fail { title: string; text: string; hint?: string; code?: string }
+/** What went wrong, in words the owner can act on. NS-E312 (a clone sample that is too short, quiet, clipped or noisy) gets its own heading. */
+const failOf = (e: unknown): Fail => {
+  if (e instanceof ApiError && e.code === "model_missing") return { title: "Install the voice-design model first", text: e.reason, hint: "Install the voice-design model from Settings, Models, then try again", code: undefined };
+  if (e instanceof ApiError) return { title: e.code === "NS-E312" ? "That recording will not work for cloning" : "The voice was not made", text: e.reason, hint: e.hint, code: e.code && e.code.startsWith("NS-") ? e.code : undefined };
+  return { title: "The voice was not made", text: (e as Error)?.message || "Something went wrong" };
+};
+
+function FailNote({ f, children }: { f: Fail; children?: ReactNode }) {
+  return (
+    <div role="alert" className="flex gap-3 rounded-ds-md bg-ds-danger-soft px-3 py-3 text-ds-xs leading-ds-normal text-ds-text-2">
+      <Icon name="alert" size={16} className="mt-px shrink-0 text-ds-danger" />
+      <div className="min-w-0 flex-1">
+        <p className="text-ds-sm font-semibold text-ds-text">{f.title}</p>
+        <p className="mt-1">{f.text}</p>
+        {f.hint && <p className="mt-1 text-ds-text">{f.hint}</p>}
+        {f.code && <p className="mt-1 text-ds-2xs text-ds-muted ds-num">{f.code}</p>}
+        {children && <div className="mt-2">{children}</div>}
+      </div>
+    </div>
+  );
+}
+
 function Voices() {
   const { ask, toast } = useApp(); const voices = useLoad<Voice[]>(() => api.get("/voices"), [], []);
   const [playing, setPlaying] = useState<string | null>(null);
@@ -183,11 +208,26 @@ function Voices() {
   const [desc, setDesc] = useState(""); const [designName, setDesignName] = useState("");
   const [step, setStep] = useState(1);
   const [sample, setSample] = useState<File | null>(null); const [name, setName] = useState(""); const [line, setLine] = useState(SAMPLE_LINE);
-  const ready = api.voiceMakingReady;
-  const canNext = step === 1 ? !!sample : step === 2 ? !!name.trim() : step === 3 ? !!line.trim() : false;
-  const save = async () => { try { await api.voiceClone(sample!, name.trim(), line.trim()); toast("Voice saved", "ok"); voices.reload(); } catch (e: any) { toast(e.message, "warn"); } };
-  const design = async () => { try { await api.voiceDesign(designName.trim() || "New voice", desc.trim()); voices.reload(); } catch (e: any) { toast(e.message, "warn"); } };
+  const [consent, setConsent] = useState(false);
+  const [busy, setBusy] = useState<"design" | "clone" | null>(null); const [upload, setUpload] = useState<number | null>(null);
+  const [fail, setFail] = useState<Fail | null>(null);
+  const [made, setMade] = useState<{ voice: Voice; line: string } | null>(null);
+  const nameOk = (n: string) => VOICE_NAME.test(n.trim());
+  const canNext = step === 1 ? !!sample : step === 2 ? nameOk(name) : step === 3 ? !!line.trim() : false;
   const CLONE_STEPS = ["Upload a sample", "Name it", "Test line", "Save"];
+  const switchMode = (v: boolean) => { setClone(v); setFail(null); };
+
+  /** One path for both makers: call, then refresh the list and show the new voice with its test line ready to play. */
+  const make = async (kind: "design" | "clone", run: () => Promise<VoiceMade>, voice: Voice, testLine: string, done: () => void) => {
+    setBusy(kind); setFail(null); setMade(null);
+    try {
+      await run(); toast(`Voice ${voice.name} saved`, "ok");
+      setMade({ voice, line: testLine }); voices.reload(); done();
+    } catch (e) { setFail(failOf(e)); }
+    setBusy(null); setUpload(null);
+  };
+  const design = () => make("design", () => api.voiceDesign(designName.trim(), desc.trim(), line.trim()), { name: designName.trim(), mode: "design", description: desc.trim() }, line.trim(), () => { setDesc(""); setDesignName(""); });
+  const save = () => make("clone", () => api.voiceClone(sample!, name.trim(), line.trim(), setUpload), { name: name.trim(), mode: "clone", description: "Cloned from your recording" }, line.trim(), () => { setSample(null); setName(""); setConsent(false); setStep(1); });
 
   return (
     <DashGrid label="Voices">
@@ -197,37 +237,45 @@ function Voices() {
       </div>
       <Card as="section" aria-labelledby="v-new" className={cx("flex flex-col gap-5", SPAN["2/4"])}>
         <CardHeader id="v-new" title="Make a new voice" className="!mb-0" />
-        <KnobSwitch label="Clone from a sample instead of designing" checked={clone} onChange={setClone} offLabel="Design" onLabel="Clone" offIcon="wand" onIcon="mic" />
-        {!ready && (
-          <p role="note" className="flex gap-2 rounded-ds-md bg-ds-accent-subtle px-3 py-2.5 text-ds-xs leading-ds-normal text-ds-text-2 shadow-[inset_0_0_0_1px_var(--ds-border-dashed)]">
-            <Icon name="clock" size={16} className="mt-px shrink-0 text-ds-accent-ink" />Designing and cloning voices on this PC are coming in the next update. You can fill the steps now; saving waits for the engine to support it
-          </p>
-        )}
+        <KnobSwitch label="Clone from a sample instead of designing" checked={clone} onChange={switchMode} offLabel="Design" onLabel="Clone" offIcon="wand" onIcon="mic" />
         {!clone ? (
           <div className="flex flex-col gap-4">
-            <Field label="Describe the voice" htmlFor="voice-desc" hint="The first one downloads the voice design model, about 2 GB"><TextArea id="voice-desc" rows={3} placeholder="Deep, calm older man, slow, a little raspy" value={desc} onChange={(e) => setDesc(e.target.value)} /></Field>
-            <Field label="Name" htmlFor="voice-dname"><Input id="voice-dname" placeholder="Hollow Porch" value={designName} onChange={(e) => setDesignName(e.target.value)} /></Field>
-            <div className="flex flex-wrap gap-2">
-              <Button leadingIcon="wand" disabled={!desc.trim() || !ready} onClick={design}>Design it</Button>
-              <Button variant="soft" leadingIcon="chat" disabled={!desc.trim()} onClick={() => { ask({ page: "library", tab: "voices" }, `Design a new narrator voice: ${desc.trim()}`); setDesc(""); }}>Ask the Assistant</Button>
+            <Field label="Describe the voice" htmlFor="voice-desc" hint="The first one downloads the voice design model, about 2 GB"><TextArea id="voice-desc" rows={3} placeholder="Deep, calm older man, slow, a little raspy" value={desc} onChange={(e) => setDesc(e.target.value)} disabled={busy != null} /></Field>
+            <Field label="Name" htmlFor="voice-dname" hint="Letters, digits, - or _, no spaces"><Input id="voice-dname" placeholder="Hollow-Porch" value={designName} onChange={(e) => setDesignName(e.target.value)} disabled={busy != null} aria-invalid={!!designName.trim() && !nameOk(designName)} /></Field>
+            <Field label="Test line" htmlFor="voice-dline" hint="Nightshift reads this in the new voice as soon as it is made"><TextArea id="voice-dline" rows={2} value={line} onChange={(e) => setLine(e.target.value)} disabled={busy != null} /></Field>
+            {fail && <FailNote f={fail} />}
+            <div className="flex flex-wrap items-center gap-2">
+              <Button leadingIcon="wand" disabled={!desc.trim() || !nameOk(designName) || !line.trim() || busy != null} onClick={design}>{busy === "design" ? "Designing" : "Design it"}</Button>
+              <Button variant="soft" leadingIcon="chat" disabled={!desc.trim() || busy != null} onClick={() => { ask({ page: "library", tab: "voices" }, `Design a new narrator voice: ${desc.trim()}`); setDesc(""); }}>Ask the Assistant</Button>
+              {busy === "design" && <span role="status" className="text-ds-xs text-ds-muted">This takes up to a minute while the model loads</span>}
             </div>
           </div>
         ) : (
           <div className="flex flex-col gap-4">
-            <IntakeStepper bare title={CLONE_STEPS[step - 1]} caption={`Step ${step} of 4`} value={step} max={4} onChange={setStep} decLabel="Previous step" incLabel="Next step" canIncrement={canNext} />
+            <IntakeStepper bare title={CLONE_STEPS[step - 1]} caption={`Step ${step} of 4`} value={step} max={4} onChange={(v) => { setStep(v); setFail(null); }} decLabel="Previous step" incLabel="Next step" canIncrement={canNext && busy == null} />
             {step === 1 && (sample
-              ? <div className="flex items-center gap-3 rounded-ds-lg bg-ds-sunken p-3 shadow-ds-inset-sm"><Icon name="voice" size={18} className="text-ds-accent-ink" /><span className="min-w-0 flex-1 truncate text-ds-sm font-semibold">{sample.name}</span><Button size="sm" variant="ghost" leadingIcon="x" onClick={() => setSample(null)}>Change</Button></div>
-              : <DropTile compact title="Drop a 3 to 10 second sample" sub="A clean recording of a voice you have the rights to" accept="audio/*" onFile={setSample} />)}
-            {step === 2 && <Field label="Name" htmlFor="voice-cname" hint="How it shows in Channels and here"><Input id="voice-cname" placeholder="My narrator" value={name} onChange={(e) => setName(e.target.value)} /></Field>}
+              ? <div className="flex items-center gap-3 rounded-ds-lg bg-ds-sunken p-3 shadow-ds-inset-sm"><Icon name="voice" size={18} className="text-ds-accent-ink" /><span className="min-w-0 flex-1 truncate text-ds-sm font-semibold">{sample.name}</span><Button size="sm" variant="ghost" leadingIcon="x" onClick={() => { setSample(null); setFail(null); }}>Change</Button></div>
+              : <DropTile compact title="Drop a 3 to 30 second sample" sub="One speaker, no music or background noise. A voice you have the rights to" accept="audio/*,video/webm" onFile={(f) => { setSample(f); setFail(null); }} />)}
+            {step === 2 && <Field label="Name" htmlFor="voice-cname" hint="Letters, digits, - or _, no spaces. How it shows in Channels and here"><Input id="voice-cname" placeholder="My-narrator" value={name} onChange={(e) => setName(e.target.value)} aria-invalid={!!name.trim() && !nameOk(name)} /></Field>}
             {step === 3 && <Field label="Test line" htmlFor="voice-line" hint="Nightshift reads this in the new voice before you save"><TextArea id="voice-line" rows={3} value={line} onChange={(e) => setLine(e.target.value)} /></Field>}
             {step === 4 && (
               <div className="flex flex-col gap-3">
                 <dl className="grid grid-cols-[max-content_minmax(0,1fr)] gap-x-4 gap-y-2 text-ds-sm"><dt className="text-ds-muted">Sample</dt><dd className="truncate font-semibold">{sample?.name}</dd><dt className="text-ds-muted">Name</dt><dd className="truncate font-semibold">{name}</dd></dl>
-                <Button leadingIcon="check" disabled={!ready} onClick={save}>Save voice</Button>
-                {!ready && <p className="text-ds-2xs text-ds-muted">Saving is switched off until cloning arrives in the next update</p>}
+                <Checkbox checked={consent} onChange={setConsent} className="text-ds-sm">This is my own voice, or I have written permission to clone it</Checkbox>
+                {fail && <FailNote f={fail}>{fail.code === "NS-E312" && <Button size="sm" variant="soft" leadingIcon="mic" onClick={() => { setSample(null); setStep(1); setFail(null); }}>Choose another recording</Button>}</FailNote>}
+                <div className="flex flex-wrap items-center gap-3">
+                  <Button leadingIcon="check" disabled={!consent || !sample || !nameOk(name) || !line.trim() || busy != null} onClick={save}>{busy === "clone" ? (upload != null && upload < 100 ? "Uploading" : "Cloning") : "Save voice"}</Button>
+                  {busy === "clone" && upload != null && upload < 100 ? <ProgressBar value={upload} label="Upload" className="w-40" /> : busy === "clone" ? <span role="status" className="text-ds-xs text-ds-muted">Checking the recording and cloning, up to a minute</span> : !consent ? <span className="text-ds-xs text-ds-muted">Tick the box to save</span> : null}
+                </div>
               </div>
             )}
             {step < 4 && <Button variant="soft" trailingIcon="chevronRight" className="self-end" disabled={!canNext} onClick={() => setStep(step + 1)}>Next</Button>}
+          </div>
+        )}
+        {made && (
+          <div className="flex flex-col gap-3 border-t border-ds-border-subtle pt-4">
+            <p role="status" className="flex items-center gap-2 text-ds-sm font-semibold"><Icon name="check" size={16} className="text-ds-success-ink" />{made.voice.name} is ready</p>
+            <VoiceCard v={made.voice} line={made.line} active={playing === made.voice.name} onPlay={setPlaying} />
           </div>
         )}
       </Card>

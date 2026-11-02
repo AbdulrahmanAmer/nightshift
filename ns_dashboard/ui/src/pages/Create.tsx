@@ -6,20 +6,20 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { useApp, useLoad } from "../lib/app";
 import { api } from "../lib/api";
-import { CLIP_STAGES, dayInline, fmtClock, fmtDur, POOL_LABELS, RUN_STAGES, stageWords, store } from "../lib/format";
+import { CLIP_STAGES, dayInline, fmtClock, fmtDur, fmtWhen, POOL_LABELS, RUN_STAGES, stageWords, store } from "../lib/format";
 import type { ChannelSummary, Idea, Job, Output, Template } from "../lib/types";
 import { cx } from "../ui/kit";
 import { LayoutDiagram } from "../visuals/charts";
 import {
   AppGrid, Badge, Button, Card, CardHeader, Checkbox, ChoiceChip, DashGrid, DayChips, DropTile, EmptyState, Field, Icon, Input, IntakeStepper,
-  LinkButton, MetaItem, NotificationItem, ProgressBar, SPAN, StatusDot, StepRail, TimeChip,
+  LinkButton, MetaItem, NotificationItem, ProgressBar, SegmentedControl, SPAN, StatusDot, StepRail, TimeChip, type SegmentOption,
 } from "../components/ref12";
 import { Poster, jobTitle } from "./Queue";
 
 type Kind = "story" | "clips";
 const STEPS: Record<Kind, { title: string; sub: string }[]> = {
-  story: [{ title: "What to make", sub: "A story or clips" }, { title: "Format", sub: "Full video or one Short" }, { title: "Channel and idea", sub: "Who it is for" }, { title: "Voice", sub: "The narrator" }, { title: "When", sub: "Starts now" }, { title: "Review", sub: "Check and start" }],
-  clips: [{ title: "What to make", sub: "A story or clips" }, { title: "Layout", sub: "How clips are framed" }, { title: "Your video", sub: "File or link" }, { title: "Options", sub: "Count, length, captions" }, { title: "When", sub: "Starts after upload" }, { title: "Review", sub: "Rights and start" }],
+  story: [{ title: "What to make", sub: "A story or clips" }, { title: "Format", sub: "Full video or one Short" }, { title: "Channel and idea", sub: "Who it is for" }, { title: "Voice", sub: "The narrator" }, { title: "When", sub: "Now or at a time" }, { title: "Review", sub: "Check and start" }],
+  clips: [{ title: "What to make", sub: "A story or clips" }, { title: "Layout", sub: "How clips are framed" }, { title: "Your video", sub: "File or link" }, { title: "Options", sub: "Count, length, captions" }, { title: "When", sub: "Now or at a time" }, { title: "Review", sub: "Rights and start" }],
 };
 const isClipChannel = (c: ChannelSummary) => /stream|clip|podcast/i.test(c.niche || "");
 const voiceOf = (c?: ChannelSummary) => (!c ? "" : typeof c.voice === "string" ? c.voice : c.voice?.name || c.voice?.speaker || "Built-in voice");
@@ -54,22 +54,27 @@ export default function Create() {
   const [caption, setCaption] = useState("punch_yellow");
   const [rights, setRights] = useState(false);
   const [upload, setUpload] = useState<number | null>(null);
+  // When: "now" sends schedule_at null; "later" sends the picked local time as an ISO instant (UTC, with Z).
+  const [whenMode, setWhenMode] = useState<"now" | "later">("now"); const [dayOff, setDayOff] = useState(0); const [time, setTime] = useState("03:00");
+  const pickedAt = whenMode === "later" ? localTime(dayOff, time) : null;
+  const pastPick = whenMode === "later" && (!pickedAt || pickedAt.getTime() <= Date.now() + 60_000);
+  const scheduleIso = pickedAt && !pastPick ? pickedAt.toISOString() : null;
   const hasSource = !!file || /^https?:\/\/\S+\.\S+/.test(url.trim());
   const channel = kind === "story" ? storyChannel : clipChannel;
 
   const pick = (k: Kind) => { setKind(k); store.set("ns-create-kind", k); };
   const go = (i: number) => { const n = Math.max(0, Math.min(5, i)); setStep(n); setReached((r) => Math.max(r, n)); };
-  const canNext = step === 2 ? (kind === "story" ? !!storyChannel : hasSource && !!clipChannel) : true;
-  const started = () => { toast("Started. You can leave this page", "ok"); jobs.reload(); refresh(); go(0); setReached(0); };
+  const canNext = step === 2 ? (kind === "story" ? !!storyChannel : hasSource && !!clipChannel) : step === 4 ? !pastPick : true;
+  const started = () => { toast(scheduleIso ? `Scheduled for ${fmtWhen(scheduleIso)}. You can leave this page` : "Started. You can leave this page", "ok"); setWhenMode("now"); jobs.reload(); refresh(); go(0); setReached(0); };
 
-  const startStory = async () => { setBusy(true); try { await api.post("/jobs/run", { channel: storyChannel, format }); started(); } catch (e: any) { toast(e.message, "bad"); } setBusy(false); };
+  const startStory = async () => { setBusy(true); try { await api.post("/jobs/run", { channel: storyChannel, format, schedule_at: scheduleIso }); started(); } catch (e: any) { toast(e.message, "bad"); } setBusy(false); };
   const startClips = async () => {
     try {
       if (file) {
-        const fd = new FormData(); Object.entries({ channel: clipChannel, template, max_clips: maxClips, min_s: minS, max_s: maxS, caption_style: caption, rights_confirmed: "true" }).forEach(([k, v]) => fd.append(k, String(v))); fd.append("file", file, file.name);
+        const fd = new FormData(); Object.entries({ channel: clipChannel, template, max_clips: maxClips, min_s: minS, max_s: maxS, caption_style: caption, rights_confirmed: "true" }).forEach(([k, v]) => fd.append(k, String(v))); if (scheduleIso) fd.append("schedule_at", scheduleIso); fd.append("file", file, file.name);
         setUpload(0); await api.upload("/jobs/clip", fd, setUpload); setFile(null);
       } else {
-        await api.post("/jobs/clip", { url: url.trim(), channel: clipChannel, template, max_clips: maxClips, min_s: minS, max_s: maxS, caption_style: caption, rights_confirmed: true }); setUrl("");
+        await api.post("/jobs/clip", { url: url.trim(), channel: clipChannel, template, max_clips: maxClips, min_s: minS, max_s: maxS, caption_style: caption, rights_confirmed: true, schedule_at: scheduleIso }); setUrl("");
       }
       setRights(false); started();
     } catch (e: any) { toast(e.message, "bad"); }
@@ -129,12 +134,12 @@ export default function Create() {
         </div>
       );
     }
-    if (step === 4) return <WhenStep kind={kind} channel={chans.find((c) => c.slug === channel)} file={file} />;
+    if (step === 4) return <WhenStep kind={kind} channel={chans.find((c) => c.slug === channel)} file={file} mode={whenMode} onMode={setWhenMode} dayOff={dayOff} onDay={setDayOff} time={time} onTime={setTime} past={pastPick} />;
     // review
     const ch = channelName(channel);
     const rows: [string, ReactNode][] = kind === "story"
-      ? [["Make", format === "master_first" ? "Full video + Shorts" : "One Short"], ["Channel", ch || "None picked"], ["Voice", voiceOf(chans.find((c) => c.slug === storyChannel))], ["Starts", "Now, after the model loads"]]
-      : [["Video", file ? file.name : url.trim() || "None yet"], ["Channel", ch || "None picked"], ["Layout", templates.data.find((t) => t.id === template)?.label || template], ["Clips", `Up to ${maxClips}, ${minS} to ${maxS} s`], ["Captions", POOL_LABELS.caption_styles.opts[caption] || caption]];
+      ? [["Make", format === "master_first" ? "Full video + Shorts" : "One Short"], ["Channel", ch || "None picked"], ["Voice", voiceOf(chans.find((c) => c.slug === storyChannel))], ["Starts", scheduleIso ? fmtWhen(scheduleIso) : "Now, after the model loads"]]
+      : [["Video", file ? file.name : url.trim() || "None yet"], ["Channel", ch || "None picked"], ["Layout", templates.data.find((t) => t.id === template)?.label || template], ["Clips", `Up to ${maxClips}, ${minS} to ${maxS} s`], ["Captions", POOL_LABELS.caption_styles.opts[caption] || caption], ["Starts", scheduleIso ? fmtWhen(scheduleIso) : "After the upload"]];
     return (
       <div className="flex flex-col gap-5">
         <dl className="grid grid-cols-[max-content_minmax(0,1fr)] gap-x-6 gap-y-3 rounded-ds-lg bg-ds-sunken p-4 shadow-ds-inset-sm">
@@ -143,8 +148,8 @@ export default function Create() {
         {kind === "clips" && <Checkbox checked={rights} onChange={setRights}>I own this video or have permission to use it</Checkbox>}
         <div className="flex flex-wrap items-center gap-3">
           {kind === "story"
-            ? <Button size="lg" onClick={startStory} disabled={!storyChannel || busy}>Start</Button>
-            : <Button size="lg" onClick={startClips} disabled={!hasSource || !rights || !clipChannel || upload != null}>Start</Button>}
+            ? <Button size="lg" onClick={startStory} disabled={!storyChannel || busy || pastPick}>{scheduleIso ? "Schedule" : "Start"}</Button>
+            : <Button size="lg" onClick={startClips} disabled={!hasSource || !rights || !clipChannel || upload != null || pastPick}>{scheduleIso ? "Schedule" : "Start"}</Button>}
           {kind === "story" ? <span className="text-ds-xs text-ds-muted">The engine loads its model first, which takes about a minute</span>
             : upload != null ? <ProgressBar value={upload} label="Upload" className="w-56" />
             : !hasSource ? <span className="text-ds-xs text-ds-muted">Add a video or a link first</span>
@@ -247,17 +252,36 @@ function VoiceStep({ channel }: { channel?: ChannelSummary }) {
   );
 }
 
-function WhenStep({ kind, channel, file }: { kind: Kind; channel?: ChannelSummary; file: File | null }) {
+/** The picked day (0 = today) and "HH:MM" as a local Date; null while the time is empty. The ISO string sent to the API is its UTC instant. */
+function localTime(dayOff: number, time: string): Date | null {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(time); if (!m) return null;
+  const d = new Date(); d.setDate(d.getDate() + dayOff); d.setHours(Number(m[1]), Number(m[2]), 0, 0); return d;
+}
+const WHEN_OPTIONS: SegmentOption<"now" | "later">[] = [{ value: "now", label: "Now", icon: "play" }, { value: "later", label: "Pick a time", icon: "clock" }];
+const dayLabel = (off: number) => { const d = new Date(); d.setDate(d.getDate() + off); return off === 0 ? "Today" : off === 1 ? "Tomorrow" : d.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" }); };
+
+function WhenStep({ kind, channel, file, mode, onMode, dayOff, onDay, time, onTime, past }: {
+  kind: Kind; channel?: ChannelSummary; file: File | null; mode: "now" | "later"; onMode: (m: "now" | "later") => void; dayOff: number; onDay: (n: number) => void; time: string; onTime: (t: string) => void; past: boolean;
+}) {
   const { status } = useApp();
   const [from, to] = (channel?.publish_window || "").split("-");
+  const at = mode === "later" ? localTime(dayOff, time) : null;
   return (
     <div className="flex flex-col gap-5">
+      <SegmentedControl label="When to start" options={WHEN_OPTIONS} value={mode} onChange={onMode} />
+      {mode === "later" && (
+        <div className="flex flex-col gap-4">
+          <Field label="Day"><div className="flex flex-wrap gap-2">{Array.from({ length: 7 }, (_, i) => <ChoiceChip key={i} on={dayOff === i} onChange={() => onDay(i)}>{dayLabel(i)}</ChoiceChip>)}</div></Field>
+          <Field label="Time" htmlFor="when-time" hint="Your PC's local time. Nightshift starts the job then, waking the engine if it is off"><Input id="when-time" type="time" value={time} onChange={(e) => onTime(e.target.value)} className="w-40" aria-invalid={past} /></Field>
+          {past && <p role="alert" className="text-ds-xs font-semibold text-ds-danger">That time has already passed. Pick a later time or choose Now</p>}
+        </div>
+      )}
       <div className="flex flex-wrap items-end gap-6">
-        <div><p className="mb-2 text-ds-xs text-ds-muted">Starts</p><TimeChip value="Now" /></div>
+        <div><p className="mb-2 text-ds-xs text-ds-muted">Starts</p>{at && !past ? <span className="inline-flex items-end gap-2"><TimeChip value={fmtClock(at.toISOString())} /><span className="pb-1 text-ds-xs">{dayInline(at.toISOString())}</span></span> : <TimeChip value="Now" />}</div>
         {from && to && <div><p className="mb-2 text-ds-xs text-ds-muted">Post between</p><span className="inline-flex items-end gap-2"><TimeChip value={from} /><span className="pb-1 text-ds-xs">to</span><TimeChip value={to} /></span></div>}
       </div>
       <p className="text-ds-sm leading-ds-normal text-ds-text-2">
-        {kind === "story" ? "The job starts as soon as you press Start and runs beside tonight's schedule. " : file ? "The file uploads first, then the job starts. " : "Nightshift downloads the video first, then the job starts. "}
+        {mode === "later" ? "The job waits in the Queue until then, then loads the model and runs. " : kind === "story" ? "The job starts as soon as you press Start and runs beside tonight's schedule. " : file ? "The file uploads first, then the job starts. " : "Nightshift downloads the video first, then the job starts. "}
         The result lands in the Queue for you to approve. {status?.next_run ? <>The automatic run is still at <span className="ds-num">{fmtClock(status.next_run)}</span> {dayInline(status.next_run)}.</> : null}
       </p>
     </div>
@@ -283,7 +307,7 @@ function JobRow({ j, channelName, onCancel }: { j: Job; channelName: (s?: string
   return (
     <li>
       <NotificationItem state="raised" title={jobTitle(j, channelName)}
-        subtitle={<span className="text-ds-accent-ink">{j.status === "queued" ? "Waiting for the engine" : stageWords(j.stage)}<span className="text-ds-muted">{j.step && j.steps ? `, step ${j.step} of ${j.steps}` : ""}</span></span>}>
+        subtitle={<span className="text-ds-accent-ink">{j.status === "queued" && j.schedule_at && new Date(j.schedule_at).getTime() > Date.now() ? `Scheduled for ${fmtWhen(j.schedule_at)}` : j.status === "queued" ? "Waiting for the engine" : stageWords(j.stage)}<span className="text-ds-muted">{j.step && j.steps ? `, step ${j.step} of ${j.steps}` : ""}</span></span>}>
         <ProgressBar value={j.progress ?? 0} label="Job progress" />
         <ol className="mt-3 flex flex-wrap gap-x-3 gap-y-1">
           {stages.map((s, i) => <li key={s} className={cx("flex items-center gap-1 text-ds-2xs", i < cur ? "text-ds-text-2" : i === cur ? "font-semibold text-ds-text" : "text-ds-muted")}>{i < cur ? <Icon name="check" size={12} className="text-ds-success-ink" /> : <span aria-hidden className={cx("size-1.5 rounded-full", i === cur ? "bg-ds-accent" : "bg-ds-border")} />}{stageWords(s)}</li>)}
