@@ -6,7 +6,8 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { useApp, useLoad } from "../lib/app";
 import { api } from "../lib/api";
-import { CLIP_STAGES, dayInline, fmtClock, fmtDur, fmtWhen, POOL_LABELS, RUN_STAGES, stageWords, store } from "../lib/format";
+import { JobError } from "../ui/JobError";
+import { dayInline, doneWords, fmtClock, fmtDur, fmtWhen, POOL_LABELS, stageWords, stagesOf, store } from "../lib/format";
 import type { ChannelSummary, Idea, Job, Output, Template } from "../lib/types";
 import { cx } from "../ui/kit";
 import { LayoutDiagram } from "../visuals/charts";
@@ -42,8 +43,8 @@ export default function Create() {
   // wizard state: every field from the previous StoryFlow and ClipFlow
   const [step, setStep] = useState(route.query.get("kind") ? 1 : 0);
   const [reached, setReached] = useState(step);
-  const [storyChannel, setStoryChannel] = useState(chans.find((c) => c.status === "active")?.slug || chans[0]?.slug || "");
-  const [format, setFormat] = useState<"master_first" | "shorts_only">("master_first");
+  const [storyChannel, setStoryChannel] = useState(route.query.get("channel") || chans.find((c) => c.status === "active")?.slug || chans[0]?.slug || "");
+  const [format, setFormat] = useState<"master_first" | "shorts_only">(route.query.get("format") === "shorts_only" ? "shorts_only" : "master_first");
   const [busy, setBusy] = useState(false);
   const templates = useLoad<Template[]>(() => api.get("/templates"), [], []);
   const [file, setFile] = useState<File | null>(null);
@@ -71,8 +72,9 @@ export default function Create() {
   const startClips = async () => {
     try {
       if (file) {
-        const fd = new FormData(); Object.entries({ channel: clipChannel, template, max_clips: maxClips, min_s: minS, max_s: maxS, caption_style: caption, rights_confirmed: "true" }).forEach(([k, v]) => fd.append(k, String(v))); if (scheduleIso) fd.append("schedule_at", scheduleIso); fd.append("file", file, file.name);
-        setUpload(0); await api.upload("/jobs/clip", fd, setUpload); setFile(null);
+        // chunked and resumable like the voice samples (8 MB pieces, then one small request): nothing is spooled to the system drive
+        setUpload(0); const up = await api.uploadFile(file, setUpload);
+        await api.post("/jobs/clip", { upload_id: up.upload_id, channel: clipChannel, template, max_clips: maxClips, min_s: minS, max_s: maxS, caption_style: caption, rights_confirmed: true, schedule_at: scheduleIso }); setFile(null);
       } else {
         await api.post("/jobs/clip", { url: url.trim(), channel: clipChannel, template, max_clips: maxClips, min_s: minS, max_s: maxS, caption_style: caption, rights_confirmed: true, schedule_at: scheduleIso }); setUrl("");
       }
@@ -232,7 +234,7 @@ function IdeasFor({ channel }: { channel: string }) {
       {mine.length ? (
         <>
           <p className="mt-1 text-ds-xs text-ds-text-2">Approved ideas are used first, in this order</p>
-          <ol className="mt-3 flex flex-col gap-2">{mine.map((i) => <li key={i.id} className="flex items-start gap-2 text-ds-sm"><Icon name="lightbulb" size={16} className="mt-0.5 shrink-0 text-ds-accent-ink" /><span><span className="font-semibold">{i.title}</span><span className="text-ds-text-2">. {i.premise}</span></span></li>)}</ol>
+          <ol className="mt-3 flex flex-col gap-2">{mine.map((i) => <li key={i.idea_id} className="flex items-start gap-2 text-ds-sm"><Icon name="lightbulb" size={16} className="mt-0.5 shrink-0 text-ds-accent-ink" /><span><span className="font-semibold">{i.title}</span><span className="text-ds-text-2">. {i.premise}</span></span></li>)}</ol>
         </>
       ) : <p className="mt-1 text-ds-xs text-ds-text-2">No approved idea for this channel, so Nightshift writes a new one. <a href="#/library?tab=ideas" className="font-semibold text-ds-accent-ink">Approve one in Library</a></p>}
     </div>
@@ -275,7 +277,7 @@ function WhenStep({ kind, channel, file, mode, onMode, dayOff, onDay, time, onTi
       {mode === "later" && (
         <div className="flex flex-col gap-4">
           <Field label="Day"><div className="flex flex-wrap gap-2">{Array.from({ length: 7 }, (_, i) => <ChoiceChip key={i} on={dayOff === i} onChange={() => onDay(i)}>{dayLabel(i)}</ChoiceChip>)}</div></Field>
-          <Field label="Time" htmlFor="when-time" hint="Your PC's local time. Nightshift starts the job then, waking the engine if it is off"><Input id="when-time" type="time" value={time} onChange={(e) => onTime(e.target.value)} className="w-40" aria-invalid={past} /></Field>
+          <Field label="Time" htmlFor="when-time" hint="Your PC's local time. The job starts then if Nightshift is open; if it is closed, it starts the next time Nightshift starts"><Input id="when-time" type="time" value={time} onChange={(e) => onTime(e.target.value)} className="w-40" aria-invalid={past} /></Field>
           {past && <p role="alert" className="text-ds-xs font-semibold text-ds-danger">That time has already passed. Pick a later time or choose Now</p>}
         </div>
       )}
@@ -305,8 +307,8 @@ function Stepper({ value, onChange, min, max, label, suffix }: { value: number; 
   );
 }
 
-function JobRow({ j, channelName, onCancel }: { j: Job; channelName: (s?: string) => string; onCancel: (id: string) => void }) {
-  const stages = j.kind === "clip" ? CLIP_STAGES : RUN_STAGES; const cur = stages.indexOf(j.stage || "");
+function JobRow({ j, channelName, onCancel }: { j: Job; channelName: (s?: string | null) => string; onCancel: (id: string) => void }) {
+  const stages = stagesOf(j); const cur = stages.indexOf(j.stage || "");
   const held = j.status === "queued" && !!j.schedule_at && new Date(j.schedule_at).getTime() > Date.now();
   return (
     <li>
@@ -322,7 +324,7 @@ function JobRow({ j, channelName, onCancel }: { j: Job; channelName: (s?: string
   );
 }
 
-function EarlierRow({ j, channelName, templates, onChanged }: { j: Job; channelName: (s?: string) => string; templates: Template[]; onChanged: () => void }) {
+function EarlierRow({ j, channelName, templates, onChanged }: { j: Job; channelName: (s?: string | null) => string; templates: Template[]; onChanged: () => void }) {
   const { toast } = useApp();
   const [open, setOpen] = useState(false); const [tpl, setTpl] = useState("");
   const canRerun = j.kind === "clip" && j.status === "done";
@@ -332,8 +334,12 @@ function EarlierRow({ j, channelName, templates, onChanged }: { j: Job; channelN
     <li>
       <NotificationItem title={jobTitle(j, channelName)}
         titleAdornment={<StatusDot tone={failed ? "danger" : cancelled ? "attention" : "online"} label={failed ? "Stopped" : cancelled ? "Cancelled" : "Done"} />}
-        subtitle={<span className={failed ? "text-ds-danger" : undefined}>{failed ? `Stopped at ${stageWords(j.stage).toLowerCase()}. ${j.message || ""}` : cancelled ? "Cancelled" : `Done ${dayInline(j.created_at)} · ${j.result?.output_ids?.length ? `${j.result.output_ids.length} videos` : "1 video"}`}</span>}
+        subtitle={<span className={failed ? "text-ds-danger" : undefined}>{failed ? `Stopped at ${stageWords(j.stage).toLowerCase()}. ${j.message || ""}` : cancelled ? "Cancelled" : `${doneWords(j)} ${dayInline(j.created_at)}`}</span>}
         meta={j.status === "done" ? <MetaItem icon="play"><a href="#/" className="inline-flex items-center font-semibold text-ds-accent-ink [@media(max-width:820px)]:min-h-10">Review it</a></MetaItem> : undefined} />
+      {failed && <JobError j={j} />}
+      {j.kind === "clip" && j.status === "done" && j.result?.layout && (
+        <p className="mt-1 text-ds-xs text-ds-text-2">Layout used: <span className="font-semibold">{templates.find((t) => t.id === j.result!.layout!.template)?.label || j.result.layout.template}</span>.{j.result.layout.no_facecam ? " No face cam was found, so the frame was cropped to the middle. Pick another layout below if that is not what you wanted." : ""}</p>
+      )}
       {canRerun && (open ? (
         <div className="mt-2 flex flex-wrap items-center gap-2 pl-1">
           <Select aria-label="Layout for the new clips" className="!h-9 !w-auto" value={tpl} onChange={(e) => setTpl(e.target.value)}>

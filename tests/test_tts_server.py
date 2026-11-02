@@ -51,9 +51,11 @@ def speak(c: TestClient, text: str, **extra: Any) -> bytes:
 
 def test_health_reports_engine_and_lazy_load(tmp_path: Path):
     c = make_client(tmp_path, load=False)
-    assert c.get("/health").json() == {"ok": True, "engine": "fake", "model_loaded": False}
+    assert c.get("/health").json() == {
+        "ok": True, "engine": "fake", "engine_kind": "fake", "model_loaded": False,
+    }  # fmt: skip
     speak(c, "hello there friend")
-    assert c.get("/health").json() == {"ok": True, "engine": "fake", "model_loaded": True}
+    assert c.get("/health").json()["model_loaded"] is True
 
 
 def test_voices_lists_presets(client: TestClient):
@@ -197,17 +199,19 @@ def test_design_without_model_returns_409_with_file_name(tmp_path: Path):
 
     c = make_client(tmp_path, NoDesign())
     r = c.post("/v1/voices/design", json={"name": "velvet", "description": "deep calm male narrator"})
-    assert r.status_code == 409 and r.json() == {"missing_model": DESIGN_FILE}
+    assert r.status_code == 409 and r.json()["missing_model"] == DESIGN_FILE
+    assert r.json()["error"] == "NS-E314" and "Get voice design" in r.json()["detail"]
     assert not (tmp_path / "voices").exists()
 
 
 def test_engine_reporting_a_missing_model_late_is_also_409(tmp_path: Path):
     class Late(FakeEngine):
         def design_to_embedding(self, description, language="English"):  # type: ignore[no-untyped-def]
-            raise NsError("NS-E202", "gone", missing_model=DESIGN_FILE)
+            raise NsError("NS-E314", "gone", missing_model=DESIGN_FILE)
 
     r = make_client(tmp_path, Late()).post("/v1/voices/design", json={"name": "v", "description": "calm"})
-    assert r.status_code == 409 and r.json() == {"missing_model": DESIGN_FILE}
+    assert r.status_code == 409 and r.json()["missing_model"] == DESIGN_FILE
+    assert r.json()["error"] == "NS-E314"
 
 
 def test_clone_requires_rights(client: TestClient, tmp_path: Path):
@@ -242,10 +246,10 @@ def test_embedding_endpoint_errors(client: TestClient):
 def test_engine_failure_is_a_coded_500(tmp_path: Path):
     class Broken(FakeEngine):
         def synth_batch(self, texts, voice, *, speed=1.0, seed=None):  # type: ignore[no-untyped-def]
-            raise NsError("NS-E202", "qwentts exited 1")
+            raise NsError("NS-E310", "qwen-tts exited 1")
 
     r = make_client(tmp_path, Broken()).post(
         "/v1/audio/speech", json={"input": "hello there", "voice": "Ryan", "model": "qwen3-tts"}
     )
     assert r.status_code == 500
-    assert r.json()["error"] == "NS-E202" and "qwentts exited 1" in r.json()["detail"]
+    assert r.json()["error"] == "NS-E310" and "qwen-tts exited 1" in r.json()["detail"]

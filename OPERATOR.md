@@ -120,12 +120,23 @@ open a command prompt and run `studio voice apply-pending`; the Library shows it
 `studio voice clone NAME --audio C:\Users\me\voice.wav --text "the words in the recording" --rights-confirmed`.
 Code `NS-E311` means a stored voice was made by the other voice engine: make that voice again.
 
+**If a voice fails.** Nightshift speaks with the `qwentts` engine (the three programs `qwen-tts.exe`, `qwen-codec.exe` and
+`tts-server.exe` in `bin\qwentts`) and switches to the slower PyTorch engine (`NS-W301`) only when the first one
+cannot run on your PC. Code `NS-E310` means one sentence could not be spoken: the message names the program and the last
+lines it printed (often "out of memory": close other programs that use the graphics card and run it again).
+Code `NS-E314` means the voice design model is not installed: open Settings, Models, Get voice design.
+Code `NS-E315` means a new voice could not be built from your recording or description: use a clean 3 to 30 second
+recording of one speaker and type exactly the words that are said in it. With the PyTorch engine the voices are stored
+as one `speaker.bin`; with `qwentts` as `speaker.spk`, `speaker.rvq` and `ref.txt` in the voice folder. If you switch
+engine, make the voices again (`NS-E311`). The speed setting of a channel (0.7 to 1.3) changes how fast the narrator
+talks, not how high the voice is.
+
 ## Start a video later
 
 In **Create**, the **When** step lets you choose a start time instead of "now". The job waits in the queue
 (Queue shows "Scheduled for ...") and starts at that time or as soon as Nightshift is running after it.
 You can cancel it any time before. A waiting job does not keep Nightshift awake: if the PC is asleep or Nightshift
-was closed at that time, the job starts the next time the Dashboard opens or the nightly run begins.
+was closed at that time, the job starts the next time the Dashboard opens or the nightly run begins. Nothing wakes a closed Nightshift at that time, and **Quit Nightshift** warns you when jobs are waiting.
 The nightly run itself is unchanged: **Settings -> Run time**.
 
 ## Every night

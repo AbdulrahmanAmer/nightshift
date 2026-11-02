@@ -1,4 +1,12 @@
+"""The qwentts.cpp contract: exact command lines, stdin, output files, voice files, error codes.
+
+`tests/fixtures/tts/fake_qwen.py` stands in for `qwen-tts.exe` and `qwen-codec.exe`. It accepts only the flags
+the pinned upstream `--help` documents, so a guessed flag fails the test the way it fails on the GPU PC.
+"""
+
+import json
 import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -6,78 +14,31 @@ from typing import Any
 import numpy as np
 import pytest
 
+from ns_common import ffmpeg
 from ns_common.errors import NsError
 from ns_tts import engine as engine_mod
-from ns_tts.audio import write_wav
+from ns_tts.audio import read_wav, write_wav
 from ns_tts.engine import (
-    QWENTTS_FLAGS,
+    EXE_SUFFIX,
+    QWEN_CODEC,
+    QWEN_TTS,
+    REFERENCE_MAGIC,
     TALKER_KIND,
     TALKER_TEMPLATE,
     TOKENIZER_FILE,
     QwenttsEngine,
 )
-from ns_tts.voices import SAMPLE_TEXT, VoiceSpec
+from ns_tts.voices import SAMPLE_TEXT, VoiceLibrary, VoiceSpec
 
+SHIM = Path(__file__).parent / "fixtures" / "tts" / "fake_qwen.py"
 CUSTOM = "qwen-talker-1.7b-customvoice-Q8_0.gguf"
 BASE = "qwen-talker-1.7b-base-Q8_0.gguf"
 DESIGN = "qwen-talker-1.7b-voicedesign-Q8_0.gguf"
 RYAN = VoiceSpec(name="Ryan", mode="preset", speaker="Ryan")
 
 
-def arg(cmd: list[str], key: str) -> str:
-    flag = QWENTTS_FLAGS[key]
-    assert flag is not None and flag in cmd, f"{key} flag missing from {cmd}"
-    return cmd[cmd.index(flag) + 1]
-
-
-def has(cmd: list[str], key: str) -> bool:
-    flag = QWENTTS_FLAGS[key]
-    return flag is not None and flag in cmd
-
-
-class FakeRun:
-    """Stands in for subprocess.run: parses the command line with QWENTTS_FLAGS and writes the outputs."""
-
-    def __init__(
-        self,
-        *,
-        sr: int = 22050,
-        seconds: float = 0.5,
-        returncode: int = 0,
-        stderr: str = "",
-        raises: BaseException | None = None,
-        write_out: bool = True,
-    ) -> None:
-        self.sr, self.seconds, self.returncode = sr, seconds, returncode
-        self.stderr, self.raises, self.write_out = stderr, raises, write_out
-        self.calls: list[list[str]] = []
-        self.kwargs: list[dict[str, Any]] = []
-        self.ref_audio_existed: list[bool] = []
-
-    def _audio(self) -> np.ndarray:
-        n = int(self.sr * self.seconds)
-        return (0.3 * np.sin(2 * np.pi * 220 * np.arange(n) / self.sr)).astype(np.float32)
-
-    def __call__(self, cmd: list[str], **kwargs: Any) -> Any:
-        self.calls.append(list(cmd))
-        self.kwargs.append(kwargs)
-        if self.raises:
-            raise self.raises
-        if self.returncode:
-            return SimpleNamespace(returncode=self.returncode, stdout="", stderr=self.stderr)
-        if self.write_out:
-            if has(cmd, "out"):
-                write_wav(Path(arg(cmd, "out")), self._audio(), self.sr)
-            if has(cmd, "batch_file"):
-                lines = Path(arg(cmd, "batch_file")).read_text(encoding="utf-8").splitlines()
-                pattern = QWENTTS_FLAGS["batch_out_name"] or ""
-                for i in range(len(lines)):
-                    write_wav(Path(arg(cmd, "out_dir")) / pattern.format(index=i), self._audio(), self.sr)
-            if has(cmd, "save_embedding"):
-                Path(arg(cmd, "save_embedding")).write_bytes(b"EMBED" * 10)
-        if has(cmd, "ref_audio"):
-            self.ref_audio_existed.append(Path(arg(cmd, "ref_audio")).is_file())
-        return SimpleNamespace(returncode=0, stdout="", stderr="")
+def launcher() -> dict[str, list[str]]:
+    return {tool: [sys.executable, str(SHIM), tool] for tool in (QWEN_TTS, QWEN_CODEC)}
 
 
 @pytest.fixture
@@ -90,166 +51,349 @@ def models(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def eng(tmp_path: Path, models: Path) -> QwenttsEngine:
-    exe = tmp_path / "bin" / "qwentts" / "qwentts.exe"
-    exe.parent.mkdir(parents=True)
-    exe.write_bytes(b"MZ")
-    return QwenttsEngine(exe, models, timeout_s=33)
+def calls(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """The JSON-lines file the stand-in appends every accepted call to."""
+    log = tmp_path / "calls.jsonl"
+    monkeypatch.setenv("NS_FAKE_QWEN_LOG", str(log))
+    monkeypatch.delenv("NS_FAKE_QWEN_FAIL", raising=False)
+    return log
 
 
 @pytest.fixture
-def run(monkeypatch: pytest.MonkeyPatch) -> FakeRun:
-    fake = FakeRun()
-    monkeypatch.setattr(subprocess, "run", fake)
-    return fake
+def eng(tmp_path: Path, models: Path, calls: Path) -> QwenttsEngine:
+    return QwenttsEngine(tmp_path / "bin", models, timeout_s=60, launcher=launcher())
 
 
-def test_preset_command_line_is_built_from_the_flag_table(eng: QwenttsEngine, run: FakeRun, models: Path):
+def ok_without_output(cmd: list[str], **kw: Any) -> Any:
+    """A subprocess.run that succeeds and writes nothing."""
+    return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+
+
+def recorded(log: Path) -> list[dict[str, Any]]:
+    if not log.is_file():
+        return []
+    return [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+
+
+def voice_folder(
+    root: Path, name: str = "me", *, spk: bool = True, rvq: bool = True, ref: bool = True
+) -> Path:
+    folder = root / name
+    folder.mkdir(parents=True)
+    if spk:
+        (folder / "speaker.spk").write_bytes(b"\x01" * 16)
+    if rvq:
+        (folder / "speaker.rvq").write_bytes(b"RVQ")
+    if ref:
+        (folder / "ref.txt").write_text("what I said\n", encoding="utf-8")
+    return folder
+
+
+def ref_wav(path: Path, seconds: float = 1.0) -> Path:
+    n = int(24000 * seconds)
+    write_wav(path, (0.3 * np.sin(2 * np.pi * 220 * np.arange(n) / 24000)).astype(np.float32), 24000)
+    return path
+
+
+# ---------------------------------------------------------------- the contract
+
+
+def test_executable_names_are_the_ones_the_release_zip_contains(repo_root: Path, tmp_path: Path):
+    workflow = (repo_root / ".github" / "workflows" / "build-qwentts.yml").read_text(encoding="utf-8")
+    for tool in (QWEN_TTS, QWEN_CODEC):
+        assert f"'{tool}{EXE_SUFFIX}'" in workflow
+    assert "qwentts.exe" not in workflow.replace("qwentts-win-cuda", "")
+    e = QwenttsEngine(tmp_path / "bin" / "qwentts", tmp_path)
+    assert e.exe(QWEN_TTS) == tmp_path / "bin" / "qwentts" / "qwen-tts.exe"
+    assert e.exe(QWEN_CODEC) == tmp_path / "bin" / "qwentts" / "qwen-codec.exe"
+    assert e.tts_command("preset", out=tmp_path / "o.wav")[0].endswith("qwen-tts.exe")
+
+
+def test_preset_command_line_and_stdin(eng: QwenttsEngine, calls: Path, models: Path):
     x = eng.synth("Hello there friend.", RYAN, seed=11)
-    (cmd,) = run.calls
-    assert cmd[0] == str(eng.exe)
-    assert arg(cmd, "talker") == str(models / CUSTOM)
-    assert arg(cmd, "tokenizer") == str(models / TOKENIZER_FILE)
-    assert arg(cmd, "text") == "Hello there friend."
-    assert arg(cmd, "speaker") == "Ryan"
-    assert arg(cmd, "language") == "English"
-    assert arg(cmd, "seed") == "11"
-    assert not has(cmd, "speaker_embedding") and not has(cmd, "ref_audio")
-    assert run.kwargs[0]["timeout"] == 33 and "shell" not in run.kwargs[0]
-    assert x.dtype == np.float32 and len(x) == int(22050 * 0.5)
-    assert eng.sr == 22050  # sample rate comes from the WAV that was read back
+    (call,) = recorded(calls)
+    assert call["tool"] == "qwen-tts"
+    argv = call["argv"]
+    assert argv[:-1] == [
+        "--model", str(models / CUSTOM),
+        "--codec", str(models / TOKENIZER_FILE),
+        "--speaker", "ryan",
+        "--lang", "English",
+        "--seed", "11",
+        "-o",
+    ]  # fmt: skip
+    assert Path(argv[-1]).name == "out.wav"
+    assert call["stdin"] == "Hello there friend."  # the text travels on stdin, never in argv
+    assert x.dtype == np.float32 and len(x) == int(24000 * 0.6) and eng.sr == 24000
 
 
-def test_no_seed_flag_without_seed(eng: QwenttsEngine, run: FakeRun):
+@pytest.mark.parametrize(
+    "name,speaker", [("Uncle_Fu", "uncle_fu"), ("Ono_Anna", "ono_anna"), ("Vivian", "vivian")]
+)
+def test_preset_speaker_names_are_lowercase(eng: QwenttsEngine, calls: Path, name: str, speaker: str):
+    eng.synth("Hello there friend.", VoiceSpec(name=name, mode="preset", speaker=name))
+    argv = recorded(calls)[0]["argv"]
+    assert argv[argv.index("--speaker") + 1] == speaker
+
+
+def test_no_seed_flag_without_seed_and_device_only_when_set(eng: QwenttsEngine, calls: Path, models: Path):
     eng.synth("Hello there friend.", RYAN)
-    assert not has(run.calls[0], "seed")
+    assert "--seed" not in recorded(calls)[0]["argv"] and "--device" not in recorded(calls)[0]["argv"]
+    eng.device = "CPU"
+    eng.synth("Hello there friend.", RYAN)
+    argv = recorded(calls)[1]["argv"]
+    assert argv[argv.index("--codec") + 2 : argv.index("--codec") + 4] == ["--device", "CPU"]
 
 
-def test_embedding_voice_uses_base_talker(eng: QwenttsEngine, run: FakeRun, models: Path, tmp_path: Path):
-    emb = tmp_path / "speaker.bin"
-    emb.write_bytes(b"EMB")
-    voice = VoiceSpec(name="me", mode="clone", embedding_path=str(emb), language="French")
-    eng.synth("Bonjour.", voice)
-    cmd = run.calls[0]
-    assert arg(cmd, "talker") == str(models / BASE)
-    assert arg(cmd, "speaker_embedding") == str(emb)
-    assert arg(cmd, "language") == "French"
-    assert not has(cmd, "speaker")
-    design = VoiceSpec(name="d", mode="design", embedding_path=str(emb))
-    eng.synth("Hi.", design)
-    assert arg(run.calls[1], "talker") == str(models / BASE)  # designed voices are embeddings too
+def test_text_with_odd_characters_survives_stdin(eng: QwenttsEngine, calls: Path):
+    text = 'She said "stop", then left: café — ñ 你好.'
+    eng.synth(text, RYAN)
+    assert recorded(calls)[0]["stdin"] == text
+    assert text not in " ".join(recorded(calls)[0]["argv"])
 
 
-def test_embedding_voice_without_file_is_an_error(eng: QwenttsEngine, run: FakeRun):
-    with pytest.raises(NsError) as ei:
-        eng.synth("Hi.", VoiceSpec(name="me", mode="clone"))
-    assert ei.value.code == "NS-E301" and not run.calls
-
-
-def test_flags_come_only_from_the_table(
-    eng: QwenttsEngine, run: FakeRun, monkeypatch: pytest.MonkeyPatch
+def test_stored_voice_uses_base_talker_and_reference_files(
+    eng: QwenttsEngine, calls: Path, models: Path, tmp_path: Path
 ):
-    monkeypatch.setitem(QWENTTS_FLAGS, "speaker", "--spk")
-    monkeypatch.setitem(QWENTTS_FLAGS, "talker", "-m")
-    monkeypatch.setitem(QWENTTS_FLAGS, "seed", None)
-    eng.synth("Hello there friend.", RYAN, seed=5)
-    cmd = run.calls[0]
-    assert "--spk" in cmd and "-m" in cmd and "--seed" not in cmd and "5" not in cmd
-    monkeypatch.setitem(QWENTTS_FLAGS, "text", None)
-    with pytest.raises(NsError) as ei:
-        eng.synth("Hello.", RYAN)
-    assert ei.value.code == "NS-E202" and "text" in ei.value.detail
+    folder = voice_folder(tmp_path / "voices")
+    voice = VoiceSpec(name="me", mode="clone", embedding_path=str(folder / "speaker.spk"), language="French")
+    eng.synth("Bonjour.", voice, seed=3)
+    argv = recorded(calls)[0]["argv"]
+    assert argv[:-1] == [
+        "--model", str(models / BASE),
+        "--codec", str(models / TOKENIZER_FILE),
+        "--ref-spk", str(folder / "speaker.spk"),
+        "--ref-rvq", str(folder / "speaker.rvq"),
+        "--ref-text", str(folder / "ref.txt"),
+        "--lang", "French",
+        "--seed", "3",
+        "-o",
+    ]  # fmt: skip
+    design = VoiceSpec(name="d", mode="design", embedding_path=str(folder / "speaker.spk"))
+    eng.synth("Hi.", design)
+    assert recorded(calls)[1]["argv"][1] == str(models / BASE)  # designed voices are stored as clones
 
 
-def test_speed_resamples_the_result(eng: QwenttsEngine, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(subprocess, "run", FakeRun(sr=24000, seconds=1.0))
-    x = eng.synth("Hello there friend.", RYAN, speed=2.0)
-    assert abs(len(x) - 12000) <= 2
+def test_make_embedding_runs_qwen_codec_and_returns_the_three_files(
+    eng: QwenttsEngine, calls: Path, models: Path, tmp_path: Path
+):
+    ref = ref_wav(tmp_path / "ref.wav")
+    files = eng.make_embedding(ref, "  what I said  ", "English")
+    assert isinstance(files, dict) and set(files) == {"speaker.spk", "speaker.rvq", "ref.txt"}
+    assert files["ref.txt"] == b"what I said\n" and files["speaker.spk"] and files["speaker.rvq"]
+    (call,) = recorded(calls)
+    assert call["tool"] == "qwen-codec"
+    expected = ["--model", str(models / TOKENIZER_FILE), "--talker", str(models / BASE), "-i"]
+    assert call["argv"][:-1] == expected
+    assert Path(call["argv"][-1]).name == "speaker.wav"
 
 
-def test_process_failures_become_ns_errors(eng: QwenttsEngine, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(subprocess, "run", FakeRun(returncode=3, stderr="line1\nCUDA error: out of memory"))
+def test_design_renders_with_voicedesign_then_encodes_through_base(
+    eng: QwenttsEngine, calls: Path, models: Path
+):
+    files, sample = eng.design_to_embedding("male, young adult, moderate pitch", "English")
+    render, encode = recorded(calls)
+    assert render["tool"] == "qwen-tts" and render["stdin"] == SAMPLE_TEXT
+    assert render["argv"][:-1] == [
+        "--model", str(models / DESIGN),
+        "--codec", str(models / TOKENIZER_FILE),
+        "--instruct", "male, young adult, moderate pitch",
+        "--lang", "English",
+        "-o",
+    ]  # fmt: skip
+    assert encode["tool"] == "qwen-codec" and encode["argv"][-1] == render["argv"][-1]  # the render itself
+    assert encode["argv"][3] == str(models / BASE) and Path(encode["argv"][-1]).name == "render.wav"
+    assert isinstance(files, dict) and files["ref.txt"] == (SAMPLE_TEXT + "\n").encode()
+    assert set(files) == {"speaker.spk", "speaker.rvq", "ref.txt"} and len(sample) > 0
+
+
+def test_voice_library_round_trip_with_the_qwentts_files(eng: QwenttsEngine, calls: Path, tmp_path: Path):
+    lib = VoiceLibrary(tmp_path / "voices")
+    v = lib.add_clone("me", str(ref_wav(tmp_path / "ref.wav")), "what I said", True, engine=eng)
+    folder = tmp_path / "voices" / "me"
+    assert {p.name for p in folder.iterdir()} == {
+        "voice.json", "speaker.spk", "speaker.rvq", "ref.txt", "sample.wav",
+    }  # fmt: skip
+    meta = json.loads((folder / "voice.json").read_text(encoding="utf-8"))
+    assert meta["engine"] == "qwentts" and meta["files"] == ["ref.txt", "speaker.rvq", "speaker.spk"]
+    assert meta["ref_text"] == "what I said" and meta["mode"] == "clone"
+    assert v.embedding_path == str(folder / "speaker.spk")
+    assert VoiceLibrary(tmp_path / "voices").get("me").embedding_path == str(folder / "speaker.spk")
+    audio, sr = read_wav(folder / "sample.wav")
+    assert sr == 24000 and len(audio) > 0
+    assert len(eng.synth("Hello there friend.", lib.get("me"))) > 0
+    # export: several files travel as one zip
+    assert lib.export_embedding("me")[:2] == b"PK"
+    lib.add_design("velvet", "deep calm male narrator", engine=eng)
+    assert (tmp_path / "voices" / "velvet" / "speaker.rvq").is_file()
+
+
+# ---------------------------------------------------------------- the stand-in itself rejects the old guesses
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        ["--text", "hello"],  # the text goes to stdin
+        ["--out", "x.wav"],  # the flag is -o
+        ["--tokenizer", "t.gguf"],  # the flag is --codec
+        ["--language", "English"],  # the flag is --lang
+        ["--ref-audio", "r.wav"],  # the flag is --ref-wav
+        ["--speaker-embedding", "e.bin"],
+        ["--batch-file", "b.txt"],
+    ],
+)
+def test_the_stand_in_rejects_flags_the_real_tool_does_not_have(models: Path, tmp_path: Path, bad: list[str]):
+    ok = ["--model", str(models / CUSTOM), "--codec", str(models / TOKENIZER_FILE), "--speaker", "ryan"]
+    proc = subprocess.run(
+        [sys.executable, str(SHIM), "qwen-tts", *ok, *bad, "-o", str(tmp_path / "o.wav")],
+        input=b"hello there", capture_output=True, check=False, timeout=60,
+    )  # fmt: skip
+    assert proc.returncode == 1 and b"unknown argument" in proc.stderr
+
+
+def test_the_stand_in_enforces_the_upstream_mode_rules(models: Path, tmp_path: Path):
+    def run(model: str, *extra: str, stdin: bytes = b"hello there") -> int:
+        cmd = [sys.executable, str(SHIM), "qwen-tts", "--model", str(models / model)]
+        cmd += ["--codec", str(models / TOKENIZER_FILE), *extra, "-o", str(tmp_path / "o.wav")]
+        return subprocess.run(cmd, input=stdin, capture_output=True, check=False, timeout=60).returncode
+
+    assert run(CUSTOM, "--speaker", "ryan") == 0
+    assert run(CUSTOM) == 1  # CustomVoice needs a speaker
+    assert run(CUSTOM, "--speaker", "Ryan") == 1  # speaker names are lowercase
+    assert run(CUSTOM, "--speaker", "ryan", stdin=b"") == 1  # empty stdin
+    assert run(BASE, "--instruct", "x") == 1  # --instruct is rejected for Base
+    assert run(DESIGN) == 1  # VoiceDesign needs --instruct
+    assert run(DESIGN, "--instruct", "calm") == 0
+
+
+# ---------------------------------------------------------------- error codes
+
+
+def test_synthesis_failures_are_ns_e310(eng: QwenttsEngine, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("NS_FAKE_QWEN_FAIL", "qwen-tts")
     with pytest.raises(NsError) as ei:
         eng.synth("Hi there.", RYAN)
-    assert ei.value.code == "NS-E202" and "exited 3" in ei.value.detail and "out of memory" in ei.value.detail
+    assert ei.value.code == "NS-E310" and "exited 3" in ei.value.detail and "out of memory" in ei.value.detail
 
-    monkeypatch.setattr(subprocess, "run", FakeRun(raises=subprocess.TimeoutExpired(["x"], 33)))
+    def raising(exc: BaseException) -> Any:
+        def run(cmd: list[str], **kw: Any) -> Any:
+            raise exc
+
+        return run
+
+    monkeypatch.delenv("NS_FAKE_QWEN_FAIL")
+    monkeypatch.setattr(subprocess, "run", raising(subprocess.TimeoutExpired(["x"], 33)))
+    with pytest.raises(NsError) as ei2:
+        eng.synth("Hi there.", RYAN)
+    assert ei2.value.code == "NS-E310" and "timed out" in ei2.value.detail
+    monkeypatch.setattr(subprocess, "run", raising(FileNotFoundError("nope")))
+    with pytest.raises(NsError) as ei3:
+        eng.synth("Hi there.", RYAN)
+    assert ei3.value.code == "NS-E310" and "cannot start" in ei3.value.detail
+
+
+def test_missing_or_unreadable_output_is_ns_e310(eng: QwenttsEngine, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(subprocess, "run", ok_without_output)
     with pytest.raises(NsError) as ei:
         eng.synth("Hi there.", RYAN)
-    assert ei.value.code == "NS-E202" and "timed out" in ei.value.detail
+    assert ei.value.code == "NS-E310" and "no output" in ei.value.detail
 
-    monkeypatch.setattr(subprocess, "run", FakeRun(raises=FileNotFoundError("nope")))
-    with pytest.raises(NsError) as ei:
-        eng.synth("Hi there.", RYAN)
-    assert ei.value.code == "NS-E202" and "cannot start" in ei.value.detail
-
-    monkeypatch.setattr(subprocess, "run", FakeRun(write_out=False))
-    with pytest.raises(NsError) as ei:
-        eng.synth("Hi there.", RYAN)
-    assert ei.value.code == "NS-E202" and "no output" in ei.value.detail
-
-
-def test_unreadable_wav_is_an_error(eng: QwenttsEngine, monkeypatch: pytest.MonkeyPatch):
     def junk(cmd: list[str], **kw: Any) -> Any:
-        Path(arg(cmd, "out")).write_bytes(b"not a wav")
-        return SimpleNamespace(returncode=0, stdout="", stderr="")
+        Path(cmd[-1]).write_bytes(b"not a wav")
+        return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
 
     monkeypatch.setattr(subprocess, "run", junk)
-    with pytest.raises(NsError) as ei:
+    with pytest.raises(NsError) as ei2:
         eng.synth("Hi there.", RYAN)
-    assert ei.value.code == "NS-E202" and "WAV" in ei.value.detail
+    assert ei2.value.code == "NS-E310" and "WAV" in ei2.value.detail
 
 
-def test_make_embedding_uses_base_talker_and_returns_saved_bytes(
-    eng: QwenttsEngine, run: FakeRun, models: Path, tmp_path: Path
-):
-    ref = tmp_path / "ref.wav"
-    ref.write_bytes(b"RIFF")
-    blob = eng.make_embedding(ref, "what I said", "English")
-    assert blob == b"EMBED" * 10
-    cmd = run.calls[0]
-    assert arg(cmd, "talker") == str(models / BASE)
-    assert arg(cmd, "ref_audio") == str(ref) and arg(cmd, "ref_text") == "what I said"
-    assert has(cmd, "save_embedding")
-
-
-def test_make_embedding_requires_the_saved_file(
+def test_voice_building_failures_are_ns_e315(
     eng: QwenttsEngine, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
-    monkeypatch.setattr(subprocess, "run", FakeRun(write_out=False, seconds=0.1))
+    ref = ref_wav(tmp_path / "ref.wav")
+    monkeypatch.setenv("NS_FAKE_QWEN_FAIL", "qwen-codec")
     with pytest.raises(NsError) as ei:
-        eng.make_embedding(tmp_path / "ref.wav", "words")
-    assert ei.value.code == "NS-E202" and "embedding" in ei.value.detail
+        eng.make_embedding(ref, "words")
+    assert ei.value.code == "NS-E315" and "exited 3" in ei.value.detail
+    monkeypatch.setenv("NS_FAKE_QWEN_FAIL", "qwen-tts")
+    with pytest.raises(NsError) as ei2:
+        eng.design_to_embedding("calm voice")
+    assert ei2.value.code == "NS-E315"
+    monkeypatch.delenv("NS_FAKE_QWEN_FAIL")
+    with pytest.raises(NsError) as ei3:
+        eng.make_embedding(ref, "   ")
+    assert ei3.value.code == "NS-E315" and "transcript" in ei3.value.detail
+    with pytest.raises(NsError) as ei4:
+        eng.make_embedding(tmp_path / "missing.wav", "words")
+    assert ei4.value.code == "NS-E315"
+    short = ref_wav(tmp_path / "short.wav", seconds=0.01)  # shorter than one codec frame: qwen-codec refuses
+    with pytest.raises(NsError) as ei5:
+        eng.make_embedding(short, "words")
+    assert ei5.value.code == "NS-E315"
 
 
-def test_design_renders_then_reencodes_through_base(
-    eng: QwenttsEngine, run: FakeRun, models: Path
+def test_codec_that_writes_nothing_is_ns_e315(
+    eng: QwenttsEngine, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
-    blob, sample = eng.design_to_embedding("deep calm male narrator", "English")
-    first, second = run.calls
-    assert arg(first, "talker") == str(models / DESIGN)
-    assert arg(first, "instruct") == "deep calm male narrator" and arg(first, "text") == SAMPLE_TEXT
-    assert arg(second, "talker") == str(models / BASE)
-    assert arg(second, "ref_audio") == arg(first, "out") and arg(second, "ref_text") == SAMPLE_TEXT
-    assert run.ref_audio_existed == [True]  # the render was still on disk for the second run
-    assert blob == b"EMBED" * 10 and len(sample) == int(22050 * 0.5)
+    monkeypatch.setattr(subprocess, "run", ok_without_output)
+    with pytest.raises(NsError) as ei:
+        eng.make_embedding(ref_wav(tmp_path / "ref.wav"), "words")
+    assert ei.value.code == "NS-E315" and "speaker.spk" in ei.value.detail
+
+
+def test_unusable_stored_voices_are_ns_e311_and_start_no_process(
+    eng: QwenttsEngine, calls: Path, tmp_path: Path
+):
+    with pytest.raises(NsError) as none:
+        eng.synth("Hi.", VoiceSpec(name="me", mode="clone"))
+    assert none.value.code == "NS-E311"
+    bin_path = tmp_path / "speaker.bin"
+    bin_path.write_bytes(REFERENCE_MAGIC + b"xyz")
+    with pytest.raises(NsError) as ref:
+        eng.synth("Hi.", VoiceSpec(name="v", mode="clone", embedding_path=str(bin_path)))
+    assert ref.value.code == "NS-E311" and "reference engine" in ref.value.detail
+    half = voice_folder(tmp_path / "voices", "half", rvq=False)
+    with pytest.raises(NsError) as no_rvq:
+        eng.synth("Hi.", VoiceSpec(name="half", mode="clone", embedding_path=str(half / "speaker.spk")))
+    assert no_rvq.value.code == "NS-E311" and "speaker.rvq" in no_rvq.value.detail
+    assert recorded(calls) == []
+
+
+def test_startup_problems_stay_ns_e202(tmp_path: Path, models: Path):
+    e = QwenttsEngine(tmp_path / "bin", models)
+    with pytest.raises(NsError) as ei:
+        e.load()
+    assert ei.value.code == "NS-E202" and "qwen-tts.exe" in ei.value.detail and not e.loaded
+    (tmp_path / "bin").mkdir()
+    (tmp_path / "bin" / "qwen-tts.exe").write_bytes(b"MZ")
+    (models / CUSTOM).unlink()
+    with pytest.raises(NsError) as ei2:
+        QwenttsEngine(tmp_path / "bin", models).load()
+    assert ei2.value.code == "NS-E202" and ei2.value.data["missing_model"] == CUSTOM
+    (models / CUSTOM).write_bytes(b"x")
+    ok = QwenttsEngine(tmp_path / "bin", models)
+    ok.load()
+    assert ok.loaded and ok.name == "qwentts"
 
 
 def test_design_without_voicedesign_gguf_names_the_missing_file(
-    eng: QwenttsEngine, run: FakeRun, models: Path
+    eng: QwenttsEngine, calls: Path, models: Path
 ):
     (models / DESIGN).unlink()
     assert eng.missing_model("design") == DESIGN
     with pytest.raises(NsError) as ei:
         eng.design_to_embedding("x")
-    assert ei.value.code == "NS-E202" and ei.value.data["missing_model"] == DESIGN
-    assert not run.calls
+    assert ei.value.code == "NS-E314" and ei.value.data["missing_model"] == DESIGN
+    assert "Get voice design" in ei.value.detail
+    assert recorded(calls) == []
 
 
 def test_missing_model_order(tmp_path: Path):
     models = tmp_path / "m"
     models.mkdir()
-    e = QwenttsEngine(tmp_path / "q.exe", models)
+    e = QwenttsEngine(tmp_path, models)
     assert e.missing_model("preset") == CUSTOM
     (models / CUSTOM).write_bytes(b"x")
     assert e.missing_model("preset") == TOKENIZER_FILE
@@ -261,51 +405,41 @@ def test_missing_model_order(tmp_path: Path):
     assert e.missing_model("design") == DESIGN
 
 
-def test_load_checks_binary_and_models(tmp_path: Path, models: Path):
-    e = QwenttsEngine(tmp_path / "missing.exe", models)
-    with pytest.raises(NsError) as ei:
-        e.load()
-    assert ei.value.code == "NS-E202" and "not found" in ei.value.detail and not e.loaded
-    exe = tmp_path / "q.exe"
-    exe.write_bytes(b"MZ")
-    (models / CUSTOM).unlink()
-    with pytest.raises(NsError) as ei2:
-        QwenttsEngine(exe, models).load()
-    assert ei2.value.data["missing_model"] == CUSTOM
-    (models / CUSTOM).write_bytes(b"x")
-    ok = QwenttsEngine(exe, models)
-    ok.load()
-    assert ok.loaded and ok.name == "qwentts"
+# ---------------------------------------------------------------- batches and speed
 
 
-def test_batch_runs_one_process(eng: QwenttsEngine, run: FakeRun):
+def test_batch_is_one_process_per_chunk_in_order(eng: QwenttsEngine, calls: Path):
     out = eng.synth_batch(["First one here.", "Second\none there.", "Third."], RYAN, seed=2)
-    assert len(run.calls) == 1 and len(out) == 3
-    cmd = run.calls[0]
-    assert not has(cmd, "text") and not has(cmd, "out")
-    assert arg(cmd, "speaker") == "Ryan" and arg(cmd, "seed") == "2"
+    assert len(out) == 3 and eng.synth_batch([], RYAN) == []
+    rec = recorded(calls)
+    assert [r["stdin"] for r in rec] == ["First one here.", "Second\none there.", "Third."]
+    assert all(r["argv"][r["argv"].index("--seed") + 1] == "2" for r in rec)
 
 
-def test_batch_writes_one_line_per_text(eng: QwenttsEngine, monkeypatch: pytest.MonkeyPatch):
-    seen: list[list[str]] = []
+def test_speed_goes_through_the_pitch_safe_stretch(eng: QwenttsEngine, monkeypatch: pytest.MonkeyPatch):
+    seen: list[tuple[int, float]] = []
 
-    class Spy(FakeRun):
-        def __call__(self, cmd: list[str], **kw: Any) -> Any:
-            seen.append(Path(arg(cmd, "batch_file")).read_text(encoding="utf-8").splitlines())
-            return super().__call__(cmd, **kw)
+    def fake_stretch(x: np.ndarray, sr: int, speed: float) -> np.ndarray:
+        seen.append((sr, speed))
+        return x
 
-    monkeypatch.setattr(subprocess, "run", Spy())
-    eng.synth_batch(["First one here.", "Second\n  one there."], RYAN)
-    assert seen == [["First one here.", "Second one there."]]
+    monkeypatch.setattr(engine_mod, "time_stretch", fake_stretch)
+    eng.synth("Hello there friend.", RYAN, speed=0.8)
+    assert seen == [(24000, 0.8)]
 
 
-def test_batch_without_batch_flags_falls_back_to_one_process_per_chunk(
-    eng: QwenttsEngine, run: FakeRun, monkeypatch: pytest.MonkeyPatch
-):
-    monkeypatch.setitem(QWENTTS_FLAGS, "batch_file", None)
-    out = eng.synth_batch(["a b c", "d e f"], RYAN)
-    assert len(out) == 2 and len(run.calls) == 2
-    assert eng.synth_batch([], RYAN) == []
+@pytest.mark.skipif(not ffmpeg.available(), reason="needs ffmpeg")
+def test_speed_changes_length_but_not_pitch(eng: QwenttsEngine):
+    base = eng.synth("one two three four five six", RYAN, seed=1)
+    slow = eng.synth("one two three four five six", RYAN, seed=1, speed=0.8)
+    fast = eng.synth("one two three four five six", RYAN, seed=1, speed=1.25)
+    assert abs(len(slow) / len(base) - 1.25) < 0.05 and abs(len(fast) / len(base) - 0.8) < 0.05
+
+    def pitch(x: np.ndarray) -> float:
+        spec = np.abs(np.fft.rfft(x * np.hanning(len(x))))
+        return float(np.argmax(spec)) * 24000 / len(x)
+
+    assert abs(pitch(slow) - pitch(base)) < 12 and abs(pitch(fast) - pitch(base)) < 12
 
 
 def test_model_file_names_match_manifest(repo_root: Path):
@@ -315,14 +449,3 @@ def test_model_file_names_match_manifest(repo_root: Path):
         assert TALKER_TEMPLATE.format(size="1.7b", kind=kind) in text
     assert TOKENIZER_FILE in text
     assert TALKER_TEMPLATE.format(size="0.6b", kind="customvoice") in text
-
-
-def test_flag_table_has_every_key_the_engine_reads():
-    required = {"talker", "tokenizer", "text", "out"}
-    optional = {
-        "speaker", "language", "instruct", "ref_audio", "ref_text", "save_embedding",
-        "speaker_embedding", "seed", "batch_file", "out_dir", "batch_out_name",
-    }  # fmt: skip
-    assert set(QWENTTS_FLAGS) == required | optional
-    assert all(QWENTTS_FLAGS[k] for k in required)
-    assert engine_mod.QWENTTS_FLAGS is QWENTTS_FLAGS

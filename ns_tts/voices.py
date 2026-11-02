@@ -1,15 +1,24 @@
 """C4 ns_tts: voice library = stored speaker embeddings (spec 15.4).
 
-Layout under `paths.models_tts_voices`: one folder per designed or cloned voice,
-`<name>/{voice.json, speaker.bin, sample.wav}`. Presets are built in and have no folder. A voice is
-written to a temporary folder first and renamed, so a failing engine never leaves half a voice behind.
+Layout under `paths.models_tts_voices`: one folder per designed or cloned voice, `<name>/voice.json`,
+`<name>/sample.wav` and the engine's speaker files. Presets are built in and have no folder.
+
+Speaker files depend on the engine that made the voice (`voice.json`: `files` lists them, `engine` names it):
+- qwentts: `speaker.spk` (speaker embedding), `speaker.rvq` (reference codes) and `ref.txt` (the transcript);
+  `qwen-tts --ref-spk --ref-rvq --ref-text` reads them directly, `qwen-codec` makes the first two.
+- reference (PyTorch) and fake: one `speaker.bin`. Voices made before `files` existed have only `speaker.bin`.
+`VoiceSpec.embedding_path` is the main file (`speaker.spk`, else `speaker.bin`); the others sit next to it.
+A voice is written to a temporary folder first and renamed, so a failing engine leaves no half voice.
 """
 
 from __future__ import annotations
 
+import io
 import json
 import re
 import shutil
+import zipfile
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
@@ -27,11 +36,35 @@ SAMPLE_TEXT = "This is a short sample of the voice, so you can hear how it sound
 
 Mode = Literal["preset", "design", "clone"]
 _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,39}$")
+_FILE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+
+# What an engine hands back for a new voice: one blob (stored as `speaker.bin`) or named files.
+VoiceFiles = Mapping[str, bytes]
+EmbeddingData = bytes | VoiceFiles
+
+
+def as_files(data: EmbeddingData) -> dict[str, bytes]:
+    """Normalise an engine result to {file name: bytes}. Empty data or a bad file name is NS-E315."""
+    files = {"speaker.bin": data} if isinstance(data, bytes) else dict(data)
+    if not files or any(not v for k, v in files.items() if k != "ref.txt"):
+        raise NsError("NS-E315", "the TTS engine returned an empty speaker embedding")
+    for name in files:
+        if not _FILE_RE.match(name):
+            raise NsError("NS-E315", f"the TTS engine returned a voice file with a bad name: {name!r}")
+    return files
+
+
+def main_file(names: list[str]) -> str:
+    """File that `VoiceSpec.embedding_path` points at: `speaker.spk`, else `speaker.bin`, else the first."""
+    for want in ("speaker.spk", "speaker.bin"):
+        if want in names:
+            return want
+    return sorted(names)[0]
 
 
 @dataclass
 class VoiceSpec:
-    """A voice as the engines see it. Designed and cloned voices carry `embedding_path` (speaker.bin)."""
+    """A voice as the engines see it. Designed and cloned voices carry `embedding_path`."""
 
     name: str
     mode: Mode
@@ -54,12 +87,14 @@ class VoiceLibrary:
             mode = raw["mode"]
             if mode not in ("design", "clone"):
                 return None
+            listed = raw.get("files")
+            names = [str(n) for n in listed if _FILE_RE.match(str(n))] if isinstance(listed, list) else []
             return VoiceSpec(
                 name=str(raw["name"]),
                 mode=mode,
                 description=raw.get("description"),
                 language=str(raw.get("language", "English")),
-                embedding_path=str(folder / "speaker.bin"),
+                embedding_path=str(folder / main_file(names or ["speaker.bin"])),
             )
         except (OSError, ValueError, KeyError):
             return None
@@ -89,12 +124,28 @@ class VoiceLibrary:
         """Path of a library voice's sample.wav (may not exist for presets)."""
         return self.root / name / "sample.wav"
 
-    def export_embedding(self, name: str) -> bytes:
-        """Bytes of `speaker.bin` for backup or transfer. KeyError if unknown, ValueError for presets."""
+    def embedding_files(self, name: str) -> list[Path]:
+        """The speaker files of a library voice (everything but voice.json and sample.wav), sorted by name."""
         spec = self.get(name)
         if spec.embedding_path is None:
             raise ValueError(f"{name} is a built-in preset and has no stored embedding")
-        return Path(spec.embedding_path).read_bytes()
+        folder = Path(spec.embedding_path).parent
+        skip = {"voice.json", "sample.wav", "preview.wav"}
+        return sorted(p for p in folder.iterdir() if p.is_file() and p.name not in skip)
+
+    def export_embedding(self, name: str) -> bytes:
+        """Speaker data for backup or transfer: the file itself for one file, else a zip.
+
+        KeyError if unknown, ValueError for presets.
+        """
+        files = self.embedding_files(name)
+        if len(files) == 1:
+            return files[0].read_bytes()
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as z:
+            for p in files:
+                z.write(p, p.name)
+        return buf.getvalue()
 
     # ---- writing ----
     def _check_new(self, name: str) -> None:
@@ -109,26 +160,26 @@ class VoiceLibrary:
     def _store(
         self,
         spec: VoiceSpec,
-        embedding: bytes,
+        embedding: EmbeddingData,
         sample: np.ndarray | None,
         engine: Engine,
         extra: dict[str, Any],
     ) -> VoiceSpec:
-        if not embedding:
-            raise NsError("NS-E202", "the TTS engine returned an empty speaker embedding")
+        files = as_files(embedding)
         self.root.mkdir(parents=True, exist_ok=True)
         tmp = self.root / f".tmp-{spec.name}"
         shutil.rmtree(tmp, ignore_errors=True)
         tmp.mkdir()
         try:
-            (tmp / "speaker.bin").write_bytes(embedding)
+            for fname, blob in files.items():
+                (tmp / fname).write_bytes(blob)
             if sample is None:
                 probe = VoiceSpec(
                     name=spec.name,
                     mode=spec.mode,
                     description=spec.description,
                     language=spec.language,
-                    embedding_path=str(tmp / "speaker.bin"),
+                    embedding_path=str(tmp / main_file(list(files))),
                 )
                 sample = engine.synth(SAMPLE_TEXT, probe)
             write_wav(tmp / "sample.wav", sample, engine.sr)
@@ -138,6 +189,7 @@ class VoiceLibrary:
                 "description": spec.description,
                 "language": spec.language,
                 "engine": engine.name,
+                "files": sorted(files),
                 **extra,
             }
             (tmp / "voice.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")

@@ -14,6 +14,7 @@ from ns_dashboard.handlers import Dashboard, build_state
 from ns_dashboard.jobs import JobControl, _stage_of
 from ns_dashboard.supervisor_link import SupervisorLink
 from ns_dashboard.svc_jobs import clean_url
+from tests.helpers import InProcessRunner
 
 URL = "https://videos.example.com/watch?v=abc123&t=5"
 
@@ -154,7 +155,9 @@ def test_real_adapter_calls_import_url_with_progress(tmp_home: Path, monkeypatch
     monkeypatch.setattr(source, "import_url", import_url)
     paths = Paths.from_env()
     state = build_state(paths, fake_services=True, link=SupervisorLink("http://127.0.0.1:9", timeout_s=0.2))
-    adapter = RealClipAdapter(paths, SupervisorLink("http://127.0.0.1:9", timeout_s=0.2))
+    adapter = RealClipAdapter(
+        paths, SupervisorLink("http://127.0.0.1:9", timeout_s=0.2), runner=InProcessRunner()
+    )
     rec = state.store.create("clip", "after-dark", {})
     ctl = JobControl(rec, state.store, state.hub)
     out = adapter.fetch_url(ctl, URL, "src-20261101-aaaa")

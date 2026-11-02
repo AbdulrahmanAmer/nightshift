@@ -280,3 +280,40 @@ def test_worker_leaves_inline_kinds_to_run_inline(tmp_home: Path):
     clip_rec, learn_rec = store.get(clip.job_id), store.get(learn.job_id)
     assert clip_rec is not None and clip_rec.status == "done"
     assert learn_rec is not None and learn_rec.status == "queued"
+
+
+def test_cancel_that_loses_the_race_with_the_worker_still_cancels_the_running_job(tmp_home: Path):
+    """Review row 14: the job turns `running` between the read and `cancel_queued`."""
+    store, worker, _hub, _ = build(tmp_home, {"clip": stage_handler([])})
+    job = store.create("clip", "c", {})
+    real = store.cancel_queued
+
+    def racing(job_id: str) -> bool:
+        store.mark_running(job_id)  # the worker wins
+        return real(job_id)  # now a no-op: the row is no longer queued
+
+    store.cancel_queued = racing  # type: ignore[method-assign]
+    assert worker.cancel(job.job_id) == "cancelling"
+    assert store.is_cancel_requested(job.job_id)
+    rec = store.get(job.job_id)
+    assert rec is not None and rec.cancel_requested
+
+
+def test_interrupted_series_part_goes_back_to_approved_on_start(tmp_home: Path):
+    """Review row 12: after a reboot the part was 'producing' forever and could not be queued again."""
+    from ns_dashboard.fakes import FakeSeriesAdapter
+
+    store, worker, _hub, paths = build(tmp_home, {})
+    series = FakeSeriesAdapter(store.db, paths)
+    series.stories = [
+        {"slug": "the-lift", "channel": "after-dark", "title": "The Lift",
+         "parts": [{"n": 2, "title": "The Intercom", "status": "producing", "job_id": "j-2"}]}
+    ]
+    worker.on_recover = {"series_part": lambda rec: series.release({**rec.params, "job_id": rec.job_id})}
+    job = store.create("series_part", "after-dark", {"story_slug": "the-lift", "part_n": 2})
+    store.mark_running(job.job_id)
+    worker.start()
+    worker.stop()
+    rec = store.get(job.job_id)
+    assert rec is not None and rec.status == "failed"
+    assert series.stories[0]["parts"][0]["status"] == "approved"

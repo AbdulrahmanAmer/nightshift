@@ -5,6 +5,10 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
+# Folder under models/tts that holds the PyTorch (reference engine) safetensors checkouts. The installer
+# downloads there (installer/stage2/fallback.py) and ns_tts.engine reads there: one constant, both sides.
+TTS_HF_SUBDIR = "hf"
+
 
 def repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
@@ -44,6 +48,8 @@ class Paths:
     def models_tts(self) -> Path: return self.home / "models" / "tts"
     @property
     def models_tts_voices(self) -> Path: return self.models_tts / "voices"
+    @property
+    def models_tts_hf(self) -> Path: return self.models_tts / TTS_HF_SUBDIR
     @property
     def models_whisper(self) -> Path: return self.home / "models" / "whisper"
     @property

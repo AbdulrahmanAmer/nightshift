@@ -51,6 +51,12 @@ class Dashboard:
         acquirer = make_acquirer(state.link.base_url)
         provider = llm_provider or SupervisorLlmProvider(state.link.status, acquirer)
         self.assistant = Assistant(self, self.registry, self.assistant_store, provider)
+        state.worker.on_idle = self.answer_saved_requests
+
+    def answer_saved_requests(self) -> None:
+        """Answer the Assistant requests saved while the engine was busy (called when a job ends)."""
+        if self.assistant_store.queued():
+            self.assistant.run_queued()
 
     def close(self) -> None:
         """Close the databases (needed on Windows before a temp folder can be deleted)."""
@@ -74,7 +80,10 @@ def build_state(
     link = link or SupervisorLink(supervisor_url(paths))
     adapters = adapters or (fake_adapters(db, paths) if fake_services else real_adapters(paths, link, log))
     store = JobStore(db)
-    worker = JobWorker(store, build_handlers(adapters), hub, log, gpu_gate=make_gpu_gate(link.status))
+    worker = JobWorker(
+        store, build_handlers(adapters, paths), hub, log, gpu_gate=make_gpu_gate(link.status),
+        on_recover={"series_part": lambda rec: adapters.series.release({**rec.params, "job_id": rec.job_id})},
+    )
     return AppState(
         paths=paths, db=db, log=log, hub=hub, link=link, adapters=adapters, store=store, worker=worker,
         fake_services=fake_services,

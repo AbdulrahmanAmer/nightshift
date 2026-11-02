@@ -64,7 +64,7 @@ class EmbedClient:
             data = sorted(r.json()["data"], key=lambda d: d["index"])
             return [[float(x) for x in d["embedding"]] for d in data]
         except (httpx.HTTPError, KeyError, ValueError) as e:
-            raise NsError("NS-E301", f"embed: {e}") from e
+            raise NsError("NS-E316", f"embed: {e}") from e
 
     def health(self) -> bool:
         try:
@@ -94,7 +94,7 @@ class FakeEmbed:
         for t in texts:
             if approx_tokens(t) > self.max_tokens:
                 raise NsError(
-                    "NS-E301", f"embed: input is too large to process ({approx_tokens(t)} tokens estimated)"
+                    "NS-E316", f"embed: input is too large to process ({approx_tokens(t)} tokens estimated)"
                 )
         return [self._one(t) for t in texts]
 

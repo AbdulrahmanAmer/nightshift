@@ -59,9 +59,24 @@ class LockedDb:
             self.db.execute("COMMIT")
 
     def close(self) -> None:
-        """Close the underlying connection."""
+        """Close the underlying connection (the next query opens it again)."""
         with self.lock:
             self.db.close()
+
+    @contextmanager
+    def released(self) -> Iterator[None]:
+        """Hold the database closed for the block (other threads wait), then open it and migrate it again.
+
+        For a restore that replaces `studio.db`: a connection that stays open (or is opened by a polling
+        request in between) keeps the `-wal` and `-shm` files locked on Windows.
+        """
+        with self.lock:
+            self.db.close()
+            try:
+                yield
+            finally:
+                self.db.close()
+                self.db.migrate()
 
 
 def open_db(paths: Paths) -> LockedDb:
@@ -76,8 +91,21 @@ def settings_file(paths: Paths) -> Path:
     return paths.config / "dashboard.json"
 
 
+def scheduled_run_time(paths: Paths) -> str | None:
+    """The nightly time of the registered Windows task (`config/schedule.json`, written by `ns schedule`)."""
+    try:
+        from ns_supervisor.schedule_cfg import read_run_time
+    except ImportError:
+        return None
+    return read_run_time(paths)
+
+
 def load_dashboard_settings(paths: Paths) -> dict[str, Any]:
-    """Settings with defaults filled in; a missing or corrupt file yields the defaults."""
+    """Settings with defaults filled in; a missing or corrupt file yields the defaults.
+
+    `run_time` is the time of the registered nightly task when there is one, because that is when the engine
+    really starts; `dashboard.json` only remembers what the owner typed.
+    """
     out = dict(DEFAULT_SETTINGS)
     f = settings_file(paths)
     if f.exists():
@@ -87,6 +115,9 @@ def load_dashboard_settings(paths: Paths) -> dict[str, Any]:
             raw = {}
         if isinstance(raw, dict):
             out.update({k: v for k, v in raw.items() if k in DEFAULT_SETTINGS})
+    registered = scheduled_run_time(paths)
+    if registered:
+        out["run_time"] = registered
     return out
 
 
@@ -114,6 +145,8 @@ class AppState:
     worker: JobWorker
     draining: bool = False
     loading_since: dict[str, float] = field(default_factory=dict)
+    #: Model downloads started from Settings: name -> {state: running | done | failed, message}.
+    model_downloads: dict[str, dict[str, str]] = field(default_factory=dict)
     last_bundle: Path | None = None
     last_backup: Path | None = None
     fake_services: bool = False

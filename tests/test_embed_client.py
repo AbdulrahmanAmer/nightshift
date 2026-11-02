@@ -40,7 +40,7 @@ def test_fake_embed_rejects_inputs_llama_server_would_reject():
     assert approx_tokens(long_text) > MAX_EMBED_TOKENS
     with pytest.raises(NsError) as ei:
         e.embed([long_text])
-    assert ei.value.code == "NS-E301"
+    assert ei.value.code == "NS-E316"
     assert e.embed(["fine " * 100])  # 500 characters pass
 
 
@@ -60,3 +60,22 @@ def test_embed_server_args_cover_the_window():
 
     args = embed_server_args(Runtime.default("cpu-dev").embed)
     assert args == ["-c", "2048", "-b", "2048", "-ub", "2048"]
+
+
+def test_embed_failures_have_their_own_code_not_the_llm_one():
+    import pytest
+
+    from ns_common.errors import NsError
+
+    def down(req: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("refused")
+
+    def junk(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"nope": 1})
+
+    for handler in (down, junk):
+        transport = httpx.MockTransport(handler)
+        cli = EmbedClient("http://127.0.0.1:8081", client=httpx.Client(transport=transport))
+        with pytest.raises(NsError) as ei:
+            cli.embed(["a"])
+        assert ei.value.code == "NS-E316"
