@@ -255,3 +255,23 @@ def test_outbox_paths_stay_under_200_characters(tmp_home: Path):
     )
     sheet = outbox_target(s, "short", 2).with_suffix(".json")
     assert len(str(sheet)) <= max(MAX_PATH, len(str(s.paths.outbox)) + 120), str(sheet)
+
+
+def test_sheets_name_the_time_zone():
+    """System gap 36: a reviewer in another time zone got a wall-clock time with no zone."""
+    import re
+
+    from ns_studio.media.outbox import publish_line, zone_label
+
+    label = zone_label("2026-11-02T18:05")
+    assert re.search(r"UTC[+-]\d\d:\d\d$", label), label
+    line = publish_line("2026-11-02T18:05")
+    assert line.startswith("PUBLISH AFTER (local time): 2026-11-02 18:05 (") and line.endswith(")")
+    assert zone_label("2026-11-02T18:05+02:00") == "UTC+02:00"
+    assert zone_label("not a date") == "" and publish_line("soon") == "PUBLISH AFTER (local time): soon"
+    meta = build_metadata(
+        channel=make_channel(), job_id="after-dark-20261101-ab12", kind="short", k=1, seo=Seo(**SEO),
+        advice=PolicyAdvice(), shots=_shots(), combo_id="c", prompt_versions={},
+        publish_at="2026-11-02T18:05",
+    )
+    assert "(local time): 2026-11-02 18:05 (" in sheet_text(meta, "s1.mp4")

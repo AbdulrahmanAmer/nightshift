@@ -340,8 +340,25 @@ def test_visual_plan_asks_for_and_keeps_emphasis(tmp_home: Path, monkeypatch: py
     from ns_studio.text.prompts import load_prompt, render
 
     p = load_prompt("visual_plan")
-    assert "emphasis" in render(p, combo=make_ctx(tmp_home).combo, setting="a porch", sentences=["One."], part_n=1)
+    combo = make_ctx(tmp_home).combo
+    assert "emphasis" in render(p, combo=combo, setting="a porch", sentences=["One."], part_n=1)
     ctx = _text_only(monkeypatch, tmp_home)
     run_job(ctx)
     beats = ctx.read_json("visual_plan.json")
     assert any(b.get("emphasis") for b in beats)
+
+
+def test_creator_note_closes_every_description():
+    """System gap 36/39: the creator note went only into the master description."""
+    from ns_common.models import Seo
+    from ns_studio.text.seo import finalize_seo
+
+    raw = Seo(title="A Title", description="A hook.", tags=["a"] * 10, hashtags=["#Shorts", "#a", "#b"])
+    out = finalize_seo(
+        raw, primary_keyword="horror story", fiction_label=True, part_n=None, parts_total=1,
+        creator_note="Written by me, narrated by a synthetic voice.",
+    )
+    note = "Written by me, narrated by a synthetic voice."
+    assert out.description.splitlines()[-2:] == ["Original fiction.", note]
+    plain = finalize_seo(raw, primary_keyword="horror story", fiction_label=True, part_n=None, parts_total=1)
+    assert plain.description.endswith("Original fiction.")

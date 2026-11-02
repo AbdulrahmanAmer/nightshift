@@ -81,12 +81,14 @@ def finalize_seo(
     parts_total: int,
     master_title: str | None = None,
     extra_lines: Sequence[str] = (),
+    creator_note: str = "",
 ) -> Seo:
     """Apply the Shorts metadata rules of spec 9.2 to an LLM-written `Seo`.
 
     Title: keyword within the first 40 characters, "Part n" when `part_n`, at most 100 characters.
     Description: the model's lines, "Part n of N." for series, `extra_lines`, "From the full story: <master
-    title>" when `master_title` is given, and "Original fiction." last when `fiction_label`.
+    title>" when `master_title` is given, "Original fiction." when `fiction_label`, then the channel's
+    `creator_note` (spec section 11: appended to every description, not only the master's).
     Hashtags: `#Shorts` first, at most 5. Tags: 10-20 and at most 500 characters.
     """
     title = fit_title(seo.title, primary_keyword, max_chars=1000)
@@ -101,6 +103,8 @@ def finalize_seo(
         lines.append(f"From the full story: {master_title.strip()}")
     if fiction_label:
         lines.append("Original fiction.")
+    if creator_note.strip():
+        lines.append(creator_note.strip())
     return Seo(
         title=title,
         description="\n".join(line for line in lines if line),

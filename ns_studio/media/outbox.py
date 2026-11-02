@@ -210,6 +210,34 @@ def _yes_no(flag: bool) -> str:
     return "Yes" if flag else "No"
 
 
+def zone_label(publish_after: str) -> str:
+    """Time zone of a local `publish_after` stamp, like `Egypt Standard Time, UTC+02:00` (DST-aware).
+
+    The sheets carry local wall-clock times; a reviewer in another zone needs to know which zone they are in.
+    Empty when the stamp cannot be read.
+    """
+    try:
+        when = datetime.fromisoformat(publish_after)
+    except ValueError:
+        return ""
+    local = when.astimezone() if when.tzinfo is None else when
+    offset = local.utcoffset()
+    if offset is None:
+        return ""
+    minutes = int(offset.total_seconds() // 60)
+    sign = "+" if minutes >= 0 else "-"
+    utc = f"UTC{sign}{abs(minutes) // 60:02d}:{abs(minutes) % 60:02d}"
+    name = local.tzname()
+    return f"{name}, {utc}" if name and not name.startswith("UTC") else utc
+
+
+def publish_line(publish_after: str) -> str:
+    """`PUBLISH AFTER (local time): 2026-11-02 18:05 (<zone>)` as written in every upload sheet."""
+    zone = zone_label(publish_after)
+    suffix = f" ({zone})" if zone else ""
+    return f"PUBLISH AFTER (local time): {publish_after.replace('T', ' ')}{suffix}"
+
+
 def sheet_text(meta: Metadata, video_name: str, *, related_title: str | None = None) -> str:
     """The plain-text upload sheet: everything to paste into YouTube Studio, in order."""
     lines = [
@@ -223,7 +251,7 @@ def sheet_text(meta: Metadata, video_name: str, *, related_title: str | None = N
         "",
         "TAGS: " + ", ".join(meta.tags),
         "",
-        f"PUBLISH AFTER (local time): {meta.publish_after.replace('T', ' ')}",
+        publish_line(meta.publish_after),
         "",
         "SETTINGS:",
         f"  Altered or synthetic content: {meta.ai_disclosure.capitalize()}",

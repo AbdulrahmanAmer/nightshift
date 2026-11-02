@@ -717,7 +717,7 @@ def clip_sheet_text(meta: ClipMetadata, video_name: str) -> str:
                 "",
                 "TAGS: " + ", ".join(meta.tags),
                 "",
-                f"PUBLISH AFTER (local time): {meta.publish_after.replace('T', ' ')}",
+                media_outbox.publish_line(meta.publish_after),
                 "",
                 "SETTINGS:",
                 f"  Altered or synthetic content: {meta.ai_disclosure.capitalize()}",

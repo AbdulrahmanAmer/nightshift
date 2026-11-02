@@ -686,6 +686,7 @@ class SeoShortsStage:
                 part_n=None,
                 parts_total=1,
                 master_title=master_title,
+                creator_note=ctx.channel.creator_note,
             )
             out.append(final.model_dump())
         ctx.write_json("seo_shorts.json", out)

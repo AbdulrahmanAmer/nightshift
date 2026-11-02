@@ -329,6 +329,7 @@ class SeoStage:
                 fiction_label=ctx.channel.fiction_label,
                 part_n=part_n,
                 parts_total=len(parts),
+                creator_note=ctx.channel.creator_note,
             )
             out.append(final.model_dump())
         ctx.write_json("seo.json", out)
