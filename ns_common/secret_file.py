@@ -6,8 +6,8 @@ footage silently turned off. Setup therefore also writes the keys here, and the 
 when `keyring` has no answer.
 
 The blob is protected with DPAPI in *machine* scope (`CRYPTPROTECT_LOCAL_MACHINE`): user-scope DPAPI needs the
-user's master key, which an S4U session does not have either. The file lives under `config\\` and the installer
-restricts its ACL to the current user; the blob alone is useless on another PC. Standard library only.
+user's master key, which an S4U session does not have either. The file lives under `config/` and the
+installer restricts its ACL to the current user; the blob alone is useless on another PC. Standard library only.
 """
 
 from __future__ import annotations

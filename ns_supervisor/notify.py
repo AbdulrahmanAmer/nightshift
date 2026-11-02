@@ -71,7 +71,7 @@ def session_is_interactive() -> bool:
 
 
 def note_path(paths: Paths) -> Path:
-    """`run\morning_note.json`: messages a toast could not show; the dashboard displays and clears them."""
+    """`run/morning_note.json`: messages a toast could not show; the dashboard displays and clears them."""
     return paths.home / "run" / NOTE_FILE
 
 

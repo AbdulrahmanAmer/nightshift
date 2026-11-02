@@ -194,7 +194,7 @@ def _apply_update(paths: Paths, zip_path: Path | None, rollback: bool, github: b
     return update_job.Outcome(msg, res.old_version, res.new_version, updated=True)
 
 
-.command("update")
+@app.command("update")
 def cmd_update(
     zip_path: Annotated[Path | None, typer.Argument(help="Nightshift-<version>.zip")] = None,
     rollback: Annotated[bool, typer.Option("--rollback", help="Restore the previous version.")] = False,

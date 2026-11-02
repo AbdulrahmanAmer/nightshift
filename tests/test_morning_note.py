@@ -18,7 +18,8 @@ def test_a_session_without_a_desktop_leaves_a_morning_note_and_shows_no_toast(tm
     assert ok is False and shown == []
     notes = notify.read_notes(paths)
     assert [n["message"] for n in notes] == ["2 Shorts ready for review"]
-    assert json.loads(notify.note_path(paths).read_text(encoding="utf-8"))["notes"][0]["title"] == "Nightshift"
+    raw = json.loads(notify.note_path(paths).read_text(encoding="utf-8"))
+    assert raw["notes"][0]["title"] == "Nightshift"
 
 
 def test_a_toast_that_shows_leaves_no_note(tmp_path: Path) -> None:

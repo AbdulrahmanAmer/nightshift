@@ -77,8 +77,9 @@ def restrict_to_user(path: Path) -> None:
 class ResilientStore:
     """Credential Manager first, plus a DPAPI file the nightly run can read when Credential Manager cannot.
 
-    The nightly task may run in a session without access to the user's Credential Manager (S4U). ``set`` writes
-    both places and only fails when neither accepted the value; ``get`` asks the keyring and falls back to the file.
+    The nightly task may run in a session without access to the user's Credential Manager (S4U). ``set``
+    writes both places and only fails when neither accepted the value; ``get`` asks the keyring and falls back
+    to the file.
     """
 
     def __init__(

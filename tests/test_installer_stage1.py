@@ -246,7 +246,9 @@ def _install_uv_harness(tmp_path: Path, winget: str) -> subprocess.CompletedProc
     script = f"""
 $ErrorActionPreference = 'Stop'
 $ast = [System.Management.Automation.Language.Parser]::ParseFile('{STAGE1}', [ref]$null, [ref]$null)
-$fn = $ast.FindAll({{ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Install-Uv' }}, $true)[0]
+$fnType = [System.Management.Automation.Language.FunctionDefinitionAst]
+$isFn = {{ param($n) $n -is $fnType -and $n.Name -eq 'Install-Uv' }}
+$fn = $ast.FindAll($isFn, $true)[0]
 . ([scriptblock]::Create($fn.Extent.Text))
 {stubs}
 function Get-DataDir {{ return '{tmp_path}' }}
@@ -255,7 +257,8 @@ function Update-SessionPath {{ }}
 function Set-Status {{ param($Index, $Tag, $Text) }}
 function Stop-Setup {{ param($Code, $Detail, $ExitCode) Write-Output "STOP:$Code|$Detail"; exit 13 }}
 $script:IsDry = $false
-$manifest = [pscustomobject]@{{ bins = [pscustomobject]@{{ uv = [pscustomobject]@{{ url = 'http://127.0.0.1:9/uv.zip'; sha256 = '0' }} }} }}
+$uv = [pscustomobject]@{{ url = 'http://127.0.0.1:9/uv.zip'; sha256 = '0' }}
+$manifest = [pscustomobject]@{{ bins = [pscustomobject]@{{ uv = $uv }} }}
 Install-Uv -Manifest $manifest
 """
     f = tmp_path / "harness.ps1"
