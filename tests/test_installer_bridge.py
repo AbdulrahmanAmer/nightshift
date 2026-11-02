@@ -273,6 +273,7 @@ class Run:
         (self.home / "config").mkdir(parents=True)
         answers = json.loads((ROOT / "installer" / "answers.example.json").read_text(encoding="utf-8"))
         answers["home_path"] = str(self.home)
+        answers["llm_tier"] = "small"          # the example ships Balanced; this run checks the Small files
         self.answers = self.home / "config" / "answers.json"
         self.answers.write_text(json.dumps(answers), encoding="utf-8")
         self.preflight = tmp_path / "preflight.json"
