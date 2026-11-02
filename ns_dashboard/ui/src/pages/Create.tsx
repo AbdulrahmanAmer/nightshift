@@ -7,7 +7,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { useApp, useLoad } from "../lib/app";
 import { api } from "../lib/api";
 import { JobError } from "../ui/JobError";
-import { CLIP_STAGES, dayInline, doneWords, fmtClock, fmtDur, fmtWhen, POOL_LABELS, RUN_STAGES, stageWords, store } from "../lib/format";
+import { dayInline, doneWords, fmtClock, fmtDur, fmtWhen, POOL_LABELS, stageWords, stagesOf, store } from "../lib/format";
 import type { ChannelSummary, Idea, Job, Output, Template } from "../lib/types";
 import { cx } from "../ui/kit";
 import { LayoutDiagram } from "../visuals/charts";
@@ -308,7 +308,7 @@ function Stepper({ value, onChange, min, max, label, suffix }: { value: number; 
 }
 
 function JobRow({ j, channelName, onCancel }: { j: Job; channelName: (s?: string | null) => string; onCancel: (id: string) => void }) {
-  const stages = j.kind === "clip" ? CLIP_STAGES : RUN_STAGES; const cur = stages.indexOf(j.stage || "");
+  const stages = stagesOf(j); const cur = stages.indexOf(j.stage || "");
   const held = j.status === "queued" && !!j.schedule_at && new Date(j.schedule_at).getTime() > Date.now();
   return (
     <li>

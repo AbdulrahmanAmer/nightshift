@@ -14,9 +14,11 @@ import Results from "./pages/Results";
 import Settings from "./pages/Settings";
 
 // Design review routes (#/design, #/design/ref12) render full-bleed, outside the app shell, and load on demand.
-const DesignSheet = lazy(() => import("./pages/DesignSheet"));
-const DesignRef12 = lazy(() => import("./pages/DesignRef12"));
-const DESIGN: Record<string, React.LazyExoticComponent<() => JSX.Element>> = { design: DesignSheet, "design-ref12": DesignRef12 };
+// Only the dev server has these pages: `import.meta.env.DEV` is false in the production build, so the two imports (and the
+// pages with their sample data) are removed from the bundle, and #/design falls through to the Queue.
+const DESIGN: Record<string, React.LazyExoticComponent<() => JSX.Element>> = import.meta.env.DEV
+  ? { design: lazy(() => import("./pages/DesignSheet")), "design-ref12": lazy(() => import("./pages/DesignRef12")) }
+  : {};
 
 const PAGES: Record<string, () => JSX.Element | null> = { queue: Queue, create: Create, library: Library, assistant: Assistant, channels: Channels, results: Results, settings: Settings };
 const TITLES: Record<string, string> = { queue: "Queue", create: "Create", library: "Library", assistant: "Assistant", channels: "Channels", results: "Results", settings: "Settings" };

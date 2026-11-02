@@ -21,16 +21,31 @@ export const kindLabel = (k: string) => (({ long: "Full video", short: "Short", 
 export const plural = (n: number, one: string, many = one + "s") => `${n} ${n === 1 ? one : many}`;
 
 export const STAGE_WORDS: Record<string, string> = {
+  // one-Short stories
   ideas: "Finding an idea", plan: "Planning the story", draft: "Writing the story", critic_revise: "Editing the story", split: "Cutting into parts",
-  hooks: "Writing the opening line", seo: "Writing title and tags", visual_plan: "Planning footage", policy_text: "Safety check", voice: "Recording narration",
-  duration_check: "Checking length", captions: "Adding captions", shorts_timing: "Picking the best moments", clips: "Finding footage", render: "Rendering",
-  render_master: "Rendering the full video", thumbnails: "Making thumbnails", shorts_derive: "Cutting the Shorts", qc: "Checking quality", policy_final: "Final check",
-  outbox: "Saving", import: "Importing the video", audio: "Extracting audio", transcribe: "Transcribing", select: "Choosing moments", detect: "Finding faces",
-  seo_clip: "Writing titles", queued: "Waiting for the engine",
+  hooks: "Writing the opening line", seo: "Writing title and tags", visual_plan: "Planning footage",
+  // full videos with Shorts, and series parts
+  long_plan: "Planning the full story", chapters_draft: "Writing the chapters", chapters_critic: "Editing the chapters", continuity: "Checking the story holds together",
+  seo_long: "Writing the video title and tags", shorts_select: "Choosing the Shorts", visual_plan_long: "Planning footage", seo_shorts: "Writing the Short titles",
+  script_import: "Reading the approved script", short_combos: "Choosing the looks", duration_check: "Checking length", shorts_timing: "Picking the best moments",
+  render_master: "Rendering the full video", thumbnails: "Making thumbnails", shorts_derive: "Cutting the Shorts",
+  // shared
+  policy_text: "Safety check", policy_final: "Final check", voice: "Recording narration", captions: "Adding captions", clips: "Finding footage", render: "Rendering",
+  qc: "Checking quality", outbox: "Saving",
+  // clip jobs
+  clip_import: "Importing the video", clip_audio: "Extracting audio", clip_analyze: "Looking at the video", clip_transcribe: "Transcribing", clip_select: "Choosing moments",
+  clip_layout: "Framing the clips", clip_captions: "Adding captions", clip_render: "Rendering the clips", clip_seo: "Writing titles", clip_qc: "Checking quality", clip_outbox: "Saving the clips",
+  download: "Downloading the video", import: "Importing the video", audio: "Extracting audio", transcribe: "Transcribing", select: "Choosing moments", detect: "Finding faces",
+  queued: "Waiting for the engine",
 };
 export const stageWords = (k?: string | null) => (k && STAGE_WORDS[k]) || (k ? k.replace(/_/g, " ") : "Working");
-export const RUN_STAGES = ["ideas", "plan", "draft", "critic_revise", "hooks", "seo", "visual_plan", "voice", "captions", "clips", "render", "qc", "outbox"];
-export const CLIP_STAGES = ["import", "audio", "transcribe", "select", "detect", "captions", "render", "qc", "outbox"];
+/** Stages in order, per kind of job (ns_studio.orchestrator.FORMAT_STAGES and the clip stages). */
+export const SHORTS_STAGES = ["ideas", "plan", "draft", "critic_revise", "split", "hooks", "seo", "visual_plan", "voice", "captions", "clips", "render", "qc", "outbox"];
+export const MASTER_STAGES = ["ideas", "long_plan", "chapters_draft", "chapters_critic", "continuity", "seo_long", "shorts_select", "visual_plan_long", "seo_shorts", "voice", "duration_check", "captions", "shorts_timing", "clips", "render_master", "thumbnails", "shorts_derive", "qc", "outbox"];
+export const SERIES_STAGES = ["script_import", "visual_plan_long", "seo_long", "seo_shorts", "voice", "duration_check", "captions", "shorts_timing", "clips", "render_master", "thumbnails", "shorts_derive", "qc", "outbox"];
+export const CLIP_STAGES = ["clip_import", "clip_audio", "clip_analyze", "clip_transcribe", "clip_select", "clip_layout", "clip_captions", "clip_render", "clip_seo", "clip_qc", "clip_outbox"];
+/** The stage list of a job: clips, a series part, a one-Short story or a full video (the default). */
+export const stagesOf = (j: { kind: string; params?: { format?: string; [k: string]: any } }) => (j.kind === "clip" ? CLIP_STAGES : j.kind === "series_part" ? SERIES_STAGES : j.params?.format === "shorts_only" ? SHORTS_STAGES : MASTER_STAGES);
 
 export const store = {
   get<T>(k: string, fb: T): T { try { const v = localStorage.getItem(k); return v == null ? fb : (JSON.parse(v) as T); } catch { return fb; } },

@@ -2,7 +2,7 @@
    Ported from the vanilla dashboard's demo layer and filled out so every page has content. */
 import { ApiError } from "./errors";
 import type { ChatEvent, Job } from "./types";
-import { CLIP_STAGES, RUN_STAGES, stageWords } from "./format";
+import { stagesOf, stageWords } from "./format";
 
 const iso = (hoursFromNow: number) => new Date(Date.now() + hoursFromNow * 3600e3).toISOString();
 const at = (daysAgo: number, hh: number, mm: number) => { const d = new Date(); d.setDate(d.getDate() - daysAgo); d.setHours(hh, mm, 0, 0); return d.toISOString(); };
@@ -140,7 +140,7 @@ const recount = () => {
 const fdGet = (b: any, k: string) => (b instanceof FormData ? b.get(k) : b?.[k]);
 
 export function simulateJob(job: Job) {
-  const stages = job.kind === "clip" ? CLIP_STAGES : RUN_STAGES;
+  const stages = stagesOf(job);
   let i = 0;
   DEMO.status.engine = { state: "loading", detail: "Loading model", elapsed_s: 0, vram_gb: 9 };
   const tick = setInterval(() => {
