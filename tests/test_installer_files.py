@@ -105,7 +105,7 @@ def test_operator_copy_covers_every_code_the_installer_can_raise():
         assert not entry["whatToDo"].endswith("!") and "!" not in entry["title"], code
 
 
-# ns_common modules that import only the standard library (and each other): the bare-Python server may use them.
+# ns_common modules with only standard-library imports (and each other): the bare-Python server may use them.
 STDLIB_ONLY_NS_COMMON = {"ns_common.atomic", "ns_common.paths", "ns_common.uv"}
 
 
