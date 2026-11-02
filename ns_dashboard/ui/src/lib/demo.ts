@@ -226,6 +226,7 @@ export async function demoHandle(method: string, path: string, body?: any): Prom
   if (p === "/models/state") return {};
   if (p === "/notes") return [];
   if (p === "/templates") return DEMO.templates;
+  if (p === "/voices/pending") return { pending: null };
   if (p === "/voices") return DEMO.voices;
   if (p === "/voices/preview") throw new Error("Voice samples need the engine running");
   if (p === "/voices/design" || p === "/voices/clone") {

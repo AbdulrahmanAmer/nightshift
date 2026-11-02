@@ -76,6 +76,17 @@ class VoicesService:
             voice_id=made.voice_id, preview_wav_path=made.preview_wav_path
         ).model_dump(mode="json")
 
+    def pending(self) -> dict[str, Any]:
+        """`{pending}`: the voice that setup asked for and that does not exist yet, or null."""
+        return {"pending": self.s.adapters.voice_maker.pending()}
+
+    def apply_pending(self) -> dict[str, Any]:
+        """Create the voice that setup queued. `NS-E314` (the VoiceDesign model) comes back as a coded error."""
+        self._accepting()
+        name = self.s.adapters.voice_maker.apply_pending()
+        self.s.log.info("voice_setup_applied", voice=name)
+        return {"created": name, "pending": self.s.adapters.voice_maker.pending()}
+
     def design(self, body: dict[str, Any]) -> dict[str, Any]:
         """New voice from a plain-English description (VoiceDesign), previewed with `test_line`."""
         self._accepting()

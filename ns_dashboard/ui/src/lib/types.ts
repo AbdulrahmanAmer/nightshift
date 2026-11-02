@@ -85,3 +85,7 @@ export interface SettingsImported { restored: boolean; file: string; lines: stri
 export interface SeriesQueued { slug: string; queued: { part: number; job_id: string; title: string }[] }
 /** POST /learn/import. */
 export interface LearnImported { matched: number; unmatched: number; summary: string[]; changes: { pool: string; option: string; delta: number }[]; unmatched_rows?: string[]; job_id?: string }
+/** GET /voices/pending and POST /voices/apply-pending: the voice that setup queued and could not make yet. */
+export interface PendingVoiceInfo { name: string; mode: "design" | "clone"; description: string; channel: string | null }
+export interface PendingVoice { pending: PendingVoiceInfo | null }
+export interface VoiceApplied { created: string | null; pending: PendingVoiceInfo | null }

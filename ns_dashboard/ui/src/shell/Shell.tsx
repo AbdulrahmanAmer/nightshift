@@ -4,7 +4,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useApp, useLoad } from "../lib/app";
 import { api } from "../lib/api";
-import { doneWords, fmtClock, fmtDay, fmtWhen, plural, stageWords, stoppedAt, store } from "../lib/format";
+import { doneWords, fmtClock, fmtDay, fmtWhen, plural, stoppedAt, store } from "../lib/format";
 import type { Job, MorningNote, Status } from "../lib/types";
 import { cx } from "../ui/kit";
 import { Chat } from "../pages/Assistant";

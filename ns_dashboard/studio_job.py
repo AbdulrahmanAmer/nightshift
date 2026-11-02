@@ -34,7 +34,7 @@ from pathlib import Path
 from typing import Any
 
 PREFIX = "NSJOB "
-KINDS = ("run", "clip", "rerun", "series", "download", "transcribe")
+KINDS = ("run", "clip", "rerun", "series", "download", "transcribe", "apply_voice")
 CANCEL_ENV = "NS_JOB_CANCEL_FILE"
 
 
@@ -166,6 +166,13 @@ def do_transcribe(args: dict[str, Any]) -> dict[str, Any]:
     return {"text": " ".join(seg.text for seg in segs).strip()}
 
 
+def do_apply_voice(args: dict[str, Any]) -> dict[str, Any]:
+    """Create the voice that setup queued (`config/pending_voice.json`); `name` is None when there was nothing to do."""
+    from ns_dashboard import studio_bridge
+
+    return {"name": studio_bridge.apply_pending_voice(**_common(args))}
+
+
 HANDLERS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     "run": do_run,
     "clip": do_clip,
@@ -173,6 +180,7 @@ HANDLERS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     "series": do_series,
     "download": do_download,
     "transcribe": do_transcribe,
+    "apply_voice": do_apply_voice,
 }
 
 

@@ -420,3 +420,40 @@ def sweep_parts(active_job_ids: Collection[str]) -> int:
     except (WorkshopError, OSError):
         return freed
     return freed
+
+
+# ---------------------------------------------------------------- the voice setup asked for
+
+
+def _voice_post(base_url: str, route: str, body: dict[str, Any]) -> dict[str, Any]:
+    """`ns_studio.voice_setup.http_post`, with an absent model reported as the code the Library page knows.
+
+    The setup voice of a "design" choice needs the VoiceDesign talker, which is not part of the base download:
+    `NS-E314` makes the page offer "Get voice design model" before it tries again.
+    """
+    from ns_common.errors import NsError
+    from ns_studio import voice_setup
+
+    try:
+        return voice_setup.http_post(base_url, route, body)
+    except NsError as e:
+        if "is not downloaded" in e.detail and route.endswith("/design"):
+            raise NsError("NS-E314") from e
+        raise
+
+
+def apply_pending_voice(
+    *, acquirer: Acquirer | None = None, fake: Collection[str] = (), paths: Paths | None = None
+) -> str | None:
+    """Create the voice that setup queued in `config/pending_voice.json` (`ns_studio.voice_setup.apply_pending`).
+
+    Returns its name, or None when nothing was queued or the voice exists already. A failure leaves the request
+    queued and propagates (`NS-E314` when the VoiceDesign model is missing).
+    """
+    from ns_studio import voice_setup
+
+    env = open_env(fake, acquirer, paths=paths)
+    try:
+        return voice_setup.apply_pending(env, post=None if "tts" in env.fake else _voice_post)
+    finally:
+        env.db.close()

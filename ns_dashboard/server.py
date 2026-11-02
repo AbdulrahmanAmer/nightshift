@@ -495,6 +495,14 @@ def create_app(
         data = await run_in_threadpool(dash.settings.voice_preview, await body_json(request))
         return Response(content=data, media_type="audio/wav")
 
+    @app.get("/api/voices/pending")
+    async def voices_pending() -> SafeJSONResponse:
+        return ok(await run_in_threadpool(dash.voices.pending))
+
+    @app.post("/api/voices/apply-pending")
+    async def voices_apply_pending() -> SafeJSONResponse:
+        return ok(await run_in_threadpool(dash.voices.apply_pending))
+
     @app.post("/api/voices/design")
     async def voices_design(request: Request) -> SafeJSONResponse:
         return ok(await run_in_threadpool(dash.voices.design, await body_json(request)))

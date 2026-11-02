@@ -892,3 +892,108 @@ def test_the_settings_route_saves_through_the_adapter_and_never_returns_the_valu
     assert r.status_code == 200 and "KEY-ROUTE" not in r.text
     assert "KEY-ROUTE" in keyring.values.values()
     assert (Paths.from_env().config / "secrets.dpapi").is_file()
+
+
+# ---------------------------------------------------------------- the voice setup asked for, made from Library > Voices
+
+
+def queue_setup_voice(paths: Paths, **kw: Any) -> None:
+    f = paths.config / "pending_voice.json"
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text(json.dumps({"channel": "after-dark", "mode": "design", "name": "Hollow", "description": "a slow, low voice", **kw}), encoding="utf-8")
+
+
+def test_the_pending_setup_voice_is_listed_and_created_by_one_button(tmp_home: Path):
+    from tests.test_dashboard_api import make_env
+    from tests.test_api_ui_contract import check_payload
+
+    client, state = make_env(tmp_home)
+    assert client.get("/api/voices/pending").json() == {"pending": None}
+    queue_setup_voice(state.paths)
+    shown = client.get("/api/voices/pending").json()
+    assert shown == {"pending": {"name": "Hollow", "mode": "design", "description": "a slow, low voice", "channel": "after-dark"}}
+    assert check_payload("PendingVoice", shown, False, "GET /voices/pending") == []
+    made = client.post("/api/voices/apply-pending")
+    assert made.status_code == 200 and made.json() == {"created": "Hollow", "pending": None}
+    assert check_payload("VoiceApplied", made.json(), False, "POST /voices/apply-pending") == []
+    assert (state.paths.models_tts_voices / "Hollow" / "voice.json").is_file()
+    assert not (state.paths.config / "pending_voice.json").exists()
+    assert client.post("/api/voices/apply-pending").json() == {"created": None, "pending": None}  # nothing left to do
+
+
+def test_a_missing_design_model_comes_back_as_ns_e314_and_the_request_stays_queued(tmp_home: Path):
+    from ns_common.errors import NsError
+    from tests.test_dashboard_api import make_env
+
+    client, state = make_env(tmp_home)
+    queue_setup_voice(state.paths)
+    state.adapters.voice_maker.fail_with = NsError("NS-E314")  # type: ignore[attr-defined]
+    r = client.post("/api/voices/apply-pending")
+    assert r.status_code == 500 and r.json()["error"]["code"] == "NS-E314"
+    assert client.get("/api/voices/pending").json()["pending"]["name"] == "Hollow"
+    src = page("Library.tsx")
+    assert "Pending voice from setup" in src and "Create it now" in src and '"/voices/apply-pending"' in src
+    assert 'e.code === "NS-E314"' in src  # the same failure card offers "Get voice design model"
+
+
+def test_a_voice_that_exists_is_not_pending(tmp_home: Path):
+    from ns_dashboard.adapters import read_pending_voice
+
+    paths = Paths.from_env()
+    queue_setup_voice(paths)
+    assert read_pending_voice(paths) is not None
+    (paths.models_tts_voices / "Hollow").mkdir(parents=True)
+    (paths.models_tts_voices / "Hollow" / "voice.json").write_text("{}", encoding="utf-8")
+    assert read_pending_voice(paths) is None
+    (paths.config / "pending_voice.json").write_text("not json", encoding="utf-8")
+    assert read_pending_voice(paths) is None
+
+
+def test_the_studio_side_makes_the_voice_with_the_fake_engine(tmp_home: Path):
+    from ns_dashboard import studio_bridge
+
+    paths = Paths.from_env()
+    paths.ensure()
+    assert studio_bridge.apply_pending_voice(fake=("tts",), paths=paths) is None
+    queue_setup_voice(paths)
+    assert studio_bridge.apply_pending_voice(fake=("tts",), paths=paths) == "Hollow"
+    assert (paths.models_tts_voices / "Hollow" / "voice.json").is_file() and not (paths.config / "pending_voice.json").exists()
+
+
+def test_a_missing_voicedesign_model_from_the_service_becomes_ns_e314(monkeypatch: pytest.MonkeyPatch):
+    import httpx
+
+    from ns_common.errors import NsError
+    from ns_dashboard import studio_bridge
+
+    def answer(status: int, body: dict[str, Any]):
+        return lambda *_a, **_kw: httpx.Response(status, json=body, request=httpx.Request("POST", "http://tts.test"))
+
+    monkeypatch.setattr(httpx, "post", answer(409, {"missing_model": "qwen-talker-1.7b-voicedesign-Q8_0.gguf"}))
+    with pytest.raises(NsError) as design:
+        studio_bridge._voice_post("http://tts.test", "/v1/voices/design", {"name": "x"})
+    assert design.value.code == "NS-E314"
+    with pytest.raises(NsError) as clone:  # a missing Base model is not fixed by the design download
+        studio_bridge._voice_post("http://tts.test", "/v1/voices/clone", {"name": "x"})
+    assert clone.value.code == "NS-E310"
+
+
+def test_the_real_adapter_runs_apply_voice_in_the_child(tmp_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    from ns_dashboard.adapters import RealVoiceMaker
+
+    script = tmp_path / "voice.py"
+    script.write_text(
+        'import json, os, sys\n'
+        'json.dump({"argv": sys.argv[1:], "args": json.load(open(sys.argv[sys.argv.index("--args") + 1]))}, open(os.environ["CHILD_ARGS_OUT"], "w"))\n'
+        'print("NSJOB " + json.dumps({"ev": "result", "name": "Hollow"}), flush=True)\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CHILD_ARGS_OUT", str(tmp_path / "out.json"))
+    paths = Paths.from_env()
+    maker = RealVoiceMaker(paths, SupervisorLink("http://127.0.0.1:8099", timeout_s=0.2), runner=runner_for(script, tmp_path))
+    assert maker.apply_pending() == "Hollow"
+    seen = json.loads((tmp_path / "out.json").read_text(encoding="utf-8"))
+    assert seen["argv"][2] == "apply_voice" and seen["args"] == {"supervisor_url": "http://127.0.0.1:8099"}
+    assert maker.pending() is None
+    queue_setup_voice(paths, mode="clone")
+    assert maker.pending() == {"name": "Hollow", "mode": "clone", "description": "Cloned from your recording", "channel": "after-dark"}

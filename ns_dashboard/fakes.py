@@ -338,6 +338,27 @@ class FakeVoiceMaker:
         self._library().add_clone(name, str(sample_wav), "fake words of the sample", True, engine=engine)
         return self._preview(name, test_line, engine)
 
+    def pending(self) -> dict[str, Any] | None:
+        """The queued setup voice, as the real adapter reads it."""
+        from ns_dashboard.adapters import read_pending_voice
+
+        return read_pending_voice(self.paths)
+
+    def apply_pending(self) -> str | None:
+        """Make the queued voice with the fake engine and forget the request."""
+        want = self.pending()
+        if self.fail_with is not None:
+            raise self.fail_with
+        if want is None:
+            return None
+        from ns_tts.engine import FakeEngine
+
+        # a recording is not kept by the fake: a cloned setup voice is made from its description line
+        self._library().add_design(want["name"], want["description"], engine=FakeEngine())
+        self.calls.append(("apply_pending", want["name"], ""))
+        (self.paths.config / "pending_voice.json").unlink(missing_ok=True)
+        return str(want["name"])
+
 
 class FakeFolderOpener:
     """Records the folders it was asked to open."""

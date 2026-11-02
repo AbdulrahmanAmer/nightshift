@@ -122,6 +122,14 @@ class VoiceMakerAdapter(Protocol):
 
     def clone(self, name: str, sample_wav: Path, test_line: str) -> MadeVoice: ...
 
+    def pending(self) -> dict[str, Any] | None:
+        """The voice setup asked for (`config/pending_voice.json`) while it does not exist yet, else None."""
+        ...
+
+    def apply_pending(self) -> str | None:
+        """Create that voice now; returns its name, or None when there was nothing to do."""
+        ...
+
 
 class FolderOpener(Protocol):
     """Opens a folder in Explorer."""
@@ -699,6 +707,16 @@ class RealVoiceMaker:
             done = self._runner.run("transcribe", {"wav": str(wav)})
         return str(done.get("text") or "").strip()
 
+    def pending(self) -> dict[str, Any] | None:
+        """The queued setup voice (name, mode, description, channel), or None when nothing waits or it exists."""
+        return read_pending_voice(self.paths)
+
+    def apply_pending(self) -> str | None:
+        """Create the setup voice in the studio venv (`ns_studio.voice_setup.apply_pending`), which holds `tts`."""
+        done = self._runner.run("apply_voice", {"supervisor_url": self.link.base_url})
+        name = done.get("name")
+        return str(name) if name else None
+
     def clone(self, name: str, sample_wav: Path, test_line: str) -> MadeVoice:
         """Base-model embedding from the sample (its words found by whisper), then the test line spoken."""
         ref_text = self._words_in(sample_wav)
@@ -713,6 +731,24 @@ class RealVoiceMaker:
         with self._tenant("tts") as url:
             self._post(url, "/v1/voices/clone", body)
             return self._preview(url, name, test_line)
+
+
+def read_pending_voice(paths: Paths) -> dict[str, Any] | None:
+    """`config/pending_voice.json` as the page shows it; None when absent, unreadable or already made."""
+    try:
+        raw = json.loads((paths.config / "pending_voice.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    name = raw.get("name") if isinstance(raw, dict) else None
+    if not isinstance(name, str) or not name or (paths.models_tts_voices / name / "voice.json").is_file():
+        return None
+    mode = "clone" if raw.get("mode") == "clone" else "design"
+    return {
+        "name": name,
+        "mode": mode,
+        "description": str(raw.get("description") or "") if mode == "design" else "Cloned from your recording",
+        "channel": raw.get("channel") if isinstance(raw.get("channel"), str) else None,
+    }
 
 
 def _service_code(r: httpx.Response) -> str | None:
