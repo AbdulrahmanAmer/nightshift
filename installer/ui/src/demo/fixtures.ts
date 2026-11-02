@@ -176,7 +176,7 @@ export function downloadsMid(plan0: InstallPlan, paused = false, stall = false):
     switch (r.key) {
       case "git": return done("already here");
       case "terminal": return done("already here");
-      case "ffmpeg": return { ...r, status: paused ? "paused" : "active", note: "installing with winget, Windows may ask for permission" };
+      case "ffmpeg": return paused || stall ? done("installed with winget") : { ...r, status: "active", note: "installing with winget, Windows may ask for permission" };
       case "setup_env": return { ...r, status: "queued", note: null };
       case "llama_cuda13": return done(null);
       case "cudart13": return { ...r, status: paused ? "paused" : "active", bytesDone: Math.round(290e6 * 0.62), speedBps: paused ? null : 4.2e6, etaS: paused ? null : 26 };

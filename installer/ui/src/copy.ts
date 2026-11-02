@@ -203,7 +203,7 @@ export const choices = {
     needCustom: (need: number) => `Needs ${need} GB free`,
     other: {
       name: "Other",
-      about: "Any GGUF file on Hugging Face, up to 15.5 GB",
+      about: "Any Hugging Face GGUF, up to 15.5 GB",
       repo: "Hugging Face repository",
       repoPh: "Qwen/Qwen3-14B-GGUF",
       file: "GGUF file name",
