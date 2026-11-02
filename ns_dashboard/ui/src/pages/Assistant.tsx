@@ -53,7 +53,8 @@ export function Chat({ compact }: { compact?: boolean }) {
     } catch (e: any) { push({ role: "error", text: `I could not answer: ${e.message}` }); }
     setBusy(false); setToolNote(null); taRef.current?.focus();
   };
-  useEffect(() => { if (askPrompt) { send(askPrompt); clearAskPrompt(); } }); // prompt handed over by "Ask about it"
+  // Prompt handed over by "Ask about it" or the top bar search. Runs only when a prompt arrives (it used to run after every render).
+  useEffect(() => { if (askPrompt) { send(askPrompt); clearAskPrompt(); } }, [askPrompt]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { taRef.current?.focus(); }, []);
 
   const decide = async (m: Msg, yes: boolean) => {

@@ -238,9 +238,9 @@
   --ds-text-on-highlight: var(--navy-900);
   /* Video wells: the same near-black in every theme so stills and players read as media */
   --ds-bg-media: #0b0b1c;
-  /* Layer 0 and 1 tuning knobs (owner feedback): the swirl image opacity on the canvas, its filter, the wash over it,
+  /* Layer 0 and 1 tuning knobs (owner feedback): the canvas image opacity, its filter, the wash over it,
      and the alpha of the glass app window. Text never sits on the canvas; it sits on the window glass or on cards. */
-  --ds-canvas-opacity: 0.3;
+  --ds-canvas-opacity: 0.4;
   --ds-canvas-img-filter: saturate(0.8);
   --ds-canvas-wash: linear-gradient(180deg, rgba(231, 231, 241, 0.55) 0%, rgba(231, 231, 241, 0.12) 45%, rgba(231, 231, 241, 0.3) 100%);
   --ds-window-alpha: 0.8;
@@ -285,9 +285,9 @@
   --ds-focus-ring: 0 0 0 3px rgba(167, 158, 247, 0.4);
   --ds-shadow-selected: 0 0 0 4px var(--ds-bg-accent-soft), var(--ds-shadow-accent);
   --ds-bg-highlight: #f6b545;
-  --ds-canvas-opacity: 0.7;
-  --ds-canvas-img-filter: blur(2px);
-  --ds-canvas-wash: linear-gradient(180deg, rgba(11, 11, 28, 0.6) 0%, rgba(11, 11, 28, 0.15) 45%, rgba(11, 11, 28, 0.4) 100%);
+  --ds-canvas-opacity: 0.9;
+  --ds-canvas-img-filter: none;
+  --ds-canvas-wash: linear-gradient(180deg, rgba(11, 11, 28, 0.4) 0%, rgba(11, 11, 28, 0.05) 45%, rgba(11, 11, 28, 0.25) 100%);
   --ds-window-alpha: 0.72;
   --ds-window-border: rgba(255, 255, 255, 0.08);
 }
@@ -357,7 +357,7 @@
   --ds-text-on-highlight: #16171c;
   --ds-illus-paper: #f4f4f7;
   --ds-illus-accent: var(--cobalt-500);
-  --ds-canvas-opacity: 0.2;
+  --ds-canvas-opacity: 0.25;
   --ds-canvas-img-filter: saturate(0.6);
   --ds-canvas-wash: linear-gradient(180deg, rgba(224, 225, 231, 0.5) 0%, rgba(224, 225, 231, 0.1) 45%, rgba(224, 225, 231, 0.3) 100%);
   --ds-window-alpha: 0.85;
@@ -449,22 +449,21 @@
   .ds-illus-on-accent .ds-illus { color: var(--navy-900); }
 
 
-  /* Layer 0 of the app shell: the canvas colour and the owner's swirl image (public/bg/swirl.webp, loaded after
+  /* Layer 0 of the app shell: the canvas colour and the generated marbled canvas (public/bg/canvas.svg, loaded after
      first paint by Shell's Canvas). It shows around the window edges and behind the rail, never under text. */
   .ds-canvas { position: fixed; inset: 0; z-index: 0; overflow: hidden; pointer-events: none; background: var(--ds-bg-canvas); }
-  .ds-canvas-img { position: absolute; inset: -24px; width: calc(100% + 48px); height: calc(100% + 48px); max-width: none; object-fit: cover;
+  .ds-canvas-img { position: absolute; inset: 0; width: 100%; height: 100%; max-width: none; object-fit: cover;
     opacity: var(--ds-canvas-opacity); filter: var(--ds-canvas-img-filter); animation: canvas-in 600ms var(--ds-ease-out) both; }
   @keyframes canvas-in { from { opacity: 0; } to { opacity: var(--ds-canvas-opacity); } }
   .ds-canvas::after { content: ""; position: absolute; inset: 0; background: var(--ds-canvas-wash); }
-  /* Layer 1 as glass: the app colour at --ds-window-alpha over a blurred canvas, a 1 px inner border, the frame shadow.
-     Cards on it stay opaque, so text contrast on cards is unchanged. Without backdrop-filter it falls back to solid. */
-  .ds-glass {
-    background: color-mix(in srgb, var(--ds-bg-app) calc(var(--ds-window-alpha) * 100%), transparent);
-    -webkit-backdrop-filter: blur(24px) saturate(1.2);
-    backdrop-filter: blur(24px) saturate(1.2);
-    box-shadow: inset 0 0 0 1px var(--ds-window-border), var(--ds-shadow-frame);
-  }
-  @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) { .ds-glass { background: var(--ds-bg-app); } }
+  /* Layer 1 as glass, with no backdrop-filter (owner bug: a live blur over a tall window cost GPU memory on every repaint).
+     The window paints the canvas colour, then a pre-blurred copy of the canvas image fixed to the viewport so it lines up
+     with the canvas behind (::before, at --ds-canvas-opacity), then the app colour at --ds-window-alpha and a 1 px inner
+     border (::after). All static: nothing is re-blurred per frame. Cards on it stay opaque. */
+  .ds-glass { isolation: isolate; background: var(--ds-bg-canvas); box-shadow: var(--ds-shadow-frame); }
+  .ds-glass::before, .ds-glass::after { content: ""; position: absolute; inset: 0; z-index: -1; border-radius: inherit; pointer-events: none; }
+  .ds-glass::before { background: url("/bg/canvas-glass.webp") center / cover no-repeat fixed; opacity: var(--ds-canvas-opacity); }
+  .ds-glass::after { background: color-mix(in srgb, var(--ds-bg-app) calc(var(--ds-window-alpha) * 100%), transparent); box-shadow: inset 0 0 0 1px var(--ds-window-border); }
 
   /* Dashboard grid from Planify's Dashboard.css: 6 named columns, 4 under 1280 px, 1 under 860 px.
      Container queries (not media queries) so the grid reflows inside the scaled review frame too. */

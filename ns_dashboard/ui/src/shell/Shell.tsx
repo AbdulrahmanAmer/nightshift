@@ -1,4 +1,4 @@
-/* App shell on the ref12 depth layers: canvas (the owner's swirl image, see Canvas) -> SideTab rail -> the rounded
+/* App shell on the ref12 depth layers: canvas (public/bg/canvas.svg, see Canvas) -> SideTab rail -> the rounded
    AppWindow holding the TopBar and the page. Toasts, the confirm dialog and the Ask drawer sit above it. */
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useApp } from "../lib/app";
@@ -88,13 +88,13 @@ function TopBar() {
   );
 }
 
-/** Depth layer 0: the canvas colour with the owner's swirl image, loaded after first paint. Opacity and blur per
+/** Depth layer 0: the canvas colour with the generated marbled canvas (public/bg/canvas.svg), loaded after first paint. Opacity and blur per
  *  theme come from --ds-canvas-* in styles.css. It sits behind the window and the rail, never under text. */
 function Canvas() {
   const [src, setSrc] = useState<string | null>(null);
   useEffect(() => {
     let live = true;
-    const load = () => { const img = new Image(); img.decoding = "async"; img.src = "bg/swirl.webp"; img.decode().then(() => live && setSrc(img.src)).catch(() => undefined); };
+    const load = () => { const img = new Image(); img.decoding = "async"; img.src = "bg/canvas.svg"; img.decode().then(() => live && setSrc(img.src)).catch(() => undefined); };
     if (document.readyState === "complete") { const t = window.setTimeout(load, 200); return () => { live = false; clearTimeout(t); }; }
     window.addEventListener("load", load, { once: true });
     return () => { live = false; window.removeEventListener("load", load); };
