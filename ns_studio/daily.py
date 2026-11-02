@@ -15,6 +15,7 @@ from ns_studio.channels import cadence
 from ns_studio.channels.crud import get_channel
 from ns_studio.context import JobContext
 from ns_studio.errors import StudioError
+from ns_studio.media.outbox import retime_sheet
 from ns_studio.policy.regen import run_job_guarded
 
 RunFn = Callable[[JobContext], list[str]]
@@ -27,22 +28,28 @@ def _default_run(ctx: JobContext) -> list[str]:
 def apply_publish_times(env: jobs.Env, job_ids: list[str], rng: random.Random, now: datetime) -> int:
     """Rewrite `publish_after` in the outbox sheets of `job_ids` with jittered slots (spec 18.6).
 
-    Works on whatever sheets exist (`*.json` under `outbox\\<slug>\\<date>\\<job>` that already carry a
-    `publish_after` key) and returns how many were rewritten.
+    Each finished job lists its files in `<job dir>/outbox/manifest.json` (the Outbox itself is organised by
+    story, with no job id in the path). Both the `.json` and the `.txt` sheet of every item are rewritten.
+    Returns how many items were rewritten.
     """
     rewritten = 0
-    by_channel: dict[str, list[tuple[cadence.ReleaseItem, Path]]] = {}
+    by_channel: dict[str, list[tuple[cadence.ReleaseItem, dict[str, str]]]] = {}
     for job_id in job_ids:
-        for sheet in env.paths.outbox.glob(f"*/*/{job_id}/**/*.json"):
+        manifest_file = env.paths.job_dir(job_id) / "outbox" / "manifest.json"
+        try:
+            manifest = json.loads(manifest_file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        for item, entry in manifest.items():
             try:
-                data = json.loads(sheet.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
+                data = json.loads(Path(entry["json"]).read_text(encoding="utf-8"))
+            except (OSError, KeyError, json.JSONDecodeError):
                 continue
             if not isinstance(data, dict) or "publish_after" not in data:
                 continue
             kind = "long" if data.get("kind") == "long" else "short"
-            item = cadence.ReleaseItem(f"{job_id}:{sheet}", job_id, kind)
-            by_channel.setdefault(str(data.get("channel", "")), []).append((item, sheet))
+            release = cadence.ReleaseItem(f"{job_id}:{item}", job_id, kind)
+            by_channel.setdefault(str(data.get("channel", "")), []).append((release, entry))
     for slug, entries in by_channel.items():
         try:
             ch = get_channel(env.paths, slug)
@@ -51,11 +58,9 @@ def apply_publish_times(env: jobs.Env, job_ids: list[str], rng: random.Random, n
         times = cadence.assign_publish_times(
             [e[0] for e in entries], now.date(), ch.publish_window, ch.shorts_per_day_max, rng
         )
-        for item, sheet in entries:
-            data = json.loads(sheet.read_text(encoding="utf-8"))
-            data["publish_after"] = times[item.output_id].isoformat(timespec="minutes")
-            sheet.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-            rewritten += 1
+        for release, entry in entries:
+            if retime_sheet(entry, times[release.output_id].isoformat(timespec="minutes")) is not None:
+                rewritten += 1
     return rewritten
 
 

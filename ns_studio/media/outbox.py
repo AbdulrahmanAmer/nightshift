@@ -6,7 +6,7 @@ import random
 import re
 import shutil
 import zlib
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -265,6 +265,28 @@ def record_output(
             "insert into clip_usage(source, clip_id, channel, job_id, item, used_at) values (?,?,?,?,?,?)",
             (c.source, c.id, ctx.channel.slug, ctx.job_id, item, now),
         )
+
+
+RELATED_PREFIX = "Set Related video -> "
+
+
+def retime_sheet(entry: Mapping[str, str], publish_at: str) -> Metadata | None:
+    """Set `publish_after` in the `.json` sheet of one outbox manifest entry and rewrite its `.txt` sheet.
+
+    `entry` is a value of the job's `outbox/manifest.json` (`mp4`, `json`, `txt` paths). Returns the new
+    metadata, or None when the sheet is missing or unreadable (nothing is changed then).
+    """
+    sheet = Path(entry["json"])
+    try:
+        meta = Metadata.model_validate_json(sheet.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    meta = meta.model_copy(update={"publish_after": publish_at})
+    related = (meta.related_video_instruction or "").removeprefix(RELATED_PREFIX) or None
+    sheet.write_text(meta.model_dump_json(indent=2) + "
+", encoding="utf-8")
+    write_sheet_txt(meta, Path(entry["mp4"]).name, Path(entry["txt"]), related_title=related)
+    return meta
 
 
 class OutboxStage:
