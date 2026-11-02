@@ -2,12 +2,14 @@
 .SYNOPSIS
     Frameless Nightshift window around WebView2 (docs/design/installer-ui.md section 6).
     nightshift-host.ps1 -Url <http://127.0.0.1:port/...> [-Title 'Nightshift'] [-Width 1366] [-Height 768]
-                        [-AppPath <dir>] [-CheckOnly]
+                        [-AppPath <dir>] [-Role setup|dashboard] [-CheckOnly]
     Exit codes: 0 window closed (or an already running window was brought to the front), 3 WebView2
     unavailable (the caller falls back to an Edge/Chrome app window), 4 bad arguments.
     Needs an STA thread (Windows PowerShell 5.1 consoles are STA by default).
-    Single instance: the named mutex Global\Nightshift.AppHost; the running host records its window in
-    %NIGHTSHIFT_HOME%\run\apphost.json {hwnd, pid} and a second start raises that window instead.
+    Single instance per role (-Role, default dashboard): the named mutex Global\Nightshift.AppHost.<role>; the
+    running host records its window in %NIGHTSHIFT_HOME%\run\apphost-<role>.json {hwnd, pid} and a second
+    start of the same role raises that window instead. The setup window (-Role setup) and the dashboard window
+    (-Role dashboard) are independent, so opening the dashboard while setup is open starts a second window.
     Closing the window never stops the engine.
     Messages from the page (window.chrome.webview.postMessage), all JSON:
       {cmd: 'minimize'} {cmd: 'toggle-maximize'} {cmd: 'drag-start'} {cmd: 'close'} {cmd: 'close-ack'}
@@ -23,6 +25,7 @@ param(
     [int]$Width = 1366,
     [int]$Height = 768,
     [string]$AppPath = '',
+    [ValidateSet('setup', 'dashboard')][string]$Role = 'dashboard',
     [switch]$CheckOnly
 )
 Set-StrictMode -Version Latest
@@ -31,7 +34,7 @@ $ErrorActionPreference = 'Stop'
 if (-not $AppPath) { $AppPath = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path }
 
 $ClientKey = '{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}'
-$MutexName = 'Global\Nightshift.AppHost'
+$MutexName = "Global\Nightshift.AppHost.$Role"
 $BackgroundHex = '#15131d'
 $MinWidth = 1024
 $MinHeight = 640
@@ -121,7 +124,7 @@ catch {
 # ---------------------------------------------------------------------------------------------------------
 # Single instance: a second start raises the running window and exits 0.
 # ---------------------------------------------------------------------------------------------------------
-$runFile = Join-Path (Get-HostHome) 'run\apphost.json'
+$runFile = Join-Path (Get-HostHome) ("run\apphost-$Role.json")
 
 function Test-ProcessAlive {
     param([int]$ProcessId)
@@ -185,7 +188,7 @@ function Remove-RunFile {
         if (Test-Path -LiteralPath $runFile) { Remove-Item -LiteralPath $runFile -Force }
     }
     catch {
-        Write-Verbose 'apphost.json could not be removed'
+        Write-Verbose 'the apphost state file could not be removed'
     }
 }
 
@@ -197,7 +200,7 @@ function Write-RunFile {
         [IO.File]::WriteAllText($runFile, ($obj | ConvertTo-Json -Compress), (New-Object System.Text.UTF8Encoding($false)))
     }
     catch {
-        Write-Verbose 'apphost.json could not be written'
+        Write-Verbose 'the apphost state file could not be written'
     }
 }
 

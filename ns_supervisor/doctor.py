@@ -7,7 +7,6 @@ venv, the last 3 job directories without media, and VERSION. It never holds API 
 from __future__ import annotations
 
 import json
-import shutil
 import subprocess
 import sys
 import zipfile
@@ -19,6 +18,7 @@ from ns_common import __version__, ffmpeg
 from ns_common.config import load_install_state, load_runtime
 from ns_common.errors import NsError
 from ns_common.paths import Paths
+from ns_common.uv import find_uv
 from ns_supervisor import procs
 from ns_supervisor.client import SupervisorClient
 
@@ -51,7 +51,7 @@ def desktop_dir() -> Path:
 def freeze_venv(paths: Paths, venv: str) -> str | None:
     """`uv pip freeze` of a venv; None when uv or the venv is absent or freezing fails."""
     py = paths.venvs / venv / "Scripts" / "python.exe"
-    uv = shutil.which("uv")
+    uv = find_uv(paths)
     if uv is None or not py.exists():
         return None
     try:

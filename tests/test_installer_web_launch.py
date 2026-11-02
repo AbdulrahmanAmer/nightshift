@@ -58,6 +58,7 @@ def test_the_webview2_host_is_tried_first_and_a_window_that_stays_up_wins():
     argv = popen.calls[0]
     assert argv[0] == "powershell.exe" and "-STA" in argv and str(HOST_SCRIPT) in argv
     assert argv[argv.index("-Url") + 1] == URL and argv[argv.index("-AppPath") + 1] == str(APP)
+    assert argv[argv.index("-Role") + 1] == "setup"      # own mutex and state file, apart from the dashboard
 
 
 def test_a_host_that_exits_zero_quickly_raised_an_open_window_and_counts_as_opened():

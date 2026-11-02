@@ -76,3 +76,32 @@ function Exit-NsWithPause {
     Read-Host 'Press Enter to close' | Out-Null
     exit $Code
 }
+
+function Start-NsDashboardService {
+    # Ask a running engine to start the dashboard service. An engine left by `ns verify` or the nightly
+    # task runs headless and never starts it on its own, so this is needed even when Test-NsSupervisor is true.
+    param([int]$TimeoutSec = 120)
+    try {
+        Invoke-NsPost -Path '/warmup' -Body @{ service = 'dashboard' } -TimeoutSec $TimeoutSec | Out-Null
+        return $true
+    }
+    catch {
+        Write-Host ('The engine could not start the dashboard service: ' + $_.Exception.Message)
+        return $false
+    }
+}
+
+function Wait-NsPort {
+    param([string]$Url, [int]$TimeoutSec = 60)
+    $deadline = (Get-Date).AddSeconds($TimeoutSec)
+    while ((Get-Date) -lt $deadline) {
+        try {
+            Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec 2 | Out-Null
+            return $true
+        }
+        catch {
+            Start-Sleep -Milliseconds 500
+        }
+    }
+    return $false
+}

@@ -13,17 +13,12 @@ if (-not (Test-NsSupervisor)) {
     }
 }
 
-# The engine starts the dashboard service itself; give the page a moment to come up.
-$deadline = (Get-Date).AddSeconds(60)
-$up = $false
-while (-not $up -and (Get-Date) -lt $deadline) {
-    try {
-        Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 2 | Out-Null
-        $up = $true
-    }
-    catch {
-        Start-Sleep -Milliseconds 500
-    }
+# A freshly started engine warms the dashboard itself. One that was already running may be headless (left by
+# `ns verify --quick` or the nightly task) and would never start it, so always ask. It is a no-op when the
+# service is up. Then wait for the page; never open a dead address.
+[void](Start-NsDashboardService)
+if (-not (Wait-NsPort -Url $url -TimeoutSec 60)) {
+    Exit-NsWithPause 'The Nightshift dashboard did not start. Run "Nightshift - Diagnostics" and send the zip.'
 }
 
 # NS_DASHBOARD_NO_HOST=1 (set by the setup window) skips it: a running host window would be raised instead.
@@ -34,29 +29,38 @@ $hostScript = Join-Path $PSScriptRoot 'nightshift-host.ps1'
 if ((Test-Path -LiteralPath $hostScript) -and ($env:NS_DASHBOARD_NO_HOST -ne '1')) {
     $hostCode = 3
     $hidden = $false
+    $consoleHandle = [IntPtr]::Zero
     try {
-        # Hide this launcher's own console while the window is open (best effort; ignored by Windows Terminal).
-        Add-Type -Namespace NsDash -Name Console -MemberDefinition @'
+        try {
+            # Hide this launcher's own console while the window is open (best effort; ignored by Windows Terminal).
+            Add-Type -Namespace NsDash -Name Console -MemberDefinition @'
 [System.Runtime.InteropServices.DllImport("kernel32.dll")] public static extern System.IntPtr GetConsoleWindow();
 [System.Runtime.InteropServices.DllImport("user32.dll")] public static extern bool ShowWindow(System.IntPtr h, int cmd);
 '@
-        $consoleHandle = [NsDash.Console]::GetConsoleWindow()
-        if ($consoleHandle -ne [IntPtr]::Zero) { [void][NsDash.Console]::ShowWindow($consoleHandle, 0); $hidden = $true }
+            $consoleHandle = [NsDash.Console]::GetConsoleWindow()
+            if ($consoleHandle -ne [IntPtr]::Zero) { [void][NsDash.Console]::ShowWindow($consoleHandle, 0); $hidden = $true }
+        }
+        catch {
+            $hidden = $false
+        }
+        try {
+            $global:LASTEXITCODE = 0
+            & $hostScript -Url $url -AppPath (Get-NsAppPath)
+            $hostCode = $LASTEXITCODE
+        }
+        catch {
+            Write-Host "The Nightshift window could not start ($($_.Exception.Message)); opening the browser app window instead."
+            $hostCode = 3
+        }
     }
-    catch {
-        $hidden = $false
+    finally {
+        # Always give the console back, whatever the host did: a console the user started would stay invisible.
+        if ($hidden) { [void][NsDash.Console]::ShowWindow($consoleHandle, 5) }
     }
-    try {
-        $global:LASTEXITCODE = 0
-        & $hostScript -Url $url -AppPath (Get-NsAppPath)
-        $hostCode = $LASTEXITCODE
-    }
-    catch {
-        Write-Host "The Nightshift window could not start ($($_.Exception.Message)); opening the browser app window instead."
-        $hostCode = 3
-    }
-    if ($hostCode -ne 3) { return }
-    if ($hidden) { [void][NsDash.Console]::ShowWindow($consoleHandle, 5) }
+    # Only a clean 0 means the window ran (or an open one was raised). 3 = WebView2 unavailable, anything else
+    # is a failure of the host: both fall through to the browser app window.
+    if ($hostCode -eq 0) { return }
+    if ($hostCode -ne 3) { Write-Host "The Nightshift window stopped with exit code $hostCode; opening the browser app window instead." }
 }
 
 # Fallback: an app window (no tabs or address bar) in Edge or Chrome when one is installed; otherwise the default browser.

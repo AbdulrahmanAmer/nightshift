@@ -131,8 +131,6 @@ def build(name: str, app_path: Path | None = None) -> dict[str, Any]:
                  "note": None},
                 {"name": "nvenc", "label": "Video encoder", "status": "passed", "value": "NVENC",
                  "note": None},
-                {"name": "mtp", "label": "Faster decoding", "status": "fallback", "value": "off",
-                 "note": None},
             ], "voice": None, "render": None, "renderNote": None, "reportReady": True}
         elif name == "done":
             _set_steps(state, STEP_ORDER[-1])

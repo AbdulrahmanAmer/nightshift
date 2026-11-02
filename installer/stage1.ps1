@@ -693,6 +693,29 @@ function Invoke-Native {
     }
 }
 
+function Get-ServerArgs {
+    # Arguments of the setup server as plain strings. `& $py @args` quotes the ones with spaces itself; literal
+    # quotes added here made Windows PowerShell 5.1 re-quote them, which broke paths like C:\Users\John Doe\...
+    param([string]$App, [string]$PreflightFile, [string]$AnswersPath = '', [bool]$Headless = $false)
+    $list = @('-X', 'utf8', '-m', 'installer.stage2.web', '--app-path', $App, '--preflight', $PreflightFile)
+    if ($AnswersPath) { $list += @('--answers', $AnswersPath) }
+    if ($Headless) { $list += '--headless' }
+    return [string[]]$list
+}
+
+function ConvertTo-ArgumentString {
+    # Start-Process -ArgumentList joins an array with spaces and quotes nothing, so quote here
+    # (CommandLineToArgvW rules: backslashes before a quote are doubled, so are trailing ones).
+    param([string[]]$Arguments)
+    $parts = foreach ($a in $Arguments) {
+        if ($a -eq '' -or $a -match '[\s"]') {
+            '"' + (($a -replace '(\\*)"', '$1$1\"') -replace '(\\+)$', '$1$1') + '"'
+        }
+        else { $a }
+    }
+    return ($parts -join ' ')
+}
+
 function Get-HandOver {
     param($Probe, $Rows, [string]$App, [string]$NsHome, [string]$ProfileName, [string]$LlamaPair, [string]$CudaString)
     return [ordered]@{
@@ -880,9 +903,7 @@ else {
 }
 
 # the setup server
-$serverArgs = @('-X', 'utf8', '-m', 'installer.stage2.web', '--app-path', ('"{0}"' -f $App), '--preflight', ('"{0}"' -f $preflightFile))
-if ($answersPath) { $serverArgs += @('--answers', ('"{0}"' -f $answersPath)) }
-if ($script:Headless) { $serverArgs += '--headless' }
+$serverArgs = Get-ServerArgs -App $App -PreflightFile $preflightFile -AnswersPath $answersPath -Headless ([bool]$script:Headless)
 if ($script:IsDry) {
     Show-Action "start setup server: $py $($serverArgs -join ' ')"
     Write-Host 'Dry run finished. Nothing was changed.'
@@ -909,7 +930,7 @@ New-Item -ItemType Directory -Force -Path $dataDir | Out-Null
 $errFile = Join-Path $dataDir 'setup-server.err'
 Remove-Item -LiteralPath (Join-Path $dataDir 'setup-server.json') -Force -ErrorAction SilentlyContinue
 Set-Status -Index 3 -Tag 'working' -Text 'starting the setup program'
-$proc = Start-Process -FilePath $py -ArgumentList $serverArgs -WorkingDirectory $App -NoNewWindow -PassThru -RedirectStandardError $errFile
+$proc = Start-Process -FilePath $py -ArgumentList (ConvertTo-ArgumentString $serverArgs) -WorkingDirectory $App -NoNewWindow -PassThru -RedirectStandardError $errFile
 $null = $proc.Handle
 
 $info = $null

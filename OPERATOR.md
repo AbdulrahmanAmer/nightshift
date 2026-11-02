@@ -29,6 +29,11 @@ Keep this file next to `INSTALL.cmd`.
    work), installs, tunes itself for 1 to 3 minutes and plays you a test voice and a short test video.
 8. At the end the window says **Nightshift is ready** and names a **diagnostics zip** on your Desktop. Send it back
    (see below). **Open dashboard** starts the dashboard.
+   Setup does not leave the engine running: **Open dashboard** and the Desktop **Nightshift Dashboard** shortcut start it
+   (and the dashboard) when needed. The dashboard and the setup window are separate windows, so you can open the
+   dashboard while setup is still open.
+   Setup also registers Nightshift for Windows notifications (the `ns notify` command and the nightly task use it). If you
+   never see one, check Windows **Settings -> System -> Notifications** for "Nightshift".
 
 With an `answers.json` next to `INSTALL.cmd` setup runs without a window, as before (add `-Ui` after
 `INSTALL.cmd` to open the window with your answers filled in; `-NoUi` forces the no-window run).
@@ -125,8 +130,12 @@ it on. Do not use Nightshift Code while a night run is due: the graphics card ca
    before that, double-click **INSTALL.cmd** again: it keeps everything that is done and refreshes the rest.
 4. Send a new diagnostics zip so the developer can see the test table is green.
 
+Notes (from 0.1.1): the update steps out of the Nightshift folder before it swaps it, so it works from the Desktop
+shortcut and from a command prompt opened inside the folder. The old version is kept next to it as `<folder>.prev`;
+run `ns update --rollback` to go back. If a step fails, the old version is put back and the message names the step.
+
 ## Uninstall
 
-Double-click **UNINSTALL.cmd**. A window shows what goes and lets you tick the two things to delete. It removes the nightly task, shortcuts, programs and environments. It asks
+Double-click **UNINSTALL.cmd**. A window shows what goes and lets you tick the two things to delete. It removes the nightly task, shortcuts, the notification registration, programs and environments. It asks
 separately whether to delete the AI models (15 GB) and your videos and history. The default answer to both is
 **No**. At the end it tells you what it kept and where.

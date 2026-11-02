@@ -16,10 +16,10 @@ def test_changelog_has_a_heading_for_the_version_file():
     text = read("CHANGELOG.md")
     m = re.search(rf"^## \[{re.escape(version)}\] - \d{{4}}-\d{{2}}-\d{{2}}\s*$", text, re.MULTILINE)
     assert m, f"CHANGELOG.md needs '## [{version}] - <date>' (release.yml reads the release notes from it)"
-    # the Unreleased heading stays above it and holds no entries once they moved under the version
+    # the Unreleased heading stays above it; it holds the fixes made since that release (a release moves them
+    # under the new version heading in the same commit that bumps VERSION, and this test follows both)
     unreleased = re.search(r"^## \[Unreleased\]\s*$", text, re.MULTILINE)
     assert unreleased and unreleased.start() < m.start()
-    assert text[unreleased.end() : m.start()].strip() == ""
 
 
 def test_release_workflow_builds_the_uis_before_the_bundle():

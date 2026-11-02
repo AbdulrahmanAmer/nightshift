@@ -10,6 +10,10 @@ import subprocess
 
 from ns_supervisor import pwsh
 
+#: AppUserModelID the toasts are sent from. Windows shows a toast only for an AUMID that is registered
+#: (key AppUserModelId under HKCU Software Classes); installer step s09 registers it, uninstall removes it.
+AUMID = "Nightshift"
+
 TOAST_SCRIPT = "\n".join(
     [
         "$ErrorActionPreference = 'Stop'",
@@ -23,7 +27,7 @@ TOAST_SCRIPT = "\n".join(
         "[void]$text.Item(0).AppendChild($tpl.CreateTextNode($env:NS_TOAST_TITLE))",
         "[void]$text.Item(1).AppendChild($tpl.CreateTextNode($env:NS_TOAST_MESSAGE))",
         "$toast = [Windows.UI.Notifications.ToastNotification]::new($tpl)",
-        "[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('Nightshift').Show($toast)",
+        f"[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('{AUMID}').Show($toast)",
     ]
 )
 
