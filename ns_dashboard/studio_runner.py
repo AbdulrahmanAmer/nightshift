@@ -106,12 +106,14 @@ class StudioRunner:
         cwd: Path | None = None,
         poll_s: float = 0.25,
         kill: Callable[[subprocess.Popen[str]], None] = kill_tree,
+        cancel_grace_s: float = 3.0,
     ) -> None:
         self.paths = paths
         self._python = python
         self._cwd = cwd
         self.poll_s = poll_s
         self._kill = kill
+        self.cancel_grace_s = cancel_grace_s
 
     # --- how the child is started ---
     def interpreter(self) -> list[str]:
@@ -156,13 +158,17 @@ class StudioRunner:
         *,
         on_event: Callable[[Event], None] = lambda _e: None,
         check_cancel: Callable[[], None] = lambda: None,
+        on_cancel: Callable[[], None] | None = None,
     ) -> Event:
         """Run `kind` to the end and return its `result` payload.
 
         `on_event(event)` gets every progress event; `check_cancel()` is called after each line and every
         `poll_s` seconds while the child is quiet, and may raise (the dashboard's `JobCancelled`): the child's
-        process tree is killed first and the exception passes on. A failure in the child becomes `NsError`
-        when it carries an `NS-` code, else `RuntimeError`.
+        process tree is killed and the exception passes on.
+        When `on_cancel()` is given it runs first and tells the child to stop by itself (the download kind
+        cancels the Clipper `CancelToken`, which kills yt-dlp and removes its folder); the tree is killed once
+        `cancel_grace_s` has passed without the child ending. A failure in the child becomes `NsError` when it
+        carries an `NS-` code, else `RuntimeError`.
         """
         args_file = self._args_file(kind, args)
         lines: queue.Queue[str | None] = queue.Queue()
@@ -212,6 +218,8 @@ class StudioRunner:
                 check_cancel()
             proc.wait(timeout=60)
         except BaseException:
+            if on_cancel is not None:
+                self._ask_to_stop(proc, on_cancel)
             self._kill(proc)
             raise
         finally:
@@ -223,3 +231,9 @@ class StudioRunner:
             last = " | ".join(list(tail)[-5:])
             raise RuntimeError(f"The studio process stopped (exit {proc.returncode}). {last}".strip())
         return {k: v for k, v in result.items() if k != "ev"}
+
+    def _ask_to_stop(self, proc: subprocess.Popen[str], on_cancel: Callable[[], None]) -> None:
+        """Run `on_cancel` and give the child `cancel_grace_s` to end by itself; never raises."""
+        with contextlib.suppress(Exception):
+            on_cancel()
+            proc.wait(timeout=self.cancel_grace_s)
