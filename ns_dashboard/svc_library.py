@@ -210,6 +210,27 @@ class LibraryService:
             )
         return out
 
+    def delete_footage(self, source: str, clip_id: str) -> dict[str, Any]:
+        """Remove a cached stock clip: its rows and its file (only a file inside the Nightshift home)."""
+        from pathlib import Path
+
+        from ns_dashboard.security import is_within
+
+        row = self.s.db.one("SELECT local_path FROM clips WHERE source = ? AND clip_id = ?", (source, clip_id))
+        if row is None:
+            raise ApiError(404, "not_found", "That clip is not in the cache.")
+        with self.s.db.tx() as db:
+            db.execute("DELETE FROM clip_usage WHERE source = ? AND clip_id = ?", (source, clip_id))
+            db.execute("DELETE FROM clips WHERE source = ? AND clip_id = ?", (source, clip_id))
+        removed = False
+        if row["local_path"]:
+            path = Path(row["local_path"])
+            if is_within(self.s.paths.home, path) and path.is_file():
+                path.unlink(missing_ok=True)
+                removed = True
+        self.s.log.info("footage_deleted", source=source, clip_id=clip_id, file_removed=removed)
+        return {"ok": True, "source": source, "clip_id": clip_id, "file_removed": removed}
+
     # --- formats ---
     def list_formats(self) -> list[dict[str, Any]]:
         """Shipped and user formats, each with the channels that may use it (an empty `formats_allowed` is all)."""

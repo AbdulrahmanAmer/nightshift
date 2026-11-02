@@ -340,6 +340,8 @@ function JobEvents({ jobs, loading, channelName, className, onReview }: { jobs: 
 
 /* ---------------------------------------------------------------- tonight's plan */
 
+/** "dashboard:preview-12" -> "a voice sample", "studio:..." -> "a video job", "code" -> "Nightshift Code". */
+const ownerWords = (o: string) => (o.startsWith("studio:") ? "a video job" : o.startsWith("dashboard:preview") || o.startsWith("dashboard:voice") ? "a voice sample" : o.startsWith("dashboard") ? "the dashboard" : /code/i.test(o) ? "Nightshift Code" : o);
 function TonightPlan({ chans, status, className }: { chans: ChannelSummary[]; status: ReturnType<typeof useApp>["status"]; className?: string }) {
   const { go, confirm, toast, refresh } = useApp();
   const pause = async (c: ChannelSummary) => {
@@ -353,6 +355,7 @@ function TonightPlan({ chans, status, className }: { chans: ChannelSummary[]; st
   return (
     <Card as="section" aria-labelledby="q-plan" className={cx("self-stretch", className)}>
       <CardHeader id="q-plan" title="Tonight's plan" actions={<Button variant="ghost" size="sm" leadingIcon="edit" onClick={() => go("#/channels")}>Edit</Button>} />
+      {status?.engine?.vram_owner && <p role="status" className="mb-3 flex items-center gap-2 rounded-ds-md bg-ds-accent-subtle px-3 py-2 text-ds-xs"><StatusDot tone="accent" />The graphics card is held by <strong className="font-semibold">{ownerWords(status.engine.vram_owner)}</strong>. Tonight's run waits for it.</p>}
       <div className="flex flex-col gap-4">
         {plan.length ? plan.map((c) => (
           <AssignmentCard key={c.slug} categories={[c.display_name]} moreLabel={`Options for ${c.display_name}`} menu={[{ icon: "edit", label: "Edit channel", onSelect: () => go(`#/channels?edit=${encodeURIComponent(c.slug)}`) }, { icon: "pause", label: "Skip tonight and pause", onSelect: () => pause(c) }]}

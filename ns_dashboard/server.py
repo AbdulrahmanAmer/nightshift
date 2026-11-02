@@ -529,6 +529,10 @@ def create_app(
         )
         return ok(data)
 
+    @app.delete("/api/library/footage/{source}/{clip_id}")
+    async def library_footage_delete(source: str, clip_id: str) -> SafeJSONResponse:
+        return ok(await run_in_threadpool(dash.library.delete_footage, source, clip_id))
+
     @app.get("/api/library/formats")
     async def library_formats() -> SafeJSONResponse:
         return ok(await run_in_threadpool(dash.library.list_formats))

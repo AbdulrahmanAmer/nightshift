@@ -479,3 +479,28 @@ def test_model_download_is_unavailable_until_ns_models_exists_then_runs_in_the_b
         time.sleep(0.02)
     assert dash.library.models_state()["voice_design"] == {"state": "done", "message": "voice_design is ready"}
     assert update.downloaded == ["voice_design"]  # type: ignore[attr-defined]
+
+
+# ------------------------------------------------------------------ gap 26: Library > Footage delete
+
+
+def test_footage_can_be_deleted_with_its_file(tmp_home: Path):
+    from tests.test_dashboard_api import make_env
+
+    client, state = make_env(tmp_home)
+    video = state.paths.home / "cache" / "clips" / "pexels" / "1.mp4"
+    video.parent.mkdir(parents=True)
+    video.write_bytes(b"x")
+    outside = tmp_home.parent / "elsewhere.mp4"
+    outside.write_bytes(b"x")
+    for cid, path in (("1", video), ("2", outside)):
+        state.db.execute(
+            "INSERT INTO clips(source, clip_id, url, license, local_path, fetched_at, keywords) VALUES ('pexels', ?, 'u', 'l', ?, 'now', '[]')",
+            (cid, str(path)),
+        )
+    state.db.execute("INSERT INTO clip_usage(source, clip_id, channel, job_id, item, used_at) VALUES ('pexels', '1', 'c', 'j', 'long', 'now')")
+    r = client.delete("/api/library/footage/pexels/1")
+    assert r.status_code == 200 and r.json()["file_removed"] is True and not video.exists()
+    assert state.db.one("SELECT COUNT(*) AS n FROM clip_usage")["n"] == 0
+    assert client.delete("/api/library/footage/pexels/1").status_code == 404
+    assert client.delete("/api/library/footage/pexels/2").json()["file_removed"] is False and outside.exists()  # not ours to delete
