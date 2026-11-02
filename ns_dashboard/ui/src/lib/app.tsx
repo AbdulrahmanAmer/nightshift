@@ -3,6 +3,7 @@ import { api } from "./api";
 import { store } from "./format";
 import type { Status } from "./types";
 
+export type Theme = "light" | "dark" | "soft";
 export type Toast = { id: number; text: string; tone?: "ok" | "bad" | "warn" };
 export type ConfirmReq = { title: string; body?: string; ok?: string; danger?: boolean; input?: { label: string; placeholder?: string }; resolve: (v: string | boolean | null) => void };
 
@@ -11,8 +12,8 @@ interface AppCtx {
   toast: (text: string, tone?: Toast["tone"]) => void; toasts: Toast[];
   confirm: (r: Omit<ConfirmReq, "resolve">) => Promise<string | boolean | null>; confirmReq: ConfirmReq | null; closeConfirm: (v: string | boolean | null) => void;
   route: { name: string; query: URLSearchParams }; go: (hash: string) => void;
-  askOpen: boolean; setAskOpen: (v: boolean) => void; askContext: Record<string, unknown>; ask: (ctx?: Record<string, unknown>, prompt?: string) => void; askPrompt: string | null; clearAskPrompt: () => void;
-  theme: "light" | "dark"; setTheme: (t: "light" | "dark") => void;
+  askOpen: boolean; setAskOpen: (v: boolean) => void; askContext: Record<string, unknown>; ask: (ctx?: Record<string, unknown>, prompt?: string, openDrawer?: boolean) => void; askPrompt: string | null; clearAskPrompt: () => void;
+  theme: Theme; setTheme: (t: Theme) => void;
   channelName: (slug?: string) => string;
 }
 const Ctx = createContext<AppCtx>(null as unknown as AppCtx);
@@ -30,7 +31,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [askOpen, setAskOpen] = useState(false);
   const [askContext, setAskContext] = useState<Record<string, unknown>>({});
   const [askPrompt, setAskPrompt] = useState<string | null>(null);
-  const [theme, setThemeState] = useState<"light" | "dark">(() => store.get<"light" | "dark" | null>("ns-theme", null) ?? (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"));
+  const [theme, setThemeState] = useState<Theme>(() => store.get<Theme | null>("ns-theme", null) ?? (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"));
   const tid = useRef(0);
 
   const lastStatus = useRef("");
@@ -49,8 +50,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const confirm = useCallback((r: Omit<ConfirmReq, "resolve">) => new Promise<string | boolean | null>((resolve) => setConfirmReq({ ...r, resolve })), []);
   const closeConfirm = useCallback((v: string | boolean | null) => { setConfirmReq((c) => { c?.resolve(v); return null; }); }, []);
   const go = useCallback((hash: string) => { location.hash = hash; }, []);
-  const ask = useCallback((ctx?: Record<string, unknown>, prompt?: string) => { setAskContext(ctx || {}); if (prompt) setAskPrompt(prompt); setAskOpen(true); }, []);
-  const setTheme = useCallback((t: "light" | "dark") => { setThemeState(t); store.set("ns-theme", t); }, []);
+  // openDrawer=false hands the prompt to the Assistant page instead (the top bar search routes there).
+  const ask = useCallback((ctx?: Record<string, unknown>, prompt?: string, openDrawer = true) => { setAskContext(ctx || {}); if (prompt) setAskPrompt(prompt); if (openDrawer) setAskOpen(true); }, []);
+  const setTheme = useCallback((t: Theme) => { setThemeState(t); store.set("ns-theme", t); }, []);
   const channelName = useCallback((slug?: string) => status?.channels?.find((c) => c.slug === slug)?.display_name || slug || "", [status]);
 
   useEffect(() => { document.documentElement.dataset.theme = theme; }, [theme]);
