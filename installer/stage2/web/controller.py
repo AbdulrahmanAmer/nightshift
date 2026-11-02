@@ -22,7 +22,17 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from installer.stage2.web import answers_view, bootstrap, labels, machine, plan, preflight, rows, samples
+from installer.stage2.web import (
+    answers_view,
+    bootstrap,
+    labels,
+    machine,
+    modelcheck,
+    plan,
+    preflight,
+    rows,
+    samples,
+)
 from installer.stage2.web.engine import EngineProcess, wizard_argv, wizard_env
 from installer.stage2.web.keys import check_key
 from installer.stage2.web.model import BOOTSTRAP_STEPS, FILE_NAMES, STEP_ORDER, STEP_PHASE
@@ -36,6 +46,19 @@ EXIT_STOPPED = 130
 DETACHED = 0x00000008 | 0x00000200      # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP (Windows only)
 SHORTCUTS = ("Nightshift Dashboard", "Nightshift Studio", "Nightshift Outbox", "Nightshift - Stop All",
              "Nightshift - Update", "Nightshift - Diagnostics")
+
+
+RETRY_NOTES = {
+    "stall": "No data for 60 s, trying again",
+    "network": "The connection dropped, trying again",
+    "hash": "The file failed its check, downloading it again",
+}
+
+
+def retry_note(reason: str, wait_s: float) -> str:
+    """The row note while a transfer waits to be retried: what happened and how long until the next try."""
+    text = RETRY_NOTES.get(reason, "The download stopped, trying again")
+    return f"{text} in {int(wait_s)} s" if wait_s >= 1 else text
 
 
 def now_iso() -> str:
@@ -154,6 +177,7 @@ class Effects:
     probe: Callable[[Path, Path, str | None], dict[str, Any] | None] = preflight.reprobe
     free_gb: Callable[[str], float] = default_free_gb
     key_check: Callable[[str, str], dict[str, Any]] = check_key
+    head: modelcheck.Head = modelcheck.urllib_head
     launch: Callable[..., None] = launch_detached
     elevate_longpaths: Callable[[], bool] = elevate_longpaths
     console: Callable[[str, str], None] = ignore_console
@@ -281,12 +305,15 @@ class SetupController:
                 raw = answers_view.read_answers(saved_answers)
             except (OSError, ValueError):
                 raw = prefill
+        default_tier = plan.recommended_tier(float(self.pf.get("ram_gb") or 0))
         view = None
         if raw:
-            view = answers_view.answers_to_view(raw, pexels_set=locked, pixabay_set=locked)
+            view = answers_view.answers_to_view(
+                raw, pexels_set=locked, pixabay_set=locked, default_tier=default_tier
+            )
             if locked:
                 self._keys_stored = {"pexelsKey": True, "pixabayKey": True}
-        tier = (view or {}).get("llmTier", "small")
+        tier = (view or {}).get("llmTier") or default_tier
         code = bool((view or {}).get("installCode", True))
         pf = self.pf
         gpu = pf.get("gpu") or {}
@@ -294,6 +321,7 @@ class SetupController:
             self.manifest, profile=pf.get("profile", "gpu"), tier=tier, include_code=code,
             cuda=pf.get("cuda"),
             ram_gb=float(pf.get("ram_gb") or 0), vram_mb=gpu.get("vram_mb"),
+            custom=(view or {}).get("llmCustom"),
         )
         steps = []
         for sid in STEP_ORDER:
@@ -445,6 +473,7 @@ class SetupController:
             include_code=raw["install_code"],
             cuda=pf.get("cuda"), ram_gb=float(pf.get("ram_gb") or 0),
             vram_mb=(pf.get("gpu") or {}).get("vram_mb"),
+            custom=raw.get("llm_custom"),
         )
 
         def fn(s: dict[str, Any]) -> None:
@@ -464,7 +493,8 @@ class SetupController:
         except (OSError, ValueError) as e:
             return {"ok": False, "errors": [{"field": "homePath", "code": None,
                                              "message": f"That answers file could not be read: {e}"}]}
-        view = answers_view.answers_to_view(raw)
+        default_tier = plan.recommended_tier(float(self.pf.get("ram_gb") or 0))
+        view = answers_view.answers_to_view(raw, default_tier=default_tier)
         draft = {k: v for k, v in view.items() if k not in ("pexelsKeySet", "pixabayKeySet")}
         keys = answers_view.keys_in(raw)
         draft["pexelsKey"] = keys["pexels_api_key"]
@@ -488,6 +518,10 @@ class SetupController:
     def check_key(self, service: str, key: str) -> dict[str, Any]:
         """``POST /api/check-key``."""
         return self.fx.key_check(service, key)
+
+    def check_model(self, repo: str, file: str) -> dict[str, Any]:
+        """``GET /api/model-check``: does this Hugging Face file exist, and does it fit a 16 GB card."""
+        return modelcheck.check_model(repo, file, self.fx.head)
 
     def disk(self, path: str, tier: str, source: bool) -> dict[str, Any]:
         """``GET /api/disk``."""
@@ -628,7 +662,8 @@ class SetupController:
     def _recheck(self) -> None:
         out = self.cfg.data_dir / "bootstrap" / "preflight.json"
         out.parent.mkdir(parents=True, exist_ok=True)
-        tier = (self.snapshot().get("answers") or {}).get("llmTier", "small")
+        ram = float(self.pf.get("ram_gb") or 0)
+        tier = (self.snapshot().get("answers") or {}).get("llmTier") or plan.recommended_tier(ram)
         new = self.fx.probe(self.cfg.app_path, out, str(self.home))
         if new is None:
             self.log("warn", "The PC check could not run. Press Check again")
@@ -1121,6 +1156,8 @@ class SetupController:
         elif event == "finish":
             self._finished.add(key)
             self.meter.drop(key)
+        elif event == "retry":
+            self.meter.drop(key)
         outcome = ev.get("outcome")
 
         def fn(s: dict[str, Any]) -> None:
@@ -1143,6 +1180,9 @@ class SetupController:
                 remaining = (row["bytesTotal"] or 0) - row["bytesDone"]
                 row["etaS"] = rows.eta_seconds(remaining, speed) if row["bytesTotal"] and speed else None
                 row["note"] = None
+            elif event == "retry":
+                row["speedBps"], row["etaS"] = None, None
+                row["note"] = retry_note(str(ev.get("reason")), float(ev.get("waitS") or 0))
             elif event == "finish":
                 all_done = all(k in self._finished for k, _v in subs)
                 if outcome == "failed":

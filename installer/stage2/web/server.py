@@ -266,6 +266,8 @@ class Handler(BaseHTTPRequestHandler):
             if body is not None:
                 service, key = str(body.get("service", "")), str(body.get("key", ""))
                 self._json(HTTPStatus.OK, ctl.check_key(service, key))
+        elif name == "model-check" and method == "GET" and ctl is not None:
+            self._json(HTTPStatus.OK, ctl.check_model(query.get("repo", [""])[0], query.get("file", [""])[0]))
         elif name == "disk" and method == "GET" and ctl is not None:
             self._json(HTTPStatus.OK, ctl.disk(query.get("path", [""])[0], query.get("tier", ["small"])[0],
                                                query.get("source", ["0"])[0] == "1"))

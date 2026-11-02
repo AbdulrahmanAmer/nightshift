@@ -13,7 +13,7 @@ class Clock:
         return self.t
 
 
-def test_speed_is_an_average_over_windows_and_time_left_waits_for_ten_seconds_of_data():
+def test_speed_is_an_average_over_windows_and_time_left_waits_for_twenty_seconds_of_data():
     clock = Clock()
     meter = rows.SpeedMeter(clock)
     assert meter.update("a", 0) is None                    # the first sample only starts the window
@@ -28,7 +28,12 @@ def test_speed_is_an_average_over_windows_and_time_left_waits_for_ten_seconds_of
     assert abs(speed - 1_300_000) < 1
     assert meter.speed("a") == speed and meter.has_data() is False      # only 7 s of data so far
     clock.t += 4.0
-    assert meter.has_data() is True
+    assert meter.has_data() is False                       # 11 s: the hero still says "estimating"
+    clock.t += 8.0
+    assert meter.has_data() is False                       # 19 s
+    clock.t += 1.0
+    assert meter.has_data() is True                        # 20 s: the estimate may show
+    assert rows.MIN_DATA_S == 20.0
     meter.drop("a")
     assert meter.speed("a") is None
     meter.reset()

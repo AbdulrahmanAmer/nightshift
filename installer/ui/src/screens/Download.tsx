@@ -2,7 +2,7 @@
 import { useEffect, useRef } from "react";
 import { Button, Card, CardHeader } from "@ref12";
 import { download as t } from "../copy";
-import { gbNum, mbps, minutesLeft, pct } from "../format";
+import { aboutDuration, gbNum, mbps, minutesLeft, pct } from "../format";
 import { useLiveState } from "../api/useSetup";
 import type { DownloadRow, PlanGroup } from "../api/types";
 import { Area, Screen } from "../parts/Screen";
@@ -40,7 +40,7 @@ export function Download({ onStop }: { onStop: () => void }) {
       : { title: t.source.internet.title, body: t.source.internet.body };
 
   return (
-    <Screen name="downloading" salutation={t.salutation(total)} description={t.description}
+    <Screen name="downloading" salutation={t.hero(total, o.etaS ? aboutDuration(o.etaS) : null, paused)} description={t.description}
       headerRight={<Button variant="soft" size="md" leadingIcon={paused ? "play" : "pause"} disabled={disabled} onClick={toggle}>{toggleLabel}</Button>}
       footerLeft={stopping ? t.stopping : t.footer(o.filesDone, o.filesTotal, gbNum(o.bytesDone), total)}
       footerRight={

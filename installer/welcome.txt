@@ -4,6 +4,6 @@ Nightshift sets up a story-to-video factory on this PC. It writes an original st
 
 Optionally, it also installs **Nightshift Code**, an AI coding assistant in your terminal, powered by the same model running on your graphics card. No account, no subscription, nothing leaves your PC.
 
-**What setup will do:** check your PC (graphics card, driver, memory, disk space), install the free tools Nightshift needs, download the AI models (~15 GB, or copy them from a folder you already have), tune them for your hardware, and run a quick test of everything. You'll answer a few questions along the way. You can close and re-run setup at any time; it picks up where it left off.
+**What setup will do:** check your PC (graphics card, driver, memory, disk space), install the free tools Nightshift needs, download the AI models (~20 GB, or copy them from a folder you already have), tune them for your hardware, and run a quick test of everything. You'll answer a few questions along the way. You can close and re-run setup at any time; it picks up where it left off.
 
 **You'll need:** an NVIDIA RTX GPU with 16 GB, ~40 GB of free disk space, an internet connection during setup (or a folder with the model files), and two free stock-footage API keys (Pexels and Pixabay). Setup shows you where to get them.

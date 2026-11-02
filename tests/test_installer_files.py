@@ -41,7 +41,7 @@ def test_welcome_text_is_spec_a2_verbatim():
     expected = "\n".join(block).strip()
     actual = (ROOT / "installer" / "welcome.txt").read_text(encoding="utf-8").strip()
     assert actual == expected
-    assert "Welcome to Nightshift" in actual and "~15 GB" in actual
+    assert "Welcome to Nightshift" in actual and "~20 GB" in actual
 
 
 @pytest.mark.parametrize("script", PS1_FILES, ids=lambda p: p.name)
@@ -66,7 +66,7 @@ def test_answers_example_is_valid_and_has_blank_secrets():
     ans = build_answers(load_raw(path))
     assert isinstance(ans, InstallerAnswers)
     assert not ans.pexels_api_key and not ans.pixabay_api_key
-    assert ans.llm_tier == "small" and ans.run_time == "03:00" and ans.masters_per_week == 1
+    assert ans.llm_tier == "balanced" and ans.run_time == "03:00" and ans.masters_per_week == 1
 
 
 def test_answers_example_matches_exported_schema():

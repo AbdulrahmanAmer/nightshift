@@ -14,6 +14,7 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
+from installer.stage2.web import modelcheck
 from installer.stage2.web.bootstrap import CmdResult
 
 TOOL_EXE = {"Git.Git": "git.exe", "Gyan.FFmpeg": "ffmpeg.exe", "Microsoft.WindowsTerminal": "wt.exe"}
@@ -104,6 +105,7 @@ def fake_effects(base: Path, present: set[str] | None = None, **overrides: Any) 
         probe=lambda app, out, home: sample_handover(app, home=home or r"C:\Nightshift"),
         free_gb=lambda _p: 500.0,
         key_check=lambda service, key: {"ok": bool(key), "code": None if key else "NS-E501", "message": None},
+        head=modelcheck.fake_head,
         launch=lambda argv, env=None: launched.append(list(argv)),
         elevate_longpaths=lambda: True, console=lambda text, level: console.append(text),
         uv_path=lambda home: str(uv), clipboard=lambda text: None,

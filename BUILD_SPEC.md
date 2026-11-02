@@ -20,7 +20,7 @@
 >
 > Optionally, it also installs **Nightshift Code**, an AI coding assistant in your terminal, powered by the same model running on your graphics card. No account, no subscription, nothing leaves your PC.
 >
-> **What setup will do:** check your PC (graphics card, driver, memory, disk space), install the free tools Nightshift needs, download the AI models (~15 GB, or copy them from a folder you already have), tune them for your hardware, and run a quick test of everything. You'll answer a few questions along the way. You can close and re-run setup at any time; it picks up where it left off.
+> **What setup will do:** check your PC (graphics card, driver, memory, disk space), install the free tools Nightshift needs, download the AI models (~20 GB, or copy them from a folder you already have), tune them for your hardware, and run a quick test of everything. You'll answer a few questions along the way. You can close and re-run setup at any time; it picks up where it left off.
 >
 > **You'll need:** an NVIDIA RTX GPU with 16 GB, ~40 GB of free disk space, an internet connection during setup (or a folder with the model files), and two free stock-footage API keys (Pexels and Pixabay). Setup shows you where to get them.
 
@@ -120,7 +120,7 @@ Therefore every heavy dependency sits behind an interface with a **fake** that p
 | GPU | RTX 5060 Ti 16 GB (Blackwell, **sm_120**) | `nvidia-smi`; block if no NVIDIA GPU (`NS-E102`); warn if VRAM < 16 GB |
 | Driver | `nvidia-smi` reports CUDA ≥ 13.0 (Blackwell path: llama.cpp CUDA 13.4 build); 12.4–12.x accepted with the CUDA 12.4 build and a warning | Below 12.4: open the NVIDIA driver page, pause, re-check (`NS-E103`) |
 | RAM | 32 GB recommended, 16 GB minimum | Selects the hardware profile (§3) |
-| Disk | ≥ 40 GB free for the default install (15 GB models + venvs + working space); +15/+22 GB for Balanced/Best LLM; +20 GB two-model mode | Block if too small (`NS-E104`) |
+| Disk | ≥ 60 GB free for the default install (Balanced: about 20 GB of models + venvs + working space); 74 GB with Balanced, 60 GB with the Small fallback, 81 GB with Best (the installer checks the chosen tier); +20 GB two-model mode | Block if too small (`NS-E104`) |
 | Disk type | NVMe/SSD for `NIGHTSHIFT_HOME` | Warn on HDD (`NS-W106`): load times will miss §14.6 |
 | Network | HF, GitHub, PyTorch, Pexels, Pixabay reachable | `NS-E105` |
 | Power | Scheduled task can wake the PC; sleep allowed, hibernate discouraged | Set task `WakeToRun`; warn if "wake timers" disabled (`NS-W107`) |
@@ -144,7 +144,7 @@ Therefore every heavy dependency sits behind an interface with a **fake** that p
 | Layer | Choice | Notes |
 |---|---|---|
 | LLM runtime | **llama.cpp `llama-server`**, official Windows CUDA release + cudart, build with merged MTP support (PR #22673 or later) | MoE offload, MTP, OpenAI-compatible API, `--alias` |
-| LLM (`code` and `story`, **one file**) | **14B-class dense Qwen GGUF, Q4_K_M, ~9 GB**: `Qwen/Qwen3-14B-GGUF` Q4_K_M by default; Slice 0 Task 14 swaps in a Qwen3.6 14B-class GGUF if one exists. Fits fully in 16 GB VRAM with 16K context. Installer offers **Balanced** (`mudler/Qwen3.6-35B-A3B-APEX-MTP-GGUF` I-Mini, ~14 GB) and **Best** (`unsloth/Qwen3.6-35B-A3B-MTP-GGUF` UD-Q4_K_XL, ~21 GB) as opt-in upgrades | Decision D13: smallest download that keeps story quality acceptable |
+| LLM (`code` and `story`, **one file**) | **Balanced is the recommended default** (owner decision 2026-11-02): `mudler/Qwen3.6-35B-A3B-APEX-MTP-GGUF` I-Mini, ~14 GB, needs 32 GB RAM. **Small**, the fallback preselected under 32 GB RAM, is the **14B-class dense Qwen GGUF, Q4_K_M, ~9 GB** (`Qwen/Qwen3-14B-GGUF`; Slice 0 Task 14 swaps in a Qwen3.6 14B-class GGUF if one exists) and fits fully in 16 GB VRAM with 16K context. **Best** (`unsloth/Qwen3.6-35B-A3B-MTP-GGUF` UD-Q4_K_XL, ~21 GB) and a user-named **custom GGUF** (up to 15.5 GB) are opt-ins | Decision D13: Balanced for story and coding quality, Small as the lighter fallback |
 | Story model, two-model mode (opt-in) | `Youssofal/Qwen3.6-35B-A3B-Abliterated-Heretic-GGUF` Q4_K_M (MTP build if available) | Enabled only if calibration (§16.5) shows refusals on fiction; set `models.story` in `manifest.json` |
 | Embeddings (`embed`) | `nomic-ai/nomic-embed-text-v1.5-GGUF` Q8_0 (~150 MB) served by a second `llama-server --embeddings` on **CPU** | For self-similarity and opening-line checks; not a GPU tenant |
 | NER | **spaCy** `en_core_web_md` in the studio venv + curated lists in `contracts/policy/` | `real_entities` check |
@@ -161,7 +161,7 @@ Therefore every heavy dependency sits behind an interface with a **fake** that p
 | Data | SQLite `data\studio.db` | WAL mode; nightly backup |
 | Installer | `INSTALL.cmd` → `installer\stage1.ps1` → `wizard.py` | No compiled installer, no code signing, no SmartScreen prompt; Windows may show a "Mark of the Web" warning on the zip, documented in `OPERATOR.md` |
 
-Storage (default install): LLM 9 GB + TTS 4.4 GB (two Q8_0 talkers + tokenizer) + whisper 1.5 GB + embed/face/spaCy 0.2 GB ≈ **15 GB of models**, venvs ~1.5 GB (no PyTorch). On-demand extras: VoiceDesign +2.1 GB, Balanced LLM +14 GB, Best LLM +21 GB, two-model story LLM +20 GB.
+Storage (default install, Balanced): LLM 14 GB + TTS 4.4 GB (two Q8_0 talkers + tokenizer) + whisper 1.5 GB + embed/face/spaCy 0.2 GB ≈ **20 GB of models**, venvs ~1.5 GB (no PyTorch). The Small fallback (9 GB LLM) is about 15 GB. On-demand extras: VoiceDesign +2.1 GB, Best LLM +9 GB over Balanced, two-model story LLM +20 GB.
 
 ---
 
@@ -169,8 +169,8 @@ Storage (default install): LLM 9 GB + TTS 4.4 GB (two Q8_0 talkers + tokenizer) 
 
 | Profile | LLM file | Context | Strategy |
 |---|---|---|---|
-| **`gpu`** (default; any RTX 16 GB, ≥ 16 GB RAM) | 14B Q4_K_M (~9 GB) | 16K | Fully on GPU, KV f16; one GPU tenant at a time (§0 rule 8) |
-| **`gpu`** with `llm_tier: balanced|best` (≥ 32 GB RAM) | 35B-A3B MoE I-Mini (~14 GB) / UD-Q4_K_XL (~21 GB) | 16K / 32K | `--fit` on; tune `--n-cpu-moe`; KV q8_0 when needed; MTP if faster |
+| **`gpu`** with `llm_tier: small` (the fallback when the PC has < 32 GB RAM; any RTX 16 GB, ≥ 16 GB RAM) | 14B Q4_K_M (~9 GB) | 16K | Fully on GPU, KV f16; one GPU tenant at a time (§0 rule 8) |
+| **`gpu`** with `llm_tier: balanced` (**recommended default**) or `best` (≥ 32 GB RAM) | 35B-A3B MoE I-Mini (~14 GB) / UD-Q4_K_XL (~21 GB) | 16K / 32K | `--fit` on; tune `--n-cpu-moe`; KV q8_0 when needed; MTP if faster |
 | **`cpu-dev`** (any machine, no GPU needed) | `Qwen/Qwen3-1.7B-GGUF` Q4_K_M (~1.1 GB), llama.cpp **CPU** build | 8K | TTS: `qwentts.cpp` CPU build with the **0.6B CustomVoice Q8_0** GGUF (~1 GB); whisper `tiny`; FFmpeg `libx264 -preset ultrafast`; embed model unchanged. Selected by `NIGHTSHIFT_PROFILE=cpu-dev` or `--allow-cpu`. **Not used during the build** (nothing is downloaded on the build laptop, §1.1); it exists so tests and prompt work on the work machine can run without taking the GPU from a nightly job. Never offered by the installer to end users. |
 
 `ns tune` sweeps ctx (8K/16K/32K), KV (f16, q8_0), `--n-gpu-layers` (99, then step down only if load fails) and, for MoE files, `--n-cpu-moe` (0, 4, 8, 12, 16) and MTP `--spec-draft-n-max` (2, 3, 4), measuring tok/s on a fixed 400-token prompt and 300-token generation, then writes the winner to `config\runtime.json`. In two-model mode it runs per model.
@@ -231,7 +231,7 @@ Work packages: **A** installer+launchers · **B** supervisor+tune+opencode · **
 
 **Stage 1 — `stage1.ps1`:** preflight (§1.2) → winget installs (Git, Windows Terminal, FFmpeg) → uv → Python 3.12 → create `NIGHTSHIFT_HOME` tree → bootstrap venv `venvs\studio` with `uv sync --locked --extra studio` from the repo → run `wizard.py [--answers <path>]`.
 
-**Unattended mode:** the installer looks for `answers.json` next to `INSTALL.cmd`, then in `%NIGHTSHIFT_HOME%\config\`. Every question in `s01_questions` is answered from it when present; missing keys are asked interactively. Schema: `contracts/schemas/answers.schema.json` (`home_path?, models_source?, llm_tier:"small"|"balanced"|"best"="small", channel{display_name,niche,language,seed_keywords[]}, voice{mode,speaker|description|ref_audio_path+ref_text+rights_confirmed}, pexels_api_key?, pixabay_api_key?, masters_per_week, run_time, install_code:bool, allow_cpu:bool`). A template `installer/answers.example.json` ships in the Drive folder.
+**Unattended mode:** the installer looks for `answers.json` next to `INSTALL.cmd`, then in `%NIGHTSHIFT_HOME%\config\`. Every question in `s01_questions` is answered from it when present; missing keys are asked interactively. Schema: `contracts/schemas/answers.schema.json` (`home_path?, models_source?, llm_tier:"small"|"balanced"|"best"="small" (the schema default is the safe fallback; the installer preselects "balanced", or "small" under 32 GB RAM), llm_custom:{repo,file,size}|null, channel{display_name,niche,language,seed_keywords[]}, voice{mode,speaker|description|ref_audio_path+ref_text+rights_confirmed}, pexels_api_key?, pixabay_api_key?, masters_per_week, run_time, install_code:bool, allow_cpu:bool`). A template `installer/answers.example.json` ships in the Drive folder.
 
 **Stage 2 — `wizard.py`** (rich TUI; each step = `check()` / `run()` / `verify()`; every step writes its result to `install_state.json` so a crash or reboot resumes at the failed step):
 | Step | Does |
@@ -239,7 +239,7 @@ Work packages: **A** installer+launchers · **B** supervisor+tune+opencode · **
 | `s00_welcome` | Shows A.2 text + the hardware check summary (incl. disk type, wake timers) |
 | `s01_questions` | **Home folder** for models, venvs, config and videos (default: `<drive with most free space, SSD preferred>\Nightshift`, must pass the 60 GB check; written to the user environment variable `NIGHTSHIFT_HOME`, so every later shortcut, task and shell sees it) · Channel (name, niche, language) · voice (preview 4 presets / design / clone, with a rights confirmation for clones) · Pexels + Pixabay keys (validated live, with links to get them, §21.6) · masters/week (default 1 for a new channel, §18.6) · run time (default 03:00) · install Nightshift Code? (default yes) |
 | `s02_download_bins` | llama.cpp + cudart, OpenCode (if chosen) |
-| `s03_download_models` | LLM GGUF, embed GGUF, TTS GGUFs (CustomVoice, Base, tokenizer), faster-whisper `distil-large-v3`, YuNet, spaCy wheel (resumable, SHA256). **Local source mode:** if `answers.models_source` (or the wizard's "I have the model files" option) points at a folder, every file whose name and SHA256 match is copied from there instead of downloaded; the rest is downloaded. |
+| `s03_download_models` | LLM GGUF (or the custom GGUF named in `llm_custom`, downloaded with no SHA256 and flagged `NS-W113`), embed GGUF, TTS GGUFs (CustomVoice, Base, tokenizer), faster-whisper `distil-large-v3`, YuNet, spaCy wheel (resumable, SHA256). **Local source mode:** if `answers.models_source` (or the wizard's "I have the model files" option) points at a folder, every file whose name and SHA256 match is copied from there instead of downloaded; the rest is downloaded. |
 | `s04_venvs` | `studio` (incl. spaCy, faster-whisper + cuBLAS/cuDNN wheels, OpenCV), `supervisor` (+ dashboard). No `tts` venv unless the PyTorch fallback is triggered (§2). |
 | `s05_opencode_prewarm` | If chosen: run OpenCode once headless; confirm `local/code` |
 | `s06_tune` | `ns tune` |
@@ -476,7 +476,7 @@ Deferred to after Slice 9: `series_compilation`, API upload, non-English caption
 | D10 | Dashboard technology | Local FastAPI + vanilla HTML/JS single page on 127.0.0.1:8100, no login | Runs on the same machine as the GPU; no build toolchain; no exposure outside localhost |
 | D11 | Clipper transcription model | faster-whisper `distil-large-v3` on GPU profiles, `tiny` on `cpu-dev` | Accuracy on arbitrary speech matters more than for script alignment |
 | D12 | Active-speaker framing for podcasts | v1: visual heuristic (largest face / mouth-region motion); audio diarization deferred | Avoids a diarization model; good enough for stacked two-speaker layouts |
-| D13 | Download size | **~15 GB default**: 14B Q4 LLM (9), TTS CustomVoice + Base Q8_0 GGUF + tokenizer (4.4), one whisper (1.5), small extras; VoiceDesign (+2.1) and bigger LLM tiers on demand; `models_source` folder mode for offline/pre-downloaded installs | Egyptian bandwidth; quantized GGUF is already the compressed form, zipping gains ≤ 3 % |
+| D13 | Download size | **~20 GB default (owner decision 2026-11-02: Balanced is the recommended tier)**: Balanced LLM (14), TTS CustomVoice + Base Q8_0 GGUF + tokenizer (4.4), one whisper (1.5), small extras. **Small (~15 GB)** is the fallback, preselected when the PC has < 32 GB RAM; Best (~22.9 GB LLM) and a user-supplied custom GGUF (up to 15.5 GB) are opt-in; VoiceDesign (+2.1) on demand; `models_source` folder mode for offline/pre-downloaded installs | Egyptian bandwidth; quantized GGUF is already the compressed form, zipping gains ≤ 3 % |
 | D14 | TTS engine | `qwentts.cpp` (GGML, CUDA, no PyTorch) with PyTorch `qwen-tts` as automatic fallback | Removes ~2.5 GB of torch and ~6 GB of fp16 weights from the target |
 
 ---
@@ -991,9 +991,10 @@ Everything below is pinned in `manifest.json` (exact versions, URLs, SHA256) by 
 ### 21.3 Models (`s03_download_models`, Hugging Face `https://huggingface.co/<repo>/resolve/<revision>/<file>`, public repos, no token; resumable with HTTP Range; SHA256 from the HF tree API)
 | Logical | Repo / file | Folder | Size | When |
 |---|---|---|---|---|
-| `llm` (small, default) | `Qwen/Qwen3-14B-GGUF` Q4_K_M (or a Qwen3.6 14B-class GGUF if Task 14 finds one) | `models\llm\` | ~9 GB | always |
-| `llm` (balanced) | `mudler/Qwen3.6-35B-A3B-APEX-MTP-GGUF` I-Mini | `models\llm\` | ~14 GB | `llm_tier: balanced` |
+| `llm` (small, fallback) | `Qwen/Qwen3-14B-GGUF` Q4_K_M (or a Qwen3.6 14B-class GGUF if Task 14 finds one) | `models\llm\` | ~9 GB | `llm_tier: small` (preselected when RAM < 32 GB) |
+| `llm` (balanced, **recommended default**) | `mudler/Qwen3.6-35B-A3B-APEX-MTP-GGUF` I-Mini | `models\llm\` | ~14 GB | `llm_tier: balanced` (needs 32 GB RAM) |
 | `llm` (best) | `unsloth/Qwen3.6-35B-A3B-MTP-GGUF` UD-Q4_K_XL | `models\llm\` | ~21 GB | `llm_tier: best` |
+| `llm` (custom, opt-in) | any public Hugging Face repo and `.gguf` file the user names (`llm_custom: {repo, file, size}`), at most 15.5 GB; no pinned SHA256 (`NS-W113`) | `models\llm\` | ≤ 15.5 GB | `llm_custom` set |
 | `story_llm` (opt-in) | `Youssofal/Qwen3.6-35B-A3B-Abliterated-Heretic-GGUF` Q4_K_M | `models\llm\` | ~20 GB | two-model mode only |
 | `embed` | `nomic-ai/nomic-embed-text-v1.5-GGUF` Q8_0 | `models\embed\` | ~150 MB | always |
 | TTS talker, presets | `Serveurperso/Qwen3-TTS-GGUF` 1.7B CustomVoice Q8_0 | `models\tts\` | ~2.1 GB | always |
@@ -1005,7 +1006,7 @@ Everything below is pinned in `manifest.json` (exact versions, URLs, SHA256) by 
 | PyTorch fallback set | `Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice`, `-Base` safetensors | `models\tts\hf\` | ~7 GB | only if `qwentts.cpp` fails smoke |
 | `cpu-dev` set | `Qwen/Qwen3-1.7B-GGUF` Q4_K_M, 0.6B CustomVoice Q8_0 GGUF, `Systran/faster-whisper-tiny` | same folders | ~2.5 GB total | dev only |
 
-**Default install total: ~15 GB.** Quantized GGUF/CTranslate2 files are already the compressed form; archiving them gains ≤ 3 %, so the bundle never zips models. For low-bandwidth sites, put the files in a folder (USB or Drive-synced) and set `models_source`; the installer copies and verifies instead of downloading.
+**Default install total: ~20 GB (Balanced); ~15 GB with the Small fallback.** Quantized GGUF/CTranslate2 files are already the compressed form; archiving them gains ≤ 3 %, so the bundle never zips models. For low-bandwidth sites, put the files in a folder (USB or Drive-synced) and set `models_source`; the installer copies and verifies instead of downloading.
 
 ### 21.4 Python environments (`s04_venvs`, `uv venv` + `uv pip install`, under `%NIGHTSHIFT_HOME%\venvs\`)
 | venv | Installs | GPU DLL notes |
@@ -1030,7 +1031,7 @@ All venvs are created from the same repo checkout (`install_state.app_path`), so
   rejected\  logs\
 <app_path>\                   the extracted repo (code only), e.g. D:\NightShift
 ```
-Disk budget: models ~15 GB + venvs ~1.5 GB + working space ≥ 20 GB → the 40 GB check in §1.2; Balanced/Best LLM +14/+21 GB; two-model mode +20 GB; PyTorch fallback +10 GB.
+Disk budget: models ~20 GB (Balanced) + venvs ~1.5 GB + working space ≥ 20 GB → the 60 GB check in §1.2 (74 GB with Balanced, 81 GB with Best); two-model mode +20 GB; PyTorch fallback +10 GB.
 
 ### 21.6 Accounts and keys the user needs
 | Key | Where to get it | Stored |
@@ -1041,7 +1042,7 @@ Disk budget: models ~15 GB + venvs ~1.5 GB + working space ≥ 20 GB → the 40 
 | YouTube | none needed in v1 (manual upload) | — |
 
 ### 21.7 Download behaviour
-Every download: HEAD for size → stream to `<file>.part` with `Range` resume → SHA256 verify (`NS-E109`) → atomic rename. Concurrency 2 files at a time; progress bar per file and overall; a failed file retries 3 times with backoff; the step is re-runnable and skips verified files. `s03` prints the total to download and an ETA before starting and tells the operator they can close the window and re-run `INSTALL.cmd` to resume.
+Every download: HEAD for size → stream to `<file>.part` with `Range` resume → SHA256 verify (`NS-E109`) → atomic rename. Concurrency 2 files at a time; progress bar per file and overall; a failed file retries 3 times with backoff; Pause stops the stream within one 64 KiB chunk, closes the connection and resumes with `Range`; a transfer that receives no bytes for 60 s is aborted and retried with backoff; the step is re-runnable and skips verified files. `s03` prints the total to download and an ETA before starting and tells the operator they can close the window and re-run `INSTALL.cmd` to resume.
 
 ---
 
