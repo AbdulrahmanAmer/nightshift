@@ -168,7 +168,8 @@ def test_clone_needs_consent_true(tmp_home: Path, consent: Any):
     if consent is None:
         payload.pop("consent")
     r = client.post("/api/voices/clone", json=payload)
-    assert r.status_code == 422 and r.json()["error"]["code"] == "consent_required"
+    assert r.status_code == 422 and r.json()["error"]["code"] == "NS-E313"
+    assert "consent" in r.json()["error"]["message"] and r.json()["error"]["hint"]
     assert maker_of(state).calls == []
     assert not (state.paths.models_tts_voices / "Mine").exists()
 

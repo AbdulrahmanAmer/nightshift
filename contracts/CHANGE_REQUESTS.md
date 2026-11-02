@@ -366,7 +366,7 @@ Format per entry:
 - **From:** dashboard Create wizard, "When" step; owner decisions of 2026-11-02
 - **Change:** new `ns_common.models.JobRunRequest` (`contracts/schemas/job_run_request.schema.json`) for `POST /api/jobs/run`: `channel: str`, `format: str | None = None`, `count: int | None = None` (1..20), and the new optional `schedule_at: datetime | None = None`. Rule: **`null` (or absent) = run now**. A time without a zone is the PC's local time.
 - **Why:** the wizard's last-but-one step lets the owner pick a start time; the request had no field for it.
-- **Not done here:** `ns_dashboard.svc_jobs.JobsService.create_run` still ignores the key (it reads the body as a dict), so the UI must not send `schedule_at` until C9 honours it (hold the job until that time, then enqueue). The clip request (`POST /api/jobs/clip`, multipart) gets the same field when its model is written.
+- **Not done here:** `ns_dashboard.svc_jobs.JobsService.create_run` still ignores the key (it reads the body as a dict), so the UI must not send `schedule_at` until C9 honours it (hold the job until that time, then enqueue). The clip request (`POST /api/jobs/clip`, multipart) gets the same field when its model is written (done: `JobClipRequest`, CR-C9-1).
 - **Status:** applied in d2a6f4f
 
 ## CR-C3-UI-6: channel stats `qc_pass_rate` and `qc_pass_target`
@@ -414,4 +414,4 @@ Format per entry:
   5. The owner suggested `NS-E330` for a bad voice sample; CR-C3-UI-7 already landed `NS-E312` ("Voice sample too short or noisy."), which is what the code raises.
   6. Scope guard: `dev/check_scope.py` allows branch `feat/c9-*` only `ns_dashboard/` plus `tests/`. This work also changes `ns_supervisor/` (GPU probe, scheduled-job wake-up), `ns_tts/` (clone sample checks), `OPERATOR.md` and `docs/OPERATOR_CLI.md`, as the task asked. The PR's scope-check job reports those paths until the orchestrator accepts or re-scopes them.
 - **Why:** the four UI gaps of CR-C3-UI-4..7 needed backend fields and routes; the points above are the contract-side edges found while building them.
-- **Status:** open
+- **Status:** applied on `feat/release-0.1.0`: points 1, 2 and 4 landed (`NS-E313` in `errors.json`, and `POST /api/voices/clone` answers it with 422 instead of `consent_required`; optional `Channel.qc_pass_target` with `ns_dashboard.channel_stats.qc_pass_target` reading it directly; new `ns_common.models.JobClipRequest` with `schedule_at` and `contracts/schemas/job_clip_request.schema.json`). Point 3 stays as written: voice making is synchronous, so `VoiceMakeResponse` keeps `{voice_id, preview_wav_path}` until it becomes a job. Point 5 is informational. Point 6 is the orchestrator's call.

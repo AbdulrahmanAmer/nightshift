@@ -200,3 +200,58 @@ def test_voice_sample_error_code_is_in_the_tts_block():
 
     d = describe("NS-E312")
     assert d.kind == "error" and "too short or noisy" in d.message and d.hint
+
+
+# --- CR-C9-1: NS-E313, Channel.qc_pass_target, the clip job request ------------------------------------
+
+
+def test_voice_consent_error_code_is_registered():
+    from ns_common.errors import describe
+
+    d = describe("NS-E313")
+    assert d.kind == "error" and "consent" in d.message and d.hint
+
+
+def test_channel_qc_pass_target_defaults_and_is_bounded():
+    base = {"slug": "after-dark", "display_name": "After Dark", "niche": "fiction"}
+    assert m.Channel.model_validate(base).qc_pass_target == 0.9
+    assert m.Channel.model_validate(base | {"qc_pass_target": 0.75}).qc_pass_target == 0.75
+    for bad in (-0.1, 1.1):
+        with pytest.raises(ValidationError):
+            m.Channel.model_validate(base | {"qc_pass_target": bad})
+
+
+CLIP = {"channel": "after-dark", "rights_confirmed": True, "url": "https://example.com/v"}
+
+
+def test_job_clip_request_defaults_mirror_the_dashboard_route():
+    req = m.JobClipRequest.model_validate(CLIP)
+    assert (req.template, req.max_clips, req.min_s, req.max_s) == ("auto", 6, 20, 60)
+    assert req.schedule_at is None and req.caption_style is None
+    assert req.path is None and req.upload_id is None and req.source_id is None
+
+
+def test_job_clip_request_needs_rights_and_a_sane_length_range():
+    for bad in (CLIP | {"rights_confirmed": False}, {k: v for k, v in CLIP.items() if k != "rights_confirmed"}):
+        with pytest.raises(ValidationError):
+            m.JobClipRequest.model_validate(bad)
+    with pytest.raises(ValidationError):
+        m.JobClipRequest.model_validate(CLIP | {"min_s": 60, "max_s": 30})
+    with pytest.raises(ValidationError):
+        m.JobClipRequest.model_validate(CLIP | {"max_clips": 11})
+    with pytest.raises(ValidationError):
+        m.JobClipRequest.model_validate(CLIP | {"surprise": 1})
+
+
+def test_job_clip_request_schedule_at_follows_the_run_request_rule():
+    assert m.JobClipRequest.model_validate(CLIP | {"schedule_at": None}).schedule_at is None
+    req = m.JobClipRequest.model_validate(CLIP | {"schedule_at": "2026-11-05T21:30:00"})
+    assert req.schedule_at is not None and (req.schedule_at.hour, req.schedule_at.minute) == (21, 30)
+
+
+def test_job_clip_request_covers_every_field_the_route_reads():
+    from ns_dashboard.svc_jobs import CLIP_PARAM_KEYS
+
+    fields = set(m.JobClipRequest.model_fields)
+    assert set(CLIP_PARAM_KEYS) <= fields
+    assert {"url", "path", "upload_id", "source_id", "schedule_at"} <= fields

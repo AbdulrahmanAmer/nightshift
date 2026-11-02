@@ -323,6 +323,13 @@
       "title": "Critic Bar",
       "type": "number"
     },
+    "qc_pass_target": {
+      "default": 0.9,
+      "maximum": 1,
+      "minimum": 0,
+      "title": "Qc Pass Target",
+      "type": "number"
+    },
     "pools": {
       "$ref": "#/$defs/Pools",
       "default": {

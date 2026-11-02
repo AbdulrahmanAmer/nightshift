@@ -22,7 +22,7 @@ are exported from `ns_common/models.py` and must match (test `test_every_schema_
 ## Freeze tags
 - `contracts-m0` — everything above as of milestone M0 completion (component C3).
 - `contracts-m1` — M0 plus the M1 amendments (C3): master-first, clipper and format schemas, installer and runtime fields, error codes NS-E320..E326 and NS-E408, `sources` and `ideas` columns, `assistant_messages`, `ns_common.gpu_dlls`.
-- UI contracts (not tagged yet): CR-C1-UI-1..3 (installer answers, `NS-E113`/`NS-W403`, `bins.webview2`) and CR-C3-UI-4..7 (`status`, `job_run_request`, `channel_stats`, `voice_*` schemas, `NS-E312`); see `CHANGE_REQUESTS.md`.
+- UI contracts (not tagged yet): CR-C1-UI-1..3 (installer answers, `NS-E113`/`NS-W403`, `bins.webview2`) and CR-C3-UI-4..7 (`status`, `job_run_request`, `channel_stats`, `voice_*` schemas, `NS-E312`) and CR-C9-1 (`NS-E313`, `Channel.qc_pass_target`, `job_clip_request`); see `CHANGE_REQUESTS.md`.
 
 ## Rules
 Only the main session edits `contracts/` and `ns_common/`. Workers file requests in `CHANGE_REQUESTS.md`.
