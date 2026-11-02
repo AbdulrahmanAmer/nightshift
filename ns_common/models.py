@@ -106,6 +106,10 @@ class EmbedCfg(Strict):
     host: str = "127.0.0.1"
     port: int = 8081
     model_path: str = ""
+    # llama-server's default physical batch (-ub 512) rejects any input longer than 512 tokens; the embedding
+    # model's own context is 2048. The supervisor passes these as -c, -b and -ub (see `embed_server_args`).
+    ctx_size: int = 2048
+    batch_size: int = 2048
 
     @property
     def base_url(self) -> str:

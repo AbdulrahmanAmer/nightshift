@@ -8,7 +8,7 @@ from collections.abc import Sequence
 from difflib import SequenceMatcher
 from typing import Any
 
-from ns_common.embed_client import to_blob
+from ns_common.embed_client import embed_window, to_blob
 from ns_common.errors import NsError
 from ns_common.models import (
     Plan,
@@ -57,7 +57,6 @@ MASTER_STAGES = [
     "visual_plan_long",
     "seo_shorts",
 ]
-EMBED_CHARS = 1500  # the embedding model sees the opening of the master only
 HOOK_MAX_WORDS = 12
 CLOSING_MAX_WORDS = 15
 SIZE_TOLERANCE = 0.2
@@ -335,7 +334,7 @@ class ContinuityStage:
         total_words = sum(c.word_count for c in built)
         if total_words < plan.target_words * 0.8:
             ctx.log.warn("story_short", words=total_words, target=plan.target_words, job_id=ctx.job_id)
-        vec = ctx.services.embed.embed([full_text[:EMBED_CHARS]])[0]
+        vec = ctx.services.embed.embed([embed_window(full_text)])[0]
         critic_avg = float(ctx.read_json("critic.json")["critic_avg"])
         ctx.db.execute(
             "insert or replace into stories(job_id, channel, format, working_title, text, word_count, "

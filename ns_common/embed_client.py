@@ -12,6 +12,26 @@ from ns_common.errors import NsError
 from ns_common.textstats import normalize_tokens
 
 
+#: Longest text the studio embeds in one input: the opening of a story, as `ContinuityStage` stores it.
+EMBED_CHARS = 1500
+#: llama-server rejects an input longer than its physical batch (512 tokens by default) with HTTP 500.
+MAX_EMBED_TOKENS = 512
+
+
+def approx_tokens(text: str) -> int:
+    """Conservative token estimate for an embedding model: three characters per token."""
+    return -(-len(text) // 3)
+
+
+def embed_window(text: str, limit: int = EMBED_CHARS) -> str:
+    """The first `limit` characters of `text`, cut back to a word boundary; short texts are unchanged."""
+    if len(text) <= limit:
+        return text
+    cut = text[:limit]
+    space = cut.rfind(" ")
+    return cut[:space] if space > limit // 2 else cut
+
+
 class Embed(Protocol):
     def embed(self, texts: list[str]) -> list[list[float]]: ...
 
@@ -55,8 +75,11 @@ class EmbedClient:
 
 
 class FakeEmbed:
-    def __init__(self, dim: int = 256) -> None:
+    """Hashed bag-of-words vectors. Like llama-server it refuses an input over `max_tokens` (estimate)."""
+
+    def __init__(self, dim: int = 256, *, max_tokens: int = MAX_EMBED_TOKENS) -> None:
         self.dim = dim
+        self.max_tokens = max_tokens
 
     def _one(self, text: str) -> list[float]:
         v = [0.0] * self.dim
@@ -69,6 +92,11 @@ class FakeEmbed:
         return [x / n for x in v]
 
     def embed(self, texts: list[str]) -> list[list[float]]:
+        for t in texts:
+            if approx_tokens(t) > self.max_tokens:
+                raise NsError(
+                    "NS-E301", f"embed: input is too large to process ({approx_tokens(t)} tokens estimated)"
+                )
         return [self._one(t) for t in texts]
 
     def health(self) -> bool:

@@ -439,3 +439,13 @@ Format per entry:
 - **Other new interfaces (not contracts, listed for reviewers):** supervisor `POST /run_finished` (additive route, gap 25); `config/pending_voice.json` written by installer step `s07_configs` and read by `ns_studio.voice_setup` (plain JSON, keys `channel, mode, name, description | ref_audio_path, ref_text, rights_confirmed`); `config/update_check.json` (weekly check state).
 - **Why:** each is the smallest place the fix could live; the first two keep the setup, the spec and the code in agreement, the third lets the studio show the re-create hint.
 - **Status:** applied on `feat/release-gaps-engine`.
+
+## CR-STUDIO-1: embed server batch size and embed input window (clean-clone review, studio row 2)
+- **From:** studio review builder (`feat/release-review-studio`)
+- **Change (applied, all on a `release-*` branch):**
+  1. `ns_common.models.EmbedCfg` gains `ctx_size` and `batch_size` (both default 2048); `contracts/schemas/runtime.schema.json` updated by hand to equal `model_json_schema()`.
+  2. `ns_common.config.embed_server_args(cfg)` returns `["-c", ctx, "-b", batch, "-ub", batch]`.
+  3. `ns_common.embed_client`: `EMBED_CHARS` (1500), `embed_window(text)`, `approx_tokens(text)` and `FakeEmbed(max_tokens=512)`, which raises `NS-E301` for an input over the estimate, as `llama-server` does with its default `-ub 512`.
+- **Why:** `SelfSimilarity` embedded a whole master (2,000 to 3,500 tokens) and the embed server answered HTTP 500 "input is too large to process", failing every `master_first` job at `policy_text`. The studio now embeds the 1,500-character opening everywhere (the same input `ContinuityStage` stores), and the fake rejects longer input so the next regression is caught in CI.
+- **Open for the runtime builder (A2):** `ns_supervisor/services.py` `_embed()` must append `*embed_server_args(cfg)` to the `llama-server --embeddings` command (one line; not edited here by instruction). Until then the server keeps `-ub 512`, which the 1,500-character window fits for English text (about 400 tokens).
+- **Status:** applied on `feat/release-review-studio` (the supervisor line is open).

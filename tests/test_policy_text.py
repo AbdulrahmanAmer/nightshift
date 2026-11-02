@@ -215,3 +215,14 @@ def test_text_checks_order_and_names():
 def test_nserror_codes_resolve():
     for code in POLICY_CODES:
         assert NsError(code).definition.message
+
+
+def test_self_similarity_embeds_only_the_opening_window(tmp_home: Path):
+    """Review row 2: a whole master (about 9,000 characters) made the embed server answer HTTP 500."""
+    ctx = make_ctx(tmp_home, fake={"embed"})  # FakeEmbed refuses inputs over 512 tokens, like llama-server
+    master = " ".join(f"Chapter sentence number {i} walks down the dark corridor." for i in range(200))
+    assert len(master) > 9000
+    ctx.write_json("story.json", {"chapters": [{"n": 1, "text": master}]})
+    _insert_story(ctx, "other-20261001-aaaa", "after-dark", master[:1500])
+    res = tc.SelfSimilarity(skip_when_fake=False).run(ctx)  # before the fix: NsError NS-E301
+    assert not res.passed and "other-20261001-aaaa" in res.detail

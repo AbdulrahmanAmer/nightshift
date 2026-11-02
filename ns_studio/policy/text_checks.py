@@ -7,7 +7,7 @@ import re
 from collections.abc import Callable
 from typing import Any
 
-from ns_common.embed_client import cosine, from_blob
+from ns_common.embed_client import cosine, embed_window, from_blob
 from ns_common.llm_client import FakeLlm
 from ns_common.models import PolicyCheck
 from ns_common.paths import Paths
@@ -199,7 +199,7 @@ class SelfSimilarity(Check):
         text = story_text(ctx)
         if not text.strip():
             return ok("no story text")
-        vec = ctx.services.embed.embed([text])[0]
+        vec = ctx.services.embed.embed([embed_window(text)])[0]  # the opening, as the stored vectors are
         rows = ctx.db.query(
             "select job_id, channel, embedding from stories where job_id != ? and embedding is not null",
             (ctx.job_id,),

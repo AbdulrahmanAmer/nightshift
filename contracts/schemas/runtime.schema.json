@@ -17,6 +17,16 @@
           "default": "",
           "title": "Model Path",
           "type": "string"
+        },
+        "ctx_size": {
+          "default": 2048,
+          "title": "Ctx Size",
+          "type": "integer"
+        },
+        "batch_size": {
+          "default": 2048,
+          "title": "Batch Size",
+          "type": "integer"
         }
       },
       "title": "EmbedCfg",
