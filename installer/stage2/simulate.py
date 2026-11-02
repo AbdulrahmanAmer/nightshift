@@ -168,6 +168,8 @@ def simulated_fetch(
         item = by_url.get(url)
         if item is not None and item.kind == "zip":
             body = _zip_with(item.expect)
+        elif item is not None and item.kind == "nupkg":
+            body = _zip_with([candidates[0] for _, candidates in item.members])
         else:
             body = b"nightshift-simulated:" + dest.name.encode()
         dest.parent.mkdir(parents=True, exist_ok=True)

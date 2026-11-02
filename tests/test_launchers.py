@@ -8,6 +8,7 @@ LAUNCHERS = Path(__file__).resolve().parents[1] / "launchers"
 EXPECTED = {
     "_common.ps1",
     "nightshift-dashboard.ps1",
+    "nightshift-host.ps1",
     "nightshift-studio.ps1",
     "open-outbox.ps1",
     "stop-all.ps1",
@@ -28,10 +29,16 @@ def test_all_launchers_exist() -> None:
 def test_script_hygiene(script: Path) -> None:
     raw = script.read_bytes()
     raw.decode("ascii")  # ASCII only (also guards against a BOM)
-    lines = [ln.strip() for ln in raw.decode("ascii").splitlines() if ln.strip()]
-    assert lines[0] == "Set-StrictMode -Version Latest"
-    assert lines[1] == "$ErrorActionPreference = 'Stop'"
     text = raw.decode("ascii")
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    if script.name == "nightshift-host.ps1":
+        # A script with a param() block must start with it; the two guard lines follow the block.
+        start = lines.index("Set-StrictMode -Version Latest")
+        assert lines[start + 1] == "$ErrorActionPreference = 'Stop'"
+        assert "[CmdletBinding()]" in lines[:start] and "param(" in lines[:start]
+    else:
+        assert lines[0] == "Set-StrictMode -Version Latest"
+        assert lines[1] == "$ErrorActionPreference = 'Stop'"
     assert "Invoke-Expression" not in text and "iex " not in text.lower()
     assert "ExecutionPolicy" not in text and "Bypass" not in text
 
@@ -62,6 +69,30 @@ def test_dashboard_launcher_opens_port_8100_after_waiting_for_the_engine() -> No
     common = read("_common.ps1")
     assert "-WindowStyle $style" in common and "'Minimized'" in common and "ns_supervisor.app" in common
     assert "/status" in common
+
+
+def test_dashboard_launcher_tries_the_webview2_host_before_the_browser_fallback() -> None:
+    text = read("nightshift-dashboard.ps1")
+    assert "nightshift-host.ps1" in text and "-Url $url" in text
+    assert text.index("Wait-NsSupervisor") < text.index("nightshift-host.ps1") < text.index("--app=$url")
+    assert "-ne 3" in text                      # exit code 3 = WebView2 unavailable: fall through
+
+
+def test_host_script_follows_the_app_host_protocol() -> None:
+    text = read("nightshift-host.ps1")
+    for needle in (
+        "{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}", "WOW6432Node", "HKCU:", "bin\\webview2", "state\\webview2",
+        "config\\window.json", "run\\apphost.json", "Global\\Nightshift.AppHost", "#15131d",
+        "CaptionHeight = 0", "ResizeBorderThickness = New-Object System.Windows.Thickness 6",
+        "GlassFrameThickness = New-Object System.Windows.Thickness 0", "UseAeroCaptionButtons = $false",
+        "WindowStyle]::None", "ResizeMode]::CanResize", "$MinWidth = 1024", "$MinHeight = 640",
+        "$CloseGraceMs = 1500",
+        "'minimize'", "'toggle-maximize'", "'drag-start'", "'close'", "'open-external'",
+        "'close-ack'", "'ready'",
+        "close-requested", "window-state", "maximized =", "WebMessageReceived", "exit 3",
+    ):
+        assert needle in text, needle
+    assert "$uri.Scheme -in @('http', 'https')" in text      # open-external is http(s) only
 
 
 def test_code_launcher_acquires_as_opencode_and_releases_in_finally() -> None:
