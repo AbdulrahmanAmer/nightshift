@@ -54,16 +54,23 @@ def wav_seconds(path: Path) -> float:
         return w.getnframes() / w.getframerate()
 
 
+_SERVICE_CODES = ("NS-E310", "NS-E311", "NS-E315")
+
+
 def _raise_voice_mismatch(r: httpx.Response) -> None:
-    """Keep `NS-E311` (a stored voice made by another TTS engine) when the service answers with it."""
+    """Keep the TTS code the service answered with.
+
+    `NS-E310` synthesis failed, `NS-E311` a voice of another engine or missing files, `NS-E315` a voice could
+    not be built. Anything else is raised by the caller.
+    """
     if r.status_code < 400:
         return
     try:
         body = r.json()
     except ValueError:
         return
-    if isinstance(body, dict) and body.get("error") == "NS-E311":
-        raise NsError("NS-E311", str(body.get("detail", "")))
+    if isinstance(body, dict) and body.get("error") in _SERVICE_CODES:
+        raise NsError(str(body["error"]), str(body.get("detail", "")))
 
 
 class TtsClient:
@@ -87,7 +94,7 @@ class TtsClient:
             _raise_voice_mismatch(r)
             r.raise_for_status()
         except httpx.HTTPError as e:
-            raise NsError("NS-E301", f"tts: {e}") from e
+            raise NsError("NS-E310", f"tts: {e}") from e
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_bytes(r.content)
         return wav_seconds(out_path)
@@ -106,7 +113,7 @@ class TtsClient:
             _raise_voice_mismatch(r)
             r.raise_for_status()
         except httpx.HTTPError as e:
-            raise NsError("NS-E301", f"tts batch: {e}") from e
+            raise NsError("NS-E310", f"tts batch: {e}") from e
         return [TtsFile(f["id"], Path(f["path"]), float(f["seconds"])) for f in r.json()["files"]]
 
     def voices(self) -> list[dict]:
@@ -115,7 +122,7 @@ class TtsClient:
             r.raise_for_status()
             return list(r.json())
         except httpx.HTTPError as e:
-            raise NsError("NS-E301", f"tts voices: {e}") from e
+            raise NsError("NS-E310", f"tts voices: {e}") from e
 
     def health(self) -> bool:
         try:

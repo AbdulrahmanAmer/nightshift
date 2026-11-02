@@ -88,6 +88,30 @@ def test_tts_and_dashboard(tmp_path: Path) -> None:
     assert dash.port == 8100 and dash.gpu is False and dash.persistent is True
 
 
+def test_pytorch_fallback_starts_with_the_tts_venv_python(tmp_path: Path) -> None:
+    """Review row 3: torch and qwen_tts live in the tts venv, not in the supervisor venv."""
+    paths = _paths(tmp_path)
+    sup = paths.venvs / "supervisor" / "Scripts" / "python.exe"
+    tts_py = paths.venvs / "tts" / "Scripts" / "python.exe"
+    for exe in (sup, tts_py):
+        exe.parent.mkdir(parents=True)
+        exe.write_text("", encoding="utf-8")
+    reference = _rt().model_copy(update={"tts": _rt().tts.model_copy(update={"engine": "reference"})})
+    svc = services.build_service(reference, paths, "tts")
+    assert svc.cmd == [str(tts_py), "-m", "ns_tts.server", "--port", "8091"]
+    for engine in ("qwentts", "faster"):  # the qwentts engine needs no torch: supervisor venv
+        rt = _rt().model_copy(update={"tts": _rt().tts.model_copy(update={"engine": engine})})
+        assert services.build_service(rt, paths, "tts").cmd[0] == str(sup)
+    # the dashboard always uses the supervisor venv
+    assert services.build_service(reference, paths, "dashboard").cmd[0] == str(sup)
+
+
+def test_pytorch_fallback_without_a_tts_venv_falls_back_to_the_running_python(tmp_path: Path) -> None:
+    reference = _rt().model_copy(update={"tts": _rt().tts.model_copy(update={"engine": "reference"})})
+    cmd = services.build_service(reference, _paths(tmp_path), "tts").cmd
+    assert cmd[0] == services.sys.executable
+
+
 def test_venv_python_prefers_supervisor_venv(tmp_path: Path) -> None:
     paths = _paths(tmp_path)
     exe = paths.venvs / "supervisor" / "Scripts" / "python.exe"
