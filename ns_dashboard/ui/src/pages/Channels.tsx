@@ -63,7 +63,7 @@ export default function Channels() {
                 <div className="grid grid-cols-1 gap-4 @container sm:grid-cols-2">
                   <StatCard tone="accent" value={Math.min(100, (week / Math.max(1, plan)) * 100)} eyebrow="This week" title={`${week} of ${plan} made`} caption={`${pending ?? 0} waiting for review`} detail={`${plan} full video${plan === 1 ? "" : "s"} a week`} />
                   {st.qc_pass_rate != null
-                    ? <StatCard tone={st.qc_pass_rate >= (st.qc_pass_target ?? QC_TARGET) ? "success" : "danger"} value={Math.round(st.qc_pass_rate * 100)} eyebrow="Quality" title="Passed the quality check" caption={`Target ${Math.round((st.qc_pass_target ?? QC_TARGET) * 100)}%`} detail="Videos from the last 30 days" />
+                    ? <StatCard tone={st.qc_pass_rate >= (st.qc_pass_target ?? QC_TARGET) ? "success" : "danger"} value={Math.round(st.qc_pass_rate * 100)} eyebrow="Quality" title="Passed QC" caption={`Target ${Math.round((st.qc_pass_target ?? QC_TARGET) * 100)}%`} detail="Videos from the last 30 days" />
                     : <StatCard tone={(st.watched_pct ?? 0) >= RETENTION_TARGET ? "success" : "danger"} value={st.watched_pct ?? 0} eyebrow="Retention" title="Watched to the end" caption={`Target ${RETENTION_TARGET}%`} detail={delta == null ? "No trend yet" : `${delta > 0 ? "+" : ""}${delta} pts vs 14 days ago`} />}
                 </div>
                 <div>

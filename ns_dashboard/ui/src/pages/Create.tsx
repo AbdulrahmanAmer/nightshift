@@ -55,7 +55,7 @@ export default function Create() {
   const [rights, setRights] = useState(false);
   const [upload, setUpload] = useState<number | null>(null);
   // When: "now" sends schedule_at null; "later" sends the picked local time as an ISO instant (UTC, with Z).
-  const [whenMode, setWhenMode] = useState<"now" | "later">("now"); const [dayOff, setDayOff] = useState(0); const [time, setTime] = useState("03:00");
+  const [whenMode, setWhenMode] = useState<"now" | "later">("now"); const [dayOff, setDayOff] = useState(() => (new Date().getHours() === 23 ? 1 : 0)); const [time, setTime] = useState(nextHour);
   const pickedAt = whenMode === "later" ? localTime(dayOff, time) : null;
   const pastPick = whenMode === "later" && (!pickedAt || pickedAt.getTime() <= Date.now() + 60_000);
   const scheduleIso = pickedAt && !pastPick ? pickedAt.toISOString() : null;
@@ -252,6 +252,9 @@ function VoiceStep({ channel }: { channel?: ChannelSummary }) {
   );
 }
 
+/** Default for the time box: the next full hour, as "HH:MM" (a time that has not passed yet today). */
+const nextHour = () => { const d = new Date(); d.setHours(d.getHours() + 1, 0, 0, 0); return `${String(d.getHours()).padStart(2, "0")}:00`; };
+
 /** The picked day (0 = today) and "HH:MM" as a local Date; null while the time is empty. The ISO string sent to the API is its UTC instant. */
 function localTime(dayOff: number, time: string): Date | null {
   const m = /^(\d{1,2}):(\d{2})$/.exec(time); if (!m) return null;
@@ -304,14 +307,15 @@ function Stepper({ value, onChange, min, max, label, suffix }: { value: number; 
 
 function JobRow({ j, channelName, onCancel }: { j: Job; channelName: (s?: string) => string; onCancel: (id: string) => void }) {
   const stages = j.kind === "clip" ? CLIP_STAGES : RUN_STAGES; const cur = stages.indexOf(j.stage || "");
+  const held = j.status === "queued" && !!j.schedule_at && new Date(j.schedule_at).getTime() > Date.now();
   return (
     <li>
       <NotificationItem state="raised" title={jobTitle(j, channelName)}
         subtitle={<span className="text-ds-accent-ink">{j.status === "queued" && j.schedule_at && new Date(j.schedule_at).getTime() > Date.now() ? `Scheduled for ${fmtWhen(j.schedule_at)}` : j.status === "queued" ? "Waiting for the engine" : stageWords(j.stage)}<span className="text-ds-muted">{j.step && j.steps ? `, step ${j.step} of ${j.steps}` : ""}</span></span>}>
-        <ProgressBar value={j.progress ?? 0} label="Job progress" />
-        <ol className="mt-3 flex flex-wrap gap-x-3 gap-y-1">
+        {!held && <ProgressBar value={j.progress ?? 0} label="Job progress" />}
+        {!held && <ol className="mt-3 flex flex-wrap gap-x-3 gap-y-1">
           {stages.map((s, i) => <li key={s} className={cx("flex items-center gap-1 text-ds-2xs", i < cur ? "text-ds-text-2" : i === cur ? "font-semibold text-ds-text" : "text-ds-muted")}>{i < cur ? <Icon name="check" size={12} className="text-ds-success-ink" /> : <span aria-hidden className={cx("size-1.5 rounded-full", i === cur ? "bg-ds-accent" : "bg-ds-border")} />}{stageWords(s)}</li>)}
-        </ol>
+        </ol>}
         <Button size="sm" variant="ghost" className="mt-2 -ml-2" onClick={() => onCancel(j.job_id)}>Cancel</Button>
       </NotificationItem>
     </li>
