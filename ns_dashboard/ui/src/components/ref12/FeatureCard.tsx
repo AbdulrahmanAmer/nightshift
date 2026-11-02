@@ -1,18 +1,21 @@
 import type { ReactNode } from "react";
 import { cx } from "../../ui/kit";
 
-/** FeatureCard: raised square tile with a line-art illustration, a 15 px title and a 12 px faint subtitle.
- *  24 px radius, 16 px padding, raised shadow; lifts 2 px on hover. Rendered as a link or a button. */
-export function FeatureCard({ title, subtitle, illustration, href, onClick, className }: {
-  title: string; subtitle?: string; illustration: ReactNode; href?: string; onClick?: () => void; className?: string;
-}) {
+/** FeatureCard (Planify): raised tile (elevation 2, radius xl, padding 16/20) with a spot illustration
+ *  (max 120 px wide) over an md/600 title and a 2-line 2xs muted description. As a link or button it lifts on hover. */
+export function FeatureCard({ illustration, title, description, href, onClick, className }: { illustration: ReactNode; title: string; description?: string; href?: string; onClick?: () => void; className?: string }) {
+  const cls = cx(
+    "ds-focus flex min-w-0 flex-col rounded-ds-xl bg-ds-surface px-5 py-4 text-left text-ds-text no-underline shadow-ds-2 transition-[box-shadow,transform] duration-200 ease-ds-out",
+    (href || onClick) && "cursor-pointer hover:-translate-y-0.5", className,
+  );
   const body = (
     <>
-      <span aria-hidden className="flex min-h-0 flex-1 items-center justify-center [&>svg]:h-full [&>svg]:max-h-[108px] [&>svg]:w-auto">{illustration}</span>
-      <span className="mt-2 block truncate text-[15px] leading-5 font-semibold text-r12-ink">{title}</span>
-      {subtitle && <span className="mt-0.5 block truncate text-[12px] leading-4 text-r12-faint">{subtitle}</span>}
+      <span aria-hidden className="grid flex-1 place-items-center px-4 pt-2 pb-3 [&>svg]:max-w-[120px]">{illustration}</span>
+      <span className="block text-ds-md leading-ds-snug font-semibold">{title}</span>
+      {description && <span className="mt-0.5 line-clamp-2 text-ds-2xs leading-ds-snug text-ds-muted">{description}</span>}
     </>
   );
-  const cls = cx("r12-focus r12-lift flex aspect-square w-full min-w-0 flex-col rounded-r12-tile bg-r12-card-2 p-4 text-left no-underline shadow-r12-raised", className);
-  return href ? <a href={href} className={cls}>{body}</a> : <button type="button" onClick={onClick} className={cls}>{body}</button>;
+  if (href) return <a href={href} className={cls}>{body}</a>;
+  if (onClick) return <button type="button" onClick={onClick} className={cls}>{body}</button>;
+  return <article className={cls}>{body}</article>;
 }

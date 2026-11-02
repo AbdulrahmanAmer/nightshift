@@ -1,18 +1,18 @@
 import { cx } from "../../ui/kit";
-import { TONE_BG, type Tone } from "./tokens";
+import type { Tone } from "./Badge";
 
-/** ProgressBar: "90% ▬▬▬" — 12 px semibold tabular percentage, then a 4 px track (tint-2) with a tone fill.
- *  Track width defaults to 72 px; the fill animates its transform, never its width. */
-export function ProgressBar({ value, label, tone = "accent", width = 72, showValue = true, className }: {
-  value: number; label: string; tone?: Tone; width?: number | "full"; showValue?: boolean; className?: string;
-}) {
-  const v = Math.max(0, Math.min(100, Math.round(value)));
+export const PROGRESS_FILL: Record<Tone, string> = { accent: "bg-ds-accent", success: "bg-ds-success", danger: "bg-ds-danger", neutral: "bg-ds-muted" };
+
+/** ProgressBar (Planify API): "90%" in xs/600 tabular, then a 4 px pill track (chart-track) at least 48 px wide.
+ *  The fill animates transform (scaleX), not width. */
+export function ProgressBar({ value, tone = "accent", showValue = true, label, maxTrack, className }: { value: number; tone?: Tone; showValue?: boolean; label: string; maxTrack?: number; className?: string }) {
+  const pct = Math.max(0, Math.min(100, Math.round(value)));
   return (
-    <div className={cx("flex items-center gap-2", width === "full" && "w-full", className)}>
-      {showValue && <span className="w-9 shrink-0 text-right text-[12px] leading-4 font-semibold text-r12-ink num">{v}%</span>}
-      <div role="progressbar" aria-label={label} aria-valuenow={v} aria-valuemin={0} aria-valuemax={100}
-        className={cx("h-1 overflow-hidden rounded-full bg-r12-tint-2", width === "full" && "flex-1")} style={width === "full" ? undefined : { width }}>
-        <div className={cx("h-full w-full origin-left rounded-full transition-transform duration-500 ease-[var(--ease-out)]", TONE_BG[tone])} style={{ transform: `scaleX(${v / 100})` }} />
+    <div className={cx("flex items-center gap-3", className)}>
+      {showValue && <span className="min-w-[3ch] text-ds-xs font-semibold ds-num">{pct}%</span>}
+      <div role="progressbar" aria-label={label} aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100}
+        className="relative h-1 min-w-12 flex-1 overflow-hidden rounded-full bg-ds-track" style={maxTrack ? { maxWidth: maxTrack } : undefined}>
+        <span className={cx("absolute inset-0 origin-left rounded-full transition-transform duration-200 ease-ds-out", PROGRESS_FILL[tone])} style={{ transform: `scaleX(${pct / 100})` }} />
       </div>
     </div>
   );

@@ -1,34 +1,37 @@
-import type { ReactNode } from "react";
 import { cx } from "../../ui/kit";
+import type { IconName } from "./Icon";
+import { MetaItem } from "./MetaItem";
 import { ProgressBar } from "./ProgressBar";
-import type { Tone } from "./tokens";
+import type { Tone } from "./Badge";
 
-export interface TaskCount { icon: ReactNode; value: string | number; label: string }
-export interface TaskData { id: string; name: string; when: string; metricLabel: string; metricValue: string; progress: number; progressLabel: string; tone?: Tone; counts?: TaskCount[] }
+export interface TaskMeta { icon: IconName; value: string | number; label: string }
+export interface Task { id: string; title: string; date: string; metricLabel: string; metric: string; progress: number; progressLabel: string; tone?: Tone; meta: TaskMeta[] }
 
-/** TaskRow: one row of Today tasks. 64 px tall (12/16 padding), 16 px radius.
- *  Columns (container query, at 448 px and wider): name+date | metric label+value | progress | counts.
- *  Narrower: name+date and counts on line one, metric and progress on line two.
- *  Name 14 semibold ink, date 12 muted; metric label 11 muted, value 14 semibold tabular;
- *  counts = 14 px muted icon + 12 semibold value separated by a 3 px dot. Raised = white + row shadow. */
-export function TaskRow({ task, raised, className }: { task: TaskData; raised?: boolean; className?: string }) {
+/** TaskRow (Planify layout, generic columns): grid 1.3fr / 0.8fr / 1fr / auto with 24 px gaps, radius lg,
+ *  padding 12/16/12/8. Title sm/600 over a 2xs muted date; metric 2xs muted label over sm/600 value;
+ *  ProgressBar (track max 56); meta = MetaItems split by a 4 px ink dot. Hover = hover fill;
+ *  highlighted = surface + elevation 2, pulled 8 px left. Under 448 px of row width it wraps to two lines. */
+export function TaskRow({ task, highlighted, onSelect }: { task: Task; highlighted?: boolean; onSelect?: (id: string) => void }) {
   return (
-    <li className={cx("@container rounded-r12-row transition-[background-color,box-shadow] duration-150 hover:bg-r12-card hover:shadow-r12-row", raised && "bg-r12-card shadow-r12-row", className)}>
-      <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-4 gap-y-2 px-4 py-3 @md:grid-cols-[minmax(0,1.35fr)_minmax(0,0.9fr)_minmax(0,1.1fr)_auto]">
-        <div className="min-w-0">
-          <p className="truncate text-[14px] leading-5 font-semibold text-r12-ink">{task.name}</p>
-          <p className="truncate text-[12px] leading-4 text-r12-muted num">{task.when}</p>
+    <li aria-current={highlighted || undefined} className="@container">
+      <div className={cx(
+        "grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-6 gap-y-2 rounded-ds-lg py-3 pr-4 pl-2 transition-[background-color,box-shadow] duration-200 ease-ds-out @md:grid-cols-[minmax(120px,1.3fr)_minmax(70px,0.8fr)_minmax(90px,1fr)_auto]",
+        highlighted ? "-ml-2 bg-ds-surface pl-4 shadow-ds-2" : "hover:bg-ds-hover",
+      )}>
+        <div className="flex min-w-0 flex-col gap-0.5">
+          <button type="button" onClick={() => onSelect?.(task.id)} className="ds-focus truncate rounded-ds-xs text-left text-ds-sm font-semibold">{task.title}</button>
+          <span className="truncate text-ds-2xs text-ds-muted ds-num">{task.date}</span>
         </div>
-        <div className="order-3 min-w-0 @md:order-none">
-          <p className="text-[11px] leading-4 text-r12-muted">{task.metricLabel}</p>
-          <p className="text-[14px] leading-5 font-semibold text-r12-ink num">{task.metricValue}</p>
+        <div className="order-3 flex min-w-0 flex-col gap-0.5 @md:order-none">
+          <span className="text-ds-2xs text-ds-muted">{task.metricLabel}</span>
+          <span className="text-ds-sm font-semibold whitespace-nowrap ds-num">{task.metric}</span>
         </div>
-        <ProgressBar value={task.progress} label={task.progressLabel} tone={task.tone} className="order-4 justify-self-end @md:order-none @md:justify-self-start" />
-        <div className="order-2 flex items-center justify-end gap-2 text-[12px] font-semibold text-r12-ink @md:order-none">
-          {task.counts?.map((c, i) => (
-            <span key={c.label} className="inline-flex items-center gap-2">
-              {i > 0 && <span aria-hidden className="size-[3px] rounded-full bg-r12-ink" />}
-              <span className="inline-flex items-center gap-1 num" title={c.label}><span aria-hidden className="text-r12-muted">{c.icon}</span>{c.value}<span className="sr-only"> {c.label}</span></span>
+        <ProgressBar value={task.progress} tone={task.tone} label={task.progressLabel} maxTrack={56} className="order-4 @md:order-none" />
+        <div className="order-2 inline-flex items-center justify-end gap-2 @md:order-none">
+          {task.meta.map((m, i) => (
+            <span key={m.label} className="inline-flex items-center gap-2">
+              {i > 0 && <span aria-hidden className="size-1 rounded-full bg-ds-text" />}
+              <MetaItem icon={m.icon} className="!text-ds-text"><span>{m.value}</span><span className="sr-only"> {m.label}</span></MetaItem>
             </span>
           ))}
         </div>

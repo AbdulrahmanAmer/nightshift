@@ -1,20 +1,24 @@
-import type { ReactNode } from "react";
+import type { ElementType, HTMLAttributes } from "react";
 import { cx } from "../../ui/kit";
 
-/** Card: the white body card. 28 px radius; 24 px padding (20 px under 640 px and on compact stat cards). */
-export function Card({ children, className, pad = 24, as: As = "section", labelledBy }: { children: ReactNode; className?: string; pad?: 16 | 20 | 24; as?: "section" | "div" | "article"; labelledBy?: string }) {
-  return <As aria-labelledby={labelledBy} className={cx("r12-card min-w-0", pad === 24 ? "p-5 sm:p-6" : pad === 20 ? "p-5" : "p-4", className)}>{children}</As>;
-}
+export type Elevation = 0 | 1 | 2 | 3;
+const E: Record<Elevation, string> = { 0: "shadow-ds-0", 1: "shadow-ds-1", 2: "shadow-ds-2", 3: "shadow-ds-3 z-10" };
+const P = { none: "p-0", sm: "px-4 py-3", md: "px-5 py-4", lg: "p-6" } as const;
+const R = { lg: "rounded-ds-lg", xl: "rounded-ds-xl", "2xl": "rounded-ds-2xl" } as const;
+const TONE = { surface: "bg-ds-surface text-ds-text", sunken: "bg-ds-sunken text-ds-text", accent: "bg-ds-accent text-ds-on-accent" } as const;
 
-/** CardHeader: 20/28 semibold title with an optional inline extra (avatar stack) and a right-side action. */
-export function CardHeader({ title, id, extra, action, className, size = "md" }: { title: ReactNode; id?: string; extra?: ReactNode; action?: ReactNode; className?: string; size?: "md" | "lg" }) {
+/** Card (Planify): the base surface. elevation 0 flat · 1 resting · 2 raised (feature tiles, active row) ·
+ *  3 floating (swiped notification). padding sm 12/16 · md 16/20 · lg 24. radius lg 16 · xl 24 · 2xl 32.
+ *  interactive = lifts 2 px and steps to elevation 2 on hover. */
+export function Card({ as: Tag = "div", elevation = 1, padding = "lg", radius = "xl", tone = "surface", interactive, className, ...rest }: HTMLAttributes<HTMLElement> & {
+  as?: ElementType; elevation?: Elevation; padding?: keyof typeof P; radius?: keyof typeof R; tone?: keyof typeof TONE; interactive?: boolean;
+}) {
   return (
-    <div className={cx("flex flex-wrap items-center justify-between gap-x-3 gap-y-2", size === "lg" ? "min-h-7" : "min-h-9", className)}>
-      <div className="flex min-w-0 items-center gap-3">
-        <h2 id={id} className={cx("truncate font-semibold text-r12-ink", size === "lg" ? "text-[22px] leading-7" : "text-[20px] leading-7")}>{title}</h2>
-        {extra}
-      </div>
-      {action && <div className="flex shrink-0 flex-wrap items-center gap-1">{action}</div>}
-    </div>
+    <Tag {...rest} className={cx(
+      "relative min-w-0 transition-[box-shadow,transform] duration-200 ease-ds-out",
+      TONE[tone], tone === "accent" && elevation === 2 ? "shadow-ds-accent" : E[elevation], P[padding], R[radius],
+      interactive && "ds-focus cursor-pointer hover:-translate-y-0.5 hover:shadow-ds-2",
+      className,
+    )} />
   );
 }

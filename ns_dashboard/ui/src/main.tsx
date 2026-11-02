@@ -31,7 +31,7 @@ function Router() {
 function Root() {
   const { route } = useApp();
   const Design = DESIGN[route.name];
-  if (Design) return <Suspense fallback={<div className="h-dvh bg-r12-page" aria-busy="true" />}><Design key={route.name} /></Suspense>;
+  if (Design) return <Suspense fallback={<div className="h-dvh bg-ds-canvas" aria-busy="true" />}><Design key={route.name} /></Suspense>;
   return <Shell><Router /></Shell>;
 }
 
