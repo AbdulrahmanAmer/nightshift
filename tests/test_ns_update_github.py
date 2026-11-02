@@ -312,12 +312,14 @@ def test_a_crashing_update_check_never_hurts_the_engine(tmp_path: Path) -> None:
 
 
 def test_new_update_package_name_wins_and_the_old_one_still_works():
+    def a(name: str, **extra: Any) -> dict[str, Any]:
+        return {"name": name, "browser_download_url": f"{BASE}/v0.3.0/{name}", **extra}
+
     new = {"tag_name": "v0.3.0", "html_url": "x", "assets": [
-        {"name": "Nightshift-Setup-0.3.0.zip", "browser_download_url": f"{BASE}/v0.3.0/Nightshift-Setup-0.3.0.zip"},
-        {"name": "nightshift-app-0.3.0.zip", "browser_download_url": f"{BASE}/v0.3.0/nightshift-app-0.3.0.zip"},
-        {"name": "Nightshift-Update-0.3.0.zip", "browser_download_url": f"{BASE}/v0.3.0/Nightshift-Update-0.3.0.zip",
-         "digest": f"sha256:{DIGEST}"},
-        {"name": "Nightshift-Update-0.3.0.zip.sha256", "browser_download_url": f"{BASE}/v0.3.0/Nightshift-Update-0.3.0.zip.sha256"},
+        a("Nightshift-Setup-0.3.0.zip"),
+        a("nightshift-app-0.3.0.zip"),
+        a("Nightshift-Update-0.3.0.zip", digest=f"sha256:{DIGEST}"),
+        a("Nightshift-Update-0.3.0.zip.sha256"),
     ]}
     rel = releases.parse_release(new)
     assert rel.zip_name == "Nightshift-Update-0.3.0.zip" and rel.digest == DIGEST

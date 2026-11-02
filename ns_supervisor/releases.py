@@ -1,7 +1,8 @@
 """C2 GitHub releases: `ns update --check` and `ns update --github` (spec J8, gap 9/16).
 
 The latest release of the public repository is read from the GitHub API. The update package is the release
-asset `Nightshift-Update-<version>.zip` (releases up to v0.1.1 call it `nightshift-app-<version>.zip`, still accepted); it is applied only after its SHA256 matches the digest GitHub publishes
+asset `Nightshift-Update-<version>.zip` (releases up to v0.1.1 call it `nightshift-app-<version>.zip`,
+still accepted); it is applied only after its SHA256 matches the digest GitHub publishes
 for that asset (`digest: "sha256:..."`) or, failing that, the `.sha256` file attached to the release (the same
 `<hash>  <name>` format as `manifest.json` pins and `make_bundle.ps1`). A package with no digest to compare
 is refused (`NS-E701`). Only https URLs on GitHub hosts are followed. No other network use, no credentials.
@@ -78,7 +79,7 @@ def parse_release(data: dict[str, Any]) -> Release:
     except ValueError as e:
         raise NsError("NS-E701", f"the latest release has no version tag ({tag!r})") from e
     version = tag.lstrip("v")
-    # new name first, then the v0.1.0/v0.1.1 name; the sidecar is the checksum file of the picked zip, else any known one
+    # new name first, then the v0.1.0/v0.1.1 name; the sidecar is the picked zip's .sha256, else any known one
     zip_names = [f"Nightshift-Update-{version}.zip".lower(), f"nightshift-app-{version}.zip".lower()]
     want_sums = {f"{n}.sha256" for n in zip_names} | {
         f"nightshift-setup-{version}.zip.sha256",

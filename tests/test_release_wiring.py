@@ -52,7 +52,8 @@ def test_changelog_lists_the_installer_wizard_as_shipped():
 def test_the_qwentts_pin_is_still_open_or_a_real_release_asset():
     pin = json.loads(read("manifest.json"))["bins"].get("qwentts")
     if pin is not None:
-        assert "/releases/download/v" in pin["url"] and pin["url"].endswith(("qwentts-win-cuda-x64.zip", "Nightshift-VoiceEngine-win-cuda-x64.zip"))
+        names = ("qwentts-win-cuda-x64.zip", "Nightshift-VoiceEngine-win-cuda-x64.zip")
+        assert "/releases/download/v" in pin["url"] and pin["url"].endswith(names)
         assert re.fullmatch(r"[0-9a-f]{64}", pin["sha256"])
 
 
@@ -60,7 +61,9 @@ def test_repo_settings_describe_the_tag_to_pin_loop():
     text = read("docs/REPO_SETTINGS.md")
     for needle in (
         "git tag v0.1.0", "build-qwentts", "bins.qwentts", "qwentts-win-cuda-x64.zip.sha256",
-        "Nightshift-VoiceEngine-win-cuda-x64.zip", "Nightshift-Setup-<ver>.zip", "Nightshift-Update-<ver>.zip",
+        "Nightshift-VoiceEngine-win-cuda-x64.zip",
+        "Nightshift-Setup-<ver>.zip",
+        "Nightshift-Update-<ver>.zip",
     ):
         assert needle in text, needle
 
@@ -79,7 +82,7 @@ def test_the_0_1_1_changelog_covers_the_re_review_prs_and_unreleased_is_empty():
     text = read("CHANGELOG.md")
     assert re.search(r"^## \[0\.1\.1\] - 2026-11-03\s*$", text, re.MULTILINE)
     unreleased = text[text.index("## [Unreleased]") : text.index("## [0.1.1]")]
-    assert "Release asset names" in unreleased  # the entries since 0.1.1; a release moves them under its version
+    assert "Release asset names" in unreleased  # entries since 0.1.1; a release moves them under its version
     # release.yml builds the notes from this body, the same way: heading to the next heading
     body = re.search(r"(?ms)^## \[0\.1\.1\][^\r\n]*\r?\n(?P<body>.*?)(?=^## \[|\Z)", text)
     assert body is not None

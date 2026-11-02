@@ -200,7 +200,7 @@ export default function Settings() {
                 : <Button variant="soft" leadingIcon="github" onClick={check} disabled={checking}>{checking ? "Checking" : "Check now"}</Button>}
             </SettingRow>
             {updateNote && <p role="alert" className="mx-1 mb-2 rounded-ds-md bg-ds-danger-soft px-3 py-2 text-ds-sm">{updateNote}</p>}
-            <SettingRow title="From a file" sub="The Nightshift-Update zip you were given, for a PC without internet">
+            <SettingRow title="From a file" sub="The nightshift-app zip you were given, for a PC without internet">
               <label className="ds-focus inline-flex h-9 cursor-pointer items-center gap-2 rounded-ds-md bg-ds-accent-soft px-4 text-ds-sm font-semibold shadow-ds-control hover:bg-ds-soft-hover focus-within:shadow-ds-focus">
                 <Icon name="archive" size={15} />
                 Choose zip<input type="file" accept=".zip" className="sr-only" onChange={(e) => { if (e.target.files?.[0]) toast("Run the Update shortcut on your desktop and pick this zip. Installing from the browser is not available yet", "warn"); e.target.value = ""; }} />
