@@ -154,7 +154,7 @@ class RealBackupAdapter:
         return Path(m.group(1).strip())
 
     def restore(self, zip_path: Path) -> list[str]:
-        """`ns restore <zip>`: puts the settings back (what it replaces is kept in data\backup\pre-restore-*)."""
+        """`ns restore <zip>`: puts the settings back (what it replaces is kept in data/backup/pre-restore-*)."""
         from ns_dashboard.errors import ApiError
 
         code, out, err = self.runner(ns_command(self.paths, "restore", str(zip_path)), 600)

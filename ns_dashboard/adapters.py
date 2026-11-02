@@ -638,7 +638,7 @@ class RealScheduleAdapter:
         self.paths = paths
 
     def apply(self, run_time: str) -> dict[str, Any]:
-        """Register the task at `run_time`; when Windows refuses, the time stays saved and the note says why."""
+        """Register the task at `run_time`; if Windows refuses, the time stays saved and the note says why."""
         from ns_supervisor.control import app_path
         from ns_supervisor.schedule import ScheduleError, install
 

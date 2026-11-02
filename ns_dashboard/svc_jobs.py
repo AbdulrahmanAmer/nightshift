@@ -52,7 +52,8 @@ def build_handlers(adapters: Adapters) -> dict[str, Handler]:
         opts["rerun"] = bool(p.get("rerun"))
         if p.get("studio_job_id"):  # "Re-run with another template": the later stages of an earlier clip job
             ids = adapters.clip.rerun(ctl, str(p["studio_job_id"]), opts)
-            return {"output_ids": ids, "source_id": p.get("source_id"), "rerun_of": p.get("rerun_of"), **ctl.extras}
+            done = {"output_ids": ids, "source_id": p.get("source_id"), "rerun_of": p.get("rerun_of")}
+            return {**done, **ctl.extras}
         if p.get("url"):  # download first (stage "download"), then run the usual pipeline on the file
             source = adapters.clip.fetch_url(ctl, str(p["url"]), str(p["source_id"]))
         else:
