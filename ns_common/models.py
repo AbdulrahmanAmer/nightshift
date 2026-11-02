@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import json
 import sys
+from datetime import datetime
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -196,6 +197,10 @@ class Answers(Strict):
     models_source: str | None = None
     llm_tier: Literal["small", "balanced", "best"] = "small"
     restore_from: str | None = None
+    # installer UI (CR-C1-UI-1): greeting name, default dashboard theme, where the models come from
+    owner_name: str | None = Field(default=None, max_length=40)
+    ui_theme: Literal["light", "dark", "soft"] = "dark"
+    models_source_kind: Literal["internet", "folder", "drive_zip"] = "internet"
 
 
 # ---------- manifest ----------
@@ -216,6 +221,7 @@ class BinPin(Strict):
     version: str
     url: str
     sha256: str | None = None
+    optional: bool = False           # only optional pins may carry sha256 "TBD-release" (CR-C1-UI-3)
 
 
 class ProfileModels(Strict):
@@ -691,6 +697,118 @@ class Format(Strict):
     sheet: FormatSheet | None = None
 
 
+# ---------- dashboard API contracts (CR-C3-UI-*) ----------
+# Shapes of what `ns_dashboard` sends and receives. Comments, not docstrings: pydantic would put a
+# docstring in the generated schema.
+
+
+class GpuStatus(Strict):
+    name: str
+    load_pct: float | None = None        # 0..100, None when the driver does not report it
+    vram_used_mb: int | None = None
+    vram_total_mb: int | None = None
+    temp_c: float | None = None
+
+
+class StatusEngine(Strict):
+    state: Literal["idle", "starting", "loading", "ready", "working", "error"] = "idle"
+    detail: str | None = None
+    elapsed_s: int | None = None
+    vram_owner: str | None = None
+    reachable: bool = True
+    service: str | None = None
+    draining: bool = False
+    progress: float | None = None
+    step: int | None = None
+    steps: int | None = None
+    vram_gb: float | None = None         # kept for the status strip; `Status.gpu` has the live numbers
+
+
+class StatusService(Strict):
+    state: str = "stopped"
+    vram_mb: int | None = None
+
+
+class StatusDisk(Strict):
+    free_gb: float | None = None
+    total_gb: float | None = None
+    home: str = ""
+
+
+class StatusChannel(Strict):
+    slug: str
+    display_name: str
+    status: str
+    niche: str | None = None
+    voice: str | None = None
+    masters_per_week: int | None = None
+    publish_window: str | None = None
+    format: str | None = None
+    pending: int = 0
+    tonight: str | None = None
+
+
+class StatusLastError(Strict):
+    job_id: str
+    message: str | None = None
+    kind: str | None = None
+
+
+# `GET /api/status` and every `status` event on `GET /api/events`.
+class Status(Strict):
+    version: str | None = None
+    engine: StatusEngine
+    next_run: str | None = None
+    next_run_in_s: int | None = None
+    schedule_time: str | None = None
+    outbox: dict[str, int] = {}
+    channels: list[StatusChannel] = []
+    services: dict[str, StatusService] = {}
+    disk: StatusDisk | None = None
+    job: dict[str, Any] | None = None
+    queue: dict[str, int] = {}
+    last_run: dict[str, Any] | None = None
+    incidents: list[dict[str, Any]] = []
+    last_error: StatusLastError | None = None
+    gpu: GpuStatus | None = None         # optional live GPU readout (CR-C3-UI-4)
+
+
+# `POST /api/jobs/run`: queue a story for one channel (Create wizard, "When" step).
+class JobRunRequest(Strict):
+    channel: str
+    format: str | None = None            # None = the channel's own format
+    count: int | None = Field(default=None, ge=1, le=20)
+    schedule_at: datetime | None = None  # null = run now; a naive time is the PC's local time (CR-C3-UI-5)
+
+
+# The `stats` object of a channel in `GET /api/channels` (Channels page, Home cards).
+class ChannelStats(Strict):
+    week: int | None = None
+    watched_pct: float | None = None
+    spark: list[float] = []
+    qc_pass_rate: float | None = Field(default=None, ge=0, le=1)   # share of videos that passed QC, 0..1
+    qc_pass_target: float = Field(default=0.9, ge=0, le=1)          # the line the page draws (CR-C3-UI-6)
+
+
+# `POST /api/voices/design` (VoiceDesign) and `POST /api/voices/clone` (Base model), CR-C3-UI-7.
+class VoiceDesignRequest(Strict):
+    name: str = Field(min_length=1)          # library name of the new voice
+    description: str = Field(min_length=1)   # plain-English description of the voice
+    test_line: str = Field(min_length=1)     # sentence spoken for the preview
+
+
+class VoiceCloneRequest(Strict):
+    name: str = Field(min_length=1)
+    sample_path: str = Field(min_length=1)   # recording of the voice, already on this PC
+    consent: Literal[True]                   # the owner confirmed they may clone this voice
+    test_line: str = Field(min_length=1)
+
+
+class VoiceMakeResponse(Strict):
+    voice_id: str
+    preview_wav_path: str
+
+
 SCHEMA_MODELS: dict[str, type[BaseModel]] = {
     "channel": Channel, "runtime": Runtime, "install_state": InstallState, "answers": Answers,
     "manifest": Manifest, "idea": Idea, "parts": Part, "seo": Seo, "visual_plan": VisualBeat,
@@ -699,6 +817,9 @@ SCHEMA_MODELS: dict[str, type[BaseModel]] = {
     "plan": Plan, "story": Story, "shorts_plan": ShortsPlanItem, "seo_long": SeoLong,
     "clip_plan": ClipPlanItem, "policy_check": PolicyCheckResult, "transcript": Transcript,
     "clip_layout": ClipLayout, "clip_template": ClipTemplate, "format": Format,
+    "status": Status, "job_run_request": JobRunRequest,
+    "channel_stats": ChannelStats, "voice_design_request": VoiceDesignRequest,
+    "voice_clone_request": VoiceCloneRequest, "voice_make_response": VoiceMakeResponse,
 }
 
 

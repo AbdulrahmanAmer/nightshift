@@ -22,6 +22,11 @@
           ],
           "default": null,
           "title": "Sha256"
+        },
+        "optional": {
+          "default": false,
+          "title": "Optional",
+          "type": "boolean"
         }
       },
       "required": [

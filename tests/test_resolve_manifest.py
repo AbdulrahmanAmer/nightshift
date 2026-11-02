@@ -105,7 +105,7 @@ def _all_sha256(mf) -> list[tuple[str, str | None]]:
         for fname, sha in prof.whisper_repo.files_sha256.items():
             out.append((f"{pname}.whisper_repo.{fname}", sha))
     for name, b in mf.bins.items():
-        if b is not None:
+        if b is not None and not (b.optional and b.sha256 == "TBD-release"):
             out.append((f"bins.{name}", b.sha256))
     return out
 

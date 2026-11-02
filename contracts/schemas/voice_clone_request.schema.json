@@ -1,0 +1,33 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "name": {
+      "minLength": 1,
+      "title": "Name",
+      "type": "string"
+    },
+    "sample_path": {
+      "minLength": 1,
+      "title": "Sample Path",
+      "type": "string"
+    },
+    "consent": {
+      "const": true,
+      "title": "Consent",
+      "type": "boolean"
+    },
+    "test_line": {
+      "minLength": 1,
+      "title": "Test Line",
+      "type": "string"
+    }
+  },
+  "required": [
+    "name",
+    "sample_path",
+    "consent",
+    "test_line"
+  ],
+  "title": "VoiceCloneRequest",
+  "type": "object"
+}

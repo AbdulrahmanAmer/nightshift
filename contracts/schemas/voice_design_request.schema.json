@@ -1,0 +1,27 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "name": {
+      "minLength": 1,
+      "title": "Name",
+      "type": "string"
+    },
+    "description": {
+      "minLength": 1,
+      "title": "Description",
+      "type": "string"
+    },
+    "test_line": {
+      "minLength": 1,
+      "title": "Test Line",
+      "type": "string"
+    }
+  },
+  "required": [
+    "name",
+    "description",
+    "test_line"
+  ],
+  "title": "VoiceDesignRequest",
+  "type": "object"
+}
