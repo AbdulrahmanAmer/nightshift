@@ -11,7 +11,6 @@ import httpx
 from ns_common.errors import NsError
 from ns_common.textstats import normalize_tokens
 
-
 #: Longest text the studio embeds in one input: the opening of a story, as `ContinuityStage` stores it.
 EMBED_CHARS = 1500
 #: llama-server rejects an input longer than its physical batch (512 tokens by default) with HTTP 500.

@@ -318,7 +318,9 @@
       "default": {
         "host": "127.0.0.1",
         "port": 8081,
-        "model_path": ""
+        "model_path": "",
+        "ctx_size": 2048,
+        "batch_size": 2048
       }
     },
     "tts": {

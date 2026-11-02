@@ -30,7 +30,7 @@ def test_pacing_speed_scales_the_voice_and_clamps():
 @pytest.mark.parametrize("pacing", ["brisk", "standard", "measured"])
 @pytest.mark.parametrize("bucket", [35, 50, 75])
 def test_a_budgeted_short_speaks_for_its_bucket(tmp_path: Path, pacing: str, bucket: int):
-    """Before the fix every pacing spoke at the voice's own speed: brisk 50 s ran 56 s, measured ran 5 s short."""
+    """Before the fix every pacing spoke at the voice speed: brisk 50 s ran 56 s, measured ran 5 s short."""
     b = short_budget(bucket, pacing, hook_words=HOOK)
     wav = tmp_path / "s.wav"
     FakeTts().speak(" ".join(["word"] * (b.words + HOOK)), "Ryan", pacing_speed(1.0, pacing), wav)
