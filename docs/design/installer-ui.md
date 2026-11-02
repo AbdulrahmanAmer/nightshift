@@ -747,8 +747,11 @@ size and the note "will continue from {x} GB". A file with a verified `.ok` mark
 and `done`.
 
 **Pause.** The header and footer buttons switch to Resume. Active rows show `paused` and keep their
-bars, and the CountdownCard shows "Paused". Winget and uv installs cannot pause. While one runs, the
-button reads "Pause after this tool" and takes effect when the file downloads begin.
+bars, and the CountdownCard shows "Paused". Pause takes effect inside the file: the downloader checks the pause
+switch after every 64 KiB chunk, so the stream stops within one chunk (well under a second), the connection is
+closed and nothing is held open. Resume reconnects with `Range` from the bytes already in the `.part` file. Winget
+and uv installs cannot pause. While one runs, the button reads "Pause after this tool" and takes effect when the
+file downloads begin.
 
 ### 2.5 Installing
 

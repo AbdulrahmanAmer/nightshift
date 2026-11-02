@@ -27,7 +27,8 @@ from ns_common.models import HfFile, Manifest
 from ns_common.paths import Paths
 
 HF = "https://huggingface.co"
-CHUNK = 1 << 20
+CHUNK = 1 << 20                  # hashing and copying
+STREAM_CHUNK = 1 << 16           # download loop: the pause switch is checked after every 64 KiB
 ProgressFn = Callable[[int, int | None], None]
 Tier = Literal["small", "balanced", "best"]
 
@@ -152,6 +153,23 @@ def _new_client() -> httpx.Client:
 # --------------------------------------------------------------------------------------------------------
 # single file
 # --------------------------------------------------------------------------------------------------------
+def head_info(http: httpx.Client, url: str) -> tuple[int, int | None]:
+    """HEAD ``url``: ``(status, size in bytes)``; the size is None when the server does not say.
+
+    Hugging Face answers a ``resolve`` URL with a redirect whose ``x-linked-size`` header is the real file
+    size, so redirects are not followed when that header is there. Raises ``httpx.HTTPError`` when the site
+    cannot be reached. ``s03`` and the custom-model check of the setup window share this logic.
+    """
+    r = http.head(url, follow_redirects=False)
+    if r.is_redirect:
+        linked = r.headers.get("x-linked-size", "")
+        if linked.isdigit():
+            return 200, int(linked)
+        r = http.head(url, follow_redirects=True)
+    length = r.headers.get("content-length", "")
+    return r.status_code, int(length) if length.isdigit() else None
+
+
 def _fetch_once(
     http: httpx.Client,
     url: str,
@@ -162,16 +180,17 @@ def _fetch_once(
     progress: ProgressFn | None,
     size: int | None,
     chunk: int,
+    gate: threading.Event | None = None,
 ) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
     part = _part(dest)
     total = size
     try:
-        head = http.head(url)
-        if head.status_code == 404:
+        status, head_size = head_info(http, url)
+        if status == 404:
             raise make_error("NS-E105", f"{url}: HTTP 404", status=404)
-        if head.status_code < 400 and head.headers.get("content-length"):
-            total = int(head.headers["content-length"])
+        if status < 400 and head_size:
+            total = head_size
     except httpx.HTTPError:
         pass  # the GET below decides whether the site is really unreachable
 
@@ -184,7 +203,8 @@ def _fetch_once(
 
     if progress:
         progress(have, total)
-    if total is None or have < total:
+    while total is None or have < total:
+        paused = False
         headers = {"Range": f"bytes={have}-"} if have else {}
         with http.stream("GET", url, headers=headers) as r:
             if r.status_code == 404:
@@ -202,8 +222,17 @@ def _fetch_once(
                 for block in r.iter_bytes(chunk):
                     fh.write(block)
                     done += len(block)
+                    if gate is not None and not gate.is_set():
+                        paused = True       # Pause: stop after this chunk and close the connection
+                        break
                     if progress:
                         progress(done, total)
+        have = part.stat().st_size
+        if not paused or gate is None:
+            break
+        if progress:
+            progress(have, total)
+        gate.wait()                         # Resume: reconnect with Range from the bytes on disk
 
     got = part.stat().st_size
     if total is not None and got != total:
@@ -227,7 +256,7 @@ def download(
     size: int | None = None,
     retries: int = 3,
     sleep: Callable[[float], None] = time.sleep,
-    chunk: int = CHUNK,
+    chunk: int = STREAM_CHUNK,
     gate: threading.Event | None = None,
 ) -> Path:
     """Download ``url`` to ``dest`` with resume, SHA256 check and atomic rename.
@@ -235,9 +264,11 @@ def download(
     Raises NS-E109 when the hash is wrong after ``retries`` attempts and NS-E105 when the site cannot be
     reached (or answers 404, which is not retried).
 
-    ``gate`` is the setup window's pause switch (set = running, cleared = paused). It is waited on before
-    every attempt, and an attempt that failed while it was cleared does not count, so a long pause that
-    drops the connection cannot use up the retries.
+    ``gate`` is the setup window's pause switch (set = running, cleared = paused). It is checked after every
+    ``chunk`` bytes (64 KiB), so Pause takes effect inside the file: the connection is closed and, on Resume,
+    reopened with ``Range`` from the bytes on disk. It is also waited on before every attempt, and an attempt
+    that failed while it was cleared does not count, so a long pause cannot use up the retries.
+
     """
     dest = Path(dest)
     if is_verified(dest, sha256):
@@ -254,7 +285,8 @@ def download(
                 gate.wait()
             try:
                 _fetch_once(
-                    http, url, dest, sha256, resume=resume, progress=progress, size=size, chunk=chunk
+                    http, url, dest, sha256, resume=resume, progress=progress, size=size, chunk=chunk,
+                    gate=gate,
                 )
                 return dest
             except NsError as e:
@@ -650,6 +682,7 @@ def run_plan(
 
         def progress(done: int, total: int | None) -> None:
             rep.update(item.name, done, total)
+
 
         try:
             copied = False

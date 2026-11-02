@@ -1042,7 +1042,7 @@ Disk budget: models ~20 GB (Balanced) + venvs ~1.5 GB + working space ≥ 20 GB 
 | YouTube | none needed in v1 (manual upload) | — |
 
 ### 21.7 Download behaviour
-Every download: HEAD for size → stream to `<file>.part` with `Range` resume → SHA256 verify (`NS-E109`) → atomic rename. Concurrency 2 files at a time; progress bar per file and overall; a failed file retries 3 times with backoff; the step is re-runnable and skips verified files. `s03` prints the total to download and an ETA before starting and tells the operator they can close the window and re-run `INSTALL.cmd` to resume.
+Every download: HEAD for size → stream to `<file>.part` with `Range` resume → SHA256 verify (`NS-E109`) → atomic rename. Concurrency 2 files at a time; progress bar per file and overall; a failed file retries 3 times with backoff; Pause stops the stream within one 64 KiB chunk, closes the connection and resumes with `Range`; the step is re-runnable and skips verified files. `s03` prints the total to download and an ETA before starting and tells the operator they can close the window and re-run `INSTALL.cmd` to resume.
 
 ---
 
