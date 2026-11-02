@@ -35,7 +35,7 @@ const kindIcon = (k: string): IconName => (k === "long" ? "monitor" : k === "sho
 const partOfDay = () => { const h = new Date().getHours(); return h < 5 ? "Good night" : h < 12 ? "Good morning" : h < 18 ? "Good afternoon" : "Good evening"; };
 
 export default function Queue() {
-  const { route, status, refresh, channelName, go, ask } = useApp();
+  const { route, status, refresh, channelName, go, ask, ownerName } = useApp();
   const [tab, setTab] = useState<Tab>((route.query.get("tab") as Tab) || "ready");
   const list = useLoad<Output[]>(() => api.get(`/outputs?status=${STATUS[tab]}`), [tab], []);
   const [current, setCurrent] = useState<string | null>(route.query.get("id"));
@@ -54,7 +54,7 @@ export default function Queue() {
   const pick = (t: Tab) => { setTab(t); setCurrent(null); };
   const reviewDescription = (
     <>
-      {owner ? `${partOfDay()}. ` : ""}{pending ? <>{pending === 1 ? "One video is" : `${pending} videos are`} ready to review{newest && tab === "ready" ? <>, the newest made at <span className="ds-num">{fmtClock(newest)}</span></> : null}.</> : "Nothing is waiting for review."}{" "}
+      {owner && !ownerName ? `${partOfDay()}. ` : ""}{pending ? <>{pending === 1 ? "One video is" : `${pending} videos are`} ready to review{newest && tab === "ready" ? <>, the newest made at <span className="ds-num">{fmtClock(newest)}</span></> : null}.</> : "Nothing is waiting for review."}{" "}
       {status?.next_run ? <>Tonight's run starts at <span className="ds-num">{fmtClock(status.next_run)}</span>.</> : "Automatic runs are off."}
     </>
   );
@@ -62,7 +62,7 @@ export default function Queue() {
   return (
     <div className="enter">
       <DashGrid label="Queue">
-        <Greeting as="h2" size="lg" className={cx("self-center", SPAN["2/4"])} salutation={owner || partOfDay()} question="What are we making tonight?"
+        <Greeting as="h2" size="lg" className={cx("self-center", SPAN["2/4"])} salutation={ownerName ? `${partOfDay()}, ${ownerName}` : owner || partOfDay()} question="What are we making tonight?"
           description={reviewDescription} adornment={chans.length ? <WorkspaceTokens tokens={chans.slice(0, 3).map((c) => ({ icon: /clip|stream|podcast/i.test(c.niche || "") ? "scissors" : "channels", label: c.display_name }))} /> : undefined} />
         <FeatureCard className={cx("self-stretch", SPAN["1/1"])} illustration={<StoryIllustration />} title="Write a story" description="An original story, narrated, with footage and captions" href="#/create?kind=story" />
         <FeatureCard className={cx("self-stretch", SPAN["1/1"])} illustration={<ClipsIllustration />} title="Cut clips" description="Vertical clips from your own stream or podcast" href="#/create?kind=clips" />

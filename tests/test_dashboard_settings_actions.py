@@ -361,3 +361,29 @@ def test_log_components_feed_the_viewer_filter(tmp_home: Path):
     assert only and {line["component"] for line in only} == {"studio"}
     assert any(line["event"] == "studio_probe" for line in only)
     assert client.get("/api/logs/tail", params={"component": "supervisor"}).json()[-1]["event"] == "supervisor_probe"
+
+
+# ---------------------------------------------------------------- gap 30: owner_name and the theme from ui_prefs.json
+
+
+def write_prefs(home: Path, text: str) -> None:
+    f = home / "config" / "ui_prefs.json"
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text(text, encoding="utf-8")
+
+
+def test_settings_carry_the_setup_windows_name_and_theme(tmp_home: Path):
+    client, _state = make_env(tmp_home)
+    first = client.get("/api/settings").json()
+    assert first["owner_name"] is None and first["ui_theme"] is None  # no file yet
+    write_prefs(tmp_home, '{"owner_name": "  Sam   Rivers ", "theme": "soft"}')
+    got = client.get("/api/settings").json()
+    assert got["owner_name"] == "Sam Rivers" and got["ui_theme"] == "soft"
+    write_prefs(tmp_home, '{"owner_name": "", "theme": "neon"}')
+    bad = client.get("/api/settings").json()
+    assert bad["owner_name"] is None and bad["ui_theme"] is None
+    write_prefs(tmp_home, "{not json")
+    assert client.get("/api/settings").json()["owner_name"] is None
+    write_prefs(tmp_home, '{"owner_name": "' + "x" * 100 + '", "theme": "dark"}')
+    long = client.get("/api/settings").json()
+    assert len(long["owner_name"]) == 40 and long["ui_theme"] == "dark"

@@ -17,7 +17,7 @@ from ns_dashboard import logs_tail
 from ns_dashboard.adapters import KEY_NAMES
 from ns_dashboard.common import now_iso
 from ns_dashboard.errors import AdapterUnavailable, ApiError
-from ns_dashboard.state import AppState, load_dashboard_settings, save_dashboard_settings
+from ns_dashboard.state import AppState, load_dashboard_settings, load_ui_prefs, save_dashboard_settings
 from ns_dashboard.svc_engine import EngineService
 from ns_dashboard.templates import load_templates
 
@@ -59,6 +59,7 @@ class SettingsService:
         runtime = self.engine.runtime_summary()
         flags = {k: v for k, v in (runtime or {}).items() if k not in ("profile", "supervisor_port")}
         nxt = self.engine.next_run()
+        prefs = load_ui_prefs(self.s.paths)
         return {
             "schedule_time": stored["run_time"],
             "home": str(self.s.paths.home),
@@ -68,6 +69,8 @@ class SettingsService:
             "notifications": bool(stored["notifications"]),
             "runtime_locked": True,
             "install": self.engine.install_summary(),
+            "owner_name": prefs["owner_name"],
+            "ui_theme": prefs["theme"],
             "next_run": nxt.isoformat(timespec="minutes") if nxt else None,
         }
 
