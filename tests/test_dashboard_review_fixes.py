@@ -339,3 +339,28 @@ def test_update_state_file_is_read_from_run_update_state_json(tmp_home: Path):
     f.write_text(json.dumps({"state": "done", "old": "0.1.0", "new": "0.1.1"}), encoding="utf-8")
     client_state = dash.library.update_state()
     assert client_state["state"] == "done" and client_state["new"] == "0.1.1"
+
+
+# ------------------------------------------------------------------ row 4: channel cards carry what the cards show
+
+
+def test_channel_card_has_cadence_window_and_caption_looks(tmp_home: Path):
+    dash, state = make(tmp_home)
+    seed_channel(state.db, state.paths, masters_per_week=2, publish_window="19:00-22:00")
+    (card,) = dash.channels.cards()
+    assert card["masters_per_week"] == 2 and card["publish_window"] == "19:00-22:00"
+    assert card["caption_styles"] == ["punch_yellow", "clean_white"] and card["formats_allowed"] == []
+
+
+def test_channel_put_accepts_the_profile_the_get_returned(tmp_home: Path):
+    """The editor started from the card and PUT card keys (`approved`, `last_output_at`): 422 extra_forbidden."""
+    dash, state = make(tmp_home)
+    seed_channel(state.db, state.paths, masters_per_week=3, avoid_topics=["war"])
+    profile = dash.channels.get("after-dark")["profile"]
+    profile["niche"] = "edited niche about doorbells"
+    saved = dash.channels.update("after-dark", profile)["profile"]
+    assert saved["masters_per_week"] == 3 and saved["avoid_topics"] == ["war"]
+    card = dash.channels.cards()[0]
+    with pytest.raises(ApiError) as err:  # the card is not a profile
+        dash.channels.update("after-dark", card)
+    assert err.value.code == "invalid_profile"
