@@ -221,7 +221,8 @@
   --ds-shadow-2: 0 2px 4px rgba(21, 21, 59, 0.03), 0 14px 32px -10px rgba(40, 36, 110, 0.16);
   --ds-shadow-3: 0 4px 8px rgba(21, 21, 59, 0.04), 0 24px 48px -14px rgba(40, 36, 110, 0.26);
   --ds-shadow-frame: 0 50px 100px -40px rgba(40, 36, 110, 0.28);
-  --ds-shadow-accent: 0 10px 22px -8px rgba(116, 102, 238, 0.6);
+  /* unslop: no coloured glow. The accent keeps a small neutral lift only; the rail shadow is the one glow left. */
+  --ds-shadow-accent: 0 1px 2px rgba(21, 21, 59, 0.12), 0 4px 10px -4px rgba(21, 21, 59, 0.18);
   --ds-focus-ring: 0 0 0 3px rgba(116, 102, 238, 0.35);
   --ds-illus-paper: var(--ds-bg-surface);
   --ds-illus-accent: var(--ds-bg-accent);
@@ -280,7 +281,7 @@
   --ds-shadow-2: 0 2px 4px rgba(0, 0, 0, 0.3), 0 14px 32px -10px rgba(0, 0, 0, 0.55);
   --ds-shadow-3: 0 4px 8px rgba(0, 0, 0, 0.35), 0 24px 48px -14px rgba(0, 0, 0, 0.7);
   --ds-shadow-frame: 0 50px 100px -40px rgba(0, 0, 0, 0.8);
-  --ds-shadow-accent: 0 10px 22px -8px rgba(128, 115, 243, 0.55);
+  --ds-shadow-accent: 0 1px 2px rgba(0, 0, 0, 0.4), 0 4px 10px -4px rgba(0, 0, 0, 0.5);
   --ds-focus-ring: 0 0 0 3px rgba(167, 158, 247, 0.4);
   --ds-shadow-selected: 0 0 0 4px var(--ds-bg-accent-soft), var(--ds-shadow-accent);
   --ds-bg-highlight: #f6b545;
@@ -344,7 +345,7 @@
   --ds-shadow-2: -9px -9px 18px var(--soft-light), 9px 9px 18px var(--soft-shade);
   --ds-shadow-3: -12px -12px 26px var(--soft-light), 14px 14px 28px var(--soft-shade-deep);
   --ds-shadow-frame: -20px -20px 40px var(--soft-light), 20px 20px 40px var(--soft-shade);
-  --ds-shadow-accent: -3px -3px 8px var(--soft-light), 4px 4px 10px rgba(15, 42, 154, 0.35);
+  --ds-shadow-accent: -3px -3px 8px var(--soft-light), 4px 4px 10px var(--soft-shade);
   --ds-focus-ring: 0 0 0 3px rgba(15, 42, 154, 0.3);
   --ds-shadow-inset: inset 4px 4px 8px var(--soft-shade), inset -4px -4px 8px var(--soft-light);
   --ds-shadow-inset-sm: inset 2px 2px 4px var(--soft-shade), inset -2px -2px 4px var(--soft-light);

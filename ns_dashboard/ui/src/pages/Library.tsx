@@ -149,7 +149,7 @@ function VoiceCard({ v, active, onPlay }: { v: Voice; active: boolean; onPlay: (
   const audio = useRef<HTMLAudioElement | null>(null);
   const [progress, setProgress] = useState(0);
   const [loading, setLoading] = useState(false);
-  const bars = useRef(sampleWaveform(36, v.name)).current;
+  const bars = useRef(sampleWaveform(64, v.name)).current;
   useEffect(() => { if (!active && audio.current) { audio.current.pause(); setProgress(0); } }, [active]);
   useEffect(() => () => audio.current?.pause(), []);
   const toggle = async () => {
