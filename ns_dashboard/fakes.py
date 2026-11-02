@@ -405,6 +405,15 @@ class FakeSeriesAdapter:
         """The stories a test put in `stories`."""
         return [dict(s) for s in self.stories]
 
+    def release(self, params: dict[str, Any]) -> None:
+        """Put the part back to `approved` when it is still `producing`."""
+        for story in self.stories:
+            if story["slug"] != params.get("story_slug"):
+                continue
+            for part in story["parts"]:
+                if part["n"] == params.get("part_n") and part["status"] == "producing":
+                    part["status"] = "approved"
+
     def queue_next(self, slug: str) -> list[dict[str, Any]]:
         """Queue the first approved part of `slug` as a `series_part` row and mark it producing."""
         from ns_dashboard.errors import ApiError

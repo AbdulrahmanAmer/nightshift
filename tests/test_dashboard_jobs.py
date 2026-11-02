@@ -297,3 +297,23 @@ def test_cancel_that_loses_the_race_with_the_worker_still_cancels_the_running_jo
     assert store.is_cancel_requested(job.job_id)
     rec = store.get(job.job_id)
     assert rec is not None and rec.cancel_requested
+
+
+def test_interrupted_series_part_goes_back_to_approved_on_start(tmp_home: Path):
+    """Review row 12: after a reboot the part was 'producing' forever and could not be queued again."""
+    from ns_dashboard.fakes import FakeSeriesAdapter
+
+    store, worker, _hub, paths = build(tmp_home, {})
+    series = FakeSeriesAdapter(store.db, paths)
+    series.stories = [
+        {"slug": "the-lift", "channel": "after-dark", "title": "The Lift",
+         "parts": [{"n": 2, "title": "The Intercom", "status": "producing", "job_id": "j-2"}]}
+    ]
+    worker.on_recover = {"series_part": lambda rec: series.release({**rec.params, "job_id": rec.job_id})}
+    job = store.create("series_part", "after-dark", {"story_slug": "the-lift", "part_n": 2})
+    store.mark_running(job.job_id)
+    worker.start()
+    worker.stop()
+    rec = store.get(job.job_id)
+    assert rec is not None and rec.status == "failed"
+    assert series.stories[0]["parts"][0]["status"] == "approved"

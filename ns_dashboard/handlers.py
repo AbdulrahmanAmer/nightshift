@@ -74,7 +74,10 @@ def build_state(
     link = link or SupervisorLink(supervisor_url(paths))
     adapters = adapters or (fake_adapters(db, paths) if fake_services else real_adapters(paths, link, log))
     store = JobStore(db)
-    worker = JobWorker(store, build_handlers(adapters), hub, log, gpu_gate=make_gpu_gate(link.status))
+    worker = JobWorker(
+        store, build_handlers(adapters), hub, log, gpu_gate=make_gpu_gate(link.status),
+        on_recover={"series_part": lambda rec: adapters.series.release({**rec.params, "job_id": rec.job_id})},
+    )
     return AppState(
         paths=paths, db=db, log=log, hub=hub, link=link, adapters=adapters, store=store, worker=worker,
         fake_services=fake_services,

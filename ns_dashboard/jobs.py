@@ -216,6 +216,11 @@ class JobStore:
         row = self.db.one("SELECT * FROM dashboard_jobs WHERE status = 'running' ORDER BY rowid LIMIT 1")
         return self._record(row) if row else None
 
+    def running_all(self) -> list[JobRecord]:
+        """Every job whose row says `running` (more than one only after a crash)."""
+        rows = self.db.query("SELECT * FROM dashboard_jobs WHERE status = 'running' ORDER BY rowid")
+        return [self._record(r) for r in rows]
+
     def counts(self) -> dict[str, int]:
         """Number of queued and running jobs."""
         out = {"queued": 0, "running": 0}
@@ -391,6 +396,7 @@ class JobWorker:
         *,
         gpu_gate: GpuGate | None = None,
         inline_kinds: frozenset[str] = frozenset({"learn"}),
+        on_recover: dict[str, Callable[[JobRecord], None]] | None = None,
     ) -> None:
         self.store = store
         self.handlers = handlers
@@ -398,6 +404,7 @@ class JobWorker:
         self.log = log
         self.gpu_gate = gpu_gate
         self.inline_kinds = inline_kinds
+        self.on_recover = on_recover or {}
         self._cv = threading.Condition()
         self._wake = False
         self._stopping = False
@@ -409,9 +416,17 @@ class JobWorker:
         """Start the worker thread (idempotent) after failing jobs a crashed process left running."""
         if self._thread is not None and self._thread.is_alive():
             return
+        interrupted = self.store.running_all()
         n = self.store.recover_interrupted()
         if n:
             self.log.warn("jobs_recovered", f"{n} interrupted job(s) marked failed", count=n)
+        for rec in interrupted:  # e.g. a series part goes back from "producing" to "approved"
+            hook = self.on_recover.get(rec.kind)
+            if hook is not None:
+                try:
+                    hook(rec)
+                except Exception as e:  # recovery must never stop the worker from starting
+                    self.log.warn("recover_failed", str(e), job_id=rec.job_id, kind=rec.kind)
         self._stopping = False
         self._thread = threading.Thread(target=self._loop, name="ns-dashboard-worker", daemon=True)
         self._thread.start()

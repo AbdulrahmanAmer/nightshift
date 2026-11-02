@@ -144,6 +144,10 @@ class SeriesAdapter(Protocol):
         """Queue the next approved part of `slug`: `[{part, job_id, title}]`; 409 when none is ready."""
         ...
 
+    def release(self, params: dict[str, Any]) -> None:
+        """Put a part whose job was interrupted back to `approved` so it can be queued again."""
+        ...
+
 
 class BackupAdapter(Protocol):
     """Export and import of settings (`ns backup`, `ns restore`) and where UNINSTALL.cmd is."""
@@ -322,6 +326,10 @@ class RealSeriesAdapter(StudioAdapter):
         except BaseException:
             studio_bridge.release_part({**params, "job_id": ctl.job_id})
             raise
+
+    def release(self, params: dict[str, Any]) -> None:
+        """A part left `producing` by a crash or a Quit goes back to `approved`."""
+        studio_bridge.release_part(params)
 
     def listing(self) -> list[dict[str, Any]]:
         """Stories and parts read from the workshop files under `stories/`."""
