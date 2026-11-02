@@ -13,9 +13,12 @@ STORY = ("The doorbell camera pings at 3:12 every night. " * 12).strip()  # 108 
 def test_short_budget_math():
     b = short_budget(50, "standard")
     assert b.wpm == 155
-    assert b.words == 129 - 12
-    assert b.min_words == round(b.words * 0.85)  # +-15 %: the band QC applies to seconds
-    assert b.max_words == round(b.words * 1.15)
+    assert b.words == 118 - 12  # fills 50 s with the pauses counted
+    assert round(b.words * 0.85) <= b.min_words <= b.words <= b.max_words <= round(b.words * 1.15)
+    # at either edge the audio (words + a 12-word hook + pauses) is within 12 % of the bucket
+    per_word = 60 / 155 + 0.035
+    assert (b.max_words + 12) * per_word <= 50 * 1.12 + per_word
+    assert (b.min_words + 12) * per_word >= 50 * 0.88 - per_word
     two = short_budget(75, "brisk", parts=2)
     assert two.words_per_part == two.words // 2
 

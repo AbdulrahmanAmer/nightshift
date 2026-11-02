@@ -239,6 +239,29 @@ def _read_riff(data: bytes) -> tuple[np.ndarray, int, int]:
     return x, ch, rate
 
 
+# One utterance of `qwen-tts --stream-by-line -o -`: a 44-byte header whose RIFF and data sizes both say
+# 0x7FFFFFFF ("live"), then the samples up to the next header or the end of the stream.
+_STREAM_HEAD = re.compile(rb"RIFF.{4}WAVEfmt .{20}data", re.DOTALL)
+
+
+def split_wav_stream(blob: bytes) -> list[tuple[np.ndarray, int]]:
+    """Split the stdout of `qwen-tts --stream-by-line -o -` into one (float32 mono samples, rate) per line.
+
+    Each utterance after the first opens with a fresh RIFF header (qwentts.cpp `wav_stream_write_header`), so
+    the stream is cut where a complete header starts; bytes before the first header are ignored. Raises
+    ValueError when a segment is not a readable WAV.
+    """
+    starts = [m.start() for m in _STREAM_HEAD.finditer(blob)]
+    out: list[tuple[np.ndarray, int]] = []
+    for i, start in enumerate(starts):
+        end = starts[i + 1] if i + 1 < len(starts) else len(blob)
+        x, ch, rate = _read_riff(blob[start:end])
+        if ch > 1:
+            x = x[: len(x) // ch * ch].reshape(-1, ch).mean(axis=1)
+        out.append((np.ascontiguousarray(x, dtype=np.float32), int(rate)))
+    return out
+
+
 def read_wav(path: Path) -> tuple[np.ndarray, int]:
     """Read a WAV file as (float32 mono samples, sample rate). Multi-channel audio is averaged.
 

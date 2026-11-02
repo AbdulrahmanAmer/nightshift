@@ -8,6 +8,7 @@ from ns_common.errors import NsError
 from ns_common.tts_client import FakeTts, wav_seconds
 from ns_studio.media.captions import (
     DRIFT_LIMIT_MS,
+    MIN_MATCH_RATIO,
     Box,
     CaptionsStage,
     _merge_pages,
@@ -369,7 +370,56 @@ def test_captions_align_a_russian_script(tmp_path: Path):
 
 
 def test_cjk_characters_are_separate_caption_words():
-    assert [w for w, _ in script_words("夜中にドアが開いた。")] == [*"夜中にドアが開い", "た 。"]
+    assert [w for w, _ in script_words("夜中にドアが開いた。")] == [*"夜中にドアが開い", "た。"]
+
+
+JA = "私は猫です。名前はまだありません。どこで生まれたかとんと見当がつきません。"
+ZH = "我是一只猫。我还没有名字。我不记得自己是在哪里出生的。"
+
+
+def _pieces(text: str, sizes: tuple[int, ...], step: float = 0.5) -> list[Word]:
+    """ASR words as faster-whisper returns ja/zh: BPE pieces of 1-3 characters, punctuation attached."""
+    chars = [c for c in text]
+    out: list[Word] = []
+    i = k = 0
+    while i < len(chars):
+        n = sizes[k % len(sizes)]
+        out.append(Word("".join(chars[i : i + n]), k * step, k * step + step * 0.9))
+        i += n
+        k += 1
+    return out
+
+
+@pytest.mark.parametrize("text", [JA, ZH])
+def test_cjk_script_matches_multi_character_asr_pieces(text: str):
+    """Re-review row 2: the script is one token per character, the recogniser's pieces were whole runs."""
+    asr = _pieces(text, (2, 1, 3, 2))
+    assert max(len(w.w) for w in asr) >= 3
+    res = align_words(text, asr)
+    assert res.match_ratio == 1.0 and res.matched == res.total
+    starts = [w.start for w in res.words]
+    assert starts == sorted(starts) and len(set(starts)) > len(asr) // 2  # characters of a piece are spread
+
+
+@pytest.mark.parametrize("text", [JA, ZH])
+def test_cjk_match_ratio_survives_asr_errors(text: str):
+    asr = _pieces(text, (2, 1, 3, 2))
+    asr[3] = Word("誤", asr[3].start, asr[3].end)  # one misheard piece and one dropped piece
+    del asr[6]
+    res = align_words(text, asr)
+    assert res.match_ratio >= MIN_MATCH_RATIO
+
+
+@pytest.mark.parametrize("text", [JA, ZH])
+def test_cjk_captions_stage_passes_with_the_fake_transcriber(tmp_path: Path, text: str):
+    """The fake now returns multi-character pieces, so the captions stage exercises the real matching."""
+    wav = tmp_path / "p1.wav"
+    FakeTts().speak(text, "Ryan", 1.0, wav)
+    wav.with_suffix(".txt").write_text(text, encoding="utf-8")
+    asr = FakeTranscriber().words(wav)
+    assert any(len(w.w) > 1 for w in asr)
+    res = align_words(text, asr)
+    assert res.match_ratio == 1.0
 
 
 def test_build_spec_describes_drift_the_way_captions_computes_it():
@@ -379,3 +429,62 @@ def test_build_spec_describes_drift_the_way_captions_computes_it():
     assert "median offset between the aligned caption word starts and the ASR word starts" in step4
     assert f"≤ {DRIFT_LIMIT_MS:.0f} ms" in step4 and "NS-E403" in step4
     assert "interpolated time" not in step4
+
+
+def test_caption_drift_reads_a_uniform_offset_from_the_aligned_pairs():
+    """Re-review row 10: the drift metric was always 0 for matched words (the clamp and the ASR start)."""
+    from ns_studio.media.captions import caption_drift
+
+    asr = _even_asr(["the", "doorbell", "camera", "pings", "at", "three", "twelve", "every", "night"])
+    res = align_words("The doorbell camera pings at 3:12 every night.", asr)
+    assert res.drift_ms == pytest.approx(0.0, abs=1e-6)  # self-consistent: says nothing about the placement
+    shifted = [Word(w.w, w.start + 0.15, w.end + 0.15, w.sentence_idx) for w in res.words]  # wrong hook gap
+    assert caption_drift(shifted, asr) == pytest.approx(150.0, abs=0.5)
+    assert caption_drift(shifted, asr) > DRIFT_LIMIT_MS  # NS-E403 now fires
+
+
+def test_caption_drift_ignores_jitter_and_unaligned_words():
+    from ns_studio.media.captions import caption_drift
+
+    asr = _even_asr(["the", "doorbell", "camera", "pings", "at", "three", "twelve", "every", "night"])
+    res = align_words("The doorbell camera pings at 3:12 every night.", asr)
+    jittered = [Word(w.w, w.start + (0.012 if i % 2 else -0.012), w.end, w.sentence_idx)
+                for i, w in enumerate(res.words)]  # fmt: skip
+    assert caption_drift(jittered, asr) < 20.0
+    ghost = [*res.words, Word("ghost", 99.0, 99.4)]  # a caption word nobody said does not count
+    assert caption_drift(ghost, asr) == pytest.approx(0.0, abs=1e-6)
+    assert caption_drift([Word("zzz", 0.0, 0.2)], asr) == float("inf")
+
+
+def test_caption_drift_works_for_cjk_and_survives_a_backwards_asr_word():
+    from ns_studio.media.captions import caption_drift
+
+    asr = _pieces(JA, (2, 1, 3, 2))
+    res = align_words(JA, asr)
+    shifted = [Word(w.w, w.start + 0.2, w.end + 0.2, w.sentence_idx) for w in res.words]
+    assert caption_drift(shifted, asr) == pytest.approx(200.0, abs=15.0)
+
+
+def _visible(ass: str) -> list[str]:
+    """The text of each Dialogue event with the override tags removed."""
+    return [re.sub(r"{[^}]*}", "", line.split(",,", 2)[2]) for line in ass.splitlines()
+            if line.startswith("Dialogue:")]  # fmt: skip
+
+
+def test_cjk_captions_are_not_burned_with_a_space_between_characters():
+    """Re-review row 15: CJK characters were joined with spaces, so the video said '私 は 猫 で す 。'."""
+    res = align_words(JA, _pieces(JA, (2, 1, 3, 2)))
+    assert res.words[0].w == "私" and res.words[4].w == "す。"  # the full stop stays with its character
+    for name in sorted(load_caption_styles()):
+        shown = _visible(build_ass(res.words, name))
+        assert shown, name
+        for text in shown:
+            assert not re.search(r"[぀-ヿ一-鿿。] [぀-ヿ一-鿿。]", text), (name, text)
+    tokens = ["the", "doorbell", "camera", "pings", "at", "three", "twelve", "every", "night"]
+    latin = align_words(SCRIPT, _even_asr(tokens))
+    assert any(" " in t for t in _visible(build_ass(latin.words, "clean_white")))  # Latin keeps its spaces
+
+
+def test_a_cjk_word_next_to_a_latin_one_keeps_the_space():
+    ws = [Word("猫", 0.0, 0.2), Word("cat", 0.3, 0.5), Word("です", 0.6, 0.9)]
+    assert any("猫 cat" in t for t in _visible(build_ass(ws, "clean_white")))

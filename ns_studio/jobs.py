@@ -73,19 +73,37 @@ def parse_fake(value: str | None) -> frozenset[str]:
     return frozenset(names)
 
 
-def load_keys() -> dict[str, str]:
-    """Pexels and Pixabay keys: Windows keyring (service 'Nightshift'), else `config/secrets.dpapi`."""
+def _warn(event: str, msg: str) -> None:
+    """Log a key-lookup problem; logging must never be the reason the lookup fails."""
     try:
-        keyring: Any = importlib.import_module("keyring")
-        keyring_error: type[Exception] = importlib.import_module("keyring.errors").KeyringError
+        NsLogger("studio", Paths.from_env().logs).warn(event, msg)
+    except Exception:  # noqa: BLE001 - a diagnostic line is not worth a crash at start-up
+        pass
+
+
+def load_keys() -> dict[str, str]:
+    """Pexels and Pixabay keys: Windows keyring (service 'Nightshift'), else `config/secrets.dpapi`.
+
+    Every keyring call is wrapped in `except Exception`: in the S4U nightly session the backend raises a
+    non-`KeyringError` type (Windows CredRead error 1312, "no such logon session"), and that must not stop
+    `open_env` before the DPAPI file is tried. When both sources are empty the key stays missing and the clip
+    source raises the coded `NS-E501` at its first use, so text-only runs never see it.
+    """
+    keyring: Any = None
+    try:
+        keyring = importlib.import_module("keyring")
     except ImportError:
-        keyring, keyring_error = None, Exception
+        pass
+    except Exception as e:  # noqa: BLE001 - a broken backend import is treated as "no keyring"
+        _warn("keyring_import_failed", f"{type(e).__name__}: {e}")
     keys: dict[str, str] = {}
     for name, short in SHORT_NAMES.items():  # the names setup and Settings store, not the short ones
-        try:
-            value = keyring.get_password(KEYRING_SERVICE, name) if keyring is not None else None
-        except keyring_error:
-            value = None  # a broken backend must not stop a text-only run
+        value: str | None = None
+        if keyring is not None:
+            try:
+                value = keyring.get_password(KEYRING_SERVICE, name)
+            except Exception as e:  # noqa: BLE001
+                _warn("keyring_failed", f"{name}: {type(e).__name__}: {e}")
         if not value:
             value = _dpapi_secret(name)  # the nightly task may not reach Credential Manager (S4U session)
         if value:
@@ -95,11 +113,12 @@ def load_keys() -> dict[str, str]:
 
 def _dpapi_secret(name: str) -> str | None:
     """The key from `config/secrets.dpapi` (`ns_common.secret_file`), or None when absent or unreadable."""
-    from ns_common.secret_file import load_secret  # imported here: it loads ctypes
-
     try:
+        from ns_common.secret_file import load_secret  # imported here: it loads ctypes
+
         return load_secret(Paths.from_env(), name)
-    except (OSError, ValueError):
+    except Exception as e:  # noqa: BLE001 - OSError, ValueError, ctypes failures: all mean "no key here"
+        _warn("secret_file_failed", f"{name}: {type(e).__name__}: {e}")
         return None
 
 

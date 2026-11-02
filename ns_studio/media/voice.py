@@ -7,6 +7,7 @@ import zlib
 from pathlib import Path
 
 from ns_common import ffmpeg as ff
+from ns_common.languages import qwen_language
 from ns_common.models import Voice
 from ns_common.pacing import pacing_speed
 from ns_common.textstats import split_sentences
@@ -34,16 +35,21 @@ def job_speed(ctx: JobContext) -> float:
     return pacing_speed(job_voice(ctx).speed, ctx.combo.pacing)
 
 
-def narration_items(parts: list[dict], voice_name: str, speed: float) -> list[TtsItem]:
-    """One TTS item per part body (`p<n>`) plus `p<n>_hook` when the hook is not the first sentence."""
+def narration_items(
+    parts: list[dict], voice_name: str, speed: float, language: str | None = None
+) -> list[TtsItem]:
+    """One TTS item per part body (`p<n>`) plus `p<n>_hook` when the hook is not the first sentence.
+
+    `language` is the channel's ISO code; it travels with every item to `qwen-tts --lang`.
+    """
     items: list[TtsItem] = []
     for p in parts:
         sentences = split_sentences(p["text"])
         cliff = (sentences[-1],) if p.get("cliffhanger") and sentences else ()
-        items.append(TtsItem(f"p{p['n']}", p["text"], voice_name, speed, cliff))
+        items.append(TtsItem(f"p{p['n']}", p["text"], voice_name, speed, cliff, language))
         hook = (p.get("hook") or "").strip()
         if hook and (not sentences or hook != sentences[0]):
-            items.append(TtsItem(f"p{p['n']}_hook", hook, voice_name, speed))
+            items.append(TtsItem(f"p{p['n']}_hook", hook, voice_name, speed, language=language))
     return items
 
 
@@ -51,6 +57,8 @@ def _signature(it: TtsItem) -> str:
     base = f"{it.voice}|{it.speed}|{it.text}"
     if it.cliff_lines:  # unchanged for items without one, so earlier jobs keep their cache
         base += "|cliff:" + "|".join(it.cliff_lines)
+    if qwen_language(it.language)[0] != "English":  # English items keep the signature (and cache) they had
+        base += f"|lang:{qwen_language(it.language)[0]}"
     return hashlib.sha256(base.encode()).hexdigest()
 
 
@@ -112,7 +120,7 @@ class VoiceStage:
         parts = ctx.read_json("parts.json")
         voice = job_voice(ctx)
         voice_name = voice.name or voice.speaker or "Ryan"
-        items = narration_items(parts, voice_name, job_speed(ctx))
+        items = narration_items(parts, voice_name, job_speed(ctx), ctx.channel.language)
         manifest, synthesized = synthesize(ctx, items)
         # Measured seconds live in audio/manifest.json only: rewriting parts.json (an input of hooks, seo,
         # visual_plan and the policy gate) made `--resume` redo those LLM stages.

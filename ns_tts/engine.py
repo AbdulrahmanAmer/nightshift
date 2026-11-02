@@ -6,10 +6,20 @@ Heavy imports (`torch`, `qwen_tts`) happen only inside methods.
 
 The qwentts contract (pinned commit in `.github/workflows/build-qwentts.yml`; flags checked against the
 `--help` text in its `docs/ARCHITECTURE.md`). The release zip holds `qwen-tts.exe`, `qwen-codec.exe` and
-`tts-server.exe` in `<home>\bin\qwentts`; there is no `qwentts.exe`. One process per chunk of text:
-`qwen-tts.exe` reads the text from **stdin** (UTF-8, read to the end), takes language and speaker as flags and
-writes a 24 kHz mono 16-bit WAV to `-o`. The text is never put on the command line. `<talker>` and `<codec>`
-are `<home>\models\tts\qwen-talker-<size>-<kind>-Q8_0.gguf` and `qwen-tokenizer-12hz-Q8_0.gguf`.
+`tts-server.exe` in `<home>\bin\qwentts`; there is no `qwentts.exe`. `qwen-tts.exe` reads the text from
+**stdin** (UTF-8), takes language and speaker as flags and writes a 24 kHz mono 16-bit WAV to `-o`. The text
+is never put on the command line. `<talker>` and `<codec>` are
+`<home>\models\tts\qwen-talker-<size>-<kind>-Q8_0.gguf` and `qwen-tokenizer-12hz-Q8_0.gguf`.
+
+One process per job, not per sentence: with `--stream-by-line -o -` the binary reads stdin line by line,
+synthesises each line as its own utterance with the model and speaker staying resident, and streams the WAVs
+to stdout, each after the first opening with a fresh 44-byte RIFF header (sizes 0x7FFFFFFF) that
+`ns_tts.audio.split_wav_stream` cuts on. `synth_batch` sends every chunk of a request that shares voice,
+language and speed in one such process (the server collects the chunks of all items of a batch request).
+The trade-off (upstream `--help` and `tools/qwen-tts.cpp` at the pinned commit; not yet timed on a GPU PC):
+a master of about 200 chunks pays one start-up of the 1.7B talker and the codec (3-6 s estimated) instead of
+200, saving 10-20 minutes of GPU tenancy; one failing chunk now fails the whole request, and the job
+retries from the voice stage. A single chunk (`synth`) still uses the file route.
 
   preset (CustomVoice talker; speaker names are lowercase: vivian, uncle_fu, ono_anna ...):
     qwen-tts.exe --model <customvoice> --codec <codec> [--device CPU] --speaker vivian --lang English
@@ -28,8 +38,8 @@ are `<home>\models\tts\qwen-talker-<size>-<kind>-Q8_0.gguf` and `qwen-tokenizer-
 Why not `tts-server.exe` behind `ns_tts.server`: it loads exactly one talker GGUF, so presets (CustomVoice),
 clones (Base) and designs (VoiceDesign) would need up to three servers or a restart per mode, its voice
 registry lives in RAM (re-registered after every restart), and a long-lived grandchild process would outlive
-the TTS service when the supervisor stops it. Its `speed` field is parsed and ignored. Per-chunk processes
-keep the contract exact and leave nothing behind; the price is one model load per chunk.
+the TTS service when the supervisor stops it. Its `speed` field is parsed and ignored. A short-lived
+`qwen-tts` process per batch keeps the contract exact and leaves nothing behind.
 
 Speed: neither tool has a speed control, so `time_stretch` (FFmpeg `atempo`, pitch preserved) runs on each
 chunk. Voices: qwentts stores `speaker.spk` + `speaker.rvq` + `ref.txt`; the reference engine and the fake
@@ -61,7 +71,7 @@ from ns_common.logging import NsLogger
 from ns_common.models import TtsCfg
 from ns_common.paths import TTS_HF_SUBDIR, Paths
 from ns_common.textstats import word_count
-from ns_tts.audio import read_wav, time_stretch, write_wav
+from ns_tts.audio import read_wav, split_wav_stream, time_stretch, write_wav
 from ns_tts.voices import PRESETS, SAMPLE_TEXT, EmbeddingData, Mode, VoiceSpec
 
 # Executables inside the qwentts zip (build-qwentts.yml packages exactly these three).
@@ -84,6 +94,9 @@ TOKENIZER_FILE = "qwen-tokenizer-12hz-Q8_0.gguf"
 # returned by Qwen3TTSModel.create_voice_clone_prompt (pickle based: only load files you made or trust).
 REFERENCE_MAGIC = b"NSREF1\n"
 REFERENCE_DIRS: dict[str, str] = {"preset": "CustomVoice", "design": "VoiceDesign", "clone": "Base"}
+
+BATCH_SECONDS_PER_LINE = 60.0  # added to the process time limit for every chunk of a batch
+EMPTY_AUDIO = np.zeros(0, dtype=np.float32)
 
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)  # no console flash when the service has none
 
@@ -154,6 +167,7 @@ class FakeEngine:
 
     def __init__(self) -> None:
         self.loaded = False
+        self.languages: list[str] = []  # the language of every synth call, so tests can see what reached it
 
     def load(self) -> None:
         self.loaded = True
@@ -183,6 +197,7 @@ class FakeEngine:
     def synth(
         self, text: str, voice: VoiceSpec, *, speed: float = 1.0, seed: int | None = None
     ) -> np.ndarray:
+        self.languages.append(voice.language)
         return self._tone(text, self._freq(voice), speed)
 
     def synth_batch(
@@ -205,7 +220,7 @@ class FakeEngine:
 
 
 class QwenttsEngine:
-    """Runs `qwen-tts.exe` once per chunk and `qwen-codec.exe` once per new voice (see the module doc).
+    """Runs `qwen-tts.exe` once per batch of chunks and `qwen-codec.exe` once per new voice (module doc).
 
     `bin_dir` is `<home>\\bin\\qwentts`. `launcher` maps a tool name (`qwen-tts`, `qwen-codec`) to the argv
     prefix that starts it; tests use it to run a Python shim instead of the real executables.
@@ -313,28 +328,39 @@ class QwenttsEngine:
         cmd += ["--talker", str(self.talker_path("clone"))]
         return [*cmd, *self._device_args(), "-i", str(wav)]
 
-    def _run(self, cmd: list[str], *, tool: str, code: str, stdin_text: str | None = None) -> None:
-        """Run `tool` to completion; every failure becomes `NsError(code)` (NS-E310 synth, NS-E315 voice)."""
+    def _run(
+        self,
+        cmd: list[str],
+        *,
+        tool: str,
+        code: str,
+        stdin_text: str | None = None,
+        timeout_s: float | None = None,
+    ) -> bytes:
+        """Run `tool` to completion and return its stdout; every failure becomes `NsError(code)` (NS-E310
+        synth, NS-E315 voice). `timeout_s` overrides the engine's per-process limit (batches take longer)."""
         if self.log:
             self.log.debug("qwentts_run", cmd=" ".join(cmd), stdin_chars=len(stdin_text or ""))
         data = stdin_text.encode("utf-8") if stdin_text is not None else b""
+        limit = timeout_s if timeout_s is not None else self.timeout_s
         try:
             proc = subprocess.run(
                 cmd,
                 input=data,
                 capture_output=True,
-                timeout=self.timeout_s,
+                timeout=limit,
                 check=False,
                 creationflags=_NO_WINDOW,
             )
         except subprocess.TimeoutExpired as e:
-            raise NsError(code, f"{tool} timed out after {self.timeout_s:.0f}s", cmd=cmd) from e
+            raise NsError(code, f"{tool} timed out after {limit:.0f}s", cmd=cmd) from e
         except OSError as e:
             raise NsError(code, f"cannot start {tool}: {e}", cmd=cmd) from e
         if proc.returncode != 0:
             raw = (proc.stderr or proc.stdout or b"").decode("utf-8", errors="replace")
             tail = "\n".join(raw.strip().splitlines()[-8:])
             raise NsError(code, f"{tool} exited {proc.returncode}: {tail}", cmd=cmd)
+        return proc.stdout or b""
 
     def _read(self, path: Path, code: str) -> np.ndarray:
         if not path.is_file():
@@ -378,7 +404,44 @@ class QwenttsEngine:
     def synth_batch(
         self, texts: Sequence[str], voice: VoiceSpec, *, speed: float = 1.0, seed: int | None = None
     ) -> list[np.ndarray]:
-        return [self.synth(t, voice, speed=speed, seed=seed) for t in texts]
+        """All of `texts` in ONE `qwen-tts` process (`--stream-by-line -o -`), one utterance per line.
+
+        Loading the talker and the codec and starting CUDA costs seconds per process, and a 14-minute master
+        has about 200 sentence chunks. The binary reads one chunk per stdin line, keeps the model and the
+        speaker resident, and writes the utterances to stdout one after another, each opened by its own WAV
+        header; `split_wav_stream` cuts them apart. NS-E310 when the number of utterances differs from the
+        number of lines sent.
+        """
+        lines = [" ".join(t.split()) for t in texts]
+        todo = [i for i, line in enumerate(lines) if line]
+        if len(todo) <= 1:
+            return [self.synth(t, voice, speed=speed, seed=seed) if lines[i] else EMPTY_AUDIO
+                    for i, t in enumerate(texts)]
+        op, args = self._voice_args(voice)
+        cmd = self.tts_command(op, out=Path("-"), seed=seed, language=voice.language, **args)
+        cmd.insert(-2, "--stream-by-line")  # before `-o -`
+        stdout = self._run(
+            cmd,
+            tool=QWEN_TTS,
+            code="NS-E310",
+            stdin_text="\n".join(lines[i] for i in todo) + "\n",
+            timeout_s=self.timeout_s + BATCH_SECONDS_PER_LINE * len(todo),
+        )
+        try:
+            segments = split_wav_stream(stdout)
+        except ValueError as e:
+            raise NsError("NS-E310", f"qwentts output is not a readable WAV stream: {e}") from e
+        if len(segments) != len(todo):
+            raise NsError(
+                "NS-E310", f"qwentts returned {len(segments)} utterances for {len(todo)} lines of text"
+            )
+        out: list[np.ndarray] = [EMPTY_AUDIO] * len(texts)
+        for i, (x, sr) in zip(todo, segments, strict=True):
+            if x.size == 0:
+                raise NsError("NS-E310", f"qwentts wrote an empty utterance for line {i + 1}")
+            self.sr = sr
+            out[i] = time_stretch(x, sr, speed)
+        return out
 
     def _encode(self, wav: Path) -> dict[str, bytes]:
         """Run qwen-codec on `wav` and return {speaker.spk, speaker.rvq} (the names are `wav`'s stem)."""

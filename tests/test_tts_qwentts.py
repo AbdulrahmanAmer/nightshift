@@ -408,12 +408,12 @@ def test_missing_model_order(tmp_path: Path):
 # ---------------------------------------------------------------- batches and speed
 
 
-def test_batch_is_one_process_per_chunk_in_order(eng: QwenttsEngine, calls: Path):
+def test_batch_is_one_process_for_all_chunks_in_order(eng: QwenttsEngine, calls: Path):
     out = eng.synth_batch(["First one here.", "Second\none there.", "Third."], RYAN, seed=2)
     assert len(out) == 3 and eng.synth_batch([], RYAN) == []
-    rec = recorded(calls)
-    assert [r["stdin"] for r in rec] == ["First one here.", "Second\none there.", "Third."]
-    assert all(r["argv"][r["argv"].index("--seed") + 1] == "2" for r in rec)
+    (rec,) = recorded(calls)  # one process, one line per chunk (a newline inside a chunk is a space)
+    assert rec["stdin"] == "First one here.\nSecond one there.\nThird.\n"
+    assert rec["argv"][rec["argv"].index("--seed") + 1] == "2" and "--stream-by-line" in rec["argv"]
 
 
 def test_speed_goes_through_the_pitch_safe_stretch(eng: QwenttsEngine, monkeypatch: pytest.MonkeyPatch):

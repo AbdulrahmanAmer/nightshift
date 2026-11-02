@@ -21,8 +21,12 @@ from typing import Any
 
 import httpx
 
+from ns_common.config import load_channel
 from ns_common.errors import NsError
+from ns_common.languages import qwen_language
 from ns_common.paths import Paths
+from ns_studio.context import JobContext
+from ns_studio.errors import StudioError
 from ns_studio.jobs import Env
 
 PENDING_NAME = "pending_voice.json"
@@ -65,6 +69,13 @@ def http_post(base_url: str, route: str, body: dict[str, Any]) -> dict[str, Any]
     except httpx.HTTPError as e:
         raise NsError("NS-E310", f"voice service: {e}") from e
     if r.status_code == 409 and "missing_model" in r.text:
+        try:
+            answer = r.json()
+        except ValueError:
+            answer = {}
+        code = answer.get("error") if isinstance(answer, dict) else None
+        if code in ("NS-E314", "NS-E202", "NS-E315"):  # the service says which model is absent
+            raise NsError(str(code), str(answer.get("detail", "")))
         raise NsError(
             "NS-E310",
             "the model for this voice tool is not downloaded; open Settings > Models > Get voice design "
@@ -86,9 +97,10 @@ def _local_engine_make(env: Env, kind: str, **kw: Any) -> None:
     from ns_tts.voices import VoiceLibrary
 
     lib = VoiceLibrary(env.paths.models_tts_voices)
+    language = qwen_language(kw["language"])[0]  # the service maps ISO codes the same way
     try:
         if kind == "design":
-            lib.add_design(kw["name"], kw["description"], engine=FakeEngine(), language=kw["language"])
+            lib.add_design(kw["name"], kw["description"], engine=FakeEngine(), language=language)
         else:
             lib.add_clone(
                 kw["name"],
@@ -96,7 +108,7 @@ def _local_engine_make(env: Env, kind: str, **kw: Any) -> None:
                 kw["ref_text"],
                 True,
                 engine=FakeEngine(),
-                language=kw["language"],
+                language=language,
             )
     except ValueError as e:
         raise NsError("NS-E310", str(e)) from e
@@ -164,6 +176,37 @@ def clone_voice(
     return env.paths.models_tts_voices / name
 
 
+def _channel_language(env: Env, slug: object) -> str:
+    """The language of the channel that queued the voice (setup writes no language), else English."""
+    try:
+        return load_channel(env.paths, str(slug)).language if slug else "en"
+    except (OSError, ValueError):
+        return "en"
+
+
+def apply_pending_voices(ctx: JobContext) -> str | None:
+    """Create the voice setup queued, for any run that is about to speak: `studio run`, the dashboard's Run
+    now and series parts all go through `run_job_guarded`, which calls this first.
+
+    Best effort, like the CLI's own `_setup_voice`: a failure is logged and the job goes on (the voice stage
+    then fails with its own message). Does nothing when no voice is queued or the job uses the fake TTS.
+    Returns the voice name when one was created.
+    """
+    from ns_common.tts_client import FakeTts
+
+    if read_pending(ctx.paths) is None or isinstance(ctx.services.tts, FakeTts):
+        return None
+    env = Env(ctx.paths, ctx.db, ctx.runtime, ctx.services, ctx.log, frozenset())
+    try:
+        made = apply_pending(env)
+    except (NsError, StudioError) as e:
+        ctx.log.warn("pending_voice_failed", str(e), job_id=ctx.job_id)
+        return None
+    if made:
+        ctx.log.info("pending_voice_created", voice=made, job_id=ctx.job_id)
+    return made
+
+
 def apply_pending(env: Env, *, post: Post | None = None) -> str | None:
     """Create the voice setup queued, then forget the request. Returns its name, or None when nothing was
     queued or the voice already exists. On a failure the request stays queued and the error propagates."""
@@ -174,7 +217,7 @@ def apply_pending(env: Env, *, post: Post | None = None) -> str | None:
     if voice_exists(env.paths, name):
         pending_file(env.paths).unlink(missing_ok=True)
         return None
-    language = str(req.get("language") or "English")
+    language = str(req.get("language") or "") or _channel_language(env, req.get("channel"))
     if req.get("mode") == "clone":
         clone_voice(
             env,

@@ -214,7 +214,7 @@ class CriticReviseStage:
         ]
         raise_if(validate_story(text, ideas_budget(ctx), past_openings=past, embed=ctx.services.embed))
         avg, _ = critic_numbers(critique)
-        vec = ctx.services.embed.embed([embed_window(text)])[0]
+        vec = ctx.services.embed.embed([embed_window(text, ctx.runtime.embed.batch_size)])[0]
         ctx.db.execute(
             "insert or replace into stories(job_id, channel, format, working_title, text, word_count, "
             "opening_line, embedding, critic_avg, revisions, created_at) values (?,?,?,?,?,?,?,?,?,?,?)",

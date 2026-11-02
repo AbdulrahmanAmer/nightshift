@@ -23,12 +23,13 @@ from ns_studio.context import FIXTURES_LLM
 from ns_studio.orchestrator import FORMAT_STAGES, MASTER_FIRST_STAGES, run_job
 from ns_studio.stages import REGISTRY
 from ns_studio.text import stages_master as M
+from ns_studio.text.budget import master_budget
 from tests.helpers import make_channel, make_ctx
 
 RUBRIC = ("hook", "clarity", "pacing", "payoff", "cliffhangers", "originality", "voice_fit")
 BAD_CRITIC = {"scores": {k: 5 for k in RUBRIC}, "fixes": ["Fix it."]}
 GOOD_CRITIC = {"scores": {k: 9 for k in RUBRIC}, "fixes": []}
-CHANNEL = {"format": "master_first", "long_minutes": (10, 10)}
+CHANNEL = {"format": "master_first", "long_minutes": (11, 11)}
 
 
 class TextLlm(FakeLlm):
@@ -76,8 +77,9 @@ def test_master_pipeline_on_fixtures(tmp_home: Path, monkeypatch: pytest.MonkeyP
     assert run_job(ctx) == M.MASTER_STAGES
 
     plan = Plan.model_validate(ctx.read_json("plan.json"))
-    assert (plan.target_minutes, plan.target_words) == (10, 1550)
-    assert [c.word_budget for c in plan.chapters] == [310] * 5
+    mb = master_budget(11, "standard")
+    assert (plan.target_minutes, plan.target_words) == (11, mb.target_words)
+    assert [c.word_budget for c in plan.chapters] == list(mb.chapter_budgets)
     assert ctx.read_json("plan_meta.json")["working_title"] == "The Doorbell Camera"
 
     story = Story.model_validate(ctx.read_json("story.json"))
@@ -86,7 +88,7 @@ def test_master_pipeline_on_fixtures(tmp_home: Path, monkeypatch: pytest.MonkeyP
         assert ch.text == _chapter_fixture(ch.n)["text"].strip()
         assert [s.idx for s in ch.sentences] == list(range(len(ch.sentences)))
         assert ch.sentences[-1].text == split_sentences(ch.text)[-1]
-        assert 248 <= ch.word_count <= 372
+        assert 0.8 * min(mb.chapter_budgets) <= ch.word_count <= 1.2 * max(mb.chapter_budgets)
         assert ch.est_seconds == pytest.approx(ch.word_count / 155 * 60, abs=0.01)
     assert [c.cliff_line_idx is None for c in story.chapters] == [False] * 4 + [True]
     assert story.chapters[0].cliff_line_idx == len(story.chapters[0].sentences) - 1
@@ -181,7 +183,7 @@ def test_master_second_run_makes_no_llm_calls(tmp_home: Path, monkeypatch: pytes
 def test_ideas_budget_uses_the_master_target(tmp_home: Path, monkeypatch: pytest.MonkeyPatch):
     ctx = _master_ctx(monkeypatch, tmp_home)
     REGISTRY["ideas"].run(ctx)
-    assert "about 1550 words" in ctx.services.llm.calls[0]["user"]  # type: ignore[attr-defined]
+    assert f"about {master_budget(11, 'standard').target_words} words" in ctx.services.llm.calls[0]["user"]  # type: ignore[attr-defined]
 
 
 def test_whole_story_continuity_on_gpu_profile(tmp_home: Path, monkeypatch: pytest.MonkeyPatch):
