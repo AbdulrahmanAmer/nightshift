@@ -625,3 +625,25 @@ def test_logs_tail_is_a_bare_list(tmp_home: Path):
     assert {"ts", "level", "component", "event", "msg"} <= set(lines[0])
     assert [r["event"] for r in dash.settings.tail("dashboard", "ERROR", 10, None)][-1] == "bad_event"
     assert "dashboard" in dash.settings.log_components()
+
+
+def test_series_compilation_is_not_offered_until_it_has_stages(tmp_home: Path, monkeypatch: pytest.MonkeyPatch):
+    """Gap 29: the empty-stage format is hidden from Run now (API and Assistant) instead of failing NS-E306."""
+    from ns_dashboard import common
+    from ns_dashboard.assistant.tools import build_registry
+    from ns_studio.orchestrator import FORMAT_STAGES
+
+    assert common.offered_formats() == ("master_first", "shorts_only")
+    assert "series_compilation" in common.KNOWN_FORMATS
+    spec = build_registry().get("start_story_job").spec  # type: ignore[union-attr]
+    assert spec.args_schema["properties"]["format"]["enum"] == ["master_first", "shorts_only"]
+
+    dash, state = make(tmp_home)
+    seed_channel(state.db, state.paths)
+    with pytest.raises(ApiError) as ei:
+        dash.jobs.create_run({"channel": "after-dark", "format": "series_compilation"})
+    assert ei.value.code == "invalid_options" and "not available yet" in str(ei.value)
+
+    # once the orchestrator gives it stages it is offered by itself
+    monkeypatch.setitem(FORMAT_STAGES, "series_compilation", ["ideas"])
+    assert common.offered_formats() == ("master_first", "shorts_only", "series_compilation")
