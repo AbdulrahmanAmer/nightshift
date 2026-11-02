@@ -27,6 +27,7 @@ from ns_supervisor import (
 )
 from ns_supervisor.client import SupervisorClient, ensure_running
 from ns_supervisor.schedule_cfg import read_run_time
+from ns_supervisor.services import venv_python
 
 app = typer.Typer(help="Nightshift runtime tools", add_completion=False)
 schedule_app = typer.Typer(help="The nightly scheduled task 'Nightshift Daily'", add_completion=False)
@@ -181,7 +182,7 @@ def _apply_update(
     env = update.UpdateEnv(
         stop=lambda: _stop_engine(paths),
         sync=lambda a: _sync(paths, a),
-        verify=update.verify_quick,
+        verify=lambda a: update.verify_quick(a, venv_python(paths, "supervisor")),
         reregister=lambda a: _reregister(paths, a),
         settle=lambda: control.wait_down(_client(paths)),
     )

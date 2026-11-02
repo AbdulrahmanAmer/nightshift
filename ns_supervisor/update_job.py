@@ -31,7 +31,7 @@ import psutil
 from ns_common.atomic import write_text_atomic
 from ns_common.errors import NsError
 from ns_common.paths import Paths
-from ns_supervisor import pwsh
+from ns_supervisor import pwsh, updater_copy
 from ns_supervisor.procs import UNDER_ENGINE_ENV
 
 CREATE_NEW_PROCESS_GROUP = 0x00000200
@@ -273,11 +273,20 @@ def launch(
     wait_pid: int | None,
     spawn: Callable[..., int] | None = None,
     now: datetime | None = None,
+    stage: Callable[[Paths], Path | None] | None = None,
 ) -> tuple[int, Path]:
-    """Start the worker for `forwarded` arguments; returns (pid, log path). Writes the `running` state."""
+    """Start the worker for `forwarded` arguments; returns (pid, log path). Writes the `running` state.
+
+    The worker runs from a private copy of the supervisor venv (`updater_copy`), so that no file in
+    `venvs\\supervisor` is open while it re-installs into that venv. Without a venv, or when the copy fails,
+    it runs with this process's interpreter as before.
+    """
     log = new_log_path(paths, now)
     log.parent.mkdir(parents=True, exist_ok=True)
-    argv = worker_argv(forwarded, log=log, home=paths.home, wait_pid=wait_pid)
+    staged = (stage or updater_copy.stage_worker_python)(paths)
+    argv = worker_argv(
+        forwarded, log=log, home=paths.home, wait_pid=wait_pid, python=str(staged) if staged else None
+    )
     _progress(paths, "running", "Starting the update.", log=str(log))
     cwd = paths.home if paths.home.is_dir() else Path(os.path.expanduser("~"))
     pid = (spawn or spawn_detached)(argv, cwd=cwd)

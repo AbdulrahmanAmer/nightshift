@@ -40,6 +40,9 @@ RESTORE_HINT = (
     "ending in .prev)."
 )
 UPDATE_VENVS = ("studio", "supervisor", "tts")      # extras: ns_common.venv_extras (shared with setup)
+#: Console scripts the app installs into every venv (`[project.scripts]`). A running copy cannot be replaced.
+ENTRY_EXES = ("ns.exe", "studio.exe")
+OLD_SUFFIX = ".old"
 
 
 @dataclass
@@ -316,15 +319,69 @@ def rollback_app(app: Path, env: UpdateEnv, *, paths: Paths) -> UpdateResult:
     return UpdateResult(old_version, current_version(app), ["rolled back"])
 
 
+def free_entry_points(venv: Path) -> list[tuple[Path, Path]]:
+    """Move `ns.exe` and `studio.exe` of `venv` out of the way so uv can write fresh ones.
+
+    Windows refuses to delete or overwrite a running program, but it does allow renaming one. A terminal that
+    is following `ns update` (or any Studio window) still runs the old `Scripts\\ns.exe`; without this, uv
+    fails with "Access is denied" while replacing it. Returns (original, moved-to) pairs.
+    """
+    scripts = venv / "Scripts"
+    moved: list[tuple[Path, Path]] = []
+    for name in ENTRY_EXES:
+        exe = scripts / name
+        if not exe.is_file():
+            continue
+        away = scripts / (name + OLD_SUFFIX)
+        try:
+            away.unlink(missing_ok=True)          # left by the last update; fails while that one still runs
+        except OSError:
+            away = scripts / f"{name}{OLD_SUFFIX}-{os.getpid()}"
+        try:
+            os.replace(exe, away)
+        except OSError:
+            continue                              # not renamable either: uv will report it
+        moved.append((exe, away))
+    return moved
+
+
+def restore_entry_points(moved: list[tuple[Path, Path]]) -> None:
+    """Put moved launchers back where uv did not write a new one (the install failed half way)."""
+    for exe, away in moved:
+        if not exe.exists() and away.exists():
+            try:
+                os.replace(away, exe)
+            except OSError:
+                pass
+
+
+def discard_entry_points(moved: list[tuple[Path, Path]]) -> None:
+    """Delete the moved launchers; one that is still running stays until the next update."""
+    for _exe, away in moved:
+        try:
+            away.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def finish_entry_points(moved: list[tuple[Path, Path]]) -> None:
+    """After a successful install: a launcher uv did not write again (nothing to reinstall) comes back, the
+    others lose their moved-aside copy."""
+    restore_entry_points(moved)
+    discard_entry_points(moved)
+
+
 def resync_venvs(
     app: Path,
     paths: Paths,
     *,
     uv: str | None = None,
     run: Callable[[list[str]], tuple[int, str]] | None = None,
+    free: Callable[[Path], list[tuple[Path, Path]]] | None = None,
 ) -> list[str]:
     """`uv pip install -e <app>[extras]` in every venv that exists; raises `NS-E702` on failure."""
     runner = run or _run
+    free_up = free or free_entry_points
     exe = uv if uv is not None else find_uv(paths)
     done: list[str] = []
     for venv in UPDATE_VENVS:
@@ -339,9 +396,12 @@ def resync_venvs(
         cmd = [exe, "pip", "install", "-e", f"{app}{extras}", "--python", str(py)]
         if no_deps:
             cmd.append("--no-deps")
+        moved = free_up(paths.venvs / venv)
         rc, tail = runner(cmd)
         if rc != 0:
+            restore_entry_points(moved)
             raise NsError("NS-E702", f"uv pip install failed for venv {venv}: {tail}")
+        finish_entry_points(moved)
         done.append(venv)
     return done
 
@@ -354,10 +414,15 @@ def _run(cmd: list[str]) -> tuple[int, str]:
     return r.returncode, " | ".join((r.stderr or r.stdout).strip().splitlines()[-3:])
 
 
-def verify_quick(app: Path) -> bool:
-    """`ns verify --quick` with the new code (a fresh interpreter in the app directory)."""
+def verify_quick(app: Path, python: str | None = None) -> bool:
+    """`ns verify --quick` with the new code (a fresh interpreter in the app directory).
+
+    `python` is the supervisor venv's interpreter, which the re-sync just brought up to date. The default,
+    this process's own interpreter, is wrong in the update worker: that runs from a copy of the venv made
+    before the re-sync and would not see a dependency the new version added.
+    """
     r = subprocess.run(
-        [sys.executable, "-m", "ns_supervisor.cli", "verify", "--quick"], cwd=str(app), check=False
+        [python or sys.executable, "-m", "ns_supervisor.cli", "verify", "--quick"], cwd=str(app), check=False
     )
     return r.returncode == 0
 
