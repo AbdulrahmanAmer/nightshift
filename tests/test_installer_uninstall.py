@@ -12,7 +12,8 @@ UNINSTALL = ROOT / "installer" / "uninstall.ps1"
 PS = shutil.which("powershell") or shutil.which("pwsh")
 pytestmark = pytest.mark.skipif(PS is None, reason="PowerShell not available")
 
-ALL_DIRS = ["venvs", "bin", "run", "models", "outbox", "rejected", "data", "imports", "cache", "config", "logs"]
+ALL_DIRS = ["venvs", "bin", "run", "models", "outbox", "rejected", "data", "imports", "cache"]
+ALL_DIRS += ["config", "logs"]
 
 
 def _make_home(tmp_path: Path) -> Path:
@@ -110,7 +111,7 @@ def test_the_dry_run_lists_the_run_folder(tmp_path: Path):
 
 
 def test_with_keepbin_the_copy_goes_now_and_the_pid_files_wait_for_the_window(tmp_path: Path):
-    """The setup window reads run\apphost-setup.json after the script ends; the deferred script removes run."""
+    """The setup window reads run/apphost-setup.json when the script ends; the deferred script removes run."""
     home = _make_home(tmp_path)
     updater = _with_updater_copy(home)
     proc = _run(home, "-SkipSystem", "-KeepBin")

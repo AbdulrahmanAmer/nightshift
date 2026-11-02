@@ -91,7 +91,8 @@ def test_the_handoff_says_nothing_is_in_flight_and_points_at_the_first_partner_r
     assert "## In flight\n- None." in text
     assert "feat/release-0.1.0" not in text.split("## Next steps")[1]  # the old release-prep step is done
     steps = text.split("## Next steps for a fresh orchestrator")[1]
-    assert "git tag v0.1.1" in steps and "Verified on the partner PC" in steps and "Nightshift-0.1.1.zip" in steps
+    for needle in ("git tag v0.1.1", "Verified on the partner PC", "Nightshift-0.1.1.zip"):
+        assert needle in steps, needle
     merged = text.split("## Merged on main")[1].split("## UI direction")[0]
     for pr in ("#48", "#51", "feat/release-0.1.1-pretag"):
         assert pr in merged, pr

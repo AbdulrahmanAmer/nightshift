@@ -160,7 +160,7 @@ def run_tts(argv: list[str]) -> int:
         if os.environ.get("NS_FAKE_QWEN_SHORT"):
             lines = lines[:-1]  # a binary that drops an utterance
         out = sys.stdout.buffer
-        hang_after = os.environ.get("NS_FAKE_QWEN_HANG_AFTER")  # finish N utterances, open the next, then stall
+        hang_after = os.environ.get("NS_FAKE_QWEN_HANG_AFTER")  # finish N utterances, open the next, stall
         for k, ln in enumerate(lines):
             if hang_after is not None and k == int(hang_after):
                 out.write(stream_header())

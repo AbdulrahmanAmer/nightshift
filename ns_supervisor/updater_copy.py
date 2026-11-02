@@ -80,7 +80,7 @@ def is_inside(path: Path | str, folder: Path) -> bool:
 def own_copy(paths: Paths, python: str | None = None) -> Path | None:
     """The `venv-<stamp>` folder the interpreter `python` (default: this one) runs from, else None.
 
-    None for a worker that runs from `venvs\supervisor` itself (the copy failed): nothing to delete then.
+    None for a worker that runs from the real venv itself (the copy failed): nothing to delete then.
     """
     root = updater_root(paths)
     exe = Path(python or sys.executable)

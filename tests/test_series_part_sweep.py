@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from ns_common.db import open_db
+from ns_dashboard.state import open_db
 from ns_common.logging import NsLogger
 from ns_common.paths import Paths
 from ns_dashboard import studio_bridge
