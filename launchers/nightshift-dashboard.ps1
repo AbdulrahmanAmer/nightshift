@@ -13,17 +13,12 @@ if (-not (Test-NsSupervisor)) {
     }
 }
 
-# The engine starts the dashboard service itself; give the page a moment to come up.
-$deadline = (Get-Date).AddSeconds(60)
-$up = $false
-while (-not $up -and (Get-Date) -lt $deadline) {
-    try {
-        Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 2 | Out-Null
-        $up = $true
-    }
-    catch {
-        Start-Sleep -Milliseconds 500
-    }
+# A freshly started engine warms the dashboard itself. One that was already running may be headless (left by
+# `ns verify --quick` or the nightly task) and would never start it, so always ask. It is a no-op when the
+# service is up. Then wait for the page; never open a dead address.
+[void](Start-NsDashboardService)
+if (-not (Wait-NsPort -Url $url -TimeoutSec 60)) {
+    Exit-NsWithPause 'The Nightshift dashboard did not start. Run "Nightshift - Diagnostics" and send the zip.'
 }
 
 # NS_DASHBOARD_NO_HOST=1 (set by the setup window) skips it: a running host window would be raised instead.

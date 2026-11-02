@@ -398,6 +398,9 @@ def test_s10_summary_names_the_file_to_upload(tmp_path: Path):
     assert "every night at 03:00" in ctx.ui.text
     assert ctx.ui.tables[0][0] == "Setup result" and len(ctx.ui.tables[0][1]) == 11
     assert any(str(ctx.paths.outbox) in r[1] for r in ctx.ui.tables[1][1])
+    stops = runner.called("ns stop")
+    assert len(stops) == 1 and stops[0].argv[-1] == "stop"        # no headless verify engine is left behind
+    assert runner.calls.index(stops[0]) > runner.calls.index(runner.called("ns doctor --bundle")[0])
 
 
 def test_s10_without_a_bundle_command_says_so(tmp_path: Path):

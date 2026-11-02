@@ -1,3 +1,8 @@
+import json
+import subprocess
+import threading
+from collections.abc import Iterator
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 import pytest
@@ -132,3 +137,100 @@ def test_update_launcher_steps_out_of_the_app_folder_before_calling_ns_update() 
     text = read("update.ps1")
     assert "Set-Location -LiteralPath (Get-NsHome)" in text
     assert text.index("Set-Location") < text.index("& $ns update")
+
+
+# --- dashboard warmup ---
+class FakeEngine:
+    """Stands in for the supervisor API; records every POST."""
+
+    def __init__(self) -> None:
+        self.posts: list[tuple[str, object]] = []
+        engine = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def _reply(self) -> None:
+                body = b'{"state": "running"}'
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def do_GET(self) -> None:  # noqa: N802
+                self._reply()
+
+            def do_POST(self) -> None:  # noqa: N802
+                raw = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+                engine.posts.append((self.path, json.loads(raw or b"null")))
+                self._reply()
+
+            def log_message(self, *args: object) -> None:
+                return
+
+        self.server = HTTPServer(("127.0.0.1", 0), Handler)
+        self.port = self.server.server_address[1]
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def close(self) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+
+
+@pytest.fixture
+def engine(tmp_path: Path) -> Iterator[tuple[FakeEngine, dict[str, str]]]:
+    eng = FakeEngine()
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "runtime.json").write_text(
+        json.dumps({"supervisor_port": eng.port}), encoding="utf-8"
+    )
+    yield eng, {"NIGHTSHIFT_HOME": str(tmp_path)}
+    eng.close()
+
+
+def run_common(snippet: str, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    script = f". '{LAUNCHERS / '_common.ps1'}'\n{snippet}\n"
+    return pwsh.run_powershell(script, env_extra=env, timeout_s=90)
+
+
+@needs_powershell
+def test_dashboard_warmup_posts_to_a_running_headless_engine(
+    engine: tuple[FakeEngine, dict[str, str]],
+) -> None:
+    eng, env = engine
+    snippet = "if (Test-NsSupervisor) { if (Start-NsDashboardService -TimeoutSec 20) { 'warmed' } }"
+    r = run_common(snippet, env)
+    assert r.returncode == 0 and "warmed" in r.stdout, r.stdout + r.stderr
+    assert eng.posts == [("/warmup", {"service": "dashboard"})]
+
+
+@needs_powershell
+def test_wait_for_the_dashboard_port_is_true_when_served_and_false_when_not(
+    engine: tuple[FakeEngine, dict[str, str]],
+) -> None:
+    eng, env = engine
+    up = run_common(f"Wait-NsPort -Url 'http://127.0.0.1:{eng.port}/' -TimeoutSec 10", env)
+    assert up.stdout.strip() == "True", up.stdout + up.stderr
+    eng.close()
+    down = run_common(f"Wait-NsPort -Url 'http://127.0.0.1:{eng.port}/' -TimeoutSec 2", env)
+    assert down.stdout.strip() == "False", down.stdout + down.stderr
+
+
+def test_dashboard_launcher_always_asks_the_engine_for_the_dashboard_and_never_opens_a_dead_page() -> None:
+    text = read("nightshift-dashboard.ps1")
+    ask = text.index("Start-NsDashboardService")
+    wait, host = text.index("Wait-NsPort"), text.index("nightshift-host.ps1")
+    assert text.index("Test-NsSupervisor") < ask < wait < host
+    # the warmup is not inside the "engine was not running" branch
+    assert text.index("Start-NsSupervisor") < text.index("Wait-NsSupervisor") < ask
+    branch_end = text.index("\n}\n", text.index("if (-not (Test-NsSupervisor))"))
+    assert ask > branch_end
+    assert "if (-not (Wait-NsPort" in text and "Exit-NsWithPause" in text[text.index("Wait-NsPort") :][:300]
+
+
+def test_open_dashboard_action_runs_the_launcher_that_does_the_warmup() -> None:
+    from installer.stage2.web import controller
+
+    src = Path(controller.__file__).read_text(encoding="utf-8")
+    body = src[src.index("def _act_open_dashboard") :][:600]
+    assert "nightshift-dashboard.ps1" in body        # one implementation of the warmup: the launcher
+    assert "Start-NsDashboardService" in read("nightshift-dashboard.ps1")
