@@ -2,7 +2,7 @@
 
 The dashboard service lives in the supervisor venv, which has no faster-whisper, GPU DLL wheels, spaCy or
 OpenCV. `ns_dashboard.studio_runner.StudioRunner` therefore starts
-`<home>/venvs/studio/Scripts/python.exe -m ns_dashboard.studio_job <kind> --args <file.json>` and reads what this
+`<home>/venvs/studio/Scripts/python.exe -m ns_dashboard.studio_job <kind> --args <f>` and reads what this
 module prints: one JSON object per line, each behind the prefix `NSJOB ` so a stray `print` from a library
 cannot be mistaken for an event. The events are
 

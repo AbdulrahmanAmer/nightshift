@@ -185,7 +185,7 @@ UPDATE_STATES = ("running", "done", "failed")
 
 
 def update_state_path(paths: Paths) -> Path:
-    """`<home>\run\update_state.json`, written by the detached updater (`ns update --github`)."""
+    """`<home>/run/update_state.json`, written by the detached updater (`ns update --github`)."""
     return paths.home / "run" / UPDATE_STATE_FILE
 
 
