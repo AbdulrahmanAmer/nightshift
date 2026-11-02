@@ -48,9 +48,17 @@ class ShortCombosStage:
 
 
 def series_fixed(series: Mapping[str, Any]) -> dict[str, str]:
-    """Combo fields a series design pins for every video of the series (caption style, visual treatment)."""
+    """Combo fields a series pins for every video of the series.
+
+    The design pins the caption style and visual treatment. `pacing` is the pace the scripts were written at
+    (`series_context.json`, stored by `Workshop.produce`): a part drawn at another pace would run its words
+    at another speed and miss the part's runtime, and its Shorts would no longer fit their time bands.
+    """
     design = series.get("design") or {}
-    return {f: str(design[f]) for f in ("caption_style", "visual_treatment") if design.get(f)}
+    fixed = {f: str(design[f]) for f in ("caption_style", "visual_treatment") if design.get(f)}
+    if series.get("pacing"):
+        fixed["pacing"] = str(series["pacing"])
+    return fixed
 
 
 def job_series_fixed(job_dir: Path) -> dict[str, str]:

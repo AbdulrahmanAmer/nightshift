@@ -115,6 +115,7 @@ class ProduceRequest:
     end_card: str
     publish_not_before_days: int
     minutes: int = 15  # the part's runtime target; QC allows a master up to 15 % over it
+    pacing: str = "standard"  # the pacing the script was written at (words = minutes x its wpm); the job keeps it
 
 
 EnqueueFn = Callable[[ProduceRequest], object]
@@ -968,7 +969,8 @@ class Workshop:
             raise WorkshopError("no design yet; run `studio series design` first")
         fn = enqueue or self.enqueue or make_db_enqueue(self.db)
         nums = self._pick(status, series, which, ("approved",), "produce")
-        wpm = PACING_WPM.get(ch.pools.pacings[0] if ch.pools.pacings else "standard", 155)
+        pacing = ch.pools.pacings[0] if ch.pools.pacings else "standard"  # what `_ctx` wrote the scripts at
+        wpm = PACING_WPM.get(pacing, 155)
         for n in nums:
             build_artifacts(sd.read_script(n), sd.read_shorts(n), wpm=wpm, combo_id=f"workshop-{slug}")
         series_slug = slugify(series.title)
@@ -996,6 +998,7 @@ class Workshop:
                 end_card=f"Next: Part {nxt.n}, {nxt.title}." if nxt else "That was the final part.",
                 publish_not_before_days=idx * design.publish_cadence_days,
                 minutes=series.entry(n).minutes,
+                pacing=pacing,
             )
             self._prepare_job(req)
             fn(req)
@@ -1020,6 +1023,7 @@ class Workshop:
             "end_card": req.end_card,
             "publish_not_before_days": req.publish_not_before_days,
             "minutes": req.minutes,
+            "pacing": req.pacing,
             "design": req.design,
         }
         (d / "series_context.json").write_text(json.dumps(context, indent=2) + "\n", encoding="utf-8")
