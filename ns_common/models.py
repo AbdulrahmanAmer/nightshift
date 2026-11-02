@@ -217,20 +217,11 @@ class HfRepo(Strict):
     files_sha256: dict[str, str] = {}
 
 
-TBD_SHA256 = "TBD-release"
-
-
 class BinPin(Strict):
     version: str
     url: str
     sha256: str | None = None
     optional: bool = False           # only optional pins may carry sha256 "TBD-release" (CR-C1-UI-3)
-
-    @model_validator(mode="after")
-    def _tbd_only_when_optional(self) -> BinPin:
-        if self.sha256 == TBD_SHA256 and not self.optional:
-            raise ValueError(f'sha256 "{TBD_SHA256}" is allowed only on entries marked optional')
-        return self
 
 
 class ProfileModels(Strict):

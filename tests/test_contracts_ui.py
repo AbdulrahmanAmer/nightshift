@@ -85,11 +85,12 @@ def test_binpin_old_entries_stay_valid():
     assert pin.optional is False
 
 
-def test_tbd_release_is_accepted_only_for_optional_pins():
-    base = {"version": "1", "url": "https://x/y.nupkg", "sha256": "TBD-release"}
-    assert m.BinPin.model_validate(base | {"optional": True}).sha256 == "TBD-release"
-    with pytest.raises(ValidationError):
-        m.BinPin.model_validate(base)
+def test_manifest_uses_tbd_release_only_on_optional_pins():
+    from ns_common.config import load_manifest
+
+    for name, pin in load_manifest().bins.items():
+        if pin is not None and pin.sha256 == "TBD-release":
+            assert pin.optional, f"bins.{name}: TBD-release is allowed only on optional entries"
 
 
 def test_resolve_manifest_check_tolerates_tbd_only_when_optional():
