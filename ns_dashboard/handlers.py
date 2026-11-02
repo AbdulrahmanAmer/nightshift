@@ -24,6 +24,7 @@ from ns_dashboard.svc_jobs import JobsService, build_handlers
 from ns_dashboard.svc_library import LibraryService
 from ns_dashboard.svc_outputs import OutputsService
 from ns_dashboard.svc_settings import SettingsService
+from ns_dashboard.svc_voices import VoicesService
 
 
 class Dashboard:
@@ -44,6 +45,7 @@ class Dashboard:
         self.jobs = JobsService(state, self.channels)
         self.settings = SettingsService(state, self.engine)
         self.library = LibraryService(state, self.channels)
+        self.voices = VoicesService(state)
         self.registry = build_registry()
         self.assistant_store = AssistantStore(state.paths)
         acquirer = make_acquirer(state.link.base_url)
