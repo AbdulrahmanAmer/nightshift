@@ -84,6 +84,7 @@ def restore_backup(
             raise NsError("NS-E703", f"{zip_path.name} has no {MANIFEST}; not a Nightshift backup")
         root = paths.home.resolve()
         saved = paths.backup_dir / f"pre-restore-{when:%Y%m%d-%H%M%S}"
+        touched: list[tuple[Path, Path | None]] = []
         for info in z.infolist():
             name = info.filename
             if info.is_dir() or name == MANIFEST:
@@ -100,15 +101,38 @@ def restore_backup(
             dest = (paths.home / Path(*rel.parts)).resolve()
             if root not in dest.parents:
                 raise NsError("NS-E703", f"unsafe path in backup: {name}")
-            if dest.exists():
-                keep = saved / Path(*rel.parts)
-                keep.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(dest, keep)
-            if name == "data/studio.db":
-                for suffix in ("-wal", "-shm"):  # stale WAL files would corrupt the restored database
-                    Path(str(dest) + suffix).unlink(missing_ok=True)
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            with z.open(info) as src, dest.open("wb") as dst:
-                shutil.copyfileobj(src, dst)
+            keep: Path | None = None
+            try:
+                if dest.exists():
+                    keep = saved / Path(*rel.parts)
+                    keep.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(dest, keep)
+                touched.append((dest, keep))
+                if name == "data/studio.db":
+                    for suffix in ("-wal", "-shm"):  # stale WAL files would corrupt the restored database
+                        Path(str(dest) + suffix).unlink(missing_ok=True)
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                with z.open(info) as src, dest.open("wb") as dst:
+                    shutil.copyfileobj(src, dst)
+            except OSError as e:  # disk full, a locked database, no permission: put everything back
+                undone = _roll_back(touched)
+                raise NsError(
+                    "NS-E703", f"restoring {name} failed ({e}); {undone} file(s) put back from {saved.name}"
+                ) from e
             lines.append(f"restored {name}")
     return lines
+
+
+def _roll_back(touched: list[tuple[Path, Path | None]]) -> int:
+    """Undo a half-done restore: copy each saved original back, delete files that did not exist before."""
+    count = 0
+    for dest, keep in reversed(touched):
+        try:
+            if keep is not None and keep.is_file():
+                shutil.copy2(keep, dest)
+            elif keep is None:
+                dest.unlink(missing_ok=True)
+            count += 1
+        except OSError:
+            continue
+    return count
