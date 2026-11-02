@@ -52,3 +52,5 @@ export interface ChannelProfile { slug: string; display_name: string; status: "a
 export interface ChannelPools { hooks: string[]; structures: string[]; pov_tones: string[]; pacings: string[]; caption_styles: string[]; visual_treatments: string[]; title_formulas: string[] }
 /** GET/PUT/POST /channels...: the profile plus the validation warnings. */
 export interface ChannelDetail { profile: ChannelProfile; warnings: string[]; warning_fields: { field: string; message: string }[] }
+/** GET /update/state: what the detached updater writes to run/update_state.json (idle when it never ran). */
+export interface UpdateState { state: "idle" | "running" | "done" | "failed"; old: string | null; new: string | null; message: string | null; updated_at: string | null }

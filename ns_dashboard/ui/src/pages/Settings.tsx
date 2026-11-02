@@ -3,8 +3,8 @@
    /settings, POST /settings/keys, GET /update/check, POST /update/apply, POST /diagnostics, GET /logs/tail. */
 import { useEffect, useState } from "react";
 import { useApp, useLoad } from "../lib/app";
-import { api } from "../lib/api";
-import type { Job, LogLine, Settings as S } from "../lib/types";
+import { api, ApiError } from "../lib/api";
+import type { Job, LogLine, Settings as S, UpdateState } from "../lib/types";
 import { dayInline, plural } from "../lib/format";
 import { cx } from "../ui/kit";
 import { Lockup } from "../ui/Lockup";
@@ -28,16 +28,38 @@ export default function Settings() {
   useEffect(() => { if (s) { setTime(s.schedule_time || "03:00"); setFlags(Object.fromEntries(Object.entries(s.flags || {}).map(([k, v]) => [k, String(v)]))); } }, [s]);
   useEffect(() => { const t = setInterval(() => document.visibilityState === "visible" && logs.reload(), 5000); return () => clearInterval(t); }, [level, component]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const put = async (body: Record<string, unknown>, ok: string) => { try { const r = await api.put("/settings", body); if (r && typeof r === "object") st.setData({ ...s, ...r }); toast(ok, "ok"); return true; } catch (e: any) { toast(e.message, "bad"); return false; } };
+  const put = async (body: Record<string, unknown>, ok: string) => { try { const r = await api.put("/settings", body); if (r && typeof r === "object") st.setData({ ...s, ...r }); if (r?.schedule_result && r.schedule_result.applied === false) { toast(r.schedule_result.note, "bad"); return false; } toast(ok, "ok"); return true; } catch (e: any) { toast(e.message, "bad"); return false; } };
   const setKey = async (name: string) => {
     const v = await confirm({ title: `${name[0]!.toUpperCase() + name.slice(1)} key`, body: "Paste the free key from your account page. It is stored in Windows Credential Manager, never in a file", ok: "Save key", input: { label: "Key", placeholder: "Paste the key" } });
     if (typeof v !== "string" || !v.trim()) return;
     try { await api.post("/settings/keys", { name, value: v.trim() }); toast("Key saved", "ok"); st.reload(); } catch (e: any) { toast(e.message, "bad"); }
   };
   const check = async () => { setChecking(true); try { setUpd(await api.get("/update/check")); } catch (e: any) { toast(e.message, "bad"); } setChecking(false); };
+  // The updater runs detached and stops this very service, so the POST may never be answered. What is shown comes from the
+  // updater's own state file (GET /update/state), polled across the restart: "Installing", "restarting", then "Now on X (was Y)".
+  const [updating, setUpdating] = useState<string | null>(null);
+  const follow = (fresh: boolean) => {
+    setUpdating("Installing the update"); let seen = !fresh; const began = Date.now(); let n = 0;
+    const t = setInterval(async () => {
+      n++; if (n > 1200) { clearInterval(t); setUpdating(null); return; }
+      try {
+        const u = await api.get<UpdateState>("/update/state");
+        if (u.state === "running") { seen = true; setUpdating(u.message || "Installing the update"); }
+        else if ((u.state === "done" || u.state === "failed") && (seen || Date.now() - began > 90_000)) {
+          clearInterval(t); setUpdating(null); setUpd(null);
+          if (u.state === "done") { toast(`Now on ${u.new || "the newest version"} (was ${u.old || "the old one"})`, "ok"); st.reload(); }
+          else toast(`The update did not work and nothing was changed. ${u.message || ""}`, "bad");
+        }
+      } catch { seen = true; setUpdating("Nightshift is restarting. This page reconnects by itself"); }
+    }, 3000);
+  };
+  useEffect(() => { api.get<UpdateState>("/update/state").then((u) => { if (u.state === "running") follow(false); }).catch(() => undefined); }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const apply = async () => {
     const ok = await confirm({ title: "Install the update?", body: "Nightshift stops the engine, installs the new version and starts again. If anything fails it goes back to this version", ok: "Install" });
-    if (!ok) return; try { await api.post("/update/apply"); toast("Updating. The page reconnects when it is done", "ok"); } catch (e: any) { toast(e.message, "bad"); }
+    if (!ok) return;
+    try { await api.post("/update/apply"); }
+    catch (e: any) { if (e instanceof ApiError) { toast(e.message, "bad"); return; } /* no answer: the updater has already stopped this service, which is the update starting */ }
+    follow(true);
   };
   const [report, setReport] = useState<{ path?: string; name?: string; download_url?: string } | null>(null);
   const diag = async () => { try { const r = await api.post("/diagnostics"); setReport(r); toast(`Report saved to ${r?.path || "your Desktop"}`, "ok"); } catch (e: any) { toast(e.message, "bad"); } };
@@ -48,6 +70,13 @@ export default function Settings() {
     if (!ok) return;
     const fd = new FormData(); fd.append("file", f);
     try { const r = await api.upload("/settings/import", fd, () => {}); toast(r?.note || "Settings restored", "ok"); st.reload(); } catch (e: any) { toast(e.message, "bad"); }
+  };
+  const models = useLoad<Record<string, { state: string; message: string }>>(() => api.get("/models/state"), [], {});
+  const busyModel = Object.values(models.data).some((m) => m.state === "running");
+  useEffect(() => { if (!busyModel) return; const t = setInterval(models.reload, 4000); return () => clearInterval(t); }, [busyModel]); // eslint-disable-line react-hooks/exhaustive-deps
+  const getModel = async (name: string, label: string) => {
+    try { await api.post("/models/get", { name }); toast(`Downloading the ${label}. It takes a while; you can keep working`, "ok"); models.reload(); }
+    catch (e: any) { toast(e instanceof ApiError && e.code === "models_unavailable" ? `Getting the ${label} from here is not available yet. Run the installer's model step again with it ticked` : e.message, e instanceof ApiError && e.code === "models_unavailable" ? "warn" : "bad"); }
   };
   const [warming, setWarming] = useState(false);
   const warmUp = async () => { setWarming(true); try { await api.post("/engine/warmup", { service: "llama" }); toast("The language model is starting. It is ready in about a minute", "ok"); } catch (e: any) { toast(e.message, "bad"); } setWarming(false); };
@@ -126,7 +155,8 @@ export default function Settings() {
           <Card as="section" aria-labelledby="s-upd">
             <CardHeader id="s-upd" title="Updates" className="!mb-1" adornment={upd?.state === "available" ? <Badge tone="accent">New version</Badge> : undefined} />
             <SettingRow title="From GitHub" sub={upd ? (upd.state === "unavailable" || upd.state === "error" || upd.state === "unknown" ? upd.message : upd.up_to_date ? `You have the newest version${upd.current ? `, ${upd.current}` : ""}` : `Version ${upd.latest} is ready. You have ${upd.current}`) : <>You have version <span className="font-mono">{version || "unknown"}</span></>}>
-              {upd?.state === "available" ? <Button leadingIcon="download" onClick={apply}>Install {upd.latest}</Button>
+              {updating ? <span className="flex items-center gap-2 text-ds-sm font-semibold text-ds-accent-ink" role="status"><StatusDot tone="accent" />{updating}</span>
+                : upd?.state === "available" ? <Button leadingIcon="download" onClick={apply}>Install {upd.latest}</Button>
                 : <Button variant="soft" leadingIcon="github" onClick={check} disabled={checking}>{checking ? "Checking" : "Check now"}</Button>}
             </SettingRow>
             <SettingRow title="From a file" sub="The nightshift-app zip you were given, for a PC without internet">
@@ -165,6 +195,14 @@ export default function Settings() {
                   {unlocked ? <Input id={"flag-" + k} className="!h-8 !w-[130px] font-mono !text-ds-xs" value={v} onChange={(e) => setFlags({ ...flags, [k]: e.target.value })} /> : <span className="font-mono text-ds-xs ds-num">{v}</span>}
                 </div>
               ))}
+            </div>
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              {([["voice_design", "voice design model"], ["story", "story model"]] as const).map(([name, label]) => (
+                <Button key={name} size="sm" variant="soft" leadingIcon="download" disabled={models.data[name]?.state === "running"} onClick={() => getModel(name, label)}>
+                  {models.data[name]?.state === "running" ? `Getting the ${label}` : `Get ${label}`}
+                </Button>
+              ))}
+              {Object.entries(models.data).filter(([, m]) => m.state !== "running").map(([k, m]) => <span key={k} className={cx("text-ds-2xs", m.state === "failed" ? "text-ds-danger" : "text-ds-success-ink")}>{k.replace("_", " ")}: {m.state === "done" ? "ready" : m.message || "failed"}</span>)}
             </div>
             {unlocked && <div className="pt-4"><Button onClick={async () => { const f = Object.fromEntries(Object.entries(flags).map(([k, v]) => [k, v !== "" && !isNaN(Number(v)) ? Number(v) : v])); if (await put({ flags: f, unlock: true }, "Engine settings saved")) setUnlocked(false); }}>Save engine settings</Button></div>}
             <div className="mt-6 flex flex-wrap items-center justify-between gap-3">
