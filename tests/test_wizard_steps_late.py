@@ -350,16 +350,35 @@ def test_s09_missing_schedule_command_is_a_warning_not_a_failure(tmp_path: Path)
     assert ctx.flag("schedule") == "unavailable" and "not part of this version" in ctx.ui.text
 
 
-def test_s09_real_scheduler_failure_is_e202(tmp_path: Path):
+def test_s09_a_refused_scheduler_never_blocks_the_install(tmp_path: Path):
     app = launcher_app(tmp_path, [])
     runner = FakeRunner(tmp_path / "desktop", results={
         "ns schedule install --time 03:00": RunResult(1, "", "access denied")})
     ctx = make_test_context(
         tmp_path, raw_answers=example_answers(), resolve=True, app_path=app, runner=runner
     )
-    with pytest.raises(NsError) as ei:
-        S09ShortcutsScheduler().run(ctx)
-    assert ei.value.code == "NS-E204" and "access denied" in ei.value.detail
+    step = S09ShortcutsScheduler()
+    step.run(ctx)                                        # does not raise
+    step.verify(ctx)
+    assert ctx.flag("schedule") == "failed"
+    assert ("NS-W206", "access denied") in ctx.warnings
+    from ns_supervisor.schedule_cfg import read_run_time
+    assert read_run_time(ctx.paths) == "03:00"           # the dashboard still shows the chosen time
+
+
+def test_s09_an_interactive_only_task_is_registered_and_the_owner_is_told(tmp_path: Path):
+    app = launcher_app(tmp_path, [])
+    runner = FakeRunner(tmp_path / "desktop", results={
+        "ns schedule install --time 03:00": RunResult(
+            0, "registered (Nightshift Daily daily at 03:00; runs only while you are logged on "
+               "(Windows refused the unattended mode))\n")})
+    ctx = make_test_context(
+        tmp_path, raw_answers=example_answers(), resolve=True, app_path=app, runner=runner
+    )
+    step = S09ShortcutsScheduler()
+    step.run(ctx)
+    assert ctx.flag("schedule") == "installed" and ctx.flag("schedule_mode") == "interactive"
+    assert any(code == "NS-W205" for code, _ in ctx.warnings)
 
 
 def test_s09_shortcut_failure_and_desktop_override(tmp_path: Path):

@@ -23,6 +23,8 @@ from installer.stage2.winenv import (
     set_shortcut_aumid,
 )
 from ns_supervisor.notify import AUMID
+from ns_supervisor.schedule import INTERACTIVE_MARK
+from ns_supervisor.schedule_cfg import write_run_time
 
 # The brand icon ships with the dashboard build; without it a shortcut keeps PowerShell's own icon.
 ICON_RELATIVE = Path("ns_dashboard") / "static" / "brand" / "nightshift.ico"
@@ -85,7 +87,7 @@ class S09ShortcutsScheduler(Step):
 
     def check(self, ctx: StepContext) -> bool:
         """Shortcuts exist and the task decision is recorded."""
-        if ctx.flag("schedule") not in ("installed", "unavailable") or ctx.flag("aumid") is None:
+        if ctx.flag("schedule") not in ("installed", "unavailable", "failed") or ctx.flag("aumid") is None:
             return False
         folder = desktop(ctx)
         return all((folder / f"{name}.lnk").exists() for name, _ in wanted_shortcuts(ctx))
@@ -115,13 +117,21 @@ class S09ShortcutsScheduler(Step):
         if res.ok:
             ctx.set_flag("schedule", "installed")
             ctx.ui.say(f"Nightly task 'Nightshift Daily' registered for {run_time} (wakes the PC).")
+            if INTERACTIVE_MARK in res.text:      # "...only while you are logged on"
+                ctx.set_flag("schedule_mode", "interactive")
+                ctx.warn("NS-W205", f"registered for {run_time}")
+            else:
+                ctx.set_flag("schedule_mode", "s4u")
         elif "No such command" in res.text or res.returncode == 2:
             ctx.set_flag("schedule", "unavailable")
             ctx.ui.say("The nightly task is not part of this version yet; nothing was scheduled.", "yellow")
             ctx.log.warn("schedule_unavailable", res.text[-200:])
         else:
-            detail = f"ns schedule install failed (exit {res.returncode}): {res.text[-200:]}"
-            raise make_error("NS-E204", detail)
+            # Never block the install on the task: the PC works without it, the owner can run it by hand.
+            ctx.set_flag("schedule", "failed")
+            ctx.log.warn("schedule_failed", f"exit {res.returncode}: {res.text[-300:]}")
+            write_run_time(ctx.paths, run_time)            # the dashboard still shows the chosen time
+            ctx.warn("NS-W206", res.text.strip()[-200:])
 
     @staticmethod
     def _register_toast_identity(ctx: StepContext, folder: Path, icon: Path | None) -> None:
@@ -145,5 +155,5 @@ class S09ShortcutsScheduler(Step):
         for name, _ in wanted_shortcuts(ctx):
             if not (folder / f"{name}.lnk").exists():
                 raise make_error("NS-E110", f"shortcut '{name}' was not created")
-        if ctx.flag("schedule") not in ("installed", "unavailable"):
-            raise make_error("NS-E204", "the nightly task was not registered")
+        if ctx.flag("schedule") not in ("installed", "unavailable", "failed"):
+            raise make_error("NS-E204", "the nightly task decision was not recorded")
