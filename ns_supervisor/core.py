@@ -45,6 +45,7 @@ class SupervisorConfig:
     monitor_interval_s: float = 1.0
     auto_exit_idle_s: float = 1800.0
     post_run_grace_s: float = 60.0  # after the nightly run reports it is done, before the engine leaves
+    update_poll_s: float = 3600.0  # how often the weekly update check is asked whether it is due
     schedule_lookahead_s: float = 3600.0
 
 
@@ -81,6 +82,7 @@ class Supervisor:
         now: Callable[[], datetime] = datetime.now,
         starter: Callable[..., procs.Proc] | None = None,
         gpu_probe: GpuProbe | None = None,
+        update_check: Callable[[], dict[str, Any] | None] | None = None,
     ) -> None:
         self.paths = paths
         self.runtime = runtime
@@ -104,6 +106,11 @@ class Supervisor:
         self.started_wall = datetime.now().isoformat(timespec="seconds")
         self.last_activity = clock()
         self.run_finished_at: float | None = None  # set by the nightly run (gap 25); cleared by new work
+        # Weekly `ns update --check` (gap 16): a blocking callable that decides for itself whether a check
+        # is due, runs at most once at a time in a worker thread, and returns the result when it checked.
+        self.update_check = update_check
+        self._next_update_poll = 0.0
+        self._update_task: asyncio.Task[None] | None = None
         self._subs: set[asyncio.Queue[dict[str, Any]]] = set()
 
     # ------------------------------------------------------------------ events
@@ -518,7 +525,26 @@ class Supervisor:
             if now - rt.idle_since >= self.cfg.idle_unload_s:
                 self.log.info("idle_unload", service=rt.name, idle_s=round(now - rt.idle_since, 1))
                 await self._stop(rt)
+        self._poll_update_check(now)
         await self._check_auto_exit(now)
+
+    def _poll_update_check(self, now: float) -> None:
+        """Start the weekly update check when its poll time has come and the last one has finished."""
+        if self.update_check is None or self.shutting_down or now < self._next_update_poll:
+            return
+        if self._update_task is not None and not self._update_task.done():
+            return
+        self._next_update_poll = now + self.cfg.update_poll_s
+        self._update_task = asyncio.create_task(self._run_update_check(self.update_check))
+
+    async def _run_update_check(self, job: Callable[[], dict[str, Any] | None]) -> None:
+        try:
+            result = await asyncio.to_thread(job)
+        except Exception as e:  # a failed check must never hurt the engine
+            self.log.warn("update_check_error", str(e))
+            return
+        if result is not None:
+            self.publish("update", dict(result))
 
     def _busy(self) -> bool:
         return (
