@@ -34,6 +34,7 @@ DOWNLOADS = "_downloads"
 
 #: Services to fake when the workshop is only read or its status files are edited (no model is called).
 READ_ONLY = ("llm", "tts", "whisper", "embed", "clips")
+FAKE_ALL = READ_ONLY
 
 
 class StageWatchLogger(NsLogger):

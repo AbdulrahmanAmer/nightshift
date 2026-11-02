@@ -15,6 +15,7 @@ if TYPE_CHECKING:
 NAME_RE = re.compile(r"^[a-z][a-z0-9_]{1,40}$")
 TOPICS = (
     "queue", "create", "library", "channels", "results", "settings", "engine", "diagnostics", "orientation",
+    "series",
 )
 JSON_TYPES = {
     "string": str,
@@ -88,6 +89,10 @@ def _is_bool(value: Any) -> bool:
 def check_value(schema: dict[str, Any], value: Any, path: str = "args") -> str | None:
     """Validate `value` against the small JSON-schema subset the descriptors use; returns an error or None."""
     typ = schema.get("type")
+    if isinstance(typ, list):  # a union such as ["integer", "string"]: any one member is enough
+        if any(check_value({**schema, "type": t}, value, path) is None for t in typ):
+            return None
+        return f"{path} must be one of {typ}"
     if typ is not None:
         expected = JSON_TYPES[typ]
         if _is_bool(value) and typ in ("integer", "number"):

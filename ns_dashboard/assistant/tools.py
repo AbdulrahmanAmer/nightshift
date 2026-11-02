@@ -329,6 +329,51 @@ def _tools() -> list[ToolDef]:
     ]
 
 
+def _described(schema: dict[str, Any]) -> dict[str, Any]:
+    """The workshop's argument schema with a description on every property (the registry requires one)."""
+    props = {
+        k: v if (v.get("description") or "enum" in v) else {**v, "description": k.replace("_", " ")}
+        for k, v in schema.get("properties", {}).items()
+    }
+    return {**schema, "properties": props}
+
+
+def _workshop_call(name: str) -> Callable[[ToolContext, dict[str, Any]], Any]:
+    """Run workshop tool `name` on a `Workshop` over this home (fake services only in fake mode)."""
+
+    def call(c: ToolContext, args: dict[str, Any]) -> Any:
+        from ns_dashboard import studio_bridge
+        from ns_dashboard.supervisor_link import make_acquirer
+        from ns_studio.series.tools import call_tool
+
+        state = c.dash.state
+        fake = studio_bridge.FAKE_ALL if state.fake_services else ()
+        acquirer = None if state.fake_services else make_acquirer(state.link.base_url)
+        with studio_bridge.workshop_session(acquirer=acquirer, fake=fake) as ws:
+            out = call_tool(ws, name, args)
+        if name == "workshop_produce":  # the rows are in dashboard_jobs; wake the worker now
+            for item in out:
+                state.worker.enqueue(str(item["job_id"]))
+        return out
+
+    return call
+
+
+def _workshop_tools() -> list[ToolDef]:
+    """The Series Workshop tools of `ns_studio.series.tools`, mounted with confirm cards (gap 7)."""
+    from ns_studio.series.tools import TOOLS
+
+    out: list[ToolDef] = []
+    for d in TOOLS:
+        side = bool(d["side_effect"])
+        spec = ToolSpec(
+            name=d["name"], description=d["description"], args_schema=_described(d["args_schema"]),
+            side_effect=side, confirm_text=d["confirm_text"] if side else "", topic="series",
+        )
+        out.append(ToolDef(spec=spec, call=_workshop_call(d["name"])))
+    return out
+
+
 def build_registry() -> Registry:
     """Registry of every tool (route-derived and orientation)."""
-    return Registry(_tools())
+    return Registry([*_tools(), *_workshop_tools()])

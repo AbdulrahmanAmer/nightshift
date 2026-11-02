@@ -76,7 +76,8 @@ def build_state(
     store = JobStore(db)
     worker = JobWorker(store, build_handlers(adapters), hub, log, gpu_gate=make_gpu_gate(link.status))
     return AppState(
-        paths=paths, db=db, log=log, hub=hub, link=link, adapters=adapters, store=store, worker=worker
+        paths=paths, db=db, log=log, hub=hub, link=link, adapters=adapters, store=store, worker=worker,
+        fake_services=fake_services,
     )
 
 
