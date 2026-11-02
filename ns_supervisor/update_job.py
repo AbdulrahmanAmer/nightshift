@@ -24,7 +24,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, TextIO
+from typing import Any, Protocol, TextIO
 
 from ns_common.errors import NsError
 from ns_common.paths import Paths
@@ -43,6 +43,18 @@ PARENT_WAIT_MAX_S = 120.0
 DONE_STATES = ("done", "failed")
 
 PopenFn = Callable[..., Any]
+
+RESTART_HINT = "Nightshift could not restart by itself; click the Nightshift Dashboard shortcut."
+
+
+class Relauncher(Protocol):
+    """Starts Nightshift again after the update (`ns_supervisor.relaunch.Relaunch`)."""
+
+    def observe(self) -> None:
+        """Remember what is running now (called before the update stops the engine)."""
+
+    def restart(self) -> None:
+        """Start it again and return once the engine answers `/status`; raises `NsError` otherwise."""
 
 
 def under_engine(env: Mapping[str, str] | None = None) -> bool:
@@ -233,6 +245,21 @@ def _echo_new(log: Path, offset: int, echo: Callable[[str], None]) -> int:
     return offset + len(chunk)
 
 
+def _guarded(fn: Callable[[], None]) -> str | None:
+    """Run `fn`; the error text when it raised, else None (a worker must not die on a side issue)."""
+    try:
+        fn()
+    except Exception as e:
+        sys.stderr.write(f"{type(e).__name__}: {e}\n")
+        return f"{type(e).__name__}: {e}"
+    return None
+
+
+def _restart(relaunch: Relauncher | None) -> str | None:
+    """Start Nightshift again; the problem as text, or None (also when there is nothing to start)."""
+    return None if relaunch is None else _guarded(relaunch.restart)
+
+
 @dataclass
 class Outcome:
     """What an update did: a one-line sentence, the versions, and whether anything changed."""
@@ -251,12 +278,19 @@ def run_worker(
     wait_pid: int | None = None,
     wait: Callable[[int], None] | None = None,
     old_version: str = "",
+    relaunch: Relauncher | None = None,
 ) -> int:
     """Run the update in this (detached) process; returns the exit code.
 
     stdout and stderr go to `log` first thing: a detached process has no console. `body` returns an `Outcome`
     and raises `NsError` on failure. The state file says `running` BEFORE the engine is stopped, then `done`
     or `failed` (`{state, old, new, message, updated_at}`, read by the dashboard).
+
+    With `relaunch`, the engine (and the dashboard window, when one was open) is started again after the
+    update, whether it applied or was rolled back, and `done` / `failed` is written only after the engine answers
+    `/status`, so a page that reconnects finds a live dashboard and the final state. When the engine does not
+    come back the state is `failed` with `restart_failed` set (and `updated` true when the new version is in
+    place), so the page can say what happened instead of waiting for ever.
     """
     sink: TextIO | None = None
     saved = (sys.stdout, sys.stderr)
@@ -270,20 +304,32 @@ def run_worker(
         write_status(paths, "running", "Waiting for Nightshift to close.", **base)
         if wait_pid is not None:
             (wait or wait_for_parent)(wait_pid)
+        if relaunch is not None:
+            _guarded(relaunch.observe)
         write_status(paths, "running", "Updating.", **base)
         try:
             out = body()
         except NsError as e:
             sys.stderr.write(f"{e}\nHint: {e.definition.hint}\n")
-            write_status(paths, "failed", f"{e.code}: {e.detail}", exit_code=1, **base)
-            return 1
+            message = f"{e.code}: {e.detail}"
         except Exception as e:  # a worker has nobody to show a traceback to: log it, report failure
             sys.stderr.write(f"{type(e).__name__}: {e}\n")
-            write_status(paths, "failed", f"{type(e).__name__}: {e}", exit_code=1, **base)
-            return 1
-        write_status(paths, "done", out.message, exit_code=0, **{**base, "old": out.old or old_version,
-                                                                  "new": out.new, "updated": out.updated})
-        return 0
+            message = f"{type(e).__name__}: {e}"
+        else:
+            versions = {**base, "old": out.old or old_version, "new": out.new, "updated": out.updated}
+            if _restart(relaunch):
+                write_status(paths, "failed", f"{out.message} {RESTART_HINT}", exit_code=1,
+                             restart_failed=True, **versions)
+                return 1
+            write_status(paths, "done", out.message, exit_code=0, **versions)
+            return 0
+        # rolled back (or never started): the old version comes back up
+        if _restart(relaunch):
+            write_status(paths, "failed", f"{message} {RESTART_HINT}", exit_code=1,
+                         restart_failed=True, **base)
+        else:
+            write_status(paths, "failed", message, exit_code=1, **base)
+        return 1
     finally:
         if sink is not None:
             sink.flush()
