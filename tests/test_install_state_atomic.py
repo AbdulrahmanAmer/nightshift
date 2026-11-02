@@ -10,14 +10,14 @@ from installer.stage2.state import StateStore
 from installer.stage2.web import controller
 from ns_common import atomic
 from ns_common.config import load_install_state, save_install_state
-from ns_common.models import InstallState
+from ns_common.models import InstallState, StepState
 from ns_common.paths import Paths
 
 
-def good_state(version: str = "0.1.0") -> InstallState:
+def good_state() -> InstallState:
     st = InstallState()
     st.app_path = "D:/app"
-    st.steps["b01_tools"] = {"status": "done", "error": None, "finished_at": "2026-11-02T10:00:00"}  # type: ignore[assignment]
+    st.steps["b01_tools"] = StepState(status="done", error=None, finished_at="2026-11-02T10:00:00")
     return st
 
 
@@ -51,7 +51,9 @@ def test_the_setup_window_reads_the_backup_of_a_torn_file(tmp_path: Path) -> Non
     assert "b02_home" in data["steps"] and "b01_tools" in data["steps"]
 
 
-def test_a_crash_during_the_swap_leaves_the_old_file_whole(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_crash_during_the_swap_leaves_the_old_file_whole(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     target = tmp_path / "state.json"
     atomic.write_text_atomic(target, '{"v": 1}')
 

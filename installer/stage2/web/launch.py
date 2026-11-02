@@ -154,7 +154,7 @@ def open_window(
             if code == 0 or (code is None and is_ready()):
                 handle.host, handle.proc = "webview2", proc
                 return handle
-            if code is None:                  # silent for the whole wait: do not leave a second window to appear
+            if code is None:  # silent for the whole wait: no second window
                 kill = getattr(proc, "kill", None)
                 if kill is not None:
                     kill()

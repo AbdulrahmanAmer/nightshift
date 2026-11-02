@@ -214,7 +214,8 @@ def write_step(
     data.setdefault("profile", None)
     data.setdefault("started_at", now_iso())
     data.setdefault("completed_at", None)
-    write_text_atomic(home / "config" / "install_state.json", json.dumps(data, indent=2) + "\n", keep_backup=True)
+    target = home / "config" / "install_state.json"
+    write_text_atomic(target, json.dumps(data, indent=2) + "\n", keep_backup=True)
 
 
 # ---------------------------------------------------------------------------------------------------------
