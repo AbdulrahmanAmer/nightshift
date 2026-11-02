@@ -35,7 +35,7 @@ export type ChatEvent =
   | { kind: "confirm"; payload: { action_id: string; tool: string; args?: any; text: string } }
   | { kind: "tool_call"; payload: { tool: string; args?: any } }
   | { kind: "tool_result"; payload: { tool: string; ok: boolean; result?: any; error?: string } }
-  | { kind: "busy"; payload: { message: string } }
+  | { kind: "busy"; payload: { message: string; owner?: string; queued?: boolean } }
   | { kind: "error"; payload: { code?: string; message: string; hint?: string } }
   | { kind: "done"; payload: { conversation_id?: string } };
 /** One part of a workshop story (GET /library/series). */
@@ -55,6 +55,33 @@ export interface ChannelDetail { profile: ChannelProfile; warnings: string[]; wa
 /** GET /notes: what the nightly run could not show as a toast (run/morning_note.json). */
 export interface MorningNote { at: string; title: string; message: string }
 /** GET /update/state: what the detached updater writes to run/update_state.json (idle when it never ran). */
-export interface UpdateState { state: "idle" | "running" | "done" | "failed"; old: string | null; new: string | null; message: string | null; updated_at: string | null }
+export interface UpdateState { state: "idle" | "running" | "done" | "failed"; old: string | null; new: string | null; message: string | null; updated_at: string | null; /** The updater process is gone though the file still said running. */ stale?: boolean }
 /** One entry of GET /assistant/tools: the registry the Assistant works from. */
 export interface ToolInfo { name: string; description: string; side_effect: boolean; topic: string }
+
+/* ---- answers the pages read from POST/PUT calls and from the lists that had no declared type (checked by tests/test_api_ui_contract.py) ---- */
+/** GET /models/state: model downloads started in this session. */
+export type ModelsState = Record<string, { state: string; message: string }>;
+/** GET /settings/uninstall. */
+export interface UninstallInfo { path: string; exists: boolean }
+/** GET /update/check and POST /update/apply (the parsed `ns update` result). */
+export interface UpdateCheck { state: "up_to_date" | "available" | "unavailable" | "error" | "unknown" | "started" | "updated"; up_to_date: boolean; message: string; current?: string | null; latest?: string | null; [k: string]: any }
+/** GET /assistant/conversations. */
+export interface AssistantConversation { conversation_id: string; title: string | null; created_at: string; updated_at: string; queued: number }
+/** GET /assistant/history. */
+export interface AssistantMessage { role: string; content: string; created_at: string; tool_calls?: any; tool_call_id?: string; name?: string }
+export interface AssistantHistory { conversation_id: string; messages: AssistantMessage[]; pending_actions: { action_id: string; tool: string; args: any; confirm_text: string }[] }
+/** POST /assistant/confirm and /assistant/dismiss. */
+export interface ActionAnswer { action_id: string; status: "done" | "failed" | "dismissed"; conversation_id: string; tool?: string; message?: string; result?: any }
+/** POST /channels/{slug}/validate. */
+export interface ChannelValidation { ok: boolean; errors: string[]; warnings: string[]; error_fields: { field: string; message: string }[]; warning_fields: { field: string; message: string }[] }
+/** POST /uploads, PUT /uploads/{id} and POST /uploads/{id}/complete. */
+export interface UploadState { upload_id: string; source_id: string; filename: string; size: number; offset: number; status: "uploading" | "complete"; path: string | null; sha256: string | null; chunk_size?: number }
+/** POST /diagnostics and POST /settings/export: a zip that was written. */
+export interface FileMade { path: string; name: string; size: number | null; download_url: string }
+/** POST /settings/import. */
+export interface SettingsImported { restored: boolean; file: string; lines: string[]; note: string }
+/** POST /library/series/{slug}/produce. */
+export interface SeriesQueued { slug: string; queued: { part: number; job_id: string; title: string }[] }
+/** POST /learn/import. */
+export interface LearnImported { matched: number; unmatched: number; summary: string[]; changes: { pool: string; option: string; delta: number }[]; unmatched_rows?: string[]; job_id?: string }

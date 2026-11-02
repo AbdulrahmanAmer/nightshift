@@ -4,7 +4,7 @@
 import { useEffect, useState } from "react";
 import { useApp, useLoad } from "../lib/app";
 import { api, ApiError } from "../lib/api";
-import type { Job, LogLine, Settings as S, UpdateState } from "../lib/types";
+import type { Job, LogLine, ModelsState, Settings as S, UpdateState } from "../lib/types";
 import { dayInline, plural } from "../lib/format";
 import { cx } from "../ui/kit";
 import { Lockup } from "../ui/Lockup";
@@ -88,7 +88,7 @@ export default function Settings() {
     const fd = new FormData(); fd.append("file", f);
     try { const r = await api.upload("/settings/import", fd, () => {}); toast(r?.note || "Settings restored", "ok"); st.reload(); } catch (e: any) { toast(e.message, "bad"); }
   };
-  const models = useLoad<Record<string, { state: string; message: string }>>(() => api.get("/models/state"), [], {});
+  const models = useLoad<ModelsState>(() => api.get("/models/state"), [], {});
   const busyModel = Object.values(models.data).some((m) => m.state === "running");
   useEffect(() => { if (!busyModel) return; const t = setInterval(models.reload, 4000); return () => clearInterval(t); }, [busyModel]); // eslint-disable-line react-hooks/exhaustive-deps
   const getModel = async (name: string, label: string) => {
