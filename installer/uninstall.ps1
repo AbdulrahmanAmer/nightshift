@@ -143,6 +143,15 @@ if (-not $SkipSystem) {
             Write-Host "  removed scheduled task '$TaskName'"
         }
     }
+    # The toast identity the installer registered (HKCU, no admin needed).
+    $aumidKey = 'HKCU:\Software\Classes\AppUserModelId\Nightshift'
+    if (Test-Path -LiteralPath $aumidKey) {
+        if ($script:IsDry) { Show-Action "remove toast registration $aumidKey" }
+        else {
+            Remove-Item -LiteralPath $aumidKey -Recurse -Force
+            Write-Host '  removed the notification registration'
+        }
+    }
     foreach ($desktop in @([Environment]::GetFolderPath('Desktop'), [Environment]::GetFolderPath('CommonDesktopDirectory'))) {
         if (-not $desktop -or -not (Test-Path -LiteralPath $desktop)) { continue }
         foreach ($lnk in @(Get-ChildItem -LiteralPath $desktop -Filter 'Nightshift*.lnk' -File -ErrorAction SilentlyContinue)) {
