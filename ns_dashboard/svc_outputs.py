@@ -17,6 +17,11 @@ from ns_dashboard.state import AppState
 
 URL_RE = re.compile(r"^https?://\S+$", re.IGNORECASE)
 EXCERPT_CHARS = 1500
+#: An output row with the YouTube link of its upload (NULL until it is marked as posted).
+OUTPUT_SELECT = (
+    "SELECT o.*, u.video_url AS video_url FROM outputs o"
+    " LEFT JOIN uploads u ON u.output_id = o.output_id"
+)
 
 
 def _read_json(f: Path) -> Any:
@@ -64,7 +69,10 @@ class OutputsService:
         return out
 
     def _row(self, output_id: str) -> sqlite3.Row:
-        row = self.s.db.one("SELECT * FROM outputs WHERE output_id = ?", (output_id,))
+        row = self.s.db.one(
+            OUTPUT_SELECT + " WHERE o.output_id = ?",
+            (output_id,),
+        )
         if row is None:
             raise ApiError(404, "not_found", "That video was not found.")
         return row
@@ -78,20 +86,27 @@ class OutputsService:
         offset: int = 0,
     ) -> list[dict[str, Any]]:
         """Filtered outputs, newest first (a bare list)."""
-        if status in ("", "all"):
-            status = None
-        if status and status not in OUTPUT_STATUSES:
-            raise ApiError(422, "bad_filter", f"Unknown status '{status}'.")
+        statuses = [s.strip() for s in (status or "").split(",") if s.strip()]
+        if statuses == ["all"]:
+            statuses = []
+        for s in statuses:
+            if s not in OUTPUT_STATUSES:
+                raise ApiError(422, "bad_filter", f"Unknown status '{s}'.")
         if kind and kind not in OUTPUT_KINDS:
             raise ApiError(422, "bad_filter", f"Unknown kind '{kind}'.")
-        where, args = [], []
-        for col, val in (("status", status), ("kind", kind), ("channel", channel)):
+        where: list[str] = []
+        args: list[Any] = []
+        if statuses:
+            where.append(f"o.status IN ({','.join('?' for _ in statuses)})")
+            args.extend(statuses)
+        for col, val in (("kind", kind), ("channel", channel)):
             if val:
-                where.append(f"{col} = ?")
+                where.append(f"o.{col} = ?")
                 args.append(val)
         clause = (" WHERE " + " AND ".join(where)) if where else ""
         rows = self.s.db.query(
-            f"SELECT * FROM outputs{clause} ORDER BY created_at DESC, rowid DESC LIMIT ? OFFSET ?",
+            OUTPUT_SELECT
+            + f"{clause} ORDER BY o.created_at DESC, o.rowid DESC LIMIT ? OFFSET ?",
             [*args, max(1, min(int(limit), 500)), max(0, int(offset))],
         )
         return [output_item(r) for r in rows]

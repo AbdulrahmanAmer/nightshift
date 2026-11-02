@@ -41,3 +41,30 @@ def test_clip_length_bounds_are_the_clipparams_bounds(tmp_home: Path, min_s: int
         assert e.code == "invalid_options"
         api_ok = False
     assert api_ok == studio_ok, f"min_s={min_s} max_s={max_s}: API {api_ok}, ClipParams {studio_ok}"
+
+
+# ------------------------------------------------------------------ row 5: Queue "Approved and posted"
+
+
+def test_queue_posted_tab_status_list_reason_url_and_path(tmp_home: Path):
+    """The tab asked for `status=approved,uploaded` (422 before); rejected rows lacked `reason`, posted `url`."""
+    dash, state = make(tmp_home)
+    seed_channel(state.db, state.paths)
+    approved = seed_output(state.db, state.paths, kind="short", k=1, title="A")
+    posted = seed_output(state.db, state.paths, kind="short", k=2, title="B")
+    rejected = seed_output(state.db, state.paths, kind="short", k=3, title="C")
+    seed_output(state.db, state.paths, kind="short", k=4, title="D")  # stays pending
+    dash.outputs.approve(approved)
+    dash.outputs.approve(posted)
+    dash.outputs.mark_uploaded(posted, "https://youtu.be/xyz")
+    dash.outputs.reject(rejected, "bad audio")
+    rows = dash.outputs.list_outputs("approved,uploaded")
+    assert {r["output_id"] for r in rows} == {approved, posted}
+    by_id = {r["output_id"]: r for r in rows}
+    assert by_id[posted]["url"] == "https://youtu.be/xyz" and by_id[approved]["url"] is None
+    assert by_id[posted]["path"].endswith(".mp4")
+    (rej,) = dash.outputs.list_outputs("rejected")
+    assert rej["reason"] == "bad audio" == rej["review_note"]
+    assert dash.outputs.detail(posted)["url"] == "https://youtu.be/xyz"
+    assert code_of(dash.outputs.list_outputs, "approved,nonsense") == "bad_filter"
+    assert len(dash.outputs.list_outputs("all")) == 4 and len(dash.outputs.list_outputs(None)) == 4
