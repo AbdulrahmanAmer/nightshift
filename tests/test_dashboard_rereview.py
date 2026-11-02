@@ -581,26 +581,40 @@ def test_a_running_update_whose_process_is_gone_is_shown_as_failed(tmp_home: Pat
     paths = Paths.from_env()
     write_update_state(paths, pid=4242, updated_at=datetime.now().isoformat())
     now = updater.read_update_state(paths, alive=lambda _pid: False)
-    assert now["state"] == "failed" and now["stale"] is True and "update-" in now["message"]
+    assert now["state"] == "failed" and now["stale"] is True and "stopped" in now["message"]
     alive = updater.read_update_state(paths, alive=lambda _pid: True)
     assert alive["state"] == "running" and "stale" not in alive and alive["message"] == "Updating."
 
 
-def test_without_a_known_process_only_age_makes_a_running_state_stale(tmp_home: Path):
+def test_without_a_pid_a_state_the_launcher_wrote_is_believed_only_for_a_short_while(tmp_home: Path):
     from datetime import datetime, timedelta
 
     from ns_dashboard import updater
 
     paths = Paths.from_env()
     now = datetime(2026, 11, 2, 12, 0, 0)
-    write_update_state(paths, updated_at=(now - timedelta(minutes=5)).isoformat())
-    assert updater.read_update_state(paths, alive=lambda _p: None, now=lambda: now)["state"] == "running"
-    write_update_state(paths, updated_at=(now - timedelta(minutes=31)).isoformat())
-    assert updater.read_update_state(paths, alive=lambda _p: None, now=lambda: now)["state"] == "failed"
-    write_update_state(paths, pid=7, updated_at=(now - timedelta(minutes=45)).isoformat())
-    assert updater.read_update_state(paths, alive=lambda _p: None, now=lambda: now)["state"] == "failed"  # unknown: age decides
+    write_update_state(paths, updated_at=(now - timedelta(seconds=30)).isoformat())
+    assert updater.read_update_state(paths, now=lambda: now)["state"] == "running"
+    write_update_state(paths, updated_at=(now - timedelta(minutes=10)).isoformat())
+    assert updater.read_update_state(paths, now=lambda: now)["state"] == "failed"
     write_update_state(paths, state="done", new="0.1.1", updated_at=(now - timedelta(days=3)).isoformat())
     assert updater.read_update_state(paths, alive=lambda _p: False, now=lambda: now)["state"] == "done"  # only `running` goes stale
+
+
+def test_the_age_fallback_when_the_supervisor_package_is_missing(tmp_home: Path, monkeypatch: pytest.MonkeyPatch):
+    import sys
+    from datetime import datetime, timedelta
+
+    from ns_dashboard import updater
+
+    monkeypatch.setitem(sys.modules, "ns_supervisor.update_job", None)  # `import` now raises ImportError
+    paths = Paths.from_env()
+    now = datetime(2026, 11, 2, 12, 0, 0)
+    write_update_state(paths, updated_at=(now - timedelta(minutes=5)).isoformat())
+    assert updater.read_update_state(paths, now=lambda: now)["state"] == "running"
+    write_update_state(paths, updated_at=(now - timedelta(minutes=31)).isoformat())
+    out = updater.read_update_state(paths, now=lambda: now)
+    assert out["state"] == "failed" and out["stale"] is True
 
 
 # ---------------------------------------------------------------- rows 2, 13, 15 (re-review): the page after an update, demo mode, schedule
