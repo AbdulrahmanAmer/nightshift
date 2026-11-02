@@ -147,15 +147,20 @@ def download_dir(paths: Paths, source_id: str) -> Path:
 
 
 def download_source(
-    paths: Paths, url: str, source_id: str, on_progress: Callable[[float], None]
+    paths: Paths,
+    url: str,
+    source_id: str,
+    on_progress: Callable[[float], None],
+    cancel_token: Any = None,
 ) -> Path:
     """Download `url` with the pinned yt-dlp (`ns_studio.clipper.source.import_url`); returns the video file.
 
-    `on_progress(percent)` gets 0-100 and may raise to stop the job. Failures are NS-E409.
+    `on_progress(percent)` gets 0-100 and may raise to stop the job; `cancel_token` (a
+    `ns_studio.clipper.source.CancelToken`) lets another thread kill yt-dlp. Failures are NS-E409.
     """
     from ns_studio.clipper import source
 
-    return source.import_url(url, download_dir(paths, source_id), on_progress)
+    return source.import_url(url, download_dir(paths, source_id), on_progress, cancel_token=cancel_token)
 
 
 def run_clip(

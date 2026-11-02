@@ -7,6 +7,7 @@ import os
 import re
 import shutil
 import subprocess
+import threading
 from collections import deque
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
@@ -265,18 +266,59 @@ def read_download_title(dest_dir: Path) -> str | None:
     return title.strip() or None if isinstance(title, str) else None
 
 
+class CancelToken:
+    """Handle to stop a running `import_url` from another thread: `cancel()` kills yt-dlp.
+
+    The dashboard keeps one per download job; the studio-side loop also checks `cancelled` on every
+    progress line, so a job that is cancelled between two lines stops at the next one.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._proc: Any = None
+        self.cancelled = False
+
+    def attach(self, proc: Any) -> None:
+        """Bind the yt-dlp process; a token cancelled before the start kills it at once."""
+        with self._lock:
+            self._proc = proc
+            if self.cancelled:
+                _kill(proc)
+
+    def cancel(self) -> None:
+        """Mark the download cancelled and kill the process if it is running."""
+        with self._lock:
+            self.cancelled = True
+            if self._proc is not None:
+                _kill(self._proc)
+
+
+def _kill(proc: Any) -> None:
+    """Kill `proc` and reap it; never raises (the process may be gone already)."""
+    try:
+        if proc.poll() is None:
+            proc.kill()
+        proc.wait()
+    except OSError:
+        pass
+
+
 def import_url(
     url: str,
     dest_dir: Path,
     progress_cb: Callable[[float], None] | None = None,
     *,
     exe: Path | None = None,
+    cancel_token: CancelToken | None = None,
 ) -> Path:
     """Download `url` with the pinned yt-dlp into `dest_dir` and return the video file.
 
-    `progress_cb` gets the percentage (0-100) of every `[download] ...%` line. The title is left in
-    `dest_dir/source.info.json` (see `read_download_title`). Raises the download-failed error (CR-C8-10)
-    when the link is not http(s), yt-dlp is missing, exits non-zero, or leaves no video behind.
+    `progress_cb` gets the percentage (0-100) of every `[download] ...%` line and may raise to stop the
+    download. `cancel_token.cancel()` (from any thread) stops it too. Either way yt-dlp is killed and
+    reaped and the half-written folder removed, so a retry of the same link does not race an orphan.
+    The title is left in `dest_dir/source.info.json` (see `read_download_title`). Raises the
+    download-failed error (CR-C8-10) when the link is not http(s), yt-dlp is missing, exits non-zero,
+    was cancelled, or leaves no video behind.
     """
     if not is_url(url):
         raise NsError(DOWNLOAD_FAILED, "not an http(s) link")
@@ -295,17 +337,33 @@ def import_url(
         )
     except OSError as e:
         raise NsError(DOWNLOAD_FAILED, f"cannot start yt-dlp: {e}") from e
+    if cancel_token is not None:
+        cancel_token.attach(proc)
     tail: deque[str] = deque(maxlen=12)
-    if proc.stdout is not None:
-        for raw in proc.stdout:
-            line = raw.rstrip()
-            if not line:
-                continue
-            tail.append(line)
-            m = _PERCENT.search(line)
-            if m and progress_cb is not None:
-                progress_cb(float(m.group(1)))
-    code = proc.wait()
+    try:
+        if proc.stdout is not None:
+            for raw in proc.stdout:
+                line = raw.rstrip()
+                if not line:
+                    continue
+                tail.append(line)
+                m = _PERCENT.search(line)
+                if m and progress_cb is not None:
+                    progress_cb(float(m.group(1)))
+                if cancel_token is not None and cancel_token.cancelled:
+                    break
+        code = proc.wait()
+    except BaseException:  # the progress callback raised (Cancel), or the thread is being torn down
+        _kill(proc)
+        shutil.rmtree(dest_dir, ignore_errors=True)
+        raise
+    finally:
+        if proc.stdout is not None and hasattr(proc.stdout, "close"):
+            proc.stdout.close()
+    if cancel_token is not None and cancel_token.cancelled:
+        _kill(proc)
+        shutil.rmtree(dest_dir, ignore_errors=True)
+        raise NsError(DOWNLOAD_FAILED, "cancelled")
     if code != 0:
         raise NsError(DOWNLOAD_FAILED, f"yt-dlp exit {code}: " + " | ".join(tail))
     video = find_download(dest_dir)
