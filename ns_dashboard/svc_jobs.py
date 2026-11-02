@@ -44,7 +44,7 @@ def build_handlers(adapters: Adapters) -> dict[str, Handler]:
     def run_handler(ctl: JobControl) -> dict[str, Any]:
         p = ctl.params
         ids = adapters.run.run(ctl, str(p["channel"]), str(p["format"]), p.get("count"))
-        return {"output_ids": ids}
+        return {"output_ids": ids, **ctl.extras}
 
     def clip_handler(ctl: JobControl) -> dict[str, Any]:
         p = ctl.params

@@ -303,6 +303,7 @@ class JobControl:
         self._store = store
         self._hub = hub
         self._progress = 0.0
+        self.extras: dict[str, Any] = {}  # extra result fields the handler merges in
 
     def _publish(self) -> None:
         rec = self._store.get(self.job_id)

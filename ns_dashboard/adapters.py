@@ -12,7 +12,7 @@ import importlib
 import json
 import os
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Collection, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
@@ -24,6 +24,7 @@ from ns_common.config import load_runtime
 from ns_common.errors import NsError
 from ns_common.logging import NsLogger
 from ns_common.paths import Paths
+from ns_dashboard import studio_bridge
 from ns_dashboard.errors import AdapterUnavailable, ApiError
 from ns_dashboard.jobs import JobControl
 from ns_dashboard.supervisor_link import SupervisorLink, make_acquirer
@@ -167,25 +168,63 @@ def stage_reporter(ctl: JobControl) -> Callable[[str, int, int], None]:
     return on_stage
 
 
-class RealRunAdapter:
-    """Expects `ns_studio.orchestrator.run_job_with_progress` (C7)."""
+def job_reporter(ctl: JobControl) -> studio_bridge.Report:
+    """`report(stage, index, total, job_index, job_total)` for the studio bridge: cancel check, then progress.
 
-    def __init__(self, paths: Paths, link: SupervisorLink) -> None:
+    Progress is the share of finished stages across all jobs of the request, shown as `name (i/n)`.
+    """
+
+    def report(stage: str, index: int, total: int, job_index: int, job_total: int) -> None:
+        ctl.check_cancel()
+        done = job_index + index / max(1, total)
+        ctl.progress(done / max(1, job_total), f"{stage} ({index + 1}/{total})")
+
+    return report
+
+
+class StudioAdapter:
+    """Shared wiring of the adapters that run studio code in-process: home, supervisor link, fakes, GPU owner."""
+
+    def __init__(
+        self,
+        paths: Paths,
+        link: SupervisorLink,
+        *,
+        fake: Collection[str] = (),
+        acquirer: Acquirer | None = None,
+    ) -> None:
         self.paths = paths
         self.link = link
+        self.fake = frozenset(fake)
+        self._acquirer = acquirer
+
+    def acquirer(self) -> Acquirer:
+        """The supervisor-backed acquirer (tests inject their own)."""
+        return self._acquirer or make_acquirer(self.link.base_url)
+
+
+class RealRunAdapter(StudioAdapter):
+    """Runs `studio run` jobs in-process through `ns_dashboard.studio_bridge.run_story_jobs` (C7).
+
+    The bridge calls `ns_studio.jobs` and `run_job_guarded`; progress comes from the stage runner's log events,
+    and the GPU tenants are acquired through the supervisor.
+    """
 
     def run(self, ctl: JobControl, channel: str, fmt: str, count: int | None) -> list[str]:
-        """Run one studio job; progress per stage, tenants acquired through the supervisor."""
-        fn = lazy("ns_studio.orchestrator", "run_job_with_progress")
-        ids = fn(
+        """Run `count` studio jobs for `channel`; returns the output ids and notes the studio job ids."""
+        seen: list[str] = []
+        ids = studio_bridge.run_story_jobs(
+            channel,
+            fmt,
+            count,
+            job_reporter(ctl),
+            acquirer=self.acquirer(),
+            fake=self.fake,
             paths=self.paths,
-            channel=channel,
-            fmt=fmt,
-            count=count,
-            on_stage=stage_reporter(ctl),
-            acquirer=make_acquirer(self.link.base_url),
+            seen=seen,
         )
-        return [str(i) for i in ids]
+        ctl.extras["studio_job_ids"] = seen
+        return ids
 
 
 class RealClipAdapter:

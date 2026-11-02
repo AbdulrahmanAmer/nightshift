@@ -14,7 +14,6 @@ from ns_dashboard.adapters import (
     RealDoctorAdapter,
     RealKeyringAdapter,
     RealLearnAdapter,
-    RealRunAdapter,
     RealScheduleAdapter,
     RealVerifyAdapter,
     lazy,
@@ -58,13 +57,10 @@ def test_real_adapters_report_unavailable_collaborators(tmp_home: Path, monkeypa
     for mod in ("ns_studio.clipper", "ns_studio.learn", "ns_supervisor.verify", "ns_supervisor.doctor",
                 "ns_supervisor.scheduler", "keyring"):
         monkeypatch.setitem(sys.modules, mod, None)
-    monkeypatch.delattr("ns_studio.orchestrator.run_job_with_progress", raising=False)
     paths, _db, store, worker = make_worker({})
     link = SupervisorLink("http://127.0.0.1:9", timeout_s=0.2)
     rec = store.create("clip", "c", {})
     ctl = JobControl(rec, store, EventHub())
-    with pytest.raises(AdapterUnavailable):
-        RealRunAdapter(paths, link).run(ctl, "c", "shorts_only", None)
     with pytest.raises(AdapterUnavailable):
         RealClipAdapter(paths, link).clip(ctl, tmp_home / "x.mp4", "src-1", {})
     with pytest.raises(AdapterUnavailable):
