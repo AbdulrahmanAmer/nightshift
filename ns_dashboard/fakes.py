@@ -12,6 +12,7 @@ import shutil
 import tempfile
 import threading
 import zipfile
+from collections.abc import Callable
 from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -380,6 +381,16 @@ class FakeUpdateAdapter:
                                 "current": "0.1.0", "latest": "0.2.0" if self.available else "0.1.0",
                                 "output": "", "error": ""})
 
+    def models_available(self) -> bool:
+        """Tests set `models_command` to switch the command on."""
+        return getattr(self, "models_command", False)
+
+    def get_model(self, name: str, on_line: Callable[[str], None] = lambda _l: None) -> tuple[int, str]:
+        """Pretend to download."""
+        self.downloaded = [*getattr(self, "downloaded", []), name]
+        on_line(f"fetching {name} 50%")
+        return 0, f"{name} is ready"
+
     def apply(self) -> dict[str, Any]:
         """Pretend to install."""
         if self.missing:
@@ -404,6 +415,15 @@ class FakeSeriesAdapter:
     def listing(self) -> list[dict[str, Any]]:
         """The stories a test put in `stories`."""
         return [dict(s) for s in self.stories]
+
+    def release(self, params: dict[str, Any]) -> None:
+        """Put the part back to `approved` when it is still `producing`."""
+        for story in self.stories:
+            if story["slug"] != params.get("story_slug"):
+                continue
+            for part in story["parts"]:
+                if part["n"] == params.get("part_n") and part["status"] == "producing":
+                    part["status"] = "approved"
 
     def queue_next(self, slug: str) -> list[dict[str, Any]]:
         """Queue the first approved part of `slug` as a `series_part` row and mark it producing."""
@@ -454,6 +474,7 @@ class FakeBackupAdapter:
         self.paths = paths
         self.restored: list[Path] = []
         self.fail_restore = False
+        self.on_restore: Callable[[], None] | None = None  # tests look at the dashboard while the restore runs
 
     def export(self) -> Path:
         """Create `exports/nightshift-backup-<ts>.zip`."""
@@ -468,6 +489,8 @@ class FakeBackupAdapter:
         """Remember the file; fail when asked to."""
         from ns_dashboard.errors import ApiError
 
+        if self.on_restore is not None:
+            self.on_restore()
         if self.fail_restore:
             raise ApiError(422, "restore_failed", "That file could not be restored.", hint="not a backup")
         self.restored.append(zip_path)

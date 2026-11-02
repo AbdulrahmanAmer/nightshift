@@ -2,7 +2,7 @@
    Ported from the vanilla dashboard's demo layer and filled out so every page has content. */
 import { ApiError } from "./errors";
 import type { ChatEvent, Job } from "./types";
-import { CLIP_STAGES, RUN_STAGES, stageWords } from "./format";
+import { stagesOf, stageWords } from "./format";
 
 const iso = (hoursFromNow: number) => new Date(Date.now() + hoursFromNow * 3600e3).toISOString();
 const at = (daysAgo: number, hh: number, mm: number) => { const d = new Date(); d.setDate(d.getDate() - daysAgo); d.setHours(hh, mm, 0, 0); return d.toISOString(); };
@@ -51,7 +51,7 @@ export const DEMO: any = {
     { job_id: "j9a41c", kind: "clip", channel: "night-desk", status: "done", progress: 100, stage: "outbox", message: "Done", created_at: at(1, 22, 40), title: "Stream, 31 October", result: { output_ids: ["clip-7f3a/c1", "clip-7f3a/c2", "clip-7f3a/c3", "clip-7f3a/c4"] } },
     { job_id: "j77b02", kind: "run", channel: "tiny-mysteries", status: "failed", progress: 62, stage: "clips", message: "No footage matched three scenes. Add a Pexels key in Settings or widen the footage look.", created_at: at(2, 3, 0) },
     { job_id: "j51e9d", kind: "run", channel: "after-dark", status: "done", progress: 100, stage: "outbox", message: "Done", created_at: at(2, 3, 0), title: "The Laundromat That Only Opens at Night" },
-  ] as Job[],
+  ] as unknown as Job[],
   templates: [
     { id: "auto", label: "Auto", description: "Nightshift looks at the video and picks the layout" },
     { id: "gaming_facecam", label: "Gaming with facecam", description: "Your camera on top, the game below" },
@@ -87,27 +87,27 @@ export const DEMO: any = {
     { ts: "04:58:31", level: "INFO", component: "studio", event: "outbox", msg: "tiny-mysteries-20261102-77c1 long" },
   ],
   ideas: [
-    { id: 1, channel: "after-dark", title: "The Laundromat That Only Opens at Night", premise: "A student finds a laundromat that is open only between 2 and 4 a.m. and never has the same machines twice.", status: "used", source: "Generated", created_at: at(4, 3, 0) },
-    { id: 2, channel: "after-dark", title: "The Substitute", premise: "A substitute teacher takes over a class whose real teacher has been dead for a year, according to the kids.", status: "approved", source: "You", created_at: at(3, 19, 10) },
-    { id: 3, channel: "after-dark", title: "Floor 13 Exists", premise: "An elevator technician keeps being called to a floor the building's plans say was never built.", status: "new", source: "Assistant", created_at: at(1, 10, 0) },
-    { id: 4, channel: "tiny-mysteries", title: "The Bakery's Second Receipt", premise: "Every receipt from the town bakery has a faint second receipt printed underneath, from a day that has not happened yet.", status: "used", source: "You", created_at: at(5, 11, 0) },
-    { id: 5, channel: "tiny-mysteries", title: "Lost Dog, Found Twice", premise: "The same dog is returned to the same family by two different neighbours on the same afternoon.", status: "new", source: "Generated", created_at: at(0, 3, 2) },
-    { id: 6, channel: "after-dark", title: "The Hotel Wake-Up Call", premise: "A guest keeps getting wake-up calls for a room that was bricked up in 1974.", status: "rejected", source: "Generated", created_at: at(6, 3, 1) },
+    { idea_id: 1, channel: "after-dark", title: "The Laundromat That Only Opens at Night", premise: "A student finds a laundromat that is open only between 2 and 4 a.m. and never has the same machines twice.", status: "used", source: "Generated", created_at: at(4, 3, 0) },
+    { idea_id: 2, channel: "after-dark", title: "The Substitute", premise: "A substitute teacher takes over a class whose real teacher has been dead for a year, according to the kids.", status: "approved", source: "You", created_at: at(3, 19, 10) },
+    { idea_id: 3, channel: "after-dark", title: "Floor 13 Exists", premise: "An elevator technician keeps being called to a floor the building's plans say was never built.", status: "new", source: "Assistant", created_at: at(1, 10, 0) },
+    { idea_id: 4, channel: "tiny-mysteries", title: "The Bakery's Second Receipt", premise: "Every receipt from the town bakery has a faint second receipt printed underneath, from a day that has not happened yet.", status: "used", source: "You", created_at: at(5, 11, 0) },
+    { idea_id: 5, channel: "tiny-mysteries", title: "Lost Dog, Found Twice", premise: "The same dog is returned to the same family by two different neighbours on the same afternoon.", status: "new", source: "Generated", created_at: at(0, 3, 2) },
+    { idea_id: 6, channel: "after-dark", title: "The Hotel Wake-Up Call", premise: "A guest keeps getting wake-up calls for a room that was bricked up in 1974.", status: "rejected", source: "Generated", created_at: at(6, 3, 1) },
   ],
   stories: [
-    { job_id: "after-dark-20261102-a1f2", title: "The Doorbell Camera That Recorded Tomorrow", channel: "after-dark", format: "master_first", words: 1652, critic_avg: 8.4, created_at: at(0, 3, 41), outputs: 3, status: "pending" },
-    { job_id: "tiny-mysteries-20261102-77c1", title: "The Bakery That Prints Two Receipts", channel: "tiny-mysteries", format: "master_first", words: 1890, critic_avg: 8.1, created_at: at(0, 4, 58), outputs: 1, status: "pending" },
-    { job_id: "after-dark-20261031-9c0d", title: "The Laundromat That Only Opens at Night", channel: "after-dark", format: "master_first", words: 1598, critic_avg: 8.1, created_at: at(2, 3, 40), outputs: 5, status: "posted" },
-    { job_id: "tiny-mysteries-20261030-2b8e", title: "Nobody Ordered the Thirteenth Pizza", channel: "tiny-mysteries", format: "master_first", words: 1744, critic_avg: 7.8, created_at: at(3, 4, 12), outputs: 4, status: "posted" },
-    { job_id: "after-dark-20261030-7b1e", title: "The Night Bus That Skips My Stop", channel: "after-dark", format: "shorts_only", words: 121, critic_avg: 7.2, created_at: at(3, 3, 55), outputs: 1, status: "rejected" },
+    { job_id: "after-dark-20261102-a1f2", title: "The Doorbell Camera That Recorded Tomorrow", channel: "after-dark", format: "master_first", words: 1652, critic_avg: 8.4, created_at: at(0, 3, 41), outputs: Array.from({ length: 3 }, (_, i) => ({ output_id: "demo/" + i, kind: "short" as const, k: i, status: "pending", video_url: null })), status: "pending" },
+    { job_id: "tiny-mysteries-20261102-77c1", title: "The Bakery That Prints Two Receipts", channel: "tiny-mysteries", format: "master_first", words: 1890, critic_avg: 8.1, created_at: at(0, 4, 58), outputs: Array.from({ length: 1 }, (_, i) => ({ output_id: "demo/" + i, kind: "short" as const, k: i, status: "pending", video_url: null })), status: "pending" },
+    { job_id: "after-dark-20261031-9c0d", title: "The Laundromat That Only Opens at Night", channel: "after-dark", format: "master_first", words: 1598, critic_avg: 8.1, created_at: at(2, 3, 40), outputs: Array.from({ length: 5 }, (_, i) => ({ output_id: "demo/" + i, kind: "short" as const, k: i, status: "pending", video_url: null })), status: "posted" },
+    { job_id: "tiny-mysteries-20261030-2b8e", title: "Nobody Ordered the Thirteenth Pizza", channel: "tiny-mysteries", format: "master_first", words: 1744, critic_avg: 7.8, created_at: at(3, 4, 12), outputs: Array.from({ length: 4 }, (_, i) => ({ output_id: "demo/" + i, kind: "short" as const, k: i, status: "pending", video_url: null })), status: "posted" },
+    { job_id: "after-dark-20261030-7b1e", title: "The Night Bus That Skips My Stop", channel: "after-dark", format: "shorts_only", words: 121, critic_avg: 7.2, created_at: at(3, 3, 55), outputs: Array.from({ length: 1 }, (_, i) => ({ output_id: "demo/" + i, kind: "short" as const, k: i, status: "pending", video_url: null })), status: "rejected" },
   ],
   footage: [
-    { source: "pexels", id: "8451234", keywords: ["empty hallway", "night"], license: "Pexels License", duration: 12.4, last_used: at(0, 3, 20), uses: 2 },
-    { source: "pexels", id: "7765001", keywords: ["porch light", "front door"], license: "Pexels License", duration: 15.0, last_used: at(0, 3, 21), uses: 1 },
-    { source: "pixabay", id: "22318", keywords: ["kitchen window", "rain"], license: "Pixabay Content License", duration: 9.1, last_used: at(2, 3, 30), uses: 1 },
-    { source: "pexels", id: "9120440", keywords: ["laundromat", "neon sign"], license: "Pexels License", duration: 18.2, last_used: at(2, 3, 31), uses: 3 },
-    { source: "pixabay", id: "40417", keywords: ["bakery", "early morning"], license: "Pixabay Content License", duration: 11.6, last_used: at(0, 4, 40), uses: 1 },
-    { source: "pexels", id: "6603318", keywords: ["street lamp", "fog"], license: "Pexels License", duration: 14.3, last_used: at(3, 4, 0), uses: 4 },
+    { source: "pexels", clip_id: "8451234", keywords: ["empty hallway", "night"], license: "Pexels License", duration: 12.4, last_used: at(0, 3, 20), uses: 2 },
+    { source: "pexels", clip_id: "7765001", keywords: ["porch light", "front door"], license: "Pexels License", duration: 15.0, last_used: at(0, 3, 21), uses: 1 },
+    { source: "pixabay", clip_id: "22318", keywords: ["kitchen window", "rain"], license: "Pixabay Content License", duration: 9.1, last_used: at(2, 3, 30), uses: 1 },
+    { source: "pexels", clip_id: "9120440", keywords: ["laundromat", "neon sign"], license: "Pexels License", duration: 18.2, last_used: at(2, 3, 31), uses: 3 },
+    { source: "pixabay", clip_id: "40417", keywords: ["bakery", "early morning"], license: "Pixabay Content License", duration: 11.6, last_used: at(0, 4, 40), uses: 1 },
+    { source: "pexels", clip_id: "6603318", keywords: ["street lamp", "fog"], license: "Pexels License", duration: 14.3, last_used: at(3, 4, 0), uses: 4 },
   ],
   formats: [
     { id: "long_16x9", name: "Full video", kind: "long", canvas: { w: 1920, h: 1080, fps: 30 }, channels: ["after-dark", "tiny-mysteries"] },
@@ -140,7 +140,7 @@ const recount = () => {
 const fdGet = (b: any, k: string) => (b instanceof FormData ? b.get(k) : b?.[k]);
 
 export function simulateJob(job: Job) {
-  const stages = job.kind === "clip" ? CLIP_STAGES : RUN_STAGES;
+  const stages = stagesOf(job);
   let i = 0;
   DEMO.status.engine = { state: "loading", detail: "Loading model", elapsed_s: 0, vram_gb: 9 };
   const tick = setInterval(() => {
@@ -195,30 +195,36 @@ export async function demoHandle(method: string, path: string, body?: any): Prom
   if ((p === "/jobs/run" || p === "/jobs/clip") && method === "POST") {
     const kind = p.endsWith("run") ? "run" : "clip";
     const sched = fdGet(body, "schedule_at") ? new Date(String(fdGet(body, "schedule_at"))) : null; const later = !!sched && +sched > Date.now();
-    const job: Job = { job_id: "j" + Math.random().toString(16).slice(2, 8), kind, channel: fdGet(body, "channel") || "after-dark", status: "queued", progress: 0, stage: "queued", message: later ? "Scheduled" : "Waiting for the engine", created_at: new Date().toISOString(), schedule_at: later ? sched!.toISOString() : null, title: kind === "clip" ? (fdGet(body, "file")?.name || fdGet(body, "url") || "Your video") : undefined };
+    const job: any = { job_id: "j" + Math.random().toString(16).slice(2, 8), kind, channel: fdGet(body, "channel") || "after-dark", status: "queued", progress: 0, stage: "queued", message: later ? "Scheduled" : "Waiting for the engine", created_at: new Date().toISOString(), schedule_at: later ? sched!.toISOString() : null, title: kind === "clip" ? (fdGet(body, "file")?.name || fdGet(body, "url") || "Your video") : undefined };
     DEMO.jobs.unshift(job); if (!later) simulateJob(job); return { job_id: job.job_id, schedule_at: job.schedule_at };
   }
   if (p === "/jobs/clip/rerun" && method === "POST") {
     const src = DEMO.jobs.find((x: Job) => x.job_id === body?.job_id);
-    const job: Job = { job_id: "j" + Math.random().toString(16).slice(2, 8), kind: "clip", channel: src?.channel || "night-desk", status: "queued", progress: 0, stage: "queued", message: "Waiting for the engine", created_at: new Date().toISOString(), title: src?.title };
+    const job: any = { job_id: "j" + Math.random().toString(16).slice(2, 8), kind: "clip", channel: src?.channel || "night-desk", status: "queued", progress: 0, stage: "queued", message: "Waiting for the engine", created_at: new Date().toISOString(), title: src?.title };
     DEMO.jobs.unshift(job); simulateJob(job); return { job_id: job.job_id };
   }
   if (p === "/jobs/verify" && method === "POST") {
-    const job: Job = { job_id: "v" + Math.random().toString(16).slice(2, 8), kind: "verify", status: "done", progress: 100, stage: "verify", message: "Done", created_at: new Date().toISOString(), result: { passed: true, checks: [{ passed: true }, { passed: true }, { passed: true }] } as any };
+    const job: any = { job_id: "v" + Math.random().toString(16).slice(2, 8), kind: "verify", status: "done", progress: 100, stage: "verify", message: "Done", created_at: new Date().toISOString(), result: { passed: true, checks: [{ passed: true }, { passed: true }, { passed: true }] } as any };
     DEMO.jobs.unshift(job); return { job_id: job.job_id };
   }
   if (parts[0] === "jobs" && parts.length === 2) { const j = DEMO.jobs.find((x: Job) => x.job_id === parts[1]); if (!j) throw new Error("Not found"); return { ...j }; }
   if (parts[0] === "jobs" && parts[2] === "cancel") { const j = DEMO.jobs.find((x: Job) => x.job_id === parts[1]); if (j) { j.status = "cancelled"; j.message = "Cancelled"; } return { ok: true }; }
-  if (p === "/channels" && method === "GET") return DEMO.status.channels.map((c: any) => ({ ...c, pools: structuredClone(POOLS), language: "en", long_minutes: [10, 14], shorts_per_master: [4, 6], audience: "general", fiction_label: true, avoid_topics: ["real crimes", "self-harm"], voice: { mode: "preset", speaker: c.voice, speed: 1 }, stats: DEMO.channelStats[c.slug] }));
-  if (p === "/channels" && method === "POST") { DEMO.status.channels.push({ ...body, voice: body.voice?.speaker, status: "active" }); return { ok: true }; }
+  const profileOf = (c: any) => ({ slug: c.slug, display_name: c.display_name, status: c.status, language: "en", niche: c.niche, seed_keywords: [], voice_notes: "", voice: { mode: "preset", speaker: c.voice, description: null, name: null, speed: 1 }, format: c.format, masters_per_week: c.masters_per_week, long_minutes: [10, 14], shorts_per_master: [4, 6], shorts_per_day_max: 2, length_buckets: [35, 50, 75], publish_window: c.publish_window, audience: "general", made_for_kids: false, fiction_label: true, creator_note: "", critic_bar: 8, qc_pass_target: 0.9, pools: { ...structuredClone(POOLS), pov_tones: ["first_person_intimate"], pacings: ["standard"], title_formulas: ["question"] }, avoid_topics: ["real crimes", "self-harm"], formats_allowed: [], captions: { mask_profanity: false }, created_at: null });
+  if (p === "/channels" && method === "GET") return DEMO.status.channels.map((c: any) => ({ slug: c.slug, display_name: c.display_name, status: c.status, niche: c.niche, language: "en", format: c.format, voice: c.voice, pending: c.pending, approved: 0, last_output_at: null, stats: DEMO.channelStats[c.slug] ?? null, masters_per_week: c.masters_per_week, publish_window: c.publish_window, caption_styles: POOLS.caption_styles, formats_allowed: [] }));
+  if (p === "/channels" && method === "POST") { DEMO.status.channels.push({ ...body, voice: body.voice?.speaker, status: "active" }); return { profile: body, warnings: [], warning_fields: [] }; }
   if (parts[0] === "channels" && parts.length >= 2) {
     const ch = DEMO.status.channels.find((c: any) => c.slug === parts[1]);
     if (parts[2] === "pause" && ch) ch.status = "paused";
     if (parts[2] === "resume" && ch) ch.status = "active";
-    if (parts[2] === "validate") return { ok: true, warnings: [] };
+    if (parts[2] === "validate") return { ok: true, errors: [], warnings: [], error_fields: [], warning_fields: [] };
     if (method === "PUT" && ch) Object.assign(ch, body, { voice: body.voice?.speaker || ch.voice });
+    if (method === "GET" && ch && parts.length === 2) return { profile: profileOf(ch), warnings: [], warning_fields: [] };
     return { ok: true };
   }
+  if (p === "/assistant/tools") return [];
+  if (p === "/update/state") return { state: "idle", old: null, new: null, message: null, updated_at: null };
+  if (p === "/models/state") return {};
+  if (p === "/notes") return [];
   if (p === "/templates") return DEMO.templates;
   if (p === "/voices") return DEMO.voices;
   if (p === "/voices/preview") throw new Error("Voice samples need the engine running");
@@ -249,8 +255,8 @@ export async function demoHandle(method: string, path: string, body?: any): Prom
   if (p === "/logs/components") return [...new Set<string>(DEMO.logs.map((l: any) => l.component))].sort();
   if (p.startsWith("/logs/tail")) { const lvl = sp.get("level"); const comp = sp.get("component"); return DEMO.logs.filter((l: any) => (!lvl || l.level === lvl) && (!comp || l.component === comp)); }
   if (p === "/library/ideas" && method === "GET") return DEMO.ideas.map((i: any) => ({ ...i }));
-  if (p === "/library/ideas" && method === "POST") { const idea = { id: Date.now(), status: "new", source: "You", created_at: new Date().toISOString(), ...body }; DEMO.ideas.unshift(idea); return idea; }
-  if (parts[0] === "library" && parts[1] === "ideas" && method === "PUT") { const i = DEMO.ideas.find((x: any) => String(x.id) === parts[2]); if (i) Object.assign(i, body); return i; }
+  if (p === "/library/ideas" && method === "POST") { const idea = { idea_id: Date.now(), status: "new", source: "You", created_at: new Date().toISOString(), ...body }; DEMO.ideas.unshift(idea); return idea; }
+  if (parts[0] === "library" && parts[1] === "ideas" && method === "PUT") { const i = DEMO.ideas.find((x: any) => String(x.idea_id) === parts[2]); if (i) Object.assign(i, body); return i; }
   if (p === "/library/stories") { const qq = (sp.get("q") || "").toLowerCase(); return DEMO.stories.filter((s: any) => !qq || s.title.toLowerCase().includes(qq)); }
   if (p === "/library/footage") { const qq = (sp.get("q") || "").toLowerCase(); return DEMO.footage.filter((f: any) => !qq || f.keywords.join(" ").includes(qq)); }
   if (p === "/library/formats" && method === "GET") return DEMO.formats.map((f: any) => ({ ...f }));
@@ -276,12 +282,12 @@ export async function demoHandle(method: string, path: string, body?: any): Prom
 export async function* demoChat(message: string): AsyncGenerator<ChatEvent> {
   const last = message.toLowerCase();
   const pend = (text: string, tool: string, run: () => any): ChatEvent => { const id = "a" + Math.random().toString(16).slice(2, 8); DEMO.pending[id] = run; return { kind: "confirm", payload: { action_id: id, tool, text } }; };
-  const startJob = (kind: string, channel: string) => () => { const job: Job = { job_id: "j" + Math.random().toString(16).slice(2, 8), kind, channel, status: "queued", progress: 0, stage: "queued", message: "Waiting", created_at: new Date().toISOString() }; DEMO.jobs.unshift(job); simulateJob(job); return { message: "Started. Progress is on the Create page, and the result lands in the Queue." }; };
+  const startJob = (kind: string, channel: string) => () => { const job: any = { job_id: "j" + Math.random().toString(16).slice(2, 8), kind, channel, status: "queued", progress: 0, stage: "queued", message: "Waiting", created_at: new Date().toISOString() }; DEMO.jobs.unshift(job); simulateJob(job); return { message: "Started. Progress is on the Create page, and the result lands in the Queue." }; };
   yield { kind: "conversation", payload: { conversation_id: "demo" } };
   await sleep(700);
   if (/draft|series|concept/.test(last)) {
     yield { kind: "message", payload: { text: "Three concepts for an After Dark Stories series. Keep one, or ask me to redo any of them.\n\nA. The Night Shift Nurse. Her doorbell camera records tomorrow. Six parts, each a new night.\nB. Floor 13 Exists. An elevator technician keeps getting called to a floor that was never built.\nC. The Substitute. A class whose real teacher has been dead for a year, according to the kids." } };
-    yield pend("Save these three concepts to Library, Ideas as new ideas", "save_ideas", () => { DEMO.ideas.unshift({ id: Date.now(), channel: "after-dark", title: "Series: The Night Shift Nurse", premise: "Her doorbell camera records tomorrow. Six parts, each a new night.", status: "new", source: "Assistant", created_at: new Date().toISOString() }); return { message: "Saved to Library, Ideas." }; });
+    yield pend("Save these three concepts to Library, Ideas as new ideas", "save_ideas", () => { DEMO.ideas.unshift({ idea_id: Date.now(), channel: "after-dark", title: "Series: The Night Shift Nurse", premise: "Her doorbell camera records tomorrow. Six parts, each a new night.", status: "new", source: "Assistant", created_at: new Date().toISOString() }); return { message: "Saved to Library, Ideas." }; });
   } else if (/regenerate|redo/.test(last)) {
     yield { kind: "message", payload: { text: "New take on B. Floor 13 Exists becomes The Service Lift: a night porter's lift stops between floors, and the intercom answers in his own voice from tomorrow." } };
   } else if (/pause|resume/.test(last)) {

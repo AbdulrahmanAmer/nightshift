@@ -8,9 +8,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useApp, useLoad } from "../lib/app";
 import { api } from "../lib/api";
-import { dayInline, fmtClock, fmtDay, fmtDur, fmtWhen, kindLabel, plural, stageWords, store } from "../lib/format";
-import type { ChannelSummary, Job, Output, OutputDetail, Run } from "../lib/types";
+import { dayInline, doneWords, MAKES_VIDEO, fmtClock, fmtDay, fmtDur, fmtWhen, kindLabel, plural, stageWords, store } from "../lib/format";
+import type { ChannelSummary, Job, MorningNote, Output, OutputDetail, Run } from "../lib/types";
 import { cx } from "../ui/kit";
+import { JobError } from "../ui/JobError";
 import { Scene } from "../visuals/Scene";
 import {
   AssignmentCard, AvatarGroup, Badge, Button, CalendarCard, Card, CardHeader, ClipsIllustration, CountdownCard, CreateTile, DashGrid, EmptyState,
@@ -27,9 +28,9 @@ export function Poster({ o, className, portrait }: { o: Pick<Output, "title" | "
   return <Scene seed={o.title} kind={o.kind === "clip" ? "clip" : "story"} w={p ? 900 : 1600} h={p ? 1600 : 900} className={className} title={`Still for ${o.title}`} />;
 }
 
-export function jobTitle(j: Job, channelName: (s?: string) => string) {
-  if (j.kind === "clip") return j.title ? `Clips from ${j.title}` : `Clips for ${channelName(j.channel)}`;
-  return j.title || `Story video for ${channelName(j.channel)}`;
+export function jobTitle(j: Job, channelName: (s?: string | null) => string) {
+  if (j.kind === "clip") return (j.params?.title ?? j.title) ? `Clips from ${j.params?.title ?? j.title}` : `Clips for ${channelName(j.channel)}`;
+  return (j.params?.title ?? j.title) || `Story video for ${channelName(j.channel)}`;
 }
 const kindIcon = (k: string): IconName => (k === "long" ? "monitor" : k === "short" ? "phone" : "scissors");
 const partOfDay = () => { const h = new Date().getHours(); return h < 5 ? "Good night" : h < 12 ? "Good morning" : h < 18 ? "Good afternoon" : "Good evening"; };
@@ -39,8 +40,9 @@ export default function Queue() {
   const [tab, setTab] = useState<Tab>((route.query.get("tab") as Tab) || "ready");
   const list = useLoad<Output[]>(() => api.get(`/outputs?status=${STATUS[tab]}`), [tab], []);
   const [current, setCurrent] = useState<string | null>(route.query.get("id"));
-  // Job history for the events and render cards: loaded once and again whenever the engine changes state (no extra polling).
-  const jobs = useLoad<Job[]>(() => api.get("/jobs"), [status?.engine?.state], []);
+  // Job history for the events and render cards: loaded again whenever the engine changes state or the running job moves on
+  // (its progress or stage), so the bars follow the job instead of freezing at the value read when it started.
+  const jobs = useLoad<Job[]>(() => api.get("/jobs"), [status?.engine?.state, status?.job?.job_id, status?.job?.progress, status?.job?.message, status?.queue?.queued], []);
   const items = list.data;
   const o = items.find((x) => x.output_id === current) || items[0];
   const counts = status?.outbox;
@@ -99,7 +101,7 @@ function QueueTabs({ tab, onTab }: { tab: Tab; onTab: (t: Tab) => void }) {
   return <SegmentedControl label="Queue" size="sm" value={tab} onChange={onTab} options={[{ value: "ready", label: `Ready${n(c?.pending)}` }, { value: "posted", label: `Approved and posted${n(c?.approved)}` }, { value: "rejected", label: `Rejected${n(c?.rejected)}` }]} />;
 }
 
-function ListView({ items, tab, onResume, channelName }: { items: Output[]; tab: Tab; onResume: (id: string) => void; channelName: (s?: string) => string }) {
+function ListView({ items, tab, onResume, channelName }: { items: Output[]; tab: Tab; onResume: (id: string) => void; channelName: (s?: string | null) => string }) {
   if (!items.length) return <EmptyState icon="film" title="Nothing here yet">{tab === "posted" ? "Approved videos show up here until you paste their YouTube link" : "Rejected videos and your reasons show up here"}</EmptyState>;
   return (
     <div className="@container">
@@ -125,7 +127,7 @@ function ListView({ items, tab, onResume, channelName }: { items: Output[]; tab:
 }
 
 type Prog = Record<string, boolean>;
-function Review({ o, items, tab, onTab, onPick, onChanged, channelName }: { o: Output; items: Output[]; tab: Tab; onTab: (t: Tab) => void; onPick: (id: string) => void; onChanged: (nextId: string | null) => Promise<void>; channelName: (s?: string) => string }) {
+function Review({ o, items, tab, onTab, onPick, onChanged, channelName }: { o: Output; items: Output[]; tab: Tab; onTab: (t: Tab) => void; onPick: (id: string) => void; onChanged: (nextId: string | null) => Promise<void>; channelName: (s?: string | null) => string }) {
   const { toast, confirm, ask, demo } = useApp();
   const detail = useLoad<OutputDetail | null>(() => api.get(`/outputs/${api.enc(o.output_id)}`), [o.output_id], null);
   const d = detail.data;
@@ -179,7 +181,7 @@ function Review({ o, items, tab, onTab, onPick, onChanged, channelName }: { o: O
     { key: "studio", title: "Open YouTube Studio", sub: "Start an upload and drag the file in", action: <LinkButton href="https://studio.youtube.com/" external size="sm" variant="soft" leadingIcon="external" onClick={() => mark("studio")}>Studio</LinkButton> },
     { key: "title", title: "Title", sub: o.title, action: <Button size="sm" variant="soft" leadingIcon="copy" onClick={() => copy(o.title, "Title", "title")}>Copy</Button> },
     { key: "description", title: "Description", sub: d?.chapters?.length ? `With ${d.chapters.length} chapters and ${d.hashtags?.length ?? 0} hashtags` : `With ${d?.hashtags?.length ?? 0} hashtags`, action: <Button size="sm" variant="soft" leadingIcon="copy" onClick={() => copy(description, "Description", "description")} disabled={!d}>Copy</Button> },
-    { key: "thumb", title: "Thumbnail", sub: o.kind === "long" ? "Three were made for this video" : "Pick a frame in Studio", action: o.kind === "long" && !demo ? <LinkButton href={api.thumbUrl(o.output_id)} external size="sm" variant="soft" leadingIcon="image" onClick={() => mark("thumb")}>Open</LinkButton> : <Button size="sm" variant="ghost" onClick={() => mark("thumb")}>Done</Button> },
+    { key: "thumb", title: "Thumbnail", sub: o.kind === "long" ? (d?.thumbnails?.length ? `Pick one of the ${d.thumbnails.length} made for this video` : "Open the one that was made") : "Pick a frame in Studio", action: o.kind === "long" && !demo ? <span className="flex gap-1">{(d?.thumbnails?.length ? d.thumbnails : ["thumb_1.jpg"]).map((t) => { const n = Number(/d/.exec(t)?.[0] || 1); return <a key={t} href={api.thumbChoiceUrl(n, o.output_id)} target="_blank" rel="noreferrer" aria-label={`Open thumbnail ${n}`} onClick={() => mark("thumb")} className="ds-focus block overflow-hidden rounded-ds-sm shadow-ds-control"><img src={api.thumbChoiceUrl(n, o.output_id)} alt="" loading="lazy" className="h-9 w-16 object-cover" /></a>; })}</span> : <Button size="sm" variant="ghost" onClick={() => mark("thumb")}>Done</Button> },
     { key: "audience", title: "Audience", sub: d?.made_for_kids ? "Yes, it's made for kids" : "No, it's not made for kids", action: <Button size="sm" variant="ghost" onClick={() => mark("audience")}>Done</Button> },
     { key: "altered", title: "Altered content", sub: d?.ai_disclosure === "yes" ? "Answer Yes" : "Answer No. The voice is production help, footage is real stock", action: <Button size="sm" variant="ghost" onClick={() => mark("altered")}>Done</Button> },
     { key: "tags", title: "Tags", sub: d?.tags?.length ? `${d.tags.length} tags, ${d.tags.slice(0, 3).join(", ")}` : "No tags", action: <Button size="sm" variant="soft" leadingIcon="copy" onClick={() => copy((d?.tags || []).join(", "), "Tags", "tags")} disabled={!d}>Copy</Button> },
@@ -299,7 +301,7 @@ function Review({ o, items, tab, onTab, onPick, onChanged, channelName }: { o: O
 
 /* ---------------------------------------------------------------- job events */
 
-function JobEvents({ jobs, loading, channelName, className, onReview }: { jobs: Job[]; loading: boolean; channelName: (s?: string) => string; className?: string; onReview: () => void }) {
+function JobEvents({ jobs, loading, channelName, className, onReview }: { jobs: Job[]; loading: boolean; channelName: (s?: string | null) => string; className?: string; onReview: () => void }) {
   const { ask, go, toast } = useApp();
   // Dismissed events are hidden in this browser only (there is no server-side dismiss).
   const [hidden, setHidden] = useState<string[]>(() => store.get<string[]>("ns-dismissed-events", []));
@@ -324,8 +326,9 @@ function JobEvents({ jobs, loading, channelName, className, onReview }: { jobs: 
               <li key={j.job_id}>
                 <NotificationItem title={title} moreLabel={`Options for ${title}`} menu={menu}
                     titleAdornment={<StatusDot tone={failed ? "danger" : cancelled ? "attention" : "online"} label={failed ? "Stopped" : cancelled ? "Cancelled" : "Done"} />}
-                    subtitle={failed ? `Stopped at ${stageWords(j.stage).toLowerCase()}. ${j.message || ""}` : cancelled ? "Cancelled" : `Done · ${j.result?.output_ids?.length ? `${j.result.output_ids.length} videos` : "1 video"}`}
+                    subtitle={failed ? `Stopped at ${stageWords(j.stage).toLowerCase()}. ${j.message || ""}` : cancelled ? "Cancelled" : doneWords(j)}
                     meta={<><MetaItem icon="calendarDays">{fmtDay(j.created_at)}</MetaItem><MetaItem icon="clock">{fmtClock(j.created_at)}</MetaItem><MetaItem icon="channels">{channelName(j.channel)}</MetaItem></>} />
+                {failed && <JobError j={j} />}
               </li>
             );
           })}
@@ -337,6 +340,8 @@ function JobEvents({ jobs, loading, channelName, className, onReview }: { jobs: 
 
 /* ---------------------------------------------------------------- tonight's plan */
 
+/** "dashboard:preview-12" -> "a voice sample", "studio:..." -> "a video job", "code" -> "Nightshift Code". */
+const ownerWords = (o: string) => (o.startsWith("studio:") ? "a video job" : o.startsWith("dashboard:preview") || o.startsWith("dashboard:voice") ? "a voice sample" : o.startsWith("dashboard") ? "the dashboard" : /code/i.test(o) ? "Nightshift Code" : o);
 function TonightPlan({ chans, status, className }: { chans: ChannelSummary[]; status: ReturnType<typeof useApp>["status"]; className?: string }) {
   const { go, confirm, toast, refresh } = useApp();
   const pause = async (c: ChannelSummary) => {
@@ -350,6 +355,7 @@ function TonightPlan({ chans, status, className }: { chans: ChannelSummary[]; st
   return (
     <Card as="section" aria-labelledby="q-plan" className={cx("self-stretch", className)}>
       <CardHeader id="q-plan" title="Tonight's plan" actions={<Button variant="ghost" size="sm" leadingIcon="edit" onClick={() => go("#/channels")}>Edit</Button>} />
+      {status?.engine?.vram_owner && <p role="status" className="mb-3 flex items-center gap-2 rounded-ds-md bg-ds-accent-subtle px-3 py-2 text-ds-xs"><StatusDot tone="accent" />The graphics card is held by <strong className="font-semibold">{ownerWords(status.engine.vram_owner)}</strong>. Tonight's run waits for it.</p>}
       <div className="flex flex-col gap-4">
         {plan.length ? plan.map((c) => (
           <AssignmentCard key={c.slug} categories={[c.display_name]} moreLabel={`Options for ${c.display_name}`} menu={[{ icon: "edit", label: "Edit channel", onSelect: () => go(`#/channels?edit=${encodeURIComponent(c.slug)}`) }, { icon: "pause", label: "Skip tonight and pause", onSelect: () => pause(c) }]}
@@ -396,7 +402,7 @@ function PostingCalendar({ chans, ready, className, onOpen }: { chans: ChannelSu
 
 /* ---------------------------------------------------------------- render jobs */
 
-function RenderJobs({ jobs, chans, channelName, className }: { jobs: Job[]; chans: ChannelSummary[]; channelName: (s?: string) => string; className?: string }) {
+function RenderJobs({ jobs, chans, channelName, className }: { jobs: Job[]; chans: ChannelSummary[]; channelName: (s?: string | null) => string; className?: string }) {
   const { go } = useApp();
   const live = jobs.filter((j) => ["queued", "running"].includes(j.status));
   // A scheduled job is queued with a future schedule_at: it shows its start time, not "Waiting", and sorts after the running ones.
@@ -410,7 +416,7 @@ function RenderJobs({ jobs, chans, channelName, className }: { jobs: Job[]; chan
       id: j.job_id, title, date: sched ? `Scheduled for ${fmtWhen(j.schedule_at)}` : running ? `Started ${fmtWhen(j.created_at)}` : fmtWhen(j.created_at),
       metricLabel: sched ? "Starts" : "Stage", metric: sched ? fmtWhen(j.schedule_at) : j.status === "queued" ? "Waiting" : running ? stageWords(j.stage) : failed ? "Stopped" : j.status === "cancelled" ? "Cancelled" : "Done",
       progress: j.progress ?? (j.status === "done" ? 100 : 0), progressLabel: `${title} progress`, tone: failed ? "danger" : j.status === "done" ? "success" : "accent",
-      meta: [{ icon: "clock", value: j.step && j.steps ? `${j.step}/${j.steps}` : "–", label: "steps" }, { icon: "film", value: j.result?.output_ids?.length ?? (j.status === "done" ? 1 : 0), label: "videos" }],
+      meta: [{ icon: "clock", value: j.step && j.steps ? `${j.step}/${j.steps}` : "–", label: "steps" }, { icon: "film", value: MAKES_VIDEO.includes(j.kind) ? (j.result?.output_ids?.length ?? 0) : "–", label: "videos" }],
     };
   });
   return (
@@ -442,7 +448,7 @@ function MachineMeters({ className }: { className?: string }) {
     vramPct != null
       ? { label: "VRAM", value: vramPct, display: `${gb(used!)} GB`, source: `${gb(used!)} of ${gb(total!)} GB in use` }
       : { label: "VRAM", value: null, display: used != null ? `${gb(used)} GB` : vramGb ? `${vramGb} GB` : undefined, source: used != null ? `${gb(used)} GB in use, total not reported` : vramGb ? `${vramGb} GB in use` : "no model loaded" },
-    { label: "Disk", value: disk ? Math.round(((disk.total_gb - disk.free_gb) / Math.max(1, disk.total_gb)) * 100) : null, source: disk ? `${disk.free_gb} GB free of ${disk.total_gb} GB` : "unknown until the engine answers" },
+    { label: "Disk", value: disk && disk.total_gb != null && disk.free_gb != null ? Math.round(((disk.total_gb - disk.free_gb) / Math.max(1, disk.total_gb)) * 100) : null, source: disk ? `${disk.free_gb} GB free of ${disk.total_gb} GB` : "unknown until the engine answers" },
   ];
   const diskLine = disk ? `${disk.free_gb} GB free on ${disk.home}` : null;
   const gpuLine = gpu ? `${gpu.name}${temp != null ? ` · ${Math.round(temp)} °C` : ""}` : null;
@@ -451,11 +457,12 @@ function MachineMeters({ className }: { className?: string }) {
 }
 
 /** "Last night": what the newest nightly run made and what stopped, from GET /runs. Shown only after a run has happened. */
-function LastNight({ className, pending, onReview, channelName }: { className?: string; pending: number; onReview: () => void; channelName: (s?: string) => string }) {
+function LastNight({ className, pending, onReview, channelName }: { className?: string; pending: number; onReview: () => void; channelName: (s?: string | null) => string }) {
   const runs = useLoad<Run[]>(() => api.get("/runs?limit=1"), [], []);
+  const notes = useLoad<MorningNote[]>(() => api.get("/notes"), [], []);
   const r = runs.data[0];
   if (!r) return null;
-  const made = r.summary?.jobs?.length ?? 0; const failed = r.summary?.failures ?? [];
+  const made = r.summary?.jobs?.length ?? 0; const failed = r.summary?.failures ?? []; const skipped = r.summary?.skipped ?? [];
   const took = r.duration_s ? (r.duration_s >= 3600 ? `${Math.floor(r.duration_s / 3600)} h ${Math.round((r.duration_s % 3600) / 60)} min` : `${Math.max(1, Math.round(r.duration_s / 60))} min`) : null;
   const when = r.mode === "daily" ? "Last night" : "Last run";
   return (
@@ -465,7 +472,10 @@ function LastNight({ className, pending, onReview, channelName }: { className?: 
       <p className="text-ds-md leading-ds-normal">
         {made ? `${plural(made, "video")} made` : "Nothing was made"}{took ? `, in ${took}` : ""}, {fmtDay(r.started_at).toLowerCase()} at <span className="ds-num">{fmtClock(r.started_at)}</span>.
         {failed.length ? ` ${plural(failed.length, "job")} stopped.` : ""}
+        {skipped.length ? ` ${plural(skipped.reduce((n, x) => n + x.jobs, 0), "job")} skipped.` : ""}
       </p>
+      {notes.data.length > 0 && <ul className="mt-2 flex flex-col gap-1 text-ds-xs text-ds-text-2">{notes.data.map((n, i) => <li key={i}>{n.message} <span className="text-ds-muted">({fmtClock(n.at)})</span></li>)}</ul>}
+      {skipped.length > 0 && <ul className="mt-2 flex flex-col gap-1 text-ds-xs text-ds-text-2">{skipped.map((x) => <li key={x.channel}>{channelName(x.channel)}: {plural(x.jobs, "job")} skipped because an earlier one stopped</li>)}</ul>}
       {failed.length > 0 && <ul className="mt-2 flex flex-col gap-1 text-ds-xs text-ds-danger">{failed.slice(0, 3).map((f) => <li key={f.job_id}>{channelName(f.channel)}: {f.code ? `${f.code}. ` : ""}{f.error || "stopped"}</li>)}</ul>}
     </Card>
   );

@@ -44,6 +44,11 @@ class UploadInfo:
         return asdict(self)
 
 
+def tmp_dir(paths: Paths) -> Path:
+    """The `tmp` folder in the home: scratch space for large files, on the same drive as the home."""
+    return paths.home / "tmp"
+
+
 def clipper_dir(paths: Paths) -> Path:
     """`imports/clipper` under the Nightshift home."""
     return paths.home / "imports" / "clipper"

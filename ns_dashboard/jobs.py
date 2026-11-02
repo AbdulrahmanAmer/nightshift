@@ -74,6 +74,8 @@ class JobRecord:
             "status": self.status,
             "progress": round(self.progress * 100, 1),
             "stage": _stage_of(self.message),
+            "step": _steps_of(self.message)[0],
+            "steps": _steps_of(self.message)[1],
             "message": self.message,
             "created_at": self.created_at,
             "started_at": self.started_at,
@@ -85,7 +87,7 @@ class JobRecord:
         }
 
 
-_STAGE_RE = re.compile(r"^(.*) \(\d+/\d+\)$")
+_STAGE_RE = re.compile(r"^(.*) \((\d+)/(\d+)\)$")
 
 
 def _stage_of(message: str) -> str | None:
@@ -94,6 +96,12 @@ def _stage_of(message: str) -> str | None:
         return "download"
     m = _STAGE_RE.match(message or "")
     return m.group(1) if m else None
+
+
+def _steps_of(message: str) -> tuple[int | None, int | None]:
+    """`(i, n)` from a `name (i/n)` progress message, else `(None, None)`."""
+    m = _STAGE_RE.match(message or "")
+    return (int(m.group(2)), int(m.group(3))) if m else (None, None)
 
 
 def _unpack(raw: str | None) -> tuple[dict[str, Any], dict[str, Any] | None]:
@@ -215,6 +223,11 @@ class JobStore:
         """The job currently running, if any."""
         row = self.db.one("SELECT * FROM dashboard_jobs WHERE status = 'running' ORDER BY rowid LIMIT 1")
         return self._record(row) if row else None
+
+    def running_all(self) -> list[JobRecord]:
+        """Every job whose row says `running` (more than one only after a crash)."""
+        rows = self.db.query("SELECT * FROM dashboard_jobs WHERE status = 'running' ORDER BY rowid")
+        return [self._record(r) for r in rows]
 
     def counts(self) -> dict[str, int]:
         """Number of queued and running jobs."""
@@ -391,6 +404,7 @@ class JobWorker:
         *,
         gpu_gate: GpuGate | None = None,
         inline_kinds: frozenset[str] = frozenset({"learn"}),
+        on_recover: dict[str, Callable[[JobRecord], None]] | None = None,
     ) -> None:
         self.store = store
         self.handlers = handlers
@@ -398,6 +412,10 @@ class JobWorker:
         self.log = log
         self.gpu_gate = gpu_gate
         self.inline_kinds = inline_kinds
+        self.on_recover = on_recover or {}
+        #: Called on the worker thread when a job ended and nothing else is queued (saved Assistant requests).
+        self.on_idle: Callable[[], None] | None = None
+        self._ended = False
         self._cv = threading.Condition()
         self._wake = False
         self._stopping = False
@@ -409,9 +427,17 @@ class JobWorker:
         """Start the worker thread (idempotent) after failing jobs a crashed process left running."""
         if self._thread is not None and self._thread.is_alive():
             return
+        interrupted = self.store.running_all()
         n = self.store.recover_interrupted()
         if n:
             self.log.warn("jobs_recovered", f"{n} interrupted job(s) marked failed", count=n)
+        for rec in interrupted:  # e.g. a series part goes back from "producing" to "approved"
+            hook = self.on_recover.get(rec.kind)
+            if hook is not None:
+                try:
+                    hook(rec)
+                except Exception as e:  # recovery must never stop the worker from starting
+                    self.log.warn("recover_failed", str(e), job_id=rec.job_id, kind=rec.kind)
         self._stopping = False
         self._thread = threading.Thread(target=self._loop, name="ns-dashboard-worker", daemon=True)
         self._thread.start()
@@ -442,10 +468,13 @@ class JobWorker:
         rec = self.store.get(job_id)
         if rec is None:
             raise LookupError(job_id)
-        if rec.status == "queued" and self.store.cancel_queued(job_id):
-            self.log.info("job_cancelled", job_id=job_id)
-            self._publish(job_id)
-            return "cancelled"
+        if rec.status == "queued":
+            if self.store.cancel_queued(job_id):
+                self.log.info("job_cancelled", job_id=job_id)
+                self._publish(job_id)
+                return "cancelled"
+            # the worker started it between our read and the update: look again, so it is cancelled as running
+            rec = self.store.get(job_id) or rec
         if rec.status == "running":
             self.store.request_cancel(job_id)
             self.store.update_progress(job_id, rec.progress, "Cancelling after the current stage...")
@@ -461,6 +490,11 @@ class JobWorker:
             return None
         self.cancel(rec.job_id)
         return rec.job_id
+
+    @property
+    def started(self) -> bool:
+        """True while the worker thread is alive."""
+        return self._thread is not None and self._thread.is_alive()
 
     @property
     def running_job_id(self) -> str | None:
@@ -546,9 +580,22 @@ class JobWorker:
             with self._cv:
                 self._cv.notify_all()
 
+    def _idle(self) -> None:
+        if self.on_idle is None:
+            return
+        try:
+            self.on_idle()
+        except Exception as e:  # an answer that fails must not stop the worker
+            self.log.warn("idle_hook_failed", str(e))
+
     def _loop(self) -> None:
         while not self._stopping:
             if self.run_next():
+                self._ended = True
+                continue
+            if self._ended:
+                self._ended = False
+                self._idle()
                 continue
             with self._cv:
                 if self._stopping:

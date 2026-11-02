@@ -66,6 +66,10 @@ class ChannelsService:
             "approved": counts.get((ch.slug, "approved"), 0),
             "last_output_at": last.get(ch.slug),
             "stats": stats,
+            "masters_per_week": ch.masters_per_week,
+            "publish_window": ch.publish_window,
+            "caption_styles": list(ch.pools.caption_styles),
+            "formats_allowed": list(ch.formats_allowed),
         }
 
     def cards(self) -> list[dict[str, Any]]:
