@@ -115,7 +115,7 @@ class ProduceRequest:
     end_card: str
     publish_not_before_days: int
     minutes: int = 15  # the part's runtime target; QC allows a master up to 15 % over it
-    pacing: str = "standard"  # the pacing the script was written at (words = minutes x its wpm); the job keeps it
+    pacing: str = "standard"  # the pacing the script was written at (minutes x its wpm); the job keeps it
 
 
 EnqueueFn = Callable[[ProduceRequest], object]

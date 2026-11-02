@@ -1,3 +1,4 @@
+# ruff: noqa: E501
 """Re-review row 9: the voice setup queued is created by every path that runs a job, not only `studio run`."""
 
 import json

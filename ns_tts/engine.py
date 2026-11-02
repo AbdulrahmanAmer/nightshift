@@ -220,7 +220,7 @@ class FakeEngine:
 
 
 class QwenttsEngine:
-    """Runs `qwen-tts.exe` once per batch of chunks and `qwen-codec.exe` once per new voice (see the module doc).
+    """Runs `qwen-tts.exe` once per batch of chunks and `qwen-codec.exe` once per new voice (module doc).
 
     `bin_dir` is `<home>\\bin\\qwentts`. `launcher` maps a tool name (`qwen-tts`, `qwen-codec`) to the argv
     prefix that starts it; tests use it to run a Python shim instead of the real executables.

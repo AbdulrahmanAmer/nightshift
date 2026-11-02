@@ -1,3 +1,4 @@
+# ruff: noqa: E501
 """Re-review row 5: publish slots start on the channel's local date and count earlier nights' Shorts."""
 
 import json

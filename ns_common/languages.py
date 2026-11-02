@@ -1,7 +1,8 @@
 """Language names the `qwen-tts` binary accepts for `--lang` (C3).
 
 Upstream `qwen-tts --help` says only "--lang <name>  Language label (default: auto)". The names are the
-`qwen3-tts.codec.language_names` of the talker GGUF (qwentts.cpp `docs/ARCHITECTURE.md`, `convert.py`, from the
+`qwen3-tts.codec.language_names` of the talker GGUF (qwentts.cpp `docs/ARCHITECTURE.md`, `convert.py`,
+from the
 checkpoint's `codec_language_id`), matched case-insensitively, and an unknown one is a fatal error
 ("unknown language"). Qwen3-TTS speaks these ten languages (plus Mandarin dialect speakers):
 Chinese, English, German, Italian, Portuguese, Spanish, Japanese, Korean, French, Russian.

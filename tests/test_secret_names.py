@@ -88,7 +88,7 @@ def test_the_nightly_toast_falls_back_to_a_morning_note(monkeypatch: pytest.Monk
 
 
 def test_a_keyring_that_raises_any_exception_falls_back_to_the_file(monkeypatch: pytest.MonkeyPatch):
-    """Nightly review row 1: in the S4U session CredRead error 1312 is not a KeyringError; open_env crashed."""
+    """Nightly review row 1: in the S4U session CredRead error 1312 is no KeyringError; open_env crashed."""
 
     class CredReadError(OSError):  # pywin32-style: neither a KeyringError nor an ImportError
         pass
@@ -116,9 +116,15 @@ def test_no_key_anywhere_is_empty_not_an_error_and_the_source_raises_e501_later(
     from ns_studio.media.clip_sources import PexelsSource
 
     kr = types.ModuleType("keyring")
-    kr.get_password = lambda service, name: (_ for _ in ()).throw(RuntimeError("no logon session"))  # type: ignore[attr-defined]
+    def no_session(service: str, name: str) -> str:
+        raise RuntimeError("no logon session")
+
+    def no_dpapi(paths: object, name: str) -> str:
+        raise RuntimeError("dpapi unavailable")
+
+    kr.get_password = no_session  # type: ignore[attr-defined]
     sf = types.ModuleType("ns_common.secret_file")
-    sf.load_secret = lambda paths, name: (_ for _ in ()).throw(RuntimeError("dpapi unavailable"))  # type: ignore[attr-defined]
+    sf.load_secret = no_dpapi  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "keyring", kr)
     monkeypatch.setitem(sys.modules, "ns_common.secret_file", sf)
     keys = jobs.load_keys()  # must not raise at start

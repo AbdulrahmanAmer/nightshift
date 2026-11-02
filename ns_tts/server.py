@@ -103,7 +103,7 @@ def create_app(engine: Engine, library: VoiceLibrary, *, log: NsLogger | None = 
     warned: set[str] = set()
 
     def language_name(code: str | None) -> str:
-        """The `--lang` name for a request's language; an unknown one is English, with one warning per code."""
+        """The `--lang` name for a request's language; unknown is English, with one warning per code."""
         name, known = qwen_language(code)
         if not known and (code or "") not in warned:
             warned.add(code or "")
@@ -147,7 +147,8 @@ def create_app(engine: Engine, library: VoiceLibrary, *, log: NsLogger | None = 
             _t, voice, speed, _c = entries[refs[0][0]]
             use_seed = voice_seed(voice.name) if seed is None else seed
             texts = [plans[i][j].text for i, j in refs]
-            for ref, a in zip(refs, engine.synth_batch(texts, voice, speed=speed, seed=use_seed), strict=True):
+            made = engine.synth_batch(texts, voice, speed=speed, seed=use_seed)
+            for ref, a in zip(refs, made, strict=True):
                 audio[ref] = a
         sr = engine.sr
         return [

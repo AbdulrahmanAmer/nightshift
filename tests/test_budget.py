@@ -48,7 +48,7 @@ def test_unknown_pacing_is_a_key_error():
 
 
 def test_master_budget_ten_minutes_standard():
-    """1,550 words of speech would play for 10:00 plus about 1:10 of pauses and cards: the budget is smaller."""
+    """1,550 words of speech play for 10:00 plus about 1:10 of pauses and cards: the budget is smaller."""
     mb = master_budget(10, "standard")
     assert (mb.target_minutes, mb.wpm) == (10, 155)
     assert mb.target_words == words_for_seconds(600, 155, fixed_s=master_fixed_seconds(5)) < 1550
@@ -65,7 +65,8 @@ def test_master_budget_chapter_count_is_5_to_7(minutes: int, pacing: str):
     assert 5 <= mb.chapters <= 7
     assert len(mb.chapter_budgets) == mb.chapters
     assert sum(mb.chapter_budgets) == mb.target_words
-    assert mb.min_words == min(mb.target_words, words_for_seconds(540, mb.wpm, fixed_s=master_fixed_seconds(5)))
+    floor = words_for_seconds(540, mb.wpm, fixed_s=master_fixed_seconds(5))
+    assert mb.min_words == min(mb.target_words, floor)
 
 
 def test_distribute_words_sums_exactly_and_spreads_remainder():

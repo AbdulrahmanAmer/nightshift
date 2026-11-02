@@ -82,9 +82,10 @@ def tone_bytes(seconds: float, freq: float) -> bytes:
 
 
 def stream_header() -> bytes:
-    """qwentts.cpp `wav_stream_write_header`: 44 bytes, RIFF and data sizes 0x7FFFFFFF (24 kHz mono 16-bit)."""
+    """qwentts.cpp `wav_stream_write_header`: 44 bytes, RIFF and data sizes 0x7FFFFFFF (24 kHz, 16-bit)."""
     fmt = struct.pack("<IHHIIHH", 16, 1, 1, 24000, 48000, 2, 16)
-    return b"RIFF" + struct.pack("<I", 0x7FFFFFFF) + b"WAVEfmt " + fmt + b"data" + struct.pack("<I", 0x7FFFFFFF)
+    live = struct.pack("<I", 0x7FFFFFFF)
+    return b"RIFF" + live + b"WAVEfmt " + fmt + b"data" + live
 
 
 def write_tone(path: str, seconds: float, freq: float) -> None:

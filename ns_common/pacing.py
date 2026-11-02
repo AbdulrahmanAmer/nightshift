@@ -26,7 +26,7 @@ def pacing_speed(voice_speed: float, pacing: str) -> float:
 
 # ---- pauses -------------------------------------------------------------------------------------------
 # The TTS service (`ns_tts.audio.chunk_text`) puts silence between its chunks; a word budget that ignores it
-# runs about 8 % long, which breaks the 15:00 QC ceiling for a 14-minute master and the +-15 % band of a Short.
+# runs about 8 % long, which breaks the 15:00 QC ceiling of a 14-minute master and the +-15 % Short band.
 PAUSE_SENTENCE_S = 0.35
 PAUSE_PARAGRAPH_S = 0.70
 PAUSE_CLIFF_S = 1.20

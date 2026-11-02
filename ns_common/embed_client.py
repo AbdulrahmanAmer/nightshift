@@ -48,7 +48,7 @@ def approx_tokens(text: str) -> int:
 
 
 def _clip_to_tokens(text: str, budget: int) -> str:
-    """The longest prefix of `text` within `budget` estimated tokens, cut at a word boundary when there is one."""
+    """The longest prefix of `text` within `budget` estimated tokens, cut at a word boundary if possible."""
     lo, hi = 0, len(text)
     while lo < hi:  # the estimate grows with the prefix, so binary search the cut
         mid = (lo + hi + 1) // 2
@@ -64,7 +64,8 @@ def _clip_to_tokens(text: str, budget: int) -> str:
 def embed_window(text: str, batch_tokens: int = MAX_EMBED_TOKENS) -> str:
     """The opening of `text` that fits one embedding input; short texts are unchanged.
 
-    The budget is `EMBED_WINDOW_TOKENS`, capped at 90 % of the server's `batch_tokens` (`EmbedCfg.batch_size`).
+    The budget is `EMBED_WINDOW_TOKENS`, capped at 90 % of the server's `batch_tokens`
+    (`EmbedCfg.batch_size`).
     Whole sentences are kept while they fit; a first sentence over the budget is cut at a word boundary.
     """
     budget = max(32, min(EMBED_WINDOW_TOKENS, int(batch_tokens * 0.9)))

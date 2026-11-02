@@ -1,3 +1,4 @@
+# ruff: noqa: E501
 """Re-review row 3: the channel's language reaches `qwen-tts --lang` (it was always English)."""
 
 from __future__ import annotations

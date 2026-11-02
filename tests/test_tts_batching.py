@@ -1,3 +1,4 @@
+# ruff: noqa: E501
 """Re-review row 8: one `qwen-tts` process per job (`--stream-by-line -o -`), never one per sentence."""
 
 from __future__ import annotations

@@ -20,7 +20,7 @@ class TtsItem:
     voice: str
     speed: float = 1.0
     cliff_lines: tuple[str, ...] = ()   # lines that get a 1,200 ms pause before them (spec 7.5)
-    language: str | None = None         # the channel's ISO code; the service maps it to qwen-tts's --lang names
+    language: str | None = None         # the channel's ISO code; the service maps it to --lang names
 
 
 def _item_body(i: TtsItem) -> dict[str, Any]:
@@ -76,7 +76,7 @@ def _raise_voice_mismatch(r: httpx.Response) -> None:
         return
     if r.status_code == 404 and isinstance(body, dict) and "unknown voice" in str(body.get("detail", "")):
         raise NsError(
-            "NS-E311", f"{body['detail']}: create the voice first (Library > Voices, or 'studio voice design')"
+            "NS-E311", f"{body['detail']}: create the voice first (Library > Voices or 'studio voice design')"
         )
     if isinstance(body, dict) and body.get("error") in _SERVICE_CODES:
         raise NsError(str(body["error"]), str(body.get("detail", "")))

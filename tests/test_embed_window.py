@@ -1,3 +1,4 @@
+# ruff: noqa: E501
 """Re-review row 1: the embed window is sized by tokens, not characters, so CJK/Hangul/Cyrillic masters fit."""
 
 from pathlib import Path
