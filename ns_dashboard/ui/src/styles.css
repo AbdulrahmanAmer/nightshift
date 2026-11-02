@@ -123,3 +123,73 @@
 .enter { animation: rise 360ms var(--ease-out) both; }
 .fade-in { animation: fade 200ms var(--ease-out) both; }
 @media (prefers-reduced-motion: reduce) { .enter, .fade-in { animation: none; } * { transition-duration: 0ms !important; } }
+
+/* SideTab: the navigation rail (left edge from md up on tall viewports, bottom bar otherwise).
+   Colour: one variable, same in both themes. The default is dark purple; to switch to the Planify violet use
+   --rail-bg: #7466EE (light) / #8073F3 (dark), with --rail-bar: #7466EE and --rail-ink: #5b4bd6. */
+:root {
+  --rail-bg: linear-gradient(180deg, #4b3fa8 0%, #2d2366 100%);
+  --rail-bar: #35296f;
+  --rail-ink: #2d2366;
+  --rail-ring: #3a2f86;
+  --rail-pop: #1a1340;
+  --rail-badge: #43d39a;
+  --rail-attention: #f5b94a;
+  --rail-shadow: 0 12px 24px rgba(45, 35, 102, 0.35);
+  --rail-w: 104px;
+  --cap: calc(var(--rail-w) * 1.5);
+}
+@keyframes tab-in-x { from { transform: translateX(-100%); } to { transform: none; } }
+@keyframes tab-in-y { from { transform: translateY(100%); } to { transform: none; } }
+@keyframes badge-pop { from { opacity: 0; transform: scale(0.6); } to { opacity: 1; transform: none; } }
+@keyframes badge-pop-mid { from { opacity: 0; transform: translateY(-50%) scale(0.6); } to { opacity: 1; transform: translateY(-50%); } }
+
+/* Bottom bar (below md, or too short for the rail) */
+.sidetab { position: fixed; z-index: 30; left: 0; right: 0; bottom: 0; display: grid; grid-template-columns: repeat(9, 1fr); height: calc(64px + env(safe-area-inset-bottom)); padding-bottom: env(safe-area-inset-bottom); background: var(--rail-bar); border-radius: 20px 20px 0 0; box-shadow: 0 -6px 20px rgba(26, 19, 64, 0.35); animation: tab-in-y 320ms ease-out both; }
+.sidetab-shape, .sidetab-tip, .sidetab-menu, .sidetab-item.sidetab-brand, .sidetab-item.sidetab-more { display: none; }
+.sidetab-list, .sidetab-items, .sidetab-tools { display: contents; }
+.sidetab-cell { position: absolute; left: 0; top: 0; width: calc(100% / 9); height: 64px; display: flex; align-items: center; justify-content: center; transform: translateX(calc(var(--i) * 100%)); transition: transform 260ms cubic-bezier(0.2, 0.8, 0.2, 1), opacity 160ms; pointer-events: none; }
+.sidetab-cell[data-off] { opacity: 0; }
+.sidetab-square { width: min(44px, 90%); aspect-ratio: 1; border-radius: 10px; background: #fff; box-shadow: 0 8px 18px -6px rgba(21, 21, 59, 0.3); }
+.sidetab-item { position: relative; z-index: 1; display: flex; align-items: center; justify-content: center; height: 64px; padding: 0; border: 0; border-radius: 10px; background: none; color: rgba(255, 255, 255, 0.8); text-decoration: none; cursor: pointer; outline: none; -webkit-tap-highlight-color: transparent; transition: color 160ms, background-color 160ms; }
+.sidetab-item svg { transition: transform 160ms ease-out; }
+.sidetab-item:hover { color: #fff; }
+.sidetab-item:hover svg { transform: scale(1.12); }
+.sidetab-item:active svg { transform: scale(0.94); }
+.sidetab-item.is-on, .sidetab-item.is-on:hover { color: var(--rail-ink); }
+.sidetab-item:focus-visible { outline: 2px solid #fff; outline-offset: 3px; }
+.sidetab-badge { position: absolute; top: 8px; right: 0; display: flex; align-items: center; justify-content: center; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px; background: var(--rail-badge); color: #0c2a1e; font: 600 10px/1 var(--font-mono); animation: badge-pop 180ms cubic-bezier(0.2, 0.8, 0.2, 1) both; }
+.sidetab-dot { position: absolute; top: 10px; right: 10px; width: 8px; height: 8px; border-radius: 50%; background: var(--rail-badge); box-shadow: 0 0 0 2px var(--rail-ring); }
+.sidetab-dot[data-tone="attention"] { background: var(--rail-attention); }
+.app-frame { padding-bottom: calc(64px + env(safe-area-inset-bottom)); }
+
+/* Rail */
+@media (min-width: 768px) and (min-height: 600px) {
+  .sidetab { display: block; left: 0; right: auto; bottom: auto; top: calc(50% - var(--h) / 2); width: var(--rail-w); height: var(--h); padding: 0; background: none; border-radius: 0; box-shadow: none; pointer-events: none; animation-name: tab-in-x; }
+  /* The shape: a gradient fill masked by cap / body / cap, so the caps keep their 2:3 aspect and the gradient runs the full height. */
+  .sidetab-shape { display: block; position: absolute; inset: 0; filter: drop-shadow(var(--rail-shadow)); }
+  .sidetab-fill { position: absolute; inset: 0; background: var(--rail-bg);
+    -webkit-mask: var(--cap-start) 0 0 / 100% var(--cap) no-repeat, var(--cap-end) 0 100% / 100% var(--cap) no-repeat, linear-gradient(#000, #000) 0 calc(var(--cap) - 1px) / 100% calc(100% - 2 * var(--cap) + 2px) no-repeat;
+    mask: var(--cap-start) 0 0 / 100% var(--cap) no-repeat, var(--cap-end) 0 100% / 100% var(--cap) no-repeat, linear-gradient(#000, #000) 0 calc(var(--cap) - 1px) / 100% calc(100% - 2 * var(--cap) + 2px) no-repeat; }
+  .sidetab-list { position: relative; display: flex; flex-direction: column; align-items: center; gap: var(--gap); height: 100%; padding: calc(var(--cap) * 0.58) 0; }
+  .sidetab-items { display: flex; flex-direction: column; gap: var(--gap); position: relative; }
+  .sidetab-tools { display: flex; flex-direction: column; gap: var(--gap); position: relative; }
+  .sidetab[data-brand="off"] .sidetab-item.sidetab-brand { display: none; }
+  .sidetab-item.sidetab-brand { display: flex; }
+  .sidetab[data-tools="full"] .sidetab-item.sidetab-more { display: none; }
+  .sidetab[data-tools="more"] .sidetab-item.sidetab-full { display: none; }
+  .sidetab[data-tools="more"] .sidetab-item.sidetab-more { display: flex; }
+  .sidetab-item { width: 44px; height: 44px; pointer-events: auto; }
+  .sidetab-item:not(.is-on):hover { background: rgba(255, 255, 255, 0.14); }
+  .sidetab-cell { width: 44px; height: 44px; transform: translateY(calc(var(--i) * (44px + var(--gap)))); }
+  .sidetab-square { width: 44px; }
+  .sidetab-badge { top: 50%; right: auto; left: calc(100% - 6px); animation-name: badge-pop-mid; transform: translateY(-50%); }
+  .sidetab-tip { display: block; position: absolute; left: calc(100% + 38px); top: 50%; margin-top: -14px; padding: 0 12px; height: 28px; line-height: 28px; border-radius: 14px; background: var(--rail-pop); color: #fff; font-size: 12px; font-weight: 500; white-space: nowrap; pointer-events: none; opacity: 0; transform: translateX(-6px); transition: opacity 120ms ease-out, transform 120ms ease-out; }
+  .sidetab-item:focus-visible .sidetab-tip { opacity: 1; transform: none; }
+  .sidetab-menu { display: flex; flex-direction: column; position: absolute; left: calc(100% + 38px); bottom: 0; padding: 6px; border-radius: 14px; background: var(--rail-pop); box-shadow: 0 12px 24px rgba(26, 19, 64, 0.35); pointer-events: auto; animation: tab-in-x 120ms ease-out both; }
+  .sidetab-menu button { display: flex; align-items: center; gap: 10px; height: 36px; padding: 0 12px; border: 0; border-radius: 10px; background: none; color: #fff; font-size: 13px; white-space: nowrap; cursor: pointer; }
+  .sidetab-menu button:hover, .sidetab-menu button:focus-visible { background: rgba(255, 255, 255, 0.14); outline: none; }
+  .app-frame { padding-bottom: 0; padding-left: var(--rail-w); }
+}
+@media (min-width: 768px) and (min-height: 600px) and (hover: hover) { .sidetab-item:hover .sidetab-tip { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .sidetab, .sidetab-badge, .sidetab-menu { animation: none; } .sidetab-cell, .sidetab-item, .sidetab-item svg, .sidetab-tip { transition: none; } }
