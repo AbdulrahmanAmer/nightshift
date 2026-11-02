@@ -70,6 +70,35 @@ and routes and buttons that nothing used. A table-driven test (`tests/test_dashb
   Desktop dashboard shortcut through IPropertyStore (best effort; the registry key alone is what makes toasts show).
   `UNINSTALL.cmd` removes the key.
 
+### Gaps closed (engine side, `docs/design/system-gaps.md`)
+- **The nightly run now starts the services it needs** (gap 1): `studio run` (and `--daily`) used `DevAcquirer`, which
+  only hands out port numbers, so at 03:00 the first LLM call hit a closed port. `StudioAcquirer` asks the engine
+  (`ns_supervisor`) for llama, embed, tts and whisper, starting the engine if it is down, and waits up to 2 hours for a
+  busy GPU (J7). After that the run stops with `NS-E201`, lists the remaining jobs as skipped and tries again the next
+  night. Fakes keep `DevAcquirer`.
+- **`embed` is started before idea dedupe and the text policy check** (gap 4): stages that embed text declare
+  `uses_embed` and hold the service while they run; a test fails when a new stage calls `ctx.services.embed` without it.
+- **A designed or cloned voice chosen in setup is created** (gap 5): `studio voice design|clone|apply-pending` use the
+  same service calls as the Library. Setup queues `config\pending_voice.json` with a clear message (the TTS engine is
+  only settled by the smoke test after it, and the other engine refuses the voice, `NS-E311`); the first real
+  `studio run` creates it.
+- **End-of-run toast** (gap 14): "1 master + 5 Shorts ready for review" / "run failed (NS-E203), open Dashboard" from the
+  nightly path, honouring Settings > Notifications (`ns_common.config.notifications_enabled`).
+- **Cliffhanger pauses** (gap 15): chapters send their cliff line to TTS, so the pause before it is 1,200 ms.
+- **`ns update --check` and `--github`** (gaps 9 and 16): read the latest GitHub release, download
+  `nightshift-app-<version>.zip` and verify its SHA256 (GitHub's digest, else the attached `.sha256`; no checksum, no
+  install) before the normal verified update with rollback. The engine runs the check once a week and shows a
+  notification when a newer release exists.
+- **The engine leaves after the nightly run** (gap 25): the run tells it (`POST /run_finished`) and it exits 60 s later
+  unless the dashboard is running or other work started, instead of staying up 30 idle minutes.
+- **Error codes**: a whisper failure is `NS-E408` (hint: the audio track) and a stored voice from the other TTS engine is
+  `NS-E311` (hint: re-create it), also through `TtsClient`.
+- **`series_compilation` is hidden from Run now** (gap 29) in the API and the Assistant until it has stages.
+- **Whisper code default is `distil-large-v3` / `int8`** (gap 31), like setup and the spec; the installer still writes
+  `float16` explicitly.
+- `tests/test_wiring.py` imports every `ns_*` module and checks that every dotted target named in
+  `ns_dashboard/adapters.py` and `ns_dashboard/assistant/tools.py` exists.
+
 ## [0.1.0] - 2026-11-02
 
 First release (milestone M0, code complete). Highlights since the pipeline landed:

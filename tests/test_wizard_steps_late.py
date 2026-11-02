@@ -436,3 +436,38 @@ def test_new_app_version_resyncs_venvs_and_retests(tmp_path: Path):
     ctx.manifest = ctx.manifest.model_copy(update={"version": "0.2.0"})
     assert S04Venvs().check(ctx) is False        # new zip + INSTALL.cmd: environments are refreshed
     assert S08Smoke().check(ctx) is False        # and the quick test runs again
+
+
+def test_s07_queues_a_designed_voice_for_the_first_run(tmp_path: Path):
+    """Gap 5: the voice chosen at setup is written down for `studio`, with a clear message."""
+    ctx, _ = keyed_context(tmp_path, voice={"mode": "design", "description": "warm, slow, older man"})
+    S07Configs().run(ctx)
+    queued = json.loads((ctx.paths.config / "pending_voice.json").read_text(encoding="utf-8"))
+    assert queued == {
+        "channel": "after-dark-tales", "mode": "design", "name": "after-dark-tales-voice",
+        "description": "warm, slow, older man",
+    }
+    assert "first time Nightshift runs" in ctx.ui.text and "studio voice apply-pending" in ctx.ui.text
+
+
+def test_s07_queues_a_cloned_voice_with_its_recording_and_consent(tmp_path: Path):
+    ctx, _ = keyed_context(
+        tmp_path, voice={"mode": "clone"}, voice_ref_audio_path="D:/me.wav", voice_ref_text="Hello there.",
+        voice_rights_confirmed=True,
+    )
+    S07Configs().run(ctx)
+    queued = json.loads((ctx.paths.config / "pending_voice.json").read_text(encoding="utf-8"))
+    assert queued["mode"] == "clone" and queued["ref_audio_path"] == "D:/me.wav"
+    assert queued["ref_text"] == "Hello there." and queued["rights_confirmed"] is True
+
+
+def test_s07_queues_nothing_for_a_preset_voice_or_an_existing_one(tmp_path: Path):
+    ctx, _ = keyed_context(tmp_path)
+    S07Configs().run(ctx)
+    assert not (ctx.paths.config / "pending_voice.json").exists()
+    ctx2, _ = keyed_context(tmp_path / "b", voice={"mode": "design", "description": "calm"})
+    made = ctx2.paths.models_tts_voices / "after-dark-tales-voice"
+    made.mkdir(parents=True)
+    (made / "voice.json").write_text("{}", encoding="utf-8")
+    S07Configs().run(ctx2)
+    assert not (ctx2.paths.config / "pending_voice.json").exists()

@@ -69,6 +69,39 @@ def write_ui_prefs(ctx: StepContext, ans: InstallerAnswers) -> None:
     f.write_text(json.dumps(prefs, indent=2) + "\n", encoding="utf-8")
 
 
+def pending_voice_file(ctx: StepContext) -> Path:
+    """config/pending_voice.json: the designed or cloned voice to create on the first run (gap 5)."""
+    return ctx.paths.config / "pending_voice.json"
+
+
+def queue_voice(ctx: StepContext, ans: InstallerAnswers, channel: Channel) -> bool:
+    """Queue the designed or cloned voice chosen in setup; `studio` creates it on its first real run.
+
+    It cannot be made here: the TTS engine (qwentts or the PyTorch fallback) is only settled by the smoke test
+    after this step, and a voice made by one engine is refused by the other. The request is plain
+    JSON read by `ns_studio.voice_setup` (the studio venv imports no installer code). Returns False for a
+    preset voice or when the voice already exists.
+    """
+    voice = channel.voice
+    if voice.mode == "preset" or not voice.name:
+        return False
+    if (ctx.paths.models_tts_voices / voice.name / "voice.json").is_file():
+        return False
+    request: dict[str, Any] = {"channel": channel.slug, "mode": voice.mode, "name": voice.name}
+    if voice.mode == "design":
+        request["description"] = voice.description
+    else:
+        request.update(
+            ref_audio_path=ans.voice_ref_audio_path,
+            ref_text=ans.voice_ref_text,
+            rights_confirmed=bool(ans.voice_rights_confirmed),
+        )
+    f = pending_voice_file(ctx)
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text(json.dumps(request, indent=2) + "\n", encoding="utf-8")
+    return True
+
+
 def answer_files(ctx: StepContext) -> list[Path]:
     """Every answers.json that may still hold a key."""
     files = [ctx.app_path / "answers.json", ctx.paths.config / "answers.json"]
@@ -140,8 +173,11 @@ class S07Configs(Step):
             else:
                 ctx.ui.say("NS-E703: could not restore your earlier settings; using fresh ones.", "yellow")
                 ctx.log.warn("restore_failed", f"exit {res.returncode}")
-        if ans.voice.mode != "preset":
-            ctx.ui.say(f"Your {ans.voice.mode} voice is created after setup (studio voice).")
+        if queue_voice(ctx, ans, channel):
+            ctx.ui.say(
+                f"Your {channel.voice.mode} voice '{channel.voice.name}' is created the first time "
+                "Nightshift runs. To make it now: studio voice apply-pending."
+            )
 
     def verify(self, ctx: StepContext) -> None:
         """Configs validate; keys are in the store; no answers file keeps a key."""

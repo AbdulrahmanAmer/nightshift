@@ -123,3 +123,25 @@ def test_whisper_cpu_skips_dll_injection_and_load_failure_is_coded(
     with pytest.raises(NsError) as ei:
         t.words(tmp_path / "a.wav")
     assert ei.value.code == "NS-E202" and calls == []
+
+
+def test_whisper_transcription_failure_is_ns_e408_with_the_audio_track_hint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Gap 19: a failure while transcribing carries NS-E408, whose hint names the audio track."""
+    monkeypatch.setattr(tr, "ensure_gpu_dlls_on_path", lambda *a, **k: [])
+
+    class WhisperModel:
+        def __init__(self, path: str, device: str, compute_type: str) -> None:
+            pass
+
+        def transcribe(self, audio: str, **kw):
+            raise RuntimeError("no audio stream in file")
+
+    monkeypatch.setitem(sys.modules, "faster_whisper", types.SimpleNamespace(WhisperModel=WhisperModel))
+    t = WhisperTranscriber(WhisperCfg(model="tiny", device="cpu", compute_type="int8"), Paths(tmp_path))
+    with pytest.raises(NsError) as ei:
+        t.segments(tmp_path / "talk.wav")
+    assert ei.value.code == "NS-E408"
+    assert "talk.wav" in ei.value.detail and "no audio stream" in ei.value.detail
+    assert "audio track" in ei.value.definition.hint

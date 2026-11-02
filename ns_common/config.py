@@ -62,3 +62,18 @@ def save_install_state(paths: Paths, st: InstallState) -> Path:
 def load_manifest(path: Path | None = None) -> Manifest:
     f = path or (repo_root() / "manifest.json")
     return Manifest.model_validate_json(f.read_text(encoding="utf-8"))
+
+
+def notifications_enabled(paths: Paths) -> bool:
+    """Settings > Notifications: `notifications` in `config/dashboard.json` (the file the dashboard owns).
+
+    On when the file or the key is absent or unreadable, which is the dashboard's own default. Read by the
+    nightly run and by the supervisor's weekly update check before they show a toast.
+    """
+    try:
+        raw = json.loads((paths.config / "dashboard.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return True
+    if isinstance(raw, dict) and isinstance(raw.get("notifications"), bool):
+        return raw["notifications"]
+    return True

@@ -176,8 +176,8 @@ class WhisperTranscriber:
                 condition_on_previous_text=False,
             )
             segs = list(raw_segments)
-        except Exception as e:
-            raise NsError("NS-E202", f"whisper transcription failed: {e}") from e
+        except Exception as e:  # decoding, VAD or CUDA errors all surface here (hint: the audio track)
+            raise NsError("NS-E408", f"{wav.name}: {type(e).__name__}: {e}") from e
         out: list[Segment] = []
         for s in segs:
             words = tuple(

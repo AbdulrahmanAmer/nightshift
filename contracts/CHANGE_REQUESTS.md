@@ -422,3 +422,14 @@ Format per entry:
   6. Scope guard: `dev/check_scope.py` allows branch `feat/c9-*` only `ns_dashboard/` plus `tests/`. This work also changes `ns_supervisor/` (GPU probe, scheduled-job wake-up), `ns_tts/` (clone sample checks), `OPERATOR.md` and `docs/OPERATOR_CLI.md`, as the task asked. The PR's scope-check job reports those paths until the orchestrator accepts or re-scopes them.
 - **Why:** the four UI gaps of CR-C3-UI-4..7 needed backend fields and routes; the points above are the contract-side edges found while building them.
 - **Status:** applied on `feat/release-0.1.0`: points 1, 2 and 4 landed (`NS-E313` in `errors.json`, and `POST /api/voices/clone` answers it with 422 instead of `consent_required`; optional `Channel.qc_pass_target` with `ns_dashboard.channel_stats.qc_pass_target` reading it directly; new `ns_common.models.JobClipRequest` with `schedule_at` and `contracts/schemas/job_clip_request.schema.json`). Point 3 stays as written: voice making is synchronous, so `VoiceMakeResponse` keeps `{voice_id, preview_wav_path}` until it becomes a job. Point 5 is informational. Point 6 is the orchestrator's call.
+
+## CR-GAPS-1: protected-path edits of the engine-side gap PR (`feat/release-gaps-engine`)
+- **From:** release builder closing `docs/design/system-gaps.md` rows 1, 4, 5, 9, 14, 15, 16, 19, 20, 25, 29, 31
+- **Change (all on a `release-*` branch, minimal, no schema shape change):**
+  1. `ns_common.models.WhisperCfg` defaults: `model` `small.en` -> `distil-large-v3`, `compute_type` `float16` -> `int8` (gap 31). `contracts/schemas/runtime.schema.json` updated by hand to equal `model_json_schema()` (the hygiene test compares them). The installer still writes `float16` for the GPU profile.
+  2. `ns_common.config.notifications_enabled(paths)`: reads `notifications` from `config/dashboard.json` (the dashboard's Settings file), default on. One reader for the nightly toast (C7) and the weekly update toast (C2) instead of two copies of the file format.
+  3. `ns_common.tts_client.TtsClient`: a 4xx/5xx answer whose JSON is `{"error": "NS-E311"}` raises `NS-E311` instead of the generic `NS-E301` (gap 20). Other failures are unchanged.
+  4. No change to `contracts/errors.json`: `NS-E311` and `NS-E408` already exist and now have raise sites.
+- **Other new interfaces (not contracts, listed for reviewers):** supervisor `POST /run_finished` (additive route, gap 25); `config/pending_voice.json` written by installer step `s07_configs` and read by `ns_studio.voice_setup` (plain JSON, keys `channel, mode, name, description | ref_audio_path, ref_text, rights_confirmed`); `config/update_check.json` (weekly check state).
+- **Why:** each is the smallest place the fix could live; the first two keep the setup, the spec and the code in agreement, the third lets the studio show the re-create hint.
+- **Status:** applied on `feat/release-gaps-engine`.

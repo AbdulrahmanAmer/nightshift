@@ -64,3 +64,28 @@ def test_cliff_lines_are_sent_per_item_only_when_set(tmp_path: Path):
     first, second = bodies[0]["items"]
     assert first["cliff_lines"] == ["The door opened."]
     assert "cliff_lines" not in second
+
+
+def test_client_keeps_ns_e311_from_the_service(tmp_path: Path):
+    """Gap 20: a voice stored by the other engine reaches the studio as NS-E311, not a generic NS-E301."""
+    import pytest
+
+    from ns_common.errors import NsError
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, json={"error": "NS-E311", "detail": "voice 'v' was created by ..."})
+
+    cli = TtsClient("http://127.0.0.1:8091", client=httpx.Client(transport=httpx.MockTransport(handler)))
+    with pytest.raises(NsError) as one:
+        cli.speak("hi", "v", 1.0, tmp_path / "o.wav")
+    with pytest.raises(NsError) as many:
+        cli.speak_batch([TtsItem("a", "x", "v")], tmp_path)
+    assert one.value.code == many.value.code == "NS-E311"
+
+    def other(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, json={"error": "NS-E310", "detail": "boom"})
+
+    cli2 = TtsClient("http://127.0.0.1:8091", client=httpx.Client(transport=httpx.MockTransport(other)))
+    with pytest.raises(NsError) as generic:
+        cli2.speak("hi", "v", 1.0, tmp_path / "o.wav")
+    assert generic.value.code == "NS-E301"

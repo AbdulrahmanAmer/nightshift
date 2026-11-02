@@ -9,7 +9,7 @@ from typing import Any, BinaryIO
 
 from ns_common.db import new_job_id
 from ns_dashboard.adapters import Adapters
-from ns_dashboard.common import FORMATS, now_iso
+from ns_dashboard.common import KNOWN_FORMATS, now_iso, offered_formats
 from ns_dashboard.errors import ApiError
 from ns_dashboard.jobs import Handler, JobControl
 from ns_dashboard.state import AppState
@@ -199,7 +199,9 @@ class JobsService:
         if ch.status == "paused":
             raise ApiError(409, "channel_paused", f"'{ch.display_name}' is paused. Resume it first.")
         fmt = str(body.get("format") or ch.format)
-        if fmt not in FORMATS:
+        if fmt not in offered_formats():
+            if fmt in KNOWN_FORMATS:
+                raise ApiError(422, "invalid_options", f"'{fmt}' is not available yet.")
             raise ApiError(422, "invalid_options", f"Unknown video type '{fmt}'.")
         count = body.get("count")
         n = _int(body, "count", 1, 1, 20) if count else None
