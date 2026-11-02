@@ -44,6 +44,19 @@ export const api = {
     return URL.createObjectURL(await res.blob());
   },
 
+  /** TODO(voices): planned endpoint POST /api/voices/design {name, description} (VoiceDesign, BUILD_SPEC J6). Not in the
+   *  backend yet, so this always fails and the Library says "coming in the next update". Never fakes a success. */
+  async voiceDesign(_name: string, _description: string): Promise<{ name: string }> {
+    throw new Error("Designing voices arrives in the next update");
+  },
+  /** TODO(voices): planned endpoint POST /api/voices/clone (multipart: sample, name, test_line, rights_confirmed),
+   *  BUILD_SPEC J6. Not in the backend yet; same contract as voiceDesign. */
+  async voiceClone(_sample: File, _name: string, _testLine: string): Promise<{ name: string }> {
+    throw new Error("Cloning voices arrives in the next update");
+  },
+  /** Whether the planned voice design and clone endpoints exist. Flip when they land. */
+  voiceMakingReady: false,
+
   upload<T = any>(path: string, fd: FormData, onProgress: (pct: number) => void): Promise<T> {
     if (this.demo) return (async () => { for (let p = 0; p <= 100; p += 20) { onProgress(p); await new Promise((r) => setTimeout(r, 150)); } return demoHandle("POST", path, fd); })();
     return new Promise((resolve, reject) => {

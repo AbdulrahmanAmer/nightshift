@@ -8,12 +8,12 @@ export function sampleWaveform(count = 32, seed = "voice"): number[] {
 }
 
 /** Waveform (Planify Media.tsx): 3 px pill bars, 2 px apart, in a 36 px row. Bars before `progress` (0-1) take the
- *  accent, the rest the highlight at 75%. Decorative. */
+ *  accent, the rest the muted ink at 60% (one accent per screen). Decorative. */
 export function Waveform({ bars, progress, className }: { bars: number[]; progress: number; className?: string }) {
   const played = Math.round(bars.length * Math.max(0, Math.min(1, progress)));
   return (
     <span aria-hidden className={cx("flex h-9 items-center gap-0.5", className)}>
-      {bars.map((h, i) => <span key={i} className={cx("max-w-[3px] min-w-0.5 flex-1 rounded-full transition-colors duration-200", i < played ? "bg-ds-accent" : "bg-ds-highlight opacity-75")} style={{ height: `${Math.round(h * 100)}%` }} />)}
+      {bars.map((h, i) => <span key={i} className={cx("max-w-[3px] min-w-0.5 flex-1 rounded-full transition-colors duration-200", i < played ? "bg-ds-accent" : "bg-ds-muted opacity-60")} style={{ height: `${Math.round(h * 100)}%` }} />)}
     </span>
   );
 }

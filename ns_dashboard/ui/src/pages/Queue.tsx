@@ -412,7 +412,7 @@ function MachineMeters({ className }: { className?: string }) {
     { label: "GPU", value: null, source: "not reported by the engine yet" },
     // engine.vram_gb / services[].vram_mb give memory in use but no total, so the well stays empty and the figure shows the size.
     { label: "VRAM", value: null, display: vramGb ? `${vramGb} GB` : undefined, source: vramGb ? `${vramGb} GB in use` : "no model loaded" },
-    { label: "Disk", value: disk ? Math.round(((disk.total_gb - disk.free_gb) / Math.max(1, disk.total_gb)) * 100) : null, source: disk ? `${disk.free_gb} GB free of ${disk.total_gb} GB` : "unknown until the engine answers", tone: "highlight" },
+    { label: "Disk", value: disk ? Math.round(((disk.total_gb - disk.free_gb) / Math.max(1, disk.total_gb)) * 100) : null, source: disk ? `${disk.free_gb} GB free of ${disk.total_gb} GB` : "unknown until the engine answers" },
   ];
   return <MeterGroup className={className} title="This PC" meters={meters} caption={disk ? `${disk.free_gb} GB free on ${disk.home}. GPU load appears once the engine reports it` : "Readings appear once the engine answers"} />;
 }
