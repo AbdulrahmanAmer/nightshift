@@ -12,11 +12,14 @@ from __future__ import annotations
 import json
 import secrets
 import threading
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from ns_common.db import Db
 from ns_common.paths import Paths
+
+#: A claim this old was left by a caller that died while answering; another caller may take it over.
+CLAIM_STALE_S = 900.0
 
 
 def _now() -> str:
@@ -31,6 +34,14 @@ class AssistantStore:
         self._lock = threading.RLock()
         with self._lock:
             self.db.migrate()  # contracts/schema.sql: assistant_messages, conversations, messages, actions, queued_messages
+            self._add_claim_columns()
+
+    def _add_claim_columns(self) -> None:
+        """`queued_messages.claimed_at` and `claimed_by` (an older file has neither; `assistant.db` is ours alone)."""
+        have = {r["name"] for r in self.db.query("PRAGMA table_info(queued_messages)")}
+        for column in ("claimed_at", "claimed_by"):
+            if column not in have:
+                self.db.execute(f"ALTER TABLE queued_messages ADD COLUMN {column} TEXT")
 
     # --- conversations / messages ---
     def new_conversation(self, title: str | None = None) -> str:
@@ -174,6 +185,30 @@ class AssistantStore:
         with self._lock:
             rows = self.db.query("SELECT * FROM queued_messages WHERE status = 'queued' ORDER BY queue_id")
         return [dict(r) | {"context": json.loads(r["context_json"] or "{}")} for r in rows]
+
+    def claim_queued(self, queue_id: int, by: str, *, stale_s: float = CLAIM_STALE_S) -> bool:
+        """Take a saved request for answering, in one statement; False when another caller has it.
+
+        A claim older than `stale_s` belongs to a caller that died mid-answer and may be taken over.
+        """
+        now = datetime.now(UTC)
+        cutoff = (now - timedelta(seconds=stale_s)).isoformat()
+        with self._lock:
+            cur = self.db.execute(
+                "UPDATE queued_messages SET claimed_at = ?, claimed_by = ? WHERE queue_id = ? AND status = 'queued'"
+                " AND (claimed_at IS NULL OR claimed_at < ?)",
+                (now.isoformat(), by, queue_id, cutoff),
+            )
+            return cur.rowcount == 1
+
+    def release_queued(self, queue_id: int, by: str) -> None:
+        """Give a claimed request back (the engine was busy, or answering failed) so it is tried again later."""
+        with self._lock:
+            self.db.execute(
+                "UPDATE queued_messages SET claimed_at = NULL, claimed_by = NULL WHERE queue_id = ? AND claimed_by = ?"
+                " AND status = 'queued'",
+                (queue_id, by),
+            )
 
     def mark_queued_done(self, queue_id: int) -> None:
         """Mark a queued request as handled."""

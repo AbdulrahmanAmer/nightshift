@@ -13,6 +13,7 @@ import re
 import subprocess
 import sys
 from collections.abc import Callable
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -216,12 +217,27 @@ def update_state_path(paths: Paths) -> Path:
     return paths.home / "run" / UPDATE_STATE_FILE
 
 
-def read_update_state(paths: Paths) -> dict[str, Any]:
+#: A `running` state that has not changed for this long, with no updater process behind it, is not running.
+STALE_AFTER = timedelta(minutes=30)
+STALE_MESSAGE = "The update stopped without finishing. Nothing was lost; see the newest update-....log in the logs folder."
+
+
+def read_update_state(
+    paths: Paths,
+    *,
+    alive: Callable[[int], bool] | None = None,
+    now: Callable[[], datetime] = datetime.now,
+) -> dict[str, Any]:
     """What the detached updater says it is doing: `{state, old, new, message, updated_at}`.
 
     The updater (which outlives the dashboard it replaces) writes `{"state": "running" | "done" | "failed",
     "old": "0.1.0", "new": "0.1.1", "message": "...", "updated_at": "<ISO time>"}`; the Settings page polls
     this after Install, also across the dashboard restart. No file, or one that cannot be read, is `idle`.
+
+    A `running` state whose updater process is gone (the PC lost power, the worker was killed; the supervisor's
+    `effective_status` decides, with `alive` and `now` for tests) is reported as `failed` with `stale: true`, so
+    the page does not show "Installing the update" for ever. Without `ns_supervisor`, a state untouched for
+    30 minutes counts as gone.
     """
     out: dict[str, Any] = {"state": "idle", "old": None, "new": None, "message": None, "updated_at": None}
     try:
@@ -230,14 +246,29 @@ def read_update_state(paths: Paths) -> dict[str, Any]:
         return out
     if not isinstance(raw, dict) or raw.get("state") not in UPDATE_STATES:
         return out
+    was_running = raw["state"] == "running"
     try:
         from ns_supervisor.update_job import effective_status
 
-        raw = effective_status(raw)      # `running` with a dead worker (power loss, killed) is `failed`
+        raw = effective_status(raw, alive=alive, now=now())  # `running` with a dead worker is `failed`
     except ImportError:
-        pass
+        if was_running and _stale(raw, now):
+            raw = {**raw, "state": "failed", "message": STALE_MESSAGE}
     for key in ("old", "new", "message", "updated_at"):
         value = raw.get(key)
         out[key] = str(value) if value is not None else None
     out["state"] = raw["state"]
+    if was_running and out["state"] == "failed":
+        out["stale"] = True
     return out
+
+
+def _stale(raw: dict[str, Any], now: Callable[[], datetime]) -> bool:
+    """Without the supervisor package: a `running` state untouched for `STALE_AFTER` has no updater behind it."""
+    try:
+        touched = datetime.fromisoformat(str(raw.get("updated_at")))
+    except ValueError:
+        return False
+    if touched.tzinfo is not None:
+        touched = touched.astimezone().replace(tzinfo=None)
+    return now() - touched > STALE_AFTER

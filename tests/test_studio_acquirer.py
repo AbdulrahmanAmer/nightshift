@@ -262,3 +262,44 @@ def test_daily_tells_the_supervisor_the_night_is_over(tmp_home: Path):
     env.services.acquirer = Spy(env.runtime)
     daily.run_daily(env, now=NOW, rng=random.Random(1), run_fn=lambda ctx: [])
     assert Spy.told == 1
+
+
+# ---------------------------------------------------------------- lease heartbeat (dashboard re-review row 1)
+
+
+class BeatClient(FakeClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self.beats: list[str] = []
+
+    def heartbeat(self, owner) -> bool:
+        self.beats.append(owner)
+        return True
+
+
+def test_a_held_service_is_renewed_on_its_own_thread_until_it_is_released(tmp_home: Path):
+    import time
+
+    client = BeatClient()
+    acq, _c, _e = make(tmp_home, client, beat_s=0.05)
+    acq.acquire("llama", "studio:j1")
+    deadline = time.monotonic() + 5
+    while len(client.beats) < 3 and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert client.beats[:3] == ["studio:j1"] * 3
+    acq.release("llama", "studio:j1")
+    time.sleep(0.3)  # the thread notices that nothing is held and ends
+    settled = len(client.beats)
+    time.sleep(0.3)
+    assert len(client.beats) == settled
+    assert acq._beat is None or not acq._beat.is_alive()
+
+
+def test_a_client_without_heartbeat_is_fine(tmp_home: Path):
+    acq, client, _e = make(tmp_home, beat_s=0.02)  # the plain FakeClient has no heartbeat
+    acq.acquire("tts", "studio:j2")
+    import time
+
+    time.sleep(0.15)
+    acq.release("tts", "studio:j2")
+    assert ("acquire", "tts", "studio:j2", None, WAIT_CAP_S) in client.calls

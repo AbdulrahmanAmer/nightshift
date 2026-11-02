@@ -82,6 +82,10 @@ class SupervisorLink:
         """`POST /stop_all`."""
         return self._post("/stop_all", {})
 
+    def release_owner(self, owner: str) -> bool:
+        """`POST /release_owner`: free the lease and queue place of `owner`; True if it freed something."""
+        return bool(self._post("/release_owner", {"owner": owner}).get("ok"))
+
     def events(self, stop: threading.Event) -> Iterator[dict[str, Any]]:
         """Parse the `/events` SSE stream into dicts until `stop` is set or the stream ends.
 

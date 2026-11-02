@@ -7,7 +7,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useApp, useLoad } from "../lib/app";
 import { api, ApiError } from "../lib/api";
 import { fmtDay, fmtDur, plural, store } from "../lib/format";
-import type { Footage, Format, Idea, SeriesStory, Story, Voice, VoiceMade } from "../lib/types";
+import type { Footage, Format, Idea, PendingVoice, SeriesStory, Story, Voice, VoiceMade } from "../lib/types";
 import { cx } from "../ui/kit";
 import { Scene } from "../visuals/Scene";
 import { LayoutDiagram } from "../visuals/charts";
@@ -182,7 +182,7 @@ function VoiceCard({ v, active, onPlay, line = SAMPLE_LINE }: { v: Voice; active
 const VOICE_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]{0,39}$/;
 interface Fail { title: string; text: string; hint?: string; code?: string; /** The voice design model is not installed: offer to get it. */ getModel?: boolean }
 /** Voice errors by code: NS-E310 engine failure, NS-E311 stored voice data missing, NS-E312 bad sample, NS-E314 design model missing, NS-E315 voice could not be built, NS-E316 search service failure. */
-const VOICE_TITLES: Record<string, string> = { "NS-E310": "The voice engine did not answer", "NS-E311": "This voice's stored data is missing", "NS-E312": "That recording will not work for cloning", "NS-E315": "The voice could not be built", "NS-E316": "The search service failed" };
+const VOICE_TITLES: Record<string, string> = { "NS-E310": "The voice engine did not answer", "NS-E311": "This voice's stored data is missing", "NS-E312": "That recording will not work for cloning", "NS-E315": "The voice could not be built", "base_model_missing": "The voice cloning model is not installed", "NS-E316": "The search service failed" };
 /** What went wrong, in words the owner can act on. NS-E312 (a clone sample that is too short, quiet, clipped or noisy) gets its own heading. */
 const failOf = (e: unknown): Fail => {
   if (e instanceof ApiError && (e.code === "model_missing" || e.code === "NS-E314")) return { title: "The voice design model is not installed", text: e.reason, hint: "Get it with the button below (it is a large download), then try again", code: e.code === "NS-E314" ? e.code : undefined, getModel: true };
@@ -217,6 +217,33 @@ function FailNote({ f, children }: { f: Fail; children?: ReactNode }) {
   );
 }
 
+/** The voice the installer's setup asked for and could not make yet (it needs the TTS engine that the smoke test settles): one button makes it. */
+
+function PendingVoiceCard({ onMade }: { onMade: () => void }) {
+  const { toast } = useApp();
+  const pending = useLoad<PendingVoice>(() => api.get("/voices/pending"), [], { pending: null });
+  const [busy, setBusy] = useState(false); const [fail, setFail] = useState<Fail | null>(null);
+  const p = pending.data.pending;
+  if (!p) return null;
+  const create = async () => {
+    setBusy(true); setFail(null);
+    try { await api.post("/voices/apply-pending"); toast(`Voice ${p.name} created`, "ok"); pending.reload(); onMade(); }
+    catch (e) { setFail(failOf(e)); }
+    setBusy(false);
+  };
+  return (
+    <Card as="section" aria-labelledby="v-pending" className="flex flex-col gap-3 @min-[600px]:col-span-2">
+      <CardHeader id="v-pending" title="Pending voice from setup" className="!mb-0" adornment={<Badge tone="accent">{p.mode === "clone" ? "Clone" : "Design"}</Badge>} />
+      <p className="text-ds-sm leading-ds-normal"><span className="font-semibold">{p.name}</span>{p.mode === "design" && p.description ? `: ${p.description}` : ": cloned from the recording you gave in setup"}. Setup could not make it yet, so videos for {p.channel || "your channel"} use another voice until it exists.</p>
+      {fail && <FailNote f={fail} />}
+      <div className="flex flex-wrap items-center gap-3">
+        <Button leadingIcon="wand" disabled={busy} onClick={create}>{busy ? "Creating" : "Create it now"}</Button>
+        {busy && <span role="status" className="text-ds-xs text-ds-muted">This takes up to a minute while the model loads</span>}
+      </div>
+    </Card>
+  );
+}
+
 function Voices() {
   const { ask, toast } = useApp(); const voices = useLoad<Voice[]>(() => api.get("/voices"), [], []);
   const [playing, setPlaying] = useState<string | null>(null);
@@ -248,6 +275,7 @@ function Voices() {
   return (
     <DashGrid label="Voices">
       <div className={cx("grid grid-cols-1 content-start gap-5 @min-[600px]:grid-cols-2", SPAN["4/4"])}>
+        <PendingVoiceCard onMade={voices.reload} />
         {voices.data.map((v) => <VoiceCard key={v.name} v={v} active={playing === v.name} onPlay={setPlaying} />)}
         {!voices.data.length && !voices.loading && <EmptyState icon="voice" className="@min-[600px]:col-span-2" title="No voices yet" />}
       </div>

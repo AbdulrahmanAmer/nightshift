@@ -46,6 +46,12 @@ class ReleaseBody(BaseModel):
     owner: str
 
 
+class OwnerBody(BaseModel):
+    """`POST /heartbeat` and `POST /release_owner` body."""
+
+    owner: str
+
+
 class ShutdownBody(BaseModel):
     """`POST /shutdown` body."""
 
@@ -125,6 +131,14 @@ def create_app(sup: Supervisor, *, start_dashboard: bool = False, run_monitor: b
     @app.post("/release")
     async def release(body: ReleaseBody) -> dict[str, Any]:
         return {"ok": await sup.release(body.service, body.owner)}
+
+    @app.post("/heartbeat")
+    async def heartbeat(body: OwnerBody) -> dict[str, Any]:
+        return {"ok": sup.heartbeat(body.owner)}
+
+    @app.post("/release_owner")
+    async def release_owner(body: OwnerBody) -> dict[str, Any]:
+        return {"ok": await sup.release_owner(body.owner)}
 
     @app.post("/stop_all")
     async def stop_all() -> dict[str, Any]:

@@ -18,6 +18,11 @@ const apiError = async (res: Response) => {
   return new ApiError(hint ? `${reason}. ${hint}` : reason, code, reason, hint);
 };
 
+/** A /status answer that was not 200. */
+export class StatusError extends Error { constructor(public status: number) { super(`The engine answered ${status}`); } }
+/** True when there is no engine at all: nothing listens (fetch TypeError), the static demo server says 404, or the answer is not JSON. */
+export const noBackend = (e: unknown) => e instanceof TypeError || e instanceof SyntaxError || (e instanceof StatusError && e.status === 404);
+
 export const api = {
   demo: false,
   async request<T = any>(method: string, path: string, body?: unknown): Promise<T> {
@@ -45,10 +50,12 @@ export const api = {
   async status() {
     if (this.demo) return demoHandle("GET", "/status");
     try {
-      const res = await fetch(BASE + "/status"); if (!res.ok) throw new Error(String(res.status));
+      const res = await fetch(BASE + "/status");
+      // A server that answers with an error (500 while it restarts, 503) is an engine that is busy coming back: retry, never sample data.
+      if (!res.ok) throw new StatusError(res.status);
       const j = await res.json(); this.answered = true; return j;
     } catch (e) {
-      if (this.answered) throw e;
+      if (this.answered || !noBackend(e)) throw e;
       this.demo = true;
       return demoHandle("GET", "/status");
     }

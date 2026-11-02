@@ -65,6 +65,12 @@ class JobRecord:
             return None
         return at if at.tzinfo is not None else at.astimezone()
 
+    def failed_stage(self) -> str | None:
+        """The stage a failed job stopped at (kept in `result.error.stage`: the message becomes the error)."""
+        err = (self.result or {}).get("error")
+        stage = err.get("stage") if isinstance(err, dict) else None
+        return stage if isinstance(stage, str) and stage else None
+
     def to_dict(self) -> dict[str, Any]:
         """API shape: `progress` is a percentage (0-100), `stage` the current stage name."""
         return {
@@ -73,7 +79,7 @@ class JobRecord:
             "channel": self.channel,
             "status": self.status,
             "progress": round(self.progress * 100, 1),
-            "stage": _stage_of(self.message),
+            "stage": _stage_of(self.message) or self.failed_stage(),
             "step": _steps_of(self.message)[0],
             "steps": _steps_of(self.message)[1],
             "message": self.message,
@@ -228,6 +234,11 @@ class JobStore:
         """Every job whose row says `running` (more than one only after a crash)."""
         rows = self.db.query("SELECT * FROM dashboard_jobs WHERE status = 'running' ORDER BY rowid")
         return [self._record(r) for r in rows]
+
+    def active_ids(self) -> set[str]:
+        """Ids of the jobs that are queued or running."""
+        rows = self.db.query("SELECT job_id FROM dashboard_jobs WHERE status IN ('queued', 'running')")
+        return {str(r["job_id"]) for r in rows}
 
     def counts(self) -> dict[str, int]:
         """Number of queued and running jobs."""
@@ -405,6 +416,9 @@ class JobWorker:
         gpu_gate: GpuGate | None = None,
         inline_kinds: frozenset[str] = frozenset({"learn"}),
         on_recover: dict[str, Callable[[JobRecord], None]] | None = None,
+        on_end: dict[str, Callable[[JobRecord], None]] | None = None,
+        sweep: Callable[[set[str]], object] | None = None,
+        idle_poll_s: float = 30.0,
     ) -> None:
         self.store = store
         self.handlers = handlers
@@ -413,20 +427,39 @@ class JobWorker:
         self.gpu_gate = gpu_gate
         self.inline_kinds = inline_kinds
         self.on_recover = on_recover or {}
+        #: Per kind: called when a job of that kind ends without finishing (cancelled in the queue, cancelled
+        #: or failed before or inside its handler), so work it had reserved (a series part) is given back.
+        self.on_end = on_end or {}
+        #: Called once at start with the ids of the queued and running jobs, after interrupted ones failed.
+        self.sweep = sweep
+        #: While nothing runs, `on_idle` is also called this often (a request saved during the nightly run,
+        #: which is not a dashboard job, has no job end to wait for).
+        self.idle_poll_s = idle_poll_s
         #: Called on the worker thread when a job ended and nothing else is queued (saved Assistant requests).
         self.on_idle: Callable[[], None] | None = None
         self._ended = False
         self._cv = threading.Condition()
         self._wake = False
         self._stopping = False
+        self._exited = False
         self._thread: threading.Thread | None = None
         self._running_id: str | None = None
 
     # --- control ---
     def start(self) -> None:
         """Start the worker thread (idempotent) after failing jobs a crashed process left running."""
-        if self._thread is not None and self._thread.is_alive():
-            return
+        t = self._thread
+        if t is not None and t.is_alive():
+            if self._stopping:  # stop() timed out (thread in a long answer): carry on, never start a second
+                with self._cv:
+                    if not self._exited:
+                        self._stopping = False
+                        return
+                t.join(2.0)
+                if t.is_alive():
+                    return
+            else:
+                return
         interrupted = self.store.running_all()
         n = self.store.recover_interrupted()
         if n:
@@ -438,19 +471,32 @@ class JobWorker:
                     hook(rec)
                 except Exception as e:  # recovery must never stop the worker from starting
                     self.log.warn("recover_failed", str(e), job_id=rec.job_id, kind=rec.kind)
+        if self.sweep is not None:
+            try:
+                self.sweep(self.store.active_ids())
+            except Exception as e:  # a sweep that fails must never stop the worker from starting
+                self.log.warn("sweep_failed", str(e))
         self._stopping = False
+        self._exited = False
         self._thread = threading.Thread(target=self._loop, name="ns-dashboard-worker", daemon=True)
         self._thread.start()
 
-    def stop(self, timeout: float = 5.0) -> None:
-        """Ask the thread to exit and wait up to `timeout` seconds."""
+    def stop(self, timeout: float = 5.0) -> bool:
+        """Ask the thread to exit and wait up to `timeout` seconds; True when it has ended.
+
+        A thread that is still inside a job or an Assistant answer is kept (not forgotten), so `start()` can
+        resume it and there are never two workers.
+        """
         with self._cv:
             self._stopping = True
             self._cv.notify_all()
         t = self._thread
         if t is not None:
             t.join(timeout)
+            if t.is_alive():
+                return False
         self._thread = None
+        return True
 
     def enqueue(self, job_id: str) -> None:
         """Wake the worker; the job must already be in the store."""
@@ -471,6 +517,7 @@ class JobWorker:
         if rec.status == "queued":
             if self.store.cancel_queued(job_id):
                 self.log.info("job_cancelled", job_id=job_id)
+                self._end_hook(rec)
                 self._publish(job_id)
                 return "cancelled"
             # the worker started it between our read and the update: look again, so it is cancelled as running
@@ -558,20 +605,22 @@ class JobWorker:
             self.store.finish(rec.job_id, "done", "Done", result)
             self.log.info("job_done", job_id=rec.job_id, kind=rec.kind)
         except JobCancelled:
-            self.store.finish(rec.job_id, "cancelled", "Cancelled")
+            self.store.finish(rec.job_id, "cancelled", "Cancelled", dict(ctl.extras) or None)
             self.log.info("job_cancelled", job_id=rec.job_id)
+            self._end_hook(rec)
         except AdapterUnavailable as e:  # a collaborator that has not landed yet: say so plainly
-            self.store.finish(rec.job_id, "failed", str(e), {"error": {"code": "unavailable", "hint": None}})
+            self.store.finish(rec.job_id, "failed", str(e), self._failure(ctl, "unavailable", None))
             self.log.warn("job_unavailable", str(e), job_id=rec.job_id)
+            self._end_hook(rec)
         except NsError as e:
-            self.store.finish(
-                rec.job_id, "failed", str(e), {"error": {"code": e.code, "hint": e.definition.hint}}
-            )
+            self.store.finish(rec.job_id, "failed", str(e), self._failure(ctl, e.code, e.definition.hint))
             self.log.error("job_failed", str(e), job_id=rec.job_id, code=e.code)
+            self._end_hook(rec)
         except Exception as e:  # the worker thread must survive any handler failure
             msg = f"{type(e).__name__}: {e}"
-            self.store.finish(rec.job_id, "failed", msg, {"error": {"code": "job_failed", "hint": None}})
+            self.store.finish(rec.job_id, "failed", msg, self._failure(ctl, "job_failed", None))
             self.log.error("job_failed", msg, job_id=rec.job_id)
+            self._end_hook(rec)
         finally:
             self.store.clear_cancel(rec.job_id)
             if track:
@@ -579,6 +628,23 @@ class JobWorker:
             self._publish(rec.job_id)
             with self._cv:
                 self._cv.notify_all()
+
+    def _end_hook(self, rec: JobRecord) -> None:
+        """Run the `on_end` hook of the job's kind; it must never break the worker."""
+        hook = self.on_end.get(rec.kind)
+        if hook is None:
+            return
+        try:
+            hook(rec)
+        except Exception as e:
+            self.log.warn("end_hook_failed", str(e), job_id=rec.job_id, kind=rec.kind)
+
+    def _failure(self, ctl: JobControl, code: str, hint: str | None) -> dict[str, Any]:
+        """Result of a failed job: the error with the stage it stopped at, plus what the handler had noted
+        (the studio job ids, so the logs of the failed run can be found)."""
+        rec = self.store.get(ctl.job_id)
+        stage = _stage_of(rec.message) if rec is not None else None
+        return {**ctl.extras, "error": {"code": code, "hint": hint, "stage": stage}}
 
     def _idle(self) -> None:
         if self.on_idle is None:
@@ -589,7 +655,19 @@ class JobWorker:
             self.log.warn("idle_hook_failed", str(e))
 
     def _loop(self) -> None:
-        while not self._stopping:
+        try:
+            self._run_loop()
+        finally:
+            with self._cv:
+                self._exited = True
+
+    def _run_loop(self) -> None:
+        next_poll = time.monotonic() + self.idle_poll_s
+        while True:
+            with self._cv:  # the decision to leave is taken under the lock `start()` uses to resume us
+                if self._stopping:
+                    self._exited = True
+                    return
             if self.run_next():
                 self._ended = True
                 continue
@@ -597,8 +675,12 @@ class JobWorker:
                 self._ended = False
                 self._idle()
                 continue
+            if self.on_idle is not None and time.monotonic() >= next_poll:
+                next_poll = time.monotonic() + self.idle_poll_s
+                self._idle()
+                continue
             with self._cv:
                 if self._stopping:
-                    break
+                    continue
                 self._cv.wait_for(lambda: self._wake or self._stopping, timeout=1.0)
                 self._wake = False

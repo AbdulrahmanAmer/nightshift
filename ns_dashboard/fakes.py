@@ -12,7 +12,7 @@ import shutil
 import tempfile
 import threading
 import zipfile
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -338,6 +338,27 @@ class FakeVoiceMaker:
         self._library().add_clone(name, str(sample_wav), "fake words of the sample", True, engine=engine)
         return self._preview(name, test_line, engine)
 
+    def pending(self) -> dict[str, Any] | None:
+        """The queued setup voice, as the real adapter reads it."""
+        from ns_dashboard.adapters import read_pending_voice
+
+        return read_pending_voice(self.paths)
+
+    def apply_pending(self) -> str | None:
+        """Make the queued voice with the fake engine and forget the request."""
+        want = self.pending()
+        if self.fail_with is not None:
+            raise self.fail_with
+        if want is None:
+            return None
+        from ns_tts.engine import FakeEngine
+
+        # a recording is not kept by the fake: a cloned setup voice is made from its description line
+        self._library().add_design(want["name"], want["description"], engine=FakeEngine())
+        self.calls.append(("apply_pending", want["name"], ""))
+        (self.paths.config / "pending_voice.json").unlink(missing_ok=True)
+        return str(want["name"])
+
 
 class FakeFolderOpener:
     """Records the folders it was asked to open."""
@@ -424,6 +445,16 @@ class FakeSeriesAdapter:
             for part in story["parts"]:
                 if part["n"] == params.get("part_n") and part["status"] == "producing":
                     part["status"] = "approved"
+
+    def sweep(self, active_job_ids: Collection[str]) -> int:
+        """Put every `producing` part without a queued or running job back to `approved`."""
+        freed = 0
+        for story in self.stories:
+            for part in story["parts"]:
+                if part["status"] == "producing" and part.get("job_id") not in set(active_job_ids):
+                    part["status"] = "approved"
+                    freed += 1
+        return freed
 
     def queue_next(self, slug: str) -> list[dict[str, Any]]:
         """Queue the first approved part of `slug` as a `series_part` row and mark it producing."""
@@ -635,8 +666,13 @@ class FakeSupervisor:
                     self._send(200, {"endpoint": "http://127.0.0.1:9", "model_alias": alias})
                 elif self.path == "/warmup":
                     self._send(200, {"state": "starting"})
-                elif self.path in ("/release", "/stop_all", "/shutdown"):
+                elif self.path in ("/release", "/stop_all", "/shutdown", "/heartbeat"):
                     self._send(200, {"ok": True})
+                elif self.path == "/release_owner":
+                    held = outer.state.get("gpu_owner") == body.get("owner")
+                    if held:
+                        outer.state["gpu_owner"] = None
+                    self._send(200, {"ok": held})
                 else:
                     self._send(404, {"detail": "not found"})
 

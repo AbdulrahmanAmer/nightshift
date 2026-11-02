@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import secrets
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -252,9 +253,17 @@ class Assistant:
     def run_queued(self) -> list[dict[str, Any]]:
         """Answer requests saved while the engine was busy; returns the events of each."""
         done: list[dict[str, Any]] = []
+        me = secrets.token_hex(4)
         for q in self.store.queued():
-            events = list(self.chat(q["text"], q["conversation_id"], q["context"], record_user=False))
+            if not self.store.claim_queued(q["queue_id"], me):  # another caller is answering it right now
+                continue
+            try:
+                events = list(self.chat(q["text"], q["conversation_id"], q["context"], record_user=False))
+            except BaseException:
+                self.store.release_queued(q["queue_id"], me)
+                raise
             if any(e["kind"] == "busy" for e in events):
+                self.store.release_queued(q["queue_id"], me)
                 break
             self.store.mark_queued_done(q["queue_id"])
             done.append({"queue_id": q["queue_id"], "events": events})

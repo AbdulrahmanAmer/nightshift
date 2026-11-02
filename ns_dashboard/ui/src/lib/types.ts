@@ -3,13 +3,13 @@ export interface Engine { state: EngineState; detail?: string; elapsed_s?: numbe
 export interface ChannelSummary { slug: string; display_name: string; status: string; niche?: string; voice?: any; masters_per_week?: number; publish_window?: string; format?: string; pending?: number; tonight?: boolean | string }
 export interface GpuStatus { name: string; load_pct?: number | null; vram_used_mb?: number | null; vram_total_mb?: number | null; temp_c?: number | null }
 export interface Incident { channel: string; ts: string; kind: string; note: string | null }
-export interface Status { version?: string; engine: Engine; next_run?: string | null; next_run_in_s?: number | null; schedule_time?: string; outbox?: { pending: number; approved: number; rejected: number; uploaded?: number }; channels: ChannelSummary[]; services?: Record<string, { state: string; vram_mb?: number | null }>; disk?: { free_gb: number | null; total_gb: number | null; home: string }; job?: Job | null; queue?: { queued: number; running: number; scheduled: number }; last_run?: Run | null; incidents?: Incident[]; last_error?: { job_id: string; message: string; kind: string } | null; gpu?: GpuStatus | null }
+export interface Status { version?: string; schedule_registered?: boolean; engine: Engine; next_run?: string | null; next_run_in_s?: number | null; schedule_time?: string; outbox?: { pending: number; approved: number; rejected: number; uploaded?: number }; channels: ChannelSummary[]; services?: Record<string, { state: string; vram_mb?: number | null }>; disk?: { free_gb: number | null; total_gb: number | null; home: string }; job?: Job | null; queue?: { queued: number; running: number; scheduled: number }; last_run?: Run | null; incidents?: Incident[]; last_error?: { job_id: string; message: string; kind: string } | null; gpu?: GpuStatus | null }
 export type Kind = "long" | "short" | "clip";
 /** One video: GET /outputs items. `reason` is the reject note, `url` the YouTube link once posted, `path` the video file. */
 export interface Output { output_id: string; job_id: string; kind: Kind; k: number | null; title: string; channel: string; duration_s: number | null; created_at: string; status: string; review_note: string | null; reason: string | null; url: string | null; path: string; source_id: string | null; combo_id: string | null; media_url: string; thumb_url: string }
 export interface OutputDetail extends Output { description?: string; tags?: string[]; hashtags?: string[]; publish_after?: string | null; ai_disclosure?: string | null; made_for_kids?: boolean | null; age_restrict_suggested?: boolean | null; story_excerpt?: string | null; policy_notes?: string[]; chapters?: { title: string; timestamp?: string; start_s: number }[] | null; related_video_instruction?: string | null; thumbnails?: string[] | null; sheet?: any; sheet_text?: string | null; policy?: any; critic_avg?: number | null; words?: number | null; [k: string]: any }
 /** A dashboard job (GET /jobs, /jobs/{id}, the SSE `dashboard_job` frames). `progress` is 0-100; `step`/`steps` come from the `name (i/n)` message. */
-export interface Job { job_id: string; kind: string; channel: string | null; status: string; schedule_at: string | null; progress: number; stage: string | null; step: number | null; steps: number | null; message: string; created_at: string; started_at: string | null; finished_at: string | null; params: { title?: string; [k: string]: any }; result: { output_ids?: string[]; layout?: { template: string; per_clip: Record<string, string>; notes: Record<string, string>; no_facecam: boolean } | null; error?: { code?: string; hint?: string | null }; [k: string]: any } | null; cancel_requested: boolean; title?: string }
+export interface Job { job_id: string; kind: string; channel: string | null; status: string; schedule_at: string | null; progress: number; stage: string | null; step: number | null; steps: number | null; message: string; created_at: string; started_at: string | null; finished_at: string | null; params: { title?: string; [k: string]: any }; result: { output_ids?: string[]; layout?: { template: string; per_clip: Record<string, string>; notes: Record<string, string>; no_facecam: boolean } | null; error?: { code?: string; hint?: string | null; stage?: string | null }; [k: string]: any } | null; cancel_requested: boolean; title?: string }
 export interface Template { id: string; label: string; description: string; when?: string; regions?: any[]; caption_y_pct?: number; title_card?: boolean }
 export interface Voice { name: string; mode: string; source?: string; description?: string }
 /** POST /voices/design and /voices/clone answer (contracts/schemas/voice_make_response). */
@@ -18,7 +18,7 @@ export interface Pools { hooks: string[]; structures: string[]; caption_styles: 
 /** The channel as the editor holds it: a profile (ChannelProfile) in the fields it edits. */
 export interface Channel extends ChannelSummary { language?: string; audience?: string; voice_notes?: string; pools?: Pools; avoid_topics?: string[]; fiction_label?: boolean; long_minutes?: number[]; shorts_per_master?: number[] }
 /** GET /settings. `flags` are the engine settings as flat dotted keys with plain values ("llama.flags.ctx": 16384). */
-export interface Settings { schedule_time: string; home: string; profile: string | null; flags: Record<string, string | number | boolean>; keys: Record<string, boolean>; notifications: boolean; runtime_locked: boolean; install: { version: string | null; app_path: string | null; profile: string | null }; owner_name: string | null; ui_theme: string | null; next_run: string | null; schedule_result?: { applied: boolean; note: string }; version?: string }
+export interface Settings { schedule_time: string; schedule_registered?: boolean; home: string; profile: string | null; flags: Record<string, string | number | boolean>; keys: Record<string, boolean>; notifications: boolean; runtime_locked: boolean; install: { version: string | null; app_path: string | null; profile: string | null }; owner_name: string | null; ui_theme: string | null; next_run: string | null; schedule_result?: { applied: boolean; note: string }; version?: string }
 export interface LearnRow { title: string; views: number; viewed_pct: number; kind?: Kind }
 /** GET /learn/summary: the last import, the best and worst videos, 14 days of views and the week-8 check. */
 export interface Learn { imported_at: string | null; matched: number | null; unmatched: number | null; summary: string[]; changes: { pool: string; option: string; delta: number }[]; top: LearnRow[]; bottom: LearnRow[]; daily: { date: string; shorts: number; long: number }[]; milestone: { label: string; rule: string; current: number; target: number; weeks: number; weeks_needed: number } | null; pools: Record<string, any>; weights: any[]; last_import: any; unmatched_uploads: string[] }
@@ -35,7 +35,7 @@ export type ChatEvent =
   | { kind: "confirm"; payload: { action_id: string; tool: string; args?: any; text: string } }
   | { kind: "tool_call"; payload: { tool: string; args?: any } }
   | { kind: "tool_result"; payload: { tool: string; ok: boolean; result?: any; error?: string } }
-  | { kind: "busy"; payload: { message: string } }
+  | { kind: "busy"; payload: { message: string; owner?: string; queued?: boolean } }
   | { kind: "error"; payload: { code?: string; message: string; hint?: string } }
   | { kind: "done"; payload: { conversation_id?: string } };
 /** One part of a workshop story (GET /library/series). */
@@ -55,6 +55,37 @@ export interface ChannelDetail { profile: ChannelProfile; warnings: string[]; wa
 /** GET /notes: what the nightly run could not show as a toast (run/morning_note.json). */
 export interface MorningNote { at: string; title: string; message: string }
 /** GET /update/state: what the detached updater writes to run/update_state.json (idle when it never ran). */
-export interface UpdateState { state: "idle" | "running" | "done" | "failed"; old: string | null; new: string | null; message: string | null; updated_at: string | null }
+export interface UpdateState { state: "idle" | "running" | "done" | "failed"; old: string | null; new: string | null; message: string | null; updated_at: string | null; /** The updater process is gone though the file still said running. */ stale?: boolean }
 /** One entry of GET /assistant/tools: the registry the Assistant works from. */
 export interface ToolInfo { name: string; description: string; side_effect: boolean; topic: string }
+
+/* ---- answers the pages read from POST/PUT calls and from the lists that had no declared type (checked by tests/test_api_ui_contract.py) ---- */
+/** GET /models/state: model downloads started in this session. */
+export type ModelsState = Record<string, { state: string; message: string }>;
+/** GET /settings/uninstall. */
+export interface UninstallInfo { path: string; exists: boolean }
+/** GET /update/check and POST /update/apply (the parsed `ns update` result). */
+export interface UpdateCheck { state: "up_to_date" | "available" | "unavailable" | "error" | "unknown" | "started" | "updated"; up_to_date: boolean; message: string; current?: string | null; latest?: string | null; [k: string]: any }
+/** GET /assistant/conversations. */
+export interface AssistantConversation { conversation_id: string; title: string | null; created_at: string; updated_at: string; queued: number }
+/** GET /assistant/history. */
+export interface AssistantMessage { role: string; content: string; created_at: string; tool_calls?: any; tool_call_id?: string; name?: string }
+export interface AssistantHistory { conversation_id: string; messages: AssistantMessage[]; pending_actions: { action_id: string; tool: string; args: any; confirm_text: string }[] }
+/** POST /assistant/confirm and /assistant/dismiss. */
+export interface ActionAnswer { action_id: string; status: "done" | "failed" | "dismissed"; conversation_id: string; tool?: string; message?: string; result?: any }
+/** POST /channels/{slug}/validate. */
+export interface ChannelValidation { ok: boolean; errors: string[]; warnings: string[]; error_fields: { field: string; message: string }[]; warning_fields: { field: string; message: string }[] }
+/** POST /uploads, PUT /uploads/{id} and POST /uploads/{id}/complete. */
+export interface UploadState { upload_id: string; source_id: string; filename: string; size: number; offset: number; status: "uploading" | "complete"; path: string | null; sha256: string | null; chunk_size?: number }
+/** POST /diagnostics and POST /settings/export: a zip that was written. */
+export interface FileMade { path: string; name: string; size: number | null; download_url: string }
+/** POST /settings/import. */
+export interface SettingsImported { restored: boolean; file: string; lines: string[]; note: string }
+/** POST /library/series/{slug}/produce. */
+export interface SeriesQueued { slug: string; queued: { part: number; job_id: string; title: string }[] }
+/** POST /learn/import. */
+export interface LearnImported { matched: number; unmatched: number; summary: string[]; changes: { pool: string; option: string; delta: number }[]; unmatched_rows?: string[]; job_id?: string }
+/** GET /voices/pending and POST /voices/apply-pending: the voice that setup queued and could not make yet. */
+export interface PendingVoiceInfo { name: string; mode: "design" | "clone"; description: string; channel: string | null }
+export interface PendingVoice { pending: PendingVoiceInfo | null }
+export interface VoiceApplied { created: string | null; pending: PendingVoiceInfo | null }

@@ -514,3 +514,88 @@ def test_warmup_is_refused_while_shutting_down(tmp_path: Path) -> None:
 
     asyncio.run(main())
     sup.close_job()
+
+
+# ---------------------------------------------------------------- GPU lease (dashboard re-review row 1)
+
+
+def test_a_studio_lease_without_heartbeat_is_reclaimed(tmp_path: Path) -> None:
+    """The studio child was killed while it held the GPU: the lock must not stay with a dead owner."""
+    sup, _table, _ = make(tmp_path, lease_expiry_s=0.5)
+
+    async def main() -> None:
+        async with running(sup):
+            await sup.acquire("llama", "studio:dead-job")
+            assert sup.status()["gpu_owner"] == "studio:dead-job"
+            assert await until(lambda: sup.status()["gpu_owner"] is None, 10)
+            await sup.acquire("llama", "studio:next-job", timeout_s=2)  # no two-hour wait for a dead owner
+            assert sup.status()["gpu_owner"] == "studio:next-job"
+
+    asyncio.run(main())
+
+
+def test_heartbeats_keep_a_lease_alive_and_other_owners_never_expire(tmp_path: Path) -> None:
+    sup, _table, _ = make(tmp_path, lease_expiry_s=0.5)
+
+    async def main() -> None:
+        async with running(sup):
+            await sup.acquire("llama", "studio:live-job")
+            for _ in range(15):  # 1.5 s, three times the expiry
+                assert sup.heartbeat("studio:live-job") is True
+                await asyncio.sleep(0.1)
+            assert sup.status()["gpu_owner"] == "studio:live-job"
+            assert sup.heartbeat("studio:someone-else") is False  # not the holder
+            await sup.release("llama", "studio:live-job")
+            await sup.acquire("llama", "dashboard:assistant")  # the Assistant does not beat
+            await asyncio.sleep(1.2)
+            assert sup.status()["gpu_owner"] == "dashboard:assistant"
+
+    asyncio.run(main())
+
+
+def test_release_owner_frees_the_lock_and_drops_the_queue_place(tmp_path: Path) -> None:
+    sup, _table, _ = make(tmp_path)
+
+    async def main() -> None:
+        async with running(sup):
+            await sup.acquire("llama", "studio:a")
+            waiter = asyncio.create_task(sup.acquire("tts", "studio:b", timeout_s=30))
+            assert await until(lambda: bool(sup.lock.waiters()))
+            assert await sup.release_owner("studio:b") is True  # the killed child waited in the queue
+            with pytest.raises(NsError) as err:
+                await waiter
+            assert err.value.code == "NS-E201"
+            assert sup.lock.waiters() == []
+            assert await sup.release_owner("studio:a") is True
+            assert sup.status()["gpu_owner"] is None
+            assert await sup.release_owner("studio:a") is False  # nothing left to free
+            await sup.acquire("llama", "studio:c", timeout_s=2)
+
+    asyncio.run(main())
+
+
+def test_a_sleeping_pc_does_not_expire_a_live_lease(tmp_path: Path) -> None:
+    clock = {"t": 1000.0}
+    paths = Paths(tmp_path / "ns")
+    table = StubTable()
+    sup = Supervisor(
+        paths, Runtime.default("gpu"), config=fast_config(lease_expiry_s=600, suspend_gap_s=150),
+        resolver=table, clock=lambda: clock["t"],
+    )
+
+    async def main() -> None:
+        try:
+            await sup.acquire("llama", "studio:j1")
+            await sup.tick()  # the monitor notices the holder
+            clock["t"] += 599
+            await sup.tick()  # one pass 599 s later: a sleep, not silence
+            assert sup.status()["gpu_owner"] == "studio:j1"
+            for _ in range(7):  # now the monitor runs every 100 s and the studio stays silent
+                clock["t"] += 100
+                await sup.tick()
+            assert sup.status()["gpu_owner"] is None
+        finally:
+            await sup.stop_all(include_persistent=True)
+            sup.close_job()
+
+    asyncio.run(main())

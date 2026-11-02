@@ -39,6 +39,8 @@ export const STAGE_WORDS: Record<string, string> = {
   queued: "Waiting for the engine",
 };
 export const stageWords = (k?: string | null) => (k && STAGE_WORDS[k]) || (k ? k.replace(/_/g, " ") : "Working");
+/** "Stopped at voice", or just "Stopped" when the failure did not say which stage. */
+export const stoppedAt = (k?: string | null) => (k ? `Stopped at ${stageWords(k).toLowerCase()}` : "Stopped");
 /** Stages in order, per kind of job (ns_studio.orchestrator.FORMAT_STAGES and the clip stages). */
 export const SHORTS_STAGES = ["ideas", "plan", "draft", "critic_revise", "split", "hooks", "seo", "visual_plan", "voice", "captions", "clips", "render", "qc", "outbox"];
 export const MASTER_STAGES = ["ideas", "long_plan", "chapters_draft", "chapters_critic", "continuity", "seo_long", "shorts_select", "visual_plan_long", "seo_shorts", "voice", "duration_check", "captions", "shorts_timing", "clips", "render_master", "thumbnails", "shorts_derive", "qc", "outbox"];
@@ -67,3 +69,6 @@ export const doneWords = (j: { kind: string; result?: { output_ids?: string[] } 
   const n = j.result?.output_ids?.length ?? 0;
   return n ? `Done · ${plural(n, "video")}` : "Done · no videos";
 };
+
+/** What the top bar and Settings say when Windows has no 'Nightshift Daily' task (NS-W206). */
+export const NO_TASK = "No nightly task; videos are made only while Nightshift is open";

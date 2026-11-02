@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import threading
 from dataclasses import asdict, dataclass
 from pathlib import Path, PureWindowsPath
@@ -172,3 +173,33 @@ class UploadManager:
             meta["sha256"] = h.hexdigest()
             (d / META).write_text(json.dumps(meta, indent=2), encoding="utf-8")
             return self._info(d, meta)
+
+
+def adopt_upload(paths: Paths, source_path: Path) -> Path:
+    """Move a finished upload to the place the Clipper import would copy it to, and drop the upload folder.
+
+    `imports/clipper/src-YYYYMMDD-xxxx/source.mp4` becomes `imports/clipper/src-<sha256[:10]>/source.mp4`, the
+    folder `import_source` fills. It finds the file already there and skips its copy, so a 25 GB stream is
+    stored once and written once. Anything that is not an upload of ours (a path on another drive, a
+    download) is returned unchanged.
+    """
+    folder = source_path.parent
+    meta_file = folder / META
+    if folder.parent != clipper_dir(paths) or not meta_file.is_file():
+        return source_path
+    try:
+        meta = json.loads(meta_file.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return source_path
+    digest = meta.get("sha256") if isinstance(meta, dict) else None
+    if not isinstance(digest, str) or len(digest) < 10 or not source_path.is_file():
+        return source_path
+    target = clipper_dir(paths) / f"src-{digest[:10]}" / source_path.name.lower()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.exists():  # the same video was imported before: the copy in the upload folder is the duplicate
+        source_path.unlink()
+    else:
+        os.replace(source_path, target)
+
+    shutil.rmtree(folder, ignore_errors=True)
+    return target

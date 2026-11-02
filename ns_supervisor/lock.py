@@ -101,3 +101,17 @@ class GpuLock:
             return False
         self._pass_on()
         return True
+
+    def drop_waiters(self, owner: str) -> int:
+        """Remove `owner` from the queue (its client is gone); each pending `acquire` fails with `NS-E201`.
+
+        A waiter that was already granted the lock is the holder, not a waiter: use `release` for that.
+        """
+        dropped = 0
+        for w in list(self._queue):
+            if w.owner != owner or w.fut.done():
+                continue
+            self._queue.remove(w)
+            w.fut.set_exception(NsError("NS-E201", f"{owner} was released while it waited for {w.service}"))
+            dropped += 1
+        return dropped

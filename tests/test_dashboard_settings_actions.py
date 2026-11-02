@@ -180,7 +180,7 @@ def test_changing_the_run_time_reregisters_the_windows_task(tmp_home: Path, monk
     assert read_run_time(Paths.from_env()) == "04:30"  # the supervisor's own copy of the time moved too
 
 
-def test_a_refused_task_update_keeps_the_time_and_says_so(tmp_home: Path, monkeypatch: pytest.MonkeyPatch):
+def test_a_refused_task_update_does_not_move_the_time_and_says_so(tmp_home: Path, monkeypatch: pytest.MonkeyPatch):
     from ns_dashboard.adapters import RealScheduleAdapter
     from ns_supervisor import schedule
 
@@ -190,9 +190,11 @@ def test_a_refused_task_update_keeps_the_time_and_says_so(tmp_home: Path, monkey
     monkeypatch.setattr(schedule, "_run", refuse)
     client, state = make_env(tmp_home)
     state.adapters.schedule = RealScheduleAdapter(Paths.from_env())
+    before = client.get("/api/settings").json()["schedule_time"]
     body = client.put("/api/settings", json={"schedule_time": "05:00"}).json()
-    assert body["schedule_time"] == "05:00"
+    assert body["schedule_time"] == before != "05:00"  # the field does not claim a time the task does not have
     assert body["schedule_result"]["applied"] is False and "Access is denied" in body["schedule_result"]["note"]
+    assert body["schedule_result"]["note"].startswith("Not saved")
 
 
 # ---------------------------------------------------------------- gap 17: export, import, uninstall -> ns backup / restore

@@ -34,7 +34,7 @@ from ns_dashboard.lazyimport import lazy
 from ns_dashboard.studio_runner import StudioRunner
 from ns_dashboard.supervisor_link import SupervisorLink, make_acquirer, supervisor_url
 from ns_dashboard.updater import RealBackupAdapter, RealUpdateAdapter
-from ns_dashboard.uploads import tmp_dir
+from ns_dashboard.uploads import adopt_upload, tmp_dir
 
 PRESET_VOICES = [{"name": "Ryan", "mode": "preset", "source": "builtin"}]
 
@@ -116,6 +116,14 @@ class VoiceMakerAdapter(Protocol):
 
     def clone(self, name: str, sample_wav: Path, test_line: str) -> MadeVoice: ...
 
+    def pending(self) -> dict[str, Any] | None:
+        """The voice setup asked for (`config/pending_voice.json`) while it does not exist yet, else None."""
+        ...
+
+    def apply_pending(self) -> str | None:
+        """Create that voice now; returns its name, or None when there was nothing to do."""
+        ...
+
 
 class FolderOpener(Protocol):
     """Opens a folder in Explorer."""
@@ -154,6 +162,10 @@ class SeriesAdapter(Protocol):
 
     def release(self, params: dict[str, Any]) -> None:
         """Put a part whose job was interrupted back to `approved` so it can be queued again."""
+        ...
+
+    def sweep(self, active_job_ids: Collection[str]) -> int:
+        """Put every `producing` part without a queued or running job back to `approved`; returns how many."""
         ...
 
 
@@ -225,6 +237,18 @@ def job_reporter(ctl: JobControl) -> studio_bridge.Report:
     return report
 
 
+def studio_owners(ctl: JobControl, args: dict[str, Any]) -> list[str]:
+    """The GPU owners (`studio:<job id>`) a job may have used: announced ids, and those the arguments name."""
+    ids: list[Any] = list(ctl.extras.get("studio_job_ids") or [])
+    params = args.get("params")
+    ids += [
+        ctl.extras.get("studio_job_id"),
+        args.get("studio_job_id"),  # a re-run
+        params.get("job_id") if isinstance(params, dict) else None,  # a series part
+    ]
+    return sorted({f"studio:{i}" for i in ids if i})
+
+
 class StudioAdapter:
     """Shared wiring of the adapters that run studio work: home, link, fakes, and the child process.
 
@@ -276,9 +300,24 @@ class StudioAdapter:
                 ctl.extras.setdefault("studio_job_ids", []).append(str(event.get("job_id", "")))
 
         full = {**args, "fake": sorted(self.fake), "supervisor_url": self.link.base_url}
-        return self.runner.run(
-            kind, full, on_event=on_event, check_cancel=ctl.check_cancel, on_cancel=on_cancel
-        )
+        try:
+            return self.runner.run(
+                kind, full, on_event=on_event, check_cancel=ctl.check_cancel, on_cancel=on_cancel
+            )
+        except BaseException:
+            self.release_leases(ctl, full)  # the child is gone (stopped itself or killed): free its lease
+            raise
+
+    def release_leases(self, ctl: JobControl, args: dict[str, Any]) -> None:
+        """Tell the supervisor that the studio owners of this job are gone, whatever they still held.
+
+        A child that stopped between stages already released its services; one that was killed in the middle
+        of a stage did not, and the lock would stay with a dead owner. Releasing is harmless when nothing is
+        held.
+        """
+        for owner in studio_owners(ctl, args):
+            with contextlib.suppress(Exception):  # an engine that is down holds nothing
+                self.link.release_owner(owner)
 
 
 class RealRunAdapter(StudioAdapter):
@@ -300,15 +339,26 @@ class RealClipAdapter(StudioAdapter):
 
     def clip(self, ctl: JobControl, source_path: Path, source_id: str, params: dict[str, Any]) -> list[str]:
         """Run the Clipper for `source_path`; returns the output ids it inserted."""
+        # an upload is moved to where the import wants it, not copied
+        source_path = adopt_upload(self.paths, source_path)
         args = {
             "source_path": str(source_path),
             "params": {**params, "channel": params.get("channel") or ctl.channel},
         }
-        done = self.child(ctl, "clip", args)
+        try:
+            done = self.child(ctl, "clip", args)
+        finally:
+            self._drop_download(source_path, source_id)
         seen = [str(i) for i in done.get("job_ids") or []]
         ctl.extras["studio_job_id"] = seen[0] if seen else None
         ctl.extras.pop("studio_job_ids", None)  # a clip job reports the single `studio_job_id`
         return [str(i) for i in done.get("output_ids") or []]
+
+    def _drop_download(self, source_path: Path, source_id: str) -> None:
+        """A linked video is deleted when its clip job ends, whatever the ending (done, failed, cancelled)."""
+        folder = studio_bridge.download_dir(self.paths, source_id)
+        if source_path.parent == folder:
+            shutil.rmtree(folder, ignore_errors=True)
 
     def rerun(self, ctl: JobControl, studio_job_id: str, changes: dict[str, Any]) -> list[str]:
         """Run the later stages of `studio_job_id` again with other options; keeps the transcript."""
@@ -359,6 +409,10 @@ class RealSeriesAdapter(StudioAdapter):
     def release(self, params: dict[str, Any]) -> None:
         """A part left `producing` by a crash or a Quit goes back to `approved`."""
         studio_bridge.release_part(params)
+
+    def sweep(self, active_job_ids: Collection[str]) -> int:
+        """Parts left `producing` with no job behind them (found at start) go back to `approved`."""
+        return studio_bridge.sweep_parts(active_job_ids)
 
     def listing(self) -> list[dict[str, Any]]:
         """Stories and parts read from the workshop files under `stories/`."""
@@ -477,21 +531,67 @@ class RealDoctorAdapter:
 
 
 class RealKeyringAdapter:
-    """Windows Credential Manager through the `keyring` package (service `Nightshift`)."""
+    """The stock-footage keys: Windows Credential Manager (service `Nightshift`) AND the DPAPI file.
+
+    The nightly task may run in a session that cannot read the owner's Credential Manager (the studio then
+    falls back to `config/secrets.dpapi`, `ns_common.secret_file`), so a key saved here must reach both places
+    or the nightly run would keep an old key. `set` fails only when neither accepted the value, like the
+    installer's `ResilientStore`; `get` asks the keyring first and the file second.
+    """
+
+    def __init__(
+        self,
+        paths: Paths | None = None,
+        *,
+        keyring_module: Any = None,
+        protect: Callable[[bytes], bytes] | None = None,
+        unprotect: Callable[[bytes], bytes] | None = None,
+    ) -> None:
+        self.paths = paths
+        self._keyring = keyring_module
+        self._protect = protect
+        self._unprotect = unprotect
 
     def _module(self) -> Any:
+        if self._keyring is not None:
+            return self._keyring
         try:
             return importlib.import_module("keyring")
         except ImportError as e:
             raise AdapterUnavailable("the keyring package is not installed") from e
 
     def get(self, name: str) -> str | None:
-        """Stored secret or None."""
-        return self._module().get_password(KEYRING_SERVICE, name)
+        """Stored secret (Credential Manager, else the DPAPI file) or None."""
+        value: str | None = None
+        try:
+            value = self._module().get_password(KEYRING_SERVICE, name)
+        except AdapterUnavailable:
+            if self.paths is None:  # nothing else to ask
+                raise
+        except Exception:  # a broken backend must not hide the file copy
+            value = None
+        if value or self.paths is None:
+            return value
+        from ns_common.secret_file import dpapi_unprotect, load_secret
+
+        return load_secret(self.paths, name, unprotect=self._unprotect or dpapi_unprotect)
 
     def set(self, name: str, value: str) -> None:
-        """Store or replace a secret."""
-        self._module().set_password(KEYRING_SERVICE, name, value)
+        """Write Credential Manager and the DPAPI file; raise only when both refused."""
+        failures: list[str] = []
+        try:
+            self._module().set_password(KEYRING_SERVICE, name, value)
+        except Exception as e:  # recorded: the file copy may still work
+            failures.append(f"keyring: {type(e).__name__}")
+        if self.paths is not None:
+            from ns_common.secret_file import dpapi_protect, store_secret
+
+            try:
+                store_secret(self.paths, name, value, protect=self._protect or dpapi_protect)
+            except OSError as e:
+                failures.append(f"file: {e}")
+        if len(failures) == (2 if self.paths is not None else 1):
+            raise AdapterUnavailable("the key could not be stored (" + "; ".join(failures) + ")")
 
 
 def scan_voice_library(paths: Paths) -> list[dict[str, Any]]:
@@ -600,15 +700,13 @@ class RealVoiceMaker:
         except httpx.HTTPError as e:
             raise NsError("NS-E310", f"voice service: {e}") from e
         if r.status_code == 409 and "missing_model" in r.text:
-            raise ApiError(
-                409,
-                "model_missing",
-                "The model for this voice tool is not downloaded yet.",
-                hint="Run the installer's model step again with the voice design option ticked.",
-            )
+            raise _missing_model(r)
         if r.status_code == 400:
             raise ApiError(400, "voice_rejected", _detail(r))
         if r.status_code >= 400:
+            code = _service_code(r)
+            if code is not None:  # the service named the condition (NS-E311, NS-E315, ...): the page words it
+                raise NsError(code, _detail(r))
             raise NsError("NS-E310", f"voice service answered {r.status_code}: {_detail(r)}")
 
     def _preview(self, base_url: str, name: str, test_line: str) -> MadeVoice:
@@ -632,6 +730,16 @@ class RealVoiceMaker:
             done = self._runner.run("transcribe", {"wav": str(wav)})
         return str(done.get("text") or "").strip()
 
+    def pending(self) -> dict[str, Any] | None:
+        """The queued setup voice (name, mode, description, channel), or None when none waits or it exists."""
+        return read_pending_voice(self.paths)
+
+    def apply_pending(self) -> str | None:
+        """Create the setup voice in the studio venv (`voice_setup.apply_pending`), which holds `tts`."""
+        done = self._runner.run("apply_voice", {"supervisor_url": self.link.base_url})
+        name = done.get("name")
+        return str(name) if name else None
+
     def clone(self, name: str, sample_wav: Path, test_line: str) -> MadeVoice:
         """Base-model embedding from the sample (its words found by whisper), then the test line spoken."""
         ref_text = self._words_in(sample_wav)
@@ -646,6 +754,67 @@ class RealVoiceMaker:
         with self._tenant("tts") as url:
             self._post(url, "/v1/voices/clone", body)
             return self._preview(url, name, test_line)
+
+
+CLONE_NOTE = "Cloned from your recording"
+
+
+def read_pending_voice(paths: Paths) -> dict[str, Any] | None:
+    """`config/pending_voice.json` as the page shows it; None when absent, unreadable or already made."""
+    try:
+        raw = json.loads((paths.config / "pending_voice.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    name = raw.get("name") if isinstance(raw, dict) else None
+    if not isinstance(name, str) or not name or (paths.models_tts_voices / name / "voice.json").is_file():
+        return None
+    mode = "clone" if raw.get("mode") == "clone" else "design"
+    return {
+        "name": name,
+        "mode": mode,
+        "description": str(raw.get("description") or "") if mode == "design" else CLONE_NOTE,
+        "channel": raw.get("channel") if isinstance(raw.get("channel"), str) else None,
+    }
+
+
+def _service_code(r: httpx.Response) -> str | None:
+    """The `NS-` code in a TTS service answer (`{"error": "NS-E315", ...}`) when it is a known one."""
+    try:
+        code = r.json().get("error")
+    except (ValueError, AttributeError):
+        return None
+    if isinstance(code, str) and code.startswith("NS-"):
+        try:
+            NsError(code)
+        except KeyError:
+            return None
+        return code
+    return None
+
+
+def _missing_model(r: httpx.Response) -> ApiError:
+    """The 409 for an absent model file, naming the model the owner can actually get.
+
+    Only the VoiceDesign talker has a download (`ns models get voicedesign`); a missing Base talker or
+    tokenizer belongs to the base install, so offering the design download for it would not help.
+    """
+    try:
+        missing = str(r.json().get("missing_model") or "")
+    except (ValueError, AttributeError):
+        missing = ""
+    if "design" in missing.lower():
+        return ApiError(
+            409,
+            "model_missing",
+            "The voice design model is not downloaded yet.",
+            hint="Get it with the button below (it is a large download), then try again.",
+        )
+    return ApiError(
+        409,
+        "base_model_missing",
+        f"A file of the voice model is missing ({missing or 'unknown'}).",
+        hint="Run the installer's model step again; this model belongs to the base download.",
+    )
 
 
 def _detail(r: httpx.Response) -> str:
@@ -683,7 +852,7 @@ class RealScheduleAdapter:
         try:
             message = install(self.paths, run_time, app_path(self.paths))
         except ScheduleError as e:
-            return {"applied": False, "note": f"Saved, but Windows did not update the nightly task: {e}"}
+            return {"applied": False, "note": f"Not saved: Windows refused to change the nightly task ({e})"}
         return {"applied": True, "note": f"Scheduled task updated. {message}"}
 
 
@@ -696,7 +865,7 @@ def real_adapters(paths: Paths, link: SupervisorLink, log: NsLogger) -> Adapters
         learn=RealLearnAdapter(paths),
         verify=RealVerifyAdapter(paths, link),
         doctor=RealDoctorAdapter(paths),
-        keyring=RealKeyringAdapter(),
+        keyring=RealKeyringAdapter(paths),
         tts=RealTtsAdapter(paths, link),
         folder=RealFolderOpener(),
         schedule=RealScheduleAdapter(paths),

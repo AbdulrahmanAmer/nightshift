@@ -80,6 +80,14 @@ class SupervisorClient:
         """Release a service acquired earlier."""
         self._call("POST", "/release", body={"service": service, "owner": owner})
 
+    def heartbeat(self, owner: str) -> bool:
+        """`POST /heartbeat`: the holder of the GPU lease is alive; False when `owner` no longer holds it."""
+        return bool(self._call("POST", "/heartbeat", body={"owner": owner}, timeout_s=10).get("ok"))
+
+    def release_owner(self, owner: str) -> bool:
+        """`POST /release_owner`: free everything `owner` holds or waits for (its process is gone)."""
+        return bool(self._call("POST", "/release_owner", body={"owner": owner}, timeout_s=30).get("ok"))
+
     # ------------------------------------------------------------------ extras
     def status(self) -> dict[str, Any]:
         """`GET /status`."""

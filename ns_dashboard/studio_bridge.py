@@ -390,3 +390,71 @@ def queue_next_part(slug: str) -> list[dict[str, Any]]:
         if nxt is None:
             raise WorkshopError(f"story {slug!r} has no approved part waiting; approve a written part first")
         return ws.produce(slug, nxt)
+
+
+def sweep_parts(active_job_ids: Collection[str]) -> int:
+    """Put every part that says `producing` but has no queued or running dashboard job back to `approved`.
+
+    Covers what the per-job hooks cannot: a row that was removed, a restore of the database, a part whose
+    job was cancelled while the dashboard was down. Returns how many parts were freed.
+    """
+    from ns_studio.series.store import StoryDir, WorkshopError
+
+    freed = 0
+    active = set(active_job_ids)
+    try:
+        with workshop_session(fake=READ_ONLY) as ws:
+            for story in ws.list_stories():
+                try:
+                    sd = StoryDir.open(ws.paths, str(story["slug"]))
+                    status = sd.read_status()
+                    for n, state in sorted(status.parts.items()):
+                        orphan = state.job_id is None or state.job_id not in active
+                        if state.status == "producing" and orphan:
+                            try:
+                                ws._set_part(sd, status, n, "approved")
+                            except WorkshopError:  # series.md has no such part: status.yaml is saved already
+                                pass
+                            freed += 1
+                except (WorkshopError, KeyError, ValueError):
+                    continue
+    except (WorkshopError, OSError):
+        return freed
+    return freed
+
+
+# ---------------------------------------------------------------- the voice setup asked for
+
+
+def _voice_post(base_url: str, route: str, body: dict[str, Any]) -> dict[str, Any]:
+    """`ns_studio.voice_setup.http_post`, with an absent model reported as the code the Library page knows.
+
+    The setup voice of a "design" choice needs the VoiceDesign talker, which is not part of the base download:
+    `NS-E314` makes the page offer "Get voice design model" before it tries again.
+    """
+    from ns_common.errors import NsError
+    from ns_studio import voice_setup
+
+    try:
+        return voice_setup.http_post(base_url, route, body)
+    except NsError as e:
+        if "is not downloaded" in e.detail and route.endswith("/design"):
+            raise NsError("NS-E314") from e
+        raise
+
+
+def apply_pending_voice(
+    *, acquirer: Acquirer | None = None, fake: Collection[str] = (), paths: Paths | None = None
+) -> str | None:
+    """Create the voice that setup queued in `config/pending_voice.json` (`voice_setup.apply_pending`).
+
+    Returns its name, or None when nothing was queued or the voice exists already. A failure leaves the
+    request queued and propagates (`NS-E314` when the VoiceDesign model is missing).
+    """
+    from ns_studio import voice_setup
+
+    env = open_env(fake, acquirer, paths=paths)
+    try:
+        return voice_setup.apply_pending(env, post=None if "tts" in env.fake else _voice_post)
+    finally:
+        env.db.close()

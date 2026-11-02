@@ -17,7 +17,13 @@ from ns_common.secrets_names import KEY_NAMES, SHORT_NAMES
 from ns_dashboard import logs_tail, runtime_flags
 from ns_dashboard.common import now_iso
 from ns_dashboard.errors import AdapterUnavailable, ApiError
-from ns_dashboard.state import AppState, load_dashboard_settings, load_ui_prefs, save_dashboard_settings
+from ns_dashboard.state import (
+    AppState,
+    load_dashboard_settings,
+    load_ui_prefs,
+    save_dashboard_settings,
+    scheduled_run_time,
+)
 from ns_dashboard.svc_engine import EngineService
 from ns_dashboard.templates import load_templates
 
@@ -33,6 +39,8 @@ POOL_COLUMNS = {
     "title_formulas": "title_formula",
 }
 MAX_BACKUP_BYTES = 1024 * 1024 * 1024
+#: How long an import waits for the job thread to finish an Assistant answer before it is refused.
+WORKER_STOP_WAIT_S = 120.0
 PREVIEW_TEXT = "This is how I will sound when I read your story."
 
 
@@ -62,6 +70,8 @@ class SettingsService:
         prefs = load_ui_prefs(self.s.paths)
         return {
             "schedule_time": stored["run_time"],
+            # False when Windows has no 'Nightshift Daily' task (NS-W206): the time is then only a preference
+            "schedule_registered": scheduled_run_time(self.s.paths) is not None,
             "home": str(self.s.paths.home),
             "profile": (runtime or {}).get("profile"),
             "flags": flags,
@@ -95,10 +105,12 @@ class SettingsService:
             if not isinstance(body["notifications"], bool):
                 raise ApiError(422, "invalid_options", "'notifications' must be true or false.")
             updates["notifications"] = body["notifications"]
+        if "run_time" in updates:  # the task first: a time Windows refused must not be remembered as the schedule
+            schedule_result = self.s.adapters.schedule.apply(updates["run_time"])
+            if schedule_result.get("applied") is False:
+                del updates["run_time"]
         if updates:
             save_dashboard_settings(self.s.paths, updates)
-        if "run_time" in updates:
-            schedule_result = self.s.adapters.schedule.apply(updates["run_time"])
         out = self.get_settings()
         if schedule_result is not None:
             out["schedule_result"] = schedule_result
@@ -309,7 +321,13 @@ class SettingsService:
         starts again, whether the restore worked or not.
         """
         was_started = self.s.worker.started
-        self.s.worker.stop()
+        if was_started and not self.s.worker.stop(WORKER_STOP_WAIT_S):
+            # the thread is inside an Assistant answer: carry on with it (no second worker) and ask again later
+            self.s.worker.start()
+            raise ApiError(
+                409, "assistant_busy", "Nightshift is still answering a saved request.",
+                hint="Wait a minute for the answer to finish, then import the settings again.",
+            )
         try:
             with self.s.db.released():
                 return self.s.adapters.backup.restore(zip_path)

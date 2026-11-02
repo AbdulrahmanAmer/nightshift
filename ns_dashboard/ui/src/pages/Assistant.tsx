@@ -4,7 +4,7 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
 import { useApp, useLoad } from "../lib/app";
 import { api } from "../lib/api";
-import { fmtDay, fmtClock, stageWords, store } from "../lib/format";
+import { fmtDay, fmtClock, stageWords, stoppedAt, store } from "../lib/format";
 import type { Job, ToolInfo } from "../lib/types";
 import { cx } from "../ui/kit";
 import { Mark } from "../ui/Mark";
@@ -18,7 +18,7 @@ type Msg = { id: number; role: "user" | "assistant" | "note" | "error"; text: st
 type Saved = { cid: string | null; msgs: Msg[] };
 
 /** Registry entry of one tool (GET /assistant/tools). The page words its busy line and Yes/No cards from these, never from a list of its own. */
-const firstSentence = (t: string) => t.split(/(?<=[.!?])s/)[0]!.replace(/[.!?]+$/, "");
+const firstSentence = (t: string) => t.split(/(?<=[.!?])\s/)[0]!.replace(/[.!?]+$/, "");
 const toolWords = (tools: ToolInfo[], name: string) => { const d = tools.find((t) => t.name === name)?.description; return d ? firstSentence(d) : name.replace(/_/g, " "); };
 const WELCOME: Msg = { id: 0, role: "assistant", text: "I run on this PC with the local model. I can start videos or clips, draft story concepts, pause or resume channels, find files and explain results. Anything that changes something shows you a Yes or No card first." };
 let mid = Date.now();
@@ -71,13 +71,12 @@ export function Chat({ compact, initialText, openCid, openTick }: { compact?: bo
   // Prompt handed over by "Ask about it" or the top bar search. Runs only when a prompt arrives (it used to run after every render).
   useEffect(() => { if (askPrompt) { send(askPrompt); clearAskPrompt(); } }, [askPrompt]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { taRef.current?.focus(); }, []);
-  // A saved request is answered by the dashboard when a job ends; here the chat also asks whenever the engine is not working,
-  // and shows the answer in THIS conversation (saved.cid), not only in one opened from History.
+  // A saved request is answered by the dashboard itself (when a job ends, and every 30 s while it is idle). The chat only looks:
+  // it never starts the answer, so a slow answer cannot be started twice. The answer shows in THIS conversation (saved.cid).
   useEffect(() => {
     const cid = saved.cid; if (!waiting || !cid) return; let live = true;
     const look = async () => {
       try {
-        if (status?.engine?.state !== "working") await api.post("/assistant/queue/run").catch(() => null);
         const convs = await api.get<{ conversation_id: string; queued?: number }[]>("/assistant/conversations");
         if (convs.find((c) => c.conversation_id === cid)?.queued) return;
         const h = await api.get(`/assistant/history?conversation_id=${encodeURIComponent(cid)}`);
@@ -187,12 +186,14 @@ export default function Assistant() {
   useDismiss(panel === "history", () => setPanel(null), histRoot, histBtn);
   useDismiss(panel === "can", () => setPanel(null), canRoot, canBtn);
   const queued = convs.data.reduce((n, c) => n + (c.queued || 0), 0);
+  const [answering, setAnswering] = useState(false);
   const runQueue = async () => {
+    if (answering) return; setAnswering(true);
     try {
       const r = await api.post<unknown[]>("/assistant/queue/run");
       toast(r.length ? `Answered ${r.length} saved request${r.length === 1 ? "" : "s"}` : "The engine is still busy. Try again in a minute", r.length ? "ok" : "warn");
       convs.reload(); setTick((t) => t + 1);
-    } catch (e: any) { toast(e.message, "bad"); }
+    } catch (e: any) { toast(e.message, "bad"); } finally { setAnswering(false); }
   };
   const recent = jobs.data.slice(0, 6);
   const copy = async (text: string) => { try { await navigator.clipboard.writeText(text); toast("Details copied", "ok"); } catch { toast("Copy was blocked", "warn"); } };
@@ -230,7 +231,7 @@ export default function Assistant() {
             <div className="mb-3 flex items-center justify-between gap-3">
               <SegmentedControl label="Runs or chats" size="sm" value={tab} onChange={setTab} options={[{ value: "runs", label: "Runs" }, { value: "chats", label: "Chats" }]} />
               <div className="flex items-center gap-1.5">
-                {tab === "chats" && queued ? <Button size="sm" variant="soft" leadingIcon="play" onClick={runQueue}>Answer {queued} saved</Button> : null}
+                {tab === "chats" && queued ? <Button size="sm" variant="soft" leadingIcon="play" disabled={answering} onClick={runQueue}>Answer {queued} saved</Button> : null}
                 <IconButton icon="x" label="Close history" onClick={() => { setPanel(null); histBtn.current?.focus(); }} />
               </div>
             </div>
@@ -248,7 +249,7 @@ export default function Assistant() {
                       <li key={j.job_id}>
                         <NotificationItem title={title} moreLabel={`Options for ${title}`} menu={menu}
                           titleAdornment={<StatusDot tone={failed ? "danger" : live ? "accent" : j.status === "cancelled" ? "attention" : "online"} label={failed ? "Stopped" : live ? "Running" : j.status === "cancelled" ? "Cancelled" : "Done"} />}
-                          subtitle={live ? stageWords(j.stage) : failed ? `Stopped at ${stageWords(j.stage).toLowerCase()}` : j.status === "cancelled" ? "Cancelled" : "Done"}
+                          subtitle={live ? stageWords(j.stage) : failed ? `${stoppedAt(j.stage)}` : j.status === "cancelled" ? "Cancelled" : "Done"}
                           meta={<><MetaItem icon="calendarDays">{fmtDay(j.created_at)}</MetaItem><MetaItem icon="clock">{fmtClock(j.created_at)}</MetaItem></>} />
                       </li>
                     );
