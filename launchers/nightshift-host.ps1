@@ -12,9 +12,7 @@
     Messages from the page (window.chrome.webview.postMessage), all JSON:
       {cmd: 'minimize'} {cmd: 'toggle-maximize'} {cmd: 'drag-start'} {cmd: 'close'} {cmd: 'close-ack'}
       {cmd: 'ready'} {cmd: 'open-external', url: 'https://...'}
-    The window icon is <AppPath>
-s_dashboardstaticrand
-ightshift.ico when that file exists.
+    The window icon is <AppPath>\ns_dashboard\static\brand\nightshift.ico when that file exists.
     Messages to the page: {event: 'window-state', state: 'normal|maximized|minimized', maximized: bool}
     and {event: 'close-requested'}.
 #>
@@ -303,8 +301,7 @@ try {
     $script:win.Background = $brush
 
     # Window and taskbar icon: the brand icon shipped with the dashboard build; no icon when the file is missing.
-    $iconFile = Join-Path $AppPath 'ns_dashboardstaticrand
-ightshift.ico'
+    $iconFile = Join-Path $AppPath 'ns_dashboard\static\brand\nightshift.ico'
     if (Test-Path -LiteralPath $iconFile) {
         try {
             $dec = [System.Windows.Media.Imaging.BitmapDecoder]::Create(

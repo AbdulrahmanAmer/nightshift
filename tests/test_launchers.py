@@ -117,7 +117,7 @@ def test_other_launchers_call_the_right_tools() -> None:
 
 def test_host_script_sets_the_window_icon_from_the_shipped_brand_ico() -> None:
     text = read("nightshift-host.ps1")
-    assert "ns_dashboard\static\brand\nightshift.ico" in text
+    assert "ns_dashboard\\static\\brand\\nightshift.ico" in text
     assert "$script:win.Icon" in text and "Test-Path -LiteralPath $iconFile" in text    # skipped when missing
     ico = Path(__file__).resolve().parents[1] / "ns_dashboard" / "static" / "brand" / "nightshift.ico"
     assert ico.is_file() and ico.read_bytes()[:4] == b"\x00\x00\x01\x00"                 # a real .ico
