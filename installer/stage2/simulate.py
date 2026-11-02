@@ -6,6 +6,7 @@ tiny fixture files, and ``ns`` / ``uv`` / PowerShell calls are answered from a s
 
 from __future__ import annotations
 
+import base64
 import io
 import json
 import zipfile
@@ -22,6 +23,11 @@ from installer.stage2.errors import make_error
 from installer.stage2.runner import RunResult
 from ns_common.logging import NsLogger
 from ns_supervisor import check_names as names
+
+def ps_b64(text: str) -> str:
+    """What ``winenv.utf8_b64_script`` prints for ``text``: base64 of its UTF-8 bytes."""
+    return base64.b64encode(text.encode("utf-8")).decode("ascii")
+
 
 # The checks `ns verify --quick` really reports (a test runs the real verify and compares the names).
 VERIFY_CHECKS = names.QUICK_CHECKS
@@ -94,9 +100,9 @@ class FakeRunner:
             self.user_env[call.meta["name"]] = call.meta["value"]
             return RunResult(0)
         if tag == "ps:get-env":
-            return RunResult(0, self.user_env.get(call.meta["name"], "") + "\n")
+            return RunResult(0, ps_b64(self.user_env.get(call.meta["name"], "")) + "\n")
         if tag == "ps:desktop":
-            return RunResult(0, str(self.desktop) + "\n")
+            return RunResult(0, ps_b64(str(self.desktop)) + "\n")
         if tag == "ps:shortcut":
             lnk = Path(call.meta["lnk"])
             lnk.parent.mkdir(parents=True, exist_ok=True)

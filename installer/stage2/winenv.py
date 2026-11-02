@@ -34,19 +34,50 @@ def set_user_env(runner: Runner, name: str, value: str) -> bool:
     return run_ps(runner, script, tag="ps:set-env", meta={"name": name, "value": value}).ok
 
 
+def utf8_b64_script(expression: str) -> str:
+    """PowerShell that prints ``expression`` as base64 of its UTF-8 bytes.
+
+    Windows PowerShell 5.1 writes redirected output in the console's OEM code page (437, 850, 720...), which
+    turns an accented or Arabic path into ``?`` or a byte pair that is not UTF-8. Base64 is plain ASCII, so
+    it survives every code page.
+    """
+    return (
+        f"$t = {expression}\n"
+        "if ($null -eq $t) { $t = '' }\n"
+        "[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes([string]$t))"
+    )
+
+
+def decode_utf8_b64(text: str) -> str:
+    """Inverse of :func:`utf8_b64_script` ("" when the output is empty or not valid base64)."""
+    raw = "".join(text.split())
+    if not raw:
+        return ""
+    try:
+        return base64.b64decode(raw, validate=True).decode("utf-8")
+    except (ValueError, UnicodeDecodeError):
+        return ""
+
+
+def eval_ps_text(
+    runner: Runner, expression: str, *, tag: str, meta: dict[str, str] | None = None, timeout: float = 60
+) -> str | None:
+    """Evaluate a PowerShell expression and return its string value exactly (None when the script failed)."""
+    res = run_ps(runner, utf8_b64_script(expression), tag=tag, meta=meta, timeout=timeout)
+    return decode_utf8_b64(res.stdout) if res.ok else None
+
+
 def get_user_env(runner: Runner, name: str) -> str | None:
     """Read a user-level environment variable (None when unset)."""
-    script = f"[Environment]::GetEnvironmentVariable('{ps_quote(name)}', 'User')"
-    res = run_ps(runner, script, tag="ps:get-env", meta={"name": name})
-    value = res.stdout.strip()
+    expr = f"[Environment]::GetEnvironmentVariable('{ps_quote(name)}', 'User')"
+    value = eval_ps_text(runner, expr, tag="ps:get-env", meta={"name": name})
     return value or None
 
 
 def desktop_dir(runner: Runner) -> Path | None:
-    """The current user's Desktop folder (follows OneDrive redirection)."""
-    res = run_ps(runner, "[Environment]::GetFolderPath('Desktop')", tag="ps:desktop")
-    text = res.stdout.strip()
-    return Path(text) if res.ok and text else None
+    """The current user's Desktop folder (follows OneDrive redirection); exact for non-ASCII paths."""
+    text = eval_ps_text(runner, "[Environment]::GetFolderPath('Desktop')", tag="ps:desktop")
+    return Path(text) if text else None
 
 
 def create_shortcut(
