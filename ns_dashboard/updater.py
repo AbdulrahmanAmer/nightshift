@@ -83,13 +83,46 @@ class RealUpdateAdapter:
 
     def check(self) -> dict[str, Any]:
         """Is a newer version on GitHub? (`ns update --check`)"""
-        return parse_update_output(*self.runner(self._command("update", "--check"), 120))
+        return classify_update(parse_update_output(*self.runner(self._command("update", "--check"), 120)))
 
     def apply(self) -> dict[str, Any]:
         """Download and install the newest version (`ns update --github`); rolls back on failure."""
-        return parse_update_output(*self.runner(self._command("update", "--github"), 3600))
+        return classify_update(parse_update_output(*self.runner(self._command("update", "--github"), 3600)))
 
 
 def venv_python(paths: Paths) -> Path:
     """Python of the supervisor venv (for callers that need it)."""
     return paths.venvs / "supervisor" / "Scripts" / "python.exe"
+
+
+MISSING_MARKERS = (
+    "no such option", "no such command", "give either a zip", "missing argument", "got unexpected extra",
+    "no module named", "is not recognized",
+)
+UNAVAILABLE_NOTE = (
+    "Checking GitHub for updates is not part of this version yet. "
+    "Use the Update shortcut on your desktop with the nightshift-app zip you were given."
+)
+
+
+def classify_update(result: dict[str, Any]) -> dict[str, Any]:
+    """Add the fields the Settings page needs to a parsed `ns update` result.
+
+    `state` is `up_to_date`, `available`, `unavailable` (the command is missing or does not take the option,
+    which is the case until `ns update --check/--github` ships), `error` or `unknown`. `up_to_date` is a bool
+    for the page and `message` is a sentence in plain words.
+    """
+    code = int(result.get("returncode") or 0)
+    err = str(result.get("error") or "").lower()
+    out = str(result.get("output") or "").lower()
+    if code in (2, 127) or (code != 0 and any(m in err or m in out for m in MISSING_MARKERS)):
+        state, message = "unavailable", UNAVAILABLE_NOTE
+    elif code != 0:
+        state, message = "error", (str(result.get("error") or "").strip().splitlines() or ["The update check failed."])[-1]
+    elif result.get("update_available") is True:
+        state, message = "available", f"Version {result.get('latest') or 'newer'} is ready."
+    elif result.get("update_available") is False:
+        state, message = "up_to_date", "You have the newest version."
+    else:
+        state, message = "unknown", "The update check finished but did not say whether a new version exists."
+    return {**result, "state": state, "up_to_date": state == "up_to_date", "message": message}

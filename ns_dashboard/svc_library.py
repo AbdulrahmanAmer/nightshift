@@ -212,7 +212,10 @@ class LibraryService:
         if self.s.draining:
             raise ApiError(503, "shutting_down", "Nightshift is shutting down.")
         self.s.log.warn("update_apply", "update started from the dashboard")
-        return self.s.adapters.update.apply()
+        res = self.s.adapters.update.apply()
+        if res.get("state") == "unavailable":
+            raise ApiError(501, "update_unavailable", str(res.get("message") or "Updating from GitHub is not available yet."))
+        return res
 
     # --- series workshop (read-only list plus "Produce next part") ---
     def series(self) -> list[dict[str, Any]]:

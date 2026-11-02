@@ -19,7 +19,7 @@ export default function Settings() {
   const [unlocked, setUnlocked] = useState(false);
   const [flags, setFlags] = useState<Record<string, string>>({});
   const [level, setLevel] = useState("");
-  const [upd, setUpd] = useState<{ current?: string; latest?: string; up_to_date?: boolean; notes?: string } | null>(null);
+  const [upd, setUpd] = useState<{ current?: string; latest?: string; up_to_date?: boolean; notes?: string; state?: "up_to_date" | "available" | "unavailable" | "error" | "unknown"; message?: string } | null>(null);
   const [checking, setChecking] = useState(false);
   const logs = useLoad<LogLine[]>(() => api.get(`/logs/tail?n=200&level=${encodeURIComponent(level)}`), [level], []);
   useEffect(() => { if (s) { setTime(s.schedule_time || "03:00"); setFlags(Object.fromEntries(Object.entries(s.flags || {}).map(([k, v]) => [k, String(v)]))); } }, [s]);
@@ -85,9 +85,9 @@ export default function Settings() {
 
         <div className={cx("flex flex-col gap-5", SPAN["3/4"])}>
           <Card as="section" aria-labelledby="s-upd">
-            <CardHeader id="s-upd" title="Updates" className="!mb-1" adornment={upd && !upd.up_to_date ? <Badge tone="accent">New version</Badge> : undefined} />
-            <SettingRow title="From GitHub" sub={upd ? (upd.up_to_date ? `You have the newest version, ${upd.current}` : `Version ${upd.latest} is ready. You have ${upd.current}`) : <>You have version <span className="font-mono">{version || "unknown"}</span></>}>
-              {upd && !upd.up_to_date ? <Button leadingIcon="download" onClick={apply}>Install {upd.latest}</Button>
+            <CardHeader id="s-upd" title="Updates" className="!mb-1" adornment={upd?.state === "available" ? <Badge tone="accent">New version</Badge> : undefined} />
+            <SettingRow title="From GitHub" sub={upd ? (upd.state === "unavailable" || upd.state === "error" || upd.state === "unknown" ? upd.message : upd.up_to_date ? `You have the newest version${upd.current ? `, ${upd.current}` : ""}` : `Version ${upd.latest} is ready. You have ${upd.current}`) : <>You have version <span className="font-mono">{version || "unknown"}</span></>}>
+              {upd?.state === "available" ? <Button leadingIcon="download" onClick={apply}>Install {upd.latest}</Button>
                 : <Button variant="soft" leadingIcon="github" onClick={check} disabled={checking}>{checking ? "Checking" : "Check now"}</Button>}
             </SettingRow>
             <SettingRow title="From a file" sub="The nightshift-app zip you were given, for a PC without internet">

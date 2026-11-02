@@ -367,14 +367,25 @@ class FakeUpdateAdapter:
     def __init__(self, available: bool = True) -> None:
         self.available = available
         self.applied = 0
+        self.missing = False  # True: the command does not take --check yet
 
     def check(self) -> dict[str, Any]:
         """Report a newer version (or none)."""
-        return {"ok": True, "returncode": 0, "update_available": self.available,
-                "current": "0.1.0", "latest": "0.2.0" if self.available else "0.1.0", "output": "", "error": ""}
+        from ns_dashboard.updater import classify_update
+
+        if self.missing:
+            return classify_update({"ok": False, "returncode": 2, "update_available": None, "output": "",
+                                    "error": "Error: Got unexpected extra argument"})
+        return classify_update({"ok": True, "returncode": 0, "update_available": self.available,
+                                "current": "0.1.0", "latest": "0.2.0" if self.available else "0.1.0",
+                                "output": "", "error": ""})
 
     def apply(self) -> dict[str, Any]:
         """Pretend to install."""
+        if self.missing:
+            from ns_dashboard.updater import classify_update
+
+            return classify_update({"ok": False, "returncode": 2, "output": "", "error": "No such option: --github"})
         self.applied += 1
         return {"ok": True, "returncode": 0, "update_available": False, "current": "0.2.0", "latest": "0.2.0",
                 "output": "installed", "error": ""}
