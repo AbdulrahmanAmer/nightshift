@@ -5,7 +5,7 @@ import { useEffect, useState } from "react";
 import { useApp, useLoad } from "../lib/app";
 import { api, ApiError } from "../lib/api";
 import type { Job, LogLine, ModelsState, Settings as S, UpdateState } from "../lib/types";
-import { dayInline, plural } from "../lib/format";
+import { dayInline, NO_TASK, plural } from "../lib/format";
 import { cx } from "../ui/kit";
 import { Lockup } from "../ui/Lockup";
 import { Badge, Button, Icon, Card, CardHeader, DashGrid, IconButton, Input, LinkButton, ProgressBar, SegmentedControl, Select, SettingRow, SPAN, StatusDot, Switch, type SegmentOption } from "../components/ref12";
@@ -124,6 +124,11 @@ export default function Settings() {
               <Input aria-label="Run time" type="time" className="!w-[132px] font-mono" value={time} onChange={(e) => setTime(e.target.value)} />
               <Button disabled={time === s?.schedule_time} onClick={() => put({ schedule_time: time }, `Runs at ${time} from tonight`)}>Save</Button>
             </SettingRow>
+            {s && s.schedule_registered === false && (
+              <SettingRow title="No nightly task" sub={<>{NO_TASK}. Windows did not accept the scheduled task, so {s.schedule_time} is only a preference</>}>
+                <Button variant="soft" leadingIcon="refresh" onClick={() => put({ schedule_time: s.schedule_time }, `Nightly task set for ${s.schedule_time}`)}>Try again</Button>
+              </SettingRow>
+            )}
             <SettingRow title="Notifications" sub="A Windows notification when a run finishes or stops">
               <Switch checked={!!s?.notifications} onChange={(v) => { st.setData(s ? { ...s, notifications: v } : s); put({ notifications: v }, v ? "Notifications on" : "Notifications off"); }} label="Notifications" />
             </SettingRow>

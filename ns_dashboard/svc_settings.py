@@ -17,7 +17,13 @@ from ns_common.secrets_names import KEY_NAMES, SHORT_NAMES
 from ns_dashboard import logs_tail, runtime_flags
 from ns_dashboard.common import now_iso
 from ns_dashboard.errors import AdapterUnavailable, ApiError
-from ns_dashboard.state import AppState, load_dashboard_settings, load_ui_prefs, save_dashboard_settings
+from ns_dashboard.state import (
+    AppState,
+    load_dashboard_settings,
+    load_ui_prefs,
+    save_dashboard_settings,
+    scheduled_run_time,
+)
 from ns_dashboard.svc_engine import EngineService
 from ns_dashboard.templates import load_templates
 
@@ -64,6 +70,8 @@ class SettingsService:
         prefs = load_ui_prefs(self.s.paths)
         return {
             "schedule_time": stored["run_time"],
+            # False when Windows has no 'Nightshift Daily' task (NS-W206): the time is then only a preference
+            "schedule_registered": scheduled_run_time(self.s.paths) is not None,
             "home": str(self.s.paths.home),
             "profile": (runtime or {}).get("profile"),
             "flags": flags,

@@ -997,3 +997,39 @@ def test_the_real_adapter_runs_apply_voice_in_the_child(tmp_home: Path, tmp_path
     assert maker.pending() is None
     queue_setup_voice(paths, mode="clone")
     assert maker.pending() == {"name": "Hollow", "mode": "clone", "description": "Cloned from your recording", "channel": "after-dark"}
+
+
+# ---------------------------------------------------------------- no nightly task (NS-W206)
+
+
+def test_status_and_settings_say_when_windows_has_no_nightly_task(tmp_home: Path):
+    from ns_supervisor.schedule_cfg import write_run_time
+    from tests.test_dashboard_api import make_env
+
+    client, state = make_env(tmp_home)
+    assert client.get("/api/status").json()["schedule_registered"] is False
+    assert client.get("/api/settings").json()["schedule_registered"] is False
+    write_run_time(state.paths, "02:30")  # `ns schedule` registered the task
+    assert client.get("/api/status").json()["schedule_registered"] is True
+    body = client.get("/api/settings").json()
+    assert body["schedule_registered"] is True and body["schedule_time"] == "02:30"
+
+
+def test_try_again_registers_the_task_through_the_schedule_adapter(tmp_home: Path):
+    from tests.test_dashboard_api import make_env
+
+    client, state = make_env(tmp_home)
+    state.adapters.schedule.applied.clear()  # type: ignore[attr-defined]
+    r = client.put("/api/settings", json={"schedule_time": "03:00"})
+    assert r.json()["schedule_result"]["applied"] is True
+    assert state.adapters.schedule.applied == ["03:00"]  # type: ignore[attr-defined]
+
+
+def test_the_pages_show_the_no_task_message_and_a_try_again_button():
+    lib = (SRC / "lib" / "format.ts").read_text(encoding="utf-8")
+    assert 'export const NO_TASK = "No nightly task; videos are made only while Nightshift is open"' in lib
+    shell = (SRC / "shell" / "Shell.tsx").read_text(encoding="utf-8")
+    assert 'status?.schedule_registered === false' in shell and "No nightly task" in shell and "NO_TASK" in shell
+    settings = page("Settings.tsx")
+    assert "s.schedule_registered === false" in settings and ">Try again</Button>" in settings
+    assert "put({ schedule_time: s.schedule_time }" in settings

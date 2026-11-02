@@ -69,3 +69,6 @@ export const doneWords = (j: { kind: string; result?: { output_ids?: string[] } 
   const n = j.result?.output_ids?.length ?? 0;
   return n ? `Done · ${plural(n, "video")}` : "Done · no videos";
 };
+
+/** What the top bar and Settings say when Windows has no 'Nightshift Daily' task (NS-W206). */
+export const NO_TASK = "No nightly task; videos are made only while Nightshift is open";
