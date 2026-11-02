@@ -337,6 +337,9 @@ function EarlierRow({ j, channelName, templates, onChanged }: { j: Job; channelN
         subtitle={<span className={failed ? "text-ds-danger" : undefined}>{failed ? `Stopped at ${stageWords(j.stage).toLowerCase()}. ${j.message || ""}` : cancelled ? "Cancelled" : `${doneWords(j)} ${dayInline(j.created_at)}`}</span>}
         meta={j.status === "done" ? <MetaItem icon="play"><a href="#/" className="inline-flex items-center font-semibold text-ds-accent-ink [@media(max-width:820px)]:min-h-10">Review it</a></MetaItem> : undefined} />
       {failed && <JobError j={j} />}
+      {j.kind === "clip" && j.status === "done" && j.result?.layout && (
+        <p className="mt-1 text-ds-xs text-ds-text-2">Layout used: <span className="font-semibold">{templates.find((t) => t.id === j.result!.layout!.template)?.label || j.result.layout.template}</span>.{j.result.layout.no_facecam ? " No face cam was found, so the frame was cropped to the middle. Pick another layout below if that is not what you wanted." : ""}</p>
+      )}
       {canRerun && (open ? (
         <div className="mt-2 flex flex-wrap items-center gap-2 pl-1">
           <Select aria-label="Layout for the new clips" className="!h-9 !w-auto" value={tpl} onChange={(e) => setTpl(e.target.value)}>

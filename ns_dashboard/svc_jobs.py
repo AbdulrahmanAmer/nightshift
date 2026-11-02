@@ -41,7 +41,7 @@ def clean_url(value: Any) -> str | None:
 
 
 def read_clip_layout(paths: Paths | None, studio_job_id: Any) -> dict[str, Any] | None:
-    """What the Clipper chose for a clip job (`clip_layout.json`): the layout, per clip, and a face cam or not."""
+    """What the Clipper chose for a clip job (`clip_layout.json`): the layout, per clip, and any face cam."""
     if paths is None or not isinstance(studio_job_id, str) or not studio_job_id:
         return None
     try:
