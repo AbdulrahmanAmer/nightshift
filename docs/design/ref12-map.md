@@ -19,7 +19,7 @@ Units:
 - **ref px**: pixels in the 1024×768 render. Boxes are `x, y, w, h`.
 - **frame px**: the 1440×1080 design frame (ref × 1.406). Planify's token values live at this scale (for example the 40 px greeting, 24 px card radius).
 
-Out of scope: SideRail, AppShell and TopBar. The rail is built on PR #25 and `Shell.tsx` is off limits. The recreation keeps a 140 px slot for the rail and lays its top row out inline.
+Out of scope: SideRail, AppShell and TopBar (`Shell.tsx` is off limits). The rail itself is the merged `shell/SideTab.tsx` from PR #25; the recreation imports it unmodified into its 140 px rail column and lays its top row out inline.
 
 ---
 
@@ -138,7 +138,7 @@ Grid behaviour:
 |---|---|---|---|---|
 | 0 | `PageBackdrop` (canvas) | `bg-canvas` #E7E7F1 | none | hairline white curves at ~70%, dots: mint 7 px (22, 586 ref), mint 4 px (935, 22), violet 9 px (990, 511); outline ring 25 px (55, 720), slate disc 20 px (918, 725) |
 | 1 | `AppWindow` (frame) | `bg-app` #F7F7FB | `shadow-frame` `0 50 100 -40 rgba(40,36,110,.28)` | radius 2xl 32; box ref 44, 34, 936, 699 |
-| 2 | Side rail (PR #25) | `bg-accent` | — | ref x 44–112, wave y ≈ 160–555 |
+| 2 | Side rail: `shell/SideTab.tsx` (PR #25, merged) | `--rail-bg` (dark purple gradient) | `--rail-shadow` | ref x 44–112, wave y ≈ 160–555; shown in `#/design/ref12` |
 | 3 | Body cards, flat | `bg-surface` | `shadow-1` | radius xl 24 |
 | 3 | Inset tiles: CreateTile, TextField, agenda icon tile, swipe tray | `accent-subtle` / `sunken` | `shadow-0` or none | dashed `border-dashed` 1.5 px on CreateTile |
 | 3 | PromoCard | `bg-accent` | `shadow-accent` | the only saturated surface |

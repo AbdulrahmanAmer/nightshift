@@ -6,9 +6,11 @@
    reflowing to 4 columns and to 1 (container queries, see .ds-dash in styles.css).
    At 1024 px and wider the window is laid out on the 1440x1080 design frame and scaled to fit, so at
    1366x768 it renders at the reference's own 1024x768 size. Narrower, it renders fluid.
-   The left column is a reserved slot: the side rail is built on PR #25 and drops in via `sideTab`. */
+   The left column holds the real SideTab rail (shell/SideTab.tsx, unmodified). The rail is position: fixed, so in the
+   scaled frame its column gets a transform, which makes that column its containing block. */
 import { useEffect, useState, type ReactNode } from "react";
 import { useApp } from "../lib/app";
+import { SideTab } from "../shell/SideTab";
 import { cx } from "../ui/kit";
 import {
   AppWindow, AssignmentCard, AvatarGroup, Badge, Button, CalendarCard, Card, CardHeader, ClipsIllustration, CreateTile, FeatureCard,
@@ -107,11 +109,7 @@ function Ref12TopRow() {
 }
 
 export function Ref12Screen({ sideTab, fit }: { sideTab?: ReactNode; fit: boolean }) {
-  const slot = sideTab ?? (
-    <div role="note" aria-label="Side rail slot" className="m-5 flex h-[calc(100%-40px)] items-center justify-center rounded-ds-xl border-[1.5px] border-dashed border-ds-dashed text-ds-2xs text-ds-muted [writing-mode:vertical-rl]">
-      Side rail slot, built on PR #25
-    </div>
-  );
+  const slot = sideTab ?? <SideTab />;
   if (!fit) {
     return (
       <AppWindow className="m-4 px-4 pt-2 pb-6">
@@ -122,7 +120,7 @@ export function Ref12Screen({ sideTab, fit }: { sideTab?: ReactNode; fit: boolea
   }
   return (
     <AppWindow style={{ position: "absolute", left: 62, top: 34, width: 1316, height: 1014 }}>
-      <div className="absolute inset-y-0 left-0 w-[140px]">{slot}</div>
+      <div className="absolute inset-y-0 left-0 w-[140px] [transform:translateZ(0)]">{slot}</div>
       <div className="absolute top-5 right-12 left-[140px]">
         <Ref12TopRow />
         <div className="mt-3"><Ref12Dashboard /></div>
@@ -136,7 +134,7 @@ export default function DesignRef12() {
   const fit = v.w >= 1024;
   const s = Math.min(v.w / FRAME.w, v.h / FRAME.h);
   useEffect(() => { document.title = "ref12 recreation · Nightshift"; }, []);
-  if (!fit) return <div className="ds-root min-h-dvh bg-ds-canvas py-2"><Ref12Screen fit={false} /></div>;
+  if (!fit) return <div className="app-frame ds-root min-h-dvh bg-ds-canvas py-2"><SideTab /><Ref12Screen fit={false} sideTab={null} /></div>;
   return (
     <div className="ds-root flex h-dvh w-full items-center justify-center overflow-hidden bg-ds-canvas">
       <div style={{ width: FRAME.w * s, height: FRAME.h * s }} className="relative shrink-0">
