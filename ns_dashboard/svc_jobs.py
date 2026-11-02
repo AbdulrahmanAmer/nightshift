@@ -305,6 +305,8 @@ class JobsService:
                     code = "upload_incomplete" if key == "upload_id" else "not_found"
                     status = 409 if key == "upload_id" else 404
                     raise ApiError(status, code, "That video has not finished uploading.")
+                if key == "upload_id" and found.suffix.lower() not in ALLOWED_EXT:
+                    raise ApiError(400, "bad_file_type", f"'{found.suffix}' is a voice recording, not a video.")
                 return str(sid), found, rerun
         raw = body.get("path")
         if raw:

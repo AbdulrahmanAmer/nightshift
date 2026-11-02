@@ -19,6 +19,9 @@ CHUNK = 8 * 1024 * 1024
 MAX_CHUNK = 16 * 1024 * 1024
 MAX_SIZE = 64 * 1024**3
 ALLOWED_EXT = frozenset({".mp4", ".mkv", ".mov", ".webm", ".avi", ".m4v", ".mpg", ".mpeg", ".ts"})
+# voice-sample recordings for Library -> Clone (the clone route reads any recording by content with FFmpeg)
+AUDIO_EXT = frozenset({".wav", ".mp3", ".m4a", ".flac", ".ogg", ".webm"})
+UPLOAD_EXT = ALLOWED_EXT | AUDIO_EXT
 SOURCE_ID_RE = re.compile(r"^src-\d{8}-[0-9a-f]{4}$")
 META = "upload.json"
 
@@ -95,13 +98,14 @@ class UploadManager:
         )
 
     def start(self, filename: str, size: int) -> UploadInfo:
-        """Begin an upload; `filename` only contributes its (allow-listed) extension."""
+        """Begin an upload; `filename` only contributes its (allow-listed video or audio) extension."""
         name = PureWindowsPath(filename or "").name
         ext = Path(name).suffix.lower()
-        if ext not in ALLOWED_EXT:
+        if ext not in UPLOAD_EXT:
             raise ApiError(
-                400, "bad_file_type", f"'{ext or name}' is not a supported video file.",
-                hint="Use mp4, mkv, mov, webm, avi, m4v, mpg or ts.",
+                400, "bad_file_type", f"'{ext or name}' is not a supported video or audio file.",
+                hint="Videos: mp4, mkv, mov, webm, avi, m4v, mpg or ts. Voice samples: wav, mp3, m4a, flac, "
+                "ogg or webm.",
             )
         if not isinstance(size, int) or size <= 0 or size > MAX_SIZE:
             raise ApiError(400, "bad_size", "The file size is missing or too large.")

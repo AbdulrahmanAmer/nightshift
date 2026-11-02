@@ -65,13 +65,10 @@ export const api = {
   },
 
   /** Chunked upload to /api/uploads (start, PUT 8 MB pieces at their offset, complete). Resolves with the stored path on the PC.
-   *  The endpoint only lists video containers, while the clone route reads any recording by content (FFmpeg), so an audio file
-   *  goes up under a .webm name. TODO(C9 backend): list audio extensions in uploads.ALLOWED_EXT and drop this rename. */
+   *  The endpoint takes video containers and voice-sample audio (wav, mp3, m4a, flac, ogg, webm) under their own names. */
   async uploadFile(file: File, onProgress: (pct: number) => void): Promise<{ path: string; upload_id?: string }> {
     if (this.demo) { for (let p = 0; p <= 100; p += 25) { onProgress(p); await new Promise((r) => setTimeout(r, 120)); } return { path: `D:\Nightshift\imports\clipper\demo\sample-${file.size}.wav` }; }
-    const ext = /.[^.\/]+$/.exec(file.name)?.[0].toLowerCase() ?? "";
-    const filename = [".mp4", ".mkv", ".mov", ".webm", ".avi", ".m4v", ".mpg", ".mpeg", ".ts"].includes(ext) ? file.name : "recording.webm";
-    const start = await this.post<{ upload_id: string; chunk_size?: number }>("/uploads", { filename, size: file.size });
+    const start = await this.post<{ upload_id: string; chunk_size?: number }>("/uploads", { filename: file.name, size: file.size });
     const step = start.chunk_size || 8 * 1024 * 1024; const base = `/uploads/${encodeURIComponent(start.upload_id)}`;
     for (let off = 0; off < file.size; off += step) {
       const res = await fetch(`${BASE}${base}?offset=${off}`, { method: "PUT", body: file.slice(off, off + step) });

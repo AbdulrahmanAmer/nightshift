@@ -439,6 +439,16 @@ def test_clip_job_from_chunked_upload_and_multipart_stream(tmp_home: Path):
     assert job2["params"]["source_id"] == streamed.source_id and job2["params"]["max_clips"] == 3
 
 
+def test_a_finished_voice_recording_is_not_a_clip_source(tmp_home: Path):
+    dash, state = make(tmp_home)
+    seed_channel(state.db, state.paths)
+    info = dash.jobs.uploads.start("sample.wav", 4)
+    dash.jobs.uploads.append(info.upload_id, 0, b"RIFF")
+    dash.jobs.uploads.complete(info.upload_id)
+    req = {"upload_id": info.upload_id, "channel": "after-dark", "rights_confirmed": True}
+    assert code_of(dash.jobs.create_clip, req) == "bad_file_type"
+
+
 def test_cancel_job(tmp_home: Path):
     dash, state = make(tmp_home)
     seed_channel(state.db, state.paths)
