@@ -23,7 +23,7 @@ import httpx
 
 from installer.stage2.errors import make_error
 from ns_common.errors import NsError
-from ns_common.models import HfFile, Manifest
+from ns_common.models import HfFile, LlmCustom, Manifest
 from ns_common.paths import Paths
 
 HF = "https://huggingface.co"
@@ -438,6 +438,15 @@ def _hf_item(f: HfFile, dest_dir: Path, revision: str = "main") -> DownloadItem:
     )
 
 
+def custom_item(custom: LlmCustom, dest_dir: Path) -> DownloadItem:
+    """The user-named GGUF: downloaded from the repository's main branch, with no pinned SHA256 (NS-W113)."""
+    name = Path(custom.file).name
+    return DownloadItem(
+        name=name, url=hf_url(custom.repo, "main", custom.file), dest=dest_dir / name, sha256=None,
+        size=custom.size,
+    )
+
+
 def plan_bins(
     manifest: Manifest,
     profile: str,
@@ -529,8 +538,9 @@ def plan_models(
     home: Path,
     *,
     include_voicedesign: bool = False,
+    custom: LlmCustom | None = None,
 ) -> list[DownloadItem]:
-    """Model files for s03: LLM for the tier, embed, TTS GGUFs, whisper, YuNet."""
+    """Model files for s03: the LLM (the tier's, or the custom GGUF), embed, TTS GGUFs, whisper, YuNet."""
     paths = Paths(Path(home))
     pm = manifest.profiles[profile]
     llm = pm.llm
@@ -539,7 +549,8 @@ def plan_models(
             llm = pm.llm_balanced
         elif tier == "best" and pm.llm_best is not None:
             llm = pm.llm_best
-    items = [_hf_item(llm, paths.models_llm), _hf_item(pm.embed, paths.models_embed)]
+    llm_item = custom_item(custom, paths.models_llm) if custom else _hf_item(llm, paths.models_llm)
+    items = [llm_item, _hf_item(pm.embed, paths.models_embed)]
     items += [_hf_item(f, paths.models_tts) for f in pm.tts]
     if include_voicedesign:
         items += [_hf_item(f, paths.models_tts) for f in pm.tts_optional]
@@ -581,10 +592,11 @@ def plan_from_manifest(
     include_code: bool = False,
     llama_pair: str | None = None,
     include_voicedesign: bool = False,
+    custom: LlmCustom | None = None,
 ) -> list[DownloadItem]:
     """Everything s02 and s03 download for ``profile`` and LLM ``tier`` (spec 21.2, 21.3)."""
     return plan_bins(manifest, profile, home, include_code=include_code, llama_pair=llama_pair) + plan_models(
-        manifest, profile, tier, home, include_voicedesign=include_voicedesign
+        manifest, profile, tier, home, include_voicedesign=include_voicedesign, custom=custom
     )
 
 

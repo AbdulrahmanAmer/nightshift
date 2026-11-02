@@ -22,7 +22,17 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from installer.stage2.web import answers_view, bootstrap, labels, machine, plan, preflight, rows, samples
+from installer.stage2.web import (
+    answers_view,
+    bootstrap,
+    labels,
+    machine,
+    modelcheck,
+    plan,
+    preflight,
+    rows,
+    samples,
+)
 from installer.stage2.web.engine import EngineProcess, wizard_argv, wizard_env
 from installer.stage2.web.keys import check_key
 from installer.stage2.web.model import BOOTSTRAP_STEPS, FILE_NAMES, STEP_ORDER, STEP_PHASE
@@ -167,6 +177,7 @@ class Effects:
     probe: Callable[[Path, Path, str | None], dict[str, Any] | None] = preflight.reprobe
     free_gb: Callable[[str], float] = default_free_gb
     key_check: Callable[[str, str], dict[str, Any]] = check_key
+    head: modelcheck.Head = modelcheck.urllib_head
     launch: Callable[..., None] = launch_detached
     elevate_longpaths: Callable[[], bool] = elevate_longpaths
     console: Callable[[str, str], None] = ignore_console
@@ -310,6 +321,7 @@ class SetupController:
             self.manifest, profile=pf.get("profile", "gpu"), tier=tier, include_code=code,
             cuda=pf.get("cuda"),
             ram_gb=float(pf.get("ram_gb") or 0), vram_mb=gpu.get("vram_mb"),
+            custom=(view or {}).get("llmCustom"),
         )
         steps = []
         for sid in STEP_ORDER:
@@ -461,6 +473,7 @@ class SetupController:
             include_code=raw["install_code"],
             cuda=pf.get("cuda"), ram_gb=float(pf.get("ram_gb") or 0),
             vram_mb=(pf.get("gpu") or {}).get("vram_mb"),
+            custom=raw.get("llm_custom"),
         )
 
         def fn(s: dict[str, Any]) -> None:
@@ -505,6 +518,10 @@ class SetupController:
     def check_key(self, service: str, key: str) -> dict[str, Any]:
         """``POST /api/check-key``."""
         return self.fx.key_check(service, key)
+
+    def check_model(self, repo: str, file: str) -> dict[str, Any]:
+        """``GET /api/model-check``: does this Hugging Face file exist, and does it fit a 16 GB card."""
+        return modelcheck.check_model(repo, file, self.fx.head)
 
     def disk(self, path: str, tier: str, source: bool) -> dict[str, Any]:
         """``GET /api/disk``."""

@@ -15,7 +15,10 @@ from ns_common.models import HfFile, Runtime, WhisperCfg
 
 
 def llm_file(ctx: StepContext) -> HfFile:
-    """The manifest LLM entry for the chosen profile and tier."""
+    """The manifest LLM entry for the chosen profile and tier, or the owner's custom GGUF (no pinned hash)."""
+    custom = ctx.llm_custom
+    if custom is not None:
+        return HfFile(repo=custom.repo, file=custom.file, sha256=None, bytes=custom.size)
     pm = ctx.manifest.profiles[ctx.profile]
     if ctx.profile == "gpu":
         if ctx.tier == "balanced" and pm.llm_balanced is not None:
@@ -36,12 +39,13 @@ def build_runtime(ctx: StepContext) -> Runtime:
     wdir = str(ctx.paths.models_whisper / pm.whisper_model)
     if profile == "gpu":
         rt.whisper = WhisperCfg(model=wdir, device="cuda", compute_type="float16")
-        if ctx.tier in ("balanced", "best"):
+        tier = "small" if ctx.llm_custom is not None else ctx.tier      # a custom GGUF: plain dense flags
+        if tier in ("balanced", "best"):
             rt.llama.flags.kv_type = "q8_0"
-            rt.llama.flags.n_cpu_moe = 8 if ctx.tier == "balanced" else 12
+            rt.llama.flags.n_cpu_moe = 8 if tier == "balanced" else 12
             rt.llama.flags.spec_type = "draft-mtp"
             rt.llama.flags.spec_draft_n_max = 3
-        if ctx.tier == "best":
+        if tier == "best":
             rt.llama.flags.ctx = 32768
     else:
         rt.whisper = WhisperCfg(model=wdir, device="cpu", compute_type="int8")

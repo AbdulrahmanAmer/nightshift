@@ -1,6 +1,8 @@
 """s03_download_models: LLM, embeddings, TTS GGUFs, faster-whisper, YuNet (component C1, spec 21.3).
 
-Resumable and verified (see downloader). With ``models_source`` set, files whose name and SHA256 match are
+Resumable and verified (see downloader). A custom story model (``llm_custom``, named by the owner,
+CR-C1-UI-9) is the one file downloaded without a pinned SHA256: the step says so with NS-W113 and points
+``runtime.json`` at it. With ``models_source`` set, files whose name and SHA256 match are
 copied from that folder and the rest is downloaded. When the PyTorch TTS fallback is scheduled the original
 safetensors are added to the plan.
 """
@@ -22,6 +24,7 @@ from installer.stage2.downloader import (
 )
 from installer.stage2.errors import make_error
 from installer.stage2.fallback import fallback_items
+from installer.stage2.runtime_cfg import update_runtime
 
 
 class S03DownloadModels(Step):
@@ -31,7 +34,7 @@ class S03DownloadModels(Step):
     title = "Download AI models"
 
     def _items(self, ctx: StepContext, *, with_fallback: bool = True) -> list[DownloadItem]:
-        items = plan_models(ctx.manifest, ctx.profile, ctx.tier, ctx.paths.home)
+        items = plan_models(ctx.manifest, ctx.profile, ctx.tier, ctx.paths.home, custom=ctx.llm_custom)
         if with_fallback and ctx.flag("tts_fallback", False):
             items += fallback_items(ctx)
         return items
@@ -58,8 +61,13 @@ class S03DownloadModels(Step):
             f"(about {eta_text(size)} at 50 Mbit/s; the bars below show the real speed)."
         )
         ctx.ui.say("You can close this window at any time and run INSTALL.cmd again to resume.", "cyan")
+        custom = ctx.llm_custom
+        if custom is not None:
+            ctx.warn("NS-W113", f"{custom.repo}/{custom.file}")
         result = ctx.download(todo, models_source=source)
         ctx.set_flag("missing_optional", sorted(result.missing_optional))
+        if custom is not None:
+            self._point_runtime_at(ctx, custom.file)
         ctx.log.info(
             "models_done", downloaded=len(result.downloaded), copied=len(result.copied),
             skipped=len(result.skipped),
@@ -68,6 +76,13 @@ class S03DownloadModels(Step):
             f"Done: {len(result.downloaded)} downloaded, {len(result.copied)} copied from your folder, "
             f"{len(result.skipped)} already present."
         )
+
+    @staticmethod
+    def _point_runtime_at(ctx: StepContext, file: str) -> None:
+        """An existing runtime.json gets the custom model path; a new one is built with it."""
+        if ctx.paths.runtime_file.exists():
+            path = str(ctx.paths.models_llm / Path(file).name)
+            update_runtime(ctx, lambda rt: setattr(rt.llama, "model_path", path))
 
     def verify(self, ctx: StepContext) -> None:
         """Every required file exists (the verified marker proves its SHA256)."""

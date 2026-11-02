@@ -2,9 +2,10 @@
 // Numbers follow the spec wireframes: an RTX 5060 Ti with 16 GB, Windows 11 Pro, 17.3 GB to download.
 import type {
   AnswersView, CheckRow, DownloadRow, DownloadsView, DriveView, FailureView, InstallPlan, MachineSummary, Notice, PlanGroup, PlanItem, ResultView,
-  SetupState, StepId, StepView, Tier, TierInfo, UninstallView, VerifyView,
+  LlmCustom, SetupState, StepId, StepView, Tier, TierInfo, UninstallView, VerifyView,
 } from "../api/types";
 import { stepTitle } from "../copy";
+import { customNeedFreeGb, vramLeftGb } from "../format";
 
 export const NOW = () => new Date();
 const iso = (offsetS = 0): string => {
@@ -67,8 +68,8 @@ const TIER_LLM: Record<Tier, { label: string; repo: string; file: string; bytes:
   best: { label: "Story model (Best)", repo: "unsloth/Qwen3.6-35B-A3B-MTP-GGUF", file: "Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf", bytes: 22853663008 },
 };
 
-export function planGroups(tier: Tier): PlanGroup[] {
-  const llm = TIER_LLM[tier];
+export function planGroups(tier: Tier, custom: LlmCustom | null = null): PlanGroup[] {
+  const llm = custom ? { label: "Story model (Custom)", file: custom.file, bytes: custom.size } : TIER_LLM[tier];
   const tools = [item("git", "Git", null, null, "winget"), item("ffmpeg", "FFmpeg", null, null, "winget"), item("terminal", "Windows Terminal", null, null, "winget")];
   const python = [item("setup_env", "Python packages for setup", null, null, "uv")];
   const programs = [
@@ -94,8 +95,6 @@ export function planGroups(tier: Tier): PlanGroup[] {
   ];
 }
 
-/** What a 16 GB card has left for context: 16 GB minus the file minus 0.6 GB of runtime (the same formula as plan.vram_left_gb). */
-export const vramLeftGb = (bytes: number): number => Math.round((16 - bytes / 1e9 - 0.6) * 10) / 10;
 const BASE_BYTES = 8.3e9; // everything except the story model
 const tierInfo = (tier: Tier, needFreeGb: number, needsRamGb: number): TierInfo => {
   const m = TIER_LLM[tier];
@@ -114,15 +113,15 @@ export function estimateLabel(totalBytes: number): { downloadMin: number; instal
   return { downloadMin, installMin, label };
 }
 
-export function plan(tier: Tier = "balanced", ramGb = 32): InstallPlan {
-  const groups = planGroups(tier);
-  const totalBytes = TIERS[tier].totalBytes;
+export function plan(tier: Tier = "balanced", ramGb = 32, custom: LlmCustom | null = null): InstallPlan {
+  const groups = planGroups(tier, custom);
+  const totalBytes = custom ? BASE_BYTES + custom.size : TIERS[tier].totalBytes;
   const tiers = { ...TIERS };
   if (ramGb < 31) {
     tiers.balanced = { ...tiers.balanced, allowed: false, reason: "Needs 32 GB of memory" };
     tiers.best = { ...tiers.best, allowed: false, reason: "Needs 32 GB of memory" };
   }
-  return { tier, profile: "gpu", groups, totalBytes, unknownCount: 4, needFreeGb: TIERS[tier].needFreeGb, estimate: estimateLabel(totalBytes), recommendedTier: ramGb < 31 ? "small" : "balanced", tiers };
+  return { tier, profile: "gpu", groups, totalBytes, unknownCount: 4, needFreeGb: custom ? customNeedFreeGb(custom.size) : TIERS[tier].needFreeGb, estimate: estimateLabel(totalBytes), recommendedTier: ramGb < 31 ? "small" : "balanced", tiers };
 }
 
 /* ------------------------------------------------------------------ steps, downloads, verify */
@@ -147,7 +146,7 @@ export function steps(firstOpen: StepId | "all-done", o: { failed?: StepId; runn
 
 export function answers(o: Partial<AnswersView> = {}): AnswersView {
   return {
-    ownerName: "Abdo", channel: { displayName: "After Dark Tales", niche: "horror fiction", language: "en" }, homePath: "D:\\Nightshift", llmTier: "balanced",
+    ownerName: "Abdo", channel: { displayName: "After Dark Tales", niche: "horror fiction", language: "en" }, homePath: "D:\\Nightshift", llmTier: "balanced", llmCustom: null,
     voice: { speaker: "Ryan" }, modelsSource: { kind: "internet", path: null }, runTime: "03:00", mastersPerWeek: 1, installCode: true, theme: "dark",
     pexelsKeySet: true, pixabayKeySet: true, ...o,
   };

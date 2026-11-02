@@ -4,13 +4,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button, Card, CardHeader, SegmentedControl, TimeChip } from "@ref12";
 import { cx } from "@dash/ui/kit";
 import { choices as t } from "../copy";
-import { gbNum, parseRunTime } from "../format";
+import { customNeedFreeGb, gbNum, parseRunTime } from "../format";
 import { useLiveState } from "../api/useSetup";
 import type { ChoicesDraft, ChoicesField, DiskCheck, PresetVoice } from "../api/types";
 import { openExternal } from "../host";
 import { Area, Screen } from "../parts/Screen";
 import { ChoiceRow } from "../parts/ChoiceRow";
 import { ModelPicker } from "../parts/ModelPicker";
+import { OtherModelCard, type ModelLookup } from "../parts/OtherModelCard";
 import { LabeledField } from "../parts/LabeledField";
 import { SetupIcon } from "../parts/icons";
 
@@ -36,11 +37,14 @@ export function Choices() {
     const a = state.answers;
     const theme = (document.documentElement.dataset.theme === "light" ? "light" : "dark") as "dark" | "light";
     return a
-      ? { ownerName: a.ownerName, channel: a.channel, homePath: a.homePath, llmTier: a.llmTier, voice: a.voice, modelsSource: a.modelsSource, runTime: a.runTime, mastersPerWeek: a.mastersPerWeek, installCode: a.installCode, theme: a.theme ?? theme, pexelsKey: null, pixabayKey: null }
-      : { ownerName: null, channel: { displayName: "", niche: "", language: "en" }, homePath: state.machine.meters.disk.path, llmTier: state.plan.recommendedTier, voice: { speaker: "Ryan" }, modelsSource: { kind: "internet", path: null }, runTime: "03:00", mastersPerWeek: 1, installCode: true, theme, pexelsKey: null, pixabayKey: null };
+      ? { ownerName: a.ownerName, channel: a.channel, homePath: a.homePath, llmTier: a.llmTier, llmCustom: a.llmCustom, voice: a.voice, modelsSource: a.modelsSource, runTime: a.runTime, mastersPerWeek: a.mastersPerWeek, installCode: a.installCode, theme: a.theme ?? theme, pexelsKey: null, pixabayKey: null }
+      : { ownerName: null, channel: { displayName: "", niche: "", language: "en" }, homePath: state.machine.meters.disk.path, llmTier: state.plan.recommendedTier, llmCustom: null, voice: { speaker: "Ryan" }, modelsSource: { kind: "internet", path: null }, runTime: "03:00", mastersPerWeek: 1, installCode: true, theme, pexelsKey: null, pixabayKey: null };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   const [d, setD] = useState<ChoicesDraft>(initial);
+  // The Other card: the two typed fields, whether it is the selected card, and what the server said about the file.
+  const [other, setOther] = useState({ selected: !!initial.llmCustom, repo: initial.llmCustom?.repo ?? "", file: initial.llmCustom?.file ?? "" });
+  const [lookup, setLookup] = useState<ModelLookup>(() => (initial.llmCustom ? { status: "ok", size: initial.llmCustom.size, key: `${initial.llmCustom.repo}|${initial.llmCustom.file}` } : { status: "idle" }));
   const [otherTime, setOtherTime] = useState(() => !RUN_PRESETS.includes(initial.runTime));
   const [touched, setTouched] = useState<Set<string>>(new Set());
   const [showAll, setShowAll] = useState(false);
@@ -77,6 +81,7 @@ export function Choices() {
   }, [api, d.modelsSource.kind, d.modelsSource.path, d.llmTier]);
 
   const tierInfo = state.plan.tiers[d.llmTier];
+  const needFreeGb = other.selected && d.llmCustom ? customNeedFreeGb(d.llmCustom.size) : tierInfo.needFreeGb;
   const ram = state.machine.ramGb;
   const keySet = { pexels: state.answers?.pexelsKeySet ?? false, pixabay: state.answers?.pixabayKeySet ?? false };
 
@@ -89,14 +94,15 @@ export function Choices() {
     if ((d.ownerName ?? "").trim().length > 40) e.ownerName = t.errors.ownerName;
     const p = d.homePath.trim();
     if (!/^[A-Za-z]:\\/.test(p) || p.includes("%") || p.length > 80) e.homePath = t.errors.homePathShape;
-    else if (disk && !diskBusy && !disk.ok) e.homePath = t.errors.homePath(tierInfo.needFreeGb, Math.round(disk.freeGb ?? 0));
-    if (!tierInfo.allowed) e.llmTier = t.errors.llmTier(t.picker.names[d.llmTier], ram);
+    else if (disk && !diskBusy && !disk.ok) e.homePath = t.errors.homePath(needFreeGb, Math.round(disk.freeGb ?? 0));
+    if (other.selected) { if (!d.llmCustom) e.llmCustom = lookup.status === "bad" ? lookup.message : t.picker.other.needCheck; }
+    else if (!tierInfo.allowed) e.llmTier = t.errors.llmTier(t.picker.names[d.llmTier], ram);
     if (d.modelsSource.kind !== "internet" && (!d.modelsSource.path?.trim() || (folder && !folder.exists))) e["modelsSource.path"] = t.errors.folder;
     if (!parseRunTime(d.runTime)) e.runTime = t.errors.runTime;
     if (!d.pexelsKey?.trim() && !keySet.pexels) e.pexelsKey = t.errors.key("Pexels");
     if (!d.pixabayKey?.trim() && !keySet.pixabay) e.pixabayKey = t.errors.key("Pixabay");
     return e;
-  }, [d, disk, diskBusy, folder, tierInfo, ram, keySet.pexels, keySet.pixabay]);
+  }, [d, other.selected, lookup, disk, diskBusy, folder, tierInfo, needFreeGb, ram, keySet.pexels, keySet.pixabay]);
 
   const keyBlocking = (k: "pexels" | "pixabay") => {
     const val = (k === "pexels" ? d.pexelsKey : d.pixabayKey)?.trim();
@@ -104,6 +110,28 @@ export function Choices() {
   };
   const valid = Object.keys(errors).length === 0 && !keyBlocking("pexels") && !keyBlocking("pixabay") && !diskBusy;
   const shown = (f: ChoicesField): string | undefined => serverErrors[f] ?? (showAll || touched.has(f) ? errors[f] : undefined);
+
+  const pickTier = (tier: ChoicesDraft["llmTier"]) => { setOther((o) => ({ ...o, selected: false })); setD((p) => ({ ...p, llmTier: tier, llmCustom: null })); setServerErrors((e) => { const n = { ...e }; delete n.llmTier; delete n.llmCustom; return n; }); touch("llmTier"); };
+  const pickOther = () => { setOther((o) => ({ ...o, selected: true })); setD((p) => ({ ...p, llmTier: "small", llmCustom: lookup.status === "ok" && lookup.size ? { repo: other.repo.trim(), file: other.file.trim(), size: lookup.size } : null })); };
+  const editOther = (patch: { repo?: string; file?: string }) => {
+    setOther((o) => ({ ...o, ...patch })); setLookup({ status: "idle" });
+    setD((p) => (p.llmCustom ? { ...p, llmCustom: null } : p)); setServerErrors((e) => { const n = { ...e }; delete n.llmCustom; return n; });
+  };
+  // On blur: look the file up. The server does a HEAD request, refuses anything over 15.5 GB and says why.
+  const checkModel = async () => {
+    const repo = other.repo.trim(); const file = other.file.trim();
+    touch("llmCustom");
+    if (!repo || !file) { setLookup({ status: "idle" }); return; }
+    const key = `${repo}|${file}`;
+    if (lookup.key === key && lookup.status !== "idle") return;
+    setLookup({ status: "checking", key });
+    try {
+      const r = await api.checkModel(repo, file);
+      const good = r.ok && r.size != null;
+      setLookup((p) => (p.key !== key ? p : good ? { status: "ok", key, size: r.size ?? 0 } : { status: "bad", key, message: r.message ?? t.picker.other.failed }));
+      setD((p) => ({ ...p, llmTier: "small", llmCustom: good ? { repo, file, size: r.size ?? 0 } : null }));
+    } catch { setLookup((p) => (p.key !== key ? p : { status: "bad", key, message: t.picker.other.failed })); }
+  };
 
   const checkKey = async (k: "pexels" | "pixabay") => {
     const val = (k === "pexels" ? d.pexelsKey : d.pixabayKey)?.trim() ?? "";
@@ -209,9 +237,11 @@ export function Choices() {
       <Area area="model">
         <Card as="section" padding="lg" aria-label={t.picker.title}>
           <CardHeader title={t.picker.title} level={2} />
-          <ModelPicker tiers={state.plan.tiers} value={d.llmTier} disabled={locked} onChange={(v) => { set("llmTier", v); touch("llmTier"); }}>
+          <ModelPicker tiers={state.plan.tiers} value={other.selected ? "other" : d.llmTier} disabled={locked} onChange={pickTier}
+            other={<OtherModelCard selected={other.selected} disabled={locked} repo={other.repo} file={other.file} lookup={lookup} error={shown("llmCustom")} onSelect={pickOther}
+              onRepo={(v) => editOther({ repo: v })} onFile={(v) => editOther({ file: v })} onCheck={() => void checkModel()} />}>
             {state.plan.recommendedTier === "small" && ram < 31 && <p className="text-ds-sm text-ds-text-2">{t.picker.lowRam(ram)}</p>}
-            <p className="text-ds-xs text-ds-muted ds-num">{t.picker.need(gbNum(tierInfo.totalBytes), tierInfo.needFreeGb)}</p>
+            <p className="text-ds-xs text-ds-muted ds-num">{other.selected ? t.picker.needCustom(needFreeGb) : t.picker.need(gbNum(tierInfo.totalBytes), tierInfo.needFreeGb)}</p>
           </ModelPicker>
         </Card>
       </Area>

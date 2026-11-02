@@ -101,11 +101,16 @@ export interface InstallPlan {
   tiers: Record<Tier, TierInfo>;
 }
 
+/** A story model the owner named: size is what the server resolved with a HEAD request. */
+export interface LlmCustom { repo: string; file: string; size: number }
+export interface ModelCheck { ok: boolean; size: number | null; message: string | null; code: string | null }
+
 export interface ChoicesDraft {
   ownerName: string | null;
   channel: { displayName: string; niche: string; language: string };   // language defaults to "en"
   homePath: string;
   llmTier: Tier;
+  llmCustom: LlmCustom | null;       // a Hugging Face GGUF the owner named; replaces the tier's model when set (tier is then "small")
   voice: { speaker: PresetVoice };
   modelsSource: { kind: "internet" | "folder" | "drive-zip"; path: string | null };
   runTime: string;                   // "03:00"
@@ -120,7 +125,7 @@ export interface AnswersView extends Omit<ChoicesDraft, "pexelsKey" | "pixabayKe
   pixabayKeySet: boolean;
 }
 export type ChoicesField =
-  | "ownerName" | "channel.displayName" | "channel.niche" | "channel.language" | "homePath" | "llmTier"
+  | "ownerName" | "channel.displayName" | "channel.niche" | "channel.language" | "homePath" | "llmTier" | "llmCustom"
   | "voice.speaker" | "modelsSource.path" | "runTime" | "mastersPerWeek" | "pexelsKey" | "pixabayKey";
 export interface FieldError { field: ChoicesField; message: string; code: string | null }
 export type AnswersResult = { ok: true; answers: AnswersView; plan: InstallPlan } | { ok: false; errors: FieldError[] };

@@ -13,6 +13,7 @@
   "NS-W112": {"message": "Windows long paths are disabled.", "hint": "Run as administrator: reg add HKLM\\SYSTEM\\CurrentControlSet\\Control\\FileSystem /v LongPathsEnabled /t REG_DWORD /d 1 /f, then reboot. Nightshift keeps paths short meanwhile."},
   "NS-E112": {"message": "faster-whisper cannot run on the GPU (cuBLAS/cuDNN DLLs missing).", "hint": "In the studio venv run: uv pip install nvidia-cublas-cu12 nvidia-cudnn-cu12, then 'ns verify --quick'. Nightshift adds their bin folders to PATH automatically."},
   "NS-E113": {"message": "Antivirus or another program blocked a file Nightshift needs.", "hint": "Add the Nightshift folder to the antivirus allow list, then retry."},
+  "NS-W113": {"message": "A custom model was downloaded without a checksum.", "hint": "Nightshift cannot verify a file you named yourself, so it is not checked against a known SHA256. Use only models from sources you trust."},
   "NS-E201": {"message": "GPU is busy with another task; the nightly run gave up after waiting.", "hint": "Close Nightshift Code or wait; the next scheduled run will retry."},
   "NS-E202": {"message": "A service failed to start or crashed repeatedly.", "hint": "Run 'ns doctor' and check logs\\supervisor-*.jsonl."},
   "NS-E203": {"message": "Service health check timed out.", "hint": "The model may be too large for this profile. Run 'ns tune' or check runtime.json."},

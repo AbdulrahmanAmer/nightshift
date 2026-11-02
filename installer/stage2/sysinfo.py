@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import shutil
 import string
 from dataclasses import dataclass
@@ -27,8 +28,13 @@ def recommended_tier(ram_gb: float) -> str:
     return "balanced" if ram_gb >= 31 else "small"
 
 
-def required_free_gb(tier: str) -> int:
-    """Free space the install needs on the home drive (spec 5: 60 GB check, plus the tier's larger model)."""
+def required_free_gb(tier: str, custom_bytes: int | None = None) -> int:
+    """Free space the install needs on the home drive (spec 5: 60 GB check, plus the tier's larger model).
+
+    A custom model adds what it is larger than Small's 9 GB (same rule as the setup window's plan).
+    """
+    if custom_bytes:
+        return BASE_FREE_GB + max(0, math.ceil(custom_bytes / 1e9) - 9)
     return BASE_FREE_GB + TIER_EXTRA_GB.get(tier, 0)
 
 

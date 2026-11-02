@@ -177,6 +177,7 @@ Endpoints (all JSON unless noted):
 | `POST /api/ui-step` | `{uiStep: "welcome" \| "checks" \| "choices"}` | `ActionResult`. Moves between the three screens before Start. The server holds the value, so a reopened window lands on the same screen |
 | `POST /api/answers` | `ChoicesDraft` | `AnswersResult` |
 | `POST /api/check-key` | `{service: "pexels" \| "pixabay", key}` | `KeyCheck`. A live request through `urllib`, using the same queries as `s01_questions.validate_*` |
+| `GET /api/model-check` | `?repo=owner/name&file=name.gguf` | `ModelCheck {ok, size, message, code}`. A `HEAD` request for `https://huggingface.co/<repo>/resolve/main/<file>` through `urllib` (`modelcheck.py`; the wizard side has the same logic in `downloader.head_info`). The size is the `x-linked-size` header of Hugging Face's redirect. Refused with a reason: a name that cannot be right, a split file, 404, a repository that needs a login, an unreachable site, an unknown size, and **a file over 15.5 GB**. In `--simulate` the head is `modelcheck.fake_head` (the size follows the quantization in the name) |
 | `GET /api/disk` | `?path=D:\Nightshift&tier=small[&source=1]` | `DiskCheck` |
 | `POST /api/action/{name}` | `ActionBody` | `ActionResult` |
 | `GET /api/file/{name}` | | File bytes. Allowlist: `voice-sample.wav`, `render-test.mp4`, `render-test.jpg`, `verify-report.json`. Anything else is 404 |
@@ -633,6 +634,9 @@ Model cards. Everything but the "good for" line comes from `manifest.json` at ru
 | Balanced, **Recommended** | `mudler/Qwen3.6-35B-A3B-APEX-MTP-GGUF`, `Qwen3.6-35B-A3B-APEX-MTP-I-Mini` | 14.3 GB | 1.1 GB | Recommended: better long stories and a usable coding assistant | `ramGb >= 31` |
 | Best | `unsloth/Qwen3.6-35B-A3B-MTP-GGUF`, `Qwen3.6-35B-A3B-UD-Q4_K_XL` | 22.9 GB | none (larger than the card) | Highest quality; needs 32 GB RAM and leaves little VRAM headroom; slower | `ramGb >= 31` |
 
+
+**The Other card.** The fourth card of the model picker lets the owner try a model the manifest does not list. It holds two fields, "Hugging Face repository" (`Qwen/Qwen3-14B-GGUF`) and "GGUF file name" (`Qwen3-14B-Q4_K_M.gguf`). Selecting the card, or focusing a field, selects it and sets `llmTier` to `small`. **On blur** of either field (when both are filled) the window calls `GET /api/model-check`; while it runs the card says "Checking the file". A good file shows `Found`, the download size and the video memory it leaves for context, like a tier card, and the draft gets `llmCustom: {repo, file, size}`; a refusal (not found, needs a login, split file, unknown size, **over 15.5 GB** with the size and "Pick a smaller version, for example Q4_K_M") shows its reason in danger under the file field and leaves `llmCustom` null, which keeps Install disabled. Editing a field forgets the result until the next blur. Answers carry the choice as `llm_custom` (`null` otherwise; `contracts/CHANGE_REQUESTS.md` CR-C1-UI-9). `s03_download_models` downloads the file from `https://huggingface.co/<repo>/resolve/main/<file>` into `models\llm\` **without a SHA256** (allowed only for this user-supplied file), shows warning `NS-W113` ("A custom model is not checked"), and `runtime.json` points `llama.model_path` at it with the plain dense flags of Small.
+
 **Default tier (owner decision 2026-11-02).** Balanced is the recommended default, so `answers.json` ships with `"llm_tier": "balanced"` and the Choices screen starts on Balanced (`plan.recommendedTier`). On a PC with less than 32 GB of memory (`ramGb < 31`) the screen starts on Small instead and says why in one line under the selector: "This PC has 16 GB of memory, so Small is selected. Balanced needs 32 GB". An unattended `answers.json` that asks for Balanced or Best on such a PC still fails with "llm_tier 'balanced' needs 32 GB of RAM". The Welcome screen's size, free-space and time figures follow the selected tier (default download about 20 GB with Balanced, about 15 GB with Small), and its plan card names the tier.
 
 "More options" opens a `Card elevation={3} padding="lg"` popover, anchored above the footer, with:
@@ -661,7 +665,8 @@ checks them again with pydantic:
 | `channel.niche` | 2–60 characters | Say in a few words what the channel is about |
 | `ownerName` | 0–40 characters | Use 40 characters or fewer |
 | `homePath` | absolute path on a fixed local drive, no `%`, 80 characters at most, at least `required_free_gb(tier)` free | Pick a folder on a drive with {need} GB free. This one has {free} GB |
-| `llmTier` | allowed on this PC | {Tier} needs 32 GB of memory. This PC has {ram} GB |
+| `llmTier` | allowed on this PC (not checked when `llmCustom` is set) | {Tier} needs 32 GB of memory. This PC has {ram} GB |
+| `llmCustom` | null, or `{repo, file, size}` with `owner/name`, a single `.gguf` file name and `0 < size <= 15.5 GB`; `required_free_gb` adds what the file is larger than 9 GB | Check the model file first; the reasons of `/api/model-check` |
 | `modelsSource.path` | an existing folder when kind is `folder` or `drive-zip` | That folder was not found |
 | `runTime` | `^([01]\d\|2[0-3]):[0-5]\d$` | Use the 24 hour clock, for example 03:00 |
 | `pexelsKey`, `pixabayKey` | not empty, unless a key is already stored (resume) | Paste the {Pexels} key. Setup needs it to find stock footage |
@@ -1567,7 +1572,15 @@ export interface CheckRow {
 
 export interface PlanItem { key: string; label: string; file: string | null; bytes: number | null; via: "download" | "winget" | "uv" }
 export interface PlanGroup { id: "tools" | "python" | "programs" | "models"; label: string; bytes: number | null; items: PlanItem[] }
-export interface TierInfo { llmBytes: number; totalBytes: number; needFreeGb: number; needsRamGb: number; allowed: boolean; reason: string | null }
+export interface TierInfo {
+  repo: string | null; file: string | null;   // the manifest model of the tier
+  llmBytes: number; totalBytes: number;
+  vramLeftGb: number | null;                  // 16 GB card: 16 - file - 0.6 (negative = larger than the card)
+  recommended: boolean;                       // Balanced
+  needFreeGb: number; needsRamGb: number; allowed: boolean; reason: string | null;
+}
+export interface LlmCustom { repo: string; file: string; size: number }
+export interface ModelCheck { ok: boolean; size: number | null; message: string | null; code: string | null }
 export interface InstallPlan {
   tier: Tier;
   profile: "gpu" | "cpu-dev";
@@ -1584,6 +1597,7 @@ export interface ChoicesDraft {
   channel: { displayName: string; niche: string; language: string };   // language defaults to "en"
   homePath: string;
   llmTier: Tier;
+  llmCustom: LlmCustom | null;       // the Other card: replaces the tier's model; llmTier is then "small"
   voice: { speaker: PresetVoice };
   modelsSource: { kind: "internet" | "folder" | "drive-zip"; path: string | null };
   runTime: string;                   // "03:00"
@@ -1598,7 +1612,7 @@ export interface AnswersView extends Omit<ChoicesDraft, "pexelsKey" | "pixabayKe
   pixabayKeySet: boolean;
 }
 export type ChoicesField =
-  | "ownerName" | "channel.displayName" | "channel.niche" | "channel.language" | "homePath" | "llmTier"
+  | "ownerName" | "channel.displayName" | "channel.niche" | "channel.language" | "homePath" | "llmTier" | "llmCustom"
   | "voice.speaker" | "modelsSource.path" | "runTime" | "mastersPerWeek" | "pexelsKey" | "pixabayKey";
 export interface FieldError { field: ChoicesField; message: string; code: string | null }
 export type AnswersResult = { ok: true; answers: AnswersView; plan: InstallPlan } | { ok: false; errors: FieldError[] };

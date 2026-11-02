@@ -129,8 +129,8 @@ class S01Questions(Step):
         return True
 
     # ---- home ----
-    def _pick_home(self, ctx: StepContext, tier: str) -> Path:
-        need = required_free_gb(tier)
+    def _pick_home(self, ctx: StepContext, tier: str, custom_bytes: int | None = None) -> Path:
+        need = required_free_gb(tier, custom_bytes)
         provided = ctx.raw_answers.get("home_path")
         while True:
             if provided:
@@ -219,19 +219,25 @@ class S01Questions(Step):
         merged: dict[str, Any] = {k: v for k, v in raw.items() if k not in KEY_NAMES}
 
         ram = float((ctx.preflight or {}).get("ram_gb") or 32)
+        custom = raw.get("llm_custom") or None
+        size = custom.get("size") if isinstance(custom, dict) else None
+        custom_bytes = size if isinstance(size, int) and size > 0 else None
         # Balanced is the recommended default; a PC under 32 GB of RAM starts on Small (the fallback).
         default_tier = recommended_tier(ram)
-        if default_tier == "small" and raw.get("llm_tier") in (None, ""):
-            ctx.ui.say(f"This PC has {ram:.0f} GB of memory, so Small is selected. Balanced needs 32 GB.")
-        asked = self._asked(ctx, "llm_tier", "LLM size: small, balanced or best?", default_tier)
-        tier = str(asked or default_tier)
+        if custom:
+            tier = "small"          # llm_custom replaces the tier's model; no RAM rule applies
+        else:
+            if default_tier == "small" and raw.get("llm_tier") in (None, ""):
+                ctx.ui.say(f"This PC has {ram:.0f} GB of memory, so Small is selected. Balanced needs 32 GB.")
+            asked = self._asked(ctx, "llm_tier", "LLM size: small, balanced or best?", default_tier)
+            tier = str(asked or default_tier)
         if tier not in ("small", "balanced", "best"):
             raise AnswersError(f"llm_tier must be small, balanced or best, not {tier!r}")
         if tier != "small" and ram < 31:
             raise AnswersError(f"llm_tier '{tier}' needs 32 GB of RAM; this PC has {ram:.0f} GB")
         merged["llm_tier"] = tier
 
-        home = self._pick_home(ctx, tier)
+        home = self._pick_home(ctx, tier, custom_bytes)
         ctx.relocate(home)
         ctx.paths.ensure()
         if drive_type(ctx.preflight, home) == "HDD":
@@ -307,7 +313,7 @@ class S01Questions(Step):
                 ["Long videos per week", str(ans.masters_per_week)],
                 ["Nightly run time", ans.run_time],
                 ["Nightshift Code", "yes" if ans.install_code else "no"],
-                ["LLM size", ans.llm_tier],
+                ["LLM size", f"custom: {ans.llm_custom.file}" if ans.llm_custom else ans.llm_tier],
                 ["Model files", ans.models_source or "download"],
             ],
         )

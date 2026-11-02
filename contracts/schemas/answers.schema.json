@@ -32,6 +32,34 @@
       "title": "AnswersChannel",
       "type": "object"
     },
+    "LlmCustom": {
+      "additionalProperties": false,
+      "properties": {
+        "repo": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$",
+          "title": "Repo",
+          "type": "string"
+        },
+        "file": {
+          "maxLength": 240,
+          "minLength": 6,
+          "title": "File",
+          "type": "string"
+        },
+        "size": {
+          "exclusiveMinimum": 0,
+          "title": "Size",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "repo",
+        "file",
+        "size"
+      ],
+      "title": "LlmCustom",
+      "type": "object"
+    },
     "Voice": {
       "additionalProperties": false,
       "properties": {
@@ -215,6 +243,17 @@
       ],
       "title": "Llm Tier",
       "type": "string"
+    },
+    "llm_custom": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/LlmCustom"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     },
     "restore_from": {
       "anyOf": [

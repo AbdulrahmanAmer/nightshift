@@ -604,3 +604,51 @@ def test_retry_notes_name_the_reason():
     assert controller.retry_note("network", 4.0) == "The connection dropped, trying again in 4 s"
     assert controller.retry_note("hash", 0.0) == "The file failed its check, downloading it again"
     assert controller.retry_note("???", 2.0) == "The download stopped, trying again in 2 s"
+
+
+# ------------------------------------------------------------------------------------------ custom model
+CUSTOM = {"repo": "bartowski/Qwen2.5-14B-Instruct-GGUF", "file": "Qwen2.5-14B-Instruct-Q4_K_M.gguf",
+          "size": 8_988_110_976}
+
+
+def test_the_model_check_goes_through_the_effects_head_and_simulate_has_a_fake(tmp_path, monkeypatch):
+    s = Setup(tmp_path, monkeypatch)
+    ok = s.ctl.check_model("Qwen/Qwen3-14B-GGUF", "Qwen3-14B-Q4_K_M.gguf")
+    assert ok == {"ok": True, "size": 9_000_000_000, "message": None, "code": None}     # fake_head: Q4 = 9 GB
+    big = s.ctl.check_model("meta/Llama-70B-GGUF", "llama-70B-Q4.gguf")
+    assert big["ok"] is False and "15.5 GB" in big["message"]
+    assert s.ctl.check_model("a/b", "missing.gguf")["ok"] is False
+    s.fx.head = lambda url: (200, 5_500_000_000)                    # the effect is replaceable
+    assert s.ctl.check_model("a/b", "m.gguf")["size"] == 5_500_000_000
+
+
+def test_a_custom_model_is_accepted_into_the_answers_the_plan_and_the_download_rows(tmp_path, monkeypatch):
+    s = Setup(tmp_path, monkeypatch)
+    good = s.accept(llmTier="best", llmCustom=dict(CUSTOM))
+    assert good["answers"]["llmCustom"] == CUSTOM and good["answers"]["llmTier"] == "small"
+    state = s.snap()
+    rows = {r["key"]: r for r in state["downloads"]["items"]}
+    row = rows[CUSTOM["file"]]
+    assert row["label"] == "Story model (Custom)" and row["bytesTotal"] == CUSTOM["size"]
+    assert LLM not in rows and "Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf" not in rows
+    assert state["answers"]["llmCustom"] == CUSTOM and state["plan"]["tier"] == "small"
+    again = s.ctl.submit_answers(draft(s.home, llmCustom=None))
+    assert again["ok"] and again["answers"]["llmCustom"] is None
+    assert LLM in {r["key"] for r in s.snap()["downloads"]["items"]}
+
+
+def test_a_custom_model_over_the_limit_is_a_field_error_and_changes_nothing(tmp_path, monkeypatch):
+    s = Setup(tmp_path, monkeypatch)
+    bad = s.ctl.submit_answers(draft(s.home, llmCustom={**CUSTOM, "size": 17_000_000_000}))
+    assert bad["ok"] is False
+    err = next(e for e in bad["errors"] if e["field"] == "llmCustom")
+    assert "17.0 GB" in err["message"] and s.snap()["answers"] is None
+
+
+def test_the_written_answers_file_carries_the_custom_model(tmp_path, monkeypatch):
+    s = Setup(tmp_path, monkeypatch, script=finish_script)
+    s.accept(llmCustom=dict(CUSTOM))
+    assert s.ctl.do_action("start")[0] == 200
+    s.until(lambda st: st["run"] == "finished", what="the run to finish")
+    written = json.loads((s.home / "config" / "answers.json").read_text(encoding="utf-8"))
+    assert written["llm_custom"] == CUSTOM and written["llm_tier"] == "small"

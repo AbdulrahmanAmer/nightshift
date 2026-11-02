@@ -3,6 +3,7 @@
   "models_source": null,
   "models_source_kind": "internet",
   "llm_tier": "balanced",
+  "llm_custom": null,
   "channel": {
     "display_name": "After Dark Tales",
     "niche": "horror fiction",

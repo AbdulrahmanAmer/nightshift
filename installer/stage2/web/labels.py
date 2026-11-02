@@ -48,7 +48,7 @@ DOWNLOAD_LABELS: dict[str, str] = {
     "yunet": "Face finder for Clipper",
     "spacy": "Language rules",
 }
-TIER_NAMES = {"small": "Small", "balanced": "Balanced", "best": "Best"}
+TIER_NAMES = {"small": "Small", "balanced": "Balanced", "best": "Best", "custom": "Custom"}
 
 
 def llm_label(tier: str) -> str:

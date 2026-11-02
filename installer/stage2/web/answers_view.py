@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from installer.stage2.web.model import PRESET_VOICES, TIERS
+from installer.stage2.web.modelcheck import MAX_BYTES, shape_problem, too_big_message
 from installer.stage2.web.plan import required_free_gb
 
 RUN_TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
@@ -87,9 +88,17 @@ def validate(draft: dict[str, Any], env: Env) -> list[dict[str, Any]]:
     if tier not in TIERS:
         errors.append(_err("llmTier", "Pick Small, Balanced or Best"))
         tier = "small"
-    errors += _home_errors(_text(draft.get("homePath")), str(tier), env)
+    custom = draft.get("llmCustom")
+    custom_bytes: int | None = None
+    if custom is not None:
+        problem = custom_problem(custom)
+        if problem:
+            errors.append(_err("llmCustom", problem))
+        else:
+            custom_bytes = int(custom["size"])
+    errors += _home_errors(_text(draft.get("homePath")), str(tier), env, custom_bytes)
     info = env.tiers.get(str(tier), {})
-    if tier != "small" and not info.get("allowed", True):
+    if custom is None and tier != "small" and not info.get("allowed", True):
         reason = info.get("reason") or "Not available on this PC"
         message = (
             f"{TIER_NAMES[str(tier)]} needs 32 GB of memory. This PC has {env.ram_gb:g} GB"
@@ -117,8 +126,23 @@ def validate(draft: dict[str, Any], env: Env) -> list[dict[str, Any]]:
     return errors
 
 
-def _home_errors(home: str, tier: str, env: Env) -> list[dict[str, Any]]:
-    need = required_free_gb(tier)
+def custom_problem(custom: Any) -> str | None:
+    """Why a custom model entry (resolved by /api/model-check) is not acceptable; None when it is fine."""
+    if not isinstance(custom, dict):
+        return "Check the model file first"
+    repo, file, size = custom.get("repo"), custom.get("file"), custom.get("size")
+    if not isinstance(repo, str) or not isinstance(file, str):
+        return "Check the model file first"
+    problem = shape_problem(repo.strip(), file.strip())
+    if problem:
+        return problem
+    if not isinstance(size, int) or isinstance(size, bool) or size <= 0:
+        return "Check the model file first"
+    return too_big_message(size) if size > MAX_BYTES else None
+
+
+def _home_errors(home: str, tier: str, env: Env, custom_bytes: int | None = None) -> list[dict[str, Any]]:
+    need = required_free_gb(tier, custom_bytes)
     if not DRIVE_PATH_RE.match(home) or "%" in home:
         return [_err("homePath", "Use a full path on a drive of this PC, such as D:\\Nightshift")]
     if len(home) > MAX_HOME_LEN:
@@ -147,11 +171,17 @@ def draft_to_answers(
     kind = kind_to_file(str(source.get("kind", "internet")))
     path = models_source if models_source is not None else (_text(source.get("path")) or None)
     owner = _text(draft.get("ownerName")) or None
+    custom = draft.get("llmCustom")
+    llm_custom = (
+        {"repo": _text(custom["repo"]), "file": _text(custom["file"]), "size": int(custom["size"])}
+        if isinstance(custom, dict) else None
+    )
     return {
         "home_path": _text(draft["homePath"]),
         "models_source": path if kind != "internet" else None,
         "models_source_kind": kind,
-        "llm_tier": draft["llmTier"],
+        "llm_tier": "small" if llm_custom else draft["llmTier"],
+        "llm_custom": llm_custom,
         "channel": {
             "display_name": _text(channel["displayName"]),
             "niche": _text(channel["niche"]),
@@ -191,6 +221,7 @@ def answers_to_view(
         },
         "homePath": raw.get("home_path") or "",
         "llmTier": raw.get("llm_tier") or default_tier,
+        "llmCustom": raw.get("llm_custom") or None,
         "voice": {"speaker": voice.get("speaker") or PRESET_VOICES[0]},
         "modelsSource": {"kind": kind if kind in KINDS_UI else "internet", "path": raw.get("models_source")},
         "runTime": raw.get("run_time", "03:00"),

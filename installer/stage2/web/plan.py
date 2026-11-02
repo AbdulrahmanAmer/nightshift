@@ -28,8 +28,10 @@ def recommended_tier(ram_gb: float) -> str:
     return "balanced" if ram_gb >= 31 else "small"
 
 
-def required_free_gb(tier: str) -> int:
-    """Free space the install needs on the home drive."""
+def required_free_gb(tier: str, custom_bytes: int | None = None) -> int:
+    """Free space the install needs on the home drive; a custom model adds its size above Small's 9 GB."""
+    if custom_bytes:
+        return BASE_FREE_GB + max(0, math.ceil(custom_bytes / 1e9) - 9)
     return BASE_FREE_GB + TIER_EXTRA_GB.get(tier, 0)
 
 
@@ -86,12 +88,19 @@ def _tier_entry(pm: dict[str, Any], profile: str, tier: str) -> dict[str, Any]:
     return pm["llm"]
 
 
-def model_rows(manifest: dict[str, Any], profile: str, tier: str) -> list[dict[str, Any]]:
-    """Rows for ``plan_models``: the LLM of the tier, embed, TTS GGUFs, whisper (one row), YuNet."""
+def model_rows(
+    manifest: dict[str, Any], profile: str, tier: str, custom: dict[str, Any] | None = None
+) -> list[dict[str, Any]]:
+    """Rows for ``plan_models``: the LLM (tier or custom GGUF), embed, TTS GGUFs, whisper, YuNet."""
     pm = manifest["profiles"][profile]
-    llm = _tier_entry(pm, profile, tier)
-    shown_tier = tier if llm is not pm["llm"] else "small"
-    rows = [_hf_row(llm, llm_label(shown_tier)), _hf_row(pm["embed"], "Memory index")]
+    if custom:
+        llm = {"repo": custom["repo"], "file": custom["file"], "bytes": custom["size"]}
+        llm_row = _hf_row(llm, llm_label("custom"))
+    else:
+        llm = _tier_entry(pm, profile, tier)
+        shown_tier = tier if llm is not pm["llm"] else "small"
+        llm_row = _hf_row(llm, llm_label(shown_tier))
+    rows = [llm_row, _hf_row(pm["embed"], "Memory index")]
     rows += [_hf_row(f, _tts_label(f["file"])) for f in pm["tts"]]
     repo_name = PurePosixPath(pm["whisper_repo"]["repo"]).name
     whisper_file = repo_name if repo_name.startswith("faster-") else "faster-" + repo_name
@@ -217,11 +226,12 @@ def build_plan(
     cuda: str | None,
     ram_gb: float,
     vram_mb: int | None,
+    custom: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """The InstallPlan for the Welcome and Choices screens."""
+    """The InstallPlan for the Welcome and Choices screens (``custom`` replaces the tier's story model)."""
     rows = tool_rows()
     rows += bin_rows(manifest, profile, include_code=include_code, llama_pair=llama_pair_for(cuda))
-    rows += model_rows(manifest, profile, tier)
+    rows += model_rows(manifest, profile, tier, custom)
     groups = [_group(gid, [r for r in rows if r["group"] == gid]) for gid in GROUP_ORDER]
     total = sum(r["bytes"] or 0 for r in rows)
     unknown = sum(1 for r in rows if r["bytes"] is None and r["via"] == "download")
@@ -231,7 +241,7 @@ def build_plan(
         "groups": groups,
         "totalBytes": total,
         "unknownCount": unknown,
-        "needFreeGb": required_free_gb(tier),
+        "needFreeGb": required_free_gb(tier, int(custom["size"]) if custom else None),
         "estimate": estimate(total),
         "recommendedTier": recommended_tier(ram_gb),
         "tiers": tier_infos(manifest, profile, ram_gb=ram_gb, vram_mb=vram_mb),
