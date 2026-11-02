@@ -1,4 +1,4 @@
-import { StrictMode, useEffect } from "react";
+import { lazy, StrictMode, Suspense, useEffect } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
 import { AppProvider, useApp } from "./lib/app";
@@ -10,6 +10,11 @@ import Assistant from "./pages/Assistant";
 import Channels from "./pages/Channels";
 import Results from "./pages/Results";
 import Settings from "./pages/Settings";
+
+// Design review routes (#/design, #/design/ref12) render full-bleed, outside the app shell, and load on demand.
+const DesignSheet = lazy(() => import("./pages/DesignSheet"));
+const DesignRef12 = lazy(() => import("./pages/DesignRef12"));
+const DESIGN: Record<string, React.LazyExoticComponent<() => JSX.Element>> = { design: DesignSheet, "design-ref12": DesignRef12 };
 
 const PAGES: Record<string, () => JSX.Element | null> = { queue: Queue, create: Create, library: Library, assistant: Assistant, channels: Channels, results: Results, settings: Settings };
 const TITLES: Record<string, string> = { queue: "Queue", create: "Create", library: "Library", assistant: "Assistant", channels: "Channels", results: "Results", settings: "Settings" };
@@ -23,10 +28,17 @@ function Router() {
   return <Page key={route.name} />;
 }
 
+function Root() {
+  const { route } = useApp();
+  const Design = DESIGN[route.name];
+  if (Design) return <Suspense fallback={<div className="h-dvh bg-r12-page" aria-busy="true" />}><Design key={route.name} /></Suspense>;
+  return <Shell><Router /></Shell>;
+}
+
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <AppProvider>
-      <Shell><Router /></Shell>
+      <Root />
     </AppProvider>
   </StrictMode>,
 );

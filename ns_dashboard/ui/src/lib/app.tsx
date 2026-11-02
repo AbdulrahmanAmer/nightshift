@@ -18,7 +18,7 @@ interface AppCtx {
 const Ctx = createContext<AppCtx>(null as unknown as AppCtx);
 export const useApp = () => useContext(Ctx);
 
-const ROUTES: Record<string, string> = { "": "queue", queue: "queue", create: "create", library: "library", assistant: "assistant", channels: "channels", results: "results", settings: "settings" };
+const ROUTES: Record<string, string> = { "": "queue", queue: "queue", create: "create", library: "library", assistant: "assistant", channels: "channels", results: "results", settings: "settings", design: "design", "design/ref12": "design-ref12" };
 const parseHash = () => { const [n, q] = location.hash.replace(/^#\/?/, "").split("?"); return { name: ROUTES[n] ?? "queue", query: new URLSearchParams(q || "") }; };
 
 export function AppProvider({ children }: { children: ReactNode }) {

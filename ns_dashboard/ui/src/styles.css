@@ -123,3 +123,146 @@
 .enter { animation: rise 360ms var(--ease-out) both; }
 .fade-in { animation: fade 200ms var(--ease-out) both; }
 @media (prefers-reduced-motion: reduce) { .enter, .fade-in { animation: none; } * { transition-duration: 0ms !important; } }
+
+/* ref12 tokens
+   Measured from the ref-12 dashboard reference (1024x768 render) and scaled x1.406 to the
+   1440x1080 design frame, snapped to a 4 px grid. Full map: docs/design/ref12-map.md.
+   The scoped classes .r12-light / .r12-dark let the design sheet show both themes side by side.
+   Everything is prefixed r12 so the existing page tokens above stay untouched. */
+:root, .r12-light {
+  --r12-page: #ced0e2;          /* backdrop behind the window */
+  --r12-page-line: rgba(255, 255, 255, 0.6);
+  --r12-window: #f7f8fb;        /* app window card */
+  --r12-window-edge: rgba(255, 255, 255, 0.9);
+  --r12-card: #ffffff;
+  --r12-card-2: #fdfcff;        /* feature tiles */
+  --r12-tint: #f1f1fd;          /* dashed add tiles, input wells */
+  --r12-tint-2: #e4e3f4;        /* segmented tray, export tray, secondary button */
+  --r12-tint-3: #f3f1fb;        /* swipe action tray */
+  --r12-dash: #c5c6ee;          /* dashed borders */
+  --r12-line: rgba(16, 19, 57, 0.08);
+  --r12-line-2: rgba(16, 19, 57, 0.14);
+  --r12-ink: #101339;           /* primary text and the dark button */
+  --r12-navy: #101339;          /* constant navy: ink on the accent card in both themes */
+  --r12-on-ink: #ffffff;
+  --r12-text-2: #3f4053;
+  --r12-muted: #8d8fa5;
+  --r12-faint: #b8bacb;
+  --r12-accent: #6f6bf0;        /* the one purple */
+  --r12-accent-ink: #5651d6;    /* purple used as text on white */
+  --r12-on-accent: #ffffff;
+  --r12-accent-soft: #e6e5fd;
+  --r12-accent-2: #9ea0ff;      /* light purple: kbd chip, avatar plus */
+  --r12-green: #5dac92;
+  --r12-green-ink: #2f7d64;
+  --r12-green-soft: #e3f2ed;
+  --r12-red: #a3172f;
+  --r12-red-ink: #c0263f;
+  --r12-red-soft: #fadbe0;
+  --r12-shadow-window: 0 24px 64px rgba(62, 64, 120, 0.14), inset 0 0 0 1px var(--r12-window-edge);
+  --r12-shadow-card: 0 2px 6px rgba(30, 32, 80, 0.03);
+  --r12-shadow-raised: 0 12px 32px rgba(30, 32, 80, 0.10), 0 2px 6px rgba(30, 32, 80, 0.04);
+  --r12-shadow-float: 0 16px 40px rgba(30, 32, 80, 0.14), 0 4px 10px rgba(30, 32, 80, 0.06);
+  --r12-shadow-row: 0 8px 24px rgba(30, 32, 80, 0.08);
+}
+:root[data-theme="dark"], .r12-dark {
+  --r12-page: #0f0d16;
+  --r12-page-line: rgba(255, 255, 255, 0.06);
+  --r12-window: #15131d;
+  --r12-window-edge: rgba(255, 255, 255, 0.06);
+  --r12-card: #1e1b2a;
+  --r12-card-2: #221f30;
+  --r12-tint: #24213a;
+  --r12-tint-2: #2c2943;
+  --r12-tint-3: #262335;
+  --r12-dash: #4a4672;
+  --r12-line: rgba(236, 234, 246, 0.08);
+  --r12-line-2: rgba(236, 234, 246, 0.14);
+  --r12-ink: #eceaf6;
+  --r12-navy: #101339;
+  --r12-on-ink: #15131d;
+  --r12-text-2: #bebcd0;
+  --r12-muted: #8b88a3;
+  --r12-faint: #6c6984;
+  --r12-accent: #7c78f5;
+  --r12-accent-ink: #aeabff;
+  --r12-on-accent: #ffffff;
+  --r12-accent-soft: rgba(124, 120, 245, 0.18);
+  --r12-accent-2: #8e8bff;
+  --r12-green: #5fbf9f;
+  --r12-green-ink: #7fd3b6;
+  --r12-green-soft: rgba(95, 191, 159, 0.16);
+  --r12-red: #e5566d;
+  --r12-red-ink: #f08a9a;
+  --r12-red-soft: rgba(229, 86, 109, 0.16);
+  --r12-shadow-window: 0 24px 64px rgba(0, 0, 0, 0.5), inset 0 0 0 1px var(--r12-window-edge);
+  --r12-shadow-card: none;
+  --r12-shadow-raised: 0 12px 32px rgba(0, 0, 0, 0.45);
+  --r12-shadow-float: 0 16px 40px rgba(0, 0, 0, 0.55);
+  --r12-shadow-row: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+.r12-light { color-scheme: light; }
+.r12-dark { color-scheme: dark; }
+
+@theme inline {
+  --color-r12-page: var(--r12-page);
+  --color-r12-page-line: var(--r12-page-line);
+  --color-r12-window: var(--r12-window);
+  --color-r12-card: var(--r12-card);
+  --color-r12-card-2: var(--r12-card-2);
+  --color-r12-tint: var(--r12-tint);
+  --color-r12-tint-2: var(--r12-tint-2);
+  --color-r12-tint-3: var(--r12-tint-3);
+  --color-r12-dash: var(--r12-dash);
+  --color-r12-line: var(--r12-line);
+  --color-r12-line-2: var(--r12-line-2);
+  --color-r12-ink: var(--r12-ink);
+  --color-r12-on-ink: var(--r12-on-ink);
+  --color-r12-text-2: var(--r12-text-2);
+  --color-r12-muted: var(--r12-muted);
+  --color-r12-faint: var(--r12-faint);
+  --color-r12-accent: var(--r12-accent);
+  --color-r12-accent-ink: var(--r12-accent-ink);
+  --color-r12-on-accent: var(--r12-on-accent);
+  --color-r12-accent-soft: var(--r12-accent-soft);
+  --color-r12-accent-2: var(--r12-accent-2);
+  --color-r12-green: var(--r12-green);
+  --color-r12-green-ink: var(--r12-green-ink);
+  --color-r12-green-soft: var(--r12-green-soft);
+  --color-r12-red: var(--r12-red);
+  --color-r12-red-ink: var(--r12-red-ink);
+  --color-r12-red-soft: var(--r12-red-soft);
+  --shadow-r12-window: var(--r12-shadow-window);
+  --shadow-r12-card: var(--r12-shadow-card);
+  --shadow-r12-raised: var(--r12-shadow-raised);
+  --shadow-r12-float: var(--r12-shadow-float);
+  --shadow-r12-row: var(--r12-shadow-row);
+  --color-r12-navy: var(--r12-navy);
+  --radius-r12-window: 32px;
+  --radius-r12-card: 28px;
+  --radius-r12-tile: 24px;
+  --radius-r12-row: 16px;
+  --radius-r12-control: 10px;
+  --radius-r12-chip: 8px;
+}
+
+@layer components {
+  .r12-card { background: var(--r12-card); border-radius: 28px; box-shadow: var(--r12-shadow-card); }
+  .r12-focus:focus-visible { outline: 2px solid var(--r12-accent); outline-offset: 2px; }
+  /* dotted agenda divider: 2 px dots every 6 px */
+  .r12-dots { background-image: radial-gradient(circle, var(--r12-muted) 0.9px, transparent 1.3px); background-size: 6px 4px; background-repeat: repeat-x; background-position: left center; }
+  .r12-lift { transition: transform 160ms var(--ease-out), box-shadow 160ms var(--ease-out); }
+  .r12-lift:hover { transform: translateY(-2px); box-shadow: var(--r12-shadow-raised); }
+}
+@media (prefers-reduced-motion: reduce) { .r12-lift:hover { transform: none; } }
+
+/* ref12 line-art illustrations */
+.r12-ill .s, .r12-ill .sw { fill: none; stroke: var(--r12-ink); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.r12-ill .sw { stroke: #ffffff; }
+.r12-ill .w { fill: var(--r12-card); }
+.r12-ill .t { fill: var(--r12-accent-soft); }
+.r12-ill .a { fill: var(--r12-accent); }
+.r12-ill .k { fill: var(--r12-ink); }
+.r12-ill-inv .s { stroke: var(--r12-navy); }
+.r12-ill-inv .w { fill: #ffffff; }
+.r12-ill-inv .a { fill: var(--r12-navy); }
