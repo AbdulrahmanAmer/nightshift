@@ -116,6 +116,7 @@ class ProduceRequest:
     publish_not_before_days: int
     minutes: int = 15  # the part's runtime target; QC allows a master up to 15 % over it
     pacing: str = "standard"  # the pacing the script was written at (minutes x its wpm); the job keeps it
+    hook_style: str = "cold_open"  # the hook style the workshop wrote the part's Shorts with
 
 
 EnqueueFn = Callable[[ProduceRequest], object]
@@ -970,6 +971,7 @@ class Workshop:
         fn = enqueue or self.enqueue or make_db_enqueue(self.db)
         nums = self._pick(status, series, which, ("approved",), "produce")
         pacing = ch.pools.pacings[0] if ch.pools.pacings else "standard"  # what `_ctx` wrote the scripts at
+        hook_style = ch.pools.hooks[0] if ch.pools.hooks else "cold_open"  # as `_ctx` wrote the hooks
         wpm = PACING_WPM.get(pacing, 155)
         for n in nums:
             build_artifacts(sd.read_script(n), sd.read_shorts(n), wpm=wpm, combo_id=f"workshop-{slug}")
@@ -999,6 +1001,7 @@ class Workshop:
                 publish_not_before_days=idx * design.publish_cadence_days,
                 minutes=series.entry(n).minutes,
                 pacing=pacing,
+                hook_style=hook_style,
             )
             self._prepare_job(req)
             fn(req)
@@ -1024,6 +1027,7 @@ class Workshop:
             "publish_not_before_days": req.publish_not_before_days,
             "minutes": req.minutes,
             "pacing": req.pacing,
+            "hook": req.hook_style,
             "design": req.design,
         }
         (d / "series_context.json").write_text(json.dumps(context, indent=2) + "\n", encoding="utf-8")

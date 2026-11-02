@@ -680,6 +680,7 @@ def test_produce_enqueues_one_job_per_approved_part(tmp_home: Path):
             "publish_not_before_days": req.publish_not_before_days,
             "minutes": req.minutes,
             "pacing": "standard",
+            "hook": "cold_open",
             "design": req.design,
         }
         src = json.loads((job / "script_source.json").read_text(encoding="utf-8"))

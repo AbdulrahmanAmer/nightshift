@@ -58,6 +58,11 @@ def series_fixed(series: Mapping[str, Any]) -> dict[str, str]:
     fixed = {f: str(design[f]) for f in ("caption_style", "visual_treatment") if design.get(f)}
     if series.get("pacing"):
         fixed["pacing"] = str(series["pacing"])
+    if series.get("hook"):
+        # The hook texts come from the workshop's `sNN.md` files, written in one hook style. A hook style
+        # drawn per Short would be credited with views it never earned and would burn the 30-day no-repeat
+        # window, so the ledger records the style the hooks were really written in.
+        fixed["hook"] = str(series["hook"])
     return fixed
 
 
