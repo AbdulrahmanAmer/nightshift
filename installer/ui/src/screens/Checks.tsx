@@ -20,7 +20,7 @@ function tone(have: number, need: number, hardMin: number): NeedMeter["tone"] {
 export function draftFor(state: ReturnType<typeof useLiveState>["state"], homePath: string): ChoicesDraft {
   const a = state.answers;
   return {
-    ownerName: a?.ownerName ?? null, channel: a?.channel ?? { displayName: "", niche: "", language: "en" }, homePath, llmTier: a?.llmTier ?? state.plan.tier,
+    ownerName: a?.ownerName ?? null, channel: a?.channel ?? { displayName: "", niche: "", language: "en" }, homePath, llmTier: a?.llmTier ?? state.plan.tier, llmCustom: a?.llmCustom ?? null,
     voice: a?.voice ?? { speaker: "Ryan" }, modelsSource: a?.modelsSource ?? { kind: "internet", path: null }, runTime: a?.runTime ?? "03:00", mastersPerWeek: a?.mastersPerWeek ?? 1,
     installCode: a?.installCode ?? true, theme: a?.theme ?? (document.documentElement.dataset.theme === "light" ? "light" : "dark"), pexelsKey: null, pixabayKey: null,
   };

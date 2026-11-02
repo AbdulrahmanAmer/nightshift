@@ -11,7 +11,7 @@ from typing import Any
 SPEED_WINDOW_S = 5.0        # speed is measured over windows this long (the first one is shorter)
 FIRST_WINDOW_S = 2.0
 EMA_ALPHA = 0.3
-MIN_DATA_S = 10.0           # no time estimate before this much data
+MIN_DATA_S = 20.0           # no time estimate before this much data (the hero says "estimating" until then)
 LOW_DISK_GB = 2.0
 # where the wizard writes finished files, relative to the install folder (the .part and .ok files sit there)
 DEST_DIRS = (
@@ -62,7 +62,7 @@ class SpeedMeter:
         self._first = None
 
     def has_data(self) -> bool:
-        """True after 10 s of measurements."""
+        """True after 20 s of measurements."""
         return self._first is not None and self._clock() - self._first >= MIN_DATA_S
 
 

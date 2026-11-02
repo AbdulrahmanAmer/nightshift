@@ -9,7 +9,7 @@ import pytest
 
 from installer.stage2.web import answers_view, controller, samples
 from installer.stage2.web.controller import Config, SetupController
-from installer.stage2.web.fakes import ScriptedEngine, fake_effects
+from installer.stage2.web.fakes import ScriptedEngine, fake_effects, sample_handover
 from installer.stage2.web.model import ENGINE_STEPS, STEP_ORDER
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -90,7 +90,8 @@ def test_the_first_state_is_the_welcome_screen_of_a_green_pc(tmp_path, monkeypat
     assert state["blocking"] is False and state["resumed"] is False and state["answers"] is None
     assert state["answersLocked"] is False and state["failure"] is None and state["result"] is None
     assert state["machine"]["gpuName"] == "NVIDIA GeForce RTX 5060 Ti" and len(state["checks"]) == 10
-    assert state["plan"]["tier"] == "small" and state["plan"]["estimate"]["label"]
+    assert state["plan"]["tier"] == "balanced" and state["plan"]["recommendedTier"] == "balanced"
+    assert state["plan"]["estimate"]["label"]
     assert state["version"] == (ROOT / "VERSION").read_text(encoding="utf-8").strip()
     assert state["rev"] >= 1 and state["host"] == "none"
     keys = {"schema", "rev", "version", "appPath", "phase", "run", "uiStep", "resumed", "prefilledFrom",
@@ -101,7 +102,8 @@ def test_the_first_state_is_the_welcome_screen_of_a_green_pc(tmp_path, monkeypat
     json.dumps(state)                                   # everything is JSON
     rows = {r["key"]: r for r in state["downloads"]["items"]}
     assert rows["git"]["status"] == "done" and rows["git"]["note"] == "already here"
-    assert rows["llama_cuda13"]["status"] == "queued" and rows["Qwen3-14B-Q4_K_M.gguf"]["bytesTotal"] > 9e9
+    assert rows["llama_cuda13"]["status"] == "queued"
+    assert rows["Qwen3.6-35B-A3B-APEX-MTP-I-Mini.gguf"]["bytesTotal"] > 14e9    # Balanced is the default
 
 
 def test_ui_step_moves_between_the_pre_start_screens(tmp_path, monkeypatch):
@@ -565,3 +567,88 @@ def test_the_sample_helpers_and_labels_cover_every_step():
     assert labels.verify_label("tts.preset") == "Voice engine" and labels.verify_label("mtp") == "mtp"
     assert labels.verify_label("odd_check") == "odd_check"
     assert labels.row_key("whisper/config.json") == "whisper" and labels.row_key("yunet") == "yunet"
+
+
+
+def test_a_pc_under_32_gb_starts_on_small_and_the_plan_says_so(tmp_path, monkeypatch):
+    s = Setup(tmp_path, monkeypatch)
+    pf = sample_handover(ROOT, home=str(s.home))
+    pf["ram_gb"] = 16.0
+    pf_file = tmp_path / "pf.json"
+    pf_file.write_text(json.dumps(pf), encoding="utf-8")
+    cfg = Config(app_path=ROOT, data_dir=tmp_path / "data2", simulate=True, home=s.home, preflight=pf_file)
+    state = SetupController(cfg, s.fx).snapshot()
+    assert state["plan"]["tier"] == "small" and state["plan"]["recommendedTier"] == "small"
+    assert state["plan"]["tiers"]["balanced"]["allowed"] is False
+    assert state["plan"]["tiers"]["small"]["allowed"] is True
+
+
+def test_a_stall_retry_shows_on_the_row_and_clears_when_the_bytes_flow_again(tmp_path, monkeypatch):
+    s = Setup(tmp_path, monkeypatch)
+    s.accept()
+    size = 9001752960
+    ctl = s.ctl
+    ctl._ev_file({"type": "file", "key": LLM, "event": "start", "total": size})
+    ctl._ev_file({"type": "file", "key": LLM, "event": "progress", "done": 1000, "total": size})
+    retry = {"type": "file", "key": LLM, "event": "retry", "attempt": 1, "reason": "stall", "waitS": 2.0}
+    ctl._ev_file(retry)
+    row = next(r for r in s.snap()["downloads"]["items"] if r["key"] == LLM)
+    assert row["status"] == "active" and row["speedBps"] is None and row["etaS"] is None
+    assert row["note"] == "No data for 60 s, trying again in 2 s"
+    ctl._ev_file({"type": "file", "key": LLM, "event": "progress", "done": 5000, "total": size})
+    row = next(r for r in s.snap()["downloads"]["items"] if r["key"] == LLM)
+    assert row["note"] is None and row["bytesDone"] == 5000
+
+
+def test_retry_notes_name_the_reason():
+    assert controller.retry_note("network", 4.0) == "The connection dropped, trying again in 4 s"
+    assert controller.retry_note("hash", 0.0) == "The file failed its check, downloading it again"
+    assert controller.retry_note("???", 2.0) == "The download stopped, trying again in 2 s"
+
+
+# ------------------------------------------------------------------------------------------ custom model
+CUSTOM = {"repo": "bartowski/Qwen2.5-14B-Instruct-GGUF", "file": "Qwen2.5-14B-Instruct-Q4_K_M.gguf",
+          "size": 8_988_110_976}
+
+
+def test_the_model_check_goes_through_the_effects_head_and_simulate_has_a_fake(tmp_path, monkeypatch):
+    s = Setup(tmp_path, monkeypatch)
+    ok = s.ctl.check_model("Qwen/Qwen3-14B-GGUF", "Qwen3-14B-Q4_K_M.gguf")
+    assert ok == {"ok": True, "size": 9_000_000_000, "message": None, "code": None}     # fake_head: Q4 = 9 GB
+    big = s.ctl.check_model("meta/Llama-70B-GGUF", "llama-70B-Q4.gguf")
+    assert big["ok"] is False and "15.5 GB" in big["message"]
+    assert s.ctl.check_model("a/b", "missing.gguf")["ok"] is False
+    s.fx.head = lambda url: (200, 5_500_000_000)                    # the effect is replaceable
+    assert s.ctl.check_model("a/b", "m.gguf")["size"] == 5_500_000_000
+
+
+def test_a_custom_model_is_accepted_into_the_answers_the_plan_and_the_download_rows(tmp_path, monkeypatch):
+    s = Setup(tmp_path, monkeypatch)
+    good = s.accept(llmTier="best", llmCustom=dict(CUSTOM))
+    assert good["answers"]["llmCustom"] == CUSTOM and good["answers"]["llmTier"] == "small"
+    state = s.snap()
+    rows = {r["key"]: r for r in state["downloads"]["items"]}
+    row = rows[CUSTOM["file"]]
+    assert row["label"] == "Story model (Custom)" and row["bytesTotal"] == CUSTOM["size"]
+    assert LLM not in rows and "Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf" not in rows
+    assert state["answers"]["llmCustom"] == CUSTOM and state["plan"]["tier"] == "small"
+    again = s.ctl.submit_answers(draft(s.home, llmCustom=None))
+    assert again["ok"] and again["answers"]["llmCustom"] is None
+    assert LLM in {r["key"] for r in s.snap()["downloads"]["items"]}
+
+
+def test_a_custom_model_over_the_limit_is_a_field_error_and_changes_nothing(tmp_path, monkeypatch):
+    s = Setup(tmp_path, monkeypatch)
+    bad = s.ctl.submit_answers(draft(s.home, llmCustom={**CUSTOM, "size": 17_000_000_000}))
+    assert bad["ok"] is False
+    err = next(e for e in bad["errors"] if e["field"] == "llmCustom")
+    assert "17.0 GB" in err["message"] and s.snap()["answers"] is None
+
+
+def test_the_written_answers_file_carries_the_custom_model(tmp_path, monkeypatch):
+    s = Setup(tmp_path, monkeypatch, script=finish_script)
+    s.accept(llmCustom=dict(CUSTOM))
+    assert s.ctl.do_action("start")[0] == 200
+    s.until(lambda st: st["run"] == "finished", what="the run to finish")
+    written = json.loads((s.home / "config" / "answers.json").read_text(encoding="utf-8"))
+    assert written["llm_custom"] == CUSTOM and written["llm_tier"] == "small"

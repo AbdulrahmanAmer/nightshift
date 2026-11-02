@@ -177,6 +177,7 @@ Endpoints (all JSON unless noted):
 | `POST /api/ui-step` | `{uiStep: "welcome" \| "checks" \| "choices"}` | `ActionResult`. Moves between the three screens before Start. The server holds the value, so a reopened window lands on the same screen |
 | `POST /api/answers` | `ChoicesDraft` | `AnswersResult` |
 | `POST /api/check-key` | `{service: "pexels" \| "pixabay", key}` | `KeyCheck`. A live request through `urllib`, using the same queries as `s01_questions.validate_*` |
+| `GET /api/model-check` | `?repo=owner/name&file=name.gguf` | `ModelCheck {ok, size, message, code}`. A `HEAD` request for `https://huggingface.co/<repo>/resolve/main/<file>` through `urllib` (`modelcheck.py`; the wizard side has the same logic in `downloader.head_info`). The size is the `x-linked-size` header of Hugging Face's redirect. Refused with a reason: a name that cannot be right, a split file, 404, a repository that needs a login, an unreachable site, an unknown size, and **a file over 15.5 GB**. In `--simulate` the head is `modelcheck.fake_head` (the size follows the quantization in the name) |
 | `GET /api/disk` | `?path=D:\Nightshift&tier=small[&source=1]` | `DiskCheck` |
 | `POST /api/action/{name}` | `ActionBody` | `ActionResult` |
 | `GET /api/file/{name}` | | File bytes. Allowlist: `voice-sample.wav`, `render-test.mp4`, `render-test.jpg`, `verify-report.json`. Anything else is 404 |
@@ -288,6 +289,7 @@ type EngineEvent =
   | { type: "plan"; items: { key: string; file: string; bytes: number | null; via: "download" | "copy" }[]; totalBytes: number }
   | { type: "file"; key: string; event: "start"; total: number | null }
   | { type: "file"; key: string; event: "progress"; done: number; total: number | null }   // at most 4 per second per file
+  | { type: "file"; key: string; event: "retry"; attempt: number; reason: "stall" | "network" | "hash"; waitS: number }   // before the backoff wait
   | { type: "file"; key: string; event: "finish"; outcome: "downloaded" | "copied" | "skipped" | "missing" | "failed" }
   | { type: "warn"; code: string; detail: string }
   | { type: "failure"; step: StepId; code: string; message: string; hint: string; detail: string; optional: boolean; attempt: number }
@@ -326,6 +328,11 @@ Wizard changes (all additive):
   on it before each attempt. An attempt that failed while the gate was cleared does not count, so a
   long pause that drops the connection cannot use up the three retries. `StepContext.download` passes
   `ctx.gate`.
+- **Stall timeout.** A transfer that receives no bytes for 60 s (`downloader.STALL_TIMEOUT_S`, the httpx read
+  timeout of every request) is aborted and counts as a network error, not as a pause: the downloader waits
+  the usual backoff (2 s, then 4 s), reconnects with `Range` and carries on. `BridgeReporter.retrying()` emits
+  the `retry` event so the row can say "No data for 60 s, trying again in 2 s"; the next `progress` event
+  clears the note.
 - **Stop.** The `stop` command sets `ctx.stop_requested`, and `BridgeReporter.update()` raises
   `SetupStopped` on its next call. `Wizard.run` catches `SetupStopped` the way it catches
   `KeyboardInterrupt`: it marks the running step `pending` and exits 130.
@@ -595,13 +602,13 @@ Purpose: everything `s01_questions` asks, on one screen, next to the sizes that 
 ╰─────────────────────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
-Grid areas: `chan chan tier tier run run` / `voice voice src src keys keys`.
+Grid areas: `chan chan chan run run run` / `model model model model model model` / `voice voice src src keys keys` (four columns: `chan chan run run` / `model model model model` / `voice voice src src` / `keys keys keys keys`). The model picker is a full-width row so its four cards sit side by side.
 
 | Region | Component and props |
 |---|---|
 | Header | `Greeting salutation="Your choices" question="" description="You can change the channel, voice and time later in the dashboard."` |
 | chan | `Card padding="lg"` with `CardHeader title="Channel" level={2}` and three fields: `TextField label="Channel name" maxLength={60} required`; `TextField label="What it is about" placeholder="horror fiction" required`; `TextField label="Your name" placeholder="Shown on the dashboard" maxLength={40}` |
-| tier | `Card padding="lg"`, `CardHeader title="Model size"`. `SegmentedControl label="Model size" options={[{value: "small", label: "Small"}, {value: "balanced", label: "Balanced"}, {value: "best", label: "Best"}]} variant="filled" size="md"`. Under it, three lines for the selected tier in `ds-num`: size and fit, a description, then `Download {totalGb} GB · needs {needGb} GB free`. A tier with `allowed: false` stays selectable. Selecting it shows `Badge tone="danger" size="sm"` with its `reason` and disables Install |
+| model | `Card padding="lg"`, `CardHeader title="Story model"`, then a `role="radiogroup"` of four option cards (`ModelPicker`, `installer\/ui\/src\/parts\/ModelPicker.tsx`; 2 columns, 4 from 1020 px). The first three are the tiers Small, Balanced and Best, read from `plan.tiers` (which the server builds from `manifest.json`); the fourth is **Other** (below). Every tier card shows: the **tier name** with a `Badge tone="accent"` "Recommended" on Balanced; the **model** (`file` without `.gguf` in mono, its Hugging Face `repo` under it in muted); the **download size** (`{llmBytes} GB download`); the **video memory it leaves for context on a 16 GB card** (`vramLeftGb`, computed as 16 GB minus the file size minus 0.6 GB of runtime, for example `6.4 GB of video memory left for context`; when the model fills the card, `No video memory left for context, part of the model runs from memory`); and a **one-line "good for"**. A tier with `allowed: false` stays selectable, shows its `reason` in `Badge tone="danger"` and disables Install. Under the cards: on a PC under 32 GB, "This PC has 16 GB of memory, so Small is selected. Balanced needs 32 GB", and always `Download {totalGb} GB, needs {needGb} GB free` for the selected card |
 | run | `Card padding="lg"`, `CardHeader title="Night run"`. `<p className="flex gap-2">` with `TimeChip value={hh} unit="h"` and `TimeChip value={mm} unit="m"` (ported, §5.2). Then `SegmentedControl label="Run time" options={["01:00", "03:00", "05:00", "other"]}`. "Other" reveals `TextField label="Time, 24 hour clock" inputMode="numeric" pattern="([01]\d\|2[0-3]):[0-5]\d"`. Caption in `text-ds-xs text-ds-muted`: "The PC wakes itself at this time, makes a video and goes back to sleep" |
 | voice | `Card padding="lg"` with `CardHeader title="Narrator"`, then `SegmentedControl label="Narrator voice" variant="plain" options={PRESET_VOICES.map(v => ({value: v, label: v}))}`, then the voice line for the selection, then the caption "You hear it in the test step. Designed and cloned voices are made later in the dashboard" |
 | src | `Card padding="lg"`, `CardHeader title="Model files come from"`, and a radio group of three `ChoiceRow`s. `ChoiceRow` (installer component) is a native `<input type="radio">` (or `checkbox`) styled as a 40 px row, `rounded-ds-md`, `bg-ds-sunken` when checked. The folder and Drive zip options reveal `TextField label="Folder"`, followed by the `DiskCheck` (`source=1`) result line: `Found 7 of 9 model files, 13.4 GB`, or the error |
@@ -618,14 +625,19 @@ Voice lines. The presets are `s01_questions.PRESET_VOICES`. These lines are UI c
 | Serena | Warm female voice |
 | Vivian | Clear, steady female voice |
 
-Tier readouts. Sizes come from `manifest.json` at runtime. The values below are what the 0.1.0
-manifest gives:
+Model cards. Everything but the "good for" line comes from `manifest.json` at runtime (the table shows what the
+0.1.0 manifest gives); the "good for" lines are UI copy.
 
-| Tier | Line 1 | Line 2 | Allowed when |
-|---|---|---|---|
-| Small | `9.0 GB · fits 16 GB of video memory` | Fastest. Good stories and Shorts | always |
-| Balanced | `14.3 GB · needs 32 GB of memory` | Better long stories. A little slower | `ramGb >= 31` |
-| Best | `22.9 GB · needs 32 GB of memory` | Best writing. Slowest, largest download | `ramGb >= 31` |
+| Tier | Model (repo, file) | Download | Video memory left for context (16 GB card) | Good for | Allowed when |
+|---|---|---|---|---|---|
+| Small | `Qwen/Qwen3-14B-GGUF`, `Qwen3-14B-Q4_K_M` | 9.0 GB | 6.4 GB | Shorts and simple stories; light coding | always |
+| Balanced, **Recommended** | `mudler/Qwen3.6-35B-A3B-APEX-MTP-GGUF`, `Qwen3.6-35B-A3B-APEX-MTP-I-Mini` | 14.3 GB | 1.1 GB | Recommended: better long stories and a usable coding assistant | `ramGb >= 31` |
+| Best | `unsloth/Qwen3.6-35B-A3B-MTP-GGUF`, `Qwen3.6-35B-A3B-UD-Q4_K_XL` | 22.9 GB | none (larger than the card) | Highest quality; needs 32 GB RAM and leaves little VRAM headroom; slower | `ramGb >= 31` |
+
+
+**The Other card.** The fourth card of the model picker lets the owner try a model the manifest does not list. It holds two fields, "Hugging Face repository" (`Qwen/Qwen3-14B-GGUF`) and "GGUF file name" (`Qwen3-14B-Q4_K_M.gguf`). Selecting the card, or focusing a field, selects it and sets `llmTier` to `small`. **On blur** of either field (when both are filled) the window calls `GET /api/model-check`; while it runs the card says "Checking the file". A good file shows `Found`, the download size and the video memory it leaves for context, like a tier card, and the draft gets `llmCustom: {repo, file, size}`; a refusal (not found, needs a login, split file, unknown size, **over 15.5 GB** with the size and "Pick a smaller version, for example Q4_K_M") shows its reason in danger under the file field and leaves `llmCustom` null, which keeps Install disabled. Editing a field forgets the result until the next blur. Answers carry the choice as `llm_custom` (`null` otherwise; `contracts/CHANGE_REQUESTS.md` CR-C1-UI-9). `s03_download_models` downloads the file from `https://huggingface.co/<repo>/resolve/main/<file>` into `models\llm\` **without a SHA256** (allowed only for this user-supplied file), shows warning `NS-W113` ("A custom model is not checked"), and `runtime.json` points `llama.model_path` at it with the plain dense flags of Small.
+
+**Default tier (owner decision 2026-11-02).** Balanced is the recommended default, so `answers.json` ships with `"llm_tier": "balanced"` and the Choices screen starts on Balanced (`plan.recommendedTier`). On a PC with less than 32 GB of memory (`ramGb < 31`) the screen starts on Small instead and says why in one line under the selector: "This PC has 16 GB of memory, so Small is selected. Balanced needs 32 GB". An unattended `answers.json` that asks for Balanced or Best on such a PC still fails with "llm_tier 'balanced' needs 32 GB of RAM". The Welcome screen's size, free-space and time figures follow the selected tier (default download about 20 GB with Balanced, about 15 GB with Small), and its plan card names the tier.
 
 "More options" opens a `Card elevation={3} padding="lg"` popover, anchored above the footer, with:
 
@@ -653,7 +665,8 @@ checks them again with pydantic:
 | `channel.niche` | 2–60 characters | Say in a few words what the channel is about |
 | `ownerName` | 0–40 characters | Use 40 characters or fewer |
 | `homePath` | absolute path on a fixed local drive, no `%`, 80 characters at most, at least `required_free_gb(tier)` free | Pick a folder on a drive with {need} GB free. This one has {free} GB |
-| `llmTier` | allowed on this PC | {Tier} needs 32 GB of memory. This PC has {ram} GB |
+| `llmTier` | allowed on this PC (not checked when `llmCustom` is set) | {Tier} needs 32 GB of memory. This PC has {ram} GB |
+| `llmCustom` | null, or `{repo, file, size}` with `owner/name`, a single `.gguf` file name and `0 < size <= 15.5 GB`; `required_free_gb` adds what the file is larger than 9 GB | Check the model file first; the reasons of `/api/model-check` |
 | `modelsSource.path` | an existing folder when kind is `folder` or `drive-zip` | That folder was not found |
 | `runTime` | `^([01]\d\|2[0-3]):[0-5]\d$` | Use the 24 hour clock, for example 03:00 |
 | `pexelsKey`, `pixabayKey` | not empty, unless a key is already stored (resume) | Paste the {Pexels} key. Setup needs it to find stock footage |
@@ -705,10 +718,10 @@ card. Within each group, active rows are pinned to the top.
 
 | Region | Component and props |
 |---|---|
-| Header | `Greeting salutation={`Downloading ${totalGb} GB`} question="" description="You can close this window. Keep the black setup window open, it is doing the work."`. Right: `Button variant="soft" leadingIcon={paused ? "play" : "pause"}`, reading "Pause" or "Resume" |
+| Header | `Greeting salutation={hero} question="" description="You can close this window. Keep the black setup window open, it is doing the work."`. Right: `Button variant="soft" leadingIcon={paused ? "play" : "pause"}`, reading "Pause" or "Resume". The hero is `Downloading 17.3 GB · about 41 min on this connection`: the time left comes from the running average speed (`overall.etaS`, rounded up to the whole minute, "about 1 h 05 min" from an hour); for the first 20 s of data it reads `Downloading 17.3 GB · estimating…`, and while paused `Downloading 17.3 GB · paused` |
 | list | `Card padding="md"` with a heading per group, `CardHeader level={3}`: Free tools, Python packages, Programs, AI models. One `DownloadRow` per `downloads.items[]` |
-| `DownloadRow` (installer component) | 48 px tall, 64 px while active (it gains a second line). Contents, left to right: <br>• Status mark: `StatusDot` tone `online` while active, `success` when done, `danger` when failed. Other states show an empty 8 px ring in `border-ds-default`. <br>• Label in `text-ds-sm font-medium`, a 220 px column. <br>• File name in `text-ds-xs text-ds-muted font-mono truncate` (flexes). <br>• Size in `text-ds-xs ds-num`, like `2.1/9.0 GB`. <br>• `ProgressBar value={pct} label={`${label} progress`} maxTrack={120} tone={failed ? "danger" : "accent"}`. Rows with `via` `winget` or `uv` have no size and show the text "installing" instead of a bar. <br>Second line while active: `{speed} · {eta} left`, in `text-ds-2xs text-ds-text-2 ds-num`. Second line when failed: `{code} {message}` in `text-ds-danger`, with `Button variant="ghost" size="sm" leadingIcon="retry"` "Retry" |
-| eta | `CountdownCard title="Time left" target={new Date(Date.now() + overall.etaS * 1000)} units={["h", "m"]}` (ported with the new `units` prop, §5.2), followed by two lines in `text-ds-sm ds-num`: `{done} of {total} GB` and `{speed}/s`. While `etaS` is null (the first 10 s, or while paused) it is a plain `Card padding="md"` titled "Time left", with "Measuring speed" or "Paused" in `text-ds-text-2` |
+| `DownloadRow` (installer component) | 48 px tall, 64 px while active (it gains a second line). The row that is downloading (or paused) has a filled surface, `bg-ds-sunken`, so the eye lands on it. Contents, left to right: <br>• Status mark: `StatusDot` tone `online` while active, `success` when done, `danger` when failed. Other states show an empty 8 px ring in `border-ds-default`. <br>• Label in `text-ds-sm font-medium`, a 220 px column. <br>• File name in `text-ds-xs text-ds-muted font-mono truncate` (flexes). <br>• Size in `text-ds-xs ds-num`, like `2.1/9.0 GB`. <br>• `ProgressBar value={pct} label={`${label} progress`} maxTrack={120} tone={failed ? "danger" : "accent"}`. Rows with `via` `winget` or `uv` have no size and show the text "installing" instead of a bar. <br>Second line while active: `{speed} · {eta} left`, in `text-ds-2xs text-ds-text-2 ds-num`; while the file waits to retry after a stall (60 s without bytes) or a dropped connection it reads the `note`, for example `No data for 60 s, trying again in 2 s`, in `text-ds-text` medium. Second line when failed: `{code} {message}` in `text-ds-danger`, with `Button variant="ghost" size="sm" leadingIcon="retry"` "Retry" |
+| eta | `CountdownCard title="Time left" target={new Date(Date.now() + overall.etaS * 1000)} units={["h", "m"]}` (ported with the new `units` prop, §5.2), followed by two lines in `text-ds-sm ds-num`: `{done} of {total} GB` and `{speed}/s`. While `etaS` is null (the first 20 s, or while paused) it is a plain `Card padding="md"` titled "Time left", with "Measuring speed" or "Paused" in `text-ds-text-2` |
 | src | `Card tone="sunken" elevation={0} padding="md"`. Title and body depend on the source: <br>• "From the internet": "Hugging Face and GitHub. Every file is checked after download" <br>• "From your folder": "Files that match are copied from {path}. The rest is downloaded" <br>• "From the Google Drive zip": "Unpacking {n} zips into the install folder, then copying" |
 | Footer left | `{filesDone} of {filesTotal} files · {doneGb} of {totalGb} GB` |
 | Footer right | `Button variant="ghost"` "Stop setup" (opens the dialog in §2.9), then `Button variant="primary"` "Pause" or "Resume" |
@@ -736,7 +749,7 @@ Speed and time left are computed in P1, not in the UI:
 
 - Per file: an exponential moving average of bytes per second over 5 s windows, with `alpha = 0.3`.
 - Overall speed: the sum over active files.
-- Overall `etaS = (bytesTotal - bytesDone) / overallSpeed`. It is shown only after 10 s of data, and
+- Overall `etaS = (bytesTotal - bytesDone) / overallSpeed`. It is shown only after 20 s of data, and
   rounded up to the whole minute.
 - Rows without a size add no bytes and do not hold up the estimate.
 
@@ -745,8 +758,11 @@ size and the note "will continue from {x} GB". A file with a verified `.ok` mark
 and `done`.
 
 **Pause.** The header and footer buttons switch to Resume. Active rows show `paused` and keep their
-bars, and the CountdownCard shows "Paused". Winget and uv installs cannot pause. While one runs, the
-button reads "Pause after this tool" and takes effect when the file downloads begin.
+bars, and the CountdownCard shows "Paused". Pause takes effect inside the file: the downloader checks the pause
+switch after every 64 KiB chunk, so the stream stops within one chunk (well under a second), the connection is
+closed and nothing is held open. Resume reconnects with `Range` from the bytes already in the `.part` file. Winget
+and uv installs cannot pause. While one runs, the button reads "Pause after this tool" and takes effect when the
+file downloads begin.
 
 ### 2.5 Installing
 
@@ -1556,7 +1572,15 @@ export interface CheckRow {
 
 export interface PlanItem { key: string; label: string; file: string | null; bytes: number | null; via: "download" | "winget" | "uv" }
 export interface PlanGroup { id: "tools" | "python" | "programs" | "models"; label: string; bytes: number | null; items: PlanItem[] }
-export interface TierInfo { llmBytes: number; totalBytes: number; needFreeGb: number; needsRamGb: number; allowed: boolean; reason: string | null }
+export interface TierInfo {
+  repo: string | null; file: string | null;   // the manifest model of the tier
+  llmBytes: number; totalBytes: number;
+  vramLeftGb: number | null;                  // 16 GB card: 16 - file - 0.6 (negative = larger than the card)
+  recommended: boolean;                       // Balanced
+  needFreeGb: number; needsRamGb: number; allowed: boolean; reason: string | null;
+}
+export interface LlmCustom { repo: string; file: string; size: number }
+export interface ModelCheck { ok: boolean; size: number | null; message: string | null; code: string | null }
 export interface InstallPlan {
   tier: Tier;
   profile: "gpu" | "cpu-dev";
@@ -1573,6 +1597,7 @@ export interface ChoicesDraft {
   channel: { displayName: string; niche: string; language: string };   // language defaults to "en"
   homePath: string;
   llmTier: Tier;
+  llmCustom: LlmCustom | null;       // the Other card: replaces the tier's model; llmTier is then "small"
   voice: { speaker: PresetVoice };
   modelsSource: { kind: "internet" | "folder" | "drive-zip"; path: string | null };
   runTime: string;                   // "03:00"
@@ -1587,7 +1612,7 @@ export interface AnswersView extends Omit<ChoicesDraft, "pexelsKey" | "pixabayKe
   pixabayKeySet: boolean;
 }
 export type ChoicesField =
-  | "ownerName" | "channel.displayName" | "channel.niche" | "channel.language" | "homePath" | "llmTier"
+  | "ownerName" | "channel.displayName" | "channel.niche" | "channel.language" | "homePath" | "llmTier" | "llmCustom"
   | "voice.speaker" | "modelsSource.path" | "runTime" | "mastersPerWeek" | "pexelsKey" | "pixabayKey";
 export interface FieldError { field: ChoicesField; message: string; code: string | null }
 export type AnswersResult = { ok: true; answers: AnswersView; plan: InstallPlan } | { ok: false; errors: FieldError[] };

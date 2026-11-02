@@ -35,6 +35,9 @@ class StubController:
     def check_key(self, service, key):
         return {"ok": key == "good", "code": None, "message": service}
 
+    def check_model(self, repo, file):
+        return {"ok": bool(repo and file), "size": 9, "message": f"{repo}|{file}", "code": None}
+
     def disk(self, path, tier, source):
         return {"path": path, "tier": tier, "source": source}
 
@@ -161,6 +164,10 @@ def test_api_routes_reach_the_controller(env):
     assert not json.loads(client.call("POST", "/api/check-key", {"service": "pexels", "key": "bad"})[2])["ok"]
     disk = json.loads(client.call("GET", "/api/disk?path=D%3A%5CNightshift&tier=best&source=1")[2])
     assert disk == {"path": "D:\\Nightshift", "tier": "best", "source": True}
+    query = "repo=Qwen%2FQwen3-14B-GGUF&file=Qwen3-14B-Q4_K_M.gguf"
+    checked = json.loads(client.call("GET", f"/api/model-check?{query}")[2])
+    assert checked["ok"] is True and checked["message"] == "Qwen/Qwen3-14B-GGUF|Qwen3-14B-Q4_K_M.gguf"
+    assert json.loads(client.call("GET", "/api/model-check")[2])["ok"] is False        # nothing named yet
     status, _, body = client.call("POST", "/api/action/pause", {"path": "x"})
     assert status == 200 and ctl.actions[-1] == ("pause", {"path": "x"})
     assert client.call("POST", "/api/action/cancel", {})[0] == 409                    # a refused precondition

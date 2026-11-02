@@ -5,6 +5,7 @@ import http.server
 import io
 import json
 import threading
+import time
 import zipfile
 from pathlib import Path
 
@@ -491,3 +492,267 @@ def test_plan_from_hf_tree_error_is_e105(tmp_path: Path):
     with pytest.raises(NsError) as ei:
         dl.plan_from_hf_tree("a/b", "main", tmp_path, client)
     assert ei.value.code == "NS-E105"
+
+
+# ---------------------------------------------------------------------------------------------- pause
+def wait_until(pred, what: str, timeout: float = 10.0) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if pred():
+            return
+        time.sleep(0.005)
+    raise AssertionError(f"timed out waiting for {what}")
+
+
+class ChunkedBody(httpx.SyncByteStream):
+    """A response body served in fixed chunks. It can clear the pause gate just before serving chunk N."""
+
+    def __init__(self, data: bytes, chunk: int, log: dict, *, gate=None, clear_before: int | None = None):
+        self.data, self.chunk, self.log = data, chunk, log
+        self.gate, self.clear_before = gate, clear_before
+
+    def __iter__(self):
+        for index, start in enumerate(range(0, len(self.data), self.chunk)):
+            if self.gate is not None and index == self.clear_before:
+                self.gate.clear()              # the operator presses Pause while this chunk is in flight
+            self.log["served"] += 1
+            yield self.data[start:start + self.chunk]
+
+    def close(self) -> None:
+        self.log["closed"] += 1
+
+
+def ranged_handler(data: bytes, chunk: int, log: dict, ranges: list, *, gate=None, clear_before=None):
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "HEAD":
+            return httpx.Response(200, headers={"content-length": str(len(data))})
+        rng = request.headers.get("range")
+        ranges.append(rng)
+        start = int(rng.split("=")[1].split("-")[0]) if rng else 0
+        body = data[start:]
+        headers = {"content-length": str(len(body))}
+        if rng:
+            headers["content-range"] = f"bytes {start}-{len(data) - 1}/{len(data)}"
+        stream = ChunkedBody(body, chunk, log, gate=gate if not rng else None, clear_before=clear_before)
+        return httpx.Response(206 if rng else 200, headers=headers, stream=stream)
+
+    return handler
+
+
+def test_pause_stops_the_stream_within_one_chunk_and_resume_continues_from_the_right_byte(tmp_path: Path):
+    chunk = 64 * 1024
+    data = bytes(range(256)) * 4096                     # 1 MiB = 16 chunks
+    sha = hashlib.sha256(data).hexdigest()
+    gate = threading.Event()
+    gate.set()
+    log = {"served": 0, "closed": 0}
+    ranges: list = []
+    handler = ranged_handler(data, chunk, log, ranges, gate=gate, clear_before=3)
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    dest = tmp_path / "a.bin"
+    out: dict = {}
+    worker = threading.Thread(
+        target=lambda: out.update(path=dl.download("https://x.test/a.bin", dest, sha, client=client,
+                                                   gate=gate, chunk=chunk, sleep=no_sleep)))
+    worker.start()
+    wait_until(lambda: log["closed"] >= 1, "the paused stream to be closed")
+    assert worker.is_alive()                             # parked at the gate, not finished and not failed
+    part = dest.with_name("a.bin.part")
+    assert log["served"] == 4                            # chunk 3 came after the clear; chunk 4 not read
+    assert part.stat().st_size == 4 * chunk              # the byte offset the Range request must carry
+    assert ranges == [None]
+    gate.set()                                           # Resume
+    worker.join(timeout=10)
+    assert not worker.is_alive() and out["path"] == dest
+    assert ranges == [None, f"bytes={4 * chunk}-"]       # reconnected from the right byte
+    assert dest.read_bytes() == data and dl.is_verified(dest, sha)
+    assert log["closed"] == 2                            # one connection per stream, none left open
+
+
+def test_a_cleared_gate_before_the_first_byte_sends_no_request_until_resume(tmp_path: Path):
+    data = DATA
+    gate = threading.Event()                             # starts paused
+    log = {"served": 0, "closed": 0}
+    ranges: list = []
+    client = httpx.Client(transport=httpx.MockTransport(ranged_handler(data, 1 << 16, log, ranges)))
+    dest = tmp_path / "a.bin"
+    worker = threading.Thread(target=lambda: dl.download("https://x.test/a.bin", dest, SHA, client=client,
+                                                         gate=gate, chunk=1 << 16, sleep=no_sleep))
+    worker.start()
+    time.sleep(0.05)
+    assert worker.is_alive() and ranges == [] and not dest.exists()
+    gate.set()
+    worker.join(timeout=10)
+    assert not worker.is_alive() and dest.read_bytes() == data
+
+
+def test_a_pause_that_drops_the_connection_does_not_use_up_a_retry(tmp_path: Path):
+    chunk = 64 * 1024
+    data = bytes(range(256)) * 4096
+    gate = threading.Event()
+    gate.set()
+    state = {"gets": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "HEAD":
+            return httpx.Response(200, headers={"content-length": str(len(data))})
+        state["gets"] += 1
+        if state["gets"] == 1:
+            gate.clear()                                 # paused, and the connection breaks with it
+            raise httpx.ReadError("connection reset", request=request)
+        rng = request.headers.get("range")
+        body = data if not rng else data[int(rng.split("=")[1].split("-")[0]):]
+        return httpx.Response(200, content=body)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    sleeps: list[float] = []
+    dest = tmp_path / "a.bin"
+    worker = threading.Thread(target=lambda: dl.download(
+        "https://x.test/a.bin", dest, None, client=client, gate=gate, chunk=chunk, retries=1,
+        sleep=sleeps.append))
+    worker.start()
+    wait_until(lambda: state["gets"] >= 1, "the first request")
+    time.sleep(0.05)
+    assert worker.is_alive()                             # that one failure was a pause, so no retry was used
+    gate.set()
+    worker.join(timeout=10)
+    assert not worker.is_alive() and dest.read_bytes() == data and sleeps == []
+
+
+def test_head_info_reads_the_hugging_face_linked_size_without_following_the_redirect():
+    seen: list[tuple[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append((request.method, request.url.host))
+        if request.url.host == "huggingface.co":
+            return httpx.Response(302, headers={"location": "https://cdn.test/f", "x-linked-size": "1234"})
+        return httpx.Response(200, headers={"content-length": "9"})
+
+    http = httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=True)
+    assert dl.head_info(http, "https://huggingface.co/o/r/resolve/main/f.gguf") == (200, 1234)
+    assert seen == [("HEAD", "huggingface.co")]          # the CDN was not asked
+
+
+def test_head_info_follows_a_redirect_without_a_linked_size_and_reports_a_missing_length():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "a.test":
+            return httpx.Response(302, headers={"location": "https://b.test/f"})
+        if request.url.path == "/nolen":
+            return httpx.Response(200)
+        if request.url.path == "/gone":
+            return httpx.Response(404)
+        return httpx.Response(200, headers={"content-length": "77"})
+
+    http = httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=True)
+    assert dl.head_info(http, "https://a.test/x") == (200, 77)
+    assert dl.head_info(http, "https://b.test/nolen") == (200, None)
+    assert dl.head_info(http, "https://b.test/gone") == (404, None)
+
+
+# ---------------------------------------------------------------------------------------------- stall
+def start_stalling_server(data: bytes, *, stall_after: int, stall_first: int = 1):
+    """A loopback server. Its first ``stall_first`` GETs send ``stall_after`` bytes, then go silent."""
+    state: dict = {"ranges": [], "release": threading.Event()}
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *args) -> None:
+            return None
+
+        def do_HEAD(self) -> None:  # noqa: N802 - http.server API
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+
+        def do_GET(self) -> None:  # noqa: N802
+            rng = self.headers.get("Range")
+            state["ranges"].append(rng)
+            start = int(rng.split("=")[1].split("-")[0]) if rng else 0
+            body = data[start:]
+            self.send_response(206 if rng else 200)
+            self.send_header("Content-Length", str(len(body)))
+            if rng:
+                self.send_header("Content-Range", f"bytes {start}-{len(data) - 1}/{len(data)}")
+            self.end_headers()
+            try:
+                if len(state["ranges"]) <= stall_first:
+                    self.wfile.write(body[:stall_after])
+                    self.wfile.flush()
+                    state["release"].wait(15)             # the server stops sending; the client must give up
+                else:
+                    self.wfile.write(body)
+            except OSError:
+                return
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    server.daemon_threads = True
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, state
+
+
+def stop_server(server, state) -> None:
+    state["release"].set()
+    server.shutdown()
+    server.server_close()
+
+
+def test_a_stalled_transfer_is_aborted_and_retried_with_range_as_a_network_error(tmp_path: Path):
+    chunk = 64 * 1024
+    data = bytes(range(256)) * 4096
+    sha = hashlib.sha256(data).hexdigest()
+    server, state = start_stalling_server(data, stall_after=3 * chunk)
+    sleeps: list[float] = []
+    retries: list[tuple[int, str, float]] = []
+    dest = tmp_path / "a.bin"
+    try:
+        url = f"http://127.0.0.1:{server.server_address[1]}/a.bin"
+        with httpx.Client(trust_env=False) as client:
+            dl.download(url, dest, sha, client=client, sleep=sleeps.append, stall_timeout=0.3, chunk=chunk,
+                        on_retry=lambda attempt, reason, wait: retries.append((attempt, reason, wait)))
+    finally:
+        stop_server(server, state)
+    assert dest.read_bytes() == data and dl.is_verified(dest, sha)
+    assert state["ranges"] == [None, f"bytes={3 * chunk}-"]  # resumed where the stall began
+    assert sleeps == [2] and retries == [(1, "stall", 2.0)]       # it counted as an attempt and waited
+
+
+def test_a_server_that_always_stalls_ends_in_e105_after_the_retries(tmp_path: Path):
+    data = bytes(range(256)) * 1024
+    server, state = start_stalling_server(data, stall_after=1000, stall_first=99)
+    sleeps: list[float] = []
+    try:
+        url = f"http://127.0.0.1:{server.server_address[1]}/a.bin"
+        with httpx.Client(trust_env=False) as client, pytest.raises(NsError) as ei:
+            dl.download(url, tmp_path / "a.bin", None, client=client, sleep=sleeps.append,
+                        stall_timeout=0.2, retries=2)
+    finally:
+        stop_server(server, state)
+    assert ei.value.code == "NS-E105" and "no data for 0.2 s" in ei.value.detail
+    assert len(state["ranges"]) == 2 and sleeps == [2]
+
+
+def test_the_default_stall_timeout_is_sixty_seconds():
+    assert dl.STALL_TIMEOUT_S == 60.0
+    client = dl._new_client()
+    try:
+        assert client.timeout.read == 60.0
+    finally:
+        client.close()
+
+
+def test_run_plan_tells_the_reporter_about_a_retry(tmp_path: Path):
+    class Rec(_Rec):
+        def __init__(self) -> None:
+            super().__init__()
+            self.retries: list[tuple] = []
+
+        def retrying(self, name, attempt, reason, wait_s):
+            self.retries.append((name, attempt, reason, wait_s))
+
+    rec = Rec()
+    item = dl.DownloadItem(name="f0", url="https://x.test/f0", dest=tmp_path / "f0", sha256=SHA)
+    res = dl.run_plan([item], client=make_client(fail_first=1), reporter=rec, sleep=no_sleep)
+    assert res.downloaded == ["f0"] and rec.retries == [("f0", 1, "network", 2.0)]
+    plain = _Rec()                                       # a reporter without ``retrying`` is simply not told
+    item2 = dl.DownloadItem(name="f1", url="https://x.test/f1", dest=tmp_path / "f1", sha256=SHA)
+    res2 = dl.run_plan([item2], client=make_client(fail_first=1), reporter=plain, sleep=no_sleep)
+    assert res2.downloaded == ["f1"]

@@ -2,9 +2,10 @@
 // Numbers follow the spec wireframes: an RTX 5060 Ti with 16 GB, Windows 11 Pro, 17.3 GB to download.
 import type {
   AnswersView, CheckRow, DownloadRow, DownloadsView, DriveView, FailureView, InstallPlan, MachineSummary, Notice, PlanGroup, PlanItem, ResultView,
-  SetupState, StepId, StepView, Tier, TierInfo, UninstallView, VerifyView,
+  LlmCustom, SetupState, StepId, StepView, Tier, TierInfo, UninstallView, VerifyView,
 } from "../api/types";
 import { stepTitle } from "../copy";
+import { customNeedFreeGb, vramLeftGb } from "../format";
 
 export const NOW = () => new Date();
 const iso = (offsetS = 0): string => {
@@ -22,12 +23,12 @@ export const DRIVES: DriveView[] = [
   { letter: "E", freeGb: 1830, type: "HDD" },
 ];
 
-export function machine(homeDrive: string): MachineSummary {
+export function machine(homeDrive: string, ramGb = 32): MachineSummary {
   const d = DRIVES.find((x) => x.letter === homeDrive) ?? DRIVES[1]!;
   return {
-    windows: "Windows 11 Pro 10.0.26200", gpuName: "NVIDIA GeForce RTX 5060 Ti", vramMb: 16311, driver: "581.57", cuda: "13.0", ramGb: 32,
+    windows: "Windows 11 Pro 10.0.26200", gpuName: "NVIDIA GeForce RTX 5060 Ti", vramMb: 16311, driver: "581.57", cuda: "13.0", ramGb,
     profile: "gpu", isAdmin: false, drives: DRIVES,
-    meters: { vram: { haveGb: 16, needGb: 16, hardMinGb: 12 }, ram: { haveGb: 32, needGb: 16, hardMinGb: 8 }, disk: { haveGb: d.freeGb, needGb: 60, hardMinGb: 40, path: `${d.letter}:\\Nightshift` } },
+    meters: { vram: { haveGb: 16, needGb: 16, hardMinGb: 12 }, ram: { haveGb: ramGb, needGb: 16, hardMinGb: 8 }, disk: { haveGb: d.freeGb, needGb: 60, hardMinGb: 40, path: `${d.letter}:\\Nightshift` } },
   };
 }
 
@@ -61,14 +62,14 @@ export function checkRows(homeDrive: string, o: { blocking?: boolean } = {}): Ch
 
 const item = (key: string, label: string, file: string | null, bytes: number | null, via: PlanItem["via"] = "download"): PlanItem => ({ key, label, file, bytes, via });
 
-const TIER_LLM: Record<Tier, { label: string; file: string; bytes: number }> = {
-  small: { label: "Story model (Small)", file: "Qwen3-14B-Q4_K_M.gguf", bytes: 9.0e9 },
-  balanced: { label: "Story model (Balanced)", file: "Qwen3-14B-Q8_0.gguf", bytes: 14.3e9 },
-  best: { label: "Story model (Best)", file: "Qwen3-32B-Q5_K_M.gguf", bytes: 22.9e9 },
+const TIER_LLM: Record<Tier, { label: string; repo: string; file: string; bytes: number }> = {
+  small: { label: "Story model (Small)", repo: "Qwen/Qwen3-14B-GGUF", file: "Qwen3-14B-Q4_K_M.gguf", bytes: 9001752960 },
+  balanced: { label: "Story model (Balanced)", repo: "mudler/Qwen3.6-35B-A3B-APEX-MTP-GGUF", file: "Qwen3.6-35B-A3B-APEX-MTP-I-Mini.gguf", bytes: 14272220768 },
+  best: { label: "Story model (Best)", repo: "unsloth/Qwen3.6-35B-A3B-MTP-GGUF", file: "Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf", bytes: 22853663008 },
 };
 
-export function planGroups(tier: Tier): PlanGroup[] {
-  const llm = TIER_LLM[tier];
+export function planGroups(tier: Tier, custom: LlmCustom | null = null): PlanGroup[] {
+  const llm = custom ? { label: "Story model (Custom)", file: custom.file, bytes: custom.size } : TIER_LLM[tier];
   const tools = [item("git", "Git", null, null, "winget"), item("ffmpeg", "FFmpeg", null, null, "winget"), item("terminal", "Windows Terminal", null, null, "winget")];
   const python = [item("setup_env", "Python packages for setup", null, null, "uv")];
   const programs = [
@@ -94,11 +95,12 @@ export function planGroups(tier: Tier): PlanGroup[] {
   ];
 }
 
-const TIERS: Record<Tier, TierInfo> = {
-  small: { llmBytes: 9.0e9, totalBytes: 17.3e9, needFreeGb: 60, needsRamGb: 16, allowed: true, reason: null },
-  balanced: { llmBytes: 14.3e9, totalBytes: 22.6e9, needFreeGb: 66, needsRamGb: 32, allowed: true, reason: null },
-  best: { llmBytes: 22.9e9, totalBytes: 31.2e9, needFreeGb: 76, needsRamGb: 32, allowed: true, reason: null },
+const BASE_BYTES = 8.3e9; // everything except the story model
+const tierInfo = (tier: Tier, needFreeGb: number, needsRamGb: number): TierInfo => {
+  const m = TIER_LLM[tier];
+  return { repo: m.repo, file: m.file, llmBytes: m.bytes, totalBytes: BASE_BYTES + m.bytes, vramLeftGb: vramLeftGb(m.bytes), recommended: tier === "balanced", needFreeGb, needsRamGb, allowed: true, reason: null };
 };
+const TIERS: Record<Tier, TierInfo> = { small: tierInfo("small", 60, 16), balanced: tierInfo("balanced", 74, 32), best: tierInfo("best", 81, 32) };
 
 export function estimateLabel(totalBytes: number): { downloadMin: number; installMin: number; label: string } {
   const downloadMin = Math.ceil((totalBytes * 8) / (50e6 * 60));
@@ -111,15 +113,15 @@ export function estimateLabel(totalBytes: number): { downloadMin: number; instal
   return { downloadMin, installMin, label };
 }
 
-export function plan(tier: Tier = "small", ramGb = 32): InstallPlan {
-  const groups = planGroups(tier);
-  const totalBytes = TIERS[tier].totalBytes;
+export function plan(tier: Tier = "balanced", ramGb = 32, custom: LlmCustom | null = null): InstallPlan {
+  const groups = planGroups(tier, custom);
+  const totalBytes = custom ? BASE_BYTES + custom.size : TIERS[tier].totalBytes;
   const tiers = { ...TIERS };
   if (ramGb < 31) {
     tiers.balanced = { ...tiers.balanced, allowed: false, reason: "Needs 32 GB of memory" };
     tiers.best = { ...tiers.best, allowed: false, reason: "Needs 32 GB of memory" };
   }
-  return { tier, profile: "gpu", groups, totalBytes, unknownCount: 4, needFreeGb: TIERS[tier].needFreeGb, estimate: estimateLabel(totalBytes), tiers };
+  return { tier, profile: "gpu", groups, totalBytes, unknownCount: 4, needFreeGb: custom ? customNeedFreeGb(custom.size) : TIERS[tier].needFreeGb, estimate: estimateLabel(totalBytes), recommendedTier: ramGb < 31 ? "small" : "balanced", tiers };
 }
 
 /* ------------------------------------------------------------------ steps, downloads, verify */
@@ -144,7 +146,7 @@ export function steps(firstOpen: StepId | "all-done", o: { failed?: StepId; runn
 
 export function answers(o: Partial<AnswersView> = {}): AnswersView {
   return {
-    ownerName: "Abdo", channel: { displayName: "After Dark Tales", niche: "horror fiction", language: "en" }, homePath: "D:\\Nightshift", llmTier: "small",
+    ownerName: "Abdo", channel: { displayName: "After Dark Tales", niche: "horror fiction", language: "en" }, homePath: "D:\\Nightshift", llmTier: "balanced", llmCustom: null,
     voice: { speaker: "Ryan" }, modelsSource: { kind: "internet", path: null }, runTime: "03:00", mastersPerWeek: 1, installCode: true, theme: "dark",
     pexelsKeySet: true, pixabayKeySet: true, ...o,
   };
@@ -167,24 +169,28 @@ export function overall(rows: DownloadRow[], plan0: InstallPlan, speedBps: numbe
   return { bytesTotal, bytesDone, filesTotal: rows.length, filesDone: rows.filter((r) => r.status === "done" || r.status === "skipped").length, speedBps, etaS };
 }
 
-export function downloadsMid(plan0: InstallPlan, paused = false): DownloadsView {
+/** Mid-download rows. `stall`: the model file got no bytes for 60 s and waits to retry (no speed, a note on the row). */
+export function downloadsMid(plan0: InstallPlan, paused = false, stall = false): DownloadsView {
   const rows = downloadRows(plan0.groups).map((r): DownloadRow => {
     const done = (note: string | null): DownloadRow => ({ ...r, status: "done", bytesDone: r.bytesTotal ?? 0, note });
     switch (r.key) {
       case "git": return done("already here");
       case "terminal": return done("already here");
-      case "ffmpeg": return { ...r, status: paused ? "paused" : "active", note: "installing with winget, Windows may ask for permission" };
+      case "ffmpeg": return paused || stall ? done("installed with winget") : { ...r, status: "active", note: "installing with winget, Windows may ask for permission" };
       case "setup_env": return { ...r, status: "queued", note: null };
       case "llama_cuda13": return done(null);
       case "cudart13": return { ...r, status: paused ? "paused" : "active", bytesDone: Math.round(290e6 * 0.62), speedBps: paused ? null : 4.2e6, etaS: paused ? null : 26 };
-      case "llm": return { ...r, status: paused ? "paused" : "active", bytesDone: 2.1e9, speedBps: paused ? null : 11.4e6, etaS: paused ? null : 605 };
+      case "llm":
+        return stall
+          ? { ...r, status: "active", bytesDone: 2.1e9, speedBps: null, etaS: null, note: "No data for 60 s, trying again in 2 s" }
+          : { ...r, status: paused ? "paused" : "active", bytesDone: 2.1e9, speedBps: paused ? null : 11.4e6, etaS: paused ? null : 605 };
       case "tts_base": return { ...r, status: "queued", bytesDone: 0.4e9, note: "will continue from 0.4 GB" };
       default: return r;
     }
   });
-  const speed = paused ? null : 11.4e6;
+  const speed = paused ? null : stall ? 4.2e6 : 11.4e6;
   const o = overall(rows, plan0, speed);
-  const view = { items: rows, overall: { ...o, bytesDone: 6.2e9, etaS: paused ? null : 2460 }, source: "internet" as const, paused };
+  const view = { items: rows, overall: { ...o, bytesDone: 6.2e9, etaS: paused ? null : stall ? null : 2460 }, source: "internet" as const, paused };
   return view;
 }
 
@@ -248,7 +254,7 @@ export function failureView(): FailureView {
 
 export function baseState(over: Partial<SetupState> = {}): SetupState {
   const m = machine("D");
-  const p = plan("small");
+  const p = plan("balanced");
   return {
     schema: 1, rev: 1, version: "0.3.0", appPath: "D:\\NightShift", phase: "checks", run: "idle", uiStep: "welcome", resumed: false, prefilledFrom: null,
     startedAt: null, updatedAt: iso(), host: "webview2", machine: m, checks: checkRows("D"), checkedAt: iso(-60), checking: false, blocking: false, plan: p,
@@ -265,7 +271,7 @@ const LOGS = [
   { t: iso(-2), level: "info" as const, text: "Qwen3-14B-Q4_K_M.gguf  2.1 of 9.0 GB  11.4 MB/s  10 min left" },
 ];
 
-export const SCREENS = ["welcome", "welcome-resume", "checks", "checks-blocking", "choices", "downloading", "paused", "installing", "verifying", "done", "failed", "uninstall", "uninstall-done", "stop-dialog", "close-dialog"] as const;
+export const SCREENS = ["welcome", "welcome-resume", "checks", "checks-blocking", "choices", "choices-lowram", "downloading", "paused", "download-stall", "installing", "verifying", "done", "failed", "uninstall", "uninstall-done", "stop-dialog", "close-dialog"] as const;
 export type ScreenName = (typeof SCREENS)[number];
 
 export function uninstallView(over: Partial<UninstallView> = {}): UninstallView {
@@ -277,11 +283,11 @@ export function uninstallView(over: Partial<UninstallView> = {}): UninstallView 
 }
 
 export function fixture(name: string): { state: SetupState | null; uninstall: UninstallView | null } {
-  const dl = (paused: boolean, run: SetupState["run"]): SetupState => {
+  const dl = (paused: boolean, run: SetupState["run"], stall = false): SetupState => {
     const p = plan("small");
     return baseState({
-      phase: "downloading", run, uiStep: null, startedAt: iso(-1500), answers: answers(), answersLocked: true, plan: p, steps: steps("s03_download_models", { detail: "Downloading AI models" }),
-      downloads: downloadsMid(p, paused), log: LOGS, checks: checkRows("D"),
+      phase: "downloading", run, uiStep: null, startedAt: iso(-1500), answers: answers({ llmTier: "small" }), answersLocked: true, plan: p, steps: steps("s03_download_models", { detail: "Downloading AI models" }),
+      downloads: downloadsMid(p, paused, stall), log: LOGS, checks: checkRows("D"),
     });
   };
   switch (name) {
@@ -297,7 +303,9 @@ export function fixture(name: string): { state: SetupState | null; uninstall: Un
       return { state: baseState({ uiStep: "checks", machine: machine("C"), checks: rows, blocking: true }), uninstall: null };
     }
     case "choices": return { state: baseState({ phase: "choices", uiStep: "choices" }), uninstall: null };
+    case "choices-lowram": return { state: baseState({ phase: "choices", uiStep: "choices", machine: machine("D", 16), plan: plan("small", 16) }), uninstall: null };
     case "downloading": return { state: dl(false, "running"), uninstall: null };
+    case "download-stall": return { state: dl(false, "running", true), uninstall: null };
     case "paused": return { state: dl(true, "paused"), uninstall: null };
     case "stop-dialog": return { state: dl(false, "running"), uninstall: null };
     case "close-dialog": return { state: dl(false, "running"), uninstall: null };

@@ -24,6 +24,7 @@ STEP_IDS = [
 def write_answers(tmp_path: Path, **over) -> Path:
     data = json.loads((ROOT / "installer" / "answers.example.json").read_text(encoding="utf-8"))
     data["home_path"] = str(tmp_path / "home")
+    data["llm_tier"] = "small"                  # the example ships Balanced; these runs check the Small files
     data["pexels_api_key"] = SECRET
     data.update(over)
     f = tmp_path / "answers.json"

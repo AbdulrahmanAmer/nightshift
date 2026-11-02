@@ -181,6 +181,15 @@ class AnswersChannel(Strict):
     seed_keywords: list[str] = []
 
 
+# A story model the owner named in the setup window (CR-C1-UI-9): a Hugging Face GGUF and its resolved size.
+# It has no pinned SHA256; the installer allows that only for this user-supplied model (NS-W113).
+# (No docstring on purpose: pydantic would copy it into the exported schema as a description.)
+class LlmCustom(Strict):
+    repo: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$")
+    file: str = Field(min_length=6, max_length=240)
+    size: int = Field(gt=0)
+
+
 class Answers(Strict):
     channel: AnswersChannel
     voice: Voice = Voice()
@@ -197,6 +206,7 @@ class Answers(Strict):
     home_path: str | None = None
     models_source: str | None = None
     llm_tier: Literal["small", "balanced", "best"] = "small"
+    llm_custom: LlmCustom | None = None    # CR-C1-UI-9: overrides the tier's model when set
     restore_from: str | None = None
     # installer UI (CR-C1-UI-1): greeting name, default dashboard theme, where the models come from
     owner_name: str | None = Field(default=None, max_length=40)

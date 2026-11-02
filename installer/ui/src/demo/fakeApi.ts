@@ -3,7 +3,7 @@
 // demo starts at Welcome and plays a scripted sequence (progress advances on a timer) when the buttons are pressed.
 import type { Api } from "../api/client";
 import type {
-  ActionBody, ActionName, ActionResult, AnswersResult, ChoicesDraft, DiskCheck, DownloadRow, KeyCheck, SetupState, StepId, UiStep, UninstallView, VerifyRow,
+  ActionBody, ActionName, ActionResult, AnswersResult, ChoicesDraft, DiskCheck, DownloadRow, KeyCheck, ModelCheck, SetupState, StepId, UiStep, UninstallView, VerifyRow,
 } from "../api/types";
 import { checkRows, DRIVES, downloadRows, downloadsMid, fixture, isoNow, machine, overall, plan as makePlan, resultView, steps as makeSteps, verifyView, answers as answersView } from "./fixtures";
 
@@ -189,7 +189,7 @@ export function createDemoApi({ screen }: { screen: string | null }): Api {
 
     async postAnswers(draft: ChoicesDraft): Promise<AnswersResult> {
       await sleep(150);
-      const p = makePlan(draft.llmTier, cur().machine.ramGb);
+      const p = makePlan(draft.llmTier, cur().machine.ramGb, draft.llmCustom);
       const { pexelsKey, pixabayKey, ...rest } = draft;
       const a = answersView({ ...rest, pexelsKeySet: !!pexelsKey || (cur().answers?.pexelsKeySet ?? false), pixabayKeySet: !!pixabayKey || (cur().answers?.pixabayKeySet ?? false) });
       bump({ answers: a, plan: p, downloads: { ...cur().downloads, items: downloadRows(p.groups), overall: overall(downloadRows(p.groups), p, null), source: draft.modelsSource.kind } });
@@ -201,7 +201,7 @@ export function createDemoApi({ screen }: { screen: string | null }): Api {
       await sleep(250);
       if (!/answers\.json$/i.test(path.trim())) return { ok: false, errors: [{ field: "homePath", message: "That file was not found", code: null }] };
       const a = answersView();
-      return { ok: true, answers: a, plan: makePlan(a.llmTier) };
+      return { ok: true, answers: a, plan: makePlan(a.llmTier, 32, a.llmCustom) };
     },
 
     async checkKey(service, key): Promise<KeyCheck> {
@@ -209,6 +209,23 @@ export function createDemoApi({ screen }: { screen: string | null }): Api {
       const who = service === "pexels" ? "Pexels" : "Pixabay";
       if (key.trim().length < 8 || /bad/i.test(key)) return { ok: false, code: service === "pexels" ? "NS-E501" : "NS-E502", message: `The ${who} key was not accepted. Copy it again from the website (no spaces)` };
       return { ok: true, code: null, message: null };
+    },
+
+    async checkModel(repo, file): Promise<ModelCheck> {
+      // The same answers as installer/stage2/web/modelcheck.py with its simulate head: the size comes from the quantization in the name.
+      await sleep(600);
+      const r = repo.trim(); const f = file.trim();
+      const no = (message: string, size: number | null = null, code: string | null = null): ModelCheck => ({ ok: false, size, message, code });
+      if (!/^[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._-]*$/.test(r)) return no("Type the repository as owner/name, for example Qwen/Qwen3-14B-GGUF");
+      if (!/^[A-Za-z0-9][A-Za-z0-9._+/-]*\.gguf$/i.test(f) || f.includes("..")) return no("Type the GGUF file name, for example Qwen3-14B-Q4_K_M.gguf");
+      if (/-\d{5}-of-\d{5}\.gguf$/i.test(f)) return no("Split files (-00001-of-00003) are not supported. Pick a single-file version");
+      const low = f.toLowerCase();
+      if (low.includes("missing")) return no("That file was not found in that repository. Check the spelling of both");
+      if (low.includes("private")) return no("That repository needs a login. Nightshift only downloads public files");
+      const sizes: [string, number][] = [["70b", 42.5e9], ["f16", 28e9], ["q8", 14.6e9], ["q6", 12.3e9], ["q5", 10.7e9], ["q4", 9e9], ["q3", 7e9]];
+      const size = sizes.find(([k]) => low.includes(k))?.[1] ?? 8e9;
+      if (size > 15.5e9) return no(`That file is ${(size / 1e9).toFixed(1)} GB. A 16 GB graphics card holds files up to 15.5 GB. Pick a smaller version, for example Q4_K_M`, size);
+      return { ok: true, size, message: null, code: null };
     },
 
     async disk(path, tier, source): Promise<DiskCheck> {

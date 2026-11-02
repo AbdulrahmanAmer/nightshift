@@ -9,7 +9,7 @@ A Windows installer package (`Nightshift-<ver>.zip` with `INSTALL.cmd`) that tur
 - Nothing heavy runs on the authoring laptop: no models, torch, llama.cpp, whisper, no Python venv for the product. Tests run in GitHub Actions (public repo, windows-latest). Builders write, commit, push, read CI.
 - Never spawn agents on the Fable model; builders are Sonnet 5.5 at effort high; Opus only for design/architecture. Fable orchestrates, reviews, merges, keeps contracts.
 - The partner's GPU PC is reached only through the shipped bundle (Google Drive). The codebase stays there for further work.
-- Download budget ~15 GB: 14B Q4 LLM (9 GB), TTS Q8_0 GGUF talkers CustomVoice + Base + tokenizer (4.4 GB), one whisper distil-large-v3 (1.5 GB). VoiceDesign and bigger LLM tiers on demand. `models_source` folder mode for offline installs.
+- Download budget ~20 GB (owner decision 2026-11-02, D13): Balanced LLM (14 GB; Small 9 GB is the fallback under 32 GB RAM), TTS Q8_0 GGUF talkers CustomVoice + Base + tokenizer (4.4 GB), one whisper distil-large-v3 (1.5 GB). VoiceDesign and bigger LLM tiers on demand. `models_source` folder mode for offline installs.
 
 ## Repo and workflow
 - GitHub: https://github.com/AbdulrahmanAmer/nightshift (public). Branch protection on `main` requires lint, types, test, powershell-parse, scope-check; orchestrator merges with `gh pr merge --admin`.
@@ -31,7 +31,7 @@ Owner-approved look: the ref12 card language (Dribbble reference `D:\NightShift-
 - Known gaps: `bins.qwentts` is pinned on main (PR #36) to the v0.1.0 release asset, but the shipped `Nightshift-0.1.0.zip` predates the pin, so that bundle probes `releases/latest/download` (unverified) and otherwise uses the PyTorch TTS engine; the pin ships in v0.1.1. The voice design model (VoiceDesign talker) is not part of the ~15 GB base download: it is fetched on first use of Library -> Voices -> Design, so that first design needs internet and takes a while (the route is synchronous, up to about a minute after the download). The series workshop UI still routes to the Assistant. The `visual_plan` and `clip_select` prompts do not ask the model for `emphasis` yet. CR-C1-4 (a)(b)(c)(e) pins (spaCy wheel hash, cuBLAS/cuDNN, fallback repos, CUDA 12.8 llama.cpp) are still open. `ns_dashboard/templates.py` still reads `clip_templates.yaml` rather than the format presets.
 
 ## Decisions log (short)
-D1 build blind, D2 Code optional last, D3 one LLM default, D10 local FastAPI + static UI, D11 distil-large-v3, D13 ~15 GB, D14 qwentts.cpp with PyTorch fallback; milestones M0 Provisioning → M1 Shorts pipeline → M2 Long-form nightly → M3 Clipper + Dashboard → M4 Release hardening (code complete + CI green = done; first real run on the partner PC).
+D1 build blind, D2 Code optional last, D3 one LLM default, D10 local FastAPI + static UI, D11 distil-large-v3, D13 ~20 GB (Balanced; Small ~15 GB), D14 qwentts.cpp with PyTorch fallback; milestones M0 Provisioning → M1 Shorts pipeline → M2 Long-form nightly → M3 Clipper + Dashboard → M4 Release hardening (code complete + CI green = done; first real run on the partner PC).
 
 ## Next steps for a fresh orchestrator
 1. `gh pr list` and `gh run list --branch main --limit 1`. Merge the release-prep PR (`feat/release-0.1.0`) when green.

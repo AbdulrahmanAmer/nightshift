@@ -7,6 +7,7 @@ import re
 from pathlib import Path
 from typing import Any, Literal
 
+from installer.stage2.web.modelcheck import MAX_BYTES, shape_problem, too_big_message
 from ns_common.models import Answers
 from ns_common.paths import Paths
 
@@ -69,6 +70,12 @@ def build_answers(raw: dict[str, Any]) -> InstallerAnswers:
         )
     if ans.voice.mode == "design" and not ans.voice.description:
         raise AnswersError("a designed voice needs voice.description")
+    if ans.llm_custom is not None:
+        problem = shape_problem(ans.llm_custom.repo, ans.llm_custom.file)
+        if problem:
+            raise AnswersError(f"llm_custom: {problem}")
+        if ans.llm_custom.size > MAX_BYTES:
+            raise AnswersError(f"llm_custom: {too_big_message(ans.llm_custom.size)}")
     return ans
 
 

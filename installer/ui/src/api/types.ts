@@ -77,7 +77,18 @@ export interface CheckRow {
 
 export interface PlanItem { key: string; label: string; file: string | null; bytes: number | null; via: "download" | "winget" | "uv" }
 export interface PlanGroup { id: "tools" | "python" | "programs" | "models"; label: string; bytes: number | null; items: PlanItem[] }
-export interface TierInfo { llmBytes: number; totalBytes: number; needFreeGb: number; needsRamGb: number; allowed: boolean; reason: string | null }
+export interface TierInfo {
+  repo: string | null;               // Hugging Face repository of the model (manifest.json)
+  file: string | null;               // GGUF file name
+  llmBytes: number;                  // download size of the model file
+  totalBytes: number;                // whole download for this tier
+  vramLeftGb: number | null;         // video memory a 16 GB card has left for context: 16 GB - file - 0.6 GB (negative = larger than the card)
+  recommended: boolean;              // Balanced
+  needFreeGb: number;
+  needsRamGb: number;
+  allowed: boolean;
+  reason: string | null;
+}
 export interface InstallPlan {
   tier: Tier;
   profile: "gpu" | "cpu-dev";
@@ -86,14 +97,20 @@ export interface InstallPlan {
   unknownCount: number;              // items whose size is learned when the download starts
   needFreeGb: number;
   estimate: { downloadMin: number; installMin: number; label: string };   // label: "About 1 hour"
+  recommendedTier: Tier;             // balanced from 32 GB of memory, else small (the fallback)
   tiers: Record<Tier, TierInfo>;
 }
+
+/** A story model the owner named: size is what the server resolved with a HEAD request. */
+export interface LlmCustom { repo: string; file: string; size: number }
+export interface ModelCheck { ok: boolean; size: number | null; message: string | null; code: string | null }
 
 export interface ChoicesDraft {
   ownerName: string | null;
   channel: { displayName: string; niche: string; language: string };   // language defaults to "en"
   homePath: string;
   llmTier: Tier;
+  llmCustom: LlmCustom | null;       // a Hugging Face GGUF the owner named; replaces the tier's model when set (tier is then "small")
   voice: { speaker: PresetVoice };
   modelsSource: { kind: "internet" | "folder" | "drive-zip"; path: string | null };
   runTime: string;                   // "03:00"
@@ -108,7 +125,7 @@ export interface AnswersView extends Omit<ChoicesDraft, "pexelsKey" | "pixabayKe
   pixabayKeySet: boolean;
 }
 export type ChoicesField =
-  | "ownerName" | "channel.displayName" | "channel.niche" | "channel.language" | "homePath" | "llmTier"
+  | "ownerName" | "channel.displayName" | "channel.niche" | "channel.language" | "homePath" | "llmTier" | "llmCustom"
   | "voice.speaker" | "modelsSource.path" | "runTime" | "mastersPerWeek" | "pexelsKey" | "pixabayKey";
 export interface FieldError { field: ChoicesField; message: string; code: string | null }
 export type AnswersResult = { ok: true; answers: AnswersView; plan: InstallPlan } | { ok: false; errors: FieldError[] };

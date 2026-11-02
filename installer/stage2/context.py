@@ -21,7 +21,7 @@ from installer.stage2.sysinfo import free_gb
 from installer.stage2.ui import Ui
 from installer.stage2.winenv import HOME_VAR
 from ns_common.logging import NsLogger
-from ns_common.models import Manifest
+from ns_common.models import LlmCustom, Manifest
 from ns_common.paths import Paths
 from ns_common.uv import find_uv
 
@@ -107,6 +107,11 @@ class StepContext:
     def tier(self) -> str:
         """LLM tier from the answers (small, balanced, best)."""
         return self.ensure_answers().llm_tier
+
+    @property
+    def llm_custom(self) -> LlmCustom | None:
+        """The story model the owner named (a Hugging Face GGUF with no pinned hash), or None."""
+        return self.ensure_answers().llm_custom
 
     # ---- locations of tools ----
     def venv_python(self, name: str) -> Path:

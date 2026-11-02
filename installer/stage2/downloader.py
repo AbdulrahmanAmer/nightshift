@@ -23,12 +23,15 @@ import httpx
 
 from installer.stage2.errors import make_error
 from ns_common.errors import NsError
-from ns_common.models import HfFile, Manifest
+from ns_common.models import HfFile, LlmCustom, Manifest
 from ns_common.paths import Paths
 
 HF = "https://huggingface.co"
-CHUNK = 1 << 20
+CHUNK = 1 << 20                  # hashing and copying
+STREAM_CHUNK = 1 << 16           # download loop: the pause switch is checked after every 64 KiB
+STALL_TIMEOUT_S = 60.0           # no bytes for this long aborts the attempt (network error, retried)
 ProgressFn = Callable[[int, int | None], None]
+RetryFn = Callable[[int, str, float], None]
 Tier = Literal["small", "balanced", "best"]
 
 # Whisper (CTranslate2) side files next to model.bin. The manifest pins only model.bin.
@@ -75,6 +78,9 @@ class Reporter(Protocol):
 
     def finish(self, name: str, outcome: str) -> None:
         """A file ended with outcome downloaded, copied, skipped, missing or failed."""
+
+    # Optional: ``retrying(name, attempt, reason, wait_s)`` is called before a retry wait (reason stall,
+    # network or hash). A reporter without it simply is not told.
 
 
 # --------------------------------------------------------------------------------------------------------
@@ -146,12 +152,29 @@ def eta_text(total_bytes: int, mbit_per_s: float = 50.0) -> str:
 
 
 def _new_client() -> httpx.Client:
-    return httpx.Client(follow_redirects=True, timeout=httpx.Timeout(30.0, read=120.0))
+    return httpx.Client(follow_redirects=True, timeout=httpx.Timeout(30.0, read=STALL_TIMEOUT_S))
 
 
 # --------------------------------------------------------------------------------------------------------
 # single file
 # --------------------------------------------------------------------------------------------------------
+def head_info(http: httpx.Client, url: str) -> tuple[int, int | None]:
+    """HEAD ``url``: ``(status, size in bytes)``; the size is None when the server does not say.
+
+    Hugging Face answers a ``resolve`` URL with a redirect whose ``x-linked-size`` header is the real file
+    size, so redirects are not followed when that header is there. Raises ``httpx.HTTPError`` when the site
+    cannot be reached. ``s03`` and the custom-model check of the setup window share this logic.
+    """
+    r = http.head(url, follow_redirects=False)
+    if r.is_redirect:
+        linked = r.headers.get("x-linked-size", "")
+        if linked.isdigit():
+            return 200, int(linked)
+        r = http.head(url, follow_redirects=True)
+    length = r.headers.get("content-length", "")
+    return r.status_code, int(length) if length.isdigit() else None
+
+
 def _fetch_once(
     http: httpx.Client,
     url: str,
@@ -162,16 +185,18 @@ def _fetch_once(
     progress: ProgressFn | None,
     size: int | None,
     chunk: int,
+    gate: threading.Event | None = None,
+    stall_timeout: float = STALL_TIMEOUT_S,
 ) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
     part = _part(dest)
     total = size
     try:
-        head = http.head(url)
-        if head.status_code == 404:
+        status, head_size = head_info(http, url)
+        if status == 404:
             raise make_error("NS-E105", f"{url}: HTTP 404", status=404)
-        if head.status_code < 400 and head.headers.get("content-length"):
-            total = int(head.headers["content-length"])
+        if status < 400 and head_size:
+            total = head_size
     except httpx.HTTPError:
         pass  # the GET below decides whether the site is really unreachable
 
@@ -184,9 +209,12 @@ def _fetch_once(
 
     if progress:
         progress(have, total)
-    if total is None or have < total:
+    # No bytes for ``stall_timeout`` seconds raises httpx.ReadTimeout: the attempt is a network error.
+    timeout = httpx.Timeout(30.0, read=stall_timeout)
+    while total is None or have < total:
+        paused = False
         headers = {"Range": f"bytes={have}-"} if have else {}
-        with http.stream("GET", url, headers=headers) as r:
+        with http.stream("GET", url, headers=headers, timeout=timeout) as r:
             if r.status_code == 404:
                 raise make_error("NS-E105", f"{url}: HTTP 404", status=404)
             if r.status_code == 416:
@@ -202,8 +230,17 @@ def _fetch_once(
                 for block in r.iter_bytes(chunk):
                     fh.write(block)
                     done += len(block)
+                    if gate is not None and not gate.is_set():
+                        paused = True       # Pause: stop after this chunk and close the connection
+                        break
                     if progress:
                         progress(done, total)
+        have = part.stat().st_size
+        if not paused or gate is None:
+            break
+        if progress:
+            progress(have, total)
+        gate.wait()                         # Resume: reconnect with Range from the bytes on disk
 
     got = part.stat().st_size
     if total is not None and got != total:
@@ -227,17 +264,24 @@ def download(
     size: int | None = None,
     retries: int = 3,
     sleep: Callable[[float], None] = time.sleep,
-    chunk: int = CHUNK,
+    chunk: int = STREAM_CHUNK,
     gate: threading.Event | None = None,
+    stall_timeout: float = STALL_TIMEOUT_S,
+    on_retry: RetryFn | None = None,
 ) -> Path:
     """Download ``url`` to ``dest`` with resume, SHA256 check and atomic rename.
 
     Raises NS-E109 when the hash is wrong after ``retries`` attempts and NS-E105 when the site cannot be
     reached (or answers 404, which is not retried).
 
-    ``gate`` is the setup window's pause switch (set = running, cleared = paused). It is waited on before
-    every attempt, and an attempt that failed while it was cleared does not count, so a long pause that
-    drops the connection cannot use up the retries.
+    ``gate`` is the setup window's pause switch (set = running, cleared = paused). It is checked after every
+    ``chunk`` bytes (64 KiB), so Pause takes effect inside the file: the connection is closed and, on Resume,
+    reopened with ``Range`` from the bytes on disk. It is also waited on before every attempt, and an attempt
+    that failed while it was cleared does not count, so a long pause cannot use up the retries.
+
+    A transfer that delivers no bytes for ``stall_timeout`` seconds (60 by default) is aborted and counts as a
+    network error: the next attempt follows after the backoff and resumes with ``Range``. ``on_retry`` is
+    told ``(attempt, reason, wait seconds)`` before each wait; reason is ``stall``, ``network`` or ``hash``.
     """
     dest = Path(dest)
     if is_verified(dest, sha256):
@@ -247,6 +291,7 @@ def download(
         return dest
     http = client or _new_client()
     last: NsError | None = None
+    reason = "network"
     attempt = 0
     try:
         while attempt < retries:
@@ -254,20 +299,27 @@ def download(
                 gate.wait()
             try:
                 _fetch_once(
-                    http, url, dest, sha256, resume=resume, progress=progress, size=size, chunk=chunk
+                    http, url, dest, sha256, resume=resume, progress=progress, size=size, chunk=chunk,
+                    gate=gate, stall_timeout=stall_timeout,
                 )
                 return dest
             except NsError as e:
                 if e.code != "NS-E109":
                     raise
-                last = e
+                last, reason = e, "hash"
+            except httpx.ReadTimeout:
+                last = make_error("NS-E105", f"{url}: no data for {stall_timeout:g} s")
+                reason = "stall"
             except (httpx.HTTPError, OSError) as e:
-                last = make_error("NS-E105", f"{url}: {e}")
+                last, reason = make_error("NS-E105", f"{url}: {e}"), "network"
             if gate is not None and not gate.is_set():
                 continue  # failed while paused: not a real attempt
             attempt += 1
             if attempt < retries:
-                sleep(2**attempt)
+                wait = 2**attempt
+                if on_retry is not None:
+                    on_retry(attempt, reason, float(wait))
+                sleep(wait)
     finally:
         if client is None:
             http.close()
@@ -386,6 +438,15 @@ def _hf_item(f: HfFile, dest_dir: Path, revision: str = "main") -> DownloadItem:
     )
 
 
+def custom_item(custom: LlmCustom, dest_dir: Path) -> DownloadItem:
+    """The user-named GGUF: downloaded from the repository's main branch, with no pinned SHA256 (NS-W113)."""
+    name = Path(custom.file).name
+    return DownloadItem(
+        name=name, url=hf_url(custom.repo, "main", custom.file), dest=dest_dir / name, sha256=None,
+        size=custom.size,
+    )
+
+
 def plan_bins(
     manifest: Manifest,
     profile: str,
@@ -477,8 +538,9 @@ def plan_models(
     home: Path,
     *,
     include_voicedesign: bool = False,
+    custom: LlmCustom | None = None,
 ) -> list[DownloadItem]:
-    """Model files for s03: LLM for the tier, embed, TTS GGUFs, whisper, YuNet."""
+    """Model files for s03: the LLM (the tier's, or the custom GGUF), embed, TTS GGUFs, whisper, YuNet."""
     paths = Paths(Path(home))
     pm = manifest.profiles[profile]
     llm = pm.llm
@@ -487,7 +549,8 @@ def plan_models(
             llm = pm.llm_balanced
         elif tier == "best" and pm.llm_best is not None:
             llm = pm.llm_best
-    items = [_hf_item(llm, paths.models_llm), _hf_item(pm.embed, paths.models_embed)]
+    llm_item = custom_item(custom, paths.models_llm) if custom else _hf_item(llm, paths.models_llm)
+    items = [llm_item, _hf_item(pm.embed, paths.models_embed)]
     items += [_hf_item(f, paths.models_tts) for f in pm.tts]
     if include_voicedesign:
         items += [_hf_item(f, paths.models_tts) for f in pm.tts_optional]
@@ -529,10 +592,11 @@ def plan_from_manifest(
     include_code: bool = False,
     llama_pair: str | None = None,
     include_voicedesign: bool = False,
+    custom: LlmCustom | None = None,
 ) -> list[DownloadItem]:
     """Everything s02 and s03 download for ``profile`` and LLM ``tier`` (spec 21.2, 21.3)."""
     return plan_bins(manifest, profile, home, include_code=include_code, llama_pair=llama_pair) + plan_models(
-        manifest, profile, tier, home, include_voicedesign=include_voicedesign
+        manifest, profile, tier, home, include_voicedesign=include_voicedesign, custom=custom
     )
 
 
@@ -651,6 +715,12 @@ def run_plan(
         def progress(done: int, total: int | None) -> None:
             rep.update(item.name, done, total)
 
+        retrying = getattr(rep, "retrying", None)
+
+        def on_retry(attempt: int, reason: str, wait_s: float) -> None:
+            if retrying is not None:
+                retrying(item.name, attempt, reason, wait_s)
+
         try:
             copied = False
             if models_source and item.kind == "file" and not is_verified(item.dest, item.sha256):
@@ -660,7 +730,7 @@ def run_plan(
                 return
             do_fetch(
                 item.url, item.dest, item.sha256, progress=progress, client=http, size=item.size,
-                retries=retries, sleep=sleep, **extra,
+                retries=retries, sleep=sleep, on_retry=on_retry, **extra,
             )
             if item.kind in ("zip", "nupkg"):
                 _extract_item(item)

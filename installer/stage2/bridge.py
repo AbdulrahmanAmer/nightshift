@@ -7,6 +7,7 @@ run. In bridge mode stdout carries nothing else: stray rich output goes to stder
 
 Events out: hello, step, say, table, plan, file, warn, failure, verify, sample, bundle, bye.
 Commands in: keys (always the first line), decision, pause, resume, stop.
+A ``file`` event is start, progress, retry (a stalled or failed transfer waits to be tried again) or finish.
 """
 
 from __future__ import annotations
@@ -73,6 +74,11 @@ class BridgeReporter:
         self._ui.emit(
             {"type": "file", "key": name, "event": "finish", "outcome": FILE_OUTCOMES.get(outcome, outcome)}
         )
+
+    def retrying(self, name: str, attempt: int, reason: str, wait_s: float) -> None:
+        """A transfer failed (reason stall, network or hash) and is tried again after ``wait_s`` seconds."""
+        self._ui.emit({"type": "file", "key": name, "event": "retry", "attempt": attempt, "reason": reason,
+                       "waitS": wait_s})
 
 
 class BridgeUi(Ui):

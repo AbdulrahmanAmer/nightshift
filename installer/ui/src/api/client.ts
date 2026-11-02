@@ -1,7 +1,7 @@
 // Transport to the setup server (docs/design/installer-ui.md section 1.4). Same origin, cookie auth (nothing to do here).
 // The real client talks JSON over fetch. The demo transport (src/demo) implements the same Api interface in memory; it is
 // loaded on demand, only when ?demo or ?screen= is in the address or when the server answers with something that is not JSON.
-import type { ActionBody, ActionName, ActionResult, AnswersResult, ChoicesDraft, DiskCheck, KeyCheck, SetupState, Tier, UiStep, UninstallView } from "./types";
+import type { ActionBody, ActionName, ActionResult, AnswersResult, ChoicesDraft, DiskCheck, KeyCheck, ModelCheck, SetupState, Tier, UiStep, UninstallView } from "./types";
 
 export interface Api {
   readonly demo: boolean;
@@ -13,6 +13,8 @@ export interface Api {
   loadAnswersFile(path: string): Promise<AnswersResult>;
   checkKey(service: "pexels" | "pixabay", key: string): Promise<KeyCheck>;
   disk(path: string, tier: Tier, source?: boolean): Promise<DiskCheck>;
+  /** Does this Hugging Face GGUF exist, how big is it, does it fit a 16 GB card (the server does a HEAD request). */
+  checkModel(repo: string, file: string): Promise<ModelCheck>;
   action(name: ActionName, body?: ActionBody): Promise<ActionResult>;
   /** null when this is not uninstall mode (HTTP 404). */
   getUninstall(): Promise<UninstallView | null>;
@@ -65,6 +67,7 @@ export const httpApi: Api = {
   loadAnswersFile: (path) => post<AnswersResult>("/api/answers", { path }),
   checkKey: (service, key) => post<KeyCheck>("/api/check-key", { service, key }),
   disk: (path, tier, source) => call<DiskCheck>(`/api/disk?path=${encodeURIComponent(path)}&tier=${tier}${source ? "&source=1" : ""}`),
+  checkModel: (repo, file) => call<ModelCheck>(`/api/model-check?repo=${encodeURIComponent(repo)}&file=${encodeURIComponent(file)}`),
   action: (name, body) => postAction(`/api/action/${name}`, body ?? {}),
   async getUninstall() {
     try {
