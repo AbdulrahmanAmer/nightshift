@@ -5,7 +5,7 @@ import { useEffect, useRef, useState, type RefObject } from "react";
 import { useApp, useLoad } from "../lib/app";
 import { api } from "../lib/api";
 import { fmtDay, fmtClock, stageWords, store } from "../lib/format";
-import type { Job } from "../lib/types";
+import type { Job, ToolInfo } from "../lib/types";
 import { cx } from "../ui/kit";
 import { Mark } from "../ui/Mark";
 import { Lockup } from "../ui/Lockup";
@@ -17,7 +17,9 @@ type Confirm = { action_id: string; text: string; tool: string; state: "pending"
 type Msg = { id: number; role: "user" | "assistant" | "note" | "error"; text: string; confirm?: Confirm };
 type Saved = { cid: string | null; msgs: Msg[] };
 
-const TOOL_WORDS: Record<string, string> = { list_outputs: "Checking the Queue", list_jobs: "Checking jobs", status: "Checking the engine", find: "Searching files", explain_error: "Reading the log", list_channels: "Reading channels", library_ideas: "Reading ideas" };
+/** Registry entry of one tool (GET /assistant/tools). The page words its busy line and Yes/No cards from these, never from a list of its own. */
+const firstSentence = (t: string) => t.split(/(?<=[.!?])s/)[0]!.replace(/[.!?]+$/, "");
+const toolWords = (tools: ToolInfo[], name: string) => { const d = tools.find((t) => t.name === name)?.description; return d ? firstSentence(d) : name.replace(/_/g, " "); };
 const WELCOME: Msg = { id: 0, role: "assistant", text: "I run on this PC with the local model. I can start videos or clips, draft story concepts, pause or resume channels, find files and explain results. Anything that changes something shows you a Yes or No card first." };
 let mid = Date.now();
 
@@ -31,11 +33,14 @@ const fromHistory = (h: { messages?: { role: string; content?: string }[]; pendi
 type Conv = { conversation_id: string; title?: string | null; updated_at: string; queued?: number };
 
 export function Chat({ compact, initialText, openCid, openTick }: { compact?: boolean; initialText?: string; openCid?: string | null; openTick?: number }) {
-  const { askContext, askPrompt, clearAskPrompt, refresh, route } = useApp();
+  const { askContext, askPrompt, clearAskPrompt, refresh, route, status } = useApp();
+  // Set when the engine was busy and the request was saved: this chat then asks for the answer until it arrives.
+  const [waiting, setWaiting] = useState(false);
   const [saved, setSaved] = useState<Saved>(() => store.get<Saved>("ns-chat2", { cid: null, msgs: [WELCOME] }));
   const [text, setText] = useState(initialText ?? "");
   const [busy, setBusy] = useState(false);
   const [toolNote, setToolNote] = useState<string | null>(null);
+  const tools = useLoad<ToolInfo[]>(() => api.get("/assistant/tools"), [], []);
   const logRef = useRef<HTMLDivElement>(null); const taRef = useRef<HTMLTextAreaElement>(null);
   const savedRef = useRef(saved); savedRef.current = saved;
 
@@ -56,8 +61,8 @@ export function Chat({ compact, initialText, openCid, openTick }: { compact?: bo
         if (ev.kind === "conversation") update((s) => ({ ...s, cid: ev.payload.conversation_id }));
         else if (ev.kind === "message") { setToolNote(null); push({ role: "assistant", text: ev.payload.text }); }
         else if (ev.kind === "confirm") push({ role: "assistant", text: "", confirm: { action_id: ev.payload.action_id, text: ev.payload.text, tool: ev.payload.tool, state: "pending" } });
-        else if (ev.kind === "tool_call") setToolNote(TOOL_WORDS[ev.payload.tool] || "Looking it up");
-        else if (ev.kind === "busy") push({ role: "note", text: ev.payload.message });
+        else if (ev.kind === "tool_call") setToolNote(toolWords(tools.data, ev.payload.tool));
+        else if (ev.kind === "busy") { push({ role: "note", text: ev.payload.message }); setWaiting(true); }
         else if (ev.kind === "error") push({ role: "error", text: ev.payload.message + (ev.payload.hint ? `. ${ev.payload.hint}` : "") });
       }
     } catch (e: any) { push({ role: "error", text: `I could not answer: ${e.message}` }); }
@@ -66,6 +71,22 @@ export function Chat({ compact, initialText, openCid, openTick }: { compact?: bo
   // Prompt handed over by "Ask about it" or the top bar search. Runs only when a prompt arrives (it used to run after every render).
   useEffect(() => { if (askPrompt) { send(askPrompt); clearAskPrompt(); } }, [askPrompt]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { taRef.current?.focus(); }, []);
+  // A saved request is answered by the dashboard when a job ends; here the chat also asks whenever the engine is not working,
+  // and shows the answer in THIS conversation (saved.cid), not only in one opened from History.
+  useEffect(() => {
+    const cid = saved.cid; if (!waiting || !cid) return; let live = true;
+    const look = async () => {
+      try {
+        if (status?.engine?.state !== "working") await api.post("/assistant/queue/run").catch(() => null);
+        const convs = await api.get<{ conversation_id: string; queued?: number }[]>("/assistant/conversations");
+        if (convs.find((c) => c.conversation_id === cid)?.queued) return;
+        const h = await api.get(`/assistant/history?conversation_id=${encodeURIComponent(cid)}`);
+        if (live) { update(() => ({ cid, msgs: fromHistory(h) })); setWaiting(false); }
+      } catch { /* try again on the next tick */ }
+    };
+    const t = setInterval(look, 6000); look();
+    return () => { live = false; clearInterval(t); };
+  }, [waiting, saved.cid, status?.engine?.state]); // eslint-disable-line react-hooks/exhaustive-deps
   // A past conversation picked in the list (or refreshed after saved requests were answered): load its transcript.
   useEffect(() => {
     if (!openCid) return;
@@ -86,7 +107,7 @@ export function Chat({ compact, initialText, openCid, openTick }: { compact?: bo
     <div className={cx("flex min-h-0 flex-1 flex-col", !compact && "h-full")}>
       <div ref={logRef} aria-live="polite" className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-5 py-4 scroll-thin">
         {!compact && saved.msgs.length <= 1 && !busy && <div className="flex justify-center pt-4 pb-2"><Lockup width={220} /></div>}
-        {saved.msgs.map((m) => m.confirm ? <ConfirmCard key={m.id} c={m.confirm} onYes={() => decide(m, true)} onNo={() => decide(m, false)} /> : (
+        {saved.msgs.map((m) => m.confirm ? <ConfirmCard key={m.id} c={m.confirm} what={toolWords(tools.data, m.confirm.tool)} onYes={() => decide(m, true)} onNo={() => decide(m, false)} /> : (
           <div key={m.id} className={cx("flex gap-3", m.role === "user" && "justify-end")}>
             {m.role !== "user" && m.role !== "note" && <span className="mt-0.5 shrink-0"><Mark size={28} /></span>}
             <div className={cx("max-w-[78%] rounded-ds-lg px-3 py-2 text-ds-md leading-ds-normal whitespace-pre-wrap",
@@ -118,13 +139,11 @@ export function Chat({ compact, initialText, openCid, openTick }: { compact?: bo
   );
 }
 
-const TOOL_LABEL: Record<string, string> = { start_run: "Start a story video", start_clips: "Cut clips", save_ideas: "Save ideas", pause_channel: "Pause a channel", resume_channel: "Resume a channel" };
 
 /** A tool proposal: the MeetingCard recipe (title, a when-line with the accent dot, the text, No and Yes). */
-function ConfirmCard({ c, onYes, onNo }: { c: Confirm; onYes: () => void; onNo: () => void }) {
-  const what = TOOL_LABEL[c.tool] || c.tool.replace(/_/g, " ");
+function ConfirmCard({ c, what, onYes, onNo }: { c: Confirm; what: string; onYes: () => void; onNo: () => void }) {
   if (c.state === "pending") {
-    return <MeetingCard className="ml-10 max-w-[min(78%,440px)] !bg-ds-surface" title="Needs your OK" when={what} description={`${c.text}?`} secondaryLabel="No" onSecondary={onNo} primaryLabel="Yes, do it" onPrimary={onYes} />;
+    return <MeetingCard className="ml-10 max-w-[min(78%,440px)] !bg-ds-surface" title="Needs your OK" when={what} description={c.text} secondaryLabel="No" onSecondary={onNo} primaryLabel="Yes, do it" onPrimary={onYes} />;
   }
   return (
     <div className="ml-10 max-w-[min(78%,440px)]">

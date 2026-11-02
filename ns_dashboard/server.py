@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import tempfile
 import threading
 import webbrowser
 from collections.abc import AsyncIterator, Iterator
@@ -33,6 +34,7 @@ from ns_dashboard.handlers import Dashboard, build_state, default_static_dir
 from ns_dashboard.security import is_loopback_host, is_loopback_origin
 from ns_dashboard.state import AppState
 from ns_dashboard.supervisor_link import EventRelay, SupervisorLink
+from ns_dashboard.uploads import tmp_dir
 
 TRUE_WORDS = {"true", "1", "on", "yes"}
 CSP = (
@@ -290,6 +292,11 @@ def create_app(
         return ok(await run_in_threadpool(dash.outputs.detail, output_id))
 
     # ------------------------------------------------------------ media
+    @app.get("/api/thumbs/{n}/{output_id:path}")
+    async def media_thumb_choice(n: int, output_id: str) -> FileResponse:
+        path = await run_in_threadpool(dash.outputs.thumb_choice_path, output_id, n)
+        return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=3600"})
+
     @app.get("/api/media/{output_id:path}/thumb.jpg")
     async def media_thumb(output_id: str) -> FileResponse:
         path = await run_in_threadpool(dash.outputs.thumb_path, output_id)
@@ -379,6 +386,14 @@ def create_app(
         return ok(await run_in_threadpool(dash.jobs.cancel, job_id))
 
     # ------------------------------------------------------------ runs / logs / learn
+    @app.get("/api/notes")
+    async def notes() -> SafeJSONResponse:
+        return ok(await run_in_threadpool(dash.engine.notes))
+
+    @app.post("/api/notes/clear")
+    async def notes_clear() -> SafeJSONResponse:
+        return ok(await run_in_threadpool(dash.engine.clear_notes))
+
     @app.get("/api/runs")
     async def runs(request: Request) -> SafeJSONResponse:
         return ok(await run_in_threadpool(dash.engine.runs, query_int(request, "limit", 30)))
@@ -522,6 +537,10 @@ def create_app(
         )
         return ok(data)
 
+    @app.delete("/api/library/footage/{source}/{clip_id}")
+    async def library_footage_delete(source: str, clip_id: str) -> SafeJSONResponse:
+        return ok(await run_in_threadpool(dash.library.delete_footage, source, clip_id))
+
     @app.get("/api/library/formats")
     async def library_formats() -> SafeJSONResponse:
         return ok(await run_in_threadpool(dash.library.list_formats))
@@ -546,6 +565,19 @@ def create_app(
     @app.get("/api/update/check")
     async def update_check() -> SafeJSONResponse:
         return ok(await run_in_threadpool(dash.library.update_check))
+
+    @app.get("/api/update/state")
+    async def update_state() -> SafeJSONResponse:
+        return ok(await run_in_threadpool(dash.library.update_state))
+
+    @app.post("/api/models/get")
+    async def models_get(request: Request) -> SafeJSONResponse:
+        body = await body_json(request)
+        return ok(await run_in_threadpool(dash.library.models_get, body.get("name")), 202)
+
+    @app.get("/api/models/state")
+    async def models_state() -> SafeJSONResponse:
+        return ok(await run_in_threadpool(dash.library.models_state))
 
     @app.post("/api/update/apply")
     async def update_apply() -> SafeJSONResponse:
@@ -591,6 +623,14 @@ def create_app(
     async def assistant_conversations() -> SafeJSONResponse:
         return ok(await run_in_threadpool(dash.assistant_store.conversations))
 
+    @app.get("/api/assistant/tools")
+    async def assistant_tools() -> SafeJSONResponse:
+        return ok([
+            {"name": t.spec.name, "description": t.spec.description, "side_effect": t.spec.side_effect,
+             "topic": t.spec.topic}
+            for t in dash.registry.all()
+        ])
+
     @app.post("/api/assistant/queue/run")
     async def assistant_queue_run() -> SafeJSONResponse:
         return ok(await run_in_threadpool(dash.assistant.run_queued))
@@ -605,6 +645,22 @@ def create_app(
     return app
 
 
+def configure_tmp(paths: Paths) -> Path:
+    """Point Starlette's upload spooling and Python's temporary files at the `tmp` folder of the home.
+
+    A multipart upload is spooled to a temporary file before the route sees it; by default that is `%TEMP%`
+    on C:, so a 30 GB recording needed that much room there and on the Nightshift drive. Leftovers from a
+    crashed run are removed.
+    """
+    folder = tmp_dir(paths)
+    folder.mkdir(parents=True, exist_ok=True)
+    for old in folder.iterdir():
+        if old.is_file():
+            old.unlink(missing_ok=True)
+    tempfile.tempdir = str(folder)
+    return folder
+
+
 def main(argv: list[str] | None = None) -> int:
     """`python -m ns_dashboard.server [--port 8100] [--open] [--fake-services]`."""
     ap = argparse.ArgumentParser(prog="python -m ns_dashboard.server", description="Nightshift Dashboard")
@@ -614,6 +670,7 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     import uvicorn
 
+    configure_tmp(Paths.from_env())
     app = create_app(fake_services=args.fake_services)
     url = f"http://127.0.0.1:{args.port}"
     sys.stdout.write(f"Nightshift Dashboard: {url}\n")

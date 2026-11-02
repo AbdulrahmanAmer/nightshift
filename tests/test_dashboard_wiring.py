@@ -16,9 +16,7 @@ from typing import Any
 
 import pytest
 
-from ns_common.acquire import DevAcquirer
 from ns_common.db import Db
-from ns_common.models import Runtime
 from ns_common.paths import Paths
 from ns_dashboard.adapters import RealRunAdapter
 from ns_dashboard.events import EventHub
@@ -30,7 +28,7 @@ from ns_studio.channels.crud import add_channel
 from ns_studio.context import FAKEABLE
 from ns_studio.orchestrator import FORMAT_STAGES
 from ns_studio.stages import StageState, register
-from tests.helpers import make_channel
+from tests.helpers import InProcessRunner, make_channel
 
 DASHBOARD = Path(__file__).resolve().parents[1] / "ns_dashboard"
 OWNED = ("ns_studio", "ns_supervisor", "ns_tts", "ns_common")
@@ -169,7 +167,7 @@ def adapter(paths: Paths) -> RealRunAdapter:
         paths,
         SupervisorLink("http://127.0.0.1:9", timeout_s=0.2),
         fake=FAKEABLE,
-        acquirer=DevAcquirer(Runtime.default("cpu-dev")),
+        runner=InProcessRunner(),
     )
 
 
@@ -258,7 +256,7 @@ def clip_adapter(paths: Paths):
         paths,
         SupervisorLink("http://127.0.0.1:9", timeout_s=0.2),
         fake=FAKEABLE,
-        acquirer=DevAcquirer(Runtime.default("cpu-dev")),
+        runner=InProcessRunner(),
     )
 
 
@@ -310,7 +308,8 @@ def test_clipper_link_download_reaches_import_url(tmp_home: Path):
 
     paths = Paths.from_env()
     _store, ctl = make_ctl(paths)
-    adapter_ = RealClipAdapter(paths, SupervisorLink("http://127.0.0.1:9", timeout_s=0.2))
+    link = SupervisorLink("http://127.0.0.1:9", timeout_s=0.2)
+    adapter_ = RealClipAdapter(paths, link, runner=InProcessRunner())
     with pytest.raises(NsError) as err:  # the real import_url runs and reports the missing yt-dlp (NS-E409)
         adapter_.fetch_url(ctl, "https://example.com/watch?v=abc", "src-link")
     assert err.value.code == "NS-E409" and "yt-dlp" in err.value.detail
@@ -348,7 +347,7 @@ def test_series_part_row_is_picked_up_and_produced(two_stage_plan: Paths, monkey
     state = open_db(paths)
     real = RealSeriesAdapter(
         paths, SupervisorLink("http://127.0.0.1:9", timeout_s=0.2), fake=FAKEABLE,
-        acquirer=DevAcquirer(Runtime.default("cpu-dev")),
+        runner=InProcessRunner(),
     )
     store = JobStore(state)
     worker = JobWorker(store, build_handlers(replace(fake_adapters(state, paths), series=real)), EventHub(),

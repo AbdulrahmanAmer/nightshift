@@ -136,3 +136,39 @@ def add_analytics(
         "avg_view_duration_s, likes, comments, shares, subs_gained) values (?,?,?,?,?,?,?,?,?,?)",
         (output_id, date, views, viewed_pct, avg_pct_viewed, avg_view_duration_s, 0, 0, 0, subs_gained),
     )
+
+
+class InProcessRunner:
+    """A `StudioRunner` stand-in that runs the child's handler in this process (dashboard adapter tests).
+
+    The studio plans and stages these tests register exist only in this interpreter, so they cannot cross a
+    process boundary. Everything else is the real path: `studio_job.HANDLERS[kind]` prints its protocol
+    events through `studio_job.emit`, which is captured here and handed to `on_event` exactly as the real
+    runner does; `check_cancel` may raise after each event.
+    """
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+
+    def run(
+        self,
+        kind: str,
+        args: dict[str, Any],
+        *,
+        on_event: Any = lambda _e: None,
+        check_cancel: Any = lambda: None,
+    ) -> dict[str, Any]:
+        """Run `kind` here; returns the same payload the child's `result` event would carry."""
+        from unittest import mock
+
+        from ns_dashboard import studio_job
+
+        self.calls.append((kind, args))
+
+        def capture(ev: str, **data: Any) -> None:
+            on_event({"ev": ev, **data})
+            check_cancel()
+
+        no_supervisor = {**args, "supervisor_url": None}  # fakes never acquire: no supervisor HTTP
+        with mock.patch.object(studio_job, "emit", capture):
+            return studio_job.HANDLERS[kind](no_supervisor)

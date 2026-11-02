@@ -51,6 +51,14 @@ NO_TOOL: dict[Route, str] = {
     ("GET", "/api/assistant/history"): "the Assistant itself",
     ("GET", "/api/assistant/conversations"): "the Assistant itself",
     ("POST", "/api/assistant/queue/run"): "the Assistant itself",
+    ("GET", "/api/assistant/tools"): "the Assistant itself (the page words its cards from the registry)",
+    ("GET", "/api/thumbs/{n}/{output_id:path}"): "binary image",
+    ("GET", "/api/update/state"): "progress of the detached updater, polled by the Settings page",
+    ("POST", "/api/models/get"): "never: model downloads are the owner's decision (Settings page)",
+    ("GET", "/api/models/state"): "progress of a model download, polled by the Settings page",
+    ("GET", "/api/notes"): "notes for the bell and Last night (the owner reads them)",
+    ("POST", "/api/notes/clear"): "the owner has read the notes",
+    ("DELETE", "/api/library/footage/{source}/{clip_id}"): "never: deleting files is the owner's decision (Library page)",
 }
 
 
@@ -209,7 +217,7 @@ def _tools() -> list[ToolDef]:
                   "template": _s("layout id, 'auto' lets Nightshift choose"),
                   "max_clips": _i("most clips", minimum=1, maximum=10),
                   "min_s": _i("shortest clip, seconds", minimum=5, maximum=120),
-                  "max_s": _i("longest clip, seconds", minimum=10, maximum=180),
+                  "max_s": _i("longest clip, seconds", minimum=10, maximum=179),
                   "caption_style": _s("caption style name")},
            required=["channel"], side=True, precheck=_clip_source_given,
            confirm=("Make up to {max_clips} clips for {channel} from {source} (layout {template}). By pressing Yes "

@@ -6,14 +6,17 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 from typing import Any
 
-from ns_dashboard import formats
+from ns_dashboard import formats, updater
 from ns_dashboard.common import now_iso
 from ns_dashboard.errors import ApiError
 from ns_dashboard.state import AppState
 from ns_dashboard.svc_channels import ChannelsService
 
+#: The names `ns models get` takes: the VoiceDesign talker and the story LLM.
+MODEL_NAMES = ("voicedesign", "story_llm")
 IDEA_STATUSES = ("new", "approved", "used", "rejected")
 IDEA_SOURCES = ("owner", "assistant", "generated")
 STATUS_ALIASES = {"dropped": "rejected"}  # the UI says "Dropped"; the shared schema says "rejected"
@@ -40,6 +43,19 @@ def _idea(row: sqlite3.Row) -> dict[str, Any]:
         "job_id": row["job_id"],
         "created_at": row["created_at"],
     }
+
+
+def story_status(statuses: list[str]) -> str:
+    """One word for a story from the states of its videos: pending, approved, posted, rejected or none."""
+    if not statuses:
+        return "none"
+    if "pending" in statuses:
+        return "pending"
+    if "uploaded" in statuses:
+        return "posted"
+    if "approved" in statuses:
+        return "approved"
+    return "rejected"
 
 
 class LibraryService:
@@ -156,6 +172,10 @@ class LibraryService:
                 by_job[o["job_id"]]["outputs"].append(
                     {k: o[k] for k in ("output_id", "kind", "k", "status", "video_url")}
                 )
+        for s in out:  # what the Stories tab shows: a title, a word count and one status for the whole story
+            s["title"] = s["working_title"] or s["opening_line"]
+            s["words"] = s["word_count"]
+            s["status"] = story_status([o["status"] for o in s["outputs"]])
         return out
 
     # --- footage ---
@@ -170,7 +190,9 @@ class LibraryService:
         clause = (" WHERE " + " AND ".join(where)) if where else ""
         rows = self.s.db.query(
             "SELECT c.*, (SELECT MAX(used_at) FROM clip_usage u WHERE u.source = c.source"
-            f" AND u.clip_id = c.clip_id) AS last_used FROM clips c{clause} ORDER BY c.fetched_at DESC LIMIT ?",
+            " AND u.clip_id = c.clip_id) AS last_used,"
+            " (SELECT COUNT(*) FROM clip_usage n WHERE n.source = c.source AND n.clip_id = c.clip_id) AS uses"
+            f" FROM clips c{clause} ORDER BY c.fetched_at DESC LIMIT ?",
             [*args, max(1, min(limit, 200))],
         )
         out = []
@@ -184,15 +206,40 @@ class LibraryService:
                     "source": r["source"], "clip_id": r["clip_id"], "url": r["url"], "license": r["license"],
                     "width": r["width"], "height": r["height"], "duration": r["duration"],
                     "local_path": r["local_path"], "keywords": kw, "fetched_at": r["fetched_at"],
-                    "last_used": r["last_used"],
+                    "last_used": r["last_used"], "uses": int(r["uses"]),
                 }
             )
         return out
 
+    def delete_footage(self, source: str, clip_id: str) -> dict[str, Any]:
+        """Remove a cached stock clip: its rows and its file (only a file inside the Nightshift home)."""
+        from pathlib import Path
+
+        from ns_dashboard.security import is_within
+
+        row = self.s.db.one("SELECT local_path FROM clips WHERE source = ? AND clip_id = ?", (source, clip_id))
+        if row is None:
+            raise ApiError(404, "not_found", "That clip is not in the cache.")
+        with self.s.db.tx() as db:
+            db.execute("DELETE FROM clip_usage WHERE source = ? AND clip_id = ?", (source, clip_id))
+            db.execute("DELETE FROM clips WHERE source = ? AND clip_id = ?", (source, clip_id))
+        removed = False
+        if row["local_path"]:
+            path = Path(row["local_path"])
+            if is_within(self.s.paths.home, path) and path.is_file():
+                path.unlink(missing_ok=True)
+                removed = True
+        self.s.log.info("footage_deleted", source=source, clip_id=clip_id, file_removed=removed)
+        return {"ok": True, "source": source, "clip_id": clip_id, "file_removed": removed}
+
     # --- formats ---
     def list_formats(self) -> list[dict[str, Any]]:
-        """Shipped and user formats."""
-        return formats.list_formats(self.s.paths)
+        """Shipped and user formats, each with the channels that may use it (an empty `formats_allowed` is all)."""
+        found = formats.list_formats(self.s.paths)
+        chans = self.channels.load_all()
+        for f in found:
+            f["channels"] = [c.slug for c in chans if not c.formats_allowed or f["id"] in c.formats_allowed]
+        return found
 
     def create_format(self, body: dict[str, Any]) -> dict[str, Any]:
         """New format or a duplicate of an existing one."""
@@ -206,6 +253,45 @@ class LibraryService:
     def update_check(self) -> dict[str, Any]:
         """Is a newer version on GitHub? (structured result of `ns update --check`)"""
         return self.s.adapters.update.check()
+
+    def models_get(self, name: str | None) -> dict[str, Any]:
+        """Start downloading a model that is fetched on demand (the voice design model, the story model).
+
+        Answers 501 until `ns models get` exists, so the page can say so instead of pretending.
+        """
+        if name not in MODEL_NAMES:
+            raise ApiError(422, "unknown_model", f"Choose one of: {', '.join(MODEL_NAMES)}.")
+        if not self.s.adapters.update.models_available():
+            raise ApiError(
+                501, "models_unavailable", "Downloading models from here is not available yet.",
+                hint="Run the installer's model step again with the option ticked.",
+            )
+        current = self.s.model_downloads.get(name)
+        if current and current["state"] == "running":
+            return {"name": name, **current}
+        self.s.model_downloads[name] = {"state": "running", "message": "Downloading"}
+
+        def work() -> None:
+            try:
+                def progress(line: str) -> None:
+                    self.s.model_downloads[name] = {"state": "running", "message": line[-200:]}
+
+                code, line = self.s.adapters.update.get_model(name, progress)
+                self.s.model_downloads[name] = {"state": "done" if code == 0 else "failed", "message": line}
+            except Exception as e:  # a failing download must not leave the page waiting forever
+                self.s.model_downloads[name] = {"state": "failed", "message": str(e)}
+
+        started = {"name": name, **self.s.model_downloads[name]}
+        threading.Thread(target=work, name=f"ns-model-{name}", daemon=True).start()
+        return started
+
+    def models_state(self) -> dict[str, dict[str, str]]:
+        """Downloads started in this session: name -> {state, message}."""
+        return {k: dict(v) for k, v in self.s.model_downloads.items()}
+
+    def update_state(self) -> dict[str, Any]:
+        """Progress of the detached updater (`run/update_state.json`): idle, running, done or failed."""
+        return updater.read_update_state(self.s.paths)
 
     def update_apply(self) -> dict[str, Any]:
         """Install the newest version (`ns update --github`, rolls back on failure)."""

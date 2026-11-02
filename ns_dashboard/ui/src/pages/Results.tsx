@@ -23,7 +23,7 @@ export default function Results() {
   const s = sum.data;
   const send = async (f: File) => {
     const fd = new FormData(); fd.append("file", f, f.name);
-    try { const r = await api.post("/learn/import", fd); sum.setData(r); toast(`Imported. ${r?.matched ?? 0} videos matched`, "ok"); } catch (e: any) { toast(e.message, "bad"); }
+    try { const r = await api.post("/learn/import", fd); sum.reload(); toast(`Imported. ${r?.matched ?? 0} videos matched`, "ok"); } catch (e: any) { toast(e.message, "bad"); }
   };
   const rows: LearnRow[] = [...(s?.top || []), ...(s?.bottom || [])];
   const days = s?.daily || [];
@@ -46,7 +46,7 @@ export default function Results() {
 
   return (
     <div className="enter flex flex-col gap-5">
-      <p className="text-ds-md text-ds-text-2">From the YouTube Studio export imported <span className="ds-num">{fmtWhen(s.imported_at)}</span>{s.matched != null ? `. ${s.matched} videos matched, ${s.unmatched} not matched` : ""}</p>
+      <p className="text-ds-md text-ds-text-2">{s.imported_at ? <>From the YouTube Studio export imported <span className="ds-num">{fmtWhen(s.imported_at)}</span></> : "No analytics export imported yet"}{s.matched != null ? `. ${s.matched} videos matched, ${s.unmatched ?? 0} not matched` : ""}</p>
       <DashGrid label="Results">
         <Figure className={cx("self-stretch", SPAN["2/4"])} label="Views, last 14 days" value={total ? fmtNum(total) : "–"} detail={growth != null ? `${growth >= 0 ? "+" : ""}${growth}% last 7 days vs the 7 before` : undefined} />
         <StatCard className={cx("self-stretch", SPAN["2/2"])} tone="accent" value={shortsShare ?? 0} eyebrow="Mix" title="Views from Shorts" caption={`${shortsShare ?? "–"}% Shorts, ${shortsShare != null ? 100 - shortsShare : "–"}% full videos`} detail="Last 14 days" />

@@ -13,7 +13,7 @@ from pydantic import ValidationError
 
 from ns_common.config import save_runtime
 from ns_common.models import Runtime
-from ns_dashboard import logs_tail
+from ns_dashboard import logs_tail, runtime_flags
 from ns_dashboard.adapters import KEY_NAMES
 from ns_dashboard.common import now_iso
 from ns_dashboard.errors import AdapterUnavailable, ApiError
@@ -57,7 +57,7 @@ class SettingsService:
         """`{schedule_time, home, profile, flags, keys, notifications, ...}`."""
         stored = load_dashboard_settings(self.s.paths)
         runtime = self.engine.runtime_summary()
-        flags = {k: v for k, v in (runtime or {}).items() if k not in ("profile", "supervisor_port")}
+        flags = runtime_flags.flatten(runtime or {})
         nxt = self.engine.next_run()
         prefs = load_ui_prefs(self.s.paths)
         return {
@@ -109,7 +109,7 @@ class SettingsService:
         current = self.engine.runtime_summary()
         if current is None:
             raise ApiError(409, "no_runtime", "runtime.json does not exist yet; run the installer first.")
-        merged = {**current, **(body.get("flags") or {})}
+        merged = runtime_flags.apply_flags(current, body.get("flags") or {})
         if body.get("profile"):
             merged["profile"] = body["profile"]
         try:
@@ -221,7 +221,26 @@ class SettingsService:
         base.setdefault("last_import", last[0].result if last else None)
         base.setdefault("unmatched_uploads", self._unmatched_uploads())
         base.setdefault("summary", self._sentences(base))
-        return base
+        return {**base, **self._results_page(last[0] if last else None)}
+
+    def _results_page(self, last: Any) -> dict[str, Any]:
+        """The fields the Results page draws: the last import, top and bottom videos, daily views, milestone."""
+        from ns_dashboard import learn_view
+        from ns_dashboard.svc_jobs import learn_response
+
+        shown = learn_response(last.result or {}) if last is not None else {}
+        top, bottom = learn_view.top_bottom(self.s.db)
+        channels = [c.slug for c in self.engine.channels.load_all()]
+        return {
+            "imported_at": last.finished_at if last is not None else None,
+            "matched": shown.get("matched"),
+            "unmatched": shown.get("unmatched"),
+            "changes": shown.get("changes", []),
+            "top": top,
+            "bottom": bottom,
+            "daily": learn_view.daily(self.s.db),
+            "milestone": learn_view.milestone(self.s.db, channels),
+        }
 
     def _unmatched_uploads(self) -> list[str]:
         rows = self.s.db.query(
@@ -281,8 +300,30 @@ class SettingsService:
             raise ApiError(404, "not_found", "No settings export has been made yet.")
         return path
 
+    def _restore_with_db_closed(self, zip_path: Path) -> list[str]:
+        """Run the restore while the dashboard holds no connection to `studio.db`.
+
+        On Windows the restore cannot replace a database whose `-wal` and `-shm` files are open (WinError 32),
+        and overwriting one that live connections use risks corruption. The worker is stopped (no job runs: the
+        caller checked), the connection is closed for the restore and opened again afterwards, and the worker
+        starts again, whether the restore worked or not.
+        """
+        was_started = self.s.worker.started
+        self.s.worker.stop()
+        try:
+            with self.s.db.released():
+                return self.s.adapters.backup.restore(zip_path)
+        finally:
+            if was_started:
+                self.s.worker.start()
+
     def import_settings(self, filename: str, fh: BinaryIO) -> dict[str, Any]:
         """Save an uploaded backup zip and restore it with `ns restore`."""
+        if self.s.store.running() is not None:
+            raise ApiError(
+                409, "job_running", "A job is running right now.",
+                hint="Wait for it to finish (or cancel it), then import the settings again.",
+            )
         if self.s.draining:
             raise ApiError(503, "shutting_down", "Nightshift is shutting down.")
         name = re.sub(r"[^A-Za-z0-9._-]+", "_", Path(filename or "backup.zip").name) or "backup.zip"
@@ -303,7 +344,7 @@ class SettingsService:
         if size == 0:
             dest.unlink(missing_ok=True)
             raise ApiError(400, "empty_file", "That file is empty.")
-        lines = self.s.adapters.backup.restore(dest)
+        lines = self._restore_with_db_closed(dest)
         self.s.log.warn("settings_restored", "settings restored from an uploaded backup", file=name)
         return {"restored": True, "file": name, "lines": lines, "note": "Restart Nightshift to use the restored settings."}
 
