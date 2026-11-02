@@ -869,6 +869,12 @@ class OutboxStage:
         )
         ctx.write_json("outbox/manifest.json", manifest)
         ctx.write_json("outbox/skipped.json", skipped)  # clips left out, with the reason
+        if skipped:
+            ctx.log.warn("clip_outbox_skipped", job_id=ctx.job_id, skipped=skipped)
+        if not manifest:
+            # SEO and QC each let the job through while one clip survived; together they can drop them all
+            reasons = "; ".join(f"{item}: {why}" for item, why in sorted(skipped.items()))
+            raise NsError("NS-E404", f"no clip passed the metadata and quality checks ({reasons})")
         source.set_source_status(ctx.db, info["source_id"], "done")
         ctx.log.info("clip_outbox_done", job_id=ctx.job_id, items=list(manifest))
 
