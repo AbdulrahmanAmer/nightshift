@@ -463,3 +463,16 @@ def test_every_route_the_ui_calls_answers_what_types_ts_declares(world: Any):
     fixed = sorted(k for k in KNOWN_MISMATCHES if k not in found)
     assert not unexpected, "API and UI disagree:\n  " + "\n  ".join(unexpected)
     assert not fixed, "these mismatches are gone, delete them from KNOWN_MISMATCHES:\n  " + "\n  ".join(fixed)
+
+
+def test_error_codes_the_ui_names_exist_in_the_error_table():
+    """The Library's voice states (NS-E310 to NS-E316) and every other `NS-E...` the pages name are real codes."""
+    from ns_common.errors import load_errors
+
+    known = load_errors()
+    src = TYPES_TS.parents[1]
+    named: set[str] = set()
+    for f in src.rglob("*.tsx"):
+        named |= set(re.findall(r'"(NS-[EW]\d{3})"', f.read_text(encoding="utf-8")))
+    assert {"NS-E310", "NS-E311", "NS-E312", "NS-E314", "NS-E315", "NS-E316"} <= named
+    assert not sorted(c for c in named if c not in known), "codes in the pages that contracts/errors.json lacks"
