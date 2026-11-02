@@ -74,6 +74,8 @@ class JobRecord:
             "status": self.status,
             "progress": round(self.progress * 100, 1),
             "stage": _stage_of(self.message),
+            "step": _steps_of(self.message)[0],
+            "steps": _steps_of(self.message)[1],
             "message": self.message,
             "created_at": self.created_at,
             "started_at": self.started_at,
@@ -85,7 +87,7 @@ class JobRecord:
         }
 
 
-_STAGE_RE = re.compile(r"^(.*) \(\d+/\d+\)$")
+_STAGE_RE = re.compile(r"^(.*) \((\d+)/(\d+)\)$")
 
 
 def _stage_of(message: str) -> str | None:
@@ -94,6 +96,12 @@ def _stage_of(message: str) -> str | None:
         return "download"
     m = _STAGE_RE.match(message or "")
     return m.group(1) if m else None
+
+
+def _steps_of(message: str) -> tuple[int | None, int | None]:
+    """`(i, n)` from a `name (i/n)` progress message, else `(None, None)`."""
+    m = _STAGE_RE.match(message or "")
+    return (int(m.group(2)), int(m.group(3))) if m else (None, None)
 
 
 def _unpack(raw: str | None) -> tuple[dict[str, Any], dict[str, Any] | None]:

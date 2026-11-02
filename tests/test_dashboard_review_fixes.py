@@ -222,3 +222,19 @@ def test_footage_rows_count_their_uses(tmp_home: Path):
         )
     rows = {r["clip_id"]: r for r in dash.library.footage()}
     assert rows["1"]["uses"] == 2 and rows["2"]["uses"] == 0 and rows["2"]["last_used"] is None
+
+
+# ------------------------------------------------------------------ row 24: jobs carry step and steps
+
+
+def test_job_dict_has_step_and_steps_from_the_progress_message(tmp_home: Path):
+    dash, state = make(tmp_home)
+    job = state.store.create("run", "after-dark", {})
+    state.store.mark_running(job.job_id)
+    state.store.update_progress(job.job_id, 0.25, "voice (2/8)")
+    d = state.store.get(job.job_id).to_dict()  # type: ignore[union-attr]
+    assert (d["stage"], d["step"], d["steps"]) == ("voice", 2, 8)
+    state.store.update_progress(job.job_id, 0.3, "Downloading 30%")
+    d = state.store.get(job.job_id).to_dict()  # type: ignore[union-attr]
+    assert (d["stage"], d["step"], d["steps"]) == ("download", None, None)
+    assert dash.jobs.get(job.job_id)["steps"] is None
