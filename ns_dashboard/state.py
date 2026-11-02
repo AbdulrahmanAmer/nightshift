@@ -128,9 +128,9 @@ def ui_prefs_file(paths: Paths) -> Path:
 
 
 def load_ui_prefs(paths: Paths) -> dict[str, Any]:
-    """`{owner_name, theme}` from the setup window's choices; missing, corrupt or invalid values come back as None.
+    """`{owner_name, theme}` from the setup window's choices; missing or invalid values come back as None.
 
-    The greeting uses `owner_name` and the first start of the page uses `theme` (the owner's later choice in the
+    The greeting uses `owner_name`; the first start of the page uses `theme` (the owner's later choice in the
     page is kept in the browser and wins).
     """
     out: dict[str, Any] = {"owner_name": None, "theme": None}
