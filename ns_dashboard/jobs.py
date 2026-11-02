@@ -442,10 +442,13 @@ class JobWorker:
         rec = self.store.get(job_id)
         if rec is None:
             raise LookupError(job_id)
-        if rec.status == "queued" and self.store.cancel_queued(job_id):
-            self.log.info("job_cancelled", job_id=job_id)
-            self._publish(job_id)
-            return "cancelled"
+        if rec.status == "queued":
+            if self.store.cancel_queued(job_id):
+                self.log.info("job_cancelled", job_id=job_id)
+                self._publish(job_id)
+                return "cancelled"
+            # the worker started it between our read and the update: look again, so it is cancelled as running
+            rec = self.store.get(job_id) or rec
         if rec.status == "running":
             self.store.request_cancel(job_id)
             self.store.update_progress(job_id, rec.progress, "Cancelling after the current stage...")
