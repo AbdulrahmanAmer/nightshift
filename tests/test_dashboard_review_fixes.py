@@ -260,3 +260,16 @@ def test_server_spools_uploads_under_the_home_tmp(tmp_home: Path, monkeypatch: p
     with tempfile.SpooledTemporaryFile(max_size=1) as f:  # what Starlette's multipart parser uses
         f.write(b"abc")
         assert Path(f._file.name).parent == folder  # type: ignore[attr-defined]
+
+
+# ------------------------------------------------------------------ gap 20: the run time is the registered task's
+
+
+def test_run_time_is_read_from_the_registered_schedule(tmp_home: Path):
+    from ns_supervisor.schedule_cfg import write_run_time
+
+    dash, state = make(tmp_home)
+    assert dash.settings.get_settings()["schedule_time"] == "03:00"
+    write_run_time(state.paths, "04:30")  # `ns schedule install --time 04:30` ran
+    assert dash.settings.get_settings()["schedule_time"] == "04:30"
+    assert dash.engine.status()["schedule_time"] == "04:30"

@@ -91,8 +91,21 @@ def settings_file(paths: Paths) -> Path:
     return paths.config / "dashboard.json"
 
 
+def scheduled_run_time(paths: Paths) -> str | None:
+    """The nightly time of the registered Windows task (`config/schedule.json`, written by `ns schedule`)."""
+    try:
+        from ns_supervisor.schedule_cfg import read_run_time
+    except ImportError:
+        return None
+    return read_run_time(paths)
+
+
 def load_dashboard_settings(paths: Paths) -> dict[str, Any]:
-    """Settings with defaults filled in; a missing or corrupt file yields the defaults."""
+    """Settings with defaults filled in; a missing or corrupt file yields the defaults.
+
+    `run_time` is the time of the registered nightly task when there is one, because that is when the engine
+    really starts; `dashboard.json` only remembers what the owner typed.
+    """
     out = dict(DEFAULT_SETTINGS)
     f = settings_file(paths)
     if f.exists():
@@ -102,6 +115,9 @@ def load_dashboard_settings(paths: Paths) -> dict[str, Any]:
             raw = {}
         if isinstance(raw, dict):
             out.update({k: v for k, v in raw.items() if k in DEFAULT_SETTINGS})
+    registered = scheduled_run_time(paths)
+    if registered:
+        out["run_time"] = registered
     return out
 
 
