@@ -102,13 +102,7 @@ class VoiceStage:
         voice_name = voice.name or voice.speaker or "Ryan"
         items = narration_items(parts, voice_name, job_speed(ctx))
         manifest, synthesized = synthesize(ctx, items)
-        changed = False
-        for p in parts:
-            secs = manifest[f"p{p['n']}"]["seconds"]
-            if abs(float(p.get("est_seconds", 0.0)) - secs) > 1e-6:
-                p["est_seconds"] = secs
-                changed = True
-        if changed:
-            ctx.write_json("parts.json", parts)
+        # Measured seconds live in audio/manifest.json only: rewriting parts.json (an input of hooks, seo,
+        # visual_plan and the policy gate) made `--resume` redo those LLM stages.
         ctx.write_json("audio/manifest.json", {it.id: manifest[it.id] for it in items})
         ctx.log.info("voice_done", job_id=ctx.job_id, items=len(items), synthesized=synthesized)

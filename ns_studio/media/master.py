@@ -220,6 +220,8 @@ class DurationCheckStage:
     tenant: Tenant = "tts"
     inputs: tuple[str, ...] = ("audio/manifest.json", "story.json")
     outputs: tuple[str, ...] = ("duration_check.json",)
+    # An expansion rewrites the story and both plans (consistently); stages that ran before must not redo.
+    rewrites: tuple[str, ...] = ("story.json", "shorts_plan.json", "visual_plan.json")
 
     def run(self, ctx: JobContext) -> None:
         """Measure, expand and re-voice until the floor is met or the budget of expansions is spent."""
