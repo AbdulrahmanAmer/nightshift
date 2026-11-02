@@ -3,7 +3,7 @@ import {
   Clapperboard, Clock, Columns3, Copy, Cpu, Download, Ellipsis, EllipsisVertical, ExternalLink, FileArchive, FileSearch, FileText, FileVideo, Film,
   FolderOpen, Github, HardDrive, Image, KeyRound, LayoutGrid, LayoutList, Layers, Lightbulb, Link2, ListChecks, Lock, LockOpen, Mail, Megaphone,
   MessageCircle, Mic, MonitorPlay, Moon, Pause, PenLine, PieChart, Play, Plus, Minus, Power, RefreshCw, RotateCcw, Scissors, Search, Settings, Share2,
-  SkipBack, SkipForward, Smartphone, SquarePen, Sun, Target, Trash2, TriangleAlert, Truck, Tv, Undo2, Upload, User, Users, Video, Wand2, X,
+  SkipBack, SkipForward, Smartphone, Square, SquarePen, Sun, Target, Trash2, TriangleAlert, Truck, Tv, Undo2, Upload, User, Users, Video, Wand2, X,
   type LucideIcon,
 } from "lucide-react";
 
@@ -24,6 +24,7 @@ export const icons = {
   lightbulb: Lightbulb, fileSearch: FileSearch, key: KeyRound, lock: Lock, lockOpen: LockOpen, github: Github, refresh: RefreshCw,
   archive: FileArchive, restore: RotateCcw, monitor: MonitorPlay, phone: Smartphone, fileVideo: FileVideo, alert: TriangleAlert,
   book: BookOpen, checklist: ListChecks, captions: Captions, wand: Wand2, power: Power,
+  winMinimize: Minus, winMaximize: Square, winRestore: Copy, winClose: X,
 } satisfies Record<string, LucideIcon>;
 
 export type IconName = keyof typeof icons;
