@@ -11,6 +11,7 @@ import { api } from "../lib/api";
 import { dayInline, doneWords, MAKES_VIDEO, fmtClock, fmtDay, fmtDur, fmtWhen, kindLabel, plural, stageWords, store } from "../lib/format";
 import type { ChannelSummary, Job, Output, OutputDetail, Run } from "../lib/types";
 import { cx } from "../ui/kit";
+import { JobError } from "../ui/JobError";
 import { Scene } from "../visuals/Scene";
 import {
   AssignmentCard, AvatarGroup, Badge, Button, CalendarCard, Card, CardHeader, ClipsIllustration, CountdownCard, CreateTile, DashGrid, EmptyState,
@@ -327,6 +328,7 @@ function JobEvents({ jobs, loading, channelName, className, onReview }: { jobs: 
                     titleAdornment={<StatusDot tone={failed ? "danger" : cancelled ? "attention" : "online"} label={failed ? "Stopped" : cancelled ? "Cancelled" : "Done"} />}
                     subtitle={failed ? `Stopped at ${stageWords(j.stage).toLowerCase()}. ${j.message || ""}` : cancelled ? "Cancelled" : doneWords(j)}
                     meta={<><MetaItem icon="calendarDays">{fmtDay(j.created_at)}</MetaItem><MetaItem icon="clock">{fmtClock(j.created_at)}</MetaItem><MetaItem icon="channels">{channelName(j.channel)}</MetaItem></>} />
+                {failed && <JobError j={j} />}
               </li>
             );
           })}
@@ -456,7 +458,7 @@ function LastNight({ className, pending, onReview, channelName }: { className?: 
   const runs = useLoad<Run[]>(() => api.get("/runs?limit=1"), [], []);
   const r = runs.data[0];
   if (!r) return null;
-  const made = r.summary?.jobs?.length ?? 0; const failed = r.summary?.failures ?? [];
+  const made = r.summary?.jobs?.length ?? 0; const failed = r.summary?.failures ?? []; const skipped = r.summary?.skipped ?? [];
   const took = r.duration_s ? (r.duration_s >= 3600 ? `${Math.floor(r.duration_s / 3600)} h ${Math.round((r.duration_s % 3600) / 60)} min` : `${Math.max(1, Math.round(r.duration_s / 60))} min`) : null;
   const when = r.mode === "daily" ? "Last night" : "Last run";
   return (
@@ -466,7 +468,9 @@ function LastNight({ className, pending, onReview, channelName }: { className?: 
       <p className="text-ds-md leading-ds-normal">
         {made ? `${plural(made, "video")} made` : "Nothing was made"}{took ? `, in ${took}` : ""}, {fmtDay(r.started_at).toLowerCase()} at <span className="ds-num">{fmtClock(r.started_at)}</span>.
         {failed.length ? ` ${plural(failed.length, "job")} stopped.` : ""}
+        {skipped.length ? ` ${plural(skipped.reduce((n, x) => n + x.jobs, 0), "job")} skipped.` : ""}
       </p>
+      {skipped.length > 0 && <ul className="mt-2 flex flex-col gap-1 text-ds-xs text-ds-text-2">{skipped.map((x) => <li key={x.channel}>{channelName(x.channel)}: {plural(x.jobs, "job")} skipped because an earlier one stopped</li>)}</ul>}
       {failed.length > 0 && <ul className="mt-2 flex flex-col gap-1 text-ds-xs text-ds-danger">{failed.slice(0, 3).map((f) => <li key={f.job_id}>{channelName(f.channel)}: {f.code ? `${f.code}. ` : ""}{f.error || "stopped"}</li>)}</ul>}
     </Card>
   );
