@@ -209,7 +209,7 @@ def _tools() -> list[ToolDef]:
                   "template": _s("layout id, 'auto' lets Nightshift choose"),
                   "max_clips": _i("most clips", minimum=1, maximum=10),
                   "min_s": _i("shortest clip, seconds", minimum=5, maximum=120),
-                  "max_s": _i("longest clip, seconds", minimum=10, maximum=180),
+                  "max_s": _i("longest clip, seconds", minimum=10, maximum=179),
                   "caption_style": _s("caption style name")},
            required=["channel"], side=True, precheck=_clip_source_given,
            confirm=("Make up to {max_clips} clips for {channel} from {source} (layout {template}). By pressing Yes "

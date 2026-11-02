@@ -318,10 +318,10 @@ class JobsService:
         template = str(body.get("template") or "auto")
         if template not in {t["id"] for t in load_templates(self.s.paths)}:
             raise ApiError(422, "invalid_options", f"Unknown layout '{template}'.")
-        min_s = _int(body, "min_s", 20, 5, 120)
-        max_s = _int(body, "max_s", 60, 10, 180)
-        if max_s < min_s:
-            raise ApiError(422, "invalid_options", "'max_s' must not be smaller than 'min_s'.")
+        min_s = _int(body, "min_s", 20, 5, 178)
+        max_s = _int(body, "max_s", 60, 6, 179)
+        if max_s <= min_s:
+            raise ApiError(422, "invalid_options", "'max_s' must be larger than 'min_s'.")
         params: dict[str, Any] = {
             "channel": slug,
             "template": template,
