@@ -94,6 +94,17 @@ class RealUpdateAdapter:
         """Download and install the newest version (`ns update --github`); rolls back on failure."""
         return classify_update(parse_update_output(*self.runner(self._command("update", "--github"), 3600)))
 
+    def models_available(self) -> bool:
+        """True when this `ns` has the `models` command (the installer/supervisor builder adds `ns models get`)."""
+        code, out, err = self.runner(self._command("models", "--help"), 60)
+        return code == 0 and "no such command" not in (out + err).lower()
+
+    def get_model(self, name: str) -> tuple[int, str]:
+        """`ns models get <name>` (a long download); returns (exit code, last output line)."""
+        code, out, err = self.runner(self._command("models", "get", name), 6 * 3600)
+        text = (err or out).strip().splitlines()
+        return code, (text[-1] if text else "")
+
 
 def venv_python(paths: Paths) -> Path:
     """Python of the supervisor venv (for callers that need it)."""

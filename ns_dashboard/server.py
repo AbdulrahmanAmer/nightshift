@@ -558,6 +558,15 @@ def create_app(
     async def update_state() -> SafeJSONResponse:
         return ok(await run_in_threadpool(dash.library.update_state))
 
+    @app.post("/api/models/get")
+    async def models_get(request: Request) -> SafeJSONResponse:
+        body = await body_json(request)
+        return ok(await run_in_threadpool(dash.library.models_get, body.get("name")), 202)
+
+    @app.get("/api/models/state")
+    async def models_state() -> SafeJSONResponse:
+        return ok(await run_in_threadpool(dash.library.models_state))
+
     @app.post("/api/update/apply")
     async def update_apply() -> SafeJSONResponse:
         return ok(await run_in_threadpool(dash.library.update_apply))

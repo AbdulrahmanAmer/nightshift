@@ -124,11 +124,19 @@ class FolderOpener(Protocol):
 
 
 class UpdateAdapter(Protocol):
-    """GitHub update check and apply (`ns update`)."""
+    """GitHub update check and apply (`ns update`), and the on-demand model downloads (`ns models get`)."""
 
     def check(self) -> dict[str, Any]: ...
 
     def apply(self) -> dict[str, Any]: ...
+
+    def models_available(self) -> bool:
+        """False until `ns models get` exists."""
+        ...
+
+    def get_model(self, name: str) -> tuple[int, str]:
+        """Download the model `name` (blocks); returns (exit code, last line)."""
+        ...
 
 
 class SeriesAdapter(Protocol):

@@ -455,3 +455,27 @@ def test_assistant_tools_route_lists_the_registry(tmp_home: Path):
     assert by_name["start_story_job"]["side_effect"] is True and by_name["list_queue"]["side_effect"] is False
     for guessed in ("list_outputs", "start_run", "start_clips", "save_ideas", "library_ideas"):
         assert guessed not in by_name
+
+
+# ------------------------------------------------------------------ gap: Settings > Models "Get voice design model" / "Get story model"
+
+
+def test_model_download_is_unavailable_until_ns_models_exists_then_runs_in_the_background(tmp_home: Path):
+    import time
+
+    from ns_dashboard.fakes import FakeUpdateAdapter
+
+    dash, state = make(tmp_home)
+    update = state.adapters.update
+    assert isinstance(update, FakeUpdateAdapter)
+    with pytest.raises(ApiError) as err:
+        dash.library.models_get("voice_design")
+    assert err.value.status == 501 and err.value.code == "models_unavailable"
+    assert code_of(dash.library.models_get, "nope") == "unknown_model"
+    update.models_command = True  # type: ignore[attr-defined]
+    assert dash.library.models_get("voice_design")["state"] == "running"
+    deadline = time.monotonic() + 10
+    while dash.library.models_state()["voice_design"]["state"] == "running" and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert dash.library.models_state()["voice_design"] == {"state": "done", "message": "voice_design is ready"}
+    assert update.downloaded == ["voice_design"]  # type: ignore[attr-defined]

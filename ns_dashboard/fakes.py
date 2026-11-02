@@ -381,6 +381,15 @@ class FakeUpdateAdapter:
                                 "current": "0.1.0", "latest": "0.2.0" if self.available else "0.1.0",
                                 "output": "", "error": ""})
 
+    def models_available(self) -> bool:
+        """Tests set `models_command` to switch the command on."""
+        return getattr(self, "models_command", False)
+
+    def get_model(self, name: str) -> tuple[int, str]:
+        """Pretend to download."""
+        self.downloaded = [*getattr(self, "downloaded", []), name]
+        return 0, f"{name} is ready"
+
     def apply(self) -> dict[str, Any]:
         """Pretend to install."""
         if self.missing:

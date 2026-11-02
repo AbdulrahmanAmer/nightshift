@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 from typing import Any
 
 from ns_dashboard import formats, updater
@@ -14,6 +15,7 @@ from ns_dashboard.errors import ApiError
 from ns_dashboard.state import AppState
 from ns_dashboard.svc_channels import ChannelsService
 
+MODEL_NAMES = ("voice_design", "story")
 IDEA_STATUSES = ("new", "approved", "used", "rejected")
 IDEA_SOURCES = ("owner", "assistant", "generated")
 STATUS_ALIASES = {"dropped": "rejected"}  # the UI says "Dropped"; the shared schema says "rejected"
@@ -229,6 +231,37 @@ class LibraryService:
     def update_check(self) -> dict[str, Any]:
         """Is a newer version on GitHub? (structured result of `ns update --check`)"""
         return self.s.adapters.update.check()
+
+    def models_get(self, name: str | None) -> dict[str, Any]:
+        """Start downloading a model that is fetched on demand (the voice design model, the story model).
+
+        Answers 501 until `ns models get` exists, so the page can say so instead of pretending.
+        """
+        if name not in MODEL_NAMES:
+            raise ApiError(422, "unknown_model", f"Choose one of: {', '.join(MODEL_NAMES)}.")
+        if not self.s.adapters.update.models_available():
+            raise ApiError(
+                501, "models_unavailable", "Downloading models from here is not available yet.",
+                hint="Run the installer's model step again with the option ticked.",
+            )
+        current = self.s.model_downloads.get(name)
+        if current and current["state"] == "running":
+            return {"name": name, **current}
+        self.s.model_downloads[name] = {"state": "running", "message": "Downloading"}
+
+        def work() -> None:
+            try:
+                code, line = self.s.adapters.update.get_model(name)
+                self.s.model_downloads[name] = {"state": "done" if code == 0 else "failed", "message": line}
+            except Exception as e:  # a failing download must not leave the page waiting forever
+                self.s.model_downloads[name] = {"state": "failed", "message": str(e)}
+
+        threading.Thread(target=work, name=f"ns-model-{name}", daemon=True).start()
+        return {"name": name, **self.s.model_downloads[name]}
+
+    def models_state(self) -> dict[str, dict[str, str]]:
+        """Downloads started in this session: name -> {state, message}."""
+        return {k: dict(v) for k, v in self.s.model_downloads.items()}
 
     def update_state(self) -> dict[str, Any]:
         """Progress of the detached updater (`run/update_state.json`): idle, running, done or failed."""
