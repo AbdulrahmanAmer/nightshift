@@ -3,6 +3,8 @@ import { createRoot } from "react-dom/client";
 import "./styles.css";
 import { AppProvider, useApp } from "./lib/app";
 import { Shell } from "./shell/Shell";
+import { ErrorBoundary } from "./shell/ErrorBoundary";
+import { store } from "./lib/format";
 import Queue from "./pages/Queue";
 import Create from "./pages/Create";
 import Library from "./pages/Library";
@@ -25,7 +27,9 @@ function Router() {
   useEffect(() => { const n = status?.outbox?.pending; document.title = `${TITLES[route.name] || "Queue"}${n ? ` (${n})` : ""} · Nightshift`; }, [route.name, status?.outbox?.pending]);
   useEffect(() => { window.scrollTo(0, 0); document.getElementById("main")?.focus({ preventScroll: true }); }, [route.name]);
   if (!status) return <div className="h-[60vh]" aria-busy="true" />;
-  return <Page key={route.name} />;
+  // A crash in one page leaves the shell and the other pages alone, and forgets the remembered tab that may have caused it.
+  const forget = () => { store.set("ns-lib-tab", "ideas"); store.set("ns-create-kind", "story"); };
+  return <ErrorBoundary key={route.name} name={TITLES[route.name] || "This page"} onCrash={forget}><Page /></ErrorBoundary>;
 }
 
 function Root() {
@@ -37,8 +41,10 @@ function Root() {
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    <AppProvider>
-      <Root />
-    </AppProvider>
+    <ErrorBoundary name="the app" root>
+      <AppProvider>
+        <Root />
+      </AppProvider>
+    </ErrorBoundary>
   </StrictMode>,
 );
