@@ -452,12 +452,12 @@ def test_s07_queues_a_designed_voice_for_the_first_run(tmp_path: Path):
 
 def test_s07_queues_a_cloned_voice_with_its_recording_and_consent(tmp_path: Path):
     ctx, _ = keyed_context(
-        tmp_path, voice={"mode": "clone"}, voice_ref_audio_path="D:\me.wav", voice_ref_text="Hello there.",
+        tmp_path, voice={"mode": "clone"}, voice_ref_audio_path="D:/me.wav", voice_ref_text="Hello there.",
         voice_rights_confirmed=True,
     )
     S07Configs().run(ctx)
     queued = json.loads((ctx.paths.config / "pending_voice.json").read_text(encoding="utf-8"))
-    assert queued["mode"] == "clone" and queued["ref_audio_path"] == "D:\me.wav"
+    assert queued["mode"] == "clone" and queued["ref_audio_path"] == "D:/me.wav"
     assert queued["ref_text"] == "Hello there." and queued["rights_confirmed"] is True
 
 

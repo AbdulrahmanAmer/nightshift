@@ -1,7 +1,7 @@
 """C2 weekly update check (spec J8, gap 16): at most once a week the supervisor asks GitHub whether a newer
 release exists and, when one does, shows a toast and publishes an `update` event.
 
-The state lives in `config\update_check.json` (`last_checked`, `latest`); a failed check (offline) is not
+The state lives in `config/update_check.json` (`last_checked`, `latest`); a failed check (offline) is not
 recorded, so it is retried at the next poll. The Settings notifications toggle is honoured. Everything the
 job touches is injectable so tests never reach the network or PowerShell.
 """
@@ -28,7 +28,7 @@ Toaster = Callable[[str, str], bool]
 
 
 def state_file(paths: Paths) -> Path:
-    """`config\update_check.json`."""
+    """`config/update_check.json`."""
     return paths.config / "update_check.json"
 
 
