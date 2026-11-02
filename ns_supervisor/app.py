@@ -23,6 +23,7 @@ from ns_common.errors import NsError
 from ns_common.models import Runtime
 from ns_common.paths import Paths
 from ns_supervisor.core import Supervisor
+from ns_supervisor.scheduled import overdue_scheduled_jobs
 
 _STATUS = {"NS-E201": 409, "NS-E202": 502, "NS-E203": 504}
 
@@ -82,7 +83,10 @@ def create_app(sup: Supervisor, *, start_dashboard: bool = False, run_monitor: b
         tasks: list[asyncio.Task[Any]] = []
         if run_monitor:
             tasks.append(asyncio.create_task(sup.run_monitor()))
-        if start_dashboard:
+        overdue = overdue_scheduled_jobs(sup.paths)
+        if overdue:
+            sup.log.info("scheduled_jobs_due", f"{overdue} scheduled dashboard job(s) are due", count=overdue)
+        if start_dashboard or overdue:  # a headless nightly start still runs jobs that came due
             tasks.append(asyncio.create_task(_warm_dashboard()))
         try:
             yield
@@ -109,7 +113,7 @@ def create_app(sup: Supervisor, *, start_dashboard: bool = False, run_monitor: b
 
     @app.get("/status")
     async def status() -> dict[str, Any]:
-        return sup.status()
+        return await asyncio.to_thread(sup.status)  # the GPU probe may spawn nvidia-smi
 
     @app.post("/acquire")
     async def acquire(body: AcquireBody) -> dict[str, Any]:
@@ -145,7 +149,7 @@ def create_app(sup: Supervisor, *, start_dashboard: bool = False, run_monitor: b
         async def gen() -> AsyncIterator[str]:
             q = sup.subscribe()
             try:
-                data = {"event": "snapshot", **sup.status()}
+                data = {"event": "snapshot", **await asyncio.to_thread(sup.status)}
                 snap = {"ts": sup.now().isoformat(), "kind": "service", "data": data}
                 yield _sse(snap)
                 sent = 1

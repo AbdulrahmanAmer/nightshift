@@ -8,6 +8,7 @@ import { fmtDay, fmtClock, stageWords, store } from "../lib/format";
 import type { Job } from "../lib/types";
 import { cx } from "../ui/kit";
 import { Mark } from "../ui/Mark";
+import { Lockup } from "../ui/Lockup";
 import { Button, Card, CardHeader, Icon, IconButton, MeetingCard, MetaItem, NotificationItem, StatusDot, type IconName, type MenuItem } from "../components/ref12";
 import { jobTitle } from "./Queue";
 
@@ -70,6 +71,7 @@ export function Chat({ compact, initialText }: { compact?: boolean; initialText?
   return (
     <div className={cx("flex min-h-0 flex-1 flex-col", !compact && "h-full")}>
       <div ref={logRef} aria-live="polite" className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-5 py-4 scroll-thin">
+        {!compact && saved.msgs.length <= 1 && !busy && <div className="flex justify-center pt-4 pb-2"><Lockup width={220} /></div>}
         {saved.msgs.map((m) => m.confirm ? <ConfirmCard key={m.id} c={m.confirm} onYes={() => decide(m, true)} onNo={() => decide(m, false)} /> : (
           <div key={m.id} className={cx("flex gap-3", m.role === "user" && "justify-end")}>
             {m.role !== "user" && m.role !== "note" && <span className="mt-0.5 shrink-0"><Mark size={28} /></span>}

@@ -72,7 +72,7 @@ export function TitleBar() {
     <>
       <div aria-hidden className="ds-drag fixed inset-x-0 top-0 z-40 h-9" onPointerDown={down} onDoubleClick={() => host.send({ cmd: "toggle-maximize" })} />
       <Notch side="left" width={CAP + 36} label="Nightshift">
-        <span className="ds-drag grid size-7 place-items-center" onPointerDown={(e) => { if (e.button === 0) host.send({ cmd: "drag-start" }); }}><Mark size={18} tone="white" /></span>
+        <span className="ds-drag grid size-7 place-items-center" onPointerDown={(e) => { if (e.button === 0) host.send({ cmd: "drag-start" }); }}><Mark size={24} tone="white" /></span>
       </Notch>
       <Notch side="right" width={CAP + 92} label="Window">
         <NotchButton icon="winMinimize" label="Minimize" onClick={() => host.send({ cmd: "minimize" })} />

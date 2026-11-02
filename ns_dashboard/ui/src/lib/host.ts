@@ -1,3 +1,5 @@
+import { api } from "./api";
+
 /* App host bridge (docs/design/installer-ui.md §6.3): the frameless WebView2 window posts window-state and
    close-requested events; the page sends window commands. Everything is a no-op in a normal browser. */
 export type HostCommand =
@@ -22,7 +24,9 @@ declare global {
 }
 
 export const host = {
-  available: (): boolean => !!window.chrome?.webview,
+  /** True inside the WebView2 host. For design review, `?host=1` also turns it on, but only in demo mode (no engine behind the page),
+   *  so the notches can be seen and screenshotted in a normal browser without a real install ever showing them. */
+  available: (): boolean => !!window.chrome?.webview || (api.demo && new URLSearchParams(location.search).get("host") === "1"),
   send: (c: HostCommand): void => window.chrome?.webview?.postMessage(c),
   on: (fn: (e: HostEvent) => void): (() => void) => {
     const w = window.chrome?.webview;

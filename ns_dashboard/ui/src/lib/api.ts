@@ -1,13 +1,21 @@
 /* API client. Talks to the FastAPI app under /api. When /api/status does not answer, it switches
    to the demo layer for the rest of the session so the UI is viewable without a backend. */
-import type { ChatEvent } from "./types";
+import type { ChatEvent, VoiceMade } from "./types";
 import { demoChat, demoHandle } from "./demo";
+import { ApiError } from "./errors";
+export { ApiError };
 
 const BASE = "/api";
 const errMessage = async (res: Response) => {
   let msg = res.statusText || `HTTP ${res.status}`;
   try { const j = await res.json(); msg = j?.error?.message || j?.detail || msg; if (j?.error?.hint) msg += `. ${j.error.hint}`; } catch { /* not JSON */ }
   return msg;
+};
+
+const apiError = async (res: Response) => {
+  let reason = res.statusText || `HTTP ${res.status}`; let code: string | undefined; let hint: string | undefined;
+  try { const j = await res.json(); const e = j?.error; reason = e?.message || j?.detail || reason; code = e?.code; hint = e?.hint; } catch { /* not JSON */ }
+  return new ApiError(hint ? `${reason}. ${hint}` : reason, code, reason, hint);
 };
 
 export const api = {
@@ -18,7 +26,7 @@ export const api = {
     if (body instanceof FormData) init.body = body;
     else if (body !== undefined) { (init.headers as Record<string, string>)["Content-Type"] = "application/json"; init.body = JSON.stringify(body); }
     const res = await fetch(BASE + path, init);
-    if (!res.ok) throw new Error(await errMessage(res));
+    if (!res.ok) throw await apiError(res);
     return (res.headers.get("content-type") || "").includes("json") ? res.json() : (res.text() as any);
   },
   get<T = any>(p: string) { return this.request<T>("GET", p); },
@@ -44,18 +52,36 @@ export const api = {
     return URL.createObjectURL(await res.blob());
   },
 
-  /** TODO(voices): planned endpoint POST /api/voices/design {name, description} (VoiceDesign, BUILD_SPEC J6). Not in the
-   *  backend yet, so this always fails and the Library says "coming in the next update". Never fakes a success. */
-  async voiceDesign(_name: string, _description: string): Promise<{ name: string }> {
-    throw new Error("Designing voices arrives in the next update");
+  /** POST /api/voices/design (CR-C3-UI-7): a voice from a description, previewed with `testLine`. Synchronous, can take about a
+   *  minute the first time (the design model loads). The voice is stored under its name; `voice_id` is that name. */
+  voiceDesign(name: string, description: string, testLine: string): Promise<VoiceMade> {
+    return this.post("/voices/design", { name, description, test_line: testLine });
   },
-  /** TODO(voices): planned endpoint POST /api/voices/clone (multipart: sample, name, test_line, rights_confirmed),
-   *  BUILD_SPEC J6. Not in the backend yet; same contract as voiceDesign. */
-  async voiceClone(_sample: File, _name: string, _testLine: string): Promise<{ name: string }> {
-    throw new Error("Cloning voices arrives in the next update");
+  /** Uploads the recording (chunked, existing /api/uploads), then POST /api/voices/clone with the stored path. `consent` is always
+   *  true here: the page does not call this until the owner has ticked the rights box, and the server refuses anything else. */
+  async voiceClone(sample: File, name: string, testLine: string, onProgress: (pct: number) => void = () => {}): Promise<VoiceMade> {
+    const up = await this.uploadFile(sample, onProgress);
+    return this.post("/voices/clone", { name, sample_path: up.path, consent: true, test_line: testLine });
   },
-  /** Whether the planned voice design and clone endpoints exist. Flip when they land. */
-  voiceMakingReady: false,
+
+  /** Chunked upload to /api/uploads (start, PUT 8 MB pieces at their offset, complete). Resolves with the stored path on the PC.
+   *  The endpoint only lists video containers, while the clone route reads any recording by content (FFmpeg), so an audio file
+   *  goes up under a .webm name. TODO(C9 backend): list audio extensions in uploads.ALLOWED_EXT and drop this rename. */
+  async uploadFile(file: File, onProgress: (pct: number) => void): Promise<{ path: string; upload_id?: string }> {
+    if (this.demo) { for (let p = 0; p <= 100; p += 25) { onProgress(p); await new Promise((r) => setTimeout(r, 120)); } return { path: `D:\Nightshift\imports\clipper\demo\sample-${file.size}.wav` }; }
+    const ext = /.[^.\/]+$/.exec(file.name)?.[0].toLowerCase() ?? "";
+    const filename = [".mp4", ".mkv", ".mov", ".webm", ".avi", ".m4v", ".mpg", ".mpeg", ".ts"].includes(ext) ? file.name : "recording.webm";
+    const start = await this.post<{ upload_id: string; chunk_size?: number }>("/uploads", { filename, size: file.size });
+    const step = start.chunk_size || 8 * 1024 * 1024; const base = `/uploads/${encodeURIComponent(start.upload_id)}`;
+    for (let off = 0; off < file.size; off += step) {
+      const res = await fetch(`${BASE}${base}?offset=${off}`, { method: "PUT", body: file.slice(off, off + step) });
+      if (!res.ok) throw await apiError(res);
+      onProgress(Math.round((Math.min(file.size, off + step) / file.size) * 100));
+    }
+    const done = await this.post<{ path?: string | null; upload_id: string }>(`${base}/complete`);
+    if (!done.path) throw new ApiError("The recording did not finish uploading");
+    return { path: done.path, upload_id: done.upload_id };
+  },
 
   upload<T = any>(path: string, fd: FormData, onProgress: (pct: number) => void): Promise<T> {
     if (this.demo) return (async () => { for (let p = 0; p <= 100; p += 20) { onProgress(p); await new Promise((r) => setTimeout(r, 150)); } return demoHandle("POST", path, fd); })();

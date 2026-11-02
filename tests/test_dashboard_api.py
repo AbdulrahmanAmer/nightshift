@@ -111,6 +111,17 @@ def test_status_shape(env):
     assert isinstance(body["services"], dict) and "next_run" in body
 
 
+def test_status_passes_the_supervisor_gpu_block_through(tmp_home):
+    with FakeSupervisor() as sup:
+        client, _ = make_env(tmp_home, SupervisorLink(sup.url, timeout_s=2))
+        assert client.get("/api/status").json()["gpu"] is None
+        gpu = {"name": "RTX 4080", "load_pct": 41.0, "vram_used_mb": 9000, "vram_total_mb": 16376, "temp_c": 58.0}
+        sup.state = {"gpu_owner": None, "services": {}, "gpu": gpu}
+        assert client.get("/api/status").json()["gpu"] == gpu
+        sup.state = {"gpu_owner": None, "services": {}, "gpu": {"load_pct": 3}}  # no name: malformed
+        assert client.get("/api/status").json()["gpu"] is None
+
+
 def test_route_table_matches_the_contract(env):
     client, _ = env
     paths = {getattr(r, "path", "") for r in client.app.routes}  # type: ignore[attr-defined]

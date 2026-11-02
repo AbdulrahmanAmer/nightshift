@@ -85,7 +85,7 @@ export function SideTab({ brand = true }: { brand?: boolean }) {
     <nav aria-label="Main" className="sidetab" data-brand={l.brand ? "on" : "off"} style={vars}>
       <div className="sidetab-shape" aria-hidden><div className="sidetab-fill" /></div>
       <div className="sidetab-list">
-        <a href="#/" className="sidetab-item sidetab-brand" aria-label="Nightshift, Queue"><Mark size={26} tone="white" /></a>
+        <a href="#/" className="sidetab-item sidetab-brand" aria-label="Nightshift, Queue"><Mark size={32} tone="white" /></a>
         <div className="sidetab-items">
           <span className="sidetab-cell" data-off={idx < 0 || undefined} aria-hidden><span className="sidetab-square" /></span>
           {items.map((n, i) => {

@@ -49,6 +49,22 @@ class JobRecord:
     result: dict[str, Any] | None = None
     cancel_requested: bool = False
 
+    @property
+    def schedule_at(self) -> str | None:
+        """Start time the owner asked for (ISO 8601 with offset); None means as soon as possible."""
+        value = self.params.get("schedule_at")
+        return value if isinstance(value, str) and value else None
+
+    def not_before(self) -> datetime | None:
+        """`schedule_at` as an aware datetime (None when unset or unreadable, which means run now)."""
+        if self.schedule_at is None:
+            return None
+        try:
+            at = datetime.fromisoformat(self.schedule_at)
+        except ValueError:
+            return None
+        return at if at.tzinfo is not None else at.astimezone()
+
     def to_dict(self) -> dict[str, Any]:
         """API shape: `progress` is a percentage (0-100), `stage` the current stage name."""
         return {
@@ -65,6 +81,7 @@ class JobRecord:
             "params": self.params,
             "result": self.result,
             "cancel_requested": self.cancel_requested,
+            "schedule_at": self.schedule_at,
         }
 
 
@@ -99,8 +116,11 @@ def _unpack(raw: str | None) -> tuple[dict[str, Any], dict[str, Any] | None]:
 class JobStore:
     """CRUD over `dashboard_jobs`; cancel requests are tracked in memory."""
 
-    def __init__(self, db: LockedDb) -> None:
+    def __init__(
+        self, db: LockedDb, *, clock: Callable[[], datetime] = lambda: datetime.now().astimezone()
+    ) -> None:
         self.db = db
+        self.clock = clock
         self._cancel: set[str] = set()
         self._lock = threading.Lock()
 
@@ -166,14 +186,30 @@ class JobStore:
         args.append(max(1, min(limit, 500)))
         return [self._record(r) for r in self.db.query(sql, args)]
 
-    def next_queued(self, exclude: Iterable[str] = ()) -> JobRecord | None:
-        """Oldest queued job (FIFO by insertion order), skipping kinds in `exclude`."""
+    def _queued(self, exclude: Iterable[str] = ()) -> Iterator[JobRecord]:
         skip = tuple(exclude)
         marks = ",".join("?" for _ in skip)
         extra = f" AND kind NOT IN ({marks})" if skip else ""
-        sql = f"SELECT * FROM dashboard_jobs WHERE status = 'queued'{extra} ORDER BY rowid LIMIT 1"
-        row = self.db.one(sql, skip)
-        return self._record(row) if row else None
+        sql = f"SELECT * FROM dashboard_jobs WHERE status = 'queued'{extra} ORDER BY rowid"
+        for row in self.db.query(sql, skip):
+            yield self._record(row)
+
+    def is_due(self, rec: JobRecord) -> bool:
+        """True when `rec` may start now: it has no start time, or the time has come."""
+        at = rec.not_before()
+        return at is None or at <= self.clock()
+
+    def next_queued(self, exclude: Iterable[str] = ()) -> JobRecord | None:
+        """Oldest queued job that is due (FIFO by insertion order), skipping kinds in `exclude`.
+
+        A job with a future `schedule_at` stays queued and is passed over until its time has come.
+        """
+        return next((r for r in self._queued(exclude) if self.is_due(r)), None)
+
+    def scheduled(self) -> list[JobRecord]:
+        """Queued jobs that are waiting for a start time, soonest first."""
+        waiting = [r for r in self._queued() if not self.is_due(r)]
+        return sorted(waiting, key=lambda r: r.not_before() or self.clock())
 
     def running(self) -> JobRecord | None:
         """The job currently running, if any."""
@@ -436,7 +472,7 @@ class JobWorker:
             return self._cv.wait_for(self._is_idle, timeout)
 
     def _is_idle(self) -> bool:
-        return self._running_id is None and self.store.counts()["queued"] == 0
+        return self._running_id is None and self.store.next_queued() is None
 
     # --- execution ---
     def _publish(self, job_id: str) -> None:

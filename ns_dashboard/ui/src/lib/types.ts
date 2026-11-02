@@ -6,9 +6,11 @@ export interface Status { version?: string; engine: Engine; next_run?: string | 
 export type Kind = "long" | "short" | "clip";
 export interface Output { output_id: string; kind: Kind; k?: number; title: string; channel: string; duration_s: number; created_at: string; status: string; path?: string; url?: string; reason?: string }
 export interface OutputDetail extends Output { description?: string; tags?: string[]; hashtags?: string[]; publish_after?: string; ai_disclosure?: string; made_for_kids?: boolean; story_excerpt?: string; policy_notes?: string[]; chapters?: { title: string; start_s: number }[]; related_video_instruction?: string; critic_avg?: number; words?: number }
-export interface Job { job_id: string; kind: string; channel?: string; status: string; progress?: number; stage?: string; step?: number; steps?: number; message?: string; created_at?: string; title?: string; result?: { output_ids?: string[] } }
+export interface Job { job_id: string; kind: string; channel?: string; status: string; /** ISO time a scheduled job is held until; null/absent = started now. */ schedule_at?: string | null; progress?: number; stage?: string; step?: number; steps?: number; message?: string; created_at?: string; title?: string; result?: { output_ids?: string[] } }
 export interface Template { id: string; label: string; description: string }
 export interface Voice { name: string; mode: string; description?: string }
+/** POST /voices/design and /voices/clone answer (contracts/schemas/voice_make_response). */
+export interface VoiceMade { voice_id: string; preview_wav_path: string }
 export interface Pools { hooks: string[]; structures: string[]; caption_styles: string[]; visual_treatments: string[] }
 export interface Channel extends ChannelSummary { language?: string; audience?: string; voice_notes?: string; pools?: Pools; avoid_topics?: string[]; fiction_label?: boolean; long_minutes?: number[]; shorts_per_master?: number[]; stats?: { week?: number; watched_pct?: number; spark?: number[]; qc_pass_rate?: number | null; qc_pass_target?: number } }
 export interface Settings { schedule_time?: string; home?: string; profile?: string; flags?: Record<string, string | number>; keys?: Record<string, boolean>; notifications?: boolean; version?: string; [k: string]: any }
