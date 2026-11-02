@@ -429,3 +429,37 @@ def test_build_spec_describes_drift_the_way_captions_computes_it():
     assert "median offset between the aligned caption word starts and the ASR word starts" in step4
     assert f"≤ {DRIFT_LIMIT_MS:.0f} ms" in step4 and "NS-E403" in step4
     assert "interpolated time" not in step4
+
+
+def test_caption_drift_reads_a_uniform_offset_from_the_aligned_pairs():
+    """Re-review row 10: the drift metric was always 0 for matched words (the clamp and the ASR start)."""
+    from ns_studio.media.captions import caption_drift
+
+    asr = _even_asr(["the", "doorbell", "camera", "pings", "at", "three", "twelve", "every", "night"])
+    res = align_words("The doorbell camera pings at 3:12 every night.", asr)
+    assert res.drift_ms == pytest.approx(0.0, abs=1e-6)  # self-consistent: says nothing about the placement
+    shifted = [Word(w.w, w.start + 0.15, w.end + 0.15, w.sentence_idx) for w in res.words]  # wrong hook gap
+    assert caption_drift(shifted, asr) == pytest.approx(150.0, abs=0.5)
+    assert caption_drift(shifted, asr) > DRIFT_LIMIT_MS  # NS-E403 now fires
+
+
+def test_caption_drift_ignores_jitter_and_unaligned_words():
+    from ns_studio.media.captions import caption_drift
+
+    asr = _even_asr(["the", "doorbell", "camera", "pings", "at", "three", "twelve", "every", "night"])
+    res = align_words("The doorbell camera pings at 3:12 every night.", asr)
+    jittered = [Word(w.w, w.start + (0.012 if i % 2 else -0.012), w.end, w.sentence_idx)
+                for i, w in enumerate(res.words)]  # fmt: skip
+    assert caption_drift(jittered, asr) < 20.0
+    ghost = [*res.words, Word("ghost", 99.0, 99.4)]  # a caption word nobody said does not count
+    assert caption_drift(ghost, asr) == pytest.approx(0.0, abs=1e-6)
+    assert caption_drift([Word("zzz", 0.0, 0.2)], asr) == float("inf")
+
+
+def test_caption_drift_works_for_cjk_and_survives_a_backwards_asr_word():
+    from ns_studio.media.captions import caption_drift
+
+    asr = _pieces(JA, (2, 1, 3, 2))
+    res = align_words(JA, asr)
+    shifted = [Word(w.w, w.start + 0.2, w.end + 0.2, w.sentence_idx) for w in res.words]
+    assert caption_drift(shifted, asr) == pytest.approx(200.0, abs=15.0)

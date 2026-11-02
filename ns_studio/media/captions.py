@@ -153,6 +153,22 @@ def drift_ms(caption_starts: Sequence[float], asr_starts: Sequence[float]) -> fl
     return statistics.median(abs(c - a) * 1000.0 for c, a in zip(caption_starts, asr_starts, strict=True))
 
 
+def caption_drift(timeline: Sequence[Word], final_asr: Sequence[Word]) -> float:
+    """Median |caption word start - recognised start| in ms, against an ASR pass over the FINAL audio.
+
+    `timeline` is what will be burned in (each part's words moved to their place in the video). The words
+    are aligned to `final_asr` on their own, and the offset is read from the aligned pairs as they are, before
+    any interpolation or monotonic clamping (the clamp used to turn it into 0). The alignment inside
+    `align_words` cannot see this error: it hands matched words the recogniser's own start, so a wrong
+    offset (hook gap, segment shift) only shows against audio that was not used to place the captions.
+    No aligned word gives infinity.
+    """
+    words = [(w.w, w.sentence_idx) for w in timeline]
+    times = _word_times_from_tokens(words, final_asr)
+    pairs = [(w.start, t[0]) for w, t in zip(timeline, times, strict=True) if t is not None]
+    return drift_ms([c for c, _a in pairs], [a for _c, a in pairs])
+
+
 def align_words(script: str, asr: Sequence[Word], *, total_s: float | None = None) -> AlignResult:
     """Align ASR words to `script` (spec §7.6) and return the script's words with ASR/interpolated times.
 
@@ -630,6 +646,16 @@ def shift_words(words: Sequence[Word], offset: float, *, sentence_idx: int | Non
     ]
 
 
+def _final_audio_check(ctx: JobContext, n: int, p: dict, hook: dict, body: dict) -> Path:
+    """Hook + gap + body as one file (what the renderer plays, without the loudness pass) and its sidecar."""
+    from ns_studio.media.audio import assemble_audio
+
+    check = ctx.file(f"captions/s{n}_check.wav")
+    assemble_audio([Path(hook["path"]), HOOK_GAP_S, Path(body["path"])], check)
+    check.with_suffix(".txt").write_text(f"{p['hook']} {p['text']}", encoding="utf-8")
+    return check
+
+
 class CaptionsStage:
     """Stage `captions` (tenant whisper): align ASR words to each part's script and write ASS files.
 
@@ -642,6 +668,13 @@ class CaptionsStage:
     tenant: Tenant = "whisper"
     inputs: tuple[str, ...] = ("audio/manifest.json", "story.json")
     outputs: tuple[str, ...] = ("captions/report.json",)
+
+    @staticmethod
+    def _final_audio_drift(
+        ctx: JobContext, n: int, p: dict, hook: dict, body: dict, timeline: list[Word], lang: str
+    ) -> float:
+        check = _final_audio_check(ctx, n, p, hook, body)
+        return caption_drift(timeline, ctx.services.transcriber.words(check, lang))
 
     def run(self, ctx: JobContext) -> None:
         """Transcribe, align and write captions for every part; fail with NS-E403 on drift."""
@@ -690,6 +723,10 @@ class CaptionsStage:
                 ratio = min(ratio, hook_res.match_ratio)
             timeline += shift_words(body_res.words, offset)
             total_s = offset + float(body["seconds"])
+            if hook_entry and getattr(tr, "name", "") != "fake":
+                # The fake cannot hear the audio it is given; a real recogniser can say whether the
+                # captions sit where the hook, the gap and the body really are.
+                drift = max(drift, self._final_audio_drift(ctx, n, p, hook_entry, body, timeline, lang))
             style_name = ctx.combo.caption_style
             opts = AssOptions(
                 variant="vertical", safe_zones=safe_zones_for("vertical"),
