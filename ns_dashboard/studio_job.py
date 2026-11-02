@@ -113,7 +113,7 @@ def do_series(args: dict[str, Any]) -> dict[str, Any]:
 def watch_cancel_file(
     cancel_file: Any, token: Any, stop: threading.Event, poll_s: float = 0.2
 ) -> threading.Thread | None:
-    """Cancel `token` (kills yt-dlp, removes its folder) once the dashboard creates `cancel_file`; ends on `stop`."""
+    """Cancel `token` (kills yt-dlp, removes its folder) once `cancel_file` exists; ends on `stop`."""
     if not cancel_file:
         return None
     flag = Path(str(cancel_file))
@@ -131,7 +131,7 @@ def watch_cancel_file(
 
 
 def do_download(args: dict[str, Any]) -> dict[str, Any]:
-    """Download a link with the pinned yt-dlp; `cancel_file` (made by the dashboard on Cancel) cancels the token."""
+    """Download a link with the pinned yt-dlp; the `cancel_file` flag (made on Cancel) cancels the token."""
     from ns_dashboard import studio_bridge
     from ns_studio.clipper.source import CancelToken
 

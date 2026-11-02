@@ -164,7 +164,12 @@ def test_only_the_samples_helpers_are_shared_with_the_wizard():
 def test_operator_guide_covers_the_voice_fallback_the_design_model_and_the_keys_file():
     text = (ROOT / "OPERATOR.md").read_text(encoding="utf-8")
     sections = {line[3:].strip(): i for i, line in enumerate(text.splitlines()) if line.startswith("## ")}
-    for title in ("If the voice engine fell back", "Get the voice design model", "If stock footage stops at night"):
+    titles = (
+        "If the voice engine fell back",
+        "Get the voice design model",
+        "If stock footage stops at night",
+    )
+    for title in titles:
         assert title in sections, title
     body = text.split("## If the voice engine fell back", 1)[1].split("## Start a video later", 1)[0]
     assert "NS-W301" in body and "NS-E314" in body and "NS-E311" in body

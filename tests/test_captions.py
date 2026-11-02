@@ -373,7 +373,7 @@ def test_cjk_characters_are_separate_caption_words():
 
 
 def test_build_spec_describes_drift_the_way_captions_computes_it():
-    """BUILD_SPEC §7.6 step 4 and `captions.drift_ms` say the same thing: median caption-vs-ASR start offset, 120 ms."""
+    """BUILD_SPEC 7.6 step 4 and `captions.drift_ms` agree: median caption-vs-ASR start offset, 120 ms."""
     spec = (Path(__file__).resolve().parents[1] / "BUILD_SPEC.md").read_text(encoding="utf-8")
     step4 = next(line for line in spec.splitlines() if line.startswith("4. Build ASS with 2–4 words"))
     assert "median offset between the aligned caption word starts and the ASR word starts" in step4

@@ -133,7 +133,7 @@ def test_unknown_service_is_an_error(tmp_path: Path) -> None:
 
 
 def test_embed_launch_argv_carries_the_batch_flags(tmp_path: Path) -> None:
-    # Without -c/-b/-ub llama-server rejects inputs over 512 tokens; the 1,500-char windows need the full batch.
+    # Without -c/-b/-ub llama-server rejects inputs over 512 tokens; 1,500-char windows need the full batch.
     rt = Runtime.model_validate(
         {
             "llama": {"model_path": "C:/m/llm.gguf"},
