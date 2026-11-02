@@ -23,7 +23,7 @@ from ns_common.errors import NsError
 from ns_common.logging import NsLogger
 from ns_common.models import Runtime
 from ns_common.paths import Paths
-from ns_supervisor import procs
+from ns_supervisor import presence, procs
 from ns_supervisor.gpu import GpuProbe, NullGpuProbe, NvidiaSmiGpuProbe
 from ns_supervisor.lock import GpuLock
 from ns_supervisor.schedule_cfg import read_run_time, seconds_until_next_run
@@ -83,6 +83,7 @@ class Supervisor:
         starter: Callable[..., procs.Proc] | None = None,
         gpu_probe: GpuProbe | None = None,
         update_check: Callable[[], dict[str, Any] | None] | None = None,
+        in_use: Callable[[], bool] | None = None,
     ) -> None:
         self.paths = paths
         self.runtime = runtime
@@ -109,6 +110,11 @@ class Supervisor:
         # Weekly `ns update --check` (gap 16): a blocking callable that decides for itself whether a check
         # is due, runs at most once at a time in a worker thread, and returns the result when it checked.
         self.update_check = update_check
+        # Is a person looking at the dashboard (window host running, browser connected)? Asked only when the
+        # idle timer has run out, so a quiet engine never spawns netstat.
+        self.in_use: Callable[[], bool] = in_use or (
+            lambda: presence.dashboard_in_use(self.paths, self.services["dashboard"].definition.port)
+        )
         self._next_update_poll = 0.0
         self._update_task: asyncio.Task[None] | None = None
         self._subs: set[asyncio.Queue[dict[str, Any]]] = set()
@@ -564,6 +570,20 @@ class Supervisor:
         """True while the dashboard service runs (the Dashboard shortcut starts it; Stop All ends it)."""
         return self.services["dashboard"].state in ("starting", "ready")
 
+    def dashboard_in_use(self) -> bool:
+        """True while the dashboard service runs and a window host or a browser is attached to it.
+
+        Reading the Library or Settings is activity: without this the engine's 30-minute idle exit stopped the
+        dashboard under an open window. A failing probe counts as "not in use".
+        """
+        if not self.dashboard_open():
+            return False
+        try:
+            return bool(self.in_use())
+        except Exception as e:  # the probe must never break the monitor
+            self.log.warn("presence_probe_error", str(e))
+            return False
+
     def note_run_finished(self) -> dict[str, Any]:
         """The nightly run reports it is done (`POST /run_finished`): the engine now leaves after
         `post_run_grace_s` unless the dashboard is open or somebody starts new work (gap 25)."""
@@ -591,6 +611,11 @@ class Supervisor:
         if now - self.last_activity < self.cfg.auto_exit_idle_s:
             return
         if self.run_due_soon():
+            return
+        if await asyncio.to_thread(self.dashboard_in_use):     # netstat and tasklist: off the event loop
+            idle = round(now - self.last_activity, 1)
+            self.log.info("auto_exit_skipped", reason="dashboard is open", idle_s=idle)
+            self.last_activity = now         # the page is being read: the idle clock starts again
             return
         self.log.info("auto_exit", idle_s=round(now - self.last_activity, 1))
         await self.shutdown(0)
