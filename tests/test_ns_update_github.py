@@ -182,7 +182,7 @@ def test_ns_update_github_downloads_then_applies(tmp_path: Path, monkeypatch: py
         return update.UpdateResult("0.1.0", "99.0.0", ["ok"])
 
     monkeypatch.setattr(update, "update_app", fake_update)
-    r = invoke(home, "update", "--github")
+    r = invoke(home, "update", "--github", "--worker")
     assert r.exit_code == 0 and "Now on 99.0.0" in r.output
     assert got["zip"].name == "nightshift-app-99.0.0.zip"
     assert got["dest"] == Paths(home).data / "updates"
@@ -193,7 +193,7 @@ def test_ns_update_github_when_already_current_changes_nothing(
 ):
     pin_latest(monkeypatch, "0.0.1")
     monkeypatch.setattr(update, "update_app", lambda *a, **k: pytest.fail("must not update"))
-    r = invoke(tmp_path / "home", "update", "--github")
+    r = invoke(tmp_path / "home", "update", "--github", "--worker")
     assert r.exit_code == 0 and "Already on the newest" in r.output
 
 
