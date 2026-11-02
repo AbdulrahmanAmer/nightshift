@@ -12,6 +12,7 @@ import shutil
 import tempfile
 import threading
 import zipfile
+from collections.abc import Callable
 from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -463,6 +464,7 @@ class FakeBackupAdapter:
         self.paths = paths
         self.restored: list[Path] = []
         self.fail_restore = False
+        self.on_restore: Callable[[], None] | None = None  # tests look at the dashboard while the restore runs
 
     def export(self) -> Path:
         """Create `exports/nightshift-backup-<ts>.zip`."""
@@ -477,6 +479,8 @@ class FakeBackupAdapter:
         """Remember the file; fail when asked to."""
         from ns_dashboard.errors import ApiError
 
+        if self.on_restore is not None:
+            self.on_restore()
         if self.fail_restore:
             raise ApiError(422, "restore_failed", "That file could not be restored.", hint="not a backup")
         self.restored.append(zip_path)

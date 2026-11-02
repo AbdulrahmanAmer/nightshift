@@ -481,6 +481,11 @@ class JobWorker:
         return rec.job_id
 
     @property
+    def started(self) -> bool:
+        """True while the worker thread is alive."""
+        return self._thread is not None and self._thread.is_alive()
+
+    @property
     def running_job_id(self) -> str | None:
         """Id of the job being executed by this worker."""
         return self._running_id

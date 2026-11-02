@@ -281,8 +281,30 @@ class SettingsService:
             raise ApiError(404, "not_found", "No settings export has been made yet.")
         return path
 
+    def _restore_with_db_closed(self, zip_path: Path) -> list[str]:
+        """Run the restore while the dashboard holds no connection to `studio.db`.
+
+        On Windows the restore cannot replace a database whose `-wal` and `-shm` files are open (WinError 32),
+        and overwriting one that live connections use risks corruption. The worker is stopped (no job runs: the
+        caller checked), the connection is closed for the restore and opened again afterwards, and the worker
+        starts again, whether the restore worked or not.
+        """
+        was_started = self.s.worker.started
+        self.s.worker.stop()
+        try:
+            with self.s.db.released():
+                return self.s.adapters.backup.restore(zip_path)
+        finally:
+            if was_started:
+                self.s.worker.start()
+
     def import_settings(self, filename: str, fh: BinaryIO) -> dict[str, Any]:
         """Save an uploaded backup zip and restore it with `ns restore`."""
+        if self.s.store.running() is not None:
+            raise ApiError(
+                409, "job_running", "A job is running right now.",
+                hint="Wait for it to finish (or cancel it), then import the settings again.",
+            )
         if self.s.draining:
             raise ApiError(503, "shutting_down", "Nightshift is shutting down.")
         name = re.sub(r"[^A-Za-z0-9._-]+", "_", Path(filename or "backup.zip").name) or "backup.zip"
@@ -303,7 +325,7 @@ class SettingsService:
         if size == 0:
             dest.unlink(missing_ok=True)
             raise ApiError(400, "empty_file", "That file is empty.")
-        lines = self.s.adapters.backup.restore(dest)
+        lines = self._restore_with_db_closed(dest)
         self.s.log.warn("settings_restored", "settings restored from an uploaded backup", file=name)
         return {"restored": True, "file": name, "lines": lines, "note": "Restart Nightshift to use the restored settings."}
 

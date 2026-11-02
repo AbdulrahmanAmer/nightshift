@@ -68,3 +68,59 @@ def test_queue_posted_tab_status_list_reason_url_and_path(tmp_home: Path):
     assert dash.outputs.detail(posted)["url"] == "https://youtu.be/xyz"
     assert code_of(dash.outputs.list_outputs, "approved,nonsense") == "bad_filter"
     assert len(dash.outputs.list_outputs("all")) == 4 and len(dash.outputs.list_outputs(None)) == 4
+
+
+# ------------------------------------------------------------------ row 7: import settings closes the database
+
+
+def test_import_settings_closes_the_database_for_the_restore_and_restarts_the_worker(tmp_home: Path):
+    """`ns restore` could not replace `studio.db` while the dashboard's connection held its -wal/-shm files."""
+    import io
+
+    from ns_dashboard.fakes import FakeBackupAdapter
+
+    dash, state = make(tmp_home)
+    backup = state.adapters.backup
+    assert isinstance(backup, FakeBackupAdapter)
+    seen: dict[str, Any] = {}
+
+    def during_restore() -> None:
+        seen["closed"] = state.db.db._conn is None
+        seen["worker_stopped"] = not state.worker.started
+
+    backup.on_restore = during_restore
+    state.worker.start()
+    try:
+        out = dash.settings.import_settings("backup.zip", io.BytesIO(b"PK-not-looked-at"))
+        assert out["restored"] is True
+        assert seen == {"closed": True, "worker_stopped": True}
+        assert state.worker.started  # running again
+        assert state.db.one("SELECT COUNT(*) AS n FROM dashboard_jobs")["n"] == 0  # and the database answers
+    finally:
+        state.worker.stop()
+
+
+def test_import_settings_restarts_the_worker_even_when_the_restore_fails(tmp_home: Path):
+    import io
+
+    from ns_dashboard.fakes import FakeBackupAdapter
+
+    dash, state = make(tmp_home)
+    assert isinstance(state.adapters.backup, FakeBackupAdapter)
+    state.adapters.backup.fail_restore = True
+    state.worker.start()
+    try:
+        assert code_of(dash.settings.import_settings, "backup.zip", io.BytesIO(b"x")) == "restore_failed"
+        assert state.worker.started
+        assert state.db.one("SELECT 1 AS one")["one"] == 1
+    finally:
+        state.worker.stop()
+
+
+def test_import_settings_is_refused_while_a_job_runs(tmp_home: Path):
+    import io
+
+    dash, state = make(tmp_home)
+    job = state.store.create("verify", None, {})
+    state.store.mark_running(job.job_id)
+    assert code_of(dash.settings.import_settings, "backup.zip", io.BytesIO(b"x")) == "job_running"

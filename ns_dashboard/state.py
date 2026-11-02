@@ -59,9 +59,24 @@ class LockedDb:
             self.db.execute("COMMIT")
 
     def close(self) -> None:
-        """Close the underlying connection."""
+        """Close the underlying connection (the next query opens it again)."""
         with self.lock:
             self.db.close()
+
+    @contextmanager
+    def released(self) -> Iterator[None]:
+        """Hold the database closed for the block (other threads wait), then open it and migrate it again.
+
+        For a restore that replaces `studio.db`: a connection that stays open (or is opened by a polling
+        request in between) keeps the `-wal` and `-shm` files locked on Windows.
+        """
+        with self.lock:
+            self.db.close()
+            try:
+                yield
+            finally:
+                self.db.close()
+                self.db.migrate()
 
 
 def open_db(paths: Paths) -> LockedDb:
