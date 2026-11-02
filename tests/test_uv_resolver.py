@@ -16,7 +16,7 @@ from ns_supervisor import doctor, update
 
 def put_home_uv(home: Path) -> Path:
     exe = home_uv(home)
-    exe.parent.mkdir(parents=True)
+    exe.parent.mkdir(parents=True, exist_ok=True)
     exe.write_bytes(b"MZ")
     return exe
 

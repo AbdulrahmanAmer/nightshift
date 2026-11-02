@@ -67,7 +67,7 @@ def test_s09_registers_the_id_and_stamps_it_on_the_dashboard_shortcut(tmp_path: 
     assert len(reg) == 1 and reg[0].meta["aumid"] == "Nightshift" and reg[0].meta["icon"] == str(icon)
     text = script_of(reg[0])
     assert "'DisplayName' -Value 'Nightshift'" in text and f"'IconUri' -Value '{icon}'" in text
-    stamp = runner.called("ps:shortcut-aumid")
+    stamp = runner.called("ps:aumid-shortcut")
     assert len(stamp) == 1 and stamp[0].meta["lnk"].endswith("Nightshift Dashboard.lnk")
     stamp_script = script_of(stamp[0])
     assert "[NsAumid]::Set(" in stamp_script and "SHGetPropertyStoreFromParsingName" in stamp_script
@@ -83,7 +83,7 @@ def test_s09_without_the_ico_registers_the_name_only(tmp_path: Path) -> None:
 
 
 def test_s09_keeps_the_registry_key_when_the_property_store_fails(tmp_path: Path) -> None:
-    runner = FakeRunner(tmp_path / "desktop", results={"ps:shortcut-aumid": RunResult(1, "", "E_FAIL")})
+    runner = FakeRunner(tmp_path / "desktop", results={"ps:aumid-shortcut": RunResult(1, "", "E_FAIL")})
     ctx, _ = step_ctx(tmp_path, runner)
     step = S09ShortcutsScheduler()
     step.run(ctx)
@@ -97,7 +97,7 @@ def test_s09_toast_registration_failure_never_fails_the_install(tmp_path: Path) 
     step = S09ShortcutsScheduler()
     step.run(ctx)
     step.verify(ctx)
-    assert ctx.flag("aumid") == "failed" and runner.called("ps:shortcut-aumid") == []
+    assert ctx.flag("aumid") == "failed" and runner.called("ps:aumid-shortcut") == []
     assert "notifications could not be registered" in ctx.ui.text
 
 
@@ -129,6 +129,9 @@ def test_property_store_stamps_and_reads_back_the_id_on_a_real_shortcut(tmp_path
     runner = SubprocessRunner()
     lnk = tmp_path / "Nightshift Dashboard.lnk"
     assert winenv.create_shortcut(runner, lnk, "powershell.exe", "-NoProfile", tmp_path, "test") is True
+    script = winenv.set_shortcut_aumid_script(lnk, "Nightshift")
+    stamp = winenv.run_ps(runner, script, tag="test", timeout=120)
+    assert stamp.ok, stamp.text
     assert winenv.set_shortcut_aumid(runner, lnk, "Nightshift") is True
     res = winenv.run_ps(runner, winenv.get_shortcut_aumid_script(lnk), tag="test", timeout=120)
     assert res.ok, res.text

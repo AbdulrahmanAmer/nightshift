@@ -148,6 +148,8 @@ def test_gpu_memory_used_sums_gpus(monkeypatch: pytest.MonkeyPatch) -> None:
 class FakePopen:
     """Records what terminate() does to a process; `exits_on` says which call makes it exit."""
 
+    pid = 4242
+
     def __init__(self, calls: list[str], *, exits_on: str | None) -> None:
         self.calls, self.exits_on, self.alive = calls, exits_on, True
 

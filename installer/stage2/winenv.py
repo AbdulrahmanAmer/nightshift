@@ -236,7 +236,7 @@ def get_shortcut_aumid_script(lnk: Path) -> str:
 def set_shortcut_aumid(runner: Runner, lnk: Path, aumid: str) -> bool:
     """Stamp ``aumid`` on a shortcut. True on success; False leaves the shortcut as it was."""
     res = run_ps(
-        runner, set_shortcut_aumid_script(lnk, aumid), tag="ps:shortcut-aumid",
+        runner, set_shortcut_aumid_script(lnk, aumid), tag="ps:aumid-shortcut",
         meta={"lnk": str(lnk), "aumid": aumid}, timeout=120,
     )
     return res.ok
