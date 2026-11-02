@@ -62,7 +62,7 @@ def test_normalize_tokens_folds_case_in_any_script():
 
 
 def test_combining_marks_stay_inside_their_word():
-    """Re-review row 11: `\w` leaves out Mn/Mc, so Hindi counted 2-3x its words and NFD 'cafe' counted twice."""
+    """Re-review row 11: the regex word class leaves out Mn/Mc: Hindi counted 2-3x, NFD 'cafe' twice."""
     assert word_count("किताब पढ़ो") == 2  # Devanagari with vowel signs and a nukta
     assert word_count("café au lait") == 3  # decomposed e + acute accent
     assert word_count("café au lait") == 3  # the same text, precomposed
@@ -73,7 +73,8 @@ def test_combining_marks_stay_inside_their_word():
 
 
 def test_danda_and_ellipsis_end_a_sentence():
-    assert split_sentences("यह पहला वाक्य है। यह दूसरा वाक्य है।") == ["यह पहला वाक्य है।", "यह दूसरा वाक्य है।"]
+    first, second = "यह पहला वाक्य है।", "यह दूसरा वाक्य है।"
+    assert split_sentences(f"{first} {second}") == [first, second]
     assert split_sentences("पहली पंक्ति॥ दूसरी पंक्ति॥") == ["पहली पंक्ति॥", "दूसरी पंक्ति॥"]
     assert split_sentences("Wait… what? Yes.") == ["Wait…", "what?", "Yes."]
     long_hindi = " ".join(["यह एक छोटा वाक्य है।"] * 12)

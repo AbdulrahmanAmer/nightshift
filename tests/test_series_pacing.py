@@ -77,10 +77,11 @@ def test_a_pinned_pacing_gives_every_part_the_same_tts_speed(tmp_home: Path):
 
 
 def test_series_shorts_record_the_hook_style_the_workshop_wrote_them_in(tmp_home: Path):
-    """Re-review row 13: each series Short drew a random hook style that its workshop-written hook never used."""
+    """Re-review row 13: each series Short drew a random hook style its workshop-written hook never used."""
     ch = make_channel(format="master_first", pools=Pools(hooks=["cold_open", "question", "confession"]))
     ctx = make_ctx(tmp_home, fmt="master_first", channel=ch)
-    ctx.write_json("series_context.json", {"part_n": 1, "pacing": "standard", "hook": "cold_open", "design": {}})
+    context = {"part_n": 1, "pacing": "standard", "hook": "cold_open", "design": {}}
+    ctx.write_json("series_context.json", context)
     assert series_fixed(ctx.series)["hook"] == "cold_open"
     ctx.write_json("shorts_plan.json", [
         {"k": k, "length_bucket": 50, "combo_id": ctx.combo.combo_id} for k in range(1, 7)
@@ -88,7 +89,7 @@ def test_series_shorts_record_the_hook_style_the_workshop_wrote_them_in(tmp_home
     ShortCombosStage().run(ctx)
     assert {c["hook"] for c in ctx.read_json("short_combos.json").values()} == {"cold_open"}
     rows = ctx.db.query("select distinct hook from combos where job_id=? and item like 's%'", (ctx.job_id,))
-    assert [r["hook"] for r in rows] == ["cold_open"]  # the ledger credits the style the hooks were written in
+    assert [r["hook"] for r in rows] == ["cold_open"]  # credited to the style the hooks use
 
 
 def test_produce_stores_the_workshop_hook_style(tmp_home: Path):

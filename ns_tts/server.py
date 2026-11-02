@@ -248,7 +248,8 @@ def create_app(engine: Engine, library: VoiceLibrary, *, log: NsLogger | None = 
                 status_code=409,
                 content=missing_body(
                     missing, "NS-E202",
-                    f"the voice cloning model is not installed ({missing}): run the installer's models step again",
+                    f"the voice cloning model is not installed ({missing}): "
+                    "run the installer's model step again",
                 ),
             )
         try:

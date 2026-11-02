@@ -21,7 +21,7 @@ NOSPACE_CHUNK = 4
 def _mark_ranges() -> str:
     """Character-class body of the combining marks (Mn, Mc, Me) of the basic plane.
 
-    `\\w` leaves them out, so Hindi 'kitab' fell apart at every vowel sign and NFD 'cafe + accent' counted twice.
+    `\\w` leaves them out, so Hindi fell apart at every vowel sign and NFD 'cafe + accent' counted twice.
     """
     out: list[str] = []
     start = prev = -2

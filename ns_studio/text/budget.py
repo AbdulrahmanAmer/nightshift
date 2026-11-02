@@ -5,8 +5,8 @@ from __future__ import annotations
 import random
 from dataclasses import dataclass
 
-from ns_common.pacing import PACING_WPM as PACING_WPM  # re-exported: shared with the voice stage
-from ns_common.pacing import (
+from ns_common.pacing import (  # PACING_WPM is re-exported: the voice stage and the tests import it here
+    PACING_WPM,
     PAUSE_PER_WORD_S,
     SHORT_QC_MARGIN,
     master_fixed_seconds,
