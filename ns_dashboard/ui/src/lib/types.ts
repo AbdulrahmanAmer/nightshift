@@ -40,7 +40,7 @@ export type ChatEvent =
   | { kind: "error"; payload: { code?: string; message: string; hint?: string } }
   | { kind: "done"; payload: { conversation_id?: string } };
 /** One part of a workshop story (GET /library/series). */
-export interface SeriesPart { n: number; title: string; minutes: number; status: "planned" | "written" | "approved" | "producing" | "published" | string; job_id?: string | null; words: number; shorts: number }
+export interface SeriesPart { n: number; title: string; minutes: number; status: "planned" | "written" | "approved" | "producing" | "produced" | "published" | string; job_id?: string | null; words: number; shorts: number }
 /** A workshop story with its part table (GET /library/series reads the story folders under stories/). */
 export interface SeriesStory { slug: string; channel: string; title: string; status: string; next_step: string; has_design: boolean; chosen?: string | null; parts: SeriesPart[]; [k: string]: any }
 /** One row of GET /runs: a nightly (daily) or manual run with the report the studio wrote. */

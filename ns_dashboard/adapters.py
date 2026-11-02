@@ -13,7 +13,7 @@ import json
 import os
 import shutil
 import time
-from collections.abc import Callable, Collection, Iterator
+from collections.abc import Callable, Collection, Iterator, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -164,8 +164,15 @@ class SeriesAdapter(Protocol):
         """Put a part whose job was interrupted back to `approved` so it can be queued again."""
         ...
 
-    def sweep(self, active_job_ids: Collection[str]) -> int:
-        """Put every `producing` part without a queued or running job back to `approved`; returns how many."""
+    def sweep(
+        self, active_job_ids: Collection[str], job_statuses: Mapping[str, str] | None = None
+    ) -> int:
+        """Settle every `producing` part with no queued or running job: `produced` when its job is `done`,
+        else `approved` (the job is missing, failed or cancelled); returns how many."""
+        ...
+
+    def finish(self, params: dict[str, Any]) -> None:
+        """A part whose job finished goes from `producing` to `produced`."""
         ...
 
 
@@ -410,9 +417,16 @@ class RealSeriesAdapter(StudioAdapter):
         """A part left `producing` by a crash or a Quit goes back to `approved`."""
         studio_bridge.release_part(params)
 
-    def sweep(self, active_job_ids: Collection[str]) -> int:
-        """Parts left `producing` with no job behind them (found at start) go back to `approved`."""
-        return studio_bridge.sweep_parts(active_job_ids)
+    def sweep(
+        self, active_job_ids: Collection[str], job_statuses: Mapping[str, str] | None = None
+    ) -> int:
+        """`producing` parts with no live job behind them (found at start): finished ones become `produced`,
+        the others go back to `approved`."""
+        return studio_bridge.sweep_parts(active_job_ids, job_statuses)
+
+    def finish(self, params: dict[str, Any]) -> None:
+        """A part whose job is done becomes `produced`, so the start sweep leaves it alone."""
+        studio_bridge.finish_part(params)
 
     def listing(self) -> list[dict[str, Any]]:
         """Stories and parts read from the workshop files under `stories/`."""

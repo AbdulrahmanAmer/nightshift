@@ -28,7 +28,7 @@ HOOK_MAX_WORDS = 12
 CLOSING_MAX_WORDS = 15
 
 StoryStatus = Literal["drafting", "approved", "producing", "published"]
-PartStatus = Literal["planned", "written", "approved", "producing", "published"]
+PartStatus = Literal["planned", "written", "approved", "producing", "produced", "published"]
 
 
 class WorkshopError(ValueError):
@@ -306,7 +306,7 @@ class StatusDoc(Strict):
             return
         if all(s == "published" for s in states):
             self.status = "published"
-        elif any(s in ("producing", "published") for s in states):
+        elif any(s in ("producing", "produced", "published") for s in states):
             self.status = "producing"
         elif all(s == "approved" for s in states):
             self.status = "approved"

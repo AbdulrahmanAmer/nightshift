@@ -480,7 +480,7 @@ function FootageTab() {
 
 const PART_LABEL: Record<string, [string, Tone]> = {
   planned: ["Planned", "neutral"], written: ["Written, waiting for your OK", "neutral"], approved: ["Approved", "accent"],
-  producing: ["Being made", "accent"], published: ["Posted", "success"],
+  producing: ["Being made", "accent"], produced: ["Made, in the Queue", "success"], published: ["Posted", "success"],
 };
 const NEXT_STEP: Record<string, string> = {
   concepts: "Ask the Assistant for concepts", choose: "Choose a concept", map: "Plan the parts", design: "Pick the look of the series",

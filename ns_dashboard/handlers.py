@@ -82,11 +82,15 @@ def build_state(
     def release_part_of(rec: JobRecord) -> None:
         adapters.series.release({**rec.params, "job_id": rec.job_id})
 
+    def finish_part_of(rec: JobRecord) -> None:
+        adapters.series.finish({**rec.params, "job_id": rec.job_id})
+
     store = JobStore(db)
     worker = JobWorker(
         store, build_handlers(adapters, paths), hub, log, gpu_gate=make_gpu_gate(link.status),
         on_recover={"series_part": release_part_of},
         on_end={"series_part": release_part_of},
+        on_done={"series_part": finish_part_of},
         sweep=adapters.series.sweep,
     )
     return AppState(
