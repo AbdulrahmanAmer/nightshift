@@ -11,6 +11,7 @@ import contextlib
 import importlib
 import json
 import os
+import shutil
 import time
 from collections.abc import Callable, Collection, Iterator
 from dataclasses import dataclass
@@ -28,6 +29,8 @@ from ns_common.paths import Paths
 from ns_dashboard import studio_bridge
 from ns_dashboard.errors import AdapterUnavailable, ApiError
 from ns_dashboard.jobs import JobControl
+from ns_dashboard.lazyimport import lazy
+from ns_dashboard.studio_runner import StudioRunner
 from ns_dashboard.supervisor_link import SupervisorLink, make_acquirer, supervisor_url
 from ns_dashboard.updater import RealBackupAdapter, RealUpdateAdapter
 
@@ -183,15 +186,6 @@ class Adapters:
     backup: BackupAdapter
 
 
-def lazy(module: str, attr: str) -> Callable[..., Any]:
-    """Resolve `module.attr` or raise `AdapterUnavailable` with a message naming it."""
-    try:
-        mod = importlib.import_module(module)
-        return getattr(mod, attr)
-    except (ImportError, AttributeError) as e:
-        raise AdapterUnavailable(f"{module}.{attr} is not installed yet ({e})") from e
-
-
 def stage_reporter(ctl: JobControl) -> Callable[[str, int, int], None]:
     """`on_stage(name, index, total)` callback: checks cancel, then records progress.
 
@@ -220,7 +214,12 @@ def job_reporter(ctl: JobControl) -> studio_bridge.Report:
 
 
 class StudioAdapter:
-    """Shared wiring of the adapters that run studio code in-process: home, link, fakes, GPU owner."""
+    """Shared wiring of the adapters that run studio work: home, link, fakes, and the child process.
+
+    The work itself runs in the studio venv as a child process (`StudioRunner`, entry
+    `ns_dashboard.studio_job`), because the dashboard's own venv has no faster-whisper, GPU DLL wheels, spaCy
+    or OpenCV. The GPU tenants are still acquired through the supervisor, from inside the child.
+    """
 
     def __init__(
         self,
@@ -228,76 +227,88 @@ class StudioAdapter:
         link: SupervisorLink,
         *,
         fake: Collection[str] = (),
-        acquirer: Acquirer | None = None,
+        runner: StudioRunner | None = None,
     ) -> None:
         self.paths = paths
         self.link = link
         self.fake = frozenset(fake)
-        self._acquirer = acquirer
+        self.runner = runner or StudioRunner(paths)
 
-    def acquirer(self) -> Acquirer:
-        """The supervisor-backed acquirer (tests inject their own)."""
-        return self._acquirer or make_acquirer(self.link.base_url)
+    def child(self, ctl: JobControl, kind: str, args: dict[str, Any]) -> dict[str, Any]:
+        """Run `kind` in the studio venv for the job `ctl`; progress and cancel flow through `ctl`.
+
+        The studio job ids announced by the child are kept in `ctl.extras["studio_job_ids"]` as they appear,
+        so a failed job still says which studio job to look at.
+        """
+        report = job_reporter(ctl)
+
+        def on_event(event: dict[str, Any]) -> None:
+            name = event.get("ev")
+            if name == "stage":
+                report(
+                    str(event.get("stage", "")),
+                    int(event.get("index", 0)),
+                    int(event.get("total", 1)),
+                    int(event.get("job_index", 0)),
+                    int(event.get("job_total", 1)),
+                )
+            elif name == "download":
+                ctl.download(float(event.get("percent", 0)))
+            elif name == "job":
+                ctl.extras.setdefault("studio_job_ids", []).append(str(event.get("job_id", "")))
+
+        full = {**args, "fake": sorted(self.fake), "supervisor_url": self.link.base_url}
+        return self.runner.run(kind, full, on_event=on_event, check_cancel=ctl.check_cancel)
 
 
 class RealRunAdapter(StudioAdapter):
-    """Runs `studio run` jobs in-process through `ns_dashboard.studio_bridge.run_story_jobs` (C7).
+    """Runs `studio run` jobs in the studio venv (`studio_job run` -> `studio_bridge.run_story_jobs`, C7).
 
-    The bridge calls `ns_studio.jobs` and `run_job_guarded`; progress comes from the runner's log events,
-    and the GPU tenants are acquired through the supervisor.
+    The orchestrator runs with the regenerate-once policy; progress comes from the runner's stage events, and
+    the GPU tenants are acquired through the supervisor.
     """
 
     def run(self, ctl: JobControl, channel: str, fmt: str, count: int | None) -> list[str]:
         """Run `count` studio jobs for `channel`; returns the output ids and notes the studio job ids."""
-        seen: list[str] = []
-        ids = studio_bridge.run_story_jobs(
-            channel,
-            fmt,
-            count,
-            job_reporter(ctl),
-            acquirer=self.acquirer(),
-            fake=self.fake,
-            paths=self.paths,
-            seen=seen,
-        )
-        ctl.extras["studio_job_ids"] = seen
-        return ids
+        done = self.child(ctl, "run", {"channel": channel, "fmt": fmt, "count": count})
+        ctl.extras["studio_job_ids"] = list(done.get("job_ids") or ctl.extras.get("studio_job_ids") or [])
+        return [str(i) for i in done.get("output_ids") or []]
 
 
 class RealClipAdapter(StudioAdapter):
-    """Runs the Clipper in-process: the clip job's stages (`studio clip`) and `import_url` for links."""
+    """Runs the Clipper in the studio venv: the clip job's stages (`studio clip`) and `import_url` for links."""
 
     def clip(self, ctl: JobControl, source_path: Path, source_id: str, params: dict[str, Any]) -> list[str]:
         """Run the Clipper for `source_path`; returns the output ids it inserted."""
-        seen: list[str] = []
-        ids = studio_bridge.run_clip(
-            source_path,
-            {**params, "channel": params.get("channel") or ctl.channel},
-            job_reporter(ctl),
-            acquirer=self.acquirer(),
-            fake=self.fake,
-            paths=self.paths,
-            seen=seen,
-        )
+        args = {
+            "source_path": str(source_path),
+            "params": {**params, "channel": params.get("channel") or ctl.channel},
+        }
+        done = self.child(ctl, "clip", args)
+        seen = [str(i) for i in done.get("job_ids") or []]
         ctl.extras["studio_job_id"] = seen[0] if seen else None
-        return ids
+        ctl.extras.pop("studio_job_ids", None)  # a clip job reports the single `studio_job_id`
+        return [str(i) for i in done.get("output_ids") or []]
 
     def rerun(self, ctl: JobControl, studio_job_id: str, changes: dict[str, Any]) -> list[str]:
         """Run the later stages of `studio_job_id` again with other options; keeps the transcript."""
-        ids = studio_bridge.rerun_clip(
-            studio_job_id,
-            changes,
-            job_reporter(ctl),
-            acquirer=self.acquirer(),
-            fake=self.fake,
-            paths=self.paths,
-        )
+        done = self.child(ctl, "rerun", {"studio_job_id": studio_job_id, "changes": changes})
         ctl.extras["studio_job_id"] = studio_job_id
-        return ids
+        ctl.extras.pop("studio_job_ids", None)
+        return [str(i) for i in done.get("output_ids") or []]
 
     def fetch_url(self, ctl: JobControl, url: str, source_id: str) -> Path:
-        """Download `url` with the pinned yt-dlp (`clipper.source.import_url`), shown as `Downloading N%`."""
-        return studio_bridge.download_source(self.paths, url, source_id, ctl.download)
+        """Download `url` with the pinned yt-dlp (`clipper.source.import_url`), shown as `Downloading N%`.
+
+        yt-dlp runs inside the child, so cancelling kills it with the rest of the process tree; the partly
+        downloaded folder is removed then.
+        """
+        try:
+            done = self.child(ctl, "download", {"url": url, "source_id": source_id})
+        except BaseException:
+            shutil.rmtree(studio_bridge.download_dir(self.paths, source_id), ignore_errors=True)
+            raise
+        return Path(str(done["path"]))
 
 
 class RealSeriesAdapter(StudioAdapter):
@@ -306,13 +317,8 @@ class RealSeriesAdapter(StudioAdapter):
     def produce(self, ctl: JobControl, params: dict[str, Any]) -> list[str]:
         """Run the part's job; a failed or cancelled part goes back to `approved` to be queued again."""
         try:
-            return studio_bridge.run_series_part(
-                {**params, "job_id": ctl.job_id},
-                job_reporter(ctl),
-                acquirer=self.acquirer(),
-                fake=self.fake,
-                paths=self.paths,
-            )
+            done = self.child(ctl, "series", {"params": {**params, "job_id": ctl.job_id}})
+            return [str(i) for i in done.get("output_ids") or []]
         except BaseException:
             studio_bridge.release_part({**params, "job_id": ctl.job_id})
             raise
@@ -524,12 +530,14 @@ class RealVoiceMaker:
         acquirer: Acquirer | None = None,
         http: httpx.Client | None = None,
         transcribe: Callable[[Path], str] | None = None,
+        runner: StudioRunner | None = None,
     ) -> None:
         self.paths = paths
         self.link = link
         self._acquirer = acquirer
         self._http = http
         self._transcribe = transcribe
+        self._runner = runner or StudioRunner(paths)
 
     def _acq(self) -> Acquirer:
         return self._acquirer or make_acquirer(self.link.base_url)
@@ -580,19 +588,12 @@ class RealVoiceMaker:
             return self._preview(url, name, test_line)
 
     def _words_in(self, wav: Path) -> str:
+        """The words spoken in `wav`: faster-whisper runs in the studio venv while this holds the tenant."""
         if self._transcribe is not None:
             return self._transcribe(wav)
-        from ns_studio.media.transcribe import WhisperTranscriber
-
-        try:
-            cfg = load_runtime(self.paths).whisper
-        except Exception:  # no runtime.json yet: the default whisper settings
-            from ns_common.models import Runtime
-
-            cfg = Runtime.default("gpu").whisper
         with self._tenant("whisper"):
-            segs = WhisperTranscriber(cfg, self.paths).segments(wav, "")
-        return " ".join(seg.text for seg in segs).strip()
+            done = self._runner.run("transcribe", {"wav": str(wav)})
+        return str(done.get("text") or "").strip()
 
     def clone(self, name: str, sample_wav: Path, test_line: str) -> MadeVoice:
         """Base-model embedding from the sample (its words found by whisper), then the test line spoken."""
