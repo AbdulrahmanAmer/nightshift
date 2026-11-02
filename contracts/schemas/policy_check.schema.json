@@ -30,6 +30,18 @@
     "notes": {
       "title": "Notes",
       "type": "string"
+    },
+    "tags_relevant": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Tags Relevant"
     }
   },
   "required": [

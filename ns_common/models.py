@@ -516,6 +516,7 @@ class PolicyCheckResult(Strict):
     title_honest: bool
     standalone: bool | None
     notes: str
+    tags_relevant: bool | None = None    # only when tags were given: true when every tag describes the story
 
 
 # ---------- clipper (spec 15.6; CR-C8-1, CR-C8-6) ----------

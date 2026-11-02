@@ -241,3 +241,16 @@ def test_default_judge_passes_with_shipped_fixture(tmp_home: Path):
     ctx = make_ctx(tmp_home)
     ctx.write_json("story.json", {"text": "A quiet house at night."})
     assert UnsafeTopics().run(ctx).passed
+
+
+def test_tag_relevance_really_asks_the_model(tmp_home: Path):
+    """System gap 13: the mode returned PASS without a call, so NS-E606 could never fire on irrelevant tags."""
+    ctx = make_ctx(tmp_home)
+    items = [{"item": "s1", "title": "T", "tags": ["horror story", "crypto giveaway"]}]
+    ctx.services.llm = _llm(_pc(tags_relevant=False, notes="crypto giveaway is unrelated"))
+    ans = judge.default_judge(ctx, "tag_relevance", story="S", items=items)
+    assert judge.verdict_failed(ans) and ans["failed_items"] == ["s1"] and "crypto" in ans["reason"]
+    call = ctx.services.llm.calls[-1]  # type: ignore[attr-defined]
+    assert "Tags: horror story, crypto giveaway" in call["user"]
+    ctx.services.llm = _llm(_pc(tags_relevant=True))
+    assert not judge.verdict_failed(judge.default_judge(ctx, "tag_relevance", story="S", items=items))

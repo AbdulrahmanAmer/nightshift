@@ -35,8 +35,7 @@ def default_judge(ctx: JobContext, mode: str, **variables: Any) -> dict[str, Any
     """Answer a mode-based question with one or more `policy_check` calls.
 
     Normalised answer: `{verdict: pass|fail, reason, flags: [{category, reason}], intensity,
-    failed_items: [str]}`. `tag_relevance` has no counterpart in the C5 prompt, so only the
-    deterministic tag limits apply and the answer is a pass.
+    failed_items: [str]}`. `tag_relevance` asks the model, per item, whether the tags describe the story.
     """
     story = str(variables.get("story", ""))
     if mode == "unsafe_topics":
@@ -71,7 +70,19 @@ def default_judge(ctx: JobContext, mode: str, **variables: Any) -> dict[str, Any
         return {**PASS, "verdict": "fail" if failed else "pass", "reason": "; ".join(reasons),
                 "failed_items": failed}
     if mode == "tag_relevance":
-        return dict(PASS)
+        failed = []
+        reasons = []
+        for it in variables.get("items", []):
+            tags = [str(t) for t in it.get("tags", [])]
+            if not tags:
+                continue
+            extra = {"title": str(it["title"])} if it.get("title") else {}
+            a = _ask(ctx, story=story, tags=", ".join(tags), **extra)
+            if a.get("tags_relevant") is False:
+                failed.append(str(it["item"]))
+                reasons.append(f"{it['item']}: {a.get('notes', '')}")
+        return {**PASS, "verdict": "fail" if failed else "pass", "reason": "; ".join(reasons),
+                "failed_items": failed}
     raise ValueError(f"unknown policy_check mode {mode!r}")
 
 
