@@ -6,10 +6,17 @@ import random
 from dataclasses import dataclass
 
 from ns_common.pacing import PACING_WPM as PACING_WPM  # re-exported: shared with the voice stage
+from ns_common.pacing import (
+    PAUSE_PER_WORD_S,
+    SHORT_QC_MARGIN,
+    master_fixed_seconds,
+    words_for_seconds,
+)
 
 SHORT_TOLERANCE = 0.15  # Shorts: words within +-15 % of the target, the same band QC applies to seconds
 CHAPTER_TOLERANCE = 0.2  # chapters: spec 7.0 allows +-20 %
-MASTER_MAX_MINUTES = 14  # QC fails a master over 15:00; pauses and chapter cards need the last minute
+MASTER_MAX_MINUTES = 14  # the longest draw of `long_minutes`; the budget below already counts the pauses
+MASTER_MAX_SECONDS = 870  # a finished master may estimate up to 14:30 (QC fails over 15:00 after the render)
 
 
 @dataclass(frozen=True)
@@ -27,17 +34,25 @@ class Budget:
 def short_budget(
     length_bucket_s: int, pacing: str, *, parts: int = 1, hook_words: int = 12, closing_words: int = 0
 ) -> Budget:
-    """Body budget of a Short: `round(seconds*wpm/60)` per part minus hook and closing words (min 40).
+    """Body budget of a Short: the words that fill `length_bucket_s` per part, pauses included, minus hook and
+    closing words (min 40).
 
-    `pacing` is a key of `PACING_WPM`; limits are +-20 % of the target.
+    `pacing` is a key of `PACING_WPM`. The TTS service leaves about 0.035 s of silence per word (350 ms per
+    sentence, 700 ms per paragraph), so the words are `seconds / (60/wpm + 0.035)`, not `seconds*wpm/60`.
+    Limits are +-15 % of the target, narrowed so a story at either edge is still within 12 % of the bucket in
+    seconds (hook and closing included): inside QC's +-15 % duration band with room for sentence-length
+    variation.
     """
     wpm = PACING_WPM[pacing]
-    total = round(length_bucket_s * wpm / 60) * parts
+    total = words_for_seconds(length_bucket_s * parts, wpm)
     words = max(40, total - hook_words * parts - closing_words)
+    voiced_extra_s = (hook_words * parts + closing_words) * (60.0 / wpm + PAUSE_PER_WORD_S)
+    qc_cap = words_for_seconds(length_bucket_s * parts * (1 + SHORT_QC_MARGIN) - voiced_extra_s, wpm)
+    qc_floor = words_for_seconds(length_bucket_s * parts * (1 - SHORT_QC_MARGIN) - voiced_extra_s, wpm)
     return Budget(
         words=words,
-        min_words=round(words * (1 - SHORT_TOLERANCE)),
-        max_words=round(words * (1 + SHORT_TOLERANCE)),
+        min_words=min(words, max(round(words * (1 - SHORT_TOLERANCE)), qc_floor)),
+        max_words=max(words, min(round(words * (1 + SHORT_TOLERANCE)), qc_cap)),
         parts=parts,
         words_per_part=words // parts,
         wpm=wpm,
@@ -71,7 +86,12 @@ def distribute_words(total: int, n: int) -> tuple[int, ...]:
 def master_budget(
     long_minutes: int | tuple[int, int], pacing: str, *, rng: random.Random | None = None
 ) -> MasterBudget:
-    """Budget of a master: `target_words = minutes * wpm`, `min_words = 9 * wpm`, 5-7 chapters.
+    """Budget of a master: the words that fill `minutes` of audio, pauses and cards included; 5-7 chapters.
+
+    Speech alone would be `minutes * wpm` words, but the TTS service adds about 0.035 s of silence per word,
+    1.2 s before each chapter's cliff line (instead of 0.35 s) and a 1.2 s title card between chapters, so a
+    14-minute draw rendered at `minutes * wpm` words came out near 15:12. `min_words` is the same sum for the
+    9-minute planning floor.
 
     `long_minutes` is a fixed number of minutes or the channel's `(lo, hi)` range: with `rng` the target is
     drawn with `rng.randint(lo, hi)`, without it the rounded-up midpoint is used (deterministic).
@@ -87,12 +107,18 @@ def master_budget(
         raise ValueError(f"long_minutes {minutes} is below the {MASTER_FLOOR_MINUTES}-minute floor")
     if minutes > MASTER_MAX_MINUTES:
         raise ValueError(f"long_minutes {minutes} is above the {MASTER_MAX_MINUTES}-minute ceiling")
-    target = minutes * wpm
-    chapters = max(MIN_CHAPTERS, min(MAX_CHAPTERS, round(target / CHAPTER_WORDS_MID)))
+    chapters = MIN_CHAPTERS
+    for _ in range(3):  # the chapter count depends on the words, the words on the chapter count
+        target = words_for_seconds(minutes * 60, wpm, fixed_s=master_fixed_seconds(chapters))
+        chapters = max(MIN_CHAPTERS, min(MAX_CHAPTERS, round(target / CHAPTER_WORDS_MID)))
+    target = words_for_seconds(minutes * 60, wpm, fixed_s=master_fixed_seconds(chapters))
+    floor_words = words_for_seconds(
+        MASTER_FLOOR_MINUTES * 60, wpm, fixed_s=master_fixed_seconds(MIN_CHAPTERS)
+    )
     return MasterBudget(
         target_minutes=minutes,
         target_words=target,
-        min_words=MASTER_FLOOR_MINUTES * wpm,
+        min_words=min(floor_words, target),
         wpm=wpm,
         chapters=chapters,
         chapter_budgets=distribute_words(target, chapters),
@@ -124,8 +150,8 @@ def master_as_budget(mb: MasterBudget) -> Budget:
 
 
 def master_max_words(wpm: int) -> int:
-    """Most words a master may hold: `MASTER_MAX_MINUTES` of narration at `wpm` (QC rejects over 15:00)."""
-    return MASTER_MAX_MINUTES * wpm
+    """Most words a master may hold: `MASTER_MAX_SECONDS` of audio at `wpm`, pauses and cards included."""
+    return words_for_seconds(MASTER_MAX_SECONDS, wpm, fixed_s=master_fixed_seconds(MIN_CHAPTERS))
 
 
 def moment_limits(body_words: int) -> tuple[int, int]:

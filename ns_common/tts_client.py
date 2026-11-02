@@ -9,6 +9,7 @@ import httpx
 import numpy as np
 
 from ns_common.errors import NsError
+from ns_common.pacing import pause_plan
 from ns_common.textstats import word_count
 
 
@@ -148,24 +149,40 @@ class FakeTts:
 
     def speak(
         self, text: str, voice: str, speed: float, out_path: Path, *, seed: int | None = None,
-        language: str | None = None,
+        language: str | None = None, cliff_lines: tuple[str, ...] = (),
     ) -> float:
-        words = max(1, word_count(text))
-        seconds = max(0.4, words / (self.wpm * speed) * 60.0)
-        n = int(seconds * self.sr)
-        burst = int(0.08 * self.sr)
-        step = n / words
-        idx = np.arange(n)
-        pos = np.mod(idx, step)
-        tone = 0.3 * np.sin(2 * np.pi * 440.0 * idx / self.sr)
-        samples = (np.where(pos < burst, tone, 0.0) * 32767).astype("<i2")
+        samples = self._samples(text, speed, cliff_lines)
         out_path.parent.mkdir(parents=True, exist_ok=True)
         with wave.open(str(out_path), "wb") as w:
             w.setnchannels(1)
             w.setsampwidth(2)
             w.setframerate(self.sr)
             w.writeframes(samples.tobytes())
-        return round(n / self.sr, 3)
+        return round(len(samples) / self.sr, 3)
+
+    def _tone(self, words: int, speed: float, *, floor_s: float = 0.0) -> np.ndarray:
+        """One tone burst per word, `words / (wpm * speed)` minutes long (at least `floor_s`)."""
+        seconds = max(floor_s, words / (self.wpm * speed) * 60.0)
+        n = int(seconds * self.sr)
+        burst = int(0.08 * self.sr)
+        idx = np.arange(n)
+        tone = 0.3 * np.sin(2 * np.pi * 440.0 * idx / self.sr)
+        gate = np.mod(idx, n / max(1, words)) < burst
+        return (np.where(gate, tone, 0.0) * 32767).astype("<i2")
+
+    def _samples(self, text: str, speed: float, cliff_lines: tuple[str, ...]) -> np.ndarray:
+        """Speech with the silences the real service inserts (`ns_common.pacing.pause_plan`): 350 ms after a
+        sentence, 700 ms before a paragraph, 1,200 ms before a cliff line. A fake without them made every
+        word budget look 8 % shorter than the audio it produces."""
+        plan = pause_plan(text, cliff_lines)
+        if len(plan) <= 1:
+            return self._tone(max(1, word_count(text)), speed, floor_s=0.4)
+        parts: list[np.ndarray] = []
+        for chunk, pause in plan:
+            parts.append(self._tone(max(1, word_count(chunk)), speed))
+            if pause > 0:
+                parts.append(np.zeros(int(pause * self.sr), dtype="<i2"))
+        return np.concatenate(parts)
 
     def speak_batch(
         self, items: list[TtsItem], out_dir: Path, *, seed: int | None = None
@@ -175,7 +192,11 @@ class FakeTts:
             p = out_dir / f"{it.id}.wav"
             self.items.append(it)
             out.append(
-                TtsFile(it.id, p, self.speak(it.text, it.voice, it.speed, p, seed=seed, language=it.language))
+                TtsFile(
+                    it.id, p,
+                    self.speak(it.text, it.voice, it.speed, p, seed=seed, language=it.language,
+                               cliff_lines=it.cliff_lines),
+                )
             )
         return out
 

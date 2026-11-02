@@ -3,6 +3,7 @@ import wave
 from pathlib import Path
 
 import httpx
+import pytest
 
 from ns_common.tts_client import FakeTts, TtsClient, TtsItem, wav_seconds
 
@@ -125,3 +126,16 @@ def test_client_failures_are_tts_codes_not_llm_codes(tmp_path: Path):
     with pytest.raises(NsError) as built:
         cli2.speak("hi", "v", 1.0, tmp_path / "o.wav")
     assert built.value.code == "NS-E315"
+
+
+def test_fake_tts_inserts_the_service_pauses(tmp_path: Path):
+    """The fake used to be pause-free, so word budgets looked 8 % shorter than the real audio."""
+    one = FakeTts().speak("w1 w2 w3 w4 w5 w6 w7 w8 w9 w10.", "Ryan", 1.0, tmp_path / "a.wav")
+    two = FakeTts().speak(
+        "w1 w2 w3 w4 w5 w6 w7 w8 w9 w10. w1 w2 w3 w4 w5 w6 w7 w8 w9 w10.", "Ryan", 1.0, tmp_path / "b.wav"
+    )
+    para = FakeTts().speak(
+        "w1 w2 w3 w4 w5 w6 w7 w8 w9 w10.\n\nw1 w2 w3 w4 w5 w6 w7 w8 w9 w10.", "Ryan", 1.0, tmp_path / "c.wav"
+    )
+    assert two - 2 * one == pytest.approx(0.35, abs=0.02)  # 350 ms between sentences
+    assert para - 2 * one == pytest.approx(0.70, abs=0.02)  # 700 ms between paragraphs
