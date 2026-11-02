@@ -113,9 +113,6 @@ public static class NsAumid
     static extern void SHGetPropertyStoreFromParsingName(
         string path, IntPtr bindContext, int flags, ref Guid riid, out IPropertyStore store);
 
-    [DllImport("propsys.dll", CharSet = CharSet.Unicode, PreserveSig = false)]
-    static extern void InitPropVariantFromString(string value, out PropVariant pv);
-
     [DllImport("ole32.dll")]
     static extern int PropVariantClear(ref PropVariant pv);
 
@@ -142,8 +139,9 @@ public static class NsAumid
         IPropertyStore store = Open(path);
         try
         {
-            PropVariant pv;
-            InitPropVariantFromString(id, out pv);
+            PropVariant pv = new PropVariant();
+            pv.vt = 31;   // VT_LPWSTR; PropVariantClear frees the string with CoTaskMemFree
+            pv.ptr = Marshal.StringToCoTaskMemUni(id);
             try
             {
                 PropertyKey key = AppUserModelId();

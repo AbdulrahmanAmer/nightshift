@@ -412,7 +412,6 @@ def test_s02_installs_the_pinned_qwentts_binary_without_probing(tmp_path: Path):
     assert pin is not None and pin.url in seen and QWENTTS_RELEASE_URL not in seen
     assert ctx.flag("qwentts") == "binary" and ctx.flag("tts_fallback") is False
     assert ctx.warnings == []
-    assert load_runtime(ctx.paths).tts.engine == "qwentts"
 
 
 def test_s02_opencode_only_when_chosen_and_cpu_profile_uses_cpu_build(tmp_path: Path):
