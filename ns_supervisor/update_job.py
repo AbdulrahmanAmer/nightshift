@@ -287,8 +287,8 @@ def run_worker(
     or `failed` (`{state, old, new, message, updated_at}`, read by the dashboard).
 
     With `relaunch`, the engine (and the dashboard window, when one was open) is started again after the
-    update, whether it applied or was rolled back, and `done` / `failed` is written only after the engine answers
-    `/status`, so a page that reconnects finds a live dashboard and the final state. When the engine does not
+    update, whether it applied or was rolled back, and `done` / `failed` is written only after the engine
+    answers `/status`, so a page that reconnects finds a live dashboard and the final state. When the engine does not
     come back the state is `failed` with `restart_failed` set (and `updated` true when the new version is in
     place), so the page can say what happened instead of waiting for ever.
     """

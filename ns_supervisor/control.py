@@ -48,6 +48,22 @@ def image_name(pid: int) -> str | None:
     return line.split('","')[0].strip('"').lower()
 
 
+def wait_down(
+    client: SupervisorClient,
+    wait_s: float = 45,
+    *,
+    sleep: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.monotonic,
+) -> bool:
+    """Poll until the supervisor stops answering `/status`; True when it did within `wait_s`."""
+    deadline = clock() + wait_s
+    while client.is_up():
+        if clock() >= deadline:
+            return False
+        sleep(0.25)
+    return True
+
+
 def stop(
     paths: Paths,
     client: SupervisorClient,
@@ -62,9 +78,7 @@ def stop(
     """
     if client.is_up():
         client.shutdown(30)
-        deadline = time.monotonic() + wait_s
-        while time.monotonic() < deadline and client.is_up():
-            time.sleep(0.25)
+        wait_down(client, wait_s)
         return ["Engine stopped through the supervisor API."]
     state_file = paths.home / "run" / "supervisor.json"
     if not state_file.exists():

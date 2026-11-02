@@ -34,6 +34,11 @@ BUSY_HINT = (
     "another program still has the Nightshift folder open (a Dashboard, Studio or terminal window?). "
     "Close those windows and run the update again; your previous version is still in place."
 )
+RESTORE_HINT = (
+    "the previous version could not be put back because another program still has the Nightshift folder open. "
+    "Close every Nightshift window, then run `ns update --rollback` (the previous version is in the folder "
+    "ending in .prev)."
+)
 UPDATE_VENVS = ("studio", "supervisor", "tts")      # extras: ns_common.venv_extras (shared with setup)
 
 
@@ -46,6 +51,8 @@ class UpdateEnv:
     verify: Callable[[Path], bool]
     reregister: Callable[[Path], list[str]]
     untracked: Callable[[Path], list[str]] = field(default=lambda app: git_untracked(app))
+    #: Called before a rollback renames folders: waits until the processes `verify` started have exited.
+    settle: Callable[[], None] = field(default=lambda: None)
 
 
 @dataclass
@@ -213,13 +220,23 @@ def rename_with_retry(
             sleep(pause_s)
 
 
-def _restore(app: Path, prev: Path, log: NsLogger) -> None:
-    """Put `<app>.prev` back in place of a failed new tree."""
+def _restore(app: Path, prev: Path, log: NsLogger, settle: Callable[[], None] | None = None) -> None:
+    """Put `<app>.prev` back in place of a failed new tree.
+
+    The failure that brought us here is usually `ns verify --quick` failing: the engine it started (and its
+    llama-server and TTS children) may still be exiting with the new tree open, so wait for them first and
+    retry both renames like the forward swap does.
+    """
+    if settle is not None:
+        try:
+            settle()
+        except Exception as e:  # waiting is best effort; the retrying renames below are the safety net
+            log.warn("rollback_settle_failed", error=str(e))
     failed = _sibling(app, ".failed")
     shutil.rmtree(failed, ignore_errors=True)
     if app.exists():
-        app.rename(failed)
-    prev.rename(app)
+        rename_with_retry(app, failed)
+    rename_with_retry(prev, app)
     shutil.rmtree(failed, ignore_errors=True)
     log.warn("update_restored", app=str(app))
 
@@ -248,9 +265,12 @@ def update_app(zip_path: Path, app: Path, env: UpdateEnv, *, paths: Paths) -> Up
         shutil.rmtree(new, ignore_errors=True)
         raise NsError("NS-E702", f"could not stage the update: {e}. {BUSY_HINT}") from e
     try:
-        new.rename(app)
+        rename_with_retry(new, app)
     except OSError as e:
-        prev.rename(app)
+        try:
+            rename_with_retry(prev, app)
+        except OSError as e2:
+            raise NsError("NS-E702", f"could not swap directories: {e}; {RESTORE_HINT}") from e2
         raise NsError("NS-E702", f"could not swap directories: {e}") from e
     try:
         env.sync(app)
@@ -259,12 +279,15 @@ def update_app(zip_path: Path, app: Path, env: UpdateEnv, *, paths: Paths) -> Up
         notes += env.reregister(app)
     except Exception as e:  # any step failing after the swap rolls back
         log.error("update_failed", str(e))
-        _restore(app, prev, log)
+        detail = e.detail if isinstance(e, NsError) else f"{type(e).__name__}: {e}"
+        try:
+            _restore(app, prev, log, env.settle)
+        except OSError as e3:   # keep the cause of the failure: it is what the owner has to report
+            raise NsError("NS-E702", f"{detail}. {RESTORE_HINT} ({e3})") from e
         try:
             env.sync(app)
         except Exception as e2:  # best effort: report, the old tree is already back
             log.error("rollback_sync_failed", str(e2))
-        detail = e.detail if isinstance(e, NsError) else f"{type(e).__name__}: {e}"
         raise NsError("NS-E702", detail) from e
     log.info("update_done", old=old_version, new=new_version)
     return UpdateResult(old_version, new_version, notes)
@@ -284,10 +307,10 @@ def rollback_app(app: Path, env: UpdateEnv, *, paths: Paths) -> UpdateResult:
     try:
         shutil.rmtree(tmp, ignore_errors=True)
         rename_with_retry(app, tmp)
-        prev.rename(app)
-        tmp.rename(prev)
+        rename_with_retry(prev, app)
+        rename_with_retry(tmp, prev)
     except OSError as e:
-        raise NsError("NS-E702", f"could not swap directories: {e}") from e
+        raise NsError("NS-E702", f"could not swap directories: {e}. {BUSY_HINT}") from e
     env.sync(app)
     log.info("rollback_done", old=old_version, restored=current_version(app))
     return UpdateResult(old_version, current_version(app), ["rolled back"])

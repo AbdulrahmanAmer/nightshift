@@ -91,6 +91,8 @@ def _stop_started_engine(client: SupervisorClient) -> None:
     try:
         if client.is_up():
             client.shutdown(30)
+            if not control.wait_down(client, 45):
+                typer.echo("The verify engine is slow to exit.", err=True)
     except NsError as e:
         typer.echo(f"Could not stop the verify engine: {e}", err=True)
 
@@ -181,6 +183,7 @@ def _apply_update(
         sync=lambda a: _sync(paths, a),
         verify=update.verify_quick,
         reregister=lambda a: _reregister(paths, a),
+        settle=lambda: control.wait_down(_client(paths)),
     )
     if rollback:
         res = update.rollback_app(app_dir, env, paths=paths)
