@@ -569,7 +569,8 @@ States: `stopped|starting|ready|stopping|error`. Owners: `opencode`, `studio:<jo
 | Method | Path | Body |
 |---|---|---|
 | POST | `/v1/audio/speech` | `{model:"qwen3-tts", input, voice, speed, response_format:"wav", seed?}` → WAV 24 kHz mono |
-| POST | `/v1/audio/speech/batch` | `{items:[{id,input,voice,speed}], out_dir, seed?}` → `{files:[{id,path,seconds}], engine, rtf}` |
+| POST | `/v1/audio/speech/batch` | `{items:[{id,input,voice,speed}], out_dir, seed?, timeout_s?, resume?}` → `{files:[{id,path,seconds}], engine, rtf}`; `timeout_s` is the client's wait (`ns_common.tts_timeout`: 120 s + 3 s per line, cap 2 h), no process is stopped before it; `resume` reuses items an interrupted attempt left in `out_dir` |
+| POST | `/v1/audio/speech/cancel` | → `{cancelled}`; kills the running batch process (the client timed out) |
 | GET | `/v1/voices` | → `[{name, mode:"preset"|"design"|"clone", source}]` |
 | POST | `/v1/voices/design` | `{name, description}` → `{name, sample_path}` |
 | POST | `/v1/voices/clone` | `{name, ref_audio_path, ref_text, rights_confirmed:true}` → `{name, sample_path}` (400 if `rights_confirmed` false) |

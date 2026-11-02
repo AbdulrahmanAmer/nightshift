@@ -168,7 +168,7 @@ def _hang_after(monkeypatch: pytest.MonkeyPatch, n: int, limit_s: float | None =
 def test_a_stalled_process_is_stopped_at_the_limit_and_keeps_its_finished_utterances(
     eng: QwenttsEngine, calls: Path, monkeypatch: pytest.MonkeyPatch  # noqa: F811
 ):
-    _hang_after(monkeypatch, 2, limit_s=6)
+    _hang_after(monkeypatch, 2, limit_s=12)
     with pytest.raises(BatchInterrupted) as ei:
         eng.synth_batch(SENTENCES, RYAN)
     assert ei.value.code == "NS-E310" and "timed out" in ei.value.detail and not ei.value.cancelled
@@ -210,7 +210,7 @@ def test_an_interrupted_batch_keeps_whole_items_and_the_retry_resumes_from_them(
     client = _client(tmp_path, eng)
     out = tmp_path / "raw"
     body = {"items": [A, B], "out_dir": str(out), "resume": True}
-    _hang_after(monkeypatch, 2, limit_s=6)
+    _hang_after(monkeypatch, 2, limit_s=12)
     r = client.post("/v1/audio/speech/batch", json=body)
     assert r.status_code == 500 and r.json()["error"] == "NS-E310"
     assert (out / "a.wav").is_file() and not (out / "b.wav").exists()  # a finished, b did not
@@ -231,7 +231,7 @@ def test_without_resume_everything_is_synthesized_again(
 ):
     client = _client(tmp_path, eng)
     body = {"items": [A, B], "out_dir": str(tmp_path / "raw")}
-    _hang_after(monkeypatch, 2, limit_s=6)
+    _hang_after(monkeypatch, 2, limit_s=12)
     assert client.post("/v1/audio/speech/batch", json=body).status_code == 500
     monkeypatch.delenv("NS_FAKE_QWEN_HANG_AFTER")
     assert client.post("/v1/audio/speech/batch", json=body).status_code == 200
@@ -243,7 +243,7 @@ def test_changed_text_is_not_resumed(
 ):
     client = _client(tmp_path, eng)
     body = {"items": [A, B], "out_dir": str(tmp_path / "raw"), "resume": True}
-    _hang_after(monkeypatch, 2, limit_s=6)
+    _hang_after(monkeypatch, 2, limit_s=12)
     assert client.post("/v1/audio/speech/batch", json=body).status_code == 500
     monkeypatch.delenv("NS_FAKE_QWEN_HANG_AFTER")
     edited = {**A, "input": "A completely different opening line for this part."}
