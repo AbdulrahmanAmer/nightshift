@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from ns_common.errors import NsError
-from ns_studio import jobs
+from ns_studio import jobs, notifications
 from ns_studio.channels import cadence
 from ns_studio.channels.crud import get_channel
 from ns_studio.context import JobContext
@@ -65,10 +65,13 @@ def run_daily(
     now: datetime | None = None,
     rng: random.Random | None = None,
     run_fn: RunFn | None = None,
+    notifier: notifications.Notifier | None = None,
 ) -> dict:
     """Plan with the governor, run every due job, back up the database and write the nightly report.
 
-    One failing job never stops the others; failures are listed in the report. Returns the report dict.
+    One failing job never stops the others; failures are listed in the report. When a `notifier` is given
+    the night ends with a toast (spec J10: videos ready, or the failure code), unless Settings turned
+    notifications off. Returns the report dict.
     """
     now = now or datetime.now(UTC)
     rng = rng or random.Random()
@@ -120,4 +123,6 @@ def run_daily(
     nightly = env.paths.logs / f"nightly-{now:%Y%m%d}.json"
     nightly.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     env.log.info("daily_done", run_id=run_id, jobs=len(done), failures=len(report["failures"]))
+    masters, shorts = notifications.output_counts(env.db, done)
+    notifications.send(env.paths, env.log, notifier, notifications.nightly_message(report, masters, shorts))
     return report

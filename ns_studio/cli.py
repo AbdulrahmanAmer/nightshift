@@ -15,7 +15,7 @@ from typer.core import TyperGroup
 from ns_common import __version__
 from ns_common.errors import NsError
 from ns_common.models import Channel, Voice
-from ns_studio import jobs, review
+from ns_studio import jobs, notifications, review
 from ns_studio.calibrate import run as calibration
 from ns_studio.channels import cadence, crud
 from ns_studio.clipper import cli as clipper_cli
@@ -185,7 +185,12 @@ def _daily(env: jobs.Env, dry_run: bool, policy: bool | None) -> None:
         for dj in due:
             typer.echo(f"{dj.channel.slug}: {dj.count} x {dj.fmt} ({dj.plan.describe()})")
         return
-    report = run_daily(env, now=now)
+    notifier = None if env.fake else notifications.default_notifier()
+    try:
+        report = run_daily(env, now=now, notifier=notifier)
+    except (NsError, StudioError) as e:  # the night itself broke (not one job): say so before exiting
+        notifications.send(env.paths, env.log, notifier, notifications.failure_message(e.code))
+        raise
     for c in report["channels"]:
         typer.echo(f"{c['channel']}: {c['jobs']} job(s), {c['plan']}")
     for j in report["jobs"]:
