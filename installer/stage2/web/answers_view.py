@@ -206,6 +206,14 @@ def draft_to_answers(
     }
 
 
+def _wants_voicedesign(raw: dict[str, Any]) -> bool:
+    """The checkbox: the explicit answer, else on when the stored voice is a designed one."""
+    flag = raw.get("include_voicedesign")
+    if flag is not None:
+        return bool(flag)
+    return (raw.get("voice") or {}).get("mode") == "design"
+
+
 def answers_to_view(
     raw: dict[str, Any], *, pexels_set: bool = False, pixabay_set: bool = False, default_tier: str = "small"
 ) -> dict[str, Any]:
@@ -228,7 +236,7 @@ def answers_to_view(
         "runTime": raw.get("run_time", "03:00"),
         "mastersPerWeek": int(raw.get("masters_per_week", 1)),
         "installCode": bool(raw.get("install_code", True)),
-        "includeVoicedesign": bool(raw.get("include_voicedesign", False)),
+        "includeVoicedesign": _wants_voicedesign(raw),
         "theme": raw.get("ui_theme", "dark"),
         "pexelsKeySet": pexels_set or bool(raw.get("pexels_api_key")),
         "pixabayKeySet": pixabay_set or bool(raw.get("pixabay_api_key")),

@@ -109,6 +109,7 @@ class StudioRunner:
         poll_s: float = 0.25,
         grace_s: float = GRACE_S,
         kill: Callable[[subprocess.Popen[str]], None] = kill_tree,
+        cancel_grace_s: float = 3.0,
     ) -> None:
         self.paths = paths
         self._python = python
@@ -116,6 +117,7 @@ class StudioRunner:
         self.poll_s = poll_s
         self.grace_s = grace_s
         self._kill = kill
+        self.cancel_grace_s = cancel_grace_s
 
     # --- how the child is started ---
     def interpreter(self) -> list[str]:
@@ -155,18 +157,28 @@ class StudioRunner:
         f.write_text(json.dumps(args, ensure_ascii=False, default=str), encoding="utf-8")
         return f
 
-    def _stop(self, proc: subprocess.Popen[str], cancel_file: Path) -> None:
-        """Ask the child to stop at its next stage boundary, wait `grace_s`, then kill what is left.
+    def _stop(
+        self, proc: subprocess.Popen[str], cancel_file: Path, on_cancel: Callable[[], None] | None = None
+    ) -> None:
+        """Ask the child to stop by itself, wait a little, then kill what is left (always).
 
-        A child that stops by itself runs its `finally` blocks, so it gives its GPU lease back. One that is
-        in the middle of a long stage does not notice in time and is killed; the caller then releases the
-        lease through the supervisor.
+        Every child is asked the same way: the flag file named by `NS_JOB_CANCEL_FILE` is created, which the child
+        sees between stages (`studio_job.report`), so its `finally` blocks give the GPU lease back; it has
+        `grace_s` (10 s). A kind with its own signal (`on_cancel`, the link download's flag that cancels the
+        Clipper token) gets that signal too and `cancel_grace_s` (3 s). The caller releases the lease through the
+        supervisor afterwards, for a child that was in the middle of a stage and had to be killed.
         """
-        if proc.poll() is None and self.grace_s > 0:
+        if proc.poll() is None:
+            grace = self.grace_s
             with contextlib.suppress(OSError):
                 cancel_file.write_text("cancel", encoding="utf-8")
-            with contextlib.suppress(subprocess.TimeoutExpired):
-                proc.wait(timeout=self.grace_s)
+            if on_cancel is not None:
+                grace = self.cancel_grace_s
+                with contextlib.suppress(Exception):
+                    on_cancel()
+            if grace > 0:
+                with contextlib.suppress(subprocess.TimeoutExpired):
+                    proc.wait(timeout=grace)
         self._kill(proc)
 
     # --- running ---
@@ -177,13 +189,17 @@ class StudioRunner:
         *,
         on_event: Callable[[Event], None] = lambda _e: None,
         check_cancel: Callable[[], None] = lambda: None,
+        on_cancel: Callable[[], None] | None = None,
     ) -> Event:
         """Run `kind` to the end and return its `result` payload.
 
         `on_event(event)` gets every progress event; `check_cancel()` is called after each line and every
         `poll_s` seconds while the child is quiet, and may raise (the dashboard's `JobCancelled`): the child's
-        process tree is killed first and the exception passes on. A failure in the child becomes `NsError`
-        when it carries an `NS-` code, else `RuntimeError`.
+        process tree is killed and the exception passes on.
+        When `on_cancel()` is given it runs first and tells the child to stop by itself (the download kind
+        cancels the Clipper `CancelToken`, which kills yt-dlp and removes its folder); the tree is killed once
+        `cancel_grace_s` has passed without the child ending. A failure in the child becomes `NsError` when it
+        carries an `NS-` code, else `RuntimeError`.
         """
         args_file = self._args_file(kind, args)
         cancel_file = args_file.with_suffix(".cancel")
@@ -234,7 +250,7 @@ class StudioRunner:
                 check_cancel()
             proc.wait(timeout=60)
         except BaseException:
-            self._stop(proc, cancel_file)
+            self._stop(proc, cancel_file, on_cancel)
             raise
         finally:
             reader.join(timeout=5)

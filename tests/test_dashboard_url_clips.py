@@ -146,7 +146,9 @@ def test_real_adapter_calls_import_url_with_progress(tmp_home: Path, monkeypatch
 
     seen: dict[str, Any] = {}
 
-    def import_url(url: str, dest_dir: Path, progress_cb: Any = None, *, exe: Path | None = None) -> Path:
+    def import_url(
+        url: str, dest_dir: Path, progress_cb: Any = None, *, exe: Path | None = None, cancel_token: Any = None
+    ) -> Path:
         seen.update(url=url, dest=dest_dir)
         for pct in (10, 60):
             progress_cb(pct)

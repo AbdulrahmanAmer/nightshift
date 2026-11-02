@@ -65,6 +65,15 @@ elif mode == "coded":
 elif mode == "crash":
     print("Traceback (most recent call last): boom", file=sys.stderr)
     sys.exit(3)
+elif mode == "obey_cancel_file":
+    emit("stage", stage="download", index=0, total=1, job_index=0, job_total=1)
+    end = time.time() + 30
+    while not os.path.exists(args["cancel_file"]) and time.time() < end:
+        time.sleep(0.02)
+    with open(os.environ["FAKE_OBEYED"], "w", encoding="utf-8") as fh:
+        fh.write("stopped by itself")
+    emit("error", code="NS-E409", detail="cancelled", message="x")
+    sys.exit(1)
 elif mode == "hang":
     grandchild = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(600)"])
     with open(os.environ["FAKE_PIDS"], "w", encoding="utf-8") as fh:
@@ -80,6 +89,7 @@ def fake(tmp_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Pat
     script.write_text(FAKE, encoding="utf-8")
     monkeypatch.setenv("FAKE_RECORD", str(tmp_path / "record.json"))
     monkeypatch.setenv("FAKE_PIDS", str(tmp_path / "pids.json"))
+    monkeypatch.setenv("FAKE_OBEYED", str(tmp_path / "obeyed.txt"))
     return script
 
 
@@ -408,3 +418,104 @@ def test_studio_job_main_reports_other_failures_without_a_code(tmp_home: Path, t
     assert studio_job.main(["clip", "--args", str(args)]) == 1
     (event,) = lines_of(capsys.readouterr().out)
     assert event["code"] is None and event["message"] == "ValueError: need 5 <= min_s < max_s <= 179"
+
+
+# ------------------------------------------------------------------ cancel reaches the Clipper CancelToken
+
+
+def test_cancel_asks_the_download_child_to_stop_before_the_tree_is_killed(
+    fake: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Cancel creates the flag file; the child cancels its `CancelToken`, ends by itself, then the kill backstop runs."""
+    monkeypatch.setenv("FAKE_MODE", "obey_cancel_file")
+    paths = Paths.from_env()
+    store, ctl = make_ctl(paths)
+    states: list[bool] = []
+
+    def record_kill(proc: Any) -> None:
+        states.append(proc.poll() is not None)  # True: the child was already gone when the backstop ran
+        proc.kill()
+
+    adapter = RealClipAdapter(
+        paths,
+        SupervisorLink("http://127.0.0.1:9", timeout_s=0.2),
+        runner=runner_for(fake, tmp_path, kill=record_kill, cancel_grace_s=10),
+    )
+    def cancel_once_the_child_runs() -> None:
+        deadline = time.monotonic() + 20
+        while not (tmp_path / "record.json").exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        store.request_cancel(ctl.job_id)
+
+    threading.Thread(target=cancel_once_the_child_runs, daemon=True).start()
+    with pytest.raises(JobCancelled):
+        adapter.fetch_url(ctl, "https://example.com/v", "src-20261101-cccc")
+    assert (tmp_path / "obeyed.txt").read_text(encoding="utf-8") == "stopped by itself"
+    assert states == [True]
+    assert recorded(tmp_path)["args"]["cancel_file"].endswith("cancel-download-src-20261101-cccc")
+    assert not Path(recorded(tmp_path)["args"]["cancel_file"]).exists()  # tidied up
+
+
+def test_runner_without_on_cancel_kills_at_once(fake: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("FAKE_MODE", "hang")
+    seen: list[bool] = []
+
+    def record_kill(proc: Any) -> None:
+        seen.append(proc.poll() is None)
+        proc.kill()
+
+    class Stop(Exception):
+        pass
+
+    def stop() -> None:
+        if (tmp_path / "pids.json").exists():
+            raise Stop
+
+    with pytest.raises(Stop):
+        runner_for(fake, tmp_path, kill=record_kill, cancel_grace_s=30).run("run", {}, check_cancel=stop)
+    assert seen == [True]  # still running when killed: no grace wait without on_cancel
+
+
+def test_watch_cancel_file_cancels_the_token_when_the_flag_appears(tmp_path: Path):
+    flag = tmp_path / "flag"
+    stop = threading.Event()
+
+    class Token:
+        cancelled = False
+
+        def cancel(self) -> None:
+            self.cancelled = True
+
+    token = Token()
+    thread = studio_job.watch_cancel_file(str(flag), token, stop, poll_s=0.01)
+    assert thread is not None
+    time.sleep(0.05)
+    assert not token.cancelled
+    flag.touch()
+    thread.join(5)
+    assert token.cancelled
+    assert studio_job.watch_cancel_file(None, token, stop) is None
+
+
+def test_download_kind_cancels_the_real_cancel_token(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """`do_download` hands `download_source` a real `CancelToken` that the flag file cancels."""
+    from ns_dashboard import studio_bridge
+    from ns_studio.clipper.source import CancelToken
+
+    flag = tmp_path / "flag"
+    got: dict[str, Any] = {}
+
+    def download_source(paths: Any, url: str, source_id: str, on_progress: Any, cancel_token: Any = None) -> Path:
+        got["token"] = cancel_token
+        flag.touch()  # the dashboard pressed Cancel
+        assert cancel_token is not None
+        end = time.monotonic() + 5
+        while not cancel_token.cancelled and time.monotonic() < end:
+            time.sleep(0.01)
+        got["cancelled"] = cancel_token.cancelled
+        return tmp_path / "x.mp4"
+
+    monkeypatch.setattr(studio_bridge, "download_source", download_source)
+    monkeypatch.setenv("NIGHTSHIFT_HOME", str(tmp_path / "home"))
+    studio_job.do_download({"url": "https://example.com/v", "source_id": "s", "cancel_file": str(flag)})
+    assert isinstance(got["token"], CancelToken) and got["cancelled"] is True

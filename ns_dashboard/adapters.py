@@ -33,8 +33,8 @@ from ns_dashboard.jobs import JobControl
 from ns_dashboard.lazyimport import lazy
 from ns_dashboard.studio_runner import StudioRunner
 from ns_dashboard.supervisor_link import SupervisorLink, make_acquirer, supervisor_url
-from ns_dashboard.uploads import adopt_upload
 from ns_dashboard.updater import RealBackupAdapter, RealUpdateAdapter
+from ns_dashboard.uploads import adopt_upload, tmp_dir
 
 PRESET_VOICES = [{"name": "Ryan", "mode": "preset", "source": "builtin"}]
 
@@ -276,7 +276,13 @@ class StudioAdapter:
         self.fake = frozenset(fake)
         self.runner = runner or StudioRunner(paths)
 
-    def child(self, ctl: JobControl, kind: str, args: dict[str, Any]) -> dict[str, Any]:
+    def child(
+        self,
+        ctl: JobControl,
+        kind: str,
+        args: dict[str, Any],
+        on_cancel: Callable[[], None] | None = None,
+    ) -> dict[str, Any]:
         """Run `kind` in the studio venv for the job `ctl`; progress and cancel flow through `ctl`.
 
         The studio job ids announced by the child are kept in `ctl.extras["studio_job_ids"]` as they appear,
@@ -301,7 +307,9 @@ class StudioAdapter:
 
         full = {**args, "fake": sorted(self.fake), "supervisor_url": self.link.base_url}
         try:
-            return self.runner.run(kind, full, on_event=on_event, check_cancel=ctl.check_cancel)
+            return self.runner.run(
+                kind, full, on_event=on_event, check_cancel=ctl.check_cancel, on_cancel=on_cancel
+            )
         except BaseException:
             self.release_leases(ctl, full)  # the child is gone (it stopped itself or was killed): free its lease
             raise
@@ -360,14 +368,27 @@ class RealClipAdapter(StudioAdapter):
     def fetch_url(self, ctl: JobControl, url: str, source_id: str) -> Path:
         """Download `url` with the pinned yt-dlp (`clipper.source.import_url`), shown as `Downloading N%`.
 
-        yt-dlp runs inside the child, so cancelling kills it with the rest of the process tree; the partly
-        downloaded folder is removed then.
+        yt-dlp runs inside the child. Cancel first creates a flag file that the child turns into
+        `CancelToken.cancel()` (yt-dlp is killed and its folder removed by the Clipper itself, even in the
+        middle of a download); the runner then kills the child process tree as the backstop, and the partly
+        downloaded folder is removed here once more.
         """
+        flag = tmp_dir(self.paths) / f"cancel-download-{source_id}"
+
+        def signal_cancel() -> None:
+            flag.parent.mkdir(parents=True, exist_ok=True)
+            flag.touch()
+
+        flag.unlink(missing_ok=True)
         try:
-            done = self.child(ctl, "download", {"url": url, "source_id": source_id})
+            done = self.child(
+                ctl, "download", {"url": url, "source_id": source_id, "cancel_file": str(flag)}, signal_cancel
+            )
         except BaseException:
             shutil.rmtree(studio_bridge.download_dir(self.paths, source_id), ignore_errors=True)
             raise
+        finally:
+            flag.unlink(missing_ok=True)
         return Path(str(done["path"]))
 
 
