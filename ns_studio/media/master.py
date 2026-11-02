@@ -18,6 +18,7 @@ from typing import Any
 
 from ns_common.acquire import Service
 from ns_common.errors import NsError
+from ns_common.pacing import PACING_WPM
 from ns_common.textstats import split_sentences
 from ns_common.tts_client import TtsItem
 from ns_studio.context import JobContext
@@ -36,13 +37,12 @@ from ns_studio.media.captions import (
     shift_words,
 )
 from ns_studio.media.transcribe import Word
-from ns_studio.media.voice import synthesize
+from ns_studio.media.voice import job_speed, job_voice, synthesize
 from ns_studio.stages import Tenant
 
 CARD_S = 1.2
 FLOOR_S = 540.0  # planning floor 9:00 (spec §7.0)
 MAX_EXPANSIONS = 2
-PACING_WPM = {"brisk": 175.0, "standard": 155.0, "measured": 140.0}
 CLEAN_STYLES = ("clean_white", "minimal_lower")
 
 
@@ -69,6 +69,7 @@ class ShortSpec:
     length_bucket: int | None = None
     caption_style: str | None = None
     visual_treatment: str | None = None
+    combo_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -114,12 +115,15 @@ def load_shorts(ctx: JobContext) -> list[ShortSpec]:
         return []
     data = ctx.read_json("shorts_plan.json")
     raw = data.get("shorts", data.get("moments", [])) if isinstance(data, dict) else data
+    # Each Short's own combo (drawn by `shorts_select` / `short_combos`) is the one applied and recorded.
+    stored = ctx.read_json("short_combos.json") if ctx.file("short_combos.json").exists() else {}
     out: list[ShortSpec] = []
     for i, s in enumerate(raw, start=1):
-        combo = s.get("combo") or {}
+        k = int(s.get("k", i))
+        combo = s.get("combo") or stored.get(str(k)) or {}
         out.append(
             ShortSpec(
-                k=int(s.get("k", i)),
+                k=k,
                 chapter=int(s["chapter"]),
                 sentence_start=int(s["sentence_start"]),
                 sentence_end=int(s["sentence_end"]),
@@ -128,6 +132,7 @@ def load_shorts(ctx: JobContext) -> list[ShortSpec]:
                 length_bucket=s.get("length_bucket", combo.get("length_bucket")),
                 caption_style=s.get("caption_style", combo.get("caption_style")),
                 visual_treatment=s.get("visual_treatment", combo.get("visual_treatment")),
+                combo_id=combo.get("combo_id") or s.get("combo_id"),
             )
         )
     return out
@@ -156,14 +161,15 @@ def timeline_from_manifest(ctx: JobContext) -> list[ChapterTiming]:
 
 def voice_items(ctx: JobContext) -> list[TtsItem]:
     """TTS items: `c<n>` chapters, `h<k>` hooks and `x<k>` closing lines of the selected Shorts."""
-    voice = ctx.channel.voice
+    voice = job_voice(ctx)
     name = voice.name or voice.speaker or "Ryan"
-    items = [TtsItem(f"c{c.n}", c.text, name, voice.speed, c.cliff_lines) for c in load_chapters(ctx)]
+    speed = job_speed(ctx)
+    items = [TtsItem(f"c{c.n}", c.text, name, speed, c.cliff_lines) for c in load_chapters(ctx)]
     for s in load_shorts(ctx):
         if s.hook:
-            items.append(TtsItem(f"h{s.k}", s.hook, name, voice.speed))
+            items.append(TtsItem(f"h{s.k}", s.hook, name, speed))
         if s.closing_line:
-            items.append(TtsItem(f"x{s.k}", s.closing_line, name, voice.speed))
+            items.append(TtsItem(f"x{s.k}", s.closing_line, name, speed))
     return items
 
 
@@ -214,10 +220,12 @@ class DurationCheckStage:
     tenant: Tenant = "tts"
     inputs: tuple[str, ...] = ("audio/manifest.json", "story.json")
     outputs: tuple[str, ...] = ("duration_check.json",)
+    # An expansion rewrites the story and both plans (consistently); stages that ran before must not redo.
+    rewrites: tuple[str, ...] = ("story.json", "shorts_plan.json", "visual_plan.json")
 
     def run(self, ctx: JobContext) -> None:
         """Measure, expand and re-voice until the floor is met or the budget of expansions is spent."""
-        wpm = PACING_WPM.get(ctx.combo.pacing, 155.0)
+        wpm = float(PACING_WPM.get(ctx.combo.pacing, 155))
         expansions: list[dict[str, Any]] = []
         while True:
             timeline = timeline_from_manifest(ctx)

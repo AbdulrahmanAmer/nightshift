@@ -10,9 +10,10 @@ from typing import Any, Literal
 from installer.stage2.web.modelcheck import MAX_BYTES, shape_problem, too_big_message
 from ns_common.models import Answers
 from ns_common.paths import Paths
+from ns_common.secrets_names import KEY_NAMES
 
-SECRET_KEYS = ("pexels_api_key", "pixabay_api_key")
-_BLANK_AS_NONE = ("pexels_api_key", "pixabay_api_key", "models_source", "home_path", "restore_from")
+SECRET_KEYS = KEY_NAMES
+_BLANK_AS_NONE = (*KEY_NAMES, "models_source", "home_path", "restore_from")
 
 
 class AnswersError(ValueError):

@@ -36,6 +36,7 @@ from ns_common.models import (
     Word,
 )
 from ns_common.paths import Paths
+from ns_studio.channels.crud import sync_channel_row
 from ns_studio.clipper import analyze, detect, layout, render, select, seo, source, transcribe_stage
 from ns_studio.clipper.models import Analysis, ClipItem, ClipMetadata, ClipParams
 from ns_studio.context import FAKEABLE, JobContext, build_services
@@ -115,10 +116,7 @@ def create_clip_job(
     services = build_services(rt, fake=set(fake), paths=paths, keys=keys, llm_fixtures=llm_fixtures)
     db = Db(paths.db_path)
     db.migrate()
-    db.execute(
-        "INSERT OR IGNORE INTO channels(slug, display_name, created_at) VALUES (?,?,?)",
-        (channel.slug, channel.display_name, datetime.now(UTC).isoformat(timespec="seconds")),
-    )
+    sync_channel_row(db, channel)
     jid = job_id or new_job_id(channel.slug)
     job_dir = paths.job_dir(jid)
     job_dir.mkdir(parents=True, exist_ok=True)
@@ -162,10 +160,10 @@ class ImportStage:
     outputs: tuple[str, ...] = ("source.json",)
 
     def run(self, ctx: JobContext) -> None:
-        """Import the source (NS-E405 for bad files or unconfirmed rights; download errors for URLs)."""
+        """Import the source (NS-E405 bad file, NS-E410 rights not confirmed, NS-E409 download failed)."""
         p = _params(ctx)
         if not p.rights_confirmed:
-            raise NsError("NS-E405", "the owner has not confirmed rights to this video")
+            raise NsError("NS-E410", "the rights box was not ticked for this video")
         existing = ctx.file("source.json")
         if existing.exists():
             prev = json.loads(existing.read_text(encoding="utf-8"))
@@ -527,6 +525,13 @@ def _backdrop_luma(
     return out
 
 
+def _picked_caption_style(ctx: JobContext) -> str | None:
+    """`caption_style` of `clip_params.json`, or None when the job has no params file."""
+    if not (ctx.job_dir / ClipParams.FILE).exists():
+        return None
+    return ClipParams.load(ctx.job_dir).caption_style
+
+
 class CaptionsStage:
     """ASS captions per clip from the transcript words (2-4 words on screen, active-word highlight).
 
@@ -547,6 +552,8 @@ class CaptionsStage:
         templates = layout.load_templates()
         info = _source(ctx)
         mask = mask_profanity_setting(ctx.channel)
+        picked = _picked_caption_style(ctx)  # the owner's choice on Create wins
+        drop_fillers = ctx.channel.captions.remove_fillers
         seg_speaker = {s.i: s.speaker for s in tr.segments}
         ctx.subdir("captions")
         report: dict[str, Any] = {}
@@ -556,8 +563,9 @@ class CaptionsStage:
             words = [
                 tmod.Word(w.w, max(0.0, w.start - clip.start_s), min(dur, max(0.0, w.end - clip.start_s)), si)
                 for w, si in zip(src_words, sentence_indices(src_words), strict=True)
+                if not (drop_fillers and select.is_filler_word(w.w))
             ]
-            style = (
+            style = picked or (
                 clip.caption_style
                 if clip.caption_style in ctx.channel.pools.caption_styles
                 else ctx.combo.caption_style
@@ -645,14 +653,27 @@ class SeoStage:
         tr, plan, info = _transcript(ctx), _plan(ctx), _source(ctx)
         sheets: list[dict[str, Any]] = []
         merged: dict[str, list[tuple[bool, str]]] = {}
+        last_error: NsError | None = None
         for clip in plan:
             words = select.words_in(tr.words, clip.start_s, clip.end_s)
             excerpt = " ".join(w.w for w in words)[:1500]
-            result, policy = seo.generate_seo(ctx, clip, excerpt=excerpt, source_title=str(info["title"]))
+            try:
+                result, policy = seo.generate_seo(
+                    ctx, clip, excerpt=excerpt, source_title=str(info["title"]),
+                    creator_note=ctx.channel.creator_note,
+                )
+            except NsError as e:  # one clip's metadata must not cost the owner the others
+                last_error = e
+                detail = str(e.detail)[:200]
+                ctx.log.warn("clip_skipped", job_id=ctx.job_id, k=clip.k, code=e.code, detail=detail)
+                sheets.append({"k": clip.k, "skipped": f"{e.code}: {e.detail}"})
+                continue
             sheets.append({"k": clip.k, **result.model_dump(mode="json")})
             for name, chk in policy.checks.items():
                 detail = f"c{clip.k}: {chk.detail}" if chk.detail else ""
                 merged.setdefault(name, []).append((chk.passed, detail))
+        if last_error is not None and all("skipped" in s for s in sheets):
+            raise last_error  # every clip failed its checks: nothing to publish
         checks = {
             name: PolicyCheck(passed=all(ok for ok, _ in rows), detail="; ".join(d for _, d in rows if d))
             for name, rows in merged.items()
@@ -669,7 +690,7 @@ class SeoStage:
 
 # ---------- C9 qc + outbox ----------
 class QcStage:
-    """Run the spec 7.7 Short checks (C6) on every clip; NS-E404 when any fails."""
+    """Run the spec 7.7 Short checks (C6) on every clip; a failing clip is left out, NS-E404 when all fail."""
 
     name: str = "clip_qc"
     tenant: Tenant = None
@@ -698,8 +719,10 @@ class QcStage:
             if not result.passed:
                 failed.append(f"{item}: {result.reason}")
         ctx.write_json("qc/report.json", summary)
-        if failed:
+        if failed and len(failed) == len(rendered):
             raise NsError("NS-E404", "; ".join(failed))
+        for line in failed:  # the passing clips go on to the Outbox; the owner sees why the others did not
+            ctx.log.warn("clip_skipped", job_id=ctx.job_id, code="NS-E404", detail=line[:200])
 
 
 def clip_sheet_text(meta: ClipMetadata, video_name: str) -> str:
@@ -718,7 +741,7 @@ def clip_sheet_text(meta: ClipMetadata, video_name: str) -> str:
                 "",
                 "TAGS: " + ", ".join(meta.tags),
                 "",
-                f"PUBLISH AFTER (local time): {meta.publish_after.replace('T', ' ')}",
+                media_outbox.publish_line(meta.publish_after),
                 "",
                 "SETTINGS:",
                 f"  Altered or synthetic content: {meta.ai_disclosure.capitalize()}",
@@ -786,13 +809,19 @@ class OutboxStage:
         ob = media_outbox
         info, lay = _source(ctx), _layout(ctx)
         rendered: dict[str, Any] = ctx.read_json("render/report.json")
-        seos = {int(s["k"]): s for s in ctx.read_json("seo_clips.json")}
+        seos = {int(s["k"]): s for s in ctx.read_json("seo_clips.json") if "skipped" not in s}
+        qc_report: dict[str, Any] = ctx.read_json("qc/report.json")
+        skipped: dict[str, str] = {}
         advice = ctx.read_json("policy_text.json")["advice"]
         dest_dir = clip_folder(ctx, str(info["source_id"]), str(info["original_name"]))
         manifest: dict[str, Any] = {}
         now = datetime.now(UTC).isoformat()
         for item, rinfo in rendered.items():
             k = int(item[1:])
+            if k not in seos or not qc_report.get(item, {}).get("passed", False):
+                reason = qc_report.get(item, {}).get("reason")
+                skipped[item] = str(reason) if k in seos else "metadata check failed"
+                continue
             s = seos[k]
             stem = clip_file_stem(k, s["title"])
             meta = ClipMetadata(
@@ -812,7 +841,7 @@ class OutboxStage:
                 made_for_kids=bool(advice["made_for_kids"]),
                 age_restrict_suggested=bool(advice["age_restrict_suggested"]),
                 combo_id=ctx.combo.combo_id,
-                prompt_versions=ctx.prompt_versions,
+                prompt_versions=ctx.versions(),
             )
             mp4 = ob.copy_if_changed(Path(rinfo["path"]), dest_dir / f"{stem}.mp4")
             json_path, txt_path = dest_dir / f"{stem}.json", dest_dir / f"{stem}.txt"
@@ -839,6 +868,7 @@ class OutboxStage:
             (ctx.job_id, *[f"{ctx.job_id}/{i}" for i in manifest]),
         )
         ctx.write_json("outbox/manifest.json", manifest)
+        ctx.write_json("outbox/skipped.json", skipped)  # clips left out, with the reason
         source.set_source_status(ctx.db, info["source_id"], "done")
         ctx.log.info("clip_outbox_done", job_id=ctx.job_id, items=list(manifest))
 

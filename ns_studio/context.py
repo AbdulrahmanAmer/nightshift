@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from ns_studio.media.clip_sources import ClipSource
     from ns_studio.media.transcribe import Transcriber
 
+PROMPT_VERSIONS_FILE = "prompt_versions.json"
 FAKEABLE: frozenset[str] = frozenset({"llm", "tts", "whisper", "embed", "clips"})
 FIXTURES_LLM = repo_root() / "tests" / "fixtures" / "llm"
 
@@ -104,6 +105,48 @@ class JobContext:
     services: Services
     log: NsLogger
     prompt_versions: dict[str, int] = field(default_factory=dict)
+
+    def _saved_prompt_versions(self) -> dict[str, int]:
+        f = self.job_dir / PROMPT_VERSIONS_FILE
+        try:
+            data = json.loads(f.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        return {str(k): int(v) for k, v in data.items()} if isinstance(data, dict) else {}
+
+    def note_prompt(self, name: str, version: int) -> None:
+        """Remember that prompt `name` at `version` produced output for this job, in memory and on disk.
+
+        `prompt_versions.json` keeps the lineage across `--resume` and regeneration, when the process that
+        called the earlier prompts is gone.
+        """
+        saved = self._saved_prompt_versions()
+        self.prompt_versions[name] = version
+        if saved.get(name) != version:
+            self.write_json(PROMPT_VERSIONS_FILE, {**saved, **self.prompt_versions})
+
+    def versions(self) -> dict[str, int]:
+        """Every prompt version used by this job so far: the saved ones plus this process's."""
+        return {**self._saved_prompt_versions(), **self.prompt_versions}
+
+    @property
+    def series(self) -> dict[str, Any]:
+        """`series_context.json` of a series part (title, part numbers, end card, design); empty otherwise."""
+        f = self.job_dir / "series_context.json"
+        try:
+            data = json.loads(f.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    @property
+    def attempt(self) -> int:
+        """How many times the policy gate has already sent this job back (0 on the first pass)."""
+        f = self.job_dir / "policy_attempts.json"
+        try:
+            return int(json.loads(f.read_text(encoding="utf-8")).get("regenerations", 0))
+        except (OSError, ValueError, AttributeError):
+            return 0
 
     def file(self, name: str) -> Path:
         """Path of `name` inside the job directory."""

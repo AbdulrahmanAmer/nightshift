@@ -7,6 +7,7 @@ from ns_common import ffmpeg as ff
 from ns_common.errors import NsError
 from ns_common.tts_client import FakeTts, wav_seconds
 from ns_studio.media.captions import (
+    DRIFT_LIMIT_MS,
     Box,
     CaptionsStage,
     _merge_pages,
@@ -77,13 +78,36 @@ def test_align_without_asr_spreads_words_and_reports_infinite_drift():
     assert res.words[0].start == 0.0 and res.words[-1].end == pytest.approx(4.0)
 
 
-def test_drift_ms_median_of_leave_one_out_errors():
-    starts = [0.0, 0.5, 1.0, 1.5, 2.0, 2.5]
-    assert drift_ms(starts, [True] * 6) == pytest.approx(0.0, abs=1e-9)
-    skewed = [0.0, 0.5, 1.2, 1.5, 2.0, 2.5]  # one word 200 ms late: errors 100, 200, 100, 0 -> median 100
-    assert drift_ms(skewed, [True] * 6) == pytest.approx(100.0)
-    assert drift_ms([0.0, 1.0], [True, True]) == 0.0
-    assert drift_ms([0.0, 1.0], [False, False]) == float("inf")
+def test_drift_ms_is_the_median_offset_between_caption_and_asr_starts():
+    asr = [0.0, 0.5, 1.0, 1.5, 2.0, 2.5]
+    assert drift_ms(asr, asr) == pytest.approx(0.0, abs=1e-9)
+    shifted = [t + 0.2 for t in asr]  # a uniform 200 ms offset is 200 ms of drift
+    assert drift_ms(shifted, asr) == pytest.approx(200.0)
+    one_late = [0.0, 0.5, 1.2, 1.5, 2.0, 2.5]  # one word 200 ms late: the median ignores it
+    assert drift_ms(one_late, asr) == pytest.approx(0.0, abs=1e-9)
+    assert drift_ms([], []) == float("inf")
+
+
+def test_uneven_speech_rhythm_is_not_drift():
+    """Review row 3: the old leave-one-out residual measured rhythm; real narration failed the 120 ms gate."""
+    script = "I opened the refrigerator slowly"
+    # starts 0.00/0.12/0.48/0.58/1.20 from the review: the old metric gave residuals of 120/130/260 ms
+    asr = [Word("i", 0.0, 0.1), Word("opened", 0.12, 0.4), Word("the", 0.48, 0.55),
+           Word("refrigerator", 0.58, 1.1), Word("slowly", 1.2, 1.6)]
+    res = align_words(script, asr)
+    assert res.matched == res.total == 5
+    assert res.drift_ms == pytest.approx(0.0, abs=1e-6)
+    assert res.drift_ms <= DRIFT_LIMIT_MS
+
+
+def test_asr_that_runs_backwards_is_drift():
+    """Captions are forced monotonic; the offset from the ASR start is what the gate measures."""
+    script = "one two three four five six"
+    asr = [Word(t, s, s + 0.2) for t, s in zip(script.split(), [0.0, 3.0, 1.0, 1.4, 1.8, 2.2], strict=True)]
+    res = align_words(script, asr)
+    assert [round(w.start, 2) for w in res.words] == [0.0, 3.0, 3.0, 3.0, 3.0, 3.0]
+    assert res.drift_ms == pytest.approx(1000.0)  # offsets 0, 0, 2.0, 1.6, 1.2, 0.8 s -> median 1.0 s
+    assert res.drift_ms > DRIFT_LIMIT_MS
 
 
 def test_group_words_sizes_and_sentence_boundaries():
@@ -216,11 +240,11 @@ def test_captions_stage_fails_with_e403_when_asr_disagrees(tmp_home: Path):
 
 
 class _LateTranscriber(FakeTranscriber):
-    """Every third word is heard 400 ms late."""
+    """The first word is timestamped 5 s late (a VAD glitch); every later caption is pushed behind it."""
 
     def words(self, wav, language="en"):
         return [
-            Word(w.w, w.start + (0.4 if i % 3 == 1 else 0.0), w.end + (0.4 if i % 3 == 1 else 0.0))
+            Word(w.w, w.start + (5.0 if i == 0 else 0.0), w.end + (5.0 if i == 0 else 0.0))
             for i, w in enumerate(super().words(wav, language))
         ]
 
@@ -329,3 +353,20 @@ def test_profanity_masking():
     words = [Word("Oh", 0.0, 0.2), Word("shit", 0.3, 0.5)]
     assert "s***" in build_ass(words, "clean_white", mask_profanity=True)
     assert "shit" in build_ass(words, "clean_white")
+
+
+def test_captions_align_a_russian_script(tmp_path: Path):
+    """Review row 13: script_words returned nothing for non-ASCII text, so there were no captions."""
+    text = "Это очень длинная история. Дверь открылась сама."
+    ws = script_words(text)
+    assert [w for w, _ in ws] == ["Это", "очень", "длинная", "история.", "Дверь", "открылась", "сама."]
+    assert [s for _, s in ws] == [0, 0, 0, 0, 1, 1, 1]
+    wav = tmp_path / "p1.wav"
+    FakeTts().speak(text, "Ryan", 1.0, wav)
+    wav.with_suffix(".txt").write_text(text, encoding="utf-8")
+    res = align_words(text, FakeTranscriber().words(wav))
+    assert res.matched == res.total == 7 and res.drift_ms <= 1.0
+
+
+def test_cjk_characters_are_separate_caption_words():
+    assert [w for w, _ in script_words("夜中にドアが開いた。")] == [*"夜中にドアが開い", "た 。"]

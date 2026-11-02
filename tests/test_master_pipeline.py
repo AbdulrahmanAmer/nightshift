@@ -65,6 +65,13 @@ def test_master_first_media_pipeline(tmp_home: Path, monkeypatch: pytest.MonkeyP
          "closing_line": "Watch the whole thing on the channel.",
          "combo_id": "c-test", "why_standalone": "x"},
     ])
+    short_combos = {
+        "1": make_combo(combo_id="c-s1", caption_style="clean_white", visual_treatment="handheld_grit",
+                   length_bucket=None),
+        "2": make_combo(combo_id="c-s2", caption_style="boxed_dark", visual_treatment="clean_bright",
+                   length_bucket=None),
+    }
+    ctx.write_json("short_combos.json", {k: c.model_dump(mode="json") for k, c in short_combos.items()})
     ctx.write_json("visual_plan.json", [
         beat(1, 0, 0, 1, True), beat(1, 1, 2, 2, False),
         beat(2, 0, 0, 0, False), beat(2, 1, 1, 2, True),
@@ -124,6 +131,13 @@ def test_master_first_media_pipeline(tmp_home: Path, monkeypatch: pytest.MonkeyP
         tl = ctx.read_json(f"captions/s{k}.json")
         assert abs(ff.duration_s(video) - tl["audio_s"]) < 0.3
         assert tl["words"][0]["sentence_idx"] == -1 and tl["words"][-1]["sentence_idx"] == -2
+    # Review row 5: the Short's own combo is what is rendered and what the outputs row records
+    assert ctx.read_json("captions/s1.json")["style"] == "clean_white"
+    assert ctx.read_json("captions/s2.json")["style"] == "boxed_dark"
+    rows = ctx.db.query("select output_id, combo_id from outputs where job_id=?", (ctx.job_id,))
+    assert {r["output_id"].split("/")[1]: r["combo_id"] for r in rows} == {
+        "long": "c-test", "s1": "c-s1", "s2": "c-s2",
+    }
     kinds = sorted(r["kind"] for r in ctx.db.query("select kind from outputs where job_id=?", (ctx.job_id,)))
     assert kinds == ["long", "short", "short"]
     used = ctx.db.one(

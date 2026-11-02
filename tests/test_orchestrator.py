@@ -73,3 +73,35 @@ def test_release_on_failure(tmp_home: Path, monkeypatch):
     with pytest.raises(NsError):
         orch.run_job(ctx)
     assert ctx.services.acquirer.events[-1][0] == "release"  # type: ignore[attr-defined]
+
+
+def test_whisper_is_unloaded_before_its_lock_is_released(tmp_home: Path, monkeypatch):
+    """Review row 9: the model stayed resident after the whisper tenant left, starving the next llama."""
+    order: list[str] = []
+    ctx = make_ctx(tmp_home, fmt="f_whisper")
+    monkeypatch.setitem(orch.FORMAT_STAGES, "f_whisper", ["w1", "l1"])
+    register(_stage("w1", "whisper"))
+    register(_stage("l1", "llama"))
+    tr = ctx.services.transcriber
+    monkeypatch.setattr(tr, "unload", lambda: order.append("unload"))
+    real_release = ctx.services.acquirer.release
+
+    def release(service, owner):
+        order.append(f"release:{service}")
+        return real_release(service, owner)
+
+    monkeypatch.setattr(ctx.services.acquirer, "release", release)
+    orch.run_job(ctx)
+    assert order == ["unload", "release:whisper", "release:llama"]
+
+
+def test_whisper_transcriber_unload_drops_the_model(tmp_home: Path):
+    from ns_common.models import WhisperCfg
+    from ns_common.paths import Paths
+    from ns_studio.media.transcribe import WhisperTranscriber
+
+    t = WhisperTranscriber(WhisperCfg(), Paths.from_env())
+    t._model = object()
+    t.unload()
+    assert t._model is None
+    t.unload()  # idempotent

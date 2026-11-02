@@ -26,10 +26,19 @@ Kind = Literal["short", "long"]
 OPENS_LIMIT = "ffprobe ok, 1 video + 1 audio, faststart"
 
 
-def duration_check(d: float, kind: Kind, bucket_s: float | None) -> QcCheck:
-    """Shorts: within bucket +-15 % and <= 179 s. Masters: 8:30 to 15:00."""
+SERIES_OVERRUN = 1.15  # pauses and chapter cards on top of the part's runtime target
+SERIES_MAX_S = 25 * 60.0 * SERIES_OVERRUN  # a series plans parts of at most 25 minutes (store.MAX_MINUTES)
+
+
+def series_max_s(minutes: float) -> float:
+    """Longest allowed master of a series part planned for `minutes`: 15 % over, at most 28:45."""
+    return min(SERIES_MAX_S, max(LONG_RANGE_S[1], minutes * 60.0 * SERIES_OVERRUN))
+
+
+def duration_check(d: float, kind: Kind, bucket_s: float | None, long_max_s: float | None = None) -> QcCheck:
+    """Shorts: within bucket +-15 % and <= 179 s. Masters: 8:30 to 15:00 (`long_max_s` for series parts)."""
     if kind == "long":
-        lo, hi = LONG_RANGE_S
+        lo, hi = LONG_RANGE_S[0], long_max_s or LONG_RANGE_S[1]
         return QcCheck(passed=lo <= d <= hi, value=round(d, 2), limit=f"{lo:.0f}-{hi:.0f} s")
     ok = d <= SHORT_MAX_S
     limit = f"<= {SHORT_MAX_S:.0f} s"
@@ -118,12 +127,13 @@ def run_qc(
     bucket_s: float | None = None,
     drift_ms: float | None = None,
     first_caption_s: float | None = None,
+    long_max_s: float | None = None,
 ) -> QcResult:
     """All spec §7.7 checks for one video; `reason` lists the failed check names."""
     checks: dict[str, QcCheck] = {}
     checks["file_opens"] = opens_check(video)
     try:
-        checks["duration"] = duration_check(ff.duration_s(video), kind, bucket_s)
+        checks["duration"] = duration_check(ff.duration_s(video), kind, bucket_s, long_max_s)
         checks["loudness"] = loudness_check(measure_loudness(video))
         checks["caption_drift_ms"] = drift_check(drift_ms)
         checks["black_frames"] = black_check(video)
@@ -221,7 +231,9 @@ def run_qc_master(ctx: JobContext) -> None:
     long_info = ctx.read_json("render/long.json")
     doc = ctx.read_json("long/chapters.json")
     drift = captions.get("long", {}).get("drift_ms")
-    long_res = run_qc("long", Path(long_info["path"]), "long", drift_ms=drift)
+    minutes = ctx.series.get("minutes")  # a series part has its own runtime target (12-25 minutes)
+    long_max = series_max_s(float(minutes)) if minutes else None
+    long_res = run_qc("long", Path(long_info["path"]), "long", drift_ms=drift, long_max_s=long_max)
     results = [with_checks(long_res, {"chapters": chapters_check(doc), "midroll": midroll_check(doc)})]
     has_report = ctx.file("render/report.json").exists()
     rendered: dict[str, Any] = ctx.read_json("render/report.json") if has_report else {}

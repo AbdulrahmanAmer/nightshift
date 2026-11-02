@@ -39,9 +39,18 @@ X264_PRESETS = {
 }
 
 
+# An apostrophe inside a single-quoted filtergraph value is written as: close the quote, three backslashes
+# and a quote (the graph parser leaves one backslash-quote for the option parser), reopen the quote.
+_QUOTE_IN_QUOTES = chr(39) + chr(92) * 3 + chr(39) + chr(39)
+
+
 def escape_filter_path(path: Path) -> str:
-    """A path as a single-quoted filtergraph option value: forward slashes, `:` escaped, quotes stripped."""
-    p = path.as_posix().replace("'", "").replace(":", "\\:")
+    """A path as a single-quoted filtergraph option value: forward slashes, `:` and `'` escaped.
+
+    An apostrophe used to be deleted, which pointed FFmpeg at a folder that does not exist (a home under
+    `C:/Users/O'Brien` failed every render).
+    """
+    p = path.as_posix().replace(":", "\\:").replace("'", _QUOTE_IN_QUOTES)
     return f"'{p}'"
 
 

@@ -121,7 +121,9 @@ def test_master_pipeline_on_fixtures(tmp_home: Path, monkeypatch: pytest.MonkeyP
     assert all(len(s.hooks) == 5 and s.chosen_hook == s.hooks[0] for s in shorts)
     assert all(len(s.chosen_hook.split()) <= 12 and len(s.closing_line.split()) <= 15 for s in shorts)
     assert shorts[0].chosen_hook == "I came home to wet footprints on a dry porch."
-    assert all(s.combo_id == "c-test" and s.start_s is None for s in shorts)
+    combos = ctx.read_json("short_combos.json")  # each Short has its own combo, not the master's
+    assert [s.combo_id for s in shorts] == [combos[str(s.k)]["combo_id"] for s in shorts]
+    assert all(s.combo_id != "c-test" and s.start_s is None for s in shorts)
 
     beats = [VisualBeat.model_validate(b) for b in ctx.read_json("visual_plan.json")]
     for ch in story.chapters:
@@ -147,6 +149,24 @@ def test_master_pipeline_on_fixtures(tmp_home: Path, monkeypatch: pytest.MonkeyP
         "ideas", "long_plan", "chapter_draft", "critic", "continuity", "long_seo", "judge",
         "shorts_select", "short_hook", "seo", "visual_plan",
     }  # fmt: skip
+
+
+def test_each_short_is_written_and_titled_in_its_own_combo(tmp_home: Path, monkeypatch: pytest.MonkeyPatch):
+    """Review row 5: hook and title prompts used the master's combo, and the ledger burned other combos."""
+    ctx = _master_ctx(monkeypatch, tmp_home)
+    run_job(ctx)
+    combos = ctx.read_json("short_combos.json")
+    assert set(combos) == {"1", "2", "3", "4", "5"}
+    calls = ctx.services.llm.calls  # type: ignore[attr-defined]
+    for k, combo in combos.items():
+        assert (combo["structure"], combo["pacing"]) == (ctx.combo.structure, ctx.combo.pacing)
+        hook_call = next(c for c in calls if c["prompt_name"] == f"short_hook_{k}")
+        assert f"Hook style: {combo['hook']}" in hook_call["user"]
+        seo_call = next(c for c in calls if c["prompt_name"] == f"seo_short_{k}")
+        assert f"Title formula: {combo['title_formula']}" in seo_call["user"]
+    ledger = ctx.db.query("select item, combo_id from combos where job_id=? order by item", (ctx.job_id,))
+    assert [r["item"] for r in ledger] == ["s1", "s2", "s3", "s4", "s5"]
+    assert [r["combo_id"] for r in ledger] == [combos[str(k)]["combo_id"] for k in range(1, 6)]
 
 
 def test_master_second_run_makes_no_llm_calls(tmp_home: Path, monkeypatch: pytest.MonkeyPatch):

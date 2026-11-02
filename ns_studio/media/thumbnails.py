@@ -15,6 +15,7 @@ import numpy as np
 
 from ns_common import ffmpeg as ff
 from ns_common.errors import NsError
+from ns_common.textstats import WORD_PATTERN
 from ns_studio.context import JobContext
 from ns_studio.media.presets import FONTS_DIR, ThumbnailLayout, load_thumbnail_layouts
 from ns_studio.stages import Tenant
@@ -93,7 +94,7 @@ def extract_frame(video: Path, t: float, out_png: Path) -> Path:
 
 def thumb_text(title: str, max_words: int = 4) -> str:
     """At most `max_words` upper-case words from a title, skipping stop words (falls back to any words)."""
-    words = re.findall(r"[A-Za-z0-9']+", title)
+    words = re.findall(WORD_PATTERN, title)
     keep = [w for w in words if w.lower() not in STOPWORDS] or words
     return " ".join(keep[:max_words]).upper()
 
@@ -196,5 +197,7 @@ class ThumbnailsStage:
         text = thumb_text(str(seo.get("thumbnail_text") or seo.get("title") or ctx.channel.display_name))
         times = pick_frame_times(master, scratch)
         frames = [extract_frame(master, t, scratch / f"frame_{i + 1}.png") for i, t in enumerate(times)]
-        make_thumbnails(frames, text, ctx.file("long"))
+        style = str(ctx.series.get("design", {}).get("thumbnail_style") or "auto")
+        layouts = load_thumbnail_layouts()
+        make_thumbnails(frames, text, ctx.file("long"), [layouts[style]] * 3 if style in layouts else None)
         ctx.log.info("thumbnails_done", job_id=ctx.job_id, times=[round(t, 2) for t in times], text=text)

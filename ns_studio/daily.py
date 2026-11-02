@@ -5,16 +5,19 @@ from __future__ import annotations
 import json
 import random
 import secrets
+import traceback
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 from ns_common.errors import NsError
 from ns_studio import jobs, notifications
 from ns_studio.channels import cadence
 from ns_studio.channels.crud import get_channel
 from ns_studio.context import JobContext
-from ns_studio.errors import StudioError
+from ns_studio.errors import UNEXPECTED, StudioError, describe_unexpected
+from ns_studio.media.outbox import retime_sheet
 from ns_studio.policy.regen import run_job_guarded
 
 RunFn = Callable[[JobContext], list[str]]
@@ -24,25 +27,42 @@ def _default_run(ctx: JobContext) -> list[str]:
     return run_job_guarded(ctx)
 
 
+def _series_delay(env: jobs.Env, job_id: str) -> int:
+    """Days a series part waits after the nightly slot (`publish_not_before_days` of its design)."""
+    f = env.paths.job_dir(job_id) / "series_context.json"
+    try:
+        return max(0, int(json.loads(f.read_text(encoding="utf-8")).get("publish_not_before_days", 0) or 0))
+    except (OSError, ValueError, AttributeError):
+        return 0
+
+
 def apply_publish_times(env: jobs.Env, job_ids: list[str], rng: random.Random, now: datetime) -> int:
     """Rewrite `publish_after` in the outbox sheets of `job_ids` with jittered slots (spec 18.6).
 
-    Works on whatever sheets exist (`*.json` under `outbox\\<slug>\\<date>\\<job>` that already carry a
-    `publish_after` key) and returns how many were rewritten.
+    Each finished job lists its files in `<job dir>/outbox/manifest.json` (the Outbox itself is organised by
+    story, with no job id in the path). Both the `.json` and the `.txt` sheet of every item are rewritten.
+    Returns how many items were rewritten.
     """
     rewritten = 0
-    by_channel: dict[str, list[tuple[cadence.ReleaseItem, Path]]] = {}
+    by_channel: dict[str, list[tuple[cadence.ReleaseItem, dict[str, Any]]]] = {}
     for job_id in job_ids:
-        for sheet in env.paths.outbox.glob(f"*/*/{job_id}/**/*.json"):
+        manifest_file = env.paths.job_dir(job_id) / "outbox" / "manifest.json"
+        try:
+            manifest = json.loads(manifest_file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        for item, entry in manifest.items():
             try:
-                data = json.loads(sheet.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
+                data = json.loads(Path(entry["json"]).read_text(encoding="utf-8"))
+            except (OSError, KeyError, json.JSONDecodeError):
                 continue
             if not isinstance(data, dict) or "publish_after" not in data:
                 continue
             kind = "long" if data.get("kind") == "long" else "short"
-            item = cadence.ReleaseItem(f"{job_id}:{sheet}", job_id, kind)
-            by_channel.setdefault(str(data.get("channel", "")), []).append((item, sheet))
+            release = cadence.ReleaseItem(f"{job_id}:{item}", job_id, kind)
+            delay = _series_delay(env, job_id)
+            slot = {**entry, "delay": delay}
+            by_channel.setdefault(str(data.get("channel", "")), []).append((release, slot))
     for slug, entries in by_channel.items():
         try:
             ch = get_channel(env.paths, slug)
@@ -51,11 +71,10 @@ def apply_publish_times(env: jobs.Env, job_ids: list[str], rng: random.Random, n
         times = cadence.assign_publish_times(
             [e[0] for e in entries], now.date(), ch.publish_window, ch.shorts_per_day_max, rng
         )
-        for item, sheet in entries:
-            data = json.loads(sheet.read_text(encoding="utf-8"))
-            data["publish_after"] = times[item.output_id].isoformat(timespec="minutes")
-            sheet.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-            rewritten += 1
+        for release, entry in entries:
+            when = times[release.output_id] + timedelta(days=int(entry.get("delay", 0)))
+            if retime_sheet(entry, when.isoformat(timespec="minutes")) is not None:
+                rewritten += 1
     return rewritten
 
 
@@ -97,18 +116,24 @@ def run_daily(
              "reasons": dj.plan.reasons}
         )
         for n in range(dj.count):
-            ctx = jobs.make_job(env, ch, dj.fmt, now=now, rng=rng)
+            job_id = "(not created)"
             try:
+                ctx = jobs.make_job(env, ch, dj.fmt, now=now, rng=rng)
+                job_id = ctx.job_id
                 ran = run(ctx)
-                report["jobs"].append({"job_id": ctx.job_id, "channel": ch.slug, "stages": len(ran)})
+                report["jobs"].append({"job_id": job_id, "channel": ch.slug, "stages": len(ran)})
+                continue
             except (NsError, StudioError) as e:
-                env.log.error("daily_job_failed", job_id=ctx.job_id, code=e.code, detail=str(e))
-                failure = {"job_id": ctx.job_id, "channel": ch.slug, "code": e.code, "error": str(e)}
-                report["failures"].append(failure)
-                if e.code == "NS-E201":
-                    gpu_busy = True
-                    report.setdefault("skipped", []).append({"channel": ch.slug, "jobs": dj.count - n})
-                    break
+                code, detail = e.code, str(e)
+            except Exception as e:  # an uncoded bug or corrupt file ends this job, never the night
+                code, detail = UNEXPECTED, f"{UNEXPECTED}: {describe_unexpected(e)}"
+                env.log.error("daily_job_crashed", job_id=job_id, traceback=traceback.format_exc())
+            env.log.error("daily_job_failed", job_id=job_id, code=code, detail=detail)
+            report["failures"].append({"job_id": job_id, "channel": ch.slug, "code": code, "error": detail})
+            if code == "NS-E201":
+                gpu_busy = True
+                report.setdefault("skipped", []).append({"channel": ch.slug, "jobs": dj.count - n})
+                break
     done = [j["job_id"] for j in report["jobs"]]
     report["publish_times_set"] = apply_publish_times(env, done, rng, now)
     backup = env.db.backup(env.paths.backup_dir, today=now.date())

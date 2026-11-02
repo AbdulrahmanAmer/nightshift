@@ -487,7 +487,7 @@ def decide_template(requested: str, facecam: Rect | None, n_faces: int) -> tuple
         return "center_crop", None
     need = TEMPLATE_NEEDS.get(requested)
     if need is None:
-        raise NsError("NS-E405", f"unknown template {requested!r}")
+        raise NsError("NS-E320", f"unknown clip layout {requested!r}")
     ok = (
         need == "none"
         or (need == "facecam" and facecam is not None)

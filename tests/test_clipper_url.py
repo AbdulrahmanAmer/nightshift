@@ -50,10 +50,13 @@ def fake_popen(
     class FakePopen:
         calls: list[list[str]] = []
         kwargs: dict[str, Any] = {}
+        instances: list[Any] = []
 
         def __init__(self, cmd: list[str], **kw: Any) -> None:
             FakePopen.calls.append(cmd)
             FakePopen.kwargs = kw
+            FakePopen.instances.append(self)
+            self.killed = False
             target = Path(cmd[cmd.index("-o") + 1].replace("%(ext)s", "mp4"))
             if write:
                 target.parent.mkdir(parents=True, exist_ok=True)
@@ -68,7 +71,13 @@ def fake_popen(
             self.stdout = iter([f"{ln}\n" for ln in (PROGRESS if lines is None else lines)])
 
         def wait(self) -> int:
-            return code
+            return -9 if self.killed else code
+
+        def poll(self) -> int | None:
+            return -9 if self.killed else None
+
+        def kill(self) -> None:
+            self.killed = True
 
     return FakePopen
 
@@ -149,6 +158,60 @@ def test_missing_binary_is_e409(tmp_path: Path) -> None:
     assert ei.value.code == "NS-E409" and "not found" in ei.value.detail
 
 
+def test_a_progress_callback_that_raises_kills_yt_dlp_and_cleans_up(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review clipper row 11: Cancel left yt-dlp running, the pipe open and the folder locked."""
+    exe = fake_exe(tmp_path / "home")
+    popen = fake_popen()
+    patch_popen(monkeypatch, popen)
+
+    class Stop(Exception):
+        pass
+
+    def progress(percent: float) -> None:
+        if percent >= 12:
+            raise Stop
+
+    dest = tmp_path / "dl"
+    with pytest.raises(Stop):
+        src.import_url(URL, dest, progress, exe=exe)
+    assert popen.instances[0].killed
+    assert not dest.exists()
+
+
+def test_cancel_token_stops_the_download_from_another_thread(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    exe = fake_exe(tmp_path / "home")
+    popen = fake_popen()
+    patch_popen(monkeypatch, popen)
+    token = src.CancelToken()
+
+    def progress(percent: float) -> None:
+        if percent >= 12:
+            token.cancel()  # what the dashboard's Cancel button does
+
+    dest = tmp_path / "dl"
+    with pytest.raises(NsError) as ei:
+        src.import_url(URL, dest, progress, exe=exe, cancel_token=token)
+    assert ei.value.code == "NS-E409" and "cancelled" in ei.value.detail
+    assert popen.instances[0].killed and not dest.exists()
+
+
+def test_a_token_cancelled_before_the_start_kills_the_process_at_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    exe = fake_exe(tmp_path / "home")
+    popen = fake_popen()
+    patch_popen(monkeypatch, popen)
+    token = src.CancelToken()
+    token.cancel()
+    with pytest.raises(NsError):
+        src.import_url(URL, tmp_path / "dl", exe=exe, cancel_token=token)
+    assert popen.instances[0].killed
+
+
 def test_non_http_link_is_e409(tmp_path: Path) -> None:
     with pytest.raises(NsError) as ei:
         src.import_url("ftp://example.com/v", tmp_path / "dl", exe=fake_exe(tmp_path / "home"))
@@ -226,7 +289,7 @@ def test_url_import_still_needs_the_rights_confirmation(tmp_home: Path, tmp_path
     ctx = sc.create_clip_job(Paths.from_env(), make_channel(), params, fake=FAKEABLE)
     with pytest.raises(NsError) as ei:
         run_stage(ctx, sc.ImportStage())
-    assert ei.value.code == "NS-E405"
+    assert ei.value.code == "NS-E410"
 
 
 def test_import_stage_reports_a_failed_download(

@@ -83,6 +83,10 @@ class Paths:
     @property
     def stories(self) -> Path: return self.home / "stories"
     @property
+    def exemplars(self) -> Path: return self.home / "exemplars"            # the owner's own example stories
+    @property
+    def prompt_overrides(self) -> Path: return self.home / "prompt_overrides"  # win over ours
+    @property
     def logs(self) -> Path: return self.home / "logs"
 
     # --- files ---

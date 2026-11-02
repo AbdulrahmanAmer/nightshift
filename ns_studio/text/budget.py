@@ -5,7 +5,11 @@ from __future__ import annotations
 import random
 from dataclasses import dataclass
 
-PACING_WPM: dict[str, int] = {"brisk": 175, "standard": 155, "measured": 140}
+from ns_common.pacing import PACING_WPM as PACING_WPM  # re-exported: shared with the voice stage
+
+SHORT_TOLERANCE = 0.15  # Shorts: words within +-15 % of the target, the same band QC applies to seconds
+CHAPTER_TOLERANCE = 0.2  # chapters: spec 7.0 allows +-20 %
+MASTER_MAX_MINUTES = 14  # QC fails a master over 15:00; pauses and chapter cards need the last minute
 
 
 @dataclass(frozen=True)
@@ -32,8 +36,8 @@ def short_budget(
     words = max(40, total - hook_words * parts - closing_words)
     return Budget(
         words=words,
-        min_words=round(words * 0.8),
-        max_words=round(words * 1.2),
+        min_words=round(words * (1 - SHORT_TOLERANCE)),
+        max_words=round(words * (1 + SHORT_TOLERANCE)),
         parts=parts,
         words_per_part=words // parts,
         wpm=wpm,
@@ -81,6 +85,8 @@ def master_budget(
         minutes = long_minutes
     if minutes < MASTER_FLOOR_MINUTES:
         raise ValueError(f"long_minutes {minutes} is below the {MASTER_FLOOR_MINUTES}-minute floor")
+    if minutes > MASTER_MAX_MINUTES:
+        raise ValueError(f"long_minutes {minutes} is above the {MASTER_MAX_MINUTES}-minute ceiling")
     target = minutes * wpm
     chapters = max(MIN_CHAPTERS, min(MAX_CHAPTERS, round(target / CHAPTER_WORDS_MID)))
     return MasterBudget(
@@ -97,8 +103,8 @@ def chapter_budget(words: int, wpm: int) -> Budget:
     """Budget of one chapter: `words` +-20 %, a single part."""
     return Budget(
         words=words,
-        min_words=round(words * 0.8),
-        max_words=round(words * 1.2),
+        min_words=round(words * (1 - CHAPTER_TOLERANCE)),
+        max_words=round(words * (1 + CHAPTER_TOLERANCE)),
         parts=1,
         words_per_part=words,
         wpm=wpm,
@@ -115,6 +121,16 @@ def master_as_budget(mb: MasterBudget) -> Budget:
         words_per_part=mb.target_words // mb.chapters,
         wpm=mb.wpm,
     )
+
+
+def master_max_words(wpm: int) -> int:
+    """Most words a master may hold: `MASTER_MAX_MINUTES` of narration at `wpm` (QC rejects over 15:00)."""
+    return MASTER_MAX_MINUTES * wpm
+
+
+def moment_limits(body_words: int) -> tuple[int, int]:
+    """Smallest and largest word count of a Short moment whose bucket asks for `body_words`."""
+    return round(body_words * (1 - SHORT_TOLERANCE)), round(body_words * (1 + SHORT_TOLERANCE))
 
 
 def short_body_words(bucket_s: int, wpm: int, *, hook_words: int = 12, closing_words: int = 12) -> int:

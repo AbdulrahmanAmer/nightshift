@@ -87,10 +87,10 @@ def test_params_validation(tmp_path) -> None:
         ClipParams(source="x", channel="c", max_clips=0).save(tmp_path)
 
 
-def test_params_missing_file_is_e405(tmp_path) -> None:
+def test_params_missing_file_is_e326(tmp_path) -> None:
     with pytest.raises(NsError) as ei:
         ClipParams.load(tmp_path)
-    assert ei.value.code == "NS-E405"
+    assert ei.value.code == "NS-E326"  # not NS-E405 ("cannot be used for clips: too long, no audio")
 
 
 def test_clip_metadata_kind_is_clip() -> None:

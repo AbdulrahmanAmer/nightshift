@@ -140,3 +140,30 @@ def test_extract_audio_is_16k_mono(tmp_path: Path) -> None:
     assert streams[0]["codec_name"] == "pcm_s16le"
     assert (int(streams[0]["sample_rate"]), int(streams[0]["channels"])) == (16000, 1)
     assert 89 < ffmpeg.duration_s(wav) < 91
+
+
+def test_stream_rotation_reads_the_display_matrix_and_the_old_tag() -> None:
+    """Review clipper row 8: a phone video coded 1920x1080 but shown portrait was analysed sideways."""
+    assert src.stream_rotation({}) == 0
+    def matrix(rotation: int) -> dict:
+        return {"side_data_list": [{"side_data_type": "Display Matrix", "rotation": rotation}]}
+
+    assert src.stream_rotation(matrix(-90)) == 90
+    assert src.stream_rotation(matrix(90)) == 270
+    assert src.stream_rotation({"side_data_list": [{"rotation": 180}]}) == 180
+    assert src.stream_rotation({"tags": {"rotate": "270"}}) == 270
+    assert src.stream_rotation({"side_data_list": [{"side_data_type": "Mastering display metadata"}]}) == 0
+
+
+@needs_ffmpeg
+def test_probe_source_reports_the_shown_size_of_a_rotated_phone_video(tmp_path: Path) -> None:
+    raw = tmp_path / "raw.mp4"
+    rot = tmp_path / "phone.mp4"
+    ffmpeg.run(["-f", "lavfi", "-i", "testsrc2=s=640x360:r=10:d=1", "-f", "lavfi", "-i", "sine=d=1",
+                "-shortest", "-pix_fmt", "yuv420p", str(raw)])
+    ffmpeg.run(["-display_rotation:v", "90", "-i", str(raw), "-c", "copy", str(rot)])
+    facts = src.probe_source(rot)
+    stream = next(s for s in ffmpeg.probe(rot)["streams"] if s["codec_type"] == "video")
+    if src.stream_rotation(stream) == 0:
+        pytest.skip("this FFmpeg did not write a display matrix")
+    assert (facts["width"], facts["height"]) == (360, 640) and facts["rotation"] in (90, 270)

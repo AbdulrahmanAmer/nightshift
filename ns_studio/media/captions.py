@@ -18,7 +18,7 @@ from typing import Literal
 from ns_common import ffmpeg as ff
 from ns_common.errors import NsError
 from ns_common.paths import contracts_dir
-from ns_common.textstats import normalize_tokens, split_sentences
+from ns_common.textstats import CJK_RANGES, WORD_PATTERN, normalize_tokens, split_sentences
 from ns_studio.context import JobContext
 from ns_studio.media.presets import FONTS_DIR, CaptionStyle, CaptionVariant, caption_style
 from ns_studio.media.transcribe import Word
@@ -46,12 +46,23 @@ class AlignResult:
         return self.matched / self.total if self.total else 1.0
 
 
+_CJK_SPLIT = re.compile(rf"[{CJK_RANGES}]|[^{CJK_RANGES}]+")
+
+
+def _display_tokens(sentence: str) -> list[str]:
+    """Whitespace-separated tokens of `sentence`, with every CJK character as its own display word."""
+    out: list[str] = []
+    for tok in sentence.split():
+        out += _CJK_SPLIT.findall(tok)
+    return out
+
+
 def script_words(text: str) -> list[tuple[str, int]]:
     """Split a script into display words with sentence indices; punctuation-only tokens join a neighbour."""
     out: list[tuple[str, int]] = []
     pending = ""
     for si, sentence in enumerate(split_sentences(text)):
-        for tok in sentence.split():
+        for tok in _display_tokens(sentence):
             if not normalize_tokens(tok):
                 if out:
                     out[-1] = (f"{out[-1][0]} {tok}", out[-1][1])
@@ -126,22 +137,16 @@ def _interpolate(
     return result
 
 
-def drift_ms(starts: Sequence[float], matched: Sequence[bool]) -> float:
-    """Median |ASR start - start interpolated from the nearest matched neighbours| over matched words, in ms.
+def drift_ms(caption_starts: Sequence[float], asr_starts: Sequence[float]) -> float:
+    """Median |caption word start - ASR word start| over the words that matched an ASR word, in ms.
 
-    Words without a matched neighbour on each side are skipped; fewer than three matched words give 0.0
-    (no evidence); no matched word at all gives infinity.
+    The two sequences are paired by position (the i-th matched script word). Natural speech rhythm (short
+    words, pauses) does not count: only the offset between where a caption word is shown and where the
+    recogniser heard that word. No matched word at all gives infinity (no evidence of any alignment).
     """
-    idx = [i for i, m in enumerate(matched) if m]
-    if not idx:
+    if not caption_starts:
         return float("inf")
-    errors: list[float] = []
-    for pos in range(1, len(idx) - 1):
-        lo, mid, hi = idx[pos - 1], idx[pos], idx[pos + 1]
-        frac = (mid - lo) / (hi - lo)
-        predicted = starts[lo] + (starts[hi] - starts[lo]) * frac
-        errors.append(abs(starts[mid] - predicted) * 1000.0)
-    return statistics.median(errors) if errors else 0.0
+    return statistics.median(abs(c - a) * 1000.0 for c, a in zip(caption_starts, asr_starts, strict=True))
 
 
 def align_words(script: str, asr: Sequence[Word], *, total_s: float | None = None) -> AlignResult:
@@ -155,10 +160,11 @@ def align_words(script: str, asr: Sequence[Word], *, total_s: float | None = Non
     if total_s is None:
         total_s = max((w.end for w in asr), default=0.0)
     times = _word_times_from_tokens(words, asr)
-    matched = [t is not None for t in times]
     filled = _interpolate(words, times, max(total_s, 0.0))
     out = [Word(w, s, e, si) for (w, si), (s, e) in zip(words, filled, strict=True)]
-    return AlignResult(out, sum(matched), len(words), drift_ms([s for s, _e in filled], matched))
+    pairs = [(f[0], t[0]) for f, t in zip(filled, times, strict=True) if t is not None]
+    drift = drift_ms([c for c, _a in pairs], [a for _c, a in pairs])
+    return AlignResult(out, len(pairs), len(words), drift)
 
 
 # ---------------------------------------------------------------------------------------------------------
@@ -209,7 +215,7 @@ class Box:
 DEFAULT_SAFE_ZONES = (220, 320)  # YouTube UI on 9:16: top and bottom pixels to keep clear
 MIN_CONTRAST = 4.5
 EMPHASIS_SCALE = 115
-_WORDISH = re.compile(r"[A-Za-z0-9']+")
+_WORDISH = re.compile(WORD_PATTERN)
 
 
 def free_bands(

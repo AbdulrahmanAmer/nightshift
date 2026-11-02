@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from ns_common.config import save_channel
 from ns_common.db import Db, new_job_id
 from ns_common.logging import NsLogger
 from ns_common.models import Channel, Combo, Runtime
@@ -24,6 +25,13 @@ def make_channel(**kw: Any) -> Channel:
         "format": "shorts_only",
     }
     return Channel(**(base | kw))
+
+
+def yaml_only_channel(paths: Paths, **kw: Any) -> Channel:
+    """Write a channel the way installer step s07 does: the YAML profile only, no `channels` table row."""
+    ch = make_channel(**kw)
+    save_channel(paths, ch)
+    return ch
 
 
 def make_combo(**kw: Any) -> Combo:
@@ -49,8 +57,13 @@ def make_ctx(
     channel: Channel | None = None,
     combo: Combo | None = None,
     fake: set[str] | None = None,
+    channel_row: bool = True,
 ) -> JobContext:
-    """Build a JobContext on a temp home with fakes, a migrated DB and a created job directory."""
+    """Build a JobContext on a temp home with fakes, a migrated DB and a created job directory.
+
+    `channel_row=False` leaves the `channels` table empty, like a real install whose only channel was
+    written as YAML by the installer (see `yaml_only_channel`).
+    """
     del home  # NIGHTSHIFT_HOME is already set by the tmp_home fixture
     paths = Paths.from_env()
     paths.ensure()
@@ -59,10 +72,11 @@ def make_ctx(
     services = build_services(runtime, fake=set(FAKEABLE) if fake is None else fake, paths=paths)
     db = Db(paths.db_path)
     db.migrate()
-    db.execute(
-        "insert or ignore into channels(slug, display_name, created_at) values (?,?,?)",
-        (channel.slug, channel.display_name, "2026-11-01T00:00:00"),
-    )
+    if channel_row:
+        db.execute(
+            "insert or ignore into channels(slug, display_name, created_at) values (?,?,?)",
+            (channel.slug, channel.display_name, "2026-11-01T00:00:00"),
+        )
     job_id = new_job_id(channel.slug)
     job_dir = paths.job_dir(job_id)
     job_dir.mkdir(parents=True, exist_ok=True)

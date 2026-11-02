@@ -10,11 +10,11 @@ from typing import Protocol
 
 from ns_common.paths import Paths
 from ns_common.secret_file import dpapi_protect, dpapi_unprotect, load_secret, store_secret
+from ns_common.secrets_names import KEY_NAMES, KEYRING_SERVICE, PEXELS_KEY, PIXABAY_KEY
 
-SERVICE = "Nightshift"
-PEXELS_KEY = "pexels_api_key"
-PIXABAY_KEY = "pixabay_api_key"
-KEY_NAMES = (PEXELS_KEY, PIXABAY_KEY)
+# One definition for the studio, the installer and Settings: ``ns_common.secrets_names``.
+SERVICE = KEYRING_SERVICE
+__all__ = ["KEY_NAMES", "PEXELS_KEY", "PIXABAY_KEY", "SERVICE"]
 
 
 class SecretStore(Protocol):

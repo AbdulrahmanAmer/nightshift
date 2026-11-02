@@ -7,7 +7,7 @@ import random
 from datetime import UTC, datetime
 from typing import Any
 
-from ns_common.embed_client import cosine, from_blob, to_blob
+from ns_common.embed_client import cosine, embed_window, from_blob, to_blob
 from ns_common.errors import NsError
 from ns_common.models import Idea, Part, Seo, VisualBeat
 from ns_common.textstats import est_seconds, split_sentences, word_count
@@ -214,7 +214,7 @@ class CriticReviseStage:
         ]
         raise_if(validate_story(text, ideas_budget(ctx), past_openings=past, embed=ctx.services.embed))
         avg, _ = critic_numbers(critique)
-        vec = ctx.services.embed.embed([text])[0]
+        vec = ctx.services.embed.embed([embed_window(text)])[0]
         ctx.db.execute(
             "insert or replace into stories(job_id, channel, format, working_title, text, word_count, "
             "opening_line, embedding, critic_avg, revisions, created_at) values (?,?,?,?,?,?,?,?,?,?,?)",
@@ -329,6 +329,7 @@ class SeoStage:
                 fiction_label=ctx.channel.fiction_label,
                 part_n=part_n,
                 parts_total=len(parts),
+                creator_note=ctx.channel.creator_note,
             )
             out.append(final.model_dump())
         ctx.write_json("seo.json", out)

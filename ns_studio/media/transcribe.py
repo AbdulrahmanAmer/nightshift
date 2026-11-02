@@ -5,6 +5,7 @@ faster-whisper is imported lazily inside `WhisperTranscriber` so this module imp
 
 from __future__ import annotations
 
+import gc
 import importlib
 import os
 import re
@@ -19,9 +20,9 @@ from ns_common import ffmpeg as ff
 from ns_common.errors import NsError
 from ns_common.models import WhisperCfg
 from ns_common.paths import Paths
-from ns_common.textstats import split_sentences
+from ns_common.textstats import WORD_PATTERN, split_sentences
 
-_TOKEN = re.compile(r"[A-Za-z0-9']+")
+_TOKEN = re.compile(WORD_PATTERN)  # the same words word_count() counts, in any script
 
 
 @dataclass(frozen=True)
@@ -67,6 +68,10 @@ class Transcriber(Protocol):
         """Segment-level transcript (with words) of `wav`."""
         ...
 
+    def unload(self) -> None:
+        """Free the model (GPU memory included); a later call loads it again. Safe when nothing is loaded."""
+        ...
+
 
 def sidecar_path(wav: Path) -> Path:
     """Script sidecar of an audio file: `p1.wav` -> `p1.txt` (written by the voice stage)."""
@@ -81,26 +86,58 @@ def _audio_seconds(wav: Path) -> float:
         return ff.duration_s(wav)
 
 
-class FakeTranscriber:
-    """Spreads the words of the `<wav>.txt` sidecar evenly over the WAV duration.
+# Pause after a word, in "letters" of speaking time: sentence ends are long, clause marks short.
+_PAUSE_LETTERS = {
+    ".": 9.0, "!": 9.0, "?": 9.0, "…": 9.0, "\u061f": 9.0, "\u3002": 9.0, "\uff01": 9.0, "\uff1f": 9.0,
+    ",": 4.0, ";": 4.0, ":": 3.0, "-": 3.0, "\u060c": 4.0, "\u3001": 4.0,
+}
 
-    Word count follows `ns_common.textstats.word_count`, the same count `FakeTts` uses for its tone bursts,
-    so fake timings line up with the fake audio.
+
+def _speech_weights(text: str) -> tuple[list[str], list[float], list[float]]:
+    """Tokens of `text` with the speaking weight of each word and the pause weight that follows it."""
+    tokens: list[str] = []
+    speak: list[float] = []
+    pause: list[float] = []
+    matches = list(_TOKEN.finditer(text))
+    for i, m in enumerate(matches):
+        after = text[m.end() : matches[i + 1].start() if i + 1 < len(matches) else len(text)]
+        tokens.append(m.group(0))
+        speak.append(len(m.group(0)) + 2.0)
+        pause.append(max((_PAUSE_LETTERS.get(c, 0.0) for c in after), default=0.0))
+    return tokens, speak, pause
+
+
+class FakeTranscriber:
+    """Spreads the words of the `<wav>.txt` sidecar over the WAV duration with uneven, speech-like timing.
+
+    Long words take longer than short ones and sentence ends are followed by a pause, so word starts are not
+    evenly spaced (evenly spaced fakes hid the caption drift bug). Word count follows
+    `ns_common.textstats.word_count`, the same count `FakeTts` uses for its tone bursts, so fake timings
+    line up with the fake audio.
     """
 
     name = "fake"
+    unloads = 0  # how often `unload` ran (tests check the orchestrator calls it)
+
+    def unload(self) -> None:
+        """Nothing is loaded; counted so tests can see the call."""
+        self.unloads += 1
 
     def words(self, wav: Path, language: str = "en") -> list[Word]:
         """One Word per script token, evenly spaced; NS-E403 when the sidecar is missing."""
         side = sidecar_path(wav)
         if not side.exists():
             raise NsError("NS-E403", f"fake transcriber needs the script sidecar {side.name}")
-        tokens = _TOKEN.findall(side.read_text(encoding="utf-8"))
+        tokens, speak, pause = _speech_weights(side.read_text(encoding="utf-8"))
         if not tokens:
             return []
-        dur = _audio_seconds(wav)
-        step = dur / len(tokens)
-        return [Word(t, i * step, i * step + step * 0.8) for i, t in enumerate(tokens)]
+        scale = _audio_seconds(wav) / (sum(speak) + sum(pause))
+        out: list[Word] = []
+        cursor = 0.0
+        for t, sp, pa in zip(tokens, speak, pause, strict=True):
+            out.append(Word(t, cursor * scale, (cursor + sp * 0.9) * scale))
+            cursor += sp + pa
+        return out
 
     def segments(self, wav: Path, language: str = "en") -> list[Segment]:
         """One Segment per sentence of the sidecar, built from the evenly spaced words."""
@@ -187,6 +224,23 @@ class WhisperTranscriber:
             )
             out.append(Segment(float(s.start), float(s.end), str(s.text).strip(), words))
         return out
+
+    def unload(self) -> None:
+        """Drop the faster-whisper model and give its memory back to the GPU.
+
+        Releasing the `whisper` tenant frees the supervisor's lock but not the weights (about 1.5 GB plus the
+        CUDA context) held by this process; the llama-server that starts next is sized for the whole card.
+        """
+        if self._model is None:
+            return
+        self._model = None
+        gc.collect()
+        try:  # torch is only present in venvs that also run the reference TTS engine
+            torch = importlib.import_module("torch")
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except ImportError:
+            pass
 
     def words(self, wav: Path, language: str = "en") -> list[Word]:
         """All words of `wav` with timestamps (VAD on)."""

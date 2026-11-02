@@ -202,20 +202,105 @@ def test_run_daily_raises_critic_bar_on_quality_drop(tmp_home: Path):
     assert saved["critic_bar"] == 8.5
 
 
-def test_apply_publish_times_rewrites_sheets(tmp_home: Path):
+def _finished_job(paths: Paths, job: str, story: str, shorts: int, *, master: bool):
+    """A finished job laid out like the real Outbox (by story, no job id in the path) plus its manifest."""
+    from ns_common.models import PolicyAdvice, Seo
+    from ns_studio.media.outbox import build_metadata, write_sheet_txt
+
+    ch = make_channel()
+    seo = Seo(title=story, description="A hook.\nOriginal fiction.", tags=[f"t{i}" for i in range(10)],
+              hashtags=["#Shorts", "#horror", "#story"], keywords=[])
+    root = paths.outbox / ch.slug / "stories" / story
+    manifest: dict[str, dict[str, str]] = {}
+    items = [("long", "long", None)] if master else []
+    items += [(f"s{k}", "short", k) for k in range(1, shorts + 1)]
+    for item, kind, k in items:
+        folder = root / ("full" if kind == "long" else "shorts")
+        folder.mkdir(parents=True, exist_ok=True)
+        name = story if kind == "long" else f"{story} - Short {k:02d}"
+        meta = build_metadata(
+            channel=ch, job_id=job, kind=kind, k=k, seo=seo, advice=PolicyAdvice(), shots=[],
+            combo_id="c", prompt_versions={}, publish_at="2026-11-21T18:00",
+            extra={"related_video_instruction": f"Set Related video -> {story}"} if kind == "short" else None,
+        )
+        mp4 = folder / f"{name}.mp4"
+        mp4.write_bytes(b"x")
+        mp4.with_suffix(".json").write_text(meta.model_dump_json(indent=2), encoding="utf-8")
+        write_sheet_txt(meta, mp4.name, mp4.with_suffix(".txt"),
+                        related_title=story if kind == "short" else None)
+        manifest[item] = {"mp4": str(mp4), "json": str(mp4.with_suffix(".json")),
+                          "txt": str(mp4.with_suffix(".txt"))}
+    job_dir = paths.job_dir(job)
+    (job_dir / "outbox").mkdir(parents=True, exist_ok=True)
+    (job_dir / "outbox" / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    return manifest
+
+
+def test_apply_publish_times_reads_the_job_manifest(tmp_home: Path):
+    """Review row 6: the old date/job glob matched nothing in the story-organised Outbox."""
     paths, db = _env(tmp_home)
     _channel(paths, db, 9)
     env = jobs.open_env(light=True)
     job = "after-dark-20261120-abcd"
-    box = paths.outbox / "after-dark" / "2026-11-20" / job
-    sheets = (("long/master.json", "long"), ("shorts/s1.json", "short"), ("shorts/s2.json", "short"))
-    for name, kind in sheets:
-        f = paths.outbox / "after-dark" / "2026-11-20" / job / name
-        f.parent.mkdir(parents=True, exist_ok=True)
-        payload = {"channel": "after-dark", "kind": kind, "publish_after": "x"}
-        f.write_text(json.dumps(payload), encoding="utf-8")
-    (box / "shorts" / "notes.json").write_text("{}", encoding="utf-8")
+    manifest = _finished_job(paths, job, "The Long Night", 2, master=True)
     assert daily.apply_publish_times(env, [job], random.Random(3), NOW) == 3
-    sheet = paths.outbox / "after-dark" / "2026-11-20" / job / "long" / "master.json"
-    data = json.loads(sheet.read_text(encoding="utf-8"))
-    assert data["publish_after"].startswith("2026-11-20T")
+    whens = {i: json.loads(Path(e["json"]).read_text(encoding="utf-8"))["publish_after"]
+             for i, e in manifest.items()}
+    assert whens["long"].startswith("2026-11-20T")  # the master goes first
+    assert whens["s1"].startswith("2026-11-21T") and whens["s2"].startswith("2026-11-21T")
+    # the .txt sheet carries the same time as the .json
+    for i, e in manifest.items():
+        txt = Path(e["txt"]).read_text(encoding="utf-8")
+        assert f"PUBLISH AFTER (local time): {whens[i].replace('T', ' ')}" in txt
+    assert "Related video: set Related video -> The Long Night" in Path(manifest["s1"]["txt"]).read_text(
+        encoding="utf-8"
+    )
+
+
+def test_shorts_only_jobs_of_one_night_get_different_slots(tmp_home: Path):
+    """Two one-Short jobs of a 2/day channel used to both land at 18:00 +-45 min the next evening."""
+    paths, db = _env(tmp_home)
+    _channel(paths, db, 9)
+    env = jobs.open_env(light=True)
+    jobs_ = ["after-dark-20261120-aaaa", "after-dark-20261120-bbbb"]
+    mans = [_finished_job(paths, j, f"Story {n}", 1, master=False) for n, j in enumerate(jobs_)]
+    assert daily.apply_publish_times(env, jobs_, random.Random(5), NOW) == 2
+    times = sorted(
+        datetime.fromisoformat(json.loads(Path(m["s1"]["json"]).read_text(encoding="utf-8"))["publish_after"])
+        for m in mans
+    )
+    assert times[0].date() == times[1].date() == date(2026, 11, 20)  # no master: from today
+
+
+def test_uncoded_exception_fails_only_that_job(tmp_home: Path):
+    """Review row 8: one bad job (KeyError, sqlite error, OSError...) aborted the night, backup and report."""
+    paths, db = _env(tmp_home)
+    _channel(paths, db, 9)
+    env = jobs.open_env(light=True)
+    calls: list[str] = []
+
+    def run(ctx):
+        calls.append(ctx.job_id)
+        if len(calls) == 1:
+            raise KeyError("fixes")
+        return ["ideas"]
+
+    report = daily.run_daily(env, now=NOW, rng=random.Random(1), run_fn=run)
+    assert len(calls) >= 2, "the next job must still run"
+    assert report["failures"][0]["code"] == "NS-E327" and "KeyError" in report["failures"][0]["error"]
+    assert report["jobs"], "later jobs are reported"
+    assert Path(report["backup"]).exists() and (paths.logs / "nightly-20261120.json").exists()
+    row = env.db.query("select finished_at from runs")[0]
+    assert row["finished_at"]
+
+
+def test_unknown_preset_in_a_pool_is_a_coded_error_at_job_start(tmp_home: Path):
+    from ns_common.models import Pools
+    from ns_studio.errors import StudioError
+
+    paths, db = _env(tmp_home)
+    ch = make_channel(pools=Pools(caption_styles=["punch_yellow", "neon_pink"]))
+    env = jobs.open_env(light=True)
+    with pytest.raises(StudioError) as ei:
+        jobs.make_job(env, ch, "shorts_only")
+    assert ei.value.code == "NS-E320" and "neon_pink" in ei.value.detail

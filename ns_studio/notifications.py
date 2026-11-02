@@ -23,9 +23,13 @@ TITLE = "Nightshift"
 
 
 def default_notifier() -> Notifier | None:
-    """`ns_supervisor.notify.toast`, or None where the supervisor package cannot be imported."""
+    """`ns_supervisor.notify.toast_or_note` (a toast, or a morning note when no desktop session can show one).
+
+    Falls back to plain `toast` for a supervisor without notes, and to None without the package.
+    """
     try:
-        return importlib.import_module("ns_supervisor.notify").toast
+        module = importlib.import_module("ns_supervisor.notify")
+        return getattr(module, "toast_or_note", None) or module.toast
     except (ImportError, AttributeError):
         return None
 

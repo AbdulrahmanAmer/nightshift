@@ -133,6 +133,8 @@ def run_job(ctx: JobContext, *, resume: bool = True, dry_run: bool = False) -> l
                     run_stage(ctx, st, force=not resume)
                 ran.append(st.name)
         finally:
+            if tenant == "whisper":  # free the weights before the lock goes to the next tenant (llama)
+                ctx.services.transcriber.unload()
             if tenant is not None:
                 ctx.services.acquirer.release(tenant, owner)
     return ran

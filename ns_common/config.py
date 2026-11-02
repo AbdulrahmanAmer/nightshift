@@ -7,7 +7,7 @@ import yaml
 
 from ns_common.atomic import BACKUP_SUFFIX, quarantine, write_text_atomic
 from ns_common.errors import NsError
-from ns_common.models import Channel, InstallState, Manifest, Runtime
+from ns_common.models import Channel, EmbedCfg, InstallState, Manifest, Runtime
 from ns_common.paths import Paths, repo_root
 
 
@@ -15,6 +15,15 @@ def _write_json(path: Path, data: dict, *, keep_backup: bool = False) -> Path:
     return write_text_atomic(
         path, json.dumps(data, indent=2, ensure_ascii=False) + "\n", keep_backup=keep_backup
     )
+
+
+def embed_server_args(cfg: EmbedCfg) -> list[str]:
+    """Context and batch flags for `llama-server --embeddings` so inputs up to `batch_size` tokens fit.
+
+    Without `-b`/`-ub` the server rejects any single input over 512 tokens (HTTP 500 "input is too large
+    to process"). The supervisor appends these where it builds the embed service command.
+    """
+    return ["-c", str(cfg.ctx_size), "-b", str(cfg.batch_size), "-ub", str(cfg.batch_size)]
 
 
 def load_runtime(paths: Paths) -> Runtime:

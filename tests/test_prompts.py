@@ -106,14 +106,14 @@ def test_missing_frontmatter_is_rejected(tmp_path: Path, monkeypatch: pytest.Mon
     (tmp_path / "bad.md").write_text("no front matter\n---USER---\nx\n", encoding="utf-8")
     (tmp_path / "half.md").write_text("---\nversion: 1\n---\nsys\n---USER---\nx\n", encoding="utf-8")
     monkeypatch.setattr(P, "PROMPTS_DIR", tmp_path)
-    P.load_prompt.cache_clear()
+    P.clear_prompt_cache()
     try:
         with pytest.raises(ValueError, match="missing front-matter"):
             P.load_prompt("bad")
         with pytest.raises(ValueError, match="needs version, thinking, schema"):
             P.load_prompt("half")
     finally:
-        P.load_prompt.cache_clear()
+        P.clear_prompt_cache()
 
 
 def test_call_json_records_version_and_forwards_schema(tmp_home: Path):

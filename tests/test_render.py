@@ -38,7 +38,8 @@ def _shots_for_graph() -> list[Shot]:
 
 def test_escape_filter_path_quotes_and_escapes_drive_colon():
     assert escape_filter_path(Path("C:/Users/me/cap.ass")) == "'C\\:/Users/me/cap.ass'"
-    assert "'" not in escape_filter_path(Path("C:/it's/cap.ass"))[1:-1]
+    # an apostrophe is escaped, not deleted: close quote, three backslashes + quote, reopen
+    assert escape_filter_path(Path("C:/it's/cap.ass")) == "'C\\:/it'" + "\\\\\\'" + "'s/cap.ass'"
 
 
 def test_vertical_graph_structure():
@@ -161,3 +162,23 @@ def test_build_short_audio_orders_hook_gap_body_and_normalizes(tmp_path: Path):
     assert abs(lufs - (-14.0)) <= 0.7 and tp <= -1.0
     only_body = build_short_audio(None, body, tmp_path / "raw2.wav", tmp_path / "final2.wav", 0.15)
     assert abs(ff.duration_s(only_body) - 4.0) < 0.05
+
+
+def test_filter_path_keeps_an_apostrophe_in_a_windows_home():
+    """Review row 14: C:/Users/O'Brien/... lost its apostrophe and every render failed with NS-E401."""
+    p = escape_filter_path(Path("C:/Users/O'Brien/Nightshift/cap.ass"))
+    assert "Brien" in p and "O'" in p and "OBrien" not in p
+    from ns_studio.clipper.render import filter_path
+
+    assert filter_path(Path("C:/it's/c1.ass")) == escape_filter_path(Path("C:/it's/c1.ass"))[1:-1]
+
+
+@pytest.mark.skipif(not ff.available(), reason="ffmpeg required")
+def test_ffmpeg_reads_an_ass_file_from_a_folder_with_an_apostrophe(tmp_path: Path):
+    folder = tmp_path / "O'Brien"
+    folder.mkdir()
+    ass = folder / "cap.ass"
+    words = [Word("Hello", 0.0, 0.2), Word("there", 0.2, 0.4)]
+    ass.write_text(build_ass(words, "clean_white"), encoding="utf-8")
+    graph = f"ass=filename={escape_filter_path(ass)}"
+    ff.run(["-f", "lavfi", "-i", "color=c=black:s=320x240:d=0.5", "-vf", graph, "-f", "null", "-"])

@@ -9,7 +9,7 @@ from ns_common.embed_client import Embed, cosine
 from ns_common.errors import NsError
 from ns_common.paths import contracts_dir
 from ns_common.textstats import fk_grade, split_sentences, word_count
-from ns_studio.text.budget import Budget
+from ns_studio.text.budget import Budget, master_max_words
 
 
 @dataclass(frozen=True)
@@ -35,6 +35,14 @@ def check_length(text: str, budget: Budget) -> Violation | None:
     return None
 
 
+def check_master_length(total_words: int, wpm: int) -> Violation | None:
+    """A master may hold at most 14 minutes of narration at `wpm`: QC fails anything over 15:00 (NS-E404)."""
+    cap = master_max_words(wpm)
+    if total_words > cap:
+        return Violation("master_length", f"{total_words} words, at most {cap} at {wpm} wpm")
+    return None
+
+
 def check_banned(text: str, banned: list[str]) -> Violation | None:
     """No banned phrase may occur (case-insensitive substring match)."""
     low = text.lower()
@@ -44,6 +52,9 @@ def check_banned(text: str, banned: list[str]) -> Violation | None:
 
 def check_reading_level(text: str, lo: float = 5.0, hi: float = 8.0) -> Violation | None:
     """Flesch-Kincaid grade of `text` must lie in `[lo, hi]`."""
+    letters = [c for c in text if c.isalpha()]
+    if letters and sum(c.isascii() for c in letters) / len(letters) < 0.8:
+        return None  # Flesch-Kincaid is an English formula; other scripts would always read as "too easy"
     g = fk_grade(text)
     if g < lo or g > hi:
         return Violation("reading_level", f"grade {g}, allowed {lo}-{hi}")

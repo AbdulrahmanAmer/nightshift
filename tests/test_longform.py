@@ -2,11 +2,13 @@ from pathlib import Path
 
 import pytest
 
+from ns_common import ffmpeg as ff
 from ns_studio.media.longform import (
     build_segment_graph,
     card_ass,
     chapters_json,
     concat_list_text,
+    fit_chapter_contrast,
     fmt_timestamp,
     midroll_suggestions,
     pick_card,
@@ -91,7 +93,8 @@ def test_segment_graph_with_and_without_card(tmp_path: Path):
 
 def test_concat_list_text():
     text = concat_list_text([Path("C:/a/seg_1.mp4"), Path("C:/a/it's/seg_2.mp4")])
-    assert text == "file 'C:/a/seg_1.mp4'\nfile 'C:/a/its/seg_2.mp4'\n"
+    first = "file 'C:/a/seg_1.mp4'\n"
+    assert text == first + "file 'C:/a/it'" + "\\''s/seg_2.mp4'\n"  # close, escape, reopen
 
 
 def test_descriptions_follow_spec_9_1_and_9_2():
@@ -119,3 +122,30 @@ def test_card_ass_is_valid_for_every_style(name: str):
     ass = card_ass("A Title {with braces}", 2, chapter_card(name))
     assert "{with" not in ass and "(with braces)" in ass
     assert ass.count("Dialogue:") == (2 if chapter_card(name).show_number else 1)
+
+
+@pytest.mark.skipif(not ff.available(), reason="ffmpeg required")
+def test_master_captions_switch_to_the_boxed_style_on_bright_footage(tmp_home: Path):
+    """System gap 16: only the Clipper looked at the footage behind the captions."""
+    from tests.helpers import make_combo, make_ctx
+
+    ctx = make_ctx(tmp_home, fmt="master_first", combo=make_combo(caption_style="clean_white"))
+    clip = tmp_home / "white.mp4"
+    ff.run(["-f", "lavfi", "-i", "color=c=white:s=1920x1080:r=25:d=4", "-pix_fmt", "yuv420p", str(clip)])
+    ctx.write_json("words/c1.json", [
+        {"w": "Hello", "start": 0.0, "end": 0.4, "sentence_idx": 0},
+        {"w": "there.", "start": 0.5, "end": 0.9, "sentence_idx": 0},
+    ])
+    ctx.subdir("captions")
+    ass = ctx.file("captions/long_c1.ass")
+    ass.write_text("plain", encoding="utf-8")
+    t = ChapterTiming(1, "One", 0.0, 0.0, 3.0)
+    shot = Shot(0, 0.0, 3.0, "fake", "w", str(clip), 0.0, 1920, 1080, "u", "l", "kw")
+    luma = fit_chapter_contrast(ctx, t, [shot])
+    assert luma and min(luma) > 200
+    assert ass.read_text(encoding="utf-8").startswith("[Script Info]")  # rewritten with the boxed style
+    dark = tmp_home / "black.mp4"
+    ff.run(["-f", "lavfi", "-i", "color=c=black:s=1920x1080:r=25:d=4", "-pix_fmt", "yuv420p", str(dark)])
+    ass.write_text("plain", encoding="utf-8")
+    fit_chapter_contrast(ctx, t, [Shot(0, 0.0, 3.0, "fake", "b", str(dark), 0.0, 1920, 1080, "u", "l", "kw")])
+    assert ass.read_text(encoding="utf-8") == "plain"  # white text on black keeps its style

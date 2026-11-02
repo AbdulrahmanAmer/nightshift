@@ -4,6 +4,11 @@ The LLM answer is normalised to the Shorts rules of section 9.2 (title <= 70, ke
 honest lines plus "Clip from: <source>", 3 to 5 hashtags including #Shorts, 10 to 20 tags within 500
 characters). The policy checks `misleading_claims`, `metadata_spam` and `real_entities` run on the
 metadata only: the spoken content is the owner's.
+
+Clips are the owner's real footage, so the fiction rules do not apply: `misleading_claims` uses its own list
+(`clip_misleading_claims.txt`: deceptive clickbait, not "caught on camera"), `real_entities` only looks for
+links and @handles, and the fixed `Clip from: <source>` line is never checked (the model cannot change it,
+so a source called "Interview with Dr. Smith" used to fail every attempt).
 """
 from __future__ import annotations
 
@@ -25,7 +30,6 @@ HASHTAGS_MAX = 5
 HASHTAGS_MIN = 3
 CHECK_CODES = {"misleading_claims": "NS-E603", "metadata_spam": "NS-E606", "real_entities": "NS-E602"}
 
-_HONORIFIC = re.compile(r"\b(?:Mr|Mrs|Ms|Dr|President|Senator|Prime Minister|Governor)\.?\s+[A-Z][a-z]+")
 _HANDLE_OR_URL = re.compile(r"(?:^|\s)@\w+|https?://|www\.")
 _WORD = re.compile(r"[A-Za-z']{4,}")
 
@@ -45,15 +49,24 @@ def _find_phrases(phrases: list[str], text: str) -> list[str]:
     return [p for p in phrases if re.search(rf"(?<!\w){re.escape(p)}(?!\w)", low)]
 
 
+SOURCE_LINE = "Clip from:"
+
+
 def metadata_texts(seo: Seo) -> list[str]:
-    """Every metadata string the checks look at."""
-    return [seo.title, seo.description, " ".join(seo.tags), " ".join(seo.hashtags)]
+    """Every model-written metadata string the checks look at (not the fixed `Clip from:` line)."""
+    written: list[str] = []
+    for ln in seo.description.splitlines():
+        if ln.startswith(SOURCE_LINE):
+            break  # the source line and the owner's creator note after it are not the model's words
+        written.append(ln)
+    own = "\n".join(written)
+    return [seo.title, own, " ".join(seo.tags), " ".join(seo.hashtags)]
 
 
 # ---------- checks ----------
 def check_misleading_claims(seo: Seo) -> PolicyCheck:
-    """Fails when a `misleading_claims.txt` phrase appears in title, description, tags or hashtags."""
-    hits = _find_phrases(_policy_lines("misleading_claims.txt"), "\n".join(metadata_texts(seo)))
+    """Fails when a `clip_misleading_claims.txt` phrase appears in title, description, tags or hashtags."""
+    hits = _find_phrases(_policy_lines("clip_misleading_claims.txt"), "\n".join(metadata_texts(seo)))
     return PolicyCheck(passed=not hits, detail=f"phrases: {', '.join(hits)}" if hits else "")
 
 
@@ -77,11 +90,9 @@ def check_metadata_spam(seo: Seo) -> PolicyCheck:
 
 
 def check_real_entities(seo: Seo) -> PolicyCheck:
-    """Block-listed names, plus a regex fallback for honorific names, @handles and URLs."""
+    """Links and @handles in the model-written metadata; the owner's guests and games may be named."""
     text = "\n".join(metadata_texts(seo))
-    hits = _find_phrases(_policy_lines("real_entities_block.txt"), text)
-    hits += [m.group(0).strip() for m in _HONORIFIC.finditer(text)]
-    hits += [m.group(0).strip() for m in _HANDLE_OR_URL.finditer(text)]
+    hits = [m.group(0).strip() for m in _HANDLE_OR_URL.finditer(text)]
     return PolicyCheck(passed=not hits, detail=f"found: {', '.join(hits)}" if hits else "")
 
 
@@ -145,7 +156,8 @@ def shorten_title(title: str, limit: int = TITLE_TARGET) -> str:
 
 
 def finalize_seo(
-    raw: dict[str, Any], *, clip: ClipPlanItem, source_title: str, seed_keywords: list[str]
+    raw: dict[str, Any], *, clip: ClipPlanItem, source_title: str, seed_keywords: list[str],
+    creator_note: str = "",
 ) -> Seo:
     """Normalise an LLM answer to the section 9.2 Shorts rules and validate it as `Seo`."""
     title = shorten_title(str(raw.get("title") or clip.title)) or shorten_title(clip.title) or "Clip"
@@ -157,7 +169,9 @@ def finalize_seo(
     lines = [ln.strip() for ln in str(raw.get("description") or "").splitlines() if ln.strip()][:2]
     if not lines:
         lines = [clip.why or clip.title]
-    description = "\n".join([*lines, "", f"Clip from: {source_title}"])
+    description = "\n".join([*lines, "", f"{SOURCE_LINE} {source_title}"])
+    if creator_note.strip():
+        description += "\n" + creator_note.strip()
     words = re.findall(r"[A-Za-z]{4,}", f"{title} {' '.join(kws)}")
     hashtags = normalize_hashtags(list(raw.get("hashtags", [])), words)
     extras = [*kws, *clip.keywords, *seed_keywords, *[w.lower() for w in words]]
@@ -177,6 +191,7 @@ def generate_seo(
     *,
     excerpt: str,
     source_title: str,
+    creator_note: str = "",
 ) -> tuple[Seo, PolicyResult]:
     """Ask `clip_seo` (retry once when a policy check fails) and return the metadata and its check record."""
     last: PolicyResult | None = None
@@ -190,7 +205,10 @@ def generate_seo(
             clip_title=clip.title,
             clip_text=excerpt,
         )
-        seo = finalize_seo(raw, clip=clip, source_title=source_title, seed_keywords=ctx.channel.seed_keywords)
+        seo = finalize_seo(
+            raw, clip=clip, source_title=source_title, seed_keywords=ctx.channel.seed_keywords,
+            creator_note=creator_note,
+        )
         last = check_metadata(seo)
         if last.passed:
             return seo, last

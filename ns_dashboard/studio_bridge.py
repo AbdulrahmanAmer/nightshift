@@ -147,15 +147,23 @@ def download_dir(paths: Paths, source_id: str) -> Path:
 
 
 def download_source(
-    paths: Paths, url: str, source_id: str, on_progress: Callable[[float], None]
+    paths: Paths,
+    url: str,
+    source_id: str,
+    on_progress: Callable[[float], None],
+    cancel_token: Any = None,
 ) -> Path:
     """Download `url` with the pinned yt-dlp (`ns_studio.clipper.source.import_url`); returns the video file.
 
-    `on_progress(percent)` gets 0-100 and may raise to stop the job. Failures are NS-E409.
+    `on_progress(percent)` gets 0-100 and may raise to stop the job; `cancel_token` (a
+    `ns_studio.clipper.source.CancelToken`) lets another thread kill yt-dlp. Failures are NS-E409.
     """
     from ns_studio.clipper import source
 
-    return source.import_url(url, download_dir(paths, source_id), on_progress)
+    target = download_dir(paths, source_id)
+    if cancel_token is None:
+        return source.import_url(url, target, on_progress)
+    return source.import_url(url, target, on_progress, cancel_token=cancel_token)
 
 
 def clip_params_of(source_path: Path, channel_slug: str, params: dict[str, Any]) -> Any:
@@ -326,6 +334,7 @@ def run_series_part(
     from ns_studio.orchestrator import plan_job
     from ns_studio.policy.regen import run_job_guarded
     from ns_studio.variation.draw import draw_combo, record_combo
+    from ns_studio.variation.stages import job_series_fixed
 
     env = open_env(fake, acquirer, paths=paths)
     job_id = str(params["job_id"])
@@ -336,7 +345,8 @@ def run_series_part(
         ctx = jobs.load_job(env, job_id)
     else:
         now = datetime.now(UTC)
-        combo = draw_combo(env.db, channel, rng=random.Random(), now=now)
+        # the series design pins the caption style and visual treatment of every part
+        combo = draw_combo(env.db, channel, rng=random.Random(), now=now, fixed=job_series_fixed(job_dir))
         record_combo(env.db, channel.slug, job_id, "long", combo, now)
         job_dir.mkdir(parents=True, exist_ok=True)
         ctx = JobContext(

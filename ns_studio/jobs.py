@@ -8,14 +8,21 @@ import random
 from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Literal, cast
+from typing import Any, Literal, cast
 
 from ns_common.config import load_runtime
 from ns_common.db import Db, new_job_id
 from ns_common.logging import NsLogger
 from ns_common.models import Channel, Combo, Runtime
 from ns_common.paths import Paths
-from ns_studio.channels.crud import add_channel, all_channels, get_channel
+from ns_common.secrets_names import KEYRING_SERVICE, SHORT_NAMES
+from ns_studio.channels.crud import (
+    add_channel,
+    all_channels,
+    get_channel,
+    pool_name_problems,
+    sync_channel_row,
+)
 from ns_studio.context import FAKEABLE, JobContext, Services, build_services
 from ns_studio.errors import StudioError
 from ns_studio.variation.draw import draw_combo, record_combo
@@ -27,7 +34,6 @@ STAGE_MODULES: tuple[str, ...] = (
     "ns_studio.media.stages_media",
     "ns_studio.series.stages",
 )
-KEYRING_SERVICE = "Nightshift"
 # Fixtures served by the fake LLM are written for a 50 s Short at the "standard" pace; validators stay real.
 FAKE_LLM_COMBO: dict[str, str] = {"length_bucket": "50", "pacing": "standard"}
 Fmt = Literal["master_first", "shorts_only", "series_compilation", "clip", "master_from_script"]
@@ -68,21 +74,33 @@ def parse_fake(value: str | None) -> frozenset[str]:
 
 
 def load_keys() -> dict[str, str]:
-    """Pexels and Pixabay keys from the Windows keyring (service 'Nightshift'); {} when unavailable."""
+    """Pexels and Pixabay keys: Windows keyring (service 'Nightshift'), else `config/secrets.dpapi`."""
     try:
-        keyring = importlib.import_module("keyring")
+        keyring: Any = importlib.import_module("keyring")
+        keyring_error: type[Exception] = importlib.import_module("keyring.errors").KeyringError
     except ImportError:
-        return {}
-    keyring_error = importlib.import_module("keyring.errors").KeyringError
+        keyring, keyring_error = None, Exception
     keys: dict[str, str] = {}
-    for name in ("pexels", "pixabay"):
+    for name, short in SHORT_NAMES.items():  # the names setup and Settings store, not the short ones
         try:
-            value = keyring.get_password(KEYRING_SERVICE, name)
+            value = keyring.get_password(KEYRING_SERVICE, name) if keyring is not None else None
         except keyring_error:
             value = None  # a broken backend must not stop a text-only run
+        if not value:
+            value = _dpapi_secret(name)  # the nightly task may not reach Credential Manager (S4U session)
         if value:
-            keys[name] = str(value)
+            keys[short] = str(value)
     return keys
+
+
+def _dpapi_secret(name: str) -> str | None:
+    """The key from `config/secrets.dpapi` (`ns_common.secret_file`), or None when absent or unreadable."""
+    from ns_common.secret_file import load_secret  # imported here: it loads ctypes
+
+    try:
+        return load_secret(Paths.from_env(), name)
+    except (OSError, ValueError):
+        return None
 
 
 @dataclass
@@ -158,6 +176,11 @@ def make_job(
     """Draw a combo, record it in the ledger unless `record` is False, create the job dir and context."""
     now = now or datetime.now(UTC)
     rng = rng or random.Random()
+    # The setup channel exists only as YAML; `ideas`, `stories`, `combos` and `outputs` reference its row.
+    sync_channel_row(env.db, channel, now)
+    unknown = pool_name_problems(channel.pools)
+    if unknown:
+        raise StudioError("NS-E320", "; ".join(unknown))
     if "llm" in env.fake:
         fixed = {**FAKE_LLM_COMBO, **(fixed or {})}  # the fixtures are written for this budget
     combo = draw_combo(env.db, channel, rng=rng, now=now, fixed=fixed)
@@ -200,9 +223,11 @@ def load_job(env: Env, job_id: str) -> JobContext:
     if not f.exists():
         raise StudioError("NS-E326", f"job {job_id} has no job.json under {job_dir}")
     data = json.loads(f.read_text(encoding="utf-8"))
+    channel = get_channel(env.paths, data["channel"])
+    sync_channel_row(env.db, channel)
     return JobContext(
         job_id=job_id,
-        channel=get_channel(env.paths, data["channel"]),
+        channel=channel,
         combo=Combo.model_validate(data["combo"]),
         fmt=cast(Fmt, data["fmt"]),
         paths=env.paths,
@@ -224,10 +249,12 @@ def prepare_plan(fmt: str, policy: bool | None) -> bool:
     from ns_studio.variation.stages import install_short_combos
 
     install_short_combos(fmt)
+    if fmt == "master_first":  # series parts run the script-import plan (CR-C11-3) with their own combos
+        install_short_combos("master_from_script")
 
     enabled = gate.available() if policy is None else policy
     if enabled:
         gate.install_gates(fmt)
-        if fmt == "master_first":  # series parts run the script-import plan (CR-C11-3)
+        if fmt == "master_first":
             gate.install_gates("master_from_script")
     return enabled

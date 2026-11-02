@@ -14,8 +14,8 @@ def test_short_budget_math():
     b = short_budget(50, "standard")
     assert b.wpm == 155
     assert b.words == 129 - 12
-    assert b.min_words == round(b.words * 0.8)
-    assert b.max_words == round(b.words * 1.2)
+    assert b.min_words == round(b.words * 0.85)  # +-15 %: the band QC applies to seconds
+    assert b.max_words == round(b.words * 1.15)
     two = short_budget(75, "brisk", parts=2)
     assert two.words_per_part == two.words // 2
 
@@ -91,7 +91,8 @@ def test_validate_chapter_checks_budget_and_skips_opening_after_chapter_one():
     cb = chapter_budget(310, 155)
     ok = _chapter_text(310)
     assert V.validate_chapter(ok, cb, chapter_n=2, past_openings=[ok.split(".")[0] + "."], embed=e) == []
-    rules = {v.rule for v in V.validate_chapter(ok, cb, chapter_n=1, past_openings=[ok], embed=e)}
+    first = [ok.split(".")[0] + "."]
+    rules = {v.rule for v in V.validate_chapter(ok, cb, chapter_n=1, past_openings=first, embed=e)}
     assert rules == {"opening_similarity"}
     short = {v.rule for v in V.validate_chapter("Short text.", cb, chapter_n=2, past_openings=[], embed=e)}
     assert "length" in short

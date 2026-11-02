@@ -21,7 +21,7 @@ from ns_studio.channels import cadence, crud
 from ns_studio.clipper import cli as clipper_cli
 from ns_studio.context import JobContext
 from ns_studio.daily import run_daily
-from ns_studio.errors import StudioError
+from ns_studio.errors import UNEXPECTED, StudioError, describe_unexpected
 from ns_studio.learn import importer, reweight, status
 from ns_studio.orchestrator import plan_job, run_job
 from ns_studio.policy.regen import run_job_guarded
@@ -108,6 +108,13 @@ def guarded() -> Iterator[None]:
         typer.echo(f"error {e}", err=True)
         if hint:
             typer.echo(f"hint: {hint}", err=True)
+        raise typer.Exit(1) from e
+    except Exception as e:  # an uncoded bug or corrupt file: coded, logged, no traceback wall
+        if type(e).__module__.split(".")[0] in ("click", "typer"):
+            raise  # usage errors and Exit keep their own message and exit code
+        err = StudioError(UNEXPECTED, describe_unexpected(e))
+        typer.echo(f"error {err}", err=True)
+        typer.echo(f"hint: {err.hint}", err=True)
         raise typer.Exit(1) from e
 
 
@@ -594,17 +601,28 @@ def calibrate_cmd(
             )
             typer.echo(f"refusal rate: {rep.refusal_rate:.1%}")
             if rep.two_model_recommended:
-                typer.echo("refusal rate is above 2 %: switch to two-model mode (spec decision D3)")
+                if env.runtime.llama.story_model_path:
+                    typer.echo("refusal rate is above 2 %: switch to two-model mode (spec decision D3)")
+                else:
+                    typer.echo(
+                        "refusal rate is above 2 %, but no story model is configured "
+                        "(llama.story_model_path is empty): two-model mode is not available on this install"
+                    )
             return
         jobs.load_stage_modules()
         ch = crud.get_channel(env.paths, channel)
         rng = random.Random()
         owner = "studio:calibrate"
-        env.services.acquirer.acquire("llama", owner)
+        acq = env.services.acquirer
+        acq.acquire("llama", owner)
         try:
-            stories = calibration.generate(lambda _i: _calibration_job(env, ch, rng), n)
+            acq.acquire("embed", owner)  # ideas embeds its premises; with embed stopped every story "refused"
+            try:
+                stories = calibration.generate(lambda _i: _calibration_job(env, ch, rng), n)
+            finally:
+                acq.release("embed", owner)
         finally:
-            env.services.acquirer.release("llama", owner)
+            acq.release("llama", owner)
         out = calibration.write_generation(env.paths, env.db, channel, stories)
         refused = sum(1 for s in stories if s.refusal)
         typer.echo(f"wrote {len(stories)} stories to {out}")

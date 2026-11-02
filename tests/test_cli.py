@@ -308,4 +308,4 @@ def test_policy_gates_also_cover_the_script_plan(monkeypatch: pytest.MonkeyPatch
     names = FORMAT_STAGES["master_from_script"]
     assert names.index("policy_text") == names.index("seo_shorts") + 1
     assert names.index("policy_final") == names.index("outbox") - 1
-    assert "short_combos" not in names
+    assert names.index("short_combos") == names.index("script_import") + 1  # series Shorts get combos too

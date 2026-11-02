@@ -12,7 +12,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from ns_common.embed_client import to_blob
+from ns_common.embed_client import embed_window, to_blob
 from ns_common.errors import NsError
 from ns_studio.context import JobContext
 from ns_studio.series.importer import build_artifacts
@@ -20,8 +20,6 @@ from ns_studio.series.store import parse_concept, parse_script, parse_short, rea
 from ns_studio.stages import Tenant, register
 from ns_studio.text.budget import PACING_WPM
 from ns_studio.text.stages_shorts import now_iso
-
-EMBED_CHARS = 1500
 
 
 def _read(path: str, what: str) -> str:
@@ -56,7 +54,7 @@ class ScriptImportStage:
         art = build_artifacts(script, shorts, wpm=wpm, combo_id=ctx.combo.combo_id, concept=concept)
         full_text = "\n\n".join(c.text for c in art.story.chapters)
         total_words = sum(c.word_count for c in art.story.chapters)
-        vec = ctx.services.embed.embed([full_text[:EMBED_CHARS]])[0]
+        vec = ctx.services.embed.embed([embed_window(full_text)])[0]
         ctx.db.execute(
             "insert or ignore into channels(slug, display_name, created_at) values (?,?,?)",
             (ctx.channel.slug, ctx.channel.display_name, now_iso()),

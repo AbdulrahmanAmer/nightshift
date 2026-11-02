@@ -28,6 +28,7 @@ class Voice(Strict):
 # Per-channel caption options (spec 17.2). A comment, not a docstring: pydantic would put it in the schema.
 class CaptionsOpts(Strict):
     mask_profanity: bool = False     # mask listed words in the captions; the audio is untouched
+    remove_fillers: bool = False     # clips: leave um / uh / er out of the captions (the audio is untouched)
 
 
 class Pools(Strict):
@@ -71,8 +72,8 @@ class Channel(Strict):
     @field_validator("long_minutes")
     @classmethod
     def _floor(cls, v: tuple[int, int]) -> tuple[int, int]:
-        if v[0] < 9 or v[1] < v[0]:
-            raise ValueError("long_minutes must be [>=9, >=min]")
+        if v[0] < 9 or v[1] < v[0] or v[1] > 14:
+            raise ValueError("long_minutes must be [>=9, >=min, <=14] (QC fails a master over 15:00)")
         return v
 
 
@@ -106,6 +107,10 @@ class EmbedCfg(Strict):
     host: str = "127.0.0.1"
     port: int = 8081
     model_path: str = ""
+    # llama-server's default physical batch (-ub 512) rejects any input longer than 512 tokens; the embedding
+    # model's own context is 2048. The supervisor passes these as -c, -b and -ub (see `embed_server_args`).
+    ctx_size: int = 2048
+    batch_size: int = 2048
 
     @property
     def base_url(self) -> str:
@@ -512,6 +517,7 @@ class PolicyCheckResult(Strict):
     title_honest: bool
     standalone: bool | None
     notes: str
+    tags_relevant: bool | None = None    # only when tags were given: true when every tag describes the story
 
 
 # ---------- clipper (spec 15.6; CR-C8-1, CR-C8-6) ----------

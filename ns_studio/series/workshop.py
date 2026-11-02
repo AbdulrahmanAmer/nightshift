@@ -54,7 +54,13 @@ from ns_studio.series.store import (
     normalize_text,
     stories_dir,
 )
-from ns_studio.text.budget import PACING_WPM, chapter_budget, distribute_words, short_body_words
+from ns_studio.text.budget import (
+    PACING_WPM,
+    chapter_budget,
+    distribute_words,
+    moment_limits,
+    short_body_words,
+)
 from ns_studio.text.models_local import ChapterDraft
 from ns_studio.text.prompts import call_json, call_text, parse_model
 from ns_studio.text.stages_master import (
@@ -108,6 +114,7 @@ class ProduceRequest:
     design: dict[str, Any]
     end_card: str
     publish_not_before_days: int
+    minutes: int = 15  # the part's runtime target; QC allows a master up to 15 % over it
 
 
 EnqueueFn = Callable[[ProduceRequest], object]
@@ -481,8 +488,8 @@ class Workshop:
                 {
                     "seconds": b,
                     "body_words": short_body_words(b, wpm),
-                    "min_words": round(short_body_words(b, wpm) * 0.8),
-                    "max_words": round(short_body_words(b, wpm) * 1.2),
+                    "min_words": moment_limits(short_body_words(b, wpm))[0],
+                    "max_words": moment_limits(short_body_words(b, wpm))[1],
                 }
                 for b in buckets
             ],
@@ -917,7 +924,8 @@ class Workshop:
             if value is None:
                 continue
             if key == "voice":
-                data["voice"] = {**data["voice"], **({"speaker": value} if isinstance(value, str) else value)}
+                patch = {"speaker": value} if isinstance(value, str) else value
+                data["voice"] = {**(data["voice"] or {}), **patch}
             elif key in DesignDoc.model_fields:
                 data[key] = value
             else:
@@ -987,6 +995,7 @@ class Workshop:
                 design=design.model_dump(),
                 end_card=f"Next: Part {nxt.n}, {nxt.title}." if nxt else "That was the final part.",
                 publish_not_before_days=idx * design.publish_cadence_days,
+                minutes=series.entry(n).minutes,
             )
             self._prepare_job(req)
             fn(req)
@@ -1001,7 +1010,18 @@ class Workshop:
         source = {"kind": "script_import", **asdict(req)}
         (d / "script_source.json").write_text(json.dumps(source, indent=2, ensure_ascii=False) + "\n",
                                               encoding="utf-8")
-        context = {"series_slug": req.series_slug, "series_title": req.series_title, "part_n": req.part_n}
+        context = {
+            "series_slug": req.series_slug,
+            "series_title": req.series_title,
+            "part_n": req.part_n,
+            "parts_total": req.parts_total,
+            "title": req.title,
+            "short_titles": req.short_titles,
+            "end_card": req.end_card,
+            "publish_not_before_days": req.publish_not_before_days,
+            "minutes": req.minutes,
+            "design": req.design,
+        }
         (d / "series_context.json").write_text(json.dumps(context, indent=2) + "\n", encoding="utf-8")
 
     def mark_published(self, slug: str, n: int) -> StatusDoc:

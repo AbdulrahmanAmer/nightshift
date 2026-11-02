@@ -78,7 +78,7 @@ def test_voice_stage_normalizes(tmp_home: Path):
     lufs, tp = measure_lufs(Path(man["p1"]["path"]))
     assert -17 <= lufs <= -15 and tp <= -1.0
     parts = ctx.read_json("parts.json")
-    assert abs(parts[0]["est_seconds"] - man["p1"]["seconds"]) < 0.01
+    assert parts == PARTS  # measured seconds live in the manifest; parts.json is an input of the LLM stages
     sidecar = Path(man["p1"]["path"]).with_suffix(".txt")
     assert sidecar.read_text(encoding="utf-8") == PARTS[0]["text"]
     assert ff.probe(Path(man["p1"]["path"]))["streams"][0]["sample_rate"] == "48000"

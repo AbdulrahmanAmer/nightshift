@@ -7,6 +7,8 @@ import zlib
 from pathlib import Path
 
 from ns_common import ffmpeg as ff
+from ns_common.models import Voice
+from ns_common.pacing import pacing_speed
 from ns_common.textstats import split_sentences
 from ns_common.tts_client import TtsItem
 from ns_studio.context import JobContext
@@ -14,6 +16,22 @@ from ns_studio.media.audio import loudnorm, measure_lufs
 from ns_studio.stages import Tenant
 
 __all__ = ["VoiceStage", "loudnorm", "measure_lufs", "narration_items", "synthesize"]
+
+
+def job_voice(ctx: JobContext) -> Voice:
+    """The voice of the job: a series design's voice when the job is a series part, else the channel's."""
+    design_voice = ctx.series.get("design", {}).get("voice")
+    if design_voice:
+        try:
+            return Voice.model_validate(design_voice)
+        except ValueError:
+            pass  # a damaged design must not stop the part: use the channel voice
+    return ctx.channel.voice
+
+
+def job_speed(ctx: JobContext) -> float:
+    """TTS speed of every item of the job: the voice's speed scaled to the combo's pacing (spec 7.0)."""
+    return pacing_speed(job_voice(ctx).speed, ctx.combo.pacing)
 
 
 def narration_items(parts: list[dict], voice_name: str, speed: float) -> list[TtsItem]:
@@ -53,7 +71,7 @@ def synthesize(ctx: JobContext, items: list[TtsItem]) -> tuple[dict[str, dict], 
     raw_dir = ctx.subdir("audio/raw")
     manifest: dict[str, dict] = {it.id: prev[it.id] for it in items if it.id not in todo_ids}
     if todo:
-        seed = zlib.crc32(ctx.job_id.encode()) & 0x7FFFFFFF
+        seed = (zlib.crc32(ctx.job_id.encode()) + ctx.attempt) & 0x7FFFFFFF  # a retry sounds different
         files = ctx.services.tts.speak_batch(todo, raw_dir, seed=seed)
         by_id = {it.id: it for it in todo}
         for f in files:
@@ -92,17 +110,11 @@ class VoiceStage:
             run_voice_master(ctx)
             return
         parts = ctx.read_json("parts.json")
-        voice = ctx.channel.voice
+        voice = job_voice(ctx)
         voice_name = voice.name or voice.speaker or "Ryan"
-        items = narration_items(parts, voice_name, voice.speed)
+        items = narration_items(parts, voice_name, job_speed(ctx))
         manifest, synthesized = synthesize(ctx, items)
-        changed = False
-        for p in parts:
-            secs = manifest[f"p{p['n']}"]["seconds"]
-            if abs(float(p.get("est_seconds", 0.0)) - secs) > 1e-6:
-                p["est_seconds"] = secs
-                changed = True
-        if changed:
-            ctx.write_json("parts.json", parts)
+        # Measured seconds live in audio/manifest.json only: rewriting parts.json (an input of hooks, seo,
+        # visual_plan and the policy gate) made `--resume` redo those LLM stages.
         ctx.write_json("audio/manifest.json", {it.id: manifest[it.id] for it in items})
         ctx.log.info("voice_done", job_id=ctx.job_id, items=len(items), synthesized=synthesized)

@@ -13,7 +13,7 @@ from pydantic import BaseModel, ValidationError
 
 from ns_common.errors import NsError
 from ns_common.models import ClipPlanItem, Idea, Part, PolicyCheckResult, Seo, VisualBeat
-from ns_common.paths import contracts_dir, repo_root
+from ns_common.paths import Paths, contracts_dir, repo_root
 from ns_studio.context import JobContext
 from ns_studio.text.exemplars import load_exemplars
 
@@ -212,10 +212,27 @@ class Prompt:
     user_template: jinja2.Template
 
 
+def _stamp(path: Path) -> tuple[int, int]:
+    st = path.stat()
+    return st.st_mtime_ns, st.st_size
+
+
+def _prompt_source(name: str) -> Path:
+    """The prompt file to use: the owner's `<home>/prompt_overrides/<name>.md` when it parses, else ours."""
+    own = Paths.from_env().prompt_overrides / f"{name}.md"
+    if own.is_file():
+        try:
+            _parse_prompt(name, str(own), _stamp(own))
+            return own
+        except (ValueError, OSError, yaml.YAMLError, jinja2.TemplateError):
+            pass  # a broken override must not stop the nightly run: fall back to the shipped prompt
+    return PROMPTS_DIR / f"{name}.md"
+
+
 @cache
-def load_prompt(name: str) -> Prompt:
-    """Load `prompts/<name>.md`; raises ValueError when the YAML front-matter is missing or incomplete."""
-    raw = (PROMPTS_DIR / f"{name}.md").read_text(encoding="utf-8").replace("\r\n", "\n")
+def _parse_prompt(name: str, path: str, stamp: tuple[int, int]) -> Prompt:
+    """Parse one prompt file (`stamp` = mtime and size keys the cache so an edited override is picked up)."""
+    raw = Path(path).read_text(encoding="utf-8").replace("\r\n", "\n")
     if not raw.startswith("---\n"):
         raise ValueError(f"prompt {name}: missing front-matter")
     parts = raw.split("---\n", 2)
@@ -233,6 +250,18 @@ def load_prompt(name: str) -> Prompt:
         system=system.strip(),
         user_template=_ENV.from_string(user.strip()),
     )
+
+
+clear_prompt_cache = _parse_prompt.cache_clear
+
+
+def load_prompt(name: str) -> Prompt:
+    """Load `prompt_overrides/<name>.md` from the owner's home, else `prompts/<name>.md`.
+
+    Raises ValueError when the shipped file's YAML front-matter is missing or incomplete.
+    """
+    path = _prompt_source(name)
+    return _parse_prompt(name, str(path), _stamp(path))
 
 
 @lru_cache(maxsize=1)
@@ -268,6 +297,21 @@ def _common_vars(ctx: JobContext) -> dict[str, Any]:
     }
 
 
+BASE_TEMPERATURE = 0.8  # the LLM clients' default
+RETRY_TEMPERATURE_STEP = 0.15
+MAX_TEMPERATURE = 1.1
+
+
+def attempt_temperature(attempt: int) -> float:
+    """Sampling temperature of regeneration `attempt` (0 = first pass): hotter each time, capped at 1.1."""
+    return round(min(MAX_TEMPERATURE, BASE_TEMPERATURE + RETRY_TEMPERATURE_STEP * attempt), 2)
+
+
+def attempt_kwargs(ctx: JobContext) -> dict[str, Any]:
+    """Extra LLM arguments for a regenerated job; empty on the first pass so clients keep their defaults."""
+    return {"temperature": attempt_temperature(ctx.attempt)} if ctx.attempt else {}
+
+
 def call_json(
     ctx: JobContext,
     name: str,
@@ -285,7 +329,7 @@ def call_json(
     schema_key = schema_name or p.schema
     if not schema_key:
         raise ValueError(f"prompt {name} has no schema")
-    ctx.prompt_versions[name] = p.version
+    ctx.note_prompt(name, p.version)
     user = render(p, **(_common_vars(ctx) | vars))
     return ctx.services.llm.complete_json(
         prompt_name=fixture or name,
@@ -293,16 +337,17 @@ def call_json(
         user=user,
         schema=PROMPT_SCHEMAS[schema_key],
         thinking=p.thinking,
+        **attempt_kwargs(ctx),
     )
 
 
 def call_text(ctx: JobContext, name: str, *, fixture: str | None = None, **vars: Any) -> str:
     """Render prompt `name` and return the LLM's plain-text answer; records the prompt version."""
     p = load_prompt(name)
-    ctx.prompt_versions[name] = p.version
+    ctx.note_prompt(name, p.version)
     user = render(p, **(_common_vars(ctx) | vars))
     return ctx.services.llm.complete_text(
-        prompt_name=fixture or name, system=p.system, user=user, thinking=p.thinking
+        prompt_name=fixture or name, system=p.system, user=user, thinking=p.thinking, **attempt_kwargs(ctx)
     )
 
 

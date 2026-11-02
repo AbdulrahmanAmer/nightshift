@@ -110,3 +110,44 @@ def test_real_mode_assembles_transcript_from_a_transcriber(tmp_path: Path) -> No
     assert out.words[0].w == "w0" and out.words[0].seg == 0
     assert out.words[-1].seg == 1  # t = 13.65 s lies in the second segment
     assert [s.speaker for s in out.segments] == [0, 1]  # 2 s pause
+
+
+class OnePassT:
+    """The real engine: segments carry their words, and every call is a full (expensive) pass."""
+
+    name = "whisper"
+
+    def __init__(self) -> None:
+        self.passes = 0
+
+    def segments(self, wav: Path, language: str = "en") -> list[Any]:
+        self.passes += 1
+        out = []
+        for i in range(3):
+            words = tuple(
+                SimpleNamespace(w=f"w{i}_{k}", start=i * 10 + k * 0.4, end=i * 10 + k * 0.4 + 0.3)
+                for k in range(15)
+            )
+            out.append(SimpleNamespace(start=i * 10.0, end=i * 10.0 + 6.0, text=f"Segment {i}.", words=words))
+        return out
+
+    def words(self, wav: Path, language: str = "en") -> list[Any]:
+        self.passes += 1
+        raise AssertionError("a second whisper pass over the whole source")
+
+
+def test_one_whisper_pass_gives_segments_and_words(tmp_path: Path) -> None:
+    """Review clipper row 10: segments() and words() each ran a full faster-whisper pass."""
+    t = OnePassT()
+    out = ts.run_transcription(t, tmp_path / "a.wav", sidecar=None, source_name="s.mp4", duration_s=40.0)
+    assert t.passes == 1
+    assert len(out.words) == 45 and [w.seg for w in out.words[::15]] == [0, 1, 2]
+    assert out.words[16].w == "w1_1"
+
+
+def test_segment_lookup_is_by_bisect_and_picks_the_nearest_gap() -> None:
+    segs = [seg(0, 0.0, 5.0, "a"), seg(1, 10.0, 15.0, "b"), seg(2, 20.0, 25.0, "c")]
+    starts = [s.start for s in segs]
+    times = (1.0, 12.0, 24.0, 6.0, 8.0, 99.0)
+    assert [ts._segment_index(segs, starts, t) for t in times] == [0, 1, 2, 0, 1, 2]
+    assert ts._segment_index([], [], 3.0) == 0

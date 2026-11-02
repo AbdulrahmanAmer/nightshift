@@ -6,7 +6,7 @@ import random
 import re
 import shutil
 import zlib
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -14,6 +14,7 @@ from typing import Any
 from ns_common.models import Channel, ClipRef, Metadata, PolicyAdvice, PolicyResult, Seo
 from ns_common.paths import Paths
 from ns_studio.context import JobContext
+from ns_studio.media.master import load_shorts
 from ns_studio.media.shotplan import Shot
 from ns_studio.stages import Tenant
 
@@ -73,6 +74,20 @@ def story_title(ctx: JobContext) -> str:
     return ctx.job_id
 
 
+MAX_PATH = 200  # longest Outbox path we create; Windows stops at 260 without LongPathsEnabled (NS-W112)
+MIN_STEM = 16
+
+
+def fit_stem(base: Path, fixed: int, wanted: int) -> int:
+    """Longest name stem (at most `wanted`) that keeps the longest sheet path under `MAX_PATH`.
+
+    The stem occurs twice in a path (folder and file name); `fixed` counts every other character below
+    `base`. Never shorter than `MIN_STEM`, so a very deep home yields short but still readable names.
+    """
+    room = (MAX_PATH - len(str(base)) - fixed) // 2
+    return max(MIN_STEM, min(wanted, room))
+
+
 def outbox_target(ctx: JobContext, kind: str, k: int | None = None) -> Path:
     """The Outbox path of a video (spec §15.2a); creates its folder (and the story folder marker).
 
@@ -88,12 +103,14 @@ def outbox_target(ctx: JobContext, kind: str, k: int | None = None) -> Path:
     if ctx.file("series_context.json").exists():
         sc = ctx.read_json("series_context.json")
         part = int(sc["part_n"])
-        series_title = safe_slug(str(sc["series_title"]))
+        fit = fit_stem(base, 50, 80)  # <base>/series/<slug>/part-NN/shorts/<title> - Part NN - Short KK.json
+        series_title = safe_slug(str(sc["series_title"]), fit)
         stem = f"{series_title} - Part {part:02d}"
-        root = base / "series" / safe_slug(str(sc["series_slug"])) / f"part-{part:02d}"
+        root = base / "series" / safe_slug(str(sc["series_slug"]), fit) / f"part-{part:02d}"
     else:
         title = story_title(ctx)
-        stem = safe_slug(title) or ctx.job_id
+        # <base>/stories/<title>/shorts/<title> - Short KK.json: the title is in the path twice
+        stem = safe_slug(title, fit_stem(base, 33, 80)) or ctx.job_id
         root = unique_dir(base / "stories", stem, ctx.job_id)
     folder = root / ("full" if kind == "long" else "shorts")
     folder.mkdir(parents=True, exist_ok=True)
@@ -112,6 +129,11 @@ def job_date(job_id: str) -> datetime:
     if not m:
         raise ValueError(f"job id without date: {job_id!r}")
     return datetime.strptime(m.group(1), "%Y%m%d")
+
+
+def series_delay_days(ctx: JobContext) -> int:
+    """Days a series part waits before its first publish (the design's cadence times the part's place)."""
+    return max(0, int(ctx.series.get("publish_not_before_days", 0) or 0))
 
 
 def publish_after(channel: Channel, job_id: str, key: str, *, day_offset: int = 1) -> str:
@@ -193,6 +215,34 @@ def _yes_no(flag: bool) -> str:
     return "Yes" if flag else "No"
 
 
+def zone_label(publish_after: str) -> str:
+    """Time zone of a local `publish_after` stamp, like `Egypt Standard Time, UTC+02:00` (DST-aware).
+
+    The sheets carry local wall-clock times; a reviewer in another zone needs to know which zone they are in.
+    Empty when the stamp cannot be read.
+    """
+    try:
+        when = datetime.fromisoformat(publish_after)
+    except ValueError:
+        return ""
+    local = when.astimezone() if when.tzinfo is None else when
+    offset = local.utcoffset()
+    if offset is None:
+        return ""
+    minutes = int(offset.total_seconds() // 60)
+    sign = "+" if minutes >= 0 else "-"
+    utc = f"UTC{sign}{abs(minutes) // 60:02d}:{abs(minutes) % 60:02d}"
+    name = local.tzname()
+    return f"{name}, {utc}" if name and not name.startswith("UTC") else utc
+
+
+def publish_line(publish_after: str) -> str:
+    """`PUBLISH AFTER (local time): 2026-11-02 18:05 (<zone>)` as written in every upload sheet."""
+    zone = zone_label(publish_after)
+    suffix = f" ({zone})" if zone else ""
+    return f"PUBLISH AFTER (local time): {publish_after.replace('T', ' ')}{suffix}"
+
+
 def sheet_text(meta: Metadata, video_name: str, *, related_title: str | None = None) -> str:
     """The plain-text upload sheet: everything to paste into YouTube Studio, in order."""
     lines = [
@@ -206,7 +256,7 @@ def sheet_text(meta: Metadata, video_name: str, *, related_title: str | None = N
         "",
         "TAGS: " + ", ".join(meta.tags),
         "",
-        f"PUBLISH AFTER (local time): {meta.publish_after.replace('T', ' ')}",
+        publish_line(meta.publish_after),
         "",
         "SETTINGS:",
         f"  Altered or synthetic content: {meta.ai_disclosure.capitalize()}",
@@ -266,6 +316,27 @@ def record_output(
         )
 
 
+RELATED_PREFIX = "Set Related video -> "
+
+
+def retime_sheet(entry: Mapping[str, str], publish_at: str) -> Metadata | None:
+    """Set `publish_after` in the `.json` sheet of one outbox manifest entry and rewrite its `.txt` sheet.
+
+    `entry` is a value of the job's `outbox/manifest.json` (`mp4`, `json`, `txt` paths). Returns the new
+    metadata, or None when the sheet is missing or unreadable (nothing is changed then).
+    """
+    sheet = Path(entry["json"])
+    try:
+        meta = Metadata.model_validate_json(sheet.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    meta = meta.model_copy(update={"publish_after": publish_at})
+    related = (meta.related_video_instruction or "").removeprefix(RELATED_PREFIX) or None
+    sheet.write_text(meta.model_dump_json(indent=2) + "\n", encoding="utf-8")
+    write_sheet_txt(meta, Path(entry["mp4"]).name, Path(entry["txt"]), related_title=related)
+    return meta
+
+
 class OutboxStage:
     """Stage `outbox`: copy each QC-passed Short to the Outbox with its `.json` metadata and `.txt` sheet.
 
@@ -275,7 +346,9 @@ class OutboxStage:
 
     name: str = "outbox"
     tenant: Tenant = None
-    inputs: tuple[str, ...] = ("qc/report.json", "seo.json", "seo_long.json", "seo_shorts.json")
+    inputs: tuple[str, ...] = (
+        "qc/report.json", "seo.json", "seo_long.json", "seo_shorts.json", "short_combos.json",
+    )
     outputs: tuple[str, ...] = ("outbox/manifest.json",)
 
     def run(self, ctx: JobContext) -> None:
@@ -300,7 +373,7 @@ class OutboxStage:
                 advice=advice,
                 shots=shots,
                 combo_id=ctx.combo.combo_id,
-                prompt_versions=ctx.prompt_versions,
+                prompt_versions=ctx.versions(),
                 publish_at=publish_after(
                     ctx.channel, ctx.job_id, item, day_offset=short_day_offset(ctx.channel, k)
                 ),
@@ -383,8 +456,8 @@ def run_outbox_master(ctx: JobContext) -> None:
 
     meta = build_metadata(
         channel=ctx.channel, job_id=ctx.job_id, kind="long", k=None, seo=long_seo, advice=advice,
-        shots=long_shots, combo_id=ctx.combo.combo_id, prompt_versions=ctx.prompt_versions,
-        publish_at=publish_after(ctx.channel, ctx.job_id, "long", day_offset=1),
+        shots=long_shots, combo_id=ctx.combo.combo_id, prompt_versions=ctx.versions(),
+        publish_at=publish_after(ctx.channel, ctx.job_id, "long", day_offset=1 + series_delay_days(ctx)),
         extra={
             "chapters": [{"timestamp": c["timestamp"], "title": c["title"], "start_s": c["start_s"]}
                          for c in chapters],
@@ -408,16 +481,20 @@ def run_outbox_master(ctx: JobContext) -> None:
         ctx.read_json("clips/shorts_shots.json") if ctx.file("clips/shorts_shots.json").exists() else {}
     )
     seos = ctx.read_json("seo_shorts.json") if ctx.file("seo_shorts.json").exists() else []
+    specs = {s.k: s for s in load_shorts(ctx)}
     for item, info in rendered.items():
         k = int(item[1:])
         shots = [Shot.from_json(s) for s in shorts_shots[item]["shots"]]
+        spec = specs.get(k)
         base = seo_from(seos[min(k, len(seos)) - 1])
         seo = base.model_copy(update={"description": short_description(base.description, long_seo.title)})
         smeta = build_metadata(
             channel=ctx.channel, job_id=ctx.job_id, kind="short", k=k, seo=seo, advice=advice, shots=shots,
-            combo_id=ctx.combo.combo_id, prompt_versions=ctx.prompt_versions,
+            combo_id=(spec.combo_id if spec else None) or ctx.combo.combo_id,
+            prompt_versions=ctx.versions(),
             publish_at=publish_after(
-                ctx.channel, ctx.job_id, item, day_offset=1 + short_day_offset(ctx.channel, k)
+                ctx.channel, ctx.job_id, item,
+                day_offset=1 + short_day_offset(ctx.channel, k) + series_delay_days(ctx),
             ),
             extra={"related_video_instruction": f"Set Related video -> {long_seo.title}",
                    "parent_job_id": ctx.job_id},

@@ -1,5 +1,5 @@
 ---
-version: 1
+version: 2
 thinking: false
 schema: visual_plan
 ---
@@ -12,7 +12,9 @@ Sentences (index: text):
 {% endfor %}
 Group consecutive sentences into beats of 2-3 sentences, covering every sentence exactly once.
 {% if chapter_n is defined %}
-For each beat return chapter={{ chapter_n }}, beat (0-based), sentence_start, sentence_end (inclusive), keywords (3), mood.
+For each beat return chapter={{ chapter_n }}, beat (0-based), sentence_start, sentence_end (inclusive), keywords (3), mood, emphasis.
 {% else %}
-For each beat return part={{ part_n }}, beat (0-based), sentence_start, sentence_end (inclusive), keywords (3), mood, need_vertical=true.
+For each beat return part={{ part_n }}, beat (0-based), sentence_start, sentence_end (inclusive), keywords (3), mood, need_vertical=true, emphasis.
 {% endif %}
+emphasis is an object that maps a sentence index (as a string) inside the beat to ONE key word copied exactly from that sentence: the word a listener would stress (a noun, verb or number, never "the" or "and"). At most one word per sentence; leave out sentences with no natural stress word. No emoji, no new words.
+

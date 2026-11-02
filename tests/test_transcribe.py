@@ -20,13 +20,14 @@ def _wav(tmp_path: Path, text: str) -> Path:
     return wav
 
 
-def test_fake_transcriber_spreads_words_evenly(tmp_path: Path):
+def test_fake_transcriber_timing_is_uneven_like_speech(tmp_path: Path):
     text = "The doorbell camera pings at 3:12 every night."
     wav = _wav(tmp_path, text)
     words = FakeTranscriber().words(wav)
     assert [w.w for w in words] == ["The", "doorbell", "camera", "pings", "at", "3", "12", "every", "night"]
     steps = [b.start - a.start for a, b in zip(words, words[1:], strict=False)]
-    assert max(steps) - min(steps) < 1e-6
+    assert max(steps) - min(steps) > 0.15  # long words and the sentence pause: not evenly spaced
+    assert all(b.start >= a.end for a, b in zip(words, words[1:], strict=False))
     assert words[0].start == 0.0 and words[-1].end <= wav_seconds(wav) + 0.01
     assert all(w.start < w.end for w in words)
 

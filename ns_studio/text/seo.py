@@ -53,7 +53,7 @@ def normalize_hashtags(
         word = re.sub(r"\s+", "", h.strip().lstrip("#"))
         if word and ("#" + word).lower() not in {c.lower() for c in cleaned} and word.lower() != "shorts":
             cleaned.append("#" + word)
-    keyword_tag = "#" + re.sub(r"[^A-Za-z0-9]", "", primary_keyword.title())
+    keyword_tag = "#" + re.sub(r"[^\w]|_", "", primary_keyword.title())
     for extra in (keyword_tag, "#NarratedStory", "#OriginalFiction", "#ShortStory"):
         if len(cleaned) >= 3:
             break
@@ -81,12 +81,14 @@ def finalize_seo(
     parts_total: int,
     master_title: str | None = None,
     extra_lines: Sequence[str] = (),
+    creator_note: str = "",
 ) -> Seo:
     """Apply the Shorts metadata rules of spec 9.2 to an LLM-written `Seo`.
 
     Title: keyword within the first 40 characters, "Part n" when `part_n`, at most 100 characters.
     Description: the model's lines, "Part n of N." for series, `extra_lines`, "From the full story: <master
-    title>" when `master_title` is given, and "Original fiction." last when `fiction_label`.
+    title>" when `master_title` is given, "Original fiction." when `fiction_label`, then the channel's
+    `creator_note` (spec section 11: appended to every description, not only the master's).
     Hashtags: `#Shorts` first, at most 5. Tags: 10-20 and at most 500 characters.
     """
     title = fit_title(seo.title, primary_keyword, max_chars=1000)
@@ -101,6 +103,8 @@ def finalize_seo(
         lines.append(f"From the full story: {master_title.strip()}")
     if fiction_label:
         lines.append("Original fiction.")
+    if creator_note.strip():
+        lines.append(creator_note.strip())
     return Seo(
         title=title,
         description="\n".join(line for line in lines if line),
@@ -141,7 +145,12 @@ def fill_chapter_list(description: str, chapters: Sequence[Mapping[str, Any]]) -
 
 
 def finalize_seo_long(
-    seo: SeoLong, *, primary_keyword: str, fiction_label: bool, creator_note: str = ""
+    seo: SeoLong,
+    *,
+    primary_keyword: str,
+    fiction_label: bool,
+    creator_note: str = "",
+    series: Mapping[str, Any] | None = None,
 ) -> SeoLong:
     """Apply the long-form metadata rules of spec 9.1 to an LLM-written `SeoLong`.
 
@@ -149,8 +158,14 @@ def finalize_seo_long(
     Description: up to 3 summary lines, a blank line, `CHAPTER_LIST_PLACEHOLDER` (filled after rendering,
     see `fill_chapter_list`), a blank line, "Original fiction." when `fiction_label`, the creator note.
     Hashtags: 3-5, never `#Shorts`. Tags: 10-20 and at most 500 characters.
+
+    A series part (`series` = its `series_context.json`) is titled "<series> - Part NN: <title>" (the model's
+    title shortened to fit 100 characters) and its summary ends with "Part N of M." and the end-card line.
     """
     title = fit_title(_PART_RE.sub("", seo.title), primary_keyword)
+    if series and series.get("title"):
+        head = str(series["title"]).strip()
+        title = f"{head}: {title}"[:100].rstrip() if len(head) + 2 + len(title) <= 100 else head[:100]
     summary = [
         ln.strip()
         for ln in seo.description.splitlines()
@@ -162,6 +177,10 @@ def finalize_seo_long(
     ][:3]
     if not summary:
         summary = [f"An original {primary_keyword} narrated in chapters."]
+    if series and series.get("part_n"):
+        summary.append(f"Part {series['part_n']} of {series.get('parts_total', series['part_n'])}.")
+        if str(series.get("end_card", "")).strip():
+            summary.append(str(series["end_card"]).strip())
     tail = ["Original fiction."] if fiction_label else []
     if creator_note.strip():
         tail.append(creator_note.strip())

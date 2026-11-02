@@ -29,6 +29,39 @@ def test_client_parses_openai_shape():
     assert round(cosine(out[0], out[1]), 6) == 0.0
 
 
+def test_fake_embed_rejects_inputs_llama_server_would_reject():
+    import pytest
+
+    from ns_common.embed_client import MAX_EMBED_TOKENS, approx_tokens
+    from ns_common.errors import NsError
+
+    e = FakeEmbed()
+    long_text = "word " * 2000  # a master story is about 9,000 characters
+    assert approx_tokens(long_text) > MAX_EMBED_TOKENS
+    with pytest.raises(NsError) as ei:
+        e.embed([long_text])
+    assert ei.value.code == "NS-E316"
+    assert e.embed(["fine " * 100])  # 500 characters pass
+
+
+def test_embed_window_cuts_at_a_word_boundary():
+    from ns_common.embed_client import EMBED_CHARS, approx_tokens, embed_window
+
+    text = "alpha beta gamma " * 400
+    w = embed_window(text)
+    assert len(w) <= EMBED_CHARS and not w.endswith("alph") and text.startswith(w)
+    assert approx_tokens(w) <= 512
+    assert embed_window("short") == "short"
+
+
+def test_embed_server_args_cover_the_window():
+    from ns_common.config import embed_server_args
+    from ns_common.models import Runtime
+
+    args = embed_server_args(Runtime.default("cpu-dev").embed)
+    assert args == ["-c", "2048", "-b", "2048", "-ub", "2048"]
+
+
 def test_embed_failures_have_their_own_code_not_the_llm_one():
     import pytest
 

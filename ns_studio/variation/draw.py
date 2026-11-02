@@ -232,6 +232,12 @@ def record_combo(
 ) -> None:
     """Write `combo` to the ledger (`combos` table) for `job_id` and `item` (`long` or `s<k>`)."""
     stamp = (now or datetime.now(UTC)).isoformat(timespec="seconds")
+    # A channel that exists only as YAML has no row yet and `combos.channel` references it (foreign_keys=ON).
+    # A bare row is enough here; `crud.sync_channel_row` fills the display name when the run starts.
+    db.execute(
+        "insert or ignore into channels(slug, display_name, created_at) values (?,?,?)",
+        (channel, channel, stamp),
+    )
     db.execute(
         "insert or replace into combos(combo_id, channel, job_id, item, hook, structure, pov_tone, pacing, "
         "caption_style, visual_treatment, title_formula, length_bucket, created_at) "

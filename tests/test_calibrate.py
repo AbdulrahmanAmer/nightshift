@@ -203,6 +203,44 @@ def test_cli_generate_then_score(tmp_home: Path, monkeypatch: pytest.MonkeyPatch
     assert "recommended critic_bar" in res2.output and "spearman overall" in res2.output
 
 
+def test_cli_generate_takes_the_embed_lease(tmp_home: Path, monkeypatch: pytest.MonkeyPatch):
+    """Review row 7: calibrate held only llama; with embed stopped every story failed NS-E301 as a refusal."""
+    from ns_common.acquire import DevAcquirer
+
+    events: list[tuple[str, str]] = []
+    real = DevAcquirer.acquire
+
+    def spy(self, service, owner, **kw):
+        events.append((service, "acquire"))
+        return real(self, service, owner, **kw)
+
+    monkeypatch.setattr(DevAcquirer, "acquire", spy)
+    monkeypatch.setattr(jobs, "STAGE_MODULES", ())
+    monkeypatch.setattr(cal, "default_generator", lambda ctx: STORY)
+    monkeypatch.setattr(cal, "default_critic", lambda ctx, text: _critique(9.0))
+    runner = CliRunner()
+    runner.invoke(app, ["channel", "add", "--slug", "after-dark", "--name", "AD", "--niche", "horror"])
+    res = runner.invoke(app, ["calibrate", "--channel", "after-dark", "--n", "2", "--fake-services"])
+    assert res.exit_code == 0, res.output
+    assert events == [("llama", "acquire"), ("embed", "acquire")]
+
+
+def test_two_model_advice_needs_a_story_model(tmp_home: Path):
+    """Review gap 14: the CLI advised a mode that cannot be switched on without story_model_path."""
+    runner = CliRunner()
+    runner.invoke(app, ["channel", "add", "--slug", "after-dark", "--name", "AD", "--niche", "horror"])
+    stories = _make_stories([9.0, 6.0] * 5) + [cal.CalibrationStory("cal-11", "", refusal=True)]
+    paths = Paths.from_env()
+    db = Db(paths.db_path)
+    db.migrate()
+    d = cal.write_generation(paths, db, "after-dark", stories)
+    scores = tmp_home / "human.csv"
+    _write_human(scores, d / "scores.csv", {f"cal-{i:02d}": (9.0 if i % 2 else 5.0) for i in range(1, 11)})
+    res = runner.invoke(app, ["calibrate", "--channel", "after-dark", "--score", str(scores)])
+    assert res.exit_code == 0, res.output
+    assert "no story model is configured" in res.output and "switch to two-model mode" not in res.output
+
+
 def test_cli_score_without_generation_fails(tmp_home: Path):
     runner = CliRunner()
     add = runner.invoke(app, ["channel", "add", "--slug", "x-ch", "--name", "X", "--niche", "n"])

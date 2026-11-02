@@ -78,10 +78,35 @@ def run_stage(ctx: JobContext, stage: Stage, *, force: bool = False) -> bool:
         return False
     with ctx.log.timed("stage", stage=stage.name, job_id=ctx.job_id, tenant=stage.tenant):
         stage.run(ctx)
+    rewrites = rewritten_inputs(stage)
+    if rewrites:  # the stage edited its own inputs on purpose (expansion): record the state it left behind
+        h = inputs_hash(ctx, stage)
     state = StageState.load(ctx.job_dir)
     state.mark_done(stage.name, h)
+    if rewrites:
+        refresh_upstream_hashes(ctx, state, rewrites, skip=stage.name)
     state.save(ctx.job_dir)
     return True
+
+
+def rewritten_inputs(stage: Stage) -> tuple[str, ...]:
+    """Files `stage` legitimately edits although earlier stages read them (class attribute `rewrites`)."""
+    return tuple(getattr(stage, "rewrites", ()))
+
+
+def refresh_upstream_hashes(ctx: JobContext, state: StageState, files: tuple[str, ...], *, skip: str) -> None:
+    """Re-record the inputs hash of every finished stage that reads one of `files`.
+
+    A later stage (the duration check expanding a chapter) rewrites `story.json` and the plans in a way that
+    keeps them consistent with each other. Without this, `--resume` sees the new bytes as a changed input and
+    redoes the LLM stages that produced the titles and the Shorts selection.
+    """
+    for name, entry in state.entries.items():
+        other = REGISTRY.get(name)
+        if name == skip or other is None or entry.get("status") != "done":
+            continue
+        if set(other.inputs) & set(files):
+            entry["inputs_hash"] = inputs_hash(ctx, other)
 
 
 def needs_embed(stage: Stage) -> bool:
