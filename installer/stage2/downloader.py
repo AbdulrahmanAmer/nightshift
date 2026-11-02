@@ -435,7 +435,8 @@ def webview2_item(manifest: Manifest, home: Path) -> DownloadItem | None:
         return None
     root = Path(home) / "bin"
     return DownloadItem(
-        name="webview2", url=pin.url, dest=root / "_downloads" / f"microsoft.web.webview2.{pin.version}.nupkg",
+        name="webview2", url=pin.url,
+        dest=root / "_downloads" / f"microsoft.web.webview2.{pin.version}.nupkg",
         sha256=pin.sha256, kind="nupkg", extract_to=root / "webview2",
         expect=tuple(name for name, _ in WEBVIEW2_MEMBERS), members=WEBVIEW2_MEMBERS,
     )

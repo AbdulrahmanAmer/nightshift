@@ -85,8 +85,10 @@ def test_host_script_follows_the_app_host_protocol() -> None:
         "config\\window.json", "run\\apphost.json", "Global\\Nightshift.AppHost", "#15131d",
         "CaptionHeight = 0", "ResizeBorderThickness = New-Object System.Windows.Thickness 6",
         "GlassFrameThickness = New-Object System.Windows.Thickness 0", "UseAeroCaptionButtons = $false",
-        "WindowStyle]::None", "ResizeMode]::CanResize", "$MinWidth = 1024", "$MinHeight = 640", "$CloseGraceMs = 1500",
-        "'minimize'", "'toggle-maximize'", "'drag-start'", "'close'", "'open-external'", "'close-ack'", "'ready'",
+        "WindowStyle]::None", "ResizeMode]::CanResize", "$MinWidth = 1024", "$MinHeight = 640",
+        "$CloseGraceMs = 1500",
+        "'minimize'", "'toggle-maximize'", "'drag-start'", "'close'", "'open-external'",
+        "'close-ack'", "'ready'",
         "close-requested", "window-state", "maximized =", "WebMessageReceived", "exit 3",
     ):
         assert needle in text, needle
