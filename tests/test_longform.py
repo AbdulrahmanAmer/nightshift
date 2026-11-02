@@ -93,7 +93,7 @@ def test_segment_graph_with_and_without_card(tmp_path: Path):
 
 def test_concat_list_text():
     text = concat_list_text([Path("C:/a/seg_1.mp4"), Path("C:/a/it's/seg_2.mp4")])
-    assert text == "file 'C:/a/seg_1.mp4'\n" + "file 'C:/a/it'" + "\\''s/seg_2.mp4'\n"  # the demuxer's close-escape-reopen rule
+    assert text == "file 'C:/a/seg_1.mp4'\n" + "file 'C:/a/it'" + "\\''s/seg_2.mp4'\n"  # close, escape, reopen
 
 
 def test_descriptions_follow_spec_9_1_and_9_2():

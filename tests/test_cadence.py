@@ -269,7 +269,7 @@ def test_shorts_only_jobs_of_one_night_get_different_slots(tmp_home: Path):
         datetime.fromisoformat(json.loads(Path(m["s1"]["json"]).read_text(encoding="utf-8"))["publish_after"])
         for m in mans
     )
-    assert times[0].date() == times[1].date() == date(2026, 11, 20)  # no master that night: two Shorts a day from today
+    assert times[0].date() == times[1].date() == date(2026, 11, 20)  # no master: from today
 
 
 def test_uncoded_exception_fails_only_that_job(tmp_home: Path):

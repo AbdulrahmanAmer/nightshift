@@ -33,7 +33,7 @@ def test_the_studio_reads_the_keys_setup_and_settings_store(monkeypatch: pytest.
 
 
 def test_the_dpapi_file_is_the_fallback_when_keyring_is_empty(monkeypatch: pytest.MonkeyPatch):
-    """The nightly task (S4U session) may not reach Credential Manager; config/secrets.dpapi is the fallback."""
+    """The nightly task (S4U) may not reach Credential Manager; config/secrets.dpapi is the fallback."""
     kr = types.ModuleType("keyring")
     errors = types.ModuleType("keyring.errors")
     errors.KeyringError = type("KeyringError", (Exception,), {})  # type: ignore[attr-defined]

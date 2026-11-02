@@ -132,7 +132,7 @@ def load_shorts(ctx: JobContext) -> list[ShortSpec]:
                 length_bucket=s.get("length_bucket", combo.get("length_bucket")),
                 caption_style=s.get("caption_style", combo.get("caption_style")),
                 visual_treatment=s.get("visual_treatment", combo.get("visual_treatment")),
-                combo_id=s.get("combo_id") or combo.get("combo_id"),
+                combo_id=combo.get("combo_id") or s.get("combo_id"),
             )
         )
     return out
