@@ -124,3 +124,35 @@ def test_import_settings_is_refused_while_a_job_runs(tmp_home: Path):
     job = state.store.create("verify", None, {})
     state.store.mark_running(job.job_id)
     assert code_of(dash.settings.import_settings, "backup.zip", io.BytesIO(b"x")) == "job_running"
+
+
+# ------------------------------------------------------------------ row 13: saved Assistant requests are answered by themselves
+
+
+def test_saved_assistant_request_is_answered_when_the_job_ends(tmp_home: Path):
+    """'I saved your request and will answer when the engine is free' needed the owner to press a button."""
+    from ns_common.paths import Paths
+    from ns_dashboard.assistant.llm import ScriptedToolLlm, StaticProvider, say
+    from ns_dashboard.handlers import build_state
+    from ns_dashboard.supervisor_link import SupervisorLink
+
+    state = build_state(
+        Paths.from_env(), fake_services=True, link=SupervisorLink("http://127.0.0.1:9", timeout_s=0.2)
+    )
+    dash = Dashboard(state, llm_provider=StaticProvider(ScriptedToolLlm([say("It is Tuesday.")])))
+    cid = dash.assistant_store.new_conversation()
+    dash.assistant_store.add_message(cid, "user", "What day is it?")
+    dash.assistant_store.queue_message(cid, "What day is it?", {})
+    job = state.store.create("verify", None, {})
+    state.worker.enqueue(job.job_id)
+    state.worker.start()
+    try:
+        assert state.worker.wait_idle(20)
+        deadline = __import__("time").monotonic() + 20
+        while dash.assistant_store.queued() and __import__("time").monotonic() < deadline:
+            __import__("time").sleep(0.05)
+    finally:
+        state.worker.stop()
+    assert dash.assistant_store.queued() == []
+    texts = [m["content"] for m in dash.assistant_store.messages(cid) if m["role"] == "assistant"]
+    assert "It is Tuesday." in texts

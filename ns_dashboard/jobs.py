@@ -405,6 +405,9 @@ class JobWorker:
         self.gpu_gate = gpu_gate
         self.inline_kinds = inline_kinds
         self.on_recover = on_recover or {}
+        #: Called on the worker thread when a job has ended and nothing else is queued (the Assistant answers saved requests).
+        self.on_idle: Callable[[], None] | None = None
+        self._ended = False
         self._cv = threading.Condition()
         self._wake = False
         self._stopping = False
@@ -569,9 +572,22 @@ class JobWorker:
             with self._cv:
                 self._cv.notify_all()
 
+    def _idle(self) -> None:
+        if self.on_idle is None:
+            return
+        try:
+            self.on_idle()
+        except Exception as e:  # an answer that fails must not stop the worker
+            self.log.warn("idle_hook_failed", str(e))
+
     def _loop(self) -> None:
         while not self._stopping:
             if self.run_next():
+                self._ended = True
+                continue
+            if self._ended:
+                self._ended = False
+                self._idle()
                 continue
             with self._cv:
                 if self._stopping:

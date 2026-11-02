@@ -51,6 +51,12 @@ class Dashboard:
         acquirer = make_acquirer(state.link.base_url)
         provider = llm_provider or SupervisorLlmProvider(state.link.status, acquirer)
         self.assistant = Assistant(self, self.registry, self.assistant_store, provider)
+        state.worker.on_idle = self.answer_saved_requests
+
+    def answer_saved_requests(self) -> None:
+        """Answer the Assistant requests saved while the engine was busy (called when a job ends)."""
+        if self.assistant_store.queued():
+            self.assistant.run_queued()
 
     def close(self) -> None:
         """Close the databases (needed on Windows before a temp folder can be deleted)."""
