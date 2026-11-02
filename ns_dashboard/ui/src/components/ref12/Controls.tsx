@@ -8,6 +8,8 @@ import { Icon, type IconName } from "./Icon";
 export interface AppTileProps {
   icon: IconName;
   label: string;
+  /** Replaces the icon box with a small picture (a layout diagram). */
+  art?: ReactNode;
   /** Second line under the label. */
   caption?: string;
   /** Selected state: the tile presses in and the glyph takes the selection colour (aria-checked in a radio AppGrid). */
@@ -17,12 +19,12 @@ export interface AppTileProps {
 }
 
 /** AppTile: a raised square with an accent glyph and its label under it. Presses in on :active and when selected. */
-export function AppTile({ icon, label, caption, selected, onClick, className, role }: AppTileProps & { role?: "radio" }) {
+export function AppTile({ icon, label, art, caption, selected, onClick, className, role }: AppTileProps & { role?: "radio" }) {
   return (
     <button type="button" role={role} aria-checked={role ? !!selected : undefined} onClick={onClick}
       className={cx("ds-focus flex min-h-[104px] min-w-0 flex-col items-center justify-center gap-2 rounded-ds-lg px-3 py-4 text-center transition-[box-shadow,transform,background-color] duration-200 ease-ds-out",
         selected ? "bg-ds-accent-subtle text-ds-text shadow-[var(--ds-shadow-inset),0_0_0_1.5px_var(--ds-border-focus)]" : "bg-ds-surface text-ds-text shadow-[var(--ds-shadow-1),0_0_0_1px_var(--ds-border-subtle)] hover:-translate-y-px active:translate-y-0 active:shadow-ds-inset", className)}>
-      <span aria-hidden className={cx("grid size-10 place-items-center rounded-ds-md", selected ? "bg-ds-accent text-ds-on-accent shadow-ds-accent" : "bg-ds-accent-soft text-ds-accent-ink")}><Icon name={icon} size={20} /></span>
+      {art ? <span aria-hidden className="grid place-items-center">{art}</span> : <span aria-hidden className={cx("grid size-10 place-items-center rounded-ds-md", selected ? "bg-ds-accent text-ds-on-accent shadow-ds-accent" : "bg-ds-accent-soft text-ds-accent-ink")}><Icon name={icon} size={20} /></span>}
       <span className="text-ds-sm leading-ds-snug font-semibold">{label}</span>
       {caption && <span className="line-clamp-2 text-ds-2xs leading-ds-snug text-ds-muted">{caption}</span>}
     </button>

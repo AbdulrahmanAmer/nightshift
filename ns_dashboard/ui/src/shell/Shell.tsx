@@ -78,7 +78,7 @@ function TopBar() {
           <IconButton icon="bell" label={bell} dot={alert || pending > 0} onClick={() => go("#/")} />
           <IconButton icon="settings" label="Settings" onClick={() => go("#/settings")} aria-current={route.name === "settings" ? "page" : undefined} />
         </div>
-        <Button leadingIcon="chat" onClick={() => ask({ page: route.name })} aria-label="Ask Nightshift"><span className="hidden @min-[480px]:inline">Ask Nightshift</span></Button>
+        <Button leadingIcon="chat" onClick={() => ask({ page: route.name })} aria-label="Ask Nightshift"><span className="hidden @min-[1000px]:inline">Ask Nightshift</span></Button>
       </div>
       <div className="mt-3 flex flex-wrap items-center gap-2 @min-[760px]:hidden">
         <StatusChip tone={DOT[eng.tone]} live>{eng.text}</StatusChip>
