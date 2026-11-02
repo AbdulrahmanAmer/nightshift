@@ -7,7 +7,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useApp, useLoad } from "../lib/app";
 import { api, ApiError } from "../lib/api";
 import { fmtDay, fmtDur, plural, store } from "../lib/format";
-import type { Footage, Format, Idea, Story, Voice, VoiceMade } from "../lib/types";
+import type { Footage, Format, Idea, SeriesStory, Story, Voice, VoiceMade } from "../lib/types";
 import { cx } from "../ui/kit";
 import { Scene } from "../visuals/Scene";
 import { LayoutDiagram } from "../visuals/charts";
@@ -287,10 +287,13 @@ function Voices() {
 
 function Formats() {
   const { toast, channelName } = useApp(); const formats = useLoad<Format[]>(() => api.get("/library/formats"), [], []);
-  const dup = async (f: Format) => { try { await api.post("/library/formats", { ...f, id: f.id + "_copy", name: (f.name || f.id) + " copy", channels: [] }); toast("Duplicated. Edit the preset file to change it", "ok"); formats.reload(); } catch (e: any) { toast(e.message, "bad"); } };
+  const dup = async (f: Format) => { try { await api.post("/library/formats", { duplicate_of: f.id }); toast("Duplicated. Edit the copy to change it", "ok"); formats.reload(); } catch (e: any) { toast(e.message, "bad"); } };
+  const [editing, setEditing] = useState<string | null>(null);
+  const editF = formats.data.find((x) => x.id === editing);
   const groups: [string, string][] = [["video", "Video formats"], ["clip", "Clip layouts"]];
   return (
     <div className="flex flex-col gap-8">
+      {editF && <DashGrid label="Edit format"><FormatEditor key={editF.id} f={editF} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); formats.reload(); }} /></DashGrid>}
       {groups.map(([k, label]) => {
         const list = formats.data.filter((f) => (k === "video" ? f.kind !== "clip" : f.kind === "clip"));
         return (
@@ -306,7 +309,7 @@ function Formats() {
                       <h3 className="text-ds-md font-semibold">{f.name || f.id}</h3>
                       <p className="text-ds-2xs text-ds-muted ds-num">{f.canvas?.w} × {f.canvas?.h} · {f.canvas?.fps} fps</p>
                       <p className="text-ds-xs text-ds-text-2">{f.channels?.length ? `Used by ${f.channels.map(channelName).join(", ")}` : "Not used by a channel"}</p>
-                      <Button size="sm" variant="ghost" className="mt-auto -ml-2 self-start" leadingIcon="copy" onClick={() => dup(f)}>Duplicate</Button>
+                      <div className="mt-auto -ml-2 flex gap-1 self-start"><Button size="sm" variant="ghost" leadingIcon="edit" onClick={() => setEditing(f.id)}>Edit</Button><Button size="sm" variant="ghost" leadingIcon="copy" onClick={() => dup(f)}>Duplicate</Button></div>
                     </div>
                   </Card>
                 );
@@ -317,6 +320,52 @@ function Formats() {
         );
       })}
     </div>
+  );
+}
+
+/** Edit form of one format: name, length, caption position and shot length. Saves with PUT /library/formats/{id}
+ *  as a patch; a shipped preset is saved as the owner's own copy of the same id and the server validates the result. */
+function FormatEditor({ f, onClose, onSaved }: { f: Format; onClose: () => void; onSaved: () => void }) {
+  const { toast } = useApp();
+  const d = f.definition || {};
+  const [name, setName] = useState<string>(d.name ?? f.name ?? f.id);
+  const [minS, setMinS] = useState(String(d.duration?.min_s ?? ""));
+  const [maxS, setMaxS] = useState(String(d.duration?.max_s ?? ""));
+  const [anchor, setAnchor] = useState(String(d.captions?.anchor_y_pct ?? ""));
+  const [words, setWords] = useState(String(d.captions?.words_on_screen ?? ""));
+  const [shotMin, setShotMin] = useState(String(d.shots?.min_s ?? ""));
+  const [shotMax, setShotMax] = useState(String(d.shots?.max_s ?? ""));
+  const [busy, setBusy] = useState(false); const [problems, setProblems] = useState<string[]>([]);
+  const num = (v: string) => (v.trim() === "" || isNaN(Number(v)) ? undefined : Number(v));
+  const save = async () => {
+    const changes: Record<string, any> = { name: name.trim() || f.id };
+    const dur = { min_s: num(minS), max_s: num(maxS) }; if (dur.min_s != null || dur.max_s != null) changes.duration = Object.fromEntries(Object.entries(dur).filter(([, v]) => v != null));
+    const cap = { anchor_y_pct: num(anchor), words_on_screen: num(words) }; if (cap.anchor_y_pct != null || cap.words_on_screen != null) changes.captions = Object.fromEntries(Object.entries(cap).filter(([, v]) => v != null));
+    const shots = { min_s: num(shotMin), max_s: num(shotMax) }; if (d.shots && (shots.min_s != null || shots.max_s != null)) changes.shots = Object.fromEntries(Object.entries(shots).filter(([, v]) => v != null));
+    setBusy(true); setProblems([]);
+    try { await api.put(`/library/formats/${encodeURIComponent(f.id)}`, { changes }); toast(f.source === "shipped" ? "Saved as your own version of this format" : "Format saved", "ok"); onSaved(); }
+    catch (e: any) { setProblems([e.message]); toast("That format was not saved", "bad"); }
+    setBusy(false);
+  };
+  const row = "grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3";
+  return (
+    <Card as="section" aria-labelledby="fmt-edit" className={SPAN["6/4"]}>
+      <CardHeader id="fmt-edit" title={`Edit ${f.name || f.id}`} actions={<Button size="sm" variant="ghost" leadingIcon="x" onClick={onClose}>Close</Button>} />
+      <div className={row}>
+        <Field label="Name" htmlFor="fmt-name"><Input id="fmt-name" value={name} onChange={(e) => setName(e.target.value)} /></Field>
+        <Field label="Shortest, seconds" htmlFor="fmt-min"><Input id="fmt-min" inputMode="numeric" value={minS} onChange={(e) => setMinS(e.target.value)} /></Field>
+        <Field label="Longest, seconds" htmlFor="fmt-max"><Input id="fmt-max" inputMode="numeric" value={maxS} onChange={(e) => setMaxS(e.target.value)} /></Field>
+        <Field label="Caption height, % from the top" htmlFor="fmt-anchor" hint="0 is the top edge, 100 the bottom"><Input id="fmt-anchor" inputMode="numeric" value={anchor} onChange={(e) => setAnchor(e.target.value)} /></Field>
+        <Field label="Words on screen at once" htmlFor="fmt-words"><Input id="fmt-words" inputMode="numeric" value={words} onChange={(e) => setWords(e.target.value)} /></Field>
+        {d.shots && <><Field label="Shortest shot, seconds" htmlFor="fmt-smin"><Input id="fmt-smin" inputMode="decimal" value={shotMin} onChange={(e) => setShotMin(e.target.value)} /></Field>
+          <Field label="Longest shot, seconds" htmlFor="fmt-smax"><Input id="fmt-smax" inputMode="decimal" value={shotMax} onChange={(e) => setShotMax(e.target.value)} /></Field></>}
+      </div>
+      {problems.length > 0 && <p role="alert" className="mt-3 text-ds-sm text-ds-danger">{problems.join(". ")}</p>}
+      <div className="mt-4 flex items-center gap-3">
+        <Button leadingIcon="check" disabled={busy} onClick={save}>{busy ? "Saving" : "Save format"}</Button>
+        <span className="text-ds-xs text-ds-muted">{f.source === "shipped" ? "A shipped format is saved as your own copy, so updates never overwrite it" : "Saved in your formats folder"}</span>
+      </div>
+    </Card>
   );
 }
 
@@ -343,12 +392,62 @@ function FootageTab() {
 
 /* ---------------------------------------------------------------- Series */
 
+const PART_LABEL: Record<string, [string, Tone]> = {
+  planned: ["Planned", "neutral"], written: ["Written, waiting for your OK", "neutral"], approved: ["Approved", "accent"],
+  producing: ["Being made", "accent"], published: ["Posted", "success"],
+};
+const NEXT_STEP: Record<string, string> = {
+  concepts: "Ask the Assistant for concepts", choose: "Choose a concept", map: "Plan the parts", design: "Pick the look of the series",
+  produce: "Produce the next part", "wait for production": "Waiting for the part being made", done: "All parts are made",
+};
+const nextWords = (s: string) => NEXT_STEP[s] ?? (s.startsWith("write part") ? `Write ${s.slice(6)}` : s.startsWith("approve part") ? `Read and approve ${s.slice(8)}` : s);
+
 function Series() {
-  const { ask, go } = useApp();
+  const { ask, go, toast, channelName } = useApp();
+  const list = useLoad<SeriesStory[]>(() => api.get("/library/series"), [], []);
+  const [busy, setBusy] = useState<string | null>(null);
   const start = () => { ask({ page: "library", tab: "series" }, "Draft 3 story concepts for a series", false); go("#/assistant"); };
-  const steps: [string, string][] = [["Concepts", "Three concepts from the Assistant; keep one or ask for a redo"], ["Part map", "Each part's hook, cliffhanger and length"], ["Scripts", "Full scripts and the Shorts cut from each part, for you to read"], ["Produce", "Approved parts are made one a week and land in the Queue"]];
+  const about = (s: SeriesStory) => { ask({ page: "library", tab: "series", story_slug: s.slug }, `What is the next step for the series ${s.title}?`, false); go("#/assistant"); };
+  const produce = async (s: SeriesStory) => {
+    setBusy(s.slug);
+    try {
+      const r = await api.post<{ queued: { part: number }[] }>(`/library/series/${encodeURIComponent(s.slug)}/produce`);
+      toast(`Part ${r.queued.map((q) => q.part).join(", ")} of ${s.title} is queued. It lands in the Queue when it is made`, "ok");
+      list.reload();
+    } catch (e: any) { toast(e.message, "bad"); }
+    setBusy(null);
+  };
+  const steps: [string, string][] = [["Concepts", "Three concepts from the Assistant; keep one or ask for a redo"], ["Part map", "Each part's hook, cliffhanger and length"], ["Scripts", "Full scripts and the Shorts cut from each part, for you to read"], ["Produce", "Approved parts are made one at a time and land in the Queue"]];
   return (
     <DashGrid label="Series">
+      {list.data.map((s) => {
+        const ready = s.parts.some((p) => p.status === "approved") && s.has_design;
+        return (
+          <Card as="article" key={s.slug} aria-labelledby={`ser-${s.slug}`} className={cx("self-stretch", SPAN["4/4"])}>
+            <CardHeader id={`ser-${s.slug}`} title={s.title} adornment={<Badge tone={s.status === "done" ? "success" : "neutral"}>{s.status}</Badge>} />
+            <p className="-mt-2 mb-3 text-ds-xs text-ds-muted">{channelName(s.channel)} · {plural(s.parts.length, "part")} · Next: {nextWords(s.next_step)}</p>
+            {s.parts.length ? (
+              <ol className="flex flex-col gap-2" aria-label={`Parts of ${s.title}`}>
+                {s.parts.map((p) => {
+                  const [label, tone] = PART_LABEL[p.status] || [p.status, "neutral" as Tone];
+                  return (
+                    <li key={p.n} className="flex flex-wrap items-center gap-3 rounded-ds-lg bg-ds-sunken px-4 py-3 shadow-ds-inset-sm">
+                      <span className="grid size-7 shrink-0 place-items-center rounded-full bg-ds-accent-soft text-ds-xs font-semibold text-ds-accent-ink ds-num">{p.n}</span>
+                      <span className="min-w-0 flex-1"><span className="block truncate text-ds-sm font-semibold">{p.title}</span><span className="block text-ds-2xs text-ds-muted">{p.minutes} min · {plural(p.shorts, "Short")} · {p.words.toLocaleString()} words</span></span>
+                      <Badge tone={tone}>{label}</Badge>
+                    </li>
+                  );
+                })}
+              </ol>
+            ) : <p className="text-ds-sm text-ds-text-2">No parts planned yet. The Assistant plans them with you</p>}
+            <div className="mt-4 flex flex-wrap items-center gap-3">
+              <Button leadingIcon="play" disabled={!ready || busy === s.slug} onClick={() => produce(s)}>{busy === s.slug ? "Queuing" : "Produce next part"}</Button>
+              <Button variant="soft" leadingIcon="chat" onClick={() => about(s)}>Ask the Assistant</Button>
+              {!ready && <span className="text-ds-xs text-ds-muted">{s.has_design ? "Approve a written part first" : "Choose the look of the series first"}</span>}
+            </div>
+          </Card>
+        );
+      })}
       <Card as="section" aria-labelledby="s-how" className={cx("self-stretch", SPAN["4/4"])}>
         <CardHeader id="s-how" title="How a series is made" />
         <ol className="grid grid-cols-1 gap-3 @container sm:grid-cols-2">
@@ -359,7 +458,7 @@ function Series() {
             </li>
           ))}
         </ol>
-        <EmptyState icon="integrations" className="mt-5" title="No series yet" action={<Button leadingIcon="chat" onClick={start}>Draft a series with the Assistant</Button>}>Series you develop show up here with each part's status. The series workshop files arrive with the next update; until then the Assistant drafts concepts and saves them to Ideas</EmptyState>
+        {!list.data.length && !list.loading && <EmptyState icon="integrations" className="mt-5" title="No series yet" action={<Button leadingIcon="chat" onClick={start}>Draft a series with the Assistant</Button>}>Series you develop with the Assistant show up here with each part's status</EmptyState>}
       </Card>
       <PromoCard className={cx("self-stretch", SPAN["2/4"])} illustration={<SeriesIllustration />} title="Start a series" description="Tell the Assistant the premise. It drafts three concepts you can keep or redo" ctaLabel="Open the Assistant" onCta={start} />
     </DashGrid>

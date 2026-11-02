@@ -373,14 +373,7 @@ def test_templates_voices_logs_runs(env):
     assert isinstance(lines, list) and any(r["event"] == "probe_event" for r in lines)
     assert "dashboard" in client.get("/api/logs/components").json()
     assert client.get("/api/runs").json() == []
-    assert client.get("/api/templates/nope/preview.png").status_code == 404
-
-
-def test_template_preview_png(env):
-    pytest.importorskip("PIL")
-    client, _ = env
-    r = client.get("/api/templates/gaming_facecam/preview.png")
-    assert r.status_code == 200 and r.content[:8] == b"\x89PNG\r\n\x1a\n"
+    assert client.get("/api/templates/nope/preview.png").status_code == 404  # the route is gone
 
 
 def test_events_stream(env):

@@ -9,7 +9,7 @@ import type { Job } from "../lib/types";
 import { cx } from "../ui/kit";
 import { Mark } from "../ui/Mark";
 import { Lockup } from "../ui/Lockup";
-import { Button, Card, CardHeader, Icon, IconButton, MeetingCard, MetaItem, NotificationItem, StatusDot, type IconName, type MenuItem } from "../components/ref12";
+import { Badge, Button, Card, CardHeader, Icon, IconButton, MeetingCard, MetaItem, NotificationItem, StatusDot, type IconName, type MenuItem } from "../components/ref12";
 import { jobTitle } from "./Queue";
 
 type Confirm = { action_id: string; text: string; tool: string; state: "pending" | "done" | "dismissed" | "failed"; result?: string };
@@ -21,7 +21,16 @@ const TOOL_WORDS: Record<string, string> = { list_outputs: "Checking the Queue",
 const WELCOME: Msg = { id: 0, role: "assistant", text: "I run on this PC with the local model. I can start videos or clips, draft story concepts, pause or resume channels, find files and explain results. Anything that changes something shows you a Yes or No card first." };
 let mid = Date.now();
 
-export function Chat({ compact, initialText }: { compact?: boolean; initialText?: string }) {
+/** Messages of a stored conversation (GET /assistant/history) as chat messages; actions still waiting come back as cards. */
+const fromHistory = (h: { messages?: { role: string; content?: string }[]; pending_actions?: { action_id: string; tool: string; confirm_text: string }[] }): Msg[] => {
+  const out: Msg[] = [];
+  for (const m of h.messages || []) if ((m.role === "user" || m.role === "assistant") && m.content?.trim()) out.push({ id: ++mid, role: m.role, text: m.content });
+  for (const a of h.pending_actions || []) out.push({ id: ++mid, role: "assistant", text: "", confirm: { action_id: a.action_id, text: a.confirm_text, tool: a.tool, state: "pending" } });
+  return out.length ? out : [WELCOME];
+};
+type Conv = { conversation_id: string; title?: string | null; updated_at: string; queued?: number };
+
+export function Chat({ compact, initialText, openCid, openTick }: { compact?: boolean; initialText?: string; openCid?: string | null; openTick?: number }) {
   const { askContext, askPrompt, clearAskPrompt, refresh, route } = useApp();
   const [saved, setSaved] = useState<Saved>(() => store.get<Saved>("ns-chat2", { cid: null, msgs: [WELCOME] }));
   const [text, setText] = useState(initialText ?? "");
@@ -57,6 +66,11 @@ export function Chat({ compact, initialText }: { compact?: boolean; initialText?
   // Prompt handed over by "Ask about it" or the top bar search. Runs only when a prompt arrives (it used to run after every render).
   useEffect(() => { if (askPrompt) { send(askPrompt); clearAskPrompt(); } }, [askPrompt]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { taRef.current?.focus(); }, []);
+  // A past conversation picked in the list (or refreshed after saved requests were answered): load its transcript.
+  useEffect(() => {
+    if (!openCid) return;
+    api.get(`/assistant/history?conversation_id=${encodeURIComponent(openCid)}`).then((h) => update(() => ({ cid: openCid, msgs: fromHistory(h) }))).catch((e: any) => push({ role: "error", text: `I could not open that conversation: ${e.message}` }));
+  }, [openCid, openTick]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const decide = async (m: Msg, yes: boolean) => {
     if (!m.confirm) return;
@@ -135,6 +149,16 @@ const CAN: { icon: IconName; t: string; s: string }[] = [
 export default function Assistant() {
   const { demo, ask, channelName, go, toast } = useApp();
   const jobs = useLoad<Job[]>(() => api.get("/jobs"), [], []);
+  const convs = useLoad<Conv[]>(() => api.get("/assistant/conversations"), [], []);
+  const [openCid, setOpenCid] = useState<string | null>(null); const [tick, setTick] = useState(0);
+  const queued = convs.data.reduce((n, c) => n + (c.queued || 0), 0);
+  const runQueue = async () => {
+    try {
+      const r = await api.post<unknown[]>("/assistant/queue/run");
+      toast(r.length ? `Answered ${r.length} saved request${r.length === 1 ? "" : "s"}` : "The engine is still busy. Try again in a minute", r.length ? "ok" : "warn");
+      convs.reload(); setTick((t) => t + 1);
+    } catch (e: any) { toast(e.message, "bad"); }
+  };
   const recent = jobs.data.slice(0, 6);
   const copy = async (text: string) => { try { await navigator.clipboard.writeText(text); toast("Details copied", "ok"); } catch { toast("Copy was blocked", "warn"); } };
   // Chat 7/12 and the side column 5/12 from 1100 px of content (a 1280 px window); both fill the viewport height there,
@@ -147,7 +171,7 @@ export default function Assistant() {
             <div className="flex min-w-0 items-center gap-3"><Mark size={28} /><div className="min-w-0"><h2 className="text-ds-lg leading-ds-tight font-semibold">Nightshift</h2><p className="truncate text-ds-2xs text-ds-muted">{demo ? "Scripted answers while the engine is off. On your PC it runs on the local model" : "Runs on the local model. It uses the same tools as the buttons"}</p></div></div>
             <StatusDot tone={demo ? "attention" : "online"} label={demo ? "Sample answers" : "Local model"} />
           </div>
-          <Chat />
+          <Chat openCid={openCid} openTick={tick} />
         </Card>
         <div className="flex flex-col gap-5 @min-[1100px]:col-span-5 @min-[1100px]:h-[calc(100dvh-132px)] @min-[1100px]:min-h-[480px]">
           <Card as="section" aria-labelledby="a-runs" className="flex min-h-0 flex-col @min-[1100px]:flex-1">
@@ -172,6 +196,23 @@ export default function Assistant() {
                 })}
               </ul>
             ) : <p className="text-ds-sm text-ds-text-2">No runs yet</p>}
+          </Card>
+          <Card as="section" aria-labelledby="a-past" className="shrink-0">
+            <CardHeader id="a-past" title="Past conversations" className="!mb-3" actions={queued ? <Button size="sm" variant="soft" leadingIcon="play" onClick={runQueue}>Answer {queued} saved</Button> : undefined} />
+            {convs.data.length ? (
+              <ul className="-mx-1 flex max-h-[168px] flex-col gap-1 overflow-y-auto px-1 scroll-thin">
+                {convs.data.map((c) => (
+                  <li key={c.conversation_id}>
+                    <button type="button" onClick={() => { setOpenCid(c.conversation_id); setTick((t) => t + 1); }} aria-current={openCid === c.conversation_id || undefined}
+                      className={cx("ds-focus flex w-full items-center justify-between gap-3 rounded-ds-md px-3 py-2 text-left text-ds-sm hover:bg-ds-sunken", openCid === c.conversation_id && "bg-ds-accent-soft")}>
+                      <span className="min-w-0 flex-1 truncate font-semibold">{c.title || "Untitled"}</span>
+                      {c.queued ? <Badge tone="accent" size="xs">Saved</Badge> : null}
+                      <span className="shrink-0 text-ds-2xs text-ds-muted">{fmtDay(c.updated_at)}</span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            ) : <p className="text-ds-sm text-ds-text-2">Your earlier chats show up here</p>}
           </Card>
           <Card as="section" aria-labelledby="a-can" className="shrink-0">
             <CardHeader id="a-can" title="What it can do" className="!mb-4" />

@@ -147,6 +147,7 @@ class FakeClipAdapter:
         self.stages = stages
         self.calls: list[dict[str, Any]] = []
         self.urls: list[str] = []
+        self.reruns: list[dict[str, Any]] = []
         self.fail_url_with: Exception | None = None
 
     def fetch_url(self, ctl: JobControl, url: str, source_id: str) -> Path:
@@ -172,6 +173,7 @@ class FakeClipAdapter:
              1 if params.get("rights_confirmed") else 0, source_path.stem),
         )
         job_id = new_job_id(channel)
+        ctl.extras["studio_job_id"] = job_id
         ids: list[str] = []
         for k in range(1, max(1, min(int(params.get("max_clips") or 2), 2)) + 1):
             title = f"Fake clip {k} from {source_path.stem}"
@@ -185,6 +187,21 @@ class FakeClipAdapter:
             )
             ids.append(oid)
         return ids
+
+    def rerun(self, ctl: JobControl, studio_job_id: str, changes: dict[str, Any]) -> list[str]:
+        """Pretend to run the later stages again: retitle the job's clips and keep their ids."""
+        self.reruns.append({"studio_job_id": studio_job_id, **changes})
+        for _ in ctl.stages(["select", "layout", "captions", "render", "qc", "outbox"]):
+            pass
+        tag = str(changes.get("template") or "auto")
+        rows = self.db.query("SELECT output_id FROM outputs WHERE job_id = ? ORDER BY k", (studio_job_id,))
+        for r in rows:
+            self.db.execute(
+                "UPDATE outputs SET title = ? WHERE output_id = ?",
+                (f"Fake clip ({tag}) {r['output_id']}", r["output_id"]),
+            )
+        ctl.extras["studio_job_id"] = studio_job_id
+        return [str(r["output_id"]) for r in rows]
 
 
 class FakeLearnAdapter:
@@ -350,17 +367,115 @@ class FakeUpdateAdapter:
     def __init__(self, available: bool = True) -> None:
         self.available = available
         self.applied = 0
+        self.missing = False  # True: the command does not take --check yet
 
     def check(self) -> dict[str, Any]:
         """Report a newer version (or none)."""
-        return {"ok": True, "returncode": 0, "update_available": self.available,
-                "current": "0.1.0", "latest": "0.2.0" if self.available else "0.1.0", "output": "", "error": ""}
+        from ns_dashboard.updater import classify_update
+
+        if self.missing:
+            return classify_update({"ok": False, "returncode": 2, "update_available": None, "output": "",
+                                    "error": "Error: Got unexpected extra argument"})
+        return classify_update({"ok": True, "returncode": 0, "update_available": self.available,
+                                "current": "0.1.0", "latest": "0.2.0" if self.available else "0.1.0",
+                                "output": "", "error": ""})
 
     def apply(self) -> dict[str, Any]:
         """Pretend to install."""
+        if self.missing:
+            from ns_dashboard.updater import classify_update
+
+            return classify_update({"ok": False, "returncode": 2, "output": "", "error": "No such option: --github"})
         self.applied += 1
         return {"ok": True, "returncode": 0, "update_available": False, "current": "0.2.0", "latest": "0.2.0",
                 "output": "installed", "error": ""}
+
+
+class FakeSeriesAdapter:
+    """Walks fake stages for a `series_part` job and files one long video."""
+
+    def __init__(self, db: LockedDb, paths: Paths) -> None:
+        self.db = db
+        self.paths = paths
+        self.produced: list[dict[str, Any]] = []
+        self.fail_with: Exception | None = None
+        self.stories: list[dict[str, Any]] = []
+
+    def listing(self) -> list[dict[str, Any]]:
+        """The stories a test put in `stories`."""
+        return [dict(s) for s in self.stories]
+
+    def queue_next(self, slug: str) -> list[dict[str, Any]]:
+        """Queue the first approved part of `slug` as a `series_part` row and mark it producing."""
+        from ns_dashboard.errors import ApiError
+
+        story = next((s for s in self.stories if s["slug"] == slug), None)
+        if story is None:
+            raise ApiError(404, "not_found", f"no story {slug!r}")
+        part = next((p for p in story["parts"] if p["status"] == "approved"), None)
+        if part is None:
+            raise ApiError(409, "cannot_produce", f"story {slug!r} has no approved part waiting")
+        job_id = new_job_id(str(story["channel"]))
+        title = f"{story['title']} - Part {part['n']:02d}"
+        self.db.execute(
+            "INSERT INTO dashboard_jobs(job_id, kind, channel, status, message, created_at, params_json)"
+            " VALUES (?, 'series_part', ?, 'queued', ?, ?, ?)",
+            (job_id, story["channel"], title, datetime.now(UTC).isoformat(),
+             json.dumps({"job_id": job_id, "channel": story["channel"], "story_slug": slug,
+                         "part_n": part["n"], "title": title})),
+        )
+        part["status"], part["job_id"] = "producing", job_id
+        return [{"part": part["n"], "job_id": job_id, "title": title}]
+
+    def produce(self, ctl: JobControl, params: dict[str, Any]) -> list[str]:
+        """Run the stages, then insert a `long` output for the part."""
+        self.produced.append(dict(params))
+        for _ in ctl.stages(DEFAULT_RUN_STAGES):
+            pass
+        if self.fail_with is not None:
+            raise self.fail_with
+        channel = str(params.get("channel") or ctl.channel or "series")
+        title = str(params.get("title") or "Series part")
+        video = write_fake_video(fake_outbox_path(self.paths, channel, ctl.job_id, "long", 1, title))
+        write_sheet(video, title=title, channel=channel, kind="long")
+        oid = f"{ctl.job_id}/long"
+        self.db.execute(
+            "INSERT INTO outputs(output_id, job_id, channel, kind, k, title, path, duration_s, status, created_at)"
+            " VALUES (?, ?, ?, 'long', NULL, ?, ?, 1.0, 'pending', ?)",
+            (oid, ctl.job_id, channel, title, str(video), datetime.now(UTC).isoformat()),
+        )
+        return [oid]
+
+
+class FakeBackupAdapter:
+    """Writes a small zip as the 'backup' and records restores."""
+
+    def __init__(self, paths: Paths) -> None:
+        self.paths = paths
+        self.restored: list[Path] = []
+        self.fail_restore = False
+
+    def export(self) -> Path:
+        """Create `exports/nightshift-backup-<ts>.zip`."""
+        stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+        out = self.paths.home / "exports" / f"nightshift-backup-{stamp}.zip"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(out, "w") as z:
+            z.writestr("manifest.json", "{}")
+        return out
+
+    def restore(self, zip_path: Path) -> list[str]:
+        """Remember the file; fail when asked to."""
+        from ns_dashboard.errors import ApiError
+
+        if self.fail_restore:
+            raise ApiError(422, "restore_failed", "That file could not be restored.", hint="not a backup")
+        self.restored.append(zip_path)
+        return [f"restored {zip_path.name}"]
+
+    def uninstall_path(self) -> Path:
+        """A path under the temp home."""
+        return self.paths.home / "app" / "UNINSTALL.cmd"
 
 
 def fake_adapters(db: LockedDb, paths: Paths) -> Adapters:
@@ -377,6 +492,8 @@ def fake_adapters(db: LockedDb, paths: Paths) -> Adapters:
         schedule=FakeScheduleAdapter(),
         update=FakeUpdateAdapter(),
         voice_maker=FakeVoiceMaker(paths),
+        series=FakeSeriesAdapter(db, paths),
+        backup=FakeBackupAdapter(paths),
     )
 
 

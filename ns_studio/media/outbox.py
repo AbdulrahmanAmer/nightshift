@@ -269,7 +269,7 @@ def record_output(
 class OutboxStage:
     """Stage `outbox`: copy each QC-passed Short to the Outbox with its `.json` metadata and `.txt` sheet.
 
-    Layout: `outbox/<slug>/<YYYY-MM-DD>/<job_id>/shorts/s<k>.{mp4,json,txt}`. Also writes the `outputs` and
+    Layout: see `outbox_target` (`outbox/<channel>/stories/<title>/shorts/...`). Also writes the `outputs` and
     `clip_usage` rows and `outbox/manifest.json` in the job directory.
     """
 

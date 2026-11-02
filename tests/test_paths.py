@@ -10,8 +10,6 @@ def test_from_env_uses_nightshift_home(tmp_home: Path):
     assert p.runtime_file == tmp_home / "config" / "runtime.json"
     assert p.channel_file("after-dark") == tmp_home / "config" / "channels" / "after-dark.yaml"
     assert p.job_dir("after-dark-20261101-ab12") == tmp_home / "data" / "jobs" / "after-dark-20261101-ab12"
-    expected = tmp_home / "outbox" / "after-dark" / "2026-11-01" / "j1"
-    assert p.outbox_dir("after-dark", "2026-11-01", "j1") == expected
 
 
 def test_default_home_is_localappdata(monkeypatch):

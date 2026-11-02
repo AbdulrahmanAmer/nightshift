@@ -44,18 +44,22 @@ def build_handlers(adapters: Adapters) -> dict[str, Handler]:
     def run_handler(ctl: JobControl) -> dict[str, Any]:
         p = ctl.params
         ids = adapters.run.run(ctl, str(p["channel"]), str(p["format"]), p.get("count"))
-        return {"output_ids": ids}
+        return {"output_ids": ids, **ctl.extras}
 
     def clip_handler(ctl: JobControl) -> dict[str, Any]:
         p = ctl.params
         opts = {k: p.get(k) for k in CLIP_PARAM_KEYS}
         opts["rerun"] = bool(p.get("rerun"))
+        if p.get("studio_job_id"):  # "Re-run with another template": the later stages of an earlier clip job
+            ids = adapters.clip.rerun(ctl, str(p["studio_job_id"]), opts)
+            done = {"output_ids": ids, "source_id": p.get("source_id"), "rerun_of": p.get("rerun_of")}
+            return {**done, **ctl.extras}
         if p.get("url"):  # download first (stage "download"), then run the usual pipeline on the file
             source = adapters.clip.fetch_url(ctl, str(p["url"]), str(p["source_id"]))
         else:
             source = Path(str(p["source_path"]))
         ids = adapters.clip.clip(ctl, source, str(p["source_id"]), opts)
-        return {"output_ids": ids, "source_id": p["source_id"]}
+        return {"output_ids": ids, "source_id": p["source_id"], **ctl.extras}
 
     def learn_handler(ctl: JobControl) -> dict[str, Any]:
         return adapters.learn.import_csv(ctl, Path(str(ctl.params["csv_path"])))
@@ -63,7 +67,18 @@ def build_handlers(adapters: Adapters) -> dict[str, Handler]:
     def verify_handler(ctl: JobControl) -> dict[str, Any]:
         return adapters.verify.verify(ctl, bool(ctl.params.get("quick", True)))
 
-    return {"run": run_handler, "clip": clip_handler, "learn": learn_handler, "verify": verify_handler}
+    def series_part_handler(ctl: JobControl) -> dict[str, Any]:
+        p = ctl.params
+        ids = adapters.series.produce(ctl, p)
+        return {"output_ids": ids, "story_slug": p.get("story_slug"), "part_n": p.get("part_n")}
+
+    return {
+        "run": run_handler,
+        "clip": clip_handler,
+        "learn": learn_handler,
+        "verify": verify_handler,
+        "series_part": series_part_handler,
+    }
 
 
 def _count(value: Any) -> int:
@@ -190,6 +205,48 @@ class JobsService:
         n = _int(body, "count", 1, 1, 20) if count else None
         params: dict[str, Any] = {"channel": slug, "format": fmt, "count": n}
         return self._enqueue("run", slug, params, self._schedule(body))
+
+    def create_clip_rerun(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Run the later stages of a finished clip job again with another template (no new transcription)."""
+        self._accepting()
+        rec = self.s.store.get(str(body.get("job_id") or ""))
+        if rec is None or rec.kind != "clip":
+            raise ApiError(404, "not_found", "That clip job was not found.")
+        if rec.status != "done":
+            raise ApiError(409, "not_finished", "Wait until that clip job has finished.")
+        template = str(body.get("template") or "")
+        if template not in {t["id"] for t in load_templates(self.s.paths)}:
+            raise ApiError(422, "invalid_options", f"Unknown layout '{template}'.")
+        studio_job_id = self._studio_job_id(rec.result or {})
+        if studio_job_id is None:
+            raise ApiError(
+                409, "cannot_rerun", "That clip job cannot be re-run.",
+                hint="Start a new clip job from the Create page.",
+            )
+        params = {k: rec.params.get(k) for k in CLIP_PARAM_KEYS}
+        params.update(
+            {
+                "template": template,
+                "max_clips": _int(body, "max_clips", int(params.get("max_clips") or 6), 1, 10),
+                "studio_job_id": studio_job_id,
+                "rerun_of": rec.job_id,
+                "source_id": rec.params.get("source_id"),
+                "rights_confirmed": True,
+            }
+        )
+        return self._enqueue("clip", rec.channel, params)
+
+    def _studio_job_id(self, result: dict[str, Any]) -> str | None:
+        """The studio job directory of a finished clip job: noted in its result, else from its outputs."""
+        noted = result.get("studio_job_id")
+        if isinstance(noted, str) and noted:
+            return noted
+        ids = [str(i) for i in result.get("output_ids") or []]
+        if not ids:
+            return None
+        marks = ",".join("?" for _ in ids)
+        row = self.s.db.one(f"SELECT job_id FROM outputs WHERE output_id IN ({marks}) LIMIT 1", ids)
+        return str(row["job_id"]) if row else None
 
     def create_verify(self, body: dict[str, Any]) -> dict[str, Any]:
         """Queue `ns verify`."""

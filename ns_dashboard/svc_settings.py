@@ -1,11 +1,13 @@
 """Settings, API keys, diagnostics, templates, voices, logs and the learn summary (component C9)."""
 
+# ruff: noqa: E501
+
 from __future__ import annotations
 
 import hashlib
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 
 from pydantic import ValidationError
 
@@ -13,10 +15,11 @@ from ns_common.config import save_runtime
 from ns_common.models import Runtime
 from ns_dashboard import logs_tail
 from ns_dashboard.adapters import KEY_NAMES
+from ns_dashboard.common import now_iso
 from ns_dashboard.errors import AdapterUnavailable, ApiError
-from ns_dashboard.state import AppState, load_dashboard_settings, save_dashboard_settings
+from ns_dashboard.state import AppState, load_dashboard_settings, load_ui_prefs, save_dashboard_settings
 from ns_dashboard.svc_engine import EngineService
-from ns_dashboard.templates import load_templates, render_preview
+from ns_dashboard.templates import load_templates
 
 TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 KEY_ALIASES = {"pexels": "pexels_api_key", "pixabay": "pixabay_api_key"}
@@ -29,6 +32,7 @@ POOL_COLUMNS = {
     "visual_treatments": "visual_treatment",
     "title_formulas": "title_formula",
 }
+MAX_BACKUP_BYTES = 1024 * 1024 * 1024
 PREVIEW_TEXT = "This is how I will sound when I read your story."
 
 
@@ -55,6 +59,7 @@ class SettingsService:
         runtime = self.engine.runtime_summary()
         flags = {k: v for k, v in (runtime or {}).items() if k not in ("profile", "supervisor_port")}
         nxt = self.engine.next_run()
+        prefs = load_ui_prefs(self.s.paths)
         return {
             "schedule_time": stored["run_time"],
             "home": str(self.s.paths.home),
@@ -64,6 +69,8 @@ class SettingsService:
             "notifications": bool(stored["notifications"]),
             "runtime_locked": True,
             "install": self.engine.install_summary(),
+            "owner_name": prefs["owner_name"],
+            "ui_theme": prefs["theme"],
             "next_run": nxt.isoformat(timespec="minutes") if nxt else None,
         }
 
@@ -155,15 +162,6 @@ class SettingsService:
         """Clip templates (bare list)."""
         return load_templates(self.s.paths)
 
-    def template_preview(self, template_id: str) -> Path:
-        """PNG drawn with Pillow."""
-        try:
-            return render_preview(self.s.paths, template_id)
-        except KeyError as e:
-            raise ApiError(404, "not_found", "Unknown layout.") from e
-        except AdapterUnavailable as e:
-            raise ApiError(503, "pillow_missing", str(e)) from e
-
     def voices(self) -> list[dict[str, Any]]:
         """Voices as `[{name, mode, source}]` (bare list)."""
         try:
@@ -216,6 +214,8 @@ class SettingsService:
         try:
             base = dict(self.s.adapters.learn.summary())
         except AdapterUnavailable:
+            base = {}
+        if not base:  # the real adapter has nothing extra: compute it from pool_weights
             base = self._db_summary()
         last = self.s.store.list_jobs(status="done", kind="learn", limit=1)
         base.setdefault("last_import", last[0].result if last else None)
@@ -264,3 +264,50 @@ class SettingsService:
         if not out:
             out.append("Nothing learned yet. Import your YouTube Analytics export after a week of uploads.")
         return out
+
+    # --- export / import / uninstall ---
+    def export_settings(self) -> dict[str, Any]:
+        """`ns backup`: a zip of settings, voices, the database and exemplars (never models or videos)."""
+        path = Path(self.s.adapters.backup.export())
+        self.s.last_backup = path
+        size = path.stat().st_size if path.exists() else None
+        self.s.log.info("settings_exported", path=str(path))
+        return {"path": str(path), "name": path.name, "size": size, "download_url": "/api/settings/export/latest"}
+
+    def latest_backup(self) -> Path:
+        """The backup zip made most recently in this session."""
+        path = self.s.last_backup
+        if path is None or not path.is_file():
+            raise ApiError(404, "not_found", "No settings export has been made yet.")
+        return path
+
+    def import_settings(self, filename: str, fh: BinaryIO) -> dict[str, Any]:
+        """Save an uploaded backup zip and restore it with `ns restore`."""
+        if self.s.draining:
+            raise ApiError(503, "shutting_down", "Nightshift is shutting down.")
+        name = re.sub(r"[^A-Za-z0-9._-]+", "_", Path(filename or "backup.zip").name) or "backup.zip"
+        if not name.lower().endswith(".zip"):
+            raise ApiError(400, "bad_file_type", "Choose the nightshift-backup zip that Export settings made.")
+        stamp = now_iso().replace(":", "").replace("-", "")[:15]
+        dest = self.s.paths.home / "imports" / "restore" / f"{stamp}-{name}"
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        size = 0
+        with dest.open("wb") as out:
+            while block := fh.read(1024 * 1024):
+                size += len(block)
+                if size > MAX_BACKUP_BYTES:
+                    out.close()
+                    dest.unlink(missing_ok=True)
+                    raise ApiError(413, "file_too_large", "That file is larger than 1 GB, so it is not a settings backup.")
+                out.write(block)
+        if size == 0:
+            dest.unlink(missing_ok=True)
+            raise ApiError(400, "empty_file", "That file is empty.")
+        lines = self.s.adapters.backup.restore(dest)
+        self.s.log.warn("settings_restored", "settings restored from an uploaded backup", file=name)
+        return {"restored": True, "file": name, "lines": lines, "note": "Restart Nightshift to use the restored settings."}
+
+    def uninstall_info(self) -> dict[str, Any]:
+        """Where UNINSTALL.cmd is (the page copies the path; Windows asks before deleting anything)."""
+        path = Path(self.s.adapters.backup.uninstall_path())
+        return {"path": str(path), "exists": path.is_file()}

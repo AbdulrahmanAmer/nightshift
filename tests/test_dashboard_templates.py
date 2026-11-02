@@ -5,7 +5,7 @@ import yaml
 
 from ns_common.paths import Paths
 from ns_dashboard import templates
-from ns_dashboard.templates import BUILTIN, load_templates, normalise_template, render_preview
+from ns_dashboard.templates import BUILTIN, load_templates, normalise_template
 
 
 def test_builtin_has_the_six_spec_templates_plus_auto():
@@ -21,11 +21,10 @@ def test_builtin_has_the_six_spec_templates_plus_auto():
         assert 0 < t["caption_y_pct"] <= 100
 
 
-def test_load_templates_adds_preview_urls(tmp_home: Path, monkeypatch: pytest.MonkeyPatch):
+def test_load_templates_keeps_the_regions(tmp_home: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(templates, "yaml_path", lambda: None)
     got = load_templates(Paths.from_env())
     assert got[0]["id"] == "auto"
-    assert got[1]["preview_url"] == "/api/templates/gaming_facecam/preview.png"
 
 
 def test_normalise_accepts_pixel_and_list_forms():
@@ -74,22 +73,6 @@ def test_broken_yaml_falls_back_to_builtin(tmp_home: Path, tmp_path: Path, monke
     f.write_text("templates: [unclosed", encoding="utf-8")
     monkeypatch.setattr(templates, "yaml_path", lambda: f)
     assert len(load_templates(Paths.from_env())) == len(BUILTIN)
-
-
-def test_preview_png_drawn_and_cached(tmp_home: Path, monkeypatch: pytest.MonkeyPatch):
-    pytest.importorskip("PIL")
-    monkeypatch.setattr(templates, "yaml_path", lambda: None)
-    paths = Paths.from_env()
-    png = render_preview(paths, "gaming_facecam")
-    assert png.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
-    from PIL import Image
-
-    with Image.open(png) as im:
-        assert im.size == (216, 384)
-    mtime = png.stat().st_mtime_ns
-    assert render_preview(paths, "gaming_facecam") == png and png.stat().st_mtime_ns == mtime
-    with pytest.raises(KeyError):
-        render_preview(paths, "nope")
 
 
 def test_real_clip_templates_yaml_shape(tmp_home: Path, monkeypatch: pytest.MonkeyPatch):
