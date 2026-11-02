@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -247,8 +248,15 @@ def test_run_adapter_stops_the_child_when_the_owner_cancels(fake: Path, tmp_path
     monkeypatch.setenv("FAKE_MODE", "hang")
     paths = Paths.from_env()
     store, ctl = make_ctl(paths)
-    store.request_cancel(ctl.job_id)
     adapter = RealRunAdapter(paths, SupervisorLink("http://127.0.0.1:9", timeout_s=0.2), runner=runner_for(fake, tmp_path))
+
+    def cancel_once_the_child_runs() -> None:  # the owner presses Cancel while the stage is running
+        deadline = time.monotonic() + 20
+        while not (tmp_path / "pids.json").exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        store.request_cancel(ctl.job_id)
+
+    threading.Thread(target=cancel_once_the_child_runs, daemon=True).start()
     with pytest.raises(JobCancelled):
         adapter.run(ctl, "after-dark", "shorts_only", 1)
     pids = json.loads((tmp_path / "pids.json").read_text(encoding="utf-8"))
@@ -302,7 +310,15 @@ def test_link_download_runs_in_the_child_and_cancel_removes_the_partial_folder(
     partial.mkdir(parents=True)
     (partial / "video.mp4.part").write_bytes(b"x" * 100)
     _store2, ctl2 = make_ctl(paths)
-    _store2.request_cancel(ctl2.job_id)
+    (tmp_path / "pids.json").unlink(missing_ok=True)
+
+    def cancel_once_the_child_runs() -> None:
+        deadline = time.monotonic() + 20
+        while not (tmp_path / "pids.json").exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        _store2.request_cancel(ctl2.job_id)
+
+    threading.Thread(target=cancel_once_the_child_runs, daemon=True).start()
     with pytest.raises(JobCancelled):
         adapter.fetch_url(ctl2, "https://example.com/v", "src-20261101-bbbb")
     assert not partial.exists()
