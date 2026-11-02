@@ -4,7 +4,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useApp, useLoad } from "../lib/app";
 import { api } from "../lib/api";
-import { doneWords, fmtClock, fmtDay, fmtWhen, stageWords, store } from "../lib/format";
+import { doneWords, fmtClock, fmtDay, fmtWhen, plural, stageWords, store } from "../lib/format";
 import type { Job, Status } from "../lib/types";
 import { cx } from "../ui/kit";
 import { Chat } from "../pages/Assistant";
@@ -143,8 +143,9 @@ function TopBar() {
   const { status, demo, ask, route, theme, setTheme, confirm, toast, refresh } = useApp();
   const eng = engineText(status);
   const [title, sub] = TITLES[route.name] || TITLES.queue!;
+  const waiting = status?.queue?.scheduled ?? 0;
   const quit = async () => {
-    const ok = await confirm({ title: "Quit Nightshift?", body: "Stops the engine and frees the graphics card.", ok: "Quit", danger: true });
+    const ok = await confirm({ title: "Quit Nightshift?", body: `Stops the engine and frees the graphics card.${waiting ? ` ${plural(waiting, "job")} scheduled for later will not start until Nightshift is opened again.` : ""}`, ok: "Quit", danger: true });
     if (ok !== true) return;
     try { await api.post("/engine/shutdown", { grace_s: 30 }); toast("Shutting down. You can close this tab", "ok"); refresh(); } catch (e: any) { toast(e.message, "bad"); }
   };

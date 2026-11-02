@@ -71,8 +71,9 @@ export default function Create() {
   const startClips = async () => {
     try {
       if (file) {
-        const fd = new FormData(); Object.entries({ channel: clipChannel, template, max_clips: maxClips, min_s: minS, max_s: maxS, caption_style: caption, rights_confirmed: "true" }).forEach(([k, v]) => fd.append(k, String(v))); if (scheduleIso) fd.append("schedule_at", scheduleIso); fd.append("file", file, file.name);
-        setUpload(0); await api.upload("/jobs/clip", fd, setUpload); setFile(null);
+        // chunked and resumable like the voice samples (8 MB pieces, then one small request): nothing is spooled to the system drive
+        setUpload(0); const up = await api.uploadFile(file, setUpload);
+        await api.post("/jobs/clip", { upload_id: up.upload_id, channel: clipChannel, template, max_clips: maxClips, min_s: minS, max_s: maxS, caption_style: caption, rights_confirmed: true, schedule_at: scheduleIso }); setFile(null);
       } else {
         await api.post("/jobs/clip", { url: url.trim(), channel: clipChannel, template, max_clips: maxClips, min_s: minS, max_s: maxS, caption_style: caption, rights_confirmed: true, schedule_at: scheduleIso }); setUrl("");
       }
@@ -275,7 +276,7 @@ function WhenStep({ kind, channel, file, mode, onMode, dayOff, onDay, time, onTi
       {mode === "later" && (
         <div className="flex flex-col gap-4">
           <Field label="Day"><div className="flex flex-wrap gap-2">{Array.from({ length: 7 }, (_, i) => <ChoiceChip key={i} on={dayOff === i} onChange={() => onDay(i)}>{dayLabel(i)}</ChoiceChip>)}</div></Field>
-          <Field label="Time" htmlFor="when-time" hint="Your PC's local time. Nightshift starts the job then, waking the engine if it is off"><Input id="when-time" type="time" value={time} onChange={(e) => onTime(e.target.value)} className="w-40" aria-invalid={past} /></Field>
+          <Field label="Time" htmlFor="when-time" hint="Your PC's local time. The job starts then if Nightshift is open; if it is closed, it starts the next time Nightshift starts"><Input id="when-time" type="time" value={time} onChange={(e) => onTime(e.target.value)} className="w-40" aria-invalid={past} /></Field>
           {past && <p role="alert" className="text-ds-xs font-semibold text-ds-danger">That time has already passed. Pick a later time or choose Now</p>}
         </div>
       )}
