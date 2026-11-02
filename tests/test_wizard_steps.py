@@ -327,8 +327,14 @@ def ctx_resolved(tmp_path: Path, **kw):
     return make_test_context(tmp_path, raw_answers=example_answers(), resolve=True, **kw)
 
 
+def unpinned(ctx):
+    """The manifest as it was before bins.qwentts was pinned (the null-pin fallback paths)."""
+    ctx.manifest = ctx.manifest.model_copy(update={"bins": {**ctx.manifest.bins, "qwentts": None}})
+    return ctx
+
+
 def test_s02_cuda13_default_pair_and_qwentts_fallback(tmp_path: Path):
-    ctx = ctx_resolved(tmp_path)                    # sample preflight reports CUDA 13.0, probe answers 404
+    ctx = unpinned(ctx_resolved(tmp_path))          # sample preflight reports CUDA 13.0, probe answers 404
     step = S02DownloadBins()
     assert step.check(ctx) is False
     step.run(ctx)
@@ -372,7 +378,7 @@ def test_s02_uses_the_qwentts_release_when_it_exists(tmp_path: Path):
         seen.append(str(request.url))
         return httpx.Response(200)
 
-    ctx = ctx_resolved(tmp_path, http=lambda: httpx.Client(transport=httpx.MockTransport(handler)))
+    ctx = unpinned(ctx_resolved(tmp_path, http=lambda: httpx.Client(transport=httpx.MockTransport(handler))))
     ctx.head_checks = True
     S02DownloadBins().run(ctx)
     assert QWENTTS_RELEASE_URL in seen
@@ -386,10 +392,27 @@ def test_s02_network_error_on_the_probe_means_fallback(tmp_path: Path):
     def boom(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("offline", request=request)
 
-    ctx = ctx_resolved(tmp_path, http=lambda: httpx.Client(transport=httpx.MockTransport(boom)))
+    ctx = unpinned(ctx_resolved(tmp_path, http=lambda: httpx.Client(transport=httpx.MockTransport(boom))))
     ctx.head_checks = True
     S02DownloadBins().run(ctx)
     assert ctx.flag("qwentts") == "none"
+
+
+def test_s02_installs_the_pinned_qwentts_binary_without_probing(tmp_path: Path):
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return httpx.Response(200)
+
+    ctx = ctx_resolved(tmp_path, http=lambda: httpx.Client(transport=httpx.MockTransport(handler)))
+    ctx.head_checks = True
+    S02DownloadBins().run(ctx)
+    pin = ctx.manifest.bins["qwentts"]
+    assert pin is not None and pin.url in seen and QWENTTS_RELEASE_URL not in seen
+    assert ctx.flag("qwentts") == "binary" and ctx.flag("tts_fallback") is False
+    assert ctx.warnings == []
+    assert load_runtime(ctx.paths).tts.engine == "qwentts"
 
 
 def test_s02_opencode_only_when_chosen_and_cpu_profile_uses_cpu_build(tmp_path: Path):
