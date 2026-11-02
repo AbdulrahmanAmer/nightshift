@@ -127,6 +127,8 @@ class FakeRunner:
             with zipfile.ZipFile(zip_path, "w") as zf:
                 zf.writestr("VERSION", "simulated")
             return RunResult(0, f"wrote {zip_path}\n")
+        if tag == "opencode models":
+            return RunResult(0, "local/code\n")
         if tag == "opencode --version":
             return RunResult(0, "1.19.5\n")
         return RunResult(0)

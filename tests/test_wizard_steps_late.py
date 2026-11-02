@@ -490,3 +490,32 @@ def test_s07_queues_nothing_for_a_preset_voice_or_an_existing_one(tmp_path: Path
     (made / "voice.json").write_text("{}", encoding="utf-8")
     S07Configs().run(ctx2)
     assert not (ctx2.paths.config / "pending_voice.json").exists()
+
+
+# ----------------------------------------------------------------------- s05/s08: local/code (gap 39)
+def test_s08_checks_that_opencode_sees_local_code_once_s07_wrote_the_config(tmp_path: Path):
+    ctx, runner = smoke_ctx(tmp_path)
+    assert S07Configs.id == "s07_configs"                      # runs before s08: the file exists by then
+    ctx.paths.opencode_file.parent.mkdir(parents=True, exist_ok=True)
+    ctx.paths.opencode_file.write_text(json.dumps(OPENCODE_CONFIG), encoding="utf-8")
+    S08Smoke().run(ctx)
+    call = runner.called("opencode models")[0]
+    assert call.env["OPENCODE_CONFIG"] == str(ctx.paths.opencode_file)
+    assert ctx.flag("opencode_local_code") is True
+
+
+def test_a_missing_local_code_model_is_said_but_does_not_fail_the_install(tmp_path: Path):
+    runner = FakeRunner(tmp_path / "desktop", results={"opencode models": RunResult(0, "openai/gpt\n")})
+    ctx = resolved(tmp_path, runner=runner)
+    ctx.paths.opencode_file.parent.mkdir(parents=True, exist_ok=True)
+    ctx.paths.opencode_file.write_text("{}", encoding="utf-8")
+    S08Smoke().run(ctx)
+    assert ctx.flag("opencode_local_code") is False and ctx.flag("smoke") == "passed"
+    assert "could not find its model" in ctx.ui.text
+
+
+def test_s05_no_longer_pretends_to_check_the_model_before_the_config_exists():
+    from installer.stage2.steps import s05_opencode_prewarm
+
+    doc = s05_opencode_prewarm.__doc__ or ""
+    assert "confirm_local_code" in doc and "after this step" in doc

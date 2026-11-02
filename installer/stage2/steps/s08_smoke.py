@@ -18,6 +18,7 @@ from installer.stage2.errors import make_error
 from installer.stage2.fallback import ensure_tts_venv, fallback_items
 from installer.stage2.runner import RunResult
 from installer.stage2.runtime_cfg import ensure_baseline, update_runtime
+from installer.stage2.steps.s05_opencode_prewarm import confirm_local_code
 from ns_supervisor import check_names as names
 
 
@@ -98,6 +99,8 @@ class S08Smoke(Step):
             if attempt == 2 or ctx.flag("tts_fallback", False):
                 raise make_error("NS-E108", "the reference TTS engine also failed its test")
             self._switch_to_reference(ctx)
+        if ctx.ensure_answers().install_code and ctx.paths.opencode_file.exists():
+            confirm_local_code(ctx)              # needs the opencode.json that s07 wrote
         ctx.set_flag("smoke", "passed")
         ctx.set_flag("smoke_version", ctx.manifest.version)
 

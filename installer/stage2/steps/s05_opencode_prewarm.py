@@ -1,7 +1,8 @@
 """s05_opencode_prewarm: confirm the OpenCode binary runs (component C1; skipped unless install_code).
 
-The full prewarm (headless run against a live ``llama`` with ``config/opencode.json``, confirming
-``local/code``) arrives with the Nightshift Code plan in M4; in M0 this step proves the binary works.
+This step proves the binary runs. Whether OpenCode sees the ``local/code`` model cannot be checked here:
+``config/opencode.json`` is written by s07, after this step. ``confirm_local_code`` does that check and is
+called by s08, once the file exists.
 """
 
 from __future__ import annotations
@@ -9,6 +10,26 @@ from __future__ import annotations
 from installer.stage2.base import Step
 from installer.stage2.context import StepContext
 from installer.stage2.errors import make_error
+
+
+def confirm_local_code(ctx: StepContext) -> bool:
+    """Ask OpenCode (with ``config/opencode.json``) for its models and look for ``local/code``.
+
+    Never raises: a missing model only means Nightshift Code will not work, the rest of Nightshift does.
+    """
+    exe = ctx.paths.bin_opencode / "opencode.exe"
+    res = ctx.runner.run(
+        [str(exe), "models"], timeout=120, tag="opencode models",
+        env={"OPENCODE_CONFIG": str(ctx.paths.opencode_file)},
+    )
+    ok = res.ok and "local/code" in res.stdout
+    ctx.set_flag("opencode_local_code", ok)
+    if ok:
+        ctx.ui.say("Nightshift Code sees its model (local/code).")
+    else:
+        ctx.ui.say("Nightshift Code could not find its model (local/code). Check config/opencode.json.", "yellow")
+        ctx.log.warn("opencode_local_code_missing", res.text[-200:])
+    return ok
 
 
 class S05OpencodePrewarm(Step):
