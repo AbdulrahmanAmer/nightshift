@@ -39,6 +39,14 @@ def test_runtime_default_profiles():
     assert gpu.llama.flags.ctx == 16384
 
 
+def test_whisper_code_default_matches_setup_and_spec():
+    """Gap 31: a hand-made runtime.json must get the spec model (distil-large-v3, int8), not small.en."""
+    w = m.WhisperCfg()
+    assert (w.model, w.device, w.compute_type) == ("distil-large-v3", "cuda", "int8")
+    assert m.Runtime().whisper == w
+    assert m.WhisperCfg(compute_type="float16").compute_type == "float16"  # the installer's override still works
+
+
 def test_every_schema_file_matches_models():
     out = contracts_dir() / "schemas"
     for name, model in m.SCHEMA_MODELS.items():

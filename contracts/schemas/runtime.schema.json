@@ -245,7 +245,7 @@
       "additionalProperties": false,
       "properties": {
         "model": {
-          "default": "small.en",
+          "default": "distil-large-v3",
           "title": "Model",
           "type": "string"
         },
@@ -259,7 +259,7 @@
           "type": "string"
         },
         "compute_type": {
-          "default": "float16",
+          "default": "int8",
           "title": "Compute Type",
           "type": "string"
         }
@@ -324,9 +324,9 @@
     "whisper": {
       "$ref": "#/$defs/WhisperCfg",
       "default": {
-        "model": "small.en",
+        "model": "distil-large-v3",
         "device": "cuda",
-        "compute_type": "float16"
+        "compute_type": "int8"
       }
     },
     "video": {
