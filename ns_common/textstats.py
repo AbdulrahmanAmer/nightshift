@@ -13,6 +13,9 @@ CJK_RANGES = r"\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff"
 _NOT_CJK = rf"[^\W_{CJK_RANGES}"
 WORD_PATTERN = rf"[{CJK_RANGES}]|{_NOT_CJK}]{_NOT_CJK}'\u2019]*(?:['\u2019]{_NOT_CJK}'\u2019]+)*"
 _WORD = re.compile(WORD_PATTERN)
+# Alignment tokens: every CJK character on its own (a recogniser returns Japanese/Chinese as multi-character
+# pieces; the script is shown character by character), other scripts as runs of letters and digits.
+_NORM_TOKEN = re.compile(rf"[{CJK_RANGES}]|[^\W_{CJK_RANGES}]+")
 _ONES = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven",
          "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen"]
 _TENS = ["", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety"]
@@ -86,4 +89,4 @@ def normalize_tokens(text: str) -> list[str]:
     text = re.sub(r"(?<=\w)\.(?=\w\.)", "", text)   # a.m. -> am.
     text = re.sub(r"\b(\d{1,2})\b", lambda m: _num_words(int(m.group(1))), text)
     text = text.replace("'", "")
-    return re.findall(r"[^\W_]+", text)
+    return _NORM_TOKEN.findall(text)

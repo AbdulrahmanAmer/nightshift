@@ -20,9 +20,12 @@ from ns_common import ffmpeg as ff
 from ns_common.errors import NsError
 from ns_common.models import WhisperCfg
 from ns_common.paths import Paths
-from ns_common.textstats import WORD_PATTERN, split_sentences
+from ns_common.textstats import CJK_RANGES, WORD_PATTERN, split_sentences
 
 _TOKEN = re.compile(WORD_PATTERN)  # the same words word_count() counts, in any script
+_CJK_CHAR = re.compile(rf"[{CJK_RANGES}]")
+#: faster-whisper returns Japanese and Chinese as BPE pieces of one to three characters, not per character.
+_PIECE_LENGTHS = (2, 1, 3, 2, 1)
 
 
 @dataclass(frozen=True)
@@ -93,16 +96,48 @@ _PAUSE_LETTERS = {
 }
 
 
+def _asr_pieces(text: str) -> list[tuple[str, int, int]]:
+    """(piece, start, end) of the words an ASR model would return for `text`.
+
+    Latin-like scripts give one piece per word. Runs of CJK characters are cut into pieces of 1-3 characters
+    like faster-whisper's BPE output, so the fake does not hand the aligner one token per script character
+    (that hid the caption matching bug on Japanese and Chinese).
+    """
+    out: list[tuple[str, int, int]] = []
+    run: list[re.Match[str]] = []
+
+    def flush() -> None:
+        i = k = 0
+        while i < len(run):
+            size = _PIECE_LENGTHS[k % len(_PIECE_LENGTHS)]
+            chunk = run[i : i + size]
+            out.append(("".join(m.group(0) for m in chunk), chunk[0].start(), chunk[-1].end()))
+            i += size
+            k += 1
+        run.clear()
+
+    for m in _TOKEN.finditer(text):
+        if _CJK_CHAR.fullmatch(m.group(0)):
+            if run and run[-1].end() != m.start():
+                flush()
+            run.append(m)
+        else:
+            flush()
+            out.append((m.group(0), m.start(), m.end()))
+    flush()
+    return out
+
+
 def _speech_weights(text: str) -> tuple[list[str], list[float], list[float]]:
-    """Tokens of `text` with the speaking weight of each word and the pause weight that follows it."""
+    """ASR pieces of `text` with the speaking weight of each and the pause weight that follows it."""
     tokens: list[str] = []
     speak: list[float] = []
     pause: list[float] = []
-    matches = list(_TOKEN.finditer(text))
-    for i, m in enumerate(matches):
-        after = text[m.end() : matches[i + 1].start() if i + 1 < len(matches) else len(text)]
-        tokens.append(m.group(0))
-        speak.append(len(m.group(0)) + 2.0)
+    pieces = _asr_pieces(text)
+    for i, (piece, _start, end) in enumerate(pieces):
+        after = text[end : pieces[i + 1][1] if i + 1 < len(pieces) else len(text)]
+        tokens.append(piece)
+        speak.append(len(piece) + 2.0)
         pause.append(max((_PAUSE_LETTERS.get(c, 0.0) for c in after), default=0.0))
     return tokens, speak, pause
 
@@ -111,9 +146,9 @@ class FakeTranscriber:
     """Spreads the words of the `<wav>.txt` sidecar over the WAV duration with uneven, speech-like timing.
 
     Long words take longer than short ones and sentence ends are followed by a pause, so word starts are not
-    evenly spaced (evenly spaced fakes hid the caption drift bug). Word count follows
-    `ns_common.textstats.word_count`, the same count `FakeTts` uses for its tone bursts, so fake timings
-    line up with the fake audio.
+    evenly spaced (evenly spaced fakes hid the caption drift bug). Latin-like scripts give one word per script
+    word; Japanese and Chinese give multi-character pieces like faster-whisper. The audio length comes from
+    the WAV, so the piece count does not matter to `FakeTts`.
     """
 
     name = "fake"
@@ -146,7 +181,7 @@ class FakeTranscriber:
         out: list[Segment] = []
         cursor = 0
         for sentence in split_sentences(side.read_text(encoding="utf-8")):
-            n = len(_TOKEN.findall(sentence))
+            n = len(_asr_pieces(sentence))
             chunk = tuple(words[cursor : cursor + n])
             cursor += n
             if chunk:

@@ -84,20 +84,24 @@ def _word_times_from_tokens(
         for t in normalize_tokens(w):
             s_tokens.append(t)
             s_owner.append(i)
+    # Each ASR word covers one or more alignment tokens (a Japanese/Chinese piece such as "です" is two
+    # characters). Its span is shared out evenly, so the characters of one piece do not all start together.
     a_tokens: list[str] = []
-    a_owner: list[int] = []
-    for k, aw in enumerate(asr):
-        for t in normalize_tokens(aw.w):
+    a_span: list[tuple[float, float]] = []
+    for aw in asr:
+        toks = normalize_tokens(aw.w)
+        for j, t in enumerate(toks):
             a_tokens.append(t)
-            a_owner.append(k)
+            step = (aw.end - aw.start) / len(toks)
+            a_span.append((aw.start + step * j, aw.start + step * (j + 1)))
     times: list[tuple[float, float] | None] = [None] * len(script)
     sm = SequenceMatcher(None, s_tokens, a_tokens, autojunk=False)
     for block in sm.get_matching_blocks():
         for off in range(block.size):
             wi = s_owner[block.a + off]
-            aw = asr[a_owner[block.b + off]]
+            start, end = a_span[block.b + off]
             cur = times[wi]
-            times[wi] = (aw.start, aw.end) if cur is None else (min(cur[0], aw.start), max(cur[1], aw.end))
+            times[wi] = (start, end) if cur is None else (min(cur[0], start), max(cur[1], end))
     return times
 
 
