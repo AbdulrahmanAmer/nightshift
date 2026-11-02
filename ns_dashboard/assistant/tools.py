@@ -215,7 +215,7 @@ def _tools() -> list[ToolDef]:
            lambda c, a: c.dash.jobs.list_jobs(a.get("status"), a.get("kind"), int(a.get("limit", 10))),
            route=("GET", "/api/jobs"),
            props={"status": _s("filter", enum=["queued", "running", "done", "failed", "cancelled"]),
-                  "kind": _s("filter", enum=["run", "clip", "learn", "verify"]),
+                  "kind": _s("filter", enum=["run", "clip", "learn", "verify", "series_part"]),
                   "limit": _i("how many", minimum=1, maximum=50)}),
         _t("get_job", "create", "One job's status, stage and result.",
            lambda c, a: c.dash.jobs.get(a["job_id"]), route=("GET", "/api/jobs/{job_id}"),

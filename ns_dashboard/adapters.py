@@ -127,6 +127,12 @@ class UpdateAdapter(Protocol):
     def apply(self) -> dict[str, Any]: ...
 
 
+class SeriesAdapter(Protocol):
+    """Series Workshop production: runs one approved part as a studio job (kind `series_part`)."""
+
+    def produce(self, ctl: JobControl, params: dict[str, Any]) -> list[str]: ...
+
+
 class ScheduleAdapter(Protocol):
     """Applies the nightly run time to the scheduled task."""
 
@@ -135,7 +141,7 @@ class ScheduleAdapter(Protocol):
 
 @dataclass
 class Adapters:
-    """The eleven collaborators the service layer and the job handlers use."""
+    """The twelve collaborators the service layer and the job handlers use."""
 
     run: RunAdapter
     clip: ClipAdapter
@@ -148,6 +154,7 @@ class Adapters:
     schedule: ScheduleAdapter
     update: UpdateAdapter
     voice_maker: VoiceMakerAdapter
+    series: SeriesAdapter
 
 
 def lazy(module: str, attr: str) -> Callable[..., Any]:
@@ -265,6 +272,24 @@ class RealClipAdapter(StudioAdapter):
     def fetch_url(self, ctl: JobControl, url: str, source_id: str) -> Path:
         """Download `url` with the pinned yt-dlp (`clipper.source.import_url`), shown as `Downloading N%`."""
         return studio_bridge.download_source(self.paths, url, source_id, ctl.download)
+
+
+class RealSeriesAdapter(StudioAdapter):
+    """Produces a series part: the job `Workshop.produce` prepared, run with the `master_from_script` plan."""
+
+    def produce(self, ctl: JobControl, params: dict[str, Any]) -> list[str]:
+        """Run the part's job; a failed or cancelled part goes back to `approved` to be queued again."""
+        try:
+            return studio_bridge.run_series_part(
+                {**params, "job_id": ctl.job_id},
+                job_reporter(ctl),
+                acquirer=self.acquirer(),
+                fake=self.fake,
+                paths=self.paths,
+            )
+        except BaseException:
+            studio_bridge.release_part({**params, "job_id": ctl.job_id})
+            raise
 
 
 class RealLearnAdapter:
@@ -544,4 +569,5 @@ def real_adapters(paths: Paths, link: SupervisorLink, log: NsLogger) -> Adapters
         schedule=RealScheduleAdapter(paths),
         update=RealUpdateAdapter(paths),
         voice_maker=RealVoiceMaker(paths, link),
+        series=RealSeriesAdapter(paths, link),
     )

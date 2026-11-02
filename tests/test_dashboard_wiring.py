@@ -318,3 +318,55 @@ def test_clipper_link_download_reaches_import_url(tmp_home: Path):
     with pytest.raises(NsError) as err:  # the real import_url runs and reports the missing yt-dlp (NS-E409)
         adapter_.fetch_url(ctl, "https://example.com/watch?v=abc", "src-link")
     assert err.value.code == "NS-E409" and "yt-dlp" in err.value.detail
+
+
+# ---------------------------------------------------------------- gap 6: the worker runs `series_part` rows
+
+
+def test_series_part_row_is_picked_up_and_produced(two_stage_plan: Paths, monkeypatch: pytest.MonkeyPatch):
+    from dataclasses import replace
+
+    from ns_common.logging import NsLogger
+    from ns_dashboard.adapters import RealSeriesAdapter
+    from ns_dashboard.fakes import fake_adapters
+    from ns_dashboard.jobs import JobWorker
+    from ns_dashboard.svc_jobs import build_handlers
+    from ns_studio.series.workshop import ProduceRequest, make_db_enqueue
+
+    for fmt in ("master_first", "master_from_script"):
+        monkeypatch.setitem(FORMAT_STAGES, fmt, ["wire_a", "wire_b"])
+    paths = two_stage_plan
+    job_id = "after-dark-20261102-ab12"
+    job_dir = paths.job_dir(job_id)
+    job_dir.mkdir(parents=True)
+    (job_dir / "script_source.json").write_text("{}", encoding="utf-8")  # what Workshop.produce prepares
+    req = ProduceRequest(
+        job_id=job_id, channel="after-dark", fmt="master_first", plan="master_from_script",
+        story_slug="the-lift",
+        part_n=2, parts_total=6, series_title="The Lift", series_slug="the-lift",
+        title="The Lift - Part 02",
+        short_titles=[], script="s.md", shorts=[], concept="c.md", design={}, end_card="Next",
+        publish_not_before_days=0,
+    )
+    make_db_enqueue(Db(paths.db_path))(req)  # exactly the row the workshop writes
+    state = open_db(paths)
+    real = RealSeriesAdapter(
+        paths, SupervisorLink("http://127.0.0.1:9", timeout_s=0.2), fake=FAKEABLE,
+        acquirer=DevAcquirer(Runtime.default("cpu-dev")),
+    )
+    store = JobStore(state)
+    worker = JobWorker(store, build_handlers(replace(fake_adapters(state, paths), series=real)), EventHub(),
+                       NsLogger("dashboard", paths.logs))
+    assert worker.run_next()
+    rec = store.get(job_id)
+    assert rec is not None and rec.status == "done", rec and rec.message
+    assert rec.result is not None and rec.result["output_ids"] == [f"{job_id}/s1"]
+    assert rec.result["story_slug"] == "the-lift" and rec.result["part_n"] == 2
+    assert (job_dir / "job.json").exists() and (job_dir / "b.json").exists()
+
+
+def test_failed_series_part_for_a_missing_story_still_fails_cleanly(two_stage_plan: Paths):
+    from ns_dashboard import studio_bridge
+
+    studio_bridge.release_part({"story_slug": "nope", "part_n": 1, "job_id": "x"})  # no story, no error
+    assert studio_bridge.list_series() == []

@@ -10,8 +10,10 @@ from __future__ import annotations
 import dataclasses
 import random
 import shutil
-from collections.abc import Callable, Collection
+from collections.abc import Callable, Collection, Iterator
+from contextlib import contextmanager
 from dataclasses import replace
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -23,11 +25,15 @@ from ns_common.paths import Paths
 if TYPE_CHECKING:
     from ns_studio.context import JobContext
     from ns_studio.jobs import Env
+    from ns_studio.series.workshop import Workshop
 
 #: `report(stage_name, stage_index, stage_total, job_index, job_total)`; may raise to cancel the job.
 Report = Callable[[str, int, int, int, int], None]
 
 DOWNLOADS = "_downloads"
+
+#: Services to fake when the workshop is only read or its status files are edited (no model is called).
+READ_ONLY = ("llm", "tts", "whisper", "embed", "clips")
 
 
 class StageWatchLogger(NsLogger):
@@ -227,3 +233,116 @@ def rerun_clip(
     new.save(ctx.job_dir)
     run_job(watched(ctx, clip_stage_names(), 0, 1, report))
     return output_ids(ctx.db, ctx.job_id)
+
+
+# ---------------------------------------------------------------- Series Workshop
+
+
+@contextmanager
+def workshop_session(
+    *, acquirer: Acquirer | None = None, fake: Collection[str] = ()
+) -> Iterator[Workshop]:
+    """A `Workshop` over `NIGHTSHIFT_HOME` (`ns_studio.series.workshop.default_workshop`), closed afterwards.
+
+    Production rows go to `dashboard_jobs` as kind `series_part`; the supervisor is the GPU owner when given.
+    """
+    from ns_studio.series.workshop import default_workshop
+
+    ws = default_workshop(frozenset(fake))
+    if acquirer is not None:
+        ws.services = replace(ws.services, acquirer=acquirer)
+    try:
+        yield ws
+    finally:
+        ws.db.close()
+
+
+def list_series() -> list[dict[str, Any]]:
+    """Every workshop story with its parts and the next step, read from the story folders (no model)."""
+    from ns_studio.series.store import WorkshopError
+
+    out: list[dict[str, Any]] = []
+    with workshop_session(fake=READ_ONLY) as ws:
+        for story in ws.list_stories():
+            try:
+                out.append({**story, **ws.status(story["slug"])})
+            except WorkshopError:
+                out.append({**story, "parts": [], "next_step": "unreadable"})
+    return out
+
+
+def release_part(params: dict[str, Any]) -> None:
+    """Put a part whose production failed or was cancelled back to `approved`, so it can be produced again."""
+    from ns_studio.series.store import StoryDir, WorkshopError
+
+    try:
+        with workshop_session(fake=READ_ONLY) as ws:
+            sd = StoryDir.open(ws.paths, str(params["story_slug"]))
+            status = sd.read_status()
+            n = int(params["part_n"])
+            state = status.parts.get(n)
+            mine = state is not None and state.job_id in (None, params.get("job_id"))
+            if state is not None and state.status == "producing" and mine:
+                ws._set_part(sd, status, n, "approved")
+    except (WorkshopError, KeyError, ValueError):
+        return
+
+
+def run_series_part(
+    params: dict[str, Any],
+    report: Report,
+    *,
+    acquirer: Acquirer | None = None,
+    fake: Collection[str] = (),
+    paths: Paths | None = None,
+) -> list[str]:
+    """Produce one approved series part: run the studio job that `Workshop.produce` prepared.
+
+    `params` is the `ProduceRequest` stored in the `series_part` row (`job_id`, `channel`, ...); the job
+    directory already holds `script_source.json`, so `run_job` switches to the `master_from_script` plan.
+    A resumed job (its `job.json` exists) continues where `stage_state.json` says.
+    """
+    from ns_studio import jobs
+    from ns_studio.channels.crud import get_channel
+    from ns_studio.context import JobContext
+    from ns_studio.orchestrator import plan_job
+    from ns_studio.policy.regen import run_job_guarded
+    from ns_studio.variation.draw import draw_combo, record_combo
+
+    env = open_env(fake, acquirer, paths=paths)
+    job_id = str(params["job_id"])
+    channel = get_channel(env.paths, str(params["channel"]))
+    jobs.prepare_plan("master_first", None)
+    job_dir = env.paths.job_dir(job_id)
+    if (job_dir / "job.json").exists():
+        ctx = jobs.load_job(env, job_id)
+    else:
+        now = datetime.now(UTC)
+        combo = draw_combo(env.db, channel, rng=random.Random(), now=now)
+        record_combo(env.db, channel.slug, job_id, "long", combo, now)
+        job_dir.mkdir(parents=True, exist_ok=True)
+        ctx = JobContext(
+            job_id=job_id,
+            channel=channel,
+            combo=combo,
+            fmt="master_first",
+            paths=env.paths,
+            job_dir=job_dir,
+            db=env.db,
+            runtime=env.runtime,
+            services=env.services,
+            log=env.log,
+        )
+        ctx.write_json(
+            "job.json",
+            {
+                "job_id": job_id,
+                "channel": channel.slug,
+                "fmt": "master_first",
+                "combo": combo.model_dump(mode="json"),
+                "created_at": now.isoformat(timespec="seconds"),
+            },
+        )
+    names = [s.name for s in plan_job("master_from_script")]
+    run_job_guarded(watched(ctx, names, 0, 1, report))
+    return output_ids(env.db, job_id)

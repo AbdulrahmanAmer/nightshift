@@ -63,7 +63,18 @@ def build_handlers(adapters: Adapters) -> dict[str, Handler]:
     def verify_handler(ctl: JobControl) -> dict[str, Any]:
         return adapters.verify.verify(ctl, bool(ctl.params.get("quick", True)))
 
-    return {"run": run_handler, "clip": clip_handler, "learn": learn_handler, "verify": verify_handler}
+    def series_part_handler(ctl: JobControl) -> dict[str, Any]:
+        p = ctl.params
+        ids = adapters.series.produce(ctl, p)
+        return {"output_ids": ids, "story_slug": p.get("story_slug"), "part_n": p.get("part_n")}
+
+    return {
+        "run": run_handler,
+        "clip": clip_handler,
+        "learn": learn_handler,
+        "verify": verify_handler,
+        "series_part": series_part_handler,
+    }
 
 
 def _count(value: Any) -> int:

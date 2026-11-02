@@ -19,9 +19,9 @@ from ns_dashboard.errors import AdapterUnavailable
 from ns_dashboard.events import EventHub
 from ns_dashboard.state import LockedDb
 
-KINDS = ("run", "clip", "learn", "verify")
+KINDS = ("run", "clip", "learn", "verify", "series_part")
 STATUSES = ("queued", "running", "done", "failed", "cancelled")
-GPU_KINDS = frozenset({"run", "clip", "verify"})
+GPU_KINDS = frozenset({"run", "clip", "verify", "series_part"})
 
 
 class JobCancelled(Exception):

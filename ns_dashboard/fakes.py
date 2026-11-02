@@ -380,6 +380,35 @@ class FakeUpdateAdapter:
                 "output": "installed", "error": ""}
 
 
+class FakeSeriesAdapter:
+    """Walks fake stages for a `series_part` job and files one long video."""
+
+    def __init__(self, db: LockedDb, paths: Paths) -> None:
+        self.db = db
+        self.paths = paths
+        self.produced: list[dict[str, Any]] = []
+        self.fail_with: Exception | None = None
+
+    def produce(self, ctl: JobControl, params: dict[str, Any]) -> list[str]:
+        """Run the stages, then insert a `long` output for the part."""
+        self.produced.append(dict(params))
+        for _ in ctl.stages(DEFAULT_RUN_STAGES):
+            pass
+        if self.fail_with is not None:
+            raise self.fail_with
+        channel = str(params.get("channel") or ctl.channel or "series")
+        title = str(params.get("title") or "Series part")
+        video = write_fake_video(fake_outbox_path(self.paths, channel, ctl.job_id, "long", 1, title))
+        write_sheet(video, title=title, channel=channel, kind="long")
+        oid = f"{ctl.job_id}/long"
+        self.db.execute(
+            "INSERT INTO outputs(output_id, job_id, channel, kind, k, title, path, duration_s, status, created_at)"
+            " VALUES (?, ?, ?, 'long', NULL, ?, ?, 1.0, 'pending', ?)",
+            (oid, ctl.job_id, channel, title, str(video), datetime.now(UTC).isoformat()),
+        )
+        return [oid]
+
+
 def fake_adapters(db: LockedDb, paths: Paths) -> Adapters:
     """All fakes wired together."""
     return Adapters(
@@ -394,6 +423,7 @@ def fake_adapters(db: LockedDb, paths: Paths) -> Adapters:
         schedule=FakeScheduleAdapter(),
         update=FakeUpdateAdapter(),
         voice_maker=FakeVoiceMaker(paths),
+        series=FakeSeriesAdapter(db, paths),
     )
 
 
