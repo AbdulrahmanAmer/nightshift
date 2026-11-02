@@ -8,6 +8,7 @@ import socket
 import sys
 from pathlib import Path
 
+import psutil
 import pytest
 
 from ns_common.paths import Paths
@@ -33,6 +34,60 @@ def test_only_established_connections_to_the_dashboard_port_count() -> None:
     assert presence.count_established("", 8100) == 0
 
 
+class Addr:
+    def __init__(self, ip: str, port: int) -> None:
+        self.ip, self.port = ip, port
+
+
+class Conn:
+    """The fields of a `psutil.net_connections()` entry that the probe reads."""
+
+    def __init__(self, local: tuple[str, int] | None, remote: tuple[str, int] | None, status: str) -> None:
+        self.laddr = Addr(*local) if local else ()
+        self.raddr = Addr(*remote) if remote else ()
+        self.status = status
+
+
+TABLE = [
+    Conn(("0.0.0.0", 8100), None, psutil.CONN_LISTEN),
+    Conn(("127.0.0.1", 8100), ("127.0.0.1", 53211), psutil.CONN_ESTABLISHED),      # the page's connection
+    Conn(("127.0.0.1", 53211), ("127.0.0.1", 8100), psutil.CONN_ESTABLISHED),      # the browser's own end
+    Conn(("127.0.0.1", 8099), ("127.0.0.1", 53300), psutil.CONN_ESTABLISHED),
+    Conn(("127.0.0.1", 8100), ("127.0.0.1", 53290), psutil.CONN_TIME_WAIT),
+    Conn(("::", 445), None, psutil.CONN_LISTEN),
+    Conn((), None, psutil.CONN_NONE),                                               # no local address at all
+]
+
+
+def test_the_connection_table_is_filtered_by_local_port_and_status_constant() -> None:
+    assert presence.count_established_connections(TABLE, 8100) == 1
+    assert presence.count_established_connections(TABLE, 8099) == 1
+    assert presence.count_established_connections(TABLE, 445) == 0              # listening is not a viewer
+    assert presence.count_established_connections([], 8100) == 0
+
+
+def test_the_display_language_of_windows_does_not_matter() -> None:
+    german = NETSTAT.replace("ESTABLISHED", "HERGESTELLT").replace("LISTENING", "ABHOEREN")
+    assert presence.count_established(german, 8100) == 0         # the old text match missed the page ...
+    assert presence.browser_connected(8100, read=lambda: german, connections=lambda: TABLE) is True
+    assert presence.browser_connected(8100, connections=lambda: [TABLE[0], TABLE[4]]) is False
+
+
+def test_an_unreadable_table_falls_back_to_netstat() -> None:
+    def denied() -> list[Conn]:
+        raise psutil.AccessDenied()
+
+    assert presence.browser_connected(8100, read=lambda: NETSTAT, connections=denied) is True
+    assert presence.browser_connected(9999, read=lambda: NETSTAT, connections=denied) is False
+    assert presence.browser_connected(8100, read=lambda: "", connections=denied) is False
+
+
+def test_dashboard_in_use_asks_the_connection_table(tmp_path: Path) -> None:
+    paths = Paths(tmp_path / "ns")
+    assert presence.dashboard_in_use(paths, 8100, image=lambda p: None, connections=lambda: TABLE) is True
+    assert presence.dashboard_in_use(paths, 8100, image=lambda p: None, connections=lambda: []) is False
+
+
 def write_host_file(paths: Paths, pid: int) -> None:
     f = paths.home / "run" / presence.HOST_RUN_FILE
     f.parent.mkdir(parents=True)
@@ -50,8 +105,8 @@ def test_a_running_window_host_counts_and_a_stale_file_does_not(tmp_path: Path) 
     assert presence.host_window_open(paths, image=lambda pid: "powershell.exe") is False
 
 
-@pytest.mark.skipif(sys.platform != "win32", reason="real netstat")
-def test_a_real_connection_to_a_port_is_seen_by_netstat() -> None:
+@pytest.mark.skipif(sys.platform != "win32", reason="real connection table")
+def test_a_real_connection_to_a_port_is_seen_in_the_connection_table() -> None:
     server = socket.socket()
     server.bind(("127.0.0.1", 0))
     server.listen(1)

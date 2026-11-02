@@ -173,7 +173,10 @@ if ($KeepBin) { Write-Host '  bin is removed when the uninstall window closes' }
 else { Remove-Tree -Path (Join-Path $nsHome 'bin') }
 if ($wipeModels) { Remove-Tree -Path (Join-Path $nsHome 'models') }
 if (-not $SkipSystem) {
-    foreach ($leaf in @('bootstrap', 'browser', 'webview2')) {
+    # With -KeepBin the window that runs this may be using the browser profile and webview2: those go with bin.
+    $leaves = @('bootstrap', 'browser', 'webview2')
+    if ($KeepBin) { $leaves = @('bootstrap') }
+    foreach ($leaf in $leaves) {
         Remove-Tree -Path (Join-Path (Join-Path $env:LOCALAPPDATA 'Nightshift') $leaf)
     }
 }

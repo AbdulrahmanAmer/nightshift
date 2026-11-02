@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import time
@@ -14,6 +15,7 @@ from ns_common.acquire import Endpoint, Service
 from ns_common.errors import NsError, load_errors
 from ns_common.models import Runtime
 from ns_common.paths import Paths
+from ns_supervisor.procs import UNDER_ENGINE_ENV
 from ns_supervisor.services import venv_python
 
 DEFAULT_URL = "http://127.0.0.1:8099"
@@ -122,6 +124,11 @@ def spawn_supervisor(paths: Paths, *, headless: bool = True) -> None:
     flags = 0
     if sys.platform == "win32":
         flags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS | 0x08000000
+    # the engine is not below an engine, whatever started this command (the update worker may be)
+    env = {k: v for k, v in os.environ.items() if k != UNDER_ENGINE_ENV}
+    # not the caller's directory: `ns verify --quick` runs with the app folder as cwd, and an engine (with its
+    # llama-server and TTS children) that inherited it would block the folder rename of a rollback
+    cwd = str(paths.home) if paths.home.is_dir() else None
     try:
         subprocess.Popen(  # detached on purpose: the engine outlives this command
             cmd,
@@ -130,6 +137,8 @@ def spawn_supervisor(paths: Paths, *, headless: bool = True) -> None:
             stderr=subprocess.DEVNULL,
             creationflags=flags,
             close_fds=True,
+            env=env,
+            cwd=cwd,
         )
     except OSError as e:
         raise NsError("NS-E202", f"cannot start the supervisor: {e}") from e

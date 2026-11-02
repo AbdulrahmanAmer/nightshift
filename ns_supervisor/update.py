@@ -34,7 +34,16 @@ BUSY_HINT = (
     "another program still has the Nightshift folder open (a Dashboard, Studio or terminal window?). "
     "Close those windows and run the update again; your previous version is still in place."
 )
+RESTORE_HINT = (
+    "the previous version could not be put back because another program still has the Nightshift "
+    "folder open. "
+    "Close every Nightshift window, then run `ns update --rollback` (the previous version is in the folder "
+    "ending in .prev)."
+)
 UPDATE_VENVS = ("studio", "supervisor", "tts")      # extras: ns_common.venv_extras (shared with setup)
+#: Console scripts the app installs into every venv (`[project.scripts]`). A running copy cannot be replaced.
+ENTRY_EXES = ("ns.exe", "studio.exe")
+OLD_SUFFIX = ".old"
 
 
 @dataclass
@@ -46,6 +55,8 @@ class UpdateEnv:
     verify: Callable[[Path], bool]
     reregister: Callable[[Path], list[str]]
     untracked: Callable[[Path], list[str]] = field(default=lambda app: git_untracked(app))
+    #: Called before a rollback renames folders: waits until the processes `verify` started have exited.
+    settle: Callable[[], object] = field(default=lambda: None)
 
 
 @dataclass
@@ -213,13 +224,23 @@ def rename_with_retry(
             sleep(pause_s)
 
 
-def _restore(app: Path, prev: Path, log: NsLogger) -> None:
-    """Put `<app>.prev` back in place of a failed new tree."""
+def _restore(app: Path, prev: Path, log: NsLogger, settle: Callable[[], object] | None = None) -> None:
+    """Put `<app>.prev` back in place of a failed new tree.
+
+    The failure that brought us here is usually `ns verify --quick` failing: the engine it started (and its
+    llama-server and TTS children) may still be exiting with the new tree open, so wait for them first and
+    retry both renames like the forward swap does.
+    """
+    if settle is not None:
+        try:
+            settle()
+        except Exception as e:  # waiting is best effort; the retrying renames below are the safety net
+            log.warn("rollback_settle_failed", error=str(e))
     failed = _sibling(app, ".failed")
     shutil.rmtree(failed, ignore_errors=True)
     if app.exists():
-        app.rename(failed)
-    prev.rename(app)
+        rename_with_retry(app, failed)
+    rename_with_retry(prev, app)
     shutil.rmtree(failed, ignore_errors=True)
     log.warn("update_restored", app=str(app))
 
@@ -248,9 +269,12 @@ def update_app(zip_path: Path, app: Path, env: UpdateEnv, *, paths: Paths) -> Up
         shutil.rmtree(new, ignore_errors=True)
         raise NsError("NS-E702", f"could not stage the update: {e}. {BUSY_HINT}") from e
     try:
-        new.rename(app)
+        rename_with_retry(new, app)
     except OSError as e:
-        prev.rename(app)
+        try:
+            rename_with_retry(prev, app)
+        except OSError as e2:
+            raise NsError("NS-E702", f"could not swap directories: {e}; {RESTORE_HINT}") from e2
         raise NsError("NS-E702", f"could not swap directories: {e}") from e
     try:
         env.sync(app)
@@ -259,12 +283,15 @@ def update_app(zip_path: Path, app: Path, env: UpdateEnv, *, paths: Paths) -> Up
         notes += env.reregister(app)
     except Exception as e:  # any step failing after the swap rolls back
         log.error("update_failed", str(e))
-        _restore(app, prev, log)
+        detail = e.detail if isinstance(e, NsError) else f"{type(e).__name__}: {e}"
+        try:
+            _restore(app, prev, log, env.settle)
+        except OSError as e3:   # keep the cause of the failure: it is what the owner has to report
+            raise NsError("NS-E702", f"{detail}. {RESTORE_HINT} ({e3})") from e
         try:
             env.sync(app)
         except Exception as e2:  # best effort: report, the old tree is already back
             log.error("rollback_sync_failed", str(e2))
-        detail = e.detail if isinstance(e, NsError) else f"{type(e).__name__}: {e}"
         raise NsError("NS-E702", detail) from e
     log.info("update_done", old=old_version, new=new_version)
     return UpdateResult(old_version, new_version, notes)
@@ -284,13 +311,65 @@ def rollback_app(app: Path, env: UpdateEnv, *, paths: Paths) -> UpdateResult:
     try:
         shutil.rmtree(tmp, ignore_errors=True)
         rename_with_retry(app, tmp)
-        prev.rename(app)
-        tmp.rename(prev)
+        rename_with_retry(prev, app)
+        rename_with_retry(tmp, prev)
     except OSError as e:
-        raise NsError("NS-E702", f"could not swap directories: {e}") from e
+        raise NsError("NS-E702", f"could not swap directories: {e}. {BUSY_HINT}") from e
     env.sync(app)
     log.info("rollback_done", old=old_version, restored=current_version(app))
     return UpdateResult(old_version, current_version(app), ["rolled back"])
+
+
+def free_entry_points(venv: Path) -> list[tuple[Path, Path]]:
+    """Move `ns.exe` and `studio.exe` of `venv` out of the way so uv can write fresh ones.
+
+    Windows refuses to delete or overwrite a running program, but it does allow renaming one. A terminal that
+    is following `ns update` (or any Studio window) still runs the old `Scripts\\ns.exe`; without this, uv
+    fails with "Access is denied" while replacing it. Returns (original, moved-to) pairs.
+    """
+    scripts = venv / "Scripts"
+    moved: list[tuple[Path, Path]] = []
+    for name in ENTRY_EXES:
+        exe = scripts / name
+        if not exe.is_file():
+            continue
+        away = scripts / (name + OLD_SUFFIX)
+        try:
+            away.unlink(missing_ok=True)          # left by the last update; fails while that one still runs
+        except OSError:
+            away = scripts / f"{name}{OLD_SUFFIX}-{os.getpid()}"
+        try:
+            os.replace(exe, away)
+        except OSError:
+            continue                              # not renamable either: uv will report it
+        moved.append((exe, away))
+    return moved
+
+
+def restore_entry_points(moved: list[tuple[Path, Path]]) -> None:
+    """Put moved launchers back where uv did not write a new one (the install failed half way)."""
+    for exe, away in moved:
+        if not exe.exists() and away.exists():
+            try:
+                os.replace(away, exe)
+            except OSError:
+                pass
+
+
+def discard_entry_points(moved: list[tuple[Path, Path]]) -> None:
+    """Delete the moved launchers; one that is still running stays until the next update."""
+    for _exe, away in moved:
+        try:
+            away.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def finish_entry_points(moved: list[tuple[Path, Path]]) -> None:
+    """After a successful install: a launcher uv did not write again (nothing to reinstall) comes back, the
+    others lose their moved-aside copy."""
+    restore_entry_points(moved)
+    discard_entry_points(moved)
 
 
 def resync_venvs(
@@ -299,9 +378,11 @@ def resync_venvs(
     *,
     uv: str | None = None,
     run: Callable[[list[str]], tuple[int, str]] | None = None,
+    free: Callable[[Path], list[tuple[Path, Path]]] | None = None,
 ) -> list[str]:
     """`uv pip install -e <app>[extras]` in every venv that exists; raises `NS-E702` on failure."""
     runner = run or _run
+    free_up = free or free_entry_points
     exe = uv if uv is not None else find_uv(paths)
     done: list[str] = []
     for venv in UPDATE_VENVS:
@@ -316,9 +397,12 @@ def resync_venvs(
         cmd = [exe, "pip", "install", "-e", f"{app}{extras}", "--python", str(py)]
         if no_deps:
             cmd.append("--no-deps")
+        moved = free_up(paths.venvs / venv)
         rc, tail = runner(cmd)
         if rc != 0:
+            restore_entry_points(moved)
             raise NsError("NS-E702", f"uv pip install failed for venv {venv}: {tail}")
+        finish_entry_points(moved)
         done.append(venv)
     return done
 
@@ -331,10 +415,15 @@ def _run(cmd: list[str]) -> tuple[int, str]:
     return r.returncode, " | ".join((r.stderr or r.stdout).strip().splitlines()[-3:])
 
 
-def verify_quick(app: Path) -> bool:
-    """`ns verify --quick` with the new code (a fresh interpreter in the app directory)."""
+def verify_quick(app: Path, python: str | None = None) -> bool:
+    """`ns verify --quick` with the new code (a fresh interpreter in the app directory).
+
+    `python` is the supervisor venv's interpreter, which the re-sync just brought up to date. The default,
+    this process's own interpreter, is wrong in the update worker: that runs from a copy of the venv made
+    before the re-sync and would not see a dependency the new version added.
+    """
     r = subprocess.run(
-        [sys.executable, "-m", "ns_supervisor.cli", "verify", "--quick"], cwd=str(app), check=False
+        [python or sys.executable, "-m", "ns_supervisor.cli", "verify", "--quick"], cwd=str(app), check=False
     )
     return r.returncode == 0
 

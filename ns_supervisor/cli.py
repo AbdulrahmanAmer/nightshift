@@ -17,6 +17,7 @@ from ns_supervisor import (
     doctor,
     models_get,
     notify,
+    relaunch,
     releases,
     schedule,
     tune,
@@ -26,6 +27,7 @@ from ns_supervisor import (
 )
 from ns_supervisor.client import SupervisorClient, ensure_running
 from ns_supervisor.schedule_cfg import read_run_time
+from ns_supervisor.services import venv_python
 
 app = typer.Typer(help="Nightshift runtime tools", add_completion=False)
 schedule_app = typer.Typer(help="The nightly scheduled task 'Nightshift Daily'", add_completion=False)
@@ -90,6 +92,8 @@ def _stop_started_engine(client: SupervisorClient) -> None:
     try:
         if client.is_up():
             client.shutdown(30)
+            if not control.wait_down(client, 45):
+                typer.echo("The verify engine is slow to exit.", err=True)
     except NsError as e:
         typer.echo(f"Could not stop the verify engine: {e}", err=True)
 
@@ -178,8 +182,9 @@ def _apply_update(
     env = update.UpdateEnv(
         stop=lambda: _stop_engine(paths),
         sync=lambda a: _sync(paths, a),
-        verify=update.verify_quick,
+        verify=lambda a: update.verify_quick(a, venv_python(paths, "supervisor")),
         reregister=lambda a: _reregister(paths, a),
+        settle=lambda: control.wait_down(_client(paths)),
     )
     if rollback:
         res = update.rollback_app(app_dir, env, paths=paths)
@@ -251,6 +256,7 @@ def cmd_update(
             paths, lambda: _apply_update(paths, zip_path, rollback, github, git, channel), log=log,
             wait_pid=wait_pid,
             old_version=update.current_version(control.app_path(paths)),
+            relaunch=relaunch.default_relaunch(paths),
         )
         raise typer.Exit(code)
     forwarded: list[str] = []
@@ -358,13 +364,20 @@ def cmd_notify(title: str, message: str) -> None:
 @models_app.command("get")
 def models_get_cmd(
     what: Annotated[str, typer.Argument(help="voicedesign | story_llm")],
+    everything: Annotated[
+        bool, typer.Option("--all", help="voicedesign: the GGUF talker and the PyTorch engine's weights.")
+    ] = False,
 ) -> None:
-    """Download an optional model (pinned in manifest.json, resumable, SHA256-checked)."""
+    """Download an optional model (pinned in manifest.json, resumable, SHA256-checked).
+
+    voicedesign follows the voice engine in runtime.json: the GGUF talker for qwentts, the Hugging Face
+    weights for the PyTorch (reference) engine. --all fetches both.
+    """
     if what not in models_get.KINDS:
         raise _die(f"unknown model {what!r}; choose one of: {', '.join(models_get.KINDS)}", 2)
     paths = Paths.from_env()
     try:
-        result = models_get.get_model(what, paths, control.app_path(paths), typer.echo)
+        result = models_get.get_model(what, paths, control.app_path(paths), typer.echo, everything=everything)
     except NsError as e:
         raise _die(e) from e
     typer.echo(json.dumps(result))
