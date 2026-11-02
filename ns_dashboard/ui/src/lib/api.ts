@@ -32,6 +32,7 @@ export const api = {
   get<T = any>(p: string) { return this.request<T>("GET", p); },
   post<T = any>(p: string, b?: unknown) { return this.request<T>("POST", p, b ?? {}); },
   put<T = any>(p: string, b: unknown) { return this.request<T>("PUT", p, b); },
+  del<T = any>(p: string) { return this.request<T>("DELETE", p); },
   mediaUrl(id: string) { return `${BASE}/media/${id.split("/").map(encodeURIComponent).join("/")}`; },
   thumbUrl(id: string) { return `${this.mediaUrl(id)}/thumb.jpg`; },
   /** One of the three thumbnails the studio made for a long video (thumb_1.jpg to thumb_3.jpg). */

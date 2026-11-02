@@ -43,8 +43,8 @@ export default function Create() {
   // wizard state: every field from the previous StoryFlow and ClipFlow
   const [step, setStep] = useState(route.query.get("kind") ? 1 : 0);
   const [reached, setReached] = useState(step);
-  const [storyChannel, setStoryChannel] = useState(chans.find((c) => c.status === "active")?.slug || chans[0]?.slug || "");
-  const [format, setFormat] = useState<"master_first" | "shorts_only">("master_first");
+  const [storyChannel, setStoryChannel] = useState(route.query.get("channel") || chans.find((c) => c.status === "active")?.slug || chans[0]?.slug || "");
+  const [format, setFormat] = useState<"master_first" | "shorts_only">(route.query.get("format") === "shorts_only" ? "shorts_only" : "master_first");
   const [busy, setBusy] = useState(false);
   const templates = useLoad<Template[]>(() => api.get("/templates"), [], []);
   const [file, setFile] = useState<File | null>(null);

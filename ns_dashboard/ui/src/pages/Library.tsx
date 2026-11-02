@@ -133,6 +133,8 @@ function Stories() {
             <div className="mt-auto flex gap-1 px-1 pb-1">
               <Button size="sm" variant="soft" onClick={() => { location.hash = `#/?tab=${s.status === "pending" ? "ready" : s.status === "rejected" ? "rejected" : "posted"}`; }}>Open</Button>
               <Button size="sm" variant="ghost" leadingIcon="restore" onClick={() => ask({ page: "library", story_id: s.job_id }, `Reuse the story "${s.title}" as the start of a new video`)}>Reuse</Button>
+              <Button size="sm" variant="ghost" leadingIcon="phone" onClick={() => { location.hash = `#/create?kind=story&format=shorts_only&channel=${encodeURIComponent(s.channel)}`; }}>Make a Short</Button>
+              <Button size="sm" variant="ghost" leadingIcon="integrations" onClick={() => ask({ page: "library", story_id: s.job_id }, `Turn the story "${s.title}" into a series of parts for ${channelName(s.channel)}`)}>Reuse as series</Button>
             </div>
           </Card>
         );
@@ -372,7 +374,12 @@ function FormatEditor({ f, onClose, onSaved }: { f: Format; onClose: () => void;
 /* ---------------------------------------------------------------- Footage */
 
 function FootageTab() {
+  const { confirm, toast } = useApp();
   const [q, setQ] = useState(""); const clips = useLoad<Footage[]>(() => api.get(`/library/footage?q=${encodeURIComponent(q)}`), [q], []);
+  const remove = async (c: Footage) => {
+    if (!(await confirm({ title: "Delete this clip?", body: "The file is removed from this PC. A video that already used it is not changed; the clip is fetched again if a story needs it", ok: "Delete", danger: true }))) return;
+    try { await api.del(`/library/footage/${encodeURIComponent(c.source)}/${encodeURIComponent(c.clip_id)}`); toast("Clip deleted", "ok"); clips.reload(); } catch (e: any) { toast(e.message, "bad"); }
+  };
   return (
     <DashGrid label="Footage">
       <div className={cx("flex flex-wrap items-center justify-between gap-3", SPAN["6/4"])}><Search value={q} onChange={setQ} placeholder="Search footage by keyword" /><span className="text-ds-2xs text-ds-muted ds-num">{clips.data.length} clips cached</span></div>
@@ -383,6 +390,7 @@ function FootageTab() {
             <h3 className="text-ds-md leading-ds-snug font-semibold">{c.keywords.join(", ")}</h3>
             <p className="flex flex-wrap gap-x-4 gap-y-1"><MetaItem icon="external"><span className="capitalize">{c.source}</span>&nbsp;#{c.clip_id}</MetaItem><MetaItem icon="refresh">{plural(c.uses, "use")}</MetaItem><MetaItem icon="calendarDays">{fmtDay(c.last_used)}</MetaItem></p>
             <p className="text-ds-2xs text-ds-muted">{c.license}</p>
+            <div><Button size="sm" variant="ghost" leadingIcon="trash" onClick={() => remove(c)}>Delete</Button></div>
           </div>
         </Card>
       )) : <EmptyState icon="film" className={SPAN["6/4"]} title="No footage cached yet">Clips are kept for 90 days after a video uses them</EmptyState>}
