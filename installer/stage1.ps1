@@ -614,13 +614,26 @@ function Install-Uv {
         return (Join-Str $dir 'uv.exe')
     }
     catch {
-        Write-Verbose "uv direct download failed: $($_.Exception.Message); trying winget"
-        $null = & winget.exe install --id astral-sh.uv -e --silent --accept-package-agreements --accept-source-agreements
-        Update-SessionPath
-        $c = Get-Command 'uv.exe' -ErrorAction SilentlyContinue
+        $downloadError = $_.Exception.Message
+        Write-Verbose "uv direct download failed: $downloadError; trying winget"
+        $c = $null
+        $haveWinget = Test-Tool 'winget.exe'
+        if ($haveWinget) {
+            try {
+                $null = & winget.exe install --id astral-sh.uv -e --silent --accept-package-agreements --accept-source-agreements
+            }
+            catch {
+                Write-Verbose "winget failed: $($_.Exception.Message)"
+            }
+            Update-SessionPath
+            $c = Get-Command 'uv.exe' -ErrorAction SilentlyContinue
+        }
         if ($null -eq $c) {
             Set-Status -Index 1 -Tag 'fail' -Text 'could not be downloaded or installed'
-            Stop-Setup -Code 'NS-E110' -Detail 'uv could not be installed (direct download and winget both failed).' -ExitCode 13
+            if ($haveWinget) {
+                Stop-Setup -Code 'NS-E110' -Detail "uv could not be installed (direct download: $downloadError; winget failed too)." -ExitCode 13
+            }
+            Stop-Setup -Code 'NS-E105' -Detail "uv could not be downloaded ($downloadError) and winget is not available." -ExitCode 13
         }
         return $c.Source
     }
