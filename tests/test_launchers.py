@@ -110,7 +110,7 @@ def test_code_launcher_acquires_as_opencode_and_releases_in_finally() -> None:
 
 def test_update_launcher_filters_release_zips_and_calls_ns_update() -> None:
     text = read("update.ps1")
-    assert "Nightshift-*.zip" in text and "update $dlg.FileName" in text
+    assert "Nightshift-*.zip" in text and "update $dlg.FileName" in text and "--detach" in text
 
 
 def test_other_launchers_call_the_right_tools() -> None:
@@ -136,7 +136,7 @@ def test_bundle_script_requires_the_brand_icon() -> None:
 def test_update_launcher_steps_out_of_the_app_folder_before_calling_ns_update() -> None:
     text = read("update.ps1")
     assert "Set-NsHomeLocation" in text
-    assert text.index("Set-NsHomeLocation") < text.index("& $ns update")
+    assert text.index("Set-NsHomeLocation") < text.index("& $py -m ns_supervisor.cli update")
     common = read("_common.ps1")
     assert "[Environment]::CurrentDirectory = $nsHome" in common   # the Win32 cwd, not just PowerShell's
 
