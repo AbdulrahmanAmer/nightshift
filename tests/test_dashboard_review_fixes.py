@@ -504,3 +504,23 @@ def test_footage_can_be_deleted_with_its_file(tmp_home: Path):
     assert state.db.one("SELECT COUNT(*) AS n FROM clip_usage")["n"] == 0
     assert client.delete("/api/library/footage/pexels/1").status_code == 404
     assert client.delete("/api/library/footage/pexels/2").json()["file_removed"] is False and outside.exists()  # not ours to delete
+
+
+# ------------------------------------------------------------------ gap 31: a clip result says which layout was chosen
+
+
+def test_clip_result_records_the_chosen_layout_and_a_missing_face_cam(tmp_home: Path):
+    import json
+
+    from ns_dashboard.svc_jobs import read_clip_layout
+
+    dash, state = make(tmp_home)
+    jd = state.paths.job_dir("clips-20261102-aaaa")
+    jd.mkdir(parents=True)
+    (jd / "clip_layout.json").write_text(
+        json.dumps({"template": "center_crop", "facecam": None, "per_clip": {"1": "center_crop"}, "notes": {"1": "NS-W402: no face cam"}}),
+        encoding="utf-8",
+    )
+    got = read_clip_layout(state.paths, "clips-20261102-aaaa")
+    assert got == {"template": "center_crop", "per_clip": {"1": "center_crop"}, "notes": {"1": "NS-W402: no face cam"}, "no_facecam": True}
+    assert read_clip_layout(state.paths, "nope") is None and read_clip_layout(None, "x") is None
