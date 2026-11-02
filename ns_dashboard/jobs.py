@@ -19,9 +19,9 @@ from ns_dashboard.errors import AdapterUnavailable
 from ns_dashboard.events import EventHub
 from ns_dashboard.state import LockedDb
 
-KINDS = ("run", "clip", "learn", "verify")
+KINDS = ("run", "clip", "learn", "verify", "series_part")
 STATUSES = ("queued", "running", "done", "failed", "cancelled")
-GPU_KINDS = frozenset({"run", "clip", "verify"})
+GPU_KINDS = frozenset({"run", "clip", "verify", "series_part"})
 
 
 class JobCancelled(Exception):
@@ -303,6 +303,7 @@ class JobControl:
         self._store = store
         self._hub = hub
         self._progress = 0.0
+        self.extras: dict[str, Any] = {}  # extra result fields the handler merges in
 
     def _publish(self) -> None:
         rec = self._store.get(self.job_id)

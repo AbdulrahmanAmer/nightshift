@@ -78,6 +78,8 @@ If the same red error comes back after one retry, do not guess: send the diagnos
    Any time later you can create a new one with the **Nightshift - Diagnostics** shortcut.
 2. Upload that file to the **diagnostics** folder in the Google Drive folder you were given.
 3. It holds logs, settings and test results. It never contains your keys, videos or the models.
+4. In the Dashboard you can do the same from **Settings, Updates, Make report**: it saves the zip on your Desktop and
+   shows a **Download** button.
 
 ## Make your first video (about 20 minutes)
 
@@ -133,13 +135,22 @@ it on. Do not use Nightshift Code while a night run is due: the graphics card ca
 3. Double-click **Nightshift - Update** on the Desktop and pick the zip (from version 0.3 on). For versions
    before that, double-click **INSTALL.cmd** again: it keeps everything that is done and refreshes the rest.
 4. Send a new diagnostics zip so the developer can see the test table is green.
+5. In the Dashboard, **Settings, Updates, Check now** asks GitHub for a newer version. In version 0.1.0 this part is not
+   in the engine yet: the page then says so, and you use the Update shortcut with the zip as above.
 
 Notes (from 0.1.1): the update steps out of the Nightshift folder before it swaps it, so it works from the Desktop
 shortcut and from a command prompt opened inside the folder. The old version is kept next to it as `<folder>.prev`;
 run `ns update --rollback` to go back. If a step fails, the old version is put back and the message names the step.
 
+## Move your settings to another PC
+
+In the Dashboard open **Settings, Your settings**. **Export** saves a zip on your Desktop with your channels, voices, run
+time and what Nightshift has learned (never models or videos). On the new PC, install Nightshift, then use **Import**
+and pick that zip. What it replaces is kept first in `data/backup/pre-restore-...`. The same can be done from a command
+prompt with `ns backup` and `ns restore <zip>`.
+
 ## Uninstall
 
-Double-click **UNINSTALL.cmd**. A window shows what goes and lets you tick the two things to delete. It removes the nightly task, shortcuts, the notification registration, programs and environments. It asks
+Double-click **UNINSTALL.cmd** (Settings, About, Uninstall copies its full path). A window shows what goes and lets you tick the two things to delete. It removes the nightly task, shortcuts, the notification registration, programs and environments. It asks
 separately whether to delete the AI models (15 GB) and your videos and history. The default answer to both is
 **No**. At the end it tells you what it kept and where.

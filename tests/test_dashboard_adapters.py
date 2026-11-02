@@ -1,7 +1,6 @@
 import json
 import sys
 import threading
-import types
 from pathlib import Path
 from typing import Any
 
@@ -10,12 +9,8 @@ import pytest
 from ns_common.logging import NsLogger
 from ns_common.paths import Paths
 from ns_dashboard.adapters import (
-    RealClipAdapter,
     RealDoctorAdapter,
     RealKeyringAdapter,
-    RealLearnAdapter,
-    RealRunAdapter,
-    RealScheduleAdapter,
     RealVerifyAdapter,
     lazy,
     real_adapters,
@@ -58,64 +53,17 @@ def test_real_adapters_report_unavailable_collaborators(tmp_home: Path, monkeypa
     for mod in ("ns_studio.clipper", "ns_studio.learn", "ns_supervisor.verify", "ns_supervisor.doctor",
                 "ns_supervisor.scheduler", "keyring"):
         monkeypatch.setitem(sys.modules, mod, None)
-    monkeypatch.delattr("ns_studio.orchestrator.run_job_with_progress", raising=False)
     paths, _db, store, worker = make_worker({})
     link = SupervisorLink("http://127.0.0.1:9", timeout_s=0.2)
     rec = store.create("clip", "c", {})
     ctl = JobControl(rec, store, EventHub())
-    with pytest.raises(AdapterUnavailable):
-        RealRunAdapter(paths, link).run(ctl, "c", "shorts_only", None)
-    with pytest.raises(AdapterUnavailable):
-        RealClipAdapter(paths, link).clip(ctl, tmp_home / "x.mp4", "src-1", {})
-    with pytest.raises(AdapterUnavailable):
-        RealLearnAdapter(paths).import_csv(ctl, tmp_home / "a.csv")
-    with pytest.raises(AdapterUnavailable):
-        RealLearnAdapter(paths).summary()
     with pytest.raises(AdapterUnavailable):
         RealVerifyAdapter(paths).verify(ctl, True)
     with pytest.raises(AdapterUnavailable):
         RealDoctorAdapter(paths).bundle()
     with pytest.raises(AdapterUnavailable):
         RealKeyringAdapter().get("pexels_api_key")
-    out = RealScheduleAdapter(paths).apply("04:00")
-    assert out["applied"] is False and "Saved" in out["note"]
     assert real_adapters(paths, link, NsLogger("dashboard", paths.logs)).folder is not None
-
-
-def test_real_adapters_pass_progress_cancel_and_params(tmp_home: Path, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setitem(sys.modules, "ns_supervisor.client", None)  # force the HTTP acquirer
-    seen: dict[str, Any] = {}
-
-    def run_clip_job(**kw: Any) -> list[str]:
-        seen.update(kw)
-        for i, name in enumerate(["import", "select"]):
-            kw["on_stage"](name, i, 2)
-        return ["job/c1"]
-
-    monkeypatch.setitem(sys.modules, "ns_studio.clipper", types.SimpleNamespace(run_clip_job=run_clip_job))
-    paths, _db, store, worker = make_worker({})
-    link = SupervisorLink("http://127.0.0.1:9", timeout_s=0.2)
-    adapter = RealClipAdapter(paths, link)
-    worker.handlers["clip"] = lambda ctl: {"output_ids": adapter.clip(ctl, Path("a.mp4"), "src-1", {"x": 1})}
-    job = store.create("clip", "c", {})
-    worker.run_next()
-    rec = store.get(job.job_id)
-    assert rec is not None and rec.status == "done" and rec.result == {"output_ids": ["job/c1"]}
-    assert seen["source_id"] == "src-1" and seen["params"] == {"x": 1}
-    assert isinstance(seen["acquirer"], HttpAcquirer)
-
-    # cancel requested before the second stage unwinds through the collaborator
-    def cancelling(**kw: Any) -> list[str]:
-        kw["on_stage"]("import", 0, 2)
-        worker.cancel_running()
-        kw["on_stage"]("select", 1, 2)
-        return []
-
-    monkeypatch.setitem(sys.modules, "ns_studio.clipper", types.SimpleNamespace(run_clip_job=cancelling))
-    job2 = store.create("clip", "c", {})
-    worker.run_next()
-    rec2 = store.get(job2.job_id)
-    assert rec2 is not None and rec2.status == "cancelled"
 
 
 def test_stage_reporter_formats_progress(tmp_home: Path):

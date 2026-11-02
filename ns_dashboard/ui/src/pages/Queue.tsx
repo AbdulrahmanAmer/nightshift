@@ -8,8 +8,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useApp, useLoad } from "../lib/app";
 import { api } from "../lib/api";
-import { dayInline, fmtClock, fmtDay, fmtDur, fmtWhen, kindLabel, stageWords, store } from "../lib/format";
-import type { ChannelSummary, Job, Output, OutputDetail } from "../lib/types";
+import { dayInline, fmtClock, fmtDay, fmtDur, fmtWhen, kindLabel, plural, stageWords, store } from "../lib/format";
+import type { ChannelSummary, Job, Output, OutputDetail, Run } from "../lib/types";
 import { cx } from "../ui/kit";
 import { Scene } from "../visuals/Scene";
 import {
@@ -35,7 +35,7 @@ const kindIcon = (k: string): IconName => (k === "long" ? "monitor" : k === "sho
 const partOfDay = () => { const h = new Date().getHours(); return h < 5 ? "Good night" : h < 12 ? "Good morning" : h < 18 ? "Good afternoon" : "Good evening"; };
 
 export default function Queue() {
-  const { route, status, refresh, channelName, go, ask } = useApp();
+  const { route, status, refresh, channelName, go, ask, ownerName } = useApp();
   const [tab, setTab] = useState<Tab>((route.query.get("tab") as Tab) || "ready");
   const list = useLoad<Output[]>(() => api.get(`/outputs?status=${STATUS[tab]}`), [tab], []);
   const [current, setCurrent] = useState<string | null>(route.query.get("id"));
@@ -54,7 +54,7 @@ export default function Queue() {
   const pick = (t: Tab) => { setTab(t); setCurrent(null); };
   const reviewDescription = (
     <>
-      {owner ? `${partOfDay()}. ` : ""}{pending ? <>{pending === 1 ? "One video is" : `${pending} videos are`} ready to review{newest && tab === "ready" ? <>, the newest made at <span className="ds-num">{fmtClock(newest)}</span></> : null}.</> : "Nothing is waiting for review."}{" "}
+      {owner && !ownerName ? `${partOfDay()}. ` : ""}{pending ? <>{pending === 1 ? "One video is" : `${pending} videos are`} ready to review{newest && tab === "ready" ? <>, the newest made at <span className="ds-num">{fmtClock(newest)}</span></> : null}.</> : "Nothing is waiting for review."}{" "}
       {status?.next_run ? <>Tonight's run starts at <span className="ds-num">{fmtClock(status.next_run)}</span>.</> : "Automatic runs are off."}
     </>
   );
@@ -62,7 +62,7 @@ export default function Queue() {
   return (
     <div className="enter">
       <DashGrid label="Queue">
-        <Greeting as="h2" size="lg" className={cx("self-center", SPAN["2/4"])} salutation={owner || partOfDay()} question="What are we making tonight?"
+        <Greeting as="h2" size="lg" className={cx("self-center", SPAN["2/4"])} salutation={ownerName ? `${partOfDay()}, ${ownerName}` : owner || partOfDay()} question="What are we making tonight?"
           description={reviewDescription} adornment={chans.length ? <WorkspaceTokens tokens={chans.slice(0, 3).map((c) => ({ icon: /clip|stream|podcast/i.test(c.niche || "") ? "scissors" : "channels", label: c.display_name }))} /> : undefined} />
         <FeatureCard className={cx("self-stretch", SPAN["1/1"])} illustration={<StoryIllustration />} title="Write a story" description="An original story, narrated, with footage and captions" href="#/create?kind=story" />
         <FeatureCard className={cx("self-stretch", SPAN["1/1"])} illustration={<ClipsIllustration />} title="Cut clips" description="Vertical clips from your own stream or podcast" href="#/create?kind=clips" />
@@ -81,6 +81,7 @@ export default function Queue() {
           </Card>
         )}
 
+        <LastNight className={SPAN["6/4"]} pending={pending} onReview={() => pick("ready")} channelName={channelName} />
         <JobEvents jobs={jobs.data} loading={jobs.loading} channelName={channelName} className={SPAN["2/2"]} onReview={() => pick("ready")} />
         <TonightPlan chans={chans} status={status} className={SPAN["2/2"]} />
         <PostingCalendar chans={chans} ready={tab === "ready" ? items : []} className={SPAN["2/2"]} onOpen={(id) => { setTab("ready"); setCurrent(id); }} />
@@ -447,4 +448,25 @@ function MachineMeters({ className }: { className?: string }) {
   const gpuLine = gpu ? `${gpu.name}${temp != null ? ` · ${Math.round(temp)} °C` : ""}` : null;
   return <MeterGroup className={className} title="This PC" meters={meters}
     caption={gpuLine ? [gpuLine, diskLine].filter(Boolean).join(". ") : diskLine ? `${diskLine}. GPU load appears once the engine reports it` : "Readings appear once the engine answers"} />;
+}
+
+/** "Last night": what the newest nightly run made and what stopped, from GET /runs. Shown only after a run has happened. */
+function LastNight({ className, pending, onReview, channelName }: { className?: string; pending: number; onReview: () => void; channelName: (s?: string) => string }) {
+  const runs = useLoad<Run[]>(() => api.get("/runs?limit=1"), [], []);
+  const r = runs.data[0];
+  if (!r) return null;
+  const made = r.summary?.jobs?.length ?? 0; const failed = r.summary?.failures ?? [];
+  const took = r.duration_s ? (r.duration_s >= 3600 ? `${Math.floor(r.duration_s / 3600)} h ${Math.round((r.duration_s % 3600) / 60)} min` : `${Math.max(1, Math.round(r.duration_s / 60))} min`) : null;
+  const when = r.mode === "daily" ? "Last night" : "Last run";
+  return (
+    <Card as="section" aria-labelledby="q-last" className={className}>
+      <CardHeader id="q-last" title={when} adornment={failed.length ? <StatusDot tone="danger" label="Something stopped" /> : <StatusDot tone="online" label="Finished" />}
+        actions={pending > 0 ? <Button size="sm" variant="soft" onClick={onReview}>Review {pending}</Button> : undefined} />
+      <p className="text-ds-md leading-ds-normal">
+        {made ? `${plural(made, "video")} made` : "Nothing was made"}{took ? `, in ${took}` : ""}, {fmtDay(r.started_at).toLowerCase()} at <span className="ds-num">{fmtClock(r.started_at)}</span>.
+        {failed.length ? ` ${plural(failed.length, "job")} stopped.` : ""}
+      </p>
+      {failed.length > 0 && <ul className="mt-2 flex flex-col gap-1 text-ds-xs text-ds-danger">{failed.slice(0, 3).map((f) => <li key={f.job_id}>{channelName(f.channel)}: {f.code ? `${f.code}. ` : ""}{f.error || "stopped"}</li>)}</ul>}
+    </Card>
+  );
 }

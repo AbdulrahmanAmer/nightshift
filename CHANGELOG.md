@@ -9,6 +9,33 @@ All notable changes to Nightshift are recorded here. The format follows
 
 Fixes from the v0.1.0 code review (installer, launchers, supervisor), found by reading the paths no test had run.
 
+### Fixed (dashboard side of `docs/design/system-gaps.md`)
+Calls from the dashboard into the studio, supervisor and Series Workshop that pointed at functions which do not exist,
+and routes and buttons that nothing used. A table-driven test (`tests/test_dashboard_wiring.py`) now resolves every
+`ns_studio`, `ns_supervisor`, `ns_tts` and `ns_common` name the dashboard takes, so an unwired call fails CI.
+- **Run now** (gap 2) calls `ns_studio.jobs` and `policy.regen.run_job_guarded`; progress and Cancel come from the stage
+  runner's log events (`ns_dashboard/studio_bridge.py`).
+- **Clipper** (gap 3) builds the clip job with `create_clip_job` and runs it with `run_job`; links download through
+  `clipper.source.import_url`. **Re-run with another template** (gap 18, `POST /api/jobs/clip/rerun`) resumes the job
+  with `resume_clip_job`, keeping the transcript.
+- **Series parts** (gap 6): the jobs worker runs `series_part` rows that `Workshop.produce` writes; a failed part goes back
+  to approved. The **Series Workshop tools** (gap 7) are in the Assistant (topic series) with Yes/No cards, and
+  **Library, Series** (gap 8) lists stories and parts from the workshop files with a "Produce next part" button.
+- **Settings, Update** (gap 9) shows "not available in this version yet" instead of an error while `ns update --check` /
+  `--github` do not exist. **Diagnostics** (gap 10) calls `doctor.build_bundle` and has a Download button (gap 22).
+  **Self-check** (gaps 11, 27) calls `run_verify(paths, rt, ctl, quick=, deps=)`; Settings also has Warm up and Stop all.
+  **Results, import CSV** (gap 12) reads the file with `learn.importer` and updates what the pools learned.
+  **Run time** (gap 13) re-registers the Windows task with `schedule.install`.
+- **Settings** has Export settings, Import settings (gap 17, `ns backup` / `ns restore`) and the real path of
+  `UNINSTALL.cmd`; the log viewer filters by component (gap 28).
+- **Assistant** (gap 21) lists past conversations and answers requests saved while the engine was busy. **Library,
+  Formats** (gap 23) has an edit form (and Duplicate works again). **Queue** (gap 26) shows a "Last night" card.
+- **First start** (gap 30) greets the owner by the name chosen in setup and starts in the chosen theme.
+
+### Removed
+- `GET /api/templates/{id}/preview.png` and the Pillow preview drawing: nothing called them (gap 28).
+- `Paths.outbox_dir`, the old date/job Outbox layout, which no code used (gap 24).
+
 ### Fixed
 - **`ns update` could never swap folders** (`NS-E702` every time): the shortcuts start `ns.exe` with the app folder as
   working directory, and Windows refuses to rename a folder that is any process's working directory. `ns update` (and

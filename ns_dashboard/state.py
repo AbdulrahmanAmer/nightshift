@@ -115,3 +115,35 @@ class AppState:
     draining: bool = False
     loading_since: dict[str, float] = field(default_factory=dict)
     last_bundle: Path | None = None
+    last_backup: Path | None = None
+    fake_services: bool = False
+
+
+UI_THEMES = ("light", "dark", "soft")
+
+
+def ui_prefs_file(paths: Paths) -> Path:
+    """`config/ui_prefs.json`, written by the installer's setup window (CR-C1-UI-8)."""
+    return paths.config / "ui_prefs.json"
+
+
+def load_ui_prefs(paths: Paths) -> dict[str, Any]:
+    """`{owner_name, theme}` from the setup window's choices; missing or invalid values come back as None.
+
+    The greeting uses `owner_name`; the first start of the page uses `theme` (the owner's later choice in the
+    page is kept in the browser and wins).
+    """
+    out: dict[str, Any] = {"owner_name": None, "theme": None}
+    try:
+        raw = json.loads(ui_prefs_file(paths).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return out
+    if not isinstance(raw, dict):
+        return out
+    name = raw.get("owner_name")
+    if isinstance(name, str) and name.strip():
+        out["owner_name"] = " ".join(name.split())[:40]
+    theme = raw.get("theme", raw.get("ui_theme"))
+    if theme in UI_THEMES:
+        out["theme"] = theme
+    return out
