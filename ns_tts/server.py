@@ -8,6 +8,7 @@ Loudness normalization is NOT done here (C6 does it). `python -m ns_tts.server -
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import os
 import re
 import sys
@@ -24,6 +25,7 @@ from pydantic import BaseModel, Field
 
 from ns_common.config import load_runtime
 from ns_common.errors import NsError
+from ns_common.languages import qwen_language
 from ns_common.logging import NsLogger
 from ns_common.models import Runtime
 from ns_common.paths import Paths
@@ -44,6 +46,7 @@ class SpeechReq(BaseModel):
     response_format: str = "wav"
     seed: int | None = None
     cliff_lines: list[str] = []
+    language: str | None = None  # ISO code or name; the channel's language (default: the voice's own)
 
 
 class BatchItem(BaseModel):
@@ -54,6 +57,7 @@ class BatchItem(BaseModel):
     voice: str
     speed: float = Field(default=1.0, ge=0.5, le=2.0)
     cliff_lines: list[str] = []
+    language: str | None = None
 
 
 class BatchReq(BaseModel):
@@ -96,6 +100,20 @@ def create_app(engine: Engine, library: VoiceLibrary, *, log: NsLogger | None = 
     """Build the app around an engine and a voice library. Engine access is serialized by a lock."""
     app = FastAPI(title="Nightshift TTS")
     lock = threading.Lock()
+    warned: set[str] = set()
+
+    def language_name(code: str | None) -> str:
+        """The `--lang` name for a request's language; an unknown one is English, with one warning per code."""
+        name, known = qwen_language(code)
+        if not known and (code or "") not in warned:
+            warned.add(code or "")
+            if log:
+                log.warn("tts_language_unknown", f"{code!r} is not a Qwen3-TTS language; using English")
+        return name
+
+    def with_language(voice: VoiceSpec, code: str | None) -> VoiceSpec:
+        """`voice` speaking the request's language (the voice's own when the request names none)."""
+        return dataclasses.replace(voice, language=language_name(code)) if code else voice
 
     def ensure_loaded() -> None:
         if not engine.loaded:
@@ -149,7 +167,7 @@ def create_app(engine: Engine, library: VoiceLibrary, *, log: NsLogger | None = 
     def speech(req: SpeechReq) -> Response:
         if req.response_format != "wav":
             raise HTTPException(400, "only response_format 'wav' is supported")
-        voice = get_voice(req.voice)
+        voice = with_language(get_voice(req.voice), req.language)
         with lock:
             x = render(req.input, voice, req.speed, req.seed, req.cliff_lines)
             sr = engine.sr
@@ -167,7 +185,8 @@ def create_app(engine: Engine, library: VoiceLibrary, *, log: NsLogger | None = 
         t0 = time.perf_counter()
         with lock:
             for it in req.items:
-                x = render(it.input, voices_by_name[it.voice], it.speed, req.seed, it.cliff_lines)
+                voice = with_language(voices_by_name[it.voice], it.language)
+                x = render(it.input, voice, it.speed, req.seed, it.cliff_lines)
                 path = out_dir / f"{it.id}.wav"
                 seconds = write_wav(path, x, engine.sr)
                 total += seconds
@@ -188,7 +207,9 @@ def create_app(engine: Engine, library: VoiceLibrary, *, log: NsLogger | None = 
         try:
             with lock:
                 ensure_loaded()
-                v = library.add_design(req.name, req.description, engine=engine, language=req.language)
+                v = library.add_design(
+                    req.name, req.description, engine=engine, language=language_name(req.language)
+                )
         except ValueError as e:
             raise HTTPException(400, str(e)) from e
         return {"name": v.name, "sample_path": str(library.sample_path(v.name))}
@@ -209,7 +230,7 @@ def create_app(engine: Engine, library: VoiceLibrary, *, log: NsLogger | None = 
                     req.ref_text,
                     req.rights_confirmed,
                     engine=engine,
-                    language=req.language,
+                    language=language_name(req.language),
                 )
         except ValueError as e:
             raise HTTPException(400, str(e)) from e

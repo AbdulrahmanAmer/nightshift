@@ -154,6 +154,7 @@ class FakeEngine:
 
     def __init__(self) -> None:
         self.loaded = False
+        self.languages: list[str] = []  # the language of every synth call, so tests can see what reached it
 
     def load(self) -> None:
         self.loaded = True
@@ -183,6 +184,7 @@ class FakeEngine:
     def synth(
         self, text: str, voice: VoiceSpec, *, speed: float = 1.0, seed: int | None = None
     ) -> np.ndarray:
+        self.languages.append(voice.language)
         return self._tone(text, self._freq(voice), speed)
 
     def synth_batch(

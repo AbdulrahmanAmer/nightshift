@@ -19,12 +19,15 @@ class TtsItem:
     voice: str
     speed: float = 1.0
     cliff_lines: tuple[str, ...] = ()   # lines that get a 1,200 ms pause before them (spec 7.5)
+    language: str | None = None         # the channel's ISO code; the service maps it to qwen-tts's --lang names
 
 
 def _item_body(i: TtsItem) -> dict[str, Any]:
     body: dict[str, Any] = {"id": i.id, "input": i.text, "voice": i.voice, "speed": i.speed}
     if i.cliff_lines:
         body["cliff_lines"] = list(i.cliff_lines)
+    if i.language:
+        body["language"] = i.language
     return body
 
 
@@ -37,7 +40,8 @@ class TtsFile:
 
 class Tts(Protocol):
     def speak(
-        self, text: str, voice: str, speed: float, out_path: Path, *, seed: int | None = None
+        self, text: str, voice: str, speed: float, out_path: Path, *, seed: int | None = None,
+        language: str | None = None,
     ) -> float: ...
 
     def speak_batch(
@@ -80,13 +84,15 @@ class TtsClient:
 
     def speak(
         self, text: str, voice: str, speed: float, out_path: Path, *, seed: int | None = None,
-        cliff_lines: tuple[str, ...] = (),
+        cliff_lines: tuple[str, ...] = (), language: str | None = None,
     ) -> float:
         body: dict[str, Any] = {
             "model": "qwen3-tts", "input": text, "voice": voice, "speed": speed, "response_format": "wav",
         }
         if cliff_lines:
             body["cliff_lines"] = list(cliff_lines)
+        if language:
+            body["language"] = language
         if seed is not None:
             body["seed"] = seed
         try:
@@ -133,12 +139,16 @@ class TtsClient:
 
 
 class FakeTts:
+    """Tone-burst narration. `items` records every item it was asked to speak (voice, speed, language)."""
+
     def __init__(self, *, wpm: float = 155, sr: int = 24000) -> None:
         self.wpm = wpm
         self.sr = sr
+        self.items: list[TtsItem] = []
 
     def speak(
-        self, text: str, voice: str, speed: float, out_path: Path, *, seed: int | None = None
+        self, text: str, voice: str, speed: float, out_path: Path, *, seed: int | None = None,
+        language: str | None = None,
     ) -> float:
         words = max(1, word_count(text))
         seconds = max(0.4, words / (self.wpm * speed) * 60.0)
@@ -163,7 +173,10 @@ class FakeTts:
         out: list[TtsFile] = []
         for it in items:
             p = out_dir / f"{it.id}.wav"
-            out.append(TtsFile(it.id, p, self.speak(it.text, it.voice, it.speed, p, seed=seed)))
+            self.items.append(it)
+            out.append(
+                TtsFile(it.id, p, self.speak(it.text, it.voice, it.speed, p, seed=seed, language=it.language))
+            )
         return out
 
     def voices(self) -> list[dict]:

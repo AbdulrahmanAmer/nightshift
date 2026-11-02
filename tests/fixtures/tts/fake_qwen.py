@@ -30,6 +30,12 @@ TTS_VALUE_FLAGS = {
 TTS_BOOL_FLAGS = {"--greedy", "--stream-by-line", "--no-fa", "--clamp-fp16"}
 CODEC_VALUE_FLAGS = {"--model", "--device", "-i", "--talker", "--format"}
 DEVICES = {"CUDA0", "Vulkan0", "MTL0", "CPU"}
+# qwen3-tts.codec.language_names of the talker GGUF; matched case-insensitively, anything else is fatal
+# ("[Prompt] FATAL: unknown language"), "auto" lets the model guess from the text.
+LANGUAGES = {
+    "auto", "chinese", "english", "german", "italian", "portuguese", "spanish", "japanese", "korean",
+    "french", "russian",
+}
 SPEAKERS = {"serena", "vivian", "uncle_fu", "ryan", "aiden", "ono_anna", "sohee", "eric", "dylan"}
 HOP = 1920  # samples per codec frame at 24 kHz
 
@@ -93,6 +99,8 @@ def run_tts(argv: list[str]) -> int:
     must_exist(a["--codec"], "--codec")
     if "--device" in a and a["--device"] not in DEVICES:
         die(f"unknown device {a['--device']!r}")
+    if "--lang" in a and a["--lang"].lower() not in LANGUAGES:
+        die(f"unknown language {a['--lang']!r}")
     raw = sys.stdin.buffer.read().decode("utf-8")
     text = raw.rstrip("\r\n")
     if not text:

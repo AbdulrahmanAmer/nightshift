@@ -164,12 +164,13 @@ def voice_items(ctx: JobContext) -> list[TtsItem]:
     voice = job_voice(ctx)
     name = voice.name or voice.speaker or "Ryan"
     speed = job_speed(ctx)
-    items = [TtsItem(f"c{c.n}", c.text, name, speed, c.cliff_lines) for c in load_chapters(ctx)]
+    lang = ctx.channel.language
+    items = [TtsItem(f"c{c.n}", c.text, name, speed, c.cliff_lines, lang) for c in load_chapters(ctx)]
     for s in load_shorts(ctx):
         if s.hook:
-            items.append(TtsItem(f"h{s.k}", s.hook, name, speed))
+            items.append(TtsItem(f"h{s.k}", s.hook, name, speed, language=lang))
         if s.closing_line:
-            items.append(TtsItem(f"x{s.k}", s.closing_line, name, speed))
+            items.append(TtsItem(f"x{s.k}", s.closing_line, name, speed, language=lang))
     return items
 
 
