@@ -511,7 +511,7 @@ def test_a_missing_local_code_model_is_said_but_does_not_fail_the_install(tmp_pa
     ctx.paths.opencode_file.write_text("{}", encoding="utf-8")
     S08Smoke().run(ctx)
     assert ctx.flag("opencode_local_code") is False and ctx.flag("smoke") == "passed"
-    assert "could not find its model" in ctx.ui.text
+    assert "cannot find local/code" in ctx.ui.text
 
 
 def test_s05_no_longer_pretends_to_check_the_model_before_the_config_exists():

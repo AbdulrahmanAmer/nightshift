@@ -15,6 +15,7 @@ from ns_supervisor import (
     backup,
     control,
     doctor,
+    models_get,
     notify,
     releases,
     schedule,
@@ -29,6 +30,8 @@ from ns_supervisor.schedule_cfg import read_run_time
 app = typer.Typer(help="Nightshift runtime tools", add_completion=False)
 schedule_app = typer.Typer(help="The nightly scheduled task 'Nightshift Daily'", add_completion=False)
 app.add_typer(schedule_app, name="schedule")
+models_app = typer.Typer(help="Optional model downloads (VoiceDesign, the story model)", add_completion=False)
+app.add_typer(models_app, name="models")
 
 
 def _die(e: NsError | str, code: int = 1) -> typer.Exit:
@@ -328,6 +331,21 @@ def schedule_show() -> None:
 def cmd_notify(title: str, message: str) -> None:
     """Show a Windows toast; without a desktop (a scheduled run) leave a morning note for the dashboard."""
     notify.toast_or_note(title, message)
+
+
+@models_app.command("get")
+def models_get_cmd(
+    what: Annotated[str, typer.Argument(help="voicedesign | story_llm")],
+) -> None:
+    """Download an optional model (pinned in manifest.json, resumable, SHA256-checked)."""
+    if what not in models_get.KINDS:
+        raise _die(f"unknown model {what!r}; choose one of: {', '.join(models_get.KINDS)}", 2)
+    paths = Paths.from_env()
+    try:
+        result = models_get.get_model(what, paths, control.app_path(paths), typer.echo)
+    except NsError as e:
+        raise _die(e) from e
+    typer.echo(json.dumps(result))
 
 
 def main() -> None:

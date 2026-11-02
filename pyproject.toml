@@ -40,7 +40,7 @@ ns = "ns_supervisor.cli:main"
 studio = "ns_studio.cli:main"
 
 [tool.setuptools.packages.find]
-include = ["ns_common*", "ns_studio*", "ns_tts*", "ns_supervisor*", "ns_dashboard*"]
+include = ["ns_common*", "ns_studio*", "ns_tts*", "ns_supervisor*", "ns_dashboard*", "installer*"]
 
 [tool.setuptools.package-data]
 ns_studio = ["prompts/*.md", "presets/*.yaml", "presets/formats/*.yaml", "presets/fonts/*", "exemplars/**/*"]

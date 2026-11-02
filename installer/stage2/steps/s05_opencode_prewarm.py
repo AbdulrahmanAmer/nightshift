@@ -27,7 +27,7 @@ def confirm_local_code(ctx: StepContext) -> bool:
     if ok:
         ctx.ui.say("Nightshift Code sees its model (local/code).")
     else:
-        ctx.ui.say("Nightshift Code could not find its model (local/code). Check config/opencode.json.", "yellow")
+        ctx.ui.say("Nightshift Code cannot find local/code; see config/opencode.json.", "yellow")
         ctx.log.warn("opencode_local_code_missing", res.text[-200:])
     return ok
 
