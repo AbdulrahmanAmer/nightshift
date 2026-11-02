@@ -14,6 +14,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import IO
@@ -249,15 +250,45 @@ def kill_tree(pid: int) -> None:
         pass
 
 
-def terminate(proc: Proc, grace_s: float = 10) -> None:
-    """Stop the process tree: terminate, wait `grace_s`, then kill. Returns once the process is gone."""
+def soft_stop(pid: int) -> bool:
+    """Ask `pid` and its descendants to close politely (`taskkill /T` without `/F`).
+
+    True when Windows accepted the request, so waiting for the exit makes sense. Console services without a
+    window refuse it (taskkill says they can only be terminated forcefully) and get False at once.
+    """
+    if sys.platform != "win32":
+        return False
+    try:
+        r = subprocess.run(
+            ["taskkill", "/PID", str(pid), "/T"],
+            capture_output=True,
+            timeout=20,
+            check=False,
+            creationflags=_NO_WINDOW,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return r.returncode == 0
+
+
+def terminate(
+    proc: Proc,
+    grace_s: float = 10,
+    *,
+    soft: Callable[[int], bool] = soft_stop,
+    kill: Callable[[int], None] = kill_tree,
+) -> None:
+    """Stop the process tree: ask politely, wait up to `grace_s`, then kill the tree. Returns once it is gone.
+
+    The hard kill (`taskkill /T /F`) only happens when the polite request was refused or the process was
+    still alive after the grace period, so a service that accepts the request can finish its writes.
+    """
     if proc.popen.poll() is None:
-        kill_tree(proc.pid)
-        with contextlib.suppress(OSError):
-            proc.popen.terminate()
-        try:
-            proc.popen.wait(timeout=grace_s)
-        except subprocess.TimeoutExpired:
+        if soft(proc.pid):
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                proc.popen.wait(timeout=grace_s)
+        if proc.popen.poll() is None:
+            kill(proc.pid)
             with contextlib.suppress(OSError):
                 proc.popen.kill()
             proc.popen.wait(timeout=10)

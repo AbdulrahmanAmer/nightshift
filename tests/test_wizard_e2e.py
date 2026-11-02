@@ -68,14 +68,15 @@ def test_full_simulated_run(tmp_path: Path):
     assert (home / "bin" / "llama" / "llama-server.exe").exists()
     assert (home / "models" / "llm" / "Qwen3-14B-Q4_K_M.gguf").exists()
     assert (home / "venvs" / "studio" / "Scripts" / "python.exe").exists()
-    assert (home / "venvs" / "tts" / "Scripts" / "python.exe").exists()          # qwentts has no binary yet
+    assert not (home / "venvs" / "tts").exists()          # the pinned qwentts binary needs no PyTorch venv
+    assert (home / "bin" / "qwentts" / ".ns-qwentts.done").exists()
     assert (home / "config" / "opencode.json").exists()
     assert list((home / "_simulated_desktop").glob("nightshift-diagnostics-*.zip"))
 
 
     p = Paths(home)
     rt = load_runtime(p)
-    assert rt.tts.engine == "reference" and rt.llama.model_path.endswith("Qwen3-14B-Q4_K_M.gguf")
+    assert rt.tts.engine == "qwentts" and rt.llama.model_path.endswith("Qwen3-14B-Q4_K_M.gguf")
     assert load_channel(p, "after-dark-tales").niche == "horror fiction"
 
 

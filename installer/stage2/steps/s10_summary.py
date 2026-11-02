@@ -73,6 +73,9 @@ class S10Summary(Step):
         else:
             ui.say("The diagnostics zip is not available in this version; send the logs folder.", "yellow")
             ctx.log.warn("bundle_missing", res.text[-200:])
+        # The headless engine `ns verify` may have left behind never starts the dashboard service; make sure
+        # the first Dashboard click starts a fresh engine that does. `ns stop` is a no-op when nothing runs.
+        ctx.run_tool("ns", ["stop"], timeout=120)
         ctx.set_flag("summary_shown", True)
 
     def verify(self, ctx: StepContext) -> None:

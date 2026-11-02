@@ -1,8 +1,10 @@
 """s08_smoke: ``ns verify --quick`` and the documented fallbacks for the untestable parts (component C1).
 
 NVENC failing switches the encoder to libx264 (NS-W401); a failing TTS engine switches to the PyTorch
-reference engine and builds its venv (NS-W301, NS-E108 when torch cannot see the GPU); MTP that is not
-faster is turned off (NS-W302); faster-whisper that cannot load on CUDA stops the install with NS-E112.
+reference engine and builds its venv (NS-W301, NS-E108 when torch cannot see the GPU); faster-whisper that
+cannot load on CUDA stops the install with NS-E112. Checks are matched on the real names `ns verify` reports
+(`ns_supervisor.check_names`). `ns verify --quick` has no MTP check: whether MTP is kept is decided by
+`ns tune` (s06), so there is no MTP branch here.
 """
 
 from __future__ import annotations
@@ -16,6 +18,7 @@ from installer.stage2.errors import make_error
 from installer.stage2.fallback import ensure_tts_venv, fallback_items
 from installer.stage2.runner import RunResult
 from installer.stage2.runtime_cfg import ensure_baseline, update_runtime
+from ns_supervisor import check_names as names
 
 
 def load_report_rows(ctx: StepContext, res: RunResult) -> list[dict[str, Any]] | None:
@@ -46,9 +49,9 @@ def parse_report(ctx: StepContext, res: RunResult) -> dict[str, bool] | None:
     return {str(c.get("name", "")).lower(): bool(c.get("passed")) for c in rows}
 
 
-def failing(report: dict[str, bool], part: str) -> bool:
-    """True when any check whose name contains ``part`` failed."""
-    return any(part in name and not ok for name, ok in report.items())
+def failing(report: dict[str, bool], prefix: str) -> bool:
+    """True when any check of the area ``prefix`` (for example ``names.TTS_PREFIX``) failed."""
+    return any(name.startswith(prefix) and not ok for name, ok in report.items())
 
 
 class S08Smoke(Step):
@@ -80,21 +83,17 @@ class S08Smoke(Step):
                 "Smoke test", ["Check", "Result"],
                 [[name, "ok" if ok else "fail"] for name, ok in report.items()], status_col=1,
             )
-            if failing(report, "whisper"):
+            if failing(report, names.WHISPER_PREFIX):
                 raise make_error("NS-E112", "faster-whisper did not load on the GPU")
-            for part in ("llm", "embed"):
-                if failing(report, part):
-                    raise make_error("NS-E203", f"the {part} service did not become healthy")
-            if failing(report, "nvenc") and "NS-W401" not in warned:
+            for prefix, what in ((names.LLAMA_PREFIX, "story model"), (names.EMBED_PREFIX, "memory index")):
+                if failing(report, prefix):
+                    bad = ", ".join(n for n, ok in report.items() if n.startswith(prefix) and not ok)
+                    raise make_error("NS-E203", f"the {what} did not pass its test ({bad})")
+            if failing(report, names.NVENC_PREFIX) and "NS-W401" not in warned:
                 update_runtime(ctx, self._use_libx264)
                 ctx.warn("NS-W401", "runtime.json now uses libx264")
                 warned.add("NS-W401")
-            rt = ensure_baseline(ctx)
-            if failing(report, "mtp") and rt.llama.flags.spec_type and "NS-W302" not in warned:
-                update_runtime(ctx, self._no_mtp)
-                ctx.warn("NS-W302", "runtime.json now uses plain decoding")
-                warned.add("NS-W302")
-            if not failing(report, "tts"):
+            if not failing(report, names.TTS_PREFIX):
                 break
             if attempt == 2 or ctx.flag("tts_fallback", False):
                 raise make_error("NS-E108", "the reference TTS engine also failed its test")
@@ -106,11 +105,6 @@ class S08Smoke(Step):
     def _use_libx264(rt: Any) -> None:
         rt.video.encoder = "libx264"
         rt.video.preset = "veryfast"
-
-    @staticmethod
-    def _no_mtp(rt: Any) -> None:
-        rt.llama.flags.spec_type = None
-        rt.llama.flags.spec_draft_n_max = None
 
     @staticmethod
     def _switch_to_reference(ctx: StepContext) -> None:

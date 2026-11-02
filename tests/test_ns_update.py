@@ -1,4 +1,5 @@
 import hashlib
+import os
 import zipfile
 from pathlib import Path
 
@@ -216,3 +217,54 @@ def test_resync_failure_and_missing_uv_are_e702(tmp_path: Path, monkeypatch: pyt
     with pytest.raises(NsError) as e2:
         update.resync_venvs(tmp_path, paths)
     assert e2.value.code == "NS-E702" and "uv" in e2.value.detail
+
+
+def _inside(child: Path, parent: Path) -> bool:
+    child, parent = child.resolve(), parent.resolve()
+    return child == parent or parent in child.parents
+
+
+def test_update_leaves_the_app_directory_before_the_swap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Shortcuts start ns.exe with <app> as cwd; Windows refuses to rename a directory that is a cwd.
+    app, z = make_app(tmp_path), make_zip(tmp_path)
+    home = tmp_path / "ns"
+    home.mkdir()
+    monkeypatch.chdir(app)
+    seen: list[Path] = []
+    e = Env()
+
+    def untracked(a: Path) -> list[str]:
+        seen.append(Path.cwd())  # called right before <app> is renamed to <app>.prev
+        return ["local_notes.txt"]
+
+    env = e.env()
+    env.untracked = untracked
+    update.update_app(z, app, env, paths=Paths(home))
+    assert seen and not _inside(seen[0], app)
+    assert Path.cwd().resolve() == home.resolve()
+    assert (app / "VERSION").read_text(encoding="utf-8").strip() == "0.2.0"
+
+
+def test_update_with_a_relative_zip_and_cwd_inside_app(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app, z = make_app(tmp_path), make_zip(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    update.update_app(Path(z.name), Path("NightShift"), Env().env(), paths=Paths(tmp_path / "ns"))
+    assert (app / "VERSION").read_text(encoding="utf-8").strip() == "0.2.0"
+    monkeypatch.chdir(app)
+    update.update_app(make_zip(tmp_path, "0.3.0"), app, Env().env(), paths=Paths(tmp_path / "ns"))
+    assert not _inside(Path.cwd(), app)  # falls back to the temp dir when the home does not exist
+    assert (app / "VERSION").read_text(encoding="utf-8").strip() == "0.3.0"
+
+
+def test_rollback_also_leaves_the_app_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    app = make_app(tmp_path)
+    paths = Paths(tmp_path / "ns")
+    update.update_app(make_zip(tmp_path), app, Env().env(), paths=paths)
+    monkeypatch.chdir(app)
+    update.rollback_app(app, Env().env(), paths=paths)
+    assert not _inside(Path.cwd(), app) and not _inside(Path(os.getcwd()), tmp_path / "NightShift.prev")
+    assert (app / "VERSION").read_text(encoding="utf-8").strip() == "0.1.0"

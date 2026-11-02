@@ -175,7 +175,7 @@ def test_a_whole_scripted_run_bootstraps_then_runs_the_wizard_and_finishes(tmp_p
         e.emit({"type": "file", "key": LLM, "event": "finish", "outcome": "downloaded"})
         e.emit({"type": "warn", "code": "NS-W302", "detail": "plain decoding"})
         e.emit({"type": "verify", "checks": [
-            {"name": "llm", "passed": True, "value": "54.2", "limit": None}]})
+            {"name": "llama.tok_s", "passed": True, "value": "54.2", "limit": None}]})
         e.emit({"type": "sample", "kind": "voice", "path": str(wav), "seconds": 1.0})
         e.emit({"type": "bundle", "path": "C:\\Users\\x\\Desktop\\nightshift-diagnostics-1.zip"})
 
@@ -474,18 +474,27 @@ def test_warnings_failures_steps_and_verify_rows_map_into_the_state(tmp_path, mo
     st = next(x for x in s.snap()["steps"] if x["id"] == "s06_tune")
     assert st["status"] == "running" and st["detail"].startswith("Trying the story model") and st["startedAt"]
     ev({"type": "verify", "checks": [
-        {"name": "llm", "passed": True, "value": "54.2", "limit": None},
-        {"name": "embed", "passed": True, "value": None, "limit": None},
-        {"name": "tts", "passed": True, "value": "0.31", "limit": None},
-        {"name": "whisper", "passed": True, "value": None, "limit": None},
-        {"name": "nvenc", "passed": False, "value": None, "limit": None},
-        {"name": "mtp", "passed": False, "value": None, "limit": None},
-        {"name": "bench.llm", "passed": True, "value": "1", "limit": None}]})
+        {"name": "supervisor.status", "passed": True, "value": "up", "limit": None},
+        {"name": "llama.start", "passed": True, "value": "12.0", "limit": None},
+        {"name": "llama.health", "passed": True, "value": None, "limit": None},
+        {"name": "llama.json_completion", "passed": True, "value": "json ok", "limit": None},
+        {"name": "llama.tok_s", "passed": True, "value": "54.2", "limit": None},
+        {"name": "embed.start", "passed": True, "value": "1.0", "limit": None},
+        {"name": "embed.vector", "passed": True, "value": "768.0", "limit": None},
+        {"name": "tts.start", "passed": True, "value": "3.0", "limit": None},
+        {"name": "tts.preset", "passed": True, "value": "0.31", "limit": None},
+        {"name": "tts.voices", "passed": False, "value": "preset", "limit": None},
+        {"name": "whisper.load", "passed": True, "value": "1.5", "limit": None},
+        {"name": "nvenc.probe", "passed": False, "value": None, "limit": None},
+        {"name": "vram.idle", "passed": True, "value": "120", "limit": None},
+        {"name": "bench.idle_vram_mb", "passed": True, "value": "1", "limit": None}]})
     checks = {c["name"]: c for c in s.snap()["verify"]["checks"]}
-    assert list(checks) == ["llm", "embed", "tts", "whisper", "nvenc", "mtp"]      # bench rows stay hidden
-    assert checks["tts"]["value"].endswith("0.31 RTF")
+    # one row per area, real `ns verify` names grouped; bench rows stay hidden; no invented "mtp" row
+    assert list(checks) == ["engine", "llm", "embed", "tts", "whisper", "nvenc", "vram"]
+    assert checks["llm"]["label"] == "Story model" and checks["llm"]["status"] == "passed"
+    assert checks["llm"]["value"] == "54.2 tokens/s"
+    assert checks["tts"]["value"].endswith("0.31 RTF") and checks["tts"]["status"] == "fallback"
     assert (checks["nvenc"]["status"], checks["nvenc"]["value"]) == ("fallback", "libx264 (slower)")
-    assert (checks["mtp"]["status"], checks["mtp"]["value"]) == ("fallback", "off")
     assert checks["whisper"]["value"] == "graphics card" and checks["embed"]["value"] == "ready"
 
 
@@ -550,6 +559,9 @@ def test_the_sample_helpers_and_labels_cover_every_step():
     from installer.stage2.web.model import STEP_PHASE
 
     assert set(labels.STEP_TITLES) == set(STEP_ORDER) == set(STEP_PHASE)
-    assert labels.verify_label("bench.llm") is None and labels.verify_label("nvenc_encode") == "Video encoder"
+    assert labels.verify_label("bench.idle_vram_mb") is None
+    assert labels.verify_label("nvenc.probe") == "Video encoder"
+    assert labels.verify_label("llama.health") == "Story model"
+    assert labels.verify_label("tts.preset") == "Voice engine" and labels.verify_label("mtp") == "mtp"
     assert labels.verify_label("odd_check") == "odd_check"
     assert labels.row_key("whisper/config.json") == "whisper" and labels.row_key("yunet") == "yunet"

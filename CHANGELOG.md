@@ -7,6 +7,42 @@ All notable changes to Nightshift are recorded here. The format follows
 
 ## [Unreleased]
 
+Fixes from the v0.1.0 code review (installer, launchers, supervisor), found by reading the paths no test had run.
+
+### Fixed
+- **`ns update` could never swap folders** (`NS-E702` every time): the shortcuts start `ns.exe` with the app folder as
+  working directory, and Windows refuses to rename a folder that is any process's working directory. `ns update` (and
+  `--rollback`) now steps out of the app folder first, and `Nightshift - Update` does a `Set-Location` before calling it.
+- **uv was only looked up on PATH**, but the installer keeps it at `bin\uv\uv.exe` and never adds it to PATH, so
+  `ns update` could not re-sync the environments and `ns doctor --bundle` had no `pip freeze`. One resolver
+  (`ns_common.uv.find_uv`: install folder first, then PATH) now serves update, doctor, the installer and the setup window.
+- **The dashboard could open as a dead page after setup**: `ns verify --quick` left a headless engine running that never
+  starts the dashboard service. The Dashboard shortcut (and the setup window's Open dashboard, which runs it) now always
+  asks the engine to start the dashboard, waits for port 8100 and never opens a dead address. `ns verify` stops an engine
+  it started itself, and the setup summary runs `ns stop`.
+- **The smoke test checked check names that do not exist** (`llm`, `mtp`; `ns verify` reports `llama.start`,
+  `llama.health`, `llama.json_completion` and has no MTP check) and the fake runner faked the same wrong names, so a
+  failing story model was never caught. The names now live in `ns_supervisor.check_names` and are used by `ns verify`, the
+  smoke step, the fake and the setup window labels. The dead MTP branch is gone (`ns tune` decides MTP). Setup rows group
+  the real checks per area.
+- **Paths with spaces broke headless setup** (`C:\Users\John Doe\...`): stage 1 wrapped the server arguments in literal
+  quotes and splatted them, which Windows PowerShell 5.1 quotes again. It now passes plain strings (and quotes correctly
+  for the window-mode `Start-Process`).
+- **Shutdown race in the engine**: a GPU waiter granted the lock while `shutdown()` ran started a new model process after
+  the stop and re-created `run\supervisor.json`. The grant is re-checked (`NS-E202`), `warmup` refuses during shutdown and
+  `write_state()` does nothing once shutting down.
+- **`terminate()` killed services at once**: it ran `taskkill /T /F` first, so `term_grace_s` was never used. It now asks
+  politely (`taskkill /T`), waits the grace period when Windows accepted the request, and only then force-kills the tree.
+- **A hidden console stayed hidden**: the dashboard launcher returned on any host exit code other than 3 before showing
+  the console it had hidden. It now restores it in a `finally` and falls back to the browser window on any exit but 0.
+- **The setup and dashboard windows shared one single-instance lock**, so opening the dashboard while setup was open only
+  raised the setup window. `nightshift-host.ps1 -Role setup|dashboard` (default dashboard) scopes the mutex and
+  `run\apphost-<role>.json`; the setup window passes `-Role setup`.
+- **Toasts never showed**: nothing registered the AppUserModelID `Nightshift`. Setup now writes
+  `HKCU\Software\Classes\AppUserModelId\Nightshift` (DisplayName, IconUri = the brand icon) and stamps the ID on the
+  Desktop dashboard shortcut through IPropertyStore (best effort; the registry key alone is what makes toasts show).
+  `UNINSTALL.cmd` removes the key.
+
 ## [0.1.0] - 2026-11-02
 
 First release (milestone M0, code complete). Highlights since the pipeline landed:

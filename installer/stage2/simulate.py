@@ -21,8 +21,10 @@ from installer.stage2.downloader import DownloadItem, ProgressFn, write_marker
 from installer.stage2.errors import make_error
 from installer.stage2.runner import RunResult
 from ns_common.logging import NsLogger
+from ns_supervisor import check_names as names
 
-VERIFY_CHECKS = ("llm", "embed", "tts", "whisper", "nvenc", "mtp")
+# The checks `ns verify --quick` really reports (a test runs the real verify and compares the names).
+VERIFY_CHECKS = names.QUICK_CHECKS
 
 
 @dataclass
@@ -42,8 +44,9 @@ Handler = Callable[[Call], RunResult]
 class FakeRunner:
     """Answers installer commands without running anything.
 
-    ``verify_failures`` names the ``ns verify --quick`` checks that report a failure. A failing ``tts``
-    check passes again once a ``torch`` package was installed through uv (the PyTorch fallback venv).
+    ``verify_failures`` names the ``ns verify --quick`` checks that report a failure, spelled as ``ns verify``
+    spells them (``ns_supervisor.check_names``, for example ``tts.voices``). Failing ``tts.*`` checks
+    pass again once a ``torch`` package was installed through uv (the PyTorch fallback venv).
     ``results`` maps a tag to a RunResult or a handler and wins over the defaults.
     """
 
@@ -124,7 +127,7 @@ class FakeRunner:
     def _verify_report(self) -> dict[str, Any]:
         failing = set(self.verify_failures)
         if self.torch_installed:
-            failing.discard("tts")
+            failing -= {n for n in failing if n.startswith(names.TTS_PREFIX)}
         checks = [{"name": n, "passed": n not in failing, "value": None, "limit": None, "log": None}
                   for n in VERIFY_CHECKS]
         return {"slice": "verify", "date": date.today().isoformat(), "checks": checks, "benchmarks": {}}
