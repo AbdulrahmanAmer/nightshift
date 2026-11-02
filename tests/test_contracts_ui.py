@@ -139,9 +139,8 @@ def test_status_gpu_needs_a_name():
 
 
 def test_the_dashboard_status_object_validates_against_the_model(tmp_home):
-    from tests.test_dashboard_api import make_env
-
     from ns_dashboard.fakes import seed_channel, seed_output
+    from tests.test_dashboard_api import make_env
 
     client, state = make_env(tmp_home)
     seed_channel(state.db, state.paths)
