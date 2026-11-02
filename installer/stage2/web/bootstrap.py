@@ -8,10 +8,15 @@ through the ``Boot`` object, so ``fakes.FakeCmd`` runs all of it in CI.
 
 from __future__ import annotations
 
+import hashlib
 import os
+import re
 import shutil
 import subprocess
+import tempfile
 import threading
+import urllib.request
+import zipfile
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -133,6 +138,72 @@ def classify(text: str, default: str) -> str:
     return "NS-E113" if any(h in low for h in BLOCKED_HINTS) else default
 
 
+def download_uv(url: str, sha256: str, dest_dir: Path) -> None:
+    """Download the pinned uv zip, check its SHA256 and extract every ``uv*.exe`` into ``dest_dir``.
+
+    Standard library only (the setup server has no httpx). Raises ``BootstrapError`` ``NS-E105`` when the
+    download fails or the digest does not match.
+    """
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(suffix=".zip", prefix="nightshift-uv-", dir=str(dest_dir))
+    os.close(fd)
+    tmp = Path(tmp_name)
+    try:
+        digest = hashlib.sha256()
+        try:
+            with urllib.request.urlopen(url, timeout=120) as resp, tmp.open("wb") as out:
+                for block in iter(lambda: resp.read(1024 * 1024), b""):
+                    digest.update(block)
+                    out.write(block)
+        except OSError as e:
+            raise BootstrapError("NS-E105", f"could not download uv from {url}: {e}") from e
+        if digest.hexdigest().lower() != sha256.lower():
+            raise BootstrapError("NS-E105", f"SHA256 mismatch for the uv download ({digest.hexdigest()[:12]})")
+        try:
+            with zipfile.ZipFile(tmp) as z:
+                for info in z.infolist():
+                    leaf = Path(info.filename).name.lower()
+                    if info.is_dir() or not (leaf.startswith("uv") and leaf.endswith(".exe")):
+                        continue
+                    with z.open(info) as src, (dest_dir / leaf).open("wb") as dst:
+                        shutil.copyfileobj(src, dst)
+        except (zipfile.BadZipFile, OSError) as e:
+            raise BootstrapError("NS-E105", f"the uv download could not be unpacked: {e}") from e
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+SHIM_MAX_BYTES = 1_000_000          # a real uv.exe is tens of MB; scoop and chocolatey shims are a few KB
+_SHIM_PATH = re.compile(r"^\s*path\s*=\s*(.+?)\s*$", re.IGNORECASE)
+
+
+def is_shim(exe: Path) -> bool:
+    """True for a launcher stub rather than uv itself: a ``.shim`` file beside it, no PE header, or tiny."""
+    try:
+        if exe.with_suffix(".shim").is_file():
+            return True
+        if exe.stat().st_size < SHIM_MAX_BYTES:
+            return True
+        with exe.open("rb") as fh:
+            return fh.read(2) != b"MZ"
+    except OSError:
+        return False
+
+
+def shim_target(exe: Path) -> Path | None:
+    """The real executable a Scoop-style shim points at (``path = ...`` in ``uv.shim``), if it exists."""
+    try:
+        text = exe.with_suffix(".shim").read_text(encoding="utf-8-sig")
+    except OSError:
+        return None
+    for line in text.splitlines():
+        m = _SHIM_PATH.match(line)
+        if m:
+            target = Path(m.group(1).strip().strip('"'))
+            return target if target.is_file() and target.resolve() != exe.resolve() else None
+    return None
+
+
 def ignore_row(key: str, status: str, note: str | None) -> None:
     """Default row callback: nothing listens."""
 
@@ -161,6 +232,8 @@ class Boot:
     on_row: Callable[[str, str, str | None], None] = ignore_row
     say: Callable[[str], None] = ignore_text
     write_answers: Callable[[], None] = ignore_call
+    uv_pin: Mapping[str, str] = field(default_factory=dict)       # manifest bins.uv: url and sha256
+    fetch_uv: Callable[[str, str, Path], None] = download_uv
     gate: threading.Event = field(default_factory=threading.Event)
     stop: threading.Event = field(default_factory=threading.Event)
 
@@ -245,13 +318,82 @@ class B02Home:
     title = "Install folder"
 
     def check(self, boot: Boot) -> bool:
-        """True when the folder tree, the variable, uv and the answers file are all there."""
+        """True when the folder tree, the variable, a uv that runs and the answers file are all there."""
         return (
             all((boot.home / d).is_dir() for d in TOP_DIRS)
             and boot.get_home_var(HOME_VAR) == str(boot.home)
-            and (boot.home / "bin" / "uv" / "uv.exe").is_file()
+            and self._uv_runs(boot)
             and (boot.home / "config" / "answers.json").is_file()
         )
+
+    @staticmethod
+    def _uv_runs(boot: Boot) -> bool:
+        """``uv --version`` succeeds when run from the copy in the install folder.
+
+        A shim copied away from its folder fails here, and a file that merely exists proves nothing.
+        """
+        target = boot.home / "bin" / "uv" / "uv.exe"
+        if not target.is_file():
+            return False
+        return boot.cmd([str(target), "--version"], None, boot.home, 60).returncode == 0
+
+    @staticmethod
+    def _copy_uv_family(src_dir: Path, dest_dir: Path) -> None:
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        for item in src_dir.iterdir():
+            if item.is_file() and item.name.lower().startswith("uv") and item.suffix.lower() == ".exe":
+                there = dest_dir / item.name
+                if there.exists() and there.samefile(item):
+                    continue
+                shutil.copy2(item, there)
+
+    def _place_uv(self, boot: Boot) -> None:
+        """Put a uv that runs at ``bin\\uv\\uv.exe``.
+
+        Order: the hand-over copy; when that is a shim, the real exe behind it; else a fresh download of the
+        pinned release (``manifest.json`` ``bins.uv``).
+        """
+        target = boot.home / "bin" / "uv" / "uv.exe"
+        source = Path(boot.uv)
+        problems: list[str] = []
+        if source.is_file():
+            self._copy_uv_family(source.parent, target.parent)
+            if self._uv_runs(boot):
+                return
+            problems.append(f"{source} does not run from {target.parent}")
+            if is_shim(source):
+                real = shim_target(source) or self._self_where(boot, source)
+                if real is not None:
+                    boot.say(f"uv at {source} is a shim; using {real}")
+                    self._copy_uv_family(real.parent, target.parent)
+                    if self._uv_runs(boot):
+                        return
+                    problems.append(f"{real} does not run from {target.parent}")
+        url, digest = boot.uv_pin.get("url"), boot.uv_pin.get("sha256")
+        if not url or not digest:
+            if problems:
+                raise BootstrapError(
+                    "NS-E105", "uv does not run and no download is pinned: " + "; ".join(problems)
+                )
+            raise BootstrapError(
+                "NS-E105", f"uv was not found at {source}; run INSTALL.cmd again so stage 1 downloads it"
+            )
+        boot.say("Downloading the pinned uv")
+        boot.fetch_uv(str(url), str(digest), target.parent)
+        if not self._uv_runs(boot):
+            raise BootstrapError(
+                "NS-E105", f"the downloaded uv does not run from {target.parent}; " + "; ".join(problems)
+            )
+
+    @staticmethod
+    def _self_where(boot: Boot, source: Path) -> Path | None:
+        """Ask the shim where the real uv is (``uv self where``); the answer must be an existing exe."""
+        res = boot.cmd([str(source), "self", "where"], None, None, 30)
+        lines = [ln.strip().strip('"') for ln in res.stdout.splitlines() if ln.strip()]
+        if res.returncode != 0 or not lines:
+            return None
+        found = Path(lines[-1])
+        return found if found.is_file() and found.suffix.lower() == ".exe" else None
 
     def run(self, boot: Boot) -> None:
         """Create everything, set the variable, copy uv, write answers.json."""
@@ -261,21 +403,12 @@ class B02Home:
         if not boot.set_home_var(HOME_VAR, str(boot.home)):
             raise BootstrapError("NS-E104", "could not set the NIGHTSHIFT_HOME user variable")
         os.environ[HOME_VAR] = str(boot.home)
-        target = boot.home / "bin" / "uv" / "uv.exe"
-        source = Path(boot.uv)
-        if not target.is_file():
-            if not source.is_file():
-                raise BootstrapError(
-                    "NS-E105", f"uv was not found at {source}; run INSTALL.cmd again so stage 1 downloads it"
-                )
-            target.parent.mkdir(parents=True, exist_ok=True)
-            for item in source.parent.iterdir():
-                if item.is_file() and item.name.lower().startswith("uv") and item.suffix.lower() == ".exe":
-                    shutil.copy2(item, target.parent / item.name)
+        if not self._uv_runs(boot):
+            self._place_uv(boot)
         boot.write_answers()
 
     def verify(self, boot: Boot) -> None:
-        """The tree and the variable exist."""
+        """The tree and the variable exist, and the copied uv runs."""
         missing = [d for d in TOP_DIRS if not (boot.home / d).is_dir()]
         if missing:
             raise BootstrapError("NS-E104", f"{boot.home} lacks {', '.join(missing)}")
@@ -283,6 +416,8 @@ class B02Home:
             raise BootstrapError("NS-E104", "NIGHTSHIFT_HOME does not point at the install folder")
         if not (boot.home / "bin" / "uv" / "uv.exe").is_file():
             raise BootstrapError("NS-E105", "uv was not copied into the install folder (bin/uv/uv.exe)")
+        if not self._uv_runs(boot):
+            raise BootstrapError("NS-E105", "uv in the install folder does not run (uv --version failed)")
 
 
 class B03SetupEnv:

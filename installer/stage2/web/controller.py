@@ -242,6 +242,7 @@ class Effects:
     elevate_longpaths: Callable[[], bool] = elevate_longpaths
     console: Callable[[str, str], None] = ignore_console
     uv_path: Callable[[Path], str] = default_uv_path
+    fetch_uv: Callable[[str, str, Path], None] = bootstrap.download_uv
     clipboard: Callable[[str], None] = copy_to_clipboard
 
 
@@ -910,7 +911,8 @@ class SetupController:
             python_version=str(self.manifest.get("python_version", "3.12")), cmd=fx.cmd, which=fx.which,
             refresh_path=fx.refresh_path, set_home_var=fx.set_home_var, get_home_var=fx.get_home_var,
             on_row=self._on_boot_row, say=lambda t: self.log("info", t), write_answers=self._write_answers,
-            gate=self._gate, stop=self._stop,
+            gate=self._gate, stop=self._stop, fetch_uv=fx.fetch_uv,
+            uv_pin=(self.manifest.get("bins") or {}).get("uv") or {},
         )
 
     def _run_bootstrap_step(self, step: Any) -> None:
