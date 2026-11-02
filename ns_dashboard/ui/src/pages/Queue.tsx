@@ -9,7 +9,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useApp, useLoad } from "../lib/app";
 import { api } from "../lib/api";
 import { dayInline, doneWords, MAKES_VIDEO, fmtClock, fmtDay, fmtDur, fmtWhen, kindLabel, plural, stageWords, store } from "../lib/format";
-import type { ChannelSummary, Job, Output, OutputDetail, Run } from "../lib/types";
+import type { ChannelSummary, Job, MorningNote, Output, OutputDetail, Run } from "../lib/types";
 import { cx } from "../ui/kit";
 import { JobError } from "../ui/JobError";
 import { Scene } from "../visuals/Scene";
@@ -459,6 +459,7 @@ function MachineMeters({ className }: { className?: string }) {
 /** "Last night": what the newest nightly run made and what stopped, from GET /runs. Shown only after a run has happened. */
 function LastNight({ className, pending, onReview, channelName }: { className?: string; pending: number; onReview: () => void; channelName: (s?: string | null) => string }) {
   const runs = useLoad<Run[]>(() => api.get("/runs?limit=1"), [], []);
+  const notes = useLoad<MorningNote[]>(() => api.get("/notes"), [], []);
   const r = runs.data[0];
   if (!r) return null;
   const made = r.summary?.jobs?.length ?? 0; const failed = r.summary?.failures ?? []; const skipped = r.summary?.skipped ?? [];
@@ -473,6 +474,7 @@ function LastNight({ className, pending, onReview, channelName }: { className?: 
         {failed.length ? ` ${plural(failed.length, "job")} stopped.` : ""}
         {skipped.length ? ` ${plural(skipped.reduce((n, x) => n + x.jobs, 0), "job")} skipped.` : ""}
       </p>
+      {notes.data.length > 0 && <ul className="mt-2 flex flex-col gap-1 text-ds-xs text-ds-text-2">{notes.data.map((n, i) => <li key={i}>{n.message} <span className="text-ds-muted">({fmtClock(n.at)})</span></li>)}</ul>}
       {skipped.length > 0 && <ul className="mt-2 flex flex-col gap-1 text-ds-xs text-ds-text-2">{skipped.map((x) => <li key={x.channel}>{channelName(x.channel)}: {plural(x.jobs, "job")} skipped because an earlier one stopped</li>)}</ul>}
       {failed.length > 0 && <ul className="mt-2 flex flex-col gap-1 text-ds-xs text-ds-danger">{failed.slice(0, 3).map((f) => <li key={f.job_id}>{channelName(f.channel)}: {f.code ? `${f.code}. ` : ""}{f.error || "stopped"}</li>)}</ul>}
     </Card>

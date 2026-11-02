@@ -5,7 +5,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useApp, useLoad } from "../lib/app";
 import { api } from "../lib/api";
 import { doneWords, fmtClock, fmtDay, fmtWhen, plural, stageWords, store } from "../lib/format";
-import type { Job, Status } from "../lib/types";
+import type { Job, MorningNote, Status } from "../lib/types";
 import { cx } from "../ui/kit";
 import { Chat } from "../pages/Assistant";
 import { jobTitle } from "../pages/Queue";
@@ -102,19 +102,22 @@ function Notifications() {
   const jobs = useLoad<Job[]>(() => (status ? api.get("/jobs") : Promise.resolve([])), [status?.engine?.state], []);
   const { channelName } = useApp();
   useDismiss(open, () => setOpen(false), ref);
+  // Notes the nightly run left because Windows could not show a toast then; reading them here removes them.
+  const notes = useLoad<MorningNote[]>(() => (status ? api.get("/notes") : Promise.resolve([])), [status?.engine?.state, open], []);
   const events = jobs.data.filter((j) => !["queued", "running"].includes(j.status)).slice(0, 6);
   const unread = events.filter((j) => (j.created_at || "") > readAt);
-  const markRead = () => { const t = new Date().toISOString(); setReadAt(t); store.set("ns-notif-read", t); };
+  const markRead = () => { const t = new Date().toISOString(); setReadAt(t); store.set("ns-notif-read", t); if (notes.data.length) api.post("/notes/clear").then(() => notes.reload()).catch(() => undefined); };
   const label = unread.length ? `Notifications, ${unread.length} unread` : "Notifications";
   return (
     <div ref={ref} className="relative">
-      <IconButton icon="bell" label={label} dot={unread.length > 0 || !!status?.last_error} aria-haspopup="dialog" aria-expanded={open} onClick={() => setOpen((o) => !o)} />
+      <IconButton icon="bell" label={label} dot={unread.length > 0 || notes.data.length > 0 || !!status?.last_error} aria-haspopup="dialog" aria-expanded={open} onClick={() => setOpen((o) => !o)} />
       {open && (
         <div role="dialog" aria-label="Notifications" className="fade-in absolute top-full right-0 z-40 mt-2 w-[min(380px,calc(100vw-32px))] rounded-ds-xl bg-ds-surface p-2 shadow-[var(--ds-shadow-3),0_0_0_1px_var(--ds-border-subtle)]">
           <div className="flex items-center justify-between px-2 py-1.5">
             <p className="text-ds-md font-semibold">Notifications</p>
-            <Button variant="ghost" size="sm" onClick={markRead} disabled={!unread.length}>Mark all read</Button>
+            <Button variant="ghost" size="sm" onClick={markRead} disabled={!unread.length && !notes.data.length}>Mark all read</Button>
           </div>
+          {notes.data.length > 0 && <ul className="mb-1 flex flex-col gap-1">{notes.data.map((n, i) => <li key={i} className="flex gap-3 rounded-ds-md bg-ds-accent-subtle px-2 py-2"><StatusDot tone="accent" className="mt-1.5" /><div className="min-w-0 flex-1"><p className="truncate text-ds-sm font-semibold">{n.title || "Nightshift"}</p><p className="line-clamp-3 text-ds-2xs text-ds-text-2">{n.message}</p><p className="text-ds-2xs text-ds-muted ds-num">{fmtDay(n.at)} {fmtClock(n.at)}</p></div></li>)}</ul>}
           {events.length ? (
             <ul className="flex max-h-[min(420px,60dvh)] flex-col gap-1 overflow-y-auto scroll-thin">
               {events.map((j) => {

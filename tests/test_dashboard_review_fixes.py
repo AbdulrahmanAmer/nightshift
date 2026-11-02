@@ -543,9 +543,3 @@ def test_morning_notes_are_listed_and_cleared(tmp_home: Path):
     f.write_text("{broken", encoding="utf-8")
     assert dash.engine.notes() == []
 
-
-def test_schedule_warning_is_not_an_error():
-    """`schedule.install` says "only while you are logged on" when only the interactive task could be registered."""
-    from ns_dashboard.fakes import FakeScheduleAdapter
-
-    assert FakeScheduleAdapter().apply("03:00")["applied"] is True

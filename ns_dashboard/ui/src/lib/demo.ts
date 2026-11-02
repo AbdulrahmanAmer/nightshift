@@ -224,6 +224,7 @@ export async function demoHandle(method: string, path: string, body?: any): Prom
   if (p === "/assistant/tools") return [];
   if (p === "/update/state") return { state: "idle", old: null, new: null, message: null, updated_at: null };
   if (p === "/models/state") return {};
+  if (p === "/notes") return [];
   if (p === "/templates") return DEMO.templates;
   if (p === "/voices") return DEMO.voices;
   if (p === "/voices/preview") throw new Error("Voice samples need the engine running");
