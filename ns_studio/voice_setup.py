@@ -67,8 +67,8 @@ def http_post(base_url: str, route: str, body: dict[str, Any]) -> dict[str, Any]
     if r.status_code == 409 and "missing_model" in r.text:
         raise NsError(
             "NS-E310",
-            "the model for this voice tool is not downloaded; run INSTALL.cmd again with the voice design "
-            "option",
+            "the model for this voice tool is not downloaded; open Settings > Models > Get voice design "
+            "(or run: ns models get voicedesign)",
         )
     if r.status_code >= 400:
         try:

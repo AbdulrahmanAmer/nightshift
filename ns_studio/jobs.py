@@ -8,7 +8,7 @@ import random
 from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Literal, cast
+from typing import Any, Literal, cast
 
 from ns_common.config import load_runtime
 from ns_common.db import Db, new_job_id
@@ -74,21 +74,32 @@ def parse_fake(value: str | None) -> frozenset[str]:
 
 
 def load_keys() -> dict[str, str]:
-    """Pexels and Pixabay keys from the Windows keyring (service 'Nightshift'); {} when unavailable."""
+    """Pexels and Pixabay keys: Windows keyring (service 'Nightshift'), else `config/secrets.dpapi`."""
     try:
-        keyring = importlib.import_module("keyring")
+        keyring: Any = importlib.import_module("keyring")
+        keyring_error: type[Exception] = importlib.import_module("keyring.errors").KeyringError
     except ImportError:
-        return {}
-    keyring_error = importlib.import_module("keyring.errors").KeyringError
+        keyring, keyring_error = None, Exception
     keys: dict[str, str] = {}
     for name, short in SHORT_NAMES.items():  # the names setup and Settings store, not the short ones
         try:
-            value = keyring.get_password(KEYRING_SERVICE, name)
+            value = keyring.get_password(KEYRING_SERVICE, name) if keyring is not None else None
         except keyring_error:
             value = None  # a broken backend must not stop a text-only run
+        if not value:
+            value = _dpapi_secret(name)  # the nightly task may not reach Credential Manager (S4U session)
         if value:
             keys[short] = str(value)
     return keys
+
+
+def _dpapi_secret(name: str) -> str | None:
+    """The key from `config/secrets.dpapi` (`ns_common.secret_file`), or None when absent or unreadable."""
+    try:
+        module = importlib.import_module("ns_common.secret_file")
+        return module.load_secret(Paths.from_env(), name)
+    except (ImportError, AttributeError, OSError, ValueError):
+        return None
 
 
 @dataclass
