@@ -1,4 +1,4 @@
-"""Gap 21: the Assistant page lists past conversations, opens one, and answers requests saved while the engine was busy."""
+"""Gap 21: the Assistant lists past conversations and answers requests saved while the engine was busy."""
 
 from __future__ import annotations
 
@@ -15,7 +15,8 @@ def test_conversation_list_shows_saved_requests_and_the_queue_replays_them(tmp_h
     events = sse_events(client.post("/api/assistant/chat", json={"message": "What is waiting?"}))
     cid = events[0]["payload"]["conversation_id"]
     convs = client.get("/api/assistant/conversations").json()
-    assert convs[0]["conversation_id"] == cid and convs[0]["title"] == "What is waiting?" and convs[0]["queued"] == 1
+    assert convs[0]["conversation_id"] == cid and convs[0]["title"] == "What is waiting?"
+    assert convs[0]["queued"] == 1
     assert client.post("/api/assistant/queue/run").json() == []  # still busy: stays saved
     assert client.get("/api/assistant/conversations").json()[0]["queued"] == 1
     provider.busy_owner = None

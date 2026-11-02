@@ -5,7 +5,6 @@ restore (17), engine buttons (27), log components (28) and the stored UI prefere
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 
 import pytest
 

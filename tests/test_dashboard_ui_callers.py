@@ -1,6 +1,6 @@
-"""Routes that had no caller (system-gaps.md #21, #22, #23, #26, #27, #28, #30) are called by the page sources.
+"""Routes that had no caller (system-gaps.md #21, #22, #23, #26, #27, #28, #30) are called by the pages.
 
-The built bundle is minified, so this reads `ns_dashboard/ui/src`; the `ui-build` job keeps `static/` equal to it.
+The built bundle is minified, so this reads `ns_dashboard/ui/src`; the `ui-build` job keeps `static/` equal.
 """
 
 from __future__ import annotations
