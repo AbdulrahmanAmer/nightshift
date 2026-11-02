@@ -106,6 +106,7 @@ class IdeasStage:
 
     name: str = "ideas"
     tenant: Tenant = "llama"
+    uses_embed: bool = True  # calls the embed service; the orchestrator leases it around run()
     inputs: tuple[str, ...] = ()
     outputs: tuple[str, ...] = ("idea.json", "ideas_all.json")
 
@@ -180,6 +181,7 @@ class CriticReviseStage:
 
     name: str = "critic_revise"
     tenant: Tenant = "llama"
+    uses_embed: bool = True  # calls the embed service; the orchestrator leases it around run()
     inputs: tuple[str, ...] = ("story.json",)
     outputs: tuple[str, ...] = ("story.json", "critic.json")
 

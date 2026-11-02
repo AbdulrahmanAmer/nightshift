@@ -15,7 +15,7 @@ from typer.core import TyperGroup
 from ns_common import __version__
 from ns_common.errors import NsError
 from ns_common.models import Channel, Voice
-from ns_studio import jobs, review
+from ns_studio import jobs, notifications, review, voice_setup
 from ns_studio.calibrate import run as calibration
 from ns_studio.channels import cadence, crud
 from ns_studio.clipper import cli as clipper_cli
@@ -52,7 +52,7 @@ class StudioGroup(TyperGroup):
 
 app = typer.Typer(help="Nightshift Studio", no_args_is_help=False, cls=StudioGroup)
 channel_app = typer.Typer(help="Manage channel profiles", no_args_is_help=True)
-voice_app = typer.Typer(help="List and preview voices", no_args_is_help=True)
+voice_app = typer.Typer(help="List, preview, design and clone voices", no_args_is_help=True)
 app.add_typer(channel_app, name="channel")
 app.add_typer(voice_app, name="voice")
 app.add_typer(clipper_cli.app, name="clip")  # CR-C8-5
@@ -151,6 +151,8 @@ def run_cmd(
             typer.echo("plan: " + " -> ".join(names))
             return
         env = jobs.open_env(fake)
+        if not dry_run:
+            _setup_voice(env)
         if daily:
             _daily(env, dry_run, policy)
             return
@@ -185,7 +187,12 @@ def _daily(env: jobs.Env, dry_run: bool, policy: bool | None) -> None:
         for dj in due:
             typer.echo(f"{dj.channel.slug}: {dj.count} x {dj.fmt} ({dj.plan.describe()})")
         return
-    report = run_daily(env, now=now)
+    notifier = None if env.fake else notifications.default_notifier()
+    try:
+        report = run_daily(env, now=now, notifier=notifier)
+    except (NsError, StudioError) as e:  # the night itself broke (not one job): say so before exiting
+        notifications.send(env.paths, env.log, notifier, notifications.failure_message(e.code))
+        raise
     for c in report["channels"]:
         typer.echo(f"{c['channel']}: {c['jobs']} job(s), {c['plan']}")
     for j in report["jobs"]:
@@ -339,6 +346,68 @@ def voice_preview(
         finally:
             env.services.acquirer.release("tts", owner)
         typer.echo(f"{target} ({seconds:.1f} s)")
+
+
+@voice_app.command("design")
+def voice_design(
+    name: Annotated[str, typer.Argument(help="Library name of the new voice.")],
+    description: Annotated[str, typer.Option("--description", help="The voice in plain English.")],
+    language: Annotated[str, typer.Option("--language")] = "English",
+    fake_services: FakeOpt = None,
+) -> None:
+    """Design a voice from a description (needs the VoiceDesign model) and store it in the library."""
+    with guarded():
+        env = jobs.open_env(fake_set(fake_services))
+        folder = voice_setup.design_voice(env, name, description, language=language)
+        typer.echo(f"voice {name} created: {folder}")
+
+
+@voice_app.command("clone")
+def voice_clone(
+    name: Annotated[str, typer.Argument(help="Library name of the new voice.")],
+    audio: Annotated[Path, typer.Option("--audio", help="A clean 3 to 30 s recording of one speaker.")],
+    text: Annotated[str, typer.Option("--text", help="The words spoken in the recording.")],
+    rights_confirmed: Annotated[
+        bool, typer.Option("--rights-confirmed", help="I own or have the right to use this voice.")
+    ] = False,
+    language: Annotated[str, typer.Option("--language")] = "English",
+    fake_services: FakeOpt = None,
+) -> None:
+    """Clone a voice from a recording and store it in the library."""
+    with guarded():
+        env = jobs.open_env(fake_set(fake_services))
+        folder = voice_setup.clone_voice(
+            env, name, audio, text, rights_confirmed=rights_confirmed, language=language
+        )
+        typer.echo(f"voice {name} created: {folder}")
+
+
+@voice_app.command("apply-pending")
+def voice_apply_pending(fake_services: FakeOpt = None) -> None:
+    """Create the voice chosen during setup (queued in config/pending_voice.json), if it is not there yet."""
+    with guarded():
+        env = jobs.open_env(fake_set(fake_services))
+        made = voice_setup.apply_pending(env)
+        typer.echo(f"voice {made} created" if made else "no voice is waiting to be created")
+
+
+def _setup_voice(env: jobs.Env) -> None:
+    """Before a real run: create the voice setup queued. A failure is a warning here; the job that needs
+    the voice then fails with its own message."""
+    if env.fake:
+        return
+    try:
+        made = voice_setup.apply_pending(env)
+    except (NsError, StudioError) as e:
+        env.log.warn("pending_voice_failed", str(e))
+        typer.echo(
+            f"warning: the voice chosen during setup is not created yet ({e}); "
+            "try: studio voice apply-pending",
+            err=True,
+        )
+        return
+    if made:
+        typer.echo(f"voice {made} created from your setup choice")
 
 
 # ---------------------------------------------------------------- review, status, learn, pause

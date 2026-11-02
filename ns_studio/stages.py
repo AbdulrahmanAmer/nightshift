@@ -84,6 +84,15 @@ def run_stage(ctx: JobContext, stage: Stage, *, force: bool = False) -> bool:
     return True
 
 
+def needs_embed(stage: Stage) -> bool:
+    """True for a stage whose code calls the embed service (idea dedupe, validators, self-similarity).
+
+    Declared with a class attribute `uses_embed = True`; it is not part of the `Stage` protocol so stages
+    that never embed stay unchanged.
+    """
+    return bool(getattr(stage, "uses_embed", False))
+
+
 REGISTRY: dict[str, Stage] = {}
 
 

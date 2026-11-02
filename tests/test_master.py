@@ -244,3 +244,47 @@ def test_duration_check_without_expand_helper_is_e305(tmp_home: Path, monkeypatc
     with pytest.raises(NsError) as ei:
         DurationCheckStage().run(ctx)
     assert ei.value.code == "NS-E305"
+
+
+def write_story_with_cliffs(ctx) -> list[str]:
+    """Like `write_story`, but shaped as StoryChapter: sentences plus cliff_line_idx (not on the last)."""
+    texts = [chapter_text(chr(120 - i), 3) for i in range(3)]
+    chapters = []
+    for i, t in enumerate(texts):
+        sentences = [s for s in t.replace("end. ", "end.\n").split("\n")]
+        chapters.append({
+            "n": i + 1, "title": f"Chapter title {i + 1}", "text": t,
+            "sentences": [{"idx": k, "text": s} for k, s in enumerate(sentences)],
+            "cliff_line_idx": None if i == 2 else len(sentences) - 1,
+        })
+    ctx.write_json("story.json", {"working_title": "T", "chapters": chapters})
+    return texts
+
+
+def test_voice_items_carry_the_chapter_cliff_line(tmp_home: Path):
+    """Gap 15: each non-final chapter sends its cliff sentence so TTS pauses 1,200 ms before it."""
+    ctx = make_ctx(tmp_home, fmt="master_first")
+    texts = write_story_with_cliffs(ctx)
+    items = {i.id: i for i in voice_items(ctx)}
+    last_sentence = [s for s in texts[0].replace("end. ", "end.\n").split("\n")][-1]
+    assert items["c1"].cliff_lines == (last_sentence,)
+    assert items["c2"].cliff_lines and items["c3"].cliff_lines == ()
+    # a story without the index (older jobs, the fixtures above) sends none
+    write_story(ctx)
+    assert all(i.cliff_lines == () for i in voice_items(ctx))
+
+
+@needs_ffmpeg
+def test_master_voice_sends_cliff_lines_to_tts(tmp_home: Path):
+    ctx = make_ctx(tmp_home, fmt="master_first")
+    write_story_with_cliffs(ctx)
+    seen: dict[str, tuple[str, ...]] = {}
+    real = ctx.services.tts.speak_batch
+
+    def spy(items, out_dir, *, seed=None):
+        seen.update({i.id: i.cliff_lines for i in items})
+        return real(items, out_dir, seed=seed)
+
+    ctx.services.tts.speak_batch = spy  # type: ignore[method-assign]
+    run_voice_master(ctx)
+    assert seen["c1"] and seen["c2"] and seen["c3"] == ()

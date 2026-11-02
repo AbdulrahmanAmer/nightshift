@@ -15,6 +15,7 @@ from typing import Any
 
 from ns_dashboard.assistant import orientation
 from ns_dashboard.assistant.registry import Registry, ToolCall, ToolContext, ToolDef, ToolSpec, obj
+from ns_dashboard.common import offered_formats
 from ns_dashboard.errors import ApiError
 from ns_dashboard.formats import merge_dicts
 
@@ -196,7 +197,7 @@ def _tools() -> list[ToolDef]:
         _t("start_story_job", "create", "Make a new story video (and Shorts) for a channel now.",
            lambda c, a: c.dash.jobs.create_run(a), route=("POST", "/api/jobs/run"),
            props={"channel": _s("channel slug"), "format": _s(
-               "what to make", enum=["master_first", "shorts_only", "series_compilation"]),
+               "what to make", enum=list(offered_formats())),
                   "count": _i("how many", minimum=1, maximum=20),
                   "schedule_at": _s("start later: local date and time such as 2026-11-03T02:00; leave out to start now")},
            required=["channel"], side=True,

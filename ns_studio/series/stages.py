@@ -36,6 +36,7 @@ class ScriptImportStage:
 
     name: str = "script_import"
     tenant: Tenant = None
+    uses_embed: bool = True  # calls the embed service; the orchestrator leases it around run()
     inputs: tuple[str, ...] = ("script_source.json",)
     outputs: tuple[str, ...] = (
         "idea.json",

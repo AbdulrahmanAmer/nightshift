@@ -248,7 +248,8 @@ def test_reference_rejects_foreign_embedding(ref_env: _Env, tmp_path: Path):
     bin_path.write_bytes(b"\x00" * 64)
     with pytest.raises(NsError) as ei:
         e.synth("hi", VoiceSpec(name="v", mode="clone", embedding_path=str(bin_path)))
-    assert ei.value.code == "NS-E301"
+    assert ei.value.code == "NS-E311"  # gap 20: a voice made by another engine, with the re-create hint
+    assert "re-create" in ei.value.definition.hint.lower()
 
 
 def test_qwentts_rejects_reference_embedding(tmp_path: Path):
@@ -257,7 +258,7 @@ def test_qwentts_rejects_reference_embedding(tmp_path: Path):
     e = QwenttsEngine(tmp_path / "q.exe", tmp_path)
     with pytest.raises(NsError) as ei:
         e.synth("hi", VoiceSpec(name="v", mode="clone", embedding_path=str(bin_path)))
-    assert ei.value.code == "NS-E301"
+    assert ei.value.code == "NS-E311"
 
 
 def test_reference_missing_model_and_missing_torch(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):

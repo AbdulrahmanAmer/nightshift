@@ -125,9 +125,9 @@ class TtsCfg(Strict):
 
 
 class WhisperCfg(Strict):
-    model: str = "small.en"
+    model: str = "distil-large-v3"
     device: Literal["cuda", "cpu"] = "cuda"
-    compute_type: str = "float16"
+    compute_type: str = "int8"
 
 
 class VideoCfg(Strict):

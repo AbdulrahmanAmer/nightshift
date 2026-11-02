@@ -113,6 +113,13 @@ sentence in the new voice, and the voice shows up in the voice list of every cha
 `models\tts\voices\<name>\` (`preview.wav` is the sentence you heard); `ns backup` keeps them.
 You can also ask the Assistant ("make me a deep calm voice called Narrator2"); it shows a confirmation card first.
 
+If you chose a designed or cloned voice during setup, Nightshift creates it the first time it runs (the first
+video or the first night), because the voice engine is only settled at the end of setup. To make it right away,
+open a command prompt and run `studio voice apply-pending`; the Library shows it afterwards. Command line:
+`studio voice design NAME --description "a warm, slow baritone"`, or
+`studio voice clone NAME --audio C:\Users\me\voice.wav --text "the words in the recording" --rights-confirmed`.
+Code `NS-E311` means a stored voice was made by the other voice engine: make that voice again.
+
 ## Start a video later
 
 In **Create**, the **When** step lets you choose a start time instead of "now". The job waits in the queue
@@ -126,6 +133,17 @@ The nightly run itself is unchanged: **Settings -> Run time**.
 Nightshift wakes the PC at the time you chose (default 03:00), makes a video, saves it in the Outbox and the PC
 may go back to sleep. In the morning open the Dashboard and review. If the PC was off, it runs when you switch
 it on. Do not use Nightshift Code while a night run is due: the graphics card can serve only one at a time.
+If the graphics card is busy at that time, the run waits up to 2 hours and then skips the night (code `NS-E201`);
+it tries again the next night.
+
+When the run ends you get a Windows notification ("1 master + 5 Shorts ready for review", or "run failed
+(NS-E203), open Dashboard"). Switch it off in **Settings -> Notifications**. Right after the run Nightshift shuts
+its engine down by itself, unless the Dashboard is open.
+
+About once a week the engine also asks GitHub whether a newer version exists and tells you with a notification
+(same switch). It sends nothing else. To check yourself: `ns update --check`; to install the newest version:
+`ns update --github` (the download is checked against its published SHA256 before anything is replaced, and the old
+version is put back if a step fails).
 
 ## Update to a new version
 

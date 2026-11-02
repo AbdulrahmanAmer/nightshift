@@ -16,6 +16,7 @@ from ns_common.logging import NsLogger
 from ns_common.models import Channel, Combo, Runtime
 from ns_common.paths import Paths, repo_root
 from ns_common.tts_client import FakeTts, Tts, TtsClient
+from ns_studio.acquirer import StudioAcquirer, wants_supervisor
 
 if TYPE_CHECKING:
     from ns_studio.media.clip_sources import ClipSource
@@ -44,11 +45,17 @@ def build_services(
     paths: Paths,
     keys: dict[str, str] | None = None,
     llm_fixtures: Path | None = None,
+    acquirer: Acquirer | None = None,
 ) -> Services:
     """Build the service bundle; names in `fake` (subset of FAKEABLE) get in-process fakes.
 
     Real clip sources use `keys["pexels"]` and `keys["pixabay"]` (empty when absent; the sources
     themselves raise a coded error on first use).
+
+    `acquirer` defaults to the supervisor-backed `StudioAcquirer` when no model service is faked (it connects
+    on first use, so building the bundle never contacts anything) and to `DevAcquirer` when any of llm, tts,
+    whisper or embed is faked: the in-process fakes need no process, and the dev acquirer only hands out the
+    configured ports.
     """
     from ns_studio.media.clip_sources import FakeClipSource, PexelsSource, PixabaySource
     from ns_studio.media.transcribe import FakeTranscriber, WhisperTranscriber
@@ -76,7 +83,9 @@ def build_services(
         embed=embed,
         transcriber=transcriber,
         clip_sources=sources,
-        acquirer=DevAcquirer(runtime),
+        acquirer=acquirer
+        if acquirer is not None
+        else (StudioAcquirer(runtime, paths) if wants_supervisor(set(fake)) else DevAcquirer(runtime)),
     )
 
 

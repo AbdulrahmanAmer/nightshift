@@ -20,16 +20,20 @@ def narration_items(parts: list[dict], voice_name: str, speed: float) -> list[Tt
     """One TTS item per part body (`p<n>`) plus `p<n>_hook` when the hook is not the first sentence."""
     items: list[TtsItem] = []
     for p in parts:
-        items.append(TtsItem(f"p{p['n']}", p["text"], voice_name, speed))
-        hook = (p.get("hook") or "").strip()
         sentences = split_sentences(p["text"])
+        cliff = (sentences[-1],) if p.get("cliffhanger") and sentences else ()
+        items.append(TtsItem(f"p{p['n']}", p["text"], voice_name, speed, cliff))
+        hook = (p.get("hook") or "").strip()
         if hook and (not sentences or hook != sentences[0]):
             items.append(TtsItem(f"p{p['n']}_hook", hook, voice_name, speed))
     return items
 
 
 def _signature(it: TtsItem) -> str:
-    return hashlib.sha256(f"{it.voice}|{it.speed}|{it.text}".encode()).hexdigest()
+    base = f"{it.voice}|{it.speed}|{it.text}"
+    if it.cliff_lines:  # unchanged for items without one, so earlier jobs keep their cache
+        base += "|cliff:" + "|".join(it.cliff_lines)
+    return hashlib.sha256(base.encode()).hexdigest()
 
 
 def synthesize(ctx: JobContext, items: list[TtsItem]) -> tuple[dict[str, dict], int]:

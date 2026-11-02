@@ -10,10 +10,20 @@ from urllib.parse import quote
 
 from ns_common.models import SLUG_RE
 from ns_dashboard.errors import ApiError
+from ns_studio.orchestrator import FORMAT_STAGES
 
 OUTPUT_STATUSES = ("pending", "approved", "rejected", "uploaded")
 OUTPUT_KINDS = ("long", "short", "clip")
-FORMATS = ("master_first", "shorts_only", "series_compilation")
+KNOWN_FORMATS = ("master_first", "shorts_only", "series_compilation")
+
+
+def offered_formats() -> tuple[str, ...]:
+    """Video types a job can be started for: those with stages. `series_compilation` has none yet (a run
+    would stop with NS-E306), so it is hidden until the orchestrator gives it stages."""
+    return tuple(f for f in KNOWN_FORMATS if FORMAT_STAGES.get(f))
+
+
+FORMATS = offered_formats()
 _SLUG = re.compile(SLUG_RE)
 
 

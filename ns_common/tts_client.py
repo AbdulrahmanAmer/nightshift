@@ -54,6 +54,18 @@ def wav_seconds(path: Path) -> float:
         return w.getnframes() / w.getframerate()
 
 
+def _raise_voice_mismatch(r: httpx.Response) -> None:
+    """Keep `NS-E311` (a stored voice made by another TTS engine) when the service answers with it."""
+    if r.status_code < 400:
+        return
+    try:
+        body = r.json()
+    except ValueError:
+        return
+    if isinstance(body, dict) and body.get("error") == "NS-E311":
+        raise NsError("NS-E311", str(body.get("detail", "")))
+
+
 class TtsClient:
     def __init__(self, base_url: str, *, timeout_s: float = 1800, client: httpx.Client | None = None) -> None:
         self.base_url = base_url.rstrip("/")
@@ -72,6 +84,7 @@ class TtsClient:
             body["seed"] = seed
         try:
             r = self.client.post(f"{self.base_url}/v1/audio/speech", json=body)
+            _raise_voice_mismatch(r)
             r.raise_for_status()
         except httpx.HTTPError as e:
             raise NsError("NS-E301", f"tts: {e}") from e
@@ -90,6 +103,7 @@ class TtsClient:
             body["seed"] = seed
         try:
             r = self.client.post(f"{self.base_url}/v1/audio/speech/batch", json=body)
+            _raise_voice_mismatch(r)
             r.raise_for_status()
         except httpx.HTTPError as e:
             raise NsError("NS-E301", f"tts batch: {e}") from e
