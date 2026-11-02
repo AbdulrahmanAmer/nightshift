@@ -1,7 +1,5 @@
 # ruff: noqa: E501
 import importlib.util
-import sys
-import types
 from pathlib import Path
 from typing import Any
 
@@ -142,33 +140,26 @@ def test_download_percent_is_clamped(tmp_home: Path):
 # ------------------------------------------------------------------ the real adapter
 
 
-def test_real_adapter_says_url_import_is_not_available_yet(tmp_home: Path, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setitem(sys.modules, "ns_studio.clipper", None)
-    paths = Paths.from_env()
-    adapter = RealClipAdapter(paths, SupervisorLink("http://127.0.0.1:9", timeout_s=0.2))
-    state = build_state(paths, fake_services=True, link=SupervisorLink("http://127.0.0.1:9", timeout_s=0.2))
-    ctl = JobControl(state.store.create("clip", "after-dark", {}), state.store, state.hub)
-    with pytest.raises(AdapterUnavailable, match="^URL import not available yet$"):
-        adapter.fetch_url(ctl, URL, "src-20261101-aaaa")
-
-
 def test_real_adapter_calls_import_url_with_progress(tmp_home: Path, monkeypatch: pytest.MonkeyPatch):
+    from ns_studio.clipper import source
+
     seen: dict[str, Any] = {}
 
-    def import_url(*, paths: Paths, url: str, source_id: str, on_progress: Any) -> Path:
-        seen.update(url=url, source_id=source_id)
+    def import_url(url: str, dest_dir: Path, progress_cb: Any = None, *, exe: Path | None = None) -> Path:
+        seen.update(url=url, dest=dest_dir)
         for pct in (10, 60):
-            on_progress(pct)
-        return paths.home / "imports" / "clipper" / source_id / "source.mp4"
+            progress_cb(pct)
+        return dest_dir / "source.mp4"
 
-    monkeypatch.setitem(sys.modules, "ns_studio.clipper", types.SimpleNamespace(import_url=import_url))
+    monkeypatch.setattr(source, "import_url", import_url)
     paths = Paths.from_env()
     state = build_state(paths, fake_services=True, link=SupervisorLink("http://127.0.0.1:9", timeout_s=0.2))
     adapter = RealClipAdapter(paths, SupervisorLink("http://127.0.0.1:9", timeout_s=0.2))
     rec = state.store.create("clip", "after-dark", {})
     ctl = JobControl(rec, state.store, state.hub)
     out = adapter.fetch_url(ctl, URL, "src-20261101-aaaa")
-    assert out.name == "source.mp4" and seen == {"url": URL, "source_id": "src-20261101-aaaa"}
+    assert out.name == "source.mp4" and seen["url"] == URL
+    assert seen["dest"] == paths.home / "imports" / "clipper" / "_downloads" / "src-20261101-aaaa"
     got = state.store.get(rec.job_id)
     assert got is not None and got.message == "Downloading 60%" and got.progress == 0.6
 

@@ -99,9 +99,6 @@ class Paths:
     def job_dir(self, job_id: str) -> Path:
         return self.jobs_dir / job_id
 
-    def outbox_dir(self, slug: str, date: str, job_id: str) -> Path:
-        return self.outbox / slug / date / job_id
-
     def rejected_dir(self, slug: str, date: str, job_id: str) -> Path:
         return self.rejected / slug / date / job_id
 

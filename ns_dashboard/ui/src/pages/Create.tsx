@@ -12,7 +12,7 @@ import { cx } from "../ui/kit";
 import { LayoutDiagram } from "../visuals/charts";
 import {
   AppGrid, Badge, Button, Card, CardHeader, Checkbox, ChoiceChip, DashGrid, DayChips, DropTile, EmptyState, Field, Icon, Input, IntakeStepper,
-  LinkButton, MetaItem, NotificationItem, ProgressBar, SegmentedControl, SPAN, StatusDot, StepRail, TimeChip, type SegmentOption,
+  LinkButton, MetaItem, NotificationItem, ProgressBar, SegmentedControl, Select, SPAN, StatusDot, StepRail, TimeChip, type SegmentOption,
 } from "../components/ref12";
 import { Poster, jobTitle } from "./Queue";
 
@@ -192,7 +192,7 @@ export default function Create() {
           </Card>
           <Card as="section" aria-labelledby="c-earlier">
             <CardHeader id="c-earlier" title="Earlier" />
-            {earlier.length ? <ul className="flex flex-col gap-3">{earlier.map((j) => <EarlierRow key={j.job_id} j={j} channelName={channelName} />)}</ul> : <p className="text-ds-sm text-ds-text-2">No earlier jobs</p>}
+            {earlier.length ? <ul className="flex flex-col gap-3">{earlier.map((j) => <EarlierRow key={j.job_id} j={j} channelName={channelName} templates={templates.data} onChanged={jobs.reload} />)}</ul> : <p className="text-ds-sm text-ds-text-2">No earlier jobs</p>}
           </Card>
         </div>
 
@@ -322,7 +322,11 @@ function JobRow({ j, channelName, onCancel }: { j: Job; channelName: (s?: string
   );
 }
 
-function EarlierRow({ j, channelName }: { j: Job; channelName: (s?: string) => string }) {
+function EarlierRow({ j, channelName, templates, onChanged }: { j: Job; channelName: (s?: string) => string; templates: Template[]; onChanged: () => void }) {
+  const { toast } = useApp();
+  const [open, setOpen] = useState(false); const [tpl, setTpl] = useState("");
+  const canRerun = j.kind === "clip" && j.status === "done";
+  const rerun = async () => { try { await api.post("/jobs/clip/rerun", { job_id: j.job_id, template: tpl }); toast("Making the clips again with that layout. The old clips are replaced", "ok"); setOpen(false); onChanged(); } catch (e: any) { toast(e.message, "bad"); } };
   const failed = j.status === "failed"; const cancelled = j.status === "cancelled";
   return (
     <li>
@@ -330,6 +334,15 @@ function EarlierRow({ j, channelName }: { j: Job; channelName: (s?: string) => s
         titleAdornment={<StatusDot tone={failed ? "danger" : cancelled ? "attention" : "online"} label={failed ? "Stopped" : cancelled ? "Cancelled" : "Done"} />}
         subtitle={<span className={failed ? "text-ds-danger" : undefined}>{failed ? `Stopped at ${stageWords(j.stage).toLowerCase()}. ${j.message || ""}` : cancelled ? "Cancelled" : `Done ${dayInline(j.created_at)} · ${j.result?.output_ids?.length ? `${j.result.output_ids.length} videos` : "1 video"}`}</span>}
         meta={j.status === "done" ? <MetaItem icon="play"><a href="#/" className="font-semibold text-ds-accent-ink">Review it</a></MetaItem> : undefined} />
+      {canRerun && (open ? (
+        <div className="mt-2 flex flex-wrap items-center gap-2 pl-1">
+          <Select aria-label="Layout for the new clips" className="!h-9 !w-auto" value={tpl} onChange={(e) => setTpl(e.target.value)}>
+            <option value="">Pick a layout</option>{templates.map((t) => <option key={t.id} value={t.id}>{t.label}</option>)}
+          </Select>
+          <Button size="sm" disabled={!tpl} onClick={rerun}>Re-run</Button>
+          <Button size="sm" variant="ghost" onClick={() => setOpen(false)}>Cancel</Button>
+        </div>
+      ) : <Button size="sm" variant="ghost" className="mt-1 -ml-1" leadingIcon="refresh" onClick={() => setOpen(true)}>Re-run with another template</Button>)}
     </li>
   );
 }

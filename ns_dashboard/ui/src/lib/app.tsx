@@ -15,6 +15,8 @@ interface AppCtx {
   askOpen: boolean; setAskOpen: (v: boolean) => void; askContext: Record<string, unknown>; ask: (ctx?: Record<string, unknown>, prompt?: string, openDrawer?: boolean) => void; askPrompt: string | null; clearAskPrompt: () => void;
   theme: Theme; setTheme: (t: Theme) => void;
   channelName: (slug?: string) => string;
+  /** The name chosen in the setup window (config/ui_prefs.json), or null. */
+  ownerName: string | null;
 }
 const Ctx = createContext<AppCtx>(null as unknown as AppCtx);
 export const useApp = () => useContext(Ctx);
@@ -31,6 +33,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [askOpen, setAskOpen] = useState(false);
   const [askContext, setAskContext] = useState<Record<string, unknown>>({});
   const [askPrompt, setAskPrompt] = useState<string | null>(null);
+  const [ownerName, setOwnerName] = useState<string | null>(null);
   const [theme, setThemeState] = useState<Theme>(() => store.get<Theme | null>("ns-theme", null) ?? (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"));
   const tid = useRef(0);
 
@@ -55,6 +58,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const setTheme = useCallback((t: Theme) => { setThemeState(t); store.set("ns-theme", t); }, []);
   const channelName = useCallback((slug?: string) => status?.channels?.find((c) => c.slug === slug)?.display_name || slug || "", [status]);
 
+  // First start: the setup window's choices (config/ui_prefs.json, served with /settings). The name is shown in the greeting; the
+  // theme is applied only while this browser has no saved choice, and is saved then, so a later pick in Settings always wins.
+  useEffect(() => {
+    api.get("/settings").then((s: { owner_name?: string | null; ui_theme?: Theme | null }) => {
+      if (s?.owner_name) setOwnerName(s.owner_name);
+      if (s?.ui_theme && store.get<Theme | null>("ns-theme", null) === null) setTheme(s.ui_theme);
+    }).catch(() => { /* demo data or no settings yet */ });
+  }, [setTheme]);
   useEffect(() => { document.documentElement.dataset.theme = theme; }, [theme]);
   useEffect(() => { const on = () => setRoute(parseHash()); addEventListener("hashchange", on); return () => removeEventListener("hashchange", on); }, []);
   useEffect(() => {
@@ -68,8 +79,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return () => { es?.close(); clearInterval(timer); };
   }, [refresh]);
 
-  const value = useMemo<AppCtx>(() => ({ status, demo, refresh, toast, toasts, confirm, confirmReq, closeConfirm, route, go, askOpen, setAskOpen, askContext, ask, askPrompt, clearAskPrompt: () => setAskPrompt(null), theme, setTheme, channelName }),
-    [status, demo, refresh, toast, toasts, confirm, confirmReq, closeConfirm, route, go, askOpen, askContext, ask, askPrompt, theme, setTheme, channelName]);
+  const value = useMemo<AppCtx>(() => ({ status, demo, refresh, toast, toasts, confirm, confirmReq, closeConfirm, route, go, askOpen, setAskOpen, askContext, ask, askPrompt, clearAskPrompt: () => setAskPrompt(null), theme, setTheme, channelName, ownerName }),
+    [status, demo, refresh, toast, toasts, confirm, confirmReq, closeConfirm, route, go, askOpen, askContext, ask, askPrompt, theme, setTheme, channelName, ownerName]);
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
 

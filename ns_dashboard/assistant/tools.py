@@ -29,6 +29,12 @@ NO_TOOL: dict[Route, str] = {
     ("POST", "/api/settings/keys"): "never: API keys are entered by the owner (Settings page)",
     ("POST", "/api/update/apply"): "never: installing an update is the owner's decision (Settings page)",
     ("POST", "/api/engine/stop_all"): "destructive button for the owner (Settings page)",
+    ("POST", "/api/settings/export"): "never: backups are made by the owner (Settings page)",
+    ("GET", "/api/settings/export/latest"): "binary zip download",
+    ("POST", "/api/settings/import"): "never: restoring settings replaces files, so only the owner does it (Settings page)",
+    ("GET", "/api/settings/uninstall"): "never: uninstalling is the owner's decision (Settings page)",
+    ("GET", "/api/library/series"): "the workshop_list and workshop_status tools read the same files",
+    ("POST", "/api/library/series/{slug}/produce"): "the workshop_produce tool queues parts (with a confirm card)",
     ("GET", "/api/events"): "event stream, not a request/response call",
     ("GET", "/api/media/{output_id:path}"): "binary video stream",
     ("GET", "/api/media/{output_id:path}/thumb.jpg"): "binary image",
@@ -38,7 +44,6 @@ NO_TOOL: dict[Route, str] = {
     ("POST", "/api/uploads/{upload_id}/complete"): "chunked file upload plumbing for the browser",
     ("GET", "/api/logs/components"): "UI filter list; tail_logs covers the content",
     ("GET", "/api/diagnostics/latest"): "binary zip download",
-    ("GET", "/api/templates/{template_id}/preview.png"): "binary image",
     ("POST", "/api/voices/preview"): "audio playback in the browser",
     ("POST", "/api/assistant/chat"): "the Assistant itself",
     ("POST", "/api/assistant/confirm"): "the Assistant itself (owner's Yes)",
@@ -209,6 +214,12 @@ def _tools() -> list[ToolDef]:
            required=["channel"], side=True, precheck=_clip_source_given,
            confirm=("Make up to {max_clips} clips for {channel} from {source} (layout {template}). By pressing Yes "
                     "you confirm you own this video or are licensed to use it.")),
+        _t("rerun_clips", "create", "Make the clips of a finished clip job again with another layout, without transcribing again.",
+           lambda c, a: c.dash.jobs.create_clip_rerun(a), route=("POST", "/api/jobs/clip/rerun"),
+           props={"job_id": _s("id of the finished clip job"), "template": _s("layout id, 'auto' lets Nightshift choose"),
+                  "max_clips": _i("most clips", minimum=1, maximum=10)},
+           required=["job_id", "template"], side=True,
+           confirm="Make the clips of job {job_id} again with the {template} layout. The old clips are replaced."),
         _t("start_verify", "create", "Run the machine self-check (ns verify).",
            lambda c, a: c.dash.jobs.create_verify(a), route=("POST", "/api/jobs/verify"),
            props={"quick": _b("quick check only")}, side=True, confirm="Run the Nightshift self-check."),
@@ -216,7 +227,7 @@ def _tools() -> list[ToolDef]:
            lambda c, a: c.dash.jobs.list_jobs(a.get("status"), a.get("kind"), int(a.get("limit", 10))),
            route=("GET", "/api/jobs"),
            props={"status": _s("filter", enum=["queued", "running", "done", "failed", "cancelled"]),
-                  "kind": _s("filter", enum=["run", "clip", "learn", "verify"]),
+                  "kind": _s("filter", enum=["run", "clip", "learn", "verify", "series_part"]),
                   "limit": _i("how many", minimum=1, maximum=50)}),
         _t("get_job", "create", "One job's status, stage and result.",
            lambda c, a: c.dash.jobs.get(a["job_id"]), route=("GET", "/api/jobs/{job_id}"),
@@ -330,6 +341,51 @@ def _tools() -> list[ToolDef]:
     ]
 
 
+def _described(schema: dict[str, Any]) -> dict[str, Any]:
+    """The workshop's argument schema with a description on every property (the registry requires one)."""
+    props = {
+        k: v if (v.get("description") or "enum" in v) else {**v, "description": k.replace("_", " ")}
+        for k, v in schema.get("properties", {}).items()
+    }
+    return {**schema, "properties": props}
+
+
+def _workshop_call(name: str) -> Callable[[ToolContext, dict[str, Any]], Any]:
+    """Run workshop tool `name` on a `Workshop` over this home (fake services only in fake mode)."""
+
+    def call(c: ToolContext, args: dict[str, Any]) -> Any:
+        from ns_dashboard import studio_bridge
+        from ns_dashboard.supervisor_link import make_acquirer
+        from ns_studio.series.tools import call_tool
+
+        state = c.dash.state
+        fake = studio_bridge.FAKE_ALL if state.fake_services else ()
+        acquirer = None if state.fake_services else make_acquirer(state.link.base_url)
+        with studio_bridge.workshop_session(acquirer=acquirer, fake=fake) as ws:
+            out = call_tool(ws, name, args)
+        if name == "workshop_produce":  # the rows are in dashboard_jobs; wake the worker now
+            for item in out:
+                state.worker.enqueue(str(item["job_id"]))
+        return out
+
+    return call
+
+
+def _workshop_tools() -> list[ToolDef]:
+    """The Series Workshop tools of `ns_studio.series.tools`, mounted with confirm cards (gap 7)."""
+    from ns_studio.series.tools import TOOLS
+
+    out: list[ToolDef] = []
+    for d in TOOLS:
+        side = bool(d["side_effect"])
+        spec = ToolSpec(
+            name=d["name"], description=d["description"], args_schema=_described(d["args_schema"]),
+            side_effect=side, confirm_text=d["confirm_text"] if side else "", topic="series",
+        )
+        out.append(ToolDef(spec=spec, call=_workshop_call(d["name"])))
+    return out
+
+
 def build_registry() -> Registry:
     """Registry of every tool (route-derived and orientation)."""
-    return Registry(_tools())
+    return Registry([*_tools(), *_workshop_tools()])

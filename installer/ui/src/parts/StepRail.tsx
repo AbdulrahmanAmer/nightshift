@@ -3,6 +3,7 @@
 import { useEffect, useState, type CSSProperties } from "react";
 import { cx } from "@dash/ui/kit";
 import { CAP_PATH, RAIL_W, layoutFor } from "@dash/shell/SideTab";
+import { Mark } from "@dash/ui/Mark";
 import { SetupIcon, type SetupIconName } from "./icons";
 import { shell } from "../copy";
 
@@ -16,11 +17,11 @@ const capUri = (flip: boolean) => {
 const CAP_START = capUri(false);
 const CAP_END = capUri(true);
 
-/** SideTab's useRailLayout is not exported; this is the same hook without the brand slot (the mark sits in the window notch). */
+/** SideTab's useRailLayout is not exported; this is the same hook; the mark sits in the brand slot at the top. */
 function useRailLayout() {
-  const [l, setL] = useState(() => layoutFor(window.innerHeight, false));
+  const [l, setL] = useState(() => layoutFor(window.innerHeight, true));
   useEffect(() => {
-    const on = () => setL((p) => { const n = layoutFor(window.innerHeight, false); return n.h === p.h && n.gap === p.gap ? p : n; });
+    const on = () => setL((p) => { const n = layoutFor(window.innerHeight, true); return n.gap === p.gap ? p : n; });
     addEventListener("resize", on);
     return () => removeEventListener("resize", on);
   }, []);
@@ -30,13 +31,14 @@ function useRailLayout() {
 export function StepRail({ steps, label = shell.railLabel, className }: { steps: RailStep[]; label?: string; className?: string }) {
   const l = useRailLayout();
   const idx = steps.findIndex((s) => s.state === "current" || s.state === "failed");
-  const h = Math.max(Math.round(2 * CAP * 0.58 + steps.length * 40 + (steps.length - 1) * l.gap), Math.ceil(2 * CAP) + 24);
+  const h = Math.max(Math.round(2 * CAP * 0.58 + (steps.length + 1) * 40 + steps.length * l.gap), Math.ceil(2 * CAP) + 24);
   const vars = { "--h": `${h}px`, "--gap": `${l.gap}px`, "--i": Math.max(idx, 0), "--cap-start": CAP_START, "--cap-end": CAP_END, "--cap": `${CAP}px` } as CSSProperties;
   const stateWord = { done: "done", current: "current step", upcoming: "not started", failed: "stopped with an error" } as const;
   return (
-    <nav aria-label={label} className={cx("sidetab", steps.length < 4 && "ns-rail-short", className)} data-brand="off" style={vars}>
+    <nav aria-label={label} className={cx("sidetab", steps.length < 4 && "ns-rail-short", className)} data-brand="on" style={vars}>
       <div className="sidetab-shape" aria-hidden><div className="sidetab-fill" /></div>
       <div className="sidetab-list">
+        <span className="sidetab-item sidetab-brand" role="img" aria-label={shell.brandGroup}><Mark size={32} tone="white" /></span>
         <div className="sidetab-items">
           <span className="sidetab-cell" data-off={idx < 0 || undefined} aria-hidden><span className="sidetab-square" /></span>
           {steps.map((s) => {

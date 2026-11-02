@@ -161,6 +161,16 @@ export function simulateJob(job: Job) {
   }, 1400);
 }
 
+const DEMO_SERIES: any[] = [{
+  slug: "the-service-lift", channel: "after-dark", title: "The Service Lift", status: "producing", next_step: "produce", has_design: true, chosen: "B",
+  parts: [
+    { n: 1, title: "Floor 13", minutes: 15, status: "published", job_id: "j-demo1", words: 2310, shorts: 3 },
+    { n: 2, title: "The Intercom", minutes: 15, status: "approved", job_id: null, words: 2240, shorts: 3 },
+    { n: 3, title: "The Service Stair", minutes: 14, status: "written", job_id: null, words: 2180, shorts: 3 },
+    { n: 4, title: "Tomorrow's Voice", minutes: 16, status: "planned", job_id: null, words: 0, shorts: 0 },
+  ],
+}];
+
 export async function demoHandle(method: string, path: string, body?: any): Promise<any> {
   await sleep(80);
   const [p, q] = path.split("?"); const parts = p.split("/").filter(Boolean); const sp = new URLSearchParams(q || "");
@@ -181,12 +191,21 @@ export async function demoHandle(method: string, path: string, body?: any): Prom
     const ch = out.channel === "tiny-mysteries";
     return { ...out, ...DEMO.detail, ...(ch ? { description: "Every receipt from the town bakery has a faint second receipt underneath, dated next Thursday.\n\nOriginal fiction.", story_excerpt: "Mrs. Penhallow kept every receipt in a biscuit tin. It was her grandson who noticed the second line of print, fainter than the first, and the date on it.", related_video_instruction: "Set Related video to The Bakery That Prints Two Receipts" } : {}), ...(out.kind === "clip" ? { description: "From my 31 October stream.", chapters: [], story_excerpt: "Cut from your own stream at 1:12:40. The moment was picked because chat activity tripled and you laughed.", policy_notes: ["Your own video, rights confirmed when the job started", "No music from the stream kept in the clip"] } : {}) };
   }
-  if (p === "/jobs" && method === "GET") return DEMO.jobs.map((j: Job) => ({ ...j }));
+  if (p === "/jobs" && method === "GET") return DEMO.jobs.filter((j: Job) => !sp.get("kind") || j.kind === sp.get("kind")).map((j: Job) => ({ ...j }));
   if ((p === "/jobs/run" || p === "/jobs/clip") && method === "POST") {
     const kind = p.endsWith("run") ? "run" : "clip";
     const sched = fdGet(body, "schedule_at") ? new Date(String(fdGet(body, "schedule_at"))) : null; const later = !!sched && +sched > Date.now();
     const job: Job = { job_id: "j" + Math.random().toString(16).slice(2, 8), kind, channel: fdGet(body, "channel") || "after-dark", status: "queued", progress: 0, stage: "queued", message: later ? "Scheduled" : "Waiting for the engine", created_at: new Date().toISOString(), schedule_at: later ? sched!.toISOString() : null, title: kind === "clip" ? (fdGet(body, "file")?.name || fdGet(body, "url") || "Your video") : undefined };
     DEMO.jobs.unshift(job); if (!later) simulateJob(job); return { job_id: job.job_id, schedule_at: job.schedule_at };
+  }
+  if (p === "/jobs/clip/rerun" && method === "POST") {
+    const src = DEMO.jobs.find((x: Job) => x.job_id === body?.job_id);
+    const job: Job = { job_id: "j" + Math.random().toString(16).slice(2, 8), kind: "clip", channel: src?.channel || "night-desk", status: "queued", progress: 0, stage: "queued", message: "Waiting for the engine", created_at: new Date().toISOString(), title: src?.title };
+    DEMO.jobs.unshift(job); simulateJob(job); return { job_id: job.job_id };
+  }
+  if (p === "/jobs/verify" && method === "POST") {
+    const job: Job = { job_id: "v" + Math.random().toString(16).slice(2, 8), kind: "verify", status: "done", progress: 100, stage: "verify", message: "Done", created_at: new Date().toISOString(), result: { passed: true, checks: [{ passed: true }, { passed: true }, { passed: true }] } as any };
+    DEMO.jobs.unshift(job); return { job_id: job.job_id };
   }
   if (parts[0] === "jobs" && parts.length === 2) { const j = DEMO.jobs.find((x: Job) => x.job_id === parts[1]); if (!j) throw new Error("Not found"); return { ...j }; }
   if (parts[0] === "jobs" && parts[2] === "cancel") { const j = DEMO.jobs.find((x: Job) => x.job_id === parts[1]); if (j) { j.status = "cancelled"; j.message = "Cancelled"; } return { ok: true }; }
@@ -218,10 +237,17 @@ export async function demoHandle(method: string, path: string, body?: any): Prom
   if (p === "/settings") { if (method === "PUT") Object.assign(DEMO.settings, body); return structuredClone(DEMO.settings); }
   if (p === "/settings/keys") { DEMO.settings.keys[body.name] = true; return { ok: true }; }
   if (p === "/diagnostics") return { path: "C:\\Users\\you\\Desktop\\nightshift-diagnostics-2026-11-02.zip" };
+  if (p === "/settings/export") return { path: "C:\Users\you\Desktop\nightshift-backup-2026-11-02.zip", name: "nightshift-backup-2026-11-02.zip" };
+  if (p === "/settings/import") return { restored: true, note: "Settings restored. Restart Nightshift to use them" };
+  if (p === "/settings/uninstall") return { path: "D:\Nightshift\app\UNINSTALL.cmd", exists: true };
+  if (p === "/engine/warmup") { DEMO.status.engine = { state: "loading", detail: "Loading the language model" }; return { state: "starting" }; }
+  if (p === "/engine/stop_all") { DEMO.status.engine = { state: "idle", detail: "Engine stopped" }; return { ok: true, cancelled_job: null }; }
   if (p === "/engine/shutdown") { DEMO.status.engine = { state: "idle", detail: "Engine stopped" }; return { ok: true }; }
+  if (p === "/runs") return [{ run_id: "daily-20261102-a1f2", started_at: new Date(Date.now() - 9 * 3600e3).toISOString(), finished_at: new Date(Date.now() - 6 * 3600e3).toISOString(), mode: "daily", duration_s: 10320, summary: { jobs: [{ job_id: "after-dark-20261102-a1f2", channel: "after-dark", stages: 19 }, { job_id: "tiny-mysteries-20261102-77c3", channel: "tiny-mysteries", stages: 19 }], failures: [] } }];
   if (p === "/learn/summary") return structuredClone(DEMO.learn);
   if (p === "/learn/import") { DEMO.learn.imported_at = new Date().toISOString(); return structuredClone(DEMO.learn); }
-  if (p.startsWith("/logs/tail")) { const lvl = sp.get("level"); return DEMO.logs.filter((l: any) => !lvl || l.level === lvl); }
+  if (p === "/logs/components") return [...new Set<string>(DEMO.logs.map((l: any) => l.component))].sort();
+  if (p.startsWith("/logs/tail")) { const lvl = sp.get("level"); const comp = sp.get("component"); return DEMO.logs.filter((l: any) => (!lvl || l.level === lvl) && (!comp || l.component === comp)); }
   if (p === "/library/ideas" && method === "GET") return DEMO.ideas.map((i: any) => ({ ...i }));
   if (p === "/library/ideas" && method === "POST") { const idea = { id: Date.now(), status: "new", source: "You", created_at: new Date().toISOString(), ...body }; DEMO.ideas.unshift(idea); return idea; }
   if (parts[0] === "library" && parts[1] === "ideas" && method === "PUT") { const i = DEMO.ideas.find((x: any) => String(x.id) === parts[2]); if (i) Object.assign(i, body); return i; }
@@ -229,8 +255,17 @@ export async function demoHandle(method: string, path: string, body?: any): Prom
   if (p === "/library/footage") { const qq = (sp.get("q") || "").toLowerCase(); return DEMO.footage.filter((f: any) => !qq || f.keywords.join(" ").includes(qq)); }
   if (p === "/library/formats" && method === "GET") return DEMO.formats.map((f: any) => ({ ...f }));
   if (p === "/library/formats" && method === "POST") { DEMO.formats.push({ ...body }); return body; }
+  if (parts[0] === "library" && parts[1] === "formats" && method === "PUT") { const f = DEMO.formats.find((x: any) => x.id === parts[2]); if (!f) throw new Error("Not found"); if (body?.changes?.name) f.name = body.changes.name; return { ...f }; }
+  if (p === "/library/series" && method === "GET") return structuredClone(DEMO_SERIES);
+  if (parts[0] === "library" && parts[1] === "series" && parts[3] === "produce") {
+    const s = DEMO_SERIES.find((x) => x.slug === parts[2]); const part = s?.parts.find((x: any) => x.status === "approved");
+    if (!part) throw new ApiError("That story has no approved part waiting.", "cannot_produce");
+    part.status = "producing"; return { slug: s.slug, queued: [{ part: part.n, job_id: "j" + Math.random().toString(16).slice(2, 8), title: `${s.title} - Part ${part.n}` }] };
+  }
   if (p === "/update/check") return { current: "0.9.2", latest: "0.9.2", up_to_date: true, notes: "" };
   if (p === "/update/apply") throw new Error("Updating needs the engine running");
+  if (p === "/assistant/conversations") return [];
+  if (p === "/assistant/queue/run") return [];
   if (p === "/assistant/confirm") { const run = DEMO.pending[body.action_id]; if (!run) throw new Error("Nothing to confirm"); delete DEMO.pending[body.action_id]; return run(); }
   if (p === "/assistant/dismiss") { delete DEMO.pending[body.action_id]; return { ok: true }; }
   throw new Error(`Not available with demo data: ${method} ${path}`);

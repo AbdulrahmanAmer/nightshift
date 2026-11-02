@@ -19,7 +19,7 @@ export interface Learn { imported_at?: string; matched?: number; unmatched?: num
 export interface Idea { id: number | string; channel: string; title: string; premise: string; status: string; source?: string; created_at?: string }
 export interface Story { job_id: string; title: string; channel: string; format: string; words: number; critic_avg: number; created_at: string; outputs: number; status: string }
 export interface Footage { source: string; id: string; keywords: string[]; license: string; duration: number; last_used: string; uses: number }
-export interface Format { id: string; name?: string; kind: string; canvas?: { w: number; h: number; fps: number }; channels?: string[] }
+export interface Format { id: string; name?: string; kind: string; canvas?: { w: number; h: number; fps: number }; channels?: string[]; source?: "shipped" | "edited" | "yours"; valid?: boolean; errors?: string[]; definition?: any }
 export interface LogLine { ts: string; level: string; component: string; event: string; msg?: string }
 export type ChatEvent =
   | { kind: "conversation"; payload: { conversation_id: string } }
@@ -30,3 +30,9 @@ export type ChatEvent =
   | { kind: "busy"; payload: { message: string } }
   | { kind: "error"; payload: { code?: string; message: string; hint?: string } }
   | { kind: "done"; payload: { conversation_id?: string } };
+/** One part of a workshop story (GET /library/series). */
+export interface SeriesPart { n: number; title: string; minutes: number; status: "planned" | "written" | "approved" | "producing" | "published" | string; job_id?: string | null; words: number; shorts: number }
+/** A workshop story with its part table (GET /library/series reads the story folders under stories/). */
+export interface SeriesStory { slug: string; channel: string; title: string; status: string; next_step: string; has_design: boolean; chosen?: string | null; parts: SeriesPart[] }
+/** One row of GET /runs: a nightly (daily) or manual run with the report the studio wrote. */
+export interface Run { run_id: string; started_at: string; finished_at?: string | null; mode: string; duration_s?: number | null; summary?: { jobs?: { job_id: string; channel: string; stages?: number }[]; failures?: { job_id: string; channel: string; code?: string; error?: string }[] } }

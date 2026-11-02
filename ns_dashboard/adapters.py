@@ -12,8 +12,9 @@ import importlib
 import json
 import os
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Collection, Iterator
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -24,10 +25,11 @@ from ns_common.config import load_runtime
 from ns_common.errors import NsError
 from ns_common.logging import NsLogger
 from ns_common.paths import Paths
+from ns_dashboard import studio_bridge
 from ns_dashboard.errors import AdapterUnavailable, ApiError
 from ns_dashboard.jobs import JobControl
-from ns_dashboard.supervisor_link import SupervisorLink, make_acquirer
-from ns_dashboard.updater import RealUpdateAdapter
+from ns_dashboard.supervisor_link import SupervisorLink, make_acquirer, supervisor_url
+from ns_dashboard.updater import RealBackupAdapter, RealUpdateAdapter
 
 KEYRING_SERVICE = "Nightshift"
 KEY_NAMES = ("pexels_api_key", "pixabay_api_key")
@@ -46,6 +48,10 @@ class ClipAdapter(Protocol):
     def clip(
         self, ctl: JobControl, source_path: Path, source_id: str, params: dict[str, Any]
     ) -> list[str]: ...
+
+    def rerun(self, ctl: JobControl, studio_job_id: str, changes: dict[str, Any]) -> list[str]:
+        """Run the later stages of an earlier clip job again with other options (transcript kept)."""
+        ...
 
     def fetch_url(self, ctl: JobControl, url: str, source_id: str) -> Path:
         """Download a video from an http(s) link (C8 `import_url`); reports `ctl.download(percent)`."""
@@ -122,6 +128,36 @@ class UpdateAdapter(Protocol):
     def apply(self) -> dict[str, Any]: ...
 
 
+class SeriesAdapter(Protocol):
+    """Series Workshop production: runs one approved part as a studio job (kind `series_part`)."""
+
+    def produce(self, ctl: JobControl, params: dict[str, Any]) -> list[str]: ...
+
+    def listing(self) -> list[dict[str, Any]]:
+        """Every workshop story with its parts and next step (read-only)."""
+        ...
+
+    def queue_next(self, slug: str) -> list[dict[str, Any]]:
+        """Queue the next approved part of `slug`: `[{part, job_id, title}]`; 409 when none is ready."""
+        ...
+
+
+class BackupAdapter(Protocol):
+    """Export and import of settings (`ns backup`, `ns restore`) and where UNINSTALL.cmd is."""
+
+    def export(self) -> Path:
+        """Write the backup zip and return its path."""
+        ...
+
+    def restore(self, zip_path: Path) -> list[str]:
+        """Restore a backup zip; returns the lines the command printed."""
+        ...
+
+    def uninstall_path(self) -> Path:
+        """Full path of UNINSTALL.cmd."""
+        ...
+
+
 class ScheduleAdapter(Protocol):
     """Applies the nightly run time to the scheduled task."""
 
@@ -130,7 +166,7 @@ class ScheduleAdapter(Protocol):
 
 @dataclass
 class Adapters:
-    """The eleven collaborators the service layer and the job handlers use."""
+    """The thirteen collaborators the service layer and the job handlers use."""
 
     run: RunAdapter
     clip: ClipAdapter
@@ -143,6 +179,8 @@ class Adapters:
     schedule: ScheduleAdapter
     update: UpdateAdapter
     voice_maker: VoiceMakerAdapter
+    series: SeriesAdapter
+    backup: BackupAdapter
 
 
 def lazy(module: str, attr: str) -> Callable[..., Any]:
@@ -167,103 +205,232 @@ def stage_reporter(ctl: JobControl) -> Callable[[str, int, int], None]:
     return on_stage
 
 
-class RealRunAdapter:
-    """Expects `ns_studio.orchestrator.run_job_with_progress` (C7)."""
+def job_reporter(ctl: JobControl) -> studio_bridge.Report:
+    """`report(stage, index, total, job_index, job_total)` for the studio bridge: cancel check, then progress.
 
-    def __init__(self, paths: Paths, link: SupervisorLink) -> None:
+    Progress is the share of finished stages across all jobs of the request, shown as `name (i/n)`.
+    """
+
+    def report(stage: str, index: int, total: int, job_index: int, job_total: int) -> None:
+        ctl.check_cancel()
+        done = job_index + index / max(1, total)
+        ctl.progress(done / max(1, job_total), f"{stage} ({index + 1}/{total})")
+
+    return report
+
+
+class StudioAdapter:
+    """Shared wiring of the adapters that run studio code in-process: home, link, fakes, GPU owner."""
+
+    def __init__(
+        self,
+        paths: Paths,
+        link: SupervisorLink,
+        *,
+        fake: Collection[str] = (),
+        acquirer: Acquirer | None = None,
+    ) -> None:
         self.paths = paths
         self.link = link
+        self.fake = frozenset(fake)
+        self._acquirer = acquirer
+
+    def acquirer(self) -> Acquirer:
+        """The supervisor-backed acquirer (tests inject their own)."""
+        return self._acquirer or make_acquirer(self.link.base_url)
+
+
+class RealRunAdapter(StudioAdapter):
+    """Runs `studio run` jobs in-process through `ns_dashboard.studio_bridge.run_story_jobs` (C7).
+
+    The bridge calls `ns_studio.jobs` and `run_job_guarded`; progress comes from the runner's log events,
+    and the GPU tenants are acquired through the supervisor.
+    """
 
     def run(self, ctl: JobControl, channel: str, fmt: str, count: int | None) -> list[str]:
-        """Run one studio job; progress per stage, tenants acquired through the supervisor."""
-        fn = lazy("ns_studio.orchestrator", "run_job_with_progress")
-        ids = fn(
+        """Run `count` studio jobs for `channel`; returns the output ids and notes the studio job ids."""
+        seen: list[str] = []
+        ids = studio_bridge.run_story_jobs(
+            channel,
+            fmt,
+            count,
+            job_reporter(ctl),
+            acquirer=self.acquirer(),
+            fake=self.fake,
             paths=self.paths,
-            channel=channel,
-            fmt=fmt,
-            count=count,
-            on_stage=stage_reporter(ctl),
-            acquirer=make_acquirer(self.link.base_url),
+            seen=seen,
         )
-        return [str(i) for i in ids]
+        ctl.extras["studio_job_ids"] = seen
+        return ids
 
 
-class RealClipAdapter:
-    """Expects `ns_studio.clipper.run_clip_job` (C8)."""
-
-    def __init__(self, paths: Paths, link: SupervisorLink) -> None:
-        self.paths = paths
-        self.link = link
+class RealClipAdapter(StudioAdapter):
+    """Runs the Clipper in-process: the clip job's stages (`studio clip`) and `import_url` for links."""
 
     def clip(self, ctl: JobControl, source_path: Path, source_id: str, params: dict[str, Any]) -> list[str]:
         """Run the Clipper for `source_path`; returns the output ids it inserted."""
-        fn = lazy("ns_studio.clipper", "run_clip_job")
-        ids = fn(
+        seen: list[str] = []
+        ids = studio_bridge.run_clip(
+            source_path,
+            {**params, "channel": params.get("channel") or ctl.channel},
+            job_reporter(ctl),
+            acquirer=self.acquirer(),
+            fake=self.fake,
             paths=self.paths,
-            source_path=source_path,
-            source_id=source_id,
-            params=params,
-            on_stage=stage_reporter(ctl),
-            acquirer=make_acquirer(self.link.base_url),
+            seen=seen,
         )
-        return [str(i) for i in ids]
+        ctl.extras["studio_job_id"] = seen[0] if seen else None
+        return ids
+
+    def rerun(self, ctl: JobControl, studio_job_id: str, changes: dict[str, Any]) -> list[str]:
+        """Run the later stages of `studio_job_id` again with other options; keeps the transcript."""
+        ids = studio_bridge.rerun_clip(
+            studio_job_id,
+            changes,
+            job_reporter(ctl),
+            acquirer=self.acquirer(),
+            fake=self.fake,
+            paths=self.paths,
+        )
+        ctl.extras["studio_job_id"] = studio_job_id
+        return ids
 
     def fetch_url(self, ctl: JobControl, url: str, source_id: str) -> Path:
-        """Download `url` into `imports/clipper/<source_id>/` with C8's `import_url`, as `Downloading N%`.
+        """Download `url` with the pinned yt-dlp (`clipper.source.import_url`), shown as `Downloading N%`."""
+        return studio_bridge.download_source(self.paths, url, source_id, ctl.download)
 
-        Expects `ns_studio.clipper.import_url(paths=, url=, source_id=, on_progress=) -> Path`, where
-        `on_progress(percent)` may raise to cancel.
-        """
+
+class RealSeriesAdapter(StudioAdapter):
+    """Produces a series part: the job `Workshop.produce` prepared, run with the `master_from_script` plan."""
+
+    def produce(self, ctl: JobControl, params: dict[str, Any]) -> list[str]:
+        """Run the part's job; a failed or cancelled part goes back to `approved` to be queued again."""
         try:
-            fn = lazy("ns_studio.clipper", "import_url")
-        except AdapterUnavailable as e:
-            raise AdapterUnavailable("URL import not available yet") from e
-        return Path(fn(paths=self.paths, url=url, source_id=source_id, on_progress=ctl.download))
+            return studio_bridge.run_series_part(
+                {**params, "job_id": ctl.job_id},
+                job_reporter(ctl),
+                acquirer=self.acquirer(),
+                fake=self.fake,
+                paths=self.paths,
+            )
+        except BaseException:
+            studio_bridge.release_part({**params, "job_id": ctl.job_id})
+            raise
+
+    def listing(self) -> list[dict[str, Any]]:
+        """Stories and parts read from the workshop files under `stories/`."""
+        return studio_bridge.list_series()
+
+    def queue_next(self, slug: str) -> list[dict[str, Any]]:
+        """Queue the next approved part (`Workshop.produce`); workshop usage errors become 409/404 answers."""
+        from ns_studio.series.store import WorkshopError
+
+        try:
+            return studio_bridge.queue_next_part(slug)
+        except WorkshopError as e:
+            missing = str(e).startswith("no story")
+            code = "not_found" if missing else "cannot_produce"
+            raise ApiError(404 if missing else 409, code, str(e)) from e
 
 
 class RealLearnAdapter:
-    """Expects `ns_studio.learn.import_csv` and `ns_studio.learn.summary` (C7)."""
+    """Imports an analytics CSV (`learn.importer.read_csv`, `import_rows`) and reweights the pools."""
 
     def __init__(self, paths: Paths) -> None:
         self.paths = paths
 
     def import_csv(self, ctl: JobControl, csv_path: Path) -> dict[str, Any]:
-        """Import `csv_path`; returns the import summary."""
-        fn = lazy("ns_studio.learn", "import_csv")
+        """Match the rows to uploads, store them, update `pool_weights`; returns the plain-English counts."""
+        from ns_common.db import Db
+        from ns_studio.channels.crud import get_channel
+        from ns_studio.errors import StudioError
+        from ns_studio.learn.importer import import_rows, read_csv
+        from ns_studio.learn.reweight import reweight, save_snapshot
+
         ctl.progress(0.1, "Reading the analytics file")
-        out = fn(self.paths, csv_path)
-        return out if isinstance(out, dict) else {"result": out}
+        db = Db(self.paths.db_path)
+        db.migrate()
+        try:
+            try:
+                rows = read_csv(csv_path)
+                ctl.progress(0.4, "Matching videos")
+                result = import_rows(db, rows, datetime.now(UTC).date().isoformat())
+            except StudioError as e:  # NS-E323 and friends: show the code and the fix hint like the CLI
+                raise NsError(e.code, e.detail) from e
+            ctl.progress(0.7, "Updating what Nightshift learns")
+            changes: list[dict[str, Any]] = []
+            for slug in sorted(set(result.matched.values())):
+                moved = reweight(db, get_channel(self.paths, slug))
+                save_snapshot(self.paths, slug, moved)
+                for pool, options in moved.items():
+                    changes.extend(
+                        {"pool": pool, "option": o, "delta": new - old} for o, (old, new) in options.items()
+                    )
+        finally:
+            db.close()
+        return {
+            "rows": len(rows),
+            "matched": len(result.matched),
+            "unmatched": [r.title or r.video_id or r.url for r in result.unmatched],
+            "changes": changes,
+        }
 
     def summary(self) -> dict[str, Any]:
-        """Summary of learned weights."""
-        fn = lazy("ns_studio.learn", "summary")
-        out = fn(self.paths)
-        return out if isinstance(out, dict) else {}
+        """Nothing extra: the Results page computes the summary from `pool_weights` (SettingsService)."""
+        return {}
 
 
 class RealVerifyAdapter:
-    """Expects `ns_supervisor.verify.run_verify` (C2)."""
+    """`ns verify` in-process: `run_verify(paths, rt, controller, quick=, deps=)`, then the report file."""
 
-    def __init__(self, paths: Paths) -> None:
+    def __init__(
+        self, paths: Paths, link: SupervisorLink | None = None, *, controller: Any = None, deps: Any = None
+    ) -> None:
         self.paths = paths
+        self.link = link
+        self.controller = controller  # tests pass a stub supervisor
+        self.deps = deps  # tests pass fake machine probes
+
+    def _controller(self) -> Any:
+        if self.controller is not None:
+            return self.controller
+        client = lazy("ns_supervisor.client", "SupervisorClient")
+        url = self.link.base_url if self.link is not None else supervisor_url(self.paths)
+        return client(url)
 
     def verify(self, ctl: JobControl, quick: bool) -> dict[str, Any]:
-        """Run `ns verify`; returns `{checks: [...]}`."""
-        fn = lazy("ns_supervisor.verify", "run_verify")
-        out = fn(paths=self.paths, quick=quick, on_stage=stage_reporter(ctl))
-        return out if isinstance(out, dict) else {"checks": out}
+        """Run the checks and write `logs\verify-report.json`; returns the checks, benchmarks and verdict."""
+        run = lazy("ns_supervisor.verify", "run_verify")
+        write = lazy("ns_supervisor.verify", "write_report")
+        runtime = lazy("ns_supervisor.control", "runtime_or_default")
+        ctl.check_cancel()
+        ctl.progress(0.05, "Running checks")
+        report = run(self.paths, runtime(self.paths), self._controller(), quick=quick, deps=self.deps)
+        report_file = write(self.paths, report)
+        return {
+            "checks": [c.model_dump(mode="json") for c in report.checks],
+            "passed": bool(report.passed),
+            "quick": quick,
+            "benchmarks": dict(report.benchmarks),
+            "report": str(report_file),
+        }
 
 
 class RealDoctorAdapter:
-    """Calls C2's doctor bundle in-process (`ns_supervisor.doctor.make_bundle(paths) -> Path`)."""
+    """Calls C2's doctor in-process: `ns_supervisor.doctor.build_bundle` (what `ns doctor --bundle` runs)."""
 
-    def __init__(self, paths: Paths) -> None:
+    def __init__(
+        self, paths: Paths, *, out_dir: Path | None = None, options: dict[str, Any] | None = None
+    ) -> None:
         self.paths = paths
+        self.out_dir = out_dir  # None: the Desktop, like the command line
+        self.options = options or {}
 
     def bundle(self) -> Path:
-        """Create the diagnostics zip and return its path."""
-        fn = lazy("ns_supervisor.doctor", "make_bundle")
-        return Path(fn(self.paths))
+        """Create the diagnostics zip (logs, reports, settings without keys) and return its path."""
+        build = lazy("ns_supervisor.doctor", "build_bundle")
+        app_path = lazy("ns_supervisor.control", "app_path")
+        return Path(build(self.paths, out_dir=self.out_dir, app=app_path(self.paths), **self.options))
 
 
 class RealKeyringAdapter:
@@ -465,22 +632,21 @@ class RealFolderOpener:
 
 
 class RealScheduleAdapter:
-    """Applies the run time to the scheduled task when C2 provides `ns_supervisor.scheduler`."""
+    """Re-registers the 'Nightshift Daily' task at the new time (`ns_supervisor.schedule.install`)."""
 
     def __init__(self, paths: Paths) -> None:
         self.paths = paths
 
     def apply(self, run_time: str) -> dict[str, Any]:
-        """Update the 'Nightshift Daily' trigger; reports `applied: False` while C2 has no hook."""
+        """Register the task at `run_time`; if Windows refuses, the time stays saved and the note says why."""
+        from ns_supervisor.control import app_path
+        from ns_supervisor.schedule import ScheduleError, install
+
         try:
-            fn = lazy("ns_supervisor.scheduler", "set_daily_time")
-        except AdapterUnavailable:
-            return {
-                "applied": False,
-                "note": "Saved. The scheduled task picks the new time up after the next update.",
-            }
-        fn(self.paths, run_time)
-        return {"applied": True, "note": "Scheduled task updated."}
+            message = install(self.paths, run_time, app_path(self.paths))
+        except ScheduleError as e:
+            return {"applied": False, "note": f"Saved, but Windows did not update the nightly task: {e}"}
+        return {"applied": True, "note": f"Scheduled task updated. {message}"}
 
 
 def real_adapters(paths: Paths, link: SupervisorLink, log: NsLogger) -> Adapters:
@@ -490,7 +656,7 @@ def real_adapters(paths: Paths, link: SupervisorLink, log: NsLogger) -> Adapters
         run=RealRunAdapter(paths, link),
         clip=RealClipAdapter(paths, link),
         learn=RealLearnAdapter(paths),
-        verify=RealVerifyAdapter(paths),
+        verify=RealVerifyAdapter(paths, link),
         doctor=RealDoctorAdapter(paths),
         keyring=RealKeyringAdapter(),
         tts=RealTtsAdapter(paths, link),
@@ -498,4 +664,6 @@ def real_adapters(paths: Paths, link: SupervisorLink, log: NsLogger) -> Adapters
         schedule=RealScheduleAdapter(paths),
         update=RealUpdateAdapter(paths),
         voice_maker=RealVoiceMaker(paths, link),
+        series=RealSeriesAdapter(paths, link),
+        backup=RealBackupAdapter(paths),
     )
