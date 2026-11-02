@@ -821,3 +821,74 @@ def test_a_failed_link_download_job_leaves_nothing_behind(tmp_home: Path, tmp_pa
     with pytest.raises(RuntimeError):
         adapter.clip(ctl, video, "src-20261102-bbbb", {"template": "auto"})
     assert not folder.exists()
+
+
+# ---------------------------------------------------------------- keys reach Credential Manager AND the DPAPI file
+
+
+def xor(data: bytes) -> bytes:
+    return bytes(b ^ 0x5A for b in data)  # stands in for DPAPI on any OS
+
+
+class MemoryKeyring:
+    def __init__(self, broken: bool = False) -> None:
+        self.values: dict[tuple[str, str], str] = {}
+        self.broken = broken
+
+    def set_password(self, service: str, name: str, value: str) -> None:
+        if self.broken:
+            raise OSError("no access to Credential Manager in this session")
+        self.values[(service, name)] = value
+
+    def get_password(self, service: str, name: str) -> str | None:
+        if self.broken:
+            raise OSError("no access")
+        return self.values.get((service, name))
+
+
+def test_a_key_saved_in_settings_is_written_to_both_stores(tmp_home: Path):
+    from ns_common.secret_file import load_secret
+    from ns_common.secrets_names import KEYRING_SERVICE
+    from ns_dashboard.adapters import RealKeyringAdapter
+
+    paths = Paths.from_env()
+    keyring = MemoryKeyring()
+    adapter = RealKeyringAdapter(paths, keyring_module=keyring, protect=xor, unprotect=xor)
+    adapter.set("pexels_api_key", "KEY-NEW")
+    assert keyring.values[(KEYRING_SERVICE, "pexels_api_key")] == "KEY-NEW"  # Credential Manager
+    assert load_secret(paths, "pexels_api_key", unprotect=xor) == "KEY-NEW"  # and the file the nightly task reads
+    adapter.set("pexels_api_key", "KEY-NEWER")  # a change reaches both, not just the first
+    assert keyring.values[(KEYRING_SERVICE, "pexels_api_key")] == "KEY-NEWER"
+    assert load_secret(paths, "pexels_api_key", unprotect=xor) == "KEY-NEWER"
+
+
+def test_one_working_store_is_enough_and_both_failing_is_an_error(tmp_home: Path):
+    from ns_common.secret_file import load_secret
+    from ns_dashboard.adapters import RealKeyringAdapter
+    from ns_dashboard.errors import AdapterUnavailable
+
+    paths = Paths.from_env()
+    broken = RealKeyringAdapter(paths, keyring_module=MemoryKeyring(broken=True), protect=xor, unprotect=xor)
+    broken.set("pixabay_api_key", "KEY-2")  # the file took it
+    assert load_secret(paths, "pixabay_api_key", unprotect=xor) == "KEY-2"
+    assert broken.get("pixabay_api_key") == "KEY-2"  # read back through the file when the keyring cannot answer
+
+    def refuse(_data: bytes) -> bytes:
+        raise OSError("disk full")
+
+    both = RealKeyringAdapter(paths, keyring_module=MemoryKeyring(broken=True), protect=refuse, unprotect=xor)
+    with pytest.raises(AdapterUnavailable):
+        both.set("pixabay_api_key", "KEY-3")
+
+
+def test_the_settings_route_saves_through_the_adapter_and_never_returns_the_value(tmp_home: Path):
+    from ns_dashboard.adapters import RealKeyringAdapter
+    from tests.test_dashboard_api import make_env
+
+    client, state = make_env(tmp_home)
+    keyring = MemoryKeyring()
+    state.adapters.keyring = RealKeyringAdapter(Paths.from_env(), keyring_module=keyring, protect=xor, unprotect=xor)  # type: ignore[assignment]
+    r = client.post("/api/settings/keys", json={"name": "pexels", "value": "KEY-ROUTE"})
+    assert r.status_code == 200 and "KEY-ROUTE" not in r.text
+    assert "KEY-ROUTE" in keyring.values.values()
+    assert (Paths.from_env().config / "secrets.dpapi").is_file()

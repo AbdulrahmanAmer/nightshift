@@ -500,21 +500,67 @@ class RealDoctorAdapter:
 
 
 class RealKeyringAdapter:
-    """Windows Credential Manager through the `keyring` package (service `Nightshift`)."""
+    """The stock-footage keys: Windows Credential Manager (service `Nightshift`) AND the DPAPI file.
+
+    The nightly task may run in a session that cannot read the owner's Credential Manager (the studio then falls
+    back to `config/secrets.dpapi`, `ns_common.secret_file`), so a key saved here must reach both places or the
+    nightly run would keep an old key. `set` fails only when neither accepted the value, like the installer's
+    `ResilientStore`; `get` asks the keyring first and the file second.
+    """
+
+    def __init__(
+        self,
+        paths: Paths | None = None,
+        *,
+        keyring_module: Any = None,
+        protect: Callable[[bytes], bytes] | None = None,
+        unprotect: Callable[[bytes], bytes] | None = None,
+    ) -> None:
+        self.paths = paths
+        self._keyring = keyring_module
+        self._protect = protect
+        self._unprotect = unprotect
 
     def _module(self) -> Any:
+        if self._keyring is not None:
+            return self._keyring
         try:
             return importlib.import_module("keyring")
         except ImportError as e:
             raise AdapterUnavailable("the keyring package is not installed") from e
 
     def get(self, name: str) -> str | None:
-        """Stored secret or None."""
-        return self._module().get_password(KEYRING_SERVICE, name)
+        """Stored secret (Credential Manager, else the DPAPI file) or None."""
+        value: str | None = None
+        try:
+            value = self._module().get_password(KEYRING_SERVICE, name)
+        except AdapterUnavailable:
+            if self.paths is None:  # nothing else to ask
+                raise
+        except Exception:  # a broken backend must not hide the file copy
+            value = None
+        if value or self.paths is None:
+            return value
+        from ns_common.secret_file import dpapi_unprotect, load_secret
+
+        return load_secret(self.paths, name, unprotect=self._unprotect or dpapi_unprotect)
 
     def set(self, name: str, value: str) -> None:
-        """Store or replace a secret."""
-        self._module().set_password(KEYRING_SERVICE, name, value)
+        """Write Credential Manager and the DPAPI file; raise only when both refused."""
+        failures: list[str] = []
+        try:
+            self._module().set_password(KEYRING_SERVICE, name, value)
+        except Exception as e:  # recorded: the file copy may still work
+            failures.append(f"keyring: {type(e).__name__}")
+        if self.paths is not None:
+            from ns_common.secret_file import dpapi_protect, store_secret
+
+            try:
+                store_secret(self.paths, name, value, protect=self._protect or dpapi_protect)
+            except OSError as e:
+                failures.append(f"file: {e}")
+        if len(failures) == (2 if self.paths is not None else 1):
+            raise AdapterUnavailable("the key could not be stored (" + "; ".join(failures) + ")")
 
 
 def scan_voice_library(paths: Paths) -> list[dict[str, Any]]:
@@ -757,7 +803,7 @@ def real_adapters(paths: Paths, link: SupervisorLink, log: NsLogger) -> Adapters
         learn=RealLearnAdapter(paths),
         verify=RealVerifyAdapter(paths, link),
         doctor=RealDoctorAdapter(paths),
-        keyring=RealKeyringAdapter(),
+        keyring=RealKeyringAdapter(paths),
         tts=RealTtsAdapter(paths, link),
         folder=RealFolderOpener(),
         schedule=RealScheduleAdapter(paths),
