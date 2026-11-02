@@ -68,3 +68,19 @@ def test_the_test_job_has_a_forty_minute_cap_in_ci_and_release():
         job = wf[wf.index("\n  test:") :]
         head = job[: job.index("steps:")]
         assert "timeout-minutes: 40" in head, rel
+
+
+def test_the_0_1_1_changelog_covers_the_re_review_prs_and_unreleased_is_empty():
+    version = read("VERSION").strip()
+    assert version == "0.1.1"
+    text = read("CHANGELOG.md")
+    assert re.search(r"^## \[0\.1\.1\] - 2026-11-03\s*$", text, re.MULTILINE)
+    unreleased = text[text.index("## [Unreleased]") : text.index("## [0.1.1]")]
+    assert unreleased.strip() == "## [Unreleased]"  # everything moved under the version
+    # release.yml builds the notes from this body, the same way: heading to the next heading
+    body = re.search(r"(?ms)^## \[0\.1\.1\][^\r\n]*\r?\n(?P<body>.*?)(?=^## \[|\Z)", text)
+    assert body is not None
+    for pr in ("#48", "#49", "#50", "#51"):
+        assert pr in body.group("body"), pr
+    for word in ("timeout", "Release", "signed in", "Create it now", "produced", "run"):
+        assert word in body.group("body"), word
