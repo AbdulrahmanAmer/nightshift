@@ -60,3 +60,11 @@ def test_repo_settings_describe_the_tag_to_pin_loop():
     text = read("docs/REPO_SETTINGS.md")
     for needle in ("git tag v0.1.0", "build-qwentts", "bins.qwentts", "qwentts-win-cuda-x64.zip.sha256"):
         assert needle in text, needle
+
+
+def test_the_test_job_has_a_forty_minute_cap_in_ci_and_release():
+    for rel in (".github/workflows/ci.yml", ".github/workflows/release.yml"):
+        wf = read(rel)
+        job = wf[wf.index("\n  test:") :]
+        head = job[: job.index("steps:")]
+        assert "timeout-minutes: 40" in head, rel
