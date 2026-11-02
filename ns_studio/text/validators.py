@@ -52,6 +52,9 @@ def check_banned(text: str, banned: list[str]) -> Violation | None:
 
 def check_reading_level(text: str, lo: float = 5.0, hi: float = 8.0) -> Violation | None:
     """Flesch-Kincaid grade of `text` must lie in `[lo, hi]`."""
+    letters = [c for c in text if c.isalpha()]
+    if letters and sum(c.isascii() for c in letters) / len(letters) < 0.8:
+        return None  # Flesch-Kincaid is an English formula; other scripts would always read as "too easy"
     g = fk_grade(text)
     if g < lo or g > hi:
         return Violation("reading_level", f"grade {g}, allowed {lo}-{hi}")

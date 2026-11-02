@@ -3,8 +3,15 @@ from __future__ import annotations
 import re
 
 _ABBREV = {"mr", "mrs", "ms", "dr", "st", "jr", "sr", "vs", "etc", "a.m", "p.m", "e.g", "i.e"}
-_SENT_END = re.compile(r"([.!?]+[\"'”’)]*)(\s+|$)")
-_WORD = re.compile(r"[A-Za-z0-9']+")
+# A sentence ends at . ! ? or the Arabic question mark; the CJK full stops end one with no space after them.
+_SENT_END = re.compile(
+    r"([.!?\u061f]+[\"'\u201d\u2019)]*)(\s+|$)|([\u3002\uff01\uff1f]+[\u300d\u300f\uff09\"'\u201d\u2019)]*)"
+)
+# Kana and CJK ideographs are written without spaces: each character counts as one word.
+CJK_RANGES = r"\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff"
+# A word is a run of letters or digits in any script (an apostrophe may sit inside it), or one CJK character.
+WORD_PATTERN = rf"[{CJK_RANGES}]|[^\W_{CJK_RANGES}][^\W_{CJK_RANGES}'\u2019]*(?:['\u2019][^\W_{CJK_RANGES}'\u2019]+)*"
+_WORD = re.compile(WORD_PATTERN)
 _ONES = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven",
          "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen"]
 _TENS = ["", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety"]
@@ -16,7 +23,7 @@ def split_sentences(text: str) -> list[str]:
     out: list[str] = []
     start = 0
     for m in _SENT_END.finditer(text):
-        end = m.end(1)
+        end = m.end(1) if m.group(1) else m.end(3)
         candidate = text[start:end].strip()
         prev_word = re.findall(r"[A-Za-z.]+", candidate[-8:])
         tail = (prev_word[-1].rstrip(".").lower() if prev_word else "")
@@ -74,8 +81,8 @@ def _num_words(n: int) -> str:
 
 
 def normalize_tokens(text: str) -> list[str]:
-    text = text.lower().replace("’", "'")
+    text = text.casefold().replace("\u2019", "'")
     text = re.sub(r"(?<=\w)\.(?=\w\.)", "", text)   # a.m. -> am.
     text = re.sub(r"\b(\d{1,2})\b", lambda m: _num_words(int(m.group(1))), text)
     text = text.replace("'", "")
-    return re.findall(r"[a-z0-9]+", text)
+    return re.findall(r"[^\W_]+", text)

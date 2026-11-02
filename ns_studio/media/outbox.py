@@ -283,8 +283,7 @@ def retime_sheet(entry: Mapping[str, str], publish_at: str) -> Metadata | None:
         return None
     meta = meta.model_copy(update={"publish_after": publish_at})
     related = (meta.related_video_instruction or "").removeprefix(RELATED_PREFIX) or None
-    sheet.write_text(meta.model_dump_json(indent=2) + "
-", encoding="utf-8")
+    sheet.write_text(meta.model_dump_json(indent=2) + "\n", encoding="utf-8")
     write_sheet_txt(meta, Path(entry["mp4"]).name, Path(entry["txt"]), related_title=related)
     return meta
 

@@ -353,3 +353,20 @@ def test_profanity_masking():
     words = [Word("Oh", 0.0, 0.2), Word("shit", 0.3, 0.5)]
     assert "s***" in build_ass(words, "clean_white", mask_profanity=True)
     assert "shit" in build_ass(words, "clean_white")
+
+
+def test_captions_align_a_russian_script(tmp_path: Path):
+    """Review row 13: script_words returned nothing for non-ASCII text, so there were no captions."""
+    text = "Это очень длинная история. Дверь открылась сама."
+    ws = script_words(text)
+    assert [w for w, _ in ws] == ["Это", "очень", "длинная", "история.", "Дверь", "открылась", "сама."]
+    assert [s for _, s in ws] == [0, 0, 0, 0, 1, 1, 1]
+    wav = tmp_path / "p1.wav"
+    FakeTts().speak(text, "Ryan", 1.0, wav)
+    wav.with_suffix(".txt").write_text(text, encoding="utf-8")
+    res = align_words(text, FakeTranscriber().words(wav))
+    assert res.matched == res.total == 7 and res.drift_ms <= 1.0
+
+
+def test_cjk_characters_are_separate_caption_words():
+    assert [w for w, _ in script_words("夜中にドアが開いた。")] == [*"夜中にドアが開い", "た 。"]

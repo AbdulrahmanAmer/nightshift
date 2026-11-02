@@ -208,8 +208,7 @@ def _finished_job(paths: Paths, job: str, story: str, shorts: int, *, master: bo
     from ns_studio.media.outbox import build_metadata, write_sheet_txt
 
     ch = make_channel()
-    seo = Seo(title=story, description="A hook.
-Original fiction.", tags=[f"t{i}" for i in range(10)],
+    seo = Seo(title=story, description="A hook.\nOriginal fiction.", tags=[f"t{i}" for i in range(10)],
               hashtags=["#Shorts", "#horror", "#story"], keywords=[])
     root = paths.outbox / ch.slug / "stories" / story
     manifest: dict[str, dict[str, str]] = {}

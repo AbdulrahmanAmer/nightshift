@@ -53,7 +53,7 @@ def normalize_hashtags(
         word = re.sub(r"\s+", "", h.strip().lstrip("#"))
         if word and ("#" + word).lower() not in {c.lower() for c in cleaned} and word.lower() != "shorts":
             cleaned.append("#" + word)
-    keyword_tag = "#" + re.sub(r"[^A-Za-z0-9]", "", primary_keyword.title())
+    keyword_tag = "#" + re.sub(r"[^\w]|_", "", primary_keyword.title())
     for extra in (keyword_tag, "#NarratedStory", "#OriginalFiction", "#ShortStory"):
         if len(cleaned) >= 3:
             break

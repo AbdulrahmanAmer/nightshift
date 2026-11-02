@@ -20,9 +20,9 @@ from ns_common import ffmpeg as ff
 from ns_common.errors import NsError
 from ns_common.models import WhisperCfg
 from ns_common.paths import Paths
-from ns_common.textstats import split_sentences
+from ns_common.textstats import WORD_PATTERN, split_sentences
 
-_TOKEN = re.compile(r"[A-Za-z0-9']+")
+_TOKEN = re.compile(WORD_PATTERN)  # the same words word_count() counts, in any script
 
 
 @dataclass(frozen=True)
@@ -86,9 +86,11 @@ def _audio_seconds(wav: Path) -> float:
         return ff.duration_s(wav)
 
 
-_TOKEN_TRAIL = re.compile(r"([A-Za-z0-9']+)([^A-Za-z0-9'\s]*)")
 # Pause after a word, in "letters" of speaking time: sentence ends are long, clause marks short.
-_PAUSE_LETTERS = {".": 9.0, "!": 9.0, "?": 9.0, "…": 9.0, ",": 4.0, ";": 4.0, ":": 3.0, "-": 3.0}
+_PAUSE_LETTERS = {
+    ".": 9.0, "!": 9.0, "?": 9.0, "…": 9.0, "\u061f": 9.0, "\u3002": 9.0, "\uff01": 9.0, "\uff1f": 9.0,
+    ",": 4.0, ";": 4.0, ":": 3.0, "-": 3.0, "\u060c": 4.0, "\u3001": 4.0,
+}
 
 
 def _speech_weights(text: str) -> tuple[list[str], list[float], list[float]]:
@@ -96,10 +98,12 @@ def _speech_weights(text: str) -> tuple[list[str], list[float], list[float]]:
     tokens: list[str] = []
     speak: list[float] = []
     pause: list[float] = []
-    for m in _TOKEN_TRAIL.finditer(text):
-        tokens.append(m.group(1))
-        speak.append(len(m.group(1)) + 2.0)
-        pause.append(max((_PAUSE_LETTERS.get(c, 0.0) for c in m.group(2)), default=0.0))
+    matches = list(_TOKEN.finditer(text))
+    for i, m in enumerate(matches):
+        after = text[m.end() : matches[i + 1].start() if i + 1 < len(matches) else len(text)]
+        tokens.append(m.group(0))
+        speak.append(len(m.group(0)) + 2.0)
+        pause.append(max((_PAUSE_LETTERS.get(c, 0.0) for c in after), default=0.0))
     return tokens, speak, pause
 
 

@@ -15,6 +15,7 @@ import numpy as np
 
 from ns_common import ffmpeg as ff
 from ns_common.errors import NsError
+from ns_common.textstats import WORD_PATTERN
 from ns_studio.context import JobContext
 from ns_studio.media.presets import FONTS_DIR, ThumbnailLayout, load_thumbnail_layouts
 from ns_studio.stages import Tenant
@@ -93,7 +94,7 @@ def extract_frame(video: Path, t: float, out_png: Path) -> Path:
 
 def thumb_text(title: str, max_words: int = 4) -> str:
     """At most `max_words` upper-case words from a title, skipping stop words (falls back to any words)."""
-    words = re.findall(r"[A-Za-z0-9']+", title)
+    words = re.findall(WORD_PATTERN, title)
     keep = [w for w in words if w.lower() not in STOPWORDS] or words
     return " ".join(keep[:max_words]).upper()
 

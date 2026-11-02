@@ -18,7 +18,7 @@ from typing import Literal
 from ns_common import ffmpeg as ff
 from ns_common.errors import NsError
 from ns_common.paths import contracts_dir
-from ns_common.textstats import normalize_tokens, split_sentences
+from ns_common.textstats import CJK_RANGES, WORD_PATTERN, normalize_tokens, split_sentences
 from ns_studio.context import JobContext
 from ns_studio.media.presets import FONTS_DIR, CaptionStyle, CaptionVariant, caption_style
 from ns_studio.media.transcribe import Word
@@ -46,12 +46,23 @@ class AlignResult:
         return self.matched / self.total if self.total else 1.0
 
 
+_CJK_SPLIT = re.compile(rf"[{CJK_RANGES}]|[^{CJK_RANGES}]+")
+
+
+def _display_tokens(sentence: str) -> list[str]:
+    """Whitespace-separated tokens of `sentence`, with every CJK character as its own display word."""
+    out: list[str] = []
+    for tok in sentence.split():
+        out += _CJK_SPLIT.findall(tok)
+    return out
+
+
 def script_words(text: str) -> list[tuple[str, int]]:
     """Split a script into display words with sentence indices; punctuation-only tokens join a neighbour."""
     out: list[tuple[str, int]] = []
     pending = ""
     for si, sentence in enumerate(split_sentences(text)):
-        for tok in sentence.split():
+        for tok in _display_tokens(sentence):
             if not normalize_tokens(tok):
                 if out:
                     out[-1] = (f"{out[-1][0]} {tok}", out[-1][1])
@@ -204,7 +215,7 @@ class Box:
 DEFAULT_SAFE_ZONES = (220, 320)  # YouTube UI on 9:16: top and bottom pixels to keep clear
 MIN_CONTRAST = 4.5
 EMPHASIS_SCALE = 115
-_WORDISH = re.compile(r"[A-Za-z0-9']+")
+_WORDISH = re.compile(WORD_PATTERN)
 
 
 def free_bands(
