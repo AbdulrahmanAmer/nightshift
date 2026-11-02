@@ -20,7 +20,7 @@ env:
 jobs:
   test:
     runs-on: windows-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - run: git config --global core.longpaths true
       - uses: actions/checkout@v4
@@ -36,7 +36,7 @@ jobs:
   release:
     needs: test
     runs-on: windows-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     permissions:
       contents: write
     env:
