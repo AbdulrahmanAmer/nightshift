@@ -340,7 +340,7 @@ class ContinuityStage:
         raise_if([v for v in [check_master_length(total_words, wpm)] if v is not None])
         if total_words < plan.target_words * 0.8:
             ctx.log.warn("story_short", words=total_words, target=plan.target_words, job_id=ctx.job_id)
-        vec = ctx.services.embed.embed([embed_window(full_text)])[0]
+        vec = ctx.services.embed.embed([embed_window(full_text, ctx.runtime.embed.batch_size)])[0]
         critic_avg = float(ctx.read_json("critic.json")["critic_avg"])
         ctx.db.execute(
             "insert or replace into stories(job_id, channel, format, working_title, text, word_count, "

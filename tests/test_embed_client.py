@@ -44,13 +44,13 @@ def test_fake_embed_rejects_inputs_llama_server_would_reject():
     assert e.embed(["fine " * 100])  # 500 characters pass
 
 
-def test_embed_window_cuts_at_a_word_boundary():
-    from ns_common.embed_client import EMBED_CHARS, approx_tokens, embed_window
+def test_embed_window_cuts_at_a_sentence_boundary():
+    from ns_common.embed_client import EMBED_WINDOW_TOKENS, approx_tokens, embed_window
 
-    text = "alpha beta gamma " * 400
+    text = "Alpha beta gamma delta. " * 400
     w = embed_window(text)
-    assert len(w) <= EMBED_CHARS and not w.endswith("alph") and text.startswith(w)
-    assert approx_tokens(w) <= 512
+    assert w.endswith("delta.") and text.startswith(w)
+    assert approx_tokens(w) <= EMBED_WINDOW_TOKENS < 512
     assert embed_window("short") == "short"
 
 
