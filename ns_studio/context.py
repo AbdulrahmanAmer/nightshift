@@ -105,6 +105,15 @@ class JobContext:
     log: NsLogger
     prompt_versions: dict[str, int] = field(default_factory=dict)
 
+    @property
+    def attempt(self) -> int:
+        """How many times the policy gate has already sent this job back (0 on the first pass)."""
+        f = self.job_dir / "policy_attempts.json"
+        try:
+            return int(json.loads(f.read_text(encoding="utf-8")).get("regenerations", 0))
+        except (OSError, ValueError, AttributeError):
+            return 0
+
     def file(self, name: str) -> Path:
         """Path of `name` inside the job directory."""
         return self.job_dir / name

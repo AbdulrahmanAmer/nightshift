@@ -14,7 +14,7 @@ from ns_studio.context import JobContext
 from ns_studio.media.audio import assemble_audio, loudnorm
 from ns_studio.media.captions import _ass_color as ass_color
 from ns_studio.media.captions import _ass_time as ass_time
-from ns_studio.media.clips import ClipCache, Searcher, assign_clips, blocked_clips, fallback_beat, utcnow
+from ns_studio.media.clips import ClipCache, Searcher, assign_clips, blocked_for_job, clip_seed, fallback_beat
 from ns_studio.media.master import (
     CARD_S,
     ChapterTiming,
@@ -122,7 +122,7 @@ def run_clips_master(ctx: JobContext) -> None:
     cache = ClipCache(ctx.db, ctx.paths, ctx.services.clip_sources, log=ctx.log)
     cache.purge_expired()
     searcher = Searcher(ctx.services.clip_sources, log=ctx.log)
-    blocked = blocked_clips(ctx.db, ctx.channel.slug, ctx.job_id, utcnow())
+    blocked = blocked_for_job(ctx, ("clips/shots.json",))
     used: set[tuple[str, str]] = set()
     shots: list[Shot] = []
     for ch, t in zip(chapters, timeline, strict=True):
@@ -130,7 +130,7 @@ def run_clips_master(ctx: JobContext) -> None:
         words = load_words(ctx, f"c{ch.n}")
         spans = beat_spans(beats, words, t.end - t.audio_start)
         slots = plan_slots(spans, treatment.long_cut_range_s)
-        seed = zlib.crc32(f"{ctx.job_id}|long|{ch.n}".encode()) & 0x7FFFFFFF
+        seed = clip_seed(ctx, f"long|{ch.n}")
         got = assign_clips(
             beats=beats, slots=slots, searcher=searcher, cache=cache, blocked=blocked, seed=seed,
             wanted="landscape", used=used, allow_other=False,

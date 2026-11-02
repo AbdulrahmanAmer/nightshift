@@ -110,7 +110,8 @@ class FakeLlm:
 
     def complete_json(self, *, prompt_name: str, system: str, user: str, schema: dict,
                       thinking: bool = False, temperature: float = 0.8, max_tokens: int = 4096) -> dict:
-        self._record(prompt_name=prompt_name, system=system, user=user, thinking=thinking, schema=schema)
+        self._record(prompt_name=prompt_name, system=system, user=user, thinking=thinking, schema=schema,
+                     temperature=temperature)
         if prompt_name in self.overrides:
             ov = self.overrides[prompt_name]
             if isinstance(ov, list):
@@ -125,7 +126,8 @@ class FakeLlm:
 
     def complete_text(self, *, prompt_name: str, system: str, user: str,
                       thinking: bool = False, temperature: float = 0.8, max_tokens: int = 2048) -> str:
-        self._record(prompt_name=prompt_name, system=system, user=user, thinking=thinking)
+        self._record(prompt_name=prompt_name, system=system, user=user, thinking=thinking,
+                     temperature=temperature)
         f = self.fixtures_dir / f"{prompt_name}.txt"
         return f.read_text(encoding="utf-8") if f.exists() else f"FAKE TEXT for {prompt_name}"
 

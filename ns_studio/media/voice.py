@@ -59,7 +59,7 @@ def synthesize(ctx: JobContext, items: list[TtsItem]) -> tuple[dict[str, dict], 
     raw_dir = ctx.subdir("audio/raw")
     manifest: dict[str, dict] = {it.id: prev[it.id] for it in items if it.id not in todo_ids}
     if todo:
-        seed = zlib.crc32(ctx.job_id.encode()) & 0x7FFFFFFF
+        seed = (zlib.crc32(ctx.job_id.encode()) + ctx.attempt) & 0x7FFFFFFF  # a retry sounds different
         files = ctx.services.tts.speak_batch(todo, raw_dir, seed=seed)
         by_id = {it.id: it for it in todo}
         for f in files:

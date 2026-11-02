@@ -268,6 +268,21 @@ def _common_vars(ctx: JobContext) -> dict[str, Any]:
     }
 
 
+BASE_TEMPERATURE = 0.8  # the LLM clients' default
+RETRY_TEMPERATURE_STEP = 0.15
+MAX_TEMPERATURE = 1.1
+
+
+def attempt_temperature(attempt: int) -> float:
+    """Sampling temperature of regeneration `attempt` (0 = first pass): hotter each time, capped at 1.1."""
+    return round(min(MAX_TEMPERATURE, BASE_TEMPERATURE + RETRY_TEMPERATURE_STEP * attempt), 2)
+
+
+def attempt_kwargs(ctx: JobContext) -> dict[str, Any]:
+    """Extra LLM arguments for a regenerated job; empty on the first pass so clients keep their defaults."""
+    return {"temperature": attempt_temperature(ctx.attempt)} if ctx.attempt else {}
+
+
 def call_json(
     ctx: JobContext,
     name: str,
@@ -293,6 +308,7 @@ def call_json(
         user=user,
         schema=PROMPT_SCHEMAS[schema_key],
         thinking=p.thinking,
+        **attempt_kwargs(ctx),
     )
 
 
@@ -302,7 +318,7 @@ def call_text(ctx: JobContext, name: str, *, fixture: str | None = None, **vars:
     ctx.prompt_versions[name] = p.version
     user = render(p, **(_common_vars(ctx) | vars))
     return ctx.services.llm.complete_text(
-        prompt_name=fixture or name, system=p.system, user=user, thinking=p.thinking
+        prompt_name=fixture or name, system=p.system, user=user, thinking=p.thinking, **attempt_kwargs(ctx)
     )
 
 

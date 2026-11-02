@@ -6,7 +6,6 @@ treatment when the plan carries them, a freshly voiced hook and a closing line t
 
 from __future__ import annotations
 
-import zlib
 from pathlib import Path
 from typing import Any
 
@@ -21,7 +20,7 @@ from ns_studio.media.caption_plan import (
     safe_zones_for,
 )
 from ns_studio.media.captions import first_event_start, shift_words
-from ns_studio.media.clips import ClipCache, Searcher, assign_clips, blocked_clips, fallback_beat, utcnow
+from ns_studio.media.clips import ClipCache, Searcher, assign_clips, blocked_for_job, clip_seed, fallback_beat
 from ns_studio.media.master import ShortSpec, load_shorts, load_words
 from ns_studio.media.presets import FONTS_DIR, visual_treatment
 from ns_studio.media.render import FINAL_LUFS, FINAL_TP, VERTICAL, fit_caption_contrast, render_video
@@ -70,6 +69,7 @@ def derive_short(
     searcher: Searcher,
     cache: ClipCache,
     blocked: set[tuple[str, str]],
+    used: set[tuple[str, str]] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Build one derived Short; returns (render report entry, shots entry)."""
     item = f"s{spec.k}"
@@ -120,10 +120,10 @@ def derive_short(
     beats = short_beats(plan, spec, fallback_beat(ctx))
     spans = beat_spans(beats, words, total)
     slots = plan_slots(spans, treatment.cut_range_s)
-    seed = zlib.crc32(f"{ctx.job_id}|{item}".encode()) & 0x7FFFFFFF
+    seed = clip_seed(ctx, item)
     shots = assign_clips(
         beats=beats, slots=slots, searcher=searcher, cache=cache, blocked=blocked, seed=seed,
-        wanted="portrait",
+        wanted="portrait", used=used,
     )
     luma = fit_caption_contrast(
         words=words, style=style, opts=opts, shots=shots, total_s=total, size=VERTICAL, ass_path=ass,
@@ -167,13 +167,14 @@ class ShortsDeriveStage:
         plan = ctx.read_json("visual_plan.json")
         cache = ClipCache(ctx.db, ctx.paths, ctx.services.clip_sources, log=ctx.log)
         searcher = Searcher(ctx.services.clip_sources, log=ctx.log)
-        blocked = blocked_clips(ctx.db, ctx.channel.slug, ctx.job_id, utcnow())
+        blocked = blocked_for_job(ctx, ("clips/shorts_shots.json",))
+        used: set[tuple[str, str]] = set()  # one set for all Shorts: siblings never share a clip (NS-E611)
         report: dict[str, Any] = {}
         shots_out: dict[str, Any] = {}
         for spec in load_shorts(ctx):
             item = f"s{spec.k}"
             report[item], shots_out[item] = derive_short(
-                ctx, spec, timings[spec.k], plan, manifest, captions_report, searcher, cache, blocked
+                ctx, spec, timings[spec.k], plan, manifest, captions_report, searcher, cache, blocked, used
             )
             ctx.log.info("render_done", job_id=ctx.job_id, item=item, duration_s=report[item]["duration_s"],
                          shots=report[item]["shots"])

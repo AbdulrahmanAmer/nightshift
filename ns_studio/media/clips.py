@@ -147,6 +147,29 @@ def blocked_clips(db: Db, channel: str, job_id: str, now: datetime) -> set[tuple
     return {(r["source"], r["clip_id"]) for r in rows}
 
 
+def clip_seed(ctx: JobContext, label: str) -> int:
+    """Seed of a clip draw: fixed per job and `label`, different on every regeneration attempt.
+
+    A regenerated job (policy NS-E611/E613) must not pick the clips the gate just rejected.
+    """
+    key = f"{ctx.job_id}|{label}" + (f"|a{ctx.attempt}" if ctx.attempt else "")
+    return zlib.crc32(key.encode()) & 0x7FFFFFFF
+
+
+def blocked_for_job(ctx: JobContext, previous: Sequence[str]) -> set[tuple[str, str]]:
+    """`blocked_clips` plus, on a regeneration, the clips listed in the earlier attempt's `previous` files."""
+    blocked = blocked_clips(ctx.db, ctx.channel.slug, ctx.job_id, utcnow())
+    if not ctx.attempt:
+        return blocked
+    for name in previous:
+        if not ctx.file(name).exists():
+            continue
+        for entry in ctx.read_json(name).values():
+            for shot in entry.get("shots", []):
+                blocked.add((str(shot["source"]), str(shot["clip_id"])))
+    return blocked
+
+
 class Searcher:
     """Search all sources with a per-job memo: one call per (source, orientation, keyword)."""
 
@@ -341,7 +364,7 @@ class ClipsStage:
         cache = ClipCache(ctx.db, ctx.paths, ctx.services.clip_sources, log=ctx.log)
         cache.purge_expired()
         searcher = Searcher(ctx.services.clip_sources, log=ctx.log)
-        blocked = blocked_clips(ctx.db, ctx.channel.slug, ctx.job_id, utcnow())
+        blocked = blocked_for_job(ctx, ("clips/shots.json",))
         out: dict[str, Any] = {}
         for p in parts:
             n = p["n"]
@@ -351,7 +374,7 @@ class ClipsStage:
             total_s = float(timeline["audio_s"])
             spans = beat_spans(beats, words, total_s)
             slots = plan_slots(spans, treatment.cut_range_s)
-            seed = zlib.crc32(f"{ctx.job_id}|s{n}".encode()) & 0x7FFFFFFF
+            seed = clip_seed(ctx, f"s{n}")
             shots = assign_clips(
                 beats=beats, slots=slots, searcher=searcher, cache=cache, blocked=blocked, seed=seed
             )
