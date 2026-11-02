@@ -38,7 +38,7 @@ def test_prepare_job_writes_the_pacing_of_the_request(tmp_home: Path):
     ws._prepare_job(req)
     saved = json.loads((ws.paths.job_dir("j1") / "series_context.json").read_text(encoding="utf-8"))
     assert saved["pacing"] == "measured"
-    assert series_fixed(saved) == {"pacing": "measured"}
+    assert series_fixed(saved) == {"pacing": "measured", "hook": "cold_open"}
 
 
 def test_every_part_draws_the_pinned_pacing_whatever_the_rng(tmp_home: Path):

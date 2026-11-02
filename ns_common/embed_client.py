@@ -44,7 +44,7 @@ def approx_tokens(text: str) -> int:
             total += _LATIN_PER_CHAR
         else:
             total += _OTHER_PER_CHAR
-    return math.ceil(total)
+    return math.ceil(round(total, 6))  # 0.4 * 400 is 160.00000000000003
 
 
 def _clip_to_tokens(text: str, budget: int) -> str:
@@ -71,13 +71,17 @@ def embed_window(text: str, batch_tokens: int = MAX_EMBED_TOKENS) -> str:
     budget = max(32, min(EMBED_WINDOW_TOKENS, int(batch_tokens * 0.9)))
     if approx_tokens(text) <= budget:
         return text
-    parts: list[str] = []
-    for sentence in split_sentences(text):
-        candidate = " ".join([*parts, sentence])
-        if approx_tokens(candidate) > budget:
+    flat = re.sub(r"\s+", " ", text.strip())  # what split_sentences sees; CJK text has no spaces to change
+    end = pos = 0
+    for sentence in split_sentences(flat):
+        start = flat.find(sentence, pos)
+        if start < 0:
             break
-        parts.append(sentence)
-    return " ".join(parts) if parts else _clip_to_tokens(text, budget)
+        pos = start + len(sentence)
+        if approx_tokens(flat[:pos]) > budget:
+            break
+        end = pos
+    return flat[:end] if end else _clip_to_tokens(flat, budget)
 
 
 class Embed(Protocol):
