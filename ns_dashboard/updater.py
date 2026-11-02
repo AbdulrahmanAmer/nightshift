@@ -134,7 +134,7 @@ MISSING_MARKERS = (
 )
 UNAVAILABLE_NOTE = (
     "Checking GitHub for updates is not part of this version yet. "
-    "Use the Update shortcut on your desktop with the nightshift-app zip you were given."
+    "Use the Update shortcut on your desktop with the Nightshift-Update zip you were given."
 )
 
 

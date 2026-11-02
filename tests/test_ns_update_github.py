@@ -309,3 +309,18 @@ def test_a_crashing_update_check_never_hurts_the_engine(tmp_path: Path) -> None:
             assert (await sup.acquire("llama", "A"))["endpoint"]
 
     asyncio.run(main())
+
+
+def test_new_update_package_name_wins_and_the_old_one_still_works():
+    new = {"tag_name": "v0.3.0", "html_url": "x", "assets": [
+        {"name": "Nightshift-Setup-0.3.0.zip", "browser_download_url": f"{BASE}/v0.3.0/Nightshift-Setup-0.3.0.zip"},
+        {"name": "nightshift-app-0.3.0.zip", "browser_download_url": f"{BASE}/v0.3.0/nightshift-app-0.3.0.zip"},
+        {"name": "Nightshift-Update-0.3.0.zip", "browser_download_url": f"{BASE}/v0.3.0/Nightshift-Update-0.3.0.zip",
+         "digest": f"sha256:{DIGEST}"},
+        {"name": "Nightshift-Update-0.3.0.zip.sha256", "browser_download_url": f"{BASE}/v0.3.0/Nightshift-Update-0.3.0.zip.sha256"},
+    ]}
+    rel = releases.parse_release(new)
+    assert rel.zip_name == "Nightshift-Update-0.3.0.zip" and rel.digest == DIGEST
+    assert rel.sidecar_url and rel.sidecar_url.endswith("Nightshift-Update-0.3.0.zip.sha256")
+    old = releases.parse_release(release_json("0.1.1", sidecar=True))
+    assert old.zip_name == "nightshift-app-0.1.1.zip" and old.sidecar_url

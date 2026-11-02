@@ -7,9 +7,10 @@
   ns_dashboard/ui/node_modules never is), minus .github, docs/superpowers/plans/_* and test fixtures over 1 MB, plus a VERSION
   file and the operator files at the root. The finished zip is verified (no .venv, models, binaries or videos;
   under 25 MB) and written as
-    <OutDir>\Nightshift-<ver>.zip
-    <OutDir>\Nightshift-<ver>.zip.sha256     ("<hash>  <name>", sha256sum format)
-    <OutDir>\nightshift-app-<ver>.zip        (same bytes; the name the update flow expects)
+    <OutDir>\Nightshift-Setup-<ver>.zip         (the installer bundle)
+    <OutDir>\Nightshift-Setup-<ver>.zip.sha256  ("<hash>  <name>", sha256sum format)
+    <OutDir>\Nightshift-Update-<ver>.zip        (same bytes; the update-from-file package the update flow expects)
+    <OutDir>\Nightshift-Update-<ver>.zip.sha256
   -DryRun runs the same steps in a temporary folder, lists every entry and writes nothing to OutDir.
 
   Works under Windows PowerShell 5.1 and PowerShell 7. Run in CI or on the GPU PC, never on the authoring laptop.
@@ -158,7 +159,7 @@ if ($dirty) {
     Write-Warning 'Working tree has uncommitted changes; the bundle contains HEAD only.'
 }
 
-$zipName = "Nightshift-$Version.zip"
+$zipName = "Nightshift-Setup-$Version.zip"
 $work = Join-Path ([System.IO.Path]::GetTempPath()) ('nightshift-bundle-' + [System.Guid]::NewGuid().ToString('N').Substring(0, 8))
 $stage = Join-Path $work 'stage'
 New-Item -ItemType Directory -Force -Path $stage | Out-Null
@@ -253,11 +254,14 @@ try {
     else {
         $ascii = New-Object System.Text.ASCIIEncoding
         [System.IO.File]::WriteAllText("$zipPath.sha256", "$hash  $zipName`n", $ascii)
-        $appZip = Join-Path $OutDir "nightshift-app-$Version.zip"
+        $appName = "Nightshift-Update-$Version.zip"
+        $appZip = Join-Path $OutDir $appName
         Copy-Item -LiteralPath $zipPath -Destination $appZip -Force
+        [System.IO.File]::WriteAllText("$appZip.sha256", "$hash  $appName`n", $ascii)
         Write-Host "Wrote $zipPath"
         Write-Host "Wrote $zipPath.sha256"
         Write-Host "Wrote $appZip"
+        Write-Host "Wrote $appZip.sha256"
     }
     Write-Host ('{0}: {1} entries, {2:N2} MB, sha256 {3}' -f $zipName, $entries.Count, $sizeMb, $hash)
 }

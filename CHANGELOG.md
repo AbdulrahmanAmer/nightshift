@@ -7,6 +7,14 @@ All notable changes to Nightshift are recorded here. The format follows
 
 ## [Unreleased]
 
+### Release asset names
+- Clearer release assets from the next tag on: `Nightshift-Setup-<ver>.zip` (the installer bundle, was `Nightshift-<ver>.zip`),
+  `Nightshift-Update-<ver>.zip` (update-from-file package, was `nightshift-app-<ver>.zip`) and
+  `Nightshift-VoiceEngine-win-cuda-x64.zip` (was `qwentts-win-cuda-x64.zip`), each with a `.sha256`.
+- `ns update --github` and the dashboard updater accept both the new and the old update-package name (new first), so
+  v0.1.0 and v0.1.1 releases keep working. `manifest.json` still pins the v0.1.0 voice-engine asset by its old name.
+- The release body now starts with a "Which file do I download?" table (`dev/release_notes.md`) followed by the changelog entries.
+
 ## [0.1.1] - 2026-11-03
 
 Second code-complete release. It carries the clean-clone review fixes, the re-review rounds (pull requests #48 to #51),

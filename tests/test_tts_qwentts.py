@@ -102,7 +102,7 @@ def test_executable_names_are_the_ones_the_release_zip_contains(repo_root: Path,
     workflow = (repo_root / ".github" / "workflows" / "build-qwentts.yml").read_text(encoding="utf-8")
     for tool in (QWEN_TTS, QWEN_CODEC):
         assert f"'{tool}{EXE_SUFFIX}'" in workflow
-    assert "qwentts.exe" not in workflow.replace("qwentts-win-cuda", "")
+    assert "qwentts.exe" not in workflow.replace("Nightshift-VoiceEngine-win-cuda", "")
     e = QwenttsEngine(tmp_path / "bin" / "qwentts", tmp_path)
     assert e.exe(QWEN_TTS) == tmp_path / "bin" / "qwentts" / "qwen-tts.exe"
     assert e.exe(QWEN_CODEC) == tmp_path / "bin" / "qwentts" / "qwen-codec.exe"

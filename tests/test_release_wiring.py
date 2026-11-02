@@ -52,13 +52,16 @@ def test_changelog_lists_the_installer_wizard_as_shipped():
 def test_the_qwentts_pin_is_still_open_or_a_real_release_asset():
     pin = json.loads(read("manifest.json"))["bins"].get("qwentts")
     if pin is not None:
-        assert "/releases/download/v" in pin["url"] and pin["url"].endswith("qwentts-win-cuda-x64.zip")
+        assert "/releases/download/v" in pin["url"] and pin["url"].endswith(("qwentts-win-cuda-x64.zip", "Nightshift-VoiceEngine-win-cuda-x64.zip"))
         assert re.fullmatch(r"[0-9a-f]{64}", pin["sha256"])
 
 
 def test_repo_settings_describe_the_tag_to_pin_loop():
     text = read("docs/REPO_SETTINGS.md")
-    for needle in ("git tag v0.1.0", "build-qwentts", "bins.qwentts", "qwentts-win-cuda-x64.zip.sha256"):
+    for needle in (
+        "git tag v0.1.0", "build-qwentts", "bins.qwentts", "qwentts-win-cuda-x64.zip.sha256",
+        "Nightshift-VoiceEngine-win-cuda-x64.zip", "Nightshift-Setup-<ver>.zip", "Nightshift-Update-<ver>.zip",
+    ):
         assert needle in text, needle
 
 
@@ -76,7 +79,7 @@ def test_the_0_1_1_changelog_covers_the_re_review_prs_and_unreleased_is_empty():
     text = read("CHANGELOG.md")
     assert re.search(r"^## \[0\.1\.1\] - 2026-11-03\s*$", text, re.MULTILINE)
     unreleased = text[text.index("## [Unreleased]") : text.index("## [0.1.1]")]
-    assert unreleased.strip() == "## [Unreleased]"  # everything moved under the version
+    assert "Release asset names" in unreleased  # the entries since 0.1.1; a release moves them under its version
     # release.yml builds the notes from this body, the same way: heading to the next heading
     body = re.search(r"(?ms)^## \[0\.1\.1\][^\r\n]*\r?\n(?P<body>.*?)(?=^## \[|\Z)", text)
     assert body is not None
@@ -96,3 +99,29 @@ def test_the_handoff_says_nothing_is_in_flight_and_points_at_the_first_partner_r
     merged = text.split("## Merged on main")[1].split("## UI direction")[0]
     for pr in ("#48", "#51", "feat/release-0.1.1-pretag"):
         assert pr in merged, pr
+
+
+def test_release_assets_use_the_setup_update_voiceengine_names():
+    wf = read(".github/workflows/release.yml")
+    for name in ("Nightshift-Setup-$version.zip", "Nightshift-Setup-$version.zip.sha256",
+                 "Nightshift-Update-$version.zip", "Nightshift-Update-$version.zip.sha256"):
+        assert f'"dist/{name}"' in wf, name
+    assert "nightshift-app-" not in wf
+    bundle = read("dev/make_bundle.ps1")
+    assert 'Nightshift-Setup-$Version.zip' in bundle and 'Nightshift-Update-$Version.zip' in bundle
+    qwen = read(".github/workflows/build-qwentts.yml")
+    assert "Nightshift-VoiceEngine-win-cuda-x64.zip" in qwen and "dist/qwentts-win-cuda-x64" not in qwen
+
+
+def test_release_body_template_has_the_download_table_and_changelog_pointer():
+    tpl = read("dev/release_notes.md")
+    for needle in ("Which file do I download?", "Nightshift-Setup-<ver>.zip", "Nightshift-Update-<ver>.zip",
+                   "Update from a file", "Source code", "CHANGELOG.md", "Windows"):
+        assert needle in tpl, needle
+    wf = read(".github/workflows/release.yml")
+    assert "dev/release_notes.md" in wf and ".Replace('<ver>', $version)" in wf
+
+
+def test_the_manifest_pin_keeps_the_existing_asset_name_until_a_new_release_exists():
+    pin = json.loads(read("manifest.json"))["bins"]["qwentts"]
+    assert "/download/v0.1.0/qwentts-win-cuda-x64.zip" in pin["url"]
