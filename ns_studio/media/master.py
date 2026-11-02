@@ -37,7 +37,7 @@ from ns_studio.media.captions import (
     shift_words,
 )
 from ns_studio.media.transcribe import Word
-from ns_studio.media.voice import job_speed, synthesize
+from ns_studio.media.voice import job_speed, job_voice, synthesize
 from ns_studio.stages import Tenant
 
 CARD_S = 1.2
@@ -161,7 +161,7 @@ def timeline_from_manifest(ctx: JobContext) -> list[ChapterTiming]:
 
 def voice_items(ctx: JobContext) -> list[TtsItem]:
     """TTS items: `c<n>` chapters, `h<k>` hooks and `x<k>` closing lines of the selected Shorts."""
-    voice = ctx.channel.voice
+    voice = job_voice(ctx)
     name = voice.name or voice.speaker or "Ryan"
     speed = job_speed(ctx)
     items = [TtsItem(f"c{c.n}", c.text, name, speed, c.cliff_lines) for c in load_chapters(ctx)]

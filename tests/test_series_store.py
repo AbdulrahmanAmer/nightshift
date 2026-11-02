@@ -140,7 +140,7 @@ def test_status_recompute_and_yaml_round_trip(tmp_home: Path):
 
 def test_design_defaults_and_cadence_bounds(tmp_home: Path):
     d = S.DesignDoc()
-    assert d.format == "long_16x9" and d.publish_cadence_days == 7 and d.voice.speaker == "Ryan"
+    assert d.format == "long_16x9" and d.publish_cadence_days == 7 and d.voice is None  # no pick: the channel voice
     with pytest.raises(ValidationError):
         S.DesignDoc(publish_cadence_days=0)
     sd = S.StoryDir.open(Paths.from_env(), "demo", must_exist=False)

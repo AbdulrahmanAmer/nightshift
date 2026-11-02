@@ -673,6 +673,13 @@ def test_produce_enqueues_one_job_per_approved_part(tmp_home: Path):
             "series_slug": "the-doorbell-camera",
             "series_title": "The Doorbell Camera",
             "part_n": req.part_n,
+            "parts_total": 3,
+            "title": req.title,
+            "short_titles": req.short_titles,
+            "end_card": req.end_card,
+            "publish_not_before_days": req.publish_not_before_days,
+            "minutes": req.minutes,
+            "design": req.design,
         }
         src = json.loads((job / "script_source.json").read_text(encoding="utf-8"))
         assert src["kind"] == "script_import" and src["job_id"] == req.job_id

@@ -320,7 +320,7 @@ class DesignDoc(Strict):
     format: str = "long_16x9"
     visual_treatment: str = "dark_slowzoom"
     caption_style: str = "clean_white"
-    voice: Voice = Voice()
+    voice: Voice | None = None  # None keeps the channel's own voice
     thumbnail_style: str = "auto"
     publish_cadence_days: int = Field(default=7, ge=1, le=30)
 

@@ -114,6 +114,7 @@ class ProduceRequest:
     design: dict[str, Any]
     end_card: str
     publish_not_before_days: int
+    minutes: int = 15  # the part's runtime target; QC allows a master up to 15 % over it
 
 
 EnqueueFn = Callable[[ProduceRequest], object]
@@ -923,7 +924,7 @@ class Workshop:
             if value is None:
                 continue
             if key == "voice":
-                data["voice"] = {**data["voice"], **({"speaker": value} if isinstance(value, str) else value)}
+                data["voice"] = {**(data["voice"] or {}), **({"speaker": value} if isinstance(value, str) else value)}
             elif key in DesignDoc.model_fields:
                 data[key] = value
             else:
@@ -993,6 +994,7 @@ class Workshop:
                 design=design.model_dump(),
                 end_card=f"Next: Part {nxt.n}, {nxt.title}." if nxt else "That was the final part.",
                 publish_not_before_days=idx * design.publish_cadence_days,
+                minutes=series.entry(n).minutes,
             )
             self._prepare_job(req)
             fn(req)
@@ -1007,7 +1009,18 @@ class Workshop:
         source = {"kind": "script_import", **asdict(req)}
         (d / "script_source.json").write_text(json.dumps(source, indent=2, ensure_ascii=False) + "\n",
                                               encoding="utf-8")
-        context = {"series_slug": req.series_slug, "series_title": req.series_title, "part_n": req.part_n}
+        context = {
+            "series_slug": req.series_slug,
+            "series_title": req.series_title,
+            "part_n": req.part_n,
+            "parts_total": req.parts_total,
+            "title": req.title,
+            "short_titles": req.short_titles,
+            "end_card": req.end_card,
+            "publish_not_before_days": req.publish_not_before_days,
+            "minutes": req.minutes,
+            "design": req.design,
+        }
         (d / "series_context.json").write_text(json.dumps(context, indent=2) + "\n", encoding="utf-8")
 
     def mark_published(self, slug: str, n: int) -> StatusDoc:

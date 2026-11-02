@@ -197,5 +197,7 @@ class ThumbnailsStage:
         text = thumb_text(str(seo.get("thumbnail_text") or seo.get("title") or ctx.channel.display_name))
         times = pick_frame_times(master, scratch)
         frames = [extract_frame(master, t, scratch / f"frame_{i + 1}.png") for i, t in enumerate(times)]
-        make_thumbnails(frames, text, ctx.file("long"))
+        style = str(ctx.series.get("design", {}).get("thumbnail_style") or "auto")
+        layouts = load_thumbnail_layouts()
+        make_thumbnails(frames, text, ctx.file("long"), [layouts[style]] * 3 if style in layouts else None)
         ctx.log.info("thumbnails_done", job_id=ctx.job_id, times=[round(t, 2) for t in times], text=text)

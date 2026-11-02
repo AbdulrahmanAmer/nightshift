@@ -7,6 +7,7 @@ import zlib
 from pathlib import Path
 
 from ns_common import ffmpeg as ff
+from ns_common.models import Voice
 from ns_common.pacing import pacing_speed
 from ns_common.textstats import split_sentences
 from ns_common.tts_client import TtsItem
@@ -17,9 +18,20 @@ from ns_studio.stages import Tenant
 __all__ = ["VoiceStage", "loudnorm", "measure_lufs", "narration_items", "synthesize"]
 
 
+def job_voice(ctx: JobContext) -> Voice:
+    """The voice of the job: a series design's voice when the job is a series part, else the channel's."""
+    design_voice = ctx.series.get("design", {}).get("voice")
+    if design_voice:
+        try:
+            return Voice.model_validate(design_voice)
+        except ValueError:
+            pass  # a damaged design must not stop the part: use the channel voice
+    return ctx.channel.voice
+
+
 def job_speed(ctx: JobContext) -> float:
     """TTS speed of every item of the job: the voice's speed scaled to the combo's pacing (spec 7.0)."""
-    return pacing_speed(ctx.channel.voice.speed, ctx.combo.pacing)
+    return pacing_speed(job_voice(ctx).speed, ctx.combo.pacing)
 
 
 def narration_items(parts: list[dict], voice_name: str, speed: float) -> list[TtsItem]:
@@ -98,7 +110,7 @@ class VoiceStage:
             run_voice_master(ctx)
             return
         parts = ctx.read_json("parts.json")
-        voice = ctx.channel.voice
+        voice = job_voice(ctx)
         voice_name = voice.name or voice.speaker or "Ryan"
         items = narration_items(parts, voice_name, job_speed(ctx))
         manifest, synthesized = synthesize(ctx, items)

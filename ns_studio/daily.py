@@ -7,8 +7,9 @@ import random
 import secrets
 import traceback
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 from ns_common.errors import NsError
 from ns_studio import jobs, notifications
@@ -26,6 +27,15 @@ def _default_run(ctx: JobContext) -> list[str]:
     return run_job_guarded(ctx)
 
 
+def _series_delay(env: jobs.Env, job_id: str) -> int:
+    """Days a series part waits after the nightly slot (`publish_not_before_days` of its design)."""
+    f = env.paths.job_dir(job_id) / "series_context.json"
+    try:
+        return max(0, int(json.loads(f.read_text(encoding="utf-8")).get("publish_not_before_days", 0) or 0))
+    except (OSError, ValueError, AttributeError):
+        return 0
+
+
 def apply_publish_times(env: jobs.Env, job_ids: list[str], rng: random.Random, now: datetime) -> int:
     """Rewrite `publish_after` in the outbox sheets of `job_ids` with jittered slots (spec 18.6).
 
@@ -34,7 +44,7 @@ def apply_publish_times(env: jobs.Env, job_ids: list[str], rng: random.Random, n
     Returns how many items were rewritten.
     """
     rewritten = 0
-    by_channel: dict[str, list[tuple[cadence.ReleaseItem, dict[str, str]]]] = {}
+    by_channel: dict[str, list[tuple[cadence.ReleaseItem, dict[str, Any]]]] = {}
     for job_id in job_ids:
         manifest_file = env.paths.job_dir(job_id) / "outbox" / "manifest.json"
         try:
@@ -50,7 +60,9 @@ def apply_publish_times(env: jobs.Env, job_ids: list[str], rng: random.Random, n
                 continue
             kind = "long" if data.get("kind") == "long" else "short"
             release = cadence.ReleaseItem(f"{job_id}:{item}", job_id, kind)
-            by_channel.setdefault(str(data.get("channel", "")), []).append((release, entry))
+            delay = _series_delay(env, job_id)
+            slot = {**entry, "delay": delay}
+            by_channel.setdefault(str(data.get("channel", "")), []).append((release, slot))
     for slug, entries in by_channel.items():
         try:
             ch = get_channel(env.paths, slug)
@@ -60,7 +72,8 @@ def apply_publish_times(env: jobs.Env, job_ids: list[str], rng: random.Random, n
             [e[0] for e in entries], now.date(), ch.publish_window, ch.shorts_per_day_max, rng
         )
         for release, entry in entries:
-            if retime_sheet(entry, times[release.output_id].isoformat(timespec="minutes")) is not None:
+            when = times[release.output_id] + timedelta(days=int(entry.get("delay", 0)))
+            if retime_sheet(entry, when.isoformat(timespec="minutes")) is not None:
                 rewritten += 1
     return rewritten
 

@@ -418,6 +418,7 @@ class SeoLongStage:
             primary_keyword=kw,
             fiction_label=ctx.channel.fiction_label,
             creator_note=ctx.channel.creator_note,
+            series=ctx.series or None,
         )
         ctx.write_json("seo_long.json", final.model_dump())
 
@@ -653,8 +654,8 @@ class SeoShortsStage:
                 combo=short_combos.get(str(item["k"]), ctx.combo),  # the Short's own title formula
                 primary_keyword=kw,
                 part_text=text,
-                part_n=None,
-                parts_total=1,
+                part_n=ctx.series.get("part_n"),
+                parts_total=int(ctx.series.get("parts_total", 1)),
                 n_titles=5,
             )
             titles = [str(t).strip() for t in raw.get("titles", []) if str(t).strip()]
@@ -683,8 +684,8 @@ class SeoShortsStage:
                 seo,
                 primary_keyword=kw,
                 fiction_label=ctx.channel.fiction_label,
-                part_n=None,
-                parts_total=1,
+                part_n=ctx.series.get("part_n"),
+                parts_total=int(ctx.series.get("parts_total", 1)),
                 master_title=master_title,
                 creator_note=ctx.channel.creator_note,
             )

@@ -145,7 +145,12 @@ def fill_chapter_list(description: str, chapters: Sequence[Mapping[str, Any]]) -
 
 
 def finalize_seo_long(
-    seo: SeoLong, *, primary_keyword: str, fiction_label: bool, creator_note: str = ""
+    seo: SeoLong,
+    *,
+    primary_keyword: str,
+    fiction_label: bool,
+    creator_note: str = "",
+    series: Mapping[str, Any] | None = None,
 ) -> SeoLong:
     """Apply the long-form metadata rules of spec 9.1 to an LLM-written `SeoLong`.
 
@@ -153,8 +158,14 @@ def finalize_seo_long(
     Description: up to 3 summary lines, a blank line, `CHAPTER_LIST_PLACEHOLDER` (filled after rendering,
     see `fill_chapter_list`), a blank line, "Original fiction." when `fiction_label`, the creator note.
     Hashtags: 3-5, never `#Shorts`. Tags: 10-20 and at most 500 characters.
+
+    A series part (`series` = its `series_context.json`) is titled "<series> - Part NN: <title>" (the model's
+    title shortened to fit 100 characters) and its summary ends with "Part N of M." and the end-card line.
     """
     title = fit_title(_PART_RE.sub("", seo.title), primary_keyword)
+    if series and series.get("title"):
+        head = str(series["title"]).strip()
+        title = f"{head}: {title}"[:100].rstrip() if len(head) + 2 + len(title) <= 100 else head[:100]
     summary = [
         ln.strip()
         for ln in seo.description.splitlines()
@@ -166,6 +177,10 @@ def finalize_seo_long(
     ][:3]
     if not summary:
         summary = [f"An original {primary_keyword} narrated in chapters."]
+    if series and series.get("part_n"):
+        summary.append(f"Part {series['part_n']} of {series.get('parts_total', series['part_n'])}.")
+        if str(series.get("end_card", "")).strip():
+            summary.append(str(series["end_card"]).strip())
     tail = ["Original fiction."] if fiction_label else []
     if creator_note.strip():
         tail.append(creator_note.strip())

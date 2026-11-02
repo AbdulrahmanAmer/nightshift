@@ -9,6 +9,9 @@ puts the Short's own `combo_id` (ledger item `s<k>`) into every plan item.
 
 from __future__ import annotations
 
+import json
+from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
 
 from ns_studio.context import JobContext
@@ -38,10 +41,24 @@ class ShortCombosStage:
         plans that did not come from it (a series part) and writes `combo_id` into every plan item.
         """
         plan: list[dict[str, Any]] = ctx.read_json("shorts_plan.json")
-        combos = draw_short_combos(ctx, plan)
+        combos = draw_short_combos(ctx, plan, extra_fixed=series_fixed(ctx.series))
         for item in plan:
             item["combo_id"] = combos[str(item["k"])].combo_id
         ctx.write_json("shorts_plan.json", plan)
+
+
+def series_fixed(series: Mapping[str, Any]) -> dict[str, str]:
+    """Combo fields a series design pins for every video of the series (caption style, visual treatment)."""
+    design = series.get("design") or {}
+    return {f: str(design[f]) for f in ("caption_style", "visual_treatment") if design.get(f)}
+
+
+def job_series_fixed(job_dir: Path) -> dict[str, str]:
+    """`series_fixed` for the job directory of a series part (before its `JobContext` exists)."""
+    try:
+        return series_fixed(json.loads((job_dir / "series_context.json").read_text(encoding="utf-8")))
+    except (OSError, ValueError, AttributeError):
+        return {}
 
 
 def install_short_combos(fmt: str) -> bool:

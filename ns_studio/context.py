@@ -130,6 +130,16 @@ class JobContext:
         return {**self._saved_prompt_versions(), **self.prompt_versions}
 
     @property
+    def series(self) -> dict[str, Any]:
+        """`series_context.json` of a series part (title, part numbers, end card, design...); empty otherwise."""
+        f = self.job_dir / "series_context.json"
+        try:
+            data = json.loads(f.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    @property
     def attempt(self) -> int:
         """How many times the policy gate has already sent this job back (0 on the first pass)."""
         f = self.job_dir / "policy_attempts.json"

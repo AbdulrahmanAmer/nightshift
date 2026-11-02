@@ -131,6 +131,11 @@ def job_date(job_id: str) -> datetime:
     return datetime.strptime(m.group(1), "%Y%m%d")
 
 
+def series_delay_days(ctx: JobContext) -> int:
+    """Days a series part waits before its first publish (the design's cadence times the part's place)."""
+    return max(0, int(ctx.series.get("publish_not_before_days", 0) or 0))
+
+
 def publish_after(channel: Channel, job_id: str, key: str, *, day_offset: int = 1) -> str:
     """Local ISO timestamp: `day_offset` days after the job date at the publish window start, +-45 min.
 
@@ -452,7 +457,7 @@ def run_outbox_master(ctx: JobContext) -> None:
     meta = build_metadata(
         channel=ctx.channel, job_id=ctx.job_id, kind="long", k=None, seo=long_seo, advice=advice,
         shots=long_shots, combo_id=ctx.combo.combo_id, prompt_versions=ctx.versions(),
-        publish_at=publish_after(ctx.channel, ctx.job_id, "long", day_offset=1),
+        publish_at=publish_after(ctx.channel, ctx.job_id, "long", day_offset=1 + series_delay_days(ctx)),
         extra={
             "chapters": [{"timestamp": c["timestamp"], "title": c["title"], "start_s": c["start_s"]}
                          for c in chapters],
@@ -488,7 +493,8 @@ def run_outbox_master(ctx: JobContext) -> None:
             combo_id=(spec.combo_id if spec else None) or ctx.combo.combo_id,
             prompt_versions=ctx.versions(),
             publish_at=publish_after(
-                ctx.channel, ctx.job_id, item, day_offset=1 + short_day_offset(ctx.channel, k)
+                ctx.channel, ctx.job_id, item,
+                day_offset=1 + short_day_offset(ctx.channel, k) + series_delay_days(ctx),
             ),
             extra={"related_video_instruction": f"Set Related video -> {long_seo.title}",
                    "parent_job_id": ctx.job_id},

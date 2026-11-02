@@ -310,6 +310,7 @@ def run_series_part(
     from ns_studio.orchestrator import plan_job
     from ns_studio.policy.regen import run_job_guarded
     from ns_studio.variation.draw import draw_combo, record_combo
+    from ns_studio.variation.stages import job_series_fixed
 
     env = open_env(fake, acquirer, paths=paths)
     job_id = str(params["job_id"])
@@ -320,7 +321,8 @@ def run_series_part(
         ctx = jobs.load_job(env, job_id)
     else:
         now = datetime.now(UTC)
-        combo = draw_combo(env.db, channel, rng=random.Random(), now=now)
+        # the series design pins the caption style and visual treatment of every part
+        combo = draw_combo(env.db, channel, rng=random.Random(), now=now, fixed=job_series_fixed(job_dir))
         record_combo(env.db, channel.slug, job_id, "long", combo, now)
         job_dir.mkdir(parents=True, exist_ok=True)
         ctx = JobContext(
