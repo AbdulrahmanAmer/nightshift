@@ -178,6 +178,18 @@ def fake_job(paths: Paths) -> float | None:
     return round(time.perf_counter() - t0, 1)
 
 
+def tts_engine_kind(base_url: str) -> str | None:
+    """`engine_kind` from the TTS service's /health ("qwentts" or "reference"); None when it does not say."""
+    import httpx
+
+    try:
+        body = httpx.get(f"{base_url}/health", timeout=10).json()
+    except (httpx.HTTPError, ValueError):
+        return None
+    kind = body.get("engine_kind") if isinstance(body, dict) else None
+    return str(kind) if kind else None
+
+
 @dataclass
 class Deps:
     """Machine probes, replaceable in tests."""
@@ -188,6 +200,7 @@ class Deps:
     vram_used: Callable[[], int | None] = procs.gpu_memory_used_mb
     gpu_name: Callable[[], str | None] = procs.gpu_name
     ram: Callable[[], float | None] = ram_gb
+    tts_engine: Callable[[str], str | None] = tts_engine_kind
     sleep: Callable[[float], None] = time.sleep
 
 
@@ -346,6 +359,11 @@ def run_verify(
     def tts_start() -> Out:
         ep, secs = acquire("tts")
         tts.append(ep)
+        if d.tts_engine(ep.base_url) == "reference":
+            rec.checks.append(GateCheck(
+                name=names.TTS_ENGINE, passed=True, value="reference",
+                log="NS-W301: the voice service runs the slower PyTorch reference engine, not qwentts.cpp",
+            ))
         return Out(True, round(secs, 1), log=ep.base_url)
 
     rec.run(names.TTS_START, tts_start, "NS-E203")
@@ -478,7 +496,7 @@ def format_lines(report: GateReport) -> list[str]:
         val = "" if c.value is None else f" = {c.value}"
         lim = f"  [{c.limit}]" if c.limit else ""
         lines.append(f"[{mark}] {c.name}{val}{lim}")
-        if not c.passed and c.log:
+        if c.log and (not c.passed or c.log.startswith("NS-W")):
             lines.append(f"       {c.log}")
     lines.append("Result: " + ("ALL CHECKS PASSED" if report.passed else "SOME CHECKS FAILED"))
     return lines

@@ -34,7 +34,10 @@ class S03DownloadModels(Step):
     title = "Download AI models"
 
     def _items(self, ctx: StepContext, *, with_fallback: bool = True) -> list[DownloadItem]:
-        items = plan_models(ctx.manifest, ctx.profile, ctx.tier, ctx.paths.home, custom=ctx.llm_custom)
+        items = plan_models(
+            ctx.manifest, ctx.profile, ctx.tier, ctx.paths.home, custom=ctx.llm_custom,
+            include_voicedesign=ctx.ensure_answers().include_voicedesign,
+        )
         if with_fallback and ctx.flag("tts_fallback", False):
             items += fallback_items(ctx)
         return items

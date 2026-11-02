@@ -23,6 +23,9 @@ from ns_common.errors import NsError
 from ns_common.logging import NsLogger
 from ns_supervisor.services import ServiceDef
 
+#: Tells `ns update` it runs below the engine, so it must detach from the engine's process tree.
+UNDER_ENGINE_ENV = "NIGHTSHIFT_UNDER_ENGINE"
+
 _NO_WINDOW: int = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 # ---------------------------------------------------------------------------------------------
@@ -32,6 +35,7 @@ if sys.platform == "win32":
     from ctypes import wintypes
 
     _KILL_ON_JOB_CLOSE = 0x2000
+    _BREAKAWAY_OK = 0x0800          # CREATE_BREAKAWAY_FROM_JOB children leave the job (ns update)
     _EXTENDED_LIMIT_INFO_CLASS = 9
     _PROCESS_SET_QUOTA = 0x0100
     _PROCESS_TERMINATE = 0x0001
@@ -96,7 +100,7 @@ if sys.platform == "win32":
         if not handle:
             return None
         info = _ExtendedLimit()
-        info.BasicLimitInformation.LimitFlags = _KILL_ON_JOB_CLOSE
+        info.BasicLimitInformation.LimitFlags = _KILL_ON_JOB_CLOSE | _BREAKAWAY_OK
         ok = k.SetInformationJobObject(
             handle, _EXTENDED_LIMIT_INFO_CLASS, ctypes.byref(info), ctypes.sizeof(info)
         )
@@ -205,7 +209,7 @@ def start(service: ServiceDef, logs_dir: Path, *, job: JobObject | None = None) 
     Raises `NS-E202` when the executable cannot be started.
     """
     log = NsLogger(service.name, logs_dir, echo=False)
-    env = {**os.environ, **service.env}
+    env = {**os.environ, **service.env, UNDER_ENGINE_ENV: "1"}
     try:
         popen = subprocess.Popen(
             service.cmd,

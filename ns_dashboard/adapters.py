@@ -26,6 +26,7 @@ from ns_common.config import load_runtime
 from ns_common.errors import NsError
 from ns_common.logging import NsLogger
 from ns_common.paths import Paths
+from ns_common.secrets_names import KEYRING_SERVICE
 from ns_dashboard import studio_bridge
 from ns_dashboard.errors import AdapterUnavailable, ApiError
 from ns_dashboard.jobs import JobControl
@@ -34,8 +35,6 @@ from ns_dashboard.studio_runner import StudioRunner
 from ns_dashboard.supervisor_link import SupervisorLink, make_acquirer, supervisor_url
 from ns_dashboard.updater import RealBackupAdapter, RealUpdateAdapter
 
-KEYRING_SERVICE = "Nightshift"
-KEY_NAMES = ("pexels_api_key", "pixabay_api_key")
 PRESET_VOICES = [{"name": "Ryan", "mode": "preset", "source": "builtin"}]
 
 

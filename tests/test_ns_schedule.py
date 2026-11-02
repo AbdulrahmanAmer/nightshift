@@ -152,3 +152,66 @@ def test_generated_scripts_are_valid_powershell(tmp_path: Path) -> None:
         notify.TOAST_SCRIPT,
     ):
         assert _parse_errors(script) == ""
+
+
+# --- review P1: S4U needs elevation; fall back to an interactive logon instead of failing the install ---
+def test_the_script_tries_s4u_first_then_interactive(tmp_path: Path) -> None:
+    script = schedule.build_install_script(Paths(tmp_path / "ns"), "03:00", tmp_path / "app")
+    assert script.index("-LogonType S4U") < script.index("catch") < script.index("-LogonType Interactive")
+    assert script.count("Register-ScheduledTask -TaskName 'Nightshift Daily'") == 2
+    assert "-WakeToRun" in script and "registered:' + $mode" in script
+
+
+STUBS = """
+$script:calls = @()
+function New-ScheduledTaskAction { param($Execute, $Argument, $WorkingDirectory) 'action' }
+function New-ScheduledTaskTrigger { param([switch]$Daily, $At) 'trigger' }
+function New-ScheduledTaskSettingsSet { param([switch]$WakeToRun, [switch]$StartWhenAvailable,
+    [switch]$AllowStartIfOnBatteries, [switch]$DontStopIfGoingOnBatteries, $ExecutionTimeLimit) 'settings' }
+function New-TimeSpan { param($Hours) 'span' }
+function New-ScheduledTaskPrincipal {
+    param($UserId, $LogonType, $RunLevel)
+    [pscustomobject]@{ Logon = $LogonType }
+}
+function Register-ScheduledTask {
+    param($TaskName, $Action, $Trigger, $Settings, $Principal, $Description, [switch]$Force)
+    $script:calls += $Principal.Logon
+    if ($Principal.Logon -eq 'S4U' -and $env:NS_S4U -eq 'deny') { throw 'Access is denied.' }
+    if ($env:NS_ALL -eq 'deny') { throw 'Register-ScheduledTask : Access is denied.' }
+}
+"""
+
+
+def run_install_script(tmp_path: Path, **env: str) -> subprocess.CompletedProcess[str]:
+    script = STUBS + schedule.build_install_script(Paths(tmp_path / "ns"), "03:00", tmp_path / "app")
+    script += "\nWrite-Output ('calls:' + ($script:calls -join ','))"
+    return pwsh.run_powershell(script, env_extra=env)
+
+
+@needs_powershell
+def test_access_denied_for_s4u_falls_back_to_an_interactive_task(tmp_path: Path) -> None:
+    r = run_install_script(tmp_path, NS_S4U="deny")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "registered:interactive" in r.stdout and "calls:S4U,Interactive" in r.stdout
+
+
+@needs_powershell
+def test_s4u_is_kept_when_windows_allows_it(tmp_path: Path) -> None:
+    r = run_install_script(tmp_path, NS_S4U="ok")
+    assert "registered:s4u" in r.stdout and "calls:S4U" in r.stdout and "Interactive" not in r.stdout
+
+
+@needs_powershell
+def test_when_both_modes_are_refused_the_error_reaches_the_caller(tmp_path: Path) -> None:
+    r = run_install_script(tmp_path, NS_ALL="deny")
+    assert r.returncode != 0 and "Access is denied" in (r.stdout + r.stderr)
+
+
+def test_install_says_when_it_could_only_register_the_interactive_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(pwsh, "run_powershell", lambda script, **kw: done("registered:interactive\n"))
+    msg = schedule.install(Paths(tmp_path / "ns"), "03:00", tmp_path)
+    assert schedule.INTERACTIVE_MARK in msg and "03:00" in msg
+    monkeypatch.setattr(pwsh, "run_powershell", lambda script, **kw: done("registered:s4u\n"))
+    assert schedule.INTERACTIVE_MARK not in schedule.install(Paths(tmp_path / "ns"), "03:00", tmp_path)

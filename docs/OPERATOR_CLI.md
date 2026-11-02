@@ -83,7 +83,6 @@ Some actions exist in the Dashboard and for the Assistant (`studio ask`) but hav
 | `ns doctor` | Check the install; `--bundle` collects logs and reports into a diagnostics zip. |
 | `ns verify` | Check every service and benchmark them; writes `logs\verify-report.json` (`--quick` for health, one completion, one voice). |
 | `ns tune` | Find the fastest llama-server flags for this PC and save them to `runtime.json` (`--dry-run` prints the sweep matrix). |
-| `ns gate MILESTONE` | Run `dev/gate_<milestone>.py` of the installed app (`m0`, `m1`, ...). |
 | `ns update ZIP` | Apply a release zip (verified, with automatic rollback); `ns update --rollback` goes back one version. |
 | `ns update --check` | Ask GitHub whether a newer release exists; prints a sentence and a JSON line (`update_available`, `current`, `latest`). Changes nothing. The engine does this once a week and shows a notification. |
 | `ns update --github` | Download `nightshift-app-<version>.zip` of the newest release, verify its SHA256 (GitHub's digest, else the attached `.sha256`; nothing is installed without one) and apply it like `ns update ZIP`. |

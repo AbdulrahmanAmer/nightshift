@@ -151,6 +151,15 @@ When the run ends you get a Windows notification ("1 master + 5 Shorts ready for
 (NS-E203), open Dashboard"). Switch it off in **Settings -> Notifications**. Right after the run Nightshift shuts
 its engine down by itself, unless the Dashboard is open.
 
+If Windows will not let Nightshift register the task for unattended runs, it registers it for "only while you are
+logged on" and says so at the end of setup (`NS-W205`). Then keep the PC logged in overnight (lock the screen, do not
+sign out), or run `ns schedule install` once from an elevated PowerShell. If the task cannot be registered at all, setup
+still finishes (`NS-W206`) and the run starts only when you start it. A message that could not be shown as a
+notification (the night run has no screen) waits in the Dashboard for the morning.
+
+The Dashboard also counts as "somebody is here": the engine does not shut itself down after 30 idle minutes while the
+Nightshift window (or a browser tab on the Dashboard) is open.
+
 About once a week the engine also asks GitHub whether a newer version exists and tells you with a notification
 (same switch). It sends nothing else. To check yourself: `ns update --check`; to install the newest version:
 `ns update --github` (the download is checked against its published SHA256 before anything is replaced, and the old
@@ -179,8 +188,12 @@ instead of ours. To change a prompt, copy its file from `ns_studio\prompts\` to 
 5. In the Dashboard, **Settings, Updates, Check now** asks GitHub for a newer version. In version 0.1.0 this part is not
    in the engine yet: the page then says so, and you use the Update shortcut with the zip as above.
 
-Notes (from 0.1.1): the update steps out of the Nightshift folder before it swaps it, so it works from the Desktop
-shortcut and from a command prompt opened inside the folder. The old version is kept next to it as `<folder>.prev`;
+Notes (from 0.1.1): the update runs as its own background process, started in your Nightshift data folder, so it
+survives the engine stopping (also when you press **Update now** in the Dashboard: the window closes, the update goes
+on, open Nightshift again when `run/update_state.json` says `done`). Close the Dashboard and Studio windows first if the
+update says another program still has the folder open. The log is `logs/update-<time>.log`.
+A cloned-repo install updates with `ns update --git` (newest release) or `ns update --git --channel main`. The
+update installs exactly the packages setup installed. The old version is kept next to it as `<folder>.prev`;
 run `ns update --rollback` to go back. If a step fails, the old version is put back and the message names the step.
 
 ## Move your settings to another PC
@@ -194,4 +207,12 @@ prompt with `ns backup` and `ns restore <zip>`.
 
 Double-click **UNINSTALL.cmd** (Settings, About, Uninstall copies its full path). A window shows what goes and lets you tick the two things to delete. It removes the nightly task, shortcuts, the notification registration, programs and environments. It asks
 separately whether to delete the AI models (15 GB) and your videos and history. The default answer to both is
-**No**. At the end it tells you what it kept and where.
+**No**. At the end it tells you what it kept and where. The window itself still uses a few program files, so the very
+last ones are removed by a small hidden task as soon as the window closes; the list says so.
+
+## Optional models
+
+The voice design model (2 GB) and the second story model (21 GB) are not part of setup. Download them when you need
+them: **Settings, Models** in the Dashboard, or `ns models get voicedesign` / `ns models get story_llm` (checked against
+the published SHA256, resumes if stopped). In `answers.json`, `"include_voicedesign": true` downloads the voice design
+model with setup.

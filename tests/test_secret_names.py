@@ -2,6 +2,7 @@
 
 import sys
 import types
+from pathlib import Path
 
 import pytest
 
@@ -16,7 +17,27 @@ def test_installer_dashboard_and_studio_share_the_names():
     assert installer_secrets.SERVICE == adapters.KEYRING_SERVICE == names.KEYRING_SERVICE
     assert installer_secrets.PEXELS_KEY == names.PEXELS_KEY
     assert installer_secrets.PIXABAY_KEY == names.PIXABAY_KEY
-    assert tuple(installer_secrets.KEY_NAMES) == names.KEY_NAMES == tuple(adapters.KEY_NAMES)
+    assert installer_secrets.KEY_NAMES is names.KEY_NAMES
+
+
+def test_the_keyring_names_are_spelled_out_in_one_module_only(repo_root: Path):
+    """The studio, the installer's secret store and Settings must import the names, not retype them."""
+    literals = (names.PEXELS_KEY, names.PIXABAY_KEY)
+    # `Answers` fields and wizard plumbing use the same words as JSON keys; the keyring side must not.
+    scanned = [
+        *sorted((repo_root / "ns_studio").rglob("*.py")),
+        *sorted((repo_root / "ns_supervisor").rglob("*.py")),
+        *sorted((repo_root / "ns_dashboard").glob("*.py")),
+        repo_root / "installer" / "stage2" / "secrets.py",
+        repo_root / "installer" / "stage2" / "answers.py",
+    ]
+    offenders = [
+        f"{p.relative_to(repo_root)}: {lit}"
+        for p in scanned
+        for lit in literals
+        if lit in p.read_text(encoding="utf-8")
+    ]
+    assert not offenders, "import ns_common.secrets_names, do not retype the names:\n" + "\n".join(offenders)
 
 
 def test_the_studio_reads_the_keys_setup_and_settings_store(monkeypatch: pytest.MonkeyPatch):

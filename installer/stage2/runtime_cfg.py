@@ -38,7 +38,7 @@ def build_runtime(ctx: StepContext) -> Runtime:
     rt.tts.model_dir = str(ctx.paths.models_tts)
     wdir = str(ctx.paths.models_whisper / pm.whisper_model)
     if profile == "gpu":
-        rt.whisper = WhisperCfg(model=wdir, device="cuda", compute_type="float16")
+        rt.whisper = WhisperCfg(model=wdir, device="cuda", compute_type="int8")
         tier = "small" if ctx.llm_custom is not None else ctx.tier      # a custom GGUF: plain dense flags
         if tier in ("balanced", "best"):
             rt.llama.flags.kv_type = "q8_0"

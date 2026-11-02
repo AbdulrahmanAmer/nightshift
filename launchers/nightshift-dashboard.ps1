@@ -4,6 +4,10 @@ $ErrorActionPreference = 'Stop'
 # "Nightshift Dashboard" shortcut: start the engine minimized if needed, then open the web UI.
 . (Join-Path $PSScriptRoot '_common.ps1')
 
+# The window host runs in this process for as long as the window is open: it must not hold the app folder as
+# its working directory, or `ns update` cannot swap the folder while the dashboard window is open.
+Set-NsHomeLocation
+
 $url = 'http://127.0.0.1:8100'
 
 if (-not (Test-NsSupervisor)) {

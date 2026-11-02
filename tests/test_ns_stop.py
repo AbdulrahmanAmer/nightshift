@@ -73,12 +73,3 @@ def test_stop_survives_a_corrupt_state_file(tmp_path: Path) -> None:
     f.write_text("{not json", encoding="utf-8")
     assert "unreadable" in control.stop(paths, client_for(_down))[0]
     assert not f.exists()
-
-
-def test_gate_runs_the_script_and_reports_missing(tmp_path: Path) -> None:
-    code, msg = control.run_gate("m9", tmp_path)
-    assert code == 2 and "gate_m9.py" in msg
-    (tmp_path / "dev").mkdir()
-    (tmp_path / "dev" / "gate_m9.py").write_text("import sys\nsys.exit(3)\n", encoding="utf-8")
-    assert control.run_gate("m9", tmp_path)[0] == 3
-    assert control.run_gate("9", tmp_path)[0] == 3

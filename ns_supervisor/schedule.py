@@ -1,7 +1,8 @@
 """C2 scheduled task `Nightshift Daily` (spec 15.9): Register-ScheduledTask through PowerShell.
 
 Wakes the PC (`WakeToRun`), catches up after downtime (`StartWhenAvailable`), runs whether or not the
-user is logged on (S4U, no stored password) and stops after 6 hours.
+user is logged on (S4U, no stored password) when Windows allows it, else only while the user is logged on
+(interactive logon, still waking the PC), and stops after 6 hours.
 """
 
 from __future__ import annotations
@@ -39,8 +40,18 @@ def studio_exe(paths: Paths) -> str:
 
 def build_install_script(paths: Paths, run_time: str, app_path: Path, task_name: str = TASK_NAME) -> str:
     """PowerShell that registers the daily task. NIGHTSHIFT_HOME is set inside the action because an
-    S4U session does not reliably carry the user's environment."""
+    S4U session does not reliably carry the user's environment.
+
+    S4U ("run whether the user is logged on or not", no stored password) is tried first. Registering it from a
+    non-elevated shell is often refused with "Access is denied"; the script then registers the same task with
+    an interactive logon ("run only when the user is logged on"; WakeToRun still wakes the PC). The last
+    output line is `registered:s4u` or `registered:interactive`.
+    """
     arguments = f'/d /s /c "set "NIGHTSHIFT_HOME={paths.home}" && "{studio_exe(paths)}" run --daily"'
+    register = (
+        f"Register-ScheduledTask -TaskName {_q(task_name)} -Action $action -Trigger $trigger "
+        "-Settings $settings -Principal $principal -Description 'Nightshift nightly run' -Force | Out-Null"
+    )
     return "\n".join(
         [
             "$ErrorActionPreference = 'Stop'",
@@ -50,13 +61,18 @@ def build_install_script(paths: Paths, run_time: str, app_path: Path, task_name:
             "$settings = New-ScheduledTaskSettingsSet -WakeToRun -StartWhenAvailable "
             "-AllowStartIfOnBatteries -DontStopIfGoingOnBatteries "
             "-ExecutionTimeLimit (New-TimeSpan -Hours 6)",
-            "$principal = New-ScheduledTaskPrincipal "
-            "-UserId ([System.Security.Principal.WindowsIdentity]::GetCurrent().Name) "
-            "-LogonType S4U -RunLevel Limited",
-            f"Register-ScheduledTask -TaskName {_q(task_name)} -Action $action -Trigger $trigger "
-            "-Settings $settings -Principal $principal -Description 'Nightshift nightly run' "
-            "-Force | Out-Null",
-            "Write-Output 'registered'",
+            "$user = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name",
+            "$mode = 's4u'",
+            "try {",
+            "  $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType S4U -RunLevel Limited",
+            f"  {register}",
+            "} catch {",
+            "  $mode = 'interactive'",
+            "  $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive "
+            "-RunLevel Limited",
+            f"  {register}",
+            "}",
+            "Write-Output ('registered:' + $mode)",
         ]
     )
 
@@ -105,14 +121,22 @@ def _run(script: str) -> str:
     return r.stdout.strip()
 
 
+INTERACTIVE_MARK = "only while you are logged on"
+INTERACTIVE_NOTE = f"runs {INTERACTIVE_MARK} (Windows refused the unattended mode)"
+
+
 def install(paths: Paths, run_time: str | None, app_path: Path) -> str:
-    """Register the task at `run_time` (default: the saved time, else 03:00) and remember it."""
+    """Register the task at `run_time` (default: the saved time, else 03:00) and remember it.
+
+    The message says when the task could only be registered for "run only when the user is logged on".
+    """
     when = run_time or read_run_time(paths) or DEFAULT_TIME
     if not valid_time(when):
         raise ScheduleError(f"time must be HH:MM (24 h), got {when!r}")
     out = _run(build_install_script(paths, when, app_path))
     write_run_time(paths, when)
-    return f"{out or 'registered'} ({TASK_NAME} daily at {when})"
+    note = f"; {INTERACTIVE_NOTE}" if "registered:interactive" in out else ""
+    return f"registered ({TASK_NAME} daily at {when}{note})"
 
 
 def remove(paths: Paths) -> str:

@@ -467,6 +467,18 @@ Format per entry:
 - **Status:** applied on `feat/release-review-studio`.
 
 
+## CR-REVIEW-RUNTIME-1: protected-path edits of the installer/runtime review PR (`feat/release-review-runtime`)
+- **From:** runtime/installer builder closing the clean-clone review rows 1 to 12, P1 to P4 and gaps 10, 14, 18, 19, 20, 27, 28, 37 to 39
+- **Change (all on a `release-*` branch, no schema shape change):**
+  1. `ns_common.uv.find_uv`: order is install folder, `NIGHTSHIFT_BOOTSTRAP_UV` (set by stage 1), `%LOCALAPPDATA%\Nightshift\bootstrap\uv\uv.exe`, PATH.
+  2. New stdlib modules `ns_common/atomic.py` (temp file + `os.replace`, `.bak`, `.bad`), `ns_common/venv_extras.py` (the one table of extras per venv, read by setup and by `ns update`) and `ns_common/secret_file.py` (DPAPI file `config/secrets.dpapi`, fallback when Credential Manager is out of reach, e.g. an S4U nightly session; `load_secret(paths, name)` is what the nightly path should call after `keyring` returns nothing).
+  3. `ns_common.config.save_install_state` is atomic and keeps `install_state.json.bak`; `load_install_state` falls back to it, then to an empty state, and keeps a torn file as `.bad`.
+  4. `contracts/errors.json`: `NS-W205` (task registered for "only while logged on") and `NS-W206` (task not registered, setup went on).
+  5. `pyproject.toml`: `installer*` joins the installed packages so `ns models get` can reuse the installer downloader.
+- **Schedule source (decided with the dashboard builder):** `config/schedule.json` (`{run_time, task_name}`, read through `ns_supervisor.schedule_cfg.read_run_time`) is the one source of the nightly time. `ns schedule install` writes it after Windows accepted the task; the installer also writes it when registration failed, so the dashboard shows the time the owner chose together with an `applied: false` note.
+- **New interfaces (not contracts):** `run/update_state.json` `{state, old, new, message, updated_at}` (detached `ns update`); `run/morning_note.json` `{notes: [{at, title, message}]}` written by `ns_supervisor.notify.toast_or_note` when the session has no desktop (the dashboard shows and clears it with `notify.read_notes/clear_notes`); `ns models get voicedesign|story_llm`; `ns update --git [--channel stable|main]`; `include_voicedesign` in answers.json.
+- **Status:** applied on `feat/release-review-runtime`.
+
 ## CR-C4-6: voice engine contract fixes (`feat/release-review-tts`: review rows 1-4, 12, 13)
 - **From:** TTS builder A (`ns_tts`, voice service start in `ns_supervisor/services.py`); protected paths edited on this `release-*` branch.
 - **Change (applied here):**

@@ -10,6 +10,8 @@
     -HomeDir     folder to clean (default: NIGHTSHIFT_HOME, then %LOCALAPPDATA%\Nightshift).
     -DryRun      print "[dry-run] <action>" lines, change nothing, exit 0.
     -SkipSystem  leave the scheduled task, shortcuts and environment variable alone (used by CI).
+    -KeepBin     leave bin for the caller to remove after it has exited (the uninstall window itself has
+                 loaded binwebview2*.dll, so Windows cannot delete them until the window is gone).
     -Ui          open the setup window for the questions (UNINSTALL.cmd passes it). Falls back to the console
                  questions when no uv Python is found.
 #>
@@ -20,6 +22,7 @@ param(
     [switch]$DeleteModels,
     [switch]$DeleteData,
     [switch]$SkipSystem,
+    [switch]$KeepBin,
     [switch]$Ui
 )
 
@@ -166,7 +169,8 @@ if (-not $SkipSystem) {
 
 # ---- folders --------------------------------------------------------------------------------------------
 Remove-Tree -Path (Join-Path $nsHome 'venvs')
-Remove-Tree -Path (Join-Path $nsHome 'bin')
+if ($KeepBin) { Write-Host '  bin is removed when the uninstall window closes' }
+else { Remove-Tree -Path (Join-Path $nsHome 'bin') }
 if ($wipeModels) { Remove-Tree -Path (Join-Path $nsHome 'models') }
 if (-not $SkipSystem) {
     foreach ($leaf in @('bootstrap', 'browser', 'webview2')) {

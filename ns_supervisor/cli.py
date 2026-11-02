@@ -1,6 +1,7 @@
 """C2 `ns` console tool (spec 15.9). Thin wiring: each command delegates to its own module."""
 
 import json
+import os
 from pathlib import Path
 from typing import Annotated
 
@@ -10,13 +11,27 @@ from ns_common import __version__
 from ns_common.config import load_runtime
 from ns_common.errors import NsError
 from ns_common.paths import Paths
-from ns_supervisor import backup, control, doctor, notify, releases, schedule, tune, update, verify
+from ns_supervisor import (
+    backup,
+    control,
+    doctor,
+    models_get,
+    notify,
+    releases,
+    schedule,
+    tune,
+    update,
+    update_job,
+    verify,
+)
 from ns_supervisor.client import SupervisorClient, ensure_running
 from ns_supervisor.schedule_cfg import read_run_time
 
 app = typer.Typer(help="Nightshift runtime tools", add_completion=False)
 schedule_app = typer.Typer(help="The nightly scheduled task 'Nightshift Daily'", add_completion=False)
 app.add_typer(schedule_app, name="schedule")
+models_app = typer.Typer(help="Optional model downloads (VoiceDesign, the story model)", add_completion=False)
+app.add_typer(models_app, name="models")
 
 
 def _die(e: NsError | str, code: int = 1) -> typer.Exit:
@@ -131,16 +146,6 @@ def cmd_tune(
     typer.echo("Saved to runtime.json.")
 
 
-@app.command("gate")
-def cmd_gate(milestone: Annotated[str, typer.Argument(help="m0, m1, ...")]) -> None:
-    """Run dev/gate_<milestone>.py of the installed app."""
-    paths = Paths.from_env()
-    code, msg = control.run_gate(milestone, control.app_path(paths))
-    typer.echo(msg)
-    if code != 0:
-        raise typer.Exit(code)
-
-
 def _stop_engine(paths: Paths) -> None:
     control.stop(paths, _client(paths))
 
@@ -160,6 +165,47 @@ def _reregister(paths: Paths, app_dir: Path) -> list[str]:
     return notes
 
 
+def _apply_update(
+    paths: Paths,
+    zip_path: Path | None,
+    rollback: bool,
+    github: bool,
+    git: bool = False,
+    channel: str = "stable",
+) -> update_job.Outcome:
+    """Do the update in this process (the worker). Prints progress; its last line is a JSON result."""
+    app_dir = control.app_path(paths)
+    env = update.UpdateEnv(
+        stop=lambda: _stop_engine(paths),
+        sync=lambda a: _sync(paths, a),
+        verify=update.verify_quick,
+        reregister=lambda a: _reregister(paths, a),
+    )
+    if rollback:
+        res = update.rollback_app(app_dir, env, paths=paths)
+    elif git:
+        res = update.git_update(app_dir, env, paths=paths, channel=channel)
+    elif github:
+        rel = releases.fetch_latest()
+        current = update.current_version(app_dir)
+        if not releases.is_newer(rel.version, current):
+            msg = f"Already on the newest version ({current})."
+            typer.echo(msg)
+            typer.echo(json.dumps({"updated": False, "old": current, "new": current}))
+            return update_job.Outcome(msg, current, current, updated=False)
+        typer.echo(f"Downloading {rel.zip_name} ...")
+        res = update.update_app(releases.download(rel, paths.data / "updates"), app_dir, env, paths=paths)
+    else:
+        assert zip_path is not None
+        res = update.update_app(zip_path, app_dir, env, paths=paths)
+    msg = f"Now on {res.new_version} (was {res.old_version})."
+    typer.echo(msg)
+    for n in res.notes:
+        typer.echo(f"  {n}")
+    typer.echo(json.dumps({"updated": True, "old": res.old_version, "new": res.new_version}))
+    return update_job.Outcome(msg, res.old_version, res.new_version, updated=True)
+
+
 @app.command("update")
 def cmd_update(
     zip_path: Annotated[Path | None, typer.Argument(help="Nightshift-<version>.zip")] = None,
@@ -168,40 +214,69 @@ def cmd_update(
     github: Annotated[
         bool, typer.Option("--github", help="Download the newest GitHub release, verify it and apply it.")
     ] = False,
+    git: Annotated[
+        bool, typer.Option("--git", help="Cloned-repo install: pull the newest release or main, re-sync.")
+    ] = False,
+    channel: Annotated[
+        str, typer.Option("--channel", help="With --git: stable (newest release tag) or main.")
+    ] = "stable",
+    detach: Annotated[
+        bool,
+        typer.Option("--detach", help="Start the update in the background and return at once."),
+    ] = False,
+    worker: Annotated[bool, typer.Option("--worker", hidden=True)] = False,
+    log: Annotated[Path | None, typer.Option("--log", hidden=True)] = None,
+    home: Annotated[Path | None, typer.Option("--home", hidden=True)] = None,
+    wait_pid: Annotated[int | None, typer.Option("--wait-pid", hidden=True)] = None,
 ) -> None:
-    """Apply a release zip (verified, with automatic rollback), go back one version, or use GitHub."""
-    if sum([zip_path is not None, rollback, check, github]) != 1:
-        raise _die("give exactly one of: a zip file, --rollback, --check, --github", 2)
+    """Apply a release zip (verified, with automatic rollback), go back one version, or use GitHub.
+
+    The update runs in a detached worker process, so stopping the engine (or closing the dashboard that
+    started it) cannot kill it half way through the swap.
+    """
+    if sum([zip_path is not None, rollback, check, github, git]) != 1:
+        raise _die("give exactly one of: a zip file, --rollback, --check, --github, --git", 2)
+    if channel not in update.CHANNELS:
+        raise _die("--channel must be one of: " + ", ".join(update.CHANNELS), 2)
+    if channel != "stable" and not git:
+        raise _die("--channel main works with --git only", 2)
+    if home is not None:
+        os.environ["NIGHTSHIFT_HOME"] = str(home)
     paths = Paths.from_env()
-    app_dir = control.app_path(paths)
     if check:
-        _update_check(update.current_version(app_dir))
+        _update_check(update.current_version(control.app_path(paths)))
         return
-    env = update.UpdateEnv(
-        stop=lambda: _stop_engine(paths),
-        sync=lambda a: _sync(paths, a),
-        verify=update.verify_quick,
-        reregister=lambda a: _reregister(paths, a),
-    )
+    if worker:
+        code = update_job.run_worker(
+            paths, lambda: _apply_update(paths, zip_path, rollback, github, git, channel), log=log,
+            wait_pid=wait_pid,
+            old_version=update.current_version(control.app_path(paths)),
+        )
+        raise typer.Exit(code)
+    forwarded: list[str] = []
+    if zip_path is not None:
+        try:
+            update.verify_package(zip_path.resolve())     # a bad zip is reported here, nothing is started
+        except NsError as e:
+            raise _die(e) from e
+        forwarded.append(str(zip_path.resolve()))        # the worker starts in another folder
+    if rollback:
+        forwarded.append("--rollback")
+    if github:
+        forwarded.append("--github")
+    if git:
+        forwarded += ["--git", "--channel", channel]
+    background = detach or update_job.under_engine()
     try:
-        if rollback:
-            res = update.rollback_app(app_dir, env, paths=paths)
-        elif github:
-            rel = releases.fetch_latest()
-            if not releases.is_newer(rel.version, update.current_version(app_dir)):
-                typer.echo(f"Already on the newest version ({update.current_version(app_dir)}).")
-                typer.echo(json.dumps({"update_available": False, "latest": rel.version}))
-                return
-            typer.echo(f"Downloading {rel.zip_name} ...")
-            res = update.update_app(releases.download(rel, paths.data / "updates"), app_dir, env, paths=paths)
-        else:
-            assert zip_path is not None
-            res = update.update_app(zip_path, app_dir, env, paths=paths)
+        pid, log_file = update_job.launch(paths, forwarded, wait_pid=os.getpid() if background else None)
     except NsError as e:
         raise _die(e) from e
-    typer.echo(f"Now on {res.new_version} (was {res.old_version}).")
-    for n in res.notes:
-        typer.echo(f"  {n}")
+    if background:
+        typer.echo(f"The update runs in the background; Nightshift will close. Progress: {log_file}")
+        status = str(update_job.status_file(paths))
+        typer.echo(json.dumps({"started": True, "log": str(log_file), "status": status}))
+        return
+    raise typer.Exit(update_job.follow(paths, pid, log_file, typer.echo))
 
 
 def _update_check(current: str) -> None:
@@ -276,8 +351,23 @@ def schedule_show() -> None:
 
 @app.command("notify")
 def cmd_notify(title: str, message: str) -> None:
-    """Show a Windows toast (does nothing where toasts are unavailable)."""
-    notify.toast(title, message)
+    """Show a Windows toast; without a desktop (a scheduled run) leave a morning note for the dashboard."""
+    notify.toast_or_note(title, message)
+
+
+@models_app.command("get")
+def models_get_cmd(
+    what: Annotated[str, typer.Argument(help="voicedesign | story_llm")],
+) -> None:
+    """Download an optional model (pinned in manifest.json, resumable, SHA256-checked)."""
+    if what not in models_get.KINDS:
+        raise _die(f"unknown model {what!r}; choose one of: {', '.join(models_get.KINDS)}", 2)
+    paths = Paths.from_env()
+    try:
+        result = models_get.get_model(what, paths, control.app_path(paths), typer.echo)
+    except NsError as e:
+        raise _die(e) from e
+    typer.echo(json.dumps(result))
 
 
 def main() -> None:

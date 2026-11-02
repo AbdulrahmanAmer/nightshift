@@ -228,3 +228,53 @@ def test_window_mode_stops_on_an_unsupported_windows(tmp_path: Path):
     proc = _run("-FakeProbe", str(_probe(tmp_path, os_arch="ARM64")), window=True)
     assert proc.returncode == 10
     assert "NS-E101" in proc.stdout and "[FAIL] This PC" in proc.stdout
+
+
+def test_stage1_hands_the_uv_path_to_the_setup_server():
+    proc = _run()
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "NIGHTSHIFT_BOOTSTRAP_UV=" in proc.stdout
+
+
+def _install_uv_harness(tmp_path: Path, winget: str) -> subprocess.CompletedProcess:
+    """Run the real Install-Uv from stage1.ps1 with a dead download URL and a chosen 'winget'."""
+    stubs = {
+        "none": "function Test-Tool { param($Name) return $false }",
+        "broken": "function Test-Tool { param($Name) return $true }\n"
+                  "function winget.exe { throw 'winget exploded' }",
+    }[winget]
+    script = f"""
+$ErrorActionPreference = 'Stop'
+$ast = [System.Management.Automation.Language.Parser]::ParseFile('{STAGE1}', [ref]$null, [ref]$null)
+$fnType = [System.Management.Automation.Language.FunctionDefinitionAst]
+$isFn = {{ param($n) $n -is $fnType -and $n.Name -eq 'Install-Uv' }}
+$fn = $ast.FindAll($isFn, $true)[0]
+. ([scriptblock]::Create($fn.Extent.Text))
+{stubs}
+function Get-DataDir {{ return '{tmp_path}' }}
+function Join-Str {{ param($a, $b) return (Join-Path $a $b) }}
+function Update-SessionPath {{ }}
+function Set-Status {{ param($Index, $Tag, $Text) }}
+function Stop-Setup {{ param($Code, $Detail, $ExitCode) Write-Output "STOP:$Code|$Detail"; exit 13 }}
+$script:IsDry = $false
+$uv = [pscustomobject]@{{ url = 'http://127.0.0.1:9/uv.zip'; sha256 = '0' }}
+$manifest = [pscustomobject]@{{ bins = [pscustomobject]@{{ uv = $uv }} }}
+Install-Uv -Manifest $manifest
+"""
+    f = tmp_path / "harness.ps1"
+    f.write_text(script, encoding="utf-8")
+    return subprocess.run([str(PS), "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(f)],
+                          capture_output=True, text=True, timeout=120)
+
+
+def test_uv_download_failure_without_winget_is_a_clear_error_not_a_raw_powershell_exception(tmp_path: Path):
+    proc = _install_uv_harness(tmp_path, "none")
+    assert proc.returncode == 13, proc.stdout + proc.stderr
+    assert "STOP:NS-E105" in proc.stdout and "winget is not available" in proc.stdout
+    assert "CommandNotFoundException" not in proc.stderr
+
+
+def test_uv_download_failure_with_a_failing_winget_is_ns_e110(tmp_path: Path):
+    proc = _install_uv_harness(tmp_path, "broken")
+    assert proc.returncode == 13, proc.stdout + proc.stderr
+    assert "STOP:NS-E110" in proc.stdout

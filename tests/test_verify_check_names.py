@@ -42,7 +42,8 @@ def test_every_constant_is_a_check_the_full_verify_can_record(tmp_path: Path) ->
     constants = {
         v for k, v in vars(names).items() if k.isupper() and isinstance(v, str) and not k.endswith("PREFIX")
     }
-    assert constants - {names.TTS_MODE_PREFIX} <= full, constants - full
+    # tts.engine is recorded only when the voice service reports the reference engine (NS-W301)
+    assert constants - {names.TTS_MODE_PREFIX, names.TTS_ENGINE} <= full, constants - full
 
 
 def test_there_is_no_mtp_check_in_verify(tmp_path: Path) -> None:

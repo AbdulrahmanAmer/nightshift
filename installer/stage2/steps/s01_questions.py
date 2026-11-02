@@ -284,6 +284,8 @@ class S01Questions(Step):
         else:
             merged["install_code"] = ctx.ui.confirm("Install Nightshift Code (offline assistant)?", True)
 
+        merged["include_voicedesign"] = bool(raw.get("include_voicedesign") or False)
+
         source = self._asked(ctx, "models_source", "Folder with the model files (blank to download)", "")
         if source and not Path(source).is_dir():
             raise AnswersError(f"models_source folder not found: {source}")

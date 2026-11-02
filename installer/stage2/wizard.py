@@ -23,7 +23,7 @@ from installer.stage2.base import Step
 from installer.stage2.bridge import BridgeUi, SetupStopped
 from installer.stage2.context import StepContext
 from installer.stage2.runner import SubprocessRunner
-from installer.stage2.secrets import KEY_NAMES, KeyringStore, MemoryStore
+from installer.stage2.secrets import KEY_NAMES, KeyringStore, MemoryStore, ResilientStore
 from installer.stage2.simulate import FakeRunner
 from installer.stage2.state import StateStore
 from installer.stage2.sysinfo import free_gb, load_preflight, sample_preflight
@@ -290,7 +290,7 @@ def build_context(args: argparse.Namespace, ui: Ui | None = None) -> StepContext
         store = MemoryStore()
     else:
         runner = SubprocessRunner(bridge=bridge)
-        store = KeyringStore()
+        store = ResilientStore(KeyringStore(), paths)
     return StepContext(
         app_path=app_path,
         paths=paths,

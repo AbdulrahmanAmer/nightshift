@@ -107,6 +107,7 @@ def fake_effects(base: Path, present: set[str] | None = None, **overrides: Any) 
         key_check=lambda service, key: {"ok": bool(key), "code": None if key else "NS-E501", "message": None},
         head=modelcheck.fake_head,
         launch=lambda argv, env=None: launched.append(list(argv)),
+        launch_captured=lambda argv, env=None, **kw: (launched.append(list(argv)), (0, ""))[1],
         elevate_longpaths=lambda: True, console=lambda text, level: console.append(text),
         uv_path=lambda home: str(uv), clipboard=lambda text: None,
     )

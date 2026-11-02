@@ -1,10 +1,9 @@
-"""C2 control helpers behind `ns stop` and `ns gate`, plus shared lookups for the CLI tools."""
+"""C2 control helpers behind `ns stop`, plus shared lookups for the CLI tools."""
 
 from __future__ import annotations
 
 import json
 import subprocess
-import sys
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -91,15 +90,3 @@ def stop(
         lines.append(f"Supervisor pid {sup_pid} is not running (stale state file).")
     state_file.unlink(missing_ok=True)
     return lines
-
-
-def run_gate(milestone: str, app: Path) -> tuple[int, str]:
-    """Run `dev/gate_<milestone>.py`; returns (exit code, message). 2 when the script is missing."""
-    name = milestone.lower()
-    if name.isdigit():
-        name = f"m{name}"
-    script = app / "dev" / f"gate_{name}.py"
-    if not script.exists():
-        return 2, f"No gate script at {script}"
-    r = subprocess.run([sys.executable, str(script)], cwd=str(app), check=False)
-    return r.returncode, f"gate {name} exited {r.returncode}"

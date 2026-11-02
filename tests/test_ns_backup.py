@@ -143,3 +143,37 @@ def test_restore_ignores_unlisted_paths(tmp_path: Path) -> None:
     lines = backup.restore_backup(paths, z, now=NOW)
     assert not (paths.models_llm / "evil.gguf").exists() and not (paths.outbox / "a.mp4").exists()
     assert all(ln.startswith("ignored") for ln in lines)
+
+
+def test_a_restore_that_hits_an_os_error_puts_everything_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Disk full or a locked database half way through must not leave a mix of old and new settings."""
+    src = seed(tmp_path / "old", "old-pc")
+    z = backup.make_backup(src, tmp_path / "b.zip", now=NOW)
+    dst = seed(tmp_path / "new", "new-pc")
+    voice_file = dst.models_tts_voices / "Alice" / "speaker.bin"
+    voice_file.write_bytes(b"NEWPC")
+    real = backup.shutil.copyfileobj
+    calls = {"n": 0}
+
+    def flaky(fsrc, fdst, *a, **k):  # type: ignore[no-untyped-def]
+        calls["n"] += 1
+        if calls["n"] == 3:                          # the third restored file runs out of disk
+            fdst.write(b"half")
+            raise OSError(28, "No space left on device")
+        return real(fsrc, fdst, *a, **k)
+
+    monkeypatch.setattr(backup.shutil, "copyfileobj", flaky)
+    with pytest.raises(NsError) as ei:
+        backup.restore_backup(dst, z, now=NOW)
+    monkeypatch.undo()
+    assert ei.value.code == "NS-E703" and "No space left" in ei.value.detail and "put back" in ei.value.detail
+    # the files restored before the failure are the new PC's again, and the half-written one is whole
+    assert "note: new-pc" in dst.channel_file("horror-nights").read_text(encoding="utf-8")
+    assert voice_file.read_bytes() == b"NEWPC"
+    con = sqlite3.connect(dst.db_path)
+    try:
+        assert con.execute("SELECT slug FROM channels").fetchall() == [("new-pc",)]
+    finally:
+        con.close()

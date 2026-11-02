@@ -176,6 +176,12 @@ class Boot:
             raise BootstrapStopped()
 
     @property
+    def uv_exe(self) -> str:
+        """uv for the later steps: the copy in the install folder once b02 placed it, else the hand-over."""
+        local = self.home / "bin" / "uv" / "uv.exe"
+        return str(local) if local.is_file() else self.uv
+
+    @property
     def venv_python(self) -> Path:
         """Python of the studio venv."""
         return self.home / "venvs" / "studio" / "Scripts" / "python.exe"
@@ -257,10 +263,14 @@ class B02Home:
         os.environ[HOME_VAR] = str(boot.home)
         target = boot.home / "bin" / "uv" / "uv.exe"
         source = Path(boot.uv)
-        if not target.is_file() and source.is_file():
+        if not target.is_file():
+            if not source.is_file():
+                raise BootstrapError(
+                    "NS-E105", f"uv was not found at {source}; run INSTALL.cmd again so stage 1 downloads it"
+                )
             target.parent.mkdir(parents=True, exist_ok=True)
             for item in source.parent.iterdir():
-                if item.is_file() and item.suffix.lower() in (".exe", ".dll"):
+                if item.is_file() and item.name.lower().startswith("uv") and item.suffix.lower() == ".exe":
                     shutil.copy2(item, target.parent / item.name)
         boot.write_answers()
 
@@ -271,6 +281,8 @@ class B02Home:
             raise BootstrapError("NS-E104", f"{boot.home} lacks {', '.join(missing)}")
         if boot.get_home_var(HOME_VAR) != str(boot.home):
             raise BootstrapError("NS-E104", "NIGHTSHIFT_HOME does not point at the install folder")
+        if not (boot.home / "bin" / "uv" / "uv.exe").is_file():
+            raise BootstrapError("NS-E105", "uv was not copied into the install folder (bin/uv/uv.exe)")
 
 
 class B03SetupEnv:
@@ -295,7 +307,7 @@ class B03SetupEnv:
         if not boot.venv_python.is_file():
             boot.say("Creating the setup environment")
             venv_dir = str(boot.home / "venvs" / "studio")
-            res = boot.cmd([boot.uv, "venv", "--python", boot.python_version, venv_dir],
+            res = boot.cmd([boot.uv_exe, "venv", "--python", boot.python_version, venv_dir],
                            env, boot.app_path, 900)
             if res.returncode != 0:
                 text = last_lines(res.stdout + "\n" + res.stderr)
@@ -304,7 +316,8 @@ class B03SetupEnv:
         boot.checkpoint()
         boot.say("Installing the Python packages for setup")
         res = boot.cmd(
-            [boot.uv, "pip", "install", "--python", str(boot.venv_python), "-e", f"{boot.app_path}[studio]"],
+            [boot.uv_exe, "pip", "install", "--python", str(boot.venv_python), "-e",
+             f"{boot.app_path}[studio]"],
             env, boot.app_path, 3600,
         )
         if res.returncode != 0:

@@ -95,10 +95,11 @@ def load_keys() -> dict[str, str]:
 
 def _dpapi_secret(name: str) -> str | None:
     """The key from `config/secrets.dpapi` (`ns_common.secret_file`), or None when absent or unreadable."""
+    from ns_common.secret_file import load_secret  # imported here: it loads ctypes
+
     try:
-        module = importlib.import_module("ns_common.secret_file")
-        return module.load_secret(Paths.from_env(), name)
-    except (ImportError, AttributeError, OSError, ValueError):
+        return load_secret(Paths.from_env(), name)
+    except (OSError, ValueError):
         return None
 
 

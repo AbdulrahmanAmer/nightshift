@@ -8,6 +8,17 @@ function Get-NsHome {
     return (Join-Path $env:LOCALAPPDATA 'Nightshift')
 }
 
+function Set-NsHomeLocation {
+    # Step out of the app folder. Set-Location only moves PowerShell's own location; the powershell.exe process
+    # keeps the Win32 current directory it was started with, and Windows refuses to rename (swap) a folder that
+    # is any process's current directory. [Environment]::CurrentDirectory is the Win32 one.
+    $nsHome = Get-NsHome
+    if (Test-Path -LiteralPath $nsHome) {
+        Set-Location -LiteralPath $nsHome
+        [Environment]::CurrentDirectory = $nsHome
+    }
+}
+
 function Get-NsAppPath {
     return (Split-Path -Parent $PSScriptRoot)
 }
@@ -32,7 +43,8 @@ function Get-NsVenvExe {
 
 function Test-NsSupervisor {
     try {
-        Invoke-RestMethod -Uri ((Get-NsSupervisorUrl) + '/status') -TimeoutSec 3 | Out-Null
+        # the liveness route answers at once; the status route runs nvidia-smi on every call
+        Invoke-RestMethod -Uri ((Get-NsSupervisorUrl) + '/health') -TimeoutSec 3 | Out-Null
         return $true
     }
     catch {

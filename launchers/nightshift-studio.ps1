@@ -3,6 +3,7 @@ $ErrorActionPreference = 'Stop'
 
 # "Nightshift Studio" shortcut: show the studio status, then offer a prompt for one command.
 . (Join-Path $PSScriptRoot '_common.ps1')
+Set-NsHomeLocation      # an open Studio window must not block `ns update` by holding the app folder
 
 $studio = Get-NsVenvExe 'studio' 'studio.exe'
 if (-not (Test-Path -LiteralPath $studio)) {

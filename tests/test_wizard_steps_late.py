@@ -37,7 +37,7 @@ def test_baseline_runtime_small_tier(tmp_path: Path):
     assert rt.embed.model_path == str(p.models_embed / "nomic-embed-text-v1.5.Q8_0.gguf")
     assert rt.tts.model_dir == str(p.models_tts) and rt.tts.engine == "qwentts"
     assert (rt.whisper.model, rt.whisper.device, rt.whisper.compute_type) == (
-        str(p.models_whisper / "distil-large-v3"), "cuda", "float16")
+        str(p.models_whisper / "distil-large-v3"), "cuda", "int8")   # spec 153
     assert rt.llama.flags.kv_type == "f16" and rt.llama.flags.spec_type is None
 
 
@@ -326,7 +326,10 @@ def test_s09_keeps_the_default_icon_when_the_ico_is_missing(tmp_path: Path):
     )
     S09ShortcutsScheduler().run(ctx)
     call = runner.called("ps:shortcut")[0]
-    assert "icon" not in call.meta and "IconLocation" not in _script_of(call)
+    script = _script_of(call)
+    assert "icon" not in call.meta and "$s.IconLocation" not in script   # the fallback sets none
+    create_line = script.split("[NsLink]::Create(")[1].splitlines()[0]
+    assert ", '')" in create_line                                       # the helper gets an empty icon
 
 
 def test_s09_nightshift_code_shortcut_only_with_install_code(tmp_path: Path):
@@ -350,16 +353,35 @@ def test_s09_missing_schedule_command_is_a_warning_not_a_failure(tmp_path: Path)
     assert ctx.flag("schedule") == "unavailable" and "not part of this version" in ctx.ui.text
 
 
-def test_s09_real_scheduler_failure_is_e202(tmp_path: Path):
+def test_s09_a_refused_scheduler_never_blocks_the_install(tmp_path: Path):
     app = launcher_app(tmp_path, [])
     runner = FakeRunner(tmp_path / "desktop", results={
         "ns schedule install --time 03:00": RunResult(1, "", "access denied")})
     ctx = make_test_context(
         tmp_path, raw_answers=example_answers(), resolve=True, app_path=app, runner=runner
     )
-    with pytest.raises(NsError) as ei:
-        S09ShortcutsScheduler().run(ctx)
-    assert ei.value.code == "NS-E204" and "access denied" in ei.value.detail
+    step = S09ShortcutsScheduler()
+    step.run(ctx)                                        # does not raise
+    step.verify(ctx)
+    assert ctx.flag("schedule") == "failed"
+    assert ("NS-W206", "access denied") in ctx.warnings
+    from ns_supervisor.schedule_cfg import read_run_time
+    assert read_run_time(ctx.paths) == "03:00"           # the dashboard still shows the chosen time
+
+
+def test_s09_an_interactive_only_task_is_registered_and_the_owner_is_told(tmp_path: Path):
+    app = launcher_app(tmp_path, [])
+    runner = FakeRunner(tmp_path / "desktop", results={
+        "ns schedule install --time 03:00": RunResult(
+            0, "registered (Nightshift Daily daily at 03:00; runs only while you are logged on "
+               "(Windows refused the unattended mode))\n")})
+    ctx = make_test_context(
+        tmp_path, raw_answers=example_answers(), resolve=True, app_path=app, runner=runner
+    )
+    step = S09ShortcutsScheduler()
+    step.run(ctx)
+    assert ctx.flag("schedule") == "installed" and ctx.flag("schedule_mode") == "interactive"
+    assert any(code == "NS-W205" for code, _ in ctx.warnings)
 
 
 def test_s09_shortcut_failure_and_desktop_override(tmp_path: Path):
@@ -471,3 +493,67 @@ def test_s07_queues_nothing_for_a_preset_voice_or_an_existing_one(tmp_path: Path
     (made / "voice.json").write_text("{}", encoding="utf-8")
     S07Configs().run(ctx2)
     assert not (ctx2.paths.config / "pending_voice.json").exists()
+
+
+# ----------------------------------------------------------------------- s05/s08: local/code (gap 39)
+def test_s08_checks_that_opencode_sees_local_code_once_s07_wrote_the_config(tmp_path: Path):
+    ctx, runner = smoke_ctx(tmp_path)
+    assert S07Configs.id == "s07_configs"                      # runs before s08: the file exists by then
+    ctx.paths.opencode_file.parent.mkdir(parents=True, exist_ok=True)
+    ctx.paths.opencode_file.write_text(json.dumps(OPENCODE_CONFIG), encoding="utf-8")
+    S08Smoke().run(ctx)
+    call = runner.called("opencode models")[0]
+    assert call.env["OPENCODE_CONFIG"] == str(ctx.paths.opencode_file)
+    assert ctx.flag("opencode_local_code") is True
+
+
+def test_a_missing_local_code_model_is_said_but_does_not_fail_the_install(tmp_path: Path):
+    runner = FakeRunner(tmp_path / "desktop", results={"opencode models": RunResult(0, "openai/gpt\n")})
+    ctx = resolved(tmp_path, runner=runner)
+    ctx.paths.opencode_file.parent.mkdir(parents=True, exist_ok=True)
+    ctx.paths.opencode_file.write_text("{}", encoding="utf-8")
+    S08Smoke().run(ctx)
+    assert ctx.flag("opencode_local_code") is False and ctx.flag("smoke") == "passed"
+    assert "cannot find local/code" in ctx.ui.text
+
+
+def test_s05_no_longer_pretends_to_check_the_model_before_the_config_exists():
+    from installer.stage2.steps import s05_opencode_prewarm
+
+    doc = s05_opencode_prewarm.__doc__ or ""
+    assert "confirm_local_code" in doc and "after this step" in doc
+
+
+# ---------------------------------------------------------------- qwentts binary names (CR-C4-6)
+def test_the_qwentts_zip_must_hold_the_real_programs(tmp_path: Path):
+    from installer.stage2 import downloader as dl
+
+    item = dl.release_zip_item("qwentts", "https://x/q.zip", None, tmp_path)
+    assert item.expect == ("qwen-tts.exe", "qwen-codec.exe")           # there is no qwentts.exe
+
+
+def test_the_installer_and_the_reference_engine_use_one_hf_folder(tmp_path: Path):
+    from installer.stage2.fallback import fallback_items
+
+    ctx = resolved(tmp_path)
+    for item in fallback_items(ctx):
+        assert ctx.paths.models_tts_hf in item.dest.parents or item.dest.parent == ctx.paths.models_tts_hf
+
+
+def test_s08_falls_back_to_the_reference_engine_when_the_unpacked_zip_lacks_qwen_tts(tmp_path: Path):
+    ctx, runner = smoke_ctx(tmp_path)
+    ctx.set_flag("qwentts", "binary")
+    ctx.paths.bin_qwentts.mkdir(parents=True, exist_ok=True)
+    (ctx.paths.bin_qwentts / "tts-server.exe").write_bytes(b"MZ")     # only the old, wrong program is there
+    S08Smoke().run(ctx)
+    assert ctx.flag("tts_fallback") is True and [c for c, _ in ctx.warnings] == ["NS-W301"]
+
+
+def test_s08_keeps_qwentts_when_both_programs_are_there(tmp_path: Path):
+    ctx, _ = smoke_ctx(tmp_path)
+    ctx.set_flag("qwentts", "binary")
+    ctx.paths.bin_qwentts.mkdir(parents=True, exist_ok=True)
+    for exe in ("qwen-tts.exe", "qwen-codec.exe"):
+        (ctx.paths.bin_qwentts / exe).write_bytes(b"MZ")
+    S08Smoke().run(ctx)
+    assert ctx.flag("tts_fallback", False) is False and ctx.warnings == []

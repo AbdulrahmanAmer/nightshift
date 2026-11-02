@@ -9,6 +9,7 @@ from __future__ import annotations
 from installer.stage2.context import StepContext
 from installer.stage2.downloader import DownloadItem, plan_from_hf_tree
 from installer.stage2.errors import make_error
+from ns_common.venv_extras import extras_suffix
 
 FALLBACK_REPOS = ("Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice", "Qwen/Qwen3-TTS-12Hz-1.7B-Base")
 INDEX_SEP = " --index-url "
@@ -16,7 +17,7 @@ INDEX_SEP = " --index-url "
 
 def fallback_items(ctx: StepContext) -> list[DownloadItem]:
     """Safetensors files of the reference TTS repos under models\\tts\\hf (listed through the HF tree API)."""
-    dest_root = ctx.paths.models_tts / "hf"
+    dest_root = ctx.paths.models_tts_hf
     if ctx.simulate:
         items: list[DownloadItem] = []
         for repo in FALLBACK_REPOS:
@@ -68,7 +69,7 @@ def ensure_tts_venv(ctx: StepContext) -> None:
         if not res.ok:
             raise make_error("NS-E105", f"installing {spec} failed (exit {res.returncode})")
     res = ctx.run_uv(
-        ["pip", "install", "--python", str(py), "--no-deps", "-e", f"{ctx.app_path}[tts]"],
+        ["pip", "install", "--python", str(py), "--no-deps", "-e", f"{ctx.app_path}{extras_suffix('tts')}"],
         tag="uv pip install tts app",
     )
     if not res.ok:

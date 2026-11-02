@@ -13,8 +13,8 @@ from pydantic import ValidationError
 
 from ns_common.config import save_runtime
 from ns_common.models import Runtime
+from ns_common.secrets_names import KEY_NAMES, SHORT_NAMES
 from ns_dashboard import logs_tail, runtime_flags
-from ns_dashboard.adapters import KEY_NAMES
 from ns_dashboard.common import now_iso
 from ns_dashboard.errors import AdapterUnavailable, ApiError
 from ns_dashboard.state import AppState, load_dashboard_settings, load_ui_prefs, save_dashboard_settings
@@ -22,7 +22,7 @@ from ns_dashboard.svc_engine import EngineService
 from ns_dashboard.templates import load_templates
 
 TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
-KEY_ALIASES = {"pexels": "pexels_api_key", "pixabay": "pixabay_api_key"}
+KEY_ALIASES = {short: full for full, short in SHORT_NAMES.items()}
 POOL_COLUMNS = {
     "hooks": "hook",
     "structures": "structure",

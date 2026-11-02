@@ -14,6 +14,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import zipfile
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -24,9 +25,16 @@ from ns_common.errors import NsError
 from ns_common.logging import NsLogger
 from ns_common.paths import Paths
 from ns_common.uv import find_uv, home_uv
+from ns_common.venv_extras import NO_DEPS, extras_suffix
 
 PRESERVE = (".git", "config", "answers.json")
-VENV_EXTRAS = (("studio", "[studio]", False), ("supervisor", "[supervisor]", False), ("tts", "[tts]", True))
+RENAME_TRIES = 20
+RENAME_PAUSE_S = 1.0
+BUSY_HINT = (
+    "another program still has the Nightshift folder open (a Dashboard, Studio or terminal window?). "
+    "Close those windows and run the update again; your previous version is still in place."
+)
+UPDATE_VENVS = ("studio", "supervisor", "tts")      # extras: ns_common.venv_extras (shared with setup)
 
 
 @dataclass
@@ -184,6 +192,27 @@ def leave_app(app: Path, paths: Paths) -> None:
     os.chdir(target)
 
 
+def rename_with_retry(
+    src: Path, dst: Path, *, tries: int | None = None, pause_s: float | None = None,
+    sleep: Callable[[float], None] = time.sleep,
+) -> None:
+    """Rename a folder, retrying while Windows still reports it in use (WinError 32 or 5).
+
+    Processes that were just told to stop (the engine, the dashboard service, a closing window) release the
+    folder a moment later, so the first attempt can fail although nothing is wrong.
+    """
+    tries = RENAME_TRIES if tries is None else tries
+    pause_s = RENAME_PAUSE_S if pause_s is None else pause_s
+    for attempt in range(1, tries + 1):
+        try:
+            src.rename(dst)
+            return
+        except OSError:
+            if attempt >= tries:
+                raise
+            sleep(pause_s)
+
+
 def _restore(app: Path, prev: Path, log: NsLogger) -> None:
     """Put `<app>.prev` back in place of a failed new tree."""
     failed = _sibling(app, ".failed")
@@ -211,13 +240,13 @@ def update_app(zip_path: Path, app: Path, env: UpdateEnv, *, paths: Paths) -> Up
         safe_extract(zip_path, new, prefix)
         notes = [f"kept {n}" for n in carry_over(app, new, env.untracked(app))]
         shutil.rmtree(prev, ignore_errors=True)
-        app.rename(prev)
+        rename_with_retry(app, prev)
     except NsError:
         shutil.rmtree(new, ignore_errors=True)
         raise
     except OSError as e:
         shutil.rmtree(new, ignore_errors=True)
-        raise NsError("NS-E702", f"could not stage the update: {e}") from e
+        raise NsError("NS-E702", f"could not stage the update: {e}. {BUSY_HINT}") from e
     try:
         new.rename(app)
     except OSError as e:
@@ -254,7 +283,7 @@ def rollback_app(app: Path, env: UpdateEnv, *, paths: Paths) -> UpdateResult:
     tmp = _sibling(app, ".swap")
     try:
         shutil.rmtree(tmp, ignore_errors=True)
-        app.rename(tmp)
+        rename_with_retry(app, tmp)
         prev.rename(app)
         tmp.rename(prev)
     except OSError as e:
@@ -275,7 +304,8 @@ def resync_venvs(
     runner = run or _run
     exe = uv if uv is not None else find_uv(paths)
     done: list[str] = []
-    for venv, extras, no_deps in VENV_EXTRAS:
+    for venv in UPDATE_VENVS:
+        extras, no_deps = extras_suffix(venv), venv in NO_DEPS
         py = paths.venvs / venv / "Scripts" / "python.exe"
         if not py.exists():
             continue
@@ -307,3 +337,94 @@ def verify_quick(app: Path) -> bool:
         [sys.executable, "-m", "ns_supervisor.cli", "verify", "--quick"], cwd=str(app), check=False
     )
     return r.returncode == 0
+
+
+# --------------------------------------------------------------------------------------------------------
+# a cloned-repo install: `ns update --git [--channel stable|main]`
+# --------------------------------------------------------------------------------------------------------
+CHANNELS = ("stable", "main")
+GitRun = Callable[[list[str]], tuple[int, str]]
+
+
+def _git_run(app: Path) -> GitRun:
+    exe = shutil.which("git")
+
+    def run(args: list[str]) -> tuple[int, str]:
+        if exe is None:
+            return 127, "git was not found on PATH"
+        try:
+            r = subprocess.run(
+                [exe, "-C", str(app), *args], capture_output=True, text=True, timeout=900, check=False
+            )
+        except (OSError, subprocess.SubprocessError) as e:
+            return 1, str(e)
+        return r.returncode, (r.stdout.strip() or r.stderr.strip())
+
+    return run
+
+
+def git_update(
+    app: Path,
+    env: UpdateEnv,
+    *,
+    paths: Paths,
+    channel: str = "stable",
+    latest_tag: Callable[[], str] | None = None,
+    git: GitRun | None = None,
+) -> UpdateResult:
+    """Update a cloned-repo install: fetch, move to the newest release tag (`stable`) or `origin/main`
+    (`main`), re-sync the venvs, verify, and go back to the previous commit if any step fails (`NS-E702`).
+
+    Refuses when the working tree has local changes to tracked files (nothing is touched then).
+    """
+    if channel not in CHANNELS:
+        raise NsError("NS-E702", f"unknown channel {channel!r}; choose stable or main")
+    app = app.absolute()
+    if not (app / ".git").exists():
+        raise NsError("NS-E702", f"{app} is not a git clone; use --github or an update zip instead")
+    run = git or _git_run(app)
+    log = NsLogger("update", paths.logs)
+    old_version = current_version(app)
+    code, head = run(["rev-parse", "HEAD"])
+    if code != 0:
+        raise NsError("NS-E702", f"git rev-parse failed: {head}")
+    code, dirty = run(["status", "--porcelain", "--untracked-files=no"])
+    if code != 0 or dirty:
+        raise NsError("NS-E702", "this copy has local changes to tracked files; commit or discard them first")
+    code, out = run(["fetch", "--tags", "--prune", "origin"])
+    if code != 0:
+        raise NsError("NS-E105", f"git fetch failed: {out}")
+    if channel == "stable":
+        tag = (latest_tag or (lambda: _latest_release_tag()))()
+        target = ["checkout", "--detach", tag]
+    else:
+        target = ["checkout", "--detach", "origin/main"]
+    leave_app(app, paths)
+    log.info("git_update_start", channel=channel, old=old_version, head=head[:12])
+    env.stop()
+    code, out = run(target)
+    if code != 0:
+        raise NsError("NS-E702", f"git {' '.join(target)} failed: {out}")
+    try:
+        env.sync(app)
+        if not env.verify(app):
+            raise NsError("NS-E702", "ns verify --quick failed on the new version")
+        notes = env.reregister(app)
+    except Exception as e:  # any step failing after the move goes back to the previous commit
+        log.error("git_update_failed", str(e))
+        run(["checkout", "--detach", head])
+        try:
+            env.sync(app)
+        except Exception as e2:  # best effort: the old tree is back
+            log.error("rollback_sync_failed", str(e2))
+        detail = e.detail if isinstance(e, NsError) else f"{type(e).__name__}: {e}"
+        raise NsError("NS-E702", detail) from e
+    new_version = current_version(app)
+    log.info("git_update_done", old=old_version, new=new_version)
+    return UpdateResult(old_version, new_version, [f"channel {channel}", *notes])
+
+
+def _latest_release_tag() -> str:
+    from ns_supervisor import releases
+
+    return releases.fetch_latest().tag
