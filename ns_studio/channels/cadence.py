@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import random
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 
@@ -230,11 +231,20 @@ def _window(window: str) -> tuple[int, int]:
 
 
 def assign_publish_times(
-    items: list[ReleaseItem], first_day: date, window: str, per_day: int, rng: random.Random
+    items: list[ReleaseItem],
+    first_day: date,
+    window: str,
+    per_day: int,
+    rng: random.Random,
+    *,
+    taken: Mapping[date, int] | None = None,
 ) -> dict[str, datetime]:
     """Publish time per output: masters on `first_day`, Shorts `per_day` a day from the next day on.
 
-    Every slot is jittered by up to +/-45 minutes and clamped inside the publish window.
+    `first_day` is the channel's local date (slots are local wall-clock times). `taken` counts the Shorts
+    earlier nights already scheduled per day: a day with `per_day` of them is skipped, a day with fewer takes
+    only the difference, and its new Shorts get the slots between the old ones. Every slot is jittered by up
+    to +/-45 minutes and clamped inside the publish window.
     """
     start, end = _window(window)
     span = max(1, end - start)
@@ -252,9 +262,13 @@ def assign_publish_times(
         out[m.output_id] = slot(first_day, k, max(1, len(masters)))
     per_day = max(1, min(per_day, MAX_SHORTS_PER_DAY))
     day = first_day + timedelta(days=1 if masters else 0)
-    for n in range(0, len(shorts), per_day):
-        chunk = shorts[n : n + per_day]
-        for k, s in enumerate(chunk):
-            out[s.output_id] = slot(day, k, len(chunk))
+    queue = list(shorts)
+    while queue:
+        before = (taken or {}).get(day, 0)
+        room = per_day - before
+        if room > 0:
+            chunk, queue = queue[:room], queue[room:]
+            for k, s in enumerate(chunk):
+                out[s.output_id] = slot(day, before + k, before + len(chunk))
         day += timedelta(days=1)
     return out
