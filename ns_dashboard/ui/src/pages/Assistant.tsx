@@ -8,7 +8,7 @@ import { fmtDay, fmtClock, stageWords, store } from "../lib/format";
 import type { Job } from "../lib/types";
 import { cx } from "../ui/kit";
 import { Mark } from "../ui/Mark";
-import { Button, Card, CardHeader, DashGrid, Icon, IconButton, MeetingCard, MetaItem, NotificationItem, SPAN, StatusDot, type IconName } from "../components/ref12";
+import { Button, Card, CardHeader, Icon, IconButton, MeetingCard, MetaItem, NotificationItem, StatusDot, type IconName, type MenuItem } from "../components/ref12";
 import { jobTitle } from "./Queue";
 
 type Confirm = { action_id: string; text: string; tool: string; state: "pending" | "done" | "dismissed" | "failed"; result?: string };
@@ -20,10 +20,10 @@ const TOOL_WORDS: Record<string, string> = { list_outputs: "Checking the Queue",
 const WELCOME: Msg = { id: 0, role: "assistant", text: "I run on this PC with the local model. I can start videos or clips, draft story concepts, pause or resume channels, find files and explain results. Anything that changes something shows you a Yes or No card first." };
 let mid = Date.now();
 
-export function Chat({ compact }: { compact?: boolean }) {
+export function Chat({ compact, initialText }: { compact?: boolean; initialText?: string }) {
   const { askContext, askPrompt, clearAskPrompt, refresh, route } = useApp();
   const [saved, setSaved] = useState<Saved>(() => store.get<Saved>("ns-chat2", { cid: null, msgs: [WELCOME] }));
-  const [text, setText] = useState("");
+  const [text, setText] = useState(initialText ?? "");
   const [busy, setBusy] = useState(false);
   const [toolNote, setToolNote] = useState<string | null>(null);
   const logRef = useRef<HTMLDivElement>(null); const taRef = useRef<HTMLTextAreaElement>(null);
@@ -69,11 +69,11 @@ export function Chat({ compact }: { compact?: boolean }) {
 
   return (
     <div className={cx("flex min-h-0 flex-1 flex-col", !compact && "h-full")}>
-      <div ref={logRef} aria-live="polite" className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-5 py-5 scroll-thin">
+      <div ref={logRef} aria-live="polite" className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-5 py-4 scroll-thin">
         {saved.msgs.map((m) => m.confirm ? <ConfirmCard key={m.id} c={m.confirm} onYes={() => decide(m, true)} onNo={() => decide(m, false)} /> : (
           <div key={m.id} className={cx("flex gap-3", m.role === "user" && "justify-end")}>
             {m.role !== "user" && m.role !== "note" && <span className="mt-0.5 shrink-0"><Mark size={28} /></span>}
-            <div className={cx("max-w-[78%] rounded-ds-lg px-4 py-2.5 text-ds-md leading-ds-normal whitespace-pre-wrap",
+            <div className={cx("max-w-[78%] rounded-ds-lg px-3 py-2 text-ds-md leading-ds-normal whitespace-pre-wrap",
               m.role === "user" ? "rounded-br-ds-xs bg-ds-accent text-ds-on-accent" : m.role === "note" ? "mx-auto bg-transparent text-center text-ds-2xs text-ds-muted" : m.role === "error" ? "rounded-tl-ds-xs bg-ds-danger-soft text-ds-text" : "rounded-tl-ds-xs bg-ds-sunken text-ds-text shadow-ds-inset-sm")}>{m.text}</div>
           </div>
         ))}
@@ -131,29 +131,37 @@ const CAN: { icon: IconName; t: string; s: string }[] = [
 ];
 
 export default function Assistant() {
-  const { demo, ask, channelName } = useApp();
+  const { demo, ask, channelName, go, toast } = useApp();
   const jobs = useLoad<Job[]>(() => api.get("/jobs"), [], []);
-  const recent = jobs.data.slice(0, 4);
+  const recent = jobs.data.slice(0, 6);
+  const copy = async (text: string) => { try { await navigator.clipboard.writeText(text); toast("Details copied", "ok"); } catch { toast("Copy was blocked", "warn"); } };
+  // Chat 7/12 and the side column 5/12 from 1100 px of content (a 1280 px window); both fill the viewport height there,
+  // and only the message list and the runs list scroll.
   return (
-    <div className="enter">
-      <DashGrid label="Assistant">
-        <Card as="section" aria-label="Chat with Nightshift" padding="none" className={cx("flex h-[calc(100dvh-196px)] min-h-[520px] flex-col overflow-hidden", SPAN["4/4"])}>
-          <div className="flex items-center justify-between gap-3 border-b border-ds-border-subtle px-5 py-4">
+    <div className="enter @container">
+      <div className="grid grid-cols-1 gap-5 @min-[1100px]:grid-cols-12">
+        <Card as="section" aria-label="Chat with Nightshift" padding="none" className="flex h-[75dvh] min-h-[480px] flex-col overflow-hidden md:h-[calc(100dvh-132px)] @min-[1100px]:col-span-7">
+          <div className="flex items-center justify-between gap-3 border-b border-ds-border-subtle px-5 py-3">
             <div className="flex min-w-0 items-center gap-3"><Mark size={28} /><div className="min-w-0"><h2 className="text-ds-lg leading-ds-tight font-semibold">Nightshift</h2><p className="truncate text-ds-2xs text-ds-muted">{demo ? "Scripted answers while the engine is off. On your PC it runs on the local model" : "Runs on the local model. It uses the same tools as the buttons"}</p></div></div>
             <StatusDot tone={demo ? "attention" : "online"} label={demo ? "Sample answers" : "Local model"} />
           </div>
           <Chat />
         </Card>
-        <div className={cx("flex flex-col gap-5", SPAN["2/4"])}>
-          <Card as="section" aria-labelledby="a-runs">
-            <CardHeader id="a-runs" title="Recent runs" />
+        <div className="flex flex-col gap-5 @min-[1100px]:col-span-5 @min-[1100px]:h-[calc(100dvh-132px)] @min-[1100px]:min-h-[480px]">
+          <Card as="section" aria-labelledby="a-runs" className="flex min-h-0 flex-col @min-[1100px]:flex-1">
+            <CardHeader id="a-runs" title="Recent runs" className="!mb-4" />
             {recent.length ? (
-              <ul className="flex flex-col gap-3">
+              <ul className="-mx-1 flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-1 pt-1 pb-1 scroll-thin">
                 {recent.map((j) => {
-                  const failed = j.status === "failed"; const live = ["queued", "running"].includes(j.status);
+                  const failed = j.status === "failed"; const live = ["queued", "running"].includes(j.status); const title = jobTitle(j, channelName);
+                  const menu: MenuItem[] = [
+                    { icon: "chat", label: failed ? "Ask why it stopped" : "Ask about it", onSelect: () => ask({ page: "assistant", job_id: j.job_id }, failed ? "Why did the last run stop?" : `What happened in the job ${title}?`, false) },
+                    { icon: "scenes", label: "Open in Create", onSelect: () => go("#/create") },
+                    { icon: "copy", label: "Copy details", onSelect: () => copy(`${title}: ${j.status}${j.message ? `, ${j.message}` : ""} (job ${j.job_id})`) },
+                  ];
                   return (
                     <li key={j.job_id}>
-                      <NotificationItem title={jobTitle(j, channelName)} moreLabel={`Ask about ${jobTitle(j, channelName)}`} onMore={() => ask({ page: "assistant", job_id: j.job_id }, failed ? "Why did the last run stop?" : `What happened in the job ${jobTitle(j, channelName)}?`, false)}
+                      <NotificationItem title={title} moreLabel={`Options for ${title}`} menu={menu}
                         titleAdornment={<StatusDot tone={failed ? "danger" : live ? "accent" : j.status === "cancelled" ? "attention" : "online"} label={failed ? "Stopped" : live ? "Running" : j.status === "cancelled" ? "Cancelled" : "Done"} />}
                         subtitle={live ? stageWords(j.stage) : failed ? `Stopped at ${stageWords(j.stage).toLowerCase()}` : j.status === "cancelled" ? "Cancelled" : "Done"}
                         meta={<><MetaItem icon="calendarDays">{fmtDay(j.created_at)}</MetaItem><MetaItem icon="clock">{fmtClock(j.created_at)}</MetaItem></>} />
@@ -163,15 +171,15 @@ export default function Assistant() {
               </ul>
             ) : <p className="text-ds-sm text-ds-text-2">No runs yet</p>}
           </Card>
-          <Card as="section" aria-labelledby="a-can">
-            <CardHeader id="a-can" title="What it can do" />
-            <ul className="flex flex-col gap-4">
-              {CAN.map(({ icon, t, s }) => <li key={t} className="flex gap-3"><span aria-hidden className="grid size-8 shrink-0 place-items-center rounded-ds-md bg-ds-accent-soft text-ds-accent-ink"><Icon name={icon} size={16} /></span><div><p className="text-ds-sm font-semibold">{t}</p><p className="text-ds-2xs text-ds-muted">{s}</p></div></li>)}
+          <Card as="section" aria-labelledby="a-can" className="shrink-0">
+            <CardHeader id="a-can" title="What it can do" className="!mb-4" />
+            <ul className="grid grid-cols-1 gap-3 @min-[1100px]:grid-cols-2">
+              {CAN.map(({ icon, t, s }) => <li key={t} className="flex gap-3"><span aria-hidden className="grid size-8 shrink-0 place-items-center rounded-ds-md bg-ds-accent-soft text-ds-accent-ink"><Icon name={icon} size={16} /></span><div className="min-w-0"><p className="text-ds-sm font-semibold">{t}</p><p className="text-ds-2xs text-ds-muted">{s}</p></div></li>)}
             </ul>
-            <p className="mt-5 border-t border-ds-border-subtle pt-4 text-ds-xs leading-ds-normal text-ds-text-2">It asks first. Starting work, pausing a channel or saving ideas shows a card with Yes and No. Nothing changes until you press Yes</p>
+            <p className="mt-4 border-t border-ds-border-subtle pt-3 text-ds-xs leading-ds-normal text-ds-text-2">It asks first. Starting work, pausing a channel or saving ideas shows a card with Yes and No. Nothing changes until you press Yes</p>
           </Card>
         </div>
-      </DashGrid>
+      </div>
     </div>
   );
 }
