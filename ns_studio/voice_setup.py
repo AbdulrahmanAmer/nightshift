@@ -25,6 +25,8 @@ from ns_common.config import load_channel
 from ns_common.errors import NsError
 from ns_common.languages import qwen_language
 from ns_common.paths import Paths
+from ns_studio.context import JobContext
+from ns_studio.errors import StudioError
 from ns_studio.jobs import Env
 
 PENDING_NAME = "pending_voice.json"
@@ -173,6 +175,29 @@ def _channel_language(env: Env, slug: object) -> str:
         return load_channel(env.paths, str(slug)).language if slug else "en"
     except (OSError, ValueError):
         return "en"
+
+
+def apply_pending_voices(ctx: JobContext) -> str | None:
+    """Create the voice setup queued, for any run that is about to speak: `studio run`, the dashboard's Run
+    now and series parts all go through `run_job_guarded`, which calls this first.
+
+    Best effort, like the CLI's own `_setup_voice`: a failure is logged and the job goes on (the voice stage
+    then fails with its own message). Does nothing when no voice is queued or the job uses the fake TTS.
+    Returns the voice name when one was created.
+    """
+    from ns_common.tts_client import FakeTts
+
+    if read_pending(ctx.paths) is None or isinstance(ctx.services.tts, FakeTts):
+        return None
+    env = Env(ctx.paths, ctx.db, ctx.runtime, ctx.services, ctx.log, frozenset())
+    try:
+        made = apply_pending(env)
+    except (NsError, StudioError) as e:
+        ctx.log.warn("pending_voice_failed", str(e), job_id=ctx.job_id)
+        return None
+    if made:
+        ctx.log.info("pending_voice_created", voice=made, job_id=ctx.job_id)
+    return made
 
 
 def apply_pending(env: Env, *, post: Post | None = None) -> str | None:

@@ -74,6 +74,10 @@ def _raise_voice_mismatch(r: httpx.Response) -> None:
         body = r.json()
     except ValueError:
         return
+    if r.status_code == 404 and isinstance(body, dict) and "unknown voice" in str(body.get("detail", "")):
+        raise NsError(
+            "NS-E311", f"{body['detail']}: create the voice first (Library > Voices, or 'studio voice design')"
+        )
     if isinstance(body, dict) and body.get("error") in _SERVICE_CODES:
         raise NsError(str(body["error"]), str(body.get("detail", "")))
 

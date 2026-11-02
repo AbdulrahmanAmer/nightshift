@@ -127,7 +127,14 @@ def reject_artifacts(ctx: JobContext, err: NsError, attempt: int) -> Path:
 
 
 def run_job_guarded(ctx: JobContext, *, resume: bool = True) -> list[str]:
-    """`run_job` with regenerate-once handling of NS-E601 to NS-E614 policy failures."""
+    """`run_job` with regenerate-once handling of NS-E601 to NS-E614 policy failures.
+
+    The voice setup queued (`config/pending_voice.json`) is created first, so every path that runs a job
+    (`studio run`, the dashboard's Run now, a series part) has it before the voice stage asks for it.
+    """
+    from ns_studio.voice_setup import apply_pending_voices
+
+    apply_pending_voices(ctx)
     first = True
     while True:
         try:
