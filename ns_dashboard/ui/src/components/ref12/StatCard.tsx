@@ -5,7 +5,7 @@ import { ProgressRing } from "./ProgressRing";
 
 const EYEBROW = { success: "text-ds-success-ink", danger: "text-ds-danger", accent: "text-ds-accent-ink" } as const;
 
-/** StatCard (Planify): padding md card. Head: 48 px ProgressRing + tone eyebrow (2xs/600 uppercase) over an md/600 title.
+/** StatCard (Planify): padding md card. Head: 48 px ProgressRing + tone eyebrow (2xs/600, sentence case) over an md/600 title.
  *  Foot: two 2xs muted caption lines and an optional sm primary button, 16 px below the head. */
 export function StatCard({ value, tone, eyebrow, title, caption, detail, action, className }: {
   value: number; tone: keyof typeof EYEBROW; eyebrow: string; title: string; caption: string; detail: string; action?: { label: string; onClick?: () => void }; className?: string;
@@ -15,7 +15,7 @@ export function StatCard({ value, tone, eyebrow, title, caption, detail, action,
       <div className="flex items-center gap-3">
         <ProgressRing value={value} tone={tone} size={48} label={title} />
         <div className="flex min-w-0 flex-col">
-          <span className={cx("text-ds-2xs font-semibold tracking-[0.03em] whitespace-nowrap uppercase", EYEBROW[tone])}>{eyebrow}</span>
+          <span className={cx("text-ds-2xs font-semibold whitespace-nowrap", EYEBROW[tone])}>{eyebrow}</span>
           <h3 className="truncate text-ds-md leading-ds-snug font-semibold">{title}</h3>
         </div>
       </div>

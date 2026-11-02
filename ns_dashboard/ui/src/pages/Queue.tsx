@@ -1,11 +1,23 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { Check, ChevronDown, Copy, ExternalLink, FolderOpen, Image, MessageSquare, Play, Undo2 } from "lucide-react";
+/* Queue (home): the ref12 recreation's composition with Nightshift's real data.
+     6 columns  greeting greeting f1 f2 f3 countdown
+                review   review   review review post post
+                events   events   plan plan   cal  cal
+                renders  renders  renders promo meters meters
+   4 columns: greeting x4 / f1 f2 f3 countdown / review x4 / post x4 / events plan / cal meters / renders x3 promo.
+   Behaviour is unchanged from the previous page: same API calls, posting checklist, remembered progress, keys A / R / →. */
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useApp, useLoad } from "../lib/app";
 import { api } from "../lib/api";
-import { fmtClock, fmtDay, fmtDur, fmtWhen, kindLabel, store } from "../lib/format";
-import type { Output, OutputDetail } from "../lib/types";
-import { Button, Card, cx, Empty, Keycap, KindTag, LinkButton, PageHeader, SegTabs } from "../ui/kit";
+import { dayInline, fmtClock, fmtDay, fmtDur, fmtWhen, kindLabel, stageWords, store } from "../lib/format";
+import type { ChannelSummary, Job, Output, OutputDetail } from "../lib/types";
+import { cx } from "../ui/kit";
 import { Scene } from "../visuals/Scene";
+import {
+  AssignmentCard, AvatarGroup, Badge, Button, CalendarCard, Card, CardHeader, ClipsIllustration, CountdownCard, CreateTile, DashGrid, EmptyState,
+  FeatureCard, Greeting, Icon, Input, Kbd, LinkButton, MeterGroup, MetaItem, NotificationItem, PromoCard, SegmentedControl, SeriesIllustration,
+  SPAN, StatusDot, StepItem, StoryIllustration, TaskList, VoiceIllustration, WorkspaceTokens,
+  type AgendaSlot, type IconName, type MenuItem, type MeterDatum, type Task, type WeekDay,
+} from "../components/ref12";
 
 type Tab = "ready" | "posted" | "rejected";
 const STATUS: Record<Tab, string> = { ready: "pending", posted: "approved,uploaded", rejected: "rejected" };
@@ -15,56 +27,104 @@ export function Poster({ o, className, portrait }: { o: Pick<Output, "title" | "
   return <Scene seed={o.title} kind={o.kind === "clip" ? "clip" : "story"} w={p ? 900 : 1600} h={p ? 1600 : 900} className={className} title={`Still for ${o.title}`} />;
 }
 
+export function jobTitle(j: Job, channelName: (s?: string) => string) {
+  if (j.kind === "clip") return j.title ? `Clips from ${j.title}` : `Clips for ${channelName(j.channel)}`;
+  return j.title || `Story video for ${channelName(j.channel)}`;
+}
+const kindIcon = (k: string): IconName => (k === "long" ? "monitor" : k === "short" ? "phone" : "scissors");
+const partOfDay = () => { const h = new Date().getHours(); return h < 5 ? "Good night" : h < 12 ? "Good morning" : h < 18 ? "Good afternoon" : "Good evening"; };
+
 export default function Queue() {
-  const { route, status, refresh, channelName } = useApp();
+  const { route, status, refresh, channelName, go, ask } = useApp();
   const [tab, setTab] = useState<Tab>((route.query.get("tab") as Tab) || "ready");
   const list = useLoad<Output[]>(() => api.get(`/outputs?status=${STATUS[tab]}`), [tab], []);
   const [current, setCurrent] = useState<string | null>(route.query.get("id"));
+  // Job history for the events and render cards: loaded once and again whenever the engine changes state (no extra polling).
+  const jobs = useLoad<Job[]>(() => api.get("/jobs"), [status?.engine?.state], []);
   const items = list.data;
   const o = items.find((x) => x.output_id === current) || items[0];
   const counts = status?.outbox;
-
+  const chans = status?.channels || [];
   const newest = items.reduce<string | null>((m, x) => (!m || x.created_at > m ? x.created_at : m), null);
+  const pending = counts?.pending ?? (tab === "ready" ? items.length : 0);
+  const owner = chans.find((c) => c.status === "active")?.display_name || chans[0]?.display_name;
+  const nextRun = status?.next_run ? new Date(status.next_run) : null;
+
+  const series = () => { ask({ page: "queue" }, "Draft 3 story concepts for a series", false); go("#/assistant"); };
+  const pick = (t: Tab) => { setTab(t); setCurrent(null); };
+  const reviewDescription = (
+    <>
+      {owner ? `${partOfDay()}. ` : ""}{pending ? <>{pending === 1 ? "One video is" : `${pending} videos are`} ready to review{newest && tab === "ready" ? <>, the newest made at <span className="ds-num">{fmtClock(newest)}</span></> : null}.</> : "Nothing is waiting for review."}{" "}
+      {status?.next_run ? <>Tonight's run starts at <span className="ds-num">{fmtClock(status.next_run)}</span>.</> : "Automatic runs are off."}
+    </>
+  );
+
   return (
-    <div className="enter flex flex-col gap-5">
-      <PageHeader
-        title={tab === "ready" ? ((counts?.pending ?? items.length) ? `${counts?.pending ?? items.length} ready to review` : "Queue") : tab === "posted" ? "Approved and posted" : "Rejected"}
-        sub={tab === "ready" ? (items.length ? <>Made overnight, newest at <span className="font-mono num">{fmtClock(newest)}</span>. Watch, approve, then post in this order</> : "Nothing waiting") : tab === "posted" ? "Approved videos wait in the Outbox folder until you post them" : "Kept for 7 days in the rejected folder, then deleted"}
-        right={<SegTabs label="Queue" value={tab} onChange={(t) => { setTab(t); setCurrent(null); }} items={[{ id: "ready", label: "Ready", count: counts?.pending }, { id: "posted", label: "Approved & posted", count: counts?.approved }, { id: "rejected", label: "Rejected", count: counts?.rejected }]} />}
-      />
-      {list.loading && !items.length ? <div className="h-[460px] rounded-[20px] bg-card/60" /> :
-        tab === "ready" ? (o ? <Review key={o.output_id} o={o} items={items} onPick={setCurrent} onChanged={async (next) => { await refresh(); list.reload(); setCurrent(next); }} channelName={channelName} /> :
-          <Empty title="Nothing to review" action={<LinkButton href="#/create" variant="primary">Make something now</LinkButton>}>Everything made so far is approved or posted. New videos appear here after tonight's run.</Empty>) :
-          <ListView items={items} tab={tab} onResume={(id) => { setTab("ready"); setCurrent(id); location.hash = `#/?id=${encodeURIComponent(id)}`; }} channelName={channelName} />}
+    <div className="enter">
+      <DashGrid label="Queue">
+        <Greeting as="h2" size="lg" className={cx("self-center", SPAN["2/4"])} salutation={owner || partOfDay()} question="What are we making tonight?"
+          description={reviewDescription} adornment={chans.length ? <WorkspaceTokens tokens={chans.slice(0, 3).map((c) => ({ icon: /clip|stream|podcast/i.test(c.niche || "") ? "scissors" : "channels", label: c.display_name }))} /> : undefined} />
+        <FeatureCard className={cx("self-stretch", SPAN["1/1"])} illustration={<StoryIllustration />} title="Write a story" description="An original story, narrated, with footage and captions" href="#/create?kind=story" />
+        <FeatureCard className={cx("self-stretch", SPAN["1/1"])} illustration={<ClipsIllustration />} title="Cut clips" description="Vertical clips from your own stream or podcast" href="#/create?kind=clips" />
+        <FeatureCard className={cx("self-stretch", SPAN["1/1"])} illustration={<SeriesIllustration />} title="Build a series" description="Plan the parts with the Assistant, then make them" onClick={series} />
+        <CountdownCard className={cx("self-stretch", SPAN["1/1"])} title="Next automatic run" target={nextRun} emptyText="Automatic runs are off. Set a time in Settings"
+          caption={status?.schedule_time ? `Every night at ${status.schedule_time}` : undefined} />
+
+        {tab === "ready" && o && !list.loading ? (
+          <Review key={o.output_id} o={o} items={items} tab={tab} onTab={pick} onPick={setCurrent} onChanged={async (next) => { await refresh(); list.reload(); setCurrent(next); }} channelName={channelName} />
+        ) : (
+          <Card as="section" aria-labelledby="q-list" className={SPAN["6/4"]}>
+            <CardHeader id="q-list" title={tab === "ready" ? "Ready to review" : tab === "posted" ? "Approved and posted" : "Rejected"} actions={<QueueTabs tab={tab} onTab={pick} />} />
+            {list.loading && !items.length ? <div aria-busy="true" className="h-[320px] rounded-ds-lg bg-ds-sunken" />
+              : tab === "ready" ? <EmptyState icon="film" title="Nothing to review" action={<LinkButton href="#/create" variant="primary">Make something now</LinkButton>}>Everything made so far is approved or posted. New videos appear here after tonight's run</EmptyState>
+              : <ListView items={items} tab={tab} onResume={(id) => { setTab("ready"); setCurrent(id); location.hash = `#/?id=${encodeURIComponent(id)}`; }} channelName={channelName} />}
+          </Card>
+        )}
+
+        <JobEvents jobs={jobs.data} loading={jobs.loading} channelName={channelName} className={SPAN["2/2"]} onReview={() => pick("ready")} />
+        <TonightPlan chans={chans} status={status} className={SPAN["2/2"]} />
+        <PostingCalendar chans={chans} ready={tab === "ready" ? items : []} className={SPAN["2/2"]} onOpen={(id) => { setTab("ready"); setCurrent(id); }} />
+        <MachineMeters className={cx("self-stretch @min-[1020px]:order-last", SPAN["2/2"])} />
+        <RenderJobs jobs={jobs.data} chans={chans} channelName={channelName} className={cx("self-stretch", SPAN["3/2"])} />
+        <PromoCard className={cx("self-stretch", SPAN["1/2"])} illustration={<VoiceIllustration />} title="Train a voice" description="Design a narrator from a few words, or clone one from a short sample" ctaLabel="Open Voices" onCta={() => go("#/library?tab=voices")} />
+      </DashGrid>
     </div>
   );
 }
 
+function QueueTabs({ tab, onTab }: { tab: Tab; onTab: (t: Tab) => void }) {
+  const { status } = useApp(); const c = status?.outbox;
+  const n = (v?: number) => (v ? ` ${v}` : "");
+  return <SegmentedControl label="Queue" size="sm" value={tab} onChange={onTab} options={[{ value: "ready", label: `Ready${n(c?.pending)}` }, { value: "posted", label: `Approved and posted${n(c?.approved)}` }, { value: "rejected", label: `Rejected${n(c?.rejected)}` }]} />;
+}
+
 function ListView({ items, tab, onResume, channelName }: { items: Output[]; tab: Tab; onResume: (id: string) => void; channelName: (s?: string) => string }) {
-  if (!items.length) return <Empty title="Nothing here yet">{tab === "posted" ? "Approved videos show up here until you paste their YouTube link" : "Rejected videos and your reasons show up here"}</Empty>;
+  if (!items.length) return <EmptyState icon="film" title="Nothing here yet">{tab === "posted" ? "Approved videos show up here until you paste their YouTube link" : "Rejected videos and your reasons show up here"}</EmptyState>;
   return (
-    <div className="grid grid-cols-[repeat(auto-fill,minmax(300px,1fr))] gap-4">
-      {items.map((x) => (
-        <Card key={x.output_id} className="flex gap-4 p-3">
-          <div className={cx("relative shrink-0 overflow-hidden rounded-[12px] bg-[#0b0d14]", x.kind === "long" ? "h-[72px] w-[128px]" : "h-[112px] w-[63px]")}><Poster o={x} className="size-full" /></div>
-          <div className="flex min-w-0 flex-1 flex-col gap-1 py-1">
-            <KindTag kind={x.kind} />
-            <p className="line-clamp-2 text-[14px] leading-5 font-medium">{x.title}</p>
-            <p className="text-[12px] text-muted">{channelName(x.channel)} · {fmtDay(x.created_at)}</p>
-            <div className="mt-auto flex items-center gap-2 pt-1 text-[13px]">
-              {x.status === "uploaded" && x.url ? <a href={x.url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-text-2 hover:text-text"><ExternalLink size={14} strokeWidth={1.5} />Posted on YouTube</a>
-                : x.status === "approved" ? <><span className="text-text-2">Not posted yet</span><Button size="sm" variant="secondary" className="ml-auto" onClick={() => onResume(x.output_id)}>Finish posting</Button></>
-                : <span className="text-text-2">{x.reason ? `Reason: ${x.reason}` : "No reason given"}</span>}
+    <div className="@container">
+      <ul className="grid grid-cols-1 gap-4 @min-[640px]:grid-cols-2 @min-[960px]:grid-cols-3">
+        {items.map((x) => (
+          <li key={x.output_id} className="flex gap-4 rounded-ds-lg bg-ds-surface p-3 shadow-[var(--ds-shadow-1),0_0_0_1px_var(--ds-border-subtle)]">
+            <div className={cx("relative shrink-0 overflow-hidden rounded-ds-sm bg-ds-media", x.kind === "long" ? "h-[72px] w-[128px]" : "h-[112px] w-[64px]")}><Poster o={x} className="size-full" /></div>
+            <div className="flex min-w-0 flex-1 flex-col gap-1 py-1">
+              <MetaItem icon={kindIcon(x.kind)}>{kindLabel(x.kind)}</MetaItem>
+              <p className="line-clamp-2 text-ds-sm leading-ds-snug font-semibold">{x.title}</p>
+              <p className="text-ds-2xs text-ds-muted">{channelName(x.channel)} · {fmtDay(x.created_at)}</p>
+              <div className="mt-auto flex items-center gap-2 pt-1 text-ds-xs">
+                {x.status === "uploaded" && x.url ? <LinkButton href={x.url} external variant="ghost" size="sm" leadingIcon="external" className="-ml-2">Posted on YouTube</LinkButton>
+                  : x.status === "approved" ? <><span className="text-ds-text-2">Not posted yet</span><Button size="sm" variant="soft" className="ml-auto" onClick={() => onResume(x.output_id)}>Finish posting</Button></>
+                  : <span className="text-ds-text-2">{x.reason ? `Reason: ${x.reason}` : "No reason given"}</span>}
+              </div>
             </div>
-          </div>
-        </Card>
-      ))}
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }
 
 type Prog = Record<string, boolean>;
-function Review({ o, items, onPick, onChanged, channelName }: { o: Output; items: Output[]; onPick: (id: string) => void; onChanged: (nextId: string | null) => Promise<void>; channelName: (s?: string) => string }) {
+function Review({ o, items, tab, onTab, onPick, onChanged, channelName }: { o: Output; items: Output[]; tab: Tab; onTab: (t: Tab) => void; onPick: (id: string) => void; onChanged: (nextId: string | null) => Promise<void>; channelName: (s?: string) => string }) {
   const { toast, confirm, ask, demo } = useApp();
   const detail = useLoad<OutputDetail | null>(() => api.get(`/outputs/${api.enc(o.output_id)}`), [o.output_id], null);
   const d = detail.data;
@@ -114,134 +174,264 @@ function Review({ o, items, onPick, onChanged, channelName }: { o: Output; items
 
   type Step = { key: string; title: string; sub?: string; action?: JSX.Element };
   const steps: Step[] = [
-    { key: "folder", title: "Open the video file", sub: o.path || "In the Outbox folder", action: <Button size="sm" variant="secondary" icon={<FolderOpen size={14} strokeWidth={1.5} />} onClick={openFolder}>Open</Button> },
-    { key: "studio", title: "Open YouTube Studio", sub: "Start an upload and drag the file in", action: <a href="https://studio.youtube.com/" target="_blank" rel="noopener noreferrer" onClick={() => mark("studio")} className="inline-flex h-8 items-center gap-1.5 rounded-full border border-line-2 bg-card px-3 text-[13px] font-medium no-underline hover:bg-raised"><ExternalLink size={14} strokeWidth={1.5} />Studio</a> },
-    { key: "title", title: "Title", sub: o.title, action: <Button size="sm" variant="secondary" icon={<Copy size={14} strokeWidth={1.5} />} onClick={() => copy(o.title, "Title", "title")}>Copy</Button> },
-    { key: "description", title: "Description", sub: d?.chapters?.length ? `With ${d.chapters.length} chapters and ${d.hashtags?.length ?? 0} hashtags` : `With ${d?.hashtags?.length ?? 0} hashtags`, action: <Button size="sm" variant="secondary" icon={<Copy size={14} strokeWidth={1.5} />} onClick={() => copy(description, "Description", "description")} disabled={!d}>Copy</Button> },
-    { key: "thumb", title: "Thumbnail", sub: o.kind === "long" ? "Three were made for this video" : "Pick a frame in Studio", action: o.kind === "long" && !demo ? <a href={api.thumbUrl(o.output_id)} target="_blank" rel="noopener noreferrer" onClick={() => mark("thumb")} className="inline-flex h-8 items-center gap-1.5 rounded-full border border-line-2 bg-card px-3 text-[13px] font-medium no-underline hover:bg-raised"><Image size={14} strokeWidth={1.5} />Open</a> : <Button size="sm" variant="ghost" onClick={() => mark("thumb")}>Done</Button> },
+    { key: "folder", title: "Open the video file", sub: o.path || "In the Outbox folder", action: <Button size="sm" variant="soft" leadingIcon="folder" onClick={openFolder}>Open</Button> },
+    { key: "studio", title: "Open YouTube Studio", sub: "Start an upload and drag the file in", action: <LinkButton href="https://studio.youtube.com/" external size="sm" variant="soft" leadingIcon="external" onClick={() => mark("studio")}>Studio</LinkButton> },
+    { key: "title", title: "Title", sub: o.title, action: <Button size="sm" variant="soft" leadingIcon="copy" onClick={() => copy(o.title, "Title", "title")}>Copy</Button> },
+    { key: "description", title: "Description", sub: d?.chapters?.length ? `With ${d.chapters.length} chapters and ${d.hashtags?.length ?? 0} hashtags` : `With ${d?.hashtags?.length ?? 0} hashtags`, action: <Button size="sm" variant="soft" leadingIcon="copy" onClick={() => copy(description, "Description", "description")} disabled={!d}>Copy</Button> },
+    { key: "thumb", title: "Thumbnail", sub: o.kind === "long" ? "Three were made for this video" : "Pick a frame in Studio", action: o.kind === "long" && !demo ? <LinkButton href={api.thumbUrl(o.output_id)} external size="sm" variant="soft" leadingIcon="image" onClick={() => mark("thumb")}>Open</LinkButton> : <Button size="sm" variant="ghost" onClick={() => mark("thumb")}>Done</Button> },
     { key: "audience", title: "Audience", sub: d?.made_for_kids ? "Yes, it's made for kids" : "No, it's not made for kids", action: <Button size="sm" variant="ghost" onClick={() => mark("audience")}>Done</Button> },
     { key: "altered", title: "Altered content", sub: d?.ai_disclosure === "yes" ? "Answer Yes" : "Answer No. The voice is production help, footage is real stock", action: <Button size="sm" variant="ghost" onClick={() => mark("altered")}>Done</Button> },
-    { key: "tags", title: "Tags", sub: d?.tags?.length ? `${d.tags.length} tags, ${d.tags.slice(0, 3).join(", ")}` : "No tags", action: <Button size="sm" variant="secondary" icon={<Copy size={14} strokeWidth={1.5} />} onClick={() => copy((d?.tags || []).join(", "), "Tags", "tags")} disabled={!d}>Copy</Button> },
+    { key: "tags", title: "Tags", sub: d?.tags?.length ? `${d.tags.length} tags, ${d.tags.slice(0, 3).join(", ")}` : "No tags", action: <Button size="sm" variant="soft" leadingIcon="copy" onClick={() => copy((d?.tags || []).join(", "), "Tags", "tags")} disabled={!d}>Copy</Button> },
     { key: "schedule", title: "Schedule and related video", sub: [d?.publish_after ? `Publish ${fmtWhen(d.publish_after)}` : "Any time", o.kind !== "long" && d?.related_video_instruction].filter(Boolean).join(". "), action: <Button size="sm" variant="ghost" onClick={() => mark("schedule")}>Done</Button> },
   ];
   const doneCount = (approved ? 1 : 0) + steps.filter((s) => prog[s.key]).length;
   const total = steps.length + 2;
+  const nextKey = !approved ? "approve" : steps.find((s) => !prog[s.key])?.key ?? "link";
+  // The checklist scrolls inside its own card on wide screens; keep the next step in view as steps get ticked.
+  const aside = useRef<HTMLElement>(null);
+  useEffect(() => {
+    const box = aside.current; if (!box || box.scrollHeight <= box.clientHeight + 1) return;
+    const el = box.querySelector<HTMLElement>(".is-next"); if (!el) return;
+    const top = el.offsetTop; const bottom = top + el.offsetHeight;
+    if (top < box.scrollTop + 64 || bottom > box.scrollTop + box.clientHeight - 16) box.scrollTo({ top: Math.max(0, top - 80), behavior: "smooth" });
+  }, [nextKey]);
 
   return (
-    <div className="grid grid-cols-[minmax(0,1fr)] gap-5 min-[1100px]:grid-cols-[minmax(0,1fr)_360px] 2xl:grid-cols-[minmax(0,1fr)_400px]">
-      <div className="flex min-w-0 flex-col gap-4">
-        {/* hero player */}
-        <div className="relative overflow-hidden rounded-[24px] bg-[#0b0d14] shadow-card">
+    <>
+      <Card as="section" aria-labelledby="q-review" className={cx("flex flex-col gap-5", SPAN["4/4"])}>
+        <CardHeader id="q-review" title="Ready to review" className="!mb-0" adornment={<Badge tone="accent" className="ds-num">{idx + 1} of {items.length}</Badge>} actions={<QueueTabs tab={tab} onTab={onTab} />} />
+        {/* the player: the one rich surface on the page */}
+        <div className="relative overflow-hidden rounded-ds-lg bg-ds-media">
           <div className={cx("relative", portrait ? "aspect-[16/10]" : "aspect-video")}>
             <div className={cx("absolute inset-0", portrait && "flex justify-center py-5")}>
               {demo ? (
-                <div className={cx("relative overflow-hidden", portrait ? "aspect-[9/16] h-full rounded-[16px] shadow-float" : "size-full")}>
+                <div className={cx("relative overflow-hidden", portrait ? "aspect-[9/16] h-full rounded-ds-md" : "size-full")}>
                   <Poster o={o} className="size-full" />
-                  <span className="absolute inset-0 flex items-center justify-center"><span className="glass-chip flex size-16 items-center justify-center rounded-full shadow-float" aria-hidden><Play size={24} strokeWidth={1.5} className="translate-x-0.5" fill="currentColor" /></span></span>
+                  <span className="absolute inset-0 grid place-items-center"><span aria-hidden className="grid size-14 place-items-center rounded-full bg-[rgba(11,11,28,0.72)] text-white"><Icon name="play" size={22} filled className="translate-x-0.5" /></span></span>
                   <span className="sr-only">Video preview. With demo data there is no video file to play</span>
                 </div>
               ) : (
-                <video key={o.output_id} controls preload="metadata" src={api.mediaUrl(o.output_id)} poster={api.thumbUrl(o.output_id)} className={cx("bg-black", portrait ? "aspect-[9/16] h-full rounded-[16px]" : "size-full")} />
+                <video key={o.output_id} controls preload="metadata" src={api.mediaUrl(o.output_id)} poster={api.thumbUrl(o.output_id)} className={cx("bg-black", portrait ? "aspect-[9/16] h-full rounded-ds-md" : "size-full")} />
               )}
             </div>
-            <div className="pointer-events-none absolute top-4 left-4 flex flex-wrap gap-2">
-              <span className="glass-chip inline-flex h-8 items-center gap-2 rounded-full px-3 text-[13px] font-medium">{kindLabel(o.kind)}{o.k ? ` ${o.k}` : ""}<span className="font-mono font-normal num opacity-70">{fmtDur(o.duration_s)}</span></span>
+            <div className="pointer-events-none absolute top-3 left-3 flex flex-wrap gap-2">
+              <Badge tone="overlay" size="md">{kindLabel(o.kind)}{o.k ? ` ${o.k}` : ""}<span className="font-medium opacity-75 ds-num">{fmtDur(o.duration_s)}</span></Badge>
             </div>
-            <span className="glass-chip pointer-events-none absolute top-4 right-4 inline-flex h-8 items-center rounded-full px-3 font-mono text-[13px] num">{idx + 1} of {items.length}</span>
           </div>
         </div>
-        <div className="flex flex-wrap items-start justify-between gap-3 px-1">
+        <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0">
-            <h2 className="text-[22px] leading-7 font-medium">{o.title}</h2>
-            <p className="mt-1 text-[13px] text-muted">{channelName(o.channel)} · made <span className="font-mono num">{fmtWhen(o.created_at)}</span>{d?.critic_avg ? <> · critic score <span className="font-mono num">{d.critic_avg.toFixed(1)}</span></> : null}{d?.words ? <> · <span className="font-mono num">{d.words.toLocaleString("en-US")}</span> words</> : null}</p>
+            <h3 className="text-ds-xl leading-ds-tight font-semibold tracking-[-0.01em]">{o.title}</h3>
+            <p className="mt-1 flex flex-wrap gap-x-4 gap-y-1">
+              <MetaItem icon="channels">{channelName(o.channel)}</MetaItem>
+              <MetaItem icon="clock">Made {fmtWhen(o.created_at)}</MetaItem>
+              {d?.critic_avg ? <MetaItem icon="target">Critic score {d.critic_avg.toFixed(1)}</MetaItem> : null}
+              {d?.words ? <MetaItem icon="file">{d.words.toLocaleString("en-US")} words</MetaItem> : null}
+            </p>
           </div>
           <div className="flex items-center gap-2">
-            <Button variant="ghost" size="sm" icon={<MessageSquare size={14} strokeWidth={1.5} />} onClick={() => ask({ page: "queue", output_id: o.output_id }, `Tell me about "${o.title}"`)}>Ask about it</Button>
-            {items.length > 1 && <Button variant="secondary" size="sm" onClick={() => nextId && onPick(nextId)}>Next video <Keycap>→</Keycap></Button>}
+            <Button variant="ghost" size="sm" leadingIcon="chat" onClick={() => ask({ page: "queue", output_id: o.output_id }, `Tell me about "${o.title}"`)}>Ask about it</Button>
+            {items.length > 1 && <Button variant="soft" size="sm" onClick={() => nextId && onPick(nextId)} trailing={<Kbd>→</Kbd>}>Next video</Button>}
           </div>
         </div>
 
-        <Card className="overflow-hidden">
-          <button type="button" aria-expanded={open} onClick={() => setOpen(!open)} className="flex w-full items-center justify-between gap-3 px-5 py-4 text-left hover:bg-raised/50">
-            <span className="text-[15px] font-medium">The story and why it passed checks</span>
-            <ChevronDown size={18} strokeWidth={1.5} className={cx("text-muted transition-transform duration-200", open && "rotate-180")} />
+        <div className="overflow-hidden rounded-ds-lg bg-ds-sunken shadow-ds-inset-sm">
+          <button type="button" aria-expanded={open} onClick={() => setOpen(!open)} className="ds-focus flex w-full items-center justify-between gap-3 rounded-ds-lg px-4 py-3 text-left text-ds-sm font-semibold hover:bg-ds-hover">
+            The story and why it passed checks
+            <Icon name="chevronDown" size={18} className={cx("text-ds-muted transition-transform duration-200 ease-ds-out", open && "rotate-180")} />
           </button>
           {open && (
-            <div className="fade-in grid gap-5 border-t border-line px-5 py-4 md:grid-cols-[1.4fr_1fr]">
-              <p className="text-[15px] leading-6 text-text-2">{d?.story_excerpt || "No excerpt saved for this video"}</p>
+            <div className="fade-in grid gap-5 px-4 pt-1 pb-4 @container md:grid-cols-[1.4fr_1fr]">
+              <p className="text-ds-md leading-ds-normal text-ds-text-2">{d?.story_excerpt || "No excerpt saved for this video"}</p>
               <ul className="flex flex-col gap-2">
-                {(d?.policy_notes || []).map((n) => <li key={n} className="flex gap-2 text-[13px]"><Check size={16} strokeWidth={1.5} className="mt-0.5 shrink-0 text-ok" />{n}</li>)}
+                {(d?.policy_notes || []).map((n) => <li key={n} className="flex gap-2 text-ds-sm"><Icon name="check" size={16} className="mt-0.5 shrink-0 text-ds-success-ink" />{n}</li>)}
               </ul>
             </div>
           )}
-        </Card>
+        </div>
 
         {items.length > 1 && (
-          <section aria-label="Other ready videos">
-            <div className="mb-3 flex items-baseline justify-between px-1"><h3 className="text-[15px] font-medium">Also ready</h3><span className="text-[12px] text-muted">{items.length - 1} more</span></div>
-            <div className="flex gap-3 overflow-x-auto pb-2 scroll-thin">
+          <section aria-labelledby="q-also">
+            <div className="mb-3 flex items-baseline justify-between"><h3 id="q-also" className="text-ds-md font-semibold">Also ready</h3><span className="text-ds-2xs text-ds-muted ds-num">{items.length - 1} more</span></div>
+            <div className="-mx-1 flex gap-3 overflow-x-auto px-1 pt-1 pb-3 scroll-thin">
               {items.filter((x) => x.output_id !== o.output_id).map((x) => (
-                <button key={x.output_id} type="button" onClick={() => onPick(x.output_id)} className="group flex w-[220px] shrink-0 flex-col gap-2 rounded-[16px] border border-line bg-card p-2 text-left shadow-sm transition-colors duration-150 hover:border-line-2">
-                  <div className="relative aspect-video overflow-hidden rounded-[8px] bg-[#0b0d14]">
+                <button key={x.output_id} type="button" onClick={() => onPick(x.output_id)} className="ds-focus flex w-[200px] shrink-0 flex-col gap-2 rounded-ds-lg bg-ds-surface p-2 text-left shadow-[var(--ds-shadow-1),0_0_0_1px_var(--ds-border-subtle)] transition-[box-shadow,transform] duration-200 ease-ds-out hover:-translate-y-0.5 hover:shadow-ds-2">
+                  <div className="relative aspect-video overflow-hidden rounded-ds-sm bg-ds-media">
                     <Poster o={x} portrait={false} className="size-full" />
-                    <span className="glass-chip absolute right-2 bottom-2 rounded-full px-2 py-0.5 font-mono text-[11px] num">{fmtDur(x.duration_s)}</span>
+                    <Badge tone="overlay" size="xs" className="absolute right-2 bottom-2 ds-num">{fmtDur(x.duration_s)}</Badge>
                   </div>
-                  <div className="px-1 pb-1"><KindTag kind={x.kind} /><p className="mt-0.5 line-clamp-2 text-[13px] leading-[18px] font-medium">{x.title}</p></div>
+                  <div className="px-1 pb-1"><MetaItem icon={kindIcon(x.kind)}>{kindLabel(x.kind)}</MetaItem><p className="mt-1 line-clamp-2 text-ds-xs leading-ds-snug font-semibold">{x.title}</p></div>
                 </button>
               ))}
             </div>
           </section>
         )}
-      </div>
+      </Card>
 
-      {/* posting checklist */}
-      <aside aria-label="Posting checklist" className="min-[1100px]:sticky min-[1100px]:top-4 min-[1100px]:self-start">
-        <Card className="flex flex-col">
-          <div className="flex items-center justify-between px-5 pt-5 pb-3">
-            <h2 className="text-[17px] font-medium">Post it</h2>
-            <span className="font-mono text-[12px] text-muted num">{doneCount} of {total} done</span>
-          </div>
-          <ol className="flex flex-col px-3 pb-3">
-            <li className={cx("mx-0 mb-1 rounded-[8px] p-3", approved ? "" : "bg-raised")}>
-              <div className="flex items-start gap-3">
-                <StepNum n={1} done={approved} />
-                <div className="min-w-0 flex-1">
-                  <p className="text-[14px] font-medium">{approved ? "Approved" : "Watch it, then decide"}</p>
-                  {approved ? <p className="text-[12px] text-muted">Ready to post</p> : (
-                    <>
-                      <div className="mt-2.5 flex gap-2"><Button variant="accent" className="flex-1" onClick={approve}>Approve</Button><Button variant="danger" onClick={reject}>Reject</Button></div>
-                      <p className="mt-2.5 flex flex-wrap items-center gap-1.5 text-[12px] text-muted"><Keycap>A</Keycap> approve <Keycap>R</Keycap> reject <Keycap>→</Keycap> next</p>
-                    </>
-                  )}
-                </div>
-                {approved && o.status === "pending" && <Button size="sm" variant="ghost" icon={<Undo2 size={14} strokeWidth={1.5} />} onClick={() => mark("approved", false)}>Undo</Button>}
-              </div>
-            </li>
-            {steps.map((s, i) => (
-              <li key={s.key} className={cx("flex items-center gap-3 rounded-[8px] px-3 py-2.5 transition-opacity duration-150", !approved && "opacity-45")} aria-disabled={!approved}>
-                <StepNum n={i + 2} done={!!prog[s.key]} />
-                <div className="min-w-0 flex-1"><p className="text-[14px] leading-5">{s.title}</p>{s.sub && <p className="truncate text-[12px] leading-4 text-muted" title={s.sub}>{s.sub}</p>}</div>
-                <fieldset disabled={!approved} className="contents">{s.action}</fieldset>
-              </li>
-            ))}
-            <li className={cx("mt-1 rounded-[8px] border border-line p-3", !approved && "opacity-45")}>
-              <div className="flex items-start gap-3">
-                <StepNum n={steps.length + 2} />
-                <div className="min-w-0 flex-1">
-                  <label htmlFor="yt-url" className="text-[14px]">Paste the YouTube link</label>
-                  <div className="mt-2 flex gap-2"><input id="yt-url" className="field-input h-9" placeholder="https://youtu.be/" value={url} onChange={(e) => setUrl(e.target.value)} disabled={!approved} onKeyDown={(e) => e.key === "Enter" && done()} /><Button variant="primary" size="sm" className="h-9" onClick={done} disabled={!approved}>Done</Button></div>
-                  <p className="mt-2 text-[12px] text-muted">The link lets Nightshift learn from this video's results</p>
-                </div>
-              </div>
-            </li>
-          </ol>
-        </Card>
-        <p className="mt-3 px-2 text-[12px] text-muted">Ticked steps are remembered for each video</p>
-      </aside>
-    </div>
+      {/* posting checklist, in YouTube's upload order */}
+      <Card ref={aside} as="aside" aria-labelledby="q-post" padding="md" className={cx("scroll-thin @min-[1020px]:sticky @min-[1020px]:top-4 @min-[1020px]:max-h-[calc(100dvh-40px)] @min-[1020px]:overflow-y-auto", SPAN["2/4"])}>
+        <CardHeader id="q-post" title="Post it" className="!mb-3" actions={<span className="mr-2 text-ds-2xs text-ds-muted ds-num">{doneCount} of {total} done</span>} />
+        <ol className="-mx-2 flex flex-col gap-1">
+          <StepItem n={1} className={nextKey === "approve" ? "is-next" : undefined} done={approved} current={!approved} title={approved ? "Approved" : "Watch it, then decide"} sub={approved ? "Ready to post" : undefined}
+            action={approved && o.status === "pending" ? <Button size="sm" variant="ghost" leadingIcon="undo" onClick={() => mark("approved", false)}>Undo</Button> : undefined}>
+            {!approved && (
+              <>
+                <div className="flex gap-2"><Button className="flex-1" onClick={approve}>Approve</Button><Button variant="danger" onClick={reject}>Reject</Button></div>
+                <p className="mt-3 flex flex-wrap items-center gap-1.5 text-ds-2xs text-ds-muted"><Kbd>A</Kbd> approve <Kbd>R</Kbd> reject <Kbd>→</Kbd> next</p>
+              </>
+            )}
+          </StepItem>
+          {steps.map((s, i) => <StepItem key={s.key} n={i + 2} className={nextKey === s.key ? "is-next" : undefined} done={!!prog[s.key]} dimmed={!approved} title={s.title} sub={prog[s.key] ? undefined : s.sub} action={s.action} />)}
+          <StepItem n={steps.length + 2} className={nextKey === "link" ? "is-next" : undefined} dimmed={!approved} title={<label htmlFor="yt-url">Paste the YouTube link</label>}>
+            <div className="flex gap-2">
+              <Input id="yt-url" className="!h-9" placeholder="https://youtu.be/" value={url} onChange={(e) => setUrl(e.target.value)} disabled={!approved} onKeyDown={(e) => e.key === "Enter" && done()} />
+              <Button onClick={done} disabled={!approved}>Done</Button>
+            </div>
+            <p className="mt-2 text-ds-2xs text-ds-muted">The link lets Nightshift learn from this video's results</p>
+          </StepItem>
+        </ol>
+        <p className="mt-3 px-1 text-ds-2xs text-ds-muted">Ticked steps are remembered for each video</p>
+      </Card>
+    </>
   );
 }
 
-function StepNum({ n, done }: { n: number; done?: boolean }) {
-  return <span className={cx("flex size-7 shrink-0 items-center justify-center rounded-full font-mono text-[12px] num transition-colors", done ? "bg-fill text-on-fill" : "border border-line-2 text-text-2")}>{done ? <Check size={14} strokeWidth={1.5} aria-label="Done" /> : n}</span>;
+/* ---------------------------------------------------------------- job events */
+
+function JobEvents({ jobs, loading, channelName, className, onReview }: { jobs: Job[]; loading: boolean; channelName: (s?: string) => string; className?: string; onReview: () => void }) {
+  const { ask, go, toast } = useApp();
+  // Dismissed events are hidden in this browser only (there is no server-side dismiss).
+  const [hidden, setHidden] = useState<string[]>(() => store.get<string[]>("ns-dismissed-events", []));
+  const dismiss = (id: string) => setHidden((h) => { const n = [...h, id].slice(-50); store.set("ns-dismissed-events", n); return n; });
+  const events = jobs.filter((j) => !["queued", "running"].includes(j.status) && !hidden.includes(j.job_id)).slice(0, 3);
+  return (
+    <Card as="section" aria-labelledby="q-events" className={cx("self-stretch overflow-visible", className)}>
+      <CardHeader id="q-events" title="Job events" actions={<Button variant="ghost" size="sm" leadingIcon="scenes" onClick={() => go("#/create")}>All jobs</Button>} />
+      {events.length ? (
+        <ul className="flex flex-col gap-3">
+          {events.map((j) => {
+            const failed = j.status === "failed"; const cancelled = j.status === "cancelled";
+            const title = jobTitle(j, channelName);
+            const copy = async () => { try { await navigator.clipboard.writeText(`${title}: ${j.status}${j.message ? `, ${j.message}` : ""} (job ${j.job_id})`); toast("Details copied", "ok"); } catch { toast("Copy was blocked", "warn"); } };
+            const menu: MenuItem[] = [
+              ...(failed ? [{ icon: "chat" as const, label: "Ask why it stopped", onSelect: () => ask({ page: "queue", job_id: j.job_id }, "Why did the last run stop?") }, { icon: "settings" as const, label: "Open Settings", onSelect: () => go("#/settings") }]
+                : cancelled ? [] : [{ icon: "play" as const, label: "Review it", onSelect: onReview }, { icon: "chat" as const, label: "Ask about it", onSelect: () => ask({ page: "queue", job_id: j.job_id }) }]),
+              { icon: "copy", label: "Copy details", onSelect: copy },
+              { icon: "x", label: "Dismiss", onSelect: () => dismiss(j.job_id) },
+            ];
+            return (
+              <li key={j.job_id}>
+                <NotificationItem title={title} moreLabel={`Options for ${title}`} menu={menu}
+                    titleAdornment={<StatusDot tone={failed ? "danger" : cancelled ? "attention" : "online"} label={failed ? "Stopped" : cancelled ? "Cancelled" : "Done"} />}
+                    subtitle={failed ? `Stopped at ${stageWords(j.stage).toLowerCase()}. ${j.message || ""}` : cancelled ? "Cancelled" : `Done · ${j.result?.output_ids?.length ? `${j.result.output_ids.length} videos` : "1 video"}`}
+                    meta={<><MetaItem icon="calendarDays">{fmtDay(j.created_at)}</MetaItem><MetaItem icon="clock">{fmtClock(j.created_at)}</MetaItem><MetaItem icon="channels">{channelName(j.channel)}</MetaItem></>} />
+              </li>
+            );
+          })}
+        </ul>
+      ) : <EmptyState icon="bell" title={loading ? "Loading jobs" : "No job events yet"}>Finished and stopped jobs show up here with their reasons</EmptyState>}
+    </Card>
+  );
+}
+
+/* ---------------------------------------------------------------- tonight's plan */
+
+function TonightPlan({ chans, status, className }: { chans: ChannelSummary[]; status: ReturnType<typeof useApp>["status"]; className?: string }) {
+  const { go, confirm, toast, refresh } = useApp();
+  const pause = async (c: ChannelSummary) => {
+    const ok = await confirm({ title: `Pause ${c.display_name}?`, body: "It is skipped from tonight until you resume it in Channels. Videos already made stay in the Queue", ok: "Pause" });
+    if (ok !== true) return;
+    try { await api.post(`/channels/${encodeURIComponent(c.slug)}/pause`); toast(`${c.display_name} is paused`, "ok"); refresh(); } catch (e: any) { toast(e.message, "bad"); }
+  };
+  const plan = chans.filter((c) => c.status === "active" && c.tonight !== false).slice(0, 2);
+  const at = fmtClock(status?.next_run) || status?.schedule_time || "";
+  const voice = (c: ChannelSummary) => (typeof c.voice === "string" ? c.voice : c.voice?.name || c.voice?.speaker || "Built-in voice");
+  return (
+    <Card as="section" aria-labelledby="q-plan" className={cx("self-stretch", className)}>
+      <CardHeader id="q-plan" title="Tonight's plan" actions={<Button variant="ghost" size="sm" leadingIcon="edit" onClick={() => go("#/channels")}>Edit</Button>} />
+      <div className="flex flex-col gap-4">
+        {plan.length ? plan.map((c) => (
+          <AssignmentCard key={c.slug} categories={[c.display_name]} moreLabel={`Options for ${c.display_name}`} menu={[{ icon: "edit", label: "Edit channel", onSelect: () => go(`#/channels?edit=${encodeURIComponent(c.slug)}`) }, { icon: "pause", label: "Skip tonight and pause", onSelect: () => pause(c) }]}
+            title={typeof c.tonight === "string" ? c.tonight : c.format === "shorts_only" ? "Shorts only" : "Full video and Shorts"}
+            priority={{ label: at || "Off", tone: "accent" }} tag={status?.next_run ? `Runs ${dayInline(status.next_run)}` : "Not scheduled"} assignee={{ name: voice(c) }} />
+        )) : <EmptyState icon="moon" title="No channel runs tonight">Resume a channel or start something now</EmptyState>}
+        <CreateTile layout="row" label="Make something now" onClick={() => go("#/create")} />
+      </div>
+    </Card>
+  );
+}
+
+/* ---------------------------------------------------------------- posting calendar */
+
+const isoDay = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+
+function PostingCalendar({ chans, ready, className, onOpen }: { chans: ChannelSummary[]; ready: Output[]; className?: string; onOpen: (id: string) => void }) {
+  const { go, ask } = useApp();
+  const [offset, setOffset] = useState(0);
+  const today = new Date(); today.setHours(12, 0, 0, 0);
+  const days: WeekDay[] = Array.from({ length: 7 }, (_, i) => {
+    const d = new Date(today); d.setDate(today.getDate() + offset * 7 + i);
+    return { iso: isoDay(d), date: d.getDate(), weekday: d.toLocaleDateString("en-GB", { weekday: "short" }), label: d.toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long" }) };
+  });
+  const [sel, setSel] = useState(isoDay(today));
+  const selected = days.find((d) => d.iso === sel) ? sel : days[0]!.iso;
+  const isToday = selected === isoDay(today);
+  const month = new Date(selected + "T12:00:00").toLocaleDateString("en-GB", { month: "long", year: "numeric" });
+  const slots: AgendaSlot[] = chans.filter((c) => c.status === "active" && c.publish_window).slice(0, 2).map((c) => {
+    const mine = isToday ? ready.filter((o) => o.channel === c.slug).slice(0, 2) : [];
+    return {
+      time: (c.publish_window || "").replace("-", " – "),
+      events: mine.length
+        ? mine.map((o) => ({ id: o.output_id, icon: kindIcon(o.kind), title: o.title, time: `${kindLabel(o.kind)} · ${fmtDur(o.duration_s)}`, tag: c.display_name, menu: [{ icon: "play" as const, label: "Open in the review card", onSelect: () => onOpen(o.output_id) }, { icon: "chat" as const, label: "Ask about it", onSelect: () => ask({ page: "queue", output_id: o.output_id }, `Tell me about "${o.title}"`) }] }))
+        : [{ id: "window-" + c.slug, icon: "calendar" as IconName, title: "Posting window", time: `${c.masters_per_week ?? 1} full video${(c.masters_per_week ?? 1) === 1 ? "" : "s"} a week`, tag: c.display_name, tagTone: "success" as const, menu: [{ icon: "edit" as const, label: "Change the posting window", onSelect: () => go(`#/channels?edit=${encodeURIComponent(c.slug)}`) }] }],
+    };
+  });
+  return (
+    <CalendarCard className={cx("self-stretch", className)} monthLabel={`Posting · ${month}`} days={days} selected={selected} onSelect={setSel} slots={slots}
+      onPrev={() => setOffset((x) => x - 1)} onNext={() => setOffset((x) => x + 1)}
+      prevLabel="Previous week" nextLabel="Next week" weekLabel="Posting days" moreLabel="Options" />
+  );
+}
+
+/* ---------------------------------------------------------------- render jobs */
+
+function RenderJobs({ jobs, chans, channelName, className }: { jobs: Job[]; chans: ChannelSummary[]; channelName: (s?: string) => string; className?: string }) {
+  const { go } = useApp();
+  const live = jobs.filter((j) => ["queued", "running"].includes(j.status));
+  const rows = [...live, ...jobs.filter((j) => !live.includes(j))].slice(0, 4);
+  const tasks: Task[] = rows.map((j) => {
+    const running = j.status === "running" || j.status === "queued"; const failed = j.status === "failed";
+    const title = jobTitle(j, channelName);
+    return {
+      id: j.job_id, title, date: running ? `Started ${fmtWhen(j.created_at)}` : fmtWhen(j.created_at),
+      metricLabel: "Stage", metric: j.status === "queued" ? "Waiting" : running ? stageWords(j.stage) : failed ? "Stopped" : j.status === "cancelled" ? "Cancelled" : "Done",
+      progress: j.progress ?? (j.status === "done" ? 100 : 0), progressLabel: `${title} progress`, tone: failed ? "danger" : j.status === "done" ? "success" : "accent",
+      meta: [{ icon: "clock", value: j.step && j.steps ? `${j.step}/${j.steps}` : "–", label: "steps" }, { icon: "film", value: j.result?.output_ids?.length ?? (j.status === "done" ? 1 : 0), label: "videos" }],
+    };
+  });
+  return (
+    <Card as="section" aria-labelledby="q-renders" className={className}>
+      <CardHeader id="q-renders" title="Render jobs" adornment={chans.length ? <AvatarGroup people={chans.map((c) => ({ name: c.display_name }))} max={3} onAdd={() => go("#/channels?edit=new")} addLabel="Add a channel" /> : undefined}
+        actions={<Button variant="ghost" size="sm" leadingIcon="scenes" onClick={() => go("#/create")}>Open Create</Button>} />
+      {tasks.length ? <TaskList tasks={tasks} selectedId={live[0]?.job_id} onSelect={() => go("#/create")} />
+        : <EmptyState icon="scenes" title="No jobs yet">Story videos and clips you start show their progress here</EmptyState>}
+    </Card>
+  );
+}
+
+/* ---------------------------------------------------------------- machine meters */
+
+function MachineMeters({ className }: { className?: string }) {
+  const { status } = useApp();
+  const disk = status?.disk;
+  const vramMb = Object.values(status?.services || {}).reduce((a, s) => a + (s.vram_mb || 0), 0);
+  const vramGb = status?.engine?.vram_gb ?? (vramMb ? Math.round(vramMb / 1024) : null);
+  const meters: MeterDatum[] = [
+    // No GPU load field exists in Status yet: an honest empty meter until the engine reports one.
+    { label: "GPU", value: null, source: "not reported by the engine yet" },
+    // engine.vram_gb / services[].vram_mb give memory in use but no total, so the well stays empty and the figure shows the size.
+    { label: "VRAM", value: null, display: vramGb ? `${vramGb} GB` : undefined, source: vramGb ? `${vramGb} GB in use` : "no model loaded" },
+    { label: "Disk", value: disk ? Math.round(((disk.total_gb - disk.free_gb) / Math.max(1, disk.total_gb)) * 100) : null, source: disk ? `${disk.free_gb} GB free of ${disk.total_gb} GB` : "unknown until the engine answers" },
+  ];
+  return <MeterGroup className={className} title="This PC" meters={meters} caption={disk ? `${disk.free_gb} GB free on ${disk.home}. GPU load appears once the engine reports it` : "Readings appear once the engine answers"} />;
 }
