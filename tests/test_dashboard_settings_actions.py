@@ -89,3 +89,31 @@ def test_diagnostics_bundle_is_built_by_doctor_and_downloadable(tmp_home: Path):
     assert body["name"] in got.headers["content-disposition"]
     with zipfile.ZipFile(body["path"]) as z:
         assert "bundle-info.json" in z.namelist() and "VERSION" in z.namelist()
+
+
+# ---------------------------------------------------------------- gap 11: verify job -> run_verify(paths, rt, ctl, ...)
+
+
+def test_verify_job_runs_the_real_checks_with_the_real_signature(tmp_home: Path):
+    from ns_common.models import Runtime
+    from ns_dashboard.adapters import RealVerifyAdapter
+    from ns_dashboard.events import EventHub
+    from ns_dashboard.jobs import JobControl, JobStore
+    from ns_dashboard.state import open_db
+    from ns_supervisor.testing import StubTable, SyncSupervisor
+    from tests.test_ns_verify import good_deps
+
+    paths = Paths.from_env()
+    paths.ensure()
+    sync = SyncSupervisor(paths, Runtime.default("gpu"), resolver=StubTable())
+    try:
+        store = JobStore(open_db(paths))
+        ctl = JobControl(store.create("verify", None, {"quick": True}), store, EventHub())
+        out = RealVerifyAdapter(paths, controller=sync, deps=good_deps()).verify(ctl, True)
+    finally:
+        sync.close()
+    names = {c["name"] for c in out["checks"]}
+    assert out["passed"] is True and out["quick"] is True
+    assert {"supervisor.status", "llama.start", "tts.start", "nvenc.probe"} <= names
+    assert "llama.tok_s" not in names  # quick
+    assert Path(out["report"]) == paths.logs / "verify-report.json" and Path(out["report"]).exists()

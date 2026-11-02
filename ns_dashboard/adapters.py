@@ -27,7 +27,7 @@ from ns_common.paths import Paths
 from ns_dashboard import studio_bridge
 from ns_dashboard.errors import AdapterUnavailable, ApiError
 from ns_dashboard.jobs import JobControl
-from ns_dashboard.supervisor_link import SupervisorLink, make_acquirer
+from ns_dashboard.supervisor_link import SupervisorLink, make_acquirer, supervisor_url
 from ns_dashboard.updater import RealUpdateAdapter
 
 KEYRING_SERVICE = "Nightshift"
@@ -336,16 +336,39 @@ class RealLearnAdapter:
 
 
 class RealVerifyAdapter:
-    """Expects `ns_supervisor.verify.run_verify` (C2)."""
+    """`ns verify` in-process: `run_verify(paths, rt, controller, quick=, deps=)`, then the report file."""
 
-    def __init__(self, paths: Paths) -> None:
+    def __init__(
+        self, paths: Paths, link: SupervisorLink | None = None, *, controller: Any = None, deps: Any = None
+    ) -> None:
         self.paths = paths
+        self.link = link
+        self.controller = controller  # tests pass a stub supervisor
+        self.deps = deps  # tests pass fake machine probes
+
+    def _controller(self) -> Any:
+        if self.controller is not None:
+            return self.controller
+        client = lazy("ns_supervisor.client", "SupervisorClient")
+        url = self.link.base_url if self.link is not None else supervisor_url(self.paths)
+        return client(url)
 
     def verify(self, ctl: JobControl, quick: bool) -> dict[str, Any]:
-        """Run `ns verify`; returns `{checks: [...]}`."""
-        fn = lazy("ns_supervisor.verify", "run_verify")
-        out = fn(paths=self.paths, quick=quick, on_stage=stage_reporter(ctl))
-        return out if isinstance(out, dict) else {"checks": out}
+        """Run the checks and write `logs\verify-report.json`; returns the checks, benchmarks and verdict."""
+        run = lazy("ns_supervisor.verify", "run_verify")
+        write = lazy("ns_supervisor.verify", "write_report")
+        runtime = lazy("ns_supervisor.control", "runtime_or_default")
+        ctl.check_cancel()
+        ctl.progress(0.05, "Running checks")
+        report = run(self.paths, runtime(self.paths), self._controller(), quick=quick, deps=self.deps)
+        report_file = write(self.paths, report)
+        return {
+            "checks": [c.model_dump(mode="json") for c in report.checks],
+            "passed": bool(report.passed),
+            "quick": quick,
+            "benchmarks": dict(report.benchmarks),
+            "report": str(report_file),
+        }
 
 
 class RealDoctorAdapter:
@@ -589,7 +612,7 @@ def real_adapters(paths: Paths, link: SupervisorLink, log: NsLogger) -> Adapters
         run=RealRunAdapter(paths, link),
         clip=RealClipAdapter(paths, link),
         learn=RealLearnAdapter(paths),
-        verify=RealVerifyAdapter(paths),
+        verify=RealVerifyAdapter(paths, link),
         doctor=RealDoctorAdapter(paths),
         keyring=RealKeyringAdapter(),
         tts=RealTtsAdapter(paths, link),
