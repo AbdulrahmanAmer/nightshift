@@ -355,7 +355,7 @@ One job = **one story → one long-form master → 4–6 derived Shorts.** Write
 1. Run faster-whisper with `word_timestamps=True` on each chapter WAV.
 2. Align ASR tokens to the script's tokens (normalized: lowercase, punctuation stripped, numbers spelled) with `difflib.SequenceMatcher`; matched script words take ASR times; unmatched runs are interpolated linearly between neighbours.
 3. Emit `words\<chapter>.json` = `[{w, start, end, sentence_idx}]` using the **script's** spelling and punctuation.
-4. Build ASS with 2–4 words on screen, active word highlighted per `caption_style`. Drift check: median |ASR time − interpolated time| on matched words ≤ 120 ms, else `NS-E403`.
+4. Build ASS with 2–4 words on screen, active word highlighted per `caption_style`. Drift check: the median offset between the aligned caption word starts and the ASR word starts, taken over the matched words only (interpolated words have no ASR time and do not count), must be ≤ 120 ms (`DRIFT_LIMIT_MS` in `ns_studio/media/captions.py`), else `NS-E403`.
 
 ### 7.7 QC targets (`qc.json`)
 | Check | Master | Short |

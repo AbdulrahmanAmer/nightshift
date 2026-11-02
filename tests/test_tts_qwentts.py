@@ -449,3 +449,27 @@ def test_model_file_names_match_manifest(repo_root: Path):
         assert TALKER_TEMPLATE.format(size="1.7b", kind=kind) in text
     assert TOKENIZER_FILE in text
     assert TALKER_TEMPLATE.format(size="0.6b", kind="customvoice") in text
+
+
+def test_e314_clears_without_restarting_the_service(tmp_path: Path, models: Path, calls: Path):
+    """`ns models get voicedesign` drops the talker next to the running service: the next request just works.
+
+    The model check is per request (a file test, not a startup snapshot), so no restart or reload is needed.
+    """
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    from ns_tts.server import create_app
+
+    (models / DESIGN).unlink()
+    engine = QwenttsEngine(tmp_path / "bin", models, timeout_s=60, launcher=launcher())
+    engine.load()
+    client = TestClient(create_app(engine, VoiceLibrary(tmp_path / "voices")))
+    body = {"name": "velvet", "description": "deep calm male narrator"}
+    before = client.post("/v1/voices/design", json=body)
+    assert before.status_code == 409 and before.json()["error"] == "NS-E314"
+    assert before.json()["missing_model"] == DESIGN
+    (models / DESIGN).write_bytes(b"gguf")  # the download finished; the service keeps running
+    after = client.post("/v1/voices/design", json=body)
+    assert after.status_code == 200, after.text
+    assert after.json()["name"] == "velvet"

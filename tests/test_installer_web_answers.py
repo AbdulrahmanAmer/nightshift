@@ -156,3 +156,17 @@ def test_read_answers_accepts_a_bom_and_rejects_a_list(tmp_path: Path):
     f.write_text("[1, 2]", encoding="utf-8")
     with pytest.raises(ValueError):
         answers_view.read_answers(f)
+
+
+def test_include_voicedesign_checkbox_reaches_answers_json_and_back():
+    on = answers_view.draft_to_answers(good_draft(includeVoicedesign=True))
+    assert on["include_voicedesign"] is True and build_answers(dict(on)).include_voicedesign is True
+    assert answers_view.answers_to_view(on)["includeVoicedesign"] is True
+    off = answers_view.draft_to_answers(good_draft())                       # an old draft without the field
+    assert off["include_voicedesign"] is False
+    assert answers_view.answers_to_view(off)["includeVoicedesign"] is False
+
+
+def test_the_committed_installer_build_has_the_voicedesign_checkbox():
+    built = (ROOT / "installer" / "ui" / "static" / "app.js").read_text(encoding="utf-8")
+    assert "includeVoicedesign" in built and "voice design model" in built

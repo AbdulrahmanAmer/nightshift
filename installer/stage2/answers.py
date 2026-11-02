@@ -27,7 +27,16 @@ class InstallerAnswers(Answers):
     models_source: str | None = None
     llm_tier: Literal["small", "balanced", "best"] = "small"
     restore_from: str | None = None
-    include_voicedesign: bool = False       # download the VoiceDesign talker now (else: ns models get)
+    # Download the VoiceDesign talker now. None (absent) means "infer": yes when the voice is a designed one,
+    # because that voice cannot be created without the model; an explicit false is honoured (NS-W114).
+    include_voicedesign: bool | None = None
+
+
+def wants_voicedesign(ans: InstallerAnswers) -> bool:
+    """Whether setup fetches the VoiceDesign talker: the explicit answer, else yes for a designed voice."""
+    if ans.include_voicedesign is not None:
+        return ans.include_voicedesign
+    return ans.voice.mode == "design"
 
 
 def find_answers(app_path: Path, paths: Paths, explicit: Path | None = None) -> Path | None:

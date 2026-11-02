@@ -1603,6 +1603,7 @@ export interface ChoicesDraft {
   runTime: string;                   // "03:00"
   mastersPerWeek: 1 | 2 | 3;
   installCode: boolean;
+  includeVoicedesign: boolean;       // download the voice design model now (about 2 GB); otherwise it comes with the first design
   theme: "dark" | "light";
   pexelsKey: string | null;          // null keeps the stored key (resume)
   pixabayKey: string | null;
