@@ -7,6 +7,29 @@ All notable changes to Nightshift are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed (studio, from the clean-clone review `D:\NightShift-refs\review-studio.md` and `review-clipper-tts-common.md`)
+- **First run**: a channel that exists only as YAML (what setup writes) gets its `channels` row before the first insert
+  (`make_job`, `load_job`, clips, ledger); the policy gate and every story embed use a 1,500-character opening window and
+  `FakeEmbed` refuses over 512 tokens like `llama-server`; caption drift is the offset between caption and ASR word starts
+  (speech rhythm no longer fails NS-E403); the stock-footage keys are read under the names setup and Settings store
+  (`ns_common.secrets_names`).
+- **Wrong output**: `pacing` sets the TTS speed and Short word bands use the QC +-15 % (masters are capped at 14 minutes);
+  each Short is written, titled, captioned and recorded in its own combo; publish slotting follows
+  `outbox/manifest.json` and rewrites both sheets; `studio calibrate` takes the embed lease and only advises two-model
+  mode when a story model exists; `tag_relevance` really asks the model (policy_check v2).
+- **Degrades**: uncoded exceptions become `NS-E327` for their job only; whisper is unloaded when its tenant is released;
+  a regenerated job changes seed, temperature and clips; `--resume` no longer redoes LLM stages after the voice stage or a
+  chapter expansion; prompt versions are saved per job; words, sentences and captions work in any script;
+  apostrophes in FFmpeg paths are escaped, not deleted; Outbox paths stay under 200 characters; the visual_plan prompt asks
+  for caption emphasis; master chapters get the caption contrast fallback.
+- **Series**: parts use their design (voice, caption style, visual treatment, title, "Part N of M", end card, publish delay)
+  and master QC allows 1.15x the part's minutes.
+- **Clipper**: clip SEO uses clip rules (not the fiction lists) and a failing clip is skipped, not the job; phone videos
+  are probed with their display rotation; one whisper pass; `import_url` can be cancelled (`CancelToken`) and kills yt-dlp;
+  rights not ticked is `NS-E410`; the caption style picked on Create is honoured; `captions.remove_fillers` channel setting.
+- **New**: your own `exemplars\` and `prompt_overrides\` are read; upload sheets name the time zone; the creator note closes
+  every description.
+
 Fixes from the v0.1.0 code review (installer, launchers, supervisor), found by reading the paths no test had run.
 
 ### Fixed (dashboard side of `docs/design/system-gaps.md`)

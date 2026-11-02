@@ -145,6 +145,18 @@ About once a week the engine also asks GitHub whether a newer version exists and
 `ns update --github` (the download is checked against its published SHA256 before anything is replaced, and the old
 version is put back if a step fails).
 
+If one job of the night fails for a reason Nightshift did not expect, it is recorded as `NS-E327` in
+`logs\nightly-<date>.json` and the other jobs still run. A clip that fails its checks is left out of the Outbox
+(the reason is in `outbox\skipped.json` of its job folder) and the other clips are delivered.
+
+### Your own examples and prompts
+
+Put your own example stories in `exemplars\` (a `.md` or `.txt` file per story, or a folder named `horror`,
+`mystery`, `revenge` or `wholesome_twist` with the same `meta.yaml` as ours): the writing prompts then use them
+instead of ours. To change a prompt, copy its file from `ns_studio\prompts\` to `prompt_overrides\` and edit it
+(keep the lines between the `---` marks at the top); a file that does not parse is ignored. Both folders are in
+**Export settings**. Upload sheets show the time zone after the publish time.
+
 ## Update to a new version
 
 1. Download the new `Nightshift-<version>.zip` and its `.sha256` file from Drive.

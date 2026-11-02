@@ -449,3 +449,19 @@ Format per entry:
 - **Why:** `SelfSimilarity` embedded a whole master (2,000 to 3,500 tokens) and the embed server answered HTTP 500 "input is too large to process", failing every `master_first` job at `policy_text`. The studio now embeds the 1,500-character opening everywhere (the same input `ContinuityStage` stores), and the fake rejects longer input so the next regression is caught in CI.
 - **Open for the runtime builder (A2):** `ns_supervisor/services.py` `_embed()` must append `*embed_server_args(cfg)` to the `llama-server --embeddings` command (one line; not edited here by instruction). Until then the server keeps `-ub 512`, which the 1,500-character window fits for English text (about 400 tokens).
 - **Status:** applied on `feat/release-review-studio` (the supervisor line is open).
+
+## CR-STUDIO-2: applied by the studio review builder (`feat/release-review-studio`)
+- **From:** studio review builder. All on a `release-*` branch; `ns_common` and `contracts` edits are minimal.
+- **Applied:**
+  1. `ns_common/secrets_names.py` (new): `KEYRING_SERVICE`, `PEXELS_KEY`, `PIXABAY_KEY`, `KEY_NAMES`, `SHORT_NAMES`. The studio reads the keys through it. **Open for A2:** make `installer/stage2/secrets.py` and `ns_dashboard/adapters.py` import these instead of their own copies (`tests/test_secret_names.py` already fails if they drift).
+  2. `ns_common/pacing.py` (new): `PACING_WPM`, `NOMINAL_WPM`, `pacing_speed(voice_speed, pacing)`. Every `TtsItem.speed` of a job is now `pacing_speed(voice.speed, combo.pacing)`; `TtsItem` already had `speed`, so no `TtsRequest` change was needed. **For the TTS builder:** speeds now range 0.7 to 1.3 per pacing (brisk is 1.13x, measured 0.90x), so the engine's speed handling must keep pitch (`atempo`), see review row 12.
+  3. `ns_common.models`: `Channel.long_minutes` upper bound 14; `CaptionsOpts.remove_fillers` (default false); `PolicyCheckResult.tags_relevant` (optional); `EmbedCfg` (CR-STUDIO-1). The matching `contracts/schemas/*.schema.json` files were edited by hand to equal `model_json_schema()`.
+  4. `ns_common/paths.py`: `Paths.exemplars` and `Paths.prompt_overrides` (both already in the backup trees).
+  5. `ns_common/textstats.py`: `WORD_PATTERN`, `CJK_RANGES`; `word_count`, `split_sentences` and `normalize_tokens` are Unicode-aware.
+  6. `ns_common/llm_client.py`: `FakeLlm` records the `temperature` of each call.
+  7. `contracts/errors.json`: `NS-E327` (a job stopped on an unexpected problem), `NS-E410` (confirm you have the right to use this video). `contracts/policy/clip_misleading_claims.txt` (new list for clip metadata).
+  8. Series: `ProduceRequest.minutes`; `series_context.json` now also holds `parts_total`, `title`, `short_titles`, `end_card`, `publish_not_before_days`, `minutes` and `design`; `DesignDoc.voice` is optional (None keeps the channel voice).
+- **Touched outside `ns_studio` (coordinator's brief):** `ns_dashboard/studio_bridge.py` (`download_source(cancel_token=)`, `run_clip` passes `caption_style`, `run_series_part` pins the combo from the design). **Open for C:** call `CancelToken.cancel()` (`ns_studio.clipper.source`) from the job's Cancel handler for download jobs.
+- **Needs the runtime builder (A2):** `ns_supervisor/services.py` `_embed()` must append `*embed_server_args(cfg)` (CR-STUDIO-1).
+- **Spec follow-up for the orchestrator:** BUILD_SPEC 7.6 step 4 still describes the old drift ("ASR time vs interpolated time"); the code now measures caption start vs ASR start. `studio dashboard` (spec 15.9) does not exist and no code refers to it.
+- **Status:** applied on `feat/release-review-studio`.
