@@ -373,6 +373,10 @@ def seed(tmp_home: Path) -> Any:
         "INSERT INTO runs(run_id, started_at, finished_at, mode, summary_json) VALUES ('r1', ?, ?, 'daily', ?)",
         (now, now, json.dumps({"jobs": [{"job_id": "j1", "channel": "after-dark", "stages": 12}], "failures": []})),
     )
+    (state.paths.home / "run").mkdir(exist_ok=True)
+    (state.paths.home / "run" / "morning_note.json").write_text(
+        json.dumps({"notes": [{"at": now, "title": "Nightshift", "message": "2 videos are ready"}]}), encoding="utf-8"
+    )
     state.log.info("job_start", "hello", job_id="x")
     series = state.adapters.series
     assert isinstance(series, FakeSeriesAdapter)
@@ -407,6 +411,7 @@ CASES = [
     Case("/api/runs", "Run", many=True),
     Case("/api/logs/tail", "LogLine", many=True),
     Case("/api/update/state", "UpdateState"),
+    Case("/api/notes", "MorningNote", many=True),
     Case("/api/assistant/tools", "ToolInfo", many=True),
 ]
 

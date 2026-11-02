@@ -52,6 +52,8 @@ export interface ChannelProfile { slug: string; display_name: string; status: "a
 export interface ChannelPools { hooks: string[]; structures: string[]; pov_tones: string[]; pacings: string[]; caption_styles: string[]; visual_treatments: string[]; title_formulas: string[] }
 /** GET/PUT/POST /channels...: the profile plus the validation warnings. */
 export interface ChannelDetail { profile: ChannelProfile; warnings: string[]; warning_fields: { field: string; message: string }[] }
+/** GET /notes: what the nightly run could not show as a toast (run/morning_note.json). */
+export interface MorningNote { at: string; title: string; message: string }
 /** GET /update/state: what the detached updater writes to run/update_state.json (idle when it never ran). */
 export interface UpdateState { state: "idle" | "running" | "done" | "failed"; old: string | null; new: string | null; message: string | null; updated_at: string | null }
 /** One entry of GET /assistant/tools: the registry the Assistant works from. */

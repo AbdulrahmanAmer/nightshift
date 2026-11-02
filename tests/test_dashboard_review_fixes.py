@@ -524,3 +524,28 @@ def test_clip_result_records_the_chosen_layout_and_a_missing_face_cam(tmp_home: 
     got = read_clip_layout(state.paths, "clips-20261102-aaaa")
     assert got == {"template": "center_crop", "per_clip": {"1": "center_crop"}, "notes": {"1": "NS-W402: no face cam"}, "no_facecam": True}
     assert read_clip_layout(state.paths, "nope") is None and read_clip_layout(None, "x") is None
+
+
+# ------------------------------------------------------------------ morning notes (a toast that could not show)
+
+
+def test_morning_notes_are_listed_and_cleared(tmp_home: Path):
+    import json
+
+    dash, state = make(tmp_home)
+    assert dash.engine.notes() == []
+    f = state.paths.home / "run" / "morning_note.json"
+    f.parent.mkdir(parents=True)
+    f.write_text(json.dumps({"notes": [{"at": "2026-11-03T03:30:00", "title": "Nightshift", "message": "2 videos are ready"}, "junk"]}), encoding="utf-8")
+    assert dash.engine.notes() == [{"at": "2026-11-03T03:30:00", "title": "Nightshift", "message": "2 videos are ready"}]
+    dash.engine.clear_notes()
+    assert not f.exists() and dash.engine.notes() == []
+    f.write_text("{broken", encoding="utf-8")
+    assert dash.engine.notes() == []
+
+
+def test_schedule_warning_is_not_an_error():
+    """`schedule.install` says "only while you are logged on" when only the interactive task could be registered."""
+    from ns_dashboard.fakes import FakeScheduleAdapter
+
+    assert FakeScheduleAdapter().apply("03:00")["applied"] is True

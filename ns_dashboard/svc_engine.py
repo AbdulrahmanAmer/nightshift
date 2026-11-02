@@ -230,6 +230,27 @@ class EngineService:
         rows = self.s.db.query("SELECT * FROM runs ORDER BY started_at DESC LIMIT ?", (n,))
         return [self._run_row(r) for r in rows]
 
+    # --- morning notes ---
+    def notes(self) -> list[dict[str, Any]]:
+        """Notes the nightly run left because no toast could be shown (`run/morning_note.json`), oldest first."""
+        try:
+            raw = json.loads((self.s.paths.home / "run" / "morning_note.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return []
+        items = raw.get("notes") if isinstance(raw, dict) else None
+        if not isinstance(items, list):
+            return []
+        return [
+            {"at": str(n.get("at") or ""), "title": str(n.get("title") or ""), "message": str(n.get("message") or "")}
+            for n in items
+            if isinstance(n, dict)
+        ]
+
+    def clear_notes(self) -> dict[str, Any]:
+        """The owner has seen the notes: remove the file."""
+        (self.s.paths.home / "run" / "morning_note.json").unlink(missing_ok=True)
+        return {"ok": True}
+
     # --- commands ---
     def warmup(self, service: str | None) -> dict[str, Any]:
         """Start `service` (default `llama`) so the first job is fast."""

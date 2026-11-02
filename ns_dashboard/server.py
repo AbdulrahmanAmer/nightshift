@@ -386,6 +386,14 @@ def create_app(
         return ok(await run_in_threadpool(dash.jobs.cancel, job_id))
 
     # ------------------------------------------------------------ runs / logs / learn
+    @app.get("/api/notes")
+    async def notes() -> SafeJSONResponse:
+        return ok(await run_in_threadpool(dash.engine.notes))
+
+    @app.post("/api/notes/clear")
+    async def notes_clear() -> SafeJSONResponse:
+        return ok(await run_in_threadpool(dash.engine.clear_notes))
+
     @app.get("/api/runs")
     async def runs(request: Request) -> SafeJSONResponse:
         return ok(await run_in_threadpool(dash.engine.runs, query_int(request, "limit", 30)))
