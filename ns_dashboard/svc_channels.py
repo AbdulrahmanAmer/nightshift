@@ -9,6 +9,7 @@ from pydantic import ValidationError
 
 from ns_common.config import list_channels, load_channel, save_channel
 from ns_common.models import Channel
+from ns_dashboard.channel_stats import channel_stats
 from ns_dashboard.channels import validate_profile
 from ns_dashboard.common import now_iso, require_slug
 from ns_dashboard.errors import ApiError
@@ -46,7 +47,13 @@ class ChannelsService:
         """True when the profile file exists."""
         return self.s.paths.channel_file(slug).exists()
 
-    def _card(self, ch: Channel, counts: dict[tuple[str, str], int], last: dict[str, str]) -> dict[str, Any]:
+    def _card(
+        self,
+        ch: Channel,
+        counts: dict[tuple[str, str], int],
+        last: dict[str, str],
+        stats: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         return {
             "slug": ch.slug,
             "display_name": ch.display_name,
@@ -58,10 +65,11 @@ class ChannelsService:
             "pending": counts.get((ch.slug, "pending"), 0),
             "approved": counts.get((ch.slug, "approved"), 0),
             "last_output_at": last.get(ch.slug),
+            "stats": stats,
         }
 
     def cards(self) -> list[dict[str, Any]]:
-        """Channel cards with output counts."""
+        """Channel cards with output counts and the `stats` object (week, retention, QC pass rate)."""
         counts = {
             (r["channel"], r["status"]): int(r["n"])
             for r in self.s.db.query(
@@ -72,7 +80,9 @@ class ChannelsService:
             r["channel"]: r["last"]
             for r in self.s.db.query("SELECT channel, MAX(created_at) AS last FROM outputs GROUP BY channel")
         }
-        return [self._card(ch, counts, last) for ch in self.load_all()]
+        loaded = self.load_all()
+        stats = channel_stats(self.s.paths, self.s.db, loaded)
+        return [self._card(ch, counts, last, stats.get(ch.slug)) for ch in loaded]
 
     def get(self, slug: str) -> dict[str, Any]:
         """Profile plus warnings."""
