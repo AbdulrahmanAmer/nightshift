@@ -612,15 +612,13 @@ class RealVoiceMaker:
         except httpx.HTTPError as e:
             raise NsError("NS-E310", f"voice service: {e}") from e
         if r.status_code == 409 and "missing_model" in r.text:
-            raise ApiError(
-                409,
-                "model_missing",
-                "The model for this voice tool is not downloaded yet.",
-                hint="Run the installer's model step again with the voice design option ticked.",
-            )
+            raise _missing_model(r)
         if r.status_code == 400:
             raise ApiError(400, "voice_rejected", _detail(r))
         if r.status_code >= 400:
+            code = _service_code(r)
+            if code is not None:  # the service named the condition (NS-E311, NS-E315, ...): the page words it
+                raise NsError(code, _detail(r))
             raise NsError("NS-E310", f"voice service answered {r.status_code}: {_detail(r)}")
 
     def _preview(self, base_url: str, name: str, test_line: str) -> MadeVoice:
@@ -658,6 +656,46 @@ class RealVoiceMaker:
         with self._tenant("tts") as url:
             self._post(url, "/v1/voices/clone", body)
             return self._preview(url, name, test_line)
+
+
+def _service_code(r: httpx.Response) -> str | None:
+    """The `NS-` code in a TTS service answer (`{"error": "NS-E315", "detail": ...}`) when it is a known one."""
+    try:
+        code = r.json().get("error")
+    except (ValueError, AttributeError):
+        return None
+    if isinstance(code, str) and code.startswith("NS-"):
+        try:
+            NsError(code)
+        except KeyError:
+            return None
+        return code
+    return None
+
+
+def _missing_model(r: httpx.Response) -> ApiError:
+    """The 409 for an absent model file, naming the model the owner can actually get.
+
+    Only the VoiceDesign talker has a download (`ns models get voicedesign`); a missing Base talker or tokenizer
+    belongs to the base install, so offering the design download for it would not help.
+    """
+    try:
+        missing = str(r.json().get("missing_model") or "")
+    except (ValueError, AttributeError):
+        missing = ""
+    if "design" in missing.lower():
+        return ApiError(
+            409,
+            "model_missing",
+            "The voice design model is not downloaded yet.",
+            hint="Get it with the button below (it is a large download), then try again.",
+        )
+    return ApiError(
+        409,
+        "base_model_missing",
+        f"A file of the voice model is missing ({missing or 'unknown'}).",
+        hint="Run the installer's model step again; this model belongs to the base download.",
+    )
 
 
 def _detail(r: httpx.Response) -> str:

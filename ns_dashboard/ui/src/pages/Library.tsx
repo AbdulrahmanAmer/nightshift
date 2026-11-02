@@ -182,7 +182,7 @@ function VoiceCard({ v, active, onPlay, line = SAMPLE_LINE }: { v: Voice; active
 const VOICE_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]{0,39}$/;
 interface Fail { title: string; text: string; hint?: string; code?: string; /** The voice design model is not installed: offer to get it. */ getModel?: boolean }
 /** Voice errors by code: NS-E310 engine failure, NS-E311 stored voice data missing, NS-E312 bad sample, NS-E314 design model missing, NS-E315 voice could not be built, NS-E316 search service failure. */
-const VOICE_TITLES: Record<string, string> = { "NS-E310": "The voice engine did not answer", "NS-E311": "This voice's stored data is missing", "NS-E312": "That recording will not work for cloning", "NS-E315": "The voice could not be built", "NS-E316": "The search service failed" };
+const VOICE_TITLES: Record<string, string> = { "NS-E310": "The voice engine did not answer", "NS-E311": "This voice's stored data is missing", "NS-E312": "That recording will not work for cloning", "NS-E315": "The voice could not be built", "base_model_missing": "The voice cloning model is not installed", "NS-E316": "The search service failed" };
 /** What went wrong, in words the owner can act on. NS-E312 (a clone sample that is too short, quiet, clipped or noisy) gets its own heading. */
 const failOf = (e: unknown): Fail => {
   if (e instanceof ApiError && (e.code === "model_missing" || e.code === "NS-E314")) return { title: "The voice design model is not installed", text: e.reason, hint: "Get it with the button below (it is a large download), then try again", code: e.code === "NS-E314" ? e.code : undefined, getModel: true };

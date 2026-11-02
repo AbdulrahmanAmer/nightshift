@@ -496,3 +496,70 @@ def test_no_page_has_a_regex_that_matches_a_bare_letter_where_a_class_was_meant(
 
 def test_the_assistant_words_a_tool_by_its_first_sentence_only():
     assert r"t.split(/(?<=[.!?])\s/)" in page("Assistant.tsx")
+
+
+# ---------------------------------------------------------------- row 8: voice errors keep their code and the right model
+
+
+def voice_maker_for(status: int, body: dict[str, Any]):
+    import httpx
+
+    from ns_common.acquire import Endpoint
+    from ns_dashboard.adapters import RealVoiceMaker
+
+    class Acq:
+        def acquire(self, service: str, owner: str, **_kw: Any) -> Endpoint:
+            return Endpoint("http://tts.test")
+
+        def release(self, service: str, owner: str) -> None:
+            return None
+
+    def handler(_req: Any) -> httpx.Response:
+        return httpx.Response(status, json=body)
+
+    return RealVoiceMaker(
+        Paths.from_env(), SupervisorLink("http://127.0.0.1:9", timeout_s=0.2), acquirer=Acq(),  # type: ignore[arg-type]
+        http=httpx.Client(transport=httpx.MockTransport(handler)), transcribe=lambda _p: "these are the words",
+    )
+
+
+@pytest.mark.parametrize("code", ["NS-E311", "NS-E315", "NS-E312", "NS-E310"])
+def test_the_service_code_reaches_the_page(tmp_home: Path, code: str):
+    from ns_common.errors import NsError
+
+    maker = voice_maker_for(500, {"error": code, "detail": "the codec said no"})
+    with pytest.raises(NsError) as err:
+        maker.clone("Mine", tmp_home / "me.wav", "Hello there.")
+    assert err.value.code == code and "the codec said no" in err.value.detail
+
+
+def test_an_unknown_error_code_is_an_engine_failure(tmp_home: Path):
+    from ns_common.errors import NsError
+
+    maker = voice_maker_for(500, {"error": "NS-E999", "detail": "?"})
+    with pytest.raises(NsError) as err:
+        maker.design("Deep", "a voice", "Hi.")
+    assert err.value.code == "NS-E310"
+
+
+def test_a_missing_base_model_does_not_offer_the_voice_design_download(tmp_home: Path):
+    from ns_dashboard.errors import ApiError
+
+    clone = voice_maker_for(409, {"missing_model": "qwen-talker-1.7b-base-Q8_0.gguf"})
+    with pytest.raises(ApiError) as e1:
+        clone.clone("Mine", tmp_home / "me.wav", "Hello there.")
+    assert e1.value.status == 409 and e1.value.code == "base_model_missing" and "qwen-talker-1.7b-base" in e1.value.message
+    design = voice_maker_for(409, {"missing_model": "qwen-talker-1.7b-base-Q8_0.gguf", "error": "NS-E314"})
+    with pytest.raises(ApiError) as e2:  # the design route also needs the Base talker: that is the file to fix
+        design.design("Deep", "a voice", "Hi.")
+    assert e2.value.code == "base_model_missing"
+    only_design = voice_maker_for(409, {"missing_model": "qwen-talker-1.7b-voicedesign-Q8_0.gguf", "error": "NS-E314"})
+    with pytest.raises(ApiError) as e3:
+        only_design.design("Deep", "a voice", "Hi.")
+    assert e3.value.code == "model_missing"
+
+
+def test_the_library_titles_the_new_voice_states():
+    src = page("Library.tsx")
+    for code in ("NS-E311", "NS-E315", "base_model_missing"):
+        assert f'"{code}":' in src
