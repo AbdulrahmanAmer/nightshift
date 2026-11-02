@@ -142,3 +142,60 @@ def test_schedule_failure_uses_e204(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(pwsh, "run_powershell", refuse)
     r = invoke(tmp_path / "home", "schedule", "install", "--time", "04:00")
     assert r.exit_code == 1 and "NS-E204" in r.output and "Access is denied" in r.output
+
+
+class FakeEngineClient:
+    """A supervisor client whose `/status` answers only after the engine was spawned."""
+
+    def __init__(self, *, up: bool) -> None:
+        self.up = up
+        self.shutdowns: list[float] = []
+
+    def is_up(self) -> bool:
+        return self.up
+
+    def shutdown(self, grace_s: float = 30) -> None:
+        self.shutdowns.append(grace_s)
+        self.up = False
+
+
+def _passing_report(*a: object, **k: object) -> GateReport:
+    return GateReport(
+        slice="verify", date="2026-11-01T00:00:00", machine={}, checks=[GateCheck(name="x", passed=True)]
+    )
+
+
+def test_verify_stops_the_headless_engine_it_started(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # A headless engine left running makes the Dashboard shortcut skip starting the dashboard service.
+    fake = FakeEngineClient(up=False)
+    monkeypatch.setattr(cli, "_client", lambda paths: fake)
+    monkeypatch.setattr(cli, "ensure_running", lambda *a, **k: setattr(fake, "up", True))
+    monkeypatch.setattr(verify, "run_verify", _passing_report)
+    r = invoke(tmp_path / "home", "verify", "--quick")
+    assert r.exit_code == 0 and fake.shutdowns == [30] and fake.up is False
+
+
+def test_verify_stops_the_engine_it_started_even_when_the_run_crashes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = FakeEngineClient(up=False)
+
+    def boom(*a: object, **k: object) -> GateReport:
+        raise RuntimeError("probe exploded")
+
+    monkeypatch.setattr(cli, "_client", lambda paths: fake)
+    monkeypatch.setattr(cli, "ensure_running", lambda *a, **k: setattr(fake, "up", True))
+    monkeypatch.setattr(verify, "run_verify", boom)
+    r = invoke(tmp_path / "home", "verify")
+    assert r.exit_code != 0 and fake.shutdowns == [30]
+
+
+def test_verify_leaves_an_engine_that_was_already_running(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = FakeEngineClient(up=True)
+    monkeypatch.setattr(cli, "_client", lambda paths: fake)
+    monkeypatch.setattr(cli, "ensure_running", lambda *a, **k: None)
+    monkeypatch.setattr(verify, "run_verify", _passing_report)
+    r = invoke(tmp_path / "home", "verify", "--quick")
+    assert r.exit_code == 0 and fake.shutdowns == [] and fake.up is True

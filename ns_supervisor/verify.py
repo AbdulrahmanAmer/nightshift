@@ -29,6 +29,7 @@ from ns_common.logging import NsLogger
 from ns_common.models import GateCheck, GateReport, Runtime
 from ns_common.paths import Paths
 from ns_common.tts_client import TtsClient
+from ns_supervisor import check_names as names
 from ns_supervisor import procs
 from ns_supervisor.benchmark import measure_tok_s
 
@@ -276,9 +277,9 @@ def run_verify(
         ctl.stop_all()
         return Out(True, "all services stopped", log="so the model load below is measured cold")
 
-    rec.run("supervisor.status", supervisor)
+    rec.run(names.SUPERVISOR_STATUS, supervisor)
     if not quick:
-        rec.run("supervisor.cold_start", cold_start)
+        rec.run(names.SUPERVISOR_COLD_START, cold_start)
 
     # -- llama -----------------------------------------------------------------------------
     llama: list[Endpoint] = []
@@ -288,12 +289,12 @@ def run_verify(
         llama.append(ep)
         return Out(True, round(secs, 1), log=f"{ep.base_url} alias={ep.model_alias}")
 
-    started = rec.run("llama.start", llama_start, "NS-E203")
+    started = rec.run(names.LLAMA_START, llama_start, "NS-E203")
     ep_llama = llama[0] if llama else None
     if started is not None and not quick:
         secs = float(started.value or 0)
         rec.bench("model_load_s", secs, f"<= {tg.load_s:.0f} s (soft)", secs <= tg.load_s, soft=True)
-    rec.run("llama.health", lambda: Out(LlmClient(_need(ep_llama, "llama").base_url, "code").health()))
+    rec.run(names.LLAMA_HEALTH, lambda: Out(LlmClient(_need(ep_llama, "llama").base_url, "code").health()))
 
     def llama_json() -> Out:
         out = LlmClient(_need(ep_llama, "llama").base_url, "code").complete_json(
@@ -306,14 +307,14 @@ def run_verify(
         )
         return Out(out.get("ok") is True, "json ok" if out.get("ok") is True else json.dumps(out))
 
-    rec.run("llama.json_completion", llama_json, "NS-E301")
+    rec.run(names.LLAMA_JSON, llama_json, "NS-E301")
 
     if not quick:
 
         def llama_speed() -> Out:
             return Out(True, measure_tok_s(_need(ep_llama, "llama").base_url))
 
-        sp = rec.run("llama.tok_s", llama_speed, "NS-E301")
+        sp = rec.run(names.LLAMA_TOK_S, llama_speed, "NS-E301")
         if sp is not None:
             v = float(sp.value or 0)
             rec.bench("code_tok_s", v, f">= {tg.tok_s:.0f} tok/s", v >= tg.tok_s)
@@ -328,14 +329,14 @@ def run_verify(
         emb.append(ep)
         return Out(True, round(secs, 1), log=ep.base_url)
 
-    rec.run("embed.start", embed_start, "NS-E203")
+    rec.run(names.EMBED_START, embed_start, "NS-E203")
 
     def embed_vec() -> Out:
         vecs = EmbedClient(_need(emb[0] if emb else None, "embed").base_url).embed(["nightshift verify"])
         ok = len(vecs) == 1 and len(vecs[0]) > 0
         return Out(ok, float(len(vecs[0])) if ok else 0.0, log="embedding dimension")
 
-    rec.run("embed.vector", embed_vec, "NS-E301")
+    rec.run(names.EMBED_VECTOR, embed_vec, "NS-E301")
     if emb:
         release("embed")
 
@@ -347,7 +348,7 @@ def run_verify(
         tts.append(ep)
         return Out(True, round(secs, 1), log=ep.base_url)
 
-    rec.run("tts.start", tts_start, "NS-E203")
+    rec.run(names.TTS_START, tts_start, "NS-E203")
 
     def tts_modes() -> Out:
         client = TtsClient(_need(tts[0] if tts else None, "tts").base_url)
@@ -372,7 +373,7 @@ def run_verify(
                 ok = audio_s > 0 and (quick or rtf <= tg.rtf)
                 rec.checks.append(
                     GateCheck(
-                        name=f"tts.{mode}",
+                        name=names.tts_mode(mode),
                         passed=ok,
                         value=round(rtf, 3),
                         limit=f"<= {tg.rtf} RTF" if not quick else None,
@@ -384,7 +385,7 @@ def run_verify(
             rec.bench("tts_rtf", round(worst, 3), f"<= {tg.rtf}", worst <= tg.rtf)
         return Out(True, ",".join(m for m, _ in picked), log="modes exercised")
 
-    rec.run("tts.voices", tts_modes, "NS-E202")
+    rec.run(names.TTS_VOICES, tts_modes, "NS-E202")
     if tts:
         release("tts")
 
@@ -397,14 +398,14 @@ def run_verify(
             release("whisper")
         return Out(True, round(secs, 1), log=f"{rt.whisper.model} on {rt.whisper.device}")
 
-    rec.run("whisper.load", whisper, "NS-E202")
+    rec.run(names.WHISPER_LOAD, whisper, "NS-E202")
 
     # -- NVENC -----------------------------------------------------------------------------
     def nvenc() -> Out:
         d.nvenc()
         return Out(True, "h264_nvenc ok", log="2 s colour source encoded")
 
-    rec.run("nvenc.probe", nvenc, "NS-W401")
+    rec.run(names.NVENC_PROBE, nvenc, "NS-W401")
 
     # -- fake-services job -----------------------------------------------------------------
     if not quick:
@@ -415,7 +416,7 @@ def run_verify(
                 return Out(True, "skipped", log="studio is not installed yet")
             return Out(True, secs, log="studio run --fake-services --format shorts_only --count 1")
 
-        rec.run("job.fake_services", job, "NS-E202")
+        rec.run(names.JOB_FAKE_SERVICES, job, "NS-E202")
 
     # -- idle VRAM -------------------------------------------------------------------------
     def idle_vram() -> Out:
@@ -435,7 +436,7 @@ def run_verify(
         rec.bench("idle_vram_mb", float(used), f"<= {tg.idle_vram_mb:.0f} MB", ok)
         return Out(ok, float(used), f"<= {tg.idle_vram_mb:.0f} MB", "GPU memory in use after unload")
 
-    rec.run("vram.idle", idle_vram, "NS-E102")
+    rec.run(names.VRAM_IDLE, idle_vram, "NS-E102")
 
     machine: dict[str, str | float | None] = {
         "gpu": d.gpu_name(),

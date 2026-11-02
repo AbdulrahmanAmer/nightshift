@@ -450,9 +450,13 @@ def test_plan_cpu_dev(manifest, tmp_path: Path):
     assert "whisper/model.bin" in names
 
 
-def test_qwentts_item_is_none_while_manifest_pin_is_null(manifest, tmp_path: Path):
-    assert manifest.bins["qwentts"] is None
-    assert dl.qwentts_item(manifest, tmp_path) is None
+def test_qwentts_item_is_the_pinned_zip_and_none_for_a_null_pin(manifest, tmp_path: Path):
+    pin = manifest.bins["qwentts"]
+    assert pin is not None                          # pinned to the v0.1.0 release asset since PR #36
+    item = dl.qwentts_item(manifest, tmp_path)
+    assert item is not None and item.url == pin.url and item.sha256 == pin.sha256
+    unpinned = manifest.model_copy(update={"bins": {**manifest.bins, "qwentts": None}})
+    assert dl.qwentts_item(unpinned, tmp_path) is None
     url = "https://github.com/o/r/releases/latest/download/q.zip"
     item = dl.release_zip_item("qwentts", url, None, tmp_path)
     assert item.kind == "zip" and item.extract_to == tmp_path / "bin" / "qwentts"

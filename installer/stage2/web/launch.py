@@ -88,11 +88,12 @@ def browser_candidates(env: Mapping[str, str]) -> list[tuple[str, Path]]:
 
 
 def host_argv(app_path: Path, url: str) -> list[str]:
-    """The WebView2 host command line."""
+    """The WebView2 host command line. ``-Role setup`` keeps its single-instance mutex and state file apart
+    from the dashboard window's, so opening the dashboard while setup is open starts a second window."""
     script = app_path / "launchers" / "nightshift-host.ps1"
     return [
         "powershell.exe", "-NoProfile", "-STA", "-ExecutionPolicy", "Bypass", "-File", str(script),
-        "-Url", url, "-Title", "Nightshift setup", "-AppPath", str(app_path),
+        "-Url", url, "-Title", "Nightshift setup", "-AppPath", str(app_path), "-Role", "setup",
     ]
 
 

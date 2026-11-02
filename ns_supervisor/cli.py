@@ -65,6 +65,19 @@ def cmd_doctor(
         raise typer.Exit(1)
 
 
+def _stop_started_engine(client: SupervisorClient) -> None:
+    """Shut down the headless engine `ns verify` started itself, so it does not linger (auto-exit is 30 min).
+
+    A headless engine never starts the dashboard service; leaving it behind made the Dashboard shortcut
+    find a running engine and open a page that was never served. An engine that was already up is left alone.
+    """
+    try:
+        if client.is_up():
+            client.shutdown(30)
+    except NsError as e:
+        typer.echo(f"Could not stop the verify engine: {e}", err=True)
+
+
 @app.command("verify")
 def cmd_verify(
     quick: Annotated[bool, typer.Option("--quick", help="Health, one completion, one voice only.")] = False,
@@ -73,11 +86,16 @@ def cmd_verify(
     paths = Paths.from_env()
     rt = control.runtime_or_default(paths)
     client = _client(paths)
+    started_here = not client.is_up()
     try:
         ensure_running(client, paths, headless=True)
     except NsError as e:
         typer.echo(f"Could not start the engine: {e}", err=True)
-    report = verify.run_verify(paths, rt, client, quick=quick)
+    try:
+        report = verify.run_verify(paths, rt, client, quick=quick)
+    finally:
+        if started_here:
+            _stop_started_engine(client)
     f = verify.write_report(paths, report)
     for line in verify.format_lines(report):
         typer.echo(line)

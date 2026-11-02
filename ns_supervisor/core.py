@@ -135,6 +135,8 @@ class Supervisor:
 
     def write_state(self) -> None:
         """Record supervisor and child pids."""
+        if self.shutting_down:  # shutdown removes the file; a late start must not bring it back
+            return
         children = {n: r.proc.pid for n, r in self.services.items() if r.proc is not None}
         data = {
             "pid": os.getpid(),
@@ -307,6 +309,16 @@ class Supervisor:
             return {"endpoint": "inproc", "model_alias": None}
         return {"endpoint": d.base_url, "model_alias": alias}
 
+    def _leave_if_shutting_down(self, owner: str) -> None:
+        """Called right after the GPU lock was granted: during shutdown give it back and refuse.
+
+        A waiter queued before `shutdown()` is granted the lock when `stop_all` releases the holder; without
+        this it would start a new model process after everything was stopped.
+        """
+        if self.shutting_down:
+            self.lock.release(owner)
+            raise NsError("NS-E202", "supervisor is shutting down")
+
     async def acquire(
         self,
         service: str,
@@ -324,6 +336,7 @@ class Supervisor:
             if not self._whisper_gpu():
                 return self._endpoint("whisper", None, None)
             await self.lock.acquire(owner, "whisper", timeout_s if wait else 0)
+            self._leave_if_shutting_down(owner)
             try:
                 await self._swap_to("whisper", self.services["llama"].definition)
             except BaseException:
@@ -346,6 +359,7 @@ class Supervisor:
                 raise
             return self._endpoint(service, d, alias)
         await self.lock.acquire(owner, service, timeout_s if wait else 0)
+        self._leave_if_shutting_down(owner)
         rt.idle_since = None
         try:
             await self._swap_to(service, d)
@@ -412,6 +426,8 @@ class Supervisor:
 
     async def warmup(self, service: str) -> str:
         """Start `service` without an owner (idle timer applies). Skipped while the GPU is busy."""
+        if self.shutting_down:
+            raise NsError("NS-E202", "supervisor is shutting down")
         self._touch()
         if service == "whisper":
             return "stopped"

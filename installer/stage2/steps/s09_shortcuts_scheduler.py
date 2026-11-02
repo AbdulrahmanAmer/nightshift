@@ -2,6 +2,11 @@
 
 Shortcuts point at the launcher scripts under ``<app>/launchers``; launchers that are not in this build are
 reported and skipped. The scheduled task is registered by ``ns schedule install``.
+
+Toasts: ``ns_supervisor.notify`` sends them as AppUserModelID ``Nightshift``, which Windows ignores unless
+it is registered. This step writes the registry key (DisplayName and IconUri) and, best effort, stamps the
+same ID on the Desktop dashboard shortcut through IPropertyStore. If only the registry part works, toasts
+still show; the flag ``aumid`` records what worked (``registry+shortcut``, ``registry`` or ``failed``).
 """
 
 from __future__ import annotations
@@ -11,7 +16,13 @@ from pathlib import Path
 from installer.stage2.base import Step
 from installer.stage2.context import StepContext
 from installer.stage2.errors import make_error
-from installer.stage2.winenv import create_shortcut, desktop_dir
+from installer.stage2.winenv import (
+    create_shortcut,
+    desktop_dir,
+    register_aumid,
+    set_shortcut_aumid,
+)
+from ns_supervisor.notify import AUMID
 
 # The brand icon ships with the dashboard build; without it a shortcut keeps PowerShell's own icon.
 ICON_RELATIVE = Path("ns_dashboard") / "static" / "brand" / "nightshift.ico"
@@ -26,6 +37,9 @@ SHORTCUTS = (
     ("Nightshift - Diagnostics", "diagnostics.ps1", False),
     ("Nightshift Code", "nightshift-code.ps1", True),
 )
+
+#: The shortcut that carries the AppUserModelID.
+AUMID_SHORTCUT = "Nightshift Dashboard"
 
 
 def wanted_shortcuts(ctx: StepContext) -> list[tuple[str, Path]]:
@@ -63,7 +77,7 @@ class S09ShortcutsScheduler(Step):
 
     def check(self, ctx: StepContext) -> bool:
         """Shortcuts exist and the task decision is recorded."""
-        if ctx.flag("schedule") not in ("installed", "unavailable"):
+        if ctx.flag("schedule") not in ("installed", "unavailable") or ctx.flag("aumid") is None:
             return False
         folder = desktop(ctx)
         return all((folder / f"{name}.lnk").exists() for name, _ in wanted_shortcuts(ctx))
@@ -86,6 +100,7 @@ class S09ShortcutsScheduler(Step):
             if not ok:
                 raise make_error("NS-E110", f"could not create the shortcut '{name}'")
             ctx.ui.say(f"  shortcut: {name}")
+        self._register_toast_identity(ctx, folder, icon)
 
         run_time = ctx.ensure_answers().run_time
         res = ctx.run_tool("ns", ["schedule", "install", "--time", run_time], timeout=300)
@@ -99,6 +114,22 @@ class S09ShortcutsScheduler(Step):
         else:
             detail = f"ns schedule install failed (exit {res.returncode}): {res.text[-200:]}"
             raise make_error("NS-E204", detail)
+
+    @staticmethod
+    def _register_toast_identity(ctx: StepContext, folder: Path, icon: Path | None) -> None:
+        """Registry key first (what makes toasts show), then the property on the dashboard shortcut."""
+        if not register_aumid(ctx.runner, AUMID, "Nightshift", icon):
+            ctx.set_flag("aumid", "failed")
+            ctx.log.warn("aumid_registry_failed", AUMID)
+            ctx.ui.say("  Windows notifications could not be registered; Nightshift works without.", "yellow")
+            return
+        lnk = folder / f"{AUMID_SHORTCUT}.lnk"
+        if lnk.exists() and set_shortcut_aumid(ctx.runner, lnk, AUMID):
+            ctx.set_flag("aumid", "registry+shortcut")
+        else:
+            ctx.set_flag("aumid", "registry")
+            ctx.log.warn("aumid_shortcut_failed", str(lnk))
+        ctx.ui.say("  notifications: registered")
 
     def verify(self, ctx: StepContext) -> None:
         """Every expected shortcut file exists and the task decision is recorded."""

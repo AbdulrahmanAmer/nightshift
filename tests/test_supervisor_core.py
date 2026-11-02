@@ -467,3 +467,50 @@ def test_process_output_reaches_the_service_log(tmp_path: Path) -> None:
     files = list(paths.logs.glob("llama-*.jsonl"))
     assert files, "service output should be logged"
     assert list(paths.logs.glob("supervisor-*.jsonl")), "supervisor events should be logged"
+
+
+def test_waiter_granted_the_gpu_during_shutdown_starts_nothing(tmp_path: Path) -> None:
+    # B queued behind A; shutdown() releases A, which grants B. B must give the lock back and refuse
+    # instead of starting a model process after stop_all and re-creating run/supervisor.json.
+    sup, _, paths = make(tmp_path, idle_unload_s=60)
+
+    async def main() -> None:
+        async with running(sup):
+            await sup.acquire("llama", "A")
+            waiter = asyncio.create_task(sup.acquire("tts", "B"))
+            assert await until(lambda: ("B", "tts") in sup.lock.waiters())
+            await sup.shutdown(grace_s=0.1)
+            with pytest.raises(NsError) as ei:
+                await asyncio.wait_for(waiter, 10)
+            assert ei.value.code == "NS-E202" and "shutting down" in ei.value.detail
+            await asyncio.sleep(0.3)
+            assert sup.services["tts"].proc is None and state(sup, "tts") == "stopped"
+            assert sup.lock.state.owner is None
+            assert not (paths.home / "run" / "supervisor.json").exists()
+
+    asyncio.run(main())
+
+
+def test_write_state_is_a_noop_once_shutting_down(tmp_path: Path) -> None:
+    sup, _, paths = make(tmp_path)
+    sup.write_state()
+    assert (paths.home / "run" / "supervisor.json").exists()
+    sup.remove_state()
+    sup.shutting_down = True
+    sup.write_state()
+    assert not (paths.home / "run" / "supervisor.json").exists()
+    sup.close_job()
+
+
+def test_warmup_is_refused_while_shutting_down(tmp_path: Path) -> None:
+    sup, _, _ = make(tmp_path)
+
+    async def main() -> None:
+        sup.shutting_down = True
+        with pytest.raises(NsError) as ei:
+            await sup.warmup("llama")
+        assert ei.value.code == "NS-E202"
+        assert sup.services["llama"].proc is None
+
+    asyncio.run(main())
+    sup.close_job()
