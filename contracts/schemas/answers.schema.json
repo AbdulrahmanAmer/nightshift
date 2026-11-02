@@ -227,6 +227,39 @@
       ],
       "default": null,
       "title": "Restore From"
+    },
+    "owner_name": {
+      "anyOf": [
+        {
+          "maxLength": 40,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Owner Name"
+    },
+    "ui_theme": {
+      "default": "dark",
+      "enum": [
+        "light",
+        "dark",
+        "soft"
+      ],
+      "title": "Ui Theme",
+      "type": "string"
+    },
+    "models_source_kind": {
+      "default": "internet",
+      "enum": [
+        "internet",
+        "folder",
+        "drive_zip"
+      ],
+      "title": "Models Source Kind",
+      "type": "string"
     }
   },
   "required": [

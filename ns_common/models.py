@@ -196,6 +196,10 @@ class Answers(Strict):
     models_source: str | None = None
     llm_tier: Literal["small", "balanced", "best"] = "small"
     restore_from: str | None = None
+    # installer UI (CR-C1-UI-1): greeting name, default dashboard theme, where the models come from
+    owner_name: str | None = Field(default=None, max_length=40)
+    ui_theme: Literal["light", "dark", "soft"] = "dark"
+    models_source_kind: Literal["internet", "folder", "drive_zip"] = "internet"
 
 
 # ---------- manifest ----------
