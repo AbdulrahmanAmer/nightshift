@@ -398,13 +398,16 @@ function PostingCalendar({ chans, ready, className, onOpen }: { chans: ChannelSu
 function RenderJobs({ jobs, chans, channelName, className }: { jobs: Job[]; chans: ChannelSummary[]; channelName: (s?: string) => string; className?: string }) {
   const { go } = useApp();
   const live = jobs.filter((j) => ["queued", "running"].includes(j.status));
-  const rows = [...live, ...jobs.filter((j) => !live.includes(j))].slice(0, 4);
+  // A scheduled job is queued with a future schedule_at: it shows its start time, not "Waiting", and sorts after the running ones.
+  const held = (j: Job) => j.status === "queued" && !!j.schedule_at && new Date(j.schedule_at).getTime() > Date.now();
+  const ordered = [...live.filter((j) => !held(j)), ...live.filter(held).sort((a, b) => +new Date(a.schedule_at!) - +new Date(b.schedule_at!))];
+  const rows = [...ordered, ...jobs.filter((j) => !live.includes(j))].slice(0, 4);
   const tasks: Task[] = rows.map((j) => {
-    const running = j.status === "running" || j.status === "queued"; const failed = j.status === "failed";
+    const running = j.status === "running" || j.status === "queued"; const failed = j.status === "failed"; const sched = held(j);
     const title = jobTitle(j, channelName);
     return {
-      id: j.job_id, title, date: running ? `Started ${fmtWhen(j.created_at)}` : fmtWhen(j.created_at),
-      metricLabel: "Stage", metric: j.status === "queued" ? "Waiting" : running ? stageWords(j.stage) : failed ? "Stopped" : j.status === "cancelled" ? "Cancelled" : "Done",
+      id: j.job_id, title, date: sched ? `Scheduled for ${fmtWhen(j.schedule_at)}` : running ? `Started ${fmtWhen(j.created_at)}` : fmtWhen(j.created_at),
+      metricLabel: sched ? "Starts" : "Stage", metric: sched ? fmtWhen(j.schedule_at) : j.status === "queued" ? "Waiting" : running ? stageWords(j.stage) : failed ? "Stopped" : j.status === "cancelled" ? "Cancelled" : "Done",
       progress: j.progress ?? (j.status === "done" ? 100 : 0), progressLabel: `${title} progress`, tone: failed ? "danger" : j.status === "done" ? "success" : "accent",
       meta: [{ icon: "clock", value: j.step && j.steps ? `${j.step}/${j.steps}` : "–", label: "steps" }, { icon: "film", value: j.result?.output_ids?.length ?? (j.status === "done" ? 1 : 0), label: "videos" }],
     };
@@ -413,7 +416,7 @@ function RenderJobs({ jobs, chans, channelName, className }: { jobs: Job[]; chan
     <Card as="section" aria-labelledby="q-renders" className={className}>
       <CardHeader id="q-renders" title="Render jobs" adornment={chans.length ? <AvatarGroup people={chans.map((c) => ({ name: c.display_name }))} max={3} onAdd={() => go("#/channels?edit=new")} addLabel="Add a channel" /> : undefined}
         actions={<Button variant="ghost" size="sm" leadingIcon="scenes" onClick={() => go("#/create")}>Open Create</Button>} />
-      {tasks.length ? <TaskList tasks={tasks} selectedId={live[0]?.job_id} onSelect={() => go("#/create")} />
+      {tasks.length ? <TaskList tasks={tasks} selectedId={ordered[0]?.job_id} onSelect={() => go("#/create")} />
         : <EmptyState icon="scenes" title="No jobs yet">Story videos and clips you start show their progress here</EmptyState>}
     </Card>
   );
@@ -424,14 +427,24 @@ function RenderJobs({ jobs, chans, channelName, className }: { jobs: Job[]; chan
 function MachineMeters({ className }: { className?: string }) {
   const { status } = useApp();
   const disk = status?.disk;
+  const gpu = status?.gpu;
+  const load = gpu?.load_pct ?? null;
+  const used = gpu?.vram_used_mb ?? null; const total = gpu?.vram_total_mb ?? null;
+  const vramPct = used != null && total ? Math.round((used / total) * 100) : null;
+  const gb = (mb: number) => (mb / 1024).toFixed(1);
+  // Without a total (no GPU block, or nvidia-smi gave none) the VRAM well stays empty and shows only the size the services report.
   const vramMb = Object.values(status?.services || {}).reduce((a, s) => a + (s.vram_mb || 0), 0);
   const vramGb = status?.engine?.vram_gb ?? (vramMb ? Math.round(vramMb / 1024) : null);
+  const temp = gpu?.temp_c;
   const meters: MeterDatum[] = [
-    // No GPU load field exists in Status yet: an honest empty meter until the engine reports one.
-    { label: "GPU", value: null, source: "not reported by the engine yet" },
-    // engine.vram_gb / services[].vram_mb give memory in use but no total, so the well stays empty and the figure shows the size.
-    { label: "VRAM", value: null, display: vramGb ? `${vramGb} GB` : undefined, source: vramGb ? `${vramGb} GB in use` : "no model loaded" },
+    { label: "GPU", value: load == null ? null : Math.round(load), source: load == null ? "not reported by the engine yet" : `${gpu!.name}, ${Math.round(load)}% busy` },
+    vramPct != null
+      ? { label: "VRAM", value: vramPct, display: `${gb(used!)} GB`, source: `${gb(used!)} of ${gb(total!)} GB in use` }
+      : { label: "VRAM", value: null, display: used != null ? `${gb(used)} GB` : vramGb ? `${vramGb} GB` : undefined, source: used != null ? `${gb(used)} GB in use, total not reported` : vramGb ? `${vramGb} GB in use` : "no model loaded" },
     { label: "Disk", value: disk ? Math.round(((disk.total_gb - disk.free_gb) / Math.max(1, disk.total_gb)) * 100) : null, source: disk ? `${disk.free_gb} GB free of ${disk.total_gb} GB` : "unknown until the engine answers" },
   ];
-  return <MeterGroup className={className} title="This PC" meters={meters} caption={disk ? `${disk.free_gb} GB free on ${disk.home}. GPU load appears once the engine reports it` : "Readings appear once the engine answers"} />;
+  const diskLine = disk ? `${disk.free_gb} GB free on ${disk.home}` : null;
+  const gpuLine = gpu ? `${gpu.name}${temp != null ? ` · ${Math.round(temp)} °C` : ""}` : null;
+  return <MeterGroup className={className} title="This PC" meters={meters}
+    caption={gpuLine ? [gpuLine, diskLine].filter(Boolean).join(". ") : diskLine ? `${diskLine}. GPU load appears once the engine reports it` : "Readings appear once the engine answers"} />;
 }

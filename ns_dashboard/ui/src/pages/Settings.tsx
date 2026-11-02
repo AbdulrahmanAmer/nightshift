@@ -6,6 +6,7 @@ import { useApp, useLoad } from "../lib/app";
 import { api } from "../lib/api";
 import type { LogLine, Settings as S } from "../lib/types";
 import { cx } from "../ui/kit";
+import { Lockup } from "../ui/Lockup";
 import { Badge, Button, Icon, Card, CardHeader, DashGrid, IconButton, Input, ProgressBar, SegmentedControl, SettingRow, SPAN, Switch, type SegmentOption } from "../components/ref12";
 
 const THEMES: SegmentOption<"light" | "dark" | "soft">[] = [{ value: "light", label: "Light", icon: "sun" }, { value: "dark", label: "Dark", icon: "moon" }, { value: "soft", label: "Soft", icon: "blend" }];
@@ -126,6 +127,7 @@ export default function Settings() {
 
           <Card as="section" aria-labelledby="s-about">
             <CardHeader id="s-about" title="About" className="!mb-1" />
+            <div className="flex justify-center py-3"><Lockup width={200} /></div>
             <SettingRow title="Nightshift" sub={`Version ${version || "unknown"}. Runs fully offline on this PC${demo ? ". Showing demo data because no engine answered" : ""}`} />
             <SettingRow title="Uninstall" sub="Run UNINSTALL.cmd in the Nightshift folder. It asks before deleting models or videos">
               <Button size="sm" variant="danger" leadingIcon="trash" onClick={() => copy(home ? `${home}\\UNINSTALL.cmd` : "UNINSTALL.cmd")}>Copy its path</Button>
