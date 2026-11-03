@@ -227,10 +227,12 @@ def build_plan(
     ram_gb: float,
     vram_mb: int | None,
     custom: dict[str, Any] | None = None,
+    llama_pair: str | None = None,
 ) -> dict[str, Any]:
     """The InstallPlan for the Welcome and Choices screens (``custom`` replaces the tier's story model)."""
     rows = tool_rows()
-    rows += bin_rows(manifest, profile, include_code=include_code, llama_pair=llama_pair_for(cuda))
+    pair = llama_pair or llama_pair_for(cuda)
+    rows += bin_rows(manifest, profile, include_code=include_code, llama_pair=pair)
     rows += model_rows(manifest, profile, tier, custom)
     groups = [_group(gid, [r for r in rows if r["group"] == gid]) for gid in GROUP_ORDER]
     total = sum(r["bytes"] or 0 for r in rows)

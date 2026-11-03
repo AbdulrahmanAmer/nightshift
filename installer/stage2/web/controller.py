@@ -409,6 +409,7 @@ class SetupController:
         the_plan = plan.build_plan(
             self.manifest, profile=pf.get("profile", "gpu"), tier=tier, include_code=code,
             cuda=pf.get("cuda"),
+            llama_pair=pf.get("llama_pair") or None,
             ram_gb=float(pf.get("ram_gb") or 0), vram_mb=gpu.get("vram_mb"),
             custom=(view or {}).get("llmCustom"),
         )
@@ -578,6 +579,7 @@ class SetupController:
             include_code=raw["install_code"],
             cuda=pf.get("cuda"), ram_gb=float(pf.get("ram_gb") or 0),
             vram_mb=(pf.get("gpu") or {}).get("vram_mb"),
+            llama_pair=pf.get("llama_pair") or None,
             custom=raw.get("llm_custom"),
         )
 

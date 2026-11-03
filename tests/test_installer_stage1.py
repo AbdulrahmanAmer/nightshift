@@ -158,7 +158,8 @@ def test_llama_pair_follows_cuda(tmp_path: Path, smi: str, gpu: str, pair: str, 
          "cuda13", "13.0", "driver"),
         ({"smi_text": "", "driver": "551.23", "gpu_name": ADA}, "cuda12", "12.4", "driver"),
         ({"smi_text": "", "driver": "531.18"}, "", "12.1", "driver"),
-        ({"smi_text": "", "driver": ""}, "cuda12", "", "none"),          # unreadable: the CUDA 12.4 build
+        ({"smi_text": "", "driver": "", "gpu_name": ADA}, "cuda12", "", "none"),  # unreadable: 12.4 build
+        ({"smi_text": "", "driver": ""}, "cuda13", "", "none"),  # unreadable, RTX 50: CUDA 13
     ],
 )
 def test_the_hand_over_names_the_cuda_source_and_the_pair(tmp_path: Path, over: dict, pair: str, cuda: str,

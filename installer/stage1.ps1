@@ -195,13 +195,19 @@ function ConvertTo-NvidiaDriverVersion {
     return ''
 }
 
+function Test-BlackwellName {
+    # RTX 50-series / RTX PRO (Blackwell); the same pattern as BLACKWELL_RE in installer/stage2/sysinfo.py.
+    param([string]$GpuName)
+    return [bool]($GpuName -match '(?i)(RTX|GeForce)\D{0,12}50[5-9]0|Blackwell|RTX\s+PRO')
+}
+
 function Get-LlamaPair {
     # The hand-over pair stage 2 downloads. RTX 50-series (Blackwell) cards can only run the CUDA 13 build,
     # so for them a CUDA 12.x driver yields no pair (the driver row fails with NS-E103 at the same time).
     param($Cuda, [string]$GpuName = '')
     if ($null -eq $Cuda) { return '' }
     if ($Cuda -ge (New-Object System.Version -ArgumentList 13, 0)) { return 'cuda13' }
-    if ($GpuName -match '(?i)(RTX|GeForce)\D{0,12}50[5-9]0|Blackwell|RTX\s+PRO') { return '' }
+    if (Test-BlackwellName $GpuName) { return '' }
     if ($Cuda -ge (New-Object System.Version -ArgumentList 12, 4)) { return 'cuda12' }
     return ''
 }
@@ -1022,7 +1028,11 @@ $llamaPair = Get-LlamaPair -Cuda $cuda -GpuName ([string]$probe.gpu_name)
 $profileName = 'gpu'
 if (-not $probe.gpu_name) { $profileName = 'cpu-dev' }
 # a GPU whose driver version could not be read gets the CUDA 12.4 build (NS-W115), not a refusal
-if ($null -eq $cuda -and $profileName -eq 'gpu') { $llamaPair = 'cuda12' }
+# (an RTX 50-series card only runs the CUDA 13 build: it gets that pair, as in s02 choose_pair, and the
+# setup window lists those files)
+if ($null -eq $cuda -and $profileName -eq 'gpu') {
+    if (Test-BlackwellName ([string]$probe.gpu_name)) { $llamaPair = 'cuda13' } else { $llamaPair = 'cuda12' }
+}
 $cudaString = ''
 if ($null -ne $cuda) { $cudaString = [string]$cuda }
 $handOver = Get-HandOver -Probe $probe -Rows $rows -App $App -NsHome $NsHome -ProfileName $profileName -LlamaPair $llamaPair -CudaString $cudaString -CudaSource $cudaInfo.source
