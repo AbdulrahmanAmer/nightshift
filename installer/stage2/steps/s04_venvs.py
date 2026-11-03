@@ -11,6 +11,7 @@ from installer.stage2.base import Step
 from installer.stage2.context import StepContext
 from installer.stage2.errors import make_error
 from installer.stage2.fallback import ensure_tts_venv
+from ns_common.uv import venv_args
 from ns_common.venv_extras import extras_suffix
 
 # Ranges, not pins: the manifest has no entries for these yet (change request CR-C1-4).
@@ -36,6 +37,8 @@ class S04Venvs(Step):
         """Environments exist and were filled (and the tts venv too when the fallback is flagged)."""
         if not ctx.flag("venvs_installed", False) or ctx.flag("venvs_version") != ctx.manifest.version:
             return False
+        if ctx.flag("venvs_app") != str(ctx.app_path):
+            return False                    # the editable installs point at another program folder
         if not (ctx.venv_python("studio").exists() and ctx.venv_python("supervisor").exists()):
             return False
         return not ctx.flag("tts_fallback", False) or (
@@ -48,8 +51,7 @@ class S04Venvs(Step):
             return
         path = ctx.paths.venvs / name
         res = ctx.run_uv(
-            ["venv", "--python", ctx.manifest.python_version, str(path)], tag=f"uv venv {name}",
-            meta={"path": str(path)},
+            venv_args(path, ctx.manifest.python_version), tag=f"uv venv {name}", meta={"path": str(path)},
         )
         if not res.ok:
             raise make_error("NS-E105", f"uv venv {name} failed (exit {res.returncode})")
@@ -78,6 +80,7 @@ class S04Venvs(Step):
             ensure_tts_venv(ctx)
         ctx.set_flag("venvs_installed", True)
         ctx.set_flag("venvs_version", ctx.manifest.version)
+        ctx.set_flag("venvs_app", str(ctx.app_path))
 
     def verify(self, ctx: StepContext) -> None:
         """The venv interpreters exist and the studio venv imports the app."""
