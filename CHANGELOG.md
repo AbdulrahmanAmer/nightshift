@@ -7,6 +7,29 @@ All notable changes to Nightshift are recorded here. The format follows
 
 ## [Unreleased]
 
+### Installer: whisper CUDA libraries and a CPU fallback for captions (CR-C1-4 a, b, c)
+- **cuBLAS and cuDNN are pinned and installed.** faster-whisper runs on CTranslate2, whose Windows build needs the
+  CUDA 12 cuBLAS DLL (and ships a cuDNN 9 loader); a fresh PC has only the NVIDIA driver, so the first video's
+  captions ran on the CPU or failed with `NS-E408`. `manifest.json` has a new `python.whisper_cuda` list
+  (`nvidia-cublas-cu12==12.8.4.1`, `nvidia-cudnn-cu12==9.10.2.21`, each `--hash=sha256:` of its win_amd64 wheel) and
+  s04 installs it into `venvs\studio` in hash-checking mode. Before it used the ranges `>=12.8,<13` and `>=9,<10`.
+  The studio extra now also says `ctranslate2>=4.6.3,<4.9` (CUDA 12.8 Windows builds). The DLL folders reach PATH
+  through `ns_common.gpu_dlls.ensure_on_path()` (verify) and the transcriber's own `ensure_gpu_dlls_on_path()`
+  before `faster_whisper` is imported, so no shell setting is involved.
+- **Setup tests a real transcription and falls back to the CPU.** `ns verify --quick` only loads the whisper model,
+  and CTranslate2 loads cuBLAS lazily. s08 now transcribes a generated 3 second WAV in the studio venv on
+  `device=cuda`; when that (or the model load) fails it writes `device=cpu, compute_type=int8` to `runtime.json`,
+  warns `NS-W404` ("Whisper runs on the CPU: captions will be slow") and tests the CPU too. Only a CPU that cannot
+  transcribe stops setup (`NS-E202`); the old hard stop `NS-E112` on a GPU failure is gone. `OPERATOR.md` and the
+  setup window's copy know `NS-W404`.
+- **spaCy model wheel and the PyTorch fallback repos come from the manifest.** `python.spacy_wheel`
+  (`en_core_web_md` 3.8.0 and its sha256) replaces the hard-coded URL, installed with `--require-hashes`;
+  `tts_fallback_repos` replaces the constant in `installer/stage2/fallback.py`. `Manifest` gained `python`
+  (`PythonPins`) and `tts_fallback_repos`, both defaulted; `contracts/schemas/manifest.schema.json` follows.
+- `tools/resolve_manifest.py --check` also validates the `python` pins; CI tests compare the pinned cuBLAS/cuDNN
+  hashes with PyPI and the spaCy wheel hash with the real download.
+- Still open: CR-C1-4 (e), a CUDA 12.8 llama.cpp build for drivers between CUDA 12.4 and 12.7.
+
 ## [0.1.4] - 2026-11-03
 
 ### Same content as 0.1.3, released

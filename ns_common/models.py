@@ -252,6 +252,15 @@ class ProfileModels(Strict):
     whisper_repo: HfRepo                   # CTranslate2 repo for whisper_model
 
 
+class PythonPins(Strict):
+    # Hash-locked pip pins for the studio venv (CR-C1-4 a and b).
+    # Requirements-file lines `name==version --hash=sha256:<hex>`: the cuBLAS and cuDNN DLLs that
+    # CTranslate2 (faster-whisper) needs on Windows.
+    whisper_cuda: list[str] = []
+    # The spaCy model wheel (a GitHub release asset, not on PyPI): version, url and the sha256 of the wheel.
+    spacy_wheel: BinPin | None = None
+
+
 class Manifest(Strict):
     version: str
     profiles: dict[str, ProfileModels]
@@ -259,6 +268,12 @@ class Manifest(Strict):
     python_version: str = "3.12"
     spacy_model: str = "en_core_web_md"
     tts_packages: list[str]     # PyTorch fallback set: exact pip specs for the fallback tts venv
+    python: PythonPins = PythonPins()
+    # Hugging Face repos of the PyTorch reference TTS engine (the fallback), downloaded as safetensors.
+    tts_fallback_repos: list[str] = [
+        "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
+        "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
+    ]
 
 
 # ---------- text stages ----------

@@ -1,3 +1,5 @@
+import hashlib
+import json
 import re
 
 import httpx
@@ -92,6 +94,23 @@ def test_check_reports_missing_sha():
     assert any("llm" in p and "sha256" in p for p in problems)
 
 
+def test_check_flags_a_python_pin_without_a_hash_or_an_exact_version():
+    mf = {
+        "profiles": {}, "bins": {},
+        "python": {
+            "whisper_cuda": [
+                "nvidia-cublas-cu12>=12.8", "nvidia-cudnn-cu12==9.10.2.21",
+                "ok==1.0 --hash=sha256:" + "a" * 64,
+            ],
+            "spacy_wheel": {"version": "3.8.0", "url": "https://example.test/x.whl", "sha256": None},
+        },
+    }
+    problems = rm.check(mf, _client())
+    assert [p.split(":")[0] for p in problems if p.startswith("python.whisper_cuda")] == [
+        "python.whisper_cuda[0]", "python.whisper_cuda[1]"]
+    assert any(p.startswith("python.spacy_wheel") and "sha256" in p for p in problems)
+
+
 def _all_sha256(mf) -> list[tuple[str, str | None]]:
     out: list[tuple[str, str | None]] = []
     for pname, prof in mf.profiles.items():
@@ -107,6 +126,8 @@ def _all_sha256(mf) -> list[tuple[str, str | None]]:
     for name, b in mf.bins.items():
         if b is not None and not (b.optional and b.sha256 == "TBD-release"):
             out.append((f"bins.{name}", b.sha256))
+    if mf.python.spacy_wheel is not None:
+        out.append(("python.spacy_wheel", mf.python.spacy_wheel.sha256))
     return out
 
 
@@ -133,6 +154,22 @@ def test_repo_manifest_validates():
     assert any(p.startswith("torch==") for p in mf.tts_packages)
 
 
+def test_python_pins_in_the_repo_manifest(repo_root):
+    """CR-C1-4 a, b, c: hash-locked cuBLAS/cuDNN and spaCy wheels, fallback repos named by the manifest."""
+    from ns_common.config import load_manifest
+
+    mf = load_manifest()
+    lines = mf.python.whisper_cuda
+    assert [line.split("==")[0] for line in lines] == ["nvidia-cublas-cu12", "nvidia-cudnn-cu12"]
+    assert all(rm.PIN_LINE_RE.match(line) for line in lines), lines
+    assert "==12.8." in lines[0] and "==9." in lines[1]     # CTranslate2 4.8.5: CUDA 12.8, cuDNN 9
+    wheel = mf.python.spacy_wheel
+    assert wheel is not None and wheel.url.endswith(f"{mf.spacy_model}-{wheel.version}-py3-none-any.whl")
+    assert mf.tts_fallback_repos == ["Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice", "Qwen/Qwen3-TTS-12Hz-1.7B-Base"]
+    raw = json.loads((repo_root / "manifest.json").read_text(encoding="utf-8"))
+    assert "python" in raw and "tts_fallback_repos" in raw     # written in the file, not only defaulted
+
+
 def test_every_sha256_is_64_hex():
     from ns_common.config import load_manifest
 
@@ -153,3 +190,38 @@ def test_repo_manifest_check_online(repo_root):
         except httpx.HTTPError:
             pytest.skip("no network")
         assert rm.check(mf, client) == []
+
+
+def _online_client() -> httpx.Client:
+    client = httpx.Client(timeout=300, headers={"User-Agent": "nightshift-resolve"}, follow_redirects=True)
+    try:
+        client.head("https://pypi.org")
+    except httpx.HTTPError:
+        client.close()
+        pytest.skip("no network")
+    return client
+
+
+def test_whisper_cuda_pins_match_the_pypi_hashes_online(repo_root):
+    """The sha256 of each pinned cuBLAS/cuDNN wheel is the one PyPI lists for its win_amd64 file."""
+    lines = json.loads((repo_root / "manifest.json").read_text(encoding="utf-8"))["python"]["whisper_cuda"]
+    with _online_client() as client:
+        for line in lines:
+            spec, sha = line.split(" --hash=sha256:")
+            name, version = spec.split("==")
+            r = client.get(f"https://pypi.org/pypi/{name}/{version}/json")
+            r.raise_for_status()
+            win = [u for u in r.json()["urls"] if u["filename"].endswith("win_amd64.whl")]
+            assert win, f"{name} {version} has no win_amd64 wheel"
+            assert sha in {u["digests"]["sha256"] for u in win}, line
+
+
+def test_spacy_wheel_pin_matches_the_download_online(repo_root):
+    """Streams the pinned spaCy model wheel (about 33 MB) and compares its sha256 with the manifest."""
+    pin = json.loads((repo_root / "manifest.json").read_text(encoding="utf-8"))["python"]["spacy_wheel"]
+    digest = hashlib.sha256()
+    with _online_client() as client, client.stream("GET", pin["url"]) as r:
+        r.raise_for_status()
+        for chunk in r.iter_bytes(1 << 20):
+            digest.update(chunk)
+    assert digest.hexdigest() == pin["sha256"]
