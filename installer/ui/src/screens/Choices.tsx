@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button, Card, CardHeader, SegmentedControl, TimeChip } from "@ref12";
 import { cx } from "@dash/ui/kit";
 import { choices as t } from "../copy";
-import { customNeedFreeGb, gbNum, parseRunTime } from "../format";
+import { customNeedFreeGb, gbNum, homePathProblem, parseRunTime } from "../format";
 import { useLiveState } from "../api/useSetup";
 import type { ChoicesDraft, ChoicesField, DiskCheck, PresetVoice } from "../api/types";
 import { openExternal } from "../host";
@@ -53,6 +53,7 @@ export function Choices() {
   const [disk, setDisk] = useState<DiskCheck | null>(null);
   const [diskBusy, setDiskBusy] = useState(false);
   const [folder, setFolder] = useState<DiskCheck | null>(null);
+  const [picking, setPicking] = useState<"install" | "models" | null>(null);
   const [more, setMore] = useState(false);
   const [keyPop, setKeyPop] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -93,7 +94,8 @@ export function Choices() {
     if (niche.length < 2 || niche.length > 60) e["channel.niche"] = t.errors.niche;
     if ((d.ownerName ?? "").trim().length > 40) e.ownerName = t.errors.ownerName;
     const p = d.homePath.trim();
-    if (!/^[A-Za-z]:\\/.test(p) || p.includes("%") || p.length > 80) e.homePath = t.errors.homePathShape;
+    const shape = homePathProblem(p);
+    if (shape) e.homePath = shape;
     else if (disk && !diskBusy && !disk.ok) e.homePath = t.errors.homePath(needFreeGb, Math.round(disk.freeGb ?? 0));
     if (other.selected) { if (!d.llmCustom) e.llmCustom = lookup.status === "bad" ? lookup.message : t.picker.other.needCheck; }
     else if (!tierInfo.allowed) e.llmTier = t.errors.llmTier(t.picker.names[d.llmTier], ram);
@@ -103,6 +105,23 @@ export function Choices() {
     if (!d.pixabayKey?.trim() && !keySet.pixabay) e.pixabayKey = t.errors.key("Pixabay");
     return e;
   }, [d, other.selected, lookup, disk, diskBusy, folder, tierInfo, needFreeGb, ram, keySet.pexels, keySet.pixabay]);
+
+  // Browse: the server shows the Windows folder dialog in front of this window; the picked path is checked like a typed one.
+  const pick = async (target: "install" | "models") => {
+    if (picking || locked) return;
+    setPicking(target);
+    try {
+      const r = await api.pickFolder(target, target === "install" ? d.homePath : d.modelsSource.path ?? "", d.llmTier);
+      if (!r.ok) { toast(r.message ?? t.more.browseFailed); return; }
+      if (r.cancelled || !r.path) return;
+      if (target === "install") { set("homePath", r.path); if (r.check) setDisk(r.check); touch("homePath"); }
+      else { set("modelsSource", { ...d.modelsSource, path: r.path }); if (r.check) setFolder(r.check); touch("modelsSource.path"); }
+    } catch (e) { toast(e instanceof Error ? e.message : t.more.browseFailed); } finally { setPicking(null); }
+  };
+  const browse = (target: "install" | "models") => (
+    <Button variant="soft" size="sm" className="shrink-0" disabled={locked || picking !== null} aria-busy={picking === target}
+      onClick={() => void pick(target)}>{picking === target ? t.more.browsing : target === "install" ? t.more.browse : t.more.browseModels}</Button>
+  );
 
   const keyBlocking = (k: "pexels" | "pixabay") => {
     const val = (k === "pexels" ? d.pexelsKey : d.pixabayKey)?.trim();
@@ -194,7 +213,7 @@ export function Choices() {
               <Card elevation={3} padding="lg" radius="xl" role="dialog" aria-label={t.more.title} className="ns-pop absolute! bottom-full left-0 z-30 mb-3 flex w-[480px] flex-col gap-4 text-ds-text">
                 <h3 className="text-ds-lg font-semibold">{t.more.title}</h3>
                 <div className="flex flex-col gap-2">
-                  <LabeledField label={t.more.folder} value={d.homePath} disabled={locked} onChange={(e) => set("homePath", e.target.value)} onBlur={() => touch("homePath")} error={shown("homePath")} inputClassName="font-mono text-ds-xs" />
+                  <LabeledField label={t.more.folder} value={d.homePath} disabled={locked} onChange={(e) => set("homePath", e.target.value)} onBlur={() => touch("homePath")} error={shown("homePath")} inputClassName="font-mono text-ds-xs" trailing={browse("install")} />
                   {disk?.message && !errors.homePath && <p className="text-ds-xs text-ds-text-2 ds-num">{disk.message}</p>}
                   <SegmentedControl label={t.more.drive} variant="plain" size="sm" value={(d.homePath[0] ?? "").toUpperCase()} onChange={(v) => set("homePath", `${v}:\\Nightshift`)}
                     options={state.machine.drives.map((x) => ({ value: x.letter, label: `${x.letter}:` }))} />
@@ -279,7 +298,7 @@ export function Choices() {
           {d.modelsSource.kind !== "internet" && (
             <div className="mt-2">
               <LabeledField label={folderLabel} placeholder={d.modelsSource.kind === "drive-zip" ? t.source.zipPh : t.source.folderPh} value={d.modelsSource.path ?? ""} disabled={locked} error={shown("modelsSource.path")}
-                onChange={(e) => set("modelsSource", { ...d.modelsSource, path: e.target.value })} onBlur={() => touch("modelsSource.path")} inputClassName="font-mono text-ds-xs" />
+                onChange={(e) => set("modelsSource", { ...d.modelsSource, path: e.target.value })} onBlur={() => touch("modelsSource.path")} inputClassName="font-mono text-ds-xs" trailing={browse("models")} />
               {folder?.modelsFound && folder.exists && <p className="mt-1.5 text-ds-xs text-ds-text-2 ds-num">{t.source.found(folder.modelsFound.files, folder.modelsFound.of, gbNum(folder.modelsFound.bytes))}</p>}
             </div>
           )}

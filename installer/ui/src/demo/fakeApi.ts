@@ -3,7 +3,7 @@
 // demo starts at Welcome and plays a scripted sequence (progress advances on a timer) when the buttons are pressed.
 import type { Api } from "../api/client";
 import type {
-  ActionBody, ActionName, ActionResult, AnswersResult, ChoicesDraft, DiskCheck, DownloadRow, KeyCheck, ModelCheck, SetupState, StepId, UiStep, UninstallView, VerifyRow,
+  ActionBody, ActionName, ActionResult, AnswersResult, ChoicesDraft, DiskCheck, DownloadRow, KeyCheck, ModelCheck, PickFolderResult, SetupState, StepId, UiStep, UninstallView, VerifyRow,
 } from "../api/types";
 import { checkRows, DRIVES, downloadRows, downloadsMid, fixture, isoNow, machine, overall, plan as makePlan, resultView, steps as makeSteps, verifyView, answers as answersView } from "./fixtures";
 
@@ -167,6 +167,7 @@ export function createDemoApi({ screen }: { screen: string | null }): Api {
 
   /* ------------------------------------------------------------ Api */
 
+  let pickCount = 0;
   const api: Api = {
     demo: true,
 
@@ -226,6 +227,14 @@ export function createDemoApi({ screen }: { screen: string | null }): Api {
       const size = sizes.find(([k]) => low.includes(k))?.[1] ?? 8e9;
       if (size > 15.5e9) return no(`That file is ${(size / 1e9).toFixed(1)} GB. A 16 GB graphics card holds files up to 15.5 GB. Pick a smaller version, for example Q4_K_M`, size);
       return { ok: true, size, message: null, code: null };
+    },
+
+    // The demo has no dialog: it "picks" the next folder of a short list and then starts over (the real one is the Windows dialog).
+    async pickFolder(target, _start, tier): Promise<PickFolderResult> {
+      await sleep(350);
+      const folders = target === "models" ? ["D:\\Models", "E:\\Downloads\\Model files"] : ["E:\\Nightshift", "D:\\My Studio\\Nightshift"];
+      const path = folders[pickCount++ % folders.length];
+      return { ok: true, path, cancelled: false, message: null, check: await api.disk(path, tier, target === "models") };
     },
 
     async disk(path, tier, source): Promise<DiskCheck> {
