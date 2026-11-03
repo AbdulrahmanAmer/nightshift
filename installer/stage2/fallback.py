@@ -9,6 +9,7 @@ from __future__ import annotations
 from installer.stage2.context import StepContext
 from installer.stage2.downloader import DownloadItem, plan_from_hf_tree
 from installer.stage2.errors import make_error
+from ns_common.uv import venv_args
 from ns_common.venv_extras import extras_suffix
 
 INDEX_SEP = " --index-url "
@@ -54,8 +55,7 @@ def ensure_tts_venv(ctx: StepContext) -> None:
     ctx.ui.say("Setting up the PyTorch voice engine (fallback) ...")
     if not py.exists():
         res = ctx.run_uv(
-            ["venv", "--python", ctx.manifest.python_version, str(venv)], tag="uv venv tts",
-            meta={"path": str(venv)},
+            venv_args(venv, ctx.manifest.python_version), tag="uv venv tts", meta={"path": str(venv)}
         )
         if not res.ok:
             raise make_error("NS-E105", f"uv venv for the tts environment failed (exit {res.returncode})")

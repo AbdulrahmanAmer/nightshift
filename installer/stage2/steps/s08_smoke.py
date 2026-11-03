@@ -12,6 +12,7 @@ is decided by `ns tune` (s06), so there is no MTP branch here.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 from installer.stage2.base import Step
@@ -23,12 +24,48 @@ from installer.stage2.runner import RunResult
 from installer.stage2.runtime_cfg import ensure_baseline, update_runtime
 from installer.stage2.steps.s05_opencode_prewarm import confirm_local_code
 from installer.stage2.whisper_probe import transcribe_probe
+from ns_common import vcruntime
 from ns_supervisor import check_names as names
 
 
 def qwentts_binaries_ok(ctx: StepContext) -> bool:
     """True when the unpacked qwentts.cpp folder holds the two programs the voice service starts."""
     return all((ctx.paths.bin_qwentts / exe).is_file() for exe in QWENTTS_EXES)
+
+
+def check_vc_runtime(ctx: StepContext) -> None:
+    """NS-E114 before llama-server is started when the Visual C++ runtime DLLs are not in System32.
+
+    Without them the program does not start at all and ``ns verify`` can only say that a service failed.
+    Not checked in ``--simulate`` (the PC running the simulation says nothing about the target).
+    """
+    if ctx.simulate:
+        return
+    absent = vcruntime.missing()
+    if absent:
+        where = vcruntime.system_dir()
+        raise make_error("NS-E114", f"{', '.join(absent)} not found in {where}; llama-server.exe needs them")
+
+
+def check_programs_present(ctx: StepContext) -> None:
+    """NS-E113 when a program s02 unpacked has been removed since (antivirus), before anything is started.
+
+    ``llama-server.exe`` missing used to end as "the story model did not pass" (NS-E203), and a removed
+    ``qwen-tts.exe`` as a quiet switch to the 7 GB PyTorch engine (NS-W301). The ``.done`` flag of the unpack
+    says the file was there; with it gone the cause is a scanner, so say so and name the file.
+    """
+    if ctx.simulate:
+        return
+    llama, voice = ctx.paths.bin_llama, ctx.paths.bin_qwentts
+    gone: list[Path] = []
+    if any(llama.glob(".ns-llama*.done")) and not (llama / "llama-server.exe").is_file():
+        gone.append(llama / "llama-server.exe")
+    if (voice / ".ns-qwentts.done").exists():
+        gone += [voice / exe for exe in QWENTTS_EXES if not (voice / exe).is_file()]
+    if gone:
+        listed = ", ".join(str(p) for p in gone)
+        detail = f"{listed} was unpacked by setup and has been removed since"
+        raise make_error("NS-E113", detail, path=str(gone[0]))
 
 
 def load_report_rows(ctx: StepContext, res: RunResult) -> list[dict[str, Any]] | None:
@@ -77,6 +114,8 @@ class S08Smoke(Step):
     def run(self, ctx: StepContext) -> None:
         """Run ``ns verify --quick`` (twice at most: once more after the TTS fallback)."""
         ensure_baseline(ctx)
+        check_vc_runtime(ctx)
+        check_programs_present(ctx)
         warned: set[str] = set()
         whisper_load_failed = False
         wants_binary = ctx.flag("qwentts") == "binary" and not ctx.flag("tts_fallback", False)

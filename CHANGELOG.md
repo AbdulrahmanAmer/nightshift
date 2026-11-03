@@ -7,7 +7,47 @@ All notable changes to Nightshift are recorded here. The format follows
 
 ## [Unreleased]
 
-Installer: whisper CUDA libraries and a CPU fallback for captions (CR-C1-4 a, b, c):
+### Install audit fixes (`feat/release-install-audit`, findings #1 to #8 and #10 to #12 of `install-audit.md`)
+
+- **Visual C++ runtime.** llama.cpp and qwentts.cpp are built against the dynamic MSVC runtime and do not start on a
+  clean Windows 11 without it (the symptom used to show only at the smoke test, after the 20 GB download). The PC
+  check has a new row "Visual C++ runtime" (`msvcp140.dll`, `vcruntime140.dll`, `vcruntime140_1.dll` in System32).
+  Step b01 installs it when missing: winget `Microsoft.VCRedist.2015+.x64` first, then the pinned `bins.vcredist`
+  (`VC_redist.x64.exe` 14.44.35211.0, SHA256 in `manifest.json`) run elevated with `/install /quiet /norestart`. The
+  smoke test checks the DLLs before it starts llama-server. New `NS-E114` (declined permission prompt, failed
+  installer, missing DLLs).
+- **The program lives in `<home>\app`.** Setup copies the extracted folder into `<home>\app` (without `venvs`, `models`
+  or any `bin` folder but the bundle's `bin\webview2`), records that path as `app_path`, and the venvs, the shortcuts, the
+  nightly task, the launchers and `ns update` all use it. The extracted folder can be deleted. The install folder may
+  not be the extracted folder (NTFS ignores case: `D:\NightShift` and `D:\Nightshift` were the same folder, so the first
+  update tried to rename the folder that held the venvs and models), inside it, or in Downloads or OneDrive; the window
+  says so and stage 1 picks `<drive>:\Nightshift-home` as the default when the usual name is taken. Running
+  `INSTALL.cmd` from a newer zip over an existing install updates it with the `ns update` swap (`app.prev` is the
+  rollback target, `.git`, `config` and `answers.json` are carried over). New `NS-E115`. The setup environment and
+  the venvs also refresh when only the version or the program folder changed.
+- **Git is not required.** Setup no longer installs it (its machine-wide installer was an extra administrator prompt
+  and a way to stop setup). `ns update --git` without Git says "Install Git for this" and names the Git-free ways.
+- **FFmpeg fallback.** When winget is missing or refuses, b01 downloads the pinned static build
+  (`bins.ffmpeg`: BtbN `autobuild-2026-10-31-12-59`, n8.1.3, SHA256 in `manifest.json`), unpacks `ffmpeg.exe` and
+  `ffprobe.exe` into `<home>\bin\ffmpeg` and adds that folder to the user's PATH. `ns_common.ffmpeg` also looks there.
+  winget is called with `--source winget`. A PC without a working winget is a yellow row, not a blocker.
+- **Re-run over a half venv.** `uv venv` gets `--clear` when the folder exists but has no `python.exe`
+  (uv 0.10 and later refuse otherwise); applied once, never in a loop.
+- **Antivirus.** WinError 225, a downloaded program that disappears between write and verify, a zip member removed
+  right after unpacking, and a `llama-server.exe` or `qwen-tts.exe` that is gone before the smoke test are `NS-E113`
+  with the allow-list hint (were `NS-E105`, an unexplained exception, or `NS-E203` and a silent 7 GB detour to the
+  PyTorch engine).
+- **`manifest.version`** is written from `VERSION` by `dev/make_bundle.ps1` (and checked in the finished zip), which
+  is what the re-run refresh of the venvs and the smoke test compares.
+- **Morning use.** `/status` reports the Windows session of the engine and whether a run is using it. The Dashboard
+  shortcut restarts an idle engine that the 03:00 task started in session 0 (no desktop: Open Outbox and the folder
+  pickers did nothing there) and never interrupts a busy one.
+- **Wake timers.** "Important wake timers only" (power setting 2) now counts as not enough for the 03:00 task, and
+  the row says which setting to change.
+- **Voice engine pin.** `bins.qwentts` is the v0.1.4 `Nightshift-VoiceEngine-win-cuda-x64.zip` asset; the unpinned
+  fallback URL uses the new asset name first and the old one second.
+
+### Installer: whisper CUDA libraries and a CPU fallback for captions (CR-C1-4 a, b, c):
 
 - **cuBLAS and cuDNN are pinned and installed.** faster-whisper runs on CTranslate2, whose Windows build needs the
   CUDA 12 cuBLAS DLL (and ships a cuDNN 9 loader); a fresh PC has only the NVIDIA driver, so the first video's

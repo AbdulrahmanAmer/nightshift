@@ -15,7 +15,11 @@ from installer.stage2.runner import RunResult
 from installer.stage2.simulate import FakeRunner
 from installer.stage2.steps.s00_welcome import S00Welcome
 from installer.stage2.steps.s01_questions import S01Questions, validate_pexels, validate_pixabay
-from installer.stage2.steps.s02_download_bins import QWENTTS_RELEASE_URL, S02DownloadBins
+from installer.stage2.steps.s02_download_bins import (
+    QWENTTS_RELEASE_URL,
+    QWENTTS_RELEASE_URL_OLD,
+    S02DownloadBins,
+)
 from installer.stage2.steps.s03_download_models import S03DownloadModels
 from installer.stage2.steps.s04_venvs import S04Venvs, spacy_wheel_url
 from installer.stage2.steps.s05_opencode_prewarm import S05OpencodePrewarm
@@ -133,7 +137,7 @@ def test_s00_shows_welcome_and_hardware_table(tmp_path: Path):
     step.verify(ctx)
     assert "Welcome to Nightshift" in ctx.ui.markdowns[0]
     title, rows = ctx.ui.tables[0]
-    assert title == "Your PC" and len(rows) == 10 and rows[0][1] == "ok"
+    assert title == "Your PC" and len(rows) == 11 and rows[0][1] == "ok"
 
 
 def test_s00_red_row_raises_its_code(tmp_path: Path):
@@ -400,10 +404,35 @@ def test_s02_uses_the_qwentts_release_when_it_exists(tmp_path: Path):
     ctx.head_checks = True
     S02DownloadBins().run(ctx)
     assert QWENTTS_RELEASE_URL in seen
-    assert QWENTTS_RELEASE_URL.endswith("/releases/latest/download/qwentts-win-cuda-x64.zip")
+    assert QWENTTS_RELEASE_URL.endswith("/releases/latest/download/Nightshift-VoiceEngine-win-cuda-x64.zip")
     assert ctx.flag("qwentts") == "binary" and ctx.flag("tts_fallback") is False
     assert ctx.warnings == []
     assert (ctx.paths.home / "bin" / "qwentts" / ".ns-qwentts.done").exists()
+
+
+def test_s02_tries_the_old_asset_name_second_when_the_new_one_is_404(tmp_path: Path):
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return httpx.Response(404 if str(request.url) == QWENTTS_RELEASE_URL else 200)
+
+    ctx = unpinned(ctx_resolved(tmp_path, http=lambda: httpx.Client(transport=httpx.MockTransport(handler))))
+    ctx.head_checks = True
+    S02DownloadBins().run(ctx)
+    assert seen.index(QWENTTS_RELEASE_URL_OLD) > seen.index(QWENTTS_RELEASE_URL)
+    assert QWENTTS_RELEASE_URL_OLD.endswith("/releases/latest/download/qwentts-win-cuda-x64.zip")
+    assert ctx.flag("qwentts") == "binary" and ctx.flag("tts_fallback") is False
+
+
+def test_s02_both_asset_names_missing_means_the_pytorch_fallback(tmp_path: Path):
+    def boom(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("offline", request=request)
+
+    ctx = unpinned(ctx_resolved(tmp_path, http=lambda: httpx.Client(transport=httpx.MockTransport(boom))))
+    ctx.head_checks = True
+    S02DownloadBins().run(ctx)
+    assert ctx.flag("qwentts") == "none" and ctx.flag("tts_fallback") is True
 
 
 def test_s02_network_error_on_the_probe_means_fallback(tmp_path: Path):
@@ -450,7 +479,7 @@ def test_s02_verify_notices_a_missing_binary(tmp_path: Path):
     (ctx.paths.bin_llama / "llama-server.exe").unlink()
     with pytest.raises(NsError) as ei:
         S02DownloadBins().verify(ctx)
-    assert ei.value.code == "NS-E109"
+    assert ei.value.code == "NS-E113"           # it was unpacked once (the flag says so): a scanner took it
 
 
 # ---------------------------------------------------------------------------------------------- s03

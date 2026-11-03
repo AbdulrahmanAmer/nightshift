@@ -10,6 +10,20 @@ Set-NsHomeLocation
 
 $url = 'http://127.0.0.1:8100'
 
+# An engine the 03:00 task started runs in session 0, which has no desktop: the dashboard it starts shows, but
+# Open Outbox, the folder pickers and the Credential Manager do nothing there. Restart an idle one in this
+# session; never interrupt a run that is still going (the page then opens on it, with those limits).
+if (Test-NsSupervisor) {
+    $engineAction = Get-NsEngineSessionAction -Status (Get-NsStatus) -MySession (Get-NsOwnSessionId)
+    if ($engineAction -eq 'restart') {
+        Write-Host 'The engine was started by the nightly task and has no desktop. Restarting it in this session.'
+        if (-not (Stop-NsEngine)) { Write-Host 'The old engine did not stop; opening the dashboard on it.' }
+    }
+    elseif ($engineAction -eq 'busy') {
+        Write-Host 'The nightly run is still using the engine. The dashboard opens on it; folder buttons work after the run.'
+    }
+}
+
 if (-not (Test-NsSupervisor)) {
     Start-NsSupervisor
     if (-not (Wait-NsSupervisor -TimeoutSec 90)) {

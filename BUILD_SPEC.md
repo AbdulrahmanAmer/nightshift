@@ -555,7 +555,7 @@ outbox\<channel>\
 llama **8080** · embed **8081** · TTS **8091** · supervisor **8099** · dashboard **8100**.
 | Method | Path | Body → Response |
 |---|---|---|
-| GET | `/status` | → `{gpu_owner, services:{<name>:{state,pid,port,vram_mb,model_alias?}}}` |
+| GET | `/status` | → `{gpu_owner, services:{<name>:{state,pid,port,vram_mb,model_alias?}}, session:{id,interactive}, busy}` (`session.interactive` is false for an engine the 03:00 task started in Windows session 0; `busy` is true while a run uses the engine) |
 | POST | `/acquire` | `{service, owner, model_alias?, wait:true, timeout_s:7200}` → `{endpoint, model_alias}` |
 | POST | `/release` | `{service, owner}` → `{ok}` |
 | POST | `/stop_all` | → `{ok}` |

@@ -51,3 +51,18 @@ def find_uv(
     if boot is not None:
         return str(boot)
     return (which or shutil.which)("uv")
+
+
+def venv_args(venv_dir: Path, python_version: str) -> list[str]:
+    """Arguments of ``uv venv`` for a folder whose ``Scripts/python.exe`` is missing.
+
+    uv 0.10 and later refuse to create a venv in a folder that exists ("A virtual environment already exists
+    ... use --clear"). A half venv (an uninstall that could not remove all of it, a scanner that quarantined
+    ``python.exe``, a crash while it was created) therefore failed every Retry and every ``INSTALL.cmd``.
+    The caller only gets here when there is no ``python.exe``, so what is in the folder is garbage that
+    belongs to Nightshift: ``--clear`` it, once. A fresh folder gets no flag (older uv versions lack it).
+    """
+    args = ["venv", "--python", python_version]
+    if venv_dir.exists():
+        args.append("--clear")
+    return [*args, str(venv_dir)]

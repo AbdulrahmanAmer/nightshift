@@ -19,8 +19,11 @@ Keep this file next to `INSTALL.cmd`.
    `answers.json`, download those too.
 2. Right-click the zip, choose **Properties**, tick **Unblock** if you see it, and press OK.
    (Windows marks downloaded files; unblocking stops warning pop-ups later.)
-3. Right-click the zip, **Extract All**, and pick a short folder such as `D:\NightShift`.
-4. Put `answers.json` in that same folder, next to `INSTALL.cmd`. With it, setup asks almost nothing.
+3. Right-click the zip, **Extract All**, and pick **any folder** (the default next to the zip is fine, or a short one
+   such as `C:\Users\<you>\Nightshift-Setup`). Setup copies the program into an `app` folder inside the install
+   folder it asks for later, so **you can delete the extracted folder after setup has finished**. The install folder
+   must be a different folder (the window tells you if it is not) and should not be in Downloads or OneDrive.
+4. Put `answers.json` in the extracted folder, next to `INSTALL.cmd`. With it, setup asks almost nothing.
 5. Double-click **INSTALL.cmd**. If Windows says "Windows protected your PC", press **More info**, then
    **Run anyway**. Windows may ask for permission to install programs: say **Yes**.
 6. A black window with a small crescent appears first. It looks at your PC, gets Python, and then opens the
@@ -46,6 +49,12 @@ You can close the setup window at any time: setup keeps running in the black win
 again opens the window again. If you close the black window, setup stops; run **INSTALL.cmd** again and it carries on
 where it stopped. Do not turn the PC off while a download is moving; if you do, just run INSTALL.cmd again.
 
+**Opening the dashboard in the morning.** The 03:00 run starts its own engine without a desktop. When you click
+**Nightshift Dashboard** and that engine has finished its work, the shortcut restarts it in your session, so
+**Open outbox** and the folder buttons work. If the night's run is still going, the shortcut never interrupts it:
+the dashboard opens on the running engine, and the folder buttons start working after the run (close the dashboard
+window and open the shortcut again).
+
 The model files can also come from a folder on this PC or from the zip files in the Google Drive models folder:
 choose that under **Model files come from** in the window.
 
@@ -63,14 +72,19 @@ Every message has a code like `NS-E104`, a sentence and a "What to do". In the s
 | NS-E104 | Not enough free disk space | Free 60 GB, or choose another drive when asked for the install folder. |
 | NS-E105 | A download site cannot be reached | Check the internet, switch off any VPN or proxy, run INSTALL.cmd again. |
 | NS-E109 | A downloaded file is damaged | Run INSTALL.cmd again. If it repeats, send the diagnostics zip. |
-| NS-E110 / NS-E111 | A tool or winget (App Installer) is missing | Install "App Installer" from the Microsoft Store, then press Check again (or Retry). |
-| NS-E113 | Antivirus blocked a file | Open Windows Security, Protection history, allow the Nightshift file and press Retry. |
+| NS-E110 | FFmpeg could not be installed | Setup tries winget first and then downloads a fixed FFmpeg build itself. Press Retry once; if it repeats, install FFmpeg yourself (`winget install Gyan.FFmpeg`) and press Retry. Git is not needed. |
+| NS-E111 | winget (App Installer) is not available | Nothing to do: setup downloads FFmpeg and the Visual C++ runtime directly. |
+| NS-E114 | The Visual C++ runtime is missing (the model runner cannot start without it) | Press Retry and click **Yes** when Windows asks for permission, or install it from `https://aka.ms/vs/17/release/vc_redist.x64.exe` and press Retry. |
+| NS-E115 | The program files could not be copied into the install folder | Make sure the install folder is not the folder you extracted the zip to, close any window that shows it, press Retry. |
+| NS-E113 | Antivirus blocked a file | Open Windows Security, Protection history, allow the Nightshift file and press Retry. Adding the install folder as an exclusion stops it happening again. It is also the code when a downloaded program (`llama-server.exe`, `qwen-tts.exe`, `yt-dlp.exe`) is missing after it was unpacked: the scanner removed it. |
 | NS-E501 / NS-E502 | Pexels or Pixabay key rejected | Copy the key again from the website (no spaces) and paste it. |
 | NS-E108 / NS-E112 | Graphics card libraries not found | Send the diagnostics zip. Nothing else to do. |
 
 Yellow rows (codes starting `NS-W`) are warnings. `NS-W403` means the setup test video could not be made: setup is complete, make your first video from the dashboard. Setup carries on. Examples: the install folder is on a hard
-disk (slow), the PC cannot wake itself at night (turn on "Allow wake timers" in Power Options), long Windows
-paths are off (run setup once as administrator), or a fallback was used for the voice or video encoder.
+disk (slow), the PC cannot wake itself at night (in Power Options, Change advanced power settings, Sleep, set
+"Allow wake timers" to **Enable**; "Important wake timers only" is not enough for the 03:00 run), long Windows
+paths are off (run setup once as administrator), the Visual C++ runtime is missing (setup installs it; click
+**Yes** when Windows asks), or a fallback was used for the voice or video encoder.
 
 If the same red error comes back after one retry, do not guess: send the diagnostics zip.
 
@@ -206,10 +220,13 @@ instead of ours. To change a prompt, copy its file from `ns_studio\prompts\` to 
 ## Update to a new version
 
 1. Download the new `Nightshift-Setup-<version>.zip` and its `.sha256` file from Drive. For **Settings > Update from a file** use `Nightshift-Update-<version>.zip` instead (older releases: `nightshift-app-<version>.zip`).
-2. Extract it into the **same folder** as before and choose **Replace files**. Your models, settings, videos and
-   history are stored elsewhere and are not touched.
-3. Double-click **Nightshift - Update** on the Desktop and pick the zip (from version 0.3 on). For versions
-   before that, double-click **INSTALL.cmd** again: it keeps everything that is done and refreshes the rest.
+2. Easiest: double-click **Nightshift - Update** on the Desktop and pick the zip (from version 0.1.1 on). It works
+   straight from the zip; nothing has to be extracted. Your models, settings, videos and history are stored
+   elsewhere and are not touched.
+3. Or extract the Setup zip anywhere (a new folder is fine; the old one can be deleted) and double-click
+   **INSTALL.cmd** again. Choose the same install folder: the window then says "Nightshift <old> is installed here.
+   Setup updates it to <new>", copies the new program over `<install folder>\app` (the old one is kept as
+   `app.prev`), keeps everything that is done and refreshes the Python environments and the self-test.
 4. Send a new diagnostics zip so the developer can see the test table is green.
 5. In the Dashboard, **Settings, Updates, Check now** asks GitHub for a newer version. In version 0.1.0 this part is not
    in the engine yet: the page then says so, and you use the Update shortcut with the zip as above.
@@ -218,7 +235,8 @@ Notes (from 0.1.1): the update runs as its own background process, started in yo
 survives the engine stopping (also when you press **Update now** in the Dashboard: the window closes, the update goes
 on, open Nightshift again when `run/update_state.json` says `done`). Close the Dashboard and Studio windows first if the
 update says another program still has the folder open. The log is `logs/update-<time>.log`.
-A cloned-repo install updates with `ns update --git` (newest release) or `ns update --git --channel main`. The
+A cloned-repo install updates with `ns update --git` (newest release) or `ns update --git --channel main`; that one
+needs Git for Windows (setup does not install it: without Git the command says "install Git for this"). The
 update installs exactly the packages setup installed. The old version is kept next to it as `<folder>.prev`;
 run `ns update --rollback` to go back. If a step fails, the old version is put back and the message names the step.
 

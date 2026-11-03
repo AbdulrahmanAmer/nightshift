@@ -110,3 +110,24 @@ def test_the_cli_rejects_a_bad_channel_or_two_actions(tmp_path: Path) -> None:
     assert runner.invoke(cli.app, ["update", "--git", "--channel", "beta"], env=env).exit_code == 2
     assert runner.invoke(cli.app, ["update", "--github", "--channel", "main"], env=env).exit_code == 2
     assert runner.invoke(cli.app, ["update", "--git", "--github"], env=env).exit_code == 2
+
+
+def test_without_git_installed_the_message_says_to_install_git_for_this(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = make_app(tmp_path)
+    monkeypatch.setattr(update.shutil, "which", lambda name: None)
+    e = Env()
+    with pytest.raises(NsError) as ei:
+        update.git_update(app, e.env(), paths=Paths(tmp_path / "ns"), latest_tag=lambda: "v0.2.0")
+    assert ei.value.code == "NS-E702" and "Install Git for this" in ei.value.detail
+    assert "--github" in ei.value.detail                # and names the way that needs no Git
+    assert e.calls == []                                # nothing was stopped or touched
+
+
+def test_setup_never_installs_git() -> None:
+    from installer.stage2.web import bootstrap, plan
+
+    names = [(key + " " + winget).lower() for key, winget, *_ in bootstrap.TOOLS]
+    assert not any("git" in name for name in names)
+    assert "git" not in {row["key"] for row in plan.tool_rows()}

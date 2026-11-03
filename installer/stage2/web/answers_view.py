@@ -59,6 +59,7 @@ class Env:
         free_gb: Callable[[str], float | None] | None = None,
         isdir: Callable[[str], bool] = os.path.isdir,
         keys_stored: dict[str, bool] | None = None,
+        layout_problem: Callable[[str], str | None] | None = None,
     ) -> None:
         self.ram_gb = ram_gb
         self.tiers = tiers
@@ -66,6 +67,7 @@ class Env:
         self.free_gb = free_gb or (lambda _p: None)
         self.isdir = isdir
         self.keys_stored = keys_stored or {}
+        self.layout_problem = layout_problem or (lambda _home: None)
 
 
 def validate(draft: dict[str, Any], env: Env) -> list[dict[str, Any]]:
@@ -144,7 +146,7 @@ def custom_problem(custom: Any) -> str | None:
 
 def _home_errors(home: str, tier: str, env: Env, custom_bytes: int | None = None) -> list[dict[str, Any]]:
     need = required_free_gb(tier, custom_bytes)
-    problem = home_problem(home, MAX_HOME_LEN)
+    problem = home_problem(home, MAX_HOME_LEN) or env.layout_problem(home)
     if problem:
         return [_err("homePath", problem)]
     if env.drive_letters is not None and home[0].upper() not in env.drive_letters:
