@@ -23,6 +23,9 @@ dependencies = [
 studio = [
   "Pillow>=10", "spacy>=3.7,<4", "faster-whisper>=1.0", "imagehash>=4.3", "keyring>=25",
   "opencv-python-headless>=4.9,<5",
+  # Windows wheels: 4.6.3 added CUDA 12.8, 4.8.5 is built with CUDA 12.8 (cuBLAS 12.8.4.1). manifest.json
+  # python.whisper_cuda pins the matching cuBLAS/cuDNN wheels: review it before raising the ceiling.
+  "ctranslate2>=4.6.3,<4.9",
 ]
 tts = ["fastapi>=0.115", "uvicorn>=0.30", "soundfile>=0.12"]
 supervisor = ["fastapi>=0.115", "uvicorn>=0.30", "psutil>=6"]

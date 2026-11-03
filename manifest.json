@@ -10,6 +10,21 @@
     "fastapi==0.162.0",
     "uvicorn==0.54.0"
   ],
+  "python": {
+    "whisper_cuda": [
+      "nvidia-cublas-cu12==12.8.4.1 --hash=sha256:47e9b82132fa8d2b4944e708049229601448aaad7e6f296f630f2d1a32de35af",
+      "nvidia-cudnn-cu12==9.10.2.21 --hash=sha256:c6288de7d63e6cf62988f0923f96dc339cea362decb1bf5b3141883392a7d65e"
+    ],
+    "spacy_wheel": {
+      "version": "3.8.0",
+      "url": "https://github.com/explosion/spacy-models/releases/download/en_core_web_md-3.8.0/en_core_web_md-3.8.0-py3-none-any.whl",
+      "sha256": "5e6329fe3fecedb1d1a02c3ea2172ee0fede6cea6e4aefb6a02d832dba78a310"
+    }
+  },
+  "tts_fallback_repos": [
+    "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
+    "Qwen/Qwen3-TTS-12Hz-1.7B-Base"
+  ],
   "profiles": {
     "gpu": {
       "llm": {

@@ -596,16 +596,43 @@ def test_s04_creates_studio_and_supervisor_venvs_without_torch(tmp_path: Path):
     assert "-e" in app.argv and f"{ROOT}[studio,supervisor]" in app.argv
     assert app.argv[:3] == [ctx.uv(), "pip", "install"] and "--python" in app.argv
     dlls = next(c for c in runner.calls if c.tag == "uv pip install studio gpu dlls")
-    assert "nvidia-cublas-cu12>=12.8,<13" in dlls.argv and "nvidia-cudnn-cu12>=9,<10" in dlls.argv
+    assert dlls.argv[-4:-1] == ["--no-deps", "--require-hashes", "-r"]         # hash-checking mode
+    pins = Path(dlls.argv[-1]).read_text(encoding="utf-8").splitlines()
+    assert pins == ctx.manifest.python.whisper_cuda
+    assert pins[0].startswith("nvidia-cublas-cu12==12.8.4.1 --hash=sha256:")
+    assert pins[1].startswith("nvidia-cudnn-cu12==9.10.2.21 --hash=sha256:")
     spacy = next(c for c in runner.calls if c.tag == "uv pip install studio spacy model")
-    assert spacy.argv[-1] == spacy_wheel_url("en_core_web_md")
-    assert spacy.argv[-1].endswith("en_core_web_md-3.8.0-py3-none-any.whl")
+    assert spacy.argv[-4:-1] == ["--no-deps", "--require-hashes", "-r"]
+    wheel = ctx.manifest.python.spacy_wheel
+    assert wheel is not None and wheel.url.endswith("en_core_web_md-3.8.0-py3-none-any.whl")
+    assert Path(spacy.argv[-1]).read_text(encoding="utf-8").strip() == (
+        f"en_core_web_md @ {wheel.url} --hash=sha256:{wheel.sha256}")
     sup = next(c for c in runner.calls if c.tag == "uv pip install supervisor app")
     assert f"{ROOT}[supervisor,tts,dashboard]" in sup.argv
     assert not any("torch" in a for c in runner.calls for a in c.argv)
     assert not ctx.venv_python("tts").exists()
     assert ctx.venv_python("studio").exists() and step.check(ctx) is True
     assert runner.called("studio import check")
+
+
+def test_s04_without_a_spacy_pin_installs_the_unchecked_release_url(tmp_path: Path):
+    runner = FakeRunner(tmp_path / "desktop")
+    ctx = ctx_resolved(tmp_path, runner=runner)
+    ctx.manifest = ctx.manifest.model_copy(update={"python": ctx.manifest.python.model_copy(
+        update={"spacy_wheel": None})})                       # an old manifest
+    S04Venvs().run(ctx)
+    spacy = next(c for c in runner.calls if c.tag == "uv pip install studio spacy model")
+    assert spacy.argv[-1] == spacy_wheel_url("en_core_web_md")
+    assert "--require-hashes" not in spacy.argv
+
+
+def test_s04_gpu_profile_needs_the_cuda_pins_in_the_manifest(tmp_path: Path):
+    ctx = ctx_resolved(tmp_path, runner=FakeRunner(tmp_path / "desktop"))
+    ctx.manifest = ctx.manifest.model_copy(update={"python": ctx.manifest.python.model_copy(
+        update={"whisper_cuda": []})})
+    with pytest.raises(NsError) as ei:
+        S04Venvs().run(ctx)
+    assert ei.value.code == "NS-E105" and "whisper_cuda" in ei.value.detail
 
 
 def test_s04_cpu_profile_skips_gpu_dll_wheels(tmp_path: Path):

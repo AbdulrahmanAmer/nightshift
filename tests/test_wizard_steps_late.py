@@ -1,6 +1,7 @@
 """C1: wizard steps s06 to s10 and runtime.json construction."""
 
 import json
+import wave
 from pathlib import Path
 
 import pytest
@@ -17,7 +18,7 @@ from installer.stage2.steps.s10_summary import S10Summary
 from installer.stage2.sysinfo import sample_preflight
 from installer.stage2.testing import example_answers, make_test_context
 from ns_common.config import load_channel, load_runtime, save_runtime
-from ns_common.errors import NsError
+from ns_common.errors import NsError, describe
 from ns_supervisor import check_names as names
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -230,11 +231,71 @@ def test_s08_tts_failing_even_in_the_fallback_is_e108(tmp_path: Path):
     assert ei.value.code == "NS-E108"
 
 
-def test_s08_whisper_and_service_failures_stop_the_install(tmp_path: Path):
-    ctx, _ = smoke_ctx(tmp_path, {names.WHISPER_LOAD})
+def whisper_cfg(ctx):
+    w = load_runtime(ctx.paths).whisper
+    return w.device, w.compute_type
+
+
+def test_s08_whisper_transcribes_a_generated_wav_on_the_gpu(tmp_path: Path):
+    ctx, runner = smoke_ctx(tmp_path)
+    S08Smoke().run(ctx)
+    probes = runner.called("whisper probe")
+    assert [c.tag for c in probes] == ["whisper probe cuda"]
+    assert probes[0].argv[-3:-1] == ["cuda", "int8"]
+    wav = Path(probes[0].argv[-1])
+    assert wav.name == "whisper-probe.wav" and wav.is_file()
+    with wave.open(str(wav), "rb") as w:
+        assert w.getnframes() / w.getframerate() == pytest.approx(3.0, abs=0.01)
+    assert whisper_cfg(ctx) == ("cuda", "int8") and ctx.warnings == []
+
+
+def test_s08_whisper_gpu_failure_falls_back_to_the_cpu_with_w404(tmp_path: Path):
+    runner = FakeRunner(tmp_path / "desktop", results={
+        "whisper probe cuda": RunResult(1, "", "RuntimeError: Library cublas64_12.dll is not found")})
+    ctx = resolved(tmp_path, runner=runner)
+    S08Smoke().run(ctx)                                      # never a hard stop
+    assert [c.tag for c in runner.called("whisper probe")] == ["whisper probe cuda", "whisper probe cpu"]
+    assert whisper_cfg(ctx) == ("cpu", "int8")
+    assert [c for c, _ in ctx.warnings] == ["NS-W404"] and "cublas64_12" in ctx.warnings[0][1]
+    assert "captions will be slow" in describe("NS-W404").message.lower()
+    assert ctx.flag("smoke") == "passed"
+
+
+def test_s08_whisper_that_did_not_load_on_the_gpu_skips_the_probe_and_uses_the_cpu(tmp_path: Path):
+    ctx, runner = smoke_ctx(tmp_path, {names.WHISPER_LOAD})
+    S08Smoke().run(ctx)
+    assert [c.tag for c in runner.called("whisper probe")] == ["whisper probe cpu"]
+    assert whisper_cfg(ctx) == ("cpu", "int8") and [c for c, _ in ctx.warnings] == ["NS-W404"]
+    assert ctx.flag("smoke") == "passed"
+
+
+def test_s08_whisper_failing_on_the_cpu_too_stops_the_install(tmp_path: Path):
+    runner = FakeRunner(tmp_path / "desktop", results={
+        "whisper probe cuda": RunResult(1, "", "no cuda"), "whisper probe cpu": RunResult(1, "", "no model")})
+    ctx = resolved(tmp_path, runner=runner)
     with pytest.raises(NsError) as ei:
         S08Smoke().run(ctx)
-    assert ei.value.code == "NS-E112" and "cuBLAS" in ei.value.definition.message + ei.value.definition.hint
+    assert ei.value.code == "NS-E202" and "no model" in ei.value.detail
+    assert ctx.flag("smoke") != "passed"
+
+
+def test_s08_cpu_profile_probes_the_cpu_only_and_a_load_failure_is_fatal(tmp_path: Path):
+    pf = sample_preflight(tmp_path / "home", ROOT)
+    pf["profile"] = "cpu-dev"
+    runner = FakeRunner(tmp_path / "desktop")
+    answers = example_answers()
+    ctx = make_test_context(tmp_path, raw_answers=answers, resolve=True, preflight=pf, runner=runner)
+    S08Smoke().run(ctx)
+    assert [c.tag for c in runner.called("whisper probe")] == ["whisper probe cpu"] and ctx.warnings == []
+    runner2 = FakeRunner(tmp_path / "d2", verify_failures={names.WHISPER_LOAD})
+    ctx2 = make_test_context(tmp_path / "b", raw_answers=example_answers(), resolve=True, preflight=pf,
+                             runner=runner2)
+    with pytest.raises(NsError) as ei:
+        S08Smoke().run(ctx2)
+    assert ei.value.code == "NS-E202"
+
+
+def test_s08_service_failures_stop_the_install(tmp_path: Path):
     for i, bad in enumerate((names.LLAMA_START, names.LLAMA_HEALTH, names.LLAMA_JSON, names.EMBED_VECTOR)):
         ctx2, _ = smoke_ctx(tmp_path / f"b{i}", {bad})
         with pytest.raises(NsError) as e2:

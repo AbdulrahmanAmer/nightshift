@@ -47,6 +47,7 @@
   "NS-E407": {"message": "No moments passed the clip filters.", "hint": "Try a longer length range, more clips, or a different channel niche; the transcript is kept so re-running is fast."},
   "NS-W402": {"message": "The requested clip layout did not apply (for example no facecam found); used center crop instead.", "hint": "Pick a different layout in Create → Clips, or leave it on Auto."},
   "NS-W403": {"message": "The setup test video did not finish.", "hint": "Setup can continue; run Diagnostics after install."},
+  "NS-W404": {"message": "Whisper runs on the CPU: captions will be slow.", "hint": "The graphics card could not run speech recognition (cuBLAS/cuDNN libraries missing or blocked). Videos still work. Update the NVIDIA driver, run 'ns verify --quick', or send the diagnostics zip."},
   "NS-E501": {"message": "Pexels API error.", "hint": "Check the API key and the hourly limit (200 requests/hour)."},
   "NS-E502": {"message": "Pixabay API error.", "hint": "Check the API key and the per-minute limit (100 requests/minute)."},
   "NS-E503": {"message": "Network request failed.", "hint": "Check the connection; the stage will retry."},

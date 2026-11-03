@@ -180,6 +180,32 @@
       ],
       "title": "ProfileModels",
       "type": "object"
+    },
+    "PythonPins": {
+      "additionalProperties": false,
+      "properties": {
+        "whisper_cuda": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Whisper Cuda",
+          "type": "array"
+        },
+        "spacy_wheel": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BinPin"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "title": "PythonPins",
+      "type": "object"
     }
   },
   "additionalProperties": false,
@@ -224,6 +250,24 @@
         "type": "string"
       },
       "title": "Tts Packages",
+      "type": "array"
+    },
+    "python": {
+      "$ref": "#/$defs/PythonPins",
+      "default": {
+        "whisper_cuda": [],
+        "spacy_wheel": null
+      }
+    },
+    "tts_fallback_repos": {
+      "default": [
+        "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
+        "Qwen/Qwen3-TTS-12Hz-1.7B-Base"
+      ],
+      "items": {
+        "type": "string"
+      },
+      "title": "Tts Fallback Repos",
       "type": "array"
     }
   },
