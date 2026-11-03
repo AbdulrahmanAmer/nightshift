@@ -53,6 +53,9 @@ ns_dashboard = ["static/**/*", "prompts/*.md"]
 testpaths = ["tests"]
 pythonpath = ["."]
 addopts = "-q"
+markers = [
+  "network: talks to the real internet (GitHub, Hugging Face); runs only when NS_NETWORK_TESTS is set",
+]
 
 [tool.ruff]
 line-length = 110

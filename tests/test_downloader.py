@@ -89,7 +89,7 @@ def test_resume_false_discards_part(tmp_path: Path):
     assert ("GET", None) in calls and dest.read_bytes() == DATA
 
 
-def test_wrong_sha_raises_e109_after_three_attempts(tmp_path: Path):
+def test_wrong_sha_removes_the_file_retries_once_then_raises_e109(tmp_path: Path):
     dest = tmp_path / "a.bin"
     sleeps: list[float] = []
     calls: list = []
@@ -97,8 +97,9 @@ def test_wrong_sha_raises_e109_after_three_attempts(tmp_path: Path):
         dl.download("https://x.test/a.bin", dest, "0" * 64, client=make_client(calls=calls),
                     sleep=sleeps.append)
     assert ei.value.code == "NS-E109"
-    assert [m for m, _ in calls].count("GET") == 3
-    assert sleeps == [2, 4]
+    assert [m for m, _ in calls].count("GET") == 2  # the first wrong file is dropped and fetched once more
+    assert [r for m, r in calls if m == "GET"] == [None, None]  # ... from zero, never resumed from a bad part
+    assert sleeps == [2]
     assert not dest.exists() and not dest.with_name("a.bin.part").exists()
 
 

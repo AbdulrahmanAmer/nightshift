@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from installer.stage2 import downloader
 from installer.stage2.web import rows
 
 
@@ -59,7 +60,13 @@ def test_part_files_and_verified_markers_show_where_a_download_stands(tmp_path: 
     assert rows.part_state(tmp_path, row) == (1234, False)
     (tmp_path / "models" / "llm" / "m.gguf").write_bytes(b"y" * 5000)
     (tmp_path / "models" / "llm" / "m.gguf.ok").write_text("{}", encoding="utf-8")
+    assert rows.part_state(tmp_path, row) == (1234, False)  # a marker that vouches for nothing is ignored
+    downloader.write_marker(tmp_path / "models" / "llm" / "m.gguf", None)
     assert rows.part_state(tmp_path, row) == (5000, True)
+    (tmp_path / "models" / "llm" / "m.gguf").write_bytes(b"y" * 4999)           # the file changed size
+    assert rows.part_state(tmp_path, row) == (1234, False)
+    (tmp_path / "models" / "llm" / "m.gguf").unlink()                             # ... or was deleted
+    assert rows.part_state(tmp_path, row) == (1234, False)
     winget = rows.make_row({"key": "git", "label": "Git", "file": None, "group": "tools", "via": "winget",
                             "bytes": None})
     assert rows.part_state(tmp_path, winget) == (0, False)
@@ -114,3 +121,34 @@ def test_the_overall_time_left_uses_the_whole_download_speed_once_measured():
     total = rows.overall(items, meter)               # 30 MB over 30 s beats the stale per-file figure
     assert total["speedBps"] == pytest.approx(1_000_000)
     assert total["etaS"] == 120                       # 70 MB left at 1 MB/s = 70 s, rounded up to minutes
+
+
+def test_the_time_left_rises_by_at_most_a_fifth_between_polls():
+    meter = rows.SpeedMeter(Clock())
+    assert meter.smooth_eta(60, 100) == 60
+    assert meter.smooth_eta(600, 200) == 72              # a ten times longer estimate climbs 20 % at a time
+    assert meter.smooth_eta(600, 300) == 86
+    assert meter.smooth_eta(30, 400) == 30               # falling is free
+    assert meter.smooth_eta(None, 500) is None           # unknown stays unknown, and the last figure is kept
+    assert meter.smooth_eta(60, 600) == 36
+    assert meter.smooth_eta(600, 100) == 600             # the bytes done fell: a file restarted, start again
+    meter.reset()
+    assert meter.smooth_eta(600, 0) == 600
+
+
+def test_the_overall_time_left_never_jumps_up_by_more_than_a_fifth_between_polls():
+    clock = Clock()
+    meter = rows.SpeedMeter(clock)
+    item = {"bytesTotal": 900_000_000, "bytesDone": 0, "status": "active", "speedBps": 1.0}
+    shown: list[int] = []
+    # fast, then a long slow stretch (a stalled CDN), then fast again, one poll a second
+    for rate in ([30e6] * 12 + [0.2e6] * 25 + [30e6] * 10) * 2:
+        clock.t += 1
+        item["bytesDone"] = min(item["bytesTotal"], item["bytesDone"] + int(rate))
+        eta = rows.overall([item], meter)["etaS"]
+        if eta:
+            shown.append(eta)
+    assert len(shown) > 30
+    assert max(b / a for a, b in zip(shown, shown[1:], strict=False)) <= 1.2 + 1e-9
+    # without the smoothing the minute rounding alone would have gone 60 -> 120 in one poll
+    assert any(b > a for a, b in zip(shown, shown[1:], strict=False))
