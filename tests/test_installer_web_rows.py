@@ -113,4 +113,4 @@ def test_the_overall_time_left_uses_the_whole_download_speed_once_measured():
     items[0]["bytesDone"] = 30_000_000
     total = rows.overall(items, meter)               # 30 MB over 30 s beats the stale per-file figure
     assert total["speedBps"] == pytest.approx(1_000_000)
-    assert total["etaS"] == 70 * 60                   # 70 MB left at 1 MB/s, rounded up to the minute
+    assert total["etaS"] == 120                       # 70 MB left at 1 MB/s = 70 s, rounded up to minutes

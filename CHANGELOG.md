@@ -7,6 +7,12 @@ All notable changes to Nightshift are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-11-03
+
+### Same content as 0.1.3, released
+- The `v0.1.3` tag's release build failed on one new test whose expectation was wrong (70 MB at 1 MB/s is 70 s,
+  not 70 min), so no 0.1.3 bundle was published. The test is corrected and 0.1.4 ships everything listed under 0.1.3.
+
 ## [0.1.3] - 2026-11-03
 
 ### Download time left is measured, never assumed
