@@ -446,7 +446,7 @@ class SetupController:
         for g in the_plan["groups"]:
             for item in g["items"]:
                 row = rows.make_row({**item, "group": g["id"]})
-                if row["via"] == "winget" and tools.get(item["key"] if item["key"] != "terminal" else "wt"):
+                if row["via"] == "winget" and tools.get({"terminal": "wt"}.get(item["key"], item["key"])):
                     row.update(via="present", status="done", note="already here")
                 elif row["via"] == "download":
                     have, verified = rows.part_state(self.home, row)

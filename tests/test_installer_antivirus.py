@@ -168,7 +168,7 @@ def smoke_ctx(tmp_path: Path) -> Any:
 
 def test_the_smoke_test_reports_a_removed_llama_server_as_ns_e113_before_ns_e203(tmp_path: Path) -> None:
     ctx = smoke_ctx(tmp_path)
-    ctx.paths.bin_llama.mkdir(parents=True)
+    ctx.paths.bin_llama.mkdir(parents=True, exist_ok=True)
     s08_smoke.check_programs_present(ctx)                        # nothing was unpacked: nothing to say
     (ctx.paths.bin_llama / ".ns-llama_cuda13.done").write_text("ok", encoding="utf-8")
     with pytest.raises(NsError) as ei:
@@ -180,7 +180,7 @@ def test_the_smoke_test_reports_a_removed_llama_server_as_ns_e113_before_ns_e203
 
 def test_the_smoke_test_reports_removed_voice_programs_before_the_pytorch_fallback(tmp_path: Path) -> None:
     ctx = smoke_ctx(tmp_path)
-    ctx.paths.bin_qwentts.mkdir(parents=True)
+    ctx.paths.bin_qwentts.mkdir(parents=True, exist_ok=True)
     (ctx.paths.bin_qwentts / ".ns-qwentts.done").write_text("ok", encoding="utf-8")
     (ctx.paths.bin_qwentts / "qwen-codec.exe").write_bytes(b"MZ")        # qwen-tts.exe is gone
     with pytest.raises(NsError) as ei:
@@ -193,7 +193,7 @@ def test_the_smoke_test_reports_removed_voice_programs_before_the_pytorch_fallba
 
 def test_a_simulation_does_not_judge_the_files_of_the_target_pc(tmp_path: Path) -> None:
     ctx = make_test_context(tmp_path, raw_answers=example_answers(), resolve=True, simulate=True)
-    ctx.paths.bin_llama.mkdir(parents=True)
+    ctx.paths.bin_llama.mkdir(parents=True, exist_ok=True)
     (ctx.paths.bin_llama / ".ns-llama_cuda13.done").write_text("ok", encoding="utf-8")
     s08_smoke.check_programs_present(ctx)
 

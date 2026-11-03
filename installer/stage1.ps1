@@ -455,6 +455,7 @@ function Get-RealProbe {
             ffmpeg = (Test-Tool 'ffmpeg.exe')
             wt     = (Test-Tool 'wt.exe')
             uv     = (Test-Tool 'uv.exe')
+            vcruntime = (Test-VcRuntime)
         }
         vc_runtime   = (Test-VcRuntime)
         long_paths   = (Get-LongPathsEnabled)
@@ -484,6 +485,7 @@ function Get-FakeProbe {
             ffmpeg = [bool](Get-Prop $tools 'ffmpeg' $true)
             wt     = [bool](Get-Prop $tools 'wt' $true)
             uv     = [bool](Get-Prop $tools 'uv' $true)
+            vcruntime = [bool](Get-Prop $j 'vc_runtime' $true)
         }
         vc_runtime   = [bool](Get-Prop $j 'vc_runtime' $true)
         long_paths   = [bool](Get-Prop $j 'long_paths' $true)

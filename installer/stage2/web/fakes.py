@@ -51,7 +51,7 @@ def sample_handover(app_path: Path, *, cuda: str = "13.0", home: str = r"C:\Nigh
         "gpu": {"name": "NVIDIA GeForce RTX 5060 Ti", "vram_mb": 16311, "driver": "581.57"},
         "drives": [{"letter": c, "free_gb": 500.0, "type": "SSD"} for c in sorted(letters)],
         "winget": True, "unreachable": [],
-        "tools": {"ffmpeg": True, "wt": True, "uv": True},
+        "tools": {"ffmpeg": True, "wt": True, "uv": True, "vcruntime": True},
         "checks": [{"id": i, "label": label, "status": "ok", "code": "", "value": value, "hint": ""}
                    for i, label, value in rows],
     }

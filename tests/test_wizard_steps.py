@@ -137,7 +137,7 @@ def test_s00_shows_welcome_and_hardware_table(tmp_path: Path):
     step.verify(ctx)
     assert "Welcome to Nightshift" in ctx.ui.markdowns[0]
     title, rows = ctx.ui.tables[0]
-    assert title == "Your PC" and len(rows) == 10 and rows[0][1] == "ok"
+    assert title == "Your PC" and len(rows) == 11 and rows[0][1] == "ok"
 
 
 def test_s00_red_row_raises_its_code(tmp_path: Path):
@@ -426,8 +426,10 @@ def test_s02_tries_the_old_asset_name_second_when_the_new_one_is_404(tmp_path: P
 
 
 def test_s02_both_asset_names_missing_means_the_pytorch_fallback(tmp_path: Path):
-    ctx = unpinned(ctx_resolved(tmp_path, http=lambda: httpx.Client(
-        transport=httpx.MockTransport(lambda request: httpx.Response(404)))))
+    def boom(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("offline", request=request)
+
+    ctx = unpinned(ctx_resolved(tmp_path, http=lambda: httpx.Client(transport=httpx.MockTransport(boom))))
     ctx.head_checks = True
     S02DownloadBins().run(ctx)
     assert ctx.flag("qwentts") == "none" and ctx.flag("tts_fallback") is True
