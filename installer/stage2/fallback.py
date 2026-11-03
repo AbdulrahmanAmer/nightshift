@@ -11,16 +11,15 @@ from installer.stage2.downloader import DownloadItem, plan_from_hf_tree
 from installer.stage2.errors import make_error
 from ns_common.venv_extras import extras_suffix
 
-FALLBACK_REPOS = ("Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice", "Qwen/Qwen3-TTS-12Hz-1.7B-Base")
 INDEX_SEP = " --index-url "
 
 
 def fallback_items(ctx: StepContext) -> list[DownloadItem]:
-    """Safetensors files of the reference TTS repos under models\\tts\\hf (listed through the HF tree API)."""
+    """Safetensors files of the manifest's ``tts_fallback_repos`` under models\\tts\\hf (HF tree API)."""
     dest_root = ctx.paths.models_tts_hf
     if ctx.simulate:
         items: list[DownloadItem] = []
-        for repo in FALLBACK_REPOS:
+        for repo in ctx.manifest.tts_fallback_repos:
             for fname in ("config.json", "model.safetensors"):
                 items.append(
                     DownloadItem(
@@ -33,7 +32,7 @@ def fallback_items(ctx: StepContext) -> list[DownloadItem]:
     client = ctx.http_factory()
     try:
         items = []
-        for repo in FALLBACK_REPOS:
+        for repo in ctx.manifest.tts_fallback_repos:
             items += plan_from_hf_tree(repo, "main", dest_root / repo.split("/")[1], client)
         return items
     finally:

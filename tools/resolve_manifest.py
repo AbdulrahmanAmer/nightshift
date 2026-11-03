@@ -12,6 +12,7 @@ HF = "https://huggingface.co"
 GH = "https://api.github.com"
 RAW_GH = "https://raw.githubusercontent.com"
 SHA_RE = re.compile(r"^[0-9a-f]{64}$")
+PIN_LINE_RE = re.compile(r"^[A-Za-z0-9_.\-]+==[0-9][^\s]* --hash=sha256:[0-9a-f]{64}$")
 TBD_SHA = "TBD-release"
 HF_FILE_KEYS = ("llm", "llm_balanced", "llm_best", "story_llm", "embed")
 HF_FILE_LIST_KEYS = ("tts", "tts_optional")
@@ -141,6 +142,16 @@ def check(manifest: dict, client: httpx.Client) -> list[str]:
         err = _head(b["url"], client)
         if err:
             problems.append(f"bins.{name}: {err}")
+    py = manifest.get("python") or {}
+    for i, line in enumerate(py.get("whisper_cuda", [])):
+        if not PIN_LINE_RE.match(line):
+            problems.append(f"python.whisper_cuda[{i}]: want 'name==x --hash=sha256:<hex>', got {line!r}")
+    wheel = py.get("spacy_wheel")
+    if wheel:
+        _check_sha("python.spacy_wheel", wheel.get("sha256"), problems)
+        err = _head(wheel["url"], client)
+        if err:
+            problems.append(f"python.spacy_wheel: {err}")
     return problems
 
 

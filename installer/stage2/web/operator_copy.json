@@ -28,6 +28,7 @@
   "NS-W302": {"title": "Faster decoding was not faster here", "whatToDo": "Nothing to do"},
   "NS-W401": {"title": "Using the slower video encoder", "whatToDo": "Update the NVIDIA driver when you can. Videos still work"},
   "NS-W403": {"title": "The setup test video could not be made", "whatToDo": "Setup is complete. Make your first video from the dashboard. If that also fails, send the diagnostics zip"},
+  "NS-W404": {"title": "Captions will be slow", "whatToDo": "Speech recognition runs on the processor because the graphics card could not run it. Videos still work. Send the diagnostics zip if you want it fixed"},
   "answers.json": {"title": "Something unexpected stopped setup", "whatToDo": "Press Retry once. If it stops again, press Copy diagnostics and send the zip"},
   "unexpected": {"title": "Something unexpected stopped setup", "whatToDo": "Press Retry once. If it stops again, press Copy diagnostics and send the zip"}
 }
