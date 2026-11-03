@@ -83,7 +83,7 @@ def test_the_0_1_2_hotfix_changelog_and_the_0_1_1_entries_are_in_place():
     assert re.search(r"^## \[0\.1\.2\] - 2026-11-03\s*$", text, re.MULTILINE)
     assert re.search(r"^## \[0\.1\.1\] - 2026-11-03\s*$", text, re.MULTILINE)
     unreleased = text[text.index("## [Unreleased]") : text.index("## [0.1.2]")]
-    assert unreleased.startswith("## [Unreleased]")  # entries after 0.1.2 wait here until the next release moves them
+    assert unreleased.startswith("## [Unreleased]")
     # release.yml builds the notes from this body, the same way: heading to the next heading
     hotfix = re.search(r"(?ms)^## \[0\.1\.2\][^\r\n]*\r?\n(?P<body>.*?)(?=^## \[|\Z)", text)
     assert hotfix is not None
