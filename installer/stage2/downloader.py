@@ -36,6 +36,7 @@ from typing import Any, Literal, Protocol
 import httpx
 
 from installer.stage2.errors import make_error
+from ns_common.avblock import is_blocked_error
 from ns_common.errors import NsError
 from ns_common.models import HfFile, LlmCustom, Manifest
 from ns_common.paths import Paths
@@ -210,6 +211,23 @@ def _new_client() -> httpx.Client:
 # --------------------------------------------------------------------------------------------------------
 # single file
 # --------------------------------------------------------------------------------------------------------
+def blocked_error(path: Path | str, what: str) -> NsError:
+    """NS-E113 (antivirus or policy blocked a file) for ``path``, with the allow-list hint of the error code.
+
+    Windows answers a quarantined file with WinError 225, and a scanner that deletes a program a moment
+    after it was written leaves a file that is simply gone. Neither is a network problem or a damaged file.
+    """
+    return make_error("NS-E113", f"{Path(path).name} {what}", path=str(path))
+
+
+def removed_after_unpack(item: DownloadItem) -> list[str]:
+    """The files of an unpacked zip item that are gone although its ``.done`` flag says it was unpacked."""
+    target = item.extract_to
+    if target is None or not (target / f".ns-{item.name}.done").exists():
+        return []
+    return [e for e in item.expect if not (target / e).exists()]
+
+
 def head_info(http: httpx.Client, url: str) -> tuple[int, int | None]:
     """HEAD ``url``: ``(status, size in bytes)``; the size is None when the server does not say.
 
@@ -341,7 +359,12 @@ def _fetch_once(
         part.unlink(missing_ok=True)
         raise make_error("NS-E109", f"{dest.name}: expected {sha256[:12]}..., got {digest[:12]}...")
     os.replace(part, dest)
-    write_marker(dest, digest)
+    try:
+        write_marker(dest, digest)
+    except FileNotFoundError as e:      # the scanner took the file between the rename and the marker
+        raise blocked_error(dest, "disappeared right after it was downloaded") from e
+    if not dest.is_file():
+        raise blocked_error(dest, "disappeared right after it was downloaded")
 
 
 def download(
@@ -412,6 +435,8 @@ def download(
                 last = make_error("NS-E105", f"{url}: no data for {stall_timeout:g} s")
                 reason = "stall"
             except OSError as e:
+                if is_blocked_error(e):
+                    raise blocked_error(dest, f"was blocked while it was downloaded ({e})") from e
                 if is_disk_full(e):
                     raise disk_full_error(dest, e) from e
                 last, reason = make_error("NS-E105", f"{url}: {e}"), "network"
@@ -837,10 +862,14 @@ class _NullReporter:
 def _extract_item(item: DownloadItem) -> None:
     assert item.extract_to is not None
     if item.kind == "nupkg":
-        extract_members(item.dest, item.extract_to, item.members)
+        names = extract_members(item.dest, item.extract_to, item.members)
     else:
-        extract_zip(item.dest, item.extract_to)
+        names = extract_zip(item.dest, item.extract_to)
     missing = [e for e in item.expect if not (item.extract_to / e).exists()]
+    written = {n.replace("\\", "/").lower() for n in names}
+    gone = [e for e in missing if e.lower() in written]
+    if gone:           # the archive has it, the disk does not: a scanner removed it right after unpacking
+        raise blocked_error(item.extract_to / gone[0], f"was removed right after unpacking {item.name}")
     if missing:
         raise make_error("NS-E109", f"{item.name}: archive lacks {', '.join(missing)}")
     (item.extract_to / f".ns-{item.name}.done").write_text("ok", encoding="utf-8")
@@ -921,6 +950,14 @@ def run_plan(
                 return
             with lock:
                 result.failed[item.name] = e
+            rep.finish(item.name, "failed")
+        except OSError as e:        # unpacking or saving: a scanner (WinError 225) is NS-E113
+            err = (
+                blocked_error(item.dest, f"was blocked while it was unpacked ({e})")
+                if is_blocked_error(e) else make_error("NS-E105", f"{item.name}: {e}")
+            )
+            with lock:
+                result.failed[item.name] = err
             rep.finish(item.name, "failed")
 
     try:

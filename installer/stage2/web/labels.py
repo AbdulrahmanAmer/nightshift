@@ -30,7 +30,7 @@ GROUP_LABELS: dict[str, str] = {
 
 # plan key -> label for the downloads that have a fixed key
 DOWNLOAD_LABELS: dict[str, str] = {
-    "git": "Git",
+    "vcruntime": "Visual C++ runtime",
     "ffmpeg": "FFmpeg",
     "terminal": "Windows Terminal",
     "setup_env": "Python packages for setup",

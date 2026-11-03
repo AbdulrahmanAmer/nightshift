@@ -143,9 +143,9 @@ def bin_rows(
 
 
 def tool_rows() -> list[dict[str, Any]]:
-    """Rows for the winget and uv steps (no size)."""
+    """Rows for the winget and uv steps (no size). Git is not one of them: nothing in setup needs it."""
     return [
-        _row("git", "Git", None, None, "winget", "tools"),
+        _row("vcruntime", "Visual C++ runtime", None, None, "winget", "tools"),
         _row("ffmpeg", "FFmpeg", None, None, "winget", "tools"),
         _row("terminal", "Windows Terminal", None, None, "winget", "tools"),
         _row("setup_env", "Python packages for setup", None, None, "uv", "python"),

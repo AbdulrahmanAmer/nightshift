@@ -1,8 +1,15 @@
 """Release wiring: the 0.1.0 changelog heading, the release workflow's build order, the manifest pin rule."""
 
 import json
+import os
 import re
+import shutil
+import subprocess
 from pathlib import Path
+
+import pytest
+
+from ns_supervisor import pwsh
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -136,6 +143,71 @@ def test_release_body_template_has_the_download_table_and_changelog_pointer():
     assert "dev/release_notes.md" in wf and ".Replace('<ver>', $version)" in wf
 
 
-def test_the_manifest_pin_keeps_the_existing_asset_name_until_a_new_release_exists():
+def test_the_manifest_pins_the_v0_1_4_voice_engine_asset_under_its_new_name():
     pin = json.loads(read("manifest.json"))["bins"]["qwentts"]
-    assert "/download/v0.1.0/qwentts-win-cuda-x64.zip" in pin["url"]
+    assert pin["url"].endswith("/download/v0.1.4/Nightshift-VoiceEngine-win-cuda-x64.zip")
+    assert pin["version"] == "0.1.4"
+    # the digest GitHub shows for that release asset (gh api repos/.../releases/tags/v0.1.4)
+    assert pin["sha256"] == "dac3dbdd1cc4291aebb18a127eff71aab2d5595437f35213ef6f64176ae4e6f5"
+
+
+# ---- manifest.version follows VERSION at release build (install audit #8) -------------------------
+def test_the_bundle_script_rewrites_the_manifest_version_from_the_version_file():
+    script = read("dev/make_bundle.ps1")
+    assert "manifest.json version:" in script and "'manifest.json'" in script
+    assert "expected '$Version'" in script                                         # the zip is verified too
+    # the pattern it uses must match the top-level line of the committed manifest and nothing nested
+    text = read("manifest.json")
+    matches = re.findall(r'(?m)^(  "version"\s*:\s*")[^"]*(")', text)
+    assert len(matches) == 1
+
+
+def test_a_bundle_dry_run_puts_the_version_file_number_in_the_zip_manifest():
+    exe = pwsh.find_powershell()
+    if exe is None or shutil.which("git") is None:
+        pytest.skip("powershell or git not available")
+    env = {k: v for k, v in os.environ.items() if k.lower() != "psmodulepath"}
+    cmd = [exe, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File",
+           str(ROOT / "dev" / "make_bundle.ps1"), "-DryRun"]
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=600, cwd=ROOT, env=env, check=False)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    version = read("VERSION").strip()
+    assert f"manifest.json version: {version}" in proc.stdout
+    assert f"verified: manifest.json version {version} = VERSION" in proc.stdout
+
+
+def test_a_rerun_refreshes_the_venvs_and_the_smoke_test_when_the_manifest_version_changes(tmp_path):
+    from installer.stage2.steps.s04_venvs import S04Venvs
+    from installer.stage2.steps.s08_smoke import S08Smoke
+    from installer.stage2.testing import example_answers, make_test_context
+
+    ctx = make_test_context(tmp_path, raw_answers=example_answers(), resolve=True)
+    for name in ("studio", "supervisor"):
+        py = ctx.venv_python(name)
+        py.parent.mkdir(parents=True)
+        py.write_bytes(b"MZ")
+    for name, value in (("venvs_installed", True), ("venvs_version", ctx.manifest.version),
+                        ("venvs_app", str(ctx.app_path)), ("smoke", "passed"),
+                        ("smoke_version", ctx.manifest.version)):
+        ctx.set_flag(name, value)
+    assert S04Venvs().check(ctx) and S08Smoke().check(ctx)
+    newer = ctx.manifest.model_copy(update={"version": ctx.manifest.version + ".1"})
+    ctx.manifest = newer                                   # setup from a newer bundle, same install folder
+    assert not S04Venvs().check(ctx) and not S08Smoke().check(ctx)
+
+
+def test_the_venvs_are_refreshed_when_the_program_folder_moved(tmp_path):
+    from installer.stage2.steps.s04_venvs import S04Venvs
+    from installer.stage2.testing import example_answers, make_test_context
+
+    ctx = make_test_context(tmp_path, raw_answers=example_answers(), resolve=True)
+    for name in ("studio", "supervisor"):
+        py = ctx.venv_python(name)
+        py.parent.mkdir(parents=True)
+        py.write_bytes(b"MZ")
+    ctx.set_flag("venvs_installed", True)
+    ctx.set_flag("venvs_version", ctx.manifest.version)
+    ctx.set_flag("venvs_app", str(tmp_path / "somewhere else"))
+    assert not S04Venvs().check(ctx)                      # editable installs still point at the old folder
+    ctx.set_flag("venvs_app", str(ctx.app_path))
+    assert S04Venvs().check(ctx)

@@ -89,7 +89,7 @@ def test_the_first_state_is_the_welcome_screen_of_a_green_pc(tmp_path, monkeypat
     assert state["phase"] == "checks" and state["run"] == "idle" and state["uiStep"] == "welcome"
     assert state["blocking"] is False and state["resumed"] is False and state["answers"] is None
     assert state["answersLocked"] is False and state["failure"] is None and state["result"] is None
-    assert state["machine"]["gpuName"] == "NVIDIA GeForce RTX 5060 Ti" and len(state["checks"]) == 10
+    assert state["machine"]["gpuName"] == "NVIDIA GeForce RTX 5060 Ti" and len(state["checks"]) == 11
     assert state["plan"]["tier"] == "balanced" and state["plan"]["recommendedTier"] == "balanced"
     assert state["plan"]["estimate"]["label"]
     assert state["version"] == (ROOT / "VERSION").read_text(encoding="utf-8").strip()
@@ -101,7 +101,8 @@ def test_the_first_state_is_the_welcome_screen_of_a_green_pc(tmp_path, monkeypat
     assert set(state) == keys
     json.dumps(state)                                   # everything is JSON
     rows = {r["key"]: r for r in state["downloads"]["items"]}
-    assert rows["git"]["status"] == "done" and rows["git"]["note"] == "already here"
+    assert rows["vcruntime"]["status"] == "done" and rows["vcruntime"]["note"] == "already here"
+    assert "git" not in rows                        # Git is not something setup installs
     assert rows["llama_cuda13"]["status"] == "queued"
     assert rows["Qwen3.6-35B-A3B-APEX-MTP-I-Mini.gguf"]["bytesTotal"] > 14e9    # Balanced is the default
 
@@ -360,21 +361,49 @@ def test_missing_tools_are_installed_with_winget_and_shown_as_rows(tmp_path, mon
     state = s.until(lambda st: st["run"] == "finished")
     installs = [c for c in s.cmd.calls if c[0].lower().startswith("winget")]
     ids = [c[c.index("--id") + 1] for c in installs]
-    assert ids == ["Git.Git", "Microsoft.WindowsTerminal", "Gyan.FFmpeg"]
+    assert ids == ["Microsoft.VCRedist.2015+.x64", "Gyan.FFmpeg", "Microsoft.WindowsTerminal"]
+    assert "Git.Git" not in ids                     # no machine-wide installer, no admin prompt for Git
+    assert all("--source" in c and "winget" in c for c in installs)
     rows = {r["key"]: r for r in state["downloads"]["items"]}
-    assert rows["git"]["status"] == "done" and rows["git"]["note"] == "installed with winget"
+    assert rows["vcruntime"]["status"] == "done" and rows["vcruntime"]["note"] == "installed with winget"
     assert rows["ffmpeg"]["status"] == "done" and rows["setup_env"]["status"] == "done"
+    assert s.fx.fetched == [] and s.fx.elevated == []       # winget did it: no direct download
 
 
-def test_no_winget_and_no_git_is_ns_e111_and_retry_carries_on(tmp_path, monkeypatch):
+def test_no_winget_means_the_pinned_direct_downloads(tmp_path, monkeypatch):
     s = Setup(tmp_path, monkeypatch, script=finish_script, present=set())
     s.accept()
     s.ctl.do_action("start")
-    state = s.until(lambda st: st["run"] == "waiting", what="NS-E111")
-    assert state["failure"]["code"] == "NS-E111" and state["failure"]["title"] == "App Installer is missing"
-    assert state["failure"]["step"] == "b01_tools" and state["failure"]["canSkip"] is False
-    assert state["phase"] == "failed" and not s.engine.alive
-    s.cmd.present.update({"git.exe", "ffmpeg.exe", "wt.exe", "winget.exe"})      # the partner installed it
+    state = s.until(lambda st: st["run"] == "finished")
+    pins = s.ctl.manifest["bins"]
+    assert [u for u, _ in s.fx.fetched] == [pins["vcredist"]["url"], pins["ffmpeg"]["url"]]
+    assert [h for _, h in s.fx.fetched] == [pins["vcredist"]["sha256"], pins["ffmpeg"]["sha256"]]
+    exe, args = s.fx.elevated[0]
+    assert exe.endswith("vc_redist.x64.exe") and args == ["/install", "/quiet", "/norestart"]
+    ffmpeg_dir = s.home / "bin" / "ffmpeg"
+    assert (ffmpeg_dir / "ffmpeg.exe").is_file() and (ffmpeg_dir / "ffprobe.exe").is_file()
+    assert not (ffmpeg_dir / "ffplay.exe").exists()
+    assert s.fx.path_adds == [str(ffmpeg_dir)]              # the folder joins the user's PATH
+    assert not any(c[0].lower().startswith("winget") for c in s.cmd.calls)
+    rows = {r["key"]: r for r in state["downloads"]["items"]}
+    assert rows["vcruntime"]["note"] == "installed from the pinned download"
+    assert rows["ffmpeg"]["note"] == "installed from the pinned download"
+    assert rows["terminal"]["status"] == "skipped"          # optional, and winget is the only way to get it
+    assert state["failure"] is None and state["steps"][0]["status"] == "done"
+
+
+def test_a_declined_permission_prompt_is_ns_e114_and_retry_carries_on(tmp_path, monkeypatch):
+    from installer.stage2.web.bootstrap import CmdResult
+
+    s = Setup(tmp_path, monkeypatch, script=finish_script, present={"ffmpeg.exe", "wt.exe"})
+    s.fx.run_elevated = lambda exe, args: CmdResult(1223, "", "The operation was canceled by the user.")
+    s.accept()
+    s.ctl.do_action("start")
+    state = s.until(lambda st: st["run"] == "waiting", what="NS-E114")
+    assert state["failure"]["code"] == "NS-E114" and state["failure"]["step"] == "b01_tools"
+    assert state["failure"]["title"] == "A Windows component is missing"
+    assert "declined" in state["failure"]["detail"] and state["failure"]["canSkip"] is False
+    s.cmd.present.add("vcruntime")                          # the partner installed it from the link
     assert s.ctl.do_action("retry")[0] == 200
     state = s.until(lambda st: st["run"] == "finished")
     assert state["failure"] is None and state["steps"][0]["status"] == "done"

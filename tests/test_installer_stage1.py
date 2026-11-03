@@ -70,7 +70,8 @@ def test_all_green_fake_probe(tmp_path: Path):
     s = _summary(proc)
     assert [r["status"] for r in s["checks"]] == ["ok"] * len(s["checks"])
     assert {r["id"] for r in s["checks"]} >= {
-        "os", "gpu", "driver", "ram", "disk", "disktype", "network", "winget", "longpaths", "waketimers",
+        "os", "gpu", "driver", "ram", "disk", "disktype", "network", "winget", "vcruntime", "longpaths",
+        "waketimers",
     }
     assert s["profile"] == "gpu" and s["llama_pair"] == "cuda13" and s["cuda"] == "13.0"
     assert s["home"] == "C:\\Nightshift"
@@ -106,10 +107,20 @@ def test_all_green_fake_probe(tmp_path: Path):
         ({"unreachable": ["huggingface.co"]}, "network", "warn", "NS-E105"),
         ({"unreachable": ["github.com"]}, "network", "fail", "NS-E105"),
         ({"unreachable": ["huggingface.co", "pypi.org"]}, "network", "fail", "NS-E105"),
-        ({"winget": False, "tools": {"git": False}}, "winget", "fail", "NS-E111"),
+        # winget is a first choice only: FFmpeg and the Visual C++ runtime have a pinned download behind it
+        ({"winget": False, "tools": {"ffmpeg": False}}, "winget", "warn", ""),
+        ({"winget": False, "vc_runtime": False}, "winget", "warn", ""),
         ({"winget": False}, "winget", "ok", ""),
+        ({"vc_runtime": False}, "vcruntime", "warn", ""),
+        ({"vc_runtime": True}, "vcruntime", "ok", ""),
         ({"long_paths": False}, "longpaths", "warn", "NS-W112"),
         ({"wake_timers": False}, "waketimers", "warn", "NS-W107"),
+        # Allow wake timers: 0 = Disable, 1 = Enable, 2 = Important wake timers only (not enough for the task)
+        ({"wake_timers": 0}, "waketimers", "warn", "NS-W107"),
+        ({"wake_timers": 1}, "waketimers", "ok", ""),
+        ({"wake_timers": 2}, "waketimers", "warn", "NS-W107"),
+        ({"wake_timers": True}, "waketimers", "ok", ""),
+        ({"wake_timers": None}, "waketimers", "ok", ""),
     ],
 )
 def test_preflight_rows(tmp_path: Path, over: dict, row: str, status: str, code: str):

@@ -55,9 +55,9 @@ $script:FallbackErrors = @{
     'NS-E104' = @('Not enough free disk space.', 'Free at least 60 GB on the drive that holds NIGHTSHIFT_HOME, or choose a bigger drive.')
     'NS-E105' = @('A required download site is unreachable.', 'Check the internet connection and any firewall or proxy.')
     'NS-W106' = @('NIGHTSHIFT_HOME is on a hard disk, not an SSD.', 'Model loading will be slow. Consider an NVMe/SSD drive.')
-    'NS-W107' = @('Wake timers are disabled in the power plan.', 'Enable Allow wake timers in Power Options > Advanced > Sleep.')
-    'NS-E110' = @('A required tool failed to install via winget.', 'Install it manually (Git, Windows Terminal, FFmpeg) and re-run setup.')
-    'NS-E111' = @('winget (Windows App Installer) is missing.', 'Install App Installer from the Microsoft Store (or use the direct links shown), then re-run setup.')
+    'NS-W107' = @('Wake timers are not fully enabled in the power plan.', 'In Power Options > Change advanced power settings > Sleep > Allow wake timers, choose Enable (not Disable, and not Important wake timers only).')
+    'NS-E110' = @('A required tool failed to install.', 'Install FFmpeg manually (winget install Gyan.FFmpeg) and re-run setup. Git is not needed.')
+    'NS-E111' = @('winget (Windows App Installer) is missing.', 'Setup downloads FFmpeg and the Visual C++ runtime directly instead. To use winget, install App Installer from the Microsoft Store.')
     'NS-W112' = @('Windows long paths are disabled.', 'Run setup once as administrator to enable them, or keep NIGHTSHIFT_HOME on a short path such as D:\Nightshift.')
 }
 $script:SplashLabels = @('This PC', 'uv', 'Python', 'Setup window')
@@ -206,8 +206,20 @@ function Get-LlamaPair {
     return ''
 }
 
+function Test-PathInside {
+    # True when $Path is $Folder or below it (Windows rules: case does not matter).
+    param([string]$Path, [string]$Folder)
+    if (-not $Path -or -not $Folder) { return $false }
+    $p = $Path.Trim().TrimEnd('\').ToLowerInvariant()
+    $f = $Folder.Trim().TrimEnd('\').ToLowerInvariant()
+    return ($p -eq $f) -or $p.StartsWith($f + '\')
+}
+
 function Select-DefaultHome {
-    param($Drives)
+    # $AppFolder is where the zip was extracted. The install folder must not be that folder or inside it:
+    # setup copies the program into <home>\app. NTFS ignores case, so D:\NightShift (the extract folder
+    # OPERATOR.md used to suggest) and D:\Nightshift (the default home) are the same folder.
+    param($Drives, [string]$AppFolder = '')
     $all = @($Drives)
     if ($all.Count -eq 0) { return '' }
     $roomy = @($all | Where-Object { [double]$_.free_gb -ge $script:MinFreeGbRecommended })
@@ -215,7 +227,9 @@ function Select-DefaultHome {
     $ssd = @($roomy | Where-Object { $_.type -eq 'SSD' })
     if ($ssd.Count -gt 0) { $roomy = $ssd }
     $best = $roomy | Sort-Object -Property @{ Expression = { [double]$_.free_gb }; Descending = $true } | Select-Object -First 1
-    return ('{0}:\Nightshift' -f $best.letter)
+    $default = ('{0}:\Nightshift' -f $best.letter)
+    if (Test-PathInside -Path $default -Folder $AppFolder) { $default = ('{0}:\Nightshift-home' -f $best.letter) }
+    return $default
 }
 
 # ---------------------------------------------------------------------------------------------------------
@@ -346,11 +360,31 @@ function Get-LongPathsEnabled {
     catch { return $false }
 }
 
-function Get-WakeTimersEnabled {
+function Test-VcRuntime {
+    # llama-server.exe and the voice programs need the Visual C++ 2015-2022 runtime (x64). It puts these three
+    # files in System32; a clean Windows 11 does not have them until some program installs the redistributable.
+    $dir = [Environment]::GetFolderPath('System')
+    foreach ($name in @('msvcp140.dll', 'vcruntime140.dll', 'vcruntime140_1.dll')) {
+        if (-not (Test-Path -LiteralPath (Join-Path $dir $name))) { return $false }
+    }
+    return $true
+}
+
+function ConvertTo-WakeSetting {
+    # "Allow wake timers" has three values: 0 = Disable, 1 = Enable, 2 = Important wake timers only.
+    # Old fake probes used true/false; keep reading them (true = 1, false = 0). $null = could not be read.
+    param($Value)
+    if ($null -eq $Value) { return $null }
+    if ($Value -is [bool]) { if ($Value) { return 1 } else { return 0 } }
+    return [int]$Value
+}
+
+function Get-WakeTimersSetting {
+    # The AC value of the power plan in use (the 03:00 task is for a PC on the wall). Returns 0, 1, 2 or $null.
     try {
         $out = & powercfg.exe /q SCHEME_CURRENT SUB_SLEEP BD3B718A-0680-4D9D-8AB2-E1D2B4AC806D | Out-String
         if ($out -match 'Current AC Power Setting Index:\s*0x([0-9a-fA-F]+)') {
-            return ([Convert]::ToInt32($Matches[1], 16) -ne 0)
+            return [Convert]::ToInt32($Matches[1], 16)
         }
     }
     catch {
@@ -418,13 +452,14 @@ function Get-RealProbe {
         unreachable  = $unreachable.ToArray()
         winget       = (Test-WingetWorks)
         tools        = [pscustomobject]@{
-            git    = (Test-Tool 'git.exe')
             ffmpeg = (Test-Tool 'ffmpeg.exe')
             wt     = (Test-Tool 'wt.exe')
             uv     = (Test-Tool 'uv.exe')
+            vcruntime = (Test-VcRuntime)
         }
+        vc_runtime   = (Test-VcRuntime)
         long_paths   = (Get-LongPathsEnabled)
-        wake_timers  = (Get-WakeTimersEnabled)
+        wake_timers  = (Get-WakeTimersSetting)
     }
 }
 
@@ -447,13 +482,14 @@ function Get-FakeProbe {
         unreachable  = @(Get-Prop $j 'unreachable' @())
         winget       = [bool](Get-Prop $j 'winget' $true)
         tools        = [pscustomobject]@{
-            git    = [bool](Get-Prop $tools 'git' $true)
             ffmpeg = [bool](Get-Prop $tools 'ffmpeg' $true)
             wt     = [bool](Get-Prop $tools 'wt' $true)
             uv     = [bool](Get-Prop $tools 'uv' $true)
+            vcruntime = [bool](Get-Prop $j 'vc_runtime' $true)
         }
+        vc_runtime   = [bool](Get-Prop $j 'vc_runtime' $true)
         long_paths   = [bool](Get-Prop $j 'long_paths' $true)
-        wake_timers  = Get-Prop $j 'wake_timers' $true
+        wake_timers  = ConvertTo-WakeSetting (Get-Prop $j 'wake_timers' 1)
     }
 }
 
@@ -583,8 +619,9 @@ function Get-PreflightRows {
         $rows.Add((New-Row 'network' 'Internet (Hugging Face, GitHub, PyPI, PyTorch, Pexels, Pixabay)' 'warn' 'NS-E105' ('unreachable: ' + ($unreachable -join ', '))))
     }
 
-    # winget (only needed when Git or FFmpeg must be installed)
-    $needWinget = (-not $Probe.tools.git) -or (-not $Probe.tools.ffmpeg)
+    # winget: setup tries it first for FFmpeg and the Visual C++ runtime, then downloads a pinned copy itself,
+    # so a PC without a working winget is only a warning (Git is not installed at all)
+    $needWinget = (-not $Probe.tools.ffmpeg) -or (-not $Probe.vc_runtime)
     if ($Probe.winget) {
         $rows.Add((New-Row 'winget' 'winget (App Installer)' 'ok' '' 'available'))
     }
@@ -592,7 +629,15 @@ function Get-PreflightRows {
         $rows.Add((New-Row 'winget' 'winget (App Installer)' 'ok' '' 'not needed, tools already installed'))
     }
     else {
-        $rows.Add((New-Row 'winget' 'winget (App Installer)' 'fail' 'NS-E111' 'winget --version failed'))
+        $rows.Add((New-Row 'winget' 'winget (App Installer)' 'warn' '' 'not available; FFmpeg and the Visual C++ runtime are downloaded directly'))
+    }
+
+    # Visual C++ runtime (llama.cpp and the voice programs do not start without it)
+    if ($Probe.vc_runtime) {
+        $rows.Add((New-Row 'vcruntime' 'Visual C++ runtime' 'ok' '' 'installed'))
+    }
+    else {
+        $rows.Add((New-Row 'vcruntime' 'Visual C++ runtime' 'warn' '' 'not installed; setup installs it (Windows asks for permission once)'))
     }
 
     # long paths
@@ -603,15 +648,20 @@ function Get-PreflightRows {
         $rows.Add((New-Row 'longpaths' 'Windows long paths enabled' 'warn' 'NS-W112' 'LongPathsEnabled is not 1'))
     }
 
-    # wake timers
-    if ($null -eq $Probe.wake_timers) {
+    # wake timers: 0 = Disable, 1 = Enable, 2 = Important wake timers only. The 03:00 task is a plain
+    # Task Scheduler wake timer, not an "important" one, so 2 does not wake the PC either.
+    $wake = ConvertTo-WakeSetting $Probe.wake_timers
+    if ($null -eq $wake) {
         $rows.Add((New-Row 'waketimers' 'Wake timers allowed (nightly run)' 'ok' '' 'could not be read'))
     }
-    elseif ($Probe.wake_timers) {
+    elseif ($wake -eq 1) {
         $rows.Add((New-Row 'waketimers' 'Wake timers allowed (nightly run)' 'ok' '' 'enabled'))
     }
+    elseif ($wake -eq 2) {
+        $rows.Add((New-Row 'waketimers' 'Wake timers allowed (nightly run)' 'warn' 'NS-W107' 'set to "Important wake timers only"; change Allow wake timers to Enable'))
+    }
     else {
-        $rows.Add((New-Row 'waketimers' 'Wake timers allowed (nightly run)' 'warn' 'NS-W107' 'disabled in the power plan'))
+        $rows.Add((New-Row 'waketimers' 'Wake timers allowed (nightly run)' 'warn' 'NS-W107' 'disabled in the power plan; change Allow wake timers to Enable'))
     }
     return $rows.ToArray()
 }
@@ -710,14 +760,14 @@ function Read-AnswersFile {
 
 function Resolve-NsHome {
     # The default install folder; the setup window lets the partner change it. Never asks a question.
-    param($Drives, $AnswersObj, [string]$Forced)
+    param($Drives, $AnswersObj, [string]$Forced, [string]$AppFolder = '')
     if ($Forced) { return $Forced }
     $fromAnswers = [string](Get-Prop $AnswersObj 'home_path' '')
     if ($fromAnswers) { return $fromAnswers }
     $existing = [Environment]::GetEnvironmentVariable('NIGHTSHIFT_HOME', 'User')
     if ($existing) { return $existing }
     if ($env:NIGHTSHIFT_HOME) { return $env:NIGHTSHIFT_HOME }
-    $default = Select-DefaultHome -Drives $Drives
+    $default = Select-DefaultHome -Drives $Drives -AppFolder $AppFolder
     if (-not $default) { $default = Join-Path (Get-DataDir) 'Home' }
     return $default
 }
@@ -962,7 +1012,7 @@ elseif (-not $ProbeOnly) {
 
 # probe and the default install folder
 if ($FakeProbe) { $probe = Get-FakeProbe -Path $FakeProbe } else { $probe = Get-RealProbe }
-$NsHome = Resolve-NsHome -Drives @($probe.drives) -AnswersObj $answersObj -Forced $HomePath
+$NsHome = Resolve-NsHome -Drives @($probe.drives) -AnswersObj $answersObj -Forced $HomePath -AppFolder $App
 if ($script:IsDry -and -not $ProbeOnly) { Show-Action "use NIGHTSHIFT_HOME = $NsHome" }
 
 $rows = Get-PreflightRows -Probe $probe -NsHome $NsHome -AllowCpu $allowCpu

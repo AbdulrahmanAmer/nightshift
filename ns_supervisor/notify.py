@@ -57,17 +57,22 @@ NOTE_FILE = "morning_note.json"
 NOTE_KEEP = 20
 
 
-def session_is_interactive() -> bool:
-    """False in session 0 (services, S4U tasks): there is no desktop to show a toast on. True elsewhere."""
+def session_id() -> int | None:
+    """Windows session number of this process (0 = services and S4U tasks); None when it cannot be read."""
     if sys.platform != "win32":
-        return True
+        return None
     try:
         sid = ctypes.c_ulong()
         kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
         ok = kernel32.ProcessIdToSessionId(os.getpid(), ctypes.byref(sid))
     except (AttributeError, OSError):
-        return True
-    return not ok or sid.value != 0
+        return None
+    return int(sid.value) if ok else None
+
+
+def session_is_interactive() -> bool:
+    """False in session 0 (services, S4U tasks): there is no desktop to show a toast on. True elsewhere."""
+    return session_id() != 0
 
 
 def note_path(paths: Paths) -> Path:

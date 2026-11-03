@@ -23,7 +23,7 @@ from ns_common.errors import NsError
 from ns_common.logging import NsLogger
 from ns_common.models import Runtime
 from ns_common.paths import Paths
-from ns_supervisor import presence, procs
+from ns_supervisor import notify, presence, procs
 from ns_supervisor.gpu import GpuProbe, NullGpuProbe, NvidiaSmiGpuProbe
 from ns_supervisor.lock import GpuLock
 from ns_supervisor.schedule_cfg import read_run_time, seconds_until_next_run
@@ -55,6 +55,8 @@ class SupervisorConfig:
 #: Owners that must heartbeat while they hold the GPU (the studio does; see `ns_studio.acquirer`). Other
 #: owners (the Assistant, voice previews, `ns verify`) hold the lock for one short call and never expire.
 LEASED_PREFIXES: tuple[str, ...] = ("studio:",)
+#: `/status` says `busy` for this long after the last acquire, release or warmup (a run between two stages).
+BUSY_RECENT_S = 120.0
 
 
 @dataclass
@@ -606,7 +608,20 @@ class Supervisor:
             "uptime_s": round(now - self.started_at, 1),
             "services": services,
             "gpu": gpu.model_dump(mode="json") if gpu is not None else None,
+            # which Windows session this engine runs in: the 03:00 task (S4U) starts it in session 0, which
+            # has no desktop, so its dashboard cannot open folders or reach the Credential Manager
+            "session": {"id": notify.session_id(), "interactive": notify.session_is_interactive()},
+            "busy": self.busy(),
         }
+
+    def busy(self) -> bool:
+        """True while a run is using the engine: somebody holds or waits for the GPU, a service has an owner
+        (the dashboard does not count), or anything asked for a service in the last `BUSY_RECENT_S`."""
+        if self.lock.state.owner is not None or self.lock.waiters():
+            return True
+        if any(self._has_owner(rt) for name, rt in self.services.items() if name != "dashboard"):
+            return True
+        return self.clock() - self.last_activity < BUSY_RECENT_S
 
     # ------------------------------------------------------------------ monitor
     async def tick(self) -> None:

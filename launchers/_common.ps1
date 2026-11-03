@@ -52,6 +52,45 @@ function Test-NsSupervisor {
     }
 }
 
+function Get-NsStatus {
+    # The engine's /status (it runs nvidia-smi, so only the Dashboard launcher asks); $null when it does not answer.
+    try { return (Invoke-RestMethod -Uri ((Get-NsSupervisorUrl) + '/status') -TimeoutSec 20) }
+    catch { return $null }
+}
+
+function Get-NsOwnSessionId {
+    return [int][System.Diagnostics.Process]::GetCurrentProcess().SessionId
+}
+
+function Get-NsEngineSessionAction {
+    # What the Dashboard shortcut does about the Windows session of a running engine.
+    #   'ok'      the engine has a desktop (or an older engine does not say): use it
+    #   'restart' the 03:00 task started it in session 0 (no desktop: Open Outbox, folder pickers and the
+    #             Credential Manager do nothing there) and it is idle: restart it in this session
+    #   'busy'    same, but a run is still using it: never interrupt that, open the dashboard on it
+    param($Status, [int]$MySession)
+    if ($null -eq $Status) { return 'ok' }
+    $session = $Status.PSObject.Properties['session']
+    if ($null -eq $session -or $null -eq $session.Value) { return 'ok' }
+    if ($session.Value.interactive) { return 'ok' }
+    if ($MySession -eq 0) { return 'ok' }
+    $busy = $Status.PSObject.Properties['busy']
+    if ($null -ne $busy -and $busy.Value) { return 'busy' }
+    return 'restart'
+}
+
+function Stop-NsEngine {
+    # Ask an idle engine to shut down and wait until it stops answering.
+    param([int]$TimeoutSec = 60)
+    try { Invoke-NsPost -Path '/shutdown' -Body @{ grace_s = 10 } -TimeoutSec 60 | Out-Null } catch { Write-Verbose 'shutdown request failed' }
+    $deadline = (Get-Date).AddSeconds($TimeoutSec)
+    while ((Get-Date) -lt $deadline) {
+        if (-not (Test-NsSupervisor)) { return $true }
+        Start-Sleep -Milliseconds 500
+    }
+    return $false
+}
+
 function Start-NsSupervisor {
     param([switch]$Headless)
     $py = Get-NsVenvExe 'supervisor' 'python.exe'

@@ -24,11 +24,13 @@ from typing import Any
 
 from installer.stage2.web import (
     answers_view,
+    appcopy,
     bootstrap,
     folderdialog,
     labels,
     machine,
     modelcheck,
+    pathcheck,
     plan,
     preflight,
     rows,
@@ -40,6 +42,7 @@ from installer.stage2.web.model import BOOTSTRAP_STEPS, FILE_NAMES, STEP_ORDER, 
 from installer.stage2.web.store import SetupStore
 from ns_common.atomic import BACKUP_SUFFIX, write_text_atomic
 from ns_common.uv import find_uv
+from ns_common.vcruntime import missing as vcruntime_missing
 
 LOG_KEEP = 50
 SAMPLE_TEXT = "This is how your channel will sound at night."
@@ -113,6 +116,7 @@ class Config:
     uninstall: bool = False
     python: str = field(default_factory=lambda: sys.executable)
     halt_after: str | None = None
+    copy_app: bool | None = None        # copy the program to <home>\app; None: yes, except in --simulate
 
 
 def default_free_gb(path: str) -> float:
@@ -251,6 +255,11 @@ class Effects:
     clipboard: Callable[[str], None] = copy_to_clipboard
     pick_folder: Callable[[str, str], str | None] = folderdialog.pick_folder      # (title, start) -> path
     drive_type: Callable[[str], int] = preflight.default_drive_type               # GetDriveTypeW of a letter
+    vc_missing: Callable[[], list[str]] = vcruntime_missing                      # DLLs not in System32
+    fetch_file: Callable[..., None] = bootstrap.download_file                    # pinned direct downloads
+    run_elevated: Callable[..., bootstrap.CmdResult] = bootstrap.run_elevated_exe
+    add_user_path: Callable[[str], bool] = bootstrap.add_user_path_entry
+    copy_app: Callable[..., appcopy.CopyResult] = appcopy.install_app
 
 
 # ---------------------------------------------------------------------------------------------------------
@@ -324,6 +333,19 @@ class SetupController:
         self.pf = self._load_preflight()
         self.home = self._initial_home()
         self.store = SetupStore(self._initial_state(), self._finalize)
+
+    # ---- the program folder ----
+    @property
+    def installs_app(self) -> bool:
+        """True when setup copies the extracted program to ``<home>\\app`` (not in ``--simulate``)."""
+        return self.cfg.copy_app if self.cfg.copy_app is not None else not self.cfg.simulate
+
+    @property
+    def run_app_path(self) -> Path:
+        """The program folder everything runs from: ``<home>\\app`` once it is in place."""
+        if self.installs_app and appcopy.installed_fingerprint(self.home) is not None:
+            return appcopy.app_dir(self.home)
+        return self.cfg.app_path
 
     # ---- construction ----
     def _read_version(self) -> str:
@@ -428,7 +450,7 @@ class SetupController:
         for g in the_plan["groups"]:
             for item in g["items"]:
                 row = rows.make_row({**item, "group": g["id"]})
-                if row["via"] == "winget" and tools.get(item["key"] if item["key"] != "terminal" else "wt"):
+                if row["via"] == "winget" and tools.get({"terminal": "wt"}.get(item["key"], item["key"])):
                     row.update(via="present", status="done", note="already here")
                 elif row["via"] == "download":
                     have, verified = rows.part_state(self.home, row)
@@ -505,13 +527,29 @@ class SetupController:
         self.store.update(lambda s: s.__setitem__("uiStep", step))
         return self._reply(200, True, None)
 
+    def _layout_problem(self, home: str) -> str | None:
+        """Why ``home`` clashes with the extracted folder or lives in Downloads or OneDrive (None: fine)."""
+        if not self.installs_app:
+            return None
+        return pathcheck.layout_problem(home, self.cfg.app_path)
+
+    def _existing_install_note(self, home: str) -> str | None:
+        """A line for the folder picker when ``home`` already holds an install that setup would update."""
+        found = appcopy.installed_version(Path(home))
+        if found is None or not self.installs_app:
+            return None
+        if found == self.version:
+            return f"Nightshift {found} is already installed here; setup repairs what is missing"
+        return (f"Nightshift {found} is installed here. Setup updates it to {self.version} and keeps your "
+                "videos, voices and settings")
+
     def _env(self, state: dict[str, Any]) -> answers_view.Env:
         drives = {d["letter"] for d in state["machine"]["drives"]} or None
         return answers_view.Env(
             ram_gb=float(state["machine"]["ramGb"]), tiers=state["plan"]["tiers"], drive_letters=drives,
             free_gb=lambda p: next((d["freeGb"] for d in state["machine"]["drives"]
                                     if d["letter"] == p[:1].upper()), None),
-            keys_stored=self._keys_stored,
+            keys_stored=self._keys_stored, layout_problem=self._layout_problem,
         )
 
     def submit_answers(self, draft: dict[str, Any]) -> dict[str, Any]:
@@ -602,7 +640,8 @@ class SetupController:
             found = preflight.scan_models_source(Path(path), expected)
             return preflight.disk_check(path, tier, state["machine"]["drives"], self.fx.free_gb, models=found)
         return preflight.disk_check(path, tier, state["machine"]["drives"], self.fx.free_gb,
-                                    drive_type_fn=self.fx.drive_type)
+                                    drive_type_fn=self.fx.drive_type, layout_fn=self._layout_problem,
+                                    existing_fn=self._existing_install_note)
 
     def pick_folder(self, body: dict[str, Any]) -> dict[str, Any]:
         """``POST /api/pick-folder``: the Windows folder dialog, then the same check as typing the path.
@@ -789,7 +828,7 @@ class SetupController:
         return sum(c["status"] == "ok" for c in checks), sum(c["status"] == "warn" for c in checks)
 
     def _act_open_dashboard(self, _path: str | None) -> str | None:
-        script = self.cfg.app_path / "launchers" / "nightshift-dashboard.ps1"
+        script = self.run_app_path / "launchers" / "nightshift-dashboard.ps1"
         code, tail = self.fx.launch_captured(
             ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script)],
             {bootstrap.HOME_VAR: str(self.home), "NS_DASHBOARD_NO_HOST": "1"},
@@ -841,8 +880,8 @@ class SetupController:
         desktop = desktop_dir()
         if py.is_file() and not self.cfg.simulate:
             res = self.fx.cmd([str(py), "-m", "ns_supervisor.cli", "doctor", "--bundle"],
-                              {bootstrap.HOME_VAR: str(self.home), "PYTHONPATH": str(self.cfg.app_path),
-                               "PYTHONUTF8": "1"}, self.cfg.app_path, 900)
+                              {bootstrap.HOME_VAR: str(self.home), "PYTHONPATH": str(self.run_app_path),
+                               "PYTHONUTF8": "1"}, self.run_app_path, 900)
             if res.returncode == 0:
                 found = sorted(desktop.glob("nightshift-diagnostics-*.zip"), key=lambda p: p.stat().st_mtime)
                 if found:
@@ -949,6 +988,9 @@ class SetupController:
             on_row=self._on_boot_row, say=lambda t: self.log("info", t), write_answers=self._write_answers,
             gate=self._gate, stop=self._stop, fetch_uv=fx.fetch_uv,
             uv_pin=(self.manifest.get("bins") or {}).get("uv") or {},
+            bin_pins=self.manifest.get("bins") or {}, vc_missing=fx.vc_missing, fetch_file=fx.fetch_file,
+            run_elevated=fx.run_elevated, add_user_path=fx.add_user_path, install_app=self.installs_app,
+            copy_app=fx.copy_app,
         )
 
     def _run_bootstrap_step(self, step: Any) -> None:
@@ -959,9 +1001,32 @@ class SetupController:
         step.verify(boot)
         if step.id == "b02_home":
             self._switch_log_to_home()
+            self.store.update(lambda s: s.__setitem__("appPath", str(self.run_app_path)))
+            self._scrub_source_answers()
         self._set_step(step.id, "done", None)
         if step.id == "b02_home":
             self._flush_earlier_steps()
+
+    def _scrub_source_answers(self) -> None:
+        """Blank the API keys of the answers file next to INSTALL.cmd once they are held in memory.
+
+        The wizard used to scrub it because the extracted folder was the program folder; now the program is
+        copied to ``<home>/app`` (without that file) and the extracted folder is meant to be thrown away, so
+        nothing else would. The window never reads the keys from the file again; the unattended run does,
+        which is why this is skipped there.
+        """
+        if self.cfg.headless or not self.installs_app:
+            return
+        for path in dict.fromkeys([self.cfg.answers, self.cfg.app_path / "answers.json"]):
+            if path is None or not path.is_file():
+                continue
+            try:
+                raw = answers_view.read_answers(path)
+                if any(raw.get(k) for k in ("pexels_api_key", "pixabay_api_key")):
+                    answers_view.write_answers(path, raw)
+                    self.log("info", f"Removed the API keys from {path.name}")
+            except (OSError, ValueError):
+                continue
 
     def _flush_earlier_steps(self) -> None:
         """b01 finished before the install folder existed: record it in install_state.json now."""
@@ -1024,7 +1089,7 @@ class SetupController:
     def _persist_step(self, step_id: str, status: str, error: str | None) -> None:
         if (self.home / "config").is_dir():
             try:
-                write_step(self.home, self.version, self.cfg.app_path, step_id, status, error)
+                write_step(self.home, self.version, self.run_app_path, step_id, status, error)
             except OSError:
                 pass
 
@@ -1037,13 +1102,13 @@ class SetupController:
         venv_py = self.home / "venvs" / "studio" / "Scripts" / "python.exe"
         python = self.cfg.python if self.cfg.simulate else str(venv_py)
         argv = wizard_argv(
-            python, app_path=self.cfg.app_path, home=self.home, answers=self.home / "config" / "answers.json",
+            python, app_path=self.run_app_path, home=self.home, answers=self.home / "config" / "answers.json",
             preflight=out, bridge=True, simulate=self.cfg.simulate, halt_after=self.cfg.halt_after,
         )
         self._finished.clear()
         self._sub.clear()
         engine = self.fx.engine_factory(
-            argv, env=wizard_env(self.cfg.app_path), cwd=self.cfg.app_path, on_event=self._on_event,
+            argv, env=wizard_env(self.run_app_path), cwd=self.run_app_path, on_event=self._on_event,
             on_line=self._on_line, on_exit=self._on_exit,
         )
         self._stderr_tail.clear()
@@ -1476,7 +1541,7 @@ class SetupController:
             except ValueError:
                 duration = 0
         return {
-            "home": str(self.home), "outbox": str(self.home / "outbox"), "appPath": str(self.cfg.app_path),
+            "home": str(self.home), "outbox": str(self.home / "outbox"), "appPath": str(self.run_app_path),
             "installed": installed, "shortcuts": list(SHORTCUTS), "runTime": answers.get("runTime", "03:00"),
             "scheduled": flags.get("schedule") == "installed",
             "diagnosticsZip": self._bundle or flags.get("bundle"),
@@ -1517,13 +1582,14 @@ class SetupController:
         out.write_text(json.dumps(self.pf, indent=2), encoding="utf-8")
         venv_python = self.home / "venvs" / "studio" / "Scripts" / "python.exe"
         python = self.cfg.python if self.cfg.simulate else str(venv_python)
-        argv = [python, "-X", "utf8", "-m", "installer.stage2.wizard", "--app-path", str(self.cfg.app_path),
+        app = self.run_app_path
+        argv = [python, "-X", "utf8", "-m", "installer.stage2.wizard", "--app-path", str(app),
                 "--answers", str(self.cfg.answers), "--preflight", str(out)]
         if self.cfg.simulate:
             argv += ["--simulate-downloads", "--no-head-checks", "--non-interactive",
                      "--home", str(self.home)]
         if self.cfg.halt_after:
             argv += ["--halt-after", self.cfg.halt_after]
-        env = wizard_env(self.cfg.app_path)
+        env = wizard_env(app)
         env[bootstrap.HOME_VAR] = str(self.home)
-        return subprocess.run(argv, cwd=str(self.cfg.app_path), env=env, check=False).returncode
+        return subprocess.run(argv, cwd=str(app), env=env, check=False).returncode

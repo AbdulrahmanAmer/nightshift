@@ -11,8 +11,23 @@ from ns_common.errors import NsError
 from ns_common.logging import NsLogger
 
 
+def home_bin() -> Path | None:
+    """``bin/ffmpeg`` under the install folder: where setup unpacks the pinned build if winget fails."""
+    home = os.environ.get("NIGHTSHIFT_HOME")
+    return Path(home) / "bin" / "ffmpeg" if home else None
+
+
 def _find(name: str, env_var: str) -> str | None:
-    return os.environ.get(env_var) or shutil.which(name)
+    """The environment override, then PATH, then the build setup placed under the install folder."""
+    found = os.environ.get(env_var) or shutil.which(name)
+    if found:
+        return found
+    folder = home_bin()
+    if folder is not None:
+        for leaf in (f"{name}.exe", name):
+            if (folder / leaf).is_file():
+                return str(folder / leaf)
+    return None
 
 
 def available() -> bool:
