@@ -73,7 +73,8 @@ def test_dashboard_launcher_opens_port_8100_after_waiting_for_the_engine() -> No
     assert "msedge.exe" in text and "chrome.exe" in text
     common = read("_common.ps1")
     assert "-WindowStyle $style" in common and "'Minimized'" in common and "ns_supervisor.app" in common
-    assert "/health" in common and "/status" not in common    # the cheap liveness route has a caller
+    liveness = common[common.index("function Test-NsSupervisor") : common.index("function Get-NsStatus")]
+    assert "/health" in liveness and "/status" not in liveness    # the cheap liveness route has a caller
 
 
 def test_dashboard_launcher_tries_the_webview2_host_before_the_browser_fallback() -> None:
@@ -335,3 +336,56 @@ def test_the_liveness_probe_asks_a_route_the_engine_really_has() -> None:
     assert probe is not None
     app_src = (Path(__file__).resolve().parents[1] / "ns_supervisor" / "app.py").read_text(encoding="utf-8")
     assert f'@app.get("{probe.group(1)}")' in app_src
+
+
+# --- an engine started by the 03:00 task lives in session 0 (no desktop) ---
+def test_dashboard_launcher_restarts_an_idle_session_0_engine_and_never_interrupts_a_run() -> None:
+    text = read("nightshift-dashboard.ps1")
+    first = text.index("Get-NsEngineSessionAction")
+    assert text.index("Test-NsSupervisor") < first < text.index("Start-NsSupervisor")
+    block = text[first : text.index("if (-not (Test-NsSupervisor))")]
+    assert "'restart'" in block and "Stop-NsEngine" in block and "'busy'" in block
+    assert block.index("Stop-NsEngine") < block.index("'busy'")        # only the restart branch stops it
+    assert "Get-NsStatus" in block and "Get-NsOwnSessionId" in block
+
+
+@needs_powershell
+@pytest.mark.parametrize(
+    ("status", "mine", "expected"),
+    [
+        ('{"session":{"id":0,"interactive":false},"busy":false}', 2, "restart"),
+        ('{"session":{"id":0,"interactive":false},"busy":true}', 2, "busy"),
+        ('{"session":{"id":2,"interactive":true},"busy":false}', 2, "ok"),
+        ('{"session":{"id":0,"interactive":false},"busy":false}', 0, "ok"),    # the launcher is in session 0
+        ('{"session":{"id":0,"interactive":false}}', 2, "restart"),
+        ('{"gpu_owner":null,"services":{}}', 2, "ok"),                          # an older engine says nothing
+        ('{"session":{"id":null,"interactive":true},"busy":true}', 2, "ok"),
+        ("null", 2, "ok"),
+    ],
+)
+def test_engine_session_action(status: str, mine: int, expected: str, tmp_path: Path) -> None:
+    snippet = f"$s = ConvertFrom-Json '{status}'\nGet-NsEngineSessionAction -Status $s -MySession {mine}"
+    r = run_common(snippet, {"NIGHTSHIFT_HOME": str(tmp_path)})
+    assert r.returncode == 0 and r.stdout.strip() == expected, r.stdout + r.stderr
+
+
+@needs_powershell
+def test_get_nsstatus_reads_the_engine_and_is_null_when_it_does_not_answer(
+    engine: tuple[FakeEngine, dict[str, str]],
+) -> None:
+    eng, env = engine
+    up = run_common("(Get-NsStatus).state", env)
+    assert up.stdout.strip() == "running", up.stdout + up.stderr
+    eng.close()
+    down = run_common("if ($null -eq (Get-NsStatus)) { 'null' } else { 'object' }", env)
+    assert down.stdout.strip() == "null", down.stdout + down.stderr
+
+
+@needs_powershell
+def test_stop_nsengine_posts_the_shutdown_and_waits_for_the_engine_to_go(
+    engine: tuple[FakeEngine, dict[str, str]],
+) -> None:
+    eng, env = engine
+    r = run_common("Stop-NsEngine -TimeoutSec 2", env)           # the fake keeps answering: it does not stop
+    assert r.stdout.strip() == "False", r.stdout + r.stderr
+    assert eng.posts == [("/shutdown", {"grace_s": 10})]

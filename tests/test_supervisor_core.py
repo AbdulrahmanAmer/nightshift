@@ -599,3 +599,39 @@ def test_a_sleeping_pc_does_not_expire_a_live_lease(tmp_path: Path) -> None:
             sup.close_job()
 
     asyncio.run(main())
+
+
+def test_status_reports_the_windows_session_and_whether_a_run_is_using_the_engine(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from ns_supervisor import core
+
+    sup, _, _ = make(tmp_path)
+    monkeypatch.setattr(core.notify, "session_id", lambda: 0)           # the 03:00 task (S4U) runs here
+    st = sup.status()
+    assert st["session"] == {"id": 0, "interactive": False}
+    assert st["busy"] is True                                          # a fresh engine counts as busy
+    later = sup.clock() + core.BUSY_RECENT_S + 1
+    monkeypatch.setattr(sup, "clock", lambda: later)
+    assert sup.status()["busy"] is False                               # nothing asked for anything since
+    monkeypatch.setattr(core.notify, "session_id", lambda: 3)          # the Dashboard shortcut starts it here
+    assert sup.status()["session"] == {"id": 3, "interactive": True}
+    monkeypatch.setattr(core.notify, "session_id", lambda: None)       # unknown: assume a desktop
+    assert sup.status()["session"] == {"id": None, "interactive": True}
+
+
+def test_busy_while_somebody_holds_the_gpu_even_when_nothing_happened_lately(tmp_path: Path) -> None:
+    from ns_supervisor import core
+
+    sup, _, _ = make(tmp_path)
+
+    async def main() -> None:
+        async with running(sup):
+            await sup.acquire("llama", "studio:j1")
+            later = time.monotonic() + core.BUSY_RECENT_S + 1000
+            sup.clock = lambda: later
+            assert sup.status()["busy"] is True
+            await sup.release("llama", "studio:j1")
+            assert sup.status()["busy"] is False
+
+    asyncio.run(main())
