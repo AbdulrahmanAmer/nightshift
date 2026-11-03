@@ -76,14 +76,19 @@ def test_the_test_job_has_a_forty_minute_cap_in_ci_and_release():
         assert "timeout-minutes: 40" in head, rel
 
 
-def test_the_0_1_2_hotfix_changelog_and_the_0_1_1_entries_are_in_place():
+def test_the_0_1_3_0_1_2_and_0_1_1_changelog_entries_are_in_place():
     version = read("VERSION").strip()
-    assert version == "0.1.2"
+    assert version == "0.1.3"
     text = read("CHANGELOG.md")
+    assert re.search(r"^## \[0\.1\.3\] - 2026-11-03\s*$", text, re.MULTILINE)
     assert re.search(r"^## \[0\.1\.2\] - 2026-11-03\s*$", text, re.MULTILINE)
     assert re.search(r"^## \[0\.1\.1\] - 2026-11-03\s*$", text, re.MULTILINE)
-    unreleased = text[text.index("## [Unreleased]") : text.index("## [0.1.2]")]
-    assert unreleased.startswith("## [Unreleased]")
+    unreleased = text[text.index("## [Unreleased]") : text.index("## [0.1.3]")]
+    assert "###" not in unreleased  # a release moves every entry under its version
+    first_run = re.search(r"(?ms)^## \[0\.1\.3\][^\r\n]*\r?\n(?P<body>.*?)(?=^## \[|\Z)", text)
+    assert first_run is not None
+    for word in ("WebView2", "nvidia-smi", "Browse", "50 Mbit/s", "total_rate"):
+        assert word in first_run.group("body"), word
     # release.yml builds the notes from this body, the same way: heading to the next heading
     hotfix = re.search(r"(?ms)^## \[0\.1\.2\][^\r\n]*\r?\n(?P<body>.*?)(?=^## \[|\Z)", text)
     assert hotfix is not None
@@ -102,7 +107,7 @@ def test_the_handoff_says_nothing_is_in_flight_and_points_at_the_first_partner_r
     assert "## In flight\n- None." in text
     assert "feat/release-0.1.0" not in text.split("## Next steps")[1]  # the old release-prep step is done
     steps = text.split("## Next steps for a fresh orchestrator")[1]
-    for needle in ("git tag v0.1.2", "Verified on the partner PC", "Nightshift-Setup-0.1.2.zip"):
+    for needle in ("git tag v0.1.3", "Verified on the partner PC", "Nightshift-Setup-0.1.3.zip"):
         assert needle in steps, needle
     merged = text.split("## Merged on main")[1].split("## UI direction")[0]
     for pr in ("#48", "#51", "feat/release-0.1.1-pretag"):

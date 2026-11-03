@@ -7,6 +7,14 @@ All notable changes to Nightshift are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-11-03
+
+### Download time left is measured, never assumed
+- The console no longer prints "about N hours at 50 Mbit/s" before the downloads; its progress lines now carry
+  the measured file speed and the whole download's time left, the same numbers the setup window shows.
+- The overall time left divides the remaining bytes by the whole download's speed over the last 30 s
+  (`SpeedMeter.total_rate`), which is steadier than adding up per-file averages; per-file averages stand in
+  only while that window is still filling.
 ### First-run fixes from the partner PC (`feat/release-0.1.3-hotfix`)
 - **The first setup window is the Nightshift window.** The bundle now carries the three WebView2 DLLs in `bin/webview2/`
   (`dev/make_bundle.ps1 -WebView2Dir`; the release workflow downloads the pinned nupkg, checks its SHA256 and each DLL
