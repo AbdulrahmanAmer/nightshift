@@ -226,7 +226,7 @@ function Test-InsideExtracted {
     # straight into D:\) holds every folder of the drive, so for a root only the root itself counts.
     param([string]$Path, [string]$AppFolder)
     if (-not $AppFolder) { return $false }
-    if ($AppFolder.Trim() -match '^[A-Za-z]:\?$') {
+    if ($AppFolder.Trim() -match '^[A-Za-z]:\\?$') {
         return ($Path.Trim().TrimEnd('\') -ieq $AppFolder.Trim().TrimEnd('\'))
     }
     return (Test-PathInside -Path $Path -Folder $AppFolder)
