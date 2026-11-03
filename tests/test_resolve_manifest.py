@@ -205,7 +205,8 @@ def _online_client() -> httpx.Client:
 def test_whisper_cuda_pins_match_the_pypi_hashes_online(repo_root):
     """The sha256 of each pinned cuBLAS/cuDNN wheel is the one PyPI lists for its win_amd64 file."""
     lines = json.loads((repo_root / "manifest.json").read_text(encoding="utf-8"))["python"]["whisper_cuda"]
-    with _online_client() as client:
+    client = _online_client()
+    try:
         for line in lines:
             spec, sha = line.split(" --hash=sha256:")
             name, version = spec.split("==")
@@ -214,14 +215,20 @@ def test_whisper_cuda_pins_match_the_pypi_hashes_online(repo_root):
             win = [u for u in r.json()["urls"] if u["filename"].endswith("win_amd64.whl")]
             assert win, f"{name} {version} has no win_amd64 wheel"
             assert sha in {u["digests"]["sha256"] for u in win}, line
+    finally:
+        client.close()
 
 
 def test_spacy_wheel_pin_matches_the_download_online(repo_root):
     """Streams the pinned spaCy model wheel (about 33 MB) and compares its sha256 with the manifest."""
     pin = json.loads((repo_root / "manifest.json").read_text(encoding="utf-8"))["python"]["spacy_wheel"]
     digest = hashlib.sha256()
-    with _online_client() as client, client.stream("GET", pin["url"]) as r:
-        r.raise_for_status()
-        for chunk in r.iter_bytes(1 << 20):
-            digest.update(chunk)
+    client = _online_client()
+    try:
+        with client.stream("GET", pin["url"]) as r:
+            r.raise_for_status()
+            for chunk in r.iter_bytes(1 << 20):
+                digest.update(chunk)
+    finally:
+        client.close()
     assert digest.hexdigest() == pin["sha256"]

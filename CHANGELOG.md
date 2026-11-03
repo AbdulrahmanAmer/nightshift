@@ -7,7 +7,8 @@ All notable changes to Nightshift are recorded here. The format follows
 
 ## [Unreleased]
 
-### Installer: whisper CUDA libraries and a CPU fallback for captions (CR-C1-4 a, b, c)
+Installer: whisper CUDA libraries and a CPU fallback for captions (CR-C1-4 a, b, c):
+
 - **cuBLAS and cuDNN are pinned and installed.** faster-whisper runs on CTranslate2, whose Windows build needs the
   CUDA 12 cuBLAS DLL (and ships a cuDNN 9 loader); a fresh PC has only the NVIDIA driver, so the first video's
   captions ran on the CPU or failed with `NS-E408`. `manifest.json` has a new `python.whisper_cuda` list
