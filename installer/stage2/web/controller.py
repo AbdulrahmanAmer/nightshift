@@ -1277,11 +1277,23 @@ class SetupController:
         if now - self._progress_log.get(key, 0.0) < 10.0:
             return
         self._progress_log[key] = now
-        row = next((r for r in self.snapshot()["downloads"]["items"] if r["key"] == rk), None)
+        snap = self.snapshot()["downloads"]
+        row = next((r for r in snap["items"] if r["key"] == rk), None)
         if not row or not row["bytesTotal"]:
             return
+        # Measured numbers only: the file's own speed, then the whole download's speed and time left
+        # (the same trailing average the setup window shows), never an assumed line speed.
         speed = f"  {row['speedBps'] / 1e6:.1f} MB/s" if row["speedBps"] else ""
-        left = f"  {max(1, int(row['etaS'] // 60))} min left" if row["etaS"] else ""
+        total = snap.get("overall") or {}
+        left = ""
+        if total.get("etaS"):
+            mins = max(1, int(total["etaS"] // 60))
+            left = f"  all files: about {mins // 60} h {mins % 60:02d} min left" if mins >= 60 else \
+                f"  all files: about {mins} min left"
+            if total.get("speedBps"):
+                left += f" at {total['speedBps'] / 1e6:.1f} MB/s"
+        elif row["status"] == "active":
+            left = "  measuring the speed"
         self.fx.console(
             f"{datetime.now():%H:%M:%S}  {row['file'] or key}  {row['bytesDone'] / 1024 ** 3:.1f} of "
             f"{row['bytesTotal'] / 1024 ** 3:.1f} GB{speed}{left}", "info")

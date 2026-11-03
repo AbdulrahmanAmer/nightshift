@@ -7,6 +7,13 @@ All notable changes to Nightshift are recorded here. The format follows
 
 ## [Unreleased]
 
+### Download time left is measured, never assumed
+- The console no longer prints "about N hours at 50 Mbit/s" before the downloads; its progress lines now carry
+  the measured file speed and the whole download's time left, the same numbers the setup window shows.
+- The overall time left divides the remaining bytes by the whole download's speed over the last 30 s
+  (`SpeedMeter.total_rate`), which is steadier than adding up per-file averages; per-file averages stand in
+  only while that window is still filling.
+
 ## [0.1.2] - 2026-11-03
 
 ### Hotfix: the setup window never started on a stock PC

@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+import pytest
+
 from installer.stage2.web import rows
 
 
@@ -75,3 +77,40 @@ def test_the_overall_bar_sums_the_rows():
     assert total["bytesTotal"] == 400 and total["bytesDone"] == 150
     assert total["filesTotal"] == 3 and total["filesDone"] == 1
     assert total["speedBps"] == 10.0 and total["etaS"] is None          # not enough data yet
+
+
+def test_the_whole_download_speed_is_a_trailing_window_over_all_files():
+    clock = Clock()
+    meter = rows.SpeedMeter(clock)
+    # the window needs 5 s of samples before it answers
+    assert meter.total_rate(0) is None
+    clock.t += 2
+    assert meter.total_rate(2_000_000) is None
+    clock.t += 4
+    rate = meter.total_rate(6_000_000)
+    assert rate == pytest.approx(1_000_000)          # 6 MB over 6 s
+    # a restarted file drops the total: the window starts again
+    clock.t += 1
+    assert meter.total_rate(500_000) is None
+    # the window keeps only the last 30 s
+    for _ in range(40):
+        clock.t += 1
+        last = meter.total_rate(500_000 + int((clock.t - 107) * 2_000_000))
+    assert last == pytest.approx(2_000_000, rel=0.05)
+    meter.reset()
+    assert meter.total_rate(0) is None
+
+
+def test_the_overall_time_left_uses_the_whole_download_speed_once_measured():
+    clock = Clock()
+    meter = rows.SpeedMeter(clock)
+    items = [
+        {"bytesTotal": 100_000_000, "bytesDone": 0, "status": "active", "speedBps": 10.0},
+    ]
+    rows.overall(items, meter)                       # first sample, per-file speed stands in
+    assert rows.overall(items, meter)["speedBps"] == 10.0
+    clock.t += 30
+    items[0]["bytesDone"] = 30_000_000
+    total = rows.overall(items, meter)               # 30 MB over 30 s beats the stale per-file figure
+    assert total["speedBps"] == pytest.approx(1_000_000)
+    assert total["etaS"] == 70 * 60                   # 70 MB left at 1 MB/s, rounded up to the minute

@@ -16,7 +16,6 @@ from installer.stage2.base import Step
 from installer.stage2.context import StepContext
 from installer.stage2.downloader import (
     DownloadItem,
-    eta_text,
     human_bytes,
     is_done,
     pending,
@@ -62,7 +61,7 @@ class S03DownloadModels(Step):
             ctx.ui.say(f"Looking for matching files in {source} before downloading.")
         ctx.ui.say(
             f"{len(todo)} files to fetch, {human_bytes(size)} in total "
-            f"(about {eta_text(size)} at 50 Mbit/s; the bars below show the real speed)."
+            "(the speed and the time left are measured once the first file is running)."
         )
         ctx.ui.say("You can close this window at any time and run INSTALL.cmd again to resume.", "cyan")
         custom = ctx.llm_custom
