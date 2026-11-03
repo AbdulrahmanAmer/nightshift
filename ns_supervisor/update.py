@@ -40,6 +40,8 @@ RESTORE_HINT = (
     "Close every Nightshift window, then run `ns update --rollback` (the previous version is in the folder "
     "ending in .prev)."
 )
+#: Written into a complete program folder (appcopy.MARKER): INSTALL.cmd trusts <home>pp only with it.
+APP_MARKER = ".ns-app.done"
 UPDATE_VENVS = ("studio", "supervisor", "tts")      # extras: ns_common.venv_extras (shared with setup)
 #: Console scripts the app installs into every venv (`[project.scripts]`). A running copy cannot be replaced.
 ENTRY_EXES = ("ns.exe", "studio.exe")
@@ -183,6 +185,30 @@ def _sibling(app: Path, suffix: str) -> Path:
     return app.with_name(app.name + suffix)
 
 
+def _digest(path: Path) -> str:
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()[:16]
+    except OSError:
+        return "-"
+
+
+def app_fingerprint(folder: Path) -> str:
+    """Version plus short hashes of manifest.json and pyproject.toml (same text as appcopy.fingerprint)."""
+    try:
+        version = (folder / "VERSION").read_text(encoding="utf-8-sig").strip() or "-"
+    except OSError:
+        version = "-"
+    return f"{version}|{_digest(folder / 'manifest.json')}|{_digest(folder / 'pyproject.toml')}"
+
+
+def write_app_marker(app: Path, log: NsLogger) -> None:
+    """Mark `app` as a finished program folder so a later INSTALL.cmd run swaps it instead of deleting it."""
+    try:
+        (app / APP_MARKER).write_text(app_fingerprint(app), encoding="utf-8")
+    except OSError as e:     # the update itself worked; the next INSTALL.cmd just copies the folder again
+        log.warn("app_marker_failed", error=str(e))
+
+
 def current_version(app: Path) -> str:
     """VERSION file of the app tree, else the package version."""
     try:
@@ -265,6 +291,7 @@ def update_app(zip_path: Path, app: Path, env: UpdateEnv, *, paths: Paths) -> Up
         new.mkdir(parents=True)
         safe_extract(zip_path, new, prefix)
         notes = [f"kept {n}" for n in carry_over(app, new, env.untracked(app))]
+        write_app_marker(new, log)
         shutil.rmtree(prev, ignore_errors=True)
         rename_with_retry(app, prev)
     except NsError:
@@ -320,6 +347,7 @@ def rollback_app(app: Path, env: UpdateEnv, *, paths: Paths) -> UpdateResult:
         rename_with_retry(tmp, prev)
     except OSError as e:
         raise NsError("NS-E702", f"could not swap directories: {e}. {BUSY_HINT}") from e
+    write_app_marker(app, log)
     env.sync(app)
     log.info("rollback_done", old=old_version, restored=current_version(app))
     return UpdateResult(old_version, current_version(app), ["rolled back"])

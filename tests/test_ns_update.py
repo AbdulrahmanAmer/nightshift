@@ -296,3 +296,52 @@ def test_update_resync_installs_exactly_the_extras_setup_installed(tmp_path: Pat
     assert by_venv["studio"].endswith(installed("uv pip install studio app"))
     assert by_venv["supervisor"].endswith(installed("uv pip install supervisor app"))
     assert by_venv["tts"].endswith(installed("uv pip install tts app"))
+
+
+def test_update_and_rollback_write_the_finished_folder_marker(tmp_path: Path) -> None:
+    # INSTALL.cmd treats <home>\app without .ns-app.done as an unfinished copy and deletes it.
+    from installer.stage2.web import appcopy
+
+    assert update.APP_MARKER == appcopy.MARKER
+    app, paths = make_app(tmp_path), Paths(tmp_path / "ns")
+    (app / "manifest.json").write_text("{}", encoding="utf-8")
+    z = make_zip(tmp_path, extra={"manifest.json": '{"version": "0.2.0"}', "pyproject.toml": "[project]\n"})
+    update.update_app(z, app, Env().env(), paths=paths)
+    marker = app / appcopy.MARKER
+    assert marker.read_text(encoding="utf-8") == appcopy.fingerprint(app)      # the text appcopy writes
+    assert appcopy.fingerprint(app).startswith("0.2.0|")
+    update.rollback_app(app, Env().env(), paths=paths)
+    assert (app / "VERSION").read_text(encoding="utf-8").strip() == "0.1.0"
+    assert marker.read_text(encoding="utf-8") == appcopy.fingerprint(app)
+    assert appcopy.fingerprint(app).startswith("0.1.0|")
+    update.rollback_app(app, Env().env(), paths=paths)                         # roll forward again
+    assert marker.read_text(encoding="utf-8") == appcopy.fingerprint(app)
+    assert appcopy.fingerprint(app).startswith("0.2.0|")
+
+
+def test_a_failed_update_leaves_the_old_folder_as_it_was(tmp_path: Path) -> None:
+    app = make_app(tmp_path)
+    with pytest.raises(NsError):
+        update.update_app(make_zip(tmp_path), app, Env(verify_ok=False).env(), paths=Paths(tmp_path / "ns"))
+    assert not (app / ".ns-app.done").exists()
+
+
+def test_a_later_install_swaps_the_updated_home_app_and_stops_the_engine_first(tmp_path: Path) -> None:
+    from installer.stage2.web import appcopy
+    from tests.test_installer_app_copy import make_source
+
+    home = tmp_path / "home"
+    app = appcopy.app_dir(home)
+    app.parent.mkdir()
+    make_app(tmp_path / "seed").rename(app)
+    update.update_app(make_zip(tmp_path), app, Env().env(), paths=Paths(home))
+    assert appcopy.installed_version(home) == "0.2.0"          # "Nightshift 0.2.0 is installed here"
+    stopped: list[bool] = []
+    res = appcopy.install_app(
+        make_source(tmp_path / "extracted", "0.3.0"), home, stop_engine=lambda: stopped.append(app.is_dir()),
+        sleep=lambda _s: None,
+    )
+    assert res.action == "updated" and (res.old_version, res.new_version) == ("0.2.0", "0.3.0")
+    assert stopped == [True]                                    # stopped while <home>\app still stood
+    assert appcopy.installed_version(home) == "0.3.0"
+    assert (home / "app.prev" / "VERSION").read_text(encoding="utf-8").strip() == "0.2.0"
