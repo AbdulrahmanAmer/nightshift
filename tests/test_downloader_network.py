@@ -108,8 +108,9 @@ def interrupted_download(url: str, dest: Path, sha256: str | None, wire: Wire, p
         outcome["total"] = total
         if not gate.is_set():
             parked.set()                  # the report made after the file and the connection were closed
-        elif done >= pause_after:
-            gate.clear()                  # "Pause" pressed: the downloader stops after the next block
+        elif done >= pause_after and not outcome.get("pressed"):
+            outcome["pressed"] = True     # Pause is pressed once; after Resume the transfer runs on
+            gate.clear()                  # the downloader stops after the next block
 
     def work() -> None:
         try:
