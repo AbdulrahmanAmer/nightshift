@@ -7,6 +7,35 @@ All notable changes to Nightshift are recorded here. The format follows
 
 ## [Unreleased]
 
+**Downloads resume, verify and recover** (`feat/release-download-hardening`)
+
+- **Real-network resume tests (CI only).** `tests/test_downloader_network.py` (marker `network`, skipped unless
+  `NS_NETWORK_TESTS` is set; the CI `test` job sets it and runs them in their own step, failing if any is skipped)
+  downloads the pinned `yt-dlp.exe` from the GitHub release and a real file through the Hugging Face redirect with the
+  real `download()`, pauses after 2 MiB (1 MiB), checks the `.part` size, resumes and asserts exactly one `Range` request
+  from that size, the pinned/straight-download hash, and that the `.ok` marker is written after the hash. A `.part`
+  cut short by hand resumes from the cut. The evidence lines go to the job log and summary.
+- **Resume edge cases.** A `.part` longer than the server's file, a server that ignores `Range`, and a `416` all restart
+  the file from zero without using up a retry (a `416` that says the part is the whole file goes straight to the hash).
+  A wrong hash deletes the file and fetches it once more from the start, then `NS-E109` (was three tries).
+- **Re-run after a crash.** A finished file whose `.ok` marker was lost (killed between the rename and the marker) is
+  hashed on the disk and adopted instead of downloaded again; a marker whose file was deleted, resized or touched is
+  ignored; verified files cost two stat calls and no request.
+- **No handle held across a pause.** A Pause landing between the downloader's gate check and its progress report used
+  to park inside the open `.part` with the connection open (the bridge reporter blocked at the gate). The downloader now
+  reports through a non-blocking `update_nowait`, so the file and the connection are always closed before it waits.
+  Stop keeps the `.part`; a stop in the middle of a `models_source` copy removes the half copy, and copies use a
+  `.copy` file so they can never overwrite or delete a resumable `.part`.
+- **Disk full is `NS-E104`**, with the free space at the destination, not a traceback or three network retries.
+- **Retries are capped and shown.** At most five tries per file (three by default), waits of 2, 4, 8 ... capped at
+  30 s; the row note says "(try 2 of 3)".
+- **Smoother progress.** The downloader reports every 64 KiB or 250 ms, whichever comes first (it now reads blocks as
+  they arrive instead of waiting to fill 64 KiB). The overall time left rises by at most 20 % from one poll to the
+  next unless a file restarted.
+- **`ns verify --downloads`** (`installer/stage2/verify_downloads.py`): re-hashes every model and program of this
+  install against `manifest.json` and prints ok / missing / bad hash with the fix for each; exit 1 when something needs
+  fixing. OPERATOR.md has a new "If a download stops" section.
+
 ## [0.1.4] - 2026-11-03
 
 ### Same content as 0.1.3, released

@@ -8,12 +8,15 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from installer.stage2.downloader import marker_matches
+
 SPEED_WINDOW_S = 5.0        # speed is measured over windows this long (the first one is shorter)
 FIRST_WINDOW_S = 2.0
 EMA_ALPHA = 0.3
 MIN_DATA_S = 20.0           # no time estimate before this much data (the hero says "estimating" until then)
 TOTAL_WINDOW_S = 30.0       # the whole download's speed is the trailing average over this long
 TOTAL_MIN_SPAN_S = 5.0      # ... and needs at least this much of it before it is used
+ETA_MAX_RISE = 1.2          # the time left may grow by at most 20 % from one poll to the next
 LOW_DISK_GB = 2.0
 # where the wizard writes finished files, relative to the install folder (the .part and .ok files sit there)
 DEST_DIRS = (
@@ -29,6 +32,9 @@ class SpeedMeter:
         self._last: dict[str, tuple[float, int]] = {}
         self._ema: dict[str, float] = {}
         self._first: float | None = None
+        self._totals: list[tuple[float, int]] = []
+        self._eta_last: int | None = None
+        self._eta_done = 0
 
     def update(self, key: str, done: int) -> float | None:
         """Feed the bytes done so far; returns the file's current average speed (None until measured)."""
@@ -79,9 +85,7 @@ class SpeedMeter:
         now = self._clock()
         if self._first is None:
             self._first = now
-        samples = getattr(self, "_totals", None)
-        if samples is None:
-            samples = self._totals = []
+        samples = self._totals
         if samples and done_total < samples[-1][1]:
             samples.clear()
         samples.append((now, done_total))
@@ -96,7 +100,27 @@ class SpeedMeter:
 
     def forget_totals(self) -> None:
         """Start the whole-download window again (pause, stop, restart)."""
-        self._totals: list[tuple[float, int]] = []
+        self._totals = []
+        self._eta_last = None
+        self._eta_done = 0
+
+    def smooth_eta(self, eta: int | None, done_total: int) -> int | None:
+        """Keep the whole download's time left from jumping up between polls.
+
+        The estimate may fall as fast as it likes, but it rises by at most 20 % per poll (a speed dip, a
+        retry, a slow file at the end of the queue climb to their value over a few polls instead of in one
+        jump). It starts again when the bytes done drop (a file restarted) and after a pause or stop.
+        """
+        if done_total < self._eta_done:
+            self._eta_last = None             # a file restarted: the old figure says nothing any more
+        self._eta_done = done_total
+        if eta is None:
+            return None
+        last = self._eta_last
+        if last and eta > last * ETA_MAX_RISE:
+            eta = int(last * ETA_MAX_RISE)
+        self._eta_last = eta
+        return eta
 
 
 def eta_seconds(remaining: float, speed: float | None) -> int | None:
@@ -130,7 +154,8 @@ def part_state(home: Path, row: dict[str, Any]) -> tuple[int, bool]:
         return 0, False
     for rel in DEST_DIRS:
         base = home / rel
-        if (base / f"{name}.ok").is_file() and (base / name).is_file():
+        # a marker counts only while the file it vouches for is still there with the size and mtime it had
+        if (base / f"{name}.ok").is_file() and marker_matches(base / name):
             return (base / name).stat().st_size, True
         part = base / f"{name}.part"
         if part.is_file():
@@ -150,6 +175,7 @@ def overall(rows: list[dict[str, Any]], meter: SpeedMeter) -> dict[str, Any]:
     per_file = sum(r["speedBps"] for r in active) if active else None
     speed = (meter.total_rate(done) if active else None) or per_file
     eta = eta_seconds(max(0, total - done), speed) if meter.has_data() and speed else None
+    eta = meter.smooth_eta(eta, done)
     return {
         "bytesTotal": total, "bytesDone": done, "filesTotal": len(rows),
         "filesDone": sum(1 for r in rows if r["status"] in ("done", "skipped")),

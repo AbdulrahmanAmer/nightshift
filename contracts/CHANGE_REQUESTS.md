@@ -507,3 +507,10 @@ Format per entry:
 - **Change:** `ns_common.models.Status` gains `schedule_mode: Literal["registered", "interactive_only", "none"] | None = None` and `contracts/schemas/status.schema.json` the same property. `schedule_registered` stays (true for `registered` and `interactive_only`). `config/schedule.json` gains `mode` (`registered` | `interactive_only`, written by `ns schedule install` from the PowerShell result; a file without it reads as `registered`); `ns_supervisor.schedule_cfg.read_schedule_mode` returns `none` without a valid file. `GET /api/status` and `GET /api/settings` carry it.
 - **Why:** the top-bar chip and Settings say "Runs at 03:00 only while you are signed in" in a warning style; without it an owner who signs out instead of locking the screen gets no run and no hint. The next-run countdown is unchanged.
 - **Status:** applied on `feat/release-0.1.1-pretag`.
+
+## CR-DL-1: Settings > Models "Verify downloads" button (`feat/release-download-hardening`)
+- **From:** release builder, download hardening item 4
+- **Change:** `ns verify --downloads` exists now (`installer/stage2/verify_downloads.py`; exit 0 all fine, 1 something to fix, 2 no install; prints a table of ok / missing / bad hash with the fix for each). The dashboard has no route for it (`POST /api/models/get` only starts `ns models get`), and adding one means a server route, a `ns_dashboard/adapters.py` method, a UI button and a rebuilt `ns_dashboard/static`, which cannot be built on the authoring laptop. Proposed: C9 adds `POST /api/models/verify` that runs `ns verify --downloads` as a job and returns the table lines (status per file), and the Models card gets a "Verify downloads" button next to "Get voice design model".
+- **Why:** the operator should be able to prove, from the dashboard, that nothing in the 20 GB is damaged.
+- **Workaround until applied:** run `ns verify --downloads` in a terminal (documented in OPERATOR.md, "If a download stops").
+- **Status:** open

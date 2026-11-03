@@ -1,15 +1,29 @@
 """Resumable, verified downloads for the installer (component C1, spec 21.7).
 
 Every download: HEAD for the size, stream to ``<file>.part`` with HTTP ``Range`` resume, SHA256 verify
-(``NS-E109``), atomic rename, three attempts with exponential backoff, two files at a time.
+(``NS-E109``), atomic rename, three attempts with capped exponential backoff, two files at a time.
 ``models_source`` folder mode copies files whose name and SHA256 match instead of downloading them.
+
+Crash and rerun rules (the installer may be closed or killed at any moment, then INSTALL.cmd run again):
+
+* a verified file (``.ok`` marker whose size and mtime still match) is skipped with two stat calls and no
+  network traffic; a marker whose file was deleted or changed is ignored;
+* a ``.part`` is resumed from its size on disk (``Range``); one longer than the server's size, one the server
+  answers with 416, or one the server will not resume (200 instead of 206) restarts from zero;
+* a finished file whose marker was lost (crash between rename and marker) is hashed locally and adopted, not
+  downloaded again;
+* a wrong hash removes the ``.part`` and tries once more, then ``NS-E109``;
+* a full disk is ``NS-E104`` with the free space, never a retry loop;
+* Stop and Pause keep the ``.part`` and hold no file handle or connection while waiting.
 """
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
+import shutil
 import threading
 import time
 import zipfile
@@ -28,8 +42,13 @@ from ns_common.paths import Paths
 
 HF = "https://huggingface.co"
 CHUNK = 1 << 20                  # hashing and copying
-STREAM_CHUNK = 1 << 16           # download loop: the pause switch is checked after every 64 KiB
 STALL_TIMEOUT_S = 60.0           # no bytes for this long aborts the attempt (network error, retried)
+PROGRESS_BYTES = 1 << 16         # progress is reported every 64 KiB ...
+PROGRESS_INTERVAL_S = 0.25       # ... or every 250 ms, whichever comes first (while bytes are arriving)
+DEFAULT_RETRIES = 3              # attempts per file
+MAX_RETRIES = 5                  # a caller can ask for more, never gets more
+BACKOFF_CAP_S = 30.0             # wait before attempt n+1 is min(2 ** n, this)
+HASH_ATTEMPTS = 2                # a wrong hash is downloaded once more from scratch, then NS-E109
 ProgressFn = Callable[[int, int | None], None]
 RetryFn = Callable[[int, str, float], None]
 Tier = Literal["small", "balanced", "best"]
@@ -119,17 +138,50 @@ def write_marker(dest: Path, digest: str | None) -> None:
 
 
 def is_verified(dest: Path, sha256: str | None) -> bool:
-    """True when ``dest`` exists and its marker matches size, mtime and the expected hash."""
+    """True when ``dest`` exists and its marker matches size, mtime and the expected hash.
+
+    Two small reads and a stat, no hashing and no network: a rerun checks thousands of files in well under a
+    second each. A marker whose file is gone, or whose size or mtime moved on, counts for nothing.
+    """
     try:
         st = dest.stat()
         marker = json.loads(_marker(dest).read_text(encoding="utf-8"))
     except (OSError, ValueError):
+        return False
+    if not isinstance(marker, dict):
         return False
     if marker.get("size") != st.st_size or marker.get("mtime_ns") != st.st_mtime_ns:
         return False
     if sha256 is not None and (marker.get("sha256") or "").lower() != sha256.lower():
         return False
     return True
+
+
+def marker_matches(dest: Path) -> bool:
+    """True when ``dest`` has a marker whose size and mtime still match (the hash is not compared)."""
+    return is_verified(dest, None)
+
+
+def is_disk_full(e: OSError) -> bool:
+    """True for ENOSPC and the Windows disk-full codes (ERROR_DISK_FULL 112, ERROR_HANDLE_DISK_FULL 39)."""
+    return e.errno == errno.ENOSPC or getattr(e, "winerror", None) in (39, 112)
+
+
+def disk_full_error(dest: Path, cause: OSError | None = None) -> NsError:
+    """NS-E104 for a write that ran out of space, with the free space left at the destination."""
+    probe = Path(dest).parent
+    while not probe.exists() and probe != probe.parent:
+        probe = probe.parent
+    try:
+        free: int | None = shutil.disk_usage(probe).free
+    except OSError:
+        free = None
+    where = f"{human_bytes(free)} free at {probe}" if free is not None else f"at {probe}"
+    return make_error(
+        "NS-E104",
+        f"{Path(dest).name}: the disk is full ({where}); free some space and run INSTALL.cmd again",
+        free_bytes=free, path=str(probe),
+    )
 
 
 def human_bytes(n: float) -> str:
@@ -175,6 +227,14 @@ def head_info(http: httpx.Client, url: str) -> tuple[int, int | None]:
     return r.status_code, int(length) if length.isdigit() else None
 
 
+def _content_range_start(value: str) -> int | None:
+    """The first byte of a ``Content-Range: bytes S-E/T`` header; None when absent or unreadable."""
+    try:
+        return int(value.split("=")[-1].split()[-1].split("-")[0])
+    except (ValueError, IndexError):
+        return None
+
+
 def _fetch_once(
     http: httpx.Client,
     url: str,
@@ -187,6 +247,7 @@ def _fetch_once(
     chunk: int,
     gate: threading.Event | None = None,
     stall_timeout: float = STALL_TIMEOUT_S,
+    clock: Callable[[], float] = time.monotonic,
 ) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
     part = _part(dest)
@@ -199,6 +260,18 @@ def _fetch_once(
             total = head_size
     except httpx.HTTPError:
         pass  # the GET below decides whether the site is really unreachable
+
+    # A finished file whose marker was lost (a crash between the rename and the marker): hash it here, on the
+    # local disk, instead of downloading gigabytes again. Without a pinned hash the size has to match.
+    if dest.is_file() and not part.exists():
+        mine = dest.stat().st_size
+        if (sha256 is not None and sha256_file(dest) == sha256.lower()) or (
+            sha256 is None and total is not None and mine == total
+        ):
+            if progress:
+                progress(mine, mine)
+            write_marker(dest, sha256.lower() if sha256 else None)
+            return
 
     if not resume and part.exists():
         part.unlink()
@@ -218,23 +291,39 @@ def _fetch_once(
             if r.status_code == 404:
                 raise make_error("NS-E105", f"{url}: HTTP 404", status=404)
             if r.status_code == 416:
+                if have and r.headers.get("content-range", "").endswith(f"/{have}"):
+                    break                       # "bytes */N" with N = our size: the .part is the whole file
                 part.unlink(missing_ok=True)
-                raise OSError("server rejected the resume range; restarting the file")
+                if not have:
+                    raise OSError("the server answered 416 to a request without a range")
+                have = 0                        # the range is out of bounds: start again, no retry is used
+                if progress:
+                    progress(0, total)
+                continue
             r.raise_for_status()
-            if have and r.status_code != 206:
-                have = 0  # the server ignored Range and is sending the whole file
+            if have and (
+                r.status_code != 206
+                or _content_range_start(r.headers.get("content-range", "")) not in (None, have)
+            ):
+                have = 0  # the server ignored Range (or sent another part) and is sending the whole file
+                if progress:
+                    progress(0, total)
             if total is None and r.headers.get("content-length"):
                 total = have + int(r.headers["content-length"])
             done = have
+            last_t, last_done = clock(), done
             with part.open("ab" if have else "wb") as fh:
-                for block in r.iter_bytes(chunk):
+                for block in r.iter_bytes():
                     fh.write(block)
                     done += len(block)
                     if gate is not None and not gate.is_set():
-                        paused = True       # Pause: stop after this chunk and close the connection
+                        paused = True       # Pause: stop after this block, close the file and the connection
                         break
                     if progress:
-                        progress(done, total)
+                        now = clock()
+                        if done - last_done >= chunk or now - last_t >= PROGRESS_INTERVAL_S:
+                            progress(done, total)
+                            last_t, last_done = now, done
         have = part.stat().st_size
         if not paused or gate is None:
             break
@@ -245,6 +334,8 @@ def _fetch_once(
     got = part.stat().st_size
     if total is not None and got != total:
         raise OSError(f"incomplete download: {got} of {total} bytes")
+    if progress:
+        progress(got, total)
     digest = sha256_file(part)
     if sha256 is not None and digest != sha256.lower():
         part.unlink(missing_ok=True)
@@ -262,26 +353,31 @@ def download(
     progress: ProgressFn | None = None,
     client: httpx.Client | None = None,
     size: int | None = None,
-    retries: int = 3,
+    retries: int = DEFAULT_RETRIES,
     sleep: Callable[[float], None] = time.sleep,
-    chunk: int = STREAM_CHUNK,
+    chunk: int = PROGRESS_BYTES,
     gate: threading.Event | None = None,
     stall_timeout: float = STALL_TIMEOUT_S,
     on_retry: RetryFn | None = None,
+    clock: Callable[[], float] = time.monotonic,
 ) -> Path:
     """Download ``url`` to ``dest`` with resume, SHA256 check and atomic rename.
 
-    Raises NS-E109 when the hash is wrong after ``retries`` attempts and NS-E105 when the site cannot be
-    reached (or answers 404, which is not retried).
+    Raises NS-E109 when the hash is wrong twice (the first wrong file is removed and fetched again from zero),
+    NS-E105 when the site cannot be reached after ``retries`` attempts (at most ``MAX_RETRIES``; 404 is not
+    retried) and NS-E104 when the disk is full (not retried: the ``.part`` stays for the next run).
 
     ``gate`` is the setup window's pause switch (set = running, cleared = paused). It is checked after every
-    ``chunk`` bytes (64 KiB), so Pause takes effect inside the file: the connection is closed and, on Resume,
-    reopened with ``Range`` from the bytes on disk. It is also waited on before every attempt, and an attempt
-    that failed while it was cleared does not count, so a long pause cannot use up the retries.
+    block that arrives (64 KiB at most), so Pause takes effect inside the file: the file and the connection
+    are closed and, on Resume, the connection is reopened with ``Range`` from the bytes on disk. It is also
+    waited on before every attempt, and an attempt that failed while it was cleared does not count, so a long
+    pause cannot use up the retries.
 
-    A transfer that delivers no bytes for ``stall_timeout`` seconds (60 by default) is aborted and counts as a
-    network error: the next attempt follows after the backoff and resumes with ``Range``. ``on_retry`` is
-    told ``(attempt, reason, wait seconds)`` before each wait; reason is ``stall``, ``network`` or ``hash``.
+    ``progress`` is called every ``chunk`` bytes (64 KiB) or every 250 ms, whichever comes first, and once at
+    the end. A transfer that delivers no bytes for ``stall_timeout`` seconds (60 by default) is aborted and
+    counts as a network error: the next attempt follows after the backoff (2, 4, 8 ... capped at 30 s) and
+    resumes with ``Range``. ``on_retry`` is told ``(attempt, reason, wait seconds)`` before each wait; reason
+    is ``stall``, ``network`` or ``hash``. Stopping (an exception from ``progress``) keeps the ``.part``.
     """
     dest = Path(dest)
     if is_verified(dest, sha256):
@@ -289,10 +385,12 @@ def download(
             n = dest.stat().st_size
             progress(n, n)
         return dest
+    retries = max(1, min(int(retries), MAX_RETRIES))
     http = client or _new_client()
     last: NsError | None = None
     reason = "network"
     attempt = 0
+    hash_failures = 0
     try:
         while attempt < retries:
             if gate is not None:
@@ -300,25 +398,32 @@ def download(
             try:
                 _fetch_once(
                     http, url, dest, sha256, resume=resume, progress=progress, size=size, chunk=chunk,
-                    gate=gate, stall_timeout=stall_timeout,
+                    gate=gate, stall_timeout=stall_timeout, clock=clock,
                 )
                 return dest
             except NsError as e:
                 if e.code != "NS-E109":
                     raise
                 last, reason = e, "hash"
+                hash_failures += 1
+                if hash_failures >= HASH_ATTEMPTS:
+                    raise
             except httpx.ReadTimeout:
                 last = make_error("NS-E105", f"{url}: no data for {stall_timeout:g} s")
                 reason = "stall"
-            except (httpx.HTTPError, OSError) as e:
+            except OSError as e:
+                if is_disk_full(e):
+                    raise disk_full_error(dest, e) from e
+                last, reason = make_error("NS-E105", f"{url}: {e}"), "network"
+            except httpx.HTTPError as e:
                 last, reason = make_error("NS-E105", f"{url}: {e}"), "network"
             if gate is not None and not gate.is_set():
                 continue  # failed while paused: not a real attempt
             attempt += 1
             if attempt < retries:
-                wait = 2**attempt
+                wait = min(float(2**attempt), BACKOFF_CAP_S)
                 if on_retry is not None:
-                    on_retry(attempt, reason, float(wait))
+                    on_retry(attempt, reason, wait)
                 sleep(wait)
     finally:
         if client is None:
@@ -354,21 +459,33 @@ def copy_from_source(
     if not root.is_dir():
         return False
     dest.parent.mkdir(parents=True, exist_ok=True)
-    part = _part(dest)
+    # Not ``<file>.part``: that name belongs to a download in progress, which a copy must not overwrite.
+    part = dest.with_name(dest.name + ".copy")
     for src in _find_in_source(root, dest.name):
         total = src.stat().st_size
         h = hashlib.sha256()
         done = 0
-        with src.open("rb") as fin, part.open("wb") as fout:
-            while True:
-                block = fin.read(CHUNK)
-                if not block:
-                    break
-                h.update(block)
-                fout.write(block)
-                done += len(block)
-                if progress:
-                    progress(done, total)
+        try:
+            with src.open("rb") as fin, part.open("wb") as fout:
+                while True:
+                    block = fin.read(CHUNK)
+                    if not block:
+                        break
+                    h.update(block)
+                    fout.write(block)
+                    done += len(block)
+                    if progress:
+                        progress(done, total)
+        except OSError as e:
+            part.unlink(missing_ok=True)
+            if is_disk_full(e):
+                raise disk_full_error(dest, e) from e
+            raise
+        except BaseException:
+            # Stop pressed mid-copy: a half copy of a file that was not hash-checked yet is not a resumable
+            # download, so it must not be mistaken for one next time.
+            part.unlink(missing_ok=True)
+            raise
         if sha256 is None or h.hexdigest() == sha256.lower():
             os.replace(part, dest)
             write_marker(dest, h.hexdigest())
@@ -766,8 +883,15 @@ def run_plan(
             outcome(item, "skipped")
             return
 
+        # The downloader owns the pause switch (it closes the file and the connection before it waits), so it
+        # reports through ``update_nowait`` when the reporter has one: the call must not block on the gate,
+        # or a Pause that lands between the downloader's check and the report would park with the file open.
+        # A replaced fetch (simulation) and the copy from ``models_source`` keep the blocking ``update``.
+        report = getattr(rep, "update_nowait", None) if gate is not None and fetch is None else None
+        report = report or rep.update
+
         def progress(done: int, total: int | None) -> None:
-            rep.update(item.name, done, total)
+            report(item.name, done, total)
 
         retrying = getattr(rep, "retrying", None)
 
@@ -778,7 +902,9 @@ def run_plan(
         try:
             copied = False
             if models_source and item.kind == "file" and not is_verified(item.dest, item.sha256):
-                copied = copy_from_source(models_source, item.dest, item.sha256, progress=progress)
+                copied = copy_from_source(
+                    models_source, item.dest, item.sha256, progress=lambda d, t: rep.update(item.name, d, t)
+                )
             if copied:
                 outcome(item, "copied")
                 return

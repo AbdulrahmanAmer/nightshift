@@ -49,6 +49,31 @@ where it stopped. Do not turn the PC off while a download is moving; if you do, 
 The model files can also come from a folder on this PC or from the zip files in the Google Drive models folder:
 choose that under **Model files come from** in the window.
 
+## If a download stops
+
+Downloads are built to be interrupted. Nothing is lost when the internet drops, the PC restarts, you press **Stop**
+or **Pause**, or you close the black window.
+
+- **What you see.** Every file has its own row. A file that is half done keeps a `.part` file in its folder
+  (for example `models\llm\<name>.gguf.part`) and, when you run setup again, its row says *will continue from
+  N GB*. A file that finished and passed its check has a `.ok` marker next to it and says *already here*.
+- **What running INSTALL.cmd again does.** It checks every file in a moment (no download, no hashing: the `.ok`
+  marker, the size and the date must still match). A finished file is left alone. A half file continues from
+  the byte where it stopped, not from zero. A file that is missing, changed or has a marker that no longer matches
+  is fetched again. Nothing that is fine is downloaded twice.
+- **When the internet is slow or drops.** A file that gets no data for 60 seconds is dropped and tried again
+  after 2, then 4 seconds (never more than 30), at most three tries; the row says *The connection dropped, trying
+  again in 2 s (try 2 of 3)*. After the third try the row turns red with `NS-E105`: check the internet and press
+  **Retry**, the file continues.
+- **A damaged file.** Every file is checked against the published SHA256 before it is kept. A file that fails is
+  deleted and downloaded once more from the start; if it fails twice the row shows `NS-E109`.
+- **The disk is full.** Setup stops with `NS-E104` and names the free space at the install folder. Free some space
+  and press **Retry** (or run INSTALL.cmd again); the half file is still there and continues.
+- **Check everything later.** Open a terminal in the install folder and run `ns verify --downloads`. It re-reads
+  every model and program, compares it with `manifest.json` and prints one line per file: `ok`, `missing` or
+  `bad hash`, with what to do for each (almost always: run INSTALL.cmd again). It changes nothing and needs no
+  internet. It takes a few minutes because it reads about 20 GB.
+
 ## If a row is red or a message shows an error code
 
 Every message has a code like `NS-E104`, a sentence and a "What to do". In the setup window press **Retry** where this table says "run INSTALL.cmd again". The usual ones:
