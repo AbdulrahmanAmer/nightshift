@@ -377,6 +377,7 @@ def test_s02_cuda13_default_pair_and_qwentts_fallback(tmp_path: Path):
 
 def test_s02_cuda12_pair_for_older_drivers(tmp_path: Path):
     pf = sysinfo.sample_preflight(tmp_path / "home", ROOT, cuda="12.4")
+    pf["gpu"]["name"] = "NVIDIA GeForce RTX 4070"   # the 12.4 build cannot run on the simulated RTX 50 card
     ctx = ctx_resolved(tmp_path, preflight=pf)
     S02DownloadBins().run(ctx)
     assert ctx.flag("llama_pair") == "cuda12"

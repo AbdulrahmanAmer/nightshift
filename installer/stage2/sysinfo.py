@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import shutil
 import string
 from dataclasses import dataclass
@@ -56,7 +57,7 @@ def sample_preflight(home: Path, app_path: Path, *, cuda: str = "13.0") -> dict[
         for i, label, value in [
             ("os", "Windows 10/11, 64-bit", "simulated"),
             ("gpu", "NVIDIA RTX GPU, 16 GB", "simulated RTX, 16311 MB"),
-            ("driver", "NVIDIA driver (CUDA 12.4 or newer; 12.8+ for RTX 50-series)", f"CUDA {cuda}"),
+            ("driver", "NVIDIA driver (CUDA 12.4 or newer; 13.0+ for RTX 50-series)", f"CUDA {cuda}"),
             ("ram", "Memory, 16 GB minimum", "32 GB"),
             ("disk", "Free disk space, 60 GB", "500 GB"),
             ("disktype", "Disk type, SSD", "SSD"),
@@ -81,6 +82,14 @@ def sample_preflight(home: Path, app_path: Path, *, cuda: str = "13.0") -> dict[
         "winget": True,
         "checks": checks,
     }
+
+
+BLACKWELL_RE = re.compile(r"(?i)(RTX|GeForce)\D{0,12}50[5-9]0|Blackwell|RTX\s+PRO")
+
+
+def is_blackwell(gpu_name: str | None) -> bool:
+    """True for RTX 50-series / RTX PRO (Blackwell) cards; the CUDA 12.4 llama.cpp build cannot run there."""
+    return bool(gpu_name) and BLACKWELL_RE.search(str(gpu_name)) is not None
 
 
 def llama_pair_for(cuda: str | None) -> str | None:

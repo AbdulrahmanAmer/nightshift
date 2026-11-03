@@ -7,7 +7,7 @@ All notable changes to Nightshift are recorded here. The format follows
 
 ## [Unreleased]
 
-Install audit fixes (`feat/release-install-audit`, findings #1 to #8 and #10 to #12 of `install-audit.md`):
+### Install audit fixes (`feat/release-install-audit`, findings #1 to #8 and #10 to #12 of `install-audit.md`)
 
 - **Visual C++ runtime.** llama.cpp and qwentts.cpp are built against the dynamic MSVC runtime and do not start on a
   clean Windows 11 without it (the symptom used to show only at the smoke test, after the 20 GB download). The PC
@@ -46,6 +46,13 @@ Install audit fixes (`feat/release-install-audit`, findings #1 to #8 and #10 to 
   the row says which setting to change.
 - **Voice engine pin.** `bins.qwentts` is the v0.1.4 `Nightshift-VoiceEngine-win-cuda-x64.zip` asset; the unpinned
   fallback URL uses the new asset name first and the old one second.
+
+### RTX 50-series cards stop early on a CUDA 12 driver
+- The only llama.cpp builds Nightshift ships are CUDA 12.4 and CUDA 13.x, and the 12.4 build has no code for
+  RTX 50-series (Blackwell) cards. Setup used to warn and go on, then fail the smoke test after the full
+  download. The "This PC" check and step s02 now stop with `NS-E103` ("RTX 50-series cards need a driver with
+  CUDA 13, driver 580 or newer") before anything is downloaded; an RTX 50 card whose driver version cannot be
+  read gets the CUDA 13 build. Other cards keep the 12.4 rule.
 
 ## [0.1.4] - 2026-11-03
 

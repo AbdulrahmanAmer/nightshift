@@ -27,7 +27,7 @@ from installer.stage2.downloader import (
 )
 from installer.stage2.errors import make_error
 from installer.stage2.runtime_cfg import update_runtime
-from installer.stage2.sysinfo import llama_pair_for
+from installer.stage2.sysinfo import is_blackwell, llama_pair_for
 
 QWENTTS_RELEASE_URL = (
     "https://github.com/AbdulrahmanAmer/nightshift/releases/latest/download/"
@@ -50,13 +50,27 @@ def choose_pair(ctx: StepContext, *, warn: bool = False) -> str | None:
         return None
     pf = ctx.preflight or {}
     cuda = str(pf.get("cuda") or "")
+    gpu_name = str((pf.get("gpu") or {}).get("name") or "")
+    blackwell = is_blackwell(gpu_name)
     if not cuda:
+        if blackwell:
+            # an RTX 50-series card only ships with CUDA 13 drivers, and the 12.4 build cannot run on it
+            if warn:
+                ctx.warn("NS-W115", "the driver version could not be read; "
+                         "using the CUDA 13 build for this RTX 50-series card")
+            return "cuda13"
         if warn:
             ctx.warn("NS-W115", "the driver version could not be read; using the CUDA 12.4 build")
         return "cuda12"
     pair = llama_pair_for(cuda)
     if pair is None:
         raise make_error("NS-E103", f"nvidia-smi reports CUDA {cuda or 'unknown'}; 12.4 or newer is required")
+    if pair == "cuda12" and blackwell:
+        raise make_error(
+            "NS-E103",
+            f"nvidia-smi reports CUDA {cuda} on {gpu_name}; RTX 50-series cards need a driver with CUDA 13 "
+            "(driver 580 or newer), the CUDA 12.4 build cannot run on them",
+        )
     return pair
 
 
