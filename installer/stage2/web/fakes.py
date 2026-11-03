@@ -28,7 +28,8 @@ def sample_handover(app_path: Path, *, cuda: str = "13.0", home: str = r"C:\Nigh
     rows = [
         ("os", "Windows 10/11, 64-bit", "Windows 11 Pro 10.0.26200"),
         ("gpu", "NVIDIA RTX GPU, 16 GB", "NVIDIA GeForce RTX 5060 Ti, 16311 MB"),
-        ("driver", "NVIDIA driver, CUDA 12.8 or newer", f"CUDA {cuda}, driver 581.57"),
+        ("driver", "NVIDIA driver (CUDA 12.4 or newer; 12.8+ for RTX 50-series)",
+         f"CUDA {cuda}, driver 581.57"),
         ("ram", "Memory, 16 GB minimum", "32 GB (Balanced and Best models available)"),
         ("disk", "Free disk space, 60 GB", "500 GB free on C:"),
         ("disktype", "Disk type, SSD", "C: SSD"),

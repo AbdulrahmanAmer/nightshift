@@ -83,9 +83,20 @@ def test_all_green_fake_probe(tmp_path: Path):
         ({"nvidia_smi": False, "gpu_name": "", "smi_text": ""}, "gpu", "fail", "NS-E102"),
         ({"vram_mb": 8192}, "gpu", "warn", ""),
         ({"smi_text": "CUDA Version: 12.2"}, "driver", "fail", "NS-E103"),
-        ({"smi_text": "CUDA Version: 12.4"}, "driver", "warn", "NS-E103"),
+        ({"smi_text": "CUDA Version: 12.4"}, "driver", "warn", ""),      # an RTX 50 card wants 12.8; no code
+        ({"smi_text": "CUDA Version: 12.4", "gpu_name": "NVIDIA GeForce RTX 4070"}, "driver", "ok", ""),
         ({"smi_text": "CUDA Version: 13.0"}, "driver", "ok", ""),
-        ({"smi_text": "no cuda line here"}, "driver", "fail", "NS-E103"),
+        # second source: the driver version, mapped to CUDA (banner missing or unreadable)
+        ({"smi_text": "no cuda line here"}, "driver", "ok", ""),     # driver 572.16 = CUDA 12.8
+        ({"smi_text": "", "driver": "531.18"}, "driver", "fail", "NS-E103"),          # CUDA 12.1
+        ({"smi_text": "", "driver": "566.14"}, "driver", "warn", ""),                 # CUDA 12.6, RTX 50 card
+        ({"smi_text": "", "driver": "566.14", "gpu_name": "NVIDIA GeForce RTX 4070"}, "driver", "ok", ""),
+        ({"smi_text": "", "driver": "581.57"}, "driver", "ok", ""),
+        # nothing readable: a warning, never a failure
+        ({"smi_text": "", "driver": ""}, "driver", "warn", "NS-W115"),
+        ({"nvidia_smi": False, "smi_text": "", "driver": "581.57"}, "driver", "ok", ""),
+        ({"nvidia_smi": False, "smi_text": "", "driver": ""}, "driver", "warn", "NS-W115"),
+        ({"vram_mb": 0}, "gpu", "warn", ""),                                          # memory size not read
         ({"ram_gb": 8}, "ram", "warn", ""),
         ({"drives": [{"letter": "C", "free_gb": 30, "type": "SSD"}]}, "disk", "fail", "NS-E104"),
         ({"drives": [{"letter": "C", "free_gb": 50, "type": "SSD"}]}, "disk", "warn", ""),
@@ -120,6 +131,39 @@ def test_preflight_rows(tmp_path: Path, over: dict, row: str, status: str, code:
 def test_llama_pair_follows_cuda(tmp_path: Path, smi: str, pair: str, cuda: str):
     s = _summary(_run("-FakeProbe", str(_probe(tmp_path, smi_text=smi))))
     assert s["llama_pair"] == pair and s["cuda"] == cuda
+
+
+@pytest.mark.parametrize(
+    ("over", "pair", "cuda", "source"),
+    [
+        ({"smi_text": "CUDA Version: 12.8"}, "cuda12", "12.8", "nvidia-smi"),
+        ({"smi_text": "", "driver": "572.16"}, "cuda12", "12.8", "driver"),
+        ({"smi_text": "NVIDIA-SMI 581.57  Treiberversion  CUDA-Version: 13.0"}, "cuda13", "13.0", "driver"),
+        ({"smi_text": "", "driver": "551.23"}, "cuda12", "12.4", "driver"),
+        ({"smi_text": "", "driver": "531.18"}, "", "12.1", "driver"),
+        ({"smi_text": "", "driver": ""}, "cuda12", "", "none"),          # unreadable: the CUDA 12.4 build
+    ],
+)
+def test_the_hand_over_names_the_cuda_source_and_the_pair(tmp_path: Path, over: dict, pair: str, cuda: str,
+                                                          source: str):
+    s = _summary(_run("-FakeProbe", str(_probe(tmp_path, **over))))
+    assert (s["llama_pair"], s["cuda"], s["cuda_source"]) == (pair, cuda, source)
+    assert s["profile"] == "gpu"
+
+
+def test_a_pc_without_any_nvidia_card_fails_the_gpu_row_only(tmp_path: Path):
+    probe = _probe(tmp_path, nvidia_smi=False, gpu_name="", smi_text="", driver="")
+    proc = _run("-FakeProbe", str(probe))
+    s = _summary(proc)
+    assert (_row(s, "gpu")["status"], _row(s, "gpu")["code"]) == ("fail", "NS-E102")
+    assert (_row(s, "driver")["status"], _row(s, "driver")["code"]) == ("warn", "")    # not a second red row
+    assert "NS-E103" not in proc.stdout and s["profile"] == "cpu-dev"
+
+
+def test_the_driver_row_has_one_label_for_every_state(tmp_path: Path):
+    labels = {_row(_summary(_run("-FakeProbe", str(_probe(tmp_path, **over)))), "driver")["label"]
+              for over in ({}, {"smi_text": "CUDA Version: 12.2"}, {"smi_text": "", "driver": ""})}
+    assert labels == {"NVIDIA driver (CUDA 12.4 or newer; 12.8+ for RTX 50-series)"}
 
 
 def test_default_home_is_largest_free_ssd(tmp_path: Path):

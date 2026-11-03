@@ -51,6 +51,7 @@ $script:FallbackErrors = @{
     'NS-E101' = @('Unsupported Windows architecture (ARM64 or 32-bit).', 'Nightshift needs 64-bit Windows 10 or 11 on an x64 PC.')
     'NS-E102' = @('No NVIDIA GPU detected.', 'Nightshift needs an NVIDIA RTX GPU with 16 GB. Check that the GPU driver is installed (nvidia-smi must work).')
     'NS-E103' = @('NVIDIA driver too old (CUDA too low).', 'Install the latest Game Ready or Studio driver from nvidia.com/drivers, reboot, then re-run setup.')
+    'NS-W115' = @('Could not read the NVIDIA driver version.', 'Setup continues with the CUDA 12.4 build. If a video later fails on the graphics card, install the latest driver from nvidia.com/drivers.')
     'NS-E104' = @('Not enough free disk space.', 'Free at least 60 GB on the drive that holds NIGHTSHIFT_HOME, or choose a bigger drive.')
     'NS-E105' = @('A required download site is unreachable.', 'Check the internet connection and any firewall or proxy.')
     'NS-W106' = @('NIGHTSHIFT_HOME is on a hard disk, not an SSD.', 'Model loading will be slow. Consider an NVMe/SSD drive.')
@@ -134,11 +135,64 @@ function Get-DataDir {
 # Parsing helpers (pure functions, covered by the fake-probe tests)
 # ---------------------------------------------------------------------------------------------------------
 function Get-CudaVersion {
+    # Source 1: the banner nvidia-smi prints ("CUDA Version: 12.8").
     param([string]$Text)
-    if ($Text -match 'CUDA Version:\s*(\d+)\.(\d+)') {
+    if ($Text -match 'CUDA\s+Version\s*:\s*(\d+)\.(\d+)') {
         return (New-Object System.Version -ArgumentList ([int]$Matches[1]), ([int]$Matches[2]))
     }
     return $null
+}
+
+# Source 2: the driver version mapped to the newest CUDA it supports. ONE table, newest first: the first row whose
+# Min is at or below the driver's major number wins. Based on NVIDIA's "CUDA Toolkit and Compatible Driver Versions"
+# table (CUDA Toolkit Release Notes, https://docs.nvidia.com/cuda/cuda-toolkit-release-notes/) and the CUDA
+# Compatibility guide (https://docs.nvidia.com/deploy/cuda-compatibility/): 580 = CUDA 13.0, 570 = 12.8,
+# 560 = 12.6, 550 = 12.4, 545 = 12.3, and older branches below that.
+$script:DriverCudaTable = @(
+    [pscustomobject]@{ Min = 580; Cuda = '13.0' }
+    [pscustomobject]@{ Min = 570; Cuda = '12.8' }
+    [pscustomobject]@{ Min = 560; Cuda = '12.6' }
+    [pscustomobject]@{ Min = 550; Cuda = '12.4' }
+    [pscustomobject]@{ Min = 545; Cuda = '12.3' }
+    [pscustomobject]@{ Min = 535; Cuda = '12.2' }
+    [pscustomobject]@{ Min = 530; Cuda = '12.1' }
+    [pscustomobject]@{ Min = 525; Cuda = '12.0' }
+    [pscustomobject]@{ Min = 0; Cuda = '11.8' }
+)
+
+function Get-CudaFromDriver {
+    param([string]$Driver)
+    if ($Driver -notmatch '^\s*(\d{3})(\.\d+)?\s*$') { return $null }
+    $major = [int]$Matches[1]
+    foreach ($row in $script:DriverCudaTable) {
+        if ($major -ge $row.Min) { return (New-Object System.Version -ArgumentList $row.Cuda) }
+    }
+    return $null
+}
+
+function Resolve-CudaVersion {
+    # banner first, then the driver table; version is $null only when neither source gave an answer
+    param($Probe)
+    $v = Get-CudaVersion -Text ([string]$Probe.smi_text)
+    if ($null -ne $v) { return [pscustomobject]@{ version = $v; source = 'nvidia-smi' } }
+    $v = Get-CudaFromDriver -Driver ([string]$Probe.driver)
+    if ($null -ne $v) { return [pscustomobject]@{ version = $v; source = 'driver' } }
+    return [pscustomobject]@{ version = $null; source = 'none' }
+}
+
+function ConvertTo-NvidiaDriverVersion {
+    # Windows reports an NVIDIA driver as 32.0.15.8157; NVIDIA's own number is the last five digits: 581.57.
+    param([string]$WindowsVersion)
+    $v = $WindowsVersion.Trim()
+    if ($v -match '^\d{3}\.\d{2}$') { return $v }
+    if ($v -match '^\d+\.\d+\.(\d+)\.(\d+)$') {
+        $all = $Matches[1] + $Matches[2]
+        if ($all.Length -ge 5) {
+            $d = $all.Substring($all.Length - 5)
+            return ($d.Substring(0, 3) + '.' + $d.Substring(3))
+        }
+    }
+    return ''
 }
 
 function Get-LlamaPair {
@@ -165,16 +219,66 @@ function Select-DefaultHome {
 # Machine probes
 # ---------------------------------------------------------------------------------------------------------
 function Find-NvidiaSmi {
-    $cmd = Get-Command 'nvidia-smi.exe' -ErrorAction SilentlyContinue
-    if ($null -ne $cmd) { return $cmd.Source }
+    # PATH, System32, the old NVSMI folder, then the driver store: DCH drivers keep nvidia-smi.exe only in
+    # System32\DriverStore\FileRepository\nv*\ and it may be on neither PATH nor System32.
+    param([string]$SystemRoot = $env:SystemRoot, [string]$ProgramFilesDir = $env:ProgramFiles, [switch]$SkipPath)
+    if (-not $SkipPath) {
+        $cmd = Get-Command 'nvidia-smi.exe' -ErrorAction SilentlyContinue
+        if ($null -ne $cmd) { return $cmd.Source }
+    }
     $candidates = @(
-        (Join-Path $env:SystemRoot 'System32\nvidia-smi.exe'),
-        (Join-Path $env:ProgramFiles 'NVIDIA Corporation\NVSMI\nvidia-smi.exe')
+        (Join-Path $SystemRoot 'System32\nvidia-smi.exe'),
+        (Join-Path $ProgramFilesDir 'NVIDIA Corporation\NVSMI\nvidia-smi.exe')
     )
     foreach ($c in $candidates) {
         if (Test-Path -LiteralPath $c) { return $c }
     }
+    $store = Join-Path $SystemRoot 'System32\DriverStore\FileRepository'
+    if (Test-Path -LiteralPath $store) {
+        $hit = @(Get-ChildItem -Path (Join-Path $store 'nv*\nvidia-smi.exe') -ErrorAction SilentlyContinue |
+                Sort-Object -Property LastWriteTime -Descending)
+        if ($hit.Count -gt 0) { return $hit[0].FullName }
+    }
     return $null
+}
+
+function Get-NvidiaAdapterMemoryMb {
+    # The video memory size from the display class registry key (a 64-bit value; WMI's AdapterRAM caps at 4 GB).
+    param([string]$Name)
+    try {
+        $class = 'HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}'
+        foreach ($key in @(Get-ChildItem -Path $class -ErrorAction SilentlyContinue)) {
+            $p = Get-ItemProperty -LiteralPath $key.PSPath -ErrorAction SilentlyContinue
+            if ($null -eq $p -or $null -eq $p.PSObject.Properties['DriverDesc'] -or $p.DriverDesc -ne $Name) { continue }
+            if ($null -eq $p.PSObject.Properties['HardwareInformation.qwMemorySize']) { continue }
+            $raw = $p.'HardwareInformation.qwMemorySize'
+            if ($raw -is [byte[]]) { $bytes = [BitConverter]::ToInt64($raw, 0) } else { $bytes = [int64]$raw }
+            if ($bytes -gt 0) { return [int][math]::Round($bytes / 1MB) }
+        }
+    }
+    catch { Write-Verbose "adapter memory lookup failed: $($_.Exception.Message)" }
+    return 0
+}
+
+function Get-NvidiaAdapterInfo {
+    # Used when nvidia-smi is missing or silent: the NVIDIA display adapter and driver as Windows reports them.
+    try {
+        $all = @(Get-CimInstance -ClassName Win32_VideoController |
+                Where-Object { ([string]$_.Name) -match 'NVIDIA' -or ([string]$_.AdapterCompatibility) -match 'NVIDIA' })
+        if ($all.Count -eq 0) { return $null }
+        $pick = @($all | Where-Object { ([string]$_.Name) -match 'RTX|GeForce|Quadro|Tesla' })
+        if ($pick.Count -eq 0) { $pick = $all }
+        $a = $pick[0]
+        return [pscustomobject]@{
+            name    = ([string]$a.Name).Trim()
+            driver  = (ConvertTo-NvidiaDriverVersion -WindowsVersion ([string]$a.DriverVersion))
+            vram_mb = (Get-NvidiaAdapterMemoryMb -Name ([string]$a.Name))
+        }
+    }
+    catch {
+        Write-Verbose "display adapter lookup failed: $($_.Exception.Message)"
+        return $null
+    }
 }
 
 function Get-DriveMediaType {
@@ -264,8 +368,8 @@ function Get-RealProbe {
     $vram = 0
     $driver = ''
     if ($null -ne $smi) {
+        # two separate tries: a failure of the banner must not hide the driver version, nor the other way round
         try {
-            $smiText = (& $smi | Out-String)
             $csv = @(& $smi '--query-gpu=name,memory.total,driver_version' '--format=csv,noheader,nounits')
             if ($csv.Count -gt 0) {
                 $parts = ([string]$csv[0]).Split(',')
@@ -276,7 +380,19 @@ function Get-RealProbe {
                 }
             }
         }
+        catch { Write-Verbose "nvidia-smi query failed: $($_.Exception.Message)" }
+        try { $smiText = (& $smi | Out-String) }
         catch { Write-Verbose "nvidia-smi failed: $($_.Exception.Message)" }
+    }
+    if (-not $gpuName -or -not $driver) {
+        $adapter = Get-NvidiaAdapterInfo
+        if ($null -ne $adapter) {
+            if (-not $gpuName) {
+                $gpuName = $adapter.name
+                if ($vram -le 0) { $vram = $adapter.vram_mb }
+            }
+            if (-not $driver) { $driver = $adapter.driver }
+        }
     }
 
     $ram = [math]::Round(([double](Get-CimInstance -ClassName Win32_ComputerSystem).TotalPhysicalMemory) / 1GB, 1)
@@ -361,12 +477,16 @@ function Get-PreflightRows {
     }
 
     # gpu + driver
-    $cuda = Get-CudaVersion -Text $Probe.smi_text
-    $gpuMissing = (-not $Probe.nvidia_smi) -or (-not $Probe.gpu_name)
+    $cudaInfo = Resolve-CudaVersion -Probe $Probe
+    $cuda = $cudaInfo.version
+    $gpuMissing = -not $Probe.gpu_name
     $gpuFail = 'fail'
     if ($AllowCpu) { $gpuFail = 'warn' }
     if ($gpuMissing) {
         $rows.Add((New-Row 'gpu' 'NVIDIA RTX GPU, 16 GB' $gpuFail 'NS-E102' 'nvidia-smi found no GPU'))
+    }
+    elseif ($Probe.vram_mb -le 0) {
+        $rows.Add((New-Row 'gpu' 'NVIDIA RTX GPU, 16 GB' 'warn' '' "$($Probe.gpu_name), video memory size not read"))
     }
     elseif ($Probe.vram_mb -lt $script:MinVramMb) {
         $rows.Add((New-Row 'gpu' 'NVIDIA RTX GPU, 16 GB' 'warn' '' "$($Probe.gpu_name), only $($Probe.vram_mb) MB of video memory"))
@@ -375,19 +495,35 @@ function Get-PreflightRows {
         $rows.Add((New-Row 'gpu' 'NVIDIA RTX GPU, 16 GB' 'ok' '' "$($Probe.gpu_name), $($Probe.vram_mb) MB"))
     }
 
-    $cudaText = 'not reported'
-    if ($null -ne $cuda) { $cudaText = "CUDA $cuda, driver $($Probe.driver)" }
+    # The label, the code and the state are decided separately: a FAIL (NS-E103) needs a version that was actually
+    # read and is below 12.4; "not reported" is a WARN (NS-W115) and setup goes on with the CUDA 12.4 build; a
+    # driver between 12.4 and 12.8 only matters to RTX 50-series (Blackwell) cards and warns without a code.
+    $driverLabel = 'NVIDIA driver (CUDA 12.4 or newer; 12.8+ for RTX 50-series)'
+    $driverPart = ''
+    if ($Probe.driver) { $driverPart = ", driver $($Probe.driver)" }
+    $cudaText = ''
+    if ($null -ne $cuda -and $cudaInfo.source -eq 'driver') { $cudaText = "CUDA $cuda (from driver $($Probe.driver))" }
+    elseif ($null -ne $cuda) { $cudaText = "CUDA $cuda$driverPart" }
+    $blackwell = ([string]$Probe.gpu_name) -match '(?i)(RTX|GeForce)\D{0,12}50[5-9]0|Blackwell|RTX\s+PRO'
+    $min = New-Object System.Version -ArgumentList 12, 4
+    $minBlackwell = New-Object System.Version -ArgumentList 12, 8
     if ($gpuMissing -and $AllowCpu) {
-        $rows.Add((New-Row 'driver' 'NVIDIA driver, CUDA 12.8 or newer' 'warn' '' 'skipped (cpu-dev profile)'))
+        $rows.Add((New-Row 'driver' $driverLabel 'warn' '' 'skipped (cpu-dev profile)'))
     }
-    elseif ($null -eq $cuda -or $cuda -lt (New-Object System.Version -ArgumentList 12, 4)) {
-        $rows.Add((New-Row 'driver' 'NVIDIA driver, CUDA 12.8 or newer' 'fail' 'NS-E103' $cudaText))
+    elseif ($gpuMissing) {
+        $rows.Add((New-Row 'driver' $driverLabel 'warn' '' 'not checked (no NVIDIA graphics card found)'))
     }
-    elseif ($cuda -lt (New-Object System.Version -ArgumentList 12, 8)) {
-        $rows.Add((New-Row 'driver' 'NVIDIA driver, CUDA 12.8 or newer' 'warn' 'NS-E103' "$cudaText (12.8 is needed for Blackwell GPUs)"))
+    elseif ($null -eq $cuda) {
+        $rows.Add((New-Row 'driver' $driverLabel 'warn' 'NS-W115' 'driver version not reported; the CUDA 12.4 build will be used'))
+    }
+    elseif ($cuda -lt $min) {
+        $rows.Add((New-Row 'driver' $driverLabel 'fail' 'NS-E103' $cudaText))
+    }
+    elseif ($cuda -lt $minBlackwell -and $blackwell) {
+        $rows.Add((New-Row 'driver' $driverLabel 'warn' '' "$cudaText (RTX 50-series cards need 12.8 or newer)"))
     }
     else {
-        $rows.Add((New-Row 'driver' 'NVIDIA driver, CUDA 12.8 or newer' 'ok' '' $cudaText))
+        $rows.Add((New-Row 'driver' $driverLabel 'ok' '' $cudaText))
     }
 
     # ram
@@ -730,7 +866,7 @@ function ConvertTo-ArgumentString {
 }
 
 function Get-HandOver {
-    param($Probe, $Rows, [string]$App, [string]$NsHome, [string]$ProfileName, [string]$LlamaPair, [string]$CudaString)
+    param($Probe, $Rows, [string]$App, [string]$NsHome, [string]$ProfileName, [string]$LlamaPair, [string]$CudaString, [string]$CudaSource = '')
     return [ordered]@{
         schema      = 1
         created     = (Get-Date).ToString('s')
@@ -739,6 +875,7 @@ function Get-HandOver {
         profile     = $ProfileName
         llama_pair  = $LlamaPair
         cuda        = $CudaString
+        cuda_source = $CudaSource
         ram_gb      = $Probe.ram_gb
         is_admin    = $Probe.is_admin
         os_caption  = $Probe.os_caption
@@ -817,13 +954,16 @@ $NsHome = Resolve-NsHome -Drives @($probe.drives) -AnswersObj $answersObj -Force
 if ($script:IsDry -and -not $ProbeOnly) { Show-Action "use NIGHTSHIFT_HOME = $NsHome" }
 
 $rows = Get-PreflightRows -Probe $probe -NsHome $NsHome -AllowCpu $allowCpu
-$cuda = Get-CudaVersion -Text $probe.smi_text
+$cudaInfo = Resolve-CudaVersion -Probe $probe
+$cuda = $cudaInfo.version
 $llamaPair = Get-LlamaPair -Cuda $cuda
 $profileName = 'gpu'
-if ((-not $probe.nvidia_smi) -or (-not $probe.gpu_name)) { $profileName = 'cpu-dev' }
+if (-not $probe.gpu_name) { $profileName = 'cpu-dev' }
+# a GPU whose driver version could not be read gets the CUDA 12.4 build (NS-W115), not a refusal
+if ($null -eq $cuda -and $profileName -eq 'gpu') { $llamaPair = 'cuda12' }
 $cudaString = ''
 if ($null -ne $cuda) { $cudaString = [string]$cuda }
-$handOver = Get-HandOver -Probe $probe -Rows $rows -App $App -NsHome $NsHome -ProfileName $profileName -LlamaPair $llamaPair -CudaString $cudaString
+$handOver = Get-HandOver -Probe $probe -Rows $rows -App $App -NsHome $NsHome -ProfileName $profileName -LlamaPair $llamaPair -CudaString $cudaString -CudaSource $cudaInfo.source
 
 if ($ProbeOnly) {
     $outDir = Split-Path -Parent $Out

@@ -57,7 +57,8 @@ Every message has a code like `NS-E104`, a sentence and a "What to do". In the s
 |---|---|---|
 | NS-E101 | Not 64-bit Windows 10/11 | This PC cannot run Nightshift. Tell the developer. |
 | NS-E102 | No NVIDIA graphics card found | Install the NVIDIA driver from nvidia.com/drivers, restart, run INSTALL.cmd again. |
-| NS-E103 | NVIDIA driver too old | Setup opens the driver page. Install the newest driver, restart, run INSTALL.cmd again. |
+| NS-E103 | NVIDIA driver too old (CUDA below 12.4) | Setup opens the driver page. Install the newest driver, restart, run INSTALL.cmd again. |
+| NS-W115 | The driver version could not be read | Nothing: setup uses the CUDA 12.4 build. If a video fails on the graphics card later, install the newest driver. |
 | NS-E104 | Not enough free disk space | Free 60 GB, or choose another drive when asked for the install folder. |
 | NS-E105 | A download site cannot be reached | Check the internet, switch off any VPN or proxy, run INSTALL.cmd again. |
 | NS-E109 | A downloaded file is damaged | Run INSTALL.cmd again. If it repeats, send the diagnostics zip. |

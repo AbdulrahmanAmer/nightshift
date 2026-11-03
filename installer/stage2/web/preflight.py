@@ -67,6 +67,11 @@ ROW_COPY: dict[tuple[str, str], tuple[str, str]] = {
         "The graphics card has less than 16 GB",
         "Setup can continue, but only the Small model fits and videos take longer",
     ),
+    ("driver", "warn"): (
+        "The driver is older than RTX 50-series cards need",
+        "Setup works with the CUDA 12.4 build. RTX 50-series cards need driver 570 or newer: "
+        "update it from the page that opened",
+    ),
     ("ram", "warn"): ("Less memory than recommended", "Setup continues with the Small model only"),
     ("disk", "warn"): (
         "Less free space than recommended",
@@ -87,7 +92,7 @@ NETWORK_FAIL_TEXT = (
 
 
 def _row_fix(row_id: str, status: str, code: str) -> dict[str, Any] | None:
-    if row_id in ("gpu", "driver") and code in ("NS-E102", "NS-E103"):
+    if row_id in ("gpu", "driver") and code in ("NS-E102", "NS-E103", "NS-W115"):
         return _fix("open-url", "Open the driver page", DRIVER_URL)
     if row_id in ("disk", "disktype"):
         return _fix("choose-drive", "Pick another drive")

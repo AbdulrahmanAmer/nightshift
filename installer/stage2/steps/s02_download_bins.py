@@ -1,8 +1,10 @@
 """s02_download_bins: llama.cpp (+ cudart), OpenCode, yt-dlp; qwentts.cpp when a binary exists (component C1).
 
 The llama.cpp pair follows the driver: CUDA 13.0 or newer takes the CUDA 13.4 build (Blackwell needs it),
-CUDA 12.4 to 12.x the CUDA 12.4 build, anything older is NS-E103. ``bins.qwentts`` is null in the manifest,
-so the GitHub Releases asset is probed; without a binary the PyTorch fallback is scheduled (NS-W301).
+CUDA 12.4 to 12.x the CUDA 12.4 build, a version that was read and is older is NS-E103, and a driver whose
+version could not be read at all takes the CUDA 12.4 build with a warning (NS-W115). ``bins.qwentts`` is null
+in the manifest, so the GitHub Releases asset is probed; without a binary the PyTorch fallback is scheduled
+(NS-W301).
 yt-dlp.exe (pinned in ``bins.yt_dlp``) goes to ``bin/yt-dlp/yt-dlp.exe`` for the Clipper link sources.
 The WebView2 window files (``bins.webview2``) come from the bundle's ``bin/webview2`` when the SHA256 match.
 """
@@ -30,12 +32,21 @@ QWENTTS_RELEASE_URL = (
 )
 
 
-def choose_pair(ctx: StepContext) -> str | None:
-    """cuda13 / cuda12 for the GPU profile (NS-E103 when the driver is too old); None for cpu-dev."""
+def choose_pair(ctx: StepContext, *, warn: bool = False) -> str | None:
+    """cuda13 / cuda12 for the GPU profile; None for cpu-dev.
+
+    NS-E103 only when stage 1 read a CUDA version and it is below 12.4. When it could not read one (``cuda``
+    empty: nvidia-smi missing or silent and no usable driver number) the CUDA 12.4 build is used and, with
+    ``warn``, NS-W115 is recorded: a refusal there would stop a working PC on a missing file.
+    """
     if ctx.profile == "cpu-dev":
         return None
     pf = ctx.preflight or {}
     cuda = str(pf.get("cuda") or "")
+    if not cuda:
+        if warn:
+            ctx.warn("NS-W115", "the driver version could not be read; using the CUDA 12.4 build")
+        return "cuda12"
     pair = llama_pair_for(cuda)
     if pair is None:
         raise make_error("NS-E103", f"nvidia-smi reports CUDA {cuda or 'unknown'}; 12.4 or newer is required")
@@ -77,7 +88,7 @@ class S02DownloadBins(Step):
 
     def run(self, ctx: StepContext) -> None:
         """Download the llama.cpp pair (and OpenCode), then settle the qwentts.cpp question."""
-        pair = choose_pair(ctx)
+        pair = choose_pair(ctx, warn=True)
         pf = ctx.preflight or {}
         ctx.set_flag("llama_pair", pair)
         ctx.set_flag("cuda", pf.get("cuda"))

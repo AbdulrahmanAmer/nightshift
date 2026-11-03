@@ -67,6 +67,7 @@ export const codes: Record<string, CodeText> = {
   "NS-E112": { title: "Caption timing cannot use the graphics card", whatToDo: "Press Copy diagnostics and send the zip. Nothing else to do" },
   "NS-E113": { title: "Windows Security blocked a file", whatToDo: "Open Windows Security, then Protection history, allow the Nightshift file and press Retry. Adding the install folder as an exclusion stops it happening again" },
   "NS-W113": { title: "A custom model is not checked", whatToDo: "Nightshift cannot verify a file you chose yourself. Use only models you trust. Nothing else to do" },
+  "NS-W115": { title: "The driver version could not be read", whatToDo: "Setup works and uses the CUDA 12.4 build. If a video fails on the graphics card later, install the newest driver from nvidia.com/drivers" },
   "NS-W114": { title: "The designed voice has to wait", whatToDo: "The voice design model is not part of this install, so the voice cannot be created yet. Get it in Settings, Models, then design the voice again" },
   "NS-E202": { title: "A Nightshift service did not start", whatToDo: "Press Retry once. If it stops again, send the diagnostics zip" },
   "NS-E203": { title: "A model took too long to start", whatToDo: "Press Retry once. If it stops again, send the diagnostics zip" },
