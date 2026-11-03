@@ -125,7 +125,8 @@ def interrupted_download(url: str, dest: Path, sha256: str | None, wire: Wire, p
             if parked.wait(1):
                 break
             if not worker.is_alive():
-                raise AssertionError(f"the download ended before the pause: {outcome}") from outcome.get("error")
+                msg = f"the download ended before the pause: {outcome}"
+                raise AssertionError(msg) from outcome.get("error")
         assert parked.is_set(), f"the download never reached the pause: {outcome}"
         part = dest.with_name(dest.name + ".part")
         outcome["paused_at"] = part.stat().st_size
