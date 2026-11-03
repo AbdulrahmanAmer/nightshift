@@ -148,8 +148,13 @@ def test_no_nvidia_smi_anywhere_is_none(tmp_path: Path) -> None:
 
 
 # ---- step s02: a version that could not be read is a warning, not a refusal ---------------------------
-def s02_ctx(tmp_path: Path, cuda: str):
+ADA = "NVIDIA GeForce RTX 4070"          # a card the CUDA 12.4 build runs on
+BLACKWELL = "NVIDIA GeForce RTX 5060 Ti"  # the partner's card: CUDA 13 build only
+
+
+def s02_ctx(tmp_path: Path, cuda: str, gpu: str = ADA):
     pf = sysinfo.sample_preflight(tmp_path / "home", ROOT, cuda=cuda)
+    pf["gpu"]["name"] = gpu
     return make_test_context(tmp_path, raw_answers=example_answers(), resolve=True, preflight=pf)
 
 
@@ -158,6 +163,14 @@ def test_s02_unreadable_cuda_uses_the_12_4_build_and_warns_w115(tmp_path: Path) 
     assert choose_pair(ctx) == "cuda12" and ctx.warnings == []              # planning alone stays quiet
     assert choose_pair(ctx, warn=True) == "cuda12"
     assert [c for c, _ in ctx.warnings] == ["NS-W115"]
+
+
+def test_s02_unreadable_cuda_on_an_rtx_50_card_takes_the_cuda13_build(tmp_path: Path) -> None:
+    ctx = s02_ctx(tmp_path, "", gpu=BLACKWELL)
+    assert choose_pair(ctx, warn=True) == "cuda13"
+    assert [c for c, _ in ctx.warnings] == ["NS-W115"]
+    names = {i.name for i in S02DownloadBins()._items(ctx)}
+    assert {"llama_cuda13", "cudart13"} <= names and "llama_cuda" not in names
 
 
 def test_s02_a_version_that_was_read_and_is_too_old_is_still_e103(tmp_path: Path) -> None:
@@ -170,6 +183,18 @@ def test_s02_a_version_that_was_read_and_is_too_old_is_still_e103(tmp_path: Path
 def test_s02_readable_versions_are_unchanged(tmp_path: Path, cuda: str, pair: str) -> None:
     ctx = s02_ctx(tmp_path, cuda)
     assert choose_pair(ctx, warn=True) == pair and ctx.warnings == []
+
+
+@pytest.mark.parametrize("cuda", ["12.8", "12.4"])
+def test_s02_an_rtx_50_card_on_a_cuda_12_driver_stops_with_e103_before_any_download(tmp_path: Path,
+                                                                                    cuda: str) -> None:
+    with pytest.raises(NsError) as ei:
+        choose_pair(s02_ctx(tmp_path, cuda, gpu=BLACKWELL), warn=True)
+    assert ei.value.code == "NS-E103" and "580" in ei.value.detail and cuda in ei.value.detail
+
+
+def test_s02_an_rtx_50_card_on_a_cuda_13_driver_is_fine(tmp_path: Path) -> None:
+    assert choose_pair(s02_ctx(tmp_path, "13.0", gpu=BLACKWELL), warn=True) == "cuda13"
 
 
 def test_s02_plans_the_cuda12_downloads_when_the_version_is_unreadable(tmp_path: Path) -> None:

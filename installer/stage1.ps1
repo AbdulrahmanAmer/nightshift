@@ -196,9 +196,12 @@ function ConvertTo-NvidiaDriverVersion {
 }
 
 function Get-LlamaPair {
-    param($Cuda)
+    # The hand-over pair stage 2 downloads. RTX 50-series (Blackwell) cards can only run the CUDA 13 build,
+    # so for them a CUDA 12.x driver yields no pair (the driver row fails with NS-E103 at the same time).
+    param($Cuda, [string]$GpuName = '')
     if ($null -eq $Cuda) { return '' }
     if ($Cuda -ge (New-Object System.Version -ArgumentList 13, 0)) { return 'cuda13' }
+    if ($GpuName -match '(?i)(RTX|GeForce)\D{0,12}50[5-9]0|Blackwell|RTX\s+PRO') { return '' }
     if ($Cuda -ge (New-Object System.Version -ArgumentList 12, 4)) { return 'cuda12' }
     return ''
 }
@@ -498,15 +501,18 @@ function Get-PreflightRows {
     # The label, the code and the state are decided separately: a FAIL (NS-E103) needs a version that was actually
     # read and is below 12.4; "not reported" is a WARN (NS-W115) and setup goes on with the CUDA 12.4 build; a
     # driver between 12.4 and 12.8 only matters to RTX 50-series (Blackwell) cards and warns without a code.
-    $driverLabel = 'NVIDIA driver (CUDA 12.4 or newer; 12.8+ for RTX 50-series)'
+    $driverLabel = 'NVIDIA driver (CUDA 12.4 or newer; 13.0+ for RTX 50-series)'
     $driverPart = ''
     if ($Probe.driver) { $driverPart = ", driver $($Probe.driver)" }
     $cudaText = ''
     if ($null -ne $cuda -and $cudaInfo.source -eq 'driver') { $cudaText = "CUDA $cuda (from driver $($Probe.driver))" }
     elseif ($null -ne $cuda) { $cudaText = "CUDA $cuda$driverPart" }
     $blackwell = ([string]$Probe.gpu_name) -match '(?i)(RTX|GeForce)\D{0,12}50[5-9]0|Blackwell|RTX\s+PRO'
+    # The only llama.cpp builds in manifest.json are CUDA 12.4 and CUDA 13.x. The 12.4 build has no code for
+    # RTX 50-series (Blackwell) cards, so on those a driver below CUDA 13 (driver 580) must stop setup here,
+    # before the 20 GB download, not at the smoke test afterwards.
     $min = New-Object System.Version -ArgumentList 12, 4
-    $minBlackwell = New-Object System.Version -ArgumentList 12, 8
+    $minBlackwell = New-Object System.Version -ArgumentList 13, 0
     if ($gpuMissing -and $AllowCpu) {
         $rows.Add((New-Row 'driver' $driverLabel 'warn' '' 'skipped (cpu-dev profile)'))
     }
@@ -520,7 +526,7 @@ function Get-PreflightRows {
         $rows.Add((New-Row 'driver' $driverLabel 'fail' 'NS-E103' $cudaText))
     }
     elseif ($cuda -lt $minBlackwell -and $blackwell) {
-        $rows.Add((New-Row 'driver' $driverLabel 'warn' '' "$cudaText (RTX 50-series cards need 12.8 or newer)"))
+        $rows.Add((New-Row 'driver' $driverLabel 'fail' 'NS-E103' "$cudaText; RTX 50-series cards need a driver with CUDA 13 (driver 580 or newer)"))
     }
     else {
         $rows.Add((New-Row 'driver' $driverLabel 'ok' '' $cudaText))
@@ -962,7 +968,7 @@ if ($script:IsDry -and -not $ProbeOnly) { Show-Action "use NIGHTSHIFT_HOME = $Ns
 $rows = Get-PreflightRows -Probe $probe -NsHome $NsHome -AllowCpu $allowCpu
 $cudaInfo = Resolve-CudaVersion -Probe $probe
 $cuda = $cudaInfo.version
-$llamaPair = Get-LlamaPair -Cuda $cuda
+$llamaPair = Get-LlamaPair -Cuda $cuda -GpuName ([string]$probe.gpu_name)
 $profileName = 'gpu'
 if (-not $probe.gpu_name) { $profileName = 'cpu-dev' }
 # a GPU whose driver version could not be read gets the CUDA 12.4 build (NS-W115), not a refusal
