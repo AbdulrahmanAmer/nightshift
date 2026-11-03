@@ -13,7 +13,8 @@ STAGE1 = ROOT / "installer" / "stage1.ps1"
 PS = shutil.which("powershell") or shutil.which("pwsh")
 pytestmark = pytest.mark.skipif(PS is None, reason="PowerShell not available")
 
-GOOD_SMI = "NVIDIA-SMI 572.16   Driver Version: 572.16   CUDA Version: 12.8"
+GOOD_SMI = "NVIDIA-SMI 581.57   Driver Version: 581.57   CUDA Version: 13.0"
+ADA = "NVIDIA GeForce RTX 4070"   # runs the CUDA 12.4 build; the fake default card is an RTX 5060 Ti
 DRIVES_OK = [{"letter": "C", "free_gb": 500, "type": "SSD"}]
 
 
@@ -71,7 +72,7 @@ def test_all_green_fake_probe(tmp_path: Path):
     assert {r["id"] for r in s["checks"]} >= {
         "os", "gpu", "driver", "ram", "disk", "disktype", "network", "winget", "longpaths", "waketimers",
     }
-    assert s["profile"] == "gpu" and s["llama_pair"] == "cuda12" and s["cuda"] == "12.8"
+    assert s["profile"] == "gpu" and s["llama_pair"] == "cuda13" and s["cuda"] == "13.0"
     assert s["home"] == "C:\\Nightshift"
     assert "NS-E" not in proc.stdout
 
@@ -83,14 +84,15 @@ def test_all_green_fake_probe(tmp_path: Path):
         ({"nvidia_smi": False, "gpu_name": "", "smi_text": ""}, "gpu", "fail", "NS-E102"),
         ({"vram_mb": 8192}, "gpu", "warn", ""),
         ({"smi_text": "CUDA Version: 12.2"}, "driver", "fail", "NS-E103"),
-        ({"smi_text": "CUDA Version: 12.4"}, "driver", "warn", ""),      # an RTX 50 card wants 12.8; no code
-        ({"smi_text": "CUDA Version: 12.4", "gpu_name": "NVIDIA GeForce RTX 4070"}, "driver", "ok", ""),
+        ({"smi_text": "CUDA Version: 12.4"}, "driver", "fail", "NS-E103"),   # the fake card is an RTX 5060 Ti
+        ({"smi_text": "CUDA Version: 12.8"}, "driver", "fail", "NS-E103"),   # the 12.4 build cannot run on it
+        ({"smi_text": "CUDA Version: 12.4", "gpu_name": ADA}, "driver", "ok", ""),
         ({"smi_text": "CUDA Version: 13.0"}, "driver", "ok", ""),
         # second source: the driver version, mapped to CUDA (banner missing or unreadable)
-        ({"smi_text": "no cuda line here"}, "driver", "ok", ""),     # driver 572.16 = CUDA 12.8
+        ({"smi_text": "no cuda line here", "gpu_name": ADA}, "driver", "ok", ""),  # 572.16 = 12.8
         ({"smi_text": "", "driver": "531.18"}, "driver", "fail", "NS-E103"),          # CUDA 12.1
-        ({"smi_text": "", "driver": "566.14"}, "driver", "warn", ""),                 # CUDA 12.6, RTX 50 card
-        ({"smi_text": "", "driver": "566.14", "gpu_name": "NVIDIA GeForce RTX 4070"}, "driver", "ok", ""),
+        ({"smi_text": "", "driver": "566.14"}, "driver", "fail", "NS-E103"),   # CUDA 12.6 on an RTX 50 card
+        ({"smi_text": "", "driver": "566.14", "gpu_name": ADA}, "driver", "ok", ""),
         ({"smi_text": "", "driver": "581.57"}, "driver", "ok", ""),
         # nothing readable: a warning, never a failure
         ({"smi_text": "", "driver": ""}, "driver", "warn", "NS-W115"),
@@ -123,24 +125,27 @@ def test_preflight_rows(tmp_path: Path, over: dict, row: str, status: str, code:
 
 
 @pytest.mark.parametrize(
-    ("smi", "pair", "cuda"),
-    [("CUDA Version: 13.0", "cuda13", "13.0"), ("CUDA Version: 13.4", "cuda13", "13.4"),
-     ("CUDA Version: 12.8", "cuda12", "12.8"), ("CUDA Version: 12.4", "cuda12", "12.4"),
-     ("CUDA Version: 12.2", "", "12.2")],
+    ("smi", "gpu", "pair", "cuda"),
+    [("CUDA Version: 13.0", "NVIDIA GeForce RTX 5060 Ti", "cuda13", "13.0"),
+     ("CUDA Version: 13.4", "NVIDIA GeForce RTX 5060 Ti", "cuda13", "13.4"),
+     ("CUDA Version: 12.8", "NVIDIA GeForce RTX 4070", "cuda12", "12.8"),
+     ("CUDA Version: 12.4", "NVIDIA GeForce RTX 4070", "cuda12", "12.4"),
+     ("CUDA Version: 12.8", "NVIDIA GeForce RTX 5060 Ti", "", "12.8"),     # Blackwell: 12.x stops setup
+     ("CUDA Version: 12.2", "NVIDIA GeForce RTX 4070", "", "12.2")],
 )
-def test_llama_pair_follows_cuda(tmp_path: Path, smi: str, pair: str, cuda: str):
-    s = _summary(_run("-FakeProbe", str(_probe(tmp_path, smi_text=smi))))
+def test_llama_pair_follows_cuda(tmp_path: Path, smi: str, gpu: str, pair: str, cuda: str):
+    s = _summary(_run("-FakeProbe", str(_probe(tmp_path, smi_text=smi, gpu_name=gpu))))
     assert s["llama_pair"] == pair and s["cuda"] == cuda
 
 
 @pytest.mark.parametrize(
     ("over", "pair", "cuda", "source"),
     [
-        ({"smi_text": "CUDA Version: 12.8"}, "cuda12", "12.8", "nvidia-smi"),
-        ({"smi_text": "", "driver": "572.16"}, "cuda12", "12.8", "driver"),
+        ({"smi_text": "CUDA Version: 12.8", "gpu_name": ADA}, "cuda12", "12.8", "nvidia-smi"),
+        ({"smi_text": "", "driver": "572.16", "gpu_name": ADA}, "cuda12", "12.8", "driver"),
         ({"smi_text": "NVIDIA-SMI 581.57  Treiberversion  CUDA-Version: 13.0", "driver": "581.57"},
          "cuda13", "13.0", "driver"),
-        ({"smi_text": "", "driver": "551.23"}, "cuda12", "12.4", "driver"),
+        ({"smi_text": "", "driver": "551.23", "gpu_name": ADA}, "cuda12", "12.4", "driver"),
         ({"smi_text": "", "driver": "531.18"}, "", "12.1", "driver"),
         ({"smi_text": "", "driver": ""}, "cuda12", "", "none"),          # unreadable: the CUDA 12.4 build
     ],
@@ -164,7 +169,7 @@ def test_a_pc_without_any_nvidia_card_fails_the_gpu_row_only(tmp_path: Path):
 def test_the_driver_row_has_one_label_for_every_state(tmp_path: Path):
     labels = {_row(_summary(_run("-FakeProbe", str(_probe(tmp_path, **over)))), "driver")["label"]
               for over in ({}, {"smi_text": "CUDA Version: 12.2"}, {"smi_text": "", "driver": ""})}
-    assert labels == {"NVIDIA driver (CUDA 12.4 or newer; 12.8+ for RTX 50-series)"}
+    assert labels == {"NVIDIA driver (CUDA 12.4 or newer; 13.0+ for RTX 50-series)"}
 
 
 def test_default_home_is_largest_free_ssd(tmp_path: Path):

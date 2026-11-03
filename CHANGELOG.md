@@ -36,6 +36,13 @@ All notable changes to Nightshift are recorded here. The format follows
   install against `manifest.json` and prints ok / missing / bad hash with the fix for each; exit 1 when something needs
   fixing. OPERATOR.md has a new "If a download stops" section.
 
+### RTX 50-series cards stop early on a CUDA 12 driver
+- The only llama.cpp builds Nightshift ships are CUDA 12.4 and CUDA 13.x, and the 12.4 build has no code for
+  RTX 50-series (Blackwell) cards. Setup used to warn and go on, then fail the smoke test after the full
+  download. The "This PC" check and step s02 now stop with `NS-E103` ("RTX 50-series cards need a driver with
+  CUDA 13, driver 580 or newer") before anything is downloaded; an RTX 50 card whose driver version cannot be
+  read gets the CUDA 13 build. Other cards keep the 12.4 rule.
+
 ## [0.1.4] - 2026-11-03
 
 ### Same content as 0.1.3, released
