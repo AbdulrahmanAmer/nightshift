@@ -57,7 +57,7 @@ export interface CodeText { title: string; whatToDo: string }
 export const codes: Record<string, CodeText> = {
   "NS-E101": { title: "This PC cannot run Nightshift", whatToDo: "Nightshift needs 64-bit Windows 10 or 11. Tell the developer" },
   "NS-E102": { title: "No NVIDIA graphics card found", whatToDo: "Install the NVIDIA driver from nvidia.com/drivers, restart, then press Check again" },
-  "NS-E103": { title: "NVIDIA driver too old", whatToDo: "Install the newest driver from the page that opened, restart, then press Check again" },
+  "NS-E103": { title: "NVIDIA driver too old for this card", whatToDo: "Install the newest driver from the page that opened (RTX 50-series cards need driver 580 or newer), restart, then press Check again" },
   "NS-E104": { title: "Not enough free disk space", whatToDo: "Free 60 GB, or pick another drive" },
   "NS-E105": { title: "A download site cannot be reached", whatToDo: "Check the internet, switch off any VPN or proxy, then press Retry" },
   "NS-E108": { title: "The graphics card libraries did not load", whatToDo: "Press Copy diagnostics and send the zip. Nothing else to do" },
