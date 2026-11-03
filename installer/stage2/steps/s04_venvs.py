@@ -1,7 +1,8 @@
 """s04_venvs: studio and supervisor environments (component C1, spec 21.4).
 
 ``studio`` gets the app with the ``studio`` extra (plus ``supervisor`` so ``ns`` imports resolve there),
-the cuBLAS/cuDNN wheels faster-whisper needs on Windows, and the spaCy model wheel. ``supervisor`` gets
+the cuBLAS/cuDNN wheels faster-whisper needs on Windows (hash-locked: ``python.whisper_cuda`` in
+``manifest.json``) and the spaCy model wheel (hash-locked: ``python.spacy_wheel``). ``supervisor`` gets
 ``[supervisor,tts,dashboard]``. The PyTorch ``tts`` venv is created only when s02 or s08 flagged the fallback.
 """
 
@@ -14,8 +15,7 @@ from installer.stage2.fallback import ensure_tts_venv
 from ns_common.uv import venv_args
 from ns_common.venv_extras import extras_suffix
 
-# Ranges, not pins: the manifest has no entries for these yet (change request CR-C1-4).
-GPU_DLL_WHEELS = ("nvidia-cublas-cu12>=12.8,<13", "nvidia-cudnn-cu12>=9,<10")
+#: Used only by a manifest without ``python.spacy_wheel`` (no hash to check); the repo manifest pins it.
 SPACY_MODEL_VERSION = "3.8.0"
 
 
@@ -63,15 +63,39 @@ class S04Venvs(Step):
         if not res.ok:
             raise make_error("NS-E105", f"installing {tag} failed (exit {res.returncode})")
 
+    def _pip_locked(self, ctx: StepContext, name: str, lines: list[str], tag: str, file_stem: str) -> None:
+        """Install requirement lines that each carry ``--hash=sha256:...`` (hash-checking mode, no deps).
+
+        The lines are written to ``logs/pins-<file_stem>.txt`` first, so the diagnostics zip shows what
+        was pinned.
+        """
+        pin_file = ctx.paths.logs / f"pins-{file_stem}.txt"
+        pin_file.parent.mkdir(parents=True, exist_ok=True)
+        pin_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        self._pip(ctx, name, ["--no-deps", "--require-hashes", "-r", str(pin_file)], tag)
+
+    def _spacy_model(self, ctx: StepContext) -> None:
+        """The spaCy model wheel, checked against the manifest's sha256 (unchecked URL for old manifests)."""
+        model = ctx.manifest.spacy_model
+        pin = ctx.manifest.python.spacy_wheel
+        if pin is None or not pin.sha256:
+            self._pip(ctx, "studio", [spacy_wheel_url(model)], "studio spacy model")
+            return
+        self._pip_locked(
+            ctx, "studio", [f"{model} @ {pin.url} --hash=sha256:{pin.sha256}"], "studio spacy model", "spacy"
+        )
+
     def run(self, ctx: StepContext) -> None:
         """Create the venvs and install the packages."""
         app = str(ctx.app_path)
         self._venv(ctx, "studio")
         self._pip(ctx, "studio", ["-e", f"{app}{extras_suffix('studio')}"], "studio app")
         if ctx.profile == "gpu":
-            self._pip(ctx, "studio", list(GPU_DLL_WHEELS), "studio gpu dlls")
-        wheel = spacy_wheel_url(ctx.manifest.spacy_model)
-        self._pip(ctx, "studio", [wheel], "studio spacy model")
+            pins = ctx.manifest.python.whisper_cuda
+            if not pins:
+                raise make_error("NS-E105", "manifest.json has no python.whisper_cuda pins")
+            self._pip_locked(ctx, "studio", pins, "studio gpu dlls", "whisper-cuda")
+        self._spacy_model(ctx)
 
         self._venv(ctx, "supervisor")
         self._pip(ctx, "supervisor", ["-e", f"{app}{extras_suffix('supervisor')}"], "supervisor app")

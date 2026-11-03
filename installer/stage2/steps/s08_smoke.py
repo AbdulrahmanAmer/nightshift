@@ -1,10 +1,12 @@
 """s08_smoke: ``ns verify --quick`` and the documented fallbacks for the untestable parts (component C1).
 
 NVENC failing switches the encoder to libx264 (NS-W401); a failing TTS engine switches to the PyTorch
-reference engine and builds its venv (NS-W301, NS-E108 when torch cannot see the GPU); faster-whisper that
-cannot load on CUDA stops the install with NS-E112. Checks are matched on the real names `ns verify` reports
-(`ns_supervisor.check_names`). `ns verify --quick` has no MTP check: whether MTP is kept is decided by
-`ns tune` (s06), so there is no MTP branch here.
+reference engine and builds its venv (NS-W301, NS-E108 when torch cannot see the GPU). Whisper is tested by
+a 3 second transcription in the studio venv (cuBLAS and cuDNN load lazily, so the model load alone proves
+nothing): on CUDA it falls back to the CPU with int8 (NS-W404, captions are slower, the install goes on); only
+a CPU that cannot transcribe either stops the install (NS-E202). Checks are matched on the real names
+`ns verify` reports (`ns_supervisor.check_names`). `ns verify --quick` has no MTP check: whether MTP is kept
+is decided by `ns tune` (s06), so there is no MTP branch here.
 """
 
 from __future__ import annotations
@@ -21,6 +23,7 @@ from installer.stage2.fallback import ensure_tts_venv, fallback_items
 from installer.stage2.runner import RunResult
 from installer.stage2.runtime_cfg import ensure_baseline, update_runtime
 from installer.stage2.steps.s05_opencode_prewarm import confirm_local_code
+from installer.stage2.whisper_probe import transcribe_probe
 from ns_common import vcruntime
 from ns_supervisor import check_names as names
 
@@ -114,6 +117,7 @@ class S08Smoke(Step):
         check_vc_runtime(ctx)
         check_programs_present(ctx)
         warned: set[str] = set()
+        whisper_load_failed = False
         wants_binary = ctx.flag("qwentts") == "binary" and not ctx.flag("tts_fallback", False)
         if wants_binary and not qwentts_binaries_ok(ctx):
             ctx.ui.say("The voice program (qwen-tts.exe) is missing from the download.", "yellow")
@@ -133,8 +137,7 @@ class S08Smoke(Step):
                 "Smoke test", ["Check", "Result"],
                 [[name, "ok" if ok else "fail"] for name, ok in report.items()], status_col=1,
             )
-            if failing(report, names.WHISPER_PREFIX):
-                raise make_error("NS-E112", "faster-whisper did not load on the GPU")
+            whisper_load_failed = failing(report, names.WHISPER_PREFIX)
             for prefix, what in ((names.LLAMA_PREFIX, "story model"), (names.EMBED_PREFIX, "memory index")):
                 if failing(report, prefix):
                     bad = ", ".join(n for n, ok in report.items() if n.startswith(prefix) and not ok)
@@ -148,10 +151,36 @@ class S08Smoke(Step):
             if attempt == 2 or ctx.flag("tts_fallback", False):
                 raise make_error("NS-E108", "the reference TTS engine also failed its test")
             self._switch_to_reference(ctx)
+        self._check_whisper(ctx, whisper_load_failed)
         if ctx.ensure_answers().install_code and ctx.paths.opencode_file.exists():
             confirm_local_code(ctx)              # needs the opencode.json that s07 wrote
         ctx.set_flag("smoke", "passed")
         ctx.set_flag("smoke_version", ctx.manifest.version)
+
+    @staticmethod
+    def _check_whisper(ctx: StepContext, load_failed: bool) -> None:
+        """Transcribe a 3 second test WAV; on CUDA a failure switches whisper to the CPU (NS-W404)."""
+        cfg = ensure_baseline(ctx).whisper
+        where = "graphics card" if cfg.device == "cuda" else "processor"
+        ctx.ui.say(f"Testing speech recognition on the {where} ...")
+        if cfg.device == "cuda":
+            res = None if load_failed else transcribe_probe(ctx, cfg)
+            if res is not None and res.ok:
+                return
+            why = "the model did not load" if res is None else res.text[-300:]
+            update_runtime(ctx, S08Smoke._use_cpu_whisper)
+            ctx.warn("NS-W404", f"runtime.json now runs whisper on the CPU ({why})")
+            cfg = ensure_baseline(ctx).whisper
+        elif load_failed:
+            raise make_error("NS-E202", "speech recognition did not load on the processor")
+        res = transcribe_probe(ctx, cfg)
+        if not res.ok:
+            raise make_error("NS-E202", f"speech recognition failed on the processor: {res.text[-300:]}")
+
+    @staticmethod
+    def _use_cpu_whisper(rt: Any) -> None:
+        rt.whisper.device = "cpu"
+        rt.whisper.compute_type = "int8"
 
     @staticmethod
     def _use_libx264(rt: Any) -> None:
