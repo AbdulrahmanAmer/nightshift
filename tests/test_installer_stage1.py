@@ -340,3 +340,29 @@ def test_uv_download_failure_with_a_failing_winget_is_ns_e110(tmp_path: Path):
     proc = _install_uv_harness(tmp_path, "broken")
     assert proc.returncode == 13, proc.stdout + proc.stderr
     assert "STOP:NS-E110" in proc.stdout
+
+
+def test_select_default_home_avoids_the_extracted_folder_and_treats_a_root_specially(tmp_path: Path):
+    ps = tmp_path / "pick.ps1"
+    lines = [
+        "$ErrorActionPreference = 'Stop'",
+        f"$text = Get-Content -LiteralPath '{STAGE1}' -Raw",
+        "$start = $text.IndexOf('function Test-PathInside')",
+        "$end = $text.IndexOf('# Machine probes')",
+        "$script:MinFreeGbRecommended = 80",
+        "Invoke-Expression $text.Substring($start, $end - $start)",
+        "$drives = @([pscustomobject]@{ letter = 'D'; free_gb = 900; type = 'SSD' },",
+        "            [pscustomobject]@{ letter = 'E'; free_gb = 400; type = 'SSD' })",
+        r"foreach ($app in @('D:', 'D:\', 'D:\Nightshift', 'D:\Nightshift-home', 'E:\Nightshift')) {",
+        "    '{0} => {1}' -f $app, (Select-DefaultHome -Drives $drives -AppFolder $app)",
+        "}",
+    ]
+    ps.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    proc = subprocess.run([str(PS), "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(ps)],
+                          capture_output=True, text=True, timeout=120)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    got = dict(line.split(" => ", 1) for line in proc.stdout.splitlines() if " => " in line)
+    assert got["D:"] == r"D:\Nightshift" and got["D:" + chr(92)] == r"D:\Nightshift"   # a root: only itself
+    assert got[r"D:\Nightshift"] == r"D:\Nightshift-home"          # the default clashes: the next name
+    assert got[r"D:\Nightshift-home"] == r"D:\Nightshift"
+    assert got[r"E:\Nightshift"] == r"D:\Nightshift"

@@ -40,7 +40,7 @@ RESTORE_HINT = (
     "Close every Nightshift window, then run `ns update --rollback` (the previous version is in the folder "
     "ending in .prev)."
 )
-#: Written into a complete program folder (appcopy.MARKER): INSTALL.cmd trusts <home>pp only with it.
+#: Written into a complete program folder (appcopy.MARKER): INSTALL.cmd trusts <home>\app only with it.
 APP_MARKER = ".ns-app.done"
 UPDATE_VENVS = ("studio", "supervisor", "tts")      # extras: ns_common.venv_extras (shared with setup)
 #: Console scripts the app installs into every venv (`[project.scripts]`). A running copy cannot be replaced.

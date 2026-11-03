@@ -52,7 +52,8 @@ def home_problem(path: str, max_len: int = MAX_PATH_LEN) -> str | None:
 # where the install folder may be, compared with the folder the zip was extracted to
 # ---------------------------------------------------------------------------------------------------------
 def _norm(path: str | os.PathLike[str]) -> str:
-    return ntpath.normcase(ntpath.normpath(str(path)))
+    n = ntpath.normcase(ntpath.normpath(str(path)))
+    return n + chr(92) if len(n) == 2 and n[1] == ":" else n      # "d:" is the root "d:\"
 
 
 def _inside(child: str, parent: str) -> bool:
@@ -94,13 +95,21 @@ def sync_roots(env: Mapping[str, str] | None = None) -> list[tuple[str, str]]:
     return roots
 
 
+def _is_drive_root(path: str) -> bool:
+    """True for a drive root such as d: (normalised): it holds every other folder of its drive."""
+    drive, rest = ntpath.splitdrive(path)
+    return bool(drive) and rest in ("", "\\")
+
+
 def layout_problem(
     home: str, app_path: str | os.PathLike[str] | None, env: Mapping[str, str] | None = None
 ) -> str | None:
     """Why ``home`` cannot be the install folder given where the program was extracted; None when it is fine.
 
     * the extracted folder itself, or a folder inside it: setup copies the program into ``<home>\\app``, which
-      cannot sit inside the folder it is copied from, and the extracted folder is meant to be deleted later;
+      cannot sit inside the folder it is copied from, and the extracted folder is meant to be deleted later.
+      A zip extracted straight into a drive root is the exception: the root holds every folder of the drive,
+      so only the root itself is refused and the other folders of that drive are fine;
     * Downloads and OneDrive folders: Windows cleans or syncs them, and sync locks break the update swap.
     """
     h = _norm(home.strip())
@@ -110,7 +119,7 @@ def layout_problem(
             return ("That is the folder you extracted Nightshift to. Pick another folder: setup copies the "
                     "program into an \"app\" folder inside the install folder, so the extracted folder can "
                     "be deleted afterwards")
-        if _inside(h, a):
+        if _inside(h, a) and not _is_drive_root(a):
             return "That folder is inside the folder you extracted Nightshift to. Pick a folder outside it"
     why = "Windows cleans or syncs it and Nightshift's files get locked"
     for label, root in sync_roots(env):

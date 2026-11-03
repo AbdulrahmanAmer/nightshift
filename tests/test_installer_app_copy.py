@@ -227,6 +227,70 @@ def test_the_default_home_in_stage1_avoids_the_folder_the_zip_was_extracted_to()
     assert text.index("function Test-PathInside") < text.index("function Select-DefaultHome")
 
 
+# ---- a zip extracted straight into a drive root ---------------------------------------------------
+@pytest.mark.parametrize(
+    ("home", "ok"),
+    [(r"D:\Nightshift", True), (r"D:\Nightshift-home", True), (r"D:\Data\ns", True), (r"E:\Nightshift", True),
+     ("D:" + chr(92), False), ("D:", False), ("d:" + chr(92), False)],
+)
+def test_a_drive_root_only_refuses_the_root_itself(home: str, ok: bool) -> None:
+    for root in ("D:" + chr(92), "D:"):
+        message = pathcheck.layout_problem(home, root, BOB)
+        assert (message is None) is ok, (home, root, message)
+
+
+def test_a_folder_that_is_not_a_root_still_refuses_everything_inside_it() -> None:
+    assert pathcheck.layout_problem(r"D:\NightShift\data", r"D:\NightShift", BOB) is not None
+    assert pathcheck.layout_problem(r"D:\Nightshift", r"D:\setup", BOB) is None
+
+
+def test_is_drive_root() -> None:
+    assert all(appcopy.is_drive_root(p) for p in ("D:" + chr(92), "D:", "d:/", Path("C:" + chr(92))))
+    assert not any(appcopy.is_drive_root(p) for p in (r"D:\Nightshift", "", "relative"))
+
+
+def test_copying_from_a_drive_root_takes_only_the_bundle_entries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    drive = tmp_path / "D"
+    make_source(drive)
+    (drive / "Games" / "save").mkdir(parents=True)
+    (drive / "Games" / "save" / "big.dat").write_text("x", encoding="utf-8")
+    (drive / "$RECYCLE.BIN").mkdir()
+    (drive / "holiday.mp4").write_text("x", encoding="utf-8")
+    home = drive / "Nightshift"                                   # the default home sits inside the root
+    (home / "logs").mkdir(parents=True)
+    monkeypatch.setattr(appcopy, "is_drive_root", lambda p: Path(p) == drive)
+    res = appcopy.install_app(drive, home)
+    assert res.action == "copied" and res.new_version == "0.1.4"
+    got = tree(home / "app")
+    assert {"INSTALL.cmd", "VERSION", "installer/stage1.ps1", "bin/webview2/WebView2Loader.dll"} <= got
+    assert appcopy.MARKER in got
+    assert not any(p.startswith(("Games/", "$RECYCLE.BIN/", "Nightshift/")) for p in got)
+    assert "holiday.mp4" not in got and not any(p.startswith(("venvs/", "models/")) for p in got)
+
+
+def test_a_home_inside_a_normal_extracted_folder_is_still_an_overlap(tmp_path: Path) -> None:
+    src = make_source(tmp_path / "Nightshift-Setup-0.1.4")
+    with pytest.raises(appcopy.AppCopyError) as ei:
+        appcopy.install_app(src, src / "home")
+    assert ei.value.code == "NS-E115" and "overlap" in ei.value.detail
+
+
+def test_the_root_entry_list_covers_every_top_level_entry_of_the_repository() -> None:
+    import shutil
+    import subprocess
+
+    git = shutil.which("git")
+    if git is None:
+        pytest.skip("git not available")
+    listing = subprocess.run([git, "-C", str(ROOT), "ls-files"], capture_output=True, text=True, check=True)
+    out = listing.stdout
+    top = {line.split("/")[0].lower() for line in out.splitlines() if line}
+    missing = top - appcopy.ROOT_ENTRIES - {".github"}              # .github is not part of the bundle
+    assert not missing, f"add to appcopy.ROOT_ENTRIES: {sorted(missing)}"
+
+
 # ---- b02 and b03 ----------------------------------------------------------------------------------
 def make_boot(tmp_path: Path, source: Path, *, home: Path | None = None) -> Boot:
     var: dict[str, str] = {}

@@ -221,10 +221,23 @@ function Test-PathInside {
     return ($p -eq $f) -or $p.StartsWith($f + '\')
 }
 
+function Test-InsideExtracted {
+    # True when $Path is the folder the zip was extracted to or lies in it. A drive root (the zip extracted
+    # straight into D:\) holds every folder of the drive, so for a root only the root itself counts.
+    param([string]$Path, [string]$AppFolder)
+    if (-not $AppFolder) { return $false }
+    if ($AppFolder.Trim() -match '^[A-Za-z]:\?$') {
+        return ($Path.Trim().TrimEnd('\') -ieq $AppFolder.Trim().TrimEnd('\'))
+    }
+    return (Test-PathInside -Path $Path -Folder $AppFolder)
+}
+
 function Select-DefaultHome {
     # $AppFolder is where the zip was extracted. The install folder must not be that folder or inside it:
     # setup copies the program into <home>\app. NTFS ignores case, so D:\NightShift (the extract folder
     # OPERATOR.md used to suggest) and D:\Nightshift (the default home) are the same folder.
+    # Order: <best drive>\Nightshift, <best drive>\Nightshift-home, then the same two on the next drives;
+    # '' when none is usable (the caller then uses a folder under the user's data directory).
     param($Drives, [string]$AppFolder = '')
     $all = @($Drives)
     if ($all.Count -eq 0) { return '' }
@@ -232,10 +245,16 @@ function Select-DefaultHome {
     if ($roomy.Count -eq 0) { $roomy = $all }
     $ssd = @($roomy | Where-Object { $_.type -eq 'SSD' })
     if ($ssd.Count -gt 0) { $roomy = $ssd }
-    $best = $roomy | Sort-Object -Property @{ Expression = { [double]$_.free_gb }; Descending = $true } | Select-Object -First 1
-    $default = ('{0}:\Nightshift' -f $best.letter)
-    if (Test-PathInside -Path $default -Folder $AppFolder) { $default = ('{0}:\Nightshift-home' -f $best.letter) }
-    return $default
+    $ranked = @($roomy | Sort-Object -Property @{ Expression = { [double]$_.free_gb }; Descending = $true })
+    $ranked += @($all | Where-Object { $ranked -notcontains $_ } |
+        Sort-Object -Property @{ Expression = { [double]$_.free_gb }; Descending = $true })
+    foreach ($d in $ranked) {
+        foreach ($name in @('Nightshift', 'Nightshift-home')) {
+            $candidate = ('{0}:\{1}' -f $d.letter, $name)
+            if (-not (Test-InsideExtracted -Path $candidate -AppFolder $AppFolder)) { return $candidate }
+        }
+    }
+    return ''
 }
 
 # ---------------------------------------------------------------------------------------------------------
@@ -972,7 +991,8 @@ try {
 }
 catch { Write-Verbose 'could not force TLS 1.2' }
 
-$App = (Resolve-Path -LiteralPath $AppPath).Path.TrimEnd('\')
+$App = (Resolve-Path -LiteralPath $AppPath).Path
+if ($App -notmatch '^[A-Za-z]:\\$') { $App = $App.TrimEnd('\') }     # keep the backslash of a drive root (D:\)
 $manifestPath = Join-Path $App 'manifest.json'
 if (-not (Test-Path -LiteralPath $manifestPath)) {
     Write-Host "manifest.json not found in $App. Extract the whole Nightshift zip and run INSTALL.cmd from there." -ForegroundColor Red
