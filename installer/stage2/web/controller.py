@@ -61,10 +61,14 @@ RETRY_NOTES = {
 }
 
 
-def retry_note(reason: str, wait_s: float) -> str:
-    """The row note while a transfer waits to be retried: what happened and how long until the next try."""
+def retry_note(reason: str, wait_s: float, attempt: int | None = None, of: int | None = None) -> str:
+    """The row note while a transfer waits to be retried: what happened, how long until the next try and which
+    try that is ("try 2 of 3"; ``attempt`` is the attempt that just failed)."""
     text = RETRY_NOTES.get(reason, "The download stopped, trying again")
-    return f"{text} in {int(wait_s)} s" if wait_s >= 1 else text
+    text = f"{text} in {int(wait_s)} s" if wait_s >= 1 else text
+    if attempt and of and attempt < of:
+        text += f" (try {attempt + 1} of {of})"
+    return text
 
 
 def now_iso() -> str:
@@ -1355,7 +1359,9 @@ class SetupController:
                 row["note"] = None
             elif event == "retry":
                 row["speedBps"], row["etaS"] = None, None
-                row["note"] = retry_note(str(ev.get("reason")), float(ev.get("waitS") or 0))
+                row["note"] = retry_note(
+                    str(ev.get("reason")), float(ev.get("waitS") or 0),
+                    int(ev.get("attempt") or 0), int(ev.get("of") or 0))
             elif event == "finish":
                 all_done = all(k in self._finished for k, _v in subs)
                 if outcome == "failed":

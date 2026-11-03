@@ -102,9 +102,20 @@ def _stop_started_engine(client: SupervisorClient) -> None:
 @app.command("verify")
 def cmd_verify(
     quick: Annotated[bool, typer.Option("--quick", help="Health, one completion, one voice only.")] = False,
+    downloads: Annotated[
+        bool,
+        typer.Option(
+            "--downloads",
+            help="Only re-hash the downloaded models and programs against manifest.json (no engine).",
+        ),
+    ] = False,
 ) -> None:
     """Check every service and benchmark them; writes logs\\verify-report.json."""
     paths = Paths.from_env()
+    if downloads:
+        from installer.stage2 import verify_downloads
+
+        raise typer.Exit(verify_downloads.run(paths, control.app_path(paths), typer.echo))
     rt = control.runtime_or_default(paths)
     client = _client(paths)
     started_here = not client.is_up()

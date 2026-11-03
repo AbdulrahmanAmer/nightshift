@@ -47,6 +47,10 @@ jobs:
   test:
     runs-on: windows-latest
     timeout-minutes: 40
+    env:
+      # Turns on the tests marked `network` (tests/test_downloader_network.py): real downloads from GitHub and
+      # Hugging Face to prove pause/resume/Range/SHA256 against the real servers. Unset on a laptop = skipped.
+      NS_NETWORK_TESTS: "1"
     steps:
       - run: git config --global core.longpaths true
       - uses: actions/checkout@v4
@@ -57,13 +61,32 @@ jobs:
           cache-dependency-path: pyproject.toml
       - run: choco install ffmpeg -y --no-progress
       - run: python -m pip install -e ".[dev]"
-      - run: python -m pytest -q --junitxml=report.xml
+      # The real-network resume tests run on their own so their evidence (bytes before the pause, the Range
+      # header, the final hash) is printed in the log. They must run: a skipped one fails the step.
+      - name: Real-network download tests
+        shell: bash
+        timeout-minutes: 12
+        run: |
+          timeout 300 python -m pytest -o addopts= -v -s -m network tests/test_downloader_network.py --junitxml=report-network.xml --tb=short -o faulthandler_timeout=120
+          python - <<'EOF'
+          import xml.etree.ElementTree as ET
+          root = ET.parse("report-network.xml").getroot()
+          suite = root if root.tag == "testsuite" else root.find("testsuite")
+          tests, skipped = int(suite.get("tests")), int(suite.get("skipped"))
+          print(f"network tests: {tests} ran, {skipped} skipped")
+          assert tests >= 4 and skipped == 0, "the real-network tests must run in CI, not be skipped"
+          EOF
+      - name: Unit tests (everything but the real-network ones)
+        if: always()
+        run: python -m pytest -q -m "not network" --junitxml=report.xml
       - name: Upload JUnit report
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: junit-report
-          path: report.xml
+          path: |
+            report.xml
+            report-network.xml
           if-no-files-found: ignore
           retention-days: 14
 

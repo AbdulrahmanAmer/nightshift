@@ -635,6 +635,22 @@ def test_retry_notes_name_the_reason():
     assert controller.retry_note("???", 2.0) == "The download stopped, trying again in 2 s"
 
 
+def test_the_retry_note_says_which_try_is_next(tmp_path, monkeypatch):
+    assert controller.retry_note("network", 4.0, 1, 3) == (
+        "The connection dropped, trying again in 4 s (try 2 of 3)")
+    assert controller.retry_note("hash", 2.0, 2, 3) == (
+        "The file failed its check, downloading it again in 2 s (try 3 of 3)")
+    assert controller.retry_note("stall", 2.0, 3, 3) == "No data for 60 s, trying again in 2 s"   # none left
+    s = Setup(tmp_path, monkeypatch)
+    s.accept()
+    ctl = s.ctl
+    ctl._ev_file({"type": "file", "key": LLM, "event": "start", "total": 9001752960})
+    ctl._ev_file({"type": "file", "key": LLM, "event": "retry", "attempt": 1, "reason": "network",
+                  "waitS": 2.0, "of": 3})
+    row = next(r for r in s.snap()["downloads"]["items"] if r["key"] == LLM)
+    assert row["note"] == "The connection dropped, trying again in 2 s (try 2 of 3)"
+
+
 # ------------------------------------------------------------------------------------------ custom model
 CUSTOM = {"repo": "bartowski/Qwen2.5-14B-Instruct-GGUF", "file": "Qwen2.5-14B-Instruct-Q4_K_M.gguf",
           "size": 8_988_110_976}

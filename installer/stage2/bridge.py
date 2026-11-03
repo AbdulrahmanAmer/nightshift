@@ -23,6 +23,7 @@ from typing import Any, TextIO
 
 from rich.console import Console
 
+from installer.stage2.downloader import DEFAULT_RETRIES
 from installer.stage2.ui import Ui
 
 PROGRESS_INTERVAL_S = 0.25  # at most 4 progress events per second per file
@@ -44,6 +45,7 @@ class BridgeReporter:
     def __init__(self, ui: BridgeUi, total_bytes: int = 0) -> None:
         self._ui = ui
         self.total_bytes = total_bytes
+        self.tries = DEFAULT_RETRIES            # attempts per file, shown as "try 2 of 3" in the row note
         self._last: dict[str, float] = {}
         self._lock = threading.Lock()
 
@@ -60,6 +62,18 @@ class BridgeReporter:
     def update(self, name: str, done: int, total: int | None) -> None:
         """Bytes done so far. Blocks while paused (the next 1 MB chunk waits here) and raises on stop."""
         self._ui.checkpoint()
+        self._report(name, done, total)
+
+    def update_nowait(self, name: str, done: int, total: int | None) -> None:
+        """Like ``update`` but never waits at the pause gate; raises ``SetupStopped`` after Stop.
+
+        The downloader checks the gate itself after every block, closes its file and connection and only then
+        waits, so its progress report must not park inside the open file if a Pause lands in between.
+        """
+        self._ui.check_stop()
+        self._report(name, done, total)
+
+    def _report(self, name: str, done: int, total: int | None) -> None:
         now = time.monotonic()
         with self._lock:
             last = self._last.get(name, 0.0)
@@ -78,7 +92,7 @@ class BridgeReporter:
     def retrying(self, name: str, attempt: int, reason: str, wait_s: float) -> None:
         """A transfer failed (reason stall, network or hash) and is tried again after ``wait_s`` seconds."""
         self._ui.emit({"type": "file", "key": name, "event": "retry", "attempt": attempt, "reason": reason,
-                       "waitS": wait_s})
+                       "waitS": wait_s, "of": self.tries})
 
 
 class BridgeUi(Ui):
@@ -160,6 +174,11 @@ class BridgeUi(Ui):
         while not self.gate.wait(GATE_POLL_S):
             if self.stop.is_set():
                 break
+        if self.stop.is_set():
+            raise SetupStopped()
+
+    def check_stop(self) -> None:
+        """Raise ``SetupStopped`` after Stop; never waits (the pause gate is left to the caller)."""
         if self.stop.is_set():
             raise SetupStopped()
 
