@@ -805,11 +805,17 @@ function Read-ServerInfo {
 }
 
 function Invoke-ServerPing {
+    # Windows PowerShell 5.1 silently drops a Cookie given through -Headers (a "restricted" header), which made
+    # every first install stop with "the setup program did not start" (v0.1.1). The cookie goes through a
+    # WebRequestSession instead, and the token is also sent as X-NS-Token, which the server accepts as well.
     param($Info, [int]$TimeoutSec = 2)
     try {
         $uri = 'http://127.0.0.1:{0}/api/ping' -f $Info.port
-        $headers = @{ Cookie = ('ns_setup=' + $Info.token) }
-        $r = Invoke-RestMethod -Uri $uri -Headers $headers -TimeoutSec $TimeoutSec -UseBasicParsing
+        $session = New-Object Microsoft.PowerShell.Commands.WebRequestSession
+        $cookie = New-Object System.Net.Cookie('ns_setup', [string]$Info.token, '/', '127.0.0.1')
+        $session.Cookies.Add($cookie)
+        $headers = @{ 'X-NS-Token' = [string]$Info.token }
+        $r = Invoke-RestMethod -Uri $uri -WebSession $session -Headers $headers -TimeoutSec $TimeoutSec -UseBasicParsing
         return [bool]$r.ok
     }
     catch { return $false }

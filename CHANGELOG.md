@@ -7,25 +7,16 @@ All notable changes to Nightshift are recorded here. The format follows
 
 ## [Unreleased]
 
-### First-run fixes from the partner PC (`feat/release-0.1.3-hotfix`)
-- **The first setup window is the Nightshift window.** The bundle now carries the three WebView2 DLLs in `bin/webview2/`
-  (`dev/make_bundle.ps1 -WebView2Dir`; the release workflow downloads the pinned nupkg, checks its SHA256 and each DLL
-  against `installer/webview2_files.json`, and packs exactly those three files; nothing else is allowed under `bin/` in
-  the zip). The window launcher looks in the install folder and in `<app>/bin/webview2`, and step s02 copies matching
-  DLLs into the install folder instead of downloading the nupkg. Before, the DLLs arrived after the first window opened,
-  so the first run showed an Edge app window with Edge's title bar and icon.
-- **A current NVIDIA driver is no longer reported as too old.** Stage 1 finds `nvidia-smi.exe` in the DCH driver store
-  (`System32/DriverStore/FileRepository/nv*`) too, reads the CUDA version from the banner, then from the driver number
-  (one table, 580 = 13.0, 570 = 12.8, 560 = 12.6, 550 = 12.4, 545 = 12.3), then from Windows' own display adapter record.
-  The driver row is labelled "NVIDIA driver (CUDA 12.4 or newer; 12.8+ for RTX 50-series)". `NS-E103` (fail) only when a
-  version was read and is below 12.4. A version that could not be read at all is the new warning `NS-W115` and setup
-  uses the CUDA 12.4 build. A driver between 12.4 and 12.8 warns, without a code, only for RTX 50-series (Blackwell) cards.
-- **Browse buttons for the install folder and the models folder.** `POST /api/pick-folder` shows the Windows folder
-  dialog (`installer/pick-folder.ps1`, in front of the setup window) and returns the path with its disk check. The install
-  folder is validated when typed, on blur and on pick: absolute path on a local fixed drive (no network paths, no
-  removable drives), at most 120 characters (was 80), no characters Windows forbids, spaces and non-ASCII letters
-  allowed. A picked drive root or a folder that already holds files gets a `Nightshift` folder inside it. The folder is
-  created when Install starts, not before.
+## [0.1.2] - 2026-11-03
+
+### Hotfix: the setup window never started on a stock PC
+- `INSTALL.cmd` stopped with "[FAIL] Setup window: the setup program did not start" (exit code 14) on the first
+  real install, although the setup server was up and had opened Edge. Stage 1's health ping passed the session
+  cookie through `-Headers`, and Windows PowerShell 5.1 silently drops that restricted header, so the server
+  answered 401 and the console killed it. `Invoke-ServerPing` now sends the cookie through a `WebRequestSession`
+  and also as an `X-NS-Token` header, which the server accepts alongside the cookie.
+- New CI test runs the real `Invoke-ServerPing` under `powershell.exe` (5.1) against a live setup server, and pins
+  that the old form fails there, so the gap that let v0.1.1 ship cannot reopen.
 
 ### Release asset names
 - Clearer release assets from the next tag on: `Nightshift-Setup-<ver>.zip` (the installer bundle, was `Nightshift-<ver>.zip`),
