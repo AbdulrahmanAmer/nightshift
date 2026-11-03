@@ -62,6 +62,7 @@ def sample_preflight(home: Path, app_path: Path, *, cuda: str = "13.0") -> dict[
             ("disktype", "Disk type, SSD", "SSD"),
             ("network", "Internet", "all reachable"),
             ("winget", "winget (App Installer)", "available"),
+            ("vcruntime", "Visual C++ runtime", "installed"),
             ("longpaths", "Windows long paths enabled", "yes"),
             ("waketimers", "Wake timers allowed", "enabled"),
         ]

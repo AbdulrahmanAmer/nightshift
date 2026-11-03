@@ -21,7 +21,10 @@ from installer.stage2.web.plan import pinned, required_free_gb
 COPY_FILE = Path(__file__).with_name("operator_copy.json")
 DRIVER_URL = "https://www.nvidia.com/Download/index.aspx"
 STORE_URL = "ms-windows-store://pdp/?ProductId=9NBLGGH4NNS1"
-CHECK_IDS = ("os", "gpu", "driver", "ram", "disk", "disktype", "network", "winget", "longpaths", "waketimers")
+CHECK_IDS = (
+    "os", "gpu", "driver", "ram", "disk", "disktype", "network", "winget", "vcruntime", "longpaths",
+    "waketimers",
+)
 DRIVE_RE = re.compile(r"^[A-Za-z]:[\\/]")
 
 _copy_cache: dict[str, dict[str, str]] | None = None
@@ -77,6 +80,14 @@ ROW_COPY: dict[tuple[str, str], tuple[str, str]] = {
     ("disk", "warn"): (
         "Less free space than recommended",
         "Setup fits, but leaves little room for videos. 60 GB keeps about a month of them",
+    ),
+    ("winget", "warn"): (
+        "winget is not available",
+        "Nothing to do: setup downloads FFmpeg and the Visual C++ runtime directly instead",
+    ),
+    ("vcruntime", "warn"): (
+        "The Visual C++ runtime is missing",
+        "Setup installs it for you. Windows asks for permission once: click Yes",
     ),
     ("network", "warn"): (
         "A download site cannot be reached",
@@ -177,7 +188,7 @@ def check_rows(pf: dict[str, Any], home: str | None = None) -> list[dict[str, An
 SHORT_LABELS = {
     "os": "Windows 10/11, 64-bit", "gpu": "Graphics card", "driver": "NVIDIA driver", "ram": "Memory",
     "disk": "Free disk space", "disktype": "Disk type", "network": "Internet",
-    "winget": "winget (App Installer)",
+    "winget": "winget (App Installer)", "vcruntime": "Visual C++ runtime",
     "longpaths": "Long file paths", "waketimers": "Wake timers",
 }
 
@@ -329,12 +340,17 @@ def disk_check(
     models: dict[str, int] | None = None,
     drive_type_fn: Callable[[str], int] = default_drive_type,
     isfile_fn: Callable[[str], bool] = os.path.isfile,
+    layout_fn: Callable[[str], str | None] | None = None,
+    existing_fn: Callable[[str], str | None] | None = None,
 ) -> dict[str, Any]:
     """DiskCheck for an install folder (or, with ``models``, for a models folder).
 
     The install folder must be an absolute path on a local fixed drive (no network or removable drives),
     at most 120 characters, and the drive needs the plan's free space. Spaces and non-ASCII letters are fine.
     Nothing is created: setup makes the folder when Install starts.
+
+    ``layout_fn`` says why the folder clashes with where the program was extracted or lives in Downloads or
+    OneDrive; ``existing_fn`` names an install that is already in the folder (setup then updates it).
     """
     need = required_free_gb(tier)
     result: dict[str, Any] = {
@@ -349,7 +365,7 @@ def disk_check(
         else:
             result["message"] = "That folder was not found"
         return result
-    problem = home_problem(path)
+    problem = home_problem(path) or (layout_fn(path) if layout_fn else None)
     if problem:
         result["message"] = problem
         return result
@@ -377,6 +393,9 @@ def disk_check(
     if result["ok"]:
         kind = f" ({result['type']})" if result["type"] != "Unknown" else ""
         result["message"] = f"{free:.0f} GB free on {letter}:{kind}"
+        existing = existing_fn(path) if existing_fn else None
+        if existing:
+            result["message"] += f". {existing}"
     else:
         result["message"] = f"Only {free:.0f} GB free on {letter}:. Nightshift needs {need} GB"
     return result

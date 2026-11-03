@@ -24,7 +24,7 @@ def row(pf: dict, row_id: str, home: str | None = None) -> dict:
     return next(r for r in preflight.check_rows(pf, home) if r["id"] == row_id)
 
 
-def test_a_good_pc_has_ten_ok_rows_and_nothing_blocks():
+def test_a_good_pc_has_eleven_ok_rows_and_nothing_blocks():
     rows = preflight.check_rows(handover(), "D:\\Nightshift")
     assert [r["id"] for r in rows] == list(preflight.CHECK_IDS)
     assert all(r["status"] == "ok" and not r["blocking"] for r in rows)
@@ -42,7 +42,7 @@ def test_a_good_pc_has_ten_ok_rows_and_nothing_blocks():
         ("disk", ("fail", "NS-E104", "31 GB free on D:"), "Not enough free disk space", "choose-drive", True),
         ("disktype", ("warn", "NS-W106", "D: is a hard disk"), "The install drive is a hard disk",
          "choose-drive", False),
-        ("winget", ("fail", "NS-E111", "winget --version failed"), "App Installer is missing",
+        ("winget", ("fail", "NS-E111", "winget --version failed"), "winget is not available",
          "open-url", True),
         ("longpaths", ("warn", "NS-W112", "LongPathsEnabled is not 1"), "Long file paths are off",
          "elevate-longpaths", False),

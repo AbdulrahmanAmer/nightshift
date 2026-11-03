@@ -10,6 +10,7 @@ import shutil
 import sys
 import tempfile
 import threading
+import zipfile
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
@@ -17,7 +18,11 @@ from typing import Any
 from installer.stage2.web import modelcheck
 from installer.stage2.web.bootstrap import CmdResult
 
-TOOL_EXE = {"Git.Git": "git.exe", "Gyan.FFmpeg": "ffmpeg.exe", "Microsoft.WindowsTerminal": "wt.exe"}
+TOOL_EXE = {
+    "Microsoft.VCRedist.2015+.x64": "vcruntime", "Gyan.FFmpeg": "ffmpeg.exe",
+    "Microsoft.WindowsTerminal": "wt.exe",
+}
+DEFAULT_PRESENT = {"vcruntime", "ffmpeg.exe", "wt.exe", "winget.exe"}      # a PC with every tool
 
 
 def sample_handover(app_path: Path, *, cuda: str = "13.0", home: str = r"C:\Nightshift") -> dict[str, Any]:
@@ -35,6 +40,7 @@ def sample_handover(app_path: Path, *, cuda: str = "13.0", home: str = r"C:\Nigh
         ("disktype", "Disk type, SSD", "C: SSD"),
         ("network", "Internet", "all reachable"),
         ("winget", "winget (App Installer)", "available"),
+        ("vcruntime", "Visual C++ runtime", "installed"),
         ("longpaths", "Windows long paths enabled", "LongPathsEnabled = 1"),
         ("waketimers", "Wake timers allowed (nightly run)", "enabled"),
     ]
@@ -45,7 +51,7 @@ def sample_handover(app_path: Path, *, cuda: str = "13.0", home: str = r"C:\Nigh
         "gpu": {"name": "NVIDIA GeForce RTX 5060 Ti", "vram_mb": 16311, "driver": "581.57"},
         "drives": [{"letter": c, "free_gb": 500.0, "type": "SSD"} for c in sorted(letters)],
         "winget": True, "unreachable": [],
-        "tools": {"git": True, "ffmpeg": True, "wt": True, "uv": True},
+        "tools": {"ffmpeg": True, "wt": True, "uv": True},
         "checks": [{"id": i, "label": label, "status": "ok", "code": "", "value": value, "hint": ""}
                    for i, label, value in rows],
     }
@@ -84,6 +90,12 @@ class FakeCmd:
         """``shutil.which`` for the fake PC."""
         return rf"C:\fake\{name}" if name.lower() in self.present else None
 
+    def vc_missing(self) -> list[str]:
+        """The runtime DLLs the fake PC lacks (all three until the runtime was "installed")."""
+        if "vcruntime" in self.present:
+            return []
+        return ["msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll"]
+
 
 DEFAULT_PICK = "E:\\Nightshift"           # --simulate: what the fake folder dialog picks
 
@@ -92,7 +104,7 @@ def fake_effects(base: Path, present: set[str] | None = None, **overrides: Any) 
     """An ``Effects`` that touches nothing outside ``base``. Returns it with its FakeCmd."""
     from installer.stage2.web.controller import Effects
 
-    cmd = FakeCmd(present if present is not None else {"git.exe", "ffmpeg.exe", "wt.exe", "winget.exe"})
+    cmd = FakeCmd(present if present is not None else DEFAULT_PRESENT)
     uv = base / "fake-uv" / "uv.exe"
     uv.parent.mkdir(parents=True, exist_ok=True)
     uv.write_bytes(b"MZ")
@@ -106,6 +118,29 @@ def fake_effects(base: Path, present: set[str] | None = None, **overrides: Any) 
         downloads.append((url, sha256))
         dest.mkdir(parents=True, exist_ok=True)
         (dest / "uv.exe").write_bytes(b"MZ")
+
+    fetched: list[tuple[str, str]] = []         # pinned direct downloads: (url, sha256)
+    elevated: list[tuple[str, list[str]]] = []
+    path_adds: list[str] = []
+
+    def fetch_file(url: str, sha256: str, dest: Path, say: Any = None) -> None:
+        fetched.append((url, sha256))
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if dest.suffix.lower() == ".zip":           # the shape of a static FFmpeg build
+            with zipfile.ZipFile(dest, "w") as z:
+                for exe in ("ffmpeg.exe", "ffprobe.exe", "ffplay.exe"):
+                    z.writestr(f"ffmpeg-fake-win64/bin/{exe}", b"MZ")
+        else:
+            dest.write_bytes(b"MZ")
+
+    def run_elevated(exe: Path, args: Sequence[str]) -> CmdResult:
+        elevated.append((str(exe), [str(a) for a in args]))
+        cmd.present.add("vcruntime")                # the "installer" put the runtime in System32
+        return CmdResult(0, "", "")
+
+    def add_user_path(directory: str) -> bool:
+        path_adds.append(directory)
+        return True
 
     def set_var(name: str, value: str) -> bool:
         var[name] = value
@@ -122,7 +157,8 @@ def fake_effects(base: Path, present: set[str] | None = None, **overrides: Any) 
         elevate_longpaths=lambda: True, console=lambda text, level: console.append(text),
         uv_path=lambda home: str(uv), clipboard=lambda text: None, fetch_uv=fetch_uv,
         pick_folder=lambda title, start: next_pick.pop(0) if next_pick else DEFAULT_PICK,
-        drive_type=lambda _letter: 3,
+        drive_type=lambda _letter: 3, vc_missing=cmd.vc_missing, fetch_file=fetch_file,
+        run_elevated=run_elevated, add_user_path=add_user_path,
     )
     for k, v in overrides.items():
         setattr(fx, k, v)
@@ -131,6 +167,9 @@ def fake_effects(base: Path, present: set[str] | None = None, **overrides: Any) 
     fx.home_var = var               # type: ignore[attr-defined]
     fx.uv_downloads = downloads     # type: ignore[attr-defined]
     fx.next_pick = next_pick        # type: ignore[attr-defined]
+    fx.fetched = fetched            # type: ignore[attr-defined]
+    fx.elevated = elevated          # type: ignore[attr-defined]
+    fx.path_adds = path_adds        # type: ignore[attr-defined]
     return fx, cmd
 
 

@@ -2,9 +2,9 @@
 
 The llama.cpp pair follows the driver: CUDA 13.0 or newer takes the CUDA 13.4 build (Blackwell needs it),
 CUDA 12.4 to 12.x the CUDA 12.4 build, a version that was read and is older is NS-E103, and a driver whose
-version could not be read at all takes the CUDA 12.4 build with a warning (NS-W115). ``bins.qwentts`` is null
-in the manifest, so the GitHub Releases asset is probed; without a binary the PyTorch fallback is scheduled
-(NS-W301).
+version could not be read at all takes the CUDA 12.4 build with a warning (NS-W115). ``bins.qwentts`` pins the
+voice engine release asset; when a manifest leaves it null, the latest GitHub release is probed under the new
+asset name and then the old one; without a binary the PyTorch fallback is scheduled (NS-W301).
 yt-dlp.exe (pinned in ``bins.yt_dlp``) goes to ``bin/yt-dlp/yt-dlp.exe`` for the Clipper link sources.
 The WebView2 window files (``bins.webview2``) come from the bundle's ``bin/webview2`` when the SHA256 match.
 """
@@ -18,16 +18,23 @@ from installer.stage2.context import StepContext
 from installer.stage2.downloader import (
     DownloadItem,
     adopt_bundled_webview2,
+    blocked_error,
     is_done,
     plan_bins,
     qwentts_item,
     release_zip_item,
+    removed_after_unpack,
 )
 from installer.stage2.errors import make_error
 from installer.stage2.runtime_cfg import update_runtime
 from installer.stage2.sysinfo import llama_pair_for
 
 QWENTTS_RELEASE_URL = (
+    "https://github.com/AbdulrahmanAmer/nightshift/releases/latest/download/"
+    "Nightshift-VoiceEngine-win-cuda-x64.zip"
+)
+# the name before 0.1.3 (v0.1.0 to v0.1.2 releases); tried second when the new name answers 404
+QWENTTS_RELEASE_URL_OLD = (
     "https://github.com/AbdulrahmanAmer/nightshift/releases/latest/download/qwentts-win-cuda-x64.zip"
 )
 
@@ -100,8 +107,11 @@ class S02DownloadBins(Step):
     def _qwentts(self, ctx: StepContext) -> None:
         item = qwentts_item(ctx.manifest, ctx.paths.home)
         if item is None:
-            probe = release_zip_item("qwentts", QWENTTS_RELEASE_URL, None, ctx.paths.home)
-            item = probe if probe_release(ctx, probe.url) else None
+            for url in (QWENTTS_RELEASE_URL, QWENTTS_RELEASE_URL_OLD):
+                probe = release_zip_item("qwentts", url, None, ctx.paths.home)
+                if probe_release(ctx, probe.url):
+                    item = probe
+                    break
         if item is not None:
             ctx.download([item])
             ctx.set_flag("qwentts", "binary")
@@ -116,6 +126,11 @@ class S02DownloadBins(Step):
         """Every item's files are in place and the qwentts decision is recorded."""
         for item in self._items(ctx):
             if not is_done(item):
+                gone = removed_after_unpack(item)
+                if gone:        # unpacked once (the flag says so) and a program is missing now: a scanner
+                    assert item.extract_to is not None
+                    what = f"was removed after {item.name} was unpacked"
+                    raise blocked_error(item.extract_to / gone[0], what)
                 raise make_error("NS-E109", f"{item.name} is not unpacked")
         if ctx.flag("qwentts") not in ("binary", "none"):
             raise make_error("NS-E109", "the qwentts.cpp decision was not recorded")
