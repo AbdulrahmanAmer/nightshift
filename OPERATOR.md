@@ -15,7 +15,7 @@ Keep this file next to `INSTALL.cmd`.
 
 ## Install (about 1 hour, mostly waiting)
 
-1. Download `Nightshift-<version>.zip` from the Google Drive folder. If there is also a `models` folder and an
+1. Download `Nightshift-Setup-<version>.zip` from the Google Drive folder (on GitHub Releases it is the file marked "Download this"; releases up to 0.1.1 call it `Nightshift-<version>.zip`). If there is also a `models` folder and an
    `answers.json`, download those too.
 2. Right-click the zip, choose **Properties**, tick **Unblock** if you see it, and press OK.
    (Windows marks downloaded files; unblocking stops warning pop-ups later.)
@@ -203,7 +203,7 @@ instead of ours. To change a prompt, copy its file from `ns_studio\prompts\` to 
 
 ## Update to a new version
 
-1. Download the new `Nightshift-<version>.zip` and its `.sha256` file from Drive.
+1. Download the new `Nightshift-Setup-<version>.zip` and its `.sha256` file from Drive. For **Settings > Update from a file** use `Nightshift-Update-<version>.zip` instead (older releases: `nightshift-app-<version>.zip`).
 2. Extract it into the **same folder** as before and choose **Replace files**. Your models, settings, videos and
    history are stored elsewhere and are not touched.
 3. Double-click **Nightshift - Update** on the Desktop and pick the zip (from version 0.3 on). For versions

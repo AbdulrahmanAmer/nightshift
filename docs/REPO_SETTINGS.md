@@ -68,8 +68,8 @@ gh api -X PUT repos/AbdulrahmanAmer/nightshift/actions/permissions/workflow -f d
 | File | Trigger | What |
 |---|---|---|
 | `.github/workflows/ci.yml` | push, pull request | `lint`, `types`, `test`, `ui-build`, `powershell-parse`, `bundle`; `scope-check` on pull requests only |
-| `.github/workflows/release.yml` | tag `v*` | tests, UI build (node 20) and check, `dev/make_bundle.ps1`, GitHub Release with `Nightshift-<ver>.zip`, `.sha256`, `nightshift-app-<ver>.zip` |
-| `.github/workflows/build-qwentts.yml` | `workflow_dispatch`, tag `v*` | builds `qwentts-win-cuda-x64.zip` on `windows-2022` (see "qwentts build") |
+| `.github/workflows/release.yml` | tag `v*` | tests, UI build (node 20) and check, `dev/make_bundle.ps1`, GitHub Release (body from `dev/release_notes.md` plus the changelog entries) with `Nightshift-Setup-<ver>.zip`, `Nightshift-Update-<ver>.zip` and a `.sha256` for each (v0.1.0 and v0.1.1 used `Nightshift-<ver>.zip`, `.sha256`, `nightshift-app-<ver>.zip`) |
+| `.github/workflows/build-qwentts.yml` | `workflow_dispatch`, tag `v*` | builds `Nightshift-VoiceEngine-win-cuda-x64.zip` (v0.1.0: `qwentts-win-cuda-x64.zip`) on `windows-2022` (see "qwentts build") |
 
 Cutting a release (orchestrator; the full loop including the qwentts pin is under "Release loop" below): move the `## [Unreleased]` entries in `CHANGELOG.md` under `## [x.y.z]`, set `VERSION`,
 `pyproject.toml` and `ns_common.__version__` to `x.y.z`, merge to `main`, wait for green CI, then
@@ -101,6 +101,20 @@ Release tags cannot be moved or deleted (tag ruleset above), so each step is don
    hand with `gh release upload v0.1.0 <zip> <zip>.sha256`) and continue at step 4. To bump qwentts.cpp later, change
    `QWENTTS_SHA` in the workflow, tag the next release, and repeat step 4.
 
+### Release asset names (from v0.1.2)
+
+| Asset | Meaning | Before (v0.1.0, v0.1.1) |
+|---|---|---|
+| `Nightshift-Setup-<ver>.zip` + `.sha256` | the installer bundle; the file to download | `Nightshift-<ver>.zip` |
+| `Nightshift-Update-<ver>.zip` + `.sha256` | update-from-file package (Settings > Update from a file, `ns update`) | `nightshift-app-<ver>.zip` |
+| `Nightshift-VoiceEngine-win-cuda-x64.zip` + `.sha256` | qwentts voice engine, downloaded by the installer | `qwentts-win-cuda-x64.zip` (v0.1.0 only) |
+
+`ns update --github` and the dashboard updater pick `Nightshift-Update-<ver>.zip` first and fall back to `nightshift-app-<ver>.zip`,
+so a machine on v0.1.1 can update to a newer release and the reverse lookup of older releases still works. The v0.1.0 asset
+`qwentts-win-cuda-x64.zip` stays where it is: `manifest.json` `bins.qwentts.url` keeps pointing at it (the sha256 pin is of that file)
+until a release with `Nightshift-VoiceEngine-win-cuda-x64.zip` exists; then re-pin to that release's URL and digest in a PR.
+The installer's unpinned probe `releases/latest/download/qwentts-win-cuda-x64.zip` only applies while the pin is `null`.
+
 ## qwentts build
 
 Workflow: `.github/workflows/build-qwentts.yml` (triggers: `workflow_dispatch` and tags `v*`; on a tag the zip is also
@@ -116,8 +130,8 @@ Last build: run https://github.com/AbdulrahmanAmer/nightshift/actions/runs/41341
 | Runner | `windows-2022`, not `windows-latest` (see failures below) |
 | CMake flags | `-G Ninja -DCMAKE_BUILD_TYPE=Release -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES="75-virtual;86-real;89-real;120a-real" -DCMAKE_CUDA_FLAGS=-allow-unsupported-compiler -DGGML_NATIVE=OFF -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON`. `120a-real` is the Blackwell (sm_120) SASS the project itself uses for CUDA 12.8+; 89 covers Ada, 86 Ampere, 75-virtual is PTX for anything else. `GGML_NATIVE=OFF` stops the CPU code being tuned to the CI runner's CPU. |
 | Targets | `tts-server`, `qwen-tts`, `qwen-codec` |
-| Output | artifact `qwentts-win-cuda-x64` with `qwentts-win-cuda-x64.zip` (602.7 MB) and `.zip.sha256`. Content: the three exes, `ggml.dll`, `ggml-base.dll`, `ggml-cpu.dll`, `ggml-cuda.dll`, `cudart64_12.dll`, `cublas64_12.dll`, `cublasLt64_12.dll`, the MSVC runtime DLLs, `BUILD-INFO.txt`. |
-| Pin for manifest.json | `bins.qwentts`: URL `https://github.com/AbdulrahmanAmer/nightshift/releases/download/<tag>/qwentts-win-cuda-x64.zip`, SHA256 from the `.sha256` asset of that same release. The zip is not byte-reproducible, so the hash must come from the published asset, never from another build. |
+| Output | artifact `Nightshift-VoiceEngine-win-cuda-x64` with `Nightshift-VoiceEngine-win-cuda-x64.zip` and `.zip.sha256` (the v0.1.0 build, 602.7 MB, was named `qwentts-win-cuda-x64.zip`). Content: the three exes, `ggml.dll`, `ggml-base.dll`, `ggml-cpu.dll`, `ggml-cuda.dll`, `cudart64_12.dll`, `cublas64_12.dll`, `cublasLt64_12.dll`, the MSVC runtime DLLs, `BUILD-INFO.txt`. |
+| Pin for manifest.json | `bins.qwentts`: URL `https://github.com/AbdulrahmanAmer/nightshift/releases/download/<tag>/Nightshift-VoiceEngine-win-cuda-x64.zip` (only for a release that has the new name; `v0.1.0` has `qwentts-win-cuda-x64.zip` and `manifest.json` keeps that URL until a newer release has been built and re-pinned), SHA256 from the `.sha256` asset of that same release. The zip is not byte-reproducible, so the hash must come from the published asset, never from another build. |
 | Not verified | The exes were not run on a GPU (no GPU in CI). `dumpbin /dependents tts-server.exe` resolves to the shipped DLLs; `tts-server.exe --help` exited 1 without output on the runner (informational step, `continue-on-error`). `ns verify` on the partner PC is the real test (risk 1 in ENGINEERING section 9, wrapper `NS-W301`). |
 
 What failed on the way, exactly:

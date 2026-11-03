@@ -309,3 +309,20 @@ def test_a_crashing_update_check_never_hurts_the_engine(tmp_path: Path) -> None:
             assert (await sup.acquire("llama", "A"))["endpoint"]
 
     asyncio.run(main())
+
+
+def test_new_update_package_name_wins_and_the_old_one_still_works():
+    def a(name: str, **extra: Any) -> dict[str, Any]:
+        return {"name": name, "browser_download_url": f"{BASE}/v0.3.0/{name}", **extra}
+
+    new = {"tag_name": "v0.3.0", "html_url": "x", "assets": [
+        a("Nightshift-Setup-0.3.0.zip"),
+        a("nightshift-app-0.3.0.zip"),
+        a("Nightshift-Update-0.3.0.zip", digest=f"sha256:{DIGEST}"),
+        a("Nightshift-Update-0.3.0.zip.sha256"),
+    ]}
+    rel = releases.parse_release(new)
+    assert rel.zip_name == "Nightshift-Update-0.3.0.zip" and rel.digest == DIGEST
+    assert rel.sidecar_url and rel.sidecar_url.endswith("Nightshift-Update-0.3.0.zip.sha256")
+    old = releases.parse_release(release_json("0.1.1", sidecar=True))
+    assert old.zip_name == "nightshift-app-0.1.1.zip" and old.sidecar_url

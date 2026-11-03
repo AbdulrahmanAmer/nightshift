@@ -1,7 +1,8 @@
 """C2 GitHub releases: `ns update --check` and `ns update --github` (spec J8, gap 9/16).
 
 The latest release of the public repository is read from the GitHub API. The update package is the release
-asset `nightshift-app-<version>.zip`; it is applied only after its SHA256 matches the digest GitHub publishes
+asset `Nightshift-Update-<version>.zip` (releases up to v0.1.1 call it `nightshift-app-<version>.zip`,
+still accepted); it is applied only after its SHA256 matches the digest GitHub publishes
 for that asset (`digest: "sha256:..."`) or, failing that, the `.sha256` file attached to the release (the same
 `<hash>  <name>` format as `manifest.json` pins and `make_bundle.ps1`). A package with no digest to compare
 is refused (`NS-E701`). Only https URLs on GitHub hosts are followed. No other network use, no credentials.
@@ -78,19 +79,29 @@ def parse_release(data: dict[str, Any]) -> Release:
     except ValueError as e:
         raise NsError("NS-E701", f"the latest release has no version tag ({tag!r})") from e
     version = tag.lstrip("v")
-    want_zip = f"nightshift-app-{version}.zip".lower()
-    want_sums = {f"{want_zip}.sha256", f"nightshift-{version}.zip.sha256"}
+    # new name first, then the v0.1.0/v0.1.1 name; the sidecar is the picked zip's .sha256, else any known one
+    zip_names = [f"Nightshift-Update-{version}.zip".lower(), f"nightshift-app-{version}.zip".lower()]
+    want_sums = {f"{n}.sha256" for n in zip_names} | {
+        f"nightshift-setup-{version}.zip.sha256",
+        f"nightshift-{version}.zip.sha256",
+    }
     zip_name = zip_url = digest = sidecar = None
+    best = len(zip_names)
+    sidecars: dict[str, str] = {}
     for asset in data.get("assets") or []:
         name = str(asset.get("name") or "")
         url = str(asset.get("browser_download_url") or "")
-        if name.lower() == want_zip and trusted(url):
-            zip_name, zip_url = name, url
+        low = name.lower()
+        if low in zip_names and trusted(url) and zip_names.index(low) < best:
+            best = zip_names.index(low)
+            zip_name, zip_url, digest = name, url, None
             raw = str(asset.get("digest") or "")
             if raw.lower().startswith("sha256:") and HEX64.match(raw[7:].lower()):
                 digest = raw[7:].lower()
-        elif name.lower() in want_sums and trusted(url):
-            sidecar = url
+        elif low in want_sums and trusted(url):
+            sidecars[low] = url
+    if zip_name is not None:
+        sidecar = sidecars.get(f"{zip_name.lower()}.sha256") or next(iter(sidecars.values()), None)
     return Release(version, tag, str(data.get("html_url") or ""), zip_name, zip_url, digest, sidecar)
 
 
@@ -144,7 +155,7 @@ def download(rel: Release, dest_dir: Path, client: httpx.Client | None = None) -
     The result is what `ns_supervisor.update.update_app` takes. A mismatch deletes the file (`NS-E701`).
     """
     if rel.zip_url is None or rel.zip_name is None:
-        raise NsError("NS-E701", f"release {rel.tag} has no nightshift-app-{rel.version}.zip")
+        raise NsError("NS-E701", f"release {rel.tag} has no Nightshift-Update-{rel.version}.zip")
     http = client or httpx.Client(timeout=httpx.Timeout(60, read=300), follow_redirects=True)
     try:
         want = expected_digest(rel, http)

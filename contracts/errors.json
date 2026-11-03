@@ -60,7 +60,7 @@
   "NS-E612": {"message": "Policy gate: long-form runtime or mid-roll placement rule violated.", "hint": "Master must be at least 8:30 and mid-rolls outside the first/last 2 minutes."},
   "NS-E613": {"message": "Policy gate: stock clip reuse rule violated.", "hint": "See spec §7.4 reuse windows."},
   "NS-E614": {"message": "Policy gate: non-voice audio detected.", "hint": "Nightshift videos carry narration only, no music."},
-  "NS-E701": {"message": "Update package failed verification.", "hint": "Re-download nightshift-app-<version>.zip and its .sha256 file."},
+  "NS-E701": {"message": "Update package failed verification.", "hint": "Re-download Nightshift-Update-<version>.zip and its .sha256 file."},
   "NS-E702": {"message": "Update failed; rolled back to the previous version.", "hint": "Run 'ns doctor --bundle' and send the diagnostics."},
   "NS-E703": {"message": "Restore from backup failed.", "hint": "Check that the zip was made by 'ns backup' and is not corrupted; nothing was changed."},
   "NS-E320": {"message": "The channel profile is invalid.", "hint": "Fix the listed rule in config/channels/<slug>.yaml or via 'studio channel edit'."},

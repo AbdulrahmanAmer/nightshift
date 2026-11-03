@@ -85,7 +85,7 @@ Some actions exist in the Dashboard and for the Assistant (`studio ask`) but hav
 | `ns tune` | Find the fastest llama-server flags for this PC and save them to `runtime.json` (`--dry-run` prints the sweep matrix). |
 | `ns update ZIP` | Apply a release zip (verified, with automatic rollback); `ns update --rollback` goes back one version. |
 | `ns update --check` | Ask GitHub whether a newer release exists; prints a sentence and a JSON line (`update_available`, `current`, `latest`). Changes nothing. The engine does this once a week and shows a notification. |
-| `ns update --github` | Download `nightshift-app-<version>.zip` of the newest release, verify its SHA256 (GitHub's digest, else the attached `.sha256`; nothing is installed without one) and apply it like `ns update ZIP`. |
+| `ns update --github` | Download `Nightshift-Update-<version>.zip` (releases up to v0.1.1: `nightshift-app-<version>.zip`, still accepted) of the newest release, verify its SHA256 (GitHub's digest, else the attached `.sha256`; nothing is installed without one) and apply it like `ns update ZIP`. |
 | `ns backup` | Back up settings, voices, the database and exemplars (`--out` sets the target zip). |
 | `ns restore ZIP` | Restore a backup; what it overwrites is kept in `data\backup\pre-restore-*` (`--all` also restores `runtime.json`). |
 | `ns schedule install` | Register the nightly task "Nightshift Daily" (`--time HH:MM`, default 03:00). |

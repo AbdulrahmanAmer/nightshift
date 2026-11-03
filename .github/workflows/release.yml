@@ -1,7 +1,7 @@
 name: release
 
 # Owner: C10. Tags v* are created by the orchestrator on a green main commit (docs/ENGINEERING.md section 7).
-# build-qwentts.yml also runs on v* tags and attaches qwentts-win-cuda-x64.zip to the same release.
+# build-qwentts.yml also runs on v* tags and attaches Nightshift-VoiceEngine-win-cuda-x64.zip to the same release.
 on:
   push:
     tags: ["v*"]
@@ -55,7 +55,9 @@ jobs:
           $pattern = '(?ms)^## \[' + [regex]::Escape($version) + '\][^\r\n]*\r?\n(?<body>.*?)(?=^## \[|\z)'
           $m = [regex]::Match($changelog, $pattern)
           if (-not $m.Success) { throw "CHANGELOG.md has no '## [$version]' heading; move the Unreleased entries under it before tagging" }
-          Set-Content -Path release-notes.md -Value $m.Groups['body'].Value.Trim() -Encoding utf8
+          # the release body: the "which file do I download" template, then this version's changelog entries
+          $template = (Get-Content dev/release_notes.md -Raw).Replace('<ver>', $version)
+          Set-Content -Path release-notes.md -Value ($template.TrimEnd() + "`n`n" + $m.Groups['body'].Value.Trim()) -Encoding utf8
 
       - uses: actions/setup-node@v4
         with:
@@ -88,9 +90,10 @@ jobs:
         run: |
           $version = $env:TAG.TrimStart('v')
           $assets = @(
-            "dist/Nightshift-$version.zip",
-            "dist/Nightshift-$version.zip.sha256",
-            "dist/nightshift-app-$version.zip"
+            "dist/Nightshift-Setup-$version.zip",
+            "dist/Nightshift-Setup-$version.zip.sha256",
+            "dist/Nightshift-Update-$version.zip",
+            "dist/Nightshift-Update-$version.zip.sha256"
           )
           # build-qwentts.yml may have created the release already; create it only when absent.
           gh release view $env:TAG *> $null

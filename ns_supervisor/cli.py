@@ -214,7 +214,7 @@ def _apply_update(
 
 @app.command("update")
 def cmd_update(
-    zip_path: Annotated[Path | None, typer.Argument(help="Nightshift-<version>.zip")] = None,
+    zip_path: Annotated[Path | None, typer.Argument(help="Nightshift-Update-<version>.zip")] = None,
     rollback: Annotated[bool, typer.Option("--rollback", help="Restore the previous version.")] = False,
     check: Annotated[bool, typer.Option("--check", help="Is a newer release on GitHub?")] = False,
     github: Annotated[
