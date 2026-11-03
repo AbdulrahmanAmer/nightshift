@@ -67,7 +67,7 @@ jobs:
         shell: bash
         timeout-minutes: 12
         run: |
-          python -m pytest -o addopts= -v -s -m network tests/test_downloader_network.py --junitxml=report-network.xml --tb=short
+          timeout 300 python -m pytest -o addopts= -v -s -m network tests/test_downloader_network.py --junitxml=report-network.xml --tb=short -o faulthandler_timeout=120
           python - <<'EOF'
           import xml.etree.ElementTree as ET
           root = ET.parse("report-network.xml").getroot()
