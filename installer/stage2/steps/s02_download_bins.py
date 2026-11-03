@@ -4,6 +4,7 @@ The llama.cpp pair follows the driver: CUDA 13.0 or newer takes the CUDA 13.4 bu
 CUDA 12.4 to 12.x the CUDA 12.4 build, anything older is NS-E103. ``bins.qwentts`` is null in the manifest,
 so the GitHub Releases asset is probed; without a binary the PyTorch fallback is scheduled (NS-W301).
 yt-dlp.exe (pinned in ``bins.yt_dlp``) goes to ``bin/yt-dlp/yt-dlp.exe`` for the Clipper link sources.
+The WebView2 window files (``bins.webview2``) come from the bundle's ``bin/webview2`` when the SHA256 match.
 """
 
 from __future__ import annotations
@@ -12,7 +13,14 @@ import httpx
 
 from installer.stage2.base import Step
 from installer.stage2.context import StepContext
-from installer.stage2.downloader import DownloadItem, is_done, plan_bins, qwentts_item, release_zip_item
+from installer.stage2.downloader import (
+    DownloadItem,
+    adopt_bundled_webview2,
+    is_done,
+    plan_bins,
+    qwentts_item,
+    release_zip_item,
+)
 from installer.stage2.errors import make_error
 from installer.stage2.runtime_cfg import update_runtime
 from installer.stage2.sysinfo import llama_pair_for
@@ -56,6 +64,8 @@ class S02DownloadBins(Step):
 
     def _items(self, ctx: StepContext) -> list[DownloadItem]:
         answers = ctx.ensure_answers()
+        # the release bundle carries the window files: use them, not the nupkg (no-op otherwise)
+        adopt_bundled_webview2(ctx.manifest, ctx.app_path, ctx.paths.home)
         return plan_bins(
             ctx.manifest, ctx.profile, ctx.paths.home, include_code=answers.install_code,
             llama_pair=choose_pair(ctx),

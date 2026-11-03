@@ -24,12 +24,19 @@
 
 .PARAMETER DryRun
   Build and verify in a temp folder, list the contents, write nothing to OutDir.
+
+.PARAMETER WebView2Dir
+  A folder holding exactly Microsoft.Web.WebView2.Core.dll, Microsoft.Web.WebView2.Wpf.dll and WebView2Loader.dll
+  (the release workflow extracts them from the pinned nupkg after checking its SHA256). They are copied to
+  bin/webview2/ INSIDE the zip, so the very first setup window already uses the frameless host. Those three files
+  are the only thing allowed under bin/ in the zip.
 #>
 [CmdletBinding()]
 param(
     [string]$Version = '',
     [string]$OutDir = '',
-    [switch]$DryRun
+    [switch]$DryRun,
+    [string]$WebView2Dir = ''
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -43,6 +50,9 @@ $MaxFixtureBytes = 1MB
 $ForbiddenNames = @('*.gguf', '*.onnx', '*.safetensors', '*.mp4', '*.exe')
 $ForbiddenDirs = @('.venv', 'venv', '__pycache__', '.git', '.github', 'node_modules')
 # The dashboard and installer builds are committed (CI job ui-build keeps them equal to ns_dashboard/ui); the partner PC has no node.
+# The only binaries a bundle may carry: the WebView2 host DLLs, in bin/webview2/ (the *.exe rule still applies).
+$WebView2Files = @('Microsoft.Web.WebView2.Core.dll', 'Microsoft.Web.WebView2.Wpf.dll', 'WebView2Loader.dll')
+$AllowedBinEntries = @($WebView2Files | ForEach-Object { 'bin/webview2/' + $_ })
 $RequiredEntries = @('VERSION', 'pyproject.toml', 'ns_common/__init__.py', 'ns_dashboard/static/index.html', 'ns_dashboard/static/app.js', 'ns_dashboard/static/brand/nightshift.ico', 'installer/ui/static/index.html', 'installer/ui/static/app.js', 'DEMO.cmd', 'dev/demo/serve.js')
 
 function Invoke-Git {
@@ -115,10 +125,20 @@ function Test-BundleZip {
         if ($e.Name.Contains('\')) {
             $problems.Add("backslash in entry name $($e.Name)")
         }
+        if ($e.Name -like 'bin/*' -and ($AllowedBinEntries -notcontains $e.Name)) {
+            $problems.Add("entry not allowed under bin/ (only $($AllowedBinEntries -join ', ')): $($e.Name)")
+        }
     }
     foreach ($req in $RequiredEntries) {
         if (-not ($entries | Where-Object { $_.Name -eq $req })) {
             $problems.Add("required entry missing: $req")
+        }
+    }
+    if ($WebView2Dir) {
+        foreach ($req in $AllowedBinEntries) {
+            if (-not ($entries | Where-Object { $_.Name -eq $req })) {
+                $problems.Add("required entry missing: $req")
+            }
         }
     }
     $size = (Get-Item -LiteralPath $ZipPath).Length
@@ -212,6 +232,21 @@ try {
     if ((Test-Path -LiteralPath $answersSrc) -and -not (Test-Path -LiteralPath $answersRoot)) {
         Copy-Item -LiteralPath $answersSrc -Destination $answersRoot
     }
+    if ($WebView2Dir) {
+        $wvSrc = (Resolve-Path -LiteralPath $WebView2Dir).Path
+        $found = @(Get-ChildItem -LiteralPath $wvSrc -Force -File | ForEach-Object { $_.Name } | Sort-Object)
+        $want = @($WebView2Files | Sort-Object)
+        if (($found -join '|') -ne ($want -join '|')) {
+            throw "WebView2Dir must hold exactly $($WebView2Files -join ', '); found: $($found -join ', ')"
+        }
+        $wvDest = Join-Path $stage 'bin/webview2'
+        New-Item -ItemType Directory -Force -Path $wvDest | Out-Null
+        foreach ($f in $WebView2Files) {
+            Copy-Item -LiteralPath (Join-Path $wvSrc $f) -Destination (Join-Path $wvDest $f)
+        }
+        Write-Host '  window files: bin/webview2 (3 DLLs)'
+    }
+
     foreach ($name in @('OPERATOR.md', 'answers.example.json', 'INSTALL.cmd', 'DEMO.cmd')) {
         if (Test-Path -LiteralPath (Join-Path $stage $name)) {
             Write-Host "  root file present: $name"

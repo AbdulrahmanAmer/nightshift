@@ -130,8 +130,9 @@ def open_window(
 ) -> WindowHandle:
     """Open ``url`` in the first launcher that works and say which one it was.
 
-    The WebView2 host is tried only when its DLLs exist (on the first run they arrive in step s02, so the
-    window opens in Edge or Chrome and the host takes over from the next run). It must show its window
+    The WebView2 host is tried only when its DLLs exist: in the install folder, or in ``<app>/bin/webview2``
+    (the release bundle ships them there, so even the first window is the host). A source checkout or a bundle
+    without them opens Edge or Chrome, and the host takes over once step s02 has downloaded the DLLs. It must show its window
     (``ready``: the host wrote its state file) within ``wait_s`` seconds, or exit 0 (it raised a window that
     was already open). Exit 3, any other exit, or silence until the deadline falls through to the browser.
     """
