@@ -8,6 +8,7 @@ them into
 
 import hashlib
 import json
+import os
 import shutil
 import subprocess
 import zipfile
@@ -123,7 +124,9 @@ def dry_run(tmp_path: Path, folder: Path) -> subprocess.CompletedProcess[str]:
     assert exe is not None
     cmd = [exe, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File",
            str(ROOT / "dev" / "make_bundle.ps1"), "-DryRun", "-WebView2Dir", str(folder)]
-    return subprocess.run(cmd, capture_output=True, text=True, timeout=600, cwd=ROOT, check=False)
+    # a PSModulePath from PowerShell 7 (the CI runner shell) hides the 5.1 modules: no Get-FileHash
+    env = {k: v for k, v in os.environ.items() if k.lower() != "psmodulepath"}
+    return subprocess.run(cmd, capture_output=True, text=True, timeout=600, cwd=ROOT, env=env, check=False)
 
 
 @needs_powershell

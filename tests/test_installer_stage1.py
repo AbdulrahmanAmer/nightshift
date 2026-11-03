@@ -138,7 +138,8 @@ def test_llama_pair_follows_cuda(tmp_path: Path, smi: str, pair: str, cuda: str)
     [
         ({"smi_text": "CUDA Version: 12.8"}, "cuda12", "12.8", "nvidia-smi"),
         ({"smi_text": "", "driver": "572.16"}, "cuda12", "12.8", "driver"),
-        ({"smi_text": "NVIDIA-SMI 581.57  Treiberversion  CUDA-Version: 13.0"}, "cuda13", "13.0", "driver"),
+        ({"smi_text": "NVIDIA-SMI 581.57  Treiberversion  CUDA-Version: 13.0", "driver": "581.57"},
+         "cuda13", "13.0", "driver"),
         ({"smi_text": "", "driver": "551.23"}, "cuda12", "12.4", "driver"),
         ({"smi_text": "", "driver": "531.18"}, "", "12.1", "driver"),
         ({"smi_text": "", "driver": ""}, "cuda12", "", "none"),          # unreadable: the CUDA 12.4 build
