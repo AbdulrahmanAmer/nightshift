@@ -102,11 +102,20 @@ class Handler(BaseHTTPRequestHandler):
         return self.headers.get("Host", "") == f"127.0.0.1:{self.server.server_address[1]}"
 
     def _cookie_ok(self) -> bool:
+        """The session cookie, or the same token as an ``X-NS-Token`` header.
+
+        The header exists for stage 1's health ping: Windows PowerShell 5.1 drops a Cookie passed through
+        ``-Headers``, so the console sends the token both ways (``Invoke-ServerPing`` in ``stage1.ps1``).
+        """
+        token = self.server.app.token
+        header = self.headers.get("X-NS-Token", "")
+        if header and secrets.compare_digest(header, token):
+            return True
         jar = SimpleCookie(self.headers.get("Cookie", ""))
         morsel = jar.get(COOKIE)
         if not morsel:
             return False
-        return secrets.compare_digest(morsel.value, self.server.app.token)
+        return secrets.compare_digest(morsel.value, token)
 
     def _body(self) -> dict[str, Any] | None:
         """The JSON body, or None after an error answer was sent."""

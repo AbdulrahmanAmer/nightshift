@@ -7,6 +7,17 @@ All notable changes to Nightshift are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-11-03
+
+### Hotfix: the setup window never started on a stock PC
+- `INSTALL.cmd` stopped with "[FAIL] Setup window: the setup program did not start" (exit code 14) on the first
+  real install, although the setup server was up and had opened Edge. Stage 1's health ping passed the session
+  cookie through `-Headers`, and Windows PowerShell 5.1 silently drops that restricted header, so the server
+  answered 401 and the console killed it. `Invoke-ServerPing` now sends the cookie through a `WebRequestSession`
+  and also as an `X-NS-Token` header, which the server accepts alongside the cookie.
+- New CI test runs the real `Invoke-ServerPing` under `powershell.exe` (5.1) against a live setup server, and pins
+  that the old form fails there, so the gap that let v0.1.1 ship cannot reopen.
+
 ### Release asset names
 - Clearer release assets from the next tag on: `Nightshift-Setup-<ver>.zip` (the installer bundle, was `Nightshift-<ver>.zip`),
   `Nightshift-Update-<ver>.zip` (update-from-file package, was `nightshift-app-<ver>.zip`) and
