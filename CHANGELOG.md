@@ -7,7 +7,34 @@ All notable changes to Nightshift are recorded here. The format follows
 
 ## [Unreleased]
 
-**Downloads resume, verify and recover** (`feat/release-download-hardening`)
+## [0.1.5] - 2026-11-03
+
+### Final pre-tag fixes (`feat/release-0.1.5-pretag`, from the last review before tagging)
+
+- **Shortcuts and the nightly task follow the program folder.** Running `INSTALL.cmd` over an install made with an
+  older version moved the program to `<home>\app`, but the Desktop shortcuts and the "Nightshift Daily" task kept the
+  folder the zip had been extracted to (and Task Scheduler could not start the 03:00 task once that folder was
+  deleted, as `OPERATOR.md` suggests). s09 now records `shortcuts_app` and runs again when it differs from the
+  program folder, which rewrites every shortcut and re-registers the task with the new command and working directory.
+- **`ns update` marks the program folder as finished.** It writes `.ns-app.done` (the same text setup writes) into the
+  new tree, and `ns update --rollback` into the restored one. A later `INSTALL.cmd` run used to find no marker, call
+  `<home>\app` "an unfinished folder from an earlier try" and delete it without stopping the engine; it now swaps it
+  with `app.prev` like any update, with the engine stopped first.
+- **The CPU fallback for captions is not sticky.** With a graphics card, s08 probes whisper on CUDA on every run. A
+  passing probe puts `runtime.json` back on `cuda`; only a failing probe keeps or sets the CPU, with `NS-W404` each
+  time. A driver update or a restored DLL no longer leaves captions slow for good.
+- **RTX 50 card with an unreadable driver version.** Stage 1 hands over `cuda13` (as s02 chooses), so the setup
+  window lists the llama.cpp and CUDA runtime rows that are really downloaded, and the total matches.
+- **Zip extracted to a drive root.** `D:\Nightshift` counted as "inside" `D:\`, so the preselected install folder was
+  refused. A drive root holds every folder of its drive: only the root itself is refused now, in stage 1 and in the
+  window. Copying from a root takes only the bundle's own top-level entries, never the whole drive.
+- **Uninstall leaves nothing behind.** It takes the FFmpeg fallback's folder (`<home>\bin\ffmpeg`) out of the user
+  PATH, and the console uninstall (used when no Python is found) removes `app`, `app.new` and `app.prev` too.
+- **`UNINSTALL.cmd` no longer keeps `<home>\app` alive.** Explorer starts the console in that folder and it waited at
+  `pause`, so the emptied folder was left after the window closed. The script changes to `%TEMP%` first, and the
+  deferred cleanup keeps trying for two minutes per folder (was 90 seconds).
+
+### Downloads resume, verify and recover (`feat/release-download-hardening`, #61)
 
 - **Real-network resume tests (CI only).** `tests/test_downloader_network.py` (marker `network`, skipped unless
   `NS_NETWORK_TESTS` is set; the CI `test` job sets it and runs them in their own step, failing if any is skipped)
@@ -36,7 +63,6 @@ All notable changes to Nightshift are recorded here. The format follows
   install against `manifest.json` and prints ok / missing / bad hash with the fix for each; exit 1 when something needs
   fixing. OPERATOR.md has a new "If a download stops" section.
 
-Installer: whisper CUDA libraries and a CPU fallback for captions (CR-C1-4 a, b, c):
 
 ### Install audit fixes (`feat/release-install-audit`, findings #1 to #8 and #10 to #12 of `install-audit.md`)
 

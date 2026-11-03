@@ -152,3 +152,17 @@ def test_each_tier_card_carries_the_manifest_model_and_the_facts_from_it(raw):
     assert [t for t, i in infos.items() if i["recommended"]] == ["balanced"]
     cpu = plan.tier_infos(raw, "cpu-dev", ram_gb=32.0, vram_mb=None)
     assert cpu["small"]["vramLeftGb"] is None and cpu["balanced"]["repo"] is None
+
+
+def test_build_plan_follows_the_pair_stage1_handed_over_when_the_driver_version_is_unreadable(raw):
+    # an RTX 50 card with an unreadable driver: stage 1 hands over cuda13 with no cuda version
+    def keys(**kw):
+        p = plan.build_plan(raw, profile="gpu", tier="small", include_code=False, ram_gb=32.0, vram_mb=16311,
+                            **kw)
+        return [i["key"] for g in p["groups"] for i in g["items"]]
+
+    blackwell = keys(cuda="", llama_pair="cuda13")
+    assert "llama_cuda13" in blackwell and "cudart13" in blackwell and "llama_cuda" not in blackwell
+    ada = keys(cuda="", llama_pair="cuda12")
+    assert "llama_cuda" in ada and "llama_cuda13" not in ada
+    assert "llama_cuda13" in keys(cuda="13.0")                       # no hand-over pair: derived from CUDA

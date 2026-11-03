@@ -3,7 +3,8 @@
     Nightshift uninstaller (component C1, spec 5).
 
 .DESCRIPTION
-    Removes the scheduled task, desktop shortcuts, venvs\, bin\ and the NIGHTSHIFT_HOME user environment
+    Removes the scheduled task, desktop shortcuts, venvs\, bin\, the program folder (app, app.new, app.prev),
+    the FFmpeg fallback's user PATH entry and the NIGHTSHIFT_HOME user environment
     variable. models\ and the user data (outbox, rejected, data, imports, cache) are kept unless you answer
     yes (default No) or pass -DeleteModels / -DeleteData. Safe to run more than once.
 
@@ -67,6 +68,31 @@ function Remove-Tree {
     if (Test-Path -LiteralPath $Path) {
         Write-Host "  could not remove $Path completely (a file may be in use); close Nightshift windows and run again." -ForegroundColor Yellow
     }
+}
+
+function Remove-UserPathEntry {
+    # Takes $Directory out of the user's PATH (the FFmpeg fallback adds <home>\bin\ffmpeg there). The value is
+    # read and written unexpanded, so %VAR% entries and the REG_EXPAND_SZ kind survive. $SubKey is below HKCU.
+    param([string]$Directory, [string]$SubKey = 'Environment')
+    $wanted = $Directory.Trim().TrimEnd('\')
+    $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($SubKey, $true)
+    if ($null -eq $key) { return $false }
+    try {
+        $value = $key.GetValue('Path', $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+        if ($null -eq $value) { return $false }
+        $kind = $key.GetValueKind('Path')
+        $parts = @(([string]$value).Split(';') | Where-Object { $_ })
+        $kept = @($parts | Where-Object { $_.Trim().TrimEnd('\') -ine $wanted })
+        if ($kept.Count -eq $parts.Count) { return $false }
+        if ($script:IsDry) {
+            Show-Action "remove $Directory from the user PATH"
+            return $true
+        }
+        $key.SetValue('Path', ($kept -join ';'), $kind)
+        Write-Host "  removed $Directory from the user PATH"
+        return $true
+    }
+    finally { $key.Close() }
 }
 
 # ---- where is the install -------------------------------------------------------------------------------
@@ -155,6 +181,8 @@ if (-not $SkipSystem) {
             Write-Host '  removed the notification registration'
         }
     }
+    # The FFmpeg fallback put its folder on the user PATH; the environment variable change below broadcasts it.
+    [void](Remove-UserPathEntry -Directory (Join-Path (Join-Path $nsHome 'bin') 'ffmpeg'))
     foreach ($desktop in @([Environment]::GetFolderPath('Desktop'), [Environment]::GetFolderPath('CommonDesktopDirectory'))) {
         if (-not $desktop -or -not (Test-Path -LiteralPath $desktop)) { continue }
         foreach ($lnk in @(Get-ChildItem -LiteralPath $desktop -Filter 'Nightshift*.lnk' -File -ErrorAction SilentlyContinue)) {
@@ -175,6 +203,9 @@ if ($KeepBin) { Write-Host '  bin and run are removed when the uninstall window 
 else {
     Remove-Tree -Path (Join-Path $nsHome 'bin')
     Remove-Tree -Path (Join-Path $nsHome 'run')
+    # The program folder setup copied (and the swap folders of an update). With -KeepBin the window runs from
+    # it, so the deferred cleanup of the window removes these.
+    foreach ($leaf in @('app', 'app.new', 'app.prev')) { Remove-Tree -Path (Join-Path $nsHome $leaf) }
 }
 if ($wipeModels) { Remove-Tree -Path (Join-Path $nsHome 'models') }
 if (-not $SkipSystem) {

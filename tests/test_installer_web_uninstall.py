@@ -140,7 +140,9 @@ def test_the_deferred_script_waits_for_the_window_then_deletes_bin_with_retries(
     home = tmp_path / "José's ns"
     script = uninstall.deferred_script(home, [111, 222])
     assert "@(111,222)" in script and "Wait-Process" in script
-    assert str(home / "bin").replace("'", "''") in script and "for ($i = 0; $i -lt 90" in script
+    assert str(home / "bin").replace("'", "''") in script
+    assert f"for ($i = 0; $i -lt {uninstall.REMOVE_TRIES}" in script
+    assert uninstall.REMOVE_TRIES >= 120                                      # at least two minutes
     started: list[dict] = []
     ok = uninstall.spawn_deferred(home, popen=lambda argv, **kw: started.append({"argv": argv, **kw}))
     assert ok and started[0]["argv"][0] == "powershell.exe" and "-EncodedCommand" in started[0]["argv"]

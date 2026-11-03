@@ -18,6 +18,7 @@ task, the launchers and ``ns update`` all point at it. Setup therefore copies th
 from __future__ import annotations
 
 import hashlib
+import ntpath
 import os
 import shutil
 import time
@@ -35,6 +36,17 @@ SKIP_TOP = frozenset({"venvs", "models", "answers.json"})
 KEEP_IN_BIN = frozenset({"webview2"})
 SKIP_ANYWHERE = frozenset(
     {"__pycache__", "node_modules", ".venv", ".pytest_cache", ".ruff_cache", ".mypy_cache"}
+)
+# A zip extracted straight into a drive root has the whole drive as its "folder": then only the bundle's own
+# top-level entries are program files (a test keeps this list covering the repository's tracked entries).
+ROOT_ENTRIES = frozenset(
+    {
+        "build_spec.md", "build_spec_v1.md", "changelog.md", "claude.md", "demo.cmd", "install.cmd",
+        "operator.md", "readme.md", "uninstall.cmd", "version", "contracts", "dev", "docs", "installer",
+        "launchers", "manifest.json", "ns_common", "ns_dashboard", "ns_studio", "ns_supervisor", "ns_tts",
+        "pyproject.toml", "tools", "tests", "bin", "answers.example.json", ".editorconfig", ".gitattributes",
+        ".gitignore",
+    }
 )
 RENAME_TRIES = 20
 RENAME_PAUSE_S = 1.0
@@ -99,6 +111,12 @@ def same_folder(a: Path, b: Path) -> bool:
     return _norm(a) == _norm(b)
 
 
+def is_drive_root(path: Path | str) -> bool:
+    """True for a drive root such as D: (with or without the backslash): it holds the whole drive."""
+    drive, rest = ntpath.splitdrive(str(path).strip())
+    return bool(drive) and rest in ("", "\\", "/")
+
+
 def is_inside(child: Path, parent: Path) -> bool:
     """True when ``child`` is ``parent`` or lies below it (case-insensitive, no symlink resolution)."""
     c, p = _norm(child).split(os.sep), _norm(parent).split(os.sep)
@@ -127,11 +145,14 @@ def is_current(source: Path, home: Path) -> bool:
 
 def _ignore(source: Path) -> Callable[[str, list[str]], set[str]]:
     root = _norm(source)
+    root_is_drive = is_drive_root(source)
 
     def ignore(directory: str, names: list[str]) -> set[str]:
         here = _norm(directory)
         skipped = {n for n in names if n in SKIP_ANYWHERE}
         if here == root:
+            if root_is_drive:
+                skipped |= {n for n in names if n.lower() not in ROOT_ENTRIES}
             skipped |= {n for n in names if n.lower() in SKIP_TOP}
         elif os.path.basename(here) == "bin" and os.path.dirname(here) == root:
             skipped |= {n for n in names if n.lower() not in KEEP_IN_BIN}
@@ -199,7 +220,8 @@ def install_app(
         if installed_fingerprint(home) is None:
             (dest / MARKER).write_text(fingerprint(dest), encoding="utf-8")
         return CopyResult("in-place", read_version(dest), read_version(dest))
-    if is_inside(dest, source) or is_inside(source, dest):
+    # (a drive root contains every folder of its drive, the home included; only its bundle entries are copied)
+    if (is_inside(dest, source) and not is_drive_root(source)) or is_inside(source, dest):
         raise AppCopyError("NS-E115", f"{source} and {dest} overlap; extract the zip to a separate folder")
     new_version = read_version(source)
     old_version = installed_version(home)

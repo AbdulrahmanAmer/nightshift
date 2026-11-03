@@ -261,6 +261,47 @@ def test_s08_whisper_gpu_failure_falls_back_to_the_cpu_with_w404(tmp_path: Path)
     assert ctx.flag("smoke") == "passed"
 
 
+def force_cpu_whisper(ctx) -> None:
+    rt = ensure_baseline(ctx)
+    rt.whisper.device, rt.whisper.compute_type = "cpu", "int8"
+    save_runtime(ctx.paths, rt)
+
+
+def test_s08_a_working_graphics_card_brings_whisper_back_from_the_cpu(tmp_path: Path):
+    # an earlier run (a missing DLL, an old driver) left runtime.json on the CPU; the card works now
+    ctx, runner = smoke_ctx(tmp_path)
+    force_cpu_whisper(ctx)
+    assert whisper_cfg(ctx) == ("cpu", "int8")
+    S08Smoke().run(ctx)
+    assert [c.tag for c in runner.called("whisper probe")] == ["whisper probe cuda"]
+    assert whisper_cfg(ctx) == ("cuda", "int8") and ctx.warnings == []
+    assert ctx.flag("smoke") == "passed"
+
+
+def test_s08_a_failing_graphics_card_keeps_whisper_on_the_cpu_and_warns_again(tmp_path: Path):
+    runner = FakeRunner(tmp_path / "desktop", results={
+        "whisper probe cuda": RunResult(1, "", "RuntimeError: cudnn64_9.dll is not found")})
+    ctx = resolved(tmp_path, runner=runner)
+    force_cpu_whisper(ctx)
+    S08Smoke().run(ctx)
+    assert [c.tag for c in runner.called("whisper probe")] == ["whisper probe cuda", "whisper probe cpu"]
+    assert whisper_cfg(ctx) == ("cpu", "int8")
+    assert [c for c, _ in ctx.warnings] == ["NS-W404"] and "cudnn64_9" in ctx.warnings[0][1]
+
+
+def test_s08_whisper_goes_cpu_then_cuda_then_cpu_across_runs(tmp_path: Path):
+    runner = FakeRunner(tmp_path / "desktop", results={"whisper probe cuda": RunResult(1, "", "no cublas")})
+    ctx = resolved(tmp_path, runner=runner)
+    S08Smoke().run(ctx)
+    assert whisper_cfg(ctx) == ("cpu", "int8")
+    runner.results.pop("whisper probe cuda")             # the DLL is installed / the driver was updated
+    S08Smoke().run(ctx)
+    assert whisper_cfg(ctx) == ("cuda", "int8")
+    runner.results["whisper probe cuda"] = RunResult(1, "", "broken again")
+    S08Smoke().run(ctx)
+    assert whisper_cfg(ctx) == ("cpu", "int8")
+
+
 def test_s08_whisper_that_did_not_load_on_the_gpu_skips_the_probe_and_uses_the_cpu(tmp_path: Path):
     ctx, runner = smoke_ctx(tmp_path, {names.WHISPER_LOAD})
     S08Smoke().run(ctx)
@@ -354,6 +395,37 @@ def test_s09_creates_shortcuts_for_existing_launchers_and_registers_the_task(tmp
     assert ctx.flag("schedule") == "installed"
     assert "not part of this version yet" in ctx.ui.text
     assert step.check(ctx) is True
+
+
+def test_s09_runs_again_when_the_program_folder_moved_to_home_app(tmp_path: Path):
+    # INSTALL.cmd over an old install: the shortcuts and the task still point at the extracted folder.
+    old = launcher_app(tmp_path / "extracted", ["nightshift-dashboard.ps1"])
+    new = launcher_app(tmp_path / "home" / "app", ["nightshift-dashboard.ps1"])
+    runner = FakeRunner(tmp_path / "desktop")
+    ctx = make_test_context(tmp_path, raw_answers=example_answers(), resolve=True, app_path=old,
+                            runner=runner)
+    step = S09ShortcutsScheduler()
+    step.run(ctx)
+    assert ctx.flag("shortcuts_app") == str(old) and step.check(ctx) is True
+    ctx.app_path = new                                   # b02 has copied the program; install_state follows
+    assert step.check(ctx) is False                      # the .lnk files exist, but point at the old folder
+    step.run(ctx)
+    assert ctx.flag("shortcuts_app") == str(new) and step.check(ctx) is True
+    last = runner.called("ps:shortcut")[-1]
+    assert str(new / "launchers") in last.meta["arguments"]
+    assert len(runner.called("ns schedule install")) == 2
+    assert runner.called("ns schedule install")[-1].cwd == new
+
+
+def test_s09_state_from_before_the_flag_existed_runs_again(tmp_path: Path):
+    app = launcher_app(tmp_path, ["nightshift-dashboard.ps1"])
+    ctx = make_test_context(tmp_path, raw_answers=example_answers(), resolve=True, app_path=app)
+    step = S09ShortcutsScheduler()
+    step.run(ctx)
+    flags = json.loads((ctx.paths.config / "wizard_flags.json").read_text(encoding="utf-8"))
+    del flags["shortcuts_app"]
+    (ctx.paths.config / "wizard_flags.json").write_text(json.dumps(flags), encoding="utf-8")
+    assert step.check(ctx) is False
 
 
 def _script_of(call) -> str:

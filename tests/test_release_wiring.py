@@ -83,15 +83,20 @@ def test_the_test_job_has_a_forty_minute_cap_in_ci_and_release():
         assert "timeout-minutes: 40" in head, rel
 
 
-def test_the_0_1_3_0_1_2_and_0_1_1_changelog_entries_are_in_place():
+def test_the_0_1_5_to_0_1_1_changelog_entries_are_in_place():
     version = read("VERSION").strip()
-    assert version == "0.1.4"
+    assert version == "0.1.5"
     text = read("CHANGELOG.md")
+    assert re.search(r"^## \[0\.1\.5\] - 2026-11-03\s*$", text, re.MULTILINE)
+    changes = re.search(r"(?ms)^## \[0\.1\.5\][^\r\n]*\r?\n(?P<body>.*?)(?=^## \[|\Z)", text)
+    assert changes is not None
+    for word in ("shortcuts_app", ".ns-app.done", "NS-W404", "cuda13", "drive root", "UNINSTALL.cmd"):
+        assert word in changes.group("body"), word
     assert re.search(r"^## \[0\.1\.4\] - 2026-11-03\s*$", text, re.MULTILINE)
     assert re.search(r"^## \[0\.1\.3\] - 2026-11-03\s*$", text, re.MULTILINE)
     assert re.search(r"^## \[0\.1\.2\] - 2026-11-03\s*$", text, re.MULTILINE)
     assert re.search(r"^## \[0\.1\.1\] - 2026-11-03\s*$", text, re.MULTILINE)
-    unreleased = text[text.index("## [Unreleased]") : text.index("## [0.1.4]")]
+    unreleased = text[text.index("## [Unreleased]") : text.index("## [0.1.5]")]
     assert unreleased.startswith("## [Unreleased]")  # entries may accumulate here between releases
     first_run = re.search(r"(?ms)^## \[0\.1\.3\][^\r\n]*\r?\n(?P<body>.*?)(?=^## \[|\Z)", text)
     assert first_run is not None
@@ -115,7 +120,7 @@ def test_the_handoff_says_nothing_is_in_flight_and_points_at_the_first_partner_r
     assert "## In flight\n- None." in text
     assert "feat/release-0.1.0" not in text.split("## Next steps")[1]  # the old release-prep step is done
     steps = text.split("## Next steps for a fresh orchestrator")[1]
-    for needle in ("git tag v0.1.4", "Verified on the partner PC", "Nightshift-Setup-0.1.4.zip"):
+    for needle in ("git tag v0.1.5", "Verified on the partner PC", "Nightshift-Setup-0.1.5.zip"):
         assert needle in steps, needle
     merged = text.split("## Merged on main")[1].split("## UI direction")[0]
     for pr in ("#48", "#51", "feat/release-0.1.1-pretag"):
