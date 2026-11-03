@@ -632,7 +632,7 @@ def test_busy_while_somebody_holds_the_gpu_even_when_nothing_happened_lately(tmp
             sup.clock = lambda: later
             assert sup.status()["busy"] is True
             await sup.release("llama", "studio:j1")
-            later2 = later + core.BUSY_RECENT_S + 1                        # the release itself counts as activity
+            later2 = later + core.BUSY_RECENT_S + 1                # the release itself is activity
             sup.clock = lambda: later2
             assert sup.status()["busy"] is False
 
