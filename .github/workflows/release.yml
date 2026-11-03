@@ -81,9 +81,40 @@ jobs:
           $changes = @(git status --porcelain installer/ui/static)
           if ($changes.Count -gt 0) { $changes; throw 'installer/ui/static differs from a fresh build of ns_dashboard/ui' }
 
+      - name: Fetch the WebView2 window files for the bundle
+        shell: pwsh
+        run: |
+          # The frameless setup window needs three DLLs from the pinned nupkg. Shipping them inside the bundle
+          # (bin/webview2/) lets the very first setup window use the host; s02 then skips the download.
+          $manifest = Get-Content manifest.json -Raw | ConvertFrom-Json
+          $pin = $manifest.bins.webview2
+          $spec = Get-Content installer/webview2_files.json -Raw | ConvertFrom-Json
+          if ($pin.sha256 -notmatch '^[0-9a-fA-F]{64}$') { throw 'bins.webview2 is not pinned in manifest.json' }
+          if ($spec.version -ne $pin.version) { throw "installer/webview2_files.json is for $($spec.version) but manifest.json pins $($pin.version)" }
+          $nupkg = Join-Path $env:RUNNER_TEMP 'webview2.nupkg'
+          Invoke-WebRequest -Uri $pin.url -OutFile $nupkg -UseBasicParsing
+          $hash = (Get-FileHash -LiteralPath $nupkg -Algorithm SHA256).Hash.ToLower()
+          if ($hash -ne $pin.sha256.ToLower()) { throw "webview2 nupkg sha256 $hash does not match the manifest pin $($pin.sha256)" }
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $out = Join-Path $env:RUNNER_TEMP 'webview2-bundle'
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          $zip = [System.IO.Compression.ZipFile]::OpenRead($nupkg)
+          try {
+            foreach ($prop in $spec.files.PSObject.Properties) {
+              $entry = $zip.GetEntry($prop.Value.member)
+              if ($null -eq $entry) { throw "the nupkg has no $($prop.Value.member)" }
+              $dest = Join-Path $out $prop.Name
+              [System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $dest, $true)
+              $h = (Get-FileHash -LiteralPath $dest -Algorithm SHA256).Hash.ToLower()
+              if ($h -ne $prop.Value.sha256.ToLower()) { throw "$($prop.Name) sha256 $h does not match installer/webview2_files.json" }
+            }
+          }
+          finally { $zip.Dispose() }
+          "WEBVIEW2_DIR=$out" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
       - name: Build bundle
         shell: pwsh
-        run: ./dev/make_bundle.ps1 -Version $env:TAG
+        run: ./dev/make_bundle.ps1 -Version $env:TAG -WebView2Dir $env:WEBVIEW2_DIR
 
       - name: Publish GitHub Release
         shell: pwsh

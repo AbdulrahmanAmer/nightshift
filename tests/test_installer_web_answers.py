@@ -75,7 +75,7 @@ def test_home_path_rules():
     assert err["homePath"] == "Pick a folder on a drive with 60 GB free. This one has 31 GB"
     for bad in ("relative\\path", "D:Nightshift", "%TEMP%\\x", "\\\\server\\share", ""):
         assert "homePath" in fields(answers_view.validate(good_draft(homePath=bad), make_env())), bad
-    assert "homePath" in fields(answers_view.validate(good_draft(homePath="D:\\" + "a" * 90), make_env()))
+    assert "homePath" in fields(answers_view.validate(good_draft(homePath="D:\\" + "a" * 130), make_env()))
     assert "homePath" in fields(answers_view.validate(good_draft(homePath="Z:\\Nightshift"), make_env()))
     # the balanced tier needs 74 GB free
     env = make_env(free=70.0)

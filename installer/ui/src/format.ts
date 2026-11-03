@@ -87,3 +87,28 @@ export function estimateFor(bytes: number): { downloadMin: number; installMin: n
 export const customNeedFreeGb = (bytes: number): number => 60 + Math.max(0, Math.ceil(bytes / 1e9) - 9);
 /** Video memory a 16 GB card has left for context: 16 GB minus the file minus 0.6 GB of runtime (the same rule as plan.vram_left_gb). */
 export const vramLeftGb = (bytes: number): number => Math.round((16 - bytes / 1e9 - 0.6) * 10) / 10;
+
+export const MAX_HOME_LEN = 120;
+const RESERVED_NAMES = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i;
+/**
+ * Why a typed path cannot be the install folder, or null (the same rules as installer/stage2/web/pathcheck.py; the server
+ * answers last). Spaces and non-ASCII letters are fine; the folder is made when Install starts, not before.
+ */
+export function homePathProblem(raw: string): string | null {
+  const p = raw.trim();
+  if (!p) return "Type a folder such as D:\\Nightshift, or press Browse";
+  if (p.startsWith("\\\\") || p.startsWith("//")) return "Network folders are not supported. Pick a folder on a drive of this PC";
+  if (!/^[A-Za-z]:\\/.test(p)) return "Use a full path such as D:\\Nightshift";
+  const rest = p.slice(3);
+  // eslint-disable-next-line no-control-regex
+  if (/[<>:"|?*%\u0000-\u001f]/.test(rest)) return "That path has a character Windows does not allow: < > : \" | ? * %";
+  if (p.length > MAX_HOME_LEN) return `Use a path of ${MAX_HOME_LEN} characters or fewer`;
+  const parts = rest.split("\\");
+  if (parts[parts.length - 1] === "") parts.pop();
+  for (const name of parts) {
+    if (name === "") return "Use single backslashes in the path";
+    if (name === "." || name === "..") return "Use a plain folder path without . or ..";
+    if (name !== name.replace(/[ .]+$/, "") || RESERVED_NAMES.test(name.split(".")[0])) return `Windows does not allow the folder name "${name}"`;
+  }
+  return null;
+}

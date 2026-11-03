@@ -280,6 +280,10 @@ class Handler(BaseHTTPRequestHandler):
         elif name == "disk" and method == "GET" and ctl is not None:
             self._json(HTTPStatus.OK, ctl.disk(query.get("path", [""])[0], query.get("tier", ["small"])[0],
                                                query.get("source", ["0"])[0] == "1"))
+        elif name == "pick-folder" and method == "POST" and getattr(ctl, "pick_folder", None) is not None:
+            body = self._body()
+            if body is not None:
+                self._json(HTTPStatus.OK, ctl.pick_folder(body))
         elif name.startswith("action/") and method == "POST" and ctl is not None:
             action = name[len("action/"):]
             body = self._body()

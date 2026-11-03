@@ -25,6 +25,7 @@ from typing import Any
 from installer.stage2.web import (
     answers_view,
     bootstrap,
+    folderdialog,
     labels,
     machine,
     modelcheck,
@@ -244,6 +245,8 @@ class Effects:
     uv_path: Callable[[Path], str] = default_uv_path
     fetch_uv: Callable[[str, str, Path], None] = bootstrap.download_uv
     clipboard: Callable[[str], None] = copy_to_clipboard
+    pick_folder: Callable[[str, str], str | None] = folderdialog.pick_folder      # (title, start) -> path
+    drive_type: Callable[[str], int] = preflight.default_drive_type               # GetDriveTypeW of a letter
 
 
 # ---------------------------------------------------------------------------------------------------------
@@ -594,7 +597,36 @@ class SetupController:
             expected = preflight.expected_model_files(self.manifest, self.pf.get("profile", "gpu"), tier)
             found = preflight.scan_models_source(Path(path), expected)
             return preflight.disk_check(path, tier, state["machine"]["drives"], self.fx.free_gb, models=found)
-        return preflight.disk_check(path, tier, state["machine"]["drives"], self.fx.free_gb)
+        return preflight.disk_check(path, tier, state["machine"]["drives"], self.fx.free_gb,
+                                    drive_type_fn=self.fx.drive_type)
+
+    def pick_folder(self, body: dict[str, Any]) -> dict[str, Any]:
+        """``POST /api/pick-folder``: the Windows folder dialog, then the same check as typing the path.
+
+        ``target`` is ``install`` (the install folder: a drive root or a folder with other files gets a
+        ``Nightshift`` folder inside it) or ``models`` (a folder of model files). Nothing is created.
+        Answers ``{ok, path, cancelled, message, check}``; ``check`` is a DiskCheck for the picked path.
+        """
+        target = "models" if body.get("target") == "models" else "install"
+        tier = str(body.get("tier") or "small")
+        start = str(body.get("start") or "")
+        if self.snapshot()["answersLocked"]:
+            return {"ok": False, "path": None, "cancelled": False, "check": None,
+                    "message": "Your choices are locked once setup has started"}
+        title = "Choose the install folder"
+        if target == "models":
+            title = "Choose the folder with the model files"
+        try:
+            picked = self.fx.pick_folder(title, start)
+        except (folderdialog.FolderDialogError, OSError) as e:
+            self.log("warn", f"The folder window could not open: {e}")
+            return {"ok": False, "path": None, "cancelled": False, "check": None,
+                    "message": "The folder window could not open. Type the folder instead"}
+        if not picked:
+            return {"ok": True, "path": None, "cancelled": True, "message": None, "check": None}
+        path = folderdialog.install_folder_for(picked) if target == "install" else picked
+        return {"ok": True, "path": path, "cancelled": False, "message": None,
+                "check": self.disk(path, tier, target == "models")}
 
     # ---- actions ----
     def _reply(self, status: int, ok: bool, message: str | None) -> tuple[int, dict[str, Any]]:

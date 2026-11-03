@@ -56,7 +56,7 @@ def sample_preflight(home: Path, app_path: Path, *, cuda: str = "13.0") -> dict[
         for i, label, value in [
             ("os", "Windows 10/11, 64-bit", "simulated"),
             ("gpu", "NVIDIA RTX GPU, 16 GB", "simulated RTX, 16311 MB"),
-            ("driver", "NVIDIA driver, CUDA 12.8 or newer", f"CUDA {cuda}"),
+            ("driver", "NVIDIA driver (CUDA 12.4 or newer; 12.8+ for RTX 50-series)", f"CUDA {cuda}"),
             ("ram", "Memory, 16 GB minimum", "32 GB"),
             ("disk", "Free disk space, 60 GB", "500 GB"),
             ("disktype", "Disk type, SSD", "SSD"),
