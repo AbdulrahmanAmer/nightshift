@@ -196,9 +196,12 @@ function ConvertTo-NvidiaDriverVersion {
 }
 
 function Get-LlamaPair {
-    param($Cuda)
+    # The hand-over pair stage 2 downloads. RTX 50-series (Blackwell) cards can only run the CUDA 13 build,
+    # so for them a CUDA 12.x driver yields no pair (the driver row fails with NS-E103 at the same time).
+    param($Cuda, [string]$GpuName = '')
     if ($null -eq $Cuda) { return '' }
     if ($Cuda -ge (New-Object System.Version -ArgumentList 13, 0)) { return 'cuda13' }
+    if ($GpuName -match '(?i)(RTX|GeForce)\D{0,12}50[5-9]0|Blackwell|RTX\s+PRO') { return '' }
     if ($Cuda -ge (New-Object System.Version -ArgumentList 12, 4)) { return 'cuda12' }
     return ''
 }
@@ -965,7 +968,7 @@ if ($script:IsDry -and -not $ProbeOnly) { Show-Action "use NIGHTSHIFT_HOME = $Ns
 $rows = Get-PreflightRows -Probe $probe -NsHome $NsHome -AllowCpu $allowCpu
 $cudaInfo = Resolve-CudaVersion -Probe $probe
 $cuda = $cudaInfo.version
-$llamaPair = Get-LlamaPair -Cuda $cuda
+$llamaPair = Get-LlamaPair -Cuda $cuda -GpuName ([string]$probe.gpu_name)
 $profileName = 'gpu'
 if (-not $probe.gpu_name) { $profileName = 'cpu-dev' }
 # a GPU whose driver version could not be read gets the CUDA 12.4 build (NS-W115), not a refusal
