@@ -81,6 +81,21 @@ def wire():
     w.close()
 
 
+def rename_back_and_forth(path: Path) -> None:
+    """Rename ``path`` away and back. Windows refuses while any handle is open on it; a virus scanner can hold
+    a freshly written file for a moment, so a refusal is retried for a few seconds before it counts."""
+    moved = path.with_name(path.name + ".moved")
+    for attempt in range(25):
+        try:
+            path.rename(moved)
+            break
+        except PermissionError:
+            if attempt == 24:
+                raise
+            threading.Event().wait(0.2)
+    moved.rename(path)
+
+
 def interrupted_download(url: str, dest: Path, sha256: str | None, wire: Wire, pause_after: int) -> dict:
     """Download with the real ``download()``; pause through the gate after ``pause_after`` bytes, look at the
     disk while it is parked, then resume. Returns what was seen while paused."""
@@ -103,20 +118,25 @@ def interrupted_download(url: str, dest: Path, sha256: str | None, wire: Wire, p
         except BaseException as e:        # re-raised in the test thread
             outcome["error"] = e
 
-    worker = threading.Thread(target=work, name="download")
+    worker = threading.Thread(target=work, name="download", daemon=True)
     worker.start()
-    assert parked.wait(180), f"the download never reached the pause: {outcome}"
-    part = dest.with_name(dest.name + ".part")
-    outcome["paused_at"] = part.stat().st_size
-    outcome["requests_before_resume"] = list(wire.requests)
-    assert not dest.exists() and not dl._marker(dest).exists()           # nothing published while paused
-    moved = part.with_name(part.name + ".moved")
-    part.rename(moved)  # fails on Windows if a handle is open
-    moved.rename(part)
-    assert part.stat().st_size == outcome["paused_at"]
-    threading.Event().wait(0.5)
-    assert part.stat().st_size == outcome["paused_at"]                    # the connection really is closed
-    gate.set()                                                            # Resume
+    try:
+        for _ in range(180):                                 # up to 3 minutes, but fail at once if it died
+            if parked.wait(1):
+                break
+            if not worker.is_alive():
+                raise AssertionError(f"the download ended before the pause: {outcome}") from outcome.get("error")
+        assert parked.is_set(), f"the download never reached the pause: {outcome}"
+        part = dest.with_name(dest.name + ".part")
+        outcome["paused_at"] = part.stat().st_size
+        outcome["requests_before_resume"] = list(wire.requests)
+        assert not dest.exists() and not dl._marker(dest).exists()      # nothing published while paused
+        rename_back_and_forth(part)                                      # Windows refuses if a handle is open
+        assert part.stat().st_size == outcome["paused_at"]
+        threading.Event().wait(0.5)
+        assert part.stat().st_size == outcome["paused_at"]               # the connection really is closed
+    finally:
+        gate.set()                                                       # Resume, and never leave it parked
     worker.join(300)
     assert not worker.is_alive(), "the download did not finish after Resume"
     if "error" in outcome:

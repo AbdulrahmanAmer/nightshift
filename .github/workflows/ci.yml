@@ -66,8 +66,9 @@ jobs:
       # header, the final hash) is printed in the log. They must run: a skipped one fails the step.
       - name: Real-network download tests
         shell: bash
+        timeout-minutes: 12
         run: |
-          python -m pytest -v -s -m network tests/test_downloader_network.py --junitxml=report-network.xml
+          python -m pytest -v -s -m network tests/test_downloader_network.py --junitxml=report-network.xml --tb=short
           python - <<'EOF'
           import xml.etree.ElementTree as ET
           root = ET.parse("report-network.xml").getroot()
