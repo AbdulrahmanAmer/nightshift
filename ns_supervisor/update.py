@@ -44,6 +44,11 @@ UPDATE_VENVS = ("studio", "supervisor", "tts")      # extras: ns_common.venv_ext
 #: Console scripts the app installs into every venv (`[project.scripts]`). A running copy cannot be replaced.
 ENTRY_EXES = ("ns.exe", "studio.exe")
 OLD_SUFFIX = ".old"
+NO_GIT_HINT = (
+    "Git is not installed, and `ns update --git` needs it. Install Git for this "
+    "(https://git-scm.com/download/win), or update without it: `ns update --github`, or the Update "
+    "shortcut with a Nightshift-Update zip."
+)
 
 
 @dataclass
@@ -471,6 +476,8 @@ def git_update(
     app = app.absolute()
     if not (app / ".git").exists():
         raise NsError("NS-E702", f"{app} is not a git clone; use --github or an update zip instead")
+    if git is None and shutil.which("git") is None:
+        raise NsError("NS-E702", NO_GIT_HINT)
     run = git or _git_run(app)
     log = NsLogger("update", paths.logs)
     old_version = current_version(app)
