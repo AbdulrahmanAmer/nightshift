@@ -109,6 +109,10 @@ class S09ShortcutsScheduler(Step):
         """Shortcuts exist and the task decision is recorded."""
         if ctx.flag("schedule") not in ("installed", "unavailable", "failed") or ctx.flag("aumid") is None:
             return False
+        # INSTALL.cmd over an older install copies the program to <home>\app: the shortcuts and the task
+        # still point at the folder the zip was extracted to (which the owner may delete) until s09 re-runs.
+        if ctx.flag("shortcuts_app") != str(ctx.app_path):
+            return False
         folder = desktop(ctx)
         return all((folder / f"{name}.lnk").exists() for name, _ in wanted_shortcuts(ctx))
 
@@ -152,6 +156,7 @@ class S09ShortcutsScheduler(Step):
             ctx.log.warn("schedule_failed", f"exit {res.returncode}: {res.text[-300:]}")
             remember_run_time(ctx.paths, run_time)       # a preference only: no schedule.json without a task
             ctx.warn("NS-W206", res.text.strip()[-200:])
+        ctx.set_flag("shortcuts_app", str(ctx.app_path))     # the app folder the shortcuts and the task use
 
     @staticmethod
     def _register_toast_identity(ctx: StepContext, folder: Path, icon: Path | None) -> None:

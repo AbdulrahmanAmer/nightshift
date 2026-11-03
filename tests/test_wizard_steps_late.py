@@ -356,6 +356,37 @@ def test_s09_creates_shortcuts_for_existing_launchers_and_registers_the_task(tmp
     assert step.check(ctx) is True
 
 
+def test_s09_runs_again_when_the_program_folder_moved_to_home_app(tmp_path: Path):
+    # INSTALL.cmd over an old install: the shortcuts and the task still point at the extracted folder.
+    old = launcher_app(tmp_path / "extracted", ["nightshift-dashboard.ps1"])
+    new = launcher_app(tmp_path / "home" / "app", ["nightshift-dashboard.ps1"])
+    runner = FakeRunner(tmp_path / "desktop")
+    ctx = make_test_context(tmp_path, raw_answers=example_answers(), resolve=True, app_path=old,
+                            runner=runner)
+    step = S09ShortcutsScheduler()
+    step.run(ctx)
+    assert ctx.flag("shortcuts_app") == str(old) and step.check(ctx) is True
+    ctx.app_path = new                                   # b02 has copied the program; install_state follows
+    assert step.check(ctx) is False                      # the .lnk files exist, but point at the old folder
+    step.run(ctx)
+    assert ctx.flag("shortcuts_app") == str(new) and step.check(ctx) is True
+    last = runner.called("ps:shortcut")[-1]
+    assert str(new / "launchers") in last.meta["arguments"]
+    assert len(runner.called("ns schedule install")) == 2
+    assert runner.called("ns schedule install")[-1].cwd == new
+
+
+def test_s09_state_from_before_the_flag_existed_runs_again(tmp_path: Path):
+    app = launcher_app(tmp_path, ["nightshift-dashboard.ps1"])
+    ctx = make_test_context(tmp_path, raw_answers=example_answers(), resolve=True, app_path=app)
+    step = S09ShortcutsScheduler()
+    step.run(ctx)
+    flags = json.loads((ctx.paths.config / "wizard_flags.json").read_text(encoding="utf-8"))
+    del flags["shortcuts_app"]
+    (ctx.paths.config / "wizard_flags.json").write_text(json.dumps(flags), encoding="utf-8")
+    assert step.check(ctx) is False
+
+
 def _script_of(call) -> str:
     import base64
 
