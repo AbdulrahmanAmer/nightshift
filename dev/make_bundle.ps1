@@ -227,6 +227,16 @@ try {
     $utf8 = New-Object System.Text.UTF8Encoding($false)
     [System.IO.File]::WriteAllText((Join-Path $stage 'VERSION'), "$Version`n", $utf8)
 
+    # manifest.json "version" is what setup compares on a re-run (s04 venvs, s08 smoke test) to decide whether
+    # to refresh them. The repository copy is never bumped, so the bundle takes the number from VERSION.
+    $manifestFile = Join-Path $stage 'manifest.json'
+    $manifestText = [System.IO.File]::ReadAllText($manifestFile)
+    $versionLine = [regex]::Match($manifestText, '(?m)^(  "version"\s*:\s*")[^"]*(")')
+    if (-not $versionLine.Success) { throw 'manifest.json has no top-level "version" line to update.' }
+    $manifestText = $manifestText.Substring(0, $versionLine.Index) + $versionLine.Groups[1].Value + $Version + $versionLine.Groups[2].Value + $manifestText.Substring($versionLine.Index + $versionLine.Length)
+    [System.IO.File]::WriteAllText($manifestFile, $manifestText, $utf8)
+    Write-Host "  manifest.json version: $Version"
+
     $answersSrc = Join-Path $stage 'installer/answers.example.json'
     $answersRoot = Join-Path $stage 'answers.example.json'
     if ((Test-Path -LiteralPath $answersSrc) -and -not (Test-Path -LiteralPath $answersRoot)) {
@@ -275,6 +285,17 @@ try {
         }
         throw "Bundle verification failed with $($problems.Count) problem(s)."
     }
+    $zr = [System.IO.Compression.ZipFile]::OpenRead($zipPath)
+    try {
+        $entry = $zr.GetEntry('manifest.json')
+        $reader = New-Object System.IO.StreamReader($entry.Open())
+        try { $zipManifestVersion = [string](($reader.ReadToEnd() | ConvertFrom-Json).version) } finally { $reader.Dispose() }
+    }
+    finally { $zr.Dispose() }
+    if ($zipManifestVersion -ne $Version) {
+        throw "manifest.json in the zip says version '$zipManifestVersion', expected '$Version'."
+    }
+    Write-Host "  verified: manifest.json version $zipManifestVersion = VERSION"
 
     $entries = @(Get-ZipEntries $zipPath)
     $hash = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLower()
