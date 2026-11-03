@@ -31,6 +31,9 @@ HOST_MUTEX = "Global\\Nightshift.AppHost.dashboard"
 HOST_WAIT_MIN = 10
 SETUP_WAIT_S = 1800
 LEFTOVERS_FILE = "Nightshift-uninstall-leftovers.txt"
+#: Tries (one per second) the deferred cleanup makes per folder: two minutes, for a console that was
+#: opened inside it or a window that is slow to exit.
+REMOVE_TRIES = 120
 
 
 def dir_bytes(path: Path, budget_s: float = SIZE_BUDGET_S) -> int:
@@ -114,7 +117,7 @@ def deferred_script(home: Path, wait_pids: list[int], local_root: Path | None = 
         "}",
         f"$targets = @({listed})",
         "foreach ($t in $targets) {",
-        "    for ($i = 0; $i -lt 90; $i++) {",
+        f"    for ($i = 0; $i -lt {REMOVE_TRIES}; $i++) {{",
         "        if (-not (Test-Path -LiteralPath $t)) { break }",
         "        Remove-Item -LiteralPath $t -Recurse -Force",
         "        if (Test-Path -LiteralPath $t) { Start-Sleep -Seconds 1 }",

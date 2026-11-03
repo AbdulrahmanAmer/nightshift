@@ -177,3 +177,13 @@ def test_operator_guide_covers_the_voice_fallback_the_design_model_and_the_keys_
     assert "NS-W301" in body and "NS-E314" in body and "NS-E311" in body
     assert "Settings, Models" in body and "ns models get voicedesign" in body
     assert "config\secrets.dpapi" in body and "Credential Manager" in body
+
+
+def test_uninstall_cmd_leaves_the_program_folder_before_it_runs_and_pauses():
+    # Explorer starts the console in <home>\app (where UNINSTALL.cmd lives); that folder is deleted by the
+    # uninstall, and a console left at "pause" with it as working directory would keep it from going.
+    lines = [ln.strip().lower() for ln in (ROOT / "UNINSTALL.cmd").read_text(encoding="utf-8").splitlines()]
+    cd = next(i for i, ln in enumerate(lines) if ln.startswith("cd /d") and "%temp%" in ln)
+    run = next(i for i, ln in enumerate(lines) if ln.startswith("powershell"))
+    pause = next(i for i, ln in enumerate(lines) if ln == "pause")
+    assert cd < run < pause
