@@ -1,9 +1,10 @@
 """C1: stage 1's health ping against a live setup server, run under Windows PowerShell 5.1.
 
-The v0.1.1 first install stopped with "the setup program did not start" because `Invoke-ServerPing` passed the
-session cookie through `-Headers`, and Windows PowerShell 5.1 silently drops that restricted header. These tests
-pin both halves of the fix: the server accepts the token as an `X-NS-Token` header, and the real `Invoke-ServerPing`
-function from `stage1.ps1` answers True under `powershell.exe` (5.1), while the old form answers False.
+The v0.1.1 first install stopped with "the setup program did not start" because `Invoke-ServerPing`
+passed the session cookie through `-Headers`, and Windows PowerShell 5.1 silently drops that restricted
+header. These tests pin both halves of the fix: the server accepts the token as an `X-NS-Token` header,
+and the real `Invoke-ServerPing` from `stage1.ps1` answers True under `powershell.exe` (5.1), while the
+old form answers False.
 """
 
 from __future__ import annotations
@@ -45,7 +46,9 @@ def server(tmp_path: Path):
     static = tmp_path / "static"
     (static / "assets").mkdir(parents=True)
     (static / "index.html").write_text("<!doctype html><title>setup</title>", encoding="utf-8")
-    srv = SetupServer(_Stub(), static_dir=static, version="9.9.9", long_poll_s=0.5, on_open_window=lambda: None)
+    srv = SetupServer(
+        _Stub(), static_dir=static, version="9.9.9", long_poll_s=0.5, on_open_window=lambda: None
+    )
     srv.start()
     yield srv
     srv.stop()
