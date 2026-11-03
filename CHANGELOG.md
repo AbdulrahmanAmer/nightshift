@@ -31,6 +31,13 @@ Installer: whisper CUDA libraries and a CPU fallback for captions (CR-C1-4 a, b,
   hashes with PyPI and the spaCy wheel hash with the real download.
 - Still open: CR-C1-4 (e), a CUDA 12.8 llama.cpp build for drivers between CUDA 12.4 and 12.7.
 
+### RTX 50-series cards stop early on a CUDA 12 driver
+- The only llama.cpp builds Nightshift ships are CUDA 12.4 and CUDA 13.x, and the 12.4 build has no code for
+  RTX 50-series (Blackwell) cards. Setup used to warn and go on, then fail the smoke test after the full
+  download. The "This PC" check and step s02 now stop with `NS-E103` ("RTX 50-series cards need a driver with
+  CUDA 13, driver 580 or newer") before anything is downloaded; an RTX 50 card whose driver version cannot be
+  read gets the CUDA 13 build. Other cards keep the 12.4 rule.
+
 ## [0.1.4] - 2026-11-03
 
 ### Same content as 0.1.3, released

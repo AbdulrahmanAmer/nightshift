@@ -1,7 +1,7 @@
 {
   "NS-E101": {"message": "Unsupported Windows architecture (ARM64 or 32-bit).", "hint": "Nightshift needs 64-bit Windows 10 or 11 on an x64 PC."},
   "NS-E102": {"message": "No NVIDIA GPU detected.", "hint": "Nightshift needs an NVIDIA RTX GPU with 16 GB. Check that the GPU driver is installed (nvidia-smi must work)."},
-  "NS-E103": {"message": "NVIDIA driver too old (CUDA < 12.4).", "hint": "Install the latest Game Ready or Studio driver from nvidia.com/drivers, reboot, then re-run setup."},
+  "NS-E103": {"message": "NVIDIA driver too old for this card (CUDA < 12.4; RTX 50-series cards need CUDA 13, driver 580 or newer).", "hint": "Install the latest Game Ready or Studio driver from nvidia.com/drivers, reboot, then re-run setup."},
   "NS-E104": {"message": "Not enough free disk space.", "hint": "Free at least 60 GB on the drive that holds NIGHTSHIFT_HOME (80 GB in two-model mode), or set NIGHTSHIFT_HOME to a bigger drive."},
   "NS-E105": {"message": "A required download site is unreachable.", "hint": "Check the internet connection and any firewall/proxy. Needed: huggingface.co, github.com, download.pytorch.org, api.pexels.com, pixabay.com."},
   "NS-W106": {"message": "NIGHTSHIFT_HOME is on a hard disk, not an SSD.", "hint": "Model loading will be slow. Consider moving NIGHTSHIFT_HOME to an NVMe/SSD drive."},
