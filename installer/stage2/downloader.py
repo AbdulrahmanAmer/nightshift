@@ -427,6 +427,56 @@ WEBVIEW2_MEMBERS: tuple[tuple[str, tuple[str, ...]], ...] = tuple(
     )
 )
 
+# The release bundle ships the same three DLLs in <app>/bin/webview2 (make_bundle.ps1 -WebView2Dir), so the
+# first setup window already uses the frameless host. installer/webview2_files.json holds their SHA256 and the
+# package version they came from (the release workflow checks them against the pinned nupkg).
+WEBVIEW2_FILES_JSON = Path(__file__).resolve().parents[1] / "webview2_files.json"
+
+
+def bundled_webview2(manifest: Manifest, app_path: Path, *, files_json: Path | None = None) -> Path | None:
+    """``<app>/bin/webview2`` when it holds exactly the pinned DLLs (version and SHA256 match), else None."""
+    pin = manifest.bins.get("webview2")
+    if pin is None or pinned_sha256(pin.sha256) is None:
+        return None
+    try:
+        spec = json.loads((files_json or WEBVIEW2_FILES_JSON).read_text(encoding="utf-8"))
+        wanted = {name: str(entry["sha256"]).lower() for name, entry in spec["files"].items()}
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return None
+    if spec.get("version") != pin.version or set(wanted) != {name for name, _ in WEBVIEW2_MEMBERS}:
+        return None
+    folder = Path(app_path) / "bin" / "webview2"
+    try:
+        if any(sha256_file(folder / name) != digest for name, digest in wanted.items()):
+            return None
+    except OSError:
+        return None
+    return folder
+
+
+def adopt_bundled_webview2(
+    manifest: Manifest, app_path: Path, home: Path, *, files_json: Path | None = None
+) -> bool:
+    """Step s02: use the bundle's DLLs instead of downloading the nupkg.
+
+    Copies them to ``<home>/bin/webview2`` and writes the same done flag an unpacked nupkg gets, so the plan
+    reports the item as skipped. Returns False (nothing changed) when the bundle has no matching DLLs, and the
+    nupkg is downloaded as before.
+    """
+    item = webview2_item(manifest, home)
+    source = bundled_webview2(manifest, app_path, files_json=files_json)
+    if item is None or source is None or item.extract_to is None:
+        return False
+    if is_done(item):
+        return True
+    target = item.extract_to
+    target.mkdir(parents=True, exist_ok=True)
+    for name in item.expect:
+        (target / name).write_bytes((source / name).read_bytes())
+    (target / f".ns-{item.name}.done").write_text("ok", encoding="utf-8")
+    return True
+
+
 
 # --------------------------------------------------------------------------------------------------------
 # plans

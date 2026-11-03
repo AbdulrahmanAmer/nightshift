@@ -144,6 +144,15 @@ export interface DiskCheck {
   modelsFound: { files: number; of: number; bytes: number } | null;   // with source=1 only
 }
 
+/** POST /api/pick-folder: the native folder dialog, opened by the server. `check` is the DiskCheck of the picked path. */
+export interface PickFolderResult {
+  ok: boolean;
+  path: string | null;               // null when cancelled or when the dialog could not open
+  cancelled: boolean;
+  message: string | null;            // set when ok is false: plain words
+  check: DiskCheck | null;
+}
+
 export interface StepView {
   id: StepId;
   title: string;                     // plain: "Download AI models"

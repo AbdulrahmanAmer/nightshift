@@ -17,11 +17,12 @@ from typing import Any
 
 from installer.stage2.web.model import PRESET_VOICES, TIERS
 from installer.stage2.web.modelcheck import MAX_BYTES, shape_problem, too_big_message
+from installer.stage2.web.pathcheck import DRIVE_PATH_RE as DRIVE_PATH_RE
+from installer.stage2.web.pathcheck import home_problem
 from installer.stage2.web.plan import required_free_gb
 
 RUN_TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
-DRIVE_PATH_RE = re.compile(r"^[A-Za-z]:\\")
-MAX_HOME_LEN = 80
+MAX_HOME_LEN = 120
 KINDS_UI = ("internet", "folder", "drive-zip")
 THEMES = ("dark", "light", "soft")
 TIER_NAMES = {"small": "Small", "balanced": "Balanced", "best": "Best"}
@@ -143,10 +144,9 @@ def custom_problem(custom: Any) -> str | None:
 
 def _home_errors(home: str, tier: str, env: Env, custom_bytes: int | None = None) -> list[dict[str, Any]]:
     need = required_free_gb(tier, custom_bytes)
-    if not DRIVE_PATH_RE.match(home) or "%" in home:
-        return [_err("homePath", "Use a full path on a drive of this PC, such as D:\\Nightshift")]
-    if len(home) > MAX_HOME_LEN:
-        return [_err("homePath", f"Use a path of {MAX_HOME_LEN} characters or fewer")]
+    problem = home_problem(home, MAX_HOME_LEN)
+    if problem:
+        return [_err("homePath", problem)]
     if env.drive_letters is not None and home[0].upper() not in env.drive_letters:
         return [_err("homePath", "Pick a folder on a fixed drive of this PC")]
     free = env.free_gb(home)

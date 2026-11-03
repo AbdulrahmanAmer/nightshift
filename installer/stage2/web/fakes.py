@@ -28,7 +28,8 @@ def sample_handover(app_path: Path, *, cuda: str = "13.0", home: str = r"C:\Nigh
     rows = [
         ("os", "Windows 10/11, 64-bit", "Windows 11 Pro 10.0.26200"),
         ("gpu", "NVIDIA RTX GPU, 16 GB", "NVIDIA GeForce RTX 5060 Ti, 16311 MB"),
-        ("driver", "NVIDIA driver, CUDA 12.8 or newer", f"CUDA {cuda}, driver 581.57"),
+        ("driver", "NVIDIA driver (CUDA 12.4 or newer; 12.8+ for RTX 50-series)",
+         f"CUDA {cuda}, driver 581.57"),
         ("ram", "Memory, 16 GB minimum", "32 GB (Balanced and Best models available)"),
         ("disk", "Free disk space, 60 GB", "500 GB free on C:"),
         ("disktype", "Disk type, SSD", "C: SSD"),
@@ -84,6 +85,9 @@ class FakeCmd:
         return rf"C:\fake\{name}" if name.lower() in self.present else None
 
 
+DEFAULT_PICK = "E:\\Nightshift"           # --simulate: what the fake folder dialog picks
+
+
 def fake_effects(base: Path, present: set[str] | None = None, **overrides: Any) -> tuple[Any, FakeCmd]:
     """An ``Effects`` that touches nothing outside ``base``. Returns it with its FakeCmd."""
     from installer.stage2.web.controller import Effects
@@ -96,6 +100,7 @@ def fake_effects(base: Path, present: set[str] | None = None, **overrides: Any) 
     launched: list[list[str]] = []
     console: list[str] = []
     downloads: list[tuple[str, str]] = []
+    next_pick: list[str | None] = []        # what the fake folder dialog answers next (None = Cancel)
 
     def fetch_uv(url: str, sha256: str, dest: Path) -> None:
         downloads.append((url, sha256))
@@ -116,6 +121,8 @@ def fake_effects(base: Path, present: set[str] | None = None, **overrides: Any) 
         launch_captured=lambda argv, env=None, **kw: (launched.append(list(argv)), (0, ""))[1],
         elevate_longpaths=lambda: True, console=lambda text, level: console.append(text),
         uv_path=lambda home: str(uv), clipboard=lambda text: None, fetch_uv=fetch_uv,
+        pick_folder=lambda title, start: next_pick.pop(0) if next_pick else DEFAULT_PICK,
+        drive_type=lambda _letter: 3,
     )
     for k, v in overrides.items():
         setattr(fx, k, v)
@@ -123,6 +130,7 @@ def fake_effects(base: Path, present: set[str] | None = None, **overrides: Any) 
     fx.console_lines = console      # type: ignore[attr-defined]
     fx.home_var = var               # type: ignore[attr-defined]
     fx.uv_downloads = downloads     # type: ignore[attr-defined]
+    fx.next_pick = next_pick        # type: ignore[attr-defined]
     return fx, cmd
 
 

@@ -15,6 +15,7 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
+from installer.stage2.web.pathcheck import home_problem
 from installer.stage2.web.plan import pinned, required_free_gb
 
 COPY_FILE = Path(__file__).with_name("operator_copy.json")
@@ -67,6 +68,11 @@ ROW_COPY: dict[tuple[str, str], tuple[str, str]] = {
         "The graphics card has less than 16 GB",
         "Setup can continue, but only the Small model fits and videos take longer",
     ),
+    ("driver", "warn"): (
+        "The driver is older than RTX 50-series cards need",
+        "Setup works with the CUDA 12.4 build. RTX 50-series cards need driver 570 or newer: "
+        "update it from the page that opened",
+    ),
     ("ram", "warn"): ("Less memory than recommended", "Setup continues with the Small model only"),
     ("disk", "warn"): (
         "Less free space than recommended",
@@ -87,7 +93,7 @@ NETWORK_FAIL_TEXT = (
 
 
 def _row_fix(row_id: str, status: str, code: str) -> dict[str, Any] | None:
-    if row_id in ("gpu", "driver") and code in ("NS-E102", "NS-E103"):
+    if row_id in ("gpu", "driver") and code in ("NS-E102", "NS-E103", "NS-W115"):
         return _fix("open-url", "Open the driver page", DRIVER_URL)
     if row_id in ("disk", "disktype"):
         return _fix("choose-drive", "Pick another drive")
@@ -299,6 +305,21 @@ def scan_models_source(folder: Path, expected: Sequence[str], max_depth: int = 4
     return {"files": len(found), "of": len(wanted), "bytes": sum(found.values())}
 
 
+DRIVE_REMOVABLE, DRIVE_REMOTE, DRIVE_CDROM = 2, 4, 5
+
+
+def default_drive_type(letter: str) -> int:
+    """Windows GetDriveTypeW of the drive (3 fixed, 2 removable, 4 network); 0 when it cannot be asked."""
+    if os.name != "nt":
+        return 0
+    try:
+        import ctypes
+
+        return int(ctypes.windll.kernel32.GetDriveTypeW(f"{letter}:\\"))  # type: ignore[attr-defined]
+    except (AttributeError, OSError):
+        return 0
+
+
 def disk_check(
     path: str,
     tier: str,
@@ -306,8 +327,15 @@ def disk_check(
     free_fn: Callable[[str], float],
     *,
     models: dict[str, int] | None = None,
+    drive_type_fn: Callable[[str], int] = default_drive_type,
+    isfile_fn: Callable[[str], bool] = os.path.isfile,
 ) -> dict[str, Any]:
-    """DiskCheck for an install folder (or, with ``models``, for a models folder)."""
+    """DiskCheck for an install folder (or, with ``models``, for a models folder).
+
+    The install folder must be an absolute path on a local fixed drive (no network or removable drives),
+    at most 120 characters, and the drive needs the plan's free space. Spaces and non-ASCII letters are fine.
+    Nothing is created: setup makes the folder when Install starts.
+    """
     need = required_free_gb(tier)
     result: dict[str, Any] = {
         "path": path, "exists": os.path.exists(path), "drive": None, "freeGb": None, "type": "Unknown",
@@ -321,16 +349,24 @@ def disk_check(
         else:
             result["message"] = "That folder was not found"
         return result
-    if not DRIVE_RE.match(path or ""):
-        result["message"] = "Use a full path such as D:\\Nightshift"
+    problem = home_problem(path)
+    if problem:
+        result["message"] = problem
         return result
+    path = path.strip()
     letter = path[0].upper()
     result["drive"] = letter
+    if isfile_fn(path):
+        result["message"] = "That is a file, not a folder"
+        return result
     known = next((d for d in drives if d["letter"] == letter), None)
     if known:
         result["freeGb"] = known["freeGb"]
         result["type"] = known["type"]
     else:
+        if drive_type_fn(letter) in (DRIVE_REMOVABLE, DRIVE_REMOTE, DRIVE_CDROM):
+            result["message"] = f"{letter}: is a removable, network or disc drive. Pick a drive in this PC"
+            return result
         try:
             result["freeGb"] = round(free_fn(path), 1)
         except OSError:
