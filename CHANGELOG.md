@@ -7,6 +7,8 @@ All notable changes to Nightshift are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-11-03
+
 ### Download time left is measured, never assumed
 - The console no longer prints "about N hours at 50 Mbit/s" before the downloads; its progress lines now carry
   the measured file speed and the whole download's time left, the same numbers the setup window shows.
