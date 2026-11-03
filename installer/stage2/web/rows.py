@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import math
 import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
-
-from installer.stage2.downloader import marker_matches
 
 SPEED_WINDOW_S = 5.0        # speed is measured over windows this long (the first one is shorter)
 FIRST_WINDOW_S = 2.0
@@ -145,6 +144,24 @@ def make_row(item: dict[str, Any]) -> dict[str, Any]:
 def format_gb(n: float) -> str:
     """Size for notes: 2.1 GB."""
     return f"{n / 1024 ** 3:.1f} GB"
+
+
+def marker_matches(dest: Path) -> bool:
+    """True when ``<dest>.ok`` exists and still describes ``dest`` (same size and mtime).
+
+    The setup server runs on the bare Python (standard library only), so this repeats the check of
+    ``installer.stage2.downloader.is_verified`` without importing it; ``test_downloader`` keeps them equal.
+    """
+    try:
+        st = dest.stat()
+        marker = json.loads(dest.with_name(dest.name + ".ok").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return (
+        isinstance(marker, dict)
+        and marker.get("size") == st.st_size
+        and marker.get("mtime_ns") == st.st_mtime_ns
+    )
 
 
 def part_state(home: Path, row: dict[str, Any]) -> tuple[int, bool]:

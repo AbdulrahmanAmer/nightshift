@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -150,7 +151,7 @@ def test_ns_verify_downloads_prints_the_table_and_exits_one_when_files_are_missi
 
 def test_ns_verify_downloads_is_listed_in_the_help(tmp_path: Path):
     r = runner.invoke(cli.app, ["verify", "--help"], env={"NIGHTSHIFT_HOME": str(tmp_path)})
-    assert "--downloads" in r.output
+    assert "--downloads" in re.sub(r"\x1b\[[0-9;]*m", "", r.output)    # rich colours the dashes alone
 
 
 @pytest.mark.parametrize("status", [vd.MISSING, vd.BAD])

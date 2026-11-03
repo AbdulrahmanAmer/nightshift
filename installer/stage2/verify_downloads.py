@@ -69,6 +69,14 @@ class Row:
 Hasher = Callable[[Path], str]
 
 
+def _stdout(line: str) -> None:
+    sys.stdout.write(line + "\n")
+
+
+def _stderr(line: str) -> None:
+    sys.stderr.write(line + "\n")
+
+
 def plan_for_install(paths: Paths, app_path: Path | None = None) -> list[DownloadItem]:
     """The files setup downloaded for this install. Raises ``AnswersError`` when setup never got that far."""
     answers_file = paths.config / "answers.json"
@@ -160,7 +168,7 @@ def format_table(rows: list[Row]) -> list[str]:
 def run(
     paths: Paths,
     app_path: Path | None = None,
-    echo: Callable[[str], None] = print,
+    echo: Callable[[str], None] = _stdout,
     *,
     hasher: Hasher = sha256_file,
 ) -> int:
@@ -171,7 +179,7 @@ def run(
         echo(f"Cannot tell which files this install needs: {e}")
         echo("Run INSTALL.cmd to finish the setup, then try again.")
         return 2
-    rows = verify_items(items, hasher=hasher, say=lambda m: print(m, file=sys.stderr))
+    rows = verify_items(items, hasher=hasher, say=_stderr)
     for line in format_table(rows):
         echo(line)
     return 1 if any(r.failing for r in rows) else 0
