@@ -3,7 +3,8 @@
 NVENC failing switches the encoder to libx264 (NS-W401); a failing TTS engine switches to the PyTorch
 reference engine and builds its venv (NS-W301, NS-E108 when torch cannot see the GPU). Whisper is tested by
 a 3 second transcription in the studio venv (cuBLAS and cuDNN load lazily, so the model load alone proves
-nothing): on CUDA it falls back to the CPU with int8 (NS-W404, captions are slower, the install goes on); only
+nothing): on CUDA it falls back to the CPU with int8 (NS-W404, captions are slower, the install goes on)
+until the next run, which probes CUDA again and switches back when it passes; only
 a CPU that cannot transcribe either stops the install (NS-E202). Checks are matched on the real names
 `ns verify` reports (`ns_supervisor.check_names`). `ns verify --quick` has no MTP check: whether MTP is kept
 is decided by `ns tune` (s06), so there is no MTP branch here.
@@ -159,28 +160,38 @@ class S08Smoke(Step):
 
     @staticmethod
     def _check_whisper(ctx: StepContext, load_failed: bool) -> None:
-        """Transcribe a 3 second test WAV; on CUDA a failure switches whisper to the CPU (NS-W404)."""
+        """Transcribe a 3 second test WAV; on CUDA a failure switches whisper to the CPU (NS-W404).
+
+        The CPU fallback is not sticky: with a graphics card the CUDA probe runs on every pass (a driver
+        update or a restored DLL fixes it) and a pass flips runtime.json back to CUDA; only a failing probe
+        keeps or sets the CPU and warns.
+        """
         cfg = ensure_baseline(ctx).whisper
-        where = "graphics card" if cfg.device == "cuda" else "processor"
-        ctx.ui.say(f"Testing speech recognition on the {where} ...")
-        if cfg.device == "cuda":
-            res = None if load_failed else transcribe_probe(ctx, cfg)
+        if ctx.profile != "cpu-dev":
+            ctx.ui.say("Testing speech recognition on the graphics card ...")
+            cuda = cfg.model_copy(update={
+                "device": "cuda", "compute_type": cfg.compute_type if cfg.device == "cuda" else "int8"})
+            res = None if load_failed else transcribe_probe(ctx, cuda)
             if res is not None and res.ok:
+                if cfg.device != "cuda":
+                    update_runtime(ctx, lambda rt: S08Smoke._use_whisper(rt, cuda.device, cuda.compute_type))
+                    ctx.ui.say("Speech recognition works on the graphics card again; captions use it.")
                 return
             why = "the model did not load" if res is None else res.text[-300:]
-            update_runtime(ctx, S08Smoke._use_cpu_whisper)
-            ctx.warn("NS-W404", f"runtime.json now runs whisper on the CPU ({why})")
+            update_runtime(ctx, lambda rt: S08Smoke._use_whisper(rt, "cpu", "int8"))
+            ctx.warn("NS-W404", f"runtime.json runs whisper on the CPU ({why})")
             cfg = ensure_baseline(ctx).whisper
         elif load_failed:
             raise make_error("NS-E202", "speech recognition did not load on the processor")
+        ctx.ui.say("Testing speech recognition on the processor ...")
         res = transcribe_probe(ctx, cfg)
         if not res.ok:
             raise make_error("NS-E202", f"speech recognition failed on the processor: {res.text[-300:]}")
 
     @staticmethod
-    def _use_cpu_whisper(rt: Any) -> None:
-        rt.whisper.device = "cpu"
-        rt.whisper.compute_type = "int8"
+    def _use_whisper(rt: Any, device: str, compute_type: str) -> None:
+        rt.whisper.device = device
+        rt.whisper.compute_type = compute_type
 
     @staticmethod
     def _use_libx264(rt: Any) -> None:

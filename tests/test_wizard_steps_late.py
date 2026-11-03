@@ -261,6 +261,47 @@ def test_s08_whisper_gpu_failure_falls_back_to_the_cpu_with_w404(tmp_path: Path)
     assert ctx.flag("smoke") == "passed"
 
 
+def force_cpu_whisper(ctx) -> None:
+    rt = ensure_baseline(ctx)
+    rt.whisper.device, rt.whisper.compute_type = "cpu", "int8"
+    save_runtime(ctx.paths, rt)
+
+
+def test_s08_a_working_graphics_card_brings_whisper_back_from_the_cpu(tmp_path: Path):
+    # an earlier run (a missing DLL, an old driver) left runtime.json on the CPU; the card works now
+    ctx, runner = smoke_ctx(tmp_path)
+    force_cpu_whisper(ctx)
+    assert whisper_cfg(ctx) == ("cpu", "int8")
+    S08Smoke().run(ctx)
+    assert [c.tag for c in runner.called("whisper probe")] == ["whisper probe cuda"]
+    assert whisper_cfg(ctx) == ("cuda", "int8") and ctx.warnings == []
+    assert ctx.flag("smoke") == "passed"
+
+
+def test_s08_a_failing_graphics_card_keeps_whisper_on_the_cpu_and_warns_again(tmp_path: Path):
+    runner = FakeRunner(tmp_path / "desktop", results={
+        "whisper probe cuda": RunResult(1, "", "RuntimeError: cudnn64_9.dll is not found")})
+    ctx = resolved(tmp_path, runner=runner)
+    force_cpu_whisper(ctx)
+    S08Smoke().run(ctx)
+    assert [c.tag for c in runner.called("whisper probe")] == ["whisper probe cuda", "whisper probe cpu"]
+    assert whisper_cfg(ctx) == ("cpu", "int8")
+    assert [c for c, _ in ctx.warnings] == ["NS-W404"] and "cudnn64_9" in ctx.warnings[0][1]
+
+
+def test_s08_whisper_goes_cpu_then_cuda_then_cpu_across_runs(tmp_path: Path):
+    runner = FakeRunner(tmp_path / "desktop", results={"whisper probe cuda": RunResult(1, "", "no cublas")})
+    ctx = resolved(tmp_path, runner=runner)
+    S08Smoke().run(ctx)
+    assert whisper_cfg(ctx) == ("cpu", "int8")
+    runner.results.pop("whisper probe cuda")             # the DLL is installed / the driver was updated
+    S08Smoke().run(ctx)
+    assert whisper_cfg(ctx) == ("cuda", "int8")
+    runner.results["whisper probe cuda"] = RunResult(1, "", "broken again")
+    S08Smoke().run(ctx)
+    assert whisper_cfg(ctx) == ("cpu", "int8")
+
+
 def test_s08_whisper_that_did_not_load_on_the_gpu_skips_the_probe_and_uses_the_cpu(tmp_path: Path):
     ctx, runner = smoke_ctx(tmp_path, {names.WHISPER_LOAD})
     S08Smoke().run(ctx)
