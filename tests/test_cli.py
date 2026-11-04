@@ -134,10 +134,23 @@ def test_resume_unknown_job_fails(tmp_home: Path, stub_stages):
 
 
 def test_fake_subset_is_accepted_and_bad_name_rejected(tmp_home: Path, stub_stages):
-    ok = runner.invoke(app, ["run", "--fake-services=llm,tts", "--format", "shorts_only"])
+    ok = runner.invoke(app, ["run", "--fake-services=llm,tts,clips", "--format", "shorts_only"])
     assert ok.exit_code == 0, ok.output
     bad = runner.invoke(app, ["run", "--fake-services=banana", "--format", "shorts_only"])
     assert bad.exit_code == 2
+
+
+def test_run_without_a_footage_key_is_refused_before_any_job(
+    tmp_home: Path, stub_stages, monkeypatch: pytest.MonkeyPatch
+):
+    """Gap L3: real clip sources and no key: NS-E502 at once, no job folder, no stage run."""
+    monkeypatch.setattr(jobs, "load_keys", lambda: {})
+    res = runner.invoke(app, ["run", "--fake-services=llm,tts", "--format", "shorts_only"])
+    assert res.exit_code == 1
+    assert "NS-E502" in res.output
+    assert "Add a Pixabay key (free) in Settings > Stock footage keys" in res.output
+    assert CALLS == []
+    assert not Paths.from_env().jobs_dir.exists() or not list(Paths.from_env().jobs_dir.iterdir())
 
 
 def test_ns_error_exits_one_with_code(tmp_home: Path, stub_stages):
