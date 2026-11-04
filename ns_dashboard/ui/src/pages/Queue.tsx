@@ -39,7 +39,10 @@ const partOfDay = () => { const h = new Date().getHours(); return h < 5 ? "Good 
 export default function Queue() {
   const { route, status, refresh, channelName, go, ask, ownerName } = useApp();
   const [tab, setTab] = useState<Tab>((route.query.get("tab") as Tab) || "ready");
-  const list = useLoad<Output[]>(() => api.get(`/outputs?status=${STATUS[tab]}`), [tab], []);
+  // reloaded when the outbox counts move (a job just finished): the first dev run showed "Nothing to review"
+  // under a "Ready 2" tab because the list was loaded once and only the counts kept polling
+  const ob = status?.outbox;
+  const list = useLoad<Output[]>(() => api.get(`/outputs?status=${STATUS[tab]}`), [tab, ob?.pending, ob?.approved, ob?.rejected, ob?.uploaded], []);
   const [current, setCurrent] = useState<string | null>(route.query.get("id"));
   // Job history for the events and render cards: loaded again whenever the engine changes state or the running job moves on
   // (its progress or stage), so the bars follow the job instead of freezing at the value read when it started.
@@ -51,14 +54,16 @@ export default function Queue() {
   const newest = items.reduce<string | null>((m, x) => (!m || x.created_at > m ? x.created_at : m), null);
   const pending = counts?.pending ?? (tab === "ready" ? items.length : 0);
   const owner = chans.find((c) => c.status === "active")?.display_name || chans[0]?.display_name;
-  const nextRun = status?.next_run ? new Date(status.next_run) : null;
+  // only a registered nightly task has a next run: the pill said "No nightly task" beside a 13 h countdown
+  const scheduled = !!status?.next_run && !!status?.schedule_registered;
+  const nextRun = scheduled ? new Date(status!.next_run!) : null;
 
   const series = () => { ask({ page: "queue" }, "Draft 3 story concepts for a series", false); go("#/assistant"); };
   const pick = (t: Tab) => { setTab(t); setCurrent(null); };
   const reviewDescription = (
     <>
       {owner && !ownerName ? `${partOfDay()}. ` : ""}{pending ? <>{pending === 1 ? "One video is" : `${pending} videos are`} ready to review{newest && tab === "ready" ? <>, the newest made at <span className="ds-num">{fmtClock(newest)}</span></> : null}.</> : "Nothing is waiting for review."}{" "}
-      {status?.next_run ? <>Tonight's run starts at <span className="ds-num">{fmtClock(status.next_run)}</span>.</> : "Automatic runs are off."}
+      {scheduled ? <>Tonight's run starts at <span className="ds-num">{fmtClock(status!.next_run!)}</span>.</> : "Automatic runs are off."}
     </>
   );
 

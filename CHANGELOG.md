@@ -37,6 +37,10 @@ All notable changes to Nightshift are recorded here. The format follows
   over a console-finished install (exit 14). Both now write UTC stamps and the arithmetic tolerates a mix.
 - `install_state.json` carries the version of the program that ran setup last: after an update through
   INSTALL.cmd the Settings page showed the old install version.
+- Dashboard Queue page: the review list reloads when the outbox counts change (it said "Nothing to review"
+  under a "Ready 2" tab after the first dev job), and the "Next automatic run" countdown and "Tonight's run
+  starts at" line only show when the nightly task is registered (the pill said "No nightly task" beside a
+  13 h countdown).
 
 ### Installer dev mode (`orchestrator/installer-dev-mode`)
 
