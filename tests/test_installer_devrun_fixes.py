@@ -88,3 +88,60 @@ def test_console_install_report_is_built_from_the_install_state(tmp_path: Path):
     assert data["last_error"]["code"] == "NS-E105"
     assert "pixabay_api_key" not in data["answers"] and data["answers"]["home_path"] == "x"
     assert write_console_install_report(Paths(tmp_path / "none"), outcome="done", version="0.1.7") is not None
+
+
+def test_a_stored_key_the_service_rejects_is_forgotten_and_setup_goes_on(tmp_path: Path):
+    """The first clean dev-mode install died with NS-E502 on a placeholder key left in Credential Manager."""
+    import httpx
+
+    from installer.stage2.steps.s01_questions import S01Questions
+    from installer.stage2.testing import example_answers
+
+    def http():
+        return httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(400)))
+
+    raw = example_answers(home_path=str(tmp_path / "home"))
+    ctx = make_test_context(tmp_path, raw_answers=raw, ui=FakeUi(interactive=False), simulate=False,
+                            http=http)
+    ctx.store.set("pixabay_api_key", "stale-placeholder")
+    step = S01Questions()
+    step.run(ctx)                                      # no NS-E502
+    step.verify(ctx)
+    assert ctx.store.get("pixabay_api_key") is None    # forgotten
+    assert "was not accepted" in ctx.ui.text and "Settings" in ctx.ui.text
+
+
+def test_a_key_given_in_answers_that_the_service_rejects_still_stops_setup(tmp_path: Path):
+    import httpx
+    import pytest
+
+    from installer.stage2.steps.s01_questions import S01Questions
+    from installer.stage2.testing import example_answers
+    from ns_common.errors import NsError
+
+    def http():
+        return httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(400)))
+
+    raw = example_answers(home_path=str(tmp_path / "home"), pixabay_api_key="typed-wrong")
+    ctx = make_test_context(tmp_path, raw_answers=raw, ui=FakeUi(interactive=False), simulate=False,
+                            http=http)
+    with pytest.raises(NsError) as ei:
+        S01Questions().run(ctx)
+    assert ei.value.code == "NS-E502"
+
+
+def test_secret_file_delete_and_memory_store_delete(tmp_path: Path):
+    from installer.stage2.secrets import MemoryStore, ResilientStore
+    from ns_common.secret_file import delete_secret, load_secret
+
+    paths = Paths(tmp_path / "home")
+    paths.config.mkdir(parents=True)
+    xor = lambda b: bytes(x ^ 0x5A for x in b)  # noqa: E731
+    store = ResilientStore(MemoryStore(), paths, protect=xor, unprotect=xor, lock_down=lambda p: None)
+    store.set("pixabay_api_key", "k")
+    assert store.get("pixabay_api_key") == "k"
+    assert load_secret(paths, "pixabay_api_key", unprotect=xor) == "k"
+    store.delete("pixabay_api_key")
+    assert store.get("pixabay_api_key") is None
+    assert load_secret(paths, "pixabay_api_key", unprotect=xor) is None
+    assert delete_secret(paths, "pixabay_api_key") is False

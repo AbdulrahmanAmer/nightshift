@@ -92,6 +92,8 @@ class KeyringAdapter(Protocol):
 
     def set(self, name: str, value: str) -> None: ...
 
+    def delete(self, name: str) -> None: ...
+
 
 class TtsPreviewAdapter(Protocol):
     """Voice list and short audio previews."""
@@ -620,6 +622,20 @@ class RealKeyringAdapter:
                 failures.append(f"file: {e}")
         if len(failures) == (2 if self.paths is not None else 1):
             raise AdapterUnavailable("the key could not be stored (" + "; ".join(failures) + ")")
+
+    def delete(self, name: str) -> None:
+        """Forget a key in Credential Manager and the DPAPI file (best effort each; the Settings page's
+        "clear" and the uninstall; a stale key left behind made a later setup fail on a rejected key)."""
+        try:
+            self._module().delete_password(KEYRING_SERVICE, name)
+        except Exception:  # noqa: BLE001 - absent, or a broken backend
+            pass
+        if self.paths is not None:
+            from ns_common.secret_file import delete_secret
+            try:
+                delete_secret(self.paths, name)
+            except OSError:
+                pass
 
 
 def scan_voice_library(paths: Paths) -> list[dict[str, Any]]:

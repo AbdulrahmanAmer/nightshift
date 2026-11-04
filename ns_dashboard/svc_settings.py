@@ -141,7 +141,14 @@ class SettingsService:
         if full not in KEY_NAMES:
             raise ApiError(400, "unknown_key", "Choose pexels or pixabay.")
         secret = (value or "").strip()
-        if not secret or len(secret) > 512:
+        if not secret:                                   # an empty value clears the key
+            try:
+                self.s.adapters.keyring.delete(full)
+            except AdapterUnavailable as e:
+                raise ApiError(501, "keyring_unavailable", str(e)) from e
+            self.s.log.info("api_key_cleared", name=full)
+            return {"name": full, "set": False}
+        if len(secret) > 512:
             raise ApiError(400, "bad_key", "Paste the key without spaces (up to 512 characters).")
         try:
             self.s.adapters.keyring.set(full, secret)

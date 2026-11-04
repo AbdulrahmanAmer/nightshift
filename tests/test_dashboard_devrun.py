@@ -66,3 +66,15 @@ def test_dev_mode_ignores_past_openings_so_the_fake_story_can_repeat(tmp_home: P
     data["dev_mode"] = True
     rt.write_text(json.dumps(data), encoding="utf-8")
     assert _past_openings(make_ctx(tmp_home)) == []
+
+
+def test_settings_clears_a_key_with_an_empty_value(tmp_home: Path):
+    from ns_dashboard.handlers import Dashboard
+
+    paths = Paths.from_env()
+    state = build_state(paths, fake_services=True, link=SupervisorLink("http://127.0.0.1:9", timeout_s=0.2))
+    svc = Dashboard(state).settings
+    assert svc.set_key("pixabay", "abc")["set"] is True
+    assert state.adapters.keyring.get("pixabay_api_key") == "abc"
+    assert svc.set_key("pixabay", "")["set"] is False
+    assert state.adapters.keyring.get("pixabay_api_key") is None
