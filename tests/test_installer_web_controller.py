@@ -504,6 +504,28 @@ def test_install_cmd_over_a_finished_install_of_the_same_program_shows_done(tmp_
     assert KEY_P not in json.dumps(state)
 
 
+def test_a_window_over_a_console_install_without_samples_still_shows_done(tmp_path, monkeypatch):
+    """`steps.default_steps` (console, unattended) has no v01_samples; the window's STEP_ORDER does. The first
+    dev-mode run finished unattended, then `INSTALL.cmd -Ui` opened on "Setup is halfway"."""
+    from tests.test_installer_app_copy import app_setup, fake_zip_folder
+
+    zip_a = fake_zip_folder(tmp_path / "zip-a", "0.1.4")
+    first = app_setup(tmp_path, monkeypatch, zip_a)
+    finished_install(first, zip_a)
+    state_file = first.home / "config" / "install_state.json"
+    saved = json.loads(state_file.read_text(encoding="utf-8"))
+    saved["steps"].pop("v01_samples", None)                       # the console wizard never marks it
+    state_file.write_text(json.dumps(saved), encoding="utf-8")
+
+    again = app_setup(tmp_path, monkeypatch, zip_a)
+    state = again.snap()
+    assert state["phase"] == "done" and state["run"] == "finished"
+    v01 = next(st for st in state["steps"] if st["id"] == "v01_samples")
+    assert v01["status"] == "skipped"
+    assert json.loads(state_file.read_text(encoding="utf-8"))["steps"]["v01_samples"]["status"] == "skipped"
+    assert state["result"] is not None and again.ctl.do_action("open-dashboard")[0] == 200
+
+
 def test_install_cmd_from_a_newer_zip_over_a_finished_install_updates(tmp_path, monkeypatch):
     from installer.stage2.web import appcopy
     from installer.stage2.web.controller import UPDATE_STEPS

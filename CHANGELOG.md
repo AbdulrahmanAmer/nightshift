@@ -29,6 +29,9 @@ All notable changes to Nightshift are recorded here. The format follows
   with NS-E303 `cosine 1.00`).
 - Unattended and console setup runs write `logs\\install-report.json` too (built from `install_state.json`,
   answers without keys, the last error), so the owner gets the same file whichever way setup ran.
+- The setup window opened over an install finished by the console or unattended path (which has no samples
+  step) showed "Setup is halfway" instead of Done; `v01_samples` is now recorded as skipped for such an
+  install and the window opens on Done with Open dashboard.
 
 ### Installer dev mode (`orchestrator/installer-dev-mode`)
 
