@@ -50,8 +50,9 @@ def build_services(
 ) -> Services:
     """Build the service bundle; names in `fake` (subset of FAKEABLE) get in-process fakes.
 
-    Real clip sources use `keys["pexels"]` and `keys["pixabay"]` (empty when absent; the sources
-    themselves raise a coded error on first use).
+    Real clip sources use `keys["pexels"]` and `keys["pixabay"]`; a source without a key is left out
+    (Pexels is optional since 2026), and when neither key is present both stay in so the first search raises
+    the coded error (`NS-E501`/`NS-E502`) instead of finding nothing.
 
     `acquirer` defaults to the supervisor-backed `StudioAcquirer` when no model service is faked (it connects
     on first use, so building the bundle never contacts anything) and to `DevAcquirer` when any of llm, tts,
@@ -74,10 +75,12 @@ def build_services(
     if "clips" in fake:
         sources = [FakeClipSource(paths.cache_clips / "fake")]
     else:
-        sources = [
+        every: list[ClipSource] = [
             PexelsSource(keys.get("pexels", ""), paths.cache_search),
             PixabaySource(keys.get("pixabay", ""), paths.cache_search),
         ]
+        keyed = [s for s, name in zip(every, ("pexels", "pixabay"), strict=True) if keys.get(name)]
+        sources = keyed or every
     return Services(
         llm=llm,
         tts=tts,

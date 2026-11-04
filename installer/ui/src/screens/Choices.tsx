@@ -101,8 +101,7 @@ export function Choices() {
     else if (!tierInfo.allowed) e.llmTier = t.errors.llmTier(t.picker.names[d.llmTier], ram);
     if (d.modelsSource.kind !== "internet" && (!d.modelsSource.path?.trim() || (folder && !folder.exists))) e["modelsSource.path"] = t.errors.folder;
     if (!parseRunTime(d.runTime)) e.runTime = t.errors.runTime;
-    if (!d.pexelsKey?.trim() && !keySet.pexels) e.pexelsKey = t.errors.key("Pexels");
-    if (!d.pixabayKey?.trim() && !keySet.pixabay) e.pixabayKey = t.errors.key("Pixabay");
+    // both stock-footage keys are optional (Settings takes them later); a pasted key is still checked live
     return e;
   }, [d, other.selected, lookup, disk, diskBusy, folder, tierInfo, needFreeGb, ram, keySet.pexels, keySet.pixabay]);
 
@@ -196,7 +195,7 @@ export function Choices() {
     const err = st.status === "bad" ? st.message : shown(field);
     return (
       <LabeledField inline label={k === "pexels" ? t.keys.pexels : t.keys.pixabay} type="password" autoComplete="off" spellCheck={false} value={val} disabled={locked}
-        placeholder={keySet[k] ? "••••••••" : ""} hint={keySet[k] && !val ? t.keys.pexelsKept : undefined} error={err}
+        placeholder={keySet[k] ? "••••••••" : ""} hint={keySet[k] && !val ? t.keys.pexelsKept : !val ? (k === "pexels" ? t.keys.pexelsOptional : t.keys.pixabayOptional) : undefined} error={err}
         onChange={(e) => { const v = e.target.value; set(field, v); setKeys((p) => ({ ...p, [k]: { status: "idle" } })); }} onBlur={() => void checkKey(k)}
         trailing={st.status === "ok" ? <span className="flex shrink-0 items-center gap-1 text-ds-xs text-ds-success-ink"><SetupIcon name="check" size={14} />{t.keys.works}</span> : st.status === "checking" ? <span className="shrink-0 text-ds-xs text-ds-text-2">{t.keys.checking}</span> : undefined} />
     );

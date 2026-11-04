@@ -119,7 +119,8 @@ def test_bad_answers_are_refused_with_field_errors_and_good_ones_rebuild_the_pla
     s = Setup(tmp_path, monkeypatch)
     bad = s.ctl.submit_answers(draft(s.home, channel={"displayName": "", "niche": ""}, pexelsKey=None))
     assert bad["ok"] is False
-    assert {e["field"] for e in bad["errors"]} >= {"channel.displayName", "channel.niche", "pexelsKey"}
+    assert {e["field"] for e in bad["errors"]} >= {"channel.displayName", "channel.niche"}
+    assert "pexelsKey" not in {e["field"] for e in bad["errors"]}     # Pexels is optional (Pixabay given)
     assert s.snap()["answers"] is None
     good = s.accept(llmTier="balanced")
     assert good["plan"]["tier"] == "balanced" and good["answers"]["llmTier"] == "balanced"

@@ -26,7 +26,7 @@ from installer.stage2.base import Step
 from installer.stage2.context import StepContext
 from installer.stage2.downloader import human_bytes
 from installer.stage2.errors import make_error
-from installer.stage2.secrets import KEY_NAMES, PEXELS_KEY, PIXABAY_KEY
+from installer.stage2.secrets import KEY_NAMES, PEXELS_KEY, PIXABAY_KEY, any_key_stored
 from installer.stage2.sysinfo import (
     choose_default_home,
     drive_type,
@@ -40,6 +40,7 @@ from installer.stage2.winenv import HOME_VAR, get_user_env, set_user_env
 PRESET_VOICES = ("Ryan", "Aiden", "Serena", "Vivian")
 PEXELS_URL = "https://www.pexels.com/api/"
 PIXABAY_URL = "https://pixabay.com/api/docs/"
+NO_KEY_NOTICE = "No stock footage key yet. Setup continues; add a Pixabay key (free) later in Settings"
 RUN_TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 
 
@@ -133,8 +134,6 @@ class S01Questions(Step):
             ans = build_answers(load_raw(f))
         except AnswersError:
             return False
-        if not ctx.simulate and not all(ctx.store.get(k) for k in KEY_NAMES):
-            return False
         ctx.answers = ans
         return True
 
@@ -199,16 +198,17 @@ class S01Questions(Step):
         ]
         client = ctx.http_factory()
         try:
-            for name, label, url, validator, code in specs:
+            # Both keys are optional (Pexels stopped giving out new keys; Settings takes a key later).
+            for name, label, url, validator, _code in specs:
                 value = ctx.raw_answers.get(name) or ctx.store.get(name)
                 if value:
                     validator(client, str(value))
-                else:
-                    if not ctx.ui.interactive:
-                        raise make_error(code, f"{label} key is missing from answers.json")
-                    ctx.ui.say(f"{label} key (free): {url}")
+                elif ctx.ui.interactive:
+                    ctx.ui.say(f"{label} key (free, optional, Enter to skip): {url}")
                     for attempt in range(3):
-                        value = ctx.ui.ask(f"Paste your {label} API key", secret=True).strip()
+                        value = ctx.ui.ask(f"Paste your {label} API key", "", secret=True).strip()
+                        if not value:
+                            break
                         try:
                             validator(client, value)
                             break
@@ -216,11 +216,18 @@ class S01Questions(Step):
                             ctx.ui.say(f"That key did not work: {e}", "red")
                             if attempt == 2:
                                 raise
+                if not value:
+                    ctx.raw_answers[name] = None
+                    ctx.log.info("key_skipped", name=name)
+                    continue
                 ctx.store.set(name, str(value))
                 ctx.raw_answers[name] = None  # never keep a key in the working copy
                 ctx.log.info("key_stored", name=name)
         finally:
             client.close()
+        if not any_key_stored(ctx.store):
+            ctx.ui.say(NO_KEY_NOTICE, "yellow")
+            ctx.log.warn("no_stock_key", hint="add a Pixabay key in Settings before the first video")
 
     # ---- run ----
     def run(self, ctx: StepContext) -> None:
@@ -344,8 +351,4 @@ class S01Questions(Step):
         current = get_user_env(ctx.runner, HOME_VAR)
         if current != str(ctx.paths.home):
             raise make_error("NS-E104", f"NIGHTSHIFT_HOME is {current!r}, expected {str(ctx.paths.home)!r}")
-        if not ctx.simulate:
-            for key in KEY_NAMES:
-                if not ctx.store.get(key):
-                    raise make_error("NS-E501" if key == PEXELS_KEY else "NS-E502", "key not stored")
-        ctx.log.info("answers_verified", tier=ans.llm_tier)
+        ctx.log.info("answers_verified", tier=ans.llm_tier, stock_key=any_key_stored(ctx.store))

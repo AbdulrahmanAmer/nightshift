@@ -45,7 +45,7 @@
 |---|---|---|
 | Channel name, niche, language | Setup / `studio channel add` | Yes |
 | Narrator voice: preset, described in words, or cloned from a 3–10 s clip **you have rights to** | Setup / anytime | Yes |
-| Pexels + Pixabay API keys (free) | Setup | Yes |
+| Pixabay API key (free; Pexels optional, it stopped giving out new keys) | Setup or Settings, any time | No. Videos get stock footage once a key is in Settings |
 | Masters per week, run time, publish window | Setup | Defaults provided |
 | Optional: seed keywords, topics to avoid, style notes | Channel profile | No |
 | Optional: your own example stories | `studio/exemplars/` | No |

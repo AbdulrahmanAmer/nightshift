@@ -297,13 +297,40 @@ def test_s01_rejected_key_is_e501_and_missing_key_unattended_too(tmp_path: Path)
         S01Questions().run(ctx)
     assert ei.value.code == "NS-E501" and "401" in ei.value.detail
 
-    missing = provided(tmp_path / "m", pexels_api_key=GOOD_PEXELS)
+    missing = provided(tmp_path / "m")                       # neither key: setup goes on, Settings takes one
     ctx2 = make_test_context(tmp_path / "m", raw_answers=missing, ui=FakeUi(interactive=False),
                              simulate=False,
                              http=keyed_http())
-    with pytest.raises(NsError) as ei2:
-        S01Questions().run(ctx2)
-    assert ei2.value.code == "NS-E502"
+    step = S01Questions()
+    step.run(ctx2)
+    step.verify(ctx2)
+    assert ctx2.store.get("pexels_api_key") is None and ctx2.store.get("pixabay_api_key") is None
+    assert "No stock footage key yet" in ctx2.ui.text and "Settings" in ctx2.ui.text
+    assert step.check(ctx2) is True                           # and a rerun does not ask again
+
+
+def test_s01_pixabay_alone_is_enough_and_pexels_is_optional(tmp_path: Path):
+    only = provided(tmp_path, pixabay_api_key=GOOD_PIXABAY)   # Pexels stopped giving out new keys
+    ctx = make_test_context(tmp_path, raw_answers=only, ui=FakeUi(interactive=False), simulate=False,
+                            http=keyed_http())
+    step = S01Questions()
+    step.run(ctx)
+    step.verify(ctx)
+    assert ctx.store.get("pixabay_api_key") == GOOD_PIXABAY and ctx.store.get("pexels_api_key") is None
+    assert step.check(ctx) is True
+    # interactive: Enter skips the Pexels prompt, Pixabay is pasted
+    ui = FakeUi({"Pexels API key": [""], "Pixabay API key": [GOOD_PIXABAY]})
+    ctx2 = make_test_context(tmp_path / "i", raw_answers=provided(tmp_path / "i"), ui=ui, simulate=False,
+                             http=keyed_http())
+    S01Questions().run(ctx2)
+    assert ctx2.store.get("pexels_api_key") is None and ctx2.store.get("pixabay_api_key") == GOOD_PIXABAY
+    assert "optional, Enter to skip" in ui.text
+    # both skipped interactively: no error either
+    ui3 = FakeUi({"Pexels API key": [""], "Pixabay API key": [""]})
+    ctx3 = make_test_context(tmp_path / "n", raw_answers=provided(tmp_path / "n"), ui=ui3, simulate=False,
+                             http=keyed_http())
+    S01Questions().run(ctx3)
+    assert "No stock footage key yet" in ui3.text
 
 
 def test_s01_asks_for_missing_keys_and_retries_a_bad_paste(tmp_path: Path):
