@@ -18,7 +18,7 @@ import time
 import zipfile
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -107,9 +107,11 @@ def retry_note(reason: str, wait_s: float, attempt: int | None = None, of: int |
     return text
 
 
-def now_iso() -> str:  # the same clock as installer.stage2.state (UTC, aware)
-    """Local time, to the second."""
-    return datetime.now().isoformat(timespec="seconds")
+def now_iso() -> str:
+    """UTC with offset, to the second: the same clock as `installer.stage2.state` (the console wizard).
+    Mixing the window's naive local stamps with the wizard's aware ones made the Done-screen duration
+    raise TypeError, and the window never started over a console-finished install."""
+    return datetime.now(UTC).isoformat(timespec="seconds")
 
 
 def hhmm() -> str:

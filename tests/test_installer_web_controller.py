@@ -515,6 +515,8 @@ def test_a_window_over_a_console_install_without_samples_still_shows_done(tmp_pa
     state_file = first.home / "config" / "install_state.json"
     saved = json.loads(state_file.read_text(encoding="utf-8"))
     saved["steps"].pop("v01_samples", None)                       # the console wizard never marks it
+    saved["started_at"] = "2026-11-04T11:59:18"                   # naive local (old window stamps) ...
+    saved["completed_at"] = "2026-11-04T10:18:51+00:00"           # ... and aware UTC (console wizard)
     state_file.write_text(json.dumps(saved), encoding="utf-8")
 
     again = app_setup(tmp_path, monkeypatch, zip_a)
@@ -524,6 +526,16 @@ def test_a_window_over_a_console_install_without_samples_still_shows_done(tmp_pa
     assert v01["status"] == "skipped"
     assert json.loads(state_file.read_text(encoding="utf-8"))["steps"]["v01_samples"]["status"] == "skipped"
     assert state["result"] is not None and again.ctl.do_action("open-dashboard")[0] == 200
+    assert state["result"]["durationS"] >= 0                      # mixed stamps no longer raise
+
+
+def test_span_seconds_tolerates_naive_and_aware_stamps():
+    from installer.stage2.web.report import span_seconds
+
+    assert span_seconds("2026-11-04T10:00:00+00:00", "2026-11-04T10:01:05+00:00") == 65
+    assert span_seconds("2026-11-04T10:00:00", "2026-11-04T10:00:30") == 30
+    assert span_seconds("2026-11-04T10:00:00", "2026-11-04T10:00:30+00:00") is not None
+    assert span_seconds(None, "2026-11-04T10:00:30") is None and span_seconds("bad", "worse") is None
 
 
 def test_install_cmd_from_a_newer_zip_over_a_finished_install_updates(tmp_path, monkeypatch):

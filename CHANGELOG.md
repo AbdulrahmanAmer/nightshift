@@ -32,6 +32,9 @@ All notable changes to Nightshift are recorded here. The format follows
 - The setup window opened over an install finished by the console or unattended path (which has no samples
   step) showed "Setup is halfway" instead of Done; `v01_samples` is now recorded as skipped for such an
   install and the window opens on Done with Open dashboard.
+- The setup window wrote naive local timestamps into `install_state.json` while the console wizard wrote UTC
+  ones; subtracting the two for the Done-screen duration raised `TypeError` and the window never started
+  over a console-finished install (exit 14). Both now write UTC stamps and the arithmetic tolerates a mix.
 
 ### Installer dev mode (`orchestrator/installer-dev-mode`)
 
