@@ -7,6 +7,16 @@ All notable changes to Nightshift are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.1.6] - 2026-11-04
+
+### Hotfix (`orchestrator/hotfix-0.1.6-key-check`, from the partner's first run of 0.1.5)
+- Installer, API keys screen: the live check of the Pexels and Pixabay keys sent Python's default
+  `User-Agent` (`Python-urllib/3.12`). Cloudflare in front of both services answers HTTP 403 (error 1010)
+  to that signature, so every valid key was reported as `NS-E501`/`NS-E502` ("not accepted, copy the key
+  again, no spaces"). The check now sends `Nightshift-Setup/<version>`; verified live against both
+  services. The studio's own stock-footage client (httpx) was never affected.
+- Do NOT send v0.1.5: its key screen rejects every key. Send `Nightshift-Setup-0.1.6.zip`.
+
 ## [0.1.5] - 2026-11-03
 
 ### Final pre-tag fixes (`feat/release-0.1.5-pretag`, from the last review before tagging)
