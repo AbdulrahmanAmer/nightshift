@@ -57,11 +57,14 @@ import importlib
 import io
 import math
 import os
+import shutil
 import subprocess
 import tempfile
 import threading
+import time
 import zlib
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -258,9 +261,14 @@ class QwenttsEngine:
         timeout_s: float = 900.0,
         log: NsLogger | None = None,
         launcher: Mapping[str, Sequence[str]] | None = None,
+        tmp_dir: Path | None = None,
     ) -> None:
         self.bin_dir = bin_dir
         self.models_dir = models_dir
+        # Scratch space for the files handed to the tools: `<home>\cache\tts-tmp` (`Paths.cache_tts_tmp`),
+        # never `%TEMP%`. The tools read argv in the ANSI code page, so a Windows user name with Arabic or
+        # other non-ASCII letters would break every temporary path (NS-W301).
+        self.tmp_root = Path(tmp_dir) if tmp_dir is not None else models_dir / ".tts-tmp"
         self.size = size
         self.device = device  # None = the tools pick the best device; "CPU" forces it (cpu-dev profile)
         self.timeout_s = timeout_s
@@ -288,6 +296,50 @@ class QwenttsEngine:
             self._cancelled = True
         proc.kill()
         return True
+
+    # ---- scratch files (ASCII paths only: the tools do not convert argv to UTF-8) ----
+    @contextmanager
+    def _scratch(self) -> Iterator[Path]:
+        """A fresh folder under `tmp_root` for one call; removed afterwards, also when the call fails.
+
+        Folders left by a crashed process (older than a day) are removed on the way in.
+        """
+        root = self.tmp_root
+        root.mkdir(parents=True, exist_ok=True)
+        if self.log is not None and not str(root).isascii():
+            self.log.warn("qwentts_non_ascii_path", path=str(root))
+        cutoff = time.time() - 86400
+        for old in root.iterdir():
+            try:
+                if old.is_dir() and old.stat().st_mtime < cutoff:
+                    shutil.rmtree(old, ignore_errors=True)
+            except OSError:
+                continue
+        folder = Path(tempfile.mkdtemp(prefix="c-", dir=root))
+        try:
+            yield folder
+        finally:
+            shutil.rmtree(folder, ignore_errors=True)
+
+    def _ascii_refs(self, args: dict[str, Any], stack: ExitStack) -> dict[str, Any]:
+        """`args` with every file (a `Path` value) whose path is not plain ASCII copied to scratch first.
+
+        The voice files normally sit under the install folder (ASCII). A voice stored anywhere else would
+        reach the tool as garbled bytes, so it is copied. The scratch folder is opened on `stack` and lives
+        until the caller's `with` ends.
+        """
+        if all(str(p).isascii() for p in args.values() if isinstance(p, Path)):
+            return args
+        scratch = stack.enter_context(self._scratch())
+        out: dict[str, Any] = {}
+        for key, path in args.items():
+            if not isinstance(path, Path) or str(path).isascii():
+                out[key] = path
+                continue
+            safe = scratch / f"{key}{path.suffix if path.suffix.isascii() else ''}"
+            shutil.copyfile(path, safe)
+            out[key] = safe
+        return out
 
     # ---- files ----
     def exe(self, tool: str) -> Path:
@@ -495,8 +547,10 @@ class QwenttsEngine:
         self, text: str, voice: VoiceSpec, *, speed: float = 1.0, seed: int | None = None
     ) -> np.ndarray:
         op, args = self._voice_args(voice)
-        with tempfile.TemporaryDirectory(prefix="ns-qwentts-") as td:
-            out = Path(td) / "out.wav"
+        with ExitStack() as stack:
+            scratch = stack.enter_context(self._scratch())
+            args = self._ascii_refs(args, stack)
+            out = scratch / "out.wav"
             cmd = self.tts_command(op, out=out, seed=seed, language=voice.language, **args)
             self._run(cmd, tool=QWEN_TTS, code="NS-E310", stdin_text=text.strip())
             return time_stretch(self._read(out, "NS-E310"), self.sr, speed)
@@ -518,16 +572,18 @@ class QwenttsEngine:
             return [self.synth(t, voice, speed=speed, seed=seed) if lines[i] else EMPTY_AUDIO
                     for i, t in enumerate(texts)]
         op, args = self._voice_args(voice)
-        cmd = self.tts_command(op, out=Path("-"), seed=seed, language=voice.language, **args)
-        cmd.insert(-2, "--stream-by-line")  # before `-o -`
         try:
-            stdout = self._run_stream(
-                cmd,
-                tool=QWEN_TTS,
-                code="NS-E310",
-                stdin_text="\n".join(lines[i] for i in todo) + "\n",
-                timeout_s=max(tts_timeout_s(len(todo)), self.batch_timeout_floor_s),
-            )
+            with ExitStack() as stack:
+                args = self._ascii_refs(args, stack)
+                cmd = self.tts_command(op, out=Path("-"), seed=seed, language=voice.language, **args)
+                cmd.insert(-2, "--stream-by-line")  # before `-o -`
+                stdout = self._run_stream(
+                    cmd,
+                    tool=QWEN_TTS,
+                    code="NS-E310",
+                    stdin_text="\n".join(lines[i] for i in todo) + "\n",
+                    timeout_s=max(tts_timeout_s(len(todo)), self.batch_timeout_floor_s),
+                )
         except BatchInterrupted as e:
             e.done = self._finished(e.partial, todo, speed)
             raise
@@ -570,8 +626,8 @@ class QwenttsEngine:
             x, sr = read_wav(ref_wav)
         except (OSError, ValueError) as e:
             raise NsError("NS-E315", f"the reference recording is not a readable WAV: {e}") from e
-        with tempfile.TemporaryDirectory(prefix="ns-qwentts-") as td:
-            wav = Path(td) / "speaker.wav"
+        with self._scratch() as td:
+            wav = td / "speaker.wav"
             write_wav(wav, x, sr)  # plain 16-bit mono PCM, the form qwen-codec is documented to read
             files = self._encode(wav)
         files[VOICE_REF_TEXT] = (words + "\n").encode("utf-8")
@@ -583,8 +639,8 @@ class QwenttsEngine:
         missing = self.missing_model("design")
         if missing:
             raise NsError("NS-E314", design_model_message(missing), missing_model=missing)
-        with tempfile.TemporaryDirectory(prefix="ns-qwentts-") as td:
-            render = Path(td) / "render.wav"
+        with self._scratch() as td:
+            render = td / "render.wav"
             cmd = self.tts_command("design", out=render, instruct=description, language=language)
             self._run(cmd, tool=QWEN_TTS, code="NS-E315", stdin_text=SAMPLE_TEXT)
             sample = self._read(render, "NS-E315")
@@ -819,4 +875,5 @@ def select_engine(cfg: TtsCfg, paths: Paths, prefer: str | None = None) -> Engin
         size="0.6b" if cpu else "1.7b",
         device="CPU" if cpu else None,
         log=NsLogger("tts", paths.logs),
+        tmp_dir=paths.cache_tts_tmp,
     )

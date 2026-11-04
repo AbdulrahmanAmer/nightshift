@@ -58,6 +58,23 @@ All notable changes to Nightshift are recorded here. The format follows
 - Not in this change: certificates and proxies, pinning Hugging Face file revisions and the qwen-tts temp
   folder (`orchestrator/pins-0.1.7`), re-syncing venvs when INSTALL.cmd is run over an existing install.
 
+### Pins and voice-engine temp files (`orchestrator/pins-0.1.7`, from install audit 2, findings 3 and 9)
+- Every Hugging Face file in `manifest.json` (all LLM tiers, embed, voice GGUFs, whisper) now names the commit
+  it is fetched from (`revision`, a 40-character sha), so a re-upload of a file under the same name on `main`
+  can no longer fail every download with NS-E109. Each file was checked at that commit: it exists, its size
+  and the LFS sha256 equal the manifest. The PyTorch fallback repos (and the VoiceDesign weights) are pinned
+  in `tts_fallback_revisions`. `HfFile.revision` defaults to `main` for an entry that names none, and the
+  custom model chosen in setup still comes from `main`. A test fails if the shipped manifest holds `main`.
+- `bins.yunet` points at the opencv_zoo commit that holds the file instead of `raw/main`; its sha256 is
+  unchanged (re-hashed from the commit URL).
+- Voice engine: `qwen-tts.exe` and `qwen-codec.exe` never convert argv to UTF-8, so a path with Arabic (or
+  other non-ASCII) letters, such as a `%TEMP%` under that Windows user name, made the voice test fail with
+  "WAV write failed" and setup fell back to the 10 GB PyTorch engine (NS-W301). The engine now keeps every
+  scratch file handed to the tools under `<home>\cache	ts-tmp` (`Paths.cache_tts_tmp`), one folder per call,
+  removed afterwards (leftovers older than a day are swept). A voice whose files sit on a non-ASCII path is
+  copied there before the tool reads it. The test stand-in now rejects non-ASCII path arguments like the real
+  tools do.
+
 ## [0.1.6] - 2026-11-04
 
 ### Hotfix (`orchestrator/hotfix-0.1.6-key-check`, from the partner's first run of 0.1.5)
