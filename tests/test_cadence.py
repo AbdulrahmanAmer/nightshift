@@ -304,3 +304,27 @@ def test_unknown_preset_in_a_pool_is_a_coded_error_at_job_start(tmp_home: Path):
     with pytest.raises(StudioError) as ei:
         jobs.make_job(env, ch, "shorts_only")
     assert ei.value.code == "NS-E320" and "neon_pink" in ei.value.detail
+
+
+def test_a_failed_master_does_not_silence_the_channel_for_the_week(tmp_home: Path):
+    """The first dev-mode nightly master failed at clips; its combo row made the next `--daily` plan
+    nothing."""
+    paths, db = _env(tmp_home)
+    ch = _channel(paths, db, 11, format="master_first")
+    plan_m = cadence.CadencePlan("after-dark", "steady", 1, 1)
+    assert cadence.jobs_due_today(db, ch, plan_m, NOW) == 1
+    # a long job started 20 hours ago that never produced a video: failed, not this week's master
+    db.execute(
+        "insert into combos (combo_id, channel, job_id, item, created_at) values (?, ?, ?, 'long', ?)",
+        ("c-failed", ch.slug, "j-failed", (NOW - timedelta(hours=20)).isoformat(timespec="seconds")),
+    )
+    assert cadence.jobs_due_today(db, ch, plan_m, NOW) == 1
+    # one started an hour ago is still running: do not start a second master tonight
+    db.execute(
+        "insert into combos (combo_id, channel, job_id, item, created_at) values (?, ?, ?, 'long', ?)",
+        ("c-running", ch.slug, "j-running", (NOW - timedelta(hours=1)).isoformat(timespec="seconds")),
+    )
+    assert cadence.jobs_due_today(db, ch, plan_m, NOW) == 0
+    # a finished master yesterday counts for the week whatever its combo age
+    add_output(db, "m-done", "long", channel=ch.slug, created_at=(NOW - timedelta(days=1)).isoformat())
+    assert cadence.jobs_due_today(db, ch, plan_m, NOW + timedelta(days=2)) == 0

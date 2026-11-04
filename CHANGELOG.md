@@ -7,6 +7,23 @@ All notable changes to Nightshift are recorded here. The format follows
 
 ## [Unreleased]
 
+- Dev mode: a clip job on any video now runs through selection, cutting and rendering: the fake model's
+  `clip_select` answer is fitted to the window in the prompt when the recorded fixture's moments (62-262 s of
+  a test recording) fall outside it (the first dev-mode clip job failed with NS-E407). The clipper's dev-mode
+  transcript sidecar is `<video stem>.transcript.json` next to the video (docs/DEV_MODE.md).
+- Clips stage: when every candidate for a scene is ruled out by the reuse rules (14 days on the channel, 30
+  across channels) the scene reuses footage from an earlier video with a warning (`NS-W405`) instead of
+  failing the whole master after the writing and the voice (the first dev-mode nightly run died with
+  NS-E402 "24 candidates for 2 slots"); when the pool is smaller than the video (a master plus its Shorts on
+  a niche with few clips) a clip may repeat inside the video, again with the warning.
+- Nightly planner: a master job that failed no longer counts as the week's master (its combo row did, so the
+  channel went silent for the whole spacing, a week at one master a week); finished long videos count, and a
+  long job started in the last 12 hours counts as still running.
+- Quality check: a derived Short that fails QC (the first dev-mode master died with "s5: duration", 61 s
+  for a 50 s bucket, after the master and four Shorts were rendered) is left out with `NS-W406` and listed
+  in `qc\\dropped.json`; the master and the other Shorts are published. The master's own QC failure, or
+  every Short failing, still stops the job.
+
 ## [0.1.9] - 2026-11-04
 
 From the clean dev-mode install of the official 0.1.8 zip on the orchestrator's laptop. Send

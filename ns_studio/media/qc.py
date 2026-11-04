@@ -183,8 +183,31 @@ class QcStage:
                 failed.append(f"{item}: {result.reason}")
         ctx.write_json("qc/report.json", summary)
         ctx.log.info("qc_done", job_id=ctx.job_id, results=summary)
-        if failed:
+        drop_failed_items(ctx, rendered, summary, must_keep=())
+        if failed and len(failed) == len(rendered):
             raise NsError("NS-E404", "; ".join(failed))
+
+
+def drop_failed_items(
+    ctx: JobContext, rendered: dict[str, Any], summary: dict[str, Any], *, must_keep: tuple[str, ...]
+) -> list[str]:
+    """Take the items that failed QC out of `render/report.json` so the Outbox publishes the rest.
+
+    One Short over its length bucket used to fail the whole job after the master and every other Short
+    were rendered (the first dev-mode master: "s5: duration", 61 s for a 50 s bucket). The clipper already
+    drops a failing clip (review row 9); story Shorts now do the same, with `NS-W406` per dropped item and
+    the list in `qc/dropped.json`. Items in `must_keep` (the master) are never dropped: they raise instead.
+    """
+    dropped = {item: str(summary[item].get("reason") or "qc") for item in rendered
+               if item in summary and not summary[item]["passed"] and item not in must_keep}
+    for item, reason in dropped.items():
+        ctx.log.warn("short_dropped", f"{item} failed QC ({reason}) and is left out; the rest is kept",
+                     code="NS-W406", job_id=ctx.job_id, item=item, reason=reason)
+    if dropped:
+        kept = {item: info for item, info in rendered.items() if item not in dropped}
+        ctx.write_json("render/report.json", kept)
+        ctx.write_json("qc/dropped.json", dropped)
+    return sorted(dropped)
 
 
 # ---------------------------------------------------------------------------------------------------------
@@ -251,5 +274,6 @@ def run_qc_master(ctx: JobContext) -> None:
             failed.append(f"{r.item}: {r.reason}")
     ctx.write_json("qc/report.json", summary)
     ctx.log.info("qc_done", job_id=ctx.job_id, results=summary)
-    if failed:
+    if not summary["long"]["passed"]:
         raise NsError("NS-E404", "; ".join(failed))
+    drop_failed_items(ctx, rendered, summary, must_keep=("long",))

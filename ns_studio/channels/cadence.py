@@ -170,16 +170,48 @@ def _count_since(db: Db, channel: str, item_is_long: bool, since: datetime) -> i
     return int(r["n"]) if r else 0
 
 
+#: A master's combo row is written at the start of its job; one older than this without a finished video
+#: is a failed (or abandoned) job, not a master that counts for the week.
+IN_PROGRESS_H = 12
+
+
+def _last_master_at(db: Db, channel: str, now: datetime) -> datetime | None:
+    """When the channel last got a master: the newest finished long video, or a long job started in the last
+    `IN_PROGRESS_H` hours (still running). A failed nightly master used to count through its combo row and
+    silenced the channel for the whole spacing (a week at one master a week): the first dev-mode nightly run
+    failed at clips and the retry planned nothing."""
+    done = db.one("select max(created_at) c from outputs where channel=? and kind='long'", (channel,))
+    recent = db.one(
+        "select max(created_at) c from combos where channel=? and item='long' and created_at >= ?",
+        (channel, (now - timedelta(hours=IN_PROGRESS_H)).isoformat(timespec="seconds")),
+    )
+    stamps = [_parse(r["c"]) for r in (done, recent) if r and r["c"]]
+    return max(stamps) if stamps else None
+
+
+def _masters_since(db: Db, channel: str, since: datetime, now: datetime) -> int:
+    """Masters that count for the week: finished long videos since `since`, plus long jobs still running."""
+    done = db.one(
+        "select count(distinct job_id) n from outputs where channel=? and kind='long' and created_at >= ?",
+        (channel, since.isoformat(timespec="seconds")),
+    )
+    running = db.one(
+        "select count(*) n from combos where channel=? and item='long' and created_at >= ?",
+        (channel, (now - timedelta(hours=IN_PROGRESS_H)).isoformat(timespec="seconds")),
+    )
+    return (int(done["n"]) if done else 0) + (int(running["n"]) if running else 0)
+
+
 def jobs_due_today(db: Db, ch: Channel, plan: CadencePlan, now: datetime) -> int:
     """Number of jobs to create today for `ch` under `plan`."""
     midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
     if ch.format == "shorts_only":
         return max(0, plan.shorts_per_day - _count_since(db, ch.slug, False, midnight))
     spacing = max(1, 7 // max(1, plan.masters_per_week))
-    last = db.one("select max(created_at) c from combos where channel=? and item='long'", (ch.slug,))
-    if last and last["c"] and now - _parse(last["c"]) < timedelta(days=spacing) - timedelta(hours=6):
+    last = _last_master_at(db, ch.slug, now)
+    if last is not None and now - last < timedelta(days=spacing) - timedelta(hours=6):
         return 0
-    week_count = _count_since(db, ch.slug, True, now - timedelta(days=7))
+    week_count = _masters_since(db, ch.slug, now - timedelta(days=7), now)
     return 1 if week_count < plan.masters_per_week else 0
 
 

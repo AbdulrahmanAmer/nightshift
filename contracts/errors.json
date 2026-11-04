@@ -52,6 +52,8 @@
   "NS-E407": {"message": "No moments passed the clip filters.", "hint": "Try a longer length range, more clips, or a different channel niche; the transcript is kept so re-running is fast."},
   "NS-W402": {"message": "The requested clip layout did not apply (for example no facecam found); used center crop instead.", "hint": "Pick a different layout in Create → Clips, or leave it on Auto."},
   "NS-W403": {"message": "The setup test video did not finish.", "hint": "Setup can continue; run Diagnostics after install."},
+  "NS-W406": {"message": "A Short failed the quality check and was left out; the master and the other Shorts were kept.", "hint": "See qc\\dropped.json in the job folder for the item and the failing check (usually a length bucket). Nothing to do unless it repeats every night."},
+  "NS-W405": {"message": "Stock footage from an earlier video was reused for a scene.", "hint": "Every fresh clip for that scene's keywords was used in the last 14 days (30 across channels). Add seed keywords to the channel, or a second footage source key, so scenes get new clips."},
   "NS-W404": {"message": "Whisper runs on the CPU: captions will be slow.", "hint": "The graphics card could not run speech recognition (cuBLAS/cuDNN libraries missing or blocked). Videos still work. Update the NVIDIA driver, run 'ns verify --quick', or send the diagnostics zip."},
   "NS-E501": {"message": "Pexels API error.", "hint": "Check the Pexels key in Settings (optional: Pixabay alone is enough) and the hourly limit (200 requests/hour)."},
   "NS-E502": {"message": "Pixabay API error.", "hint": "Add or check the Pixabay key (free) in Settings > Stock footage keys; the per-minute limit is 100 requests."},
