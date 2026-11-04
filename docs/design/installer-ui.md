@@ -960,9 +960,9 @@ Grid areas: `err err err err steps steps`.
 | Footer right | `Button variant="ghost"` "Stop setup"; `Button variant="soft"` "Skip this step", shown only when `failure.canSkip`; `Button variant="primary" leadingIcon="retry"` "Retry" |
 
 **Amendment (first-run support).** The button is **Save a help file**; next to it **Open log folder** (`reveal` of
-`<home>logs`) and, for NS-E113, **Open Protection history** (action `open-windows-page`, `protection-history`). One
+`<home>\logs`) and, for NS-E113, **Open Protection history** (action `open-windows-page`, `protection-history`). One
 sentence under them says where the zip is and who gets it. The footer has **Copy status**. Every failure, stop and
-finish also writes `<home>logsinstall-report.json`. The zip holds the setup evidence (`install-report.json`,
+finish also writes `<home>\logs\install-report.json`. The zip holds the setup evidence (`install-report.json`,
 `setup/wizard_flags.json`, `setup/answers.json` without keys, `setup/preflight.json`, `setup/setup-server.err`,
 `setup/bootstrap/*`) whether `ns doctor --bundle` or the fallback below writes it, and is named
 `nightshift-diagnostics-<date>-<HHMM>.zip`.
