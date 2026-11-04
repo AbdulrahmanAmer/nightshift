@@ -13,7 +13,7 @@ PS = shutil.which("powershell") or shutil.which("pwsh")
 pytestmark = pytest.mark.skipif(PS is None, reason="PowerShell not available")
 
 ALL_DIRS = ["venvs", "bin", "run", "models", "outbox", "rejected", "data", "imports", "cache"]
-ALL_DIRS += ["config", "logs"]
+ALL_DIRS += ["config", "logs", "stories", "state", "tmp"]
 
 
 def _make_home(tmp_path: Path) -> Path:
@@ -51,8 +51,8 @@ def test_default_removes_venvs_bin_and_run_only(tmp_path: Path):
     home = _make_home(tmp_path)
     proc = _run(home, "-SkipSystem")
     assert proc.returncode == 0, proc.stdout + proc.stderr
-    assert _present(home) == set(ALL_DIRS) - {"venvs", "bin", "run"}
-    assert "Kept in" in proc.stdout and "models" in proc.stdout
+    assert _present(home) == set(ALL_DIRS) - {"venvs", "bin", "run", "state", "tmp"}
+    assert "Kept in" in proc.stdout and "models" in proc.stdout and "stories" in proc.stdout
 
 
 def test_second_run_is_idempotent(tmp_path: Path):
@@ -223,3 +223,11 @@ def test_the_dry_run_names_the_path_entry_and_changes_nothing(tmp_path: Path):
     out = _path_probe(tmp_path, home, start, dry=True)
     assert rf"[dry-run] remove {home}\bin\ffmpeg from the user PATH" in out
     assert f"path={start}" in out
+
+
+def test_delete_data_also_removes_stories_and_the_internal_folders(tmp_path: Path):
+    """The first dev-mode uninstall left stories, state and tmp under the install folder."""
+    home = _make_home(tmp_path)
+    proc = _run(home, "-SkipSystem", "-DeleteData")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert _present(home) == {"models", "config", "logs"}

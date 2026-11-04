@@ -41,6 +41,9 @@ All notable changes to Nightshift are recorded here. The format follows
   under a "Ready 2" tab after the first dev job), and the "Next automatic run" countdown and "Tonight's run
   starts at" line only show when the nightly task is registered (the pill said "No nightly task" beside a
   13 h countdown).
+- Uninstall also removes the setup environment and the run/state/tmp folders under `%LOCALAPPDATA%\Nightshift`,
+  the install folder's `state` and `tmp`, and (with "delete my videos") `stories`; the first dev-mode uninstall left
+  them behind. The "kept" line lists `stories` when it stays.
 
 ### Installer dev mode (`orchestrator/installer-dev-mode`)
 
