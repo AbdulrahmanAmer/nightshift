@@ -439,7 +439,8 @@ def test_the_real_state_pulses_the_engine_and_the_fake_state_does_not(tmp_home: 
 
 
 def test_a_finished_job_can_be_hidden_but_a_running_one_cannot(tmp_home: Path):
-    """The Create page's Earlier list: failed clip cards from a bad day can be hidden; rows and outputs stay."""
+    """The Create page's Earlier list: failed clip cards from a bad day can be hidden; rows and outputs
+    stay."""
     store, worker, _hub, _ = build(tmp_home, {"clip": stage_handler([])})
     job = store.create("clip", "c", {"a": 1})
     assert store.dismiss(job.job_id) is not None

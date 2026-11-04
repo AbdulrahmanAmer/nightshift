@@ -282,10 +282,10 @@ def test_the_card_after_a_yes_names_the_files_the_tool_made():
     """"Fetch two clips and show me where they are": the paths belong on the card, not only in the transcript."""
     from ns_dashboard.assistant.loop import result_facts
 
-    out = result_facts({"clips": [{"path": r"D:\\n\\a.mp4"}, {"path": r"D:\\n\\b.mp4"}], "note": "Only 1 new clip."})
+    out = result_facts({"clips": [{"path": r"D:\n\a.mp4"}, {"path": r"D:\n\b.mp4"}], "note": "Only 1 new clip."})
     assert out == "Files:\nD:\\n\\a.mp4\nD:\\n\\b.mp4\nOnly 1 new clip."
     assert result_facts({"job_id": "run-1", "status": "queued"}) == "job id: run-1"
-    assert result_facts({"path": r"C:\\x\\report.zip"}) == r"Path: C:\\x\\report.zip"
+    assert result_facts({"path": r"C:\x\report.zip"}) == r"Path: C:\x\report.zip"
     assert result_facts({"profile": {"status": "paused"}}) == "" and result_facts("text") == ""
 
 

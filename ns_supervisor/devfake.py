@@ -226,7 +226,8 @@ def _after_tool(messages: list[dict[str, Any]]) -> str:
 
 def chat_message(body: dict[str, Any]) -> dict[str, Any]:
     """The whole assistant message for a chat request, with `tool_calls` when a tool fits."""
-    messages = body.get("messages") if isinstance(body.get("messages"), list) else []
+    raw = body.get("messages")
+    messages: list[dict[str, Any]] = [m for m in raw if isinstance(m, dict)] if isinstance(raw, list) else []
     if body.get("tools"):
         if messages and messages[-1].get("role") == "tool":
             return {"role": "assistant", "content": _after_tool(messages)}
