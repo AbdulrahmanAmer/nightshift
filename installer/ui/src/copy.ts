@@ -246,9 +246,9 @@ export const choices = {
     checking: "Looking in that folder",
   },
   keys: {
-    title: "Stock footage keys",
+    title: "Stock footage keys (optional, can be added later in Settings)",
     pexels: "Pexels key (optional)",
-    pixabay: "Pixabay key",
+    pixabay: "Pixabay key (optional)",
     works: "Works",
     checking: "Checking",
     getKeys: "Get free keys",
@@ -256,6 +256,7 @@ export const choices = {
     pixabayLink: "Pixabay, free key",
     pexelsKept: "A key is already saved. Leave this empty to keep it",
     pexelsOptional: "Pexels is not giving out new keys right now. Leave this empty; Pixabay alone is enough",
+    pixabayOptional: "Free at pixabay.com. Without any key, videos get no stock footage until you add one in Settings",
     popoverLabel: "Where to get the keys",
   },
   footer: { folder: (path: string, free: string | null) => (free ? `Install folder ${path} · ${free} free` : `Install folder ${path}`), checking: "Checking the install folder", more: "More options", problems: "answers.json had problems. Fix them here" },
@@ -289,7 +290,6 @@ export const choices = {
     llmTier: (tier: string, ram: number) => `${tier} needs 32 GB of memory. This PC has ${ram} GB`,
     folder: "That folder was not found",
     runTime: "Use the 24 hour clock, for example 03:00",
-    key: "Paste the Pixabay key (free). Pexels is optional; setup needs one key to find stock footage",
   },
   saveFailed: "Setup could not save your choices. Press Install again",
 };

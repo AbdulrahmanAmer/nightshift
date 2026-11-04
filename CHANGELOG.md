@@ -15,10 +15,16 @@ All notable changes to Nightshift are recorded here. The format follows
   to that signature, so every valid key was reported as `NS-E501`/`NS-E502` ("not accepted, copy the key
   again, no spaces"). The check now sends `Nightshift-Setup/<version>`; verified live against both
   services. The studio's own stock-footage client (httpx) was never affected.
-- The Pexels key is optional: Pexels has paused new API keys, so one stock-footage key is enough (Pixabay
-  alone works). The setup screen marks Pexels "(optional)" and only complains when neither key is given; the
-  console wizard lets Enter skip a key; `s01`/`s07` verify that at least one key is stored; the studio builds
-  only the clip sources that have a key (both when none, so the first search still raises `NS-E501`/`NS-E502`).
+- Both stock-footage keys are optional, so setup never blocks on them: Pexels has paused new API keys, and a
+  Pixabay key can be added later in Settings > Stock footage keys. The setup screen marks both fields optional
+  with a hint, a pasted key is still checked live, the console wizard lets Enter skip a key and prints a notice
+  when none is given, `s01`/`s07` no longer require a stored key, and the studio builds only the clip sources
+  that have a key (both when none, so the first video's clips stage fails with `NS-E502`, whose hint now says
+  to add the key in Settings).
+- Pixabay video renditions: the studio takes the smallest rendition that still covers a 1080p master (Pixabay
+  now serves `large` at 3840x2160, about 35 MB per clip; `small` is 1920x1080 at about 10 MB). The request
+  (`/api/videos/`, `video_type=film`, `safesearch=true`, 24 h response cache, 90 requests/min) was checked
+  live against the current Pixabay API docs and response.
 - Do NOT send v0.1.5: its key screen rejects every key. Send `Nightshift-Setup-0.1.6.zip`.
 
 ## [0.1.5] - 2026-11-03

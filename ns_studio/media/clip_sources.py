@@ -259,6 +259,28 @@ class PexelsSource(_HttpSource):
         return self._fetch_file(cand.download_url, dest)
 
 
+MASTER_SHORT_SIDE = 1080
+
+
+def pick_pixabay_rendition(renditions: dict[str, Any]) -> dict[str, Any] | None:
+    """The smallest rendition that still covers a 1080p master, else the biggest one there is.
+
+    Pixabay (2026) serves `large` at 3840x2160 (~35 MB for 17 s), `medium` at 2560x1440, `small` at
+    1920x1080 and `tiny` at 1280x720; older videos are one step smaller each. A 1080p master gains nothing
+    from 4K, so the first rendition (smallest first) whose short side is >= 1080 is taken, which keeps a
+    clip download at about 10 MB instead of 35. An empty `large` (url "", size 0) is skipped.
+    """
+    usable: list[dict[str, Any]] = []
+    for size in ("tiny", "small", "medium", "large"):
+        r = renditions.get(size) or {}
+        if r.get("url") and int(r.get("width") or 0) > 0 and int(r.get("height") or 0) > 0:
+            usable.append(r)
+    for r in usable:
+        if min(int(r["width"]), int(r["height"])) >= MASTER_SHORT_SIDE:
+            return r
+    return usable[-1] if usable else None
+
+
 def parse_pixabay(data: dict[str, Any], orientation: Orientation) -> list[ClipCandidate]:
     """Candidates from a Pixabay `/api/videos/` response, filtered to the wanted aspect ratio.
 
@@ -268,12 +290,7 @@ def parse_pixabay(data: dict[str, Any], orientation: Orientation) -> list[ClipCa
     out: list[ClipCandidate] = []
     for h in data.get("hits", []):
         renditions = h.get("videos", {})
-        pick = None
-        for size in ("large", "medium", "small", "tiny"):
-            r = renditions.get(size) or {}
-            if r.get("url") and int(r.get("width") or 0) > 0 and int(r.get("height") or 0) > 0:
-                pick = r
-                break
+        pick = pick_pixabay_rendition(renditions)
         if pick is None:
             continue
         w, ht = int(pick["width"]), int(pick["height"])

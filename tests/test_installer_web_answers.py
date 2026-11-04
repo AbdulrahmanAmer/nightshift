@@ -54,8 +54,6 @@ def test_a_good_draft_has_no_errors():
         ({"ownerName": "y" * 41}, "ownerName", "Use 40 characters or fewer"),
         ({"runTime": "25:00"}, "runTime", "Use the 24 hour clock, for example 03:00"),
         ({"runTime": "3:00"}, "runTime", "Use the 24 hour clock, for example 03:00"),
-        ({"pexelsKey": "", "pixabayKey": ""}, "pixabayKey", answers_view.KEY_MESSAGE),
-        ({"pexelsKey": None, "pixabayKey": None}, "pixabayKey", answers_view.KEY_MESSAGE),
         ({"voice": {"speaker": "Nobody"}}, "voice.speaker", "Pick one of the four narrators"),
         ({"mastersPerWeek": 4}, "mastersPerWeek", "Pick 1, 2 or 3 long videos per week"),
     ],
@@ -64,12 +62,12 @@ def test_field_rules_and_their_plain_messages(over, field, message):
     assert fields(answers_view.validate(good_draft(**over), make_env()))[field] == message
 
 
-def test_one_key_is_enough_and_pexels_is_optional():
+def test_both_stock_footage_keys_are_optional():
     assert answers_view.validate(good_draft(pexelsKey=""), make_env()) == []            # Pixabay only
     assert answers_view.validate(good_draft(pixabayKey=None), make_env()) == []         # Pexels only
+    assert answers_view.validate(good_draft(pexelsKey="", pixabayKey=None), make_env()) == []  # none
     env = make_env(keys_stored={"pexelsKey": False, "pixabayKey": True})
     assert answers_view.validate(good_draft(pexelsKey=None, pixabayKey=None), env) == []  # stored Pixabay
-    assert "Pexels" in answers_view.KEY_MESSAGE and "optional" in answers_view.KEY_MESSAGE
 
 
 def test_a_stored_key_may_stay_empty_on_resume():

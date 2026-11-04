@@ -16,7 +16,7 @@ from installer.stage2.base import Step
 from installer.stage2.context import StepContext
 from installer.stage2.errors import make_error
 from installer.stage2.runtime_cfg import ensure_baseline
-from installer.stage2.secrets import KEY_NAMES, any_key_stored
+from installer.stage2.secrets import KEY_NAMES
 from ns_common.config import load_channel, load_runtime, save_channel
 from ns_common.models import Channel, Voice
 
@@ -186,8 +186,6 @@ class S07Configs(Step):
         load_channel(ctx.paths, slugify(ans.channel.display_name))
         if ans.install_code and not ctx.paths.opencode_file.exists():
             raise make_error("NS-E110", "config/opencode.json was not written")
-        if not ctx.simulate and not any_key_stored(ctx.store):
-            raise make_error("NS-E502", "no stock footage key stored (Pixabay or Pexels)")
         leaking = [f.name for f in answer_files(ctx) if _file_has_keys(f)]
         if leaking:
             raise make_error("NS-E501", f"API keys are still written in {', '.join(leaking)}")

@@ -40,6 +40,7 @@ from installer.stage2.winenv import HOME_VAR, get_user_env, set_user_env
 PRESET_VOICES = ("Ryan", "Aiden", "Serena", "Vivian")
 PEXELS_URL = "https://www.pexels.com/api/"
 PIXABAY_URL = "https://pixabay.com/api/docs/"
+NO_KEY_NOTICE = "No stock footage key yet. Setup continues; add a Pixabay key (free) later in Settings"
 RUN_TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 
 
@@ -133,8 +134,6 @@ class S01Questions(Step):
             ans = build_answers(load_raw(f))
         except AnswersError:
             return False
-        if not ctx.simulate and not any_key_stored(ctx.store):
-            return False
         ctx.answers = ans
         return True
 
@@ -199,7 +198,7 @@ class S01Questions(Step):
         ]
         client = ctx.http_factory()
         try:
-            # Each key is optional on its own (Pexels stopped giving out new keys); one of the two is enough.
+            # Both keys are optional (Pexels stopped giving out new keys; Settings takes a key later).
             for name, label, url, validator, _code in specs:
                 value = ctx.raw_answers.get(name) or ctx.store.get(name)
                 if value:
@@ -227,9 +226,8 @@ class S01Questions(Step):
         finally:
             client.close()
         if not any_key_stored(ctx.store):
-            raise make_error(
-                "NS-E502", "no stock footage key: paste a Pixabay key (free), Pexels is optional"
-            )
+            ctx.ui.say(NO_KEY_NOTICE, "yellow")
+            ctx.log.warn("no_stock_key", hint="add a Pixabay key in Settings before the first video")
 
     # ---- run ----
     def run(self, ctx: StepContext) -> None:
@@ -353,6 +351,4 @@ class S01Questions(Step):
         current = get_user_env(ctx.runner, HOME_VAR)
         if current != str(ctx.paths.home):
             raise make_error("NS-E104", f"NIGHTSHIFT_HOME is {current!r}, expected {str(ctx.paths.home)!r}")
-        if not ctx.simulate and not any_key_stored(ctx.store):
-            raise make_error("NS-E502", "no stock footage key stored (Pixabay or Pexels)")
-        ctx.log.info("answers_verified", tier=ans.llm_tier)
+        ctx.log.info("answers_verified", tier=ans.llm_tier, stock_key=any_key_stored(ctx.store))

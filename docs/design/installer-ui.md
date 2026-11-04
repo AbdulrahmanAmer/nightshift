@@ -670,7 +670,7 @@ checks them again with pydantic:
 | `llmCustom` | null, or `{repo, file, size}` with `owner/name`, a single `.gguf` file name and `0 < size <= 15.5 GB`; `required_free_gb` adds what the file is larger than 9 GB | Check the model file first; the reasons of `/api/model-check` |
 | `modelsSource.path` | an existing folder when kind is `folder` or `drive-zip` | That folder was not found |
 | `runTime` | `^([01]\d\|2[0-3]):[0-5]\d$` | Use the 24 hour clock, for example 03:00 |
-| `pexelsKey`, `pixabayKey` | at least one of the two not empty or already stored (resume); Pexels is optional | Paste the Pixabay key (free). Pexels is optional; setup needs one key to find stock footage (on `pixabayKey`) |
+| `pexelsKey`, `pixabayKey` | optional; a pasted key is checked live and a rejected one is a field error (NS-E501/NS-E502) | (none when empty; Settings takes a key later) |
 
 Install posts the draft to `POST /api/answers` if it changed since the last accepted version, then
 calls `start`.
