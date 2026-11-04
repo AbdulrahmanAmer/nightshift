@@ -1,8 +1,10 @@
 """Shape rules for the install folder, shared by the Choices validation and the disk check.
 
 Standard library only. The same rules are mirrored in the window (``installer/ui/src/format.ts``,
-``homePathProblem``) for instant feedback; the server's answer stays authoritative. A path may hold spaces and
-non-ASCII letters. The folder is never created here: setup creates it when Install starts.
+``homePathProblem``) for instant feedback; the server's answer stays authoritative. A path may hold spaces
+but only printable ASCII characters: the model programs (llama.cpp, qwentts.cpp, CTranslate2) open their
+files through the ANSI code page and cannot open a folder named in Arabic or with accented letters. The
+folder is never created here: setup creates it when Install starts.
 """
 
 from __future__ import annotations
@@ -19,6 +21,15 @@ RESERVED_NAMES = frozenset(
     {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
 )
 EXAMPLE = "D:\\Nightshift"
+NON_ASCII_PROBLEM = (
+    "Use a folder name with plain English letters, digits, spaces, - and _ "
+    "(the model programs cannot open other paths)"
+)
+
+
+def ascii_problem(path: str) -> str | None:
+    """``NON_ASCII_PROBLEM`` when ``path`` has a character outside printable ASCII (space to ~), else None."""
+    return NON_ASCII_PROBLEM if any(not 32 <= ord(c) <= 126 for c in path) else None
 
 
 def home_problem(path: str, max_len: int = MAX_PATH_LEN) -> str | None:
@@ -35,6 +46,8 @@ def home_problem(path: str, max_len: int = MAX_PATH_LEN) -> str | None:
         return 'That path has a character Windows does not allow: < > : " | ? * %'
     if len(p) > max_len:
         return f"Use a path of {max_len} characters or fewer"
+    if (problem := ascii_problem(p)) is not None:
+        return problem
     parts = rest.split("\\")
     if parts and parts[-1] == "":
         parts = parts[:-1]                          # one trailing backslash is fine

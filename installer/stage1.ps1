@@ -662,7 +662,7 @@ function Get-PreflightRows {
         $rows.Add((New-Row 'vcruntime' 'Visual C++ runtime' 'ok' '' 'installed'))
     }
     else {
-        $rows.Add((New-Row 'vcruntime' 'Visual C++ runtime' 'warn' '' 'not installed; setup installs it (Windows asks for permission once)'))
+        $rows.Add((New-Row 'vcruntime' 'Visual C++ runtime' 'warn' '' 'not installed; stage 1 installs it now (Windows asks for permission: press Yes)'))
     }
 
     # long paths
@@ -854,6 +854,57 @@ function Install-Uv {
         }
         return $c.Source
     }
+}
+
+function Install-VcRuntime {
+    # The runtime is installed here, with this console in front, because Windows shows the permission prompt of
+    # a hidden background process only as a flashing taskbar button that nobody finds. Returns $true when the
+    # runtime is there afterwards. A refusal or a failure is not fatal: the setup window tries again in its
+    # "Visual C++ runtime" row and says how to install it by hand.
+    param($Manifest)
+    $pin = Get-Prop (Get-Prop $Manifest 'bins' $null) 'vcredist' $null
+    if ($null -eq $pin -or -not $pin.url -or -not $pin.sha256) {
+        Write-Host 'The Visual C++ runtime is missing and manifest.json pins no download for it; the setup window will try.'
+        return $false
+    }
+    if ($script:IsDry) {
+        Show-Action "install the Visual C++ runtime: download $($pin.url) (sha256 $($pin.sha256)), run it with -Verb RunAs: /install /quiet /norestart"
+        return $false
+    }
+    $exe = Join-Path ([IO.Path]::GetTempPath()) 'nightshift-vc_redist.x64.exe'
+    Write-Host ''
+    Write-Host 'The Microsoft Visual C++ runtime is not installed on this PC. Nightshift needs it (about 25 MB).'
+    try {
+        Invoke-WebRequest -Uri $pin.url -OutFile $exe -UseBasicParsing
+        $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $exe).Hash.ToLower()
+        if ($actual -ne ([string]$pin.sha256).ToLower()) { throw "SHA256 mismatch for the download ($actual)" }
+    }
+    catch {
+        Remove-Item -LiteralPath $exe -Force -ErrorAction SilentlyContinue
+        Write-Host ('Could not download the Visual C++ runtime: {0}' -f $_.Exception.Message) -ForegroundColor Yellow
+        Write-Host '    Fix: install it from https://aka.ms/vs/17/release/vc_redist.x64.exe, or let the setup window try again.'
+        return $false
+    }
+    Write-Host 'Windows will ask for permission to install the Microsoft Visual C++ runtime; press Yes.' -ForegroundColor Cyan
+    $code = 1223
+    try {
+        $p = Start-Process -FilePath $exe -ArgumentList '/install', '/quiet', '/norestart' -Verb RunAs -Wait -PassThru -ErrorAction Stop
+        $code = [int]$p.ExitCode
+    }
+    catch { Write-Verbose "elevated start failed: $($_.Exception.Message)" }
+    Remove-Item -LiteralPath $exe -Force -ErrorAction SilentlyContinue
+    if (@(0, 1638, 1641, 3010) -contains $code -and (Test-VcRuntime)) {
+        Write-Host 'The Microsoft Visual C++ runtime is installed.' -ForegroundColor Green
+        return $true
+    }
+    if ($code -eq 1223) {
+        Write-Host 'The permission window was closed or declined, so the runtime was not installed.' -ForegroundColor Yellow
+    }
+    else {
+        Write-Host ('The Visual C++ runtime installer stopped with exit code {0}.' -f $code) -ForegroundColor Yellow
+    }
+    Write-Host '    Fix: install it from https://aka.ms/vs/17/release/vc_redist.x64.exe (press Yes when Windows asks), or let the setup window try again.'
+    return $false
 }
 
 function Get-UvVersion {
@@ -1138,6 +1189,17 @@ else {
         }
     }
     if ($showSplash) { Set-Status -Index 2 -Tag 'ok' -Text ('{0}, {1}' -f $pyVersion, $pyNote) }
+}
+
+# Visual C++ runtime (stage 1 so the permission prompt appears in front of this console)
+if (-not [bool]$probe.vc_runtime) {
+    if ($showSplash -and -not $script:IsDry) { Write-Host '' }
+    if (Install-VcRuntime -Manifest $Manifest) {
+        $probe.vc_runtime = $true
+        $probe.tools.vcruntime = $true
+        $rows = Get-PreflightRows -Probe $probe -NsHome $NsHome -AllowCpu $allowCpu
+        $handOver = Get-HandOver -Probe $probe -Rows $rows -App $App -NsHome $NsHome -ProfileName $profileName -LlamaPair $llamaPair -CudaString $cudaString -CudaSource $cudaInfo.source
+    }
 }
 
 # hand-over file for the setup server (hardware summary)

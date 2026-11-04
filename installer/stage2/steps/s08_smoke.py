@@ -24,9 +24,13 @@ from installer.stage2.fallback import ensure_tts_venv, fallback_items
 from installer.stage2.runner import RunResult
 from installer.stage2.runtime_cfg import ensure_baseline, update_runtime
 from installer.stage2.steps.s05_opencode_prewarm import confirm_local_code
+from installer.stage2.sysinfo import drive_type
 from installer.stage2.whisper_probe import transcribe_probe
-from ns_common import vcruntime
+from ns_common import ports, vcruntime
+from ns_common.avblock import looks_blocked
 from ns_supervisor import check_names as names
+from ns_supervisor.health_cfg import timeout_for_drive, write_health_timeout
+from ns_supervisor.services import DASHBOARD_PORT
 
 
 def qwentts_binaries_ok(ctx: StepContext) -> bool:
@@ -46,6 +50,37 @@ def check_vc_runtime(ctx: StepContext) -> None:
     if absent:
         where = vcruntime.system_dir()
         raise make_error("NS-E114", f"{', '.join(absent)} not found in {where}; llama-server.exe needs them")
+
+
+def runtime_ports(ctx: StepContext) -> dict[str, int]:
+    """The ports the services bind, from runtime.json (service name -> port)."""
+    rt = ensure_baseline(ctx)
+    return {
+        "llama": rt.llama.port, "embed": rt.embed.port, "tts": rt.tts.port,
+        "supervisor": rt.supervisor_port, "dashboard": DASHBOARD_PORT,
+    }
+
+
+def check_ports(ctx: StepContext) -> None:
+    """NS-E116 naming the port and its owner when another program already holds one the services need.
+
+    Without it a taken 8080 ended as "the story model did not pass" (NS-E203): llama-server could not bind,
+    or a foreign server answered the health check. Not checked in ``--simulate``.
+    """
+    if ctx.simulate:
+        return
+    ports.ensure_free(runtime_ports(ctx))
+
+
+def prepare_verify(ctx: StepContext) -> None:
+    """Before ``ns verify``: no report from an earlier run, and a start timeout that fits the install drive.
+
+    A Retry whose ``ns verify`` dies before it writes could otherwise pass on the old report. A cold load of
+    the 14 GB story model from a hard disk takes longer than the 120 s the supervisor used to wait.
+    """
+    (ctx.paths.logs / "verify-report.json").unlink(missing_ok=True)
+    kind = drive_type(ctx.preflight, ctx.paths.home)
+    write_health_timeout(ctx.paths, timeout_for_drive(kind))
 
 
 def check_programs_present(ctx: StepContext) -> None:
@@ -97,6 +132,19 @@ def parse_report(ctx: StepContext, res: RunResult) -> dict[str, bool] | None:
     return {str(c.get("name", "")).lower(): bool(c.get("passed")) for c in rows}
 
 
+def blocked_rows(rows: list[dict[str, Any]] | None) -> str:
+    """The text of a failed check whose log says Windows blocked a program (Smart App Control, antivirus).
+
+    Without this a blocked ``llama-server.exe`` ended as "the story model did not pass" (NS-E203) and a
+    blocked ``qwen-tts.exe`` as a quiet switch to the PyTorch engine (NS-W301). Empty when none did.
+    """
+    for row in rows or []:
+        log = str(row.get("log") or "")
+        if not row.get("passed") and looks_blocked(log):
+            return f"{row.get('name', 'a check')}: {log}"
+    return ""
+
+
 def failing(report: dict[str, bool], prefix: str) -> bool:
     """True when any check of the area ``prefix`` (for example ``names.TTS_PREFIX``) failed."""
     return any(name.startswith(prefix) and not ok for name, ok in report.items())
@@ -117,6 +165,7 @@ class S08Smoke(Step):
         ensure_baseline(ctx)
         check_vc_runtime(ctx)
         check_programs_present(ctx)
+        check_ports(ctx)
         warned: set[str] = set()
         whisper_load_failed = False
         wants_binary = ctx.flag("qwentts") == "binary" and not ctx.flag("tts_fallback", False)
@@ -125,6 +174,7 @@ class S08Smoke(Step):
             self._switch_to_reference(ctx)
         for attempt in (1, 2):
             ctx.ui.say("Testing the language model, voice, captions and video encoder ...")
+            prepare_verify(ctx)
             res = ctx.run_tool("ns", ["verify", "--quick"], timeout=3600)
             rows = load_report_rows(ctx, res)
             report = parse_report(ctx, res)
@@ -138,6 +188,9 @@ class S08Smoke(Step):
                 "Smoke test", ["Check", "Result"],
                 [[name, "ok" if ok else "fail"] for name, ok in report.items()], status_col=1,
             )
+            blocked = blocked_rows(rows)
+            if blocked:
+                raise make_error("NS-E113", blocked)
             whisper_load_failed = failing(report, names.WHISPER_PREFIX)
             for prefix, what in ((names.LLAMA_PREFIX, "story model"), (names.EMBED_PREFIX, "memory index")):
                 if failing(report, prefix):

@@ -19,6 +19,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import IO
 
+from ns_common import ports
+from ns_common.avblock import blocked_hint, is_blocked_error
 from ns_common.errors import NsError
 from ns_common.logging import NsLogger
 from ns_supervisor.services import ServiceDef
@@ -208,6 +210,7 @@ def start(service: ServiceDef, logs_dir: Path, *, job: JobObject | None = None) 
 
     Raises `NS-E202` when the executable cannot be started.
     """
+    ports.ensure_free({service.name: service.port}, host=service.host)      # NS-E116: the port and its owner
     log = NsLogger(service.name, logs_dir, echo=False)
     env = {**os.environ, **service.env, UNDER_ENGINE_ENV: "1"}
     try:
@@ -220,6 +223,8 @@ def start(service: ServiceDef, logs_dir: Path, *, job: JobObject | None = None) 
             creationflags=_NO_WINDOW,
         )
     except OSError as e:
+        if is_blocked_error(e):
+            raise NsError("NS-E113", f"{blocked_hint(service.cmd[0])} ({e})", cmd=service.cmd) from e
         raise NsError("NS-E202", f"cannot start {service.name}: {e}", cmd=service.cmd) from e
     if job is not None:
         job.assign(popen.pid)

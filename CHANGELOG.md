@@ -7,6 +7,57 @@ All notable changes to Nightshift are recorded here. The format follows
 
 ## [Unreleased]
 
+### 0.1.7 install-path fixes (`orchestrator/hotfix-0.1.7-install`, from the second install audit)
+- faster-whisper and PyAV (blocker): the `studio` extra now pins `faster-whisper>=1.0,<1.3` and
+  `av>=11,<19`. faster-whisper 1.2.1 calls `av.open(metadata_errors=...)`, which PyAV 19.0 removed, so on a
+  fresh install `uv` resolved av 19.0.2 and every transcription raised `TypeError`. The partner would have
+  reached the end of the roughly 20 GB download, then seen "speech recognition failed on the processor"
+  (`NS-E202`) in the final test, and every caption and Clipper job would have failed the same way. The caps
+  reach the one venv that runs faster-whisper through `s04`, the setup venv (`b03`) and `ns update`, which all
+  install `nightshift[studio,...]` from `pyproject.toml`; `tests/test_install_caps.py` fails if either cap goes.
+- The PC no longer sleeps during setup: the setup server holds `SetThreadExecutionState(ES_CONTINUOUS |
+  ES_SYSTEM_REQUIRED)` on the thread that runs the steps and releases it when the run finishes, fails or is
+  stopped. The partner would have found the download stopped after a 1 to 2 hour wait. A downloader that gets a
+  network error now probes the site's host and waits (2, 4, 8 ... up to two minutes) for the network to come
+  back before it counts the attempt, so a PC that woke from sleep no longer burns its three tries in seconds
+  and shows `NS-E105` ("a required download site is unreachable"). The row reads "No internet right now,
+  waiting for it to come back".
+- Visual C++ runtime: stage 1 (the black window, in front) now installs it when it is missing: it downloads
+  the pinned `bins.vcredist`, checks the SHA256, says "Windows will ask for permission to install the
+  Microsoft Visual C++ runtime; press Yes", runs it with `Start-Process -Verb RunAs -Wait` and reports the
+  result. The partner would have seen the old prompt only as a flashing taskbar shield behind the setup
+  window, a row reading "installing" for up to 50 minutes and then `NS-E114`. A declined prompt prints the fix
+  and setup goes on; the setup window keeps its own path as a fallback with a 10 minute wait, and `NS-E114`
+  now says "Look for a flashing shield icon on the taskbar and press Yes, or install it from
+  aka.ms/vs/17/release/vc_redist.x64.exe and press Retry".
+- Install folders with characters outside printable ASCII (an Arabic or accented folder name) are refused in
+  the setup window (instantly, and by the server) and in the console question (`NS-E117`; the question asks
+  again) with "Use a folder name with plain English letters, digits, spaces, - and _ (the model programs
+  cannot open other paths)". llama.cpp, qwentts.cpp and CTranslate2 open model paths through the ANSI code
+  page, so such a home made `ns tune` fall back to defaults and the story model fail its test (`NS-E203`).
+- A program Windows refuses to start (Smart App Control `WinError 4551`, an Application Control policy
+  `1260`, antivirus `225`/`226`, "the file contains a virus") is `NS-E113` with "Windows blocked <file> when
+  it was started ... Allow it in Windows Security > App & browser control, then press Retry", from the engine's
+  service start, the installer's command runner and the failed checks of the final test. The partner would
+  have seen "a service failed" (`NS-E202`), "the story model did not pass" (`NS-E203`) or a quiet switch to the
+  7 GB PyTorch voice engine.
+- uv failures show uv's last 15 lines on the Failed screen instead of a bare "A required download site is
+  unreachable"; a full disk is `NS-E104` and a blocked program `NS-E113`. Every uv call (setup venv, `s04`,
+  the PyTorch fallback, `ns update`) now uses `UV_CACHE_DIR=<home>/cache/uv`, so the roughly 3 GB uv cache
+  fills the install drive, not C:. If that folder cannot be made, `s04` checks that C: has 8 GB free first
+  (`NS-E104`). uv's own managed Python (about 30 MB) stays where uv puts it.
+- Busy ports: before the final test (`s08`), before an engine start and before a service start, the ports
+  (story model 8080, memory index 8081, voice 8091, engine 8099, dashboard 8100) are bind-tested. A taken one
+  is the new `NS-E116` naming the port and the program that holds it (psutil) and saying "Close that program
+  or change the port in Settings". The partner would have seen "the story model did not pass" with no port.
+- Final test: a stale `logs/verify-report.json` is deleted before each `ns verify`, so a Retry whose verify
+  died before writing can no longer pass on an old report. The supervisor's start timeout (a fixed 120 s, too
+  short to load the 14 GB story model from a hard disk, which would have ended as `NS-E203`) is now read from
+  `config/supervisor.json`: setup writes 600 s when the install drive is not an SSD (or is unknown) and 300 s
+  otherwise, and the nightly run uses it too.
+- Not in this change: certificates and proxies, pinning Hugging Face file revisions and the qwen-tts temp
+  folder (`orchestrator/pins-0.1.7`), re-syncing venvs when INSTALL.cmd is run over an existing install.
+
 ## [0.1.6] - 2026-11-04
 
 ### Hotfix (`orchestrator/hotfix-0.1.6-key-check`, from the partner's first run of 0.1.5)

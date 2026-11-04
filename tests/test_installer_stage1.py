@@ -366,3 +366,39 @@ def test_select_default_home_avoids_the_extracted_folder_and_treats_a_root_speci
     assert got[r"D:\Nightshift"] == r"D:\Nightshift-home"          # the default clashes: the next name
     assert got[r"D:\Nightshift-home"] == r"D:\Nightshift"
     assert got[r"E:\Nightshift"] == r"D:\Nightshift"
+
+
+# ---------------------------------------------------------------------------------- Visual C++ runtime
+def test_a_missing_runtime_is_installed_by_stage_1_with_the_pinned_download(tmp_path: Path):
+    proc = _run("-FakeProbe", str(_probe(tmp_path, vc_runtime=False)))
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    pin = json.loads((ROOT / "manifest.json").read_text(encoding="utf-8"))["bins"]["vcredist"]
+    line = next(x for x in proc.stdout.splitlines() if "install the Visual C++ runtime" in x)
+    assert pin["url"] in line and pin["sha256"] in line
+    assert "-Verb RunAs" in line and "/install /quiet /norestart" in line
+    # it comes before the setup server starts, so the permission prompt appears in front of the console
+    assert proc.stdout.index("install the Visual C++ runtime") < proc.stdout.index("start setup server")
+
+
+def test_an_installed_runtime_is_left_alone(tmp_path: Path):
+    proc = _run("-FakeProbe", str(_probe(tmp_path, vc_runtime=True)))
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "Visual C++ runtime:" not in proc.stdout and "install the Visual C++ runtime" not in proc.stdout
+
+
+def test_the_runtime_installer_is_ps51_compatible_and_says_what_will_happen():
+    text = STAGE1.read_text(encoding="utf-8")
+    body = text[text.index("function Install-VcRuntime"):text.index("function Get-UvVersion")]
+    assert "-UseBasicParsing" in body and "Get-FileHash -Algorithm SHA256" in body
+    assert "Start-Process" in body and "-Verb RunAs" in body and "-Wait" in body
+    assert "'/install', '/quiet', '/norestart'" in body
+    assert "Windows will ask for permission to install the Microsoft Visual C++ runtime; press Yes" in body
+    assert "https://aka.ms/vs/17/release/vc_redist.x64.exe" in body        # the fix when it is declined
+    assert "?." not in body and "??" not in body and "&&" not in body        # no PowerShell 7 syntax
+    assert body.index("1223") < body.index("Fix:")
+
+
+def test_the_runtime_row_value_matches_what_stage_1_does(tmp_path: Path):
+    proc = _run("-FakeProbe", str(_probe(tmp_path, vc_runtime=False)))
+    row = _row(_summary(proc), "vcruntime")
+    assert "stage 1 installs it" in row["value"]
