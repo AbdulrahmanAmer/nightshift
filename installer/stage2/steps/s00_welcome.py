@@ -48,7 +48,10 @@ class S00Welcome(Step):
             for c in pf.get("checks", []):
                 if c.get("status") == "warn" and c.get("hint"):
                     ctx.ui.say(f"  ! {c.get('code', '')} {c['hint']}", "yellow")
-        ctx.ui.pause("Press Enter to start setup")
+        if ctx.unattended:
+            ctx.ui.say("Unattended setup: starting now.")
+        else:
+            ctx.ui.pause("Press Enter to start setup")
 
     def verify(self, ctx: StepContext) -> None:
         """A red row in the stage 1 summary stops the install with that row's code."""

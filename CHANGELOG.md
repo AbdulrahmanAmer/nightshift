@@ -7,6 +7,13 @@ All notable changes to Nightshift are recorded here. The format follows
 
 ## [Unreleased]
 
+- First dev-mode run on a laptop (`INSTALL.cmd --dev`, unattended): the welcome step waited for Enter and
+  died with `EOFError` when standard input was not a console; the console UI now treats end-of-input as
+  "not interactive" and takes the defaults, and an unattended run never waits for Enter. A setup that fails
+  before the engine venv exists could not write the diagnostics zip (`ns doctor` is not installed yet); the
+  wizard now writes a plain zip of the logs, install state, answers and bootstrap files itself
+  (`installer/stage2/diagzip.py`).
+
 ### Installer dev mode (`orchestrator/installer-dev-mode`)
 
 `INSTALL.cmd --dev` (or `NIGHTSHIFT_DEV_MODE=1`) runs the real installer end to end on a PC with no NVIDIA card and

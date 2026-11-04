@@ -146,31 +146,53 @@ class Ui:
         return RichReporter(self.console, total_bytes)
 
     # ---- input ----
+    def _eof(self) -> None:
+        """Standard input ended (no console, a closed console, an empty redirected stdin): from now on
+        every prompt takes its default instead of raising EOFError out of a step (first dev-mode run)."""
+        self.interactive = False
+        self.say("No keyboard input is available; setup continues with the default answers.", "yellow")
+
     def ask(self, prompt: str, default: str | None = None, *, secret: bool = False) -> str:
         """Ask for a line of text; Enter accepts ``default``."""
         if not self.interactive:
             return default or ""
-        if default is not None:
-            return Prompt.ask(prompt, default=default, console=self.console, password=secret)
-        return Prompt.ask(prompt, console=self.console, password=secret)
+        try:
+            if default is not None:
+                return Prompt.ask(prompt, default=default, console=self.console, password=secret)
+            return Prompt.ask(prompt, console=self.console, password=secret)
+        except EOFError:
+            self._eof()
+            return default or ""
 
     def confirm(self, prompt: str, default: bool = True) -> bool:
         """Yes/no question."""
         if not self.interactive:
             return default
-        return Confirm.ask(prompt, default=default, console=self.console)
+        try:
+            return Confirm.ask(prompt, default=default, console=self.console)
+        except EOFError:
+            self._eof()
+            return default
 
     def choose(self, prompt: str, options: Sequence[str], default: str | None = None) -> str:
         """Pick one of ``options`` (case-insensitive match; Enter takes ``default``)."""
         if not self.interactive:
             return default if default is not None else options[0]
-        return Prompt.ask(prompt, choices=list(options), default=default, console=self.console,
-                          case_sensitive=False)
+        try:
+            return Prompt.ask(prompt, choices=list(options), default=default, console=self.console,
+                              case_sensitive=False)
+        except EOFError:
+            self._eof()
+            return default if default is not None else options[0]
 
     def pause(self, prompt: str = "Press Enter to continue") -> None:
         """Wait for Enter (no-op when not interactive)."""
-        if self.interactive:
+        if not self.interactive:
+            return
+        try:
             Prompt.ask(prompt, default="", console=self.console, show_default=False)
+        except EOFError:
+            self._eof()
 
     def play(self, wav: Path) -> None:
         """Play a WAV file through the speakers (Windows only; silently skipped elsewhere)."""

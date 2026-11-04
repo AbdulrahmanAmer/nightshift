@@ -23,6 +23,7 @@ from installer.stage2.base import Step
 from installer.stage2.bridge import BridgeUi, SetupStopped
 from installer.stage2.context import StepContext
 from installer.stage2.devmode import BANNER, env_enabled, relax_checks, reset_for_mode_switch
+from installer.stage2.diagzip import write_fallback_bundle
 from installer.stage2.runner import SubprocessRunner
 from installer.stage2.secrets import KEY_NAMES, KeyringStore, MemoryStore, ResilientStore
 from installer.stage2.simulate import FakeRunner
@@ -241,8 +242,19 @@ class Wizard:
             ui.say(f"Setup stopped: {failure.code}. Writing the diagnostics bundle ...")
             res = ctx.run_tool("ns", ["doctor", "--bundle"], timeout=600)
             ctx.log.info("bundle_attempt", ok=res.ok)
-            fail_msg = "The diagnostics bundle could not be written; see the logs folder."
-            ui.say(res.text if res.ok else fail_msg)
+            if res.ok:
+                ui.say(res.text)
+            else:
+                # before s04 there is no engine venv, so `ns doctor` cannot run: write the zip ourselves
+                try:
+                    out = write_fallback_bundle(ctx.paths)
+                except OSError as e:
+                    ctx.log.warn("bundle_fallback_failed", error=str(e))
+                    ui.say("The diagnostics bundle could not be written; send the logs folder instead: "
+                           f"{ctx.paths.logs}")
+                else:
+                    ctx.log.info("bundle_fallback", path=str(out))
+                    ui.say(f"Diagnostics written to {out} (and a copy on the Desktop when there is one).")
             ui.say(f"Send the nightshift-diagnostics zip from your Desktop. Error code: {failure.code}")
             return EXIT_FAILED
         ui.say("Setup stopped. Run INSTALL.cmd again to continue from this step.")
