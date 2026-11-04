@@ -177,12 +177,10 @@ export default function Create() {
                 <h3 className="text-ds-lg leading-ds-snug font-semibold">{steps[step]!.title}</h3>
               </div>
               {body}
-              {step < 5 && (
-                <div className="sticky bottom-[calc(72px+env(safe-area-inset-bottom))] z-10 -mx-2 flex items-center justify-between gap-3 rounded-b-ds-lg border-t border-ds-border-subtle bg-ds-surface px-2 py-3 md:bottom-0">
-                  <Button variant="ghost" leadingIcon="chevronLeft" disabled={step === 0} onClick={() => go(step - 1)}>Back</Button>
-                  <Button trailingIcon="chevronRight" disabled={!canNext} onClick={() => go(step + 1)}>Next</Button>
-                </div>
-              )}
+              <div className="sticky bottom-[calc(72px+env(safe-area-inset-bottom))] z-10 -mx-2 flex items-center justify-between gap-3 rounded-b-ds-lg border-t border-ds-border-subtle bg-ds-surface px-2 py-3 md:bottom-0">
+                <Button variant="ghost" leadingIcon="chevronLeft" disabled={step === 0} onClick={() => go(step - 1)}>Back</Button>
+                {step < 5 && <Button trailingIcon="chevronRight" disabled={!canNext} onClick={() => go(step + 1)}>Next</Button>}
+              </div>
             </div>
           </div>
         </Card>

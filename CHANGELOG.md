@@ -10,6 +10,7 @@ All notable changes to Nightshift are recorded here. The format follows
 - Stop-all now closes the Nightshift window too (it stopped the engine and the dashboard and left the WebView2
   window on a dead page, 150 MB, in the 0.1.10 teardown test); the window also closes itself when its server
   stops answering for 15 s (the nightly task, an update, uninstall).
+- Create wizard: the Review step keeps its Back button (it had only Start; the way back was the step rail).
 
 ## [0.1.10] - 2026-11-04
 
