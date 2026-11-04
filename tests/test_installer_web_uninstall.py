@@ -48,7 +48,7 @@ def test_the_view_lists_what_goes_and_what_stays_with_sizes(tmp_path: Path):
     assert view["home"] == str(home) and view["running"] is False and view["result"] is None
     assert [a["label"] for a in view["always"]] == [
         "The nightly task", "Desktop shortcuts", "Programs and Python environments",
-        "The install folder setting",
+        "Windows' note of where Nightshift is installed",
     ]
     assert view["always"][2]["bytes"] == 150 and view["always"][0]["bytes"] is None
     assert view["models"] == {"path": str(home / "models"), "bytes": 4000}
@@ -83,6 +83,10 @@ def test_removing_runs_the_script_logs_its_output_and_reports_what_stayed(tmp_pa
     assert result["kept"] == [{"label": "AI models", "path": str(home / "models")}]
     assert "Videos and history" in result["removed"] and "AI models" not in result["removed"]
     assert deferred == [home]                                    # bin is left for the detached PowerShell
+    # the closing screen is honest: what an uninstall never touches is listed, not "nothing else was changed"
+    stays = " ".join(result["stays"])
+    assert "Credential Manager" in stays and "Visual C++ runtime" in stays and "download cache" in stays
+    assert str(home / "config") in stays and str(home / "logs") in stays
     assert any(r.startswith("Programs and Python environments (the last files go") for r in result["removed"])
     assert logged == ["  removing D:\\ns\\venvs", "  removed shortcut Nightshift Dashboard.lnk"]
     assert "-DeleteData" in started[0] and "-DeleteModels" not in started[0]
@@ -118,7 +122,7 @@ def test_a_file_that_could_not_be_removed_is_reported_as_kept_not_removed(tmp_pa
     labels = [k["label"] for k in result["kept"]]
     assert "Python environments (a file is in use)" in labels
     assert "Programs (delete this folder by hand)" in labels
-    assert "The install folder setting (NIGHTSHIFT_HOME)" in labels
+    assert "Windows' note of where Nightshift is installed (could not be removed)" in labels
     assert not any(r.startswith("Programs") for r in result["removed"])
     assert "The nightly task" not in result["removed"]
 

@@ -34,6 +34,7 @@ from installer.stage2.web import (
     pathcheck,
     plan,
     preflight,
+    report,
     rows,
     samples,
 )
@@ -42,6 +43,9 @@ from installer.stage2.web.keys import check_key
 from installer.stage2.web.model import BOOTSTRAP_STEPS, FILE_NAMES, STEP_ORDER, STEP_PHASE
 from installer.stage2.web.store import SetupStore
 from ns_common.atomic import BACKUP_SUFFIX, write_text_atomic
+from ns_common.paths import Paths
+from ns_common.secret_file import load_secret
+from ns_common.secrets_names import KEY_NAMES
 from ns_common.uv import find_uv
 from ns_common.vcruntime import missing as vcruntime_missing
 
@@ -54,6 +58,12 @@ DETACHED = 0x00000008 | 0x00000200      # DETACHED_PROCESS | CREATE_NEW_PROCESS_
 SHORTCUTS = ("Nightshift Dashboard", "Nightshift Studio", "Nightshift Outbox", "Nightshift - Stop All",
              "Nightshift - Update", "Nightshift - Diagnostics")
 
+
+# model.WINDOWS_PAGES: the Windows pages the window may open by name, and the command that opens each
+PAGE_COMMANDS: dict[str, tuple[str, ...]] = {
+    "power": ("control.exe", "powercfg.cpl"),
+    "protection-history": ("explorer.exe", "windowsdefender://threathistory"),
+}
 
 RETRY_NOTES = {
     "stall": "No data for 60 s, trying again",
@@ -323,6 +333,7 @@ class SetupController:
         self._waiting_on: str | None = None       # engine (P2 awaits a decision), pipeline, disk
         self._pause_requested = False
         self._attempts: dict[str, int] = {}
+        self._last_error: dict[str, Any] | None = None     # survives Retry, for the status line and report
         self._accepted: dict[str, Any] | None = None
         self._keys: dict[str, str | None] = {"pexels_api_key": None, "pixabay_api_key": None}
         self._keys_stored = {"pexelsKey": False, "pixabayKey": False}
@@ -367,6 +378,13 @@ class SetupController:
             home = str(self.cfg.home) if self.cfg.home else r"C:\Nightshift"
             pf = sample_handover(self.cfg.app_path, home=home)
         return pf
+
+    def _load_support(self) -> dict[str, Any]:
+        """Who the partner sends the help file to (``installer/support.json``); nulls when not filled in."""
+        data = self._read_json(self.cfg.app_path / "installer" / "support.json")
+        name, url = data.get("name"), data.get("driveUrl")
+        return {"name": name.strip() or None if isinstance(name, str) else None,
+                "driveUrl": url if isinstance(url, str) and url.startswith("https://") else None}
 
     def _initial_home(self) -> Path:
         if self.cfg.home:
@@ -441,6 +459,7 @@ class SetupController:
             "downloads": {"items": [], "overall": {}, "source": (view or {}).get("modelsSource", {}).get(
                 "kind", "internet"), "paused": False},
             "verify": None, "failure": None, "notices": [], "result": None, "log": [],
+            "support": self._load_support(),
         }
         state["downloads"]["items"] = self._initial_rows(the_plan)
         state["downloads"]["overall"] = rows.overall(state["downloads"]["items"], self.meter)
@@ -878,9 +897,101 @@ class SetupController:
         self.store.wake_all()
         return None
 
-    # ---- diagnostics ----
+    # ---- status line, install report, diagnostics ----
+    def _act_copy_status(self, _path: str | None) -> str | None:
+        line = report.status_line(self.snapshot(), self._last_error)
+        self.fx.clipboard(line)
+        return line
+
+    def _act_open_windows_page(self, path: str | None) -> str | None:
+        argv = PAGE_COMMANDS.get(path or "")
+        if argv is not None:
+            self.fx.launch(list(argv))
+        return None
+
+    def _read_json(self, path: Path) -> dict[str, Any]:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def _report_dir(self) -> Path:
+        """The logs folder of the install (next to verify-report.json), or the setup data before it exists."""
+        return self.home / "logs" if self.home.is_dir() else self.cfg.data_dir / "bootstrap"
+
+    def _outcome_now(self) -> str:
+        state = self.snapshot()
+        if state["run"] == "finished":
+            return "done"
+        if state["run"] in ("stopped", "stopping"):
+            return "stopped"
+        return "failed" if state["failure"] else "running"
+
+    def _write_install_report(self, outcome: str) -> Path | None:
+        """install-report.json, next to verify-report.json: written when a run ends, whatever the outcome."""
+        try:
+            free: float | None = round(self.fx.free_gb(str(self.home)), 1)
+        except OSError:
+            free = None
+        answers_file = self.home / "config" / "answers.json"
+        data = report.build_install_report(
+            self.snapshot(), outcome=outcome, last_error=self._last_error, attempts=self._attempts,
+            flags=self._read_json(self.home / "config" / "wizard_flags.json"),
+            runtime=self._read_json(self.home / "config" / "runtime.json"),
+            answers=self._read_json(answers_file) if answers_file.is_file() else None, free_gb=free,
+        )
+        target = self._report_dir() / report.REPORT_NAME
+        try:
+            write_text_atomic(target, json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+        except OSError:
+            return None
+        return target
+
+    def _add_report_to_bundle(self) -> None:
+        """The wizard made the diagnostics zip before this report existed: put the report in it."""
+        zip_path = self._bundle or self._read_json(self.home / "config" / "wizard_flags.json").get("bundle")
+        target = self._report_dir() / report.REPORT_NAME
+        if not zip_path or not Path(str(zip_path)).is_file() or not target.is_file():
+            return
+        try:
+            with zipfile.ZipFile(str(zip_path)) as zf:
+                if report.REPORT_NAME in zf.namelist():
+                    return
+            with zipfile.ZipFile(str(zip_path), "a", zipfile.ZIP_DEFLATED) as zf:
+                zf.write(target, report.REPORT_NAME)
+        except (OSError, zipfile.BadZipFile):
+            return
+
+    def setup_evidence(self) -> list[tuple[str, Path | bytes]]:
+        """The setup-time files a failed install is diagnosed from, as (name in the zip, file or bytes).
+
+        Same layout as ``ns_supervisor.doctor`` writes: ``install-report.json`` and ``setup/...``. The answers
+        have no API keys and the hand-over is the hardware check.
+        """
+        out: list[tuple[str, Path | bytes]] = []
+        rep = self._report_dir() / report.REPORT_NAME
+        if rep.is_file():
+            out.append((report.REPORT_NAME, rep))
+        flags = self.home / "config" / "wizard_flags.json"
+        if flags.is_file():
+            out.append(("setup/wizard_flags.json", flags))
+        answers = self.home / "config" / "answers.json"
+        if answers.is_file():
+            out.append(("setup/answers.json", json.dumps(
+                report.scrub_answers(self._read_json(answers)), indent=2).encode("utf-8")))
+        out.append(("setup/preflight.json", json.dumps(self.pf, indent=2).encode("utf-8")))
+        err = self.cfg.data_dir / "setup-server.err"
+        if err.is_file():
+            out.append(("setup/setup-server.err", err))
+        boot = self.cfg.data_dir / "bootstrap"
+        if boot.is_dir():
+            out.extend((f"setup/bootstrap/{f.name}", f) for f in sorted(boot.iterdir()) if f.is_file())
+        return out
+
     def write_diagnostics(self) -> Path | None:
-        """The diagnostics zip on the Desktop (``ns doctor --bundle`` when the studio venv exists)."""
+        """One diagnostics zip on the Desktop: ns doctor --bundle once the studio venv exists, else ours."""
+        self._write_install_report(self._outcome_now())
         py = self.home / "venvs" / "studio" / "Scripts" / "python.exe"
         desktop = desktop_dir()
         if py.is_file() and not self.cfg.simulate:
@@ -891,19 +1002,24 @@ class SetupController:
                 found = sorted(desktop.glob("nightshift-diagnostics-*.zip"), key=lambda p: p.stat().st_mtime)
                 if found:
                     return found[-1]
-        target = desktop / f"nightshift-diagnostics-{datetime.now():%Y%m%d}-setup.zip"
+        target = desktop / f"nightshift-diagnostics-{datetime.now():%Y-%m-%d-%H%M}.zip"
         try:
             desktop.mkdir(parents=True, exist_ok=True)
             with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as zf:
-                for folder in (self.home / "logs", self.cfg.data_dir / "bootstrap"):
+                for folder in (self.home / "logs",):
                     if folder.is_dir():
                         for f in folder.rglob("*"):
                             if f.is_file():
-                                zf.write(f, f"logs/{f.name}")
-                state_file = self.home / "config" / "install_state.json"
-                if state_file.is_file():
-                    zf.write(state_file, "install_state.json")
-                zf.writestr("preflight.json", json.dumps(self.pf, indent=2))
+                                zf.write(f, "logs/" + f.relative_to(folder).as_posix())
+                for name in ("install_state.json", "runtime.json"):
+                    src = self.home / "config" / name
+                    if src.is_file():
+                        zf.write(src, name)
+                for arc, item in self.setup_evidence():
+                    if isinstance(item, bytes):
+                        zf.writestr(arc, item)
+                    else:
+                        zf.write(item, arc)
         except OSError:
             return None
         return target
@@ -939,7 +1055,10 @@ class SetupController:
                     r["error"] = {"code": code, "message": title}
 
         self.store.update(fn)
+        self._last_error = {"code": code, "title": title, "step": step, "stepTitle": view["stepTitle"],
+                            "at": view["at"]}
         self.log("error", f"{code}  {title}")
+        self._write_install_report("failed")
 
     # ---- pipeline ----
     def _begin_pipeline(self) -> None:
@@ -1191,6 +1310,7 @@ class SetupController:
         self.store.update(fn)
         self.meter.reset()
         self.log("info", "Setup stopped. Run INSTALL.cmd again to carry on from here.")
+        self._write_install_report("stopped")
 
     def _finish_done(self) -> None:
         result = self._build_result()
@@ -1203,6 +1323,8 @@ class SetupController:
 
         self.store.update(fn)
         self.log("info", "Setup is done")
+        self._write_install_report("done")
+        self._add_report_to_bundle()
 
     def _bootstrap_failed(self, step_id: str, e: bootstrap.BootstrapError) -> None:
         self._set_step(step_id, "failed", e.code)
@@ -1522,7 +1644,7 @@ class SetupController:
 
         voices = sum((i["bytes"] or 0) for i in sizes["models"]["items"] if i["label"].startswith("Voice"))
         rest = sum((i["bytes"] or 0) for k, i in models.items()
-                   if k in ("Memory index", "Caption timing", "Face finder for Clipper"))
+                   if k in ("Story memory", "Caption timing", "Face finder for Clipper"))
         installed = [
             {"label": llm["label"] if llm else "Story model", "detail": gb(llm["bytes"] if llm else None)},
             {"label": "Voices: presets and your own", "detail": gb(voices)},
@@ -1554,8 +1676,18 @@ class SetupController:
             "installed": installed, "shortcuts": list(SHORTCUTS), "runTime": answers.get("runTime", "03:00"),
             "scheduled": flags.get("schedule") == "installed",
             "diagnosticsZip": self._bundle or flags.get("bundle"),
-            "durationS": duration, "warnings": warnings,
+            "durationS": duration, "warnings": warnings, "stockKeyMissing": not self._stock_key_stored(),
         }
+
+    def _stock_key_stored(self) -> bool:
+        """True when a stock footage key was typed in this session or is in the encrypted file from s07."""
+        if any(self._keys.values()):
+            return True
+        paths = Paths(self.home)
+        try:
+            return any(load_secret(paths, name) for name in KEY_NAMES)
+        except (OSError, ValueError):
+            return False
 
     # ---- headless (answers.json next to INSTALL.cmd, or -NoUi) ----
     def run_headless(self) -> int:

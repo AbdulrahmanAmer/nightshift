@@ -51,6 +51,7 @@ function Fix({ row, picking, onPick }: { row: CheckRow; picking: boolean; onPick
   const variant = row.status === "fail" ? "primary" : "soft";
   switch (fix.kind) {
     case "open-url": return <Button variant={variant} size="md" trailingIcon="external" onClick={() => openExternal(fix.url)}>{fix.label}</Button>;
+    case "open-windows-page": return <Button variant={variant} size="md" trailingIcon="external" onClick={() => void act("open-windows-page", { path: fix.page })}>{fix.label}</Button>;
     case "elevate-longpaths": return <Button variant={variant} size="md" disabled={busy.has("elevate-longpaths")} onClick={() => void act("elevate-longpaths")}>{fix.label}</Button>;
     case "recheck": return <Button variant={variant} size="md" leadingIcon="restore" disabled={busy.has("recheck")} onClick={() => void act("recheck")}>{fix.label}</Button>;
     case "choose-drive": return picking ? null : <Button variant={variant} size="md" onClick={onPick}>{fix.label}</Button>;

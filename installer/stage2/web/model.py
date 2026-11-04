@@ -37,8 +37,10 @@ PRESET_VOICES = ("Ryan", "Aiden", "Serena", "Vivian")
 UI_STEPS = ("welcome", "checks", "choices")
 ACTIONS = (
     "start", "pause", "resume", "retry", "skip", "cancel", "recheck", "open-dashboard",
-    "diagnostics", "reveal", "elevate-longpaths", "close-setup",
+    "diagnostics", "reveal", "elevate-longpaths", "close-setup", "copy-status", "open-windows-page",
 )
+# Windows pages the window may open by name (the "path" of the open-windows-page action).
+WINDOWS_PAGES = ("power", "protection-history")
 FILE_NAMES = ("voice-sample.wav", "render-test.mp4", "render-test.jpg", "verify-report.json")
 
 Phase = Literal["checks", "choices", "downloading", "installing", "verifying", "done", "failed"]

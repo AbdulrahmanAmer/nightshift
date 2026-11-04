@@ -1,14 +1,18 @@
 """C2 `ns doctor [--bundle]`: quick diagnosis, and the diagnostics zip the partner sends back (J7).
 
-The bundle holds logs, install_state, runtime, verify-report, nvidia-smi output, `uv pip freeze` per
-venv, the last 3 job directories without media, and VERSION. It never holds API keys, models or videos.
+The bundle holds logs, install_state, runtime, verify-report, install-report, the setup evidence (`setup/`:
+wizard flags, answers without keys, the hardware check, `setup-server.err`, the bootstrap logs), nvidia-smi
+output, `uv pip freeze` per venv, the last 3 job directories without media, and VERSION. It never holds API
+keys, models or videos.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
+import tempfile
 import zipfile
 from collections.abc import Callable
 from datetime import datetime
@@ -89,6 +93,56 @@ def _last_jobs(paths: Paths, n: int = 3) -> list[Path]:
     return sorted(dirs, key=lambda p: p.stat().st_mtime, reverse=True)[:n]
 
 
+def setup_data_dir() -> Path:
+    """Where setup keeps its own files (setup-server.err, the bootstrap logs), outside the install folder."""
+    local = os.environ.get("LOCALAPPDATA")
+    return (Path(local) if local else Path.home() / "AppData" / "Local") / "Nightshift"
+
+
+def _scrubbed_answers(src: Path) -> str | None:
+    """answers.json text without any `*_api_key` field; None when the file is missing or not an object."""
+    try:
+        data = json.loads(src.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    clean = {k: v for k, v in data.items() if not k.endswith("_api_key")}
+    return json.dumps(clean, indent=2, ensure_ascii=False) + "\n"
+
+
+def _add_setup_evidence(
+    z: zipfile.ZipFile, paths: Paths, skipped: list[str], setup_dir: Path, temp_dir: Path
+) -> None:
+    """What a failed setup is diagnosed from: flags, answers (no keys), the hardware check, setup logs."""
+    report = paths.logs / "install-report.json"
+    if report.is_file():
+        _add_file(z, report, "install-report.json", skipped)
+    else:
+        skipped.append("install-report.json: not found")
+    flags = paths.config / "wizard_flags.json"
+    if flags.is_file():
+        _add_file(z, flags, "setup/wizard_flags.json", skipped)
+    answers = _scrubbed_answers(paths.config / "answers.json")
+    if answers is not None:
+        z.writestr("setup/answers.json", answers)
+    boot = setup_dir / "bootstrap"
+    hardware = next(
+        (p for p in (boot / "preflight.json", temp_dir / "nightshift-preflight.json") if p.is_file()), None
+    )
+    if hardware is not None:
+        _add_file(z, hardware, "setup/preflight.json", skipped)
+    else:
+        skipped.append("setup/preflight.json: not found")
+    err = setup_dir / "setup-server.err"
+    if err.is_file():
+        _add_file(z, err, "setup/setup-server.err", skipped)
+    if boot.is_dir():
+        for f in sorted(boot.iterdir()):
+            if f.is_file() and f != hardware:
+                _add_file(z, f, f"setup/bootstrap/{f.name}", skipped)
+
+
 def build_bundle(
     paths: Paths,
     *,
@@ -97,12 +151,18 @@ def build_bundle(
     freeze: Callable[[Paths, str], str | None] = freeze_venv,
     smi: Callable[[], str | None] = procs.nvidia_smi_report,
     app: Path | None = None,
+    setup_dir: Path | None = None,
+    temp_dir: Path | None = None,
 ) -> Path:
-    """Write `nightshift-diagnostics-<date>.zip` (default: Desktop) and return its path."""
+    """Write `nightshift-diagnostics-<date>-<HHMM>.zip` (default: Desktop) and return its path.
+
+    The name carries the minute so two zips on one day do not overwrite each other. `setup_dir` and `temp_dir`
+    default to the Nightshift folder in LOCALAPPDATA and the temp folder; tests pass folders of their own.
+    """
     when = now or datetime.now()
     target_dir = out_dir or desktop_dir()
     target_dir.mkdir(parents=True, exist_ok=True)
-    out = target_dir / f"nightshift-diagnostics-{when:%Y-%m-%d}.zip"
+    out = target_dir / f"nightshift-diagnostics-{when:%Y-%m-%d-%H%M}.zip"
     skipped: list[str] = []
     version_text = __version__
     if app is not None and (app / "VERSION").exists():
@@ -122,6 +182,9 @@ def build_bundle(
                 _add_file(z, src, arc, skipped)
             elif arc in ("install_state.json", "runtime.json", "verify-report.json"):
                 skipped.append(f"{arc}: not found")
+        _add_setup_evidence(
+            z, paths, skipped, setup_dir or setup_data_dir(), temp_dir or Path(tempfile.gettempdir())
+        )
         report = smi()
         z.writestr("nvidia-smi.txt", report if report is not None else "nvidia-smi is not available\n")
         for venv in VENVS:

@@ -8,10 +8,12 @@ import type { FailureView } from "../api/types";
 import { Area, Screen } from "../parts/Screen";
 import { StepItem } from "../parts/RowItems";
 import { SetupIcon } from "../parts/icons";
+import { CopyStatusButton } from "../parts/CopyStatus";
 
 export function Failed({ onStop }: { onStop: () => void }) {
   const { state, act, toast, busy } = useLiveState();
   const [all, setAll] = useState(false);
+  const [saved, setSaved] = useState<string | null>(null);
   const f: FailureView = state.failure ?? {
     step: state.steps.find((s) => s.status === "failed")?.id ?? "s03_download_models", stepTitle: "", code: "unexpected", title: codeText("unexpected").title,
     whatToDo: codeText("unexpected").whatToDo, detail: "", canSkip: false, attempts: 1, at: state.updatedAt,
@@ -20,12 +22,22 @@ export function Failed({ onStop }: { onStop: () => void }) {
   const lines = f.detail.split("\n");
   const long = lines.length > 6 || f.detail.length > 420;
   const failedStep = state.steps.find((s) => s.id === f.step);
-  const copyDiag = async () => { const r = await act("diagnostics"); if (r.ok) toast(t.diagnosticsSaved); };
+  const who = state.support.name ?? t.whoFallback;
+  const BS = "\\";
+  const logs = state.answers?.homePath ? `${state.answers.homePath.replace(/\\+$/, "")}${BS}logs` : null;
+  const saveHelp = async () => {
+    const r = await act("diagnostics");
+    if (!r.ok || !r.message) return;
+    const name = r.message.split(/[\\/]/).pop() ?? r.message;
+    setSaved(name);
+    toast(t.helpAfter(name, who));
+  };
   return (
     <Screen name="failed" salutation={t.salutation(stepName)} description={t.description}
       footerLeft={t.footer(hhmm(f.at))}
       footerRight={
         <>
+          <CopyStatusButton />
           <Button variant="ghost" size="lg" onClick={onStop}>{t.stop}</Button>
           {f.canSkip && <Button variant="soft" size="lg" disabled={busy.has("skip")} onClick={() => void act("skip")}>{t.skip}</Button>}
           <Button variant="primary" size="lg" leadingIcon="restore" data-primary disabled={busy.has("retry")} onClick={() => void act("retry")}>{t.retry}</Button>
@@ -50,7 +62,14 @@ export function Failed({ onStop }: { onStop: () => void }) {
               <p className="mt-2 text-ds-xs text-ds-text-2 ds-num">{t.tried(f.attempts)}</p>
             </div>
           )}
-          <div><Button variant="soft" size="md" leadingIcon="copy" disabled={busy.has("diagnostics")} onClick={() => void copyDiag()}>{t.copyDiagnostics}</Button></div>
+          <div className="flex flex-col gap-3">
+            <p className="max-w-[60ch] text-ds-sm leading-ds-normal text-ds-text-2">{saved ? t.helpAfter(saved, who) : t.helpBefore(who)}</p>
+            <div className="flex flex-wrap items-center gap-3">
+              {f.code === "NS-E113" && <Button variant="primary" size="md" trailingIcon="external" onClick={() => void act("open-windows-page", { path: "protection-history" })}>{t.openProtection}</Button>}
+              <Button variant="soft" size="md" leadingIcon="copy" disabled={busy.has("diagnostics")} onClick={() => void saveHelp()}>{t.saveHelp}</Button>
+              {logs && <Button variant="soft" size="md" leadingIcon="folder" onClick={() => void act("reveal", { path: logs })}>{t.openLogs}</Button>}
+            </div>
+          </div>
         </Card>
       </Area>
       <Area area="steps">
