@@ -24,6 +24,7 @@ Route = tuple[str, str]
 
 # Routes that are deliberately not tools, with the reason (never-registered actions first).
 NO_TOOL: dict[Route, str] = {
+    ("GET", "/health"): "never: the supervisor's readiness probe, not an action (ServiceDef.health_path)",
     ("POST", "/api/outputs/{output_id:path}/approve"): "never: only the owner approves videos (Queue page)",
     ("POST", "/api/outputs/{output_id:path}/reject"): "never: only the owner rejects videos (Queue page)",
     ("POST", "/api/outputs/{output_id:path}/uploaded"): "never: only the owner confirms a posted video (Queue page)",

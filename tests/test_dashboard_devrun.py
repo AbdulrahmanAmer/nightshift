@@ -47,9 +47,12 @@ def test_dev_mode_needs_no_stock_footage_key(tmp_home: Path):
     data = json.loads(rt.read_text(encoding="utf-8")) if rt.is_file() else {}
     data["dev_mode"] = True
     rt.write_text(json.dumps(data), encoding="utf-8")
+    from ns_dashboard.svc_channels import ChannelsService
+    from ns_dashboard.svc_jobs import JobsService
+
     state = build_state(paths, fake_services=True, link=SupervisorLink("http://127.0.0.1:9", timeout_s=0.2))
     state.fake_services = False                         # a real-adapter dashboard in dev mode
-    state.jobs._require_footage_key()                   # no NS-E502
+    JobsService(state, ChannelsService(state))._require_footage_key()   # no NS-E502
 
 
 def test_dev_mode_ignores_past_openings_so_the_fake_story_can_repeat(tmp_home: Path):

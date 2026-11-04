@@ -60,19 +60,20 @@ def test_second_run_is_idempotent(tmp_path: Path):
     assert _run(home, "-SkipSystem").returncode == 0
     again = _run(home, "-SkipSystem")
     assert again.returncode == 0, again.stdout + again.stderr
-    assert _present(home) == set(ALL_DIRS) - {"venvs", "bin", "run"}
+    assert _present(home) == set(ALL_DIRS) - {"venvs", "bin", "run", "state", "tmp"}
 
 
 def test_delete_models_only(tmp_path: Path):
     home = _make_home(tmp_path)
     assert _run(home, "-SkipSystem", "-DeleteModels").returncode == 0
-    assert _present(home) == set(ALL_DIRS) - {"venvs", "bin", "run", "models"}
+    assert _present(home) == set(ALL_DIRS) - {"venvs", "bin", "run", "models", "state", "tmp"}
 
 
 def test_delete_data_only(tmp_path: Path):
     home = _make_home(tmp_path)
     assert _run(home, "-SkipSystem", "-DeleteData").returncode == 0
     gone = {"venvs", "bin", "run", "outbox", "rejected", "data", "imports", "cache"}
+    gone |= {"stories", "state", "tmp"}
     assert _present(home) == set(ALL_DIRS) - gone
 
 
@@ -135,7 +136,7 @@ def test_the_console_uninstall_removes_the_program_folder_and_the_update_swap_fo
     proc = _run(home, "-SkipSystem")
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert not any(f.exists() for f in folders)
-    assert _present(home) == set(ALL_DIRS) - {"venvs", "bin", "run"}
+    assert _present(home) == set(ALL_DIRS) - {"venvs", "bin", "run", "state", "tmp"}
 
 
 def test_the_dry_run_lists_the_program_folders(tmp_path: Path):
