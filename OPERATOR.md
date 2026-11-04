@@ -26,16 +26,23 @@ Keep this file next to `INSTALL.cmd`.
 4. Put `answers.json` in the extracted folder, next to `INSTALL.cmd`. With it, setup asks almost nothing.
 5. Double-click **INSTALL.cmd**. If Windows says "Windows protected your PC", press **More info**, then
    **Run anyway**. Windows may ask for permission to install programs: say **Yes**.
-6. A black window with a small crescent appears first. It looks at your PC, gets Python, and then opens the
-   **Nightshift setup window**. Keep the black window open: it does the work and is the log. If no setup window
-   appears, the black window prints an address (`http://127.0.0.1:...`): paste it into Edge or Chrome.
+6. A window called **Nightshift setup**, with text and a small crescent, appears first. It looks at your PC, gets
+   Python, and then opens the setup window. Keep the window called Nightshift setup open: it does the work and is
+   the log. If no setup window appears, that window prints an address (`http://127.0.0.1:...`): paste it into Edge
+   or Chrome.
 7. In the setup window: read the PC check (green and yellow rows are fine, red rows say what to do), choose
    your channel, narrator, model and night run time (Balanced is
    preselected; on a PC with less than 32 GB of memory Small is, and the window says why), paste the two stock footage keys, and press **Install**.
    Setup then downloads the AI models (you see every file, the speed and the time left; **Pause** and **Resume**
    work), installs, tunes itself for 1 to 3 minutes and plays you a test voice and a short test video.
-8. At the end the window says **Nightshift is ready** and names a **diagnostics zip** on your Desktop. Send it back
-   (see below). **Open dashboard** starts the dashboard.
+8. At the end the window says **Nightshift is ready**, shows the **next three steps** (open the dashboard, press
+   **Create it now** once while nothing else uses the graphics card, read tomorrow morning's note and check the
+   schedule) and names a **help file** (a zip) on your Desktop. Send it back (see below). **Open dashboard** starts
+   the dashboard. If no stock footage key is stored, the window reminds you to add a Pixabay key in Settings before the
+   first video.
+   Any time during setup, **Copy status** (next to the other buttons at the bottom) puts one line on the clipboard,
+   for example `Nightshift setup 0.1.7 · step 6/14 Download AI models · 41% · 12:03 elapsed · last error NS-E105`.
+   Paste it into a message to the person who sent you Nightshift.
    Setup does not leave the engine running: **Open dashboard** and the Desktop **Nightshift Dashboard** shortcut start it
    (and the dashboard) when needed. The dashboard and the setup window are separate windows, so you can open the
    dashboard while setup is still open.
@@ -45,8 +52,8 @@ Keep this file next to `INSTALL.cmd`.
 With an `answers.json` next to `INSTALL.cmd` setup runs without a window, as before (add `-Ui` after
 `INSTALL.cmd` to open the window with your answers filled in; `-NoUi` forces the no-window run).
 
-You can close the setup window at any time: setup keeps running in the black window, and running **INSTALL.cmd**
-again opens the window again. If you close the black window, setup stops; run **INSTALL.cmd** again and it carries on
+You can close the setup window at any time: setup keeps running in the window called Nightshift setup, and running
+**INSTALL.cmd** again opens the setup window again. If you close the Nightshift setup window, setup stops; run **INSTALL.cmd** again and it carries on
 where it stopped. Do not turn the PC off while a download is moving; if you do, just run INSTALL.cmd again.
 
 **Opening the dashboard in the morning.** The 03:00 run starts its own engine without a desktop. When you click
@@ -61,7 +68,7 @@ choose that under **Model files come from** in the window.
 ## If a download stops
 
 Downloads are built to be interrupted. Nothing is lost when the internet drops, the PC restarts, you press **Stop**
-or **Pause**, or you close the black window.
+or **Pause**, or you close the Nightshift setup window.
 
 - **What you see.** Every file has its own row. A file that is half done keeps a `.part` file in its folder
   (for example `models\llm\<name>.gguf.part`) and, when you run setup again, its row says *will continue from
@@ -98,29 +105,34 @@ Every message has a code like `NS-E104`, a sentence and a "What to do". In the s
 | NS-E105 | A download site cannot be reached | Check the internet, switch off any VPN or proxy, run INSTALL.cmd again. |
 | NS-E109 | A downloaded file is damaged | Run INSTALL.cmd again. If it repeats, send the diagnostics zip. |
 | NS-E110 | FFmpeg could not be installed | Setup tries winget first and then downloads a fixed FFmpeg build itself. Press Retry once; if it repeats, install FFmpeg yourself (`winget install Gyan.FFmpeg`) and press Retry. Git is not needed. |
-| NS-E111 | winget (App Installer) is not available | Nothing to do: setup downloads FFmpeg and the Visual C++ runtime directly. |
-| NS-E114 | The Visual C++ runtime is missing (the model runner cannot start without it) | Stage 1 (the black window) asks for permission first: press **Yes**. If it was declined, look for a flashing shield icon on the taskbar and press **Yes**, or install it from `https://aka.ms/vs/17/release/vc_redist.x64.exe` and press Retry. |
+| NS-E111 | winget (the Windows app installer) is not available | Nothing to do: setup downloads FFmpeg and the Visual C++ runtime directly. |
+| NS-E114 | The Visual C++ runtime is missing (the model runner cannot start without it) | Stage 1 (the Nightshift setup window with text) asks for permission first: press **Yes**. If it was declined, look for a flashing shield icon on the taskbar and press **Yes**, or install it from `https://aka.ms/vs/17/release/vc_redist.x64.exe` and press Retry. |
 | NS-E116 | A network port Nightshift needs is already in use | The message names the port and the program that holds it. Close that program (or change the port in Settings) and press Retry. |
 | NS-E117 | The install folder name has characters the model programs cannot open | Use a folder name with plain English letters, digits, spaces, - and _, then press Retry. |
 | NS-E115 | The program files could not be copied into the install folder | Make sure the install folder is not the folder you extracted the zip to, close any window that shows it, press Retry. |
-| NS-E113 | Antivirus blocked a file | Open Windows Security, Protection history, allow the Nightshift file and press Retry. Adding the install folder as an exclusion stops it happening again. It is also the code when a downloaded program (`llama-server.exe`, `qwen-tts.exe`, `yt-dlp.exe`) is missing after it was unpacked: the scanner removed it. |
+| NS-E113 | Antivirus blocked a file | Press **Open Protection history**, allow the Nightshift file there, then press Retry. Adding the install folder as an exclusion stops it happening again. It is also the code when a downloaded program (`llama-server.exe`, `qwen-tts.exe`, `yt-dlp.exe`) is missing after it was unpacked: the scanner removed it. |
 | NS-E501 / NS-E502 | Pexels or Pixabay key rejected | Copy the key again from the website (no spaces) and paste it. |
-| NS-E108 / NS-E112 | Graphics card libraries not found | Send the diagnostics zip. Nothing else to do. |
+| NS-E108 / NS-E112 | Graphics card libraries not found | Press **Save a help file** and send that file. Nothing else to do. |
 
 Yellow rows (codes starting `NS-W`) are warnings. `NS-W403` means the setup test video could not be made: setup is complete, make your first video from the dashboard. Setup carries on. Examples: the install folder is on a hard
-disk (slow), the PC cannot wake itself at night (in Power Options, Change advanced power settings, Sleep, set
-"Allow wake timers" to **Enable**; "Important wake timers only" is not enough for the 03:00 run), long Windows
-paths are off (run setup once as administrator), the Visual C++ runtime is missing (setup installs it; click
+disk (slow), the PC cannot wake itself at night (press **Open power settings**, and under Sleep set "Allow wake timers" to
+**Enable**; "Important wake timers only" is not enough for the 03:00 run), very long file names are off (press
+**Fix it** and say Yes when Windows asks), the Visual C++ runtime is missing (setup installs it; click
 **Yes** when Windows asks), or a fallback was used for the voice or video encoder.
 
-If the same red error comes back after one retry, do not guess: send the diagnostics zip.
+If the same red error comes back after one retry, do not guess: press **Save a help file** and send that file.
 
 ## Send diagnostics back
 
-1. At the end of setup a file called `nightshift-diagnostics-<date>.zip` is saved on your **Desktop**.
-   Any time later you can create a new one with the **Nightshift - Diagnostics** shortcut.
-2. Upload that file to the **diagnostics** folder in the Google Drive folder you were given.
-3. It holds logs, settings and test results. It never contains your keys, videos or the models.
+1. At the end of setup a file called `nightshift-diagnostics-<date>-<time>.zip` is saved on your **Desktop**.
+   If setup stops with an error, press **Save a help file** on that screen (it saves the same kind of zip), or
+   **Open log folder** to look at the logs. Any time later you can create a new one with the
+   **Nightshift - Diagnostics** shortcut. Two files made on the same day do not overwrite each other.
+2. Send that file to the person who gave you Nightshift (the window names who, when the developer filled it in), for
+   example in the **diagnostics** folder in the Google Drive folder you were given.
+3. It holds logs, settings (without your keys), the hardware check, the setup files (`setup-server.err`,
+   `wizard_flags.json`, your choices) and test results, plus `install-report.json`, which lists every step with its
+   result and how long it took. It never contains your keys, videos or the models.
 4. In the Dashboard you can do the same from **Settings, Updates, Make report**: it saves the zip on your Desktop and
    shows a **Download** button.
 
@@ -280,6 +292,11 @@ Double-click **UNINSTALL.cmd** (Settings, About, Uninstall copies its full path)
 separately whether to delete the AI models (15 GB) and your videos and history. The default answer to both is
 **No**. At the end it tells you what it kept and where. The window itself still uses a few program files, so the very
 last ones are removed by a small hidden task as soon as the window closes; the list says so.
+
+Uninstall does **not** change everything on the PC. These stay, and the closing screen lists them: your settings and
+logs (`config` and `logs` in the install folder, so the folder itself stays), your stock footage keys (Windows
+Credential Manager), the Visual C++ runtime, FFmpeg and Windows Terminal (other programs use them), and the Python
+that setup fetched together with its download cache (several GB, in your user folders).
 
 ## Optional models
 

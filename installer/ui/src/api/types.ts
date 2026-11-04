@@ -10,6 +10,8 @@ export type StepId =
   | "b01_tools" | "b02_home" | "b03_setup_env"
   | "s01_questions" | "s02_download_bins" | "s03_download_models" | "s04_venvs" | "s05_opencode_prewarm"
   | "s06_tune" | "s07_configs" | "s08_smoke" | "v01_samples" | "s09_shortcuts_scheduler" | "s10_summary";
+/** Windows pages the server may open by name (model.WINDOWS_PAGES). */
+export type WindowsPage = "power" | "protection-history";
 export type CheckId = "os" | "gpu" | "driver" | "ram" | "disk" | "disktype" | "network" | "winget" | "longpaths" | "waketimers";
 
 export interface SetupState {
@@ -39,6 +41,7 @@ export interface SetupState {
   failure: FailureView | null;
   notices: Notice[];                 // NS-W* raised so far
   result: ResultView | null;         // set at done
+  support: SupportView;              // who the help file goes to (installer/support.json)
   log: LogLine[];                    // newest last, at most 50
 }
 
@@ -60,6 +63,7 @@ export interface MeterValue { haveGb: number; needGb: number; hardMinGb: number 
 export type FixAction =
   | { kind: "open-url"; label: string; url: string }
   | { kind: "elevate-longpaths"; label: string }
+  | { kind: "open-windows-page"; label: string; page: WindowsPage }
   | { kind: "choose-drive"; label: string }
   | { kind: "recheck"; label: string };
 
@@ -210,14 +214,17 @@ export interface ResultView {
   runTime: string;
   scheduled: boolean;
   diagnosticsZip: string | null;
+  stockKeyMissing: boolean;          // neither a Pexels nor a Pixabay key is stored
   durationS: number;
   warnings: Notice[];
 }
+/** installer/support.json: both null until the owner fills it in. */
+export interface SupportView { name: string | null; driveUrl: string | null }
 export interface LogLine { t: string; level: "info" | "warn" | "error"; text: string }
 
 export type ActionName =
   | "start" | "pause" | "resume" | "retry" | "skip" | "cancel" | "recheck" | "open-dashboard"
-  | "diagnostics" | "reveal" | "elevate-longpaths" | "close-setup";
+  | "diagnostics" | "reveal" | "elevate-longpaths" | "close-setup" | "copy-status" | "open-windows-page";
 export interface ActionBody { path?: string }
 export interface ActionResult { ok: boolean; message: string | null; state: SetupState }
 
@@ -227,5 +234,5 @@ export interface UninstallView {
   models: { path: string; bytes: number };
   data: { path: string; bytes: number };
   running: boolean;
-  result: { removed: string[]; kept: { label: string; path: string }[] } | null;
+  result: { removed: string[]; kept: { label: string; path: string }[]; stays: string[] } | null;
 }

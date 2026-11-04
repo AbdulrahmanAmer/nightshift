@@ -115,7 +115,15 @@ def test_action_preconditions(action, ok_state, bad_state):
 def test_diagnostics_is_always_allowed_and_unknown_actions_are_not():
     for run in ("idle", "running", "waiting", "finished"):
         assert machine.check("diagnostics", state(run=run)) is None
+        assert machine.check("copy-status", state(run=run)) is None     # the status line is for every screen
     assert machine.check("explode", state())
+
+
+def test_windows_pages_open_by_name_only():
+    for page in ("power", "protection-history"):
+        assert machine.check("open-windows-page", state(), page) is None
+    assert machine.check("open-windows-page", state(), "cmd.exe")
+    assert machine.check("open-windows-page", state(), None)
 
 
 def test_reveal_only_opens_paths_the_state_lists():

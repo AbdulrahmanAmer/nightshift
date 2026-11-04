@@ -6,6 +6,7 @@ import { useLiveState } from "../api/useSetup";
 import { Area, Screen } from "../parts/Screen";
 import { StepItem } from "../parts/RowItems";
 import { DriveStepper } from "../parts/Widgets";
+import { CopyStatusButton } from "../parts/CopyStatus";
 
 export function Installing({ onStop }: { onStop: () => void }) {
   const { state } = useLiveState();
@@ -17,7 +18,7 @@ export function Installing({ onStop }: { onStop: () => void }) {
   return (
     <Screen name="installing" salutation={t.salutation} description={t.description}
       footerLeft={t.footer(Math.min(count, doneCount + 1), count)}
-      footerRight={<Button variant="ghost" size="lg" disabled={stopping} onClick={onStop}>{t.stop}</Button>}>
+      footerRight={<><CopyStatusButton /><Button variant="ghost" size="lg" disabled={stopping} onClick={onStop}>{t.stop}</Button></>}>
       <Area area="stepper"><DriveStepper title={t.stepsTitle} value={doneCount} max={count} unit={t.unit} /></Area>
       <Area area="list" className="ns-list-fit">
         <Card as="section" padding="md" aria-label={t.stepsTitle}>

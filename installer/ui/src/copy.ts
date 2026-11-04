@@ -2,6 +2,7 @@
 // Rules (section 3.4): plain words, sentence case, no exclamation marks, no trailing period on labels and buttons,
 // every error says what to do next. types.check.ts proves at compile time that the three tables below cover every id.
 import type { CheckId, Phase, PresetVoice, StepId, Tier } from "./api/types";
+import operatorCopy from "../../stage2/web/operator_copy.json";
 
 /* ------------------------------------------------------------------ tables keyed by contract ids */
 
@@ -23,13 +24,13 @@ export const phaseLabel: Record<Phase, string> & { welcome: string; uninstall: s
 export const stepTitle: Record<StepId, string> = {
   b01_tools: "Free tools",
   b02_home: "Install folder",
-  b03_setup_env: "Setup environment",
+  b03_setup_env: "Setup helper",
   s01_questions: "Questions",
   s02_download_bins: "Download programs",
   s03_download_models: "Download AI models",
-  s04_venvs: "Python environments",
+  s04_venvs: "Program parts",
   s05_opencode_prewarm: "Nightshift Code first start",
-  s06_tune: "Tune for this graphics card",
+  s06_tune: "Finding the best settings for your graphics card",
   s07_configs: "Settings and keys",
   s08_smoke: "Check that the models run",
   v01_samples: "Test video and voice",
@@ -46,48 +47,16 @@ export const checkLabel: Record<CheckId, string> = {
   disk: "Free disk space",
   disktype: "Disk type",
   network: "Internet",
-  winget: "winget (App Installer)",
-  longpaths: "Long file paths",
+  winget: "Windows app installer (optional)",
+  longpaths: "Very long file names",
   waketimers: "Wake timers",
 };
 
 /* ------------------------------------------------------------------ plain text for every code (section 3.6) */
 
 export interface CodeText { title: string; whatToDo: string }
-export const codes: Record<string, CodeText> = {
-  "NS-E101": { title: "This PC cannot run Nightshift", whatToDo: "Nightshift needs 64-bit Windows 10 or 11. Tell the developer" },
-  "NS-E102": { title: "No NVIDIA graphics card found", whatToDo: "Install the NVIDIA driver from nvidia.com/drivers, restart, then press Check again" },
-  "NS-E103": { title: "NVIDIA driver too old for this card", whatToDo: "Install the newest driver from the page that opened (RTX 50-series cards need driver 580 or newer), restart, then press Check again" },
-  "NS-E104": { title: "Not enough free disk space", whatToDo: "Free 60 GB, or pick another drive" },
-  "NS-E105": { title: "A download site cannot be reached", whatToDo: "Check the internet, switch off any VPN or proxy, then press Retry" },
-  "NS-E108": { title: "The graphics card libraries did not load", whatToDo: "Press Copy diagnostics and send the zip. Nothing else to do" },
-  "NS-E109": { title: "A downloaded file is damaged", whatToDo: "Press Retry. Setup downloads that file again. If the same error comes back, send the diagnostics zip" },
-  "NS-E110": { title: "A free tool did not install", whatToDo: "Install \"App Installer\" from the Microsoft Store, then press Retry" },
-  "NS-E111": { title: "App Installer is missing", whatToDo: "Install \"App Installer\" from the Microsoft Store, then press Check again" },
-  "NS-E112": { title: "Caption timing cannot use the graphics card", whatToDo: "Press Copy diagnostics and send the zip. Nothing else to do" },
-  "NS-E113": { title: "Windows Security blocked a file", whatToDo: "Open Windows Security, then Protection history, allow the Nightshift file and press Retry. Adding the install folder as an exclusion stops it happening again" },
-  "NS-E114": { title: "A Windows component is missing", whatToDo: "Look for a flashing shield icon on the taskbar and press Yes, or install it from aka.ms/vs/17/release/vc_redist.x64.exe and press Retry" },
-  "NS-E116": { title: "A network port is already in use", whatToDo: "Close the program that uses that port (the message names it), or change the port in Settings, then press Retry" },
-  "NS-E117": { title: "That folder name cannot be used", whatToDo: "Use a folder name with plain English letters, digits, spaces, - and _ (the model programs cannot open other paths), then press Retry" },
-  "NS-W113": { title: "A custom model is not checked", whatToDo: "Nightshift cannot verify a file you chose yourself. Use only models you trust. Nothing else to do" },
-  "NS-W115": { title: "The driver version could not be read", whatToDo: "Setup works and uses the CUDA 12.4 build. If a video fails on the graphics card later, install the newest driver from nvidia.com/drivers" },
-  "NS-W114": { title: "The designed voice has to wait", whatToDo: "The voice design model is not part of this install, so the voice cannot be created yet. Get it in Settings, Models, then design the voice again" },
-  "NS-E202": { title: "A Nightshift service did not start", whatToDo: "Press Retry once. If it stops again, send the diagnostics zip" },
-  "NS-E203": { title: "A model took too long to start", whatToDo: "Press Retry once. If it stops again, send the diagnostics zip" },
-  "NS-E204": { title: "The nightly task could not be set up", whatToDo: "Setup still works. Start videos from the dashboard and send the diagnostics zip" },
-  "NS-E501": { title: "The Pexels key was not accepted", whatToDo: "Copy the key again from the website (no spaces) and paste it" },
-  "NS-E502": { title: "The Pixabay key was not accepted", whatToDo: "Copy the key again from the website (no spaces) and paste it" },
-  "NS-E503": { title: "The internet dropped", whatToDo: "Check the connection, then press Retry" },
-  "NS-W106": { title: "The install drive is a hard disk", whatToDo: "Models load slowly from a hard disk. Pick an SSD drive if you have one" },
-  "NS-W107": { title: "The PC cannot wake itself at night", whatToDo: "Turn on \"Allow wake timers\" in Power Options, under Sleep" },
-  "NS-W112": { title: "Long file paths are off", whatToDo: "Setup works. Press Fix it to turn them on (Windows asks for permission)" },
-  "NS-W301": { title: "Using the backup voice engine", whatToDo: "Voices sound the same and take a little longer. Nothing to do" },
-  "NS-W302": { title: "Faster decoding was not faster here", whatToDo: "Nothing to do" },
-  "NS-W401": { title: "Using the slower video encoder", whatToDo: "Update the NVIDIA driver when you can. Videos still work" },
-  "NS-W403": { title: "The setup test video could not be made", whatToDo: "Setup is complete. Make your first video from the dashboard. If that also fails, send the diagnostics zip" },
-  unexpected: { title: "Something unexpected stopped setup", whatToDo: "Press Retry once. If it stops again, press Copy diagnostics and send the zip" },
-  "answers.json": { title: "Something unexpected stopped setup", whatToDo: "Press Retry once. If it stops again, press Copy diagnostics and send the zip" },
-};
+/** The server's own table (operator_copy.json) is the only one: the window shows its titles and the fallback here uses the same words. */
+export const codes: Record<string, CodeText> = operatorCopy;
 export const codeText = (code: string | null | undefined): CodeText => (code && codes[code]) || codes["unexpected"]!;
 
 /* ------------------------------------------------------------------ screens */
@@ -112,7 +81,7 @@ export const shell = {
   restore: "Restore",
   close: "Close",
   skipToContent: "Skip to content",
-  connectionLost: "Lost contact with setup. If the black setup window is closed, run INSTALL.cmd again",
+  connectionLost: "Lost contact with setup. If the Nightshift setup window is closed, run INSTALL.cmd again",
   connecting: "Connecting to setup",
   demoNote: "Sample data. No setup server answered",
   toastDismiss: "Dismiss",
@@ -135,14 +104,14 @@ export const welcome = {
   sizeApprox: (gb: string) => `about ${gb}`,
   totals: { model: "Story model", download: "To download", free: "Free space needed", time: "Time" },
   recommended: "recommended",
-  timeExplain: (dl: number, inst: number) => `${dl} min downloading at 50 Mbit/s, ${inst} min installing and testing. You can close this window and run INSTALL.cmd again any time`,
+  timeExplain: "On a typical home connection. The real time shows once the download starts. You can close this window; keep the window called Nightshift setup open",
   footer: (version: string, path: string) => `Version ${version} · ${path}`,
   footerPrefilled: (path: string) => `Answers loaded from ${path}`,
-  advanced: "Advanced",
+  advanced: "For the developer",
   start: "Start setup",
   resume: "Continue setup",
   drawer: {
-    title: "Advanced",
+    title: "For the developer",
     close: "Close",
     answersTitle: "Use answers from a file",
     answersLabel: "answers.json path",
@@ -169,7 +138,7 @@ export const checks = {
   badge: { ok: "OK", warn: "Warning", fail: "Blocks setup" },
   metersTitle: "Against what Nightshift needs",
   meterLabels: { vram: "VRAM", ram: "Memory", disk: "Disk" },
-  meterCaption: (have: number, need: number) => `${Math.round(have)}/${Math.round(need)} GB`,
+  meterCaption: (have: number, need: number) => `${Math.round(have)} GB (needs ${Math.round(need)})`,
   noCards: "Nothing needs your attention",
   footerChecked: (t: string) => `Checked ${t}`,
   footerBlocking: "Fix the red items to continue",
@@ -186,7 +155,7 @@ export const checks = {
 
 export const choices = {
   salutation: "Your choices",
-  description: "You can change the channel, voice and time later in the dashboard.",
+  description: "Channel, narrator, run time and keys can change later. The model size and install folder are final for this install.",
   channel: { title: "Channel", name: "Channel name", namePh: "After Dark Tales", about: "What it is about", aboutPh: "horror fiction", owner: "Your name", ownerPh: "Shown on the dashboard" },
   picker: {
     title: "Story model",
@@ -196,11 +165,11 @@ export const choices = {
     goodFor: {
       small: "Shorts and simple stories; light coding",
       balanced: "Recommended: better long stories and a usable coding assistant",
-      best: "Highest quality; needs 32 GB RAM and leaves little VRAM headroom; slower",
+      best: "Best stories, slowest. Needs 32 GB of memory",
     } satisfies Record<Tier, string>,
     download: (gb: string) => `${gb} GB download`,
-    vramLeft: (gb: string) => `${gb} GB of video memory left for context`,
-    vramNone: "No video memory left for context, part of the model runs from memory",
+    vramLeft: (_gb: string) => "Room to spare on your graphics card",
+    vramNone: "Fills your graphics card; works, a little slower",
     unknownModel: "Not available in this version",
     notAllowed: "Needs a 16 GB graphics card",
     lowRam: (ram: number) => `This PC has ${ram} GB of memory, so Small is selected. Balanced needs 32 GB`,
@@ -208,7 +177,7 @@ export const choices = {
     needCustom: (need: number) => `Needs ${need} GB free`,
     other: {
       name: "Other",
-      about: "Any Hugging Face GGUF, up to 15.5 GB",
+      about: "For the developer: a different model file (any Hugging Face GGUF, up to 15.5 GB)",
       repo: "Hugging Face repository",
       repoPh: "Qwen/Qwen3-14B-GGUF",
       file: "GGUF file name",
@@ -301,7 +270,7 @@ export const download = {
   salutation: (total: string) => `Downloading ${total} GB`,
   /** The hero: the size, then the time left from the running average ("estimating" for the first 20 s, "paused" while paused). */
   hero: (total: string, left: string | null, paused: boolean) => `Downloading ${total} GB · ${paused ? "paused" : left ? `${left} on this connection` : "estimating…"}`,
-  description: "You can close this window. Keep the black setup window open, it is doing the work.",
+  description: "You can close this window. Keep the window called Nightshift setup open: it does the work. The PC will not sleep until setup ends.",
   pause: "Pause",
   pausing: "Pausing",
   pauseAfter: "Pause after this tool",
@@ -309,8 +278,8 @@ export const download = {
   stop: "Stop setup",
   groups: { tools: "Free tools", python: "Python packages", programs: "Programs", models: "AI models" },
   rowStatus: { queued: "waiting", active: "", copying: "copying", verifying: "checking", extracting: "unpacking", paused: "paused", done: "done", skipped: "skipped", failed: "failed" },
-  installing: "installing",
-  installingWinget: "installing, Windows may ask for permission",
+  installing: "installing, about 1 GB from the internet",
+  installingWinget: "installing, about 2 minutes. Windows may ask for permission",
   retry: "Retry",
   etaTitle: "Time left",
   measuring: "Measuring speed",
@@ -329,7 +298,7 @@ export const download = {
 
 export const installing = {
   salutation: "Installing",
-  description: "Setting things up on this PC. This takes 5 to 15 minutes.",
+  description: "Setting things up on this PC. Usually 5 to 15 minutes, longer on a slow connection (the Python packages are about 2.5 GB).",
   stepsTitle: "Steps",
   unit: "step",
   waiting: "waiting",
@@ -348,18 +317,18 @@ export const verify = {
   description: "Nightshift makes a short test video and reads a sentence in your narrator's voice.",
   checksTitle: "Checks",
   statusBadge: { passed: "OK", fallback: "Warning", failed: "Failed", running: "Running", pending: "" },
-  extraRows: { s09_shortcuts_scheduler: "Shortcuts and nightly task", s10_summary: "Diagnostics zip" },
+  extraRows: { s09_shortcuts_scheduler: "Shortcuts and nightly task", s10_summary: "Help file" },
   renderTitle: "Test video",
   renderPending: "Rendering a 6 second test",
   frameAlt: "First frame of the test video",
   play: "Play",
   caption: (len: string, enc: string) => `Test video · ${len} · ${enc}`,
-  encoder: { h264_nvenc: "NVENC", libx264: "libx264 (slower)" },
+  encoder: { h264_nvenc: "graphics card video", libx264: "processor video (slower)" },
   playSample: "Play sample",
   pauseSample: "Pause sample",
   noVoice: "The voice sample could not be made. Setup is still complete",
   footer: (done: number, total: number) => `${done} of ${total} done`,
-  copyReport: "Copy test report",
+  copyReport: "Copy full test report (for the developer)",
   reportCopied: "Test report copied",
   reportCopyFailed: "Could not copy the report. Select it below and copy it by hand",
   reportDialogTitle: "Test report",
@@ -367,28 +336,38 @@ export const verify = {
   selectAll: "Select all",
   closeDialog: "Close",
   notesEmpty: "No notices so far",
-  labelByPrefix: [["llm", "Story model"], ["embed", "Memory index"], ["tts", "Voice engine"], ["whisper", "Captions"], ["nvenc", "Video encoder"], ["mtp", "Faster decoding"]] as [string, string][],
+  labelByPrefix: [["llm", "Story model"], ["embed", "Story memory"], ["tts", "Voice engine"], ["whisper", "Captions"], ["nvenc", "Video encoder"], ["mtp", "Speed boost"]] as [string, string][],
 };
 
 export const done = {
   salutation: "Nightshift is ready",
-  description: (time: string) => `Your first video is one click away. Tonight at ${time} the PC makes one on its own.`,
-  descriptionNoTask: "Your first video is one click away. The nightly task could not be set up, so start videos from the dashboard",
-  installedTitle: "Installed",
+  description: (time: string) => `Make your first video now, or let tonight's ${time} run make one.`,
+  descriptionNoTask: "Make your first video now. The nightly task could not be set up, so start videos from the dashboard",
+  stepsTitle: "Next three steps",
+  steps: [
+    "Press Open dashboard.",
+    "Press Create it now once, while nothing else is using the graphics card.",
+    "Tomorrow morning, read the note from the night run in the dashboard, and check the schedule in Settings.",
+  ],
+  stepsNoTask: "Check the schedule in Settings. The nightly task is not set up, so start each video from the dashboard.",
+  keyReminder: "Add a Pixabay key in Settings before the first video",
+  installedTitle: "What was installed",
   outTitle: "Your videos land here",
   openFolder: "Open folder",
   shortcuts: "Desktop shortcuts",
   sendTitle: "Send this back",
-  sendBody: "is on your Desktop. Upload it to the diagnostics folder on Google Drive.",
-  sendMissing: "The diagnostics zip could not be written. Use the Nightshift Diagnostics shortcut on your Desktop.",
+  sendBody: (who: string) => `is on your Desktop. Send this file to ${who}.`,
+  whoFallback: "the person who sent you Nightshift",
+  openDrive: "Open the Drive folder",
+  sendMissing: "The help file could not be written. Use the Nightshift Diagnostics shortcut on your Desktop.",
   showFile: "Show file",
   tryAgain: "Try again",
   adminNote: "Setup ran as administrator. Shortcuts were made for the account that ran setup",
   footer: (d: string) => `Setup took ${d}`,
   opening: "Opening the dashboard",
-  copyReport: "Copy test report",
+  copyReport: "Copy full test report (for the developer)",
   openDashboard: "Open dashboard",
-  diagnosticsSaved: "Diagnostics zip saved on your Desktop. Its name is copied",
+  diagnosticsSaved: "Help file saved on your Desktop. Its name is copied",
 };
 
 export const failed = {
@@ -399,8 +378,13 @@ export const failed = {
   showAll: "Show all",
   showLess: "Show less",
   tried: (n: number) => `Tried ${n} ${n === 1 ? "time" : "times"}`,
-  copyDiagnostics: "Copy diagnostics",
-  diagnosticsSaved: "Diagnostics zip saved on your Desktop. Its name is copied",
+  saveHelp: "Save a help file",
+  openLogs: "Open log folder",
+  openProtection: "Open Protection history",
+  /** Before the file exists / after it was saved: where it is and what to send, in one sentence. */
+  helpBefore: (who: string) => `Save a help file puts one zip on your Desktop. Send this file to ${who}.`,
+  helpAfter: (name: string, who: string) => `Saved on your Desktop as ${name}. Send this file to ${who}.`,
+  whoFallback: "the person who sent you Nightshift",
   stepsTitle: "Steps",
   footer: (t: string) => `Error at ${t}`,
   stop: "Stop setup",
@@ -418,8 +402,8 @@ export const stopDialog = {
 
 export const closeDialog = {
   title: "Close the setup window?",
-  body: "Setup keeps running in the black setup window. Run INSTALL.cmd to open this window again.",
-  bodyUninstall: "Removal finishes in the black window.",
+  body: "Setup keeps running in the Nightshift setup window. Run INSTALL.cmd to open this window again.",
+  bodyUninstall: "Removal finishes in the Nightshift setup window.",
   stopAndClose: "Stop setup and close",
   keepOpen: "Keep this open",
   close: "Close window",
@@ -435,7 +419,7 @@ export const uninstall = {
   deleteData: "Delete videos and history",
   deleteDataHint: "Your outbox, rejected videos and history",
   footerKept: (items: string) => `Kept unless ticked: ${items}`,
-  footerRunning: "Removing Nightshift. Watch the black window",
+  footerRunning: "Removing Nightshift. Watch the Nightshift setup window",
   cancel: "Cancel",
   remove: "Remove Nightshift",
   removing: "Removing",
@@ -443,7 +427,8 @@ export const uninstall = {
   confirmBody: (list: string[]) => `This removes ${list.join(", ")}. It cannot be undone.`,
   confirmKeep: "Keep it",
   doneSalutation: "Nightshift is removed",
-  doneDescription: "Nothing else was changed on this PC.",
+  doneDescription: "Nightshift is removed from your programs. A few things stay on this PC on purpose; they are listed below.",
+  staysTitle: "Also left on this PC",
   keptTitle: "Kept",
   keptNone: "Nothing was kept. The install folder is gone",
   reveal: "Show folder",
@@ -452,7 +437,7 @@ export const uninstall = {
     { label: "The nightly task", bytes: null },
     { label: "Desktop shortcuts", bytes: null },
     { label: "Programs and Python environments", bytes: null },
-    { label: "The install folder setting", bytes: null },
+    { label: "Windows' note of where Nightshift is installed", bytes: null },
   ] as { label: string; bytes: number | null }[],
 };
 
@@ -463,4 +448,10 @@ export const common = {
   working: "Working",
   openDriverPage: "Open the driver page",
   openStore: "Open the Microsoft Store",
+};
+
+/** "Copy status": one line the partner pastes to the owner (built by the server, so it is the same on every screen). */
+export const status = {
+  button: "Copy status",
+  copied: "Status copied. Paste it into your message",
 };

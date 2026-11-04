@@ -19,11 +19,12 @@ from typing import Any
 from installer.stage2.web.bootstrap import HOME_VAR, get_user_variable
 
 SIZE_BUDGET_S = 5.0
+NOTE_LABEL = "Windows' note of where Nightshift is installed"      # the NIGHTSHIFT_HOME variable
 ALWAYS = (
     ("The nightly task", None),
     ("Desktop shortcuts", None),
     ("Programs and Python environments", ("venvs", "bin", "run")),
-    ("The install folder setting", None),
+    (NOTE_LABEL, None),
 )
 DATA_DIRS = ("outbox", "rejected", "data", "imports", "cache")
 #: `launchers\\nightshift-host.ps1` holds this named mutex for as long as a dashboard window is open.
@@ -34,6 +35,16 @@ LEFTOVERS_FILE = "Nightshift-uninstall-leftovers.txt"
 #: Tries (one per second) the deferred cleanup makes per folder: two minutes, for a console that was
 #: opened inside it or a window that is slow to exit.
 REMOVE_TRIES = 120
+
+
+def stays_on_pc(home: Path) -> list[str]:
+    """What an uninstall never removes (see uninstall.ps1), in plain words, for the closing screen."""
+    return [
+        f"Your settings and logs, in {home / 'config'} and {home / 'logs'}",
+        "Your stock footage keys, in Windows Credential Manager",
+        "The Visual C++ runtime, FFmpeg and Windows Terminal, which other programs use",
+        "The Python that setup fetched and its download cache (several GB), in your user folders",
+    ]
 
 
 def dir_bytes(path: Path, budget_s: float = SIZE_BUDGET_S) -> int:
@@ -273,7 +284,7 @@ class UninstallApp:
             self._log(failure)
         removed, kept = self._outcome(home, delete_models, delete_data, failed=bool(failure))
         with self._lock:
-            self._result = {"removed": removed, "kept": kept}
+            self._result = {"removed": removed, "kept": kept, "stays": stays_on_pc(home)}
             self._running = False
 
     def _outcome(
@@ -286,9 +297,9 @@ class UninstallApp:
             kept.append({"label": "Nightshift (the removal did not finish; run UNINSTALL.cmd again)",
                          "path": str(home)})
         elif self._env_var(HOME_VAR) is None:
-            removed += ["The nightly task", "Desktop shortcuts", "The install folder setting"]
+            removed += ["The nightly task", "Desktop shortcuts", NOTE_LABEL]
         else:
-            kept.append({"label": "The install folder setting (NIGHTSHIFT_HOME)", "path": str(home)})
+            kept.append({"label": f"{NOTE_LABEL} (could not be removed)", "path": str(home)})
         if (home / "venvs").exists():
             kept.append({"label": "Python environments (a file is in use)", "path": str(home / "venvs")})
         programs = "Programs and Python environments"
