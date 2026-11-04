@@ -321,19 +321,19 @@ class QwenttsEngine:
         finally:
             shutil.rmtree(folder, ignore_errors=True)
 
-    def _ascii_refs(self, args: dict[str, Path], stack: ExitStack) -> dict[str, Path]:
-        """`args` with every file whose path is not plain ASCII copied into a scratch folder first.
+    def _ascii_refs(self, args: dict[str, Any], stack: ExitStack) -> dict[str, Any]:
+        """`args` with every file (a `Path` value) whose path is not plain ASCII copied to scratch first.
 
         The voice files normally sit under the install folder (ASCII). A voice stored anywhere else would
         reach the tool as garbled bytes, so it is copied. The scratch folder is opened on `stack` and lives
         until the caller's `with` ends.
         """
-        if all(str(p).isascii() for p in args.values()):
+        if all(str(p).isascii() for p in args.values() if isinstance(p, Path)):
             return args
         scratch = stack.enter_context(self._scratch())
-        out: dict[str, Path] = {}
+        out: dict[str, Any] = {}
         for key, path in args.items():
-            if str(path).isascii():
+            if not isinstance(path, Path) or str(path).isascii():
                 out[key] = path
                 continue
             safe = scratch / f"{key}{path.suffix if path.suffix.isascii() else ''}"
