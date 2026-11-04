@@ -3,8 +3,23 @@ $ErrorActionPreference = 'Stop'
 
 # Shared helpers for the Nightshift launchers (dot-sourced; not a shortcut target).
 
+function Test-NsHomeFolder {
+    param([string]$Candidate)
+    if (-not $Candidate) { return $false }
+    return (Test-Path -LiteralPath (Join-Path $Candidate 'config\runtime.json'))
+}
+
 function Get-NsHome {
-    if ($env:NIGHTSHIFT_HOME) { return $env:NIGHTSHIFT_HOME }
+    # The launchers live in <home>\app\launchers, so the folder two levels up is the install home. That beats
+    # NIGHTSHIFT_HOME when the variable is unset or stale: a process started before setup finished (the setup
+    # server behind the Done screen, an old console, an Explorer that did not pick up the new user variable)
+    # still has the old environment, and the first dev-mode run looked for the engine's venv under
+    # %LOCALAPPDATA%\Nightshift and stopped with "Supervisor venv not found".
+    $fromEnv = $env:NIGHTSHIFT_HOME
+    if (Test-NsHomeFolder $fromEnv) { return $fromEnv }
+    $fromHere = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+    if (Test-NsHomeFolder $fromHere) { return $fromHere }
+    if ($fromEnv) { return $fromEnv }
     return (Join-Path $env:LOCALAPPDATA 'Nightshift')
 }
 

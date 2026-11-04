@@ -13,6 +13,10 @@ All notable changes to Nightshift are recorded here. The format follows
   before the engine venv exists could not write the diagnostics zip (`ns doctor` is not installed yet); the
   wizard now writes a plain zip of the logs, install state, answers and bootstrap files itself
   (`installer/stage2/diagzip.py`).
+- Launchers (`launchers/_common.ps1` `Get-NsHome`): the install home is found from the launcher's own folder
+  (`<home>\app\launchers`) when `NIGHTSHIFT_HOME` is unset or points at a folder without `config\runtime.json`;
+  the first dev-mode dashboard launch from a process started before setup had set the variable looked under
+  `%LOCALAPPDATA%\Nightshift` and stopped with "Supervisor venv not found".
 
 ### Installer dev mode (`orchestrator/installer-dev-mode`)
 
