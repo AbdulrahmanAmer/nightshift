@@ -12,6 +12,9 @@ All notable changes to Nightshift are recorded here. The format follows
   "make a Short for ..."), answers in text after the tool ran (the paths it returned, or the Yes/No card it
   raised), and the Library's footage fetch uses the synthetic clip source when no key is stored. The
   Assistant's whole path (confirm card, tool run, result) can now be tried on a dev install.
+- Channel card: "This week N of P made" counts the jobs that made a full video (the plan is full videos a
+  week); a Shorts-only channel counts every job. The dev channel showed "5 of 1 made" after four one-Short
+  jobs and a clip job.
 - Assistant: after a Yes the card now says what happened, not only "Done": the file paths a tool made (fetch
   footage), the job id it started, or its note. The model gets no turn after a confirmed action, so "fetch
   two clips and show me where they are" used to end with the paths only in the transcript.

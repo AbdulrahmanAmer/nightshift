@@ -135,8 +135,12 @@ def channel_stats(
     week_since = (now - timedelta(days=7)).isoformat()
     out: dict[str, dict[str, Any]] = {}
     for ch in channels:
+        # the plan the card compares against is full videos a week, so only jobs that made one count; a
+        # Shorts-only channel has no full videos and counts every job (the dev channel showed "5 of 1 made"
+        # after four one-Short jobs and a clip job)
+        kinds = "" if ch.format == "shorts_only" else " AND kind = 'long'"
         made = db.one(
-            "SELECT COUNT(DISTINCT job_id) AS n FROM outputs WHERE channel = ? AND created_at >= ?",
+            f"SELECT COUNT(DISTINCT job_id) AS n FROM outputs WHERE channel = ? AND created_at >= ?{kinds}",
             (ch.slug, week_since),
         )
         pct, spark = _retention(db, ch.slug, now)
