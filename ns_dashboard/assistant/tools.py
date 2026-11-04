@@ -51,6 +51,7 @@ NO_TOOL: dict[Route, str] = {
     ("GET", "/api/voices/pending"): "the Library page shows the voice that setup queued",
     ("POST", "/api/voices/apply-pending"): "never: creating the setup voice downloads and runs the voice model (Library page button)",
     ("POST", "/api/engine/release_gpu"): "never: freeing the graphics card stops whatever holds it (Queue page button)",
+    ("POST", "/api/jobs/{job_id}/dismiss"): "a card tidy-up on the Create page (Hide); nothing about the job changes",
     ("POST", "/api/assistant/chat"): "the Assistant itself",
     ("POST", "/api/assistant/confirm"): "the Assistant itself (owner's Yes)",
     ("POST", "/api/assistant/dismiss"): "the Assistant itself (owner's No)",

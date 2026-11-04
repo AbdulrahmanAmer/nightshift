@@ -32,7 +32,7 @@ export default function Settings() {
   const setKey = async (name: string) => {
     const v = await confirm({ title: `${name[0]!.toUpperCase() + name.slice(1)} key`, body: "Paste the free key from your account page. It is stored in Windows Credential Manager, never in a file", ok: "Save key", input: { label: "Key", placeholder: "Paste the key" } });
     if (typeof v !== "string" || !v.trim()) return;
-    try { await api.post("/settings/keys", { name, value: v.trim() }); toast("Key saved", "ok"); st.reload(); } catch (e: any) { toast(e.message, "bad"); }
+    try { const r = await api.post("/settings/keys", { name, value: v.trim() }); toast(r?.message || "Key saved", r?.checked === false ? "warn" : "ok"); st.reload(); } catch (e: any) { toast(e.message, "bad"); }
   };
   const check = async () => { setChecking(true); try { setUpd(await api.get("/update/check")); } catch (e: any) { toast(e.message, "bad"); } setChecking(false); };
   // The updater runs detached and stops this very service, so the POST may never be answered. What is shown comes from the

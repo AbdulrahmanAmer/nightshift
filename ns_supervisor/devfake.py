@@ -5,7 +5,8 @@
 an answer in the shape the real clients read (`ns_common.llm_client`, `ns_common.embed_client`):
 
     GET  /health               {"status": "ok", ...}
-    POST /v1/chat/completions  the schema's own example (response_format json_schema) or a short text
+    POST /v1/chat/completions  the schema's own example (response_format json_schema) or a short text;
+                               with `tools`, one tool call picked from the owner's words (`plan_tool_call`)
     POST /completion           llama.cpp's native route with timings (the benchmark in `ns verify`)
     POST /v1/embeddings        a deterministic unit vector per text
 
@@ -19,6 +20,7 @@ import argparse
 import hashlib
 import json
 import math
+import re
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
@@ -101,6 +103,142 @@ def chat_reply(body: dict[str, Any]) -> str:
     return TEXT_REPLY
 
 
+# ---------------------------------------------------------------------------------------------- tool calls
+_NUMBER_WORDS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5}
+_SUBJECT = re.compile(
+    r"\b(?:of|for|about|showing|with)\s+(?:an?\s+|the\s+|some\s+)?(.+?)(?=\s+(?:for|into|and|to|in)\b|[.,!?]|$)",
+    re.I,
+)
+_SLUG = re.compile(r"\b[a-z0-9]+(?:-[a-z0-9]+)+\b")
+_TITLE = re.compile(r"\b([A-Z][a-z0-9]+(?:\s+[A-Z][a-z0-9]+)+)\b")
+
+
+def _tool_names(tools: Any) -> set[str]:
+    out: set[str] = set()
+    for t in tools or []:
+        fn = t.get("function") if isinstance(t, dict) else None
+        if isinstance(fn, dict) and fn.get("name"):
+            out.add(str(fn["name"]))
+    return out
+
+
+_QUESTION = re.compile(r"<question>(.*?)</question>", re.S)
+
+
+def _last_user(messages: list[dict[str, Any]]) -> str:
+    """The owner's own words: the Assistant wraps them as <question> and appends a facts block."""
+    for m in reversed(messages):
+        if m.get("role") == "user":
+            content = str(m.get("content") or "")
+            q = _QUESTION.search(content)
+            return q.group(1) if q else content
+    return ""
+
+
+def _count(low: str, default: int) -> int:
+    m = re.search(r"\b(\d+|one|two|three|four|five)\b", low)
+    if not m:
+        return default
+    word = m.group(1)
+    return min(5, max(1, int(word) if word.isdigit() else _NUMBER_WORDS[word]))
+
+
+def _subject(text: str, fallback: str) -> str:
+    m = _SUBJECT.search(text)
+    return (m.group(1).strip() if m else fallback)[:60] or fallback
+
+
+def _channel(text: str) -> str | None:
+    m = _SLUG.search(text)
+    if m:
+        return m.group(0)
+    t = _TITLE.search(text)
+    return re.sub(r"\s+", "-", t.group(1).lower()) if t else None
+
+
+def plan_tool_call(messages: list[dict[str, Any]], tools: Any) -> dict[str, Any] | None:
+    """One tool call for the owner's last message, picked by its words, or None for a plain text answer.
+
+    The real model reads the tool list; this stand-in matches a handful of phrasings so the Assistant's
+    whole path (confirm card, tool run, result shown) can be tried on a dev install: "fetch two clips of a
+    dark hallway", "what is the status", "pause Dev Night Tales", "where is the footage cache", "make a
+    Short for dev-night-tales". Only tools in `tools` are called; everything else gets the text reply.
+    """
+    names = _tool_names(tools)
+    if not names or not messages or messages[-1].get("role") != "user":
+        return None
+    text = _last_user(messages)
+    low = text.lower()
+
+    def pick(name: str, **args: Any) -> dict[str, Any] | None:
+        if name not in names:
+            return None
+        return {"name": name, "args": {k: v for k, v in args.items() if v is not None}}
+
+    if re.search(r"\b(fetch|pull|download|grab|get)\b.*\b(clips?|footage|stock|videos?)\b", low):
+        orientation = "portrait" if re.search(r"\b(vertical|portrait|shorts?)\b", low) else "landscape"
+        return pick("fetch_footage", q=_subject(text, "night street"), count=_count(low, 1),
+                    orientation=orientation)
+    if re.search(r"\b(search|look for|find)\b.*\b(clips?|footage|stock)\b", low):
+        return pick("search_footage", q=_subject(text, "night"))
+    where = re.search(r"\bwhere (?:is|are)\s+(?:the\s+|my\s+)?(.+?)(?:[.,!?]|$)", text, re.I)
+    if where:
+        return pick("where_is", thing=where.group(1).strip()[:60] or "logs")
+    if re.search(r"\bpause\b", low):
+        return pick("pause_channel", slug=_channel(text), note="asked in chat")
+    if re.search(r"\bresume\b", low):
+        return pick("resume_channel", slug=_channel(text), note="asked in chat")
+    if re.search(r"\b(make|start|write|create)\b.*\b(shorts?|story|video)\b", low):
+        fmt = "shorts_only" if re.search(r"\bshorts?\b", low) else None
+        return pick("start_story_job", channel=_channel(text), format=fmt)
+    if re.search(r"\b(queue|ready|waiting|review)\b", low):
+        return pick("list_queue", status="pending")
+    if re.search(r"\bchannels?\b", low):
+        return pick("list_channels")
+    if re.search(r"\bideas?\b", low):
+        return pick("list_ideas")
+    if re.search(r"\b(status|engine|running|how are things)\b", low):
+        return pick("status")
+    return None
+
+
+def _after_tool(messages: list[dict[str, Any]]) -> str:
+    """The text answer after a tool ran: the paths it returned, the confirm card it raised, or its gist."""
+    last = messages[-1]
+    raw = str(last.get("content") or "")
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        data = None
+    if isinstance(data, dict):
+        if data.get("status") == "awaiting_owner_confirmation":
+            return f"I need your Yes first: {data.get('will_do', 'see the card above')}"
+        if "error" in data and isinstance(data["error"], dict):
+            err = data["error"]
+            return f"That did not work: {err.get('message') or err.get('code')}"
+        paths = [str(i.get("path")) for k in ("clips", "items", "results") for i in data.get(k) or []
+                 if isinstance(i, dict) and i.get("path")]
+        if paths:
+            return "Done. The files are here:\n" + "\n".join(paths)
+    gist = raw if len(raw) <= 600 else raw[:600] + "..."
+    return f"Done ({last.get('name') or 'tool'}). {gist}"
+
+
+def chat_message(body: dict[str, Any]) -> dict[str, Any]:
+    """The whole assistant message for a chat request, with `tool_calls` when a tool fits."""
+    raw = body.get("messages")
+    messages: list[dict[str, Any]] = [m for m in raw if isinstance(m, dict)] if isinstance(raw, list) else []
+    if body.get("tools"):
+        if messages and messages[-1].get("role") == "tool":
+            return {"role": "assistant", "content": _after_tool(messages)}
+        planned = plan_tool_call(messages, body.get("tools"))
+        if planned:
+            call = {"id": f"call_dev_{planned['name']}", "type": "function",
+                    "function": {"name": planned["name"], "arguments": json.dumps(planned["args"])}}
+            return {"role": "assistant", "content": "", "tool_calls": [call]}
+    return {"role": "assistant", "content": chat_reply(body)}
+
+
 class Handler(BaseHTTPRequestHandler):
     """One request. The service name ("llama" or "embed") is set on the server object."""
 
@@ -145,8 +283,9 @@ class Handler(BaseHTTPRequestHandler):
         """Chat, completion and embeddings."""
         body = self._body()
         if self.service == "llama" and self.path == "/v1/chat/completions":
-            msg = {"role": "assistant", "content": chat_reply(body)}
-            self._send(200, {"choices": [{"index": 0, "message": msg, "finish_reason": "stop"}]})
+            msg = chat_message(body)
+            reason = "tool_calls" if msg.get("tool_calls") else "stop"
+            self._send(200, {"choices": [{"index": 0, "message": msg, "finish_reason": reason}]})
         elif self.service == "llama" and self.path == "/completion":
             n = int(body.get("n_predict") or 16)
             self._send(200, {

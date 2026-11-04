@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, BinaryIO
 
@@ -27,6 +28,16 @@ from ns_dashboard.state import (
 )
 from ns_dashboard.svc_engine import EngineService
 from ns_dashboard.templates import load_templates
+
+KeyCheck = Callable[[str, str], dict[str, Any]]
+
+
+def live_key_check(service: str, key: str) -> dict[str, Any]:
+    """One small search with the product User-Agent (the installer's checker; Cloudflare 403s urllib's)."""
+    from installer.stage2.web.keys import check_key
+
+    return check_key(service, key)
+
 
 TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 KEY_ALIASES = {short: full for full, short in SHORT_NAMES.items()}
@@ -51,6 +62,8 @@ class SettingsService:
     def __init__(self, state: AppState, engine: EngineService) -> None:
         self.s = state
         self.engine = engine
+        #: the live key check (`installer.stage2.web.keys.check_key`): None skips it (fake services, tests)
+        self.key_check: KeyCheck | None = None if state.fake_services else live_key_check
 
     # --- settings ---
     def _key_flags(self) -> dict[str, bool]:
@@ -150,12 +163,29 @@ class SettingsService:
             return {"name": full, "set": False}
         if len(secret) > 512:
             raise ApiError(400, "bad_key", "Paste the key without spaces (up to 512 characters).")
+        short = SHORT_NAMES.get(full, full)
+        service = short[0].upper() + short[1:]
+        verdict = self.key_check(short, secret) if self.key_check is not None else None
+        if verdict is not None and not verdict.get("ok") and verdict.get("code") != "NS-E503":
+            # the service answered and did not accept the key: not stored, so a working key is not replaced
+            raise ApiError(
+                422, str(verdict.get("code") or "bad_key"),
+                f"{service} did not accept this key. Paste it again from your {service} account page "
+                "(no spaces); the key you had, if any, is kept.",
+            )
         try:
             self.s.adapters.keyring.set(full, secret)
         except AdapterUnavailable as e:
             raise ApiError(501, "keyring_unavailable", str(e)) from e
-        self.s.log.info("api_key_set", name=full)
-        return {"name": full, "set": True}
+        self.s.log.info("api_key_set", name=full, checked=bool(verdict and verdict.get("ok")))
+        out: dict[str, Any] = {"name": full, "set": True}
+        if verdict is not None:
+            out["checked"] = bool(verdict.get("ok"))
+            out["message"] = (
+                f"{service} accepted the key" if verdict.get("ok")
+                else f"Key saved, but {service} could not be reached to check it (no internet?)"
+            )
+        return out
 
     # --- diagnostics ---
     def diagnostics(self) -> dict[str, Any]:

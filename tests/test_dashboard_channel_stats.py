@@ -142,7 +142,16 @@ def test_week_count_and_retention_come_from_outputs_and_analytics(tmp_home: Path
     for oid, day, pct in ((recent_a, "2026-10-30", 50.0), (other_job, "2026-10-30", 70.0), (recent_a, "2026-11-01", 80.0), (old, "2026-09-01", 10.0)):
         db.execute("INSERT INTO analytics(output_id, date, avg_pct_viewed) VALUES (?, ?, ?)", (oid, day, pct))
     stats = channel_stats(paths, db, [Channel(slug="after-dark", display_name="A", niche="n")], NOW)["after-dark"]
-    assert stats["week"] == 2  # two distinct jobs in the last 7 days
+    assert stats["week"] == 2  # two distinct jobs with a full video in the last 7 days
+    # a one-Short job and a clip job do not count against a plan of full videos a week...
+    short_job = seed_output(db, paths, kind="short", k=1, with_files=False)
+    clip_job = seed_output(db, paths, kind="clip", k=1, with_files=False)
+    for oid in (short_job, clip_job):
+        db.execute("UPDATE outputs SET created_at = ? WHERE output_id = ?", ((NOW - timedelta(days=2)).isoformat(), oid))
+    assert channel_stats(paths, db, [Channel(slug="after-dark", display_name="A", niche="n")], NOW)["after-dark"]["week"] == 2
+    # ...but a Shorts-only channel has no full videos and counts every job
+    shorts_only = Channel(slug="after-dark", display_name="A", niche="n", format="shorts_only")
+    assert channel_stats(paths, db, [shorts_only], NOW)["after-dark"]["week"] == 4
     assert stats["spark"] == [60.0, 80.0]  # per day, oldest first; the September row is outside 14 days
     assert stats["watched_pct"] == pytest.approx((50 + 70 + 80) / 3, abs=0.1)
     db.close()

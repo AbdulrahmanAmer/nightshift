@@ -82,8 +82,11 @@ folder is the honest test.
 ### First dashboard launch and "Create it now"
 
 The shortcut starts the real supervisor and the real dashboard (port 8100). The Library, Voices (design and
-clone use the fake engine), Settings, Queue, Review and the Assistant work; the Assistant answers a fixed
-sentence because the fake llama has no opinions. **Create it now** creates a job that runs the whole
+clone use the fake engine), Settings, Queue, Review and the Assistant work. The fake llama has no
+opinions, but it turns plain requests into tool calls so the Assistant's whole path can be tried: "fetch
+two clips of a dark hallway", "what is the status", "pause Dev Night Tales", "where is the footage
+cache", "make a Short for dev-night-tales", "what is ready to review"; anything else gets a fixed
+sentence. After a Yes the card names the files or job the tool made. **Create it now** creates a job that runs the whole
 pipeline on the fakes and puts a real video in `<home>\outbox`. A Shorts job takes a few minutes. A channel's
 long video (the default format) is a 9 to 14 minute master that FFmpeg encodes with `libx264` on the laptop's CPU,
 so allow much longer, or pick Shorts only in Create for the quick pass.
@@ -148,7 +151,10 @@ real install:
    (NS-W205), `ns studio run --daily` and the post-run behaviour are not exercised. Registering the task is.
 8. **Nightshift Code.** OpenCode is not installed, `opencode.json` is not written, `nightshift-code.ps1` has no
    shortcut.
-9. **The Assistant** gets canned text from the fake llama: tool-calling and answer quality are unproven.
+9. **The Assistant** runs on keyword routing in the fake llama (`ns_supervisor.devfake.plan_tool_call`): the
+   confirm card, the tool run and the result are real, the wording and the choice of tool on a real model are
+   not. Library > Footage and the Assistant's `fetch_footage` use the synthetic clip source unless a key is
+   stored in Settings; with a key they download from Pixabay or Pexels for real.
 10. **Diagnostics.** `ns doctor` shows `nvidia-smi` as "not needed (dev mode)" and the bundle holds no GPU readout;
     the Settings page hides `dev_mode`.
 11. **Numbers.** Nothing here measures tokens per second, real-time factor, model load time, memory or video

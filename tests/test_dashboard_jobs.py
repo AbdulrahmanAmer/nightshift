@@ -436,3 +436,21 @@ def test_the_real_state_pulses_the_engine_and_the_fake_state_does_not(tmp_home: 
     fake = build_state(Paths.from_env(), fake_services=True)
     assert fake.worker.pulse is None
     fake.db.close()
+
+
+def test_a_finished_job_can_be_hidden_but_a_running_one_cannot(tmp_home: Path):
+    """The Create page's Earlier list: failed clip cards from a bad day can be hidden; rows and outputs
+    stay."""
+    store, worker, _hub, _ = build(tmp_home, {"clip": stage_handler([])})
+    job = store.create("clip", "c", {"a": 1})
+    assert store.dismiss(job.job_id) is not None
+    assert store.get(job.job_id).dismissed_at is None                   # queued: unchanged
+    assert worker.run_next()
+    rec = store.dismiss(job.job_id)
+    assert rec is not None and rec.status == "done" and rec.dismissed_at and rec.params == {"a": 1}
+    assert rec.result == {"output_ids": ["x/1"]}
+    assert rec.to_dict()["dismissed_at"] == rec.dismissed_at
+    assert store.dismiss("nope-20260101-abcd") is None
+    # a later finish() (a resume writing its result) keeps the flag
+    store.finish(job.job_id, "done", "Done again", {"output_ids": ["x/2"]})
+    assert store.get(job.job_id).dismissed_at == rec.dismissed_at

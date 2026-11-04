@@ -7,6 +7,25 @@ All notable changes to Nightshift are recorded here. The format follows
 
 ## [Unreleased]
 
+- Dev mode: the fake language model now turns plain requests in the Assistant into tool calls ("fetch two
+  clips of a dark hallway", "what is the status", "pause Dev Night Tales", "where is the footage cache",
+  "make a Short for ..."), answers in text after the tool ran (the paths it returned, or the Yes/No card it
+  raised), and the Library's footage fetch uses the synthetic clip source when no key is stored. The
+  Assistant's whole path (confirm card, tool run, result) can now be tried on a dev install.
+- Create page: a finished job card (done, stopped or cancelled) has a Hide button; the job and its videos stay,
+  the card leaves the Earlier list (`POST /api/jobs/{id}/dismiss`). Library > Footage shows each clip's file
+  path and has a "Fetch 2 clips" button for the search words (the Assistant's `fetch_footage`, by hand).
+- Settings > Stock footage keys: a saved key is checked with the service right away (the same check as the
+  installer, with the product User-Agent) and the toast says "Pixabay accepted the key"; a key the service
+  rejects is not stored (the working key, if any, is kept) and the dialog says to paste it again; when the
+  service cannot be reached the key is stored and the toast says it could not be checked.
+- Channel card: "This week N of P made" counts the jobs that made a full video (the plan is full videos a
+  week); a Shorts-only channel counts every job. The dev channel showed "5 of 1 made" after four one-Short
+  jobs and a clip job.
+- Assistant: after a Yes the card now says what happened, not only "Done": the file paths a tool made (fetch
+  footage), the job id it started, or its note. The model gets no turn after a confirmed action, so "fetch
+  two clips and show me where they are" used to end with the paths only in the transcript.
+
 - Dev mode: a clip job on any video now runs through selection, cutting and rendering: the fake model's
   `clip_select` answer is fitted to the window in the prompt when the recorded fixture's moments (62-262 s of
   a test recording) fall outside it (the first dev-mode clip job failed with NS-E407). The clipper's dev-mode
