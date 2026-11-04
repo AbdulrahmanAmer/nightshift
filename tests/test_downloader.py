@@ -400,7 +400,9 @@ def test_plan_small_tier_gpu(manifest, tmp_path: Path):
     items = dl.plan_from_manifest(manifest, "gpu", "small", tmp_path, llama_pair="cuda12")
     by = {i.name: i for i in items}
     llm = by["Qwen3-14B-Q4_K_M.gguf"]
-    assert llm.url == "https://huggingface.co/Qwen/Qwen3-14B-GGUF/resolve/main/Qwen3-14B-Q4_K_M.gguf"
+    rev = manifest.profiles["gpu"].llm.revision
+    assert rev != "main"
+    assert llm.url == f"https://huggingface.co/Qwen/Qwen3-14B-GGUF/resolve/{rev}/Qwen3-14B-Q4_K_M.gguf"
     assert llm.dest == tmp_path / "models" / "llm" / "Qwen3-14B-Q4_K_M.gguf"
     assert llm.sha256 == manifest.profiles["gpu"].llm.sha256 and llm.size == 9001752960
     assert "nomic-embed-text-v1.5.Q8_0.gguf" in by

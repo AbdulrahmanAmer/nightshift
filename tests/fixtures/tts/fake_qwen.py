@@ -199,8 +199,22 @@ def run_codec(argv: list[str]) -> int:
     return 0
 
 
+PATH_FLAGS = {
+    "--model", "--codec", "--talker", "--ref-spk", "--ref-rvq", "--ref-text", "--ref-wav", "-o", "-i",
+}  # fmt: skip
+
+
+def reject_non_ascii_paths(argv: list[str]) -> None:
+    """The real tools never convert argv to UTF-8 (qwentts.cpp `main()` has no `utf8_init`): a path with a
+    letter outside ASCII reaches them in the ANSI code page and its file cannot be opened or written."""
+    for flag, value in zip(argv, argv[1:], strict=False):
+        if flag in PATH_FLAGS and not value.isascii():
+            die(f"cannot open {flag} {value.encode('ascii', 'replace').decode()!r} (non-ASCII path)")
+
+
 def main() -> int:
     tool, argv = sys.argv[1], sys.argv[2:]
+    reject_non_ascii_paths(argv)
     fail = os.environ.get("NS_FAKE_QWEN_FAIL", "")
     if fail in (tool, "all"):
         sys.stderr.write("[fake-qwen] CUDA error: out of memory\n")

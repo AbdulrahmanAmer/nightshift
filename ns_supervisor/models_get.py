@@ -47,12 +47,22 @@ def hf_tree(repo: str, revision: str, dest_dir: Path) -> list[DownloadItem]:
         client.close()
 
 
-def reference_items(paths: Paths, tree: HfTree) -> list[DownloadItem]:
-    """The PyTorch engine's VoiceDesign weights under `models\\tts\\hf` (and Base when it is not there)."""
-    items = tree(REFERENCE_VOICEDESIGN, "main", paths.models_tts_hf / REFERENCE_VOICEDESIGN.split("/")[1])
+def reference_items(
+    paths: Paths, tree: HfTree, revisions: dict[str, str] | None = None
+) -> list[DownloadItem]:
+    """The PyTorch engine's VoiceDesign weights under `models\\tts\\hf` (and Base when it is not there).
+
+    `revisions` maps a repo to its pinned commit (`Manifest.tts_fallback_revisions`); a repo it lacks is read
+    from ``main``.
+    """
+    revs = revisions or {}
+    items = tree(
+        REFERENCE_VOICEDESIGN, revs.get(REFERENCE_VOICEDESIGN, "main"),
+        paths.models_tts_hf / REFERENCE_VOICEDESIGN.split("/")[1],
+    )
     base_dir = paths.models_tts_hf / REFERENCE_BASE.split("/")[1]
     if not base_dir.is_dir():
-        items += tree(REFERENCE_BASE, "main", base_dir)
+        items += tree(REFERENCE_BASE, revs.get(REFERENCE_BASE, "main"), base_dir)
     return items
 
 
@@ -79,7 +89,7 @@ def plan_items(
         if engine != "reference" or everything:
             items += [_hf_item(f, paths.models_tts) for f in pm.tts_optional]
         if engine == "reference" or everything:
-            items += reference_items(paths, tree or hf_tree)
+            items += reference_items(paths, tree or hf_tree, manifest.tts_fallback_revisions)
     elif kind == "story_llm":
         items = [_hf_item(pm.story_llm, paths.models_llm)] if pm.story_llm is not None else []
     else:

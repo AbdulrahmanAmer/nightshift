@@ -29,7 +29,7 @@ def test_voicedesign_is_the_pinned_talker_in_models_tts(tmp_path: Path) -> None:
     pin = manifest().profiles["gpu"].tts_optional[0]
     assert item.dest == paths.models_tts / VOICEDESIGN
     assert item.sha256 == pin.sha256 and item.size == pin.bytes
-    assert item.url.endswith(f"/resolve/main/{VOICEDESIGN}")
+    assert item.url.endswith(f"/resolve/{pin.revision}/{VOICEDESIGN}") and pin.revision != "main"
 
 
 def test_the_story_model_is_the_pinned_gguf_in_models_llm(tmp_path: Path) -> None:
