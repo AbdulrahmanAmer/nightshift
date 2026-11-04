@@ -1,4 +1,4 @@
-"""C2: how long a service may take to answer its health check after it starts (`config\supervisor.json`).
+"""C2: how long a service may take to answer its health check after it starts (`config/supervisor.json`).
 
 A cold load of the 14 GB story model takes about 30 s from an SSD and several minutes from a hard disk, so the
 installer (s08) writes 600 s for a hard disk (or an unknown drive type) and 300 s otherwise. Without the file

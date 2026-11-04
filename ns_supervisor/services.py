@@ -150,6 +150,7 @@ def _dashboard(paths: Paths) -> ServiceDef:
         cmd=cmd,
         host="127.0.0.1",
         port=DASHBOARD_PORT,
+        health_path="/api/health",     # the dashboard's routes all live under /api (first dev-mode launch)
         gpu=False,
         persistent=True,
         env=_env(paths),

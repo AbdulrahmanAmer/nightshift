@@ -18,7 +18,7 @@ import time
 import zipfile
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -58,6 +58,11 @@ EXIT_BLOCKED = 10
 #: Steps that run again when INSTALL.cmd is started from a newer zip over a finished install: the program
 #: copy (b02), the setup environment (b03), the studio and supervisor environments, the smoke test, the
 #: shortcuts and task, and the summary.
+#: Steps only the setup window runs (`steps.bridge_steps`): a console or unattended install never marks them,
+#: so a window opened over such an install must not take them for unfinished work (it showed "Setup is
+#: halfway" over a complete dev-mode install, and never reached Done).
+WINDOW_ONLY_STEPS = ("v01_samples",)
+
 UPDATE_STEPS = (
     "b02_home", "b03_setup_env", "s04_venvs", "s08_smoke", "s09_shortcuts_scheduler", "s10_summary",
 )
@@ -103,8 +108,10 @@ def retry_note(reason: str, wait_s: float, attempt: int | None = None, of: int |
 
 
 def now_iso() -> str:
-    """Local time, to the second."""
-    return datetime.now().isoformat(timespec="seconds")
+    """UTC with offset, to the second: the same clock as `installer.stage2.state` (the console wizard).
+    Mixing the window's naive local stamps with the wizard's aware ones made the Done-screen duration
+    raise TypeError, and the window never started over a console-finished install."""
+    return datetime.now(UTC).isoformat(timespec="seconds")
 
 
 def hhmm() -> str:
@@ -331,7 +338,9 @@ def write_step(
     steps = data.get("steps") if isinstance(data.get("steps"), dict) else {}
     finished = now_iso() if status in ("done", "skipped", "failed") else None
     steps[step_id] = {"status": status, "error": error, "finished_at": finished}
-    data.update({"version": data.get("version", version), "app_path": str(app_path), "steps": steps})
+    # the version of the program that is running now: an update through INSTALL.cmd must not keep the old
+    # number (Settings showed install 0.1.7 after a 0.1.8 update on the first dev run)
+    data.update({"version": version, "app_path": str(app_path), "steps": steps})
     data.setdefault("profile", None)
     data.setdefault("started_at", now_iso())
     data.setdefault("completed_at", None)
@@ -491,9 +500,16 @@ class SetupController:
                 "status": status if status in ("done", "skipped") else "pending", "detail": None,
                 "startedAt": None, "finishedAt": st.get("finished_at"),
             })
-        self._finished_before = (
-            locked and bool(steps) and all(st["status"] in ("done", "skipped") for st in steps)
+        others_done = locked and bool(steps) and all(
+            st["status"] in ("done", "skipped") for st in steps if st["id"] not in WINDOW_ONLY_STEPS
         )
+        if others_done:
+            for st in steps:                               # a console install made no samples: not unfinished
+                if st["id"] in WINDOW_ONLY_STEPS and st["status"] == "pending":
+                    st["status"] = "skipped"
+                    st["detail"] = "not made by a console install"
+                    self._persist_step(st["id"], "skipped", "not made by a console install")
+        self._finished_before = others_done
         self._saved_times = (saved.get("started_at"), saved.get("completed_at"))
         if self._finished_before and self._program_differs():
             # INSTALL.cmd from a newer zip over a finished install: the update runs on Continue
@@ -556,14 +572,7 @@ class SetupController:
             return
         result = self._build_result()
         started, completed = self._saved_times
-        try:
-            if started and completed:
-                span = datetime.fromisoformat(completed) - datetime.fromisoformat(started)
-                result["durationS"] = max(0, int(span.total_seconds()))
-            else:
-                result["durationS"] = 0
-        except ValueError:
-            result["durationS"] = 0
+        result["durationS"] = report.span_seconds(started, completed) or 0
 
         def fn(s: dict[str, Any]) -> None:
             s["run"] = "finished"
@@ -1783,7 +1792,7 @@ class SetupController:
         duration = 0
         if started:
             try:
-                duration = max(0, int((datetime.now() - datetime.fromisoformat(started)).total_seconds()))
+                duration = report.span_seconds(started, now_iso()) or 0
             except ValueError:
                 duration = 0
         return {

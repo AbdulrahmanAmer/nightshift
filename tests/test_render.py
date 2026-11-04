@@ -83,9 +83,11 @@ def test_encoder_args():
     nv = encoder_args(VideoCfg(encoder="h264_nvenc", preset="p4"))
     assert nv[:4] == ["-c:v", "h264_nvenc", "-preset", "p4"]
     cpu = encoder_args(VideoCfg(encoder="libx264", preset="ultrafast"))
-    assert cpu[:4] == ["-c:v", "libx264", "-preset", "ultrafast"]
+    assert cpu[:4] == ["-c:v", "libx264", "-preset", "veryfast"]      # ultrafast made 900 MB Shorts
     forced = encoder_args(VideoCfg(encoder="h264_nvenc", preset="p4"), force_cpu=True)
     assert forced[1] == "libx264" and forced[3] == "veryfast"
+    for args in (nv, cpu, forced):                                        # every render is bitrate-capped
+        assert args[args.index("-maxrate") + 1] == "12M" and "-bufsize" in args
 
 
 def test_render_without_shots_is_e401(tmp_path: Path):

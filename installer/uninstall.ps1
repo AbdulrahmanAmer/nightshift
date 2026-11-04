@@ -210,14 +210,17 @@ else {
 if ($wipeModels) { Remove-Tree -Path (Join-Path $nsHome 'models') }
 if (-not $SkipSystem) {
     # With -KeepBin the window that runs this may be using the browser profile and webview2: those go with bin.
-    $leaves = @('bootstrap', 'browser', 'webview2')
+    # venvs (the setup environment), run, state and tmp under %LOCALAPPDATA%\Nightshift were left behind by the
+    # first dev-mode uninstall; with -KeepBin the window still runs from that venv, so only bootstrap goes then.
+    $leaves = @('bootstrap', 'browser', 'webview2', 'venvs', 'run', 'state', 'tmp')
     if ($KeepBin) { $leaves = @('bootstrap') }
     foreach ($leaf in $leaves) {
         Remove-Tree -Path (Join-Path (Join-Path $env:LOCALAPPDATA 'Nightshift') $leaf)
     }
 }
+foreach ($d in @('state', 'tmp')) { Remove-Tree -Path (Join-Path $nsHome $d) }    # internal, never user data
 if ($wipeData) {
-    foreach ($d in @('outbox', 'rejected', 'data', 'imports', 'cache')) { Remove-Tree -Path (Join-Path $nsHome $d) }
+    foreach ($d in @('outbox', 'rejected', 'data', 'imports', 'cache', 'stories')) { Remove-Tree -Path (Join-Path $nsHome $d) }
 }
 
 # ---- environment variable (last, so a half-finished run can be repeated) --------------------------------
@@ -232,7 +235,7 @@ if (-not $SkipSystem) {
 # ---- what is left ---------------------------------------------------------------------------------------
 Write-Host ''
 $kept = @()
-foreach ($d in @('models', 'outbox', 'rejected', 'data', 'imports', 'cache', 'config', 'logs')) {
+foreach ($d in @('models', 'outbox', 'rejected', 'data', 'imports', 'cache', 'stories', 'config', 'logs')) {
     $full = Join-Path $nsHome $d
     if (Test-Path -LiteralPath $full) { $kept += $d }
 }

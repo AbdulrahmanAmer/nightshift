@@ -70,6 +70,43 @@ def read(name: str) -> str:
     return (LAUNCHERS / name).read_text(encoding="ascii")
 
 
+def test_get_ns_home_falls_back_to_the_launchers_own_install_folder(tmp_path: Path) -> None:
+    """NIGHTSHIFT_HOME unset or stale: the home is two levels above the launchers folder (first dev run)."""
+    import os
+    import shutil
+    import subprocess
+
+    from ns_supervisor import pwsh
+
+    exe = pwsh.find_powershell()
+    if exe is None:
+        pytest.skip("powershell not available")
+    home = tmp_path / "Night Home"
+    launchers = home / "app" / "launchers"
+    launchers.mkdir(parents=True)
+    (home / "config").mkdir()
+    (home / "config" / "runtime.json").write_text("{}", encoding="utf-8")
+    shutil.copy(LAUNCHERS / "_common.ps1", launchers / "_common.ps1")
+    stale = tmp_path / "stale"
+    stale.mkdir()
+    common = launchers / "_common.ps1"
+    script = f". '{common}'\nWrite-Output (Get-NsHome)\nWrite-Output $env:NIGHTSHIFT_HOME\n"
+    env = {k: v for k, v in os.environ.items() if k.lower() != "psmodulepath"}
+    for value in (None, str(stale)):                   # unset, and set to a folder that is not an install
+        env.pop("NIGHTSHIFT_HOME", None)
+        if value is not None:
+            env["NIGHTSHIFT_HOME"] = value
+        out = subprocess.run([exe, "-NoProfile", "-NonInteractive", "-Command", script], capture_output=True,
+                             text=True, timeout=60, env=env, check=False)
+        assert out.returncode == 0, out.stdout + out.stderr
+        lines = out.stdout.strip().splitlines()
+        assert lines == [str(home), str(home)], (value, out.stdout, out.stderr)   # resolved, and exported
+    env["NIGHTSHIFT_HOME"] = str(home)                 # a good variable still wins
+    out = subprocess.run([exe, "-NoProfile", "-NonInteractive", "-Command", script], capture_output=True,
+                         text=True, timeout=60, env=env, check=False)
+    assert out.stdout.strip().splitlines() == [str(home), str(home)]
+
+
 def test_dashboard_launcher_opens_port_8100_after_waiting_for_the_engine() -> None:
     text = read("nightshift-dashboard.ps1")
     assert "http://127.0.0.1:8100" in text

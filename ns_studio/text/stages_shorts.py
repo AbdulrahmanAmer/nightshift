@@ -7,6 +7,7 @@ import random
 from datetime import UTC, datetime
 from typing import Any
 
+from ns_common.devmode import is_dev
 from ns_common.embed_client import cosine, embed_window, from_blob, to_blob
 from ns_common.errors import NsError
 from ns_common.models import Idea, Part, Seo, VisualBeat
@@ -212,6 +213,8 @@ class CriticReviseStage:
                 (ctx.channel.slug, ctx.job_id),
             )
         ]
+        if is_dev(ctx.paths):
+            past = []      # the fake LLM tells the same story every run; dev mode must not fail on that
         raise_if(validate_story(text, ideas_budget(ctx), past_openings=past, embed=ctx.services.embed))
         avg, _ = critic_numbers(critique)
         vec = ctx.services.embed.embed([embed_window(text, ctx.runtime.embed.batch_size)])[0]

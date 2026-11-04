@@ -218,9 +218,12 @@ def audio_filter(measured: dict[str, float] | None) -> str:
 
 def encoder_args(encoder: str, preset: str) -> list[str]:
     """Video encoder options for `libx264` or `h264_nvenc`."""
+    cap = ["-maxrate", "12M", "-bufsize", "24M"]          # see ns_studio.media.render.MAXRATE
     if encoder == "h264_nvenc":
-        return ["-c:v", "h264_nvenc", "-preset", preset, "-rc", "vbr", "-cq", "23", "-b:v", "0"]
-    return ["-c:v", "libx264", "-preset", preset, "-crf", "20"]
+        return ["-c:v", "h264_nvenc", "-preset", preset, "-rc", "vbr", "-cq", "23", "-b:v", "0", *cap]
+    if preset == "ultrafast":
+        preset = "veryfast"
+    return ["-c:v", "libx264", "-preset", preset, "-crf", "22", *cap]
 
 
 def build_args(spec: RenderSpec, measured: dict[str, float] | None) -> list[str]:

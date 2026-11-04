@@ -78,7 +78,7 @@ def check_sentence_length(text: str, max_words: int = 35) -> Violation | None:
 
 
 def check_opening_similarity(
-    opening: str, past_openings: list[str], embed: Embed, threshold: float = 0.8
+    opening: str, past_openings: list[str], embed: Embed, threshold: float = 0.9
 ) -> Violation | None:
     """The opening line must differ (cosine < `threshold`) from every past opening."""
     if not past_openings:

@@ -7,6 +7,44 @@ All notable changes to Nightshift are recorded here. The format follows
 
 ## [Unreleased]
 
+- First dev-mode run on a laptop (`INSTALL.cmd --dev`, unattended): the welcome step waited for Enter and
+  died with `EOFError` when standard input was not a console; the console UI now treats end-of-input as
+  "not interactive" and takes the defaults, and an unattended run never waits for Enter. A setup that fails
+  before the engine venv exists could not write the diagnostics zip (`ns doctor` is not installed yet); the
+  wizard now writes a plain zip of the logs, install state, answers and bootstrap files itself
+  (`installer/stage2/diagzip.py`).
+- Launchers (`launchers/_common.ps1` `Get-NsHome`): the install home is found from the launcher's own folder
+  (`<home>\app\launchers`) when `NIGHTSHIFT_HOME` is unset or points at a folder without `config\runtime.json`;
+  the first dev-mode dashboard launch from a process started before setup had set the variable looked under
+  `%LOCALAPPDATA%\Nightshift` and stopped with "Supervisor venv not found".
+- Dashboard: an `/api/health` route for the supervisor's readiness probe (`ServiceDef.health_path`); without it the
+  dashboard service stayed "starting" and the engine pill said "Loading dashboard..." for ever (first dev-mode
+  launch). Dev mode no longer needs a stock-footage key to start a job (its clip source is a fake).
+- Renders are bitrate-capped (`-maxrate 12M -bufsize 24M`, NVENC and libx264, masters, Shorts and clips) and
+  the CPU encoder never uses `ultrafast`: the first dev-mode Short came out at 134 Mbit/s (900 MB for 54 s)
+  with `libx264 -preset ultrafast -crf 21` under the film-grain filter.
+- Story validators: the repeated-opening check (`opening_similarity`) uses cosine >= 0.9 instead of 0.8 (nomic
+  similarities between two openings of the same niche sit around 0.8, a false rejection fails the job after
+  the writing), and dev mode skips it (the fake LLM tells the same story every run: the second dev job failed
+  with NS-E303 `cosine 1.00`).
+- Unattended and console setup runs write `logs\\install-report.json` too (built from `install_state.json`,
+  answers without keys, the last error), so the owner gets the same file whichever way setup ran.
+- The setup window opened over an install finished by the console or unattended path (which has no samples
+  step) showed "Setup is halfway" instead of Done; `v01_samples` is now recorded as skipped for such an
+  install and the window opens on Done with Open dashboard.
+- The setup window wrote naive local timestamps into `install_state.json` while the console wizard wrote UTC
+  ones; subtracting the two for the Done-screen duration raised `TypeError` and the window never started
+  over a console-finished install (exit 14). Both now write UTC stamps and the arithmetic tolerates a mix.
+- `install_state.json` carries the version of the program that ran setup last: after an update through
+  INSTALL.cmd the Settings page showed the old install version.
+- Dashboard Queue page: the review list reloads when the outbox counts change (it said "Nothing to review"
+  under a "Ready 2" tab after the first dev job), and the "Next automatic run" countdown and "Tonight's run
+  starts at" line only show when the nightly task is registered (the pill said "No nightly task" beside a
+  13 h countdown).
+- Uninstall also removes the setup environment and the run/state/tmp folders under `%LOCALAPPDATA%\Nightshift`,
+  the install folder's `state` and `tmp`, and (with "delete my videos") `stories`; the first dev-mode uninstall left
+  them behind. The "kept" line lists `stories` when it stays.
+
 ### Installer dev mode (`orchestrator/installer-dev-mode`)
 
 `INSTALL.cmd --dev` (or `NIGHTSHIFT_DEV_MODE=1`) runs the real installer end to end on a PC with no NVIDIA card and
