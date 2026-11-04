@@ -68,6 +68,12 @@ def build_handlers(adapters: Adapters, paths: Paths | None = None) -> dict[str, 
 
     def run_handler(ctl: JobControl) -> dict[str, Any]:
         p = ctl.params
+        if p.get("resume_job_id"):  # "Retry from where it stopped": the same studio job, not a new story
+            again = str(p["resume_job_id"])
+            ids = adapters.run.run(
+                ctl, str(p["channel"]), str(p["format"]), p.get("count"), resume_job_id=again
+            )
+            return {"output_ids": ids, "resumed": p.get("resume_job_id"), **ctl.extras}
         ids = adapters.run.run(ctl, str(p["channel"]), str(p["format"]), p.get("count"))
         return {"output_ids": ids, **ctl.extras}
 
@@ -260,6 +266,42 @@ class JobsService:
         self._require_footage_key()
         params: dict[str, Any] = {"channel": slug, "format": fmt, "count": n}
         return self._enqueue("run", slug, params, self._schedule(body))
+
+    def create_resume(self, job_id: str) -> dict[str, Any]:
+        """Queue the failed story job `job_id` again from the stage where it stopped (same studio job).
+
+        A new `run` row continues the studio job the failed one announced (`result.studio_job_ids`; the last
+        one is the one that failed): its finished stages are kept, so a failure at voice, clips or render does
+        not repeat the language-model pass or write a different story.
+        """
+        self._accepting()
+        rec = self.s.store.get(job_id)
+        if rec is None or rec.kind != "run":
+            raise ApiError(404, "not_found", "That story job was not found.")
+        if rec.status != "failed":
+            raise ApiError(409, "not_failed", "Only a job that stopped with an error can be continued.")
+        ids = [str(i) for i in (rec.result or {}).get("studio_job_ids") or [] if i]
+        if not ids:
+            raise ApiError(
+                409, "cannot_resume", "That job stopped before it made anything to continue from.",
+                hint="Start a new video from the Create page.",
+            )
+        studio_job = ids[-1]
+        if not self.s.paths.job_dir(studio_job).joinpath("job.json").exists():
+            raise ApiError(
+                409, "cannot_resume", "The files of that job are gone, so it cannot be continued.",
+                hint="Start a new video from the Create page.",
+            )
+        for other in self.s.store.list_jobs(None, "run", 200):
+            if other.status in ("queued", "running") and other.params.get("resume_job_id") == studio_job:
+                raise ApiError(409, "already_queued", "That job is already being continued.")
+        channel = rec.channel or str(rec.params.get("channel") or "")
+        self._require_footage_key()
+        params: dict[str, Any] = {
+            "channel": channel, "format": str(rec.params.get("format") or ""), "count": 1,
+            "resume_job_id": studio_job, "resume_of": rec.job_id,
+        }
+        return self._enqueue("run", channel, params)
 
     def create_clip_rerun(self, body: dict[str, Any]) -> dict[str, Any]:
         """Run the later stages of a finished clip job again with another template (no new transcription)."""

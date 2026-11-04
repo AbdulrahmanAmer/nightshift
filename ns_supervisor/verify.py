@@ -418,7 +418,7 @@ def run_verify(
             release("whisper")
         return Out(True, round(secs, 1), log=f"{rt.whisper.model} on {rt.whisper.device}")
 
-    rec.run(names.WHISPER_LOAD, whisper, "NS-E202")
+    rec.run(names.WHISPER_LOAD, whisper, "NS-E411")
 
     # -- NVENC -----------------------------------------------------------------------------
     def nvenc() -> Out:

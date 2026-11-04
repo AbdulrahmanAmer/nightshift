@@ -73,6 +73,7 @@ export const codes: Record<string, CodeText> = {
   "NS-W115": { title: "The driver version could not be read", whatToDo: "Setup works and uses the CUDA 12.4 build. If a video fails on the graphics card later, install the newest driver from nvidia.com/drivers" },
   "NS-W114": { title: "The designed voice has to wait", whatToDo: "The voice design model is not part of this install, so the voice cannot be created yet. Get it in Settings, Models, then design the voice again" },
   "NS-E202": { title: "A Nightshift service did not start", whatToDo: "Press Retry once. If it stops again, send the diagnostics zip" },
+  "NS-E411": { title: "Speech recognition did not start", whatToDo: "Press Retry once. If it stops again, press Copy diagnostics and send the zip" },
   "NS-E203": { title: "A model took too long to start", whatToDo: "Press Retry once. If it stops again, send the diagnostics zip" },
   "NS-E204": { title: "The nightly task could not be set up", whatToDo: "Setup still works. Start videos from the dashboard and send the diagnostics zip" },
   "NS-E501": { title: "The Pexels key was not accepted", whatToDo: "Copy the key again from the website (no spaces) and paste it" },

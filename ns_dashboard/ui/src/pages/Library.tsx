@@ -269,7 +269,7 @@ function PendingVoiceCard({ onMade }: { onMade: () => void }) {
   return (
     <Card as="section" aria-labelledby="v-pending" className="flex flex-col gap-3 @min-[600px]:col-span-2">
       <CardHeader id="v-pending" title="Pending voice from setup" className="!mb-0" adornment={<Badge tone="accent">{p.mode === "clone" ? "Clone" : "Design"}</Badge>} />
-      <p className="text-ds-sm leading-ds-normal"><span className="font-semibold">{p.name}</span>{p.mode === "design" && p.description ? `: ${p.description}` : ": cloned from the recording you gave in setup"}. Setup could not make it yet, so videos for {p.channel || "your channel"} use another voice until it exists.</p>
+      <p className="text-ds-sm leading-ds-normal"><span className="font-semibold">{p.name}</span>{p.mode === "design" && p.description ? `: ${p.description}` : ": cloned from the recording you gave in setup"}. Setup could not make it yet, so a video for {p.channel || "your channel"} cannot be voiced until it exists: the job stops at the voice stage with NS-E311. Press Create it now first.</p>
       {fail && <FailNote f={fail} />}
       {busy && <div role="status" className="flex flex-col gap-2 text-ds-xs text-ds-muted"><span>{job?.message || "Waiting to start"}. This takes up to a minute while the model loads; you can follow it in the Queue</span><ProgressBar value={job?.progress ?? 0} label="Voice progress" /></div>}
       <div className="flex flex-wrap items-center gap-3">

@@ -91,6 +91,20 @@ export default function Settings() {
     catch (e: any) { if (e instanceof ApiError) { toast(e.message, "bad"); return; } /* no answer: the updater has already stopped this service, which is the update starting */ }
     follow(true);
   };
+  /** "From a file": the release's Nightshift-Update-<version>.zip and its .sha256, picked together. The updater refuses a zip without its checksum. */
+  const installFile = async (picked: FileList | null) => {
+    const files = Array.from(picked || []);
+    const zip = files.find((f) => /\.zip$/i.test(f.name)); const sum = files.find((f) => /\.sha256$/i.test(f.name));
+    if (!zip) { toast("Choose the file named Nightshift-Update-<version>.zip", "warn"); return; }
+    if (!/^(Nightshift-Update|nightshift-app)-\d+\.\d+\.\d+.*\.zip$/i.test(zip.name)) { toast("That is not the update file. It is named Nightshift-Update-<version>.zip (the Setup zip is for a first install)", "warn"); return; }
+    if (!sum) { toast(`Also choose ${zip.name}.sha256. Pick both files at once (hold Ctrl). The update is refused without it`, "warn"); return; }
+    const ok = await confirm({ title: "Install this update?", body: `${zip.name} replaces the program files. Nightshift stops the engine, installs and starts again. If anything fails it goes back to this version`, ok: "Install" });
+    if (!ok) return;
+    const fd = new FormData(); fd.append("file", zip); fd.append("checksum", sum);
+    try { await api.upload("/update/file", fd, () => {}); }
+    catch (e: any) { if (!/^Upload failed/.test(String(e?.message))) { toast(e.message, "bad"); return; } /* no answer: the updater has stopped this service, which is the update starting */ }
+    follow(true);
+  };
   const [report, setReport] = useState<{ path?: string; name?: string; download_url?: string } | null>(null);
   const diag = async () => { try { const r = await api.post("/diagnostics"); setReport(r); toast(`Report saved to ${r?.path || "your Desktop"}`, "ok"); } catch (e: any) { toast(e.message, "bad"); } };
   const [backup, setBackup] = useState<{ path?: string; name?: string; download_url?: string } | null>(null);
@@ -200,10 +214,10 @@ export default function Settings() {
                 : <Button variant="soft" leadingIcon="github" onClick={check} disabled={checking}>{checking ? "Checking" : "Check now"}</Button>}
             </SettingRow>
             {updateNote && <p role="alert" className="mx-1 mb-2 rounded-ds-md bg-ds-danger-soft px-3 py-2 text-ds-sm">{updateNote}</p>}
-            <SettingRow title="From a file" sub="The nightshift-app zip you were given, for a PC without internet">
+            <SettingRow title="From a file" sub="For a PC without internet: choose Nightshift-Update-<version>.zip and Nightshift-Update-<version>.zip.sha256 together (hold Ctrl). The update is refused without the checksum file">
               <label className="ds-focus inline-flex h-9 cursor-pointer items-center gap-2 rounded-ds-md bg-ds-accent-soft px-4 text-ds-sm font-semibold shadow-ds-control hover:bg-ds-soft-hover focus-within:shadow-ds-focus">
                 <Icon name="archive" size={15} />
-                Choose zip<input type="file" accept=".zip" className="sr-only" onChange={(e) => { if (e.target.files?.[0]) toast("Run the Update shortcut on your desktop and pick this zip. Installing from the browser is not available yet", "warn"); e.target.value = ""; }} />
+                Choose files<input type="file" multiple accept=".zip,.sha256" className="sr-only" onChange={(e) => { installFile(e.target.files); e.target.value = ""; }} />
               </label>
             </SettingRow>
             <SettingRow title="Diagnostics report" sub={report?.path ? <>Saved as <span className="font-mono break-all">{report.path}</span></> : "A zip on your Desktop with logs and settings, without keys, to send for help"}>

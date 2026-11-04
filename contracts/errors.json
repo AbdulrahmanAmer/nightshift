@@ -3,6 +3,7 @@
   "NS-E102": {"message": "No NVIDIA GPU detected.", "hint": "Nightshift needs an NVIDIA RTX GPU with 16 GB. Check that the GPU driver is installed (nvidia-smi must work)."},
   "NS-E103": {"message": "NVIDIA driver too old for this card (CUDA < 12.4; RTX 50-series cards need CUDA 13, driver 580 or newer).", "hint": "Install the latest Game Ready or Studio driver from nvidia.com/drivers, reboot, then re-run setup."},
   "NS-E104": {"message": "Not enough free disk space.", "hint": "Free at least 60 GB on the drive that holds NIGHTSHIFT_HOME (80 GB in two-model mode), or set NIGHTSHIFT_HOME to a bigger drive."},
+  "NS-E118": {"message": "GitHub did not hand out the update.", "hint": "GitHub answered with an error. A 403 or 429 means its hourly limit for update checks from this connection was reached: wait an hour and check again. A 404 means no release is published yet. A 5xx error is on GitHub's side: try again later."},
   "NS-E105": {"message": "A required download site is unreachable.", "hint": "Check the internet connection and any firewall/proxy. Needed: huggingface.co, github.com, download.pytorch.org, api.pexels.com, pixabay.com."},
   "NS-W106": {"message": "NIGHTSHIFT_HOME is on a hard disk, not an SSD.", "hint": "Model loading will be slow. Consider moving NIGHTSHIFT_HOME to an NVMe/SSD drive."},
   "NS-W107": {"message": "Wake timers are not fully enabled in the power plan.", "hint": "The nightly task cannot wake the PC. In Power Options > Change plan settings > Change advanced power settings > Sleep > Allow wake timers, choose Enable. 'Important wake timers only' is not enough for the 03:00 task."},
@@ -79,5 +80,6 @@
   "NS-E408": {"message": "Transcription failed.", "hint": "Check that the video has an audio track and that the whisper model is installed; run 'ns verify --quick'. For GPU errors see NS-E112."},
   "NS-E409": {"message": "Download failed.", "hint": "Check the link and that the video is yours or you have permission to use it; yt-dlp must be installed by setup."},
   "NS-E327": {"message": "A job stopped on an unexpected problem.", "hint": "Other jobs were not affected. Open the log named in the report (logs folder) or run 'ns doctor --bundle' and send the zip."},
+  "NS-E411": {"message": "Speech recognition could not start.", "hint": "The captions model (whisper) did not load. Check that it is installed (Settings > Models), run 'ns verify --quick', and see NS-W404 / NS-E112 for graphics card problems. Videos cannot get captions until it loads."},
   "NS-E410": {"message": "Confirm that you have the right to use this video.", "hint": "Tick the box that says the video is yours or licensed to you, then start the clip job again."}
 }

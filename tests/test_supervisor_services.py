@@ -32,6 +32,7 @@ def test_llama_command_matches_spec(tmp_path: Path) -> None:
         "-ngl", "99",
         "-c", "16384",
         "--alias", "code,story",
+        "-np", "1",
     ]  # fmt: skip
     assert d.gpu is True and d.port == 8080
     assert d.health_url == "http://127.0.0.1:8080/health"
@@ -51,8 +52,22 @@ def test_llama_optional_flags(tmp_path: Path) -> None:
 
 def test_llama_plain_has_no_optional_flags(tmp_path: Path) -> None:
     cmd = services.build_service(_rt(), _paths(tmp_path), "llama").cmd
-    for flag in ("-ctk", "-ctv", "--n-cpu-moe", "--spec-type", "-np", "-t"):
+    for flag in ("-ctk", "-ctv", "--n-cpu-moe", "--spec-type", "-t"):
         assert flag not in cmd
+
+
+def test_llama_always_runs_one_slot(tmp_path: Path) -> None:
+    """P2: without MTP the server must not split the context over its default slots."""
+    plain = services.build_service(_rt(), _paths(tmp_path), "llama").cmd
+    assert plain[plain.index("-np") + 1] == "1" and plain.count("-np") == 1
+    mtp = services.build_service(_rt(spec_type="draft-mtp"), _paths(tmp_path), "llama").cmd
+    assert mtp.count("-np") == 1 and mtp[mtp.index("-np") + 1] == "1"
+    rt = Runtime.model_validate(
+        {"llama": {"model_path": "C:/m/code.gguf", "story_model_path": "C:/m/story.gguf"}}
+    )
+    for alias in ("story", "code"):
+        cmd = services.build_service(rt, _paths(tmp_path), "llama", alias).cmd
+        assert cmd[cmd.index("-np") + 1] == "1"
 
 
 def test_two_model_mode_variants(tmp_path: Path) -> None:
@@ -76,6 +91,14 @@ def test_embed_is_cpu_and_unlocked(tmp_path: Path) -> None:
     assert d.cmd[d.cmd.index("-ngl") + 1] == "0"
     assert d.cmd[d.cmd.index("--port") + 1] == "8081"
     assert d.gpu is False
+
+
+def test_embed_cannot_see_the_graphics_card(tmp_path: Path) -> None:
+    """P1: the CUDA build of llama-server would otherwise open a CUDA context beside the story model."""
+    paths = _paths(tmp_path)
+    d = services.build_service(_rt(), paths, "embed")
+    assert d.env["CUDA_VISIBLE_DEVICES"] == "-1" and d.env["NIGHTSHIFT_HOME"] == str(paths.home)
+    assert "CUDA_VISIBLE_DEVICES" not in services.build_service(_rt(), paths, "llama").env
 
 
 def test_tts_and_dashboard(tmp_path: Path) -> None:

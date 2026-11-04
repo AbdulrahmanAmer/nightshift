@@ -386,6 +386,10 @@ def create_app(
     async def jobs_get(job_id: str) -> SafeJSONResponse:
         return ok(await run_in_threadpool(dash.jobs.get, job_id))
 
+    @app.post("/api/jobs/{job_id}/resume")
+    async def jobs_resume(job_id: str) -> SafeJSONResponse:
+        return ok(await run_in_threadpool(dash.jobs.create_resume, job_id), 201)
+
     @app.post("/api/jobs/{job_id}/cancel")
     async def jobs_cancel(job_id: str) -> SafeJSONResponse:
         return ok(await run_in_threadpool(dash.jobs.cancel, job_id))
@@ -599,6 +603,19 @@ def create_app(
     @app.get("/api/models/state")
     async def models_state() -> SafeJSONResponse:
         return ok(await run_in_threadpool(dash.library.models_state))
+
+    @app.post("/api/update/file")
+    async def update_file(request: Request) -> SafeJSONResponse:
+        form = await read_form(request)
+        upload = form.get("file")
+        side = form.get("checksum")
+        if upload is None or not getattr(upload, "filename", None):
+            raise ApiError(400, "no_file", "Choose the Nightshift-Update zip and its .sha256 file.")
+        side_fh = side.file if side is not None and getattr(side, "filename", None) else None
+        apply = dash.library.update_apply_file
+        result = await run_in_threadpool(apply, upload.filename, upload.file, side_fh)
+        await form.close()
+        return ok(result)
 
     @app.post("/api/update/apply")
     async def update_apply() -> SafeJSONResponse:
