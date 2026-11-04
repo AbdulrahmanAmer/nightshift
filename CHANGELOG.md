@@ -7,6 +7,30 @@ All notable changes to Nightshift are recorded here. The format follows
 
 ## [Unreleased]
 
+### Installer dev mode (`orchestrator/installer-dev-mode`)
+
+`INSTALL.cmd --dev` (or `NIGHTSHIFT_DEV_MODE=1`) runs the real installer end to end on a PC with no NVIDIA card and
+without downloading any model or PyTorch, so stage 1, the setup server and window, steps s01 to s10, the shortcuts, the
+first dashboard launch, the supervisor and a "Create it now" job can be exercised on a laptop. It is not `--simulate`:
+the steps run for real; only what a laptop cannot do is replaced. Read `docs/DEV_MODE.md` for what it proves and what it
+does not.
+
+- **Stage 1** (`-Dev`): the graphics card, driver and video memory rows are information rows, memory warns under 4 GB,
+  disk needs 10 GB; the profile is always `cpu-dev`; the hand-over has `dev_mode: true` and the setup server gets `--dev`.
+- **Setup window**: the plan lists the CPU build and the models as "(stub, dev)"; `state.devMode` shows
+  "DEV MODE: fake engines, no models" in the footer of every screen, and the Done screen lists stubs and fakes.
+- **Steps**: s02 downloads the CPU llama.cpp build, yt-dlp and the window files and skips cudart, OpenCode and qwentts.cpp;
+  s03 writes 4 KB stubs with the manifest names (`.dev-stub` marker, hash `dev-stub`, never accepted by a real install);
+  s04 installs the new `dev-install` extra (studio without faster-whisper, PyAV and CTranslate2; no cuBLAS/cuDNN, no
+  `tts` venv); s05 and s06 are skipped; s08 verifies against the fakes; s09 registers the night task disabled
+  (`ns schedule install --disabled`, `schedule.json` mode `disabled`). Installing for real over a dev install redoes the
+  later steps and replaces the stubs.
+- **Fake engines** (`runtime.json` `dev_mode`): the supervisor starts `ns_supervisor.devfake` (llama, embed) and
+  `ns_tts.server --engine fake`; `ns verify` passes against them (libx264 replaces NVENC, Whisper and VRAM are dev-mode
+  passes) and its report says `dev_mode`; studio and dashboard jobs run on `FAKEABLE` with a real FFmpeg render.
+- **Contracts** (CR-DEVMODE-1): `Runtime.dev_mode`, `InstallState.dev_mode`, `GateReport.dev_mode` and their schemas.
+  `ns tune` and `ns doctor` know the mode; the Settings page hides the flag.
+
 ### Assistant slice 1: make it fit (`feat/assistant-fit`)
 
 The Assistant overflowed the local model's 16,384-token context in long chats (about 9-10k tokens were used before any

@@ -16,6 +16,7 @@ from pathlib import Path
 
 from ns_common import __version__, ffmpeg
 from ns_common.config import load_install_state, load_runtime
+from ns_common.devmode import is_dev
 from ns_common.errors import NsError
 from ns_common.paths import Paths
 from ns_common.uv import find_uv
@@ -159,8 +160,11 @@ def diagnose(paths: Paths, client: SupervisorClient) -> list[tuple[str, bool, st
     up = client.is_up()
     where = client.base_url if up else "not running (opening the Dashboard starts it)"
     rows.append(("supervisor", up, where))
-    smi = procs.nvidia_smi_report()
-    rows.append(("nvidia-smi", smi is not None, "ok" if smi is not None else "no NVIDIA driver found"))
+    if is_dev(paths):       # docs/DEV_MODE.md: a dev install has no graphics card to ask
+        rows.append(("nvidia-smi", True, "not needed (dev mode)"))
+    else:
+        smi = procs.nvidia_smi_report()
+        rows.append(("nvidia-smi", smi is not None, "ok" if smi is not None else "no NVIDIA driver found"))
     have_ffmpeg = ffmpeg.available()
     rows.append(("ffmpeg", have_ffmpeg, "on PATH" if have_ffmpeg else "ffmpeg/ffprobe not found"))
     return rows

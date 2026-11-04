@@ -102,6 +102,11 @@
       ],
       "default": null,
       "title": "Completed At"
+    },
+    "dev_mode": {
+      "default": false,
+      "title": "Dev Mode",
+      "type": "boolean"
     }
   },
   "title": "InstallState",

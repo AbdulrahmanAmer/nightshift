@@ -257,7 +257,7 @@ export function baseState(over: Partial<SetupState> = {}): SetupState {
   const p = plan("balanced");
   return {
     schema: 1, rev: 1, version: "0.3.0", appPath: "D:\\NightShift", phase: "checks", run: "idle", uiStep: "welcome", resumed: false, prefilledFrom: null,
-    startedAt: null, updatedAt: iso(), host: "webview2", machine: m, checks: checkRows("D"), checkedAt: iso(-60), checking: false, blocking: false, plan: p,
+    startedAt: null, updatedAt: iso(), host: "webview2", devMode: false, machine: m, checks: checkRows("D"), checkedAt: iso(-60), checking: false, blocking: false, plan: p,
     answers: null, answersLocked: false, steps: steps("b01_tools", { running: false }), downloads: { items: downloadRows(p.groups), overall: overall(downloadRows(p.groups), p, null), source: "internet", paused: false },
     verify: null, failure: null, notices: [], result: null, log: [], ...over,
   };

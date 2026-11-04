@@ -13,6 +13,9 @@
     -NoUi       headless, even without an answers.json (same as NS_NONINTERACTIVE=1).
     -ProbeOnly  with -Out <file> [-HomePath <dir>]: write the hand-over JSON and exit 0, nothing else.
     -FakeProbe  (CI only, requires -DryRun or -ProbeOnly) JSON file that replaces the machine probes.
+    -Dev        a dev install (also INSTALL.cmd --dev, or NIGHTSHIFT_DEV_MODE=1; docs/DEV_MODE.md): the real
+                installer with stub models and fake engines, for a PC with no NVIDIA card. The graphics card,
+                driver and video memory rows become information rows and 10 GB of free disk is enough.
 #>
 [CmdletBinding()]
 param(
@@ -24,7 +27,8 @@ param(
     [switch]$NoUi,
     [switch]$ProbeOnly,
     [string]$Out = '',
-    [string]$HomePath = ''
+    [string]$HomePath = '',
+    [switch]$Dev
 )
 
 Set-StrictMode -Version Latest
@@ -41,6 +45,10 @@ $script:MinFreeGbHard = 40
 $script:MinFreeGbRecommended = 60
 $script:MinRamGb = 15
 $script:MinVramMb = 15000
+# a dev install (docs/DEV_MODE.md) writes stub models, so it needs far less
+$script:DevMinFreeGb = 10
+$script:DevMinRamGb = 4
+$script:DevBanner = 'DEV MODE: fake engines, no models'
 $script:NetworkHosts = @(
     'https://huggingface.co', 'https://github.com', 'https://download.pytorch.org',
     'https://api.pexels.com', 'https://pixabay.com', 'https://pypi.org', 'https://files.pythonhosted.org'
@@ -529,7 +537,9 @@ function New-Row {
 }
 
 function Get-PreflightRows {
-    param($Probe, [string]$NsHome, [bool]$AllowCpu)
+    # $DevMode (docs/DEV_MODE.md): the graphics card, driver and video memory are information rows, the memory
+    # row asks for 4 GB and the disk row for 10 GB; everything else is checked as usual.
+    param($Probe, [string]$NsHome, [bool]$AllowCpu, [bool]$DevMode = $false)
     $rows = New-Object System.Collections.Generic.List[object]
 
     # os
@@ -546,7 +556,12 @@ function Get-PreflightRows {
     $gpuMissing = -not $Probe.gpu_name
     $gpuFail = 'fail'
     if ($AllowCpu) { $gpuFail = 'warn' }
-    if ($gpuMissing) {
+    if ($DevMode) {
+        $gpuNote = 'no NVIDIA graphics card'
+        if (-not $gpuMissing) { $gpuNote = [string]$Probe.gpu_name }
+        $rows.Add((New-Row 'gpu' 'NVIDIA RTX GPU, 16 GB' 'ok' '' "$gpuNote (dev mode, not needed)"))
+    }
+    elseif ($gpuMissing) {
         $rows.Add((New-Row 'gpu' 'NVIDIA RTX GPU, 16 GB' $gpuFail 'NS-E102' 'nvidia-smi found no GPU'))
     }
     elseif ($Probe.vram_mb -le 0) {
@@ -574,7 +589,10 @@ function Get-PreflightRows {
     # before the 20 GB download, not at the smoke test afterwards.
     $min = New-Object System.Version -ArgumentList 12, 4
     $minBlackwell = New-Object System.Version -ArgumentList 13, 0
-    if ($gpuMissing -and $AllowCpu) {
+    if ($DevMode) {
+        $rows.Add((New-Row 'driver' $driverLabel 'ok' '' 'not checked (dev mode, not needed)'))
+    }
+    elseif ($gpuMissing -and $AllowCpu) {
         $rows.Add((New-Row 'driver' $driverLabel 'warn' '' 'skipped (cpu-dev profile)'))
     }
     elseif ($gpuMissing) {
@@ -596,7 +614,15 @@ function Get-PreflightRows {
     # ram
     $ramNote = 'Balanced and Best models available'
     if ($Probe.ram_gb -lt 31) { $ramNote = 'Small model tier only' }
-    if ($Probe.ram_gb -ge $script:MinRamGb) {
+    if ($DevMode) {
+        if ($Probe.ram_gb -ge $script:DevMinRamGb) {
+            $rows.Add((New-Row 'ram' 'Memory, 4 GB for dev mode' 'ok' '' "$($Probe.ram_gb) GB (dev mode needs $($script:DevMinRamGb) GB)"))
+        }
+        else {
+            $rows.Add((New-Row 'ram' 'Memory, 4 GB for dev mode' 'warn' '' "$($Probe.ram_gb) GB is below the $($script:DevMinRamGb) GB dev mode needs"))
+        }
+    }
+    elseif ($Probe.ram_gb -ge $script:MinRamGb) {
         $rows.Add((New-Row 'ram' 'Memory, 16 GB minimum' 'ok' '' "$($Probe.ram_gb) GB ($ramNote)"))
     }
     else {
@@ -607,21 +633,29 @@ function Get-PreflightRows {
     $letter = ''
     if ($NsHome.Length -ge 2 -and $NsHome[1] -eq ':') { $letter = $NsHome.Substring(0, 1).ToUpper() }
     $drive = @(@($Probe.drives) | Where-Object { ([string]$_.letter).ToUpper() -eq $letter }) | Select-Object -First 1
+    $diskLabel = 'Free disk space, 60 GB'
+    $diskHard = $script:MinFreeGbHard
+    $diskRecommended = $script:MinFreeGbRecommended
+    if ($DevMode) {
+        $diskLabel = 'Free disk space, 10 GB for dev mode'
+        $diskHard = $script:DevMinFreeGb
+        $diskRecommended = $script:DevMinFreeGb
+    }
     if ($null -eq $drive) {
-        $rows.Add((New-Row 'disk' 'Free disk space, 60 GB' 'fail' 'NS-E104' "drive of $NsHome not found"))
+        $rows.Add((New-Row 'disk' $diskLabel 'fail' 'NS-E104' "drive of $NsHome not found"))
         $rows.Add((New-Row 'disktype' 'Disk type, SSD' 'ok' '' 'unknown'))
     }
     else {
         $free = [double]$drive.free_gb
         $dtype = [string](Get-Prop $drive 'type' 'Unknown')
-        if ($free -lt $script:MinFreeGbHard) {
-            $rows.Add((New-Row 'disk' 'Free disk space, 60 GB' 'fail' 'NS-E104' "$free GB free on ${letter}:"))
+        if ($free -lt $diskHard) {
+            $rows.Add((New-Row 'disk' $diskLabel 'fail' 'NS-E104' "$free GB free on ${letter}:"))
         }
-        elseif ($free -lt $script:MinFreeGbRecommended) {
-            $rows.Add((New-Row 'disk' 'Free disk space, 60 GB' 'warn' '' "$free GB free on ${letter}: (60 GB recommended)"))
+        elseif ($free -lt $diskRecommended) {
+            $rows.Add((New-Row 'disk' $diskLabel 'warn' '' "$free GB free on ${letter}: (60 GB recommended)"))
         }
         else {
-            $rows.Add((New-Row 'disk' 'Free disk space, 60 GB' 'ok' '' "$free GB free on ${letter}:"))
+            $rows.Add((New-Row 'disk' $diskLabel 'ok' '' "$free GB free on ${letter}:"))
         }
         if ($dtype -eq 'HDD') {
             $rows.Add((New-Row 'disktype' 'Disk type, SSD' 'warn' 'NS-W106' "${letter}: is a hard disk"))
@@ -983,10 +1017,11 @@ function Invoke-Native {
 function Get-ServerArgs {
     # Arguments of the setup server as plain strings. `& $py @args` quotes the ones with spaces itself; literal
     # quotes added here made Windows PowerShell 5.1 re-quote them, which broke paths like C:\Users\John Doe\...
-    param([string]$App, [string]$PreflightFile, [string]$AnswersPath = '', [bool]$Headless = $false)
+    param([string]$App, [string]$PreflightFile, [string]$AnswersPath = '', [bool]$Headless = $false, [bool]$DevMode = $false)
     $list = @('-X', 'utf8', '-m', 'installer.stage2.web', '--app-path', $App, '--preflight', $PreflightFile)
     if ($AnswersPath) { $list += @('--answers', $AnswersPath) }
     if ($Headless) { $list += '--headless' }
+    if ($DevMode) { $list += '--dev' }
     return [string[]]$list
 }
 
@@ -1004,7 +1039,7 @@ function ConvertTo-ArgumentString {
 }
 
 function Get-HandOver {
-    param($Probe, $Rows, [string]$App, [string]$NsHome, [string]$ProfileName, [string]$LlamaPair, [string]$CudaString, [string]$CudaSource = '')
+    param($Probe, $Rows, [string]$App, [string]$NsHome, [string]$ProfileName, [string]$LlamaPair, [string]$CudaString, [string]$CudaSource = '', [bool]$DevMode = $false)
     return [ordered]@{
         schema      = 1
         created     = (Get-Date).ToString('s')
@@ -1014,6 +1049,7 @@ function Get-HandOver {
         llama_pair  = $LlamaPair
         cuda        = $CudaString
         cuda_source = $CudaSource
+        dev_mode    = $DevMode
         ram_gb      = $Probe.ram_gb
         is_admin    = $Probe.is_admin
         os_caption  = $Probe.os_caption
@@ -1067,6 +1103,10 @@ $answersObj = $null
 if ($answersPath) { $answersObj = Read-AnswersFile -Path $answersPath }
 $allowCpu = [bool](Get-Prop $answersObj 'allow_cpu' $false)
 
+# a dev install: -Dev, INSTALL.cmd --dev, or NIGHTSHIFT_DEV_MODE=1 (docs/DEV_MODE.md)
+$script:DevMode = ([bool]$Dev) -or ([string]$env:NIGHTSHIFT_DEV_MODE -match '^(1|true|yes)$')
+if ($script:DevMode) { $env:NIGHTSHIFT_DEV_MODE = '1' }
+
 # headless: answers.json without -Ui, -NoUi, or NS_NONINTERACTIVE=1 (the unattended path CI and the operator use)
 $script:Headless = (($answersPath -and -not $Ui) -or [bool]$NoUi -or ($env:NS_NONINTERACTIVE -eq '1'))
 $showSplash = (-not $script:Headless) -and (-not $ProbeOnly)
@@ -1083,6 +1123,7 @@ if ($showSplash) {
 elseif (-not $ProbeOnly) {
     Write-Host ''
     Write-Host 'Nightshift setup - stage 1' -ForegroundColor Cyan
+    if ($script:DevMode) { Write-Host $script:DevBanner -ForegroundColor Yellow }
     if ($script:IsDry) { Write-Host 'Dry run: nothing will be changed on this PC.' }
     if ($answersPath) { Write-Host "Using answers from $answersPath (unattended mode)." }
 }
@@ -1092,12 +1133,13 @@ if ($FakeProbe) { $probe = Get-FakeProbe -Path $FakeProbe } else { $probe = Get-
 $NsHome = Resolve-NsHome -Drives @($probe.drives) -AnswersObj $answersObj -Forced $HomePath -AppFolder $App
 if ($script:IsDry -and -not $ProbeOnly) { Show-Action "use NIGHTSHIFT_HOME = $NsHome" }
 
-$rows = Get-PreflightRows -Probe $probe -NsHome $NsHome -AllowCpu $allowCpu
+$rows = Get-PreflightRows -Probe $probe -NsHome $NsHome -AllowCpu $allowCpu -DevMode $script:DevMode
 $cudaInfo = Resolve-CudaVersion -Probe $probe
 $cuda = $cudaInfo.version
 $llamaPair = Get-LlamaPair -Cuda $cuda -GpuName ([string]$probe.gpu_name)
 $profileName = 'gpu'
-if (-not $probe.gpu_name) { $profileName = 'cpu-dev' }
+if ((-not $probe.gpu_name) -or $script:DevMode) { $profileName = 'cpu-dev' }
+if ($script:DevMode) { $llamaPair = '' }
 # a GPU whose driver version could not be read gets the CUDA 12.4 build (NS-W115), not a refusal
 # (an RTX 50-series card only runs the CUDA 13 build: it gets that pair, as in s02 choose_pair, and the
 # setup window lists those files)
@@ -1106,7 +1148,7 @@ if ($null -eq $cuda -and $profileName -eq 'gpu') {
 }
 $cudaString = ''
 if ($null -ne $cuda) { $cudaString = [string]$cuda }
-$handOver = Get-HandOver -Probe $probe -Rows $rows -App $App -NsHome $NsHome -ProfileName $profileName -LlamaPair $llamaPair -CudaString $cudaString -CudaSource $cudaInfo.source
+$handOver = Get-HandOver -Probe $probe -Rows $rows -App $App -NsHome $NsHome -ProfileName $profileName -LlamaPair $llamaPair -CudaString $cudaString -CudaSource $cudaInfo.source -DevMode $script:DevMode
 
 if ($ProbeOnly) {
     $outDir = Split-Path -Parent $Out
@@ -1123,7 +1165,10 @@ if ($showSplash) {
         Stop-Setup -Code 'NS-E101' -Detail 'This PC cannot run Nightshift. Tell the developer.' -ExitCode 10
     }
     $ramText = '{0:0.#} GB memory' -f ([double]$probe.ram_gb)
-    if ($probe.gpu_name) {
+    if ($script:DevMode) {
+        Set-Status -Index 0 -Tag 'ok' -Text ("{0}, {1}, {2}" -f $probe.os_caption, $ramText, $script:DevBanner)
+    }
+    elseif ($probe.gpu_name) {
         $gpuGb = [int][math]::Round(([double]$probe.vram_mb) / 1024)
         Set-Status -Index 0 -Tag 'ok' -Text ("{0}, {1} ({2} GB), {3}" -f $probe.os_caption, $probe.gpu_name, $gpuGb, $ramText)
     }
@@ -1197,8 +1242,8 @@ if (-not [bool]$probe.vc_runtime) {
     if (Install-VcRuntime -Manifest $Manifest) {
         $probe.vc_runtime = $true
         $probe.tools.vcruntime = $true
-        $rows = Get-PreflightRows -Probe $probe -NsHome $NsHome -AllowCpu $allowCpu
-        $handOver = Get-HandOver -Probe $probe -Rows $rows -App $App -NsHome $NsHome -ProfileName $profileName -LlamaPair $llamaPair -CudaString $cudaString -CudaSource $cudaInfo.source
+        $rows = Get-PreflightRows -Probe $probe -NsHome $NsHome -AllowCpu $allowCpu -DevMode $script:DevMode
+        $handOver = Get-HandOver -Probe $probe -Rows $rows -App $App -NsHome $NsHome -ProfileName $profileName -LlamaPair $llamaPair -CudaString $cudaString -CudaSource $cudaInfo.source -DevMode $script:DevMode
     }
 }
 
@@ -1214,7 +1259,7 @@ else {
 }
 
 # the setup server
-$serverArgs = Get-ServerArgs -App $App -PreflightFile $preflightFile -AnswersPath $answersPath -Headless ([bool]$script:Headless)
+$serverArgs = Get-ServerArgs -App $App -PreflightFile $preflightFile -AnswersPath $answersPath -Headless ([bool]$script:Headless) -DevMode ([bool]$script:DevMode)
 if ($script:IsDry) {
     Show-Action "start setup server: $py $($serverArgs -join ' ')"
     Write-Host 'Dry run finished. Nothing was changed.'

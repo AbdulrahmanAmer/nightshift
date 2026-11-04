@@ -9,11 +9,16 @@ from pathlib import Path
 
 from installer.stage2.base import Step
 from installer.stage2.context import StepContext
+from installer.stage2.devmode import BANNER
 from installer.stage2.errors import make_error
 from installer.stage2.winenv import desktop_dir
 
 NEXT_STEPS = (
     "Next: open 'Nightshift Dashboard' on your Desktop and press Run now to make your first video."
+)
+DEV_NEXT_STEPS = (
+    "Dev mode: open 'Nightshift Dashboard' and press Create it now. The job runs every stage on fake engines "
+    "and renders a real video into the outbox. Nothing is scheduled."
 )
 
 
@@ -56,9 +61,13 @@ class S10Summary(Step):
             ],
         )
         schedule = ctx.flag("schedule")
-        if schedule == "installed":
+        if ctx.dev_mode:
+            ui.say(f"{BANNER}.", "yellow")
+        if schedule == "installed" and ctx.flag("schedule_mode") == "disabled":
+            ui.say(f"Nightly task: registered for {ans.run_time} but DISABLED (dev mode); it never runs.")
+        elif schedule == "installed":
             ui.say(f"Nightly run: every night at {ans.run_time} (the PC wakes itself).")
-        ui.say(NEXT_STEPS, "bold green")
+        ui.say(DEV_NEXT_STEPS if ctx.dev_mode else NEXT_STEPS, "bold green")
 
         res = ctx.run_tool("ns", ["doctor", "--bundle"], timeout=900)
         folder = ctx.desktop_override or desktop_dir(ctx.runner)

@@ -30,13 +30,14 @@ import time
 import zipfile
 from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Literal, Protocol
 from urllib.parse import urlsplit
 
 import httpx
 
+from installer.stage2.devmode import STUB_BYTES
 from installer.stage2.errors import make_error
 from ns_common.avblock import is_blocked_error
 from ns_common.errors import NsError
@@ -79,6 +80,8 @@ class DownloadItem:
     optional: bool = False
     # kind="nupkg": (file name written into ``extract_to``, candidate archive paths in preference order).
     members: tuple[tuple[str, tuple[str, ...]], ...] = ()
+    # A dev install (docs/DEV_MODE.md) writes a small placeholder file instead of fetching ``url``.
+    stub: bool = False
 
 
 @dataclass
@@ -789,8 +792,13 @@ def plan_models(
     *,
     include_voicedesign: bool = False,
     custom: LlmCustom | None = None,
+    dev: bool = False,
 ) -> list[DownloadItem]:
-    """Model files for s03: the LLM (the tier's, or the custom GGUF), embed, TTS GGUFs, whisper, YuNet."""
+    """Model files for s03: the LLM (the tier's, or the custom GGUF), embed, TTS GGUFs, whisper, YuNet.
+
+    ``dev`` (docs/DEV_MODE.md): every model becomes a stub of a few KB with no hash to check, the optional
+    whisper side files are left out, and YuNet (a 230 KB face finder the Clipper reads) is the real file.
+    """
     paths = Paths(Path(home))
     pm = manifest.profiles[profile]
     llm = pm.llm
@@ -830,6 +838,11 @@ def plan_models(
                 sha256=yunet.sha256,
             )
         )
+    if dev:
+        items = [
+            i if i.name == "yunet" else replace(i, sha256=None, size=STUB_BYTES, stub=True)
+            for i in items if not i.optional
+        ]
     return items
 
 
@@ -843,10 +856,11 @@ def plan_from_manifest(
     llama_pair: str | None = None,
     include_voicedesign: bool = False,
     custom: LlmCustom | None = None,
+    dev: bool = False,
 ) -> list[DownloadItem]:
     """Everything s02 and s03 download for ``profile`` and LLM ``tier`` (spec 21.2, 21.3)."""
     return plan_bins(manifest, profile, home, include_code=include_code, llama_pair=llama_pair) + plan_models(
-        manifest, profile, tier, home, include_voicedesign=include_voicedesign, custom=custom
+        manifest, profile, tier, home, include_voicedesign=include_voicedesign, custom=custom, dev=dev
     )
 
 

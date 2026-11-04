@@ -24,6 +24,7 @@ from installer.stage2.answers import (
 )
 from installer.stage2.base import Step
 from installer.stage2.context import StepContext
+from installer.stage2.devmode import MIN_FREE_GB
 from installer.stage2.downloader import human_bytes
 from installer.stage2.errors import make_error
 from installer.stage2.secrets import KEY_NAMES, PEXELS_KEY, PIXABAY_KEY, any_key_stored
@@ -135,12 +136,12 @@ class S01Questions(Step):
             ans = build_answers(load_raw(f))
         except AnswersError:
             return False
-        ctx.answers = ans
+        ctx.answers = ctx.constrain(ans)
         return True
 
     # ---- home ----
     def _pick_home(self, ctx: StepContext, tier: str, custom_bytes: int | None = None) -> Path:
-        need = required_free_gb(tier, custom_bytes)
+        need = MIN_FREE_GB if ctx.dev_mode else required_free_gb(tier, custom_bytes)
         provided = ctx.raw_answers.get("home_path")
         while True:
             if provided:
@@ -242,7 +243,7 @@ class S01Questions(Step):
         merged: dict[str, Any] = {k: v for k, v in raw.items() if k not in KEY_NAMES}
 
         ram = float((ctx.preflight or {}).get("ram_gb") or 32)
-        custom = raw.get("llm_custom") or None
+        custom = None if ctx.dev_mode else raw.get("llm_custom") or None      # a dev install stubs Small only
         size = custom.get("size") if isinstance(custom, dict) else None
         custom_bytes = size if isinstance(size, int) and size > 0 else None
         # Balanced is the recommended default; a PC under 32 GB of RAM starts on Small (the fallback).
@@ -254,6 +255,8 @@ class S01Questions(Step):
                 ctx.ui.say(f"This PC has {ram:.0f} GB of memory, so Small is selected. Balanced needs 32 GB.")
             asked = self._asked(ctx, "llm_tier", "LLM size: small, balanced or best?", default_tier)
             tier = str(asked or default_tier)
+        if ctx.dev_mode:
+            tier = "small"          # stubs of the Small model; the RAM rule below does not apply
         if tier not in ("small", "balanced", "best"):
             raise AnswersError(f"llm_tier must be small, balanced or best, not {tier!r}")
         if tier != "small" and ram < 31:
@@ -323,6 +326,7 @@ class S01Questions(Step):
         ans = build_answers({**merged, PEXELS_KEY: None, PIXABAY_KEY: None})
 
         self._keys(ctx)
+        ans = ctx.constrain(ans)
         ctx.answers = ans
         if ans.voice.mode == "design" and ans.include_voicedesign is False:
             ctx.warn("NS-W114", ans.voice.name or ans.voice.description or "")

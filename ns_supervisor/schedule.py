@@ -10,6 +10,7 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+from ns_common.devmode import is_dev
 from ns_common.paths import Paths
 from ns_supervisor import pwsh
 from ns_supervisor.schedule_cfg import (
@@ -38,7 +39,9 @@ def studio_exe(paths: Paths) -> str:
     return str(exe) if exe.exists() else "studio"
 
 
-def build_install_script(paths: Paths, run_time: str, app_path: Path, task_name: str = TASK_NAME) -> str:
+def build_install_script(
+    paths: Paths, run_time: str, app_path: Path, task_name: str = TASK_NAME, *, disabled: bool = False
+) -> str:
     """PowerShell that registers the daily task. NIGHTSHIFT_HOME is set inside the action because an
     S4U session does not reliably carry the user's environment.
 
@@ -46,6 +49,9 @@ def build_install_script(paths: Paths, run_time: str, app_path: Path, task_name:
     non-elevated shell is often refused with "Access is denied"; the script then registers the same task with
     an interactive logon ("run only when the user is logged on"; WakeToRun still wakes the PC). The last
     output line is `registered:s4u` or `registered:interactive`.
+
+    `disabled` (a dev install, docs/DEV_MODE.md) registers the same task and then disables it, so it never
+    fires on the development PC; `ns schedule show` and the uninstall still find it by name.
     """
     arguments = f'/d /s /c "set "NIGHTSHIFT_HOME={paths.home}" && "{studio_exe(paths)}" run --daily"'
     register = (
@@ -72,6 +78,7 @@ def build_install_script(paths: Paths, run_time: str, app_path: Path, task_name:
             "-RunLevel Limited",
             f"  {register}",
             "}",
+            *([f"Disable-ScheduledTask -TaskName {_q(task_name)} | Out-Null"] if disabled else []),
             "Write-Output ('registered:' + $mode)",
         ]
     )
@@ -125,17 +132,27 @@ INTERACTIVE_MARK = "only while you are logged on"
 INTERACTIVE_NOTE = f"runs {INTERACTIVE_MARK} (Windows refused the unattended mode)"
 
 
-def install(paths: Paths, run_time: str | None, app_path: Path) -> str:
+DISABLED_NOTE = "DISABLED: dev mode, it never runs by itself"
+
+
+def install(paths: Paths, run_time: str | None, app_path: Path, *, disabled: bool = False) -> str:
     """Register the task at `run_time` (default: the saved time, else 03:00) and remember it.
 
     The message says when the task could only be registered for "run only when the user is logged on".
+    With `disabled` the task is registered and switched off, and `schedule.json` says so (mode `disabled`: no
+    run is coming, so the supervisor and the dashboard do not expect one). A dev install (`runtime.json` says
+    `dev_mode`) is always registered disabled, also when the dashboard or `ns update` re-registers it.
     """
     when = run_time or read_run_time(paths) or DEFAULT_TIME
     if not valid_time(when):
         raise ScheduleError(f"time must be HH:MM (24 h), got {when!r}")
-    out = _run(build_install_script(paths, when, app_path))
+    disabled = disabled or is_dev(paths)        # a dev install never gets an enabled task, whoever asks
+    out = _run(build_install_script(paths, when, app_path, disabled=disabled))
     interactive = "registered:interactive" in out
-    write_run_time(paths, when, "interactive_only" if interactive else "registered")
+    mode = "disabled" if disabled else "interactive_only" if interactive else "registered"
+    write_run_time(paths, when, mode)
+    if disabled:
+        return f"registered ({TASK_NAME} daily at {when}; {DISABLED_NOTE})"
     note = f"; {INTERACTIVE_NOTE}" if interactive else ""
     return f"registered ({TASK_NAME} daily at {when}{note})"
 

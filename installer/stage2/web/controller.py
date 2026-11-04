@@ -22,6 +22,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from installer.stage2 import devmode
 from installer.stage2.web import (
     answers_view,
     appcopy,
@@ -119,6 +120,7 @@ class Config:
     python: str = field(default_factory=lambda: sys.executable)
     halt_after: str | None = None
     copy_app: bool | None = None        # copy the program to <home>\app; None: yes, except in --simulate
+    dev_mode: bool = False              # --dev / NIGHTSHIFT_DEV_MODE=1: a dev install (docs/DEV_MODE.md)
 
 
 def default_free_gb(path: str) -> float:
@@ -334,7 +336,13 @@ class SetupController:
         self.manifest = plan.load_manifest(cfg.app_path)
         self.version = self._read_version()
         self.pf = self._load_preflight()
+        self.dev = bool(cfg.dev_mode or devmode.env_enabled() or self.pf.get("dev_mode"))
+        if self.dev:
+            self.pf = preflight.apply_dev(self.pf)
         self.home = self._initial_home()
+        if devmode.reset_for_mode_switch(self.home, self.dev):
+            self.fx.console("This folder holds an install of the other kind (real or dev): its later steps "
+                            "run again.", "info")
         self.store = SetupStore(self._initial_state(), self._finalize)
 
     # ---- the program folder ----
@@ -401,7 +409,7 @@ class SetupController:
                 raw = answers_view.read_answers(saved_answers)
             except (OSError, ValueError):
                 raw = prefill
-        default_tier = plan.recommended_tier(float(self.pf.get("ram_gb") or 0))
+        default_tier = "small" if self.dev else plan.recommended_tier(float(self.pf.get("ram_gb") or 0))
         view = None
         if raw:
             view = answers_view.answers_to_view(
@@ -418,7 +426,7 @@ class SetupController:
             cuda=pf.get("cuda"),
             llama_pair=pf.get("llama_pair") or None,
             ram_gb=float(pf.get("ram_gb") or 0), vram_mb=gpu.get("vram_mb"),
-            custom=(view or {}).get("llmCustom"),
+            custom=(view or {}).get("llmCustom"), dev=self.dev,
         )
         steps = []
         for sid in STEP_ORDER:
@@ -434,7 +442,7 @@ class SetupController:
             "phase": "checks", "run": "idle", "uiStep": "welcome", "resumed": bool(done_before),
             "prefilledFrom": str(self.cfg.answers) if self.cfg.answers and prefill is not None else None,
             "startedAt": saved.get("started_at") if done_before else None, "updatedAt": now_iso(),
-            "host": "none",
+            "host": "none", "devMode": self.dev,
             "machine": preflight.machine_summary(pf, str(self.home), tier),
             "checks": preflight.check_rows(pf, str(self.home)), "checkedAt": hhmm(), "checking": False,
             "blocking": False, "plan": the_plan, "answers": view, "answersLocked": locked, "steps": steps,
@@ -553,7 +561,7 @@ class SetupController:
             ram_gb=float(state["machine"]["ramGb"]), tiers=state["plan"]["tiers"], drive_letters=drives,
             free_gb=lambda p: next((d["freeGb"] for d in state["machine"]["drives"]
                                     if d["letter"] == p[:1].upper()), None),
-            keys_stored=self._keys_stored, layout_problem=self._layout_problem,
+            keys_stored=self._keys_stored, layout_problem=self._layout_problem, dev=self.dev,
         )
 
     def submit_answers(self, draft: dict[str, Any]) -> dict[str, Any]:
@@ -587,7 +595,7 @@ class SetupController:
             cuda=pf.get("cuda"), ram_gb=float(pf.get("ram_gb") or 0),
             vram_mb=(pf.get("gpu") or {}).get("vram_mb"),
             llama_pair=pf.get("llama_pair") or None,
-            custom=raw.get("llm_custom"),
+            custom=raw.get("llm_custom"), dev=self.dev,
         )
 
         def fn(s: dict[str, Any]) -> None:
@@ -607,7 +615,7 @@ class SetupController:
         except (OSError, ValueError) as e:
             return {"ok": False, "errors": [{"field": "homePath", "code": None,
                                              "message": f"That answers file could not be read: {e}"}]}
-        default_tier = plan.recommended_tier(float(self.pf.get("ram_gb") or 0))
+        default_tier = "small" if self.dev else plan.recommended_tier(float(self.pf.get("ram_gb") or 0))
         view = answers_view.answers_to_view(raw, default_tier=default_tier)
         draft = {k: v for k, v in view.items() if k not in ("pexelsKeySet", "pixabayKeySet")}
         keys = answers_view.keys_in(raw)
@@ -646,7 +654,7 @@ class SetupController:
             return preflight.disk_check(path, tier, state["machine"]["drives"], self.fx.free_gb, models=found)
         return preflight.disk_check(path, tier, state["machine"]["drives"], self.fx.free_gb,
                                     drive_type_fn=self.fx.drive_type, layout_fn=self._layout_problem,
-                                    existing_fn=self._existing_install_note)
+                                    existing_fn=self._existing_install_note, dev=self.dev)
 
     def pick_folder(self, body: dict[str, Any]) -> dict[str, Any]:
         """``POST /api/pick-folder``: the Windows folder dialog, then the same check as typing the path.
@@ -816,6 +824,8 @@ class SetupController:
             self.log("warn", "The PC check could not run. Press Check again")
             self.store.update(lambda s: s.__setitem__("checking", False))
             return
+        if self.dev:
+            new = preflight.apply_dev(new)
         self.pf = new
 
         def fn(s: dict[str, Any]) -> None:
@@ -1113,6 +1123,7 @@ class SetupController:
         argv = wizard_argv(
             python, app_path=self.run_app_path, home=self.home, answers=self.home / "config" / "answers.json",
             preflight=out, bridge=True, simulate=self.cfg.simulate, halt_after=self.cfg.halt_after,
+            dev=self.dev,
         )
         self._finished.clear()
         self._sub.clear()
@@ -1531,6 +1542,14 @@ class SetupController:
             {"label": "Night run", "detail": answers.get("runTime", "03:00")},
             {"label": "Everything else", "detail": str(self.home)},
         ]
+        if self.dev:        # docs/DEV_MODE.md: stubs and fakes, no Nightshift Code, a disabled night task
+            installed = [
+                {"label": "Story, voice and caption models", "detail": "stubs (dev mode), no download"},
+                {"label": "Engines", "detail": "fake (dev mode)"},
+                {"label": "Nightshift Code", "detail": "not installed (dev mode)"},
+                {"label": "Night run", "detail": "off (dev mode)"},
+                {"label": "Everything else", "detail": str(self.home)},
+            ]
         warnings = list(state["notices"])
         if state["machine"].get("isAdmin"):
             user = os.environ.get("USERNAME", "this user")
@@ -1552,7 +1571,8 @@ class SetupController:
         return {
             "home": str(self.home), "outbox": str(self.home / "outbox"), "appPath": str(self.run_app_path),
             "installed": installed, "shortcuts": list(SHORTCUTS), "runTime": answers.get("runTime", "03:00"),
-            "scheduled": flags.get("schedule") == "installed",
+            "scheduled": flags.get("schedule") == "installed" and flags.get("schedule_mode") != "disabled",
+            "devMode": self.dev,
             "diagnosticsZip": self._bundle or flags.get("bundle"),
             "durationS": duration, "warnings": warnings,
         }
@@ -1599,6 +1619,8 @@ class SetupController:
                      "--home", str(self.home)]
         if self.cfg.halt_after:
             argv += ["--halt-after", self.cfg.halt_after]
+        if self.dev:
+            argv.append("--dev")
         env = wizard_env(app)
         env[bootstrap.HOME_VAR] = str(self.home)
         return subprocess.run(argv, cwd=str(app), env=env, check=False).returncode

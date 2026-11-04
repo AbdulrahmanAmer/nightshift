@@ -51,6 +51,11 @@ def build_runtime(ctx: StepContext) -> Runtime:
         rt.whisper = WhisperCfg(model=wdir, device="cpu", compute_type="int8")
     if ctx.flag("tts_fallback", False):
         rt.tts.engine = "reference"
+    if ctx.dev_mode:
+        # docs/DEV_MODE.md: fake engines. The voice service runs in the supervisor venv (there is no PyTorch
+        # venv), and every consumer of runtime.json reads dev_mode to start the fakes.
+        rt.dev_mode = True
+        rt.tts.engine = "qwentts"
     return rt
 
 

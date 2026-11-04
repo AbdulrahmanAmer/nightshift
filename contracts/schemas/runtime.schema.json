@@ -353,6 +353,11 @@
       "default": 8099,
       "title": "Supervisor Port",
       "type": "integer"
+    },
+    "dev_mode": {
+      "default": false,
+      "title": "Dev Mode",
+      "type": "boolean"
     }
   },
   "title": "Runtime",

@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
 from ns_common import __version__
+from ns_common.devmode import is_dev
 from ns_common.errors import NsError
 from ns_common.logging import NsLogger
 from ns_common.paths import Paths
@@ -418,8 +419,9 @@ def resync_venvs(
     free_up = free or free_entry_points
     exe = uv if uv is not None else find_uv(paths)
     done: list[str] = []
+    dev = is_dev(paths)         # a dev install re-syncs the dev extras (no speech or GPU wheels)
     for venv in UPDATE_VENVS:
-        extras, no_deps = extras_suffix(venv), venv in NO_DEPS
+        extras, no_deps = extras_suffix(venv, dev=dev), venv in NO_DEPS
         py = paths.venvs / venv / "Scripts" / "python.exe"
         if not py.exists():
             continue

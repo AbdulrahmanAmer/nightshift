@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import Any
 
 #: Top-level keys the page does not edit as engine flags.
-HIDDEN = ("profile", "supervisor_port")
+HIDDEN = ("profile", "supervisor_port", "dev_mode")
 
 
 def flatten(data: dict[str, Any], prefix: str = "") -> dict[str, Any]:

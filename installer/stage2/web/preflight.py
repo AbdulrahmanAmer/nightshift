@@ -15,6 +15,7 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
+from installer.stage2.devmode import MIN_FREE_GB, MIN_RAM_GB, PROFILE
 from installer.stage2.web.pathcheck import home_problem
 from installer.stage2.web.plan import pinned, required_free_gb
 
@@ -53,6 +54,44 @@ def load(path: Path | str) -> dict[str, Any] | None:
     except (OSError, ValueError):
         return None
     return data if isinstance(data, dict) else None
+
+
+# ---------------------------------------------------------------------------------------------------------
+# dev mode (docs/DEV_MODE.md)
+# ---------------------------------------------------------------------------------------------------------
+DEV_NOTE = "dev mode, not needed"
+
+
+def apply_dev(pf: dict[str, Any]) -> dict[str, Any]:
+    """The hand-over JSON of a dev install: profile ``cpu-dev``, no llama.cpp pair, and the checks that dev
+    mode does not need turned into information rows.
+
+    The graphics card and driver rows are ``ok`` with a value that says what was found and that dev mode does
+    not need it; the memory row only warns under ``MIN_RAM_GB``; the disk row fails under ``MIN_FREE_GB``.
+    Idempotent, so a hand-over that stage 1 already wrote for ``-Dev`` comes out the same.
+    """
+    out = {**pf, "dev_mode": True, "profile": PROFILE, "llama_pair": ""}
+    gpu = pf.get("gpu") or {}
+    found = f"{gpu['name']}" if gpu.get("name") else "no NVIDIA graphics card"
+    ram = float(pf.get("ram_gb") or 0)
+    rows: list[dict[str, Any]] = []
+    for c in pf.get("checks") or []:
+        c = dict(c)
+        if c.get("id") == "gpu":
+            c.update(status="ok", code="", hint="", value=f"{found} ({DEV_NOTE})")
+        elif c.get("id") == "driver":
+            c.update(status="ok", code="", hint="", value=f"not checked ({DEV_NOTE})")
+        elif c.get("id") == "ram":
+            if ram >= MIN_RAM_GB:
+                c.update(status="ok", code="", hint="", value=f"{ram:g} GB (dev mode needs {MIN_RAM_GB} GB)")
+            else:
+                c.update(status="warn", value=f"{ram:g} GB is below the {MIN_RAM_GB} GB dev mode needs")
+        rows.append(c)
+    home = str(pf.get("home") or "")
+    if home and pf.get("drives"):       # the disk rows used the real thresholds (40 and 60 GB)
+        rows = [c for c in rows if c.get("id") not in ("disk", "disktype")] + raw_disk_rows(out, home)
+    out["checks"] = rows
+    return out
 
 
 # ---------------------------------------------------------------------------------------------------------
@@ -126,7 +165,14 @@ def raw_disk_rows(pf: dict[str, Any], home: str) -> list[dict[str, Any]]:
         return [{**base, "status": "fail", "code": "NS-E104", "value": f"drive of {home} not found"},
                 {"id": "disktype", "label": "Disk type", "status": "ok", "code": "", "value": "unknown"}]
     free = drive["freeGb"]
-    if free < 40:
+    if pf.get("dev_mode"):
+        base = {**base, "label": "Free disk space"}
+        if free < MIN_FREE_GB:
+            disk = {**base, "status": "fail", "code": "NS-E104",
+                    "value": f"{free:g} GB free on {letter}: (dev mode needs {MIN_FREE_GB} GB)"}
+        else:
+            disk = {**base, "status": "ok", "value": f"{free:g} GB free on {letter}:"}
+    elif free < 40:
         disk = {**base, "status": "fail", "code": "NS-E104", "value": f"{free:g} GB free on {letter}:"}
     elif free < 60:
         disk = {**base, "status": "warn", "value": f"{free:g} GB free on {letter}: (60 GB recommended)"}
@@ -164,7 +210,8 @@ def check_rows(pf: dict[str, Any], home: str | None = None) -> list[dict[str, An
                 if row_id == "network":
                     what = NETWORK_FAIL_TEXT if status == "fail" else ROW_COPY[("network", "warn")][1]
                 if row_id == "disk" and status == "fail":
-                    what = "Free 60 GB on this drive, or pick another drive below"
+                    need = MIN_FREE_GB if pf.get("dev_mode") else 60
+                    what = f"Free {need} GB on this drive, or pick another drive below"
             elif (row_id, status) in ROW_COPY:
                 title, what = ROW_COPY[(row_id, status)]
             else:
@@ -229,6 +276,7 @@ def machine_summary(pf: dict[str, Any], home: str, tier: str) -> dict[str, Any]:
     os_row = next((c for c in pf.get("checks") or [] if c.get("id") == "os"), {})
     default_os = str(os_row.get("value", "Windows"))
     windows = f"{caption} {pf.get('os_version', '')}".strip() if caption else default_os
+    dev = bool(pf.get("dev_mode"))
     return {
         "windows": windows,
         "gpuName": gpu.get("name") or None,
@@ -241,8 +289,10 @@ def machine_summary(pf: dict[str, Any], home: str, tier: str) -> dict[str, Any]:
         "drives": drives,
         "meters": {
             "vram": {"haveGb": _gb(vram_mb), "needGb": 16, "hardMinGb": 8},
-            "ram": {"haveGb": round(ram, 1), "needGb": 16, "hardMinGb": 8},
-            "disk": {"haveGb": free, "needGb": required_free_gb(tier), "hardMinGb": 40, "path": home},
+            "ram": {"haveGb": round(ram, 1), "needGb": MIN_RAM_GB if dev else 16,
+                    "hardMinGb": MIN_RAM_GB if dev else 8},
+            "disk": {"haveGb": free, "needGb": required_free_gb(tier, dev=dev),
+                     "hardMinGb": MIN_FREE_GB if dev else 40, "path": home},
         },
     }
 
@@ -342,6 +392,7 @@ def disk_check(
     isfile_fn: Callable[[str], bool] = os.path.isfile,
     layout_fn: Callable[[str], str | None] | None = None,
     existing_fn: Callable[[str], str | None] | None = None,
+    dev: bool = False,
 ) -> dict[str, Any]:
     """DiskCheck for an install folder (or, with ``models``, for a models folder).
 
@@ -352,7 +403,7 @@ def disk_check(
     ``layout_fn`` says why the folder clashes with where the program was extracted or lives in Downloads or
     OneDrive; ``existing_fn`` names an install that is already in the folder (setup then updates it).
     """
-    need = required_free_gb(tier)
+    need = required_free_gb(tier, dev=dev)
     result: dict[str, Any] = {
         "path": path, "exists": os.path.exists(path), "drive": None, "freeGb": None, "type": "Unknown",
         "needGb": need, "ok": False, "message": None, "modelsFound": models,

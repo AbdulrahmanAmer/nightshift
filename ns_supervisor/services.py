@@ -61,6 +61,12 @@ def _env(paths: Paths) -> dict[str, str]:
     return {"NIGHTSHIFT_HOME": str(paths.home)}
 
 
+def _dev_cmd(paths: Paths, service: str, port: int, host: str) -> list[str]:
+    """Command of a dev install's stand-in for llama-server and the embedding server (`devfake`)."""
+    return [venv_python(paths, "supervisor"), "-m", "ns_supervisor.devfake", "--service", service,
+            "--port", str(port), "--host", host]  # fmt: skip
+
+
 def _llama(rt: Runtime, paths: Paths, alias: str | None) -> ServiceDef:
     cfg = rt.llama
     fl = cfg.flags
@@ -86,12 +92,14 @@ def _llama(rt: Runtime, paths: Paths, alias: str | None) -> ServiceDef:
         cmd += ["--spec-type", fl.spec_type, "--spec-draft-n-max", str(fl.spec_draft_n_max or 3), "-np", "1"]
     if fl.threads:
         cmd += ["-t", str(fl.threads)]
+    if rt.dev_mode:     # docs/DEV_MODE.md: no llama-server, no model, no GPU
+        cmd = _dev_cmd(paths, "llama", cfg.port, cfg.host)
     return ServiceDef(
         name="llama",
         cmd=cmd,
         host=cfg.host,
         port=cfg.port,
-        gpu=fl.n_gpu_layers != 0,
+        gpu=fl.n_gpu_layers != 0 and not rt.dev_mode,
         variant=llama_variant(rt, alias),
         model_alias=aliases,
         env=_env(paths),
@@ -108,6 +116,8 @@ def _embed(rt: Runtime, paths: Paths) -> ServiceDef:
         "--host", cfg.host,
         "-ngl", "0",
     ] + embed_server_args(cfg)  # fmt: skip
+    if rt.dev_mode:
+        cmd = _dev_cmd(paths, "embed", cfg.port, cfg.host)
     return ServiceDef(name="embed", cmd=cmd, host=cfg.host, port=cfg.port, gpu=False, env=_env(paths))
 
 
@@ -117,8 +127,12 @@ def _tts(rt: Runtime, paths: Paths) -> ServiceDef:
     # fallback.py); the qwentts engine needs just numpy and FastAPI and runs in the supervisor venv.
     venv = "tts" if cfg.engine == "reference" else "supervisor"
     cmd = [venv_python(paths, venv), "-m", "ns_tts.server", "--port", str(cfg.port)]
+    if rt.dev_mode:     # the real server with its fake engine: tone-burst narration, voices, design and clone
+        cmd = [venv_python(paths, "supervisor"), "-m", "ns_tts.server", "--port", str(cfg.port),
+               "--engine", "fake"]  # fmt: skip
     return ServiceDef(
-        name="tts", cmd=cmd, host=cfg.host, port=cfg.port, gpu=cfg.device == "cuda", env=_env(paths)
+        name="tts", cmd=cmd, host=cfg.host, port=cfg.port, gpu=cfg.device == "cuda" and not rt.dev_mode,
+        env=_env(paths),
     )
 
 

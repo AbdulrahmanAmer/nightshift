@@ -115,6 +115,7 @@ export const shell = {
   connectionLost: "Lost contact with setup. If the black setup window is closed, run INSTALL.cmd again",
   connecting: "Connecting to setup",
   demoNote: "Sample data. No setup server answered",
+  devBanner: "DEV MODE: fake engines, no models",
   toastDismiss: "Dismiss",
 };
 

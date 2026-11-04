@@ -138,7 +138,8 @@ def open_env(fake: frozenset[str] = frozenset(), *, light: bool = False) -> Env:
     """Open the studio environment from `NIGHTSHIFT_HOME`; real services are built but not contacted.
 
     `light=True` is for commands that never call a service (channel, review, status, learn): a missing
-    `runtime.json` is tolerated and every service is a fake.
+    `runtime.json` is tolerated and every service is a fake. So is a dev install (`runtime.json` says
+    `dev_mode`, docs/DEV_MODE.md).
     """
     paths = Paths.from_env()
     paths.ensure()
@@ -150,6 +151,8 @@ def open_env(fake: frozenset[str] = frozenset(), *, light: bool = False) -> Env:
         runtime = load_runtime(paths)
     else:
         runtime = Runtime.default("cpu-dev")
+    if runtime.dev_mode:        # a dev install (docs/DEV_MODE.md) has no model: every service is its fake
+        fake = FAKEABLE
     keys = {} if "clips" in fake else load_keys()
     services = build_services(runtime, fake=fake, paths=paths, keys=keys)
     return Env(paths, db, runtime, services, NsLogger("studio", paths.logs), fake)

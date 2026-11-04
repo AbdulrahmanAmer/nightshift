@@ -25,6 +25,7 @@ export interface SetupState {
   startedAt: string | null;          // ISO 8601, local time
   updatedAt: string;
   host: "webview2" | "browser-app" | "browser" | "none";
+  devMode: boolean;                  // INSTALL.cmd --dev: stub models, fake engines (docs/DEV_MODE.md)
   machine: MachineSummary;
   checks: CheckRow[];
   checkedAt: string | null;
@@ -212,6 +213,7 @@ export interface ResultView {
   diagnosticsZip: string | null;
   durationS: number;
   warnings: Notice[];
+  devMode?: boolean;                 // a dev install: the Done screen says so in its list
 }
 export interface LogLine { t: string; level: "info" | "warn" | "error"; text: string }
 

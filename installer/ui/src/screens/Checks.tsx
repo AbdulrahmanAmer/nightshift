@@ -66,11 +66,13 @@ export function Checks() {
   const fail = rows.filter((r) => r.status === "fail").length;
   const issues = [...rows.filter((r) => r.status === "fail"), ...rows.filter((r) => r.status === "warn")];
   const m = state.machine.meters;
-  const meters: NeedMeter[] = [
+  const all: NeedMeter[] = [
     { label: t.meterLabels.vram, value: Math.min(100, Math.round((m.vram.haveGb / m.vram.needGb) * 100)), tone: tone(m.vram.haveGb, m.vram.needGb, m.vram.hardMinGb), caption: t.meterCaption(m.vram.haveGb, m.vram.needGb) },
     { label: t.meterLabels.ram, value: Math.min(100, Math.round((m.ram.haveGb / m.ram.needGb) * 100)), tone: tone(m.ram.haveGb, m.ram.needGb, m.ram.hardMinGb), caption: t.meterCaption(m.ram.haveGb, m.ram.needGb) },
     { label: t.meterLabels.disk, value: Math.min(100, Math.round((m.disk.haveGb / m.disk.needGb) * 100)), tone: tone(m.disk.haveGb, m.disk.needGb, m.disk.hardMinGb), caption: t.meterCaption(m.disk.haveGb, m.disk.needGb) },
   ];
+  // a dev install needs no graphics card: its video memory meter would only show a shortfall that does not matter
+  const meters = state.devMode ? all.slice(1) : all;
   const jump = (r: CheckRow) => {
     const el = document.getElementById(`issue-${r.id}`);
     el?.scrollIntoView({ block: "nearest", behavior: "auto" });

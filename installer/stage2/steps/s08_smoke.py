@@ -219,6 +219,9 @@ class S08Smoke(Step):
         update or a restored DLL fixes it) and a pass flips runtime.json back to CUDA; only a failing probe
         keeps or sets the CPU and warns.
         """
+        if ctx.dev_mode:        # no faster-whisper and no model: the studio's transcriber is the fake
+            ctx.ui.say("Dev mode: speech recognition is a fake, so it is not tested.")
+            return
         cfg = ensure_baseline(ctx).whisper
         if ctx.profile != "cpu-dev":
             ctx.ui.say("Testing speech recognition on the graphics card ...")

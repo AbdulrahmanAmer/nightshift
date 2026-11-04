@@ -1131,6 +1131,8 @@ def default_workshop(fake: Collection[str] = (), *, enqueue: EnqueueFn | None = 
     runtime = (
         Runtime.default("cpu-dev") if fakes and not paths.runtime_file.exists() else load_runtime(paths)
     )
+    if runtime.dev_mode:        # a dev install (docs/DEV_MODE.md) has no model: every service is its fake
+        fakes = FAKEABLE
     services = build_services(runtime, fake=fakes, paths=paths)
     return Workshop(paths, services, runtime, db, NsLogger("studio", paths.logs, echo=False), enqueue)
 

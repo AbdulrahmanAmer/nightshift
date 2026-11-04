@@ -25,12 +25,17 @@ def schedule_file(paths: Paths) -> Path:
 
 
 def read_run_time(paths: Paths) -> str | None:
-    """The configured nightly `HH:MM`, or None when no schedule is registered or the file is bad."""
+    """The configured nightly `HH:MM`, or None when no schedule is registered or the file is bad.
+
+    A task registered `disabled` (a dev install) is not a schedule: no run is coming, so this says None.
+    """
     f = schedule_file(paths)
     try:
         data = json.loads(f.read_text(encoding="utf-8"))
         run_time = data["run_time"]
     except (OSError, ValueError, KeyError, TypeError):
+        return None
+    if data.get("mode") == "disabled":
         return None
     return run_time if isinstance(run_time, str) and valid_time(run_time) else None
 
@@ -38,8 +43,9 @@ def read_run_time(paths: Paths) -> str | None:
 def write_run_time(paths: Paths, run_time: str, mode: str = "registered") -> None:
     """Persist the schedule so the supervisor knows when the next run is due.
 
-    `mode` is `registered` (the task runs unattended) or `interactive_only` (Windows refused the unattended
-    mode, NS-W205: it runs only while the owner is signed in).
+    `mode` is `registered` (the task runs unattended), `interactive_only` (Windows refused the
+    unattended mode, NS-W205: it runs only while the owner is signed in) or `disabled` (a dev install:
+    the task exists but never fires, `read_run_time` answers None).
     """
     f = schedule_file(paths)
     f.parent.mkdir(parents=True, exist_ok=True)

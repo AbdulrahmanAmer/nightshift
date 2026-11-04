@@ -14,6 +14,7 @@ from pathlib import Path
 from installer.stage2.answers import wants_voicedesign
 from installer.stage2.base import Step
 from installer.stage2.context import StepContext
+from installer.stage2.devmode import remove_stubs
 from installer.stage2.downloader import (
     DownloadItem,
     human_bytes,
@@ -36,7 +37,7 @@ class S03DownloadModels(Step):
     def _items(self, ctx: StepContext, *, with_fallback: bool = True) -> list[DownloadItem]:
         items = plan_models(
             ctx.manifest, ctx.profile, ctx.tier, ctx.paths.home, custom=ctx.llm_custom,
-            include_voicedesign=wants_voicedesign(ctx.ensure_answers()),
+            include_voicedesign=wants_voicedesign(ctx.ensure_answers()), dev=ctx.dev_mode,
         )
         if with_fallback and ctx.flag("tts_fallback", False):
             items += fallback_items(ctx)
@@ -53,10 +54,18 @@ class S03DownloadModels(Step):
     def run(self, ctx: StepContext) -> None:
         """Print the plan, then download or copy."""
         answers = ctx.ensure_answers()
+        if not ctx.dev_mode:
+            for gone in remove_stubs(ctx.paths.home / "models"):      # left by an earlier `--dev` install
+                ctx.log.info("dev_stub_removed", file=str(gone))
         items = self._items(ctx)
         todo = self._outstanding(ctx, items)
         size = total_bytes(todo)
         source = answers.models_source
+        if ctx.dev_mode:
+            ctx.ui.say(
+                "Dev mode: no model is downloaded. Small placeholder files with the real names are written "
+                "(marked .dev-stub); the face finder is the real, tiny file."
+            )
         if source:
             ctx.ui.say(f"Looking for matching files in {source} before downloading.")
         ctx.ui.say(

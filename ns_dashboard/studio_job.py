@@ -98,7 +98,12 @@ def _acquirer(args: dict[str, Any]) -> Any:
 
 
 def _common(args: dict[str, Any]) -> dict[str, Any]:
-    return {"acquirer": _acquirer(args), "fake": tuple(args.get("fake") or ()), "paths": _paths()}
+    from ns_common.devmode import dev_fakes
+
+    paths = _paths()
+    # a dev install (docs/DEV_MODE.md) runs every job on the in-process fakes, whatever the dashboard sent
+    fake = tuple(args.get("fake") or ()) or tuple(sorted(dev_fakes(paths)))
+    return {"acquirer": _acquirer(args), "fake": fake, "paths": paths}
 
 
 def do_run(args: dict[str, Any]) -> dict[str, Any]:
@@ -184,9 +189,12 @@ def do_download(args: dict[str, Any]) -> dict[str, Any]:
 def do_transcribe(args: dict[str, Any]) -> dict[str, Any]:
     """The words spoken in a WAV (faster-whisper), as one text; the dashboard holds the `whisper` tenant."""
     from ns_common.config import load_runtime
+    from ns_common.devmode import is_dev
     from ns_studio.media.transcribe import WhisperTranscriber
 
     paths = _paths()
+    if is_dev(paths):  # a dev install has no faster-whisper (docs/DEV_MODE.md): a fixed line to clone from
+        return {"text": "This is the dev mode transcript of your recording."}
     try:
         cfg = load_runtime(paths).whisper
     except Exception:  # no or unreadable runtime.json: the default whisper settings

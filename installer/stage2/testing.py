@@ -153,6 +153,7 @@ def make_test_context(
     unattended: bool = True,
     home_forced: bool = True,
     resolve: bool = False,
+    dev_mode: bool = False,
 ) -> StepContext:
     """Build a StepContext rooted in ``tmp_path`` with fakes for everything that touches the machine."""
     home = tmp_path / "home"
@@ -170,6 +171,7 @@ def make_test_context(
         log=NsLogger("installer", paths.logs, echo=False),
         state=StateStore(paths, app),
         simulate=simulate,
+        dev_mode=dev_mode,
         unattended=unattended,
         raw_answers=dict(raw_answers or {}),
         preflight=pf if isinstance(pf, dict) else None,
@@ -180,7 +182,7 @@ def make_test_context(
         http_factory=http or not_found_http,
     )
     if resolve and raw_answers and "channel" in raw_answers:
-        ctx.answers = build_answers(dict(raw_answers))
+        ctx.answers = ctx.constrain(build_answers(dict(raw_answers)))
     return ctx
 
 

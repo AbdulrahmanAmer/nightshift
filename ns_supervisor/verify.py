@@ -155,6 +155,19 @@ def nvenc_probe() -> None:
         raise NsError("NS-W401", e.detail) from e
 
 
+def x264_probe() -> None:
+    """Encode a 2 second colour source with `libx264` (a dev install: no NVENC, the CPU encoder renders)."""
+    if not ffmpeg.available():
+        raise NsError("NS-E401", "ffmpeg/ffprobe not found on PATH")
+    ffmpeg.run(
+        [
+            "-f", "lavfi", "-i", "color=c=0x2060a0:s=1280x720:r=30:d=2",
+            "-c:v", "libx264", "-preset", "ultrafast", "-f", "null", "-",
+        ],  # fmt: skip
+        timeout_s=120,
+    )
+
+
 def fake_job(paths: Paths) -> float | None:
     """`studio run --fake-services --format shorts_only --count 1`; seconds, or None if studio is absent."""
     exe = paths.venvs / "studio" / "Scripts" / "studio.exe"
@@ -196,6 +209,7 @@ class Deps:
 
     whisper: Callable[[Paths, Runtime], float] = whisper_probe
     nvenc: Callable[[], None] = nvenc_probe
+    x264: Callable[[], None] = x264_probe       # a dev install probes the CPU encoder instead of NVENC
     job: Callable[[Paths], float | None] = fake_job
     vram_used: Callable[[], int | None] = procs.gpu_memory_used_mb
     gpu_name: Callable[[], str | None] = procs.gpu_name
@@ -411,6 +425,8 @@ def run_verify(
     def whisper() -> Out:
         ctl.acquire("whisper", OWNER, timeout_s=600)
         try:
+            if rt.dev_mode:     # a dev install has no faster-whisper and no model (the studio fakes it)
+                return Out(True, 0.0, log="dev mode: fake speech recognition, no model to load")
             secs = d.whisper(paths, rt)
         finally:
             release("whisper")
@@ -420,6 +436,9 @@ def run_verify(
 
     # -- NVENC -----------------------------------------------------------------------------
     def nvenc() -> Out:
+        if rt.dev_mode:
+            d.x264()
+            return Out(True, "libx264 ok", log="dev mode: 2 s colour source encoded on the processor")
         d.nvenc()
         return Out(True, "h264_nvenc ok", log="2 s colour source encoded")
 
@@ -438,6 +457,8 @@ def run_verify(
 
     # -- idle VRAM -------------------------------------------------------------------------
     def idle_vram() -> Out:
+        if rt.dev_mode:
+            return Out(True, "n/a", log="dev mode: no graphics card to measure")
         try:
             ctl.stop_all()
         except NsError as e:  # no supervisor means nothing of ours is loaded; still measure the GPU
@@ -457,7 +478,7 @@ def run_verify(
     rec.run(names.VRAM_IDLE, idle_vram, "NS-E102")
 
     machine: dict[str, str | float | None] = {
-        "gpu": d.gpu_name(),
+        "gpu": None if rt.dev_mode else d.gpu_name(),
         "ram_gb": ram,
         "disk_type": None,
         "os": platform.platform(),
@@ -472,6 +493,7 @@ def run_verify(
         machine=machine,
         checks=rec.checks,
         benchmarks=rec.benchmarks,
+        dev_mode=rt.dev_mode,
     )
 
 

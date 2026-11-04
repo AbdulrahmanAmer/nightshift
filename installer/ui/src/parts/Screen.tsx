@@ -3,10 +3,13 @@
 import type { ReactNode } from "react";
 import { Greeting } from "@ref12";
 import { cx } from "@dash/ui/kit";
+import { useSetup } from "../api/useSetup";
+import { shell } from "../copy";
 
 export function Screen({ name, salutation, question = "", description, headerRight, footerLeft, footerRight, children }: {
   name: string; salutation: string; question?: string; description?: ReactNode; headerRight?: ReactNode; footerLeft?: ReactNode; footerRight?: ReactNode; children: ReactNode;
 }) {
+  const dev = useSetup().state?.devMode === true;
   return (
     <div className="flex h-full min-h-0 flex-col pt-10 pr-8 pb-4 pl-[112px]">
       <header className="flex shrink-0 items-start justify-between gap-6 pb-4">
@@ -17,7 +20,10 @@ export function Screen({ name, salutation, question = "", description, headerRig
         <div className={cx("ns-grid grid grid-cols-4 gap-5 @min-[1020px]:grid-cols-6", `ns-${name}`)}>{children}</div>
       </div>
       <footer className="relative mt-1 flex min-h-10 shrink-0 items-center justify-between gap-4">
-        <div className="min-w-0 text-ds-xs text-ds-muted ds-num">{footerLeft}</div>
+        <div className="min-w-0 text-ds-xs text-ds-muted ds-num">
+          {footerLeft}
+          {dev && <span role="status" className="ml-3 rounded-ds-md bg-ds-surface px-2 py-0.5 font-semibold text-ds-text-2">{shell.devBanner}</span>}
+        </div>
         <div className="flex shrink-0 items-center gap-3">{footerRight}</div>
       </footer>
     </div>

@@ -87,7 +87,7 @@ def test_report_file_is_gate_report_shaped_and_schema_valid(
     GateReport.model_validate(data)
     schema = json.loads((contracts_dir() / "schemas" / "gate_report.schema.json").read_text("utf-8"))
     jsonschema.validate(data, schema)
-    assert set(data) == {"slice", "date", "machine", "checks", "benchmarks"}
+    assert set(data) == {"slice", "date", "machine", "checks", "benchmarks", "dev_mode"}
 
 
 def test_quick_skips_benchmarks_and_the_job(engine: tuple[Paths, Runtime, SyncSupervisor]) -> None:

@@ -22,12 +22,14 @@ from installer.stage2.answers import AnswersError, find_answers, load_raw
 from installer.stage2.base import Step
 from installer.stage2.bridge import BridgeUi, SetupStopped
 from installer.stage2.context import StepContext
+from installer.stage2.devmode import BANNER, env_enabled, reset_for_mode_switch
 from installer.stage2.runner import SubprocessRunner
 from installer.stage2.secrets import KEY_NAMES, KeyringStore, MemoryStore, ResilientStore
 from installer.stage2.simulate import FakeRunner
 from installer.stage2.state import StateStore
 from installer.stage2.sysinfo import free_gb, load_preflight, sample_preflight
 from installer.stage2.ui import Ui
+from installer.stage2.web.preflight import apply_dev
 from ns_common import __version__
 from ns_common.config import load_manifest
 from ns_common.errors import NsError
@@ -105,8 +107,13 @@ class Wizard:
     def _run(self) -> int:
         ctx = self.ctx
         ctx.resumed = ctx.state.any_done()
-        ctx.state.begin(ctx.profile)
-        ctx.log.info("wizard_start", resumed=ctx.resumed, simulate=ctx.simulate, unattended=ctx.unattended)
+        ctx.state.begin(ctx.profile, ctx.dev_mode)
+        ctx.log.info(
+            "wizard_start", resumed=ctx.resumed, simulate=ctx.simulate, unattended=ctx.unattended,
+            dev_mode=ctx.dev_mode,
+        )
+        if ctx.dev_mode:
+            ctx.ui.say(f"{BANNER}. Programs are real, models are stubs, engines are fakes.", style="yellow")
         for step in self.steps:
             if ctx.stop_requested.is_set():
                 raise SetupStopped()
@@ -259,6 +266,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     p.add_argument("--preflight", help="stage 1 hardware summary (default: the temp-folder JSON)")
     p.add_argument("--no-head-checks", action="store_true", help="simulate mode: skip HEAD checks")
     p.add_argument("--ui-bridge", choices=["stdio"], help="talk JSON lines to the setup window (P1) on stdio")
+    p.add_argument("--dev", action="store_true",
+                   help="dev install (docs/DEV_MODE.md): stub models, fake engines, no GPU packages")
     return p.parse_args(list(argv) if argv is not None else None)
 
 
@@ -291,6 +300,11 @@ def build_context(args: argparse.Namespace, ui: Ui | None = None) -> StepContext
     else:
         runner = SubprocessRunner(bridge=bridge)
         store = ResilientStore(KeyringStore(), paths)
+    dev = bool(getattr(args, "dev", False)) or env_enabled() or bool((preflight or {}).get("dev_mode"))
+    if dev and preflight is not None:
+        preflight = apply_dev(preflight)        # a graphics card and 60 GB are not red rows in a dev install
+    if reset_for_mode_switch(paths.home, dev):
+        NsLogger("installer", paths.logs, echo=False).info("mode_switch", dev_mode=dev)
     return StepContext(
         app_path=app_path,
         paths=paths,
@@ -301,6 +315,7 @@ def build_context(args: argparse.Namespace, ui: Ui | None = None) -> StepContext
         log=NsLogger("installer", paths.logs),
         state=StateStore(paths, app_path),
         simulate=bool(args.simulate_downloads),
+        dev_mode=dev,
         unattended=unattended,
         answers_path=answers_path,
         raw_answers=raw,
@@ -339,7 +354,8 @@ def _main_bridge(args: argparse.Namespace, steps: Sequence[Step]) -> int:
         ui.say(f"answers.json problem: {e}", style="red")
         ui.emit({"type": "bye", "exitCode": EXIT_QUIT})
         return EXIT_QUIT
-    ui.emit({"type": "hello", "pid": os.getpid(), "version": __version__, "resumed": ctx.state.any_done()})
+    ui.emit({"type": "hello", "pid": os.getpid(), "version": __version__, "resumed": ctx.state.any_done(),
+             "devMode": ctx.dev_mode})
     keys = ui.wait_keys()
     for name in KEY_NAMES:
         if keys.get(name):
