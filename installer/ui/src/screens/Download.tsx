@@ -8,6 +8,7 @@ import type { DownloadRow, PlanGroup } from "../api/types";
 import { Area, Screen } from "../parts/Screen";
 import { DownloadRowItem } from "../parts/DownloadRowItem";
 import { TimeLeftCard } from "../parts/Widgets";
+import { CopyStatusButton } from "../parts/CopyStatus";
 
 const GROUPS: PlanGroup["id"][] = ["tools", "python", "programs", "models"];
 const LIVE = new Set<DownloadRow["status"]>(["active", "copying", "verifying", "extracting", "paused"]);
@@ -45,6 +46,7 @@ export function Download({ onStop }: { onStop: () => void }) {
       footerLeft={stopping ? t.stopping : t.footer(o.filesDone, o.filesTotal, gbNum(o.bytesDone), total)}
       footerRight={
         <>
+          <CopyStatusButton />
           <Button variant="ghost" size="lg" disabled={stopping} onClick={onStop}>{t.stop}</Button>
           <Button variant="primary" size="lg" data-primary disabled={disabled} onClick={toggle}>{toggleLabel}</Button>
         </>

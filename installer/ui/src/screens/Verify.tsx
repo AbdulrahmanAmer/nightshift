@@ -10,6 +10,7 @@ import { VerifyRowItem } from "../parts/RowItems";
 import { IssueCard } from "../parts/IssueCard";
 import { SetupIcon } from "../parts/icons";
 import { useCopyReport } from "../parts/useCopyReport";
+import { CopyStatusButton } from "../parts/CopyStatus";
 
 function labelFor(name: string, label: string): string {
   if (label) return label;
@@ -100,7 +101,7 @@ export function Verify() {
   return (
     <Screen name="verifying" salutation={t.salutation} description={t.description}
       footerLeft={t.footer(doneN, total)}
-      footerRight={<Button variant="soft" size="lg" leadingIcon="copy" data-primary disabled={!v?.reportReady} onClick={() => void copy()}>{t.copyReport}</Button>}>
+      footerRight={<><CopyStatusButton /><Button variant="soft" size="lg" leadingIcon="copy" data-primary disabled={!v?.reportReady} onClick={() => void copy()}>{t.copyReport}</Button></>}>
       <Area area="checks">
         <Card as="section" padding="md" aria-label={t.checksTitle}>
           <CardHeader title={t.checksTitle} level={2} className="mb-3 px-3" />

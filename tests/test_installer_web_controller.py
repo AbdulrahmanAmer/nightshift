@@ -213,7 +213,7 @@ def test_a_whole_scripted_run_bootstraps_then_runs_the_wizard_and_finishes(tmp_p
     assert [n["code"] for n in state["notices"]] == ["NS-W302"]
     assert state["verify"]["voice"]["speaker"] == "Ryan" and len(state["verify"]["voice"]["bars"]) == 28
     first_check = state["verify"]["checks"][0]
-    assert first_check["label"] == "Story model" and first_check["value"] == "54.2 tokens/s"
+    assert first_check["label"] == "Story model" and first_check["value"] == "works"
     result = state["result"]
     assert result["outbox"] == str(s.home / "outbox") and result["runTime"] == "03:00"
     assert result["diagnosticsZip"].endswith("nightshift-diagnostics-1.zip")
@@ -687,7 +687,7 @@ def test_warnings_failures_steps_and_verify_rows_map_into_the_state(tmp_path, mo
     ev({"type": "warn", "code": "prompt", "detail": "Name?"})
     state = s.snap()
     assert [n["code"] for n in state["notices"]] == ["NS-W302"]
-    assert state["notices"][0]["title"] == "Faster decoding was not faster here"
+    assert state["notices"][0]["title"] == "The speed boost did not help here"
     assert any("asked a question" in line["text"] for line in state["log"])
     ev(step_event("s05_opencode_prewarm", "skipped", "not selected"))
     st = next(x for x in s.snap()["steps"] if x["id"] == "s05_opencode_prewarm")
@@ -715,9 +715,9 @@ def test_warnings_failures_steps_and_verify_rows_map_into_the_state(tmp_path, mo
     # one row per area, real `ns verify` names grouped; bench rows stay hidden; no invented "mtp" row
     assert list(checks) == ["engine", "llm", "embed", "tts", "whisper", "nvenc", "vram"]
     assert checks["llm"]["label"] == "Story model" and checks["llm"]["status"] == "passed"
-    assert checks["llm"]["value"] == "54.2 tokens/s"
-    assert checks["tts"]["value"].endswith("0.31 RTF") and checks["tts"]["status"] == "fallback"
-    assert (checks["nvenc"]["status"], checks["nvenc"]["value"]) == ("fallback", "libx264 (slower)")
+    assert checks["llm"]["value"] == "works"
+    assert checks["tts"]["value"] == "voice works" and checks["tts"]["status"] == "fallback"
+    assert (checks["nvenc"]["status"], checks["nvenc"]["value"]) == ("fallback", "processor video (slower)")
     assert checks["whisper"]["value"] == "graphics card" and checks["embed"]["value"] == "ready"
 
 

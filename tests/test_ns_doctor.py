@@ -38,9 +38,11 @@ def build(paths: Paths, tmp_path: Path, **kw: object) -> zipfile.ZipFile:
         now=datetime(2026, 11, 1, 12, 0),
         freeze=lambda p, venv: "pkg==1.0\n" if venv == "studio" else None,  # type: ignore[arg-type]
         smi=lambda: "NVIDIA-SMI 570 | RTX 5060 Ti",
+        setup_dir=tmp_path / "local-nightshift",
+        temp_dir=tmp_path / "temp",
         **kw,  # type: ignore[arg-type]
     )
-    assert out.name == "nightshift-diagnostics-2026-11-01.zip" and out.parent == tmp_path / "desk"
+    assert out.name == "nightshift-diagnostics-2026-11-01-1200.zip" and out.parent == tmp_path / "desk"
     return zipfile.ZipFile(out)
 
 
@@ -87,6 +89,8 @@ def test_bundle_tolerates_missing_files_and_nvidia_smi(tmp_path: Path) -> None:
         now=datetime(2026, 11, 1),
         freeze=lambda p, v: None,
         smi=lambda: None,
+        setup_dir=tmp_path / "local-nightshift",
+        temp_dir=tmp_path / "temp",
     )
     z = zipfile.ZipFile(out)
     assert "not available" in z.read("nvidia-smi.txt").decode()
@@ -121,3 +125,51 @@ def test_diagnose_reports_missing_pieces(tmp_path: Path) -> None:
     assert by["runtime.json"][0] is False and "NS-E203" in by["runtime.json"][1]
     assert by["supervisor"][0] is False
     assert by["venv studio"][0] is False
+
+
+def test_bundle_holds_the_setup_evidence_without_keys(tmp_path: Path) -> None:
+    paths = seed(tmp_path)
+    report = (paths.logs / "install-report.json")
+    report.write_text(json.dumps({"outcome": "failed", "code": "NS-E105"}), encoding="utf-8")
+    (paths.config / "wizard_flags.json").write_text('{"tts_fallback": true}', encoding="utf-8")
+    (paths.config / "answers.json").write_text(
+        json.dumps({"home_path": "D:/n", "pexels_api_key": "SECRET-1", "pixabay_api_key": "SECRET-2"}),
+        encoding="utf-8",
+    )
+    local = tmp_path / "local-nightshift"
+    (local / "bootstrap").mkdir(parents=True)
+    (local / "bootstrap" / "preflight.json").write_text('{"gpu": {"name": "RTX"}}', encoding="utf-8")
+    (local / "bootstrap" / "setup-ui.jsonl").write_text('{"text": "hello"}\n', encoding="utf-8")
+    (local / "setup-server.err").write_text("Traceback: boom\n", encoding="utf-8")
+    z = build(paths, tmp_path)
+    names = set(z.namelist())
+    assert {
+        "install-report.json",
+        "setup/wizard_flags.json",
+        "setup/answers.json",
+        "setup/preflight.json",
+        "setup/setup-server.err",
+        "setup/bootstrap/setup-ui.jsonl",
+    } <= names
+    assert json.loads(z.read("setup/answers.json")) == {"home_path": "D:/n"}
+    assert b"SECRET" not in b"".join(z.read(n) for n in names)
+    assert json.loads(z.read("install-report.json"))["code"] == "NS-E105"
+
+
+def test_bundle_falls_back_to_the_stage_one_hand_over_in_temp(tmp_path: Path) -> None:
+    temp = tmp_path / "temp"
+    temp.mkdir()
+    (temp / "nightshift-preflight.json").write_text('{"profile": "gpu"}', encoding="utf-8")
+    z = build(seed(tmp_path), tmp_path)
+    assert json.loads(z.read("setup/preflight.json")) == {"profile": "gpu"}
+    notes = json.loads(z.read("bundle-info.json"))["notes"]
+    assert any("install-report.json: not found" in n for n in notes)
+
+
+def test_two_bundles_on_one_day_do_not_overwrite_each_other(tmp_path: Path) -> None:
+    paths = seed(tmp_path)
+    first = doctor.build_bundle(paths, out_dir=tmp_path / "desk", now=datetime(2026, 11, 1, 9, 5),
+                                freeze=lambda p, v: None, smi=lambda: None)
+    second = doctor.build_bundle(paths, out_dir=tmp_path / "desk", now=datetime(2026, 11, 1, 9, 6),
+                                 freeze=lambda p, v: None, smi=lambda: None)
+    assert first.name == "nightshift-diagnostics-2026-11-01-0905.zip" and first != second and first.is_file()

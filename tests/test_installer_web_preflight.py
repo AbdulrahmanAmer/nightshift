@@ -47,7 +47,7 @@ def test_a_good_pc_has_eleven_ok_rows_and_nothing_blocks():
         ("longpaths", ("warn", "NS-W112", "LongPathsEnabled is not 1"), "Long file paths are off",
          "elevate-longpaths", False),
         ("waketimers", ("warn", "NS-W107", "disabled in the power plan"),
-         "The PC cannot wake itself at night", None, False),
+         "The PC cannot wake itself at night", "open-windows-page", False),
         ("os", ("fail", "NS-E101", "architecture ARM64"), "This PC cannot run Nightshift", None, True),
     ],
 )
@@ -196,4 +196,4 @@ def test_copy_falls_back_to_the_errors_json_text():
     assert preflight.copy_for("NS-E109")[0] == "A downloaded file is damaged"
     assert preflight.copy_for("NS-X999", "It broke", "Try again") == ("It broke", "Try again")
     title, what = preflight.copy_for("unexpected")
-    assert title == "Something unexpected stopped setup" and "Copy diagnostics" in what
+    assert title == "Something unexpected stopped setup" and "Save a help file" in what
