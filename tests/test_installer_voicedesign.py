@@ -77,4 +77,4 @@ def test_ns_w114_is_a_known_code_in_the_contract_the_operator_copy_and_the_ui():
     assert codes["NS-W114"]["message"] and "include_voicedesign" in codes["NS-W114"]["hint"]
     copy = json.loads((ROOT / "installer" / "stage2" / "web" / "operator_copy.json").read_text(encoding="utf-8"))
     assert copy["NS-W114"]["title"] and copy["NS-W114"]["whatToDo"]
-    assert "NS-W114" in (ROOT / "installer" / "ui" / "src" / "copy.ts").read_text(encoding="utf-8")
+    assert "operator_copy.json" in (ROOT / "installer" / "ui" / "src" / "copy.ts").read_text(encoding="utf-8")

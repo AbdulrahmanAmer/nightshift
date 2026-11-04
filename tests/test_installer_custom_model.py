@@ -52,7 +52,7 @@ def test_ns_w113_is_published_with_plain_text():
     assert "checksum" in codes["NS-W113"]["message"] and codes["NS-W113"]["hint"]
     copy = json.loads((ROOT / "installer" / "stage2" / "web" / "operator_copy.json").read_text("utf-8"))
     assert copy["NS-W113"]["title"] and copy["NS-W113"]["whatToDo"]
-    assert "NS-W113" in (ROOT / "installer" / "ui" / "src" / "copy.ts").read_text("utf-8")
+    assert "operator_copy.json" in (ROOT / "installer" / "ui" / "src" / "copy.ts").read_text("utf-8")
 
 
 # ---------------------------------------------------------------------------------------------- the check
