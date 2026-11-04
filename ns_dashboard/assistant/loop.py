@@ -76,6 +76,33 @@ def run_tool(td: ToolDef, ctx: ToolContext, args: dict[str, Any]) -> tuple[bool,
         return False, {"error": {"code": "tool_failed", "message": f"{type(e).__name__}: {e}"}}
 
 
+def result_facts(result: Any) -> str:
+    """The lines the owner wants to see on the card after a Yes: file paths, a job id, a note.
+
+    The model gets no turn after a confirmed action (the card's result is the only answer), so "fetch two
+    clips and show me where they are" used to end with "Done: Download up to 2 ..." and the paths only in
+    the transcript. Known result shapes are summarised here; anything else leaves the card as it was.
+    """
+    if not isinstance(result, dict):
+        return ""
+    lines: list[str] = []
+    paths = [str(item["path"]) for key in ("clips", "items", "results", "outputs")
+             for item in (result.get(key) or []) if isinstance(item, dict) and item.get("path")]
+    if paths:
+        lines.append("Files:")
+        lines.extend(paths[:10])
+    elif isinstance(result.get("path"), str):
+        lines.append(f"Path: {result['path']}")
+    for key in ("job_id", "idea_id", "action"):
+        if isinstance(result.get(key), (str, int)):
+            lines.append(f"{key.replace('_', ' ')}: {result[key]}")
+    for key in ("note", "message"):
+        if isinstance(result.get(key), str) and result[key].strip():
+            lines.append(result[key].strip())
+            break
+    return "\n".join(lines)
+
+
 def to_text(result: Any) -> str:
     """JSON text of a tool result for the transcript; an enormous one is rebuilt smaller, never cut mid-string.
 
@@ -270,6 +297,9 @@ class Assistant:
         ok, result = run_tool(td, ToolContext(self.dash, action["context"]), action["args"])
         self.store.finish_action(action_id, "done" if ok else "failed", result)
         summary = f"Done: {action['confirm_text']}" if ok else f"That did not work: {action['confirm_text']}"
+        facts = result_facts(result) if ok else ""
+        if facts:
+            summary = f"{summary}\n{facts}"
         self.store.add_message(cid, "assistant", f"{summary}\nResult: {to_text(result)}")
         return {"action_id": action_id, "tool": action["tool"], "status": "done" if ok else "failed",
                 "message": summary, "result": result, "conversation_id": cid}

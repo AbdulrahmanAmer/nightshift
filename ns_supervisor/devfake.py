@@ -122,10 +122,16 @@ def _tool_names(tools: Any) -> set[str]:
     return out
 
 
+_QUESTION = re.compile(r"<question>(.*?)</question>", re.S)
+
+
 def _last_user(messages: list[dict[str, Any]]) -> str:
+    """The owner's own words: the Assistant wraps them as <question> and appends a facts block."""
     for m in reversed(messages):
         if m.get("role") == "user":
-            return str(m.get("content") or "")
+            content = str(m.get("content") or "")
+            q = _QUESTION.search(content)
+            return q.group(1) if q else content
     return ""
 
 

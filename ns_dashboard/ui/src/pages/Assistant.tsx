@@ -147,8 +147,8 @@ function ConfirmCard({ c, what, onYes, onNo }: { c: Confirm; what: string; onYes
   return (
     <div className="ml-10 max-w-[min(78%,440px)]">
       <NotificationItem title={`${c.text}`} titleAdornment={<StatusDot tone={c.state === "done" ? "online" : c.state === "failed" ? "danger" : "attention"} label={c.state === "done" ? "Done" : c.state === "failed" ? "Failed" : "Not done"} />}
-        subtitle={<span className={cx("inline-flex items-center gap-1.5", c.state === "done" ? "text-ds-success-ink" : c.state === "failed" ? "text-ds-danger" : "text-ds-muted")}>
-          <Icon name={c.state === "done" ? "check" : "x"} size={14} />{c.state === "dismissed" ? "Not done" : c.result || (c.state === "done" ? "Done" : "That did not work")}
+        subtitle={<span className={cx("inline-flex items-start gap-1.5 whitespace-pre-wrap break-all", c.state === "done" ? "text-ds-success-ink" : c.state === "failed" ? "text-ds-danger" : "text-ds-muted")}>
+          <Icon name={c.state === "done" ? "check" : "x"} size={14} className="mt-0.5 shrink-0" />{c.state === "dismissed" ? "Not done" : c.result || (c.state === "done" ? "Done" : "That did not work")}
         </span>} />
     </div>
   );

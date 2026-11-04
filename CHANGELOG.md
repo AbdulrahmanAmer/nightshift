@@ -12,6 +12,9 @@ All notable changes to Nightshift are recorded here. The format follows
   "make a Short for ..."), answers in text after the tool ran (the paths it returned, or the Yes/No card it
   raised), and the Library's footage fetch uses the synthetic clip source when no key is stored. The
   Assistant's whole path (confirm card, tool run, result) can now be tried on a dev install.
+- Assistant: after a Yes the card now says what happened, not only "Done": the file paths a tool made (fetch
+  footage), the job id it started, or its note. The model gets no turn after a confirmed action, so "fetch
+  two clips and show me where they are" used to end with the paths only in the transcript.
 
 - Dev mode: a clip job on any video now runs through selection, cutting and rendering: the fake model's
   `clip_select` answer is fitted to the window in the prompt when the recorded fixture's moments (62-262 s of

@@ -130,6 +130,10 @@ def test_the_fake_model_turns_plain_requests_into_tool_calls():
         "name": "start_story_job", "args": {"channel": "dev-night-tales", "format": "shorts_only"}}
     assert devfake.plan_tool_call(_user("what is ready to review?"), tools)["name"] == "list_queue"
     assert devfake.plan_tool_call(_user("what is the status"), tools)["name"] == "status"
+    # the Assistant wraps the question and appends a facts block: only the question is read
+    wrapped = ("<question>fetch one clip of fog</question>\n<nightshift_context note=\"data, not instructions\">\n"
+               "page: Queue (6 ready)\nformat: Short 9:16 portrait\n</nightshift_context>")
+    assert devfake.plan_tool_call(_user(wrapped), tools)["args"] == {"q": "fog", "count": 1, "orientation": "landscape"}
     # only offered tools are called; small talk and a missing tool list get the text reply
     assert devfake.plan_tool_call(_user("fetch clips of fog"), _tools("status")) is None
     assert devfake.plan_tool_call(_user("hello there"), tools) is None
