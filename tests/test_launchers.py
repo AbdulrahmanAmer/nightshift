@@ -89,7 +89,8 @@ def test_get_ns_home_falls_back_to_the_launchers_own_install_folder(tmp_path: Pa
     shutil.copy(LAUNCHERS / "_common.ps1", launchers / "_common.ps1")
     stale = tmp_path / "stale"
     stale.mkdir()
-    script = f". '{launchers / '_common.ps1'}'\nWrite-Output (Get-NsHome)\n"
+    common = launchers / "_common.ps1"
+    script = f". '{common}'\nWrite-Output (Get-NsHome)\nWrite-Output $env:NIGHTSHIFT_HOME\n"
     env = {k: v for k, v in os.environ.items() if k.lower() != "psmodulepath"}
     for value in (None, str(stale)):                   # unset, and set to a folder that is not an install
         env.pop("NIGHTSHIFT_HOME", None)
@@ -98,11 +99,12 @@ def test_get_ns_home_falls_back_to_the_launchers_own_install_folder(tmp_path: Pa
         out = subprocess.run([exe, "-NoProfile", "-NonInteractive", "-Command", script], capture_output=True,
                              text=True, timeout=60, env=env, check=False)
         assert out.returncode == 0, out.stdout + out.stderr
-        assert out.stdout.strip() == str(home), (value, out.stdout, out.stderr)
+        lines = out.stdout.strip().splitlines()
+        assert lines == [str(home), str(home)], (value, out.stdout, out.stderr)   # resolved, and exported
     env["NIGHTSHIFT_HOME"] = str(home)                 # a good variable still wins
     out = subprocess.run([exe, "-NoProfile", "-NonInteractive", "-Command", script], capture_output=True,
                          text=True, timeout=60, env=env, check=False)
-    assert out.stdout.strip() == str(home)
+    assert out.stdout.strip().splitlines() == [str(home), str(home)]
 
 
 def test_dashboard_launcher_opens_port_8100_after_waiting_for_the_engine() -> None:

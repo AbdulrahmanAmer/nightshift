@@ -15,10 +15,13 @@ function Get-NsHome {
     # server behind the Done screen, an old console, an Explorer that did not pick up the new user variable)
     # still has the old environment, and the first dev-mode run looked for the engine's venv under
     # %LOCALAPPDATA%\Nightshift and stopped with "Supervisor venv not found".
+    # The resolved home is exported to this process so every child (engine, dashboard, studio job) that reads
+    # NIGHTSHIFT_HOME (ns_common.paths.Paths.from_env) uses the same folder; without that the engine ran with
+    # %LOCALAPPDATA%\Nightshift as its home (no channels, wrong disk, version 0.1.0 in Settings).
     $fromEnv = $env:NIGHTSHIFT_HOME
     if (Test-NsHomeFolder $fromEnv) { return $fromEnv }
     $fromHere = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
-    if (Test-NsHomeFolder $fromHere) { return $fromHere }
+    if (Test-NsHomeFolder $fromHere) { $env:NIGHTSHIFT_HOME = $fromHere; return $fromHere }
     if ($fromEnv) { return $fromEnv }
     return (Join-Path $env:LOCALAPPDATA 'Nightshift')
 }
