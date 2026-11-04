@@ -46,6 +46,10 @@ def build_install_script(paths: Paths, run_time: str, app_path: Path, task_name:
     non-elevated shell is often refused with "Access is denied"; the script then registers the same task with
     an interactive logon ("run only when the user is logged on"; WakeToRun still wakes the PC). The last
     output line is `registered:s4u` or `registered:interactive`.
+
+    The working directory is the install home, not ``app_path``: a process whose cwd is the program folder
+    blocks the folder swap of an update (Windows refuses to rename it), and the 03:00 run keeps ``studio.exe``
+    and its children alive for hours. The programs find the app through their editable installs.
     """
     arguments = f'/d /s /c "set "NIGHTSHIFT_HOME={paths.home}" && "{studio_exe(paths)}" run --daily"'
     register = (
@@ -56,7 +60,7 @@ def build_install_script(paths: Paths, run_time: str, app_path: Path, task_name:
         [
             "$ErrorActionPreference = 'Stop'",
             f"$action = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument {_q(arguments)} "
-            f"-WorkingDirectory {_q(str(app_path))}",
+            f"-WorkingDirectory {_q(str(paths.home))}",
             f"$trigger = New-ScheduledTaskTrigger -Daily -At ([datetime]{_q(run_time)})",
             "$settings = New-ScheduledTaskSettingsSet -WakeToRun -StartWhenAvailable "
             "-AllowStartIfOnBatteries -DontStopIfGoingOnBatteries "

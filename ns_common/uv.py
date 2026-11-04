@@ -74,8 +74,13 @@ def uv_env(home: Path) -> dict[str, str]:
     uv's default cache is `%LOCALAPPDATA%/uv/cache` on the system drive. It holds the unpacked cuBLAS/cuDNN
     and the other wheels (about 3 GB), which filled a small C: while the install drive had room. When the
     cache folder cannot be made, `UV_CACHE_DIR` is left out and uv uses its default.
+
+    `UV_PYTHON_PREFERENCE=only-managed` makes every venv use the Python that uv installed itself (stage 1
+    runs `uv python install 3.12`), never a Python 3.12 that happens to be on the PC: a Microsoft Store Python
+    virtualizes writes under %LOCALAPPDATA%, and the setup environment, the studio and supervisor venvs and
+    `ns update` must all run on the same interpreter.
     """
-    env = {"UV_LINK_MODE": "copy"}
+    env = {"UV_LINK_MODE": "copy", "UV_PYTHON_PREFERENCE": "only-managed"}
     cache = cache_dir(home)
     try:
         cache.mkdir(parents=True, exist_ok=True)

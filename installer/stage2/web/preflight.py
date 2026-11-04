@@ -117,8 +117,28 @@ def _row_fix(row_id: str, status: str, code: str) -> dict[str, Any] | None:
     return None
 
 
-def raw_disk_rows(pf: dict[str, Any], home: str) -> list[dict[str, Any]]:
-    """The disk and disktype lines for ``home``, with the same rules as stage 1's Get-PreflightRows."""
+def folder_bytes(folder: str | Path) -> int:
+    """Bytes of the files under ``folder`` (0 when it is not there): what setup already put on a drive."""
+    total = 0
+    for current, _dirs, files in os.walk(folder):
+        for name in files:
+            try:
+                total += os.stat(os.path.join(current, name)).st_size
+            except OSError:
+                continue
+    return total
+
+
+def raw_disk_rows(
+    pf: dict[str, Any], home: str, held_gb: Callable[[], float] | None = None
+) -> list[dict[str, Any]]:
+    """The disk and disktype lines for ``home``, with the same rules as stage 1's Get-PreflightRows.
+
+    ``held_gb`` (a locked resume) says how much of the install folder is setup's own work. Below the hard
+    limit the row is still only a warning when free space plus that amount reaches the limit: the shortfall
+    is the models, programs and environments already on the drive, and the 2 GB guard during downloads and
+    NS-E104 from the steps still protect the run.
+    """
     letter = home[:1].upper() if len(home) > 1 and home[1] == ":" else ""
     drive = next((d for d in drives_view(pf) if d["letter"] == letter), None)
     base = {"id": "disk", "label": "Free disk space", "code": "", "hint": ""}
@@ -126,7 +146,11 @@ def raw_disk_rows(pf: dict[str, Any], home: str) -> list[dict[str, Any]]:
         return [{**base, "status": "fail", "code": "NS-E104", "value": f"drive of {home} not found"},
                 {"id": "disktype", "label": "Disk type", "status": "ok", "code": "", "value": "unknown"}]
     free = drive["freeGb"]
-    if free < 40:
+    held = held_gb() if free < 40 and held_gb is not None else 0.0
+    if free < 40 and free + held >= 40:
+        disk = {**base, "status": "warn",
+                "value": f"{free:g} GB free on {letter}:; setup already holds {held:.0f} GB here"}
+    elif free < 40:
         disk = {**base, "status": "fail", "code": "NS-E104", "value": f"{free:g} GB free on {letter}:"}
     elif free < 60:
         disk = {**base, "status": "warn", "value": f"{free:g} GB free on {letter}: (60 GB recommended)"}
@@ -141,15 +165,19 @@ def raw_disk_rows(pf: dict[str, Any], home: str) -> list[dict[str, Any]]:
     return [disk, kind]
 
 
-def check_rows(pf: dict[str, Any], home: str | None = None) -> list[dict[str, Any]]:
+def check_rows(
+    pf: dict[str, Any], home: str | None = None, held_gb: Callable[[], float] | None = None
+) -> list[dict[str, Any]]:
     """One CheckRow per line of the hand-over JSON, in screen order.
 
     With ``home`` the disk lines are worked out again for that install folder (drive picker, typed path).
+    ``held_gb`` is given on a locked resume (see ``raw_disk_rows``).
     """
     rows: list[dict[str, Any]] = []
     source = list(pf.get("checks") or [])
     if home:
-        source = [c for c in source if c.get("id") not in ("disk", "disktype")] + raw_disk_rows(pf, home)
+        source = [c for c in source if c.get("id") not in ("disk", "disktype")]
+        source += raw_disk_rows(pf, home, held_gb)
     for c in source:
         row_id = str(c.get("id", ""))
         if row_id not in CHECK_IDS:

@@ -45,7 +45,12 @@ def test_script_hygiene(script: Path) -> None:
         assert lines[0] == "Set-StrictMode -Version Latest"
         assert lines[1] == "$ErrorActionPreference = 'Stop'"
     assert "Invoke-Expression" not in text and "iex " not in text.lower()
-    assert "ExecutionPolicy" not in text and "Bypass" not in text
+    if script.name == "nightshift-dashboard.ps1":
+        # the only launcher that starts another PowerShell (the hidden window host): the child needs the same
+        # policy bypass the shortcut gave this one, and nothing else changes the policy
+        assert text.count("ExecutionPolicy Bypass") == 1 and "Set-ExecutionPolicy" not in text
+    else:
+        assert "ExecutionPolicy" not in text and "Bypass" not in text
 
 
 @needs_powershell
@@ -239,37 +244,59 @@ def test_open_dashboard_action_runs_the_launcher_that_does_the_warmup() -> None:
     assert "Start-NsDashboardService" in read("nightshift-dashboard.ps1")
 
 
-# --- the console the launcher hid is always restored ---
-AST_PROBE = """
-$errs = $null; $tokens = $null
-$ast = [System.Management.Automation.Language.Parser]::ParseFile($env:NS_PS1, [ref]$tokens, [ref]$errs)
-$kind = [System.Management.Automation.Language.TryStatementAst]
-$tries = $ast.FindAll({ param($n) $n -is $kind }, $true)
-$hit = @($tries | Where-Object {
-    $null -ne $_.Finally -and
-    $_.Finally.Extent.Text.Contains('ShowWindow($consoleHandle, 5)') -and
-    $_.Body.Extent.Text.Contains('& $hostScript')
-})
-Write-Output ('FINALLY_AROUND_HOST=' + $hit.Count)
-"""
-
-
-@needs_powershell
-def test_dashboard_launcher_restores_its_console_in_a_finally_around_the_host_call() -> None:
-    r = pwsh.run_powershell(AST_PROBE, env_extra={"NS_PS1": str(LAUNCHERS / "nightshift-dashboard.ps1")})
-    assert r.returncode == 0 and "FINALLY_AROUND_HOST=1" in r.stdout, r.stdout + r.stderr
+# --- the window host is its own hidden process; the launcher does not keep a console open behind it ---
+def test_dashboard_launcher_starts_the_host_as_its_own_hidden_process_and_ends() -> None:
+    text = read("nightshift-dashboard.ps1")
+    assert "& $hostScript" not in text            # the window no longer lives in the launcher's process
+    start = text.index("Start-Process -FilePath 'powershell.exe'")
+    call = text[start : text.index("\n", start)]
+    assert "-WindowStyle Hidden" in call and "-PassThru" in call and "-WorkingDirectory (Get-NsHome)" in call
+    args_line = text[text.index("$hostArguments ="):][:200]
+    assert "-STA" in args_line and '-File `"$hostScript`"' in args_line and "-Url $url" in args_line
+    assert 'AppPath `"$appPath`"' in args_line         # quoted: the program folder may contain spaces
+    assert "GetConsoleWindow" not in text and "ShowWindow" not in text
+    common = read("_common.ps1")
+    wait = common[common.index("function Wait-NsHostReady") : common.index("function Wait-NsSupervisor")]
+    assert "$Process.HasExited" in wait and "'ready'" in wait and "apphost-" in wait
+    host = read("nightshift-host.ps1")
+    assert "[switch]$Ready" in host and "-Ready" in host.split("add_CoreWebView2InitializationCompleted")[1]
 
 
 def test_dashboard_launcher_only_trusts_a_clean_exit_from_the_host() -> None:
     text = read("nightshift-dashboard.ps1")
     assert "if ($hostCode -eq 0) { return }" in text
     assert "if ($hostCode -ne 3) { return }" not in text
-    # nothing between the host call and the restore can return early
-    host_call = text.index("& $hostScript")
-    finally_at = text.index("finally", host_call)
-    assert "return" not in text[host_call:finally_at]
-    assert text.index("ShowWindow($consoleHandle, 5)") > finally_at
-    assert text.index("if ($hostCode -eq 0) { return }") > text.index("ShowWindow($consoleHandle, 5)")
+    assert "$hostCode = Wait-NsHostReady -Process $hostProcess" in text
+    # the fallback chain after a failed host: Edge or Chrome app window, then the default browser
+    ok_return = text.index("if ($hostCode -eq 0) { return }")
+    assert ok_return < text.index("--app=$url") < text.index("Start-Process $url")
+
+
+def test_the_browser_app_window_never_shows_the_first_run_pages() -> None:
+    text = read("nightshift-dashboard.ps1")
+    fallback = text[text.index('@("--app=$url"') :][:140]
+    assert "'--no-first-run'" in fallback and "'--no-default-browser-check'" in fallback
+
+
+@needs_powershell
+def test_wait_for_the_host_returns_its_exit_code_or_ready(tmp_path: Path) -> None:
+    env = {"NIGHTSHIFT_HOME": str(tmp_path)}
+    # a host that already exited with 3 (WebView2 unavailable): the launcher falls back to the browser
+    gone = run_common(
+        "$p = Start-Process -FilePath 'cmd.exe' -ArgumentList '/c exit 3' -WindowStyle Hidden -PassThru; "
+        "Wait-NsHostReady -Process $p -TimeoutSec 20", env)
+    assert gone.stdout.strip() == "3", gone.stdout + gone.stderr
+    # a host that is running and whose state file says ready: 0 at once (the launcher ends)
+    run = tmp_path / "run"
+    run.mkdir()
+    ready = run_common(
+        "$p = Start-Process -FilePath 'ping.exe' -ArgumentList '-n 30 127.0.0.1' "
+        "-WindowStyle Hidden -PassThru; "
+        "try { "
+        "$j = @{ hwnd = 1; pid = $p.Id; ready = $true } | ConvertTo-Json -Compress; "
+        "[IO.File]::WriteAllText((Join-Path $env:NIGHTSHIFT_HOME 'run\\apphost-dashboard.json'), $j); "
+        "Wait-NsHostReady -Process $p -TimeoutSec 20 } finally { Stop-Process -Id $p.Id -Force }", env)
+    assert ready.stdout.strip() == "0", ready.stdout + ready.stderr
 
 
 # --- host roles: the setup window and the dashboard window are separate single instances ---
@@ -389,3 +416,12 @@ def test_stop_nsengine_posts_the_shutdown_and_waits_for_the_engine_to_go(
     r = run_common("Stop-NsEngine -TimeoutSec 2", env)           # the fake keeps answering: it does not stop
     assert r.stdout.strip() == "False", r.stdout + r.stderr
     assert eng.posts == [("/shutdown", {"grace_s": 10})]
+
+
+def test_the_engine_is_started_from_the_install_home_without_stage_ones_python_path() -> None:
+    common = read("_common.ps1")
+    body = common[common.index("function Start-NsSupervisor") : common.index("function Wait-NsHostReady")]
+    assert "-WorkingDirectory (Get-NsHome)" in body and "Get-NsAppPath" not in body
+    start = body.index("Start-Process")
+    assert body.index("Remove-Item Env:PYTHONPATH") < start
+    assert body.index("Remove-Item Env:NIGHTSHIFT_BOOTSTRAP_UV") < start

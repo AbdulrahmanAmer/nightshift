@@ -72,6 +72,17 @@ def check_ports(ctx: StepContext) -> None:
     ports.ensure_free(runtime_ports(ctx))
 
 
+def stop_own_engine(ctx: StepContext) -> None:
+    """Stop an engine left over from an earlier try before the port check looks at the ports.
+
+    ``ns verify`` starts a detached engine (and its llama-server). When the console was closed while it ran,
+    the engine lives on for up to 30 minutes, and a rerun would stop with NS-E116 against Nightshift's own
+    python.exe. ``ns stop`` is a no-op when nothing runs (s10 makes the same call).
+    """
+    ctx.ui.say("Stopping any Nightshift engine left over from an earlier try ...")
+    ctx.run_tool("ns", ["stop"], timeout=120)
+
+
 def prepare_verify(ctx: StepContext) -> None:
     """Before ``ns verify``: no report from an earlier run, and a start timeout that fits the install drive.
 
@@ -165,6 +176,7 @@ class S08Smoke(Step):
         ensure_baseline(ctx)
         check_vc_runtime(ctx)
         check_programs_present(ctx)
+        stop_own_engine(ctx)
         check_ports(ctx)
         warned: set[str] = set()
         whisper_load_failed = False

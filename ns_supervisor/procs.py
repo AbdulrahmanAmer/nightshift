@@ -224,7 +224,7 @@ def start(service: ServiceDef, logs_dir: Path, *, job: JobObject | None = None) 
         )
     except OSError as e:
         if is_blocked_error(e):
-            raise NsError("NS-E113", f"{blocked_hint(service.cmd[0])} ({e})", cmd=service.cmd) from e
+            raise NsError("NS-E113", f"{blocked_hint(service.cmd[0], e)} ({e})", cmd=service.cmd) from e
         raise NsError("NS-E202", f"cannot start {service.name}: {e}", cmd=service.cmd) from e
     if job is not None:
         job.assign(popen.pid)

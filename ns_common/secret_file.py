@@ -86,6 +86,11 @@ def _read_all(paths: Paths) -> dict[str, str]:
     return {str(k): str(v) for k, v in data.items()} if isinstance(data, dict) else {}
 
 
+def stored_names(paths: Paths) -> set[str]:
+    """Names with a blob in `config/secrets.dpapi` (nothing is decrypted; empty when there is no file)."""
+    return {name for name, blob in _read_all(paths).items() if blob}
+
+
 def store_secret(paths: Paths, name: str, value: str, *, protect: ProtectFn = dpapi_protect) -> Path:
     """Add or replace one secret in `config\\secrets.dpapi` (written atomically)."""
     data = _read_all(paths)

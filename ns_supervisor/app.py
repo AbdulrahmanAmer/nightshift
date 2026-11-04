@@ -22,6 +22,7 @@ from ns_common.config import load_runtime
 from ns_common.errors import NsError
 from ns_common.models import Runtime
 from ns_common.paths import Paths
+from ns_common.singleton import AlreadyRunning, FileLock
 from ns_supervisor import update_check
 from ns_supervisor.core import Supervisor, SupervisorConfig
 from ns_supervisor.health_cfg import read_health_timeout
@@ -192,10 +193,19 @@ def create_app(sup: Supervisor, *, start_dashboard: bool = False, run_monitor: b
     return app
 
 
-def main(argv: list[str] | None = None) -> int:
-    """Entry point for `python -m ns_supervisor.app`."""
-    import uvicorn  # pyright: ignore[reportMissingImports]
+def engine_lock(paths: Paths) -> FileLock:
+    """``run/supervisor.lock``: held while an engine of this home lives (the OS drops it on a crash)."""
+    return FileLock(paths.home / "run" / "supervisor.lock")
 
+
+def main(argv: list[str] | None = None) -> int:
+    """Entry point for `python -m ns_supervisor.app`.
+
+    One engine per home. Its lifespan (state file, children, dashboard) runs before uvicorn binds the port, so
+    two starts close together (Open dashboard pressed twice, the Desktop shortcut while the first engine is
+    still loading) both got that far; the one that then failed to bind removed ``run/supervisor.json`` of the
+    other on its way out. The lock is taken before anything else: a second start says so and exits with 0.
+    """
     ap = argparse.ArgumentParser(prog="ns_supervisor.app")
     ap.add_argument("--headless", action="store_true", help="no console title, no dashboard service")
     ap.add_argument("--port", type=int, default=None)
@@ -203,6 +213,22 @@ def main(argv: list[str] | None = None) -> int:
 
     paths = Paths.from_env()
     paths.logs.mkdir(parents=True, exist_ok=True)
+    lock = engine_lock(paths)
+    try:
+        lock.acquire()
+    except AlreadyRunning as e:
+        who = f" (pid {e.owner})" if e.owner else ""
+        sys.stderr.write(f"The Nightshift engine is already running{who}.\n")
+        return 0
+    try:
+        return _serve(args, paths)
+    finally:
+        lock.release()
+
+
+def _serve(args: argparse.Namespace, paths: Paths) -> int:
+    import uvicorn  # pyright: ignore[reportMissingImports]
+
     try:
         runtime = load_runtime(paths)
     except NsError:

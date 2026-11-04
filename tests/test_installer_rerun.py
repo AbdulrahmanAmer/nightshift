@@ -124,3 +124,53 @@ def test_b03_leaves_a_whole_venv_alone(tmp_path: Path) -> None:
     boot.cmd = cmd
     bootstrap.B03SetupEnv().run(boot)
     assert not [c for c in seen if c[1] == "venv"]                           # python.exe is there: no uv venv
+
+
+# ---- A2-#13: an update through INSTALL.cmd re-keys s04 and s08 ------------------------------------------
+def staged_bundle(root: Path, version: str) -> Path:
+    """What dev/make_bundle.ps1 stages: the repo manifest with its version set from VERSION."""
+    import re
+
+    root.mkdir(parents=True)
+    text = (Path(__file__).resolve().parents[1] / "manifest.json").read_text(encoding="utf-8")
+    top_level = re.compile(r'(?m)^(  "version"\s*:\s*")[^"]*(")')
+    text = top_level.sub(lambda m: m.group(1) + version + m.group(2), text, count=1)
+    (root / "manifest.json").write_text(text, encoding="utf-8")
+    (root / "VERSION").write_text(version + "\n", encoding="utf-8")
+    (root / "pyproject.toml").write_text("[project]\nname='x'\n", encoding="utf-8")
+    return root
+
+
+def test_an_update_through_install_cmd_makes_s04_and_s08_run_again(tmp_path: Path) -> None:
+    from installer.stage2.steps.s08_smoke import S08Smoke
+    from installer.stage2.web import appcopy
+    from ns_common.config import load_manifest
+
+    home = tmp_path / "home"
+    appcopy.install_app(staged_bundle(tmp_path / "zip-old", "0.1.7"), home)
+
+    def context():
+        app = home / "app"                           # the wizard reads the manifest of the installed copy
+        return make_test_context(
+            tmp_path, raw_answers=example_answers(), resolve=True, app_path=app,
+            manifest=load_manifest(app / "manifest.json"),
+        )
+
+    ctx = context()
+    assert ctx.manifest.version == "0.1.7"
+    for name in ("studio", "supervisor"):
+        python = ctx.venv_python(name)
+        python.parent.mkdir(parents=True, exist_ok=True)
+        python.write_text("MZ", encoding="utf-8")
+    ctx.set_flag("venvs_installed", True)
+    ctx.set_flag("venvs_version", ctx.manifest.version)
+    ctx.set_flag("venvs_app", str(ctx.app_path))
+    ctx.set_flag("smoke", "passed")
+    ctx.set_flag("smoke_version", ctx.manifest.version)
+    assert S04Venvs().check(ctx) is True and S08Smoke().check(ctx) is True        # nothing to do for 0.1.7
+
+    appcopy.install_app(staged_bundle(tmp_path / "zip-new", "0.1.8"), home)  # INSTALL.cmd from the new zip
+    updated = context()
+    assert updated.manifest.version == "0.1.8"
+    assert S04Venvs().check(updated) is False                      # the environments are refreshed ...
+    assert S08Smoke().check(updated) is False                      # ... and the final test runs again

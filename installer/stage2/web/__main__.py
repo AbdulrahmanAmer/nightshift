@@ -2,7 +2,7 @@
 
 Exit codes: 0 done or closed, 10 a blocking check (headless), 11 answers.json unreadable, 12 a required tool
 could not be installed, 13 Python could not be set up (stage 1), 14 the setup environment could not be built
-or the server did not start, 130 stopped.
+or the server did not start, 15 another setup is already running (headless), 130 stopped.
 """
 
 from __future__ import annotations

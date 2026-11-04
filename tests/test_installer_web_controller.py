@@ -7,10 +7,12 @@ from pathlib import Path
 
 import pytest
 
-from installer.stage2.web import answers_view, controller, samples
+from installer.stage2.web import answers_view, controller, preflight, samples
 from installer.stage2.web.controller import Config, SetupController
 from installer.stage2.web.fakes import ScriptedEngine, fake_effects, sample_handover
 from installer.stage2.web.model import ENGINE_STEPS, STEP_ORDER
+from ns_common.paths import Paths
+from ns_common.secret_file import store_secret
 
 ROOT = Path(__file__).resolve().parents[1]
 KEY_P, KEY_X = "KEY-pexels-1a2b", "KEY-pixabay-3c4d"
@@ -444,6 +446,7 @@ def test_a_second_run_resumes_what_the_first_one_finished(tmp_path, monkeypatch)
     part = first.home / "models" / "llm" / "Qwen3-14B-Q4_K_M.gguf.part"
     part.parent.mkdir(parents=True)
     part.write_bytes(b"x" * 2048)
+    store_secret(Paths(first.home), "pexels_api_key", KEY_P, protect=lambda b: b)     # s01 stored it earlier
 
     second = Setup(tmp_path, monkeypatch, script=finish_script)
     state = second.snap()
@@ -451,7 +454,8 @@ def test_a_second_run_resumes_what_the_first_one_finished(tmp_path, monkeypatch)
     assert state["phase"] == "downloading" and state["run"] == "idle"   # Welcome resume screen, not Choices
     assert state["startedAt"] == "2026-11-02T21:00:00"
     assert state["answers"]["channel"]["displayName"] == "After Dark Tales"
-    assert state["answers"]["pexelsKeySet"]
+    assert state["answers"]["pexelsKeySet"] and not state["answers"]["pixabayKeySet"]
+    assert state["notices"] == []                                    # one key is enough
     done = [st["id"] for st in state["steps"] if st["status"] == "done"]
     assert done == ["b01_tools", "b02_home", "b03_setup_env", "s01_questions", "s02_download_bins"]
     row = next(r for r in state["downloads"]["items"] if r["key"] == "Qwen3-14B-Q4_K_M.gguf")
@@ -462,6 +466,192 @@ def test_a_second_run_resumes_what_the_first_one_finished(tmp_path, monkeypatch)
     state = second.until(lambda st: st["run"] == "finished")
     assert state["phase"] == "done"
     assert json.loads((cfg_dir / "answers.json").read_text(encoding="utf-8")) == saved      # left alone
+
+
+# ------------------------------------------------------------------- INSTALL.cmd over a finished install
+def finished_install(s, old_zip: Path) -> None:
+    """What a completed setup leaves behind: the program copy, the answers and every step done."""
+    from installer.stage2.web import appcopy
+
+    appcopy.install_app(old_zip, s.home)
+    cfg_dir = s.home / "config"
+    cfg_dir.mkdir(parents=True, exist_ok=True)
+    answers_view.write_answers(cfg_dir / "answers.json", answers_view.draft_to_answers(draft(s.home)))
+    (cfg_dir / "install_state.json").write_text(json.dumps({
+        "version": "0.1.4", "app_path": str(s.home / "app"), "profile": "gpu",
+        "started_at": "2026-11-02T21:00:00", "completed_at": "2026-11-02T22:05:00",
+        "steps": {i: {"status": "done", "error": None, "finished_at": "2026-11-02T22:00:00"}
+                  for i in STEP_ORDER}}), encoding="utf-8")
+
+
+def test_install_cmd_over_a_finished_install_of_the_same_program_shows_done(tmp_path, monkeypatch):
+    from tests.test_installer_app_copy import app_setup, fake_zip_folder
+
+    zip_a = fake_zip_folder(tmp_path / "zip-a", "0.1.4")
+    first = app_setup(tmp_path, monkeypatch, zip_a)
+    finished_install(first, zip_a)
+
+    again = app_setup(tmp_path, monkeypatch, zip_a)             # a new server over the finished install
+    state = again.snap()
+    assert state["phase"] == "done" and state["run"] == "finished" and state["answersLocked"] is True
+    assert all(st["status"] == "done" for st in state["steps"])
+    result = state["result"]
+    assert result["home"] == str(again.home) and result["appPath"] == str(again.home / "app")
+    assert result["outbox"] == str(again.home / "outbox") and result["runTime"] == "03:00"
+    assert result["durationS"] == 65 * 60                          # from the saved start and finish
+    assert again.ctl.do_action("open-dashboard")[0] == 200         # the Done screen's button works
+    assert any(a[-1].endswith("nightshift-dashboard.ps1") for a in again.fx.launched)
+    assert KEY_P not in json.dumps(state)
+
+
+def test_install_cmd_from_a_newer_zip_over_a_finished_install_updates(tmp_path, monkeypatch):
+    from installer.stage2.web import appcopy
+    from installer.stage2.web.controller import UPDATE_STEPS
+    from tests.test_installer_app_copy import app_setup, fake_zip_folder
+
+    zip_old = fake_zip_folder(tmp_path / "zip-old", "0.1.4")
+    finished_install(app_setup(tmp_path, monkeypatch, zip_old), zip_old)
+    zip_new = fake_zip_folder(tmp_path / "zip-new", "0.1.5")
+
+    s = app_setup(tmp_path, monkeypatch, zip_new, finish_script)
+    state = s.snap()
+    status = {st["id"]: st["status"] for st in state["steps"]}
+    assert {i for i, v in status.items() if v == "pending"} == set(UPDATE_STEPS)
+    assert set(UPDATE_STEPS) >= {"b02_home", "b03_setup_env", "s04_venvs", "s08_smoke",
+                                 "s09_shortcuts_scheduler", "s10_summary"}
+    assert state["result"] is None and state["run"] == "idle" and state["resumed"] is True
+    assert state["phase"] == "downloading"                  # the Welcome resume screen, Continue updates
+    saved = json.loads((s.home / "config" / "install_state.json").read_text(encoding="utf-8"))
+    assert saved["steps"]["s04_venvs"]["status"] == "pending"
+    assert saved["steps"]["s01_questions"]["status"] == "done"
+    assert appcopy.installed_version(s.home) == "0.1.4"             # nothing is copied before Continue
+
+    assert s.ctl.do_action("start")[0] == 200
+    state = s.until(lambda st: st["run"] == "finished", what="the update to finish")
+    assert state["phase"] == "done" and state["result"] is not None
+    assert appcopy.installed_version(s.home) == "0.1.5"
+    assert (s.home / "app.prev" / "VERSION").read_text(encoding="utf-8").strip() == "0.1.4"
+    argv = s.engine.argv
+    assert argv[argv.index("--app-path") + 1] == str(s.home / "app")
+
+
+def test_a_locked_resume_on_a_nearly_full_drive_is_not_blocked_by_its_own_files(tmp_path, monkeypatch):
+    from tests.test_installer_app_copy import app_setup, fake_zip_folder
+
+    zip_a = fake_zip_folder(tmp_path / "zip-a", "0.1.4")
+    s = app_setup(tmp_path, monkeypatch, zip_a)
+    finished_install(s, zip_a)
+    state = json.loads((s.home / "config" / "install_state.json").read_text(encoding="utf-8"))
+    state["steps"]["s08_smoke"]["status"] = "pending"
+    (s.home / "config" / "install_state.json").write_text(json.dumps(state), encoding="utf-8")
+    letter = str(s.home)[0].upper()
+    monkeypatch.setattr(preflight, "folder_bytes", lambda _home: 20 * 1024 ** 3)       # setup's own downloads
+    again = app_setup(tmp_path, monkeypatch, zip_a)
+    again.ctl.pf["drives"] = [{"letter": letter, "free_gb": 30.0, "type": "SSD"}]
+    again.fx.probe = lambda app, out, home: again.ctl.pf
+    again.ctl._recheck()
+    snap = again.snap()
+    disk = next(c for c in snap["checks"] if c["id"] == "disk")
+    assert snap["answersLocked"] is True
+    assert disk["status"] == "warn" and "setup already holds 20 GB" in disk["value"] and not snap["blocking"]
+    # the same drive on a first run (nothing locked) still blocks
+    fresh = Setup(tmp_path / "other", monkeypatch)
+    fresh.ctl.pf["drives"] = [{"letter": str(fresh.home)[0].upper(), "free_gb": 30.0, "type": "SSD"}]
+    fresh.fx.probe = lambda app, out, home: fresh.ctl.pf
+    fresh.ctl._recheck()
+    assert fresh.snap()["blocking"] is True
+
+
+def test_a_half_finished_install_is_left_alone_by_a_newer_zip(tmp_path, monkeypatch):
+    from tests.test_installer_app_copy import app_setup, fake_zip_folder
+
+    zip_a = fake_zip_folder(tmp_path / "zip-a", "0.1.4")
+    s = app_setup(tmp_path, monkeypatch, zip_a)
+    finished_install(s, zip_a)
+    state = json.loads((s.home / "config" / "install_state.json").read_text(encoding="utf-8"))
+    state["steps"]["s08_smoke"]["status"] = "pending"           # setup stopped before the smoke test
+    (s.home / "config" / "install_state.json").write_text(json.dumps(state), encoding="utf-8")
+    half = app_setup(tmp_path, monkeypatch, fake_zip_folder(tmp_path / "zip-b", "0.1.5"))
+    snap = half.snap()
+    assert snap["result"] is None and snap["run"] == "idle"
+    assert [st["id"] for st in snap["steps"] if st["status"] == "pending"] == ["s08_smoke"]
+
+
+def test_a_resume_with_no_stored_key_says_so_instead_of_showing_a_key_as_set(tmp_path, monkeypatch):
+    from tests.test_installer_app_copy import app_setup, fake_zip_folder
+
+    zip_a = fake_zip_folder(tmp_path / "zip-a", "0.1.4")
+    s = app_setup(tmp_path, monkeypatch, zip_a)
+    finished_install(s, zip_a)
+    state = json.loads((s.home / "config" / "install_state.json").read_text(encoding="utf-8"))
+    state["steps"]["s08_smoke"]["status"] = "pending"
+    (s.home / "config" / "install_state.json").write_text(json.dumps(state), encoding="utf-8")
+
+    bare = app_setup(tmp_path, monkeypatch, zip_a).snap()  # no key stored anywhere
+    assert bare["answers"]["pexelsKeySet"] is False and bare["answers"]["pixabayKeySet"] is False
+    assert [n["code"] for n in bare["notices"]] == ["no-stock-key"]
+    assert "Pixabay key" in bare["notices"][0]["whatToDo"] and bare["notices"][0]["title"]
+
+    store_secret(Paths(s.home), "pixabay_api_key", KEY_X, protect=lambda b: b)     # s01 stored it
+    kept = app_setup(tmp_path, monkeypatch, zip_a).snap()
+    assert kept["answers"]["pixabayKeySet"] is True and kept["answers"]["pexelsKeySet"] is False
+    assert kept["notices"] == []
+    assert KEY_X not in json.dumps(kept)                                # only the fact, never the value
+
+
+def test_the_unattended_run_keeps_the_pc_awake_like_the_window_does(tmp_path, monkeypatch):
+    from installer.stage2.web import keepawake
+
+    s = Setup(tmp_path, monkeypatch)
+    answers = tmp_path / "answers.json"
+    answers_view.write_answers(answers, answers_view.draft_to_answers(draft(s.home)))
+    s.cfg.answers, s.cfg.headless = answers, True
+    awake_at_wizard: list[list[int]] = []
+
+    def fake_run(argv, **kw):
+        awake_at_wizard.append(list(s.fx.awake))                 # what was set when the wizard started
+        return type("Done", (), {"returncode": 0})()
+
+    monkeypatch.setattr(controller.subprocess, "run", fake_run)
+    assert s.ctl.run_headless() == 0
+    both = keepawake.ES_CONTINUOUS | keepawake.ES_SYSTEM_REQUIRED
+    assert awake_at_wizard == [[both]]                           # held while the wizard ran ...
+    assert s.fx.awake == [both, keepawake.ES_CONTINUOUS]         # ... and given back afterwards
+
+
+def test_a_second_unattended_setup_is_refused_while_the_first_one_runs(tmp_path, monkeypatch):
+    from ns_common.singleton import FileLock
+
+    s = Setup(tmp_path, monkeypatch)
+    answers = tmp_path / "answers.json"
+    answers_view.write_answers(answers, answers_view.draft_to_answers(draft(s.home)))
+    s.cfg.answers, s.cfg.headless = answers, True
+    first = FileLock(s.cfg.data_dir / "bootstrap" / "setup.lock")
+    first.acquire()                                               # the first INSTALL.cmd is running
+    try:
+        assert s.ctl.run_headless() == controller.EXIT_ALREADY_RUNNING == 15
+    finally:
+        first.release()
+    assert any("already running" in line for line in s.fx.console_lines)
+    assert s.fx.awake == []                                       # it did nothing at all
+    assert not (s.home / "venvs").exists()
+
+
+def test_open_dashboard_starts_the_engine_without_stage_ones_pythonpath(tmp_path, monkeypatch):
+    """The engine must import the program from <home>\\app, not from the folder the zip was extracted to."""
+    seen: list[dict] = []
+    s = Setup(tmp_path, monkeypatch)
+    s.fx.launch_captured = lambda argv, env=None, **kw: (seen.append({"argv": argv, "env": env}), (0, ""))[1]
+    s.ctl.store.update(lambda st: st.update(phase="done"))
+    assert s.ctl._act_open_dashboard(None) == "Opening the dashboard"
+    env = seen[0]["env"]
+    assert env["PYTHONPATH"] is None and env["NIGHTSHIFT_BOOTSTRAP_UV"] is None      # None: removed
+    assert env["NS_DASHBOARD_NO_HOST"] == "1" and env["NIGHTSHIFT_HOME"] == str(s.home)
+    monkeypatch.setenv("PYTHONPATH", str(ROOT))
+    monkeypatch.setenv("NIGHTSHIFT_BOOTSTRAP_UV", "C:/x/uv.exe")
+    child = controller.child_env(env)
+    assert "PYTHONPATH" not in child and "NIGHTSHIFT_BOOTSTRAP_UV" not in child
+    assert child["NS_DASHBOARD_NO_HOST"] == "1" and "PATH" in {k.upper() for k in child}
 
 
 # ------------------------------------------------------------------------------------------ events

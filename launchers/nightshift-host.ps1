@@ -193,10 +193,11 @@ function Remove-RunFile {
 }
 
 function Write-RunFile {
-    param([IntPtr]$Handle)
+    # ready = WebView2 initialised and the page is loading: the Dashboard launcher waits for it, then ends.
+    param([IntPtr]$Handle, [switch]$Ready)
     try {
         New-Item -ItemType Directory -Force -Path (Split-Path -Parent $runFile) | Out-Null
-        $obj = [ordered]@{ hwnd = $Handle.ToInt64(); pid = $PID }
+        $obj = [ordered]@{ hwnd = $Handle.ToInt64(); pid = $PID; ready = [bool]$Ready }
         [IO.File]::WriteAllText($runFile, ($obj | ConvertTo-Json -Compress), (New-Object System.Text.UTF8Encoding($false)))
     }
     catch {
@@ -389,6 +390,7 @@ try {
             return
         }
         $script:ready = $true
+        Write-RunFile -Handle (New-Object System.Windows.Interop.WindowInteropHelper $script:win).Handle -Ready
         $core = $script:wv.CoreWebView2
         $core.Settings.AreDefaultContextMenusEnabled = $false
         $core.Settings.AreDevToolsEnabled = ($env:NS_DEVTOOLS -eq '1')

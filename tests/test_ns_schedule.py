@@ -34,7 +34,15 @@ def test_install_script_has_every_required_setting(tmp_path: Path) -> None:
 
 def test_single_quotes_in_paths_are_escaped(tmp_path: Path) -> None:
     script = schedule.build_install_script(Paths(tmp_path / "O'Brien"), "03:00", tmp_path / "it's")
-    assert "O''Brien" in script and "it''s" in script
+    assert "O''Brien" in script
+
+
+def test_the_task_does_not_run_in_the_program_folder(tmp_path: Path) -> None:
+    """A cwd inside <home>\\app would make every update fail while the 03:00 run (or its children) lives."""
+    paths = Paths(tmp_path / "ns")
+    script = schedule.build_install_script(paths, "03:00", tmp_path / "ns" / "app")
+    wd = script.split("-WorkingDirectory ")[1].split("\n")[0]
+    assert wd == f"'{paths.home}'" and str(tmp_path / "ns" / "app") not in wd
 
 
 def test_install_runs_powershell_and_saves_the_time(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
