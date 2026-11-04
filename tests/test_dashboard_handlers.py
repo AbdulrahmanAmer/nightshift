@@ -585,7 +585,7 @@ def test_api_keys_are_stored_but_never_echoed_or_logged(tmp_home: Path):
     assert secret not in json.dumps(dash.settings.get_settings())
     assert dash.settings.set_key("pixabay_api_key", "k")["name"] == "pixabay_api_key"
     assert code_of(dash.settings.set_key, "youtube", "k") == "unknown_key"
-    assert code_of(dash.settings.set_key, "pexels", "   ") == "bad_key"
+    assert dash.settings.set_key("pexels", "   ")["set"] is False          # an empty value clears the key
     logged = "".join(f.read_text(encoding="utf-8") for f in state.paths.logs.glob("*.jsonl"))
     assert "api_key_set" in logged and secret not in logged
 
