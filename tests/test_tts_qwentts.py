@@ -5,6 +5,7 @@ the pinned upstream `--help` documents, so a guessed flag fails the test the way
 """
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -473,3 +474,130 @@ def test_e314_clears_without_restarting_the_service(tmp_path: Path, models: Path
     after = client.post("/v1/voices/design", json=body)
     assert after.status_code == 200, after.text
     assert after.json()["name"] == "velvet"
+
+
+# ---------------------------------------------------------------- ASCII-only paths (0.1.7, NS-W301)
+# qwen-tts.exe and qwen-codec.exe never convert argv to UTF-8, so every path handed to them has to be ASCII.
+# `%TEMP%` holds the Windows user name, which may be Arabic: the scratch files live under the install folder.
+
+ARABIC = "\u0645\u0633\u062a\u062e\u062f\u0645"  # "user"
+
+
+def path_args(argv: list[str]) -> list[str]:
+    flags = {"--model", "--codec", "--talker", "--ref-spk", "--ref-rvq", "--ref-text", "-o", "-i"}
+    return [v for f, v in zip(argv, argv[1:], strict=False) if f in flags]
+
+
+@pytest.fixture
+def arabic_temp(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """`%TEMP%` of a Windows user with an Arabic name."""
+    temp = tmp_path / "Users" / ARABIC / "AppData" / "Local" / "Temp"
+    temp.mkdir(parents=True)
+    for var in ("TEMP", "TMP", "TMPDIR"):
+        monkeypatch.setenv(var, str(temp))
+    monkeypatch.setattr("tempfile.tempdir", None)
+    return temp
+
+
+def test_the_stand_in_rejects_a_non_ascii_path_like_the_real_tool(models: Path, tmp_path: Path):
+    out = tmp_path / ARABIC / "o.wav"
+    out.parent.mkdir()
+    cmd = [sys.executable, str(SHIM), "qwen-tts", "--model", str(models / CUSTOM)]
+    cmd += ["--codec", str(models / TOKENIZER_FILE), "--speaker", "ryan", "-o", str(out)]
+    proc = subprocess.run(cmd, input=b"hello there", capture_output=True, check=False, timeout=60)
+    assert proc.returncode == 1 and b"non-ASCII" in proc.stderr
+
+
+def test_synth_never_uses_the_windows_temp_folder(
+    arabic_temp: Path, tmp_path: Path, models: Path, calls: Path
+):
+    scratch = tmp_path / "home" / "cache" / "tts-tmp"
+    eng = QwenttsEngine(tmp_path / "bin", models, timeout_s=60, launcher=launcher(), tmp_dir=scratch)
+    assert len(eng.synth("Hello there friend.", RYAN)) > 0
+    (call,) = recorded(calls)
+    out = Path(call["argv"][-1])
+    assert out.name == "out.wav" and scratch in out.parents
+    assert all(a.isascii() for a in path_args(call["argv"]))
+    assert list(scratch.iterdir()) == []  # cleaned after the call
+    assert list(arabic_temp.iterdir()) == []  # nothing was written to %TEMP%
+
+
+def test_the_scratch_folder_is_cleaned_when_the_tool_fails(
+    tmp_path: Path, models: Path, calls: Path, monkeypatch: pytest.MonkeyPatch
+):
+    scratch = tmp_path / "home" / "cache" / "tts-tmp"
+    eng = QwenttsEngine(tmp_path / "bin", models, timeout_s=60, launcher=launcher(), tmp_dir=scratch)
+    monkeypatch.setenv("NS_FAKE_QWEN_FAIL", "qwen-tts")
+    with pytest.raises(NsError):
+        eng.synth("Hello there friend.", RYAN)
+    assert scratch.is_dir() and list(scratch.iterdir()) == []
+
+
+def test_old_scratch_folders_of_a_crashed_run_are_removed(tmp_path: Path, models: Path, calls: Path):
+    scratch = tmp_path / "home" / "cache" / "tts-tmp"
+    old, fresh = scratch / "c-old", scratch / "c-fresh"
+    old.mkdir(parents=True)
+    fresh.mkdir()
+    (old / "out.wav").write_bytes(b"x")
+    stamp = old.stat().st_mtime - 3 * 86400
+    os.utime(old, (stamp, stamp))
+    eng = QwenttsEngine(tmp_path / "bin", models, timeout_s=60, launcher=launcher(), tmp_dir=scratch)
+    eng.synth("Hello there friend.", RYAN)
+    assert not old.exists() and fresh.is_dir()
+
+
+def test_voice_encoding_and_design_use_the_scratch_folder_too(
+    arabic_temp: Path, tmp_path: Path, models: Path, calls: Path
+):
+    scratch = tmp_path / "home" / "cache" / "tts-tmp"
+    eng = QwenttsEngine(tmp_path / "bin", models, timeout_s=60, launcher=launcher(), tmp_dir=scratch)
+    eng.make_embedding(ref_wav(tmp_path / "ref.wav"), "what I said", "English")
+    eng.design_to_embedding("male, young adult, moderate pitch", "English")
+    runs = recorded(calls)
+    assert [r["tool"] for r in runs] == ["qwen-codec", "qwen-tts", "qwen-codec"]
+    for r in runs:
+        assert all(a.isascii() for a in path_args(r["argv"]))
+        assert all(scratch in Path(a).parents for a in path_args(r["argv"])[-1:])
+    assert list(scratch.iterdir()) == [] and list(arabic_temp.iterdir()) == []
+
+
+@pytest.mark.parametrize("batch", [False, True])
+def test_a_voice_stored_outside_ascii_paths_is_copied_before_the_tool_reads_it(
+    tmp_path: Path, models: Path, calls: Path, batch: bool
+):
+    folder = voice_folder(tmp_path / ARABIC, "me")
+    voice = VoiceSpec(name="me", mode="clone", embedding_path=str(folder / "speaker.spk"))
+    scratch = tmp_path / "home" / "cache" / "tts-tmp"
+    eng = QwenttsEngine(tmp_path / "bin", models, timeout_s=60, launcher=launcher(), tmp_dir=scratch)
+    if batch:
+        out = eng.synth_batch(["First one here.", "Second one there."], voice)
+        assert len(out) == 2
+    else:
+        assert len(eng.synth("Hello there friend.", voice)) > 0
+    (call,) = recorded(calls)
+    argv = call["argv"]
+    assert all(a.isascii() for a in path_args(argv))
+    for flag in ("--ref-spk", "--ref-rvq", "--ref-text"):
+        assert scratch in Path(argv[argv.index(flag) + 1]).parents
+    assert (folder / "speaker.spk").is_file()  # the stored voice itself is untouched
+    assert list(scratch.iterdir()) == []
+
+
+def test_ascii_voice_files_are_passed_as_they_are(tmp_path: Path, models: Path, calls: Path):
+    folder = voice_folder(tmp_path / "voices", "me")
+    voice = VoiceSpec(name="me", mode="clone", embedding_path=str(folder / "speaker.spk"))
+    eng = QwenttsEngine(tmp_path / "bin", models, timeout_s=60, launcher=launcher())
+    eng.synth_batch(["First one here.", "Second one there."], voice)
+    argv = recorded(calls)[0]["argv"]
+    assert argv[argv.index("--ref-spk") + 1] == str(folder / "speaker.spk")
+
+
+def test_the_service_engine_scratches_under_the_install_folder(tmp_path: Path):
+    from ns_common.models import TtsCfg
+    from ns_common.paths import Paths
+    from ns_tts.engine import select_engine
+
+    paths = Paths(tmp_path / "Nightshift")
+    eng = select_engine(TtsCfg(), paths, prefer="qwentts")
+    assert isinstance(eng, QwenttsEngine)
+    assert eng.tmp_root == paths.home / "cache" / "tts-tmp" == paths.cache_tts_tmp

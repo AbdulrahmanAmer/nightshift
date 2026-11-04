@@ -31,50 +31,58 @@
         "repo": "Qwen/Qwen3-14B-GGUF",
         "file": "Qwen3-14B-Q4_K_M.gguf",
         "sha256": "500a8806e85ee9c83f3ae08420295592451379b4f8cf2d0f41c15dffeb6b81f0",
-        "bytes": 9001752960
+        "bytes": 9001752960,
+        "revision": "530227a7d994db8eca5ab5ced2fb692b614357fd"
       },
       "llm_balanced": {
         "repo": "mudler/Qwen3.6-35B-A3B-APEX-MTP-GGUF",
         "file": "Qwen3.6-35B-A3B-APEX-MTP-I-Mini.gguf",
         "sha256": "6c2092ff43056701fdf431f01fb62334d60500953dc270dea2a387f1bb53d99b",
-        "bytes": 14272220768
+        "bytes": 14272220768,
+        "revision": "28ea82d91803164a535589a6ec686ba9cc6bd593"
       },
       "llm_best": {
         "repo": "unsloth/Qwen3.6-35B-A3B-MTP-GGUF",
         "file": "Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf",
         "sha256": "55983c5a75a1ab969824077b3bb3de4146e82a9234072b48ad4e8f92ad3fe9f1",
-        "bytes": 22853663008
+        "bytes": 22853663008,
+        "revision": "5bc3e238d916f48a861bac2f8a1990a0e9b7e98d"
       },
       "story_llm": {
         "repo": "Youssofal/Qwen3.6-35B-A3B-Abliterated-Heretic-GGUF",
         "file": "Qwen3.6-35B-A3B-Abliterated-Heretic-Q4_K_M/Qwen3.6-35B-A3B-Abliterated-Heretic-Q4_K_M.gguf",
         "sha256": "ae2fb73ac0da875640269f1e65e9c7fb415b066c6d544c3eef9adb0d03f04792",
-        "bytes": 21166758336
+        "bytes": 21166758336,
+        "revision": "4c22107061e656fb2a87a3ec2491bb61975eb581"
       },
       "embed": {
         "repo": "nomic-ai/nomic-embed-text-v1.5-GGUF",
         "file": "nomic-embed-text-v1.5.Q8_0.gguf",
         "sha256": "3e24342164b3d94991ba9692fdc0dd08e3fd7362e0aacc396a9a5c54a544c3b7",
-        "bytes": 146146432
+        "bytes": 146146432,
+        "revision": "0188c9bf409793f810680a5a431e7b899c46104c"
       },
       "tts": [
         {
           "repo": "Serveurperso/Qwen3-TTS-GGUF",
           "file": "qwen-talker-1.7b-customvoice-Q8_0.gguf",
           "sha256": "cab2cff67a0a557310febe558dc83076b28ed790e491867eb2751759f4cd89fa",
-          "bytes": 2042834304
+          "bytes": 2042834304,
+          "revision": "b7ee2e8c7459c3bea99da23e3d178125a7d1713c"
         },
         {
           "repo": "Serveurperso/Qwen3-TTS-GGUF",
           "file": "qwen-talker-1.7b-base-Q8_0.gguf",
           "sha256": "4b9a33a236908dd9435a42f7a396e38038329d053b704342a6413c08544c4fda",
-          "bytes": 2079448256
+          "bytes": 2079448256,
+          "revision": "b7ee2e8c7459c3bea99da23e3d178125a7d1713c"
         },
         {
           "repo": "Serveurperso/Qwen3-TTS-GGUF",
           "file": "qwen-tokenizer-12hz-Q8_0.gguf",
           "sha256": "1883beeed99348fc35e23dd225e9082f93f6f8c109330a33d935baa8acdbfd94",
-          "bytes": 291150624
+          "bytes": 291150624,
+          "revision": "b7ee2e8c7459c3bea99da23e3d178125a7d1713c"
         }
       ],
       "tts_optional": [
@@ -82,13 +90,14 @@
           "repo": "Serveurperso/Qwen3-TTS-GGUF",
           "file": "qwen-talker-1.7b-voicedesign-Q8_0.gguf",
           "sha256": "575610ab1ddcca4dca6bd9a64bcd859d93bbad8764f9cab24e1dbc0c51f62276",
-          "bytes": 2042833824
+          "bytes": 2042833824,
+          "revision": "b7ee2e8c7459c3bea99da23e3d178125a7d1713c"
         }
       ],
       "whisper_model": "distil-large-v3",
       "whisper_repo": {
         "repo": "Systran/faster-distil-whisper-large-v3",
-        "revision": "main",
+        "revision": "c3058b475261292e64a0412df1d2681c06260fab",
         "files_sha256": {
           "model.bin": "b79368e19b6623813609431a6e5ee309a71506701ebc49fd7820e692dec7c5f5"
         }
@@ -99,34 +108,38 @@
         "repo": "Qwen/Qwen3-1.7B-GGUF",
         "file": "Qwen3-1.7B-Q8_0.gguf",
         "sha256": "061b54daade076b5d3362dac252678d17da8c68f07560be70818cace6590cb1a",
-        "bytes": 1834426016
+        "bytes": 1834426016,
+        "revision": "90862c4b9d2787eaed51d12237eafdfe7c5f6077"
       },
       "story_llm": null,
       "embed": {
         "repo": "nomic-ai/nomic-embed-text-v1.5-GGUF",
         "file": "nomic-embed-text-v1.5.Q8_0.gguf",
         "sha256": "3e24342164b3d94991ba9692fdc0dd08e3fd7362e0aacc396a9a5c54a544c3b7",
-        "bytes": 146146432
+        "bytes": 146146432,
+        "revision": "0188c9bf409793f810680a5a431e7b899c46104c"
       },
       "tts": [
         {
           "repo": "Serveurperso/Qwen3-TTS-GGUF",
           "file": "qwen-talker-0.6b-customvoice-Q8_0.gguf",
           "sha256": "4eb38675c736ed6ac72012846ac8d6ef80e5af8bc05726870f0b3a6569588519",
-          "bytes": 968588544
+          "bytes": 968588544,
+          "revision": "b7ee2e8c7459c3bea99da23e3d178125a7d1713c"
         },
         {
           "repo": "Serveurperso/Qwen3-TTS-GGUF",
           "file": "qwen-tokenizer-12hz-Q8_0.gguf",
           "sha256": "1883beeed99348fc35e23dd225e9082f93f6f8c109330a33d935baa8acdbfd94",
-          "bytes": 291150624
+          "bytes": 291150624,
+          "revision": "b7ee2e8c7459c3bea99da23e3d178125a7d1713c"
         }
       ],
       "tts_optional": [],
       "whisper_model": "tiny",
       "whisper_repo": {
         "repo": "Systran/faster-whisper-tiny",
-        "revision": "main",
+        "revision": "d90ca5fe260221311c53c58e660288d3deb8d356",
         "files_sha256": {
           "model.bin": "dcb76c6586fc06cbdac6dd21f14cfd129cc4cdd9dce19bf4ffa62e59cbe6e6d1"
         }
@@ -186,7 +199,7 @@
     },
     "yunet": {
       "version": "2023mar",
-      "url": "https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx",
+      "url": "https://github.com/opencv/opencv_zoo/raw/f12e12798e8314f7c074a6656816c048dcc95b7a/models/face_detection_yunet/face_detection_yunet_2023mar.onnx",
       "sha256": "8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4"
     },
     "ffmpeg": {
@@ -199,5 +212,10 @@
       "url": "https://download.visualstudio.microsoft.com/download/pr/990c720a-46ce-4dc7-87b9-c2eb615d34b9/CC0FF0EB1DC3F5188AE6300FAEF32BF5BEEBA4BDD6E8E445A9184072096B713B/VC_redist.x64.exe",
       "sha256": "cc0ff0eb1dc3f5188ae6300faef32bf5beeba4bdd6e8e445a9184072096b713b"
     }
+  },
+  "tts_fallback_revisions": {
+    "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice": "0c0e3051f131929182e2c023b9537f8b1c68adfe",
+    "Qwen/Qwen3-TTS-12Hz-1.7B-Base": "fd4b254389122332181a7c3db7f27e918eec64e3",
+    "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign": "5ecdb67327fd37bb2e042aab12ff7391903235d3"
   }
 }
