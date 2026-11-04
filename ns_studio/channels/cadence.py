@@ -189,6 +189,19 @@ def _last_master_at(db: Db, channel: str, now: datetime) -> datetime | None:
     return max(stamps) if stamps else None
 
 
+def _masters_since(db: Db, channel: str, since: datetime, now: datetime) -> int:
+    """Masters that count for the week: finished long videos since `since`, plus long jobs still running."""
+    done = db.one(
+        "select count(distinct job_id) n from outputs where channel=? and kind='long' and created_at >= ?",
+        (channel, since.isoformat(timespec="seconds")),
+    )
+    running = db.one(
+        "select count(*) n from combos where channel=? and item='long' and created_at >= ?",
+        (channel, (now - timedelta(hours=IN_PROGRESS_H)).isoformat(timespec="seconds")),
+    )
+    return (int(done["n"]) if done else 0) + (int(running["n"]) if running else 0)
+
+
 def jobs_due_today(db: Db, ch: Channel, plan: CadencePlan, now: datetime) -> int:
     """Number of jobs to create today for `ch` under `plan`."""
     midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -198,7 +211,7 @@ def jobs_due_today(db: Db, ch: Channel, plan: CadencePlan, now: datetime) -> int
     last = _last_master_at(db, ch.slug, now)
     if last is not None and now - last < timedelta(days=spacing) - timedelta(hours=6):
         return 0
-    week_count = _count_since(db, ch.slug, True, now - timedelta(days=7))
+    week_count = _masters_since(db, ch.slug, now - timedelta(days=7), now)
     return 1 if week_count < plan.masters_per_week else 0
 
 
