@@ -484,6 +484,7 @@ def test_stage_1_asks_for_the_managed_python_only_and_the_pin_is_looked_up_from_
 
 def _find_python(tmp_path: Path, answer: str) -> str:
     """Find-PythonExe against a fake uv (a .cmd) that prints ``answer``."""
+    tmp_path.mkdir(parents=True, exist_ok=True)
     uv = tmp_path / "uv.cmd"
     uv.write_text(f"@echo off\r\necho {answer}\r\n", encoding="ascii")
     script = _functions(["Find-PythonExe", "Test-StorePythonAlias"]) + f"""
@@ -546,6 +547,6 @@ def test_stage_1_unblocks_the_extracted_files_before_anything_loads_them():
 
 def test_the_setup_server_gets_60_seconds_and_a_progress_line():
     text = STAGE1.read_text(encoding="utf-8")
-    wait = text[text.index("$serverStart = Get-Date"):text.index("the setup program did not start")]
+    wait = text[text.index("$serverStart = Get-Date"):text.index("-Text 'the setup program did not start'")]
     assert "AddSeconds(60)" in wait and "AddSeconds(20)" not in wait
     assert "still waiting" in wait and "TotalSeconds -ge 15" in wait
