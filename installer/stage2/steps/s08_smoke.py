@@ -5,7 +5,7 @@ reference engine and builds its venv (NS-W301, NS-E108 when torch cannot see the
 a 3 second transcription in the studio venv (cuBLAS and cuDNN load lazily, so the model load alone proves
 nothing): on CUDA it falls back to the CPU with int8 (NS-W404, captions are slower, the install goes on)
 until the next run, which probes CUDA again and switches back when it passes; only
-a CPU that cannot transcribe either stops the install (NS-E202). Checks are matched on the real names
+a CPU that cannot transcribe either stops the install (NS-E411). Checks are matched on the real names
 `ns verify` reports (`ns_supervisor.check_names`). `ns verify --quick` has no MTP check: whether MTP is kept
 is decided by `ns tune` (s06), so there is no MTP branch here.
 """
@@ -247,11 +247,11 @@ class S08Smoke(Step):
             ctx.warn("NS-W404", f"runtime.json runs whisper on the CPU ({why})")
             cfg = ensure_baseline(ctx).whisper
         elif load_failed:
-            raise make_error("NS-E202", "speech recognition did not load on the processor")
+            raise make_error("NS-E411", "speech recognition did not load on the processor")
         ctx.ui.say("Testing speech recognition on the processor ...")
         res = transcribe_probe(ctx, cfg)
         if not res.ok:
-            raise make_error("NS-E202", f"speech recognition failed on the processor: {res.text[-300:]}")
+            raise make_error("NS-E411", f"speech recognition failed on the processor: {res.text[-300:]}")
 
     @staticmethod
     def _use_whisper(rt: Any, device: str, compute_type: str) -> None:

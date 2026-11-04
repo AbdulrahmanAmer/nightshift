@@ -83,6 +83,14 @@ class SupervisorLink:
         """`POST /stop_all`."""
         return self._post("/stop_all", {})
 
+    def heartbeat(self, owner: str) -> bool:
+        """`POST /heartbeat`: tell the engine `owner` is alive (restarts its idle clock). Never raises;
+        False when the engine does not answer."""
+        try:
+            return bool(self._post("/heartbeat", {"owner": owner}).get("ok"))
+        except (SupervisorUnavailable, ApiError):
+            return False
+
     def release_owner(self, owner: str, *, unless_alive: bool = False) -> bool:
         """`POST /release_owner`: free the lease and queue place of `owner`; True if it freed something.
 

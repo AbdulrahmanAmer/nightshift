@@ -398,6 +398,40 @@ def test_no_auto_exit_when_run_due_within_an_hour(tmp_path: Path) -> None:
     asyncio.run(main())
 
 
+def test_a_heartbeat_of_a_run_that_holds_nothing_defers_auto_exit(tmp_path: Path) -> None:
+    """Gap L1: clips, render and QC hold no service; the beat of the run is what keeps the engine up."""
+    sup, _, _ = make(tmp_path, auto_exit_idle_s=0.5, idle_unload_s=60)
+
+    async def main() -> None:
+        async with running(sup):
+            await sup.acquire("llama", "studio:job-1")
+            await sup.release("llama", "studio:job-1")
+            for _ in range(20):  # 2 s, four times the idle limit, the run holds nothing
+                assert sup.heartbeat("studio:job-1") is False  # not the lock holder, but alive
+                await asyncio.sleep(0.1)
+            assert not sup.exit_requested.is_set()
+            for _ in range(10):  # the dashboard worker's pulse works the same way
+                sup.heartbeat("dashboard:job")
+                await asyncio.sleep(0.1)
+            assert not sup.exit_requested.is_set()
+            assert await until(sup.exit_requested.is_set, 10)  # silent now: the idle exit applies again
+
+    asyncio.run(main())
+
+
+def test_a_heartbeat_of_a_foreign_owner_is_not_activity(tmp_path: Path) -> None:
+    sup, _, _ = make(tmp_path, auto_exit_idle_s=0.5, idle_unload_s=60)
+
+    async def main() -> None:
+        async with running(sup):
+            for _ in range(20):
+                sup.heartbeat("opencode")
+                await asyncio.sleep(0.1)
+            assert sup.exit_requested.is_set()
+
+    asyncio.run(main())
+
+
 def test_activity_defers_auto_exit(tmp_path: Path) -> None:
     sup, _, _ = make(tmp_path, auto_exit_idle_s=0.8, idle_unload_s=60)
 
@@ -546,8 +580,25 @@ def test_heartbeats_keep_a_lease_alive_and_other_owners_never_expire(tmp_path: P
             assert sup.status()["gpu_owner"] == "studio:live-job"
             assert sup.heartbeat("studio:someone-else") is False  # not the holder
             await sup.release("llama", "studio:live-job")
-            await sup.acquire("llama", "dashboard:assistant")  # the Assistant does not beat
+            await sup.acquire("llama", "opencode")  # a foreign program does not beat and never expires
             await asyncio.sleep(1.2)
+            assert sup.status()["gpu_owner"] == "opencode"
+
+    asyncio.run(main())
+
+
+def test_an_assistant_hold_without_heartbeat_is_reclaimed_and_a_beating_one_stays(tmp_path: Path) -> None:
+    """P4: a dashboard that died in the middle of a turn must not keep the GPU for two hours."""
+    sup, _table, _ = make(tmp_path, lease_expiry_s=0.5)
+
+    async def main() -> None:
+        async with running(sup):
+            await sup.acquire("llama", "dashboard:assistant")
+            assert await until(lambda: sup.status()["gpu_owner"] is None, 10)
+            await sup.acquire("llama", "dashboard:assistant")
+            for _ in range(15):  # three times the expiry, beating
+                assert sup.heartbeat("dashboard:assistant") is True
+                await asyncio.sleep(0.1)
             assert sup.status()["gpu_owner"] == "dashboard:assistant"
 
     asyncio.run(main())

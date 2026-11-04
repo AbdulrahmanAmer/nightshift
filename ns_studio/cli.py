@@ -14,6 +14,7 @@ from typer.core import TyperGroup
 
 from ns_common import __version__
 from ns_common.errors import NsError
+from ns_common.keepawake import keep_awake
 from ns_common.models import Channel, Voice
 from ns_studio import jobs, notifications, review, voice_setup
 from ns_studio.calibrate import run as calibration
@@ -22,6 +23,7 @@ from ns_studio.clipper import cli as clipper_cli
 from ns_studio.context import JobContext
 from ns_studio.daily import run_daily
 from ns_studio.errors import UNEXPECTED, StudioError, describe_unexpected
+from ns_studio.footage_keys import require_footage_key
 from ns_studio.learn import importer, reweight, status
 from ns_studio.orchestrator import plan_job, run_job
 from ns_studio.policy.regen import run_job_guarded
@@ -163,23 +165,35 @@ def run_cmd(
         if daily:
             _daily(env, dry_run, policy)
             return
-        if resume is not None:
-            ctx = jobs.load_job(env, resume)
-            jobs.prepare_plan(ctx.fmt, policy)
-            if dry_run:
-                typer.echo("plan: " + " -> ".join(run_job(ctx, dry_run=True)))
-                return
-            ran = run_job_guarded(ctx, resume=True)
-            typer.echo(f"job {ctx.job_id} resumed: {len(ran)} stages visited")
+        with keep_awake():  # the PC must not sleep under a run (`run_daily` holds its own)
+            _run_jobs(
+                env, fmt=fmt, channel=channel, count=count, dry_run=dry_run, resume=resume, policy=policy
+            )
+
+
+def _run_jobs(
+    env: jobs.Env, *, fmt: str | None, channel: str | None, count: int, dry_run: bool, resume: str | None,
+    policy: bool | None,
+) -> None:
+    """The `--resume` and plain branches of `studio run`."""
+    if resume is not None:
+        ctx = jobs.load_job(env, resume)
+        jobs.prepare_plan(ctx.fmt, policy)
+        if dry_run:
+            typer.echo("plan: " + " -> ".join(run_job(ctx, dry_run=True)))
             return
-        rng = random.Random()
-        for ch in jobs.resolve_channels(env, channel):
-            job_fmt = fmt or ch.format
-            jobs.prepare_plan(job_fmt, policy)
-            for _ in range(count):
-                ctx = jobs.make_job(env, ch, job_fmt, rng=rng)
-                ran = run_job_guarded(ctx)
-                typer.echo(f"job {ctx.job_id} done: {len(ran)} stages ({ch.slug}, {ctx.fmt})")
+        ran = run_job_guarded(ctx, resume=True)
+        typer.echo(f"job {ctx.job_id} resumed: {len(ran)} stages visited")
+        return
+    rng = random.Random()
+    for ch in jobs.resolve_channels(env, channel):
+        job_fmt = fmt or ch.format
+        jobs.prepare_plan(job_fmt, policy)
+        for _ in range(count):
+            require_footage_key(env.services)  # before any GPU work: `clips` would fail an hour in
+            ctx = jobs.make_job(env, ch, job_fmt, rng=rng)
+            ran = run_job_guarded(ctx)
+            typer.echo(f"job {ctx.job_id} done: {len(ran)} stages ({ch.slug}, {ctx.fmt})")
 
 
 def _daily(env: jobs.Env, dry_run: bool, policy: bool | None) -> None:

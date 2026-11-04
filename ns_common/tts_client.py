@@ -140,7 +140,9 @@ class TtsClient:
         except httpx.TimeoutException as e:
             stopped = self.cancel_batch()
             note = "asked the service to cancel it" if stopped else "could not ask the service to cancel it"
-            raise NsError("NS-E310", f"tts batch: no answer after {limit:.0f}s ({note}): {e}") from e
+            raise NsError(
+                "NS-E310", f"tts batch: no answer after {limit:.0f}s ({note}): {e}", timed_out=True
+            ) from e
         except httpx.HTTPError as e:
             raise NsError("NS-E310", f"tts batch: {e}") from e
         return [TtsFile(f["id"], Path(f["path"]), float(f["seconds"])) for f in r.json()["files"]]

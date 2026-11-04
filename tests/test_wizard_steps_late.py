@@ -316,7 +316,7 @@ def test_s08_whisper_failing_on_the_cpu_too_stops_the_install(tmp_path: Path):
     ctx = resolved(tmp_path, runner=runner)
     with pytest.raises(NsError) as ei:
         S08Smoke().run(ctx)
-    assert ei.value.code == "NS-E202" and "no model" in ei.value.detail
+    assert ei.value.code == "NS-E411" and "no model" in ei.value.detail
     assert ctx.flag("smoke") != "passed"
 
 
@@ -333,7 +333,7 @@ def test_s08_cpu_profile_probes_the_cpu_only_and_a_load_failure_is_fatal(tmp_pat
                              runner=runner2)
     with pytest.raises(NsError) as ei:
         S08Smoke().run(ctx2)
-    assert ei.value.code == "NS-E202"
+    assert ei.value.code == "NS-E411"
 
 
 def test_s08_service_failures_stop_the_install(tmp_path: Path):

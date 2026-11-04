@@ -317,3 +317,122 @@ def test_interrupted_series_part_goes_back_to_approved_on_start(tmp_home: Path):
     rec = store.get(job.job_id)
     assert rec is not None and rec.status == "failed"
     assert series.stories[0]["parts"][0]["status"] == "approved"
+
+
+# -------------------------------------------------------- gaps L1 and L2: awake and alive while a job runs
+
+
+def test_a_job_runs_with_the_pc_held_awake_and_released_after_a_failure(tmp_home: Path):
+    from contextlib import contextmanager
+
+    events: list[str] = []
+
+    @contextmanager
+    def awake():
+        events.append("hold")
+        try:
+            yield
+        finally:
+            events.append("release")
+
+    def good(ctl: JobControl) -> dict[str, Any]:
+        events.append("work")
+        return {}
+
+    def bad(ctl: JobControl) -> dict[str, Any]:
+        events.append("work")
+        raise RuntimeError("boom")
+
+    store, worker, _hub, _ = build(tmp_home, {"clip": good, "verify": bad}, awake=awake)
+    store.create("clip", "c", {})
+    store.create("verify", None, {})
+    assert worker.run_next() and worker.run_next()
+    assert events == ["hold", "work", "release", "hold", "work", "release"]
+
+
+def test_the_engine_is_pulsed_while_a_job_runs_and_not_after(tmp_home: Path):
+    import threading
+    import time
+
+    pulses: list[float] = []
+    gate = threading.Event()
+
+    def handler(ctl: JobControl) -> dict[str, Any]:
+        deadline = time.monotonic() + 5
+        while len(pulses) < 3 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        gate.set()
+        return {}
+
+    def pulse() -> None:
+        pulses.append(time.monotonic())
+        if len(pulses) == 2:
+            raise OSError("engine restarting")  # a failing pulse never stops the job or the next pulse
+
+    store, worker, _hub, _ = build(tmp_home, {"clip": handler}, pulse=pulse, pulse_s=0.02)
+    job = store.create("clip", "c", {})
+    assert worker.run_next()
+    rec = store.get(job.job_id)
+    assert rec is not None and rec.status == "done" and gate.is_set()
+    settled = len(pulses)
+    time.sleep(0.15)
+    assert len(pulses) == settled  # the pulse thread ended with the job
+    assert settled >= 3
+
+
+def test_the_default_worker_holds_the_real_execution_state_on_its_thread(tmp_home: Path, monkeypatch):
+    from ns_common import keepawake
+
+    calls: list[int] = []
+    monkeypatch.setattr(keepawake, "_set_execution_state", lambda flags: (calls.append(flags), 0)[1])
+    # `keep_awake` binds its default at definition time, so give the worker the patched function explicitly.
+    store, worker, _hub, _ = build(
+        tmp_home, {"clip": lambda ctl: {}},
+        awake=lambda: keepawake.keep_awake(lambda f: (calls.append(f), 0)[1]),
+    )
+    store.create("clip", "c", {})
+    worker.run_next()
+    assert calls == [keepawake.ES_CONTINUOUS | keepawake.ES_SYSTEM_REQUIRED, keepawake.ES_CONTINUOUS]
+
+
+def test_the_link_heartbeat_posts_the_job_owner_and_never_raises():
+    import httpx
+
+    from ns_dashboard.supervisor_link import SupervisorLink
+
+    seen: list[tuple[str, str, bytes]] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen.append((req.method, req.url.path, req.content))
+        return httpx.Response(200, json={"ok": False})
+
+    link = SupervisorLink("http://sup:8099", client=httpx.Client(transport=httpx.MockTransport(handler)))
+    assert link.heartbeat("dashboard:job") is False  # alive, though it holds nothing
+    assert seen[0][:2] == ("POST", "/heartbeat") and b"dashboard:job" in seen[0][2]
+    assert SupervisorLink("http://127.0.0.1:9", timeout_s=0.2).heartbeat("dashboard:job") is False
+
+
+def test_the_real_state_pulses_the_engine_and_the_fake_state_does_not(tmp_home: Path):
+    from ns_dashboard.handlers import build_state
+    from ns_dashboard.jobs import JOB_OWNER
+
+    class Link:
+        base_url = "http://127.0.0.1:9"
+        beats: list[str] = []
+
+        def status(self):
+            return None
+
+        def heartbeat(self, owner: str) -> bool:
+            self.beats.append(owner)
+            return True
+
+    link = Link()
+    real = build_state(Paths.from_env(), link=link, fake_services=False)  # type: ignore[arg-type]
+    assert real.worker.pulse is not None
+    real.worker.pulse()
+    assert link.beats == [JOB_OWNER]
+    real.db.close()
+    fake = build_state(Paths.from_env(), fake_services=True)
+    assert fake.worker.pulse is None
+    fake.db.close()

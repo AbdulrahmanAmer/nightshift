@@ -42,7 +42,11 @@ PRESET_VOICES = [{"name": "Ryan", "mode": "preset", "source": "builtin"}]
 class RunAdapter(Protocol):
     """Runs one studio job (spec 15.9 `studio run`) and returns the new output ids."""
 
-    def run(self, ctl: JobControl, channel: str, fmt: str, count: int | None) -> list[str]: ...
+    def run(
+        self, ctl: JobControl, channel: str, fmt: str, count: int | None, *, resume_job_id: str | None = None
+    ) -> list[str]:
+        """Run `count` new jobs, or (with `resume_job_id`) continue that failed studio job from its stage."""
+        ...
 
 
 class ClipAdapter(Protocol):
@@ -137,6 +141,10 @@ class UpdateAdapter(Protocol):
     def check(self) -> dict[str, Any]: ...
 
     def apply(self) -> dict[str, Any]: ...
+
+    def apply_file(self, zip_path: Path) -> dict[str, Any]:
+        """Install an update zip from disk (`ns update <zip>`, its `.sha256` beside it)."""
+        ...
 
     def models_available(self) -> bool:
         """False until `ns models get` exists."""
@@ -334,9 +342,15 @@ class RealRunAdapter(StudioAdapter):
     the GPU tenants are acquired through the supervisor.
     """
 
-    def run(self, ctl: JobControl, channel: str, fmt: str, count: int | None) -> list[str]:
-        """Run `count` studio jobs for `channel`; returns the output ids and notes the studio job ids."""
-        done = self.child(ctl, "run", {"channel": channel, "fmt": fmt, "count": count})
+    def run(
+        self, ctl: JobControl, channel: str, fmt: str, count: int | None, *, resume_job_id: str | None = None
+    ) -> list[str]:
+        """Run `count` studio jobs for `channel` (or resume `resume_job_id`); returns the output ids and
+        notes the studio job ids."""
+        args: dict[str, Any] = {"channel": channel, "fmt": fmt, "count": count}
+        if resume_job_id:
+            args["resume_job_id"] = resume_job_id
+        done = self.child(ctl, "run", args)
         ctl.extras["studio_job_ids"] = list(done.get("job_ids") or ctl.extras.get("studio_job_ids") or [])
         return [str(i) for i in done.get("output_ids") or []]
 

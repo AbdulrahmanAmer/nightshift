@@ -67,6 +67,44 @@ All notable changes to Nightshift are recorded here. The format follows
   CUDA 12.4 pair after `NS-E203` (A1-#17), the PyTorch fallback limits (A1-#23, A1-#24), a constraints file or
   `uv.lock` (A1-#12), and a key field on the Welcome resume screen (P9 only reports a missing key).
 
+### Studio round 3: engine stays up through a job, keep-awake at night, no-key refusal up front (`orchestrator/studio-round3`)
+
+From the third studio review of 0.1.7 (`gaps-round3-studio`). Nothing here has run on the GPU PC yet.
+
+- **The engine no longer leaves in the middle of a job (L1).** After `captions` every stage holds no GPU service, and
+  the engine's 30-minute idle clock only saw acquires and releases, so a long download-and-render stretch made it exit
+  (the next job then failed with NS-E202 "supervisor unreachable", every night after the first video). `POST /heartbeat`
+  now restarts the idle clock for a `studio:` run or the dashboard job worker (`dashboard:job`) even when it holds
+  nothing. `StudioAcquirer` beats from its first `acquire` until `run_finished` (with the run's owner while nothing is
+  held), the dashboard's job worker pulses the engine every minute while a job runs, and an `acquire` that meets "supervisor
+  unreachable" connects again once (the nightly run starts a new engine) before it fails.
+- **The PC stays awake (L2).** `ns_common/keepawake.py` (`ES_CONTINUOUS | ES_SYSTEM_REQUIRED`, per thread, released in
+  `finally`) is held around `run_daily`, around `studio run`, and for the length of every job on the dashboard's worker
+  thread. The installer keeps its own identical copy (its web package may import only the standard library); a test
+  keeps the two equal.
+- **No stock-footage key means no story video, said up front (L3).** The nightly planner (per job, before a combo is drawn),
+  `studio run` and the dashboard's Run now / Retry refuse with NS-E502 "No stock footage key. Add a Pixabay key (free)
+  in Settings > Stock footage keys" before any GPU work. When both sources fail, the Pixabay error is raised first
+  (Pexels gives out no keys). The setup text now says videos cannot be made until a key is added.
+- **The voice stage's time limit follows this PC's speed (L4).** `ns verify` stores the slowest voice mode's real-time
+  factor in `config/tts_speed.json`; the batch limit is 120 s plus `max(3, 6 x rtf x 1.5)` s per line (unchanged without
+  a measurement), and a batch that times out is retried once at twice the limit, resuming from the items the service had
+  finished.
+- **Embed server off the card (P1)**: started with `CUDA_VISIBLE_DEVICES=-1`. **llama-server always `-np 1` (P2).**
+- **Pending setup voice card (P3)** says a video cannot be voiced until the voice exists (NS-E311) and points at
+  "Create it now".
+- **The Assistant's GPU hold is leased (P4)**: it beats every 30 s during a turn and the engine reclaims a silent hold
+  after 10 minutes, like a studio lease.
+- **Retry from where it stopped (P5).** A failed story job on the Queue / Create pages has a button that continues the
+  same studio job from its failed stage (`POST /api/jobs/{id}/resume`, assistant tool `resume_job` with a confirm card).
+- **Updater (P7).** Settings > Update from a file now installs `Nightshift-Update-<version>.zip` together with its
+  `.sha256` (`POST /api/update/file`, then `ns update <zip>`); the release notes say the checksum is required. A GitHub
+  error status (403/429 rate limit, 404, 5xx) is NS-E118 and says so instead of "check the internet connection"; the
+  Settings page shows the `error` line of `ns`, not the `hint:` line after it.
+- **Reject moves the files (P8)**: the dashboard's Reject takes the video, its sheet and thumbnails out of the Outbox
+  (same code as `studio review reject`, into the `rejected` folder of the Nightshift home, under channel, day and job). **Whisper failures are NS-E411**
+  (was NS-E202).
+
 ### Installer: first-run support (`orchestrator/installer-first-run`)
 
 What the owner needs to help a partner who cannot describe what went wrong, and the copy a non-technical partner reads.

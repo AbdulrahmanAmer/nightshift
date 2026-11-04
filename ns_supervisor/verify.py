@@ -29,6 +29,7 @@ from ns_common.logging import NsLogger
 from ns_common.models import GateCheck, GateReport, Runtime
 from ns_common.paths import Paths
 from ns_common.tts_client import TtsClient
+from ns_common.tts_timeout import save_rtf
 from ns_supervisor import check_names as names
 from ns_supervisor import procs
 from ns_supervisor.benchmark import measure_tok_s
@@ -399,6 +400,7 @@ def run_verify(
                     )
                 )
         worst = max(rtfs)
+        save_rtf(paths, worst, quick=quick)  # the voice stage sizes its batch time limit from it (gap L4)
         if not quick:
             rec.bench("tts_rtf", round(worst, 3), f"<= {tg.rtf}", worst <= tg.rtf)
         return Out(True, ",".join(m for m, _ in picked), log="modes exercised")
@@ -416,7 +418,7 @@ def run_verify(
             release("whisper")
         return Out(True, round(secs, 1), log=f"{rt.whisper.model} on {rt.whisper.device}")
 
-    rec.run(names.WHISPER_LOAD, whisper, "NS-E202")
+    rec.run(names.WHISPER_LOAD, whisper, "NS-E411")
 
     # -- NVENC -----------------------------------------------------------------------------
     def nvenc() -> Out:
