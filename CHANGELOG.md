@@ -14,7 +14,8 @@ All notable changes to Nightshift are recorded here. The format follows
 - Clips stage: when every candidate for a scene is ruled out by the reuse rules (14 days on the channel, 30
   across channels) the scene reuses footage from an earlier video with a warning (`NS-W405`) instead of
   failing the whole master after the writing and the voice (the first dev-mode nightly run died with
-  NS-E402 "24 candidates for 2 slots"). Clips are still never repeated inside one video.
+  NS-E402 "24 candidates for 2 slots"); when the pool is smaller than the video (a master plus its Shorts on
+  a niche with few clips) a clip may repeat inside the video, again with the warning.
 - Nightly planner: a master job that failed no longer counts as the week's master (its combo row did, so the
   channel went silent for the whole spacing, a week at one master a week); finished long videos count, and a
   long job started in the last 12 hours counts as in progress.

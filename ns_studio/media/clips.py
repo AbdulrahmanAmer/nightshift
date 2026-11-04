@@ -316,13 +316,18 @@ def select_for_beat(
         # regeneration's previous picks: repeat footage with a warning rather than fail the whole video after
         # the writing and the voice (the first dev-mode nightly run died here: NS-E402 "24 candidates for 2
         # slots"). Clips are still never repeated inside this video (`used`).
-        relaxed = pick_for_slots(
-            [c for c, _k in pool], slots, used=used, blocked=set(), dark=dark, wanted=wanted
-        )
+        candidates = [c for c, _k in pool]
+        relaxed = pick_for_slots(candidates, slots, used=used, blocked=set(), dark=dark, wanted=wanted)
+        how = "earlier footage is reused"
+        if relaxed is None:
+            # the pool is smaller than the video (a master plus its Shorts on a niche with few clips): a clip
+            # may appear twice in the video rather than lose it
+            relaxed = pick_for_slots(candidates, slots, used=set(), blocked=set(), dark=dark, wanted=wanted)
+            how = "footage from this video is repeated"
         if relaxed is not None:
             if searcher.log:
                 searcher.log.warn("footage_reused", code="NS-W405", keywords=list(kws), mood=mood,
-                                  msg="no fresh stock clip for this beat; earlier footage is reused")
+                                  msg=f"no fresh stock clip for this beat; {how}")
             kw_of = {(c.source, c.id): k for c, k in pool}
             return [(c, kw_of[(c.source, c.id)]) for c in relaxed]
     raise NsError("NS-E402", f"keywords {kws} mood {mood!r}: {len(pool)} candidates for {len(slots)} slots")

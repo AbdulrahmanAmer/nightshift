@@ -313,8 +313,11 @@ def test_a_beat_reuses_footage_with_a_warning_instead_of_failing_when_every_clip
     blocked = {("stub", "p1"), ("stub", "p2"), ("stub", "p3")}
     picks = select_for_beat(Searcher([src]), ["hallway"], "calm", _slots(2), used=set(), blocked=blocked)
     assert [c.id for c, _kw in picks] == ["p1", "p2"]
-    # but a clip already used inside this video is still never repeated
+    # a pool smaller than the video: a clip repeats inside the video rather than the video being lost
+    again = select_for_beat(Searcher([src]), ["hallway"], "calm", _slots(2),
+                            used={("stub", "p1"), ("stub", "p2"), ("stub", "p3")}, blocked=blocked)
+    assert [c.id for c, _kw in again] == ["p1", "p2"]
+    # nothing at all for the keywords is still NS-E402
     with pytest.raises(NsError) as ei:
-        select_for_beat(Searcher([src]), ["hallway"], "calm", _slots(2),
-                        used={("stub", "p1"), ("stub", "p2"), ("stub", "p3")}, blocked=blocked)
+        select_for_beat(Searcher([StubSource()]), ["nothing"], "calm", _slots(2), used=set(), blocked=set())
     assert ei.value.code == "NS-E402"
