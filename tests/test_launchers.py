@@ -163,6 +163,20 @@ def test_other_launchers_call_the_right_tools() -> None:
     assert "studio.exe" in read("nightshift-studio.ps1")
 
 
+def test_stop_all_closes_the_window_hosts_and_the_host_closes_itself_when_the_server_is_gone() -> None:
+    """stop-all left the WebView2 window on a dead page (153 MB) in the 0.1.10 dev teardown test."""
+    assert "Close-NsHostWindows" in read("stop-all.ps1")
+    common = read("_common.ps1")
+    fn = common[common.index("function Close-NsHostWindows"):]
+    fn = fn[: fn.index("\nfunction ")]
+    assert "apphost-*.json" in fn and "PostMessage" in fn and "0x0010" in fn and "Stop-Process" in fn
+    host = read("nightshift-host.ps1")
+    assert "function Test-ServerAlive" in host and "$ServerMissLimit = 3" in host
+    after_ready = host.split("$script:ready = $true")[1]
+    armed = after_ready.split("serverTimer.Start()")[0]
+    assert "serverTimer" in after_ready and "$script:confirmedClose = $true" in armed
+
+
 def test_host_script_sets_the_window_icon_from_the_shipped_brand_ico() -> None:
     text = read("nightshift-host.ps1")
     assert "ns_dashboard\\static\\brand\\nightshift.ico" in text
