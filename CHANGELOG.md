@@ -45,6 +45,40 @@ From the third studio review of 0.1.7 (`gaps-round3-studio`). Nothing here has r
   (same code as `studio review reject`, into the `rejected` folder of the Nightshift home, under channel, day and job). **Whisper failures are NS-E411**
   (was NS-E202).
 
+### Installer: first-run support (`orchestrator/installer-first-run`)
+
+What the owner needs to help a partner who cannot describe what went wrong, and the copy a non-technical partner reads.
+This branch edits `contracts/errors.json` (two hints), so it is an `orchestrator/` branch.
+
+- **Copy status** (every screen after Start: Welcome resume, Downloading, Installing, Testing, Failed, Done). One click
+  puts a line like `Nightshift setup 0.1.7 · step 6/14 Download AI models · 41% · 12:03 elapsed · last error NS-E105 (A
+  download site cannot be reached)` on the clipboard (new action `copy-status`; `installer/stage2/web/report.py`). The
+  last error survives a Retry.
+- **`install-report.json`** next to `verify-report.json` (the `logs` folder of the install; the setup data folder before the install
+  folder exists). Written at every failure, stop and finish: version, outcome, failed step, code, attempts, last error,
+  machine (Windows, graphics card, memory, driver, CUDA, free space), choices, engines (voice engine, captions device,
+  encoder, fallbacks, schedule mode), warning codes, every step with its status and seconds, the answers without keys.
+- **One diagnostics zip with the setup evidence.** `ns doctor --bundle` and the setup window's fallback now both hold
+  `install-report.json`, `setup/wizard_flags.json`, `setup/answers.json` (keys removed), `setup/preflight.json` (the
+  hardware check), `setup/setup-server.err` and `setup/bootstrap/*`. The name carries the minute
+  (`nightshift-diagnostics-2026-11-04-1203.zip`), so two zips on one day do not overwrite each other. The zip the wizard
+  makes before the last step gets the final report added when setup ends.
+- **Failed screen.** Buttons Save a help file (was Copy diagnostics), Open log folder and, for NS-E113, Open Protection
+  history; one sentence says where the file is and who gets it ("Send this file to <name>", from the new
+  `installer/support.json`, or "the person who sent you Nightshift" until the owner fills it in). Wake timers (NS-W107)
+  get an Open power settings button. New action `open-windows-page` (`power`, `protection-history`; names only).
+- **Done screen.** Three numbered next steps (Open dashboard; Create it now once with the graphics card idle; tomorrow
+  morning's note and the schedule), the "Add a Pixabay key in Settings before the first video" reminder when no key is
+  stored (`result.stockKeyMissing`), warnings now show their instruction next to the title, "What was installed" is a
+  fold-out.
+- **Copy fixes** (`installer/ui/src/copy.ts`, `operator_copy.json`, `contracts/errors.json`, `OPERATOR.md`, Settings):
+  no assumed download speed or "black window"; Choices says which choices are final; model cards without "context";
+  step and check names a partner understands ("Program parts", "Story memory", "graphics card video"); "Copy full
+  test report (for the developer)"; uninstall no longer says "Nothing else was changed on this PC" and lists what stays
+  (settings and logs, keys, Visual C++ runtime, FFmpeg, Windows Terminal, the Python download cache); Settings names the
+  `Nightshift-Update` zip and the folder UNINSTALL.cmd is in. The UI's code table is now `operator_copy.json` itself, so
+  the two can no longer disagree.
+
 ### Assistant slice 1: make it fit (`feat/assistant-fit`)
 
 The Assistant overflowed the local model's 16,384-token context in long chats (about 9-10k tokens were used before any

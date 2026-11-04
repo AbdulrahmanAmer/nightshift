@@ -723,7 +723,7 @@ class B03SetupEnv:
     """``venvs\\studio`` with the app installed in it, as stage 1 used to do."""
 
     id = "b03_setup_env"
-    title = "Setup environment"
+    title = "Setup helper"
 
     def check(self, boot: Boot) -> bool:
         """True when the venv exists and was filled from this program folder at this version."""

@@ -912,6 +912,15 @@ Grid areas: `inst inst out out send send`.
 The brief's "diagnostics bundle" is the `send` card. `s10_summary` writes the bundle exactly as it does
 today (`ns doctor --bundle`).
 
+**Amendment (first-run support, `orchestrator/installer-first-run`).** The Installed card became the **Next three steps**
+card: (1) Open dashboard, (2) press Create it now once with the graphics card idle, (3) read tomorrow morning's note and
+check the schedule in Settings; then the "Add a Pixabay key in Settings before the first video" line when
+`result.stockKeyMissing`, the warnings with their `whatToDo`, and "What was installed" as a fold-out. The send card says
+"Send this file to {support.name}" (`installer/support.json`; "the person who sent you Nightshift" when empty) and has
+an "Open the Drive folder" button when `support.driveUrl` is set. The footer also has **Copy status** (action
+`copy-status`: one line from `installer/stage2/web/report.py`, the same on every screen after Start) and the old
+report button is "Copy full test report (for the developer)".
+
 After Open dashboard the window stays open. Its close button no longer asks for confirmation. Closing it
 with `run = finished` calls `close-setup`, so P1 exits 0 and the console prints "Setup is done. You can
 close this window." before `INSTALL.cmd`'s `pause`.
@@ -949,6 +958,14 @@ Grid areas: `err err err err steps steps`.
 | steps | `Card padding="md"` with `CardHeader title="Steps"` and every step as a compact `StepItem` (32 px rows) |
 | Footer left | `Error at {HH:MM}` |
 | Footer right | `Button variant="ghost"` "Stop setup"; `Button variant="soft"` "Skip this step", shown only when `failure.canSkip`; `Button variant="primary" leadingIcon="retry"` "Retry" |
+
+**Amendment (first-run support).** The button is **Save a help file**; next to it **Open log folder** (`reveal` of
+`<home>\logs`) and, for NS-E113, **Open Protection history** (action `open-windows-page`, `protection-history`). One
+sentence under them says where the zip is and who gets it. The footer has **Copy status**. Every failure, stop and
+finish also writes `<home>\logs\install-report.json`. The zip holds the setup evidence (`install-report.json`,
+`setup/wizard_flags.json`, `setup/answers.json` without keys, `setup/preflight.json`, `setup/setup-server.err`,
+`setup/bootstrap/*`) whether `ns doctor --bundle` or the fallback below writes it, and is named
+`nightshift-diagnostics-<date>-<HHMM>.zip`.
 
 **Copy diagnostics** calls the `diagnostics` action:
 

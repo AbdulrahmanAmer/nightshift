@@ -38,7 +38,7 @@ def _set_steps(state: dict[str, Any], done_until: str | None, running: str | Non
         if st["id"] == running:
             st["status"] = "running"
             st["startedAt"] = "2026-11-02T21:41:00"
-            st["detail"] = "Trying the story model at different settings, 54 tokens/s"
+            st["detail"] = "Trying the story model at different settings"
         elif not reached:
             st["status"] = "done"
             st["finishedAt"] = "2026-11-02T21:30:00"
@@ -121,9 +121,9 @@ def build(name: str, app_path: Path | None = None) -> dict[str, Any]:
             _set_steps(state, "s07_configs", "s08_smoke")
             state["run"] = "running"
             state["verify"] = {"checks": [
-                {"name": "llm", "label": "Story model", "status": "passed", "value": "54 tokens/s",
+                {"name": "llm", "label": "Story model", "status": "passed", "value": "works",
                  "note": None},
-                {"name": "embed", "label": "Memory index", "status": "passed", "value": "ready",
+                {"name": "embed", "label": "Story memory", "status": "passed", "value": "ready",
                  "note": None},
                 {"name": "tts", "label": "Voice engine", "status": "passed", "value": "Ryan, 0.31 RTF",
                  "note": None},
@@ -146,7 +146,7 @@ def build(name: str, app_path: Path | None = None) -> dict[str, Any]:
                 "shortcuts": ["Nightshift Dashboard", "Nightshift Outbox", "Nightshift - Diagnostics"],
                 "runTime": "03:00", "scheduled": True,
                 "diagnosticsZip": "C:\\Users\\Abdo\\Desktop\\nightshift-diagnostics-20261102.zip",
-                "durationS": 3480, "warnings": [],
+                "stockKeyMissing": True, "durationS": 3480, "warnings": [],
             }
         elif name == "failed":
             _set_steps(state, "s02_download_bins")

@@ -85,7 +85,7 @@ export function createDemoApi({ screen }: { screen: string | null }): Api {
       const checks: VerifyRow[] = all.checks.map((c, i) => (i < upto - (id === "s08_smoke" && !finished ? 1 : 0) ? c : { ...c, status: i === upto - 1 && id === "s08_smoke" ? "running" : "pending", value: null, note: null }));
       verify = { ...all, checks, voice: id === "v01_samples" && finished ? all.voice : null, render: id === "v01_samples" && finished ? all.render : null, reportReady: false };
     }
-    bump({ steps: nextSteps, verify, notices: id === "s08_smoke" && finished ? [{ code: "NS-W302", title: "Faster decoding was not faster here", whatToDo: "Nothing to do", step: id }] : cur().notices });
+    bump({ steps: nextSteps, verify, notices: id === "s08_smoke" && finished ? [{ code: "NS-W302", title: "The speed boost did not help here", whatToDo: "Nothing to do", step: id }] : cur().notices });
     if (finished) { pushLog(LOG[id] ?? "done"); eng.i++; eng.c = 0; }
     return finished && eng.i >= ids.length;
   }
@@ -293,7 +293,9 @@ export function createDemoApi({ screen }: { screen: string | null }): Api {
           bump({ checks: cur().checks.map((c) => (c.id === "longpaths" ? { ...c, status: "ok" as const, value: "on", code: null, title: null, whatToDo: null, fix: null } : c)) });
           return ok();
         case "open-dashboard": return ok("Opening the dashboard");
-        case "diagnostics": return ok("Diagnostics zip saved on your Desktop");
+        case "diagnostics": return ok("C:\\Users\\Abdo\\Desktop\\nightshift-diagnostics-2026-11-04-1203.zip");
+        case "copy-status": return ok("Nightshift setup 0.3.0 · step 6/14 Download AI models · 41% · 12:03 elapsed · last error NS-E105 (A download site cannot be reached)");
+        case "open-windows-page": return ok();
         case "reveal": return ok(body?.path ?? null);
         case "close-setup": return ok();
       }
@@ -304,7 +306,7 @@ export function createDemoApi({ screen }: { screen: string | null }): Api {
     async uninstall(): Promise<ActionResult> {
       if (!un) return no("Not available here");
       un = { ...un, running: true };
-      window.setTimeout(() => { un = un && { ...un, running: false, result: { removed: ["The nightly task", "Desktop shortcuts", "Programs and Python environments"], kept: [{ label: "AI models", path: un.models.path }, { label: "Videos and history", path: un.data.path }] } }; }, 2200);
+      window.setTimeout(() => { un = un && { ...un, running: false, result: { removed: ["The nightly task", "Desktop shortcuts", "Programs and Python environments"], kept: [{ label: "AI models", path: un.models.path }, { label: "Videos and history", path: un.data.path }], stays: ["Your settings and logs", "Your stock footage keys, in Windows Credential Manager", "The Visual C++ runtime, FFmpeg and Windows Terminal, which other programs use", "The Python that setup fetched and its download cache (several GB), in your user folders"] } }; }, 2200);
       return { ok: true, message: null, state: undefined as unknown as SetupState };
     },
 

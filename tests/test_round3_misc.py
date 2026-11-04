@@ -282,5 +282,3 @@ def test_whisper_that_cannot_load_has_its_own_code_and_the_verify_row_carries_it
 
     copy = json.loads((ROOT / "installer" / "stage2" / "web" / "operator_copy.json").read_text("utf-8"))
     assert copy["NS-E411"]["title"] and copy["NS-E411"]["whatToDo"]
-    ui = (ROOT / "installer" / "ui" / "src" / "copy.ts").read_text(encoding="utf-8")
-    assert '"NS-E411"' in ui

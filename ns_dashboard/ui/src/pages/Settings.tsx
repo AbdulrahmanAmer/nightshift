@@ -116,6 +116,9 @@ export default function Settings() {
     try { const r = await api.upload("/settings/import", fd, () => {}); toast(r?.note || "Settings restored", "ok"); st.reload(); } catch (e: any) { toast(e.message, "bad"); }
   };
   const models = useLoad<ModelsState>(() => api.get("/models/state"), [], {});
+  // Where UNINSTALL.cmd really is (<install folder>\app), so the row names the folder instead of "the Nightshift folder".
+  const uninstallInfo = useLoad<{ path?: string } | null>(() => api.get("/settings/uninstall"), [], null);
+  const uninstallDir = uninstallInfo.data?.path ? uninstallInfo.data.path.replace(/[\\/][^\\/]*$/, "") : null;
   const busyModel = Object.values(models.data).some((m) => m.state === "running");
   useEffect(() => { if (!busyModel) return; const t = setInterval(models.reload, 4000); return () => clearInterval(t); }, [busyModel]); // eslint-disable-line react-hooks/exhaustive-deps
   const getModel = async (name: string, label: string) => {
@@ -214,7 +217,7 @@ export default function Settings() {
                 : <Button variant="soft" leadingIcon="github" onClick={check} disabled={checking}>{checking ? "Checking" : "Check now"}</Button>}
             </SettingRow>
             {updateNote && <p role="alert" className="mx-1 mb-2 rounded-ds-md bg-ds-danger-soft px-3 py-2 text-ds-sm">{updateNote}</p>}
-            <SettingRow title="From a file" sub="For a PC without internet: choose Nightshift-Update-<version>.zip and Nightshift-Update-<version>.zip.sha256 together (hold Ctrl). The update is refused without the checksum file">
+            <SettingRow title="From a file" sub="A Nightshift-Update zip you were given (some updates still need the internet). Choose Nightshift-Update-<version>.zip and its .sha256 file together (hold Ctrl); the update is refused without the checksum file">
               <label className="ds-focus inline-flex h-9 cursor-pointer items-center gap-2 rounded-ds-md bg-ds-accent-soft px-4 text-ds-sm font-semibold shadow-ds-control hover:bg-ds-soft-hover focus-within:shadow-ds-focus">
                 <Icon name="archive" size={15} />
                 Choose files<input type="file" multiple accept=".zip,.sha256" className="sr-only" onChange={(e) => { installFile(e.target.files); e.target.value = ""; }} />
@@ -277,7 +280,7 @@ export default function Settings() {
             <CardHeader id="s-about" title="About" className="!mb-1" />
             <div className="flex justify-center py-3"><Lockup width={200} /></div>
             <SettingRow title="Nightshift" sub={`Version ${version || "unknown"}. Runs fully offline on this PC${demo ? ". Showing demo data because no engine answered" : ""}`} />
-            <SettingRow title="Uninstall" sub="Run UNINSTALL.cmd in the Nightshift folder. It asks before deleting models or videos">
+            <SettingRow title="Uninstall" sub={`Run UNINSTALL.cmd in ${uninstallDir ?? "the app folder inside your Nightshift install folder"}. It asks before deleting models or videos`}>
               <Button size="sm" variant="danger" leadingIcon="trash" onClick={async () => { try { const r = await api.get("/settings/uninstall"); await copy(r.path); } catch { await copy("UNINSTALL.cmd"); } }}>Copy its path</Button>
             </SettingRow>
           </Card>

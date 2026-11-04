@@ -8,6 +8,7 @@ import { useLiveState } from "../api/useSetup";
 import type { DownloadRow, FieldError, PlanGroup, Tier } from "../api/types";
 import { Area, Screen } from "../parts/Screen";
 import { LabeledField } from "../parts/LabeledField";
+import { CopyStatusButton } from "../parts/CopyStatus";
 
 const TIER_NAME: Record<Tier, string> = { small: "Small", balanced: "Balanced", best: "Best" };
 
@@ -100,6 +101,7 @@ export function Welcome({ resume }: { resume: boolean }) {
         footerLeft={state.prefilledFrom && !resume ? t.footerPrefilled(state.prefilledFrom) : t.footer(state.version, state.appPath)}
         footerRight={
           <>
+            {resume && <CopyStatusButton />}
             <Button variant="soft" size="lg" data-advanced-toggle onClick={() => setOpen((o) => !o)} aria-expanded={open} aria-haspopup="dialog">{t.advanced}</Button>
             <Button variant="primary" size="lg" trailingIcon="chevronRight" data-primary disabled={busy.has("start") || busy.has("resume") || busy.has("ui-step:checks")} onClick={start}>{resume ? t.resume : t.start}</Button>
           </>
@@ -110,7 +112,7 @@ export function Welcome({ resume }: { resume: boolean }) {
         <Area area="time">
           <Card elevation={0} tone="sunken" padding="md" radius="lg" className="flex flex-col justify-center gap-1.5">
             <MetaItem icon="clock" className="text-ds-md font-semibold text-ds-text">{est.label}</MetaItem>
-            <p className="text-ds-xs leading-ds-normal text-ds-text-2">{t.timeExplain(est.downloadMin, est.installMin)}</p>
+            <p className="text-ds-xs leading-ds-normal text-ds-text-2">{t.timeExplain}</p>
           </Card>
         </Area>
         <Area area="plan">

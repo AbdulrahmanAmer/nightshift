@@ -36,6 +36,12 @@ export function Uninstall({ view }: { view: UninstallView }) {
                 ))}
               </ul>
             )}
+            {r.stays.length > 0 && (
+              <>
+                <h3 className="mt-5 text-ds-sm font-semibold">{t.staysTitle}</h3>
+                <ul className="mt-2 flex list-disc flex-col gap-1.5 pl-5 text-ds-sm leading-ds-normal text-ds-text-2">{r.stays.map((s) => <li key={s}>{s}</li>)}</ul>
+              </>
+            )}
           </Card>
         </Area>
       </Screen>

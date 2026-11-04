@@ -7,13 +7,13 @@ from typing import Any
 STEP_TITLES: dict[str, str] = {
     "b01_tools": "Free tools",
     "b02_home": "Install folder",
-    "b03_setup_env": "Setup environment",
+    "b03_setup_env": "Setup helper",
     "s01_questions": "Questions",
     "s02_download_bins": "Download programs",
     "s03_download_models": "Download AI models",
-    "s04_venvs": "Python environments",
+    "s04_venvs": "Program parts",
     "s05_opencode_prewarm": "Nightshift Code first start",
-    "s06_tune": "Tune for this graphics card",
+    "s06_tune": "Finding the best settings for your graphics card",
     "s07_configs": "Settings and keys",
     "s08_smoke": "Test the story model, voice and video",
     "v01_samples": "Make a test voice and video",
@@ -43,7 +43,7 @@ DOWNLOAD_LABELS: dict[str, str] = {
     "opencode": "Nightshift Code",
     "yt_dlp": "Video downloader for Clipper",
     "webview2": "Setup window files",
-    "embed": "Memory index",
+    "embed": "Story memory",
     "whisper": "Caption timing",
     "yunet": "Face finder for Clipper",
     "spacy": "Language rules",
@@ -103,7 +103,7 @@ NVENC_PROBE = "nvenc.probe"
 # One setup row per area: llama.start, llama.health and llama.json_completion all report into "Story model".
 VERIFY_AREAS: tuple[tuple[str, str, str], ...] = (
     (LLAMA_PREFIX, "llm", "Story model"),
-    (EMBED_PREFIX, "embed", "Memory index"),
+    (EMBED_PREFIX, "embed", "Story memory"),
     (TTS_PREFIX, "tts", "Voice engine"),
     (WHISPER_PREFIX, "whisper", "Captions"),
     (NVENC_PREFIX, "nvenc", "Video encoder"),
@@ -142,16 +142,18 @@ def verify_value(name: str, passed: bool, value: str | None, speaker: str | None
     """The value column contribution of one verify check (spec 2.6); None when it has nothing to say."""
     low = name.lower()
     if low == LLAMA_TOK_S:
-        return f"{value} tokens/s" if value else None
+        return "works" if passed else None      # the number stays in verify-report.json
     if low == EMBED_VECTOR:
         return "ready" if passed else None
     if low.startswith(TTS_PREFIX) and low not in (TTS_START, TTS_VOICES):
-        who = speaker or "voice"      # tts.preset / tts.design / tts.clone carry the real-time factor
-        return f"{who}, {value} RTF" if value else who
+        # tts.preset / tts.design / tts.clone carry the real-time factor; it stays in verify-report.json
+        if not passed:
+            return speaker or "voice"
+        return f"{speaker}, voice works" if speaker else "voice works"
     if low == WHISPER_LOAD:
         return "graphics card" if passed else "processor"
     if low == NVENC_PROBE:
-        return "NVENC" if passed else "libx264 (slower)"
+        return "graphics card video" if passed else "processor video (slower)"
     return None
 
 
