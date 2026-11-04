@@ -7,12 +7,13 @@ import zlib
 from pathlib import Path
 
 from ns_common import ffmpeg as ff
+from ns_common.errors import NsError
 from ns_common.languages import qwen_language
 from ns_common.models import Voice
 from ns_common.pacing import pacing_speed
 from ns_common.textstats import split_sentences
-from ns_common.tts_client import TtsItem
-from ns_common.tts_timeout import batch_timeout_s
+from ns_common.tts_client import TtsFile, TtsItem
+from ns_common.tts_timeout import TTS_TIMEOUT_CAP_S, batch_timeout_s, load_rtf
 from ns_studio.context import JobContext
 from ns_studio.media.audio import loudnorm, measure_lufs
 from ns_studio.stages import Tenant
@@ -63,6 +64,26 @@ def _signature(it: TtsItem) -> str:
     return hashlib.sha256(base.encode()).hexdigest()
 
 
+def _speak(ctx: JobContext, todo: list[TtsItem], raw_dir: Path, seed: int, limit: float) -> list[TtsFile]:
+    """One batch; when the limit passes (NS-E310 after the client asked the service to cancel) one more try.
+
+    The retry runs at twice the limit (at most 2 h) and `resume` makes the service keep the items it had
+    already finished, so only the rest is spoken again. Anything else (a missing voice, a failed process)
+    is not a matter of time and is raised at once.
+    """
+    try:
+        return ctx.services.tts.speak_batch(todo, raw_dir, seed=seed, timeout_s=limit)
+    except NsError as e:
+        timed_out = bool(e.data.get("timed_out")) or "timed out" in e.detail  # the client's, or the service's
+        if e.code != "NS-E310" or not timed_out:
+            raise
+        again = min(TTS_TIMEOUT_CAP_S, limit * 2)
+        ctx.log.warn(
+            "voice_batch_retry", str(e), job_id=ctx.job_id, items=len(todo), timeout_s=round(again)
+        )
+        return ctx.services.tts.speak_batch(todo, raw_dir, seed=seed, timeout_s=again)
+
+
 def synthesize(ctx: JobContext, items: list[TtsItem]) -> tuple[dict[str, dict], int]:
     """Speak, normalize (-16 LUFS) and measure `items`; reuse files whose text, voice and speed are unchanged.
 
@@ -81,9 +102,10 @@ def synthesize(ctx: JobContext, items: list[TtsItem]) -> tuple[dict[str, dict], 
     manifest: dict[str, dict] = {it.id: prev[it.id] for it in items if it.id not in todo_ids}
     if todo:
         seed = (zlib.crc32(ctx.job_id.encode()) + ctx.attempt) & 0x7FFFFFFF  # a retry sounds different
-        limit = batch_timeout_s(it.text for it in todo)  # 120 s + 3 s per line, at most 2 h
-        ctx.log.info("voice_batch", job_id=ctx.job_id, items=len(todo), timeout_s=round(limit))
-        files = ctx.services.tts.speak_batch(todo, raw_dir, seed=seed, timeout_s=limit)
+        rtf = load_rtf(ctx.paths)  # the speed `ns verify` measured on this PC (None: the default figures)
+        limit = batch_timeout_s((it.text for it in todo), rtf)  # 120 s + 3 s or more per line, at most 2 h
+        ctx.log.info("voice_batch", job_id=ctx.job_id, items=len(todo), timeout_s=round(limit), rtf=rtf)
+        files = _speak(ctx, todo, raw_dir, seed, limit)
         by_id = {it.id: it for it in todo}
         for f in files:
             out = ctx.file(f"audio/{f.id}.wav")
