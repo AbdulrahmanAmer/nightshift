@@ -7,6 +7,11 @@ All notable changes to Nightshift are recorded here. The format follows
 
 ## [Unreleased]
 
+- Dev mode: a clip job on any video now runs through selection, cutting and rendering: the fake model's
+  `clip_select` answer is fitted to the window in the prompt when the recorded fixture's moments (62-262 s of
+  a test recording) fall outside it (the first dev-mode clip job failed with NS-E407). The clipper's dev-mode
+  transcript sidecar is `<video stem>.transcript.json` next to the video (docs/DEV_MODE.md).
+
 ## [0.1.9] - 2026-11-04
 
 From the clean dev-mode install of the official 0.1.8 zip on the orchestrator's laptop. Send

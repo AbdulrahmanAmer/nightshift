@@ -96,6 +96,41 @@ class LlmClient:
             return False
 
 
+_WINDOW_LINE = re.compile(r"^\[(\d+(?:\.\d+)?)-(\d+(?:\.\d+)?)\]", re.M)
+
+
+def fit_clip_fixture(data: dict, user: str) -> dict:
+    """The clip_select fixture's moments sit at 62-262 s of a test recording; on any other video (a dev-mode
+    clip job on a 54 s Short) none of them fall inside the window and the selector ends with NS-E407 "the
+    model returned no candidates". When no fixture clip overlaps the window the prompt describes, two moments
+    are made up inside it instead (the first and the middle third), so the clipper's later stages run."""
+    spans = [(float(a), float(b)) for a, b in _WINDOW_LINE.findall(user or "")]
+    if not spans:
+        return data
+    w_start, w_end = min(a for a, _ in spans), max(b for _, b in spans)
+    clips = data.get("clips") if isinstance(data, dict) else None
+    if isinstance(clips, list) and any(
+        isinstance(c, dict) and float(c.get("end_s", 0)) > w_start and float(c.get("start_s", 0)) < w_end
+        for c in clips
+    ):
+        return data
+    span = max(0.0, w_end - w_start)
+    if span < 8.0:
+        return data
+    third = span / 3.0
+    first = (w_start, w_start + max(5.0, third))
+    middle = (w_start + third, w_start + 2 * third)
+    made = []
+    for k, (a, b) in enumerate(((first), (middle)), start=1):
+        made.append({
+            "k": k, "start_s": round(a, 1), "end_s": round(min(b, w_end), 1),
+            "title": f"Moment {k} (dev-mode stand-in)", "hook_line": None,
+            "why": "made up by the fake model so the clip pipeline can run on this video",
+            "score": round(0.9 - 0.1 * (k - 1), 2), "speakers": None, "keywords": ["dev"],
+        })
+    return {**data, "clips": made}
+
+
 class FakeLlm:
     def __init__(
         self, fixtures_dir: Path, *, overrides: dict[str, dict | list[dict]] | None = None
@@ -122,7 +157,10 @@ class FakeLlm:
         f = self.fixtures_dir / f"{prompt_name}.json"
         if not f.exists():
             raise FileNotFoundError(f)
-        return json.loads(f.read_text(encoding="utf-8"))
+        data = json.loads(f.read_text(encoding="utf-8"))
+        if prompt_name == "clip_select":
+            data = fit_clip_fixture(data, user)
+        return data
 
     def complete_text(self, *, prompt_name: str, system: str, user: str,
                       thinking: bool = False, temperature: float = 0.8, max_tokens: int = 2048) -> str:
