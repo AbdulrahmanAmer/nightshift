@@ -798,11 +798,20 @@ function Resolve-NsHome {
 }
 
 function Find-Uv {
-    param([string]$NsHome)
+    # The pinned uv (manifest.json bins.uv) is preferred: setup relies on flags (`uv venv --clear`,
+    # `--require-hashes` with a direct URL, UV_CACHE_DIR) that an older uv on PATH does not have. A copy
+    # from an earlier setup is used only when it is that version; a uv on PATH likewise. Without a match
+    # the caller downloads the pin. Without -Version (no pin in the manifest) any uv is taken, PATH first.
+    param([string]$NsHome, [string]$Version = '')
+    $candidates = @((Join-Str (Get-DataDir) 'bootstrap\uv\uv.exe'), (Join-Str $NsHome 'bin\uv\uv.exe'))
     $c = Get-Command 'uv.exe' -ErrorAction SilentlyContinue
-    if ($null -ne $c) { return $c.Source }
-    foreach ($p in @((Join-Str (Get-DataDir) 'bootstrap\uv\uv.exe'), (Join-Str $NsHome 'bin\uv\uv.exe'))) {
-        if (Test-Path -LiteralPath $p) { return $p }
+    if ($null -ne $c) {
+        if ($Version) { $candidates += $c.Source } else { $candidates = @($c.Source) + $candidates }
+    }
+    foreach ($p in $candidates) {
+        if (-not (Test-Path -LiteralPath $p)) { continue }
+        if ($Version -and (Get-UvVersion -Uv $p) -ne $Version) { continue }
+        return $p
     }
     return $null
 }
@@ -917,16 +926,51 @@ function Get-UvVersion {
     return '?'
 }
 
+function Test-StorePythonAlias {
+    # %LOCALAPPDATA%\Microsoft\WindowsApps holds the Microsoft Store "python.exe" aliases and the Store
+    # package's own interpreter: writes to %LOCALAPPDATA% are virtualized there, so the setup server's
+    # files may never appear where stage 1 looks. Never use a Python from that folder.
+    param([string]$Path)
+    return ($Path -match '(?i)[\\/]WindowsApps[\\/]')
+}
+
 function Find-PythonExe {
+    # Only a uv-managed Python (UV_PYTHON_PREFERENCE=only-managed is set before this runs), never one from the
+    # Microsoft Store folder, so the server and every venv run on the interpreter setup installed itself.
     param([string]$Uv, [string]$Version)
     try {
         $found = (& $Uv python find $Version 2>$null | Out-String).Trim()
-        if ($LASTEXITCODE -eq 0 -and $found -and (Test-Path -LiteralPath $found.Split("`n")[0].Trim())) {
-            return $found.Split("`n")[0].Trim()
+        if ($LASTEXITCODE -eq 0 -and $found) {
+            $first = $found.Split("`n")[0].Trim()
+            if ((Test-Path -LiteralPath $first) -and -not (Test-StorePythonAlias -Path $first)) { return $first }
         }
     }
     catch { Write-Verbose "uv python find failed: $($_.Exception.Message)" }
     return $null
+}
+
+function Unblock-ExtractedFiles {
+    # A zip downloaded with a browser and extracted with Explorer carries the Mark of the Web on every file.
+    # .NET Framework refuses to load a marked assembly (Add-Type -Path fails with 0x80131515), so the
+    # WebView2 window helpers did not load and the first setup window opened in Edge. Best effort: a file
+    # that cannot be unblocked changes nothing for the rest.
+    param([string]$Folder)
+    $roots = @($Folder)
+    if ($Folder -match '^[A-Za-z]:\\$') {
+        # extracted straight into a drive root: never walk the whole drive, only the bundle's own folders
+        $roots = @('bin', 'launchers', 'installer', 'ns_common', 'ns_dashboard', 'ns_studio', 'ns_supervisor', 'ns_tts', 'tools') |
+            ForEach-Object { Join-Path $Folder $_ }
+    }
+    $kinds = @('.dll', '.exe', '.ps1', '.cmd', '.pyd')
+    foreach ($root in $roots) {
+        try {
+            if (-not (Test-Path -LiteralPath $root)) { continue }
+            Get-ChildItem -LiteralPath $root -Recurse -File -Force -ErrorAction SilentlyContinue |
+                Where-Object { $kinds -contains $_.Extension.ToLower() } |
+                Unblock-File -ErrorAction SilentlyContinue
+        }
+        catch { Write-Verbose "Unblock-File failed under ${root}: $($_.Exception.Message)" }
+    }
 }
 
 function Read-ServerInfo {
@@ -1059,6 +1103,10 @@ $versionPath = Join-Path $App 'VERSION'
 $Version = '0.0.0'
 if (Test-Path -LiteralPath $versionPath) { $Version = (Get-Content -Raw -LiteralPath $versionPath).Trim() }
 
+# Remove the Mark of the Web from the extracted program files (best effort), so the WebView2 window helpers load
+if ($script:IsDry) { Show-Action "unblock the extracted program files in $App (remove the Mark of the Web)" }
+else { Unblock-ExtractedFiles -Folder $App }
+
 # answers.json (unattended mode)
 $answersPath = ''
 if ($Answers) { $answersPath = $Answers }
@@ -1147,7 +1195,8 @@ else {
 
 # uv
 if ($showSplash) { Set-Status -Index 1 -Tag 'working' -Text 'looking for it' }
-$uv = Find-Uv -NsHome $NsHome
+$uvPin = Get-Prop (Get-Prop $Manifest 'bins' $null) 'uv' $null
+$uv = Find-Uv -NsHome $NsHome -Version ([string](Get-Prop $uvPin 'version' ''))
 if ($null -ne $uv) {
     if ($script:IsDry) { Show-Action "uv already present: $uv" }
     elseif ($showSplash) { Set-Status -Index 1 -Tag 'ok' -Text ('{0}, already here' -f (Get-UvVersion -Uv $uv)) }
@@ -1166,6 +1215,7 @@ else { $env:NIGHTSHIFT_BOOTSTRAP_UV = $uv }
 # Python
 $pyVersion = [string]$Manifest.python_version
 $env:UV_LINK_MODE = 'copy'
+$env:UV_PYTHON_PREFERENCE = 'only-managed'      # the uv-managed Python 3.12, never one found on this PC
 if ($script:IsDry) {
     Show-Action "$uv python install $pyVersion"
     $py = Join-Str (Get-DataDir) 'python\python.exe'
@@ -1245,11 +1295,19 @@ $proc = Start-Process -FilePath $py -ArgumentList (ConvertTo-ArgumentString $ser
 $null = $proc.Handle
 
 $info = $null
-$deadline = (Get-Date).AddSeconds(20)
+# The first start of a freshly installed Python can take a while (Defender scans it, slow disks): wait up to 60 s
+# and say so after 15 s, so a slow start does not look like a hang.
+$serverStart = Get-Date
+$deadline = $serverStart.AddSeconds(60)
+$saidWaiting = $false
 while ((Get-Date) -lt $deadline -and -not $proc.HasExited) {
     $info = Read-ServerInfo
     if ($null -ne $info -and [int]$info.pid -eq $proc.Id -and (Invoke-ServerPing -Info $info)) { break }
     $info = $null
+    if (-not $saidWaiting -and ((Get-Date) - $serverStart).TotalSeconds -ge 15) {
+        $saidWaiting = $true
+        Set-Status -Index 3 -Tag 'working' -Text 'starting the setup program, still waiting (the first start can take a minute)'
+    }
     Start-Sleep -Milliseconds 250
 }
 if ($null -eq $info) {

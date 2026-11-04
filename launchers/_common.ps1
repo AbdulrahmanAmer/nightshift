@@ -101,7 +101,38 @@ function Start-NsSupervisor {
         $argList += '--headless'
         $style = 'Hidden'
     }
-    Start-Process -FilePath $py -ArgumentList $argList -WindowStyle $style -WorkingDirectory (Get-NsAppPath)
+    # The engine must run from <home>\app, never from the folder setup was extracted to (stage 1 sets
+    # PYTHONPATH to it), and never with the program folder as its working directory (a running process there
+    # blocks the folder swap of an update). The venv has the app as an editable install.
+    Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue
+    Remove-Item Env:NIGHTSHIFT_BOOTSTRAP_UV -ErrorAction SilentlyContinue
+    Start-Process -FilePath $py -ArgumentList $argList -WindowStyle $style -WorkingDirectory (Get-NsHome)
+}
+
+function Wait-NsHostReady {
+    # After the window host was started as its own hidden process: 0 once its window is up (the host marks its
+    # state file ready after WebView2 initialised), the host's exit code when it ended first (3 = WebView2
+    # unavailable, the caller then opens a browser app window), and 0 when it is still starting at the deadline
+    # (never open a second window beside a slow one).
+    param($Process, [string]$Role = 'dashboard', [int]$TimeoutSec = 45)
+    $null = $Process.Handle     # without it Windows PowerShell 5.1 cannot read ExitCode of a process it did not wait for
+    $runFile = Join-Path (Get-NsHome) ('run\apphost-' + $Role + '.json')
+    $deadline = (Get-Date).AddSeconds($TimeoutSec)
+    while ((Get-Date) -lt $deadline) {
+        if ($Process.HasExited) { return [int]$Process.ExitCode }
+        try {
+            if (Test-Path -LiteralPath $runFile) {
+                $state = Get-Content -Raw -LiteralPath $runFile | ConvertFrom-Json
+                $names = $state.PSObject.Properties.Name
+                if (($names -contains 'pid') -and ($names -contains 'ready') -and [int]$state.pid -eq $Process.Id -and $state.ready) { return 0 }
+            }
+        }
+        catch {
+            Write-Verbose 'the window host state file is not readable yet'
+        }
+        Start-Sleep -Milliseconds 300
+    }
+    return 0
 }
 
 function Wait-NsSupervisor {

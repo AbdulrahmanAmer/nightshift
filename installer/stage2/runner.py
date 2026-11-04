@@ -101,7 +101,7 @@ class SubprocessRunner:
             return RunResult(127, "", str(e))
         except OSError as e:
             if is_blocked_error(e):         # Smart App Control / antivirus refused to start the program
-                return RunResult(126, "", f"{blocked_hint(argv[0])} ({e})")
+                return RunResult(126, "", f"{blocked_hint(argv[0], e)} ({e})")
             raise
         except subprocess.TimeoutExpired:
             return RunResult(124, "", f"timed out after {timeout} s")

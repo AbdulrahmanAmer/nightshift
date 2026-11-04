@@ -51,7 +51,7 @@ def test_the_engine_uses_the_configured_timeout():
 
     from ns_supervisor import app
 
-    src = inspect.getsource(app.main)
+    src = inspect.getsource(app._serve)
     assert "read_health_timeout(paths)" in src and "config=cfg" in src
 
 

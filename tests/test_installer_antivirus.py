@@ -203,6 +203,11 @@ def test_the_fix_hint_of_ns_e113_is_the_allow_list_and_the_operator_copy_says_wh
     root = Path(__file__).resolve().parents[1]
     copy = json.loads((root / "installer" / "stage2" / "web" / "operator_copy.json").read_text("utf-8"))
     assert "Protection history" in copy["NS-E113"]["whatToDo"]
+    sac = "Windows Security > App & browser control > Smart App Control settings"
+    assert sac in copy["NS-E113"]["whatToDo"] and "cannot allow a single file" in copy["NS-E113"]["whatToDo"]
+    assert sac in describe("NS-E113").hint
+    assert "Settings" not in copy["NS-E116"]["whatToDo"] and "restart the PC" in copy["NS-E116"]["whatToDo"]
+    assert "change the port" not in describe("NS-E116").hint
 
 
 def test_httpx_is_not_involved_in_the_blocked_case() -> None:

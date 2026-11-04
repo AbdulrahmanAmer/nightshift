@@ -30,7 +30,7 @@ def fail_with(text: str, code: int = 2) -> RunResult:
 # ---- the cache -----------------------------------------------------------------------------------
 def test_uv_env_puts_the_cache_under_the_home_folder(tmp_path: Path):
     env = ns_uv.uv_env(tmp_path / "home")
-    assert env["UV_LINK_MODE"] == "copy"
+    assert env["UV_LINK_MODE"] == "copy" and env["UV_PYTHON_PREFERENCE"] == "only-managed"
     assert env["UV_CACHE_DIR"] == str(tmp_path / "home" / "cache" / "uv")
     assert (tmp_path / "home" / "cache" / "uv").is_dir()
 
@@ -38,7 +38,7 @@ def test_uv_env_puts_the_cache_under_the_home_folder(tmp_path: Path):
 def test_uv_env_leaves_the_cache_out_when_the_folder_cannot_be_made(tmp_path: Path):
     blocker = tmp_path / "home"
     blocker.write_text("a file where the home folder should be", encoding="utf-8")
-    assert ns_uv.uv_env(blocker) == {"UV_LINK_MODE": "copy"}
+    assert ns_uv.uv_env(blocker) == {"UV_LINK_MODE": "copy", "UV_PYTHON_PREFERENCE": "only-managed"}
 
 
 def test_every_uv_call_of_s04_carries_the_cache_dir(tmp_path: Path):

@@ -60,7 +60,7 @@ def port_message(label: str, port: int, owner: str | None) -> str:
     who = owner or "another program or a range Windows reserved (Hyper-V, WSL)"
     return (
         f"Port {port} ({label}) is already in use by {who}. "
-        "Close that program or change the port in Settings, then press Retry"
+        "Close that program, or restart the PC, then press Retry"
     )
 
 

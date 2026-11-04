@@ -4,8 +4,8 @@ $ErrorActionPreference = 'Stop'
 # "Nightshift Dashboard" shortcut: start the engine minimized if needed, then open the web UI.
 . (Join-Path $PSScriptRoot '_common.ps1')
 
-# The window host runs in this process for as long as the window is open: it must not hold the app folder as
-# its working directory, or `ns update` cannot swap the folder while the dashboard window is open.
+# Neither this launcher nor the window host it starts may hold the app folder as its working directory, or
+# `ns update` cannot swap the folder while the dashboard window is open.
 Set-NsHomeLocation
 
 $url = 'http://127.0.0.1:8100'
@@ -43,39 +43,24 @@ if (-not (Wait-NsPort -Url $url -TimeoutSec 60)) {
 # First choice: the frameless WebView2 window (nightshift-host.ps1). It exits 3 after printing one line when
 # WebView2 or its DLLs are missing, and 0 when the window closed or an open window was brought to the front.
 # Closing that window never stops the engine.
+# The host runs as its own hidden PowerShell process and this launcher ends as soon as the window is up: a
+# launcher that kept the window in its own process left its console open behind the dashboard (Windows
+# Terminal, the default console on Windows 11, ignores a request to hide it), and closing that console closed
+# the dashboard window too.
 $hostScript = Join-Path $PSScriptRoot 'nightshift-host.ps1'
 if ((Test-Path -LiteralPath $hostScript) -and ($env:NS_DASHBOARD_NO_HOST -ne '1')) {
     $hostCode = 3
-    $hidden = $false
-    $consoleHandle = [IntPtr]::Zero
     try {
-        try {
-            # Hide this launcher's own console while the window is open (best effort; ignored by Windows Terminal).
-            Add-Type -Namespace NsDash -Name Console -MemberDefinition @'
-[System.Runtime.InteropServices.DllImport("kernel32.dll")] public static extern System.IntPtr GetConsoleWindow();
-[System.Runtime.InteropServices.DllImport("user32.dll")] public static extern bool ShowWindow(System.IntPtr h, int cmd);
-'@
-            $consoleHandle = [NsDash.Console]::GetConsoleWindow()
-            if ($consoleHandle -ne [IntPtr]::Zero) { [void][NsDash.Console]::ShowWindow($consoleHandle, 0); $hidden = $true }
-        }
-        catch {
-            $hidden = $false
-        }
-        try {
-            $global:LASTEXITCODE = 0
-            & $hostScript -Url $url -AppPath (Get-NsAppPath)
-            $hostCode = $LASTEXITCODE
-        }
-        catch {
-            Write-Host "The Nightshift window could not start ($($_.Exception.Message)); opening the browser app window instead."
-            $hostCode = 3
-        }
+        $appPath = Get-NsAppPath
+        $hostArguments = "-NoProfile -STA -ExecutionPolicy Bypass -File `"$hostScript`" -Url $url -AppPath `"$appPath`""
+        $hostProcess = Start-Process -FilePath 'powershell.exe' -ArgumentList $hostArguments -WindowStyle Hidden -WorkingDirectory (Get-NsHome) -PassThru
+        $hostCode = Wait-NsHostReady -Process $hostProcess
     }
-    finally {
-        # Always give the console back, whatever the host did: a console the user started would stay invisible.
-        if ($hidden) { [void][NsDash.Console]::ShowWindow($consoleHandle, 5) }
+    catch {
+        Write-Host "The Nightshift window could not start ($($_.Exception.Message)); opening the browser app window instead."
+        $hostCode = 3
     }
-    # Only a clean 0 means the window ran (or an open one was raised). 3 = WebView2 unavailable, anything else
+    # Only a clean 0 means the window runs (or an open one was raised). 3 = WebView2 unavailable, anything else
     # is a failure of the host: both fall through to the browser app window.
     if ($hostCode -eq 0) { return }
     if ($hostCode -ne 3) { Write-Host "The Nightshift window stopped with exit code $hostCode; opening the browser app window instead." }
@@ -101,7 +86,9 @@ function Find-NsAppBrowser {
 $browser = Find-NsAppBrowser
 if ($browser) {
     try {
-        Start-Process -FilePath $browser -ArgumentList @("--app=$url")
+        # --no-first-run / --no-default-browser-check: on a PC where Edge was never opened, its welcome and
+        # sign-in pages would otherwise open in place of, or over, the dashboard.
+        Start-Process -FilePath $browser -ArgumentList @("--app=$url", '--no-first-run', '--no-default-browser-check')
         return
     }
     catch {
