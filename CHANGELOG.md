@@ -7,6 +7,12 @@ All notable changes to Nightshift are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.1.10] - 2026-11-04
+
+From the browser-driven user journey on the 0.1.9 dev install (docs/DEV_MODE.md; every page and flow
+clicked through in Chrome, the Pixabay key tested live). Send `Nightshift-Setup-0.1.10.zip`; an install
+started with 0.1.6 to 0.1.9 resumes under it (INSTALL.cmd, Continue).
+
 - Dev mode: the fake language model now turns plain requests in the Assistant into tool calls ("fetch two
   clips of a dark hallway", "what is the status", "pause Dev Night Tales", "where is the footage cache",
   "make a Short for ..."), answers in text after the tool ran (the paths it returned, or the Yes/No card it
