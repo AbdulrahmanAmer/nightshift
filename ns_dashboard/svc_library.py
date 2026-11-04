@@ -18,6 +18,7 @@ from ns_dashboard.common import now_iso
 from ns_dashboard.errors import AdapterUnavailable, ApiError
 from ns_dashboard.state import AppState
 from ns_dashboard.svc_channels import ChannelsService
+from ns_studio.footage_keys import NO_FOOTAGE_KEY
 
 #: The names `ns models get` takes: the VoiceDesign talker and the story LLM.
 MODEL_NAMES = ("voicedesign", "story_llm")
@@ -34,7 +35,6 @@ if TYPE_CHECKING:
 FOOTAGE_SOURCES = ("auto", "pixabay", "pexels")
 FOOTAGE_ORIENTATIONS = ("landscape", "portrait")
 FOOTAGE_MAX = 5  # clips per request: a chat request must not become a bulk download
-NO_FOOTAGE_KEY = "No stock footage key. Add a Pixabay key (free) in Settings > Stock footage keys"
 _FOOTAGE_API_ERRORS = ("NS-E501", "NS-E502", "NS-E503")  # the codes the clip sources use (clips._API_ERRORS)
 _SAFE_CLIP_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")  # becomes a file name in the cache
 

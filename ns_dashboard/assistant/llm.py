@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from collections.abc import Callable
 from typing import Any, Protocol
 
@@ -19,6 +20,9 @@ OWNER = "dashboard:assistant"
 #: The Assistant runs on the Balanced base model (`code`), never on the story model: in two-model mode `story` is a
 #: 21 GB abliterated writer that does not fit the card and is the wrong choice for an agent that must obey confirm rules.
 MODEL_ALIAS = "code"
+#: How often a held GPU lease is renewed. The engine reclaims a `dashboard:assistant` hold that stays silent for
+#: its lease time (10 minutes), so a dashboard that died in the middle of a turn cannot keep the GPU forever (P4).
+BEAT_S = 30.0
 
 
 class ToolLlm(Protocol):
@@ -104,9 +108,14 @@ class LlmProvider(Protocol):
 class SupervisorLlmProvider:
     """Uses the `llama` service through the supervisor; refuses while someone else holds the GPU."""
 
-    def __init__(self, status_fn: Callable[[], dict[str, Any] | None], acquirer: Acquirer) -> None:
+    def __init__(
+        self, status_fn: Callable[[], dict[str, Any] | None], acquirer: Acquirer, *, beat_s: float = BEAT_S
+    ) -> None:
         self.status_fn = status_fn
         self.acquirer = acquirer
+        self.beat_s = beat_s
+        self._beat_stop = threading.Event()
+        self._beat: threading.Thread | None = None
 
     def acquire(self) -> ToolLlm:
         """Acquire `llama` for the Assistant (short wait) and build a client for its endpoint."""
@@ -117,11 +126,39 @@ class SupervisorLlmProvider:
         if owner and owner != OWNER:
             raise EngineBusy(str(owner))
         ep = self.acquirer.acquire("llama", OWNER, model_alias=MODEL_ALIAS, timeout_s=120)
+        self._start_beat()
         return ToolLlmClient(ep.base_url, ep.model_alias or MODEL_ALIAS, timeout_s=300)
 
     def release(self) -> None:
         """Release `llama`; the supervisor unloads it after its idle timeout."""
+        self._stop_beat()
         self.acquirer.release("llama", OWNER)
+
+    def _start_beat(self) -> None:
+        """Renew the lease while the turn lasts (P4): a silent hold is reclaimed by the engine."""
+        beat = getattr(self.acquirer, "heartbeat", None)
+        if beat is None:
+            return
+        self._stop_beat()
+        stop = threading.Event()
+        self._beat_stop = stop
+
+        def loop() -> None:
+            while not stop.wait(self.beat_s):
+                try:
+                    beat(OWNER)
+                except Exception:  # noqa: BLE001 - a missed beat is retried; the turn must not break
+                    pass
+
+        self._beat = threading.Thread(target=loop, name="ns-assistant-beat", daemon=True)
+        self._beat.start()
+
+    def _stop_beat(self) -> None:
+        self._beat_stop.set()
+        t = self._beat
+        if t is not None and t is not threading.current_thread():
+            t.join(1.0)
+        self._beat = None
 
 
 class StaticProvider:

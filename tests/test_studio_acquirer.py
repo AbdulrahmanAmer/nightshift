@@ -164,6 +164,63 @@ def test_unreachable_supervisor_is_ns_e202_and_release_never_masks_an_error(tmp_
     assert acq2.warmup("embed") == "unavailable"
 
 
+# ------------------------------------------------------ gap L1: the engine left in the middle of the night
+
+
+class LostEngineClient(FakeClient):
+    """The first `acquire` finds the engine gone; after `ensure` ran again a new engine answers."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.up = False
+
+    def acquire(self, service, owner, *, model_alias=None, timeout_s=7200) -> Endpoint:
+        if not self.up:
+            self.calls.append(("acquire-failed", service, owner))
+            raise NsError("NS-E202", "supervisor unreachable at http://127.0.0.1:8099: connection refused")
+        return super().acquire(service, owner, model_alias=model_alias, timeout_s=timeout_s)
+
+
+def test_a_lost_engine_is_started_again_once_and_the_acquire_is_retried(tmp_home: Path):
+    paths = Paths.from_env()
+    paths.ensure()
+    client = LostEngineClient()
+    ensured: list[int] = []
+
+    def ensure(c) -> None:
+        ensured.append(1)
+        if len(ensured) > 1:
+            client.up = True  # the second `ensure_running` brought a new engine up
+
+    acq = StudioAcquirer(Runtime.default("cpu-dev"), paths, client=client, ensure=ensure)
+    acq._connect()  # the engine was up once ...
+    assert ensured == [1]
+    ep = acq.acquire("llama", "studio:j9")  # ... and then left on its idle timer
+    assert ep == Endpoint("http://127.0.0.1/llama", None)
+    assert ensured == [1, 1]
+    assert [c[0] for c in client.calls] == ["acquire-failed", "acquire"]
+    acq.release("llama", "studio:j9")
+    acq.stop_beat()
+
+
+def test_a_lost_engine_that_does_not_come_back_fails_with_ns_e202_after_one_retry(tmp_home: Path):
+    client = LostEngineClient()
+    acq, _c, ensured = make(tmp_home, client)
+    with pytest.raises(NsError) as ei:
+        acq.acquire("llama", "studio:j9")
+    assert ei.value.code == "NS-E202"
+    assert len(ensured) == 2  # connected, reconnected once, no loop
+    assert [c[0] for c in client.calls] == ["acquire-failed", "acquire-failed"]
+
+
+def test_a_refusal_is_not_taken_for_a_lost_engine(tmp_home: Path):
+    busy = NsError("NS-E202", "supervisor answered HTTP 502: a service failed")
+    acq, client, ensured = make(tmp_home, FakeClient(fail_with=busy))
+    with pytest.raises(NsError):
+        acq.acquire("llama", "studio:j1")
+    assert len(ensured) == 1 and len(client.calls) == 1
+
+
 # ---------------------------------------------------------------- the orchestrator really goes through it
 
 
@@ -277,22 +334,37 @@ class BeatClient(FakeClient):
         return True
 
 
-def test_a_held_service_is_renewed_on_its_own_thread_until_it_is_released(tmp_home: Path):
+def _wait_for(pred, timeout: float = 5.0) -> bool:
     import time
 
+    deadline = time.monotonic() + timeout
+    while not pred() and time.monotonic() < deadline:
+        time.sleep(0.02)
+    return pred()
+
+
+def test_the_run_keeps_beating_between_services_until_it_is_finished(tmp_home: Path):
+    """Gap L1: clips, render and QC hold no service; the engine must still hear from the run."""
     client = BeatClient()
+    client.run_finished = lambda: True  # type: ignore[attr-defined]
     acq, _c, _e = make(tmp_home, client, beat_s=0.05)
     acq.acquire("llama", "studio:j1")
-    deadline = time.monotonic() + 5
-    while len(client.beats) < 3 and time.monotonic() < deadline:
-        time.sleep(0.02)
+    assert _wait_for(lambda: len(client.beats) >= 3)
     assert client.beats[:3] == ["studio:j1"] * 3
-    acq.release("llama", "studio:j1")
-    time.sleep(0.3)  # the thread notices that nothing is held and ends
+    acq.release("llama", "studio:j1")  # nothing held any more (a render is running)
+    seen = len(client.beats)
+    assert _wait_for(lambda: len(client.beats) >= seen + 3)  # still beating, for the owner of the run
+    assert set(client.beats) == {"studio:j1"}
+    assert acq.run_finished() is True  # the end of the run ends the beat
     settled = len(client.beats)
+    import time
+
     time.sleep(0.3)
     assert len(client.beats) == settled
     assert acq._beat is None or not acq._beat.is_alive()
+    acq.acquire("tts", "studio:j2")  # a later acquire starts it again
+    assert _wait_for(lambda: "studio:j2" in client.beats)
+    acq.stop_beat()
 
 
 def test_a_client_without_heartbeat_is_fine(tmp_home: Path):

@@ -10,14 +10,16 @@ from typing import Any, BinaryIO
 
 from ns_common.db import new_job_id
 from ns_common.paths import Paths
+from ns_common.secrets_names import SHORT_NAMES
 from ns_dashboard.adapters import Adapters
 from ns_dashboard.common import KNOWN_FORMATS, now_iso, offered_formats
-from ns_dashboard.errors import ApiError
+from ns_dashboard.errors import AdapterUnavailable, ApiError
 from ns_dashboard.jobs import Handler, JobControl
 from ns_dashboard.state import AppState
 from ns_dashboard.svc_channels import ChannelsService
 from ns_dashboard.templates import load_templates
 from ns_dashboard.uploads import ALLOWED_EXT, CHUNK, UploadInfo, UploadManager, find_source
+from ns_studio.footage_keys import NO_FOOTAGE_KEY
 
 CLIP_PARAM_KEYS = ("channel", "template", "max_clips", "min_s", "max_s", "caption_style", "rights_confirmed")
 MAX_CSV_BYTES = 20 * 1024 * 1024
@@ -221,6 +223,25 @@ class JobsService:
         self.s.hub.publish("dashboard_job", rec.to_dict())
         return rec.to_dict()
 
+    def _require_footage_key(self) -> None:
+        """Refuse a story video when no stock-footage key is stored (gap L3): `clips` would fail an hour in.
+
+        Not checked with fake services (they bring their own footage) or when the keyring cannot be read at
+        all (then nothing is known, and the run itself reports what it finds).
+        """
+        if self.s.fake_services:
+            return
+        for name in SHORT_NAMES:
+            try:
+                if self.s.adapters.keyring.get(name):
+                    return
+            except AdapterUnavailable:
+                return
+        raise ApiError(
+            409, "NS-E502", NO_FOOTAGE_KEY,
+            hint="Pixabay gives a free key in a minute. Keys are entered by the owner in Settings.",
+        )
+
     # --- creation ---
     def create_run(self, body: dict[str, Any]) -> dict[str, Any]:
         """Queue `studio run` for one channel; `schedule_at` (null = now) holds it until that time."""
@@ -236,6 +257,7 @@ class JobsService:
             raise ApiError(422, "invalid_options", f"Unknown video type '{fmt}'.")
         count = body.get("count")
         n = _int(body, "count", 1, 1, 20) if count else None
+        self._require_footage_key()
         params: dict[str, Any] = {"channel": slug, "format": fmt, "count": n}
         return self._enqueue("run", slug, params, self._schedule(body))
 

@@ -259,7 +259,7 @@ export const choices = {
     pixabayLink: "Pixabay, free key",
     pexelsKept: "A key is already saved. Leave this empty to keep it",
     pexelsOptional: "Pexels is not giving out new keys right now. Leave this empty; Pixabay alone is enough",
-    pixabayOptional: "Free at pixabay.com. Without any key, videos get no stock footage until you add one in Settings",
+    pixabayOptional: "Free at pixabay.com. Without a Pixabay key Nightshift cannot make videos until you add one in Settings",
     popoverLabel: "Where to get the keys",
   },
   footer: { folder: (path: string, free: string | null) => (free ? `Install folder ${path} · ${free} free` : `Install folder ${path}`), checking: "Checking the install folder", more: "More options", problems: "answers.json had problems. Fix them here" },

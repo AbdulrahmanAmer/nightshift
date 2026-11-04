@@ -83,6 +83,30 @@ def test_run_fake_services_creates_jobs(tmp_home: Path, stub_stages):
     assert CALLS == ["a", "b", "a", "b"]
 
 
+def test_run_holds_the_pc_awake_until_the_jobs_are_done(
+    tmp_home: Path, stub_stages, monkeypatch: pytest.MonkeyPatch
+):
+    """Gap L2: a long `studio run` must not be interrupted by Windows' sleep timer."""
+    from contextlib import contextmanager
+
+    from ns_studio import cli
+
+    held: list[str] = []
+
+    @contextmanager
+    def fake_awake():
+        held.append("hold")
+        try:
+            yield
+        finally:
+            held.append("release")
+
+    monkeypatch.setattr(cli, "keep_awake", fake_awake)
+    res = runner.invoke(app, ["run", "--fake-services", "--format", "shorts_only"])
+    assert res.exit_code == 0, res.output
+    assert held == ["hold", "release"] and CALLS == ["a", "b"]
+
+
 def test_dry_run_creates_nothing(tmp_home: Path, stub_stages):
     res = runner.invoke(app, ["run", "--dry-run", "--format", "shorts_only"])
     assert res.exit_code == 0, res.output
