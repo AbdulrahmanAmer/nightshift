@@ -10,11 +10,18 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
+from installer.stage2.web.appcopy import read_version
 from installer.stage2.web.preflight import copy_for
 
 TIMEOUT_S = 15.0
+# Pixabay and Pexels sit behind Cloudflare, which answers HTTP 403 (error 1010) to the default
+# "Python-urllib/3.x" browser signature, so every key looked rejected. A product User-Agent passes.
+# (The web package runs on the bare Python, so the version comes from the VERSION file, not ns_common.)
+_VERSION = read_version(Path(__file__).resolve().parents[3]) or "0"
+USER_AGENT = f"Nightshift-Setup/{_VERSION} (+https://github.com/AbdulrahmanAmer/nightshift)"
 REJECTED = {"pexels": "NS-E501", "pixabay": "NS-E502"}
 Fetch = Callable[[urllib.request.Request], int]
 
@@ -41,10 +48,10 @@ def check_key(service: str, key: str, fetch: Fetch | None = None) -> dict[str, A
     if service == "pexels":
         query = urllib.parse.urlencode({"query": "nature", "per_page": 1})
         url = f"https://api.pexels.com/v1/search?{query}"
-        req = urllib.request.Request(url, headers={"Authorization": key})
+        req = urllib.request.Request(url, headers={"Authorization": key, "User-Agent": USER_AGENT})
     else:
         query = urllib.parse.urlencode({"key": key, "q": "nature", "per_page": 3})
-        req = urllib.request.Request(f"https://pixabay.com/api/?{query}")
+        req = urllib.request.Request(f"https://pixabay.com/api/?{query}", headers={"User-Agent": USER_AGENT})
     try:
         status = send(req)
     except (OSError, ValueError):

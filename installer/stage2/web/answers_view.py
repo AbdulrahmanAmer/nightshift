@@ -27,6 +27,9 @@ KINDS_UI = ("internet", "folder", "drive-zip")
 THEMES = ("dark", "light", "soft")
 TIER_NAMES = {"small": "Small", "balanced": "Balanced", "best": "Best"}
 SERVICES = {"pexelsKey": "Pexels", "pixabayKey": "Pixabay"}
+# Both keys are optional: setup never blocks on them. A pasted key is still checked live (/api/check-key)
+# and a rejected one is a field error; without any key the studio's clips stage asks for one (NS-E502)
+# and Settings takes it. Pexels stopped handing out new API keys in 2026, so Pixabay is the one to add.
 
 
 def kind_to_file(kind: str) -> str:
@@ -122,10 +125,6 @@ def validate(draft: dict[str, Any], env: Env) -> list[dict[str, Any]]:
         errors.append(_err("runTime", "Use the 24 hour clock, for example 03:00"))
     if draft.get("mastersPerWeek") not in (1, 2, 3):
         errors.append(_err("mastersPerWeek", "Pick 1, 2 or 3 long videos per week"))
-    for field, label in SERVICES.items():
-        stored = env.keys_stored.get(field, False)
-        if not _text(draft.get(field)) and not stored:
-            errors.append(_err(field, f"Paste the {label} key. Setup needs it to find stock footage"))
     return errors
 
 

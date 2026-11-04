@@ -148,6 +148,25 @@ def test_pexels_download_streams_to_dest(tmp_path: Path):
     assert not list(tmp_path.rglob("*.part"))
 
 
+def test_pixabay_rendition_is_the_smallest_that_still_covers_1080p():
+    from ns_studio.media.clip_sources import pick_pixabay_rendition
+
+    def r(w, h):
+        return {"url": f"u{w}x{h}", "width": w, "height": h, "size": w * h}
+
+    live_2026 = {"large": r(3840, 2160), "medium": r(2560, 1440), "small": r(1920, 1080),
+                 "tiny": r(1280, 720)}
+    assert pick_pixabay_rendition(live_2026)["url"] == "u1920x1080"          # not the 35 MB 4K file
+    older = {"large": r(1920, 1080), "medium": r(1280, 720), "small": r(640, 360), "tiny": r(480, 270)}
+    assert pick_pixabay_rendition(older)["url"] == "u1920x1080"
+    portrait = {"large": {"url": "", "width": 0, "height": 0, "size": 0}, "medium": r(1080, 1920),
+                "small": r(540, 960), "tiny": r(360, 640)}
+    assert pick_pixabay_rendition(portrait)["url"] == "u1080x1920"           # empty large skipped
+    small_only = {"medium": r(1280, 720), "tiny": r(640, 360)}
+    assert pick_pixabay_rendition(small_only)["url"] == "u1280x720"          # best there is
+    assert pick_pixabay_rendition({}) is None
+
+
 def test_parse_pixabay_filters_by_ratio_and_skips_empty_renditions():
     portrait = parse_pixabay(_load("pixabay_search.json"), "portrait")
     assert [c.id for c in portrait] == ["126", "128"]

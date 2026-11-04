@@ -186,10 +186,6 @@ class S07Configs(Step):
         load_channel(ctx.paths, slugify(ans.channel.display_name))
         if ans.install_code and not ctx.paths.opencode_file.exists():
             raise make_error("NS-E110", "config/opencode.json was not written")
-        if not ctx.simulate:
-            for key in KEY_NAMES:
-                if not ctx.store.get(key):
-                    raise make_error("NS-E501" if key.startswith("pexels") else "NS-E502", "key not stored")
         leaking = [f.name for f in answer_files(ctx) if _file_has_keys(f)]
         if leaking:
             raise make_error("NS-E501", f"API keys are still written in {', '.join(leaking)}")
