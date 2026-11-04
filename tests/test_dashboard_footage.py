@@ -2,6 +2,7 @@
 """The Assistant's `fetch_footage`: stock clips are searched, downloaded into the cache and reported with their
 paths (component C9). Stub clip sources stand in for Pexels and Pixabay, so nothing here touches the network."""
 import json
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -225,3 +226,20 @@ def test_where_is_answers_the_footage_cache(tmp_home: Path):
         res = where(ToolContext(dash), {"thing": thing})
         assert res == {"kind": "cache", "path": str(state.paths.cache_clips)}, thing
     assert Path(res["path"]).is_absolute()
+
+
+def test_a_dev_install_fetches_from_the_fake_source_without_a_key(tmp_home: Path, monkeypatch: pytest.MonkeyPatch):
+    """docs/DEV_MODE.md: the Footage page and the Assistant's fetch_footage work on a dev install with no key."""
+    if not shutil.which("ffmpeg"):
+        pytest.skip("ffmpeg is not installed")
+    dash, state, seen = make(tmp_home, {}, [])
+    state.paths.runtime_file.parent.mkdir(parents=True, exist_ok=True)
+    state.paths.runtime_file.write_text(json.dumps({"dev_mode": True}), encoding="utf-8")
+    out = dash.library.fetch_footage("fog", count=2)
+    assert len(out["clips"]) == 2 and all(Path(c["path"]).is_file() for c in out["clips"])
+    assert all(c["source"] == "fake" for c in out["clips"]) and seen == []
+    # a stored key still wins over the fake source
+    stub = StubSource()
+    dash2, state2, seen2 = make(tmp_home, {"pixabay_api_key": "pk"}, [stub])
+    dash2.library.fetch_footage("fog")
+    assert seen2 == [{"pixabay": "pk"}] and stub.downloads

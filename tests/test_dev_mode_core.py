@@ -107,6 +107,54 @@ def test_example_for_satisfies_the_schemas_the_pipeline_sends():
     }
 
 
+def _tools(*names: str) -> list[dict]:
+    return [{"type": "function", "function": {"name": n, "parameters": {}}} for n in names]
+
+
+def _user(text: str) -> list[dict]:
+    return [{"role": "system", "content": "x"}, {"role": "user", "content": text}]
+
+
+def test_the_fake_model_turns_plain_requests_into_tool_calls():
+    tools = _tools("fetch_footage", "search_footage", "status", "pause_channel", "where_is", "start_story_job",
+                   "list_queue", "list_channels")
+    ask = "Fetch two stock clips of a dark hallway for Dev Night Tales and show me where the files are."
+    plan = devfake.plan_tool_call(_user(ask), tools)
+    assert plan == {"name": "fetch_footage", "args": {"q": "dark hallway", "count": 2, "orientation": "landscape"}}
+    plan = devfake.plan_tool_call(_user("pull 3 vertical clips of rain on a window"), tools)
+    assert plan["args"] == {"q": "rain on a window", "count": 3, "orientation": "portrait"}
+    assert devfake.plan_tool_call(_user("pause Dev Night Tales for now"), tools)["args"]["slug"] == "dev-night-tales"
+    assert devfake.plan_tool_call(_user("where is the footage cache?"), tools) == {
+        "name": "where_is", "args": {"thing": "footage cache"}}
+    assert devfake.plan_tool_call(_user("make a Short for dev-night-tales"), tools) == {
+        "name": "start_story_job", "args": {"channel": "dev-night-tales", "format": "shorts_only"}}
+    assert devfake.plan_tool_call(_user("what is ready to review?"), tools)["name"] == "list_queue"
+    assert devfake.plan_tool_call(_user("what is the status"), tools)["name"] == "status"
+    # only offered tools are called; small talk and a missing tool list get the text reply
+    assert devfake.plan_tool_call(_user("fetch clips of fog"), _tools("status")) is None
+    assert devfake.plan_tool_call(_user("hello there"), tools) is None
+    assert devfake.plan_tool_call(_user("fetch clips of fog"), []) is None
+
+
+def test_the_fake_model_answers_in_text_after_a_tool_ran():
+    body = {"tools": _tools("fetch_footage"), "messages": _user("fetch a clip of fog")}
+    msg = devfake.chat_message(body)
+    assert msg["tool_calls"][0]["function"]["name"] == "fetch_footage" and msg["content"] == ""
+    after = _user("fetch a clip of fog") + [
+        msg,
+        {"role": "tool", "name": "fetch_footage", "tool_call_id": "call_dev_fetch_footage",
+         "content": json.dumps({"clips": [{"path": r"D:\\x\\a.mp4"}, {"path": r"D:\\x\\b.mp4"}]})},
+    ]
+    text = devfake.chat_message({**body, "messages": after})["content"]
+    assert "a.mp4" in text and "b.mp4" in text
+    assert "tool_calls" not in devfake.chat_message({**body, "messages": after})
+    gate = after[:-1] + [{"role": "tool", "name": "fetch_footage", "tool_call_id": "c",
+                          "content": json.dumps({"status": "awaiting_owner_confirmation", "will_do": "Download 1 clip."})}]
+    assert "Download 1 clip." in devfake.chat_message({**body, "messages": gate})["content"]
+    # a schema request and a plain chat are unchanged
+    assert devfake.chat_message({"messages": _user("hi")})["content"] == devfake.TEXT_REPLY
+
+
 def test_embeddings_are_deterministic_unit_vectors():
     a, b = devfake.embedding_for("night"), devfake.embedding_for("night")
     assert a == b and len(a) == devfake.EMBED_DIM and devfake.embedding_for("day") != a

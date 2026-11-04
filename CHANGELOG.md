@@ -7,6 +7,12 @@ All notable changes to Nightshift are recorded here. The format follows
 
 ## [Unreleased]
 
+- Dev mode: the fake language model now turns plain requests in the Assistant into tool calls ("fetch two
+  clips of a dark hallway", "what is the status", "pause Dev Night Tales", "where is the footage cache",
+  "make a Short for ..."), answers in text after the tool ran (the paths it returned, or the Yes/No card it
+  raised), and the Library's footage fetch uses the synthetic clip source when no key is stored. The
+  Assistant's whole path (confirm card, tool run, result) can now be tried on a dev install.
+
 - Dev mode: a clip job on any video now runs through selection, cutting and rendering: the fake model's
   `clip_select` answer is fitted to the window in the prompt when the recorded fixture's moments (62-262 s of
   a test recording) fall outside it (the first dev-mode clip job failed with NS-E407). The clipper's dev-mode
