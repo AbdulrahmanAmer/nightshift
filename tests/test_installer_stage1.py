@@ -402,3 +402,151 @@ def test_the_runtime_row_value_matches_what_stage_1_does(tmp_path: Path):
     proc = _run("-FakeProbe", str(_probe(tmp_path, vc_runtime=False)))
     row = _row(_summary(proc), "vcruntime")
     assert "stage 1 installs it" in row["value"]
+
+
+# ----------------------------------------------------------------------- bootstrap uv, Python, Unblock-File
+def _functions(names: list[str]) -> str:
+    """PowerShell that defines the named functions of stage1.ps1 (and nothing else of it)."""
+    listed = ", ".join(repr(x) for x in names)
+    return f"""
+$ErrorActionPreference = 'Stop'
+$ast = [System.Management.Automation.Language.Parser]::ParseFile('{STAGE1}', [ref]$null, [ref]$null)
+$fnType = [System.Management.Automation.Language.FunctionDefinitionAst]
+foreach ($n in @({listed})) {{
+    $found = $ast.FindAll({{ param($x) $x -is $fnType -and $x.Name -eq $n }}, $true)[0]
+    . ([scriptblock]::Create($found.Extent.Text))
+}}
+function Join-Str {{ param($a, $b) return (Join-Path $a $b) }}
+"""
+
+
+def _ps(tmp_path: Path, script: str) -> subprocess.CompletedProcess:
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    f = tmp_path / "harness.ps1"
+    f.write_text(script, encoding="utf-8")
+    return subprocess.run([str(PS), "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(f)],
+                          capture_output=True, text=True, timeout=120)
+
+
+def _find_uv(tmp_path: Path, *, boot: str | None, home: str | None, on_path: str | None, version: str) -> str:
+    """What Find-Uv answers; each copy of uv reports the version given for it (a path with 'old' is 0.9.0)."""
+    data, nsh = tmp_path / "data", tmp_path / "nshome"
+    for found, folder in ((boot, data / "bootstrap" / "uv"), (home, nsh / "bin" / "uv")):
+        if found:
+            folder.mkdir(parents=True, exist_ok=True)
+            (folder / "uv.exe").write_text(found, encoding="utf-8")       # the text is the version it reports
+    path_exe = ""
+    if on_path:
+        (tmp_path / "pathdir").mkdir(exist_ok=True)
+        (tmp_path / "pathdir" / "uv.exe").write_text(on_path, encoding="utf-8")
+        path_exe = str(tmp_path / "pathdir" / "uv.exe")
+    script = _functions(["Find-Uv"]) + f"""
+function Get-DataDir {{ return '{data}' }}
+function Get-UvVersion {{ param([string]$Uv) return (Get-Content -Raw -LiteralPath $Uv).Trim() }}
+function Get-Command {{ param($Name, $ErrorAction)
+  if ('{path_exe}') {{ return [pscustomobject]@{{ Source = '{path_exe}' }} }} }}
+$r = Find-Uv -NsHome '{nsh}' -Version '{version}'
+if ($null -eq $r) {{ Write-Output 'NONE' }} else {{ Write-Output $r }}
+"""
+    proc = _ps(tmp_path, script)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    return proc.stdout.strip()
+
+
+def test_stage_1_prefers_the_pinned_uv_over_an_older_one_on_the_path(tmp_path: Path):
+    pin = json.loads((ROOT / "manifest.json").read_text(encoding="utf-8"))["bins"]["uv"]["version"]
+    got = _find_uv(tmp_path, boot=pin, home=None, on_path="0.9.0", version=pin)
+    assert got == str(tmp_path / "data" / "bootstrap" / "uv" / "uv.exe")
+
+
+def test_an_older_uv_on_the_path_is_not_used_so_the_pin_is_downloaded(tmp_path: Path):
+    assert _find_uv(tmp_path, boot=None, home="0.9.0", on_path="0.9.0", version="0.13.6") == "NONE"
+
+
+def test_the_pinned_uv_on_the_path_or_in_the_install_folder_is_accepted(tmp_path: Path):
+    got = _find_uv(tmp_path, boot=None, home=None, on_path="0.13.6", version="0.13.6")
+    assert got == str(tmp_path / "pathdir" / "uv.exe")
+    got = _find_uv(tmp_path / "b", boot=None, home="0.13.6", on_path=None, version="0.13.6")
+    assert got.endswith("uv.exe") and "nshome" in got
+
+
+def test_without_a_pin_in_the_manifest_any_uv_is_taken_path_first(tmp_path: Path):
+    assert _find_uv(tmp_path, boot="0.1.0", home=None, on_path="0.9.0", version="") == str(
+        tmp_path / "pathdir" / "uv.exe")
+
+
+def test_stage_1_asks_for_the_managed_python_only_and_the_pin_is_looked_up_from_the_manifest():
+    text = STAGE1.read_text(encoding="utf-8")
+    assert "$env:UV_PYTHON_PREFERENCE = 'only-managed'" in text
+    assert text.index("UV_PYTHON_PREFERENCE") < text.index("$py = Find-PythonExe -Uv $uv")
+    assert "Find-Uv -NsHome $NsHome -Version" in text
+
+
+def _find_python(tmp_path: Path, answer: str) -> str:
+    """Find-PythonExe against a fake uv (a .cmd) that prints ``answer``."""
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    uv = tmp_path / "uv.cmd"
+    uv.write_text(f"@echo off\r\necho {answer}\r\n", encoding="ascii")
+    script = _functions(["Find-PythonExe", "Test-StorePythonAlias"]) + f"""
+$r = Find-PythonExe -Uv '{uv}' -Version '3.12'
+if ($null -eq $r) {{ Write-Output 'NONE' }} else {{ Write-Output $r }}
+"""
+    proc = _ps(tmp_path, script)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    return proc.stdout.strip()
+
+
+def test_a_microsoft_store_python_is_never_chosen(tmp_path: Path):
+    alias = tmp_path / "AppData" / "Local" / "Microsoft" / "WindowsApps" / "python.exe"
+    alias.parent.mkdir(parents=True)
+    alias.write_bytes(b"")
+    assert _find_python(tmp_path, str(alias)) == "NONE"
+    store = tmp_path / "Program Files" / "WindowsApps" / "PythonSoftwareFoundation.Python.3.12" / "python.exe"
+    store.parent.mkdir(parents=True)
+    store.write_bytes(b"")
+    assert _find_python(tmp_path / "second", str(store)) == "NONE"
+
+
+def test_a_uv_managed_python_is_chosen(tmp_path: Path):
+    managed = tmp_path / "uv" / "python" / "cpython-3.12.9-windows-x86_64-none" / "python.exe"
+    managed.parent.mkdir(parents=True)
+    managed.write_bytes(b"")
+    assert _find_python(tmp_path, str(managed)) == str(managed)
+
+
+def test_unblock_removes_the_mark_of_the_web_from_programs_and_leaves_other_files(tmp_path: Path):
+    folder = tmp_path / "Nightshift-extracted"
+    (folder / "bin" / "webview2").mkdir(parents=True)
+    dll = folder / "bin" / "webview2" / "Microsoft.Web.WebView2.Core.dll"
+    note = folder / "notes.txt"
+    dll.write_bytes(b"MZ")
+    note.write_text("x", encoding="utf-8")
+    mark = "[ZoneTransfer]`r`nZoneId=3"
+    script = _functions(["Unblock-ExtractedFiles"]) + f"""
+foreach ($f in @('{dll}', '{note}')) {{ Set-Content -LiteralPath $f -Stream Zone.Identifier -Value "{mark}" }}
+Unblock-ExtractedFiles -Folder '{folder}'
+foreach ($f in @('{dll}', '{note}')) {{
+    $has = $null -ne (Get-Item -LiteralPath $f -Stream Zone.Identifier -ErrorAction SilentlyContinue)
+    Write-Output ((Split-Path -Leaf $f) + '=' + $has)
+}}
+"""
+    proc = _ps(tmp_path, script)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "Microsoft.Web.WebView2.Core.dll=False" in proc.stdout       # unblocked: the helpers can load
+    assert "notes.txt=True" in proc.stdout                                # only programs are touched
+
+
+def test_stage_1_unblocks_the_extracted_files_before_anything_loads_them():
+    proc = _run()
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "unblock the extracted program files" in proc.stdout
+    assert proc.stdout.index("unblock the extracted") < proc.stdout.index("start setup server")
+    text = STAGE1.read_text(encoding="utf-8")
+    assert text.index("Unblock-ExtractedFiles -Folder $App") < text.index("Show-Splash -Version $Version")
+
+
+def test_the_setup_server_gets_60_seconds_and_a_progress_line():
+    text = STAGE1.read_text(encoding="utf-8")
+    wait = text[text.index("$serverStart = Get-Date"):text.index("-Text 'the setup program did not start'")]
+    assert "AddSeconds(60)" in wait and "AddSeconds(20)" not in wait
+    assert "still waiting" in wait and "TotalSeconds -ge 15" in wait

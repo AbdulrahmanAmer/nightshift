@@ -112,7 +112,8 @@ def do_run(args: dict[str, Any]) -> dict[str, Any]:
 
     seen = SeenJobs()
     ids = studio_bridge.run_story_jobs(
-        str(args["channel"]), str(args["fmt"]), args.get("count"), report, seen=seen, **_common(args)
+        str(args["channel"]), str(args["fmt"]), args.get("count"), report, seen=seen,
+        resume_job_id=str(args["resume_job_id"]) if args.get("resume_job_id") else None, **_common(args),
     )
     return {"output_ids": ids, "job_ids": list(seen)}
 

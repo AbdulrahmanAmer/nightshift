@@ -69,8 +69,10 @@ class StudioAcquirer:
         self.wait_cap_s = wait_cap_s
         self.beat_s = beat_s
         self._held: set[tuple[str, str]] = set()
+        self._run_owner: str | None = None  # the owner that last acquired: it keeps beating between services
         self._beat: threading.Thread | None = None
         self._beat_mu = threading.Lock()
+        self._beat_stop = threading.Event()
         self.log = log or NsLogger("studio", paths.logs, echo=False)
         self._client: SupervisorApi | None = client
         self._ensure = ensure
@@ -112,13 +114,39 @@ class StudioAcquirer:
         client = self._connect()
         wait = max(1, min(int(timeout_s), self.wait_cap_s))
         try:
-            ep = client.acquire(service, owner, model_alias=model_alias, timeout_s=wait)
+            ep = self._acquire_once(client, service, owner, model_alias, wait)
         except NsError as e:
-            self.log.warn("acquire_failed", str(e), service=service, owner=owner, code=e.code, wait_s=wait)
-            raise
+            if not self._unreachable(e):
+                self.log.warn(
+                    "acquire_failed", str(e), service=service, owner=owner, code=e.code, wait_s=wait
+                )
+                raise
+            # The engine is gone (it left on its idle timer, or crashed). Connect again: `ensure_running`
+            # starts a new one in the nightly run (gap L1), so one lost engine does not fail every later job.
+            self.log.warn("supervisor_lost", str(e), service=service, owner=owner)
+            self._ready = False
+            client = self._connect()
+            try:
+                ep = self._acquire_once(client, service, owner, model_alias, wait)
+            except NsError as e2:
+                self.log.warn(
+                    "acquire_failed", str(e2), service=service, owner=owner, code=e2.code, wait_s=wait
+                )
+                raise
         self._hold(service, owner)
         self.log.info("acquired", service=service, owner=owner)
         return ep
+
+    @staticmethod
+    def _acquire_once(
+        client: SupervisorApi, service: Service, owner: str, model_alias: str | None, wait: int
+    ) -> Endpoint:
+        return client.acquire(service, owner, model_alias=model_alias, timeout_s=wait)
+
+    @staticmethod
+    def _unreachable(e: NsError) -> bool:
+        """True for the client's "supervisor unreachable" answer (a transport failure, not a refusal)."""
+        return e.code == "NS-E202" and "unreachable" in str(e)
 
     def release(self, service: Service, owner: str) -> None:
         """Give the service back. A supervisor that is gone must not hide the error that got us here."""
@@ -135,7 +163,9 @@ class StudioAcquirer:
         """Remember a held service and make sure the heartbeat thread runs."""
         with self._beat_mu:
             self._held.add((service, owner))
+            self._run_owner = owner
             if self._beat is None or not self._beat.is_alive():
+                self._beat_stop.clear()
                 self._beat = threading.Thread(target=self._beat_loop, name="ns-lease-beat", daemon=True)
                 self._beat.start()
 
@@ -143,19 +173,26 @@ class StudioAcquirer:
         with self._beat_mu:
             self._held.discard((service, owner))
 
-    def _beat_loop(self) -> None:
-        """Renew the lease of every owner that holds a service until none is held.
+    def stop_beat(self) -> None:
+        """End the heartbeat thread (the run is finished); a later `acquire` starts it again."""
+        self._beat_stop.set()
+        thread = self._beat
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(1.0)
 
-        This runs on its own thread so a stage that takes an hour still beats. A failed beat is only logged:
-        the supervisor may be restarting, and the next beat will tell.
+    def _beat_loop(self) -> None:
+        """Renew the lease of every owner that holds a service, from the first `acquire` until the run ends.
+
+        This runs on its own thread so a stage that takes an hour still beats. It keeps going when nothing is
+        held (clip download, render, QC, outbox): the owner of the run still beats, which tells the engine the
+        run is alive and restarts its idle clock (gap L1). A failed beat is only logged: the supervisor may be
+        restarting, and the next beat will tell.
         """
-        while True:
-            threading.Event().wait(self.beat_s)
+        while not self._beat_stop.wait(self.beat_s):
             with self._beat_mu:
                 owners = sorted({o for _s, o in self._held})
-                if not owners:
-                    self._beat = None
-                    return
+                if not owners and self._run_owner is not None:
+                    owners = [self._run_owner]
             beat = getattr(self._client, "heartbeat", None)
             if beat is None:
                 continue
@@ -169,6 +206,7 @@ class StudioAcquirer:
     def run_finished(self) -> bool:
         """Tell the supervisor the nightly run is done so the engine can leave (gap 25). Best effort; False
         when this run never used the supervisor or it is gone."""
+        self.stop_beat()
         client = self.client
         signal = getattr(client, "run_finished", None)
         if signal is None:

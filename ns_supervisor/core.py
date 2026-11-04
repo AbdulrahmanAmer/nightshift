@@ -47,14 +47,19 @@ class SupervisorConfig:
     post_run_grace_s: float = 60.0  # after the nightly run reports it is done, before the engine leaves
     update_poll_s: float = 3600.0  # how often the weekly update check is asked whether it is due
     schedule_lookahead_s: float = 3600.0
-    lease_expiry_s: float = 600.0  # a `studio:` GPU lease with no heartbeat for this long is reclaimed
+    lease_expiry_s: float = 600.0  # a `studio:` or Assistant GPU lease silent for this long is reclaimed
     suspend_gap_s: float = 60.0  # a monitor pass this late means the PC slept: leases start over
     release_alive_s: float = 90.0  # the dashboard's Release is refused while the holder beat this recently
 
 
-#: Owners that must heartbeat while they hold the GPU (the studio does; see `ns_studio.acquirer`). Other
-#: owners (the Assistant, voice previews, `ns verify`) hold the lock for one short call and never expire.
-LEASED_PREFIXES: tuple[str, ...] = ("studio:",)
+#: Owners that must heartbeat while they hold the GPU (the studio does, see `ns_studio.acquirer`; so does the
+#: Assistant during a turn, see `ns_dashboard.assistant.llm`). A hold that stays silent for `lease_expiry_s`
+#: is reclaimed. Other owners (voice previews, `ns verify`) hold the lock for one short call and never expire.
+LEASED_PREFIXES: tuple[str, ...] = ("studio:", "dashboard:assistant")
+#: Owners whose heartbeat also counts as activity for the idle exit, whether or not they hold the GPU at that
+#: moment: a nightly run or a dashboard job spends most of its time in clips, render and QC with no service
+#: held, and the engine must not leave under it (gap L1).
+ACTIVITY_PREFIXES: tuple[str, ...] = ("studio:", "dashboard:job")
 #: `/status` says `busy` for this long after the last acquire, release or warmup (a run between two stages).
 BUSY_RECENT_S = 120.0
 
@@ -475,7 +480,14 @@ class Supervisor:
         return {"ok": await self.release_owner(owner)}
 
     def heartbeat(self, owner: str) -> bool:
-        """The holder of the GPU lease is alive. False when `owner` does not hold the lock (any more)."""
+        """The holder of the GPU lease is alive. False when `owner` does not hold the lock (any more).
+
+        A beat from a `studio:` run or the dashboard's job worker also restarts the idle clock when that owner
+        holds nothing right now (download, render, QC): the 30-minute idle exit would otherwise stop the
+        engine under a running job.
+        """
+        if owner.startswith(ACTIVITY_PREFIXES):
+            self._touch()
         if self.lock.state.owner != owner:
             return False
         self._lease_owner = owner
@@ -483,7 +495,7 @@ class Supervisor:
         return True
 
     async def _expire_lease(self, now: float) -> None:
-        """Reclaim the GPU from a `studio:` owner that has sent no heartbeat for `lease_expiry_s`.
+        """Reclaim the GPU from a leased owner (`studio:`, the Assistant) silent for `lease_expiry_s`.
 
         The studio child sends one every few seconds while it holds a service (also during a long stage).
         Silence means the process was killed, crashed or hung; without this the lock would stay with a dead

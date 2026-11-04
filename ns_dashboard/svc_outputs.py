@@ -14,6 +14,7 @@ from ns_dashboard.common import OUTPUT_KINDS, OUTPUT_STATUSES, now_iso, output_i
 from ns_dashboard.errors import AdapterUnavailable, ApiError
 from ns_dashboard.security import is_within
 from ns_dashboard.state import AppState
+from ns_studio.errors import StudioError
 
 URL_RE = re.compile(r"^https?://\S+$", re.IGNORECASE)
 EXCERPT_CHARS = 1500
@@ -206,12 +207,33 @@ class OutputsService:
         row = self._row(output_id)
         if row["status"] == "uploaded":
             raise ApiError(409, "already_uploaded", "This video is already marked as uploaded.")
-        self.s.db.execute(
-            "UPDATE outputs SET status = 'rejected', review_note = ? WHERE output_id = ?",
-            (text[:500], output_id),
-        )
-        self.s.log.info("output_rejected", output_id=output_id, reason=text[:200])
+        moved = None
+        if row["status"] != "rejected":  # a second rejection only changes the note; the files are away
+            moved = self._move_to_rejected(output_id, text[:500])
+        if moved is None:
+            self.s.db.execute(
+                "UPDATE outputs SET status = 'rejected', review_note = ? WHERE output_id = ?",
+                (text[:500], output_id),
+            )
+        self.s.log.info("output_rejected", output_id=output_id, reason=text[:200], moved_to=str(moved or ""))
         return output_item(self._row(output_id))
+
+    def _move_to_rejected(self, output_id: str, reason: str) -> Path | None:
+        """Take the video's files out of the Outbox, as `studio review reject` does (same code).
+
+        They go to the `rejected` folder of the Nightshift home, under channel, day and job (the video, its
+        sheet and thumbnails), and the row keeps the new path, so a rejected video is not left among the
+        ones waiting to be posted. None when the files could not be moved (the row is then rejected in
+        place and the failure is logged).
+        """
+        from ns_studio import review
+
+        try:
+            with self.s.db.lock:
+                return review.reject(self.s.paths, self.s.db, output_id, reason)  # type: ignore[arg-type]
+        except (OSError, StudioError) as e:
+            self.s.log.warn("reject_move_failed", str(e), output_id=output_id)
+            return None
 
     def mark_uploaded(self, output_id: str, url: str | None) -> dict[str, Any]:
         """Record the YouTube URL (so analytics can be matched later) and set status `uploaded`."""

@@ -15,7 +15,7 @@ from installer.stage2.runner import SubprocessRunner
 from installer.stage2.steps import s08_smoke
 from installer.stage2.testing import example_answers, make_test_context
 from ns_common import avblock
-from ns_common.avblock import blocked_hint, is_blocked_error, looks_blocked
+from ns_common.avblock import blocked_hint, is_blocked_error, is_smart_app_control, looks_blocked
 from ns_common.errors import NsError
 from ns_supervisor import procs
 from ns_supervisor.services import ServiceDef
@@ -65,7 +65,19 @@ def test_the_hint_names_the_program_and_where_to_allow_it() -> None:
     hint = blocked_hint(r"C:\Users\Sam\Nightshift\bin\llama\llama-server.exe")
     assert "llama-server.exe" in hint and "Sam" not in hint
     assert blocked_hint("C:/x/qwen-tts.exe").startswith("Windows blocked qwen-tts.exe")
-    assert "Allow it in Windows Security > App & browser control, then press Retry" in hint
+    assert "Allow the file in Windows Security > Protection history, then press Retry" in hint
+    assert "Smart App Control" not in hint
+
+
+def test_smart_app_control_cannot_allow_one_file_so_the_hint_says_to_turn_it_off() -> None:
+    err = os_error(4551, "An Application Control policy has blocked this file")
+    hint = blocked_hint("C:/x/llama-server.exe", err)
+    assert "Smart App Control blocks programs it does not know" in hint
+    assert "Windows Security > App & browser control > Smart App Control settings" in hint
+    assert "cannot be turned back on without reinstalling Windows" in hint and hint.endswith("press Retry")
+    assert "Protection history" not in hint
+    assert "Smart App Control" in blocked_hint("a.exe", "blocked by Smart App Control")
+    assert is_smart_app_control(err) and not is_smart_app_control(os_error(225, "virus"))
 
 
 def test_a_supervisor_start_blocked_by_smart_app_control_is_ns_e113(

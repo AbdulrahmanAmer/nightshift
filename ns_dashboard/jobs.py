@@ -8,12 +8,14 @@ import sqlite3
 import threading
 import time
 from collections.abc import Callable, Iterable, Iterator
+from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
 from ns_common.db import new_job_id
 from ns_common.errors import NsError
+from ns_common.keepawake import keep_awake
 from ns_common.logging import NsLogger
 from ns_dashboard.errors import AdapterUnavailable
 from ns_dashboard.events import EventHub
@@ -22,6 +24,8 @@ from ns_dashboard.state import LockedDb
 KINDS = ("run", "clip", "learn", "verify", "series_part", "apply_voice")
 STATUSES = ("queued", "running", "done", "failed", "cancelled")
 GPU_KINDS = frozenset({"run", "clip", "verify", "series_part", "apply_voice"})
+JOB_OWNER = "dashboard:job"  # the owner id of the worker's heartbeat to the engine (never holds the GPU)
+PULSE_S = 60.0  # how often a running job tells the engine it is alive
 
 
 class JobCancelled(Exception):
@@ -425,6 +429,9 @@ class JobWorker:
         on_done: dict[str, Callable[[JobRecord], None]] | None = None,
         sweep: Callable[[set[str], dict[str, str]], object] | None = None,
         idle_poll_s: float = 30.0,
+        awake: Callable[[], AbstractContextManager[None]] = keep_awake,
+        pulse: Callable[[], object] | None = None,
+        pulse_s: float = PULSE_S,
     ) -> None:
         self.store = store
         self.handlers = handlers
@@ -443,6 +450,12 @@ class JobWorker:
         #: While nothing runs, `on_idle` is also called this often (a request saved during the nightly run,
         #: which is not a dashboard job, has no job end to wait for).
         self.idle_poll_s = idle_poll_s
+        #: Held on the thread that runs a job, for the length of the job: the PC must not sleep under it.
+        self.awake = awake
+        #: Called every `pulse_s` seconds while a job runs (tells the engine the dashboard is working, so its
+        #: idle exit does not stop the service under a download or a render).
+        self.pulse = pulse
+        self.pulse_s = pulse_s
         #: Called on the worker thread when a job ended and nothing else is queued (saved Assistant requests).
         self.on_idle: Callable[[], None] | None = None
         self._ended = False
@@ -598,7 +611,32 @@ class JobWorker:
         assert done is not None
         return done
 
+    def _pulse_loop(self, stop: threading.Event) -> None:
+        """Call `pulse` now and then until `stop`; a failing pulse is only logged."""
+        pulse = self.pulse
+        while pulse is not None and not stop.is_set():
+            try:
+                pulse()
+            except Exception as e:  # the engine may be restarting; the next pulse will tell
+                self.log.debug("pulse_failed", str(e))
+            stop.wait(self.pulse_s)
+
     def _execute(self, rec: JobRecord, *, track: bool = True) -> None:
+        """Run `rec` (see `_run_job`) with the PC held awake and the engine told that a job is running."""
+        stop = threading.Event()
+        pulser: threading.Thread | None = None
+        if self.pulse is not None:
+            pulser = threading.Thread(target=self._pulse_loop, args=(stop,), name="ns-job-pulse", daemon=True)
+            pulser.start()
+        try:
+            with self.awake():
+                self._run_job(rec, track=track)
+        finally:
+            stop.set()
+            if pulser is not None:
+                pulser.join(1.0)
+
+    def _run_job(self, rec: JobRecord, *, track: bool = True) -> None:
         """Mark `rec` running, call its handler and record the outcome."""
         if track:
             self._running_id = rec.job_id

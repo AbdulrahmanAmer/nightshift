@@ -36,7 +36,7 @@ def test_a_listening_port_is_not_free_and_a_closed_one_is() -> None:
 def test_the_message_names_the_port_the_owner_and_the_fix() -> None:
     msg = ports.port_message("story model", 8080, "node.exe (pid 4242)")
     assert "Port 8080 (story model)" in msg and "node.exe (pid 4242)" in msg
-    assert "Close that program or change the port in Settings" in msg
+    assert "Close that program, or restart the PC, then press Retry" in msg and "Settings" not in msg
     assert "Hyper-V" in ports.port_message("story model", 8080, None)
 
 
@@ -143,3 +143,18 @@ def test_a_simulation_does_not_judge_the_ports_of_the_target_pc(
     monkeypatch.setattr(ports, "is_free", lambda port, host="127.0.0.1": False)
     s08_smoke.check_ports(ctx)
 
+
+
+def test_s08_stops_a_leftover_engine_before_it_looks_at_the_ports(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A rerun after a closed console must not meet NS-E116 against Nightshift's own detached engine."""
+    from installer.stage2.simulate import FakeRunner
+
+    runner = FakeRunner(tmp_path / "desktop")
+    ctx = make_test_context(tmp_path, raw_answers=example_answers(), resolve=True, runner=runner)
+    stops_seen: list[int] = []
+    monkeypatch.setattr(s08_smoke, "check_ports", lambda c: stops_seen.append(len(runner.called("ns stop"))))
+    s08_smoke.S08Smoke().run(ctx)
+    assert stops_seen == [1]                       # `ns stop` had already run when the ports were checked
+    assert runner.called("ns stop")[0].argv[-1] == "stop"

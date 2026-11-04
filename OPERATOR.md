@@ -23,7 +23,10 @@ Keep this file next to `INSTALL.cmd`.
    such as `C:\Users\<you>\Nightshift-Setup`). Setup copies the program into an `app` folder inside the install
    folder it asks for later, so **you can delete the extracted folder after setup has finished**. The install folder
    must be a different folder (the window tells you if it is not) and should not be in Downloads or OneDrive.
-4. Put `answers.json` in the extracted folder, next to `INSTALL.cmd`. With it, setup asks almost nothing.
+4. Optional, for an unattended install: put `answers.json` in the extracted folder, next to `INSTALL.cmd`. With it
+   setup runs in the Nightshift setup window with text only: there is no setup window, so steps 6 to 8 do not apply
+   (that text window is the log and prints the result). To get the window with your answers filled in, start it from a command
+   prompt as `INSTALL.cmd -Ui`. Without `answers.json`, skip this step: the setup window asks everything.
 5. Double-click **INSTALL.cmd**. If Windows says "Windows protected your PC", press **More info**, then
    **Run anyway**. Windows may ask for permission to install programs: say **Yes**.
 6. A window called **Nightshift setup**, with text and a small crescent, appears first. It looks at your PC, gets
@@ -107,10 +110,10 @@ Every message has a code like `NS-E104`, a sentence and a "What to do". In the s
 | NS-E110 | FFmpeg could not be installed | Setup tries winget first and then downloads a fixed FFmpeg build itself. Press Retry once; if it repeats, install FFmpeg yourself (`winget install Gyan.FFmpeg`) and press Retry. Git is not needed. |
 | NS-E111 | winget (the Windows app installer) is not available | Nothing to do: setup downloads FFmpeg and the Visual C++ runtime directly. |
 | NS-E114 | The Visual C++ runtime is missing (the model runner cannot start without it) | Stage 1 (the Nightshift setup window with text) asks for permission first: press **Yes**. If it was declined, look for a flashing shield icon on the taskbar and press **Yes**, or install it from `https://aka.ms/vs/17/release/vc_redist.x64.exe` and press Retry. |
-| NS-E116 | A network port Nightshift needs is already in use | The message names the port and the program that holds it. Close that program (or change the port in Settings) and press Retry. |
+| NS-E116 | A network port Nightshift needs is already in use | The message names the port and the program that holds it. Close that program (or restart the PC) and press Retry. |
 | NS-E117 | The install folder name has characters the model programs cannot open | Use a folder name with plain English letters, digits, spaces, - and _, then press Retry. |
 | NS-E115 | The program files could not be copied into the install folder | Make sure the install folder is not the folder you extracted the zip to, close any window that shows it, press Retry. |
-| NS-E113 | Antivirus blocked a file | Press **Open Protection history**, allow the Nightshift file there, then press Retry. Adding the install folder as an exclusion stops it happening again. It is also the code when a downloaded program (`llama-server.exe`, `qwen-tts.exe`, `yt-dlp.exe`) is missing after it was unpacked: the scanner removed it. |
+| NS-E113 | Antivirus blocked a file | Press **Open Protection history**, allow the Nightshift file there, then press Retry. Adding the install folder as an exclusion stops it happening again. If the message says Smart App Control: it blocks programs it does not know and cannot allow one file; turn it off in Windows Security > App & browser control > Smart App Control settings (it cannot be turned back on without reinstalling Windows), then press Retry. It is also the code when a downloaded program (`llama-server.exe`, `qwen-tts.exe`, `yt-dlp.exe`) is missing after it was unpacked: the scanner removed it. |
 | NS-E501 / NS-E502 | Pexels or Pixabay key rejected | Copy the key again from the website (no spaces) and paste it. |
 | NS-E108 / NS-E112 | Graphics card libraries not found | Press **Save a help file** and send that file. Nothing else to do. |
 
@@ -207,8 +210,10 @@ step is still to do.
 Your Pexels and Pixabay keys are kept in Windows Credential Manager. The night run may start in a Windows session that
 cannot read it, so setup also stores the keys in `config\secrets.dpapi`, a file Windows encrypts for this PC. The night run
 uses that file when Credential Manager has nothing. The file is useless on another PC and never goes into the
-diagnostics zip. If footage is missing after you moved to another PC, or after you changed a key in Settings (which updates Credential
-Manager only), run INSTALL.cmd again and enter the keys there: setup writes both places.
+diagnostics zip. If footage is missing after you moved to another PC, open **Settings > Stock footage keys** in the
+dashboard and save the keys again: it writes both places. Running INSTALL.cmd again does not ask for keys when
+the install is finished: the window then opens on **Nightshift is ready** (same version) or offers the update
+(newer zip).
 
 ## Start a video later
 
@@ -263,9 +268,10 @@ instead of ours. To change a prompt, copy its file from `ns_studio\prompts\` to 
    straight from the zip; nothing has to be extracted. Your models, settings, videos and history are stored
    elsewhere and are not touched.
 3. Or extract the Setup zip anywhere (a new folder is fine; the old one can be deleted) and double-click
-   **INSTALL.cmd** again. Choose the same install folder: the window then says "Nightshift <old> is installed here.
-   Setup updates it to <new>", copies the new program over `<install folder>\app` (the old one is kept as
-   `app.prev`), keeps everything that is done and refreshes the Python environments and the self-test.
+   **INSTALL.cmd** again. The window finds the finished install and shows the first screen with **Continue**: it
+   updates the program in `<install folder>\app` (the old one is kept as `app.prev`), keeps everything that is
+   done and refreshes the Python environments, the self-test, the shortcuts and the night task. If the zip is the
+   same version as the one installed, the window opens on **Nightshift is ready** instead, with **Open dashboard**.
 4. Send a new diagnostics zip so the developer can see the test table is green.
 5. In the Dashboard, **Settings, Updates, Check now** asks GitHub for a newer version. In version 0.1.0 this part is not
    in the engine yet: the page then says so, and you use the Update shortcut with the zip as above.

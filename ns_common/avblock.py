@@ -39,10 +39,34 @@ def is_blocked_error(error: BaseException) -> bool:
     return isinstance(error, OSError) and looks_blocked(str(error))
 
 
-def blocked_hint(program: str | Path) -> str:
-    """What to tell the user when Windows refused to start ``program`` (names the file, where to allow it)."""
+SMART_APP_CONTROL_HINTS = ("smart app control", "application control policy")
+SMART_APP_CONTROL_FIX = (
+    "Smart App Control blocks programs it does not know. Turn it off in Windows Security > App & browser "
+    "control > Smart App Control settings (this cannot be turned back on without reinstalling Windows), "
+    "then press Retry"
+)
+
+
+def is_smart_app_control(error: BaseException | str | None) -> bool:
+    """True when the error is Smart App Control's block (WinError 4551, or text that names it)."""
+    if error is None:
+        return False
+    if getattr(error, "winerror", None) == 4551:
+        return True
+    low = str(error).lower()
+    return "winerror 4551" in low or "os error 4551" in low or any(h in low for h in SMART_APP_CONTROL_HINTS)
+
+
+def blocked_hint(program: str | Path, error: BaseException | str | None = None) -> str:
+    """What to tell the user when Windows refused to start ``program`` (names the file, what to do).
+
+    Smart App Control (WinError 4551) cannot allow a single file, so the advice there is to turn it off;
+    for an antivirus or a policy the file is allowed in Windows Security.
+    """
     name = ntpath.basename(str(program)) or str(program)
+    if is_smart_app_control(error):
+        return f"Windows blocked {name} when it was started. {SMART_APP_CONTROL_FIX}"
     return (
-        f"Windows blocked {name} when it was started (Smart App Control or antivirus). "
-        "Allow it in Windows Security > App & browser control, then press Retry"
+        f"Windows blocked {name} when it was started (antivirus or a policy). "
+        "Allow the file in Windows Security > Protection history, then press Retry"
     )

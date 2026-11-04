@@ -31,6 +31,104 @@ does not.
 - **Contracts** (CR-DEVMODE-1): `Runtime.dev_mode`, `InstallState.dev_mode`, `GateReport.dev_mode` and their schemas.
   `ns tune` and `ns doctor` know the mode; the Settings page hides the flag.
 
+### Installer round 3 (`orchestrator/installer-round3`, from the round-3 installer gap report)
+
+- **INSTALL.cmd over a finished install no longer opens an empty window (blocker B1, a 0.1.7 regression).** On
+  start the setup server compares the installed program (`<home>\app`, the appcopy fingerprint: VERSION plus hashes
+  of `manifest.json` and `pyproject.toml`) with the extracted one. A different program: b02, b03, s04, s08, s09
+  and s10 go back to pending (in the window and in `install_state.json`), the window shows the Welcome resume
+  screen, and Continue copies the new program (the old one stays as `app.prev`), refreshes the environments, runs
+  the final test, remakes the shortcuts and the night task, and ends on Done. The same program: Done opens at once
+  with the result a finished run builds (home, outbox, night run time, diagnostics zip) and **Open dashboard**
+  works. An install that stopped half way is left alone. This restores the documented paths "update by running
+  INSTALL.cmd from the new zip" and "open Nightshift by double-clicking INSTALL.cmd".
+- Resume on a nearly full drive (L1): the free-disk row of a locked resume is a warning, not a blocker, when free
+  space plus what setup already holds under the install folder reaches the 40 GB limit ("N GB free on D:; setup
+  already holds X GB here"). The 2 GB guard during downloads and `NS-E104` from the steps still protect the run.
+- Final test (L2): `s08` runs `ns stop` before the port check, so a detached engine left by a closed console is
+  stopped instead of ending as `NS-E116` against Nightshift's own python.exe. `NS-E116` no longer says "change
+  the port in Settings" (there is no such setting): "Close the program using that port (the message names it), or
+  restart the PC, then press Retry".
+- The unattended run (L3, `answers.json` next to INSTALL.cmd) holds `SetThreadExecutionState` like the window does,
+  and takes a lock (`<data>\bootstrap\setup.lock`, released by Windows if the process dies): a second unattended
+  setup says "Setup is already running on this PC" and exits with code 15 (A1-#14).
+- Stage 1 (P2, P3, A1-#25, A1-#26): it uses the pinned uv (`manifest.json` `bins.uv`, 0.13.6) and downloads it when
+  the copy it finds, including one on PATH, is another version; it asks uv for the managed Python 3.12 only
+  (`UV_PYTHON_PREFERENCE=only-managed`, also in `ns_common.uv.uv_env` for b03, s04 and `ns update`) and never takes
+  a Python from a `WindowsApps` folder (Microsoft Store alias); it runs `Unblock-File` on the extracted programs
+  (`.dll .exe .ps1 .cmd .pyd`) so the WebView2 helpers load and the setup window no longer falls back to Edge on a
+  browser-downloaded zip; the setup server gets 60 s to answer (was 20) and the splash says it is still waiting
+  after 15 s.
+- **Open dashboard (P1, A1-#20):** the engine the Done screen starts no longer inherits stage 1's `PYTHONPATH`
+  (the extracted folder) or `NIGHTSHIFT_BOOTSTRAP_UV`, so it and its dashboard import the program from
+  `<home>\app` and keep working when the extracted folder is deleted. The same variables are cleared in
+  `Start-NsSupervisor`. The engine started by a shortcut and the 03:00 task now run with the install home as their
+  working directory, not the program folder, so an update is no longer blocked while either runs.
+- Windows Security (P4): `NS-E113` for Smart App Control (WinError 4551, "Application Control policy") says that it
+  blocks programs it does not know and cannot allow one file: "Turn it off in Windows Security > App & browser
+  control > Smart App Control settings (this cannot be turned back on without reinstalling Windows), then press
+  Retry". Antivirus blocks keep "Protection history, allow the file". `contracts/errors.json`, the operator copy,
+  the window's fallback copy and OPERATOR.md say both.
+- Browser windows (P6, P7): the Edge or Chrome fallback of the Dashboard launcher gets `--no-first-run
+  --no-default-browser-check`. The Dashboard launcher starts the WebView2 window as its own hidden PowerShell
+  process (`-STA`, working directory = install home) and ends once the window reports ready, instead of keeping
+  the window in its own process: no "Windows PowerShell" console is left behind the dashboard when Windows Terminal
+  is the default console, and closing it no longer closes the dashboard. A host that exits 3 (WebView2 missing) or
+  fails still falls back to the browser app window.
+- One engine per install (P8): `python -m ns_supervisor.app` takes `run\supervisor.lock` (a lock Windows drops with
+  the process) before anything else; a second start prints "The Nightshift engine is already running" and exits 0
+  without touching `run\supervisor.json`, which the failed second start used to delete on its way out.
+- Keys (P9): `s01` already puts the stock footage keys in Credential Manager and `config\secrets.dpapi` as soon as it
+  runs, so a restart after s01 keeps them; the server's in-memory copy only covers the minutes between Start and
+  s01. A resumed window now reports what is really stored (`pexelsKeySet` / `pixabayKeySet` from `secrets.dpapi`,
+  not "set because the questions step is done") and, when neither key is there, adds the notice "No stock footage
+  key is stored. Add a Pixabay key (free) in Settings > Stock footage keys before the first video".
+- A2-#13: `dev/make_bundle.ps1` already rewrites `manifest.json` `version` from VERSION; `tests/test_installer_rerun.py`
+  now proves the chain (bundle manifest, `<home>\app` copy, wizard manifest) makes `s04` and `s08` run again after
+  an update through INSTALL.cmd. OPERATOR.md step 4 says that an `answers.json` makes setup unattended (no window;
+  `INSTALL.cmd -Ui` for the window), and its update and key paragraphs describe the new INSTALL.cmd behaviour.
+- Deliberately left (listed in the PR): system proxy and TLS-scanning antivirus (A1-#15 / A2-#12), a retry with the
+  CUDA 12.4 pair after `NS-E203` (A1-#17), the PyTorch fallback limits (A1-#23, A1-#24), a constraints file or
+  `uv.lock` (A1-#12), and a key field on the Welcome resume screen (P9 only reports a missing key).
+
+### Studio round 3: engine stays up through a job, keep-awake at night, no-key refusal up front (`orchestrator/studio-round3`)
+
+From the third studio review of 0.1.7 (`gaps-round3-studio`). Nothing here has run on the GPU PC yet.
+
+- **The engine no longer leaves in the middle of a job (L1).** After `captions` every stage holds no GPU service, and
+  the engine's 30-minute idle clock only saw acquires and releases, so a long download-and-render stretch made it exit
+  (the next job then failed with NS-E202 "supervisor unreachable", every night after the first video). `POST /heartbeat`
+  now restarts the idle clock for a `studio:` run or the dashboard job worker (`dashboard:job`) even when it holds
+  nothing. `StudioAcquirer` beats from its first `acquire` until `run_finished` (with the run's owner while nothing is
+  held), the dashboard's job worker pulses the engine every minute while a job runs, and an `acquire` that meets "supervisor
+  unreachable" connects again once (the nightly run starts a new engine) before it fails.
+- **The PC stays awake (L2).** `ns_common/keepawake.py` (`ES_CONTINUOUS | ES_SYSTEM_REQUIRED`, per thread, released in
+  `finally`) is held around `run_daily`, around `studio run`, and for the length of every job on the dashboard's worker
+  thread. The installer keeps its own identical copy (its web package may import only the standard library); a test
+  keeps the two equal.
+- **No stock-footage key means no story video, said up front (L3).** The nightly planner (per job, before a combo is drawn),
+  `studio run` and the dashboard's Run now / Retry refuse with NS-E502 "No stock footage key. Add a Pixabay key (free)
+  in Settings > Stock footage keys" before any GPU work. When both sources fail, the Pixabay error is raised first
+  (Pexels gives out no keys). The setup text now says videos cannot be made until a key is added.
+- **The voice stage's time limit follows this PC's speed (L4).** `ns verify` stores the slowest voice mode's real-time
+  factor in `config/tts_speed.json`; the batch limit is 120 s plus `max(3, 6 x rtf x 1.5)` s per line (unchanged without
+  a measurement), and a batch that times out is retried once at twice the limit, resuming from the items the service had
+  finished.
+- **Embed server off the card (P1)**: started with `CUDA_VISIBLE_DEVICES=-1`. **llama-server always `-np 1` (P2).**
+- **Pending setup voice card (P3)** says a video cannot be voiced until the voice exists (NS-E311) and points at
+  "Create it now".
+- **The Assistant's GPU hold is leased (P4)**: it beats every 30 s during a turn and the engine reclaims a silent hold
+  after 10 minutes, like a studio lease.
+- **Retry from where it stopped (P5).** A failed story job on the Queue / Create pages has a button that continues the
+  same studio job from its failed stage (`POST /api/jobs/{id}/resume`, assistant tool `resume_job` with a confirm card).
+- **Updater (P7).** Settings > Update from a file now installs `Nightshift-Update-<version>.zip` together with its
+  `.sha256` (`POST /api/update/file`, then `ns update <zip>`); the release notes say the checksum is required. A GitHub
+  error status (403/429 rate limit, 404, 5xx) is NS-E118 and says so instead of "check the internet connection"; the
+  Settings page shows the `error` line of `ns`, not the `hint:` line after it.
+- **Reject moves the files (P8)**: the dashboard's Reject takes the video, its sheet and thumbnails out of the Outbox
+  (same code as `studio review reject`, into the `rejected` folder of the Nightshift home, under channel, day and job). **Whisper failures are NS-E411**
+  (was NS-E202).
+
 ### Installer: first-run support (`orchestrator/installer-first-run`)
 
 What the owner needs to help a partner who cannot describe what went wrong, and the copy a non-technical partner reads.

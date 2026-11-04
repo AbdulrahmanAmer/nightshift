@@ -50,6 +50,10 @@ def build_install_script(
     an interactive logon ("run only when the user is logged on"; WakeToRun still wakes the PC). The last
     output line is `registered:s4u` or `registered:interactive`.
 
+    The working directory is the install home, not ``app_path``: a process whose cwd is the program folder
+    blocks the folder swap of an update (Windows refuses to rename it), and the 03:00 run keeps ``studio.exe``
+    and its children alive for hours. The programs find the app through their editable installs.
+
     `disabled` (a dev install, docs/DEV_MODE.md) registers the same task and then disables it, so it never
     fires on the development PC; `ns schedule show` and the uninstall still find it by name.
     """
@@ -62,7 +66,7 @@ def build_install_script(
         [
             "$ErrorActionPreference = 'Stop'",
             f"$action = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument {_q(arguments)} "
-            f"-WorkingDirectory {_q(str(app_path))}",
+            f"-WorkingDirectory {_q(str(paths.home))}",
             f"$trigger = New-ScheduledTaskTrigger -Daily -At ([datetime]{_q(run_time)})",
             "$settings = New-ScheduledTaskSettingsSet -WakeToRun -StartWhenAvailable "
             "-AllowStartIfOnBatteries -DontStopIfGoingOnBatteries "

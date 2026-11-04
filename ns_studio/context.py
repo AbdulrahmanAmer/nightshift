@@ -37,6 +37,8 @@ class Services:
     transcriber: Transcriber
     clip_sources: list[ClipSource]
     acquirer: Acquirer
+    #: False when the real clip sources have no key: a story video cannot be made (`footage_keys`).
+    footage_key: bool = True
 
 
 def build_services(
@@ -52,7 +54,8 @@ def build_services(
 
     Real clip sources use `keys["pexels"]` and `keys["pixabay"]`; a source without a key is left out
     (Pexels is optional since 2026), and when neither key is present both stay in so the first search raises
-    the coded error (`NS-E501`/`NS-E502`) instead of finding nothing.
+    the coded error (`NS-E501`/`NS-E502`) instead of finding nothing. `Services.footage_key` says whether any
+    key exists: the nightly planner, `studio run` and the dashboard refuse a story job without one up front.
 
     `acquirer` defaults to the supervisor-backed `StudioAcquirer` when no model service is faked (it connects
     on first use, so building the bundle never contacts anything) and to `DevAcquirer` when any of llm, tts,
@@ -72,6 +75,7 @@ def build_services(
         FakeTranscriber() if "whisper" in fake else WhisperTranscriber(runtime.whisper, paths)
     )
     sources: list[ClipSource]
+    footage_key = True
     if "clips" in fake:
         sources = [FakeClipSource(paths.cache_clips / "fake")]
     else:
@@ -81,12 +85,14 @@ def build_services(
         ]
         keyed = [s for s, name in zip(every, ("pexels", "pixabay"), strict=True) if keys.get(name)]
         sources = keyed or every
+        footage_key = bool(keyed)
     return Services(
         llm=llm,
         tts=tts,
         embed=embed,
         transcriber=transcriber,
         clip_sources=sources,
+        footage_key=footage_key,
         acquirer=acquirer
         if acquirer is not None
         else (StudioAcquirer(runtime, paths) if wants_supervisor(set(fake)) else DevAcquirer(runtime)),

@@ -9,7 +9,7 @@ import re
 import sqlite3
 import threading
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, BinaryIO
 
 from ns_common.errors import NsError
 from ns_common.secrets_names import SHORT_NAMES
@@ -18,6 +18,7 @@ from ns_dashboard.common import now_iso
 from ns_dashboard.errors import AdapterUnavailable, ApiError
 from ns_dashboard.state import AppState
 from ns_dashboard.svc_channels import ChannelsService
+from ns_studio.footage_keys import NO_FOOTAGE_KEY
 
 #: The names `ns models get` takes: the VoiceDesign talker and the story LLM.
 MODEL_NAMES = ("voicedesign", "story_llm")
@@ -34,9 +35,27 @@ if TYPE_CHECKING:
 FOOTAGE_SOURCES = ("auto", "pixabay", "pexels")
 FOOTAGE_ORIENTATIONS = ("landscape", "portrait")
 FOOTAGE_MAX = 5  # clips per request: a chat request must not become a bulk download
-NO_FOOTAGE_KEY = "No stock footage key. Add a Pixabay key (free) in Settings > Stock footage keys"
 _FOOTAGE_API_ERRORS = ("NS-E501", "NS-E502", "NS-E503")  # the codes the clip sources use (clips._API_ERRORS)
 _SAFE_CLIP_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")  # becomes a file name in the cache
+#: The update package the release carries (`Nightshift-Update-0.1.8.zip`; releases up to 0.1.1 named it `nightshift-app-...`).
+UPDATE_ZIP_RE = re.compile(r"^(?:Nightshift-Update|nightshift-app)-\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.]+)?\.zip$", re.IGNORECASE)
+MAX_UPDATE_BYTES = 200 * 1024 * 1024  # the Update zip is a few MB; the bundle check allows 25 MB
+
+
+def _save_upload(fh: BinaryIO, dest: Path, limit: int, too_big: str) -> int:
+    """Write `fh` to `dest` in 1 MB blocks; more than `limit` bytes deletes the file and raises 413."""
+    size = 0
+    with dest.open("wb") as out:
+        while block := fh.read(1024 * 1024):
+            size += len(block)
+            if size > limit:
+                out.close()
+                dest.unlink(missing_ok=True)
+                raise ApiError(413, "file_too_large", too_big)
+            out.write(block)
+    if size == 0:
+        dest.unlink(missing_ok=True)
+    return size
 
 
 def _real_footage_sources(keys: dict[str, str], paths: Paths) -> list[ClipSource]:
@@ -444,6 +463,51 @@ class LibraryService:
         res = self.s.adapters.update.apply()
         if res.get("state") == "unavailable":
             raise ApiError(501, "update_unavailable", str(res.get("message") or "Updating from GitHub is not available yet."))
+        return res
+
+    def update_apply_file(self, zip_name: str, zip_fh: BinaryIO, sha_fh: BinaryIO | None) -> dict[str, Any]:
+        """Install an update from files the owner picked: the zip and its `.sha256`.
+
+        Both are saved under `data/updates/` (the sidecar as `<zip name>.sha256`, where `ns update` looks for
+        it) and `ns update <zip>` does the rest: it refuses a zip without a matching digest (`NS-E701`) before
+        anything is stopped, then installs with a rollback.
+        """
+        if self.s.draining:
+            raise ApiError(503, "shutting_down", "Nightshift is shutting down.")
+        if self.s.store.running() is not None:
+            raise ApiError(
+                409, "job_running", "A job is running right now.",
+                hint="Wait for it to finish (or cancel it), then install the update.",
+            )
+        name = Path(zip_name or "").name
+        if not UPDATE_ZIP_RE.match(name):
+            raise ApiError(
+                400, "bad_file_type", "Choose the file named Nightshift-Update-<version>.zip.",
+                hint="The Setup zip is for a first install. The Update zip is the other file in the release.",
+            )
+        if sha_fh is None:
+            raise ApiError(
+                400, "no_checksum", f"Choose {name}.sha256 as well.",
+                hint="Pick both files at once. The update is refused without its checksum file.",
+            )
+        folder = self.s.paths.data / "updates"
+        folder.mkdir(parents=True, exist_ok=True)
+        dest = folder / name
+        side = folder / f"{name}.sha256"
+        size = _save_upload(zip_fh, dest, MAX_UPDATE_BYTES, "That file is larger than 200 MB, so it is not an update.")
+        if size == 0:
+            raise ApiError(400, "empty_file", "That file is empty.")
+        text = sha_fh.read(4096).decode("utf-8", errors="replace").strip()
+        if not text:
+            dest.unlink(missing_ok=True)
+            raise ApiError(400, "empty_file", f"{name}.sha256 is empty.")
+        side.write_text(text.splitlines()[0] + "\n", encoding="utf-8")
+        self.s.log.warn("update_apply_file", "update started from an uploaded file", file=name)
+        res = self.s.adapters.update.apply_file(dest)
+        if res.get("state") == "error":
+            raise ApiError(409, "update_refused", str(res.get("message") or "The update was refused."))
+        if res.get("state") == "unavailable":
+            raise ApiError(501, "update_unavailable", str(res.get("message") or "Updating is not available yet."))
         return res
 
     # --- series workshop (read-only list plus "Produce next part") ---

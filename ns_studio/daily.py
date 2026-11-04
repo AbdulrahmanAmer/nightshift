@@ -7,16 +7,19 @@ import random
 import secrets
 import traceback
 from collections.abc import Callable
+from contextlib import AbstractContextManager
 from datetime import UTC, date, datetime, timedelta, tzinfo
 from pathlib import Path
 from typing import Any
 
 from ns_common.errors import NsError
+from ns_common.keepawake import keep_awake
 from ns_studio import jobs, notifications
 from ns_studio.channels import cadence
 from ns_studio.channels.crud import get_channel
 from ns_studio.context import JobContext
 from ns_studio.errors import UNEXPECTED, StudioError, describe_unexpected
+from ns_studio.footage_keys import require_footage_key
 from ns_studio.media.outbox import retime_sheet
 from ns_studio.policy.regen import run_job_guarded
 
@@ -124,6 +127,25 @@ def run_daily(
     rng: random.Random | None = None,
     run_fn: RunFn | None = None,
     notifier: notifications.Notifier | None = None,
+    awake: Callable[[], AbstractContextManager[None]] = keep_awake,
+) -> dict:
+    """The nightly run (see `_run_daily`), with the PC held awake for as long as it lasts.
+
+    The 03:00 task wakes the PC, but with nobody at the keyboard Windows puts it back to sleep after a couple
+    of minutes, GPU load or not. `awake()` (`ES_CONTINUOUS | ES_SYSTEM_REQUIRED`, per thread) is held on this
+    thread from the first plan to the report and released in `finally`, also when the night breaks.
+    """
+    with awake():
+        return _run_daily(env, now=now, rng=rng, run_fn=run_fn, notifier=notifier)
+
+
+def _run_daily(
+    env: jobs.Env,
+    *,
+    now: datetime | None = None,
+    rng: random.Random | None = None,
+    run_fn: RunFn | None = None,
+    notifier: notifications.Notifier | None = None,
 ) -> dict:
     """Plan with the governor, run every due job, back up the database and write the nightly report.
 
@@ -157,6 +179,8 @@ def run_daily(
         for n in range(dj.count):
             job_id = "(not created)"
             try:
+                # No stock-footage key: every story would fail at `clips` after an hour of GPU work (gap L3).
+                require_footage_key(env.services)
                 ctx = jobs.make_job(env, ch, dj.fmt, now=now, rng=rng)
                 job_id = ctx.job_id
                 ran = run(ctx)

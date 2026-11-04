@@ -86,6 +86,27 @@ def test_only_hugging_face_offline_is_a_warning_and_everything_offline_blocks():
     assert not preflight.hf_only_blocked(handover())
 
 
+def test_a_resume_only_warns_when_setups_own_files_explain_the_shortfall(tmp_path):
+    pf = handover()
+    pf["drives"] = [{"letter": "D", "free_gb": 31.0, "type": "SSD"}]
+
+    def disk(held):
+        rows = preflight.check_rows(pf, "D:\\Nightshift", (lambda: held) if held is not None else None)
+        return next(r for r in rows if r["id"] == "disk")
+
+    assert disk(None)["status"] == "fail" and disk(None)["blocking"]          # a first run is still stopped
+    assert disk(5.0)["status"] == "fail" and disk(5.0)["blocking"]            # 31 + 5 < 40: not setup's doing
+    ok = disk(25.0)                                                           # 31 + 25 >= 40
+    assert ok["status"] == "warn" and not ok["blocking"] and ok["code"] is None
+    assert "31 GB free on D:" in ok["value"] and "setup already holds 25 GB here" in ok["value"]
+    pf["drives"][0]["free_gb"] = 50.0                                 # above the hard limit: unchanged
+    assert disk(25.0)["status"] == "warn" and "holds" not in disk(25.0)["value"]
+    (tmp_path / "models").mkdir()
+    (tmp_path / "models" / "a.bin").write_bytes(b"x" * 1000)
+    (tmp_path / "b.txt").write_bytes(b"y" * 24)
+    assert preflight.folder_bytes(tmp_path) == 1024 and preflight.folder_bytes(tmp_path / "nope") == 0
+
+
 def test_disk_rows_are_worked_out_again_for_another_install_folder():
     pf = handover()
     pf["drives"] = [

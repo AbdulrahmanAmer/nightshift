@@ -33,7 +33,7 @@ PRIMARY_SHARE = 6  # of the 10 topic slots, the best topic gets this many before
 #: that ships in another change, such as `fetch_footage`) are skipped, so the table can name them ahead of time.
 PACKS: dict[str, tuple[str, ...]] = {
     "queue": ("list_queue", "get_output", "review_brief", "video_stats", "get_story", "open_folder"),
-    "create": ("start_story_job", "start_clip_job", "tonight_plan", "list_jobs", "get_job", "cancel_job", "rerun_clips", "list_templates", "start_verify"),
+    "create": ("start_story_job", "start_clip_job", "tonight_plan", "list_jobs", "get_job", "cancel_job", "rerun_clips", "resume_job", "list_templates", "start_verify"),
     "library": ("search_footage", "fetch_footage", "list_ideas", "add_idea", "search_stories", "get_story", "list_voices", "design_voice", "clone_voice", "list_formats", "set_idea_status", "duplicate_format", "edit_format"),
     "channels": ("list_channels", "get_channel", "edit_channel", "pause_channel", "resume_channel", "create_channel", "validate_channel"),
     "results": ("what_worked", "video_stats", "summary_results", "list_runs", "import_analytics"),
@@ -75,6 +75,7 @@ HINTS: dict[str, tuple[str, ...]] = {
     "rerun_clips": ("again", "another layout"),
     "list_templates": ("layout", "template"),
     "cancel_job": ("cancel", "stop the job"),
+    "resume_job": ("retry", "continue", "resume", "try again", "pick up", "where it stopped"),
 }
 
 #: The page the owner is on gives its topic a head start.
@@ -92,6 +93,7 @@ LEXICON: dict[str, tuple[str, ...]] = {
     "create": (
         "start", "create", "new video", "new story", "short", "shorts", "cut clips", "clips from", "render",
         "tonight", "tomorrow", "schedule", "run at", "cancel", "job", "jobs", "what runs", "plan", "at 2",
+        "retry", "where it stopped",
     ),
     "library": (
         "footage", "stock", "pexels", "pixabay", "idea", "ideas", "voice", "voices", "narrator", "story", "stories",

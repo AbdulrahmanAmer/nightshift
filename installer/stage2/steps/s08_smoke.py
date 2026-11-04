@@ -5,7 +5,7 @@ reference engine and builds its venv (NS-W301, NS-E108 when torch cannot see the
 a 3 second transcription in the studio venv (cuBLAS and cuDNN load lazily, so the model load alone proves
 nothing): on CUDA it falls back to the CPU with int8 (NS-W404, captions are slower, the install goes on)
 until the next run, which probes CUDA again and switches back when it passes; only
-a CPU that cannot transcribe either stops the install (NS-E202). Checks are matched on the real names
+a CPU that cannot transcribe either stops the install (NS-E411). Checks are matched on the real names
 `ns verify` reports (`ns_supervisor.check_names`). `ns verify --quick` has no MTP check: whether MTP is kept
 is decided by `ns tune` (s06), so there is no MTP branch here.
 """
@@ -70,6 +70,17 @@ def check_ports(ctx: StepContext) -> None:
     if ctx.simulate:
         return
     ports.ensure_free(runtime_ports(ctx))
+
+
+def stop_own_engine(ctx: StepContext) -> None:
+    """Stop an engine left over from an earlier try before the port check looks at the ports.
+
+    ``ns verify`` starts a detached engine (and its llama-server). When the console was closed while it ran,
+    the engine lives on for up to 30 minutes, and a rerun would stop with NS-E116 against Nightshift's own
+    python.exe. ``ns stop`` is a no-op when nothing runs (s10 makes the same call).
+    """
+    ctx.ui.say("Stopping any Nightshift engine left over from an earlier try ...")
+    ctx.run_tool("ns", ["stop"], timeout=120)
 
 
 def prepare_verify(ctx: StepContext) -> None:
@@ -165,6 +176,7 @@ class S08Smoke(Step):
         ensure_baseline(ctx)
         check_vc_runtime(ctx)
         check_programs_present(ctx)
+        stop_own_engine(ctx)
         check_ports(ctx)
         warned: set[str] = set()
         whisper_load_failed = False
@@ -238,11 +250,11 @@ class S08Smoke(Step):
             ctx.warn("NS-W404", f"runtime.json runs whisper on the CPU ({why})")
             cfg = ensure_baseline(ctx).whisper
         elif load_failed:
-            raise make_error("NS-E202", "speech recognition did not load on the processor")
+            raise make_error("NS-E411", "speech recognition did not load on the processor")
         ctx.ui.say("Testing speech recognition on the processor ...")
         res = transcribe_probe(ctx, cfg)
         if not res.ok:
-            raise make_error("NS-E202", f"speech recognition failed on the processor: {res.text[-300:]}")
+            raise make_error("NS-E411", f"speech recognition failed on the processor: {res.text[-300:]}")
 
     @staticmethod
     def _use_whisper(rt: Any, device: str, compute_type: str) -> None:

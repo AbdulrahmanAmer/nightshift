@@ -44,6 +44,10 @@ from installer.stage2.web.keys import check_key
 from installer.stage2.web.model import BOOTSTRAP_STEPS, FILE_NAMES, STEP_ORDER, STEP_PHASE
 from installer.stage2.web.store import SetupStore
 from ns_common.atomic import BACKUP_SUFFIX, write_text_atomic
+from ns_common.paths import Paths
+from ns_common.secret_file import stored_names
+from ns_common.secrets_names import PEXELS_KEY, PIXABAY_KEY
+from ns_common.singleton import AlreadyRunning, FileLock
 from ns_common.uv import find_uv
 from ns_common.vcruntime import missing as vcruntime_missing
 
@@ -51,10 +55,27 @@ LOG_KEEP = 50
 SAMPLE_TEXT = "This is how your channel will sound at night."
 DEFAULT_SPEAKER = "Ryan"
 EXIT_BLOCKED = 10
+#: Steps that run again when INSTALL.cmd is started from a newer zip over a finished install: the program
+#: copy (b02), the setup environment (b03), the studio and supervisor environments, the smoke test, the
+#: shortcuts and task, and the summary.
+UPDATE_STEPS = (
+    "b02_home", "b03_setup_env", "s04_venvs", "s08_smoke", "s09_shortcuts_scheduler", "s10_summary",
+)
+EXIT_ALREADY_RUNNING = 15
 EXIT_STOPPED = 130
 DETACHED = 0x00000008 | 0x00000200      # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP (Windows only)
 SHORTCUTS = ("Nightshift Dashboard", "Nightshift Studio", "Nightshift Outbox", "Nightshift - Stop All",
              "Nightshift - Update", "Nightshift - Diagnostics")
+
+
+#: Shown on a resume when neither Credential Manager nor config/secrets.dpapi holds a stock footage key.
+NO_KEY_NOTICE: dict[str, Any] = {
+    "code": "no-stock-key", "title": "No stock footage key is stored",
+    "whatToDo": "Add a Pixabay key (free) in Settings > Stock footage keys before the first video; "
+                "without one the videos have no stock footage",
+    "step": None,
+}
+
 
 
 # model.WINDOWS_PAGES: the Windows pages the window may open by name, and the command that opens each
@@ -138,11 +159,23 @@ def default_free_gb(path: str) -> float:
     return shutil.disk_usage(p).free / 1024 ** 3
 
 
-def launch_detached(argv: list[str], env: dict[str, str] | None = None) -> None:
+def child_env(extra: dict[str, str | None] | None = None) -> dict[str, str]:
+    """This process's environment plus ``extra``; a value of None removes the variable for the child."""
+    merged: dict[str, str | None] = {**os.environ, **(extra or {})}
+    return {k: v for k, v in merged.items() if v is not None}
+
+
+#: Stage 1 points these at the extracted folder for the setup server. The engine and the dashboard that the
+#: server starts must run from ``<home>\app``: with PYTHONPATH inherited they imported ``ns_supervisor`` and
+#: ``ns_dashboard`` from the extracted folder, which the partner may delete once setup says it can be.
+STAGE1_ONLY_ENV: dict[str, str | None] = {"PYTHONPATH": None, "NIGHTSHIFT_BOOTSTRAP_UV": None}
+
+
+def launch_detached(argv: list[str], env: dict[str, str | None] | None = None) -> None:
     """Start a program that outlives this one (the dashboard, Explorer)."""
     flags = DETACHED if os.name == "nt" else 0
     subprocess.Popen(
-        argv, env={**os.environ, **(env or {})}, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+        argv, env=child_env(env), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL, close_fds=True, creationflags=flags,
     )
 
@@ -165,7 +198,7 @@ def dashboard_answers(url: str = "http://127.0.0.1:8100/") -> bool:
 
 def launch_captured(
     argv: list[str],
-    env: dict[str, str] | None = None,
+    env: dict[str, str | None] | None = None,
     *,
     wait_s: float = 150.0,
     sleep: Callable[[float], None] = time.sleep,
@@ -181,7 +214,7 @@ def launch_captured(
     """
     flags = 0x08000000 if os.name == "nt" else 0          # CREATE_NO_WINDOW
     proc = popen(
-        argv, env={**os.environ, **(env or {})}, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+        argv, env=child_env(env), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace", creationflags=flags,
     )
     lines: list[str] = []
@@ -351,7 +384,9 @@ class SetupController:
         if devmode.reset_for_mode_switch(self.home, self.dev):
             self.fx.console("This folder holds an install of the other kind (real or dev): its later steps "
                             "run again.", "info")
+        self._update_reset: list[str] = []
         self.store = SetupStore(self._initial_state(), self._finalize)
+        self._settle_finished_install()
 
     # ---- the program folder ----
     @property
@@ -426,12 +461,16 @@ class SetupController:
                 raw = prefill
         default_tier = "small" if self.dev else plan.recommended_tier(float(self.pf.get("ram_gb") or 0))
         view = None
+        if locked:
+            # s01 put the keys in Credential Manager and config/secrets.dpapi when it ran; say what is really
+            # there, not that a key exists because the questions step is done
+            names = stored_names(Paths(self.home))
+            self._keys_stored = {"pexelsKey": PEXELS_KEY in names, "pixabayKey": PIXABAY_KEY in names}
         if raw:
             view = answers_view.answers_to_view(
-                raw, pexels_set=locked, pixabay_set=locked, default_tier=default_tier
+                raw, pexels_set=self._keys_stored["pexelsKey"], pixabay_set=self._keys_stored["pixabayKey"],
+                default_tier=default_tier,
             )
-            if locked:
-                self._keys_stored = {"pexelsKey": True, "pixabayKey": True}
         tier = (view or {}).get("llmTier") or default_tier
         code = bool((view or {}).get("installCode", True))
         pf = self.pf
@@ -452,6 +491,16 @@ class SetupController:
                 "status": status if status in ("done", "skipped") else "pending", "detail": None,
                 "startedAt": None, "finishedAt": st.get("finished_at"),
             })
+        self._finished_before = (
+            locked and bool(steps) and all(st["status"] in ("done", "skipped") for st in steps)
+        )
+        self._saved_times = (saved.get("started_at"), saved.get("completed_at"))
+        if self._finished_before and self._program_differs():
+            # INSTALL.cmd from a newer zip over a finished install: the update runs on Continue
+            self._update_reset = [st["id"] for st in steps if st["id"] in UPDATE_STEPS]
+            for st in steps:
+                if st["id"] in UPDATE_STEPS:
+                    st["status"], st["finishedAt"] = "pending", None
         state: dict[str, Any] = {
             "schema": 1, "rev": 1, "version": self.version, "appPath": str(self.cfg.app_path),
             "phase": "checks", "run": "idle", "uiStep": "welcome", "resumed": bool(done_before),
@@ -459,18 +508,68 @@ class SetupController:
             "startedAt": saved.get("started_at") if done_before else None, "updatedAt": now_iso(),
             "host": "none", "devMode": self.dev,
             "machine": preflight.machine_summary(pf, str(self.home), tier),
-            "checks": preflight.check_rows(pf, str(self.home)), "checkedAt": hhmm(), "checking": False,
+            "checks": preflight.check_rows(pf, str(self.home), self._held_gb_fn(locked)),
+            "checkedAt": hhmm(), "checking": False,
             "blocking": False, "plan": the_plan, "answers": view, "answersLocked": locked, "steps": steps,
             "downloads": {"items": [], "overall": {}, "source": (view or {}).get("modelsSource", {}).get(
                 "kind", "internet"), "paused": False},
             "verify": None, "failure": None, "notices": [], "result": None, "log": [],
             "support": self._load_support(),
         }
+        if locked and not any(self._keys_stored.values()):
+            state["notices"].append(dict(NO_KEY_NOTICE))
         state["downloads"]["items"] = self._initial_rows(the_plan)
         state["downloads"]["overall"] = rows.overall(state["downloads"]["items"], self.meter)
         if prefill is not None:
             self._keys.update(answers_view.keys_in(prefill))
         return state
+
+    def _held_gb_fn(self, locked: bool) -> Callable[[], float] | None:
+        """On a resume, how much of the install folder is setup's own work (the disk row then only warns)."""
+        if not locked:
+            return None
+        return lambda: preflight.folder_bytes(self.home) / 1024 ** 3
+
+    def _program_differs(self) -> bool:
+        """True when ``<home>\\app`` holds another program than the extracted folder this setup came from."""
+        if not self.installs_app:
+            return False
+        installed = appcopy.installed_fingerprint(self.home)
+        if installed is None or appcopy.same_folder(self.cfg.app_path, appcopy.app_dir(self.home)):
+            return False
+        return installed != appcopy.fingerprint(self.cfg.app_path)
+
+    def _settle_finished_install(self) -> None:
+        """Start over a finished install (INSTALL.cmd, or the window, run again).
+
+        A different program in the zip: the steps that copy and refresh the program were reset to pending in
+        the first state; the same reset goes to install_state.json so the wizard runs them too, and Continue
+        performs the update. The same program: the window shows Done with the result a finished run would
+        have built, so Open dashboard works (a fresh server has no run of its own to build it from).
+        """
+        for sid in self._update_reset:
+            self._persist_step(sid, "pending", None)
+        if self._update_reset:
+            self.log("info", f"A different Nightshift program was found; Continue updates {self.home}")
+            return
+        if not self._finished_before:
+            return
+        result = self._build_result()
+        started, completed = self._saved_times
+        try:
+            if started and completed:
+                span = datetime.fromisoformat(completed) - datetime.fromisoformat(started)
+                result["durationS"] = max(0, int(span.total_seconds()))
+            else:
+                result["durationS"] = 0
+        except ValueError:
+            result["durationS"] = 0
+
+        def fn(s: dict[str, Any]) -> None:
+            s["run"] = "finished"
+            s["result"] = result
+
+        self.store.update(fn)
 
     def _initial_rows(self, the_plan: dict[str, Any]) -> list[dict[str, Any]]:
         tools = {k: bool(v) for k, v in (self.pf.get("tools") or {}).items()}
@@ -845,7 +944,7 @@ class SetupController:
         self.pf = new
 
         def fn(s: dict[str, Any]) -> None:
-            s["checks"] = preflight.check_rows(new, str(self.home))
+            s["checks"] = preflight.check_rows(new, str(self.home), self._held_gb_fn(s["answersLocked"]))
             s["machine"] = preflight.machine_summary(new, str(self.home), tier)
             s["checkedAt"] = hhmm()
             s["checking"] = False
@@ -862,7 +961,7 @@ class SetupController:
         script = self.run_app_path / "launchers" / "nightshift-dashboard.ps1"
         code, tail = self.fx.launch_captured(
             ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script)],
-            {bootstrap.HOME_VAR: str(self.home), "NS_DASHBOARD_NO_HOST": "1"},
+            {bootstrap.HOME_VAR: str(self.home), "NS_DASHBOARD_NO_HOST": "1", **STAGE1_ONLY_ENV},
         )
         if code not in (None, 0):
             self.log("error", f"The dashboard launcher stopped with exit code {code}: {tail}")
@@ -1706,7 +1805,24 @@ class SetupController:
 
     # ---- headless (answers.json next to INSTALL.cmd, or -NoUi) ----
     def run_headless(self) -> int:
-        """Checks, bootstrap, then the wizard without a bridge and without a window. Returns the exit code."""
+        """Checks, bootstrap, then the wizard without a bridge and without a window. Returns the exit code.
+
+        One unattended setup per PC (a second double-click on INSTALL.cmd would race the first on the same
+        ``.part`` files and venvs), and the PC stays awake for the whole run, like the window's pipeline.
+        """
+        lock = FileLock(self.cfg.data_dir / "bootstrap" / "setup.lock")
+        try:
+            lock.acquire()
+        except AlreadyRunning:
+            self.fx.console("Setup is already running on this PC. Wait for it, or close its window.", "error")
+            return EXIT_ALREADY_RUNNING
+        try:
+            with keepawake.keep_awake(self.fx.set_execution_state):
+                return self._run_headless()
+        finally:
+            lock.release()
+
+    def _run_headless(self) -> int:
         state = self.snapshot()
         say = self.fx.console
         for c in state["checks"]:

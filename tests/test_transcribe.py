@@ -123,7 +123,7 @@ def test_whisper_cpu_skips_dll_injection_and_load_failure_is_coded(
     t = WhisperTranscriber(WhisperCfg(model="tiny", device="cpu", compute_type="int8"), Paths(tmp_path))
     with pytest.raises(NsError) as ei:
         t.words(tmp_path / "a.wav")
-    assert ei.value.code == "NS-E202" and calls == []
+    assert ei.value.code == "NS-E411" and calls == []
 
 
 def test_whisper_transcription_failure_is_ns_e408_with_the_audio_track_hint(
