@@ -24,6 +24,25 @@ def scrub_answers(raw: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def aware(value: datetime) -> datetime:
+    """A timezone-aware datetime: a naive one is taken as local time (the setup window used to write naive
+    local stamps while the console wizard wrote UTC ones, and subtracting the two raised TypeError, which
+    stopped the window from starting over a console-finished install)."""
+    return value if value.tzinfo is not None else value.astimezone()
+
+
+def span_seconds(start_iso: str | None, end_iso: str | None) -> int | None:
+    """Whole seconds between two ISO stamps of any mix of naive/aware; None when either is missing or bad."""
+    if not start_iso or not end_iso:
+        return None
+    try:
+        a = aware(datetime.fromisoformat(start_iso))
+        b = aware(datetime.fromisoformat(end_iso))
+    except ValueError:
+        return None
+    return max(0, int((b - a).total_seconds()))
+
+
 def _parse(iso: str | None) -> datetime | None:
     if not iso:
         return None
@@ -46,7 +65,7 @@ def elapsed_s(state: dict[str, Any], now: datetime | None = None) -> int | None:
     started = _parse(state.get("startedAt"))
     if started is None:
         return None
-    return max(0, int(((now or datetime.now()) - started).total_seconds()))
+    return max(0, int((aware(now or datetime.now()) - aware(started)).total_seconds()))
 
 
 def current_step(state: dict[str, Any]) -> tuple[int, dict[str, Any]] | None:

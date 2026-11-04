@@ -107,7 +107,7 @@ def retry_note(reason: str, wait_s: float, attempt: int | None = None, of: int |
     return text
 
 
-def now_iso() -> str:
+def now_iso() -> str:  # the same clock as installer.stage2.state (UTC, aware)
     """Local time, to the second."""
     return datetime.now().isoformat(timespec="seconds")
 
@@ -568,14 +568,7 @@ class SetupController:
             return
         result = self._build_result()
         started, completed = self._saved_times
-        try:
-            if started and completed:
-                span = datetime.fromisoformat(completed) - datetime.fromisoformat(started)
-                result["durationS"] = max(0, int(span.total_seconds()))
-            else:
-                result["durationS"] = 0
-        except ValueError:
-            result["durationS"] = 0
+        result["durationS"] = report.span_seconds(started, completed) or 0
 
         def fn(s: dict[str, Any]) -> None:
             s["run"] = "finished"
@@ -1795,7 +1788,7 @@ class SetupController:
         duration = 0
         if started:
             try:
-                duration = max(0, int((datetime.now() - datetime.fromisoformat(started)).total_seconds()))
+                duration = report.span_seconds(started, now_iso()) or 0
             except ValueError:
                 duration = 0
         return {
