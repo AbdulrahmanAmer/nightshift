@@ -176,6 +176,8 @@ def where_is(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
         "config": ("config", paths.config), "runtime": ("config", paths.runtime_file),
         "backups": ("data", paths.backup_dir), "analytics": ("imports", paths.imports_analytics),
         "footage": ("cache", paths.cache_clips), "clips": ("cache", paths.cache_clips),
+        "footage cache": ("cache", paths.cache_clips), "stock footage": ("cache", paths.cache_clips),
+        "stock clips": ("cache", paths.cache_clips), "clip cache": ("cache", paths.cache_clips),
     }
     if low in named:
         kind, p = named[low]
