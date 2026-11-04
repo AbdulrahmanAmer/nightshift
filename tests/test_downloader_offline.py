@@ -75,7 +75,8 @@ def test_the_real_probe_is_false_for_a_closed_port():
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         port = s.getsockname()[1]                       # bound, never listened on, then closed: refuses
-    assert dl.network_is_up(f"http://127.0.0.1:{port}/", timeout=0.5) is False
+    real = dl.wait_for_network.__kwdefaults__["probe"]        # conftest replaces dl.network_is_up in every test
+    assert real(f"http://127.0.0.1:{port}/", timeout=0.5) is False
 
 
 def test_the_row_note_says_the_internet_is_gone():
