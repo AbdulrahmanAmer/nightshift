@@ -7,6 +7,11 @@ All notable changes to Nightshift are recorded here. The format follows
 
 ## [Unreleased]
 
+- Installer: running INSTALL.cmd again after the questions step (window closed, PC slept or rebooted, power
+  cut, update over an install) showed a greyed-out Choices screen whose Install button re-sent the locked
+  answers and stopped; the setup window now opens on the "Setup is halfway" screen and Continue resumes the
+  run from the first unfinished step (`machine.derive_phase` follows the steps when the answers are locked).
+
 ### Pins and voice-engine temp files (`orchestrator/pins-0.1.7`, from install audit 2, findings 3 and 9)
 - Every Hugging Face file in `manifest.json` (all LLM tiers, embed, voice GGUFs, whisper) now names the commit
   it is fetched from (`revision`, a 40-character sha), so a re-upload of a file under the same name on `main`

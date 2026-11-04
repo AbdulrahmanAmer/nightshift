@@ -448,6 +448,7 @@ def test_a_second_run_resumes_what_the_first_one_finished(tmp_path, monkeypatch)
     second = Setup(tmp_path, monkeypatch, script=finish_script)
     state = second.snap()
     assert state["resumed"] is True and state["answersLocked"] is True
+    assert state["phase"] == "downloading" and state["run"] == "idle"   # Welcome resume screen, not Choices
     assert state["startedAt"] == "2026-11-02T21:00:00"
     assert state["answers"]["channel"]["displayName"] == "After Dark Tales"
     assert state["answers"]["pexelsKeySet"]
