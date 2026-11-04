@@ -90,7 +90,8 @@ def test_the_0_1_5_to_0_1_1_changelog_entries_are_in_place():
     assert re.search(r"^## \[0\.1\.8\] - 2026-11-04\s*$", text, re.MULTILINE)
     eight = re.search(r"(?ms)^## \[0\.1\.8\][^\r\n]*\r?\n(?P<body>.*?)(?=^## \[|\Z)", text)
     assert eight is not None
-    words = ("dev-mode", "EOFError", "/api/health", "maxrate", "fetch_footage", "keep-awake", "Smart App Control")
+    words = ("dev-mode", "EOFError", "/api/health", "maxrate", "fetch_footage", "keep-awake",
+             "Smart App Control")
     for word in words:
         assert word in eight.group("body"), word
     assert re.search(r"^## \[0\.1\.7\] - 2026-11-04\s*$", text, re.MULTILINE)
