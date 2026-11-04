@@ -5,13 +5,17 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import threading
-from typing import Any
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
+from ns_common.errors import NsError
+from ns_common.secrets_names import SHORT_NAMES
 from ns_dashboard import formats, updater
 from ns_dashboard.common import now_iso
-from ns_dashboard.errors import ApiError
+from ns_dashboard.errors import AdapterUnavailable, ApiError
 from ns_dashboard.state import AppState
 from ns_dashboard.svc_channels import ChannelsService
 
@@ -20,6 +24,49 @@ MODEL_NAMES = ("voicedesign", "story_llm")
 IDEA_STATUSES = ("new", "approved", "used", "rejected")
 IDEA_SOURCES = ("owner", "assistant", "generated")
 STATUS_ALIASES = {"dropped": "rejected"}  # the UI says "Dropped"; the shared schema says "rejected"
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from ns_common.paths import Paths
+    from ns_studio.media.clip_sources import ClipCandidate, ClipSource, Orientation
+
+FOOTAGE_SOURCES = ("auto", "pixabay", "pexels")
+FOOTAGE_ORIENTATIONS = ("landscape", "portrait")
+FOOTAGE_MAX = 5  # clips per request: a chat request must not become a bulk download
+NO_FOOTAGE_KEY = "No stock footage key. Add a Pixabay key (free) in Settings > Stock footage keys"
+_FOOTAGE_API_ERRORS = ("NS-E501", "NS-E502", "NS-E503")  # the codes the clip sources use (clips._API_ERRORS)
+_SAFE_CLIP_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")  # becomes a file name in the cache
+
+
+def _real_footage_sources(keys: dict[str, str], paths: Paths) -> list[ClipSource]:
+    """Keyed Pixabay/Pexels sources for the names in `keys`, in that order (same construction as `build_services`)."""
+    from ns_studio.media.clip_sources import PexelsSource, PixabaySource
+
+    out: list[ClipSource] = []
+    if "pixabay" in keys:
+        out.append(PixabaySource(keys["pixabay"], paths.cache_search))
+    if "pexels" in keys:
+        out.append(PexelsSource(keys["pexels"], paths.cache_search))
+    return out
+
+
+def _stored_keywords(raw: str | None, fallback: str) -> list[str]:
+    """The keyword list of a `clips` row (JSON text), or `[fallback]` when it is empty or unreadable."""
+    try:
+        found = json.loads(raw) if raw else []
+    except ValueError:
+        found = []
+    return [str(k) for k in found] if isinstance(found, list) and found else [fallback]
+
+
+def _footage_item(cand: ClipCandidate, path: Path, keywords: list[str], *, new: bool) -> dict[str, Any]:
+    """One clip as the Assistant and the API report it: the absolute path first."""
+    return {
+        "path": str(path.absolute()), "source": cand.source, "clip_id": cand.id, "page_url": cand.page_url,
+        "license": cand.license, "size": f"{cand.width}x{cand.height}", "width": cand.width,
+        "height": cand.height, "duration": cand.duration, "keywords": keywords, "new": new,
+    }
 
 
 def like(q: str) -> str:
@@ -64,6 +111,8 @@ class LibraryService:
     def __init__(self, state: AppState, channels: ChannelsService) -> None:
         self.s = state
         self.channels = channels
+        #: Builds the keyed clip sources from `{name: key}`; tests replace it with stubs (no network).
+        self.footage_sources: Callable[[dict[str, str], Paths], list[ClipSource]] | None = None
 
     # --- ideas ---
     def list_ideas(self, channel: str | None = None, status: str | None = None, q: str | None = None,
@@ -211,10 +260,104 @@ class LibraryService:
             )
         return out
 
+    def fetch_footage(
+        self, q: str | None, orientation: str | None = "landscape", count: Any = 1, source: str | None = "auto"
+    ) -> dict[str, Any]:
+        """Download up to `count` (1 to 5) stock clips for `q` into the footage cache and say where they are.
+
+        A network download, not GPU work: no lease, no studio job. The files and `clips` rows are the ones the
+        studio's `ClipCache` writes, so later jobs reuse them and Library > Footage lists them. Clips that are
+        already cached are not downloaded again (they only fill the answer when fewer new ones were found).
+        """
+        from ns_studio.media.clips import ClipCache, Searcher, normalize_keyword
+
+        query = str(q or "").strip()
+        if not query or len(query) > 100:
+            raise ApiError(422, "invalid_options", "Give a search word or phrase for the footage (up to 100 characters).")
+        orient = str(orientation or "landscape").lower()
+        if orient not in FOOTAGE_ORIENTATIONS:
+            raise ApiError(422, "invalid_options", "Orientation must be landscape or portrait.")
+        which = str(source or "auto").lower()
+        if which not in FOOTAGE_SOURCES:
+            raise ApiError(422, "invalid_options", f"Source must be one of {', '.join(FOOTAGE_SOURCES)}.")
+        try:
+            want = int(count if count is not None else 1)
+        except (TypeError, ValueError):
+            raise ApiError(422, "invalid_options", "count must be a whole number from 1 to 5.") from None
+        want = max(1, min(want, FOOTAGE_MAX))
+
+        keys = self._footage_keys()
+        order = ("pixabay", "pexels") if which == "auto" else (which,)
+        usable = {name: keys[name] for name in order if keys.get(name)}
+        if not usable:
+            if which == "pexels":
+                raise ApiError(409, "NS-E501", "No Pexels key. Add a Pexels key (free) in Settings > Stock footage keys",
+                               hint="Keys are entered by the owner in Settings, not in chat.")
+            raise ApiError(409, "NS-E502", NO_FOOTAGE_KEY,
+                           hint="Keys are entered by the owner in Settings, not in chat. A Pexels key works too.")
+        sources = (self.footage_sources or _real_footage_sources)(usable, self.s.paths)
+
+        searcher = Searcher(sources, per_page=80, log=self.s.log)
+        wanted: Orientation = "portrait" if orient == "portrait" else "landscape"
+        found = [c for c in searcher.search(query, wanted) if c.orientation == wanted]
+        if not found and searcher.errors:
+            raise searcher.errors[0]
+        found.sort(key=lambda c: min(c.width, c.height) < 1080)  # stable: Full HD first, search order otherwise
+        keyword = normalize_keyword(query) or query.lower()
+        cache = ClipCache(self.s.db.db, self.s.paths, sources, log=self.s.log)
+        by_name = {s.name: s for s in sources}
+        fresh: list[dict[str, Any]] = []
+        reused: list[dict[str, Any]] = []
+        errors: list[NsError] = []
+        for cand in found:
+            if len(fresh) >= want:
+                break
+            if not _SAFE_CLIP_ID.fullmatch(cand.id):
+                continue
+            dest = cache.path_for(cand.source, cand.id)
+            row = self.s.db.one("SELECT local_path, keywords FROM clips WHERE source = ? AND clip_id = ?", (cand.source, cand.id))
+            if row is not None and row["local_path"] and Path(row["local_path"]).is_file():
+                if len(reused) < want:
+                    reused.append(_footage_item(cand, Path(row["local_path"]), _stored_keywords(row["keywords"], keyword), new=False))
+                continue
+            try:
+                by_name[cand.source].download(cand, dest)
+            except NsError as e:
+                if e.code not in _FOOTAGE_API_ERRORS:
+                    raise
+                errors.append(e)
+                continue
+            with self.s.db.lock:  # the row is a quick write; the download above ran without the lock
+                cache.record(cand, dest, [keyword])
+            fresh.append(_footage_item(cand, dest, [keyword], new=True))
+        if not fresh and errors:
+            raise errors[0]
+        clips = [*fresh, *reused[: max(0, want - len(fresh))]]
+        self.s.log.info("footage_fetched", q=query, orientation=orient, source=which, new=len(fresh), reused=len(clips) - len(fresh))
+        out: dict[str, Any] = {
+            "paths": [c["path"] for c in clips], "folder": str(self.s.paths.cache_clips), "query": query,
+            "orientation": orient, "requested": want, "downloaded": len(fresh), "clips": clips,
+        }
+        if not clips:
+            out["note"] = f"No {orient} clips found for '{query}'. Try other words."
+        elif len(fresh) < want:
+            out["note"] = f"Only {len(fresh)} new clip(s) found for '{query}'; the rest were already in the cache."
+        return out
+
+    def _footage_keys(self) -> dict[str, str]:
+        """The stock-footage keys that are stored, by short name (`pexels`, `pixabay`); never logged."""
+        out: dict[str, str] = {}
+        for full, short in SHORT_NAMES.items():
+            try:
+                value = self.s.adapters.keyring.get(full)
+            except AdapterUnavailable:
+                value = None
+            if value:
+                out[short] = value
+        return out
+
     def delete_footage(self, source: str, clip_id: str) -> dict[str, Any]:
         """Remove a cached stock clip: its rows and its file (only a file inside the Nightshift home)."""
-        from pathlib import Path
-
         from ns_dashboard.security import is_within
 
         row = self.s.db.one("SELECT local_path FROM clips WHERE source = ? AND clip_id = ?", (source, clip_id))

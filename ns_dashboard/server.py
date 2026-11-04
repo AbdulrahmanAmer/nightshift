@@ -550,6 +550,14 @@ def create_app(
         )
         return ok(data)
 
+    @app.post("/api/library/footage/fetch")
+    async def library_footage_fetch(request: Request) -> SafeJSONResponse:
+        b = await body_json(request)
+        data = await run_in_threadpool(
+            dash.library.fetch_footage, b.get("q"), b.get("orientation"), b.get("count"), b.get("source")
+        )
+        return ok(data)
+
     @app.delete("/api/library/footage/{source}/{clip_id}")
     async def library_footage_delete(source: str, clip_id: str) -> SafeJSONResponse:
         return ok(await run_in_threadpool(dash.library.delete_footage, source, clip_id))
