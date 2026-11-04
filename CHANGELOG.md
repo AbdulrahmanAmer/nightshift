@@ -15,6 +15,10 @@ All notable changes to Nightshift are recorded here. The format follows
   to that signature, so every valid key was reported as `NS-E501`/`NS-E502` ("not accepted, copy the key
   again, no spaces"). The check now sends `Nightshift-Setup/<version>`; verified live against both
   services. The studio's own stock-footage client (httpx) was never affected.
+- The Pexels key is optional: Pexels has paused new API keys, so one stock-footage key is enough (Pixabay
+  alone works). The setup screen marks Pexels "(optional)" and only complains when neither key is given; the
+  console wizard lets Enter skip a key; `s01`/`s07` verify that at least one key is stored; the studio builds
+  only the clip sources that have a key (both when none, so the first search still raises `NS-E501`/`NS-E502`).
 - Do NOT send v0.1.5: its key screen rejects every key. Send `Nightshift-Setup-0.1.6.zip`.
 
 ## [0.1.5] - 2026-11-03

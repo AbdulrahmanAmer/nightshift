@@ -6,7 +6,7 @@ import os
 import subprocess
 from collections.abc import Callable
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 from ns_common.paths import Paths
 from ns_common.secret_file import dpapi_protect, dpapi_unprotect, load_secret, store_secret
@@ -14,7 +14,12 @@ from ns_common.secrets_names import KEY_NAMES, KEYRING_SERVICE, PEXELS_KEY, PIXA
 
 # One definition for the studio, the installer and Settings: ``ns_common.secrets_names``.
 SERVICE = KEYRING_SERVICE
-__all__ = ["KEY_NAMES", "PEXELS_KEY", "PIXABAY_KEY", "SERVICE"]
+__all__ = ["KEY_NAMES", "PEXELS_KEY", "PIXABAY_KEY", "SERVICE", "any_key_stored"]
+
+
+def any_key_stored(store: Any) -> bool:
+    """One stock-footage key is enough (Pixabay alone works; Pexels stopped handing out new keys in 2026)."""
+    return any(store.get(k) for k in KEY_NAMES)
 
 
 class SecretStore(Protocol):

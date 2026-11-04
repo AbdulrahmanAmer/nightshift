@@ -23,6 +23,14 @@ def test_build_real_services_do_not_connect(tmp_home: Path):
     assert s.transcriber.name == "whisper"
 
 
+def test_a_source_without_a_key_is_left_out_unless_no_key_at_all(tmp_home: Path):
+    p = Paths.from_env()
+    only = build_services(Runtime.default("cpu-dev"), fake=set(), paths=p, keys={"pixabay": "k2"})
+    assert [c.name for c in only.clip_sources] == ["pixabay"]          # Pexels is optional
+    none = build_services(Runtime.default("cpu-dev"), fake=set(), paths=p, keys={})
+    assert [c.name for c in none.clip_sources] == ["pexels", "pixabay"]  # first search raises the coded error
+
+
 def test_job_context_json_helpers(tmp_home: Path):
     ctx = make_ctx(tmp_home)
     ctx.write_json("sub/a.json", {"x": [1, 2], "t": "é"})
