@@ -24,8 +24,8 @@ Keep this file next to `INSTALL.cmd`.
    folder it asks for later, so **you can delete the extracted folder after setup has finished**. The install folder
    must be a different folder (the window tells you if it is not) and should not be in Downloads or OneDrive.
 4. Optional, for an unattended install: put `answers.json` in the extracted folder, next to `INSTALL.cmd`. With it
-   setup runs in the black window only: there is no setup window, so steps 6 to 8 do not apply (the black window
-   is the log and prints the result). To get the window with your answers filled in, start it from a command
+   setup runs in the Nightshift setup window with text only: there is no setup window, so steps 6 to 8 do not apply
+   (that text window is the log and prints the result). To get the window with your answers filled in, start it from a command
    prompt as `INSTALL.cmd -Ui`. Without `answers.json`, skip this step: the setup window asks everything.
 5. Double-click **INSTALL.cmd**. If Windows says "Windows protected your PC", press **More info**, then
    **Run anyway**. Windows may ask for permission to install programs: say **Yes**.
