@@ -146,6 +146,9 @@ def _plain(value: Any) -> Any:
 def render_confirm(spec: ToolSpec, args: dict[str, Any]) -> str:
     """The confirm-card text in the owner's words (unknown placeholders render as `(default)`)."""
     flat = _Safe({k: _plain(v) for k, v in args.items()})
+    for key, prop in spec.args_schema.get("properties", {}).items():  # a default the tool applies shows as such
+        if "default" in prop:
+            flat.setdefault(key, str(prop["default"]))
     flat.setdefault("source", args.get("url") or args.get("path") or "(default)")
     flat.setdefault("schedule_at", "now")
     return (spec.confirm_text or spec.description).format_map(flat)
