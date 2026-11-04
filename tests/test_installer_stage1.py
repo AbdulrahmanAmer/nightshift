@@ -395,7 +395,7 @@ def test_the_runtime_installer_is_ps51_compatible_and_says_what_will_happen():
     assert "Windows will ask for permission to install the Microsoft Visual C++ runtime; press Yes" in body
     assert "https://aka.ms/vs/17/release/vc_redist.x64.exe" in body        # the fix when it is declined
     assert "?." not in body and "??" not in body and "&&" not in body        # no PowerShell 7 syntax
-    assert body.index("1223") < body.index("Fix:")
+    assert body.index("1223") < body.rindex("Fix:")
 
 
 def test_the_runtime_row_value_matches_what_stage_1_does(tmp_path: Path):

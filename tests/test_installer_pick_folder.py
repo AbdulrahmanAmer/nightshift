@@ -43,7 +43,7 @@ def test_a_folder_name_outside_plain_ascii_is_refused_with_the_reason(path: str)
 
 def test_the_window_mirrors_the_non_ascii_rule() -> None:
     ts = (ROOT / "installer" / "ui" / "src" / "format.ts").read_text(encoding="utf-8")
-    assert pathcheck.NON_ASCII_PROBLEM in ts and "u0020-\\u007e" in ts
+    assert pathcheck.NON_ASCII_PROBLEM in ts and "[^ -~]" in ts
 
 
 @pytest.mark.parametrize(

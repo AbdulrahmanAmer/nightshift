@@ -70,7 +70,12 @@ def test_a_network_that_never_returns_still_ends_in_e105(tmp_path: Path, monkeyp
 
 
 def test_the_real_probe_is_false_for_a_closed_port():
-    assert dl.network_is_up("http://127.0.0.1:1/", timeout=0.5) is False
+    import socket
+
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]                       # bound, never listened on, then closed: refuses
+    assert dl.network_is_up(f"http://127.0.0.1:{port}/", timeout=0.5) is False
 
 
 def test_the_row_note_says_the_internet_is_gone():

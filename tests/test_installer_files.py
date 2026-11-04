@@ -107,7 +107,8 @@ def test_operator_copy_covers_every_code_the_installer_can_raise():
 
 # ns_common modules with only standard-library imports (and each other): the bare-Python server may use them.
 STDLIB_ONLY_NS_COMMON = {
-    "ns_common.atomic", "ns_common.avblock", "ns_common.paths", "ns_common.uv", "ns_common.vcruntime",
+    "ns_common.atomic", "ns_common.avblock", "ns_common.paths", "ns_common.pathrules", "ns_common.uv",
+    "ns_common.vcruntime",
 }
 
 

@@ -14,6 +14,8 @@ import os
 import re
 from collections.abc import Mapping
 
+from ns_common.pathrules import NON_ASCII_PROBLEM, ascii_problem  # noqa: F401 - re-exported for callers
+
 MAX_PATH_LEN = 120
 DRIVE_PATH_RE = re.compile(r"^[A-Za-z]:\\")
 ILLEGAL_CHARS = '<>:"|?*%'
@@ -21,15 +23,6 @@ RESERVED_NAMES = frozenset(
     {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
 )
 EXAMPLE = "D:\\Nightshift"
-NON_ASCII_PROBLEM = (
-    "Use a folder name with plain English letters, digits, spaces, - and _ "
-    "(the model programs cannot open other paths)"
-)
-
-
-def ascii_problem(path: str) -> str | None:
-    """``NON_ASCII_PROBLEM`` when ``path`` has a character outside printable ASCII (space to ~), else None."""
-    return NON_ASCII_PROBLEM if any(not 32 <= ord(c) <= 126 for c in path) else None
 
 
 def home_problem(path: str, max_len: int = MAX_PATH_LEN) -> str | None:

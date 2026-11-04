@@ -35,8 +35,8 @@ from installer.stage2.sysinfo import (
     recommended_tier,
     required_free_gb,
 )
-from installer.stage2.web.pathcheck import ascii_problem
 from installer.stage2.winenv import HOME_VAR, get_user_env, set_user_env
+from ns_common.pathrules import ascii_problem
 
 PRESET_VOICES = ("Ryan", "Aiden", "Serena", "Vivian")
 PEXELS_URL = "https://www.pexels.com/api/"
