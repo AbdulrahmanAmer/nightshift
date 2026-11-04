@@ -7,6 +7,12 @@ All notable changes to Nightshift are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.1.7] - 2026-11-04
+
+Hotfix after the partner's first run of 0.1.6 and two fresh audits (install blockers from the Start button
+onward, and installer functionality). Do NOT send 0.1.5 or 0.1.6 to a new PC; send `Nightshift-Setup-0.1.7.zip`.
+An install started with 0.1.6 resumes under 0.1.7: run INSTALL.cmd from the new zip and press Continue.
+
 ### 0.1.7 install-path fixes (`orchestrator/hotfix-0.1.7-install`, from the second install audit)
 - faster-whisper and PyAV (blocker): the `studio` extra now pins `faster-whisper>=1.0,<1.3` and
   `av>=11,<19`. faster-whisper 1.2.1 calls `av.open(metadata_errors=...)`, which PyAV 19.0 removed, so on a
