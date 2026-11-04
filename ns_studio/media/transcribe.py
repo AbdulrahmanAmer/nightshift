@@ -233,7 +233,7 @@ class WhisperTranscriber:
                     str(model_dir), device=self.cfg.device, compute_type=self.cfg.compute_type
                 )
             except Exception as e:
-                raise NsError("NS-E202", f"whisper failed to load: {e}") from e
+                raise NsError("NS-E411", f"whisper failed to load: {e}") from e
         return self._model
 
     def _run(self, wav: Path, language: str) -> list[Segment]:

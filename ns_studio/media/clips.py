@@ -207,6 +207,17 @@ class Searcher:
             merged += [p[i] for p in per_source if i < len(p)]
         return merged
 
+    def first_error(self) -> NsError | None:
+        """The error to report when no source found anything: Pixabay's before Pexels'.
+
+        Pexels gives out no keys any more, so "check the Pexels key" sends the owner after something she
+        cannot get; the Pixabay error ("add a Pixabay key, it is free") names the key she can.
+        """
+        for e in self.errors:
+            if e.code == "NS-E502":
+                return e
+        return self.errors[0] if self.errors else None
+
 
 def has_face_hint(c: ClipCandidate) -> bool:
     """True when the title or tags suggest a person (Pexels/Pixabay expose no face flag)."""
@@ -299,7 +310,7 @@ def select_for_beat(
             kw_of = {(c.source, c.id): k for c, k in pool}
             return [(c, kw_of[(c.source, c.id)]) for c in picks]
     if not pool and searcher.errors:
-        raise searcher.errors[0]
+        raise searcher.first_error() or searcher.errors[0]
     raise NsError("NS-E402", f"keywords {kws} mood {mood!r}: {len(pool)} candidates for {len(slots)} slots")
 
 

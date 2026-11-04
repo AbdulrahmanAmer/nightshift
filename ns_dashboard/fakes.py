@@ -116,10 +116,15 @@ class FakeRunAdapter:
         self.paths = paths
         self.stages = stages or list(DEFAULT_RUN_STAGES)
         self.calls: list[tuple[str, str, int | None]] = []
+        self.resumed: list[str] = []
 
-    def run(self, ctl: JobControl, channel: str, fmt: str, count: int | None) -> list[str]:
+    def run(
+        self, ctl: JobControl, channel: str, fmt: str, count: int | None, *, resume_job_id: str | None = None
+    ) -> list[str]:
         """Run the stages and register the outputs."""
         self.calls.append((channel, fmt, count))
+        if resume_job_id:
+            self.resumed.append(resume_job_id)
         for _ in ctl.stages(self.stages):
             pass
         job_id = new_job_id(channel)
@@ -414,6 +419,12 @@ class FakeUpdateAdapter:
         self.downloaded = [*getattr(self, "downloaded", []), name]
         on_line(f"fetching {name} 50%")
         return 0, f"{name} is ready"
+
+    def apply_file(self, zip_path: Path) -> dict[str, Any]:
+        """Pretend to install a zip from disk."""
+        self.files = [*getattr(self, "files", []), zip_path]
+        return {"ok": True, "returncode": 0, "started": True, "state": "started", "output": "", "error": "",
+                "message": "The update is running. Nightshift restarts by itself when it is done."}
 
     def apply(self) -> dict[str, Any]:
         """Pretend to install."""

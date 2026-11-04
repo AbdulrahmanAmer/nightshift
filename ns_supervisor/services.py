@@ -83,7 +83,10 @@ def _llama(rt: Runtime, paths: Paths, alias: str | None) -> ServiceDef:
     if fl.n_cpu_moe > 0:
         cmd += ["--n-cpu-moe", str(fl.n_cpu_moe)]
     if fl.spec_type:
-        cmd += ["--spec-type", fl.spec_type, "--spec-draft-n-max", str(fl.spec_draft_n_max or 3), "-np", "1"]
+        cmd += ["--spec-type", fl.spec_type, "--spec-draft-n-max", str(fl.spec_draft_n_max or 3)]
+    # One slot, always: the GPU lock serialises every request anyway, and a build that gives each of N slots
+    # ctx/N tokens would fail the Assistant's 9-12k token prompts and whole-story prompts (NS-E301).
+    cmd += ["-np", "1"]
     if fl.threads:
         cmd += ["-t", str(fl.threads)]
     return ServiceDef(
@@ -108,7 +111,11 @@ def _embed(rt: Runtime, paths: Paths) -> ServiceDef:
         "--host", cfg.host,
         "-ngl", "0",
     ] + embed_server_args(cfg)  # fmt: skip
-    return ServiceDef(name="embed", cmd=cmd, host=cfg.host, port=cfg.port, gpu=False, env=_env(paths))
+    # The binary is the CUDA build of llama-server. `-ngl 0` alone still creates a CUDA context and may put
+    # large-batch compute buffers on the card, a few hundred MB beside the 14 GB story model. No visible
+    # device: the embeddings run on the CPU, at the speed they had.
+    env = {**_env(paths), "CUDA_VISIBLE_DEVICES": "-1"}
+    return ServiceDef(name="embed", cmd=cmd, host=cfg.host, port=cfg.port, gpu=False, env=env)
 
 
 def _tts(rt: Runtime, paths: Paths) -> ServiceDef:

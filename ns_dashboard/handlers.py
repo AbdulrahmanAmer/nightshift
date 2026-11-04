@@ -15,7 +15,7 @@ from ns_dashboard.assistant.store import AssistantStore
 from ns_dashboard.assistant.tools import build_registry
 from ns_dashboard.events import EventHub
 from ns_dashboard.fakes import fake_adapters
-from ns_dashboard.jobs import JobRecord, JobStore, JobWorker, make_gpu_gate
+from ns_dashboard.jobs import JOB_OWNER, JobRecord, JobStore, JobWorker, make_gpu_gate
 from ns_dashboard.state import AppState, open_db
 from ns_dashboard.supervisor_link import SupervisorLink, make_acquirer, supervisor_url
 from ns_dashboard.svc_channels import ChannelsService
@@ -88,6 +88,7 @@ def build_state(
     store = JobStore(db)
     worker = JobWorker(
         store, build_handlers(adapters, paths), hub, log, gpu_gate=make_gpu_gate(link.status),
+        pulse=None if fake_services else (lambda: link.heartbeat(JOB_OWNER)),
         on_recover={"series_part": release_part_of},
         on_end={"series_part": release_part_of},
         on_done={"series_part": finish_part_of},

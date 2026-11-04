@@ -68,7 +68,31 @@ def trusted(url: str) -> bool:
 
 
 def _unreachable(e: Exception) -> NsError:
+    """`NS-E105` for a connection that failed; `NS-E118` when GitHub answered with an error status.
+
+    "Check the internet connection" is wrong advice for a reply: a 403 or 429 is GitHub's hourly limit for
+    update checks from one address, a 404 means no release is published.
+    """
+    if isinstance(e, httpx.HTTPStatusError):
+        return NsError("NS-E118", f"github.com: {status_words(e.response)}")
     return NsError("NS-E105", f"github.com: {e}")
+
+
+def status_words(r: httpx.Response) -> str:
+    """What a GitHub error answer means, in a sentence that starts with the status."""
+    code = r.status_code
+    try:
+        body = r.text.lower()
+    except httpx.ResponseNotRead:  # an answer to a streamed download: the body was not read
+        body = ""
+    limited = r.headers.get("x-ratelimit-remaining") == "0" or "rate limit" in body
+    if code in (403, 429) and (code == 429 or limited):
+        return f"HTTP {code}: GitHub's limit of update checks per hour was reached; try again in an hour"
+    if code == 404:
+        return "HTTP 404: no release is published there yet"
+    if code in (500, 502, 503, 504):
+        return f"HTTP {code}: GitHub has a problem right now; try again later"
+    return f"HTTP {code}: GitHub refused the request"
 
 
 def parse_release(data: dict[str, Any]) -> Release:

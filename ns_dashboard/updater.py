@@ -113,6 +113,11 @@ class RealUpdateAdapter:
         """Download and install the newest version (`ns update --github`); rolls back on failure."""
         return classify_update(parse_update_output(*self.runner(self._command("update", "--github"), 3600)))
 
+    def apply_file(self, zip_path: Path) -> dict[str, Any]:
+        """Install an update zip from disk (`ns update <zip>`). The command checks the zip and its `.sha256`
+        before it starts the detached worker, so a bad package is answered here and nothing is stopped."""
+        return classify_update(parse_update_output(*self.runner(self._command("update", str(zip_path)), 3600)))
+
     def models_available(self) -> bool:
         """True when this `ns` has the `models` command (the installer/supervisor builder adds `ns models get`)."""
         code, out, err = self.runner(self._command("models", "--help"), 60)
@@ -138,6 +143,19 @@ UNAVAILABLE_NOTE = (
 )
 
 
+def error_line(stderr: str) -> str:
+    """The line of `ns` stderr that says what went wrong: `error NS-E118: ...`, not the `hint:` line after it.
+
+    The CLI prints `error <code>: <message> (<detail>)` and then `hint: <generic advice>`; the last line used
+    to be shown, so a GitHub rate limit read "Check the internet connection".
+    """
+    lines = [x.strip() for x in stderr.strip().splitlines() if x.strip()]
+    for line in lines:
+        if line.lower().startswith("error "):
+            return line[6:].strip()
+    return lines[-1] if lines else "The update check failed."
+
+
 def classify_update(result: dict[str, Any]) -> dict[str, Any]:
     """Add the fields the Settings page needs to a parsed `ns update` result.
 
@@ -151,7 +169,7 @@ def classify_update(result: dict[str, Any]) -> dict[str, Any]:
     if code in (2, 127) or (code != 0 and any(m in err or m in out for m in MISSING_MARKERS)):
         state, message = "unavailable", UNAVAILABLE_NOTE
     elif code != 0:
-        state, message = "error", (str(result.get("error") or "").strip().splitlines() or ["The update check failed."])[-1]
+        state, message = "error", error_line(str(result.get("error") or ""))
     elif result.get("updated") is True:
         state, message = "updated", f"Now on {result.get('new') or 'the newest version'} (was {result.get('old') or 'older'})."
     elif result.get("started") is True:

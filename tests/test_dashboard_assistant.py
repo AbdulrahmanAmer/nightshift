@@ -415,3 +415,60 @@ def test_transcripts_persist_in_assistant_db(tmp_home: Path):
     assert again.conversations()[0]["title"] == "hi there"
     # the second turn replays the first one to the model
     assert [m["role"] for m in llm.requests[1]] == ["system", "user", "assistant", "user"]
+
+
+# ---------------------------------------------------------------- P4: the Assistant's GPU hold is leased
+
+
+def test_the_assistant_renews_its_gpu_lease_during_a_turn_and_stops_after_release():
+    import time
+
+    from ns_common.acquire import Endpoint
+    from ns_dashboard.assistant.llm import OWNER, SupervisorLlmProvider
+
+    class Acq:
+        def __init__(self) -> None:
+            self.beats: list[str] = []
+            self.calls: list[str] = []
+
+        def acquire(self, service, owner, *, model_alias=None, timeout_s=7200):
+            self.calls.append(f"acquire {service} {owner}")
+            return Endpoint("http://127.0.0.1:9", model_alias)
+
+        def release(self, service, owner):
+            self.calls.append(f"release {service} {owner}")
+
+        def heartbeat(self, owner):
+            self.beats.append(owner)
+            if len(self.beats) == 2:
+                raise OSError("engine restarting")  # a missed beat never breaks the turn
+            return True
+
+    acq = Acq()
+    provider = SupervisorLlmProvider(lambda: {"gpu_owner": None}, acq, beat_s=0.02)  # type: ignore[arg-type]
+    provider.acquire()
+    deadline = time.monotonic() + 5
+    while len(acq.beats) < 4 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert acq.beats[:4] == [OWNER] * 4
+    provider.release()
+    settled = len(acq.beats)
+    time.sleep(0.15)
+    assert len(acq.beats) == settled
+    assert acq.calls == [f"acquire llama {OWNER}", f"release llama {OWNER}"]
+
+
+def test_an_acquirer_without_heartbeat_is_fine_for_the_assistant():
+    from ns_common.acquire import Endpoint
+    from ns_dashboard.assistant.llm import SupervisorLlmProvider
+
+    class Plain:
+        def acquire(self, service, owner, *, model_alias=None, timeout_s=7200):
+            return Endpoint("http://127.0.0.1:9", model_alias)
+
+        def release(self, service, owner):
+            pass
+
+    provider = SupervisorLlmProvider(lambda: {}, Plain())  # type: ignore[arg-type]
+    provider.acquire()
+    provider.release()
