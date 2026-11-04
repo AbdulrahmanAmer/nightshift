@@ -98,6 +98,16 @@ def store_secret(paths: Paths, name: str, value: str, *, protect: ProtectFn = dp
     return write_text_atomic(secret_path(paths), json.dumps(data, indent=2) + "\n")
 
 
+def delete_secret(paths: Paths, name: str) -> bool:
+    """Remove one secret from `config\\secrets.dpapi`; True when it was there. No file: False."""
+    data = _read_all(paths)
+    if name not in data:
+        return False
+    del data[name]
+    write_text_atomic(secret_path(paths), json.dumps(data, indent=2) + "\n")
+    return True
+
+
 def load_secret(paths: Paths, name: str, *, unprotect: ProtectFn = dpapi_unprotect) -> str | None:
     """One secret from the file; None when it is absent or cannot be decrypted. Never raises."""
     raw = _read_all(paths).get(name)

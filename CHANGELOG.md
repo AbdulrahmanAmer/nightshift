@@ -7,6 +7,12 @@ All notable changes to Nightshift are recorded here. The format follows
 
 ## [Unreleased]
 
+- A stock-footage key saved by an earlier setup (Credential Manager or `config\\secrets.dpapi`) that the
+  service rejects no longer stops setup: it is forgotten with a notice, and Settings takes a new one (the
+  first clean dev-mode install of 0.1.8 died with NS-E502 on a placeholder key left behind). A key given in
+  `answers.json` that is rejected still stops setup. Settings clears a key when it is saved empty, and the
+  uninstall forgets both copies of the keys.
+
 ## [0.1.8] - 2026-11-04
 
 The first release that ran end to end on a real PC before shipping: a dev-mode install on the orchestrator's

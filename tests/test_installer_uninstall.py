@@ -232,3 +232,11 @@ def test_delete_data_also_removes_stories_and_the_internal_folders(tmp_path: Pat
     proc = _run(home, "-SkipSystem", "-DeleteData")
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert _present(home) == {"models", "config", "logs"}
+
+
+def test_uninstall_removes_the_secrets_file(tmp_path: Path):
+    home = _make_home(tmp_path)
+    (home / "config" / "secrets.dpapi").write_text("{}", encoding="utf-8")
+    proc = _run(home, "-SkipSystem")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert not (home / "config" / "secrets.dpapi").exists() and (home / "config").exists()

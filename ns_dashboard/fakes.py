@@ -274,6 +274,10 @@ class FakeKeyring:
         """Store a secret."""
         self.store[name] = value
 
+    def delete(self, name: str) -> None:
+        """Forget a secret."""
+        self.store.pop(name, None)
+
 
 class FakeTtsAdapter:
     """FakeTts previews; a fixed voice list."""

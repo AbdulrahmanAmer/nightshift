@@ -195,6 +195,30 @@ if (-not $SkipSystem) {
     }
 }
 
+# ---- the stock-footage keys -----------------------------------------------------------------------------
+# A key left in Credential Manager or config\secrets.dpapi made the next setup on this PC fail (it validated the
+# stale key and stopped). Forget both copies, best effort, before the venv that can talk to the vault goes.
+if (-not $SkipSystem) {
+    if ($script:IsDry) { Show-Action 'forget the Pexels and Pixabay keys in Credential Manager' }
+    else {
+        $kpy = Join-Path $nsHome 'venvs\supervisor\Scripts\python.exe'
+        $forgot = $false
+        if (Test-Path -LiteralPath $kpy) {
+            try {
+                & $kpy -I -c "import keyring`nfor n in ('pexels_api_key','pixabay_api_key'):`n    try: keyring.delete_password('Nightshift', n)`n    except Exception: pass" 2>$null | Out-Null
+                $forgot = $true
+            } catch { $forgot = $false }
+        }
+        if (-not $forgot) { foreach ($i in 1..2) { cmdkey /delete:Nightshift 2>$null | Out-Null } }
+        Write-Host '  forgot the stock-footage keys in Credential Manager'
+    }
+}
+$secretsFile = Join-Path (Join-Path $nsHome 'config') 'secrets.dpapi'
+if (Test-Path -LiteralPath $secretsFile) {
+    if ($script:IsDry) { Show-Action "delete $secretsFile" }
+    else { Remove-Item -LiteralPath $secretsFile -Force -ErrorAction SilentlyContinue; Write-Host "  removed $secretsFile" }
+}
+
 # ---- folders --------------------------------------------------------------------------------------------
 Remove-Tree -Path (Join-Path $nsHome 'venvs')
 # The update worker's private copy of the supervisor venv (150-300 MB after any update) lives in run, under updater.

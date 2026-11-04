@@ -37,6 +37,7 @@ from installer.stage2.sysinfo import (
     required_free_gb,
 )
 from installer.stage2.winenv import HOME_VAR, get_user_env, set_user_env
+from ns_common.errors import NsError
 from ns_common.pathrules import ascii_problem
 
 PRESET_VOICES = ("Ryan", "Aiden", "Serena", "Vivian")
@@ -207,8 +208,26 @@ class S01Questions(Step):
         try:
             # Both keys are optional (Pexels stopped giving out new keys; Settings takes a key later).
             for name, label, url, validator, _code in specs:
-                value = ctx.raw_answers.get(name) or ctx.store.get(name)
-                if value:
+                provided = ctx.raw_answers.get(name)
+                value = provided or ctx.store.get(name)
+                if value and not provided:
+                    # a key saved by an earlier setup or in Settings: when the service rejects it now, setup
+                    # must not stop (the first clean dev-mode install died on a stale key left in Credential
+                    # Manager); it is forgotten and Settings takes a new one. A network error keeps it.
+                    try:
+                        validator(client, str(value))
+                    except NsError as e:
+                        if e.code == "NS-E503":
+                            ctx.ui.say(f"Could not check the saved {label} key ({e.detail}); keeping it.",
+                                       "yellow")
+                            ctx.log.warn("key_unchecked", name=name, detail=e.detail)
+                        else:
+                            ctx.ui.say(f"The saved {label} key was not accepted ({e.detail}); it was "
+                                       "removed. Add a key in Settings after setup.", "yellow")
+                            ctx.log.warn("key_rejected_removed", name=name, detail=e.detail)
+                            ctx.store.delete(name)
+                            value = None
+                elif value:
                     validator(client, str(value))
                 elif ctx.ui.interactive:
                     ctx.ui.say(f"{label} key (free, optional, Enter to skip): {url}")

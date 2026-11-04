@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from ns_common.paths import Paths
-from ns_common.secret_file import dpapi_protect, dpapi_unprotect, load_secret, store_secret
+from ns_common.secret_file import delete_secret, dpapi_protect, dpapi_unprotect, load_secret, store_secret
 from ns_common.secrets_names import KEY_NAMES, KEYRING_SERVICE, PEXELS_KEY, PIXABAY_KEY
 
 # One definition for the studio, the installer and Settings: ``ns_common.secrets_names``.
@@ -33,6 +33,10 @@ class SecretStore(Protocol):
         """Store a value."""
         ...
 
+    def delete(self, name: str) -> None:
+        """Forget a value (no error when it is not there)."""
+        ...
+
 
 class KeyringStore:
     """Windows Credential Manager through the ``keyring`` package (studio extra, imported lazily)."""
@@ -49,6 +53,15 @@ class KeyringStore:
 
         keyring.set_password(SERVICE, name, value)
 
+    def delete(self, name: str) -> None:
+        """Remove ``Nightshift/<name>`` (quietly when absent)."""
+        import keyring
+
+        try:
+            keyring.delete_password(SERVICE, name)
+        except keyring.errors.PasswordDeleteError:
+            return
+
 
 class MemoryStore:
     """In-memory store for tests and ``--simulate-downloads``."""
@@ -63,6 +76,10 @@ class MemoryStore:
     def set(self, name: str, value: str) -> None:
         """Store a value."""
         self.values[name] = value
+
+    def delete(self, name: str) -> None:
+        """Forget a value."""
+        self.values.pop(name, None)
 
 
 def restrict_to_user(path: Path) -> None:
@@ -109,6 +126,17 @@ class ResilientStore:
         except Exception:  # noqa: BLE001 - a broken backend must not hide the file copy
             value = None
         return value or load_secret(self.paths, name, unprotect=self._unprotect)
+
+    def delete(self, name: str) -> None:
+        """Forget the key in both places (a stored key the service rejected must not survive setup)."""
+        try:
+            self.primary.delete(name)
+        except Exception:  # noqa: BLE001 - best effort, the file copy is still removed
+            pass
+        try:
+            delete_secret(self.paths, name)
+        except OSError:
+            pass
 
     def set(self, name: str, value: str) -> None:
         """Write the keyring and the file; raise only when both fail."""
