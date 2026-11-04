@@ -10,15 +10,18 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
+from installer.stage2.web.appcopy import read_version
 from installer.stage2.web.preflight import copy_for
-from ns_common import __version__
 
 TIMEOUT_S = 15.0
 # Pixabay and Pexels sit behind Cloudflare, which answers HTTP 403 (error 1010) to the default
 # "Python-urllib/3.x" browser signature, so every key looked rejected. A product User-Agent passes.
-USER_AGENT = f"Nightshift-Setup/{__version__} (+https://github.com/AbdulrahmanAmer/nightshift)"
+# (The web package runs on the bare Python, so the version comes from the VERSION file, not ns_common.)
+_VERSION = read_version(Path(__file__).resolve().parents[3]) or "0"
+USER_AGENT = f"Nightshift-Setup/{_VERSION} (+https://github.com/AbdulrahmanAmer/nightshift)"
 REJECTED = {"pexels": "NS-E501", "pixabay": "NS-E502"}
 Fetch = Callable[[urllib.request.Request], int]
 
