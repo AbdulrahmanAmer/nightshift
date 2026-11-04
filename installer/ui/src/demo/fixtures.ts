@@ -49,13 +49,13 @@ export function checkRows(homeDrive: string, o: { blocking?: boolean } = {}): Ch
         : { id: "disk", label: "Free disk space", status: "ok", blocking: false, value: `${d.freeGb} GB free on ${d.letter}:`, code: null, title: null, whatToDo: null, fix: null },
     { id: "disktype", label: "Disk type", status: "ok", blocking: false, value: `${d.letter}: ${d.type}`, code: null, title: null, whatToDo: null, fix: null },
     { id: "network", label: "Internet", status: "ok", blocking: false, value: "all sites reachable", code: null, title: null, whatToDo: null, fix: null },
-    { id: "winget", label: "winget (App Installer)", status: "ok", blocking: false, value: "available", code: null, title: null, whatToDo: null, fix: null },
-    { id: "longpaths", label: "Long file paths", status: "warn", blocking: false, value: "off", code: "NS-W112", title: "Long file paths are off", whatToDo: "Setup works. Press Fix it to turn them on (Windows asks for permission)", fix: { kind: "elevate-longpaths", label: "Fix it" } },
+    { id: "winget", label: "Windows app installer (optional)", status: "ok", blocking: false, value: "available", code: null, title: null, whatToDo: null, fix: null },
+    { id: "longpaths", label: "Very long file names", status: "warn", blocking: false, value: "off", code: "NS-W112", title: "Long file paths are off", whatToDo: "Setup works without it. Press Fix it to let Windows handle very long file names (Windows asks for permission)", fix: { kind: "elevate-longpaths", label: "Fix it" } },
     { id: "waketimers", label: "Wake timers", status: "ok", blocking: false, value: "enabled", code: null, title: null, whatToDo: null, fix: null },
   ];
   return o.blocking || diskFail
     ? rows
-    : rows.map((r) => (r.id === "waketimers" ? { ...r, status: "warn", value: "disabled", code: "NS-W107", title: "The PC cannot wake itself at night", whatToDo: "Open Power Options, Change plan settings, Change advanced power settings, Sleep, Allow wake timers, and pick Enable", fix: null } : r));
+    : rows.map((r) => (r.id === "waketimers" ? { ...r, status: "warn", value: "disabled", code: "NS-W107", title: "The PC cannot wake itself at night", whatToDo: "Press Open power settings. In the window that opens, under Sleep, set Allow wake timers to Enable. \"Important wake timers only\" is not enough for the night run", fix: { kind: "open-windows-page", label: "Open power settings", page: "power" } } : r));
 }
 
 /* ------------------------------------------------------------------ plan */
@@ -206,7 +206,7 @@ export function verifyView(stage: "partial" | "all"): VerifyView {
     { name: "tts", label: "Voice engine", status: "passed", value: "Ryan, 0.31 RTF", note: null },
     { name: "whisper", label: "Captions", status: "passed", value: "graphics card", note: null },
     { name: "nvenc", label: "Video encoder", status: "passed", value: "NVENC", note: null },
-    { name: "mtp", label: "Faster decoding", status: "fallback", value: "off", note: "NS-W302" },
+    { name: "mtp", label: "Speed boost", status: "fallback", value: "off", note: "NS-W302" },
   ];
   return {
     checks: stage === "partial" ? checks : checks,
@@ -217,7 +217,7 @@ export function verifyView(stage: "partial" | "all"): VerifyView {
   };
 }
 
-const NOTICE_W302: Notice = { code: "NS-W302", title: "Faster decoding was not faster here", whatToDo: "Nothing to do", step: "s08_smoke" };
+const NOTICE_W302: Notice = { code: "NS-W302", title: "The speed boost did not help here", whatToDo: "Nothing to do", step: "s08_smoke" };
 
 export function resultView(): ResultView {
   return {
@@ -227,15 +227,18 @@ export function resultView(): ResultView {
       { label: "Nightshift Code", detail: "yes" }, { label: "Night run", detail: "03:00" }, { label: "Everything else", detail: "D:\\Nightshift" },
     ],
     shortcuts: ["Nightshift Dashboard", "Nightshift Outbox", "Nightshift Diagnostics"], runTime: "03:00", scheduled: true,
-    diagnosticsZip: "C:\\Users\\Abdo\\Desktop\\nightshift-diagnostics-2026-11-02.zip", durationS: 58 * 60 + 12,
-    warnings: [{ code: "NS-W112", title: "Long file paths are off", whatToDo: "Setup works. Press Fix it to turn them on (Windows asks for permission)", step: null }],
+    diagnosticsZip: "C:\\Users\\Abdo\\Desktop\\nightshift-diagnostics-2026-11-02.zip", stockKeyMissing: true, durationS: 58 * 60 + 12,
+    warnings: [
+      { code: "NS-W112", title: "Long file paths are off", whatToDo: "Setup works without it. Press Fix it to let Windows handle very long file names (Windows asks for permission)", step: null },
+      { code: "NS-W205", title: "The nightly task runs only while you are logged on", whatToDo: "Windows refused the unattended mode. Stay logged in overnight (lock the screen, do not sign out). Nothing else to do", step: null },
+    ],
   };
 }
 
 export function failureView(): FailureView {
   return {
     step: "s03_download_models", stepTitle: "Download AI models", code: "NS-E109", title: "A downloaded file is damaged",
-    whatToDo: "Press Retry. Setup downloads that file again. If the same error comes back, send the diagnostics zip.",
+    whatToDo: "Press Retry. Setup downloads that file again. If the same error comes back, press Save a help file and send that file",
     detail: [
       "qwen-talker-1.7b-base-Q8_0.gguf: expected 4b9a33a2c1d94e7f8a3b5c6d7e8f9012a3b4c5d6e7f8091a2b3c4d5e6f70812",
       "got 0c1d7f0e92b84c55a1e6d3f4b5a69788c9d0e1f2a3b4c5d6e7f8091a2b3c4d5e",
@@ -259,7 +262,7 @@ export function baseState(over: Partial<SetupState> = {}): SetupState {
     schema: 1, rev: 1, version: "0.3.0", appPath: "D:\\NightShift", phase: "checks", run: "idle", uiStep: "welcome", resumed: false, prefilledFrom: null,
     startedAt: null, updatedAt: iso(), host: "webview2", devMode: false, machine: m, checks: checkRows("D"), checkedAt: iso(-60), checking: false, blocking: false, plan: p,
     answers: null, answersLocked: false, steps: steps("b01_tools", { running: false }), downloads: { items: downloadRows(p.groups), overall: overall(downloadRows(p.groups), p, null), source: "internet", paused: false },
-    verify: null, failure: null, notices: [], result: null, log: [], ...over,
+    verify: null, failure: null, notices: [], result: null, log: [], support: { name: null, driveUrl: null }, ...over,
   };
 }
 
@@ -271,13 +274,20 @@ const LOGS = [
   { t: iso(-2), level: "info" as const, text: "Qwen3-14B-Q4_K_M.gguf  2.1 of 9.0 GB  11.4 MB/s  10 min left" },
 ];
 
+const STAYS = [
+  "Your settings and logs, in D:\\Nightshift\\config and D:\\Nightshift\\logs",
+  "Your stock footage keys, in Windows Credential Manager",
+  "The Visual C++ runtime, FFmpeg and Windows Terminal, which other programs use",
+  "The Python that setup fetched and its download cache (several GB), in your user folders",
+];
+
 export const SCREENS = ["welcome", "welcome-resume", "checks", "checks-blocking", "choices", "choices-lowram", "downloading", "paused", "download-stall", "installing", "verifying", "done", "failed", "uninstall", "uninstall-done", "stop-dialog", "close-dialog"] as const;
 export type ScreenName = (typeof SCREENS)[number];
 
 export function uninstallView(over: Partial<UninstallView> = {}): UninstallView {
   return {
     home: "D:\\Nightshift",
-    always: [{ label: "The nightly task", bytes: null }, { label: "Desktop shortcuts", bytes: null }, { label: "Programs and Python environments", bytes: 2.3e9 }, { label: "The install folder setting", bytes: null }],
+    always: [{ label: "The nightly task", bytes: null }, { label: "Desktop shortcuts", bytes: null }, { label: "Programs and Python environments", bytes: 2.3e9 }, { label: "Windows' note of where Nightshift is installed", bytes: null }],
     models: { path: "D:\\Nightshift\\models", bytes: 15.1e9 }, data: { path: "D:\\Nightshift\\data", bytes: 38.4e9 }, running: false, result: null, ...over,
   };
 }
@@ -356,7 +366,7 @@ export function fixture(name: string): { state: SetupState | null; uninstall: Un
     case "uninstall-done":
       return {
         state: null,
-        uninstall: uninstallView({ result: { removed: ["The nightly task", "Desktop shortcuts", "Programs and Python environments"], kept: [{ label: "AI models", path: "D:\\Nightshift\\models" }, { label: "Videos and history", path: "D:\\Nightshift\\data" }] } }),
+        uninstall: uninstallView({ result: { removed: ["The nightly task", "Desktop shortcuts", "Programs and Python environments"], kept: [{ label: "AI models", path: "D:\\Nightshift\\models" }, { label: "Videos and history", path: "D:\\Nightshift\\data" }], stays: STAYS } }),
       };
     default: return { state: baseState(), uninstall: null };
   }

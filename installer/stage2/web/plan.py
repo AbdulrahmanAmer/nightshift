@@ -119,7 +119,7 @@ def model_rows(
         llm = _tier_entry(pm, profile, tier)
         shown_tier = tier if llm is not pm["llm"] else "small"
         llm_row = _hf_row(llm, llm_label(shown_tier))
-    rows = [llm_row, _hf_row(pm["embed"], "Memory index")]
+    rows = [llm_row, _hf_row(pm["embed"], "Story memory")]
     rows += [_hf_row(f, _tts_label(f["file"])) for f in pm["tts"]]
     repo_name = PurePosixPath(pm["whisper_repo"]["repo"]).name
     whisper_file = repo_name if repo_name.startswith("faster-") else "faster-" + repo_name

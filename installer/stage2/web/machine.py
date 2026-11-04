@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from installer.stage2.web.model import STEP_ORDER, STEP_PHASE
+from installer.stage2.web.model import STEP_ORDER, STEP_PHASE, WINDOWS_PAGES
 
 DONE_STATUSES = ("done", "skipped", "warning")
 
@@ -105,7 +105,10 @@ def check(action: str, state: dict[str, Any], path: str | None = None) -> str | 
     elif action == "close-setup":
         if run not in ("idle", "stopped", "finished"):
             return "Setup is still running."
-    elif action != "diagnostics":
+    elif action == "open-windows-page":
+        if path not in WINDOWS_PAGES:
+            return "That Windows page cannot be opened from here."
+    elif action not in ("diagnostics", "copy-status"):
         return f"Unknown action {action}."
     return None
 

@@ -1,10 +1,12 @@
-// 2.7 Done.
+// 2.7 Done: three numbered next steps, then where the videos land and what to send back if something looks wrong.
 import { useEffect, useState } from "react";
 import { Button, Card, CardHeader, DottedRule, StatusDot } from "@ref12";
 import { done as t } from "../copy";
 import { duration } from "../format";
 import { useLiveState } from "../api/useSetup";
+import { openExternal } from "../host";
 import { Area, Screen } from "../parts/Screen";
+import { CopyStatusButton } from "../parts/CopyStatus";
 import { useCopyReport } from "../parts/useCopyReport";
 
 export function Done() {
@@ -15,34 +17,52 @@ export function Done() {
   const r = state.result;
   if (!r) return null;
   const zip = r.diagnosticsZip;
-  const zipName = zip ? zip.split(/[\\/]/).pop() : null;
+  const zipName = zip ? zip.split(/[\/]/).pop() : null;
+  const who = state.support.name ?? t.whoFallback;
   const open = async () => { setOpening(true); await act("open-dashboard"); };
-  const warnings = [...r.warnings.map((w) => w.title), ...(state.machine.isAdmin ? [t.adminNote] : [])];
+  // The warnings keep their instructions: the title says what is wrong, "what to do" says what to do about it.
+  const warnings = [...r.warnings.map((w) => ({ key: w.code + w.title, title: w.title, what: w.whatToDo })), ...(state.machine.isAdmin ? [{ key: "admin", title: t.adminNote, what: "" }] : [])];
+  const steps = [t.steps[0], t.steps[1], r.scheduled ? t.steps[2] : t.stepsNoTask];
   return (
     <Screen name="done" salutation={t.salutation} description={r.scheduled ? t.description(r.runTime) : t.descriptionNoTask}
       footerLeft={opening ? t.opening : t.footer(duration(r.durationS))}
       footerRight={
         <>
+          <CopyStatusButton />
           <Button variant="soft" size="lg" leadingIcon="copy" onClick={() => void copy()}>{t.copyReport}</Button>
           <Button variant="primary" size="lg" data-primary disabled={opening} onClick={() => void open()}>{t.openDashboard}</Button>
         </>
       }>
       <Area area="inst">
-        <Card as="section" padding="lg" aria-label={t.installedTitle}>
-          <CardHeader title={t.installedTitle} level={2} />
-          <dl className="flex flex-col gap-2.5">
-            {r.installed.map((i) => (
-              <div key={i.label} className="flex items-baseline justify-between gap-4 text-ds-sm">
-                <dt className="min-w-0">{i.label}</dt>
-                <dd className="max-w-[55%] shrink-0 truncate text-right ds-num" title={i.detail}>{i.detail}</dd>
-              </div>
+        <Card as="section" padding="lg" aria-label={t.stepsTitle} className="overflow-y-auto scroll-thin">
+          <CardHeader title={t.stepsTitle} level={2} />
+          <ol className="flex flex-col gap-3 text-ds-sm leading-ds-normal">
+            {steps.map((s, i) => (
+              <li key={s} className="flex gap-3"><span className="grid size-5 shrink-0 place-items-center rounded-full bg-ds-sunken text-ds-xs font-semibold ds-num">{i + 1}</span><span className="min-w-0">{s}</span></li>
             ))}
-          </dl>
+          </ol>
+          {r.stockKeyMissing && <p className="mt-4 flex items-center gap-2 text-ds-sm font-medium"><StatusDot tone="attention" size={7} />{t.keyReminder}</p>}
           {warnings.length > 0 && (
-            <ul className="mt-4 flex flex-col gap-1.5">
-              {warnings.map((w) => <li key={w} className="flex items-center gap-2 text-ds-xs text-ds-text-2"><StatusDot tone="attention" size={5} />{w}</li>)}
+            <ul className="mt-4 flex flex-col gap-2.5">
+              {warnings.map((w) => (
+                <li key={w.key} className="flex items-start gap-2 text-ds-xs leading-ds-normal text-ds-text-2">
+                  <span className="mt-1 shrink-0"><StatusDot tone="attention" size={5} /></span>
+                  <span className="min-w-0"><span className="font-medium text-ds-text">{w.title}</span>{w.what ? <> {w.what}</> : null}</span>
+                </li>
+              ))}
             </ul>
           )}
+          <details className="mt-4 text-ds-sm">
+            <summary className="cursor-pointer text-ds-text-2">{t.installedTitle}</summary>
+            <dl className="mt-3 flex flex-col gap-2.5">
+              {r.installed.map((i) => (
+                <div key={i.label} className="flex items-baseline justify-between gap-4">
+                  <dt className="min-w-0">{i.label}</dt>
+                  <dd className="max-w-[55%] shrink-0 truncate text-right ds-num" title={i.detail}>{i.detail}</dd>
+                </div>
+              ))}
+            </dl>
+          </details>
         </Card>
       </Area>
       <Area area="out">
@@ -61,8 +81,11 @@ export function Done() {
           {zip ? (
             <>
               <p className="font-mono text-ds-sm break-all" title={zip}>{zipName}</p>
-              <p className="mt-2 text-ds-sm leading-ds-normal text-ds-text-2">{t.sendBody}</p>
-              <div className="mt-3"><Button variant="soft" size="md" leadingIcon="folder" onClick={() => void act("reveal", { path: zip })}>{t.showFile}</Button></div>
+              <p className="mt-2 text-ds-sm leading-ds-normal text-ds-text-2">{t.sendBody(who)}</p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <Button variant="soft" size="md" leadingIcon="folder" onClick={() => void act("reveal", { path: zip })}>{t.showFile}</Button>
+                {state.support.driveUrl && <Button variant="soft" size="md" trailingIcon="external" onClick={() => openExternal(state.support.driveUrl!)}>{t.openDrive}</Button>}
+              </div>
             </>
           ) : (
             <>

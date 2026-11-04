@@ -44,7 +44,7 @@ def copy_for(code: str, message: str = "", hint: str = "") -> tuple[str, str]:
     entry = operator_copy().get(code)
     if entry:
         return entry["title"], entry["whatToDo"]
-    return message or code, hint or "Press Copy diagnostics and send the zip"
+    return message or code, hint or "Press Save a help file and send that file"
 
 
 def load(path: Path | str) -> dict[str, Any] | None:
@@ -121,6 +121,8 @@ def _row_fix(row_id: str, status: str, code: str) -> dict[str, Any] | None:
         return _fix("recheck", "Check again")
     if row_id == "winget" and status == "fail":
         return _fix("open-url", "Open the Microsoft Store", STORE_URL)
+    if row_id == "waketimers":
+        return {"kind": "open-windows-page", "label": "Open power settings", "page": "power"}
     if row_id == "longpaths":
         return _fix("elevate-longpaths", "Fix it")
     return None
@@ -205,8 +207,8 @@ def check_rows(pf: dict[str, Any], home: str | None = None) -> list[dict[str, An
 SHORT_LABELS = {
     "os": "Windows 10/11, 64-bit", "gpu": "Graphics card", "driver": "NVIDIA driver", "ram": "Memory",
     "disk": "Free disk space", "disktype": "Disk type", "network": "Internet",
-    "winget": "winget (App Installer)", "vcruntime": "Visual C++ runtime",
-    "longpaths": "Long file paths", "waketimers": "Wake timers",
+    "winget": "Windows app installer (optional)", "vcruntime": "Visual C++ runtime",
+    "longpaths": "Very long file names", "waketimers": "Wake timers",
 }
 
 
