@@ -34,7 +34,7 @@ All notable changes to Nightshift are recorded here. The format follows
   a niche with few clips) a clip may repeat inside the video, again with the warning.
 - Nightly planner: a master job that failed no longer counts as the week's master (its combo row did, so the
   channel went silent for the whole spacing, a week at one master a week); finished long videos count, and a
-  long job started in the last 12 hours counts as in progress.
+  long job started in the last 12 hours counts as still running.
 - Quality check: a derived Short that fails QC (the first dev-mode master died with "s5: duration", 61 s
   for a 50 s bucket, after the master and four Shorts were rendered) is left out with `NS-W406` and listed
   in `qc\\dropped.json`; the master and the other Shorts are published. The master's own QC failure, or
