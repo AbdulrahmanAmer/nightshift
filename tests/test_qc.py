@@ -178,3 +178,18 @@ def test_qc_stage_raises_e404_but_keeps_evidence(tmp_home: Path, tmp_path: Path)
         QcStage().run(ctx)
     assert ei.value.code == "NS-E404" and "caption_drift_ms" in ei.value.detail
     assert ctx.read_json("qc/report.json")["s1"]["passed"] is False
+
+
+@needs_ffmpeg
+def test_qc_stage_drops_a_failing_short_and_keeps_the_rest(tmp_home: Path, tmp_path: Path):
+    """The first dev-mode master failed "s5: duration" after everything was rendered; now s5 is dropped."""
+    ctx = make_ctx(tmp_home, combo=make_combo(length_bucket=3))
+    good = make_video(tmp_path / "good.mp4")
+    ctx.write_json("render/report.json", {"s1": {"path": str(good), "duration_s": 3.0},
+                                          "s2": {"path": str(good), "duration_s": 3.0}})
+    ctx.write_json("captions/report.json", {"s1": {"drift_ms": 30.0, "first_caption_s": 0.0},
+                                            "s2": {"drift_ms": 500.0, "first_caption_s": 0.0}})
+    QcStage().run(ctx)                                               # no NS-E404
+    assert ctx.read_json("qc/report.json")["s2"]["passed"] is False
+    assert list(ctx.read_json("render/report.json")) == ["s1"]     # the Outbox will publish s1 only
+    assert ctx.read_json("qc/dropped.json") == {"s2": "caption_drift_ms"}
