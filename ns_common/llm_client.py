@@ -96,7 +96,9 @@ class LlmClient:
             return False
 
 
-_WINDOW_LINE = re.compile(r"^\[(\d+(?:\.\d+)?)-(\d+(?:\.\d+)?)\]", re.M)
+# the clip_select prompt says "Window: 0.0 s to 53.6 s" and lists segments as "[3] 12.0 - 15.5: text"
+_WINDOW_HEAD = re.compile(r"Window:\s*(\d+(?:\.\d+)?)\s*s\s+to\s+(\d+(?:\.\d+)?)\s*s")
+_WINDOW_LINE = re.compile(r"^\[\d+\]\s*(\d+(?:\.\d+)?)\s*-\s*(\d+(?:\.\d+)?):", re.M)
 
 
 def fit_clip_fixture(data: dict, user: str) -> dict:
@@ -104,10 +106,14 @@ def fit_clip_fixture(data: dict, user: str) -> dict:
     clip job on a 54 s Short) none of them fall inside the window and the selector ends with NS-E407 "the
     model returned no candidates". When no fixture clip overlaps the window the prompt describes, two moments
     are made up inside it instead (the first and the middle third), so the clipper's later stages run."""
-    spans = [(float(a), float(b)) for a, b in _WINDOW_LINE.findall(user or "")]
-    if not spans:
-        return data
-    w_start, w_end = min(a for a, _ in spans), max(b for _, b in spans)
+    head = _WINDOW_HEAD.search(user or "")
+    if head:
+        w_start, w_end = float(head.group(1)), float(head.group(2))
+    else:
+        spans = [(float(a), float(b)) for a, b in _WINDOW_LINE.findall(user or "")]
+        if not spans:
+            return data
+        w_start, w_end = min(a for a, _ in spans), max(b for _, b in spans)
     clips = data.get("clips") if isinstance(data, dict) else None
     if isinstance(clips, list) and any(
         isinstance(c, dict) and float(c.get("end_s", 0)) > w_start and float(c.get("start_s", 0)) < w_end
