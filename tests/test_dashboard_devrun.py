@@ -68,6 +68,38 @@ def test_dev_mode_ignores_past_openings_so_the_fake_story_can_repeat(tmp_home: P
     assert _past_openings(make_ctx(tmp_home)) == []
 
 
+def test_a_saved_key_is_checked_live_and_a_rejected_one_is_not_stored(tmp_home: Path):
+    """The partner's "key not accepted" day: Settings now says whether the service took the key, and a
+    rejected key never replaces a working one. A network failure stores the key and says it was not
+    checked."""
+    from ns_dashboard.errors import ApiError
+    from ns_dashboard.handlers import Dashboard
+
+    paths = Paths.from_env()
+    state = build_state(paths, fake_services=True, link=SupervisorLink("http://127.0.0.1:9", timeout_s=0.2))
+    svc = Dashboard(state).settings
+    assert svc.key_check is None                                     # fake services: no network
+    asked: list[tuple[str, str]] = []
+
+    def check(service: str, key: str) -> dict:
+        asked.append((service, key))
+        return {"ok": key == "good", "code": None if key == "good" else "NS-E502", "message": None}
+
+    svc.key_check = check
+    out = svc.set_key("pixabay", "good")
+    assert out == {"name": "pixabay_api_key", "set": True, "checked": True,
+                   "message": "Pixabay accepted the key"}
+    with pytest.raises(ApiError) as ei:
+        svc.set_key("pixabay", "bad")
+    assert ei.value.status == 422 and ei.value.code == "NS-E502" and "did not accept" in ei.value.message
+    assert state.adapters.keyring.get("pixabay_api_key") == "good"   # the working key is kept
+    assert asked == [("pixabay", "good"), ("pixabay", "bad")]
+    svc.key_check = lambda s, k: {"ok": False, "code": "NS-E503", "message": "offline"}
+    out = svc.set_key("pexels", "unchecked")
+    assert out["checked"] is False and "could not be reached" in out["message"]
+    assert state.adapters.keyring.get("pexels_api_key") == "unchecked"
+
+
 def test_settings_clears_a_key_with_an_empty_value(tmp_home: Path):
     from ns_dashboard.handlers import Dashboard
 
