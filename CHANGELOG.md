@@ -11,6 +11,10 @@ All notable changes to Nightshift are recorded here. The format follows
   `clip_select` answer is fitted to the window in the prompt when the recorded fixture's moments (62-262 s of
   a test recording) fall outside it (the first dev-mode clip job failed with NS-E407). The clipper's dev-mode
   transcript sidecar is `<video stem>.transcript.json` next to the video (docs/DEV_MODE.md).
+- Clips stage: when every candidate for a scene is ruled out by the reuse rules (14 days on the channel, 30
+  across channels) the scene reuses footage from an earlier video with a warning (`NS-W405`) instead of
+  failing the whole master after the writing and the voice (the first dev-mode nightly run died with
+  NS-E402 "24 candidates for 2 slots"). Clips are still never repeated inside one video.
 
 ## [0.1.9] - 2026-11-04
 

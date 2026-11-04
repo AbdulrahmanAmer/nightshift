@@ -302,3 +302,19 @@ def test_clips_stage_raises_e402_when_nothing_found(tmp_home: Path):
     with pytest.raises(NsError) as ei:
         ClipsStage().run(ctx)
     assert ei.value.code == "NS-E402"
+
+
+def test_a_beat_reuses_footage_with_a_warning_instead_of_failing_when_every_clip_is_blocked():
+    """The first dev-mode nightly run died with NS-E402 "24 candidates for 2 slots": the fake source's
+    clips had all been used by that day's Shorts (14-day rule). Repeating footage beats losing the video."""
+    src = StubSource({
+        ("hallway", "portrait"): [cand("p1"), cand("p2"), cand("p3")],
+    })
+    blocked = {("stub", "p1"), ("stub", "p2"), ("stub", "p3")}
+    picks = select_for_beat(Searcher([src]), ["hallway"], "calm", _slots(2), used=set(), blocked=blocked)
+    assert [c.id for c, _kw in picks] == ["p1", "p2"]
+    # but a clip already used inside this video is still never repeated
+    with pytest.raises(NsError) as ei:
+        select_for_beat(Searcher([src]), ["hallway"], "calm", _slots(2),
+                        used={("stub", "p1"), ("stub", "p2"), ("stub", "p3")}, blocked=blocked)
+    assert ei.value.code == "NS-E402"
