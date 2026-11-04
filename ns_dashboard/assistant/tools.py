@@ -320,8 +320,7 @@ def _tools() -> list[ToolDef]:
            route=("GET", "/api/library/footage"),
            props={"q": _s("keyword"), "limit": _i("how many", minimum=1, maximum=50)}),
         _t("fetch_footage", "library",
-           "Download stock clips for a scene now into the footage cache (no job, no GPU) and return their absolute file paths first, "
-           "then source, clip id, page link, licence, size, duration and keywords. Needs a Pixabay or Pexels key saved in Settings.",
+           "Download stock clips for a scene into the footage cache now and return their absolute file paths. Needs a Pixabay or Pexels key set in Settings.",
            lambda c, a: c.dash.library.fetch_footage(a.get("q"), a.get("orientation"), a.get("count"), a.get("source")),
            route=("POST", "/api/library/footage/fetch"),
            props={"q": _s("what the scene shows, in a few words, e.g. 'foggy forest road at night'"),
