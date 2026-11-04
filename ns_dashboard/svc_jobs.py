@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, BinaryIO
 
 from ns_common.db import new_job_id
+from ns_common.devmode import is_dev
 from ns_common.paths import Paths
 from ns_common.secrets_names import SHORT_NAMES
 from ns_dashboard.adapters import Adapters
@@ -235,8 +236,8 @@ class JobsService:
         Not checked with fake services (they bring their own footage) or when the keyring cannot be read at
         all (then nothing is known, and the run itself reports what it finds).
         """
-        if self.s.fake_services:
-            return
+        if self.s.fake_services or is_dev(self.s.paths):
+            return                                     # fakes (and dev mode) bring their own footage
         for name in SHORT_NAMES:
             try:
                 if self.s.adapters.keyring.get(name):

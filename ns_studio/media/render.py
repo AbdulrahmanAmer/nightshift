@@ -154,12 +154,21 @@ def build_landscape_graph(
     return build_graph(shots, edges, LANDSCAPE, fps, treatment, ass_path, fonts_dir)
 
 
+#: Bitrate ceiling for a 1080p render (YouTube's own recommendation for 1080p SDR is 8 to 12 Mbit/s; the
+#: film-grain `noise` filter in the treatments drives quality-only modes far above that: the first dev-mode
+#: Short came out at 134 Mbit/s, 900 MB for 54 s, with `libx264 -preset ultrafast -crf 21`).
+MAXRATE = "12M"
+BUFSIZE = "24M"
+
+
 def encoder_args(video: VideoCfg, *, force_cpu: bool = False) -> list[str]:
-    """Video encoder arguments from `runtime.video` (NVENC on GPU profiles, libx264 otherwise)."""
+    """Video encoder arguments from `runtime.video` (NVENC on GPU profiles, libx264 otherwise), with a cap."""
+    cap = ["-maxrate", MAXRATE, "-bufsize", BUFSIZE]
     if video.encoder == "h264_nvenc" and not force_cpu:
-        return ["-c:v", "h264_nvenc", "-preset", video.preset, "-rc", "vbr", "-cq", "23", "-b:v", "0"]
-    preset = video.preset if video.preset in X264_PRESETS else "veryfast"
-    return ["-c:v", "libx264", "-preset", preset, "-crf", "21"]
+        return ["-c:v", "h264_nvenc", "-preset", video.preset, "-rc", "vbr", "-cq", "23", "-b:v", "0", *cap]
+    # ultrafast turns off nearly every compression tool (huge files); veryfast is still real time on a CPU
+    preset = video.preset if video.preset in X264_PRESETS and video.preset != "ultrafast" else "veryfast"
+    return ["-c:v", "libx264", "-preset", preset, "-crf", "23", *cap]
 
 
 def render_video(

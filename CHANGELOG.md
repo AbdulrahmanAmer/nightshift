@@ -17,6 +17,12 @@ All notable changes to Nightshift are recorded here. The format follows
   (`<home>\app\launchers`) when `NIGHTSHIFT_HOME` is unset or points at a folder without `config\runtime.json`;
   the first dev-mode dashboard launch from a process started before setup had set the variable looked under
   `%LOCALAPPDATA%\Nightshift` and stopped with "Supervisor venv not found".
+- Dashboard: a `/health` route for the supervisor's readiness probe (`ServiceDef.health_path`); without it the
+  dashboard service stayed "starting" and the engine pill said "Loading dashboard..." for ever (first dev-mode
+  launch). Dev mode no longer needs a stock-footage key to start a job (its clip source is a fake).
+- Renders are bitrate-capped (`-maxrate 12M -bufsize 24M`, NVENC and libx264, masters, Shorts and clips) and
+  the CPU encoder never uses `ultrafast`: the first dev-mode Short came out at 134 Mbit/s (900 MB for 54 s)
+  with `libx264 -preset ultrafast -crf 21` under the film-grain filter.
 
 ### Installer dev mode (`orchestrator/installer-dev-mode`)
 

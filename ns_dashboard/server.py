@@ -195,6 +195,12 @@ def create_app(
         return ok({"error": {"code": code, "message": str(exc.detail), "hint": None}}, exc.status_code)
 
     # ------------------------------------------------------------ status / engine / events
+    @app.get("/health")
+    async def health() -> SafeJSONResponse:
+        """The supervisor's readiness probe (`ServiceDef.health_path`); without it the dashboard stayed
+        "starting" and the engine showed "Loading dashboard..." forever (first dev-mode launch)."""
+        return SafeJSONResponse({"ok": True, "service": "dashboard"})
+
     @app.get("/api/status")
     async def status() -> SafeJSONResponse:
         return ok(await run_in_threadpool(dash.engine.status))
