@@ -35,6 +35,8 @@ All notable changes to Nightshift are recorded here. The format follows
 - The setup window wrote naive local timestamps into `install_state.json` while the console wizard wrote UTC
   ones; subtracting the two for the Done-screen duration raised `TypeError` and the window never started
   over a console-finished install (exit 14). Both now write UTC stamps and the arithmetic tolerates a mix.
+- `install_state.json` carries the version of the program that ran setup last: after an update through
+  INSTALL.cmd the Settings page showed the old install version.
 
 ### Installer dev mode (`orchestrator/installer-dev-mode`)
 

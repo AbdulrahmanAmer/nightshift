@@ -338,7 +338,9 @@ def write_step(
     steps = data.get("steps") if isinstance(data.get("steps"), dict) else {}
     finished = now_iso() if status in ("done", "skipped", "failed") else None
     steps[step_id] = {"status": status, "error": error, "finished_at": finished}
-    data.update({"version": data.get("version", version), "app_path": str(app_path), "steps": steps})
+    # the version of the program that is running now: an update through INSTALL.cmd must not keep the old
+    # number (Settings showed install 0.1.7 after a 0.1.8 update on the first dev run)
+    data.update({"version": version, "app_path": str(app_path), "steps": steps})
     data.setdefault("profile", None)
     data.setdefault("started_at", now_iso())
     data.setdefault("completed_at", None)
