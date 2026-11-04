@@ -7,7 +7,7 @@ venv gets torch cu128 and ``qwen-tts`` from the manifest pins, then ``-e <app>[t
 from __future__ import annotations
 
 from installer.stage2.context import StepContext
-from installer.stage2.downloader import DownloadItem, plan_from_hf_tree
+from installer.stage2.downloader import DownloadItem, hf_url, plan_from_hf_tree
 from installer.stage2.errors import make_error
 from ns_common.uv import venv_args
 from ns_common.venv_extras import extras_suffix
@@ -25,7 +25,7 @@ def fallback_items(ctx: StepContext) -> list[DownloadItem]:
                 items.append(
                     DownloadItem(
                         name=f"{repo}/{fname}",
-                        url=f"https://huggingface.co/{repo}/resolve/main/{fname}",
+                        url=hf_url(repo, ctx.manifest.tts_fallback_revisions.get(repo, "main"), fname),
                         dest=dest_root / repo.split("/")[1] / fname,
                     )
                 )
@@ -34,7 +34,8 @@ def fallback_items(ctx: StepContext) -> list[DownloadItem]:
     try:
         items = []
         for repo in ctx.manifest.tts_fallback_repos:
-            items += plan_from_hf_tree(repo, "main", dest_root / repo.split("/")[1], client)
+            revision = ctx.manifest.tts_fallback_revisions.get(repo, "main")
+            items += plan_from_hf_tree(repo, revision, dest_root / repo.split("/")[1], client)
         return items
     finally:
         client.close()

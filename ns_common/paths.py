@@ -75,6 +75,8 @@ class Paths:
     @property
     def cache_search(self) -> Path: return self.home / "cache" / "search"
     @property
+    def cache_tts_tmp(self) -> Path: return self.home / "cache" / "tts-tmp"   # scratch for the voice engine
+    @property
     def imports_analytics(self) -> Path: return self.home / "imports" / "analytics"
     @property
     def outbox(self) -> Path: return self.home / "outbox"

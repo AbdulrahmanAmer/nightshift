@@ -623,10 +623,12 @@ def adopt_bundled_webview2(
 # --------------------------------------------------------------------------------------------------------
 # plans
 # --------------------------------------------------------------------------------------------------------
-def _hf_item(f: HfFile, dest_dir: Path, revision: str = "main") -> DownloadItem:
+def _hf_item(f: HfFile, dest_dir: Path, revision: str | None = None) -> DownloadItem:
+    """A manifest file as a download item, fetched from its pinned commit (``main`` if it names none)."""
     name = Path(f.file).name
     return DownloadItem(
-        name=name, url=hf_url(f.repo, revision, f.file), dest=dest_dir / name, sha256=f.sha256, size=f.bytes
+        name=name, url=hf_url(f.repo, revision or f.revision or "main", f.file), dest=dest_dir / name,
+        sha256=f.sha256, size=f.bytes,
     )
 
 

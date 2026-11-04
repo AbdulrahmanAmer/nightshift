@@ -225,6 +225,9 @@ class HfFile(Strict):
     file: str
     sha256: str | None = None
     bytes: int | None = None
+    # A commit sha of the repo; the file is fetched from that commit, never from a moving branch.
+    # "main" is only the fallback for an entry that names none (and a test fails the shipped manifest if so).
+    revision: str = "main"
 
 
 class HfRepo(Strict):
@@ -274,6 +277,9 @@ class Manifest(Strict):
         "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
         "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
     ]
+    # repo -> commit sha for the repos fetched through the Hugging Face tree API (the fallback engine's
+    # weights and its VoiceDesign weights). A repo with no entry is read from "main".
+    tts_fallback_revisions: dict[str, str] = {}
 
 
 # ---------- text stages ----------
