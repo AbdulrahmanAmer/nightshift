@@ -137,8 +137,16 @@ class S09ShortcutsScheduler(Step):
         self._register_toast_identity(ctx, folder, icon)
 
         run_time = ctx.ensure_answers().run_time
-        res = ctx.run_tool("ns", ["schedule", "install", "--time", run_time], timeout=300)
-        if res.ok:
+        argv = ["schedule", "install", "--time", run_time, *(["--disabled"] if ctx.dev_mode else [])]
+        res = ctx.run_tool("ns", argv, timeout=300)
+        if res.ok and ctx.dev_mode:
+            # docs/DEV_MODE.md: the task exists (`ns schedule show` and the uninstall find it) but it is
+            # disabled, so it never wakes or runs the development PC
+            ctx.set_flag("schedule", "installed")
+            ctx.set_flag("schedule_mode", "disabled")
+            remember_run_time(ctx.paths, run_time)      # the chosen time stays a preference
+            ctx.ui.say(f"Dev mode: nightly task 'Nightshift Daily' registered for {run_time} but DISABLED.")
+        elif res.ok:
             ctx.set_flag("schedule", "installed")
             ctx.ui.say(f"Nightly task 'Nightshift Daily' registered for {run_time} (wakes the PC).")
             if INTERACTIVE_MARK in res.text:      # "...only while you are logged on"

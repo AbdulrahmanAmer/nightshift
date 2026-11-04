@@ -4,6 +4,10 @@
 the cuBLAS/cuDNN wheels faster-whisper needs on Windows (hash-locked: ``python.whisper_cuda`` in
 ``manifest.json``) and the spaCy model wheel (hash-locked: ``python.spacy_wheel``). ``supervisor`` gets
 ``[supervisor,tts,dashboard]``. The PyTorch ``tts`` venv is created only when s02 or s08 flagged the fallback.
+
+A dev install (``ctx.dev_mode``, docs/DEV_MODE.md) installs the ``dev-install`` extra instead of
+``studio``: the same packages without faster-whisper, PyAV and CTranslate2, and never the cuBLAS/cuDNN wheels
+or the ``tts`` venv.
 """
 
 from __future__ import annotations
@@ -20,6 +24,8 @@ from ns_common.venv_extras import extras_suffix
 
 #: The wheels uv unpacks for the studio, supervisor and PyTorch venvs (cuBLAS, cuDNN, torch).
 UV_CACHE_NEED_GB = 8
+#: A dev install unpacks no torch, cuBLAS or cuDNN: spaCy, NumPy, OpenCV and the web stack.
+UV_CACHE_NEED_DEV_GB = 2
 
 #: Used only by a manifest without ``python.spacy_wheel`` (no hash to check); the repo manifest pins it.
 SPACY_MODEL_VERSION = "3.8.0"
@@ -43,11 +49,12 @@ def check_cache_space(ctx: StepContext) -> None:
         return
     drive = Path(os.environ.get("SystemDrive", "C:") + os.sep)
     free = ctx.free_gb_fn(drive)
-    if free < UV_CACHE_NEED_GB:
+    need = UV_CACHE_NEED_DEV_GB if ctx.dev_mode else UV_CACHE_NEED_GB
+    if free < need:
         raise make_error(
             "NS-E104",
             f"uv's cache cannot be placed on the install drive and {drive} has {free:.0f} GB free; "
-            f"{UV_CACHE_NEED_GB} GB are needed",
+            f"{need} GB are needed",
         )
 
 
@@ -114,7 +121,8 @@ class S04Venvs(Step):
         check_cache_space(ctx)
         app = str(ctx.app_path)
         self._venv(ctx, "studio")
-        self._pip(ctx, "studio", ["-e", f"{app}{extras_suffix('studio')}"], "studio app")
+        dev = ctx.dev_mode      # docs/DEV_MODE.md: the dev-install extra, no speech or GPU wheels
+        self._pip(ctx, "studio", ["-e", f"{app}{extras_suffix('studio', dev=dev)}"], "studio app")
         if ctx.profile == "gpu":
             pins = ctx.manifest.python.whisper_cuda
             if not pins:
@@ -123,7 +131,7 @@ class S04Venvs(Step):
         self._spacy_model(ctx)
 
         self._venv(ctx, "supervisor")
-        self._pip(ctx, "supervisor", ["-e", f"{app}{extras_suffix('supervisor')}"], "supervisor app")
+        self._pip(ctx, "supervisor", ["-e", f"{app}{extras_suffix('supervisor', dev=dev)}"], "supervisor app")
 
         if ctx.flag("tts_fallback", False):
             ensure_tts_venv(ctx)

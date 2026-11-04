@@ -97,8 +97,8 @@ def test_the_first_state_is_the_welcome_screen_of_a_green_pc(tmp_path, monkeypat
     assert state["version"] == (ROOT / "VERSION").read_text(encoding="utf-8").strip()
     assert state["rev"] >= 1 and state["host"] == "none"
     keys = {"schema", "rev", "version", "appPath", "phase", "run", "uiStep", "resumed", "prefilledFrom",
-            "startedAt", "updatedAt", "host", "machine", "checks", "checkedAt", "checking", "blocking",
-            "plan", "support",
+            "startedAt", "updatedAt", "host", "devMode", "machine", "checks", "checkedAt", "checking",
+            "blocking", "plan", "support",
             "answers", "answersLocked", "steps", "downloads", "verify", "failure", "notices", "result", "log"}
     assert set(state) == keys
     json.dumps(state)                                   # everything is JSON

@@ -7,6 +7,9 @@ voice engine release asset; when a manifest leaves it null, the latest GitHub re
 asset name and then the old one; without a binary the PyTorch fallback is scheduled (NS-W301).
 yt-dlp.exe (pinned in ``bins.yt_dlp``) goes to ``bin/yt-dlp/yt-dlp.exe`` for the Clipper link sources.
 The WebView2 window files (``bins.webview2``) come from the bundle's ``bin/webview2`` when the SHA256 match.
+
+A dev install (``ctx.dev_mode``, docs/DEV_MODE.md) downloads the CPU llama.cpp build, yt-dlp and the window
+files for real and skips cudart, OpenCode and qwentts.cpp; there is no PyTorch fallback either.
 """
 
 from __future__ import annotations
@@ -114,11 +117,21 @@ class S02DownloadBins(Step):
         ctx.set_flag("llama_pair", pair)
         ctx.set_flag("cuda", pf.get("cuda"))
         items = self._items(ctx)
-        ctx.ui.say(f"llama.cpp build: {pair or 'CPU'} (driver CUDA {pf.get('cuda') or 'n/a'})")
+        if ctx.dev_mode:
+            ctx.ui.say("llama.cpp build: CPU (dev mode)")
+            ctx.ui.say("Dev mode: not downloaded: the CUDA runtime, the voice engine and Nightshift Code.")
+        else:
+            ctx.ui.say(f"llama.cpp build: {pair or 'CPU'} (driver CUDA {pf.get('cuda') or 'n/a'})")
         ctx.download(items)
         self._qwentts(ctx)
 
     def _qwentts(self, ctx: StepContext) -> None:
+        if ctx.dev_mode:
+            # no voice engine program and no PyTorch fallback: the voice service is the fake engine
+            ctx.set_flag("qwentts", "none")
+            ctx.set_flag("tts_fallback", False)
+            ctx.ui.say("Dev mode: the voice engine (qwentts.cpp) is not downloaded; the fake engine speaks.")
+            return
         item = qwentts_item(ctx.manifest, ctx.paths.home)
         if item is None:
             for url in (QWENTTS_RELEASE_URL, QWENTTS_RELEASE_URL_OLD):

@@ -3,7 +3,7 @@
 Read this first in a fresh session. It says where the project stands, what is decided, what is in flight, and what to do next. Update it whenever the position changes.
 
 ## What we are building
-A Windows installer package (`Nightshift-<ver>.zip` with `INSTALL.cmd`) that turns one RTX 16 GB PC into an offline AI studio: writes original stories, narrates them (Qwen3-TTS GGUF via qwentts.cpp), renders 10–20 min long-form videos plus Shorts, cuts clips from the owner's own videos, with a local web dashboard and an Assistant on the local Qwen model. Spec: `BUILD_SPEC.md` (v2). Process: `docs/ENGINEERING.md`. Plans: `docs/superpowers/plans/`.
+A Windows installer package (`Nightshift-<ver>.zip` with `INSTALL.cmd`) that turns one RTX 16 GB PC into an offline AI studio: writes original stories, narrates them (Qwen3-TTS GGUF via qwentts.cpp), renders 10–20 min long-form videos plus Shorts, cuts clips from the owner's own videos, with a local web dashboard and an Assistant on the local Qwen model. Spec: `BUILD_SPEC.md` (v2). Process: `docs/ENGINEERING.md`. Plans: `docs/superpowers/plans/`. A real end-to-end install on a PC with no NVIDIA card and no models (stub files, fake engines): `INSTALL.cmd --dev`, `docs/DEV_MODE.md`.
 
 ## Non-negotiables (from the owner)
 - Nothing heavy runs on the authoring laptop: no models, torch, llama.cpp, whisper, no Python venv for the product. Tests run in GitHub Actions (public repo, windows-latest). Builders write, commit, push, read CI.

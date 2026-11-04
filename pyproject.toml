@@ -30,6 +30,13 @@ studio = [
   # python.whisper_cuda pins the matching cuBLAS/cuDNN wheels: review it before raising the ceiling.
   "ctranslate2>=4.6.3,<4.9",
 ]
+# `INSTALL.cmd --dev` (docs/DEV_MODE.md): the studio extra without the speech and GPU wheels (faster-whisper, PyAV,
+# CTranslate2), because a dev install runs on fake engines and downloads no model. Keep it equal to `studio` minus
+# those three (tests/test_dev_mode_extras.py checks it).
+dev-install = [
+  "Pillow>=10", "spacy>=3.7,<4", "imagehash>=4.3", "keyring>=25",
+  "opencv-python-headless>=4.9,<5",
+]
 tts = ["fastapi>=0.115", "uvicorn>=0.30", "soundfile>=0.12"]
 supervisor = ["fastapi>=0.115", "uvicorn>=0.30", "psutil>=6"]
 # The dashboard runs in the supervisor venv (fastapi and uvicorn come from the supervisor extra): uploads, thumbnails, key storage.

@@ -150,6 +150,9 @@ def cmd_tune(
         for line in tune.matrix_lines(rt):
             typer.echo(line)
         return
+    if rt.dev_mode:
+        typer.echo("Dev mode: the language model is a fake, so there is nothing to tune.")
+        return
     if not rt.llama.model_path:
         raise _die("runtime.json has no llama model_path; run the installer first.")
     with tune.gpu_reservation(_client(paths)):
@@ -338,11 +341,11 @@ def cmd_restore(
         typer.echo(ln)
 
 
-def _schedule_call(fn_name: str, time: str | None = None) -> None:
+def _schedule_call(fn_name: str, time: str | None = None, disabled: bool = False) -> None:
     paths = Paths.from_env()
     try:
         if fn_name == "install":
-            msg = schedule.install(paths, time, control.app_path(paths))
+            msg = schedule.install(paths, time, control.app_path(paths), disabled=disabled)
         elif fn_name == "remove":
             msg = schedule.remove(paths)
         else:
@@ -355,9 +358,12 @@ def _schedule_call(fn_name: str, time: str | None = None) -> None:
 @schedule_app.command("install")
 def schedule_install(
     time: Annotated[str | None, typer.Option("--time", help="Local time HH:MM (default 03:00).")] = None,
+    disabled: Annotated[
+        bool, typer.Option("--disabled", help="Register the task but switch it off (a dev install).")
+    ] = False,
 ) -> None:
     """Register the daily task (wake the PC, run whether logged on or not, stop after 6 h)."""
-    _schedule_call("install", time)
+    _schedule_call("install", time, disabled)
 
 
 @schedule_app.command("remove")

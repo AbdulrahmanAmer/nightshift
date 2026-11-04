@@ -514,3 +514,9 @@ Format per entry:
 - **Why:** the operator should be able to prove, from the dashboard, that nothing in the 20 GB is damaged.
 - **Workaround until applied:** run `ns verify --downloads` in a terminal (documented in OPERATOR.md, "If a download stops").
 - **Status:** open
+
+## CR-DEVMODE-1: `dev_mode` in `Runtime`, `InstallState` and `GateReport` (`orchestrator/installer-dev-mode`)
+- **From:** orchestrator, `INSTALL.cmd --dev` (docs/DEV_MODE.md)
+- **Change:** `ns_common.models.Runtime`, `InstallState` and `GateReport` gain `dev_mode: bool = False`, and `contracts/schemas/runtime.schema.json`, `install_state.schema.json` and `gate_report.schema.json` the same property. `config/runtime.json` of a dev install says `"profile": "cpu-dev", "dev_mode": true`; `install_state.json` records it; `logs/verify-report.json` carries it. Every reader goes through `ns_common.devmode`.
+- **Why:** a real end-to-end install on a PC with no GPU and no model: the supervisor starts the fake llama and embedding servers and the fake voice engine, the studio runs jobs on its in-process fakes, `ns verify` passes against them, and the report says so.
+- **Status:** applied on `orchestrator/installer-dev-mode`.

@@ -63,7 +63,9 @@ class Env:
         isdir: Callable[[str], bool] = os.path.isdir,
         keys_stored: dict[str, bool] | None = None,
         layout_problem: Callable[[str], str | None] | None = None,
+        dev: bool = False,
     ) -> None:
+        self.dev = dev              # a dev install needs 10 GB free, not 60 (docs/DEV_MODE.md)
         self.ram_gb = ram_gb
         self.tiers = tiers
         self.drive_letters = drive_letters
@@ -144,7 +146,7 @@ def custom_problem(custom: Any) -> str | None:
 
 
 def _home_errors(home: str, tier: str, env: Env, custom_bytes: int | None = None) -> list[dict[str, Any]]:
-    need = required_free_gb(tier, custom_bytes)
+    need = required_free_gb(tier, custom_bytes, dev=env.dev)
     problem = home_problem(home, MAX_HOME_LEN) or env.layout_problem(home)
     if problem:
         return [_err("homePath", problem)]

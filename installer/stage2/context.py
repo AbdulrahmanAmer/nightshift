@@ -44,6 +44,8 @@ class StepContext:
     log: NsLogger
     state: StateStore
     simulate: bool = False
+    # `INSTALL.cmd --dev` (docs/DEV_MODE.md): the real steps with stub models, fake engines, no GPU packages
+    dev_mode: bool = False
     unattended: bool = False
     answers_path: Path | None = None
     raw_answers: dict[str, Any] = field(default_factory=dict)
@@ -93,12 +95,24 @@ class StepContext:
             src = candidate if candidate.is_file() else found
             if src is None:
                 raise RuntimeError("answers are not available yet; step s01_questions has not completed")
-            self.answers = build_answers(load_raw(src))
+            self.answers = self.constrain(build_answers(load_raw(src)))
         return self.answers
+
+    def constrain(self, ans: InstallerAnswers) -> InstallerAnswers:
+        """The answers a dev install really uses: the Small model only, no Nightshift Code (OpenCode is not
+        downloaded), no voice design model, no models folder. A real install gets ``ans`` back unchanged."""
+        if not self.dev_mode:
+            return ans
+        return ans.model_copy(update={
+            "install_code": False, "include_voicedesign": False, "llm_tier": "small", "llm_custom": None,
+            "models_source": None,
+        })
 
     @property
     def profile(self) -> str:
-        """gpu or cpu-dev."""
+        """gpu or cpu-dev (a dev install is always cpu-dev)."""
+        if self.dev_mode:
+            return "cpu-dev"
         if self.preflight and self.preflight.get("profile") in ("gpu", "cpu-dev"):
             return str(self.preflight["profile"])
         return self.state.state.profile or "gpu"
@@ -167,6 +181,10 @@ class StepContext:
         client = self.http_factory()
         if self.simulate:
             fetch = simulated_fetch(items, head_checks=self.head_checks, log=self.log)
+        if any(i.stub for i in items):          # a dev install: the models are written, not downloaded
+            from installer.stage2.dev_stubs import stub_fetch
+
+            fetch = stub_fetch(items, fetch)
         try:
             with self.ui.reporter(total_bytes(pending(items))) as rep:
                 return run_plan(

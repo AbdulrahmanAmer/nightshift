@@ -107,9 +107,13 @@ def test_operator_copy_covers_every_code_the_installer_can_raise():
 
 # ns_common modules with only standard-library imports (and each other): the bare-Python server may use them.
 STDLIB_ONLY_NS_COMMON = {
-    "ns_common.atomic", "ns_common.avblock", "ns_common.paths", "ns_common.pathrules", "ns_common.uv",
-    "ns_common.vcruntime", "ns_common.secret_file", "ns_common.secrets_names", "ns_common.singleton",
+    "ns_common.atomic", "ns_common.avblock", "ns_common.devmode", "ns_common.paths", "ns_common.pathrules",
+    "ns_common.uv", "ns_common.vcruntime", "ns_common.secret_file", "ns_common.secrets_names",
+    "ns_common.singleton",
 }
+# installer.stage2.devmode (dev mode numbers, stubs, mode switch) is stdlib-only too and shared by the setup
+# server and the wizard; the test below keeps it that way.
+STDLIB_ONLY_INSTALLER = {"installer.stage2.devmode"}
 
 
 def test_the_ns_common_modules_the_setup_server_uses_are_really_stdlib_only():
@@ -127,6 +131,22 @@ def test_the_ns_common_modules_the_setup_server_uses_are_really_stdlib_only():
             for m in mods:
                 ok = m.split(".")[0] in sys.stdlib_module_names or m in STDLIB_ONLY_NS_COMMON
                 assert ok or m == "__future__", f"{name} imports {m}"
+
+
+def test_the_dev_mode_module_shared_with_the_setup_server_is_stdlib_only():
+    import ast
+    import sys
+
+    tree = ast.parse((ROOT / "installer" / "stage2" / "devmode.py").read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        mods: list[str] = []
+        if isinstance(node, ast.Import):
+            mods = [a.name for a in node.names]
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            mods = [node.module]
+        for m in mods:
+            ok = m.split(".")[0] in sys.stdlib_module_names or m in STDLIB_ONLY_NS_COMMON
+            assert ok or m == "__future__", f"installer/stage2/devmode.py imports {m}"
 
 
 def test_web_package_imports_only_the_standard_library():
@@ -149,7 +169,7 @@ def test_web_package_imports_only_the_standard_library():
                     continue
                 if name == allowed_first_party or name.startswith(allowed_first_party + "."):
                     continue
-                if name in STDLIB_ONLY_NS_COMMON:
+                if name in STDLIB_ONLY_NS_COMMON or name in STDLIB_ONLY_INSTALLER:
                     continue
                 offenders.append(f"{path.name}: {name}")
     assert not offenders, "the setup server runs on the bare Python: " + ", ".join(offenders)

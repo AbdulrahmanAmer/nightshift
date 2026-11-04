@@ -11,6 +11,7 @@ import math
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from installer.stage2.devmode import MIN_FREE_GB, MIN_RAM_GB, STUB_BYTES
 from installer.stage2.web.labels import GROUP_LABELS, llm_label
 
 BASE_FREE_GB = 60
@@ -28,8 +29,13 @@ def recommended_tier(ram_gb: float) -> str:
     return "balanced" if ram_gb >= 31 else "small"
 
 
-def required_free_gb(tier: str, custom_bytes: int | None = None) -> int:
-    """Free space the install needs on the home drive; a custom model adds its size above Small's 9 GB."""
+def required_free_gb(tier: str, custom_bytes: int | None = None, *, dev: bool = False) -> int:
+    """Free space the install needs on the home drive; a custom model adds its size above Small's 9 GB.
+
+    A dev install (docs/DEV_MODE.md) writes stubs for the models and needs 10 GB for the programs and venvs.
+    """
+    if dev:
+        return MIN_FREE_GB
     if custom_bytes:
         return BASE_FREE_GB + max(0, math.ceil(custom_bytes / 1e9) - 9)
     return BASE_FREE_GB + TIER_EXTRA_GB.get(tier, 0)
@@ -88,10 +94,23 @@ def _tier_entry(pm: dict[str, Any], profile: str, tier: str) -> dict[str, Any]:
     return pm["llm"]
 
 
+STUB_NOTE = " (stub, dev)"
+
+
 def model_rows(
-    manifest: dict[str, Any], profile: str, tier: str, custom: dict[str, Any] | None = None
+    manifest: dict[str, Any], profile: str, tier: str, custom: dict[str, Any] | None = None,
+    *, dev: bool = False,
 ) -> list[dict[str, Any]]:
-    """Rows for ``plan_models``: the LLM (tier or custom GGUF), embed, TTS GGUFs, whisper, YuNet."""
+    """Rows for ``plan_models``: the LLM (tier or custom GGUF), embed, TTS GGUFs, whisper, YuNet.
+
+    ``dev``: every model but YuNet is a stub of ``STUB_BYTES`` ("stub, dev" in the label), never a custom one.
+    """
+    if dev:
+        stubbed = model_rows(manifest, profile, "small")
+        return [
+            r if r["key"] == "yunet" else {**r, "label": r["label"] + STUB_NOTE, "bytes": STUB_BYTES}
+            for r in stubbed
+        ]
     pm = manifest["profiles"][profile]
     if custom:
         llm = {"repo": custom["repo"], "file": custom["file"], "bytes": custom["size"]}
@@ -115,7 +134,10 @@ def model_rows(
 def bin_rows(
     manifest: dict[str, Any], profile: str, *, include_code: bool, llama_pair: str | None
 ) -> list[dict[str, Any]]:
-    """Rows for ``plan_bins``: llama.cpp (+ cudart), OpenCode, yt-dlp, the window files."""
+    """Rows for ``plan_bins``: llama.cpp (+ cudart), OpenCode, yt-dlp, the window files.
+
+    A dev install passes ``profile="cpu-dev"`` and ``include_code=False``: the CPU build, no OpenCode.
+    """
     bins = manifest.get("bins") or {}
     if profile == "cpu-dev":
         keys = ["llama_cpu"]
@@ -185,18 +207,25 @@ def vram_left_gb(file_bytes: int | float) -> float:
 
 
 def tier_infos(
-    manifest: dict[str, Any], profile: str, *, ram_gb: float, vram_mb: int | None
+    manifest: dict[str, Any], profile: str, *, ram_gb: float, vram_mb: int | None, dev: bool = False
 ) -> dict[str, Any]:
-    """The three Model size options with their sizes and whether this PC may pick them."""
+    """The three Model size options with their sizes and whether this PC may pick them.
+
+    A dev install (``dev``) offers Small only, as a stub of ``STUB_BYTES``.
+    """
     pm = manifest["profiles"][profile]
-    base_bytes = sum(r["bytes"] or 0 for r in model_rows(manifest, profile, "small")[1:])
+    base_bytes = sum(r["bytes"] or 0 for r in model_rows(manifest, profile, "small", dev=dev)[1:])
     out: dict[str, Any] = {}
     for tier in ("small", "balanced", "best"):
         entry = pm.get(TIER_KEYS[tier])
         llm_bytes = int(entry.get("bytes") or 0) if entry else 0
+        if dev:
+            llm_bytes = STUB_BYTES if tier == "small" else 0
         allowed, reason = True, None
         if tier != "small":
-            if not entry or profile != "gpu":
+            if dev:
+                allowed, reason = False, "Not available in dev mode"
+            elif not entry or profile != "gpu":
                 allowed, reason = False, "Not available in this version"
             elif ram_gb < 31:
                 allowed, reason = False, "Needs 32 GB of memory"
@@ -209,8 +238,8 @@ def tier_infos(
             "recommended": tier == "balanced",
             "llmBytes": llm_bytes,
             "totalBytes": llm_bytes + base_bytes,
-            "needFreeGb": required_free_gb(tier),
-            "needsRamGb": 16 if tier == "small" else 32,
+            "needFreeGb": required_free_gb(tier, dev=dev),
+            "needsRamGb": (MIN_RAM_GB if dev else 16) if tier == "small" else 32,
             "allowed": allowed,
             "reason": reason,
         }
@@ -228,12 +257,18 @@ def build_plan(
     vram_mb: int | None,
     custom: dict[str, Any] | None = None,
     llama_pair: str | None = None,
+    dev: bool = False,
 ) -> dict[str, Any]:
-    """The InstallPlan for the Welcome and Choices screens (``custom`` replaces the tier's story model)."""
+    """The InstallPlan for the Welcome and Choices screens (``custom`` replaces the tier's story model).
+
+    ``dev`` (docs/DEV_MODE.md): the CPU build of llama.cpp, no OpenCode, stub models of the Small tier.
+    """
+    if dev:
+        profile, tier, include_code, custom, llama_pair = "cpu-dev", "small", False, None, None
     rows = tool_rows()
     pair = llama_pair or llama_pair_for(cuda)
     rows += bin_rows(manifest, profile, include_code=include_code, llama_pair=pair)
-    rows += model_rows(manifest, profile, tier, custom)
+    rows += model_rows(manifest, profile, tier, custom, dev=dev)
     groups = [_group(gid, [r for r in rows if r["group"] == gid]) for gid in GROUP_ORDER]
     total = sum(r["bytes"] or 0 for r in rows)
     unknown = sum(1 for r in rows if r["bytes"] is None and r["via"] == "download")
@@ -243,10 +278,10 @@ def build_plan(
         "groups": groups,
         "totalBytes": total,
         "unknownCount": unknown,
-        "needFreeGb": required_free_gb(tier, int(custom["size"]) if custom else None),
+        "needFreeGb": required_free_gb(tier, int(custom["size"]) if custom else None, dev=dev),
         "estimate": estimate(total),
-        "recommendedTier": recommended_tier(ram_gb),
-        "tiers": tier_infos(manifest, profile, ram_gb=ram_gb, vram_mb=vram_mb),
+        "recommendedTier": "small" if dev else recommended_tier(ram_gb),
+        "tiers": tier_infos(manifest, profile, ram_gb=ram_gb, vram_mb=vram_mb, dev=dev),
     }
 
 

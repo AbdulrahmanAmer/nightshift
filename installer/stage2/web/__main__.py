@@ -14,6 +14,7 @@ import time
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
+import installer.stage2.devmode as devmode
 from installer.stage2.web import launch
 from installer.stage2.web.controller import Config, Effects, SetupController
 from installer.stage2.web.server import SetupServer
@@ -38,6 +39,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     p.add_argument("--port", type=int, default=0, help="listen on this port (default: a random free port)")
     p.add_argument("--halt-after", metavar="STEP", help="stop the wizard after this step (tests)")
     p.add_argument("--python", help="interpreter for the wizard in --simulate mode (default: this one)")
+    p.add_argument("--dev", action="store_true",
+                   help="dev install (docs/DEV_MODE.md): stub models, fake engines, no GPU needed")
     return p.parse_args(list(argv) if argv is not None else None)
 
 
@@ -189,11 +192,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         fixture=args.fixture,
         uninstall=args.uninstall,
         halt_after=args.halt_after,
+        dev_mode=bool(args.dev),
     )
     if args.python:
         cfg.python = args.python
     if args.uninstall:
         return run_uninstall(args, cfg)
+    if cfg.dev_mode or devmode.env_enabled():
+        say(f"{devmode.BANNER}. The programs are real, the models are stubs, the engines are fakes.")
     if cfg.headless:
         try:
             controller = SetupController(cfg, _headless_effects(cfg))

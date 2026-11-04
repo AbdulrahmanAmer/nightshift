@@ -21,7 +21,7 @@ ExitFn = Callable[[int], None]
 
 def wizard_argv(
     python: str, *, app_path: Path, home: Path, answers: Path, preflight: Path, bridge: bool,
-    simulate: bool = False, halt_after: str | None = None,
+    simulate: bool = False, halt_after: str | None = None, dev: bool = False,
 ) -> list[str]:
     """The wizard command line (with ``--ui-bridge stdio`` for the window, without it for headless runs)."""
     argv = [
@@ -35,6 +35,8 @@ def wizard_argv(
         argv += ["--simulate-downloads", "--no-head-checks"]
     if halt_after:
         argv += ["--halt-after", halt_after]
+    if dev:
+        argv.append("--dev")        # a dev install (docs/DEV_MODE.md): stub models, fake engines
     return argv
 
 

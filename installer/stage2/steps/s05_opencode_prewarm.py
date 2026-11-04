@@ -40,7 +40,9 @@ class S05OpencodePrewarm(Step):
     optional = True
 
     def skip_reason(self, ctx: StepContext) -> str | None:
-        """Only when the operator chose Nightshift Code."""
+        """Only when the operator chose Nightshift Code (a dev install never does: no OpenCode download)."""
+        if ctx.dev_mode:
+            return "dev mode: Nightshift Code is not installed"
         return None if ctx.ensure_answers().install_code else "Nightshift Code was not selected"
 
     def check(self, ctx: StepContext) -> bool:

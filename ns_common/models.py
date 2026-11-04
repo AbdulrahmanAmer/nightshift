@@ -149,6 +149,9 @@ class Runtime(Strict):
     whisper: WhisperCfg = WhisperCfg()
     video: VideoCfg = VideoCfg()
     supervisor_port: int = 8099
+    # Dev install (`INSTALL.cmd --dev`, docs/DEV_MODE.md): fake engines, stub model files. Consumers read it
+    # through `ns_common.devmode`; a real install never sets it.
+    dev_mode: bool = False
 
     @classmethod
     def default(cls, profile: Literal["gpu", "cpu-dev"]) -> Runtime:
@@ -177,6 +180,7 @@ class InstallState(Strict):
     steps: dict[str, StepState] = {}
     started_at: str | None = None
     completed_at: str | None = None
+    dev_mode: bool = False      # installed with `INSTALL.cmd --dev` (docs/DEV_MODE.md)
 
 
 class AnswersChannel(Strict):
@@ -418,6 +422,7 @@ class GateReport(Strict):
     machine: dict[str, str | float | None]
     checks: list[GateCheck]
     benchmarks: dict[str, float] = {}
+    dev_mode: bool = False      # `ns verify` ran against the dev install's fake engines (docs/DEV_MODE.md)
 
     @property
     def passed(self) -> bool:

@@ -10,6 +10,7 @@ files setup downloads, and checks each one on disk:
 * ``ok (no pin)`` a file with no pinned hash (the owner's own story model): present and the right size
 * ``unpacked``  a zip that setup extracted (the archive is not kept, so only the unpacked files are checked)
 * ``optional``  an optional side file the server does not publish
+* ``stub (dev)`` a placeholder written by ``INSTALL.cmd --dev`` (docs/DEV_MODE.md): fine in a dev install
 
 It never changes anything and never touches the network: the fix for every line is printed with it and is
 almost always "run INSTALL.cmd again", which downloads only what is missing or wrong.
@@ -23,6 +24,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from installer.stage2 import devmode
 from installer.stage2.answers import AnswersError, build_answers, load_raw, wants_voicedesign
 from installer.stage2.downloader import (
     DownloadItem,
@@ -45,6 +47,7 @@ BAD = "bad hash"
 NO_PIN = "ok (no pin)"
 UNPACKED = "unpacked"
 OPTIONAL = "optional"
+STUB = "stub (dev)"
 FAILING = (MISSING, BAD)
 
 RERUN = "Run INSTALL.cmd again: it downloads only what is missing and keeps what is verified."
@@ -93,7 +96,7 @@ def plan_for_install(paths: Paths, app_path: Path | None = None) -> list[Downloa
         llama_pair=pair if isinstance(pair, str) else None,
     ) + plan_models(
         manifest, profile, answers.llm_tier, paths.home, custom=answers.llm_custom,
-        include_voicedesign=wants_voicedesign(answers),
+        include_voicedesign=wants_voicedesign(answers), dev=state.dev_mode,
     )
 
 
@@ -115,6 +118,10 @@ def check_item(item: DownloadItem, *, hasher: Hasher = sha256_file) -> Row:
             return Row(item.name, str(dest), OPTIONAL, "optional file, not installed")
         return Row(item.name, str(dest), MISSING, "", RERUN)
     size = dest.stat().st_size
+    if item.stub:                       # a dev install: the placeholder is the right file
+        if devmode.is_stub(dest):
+            return Row(item.name, str(dest), STUB, "dev mode placeholder, not a model")
+        return Row(item.name, str(dest), NO_PIN, f"{human_bytes(size)}, a real file kept in a dev install")
     pin = pinned_sha256(item.sha256)
     cleanup = (
         f"Delete {dest.name} and {_marker(dest).name} in {dest.parent}, then run INSTALL.cmd again. "

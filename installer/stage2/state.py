@@ -26,9 +26,10 @@ class StateStore:
         self.clock = clock
         self.state: InstallState = load_install_state(paths)
 
-    def begin(self, profile: str | None) -> None:
-        """Record app path, start time and profile; keeps the original start time on resume."""
+    def begin(self, profile: str | None, dev_mode: bool = False) -> None:
+        """Record app path, start time, profile and dev mode; keeps the original start time on resume."""
         self.state.app_path = str(self.app_path)
+        self.state.dev_mode = dev_mode
         self.state.started_at = self.state.started_at or self.clock()
         self.state.completed_at = None
         if profile == "gpu" or profile == "cpu-dev":

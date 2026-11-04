@@ -27,6 +27,7 @@ export interface SetupState {
   startedAt: string | null;          // ISO 8601, local time
   updatedAt: string;
   host: "webview2" | "browser-app" | "browser" | "none";
+  devMode: boolean;                  // INSTALL.cmd --dev: stub models, fake engines (docs/DEV_MODE.md)
   machine: MachineSummary;
   checks: CheckRow[];
   checkedAt: string | null;
@@ -217,6 +218,7 @@ export interface ResultView {
   stockKeyMissing: boolean;          // neither a Pexels nor a Pixabay key is stored
   durationS: number;
   warnings: Notice[];
+  devMode?: boolean;                 // a dev install: the Done screen says so in its list
 }
 /** installer/support.json: both null until the owner fills it in. */
 export interface SupportView { name: string | null; driveUrl: string | null }
