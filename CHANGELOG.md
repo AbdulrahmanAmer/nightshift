@@ -7,6 +7,11 @@ All notable changes to Nightshift are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.1.9] - 2026-11-04
+
+From the clean dev-mode install of the official 0.1.8 zip on the orchestrator's laptop. Send
+`Nightshift-Setup-0.1.9.zip`; an install started with 0.1.6 to 0.1.8 resumes under it (INSTALL.cmd, Continue).
+
 - A stock-footage key saved by an earlier setup (Credential Manager or `config\\secrets.dpapi`) that the
   service rejects no longer stops setup: it is forgotten with a notice, and Settings takes a new one (the
   first clean dev-mode install of 0.1.8 died with NS-E502 on a placeholder key left behind). A key given in
