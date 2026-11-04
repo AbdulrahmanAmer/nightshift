@@ -25,11 +25,19 @@ def derive_phase(
     started: bool,
     run: str,
     failure: dict[str, Any] | None,
+    answers_locked: bool = False,
 ) -> str:
-    """The screen to show. Never stored on its own: always derived from the rest of the state."""
+    """The screen to show. Never stored on its own: always derived from the rest of the state.
+
+    A setup server started over an install whose questions step is done (the window was closed, the PC
+    slept or rebooted, INSTALL.cmd was run again) has ``started`` False but ``answers_locked`` True: the
+    phase then follows the steps, like a running install, so the window shows the Welcome resume screen
+    (Continue starts the run) instead of a locked Choices screen whose Install button re-sends answers the
+    server refuses.
+    """
     if failure is not None and run == "waiting":
         return "failed"
-    if not started:
+    if not started and not answers_locked:
         if answers_accepted:
             return "choices"
         return "choices" if ui_step == "choices" else "checks"
@@ -51,6 +59,7 @@ def finalize(state: dict[str, Any], *, started: bool) -> None:
         started=started,
         run=state["run"],
         failure=state.get("failure"),
+        answers_locked=bool(state.get("answersLocked")),
     )
 
 
