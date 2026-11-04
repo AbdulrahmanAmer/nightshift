@@ -109,6 +109,39 @@ function Stop-NsEngine {
     return $false
 }
 
+function Close-NsHostWindows {
+    # Close the Nightshift windows (dashboard and setup hosts) recorded in <home>\run\apphost-*.json: WM_CLOSE
+    # first (the host saves its window state), the process after a grace period. Stale files are removed.
+    param([int]$GraceSec = 8)
+    $runDir = Join-Path (Get-NsHome) 'run'
+    if (-not (Test-Path -LiteralPath $runDir)) { return }
+    if ($null -eq ('NsCommon.Native' -as [type])) {
+        Add-Type -Namespace NsCommon -Name Native -MemberDefinition '[System.Runtime.InteropServices.DllImport("user32.dll")] public static extern bool PostMessage(System.IntPtr h, int msg, System.IntPtr w, System.IntPtr l);'
+    }
+    foreach ($file in @(Get-ChildItem -LiteralPath $runDir -Filter 'apphost-*.json' -ErrorAction SilentlyContinue)) {
+        $hostPid = 0
+        $hwnd = [IntPtr]::Zero
+        try {
+            $j = Get-Content -Raw -LiteralPath $file.FullName | ConvertFrom-Json
+            $hostPid = [int]$j.pid
+            $hwnd = [IntPtr][int64]$j.hwnd
+        }
+        catch {
+            $hostPid = 0
+        }
+        $proc = $null
+        if ($hostPid -gt 0) { $proc = Get-Process -Id $hostPid -ErrorAction SilentlyContinue }
+        if ($null -eq $proc) {
+            Remove-Item -LiteralPath $file.FullName -Force -ErrorAction SilentlyContinue
+            continue
+        }
+        if ($hwnd -ne [IntPtr]::Zero) { [void][NsCommon.Native]::PostMessage($hwnd, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero) }
+        if (-not $proc.WaitForExit($GraceSec * 1000)) { Stop-Process -Id $hostPid -Force -ErrorAction SilentlyContinue }
+        Remove-Item -LiteralPath $file.FullName -Force -ErrorAction SilentlyContinue
+        Write-Host ('Closed the Nightshift window (' + $file.BaseName.Replace('apphost-', '') + ').')
+    }
+}
+
 function Start-NsSupervisor {
     param([switch]$Headless)
     $py = Get-NsVenvExe 'supervisor' 'python.exe'

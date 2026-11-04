@@ -10,7 +10,8 @@
     running host records its window in %NIGHTSHIFT_HOME%\run\apphost-<role>.json {hwnd, pid} and a second
     start of the same role raises that window instead. The setup window (-Role setup) and the dashboard window
     (-Role dashboard) are independent, so opening the dashboard while setup is open starts a second window.
-    Closing the window never stops the engine.
+    Closing the window never stops the engine. The window closes itself when the server behind its URL stops
+    answering (stop-all, the nightly task, an update, uninstall), instead of sitting on a dead page.
     Messages from the page (window.chrome.webview.postMessage), all JSON:
       {cmd: 'minimize'} {cmd: 'toggle-maximize'} {cmd: 'drag-start'} {cmd: 'close'} {cmd: 'close-ack'}
       {cmd: 'ready'} {cmd: 'open-external', url: 'https://...'}
@@ -39,6 +40,8 @@ $BackgroundHex = '#15131d'
 $MinWidth = 1024
 $MinHeight = 640
 $CloseGraceMs = 1500
+$ServerPollS = 5          # how often the host checks that its server still answers
+$ServerMissLimit = 3      # consecutive misses before the window closes itself
 
 function Get-HostHome {
     if ($env:NIGHTSHIFT_HOME) { return $env:NIGHTSHIFT_HOME }
@@ -202,6 +205,26 @@ function Write-RunFile {
     }
     catch {
         Write-Verbose 'the apphost state file could not be written'
+    }
+}
+
+function Test-ServerAlive {
+    # True when the server behind the start URL still answers (any HTTP status counts), false on a connection error.
+    try {
+        $req = [System.Net.HttpWebRequest]::Create($startUri.Scheme + '://' + $startUri.Authority + '/')
+        $req.Method = 'HEAD'
+        $req.Timeout = 2000
+        $req.ReadWriteTimeout = 2000
+        $resp = $req.GetResponse()
+        $resp.Close()
+        return $true
+    }
+    catch [System.Net.WebException] {
+        if ($null -ne $_.Exception.Response) { return $true }   # 404 or 405 still means a server is there
+        return $false
+    }
+    catch {
+        return $false
     }
 }
 
@@ -391,6 +414,25 @@ try {
         }
         $script:ready = $true
         Write-RunFile -Handle (New-Object System.Windows.Interop.WindowInteropHelper $script:win).Handle -Ready
+        # The page is served by a local server: when it stops answering (stop-all, the nightly task, an update,
+        # uninstall) the window closes itself instead of sitting on a dead page.
+        $script:serverMisses = 0
+        $script:serverTimer = New-Object System.Windows.Threading.DispatcherTimer
+        $script:serverTimer.Interval = [TimeSpan]::FromSeconds($ServerPollS)
+        $script:serverTimer.add_Tick({
+            if (Test-ServerAlive) {
+                $script:serverMisses = 0
+                return
+            }
+            $script:serverMisses += 1
+            if ($script:serverMisses -ge $ServerMissLimit) {
+                $script:serverTimer.Stop()
+                Write-Host 'Nightshift stopped; closing its window.'
+                $script:confirmedClose = $true
+                $script:win.Close()
+            }
+        })
+        $script:serverTimer.Start()
         $core = $script:wv.CoreWebView2
         $core.Settings.AreDefaultContextMenusEnabled = $false
         $core.Settings.AreDevToolsEnabled = ($env:NS_DEVTOOLS -eq '1')

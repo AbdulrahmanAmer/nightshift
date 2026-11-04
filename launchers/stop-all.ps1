@@ -14,3 +14,4 @@ else {
     & $py -m ns_supervisor.cli stop
 }
 Start-Sleep -Seconds 2
+Close-NsHostWindows

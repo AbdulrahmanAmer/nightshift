@@ -214,6 +214,8 @@ def _daily(env: jobs.Env, dry_run: bool, policy: bool | None) -> None:
     except (NsError, StudioError) as e:  # the night itself broke (not one job): say so before exiting
         notifications.send(env.paths, env.log, notifier, notifications.failure_message(e.code))
         raise
+    if not report["channels"]:
+        typer.echo("nothing due tonight: every channel already has this week's full video or today's Shorts")
     for c in report["channels"]:
         typer.echo(f"{c['channel']}: {c['jobs']} job(s), {c['plan']}")
     for j in report["jobs"]:
