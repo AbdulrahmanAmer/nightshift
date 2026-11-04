@@ -454,13 +454,27 @@ function FormatEditor({ f, onClose, onSaved }: { f: Format; onClose: () => void;
 function FootageTab() {
   const { confirm, toast } = useApp();
   const [q, setQ] = useState(""); const clips = useLoad<Footage[]>(() => api.get(`/library/footage?q=${encodeURIComponent(q)}`), [q], []);
+  const [fetching, setFetching] = useState(false);
   const remove = async (c: Footage) => {
     if (!(await confirm({ title: "Delete this clip?", body: "The file is removed from this PC. A video that already used it is not changed; the clip is fetched again if a story needs it", ok: "Delete", danger: true }))) return;
     try { await api.del(`/library/footage/${encodeURIComponent(c.source)}/${encodeURIComponent(c.clip_id)}`); toast("Clip deleted", "ok"); clips.reload(); } catch (e: any) { toast(e.message, "bad"); }
   };
+  const fetchNew = async () => {
+    setFetching(true);
+    try {
+      const r = await api.post("/library/footage/fetch", { q: q.trim(), count: 2, orientation: "landscape" });
+      const n = r?.clips?.length ?? 0;
+      toast(n ? `${plural(n, "clip")} for "${q.trim()}" in the footage cache${r?.note ? `. ${r.note}` : ""}` : r?.note || "Nothing found", n ? "ok" : "warn");
+      clips.reload();
+    } catch (e: any) { toast(e.message, "bad"); }
+    setFetching(false);
+  };
   return (
     <DashGrid label="Footage">
-      <div className={cx("flex flex-wrap items-center justify-between gap-3", SPAN["6/4"])}><Search value={q} onChange={setQ} placeholder="Search footage by keyword" /><span className="text-ds-2xs text-ds-muted ds-num">{clips.data.length} clips cached</span></div>
+      <div className={cx("flex flex-wrap items-center justify-between gap-3", SPAN["6/4"])}>
+        <div className="flex flex-wrap items-center gap-2"><Search value={q} onChange={setQ} placeholder="Search footage by keyword" /><Button size="sm" variant="soft" leadingIcon="download" disabled={!q.trim() || fetching} onClick={fetchNew}>{fetching ? "Fetching" : "Fetch 2 clips"}</Button></div>
+        <span className="text-ds-2xs text-ds-muted ds-num">{clips.data.length} clips cached</span>
+      </div>
       {clips.data.length ? clips.data.map((c) => (
         <Card as="article" key={c.source + c.clip_id} padding="sm" className={cx("flex flex-col gap-3 self-stretch", SPAN["2/2"])}>
           <div className="relative aspect-[16/7] overflow-hidden rounded-ds-md bg-ds-media"><Scene seed={c.keywords.join(" ")} w={1600} h={700} className="size-full" /><Badge tone="overlay" size="xs" className="absolute right-2 bottom-2 ds-num">{fmtDur(c.duration)}</Badge></div>
@@ -468,6 +482,7 @@ function FootageTab() {
             <h3 className="text-ds-md leading-ds-snug font-semibold">{c.keywords.join(", ")}</h3>
             <p className="flex flex-wrap gap-x-4 gap-y-1"><MetaItem icon="external"><span className="capitalize">{c.source}</span>&nbsp;#{c.clip_id}</MetaItem><MetaItem icon="refresh">{plural(c.uses, "use")}</MetaItem><MetaItem icon="calendarDays">{fmtDay(c.last_used)}</MetaItem></p>
             <p className="text-ds-2xs text-ds-muted">{c.license}</p>
+            {c.local_path && <p className="text-ds-2xs text-ds-muted font-mono break-all">{c.local_path}</p>}
             <div><Button size="sm" variant="ghost" leadingIcon="trash" onClick={() => remove(c)}>Delete</Button></div>
           </div>
         </Card>

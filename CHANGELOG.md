@@ -12,6 +12,9 @@ All notable changes to Nightshift are recorded here. The format follows
   "make a Short for ..."), answers in text after the tool ran (the paths it returned, or the Yes/No card it
   raised), and the Library's footage fetch uses the synthetic clip source when no key is stored. The
   Assistant's whole path (confirm card, tool run, result) can now be tried on a dev install.
+- Create page: a finished job card (done, stopped or cancelled) has a Hide button; the job and its videos stay,
+  the card leaves the Earlier list (`POST /api/jobs/{id}/dismiss`). Library > Footage shows each clip's file
+  path and has a "Fetch 2 clips" button for the search words (the Assistant's `fetch_footage`, by hand).
 - Settings > Stock footage keys: a saved key is checked with the service right away (the same check as the
   installer, with the product User-Agent) and the toast says "Pixabay accepted the key"; a key the service
   rejects is not stored (the working key, if any, is kept) and the dialog says to paste it again; when the

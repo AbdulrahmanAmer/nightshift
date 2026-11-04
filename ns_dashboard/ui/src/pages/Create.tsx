@@ -38,7 +38,7 @@ export default function Create() {
   }, [running.length]); // eslint-disable-line react-hooks/exhaustive-deps
   const cancel = async (id: string) => { try { await api.post(`/jobs/${encodeURIComponent(id)}/cancel`); toast("Cancelling", "warn"); jobs.reload(); } catch (e: any) { toast(e.message, "bad"); } };
   const finishedClips = clips.data.filter((o) => o.kind === "clip");
-  const earlier = jobs.data.filter((j) => !["queued", "running"].includes(j.status)).slice(0, 6);
+  const earlier = jobs.data.filter((j) => !["queued", "running"].includes(j.status) && !j.dismissed_at).slice(0, 6);
 
   // wizard state: every field from the previous StoryFlow and ClipFlow
   const [step, setStep] = useState(route.query.get("kind") ? 1 : 0);
@@ -331,6 +331,7 @@ function EarlierRow({ j, channelName, templates, onChanged }: { j: Job; channelN
   const canRerun = j.kind === "clip" && j.status === "done";
   const rerun = async () => { try { await api.post("/jobs/clip/rerun", { job_id: j.job_id, template: tpl }); toast("Making the clips again with that layout. The old clips are replaced", "ok"); setOpen(false); onChanged(); } catch (e: any) { toast(e.message, "bad"); } };
   const failed = j.status === "failed"; const cancelled = j.status === "cancelled";
+  const hide = async () => { try { await api.post(`/jobs/${encodeURIComponent(j.job_id)}/dismiss`); onChanged(); } catch (e: any) { toast(e.message, "bad"); } };
   return (
     <li>
       <NotificationItem title={jobTitle(j, channelName)}
@@ -338,6 +339,7 @@ function EarlierRow({ j, channelName, templates, onChanged }: { j: Job; channelN
         subtitle={<span className={failed ? "text-ds-danger" : undefined}>{failed ? `${stoppedAt(j.stage)}. ${j.message || ""}` : cancelled ? "Cancelled" : `${doneWords(j)} ${dayInline(j.created_at)}`}</span>}
         meta={j.status === "done" ? <MetaItem icon="play"><a href="#/" className="inline-flex items-center font-semibold text-ds-accent-ink [@media(max-width:820px)]:min-h-10">Review it</a></MetaItem> : undefined} />
       {failed && <JobError j={j} />}
+      <div className="mt-1 pl-1"><Button size="sm" variant="ghost" leadingIcon="x" onClick={hide}>Hide</Button></div>
       {j.kind === "clip" && j.status === "done" && j.result?.layout && (
         <p className="mt-1 text-ds-xs text-ds-text-2">Layout used: <span className="font-semibold">{templates.find((t) => t.id === j.result!.layout!.template)?.label || j.result.layout.template}</span>.{j.result.layout.no_facecam ? " No face cam was found, so the frame was cropped to the middle. Pick another layout below if that is not what you wanted." : ""}</p>
       )}

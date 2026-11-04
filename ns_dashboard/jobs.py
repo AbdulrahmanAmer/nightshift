@@ -52,6 +52,7 @@ class JobRecord:
     params: dict[str, Any] = field(default_factory=dict)
     result: dict[str, Any] | None = None
     cancel_requested: bool = False
+    dismissed_at: str | None = None
 
     @property
     def schedule_at(self) -> str | None:
@@ -94,6 +95,7 @@ class JobRecord:
             "result": self.result,
             "cancel_requested": self.cancel_requested,
             "schedule_at": self.schedule_at,
+            "dismissed_at": self.dismissed_at,
         }
 
 
@@ -112,6 +114,16 @@ def _steps_of(message: str) -> tuple[int | None, int | None]:
     """`(i, n)` from a `name (i/n)` progress message, else `(None, None)`."""
     m = _STAGE_RE.match(message or "")
     return (int(m.group(2)), int(m.group(3))) if m else (None, None)
+
+
+def _dismissed_at(raw: str | None) -> str | None:
+    """When the owner hid the job's card (`dismissed_at` in `params_json`), else None."""
+    try:
+        d = json.loads(raw or "")
+    except ValueError:
+        return None
+    value = d.get("dismissed_at") if isinstance(d, dict) else None
+    return value if isinstance(value, str) and value else None
 
 
 def _unpack(raw: str | None) -> tuple[dict[str, Any], dict[str, Any] | None]:
@@ -158,6 +170,7 @@ class JobStore:
             finished_at=row["finished_at"],
             params=params,
             result=result,
+            dismissed_at=_dismissed_at(row["params_json"]),
             cancel_requested=requested and row["status"] == "running",
         )
 
@@ -284,13 +297,33 @@ class JobStore:
                 return
             params, old = _unpack(row["params_json"])
             merged = result if result is not None else old
-            payload = json.dumps({"params": params, "result": merged}, default=str)
+            payload = json.dumps(
+                {"params": params, "result": merged, "dismissed_at": _dismissed_at(row["params_json"])},
+                default=str,
+            )
             progress = 1.0 if status == "done" else float(row["progress"] or 0.0)
             self.db.execute(
                 "UPDATE dashboard_jobs SET status = ?, message = ?, progress = ?, finished_at = ?,"
                 " params_json = ? WHERE job_id = ?",
                 (status, message, progress, _now(), payload, job_id),
             )
+
+    def dismiss(self, job_id: str) -> JobRecord | None:
+        """Hide a finished job's card (the Create page's Earlier list); the row and its outputs stay.
+
+        None when the job is unknown; a job that is still queued or running is not changed (the card is
+        where it is cancelled from). Returns the record either way so the caller can say what happened.
+        """
+        with self.db.tx():
+            row = self.db.one("SELECT status, params_json FROM dashboard_jobs WHERE job_id = ?", (job_id,))
+            if row is None:
+                return None
+            if row["status"] in ("queued", "running"):
+                return self.get(job_id)
+            params, result = _unpack(row["params_json"])
+            payload = json.dumps({"params": params, "result": result, "dismissed_at": _now()}, default=str)
+            self.db.execute("UPDATE dashboard_jobs SET params_json = ? WHERE job_id = ?", (payload, job_id))
+        return self.get(job_id)
 
     def cancel_queued(self, job_id: str) -> bool:
         """Cancel a job that has not started."""

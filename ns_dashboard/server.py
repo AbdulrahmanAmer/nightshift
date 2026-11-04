@@ -400,6 +400,10 @@ def create_app(
     async def jobs_cancel(job_id: str) -> SafeJSONResponse:
         return ok(await run_in_threadpool(dash.jobs.cancel, job_id))
 
+    @app.post("/api/jobs/{job_id}/dismiss")
+    async def jobs_dismiss(job_id: str) -> SafeJSONResponse:
+        return ok(await run_in_threadpool(dash.jobs.dismiss, job_id))
+
     # ------------------------------------------------------------ runs / logs / learn
     @app.get("/api/notes")
     async def notes() -> SafeJSONResponse:

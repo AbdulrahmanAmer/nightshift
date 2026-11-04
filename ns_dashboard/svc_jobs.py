@@ -483,6 +483,17 @@ class JobsService:
             raise ApiError(404, "not_found", "That job was not found.")
         return rec.to_dict()
 
+    def dismiss(self, job_id: str) -> dict[str, Any]:
+        """Hide a finished job's card on the Create page; 409 while it is queued or running."""
+        rec = self.s.store.get(job_id)
+        if rec is None:
+            raise ApiError(404, "not_found", "That job was not found.")
+        if rec.status in ("queued", "running"):
+            raise ApiError(409, "still_running",
+                           "That job is still running. Cancel it first if you want it gone.")
+        out = self.s.store.dismiss(job_id)
+        return out.to_dict() if out is not None else self.get(job_id)
+
     def cancel(self, job_id: str) -> dict[str, Any]:
         """Cancel a queued or running job; 409 when it already ended."""
         rec = self.s.store.get(job_id)
