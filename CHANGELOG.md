@@ -58,6 +58,20 @@ All notable changes to Nightshift are recorded here. The format follows
 - Not in this change: certificates and proxies, pinning Hugging Face file revisions and the qwen-tts temp
   folder (`orchestrator/pins-0.1.7`), re-syncing venvs when INSTALL.cmd is run over an existing install.
 
+### Assistant: pull stock footage now (`feat/assistant-fetch-footage`)
+
+- **`fetch_footage` tool and `POST /api/library/footage/fetch`.** The Assistant (after the owner's Yes) can search
+  Pixabay and Pexels for a scene and download up to 5 clips into `cache\clips\<source>\`, the same folder and `clips`
+  table the nightly jobs use, so later jobs reuse them and Library > Footage lists them. The answer starts with the
+  absolute file paths, then source, clip id, page link, licence, size, duration and keywords. Clips already in the cache
+  are not downloaded again; a dead download is skipped as long as another succeeds. It is a plain network download:
+  no GPU lease and no studio job. Keys are read from Credential Manager or the DPAPI file; with none stored the answer is
+  `NS-E502` "No stock footage key. Add a Pixabay key (free) in Settings > Stock footage keys" (keys are entered only in
+  Settings, never in chat).
+- **`where_is` answers "footage cache", "stock footage", "stock clips" and "clip cache"** with the cache folder.
+- Confirm cards show a tool's schema defaults (count 1, landscape, auto) instead of "(default)".
+- `ClipCache.record` is the one place that writes a `clips` row (used by `ensure` and by the new tool).
+
 ### Pins and voice-engine temp files (`orchestrator/pins-0.1.7`, from install audit 2, findings 3 and 9)
 - Every Hugging Face file in `manifest.json` (all LLM tiers, embed, voice GGUFs, whisper) now names the commit
   it is fetched from (`revision`, a 40-character sha), so a re-upload of a file under the same name on `main`

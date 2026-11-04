@@ -107,15 +107,19 @@ class ClipCache:
         if src is None:
             raise NsError("NS-E402", f"no clip source named {cand.source!r} to download {cand.id}")
         src.download(cand, dest)
+        self.record(cand, dest, kws)
+        return dest
+
+    def record(self, cand: ClipCandidate, dest: Path, keywords: Sequence[str]) -> None:
+        """Write (or replace) the `clips` row of a downloaded candidate."""
         self.db.execute(
             "insert or replace into clips(source, clip_id, url, license, width, height, duration, local_path,"
             " fetched_at, keywords) values (?,?,?,?,?,?,?,?,?,?)",
             (cand.source, cand.id, cand.page_url, cand.license, cand.width, cand.height, cand.duration,
-             str(dest), self.now().isoformat(), json.dumps(kws)),
+             str(dest), self.now().isoformat(), json.dumps(list(keywords))),
         )
         if self.log:
             self.log.info("clip_cached", source=cand.source, clip_id=cand.id)
-        return dest
 
     def purge_expired(self) -> int:
         """Delete cached files older than 90 days (rows stay, `local_path` cleared, for usage history)."""
