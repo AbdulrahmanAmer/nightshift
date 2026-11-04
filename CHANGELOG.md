@@ -27,6 +27,8 @@ All notable changes to Nightshift are recorded here. The format follows
   similarities between two openings of the same niche sit around 0.8, a false rejection fails the job after
   the writing), and dev mode skips it (the fake LLM tells the same story every run: the second dev job failed
   with NS-E303 `cosine 1.00`).
+- Unattended and console setup runs write `logs\\install-report.json` too (built from `install_state.json`,
+  answers without keys, the last error), so the owner gets the same file whichever way setup ran.
 
 ### Installer dev mode (`orchestrator/installer-dev-mode`)
 

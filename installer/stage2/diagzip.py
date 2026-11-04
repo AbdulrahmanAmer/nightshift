@@ -10,13 +10,63 @@ the bootstrap logs from ``%LOCALAPPDATA%\\Nightshift``.
 from __future__ import annotations
 
 import datetime as dt
+import json
 import os
 import zipfile
 from pathlib import Path
 
 from ns_common.paths import Paths
 
-__all__ = ["write_fallback_bundle"]
+__all__ = ["write_console_install_report", "write_fallback_bundle"]
+
+
+def write_console_install_report(
+    paths: Paths, *, outcome: str, version: str, last_error: dict[str, object] | None = None,
+    when: dt.datetime | None = None,
+) -> Path | None:
+    """``logs\\install-report.json`` for a console or unattended run (the setup window writes its own).
+
+    Built from ``config\\install_state.json`` (every step with its status and finish time) so the owner gets
+    the same file whichever way setup ran; ``None`` when there is no state yet or the folder is not writable.
+    """
+    state_file = paths.config / "install_state.json"
+    try:
+        state = json.loads(state_file.read_text(encoding="utf-8")) if state_file.is_file() else {}
+    except (OSError, ValueError):
+        state = {}
+    steps = state.get("steps") if isinstance(state.get("steps"), dict) else {}
+    answers_file = paths.config / "answers.json"
+    answers: dict[str, object] = {}
+    try:
+        if answers_file.is_file():
+            raw = json.loads(answers_file.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                answers = {k: v for k, v in raw.items() if not str(k).endswith("_api_key")}
+    except (OSError, ValueError):
+        answers = {}
+    data = {
+        "schema": 1,
+        "written_at": (when or dt.datetime.now()).isoformat(timespec="seconds"),
+        "version": version,
+        "outcome": outcome,
+        "mode": "console",
+        "dev_mode": bool(state.get("dev_mode")),
+        "profile": state.get("profile"),
+        "app_path": state.get("app_path"),
+        "started_at": state.get("started_at"),
+        "completed_at": state.get("completed_at"),
+        "steps": {sid: {"status": (st or {}).get("status"), "finished_at": (st or {}).get("finished_at"),
+                        "error": (st or {}).get("error")} for sid, st in steps.items()},
+        "last_error": last_error,
+        "answers": answers,
+    }
+    try:
+        paths.logs.mkdir(parents=True, exist_ok=True)
+        out = paths.logs / "install-report.json"
+        out.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    except OSError:
+        return None
+    return out
 
 
 def _bootstrap_dir() -> Path | None:

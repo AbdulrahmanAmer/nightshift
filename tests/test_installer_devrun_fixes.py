@@ -3,6 +3,7 @@ Enter and died with EOFError when stdin was not a console, and the diagnostics b
 because the engine venv (and `ns doctor`) does not exist before s04."""
 
 import io
+import json
 import zipfile
 from pathlib import Path
 
@@ -63,3 +64,27 @@ def test_fallback_bundle_holds_logs_state_and_answers(tmp_path: Path, monkeypatc
     assert {"logs/installer-20261104.jsonl", "config/install_state.json", "config/answers.json",
             "bootstrap/bootstrap/preflight.json"} <= names
     assert (desk / out.name).is_file()
+
+
+def test_console_install_report_is_built_from_the_install_state(tmp_path: Path):
+    from installer.stage2.diagzip import write_console_install_report
+
+    paths = Paths(tmp_path / "home")
+    paths.config.mkdir(parents=True)
+    (paths.config / "install_state.json").write_text(json.dumps({
+        "version": "0.1.7", "app_path": "x", "profile": "cpu-dev", "dev_mode": True,
+        "started_at": "2026-11-04T11:59:18", "completed_at": None,
+        "steps": {"s01_questions": {"status": "done", "error": None, "finished_at": "2026-11-04T12:00:00"},
+                  "s02_download_bins": {"status": "failed", "error": "NS-E105", "finished_at": None}},
+    }), encoding="utf-8")
+    (paths.config / "answers.json").write_text(json.dumps({"home_path": "x", "pixabay_api_key": "SECRET"}),
+                                               encoding="utf-8")
+    err = {"code": "NS-E105", "message": "site unreachable", "detail": "d"}
+    out = write_console_install_report(paths, outcome="failed", version="0.1.7", last_error=err)
+    assert out is not None and out.name == "install-report.json" and out.parent == paths.logs
+    data = json.loads(out.read_text(encoding="utf-8"))
+    assert data["outcome"] == "failed" and data["mode"] == "console" and data["dev_mode"] is True
+    assert data["steps"]["s02_download_bins"]["status"] == "failed"
+    assert data["last_error"]["code"] == "NS-E105"
+    assert "pixabay_api_key" not in data["answers"] and data["answers"]["home_path"] == "x"
+    assert write_console_install_report(Paths(tmp_path / "none"), outcome="done", version="0.1.7") is not None

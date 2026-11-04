@@ -23,7 +23,7 @@ from installer.stage2.base import Step
 from installer.stage2.bridge import BridgeUi, SetupStopped
 from installer.stage2.context import StepContext
 from installer.stage2.devmode import BANNER, env_enabled, relax_checks, reset_for_mode_switch
-from installer.stage2.diagzip import write_fallback_bundle
+from installer.stage2.diagzip import write_console_install_report, write_fallback_bundle
 from installer.stage2.runner import SubprocessRunner
 from installer.stage2.secrets import KEY_NAMES, KeyringStore, MemoryStore, ResilientStore
 from installer.stage2.simulate import FakeRunner
@@ -126,6 +126,7 @@ class Wizard:
                 return EXIT_HALTED
         ctx.state.complete()
         ctx.log.info("wizard_end", warnings=len(ctx.warnings))
+        write_console_install_report(self.ctx.paths, outcome="done", version=__version__)
         return EXIT_OK
 
     # ---- one step ----
@@ -255,6 +256,10 @@ class Wizard:
                 else:
                     ctx.log.info("bundle_fallback", path=str(out))
                     ui.say(f"Diagnostics written to {out} (and a copy on the Desktop when there is one).")
+            write_console_install_report(
+                ctx.paths, outcome="failed", version=__version__,
+                last_error={"code": failure.code, "message": failure.message, "detail": failure.detail},
+            )
             ui.say(f"Send the nightshift-diagnostics zip from your Desktop. Error code: {failure.code}")
             return EXIT_FAILED
         ui.say("Setup stopped. Run INSTALL.cmd again to continue from this step.")
