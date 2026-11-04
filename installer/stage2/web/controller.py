@@ -43,9 +43,6 @@ from installer.stage2.web.keys import check_key
 from installer.stage2.web.model import BOOTSTRAP_STEPS, FILE_NAMES, STEP_ORDER, STEP_PHASE
 from installer.stage2.web.store import SetupStore
 from ns_common.atomic import BACKUP_SUFFIX, write_text_atomic
-from ns_common.paths import Paths
-from ns_common.secret_file import load_secret
-from ns_common.secrets_names import KEY_NAMES
 from ns_common.uv import find_uv
 from ns_common.vcruntime import missing as vcruntime_missing
 
@@ -1683,11 +1680,9 @@ class SetupController:
         """True when a stock footage key was typed in this session or is in the encrypted file from s07."""
         if any(self._keys.values()):
             return True
-        paths = Paths(self.home)
-        try:
-            return any(load_secret(paths, name) for name in KEY_NAMES)
-        except (OSError, ValueError):
-            return False
+        # s07 keeps the keys in config/secrets.dpapi ({name: encrypted text}); a name with a value is enough
+        stored = self._read_json(self.home / "config" / "secrets.dpapi")
+        return any(stored.get(name) for name in ("pexels_api_key", "pixabay_api_key"))
 
     # ---- headless (answers.json next to INSTALL.cmd, or -NoUi) ----
     def run_headless(self) -> int:
