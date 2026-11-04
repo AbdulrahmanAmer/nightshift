@@ -7,6 +7,14 @@ All notable changes to Nightshift are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.1.8] - 2026-11-04
+
+The first release that ran end to end on a real PC before shipping: a dev-mode install on the orchestrator's
+laptop (`INSTALL.cmd --dev`, docs/DEV_MODE.md) exercised stage 1, the setup server and window (WebView2 host),
+every step, the shortcuts, the engine, the dashboard, a job with a real FFmpeg render, an update over the
+install, and the uninstall. Also two review rounds (installer, studio) and the assistant fit work. Send
+`Nightshift-Setup-0.1.8.zip`; an install started with 0.1.6 or 0.1.7 resumes under it (INSTALL.cmd, Continue).
+
 - First dev-mode run on a laptop (`INSTALL.cmd --dev`, unattended): the welcome step waited for Enter and
   died with `EOFError` when standard input was not a console; the console UI now treats end-of-input as
   "not interactive" and takes the defaults, and an unattended run never waits for Enter. A setup that fails
