@@ -173,7 +173,8 @@ export function Choices() {
     setSaving(true);
     try {
       const sig = JSON.stringify(draft);
-      if (sig !== lastPosted.current) {
+      // a restarted install has its answers locked on the server: do not re-send them, just continue
+      if (!locked && sig !== lastPosted.current) {
         const r = await api.postAnswers(draft);
         if (!r.ok) {
           const map: Errors = {}; for (const e of r.errors) map[e.field] = e.message;

@@ -24,3 +24,12 @@ def _roomy_outbox_paths(monkeypatch: pytest.MonkeyPatch) -> None:
     from ns_studio.media import outbox
 
     monkeypatch.setattr(outbox, "MAX_PATH", 400)
+
+
+@pytest.fixture(autouse=True)
+def _network_is_up(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The downloader probes the network after a failed transfer (a PC that woke from sleep). Tests use fake
+    hosts and fake sleeps, so the probe says "up" unless a test sets its own."""
+    from installer.stage2 import downloader
+
+    monkeypatch.setattr(downloader, "network_is_up", lambda url, timeout=5.0: True)

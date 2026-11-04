@@ -90,9 +90,11 @@ export const vramLeftGb = (bytes: number): number => Math.round((16 - bytes / 1e
 
 export const MAX_HOME_LEN = 120;
 const RESERVED_NAMES = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i;
+/** The model programs (llama.cpp, qwentts.cpp, CTranslate2) open their files through the ANSI code page. */
+export const NON_ASCII_PATH = "Use a folder name with plain English letters, digits, spaces, - and _ (the model programs cannot open other paths)";
 /**
  * Why a typed path cannot be the install folder, or null (the same rules as installer/stage2/web/pathcheck.py; the server
- * answers last). Spaces and non-ASCII letters are fine; the folder is made when Install starts, not before.
+ * answers last). Spaces are fine, other than printable ASCII is not; the folder is made when Install starts, not before.
  */
 export function homePathProblem(raw: string): string | null {
   const p = raw.trim();
@@ -103,6 +105,7 @@ export function homePathProblem(raw: string): string | null {
   // eslint-disable-next-line no-control-regex
   if (/[<>:"|?*%\u0000-\u001f]/.test(rest)) return "That path has a character Windows does not allow: < > : \" | ? * %";
   if (p.length > MAX_HOME_LEN) return `Use a path of ${MAX_HOME_LEN} characters or fewer`;
+  if (/[^ -~]/.test(p)) return NON_ASCII_PATH;
   const parts = rest.split("\\");
   if (parts[parts.length - 1] === "") parts.pop();
   for (const name of parts) {

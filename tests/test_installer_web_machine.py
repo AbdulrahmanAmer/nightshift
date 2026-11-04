@@ -56,6 +56,21 @@ def test_before_start_the_phase_follows_the_screen_and_the_answers(ui_step, acce
                                 run="idle", failure=None) == expected
 
 
+def test_a_restarted_install_with_locked_answers_follows_the_steps_not_the_choices_screen():
+    # INSTALL.cmd run again after the questions step: the server is not "started" yet, the answers are locked
+    done = STEP_ORDER.index("s01_questions") + 1
+    assert machine.derive_phase(steps(done), ui_step="welcome", answers_accepted=True, started=False,
+                                run="idle", failure=None, answers_locked=True) == "downloading"
+    later = STEP_ORDER.index("s04_venvs")
+    assert machine.derive_phase(steps(later), ui_step="welcome", answers_accepted=True, started=False,
+                                run="idle", failure=None, answers_locked=True) == "installing"
+    assert machine.derive_phase(steps(len(STEP_ORDER)), ui_step=None, answers_accepted=True, started=False,
+                                run="idle", failure=None, answers_locked=True) == "done"
+    # the default keeps the old behaviour for a fresh install
+    assert machine.derive_phase(steps(0), ui_step="welcome", answers_accepted=True, started=False,
+                                run="idle", failure=None) == "choices"
+
+
 def test_a_failure_only_wins_while_the_engine_waits_for_a_decision():
     failure = {"step": "s03_download_models", "canSkip": False}
     assert phase(5, run="waiting", failure=failure) == "failed"

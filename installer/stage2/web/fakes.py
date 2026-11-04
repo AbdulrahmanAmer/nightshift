@@ -146,6 +146,7 @@ def fake_effects(base: Path, present: set[str] | None = None, **overrides: Any) 
         var[name] = value
         return True
 
+    awake: list[int] = []
     fx = Effects(
         cmd=cmd, which=cmd.which, refresh_path=lambda: None, set_home_var=set_var, get_home_var=var.get,
         probe=lambda app, out, home: sample_handover(app, home=home or r"C:\Nightshift"),
@@ -159,6 +160,7 @@ def fake_effects(base: Path, present: set[str] | None = None, **overrides: Any) 
         pick_folder=lambda title, start: next_pick.pop(0) if next_pick else DEFAULT_PICK,
         drive_type=lambda _letter: 3, vc_missing=cmd.vc_missing, fetch_file=fetch_file,
         run_elevated=run_elevated, add_user_path=add_user_path,
+        set_execution_state=lambda flags: (awake.append(flags), 0)[1],
     )
     for k, v in overrides.items():
         setattr(fx, k, v)
@@ -170,6 +172,7 @@ def fake_effects(base: Path, present: set[str] | None = None, **overrides: Any) 
     fx.fetched = fetched            # type: ignore[attr-defined]
     fx.elevated = elevated          # type: ignore[attr-defined]
     fx.path_adds = path_adds        # type: ignore[attr-defined]
+    fx.awake = awake                # type: ignore[attr-defined]
     return fx, cmd
 
 

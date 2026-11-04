@@ -15,6 +15,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
+from ns_common.avblock import blocked_hint, is_blocked_error
+
 
 @dataclass(frozen=True)
 class RunResult:
@@ -97,6 +99,10 @@ class SubprocessRunner:
             )
         except FileNotFoundError as e:
             return RunResult(127, "", str(e))
+        except OSError as e:
+            if is_blocked_error(e):         # Smart App Control / antivirus refused to start the program
+                return RunResult(126, "", f"{blocked_hint(argv[0])} ({e})")
+            raise
         except subprocess.TimeoutExpired:
             return RunResult(124, "", f"timed out after {timeout} s")
         return RunResult(proc.returncode, proc.stdout or "", proc.stderr or "")

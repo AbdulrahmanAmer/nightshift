@@ -24,7 +24,7 @@ from ns_common import __version__
 from ns_common.errors import NsError
 from ns_common.logging import NsLogger
 from ns_common.paths import Paths
-from ns_common.uv import find_uv, home_uv
+from ns_common.uv import find_uv, home_uv, uv_env
 from ns_common.venv_extras import NO_DEPS, extras_suffix
 
 PRESERVE = (".git", "config", "answers.json")
@@ -414,7 +414,7 @@ def resync_venvs(
     free: Callable[[Path], list[tuple[Path, Path]]] | None = None,
 ) -> list[str]:
     """`uv pip install -e <app>[extras]` in every venv that exists; raises `NS-E702` on failure."""
-    runner = run or _run
+    runner = run or (lambda cmd: _run(cmd, uv_env(paths.home)))
     free_up = free or free_entry_points
     exe = uv if uv is not None else find_uv(paths)
     done: list[str] = []
@@ -440,9 +440,11 @@ def resync_venvs(
     return done
 
 
-def _run(cmd: list[str]) -> tuple[int, str]:
+def _run(cmd: list[str], env: dict[str, str] | None = None) -> tuple[int, str]:
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=1800, check=False)
+        r = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=1800, check=False, env={**os.environ, **(env or {})}
+        )
     except (OSError, subprocess.SubprocessError) as e:
         return 1, str(e)
     return r.returncode, " | ".join((r.stderr or r.stdout).strip().splitlines()[-3:])

@@ -13,7 +13,7 @@ import httpx
 
 from installer.stage2.answers import InstallerAnswers, build_answers, find_answers, load_raw
 from installer.stage2.downloader import DownloadItem, PlanResult, pending, run_plan, total_bytes
-from installer.stage2.errors import describe_code
+from installer.stage2.errors import describe_code, tail_lines
 from installer.stage2.runner import Runner, RunResult
 from installer.stage2.secrets import SecretStore
 from installer.stage2.state import StateStore, load_flags, save_flags
@@ -23,7 +23,7 @@ from installer.stage2.winenv import HOME_VAR
 from ns_common.logging import NsLogger
 from ns_common.models import LlmCustom, Manifest
 from ns_common.paths import Paths
-from ns_common.uv import find_uv
+from ns_common.uv import find_uv, uv_env
 
 
 def default_http() -> httpx.Client:
@@ -142,14 +142,20 @@ class StepContext:
 
     def run_uv(
         self, args: list[str], *, tag: str, meta: dict[str, str] | None = None,
-        timeout: float | None = 3600, capture: bool = False,
+        timeout: float | None = 3600, capture: bool = True,
     ) -> RunResult:
-        """Run uv (output goes to the terminal so the operator sees progress)."""
-        env = {"UV_LINK_MODE": "copy"}
-        return self.runner.run(
-            [self.uv(), *args], cwd=self.app_path, env=env, timeout=timeout, capture=capture, tag=tag,
-            meta=meta,
+        """Run uv with its cache on the install drive (``UV_CACHE_DIR``) and its output captured.
+
+        The output goes to ``logs`` and a failure carries its last lines (``errors.uv_error``), so the Failed
+        screen shows why uv stopped instead of "site unreachable".
+        """
+        res = self.runner.run(
+            [self.uv(), *args], cwd=self.app_path, env=uv_env(self.paths.home), timeout=timeout,
+            capture=capture, tag=tag, meta=meta,
         )
+        if capture and res.text:
+            self.log.info("uv", f"{tag}: exit {res.returncode}", output=tail_lines(res.text, 60))
+        return res
 
     # ---- downloads ----
     def download(self, items: list[DownloadItem], *, models_source: Path | str | None = None) -> PlanResult:

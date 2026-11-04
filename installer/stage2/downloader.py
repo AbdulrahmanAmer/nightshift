@@ -24,6 +24,7 @@ import hashlib
 import json
 import os
 import shutil
+import socket
 import threading
 import time
 import zipfile
@@ -32,6 +33,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, Protocol
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -50,6 +52,9 @@ DEFAULT_RETRIES = 3              # attempts per file
 MAX_RETRIES = 5                  # a caller can ask for more, never gets more
 BACKOFF_CAP_S = 30.0             # wait before attempt n+1 is min(2 ** n, this)
 HASH_ATTEMPTS = 2                # a wrong hash is downloaded once more from scratch, then NS-E109
+OFFLINE_WAIT_S = 120.0           # after a network error wait up to this long for the internet first
+OFFLINE_PROBE_TIMEOUT_S = 5.0    # one reachability probe
+MAX_OFFLINE_WAITS = 12           # waits that ended with the network back (per file) that are not attempts
 ProgressFn = Callable[[int, int | None], None]
 RetryFn = Callable[[int, str, float], None]
 Tier = Literal["small", "balanced", "best"]
@@ -367,6 +372,43 @@ def _fetch_once(
         raise blocked_error(dest, "disappeared right after it was downloaded")
 
 
+def network_is_up(url: str, timeout: float = OFFLINE_PROBE_TIMEOUT_S) -> bool:
+    """True when a TCP connection to the host of ``url`` can be opened (DNS, route and the site's port)."""
+    parts = urlsplit(url)
+    host = parts.hostname or "huggingface.co"
+    try:
+        socket.create_connection((host, parts.port or 443), timeout=timeout).close()
+    except OSError:
+        return False
+    return True
+
+
+def wait_for_network(
+    url: str, *, sleep: Callable[[float], None], probe: Callable[[str], bool] = network_is_up,
+    limit: float = OFFLINE_WAIT_S, on_wait: Callable[[float], None] | None = None,
+) -> str:
+    """Probe the network after a failed transfer, with backoff (2, 4, 8 ... 30 s) for up to ``limit`` seconds.
+
+    Returns ``"up"`` when it was reachable at the first probe (the failure was the site's, so the attempt
+    counts), ``"back"`` when it came back while waiting (a PC that slept and woke: the attempt does not
+    count) and ``"down"`` when it is still gone after ``limit`` seconds. The time waited is summed from the
+    waits themselves, so a fake ``sleep`` makes the loop instant.
+    """
+    if probe(url):
+        return "up"
+    waited, step = 0.0, 2.0
+    while waited < limit:
+        wait = min(step, BACKOFF_CAP_S, limit - waited)
+        if on_wait is not None:
+            on_wait(wait)
+        sleep(wait)
+        waited += wait
+        step *= 2
+        if probe(url):
+            return "back"
+    return "down"
+
+
 def download(
     url: str,
     dest: Path,
@@ -414,6 +456,7 @@ def download(
     reason = "network"
     attempt = 0
     hash_failures = 0
+    offline_waits = 0
     try:
         while attempt < retries:
             if gate is not None:
@@ -444,6 +487,15 @@ def download(
                 last, reason = make_error("NS-E105", f"{url}: {e}"), "network"
             if gate is not None and not gate.is_set():
                 continue  # failed while paused: not a real attempt
+            if reason in ("network", "stall") and offline_waits < MAX_OFFLINE_WAITS:
+                # a PC that woke from sleep has no network for a while: wait for it, do not burn the tries
+                online = wait_for_network(
+                    url, sleep=sleep, probe=network_is_up,
+                    on_wait=(lambda w, a=attempt: on_retry(a, "offline", w)) if on_retry else None,
+                )
+                if online == "back":
+                    offline_waits += 1
+                    continue
             attempt += 1
             if attempt < retries:
                 wait = min(float(2**attempt), BACKOFF_CAP_S)

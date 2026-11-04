@@ -356,7 +356,11 @@ def test_s08_no_report_is_e202_and_report_file_is_a_fallback(tmp_path: Path):
     report = {"checks": [{"name": "nvenc_encode", "passed": True}, {"name": "whisper_cuda", "passed": True}]}
     (ctx2.paths.logs / "verify-report.json").write_text(json.dumps(report), encoding="utf-8")
     assert parse_report(ctx2, RunResult(0, "")) == {"nvenc_encode": True, "whisper_cuda": True}
-    S08Smoke().run(ctx2)
+    # the file is read as a fallback by parse_report, but s08 deletes a report from an earlier run before it
+    # runs `ns verify`, so a verify that wrote nothing can no longer pass on it
+    with pytest.raises(NsError) as ei2:
+        S08Smoke().run(ctx2)
+    assert ei2.value.code == "NS-E202" and "no report" in ei2.value.detail
 
 
 def test_parse_report_ignores_noise_around_the_json(tmp_path: Path):
