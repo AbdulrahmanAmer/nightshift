@@ -73,3 +73,22 @@ def test_budget_numbers_are_printed_for_the_record(home: fixture_home.FixtureHom
     assert worst["system"] <= plan.system, worst
     assert worst["tools"] <= plan.tools, worst
     assert worst["context_block"] <= plan.context_block, worst
+
+
+def test_zz_measure(home: fixture_home.FixtureHome):  # TEMPORARY: prints the measured numbers by failing; removed in the next commit
+    from ns_dashboard.assistant import router
+    cases = load_cases(CASES, home.ids, fixture_home.SECRET)
+    out = []
+    for ctx in (16384, 32768):
+        results = [run_case(home.dash, c, ctx_tokens=ctx) for c in cases]
+        out.append(f"ctx {ctx}: " + str({k: max(r.stats[k] for r in results) for k in ("system", "tools", "context_block", "history", "total")}))
+        out.append(render_markdown(results))
+    reg = home.dash.registry
+    core = [reg.get(n).spec.openai() for n in router.CORE]  # type: ignore[union-attr]
+    out.append(f"core8 tokens {prompt.estimate_json(core)}")
+    for t in router.PACKS:
+        names = router._pack(reg, t, "")
+        specs = [reg.get(n).spec.openai() for n in names]  # type: ignore[union-attr]
+        out.append(f"pack {t}: {len(names)} tools {prompt.estimate_json(specs)} tokens: {','.join(names)}")
+    out.append("system tokens " + str(prompt.estimate_tokens(home.dash.assistant.system_prompt())))
+    assert False, "\n" + "\n".join(out)
