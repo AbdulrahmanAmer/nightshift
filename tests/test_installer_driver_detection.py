@@ -211,4 +211,4 @@ def test_w115_has_a_code_a_plain_text_and_a_ui_string() -> None:
     copy = json.loads(copy_file.read_text(encoding="utf-8"))
     assert copy["NS-W115"]["title"] and "CUDA 12.4" in copy["NS-W115"]["whatToDo"]
     ts = (ROOT / "installer" / "ui" / "src" / "copy.ts").read_text(encoding="utf-8")
-    assert '"NS-W115"' in ts and "NS-W115" in (ROOT / "OPERATOR.md").read_text(encoding="utf-8")
+    assert "operator_copy.json" in ts and "NS-W115" in (ROOT / "OPERATOR.md").read_text(encoding="utf-8")
