@@ -7,6 +7,42 @@ All notable changes to Nightshift are recorded here. The format follows
 
 ## [Unreleased]
 
+### Assistant slice 1: make it fit (`feat/assistant-fit`)
+
+The Assistant overflowed the local model's 16,384-token context in long chats (about 9-10k tokens were used before any
+history: the prompt, a 1,700-token system map, all 59 tools, and tool results of up to 6,000 characters).
+
+- **Prompt budgets** (`assistant/prompt.py`). Every request is planned against the context from `runtime.json`
+  (`llama.flags.ctx`, 16,384 when unknown): 16k = reply 1,200, system 1,300, tools 2,500, context block 2,500, margin
+  1,000, history the rest (7,884); 32k = 1,500 / 1,300 / 3,000 / 4,500 / 1,500 / 20,968. One estimator everywhere
+  (`approx_tokens` plus 10 %). The reply limit (`max_tokens`) now follows the plan.
+- **Stable system message, live facts on the question.** The system message is the same bytes for the whole run of the
+  app (no live state), so llama-server keeps its cache; engine state, GPU owner, videos waiting, jobs, next run,
+  channels, the page and a reminder are attached to the latest user message once per turn, labelled as data. They are
+  never stored in the transcript.
+- **History compaction.** Tool results of earlier turns become one-line digests; this turn's results are kept up to
+  1,500 tokens and shrunk by re-building the JSON (summary fields kept, lists and strings shortened), never cut through
+  the middle of a string. Over budget, the oldest whole turn goes first, so a tool call is never split from its result.
+  Stored results are no longer truncated at 6,000 characters (they are rebuilt smaller above 20,000).
+- **Topic router and trimmed tools** (`assistant/router.py`). No model call: the page, keyword phrases, ids, `NS-` codes,
+  channel slugs and the previous turn's topics pick at most two topics. The model sees 8 core tools (`status`, `find`,
+  `where_is`, `open_path`, `search_docs`, `diagnose`, `explain_error`, `list_tools`) plus at most 10 tools of those
+  topics: at most 18 instead of 59. Calling `list_tools(topic)` adds that topic's tools for the next step of the turn.
+  `fetch_footage` is in the library topic; the 12 workshop tools appear only with the series topic.
+- **Task-shaped read tools** (`assistant/composite.py`): `diagnose` (job, failed stage, plain meaning of the code, log
+  lines, policy retries, next step), `review_brief` (policy notes, disclosure, earlier rejections on the same options;
+  the owner still decides), `what_worked` (best options per pool with the number of videos and a confidence word),
+  `tonight_plan`, `video_stats`, `get_story` and `open_path` (opens a folder inside the Nightshift home only).
+- **Model alias `code`** instead of `story` for the Assistant: in two-model mode `story` is the 21 GB writing model.
+- **Docs scope.** `search_docs` and `find` serve `README.md`, `OPERATOR.md`, the error catalogue and a generated list of
+  what the Assistant can and cannot do. `BUILD_SPEC.md` and `docs/ENGINEERING.md` are no longer indexed (they describe a
+  build, not this install). The system prompt is version 2.
+- **Pasted keys are blanked** (`assistant/redact.py`) before they are stored in `assistant.db` or sent to the model;
+  the next turn tells the model to point to Settings > Stock footage keys.
+- **Offline evaluation** (`assistant/eval.py`, `tests/assistant_eval/`): the 20 partner questions on the scripted fake
+  model assert the topics and tools offered, the retrieval scope, the token budget of every request (also after a
+  30-turn history) and the confirm gate. No database schema change.
+
 ### Assistant: pull stock footage now (`feat/assistant-fetch-footage`)
 
 - **`fetch_footage` tool and `POST /api/library/footage/fetch`.** The Assistant (after the owner's Yes) can search

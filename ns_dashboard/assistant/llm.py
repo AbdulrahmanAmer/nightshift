@@ -16,13 +16,18 @@ from ns_common.errors import NsError
 from ns_common.llm_client import LlmClient, strip_thinking
 
 OWNER = "dashboard:assistant"
+#: The Assistant runs on the Balanced base model (`code`), never on the story model: in two-model mode `story` is a
+#: 21 GB abliterated writer that does not fit the card and is the wrong choice for an agent that must obey confirm rules.
+MODEL_ALIAS = "code"
 
 
 class ToolLlm(Protocol):
     """Anything that can answer one chat turn with optional tool calls."""
 
-    def chat_tools(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> dict[str, Any]:
-        """Return an assistant message `{role, content, tool_calls?}`."""
+    def chat_tools(
+        self, messages: list[dict[str, Any]], tools: list[dict[str, Any]], *, max_tokens: int | None = None
+    ) -> dict[str, Any]:
+        """Return an assistant message `{role, content, tool_calls?}`; `max_tokens` caps the reply."""
         ...
 
 
@@ -47,7 +52,7 @@ class ToolLlmClient(LlmClient):
         tools: list[dict[str, Any]],
         *,
         temperature: float = 0.3,
-        max_tokens: int = 1200,
+        max_tokens: int | None = None,
     ) -> dict[str, Any]:
         """One tool-calling chat turn; `tool_calls[].function.arguments` stays a JSON string."""
         body: dict[str, Any] = {
@@ -56,7 +61,7 @@ class ToolLlmClient(LlmClient):
             "tools": tools,
             "tool_choice": "auto",
             "temperature": temperature,
-            "max_tokens": max_tokens,
+            "max_tokens": max_tokens or 1200,
             "chat_template_kwargs": {"enable_thinking": False},
         }
         try:
@@ -111,8 +116,8 @@ class SupervisorLlmProvider:
         owner = st.get("gpu_owner")
         if owner and owner != OWNER:
             raise EngineBusy(str(owner))
-        ep = self.acquirer.acquire("llama", OWNER, model_alias="story", timeout_s=120)
-        return ToolLlmClient(ep.base_url, ep.model_alias or "story", timeout_s=300)
+        ep = self.acquirer.acquire("llama", OWNER, model_alias=MODEL_ALIAS, timeout_s=120)
+        return ToolLlmClient(ep.base_url, ep.model_alias or MODEL_ALIAS, timeout_s=300)
 
     def release(self) -> None:
         """Release `llama`; the supervisor unloads it after its idle timeout."""
@@ -167,11 +172,15 @@ class ScriptedToolLlm:
         self.script = list(script)
         self.requests: list[list[dict[str, Any]]] = []
         self.tool_lists: list[list[dict[str, Any]]] = []
+        self.max_tokens: list[int | None] = []
 
-    def chat_tools(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> dict[str, Any]:
+    def chat_tools(
+        self, messages: list[dict[str, Any]], tools: list[dict[str, Any]], *, max_tokens: int | None = None
+    ) -> dict[str, Any]:
         """Next scripted message; after the script ends it answers with a stock sentence."""
         self.requests.append([dict(m) for m in messages])
         self.tool_lists.append(tools)
+        self.max_tokens.append(max_tokens)
         if not self.script:
             return say("(script finished)")
         item = self.script.pop(0)
@@ -181,7 +190,9 @@ class ScriptedToolLlm:
 class EchoToolLlm:
     """Offline stand-in for `--fake-services`: answers with the last thing the owner said."""
 
-    def chat_tools(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> dict[str, Any]:
+    def chat_tools(
+        self, messages: list[dict[str, Any]], tools: list[dict[str, Any]], *, max_tokens: int | None = None
+    ) -> dict[str, Any]:
         """Echo the latest user message."""
         last = next((m["content"] for m in reversed(messages) if m.get("role") == "user"), "")
         return say(f"(fake assistant) I heard: {last}")

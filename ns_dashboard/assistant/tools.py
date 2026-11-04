@@ -10,11 +10,12 @@ new route without a descriptor (or a reason) fails CI.
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from ns_dashboard.assistant import orientation
-from ns_dashboard.assistant.registry import Registry, ToolCall, ToolContext, ToolDef, ToolSpec, obj
+from ns_dashboard.assistant import composite, orientation
+from ns_dashboard.assistant.registry import TOPICS, Registry, ToolCall, ToolContext, ToolDef, ToolSpec, obj
 from ns_dashboard.common import offered_formats
 from ns_dashboard.errors import ApiError
 from ns_dashboard.formats import merge_dicts
@@ -147,6 +148,11 @@ def _describe(c: ToolContext, a: dict[str, Any]) -> Any:
 
 def _list_tools(c: ToolContext, a: dict[str, Any]) -> Any:
     grouped = c.dash.registry.by_topic(a.get("topic"))
+    if not a.get("topic"):  # the whole list would not fit the model's window: names only
+        return {"topics": {topic: [s.name for s in specs] for topic, specs in grouped.items()},
+                "note": "Call list_tools with a topic to see what each tool does and to get that topic's tools."}
+    if not grouped:
+        return {"error": {"code": "unknown_topic", "message": f"Topics are: {', '.join(TOPICS)}."}}
     return {topic: [{"name": s.name, "does": s.description, "changes_something": s.side_effect} for s in specs]
             for topic, specs in grouped.items()}
 
@@ -351,9 +357,9 @@ def _tools() -> list[ToolDef]:
            required=["thing"]),
         _t("describe_tool", "orientation", "Full description and arguments of one tool.", _describe,
            props={"name": _s("tool name")}, required=["name"]),
-        _t("list_tools", "orientation", "Every tool grouped by topic (queue, create, library, channels, ...).",
-           _list_tools, props={"topic": _s("only this topic")}),
-        _t("search_docs", "orientation", "Ranked passages from the Nightshift docs (spec, README, operator guide).",
+        _t("list_tools", "orientation", "Tools by topic. With a topic it lists that topic's tools and shows them to you from the next step.",
+           _list_tools, props={"topic": _s("only this topic", enum=list(TOPICS))}),
+        _t("search_docs", "orientation", "Ranked passages from the README, operator guide, error list and what the Assistant can do.",
            orientation.search_docs,
            props={"query": _s("what to look up"), "limit": _i("how many", minimum=1, maximum=10)},
            required=["query"]),
@@ -407,6 +413,26 @@ def _workshop_tools() -> list[ToolDef]:
     return out
 
 
+#: Result fields that survive when a long result is shrunk or digested for the model (`prompt.shrink_result`).
+SUMMARY_FIELDS: dict[str, tuple[str, ...]] = {
+    "list_queue": ("output_id", "title", "channel", "kind", "status", "duration_s"),
+    "get_output": ("output_id", "title", "channel", "kind", "status", "policy_notes", "ai_disclosure", "made_for_kids", "folder", "story_excerpt", "description", "tags"),
+    "list_jobs": ("job_id", "kind", "channel", "status", "stage", "message"),
+    "get_job": ("job_id", "kind", "channel", "status", "stage", "message", "result"),
+    "search_stories": ("job_id", "channel", "working_title", "opening_line", "outputs"),
+    "list_ideas": ("idea_id", "channel", "title", "premise", "status"),
+    "find": ("query", "hits"),
+    "search_docs": ("query", "hits"),
+}
+
+
+def _with_summary(td: ToolDef) -> ToolDef:
+    fields = SUMMARY_FIELDS.get(td.spec.name)
+    if not fields or td.spec.summary_fields:
+        return td
+    return replace(td, spec=replace(td.spec, summary_fields=fields))
+
+
 def build_registry() -> Registry:
-    """Registry of every tool (route-derived and orientation)."""
-    return Registry([*_tools(), *_workshop_tools()])
+    """Registry of every tool (route-derived, orientation, composite read tools and the workshop)."""
+    return Registry([_with_summary(t) for t in [*_tools(), *composite.tools(), *_workshop_tools()]])

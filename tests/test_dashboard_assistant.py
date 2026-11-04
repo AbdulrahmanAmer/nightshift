@@ -11,6 +11,7 @@ from ns_dashboard.assistant import docs_index
 from ns_dashboard.assistant.llm import ScriptedToolLlm, StaticProvider, call, calls, say
 from ns_dashboard.assistant.loop import fill_from_context, load_prompt
 from ns_dashboard.assistant.orientation import compact_map, system_map
+from ns_dashboard.assistant.prompt import BUDGET_16K, estimate_tokens
 from ns_dashboard.assistant.registry import TOPICS, ToolContext, check_value, obj, render_confirm
 from ns_dashboard.assistant.store import AssistantStore
 from ns_dashboard.assistant.tools import NO_TOOL, build_registry
@@ -140,7 +141,7 @@ def test_fill_from_context():
 def test_prompt_has_versioned_front_matter():
     meta, body = load_prompt()
     assert isinstance(meta["version"], int) and meta["version"] >= 1
-    assert "{{system_map}}" in body and "{{context}}" in body
+    assert "{{static_map}}" in body and "{{context}}" not in body and "{{system_map}}" not in body
     for rule in ("confirm card", "never claim", "approve or reject"):
         assert rule.lower() in body.lower()
 
@@ -160,18 +161,23 @@ def test_system_map_is_compact_and_complete(tmp_home: Path):
     assert "\n" not in text and json.loads(text)["home"] == str(tmp_home)
 
 
-def test_system_prompt_injects_map_and_context(tmp_home: Path):
-    dash, _, _ = make(tmp_home)
-    prompt = dash.assistant.system_prompt(ToolContext(dash, {"page": "Queue", "output_id": "j/s1"}))
-    assert "{{" not in prompt and '"pages"' in prompt and '"output_id": "j/s1"' in prompt
+def test_system_prompt_is_static_and_fits_its_budget(tmp_home: Path):
+    dash, state, _ = make(tmp_home)
+    seed_channel(state.db, state.paths, "after-dark")
+    first = dash.assistant.system_prompt(ToolContext(dash, {"page": "Queue", "output_id": "j/s1"}))
+    again = dash.assistant.system_prompt(ToolContext(dash, {"page": "Library"}))
+    assert first == again  # no live state and no page context: byte-identical, so the model's cache survives
+    assert "{{" not in first and "Pages:" in first and "Queue" in first and "outbox" in first
+    assert "after-dark" not in first and "j/s1" not in first
+    assert estimate_tokens(first) <= BUDGET_16K.system
 
 
-def test_search_docs_finds_the_queue_passage_for_posting():
+def test_search_docs_serves_only_the_owner_docs():
     idx = docs_index.DocsIndex.from_root(repo_root())
     hits = idx.search("post to youtube", 3)
-    assert hits, "the spec should have passages about posting to YouTube"
-    assert any("posting checklist" in h["text"] and h["file"] == "BUILD_SPEC.md" for h in hits), hits
-    assert any("Queue" in h["text"] for h in hits)
+    assert hits, "the owner docs should have passages about YouTube"
+    assert {h["file"] for h in hits} <= set(docs_index.DOC_FILES), hits
+    assert "BUILD_SPEC.md" not in docs_index.DOC_FILES and "docs/ENGINEERING.md" not in docs_index.DOC_FILES
 
 
 def test_docs_index_chunking_and_errors_file():
@@ -236,7 +242,8 @@ def test_read_only_tool_runs_immediately(tmp_home: Path):
     second = llm.requests[1]
     assert second[0]["role"] == "system" and "Queue" in second[0]["content"]
     assert second[-1]["role"] == "tool" and oid in second[-1]["content"]
-    assert len(llm.tool_lists[0]) == len(dash.registry.names())
+    offered = [t["function"]["name"] for t in llm.tool_lists[0]]
+    assert len(offered) <= 18 and "list_queue" in offered and len(offered) < len(dash.registry.names())
     assert provider.released == 1
     cid = events[0]["payload"]["conversation_id"]
     roles = [m["role"] for m in dash.assistant.history(cid)["messages"]]

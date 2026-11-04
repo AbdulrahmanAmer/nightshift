@@ -8,20 +8,25 @@ import json
 import math
 import re
 from collections import Counter
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from ns_common.config import load_install_state
 from ns_common.paths import Paths, repo_root
+from ns_dashboard.assistant.registry import ToolSpec
 
+#: What the Assistant may quote as fact: what the owner reads (README, operator guide), the error catalogue and the
+#: generated list of what the Assistant itself can do. BUILD_SPEC.md and docs/ENGINEERING.md describe a build, not
+#: this install (they name tools that do not exist and builder rules), so they are not indexed.
 DOC_FILES = (
-    "BUILD_SPEC.md",
     "README.md",
     "OPERATOR.md",
-    "docs/ENGINEERING.md",
     "contracts/errors.json",
 )
+CAPABILITIES_FILE = "capabilities (generated)"
+ALLOWED_SOURCES = frozenset({*DOC_FILES, CAPABILITIES_FILE})
 STOPWORDS = frozenset(
     "a an and are as at be by can do does for from has have how i if in into is it its me my of on or our so "
     "that the their then there these this to up was we what when where which who why will with you your".split()
@@ -136,8 +141,8 @@ class DocsIndex:
         self._idf = {t: math.log(1 + (self._n - d + 0.5) / (d + 0.5)) for t, d in df.items()}
 
     @classmethod
-    def from_root(cls, root: Path, files: tuple[str, ...] = DOC_FILES) -> DocsIndex:
-        """Index whichever of `files` exist under `root`."""
+    def from_root(cls, root: Path, files: tuple[str, ...] = DOC_FILES, extra: Iterable[Chunk] = ()) -> DocsIndex:
+        """Index whichever of `files` exist under `root`, plus the `extra` chunks (the generated capability list)."""
         chunks: list[Chunk] = []
         for rel in files:
             f = root / rel
@@ -148,7 +153,7 @@ class DocsIndex:
             except OSError:
                 continue
             chunks += chunk_errors(rel, text) if rel.endswith(".json") else chunk_markdown(rel, text)
-        return cls(chunks)
+        return cls([*chunks, *extra])
 
     def search(self, query: str, k: int = 5) -> list[dict[str, Any]]:
         """Top `k` passages for `query`: `{file, heading, line, score, text}`."""
@@ -194,12 +199,45 @@ def docs_root(paths: Paths) -> Path:
     return Path(app) if app and Path(app).is_dir() else repo_root()
 
 
-def get_index(paths: Paths) -> DocsIndex:
-    """The shared index for this installation (built on first use)."""
+#: Plain facts the registry cannot generate: things people ask the Assistant to do that Nightshift never does.
+FACTS: tuple[tuple[str, str], ...] = (
+    (
+        "upload to YouTube",
+        "Can the Assistant upload, publish or post videos to YouTube? No. Nightshift never uploads. The owner posts "
+        "each video by hand on YouTube and then pastes the link on the Queue page (Mark as posted).",
+    ),
+    (
+        "approve or reject a video",
+        "Can the Assistant approve or reject a video? No. Only the owner approves or rejects, on the Queue page (press A "
+        "to approve, R to reject). The Assistant can prepare the decision with review_brief.",
+    ),
+)
+
+
+def capability_chunks(specs: Iterable[ToolSpec], no_tool: Mapping[tuple[str, str], str]) -> list[Chunk]:
+    """The generated "what can the Assistant do" passages: one per tool, one per thing it must never do."""
+    out: list[Chunk] = []
+    for s in sorted(specs, key=lambda x: x.name):
+        how = "It asks the owner to confirm first." if s.side_effect else "It only reads and runs at once."
+        out.append(Chunk(CAPABILITIES_FILE, s.name, 0, f"The Assistant tool {s.name}: {s.description} {how}"))
+    for (method, path), reason in sorted(no_tool.items()):
+        if not reason.startswith(("never", "destructive")):
+            continue  # plumbing routes (downloads, streams) are not things anyone asks for
+        words = reason.removeprefix("never:").strip()
+        verb = path.rstrip("/").rsplit("/", 1)[-1] or path
+        out.append(
+            Chunk(CAPABILITIES_FILE, f"cannot: {verb}", 0, f"The Assistant cannot do this ({method} {path}): {words}.")
+        )
+    out += [Chunk(CAPABILITIES_FILE, heading, 0, text) for heading, text in FACTS]
+    return out
+
+
+def get_index(paths: Paths, capabilities: Callable[[], list[Chunk]] | None = None) -> DocsIndex:
+    """The shared index for this installation (built on first use). `capabilities` adds the generated passages."""
     root = docs_root(paths)
-    key = str(root)
+    key = f"{root}|{'cap' if capabilities else 'plain'}"
     idx = _CACHE.get(key)
     if idx is None:
-        idx = DocsIndex.from_root(root)
+        idx = DocsIndex.from_root(root, extra=capabilities() if capabilities else ())
         _CACHE[key] = idx
     return idx

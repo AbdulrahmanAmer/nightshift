@@ -6,22 +6,27 @@ from __future__ import annotations
 
 import json
 import secrets
-from collections.abc import Iterator
+from collections import deque
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
 import yaml
 
+from ns_common.config import load_runtime
 from ns_common.errors import NsError
+from ns_dashboard.assistant import prompt, router
 from ns_dashboard.assistant.llm import EngineBusy, EngineOffline, LlmProvider
+from ns_dashboard.assistant.orientation import static_map
+from ns_dashboard.assistant.redact import redact_obj, redact_text
 from ns_dashboard.assistant.registry import Registry, ToolContext, ToolDef, render_confirm
 from ns_dashboard.assistant.store import AssistantStore
 from ns_dashboard.errors import AdapterUnavailable, ApiError
 
 PROMPT_FILE = Path(__file__).resolve().parents[1] / "prompts" / "assistant.md"
 MAX_STEPS = 8
-HISTORY_MESSAGES = 30
-RESULT_CHARS = 6000
+RESULT_CHARS = 20000  # a stored tool result longer than this is rebuilt smaller (still valid JSON)
+STORE_TOKENS = 5000
 
 Event = dict[str, Any]
 
@@ -72,10 +77,12 @@ def run_tool(td: ToolDef, ctx: ToolContext, args: dict[str, Any]) -> tuple[bool,
 
 
 def to_text(result: Any) -> str:
-    """JSON text for the model, trimmed to a sane size."""
+    """JSON text of a tool result for the transcript; an enormous one is rebuilt smaller, never cut mid-string.
+
+    The model never reads this text as stored: `prompt.assemble` shrinks this turn's results and digests old ones."""
     text = json.dumps(result, ensure_ascii=False, default=str)
     if len(text) > RESULT_CHARS:
-        text = text[:RESULT_CHARS] + '..."(truncated)"'
+        text = prompt.shrink_result(text, STORE_TOKENS)
     return text
 
 
@@ -83,31 +90,44 @@ class Assistant:
     """One instance per app: runs chat turns and executes confirmed actions."""
 
     def __init__(self, dash: Any, registry: Registry, store: AssistantStore, provider: LlmProvider,
-                 *, max_steps: int = MAX_STEPS) -> None:
+                 *, max_steps: int = MAX_STEPS, ctx_tokens: Callable[[], int] | None = None) -> None:
         self.dash = dash
         self.registry = registry
         self.store = store
         self.provider = provider
         self.max_steps = max_steps
+        self._ctx_fn = ctx_tokens
+        self._system: str | None = None
+        self.summary_fields = {t.spec.name: t.spec.summary_fields for t in registry.all() if t.spec.summary_fields}
+        #: The estimated token sections and the tool names of the latest requests (the eval and tests read them).
+        self.stats: deque[prompt.PromptStats] = deque(maxlen=64)
+        self.offered: deque[list[str]] = deque(maxlen=64)
+
+    def context_tokens(self) -> int:
+        """The language model's context size: `runtime.json` llama.flags.ctx (16,384 when it cannot be read)."""
+        if self._ctx_fn is not None:
+            return int(self._ctx_fn())
+        try:
+            return int(load_runtime(self.dash.state.paths).llama.flags.ctx)
+        except (NsError, OSError, ValueError):
+            return prompt.DEFAULT_CTX
 
     # --------------------------------------------------------------- prompt
-    def system_prompt(self, ctx: ToolContext) -> str:
-        """The versioned prompt with the compact system map and the owner's context filled in."""
-        from ns_dashboard.assistant.orientation import compact_map
-
-        _meta, body = load_prompt()
-        shown = {k: v for k, v in ctx.context.items() if v}
-        return body.replace("{{system_map}}", compact_map(ctx)).replace(
-            "{{context}}", json.dumps(shown, ensure_ascii=False) if shown else "(none)"
-        )
+    def system_prompt(self, ctx: ToolContext | None = None) -> str:
+        """The versioned prompt with the fixed map of pages and folders. Byte-identical for the whole run of the
+        app (no live state, no context), so llama-server keeps its cache of the system and tools block."""
+        if self._system is None:
+            _meta, body = load_prompt()
+            self._system = body.replace("{{static_map}}", static_map())
+        return self._system
 
     # --------------------------------------------------------------- chat
     def chat(self, message: str, conversation_id: str | None = None, context: dict[str, Any] | None = None,
              *, record_user: bool = True) -> Iterator[Event]:
         """Run one owner message to completion, yielding events:
         `conversation`, `tool_call`, `tool_result`, `confirm`, `message`, `busy`, `error`, `done`."""
-        context = dict(context or {})
-        text = (message or "").strip()
+        context = dict(redact_obj(dict(context or {})))  # a pasted key is blanked before it is stored or sent
+        text = redact_text((message or "").strip())
         if not text:
             yield {"kind": "error", "payload": {"code": "empty_message", "message": "Type a question first."}}
             yield {"kind": "done", "payload": {}}
@@ -146,20 +166,31 @@ class Assistant:
             self.provider.release()
         yield {"kind": "done", "payload": {"conversation_id": cid}}
 
-    def _history(self, cid: str) -> list[dict[str, Any]]:
-        msgs = self.store.messages(cid)[-HISTORY_MESSAGES:]
-        # a tool message must follow the assistant message that called it: drop orphans at the cut
-        while msgs and msgs[0]["role"] == "tool":
-            msgs.pop(0)
-        keep = ("role", "content", "tool_calls", "tool_call_id", "name")
-        return [{k: m[k] for k in keep if k in m} for m in msgs]
+    @staticmethod
+    def _previous_topics(registry: Registry, stored: list[dict[str, Any]]) -> list[str]:
+        """Topics of the tools the previous turn called (they stay in play for one more turn)."""
+        last = max((i for i, m in enumerate(stored) if m["role"] == "user"), default=-1)
+        before = stored[: max(last, 0)]
+        start = max((i for i, m in enumerate(before) if m["role"] == "user"), default=0)
+        names = [str((c.get("function") or {}).get("name", "")) for m in before[start:] for c in m.get("tool_calls") or []]
+        return router.topics_of_calls(registry, names)
 
     def _turn(self, llm: Any, cid: str, context: dict[str, Any]) -> Iterator[Event]:
         ctx = ToolContext(self.dash, context)
-        tools = self.registry.openai_tools()
+        stored = self.store.messages(cid)
+        question = next((str(m["content"]) for m in reversed(stored) if m["role"] == "user"), "")
+        slugs = [c.slug for c in self.dash.channels.load_all()]
+        topics = router.route(question, context, slugs, self._previous_topics(self.registry, stored))
+        offer = router.ToolOffer(self.registry, question, topics)
+        budget = prompt.budget_for(self.context_tokens())
+        system = self.system_prompt()
+        block = prompt.build_context_block(self.dash, context, question, budget.context_block)  # once per turn
         for _step in range(self.max_steps):
-            messages = [{"role": "system", "content": self.system_prompt(ctx)}, *self._history(cid)]
-            reply = llm.chat_tools(messages, tools)
+            tools = prompt.fit_tools(offer.specs(), offer.core_count, budget)
+            messages, stats = prompt.assemble(system, self.store.messages(cid), block, tools, budget, self.summary_fields)
+            self.stats.append(stats)
+            self.offered.append([t["function"]["name"] for t in tools])
+            reply = llm.chat_tools(messages, tools, max_tokens=budget.output_reserve)
             calls = reply.get("tool_calls") or []
             content = (reply.get("content") or "").strip()
             self.store.add_message(cid, "assistant", content, tool_calls=calls or None)
@@ -169,12 +200,12 @@ class Assistant:
             if content:
                 yield {"kind": "message", "payload": {"text": content, "partial": True}}
             for c in calls:
-                yield from self._run_call(cid, c, ctx)
+                yield from self._run_call(cid, c, ctx, offer)
         note = "I stopped after several steps without a final answer. Please ask again more simply."
         self.store.add_message(cid, "assistant", note)
         yield {"kind": "message", "payload": {"text": note}}
 
-    def _run_call(self, cid: str, call: dict[str, Any], ctx: ToolContext) -> Iterator[Event]:
+    def _run_call(self, cid: str, call: dict[str, Any], ctx: ToolContext, offer: router.ToolOffer | None = None) -> Iterator[Event]:
         fn = call.get("function") or {}
         name = str(fn.get("name", ""))
         call_id = str(call.get("id") or name)
@@ -211,6 +242,11 @@ class Assistant:
             return
         yield {"kind": "tool_call", "payload": {"tool": name, "args": args}}
         ok, result = run_tool(td, ctx, args)
+        if ok and name == "list_tools" and offer is not None and isinstance(result, dict):
+            topic = args.get("topic") if isinstance(args, dict) else None
+            added = offer.add_topic(topic) if isinstance(topic, str) else []
+            if added:  # the escape hatch: the next step of this turn offers that topic's tools
+                result = {**result, "tools_added": added, "note": "Tools added for your next step: " + ", ".join(added)}
         reply(result)
         yield {"kind": "tool_result", "payload": {"tool": name, "ok": ok, "result": result}}
 
