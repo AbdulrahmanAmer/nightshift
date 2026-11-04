@@ -31,13 +31,13 @@ def _client(tmp_home: Path) -> TestClient:
 
 
 def test_the_dashboard_answers_the_supervisors_health_probe(tmp_home: Path):
-    r = _client(tmp_home).get("/health")
+    r = _client(tmp_home).get("/api/health")
     assert r.status_code == 200 and r.json()["ok"] is True
 
 
 def test_the_supervisor_probes_the_dashboard_at_health(tmp_home: Path):
     d = build_service(Runtime.default("cpu-dev"), Paths.from_env(), "dashboard")
-    assert d.health_url.endswith(":8100/health")
+    assert d.health_url.endswith(":8100/api/health")
 
 
 def test_dev_mode_needs_no_stock_footage_key(tmp_home: Path):
