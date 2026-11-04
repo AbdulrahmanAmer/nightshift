@@ -7,6 +7,10 @@ All notable changes to Nightshift are recorded here. The format follows
 
 ## [Unreleased]
 
+- Installer: running INSTALL.cmd again after the questions step (window closed, PC slept or rebooted, power
+  cut, update over an install) showed a greyed-out Choices screen whose Install button re-sent the locked
+  answers and stopped; the setup window now opens on the "Setup is halfway" screen and Continue resumes the
+  run from the first unfinished step (`machine.derive_phase` follows the steps when the answers are locked).
 ### Assistant: pull stock footage now (`feat/assistant-fetch-footage`)
 
 - **`fetch_footage` tool and `POST /api/library/footage/fetch`.** The Assistant (after the owner's Yes) can search
