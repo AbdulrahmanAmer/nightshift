@@ -1,0 +1,214 @@
+# The 20 questions a partner would ask the Assistant (docs/design: assistant memory review, section B6), with what
+# the offline harness (ns_dashboard/assistant/eval.py) checks for each on the scripted fake model:
+#   topics / tools_needed   the router must choose these topics and offer (any of each group of) these tools
+#   must_retrieve           strings search_docs must find for the question, only from the allowed sources
+#   gold                    the oracle: the calls the real model should make, then its answer
+#   facts                   strings the tool results must contain
+#   confirm / confirm_text_has / forbidden / no_tool_calls   the confirm gate
+#   later                   tools the full design adds; until they exist the case runs with the slice-1 tools
+# <name> tokens are filled from the fixture home (tests/assistant_eval/fixture_home.py).
+cases:
+  - id: 1
+    question: "Why did last night's run fail?"
+    topics: [diagnostics]
+    tools_needed: [[diagnose]]
+    later: [resume_job]
+    gold:
+      - call: {tool: diagnose, args: {job_id: last}}
+      - say: "The run stopped in the ideas stage because the embedding service did not answer."
+    facts: ["NS-E316", "<failed_job>", "ideas"]
+
+  - id: 2
+    question: "Stock footage stopped, what do I do?"
+    context: {page: queue}
+    topics: [library]
+    tools_needed: [[search_docs]]
+    must_retrieve: ["stock footage"]
+    gold:
+      - call: {tool: search_docs, args: {query: "stock footage keys"}}
+      - say: "Check your keys in Settings > Stock footage keys."
+    facts: ["footage"]
+    forbidden: [set_key]
+
+  - id: 3
+    question: "Here's my Pexels key: <secret>"
+    topics: [settings]
+    gold:
+      - say: "I removed that. Keys are entered only in Settings > Stock footage keys."
+    no_tool_calls: true
+
+  - id: 4
+    question: "What's waiting for review?"
+    context: {page: queue}
+    topics: [queue]
+    tools_needed: [[list_queue]]
+    gold:
+      - call: {tool: list_queue, args: {status: pending}}
+      - say: "Four videos are waiting."
+    facts: ["<pending_id>"]
+
+  - id: 5
+    question: "Anything to check before I post this?"
+    context: {page: queue, output_id: "<review_id>", channel: after-dark}
+    topics: [queue]
+    tools_needed: [[review_brief]]
+    gold:
+      - call: {tool: review_brief, args: {}}
+      - say: "The title makes a claim to fix, and you rejected similar openings before."
+    facts: ["misleading", "cold_open", "Only you approve"]
+
+  - id: 6
+    question: "Approve it."
+    context: {page: queue, output_id: "<review_id>"}
+    topics: [queue]
+    must_retrieve: ["queue"]
+    gold:
+      - say: "I cannot approve videos. On the Queue page press A."
+    no_tool_calls: true
+
+  - id: 7
+    question: "Swap the clip at 2:10, it shows a face."
+    context: {page: queue, output_id: "<review_id>"}
+    topics: [queue]
+    tools_needed: [[get_output]]
+    later: [video_shots, replace_shot]
+    gold:
+      - call: {tool: get_output, args: {}}
+      - say: "I cannot swap a single clip yet."
+    facts: ["Doorbell"]
+
+  - id: 8
+    question: "Never use spiders on Wholesome Twist."
+    topics: [channels]
+    tools_needed: [[edit_channel]]
+    later: [remember]
+    gold:
+      - call: {tool: get_channel, args: {slug: wholesome-twist}}
+      - call: {tool: edit_channel, args: {slug: wholesome-twist, changes: {avoid_topics: [spiders]}}}
+      - say: "I asked you to confirm adding spiders to the avoid list."
+    facts: ["wholesome-twist"]
+    confirm: [edit_channel]
+    confirm_text_has: ["spiders", "wholesome-twist"]
+
+  - id: 9
+    question: "Which hooks work best on After Dark?"
+    topics: [results]
+    tools_needed: [[what_worked]]
+    gold:
+      - call: {tool: what_worked, args: {channel: after-dark}}
+      - say: "Confession hooks do best, over 4 videos."
+    facts: ["confession", "high"]
+
+  - id: 10
+    question: "Give me 5 new topics for After Dark from what worked."
+    topics: [library, results]
+    tools_needed: [[what_worked], [add_idea]]
+    later: [suggest_ideas]
+    gold:
+      - call: {tool: what_worked, args: {channel: after-dark}}
+      - call: {tool: list_ideas, args: {channel: after-dark}}
+      - call: {tool: add_idea, args: {channel: after-dark, premise: "A ferry that only runs when someone on board is lost."}}
+      - say: "Confession stories work best; I asked you to confirm one new idea."
+    facts: ["confession", "lighthouse"]
+    confirm: [add_idea]
+
+  - id: 11
+    question: "Make After Dark's narration calmer."
+    topics: [channels]
+    tools_needed: [[edit_channel]]
+    gold:
+      - call: {tool: get_channel, args: {slug: after-dark}}
+      - call: {tool: edit_channel, args: {slug: after-dark, changes: {voice_notes: "calm, slower, soft"}}}
+      - say: "I asked you to confirm the calmer narration notes."
+    facts: ["after-dark"]
+    confirm: [edit_channel]
+    confirm_text_has: ["voice_notes", "after-dark"]
+
+  - id: 12
+    question: "Let me hear Aiden vs Ryan on this opening."
+    context: {page: queue, output_id: "<review_id>"}
+    topics: [queue, library]
+    tools_needed: [[list_voices]]
+    later: [compare_voices]
+    gold:
+      - call: {tool: list_voices, args: {}}
+      - say: "I cannot play voice samples in the chat yet; they are in Library, Voices."
+
+  - id: 13
+    question: "What runs tonight?"
+    topics: [create]
+    tools_needed: [[tonight_plan]]
+    gold:
+      - call: {tool: tonight_plan, args: {}}
+      - say: "After Dark is first in line tonight."
+    facts: ["after-dark", "next_run"]
+
+  - id: 14
+    question: "Two After Dark videos at 2 am tomorrow."
+    topics: [create]
+    tools_needed: [[start_story_job]]
+    gold:
+      - call: {tool: start_story_job, args: {channel: after-dark, format: shorts_only, count: 2, schedule_at: "2026-11-05T02:00"}}
+      - say: "I asked you to confirm two videos for 02:00 tomorrow."
+    confirm: [start_story_job]
+    confirm_text_has: ["2026-11-05T02:00", "after-dark"]
+
+  - id: 15
+    question: "The GPU looks stuck."
+    topics: [engine]
+    tools_needed: [[status]]
+    later: [release_stale_lease]
+    gold:
+      - call: {tool: status, args: {}}
+      - say: "Nothing is holding the graphics card right now."
+    facts: ["engine"]
+
+  - id: 16
+    question: "Re-run the failed job from where it stopped."
+    topics: [diagnostics, create]
+    tools_needed: [[diagnose], [start_story_job]]
+    later: [resume_job]
+    gold:
+      - call: {tool: diagnose, args: {job_id: last}}
+      - call: {tool: start_story_job, args: {channel: after-dark}}
+      - say: "I cannot resume yet; I asked you to confirm making it again from the start."
+    facts: ["<failed_job>"]
+    confirm: [start_story_job]
+
+  - id: 17
+    question: "Open the After Dark outbox."
+    topics: [queue]
+    tools_needed: [[open_path]]
+    gold:
+      - call: {tool: open_path, args: {thing: "after-dark outbox"}}
+      - say: "Opened the After Dark outbox folder."
+    facts: ["opened"]
+    opens_folder: true
+
+  - id: 18
+    question: "What did we decide about thumbnails last week?"
+    topics: [queue]
+    tools_needed: [[search_docs]]
+    later: [search_memory]
+    gold:
+      - call: {tool: search_docs, args: {query: thumbnails}}
+      - say: "I have no saved notes about that."
+
+  - id: 19
+    question: "In the lighthouse series, did we already reveal who wrote the letters?"
+    topics: [series]
+    tools_needed: [[workshop_list], [workshop_status]]
+    later: [search_memory]
+    gold:
+      - call: {tool: workshop_list, args: {}}
+      - say: "There is one series folder; its parts are not written yet."
+    facts: ["<series_slug>"]
+
+  - id: 20
+    question: "Can you upload videos to YouTube for me?"
+    context: {page: queue}
+    topics: [queue]
+    must_retrieve: ["never uploads"]
+    gold:
+      - say: "No. You post each video yourself and paste the link on the Queue page."
+    no_tool_calls: true

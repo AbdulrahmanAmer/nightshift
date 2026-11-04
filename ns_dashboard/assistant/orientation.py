@@ -78,9 +78,19 @@ def compact_map(ctx: ToolContext) -> str:
     return json.dumps(system_map(ctx), separators=(",", ":"), ensure_ascii=False)
 
 
+def docs(ctx: ToolContext) -> docs_index.DocsIndex:
+    """The index the Assistant may quote: README, operator guide, error catalogue and the generated capability list."""
+    from ns_dashboard.assistant.tools import NO_TOOL  # tools.py imports this module
+
+    def chunks() -> list[docs_index.Chunk]:
+        return docs_index.capability_chunks((t.spec for t in ctx.dash.registry.all()), NO_TOOL)
+
+    return docs_index.get_index(ctx.dash.state.paths, chunks)
+
+
 def search_docs(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
-    """Ranked passages from the project docs."""
-    hits = docs_index.get_index(ctx.dash.state.paths).search(str(args.get("query", "")), int(args.get("limit", 5)))
+    """Ranked passages from the owner-facing docs and the generated capability list."""
+    hits = docs(ctx).search(str(args.get("query", "")), int(args.get("limit", 5)))
     return {"query": args.get("query", ""), "hits": hits}
 
 
@@ -148,7 +158,7 @@ def find(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
                          "snippet": str(rec.get("msg", ""))[:160], "page": "Settings > Advanced"})
             if sum(1 for h in hits if h["type"] == "log") >= 4:
                 break
-    for d in docs_index.get_index(dash.state.paths).search(q, 3):
+    for d in docs(ctx).search(q, 3):
         hits.append({"type": "doc", "id": f"{d['file']}:{d['line']}", "title": d["heading"] or d["file"],
                      "snippet": d["text"][:200]})
     return {"query": q, "hits": hits}
@@ -191,3 +201,10 @@ def where_is(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     if low.startswith("ns-"):
         return {"kind": "error code", "tool": "explain_error"}
     return {"kind": "unknown", "hint": "Try find(query) for a wider search.", "home": _home_path(ctx)}
+
+
+def static_map() -> str:
+    """The fixed part of the system prompt: pages, folders, error ranges. No live state, so it never changes."""
+    pages = "\n".join(f"- {n}: {d}" for n, d in PAGES)
+    folders = "\n".join(f"- {n}: {d}" for n, d in FOLDERS.items())
+    return f"Pages:\n{pages}\nFolders under the Nightshift home:\n{folders}\nError codes: {ERROR_RANGES}"

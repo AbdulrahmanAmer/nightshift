@@ -37,6 +37,8 @@ class ToolSpec:
     side_effect: bool
     confirm_text: str = ""
     topic: str = "queue"
+    #: Result fields that survive when a long result is shrunk or digested for the model (`prompt.shrink_result`).
+    summary_fields: tuple[str, ...] = ()
 
     def openai(self) -> dict[str, Any]:
         """OpenAI-compatible function-tool object."""
