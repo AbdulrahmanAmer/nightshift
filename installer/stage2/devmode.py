@@ -10,15 +10,16 @@ from __future__ import annotations
 
 import json
 import os
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
+from typing import Any
 
 from ns_common.devmode import BANNER
 
 __all__ = [
     "BANNER", "ENV_VAR", "HEADER", "MIN_FREE_GB", "MIN_RAM_GB", "PROFILE", "SKIPPED_BINS", "STUB_BYTES",
-    "STUB_DIGEST", "STUB_SUFFIX", "env_enabled", "is_stub", "remove_stubs", "reset_for_mode_switch",
-    "stub_body", "stub_marker", "write_stub",
+    "STUB_DIGEST", "STUB_SUFFIX", "env_enabled", "is_stub", "relax_checks", "remove_stubs",
+    "reset_for_mode_switch", "stub_body", "stub_marker", "write_stub",
 ]
 
 ENV_VAR = "NIGHTSHIFT_DEV_MODE"
@@ -37,6 +38,45 @@ def env_enabled(environ: Mapping[str, str] | None = None) -> bool:
     """True when ``NIGHTSHIFT_DEV_MODE`` is 1, true or yes."""
     value = (environ if environ is not None else os.environ).get(ENV_VAR, "")
     return value.strip().lower() in ("1", "true", "yes")
+
+
+DEV_NOTE = "dev mode, not needed"
+
+
+def relax_checks(
+    pf: dict[str, Any], disk_rows: Callable[[dict[str, Any], str], list[dict[str, Any]]] | None = None
+) -> dict[str, Any]:
+    """The hand-over JSON of a dev install: profile ``cpu-dev``, no llama.cpp pair, and the checks that dev
+    mode does not need turned into information rows.
+
+    The graphics card and driver rows are ``ok`` with a value that says what was found and that dev mode does
+    not need it; the memory row only warns under ``MIN_RAM_GB``. ``disk_rows(pf, home)`` (the setup server
+    passes ``preflight.raw_disk_rows``) replaces the disk rows, which stage 1 may have judged by the real
+    thresholds of 40 and 60 GB; without it they are left alone (step s01 checks the 10 GB itself).
+    Idempotent, so a hand-over that stage 1 already wrote for ``-Dev`` comes out the same.
+    """
+    out = {**pf, "dev_mode": True, "profile": PROFILE, "llama_pair": ""}
+    gpu = pf.get("gpu") or {}
+    found = f"{gpu['name']}" if gpu.get("name") else "no NVIDIA graphics card"
+    ram = float(pf.get("ram_gb") or 0)
+    rows: list[dict[str, Any]] = []
+    for c in pf.get("checks") or []:
+        c = dict(c)
+        if c.get("id") == "gpu":
+            c.update(status="ok", code="", hint="", value=f"{found} ({DEV_NOTE})")
+        elif c.get("id") == "driver":
+            c.update(status="ok", code="", hint="", value=f"not checked ({DEV_NOTE})")
+        elif c.get("id") == "ram":
+            if ram >= MIN_RAM_GB:
+                c.update(status="ok", code="", hint="", value=f"{ram:g} GB (dev mode needs {MIN_RAM_GB} GB)")
+            else:
+                c.update(status="warn", value=f"{ram:g} GB is below the {MIN_RAM_GB} GB dev mode needs")
+        rows.append(c)
+    home = str(pf.get("home") or "")
+    if disk_rows is not None and home and pf.get("drives"):
+        rows = [c for c in rows if c.get("id") not in ("disk", "disktype")] + disk_rows(out, home)
+    out["checks"] = rows
+    return out
 
 
 def stub_marker(dest: Path) -> Path:

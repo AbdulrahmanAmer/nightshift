@@ -84,7 +84,9 @@ folder is the honest test.
 The shortcut starts the real supervisor and the real dashboard (port 8100). The Library, Voices (design and
 clone use the fake engine), Settings, Queue, Review and the Assistant work; the Assistant answers a fixed
 sentence because the fake llama has no opinions. **Create it now** creates a job that runs the whole
-pipeline on the fakes in a few minutes and puts a video in `<home>\outbox`.
+pipeline on the fakes and puts a real video in `<home>\outbox`. A Shorts job takes a few minutes. A channel's
+long video (the default format) is a 9 to 14 minute master that FFmpeg encodes with `libx264` on the laptop's CPU,
+so allow much longer, or pick Shorts only in Create for the quick pass.
 
 ## What it needs
 

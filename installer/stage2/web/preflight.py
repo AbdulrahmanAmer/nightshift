@@ -15,7 +15,7 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
-from installer.stage2.devmode import MIN_FREE_GB, MIN_RAM_GB, PROFILE
+from installer.stage2.devmode import MIN_FREE_GB, MIN_RAM_GB, relax_checks
 from installer.stage2.web.pathcheck import home_problem
 from installer.stage2.web.plan import pinned, required_free_gb
 
@@ -59,39 +59,9 @@ def load(path: Path | str) -> dict[str, Any] | None:
 # ---------------------------------------------------------------------------------------------------------
 # dev mode (docs/DEV_MODE.md)
 # ---------------------------------------------------------------------------------------------------------
-DEV_NOTE = "dev mode, not needed"
-
-
 def apply_dev(pf: dict[str, Any]) -> dict[str, Any]:
-    """The hand-over JSON of a dev install: profile ``cpu-dev``, no llama.cpp pair, and the checks that dev
-    mode does not need turned into information rows.
-
-    The graphics card and driver rows are ``ok`` with a value that says what was found and that dev mode does
-    not need it; the memory row only warns under ``MIN_RAM_GB``; the disk row fails under ``MIN_FREE_GB``.
-    Idempotent, so a hand-over that stage 1 already wrote for ``-Dev`` comes out the same.
-    """
-    out = {**pf, "dev_mode": True, "profile": PROFILE, "llama_pair": ""}
-    gpu = pf.get("gpu") or {}
-    found = f"{gpu['name']}" if gpu.get("name") else "no NVIDIA graphics card"
-    ram = float(pf.get("ram_gb") or 0)
-    rows: list[dict[str, Any]] = []
-    for c in pf.get("checks") or []:
-        c = dict(c)
-        if c.get("id") == "gpu":
-            c.update(status="ok", code="", hint="", value=f"{found} ({DEV_NOTE})")
-        elif c.get("id") == "driver":
-            c.update(status="ok", code="", hint="", value=f"not checked ({DEV_NOTE})")
-        elif c.get("id") == "ram":
-            if ram >= MIN_RAM_GB:
-                c.update(status="ok", code="", hint="", value=f"{ram:g} GB (dev mode needs {MIN_RAM_GB} GB)")
-            else:
-                c.update(status="warn", value=f"{ram:g} GB is below the {MIN_RAM_GB} GB dev mode needs")
-        rows.append(c)
-    home = str(pf.get("home") or "")
-    if home and pf.get("drives"):       # the disk rows used the real thresholds (40 and 60 GB)
-        rows = [c for c in rows if c.get("id") not in ("disk", "disktype")] + raw_disk_rows(out, home)
-    out["checks"] = rows
-    return out
+    """``devmode.relax_checks`` with the disk rows worked out here (``raw_disk_rows`` knows the 10 GB)."""
+    return relax_checks(pf, raw_disk_rows)
 
 
 # ---------------------------------------------------------------------------------------------------------

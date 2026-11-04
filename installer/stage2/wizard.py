@@ -22,14 +22,13 @@ from installer.stage2.answers import AnswersError, find_answers, load_raw
 from installer.stage2.base import Step
 from installer.stage2.bridge import BridgeUi, SetupStopped
 from installer.stage2.context import StepContext
-from installer.stage2.devmode import BANNER, env_enabled, reset_for_mode_switch
+from installer.stage2.devmode import BANNER, env_enabled, relax_checks, reset_for_mode_switch
 from installer.stage2.runner import SubprocessRunner
 from installer.stage2.secrets import KEY_NAMES, KeyringStore, MemoryStore, ResilientStore
 from installer.stage2.simulate import FakeRunner
 from installer.stage2.state import StateStore
 from installer.stage2.sysinfo import free_gb, load_preflight, sample_preflight
 from installer.stage2.ui import Ui
-from installer.stage2.web.preflight import apply_dev
 from ns_common import __version__
 from ns_common.config import load_manifest
 from ns_common.errors import NsError
@@ -302,7 +301,7 @@ def build_context(args: argparse.Namespace, ui: Ui | None = None) -> StepContext
         store = ResilientStore(KeyringStore(), paths)
     dev = bool(getattr(args, "dev", False)) or env_enabled() or bool((preflight or {}).get("dev_mode"))
     if dev and preflight is not None:
-        preflight = apply_dev(preflight)        # a graphics card and 60 GB are not red rows in a dev install
+        preflight = relax_checks(preflight)     # a graphics card is not a red row in a dev install
     if reset_for_mode_switch(paths.home, dev):
         NsLogger("installer", paths.logs, echo=False).info("mode_switch", dev_mode=dev)
     return StepContext(

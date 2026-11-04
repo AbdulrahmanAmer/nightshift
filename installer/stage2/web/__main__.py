@@ -14,7 +14,7 @@ import time
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
-from installer.stage2 import devmode
+import installer.stage2.devmode as devmode
 from installer.stage2.web import launch
 from installer.stage2.web.controller import Config, Effects, SetupController
 from installer.stage2.web.server import SetupServer

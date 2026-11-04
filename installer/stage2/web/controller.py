@@ -22,7 +22,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from installer.stage2 import devmode
+import installer.stage2.devmode as devmode
 from installer.stage2.web import (
     answers_view,
     appcopy,

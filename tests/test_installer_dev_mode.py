@@ -148,7 +148,8 @@ def test_s02_dev_downloads_the_small_programs_and_skips_the_rest(tmp_path: Path)
     bins = ctx.paths.home / "bin"
     assert (bins / "llama" / "llama-server.exe").is_file()                     # the CPU build, for real
     assert (bins / "yt-dlp" / "yt-dlp.exe").is_file() and (bins / "webview2").is_dir()
-    assert not (bins / "opencode").exists() and not (bins / "qwentts").exists()
+    assert not (bins / "opencode" / "opencode.exe").exists() and not (bins / "qwentts" / ".ns-qwentts.done").exists()
+    assert not any(p.is_file() for folder in ("opencode", "qwentts") for p in (bins / folder).rglob("*"))
     assert not list((bins / "llama").glob("cudart*")) and not list((bins / "_downloads").glob("cudart*"))
     assert (ctx.flag("qwentts"), ctx.flag("tts_fallback"), ctx.flag("llama_pair")) == ("none", False, None)
     assert ctx.warnings == [] and "Dev mode: not downloaded" in ctx.ui.text
@@ -412,7 +413,7 @@ def test_the_whole_wizard_in_dev_mode_then_switching_to_a_real_install(tmp_path:
     assert rt["dev_mode"] is True and rt["profile"] == "cpu-dev" and rt["tts"]["engine"] == "qwentts"
     assert devmode.is_stub(home / "models" / "llm" / "Qwen3-1.7B-Q8_0.gguf")
     assert not (home / "models" / "llm" / "Qwen3-14B-Q4_K_M.gguf").exists()
-    assert not (home / "bin" / "opencode").exists() and not (home / "bin" / "qwentts").exists()
+    assert not any(p.is_file() for folder in ("opencode", "qwentts") for p in (home / "bin" / folder).rglob("*"))
     assert not (home / "venvs" / "tts").exists() and not (home / "config" / "opencode.json").exists()
     flags = json.loads((home / "config" / "wizard_flags.json").read_text(encoding="utf-8"))
     assert flags["schedule_mode"] == "disabled" and flags["tuned"] == "defaults" and flags["qwentts"] == "none"
