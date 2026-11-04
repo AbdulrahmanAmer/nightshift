@@ -99,7 +99,9 @@ Every message has a code like `NS-E104`, a sentence and a "What to do". In the s
 | NS-E109 | A downloaded file is damaged | Run INSTALL.cmd again. If it repeats, send the diagnostics zip. |
 | NS-E110 | FFmpeg could not be installed | Setup tries winget first and then downloads a fixed FFmpeg build itself. Press Retry once; if it repeats, install FFmpeg yourself (`winget install Gyan.FFmpeg`) and press Retry. Git is not needed. |
 | NS-E111 | winget (App Installer) is not available | Nothing to do: setup downloads FFmpeg and the Visual C++ runtime directly. |
-| NS-E114 | The Visual C++ runtime is missing (the model runner cannot start without it) | Press Retry and click **Yes** when Windows asks for permission, or install it from `https://aka.ms/vs/17/release/vc_redist.x64.exe` and press Retry. |
+| NS-E114 | The Visual C++ runtime is missing (the model runner cannot start without it) | Stage 1 (the black window) asks for permission first: press **Yes**. If it was declined, look for a flashing shield icon on the taskbar and press **Yes**, or install it from `https://aka.ms/vs/17/release/vc_redist.x64.exe` and press Retry. |
+| NS-E116 | A network port Nightshift needs is already in use | The message names the port and the program that holds it. Close that program (or change the port in Settings) and press Retry. |
+| NS-E117 | The install folder name has characters the model programs cannot open | Use a folder name with plain English letters, digits, spaces, - and _, then press Retry. |
 | NS-E115 | The program files could not be copied into the install folder | Make sure the install folder is not the folder you extracted the zip to, close any window that shows it, press Retry. |
 | NS-E113 | Antivirus blocked a file | Open Windows Security, Protection history, allow the Nightshift file and press Retry. Adding the install folder as an exclusion stops it happening again. It is also the code when a downloaded program (`llama-server.exe`, `qwen-tts.exe`, `yt-dlp.exe`) is missing after it was unpacked: the scanner removed it. |
 | NS-E501 / NS-E502 | Pexels or Pixabay key rejected | Copy the key again from the website (no spaces) and paste it. |

@@ -23,7 +23,8 @@ from ns_common.errors import NsError
 from ns_common.models import Runtime
 from ns_common.paths import Paths
 from ns_supervisor import update_check
-from ns_supervisor.core import Supervisor
+from ns_supervisor.core import Supervisor, SupervisorConfig
+from ns_supervisor.health_cfg import read_health_timeout
 from ns_supervisor.scheduled import overdue_scheduled_jobs
 
 _STATUS = {"NS-E201": 409, "NS-E202": 502, "NS-E203": 504}
@@ -212,7 +213,8 @@ def main(argv: list[str] | None = None) -> int:
 
         ctypes.windll.kernel32.SetConsoleTitleW("Nightshift Engine")
 
-    sup = Supervisor(paths, runtime, update_check=update_check.make_job(paths))
+    cfg = SupervisorConfig(health_timeout_s=read_health_timeout(paths))
+    sup = Supervisor(paths, runtime, config=cfg, update_check=update_check.make_job(paths))
     app = create_app(sup, start_dashboard=not args.headless)
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
 

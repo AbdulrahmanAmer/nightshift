@@ -19,12 +19,31 @@ DRIVES = [{"letter": "D", "freeGb": 412.0, "type": "SSD"}, {"letter": "C", "free
 # ---- the path rules --------------------------------------------------------------------------------------
 @pytest.mark.parametrize(
     "path",
-    ["D:\\Nightshift", "D:\\Night shift\\Studio 2", "D:\\Nightshift\\", "E:\\M\u00fcnchen\\Videos",
-     "D:\\\u0646\u0627\u064a\u062a", "C:\\Users\\John Doe\\Nightshift", "d:\\x", "D:\\" + "a" * 100,
-     "D:\\a.b\\c-d_e"],
+    ["D:\\Nightshift", "D:\\Night shift\\Studio 2", "D:\\Nightshift\\", "E:\\Munchen\\Videos",
+     "C:\\Users\\John Doe\\Nightshift", "d:\\x", "D:\\" + "a" * 100, "D:\\a.b\\c-d_e", "D:\\Night-shift_2"],
 )
 def test_good_paths_have_no_problem(path: str) -> None:
     assert pathcheck.home_problem(path) is None
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["E:\\M\u00fcnchen\\Videos", "D:\\\u0646\u0627\u064a\u062a", "C:\\Users\\\u0623\u062d\u0645\u062f\\Ns",
+     "D:\\Night\u2011shift", "D:\\caf\u00e9", "D:\\\u591c\u73ed", "D:\\a\u00a0b"],
+)
+def test_a_folder_name_outside_plain_ascii_is_refused_with_the_reason(path: str) -> None:
+    # llama.cpp, qwentts.cpp and CTranslate2 open model paths through the ANSI code page
+    assert pathcheck.home_problem(path) == (
+        "Use a folder name with plain English letters, digits, spaces, - and _ "
+        "(the model programs cannot open other paths)"
+    )
+    assert pathcheck.ascii_problem(path) == pathcheck.NON_ASCII_PROBLEM
+    assert pathcheck.ascii_problem("D:\\Nightshift") is None
+
+
+def test_the_window_mirrors_the_non_ascii_rule() -> None:
+    ts = (ROOT / "installer" / "ui" / "src" / "format.ts").read_text(encoding="utf-8")
+    assert pathcheck.NON_ASCII_PROBLEM in ts and "[^ -~]" in ts
 
 
 @pytest.mark.parametrize(
@@ -52,7 +71,9 @@ def test_the_length_limit_is_120_and_a_parameter() -> None:
 def test_the_choices_validation_uses_the_same_rules() -> None:
     env = answers_view.Env(ram_gb=32, tiers={"small": {"needFreeGb": 60}}, drive_letters={"D"},
                            free_gb=lambda _p: 500.0)
-    assert answers_view._home_errors("D:\\Night shift \u00e9", "small", env) == []
+    assert answers_view._home_errors("D:\\Night shift", "small", env) == []
+    errors = answers_view._home_errors("D:\\Night shift \u00e9", "small", env)
+    assert "plain English letters" in errors[0]["message"]
     assert "Network" in answers_view._home_errors("\\\\nas\\share", "small", env)[0]["message"]
     assert "120" in answers_view._home_errors("D:\\" + "a" * 130, "small", env)[0]["message"]
     assert "fixed drive" in answers_view._home_errors("Z:\\x", "small", env)[0]["message"]
@@ -65,8 +86,8 @@ def check(path: str, **kw) -> dict:
     return preflight.disk_check(path, "small", DRIVES, kw.pop("free_fn", lambda _p: 0.0), **kw)
 
 
-def test_a_folder_on_a_roomy_fixed_drive_is_ok_and_spaces_and_unicode_are_fine() -> None:
-    r = check("D:\\Night shift \u00e9\\Studio")
+def test_a_folder_on_a_roomy_fixed_drive_is_ok_and_spaces_are_fine() -> None:
+    r = check("D:\\Night shift\\Studio")
     assert r["ok"] and r["drive"] == "D" and r["freeGb"] == 412.0
     assert r["message"] == "412 GB free on D: (SSD)"
 

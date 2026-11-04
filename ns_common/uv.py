@@ -53,6 +53,38 @@ def find_uv(
     return (which or shutil.which)("uv")
 
 
+#: Words of uv's (and Windows') message when the disk is full.
+FULL_DISK_HINTS = ("no space left", "os error 112", "not enough space on the disk", "disk is full")
+
+
+def looks_full(text: str) -> bool:
+    """True when uv output says the disk is full."""
+    low = text.lower()
+    return any(hint in low for hint in FULL_DISK_HINTS)
+
+
+def cache_dir(home: Path) -> Path:
+    """uv's package cache on the install drive: `<home>/cache/uv`."""
+    return home / "cache" / "uv"
+
+
+def uv_env(home: Path) -> dict[str, str]:
+    """Environment of every uv call that fills a venv: copy mode and the cache on the install drive.
+
+    uv's default cache is `%LOCALAPPDATA%/uv/cache` on the system drive. It holds the unpacked cuBLAS/cuDNN
+    and the other wheels (about 3 GB), which filled a small C: while the install drive had room. When the
+    cache folder cannot be made, `UV_CACHE_DIR` is left out and uv uses its default.
+    """
+    env = {"UV_LINK_MODE": "copy"}
+    cache = cache_dir(home)
+    try:
+        cache.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return env
+    env["UV_CACHE_DIR"] = str(cache)
+    return env
+
+
 def venv_args(venv_dir: Path, python_version: str) -> list[str]:
     """Arguments of ``uv venv`` for a folder whose ``Scripts/python.exe`` is missing.
 

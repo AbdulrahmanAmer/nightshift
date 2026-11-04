@@ -36,6 +36,7 @@ from installer.stage2.sysinfo import (
     required_free_gb,
 )
 from installer.stage2.winenv import HOME_VAR, get_user_env, set_user_env
+from ns_common.pathrules import ascii_problem
 
 PRESET_VOICES = ("Ryan", "Aiden", "Serena", "Vivian")
 PEXELS_URL = "https://www.pexels.com/api/"
@@ -155,6 +156,11 @@ class S01Questions(Step):
                     home = Path(reply.strip().strip('"'))
                 else:
                     home = default
+            if (problem := ascii_problem(str(home))) is not None:
+                if provided or ctx.home_forced or not ctx.ui.interactive:
+                    raise make_error("NS-E117", f"{home}: {problem}")
+                ctx.ui.say(f"{problem}. Pick another folder.", "red")
+                continue
             free = ctx.free_gb_fn(home)
             if free >= need:
                 return home

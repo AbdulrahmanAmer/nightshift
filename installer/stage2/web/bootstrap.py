@@ -28,7 +28,7 @@ from typing import NamedTuple
 import ns_common.vcruntime as vcruntime
 from installer.stage2.web import appcopy, pathcheck
 from ns_common.avblock import is_blocked_error, looks_blocked
-from ns_common.uv import venv_args
+from ns_common.uv import looks_full, uv_env, venv_args
 
 HOME_VAR = "NIGHTSHIFT_HOME"
 TOP_DIRS = ("bin", "models", "venvs", "config", "data", "cache", "imports", "outbox", "rejected", "logs")
@@ -43,6 +43,7 @@ WINGET_ARGS = ("--source", "winget", "--silent", "--accept-package-agreements", 
 #: Exit codes of vc_redist.x64.exe that mean "installed": ok, a newer one is there, reboot started or wanted.
 VCREDIST_OK_CODES = (0, 1638, 1641, 3010)
 ERROR_CANCELLED = 1223                  # the UAC prompt was declined or closed
+ELEVATED_WAIT_S = 600                   # stage 1 installs the runtime; this is only the fallback wait
 FFMPEG_EXES = ("ffmpeg.exe", "ffprobe.exe")
 
 
@@ -161,7 +162,7 @@ def add_user_path_entry(directory: str) -> bool:
     return True
 
 
-def run_elevated_exe(exe: Path, args: Sequence[str], timeout: float = 1200) -> CmdResult:
+def run_elevated_exe(exe: Path, args: Sequence[str], timeout: float = ELEVATED_WAIT_S) -> CmdResult:
     """Run a program with administrator rights (a UAC prompt) and wait; the result carries its exit code.
 
     ``Start-Process -Verb RunAs`` is the only way for a normal process to start an installer that demands
@@ -200,8 +201,11 @@ def last_lines(text: str, count: int = 20) -> str:
 
 
 def classify(text: str, default: str) -> str:
-    """NS-E113 when the output looks like antivirus or policy blocked a file, else ``default``."""
-    return "NS-E113" if looks_blocked(text) else default
+    """NS-E113 when the output looks like antivirus or policy blocked a file, NS-E104 when uv ran out of disk
+    space (only for the NS-E105 default), else ``default``."""
+    if looks_blocked(text):
+        return "NS-E113"
+    return "NS-E104" if default == "NS-E105" and looks_full(text) else default
 
 
 def download_uv(url: str, sha256: str, dest_dir: Path) -> None:
@@ -479,13 +483,18 @@ class B01Tools:
                 boot.on_row(key, "done", "already here")
                 boot.say(f"{label}: already here")
                 continue
-            boot.on_row(key, "active", "installing, Windows may ask for permission")
+            ask = "look for a flashing shield on the taskbar and press Yes" if key == "vcruntime" else (
+                "Windows may ask for permission"
+            )
+            boot.on_row(key, "active", f"installing, {ask}")
             text = ""
             fallback = {"vcruntime": self._install_vcruntime, "ffmpeg": self._install_ffmpeg}.get(key)
             then = "; trying the pinned download" if fallback is not None else ""
             if boot.which("winget.exe"):
                 boot.say(f"{label}: installing with winget")
-                res = boot.cmd(["winget.exe", "install", "--id", winget_id, "-e", *WINGET_ARGS], timeout=1800)
+                res = boot.cmd(
+                    ["winget.exe", "install", "--id", winget_id, "-e", *WINGET_ARGS], timeout=ELEVATED_WAIT_S
+                )
                 text = last_lines(res.stdout + "\n" + res.stderr)
                 boot.refresh_path()
                 if self.have(boot, key):
@@ -728,7 +737,7 @@ class B03SetupEnv:
 
     def run(self, boot: Boot) -> None:
         """Create the venv when it is missing, then install the studio extra."""
-        env = {"UV_LINK_MODE": "copy"}
+        env = uv_env(boot.home)             # copy mode, and uv's cache on the install drive
         boot.on_row("setup_env", "active", "installing")
         if not boot.venv_python.is_file():
             boot.say("Creating the setup environment")

@@ -8,12 +8,18 @@ the cuBLAS/cuDNN wheels faster-whisper needs on Windows (hash-locked: ``python.w
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
+
 from installer.stage2.base import Step
 from installer.stage2.context import StepContext
-from installer.stage2.errors import make_error
+from installer.stage2.errors import make_error, uv_error
 from installer.stage2.fallback import ensure_tts_venv
-from ns_common.uv import venv_args
+from ns_common.uv import uv_env, venv_args
 from ns_common.venv_extras import extras_suffix
+
+#: The wheels uv unpacks for the studio, supervisor and PyTorch venvs (cuBLAS, cuDNN, torch).
+UV_CACHE_NEED_GB = 8
 
 #: Used only by a manifest without ``python.spacy_wheel`` (no hash to check); the repo manifest pins it.
 SPACY_MODEL_VERSION = "3.8.0"
@@ -25,6 +31,24 @@ def spacy_wheel_url(model: str, version: str = SPACY_MODEL_VERSION) -> str:
         f"https://github.com/explosion/spacy-models/releases/download/{model}-{version}/"
         f"{model}-{version}-py3-none-any.whl"
     )
+
+
+def check_cache_space(ctx: StepContext) -> None:
+    """NS-E104 when uv's cache cannot be on the install drive and the system drive is short of room.
+
+    ``uv_env`` puts the cache under ``<home>/cache/uv``; only when that folder cannot be made does uv fall
+    back to ``%LOCALAPPDATA%`` on C:, which a small system drive cannot hold.
+    """
+    if "UV_CACHE_DIR" in uv_env(ctx.paths.home):
+        return
+    drive = Path(os.environ.get("SystemDrive", "C:") + os.sep)
+    free = ctx.free_gb_fn(drive)
+    if free < UV_CACHE_NEED_GB:
+        raise make_error(
+            "NS-E104",
+            f"uv's cache cannot be placed on the install drive and {drive} has {free:.0f} GB free; "
+            f"{UV_CACHE_NEED_GB} GB are needed",
+        )
 
 
 class S04Venvs(Step):
@@ -54,14 +78,14 @@ class S04Venvs(Step):
             venv_args(path, ctx.manifest.python_version), tag=f"uv venv {name}", meta={"path": str(path)},
         )
         if not res.ok:
-            raise make_error("NS-E105", f"uv venv {name} failed (exit {res.returncode})")
+            raise uv_error(f"uv venv {name} failed", res)
 
     def _pip(self, ctx: StepContext, name: str, packages: list[str], tag: str) -> None:
         res = ctx.run_uv(
             ["pip", "install", "--python", str(ctx.venv_python(name)), *packages], tag=f"uv pip install {tag}"
         )
         if not res.ok:
-            raise make_error("NS-E105", f"installing {tag} failed (exit {res.returncode})")
+            raise uv_error(f"installing {tag} failed", res)
 
     def _pip_locked(self, ctx: StepContext, name: str, lines: list[str], tag: str, file_stem: str) -> None:
         """Install requirement lines that each carry ``--hash=sha256:...`` (hash-checking mode, no deps).
@@ -87,6 +111,7 @@ class S04Venvs(Step):
 
     def run(self, ctx: StepContext) -> None:
         """Create the venvs and install the packages."""
+        check_cache_space(ctx)
         app = str(ctx.app_path)
         self._venv(ctx, "studio")
         self._pip(ctx, "studio", ["-e", f"{app}{extras_suffix('studio')}"], "studio app")

@@ -8,9 +8,11 @@ import sys
 import time
 from collections.abc import Callable
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 
+from ns_common import ports
 from ns_common.acquire import Endpoint, Service
 from ns_common.errors import NsError, load_errors
 from ns_common.models import Runtime
@@ -163,6 +165,8 @@ def ensure_running(
     """Start the supervisor if `/status` is down and wait for it. Raises `NS-E202` if it never answers."""
     if client.is_up():
         return
+    if spawn is None and (port := urlsplit(client.base_url).port):
+        ports.ensure_free({"supervisor": port})          # a foreign program holds it: say so
     (spawn or (lambda: spawn_supervisor(paths, headless=headless)))()
     deadline = time.monotonic() + wait_s
     while time.monotonic() < deadline:

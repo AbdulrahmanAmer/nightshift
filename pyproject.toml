@@ -21,7 +21,10 @@ dependencies = [
 # Installed on the target machine only (spec §1.1). torch + TTS engines are installed by the
 # installer from manifest.json pins, not from here, because the cu128 index cannot be locked here.
 studio = [
-  "Pillow>=10", "spacy>=3.7,<4", "faster-whisper>=1.0", "imagehash>=4.3", "keyring>=25",
+  "Pillow>=10", "spacy>=3.7,<4", "imagehash>=4.3", "keyring>=25",
+  # faster-whisper 1.2.x calls av.open(metadata_errors=...), which PyAV 19.0 removed: both caps are needed
+  # (tests/test_install_caps.py). Raise them together, after checking faster_whisper/audio.py.
+  "faster-whisper>=1.0,<1.3", "av>=11,<19",
   "opencv-python-headless>=4.9,<5",
   # Windows wheels: 4.6.3 added CUDA 12.8, 4.8.5 is built with CUDA 12.8 (cuBLAS 12.8.4.1). manifest.json
   # python.whisper_cuda pins the matching cuBLAS/cuDNN wheels: review it before raising the ceiling.

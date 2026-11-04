@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from installer.stage2.context import StepContext
 from installer.stage2.downloader import DownloadItem, hf_url, plan_from_hf_tree
-from installer.stage2.errors import make_error
+from installer.stage2.errors import make_error, uv_error
 from ns_common.uv import venv_args
 from ns_common.venv_extras import extras_suffix
 
@@ -59,7 +59,7 @@ def ensure_tts_venv(ctx: StepContext) -> None:
             venv_args(venv, ctx.manifest.python_version), tag="uv venv tts", meta={"path": str(venv)}
         )
         if not res.ok:
-            raise make_error("NS-E105", f"uv venv for the tts environment failed (exit {res.returncode})")
+            raise uv_error("uv venv for the tts environment failed", res)
     for entry in ctx.manifest.tts_packages:
         spec, index = parse_pin(entry)
         args = ["pip", "install", "--python", str(py), spec]
@@ -67,13 +67,13 @@ def ensure_tts_venv(ctx: StepContext) -> None:
             args += ["--index-url", index]
         res = ctx.run_uv(args, tag=f"uv pip install tts {spec.split('==')[0]}")
         if not res.ok:
-            raise make_error("NS-E105", f"installing {spec} failed (exit {res.returncode})")
+            raise uv_error(f"installing {spec} failed", res)
     res = ctx.run_uv(
         ["pip", "install", "--python", str(py), "--no-deps", "-e", f"{ctx.app_path}{extras_suffix('tts')}"],
         tag="uv pip install tts app",
     )
     if not res.ok:
-        raise make_error("NS-E105", f"installing the app into the tts environment failed ({res.returncode})")
+        raise uv_error("installing the app into the tts environment failed", res)
     if ctx.profile == "gpu":
         probe = (
             "import sys, torch; "

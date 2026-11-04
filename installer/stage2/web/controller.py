@@ -27,6 +27,7 @@ from installer.stage2.web import (
     appcopy,
     bootstrap,
     folderdialog,
+    keepawake,
     labels,
     machine,
     modelcheck,
@@ -57,6 +58,7 @@ SHORTCUTS = ("Nightshift Dashboard", "Nightshift Studio", "Nightshift Outbox", "
 RETRY_NOTES = {
     "stall": "No data for 60 s, trying again",
     "network": "The connection dropped, trying again",
+    "offline": "No internet right now, waiting for it to come back",
     "hash": "The file failed its check, downloading it again",
 }
 
@@ -260,6 +262,7 @@ class Effects:
     run_elevated: Callable[..., bootstrap.CmdResult] = bootstrap.run_elevated_exe
     add_user_path: Callable[[str], bool] = bootstrap.add_user_path_entry
     copy_app: Callable[..., appcopy.CopyResult] = appcopy.install_app
+    set_execution_state: Callable[[int], int] = keepawake._set_execution_state    # keep the PC awake
 
 
 # ---------------------------------------------------------------------------------------------------------
@@ -964,6 +967,10 @@ class SetupController:
         thread.start()
 
     def _pipeline_main(self) -> None:
+        with keepawake.keep_awake(self.fx.set_execution_state):     # released when the run ends or fails
+            self._pipeline_run()
+
+    def _pipeline_run(self) -> None:
         step_id = BOOTSTRAP_STEPS[0]
         try:
             for step in bootstrap.bootstrap_steps():
