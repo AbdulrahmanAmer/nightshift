@@ -98,8 +98,8 @@ def load_cases(path: Path, ids: dict[str, str], secret: str = "") -> list[Case]:
     return out
 
 
-def _script(case: Case) -> list[dict[str, Any]]:
-    out: list[dict[str, Any]] = []
+def _script(case: Case) -> list[Any]:
+    out: list[Any] = []
     for i, step in enumerate(case.gold):
         if "call" in step:
             c = step["call"]
