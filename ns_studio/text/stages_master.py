@@ -8,6 +8,7 @@ from collections.abc import Sequence
 from difflib import SequenceMatcher
 from typing import Any
 
+from ns_common.devmode import is_dev
 from ns_common.embed_client import embed_window, to_blob
 from ns_common.errors import NsError
 from ns_common.models import (
@@ -104,6 +105,8 @@ def load_story(ctx: JobContext) -> Story:
 
 
 def _past_openings(ctx: JobContext) -> list[str]:
+    if is_dev(ctx.paths):
+        return []          # the fake LLM tells the same story every run; dev mode must not fail on that
     rows = ctx.db.query(
         "select opening_line from stories where channel=? and job_id!=? order by created_at desc limit 50",
         (ctx.channel.slug, ctx.job_id),

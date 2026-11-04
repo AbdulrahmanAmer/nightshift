@@ -23,6 +23,10 @@ All notable changes to Nightshift are recorded here. The format follows
 - Renders are bitrate-capped (`-maxrate 12M -bufsize 24M`, NVENC and libx264, masters, Shorts and clips) and
   the CPU encoder never uses `ultrafast`: the first dev-mode Short came out at 134 Mbit/s (900 MB for 54 s)
   with `libx264 -preset ultrafast -crf 21` under the film-grain filter.
+- Story validators: the repeated-opening check (`opening_similarity`) uses cosine >= 0.9 instead of 0.8 (nomic
+  similarities between two openings of the same niche sit around 0.8, a false rejection fails the job after
+  the writing), and dev mode skips it (the fake LLM tells the same story every run: the second dev job failed
+  with NS-E303 `cosine 1.00`).
 
 ### Installer dev mode (`orchestrator/installer-dev-mode`)
 
