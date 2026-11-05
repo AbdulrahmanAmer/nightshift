@@ -158,7 +158,10 @@ def import_source(
     sidecar: str | None = None
     if sidecar_src.is_file():
         sidecar_dest = dest_dir / f"source{SIDECAR_SUFFIX}"
-        shutil.copy2(sidecar_src, sidecar_dest)
+        # an adopted upload already sits in its hash folder with its sidecar: copying a file onto itself is
+        # WinError 32 on Windows (Python's CopyFile2 fast path), so the sidecar is only recorded then
+        if sidecar_src.resolve() != sidecar_dest.resolve():
+            shutil.copy2(sidecar_src, sidecar_dest)
         sidecar = str(sidecar_dest)
     info = SourceInfo(
         source_id=source_id,

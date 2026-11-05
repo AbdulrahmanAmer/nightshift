@@ -1073,3 +1073,22 @@ def test_the_update_reconnect_cap_starts_when_the_state_leaves_running_not_at_th
     # the give-up text for that case does not tell the owner to start a second copy
     assert "Wait for its window to finish" in follow and "UPDATE_HARD_STOP_MS" in follow
     assert follow.count("from the shortcut on your desktop") == 2
+
+
+def test_adopt_upload_moves_a_dev_transcript_sidecar_along(tmp_home: Path):
+    """A clip job from an upload on the dev install stopped at NS-E406: the sidecar beside the upload was
+    deleted with the upload folder when the video moved to its hash folder."""
+    import hashlib
+
+    from ns_dashboard.uploads import adopt_upload, clipper_dir
+
+    paths = Paths.from_env()
+    folder = clipper_dir(paths) / "src-20261105-abcd"
+    folder.mkdir(parents=True)
+    upload = folder / "source.mp4"
+    upload.write_bytes(b"video-bytes")
+    meta = {"sha256": hashlib.sha256(b"video-bytes").hexdigest()}
+    (folder / "upload.json").write_text(json.dumps(meta), encoding="utf-8")
+    (folder / "source.transcript.json").write_text("{}", encoding="utf-8")
+    moved = adopt_upload(paths, upload)
+    assert moved.with_name("source.transcript.json").is_file() and not folder.exists()
