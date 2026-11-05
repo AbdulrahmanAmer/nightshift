@@ -330,6 +330,17 @@ def read_install_state(home: Path) -> dict[str, Any]:
     return {}
 
 
+def reset_install_times(home: Path) -> None:
+    """Forget the start and finish times of an install that is being run again from scratch."""
+    data = read_install_state(home)
+    if not data:
+        return
+    data["started_at"] = None
+    data["completed_at"] = None
+    target = home / "config" / "install_state.json"
+    write_text_atomic(target, json.dumps(data, indent=2) + "\n", keep_backup=True)
+
+
 def write_step(
     home: Path, version: str, app_path: Path, step_id: str, status: str, error: str | None
 ) -> None:
@@ -394,6 +405,7 @@ class SetupController:
             self.fx.console("This folder holds an install of the other kind (real or dev): its later steps "
                             "run again.", "info")
         self._update_reset: list[str] = []
+        self._reinstall = False
         self.store = SetupStore(self._initial_state(), self._finalize)
         self._settle_finished_install()
 
@@ -503,6 +515,20 @@ class SetupController:
         others_done = locked and bool(steps) and all(
             st["status"] in ("done", "skipped") for st in steps if st["id"] not in WINDOW_ONLY_STEPS
         )
+        if others_done and self.installs_app and appcopy.installed_fingerprint(self.home) is None:
+            # the program folder is gone (an uninstall keeps config\install_state.json): the steps' "done"
+            # is stale, so setup runs them again instead of showing Done over nothing; the answers stay
+            others_done = False
+            for st in steps:
+                if st["id"] not in ("s00_welcome", "s01_questions") and st["status"] == "done":
+                    st["status"] = "pending"
+                    st["detail"] = None
+                    st["finishedAt"] = None
+                    self._persist_step(st["id"], "pending", None)
+            self._reinstall = True                      # logged once the store exists
+            saved["started_at"] = None                  # the Done screen's duration starts from this run
+            saved["completed_at"] = None
+            reset_install_times(self.home)
         if others_done:
             for st in steps:                               # a console install made no samples: not unfinished
                 if st["id"] in WINDOW_ONLY_STEPS and st["status"] == "pending":
@@ -563,6 +589,8 @@ class SetupController:
         performs the update. The same program: the window shows Done with the result a finished run would
         have built, so Open dashboard works (a fresh server has no run of its own to build it from).
         """
+        if self._reinstall:
+            self.log("info", f"No Nightshift program in {self.home}: setup installs again (answers kept)")
         for sid in self._update_reset:
             self._persist_step(sid, "pending", None)
         if self._update_reset:

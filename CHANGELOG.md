@@ -7,6 +7,11 @@ All notable changes to Nightshift are recorded here. The format follows
 
 ## [Unreleased]
 
+- Setup after an uninstall installs again instead of showing Done over an empty folder: the uninstall now
+  removes `config\install_state.json` (answers and channels stay), and a setup window that finds the
+  program folder gone runs the install steps again, with the Done screen's duration counted from that run
+  (found by the windowed dev install on 2026-11-05: it said 30,265 s).
+
 - `ns restore` refuses while Nightshift is running ("stop it first, nothing was changed") instead of failing
   halfway on the locked database and putting the files back (found on the 0.1.11 dev install with the engine up).
 - A job interrupted by a restart (the engine stopped or the PC restarted mid-job) keeps the stage it was at and
