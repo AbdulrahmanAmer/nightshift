@@ -103,7 +103,7 @@ L release and CI (ci.yml: lint, types, test, bundle, ui-build, powershell-parse,
 - [x] The 03:00 scheduled task fired by hand (`Start-ScheduledTask`) on the 0.1.11 dev install: `studio run --daily` started the engine headless, made a master (22 stages, 18.5 min, 1 master + 4 Shorts, publish times set), the engine left by itself, the slate was CLEAN 20 s later, the task was disabled again, LastTaskResult 0 (V-dev 2026-11-05)
 - [ ] Keep-awake during a run: `powercfg -requests` needs an elevated prompt, not available in the loop; V-ci (`tests/test_keepawake.py`) plus a partner line: run it elevated during the nightly run and expect the studio process under EXECUTION (V-gpu)
 - [x] Kill the engine mid-job (supervisor, dashboard, child, ffmpeg force-stopped at clips 12/16): after relaunch the job is failed at stage clips with NS-E328 and its studio job id; Retry continued the same studio job to done in 75 s. Before PR #86 the stage and the id were lost and Retry refused (V-dev 2026-11-05)
-- [ ] Lease TTL: a holder that stops heartbeating is reclaimed (V-ci only; prove on dev) (U)
+- [ ] Lease TTL (600 s): in dev mode there is no GPU lock to hold, so the reclaim is V-ci (`tests/test_supervisor_lock.py`) and a partner line: kill a studio child mid-stage on the GPU PC and expect `lease_expired` within 10 min (V-gpu)
 - [x] Services start on demand, `ns verify --quick`, `ns stop` (V-dev)
 
 ### E. Studio
@@ -146,7 +146,7 @@ L release and CI (ci.yml: lint, types, test, bundle, ui-build, powershell-parse,
 ### L. Release and CI
 - [x] Tag → release.yml → Setup/Update zips + sha256, manifest version, WebView2 DLLs (V-dev 0.1.10)
 - [x] v0.1.11 assets: Setup and Update zips + sha256, manifest 0.1.11, teardown fix inside; dev install updated from the zip in 41 s (V-dev 2026-11-05)
-- [ ] `ns update` finds the new release on GitHub from an older install (V-ci; live U)
+- [x] `ns update --check` live against GitHub: "Up to date (0.1.11)" with the release link (V-dev 2026-11-05); the download-and-apply path from an older install is V-ci (`tests/test_ns_update_github.py`)
 
 ## 6. The inventory (the mechanical checklist)
 
