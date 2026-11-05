@@ -14,6 +14,8 @@ from typing import Any
 
 from ns_common.db import new_job_id
 from ns_common.paths import Paths
+
+SIDECAR_SUFFIX = ".transcript.json"   # the Clipper's dev-mode transcript next to a video (clipper/source.py)
 from ns_dashboard.errors import ApiError
 
 CHUNK = 8 * 1024 * 1024
@@ -200,6 +202,11 @@ def adopt_upload(paths: Paths, source_path: Path) -> Path:
         source_path.unlink()
     else:
         os.replace(source_path, target)
+    # dev mode (docs/DEV_MODE.md): a transcript sidecar dropped beside the upload travels along, so the fake
+    # transcriber finds it; it used to be deleted with the upload folder and every clip job stopped at NS-E406
+    sidecar = folder / f"{source_path.stem}{SIDECAR_SUFFIX}"
+    if sidecar.is_file():
+        os.replace(sidecar, target.with_name(f"{target.stem}{SIDECAR_SUFFIX}"))
 
     shutil.rmtree(folder, ignore_errors=True)
     return target

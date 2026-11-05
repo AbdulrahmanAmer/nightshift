@@ -7,6 +7,8 @@ All notable changes to Nightshift are recorded here. The format follows
 
 ## [Unreleased]
 
+- Dev mode: a transcript sidecar dropped beside an upload moves with the video into its hash folder (it was
+  deleted with the upload folder when the clip job started).
 - Dev mode: a clip job from an upload finds a transcript sidecar dropped next to the stored file after the
   upload (it was only read when recorded at import, so every dev clip-from-upload stopped with NS-E406).
 
