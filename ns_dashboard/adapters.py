@@ -314,7 +314,9 @@ class StudioAdapter:
             elif name == "download":
                 ctl.download(float(event.get("percent", 0)))
             elif name == "job":
-                ctl.extras.setdefault("studio_job_ids", []).append(str(event.get("job_id", "")))
+                ids = ctl.extras.setdefault("studio_job_ids", [])
+                ids.append(str(event.get("job_id", "")))
+                ctl.note(studio_job_ids=list(ids))   # written now: a restart mid-job must not lose them
 
         full = {**args, "fake": sorted(self.fake), "supervisor_url": self.link.base_url}
         try:

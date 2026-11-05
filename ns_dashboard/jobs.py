@@ -100,6 +100,11 @@ class JobRecord:
 
 
 _STAGE_RE = re.compile(r"^(.*) \((\d+)/(\d+)\)$")
+INTERRUPTED_CODE = "NS-E328"
+INTERRUPTED_HINT = (
+    "Nightshift or the PC restarted while this job ran. Press Retry from where it stopped: the finished "
+    "stages are kept. If it happens every night, check the PC's sleep and restart settings."
+)
 
 
 def _stage_of(message: str) -> str | None:
@@ -349,13 +354,49 @@ class JobStore:
         with self._lock:
             self._cancel.discard(job_id)
 
+    def note_result(self, job_id: str, fields: dict[str, Any]) -> None:
+        """Merge `fields` into the job's result while it runs (the studio job ids as they are announced).
+
+        A job killed mid-run (the PC restarted, the engine was stopped) used to lose them: `finish` never ran,
+        so `recover_interrupted` left a row with no studio job and the Retry button had nothing to continue.
+        """
+        with self.db.tx():
+            row = self.db.one("SELECT params_json FROM dashboard_jobs WHERE job_id = ?", (job_id,))
+            if row is None:
+                return
+            params, old = _unpack(row["params_json"])
+            payload = json.dumps(
+                {"params": params, "result": {**(old or {}), **fields},
+                 "dismissed_at": _dismissed_at(row["params_json"])},
+                default=str,
+            )
+            self.db.execute("UPDATE dashboard_jobs SET params_json = ? WHERE job_id = ?", (payload, job_id))
+
     def recover_interrupted(self) -> int:
-        """Fail jobs left `running` by a previous process; returns how many."""
-        return self.db.execute(
-            "UPDATE dashboard_jobs SET status = 'failed', message = 'Interrupted by a restart',"
-            " finished_at = ? WHERE status = 'running'",
-            (_now(),),
-        )
+        """Fail jobs left `running` by a previous process; returns how many.
+
+        The stage the job was at (from its last message, "voice (10/16)") and the studio job ids it
+        announced (`note_result`) are kept in `result.error.stage` and `result.studio_job_ids`, so the card
+        says where it stopped and Retry can continue it.
+        """
+        rows = list(self.db.query(
+            "SELECT job_id, message, params_json FROM dashboard_jobs WHERE status = 'running'"
+        ))
+        for row in rows:
+            params, old = _unpack(row["params_json"])
+            stage = _stage_of(row["message"] or "")
+            error = {"code": INTERRUPTED_CODE, "hint": INTERRUPTED_HINT, "stage": stage}
+            result = {**(old or {}), "error": error}
+            payload = json.dumps(
+                {"params": params, "result": result, "dismissed_at": _dismissed_at(row["params_json"])},
+                default=str,
+            )
+            self.db.execute(
+                "UPDATE dashboard_jobs SET status = 'failed', message = 'Interrupted by a restart',"
+                " finished_at = ?, params_json = ? WHERE job_id = ?",
+                (_now(), payload, row["job_id"]),
+            )
+        return len(rows)
 
 
 class JobControl:
@@ -381,6 +422,11 @@ class JobControl:
         self._progress = max(0.0, min(1.0, float(fraction)))
         self._store.update_progress(self.job_id, self._progress, message)
         self._publish()
+
+    def note(self, **fields: Any) -> None:
+        """Record result fields now (not only at the end), so they survive a restart mid-job."""
+        self.extras.update(fields)
+        self._store.note_result(self.job_id, fields)
 
     def download(self, percent: float) -> None:
         """Report download progress: stage `download`, message `Downloading 42%`."""
