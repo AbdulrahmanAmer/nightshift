@@ -7,6 +7,11 @@ All notable changes to Nightshift are recorded here. The format follows
 
 ## [Unreleased]
 
+- Variation: when a job's pinned combo fields leave no unused combination in the 30-day ledger, the draw
+  repeats one with a warning (`NS-W325`) instead of stopping the job with NS-E325. A series pins hook,
+  structure, pacing, caption style and visual treatment, which left its Shorts nine combinations: the first
+  series part on the dev install failed at `short_combos`, and in production the second part would have.
+
 - `ns restore` refuses while Nightshift is running ("stop it first, nothing was changed") instead of failing
   halfway on the locked database and putting the files back (found on the 0.1.11 dev install with the engine up).
 - A job interrupted by a restart (the engine stopped or the PC restarted mid-job) keeps the stage it was at and
