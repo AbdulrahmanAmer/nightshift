@@ -9,6 +9,10 @@ All notable changes to Nightshift are recorded here. The format follows
 
 - `ns restore` refuses while Nightshift is running ("stop it first, nothing was changed") instead of failing
   halfway on the locked database and putting the files back (found on the 0.1.11 dev install with the engine up).
+- A job interrupted by a restart (the engine stopped or the PC restarted mid-job) keeps the stage it was at and
+  the studio job it had started, so the card says where it stopped (`NS-E328`) and Retry continues it. Found by
+  killing the engine at the voice stage on the 0.1.11 dev install: the card lost the stage and Retry answered
+  "stopped before it made anything to continue from".
 
 ## [0.1.11] - 2026-11-05
 

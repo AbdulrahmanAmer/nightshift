@@ -148,13 +148,22 @@ def test_failure_paths_record_message(tmp_home: Path):
 
 
 def test_recover_interrupted_on_start(tmp_home: Path):
-    store, worker, _hub, _ = build(tmp_home, {})
-    job = store.create("clip", None, {})
+    """A job killed mid-run (engine stopped, PC restarted) keeps its stage and the studio jobs it
+    announced."""
+    store, worker, hub, _ = build(tmp_home, {})
+    job = store.create("run", "c", {"channel": "c", "format": "shorts_only"})
     store.mark_running(job.job_id)
+    ctl = JobControl(job, store, hub)
+    ctl.note(studio_job_ids=["c-20261105-aaaa"])            # announced by the child as it started
+    ctl.progress(0.6, "voice (10/16)")
+    assert store.get(job.job_id).result == {"studio_job_ids": ["c-20261105-aaaa"]}   # already on disk
     worker.start()
     worker.stop()
     rec = store.get(job.job_id)
     assert rec is not None and rec.status == "failed" and "restart" in rec.message
+    assert rec.result["studio_job_ids"] == ["c-20261105-aaaa"]
+    assert rec.result["error"]["code"] == "NS-E328" and rec.result["error"]["stage"] == "voice"
+    assert rec.to_dict()["stage"] == "voice" and "Retry" in rec.result["error"]["hint"]
 
 
 def test_thread_mode_drains_queue(tmp_home: Path):
