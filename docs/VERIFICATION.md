@@ -148,7 +148,16 @@ L release and CI (ci.yml: lint, types, test, bundle, ui-build, powershell-parse,
 - [x] v0.1.11 assets: Setup and Update zips + sha256, manifest 0.1.11, teardown fix inside; dev install updated from the zip in 41 s (V-dev 2026-11-05)
 - [ ] `ns update` finds the new release on GitHub from an older install (V-ci; live U)
 
-## 6. The loop (one iteration)
+## 6. The inventory (the mechanical checklist)
+
+`docs/VERIFICATION_INVENTORY.md` is generated from the code by `dev/verification_inventory.py`: every API
+route, CLI command, studio stage, installer step, launcher, dashboard page, assistant tool, supervisor
+service and workflow, each with a status (section 1) and its evidence. `tests/test_verification_inventory.py`
+fails in CI when the code defines an item the inventory does not list or the file is stale, so a new route
+or stage cannot appear without a status. The loop marks items there as it proves them; the block checklists
+above hold the narrative, the inventory holds the count.
+
+## 7. The loop (one iteration)
 
 0. **Slate**: `nsproc.ps1` must say CLEAN. Nothing from a previous test stays up.
 1. **Pick**: the highest-risk U item (operations and resilience before polish).
