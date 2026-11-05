@@ -524,6 +524,7 @@ def test_a_window_over_a_finished_install_whose_program_is_gone_installs_again(t
     assert by_id["s04_venvs"] == "pending" and by_id["s08_smoke"] == "pending"
     saved = json.loads((again.home / "config" / "install_state.json").read_text(encoding="utf-8"))
     assert saved["steps"]["s04_venvs"]["status"] == "pending"
+    assert state["startedAt"] is None and saved["started_at"] is None   # the duration counts this run only
 
 
 def test_a_window_over_a_console_install_without_samples_still_shows_done(tmp_path, monkeypatch):

@@ -9,7 +9,8 @@ All notable changes to Nightshift are recorded here. The format follows
 
 - Setup after an uninstall installs again instead of showing Done over an empty folder: the uninstall now
   removes `config\install_state.json` (answers and channels stay), and a setup window that finds the
-  program folder gone runs the install steps again (found by the windowed dev install on 2026-11-05).
+  program folder gone runs the install steps again, with the Done screen's duration counted from that run
+  (found by the windowed dev install on 2026-11-05: it said 30,265 s).
 
 - A job interrupted by a restart (the engine stopped or the PC restarted mid-job) keeps the stage it was at and
   the studio job it had started, so the card says where it stopped (`NS-E328`) and Retry continues it. Found by

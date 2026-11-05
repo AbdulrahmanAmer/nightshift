@@ -330,6 +330,17 @@ def read_install_state(home: Path) -> dict[str, Any]:
     return {}
 
 
+def reset_install_times(home: Path) -> None:
+    """Forget the start and finish times of an install that is being run again from scratch."""
+    data = read_install_state(home)
+    if not data:
+        return
+    data["started_at"] = None
+    data["completed_at"] = None
+    target = home / "config" / "install_state.json"
+    write_text_atomic(target, json.dumps(data, indent=2) + "\n", keep_backup=True)
+
+
 def write_step(
     home: Path, version: str, app_path: Path, step_id: str, status: str, error: str | None
 ) -> None:
@@ -515,6 +526,9 @@ class SetupController:
                     st["finishedAt"] = None
                     self._persist_step(st["id"], "pending", None)
             self._reinstall = True                      # logged once the store exists
+            saved["started_at"] = None                  # the Done screen's duration starts from this run
+            saved["completed_at"] = None
+            reset_install_times(self.home)
         if others_done:
             for st in steps:                               # a console install made no samples: not unfinished
                 if st["id"] in WINDOW_ONLY_STEPS and st["status"] == "pending":
