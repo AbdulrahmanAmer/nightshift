@@ -7,6 +7,9 @@ All notable changes to Nightshift are recorded here. The format follows
 
 ## [Unreleased]
 
+- Dev mode: a clip job from an upload finds a transcript sidecar dropped next to the stored file after the
+  upload (it was only read when recorded at import, so every dev clip-from-upload stopped with NS-E406).
+
 ## [0.1.11] - 2026-11-05
 
 From the clean-teardown test loop on the 0.1.10 dev install (one test at a time, each torn down and the
