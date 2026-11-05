@@ -89,6 +89,28 @@ def test_backup_then_restore_roundtrip(tmp_path: Path) -> None:
     assert r3.exit_code == 1 and "NS-E703" in r3.output
 
 
+def test_restore_refuses_while_the_engine_runs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """On the dev install, `ns restore` with the engine up failed on the locked studio.db-wal (WinError 32)
+    after restoring 12 files, then put them back. It now refuses up front and changes nothing."""
+    from ns_supervisor import backup
+
+    home = tmp_path / "home"
+    paths = Paths(home)
+    paths.ensure()
+    paths.channel_file("a").write_text("slug: a\n", encoding="utf-8")
+    out = backup.make_backup(paths, tmp_path / "b.zip")
+    paths.channel_file("a").write_text("slug: a\nniche: changed\n", encoding="utf-8")
+
+    class Up:
+        def is_up(self) -> bool:
+            return True
+
+    monkeypatch.setattr(cli, "_client", lambda paths: Up())
+    r = invoke(home, "restore", str(out))
+    assert r.exit_code == 1 and "NS-E703" in r.output and "Stop All" in r.output
+    assert "changed" in paths.channel_file("a").read_text(encoding="utf-8")   # nothing was restored
+
+
 def test_doctor_bundle_writes_zip(tmp_path: Path) -> None:
     home = tmp_path / "home"
     Paths(home).ensure()

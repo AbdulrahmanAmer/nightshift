@@ -333,8 +333,17 @@ def cmd_restore(
     all_files: Annotated[bool, typer.Option("--all", help="Also restore runtime.json.")] = False,
 ) -> None:
     """Restore a backup (what it overwrites is kept in data\\backup\\pre-restore-*)."""
+    paths = Paths.from_env()
+    if _client(paths).is_up():
+        # the running engine holds data\studio.db open: the restore used to fail halfway (WinError 32) and
+        # put everything back; now it says what to do before touching anything
+        raise _die(NsError(
+            "NS-E703",
+            "Nightshift is running, so the database cannot be replaced. Stop it first (the 'Nightshift - "
+            "Stop All' shortcut, or ns stop), then run the restore again. Nothing was changed.",
+        ))
     try:
-        lines = backup.restore_backup(Paths.from_env(), zip_path, include_machine=all_files)
+        lines = backup.restore_backup(paths, zip_path, include_machine=all_files)
     except NsError as e:
         raise _die(e) from e
     for ln in lines:
