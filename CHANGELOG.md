@@ -13,6 +13,10 @@ All notable changes to Nightshift are recorded here. The format follows
   deleted with the upload folder when the clip job started).
 - Dev mode: a clip job from an upload finds a transcript sidecar dropped next to the stored file after the
   upload (it was only read when recorded at import, so every dev clip-from-upload stopped with NS-E406).
+- A job interrupted by a restart (the engine stopped or the PC restarted mid-job) keeps the stage it was at and
+  the studio job it had started, so the card says where it stopped (`NS-E328`) and Retry continues it. Found by
+  killing the engine at the voice stage on the 0.1.11 dev install: the card lost the stage and Retry answered
+  "stopped before it made anything to continue from".
 
 ## [0.1.11] - 2026-11-05
 

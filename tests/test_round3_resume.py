@@ -213,3 +213,24 @@ def test_the_route_and_the_assistant_tool(tmp_home: Path):
     assert td is not None and td.spec.side_effect and td.spec.topic == "create"
     assert td.route == ("POST", "/api/jobs/{job_id}/resume")
     assert "{job_id}" in td.spec.confirm_text
+
+
+def test_a_job_interrupted_by_a_restart_can_be_resumed(tmp_home: Path):
+    """Killing the engine mid-job on the 0.1.11 dev install left "Interrupted by a restart" with no stage
+    and no studio job, and Retry answered cannot_resume. The ids are noted as announced and survive the
+    restart."""
+    dash = make(tmp_home)
+    s = dash.state
+    rec = s.store.create("run", "after-dark", {"channel": "after-dark", "format": "shorts_only", "count": 1})
+    s.store.mark_running(rec.job_id)
+    s.store.note_result(rec.job_id, {"studio_job_ids": ["after-dark-20261105-dddd"]})
+    s.store.update_progress(rec.job_id, 0.6, "voice (10/16)")
+    folder = s.paths.job_dir("after-dark-20261105-dddd")
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "job.json").write_text("{}", encoding="utf-8")
+    assert s.store.recover_interrupted() == 1
+    failed = s.store.get(rec.job_id)
+    assert failed.status == "failed" and failed.to_dict()["stage"] == "voice"
+    new = dash.jobs.create_resume(rec.job_id)
+    assert new["params"]["resume_job_id"] == "after-dark-20261105-dddd"
+    assert new["params"]["resume_of"] == rec.job_id
