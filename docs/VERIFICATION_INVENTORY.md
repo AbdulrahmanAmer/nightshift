@@ -5,7 +5,7 @@ are kept between runs and maintained by the verification loop (docs/VERIFICATION
 starts as `U`; `tests/test_verification_inventory.py` fails when the code has an item this
 file does not list.
 
-Items: 256 (V-dev 114, V-ci 53, V-gpu 0, U 89).
+Items: 256 (V-dev 115, V-ci 52, V-gpu 0, U 89).
 
 | kind | id | status | evidence |
 |---|---|---|---|
@@ -173,7 +173,7 @@ Items: 256 (V-dev 114, V-ci 53, V-gpu 0, U 89).
 | installer-step | `s08_smoke` | V-dev | test-loop-2026-11-05.md (fresh dev install from the 0.1.10 zip, 258 s) |
 | installer-step | `s09_shortcuts_scheduler` | V-dev | test-loop-2026-11-05.md (fresh dev install from the 0.1.10 zip, 258 s) |
 | installer-step | `s10_summary` | V-dev | test-loop-2026-11-05.md (fresh dev install from the 0.1.10 zip, 258 s) |
-| installer-step | `v01_samples` | V-ci | tests/test_installer_web_samples.py (window-only step, skipped headless) |
+| installer-step | `v01_samples` | V-dev | test-loop-2026-11-05.md (windowed reinstall made the samples) |
 | launcher | `_common.ps1` | V-dev | test-loop-2026-11-05.md |
 | launcher | `diagnostics.ps1` | V-dev | test-loop-2026-11-05.md (zip on the Desktop) |
 | launcher | `nightshift-code.ps1` | V-ci | tests/test_launchers.py |

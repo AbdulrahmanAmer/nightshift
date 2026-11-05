@@ -64,7 +64,7 @@ L release and CI (ci.yml: lint, types, test, bundle, ui-build, powershell-parse,
 
 | Block | Static | Unit/contract | Dev integration | E2E journeys | Lifecycle | Operations | Resilience | Security | Perf | Docs | GPU-only |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| A stage 1 | V-ci | V-ci | V-dev (headless, dev flag) | **U** (setup window in dev) | V-dev | — | **U** (console closed mid-run) | V-ci | V-dev 258 s | V-dev | V-gpu |
+| A stage 1 | V-ci | V-ci | V-dev (headless, dev flag; window run via its API) | partial (window run proven by API; clicks U) | V-dev | — | **U** (console closed mid-run) | V-ci | V-dev 258 s | V-dev | V-gpu |
 | B stage 2 | V-ci | V-ci | V-dev | **U** (wizard clicks) | V-dev | — | **U** (network off, retry) | V-ci | V-dev | partial | V-gpu (downloads, smoke) |
 | C launchers | V-ci | V-ci | V-dev (dashboard, host, stop-all, update) | V-dev | V-dev | V-dev | V-dev (dead server → window closes) | — | — | V-dev | V-gpu (host on a stock PC) |
 | D supervisor | V-ci | V-ci | V-dev (services, leases, verify) | — | V-dev | V-dev (task fired by hand: headless engine, master, engine left) / **U** keep-awake | V-dev (kill mid-job → NS-E328 at its stage, Retry continues; PR #86) / **U** lease TTL | V-ci | V-dev | partial | V-gpu (GPU gate, tune) |
@@ -82,7 +82,7 @@ L release and CI (ci.yml: lint, types, test, bundle, ui-build, powershell-parse,
 ## 5. Block checklists (the items the loop works through; U items first)
 
 ### A. Stage 1
-- [ ] The setup window (`-Ui`) in dev mode: Welcome → Choices → Download → Installing → Testing → Done, every screen's words true (U)
+- [x] The setup window (`-Ui`) in dev mode after an uninstall: Welcome (resume) → Continue → downloading → installing → verifying → Done in 290 s, every step done, read through the window's own API (V-dev 2026-11-05, PR #89 fixed Done-over-nothing and the 30,265 s duration); the screens' words by clicking are still U (the Chrome extension was down)
 - [ ] Console closed mid-run resumes on the next INSTALL.cmd (U)
 - [x] Headless dev install from the official zip (V-dev 258 s)
 - [x] Preflight rows, Smart App Control, antivirus copy (V-ci)
