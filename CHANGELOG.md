@@ -7,6 +7,11 @@ All notable changes to Nightshift are recorded here. The format follows
 
 ## [Unreleased]
 
+- A job interrupted by a restart (the engine stopped or the PC restarted mid-job) keeps the stage it was at and
+  the studio job it had started, so the card says where it stopped (`NS-E328`) and Retry continues it. Found by
+  killing the engine at the voice stage on the 0.1.11 dev install: the card lost the stage and Retry answered
+  "stopped before it made anything to continue from".
+
 ## [0.1.11] - 2026-11-05
 
 From the clean-teardown test loop on the 0.1.10 dev install (one test at a time, each torn down and the
