@@ -7,6 +7,8 @@ All notable changes to Nightshift are recorded here. The format follows
 
 ## [Unreleased]
 
+- Clipper import: a video that already sits in its hash folder with its sidecar is recorded without copying the
+  sidecar onto itself (WinError 32 on Windows; it stopped every dev clip job from an upload at 1 s).
 - Dev mode: a transcript sidecar dropped beside an upload moves with the video into its hash folder (it was
   deleted with the upload folder when the clip job started).
 - Dev mode: a clip job from an upload finds a transcript sidecar dropped next to the stored file after the

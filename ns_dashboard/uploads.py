@@ -14,8 +14,6 @@ from typing import Any
 
 from ns_common.db import new_job_id
 from ns_common.paths import Paths
-
-SIDECAR_SUFFIX = ".transcript.json"   # the Clipper's dev-mode transcript next to a video (clipper/source.py)
 from ns_dashboard.errors import ApiError
 
 CHUNK = 8 * 1024 * 1024
@@ -27,6 +25,7 @@ AUDIO_EXT = frozenset({".wav", ".mp3", ".m4a", ".flac", ".ogg", ".webm"})
 UPLOAD_EXT = ALLOWED_EXT | AUDIO_EXT
 SOURCE_ID_RE = re.compile(r"^src-\d{8}-[0-9a-f]{4}$")
 META = "upload.json"
+SIDECAR_SUFFIX = ".transcript.json"   # the Clipper's dev-mode transcript next to a video (clipper/source.py)
 
 
 @dataclass
