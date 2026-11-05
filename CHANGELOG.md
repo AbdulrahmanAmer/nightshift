@@ -7,6 +7,10 @@ All notable changes to Nightshift are recorded here. The format follows
 
 ## [Unreleased]
 
+- Setup after an uninstall installs again instead of showing Done over an empty folder: the uninstall now
+  removes `config\install_state.json` (answers and channels stay), and a setup window that finds the
+  program folder gone runs the install steps again (found by the windowed dev install on 2026-11-05).
+
 - A job interrupted by a restart (the engine stopped or the PC restarted mid-job) keeps the stage it was at and
   the studio job it had started, so the card says where it stopped (`NS-E328`) and Retry continues it. Found by
   killing the engine at the voice stage on the 0.1.11 dev install: the card lost the stage and Retry answered
