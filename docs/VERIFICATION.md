@@ -69,7 +69,7 @@ L release and CI (ci.yml: lint, types, test, bundle, ui-build, powershell-parse,
 | C launchers | V-ci | V-ci | V-dev (dashboard, host, stop-all, update) | V-dev | V-dev | V-dev | V-dev (dead server → window closes) | — | — | V-dev | V-gpu (host on a stock PC) |
 | D supervisor | V-ci | V-ci | V-dev (services, leases, verify) | — | V-dev | V-dev (task fired by hand: headless engine, master, engine left) / **U** keep-awake | V-dev (kill mid-job → NS-E328 at its stage, Retry continues; PR #86) / **U** lease TTL | V-ci | V-dev | partial | V-gpu (GPU gate, tune) |
 | E studio | V-ci | V-ci | V-dev (Shorts, master, clip, planner, QC) | V-dev | — | — | partial (resume proven; kill mid-stage U) | V-ci | V-dev (Short 83 s) | partial | V-gpu (quality, timing) |
-| F dashboard API | V-ci | V-ci | V-dev (20 groups probed, chunked upload → clips) | V-dev | V-dev | V-dev (update, uninstall routes) | **U** | V-ci | — | — | — |
+| F dashboard API | V-ci | V-ci | V-dev (20 groups probed, chunked upload → clips) | V-dev | V-dev | V-dev (update, uninstall routes) | **U** | V-dev (traversal 404, loopback only) | — | — | — |
 | G dashboard UI | V-ci | V-ci (callers, contract) | V-dev (Chrome) | V-dev (all pages) | — | — | — | — | — | partial | V-gpu (WebView2) |
 | H assistant | V-ci | V-ci (eval, router, redact) | V-dev (fake tool routing) | V-dev | — | — | **U** (engine busy, timeouts) | V-ci (redaction) | — | V-dev | V-gpu (real model answers) |
 | I engines/clients | V-ci | V-ci | V-dev (fakes; real Pixabay) | — | — | — | **U** (Pexels live; 429 handling live) | V-ci | — | — | V-gpu (all real engines) |
@@ -118,7 +118,7 @@ L release and CI (ci.yml: lint, types, test, bundle, ui-build, powershell-parse,
 - [x] 20 route groups answer; jobs, outputs, settings, keys, footage, assistant (V-dev)
 - [x] Uploads: chunked upload of a Short → clip job → one 15 s clip (V-dev 2026-11-05 after PR #88: the dev sidecar was deleted with the upload folder, then copied onto itself with WinError 32). An upload id is not usable after a dashboard restart once adopted (409 upload_incomplete); re-run from the job is the path (wording item, U)
 - [ ] URL clips (`/api/url` path) with a local file URL (U)
-- [ ] Security: path confinement on media/thumbs, 127.0.0.1 only (V-ci; prove by request) (U)
+- [x] Security: traversal requests on media, thumbs, outputs and footage delete answer 404; dashboard and engine refuse the LAN address and listen on 127.0.0.1 only (V-dev 2026-11-05)
 
 ### G. Dashboard UI
 - [x] Every page renders with data; Create wizard; Queue approve/reject; Library tabs; Settings keys; Hide (V-dev)
