@@ -74,7 +74,7 @@ L release and CI (ci.yml: lint, types, test, bundle, ui-build, powershell-parse,
 | H assistant | V-ci | V-ci (eval, router, redact) | V-dev (fake tool routing) | V-dev | — | — | **U** (engine busy, timeouts) | V-ci (redaction) | — | V-dev | V-gpu (real model answers) |
 | I engines/clients | V-ci | V-ci | V-dev (fakes; real Pixabay) | — | — | — | **U** (Pexels live; 429 handling live) | V-ci | — | — | V-gpu (all real engines) |
 | J contracts | V-ci | V-ci | — | — | — | — | — | — | — | V-ci | — |
-| K operations | V-ci | V-ci | V-dev (update, uninstall, diagnostics) | V-dev | V-dev | V-dev (task fires, rollback, export/import, backup/restore) / **U** toasts | V-dev (restore while running refused, PR #87) / **U** disk full, network off | V-dev (keys forgotten) | V-dev (update 51 s) | partial | — |
+| K operations | V-ci | V-ci | V-dev (update, uninstall, diagnostics) | V-dev | V-dev | V-dev (task fires, rollback, export/import, backup/restore, notify command) / V-gpu toast visible, keep-awake | V-dev (restore while running refused, PR #87) / **U** disk full, network off | V-dev (keys forgotten) | V-dev (update 51 s) | partial | — |
 | L release/CI | V-ci | V-ci (release wiring) | V-dev (assets, sha256, manifest) | — | V-dev | — | — | — | — | V-dev | — |
 
 "partial" means some items of the angle are verified and the rest are U; the block checklists below say which.
@@ -101,7 +101,7 @@ L release and CI (ci.yml: lint, types, test, bundle, ui-build, powershell-parse,
 
 ### D. Supervisor
 - [x] The 03:00 scheduled task fired by hand (`Start-ScheduledTask`) on the 0.1.11 dev install: `studio run --daily` started the engine headless, made a master (22 stages, 18.5 min, 1 master + 4 Shorts, publish times set), the engine left by itself, the slate was CLEAN 20 s later, the task was disabled again, LastTaskResult 0 (V-dev 2026-11-05)
-- [ ] Keep-awake set during the nightly run: no log line found; prove with `powercfg /requests` during a run (U)
+- [ ] Keep-awake during a run: `powercfg -requests` needs an elevated prompt, not available in the loop; V-ci (`tests/test_keepawake.py`) plus a partner line: run it elevated during the nightly run and expect the studio process under EXECUTION (V-gpu)
 - [x] Kill the engine mid-job (supervisor, dashboard, child, ffmpeg force-stopped at clips 12/16): after relaunch the job is failed at stage clips with NS-E328 and its studio job id; Retry continued the same studio job to done in 75 s. Before PR #86 the stage and the id were lost and Retry refused (V-dev 2026-11-05)
 - [ ] Lease TTL: a holder that stops heartbeating is reclaimed (V-ci only; prove on dev) (U)
 - [x] Services start on demand, `ns verify --quick`, `ns stop` (V-dev)
@@ -136,7 +136,7 @@ L release and CI (ci.yml: lint, types, test, bundle, ui-build, powershell-parse,
 - [ ] 429 handling live (V-ci; live U)
 
 ### K. Operations
-- [ ] Toasts: a Windows notification shows at job end (`ns notify`) (U)
+- [x] `ns notify` exits 0 and the AppUserModelId registration exists (V-dev 2026-11-05); the toast being visible is a partner line (V-gpu)
 - [x] Rollback: 0.1.11 → 0.1.10 in 21 s, dashboard reports 0.1.10, update to 0.1.11 again in 32 s (V-dev 2026-11-05)
 - [x] Settings export (16-entry zip) → run time changed back → import restores it, machine-specific files skipped, keys kept (V-dev 2026-11-05 on the same install; a second PC is V-gpu)
 - [x] `ns backup` 16-entry zip; `ns restore` with nothing running restores config and studio.db; with the engine up it failed halfway and rolled back, now refused up front with NS-E703 (PR #87) (V-dev 2026-11-05)
