@@ -7,6 +7,9 @@ All notable changes to Nightshift are recorded here. The format follows
 
 ## [Unreleased]
 
+- `ns restore` refuses while Nightshift is running ("stop it first, nothing was changed") instead of failing
+  halfway on the locked database and putting the files back (found on the 0.1.11 dev install with the engine up).
+
 ## [0.1.11] - 2026-11-05
 
 From the clean-teardown test loop on the 0.1.10 dev install (one test at a time, each torn down and the
