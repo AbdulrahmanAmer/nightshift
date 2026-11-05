@@ -67,7 +67,7 @@ L release and CI (ci.yml: lint, types, test, bundle, ui-build, powershell-parse,
 | A stage 1 | V-ci | V-ci | V-dev (headless, dev flag) | **U** (setup window in dev) | V-dev | — | **U** (console closed mid-run) | V-ci | V-dev 258 s | V-dev | V-gpu |
 | B stage 2 | V-ci | V-ci | V-dev | **U** (wizard clicks) | V-dev | — | **U** (network off, retry) | V-ci | V-dev | partial | V-gpu (downloads, smoke) |
 | C launchers | V-ci | V-ci | V-dev (dashboard, host, stop-all, update) | V-dev | V-dev | V-dev | V-dev (dead server → window closes) | — | — | V-dev | V-gpu (host on a stock PC) |
-| D supervisor | V-ci | V-ci | V-dev (services, leases, verify) | — | V-dev | **U** (03:00 task firing, keep-awake) | **U** (kill mid-job, lease TTL) | V-ci | V-dev | partial | V-gpu (GPU gate, tune) |
+| D supervisor | V-ci | V-ci | V-dev (services, leases, verify) | — | V-dev | V-dev (task fired by hand: headless engine, master, engine left) / **U** keep-awake | **U** (kill mid-job, lease TTL) | V-ci | V-dev | partial | V-gpu (GPU gate, tune) |
 | E studio | V-ci | V-ci | V-dev (Shorts, master, clip, planner, QC) | V-dev | — | — | partial (resume proven; kill mid-stage U) | V-ci | V-dev (Short 83 s) | partial | V-gpu (quality, timing) |
 | F dashboard API | V-ci | V-ci | V-dev (20 groups probed) | V-dev | V-dev | V-dev (update, uninstall routes) | **U** | V-ci | — | — | — |
 | G dashboard UI | V-ci | V-ci (callers, contract) | V-dev (Chrome) | V-dev (all pages) | — | — | — | — | — | partial | V-gpu (WebView2) |
@@ -100,14 +100,15 @@ L release and CI (ci.yml: lint, types, test, bundle, ui-build, powershell-parse,
 - [ ] Studio and Code launchers from a fresh install (U)
 
 ### D. Supervisor
-- [ ] The 03:00 scheduled task: register enabled in dev for one run, fire it by hand (`schtasks /run`), the run happens headless, keep-awake set during it (U)
+- [x] The 03:00 scheduled task fired by hand (`Start-ScheduledTask`) on the 0.1.11 dev install: `studio run --daily` started the engine headless, made a master (22 stages, 18.5 min, 1 master + 4 Shorts, publish times set), the engine left by itself, the slate was CLEAN 20 s later, the task was disabled again, LastTaskResult 0 (V-dev 2026-11-05)
+- [ ] Keep-awake set during the nightly run: no log line found; prove with `powercfg /requests` during a run (U)
 - [ ] Kill the engine mid-job: the job shows failed with its stage, resume works (U)
 - [ ] Lease TTL: a holder that stops heartbeating is reclaimed (V-ci only; prove on dev) (U)
 - [x] Services start on demand, `ns verify --quick`, `ns stop` (V-dev)
 
 ### E. Studio
 - [x] shorts_only, master_first (fresh install: Shorts; master on the 0.1.9 install), clipper, planner, QC drop, footage reuse (V-dev)
-- [ ] master_first on the fresh 0.1.11 install, timed (U on this build)
+- [x] master_first on the fresh 0.1.11 install through the scheduled task: 18.5 min, 199 MB master, Shorts 13-109 MB (V-dev 2026-11-05)
 - [ ] Series workshop end to end (concepts → map → scripts → produce) (U)
 - [ ] Review: approve, reject with note, mark uploaded, re-review (V-dev approve/reject; uploaded U)
 - [ ] Learn: analytics CSV import → Results page with data → weights (U)
@@ -144,7 +145,7 @@ L release and CI (ci.yml: lint, types, test, bundle, ui-build, powershell-parse,
 
 ### L. Release and CI
 - [x] Tag → release.yml → Setup/Update zips + sha256, manifest version, WebView2 DLLs (V-dev 0.1.10)
-- [ ] v0.1.11 assets verified (pending at the time of writing)
+- [x] v0.1.11 assets: Setup and Update zips + sha256, manifest 0.1.11, teardown fix inside; dev install updated from the zip in 41 s (V-dev 2026-11-05)
 - [ ] `ns update` finds the new release on GitHub from an older install (V-ci; live U)
 
 ## 6. The loop (one iteration)
