@@ -111,7 +111,7 @@ L release and CI (ci.yml: lint, types, test, bundle, ui-build, powershell-parse,
 - [x] master_first on the fresh 0.1.11 install through the scheduled task: 18.5 min, 199 MB master, Shorts 13-109 MB (V-dev 2026-11-05)
 - [ ] Series workshop end to end (concepts → map → scripts → produce) (U)
 - [ ] Review: approve, reject with note, mark uploaded, re-review (V-dev approve/reject; uploaded U)
-- [ ] Learn: analytics CSV import → Results page with data → weights (U)
+- [x] Learn: a YouTube-Studio-style CSV naming two Shorts imported through `/api/learn/import`: 2 matched, weights moved in five pools, channel retention 61.5 % and a spark point (V-dev 2026-11-05); the Results page rendering those numbers is checked in the browser pass (U)
 - [ ] Calibrate (U)
 
 ### F. Dashboard API
