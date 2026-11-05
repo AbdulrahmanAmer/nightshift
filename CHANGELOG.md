@@ -7,6 +7,10 @@ All notable changes to Nightshift are recorded here. The format follows
 
 ## [Unreleased]
 
+- Dev mode: the fake model's series map fits the part count the workshop asked for (a two-part series
+  stopped with NS-E302 "returned 3 parts, expected 2"); the workshop's "choose a concept first" and "no
+  design yet" messages no longer tell a dashboard user to run a `studio series` command.
+
 - `ns restore` refuses while Nightshift is running ("stop it first, nothing was changed") instead of failing
   halfway on the locked database and putting the files back (found on the 0.1.11 dev install with the engine up).
 - A job interrupted by a restart (the engine stopped or the PC restarted mid-job) keeps the stage it was at and
