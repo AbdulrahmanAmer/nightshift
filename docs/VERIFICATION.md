@@ -67,7 +67,7 @@ L release and CI (ci.yml: lint, types, test, bundle, ui-build, powershell-parse,
 | A stage 1 | V-ci | V-ci | V-dev (headless, dev flag) | **U** (setup window in dev) | V-dev | — | **U** (console closed mid-run) | V-ci | V-dev 258 s | V-dev | V-gpu |
 | B stage 2 | V-ci | V-ci | V-dev | **U** (wizard clicks) | V-dev | — | **U** (network off, retry) | V-ci | V-dev | partial | V-gpu (downloads, smoke) |
 | C launchers | V-ci | V-ci | V-dev (dashboard, host, stop-all, update) | V-dev | V-dev | V-dev | V-dev (dead server → window closes) | — | — | V-dev | V-gpu (host on a stock PC) |
-| D supervisor | V-ci | V-ci | V-dev (services, leases, verify) | — | V-dev | V-dev (task fired by hand: headless engine, master, engine left) / **U** keep-awake | **U** (kill mid-job, lease TTL) | V-ci | V-dev | partial | V-gpu (GPU gate, tune) |
+| D supervisor | V-ci | V-ci | V-dev (services, leases, verify) | — | V-dev | V-dev (task fired by hand: headless engine, master, engine left) / **U** keep-awake | V-dev (kill mid-job → NS-E328 at its stage, Retry continues; PR #86) / **U** lease TTL | V-ci | V-dev | partial | V-gpu (GPU gate, tune) |
 | E studio | V-ci | V-ci | V-dev (Shorts, master, clip, planner, QC) | V-dev | — | — | partial (resume proven; kill mid-stage U) | V-ci | V-dev (Short 83 s) | partial | V-gpu (quality, timing) |
 | F dashboard API | V-ci | V-ci | V-dev (20 groups probed) | V-dev | V-dev | V-dev (update, uninstall routes) | **U** | V-ci | — | — | — |
 | G dashboard UI | V-ci | V-ci (callers, contract) | V-dev (Chrome) | V-dev (all pages) | — | — | — | — | — | partial | V-gpu (WebView2) |
@@ -102,7 +102,7 @@ L release and CI (ci.yml: lint, types, test, bundle, ui-build, powershell-parse,
 ### D. Supervisor
 - [x] The 03:00 scheduled task fired by hand (`Start-ScheduledTask`) on the 0.1.11 dev install: `studio run --daily` started the engine headless, made a master (22 stages, 18.5 min, 1 master + 4 Shorts, publish times set), the engine left by itself, the slate was CLEAN 20 s later, the task was disabled again, LastTaskResult 0 (V-dev 2026-11-05)
 - [ ] Keep-awake set during the nightly run: no log line found; prove with `powercfg /requests` during a run (U)
-- [ ] Kill the engine mid-job: the job shows failed with its stage, resume works (U)
+- [x] Kill the engine mid-job (supervisor, dashboard, child, ffmpeg force-stopped at clips 12/16): after relaunch the job is failed at stage clips with NS-E328 and its studio job id; Retry continued the same studio job to done in 75 s. Before PR #86 the stage and the id were lost and Retry refused (V-dev 2026-11-05)
 - [ ] Lease TTL: a holder that stops heartbeating is reclaimed (V-ci only; prove on dev) (U)
 - [x] Services start on demand, `ns verify --quick`, `ns stop` (V-dev)
 
