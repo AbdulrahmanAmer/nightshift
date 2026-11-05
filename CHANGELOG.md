@@ -7,6 +7,12 @@ All notable changes to Nightshift are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.1.11] - 2026-11-05
+
+From the clean-teardown test loop on the 0.1.10 dev install (one test at a time, each torn down and the
+process list checked; report `D:\NightShift-refs\test-loop-2026-11-05.md`). Send `Nightshift-Setup-0.1.11.zip`;
+an install started with 0.1.6 to 0.1.10 resumes under it (INSTALL.cmd, Continue).
+
 - Stop-all now closes the Nightshift window too (it stopped the engine and the dashboard and left the WebView2
   window on a dead page, 150 MB, in the 0.1.10 teardown test); the window also closes itself when its server
   stops answering for 15 s (the nightly task, an update, uninstall).
