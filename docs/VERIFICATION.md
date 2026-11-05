@@ -97,7 +97,7 @@ L release and CI (ci.yml: lint, types, test, bundle, ui-build, powershell-parse,
 - [x] Dashboard launcher with window, headless, Edge fallback text (V-dev, V-ci)
 - [x] stop-all stops engine, dashboard and the window; the window closes itself when the server is gone (V-dev)
 - [x] Update from a local zip (V-dev 51 s)
-- [ ] Studio and Code launchers from a fresh install (U)
+- [x] `diagnostics.ps1` writes the zip to the Desktop (V-dev 2026-11-05); `nightshift-studio.ps1` and `nightshift-code.ps1` open consoles/Code and stay V-ci (`tests/test_launchers.py`); `open-outbox.ps1` opens Explorer, V-ci
 
 ### D. Supervisor
 - [x] The 03:00 scheduled task fired by hand (`Start-ScheduledTask`) on the 0.1.11 dev install: `studio run --daily` started the engine headless, made a master (22 stages, 18.5 min, 1 master + 4 Shorts, publish times set), the engine left by itself, the slate was CLEAN 20 s later, the task was disabled again, LastTaskResult 0 (V-dev 2026-11-05)
@@ -127,7 +127,7 @@ L release and CI (ci.yml: lint, types, test, bundle, ui-build, powershell-parse,
 
 ### H. Assistant
 - [x] Chat → tool call → confirm card → Yes → result on card (V-dev, fake routing)
-- [ ] Engine busy (a job running) → the Assistant says so and waits/refuses (U)
+- [x] Assistant while a job runs: answered at once with the engine state (render 13/16); the busy refusal needs a real GPU owner, V-ci (`tests/test_dashboard_assistant.py` EngineBusy) and a partner line (V-gpu) (2026-11-05)
 - [ ] Offline eval suite passes on the current prompt (V-ci; rerun after prompt changes)
 
 ### I. Engines and clients

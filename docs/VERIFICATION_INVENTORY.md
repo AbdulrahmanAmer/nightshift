@@ -5,7 +5,7 @@ are kept between runs and maintained by the verification loop (docs/VERIFICATION
 starts as `U`; `tests/test_verification_inventory.py` fails when the code has an item this
 file does not list.
 
-Items: 256 (V-dev 113, V-ci 54, V-gpu 0, U 89).
+Items: 256 (V-dev 114, V-ci 53, V-gpu 0, U 89).
 
 | kind | id | status | evidence |
 |---|---|---|---|
@@ -175,7 +175,7 @@ Items: 256 (V-dev 113, V-ci 54, V-gpu 0, U 89).
 | installer-step | `s10_summary` | V-dev | test-loop-2026-11-05.md (fresh dev install from the 0.1.10 zip, 258 s) |
 | installer-step | `v01_samples` | V-ci | tests/test_installer_web_samples.py (window-only step, skipped headless) |
 | launcher | `_common.ps1` | V-dev | test-loop-2026-11-05.md |
-| launcher | `diagnostics.ps1` | V-ci | tests/test_launchers.py |
+| launcher | `diagnostics.ps1` | V-dev | test-loop-2026-11-05.md (zip on the Desktop) |
 | launcher | `nightshift-code.ps1` | V-ci | tests/test_launchers.py |
 | launcher | `nightshift-dashboard.ps1` | V-dev | test-loop-2026-11-05.md (window and no-host starts) |
 | launcher | `nightshift-host.ps1` | V-dev | test-loop-2026-11-05.md (closes itself when the server is gone) |
@@ -196,7 +196,7 @@ Items: 256 (V-dev 113, V-ci 54, V-gpu 0, U 89).
 | assistant-tool | `list_tools` | V-ci | tests/test_assistant_router.py |
 | assistant-tool | `open_path` | U |  |
 | assistant-tool | `search_docs` | U |  |
-| assistant-tool | `status` | V-dev | journey-2026-11-04.md |
+| assistant-tool | `status` | V-dev | journey-2026-11-04.md; answered during a running job (test-loop-2026-11-05.md) |
 | assistant-tool | `where_is` | V-ci | tests/test_dashboard_footage.py |
 | assistant-tool | `list_queue` | U |  |
 | assistant-tool | `get_output` | U |  |
