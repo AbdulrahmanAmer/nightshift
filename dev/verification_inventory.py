@@ -1,0 +1,124 @@
+"""The verification inventory: every checkable item the code defines, with a status the loop maintains.
+
+`python dev/verification_inventory.py` rewrites `docs/VERIFICATION_INVENTORY.md` from the code (API routes,
+CLI commands, studio stages, installer steps, launchers, dashboard pages, assistant tools, supervisor
+services, workflows), keeping the status and evidence already recorded for each item; a new item starts
+as `U`. `tests/test_verification_inventory.py` fails when the code has an item the file does not list, so
+the map cannot drift from the program. Standard library only (docs/VERIFICATION.md, section 1 for the
+statuses).
+"""
+
+from __future__ import annotations
+
+import ast
+import re
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+INVENTORY = ROOT / "docs" / "VERIFICATION_INVENTORY.md"
+STATUSES = ("V-dev", "V-ci", "V-gpu", "U")
+CLI_PREFIX = {
+    ("ns_supervisor/cli.py", "app"): "ns", ("ns_supervisor/cli.py", "schedule_app"): "ns schedule",
+    ("ns_supervisor/cli.py", "models_app"): "ns models",
+    ("ns_studio/cli.py", "app"): "studio", ("ns_studio/cli.py", "channel_app"): "studio channel",
+    ("ns_studio/cli.py", "voice_app"): "studio voice", ("ns_studio/cli.py", "review_app"): "studio review",
+}
+
+
+def _read(rel: str) -> str:
+    return (ROOT / rel).read_text(encoding="utf-8")
+
+
+def collect() -> list[tuple[str, str]]:
+    """(kind, id) for every item, in a stable order."""
+    items: list[tuple[str, str]] = []
+    for m in re.finditer(r'@app\.(get|post|put|delete)\("([^"]+)"', _read("ns_dashboard/server.py")):
+        items.append(("api", f"{m.group(1).upper()} {m.group(2)}"))
+    for rel in ("ns_supervisor/cli.py", "ns_studio/cli.py"):
+        for m in re.finditer(r'@(\w+)\.command\("([^"]+)"', _read(rel)):
+            prefix = CLI_PREFIX.get((rel, m.group(1)), f"{rel}:{m.group(1)}")
+            items.append(("cli", f"{prefix} {m.group(2)}"))
+    orch = _read("ns_studio/orchestrator.py")
+    block = orch[orch.index("SHORTS_ONLY_STAGES"): orch.index("FORMAT_STAGES")]
+    seen: list[str] = []
+    for name in re.findall(r'"([a-z_]+)"', block):
+        if name not in seen:
+            seen.append(name)
+    items.extend(("stage", f"story {n}") for n in seen)
+    for m in re.finditer(r'name: str = "([a-z_]+)"', _read("ns_studio/clipper/stages_clip.py")):
+        items.append(("stage", f"clip {m.group(1)}"))
+    for f in sorted((ROOT / "installer" / "stage2" / "steps").glob("*.py")):
+        if re.match(r"[sbv]\d\d_", f.name):
+            items.append(("installer-step", f.stem))
+    for f in sorted((ROOT / "launchers").glob("*.ps1")):
+        items.append(("launcher", f.name))
+    for f in sorted((ROOT / "ns_dashboard" / "ui" / "src" / "pages").glob("*.tsx")):
+        if not f.name.startswith("Design") and f.name != "SuggestMenu.tsx":
+            items.append(("page", f.stem))
+    router = _read("ns_dashboard/assistant/router.py")
+    start = router.index("TOPICS")
+    topics_src = router[router.index("{", start): router.index("\n}\n", start) + 2]
+    topics = ast.literal_eval(topics_src)          # {topic: (tool, ...)}: the registry's own list by topic
+    core_start = router.index("CORE")
+    core_src = router[router.index("(", core_start): router.index(")", core_start) + 1]
+    core = ast.literal_eval(core_src)
+    tools: list[str] = list(core)              # the tools offered on every turn
+    for names in topics.values():
+        for name in names:
+            if name not in tools:
+                tools.append(name)
+    items.extend(("assistant-tool", t) for t in tools)
+    for m in re.finditer(r'name="([a-z]+)"', _read("ns_supervisor/services.py")):
+        if ("service", m.group(1)) not in items:
+            items.append(("service", m.group(1)))
+    for f in sorted((ROOT / ".github" / "workflows").glob("*.yml")):
+        items.append(("workflow", f.name))
+    return items
+
+
+def parse_inventory(text: str) -> dict[tuple[str, str], tuple[str, str]]:
+    """{(kind, id): (status, evidence)} from the committed table."""
+    out: dict[tuple[str, str], tuple[str, str]] = {}
+    for line in text.splitlines():
+        if not line.startswith("| ") or line.startswith("| kind") or line.startswith("|---"):
+            continue
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        if len(cells) >= 4:
+            out[(cells[0], cells[1].strip("`"))] = (cells[2], cells[3])
+    return out
+
+
+def render(items: list[tuple[str, str]], known: dict[tuple[str, str], tuple[str, str]]) -> str:
+    counts = {s: 0 for s in STATUSES}
+    rows = []
+    for kind, ident in items:
+        status, evidence = known.get((kind, ident), ("U", ""))
+        counts[status] += 1
+        rows.append(f"| {kind} | `{ident}` | {status} | {evidence} |")
+    summary = ", ".join(f"{s} {counts[s]}" for s in STATUSES)
+    head = (
+        "# Verification inventory\n\n"
+        "Generated by `python dev/verification_inventory.py` from the code; the status and evidence columns\n"
+        "are kept between runs and maintained by the verification loop (docs/VERIFICATION.md). A new item\n"
+        "starts as `U`; `tests/test_verification_inventory.py` fails when the code has an item this file does\n"
+        "not list.\n\n"
+        f"Items: {len(items)} ({summary}).\n\n"
+        "| kind | id | status | evidence |\n|---|---|---|---|\n"
+    )
+    return head + "\n".join(rows) + "\n"
+
+
+def main(argv: list[str]) -> int:
+    items = collect()
+    known = parse_inventory(INVENTORY.read_text(encoding="utf-8")) if INVENTORY.exists() else {}
+    text = render(items, known)
+    if "--check" in argv:
+        return 0 if INVENTORY.exists() and INVENTORY.read_text(encoding="utf-8") == text else 1
+    INVENTORY.write_text(text, encoding="utf-8", newline="\n")
+    print(f"{len(items)} items -> {INVENTORY.relative_to(ROOT)}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
