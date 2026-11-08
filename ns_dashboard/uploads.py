@@ -25,6 +25,7 @@ AUDIO_EXT = frozenset({".wav", ".mp3", ".m4a", ".flac", ".ogg", ".webm"})
 UPLOAD_EXT = ALLOWED_EXT | AUDIO_EXT
 SOURCE_ID_RE = re.compile(r"^src-\d{8}-[0-9a-f]{4}$")
 META = "upload.json"
+SIDECAR_SUFFIX = ".transcript.json"   # the Clipper's dev-mode transcript next to a video (clipper/source.py)
 
 
 @dataclass
@@ -200,6 +201,11 @@ def adopt_upload(paths: Paths, source_path: Path) -> Path:
         source_path.unlink()
     else:
         os.replace(source_path, target)
+    # dev mode (docs/DEV_MODE.md): a transcript sidecar dropped beside the upload travels along, so the fake
+    # transcriber finds it; it used to be deleted with the upload folder and every clip job stopped at NS-E406
+    sidecar = folder / f"{source_path.stem}{SIDECAR_SUFFIX}"
+    if sidecar.is_file():
+        os.replace(sidecar, target.with_name(f"{target.stem}{SIDECAR_SUFFIX}"))
 
     shutil.rmtree(folder, ignore_errors=True)
     return target

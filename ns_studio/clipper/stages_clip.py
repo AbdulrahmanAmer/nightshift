@@ -71,6 +71,17 @@ def _source(ctx: JobContext) -> dict[str, Any]:
     return info
 
 
+def sidecar_for(info: dict[str, Any]) -> Path | None:
+    """The transcript sidecar of a source: the one recorded at import, else `source.transcript.json` next
+    to the stored file (an upload is registered before a sidecar can be dropped beside it;
+    docs/DEV_MODE.md)."""
+    if info.get("sidecar"):
+        return Path(str(info["sidecar"]))
+    stored = Path(str(info.get("path") or ""))
+    beside = stored.with_name(f"{stored.stem}{source.SIDECAR_SUFFIX}") if stored.name else None
+    return beside if beside is not None and beside.is_file() else None
+
+
 def _plan(ctx: JobContext) -> list[ClipItem]:
     items = [ClipItem.model_validate(d) for d in ctx.read_json("clip_plan.json")]
     return [i for i in items if i.status == "kept"]
@@ -232,7 +243,7 @@ class TranscribeStage:
     def run(self, ctx: JobContext) -> None:
         """Write the transcript with speaker indexes; NS-E406 when it has fewer than 30 words."""
         info = _source(ctx)
-        sidecar = Path(info["sidecar"]) if info.get("sidecar") else None
+        sidecar = sidecar_for(info)
         tr = transcribe_stage.run_transcription(
             ctx.services.transcriber,
             ctx.file("audio.wav"),
