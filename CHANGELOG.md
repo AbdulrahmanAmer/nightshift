@@ -7,6 +7,12 @@ All notable changes to Nightshift are recorded here. The format follows
 
 ## [Unreleased]
 
+- Clipper import: a video that already sits in its hash folder with its sidecar is recorded without copying the
+  sidecar onto itself (WinError 32 on Windows; it stopped every dev clip job from an upload at 1 s).
+- Dev mode: a transcript sidecar dropped beside an upload moves with the video into its hash folder (it was
+  deleted with the upload folder when the clip job started).
+- Dev mode: a clip job from an upload finds a transcript sidecar dropped next to the stored file after the
+  upload (it was only read when recorded at import, so every dev clip-from-upload stopped with NS-E406).
 - `ns restore` refuses while Nightshift is running ("stop it first, nothing was changed") instead of failing
   halfway on the locked database and putting the files back (found on the 0.1.11 dev install with the engine up).
 - A job interrupted by a restart (the engine stopped or the PC restarted mid-job) keeps the stage it was at and
