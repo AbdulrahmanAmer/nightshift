@@ -219,6 +219,16 @@ if (Test-Path -LiteralPath $secretsFile) {
     else { Remove-Item -LiteralPath $secretsFile -Force -ErrorAction SilentlyContinue; Write-Host "  removed $secretsFile" }
 }
 
+# The install state describes the program being removed; the next setup must run its steps again (the
+# answers and channels stay in config). The window trusted this file and showed Done over an empty folder.
+foreach ($leaf in @('install_state.json', 'install_state.json.bak')) {
+    $stateFile = Join-Path (Join-Path $nsHome 'config') $leaf
+    if (Test-Path -LiteralPath $stateFile) {
+        if ($script:IsDry) { Show-Action "delete $stateFile" }
+        else { Remove-Item -LiteralPath $stateFile -Force -ErrorAction SilentlyContinue; Write-Host "  removed $stateFile" }
+    }
+}
+
 # ---- folders --------------------------------------------------------------------------------------------
 Remove-Tree -Path (Join-Path $nsHome 'venvs')
 # The update worker's private copy of the supervisor venv (150-300 MB after any update) lives in run, under updater.

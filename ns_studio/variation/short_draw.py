@@ -54,7 +54,12 @@ def draw_short_combos(
             "length_bucket": str(bucket),
             **(extra_fixed or {}),
         }
-        combo = draw_combo(ctx.db, ctx.channel, rng=rng, now=now, fixed=fixed)
+        combo = draw_combo(
+            ctx.db, ctx.channel, rng=rng, now=now, fixed=fixed,
+            on_repeat=lambda why, k=k, fixed=fixed: ctx.log.warn(
+                "variation_repeated", f"Short {k}: {why}", code="NS-W325", job_id=ctx.job_id, fixed=fixed
+            ),
+        )
         record_combo(ctx.db, ctx.channel.slug, ctx.job_id, f"s{k}", combo, now)
         out[k] = combo
     ctx.write_json(STORED, {k: c.model_dump(mode="json") for k, c in out.items()})

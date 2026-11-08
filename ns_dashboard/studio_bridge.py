@@ -378,7 +378,10 @@ def run_series_part(
     else:
         now = datetime.now(UTC)
         # the series design pins the caption style and visual treatment of every part
-        combo = draw_combo(env.db, channel, rng=random.Random(), now=now, fixed=job_series_fixed(job_dir))
+        combo = draw_combo(
+            env.db, channel, rng=random.Random(), now=now, fixed=job_series_fixed(job_dir),
+            on_repeat=lambda why: env.log.warn("variation_repeated", why, code="NS-W325", job_id=job_id),
+        )
         record_combo(env.db, channel.slug, job_id, "long", combo, now)
         job_dir.mkdir(parents=True, exist_ok=True)
         ctx = JobContext(

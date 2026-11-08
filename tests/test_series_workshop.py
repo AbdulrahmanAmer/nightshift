@@ -263,7 +263,10 @@ def test_choose_promotes_the_draft_and_records_it(tmp_home: Path):
         ws.choose(slug, "F")
 
 
-def test_map_enforces_the_runtime_and_parts_bounds(tmp_home: Path):
+def test_map_enforces_the_runtime_and_parts_bounds(tmp_home: Path, monkeypatch: pytest.MonkeyPatch):
+    from ns_common import llm_client
+
+    monkeypatch.setattr(llm_client, "fit_map_fixture", lambda data, user: data)   # the raw 3-part fixture
     ws = make_workshop(tmp_home)
     slug = ws.start("after-dark", PREMISE)
     ws.concepts(slug)
