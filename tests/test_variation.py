@@ -127,6 +127,21 @@ def test_full_combo_not_repeated_within_30_days(tmp_home: Path):
     assert ei.value.code == "NS-E325"
 
 
+def test_an_exhausted_ledger_repeats_with_a_warning_when_the_caller_allows_it(tmp_home: Path):
+    """A series pins hook, structure, pacing, caption style and visual treatment: its Shorts have nine
+    combinations and the second part's Shorts used to stop with NS-E325. With `on_repeat` the draw
+    repeats and the caller logs NS-W325."""
+    db = _db(tmp_home)
+    ch = _tiny()
+    for i, (h, s) in enumerate(product(ch.pools.hooks, ch.pools.structures)):
+        draw.record_combo(db, ch.slug, f"j{i}", "s1", _combo(h, s, f"c-old{i}"), NOW - timedelta(days=29))
+    reasons: list[str] = []
+    c = draw.draw_combo(db, ch, rng=random.Random(1), now=NOW, on_repeat=reasons.append)
+    assert c.hook in ch.pools.hooks and len(reasons) == 1 and "used again" in reasons[0]
+    with pytest.raises(StudioError):                                 # the default still refuses
+        draw.draw_combo(db, ch, rng=random.Random(1), now=NOW)
+
+
 def test_combo_older_than_30_days_may_repeat(tmp_home: Path):
     db = _db(tmp_home)
     ch = _tiny()

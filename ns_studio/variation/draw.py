@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import itertools
 import random
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 
 from ns_common.db import Db
@@ -141,11 +142,15 @@ def draw_combo(
     rng: random.Random,
     now: datetime | None = None,
     fixed: dict[str, str] | None = None,
+    on_repeat: Callable[[str], None] | None = None,
 ) -> Combo:
     """Draw one combo for `channel`, honouring weights, the pair window and the 30-day ledger.
 
     `fixed` pins combo fields (for example `structure`, `pov_tone`, `pacing` for a Short derived
-    from a master). Raises StudioError NS-E325 when the ledger leaves nothing to draw.
+    from a master). Raises StudioError NS-E325 when the ledger leaves nothing to draw, unless
+    `on_repeat` is given: then the heaviest combination is drawn again and `on_repeat` gets the reason
+    (a series pins hook, structure, pacing, caption style and visual treatment, which leaves its Shorts
+    nine combinations; the second part's Shorts used to stop the job with NS-E325).
     """
     now = now or datetime.now(UTC)
     fixed = dict(fixed or {})
@@ -179,6 +184,9 @@ def draw_combo(
             break
     if chosen is None:
         chosen = _enumerate_unused(probs, pair_weight, others, used)
+    if chosen is None and on_repeat is not None:
+        on_repeat("every combination was used in the last 30 days; the heaviest one is used again")
+        chosen = _enumerate_unused(probs, pair_weight, others, set())
     if chosen is None:
         raise StudioError("NS-E325", "every combination was used in the last 30 days")
 

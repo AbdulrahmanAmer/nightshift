@@ -504,6 +504,29 @@ def test_install_cmd_over_a_finished_install_of_the_same_program_shows_done(tmp_
     assert KEY_P not in json.dumps(state)
 
 
+def test_a_window_over_a_finished_install_whose_program_is_gone_installs_again(tmp_path, monkeypatch):
+    """The windowed dev install after an uninstall (config kept) reported phase done, run finished: the old
+    install_state.json said every step was done although app and venvs were gone."""
+    import shutil
+
+    from tests.test_installer_app_copy import app_setup, fake_zip_folder
+
+    zip_a = fake_zip_folder(tmp_path / "zip-a", "0.1.4")
+    first = app_setup(tmp_path, monkeypatch, zip_a)
+    finished_install(first, zip_a)
+    shutil.rmtree(first.home / "app")                           # what an uninstall removes
+
+    again = app_setup(tmp_path, monkeypatch, zip_a)
+    state = again.snap()
+    assert state["phase"] != "done" and state["run"] != "finished" and state["answersLocked"] is True
+    by_id = {st["id"]: st["status"] for st in state["steps"]}
+    assert by_id["s01_questions"] == "done"
+    assert by_id["s04_venvs"] == "pending" and by_id["s08_smoke"] == "pending"
+    saved = json.loads((again.home / "config" / "install_state.json").read_text(encoding="utf-8"))
+    assert saved["steps"]["s04_venvs"]["status"] == "pending"
+    assert state["startedAt"] is None and saved["started_at"] is None   # the duration counts this run only
+
+
 def test_a_window_over_a_console_install_without_samples_still_shows_done(tmp_path, monkeypatch):
     """`steps.default_steps` (console, unattended) has no v01_samples; the window's STEP_ORDER does. The first
     dev-mode run finished unattended, then `INSTALL.cmd -Ui` opened on "Setup is halfway"."""

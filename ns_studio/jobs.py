@@ -205,7 +205,10 @@ def make_job(
         raise StudioError("NS-E320", "; ".join(unknown))
     if "llm" in env.fake:
         fixed = {**FAKE_LLM_COMBO, **(fixed or {})}  # the fixtures are written for this budget
-    combo = draw_combo(env.db, channel, rng=rng, now=now, fixed=fixed)
+    combo = draw_combo(
+        env.db, channel, rng=rng, now=now, fixed=fixed,
+        on_repeat=lambda why: env.log.warn("variation_repeated", why, code="NS-W325", channel=channel.slug),
+    )
     job_id = new_job_id(channel.slug, now)
     item = "long" if fmt == "master_first" else "s1"
     if record:

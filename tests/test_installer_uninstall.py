@@ -240,3 +240,18 @@ def test_uninstall_removes_the_secrets_file(tmp_path: Path):
     proc = _run(home, "-SkipSystem")
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert not (home / "config" / "secrets.dpapi").exists() and (home / "config").exists()
+
+
+def test_uninstall_removes_the_install_state_but_keeps_the_answers(tmp_path: Path):
+    """A setup window over an uninstalled home showed Done (the kept install_state.json said every step was
+    done) and Open dashboard failed; the state file goes, the answers and channels stay."""
+    home = _make_home(tmp_path)
+    (home / "config" / "install_state.json").write_text("{}", encoding="utf-8")
+    (home / "config" / "install_state.json.bak").write_text("{}", encoding="utf-8")
+    (home / "config" / "answers.json").write_text("{}", encoding="utf-8")
+    proc = _run(home, "-SkipSystem")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert not (home / "config" / "install_state.json").exists()
+    assert not (home / "config" / "install_state.json.bak").exists()
+    assert (home / "config" / "answers.json").exists()
+    assert "install_state.json" in proc.stdout
