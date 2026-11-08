@@ -181,7 +181,7 @@ def test_linear_possible_decision() -> None:
 def test_boost_limiter_has_a_fixed_ceiling_inside_the_limiter_range() -> None:
     # the ceiling is TARGET_TP - 2 = -3.5 dBFS whatever the clip's level; only the boost follows the clip
     f = audio.boost_limiter(6.38, rd.TARGET_TP)
-    assert f == "volume=6.38dB,alimiter=limit=0.6683:attack=2:release=50:level=0"
+    assert f == "volume=6.38dB,alimiter=limit=0.6683:attack=2:release=120:level=0"
     quiet = audio.boost_limiter(31.7, rd.TARGET_TP)
     assert quiet.split(",")[1] == f.split(",")[1]
     assert 0.0625 < float(quiet.split("limit=")[1].split(":")[0]) < 1.0
@@ -216,16 +216,19 @@ def _fake_measure(monkeypatch: pytest.MonkeyPatch, answers: list[dict[str, float
 
 
 def test_plan_raises_the_boost_until_the_peak_fits(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    # first try: the limiter takes 3.4 LU off (-17.0); the peak (-3.5) + 3.0 gain + 1.0 spare is too hot
-    seen = _fake_measure(monkeypatch, [_m(-20.38, -0.47), _m(-17.0, -3.5), _m(-14.2, -3.5)])
+    # the limiter takes 3.0 LU off at 6.38 dB, then 1.8 LU still missing at 9.38: the first step adds the raw
+    # shortfall (3.0), the second the shortfall over the secant slope (1.8 / (1.2 / 3.0) = 4.5)
+    seen = _fake_measure(
+        monkeypatch, [_m(-20.38, -0.47), _m(-17.0, -3.5), _m(-15.8, -3.5), _m(-14.2, -3.5)]
+    )
     plan = rd.plan_loudness(spec_for("center_crop", tmp_path / "o.mp4"))
-    assert plan.mode == "limited" and len(seen) == 3
-    assert _boost(seen[1]) == pytest.approx(6.38) and _boost(seen[2]) == pytest.approx(9.38)
+    assert plan.mode == "limited" and len(seen) == 4
+    assert [_boost(p) for p in seen[1:]] == pytest.approx([6.38, 9.38, 13.88])
     assert seen[1].split(",")[1] == seen[2].split(",")[1]                  # the ceiling does not move
-    assert plan.pre == seen[2] and plan.measured == _m(-14.2, -3.5) and plan.source == _m(-20.38, -0.47)
+    assert plan.pre == seen[3] and plan.measured == _m(-14.2, -3.5) and plan.source == _m(-20.38, -0.47)
     rep = plan.report()
     assert rep == {"mode": "limited", "input_i": -20.38, "input_tp": -0.47, "limited_i": -14.2,
-                   "limited_tp": -3.5, "boost_db": 9.38, "ceiling_db": -3.5}
+                   "limited_tp": -3.5, "boost_db": 13.88, "ceiling_db": -3.5}
 
 
 def test_plan_stops_after_the_last_pass(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

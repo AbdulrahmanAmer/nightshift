@@ -109,7 +109,7 @@ def synthesize(ctx: JobContext, items: list[TtsItem]) -> tuple[dict[str, dict], 
         by_id = {it.id: it for it in todo}
         for f in files:
             out = ctx.file(f"audio/{f.id}.wav")
-            loudnorm(f.path, out)
+            loudnorm(f.path, out, log=ctx.log)
             lufs, tp = measure_lufs(out)
             out.with_suffix(".txt").write_text(by_id[f.id].text, encoding="utf-8")
             manifest[f.id] = {
