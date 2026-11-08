@@ -7,6 +7,9 @@ All notable changes to Nightshift are recorded here. The format follows
 
 ## [Unreleased]
 
+- Clipper: a quiet clip with high peaks (a phone recording, a podcast) now reaches -14 LUFS instead of failing QC
+  with NS-E404 at about -17 LUFS. Its peaks are held down before the loudness pass, and `render/report.json`
+  says which path each clip took (`loudness.mode` is `linear` or `limited`, with the measured values).
 - Clipper import: a video that already sits in its hash folder with its sidecar is recorded without copying the
   sidecar onto itself (WinError 32 on Windows; it stopped every dev clip job from an upload at 1 s).
 - Dev mode: a transcript sidecar dropped beside an upload moves with the video into its hash folder (it was

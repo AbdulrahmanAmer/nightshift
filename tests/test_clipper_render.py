@@ -161,3 +161,113 @@ def test_render_with_burned_captions_and_loudness(tmp_path: Path) -> None:
     m = rd.parse_loudnorm(probe.stderr)
     assert m is not None and -15.0 <= m["input_i"] <= -13.0
     assert m["input_tp"] <= -1.0
+
+
+# ---------- loudness on quiet, peaky sources ----------
+# Measured on a real clip (NS-E404, 2026-11-08): -20.38 LUFS with a -0.47 dBTP peak.
+PEAKY = {"input_i": -20.38, "input_tp": -0.47}
+
+
+def test_linear_possible_decision() -> None:
+    assert not rd.linear_possible(PEAKY["input_i"], PEAKY["input_tp"])  # +6.4 dB would put the peak at +5.9
+    assert rd.linear_possible(-20.0, -10.0)                                # +6 dB lands the peak at -4
+    assert rd.linear_possible(-20.0, -7.5)                                 # exactly -1.5 dBTP
+    assert rd.linear_possible(-20.0, -7.45)                                # inside the 0.1 dB tolerance
+    assert not rd.linear_possible(-20.0, -7.3)
+    assert rd.linear_possible(-12.0, -0.5)                                 # louder than the target: a cut
+
+
+def test_peak_ceiling_keeps_the_target_crest() -> None:
+    # crest allowed by the target is -1.5 - -14 = 12.5 dB; the ceiling sits 2 dB inside it
+    assert rd.peak_ceiling_db(-20.0) == pytest.approx(-9.5)
+    lin = rd.limiter_filter(-9.5)
+    assert lin.startswith("alimiter=limit=0.335:") and lin.endswith("level=0")
+    assert "limit=0.0625:" in rd.limiter_filter(-60.0) and "limit=1:" in rd.limiter_filter(6.0)
+
+
+def test_audio_filter_puts_the_peak_stage_before_loudnorm() -> None:
+    m = {"input_i": -20.0, "input_tp": -8.0, "input_lra": 1.0, "input_thresh": -30.0, "target_offset": 0.0}
+    f = rd.audio_filter(m, pre="alimiter=limit=0.4:attack=2:release=50:level=0")
+    assert f.startswith("alimiter=limit=0.4:attack=2:release=50:level=0,loudnorm=")
+    assert "measured_I=-20.00" in f
+    assert rd.audio_filter(m).startswith("loudnorm=")
+
+
+def _m(i: float, tp: float) -> dict[str, float]:
+    return {"input_i": i, "input_tp": tp, "input_lra": 1.0, "input_thresh": i - 10, "target_offset": 0.0}
+
+
+def test_plan_lowers_the_ceiling_until_the_peak_fits(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[str] = []
+
+    def fake(spec: rd.RenderSpec, log: object = None, pre: str = "") -> dict[str, float]:
+        seen.append(pre)
+        if not pre:
+            return _m(-20.38, -0.47)
+        return _m(-21.0, -9.0) if len(seen) == 2 else _m(-21.5, -11.0)   # first try still 3 dB too hot
+
+    monkeypatch.setattr(rd, "measure_loudness", fake)
+    plan = rd.plan_loudness(spec_for("center_crop", tmp_path / "o.mp4"))
+    assert plan.mode == "limited" and len(seen) == 3 and seen[1] != seen[2]
+    assert plan.measured == _m(-21.5, -11.0) and plan.source == _m(-20.38, -0.47)
+    rep = plan.report()
+    assert rep["input_i"] == -20.38 and rep["limited_tp"] == -11.0 and rep["mode"] == "limited"
+
+
+def test_plan_stays_linear_for_normal_and_silent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(rd, "measure_loudness", lambda spec, log=None, pre="": _m(-18.0, -8.0))
+    plan = rd.plan_loudness(spec_for("center_crop", tmp_path / "o.mp4"))
+    assert plan.report() == {"mode": "linear", "input_i": -18.0, "input_tp": -8.0} and plan.pre == ""
+    monkeypatch.setattr(rd, "measure_loudness", lambda spec, log=None, pre="": None)
+    silent = rd.plan_loudness(spec_for("center_crop", tmp_path / "o.mp4"))
+    assert silent.report() == {"mode": "linear", "input_i": None, "input_tp": None}
+
+
+def make_peaky_source(path: Path) -> None:
+    """12 s, 1280x720: a quiet 220 Hz tone with a 5 ms low-passed noise click every half second.
+
+    Measured by loudnorm: about -20 LUFS with a peak near 0 dBTP, so +6 dB cannot be applied linearly. The
+    noise is low-passed at 3 kHz so the clicks resemble speech plosives, not full-band hash.
+    """
+    graph = (
+        "[1:a]volume=1.2[s];"
+        "[2:a]lowpass=f=3000,volume='if(lt(mod(t,0.5),0.005),1.5,0)':eval=frame[c];"
+        "[s][c]amix=inputs=2:normalize=0,aformat=channel_layouts=mono[a]"
+    )
+    ffmpeg.run(
+        ["-f", "lavfi", "-i", "color=c=black:s=1280x720:r=30:d=12",
+         "-f", "lavfi", "-i", "sine=frequency=220:sample_rate=48000:duration=12",
+         "-f", "lavfi", "-i", "anoisesrc=d=12:sample_rate=48000:amplitude=0.9:seed=7",
+         "-filter_complex", graph, "-map", "0:v", "-map", "[a]",
+         "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac", "-b:a", "192k", str(path)]
+    )
+
+
+@needs_ffmpeg
+def test_quiet_peaky_source_still_reaches_minus_14(tmp_path: Path) -> None:
+    src = tmp_path / "peaky.mp4"
+    make_peaky_source(src)
+    base = spec_for("center_crop", tmp_path / "c1.mp4", start=1.0, end=10.0)
+    spec = rd.RenderSpec(**{**base.__dict__, "video": src})
+    before = rd.measure_loudness(spec)
+    assert before is not None and not rd.linear_possible(before["input_i"], before["input_tp"])  # the defect
+    out, loud = rd.render_clip_report(spec)
+    assert loud["mode"] == "limited"
+    assert loud["input_i"] == pytest.approx(before["input_i"], abs=0.01)
+    assert loud["input_tp"] == pytest.approx(before["input_tp"], abs=0.01)
+    assert isinstance(loud["limited_i"], float) and isinstance(loud["input_i"], float)
+    assert isinstance(loud["limited_tp"], float) and isinstance(loud["input_tp"], float)
+    assert loud["limited_i"] < loud["input_i"] and loud["limited_tp"] < loud["input_tp"]
+    probe = ffmpeg.run(
+        ["-i", str(out), "-vn", "-af", "loudnorm=I=-14:TP=-1.5:LRA=11:print_format=json", "-f", "null", "-"]
+    )
+    m = rd.parse_loudnorm(probe.stderr)
+    assert m is not None and -15.0 <= m["input_i"] <= -13.0
+    assert m["input_tp"] <= -1.0
+
+
+@needs_ffmpeg
+def test_normal_source_keeps_the_linear_two_pass(tmp_path: Path) -> None:
+    out, loud = rd.render_clip_report(spec_for("center_crop", tmp_path / "c1.mp4"))
+    assert out.is_file() and loud["mode"] == "linear" and "limited_i" not in loud
+    assert set(loud) >= {"mode", "input_i", "input_tp"}

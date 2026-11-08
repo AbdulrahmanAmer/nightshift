@@ -641,11 +641,12 @@ class RenderStage:
                 encoder=ctx.runtime.video.encoder,
                 preset=ctx.runtime.video.preset,
             )
-            render.render_clip(spec, ctx.log)
+            _, loudness = render.render_clip_report(spec, ctx.log)
             report[f"c{clip.k}"] = {
                 "path": str(out),
                 "duration_s": round(ffmpeg.duration_s(out), 3),
                 "template": template_of(lay, clip.k),
+                "loudness": loudness,
             }
         ctx.write_json("render/report.json", report)
 

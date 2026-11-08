@@ -3,7 +3,8 @@
 `build_filter_graph` is pure: it turns a template plus crops into one `-filter_complex` string. The panels
 come from the template's format preset through the generic engine in `ns_studio.media.layout` (crop + scale
 + overlay, blurred fill); this module adds the speaker border and the burned `ass=` captions.
-`render_clip` adds the two-pass loudnorm to -14 LUFS and runs FFmpeg through `ns_common.ffmpeg.run`.
+`render_clip` adds the two-pass loudnorm to -14 LUFS (behind a peak limiter when the clip is too peaky to be
+lifted linearly) and runs FFmpeg through `ns_common.ffmpeg.run`.
 """
 from __future__ import annotations
 
@@ -24,6 +25,12 @@ from ns_studio.media.render import escape_filter_path
 TARGET_LUFS = -14.0
 TARGET_TP = -1.5
 TARGET_LRA = 11.0
+LINEAR_TOLERANCE_DB = 0.1   # loudnorm limiting a peak by a tenth of a dB moves the loudness by less
+CEILING_HEADROOM_DB = 2.0   # ~1 dB of loudness the limiter removes, ~1 dB the resample and AAC add to a peak
+REENCODE_OVERSHOOT_DB = 1.0
+LIMITER_ATTACK_MS = 2.0
+LIMITER_RELEASE_MS = 50.0
+MAX_LIMITER_PASSES = 4
 FPS = 30
 
 
@@ -191,12 +198,38 @@ def parse_loudnorm(stderr: str) -> dict[str, float] | None:
     return vals if all(math.isfinite(v) for v in vals.values()) else None
 
 
-def measure_loudness(spec: RenderSpec, log: NsLogger | None = None) -> dict[str, float] | None:
-    """Loudnorm pass 1 over the clip's audio."""
+def linear_possible(input_i: float, input_tp: float) -> bool:
+    """Whether a plain gain to `TARGET_LUFS` keeps the true peak at or under `TARGET_TP`.
+
+    loudnorm only stays linear when it does; otherwise it limits on the fly and ends short of the target
+    (a -20.4 LUFS / -0.5 dBTP clip came out at -17.1 LUFS and failed QC with NS-E404).
+    """
+    return input_tp + (TARGET_LUFS - input_i) <= TARGET_TP + LINEAR_TOLERANCE_DB
+
+
+def peak_ceiling_db(input_i: float) -> float:
+    """The sample-peak ceiling (dBFS) that lets a clip of `input_i` LUFS reach the target linearly.
+
+    The target allows `TARGET_TP - TARGET_LUFS` dB between loudness and peak; the ceiling keeps
+    `CEILING_HEADROOM_DB` of that for the limiter's own loudness loss and for the overshoot that the final
+    resample and AAC encode add to a sharp peak.
+    """
+    return input_i + (TARGET_TP - TARGET_LUFS) - CEILING_HEADROOM_DB
+
+
+def limiter_filter(ceiling_db: float) -> str:
+    """A lookahead `alimiter` holding the sample peaks at `ceiling_db` (auto-level off, no makeup gain)."""
+    lin = min(1.0, max(0.0625, 10 ** (ceiling_db / 20)))  # alimiter accepts 0.0625 (-24 dBFS) to 1
+    return f"alimiter=limit={lin:.4g}:attack={LIMITER_ATTACK_MS:g}:release={LIMITER_RELEASE_MS:g}:level=0"
+
+
+def measure_loudness(spec: RenderSpec, log: NsLogger | None = None, pre: str = "") -> dict[str, float] | None:
+    """Loudnorm pass 1 over the clip's audio, after the optional `pre` filter (what pass 2 will see)."""
+    chain = f"{pre}," if pre else ""
     proc = ffmpeg.run(
         [
             "-ss", f"{spec.start:.3f}", "-t", f"{spec.duration:.3f}", "-i", str(spec.video), "-vn",
-            "-af", f"loudnorm=I={TARGET_LUFS:g}:TP={TARGET_TP:g}:LRA={TARGET_LRA:g}:print_format=json",
+            "-af", f"{chain}loudnorm=I={TARGET_LUFS:g}:TP={TARGET_TP:g}:LRA={TARGET_LRA:g}:print_format=json",
             "-f", "null", "-",
         ],
         log=log,
@@ -204,8 +237,69 @@ def measure_loudness(spec: RenderSpec, log: NsLogger | None = None) -> dict[str,
     return parse_loudnorm(proc.stderr)
 
 
-def audio_filter(measured: dict[str, float] | None) -> str:
-    """The audio chain for `[aout]`: two-pass loudnorm when measured, single-pass otherwise."""
+@dataclass(frozen=True)
+class LoudnessPlan:
+    """How a clip's audio reaches the target: the peak stage (empty when linear) and the pass-1 values.
+
+    `measured` is what loudnorm will see (after `pre`); `source` is the clip as recorded.
+    """
+
+    pre: str
+    measured: dict[str, float] | None
+    source: dict[str, float] | None
+    ceiling_db: float | None = None
+
+    @property
+    def mode(self) -> str:
+        """`linear` (two-pass loudnorm alone) or `limited` (peaks held down first)."""
+        return "limited" if self.pre else "linear"
+
+    def report(self) -> dict[str, float | str | None]:
+        """The `loudness` entry of `render/report.json`: enough to explain a QC miss from the job folder."""
+        src = self.source
+        out: dict[str, float | str | None] = {
+            "mode": self.mode,
+            "input_i": src["input_i"] if src else None,
+            "input_tp": src["input_tp"] if src else None,
+        }
+        if self.pre and self.measured and self.ceiling_db is not None:
+            out["limited_i"] = self.measured["input_i"]
+            out["limited_tp"] = self.measured["input_tp"]
+            out["ceiling_db"] = round(self.ceiling_db, 2)
+        return out
+
+
+def plan_loudness(spec: RenderSpec, log: NsLogger | None = None) -> LoudnessPlan:
+    """Pass 1, and when the target is out of linear reach, a peak limiter measured again until it fits.
+
+    Quiet recordings with high peaks (phone audio, podcasts) sit 20 dB or more under their own peaks, so
+    lifting them to -14 LUFS would clip. The limiter goes before loudnorm and pass 1 is repeated on its
+    output, so the `measured_*` values are those loudnorm sees and it can stay linear. Each repeat lowers the
+    ceiling by the shortfall; after `MAX_LIMITER_PASSES` loudnorm takes over as it did before.
+    """
+    source = measure_loudness(spec, log)
+    if source is None or linear_possible(source["input_i"], source["input_tp"]):
+        return LoudnessPlan("", source, source)
+    ceiling = peak_ceiling_db(source["input_i"])
+    plan = LoudnessPlan("", source, source)
+    for attempt in range(MAX_LIMITER_PASSES):
+        pre = limiter_filter(ceiling)
+        measured = measure_loudness(spec, log, pre)
+        if measured is None:
+            break
+        plan = LoudnessPlan(pre, measured, source, ceiling)
+        if log:
+            log.info("loudness_limited", attempt=attempt + 1, ceiling_db=round(ceiling, 2),
+                     input_i=measured["input_i"], input_tp=measured["input_tp"])
+        peak = measured["input_tp"] + REENCODE_OVERSHOOT_DB
+        if linear_possible(measured["input_i"], peak):
+            break
+        ceiling -= peak + (TARGET_LUFS - measured["input_i"]) - TARGET_TP + 0.5
+    return plan
+
+
+def audio_filter(measured: dict[str, float] | None, pre: str = "") -> str:
+    """The audio chain for `[aout]`: the `pre` peak stage, then two-pass loudnorm (one pass if unmeasured)."""
     base = f"loudnorm=I={TARGET_LUFS:g}:TP={TARGET_TP:g}:LRA={TARGET_LRA:g}"
     if measured:
         base += (
@@ -213,7 +307,7 @@ def audio_filter(measured: dict[str, float] | None) -> str:
             f":measured_LRA={measured['input_lra']:.2f}:measured_thresh={measured['input_thresh']:.2f}"
             f":offset={measured['target_offset']:.2f}:linear=true"
         )
-    return f"{base},aresample=48000"
+    return f"{pre + ',' if pre else ''}{base},aresample=48000"
 
 
 def encoder_args(encoder: str, preset: str) -> list[str]:
@@ -226,9 +320,9 @@ def encoder_args(encoder: str, preset: str) -> list[str]:
     return ["-c:v", "libx264", "-preset", preset, "-crf", "22", *cap]
 
 
-def build_args(spec: RenderSpec, measured: dict[str, float] | None) -> list[str]:
+def build_args(spec: RenderSpec, measured: dict[str, float] | None, pre: str = "") -> list[str]:
     """Full FFmpeg argument list for the clip."""
-    graph = build_filter_graph(spec) + f";[0:a]{audio_filter(measured)}[aout]"
+    graph = build_filter_graph(spec) + f";[0:a]{audio_filter(measured, pre)}[aout]"
     return [
         "-ss", f"{spec.start:.3f}", "-t", f"{spec.duration:.3f}", "-i", str(spec.video),
         "-filter_complex", graph, "-map", "[vout]", "-map", "[aout]",
@@ -239,17 +333,27 @@ def build_args(spec: RenderSpec, measured: dict[str, float] | None) -> list[str]
     ]
 
 
-def render_clip(spec: RenderSpec, log: NsLogger | None = None) -> Path:
-    """Render one clip to `spec.out`; falls back from NVENC to libx264 (NS-W401) when the encoder fails."""
+def render_clip_report(
+    spec: RenderSpec, log: NsLogger | None = None
+) -> tuple[Path, dict[str, float | str | None]]:
+    """Render one clip to `spec.out`; returns the path and the clip's `loudness` report entry.
+
+    Falls back from NVENC to libx264 (NS-W401) when the encoder fails.
+    """
     spec.out.parent.mkdir(parents=True, exist_ok=True)
-    measured = measure_loudness(spec, log)
+    plan = plan_loudness(spec, log)
     try:
-        ffmpeg.run(build_args(spec, measured), log=log)
+        ffmpeg.run(build_args(spec, plan.measured, plan.pre), log=log)
     except NsError:
         if spec.encoder != "h264_nvenc":
             raise
         if log:
             log.warn("nvenc_fallback", "NVENC failed, retrying with libx264", code="NS-W401")
         fallback = RenderSpec(**{**spec.__dict__, "encoder": "libx264", "preset": "veryfast"})
-        ffmpeg.run(build_args(fallback, measured), log=log)
-    return spec.out
+        ffmpeg.run(build_args(fallback, plan.measured, plan.pre), log=log)
+    return spec.out, plan.report()
+
+
+def render_clip(spec: RenderSpec, log: NsLogger | None = None) -> Path:
+    """Render one clip to `spec.out` (see `render_clip_report`)."""
+    return render_clip_report(spec, log)[0]
