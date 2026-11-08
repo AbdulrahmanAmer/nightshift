@@ -157,6 +157,11 @@ fails in CI when the code defines an item the inventory does not list or the fil
 or stage cannot appear without a status. The loop marks items there as it proves them; the block checklists
 above hold the narrative, the inventory holds the count.
 
+`docs/PLUMBING.md` is the third view: the wiring. Every port, process, file, environment variable, event
+channel, external host, Windows integration point and configuration key, derived from the code with a
+`file:line` each, a coverage table per section (what is V-dev, V-ci, V-gpu or U) and the disposition of every
+leftover candidate it turned up. Read it before touching a place where two components meet.
+
 ## 7. The loop (one iteration)
 
 0. **Slate**: `nsproc.ps1` must say CLEAN. Nothing from a previous test stays up.

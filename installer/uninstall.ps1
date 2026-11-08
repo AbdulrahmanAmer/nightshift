@@ -3,7 +3,7 @@
     Nightshift uninstaller (component C1, spec 5).
 
 .DESCRIPTION
-    Removes the scheduled task, desktop shortcuts, venvs\, bin\, the program folder (app, app.new, app.prev),
+    Removes the scheduled task, desktop shortcuts, venvs\, bin\, the program folder (app, app.new, app.prev, app.failed, app.swap),
     the FFmpeg fallback's user PATH entry and the NIGHTSHIFT_HOME user environment
     variable. models\ and the user data (outbox, rejected, data, imports, cache) are kept unless you answer
     yes (default No) or pass -DeleteModels / -DeleteData. Safe to run more than once.
@@ -229,7 +229,8 @@ else {
     Remove-Tree -Path (Join-Path $nsHome 'run')
     # The program folder setup copied (and the swap folders of an update). With -KeepBin the window runs from
     # it, so the deferred cleanup of the window removes these.
-    foreach ($leaf in @('app', 'app.new', 'app.prev')) { Remove-Tree -Path (Join-Path $nsHome $leaf) }
+    # app.failed and app.swap are what an interrupted `ns update` leaves beside the program folder
+    foreach ($leaf in @('app', 'app.new', 'app.prev', 'app.failed', 'app.swap')) { Remove-Tree -Path (Join-Path $nsHome $leaf) }
 }
 if ($wipeModels) { Remove-Tree -Path (Join-Path $nsHome 'models') }
 if (-not $SkipSystem) {

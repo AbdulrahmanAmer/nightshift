@@ -58,7 +58,7 @@ def builtin_dir() -> Path | None:
 
 def user_dir(paths: Paths) -> Path:
     """Where edited and duplicated formats are stored."""
-    return paths.config / "formats"
+    return paths.formats_dir
 
 
 def _load(file: Path) -> dict[str, Any] | None:

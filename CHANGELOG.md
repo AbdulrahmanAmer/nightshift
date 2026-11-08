@@ -7,6 +7,13 @@ All notable changes to Nightshift are recorded here. The format follows
 
 ## [Unreleased]
 
+- A format edited or added in Library > Formats is now used by the studio: it wrote `config\formats\<id>.yaml`
+  and the studio read only the shipped presets, so no edit ever reached a render (found by the plumbing map,
+  `docs/PLUMBING.md`).
+- Home layout: `exemplars` and `prompt_overrides` (the two folders the studio reads for the owner's own stories
+  and prompt edits) are created with the rest; the never-written `stories` folder and the unused clips index
+  path are gone. Uninstall also removes `app.failed` and `app.swap` left by an interrupted update.
+
 - Clipper import: a video that already sits in its hash folder with its sidecar is recorded without copying the
   sidecar onto itself (WinError 32 on Windows; it stopped every dev clip job from an upload at 1 s).
 - Dev mode: a transcript sidecar dropped beside an upload moves with the video into its hash folder (it was
