@@ -118,6 +118,12 @@ class StepContext:
         return self.state.state.profile or "gpu"
 
     @property
+    def fake_voice(self) -> bool:
+        """Engine test (docs/DEV_MODE.md): a real install whose voice engine is the fake. A dev install fakes
+        the voice anyway and its consumers read ``dev_mode``, so the answer counts for a real install only."""
+        return not self.dev_mode and self.ensure_answers().fake_voice
+
+    @property
     def tier(self) -> str:
         """LLM tier from the answers (small, balanced, best)."""
         return self.ensure_answers().llm_tier

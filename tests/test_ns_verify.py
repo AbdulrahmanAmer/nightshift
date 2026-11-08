@@ -278,3 +278,27 @@ def test_engine_kind_is_read_from_the_health_body(monkeypatch: pytest.MonkeyPatc
     assert verify.tts_engine_kind("http://127.0.0.1:8091") == "reference"
     monkeypatch.setattr(httpx, "get", lambda url, timeout=0: httpx.Response(200, json={"ok": True}))
     assert verify.tts_engine_kind("http://127.0.0.1:8091") is None
+
+
+def test_a_pc_without_a_graphics_card_encodes_on_the_cpu_and_skips_the_vram_check(tmp_path: Path) -> None:
+    """A real install on the cpu-dev profile (answers `allow_cpu`) has no nvidia-smi and renders with libx264:
+    the encoder row used to fail with NS-W401 and the idle-VRAM row with NS-E102 on every such install."""
+    paths = Paths(tmp_path / "ns")
+    rt = Runtime.default("cpu-dev")
+    sync = SyncSupervisor(paths, rt, resolver=StubTable())
+    try:
+        calls: list[str] = []
+
+        def no_nvenc() -> None:
+            raise NsError("NS-W401", "h264_nvenc is not available")
+
+        deps = good_deps(
+            nvenc=no_nvenc, x264=lambda: calls.append("x264"), vram_used=lambda: None, gpu_name=lambda: None
+        )
+        report = verify.run_verify(paths, rt, sync, quick=True, deps=deps)
+    finally:
+        sync.close()
+    by = {c.name: c for c in report.checks}
+    assert by["nvenc.probe"].passed and "processor" in (by["nvenc.probe"].log or "") and calls == ["x264"]
+    assert by["vram.idle"].passed and by["vram.idle"].value == "n/a"
+    assert report.machine["gpu"] is None and report.dev_mode is False and report.passed

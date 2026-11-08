@@ -202,7 +202,8 @@
           "enum": [
             "qwentts",
             "reference",
-            "faster"
+            "faster",
+            "fake"
           ],
           "title": "Engine",
           "type": "string"

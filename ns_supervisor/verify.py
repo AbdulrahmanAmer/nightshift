@@ -193,7 +193,7 @@ def fake_job(paths: Paths) -> float | None:
 
 
 def tts_engine_kind(base_url: str) -> str | None:
-    """`engine_kind` from the TTS service's /health ("qwentts" or "reference"); None when it does not say."""
+    """`engine_kind` from the voice service's /health (qwentts, reference, fake); None when it is absent."""
     import httpx
 
     try:
@@ -423,6 +423,10 @@ def run_verify(
     if tts:
         release("tts")
 
+    # A real install on a PC without an NVIDIA card (profile cpu-dev, answer `allow_cpu`) renders with libx264
+    # and has no nvidia-smi: the encoder check runs on the processor and nothing measures video memory.
+    no_card = rt.profile == "cpu-dev"
+
     # -- whisper ---------------------------------------------------------------------------
     def whisper() -> Out:
         ctl.acquire("whisper", OWNER, timeout_s=600)
@@ -438,9 +442,10 @@ def run_verify(
 
     # -- NVENC -----------------------------------------------------------------------------
     def nvenc() -> Out:
-        if rt.dev_mode:
+        if rt.dev_mode or no_card:
             d.x264()
-            return Out(True, "libx264 ok", log="dev mode: 2 s colour source encoded on the processor")
+            why = "dev mode" if rt.dev_mode else "no graphics card (cpu-dev profile)"
+            return Out(True, "libx264 ok", log=f"{why}: 2 s colour source encoded on the processor")
         d.nvenc()
         return Out(True, "h264_nvenc ok", log="2 s colour source encoded")
 
@@ -459,8 +464,9 @@ def run_verify(
 
     # -- idle VRAM -------------------------------------------------------------------------
     def idle_vram() -> Out:
-        if rt.dev_mode:
-            return Out(True, "n/a", log="dev mode: no graphics card to measure")
+        if rt.dev_mode or no_card:
+            why = "dev mode" if rt.dev_mode else "cpu-dev profile"
+            return Out(True, "n/a", log=f"{why}: no graphics card to measure")
         try:
             ctl.stop_all()
         except NsError as e:  # no supervisor means nothing of ours is loaded; still measure the GPU
@@ -480,7 +486,7 @@ def run_verify(
     rec.run(names.VRAM_IDLE, idle_vram, "NS-E102")
 
     machine: dict[str, str | float | None] = {
-        "gpu": None if rt.dev_mode else d.gpu_name(),
+        "gpu": None if rt.dev_mode or no_card else d.gpu_name(),
         "ram_gb": ram,
         "disk_type": None,
         "os": platform.platform(),

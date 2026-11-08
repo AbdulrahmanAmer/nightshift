@@ -445,3 +445,49 @@ def test_the_hand_over_json_from_stage_1_turns_dev_mode_on(tmp_path: Path):
     args[args.index("--preflight") + 1] = str(pf)
     assert main(args) == 0
     assert load_install_state(Paths(tmp_path / "home")).dev_mode is True
+
+
+# ------------------------------------------------------------------------------- real install without a card
+def test_a_real_cpu_install_with_the_voice_binary_runs_qwentts_not_the_reference_venv(tmp_path: Path):
+    """Runtime.default("cpu-dev") says "reference", whose PyTorch venv s04 makes only on the fallback: a real
+    install on a PC without a graphics card pointed its voice service at a venv that did not exist."""
+    ctx = make_test_context(
+        tmp_path / "r", raw_answers=example_answers(allow_cpu=True), resolve=True, dev_mode=False,
+        preflight={"profile": "cpu-dev"},
+    )
+    assert ctx.profile == "cpu-dev" and not ctx.dev_mode
+    S02DownloadBins().run(ctx)
+    assert ctx.flag("qwentts") == "binary" and ctx.flag("tts_fallback") is False
+    rt = build_runtime(ctx)
+    assert rt.tts.engine == "qwentts" and rt.tts.device == "cpu" and rt.dev_mode is False
+    ctx.set_flag("tts_fallback", True)                      # the PyTorch fallback still wins
+    assert build_runtime(ctx).tts.engine == "reference"
+
+
+# ------------------------------------------------------------------------------- engine test: fake_voice
+def test_fake_voice_installs_the_real_models_with_the_fake_voice_engine(tmp_path: Path):
+    """docs/DEV_MODE.md "Real engines, fake voice": no qwentts.cpp, no voice model, `tts.engine: fake`."""
+    ctx = make_test_context(
+        tmp_path / "r", raw_answers=example_answers(allow_cpu=True, fake_voice=True), resolve=True,
+        dev_mode=False, preflight={"profile": "cpu-dev"},
+    )
+    assert ctx.fake_voice is True
+    S02DownloadBins().run(ctx)
+    assert ctx.flag("qwentts") == "none" and ctx.flag("tts_fallback") is False
+    assert "Engine test" in ctx.ui.text
+    assert not (ctx.paths.home / "bin" / "qwentts" / ".ns-qwentts.done").exists()
+    names = [i.name for i in S03DownloadModels()._items(ctx)]
+    assert not any(n.startswith("qwen-") for n in names), names        # talker and tokenizer GGUFs
+    assert any(n.endswith(".gguf") for n in names) and "whisper/model.bin" in names     # the real models stay
+    assert all(i.sha256 for i in S03DownloadModels()._items(ctx) if i.name.endswith(".gguf"))
+    rt = build_runtime(ctx)
+    assert rt.tts.engine == "fake" and rt.dev_mode is False and rt.profile == "cpu-dev"
+
+
+def test_fake_voice_is_ignored_by_a_dev_install_which_fakes_the_voice_anyway(tmp_path: Path):
+    ctx = dev_ctx(tmp_path, fake_voice=True)
+    assert ctx.fake_voice is False
+    S02DownloadBins().run(ctx)
+    assert "Dev mode" in ctx.ui.text and "Engine test" not in ctx.ui.text
+    rt = build_runtime(ctx)
+    assert rt.tts.engine == "qwentts" and rt.dev_mode is True

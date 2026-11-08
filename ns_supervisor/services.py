@@ -134,11 +134,14 @@ def _tts(rt: Runtime, paths: Paths) -> ServiceDef:
     # fallback.py); the qwentts engine needs just numpy and FastAPI and runs in the supervisor venv.
     venv = "tts" if cfg.engine == "reference" else "supervisor"
     cmd = [venv_python(paths, venv), "-m", "ns_tts.server", "--port", str(cfg.port)]
-    if rt.dev_mode:     # the real server with its fake engine: tone-burst narration, voices, design and clone
+    # The real server with its fake engine (tone-burst narration, voices, design and clone): a dev install, or
+    # an engine test (`tts.engine: fake`, docs/DEV_MODE.md).
+    fake = rt.dev_mode or cfg.engine == "fake"
+    if fake:
         cmd = [venv_python(paths, "supervisor"), "-m", "ns_tts.server", "--port", str(cfg.port),
                "--engine", "fake"]  # fmt: skip
     return ServiceDef(
-        name="tts", cmd=cmd, host=cfg.host, port=cfg.port, gpu=cfg.device == "cuda" and not rt.dev_mode,
+        name="tts", cmd=cmd, host=cfg.host, port=cfg.port, gpu=cfg.device == "cuda" and not fake,
         env=_env(paths),
     )
 
