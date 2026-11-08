@@ -41,3 +41,15 @@ def test_no_window_lines_or_a_tiny_window_leave_the_fixture_alone():
     data = {"clips": [{"start_s": 62.4, "end_s": 101.9}]}
     assert fit_clip_fixture(data, "no timings here") is data
     assert fit_clip_fixture(data, _prompt(0.0, 6.0)) is data
+
+
+def test_the_series_map_fixture_is_fitted_to_the_requested_part_count():
+    from ns_common.llm_client import fit_map_fixture
+
+    data = {"parts": [{"n": 1, "title": "A", "recap": ""}, {"n": 2, "title": "B", "recap": "x"},
+                      {"n": 3, "title": "C", "recap": "y"}], "arc_payoff": "p"}
+    two = fit_map_fixture(data, "Plan exactly 2 parts of about 12 minutes each.")
+    assert [p["n"] for p in two["parts"]] == [1, 2] and two["arc_payoff"] == "p"
+    four = fit_map_fixture(data, "Plan exactly 4 parts of about 12 minutes each.")
+    assert [p["n"] for p in four["parts"]] == [1, 2, 3, 4] and four["parts"][3]["title"].startswith("C")
+    assert fit_map_fixture(data, "Plan exactly 3 parts") is data and fit_map_fixture(data, "no count") is data

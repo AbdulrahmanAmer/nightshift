@@ -101,6 +101,32 @@ _WINDOW_HEAD = re.compile(r"Window:\s*(\d+(?:\.\d+)?)\s*s\s+to\s+(\d+(?:\.\d+)?)
 _WINDOW_LINE = re.compile(r"^\[\d+\]\s*(\d+(?:\.\d+)?)\s*-\s*(\d+(?:\.\d+)?):", re.M)
 
 
+_MAP_PARTS = re.compile(r"Plan exactly (\d+) parts")
+
+
+def fit_map_fixture(data: dict, user: str) -> dict:
+    """The workshop_map fixture plans three parts; a dev-mode series asking for two or four parts stopped
+    with NS-E302 "returned 3 parts, expected N". The fixture is trimmed or its last part repeated so the
+    count matches what the prompt asked for (part numbers renumbered)."""
+    m = _MAP_PARTS.search(user or "")
+    parts = data.get("parts") if isinstance(data, dict) else None
+    if not m or not isinstance(parts, list) or not parts:
+        return data
+    want = int(m.group(1))
+    if want == len(parts) or want < 1:
+        return data
+    fitted = [dict(p) for p in parts[:want]]
+    while len(fitted) < want:
+        extra = dict(parts[-1])
+        extra["title"] = f"{extra.get('title', 'Part')} {len(fitted) + 1}"[:40]
+        fitted.append(extra)
+    for i, p in enumerate(fitted, start=1):
+        p["n"] = i
+        if i == 1:
+            p["recap"] = ""
+    return {**data, "parts": fitted}
+
+
 def fit_clip_fixture(data: dict, user: str) -> dict:
     """The clip_select fixture's moments sit at 62-262 s of a test recording; on any other video (a dev-mode
     clip job on a 54 s Short) none of them fall inside the window and the selector ends with NS-E407 "the
@@ -166,6 +192,8 @@ class FakeLlm:
         data = json.loads(f.read_text(encoding="utf-8"))
         if prompt_name == "clip_select":
             data = fit_clip_fixture(data, user)
+        if prompt_name == "workshop_map":
+            data = fit_map_fixture(data, user)
         return data
 
     def complete_text(self, *, prompt_name: str, system: str, user: str,
