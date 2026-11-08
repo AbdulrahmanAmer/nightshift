@@ -6,7 +6,7 @@ import json
 import math
 import re
 import shutil
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -69,6 +69,76 @@ def parse_loudnorm_json(stderr: str) -> dict[str, float]:
     return {k: _to_float(str(v)) for k, v in raw.items() if k != "normalization_type"}
 
 
+LINEAR_TOLERANCE_DB = 0.1   # loudnorm limiting a peak by a tenth of a dB moves the loudness by less
+LIMITER_HEADROOM_DB = 2.0   # sample-peak ceiling under `tp`: a clipped peak is 1 dB wider once resampled
+OVERSHOOT_DB = 1.0          # and encoded; `limit_to_linear` keeps that much between the peak and `tp`
+LIMITER_ATTACK_MS = 2.0
+LIMITER_RELEASE_MS = 50.0
+MAX_LIMITER_PASSES = 4
+
+
+def linear_possible(input_i: float, input_tp: float, *, i: float, tp: float) -> bool:
+    """Whether a plain gain from `input_i` LUFS to `i` keeps the true peak at or under `tp`.
+
+    loudnorm stays linear only then; otherwise it limits on the fly and ends short of the target (a
+    -20.4 LUFS / -0.5 dBTP clip came out at -17.1 LUFS for a -14 target).
+    """
+    return input_tp + (i - input_i) <= tp + LINEAR_TOLERANCE_DB
+
+
+def limiter_ceiling_db(tp: float) -> float:
+    """The sample-peak ceiling (dBFS) `boost_limiter` holds the audio to."""
+    return tp - LIMITER_HEADROOM_DB
+
+
+def boost_limiter(boost_db: float, tp: float) -> str:
+    """Lift by `boost_db`, then hold the peaks at a fixed ceiling just under `tp`.
+
+    The ceiling stays well inside alimiter's 0.0625..1 range whatever the clip's level, which a ceiling
+    placed relative to a very quiet clip would not.
+    """
+    limit = 10 ** (limiter_ceiling_db(tp) / 20)
+    return (
+        f"volume={boost_db:.2f}dB,alimiter=limit={limit:.4g}:attack={LIMITER_ATTACK_MS:g}"
+        f":release={LIMITER_RELEASE_MS:g}:level=0"
+    )
+
+
+def limit_to_linear(
+    measure: Callable[[str], dict[str, float] | None], source: dict[str, float], *, i: float, tp: float
+) -> tuple[str, dict[str, float] | None, float]:
+    """The `boost_limiter` stage that lets loudnorm reach `i` linearly, with its measurement and boost.
+
+    `source` is the loudnorm pass-1 report of the unprocessed audio; `measure(pre)` repeats pass 1 after
+    `pre`. The first boost brings the loudness to `i`; the limiter then takes some off, so each repeat adds
+    the shortfall to the boost until the measured peak fits (with `OVERSHOOT_DB` to spare) or
+    `MAX_LIMITER_PASSES` is spent (the last attempt is returned). `("", None, 0.0)` when a measurement
+    fails: the caller keeps the plain chain.
+    """
+    boost = i - source["input_i"]
+    pre, got, used = "", None, boost
+    for _ in range(MAX_LIMITER_PASSES):
+        pre, used = boost_limiter(boost, tp), boost
+        got = measure(pre)
+        if got is None:
+            return "", None, 0.0
+        if linear_possible(got["input_i"], got["input_tp"] + OVERSHOOT_DB, i=i, tp=tp):
+            break
+        boost += i - got["input_i"]
+    return pre, got, used
+
+
+def _pass_one(in_wav: Path, target: str, stage: str) -> dict[str, float] | None:
+    """Loudnorm pass 1 over `in_wav` after the filter `stage`; None when FFmpeg fails or it is silent."""
+    af = f"{stage},loudnorm={target}:print_format=json"
+    args = ["-i", str(in_wav), "-vn", "-af", af, "-f", "null", "-"]
+    try:
+        got = parse_loudnorm_json(ff.run(args).stderr)
+    except NsError:
+        return None
+    return got if all(math.isfinite(got.get(k, math.nan)) for k in ("input_i", "input_tp")) else None
+
+
 def loudnorm(
     in_wav: Path, out_wav: Path, *, i: float = -16.0, tp: float = -1.5, lra: float = 11.0, sr: int = 48000
 ) -> None:
@@ -86,12 +156,17 @@ def loudnorm(
     if not math.isfinite(m.get("input_i", math.nan)):
         ff.run(["-i", str(in_wav), "-vn", "-ar", str(sr), "-ac", "1", "-c:a", "pcm_s16le", str(out_wav)])
         return
+    pre = ""
+    if not linear_possible(m["input_i"], m["input_tp"], i=i, tp=tp):  # quiet and peaky: lift and limit first
+        pre, limited, _ = limit_to_linear(lambda stage: _pass_one(in_wav, target, stage), m, i=i, tp=tp)
+        m = limited or m
     measured = (
         f"measured_I={m['input_i']}:measured_TP={m['input_tp']}:measured_LRA={m['input_lra']}"
         f":measured_thresh={m['input_thresh']}:offset={m['target_offset']}"
     )
     ff.run(
-        ["-i", str(in_wav), "-vn", "-af", f"loudnorm={target}:{measured}:linear=true:print_format=summary",
+        ["-i", str(in_wav), "-vn", "-af",
+         f"{pre + ',' if pre else ''}loudnorm={target}:{measured}:linear=true:print_format=summary",
          "-ar", str(sr), "-ac", "1", "-c:a", "pcm_s16le", str(out_wav)]
     )
     got = measure_loudness(out_wav)

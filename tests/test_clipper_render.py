@@ -11,6 +11,7 @@ from ns_common.models import ClipLayout, Crop, FaceFrame, Rect
 from ns_studio.clipper import layout as lay
 from ns_studio.clipper import render as rd
 from ns_studio.clipper.models import TEMPLATE_NAMES
+from ns_studio.media import audio
 from tests.fixtures.clipper.make_sample import facecam_truth, shared_sample
 
 needs_ffmpeg = pytest.mark.skipif(not ffmpeg.available(), reason="ffmpeg not available")
@@ -177,18 +178,19 @@ def test_linear_possible_decision() -> None:
     assert rd.linear_possible(-12.0, -0.5)                                 # louder than the target: a cut
 
 
-def test_peak_ceiling_keeps_the_target_crest() -> None:
-    # crest allowed by the target is -1.5 - -14 = 12.5 dB; the ceiling sits 2 dB inside it
-    assert rd.peak_ceiling_db(-20.0) == pytest.approx(-9.5)
-    lin = rd.limiter_filter(-9.5)
-    assert lin.startswith("alimiter=limit=0.335:") and lin.endswith("level=0")
-    assert "limit=0.0625:" in rd.limiter_filter(-60.0) and "limit=1:" in rd.limiter_filter(6.0)
+def test_boost_limiter_has_a_fixed_ceiling_inside_the_limiter_range() -> None:
+    # the ceiling is TARGET_TP - 2 = -3.5 dBFS whatever the clip's level; only the boost follows the clip
+    f = audio.boost_limiter(6.38, rd.TARGET_TP)
+    assert f == "volume=6.38dB,alimiter=limit=0.6683:attack=2:release=50:level=0"
+    quiet = audio.boost_limiter(31.7, rd.TARGET_TP)
+    assert quiet.split(",")[1] == f.split(",")[1]
+    assert 0.0625 < float(quiet.split("limit=")[1].split(":")[0]) < 1.0
 
 
 def test_audio_filter_puts_the_peak_stage_before_loudnorm() -> None:
     m = {"input_i": -20.0, "input_tp": -8.0, "input_lra": 1.0, "input_thresh": -30.0, "target_offset": 0.0}
-    f = rd.audio_filter(m, pre="alimiter=limit=0.4:attack=2:release=50:level=0")
-    assert f.startswith("alimiter=limit=0.4:attack=2:release=50:level=0,loudnorm=")
+    f = rd.audio_filter(m, pre="volume=6.00dB,alimiter=limit=0.4:attack=2:release=50:level=0")
+    assert f.startswith("volume=6.00dB,alimiter=limit=0.4:attack=2:release=50:level=0,loudnorm=")
     assert "measured_I=-20.00" in f
     assert rd.audio_filter(m).startswith("loudnorm=")
 
@@ -197,21 +199,49 @@ def _m(i: float, tp: float) -> dict[str, float]:
     return {"input_i": i, "input_tp": tp, "input_lra": 1.0, "input_thresh": i - 10, "target_offset": 0.0}
 
 
-def test_plan_lowers_the_ceiling_until_the_peak_fits(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def _boost(pre: str) -> float:
+    return float(pre.split("volume=")[1].split("dB")[0])
+
+
+def _fake_measure(monkeypatch: pytest.MonkeyPatch, answers: list[dict[str, float] | None]) -> list[str]:
+    """Make `measure_loudness` answer in order (first the unprocessed clip); returns each `pre` seen."""
     seen: list[str] = []
 
-    def fake(spec: rd.RenderSpec, log: object = None, pre: str = "") -> dict[str, float]:
+    def fake(spec: rd.RenderSpec, log: object = None, pre: str = "") -> dict[str, float] | None:
         seen.append(pre)
-        if not pre:
-            return _m(-20.38, -0.47)
-        return _m(-21.0, -9.0) if len(seen) == 2 else _m(-21.5, -11.0)   # first try still 3 dB too hot
+        return answers[len(seen) - 1]
 
     monkeypatch.setattr(rd, "measure_loudness", fake)
+    return seen
+
+
+def test_plan_raises_the_boost_until_the_peak_fits(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # first try: the limiter takes 3.4 LU off (-17.0); the peak (-3.5) + 3.0 gain + 1.0 spare is too hot
+    seen = _fake_measure(monkeypatch, [_m(-20.38, -0.47), _m(-17.0, -3.5), _m(-14.2, -3.5)])
     plan = rd.plan_loudness(spec_for("center_crop", tmp_path / "o.mp4"))
-    assert plan.mode == "limited" and len(seen) == 3 and seen[1] != seen[2]
-    assert plan.measured == _m(-21.5, -11.0) and plan.source == _m(-20.38, -0.47)
+    assert plan.mode == "limited" and len(seen) == 3
+    assert _boost(seen[1]) == pytest.approx(6.38) and _boost(seen[2]) == pytest.approx(9.38)
+    assert seen[1].split(",")[1] == seen[2].split(",")[1]                  # the ceiling does not move
+    assert plan.pre == seen[2] and plan.measured == _m(-14.2, -3.5) and plan.source == _m(-20.38, -0.47)
     rep = plan.report()
-    assert rep["input_i"] == -20.38 and rep["limited_tp"] == -11.0 and rep["mode"] == "limited"
+    assert rep == {"mode": "limited", "input_i": -20.38, "input_tp": -0.47, "limited_i": -14.2,
+                   "limited_tp": -3.5, "boost_db": 9.38, "ceiling_db": -3.5}
+
+
+def test_plan_stops_after_the_last_pass(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    hot = _m(-17.0, -1.0)                                                  # never fits
+    seen = _fake_measure(monkeypatch, [_m(-20.38, -0.47), hot, hot, hot, hot])
+    plan = rd.plan_loudness(spec_for("center_crop", tmp_path / "o.mp4"))
+    assert len(seen) == 1 + audio.MAX_LIMITER_PASSES
+    assert plan.mode == "limited" and plan.pre == seen[-1]
+    assert plan.report()["boost_db"] == pytest.approx(15.38)
+
+
+def test_plan_falls_back_when_a_measure_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    seen = _fake_measure(monkeypatch, [_m(-20.38, -0.47), _m(-17.0, -1.0), None])
+    plan = rd.plan_loudness(spec_for("center_crop", tmp_path / "o.mp4"))
+    assert len(seen) == 3 and plan.mode == "linear" and plan.pre == "" and plan.measured == plan.source
+    assert plan.report() == {"mode": "linear", "input_i": -20.38, "input_tp": -0.47}
 
 
 def test_plan_stays_linear_for_normal_and_silent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -223,17 +253,18 @@ def test_plan_stays_linear_for_normal_and_silent(tmp_path: Path, monkeypatch: py
     assert silent.report() == {"mode": "linear", "input_i": None, "input_tp": None}
 
 
-def make_peaky_source(path: Path) -> None:
-    """12 s, 1280x720: a quiet 220 Hz tone with a 5 ms low-passed noise click every 70 ms.
+def make_peaky_source(path: Path, level_db: float = 0.0) -> None:
+    """12 s, 1280x720: a quiet 220 Hz tone with a 5 ms low-passed noise click every 70 ms, `level_db` overall.
 
-    Measured by loudnorm: -20.7 LUFS with a -0.55 dBTP peak (the real clip was -20.4 / -0.5), so +6.7 dB
-    cannot be applied linearly; the old two-pass chain ended at -17.4 LUFS on it. The
-    noise is low-passed at 3 kHz so the clicks resemble speech plosives, not full-band hash.
+    The clicks are gated per sample (`aeval`), so each is really 5 ms long, like a speech plosive; the noise
+    is low-passed at 3 kHz because full-band hash would make the resampler ring. At 0 dB loudnorm measures
+    about -20.6 LUFS with a -0.8 dBTP peak (the real clip was -20.4 / -0.5) and the old chain renders it at
+    -20.7 LUFS, 6.7 LU short. At -25 dB it is the very quiet case (about -45.6 LUFS / -25.8 dBTP).
     """
     graph = (
         "[1:a]volume=0.6[s];"
-        "[2:a]lowpass=f=3000,volume='if(lt(mod(t,0.07),0.005),1.3,0)':eval=frame[c];"
-        "[s][c]amix=inputs=2:normalize=0,aformat=channel_layouts=mono[a]"
+        "[2:a]lowpass=f=3000,aeval=exprs='val(0)*1.3*lt(mod(t,0.07),0.005)':c=same[c];"
+        f"[s][c]amix=inputs=2:normalize=0,volume={level_db:g}dB,aformat=channel_layouts=mono[a]"
     )
     ffmpeg.run(
         ["-f", "lavfi", "-i", "color=c=black:s=1280x720:r=30:d=12",
@@ -244,27 +275,55 @@ def make_peaky_source(path: Path) -> None:
     )
 
 
-@needs_ffmpeg
-def test_quiet_peaky_source_still_reaches_minus_14(tmp_path: Path) -> None:
+Loud = dict[str, float | str | None]
+
+
+Finals = dict[str, dict[str, float]]
+
+
+def _render_peaky(tmp_path: Path, level_db: float) -> tuple[dict[str, float], Loud, Finals]:
     src = tmp_path / "peaky.mp4"
-    make_peaky_source(src)
+    make_peaky_source(src, level_db)
     base = spec_for("center_crop", tmp_path / "c1.mp4", start=1.0, end=10.0)
     spec = rd.RenderSpec(**{**base.__dict__, "video": src})
     before = rd.measure_loudness(spec)
     assert before is not None and not rd.linear_possible(before["input_i"], before["input_tp"])  # the defect
+    old = tmp_path / "old.mp4"
+    ffmpeg.run(rd.build_args(rd.RenderSpec(**{**spec.__dict__, "out": old}), before))  # the old chain
     out, loud = rd.render_clip_report(spec)
+    return before, loud, {"old": _final(old), "new": _final(out)}
+
+
+def _final(path: Path) -> dict[str, float]:
+    probe = ffmpeg.run(
+        ["-i", str(path), "-vn", "-af", "loudnorm=I=-14:TP=-1.5:LRA=11:print_format=json", "-f", "null", "-"]
+    )
+    m = rd.parse_loudnorm(probe.stderr)
+    assert m is not None
+    return m
+
+
+@needs_ffmpeg
+def test_quiet_peaky_source_still_reaches_minus_14(tmp_path: Path) -> None:
+    before, loud, final = _render_peaky(tmp_path, 0.0)
+    assert before["input_i"] > -25.0 and final["old"]["input_i"] < -16.0       # the old chain falls short
     assert loud["mode"] == "limited"
     assert loud["input_i"] == pytest.approx(before["input_i"], abs=0.01)
     assert loud["input_tp"] == pytest.approx(before["input_tp"], abs=0.01)
-    assert isinstance(loud["limited_i"], float) and isinstance(loud["input_i"], float)
-    assert isinstance(loud["limited_tp"], float) and isinstance(loud["input_tp"], float)
-    assert loud["limited_i"] < loud["input_i"] and loud["limited_tp"] < loud["input_tp"]
-    probe = ffmpeg.run(
-        ["-i", str(out), "-vn", "-af", "loudnorm=I=-14:TP=-1.5:LRA=11:print_format=json", "-f", "null", "-"]
-    )
-    m = rd.parse_loudnorm(probe.stderr)
-    assert m is not None and -15.0 <= m["input_i"] <= -13.0
-    assert m["input_tp"] <= -1.0
+    assert isinstance(loud["limited_i"], float) and isinstance(loud["limited_tp"], float)
+    assert loud["ceiling_db"] == -3.5 and isinstance(loud["boost_db"], float) and loud["boost_db"] > 6.0
+    assert -15.0 <= final["new"]["input_i"] <= -13.0
+    assert final["new"]["input_tp"] <= -1.0
+
+
+@needs_ffmpeg
+def test_very_quiet_peaky_source_still_reaches_minus_14(tmp_path: Path) -> None:
+    before, loud, final = _render_peaky(tmp_path, -25.0)
+    assert before["input_i"] < -40.0 and final["old"]["input_i"] < -16.0
+    assert loud["mode"] == "limited" and loud["ceiling_db"] == -3.5
+    assert isinstance(loud["boost_db"], float) and loud["boost_db"] > 30.0
+    assert -15.0 <= final["new"]["input_i"] <= -13.0
+    assert final["new"]["input_tp"] <= -1.0
 
 
 @needs_ffmpeg

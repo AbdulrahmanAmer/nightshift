@@ -19,18 +19,13 @@ from ns_common.errors import NsError
 from ns_common.logging import NsLogger
 from ns_common.models import CANVAS_H, CANVAS_W, ClipTemplate, Crop, Format, Rect
 from ns_studio.clipper import layout
+from ns_studio.media import audio
 from ns_studio.media.layout import SourceSpec, build_regions_graph, fit_facecam_height
 from ns_studio.media.render import escape_filter_path
 
 TARGET_LUFS = -14.0
 TARGET_TP = -1.5
 TARGET_LRA = 11.0
-LINEAR_TOLERANCE_DB = 0.1   # loudnorm limiting a peak by a tenth of a dB moves the loudness by less
-CEILING_HEADROOM_DB = 2.0   # ~1 dB of loudness the limiter removes, ~1 dB the resample and AAC add to a peak
-REENCODE_OVERSHOOT_DB = 1.0
-LIMITER_ATTACK_MS = 2.0
-LIMITER_RELEASE_MS = 50.0
-MAX_LIMITER_PASSES = 4
 FPS = 30
 
 
@@ -199,28 +194,8 @@ def parse_loudnorm(stderr: str) -> dict[str, float] | None:
 
 
 def linear_possible(input_i: float, input_tp: float) -> bool:
-    """Whether a plain gain to `TARGET_LUFS` keeps the true peak at or under `TARGET_TP`.
-
-    loudnorm only stays linear when it does; otherwise it limits on the fly and ends short of the target
-    (a -20.4 LUFS / -0.5 dBTP clip came out at -17.1 LUFS and failed QC with NS-E404).
-    """
-    return input_tp + (TARGET_LUFS - input_i) <= TARGET_TP + LINEAR_TOLERANCE_DB
-
-
-def peak_ceiling_db(input_i: float) -> float:
-    """The sample-peak ceiling (dBFS) that lets a clip of `input_i` LUFS reach the target linearly.
-
-    The target allows `TARGET_TP - TARGET_LUFS` dB between loudness and peak; the ceiling keeps
-    `CEILING_HEADROOM_DB` of that for the limiter's own loudness loss and for the overshoot that the final
-    resample and AAC encode add to a sharp peak.
-    """
-    return input_i + (TARGET_TP - TARGET_LUFS) - CEILING_HEADROOM_DB
-
-
-def limiter_filter(ceiling_db: float) -> str:
-    """A lookahead `alimiter` holding the sample peaks at `ceiling_db` (auto-level off, no makeup gain)."""
-    lin = min(1.0, max(0.0625, 10 ** (ceiling_db / 20)))  # alimiter accepts 0.0625 (-24 dBFS) to 1
-    return f"alimiter=limit={lin:.4g}:attack={LIMITER_ATTACK_MS:g}:release={LIMITER_RELEASE_MS:g}:level=0"
+    """Whether a plain gain to `TARGET_LUFS` keeps the true peak at or under `TARGET_TP` (see `audio`)."""
+    return audio.linear_possible(input_i, input_tp, i=TARGET_LUFS, tp=TARGET_TP)
 
 
 def measure_loudness(spec: RenderSpec, log: NsLogger | None = None, pre: str = "") -> dict[str, float] | None:
@@ -241,17 +216,18 @@ def measure_loudness(spec: RenderSpec, log: NsLogger | None = None, pre: str = "
 class LoudnessPlan:
     """How a clip's audio reaches the target: the peak stage (empty when linear) and the pass-1 values.
 
-    `measured` is what loudnorm will see (after `pre`); `source` is the clip as recorded.
+    `measured` is what loudnorm will see (after `pre`); `source` is the clip as recorded; `boost_db` is
+    the lift the peak stage applies before its limiter.
     """
 
     pre: str
     measured: dict[str, float] | None
     source: dict[str, float] | None
-    ceiling_db: float | None = None
+    boost_db: float | None = None
 
     @property
     def mode(self) -> str:
-        """`linear` (two-pass loudnorm alone) or `limited` (peaks held down first)."""
+        """`linear` (two-pass loudnorm alone) or `limited` (lifted, then peaks held down first)."""
         return "limited" if self.pre else "linear"
 
     def report(self) -> dict[str, float | str | None]:
@@ -262,40 +238,34 @@ class LoudnessPlan:
             "input_i": src["input_i"] if src else None,
             "input_tp": src["input_tp"] if src else None,
         }
-        if self.pre and self.measured and self.ceiling_db is not None:
+        if self.pre and self.measured and self.boost_db is not None:
             out["limited_i"] = self.measured["input_i"]
             out["limited_tp"] = self.measured["input_tp"]
-            out["ceiling_db"] = round(self.ceiling_db, 2)
+            out["boost_db"] = round(self.boost_db, 2)
+            out["ceiling_db"] = round(audio.limiter_ceiling_db(TARGET_TP), 2)
         return out
 
 
 def plan_loudness(spec: RenderSpec, log: NsLogger | None = None) -> LoudnessPlan:
-    """Pass 1, and when the target is out of linear reach, a peak limiter measured again until it fits.
+    """Pass 1, and when the target is out of linear reach, a lift and limiter measured again until it fits.
 
     Quiet recordings with high peaks (phone audio, podcasts) sit 20 dB or more under their own peaks, so
-    lifting them to -14 LUFS would clip. The limiter goes before loudnorm and pass 1 is repeated on its
-    output, so the `measured_*` values are those loudnorm sees and it can stay linear. Each repeat lowers the
-    ceiling by the shortfall; after `MAX_LIMITER_PASSES` loudnorm takes over as it did before.
+    lifting them to -14 LUFS would clip. `audio.limit_to_linear` puts a boost and a fixed-ceiling limiter
+    before loudnorm and repeats pass 1 on its output, so the `measured_*` values are those loudnorm sees
+    and it can stay linear. After `audio.MAX_LIMITER_PASSES` loudnorm takes over as it did before.
     """
     source = measure_loudness(spec, log)
     if source is None or linear_possible(source["input_i"], source["input_tp"]):
         return LoudnessPlan("", source, source)
-    ceiling = peak_ceiling_db(source["input_i"])
-    plan = LoudnessPlan("", source, source)
-    for attempt in range(MAX_LIMITER_PASSES):
-        pre = limiter_filter(ceiling)
-        measured = measure_loudness(spec, log, pre)
-        if measured is None:
-            break
-        plan = LoudnessPlan(pre, measured, source, ceiling)
-        if log:
-            log.info("loudness_limited", attempt=attempt + 1, ceiling_db=round(ceiling, 2),
-                     input_i=measured["input_i"], input_tp=measured["input_tp"])
-        peak = measured["input_tp"] + REENCODE_OVERSHOOT_DB
-        if linear_possible(measured["input_i"], peak):
-            break
-        ceiling -= peak + (TARGET_LUFS - measured["input_i"]) - TARGET_TP + 0.5
-    return plan
+    pre, measured, boost = audio.limit_to_linear(
+        lambda p: measure_loudness(spec, log, p), source, i=TARGET_LUFS, tp=TARGET_TP
+    )
+    if measured is None:
+        return LoudnessPlan("", source, source)
+    if log:
+        log.info("loudness_limited", boost_db=round(boost, 2), ceiling_db=audio.limiter_ceiling_db(TARGET_TP),
+                 input_i=measured["input_i"], input_tp=measured["input_tp"])
+    return LoudnessPlan(pre, measured, source, boost)
 
 
 def audio_filter(measured: dict[str, float] | None, pre: str = "") -> str:
