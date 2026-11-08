@@ -167,3 +167,15 @@ def test_probe_source_reports_the_shown_size_of_a_rotated_phone_video(tmp_path: 
     if src.stream_rotation(stream) == 0:
         pytest.skip("this FFmpeg did not write a display matrix")
     assert (facts["width"], facts["height"]) == (360, 640) and facts["rotation"] in (90, 270)
+
+
+@needs_ffmpeg
+def test_import_from_the_hash_folder_keeps_the_sidecar(tmp_home: Path, tmp_path: Path) -> None:
+    """An upload is adopted into imports/clipper/src-<hash>/ with its dev sidecar before the Clipper imports
+    it; the second import found the sidecar beside the video and copied it onto itself (WinError 32)."""
+    paths, db = env(tmp_home)
+    first = src.import_source(paths, db, copy_sample(tmp_path), channel="c", rights_confirmed=True)
+    assert first.sidecar and Path(first.sidecar).is_file()
+    again = src.import_source(paths, db, Path(first.path), channel="c", rights_confirmed=True)
+    assert again.source_id == first.source_id and again.sidecar == first.sidecar
+    assert Path(again.sidecar).is_file()
