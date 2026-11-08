@@ -7,6 +7,13 @@ All notable changes to Nightshift are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.1.12] - 2026-11-09
+
+From the verification loop of 2026-11-05 (seven defects on the dev install) and the plumbing pass of
+2026-11-08 (`docs/PLUMBING.md`; a real-engine install on a PC without a graphics card: real language model,
+embeddings and speech recognition with the fake voice, report `D:\NightShift-refs\test-loop-2026-11-08.md`).
+Send `Nightshift-Setup-0.1.12.zip`; an install started with 0.1.6 to 0.1.11 resumes under it.
+
 - Clipper: a quiet clip with high peaks (a phone recording, a podcast) now reaches -14 LUFS instead of failing
   QC with NS-E404 at about -17 LUFS. The clip is lifted and its peaks held down before the loudness pass, and
   `render/report.json` says which path each clip took (`loudness.mode` is `linear` or `limited`, with the
