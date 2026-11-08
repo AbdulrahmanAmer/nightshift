@@ -151,6 +151,9 @@ real install:
    (NS-W205), `ns studio run --daily` and the post-run behaviour are not exercised. Registering the task is.
 8. **Nightshift Code.** OpenCode is not installed, `opencode.json` is not written, `nightshift-code.ps1` has no
    shortcut.
+8b. **Clips from an upload.** The fake transcriber needs a sidecar; an upload has none at import time. Drop
+   `source.transcript.json` next to the stored file (`imports\clipper\<source id>\source.mp4`) before
+   starting the clip job: the transcribe stage looks there when no sidecar was recorded.
 9. **The Assistant** runs on keyword routing in the fake llama (`ns_supervisor.devfake.plan_tool_call`): the
    confirm card, the tool run and the result are real, the wording and the choice of tool on a real model are
    not. Library > Footage and the Assistant's `fetch_footage` use the synthetic clip source unless a key is

@@ -151,3 +151,19 @@ def test_segment_lookup_is_by_bisect_and_picks_the_nearest_gap() -> None:
     times = (1.0, 12.0, 24.0, 6.0, 8.0, 99.0)
     assert [ts._segment_index(segs, starts, t) for t in times] == [0, 1, 2, 0, 1, 2]
     assert ts._segment_index([], [], 3.0) == 0
+
+
+def test_a_sidecar_dropped_beside_the_stored_source_is_found(tmp_path: Path) -> None:
+    """An upload is registered before a dev sidecar can sit next to it: the stage looks beside the stored
+    file."""
+    from ns_studio.clipper.stages_clip import sidecar_for
+
+    stored = tmp_path / "src-1" / "source.mp4"
+    stored.parent.mkdir()
+    stored.write_bytes(b"x")
+    assert sidecar_for({"path": str(stored)}) is None
+    beside = stored.with_name("source.transcript.json")
+    beside.write_text("{}", encoding="utf-8")
+    assert sidecar_for({"path": str(stored)}) == beside
+    assert sidecar_for({"path": str(stored), "sidecar": str(tmp_path / "rec.json")}) == tmp_path / "rec.json"
+    assert sidecar_for({}) is None
