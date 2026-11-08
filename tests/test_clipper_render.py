@@ -224,14 +224,15 @@ def test_plan_stays_linear_for_normal_and_silent(tmp_path: Path, monkeypatch: py
 
 
 def make_peaky_source(path: Path) -> None:
-    """12 s, 1280x720: a quiet 220 Hz tone with a 5 ms low-passed noise click every half second.
+    """12 s, 1280x720: a quiet 220 Hz tone with a 5 ms low-passed noise click every 70 ms.
 
-    Measured by loudnorm: about -20 LUFS with a peak near 0 dBTP, so +6 dB cannot be applied linearly. The
+    Measured by loudnorm: -20.7 LUFS with a -0.55 dBTP peak (the real clip was -20.4 / -0.5), so +6.7 dB
+    cannot be applied linearly; the old two-pass chain ended at -17.4 LUFS on it. The
     noise is low-passed at 3 kHz so the clicks resemble speech plosives, not full-band hash.
     """
     graph = (
-        "[1:a]volume=1.2[s];"
-        "[2:a]lowpass=f=3000,volume='if(lt(mod(t,0.5),0.005),1.5,0)':eval=frame[c];"
+        "[1:a]volume=0.6[s];"
+        "[2:a]lowpass=f=3000,volume='if(lt(mod(t,0.07),0.005),1.3,0)':eval=frame[c];"
         "[s][c]amix=inputs=2:normalize=0,aformat=channel_layouts=mono[a]"
     )
     ffmpeg.run(
