@@ -12,6 +12,20 @@ All notable changes to Nightshift are recorded here. The format follows
   `render/report.json` says which path each clip took (`loudness.mode` is `linear` or `limited`, with the
   measured values). Narration and Shorts audio that is quiet with high peaks gets the same treatment, so a
   Short no longer misses -14 LUFS for that reason.
+- A format edited or added in Library > Formats is now used by the studio: it wrote `config\formats\<id>.yaml`
+  and the studio read only the shipped presets, so no edit ever reached a render (found by the plumbing map,
+  `docs/PLUMBING.md`).
+- Home layout: `exemplars` and `prompt_overrides` (the two folders the studio reads for the owner's own stories
+  and prompt edits) are created with the rest; the never-written `stories` folder and the unused clips index
+  path are gone. Uninstall also removes `app.failed` and `app.swap` left by an interrupted update.
+- A real install on a PC without an NVIDIA card (profile `cpu-dev`) pointed its voice service at the PyTorch
+  venv although setup had downloaded the qwentts.cpp binary (the venv exists only on the fallback): the voice
+  service could not start. `runtime.json` now says `qwentts` whenever the binary was found, on both profiles.
+- `ns verify` on that profile encodes its test clip with libx264 and skips the video-memory measurement
+  instead of failing both rows for want of `nvidia-smi`.
+- Engine test: the `answers.json` setting `fake_voice: true` installs the real language model, embeddings and
+  speech recognition with the fake voice engine (no voice model, no qwentts.cpp download; `tts.engine: fake`).
+  It is how the orchestrator proved the real-engine path on a laptop without a graphics card (docs/DEV_MODE.md).
 - Variation: when a job's pinned combo fields leave no unused combination in the 30-day ledger, the draw
   repeats one with a warning (`NS-W325`) instead of stopping the job with NS-E325. A series pins hook,
   structure, pacing, caption style and visual treatment, which left its Shorts nine combinations: the first

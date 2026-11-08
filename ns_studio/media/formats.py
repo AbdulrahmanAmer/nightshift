@@ -15,6 +15,7 @@ import yaml
 from pydantic import ValidationError
 
 from ns_common.models import Channel, Format
+from ns_common.paths import Paths
 from ns_studio.errors import StudioError
 from ns_studio.media.presets import PRESETS_DIR, load_caption_styles
 
@@ -40,9 +41,20 @@ def _load_dir(directory: str) -> dict[str, Format]:
     return {p.stem: _load_file(p) for p in files}
 
 
-def load_formats(directory: Path | None = None) -> dict[str, Format]:
-    """Every preset in `presets/formats/` (or `directory`) keyed by id; NS-E320 when a file is invalid."""
-    return dict(_load_dir(str(directory or FORMATS_DIR)))
+def load_formats(directory: Path | None = None, *, paths: Paths | None = None) -> dict[str, Format]:
+    """Every shipped preset keyed by id, overlaid with the owner's edited or new formats.
+
+    The dashboard's Library > Formats writes `<home>\\config\\formats\\<id>.yaml` (`ns_dashboard.formats`);
+    a file with a shipped id shadows that preset, any other id is a new format. Until 0.1.12 the studio read
+    the shipped folder only, so an edited format never reached a render. `directory` replaces the shipped
+    folder and skips the overlay (tests). NS-E320 when a file is invalid. Folders are read once per process
+    (`_load_dir` is cached); the studio runs one job per process, so an edit reaches the next job.
+    """
+    if directory is not None:
+        return dict(_load_dir(str(directory)))
+    out = dict(_load_dir(str(FORMATS_DIR)))
+    out.update(_load_dir(str((paths or Paths.from_env()).formats_dir)))
+    return out
 
 
 def get_format(format_id: str, directory: Path | None = None) -> Format:

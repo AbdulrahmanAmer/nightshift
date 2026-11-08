@@ -38,6 +38,7 @@ class S03DownloadModels(Step):
         items = plan_models(
             ctx.manifest, ctx.profile, ctx.tier, ctx.paths.home, custom=ctx.llm_custom,
             include_voicedesign=wants_voicedesign(ctx.ensure_answers()), dev=ctx.dev_mode,
+            include_voice=not ctx.fake_voice,
         )
         if with_fallback and ctx.flag("tts_fallback", False):
             items += fallback_items(ctx)

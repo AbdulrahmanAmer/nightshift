@@ -172,3 +172,26 @@ def test_clip_layout_choice_follows_formats_allowed() -> None:
     with pytest.raises(StudioError) as ei2:
         apply("center_crop", ["clip_gaming_facecam"], None, 0, explicit=False, channel="after-dark")
     assert ei2.value.code == "NS-E320" and "clip_center_crop" in ei2.value.detail
+
+
+def test_the_owners_edited_formats_shadow_and_extend_the_shipped_ones(tmp_home: Path) -> None:
+    """Library > Formats writes `<home>\\config\\formats\\<id>.yaml`; the studio read only the shipped
+    presets, so an edited format never reached a render. A shipped id is shadowed, a new id is added."""
+    from ns_common.paths import Paths
+
+    paths = Paths.from_env()
+    paths.formats_dir.mkdir(parents=True)
+    short = yaml.safe_load((F.FORMATS_DIR / "short_9x16.yaml").read_text(encoding="utf-8"))
+    short["duration"]["max_s"] = 123
+    (paths.formats_dir / "short_9x16.yaml").write_text(yaml.safe_dump(short), encoding="utf-8")
+    if "id" in short:
+        short["id"] = "my_short"
+    (paths.formats_dir / "my_short.yaml").write_text(yaml.safe_dump(short), encoding="utf-8")
+    assert F.get_format("short_9x16").duration.max_s == 123
+    assert "my_short" in F.format_ids() and F.get_format("my_short").duration.max_s == 123
+    assert set(F.load_formats()) == SHIPPED | {"my_short"}
+    assert set(F.load_formats(F.FORMATS_DIR)) == SHIPPED          # an explicit folder: no overlay
+    (paths.formats_dir / "broken.yaml").write_text("id: broken\nname: no canvas\n", encoding="utf-8")
+    F._load_dir.cache_clear()                                     # one read per process (per studio job)
+    with pytest.raises(StudioError):
+        F.load_formats()
