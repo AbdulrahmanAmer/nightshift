@@ -51,7 +51,8 @@ $script:DevMinRamGb = 4
 $script:DevBanner = 'DEV MODE: fake engines, no models'
 $script:NetworkHosts = @(
     'https://huggingface.co', 'https://github.com', 'https://download.pytorch.org',
-    'https://api.pexels.com', 'https://pixabay.com', 'https://pypi.org', 'https://files.pythonhosted.org'
+    'https://api.pexels.com', 'https://pixabay.com', 'https://pypi.org', 'https://files.pythonhosted.org',
+    'https://api.github.com', 'https://api.nuget.org', 'https://download.visualstudio.microsoft.com'
 )
 # Setup cannot work without these (programs and Python packages come from them); any other site is a warning.
 $script:CriticalHosts = @('github.com', 'pypi.org', 'files.pythonhosted.org')

@@ -63,6 +63,8 @@ class Paths:
     @property
     def channels_dir(self) -> Path: return self.config / "channels"
     @property
+    def formats_dir(self) -> Path: return self.config / "formats"   # the owner's edits (Library > Formats)
+    @property
     def data(self) -> Path: return self.home / "data"
     @property
     def backup_dir(self) -> Path: return self.data / "backup"
@@ -83,8 +85,6 @@ class Paths:
     @property
     def rejected(self) -> Path: return self.home / "rejected"
     @property
-    def stories(self) -> Path: return self.home / "stories"
-    @property
     def exemplars(self) -> Path: return self.home / "exemplars"            # the owner's own example stories
     @property
     def prompt_overrides(self) -> Path: return self.home / "prompt_overrides"  # win over ours
@@ -102,8 +102,6 @@ class Paths:
     def db_path(self) -> Path: return self.data / "studio.db"
     @property
     def assistant_db(self) -> Path: return self.data / "assistant.db"
-    @property
-    def clips_index(self) -> Path: return self.cache_clips / "index.sqlite"
 
     def channel_file(self, slug: str) -> Path:
         return self.channels_dir / f"{slug}.yaml"
@@ -121,7 +119,7 @@ class Paths:
             self.models_whisper, self.models_spacy, self.models_cv, self.venvs, self.config,
             self.channels_dir, self.data, self.backup_dir, self.jobs_dir, self.calibration_dir,
             self.cache_clips, self.cache_search, self.imports_analytics, self.outbox, self.rejected,
-            self.stories, self.logs,
+            self.exemplars, self.prompt_overrides, self.logs,
         ]
 
     def ensure(self) -> None:
