@@ -7,6 +7,11 @@ All notable changes to Nightshift are recorded here. The format follows
 
 ## [Unreleased]
 
+- Clipper: a quiet clip with high peaks (a phone recording, a podcast) now reaches -14 LUFS instead of failing
+  QC with NS-E404 at about -17 LUFS. The clip is lifted and its peaks held down before the loudness pass, and
+  `render/report.json` says which path each clip took (`loudness.mode` is `linear` or `limited`, with the
+  measured values). Narration and Shorts audio that is quiet with high peaks gets the same treatment, so a
+  Short no longer misses -14 LUFS for that reason.
 - A format edited or added in Library > Formats is now used by the studio: it wrote `config\formats\<id>.yaml`
   and the studio read only the shipped presets, so no edit ever reached a render (found by the plumbing map,
   `docs/PLUMBING.md`).
@@ -32,7 +37,6 @@ All notable changes to Nightshift are recorded here. The format follows
   removes `config\install_state.json` (answers and channels stay), and a setup window that finds the
   program folder gone runs the install steps again, with the Done screen's duration counted from that run
   (found by the windowed dev install on 2026-11-05: it said 30,265 s).
-
 - Clipper import: a video that already sits in its hash folder with its sidecar is recorded without copying the
   sidecar onto itself (WinError 32 on Windows; it stopped every dev clip job from an upload at 1 s).
 - Dev mode: a transcript sidecar dropped beside an upload moves with the video into its hash folder (it was

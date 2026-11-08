@@ -284,11 +284,13 @@ def fit_caption_contrast(
     return luma
 
 
-def build_short_audio(hook: Path | None, body: Path, out_raw: Path, out_final: Path, gap_s: float) -> Path:
+def build_short_audio(
+    hook: Path | None, body: Path, out_raw: Path, out_final: Path, gap_s: float, log: NsLogger | None = None
+) -> Path:
     """Hook + silence + body, loudness-normalized to -14 LUFS / -1.5 dBTP (spec S1)."""
     segments: list[Path | float] = [hook, gap_s, body] if hook else [body]
     assemble_audio(segments, out_raw)
-    loudnorm(out_raw, out_final, i=FINAL_LUFS, tp=FINAL_TP)
+    loudnorm(out_raw, out_final, i=FINAL_LUFS, tp=FINAL_TP, log=log)
     return out_final
 
 
@@ -317,6 +319,7 @@ class RenderStage:
                 out_dir / "audio_raw.wav",
                 out_dir / "audio.wav",
                 float(timeline["body_offset_s"]) - float(timeline["hook_s"]),
+                ctx.log,
             )
             shots = [Shot.from_json(s) for s in entry["shots"]]
             ass_path = ctx.file(f"captions/{item}.ass")

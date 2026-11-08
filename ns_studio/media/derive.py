@@ -97,7 +97,7 @@ def derive_short(
         raise NsError("NS-E404", f"{item}: {total:.0f} s exceeds the {SHORT_MAX_S:.0f} s Shorts limit")
     raw = assemble_audio(segments, out_dir / "audio_raw.wav")
     audio = out_dir / "audio.wav"
-    loudnorm(raw, audio, i=FINAL_LUFS, tp=FINAL_TP)
+    loudnorm(raw, audio, i=FINAL_LUFS, tp=FINAL_TP, log=ctx.log)
     total = ff.duration_s(audio)
 
     style = spec.caption_style or ctx.combo.caption_style
