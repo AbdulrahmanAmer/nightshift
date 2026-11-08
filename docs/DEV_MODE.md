@@ -165,6 +165,28 @@ real install:
 
 If a dev install passes and the GPU PC still fails, look first at items 1 to 5.
 
+## Real engines, fake voice (the engine test)
+
+A dev install proves the plumbing and nothing about a model. The step between it and the GPU PC is an
+install with the **real** language model, embeddings and speech recognition and only the voice faked:
+`answers.json` with `"fake_voice": true` (no `--dev`). Setup then
+
+- downloads llama.cpp (the CPU build on a PC without an NVIDIA card, `allow_cpu: true`), the LLM, embed and
+  whisper files of the profile with their pinned SHA256, the Python packages including faster-whisper and
+  CTranslate2;
+- downloads **no** voice model and **no** qwentts.cpp, makes no PyTorch venv, and writes `tts.engine: fake` in
+  `runtime.json` (`ns_supervisor.services` starts `ns_tts.server --engine fake` in the supervisor venv);
+- runs `ns tune` and the smoke test against the real `llama-server.exe`, the real embeddings and the real
+  speech recognition; the voice rows pass on the fake engine (`engine_kind: fake`, no NS-W301).
+
+Everything else is a real install: the nightly task is enabled, `dev_mode` is false, the Settings page shows
+no dev banner. It is an `answers.json` setting only; the setup window never asks it. To make the download
+small, the orchestrator's laptop run edited the **extracted** bundle's `manifest.json` (`profiles.cpu-dev.llm`
+pointed at `Qwen/Qwen3-0.6B-GGUF` `Qwen3-0.6B-Q8_0.gguf`, 639 MB, with its Hugging Face SHA256 and revision);
+the shipped manifest is unchanged. What such a run proves that a dev pass does not: items 2 (the language
+model starts, answers JSON, `ns tune`), 3 (embeddings), 4 (speech recognition on the processor) and the
+download path with real hashes. It still proves nothing about the GPU, NVENC, the voice engine or quality.
+
 ## Where the code is
 
 | What | Where |

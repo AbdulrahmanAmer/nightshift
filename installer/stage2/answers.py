@@ -30,6 +30,10 @@ class InstallerAnswers(Answers):
     # Download the VoiceDesign talker now. None (absent) means "infer": yes when the voice is a designed one,
     # because that voice cannot be created without the model; an explicit false is honoured (NS-W114).
     include_voicedesign: bool | None = None
+    # Engine test (docs/DEV_MODE.md, "Real engines, fake voice"): the real language model, embeddings and
+    # speech recognition with the fake voice engine. No voice model and no qwentts.cpp are downloaded and
+    # runtime.json says `tts.engine: fake`. An answers.json setting only; the setup window never asks it.
+    fake_voice: bool = False
 
 
 def wants_voicedesign(ans: InstallerAnswers) -> bool:

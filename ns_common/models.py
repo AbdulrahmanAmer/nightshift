@@ -120,7 +120,9 @@ class EmbedCfg(Strict):
 class TtsCfg(Strict):
     host: str = "127.0.0.1"
     port: int = 8091
-    engine: Literal["qwentts", "reference", "faster"] = "qwentts"
+    # qwentts: qwentts.cpp; reference: the PyTorch engine (installer fallback, NS-W301); faster: legacy name
+    # for qwentts; fake: the tone-burst engine of an engine test (answer `fake_voice`, docs/DEV_MODE.md).
+    engine: Literal["qwentts", "reference", "faster", "fake"] = "qwentts"
     model_dir: str = ""
     device: Literal["cuda", "cpu"] = "cuda"
 

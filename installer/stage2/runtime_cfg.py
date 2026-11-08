@@ -49,8 +49,13 @@ def build_runtime(ctx: StepContext) -> Runtime:
             rt.llama.flags.ctx = 32768
     else:
         rt.whisper = WhisperCfg(model=wdir, device="cpu", compute_type="int8")
-    if ctx.flag("tts_fallback", False):
-        rt.tts.engine = "reference"
+    # The voice engine. qwentts.cpp whenever s02 found its binary, on both profiles: Runtime.default of
+    # cpu-dev says "reference", which runs in the PyTorch venv that s04 creates only on the fallback, so a
+    # real install on a PC without a graphics card pointed its voice service at a venv that did not exist.
+    # The PyTorch reference engine on the fallback (NS-W301); the fake engine for an engine test.
+    rt.tts.engine = "reference" if ctx.flag("tts_fallback", False) else "qwentts"
+    if ctx.fake_voice:
+        rt.tts.engine = "fake"
     if ctx.dev_mode:
         # docs/DEV_MODE.md: fake engines. The voice service runs in the supervisor venv (there is no PyTorch
         # venv), and every consumer of runtime.json reads dev_mode to start the fakes.

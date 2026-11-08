@@ -132,6 +132,12 @@ class S02DownloadBins(Step):
             ctx.set_flag("tts_fallback", False)
             ctx.ui.say("Dev mode: the voice engine (qwentts.cpp) is not downloaded; the fake engine speaks.")
             return
+        if ctx.fake_voice:
+            # docs/DEV_MODE.md "Real engines, fake voice": the fake engine speaks for the real models
+            ctx.set_flag("qwentts", "none")
+            ctx.set_flag("tts_fallback", False)
+            ctx.ui.say("Engine test (fake_voice): the voice engine is not downloaded; the fake one speaks.")
+            return
         item = qwentts_item(ctx.manifest, ctx.paths.home)
         if item is None:
             for url in (QWENTTS_RELEASE_URL, QWENTTS_RELEASE_URL_OLD):

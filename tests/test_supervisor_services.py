@@ -173,3 +173,15 @@ def test_embed_launch_argv_defaults_cover_the_window(tmp_path: Path) -> None:
     cmd = services.build_service(_rt(), _paths(tmp_path), "embed").cmd
     assert cmd[cmd.index("-c") + 1] == "2048"
     assert cmd[cmd.index("-ub") + 1] == "2048"
+
+
+def test_the_fake_voice_engine_runs_in_the_supervisor_venv_without_the_graphics_card(tmp_path: Path) -> None:
+    """An engine test (`tts.engine: fake`, docs/DEV_MODE.md) starts the real server with its fake engine,
+    like a dev install does, and never asks for the GPU lease."""
+    paths = _paths(tmp_path)
+    fake = _rt().model_copy(update={"tts": _rt().tts.model_copy(update={"engine": "fake"})})
+    svc = services.build_service(fake, paths, "tts")
+    assert svc.cmd[1:] == ["-m", "ns_tts.server", "--port", "8091", "--engine", "fake"]
+    assert svc.gpu is False
+    dev = _rt().model_copy(update={"dev_mode": True})
+    assert services.build_service(dev, paths, "tts").cmd[1:] == svc.cmd[1:]
