@@ -7,6 +7,10 @@ All notable changes to Nightshift are recorded here. The format follows
 
 ## [Unreleased]
 
+- Variation: when a job's pinned combo fields leave no unused combination in the 30-day ledger, the draw
+  repeats one with a warning (`NS-W325`) instead of stopping the job with NS-E325. A series pins hook,
+  structure, pacing, caption style and visual treatment, which left its Shorts nine combinations: the first
+  series part on the dev install failed at `short_combos`, and in production the second part would have.
 - Dev mode: the fake model's series map fits the part count the workshop asked for (a two-part series
   stopped with NS-E302 "returned 3 parts, expected 2"); the workshop's "choose a concept first" and "no
   design yet" messages no longer tell a dashboard user to run a `studio series` command.
