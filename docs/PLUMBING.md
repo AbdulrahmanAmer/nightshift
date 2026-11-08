@@ -962,6 +962,18 @@ Not under paths.config but related: logs/verify-report.json, logs/install-report
 | 33 | `tts.engine` value `faster` kept as a legacy alias | **By design** (installed homes from 0.1.0 carry it; `select_engine` maps it to qwentts). |
 | 34 | TODO / FIXME markers | None in the product sources (grep). |
 
+Two more things came out of the engine-test run itself (2026-11-08/09):
+
+- **Clip loudness (defect, fix on `orchestrator/clip-loudness`).** The clipper's two-pass loudnorm cannot reach
+  -14 LUFS on a quiet, peaky source (measured: input -20.4 LUFS at -0.47 dBTP; FFmpeg falls back to dynamic
+  mode and lands at -17.1), and the QC gate then fails every clip of that source with `NS-E404` and no remedy
+  for the owner. The render needs a peak-control stage before loudnorm when linear mode is impossible.
+- **One user variable per Windows user (by design, documented).** Setup writes `NIGHTSHIFT_HOME` as a user
+  environment variable and uninstall removes it. Two installs under one Windows user (the laptop's dev install
+  and the engine test) therefore share and overwrite it; the launchers are immune (they resolve the home from
+  their own folder) but a bare `ns` or `studio` in a new console follows the last install. Supported use is one
+  install per PC; keep it so.
+
 Two defects outside this list came from reading the same wiring on 2026-11-08 and are in PR #92: a real
 install on a PC without an NVIDIA card wrote `tts.engine: reference` and so pointed its voice service at the
 PyTorch venv that only the fallback creates; and `ns verify` on that profile failed the encoder and idle-VRAM
