@@ -23,7 +23,7 @@ def seed(home: Path, marker: str = "one") -> Paths:
     voice.mkdir(parents=True)
     (voice / "voice.json").write_text('{"name": "Alice"}', encoding="utf-8")
     (voice / "speaker.bin").write_bytes(b"\x01\x02\x03")
-    (paths.home / "exemplars").mkdir()
+    (paths.home / "exemplars").mkdir(exist_ok=True)    # Paths.ensure() creates it since 0.1.12
     (paths.home / "exemplars" / "mine.md").write_text("exemplar", encoding="utf-8")
     con = sqlite3.connect(paths.db_path)
     con.execute("PRAGMA journal_mode=WAL")

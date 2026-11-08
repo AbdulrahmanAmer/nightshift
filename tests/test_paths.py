@@ -21,8 +21,10 @@ def test_default_home_is_localappdata(monkeypatch):
 def test_ensure_creates_all_dirs(tmp_home: Path):
     p = Paths.from_env()
     p.ensure()
-    for d in (p.logs, p.cache_clips, p.models_tts_voices, p.backup_dir, p.channels_dir, p.rejected):
+    for d in (p.logs, p.cache_clips, p.models_tts_voices, p.backup_dir, p.channels_dir, p.rejected,
+              p.exemplars, p.prompt_overrides):      # the two the studio reads were never created before
         assert d.is_dir()
+    assert not (tmp_home / "stories").exists()        # nothing ever wrote there (outbox\<slug>\stories does)
 
 
 def test_repo_root_contains_contracts():
@@ -35,8 +37,9 @@ def test_new_folders_and_files(tmp_home: Path):
     assert p.bin_uv == tmp_home / "bin" / "uv"
     assert p.bin_qwentts == tmp_home / "bin" / "qwentts"
     assert p.models_cv == tmp_home / "models" / "cv"
-    assert p.stories == tmp_home / "stories"
+    assert p.formats_dir == tmp_home / "config" / "formats"
+    assert not hasattr(p, "stories") and not hasattr(p, "clips_index")    # removed: nothing read them
     assert p.assistant_db == tmp_home / "data" / "assistant.db"
     p.ensure()
-    for d in (p.bin_uv, p.bin_qwentts, p.models_cv, p.stories):
+    for d in (p.bin_uv, p.bin_qwentts, p.models_cv, p.exemplars):
         assert d.is_dir()

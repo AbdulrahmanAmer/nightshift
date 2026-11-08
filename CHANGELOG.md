@@ -7,6 +7,12 @@ All notable changes to Nightshift are recorded here. The format follows
 
 ## [Unreleased]
 
+- A format edited or added in Library > Formats is now used by the studio: it wrote `config\formats\<id>.yaml`
+  and the studio read only the shipped presets, so no edit ever reached a render (found by the plumbing map,
+  `docs/PLUMBING.md`).
+- Home layout: `exemplars` and `prompt_overrides` (the two folders the studio reads for the owner's own stories
+  and prompt edits) are created with the rest; the never-written `stories` folder and the unused clips index
+  path are gone. Uninstall also removes `app.failed` and `app.swap` left by an interrupted update.
 - A real install on a PC without an NVIDIA card (profile `cpu-dev`) pointed its voice service at the PyTorch
   venv although setup had downloaded the qwentts.cpp binary (the venv exists only on the fallback): the voice
   service could not start. `runtime.json` now says `qwentts` whenever the binary was found, on both profiles.
