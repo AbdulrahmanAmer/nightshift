@@ -157,6 +157,10 @@ fails in CI when the code defines an item the inventory does not list or the fil
 or stage cannot appear without a status. The loop marks items there as it proves them; the block checklists
 above hold the narrative, the inventory holds the count.
 
+`docs/FINALIZATION.md` is the box list: every open item from this file, the inventory, the plumbing map, the
+partner column and the handoff gaps as one line with its proof; `dev/finalization_status.py` counts the boxes
+and refuses a ticked box without evidence.
+
 ## 7. The loop (one iteration)
 
 0. **Slate**: `nsproc.ps1` must say CLEAN. Nothing from a previous test stays up.
