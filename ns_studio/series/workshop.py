@@ -427,7 +427,7 @@ class Workshop:
         sd, status, ch = self._open(slug)
         concept = sd.read_concept()
         if not concept.premise.strip() or concept.title == "Untitled":
-            raise WorkshopError("choose a concept first (`studio series choose`)")
+            raise WorkshopError("choose a concept first (Library > Series, or ask the Assistant to pick one)")
         if any(p.status != "planned" for p in status.parts.values()):
             raise WorkshopError("parts are already written; edit series.md by hand instead of re-mapping")
         with self._llm(slug):
@@ -967,7 +967,9 @@ class Workshop:
         series = sd.read_series()
         design = sd.read_design()
         if design is None:
-            raise WorkshopError("no design yet; run `studio series design` first")
+            raise WorkshopError(
+                "no design yet: set the series design first (Library > Series, or ask the Assistant)"
+            )
         fn = enqueue or self.enqueue or make_db_enqueue(self.db)
         nums = self._pick(status, series, which, ("approved",), "produce")
         pacing = ch.pools.pacings[0] if ch.pools.pacings else "standard"  # what `_ctx` wrote the scripts at

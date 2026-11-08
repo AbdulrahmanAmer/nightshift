@@ -11,6 +11,13 @@ All notable changes to Nightshift are recorded here. The format follows
   repeats one with a warning (`NS-W325`) instead of stopping the job with NS-E325. A series pins hook,
   structure, pacing, caption style and visual treatment, which left its Shorts nine combinations: the first
   series part on the dev install failed at `short_combos`, and in production the second part would have.
+- Dev mode: the fake model's series map fits the part count the workshop asked for (a two-part series
+  stopped with NS-E302 "returned 3 parts, expected 2"); the workshop's "choose a concept first" and "no
+  design yet" messages no longer tell a dashboard user to run a `studio series` command.
+- Setup after an uninstall installs again instead of showing Done over an empty folder: the uninstall now
+  removes `config\install_state.json` (answers and channels stay), and a setup window that finds the
+  program folder gone runs the install steps again, with the Done screen's duration counted from that run
+  (found by the windowed dev install on 2026-11-05: it said 30,265 s).
 
 - Clipper import: a video that already sits in its hash folder with its sidecar is recorded without copying the
   sidecar onto itself (WinError 32 on Windows; it stopped every dev clip job from an upload at 1 s).
