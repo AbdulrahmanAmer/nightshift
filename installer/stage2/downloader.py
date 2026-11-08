@@ -793,11 +793,13 @@ def plan_models(
     include_voicedesign: bool = False,
     custom: LlmCustom | None = None,
     dev: bool = False,
+    include_voice: bool = True,
 ) -> list[DownloadItem]:
     """Model files for s03: the LLM (the tier's, or the custom GGUF), embed, TTS GGUFs, whisper, YuNet.
 
     ``dev`` (docs/DEV_MODE.md): every model becomes a stub of a few KB with no hash to check, the optional
     whisper side files are left out, and YuNet (a 230 KB face finder the Clipper reads) is the real file.
+    ``include_voice=False`` (the ``fake_voice`` engine test) leaves out every voice model.
     """
     paths = Paths(Path(home))
     pm = manifest.profiles[profile]
@@ -809,9 +811,10 @@ def plan_models(
             llm = pm.llm_best
     llm_item = custom_item(custom, paths.models_llm) if custom else _hf_item(llm, paths.models_llm)
     items = [llm_item, _hf_item(pm.embed, paths.models_embed)]
-    items += [_hf_item(f, paths.models_tts) for f in pm.tts]
-    if include_voicedesign:
-        items += [_hf_item(f, paths.models_tts) for f in pm.tts_optional]
+    if include_voice:
+        items += [_hf_item(f, paths.models_tts) for f in pm.tts]
+        if include_voicedesign:
+            items += [_hf_item(f, paths.models_tts) for f in pm.tts_optional]
 
     wdir = paths.models_whisper / pm.whisper_model
     repo = pm.whisper_repo

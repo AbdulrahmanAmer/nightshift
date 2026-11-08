@@ -759,3 +759,15 @@ def test_run_plan_tells_the_reporter_about_a_retry(tmp_path: Path):
     item2 = dl.DownloadItem(name="f1", url="https://x.test/f1", dest=tmp_path / "f1", sha256=SHA)
     res2 = dl.run_plan([item2], client=make_client(fail_first=1), reporter=plain, sleep=no_sleep)
     assert res2.downloaded == ["f1"]
+
+
+def test_plan_without_voice_leaves_out_every_voice_model(manifest, tmp_path: Path):
+    """The `fake_voice` engine test (docs/DEV_MODE.md) downloads the real models, no talker or tokenizer."""
+    items = dl.plan_models(
+        manifest, "cpu-dev", "small", tmp_path, include_voice=False, include_voicedesign=True
+    )
+    names = _names(items)
+    assert not any(n.startswith("qwen-") for n in names), names        # talker and tokenizer GGUFs
+    assert "Qwen3-1.7B-Q8_0.gguf" in names and "whisper/model.bin" in names and "yunet" in names
+    with_voice = _names(dl.plan_models(manifest, "cpu-dev", "small", tmp_path))
+    assert "qwen-talker-0.6b-customvoice-Q8_0.gguf" in with_voice

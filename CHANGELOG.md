@@ -7,6 +7,15 @@ All notable changes to Nightshift are recorded here. The format follows
 
 ## [Unreleased]
 
+- A real install on a PC without an NVIDIA card (profile `cpu-dev`) pointed its voice service at the PyTorch
+  venv although setup had downloaded the qwentts.cpp binary (the venv exists only on the fallback): the voice
+  service could not start. `runtime.json` now says `qwentts` whenever the binary was found, on both profiles.
+- `ns verify` on that profile encodes its test clip with libx264 and skips the video-memory measurement
+  instead of failing both rows for want of `nvidia-smi`.
+- Engine test: the `answers.json` setting `fake_voice: true` installs the real language model, embeddings and
+  speech recognition with the fake voice engine (no voice model, no qwentts.cpp download; `tts.engine: fake`).
+  It is how the orchestrator proved the real-engine path on a laptop without a graphics card (docs/DEV_MODE.md).
+
 - Clipper import: a video that already sits in its hash folder with its sidecar is recorded without copying the
   sidecar onto itself (WinError 32 on Windows; it stopped every dev clip job from an upload at 1 s).
 - Dev mode: a transcript sidecar dropped beside an upload moves with the video into its hash folder (it was

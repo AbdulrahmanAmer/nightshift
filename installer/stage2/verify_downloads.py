@@ -97,6 +97,7 @@ def plan_for_install(paths: Paths, app_path: Path | None = None) -> list[Downloa
     ) + plan_models(
         manifest, profile, answers.llm_tier, paths.home, custom=answers.llm_custom,
         include_voicedesign=wants_voicedesign(answers), dev=state.dev_mode,
+        include_voice=not (answers.fake_voice and not state.dev_mode),
     )
 
 
