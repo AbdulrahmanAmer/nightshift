@@ -222,8 +222,12 @@ def _apply_update(
     typer.echo(msg)
     for n in res.notes:
         typer.echo(f"  {n}")
-    typer.echo(json.dumps({"updated": True, "old": res.old_version, "new": res.new_version}))
-    return update_job.Outcome(msg, res.old_version, res.new_version, updated=True)
+    result: dict[str, object] = {"updated": True, "old": res.old_version, "new": res.new_version}
+    if res.release_notes:
+        result["release_notes"] = res.release_notes
+    typer.echo(json.dumps(result))
+    return update_job.Outcome(msg, res.old_version, res.new_version, updated=True,
+                              release_notes=res.release_notes)
 
 
 @app.command("update")

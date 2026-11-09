@@ -30,6 +30,7 @@ from ns_common.venv_extras import NO_DEPS, extras_suffix
 from ns_supervisor.procs import scrubbed
 
 PRESERVE = (".git", "config", "answers.json")
+RELEASE_NOTES_MAX = 20000       # keeps the dashboard's state file small whatever a changelog holds
 RENAME_TRIES = 20
 RENAME_PAUSE_S = 1.0
 BUSY_HINT = (
@@ -75,6 +76,33 @@ class UpdateResult:
     old_version: str
     new_version: str
     notes: list[str] = field(default_factory=list)
+    #: The `## [<new version>]` section of the new program's CHANGELOG.md; empty when there is none.
+    release_notes: str = ""
+
+
+def release_notes(app: Path, version: str) -> str:
+    """The `## [<version>]` section of `<app>/CHANGELOG.md` (heading line included), else an empty string.
+
+    `notes` lists what an update carried over; this is what the owner wants to read afterwards, what changed.
+    A missing or unreadable changelog, or one without that version, is not an error: the update worked.
+    """
+    version = version.strip().removeprefix("v")
+    if not version:
+        return ""
+    try:
+        text = (app / "CHANGELOG.md").read_text(encoding="utf-8-sig")
+    except (OSError, UnicodeDecodeError):
+        return ""
+    lines: list[str] = []
+    inside = False
+    for line in text.splitlines():
+        if line.startswith("## "):
+            if inside:
+                break
+            inside = line[3:].strip().startswith(f"[{version}]")
+        if inside:
+            lines.append(line.rstrip())
+    return "\n".join(lines).strip()[:RELEASE_NOTES_MAX]
 
 
 def sha256_file(path: Path) -> str:
@@ -328,7 +356,7 @@ def update_app(zip_path: Path, app: Path, env: UpdateEnv, *, paths: Paths) -> Up
             log.error("rollback_sync_failed", str(e2))
         raise NsError("NS-E702", detail) from e
     log.info("update_done", old=old_version, new=new_version)
-    return UpdateResult(old_version, new_version, notes)
+    return UpdateResult(old_version, new_version, notes, release_notes(app, new_version))
 
 
 def rollback_app(app: Path, env: UpdateEnv, *, paths: Paths) -> UpdateResult:
@@ -549,7 +577,9 @@ def git_update(
         raise NsError("NS-E702", detail) from e
     new_version = current_version(app)
     log.info("git_update_done", old=old_version, new=new_version)
-    return UpdateResult(old_version, new_version, [f"channel {channel}", *notes])
+    return UpdateResult(
+        old_version, new_version, [f"channel {channel}", *notes], release_notes(app, new_version)
+    )
 
 
 def _latest_release_tag() -> str:
