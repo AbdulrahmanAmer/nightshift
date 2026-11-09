@@ -643,7 +643,7 @@ def test_the_setup_window_sends_its_draft_with_the_folder_check():
 
 # ------------------------------------------------ NS-E104 is for space only (nit 5 of the second round)
 def test_a_home_that_could_not_be_set_up_is_not_called_a_disk_space_problem(tmp_path, monkeypatch):
-    """NIGHTSHIFT_HOME not set or the folders not created is NS-E119; its hint is not "free some space"."""
+    """NIGHTSHIFT_HOME not set or the folders not created is NS-E120; its hint is not "free some space"."""
     from installer.stage2.web import bootstrap
     from ns_common.errors import describe
     from tests.test_installer_uv_pin import Transport, VersionCmd, make_boot, pin_for
@@ -653,27 +653,27 @@ def test_a_home_that_could_not_be_set_up_is_not_called_a_disk_space_problem(tmp_
     monkeypatch.setattr("installer.stage2.steps.s01_questions.set_user_env", lambda *a, **k: False)
     with pytest.raises(NsError) as ei:
         S01Questions().run(ctx)
-    assert ei.value.code == "NS-E119" and "NIGHTSHIFT_HOME" in ei.value.detail
+    assert ei.value.code == "NS-E120" and "NIGHTSHIFT_HOME" in ei.value.detail
 
     boot = make_boot(tmp_path, tmp_path / "uv.exe", VersionCmd(), Transport(), pin_for(tmp_path))
     step = bootstrap.B02Home()
     with pytest.raises(bootstrap.BootstrapError) as lacks:  # no folders yet
         step.verify(boot)
-    assert lacks.value.code == "NS-E119"
+    assert lacks.value.code == "NS-E120"
     for d in bootstrap.TOP_DIRS:
         (boot.home / d).mkdir(parents=True, exist_ok=True)
     with pytest.raises(bootstrap.BootstrapError) as unset:  # the variable was never set
         step.verify(boot)
-    assert unset.value.code == "NS-E119"
+    assert unset.value.code == "NS-E120"
 
-    hint = describe("NS-E119").hint
+    hint = describe("NS-E120").hint
     assert "Free some space" not in hint and "not about free space" in hint
     web = ROOT / "installer" / "stage2" / "web"
     import json
 
     copy = json.loads((web / "operator_copy.json").read_text(encoding="utf-8"))
-    assert copy["NS-E119"]["whatToDo"] and "Free some space" not in copy["NS-E119"]["whatToDo"]
-    assert "| NS-E119 |" in (ROOT / "OPERATOR.md").read_text(encoding="utf-8")
+    assert copy["NS-E120"]["whatToDo"] and "Free some space" not in copy["NS-E120"]["whatToDo"]
+    assert "| NS-E120 |" in (ROOT / "OPERATOR.md").read_text(encoding="utf-8")
 
 
 def test_the_picker_line_does_not_pair_the_tiers_download_with_another_need():

@@ -378,7 +378,7 @@ class S01Questions(Step):
         if drive_type(ctx.preflight, home) == "HDD":
             ctx.warn("NS-W106", str(home))
         if not set_user_env(ctx.runner, HOME_VAR, str(home)):
-            raise make_error("NS-E119", "could not set the NIGHTSHIFT_HOME user variable")
+            raise make_error("NS-E120", "could not set the NIGHTSHIFT_HOME user variable")
         merged["home_path"] = str(home)
 
         chan = dict(raw.get("channel") or {})
@@ -481,10 +481,10 @@ class S01Questions(Step):
         if not self._answers_file(ctx).is_file():
             raise AnswersError("config/answers.json was not written")
         if not ctx.paths.config.is_dir():
-            raise make_error("NS-E119", f"{ctx.paths.home} was not created")
+            raise make_error("NS-E120", f"{ctx.paths.home} was not created")
         current = get_user_env(ctx.runner, HOME_VAR)
         if current != str(ctx.paths.home):
-            raise make_error("NS-E119", f"NIGHTSHIFT_HOME is {current!r}, expected {str(ctx.paths.home)!r}")
+            raise make_error("NS-E120", f"NIGHTSHIFT_HOME is {current!r}, expected {str(ctx.paths.home)!r}")
         ctx.log.info("answers_verified", tier=ans.llm_tier, stock_key=any_key_stored(ctx.store))
         if not self._ran:
             for line in reinstall.kept_lines(ctx, ans):
