@@ -101,6 +101,26 @@ def test_one_unreadable_channel_does_not_stop_the_others(tmp_home: Path):
     assert [c.slug for c in jobs.resolve_channels(env, None)] == ["good-one", "long-name"]
 
 
+def test_a_channel_yaml_that_is_not_valid_yaml_is_skipped_like_the_others(tmp_home: Path):
+    paths, _ = _env(tmp_home)
+    _write_old_profile(paths, "good-one", {"mode": "preset", "speaker": "Ryan"})
+    _write_old_profile(paths, "long-name", LONG_DESIGN)
+    paths.channel_file("hand-edited").write_text("slug: [unclosed\nniche: : :\n", encoding="utf-8")
+    assert [c.slug for c in crud.all_channels(paths)] == ["good-one", "long-name"]
+    env = jobs.open_env(light=True)
+    assert [c.slug for c in jobs.resolve_channels(env, None)] == ["good-one", "long-name"]
+    problems = crud.broken_channels(paths)
+    assert [slug for slug, _ in problems] == ["hand-edited"] and "hand-edited.yaml" in problems[0][1]
+
+
+def test_asking_for_a_channel_whose_yaml_is_not_valid_says_NS_E320(tmp_home: Path):
+    paths, _ = _env(tmp_home)
+    paths.channel_file("hand-edited").write_text("slug: [unclosed\n", encoding="utf-8")
+    with pytest.raises(StudioError) as ei:
+        crud.get_channel(paths, "hand-edited")
+    assert ei.value.code == "NS-E320" and "hand-edited.yaml" in str(ei.value)
+
+
 def test_the_skipped_channel_is_named_not_hidden(tmp_home: Path):
     """The bad channel is reported (a list for callers, a WARN in the studio log), never dropped silently."""
     paths, _ = _env(tmp_home)

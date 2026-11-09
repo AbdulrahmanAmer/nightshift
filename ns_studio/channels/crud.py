@@ -157,7 +157,7 @@ def _load_each(paths: Paths) -> tuple[list[Channel], list[tuple[str, str]]]:
     for slug in list_channels(paths):
         try:
             good.append(load_channel(paths, slug))
-        except (ValidationError, ValueError, OSError) as e:
+        except (ValidationError, ValueError, OSError, yaml.YAMLError) as e:
             bad.append((slug, f"{slug}.yaml: {e}"))
     return good, bad
 
@@ -193,7 +193,7 @@ def get_channel(paths: Paths, slug: str) -> Channel:
         raise StudioError("NS-E322", slug)
     try:
         return load_channel(paths, slug)
-    except (ValidationError, ValueError) as e:
+    except (ValidationError, ValueError, yaml.YAMLError) as e:
         raise StudioError("NS-E320", f"{slug}.yaml: {e}") from e
 
 

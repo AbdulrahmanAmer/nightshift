@@ -396,7 +396,11 @@ class S01Questions(Step):
         for key in ("voice_ref_audio_path", "voice_ref_text", "voice_rights_confirmed"):
             if key in raw and key not in merged:
                 merged[key] = raw[key]
-        ans = build_answers({**merged, PEXELS_KEY: None, PIXABAY_KEY: None})
+        # The name rule is for a voice typed now. A voice the earlier install already had (inherited because
+        # the new answers leave it out, or named again unchanged) was accepted by 0.1.x, so it is read as
+        # saved answers; a voice the new answers change keeps the rule on (defect D-24).
+        carried = bool(earlier) and "voice" not in {c.key for c in diff}
+        ans = build_answers({**merged, PEXELS_KEY: None, PIXABAY_KEY: None}, saved=carried)
 
         self._keys(ctx)
         ans = ctx.constrain(ans)

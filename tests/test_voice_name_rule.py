@@ -130,6 +130,12 @@ def test_a_long_channel_name_still_queues_a_designed_voice(tmp_path: Path):
 OLD_LONG = "after-dark-tales-of-the-deep-north-woods-and-lakes-voice"  # 57 chars: the 0.1.x unbounded default
 OLD_SHAPES = {
     "long design name": {"mode": "design", "description": "warm baritone", "name": OLD_LONG, "speaker": None},
+    "design name with a space": {
+        "mode": "design",
+        "description": "warm baritone",
+        "name": "Night Narrator",
+        "speaker": None,
+    },
     "preset that kept a spaced name": {"mode": "preset", "speaker": "Ryan", "name": "Night Narrator"},
 }
 
@@ -196,3 +202,74 @@ def test_the_same_old_name_given_to_setup_now_is_refused(tmp_path: Path):
     )
     with pytest.raises(AnswersError, match="cannot be used"):
         S01Questions().run(ctx)
+
+
+# ---- an update over kept answers with an old-shaped voice name goes through s01.run (D-24 round 2) ----
+
+
+def _update(tmp_path: Path, new: dict[str, Any]):
+    """A real S01Questions().run for answers supplied from a file outside config, over a home whose saved
+    answers.json is the earlier install's (the way an update, repair or reinstall reaches s01)."""
+    ctx = make_test_context(tmp_path, raw_answers=new, ui=FakeUi(interactive=False))
+    src = tmp_path / "new-answers.json"
+    src.write_text(json.dumps(new), encoding="utf-8")
+    ctx.answers_path = src
+    return ctx
+
+
+def _saved(ctx) -> dict[str, Any]:
+    return json.loads((ctx.paths.config / "answers.json").read_text(encoding="utf-8"))
+
+
+@pytest.mark.parametrize("shape", sorted(OLD_SHAPES))
+def test_an_update_that_changes_only_the_run_time_keeps_an_old_voice_name(tmp_path: Path, shape: str):
+    earlier = make_test_context(tmp_path, ui=FakeUi(interactive=False))
+    _saved_answers(earlier, OLD_SHAPES[shape])
+    ctx = _update(tmp_path, {"run_time": "05:45"})
+    S01Questions().run(ctx)  # used to raise AnswersError "The voice name '...' cannot be used"
+    saved = _saved(ctx)
+    assert saved["run_time"] == "05:45"  # the change the owner asked for reached the saved answers
+    assert saved["voice"]["name"] == OLD_SHAPES[shape]["name"]  # the old voice stays as it was
+    assert ctx.answers is not None and ctx.answers.run_time == "05:45"
+
+
+def test_an_answers_file_copied_from_the_saved_one_with_a_new_run_time_is_not_a_voice_change(tmp_path: Path):
+    earlier = make_test_context(tmp_path, ui=FakeUi(interactive=False))
+    f = _saved_answers(earlier, OLD_SHAPES["long design name"])
+    copy = {**json.loads(f.read_text(encoding="utf-8")), "run_time": "05:45"}  # names the same voice again
+    ctx = _update(tmp_path, copy)
+    S01Questions().run(ctx)
+    assert _saved(ctx)["run_time"] == "05:45" and _saved(ctx)["voice"]["name"] == OLD_LONG
+
+
+@pytest.mark.parametrize("shape", sorted(OLD_SHAPES))
+def test_an_update_that_types_a_bad_voice_name_is_still_refused_and_changes_nothing(
+    tmp_path: Path, shape: str
+):
+    earlier = make_test_context(tmp_path, ui=FakeUi(interactive=False))
+    _saved_answers(earlier, OLD_SHAPES[shape])
+    before = _saved(earlier)
+    typed = {"mode": "design", "description": "a new voice", "name": "Another Bad Name", "speaker": None}
+    ctx = _update(tmp_path, {"run_time": "05:45", "voice": typed})
+    with pytest.raises(AnswersError, match="Another Bad Name"):
+        S01Questions().run(ctx)
+    assert _saved(ctx) == before  # the saved answers are untouched
+
+
+def test_an_update_that_changes_the_description_but_keeps_the_old_bad_name_is_refused(tmp_path: Path):
+    """The voice is edited, so it would be created again under the name: the rule applies to it."""
+    earlier = make_test_context(tmp_path, ui=FakeUi(interactive=False))
+    _saved_answers(earlier, OLD_SHAPES["long design name"])
+    typed = {**OLD_SHAPES["long design name"], "description": "a different, brighter voice"}
+    ctx = _update(tmp_path, {"voice": typed})
+    with pytest.raises(AnswersError, match="cannot be used"):
+        S01Questions().run(ctx)
+
+
+def test_an_update_may_replace_an_old_bad_name_with_a_good_one(tmp_path: Path):
+    earlier = make_test_context(tmp_path, ui=FakeUi(interactive=False))
+    _saved_answers(earlier, OLD_SHAPES["long design name"])
+    typed = {**OLD_SHAPES["long design name"], "name": "after-dark-voice"}
+    ctx = _update(tmp_path, {"voice": typed})
+    S01Questions().run(ctx)
+    assert _saved(ctx)["voice"]["name"] == "after-dark-voice"
