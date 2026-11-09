@@ -31,7 +31,11 @@ def test_uninstall_cmd_runs_uninstall_ps1():
 
 def test_welcome_text_is_spec_a2_verbatim():
     spec = (ROOT / "BUILD_SPEC.md").read_text(encoding="utf-8").splitlines()
-    start = spec.index("### A.2 Installer welcome screen (exact text shown by `INSTALL.cmd`)") + 1
+    heading = (
+        "### A.2 Installer welcome text (printed by the headless console path; "
+        "the setup window shows a short welcome)"
+    )
+    start = spec.index(heading) + 1
     block: list[str] = []
     for line in spec[start:]:
         if line.startswith(">"):
