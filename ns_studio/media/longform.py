@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import os
 import zlib
 from collections.abc import Sequence
 from pathlib import Path
@@ -30,6 +31,7 @@ from ns_studio.media.clips import (
     fallback_beat,
     make_lemmatizer,
 )
+from ns_studio.media.diskfull import run_ffmpeg
 from ns_studio.media.master import (
     CARD_S,
     ChapterTiming,
@@ -289,15 +291,17 @@ def render_segment(
     )
 
     def attempt(force_cpu: bool) -> None:
-        ff.run([*inputs, *script, "-map", "[vout]", "-an",
-                *encoder_args(video, force_cpu=force_cpu), "-r", str(fps), "-pix_fmt", "yuv420p",
-                ff.relative_arg(out, base)],
-               log=ctx.log, cwd=base)
+        run_ffmpeg(
+            [*inputs, *script, "-map", "[vout]", "-an",
+             *encoder_args(video, force_cpu=force_cpu), "-r", str(fps), "-pix_fmt", "yuv420p",
+             ff.relative_arg(out, base)],
+            folder=out.parent, out=out, log=ctx.log, cwd=base,
+        )
 
     try:
         attempt(False)
-    except NsError:
-        if video.encoder != "h264_nvenc":
+    except NsError as e:
+        if video.encoder != "h264_nvenc" or e.code == "NS-E104":  # a full disk is not an encoder problem
             raise
         ctx.log.warn("nvenc_failed", code="NS-W401", msg="falling back to libx264")
         attempt(True)
@@ -305,10 +309,15 @@ def render_segment(
 
 
 def concat_list_text(paths: Sequence[Path]) -> str:
-    """Body of an FFmpeg concat-demuxer list file; a quote in a path is written close-escape-reopen."""
+    """Body of an FFmpeg concat-demuxer list file; a quote in a path is written close-escape-reopen.
+
+    Every name is absolute: the demuxer reads a relative one against the LIST's folder, not the process's.
+    """
     quote = chr(39)
     escaped = quote + chr(92) + quote + quote
-    return "".join(f"file {quote}{p.as_posix().replace(quote, escaped)}{quote}\n" for p in paths)
+    return "".join(
+        f"file {quote}{Path(os.path.abspath(p)).as_posix().replace(quote, escaped)}{quote}\n" for p in paths
+    )
 
 
 class RenderMasterStage:
@@ -348,9 +357,12 @@ class RenderMasterStage:
         lst = out_dir / "segments.txt"
         lst.write_text(concat_list_text(segs), encoding="utf-8")
         master = out_dir / "master.mp4"
-        ff.run(["-f", "concat", "-safe", "0", "-i", str(lst), "-i", str(audio), "-map", "0:v", "-map", "1:a",
-                "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "1",
-                "-movflags", "+faststart", str(master)], log=ctx.log)
+        run_ffmpeg(
+            ["-f", "concat", "-safe", "0", "-i", str(lst), "-i", str(audio), "-map", "0:v", "-map", "1:a",
+             "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "1",
+             "-movflags", "+faststart", str(master)],
+            folder=master.parent, out=master, log=ctx.log,
+        )
         total = timeline[-1].end
         ctx.write_json("long/chapters.json", chapters_json(timeline, total))
         for p in segs:

@@ -21,7 +21,7 @@ from ns_common.errors import NsError
 from ns_common.logging import NsLogger
 from ns_common.paths import Paths
 from ns_studio.context import JobContext
-from ns_studio.media.clip_sources import ClipCandidate, ClipSource, Orientation
+from ns_studio.media.clip_sources import ClipCandidate, ClipSource, Orientation, give_log
 from ns_studio.media.presets import visual_treatment
 from ns_studio.media.shotplan import Shot, ShotSlot, beat_spans, plan_slots
 from ns_studio.media.transcribe import Word
@@ -134,6 +134,7 @@ class ClipCache:
         self.sources = {s.name: s for s in sources}
         self.now = now
         self.log = log
+        give_log(sources, log)
 
     def path_for(self, source: str, clip_id: str) -> Path:
         """Cache location of a clip."""
@@ -241,8 +242,10 @@ class Searcher:
         self.sources = list(sources)
         self.per_page = per_page
         self.log = log
+        give_log(self.sources, log)
         self.lemma = lemma  # spaCy lemmatizer for keyword dedupe; None = the trailing-s rule
         self._memo: dict[tuple[str, str, str], list[ClipCandidate]] = {}
+        self._down: set[str] = set()  # sources that gave NS-E503 once: not asked again this job
         self.errors: list[NsError] = []
 
     def search(self, keyword: str, orientation: Orientation) -> list[ClipCandidate]:
@@ -250,6 +253,8 @@ class Searcher:
         per_source: list[list[ClipCandidate]] = []
         for src in self.sources:
             key = (src.name, orientation, keyword)
+            if key not in self._memo and src.name in self._down:
+                self._memo[key] = []
             if key not in self._memo:
                 try:
                     self._memo[key] = src.search(keyword, orientation=orientation, per_page=self.per_page)
@@ -257,6 +262,8 @@ class Searcher:
                     if e.code not in _API_ERRORS:
                         raise
                     self.errors.append(e)
+                    if e.code == "NS-E503":  # an outage already cost its backoff; do not pay it per keyword
+                        self._down.add(src.name)
                     if self.log:
                         self.log.warn("clip_search_failed", source=src.name, keyword=keyword, code=e.code)
                     self._memo[key] = []

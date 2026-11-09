@@ -21,6 +21,7 @@ from ns_common.errors import NsError
 from ns_common.logging import NsLogger
 from ns_common.paths import Paths
 from ns_studio.clipper import download_cleanup
+from ns_studio.media.diskfull import run_ffmpeg
 
 MAX_DURATION_S = 4 * 3600.0
 SIDECAR_SUFFIX = ".transcript.json"
@@ -207,11 +208,13 @@ def set_source_status(db: Db, source_id: str, status: str, template: str | None 
 def extract_audio(video: Path, out_wav: Path) -> Path:
     """16 kHz mono PCM WAV of the first audio stream."""
     out_wav.parent.mkdir(parents=True, exist_ok=True)
-    ffmpeg.run(
+    run_ffmpeg(
         [
             "-i", str(video), "-vn", "-map", "0:a:0", "-ac", "1", "-ar", "16000",
             "-c:a", "pcm_s16le", str(out_wav),
-        ]
+        ],
+        folder=out_wav.parent,
+        out=out_wav,
     )
     return out_wav
 

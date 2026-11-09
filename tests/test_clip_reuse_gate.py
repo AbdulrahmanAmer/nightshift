@@ -187,6 +187,39 @@ def test_a_relaxed_pick_is_a_warning_not_a_failure(tmp_home: Path):
     assert ei.value.code == "NS-E613"
 
 
+def test_the_owner_reads_the_footage_warning_in_plain_words_on_the_review_page(tmp_home: Path):
+    """H-2: the NS-W405 text reached only the log line; the Review page showed `OK: clip reuse`."""
+    from ns_common.errors import describe
+    from ns_dashboard.svc_outputs import policy_notes
+
+    ctx = make_ctx(tmp_home)
+    _write_shots(ctx, "clips/shots.json", {"s1": [_shot("a", relaxed=True), _shot("b", start=2.0)]})
+    _earlier(ctx, "a", ctx.channel.slug, 3)
+    _gate(ctx)
+    policy = ctx.read_json("policy_final.json")  # what the Review page reads back for this video
+    notes = policy_notes(policy)
+    known = describe("NS-W405")
+    assert notes[0].startswith("Warning: clip reuse - ")  # before the OK lines, not among them
+    assert known.message in notes[0] and known.hint in notes[0]
+    assert "stub/a" in notes[0] and "OK: clip reuse" not in notes
+    # a video with fresh footage only shows the plain OK line
+    clean = make_ctx(tmp_home)
+    _write_shots(clean, "clips/shots.json", {"s1": [_shot("b")]})
+    _gate(clean)
+    assert policy_notes(clean.read_json("policy_final.json")) == ["OK: clip reuse"]
+
+
+def test_a_relaxed_pick_with_no_usage_row_still_warns_the_owner(tmp_home: Path):
+    """A regeneration relaxes against the earlier attempt's picks, which have no clip_usage row to match."""
+    from ns_common.errors import describe
+
+    ctx = make_ctx(tmp_home)
+    _write_shots(ctx, "clips/shots.json", {"s1": [_shot("a", relaxed=True)]})
+    _gate(ctx)
+    res = _result(ctx)
+    assert res["passed"] and describe("NS-W405").hint in res["detail"] and "stub/a" in res["detail"]
+
+
 def test_a_repeat_inside_a_video_is_only_a_warning_when_it_was_the_relaxation(tmp_home: Path):
     ctx = make_ctx(tmp_home)
     _write_shots(ctx, "clips/shots.json", {"long": [_shot("a"), _shot("a", relaxed=True, start=2.0)]})

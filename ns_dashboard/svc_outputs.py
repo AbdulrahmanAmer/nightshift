@@ -21,6 +21,7 @@ from ns_studio.errors import StudioError
 
 URL_RE = re.compile(r"^https?://\S+$", re.IGNORECASE)
 EXCERPT_CHARS = 1500
+WARNING_CODE_RE = re.compile(r"\bNS-W\d{3}\b")
 #: An output row with the YouTube link of its upload (NULL until it is marked as posted).
 OUTPUT_SELECT = (
     "SELECT o.*, u.video_url AS video_url FROM outputs o"
@@ -43,19 +44,26 @@ def _read_text(f: Path) -> str | None:
 
 
 def policy_notes(policy: Any) -> list[str]:
-    """Plain-English lines for the Review page: problems first, then the checks that passed."""
+    """Plain-English lines for the Review page: problems, then warnings, then the checks that passed.
+
+    A check that passed with a warning (its detail names an `NS-W...` code, like the stock-footage reuse
+    NS-W405) is shown with its text instead of a bare OK.
+    """
     if not isinstance(policy, dict) or not isinstance(policy.get("checks"), dict):
         return []
     problems: list[str] = []
+    warned: list[str] = []
     passed: list[str] = []
     for name, chk in policy["checks"].items():
         label = str(name).replace("_", " ")
         detail = str(chk.get("detail", "")).strip() if isinstance(chk, dict) else ""
         if isinstance(chk, dict) and chk.get("passed") is False:
             problems.append(f"Problem: {label}" + (f" - {detail}" if detail else ""))
+        elif WARNING_CODE_RE.search(detail):
+            warned.append(f"Warning: {label} - {detail}")
         else:
             passed.append(f"OK: {label}")
-    return [*problems, *passed]
+    return [*problems, *warned, *passed]
 
 
 def _same_file(a: Path, b: Path) -> bool:
