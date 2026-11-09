@@ -31,9 +31,13 @@ def emit(ev, **data):
 
 mode = os.environ.get("CHILD_MODE", "polite")
 emit("job", job_id="after-dark-20261102-aaaa")
+for name in filter(None, os.environ.get("CHILD_OWNERS", "").split(",")):
+    emit("owner", owner=name)  # a lease owner that is not `studio:<job id>` (a setup voice, a helper)
 emit("stage", stage="voice", index=0, total=2, job_index=0, job_total=1)
 with open(os.environ["CHILD_UP"], "w", encoding="utf-8") as fh:
     fh.write("up")
+if mode == "crash":
+    sys.exit(3)  # dies without a result line
 flag = os.environ["NS_JOB_CANCEL_FILE"]
 end = time.time() + 120
 while time.time() < end:
@@ -124,6 +128,43 @@ def test_a_child_stuck_in_a_stage_is_killed_after_the_grace_and_its_lease_is_rel
         adapter.run(ctl, "after-dark", "shorts_only", 1)
     assert len(killed) == 1 and not (tmp_path / "mark").exists()
     assert link.released == ["studio:after-dark-20261102-aaaa"]
+
+
+def test_cancel_frees_every_owner_the_child_took_not_only_the_studio_job_ids(
+    child: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setenv("CHILD_OWNERS", "studio:voice-nova,dashboard:helper-1")
+    paths = Paths.from_env()
+    store, ctl = make_ctl(paths)
+    cancel_when_up(tmp_path, store, ctl.job_id)
+    link = RecordingLink()
+    adapter = RealRunAdapter(paths, link, runner=runner_for(child, tmp_path, grace_s=15))
+    with pytest.raises(JobCancelled):
+        adapter.run(ctl, "after-dark", "shorts_only", 1)
+    assert sorted(link.released) == [
+        "dashboard:helper-1", "studio:after-dark-20261102-aaaa", "studio:voice-nova",
+    ]
+    rec = store.get(ctl.job_id)  # written as announced: a restart mid-job must not lose them
+    assert rec is not None and rec.result is not None
+    assert rec.result["lease_owners"] == ["studio:voice-nova", "dashboard:helper-1"]
+
+
+def test_a_failed_job_frees_every_owner_it_took_too(child: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("CHILD_OWNERS", "studio:voice-nova,studio:voice-nova")  # announced twice, released once
+    monkeypatch.setenv("CHILD_MODE", "crash")
+    paths = Paths.from_env()
+    _store, ctl = make_ctl(paths)
+    link = RecordingLink()
+    adapter = RealRunAdapter(paths, link, runner=runner_for(child, tmp_path))
+    with pytest.raises(Exception):  # noqa: B017 - the child exits without a result: any NsError will do
+        adapter.run(ctl, "after-dark", "shorts_only", 1)
+    assert sorted(link.released) == ["studio:after-dark-20261102-aaaa", "studio:voice-nova"]
+
+
+def test_studio_owners_include_the_lease_owners_the_child_announced(tmp_home: Path):
+    _store, ctl = make_ctl(Paths.from_env())
+    ctl.extras["lease_owners"] = ["studio:voice-nova", "dashboard:helper-1"]
+    assert studio_owners(ctl, {}) == ["dashboard:helper-1", "studio:voice-nova"]
 
 
 def test_the_runner_hands_the_child_its_cancel_file_and_removes_it_afterwards(tmp_home: Path, tmp_path: Path):
