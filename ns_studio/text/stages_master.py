@@ -169,7 +169,12 @@ class ChaptersDraftStage:
     outputs: tuple[str, ...] = ("story_draft.json",)
 
     def run(self, ctx: JobContext) -> None:
-        """Write `story_draft.json`; chapters already drafted for the same plan are reused (crash resume)."""
+        """Write `story_draft.json`; chapters already drafted for the same plan are reused (crash resume).
+
+        A saved chapter also carries the generation it was written in (`JobContext.generation`): a
+        regeneration restarts this stage with the same plan, and reusing the chapters would rebuild the story
+        that just failed. Drafts without the key (an older job folder) are generation 0.
+        """
         plan_bytes = ctx.file("plan.json").read_bytes()
         plan_sha = hashlib.sha256(plan_bytes).hexdigest()
         plan = parse_model(Plan, json.loads(plan_bytes), "plan.json")
@@ -177,13 +182,14 @@ class ChaptersDraftStage:
         idea = ctx.read_json("idea.json")
         drafts = ctx.subdir("drafts")
         wpm = _wpm(ctx)
+        generation = ctx.generation
         summaries: list[dict[str, Any]] = []
         chapters: list[dict[str, Any]] = []
         previous = ""
         for ch in plan.chapters:
             f = drafts / f"ch{ch.n}.json"
             saved = json.loads(f.read_text(encoding="utf-8")) if f.exists() else None
-            if saved and saved.get("plan_sha") == plan_sha:
+            if saved and saved.get("plan_sha") == plan_sha and saved.get("generation", 0) == generation:
                 draft = ChapterDraft.model_validate(saved["draft"])
             else:
                 raw = call_json(
@@ -199,7 +205,11 @@ class ChaptersDraftStage:
                 )
                 draft = parse_model(ChapterDraft, raw, f"chapter_draft {ch.n}")
                 write_text_atomic(
-                    f, json.dumps({"plan_sha": plan_sha, "draft": draft.model_dump()}, ensure_ascii=False)
+                    f,
+                    json.dumps(
+                        {"plan_sha": plan_sha, "generation": generation, "draft": draft.model_dump()},
+                        ensure_ascii=False,
+                    ),
                 )
             text = draft.text.strip()
             summaries.append({"n": ch.n, "title": ch.title, "summary": draft.summary.strip()})

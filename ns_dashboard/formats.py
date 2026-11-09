@@ -12,39 +12,26 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import ValidationError
 
 from ns_common.atomic import write_text_atomic
-from ns_common.models import Format
 from ns_common.paths import Paths
 from ns_dashboard.errors import ApiError
 
 ID_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 
 
-def validate_format(definition: Any) -> list[str]:
-    """Plain problems with a format definition (empty list = valid), checked by `ns_common.models.Format`."""
-    if not isinstance(definition, dict):
-        return ["a format must be a mapping"]
-    try:
-        Format.model_validate(definition)
-    except ValidationError as e:
-        out = []
-        for err in e.errors():
-            where = ".".join(str(p) for p in err["loc"]) or "format"
-            kind = err["type"]
-            if kind == "missing":
-                out.append(f"{where} is required")
-            elif kind == "extra_forbidden":
-                out.append(f"{where} is not a known setting")
-            else:
-                out.append(f"{where}: {err['msg']}")
-        return out
-    problems = []
-    dur = definition["duration"]
-    if dur["max_s"] < dur["min_s"]:
-        problems.append("duration.max_s must not be smaller than duration.min_s")
-    return problems
+def validate_format(definition: Any, stem: str | None = None) -> list[str]:
+    """Plain problems with a format definition (empty list = valid).
+
+    The studio's own check (`ns_studio.media.formats.definition_problems`): the shared model first, then the
+    rules a render applies for the format's kind (regions inside the canvas, one picture region for a Short
+    or a full video, shot and duration ranges, known caption styles). The Formats editor therefore refuses
+    at save what the studio would refuse when a job chooses the format. `stem` is the file name a listed
+    definition was read from (its `id` must equal it, as the studio requires).
+    """
+    from ns_studio.media.formats import definition_problems
+
+    return definition_problems(definition, stem)
 
 
 def builtin_dir() -> Path | None:
@@ -70,6 +57,14 @@ def _load(file: Path) -> dict[str, Any] | None:
     return data if isinstance(data, dict) else None
 
 
+def _canvas_summary(canvas: Any) -> Any:
+    """The canvas for the format cards: a file that leaves `fps` out (the shipped presets since P10a) shows
+    the model's default, which is also what a render uses when Settings has no frame rate of its own."""
+    if isinstance(canvas, dict) and "fps" not in canvas:
+        return {**canvas, "fps": 30}
+    return canvas
+
+
 def list_formats(paths: Paths) -> list[dict[str, Any]]:
     """Every format (shipped and user) with its validation state; user files shadow shipped ones."""
     found: dict[str, dict[str, Any]] = {}
@@ -88,13 +83,13 @@ def list_formats(paths: Paths) -> list[dict[str, Any]]:
     out = []
     for fid, entry in sorted(found.items()):
         d = entry["definition"]
-        errors = validate_format(d)
+        errors = validate_format(d, fid)
         out.append(
             {
                 "id": fid,
                 "name": d.get("name") or fid.replace("_", " ").title(),
                 "kind": d.get("kind"),
-                "canvas": d.get("canvas"),
+                "canvas": _canvas_summary(d.get("canvas")),
                 "source": entry["source"],
                 "valid": not errors,
                 "errors": errors,

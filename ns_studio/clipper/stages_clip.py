@@ -55,6 +55,7 @@ from ns_studio.media.caption_plan import (
     speaker_plan,
 )
 from ns_studio.media.formats import ensure_allowed, formats_allowed
+from ns_studio.media.job_formats import warn_broken_overrides
 from ns_studio.orchestrator import FORMAT_STAGES
 from ns_studio.stages import Stage, Tenant, register
 from ns_studio.text.prompts import call_json
@@ -438,6 +439,12 @@ def template_of(lay: ClipLayout, k: int) -> str:
     return lay.per_clip.get(str(k), lay.template)
 
 
+def _warn_broken_formats(ctx: JobContext, plan: Collection[ClipItem], lay: ClipLayout) -> None:
+    """Log when the owner's copy of a clip layout in use does not load (the shipped one is used)."""
+    used = {layout.format_id_for(template_of(lay, c.k)) for c in plan}
+    warn_broken_overrides(used, paths=ctx.paths, log=ctx.log)
+
+
 _FALLBACK_ORDER = (
     "talking_head", "podcast_single", "center_crop", "podcast_stacked", "gaming_facecam", "screen_plus_cam",
 )
@@ -602,6 +609,7 @@ class CaptionsStage:
         caps, tmod = media_captions, media_transcribe
         tr, plan, lay = _transcript(ctx), _plan(ctx), _layout(ctx)
         templates = layout.load_templates()
+        _warn_broken_formats(ctx, plan, lay)
         info = _source(ctx)
         mask = mask_profanity_setting(ctx.channel)
         picked = _picked_caption_style(ctx)  # the owner's choice on Create wins
@@ -678,6 +686,7 @@ class RenderStage:
         """Render every clip and write `render/report.json`."""
         info, plan, lay = _source(ctx), _plan(ctx), _layout(ctx)
         templates = layout.load_templates()
+        _warn_broken_formats(ctx, plan, lay)
         ctx.subdir("clips")
         report: dict[str, Any] = {}
         for clip in plan:

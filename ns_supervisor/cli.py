@@ -236,6 +236,8 @@ def _apply_update(
         assert zip_path is not None
         res = update.update_app(zip_path, app_dir, env, paths=paths)
     msg = f"Now on {res.new_version} (was {res.old_version})."
+    if res.settings:        # a rollback says what became of the settings files (the dashboard shows it)
+        msg += " " + res.settings
     typer.echo(msg)
     for n in res.notes:
         typer.echo(f"  {n}")
