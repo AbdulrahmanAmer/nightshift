@@ -520,3 +520,12 @@ Format per entry:
 - **Change:** `ns_common.models.Runtime`, `InstallState` and `GateReport` gain `dev_mode: bool = False`, and `contracts/schemas/runtime.schema.json`, `install_state.schema.json` and `gate_report.schema.json` the same property. `config/runtime.json` of a dev install says `"profile": "cpu-dev", "dev_mode": true`; `install_state.json` records it; `logs/verify-report.json` carries it. Every reader goes through `ns_common.devmode`.
 - **Why:** a real end-to-end install on a PC with no GPU and no model: the supervisor starts the fake llama and embedding servers and the fake voice engine, the studio runs jobs on its in-process fakes, `ns verify` passes against them, and the report says so.
 - **Status:** applied on `orchestrator/installer-dev-mode`.
+
+## CR-H7-1: `ns_tts/sapi.py` and the fake voice's coded warning (`wf/h7-sapi-fake-voice`)
+- **From:** builder, head order H-7 (the fake voice speaks the real text with Windows SAPI), defect D-26
+- **Change (two small things on a protected path, for an `orchestrator/*` branch):**
+  1. `pyproject.toml` `[tool.ruff.lint.per-file-ignores]` gains `"ns_tts/sapi.py" = ["TID251"]`, next to `ns_tts/engine.py`. The module starts Windows PowerShell with `subprocess.run` and a list of arguments (never a shell) to drive `System.Speech.Synthesis.SpeechSynthesizer`.
+  2. `contracts/errors.json` gains a warning for "the fake voice made tone bursts": proposed `NS-W303` "The fake voice made tone bursts, which speech recognition cannot align." (hint: "This PC has no Windows speech voice. Install one (Settings > Time & language > Speech) or expect NS-E403 at the captions stage; it is the test voice, not a product fault."). `ns_tts.engine.FakeEngine` and `ns_studio.media.fake_voice.note_voice_engine` log the event `fake_voice_tones_only` and would add `code="NS-W303"`.
+- **Why:** no existing `NS-W` code means this (`NS-W301` is the PyTorch fallback of the real engine), and the branch is `wf/*`, which may not edit `contracts/` or `pyproject.toml`.
+- **Workaround until applied:** the `subprocess` import carries `# noqa: TID251`; the warning is logged uncoded as the event `fake_voice_tones_only` and is in `/health` (`voice_warning`), `audiooice_engine.json` and the NS-E403 detail.
+- **Status:** open

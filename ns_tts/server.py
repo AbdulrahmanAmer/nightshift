@@ -33,7 +33,7 @@ from ns_common.models import Runtime
 from ns_common.paths import Paths
 from ns_common.tts_timeout import TTS_TIMEOUT_CAP_S, tts_timeout_s
 from ns_tts.audio import chunk_text, stitch, trim_silence, wav_bytes, write_wav
-from ns_tts.engine import BatchInterrupted, Engine, design_model_message, select_engine
+from ns_tts.engine import BatchInterrupted, Engine, design_model_message, fake_speech_for, select_engine
 from ns_tts.voices import VoiceLibrary, VoiceSpec
 
 _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
@@ -199,12 +199,19 @@ def create_app(engine: Engine, library: VoiceLibrary, *, log: NsLogger | None = 
     @app.get("/health")
     def health() -> dict[str, Any]:
         # engine_kind: "qwentts", "reference" (PyTorch fallback: `ns verify` reports NS-W301) or "fake"
-        return {
+        body: dict[str, Any] = {
             "ok": True,
             "engine": engine.name,
             "engine_kind": engine.name,
             "model_loaded": bool(engine.loaded),
         }
+        # The fake says how it speaks: voice_mode "sapi" (the text, in the Windows voice named by `voice`) or
+        # "tones" (bursts; `voice_fallback` and `voice_warning` when a SAPI voice was wanted but is missing).
+        describe = getattr(engine, "describe", None)
+        info = describe() if callable(describe) else None
+        if isinstance(info, dict):
+            body.update(info)
+        return body
 
     @app.get("/v1/voices")
     def voices() -> list[dict[str, str]]:
@@ -393,7 +400,8 @@ def main() -> None:
             raise
         rt = Runtime()
     log = NsLogger("tts", paths.logs)
-    engine = select_engine(rt.tts, paths, args.engine)
+    speech = fake_speech_for(rt.tts, dev_mode=rt.dev_mode)  # "sapi" only on an engine-test install
+    engine = select_engine(rt.tts, paths, args.engine, fake_speech=speech)
     try:
         engine.load()
     except NsError as e:

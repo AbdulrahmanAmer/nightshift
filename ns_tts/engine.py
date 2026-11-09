@@ -1,7 +1,8 @@
 r"""C4 ns_tts: TTS engines behind one protocol (spec 2, 6.1, 14.2, 15.4).
 
 Engines: `QwenttsEngine` (the qwentts.cpp command-line tools, default), `ReferenceEngine` (PyTorch `qwen-tts`,
-the NS-W301 fallback when the qwentts binary fails its smoke test) and `FakeEngine` (CI, `NS_TTS_FAKE=1`).
+the NS-W301 fallback when the qwentts binary fails its smoke test) and `FakeEngine` (CI, `NS_TTS_FAKE=1`; tone
+bursts, or on an engine-test install the real text spoken by Windows speech, `ns_tts.sapi`).
 Heavy imports (`torch`, `qwen_tts`) happen only inside methods.
 
 The qwentts contract (pinned commit in `.github/workflows/build-qwentts.yml`; flags checked against the
@@ -76,7 +77,16 @@ from ns_common.models import TtsCfg
 from ns_common.paths import TTS_HF_SUBDIR, Paths
 from ns_common.textstats import word_count
 from ns_common.tts_timeout import tts_timeout_s
-from ns_tts.audio import read_wav, split_wav_stream, time_stretch, write_wav
+from ns_tts.audio import read_wav, split_wav_stream, time_stretch, trim_silence, write_wav
+from ns_tts.sapi import (
+    CALIBRATION_TEXT,
+    PowerShellSapi,
+    SapiBackend,
+    SapiUnavailable,
+    limit_peak,
+    pick_voice,
+    rate_for,
+)
 from ns_tts.voices import PRESETS, SAMPLE_TEXT, EmbeddingData, Mode, VoiceSpec
 
 # Executables inside the qwentts zip (build-qwentts.yml packages exactly these three).
@@ -181,22 +191,149 @@ def _digest_bytes(seed: bytes, n: int = 256) -> bytes:
     return out[:n]
 
 
+FAKE_SPEECH_MODES = ("tones", "sapi")
+
+
+def fake_speech_for(cfg: TtsCfg, *, dev_mode: bool) -> str:
+    """How the fake engine speaks in this service: `sapi` for an engine-test install, else `tones`.
+
+    An engine test runs the real speech recognition, which cannot align tone bursts (D-26), so only there
+    (`tts.engine: fake` in runtime.json, not dev mode, not the `NS_TTS_FAKE=1` of the test suite) does the
+    fake try Windows speech. `NS_TTS_FAKE_SPEECH=tones|sapi` overrides the decision (a developer who wants
+    to hear it).
+    """
+    forced = os.environ.get("NS_TTS_FAKE_SPEECH", "").strip().lower()
+    if forced in FAKE_SPEECH_MODES:
+        return forced
+    if os.environ.get("NS_TTS_FAKE") == "1" or dev_mode:
+        return "tones"
+    return "sapi" if cfg.engine == "fake" else "tones"
+
+
 class FakeEngine:
-    """Tone burst per word, deterministic 256-byte embeddings. Used by CI and `NS_TTS_FAKE=1`."""
+    """The engine of CI, `NS_TTS_FAKE=1`, a dev install and the engine test.
+
+    Embeddings are deterministic 256-byte digests. What it says depends on `speech`:
+
+    - `speech="tones"` (the default): a tone burst per word, no speech;
+    - `speech="sapi"` (the engine test): the actual text, spoken by the Windows speech synthesizer
+      (`ns_tts.sapi`), so the real speech recognition can align the captions. When this PC has no SAPI voice
+      the engine speaks tone bursts instead and says so (`describe()`, /health, a warning in the tts log).
+
+    `sapi` is a stand-in for the Windows speech synthesizer (tests); `tmp_dir` is its scratch folder.
+    """
 
     name = "fake"
     sr = 24000
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        speech: str = "tones",
+        sapi: SapiBackend | None = None,
+        log: NsLogger | None = None,
+        tmp_dir: Path | None = None,
+    ) -> None:
+        if speech not in FAKE_SPEECH_MODES:
+            raise ValueError(f"speech must be one of {FAKE_SPEECH_MODES}, got {speech!r}")
         self.loaded = False
         self.batch_timeout_floor_s = 0.0
         self.languages: list[str] = []  # the language of every synth call, so tests can see what reached it
+        self.speech = speech
+        self.log = log
+        self._sapi: SapiBackend = sapi if sapi is not None else PowerShellSapi(tmp_dir=tmp_dir)
+        self._probe_lock = threading.Lock()
+        self._probed = speech == "tones"
+        self.voice_mode = "tones"  # what the engine really does: "sapi" or "tones"
+        self.voice_name: str | None = None
+        self.voice_wpm: float | None = None  # pace of the voice at SAPI Rate 0, measured at start-up
+        self.voice_warning: str | None = None  # why a requested SAPI voice fell back to tone bursts
 
     def load(self) -> None:
+        self._probe()
         self.loaded = True
 
     def missing_model(self, op: Mode) -> str | None:
         return None
+
+    # ---- Windows speech ----
+    def _probe(self) -> None:
+        """Pick the SAPI voice and measure its pace, once; on any failure fall back to tone bursts, loudly."""
+        if self._probed:
+            return
+        with self._probe_lock:
+            if self._probed:
+                return
+            try:
+                self._start_sapi()
+            except SapiUnavailable as e:
+                self.voice_mode, self.voice_name, self.voice_wpm = "tones", None, None
+                self.voice_warning = f"{e}; the fake voice makes tone bursts, which recognition cannot align"
+                if self.log is not None:
+                    self.log.warn("fake_voice_tones_only", self.voice_warning, requested="sapi")
+            except NsError as e:  # the test sentence itself failed to render
+                self.voice_mode, self.voice_name, self.voice_wpm = "tones", None, None
+                self.voice_warning = (
+                    f"Windows speech failed its start-up test ({e.detail}); "
+                    "the fake voice makes tone bursts, which speech recognition cannot align"
+                )
+                if self.log is not None:
+                    self.log.warn("fake_voice_tones_only", self.voice_warning, requested="sapi")
+            self._probed = True
+
+    def _start_sapi(self) -> None:
+        voices = self._sapi.voices()
+        voice = pick_voice(voices)
+        if voice is None:
+            raise SapiUnavailable("no Windows speech (SAPI) voice is installed on this PC")
+        heard = self._sapi.speak(voice.name, [CALIBRATION_TEXT], rate=0, sr=self.sr, timeout_s=120.0)
+        spoken = trim_silence(heard[0], self.sr) if heard else EMPTY_AUDIO
+        seconds = len(spoken) / self.sr
+        wpm = word_count(CALIBRATION_TEXT) / seconds * 60.0 if seconds > 0.5 else 0.0
+        if not 40.0 <= wpm <= 900.0:
+            raise SapiUnavailable(f"Windows voice {voice.name!r} spoke the test text at {wpm:.0f} words/min")
+        self.voice_mode, self.voice_name, self.voice_wpm = "sapi", voice.name, round(wpm, 1)
+        if self.log is not None:
+            self.log.info(
+                "fake_voice_sapi", f"the fake voice speaks with Windows voice {voice.name!r}",
+                voice=voice.name, culture=voice.culture, installed=len(voices), words_per_min=self.voice_wpm,
+            )  # fmt: skip
+
+    def describe(self) -> dict[str, Any]:
+        """What `/health` adds for the fake: how it speaks, with which voice, and why it fell back."""
+        self._probe()
+        info: dict[str, Any] = {"voice_mode": self.voice_mode, "voice": self.voice_name}
+        if self.voice_wpm is not None:
+            info["voice_wpm"] = self.voice_wpm
+        if self.voice_warning:
+            info["voice_fallback"] = True
+            info["voice_warning"] = self.voice_warning
+        return info
+
+    def _speaks(self) -> bool:
+        self._probe()
+        return self.voice_mode == "sapi"
+
+    def _speak(self, texts: Sequence[str], speed: float) -> list[np.ndarray]:
+        """The texts spoken by the SAPI voice (one process for all), at the pace `speed` asks for."""
+        assert self.voice_name is not None and self.voice_wpm is not None
+        lines = [" ".join(t.split()) for t in texts]
+        todo = [i for i, line in enumerate(lines) if line]
+        out: list[np.ndarray] = [EMPTY_AUDIO] * len(texts)
+        if not todo:
+            return out
+        heard = self._sapi.speak(
+            self.voice_name,
+            [lines[i] for i in todo],
+            rate=rate_for(speed, self.voice_wpm),
+            sr=self.sr,
+            timeout_s=max(120.0 + 2.0 * len(todo), self.batch_timeout_floor_s),
+        )
+        if len(heard) != len(todo):
+            raise NsError("NS-E310", f"Windows speech returned {len(heard)} clips for {len(todo)} lines")
+        for i, x in zip(todo, heard, strict=True):
+            out[i] = limit_peak(x)
+        return out
 
     def _freq(self, voice: VoiceSpec) -> float:
         if voice.mode == "preset":
@@ -220,12 +357,18 @@ class FakeEngine:
     def synth(
         self, text: str, voice: VoiceSpec, *, speed: float = 1.0, seed: int | None = None
     ) -> np.ndarray:
+        if self._speaks():
+            return self.synth_batch([text], voice, speed=speed, seed=seed)[0]
         self.languages.append(voice.language)
         return self._tone(text, self._freq(voice), speed)
 
     def synth_batch(
         self, texts: Sequence[str], voice: VoiceSpec, *, speed: float = 1.0, seed: int | None = None
     ) -> list[np.ndarray]:
+        if self._speaks():
+            self._freq(voice)  # the same NS-E311 for a voice without stored data as the tone engine gives
+            self.languages.extend([voice.language] * len(texts))
+            return self._speak(texts, speed)
         return [self.synth(t, voice, speed=speed, seed=seed) for t in texts]
 
     def make_embedding(self, ref_wav: Path, ref_text: str, language: str = "English") -> EmbeddingData:
@@ -236,6 +379,8 @@ class FakeEngine:
         self, description: str, language: str = "English"
     ) -> tuple[EmbeddingData, np.ndarray]:
         emb = _digest_bytes(b"design:" + description.encode())
+        if self._speaks():  # the preview of a designed voice speaks the sample sentence too
+            return emb, self._speak([SAMPLE_TEXT], 1.0)[0]
         return emb, self._tone(SAMPLE_TEXT, 200.0 + emb[0] * 2.0, 1.0)
 
 
@@ -857,12 +1002,17 @@ def tts_models_root(cfg: TtsCfg, paths: Paths) -> Path:
     return Path(cfg.model_dir) if cfg.model_dir else paths.models_tts
 
 
-def select_engine(cfg: TtsCfg, paths: Paths, prefer: str | None = None) -> Engine:
+def select_engine(
+    cfg: TtsCfg, paths: Paths, prefer: str | None = None, *, fake_speech: str = "tones"
+) -> Engine:
     """Pick the engine: `NS_TTS_FAKE=1` or prefer="fake" -> fake; "reference" -> PyTorch; else qwentts.
 
     `prefer` overrides `cfg.engine`. The legacy config value "faster" means qwentts. Nothing is loaded.
+    `fake_speech` ("tones" or "sapi", see `fake_speech_for`) is how the fake engine speaks.
     """
     if os.environ.get("NS_TTS_FAKE") == "1" or prefer == "fake":
+        if fake_speech == "sapi":
+            return FakeEngine(speech="sapi", log=NsLogger("tts", paths.logs), tmp_dir=paths.cache_tts_tmp)
         return FakeEngine()
     want = prefer or cfg.engine
     cpu = cfg.device == "cpu"

@@ -195,6 +195,42 @@ the shipped manifest is unchanged. What such a run proves that a dev pass does n
 model starts, answers JSON, `ns tune`), 3 (embeddings), 4 (speech recognition on the processor) and the
 download path with real hashes. It still proves nothing about the GPU, NVENC, the voice engine or quality.
 
+### What the fake voice is on an engine test
+
+Real speech recognition cannot align tone bursts, so with a tone-burst voice every story and script job stopped
+at captions with NS-E403 ("drift inf ms, matched 0%", defect D-26). The fake voice of an engine test (`tts.engine:
+fake` and not `dev_mode`) therefore **speaks the actual text with the speech synthesizer that ships with
+Windows** (SAPI, `System.Speech.Synthesis.SpeechSynthesizer`, started through Windows PowerShell 5.1): no
+download, no model, CPU only. It is still a fake: one Windows voice stands in for every preset, designed and
+cloned voice (they differ only in what the library stores for them), and Settings shows `tts.engine: fake` as
+before.
+
+- **Same service contract.** `POST /v1/audio/speech` and `/v1/audio/speech/batch`, the voice list, design and
+  clone are the code of the real service; only the engine behind them is the fake. A batch is one synthesizer
+  run for all its sentences.
+- **Which voice.** Chosen from what is installed, so two runs on one PC pick the same one: English first
+  (en-US, then the other en-*), then by name. On a stock Windows 10 or 11 that is Microsoft David Desktop
+  (Zira sorts after it). `GET /health` of the voice service says which: `voice_mode` (`sapi`), `voice` (its
+  name) and `voice_wpm` (its pace at SAPI rate 0, measured by one test sentence at start-up).
+- **Speed.** The voice's `speed` setting picks the SAPI rate (an integer, -10 to 10, about 11 % per step) whose
+  pace is closest to 155 words a minute times the speed, so speed 1.0 lands within about 6 % of the pace the
+  planner and the tone bursts assume and the extremes are limited to what SAPI offers.
+- **Output the same checks accept.** 16-bit mono WAV at the service's 24 kHz; peaks held under -1 dBFS (SAPI
+  voices peak near full scale); the service trims each sentence's silence and puts its own pause between
+  sentences, exactly as for the real engine; the voice stage then loudness-normalizes to -16 LUFS with the
+  true-peak ceiling the Short and master stages rely on, and writes the script sidecar next to each clip
+  (`tests/test_fake_voice_note.py::test_the_voice_stage_treats_the_windows_speaking_fake_like_real_engine_output`).
+- **A PC with no SAPI voice** (a stripped Windows, a Windows without PowerShell, a non-Windows test runner) gets
+  today's tone bursts and says so: `/health` has `voice_mode: tones`, `voice_fallback: true` and
+  `voice_warning` with the reason; the voice service log and the job log carry the warning `fake_voice_tones_only`
+  (uncoded: no existing NS-W code means this); the job keeps `audio\voice_engine.json` (`mode`, `voice`,
+  `warning`); and the NS-E403 of the captions stage ends with "the voice is the fake one of this engine test and
+  it made tone bursts ... this is the test voice, not a product fault". With a Windows voice the same sentence
+  names the voice. A real engine never gets that sentence.
+- **Switches.** Only `tts.engine: fake` without `dev_mode` asks for Windows speech. A dev install, the test suite
+  and CI (`NS_TTS_FAKE=1`) keep the tone bursts. `NS_TTS_FAKE_SPEECH=sapi` or `tones` forces either way, for a
+  developer who wants to hear the dev install or to take the engine test back to tones.
+
 The twin answer is `"fake_footage": true`. A story job needs a Pixabay or Pexels key and stops with NS-E502
 without one, which blocks an engine test on a PC with no stock-footage account. With the answer, setup writes
 `fake_footage: true` into `runtime.json` and the studio, the nightly planner, `studio run`, the dashboard's
@@ -202,6 +238,21 @@ job refusal and Library > Footage all use the synthetic clip source, as a dev in
 model, embeddings and speech recognition stay real. The videos then carry placeholder footage, so the answer
 is for an engine test only and never for the partner's PC. Settings shows it as `fake_footage` next to
 `dev_mode` in the settings payload.
+
+## Developer switches
+
+Environment variables and answers that exist for development and the engine test. None is set by the product
+and none changes a real install; the voice-service ones are read by the **fake** engine only, when the voice
+service starts, from the environment of the process that starts it (the supervisor hands its environment to the
+service, so set them before starting the engine, and restart the engine to change them).
+
+| Switch | Where | What it does |
+| --- | --- | --- |
+| `INSTALL.cmd --dev`, `NIGHTSHIFT_DEV_MODE=1` | installer | the dev install above: fake engines, stub models, 10 GB |
+| `"fake_voice": true` in `answers.json` | installer | the engine test above: real models, the fake voice (`tts.engine: fake`) |
+| `"fake_footage": true` in `answers.json` | installer | the synthetic clip source with real models |
+| `NS_TTS_FAKE=1` | voice service | use the fake engine whatever `runtime.json` says (the test suite, CI); tone bursts |
+| `NS_TTS_FAKE_SPEECH=sapi` or `tones` | fake engine | force Windows speech or tone bursts for the fake voice (see "What the fake voice is") |
 
 ## Where the code is
 
@@ -212,6 +263,7 @@ is for an engine test only and never for the partner's PC. Settings shows it as 
 | setup server | `installer/stage2/web/` (`Config.dev_mode`, `preflight.apply_dev`, `plan.build_plan(dev=...)`, `state.devMode`) |
 | wizard steps | `installer/stage2/steps/s01` to `s10` (`if ctx.dev_mode`), `dev_stubs.py` |
 | fake services | `ns_supervisor/devfake.py`, `ns_supervisor/services.py`, `ns_supervisor/verify.py` |
+| the fake voice | `ns_tts/engine.py` (`FakeEngine`), `ns_tts/sapi.py` (Windows speech), `ns_studio/media/fake_voice.py` (job log, NS-E403 note) |
 | fake jobs | `ns_studio/jobs.py`, `ns_studio/series/workshop.py`, `ns_dashboard/studio_job.py` |
 | disabled task | `ns_supervisor/schedule.py` (`disabled=True`), `schedule_cfg.py` |
 | contracts | `Runtime.dev_mode`, `InstallState.dev_mode`, `GateReport.dev_mode` and their schemas |
