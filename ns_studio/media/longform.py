@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import os
 import zlib
 from collections.abc import Sequence
 from pathlib import Path
@@ -305,10 +306,15 @@ def render_segment(
 
 
 def concat_list_text(paths: Sequence[Path]) -> str:
-    """Body of an FFmpeg concat-demuxer list file; a quote in a path is written close-escape-reopen."""
+    """Body of an FFmpeg concat-demuxer list file; a quote in a path is written close-escape-reopen.
+
+    Every name is absolute: the demuxer reads a relative one against the LIST's folder, not the process's.
+    """
     quote = chr(39)
     escaped = quote + chr(92) + quote + quote
-    return "".join(f"file {quote}{p.as_posix().replace(quote, escaped)}{quote}\n" for p in paths)
+    return "".join(
+        f"file {quote}{Path(os.path.abspath(p)).as_posix().replace(quote, escaped)}{quote}\n" for p in paths
+    )
 
 
 class RenderMasterStage:

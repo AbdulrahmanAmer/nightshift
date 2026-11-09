@@ -6,6 +6,7 @@ grain and burned-in ASS captions. Shorts are 1080x1920, masters 1920x1080, 30 fp
 
 from __future__ import annotations
 
+import os
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -43,12 +44,15 @@ _QUOTE_IN_QUOTES = chr(39) + chr(92) * 3 + chr(39) + chr(39)
 
 
 def escape_filter_path(path: Path) -> str:
-    """A path as a single-quoted filtergraph option value: forward slashes, `:` and `'` escaped.
+    """A path as a single-quoted filtergraph option value: absolute, forward slashes, `:` and `'` escaped.
+
+    The path is made absolute HERE, the one place graph text is built: FFmpeg starts in the folder the job
+    files share, so a relative path (a relative `NIGHTSHIFT_HOME`) would be read against that folder.
 
     An apostrophe used to be deleted, which pointed FFmpeg at a folder that does not exist (a home under
     `C:/Users/O'Brien` failed every render).
     """
-    p = path.as_posix().replace(":", "\\:").replace("'", _QUOTE_IN_QUOTES)
+    p = Path(os.path.abspath(path)).as_posix().replace(":", "\\:").replace("'", _QUOTE_IN_QUOTES)
     return f"'{p}'"
 
 
