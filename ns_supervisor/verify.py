@@ -22,6 +22,7 @@ from typing import Any, Protocol
 
 from ns_common import __version__, ffmpeg
 from ns_common.acquire import Endpoint, Service
+from ns_common.atomic import write_text_atomic
 from ns_common.embed_client import EmbedClient
 from ns_common.errors import NsError
 from ns_common.llm_client import LlmClient
@@ -514,10 +515,7 @@ def report_path(paths: Paths) -> Path:
 
 def write_report(paths: Paths, report: GateReport) -> Path:
     """Write the report as JSON; returns the file."""
-    f = report_path(paths)
-    f.parent.mkdir(parents=True, exist_ok=True)
-    f.write_text(json.dumps(report.model_dump(mode="json"), indent=2) + "\n", encoding="utf-8")
-    return f
+    return write_text_atomic(report_path(paths), json.dumps(report.model_dump(mode="json"), indent=2) + "\n")
 
 
 def format_lines(report: GateReport) -> list[str]:

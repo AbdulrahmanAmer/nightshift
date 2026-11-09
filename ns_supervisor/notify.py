@@ -15,7 +15,7 @@ from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 
-from ns_common.atomic import write_text_atomic
+from ns_common.atomic import read_text_retry, write_text_atomic
 from ns_common.paths import Paths
 from ns_supervisor import pwsh
 
@@ -83,7 +83,7 @@ def note_path(paths: Paths) -> Path:
 def read_notes(paths: Paths) -> list[dict[str, str]]:
     """The waiting notes, oldest first (empty when none or unreadable)."""
     try:
-        data = json.loads(note_path(paths).read_text(encoding="utf-8"))
+        data = json.loads(read_text_retry(note_path(paths)))
         notes = data["notes"]
     except (OSError, ValueError, KeyError, TypeError):
         return []
