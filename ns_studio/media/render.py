@@ -1,7 +1,9 @@
 """FFmpeg filter-graph builders and the render stage (component C6).
 
 One filter graph per video: per-shot trim, scale/crop (or blurred fill), zoompan, concat, colour, vignette,
-grain and burned-in ASS captions. Shorts are 1080x1920, masters 1920x1080, 30 fps.
+grain and burned-in ASS captions. Shorts are 1080x1920, masters 1920x1080, 30 fps unless the format a job
+draws from says otherwise: a story Short takes its frame size, picture regions, caption anchor, frame rate
+and encoder preset from its format (`picture_chains`, `RenderStage`).
 """
 
 from __future__ import annotations
@@ -15,12 +17,16 @@ from typing import Any
 from ns_common import ffmpeg as ff
 from ns_common.errors import NsError
 from ns_common.logging import NsLogger
-from ns_common.models import VideoCfg
+from ns_common.models import Format, VideoCfg
 from ns_studio.context import JobContext
+from ns_studio.errors import StudioError
 from ns_studio.media.audio import FINAL_LUFS, FINAL_TP, assemble_audio, loudnorm
 from ns_studio.media.caption_plan import AssOptions
 from ns_studio.media.captions import Box, caption_band, ensure_contrast, sample_luma
 from ns_studio.media.diskfull import run_ffmpeg
+from ns_studio.media.formats import encoder_preset_of, fps_of
+from ns_studio.media.job_formats import job_format, job_format_entry
+from ns_studio.media.layout import SourceSpec, build_regions_graph, covers_canvas
 from ns_studio.media.presets import (
     FONTS_DIR,
     CaptionStyle,
@@ -32,6 +38,7 @@ from ns_studio.media.presets import (
 from ns_studio.media.shotplan import Shot, frame_edges
 from ns_studio.media.transcribe import Word
 from ns_studio.stages import Tenant
+from ns_studio.text.story_profile import with_mark
 
 VERTICAL = (1080, 1920)
 LANDSCAPE = (1920, 1080)
@@ -170,6 +177,67 @@ def cat_chains(
     return chains
 
 
+def is_plain(fmt: Format | None) -> bool:
+    """True when the picture fills the frame edge to edge: no format, or one `full` region over the canvas."""
+    if fmt is None:
+        return True
+    regions = fmt.layout.regions
+    return len(regions) == 1 and regions[0].source == "full" and covers_canvas(fmt, regions[0])
+
+
+def footage_size(fmt: Format | None, default: tuple[int, int]) -> tuple[int, int]:
+    """The size shots are drawn at: the frame for a plain layout, else the size of the `full` region."""
+    if fmt is None:
+        return default
+    if is_plain(fmt):
+        return fmt.canvas.w, fmt.canvas.h
+    full = next((r for r in fmt.layout.regions if r.source == "full"), None)
+    if full is None:
+        raise StudioError("NS-E320", f"format {fmt.id!r} has no region that shows the picture (source full)")
+    return full.w, full.h
+
+
+def picture_chains(
+    shots: Sequence[Shot],
+    frames: Sequence[int],
+    size: tuple[int, int],
+    fps: int,
+    zoom: ZoomSpec,
+    fmt: Format | None = None,
+    *,
+    first_input: int = 0,
+    phase_start: int | None = None,
+) -> tuple[list[str], str]:
+    """The chains that make the picture, and the label (`cat` or `comp`) of the result.
+
+    No format, or a plain layout (one full-frame region): the per-shot chains and their concat at `size`,
+    character for character what the renders drew before formats were read. Otherwise the shots are drawn at
+    the size of the format's `full` region and `build_regions_graph` places every region on the canvas (a
+    blurred fill, a smaller picture, ...); a canvas the first region does not cover starts black for exactly
+    the length of the video.
+    """
+    if fmt is None or is_plain(fmt):
+        chains = cat_chains(
+            shots, frames, footage_size(fmt, size), fps, zoom,
+            first_input=first_input, phase_start=phase_start,
+        )
+        return chains, "cat"
+    w, h = footage_size(fmt, size)
+    chains = cat_chains(shots, frames, (w, h), fps, zoom, first_input=first_input, phase_start=phase_start)
+    picture = SourceSpec(w, h, label="cat")
+    chains += build_regions_graph(
+        fmt, {"full": picture, "blur_fill": picture}, out_label="comp", duration_s=sum(frames) / fps, fps=fps
+    )
+    return chains, "comp"
+
+
+def video_for_format(video: VideoCfg, fmt: Format) -> VideoCfg:
+    """`video` with the frame rate and encoder preset the format's file writes (else the runtime's own)."""
+    return video.model_copy(
+        update={"fps": fps_of(fmt, video.fps), "preset": encoder_preset_of(fmt, video.preset)}
+    )
+
+
 def build_graph(
     shots: Sequence[Shot],
     edges: Sequence[int],
@@ -178,11 +246,12 @@ def build_graph(
     treatment: VisualTreatment,
     ass_path: Path | None,
     fonts_dir: Path | None = None,
+    fmt: Format | None = None,
 ) -> str:
     """The complete filter_complex ending in `[vout]`; input k is the clip of shot k."""
     frames = [edges[i + 1] - edges[i] for i in range(len(shots))]
-    chains = cat_chains(shots, frames, size, fps, treatment.zoom)
-    chains.append(f"[cat]{post_chain(treatment, ass_path, fonts_dir)}[vout]")
+    chains, label = picture_chains(shots, frames, size, fps, treatment.zoom, fmt)
+    chains.append(f"[{label}]{post_chain(treatment, ass_path, fonts_dir)}[vout]")
     return ";".join(chains)
 
 
@@ -304,8 +373,11 @@ def render_video(
     fonts_dir: Path | None = None,
     log: NsLogger | None = None,
     max_inputs: int = ff.MAX_CLIP_INPUTS,
+    fmt: Format | None = None,
 ) -> Path:
     """Render `shots` + `audio` into `out` (H.264/AAC, faststart); NS-E401 on failure.
+
+    `fmt` (the job's format) lays the picture out on the canvas (`picture_chains`); `size` is its frame.
 
     When NVENC fails the render is retried once with libx264 and NS-W401 is logged. With more than
     `max_inputs` shots the render is cut into parts of at most that many (`render_in_parts`); the command
@@ -319,9 +391,9 @@ def render_video(
     if len(shots) > max_inputs:
         return render_in_parts(
             shots=shots, frames=frames, audio=audio, out=out, size=size, treatment=treatment, video=video,
-            ass_path=ass_path, fonts_dir=fonts_dir, log=log, max_inputs=max_inputs,
+            ass_path=ass_path, fonts_dir=fonts_dir, log=log, max_inputs=max_inputs, fmt=fmt,
         )
-    graph = build_graph(shots, edges, size, video.fps, treatment, ass_path, fonts_dir)
+    graph = build_graph(shots, edges, size, video.fps, treatment, ass_path, fonts_dir, fmt)
     # The command line stays short whatever the install path and the clip count: the graph goes into a script
     # file next to the video, and FFmpeg starts in the folder the files share and names them relative to it.
     base = ff.common_dir([*(s.path for s in shots), audio, out])
@@ -362,6 +434,7 @@ def render_in_parts(
     fonts_dir: Path | None,
     log: NsLogger | None,
     max_inputs: int,
+    fmt: Format | None = None,
 ) -> Path:
     """The same video as one command, rendered in parts of at most `max_inputs` shots and joined.
 
@@ -388,9 +461,9 @@ def render_in_parts(
         for k, (a, b) in enumerate(ranges):
             part = part_path(folder, k)
             mine = shots[a:b]
-            chains = cat_chains(mine, frames[a:b], size, fps, treatment.zoom, phase_start=a)
+            chains, label = picture_chains(mine, frames[a:b], size, fps, treatment.zoom, fmt, phase_start=a)
             post = post_chain(treatment, ass_path, fonts_dir, ass_offset_s=starts[k] / fps)
-            chains.append(f"[cat]{post}[vout]")
+            chains.append(f"[{label}]{post}[vout]")
             base = ff.common_dir([*(s.path for s in mine), part])
             script = ff.filter_complex_args(
                 ";".join(chains), part.with_name(f"{part.stem}.filtergraph.txt"), log=log, base=base
@@ -471,7 +544,7 @@ def fit_caption_contrast(
     st = caption_style(style) if isinstance(style, str) else style
     band = caption_band(
         st, opts.variant, avoid_regions=opts.avoid_regions or None, safe_zones=opts.safe_zones,
-        anchor_y_pct=opts.anchor_y_pct,
+        anchor_y_pct=opts.anchor_y_pct, canvas=opts.canvas,
     )
     try:
         luma = backdrop_luma(shots, band, size, total_s)
@@ -521,6 +594,10 @@ class RenderStage:
         shots_by_item: dict[str, Any] = ctx.read_json("clips/shots.json")
         manifest = ctx.read_json("audio/manifest.json")
         treatment = visual_treatment(ctx.combo.visual_treatment)
+        fmt = job_format(ctx, "short")
+        chosen = job_format_entry(ctx, "short")
+        canvas = (fmt.canvas.w, fmt.canvas.h)
+        video = video_for_format(ctx.runtime.video, fmt)
         report: dict[str, Any] = {}
         for item, entry in shots_by_item.items():
             n = int(item[1:])
@@ -545,19 +622,20 @@ class RenderStage:
                 words=[Word.from_json(w) for w in timeline["words"]],
                 style=timeline.get("style", ctx.combo.caption_style),
                 opts=AssOptions.from_json(timeline.get("ass_opts")),
-                shots=shots, total_s=float(timeline["audio_s"]), size=VERTICAL, ass_path=ass_path,
+                shots=shots, total_s=float(timeline["audio_s"]), size=canvas, ass_path=ass_path,
                 log=ctx.log,
             )
             out = render_video(
                 shots=shots,
                 audio=audio,
                 out=out_dir / "short.mp4",
-                size=VERTICAL,
+                size=canvas,
                 treatment=treatment,
-                video=ctx.runtime.video,
+                video=video,
                 ass_path=ass_path,
                 fonts_dir=FONTS_DIR,
                 log=ctx.log,
+                fmt=fmt,
             )
             report[item] = {
                 "path": str(out),
@@ -566,9 +644,12 @@ class RenderStage:
                 "duration_s": round(ff.duration_s(out), 3),
                 "shots": len(shots),
                 "encoder": ctx.runtime.video.encoder,
+                "format": fmt.id,
+                "format_why": chosen.get("why"),
+                "canvas": list(canvas),
             }
             ctx.log.info(
                 "render_done", job_id=ctx.job_id, item=item,
-                duration_s=report[item]["duration_s"], shots=len(shots),
+                duration_s=report[item]["duration_s"], shots=len(shots), format=fmt.id,
             )
-        ctx.write_json("render/report.json", report)
+        ctx.write_json("render/report.json", with_mark(ctx, report))

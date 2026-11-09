@@ -12,7 +12,7 @@ from typing import Any
 
 from ns_common import ffmpeg
 from ns_common.atomic import read_text_retry
-from ns_common.errors import NsError
+from ns_common.errors import NsError, describe
 from ns_dashboard import media
 from ns_dashboard.common import OUTPUT_KINDS, OUTPUT_STATUSES, now_iso, output_item
 from ns_dashboard.errors import AdapterUnavailable, ApiError
@@ -326,6 +326,9 @@ class OutputsService:
         if not URL_RE.match(link):
             raise ApiError(400, "bad_url", "Paste the full YouTube link, starting with https://")
         row = self._row(output_id)
+        if "profile" in row.keys() and row["profile"]:
+            known = describe("NS-E329")
+            raise ApiError(409, "NS-E329", known.message, hint=known.hint)
         if row["status"] == "rejected":
             raise ApiError(409, "rejected", "Approve this video before marking it as uploaded.")
         with self.s.db.tx() as db:

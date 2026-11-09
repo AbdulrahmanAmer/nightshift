@@ -7,14 +7,14 @@ import random
 import secrets
 import traceback
 from collections.abc import Callable
-from contextlib import AbstractContextManager
+from contextlib import AbstractContextManager, ExitStack
 from datetime import UTC, date, datetime, timedelta, tzinfo
 from functools import partial
 from pathlib import Path
 from typing import Any
 
 from ns_common.atomic import read_text_retry, write_text_atomic
-from ns_common.errors import NsError
+from ns_common.errors import NsError, describe
 from ns_common.keepawake import keep_awake
 from ns_studio import jobs, notifications, ownership
 from ns_studio.channels import cadence
@@ -55,7 +55,7 @@ def scheduled_shorts(
     since = (now - timedelta(days=SCHEDULE_LOOKBACK_DAYS)).isoformat()
     rows = env.db.query(
         "select job_id, path from outputs where channel=? and kind='short'"
-        " and status in ('pending', 'approved') and created_at >= ?",
+        " and status in ('pending', 'approved') and created_at >= ? and profile is null",
         (slug, since),
     )
     taken: dict[date, int] = {}
@@ -99,6 +99,10 @@ def apply_publish_times(
             except (OSError, KeyError, json.JSONDecodeError):
                 continue
             if not isinstance(data, dict) or "publish_after" not in data:
+                continue
+            if data.get("profile"):  # a test output (tiny_story) is never given a publish slot
+                refusal = describe("NS-E329").message
+                env.log.warn("publish_slot_refused", refusal, code="NS-E329", job_id=job_id, item=item)
                 continue
             kind = "long" if data.get("kind") == "long" else "short"
             release = cadence.ReleaseItem(f"{job_id}:{item}", job_id, kind)
@@ -167,8 +171,14 @@ def _run_daily(
     if unreadable:
         report["unreadable_profiles"] = [list(pair) for pair in unreadable]
     recovered = _close_dead_work(env, now, report)
-    # this row has a live owner until it is closed
-    with ownership.hold_run(env.paths, run_id, origin="daily"):
+    # this row has a live owner until it is closed; a night that cannot be owned does not start, and says so
+    owned = ExitStack()
+    try:
+        owned.enter_context(ownership.hold_run(env.paths, run_id, origin="daily"))
+    except (ownership.JobBusy, ownership.LockUnavailable) as e:
+        _refuse_night(env, run_id, now, report, e, recovered)
+        raise
+    with owned:
         env.db.execute(
             "insert into runs(run_id, started_at, mode) values (?,?,?)",
             (run_id, now.isoformat(timespec="seconds"), "daily"),
@@ -202,6 +212,78 @@ def _run_daily(
     if finish is not None:  # gap 25: the engine this run needed leaves once nobody else uses it
         finish()
     return report
+
+
+def _refusal_words(error: StudioError) -> tuple[str, str]:
+    """`(morning note, short reason)` for a night that could not be owned, in plain words naming the cause."""
+    if isinstance(error, ownership.JobBusy):
+        if error.owner:
+            reason = f"another Nightshift run is already running with the same name (process {error.owner})"
+        else:  # the lock file names no process: do not claim one
+            reason = (
+                "another process is holding the run's lock file (a second Nightshift run, or a program "
+                "scanning the file)"
+            )
+        note = (
+            f"The night's run did not start: {reason}. If that is another run it carries on; this one made "
+            "nothing and nothing was lost. If no other run should be going, close any old Nightshift window "
+            "and run it again."
+        )
+        return note, reason
+    cause = getattr(error, "cause", None)
+    why = (getattr(cause, "strerror", None) or str(cause)) if cause is not None else str(error)
+    reason = f"the file that marks a run as alive cannot be made ({getattr(error, 'path', None)}: {why})"
+    note = (
+        f"The night's run did not start: {reason}. Nothing was made and nothing was lost. Check that the "
+        "folder is not read-only, full or blocked by antivirus; the next nightly run tries again."
+    )
+    return note, reason
+
+
+def _refuse_night(
+    env: jobs.Env,
+    run_id: str,
+    now: datetime,
+    report: dict,
+    error: StudioError,
+    recovered: ownership.Recovery | None,
+) -> None:
+    """The night cannot be owned (another live process holds its lock, or no lock file can be made after the
+    tries): it does not start, and it is never silent about it.
+
+    Refusing is deliberate: a night run with no owner would be closed as dead by the next start and continued
+    next to itself. What is not allowed is losing it unseen: this writes the closed `runs` row the way a night
+    that broke leaves it (`failed` and the reason, which `/api/status` shows), logs it, and leaves the morning
+    note; the CLI then sends its failure toast and exits 1. Each of the three is its own try: a disk that
+    cannot be written (the very cause, maybe) must not hide the others or replace the error the caller sees.
+    """
+    note, reason = _refusal_words(error)
+    report["failed"], report["reason"] = error.code, reason
+    # The Queue's "Last night" card shows a stop only from `failures` (a red dot and "<channel>: <code>.
+    # <error>"). The morning note can be cleared ("Mark all read") or never left (notifications off), so one
+    # entry here keeps the cause on screen. `channel` is shown as written: "The night: NS-E327. <reason>".
+    report["failures"].append(
+        {"job_id": NIGHT_NOT_STARTED, "channel": "The night", "code": error.code, "error": reason}
+    )
+    env.log.error("daily_not_started", run_id=run_id, code=error.code, detail=str(error), reason=reason)
+    try:
+        env.db.execute(
+            "insert into runs(run_id, started_at, finished_at, mode, summary_json) values (?,?,?,?,?)",
+            (
+                run_id,
+                now.isoformat(timespec="seconds"),
+                datetime.now(UTC).isoformat(timespec="seconds"),
+                "daily",
+                json.dumps(report),
+            ),
+        )
+    except Exception as e:  # noqa: BLE001 - a database that cannot be written must not hide the real cause
+        env.log.warn("daily_not_started_row_failed", str(e), run_id=run_id)
+    if recovered is not None and recovered.any:
+        # the jobs `_close_dead_work` closed for tonight's resume are told by `_tonight` once it has tried;
+        # this night never gets there, so they are told here as waiting for the next one
+        ownership.leave_recovery_note(env.paths, env.log, recovered)
+    ownership.leave_note(env.paths, env.log, note)
 
 
 def _close_dead_work(env: jobs.Env, now: datetime, report: dict) -> ownership.Recovery | None:
@@ -279,6 +361,8 @@ def _attempt(
 Outcomes = dict[str, tuple[str, str | None]]
 #: What `_attempt` returns for a job another process is running (a Retry from the Queue): not an error code.
 BUSY = "busy"
+#: The `job_id` of the one `failures` entry that a night which could not be owned leaves (`_refuse_night`).
+NIGHT_NOT_STARTED = "(night did not start)"
 
 
 def _resume_interrupted(

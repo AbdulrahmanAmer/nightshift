@@ -5,7 +5,7 @@ are kept between runs and maintained by the verification loop (docs/VERIFICATION
 starts as `U`; `tests/test_verification_inventory.py` fails when the code has an item this
 file does not list.
 
-Items: 260 (V-dev 151, V-ci 52, V-gpu 0, U 57).
+Items: 261 (V-dev 151, V-ci 52, V-gpu 0, U 58).
 
 | kind | id | status | evidence |
 |---|---|---|---|
@@ -19,6 +19,7 @@ Items: 260 (V-dev 151, V-ci 52, V-gpu 0, U 57).
 | api | `GET /api/channels` | V-dev | test-loop-2026-11-05.md (stats after analytics import) |
 | api | `POST /api/channels` | V-dev | test-loop-2026-11-08.md 2026-11-09 08:50-08:58 (0.1.12 dev, runs/qa/croutes) |
 | api | `GET /api/channels/{slug}` | V-dev | test-loop-2026-11-08.md 2026-11-09 08:50-08:58 (0.1.12 dev, runs/qa/croutes) |
+| api | `GET /api/channels/{slug}/formats` | U |  |
 | api | `PUT /api/channels/{slug}` | V-dev | test-loop-2026-11-08.md 2026-11-09 08:50-08:58 (0.1.12 dev, runs/qa/croutes) |
 | api | `POST /api/channels/{slug}/pause` | V-dev | test-loop-2026-11-08.md 2026-11-09 08:50-08:58 (0.1.12 dev, runs/qa/croutes) |
 | api | `POST /api/channels/{slug}/resume` | V-dev | test-loop-2026-11-08.md 2026-11-09 08:50-08:58 (0.1.12 dev, runs/qa/croutes) |

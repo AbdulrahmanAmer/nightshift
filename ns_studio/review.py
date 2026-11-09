@@ -42,6 +42,10 @@ def describe(paths: Paths, db: Db, output_id: str) -> list[str]:
         f"{row['output_id']}  [{row['status']}]  {row['title']}",
         f"file: {row['path']}",
     ]
+    if "profile" in row.keys() and row["profile"]:
+        lines.append(
+            f"TEST OUTPUT ({row['profile']}): made on an engine-test install; it cannot be posted (NS-E329)"
+        )
     job_dir = paths.job_dir(row["job_id"])
     story = job_dir / "story.json"
     if story.exists():
@@ -119,6 +123,8 @@ def mark_uploaded(db: Db, job_id: str, item: str, url: str, now: datetime | None
     row = get_output(db, output_id)
     if not any(h in url for h in _URL_HOSTS):
         raise StudioError("NS-E326", "the URL must be a youtube.com or youtu.be link")
+    if "profile" in row.keys() and row["profile"]:
+        raise StudioError("NS-E329", f"{output_id} was made with the {row['profile']} profile")
     if row["status"] != "approved":
         raise StudioError("NS-E326", f"{output_id} is {row['status']}; approve it in 'studio review' first")
     stamp = (now or datetime.now(UTC)).isoformat(timespec="seconds")
