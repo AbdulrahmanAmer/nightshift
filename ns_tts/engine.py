@@ -95,6 +95,7 @@ QWEN_TTS = "qwen-tts"
 QWEN_CODEC = "qwen-codec"
 TTS_SERVER = "tts-server"  # shipped, not used (see the module doc)
 EXE_SUFFIX = ".exe"
+FAKE_VOICE_TONES_CODE = "NS-W303"  # contracts/errors.json: the fake voice made tone bursts (CR-H7-1)
 
 # Files of a stored qwentts voice (next to voice.json); `speaker.spk` is VoiceSpec.embedding_path.
 VOICE_SPK = "speaker.spk"
@@ -310,7 +311,12 @@ class FakeEngine:
                 self.voice_mode, self.voice_name, self.voice_wpm = "tones", None, None
                 self.voice_warning = f"{e}; the fake voice makes tone bursts, which recognition cannot align"
                 if self.log is not None:
-                    self.log.warn("fake_voice_tones_only", self.voice_warning, requested="sapi")
+                    self.log.warn(
+                        "fake_voice_tones_only",
+                        self.voice_warning,
+                        code=FAKE_VOICE_TONES_CODE,
+                        requested="sapi",
+                    )
             except (NsError, OSError) as e:  # the test sentence failed, or the scratch folder is unusable
                 detail = e.detail if isinstance(e, NsError) else str(e)
                 self.voice_mode, self.voice_name, self.voice_wpm = "tones", None, None
@@ -319,7 +325,12 @@ class FakeEngine:
                     "the fake voice makes tone bursts, which speech recognition cannot align"
                 )
                 if self.log is not None:
-                    self.log.warn("fake_voice_tones_only", self.voice_warning, requested="sapi")
+                    self.log.warn(
+                        "fake_voice_tones_only",
+                        self.voice_warning,
+                        code=FAKE_VOICE_TONES_CODE,
+                        requested="sapi",
+                    )
             self._probed = True
 
     def _start_sapi(self) -> None:
@@ -354,6 +365,7 @@ class FakeEngine:
         if self.voice_warning:
             info["voice_fallback"] = True
             info["voice_warning"] = self.voice_warning
+            info["voice_warning_code"] = FAKE_VOICE_TONES_CODE
         return info
 
     # ---- the developer delay ----
