@@ -16,11 +16,13 @@ import typer
 
 from ns_common.config import load_channel
 from ns_common.errors import NsError
+from ns_common.logging import NsLogger
 from ns_common.paths import Paths
 from ns_studio.clipper.models import TEMPLATE_NAMES, ClipParams
 from ns_studio.clipper.source import is_url
 from ns_studio.clipper.stages_clip import create_clip_job, resume_clip_job
 from ns_studio.context import FAKEABLE
+from ns_studio.diskroom import require_clip_room
 from ns_studio.errors import hint_of
 from ns_studio.orchestrator import run_job
 
@@ -112,6 +114,11 @@ def clip(
             params.validate()
         except ValueError as e:
             raise typer.BadParameter(str(e)) from e
+        # NS-E104 before the job folder is made when the drive has less room than this job writes (D-33)
+        require_clip_room(
+            paths, NsLogger("studio", paths.logs), max_clips=params.max_clips, url_source=is_url(video),
+            source=None if is_url(video) else params.source, fake=fake,
+        )
         ctx = create_clip_job(paths, ch, params, fake=fake)
         typer.echo(f"job {ctx.job_id}")
         ran = run_job(ctx)
@@ -141,6 +148,7 @@ def _reselect(
         new.validate()
     except ValueError as e:
         raise typer.BadParameter(str(e)) from e
+    require_clip_room(paths, NsLogger("studio", paths.logs), max_clips=new.max_clips, rerun=True, fake=fake)
     ctx = resume_clip_job(paths, job_id, load_channel(paths, channel or old.channel), fake=fake)
     new.save(ctx.job_dir)
     ran = run_job(ctx)

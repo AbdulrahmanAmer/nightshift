@@ -62,13 +62,16 @@ DOC_TESTS: tuple[str, ...] = (
     "tests/test_ci_workflow.py",  # docs/REPO_SETTINGS.md names the required checks
     "tests/test_dashboard_assistant.py",  # search_docs over the real README.md and OPERATOR.md
     "tests/test_devfake_tool_cue.py",  # the assistant-tool rows of docs/VERIFICATION_INVENTORY.md
+    "tests/test_diskneed.py",  # BUILD_SPEC.md, docs/FEATURE_STATUS.md carry the tier numbers
     "tests/test_finalization.py",  # docs/FINALIZATION.md, docs/FEATURE_STATUS.md (dev/finalization_status.py)
     "tests/test_hygiene.py",  # CHANGELOG.md and every tracked file
     "tests/test_installer_app_copy.py",  # git ls-files: every tracked file, documents included
+    "tests/test_installer_disk_need.py",  # OPERATOR.md, docs/FEATURE_STATUS.md, installer-ui.md
     "tests/test_installer_driver_detection.py",  # OPERATOR.md names NS-W115
     "tests/test_installer_files.py",  # BUILD_SPEC.md, OPERATOR.md
     "tests/test_installer_first_run.py",  # OPERATOR.md
     "tests/test_release_wiring.py",  # CHANGELOG.md, docs/REPO_SETTINGS.md, docs/HANDOFF.md
+    "tests/test_spec_clipper_text.py",  # BUILD_SPEC.md 17.2, D40, docs/FEATURE_STATUS.md
     "tests/test_spec_installer_text.py",  # BUILD_SPEC.md, docs/FEATURE_STATUS.md, OPERATOR.md
     "tests/test_spec_operator_text.py",  # OPERATOR.md, README.md, BUILD_SPEC.md, docs/FEATURE_STATUS.md
     "tests/test_spec_runtime_text.py",  # BUILD_SPEC.md, docs/FEATURE_STATUS.md

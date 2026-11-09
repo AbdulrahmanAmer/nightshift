@@ -23,6 +23,7 @@ from ns_studio.channels import cadence, crud
 from ns_studio.clipper import cli as clipper_cli
 from ns_studio.context import JobContext
 from ns_studio.daily import nothing_due_message, run_daily
+from ns_studio.diskroom import require_story_room
 from ns_studio.errors import UNEXPECTED, StudioError, describe_unexpected, hint_of
 from ns_studio.footage_keys import require_footage_key
 from ns_studio.learn import importer, reweight, status
@@ -256,6 +257,8 @@ def _run_jobs(
         if dry_run:
             typer.echo("plan: " + " -> ".join(run_job(ctx, dry_run=True)))
             return
+        # a resumed job needs only what its unfinished stages still write; refused (NS-E104) before it starts
+        require_story_room(env.paths, env.log, ctx.channel, ctx.fmt, fake=env.fake, resume_dir=ctx.job_dir)
         ran = run_job_guarded(ctx, resume=True)
         rows = env.db.query("select output_id from outputs where job_id=?", (ctx.job_id,))
         # the Queue card of an interrupted job is done now
@@ -271,6 +274,8 @@ def _run_jobs(
         jobs.prepare_plan(job_fmt, policy)
         for _ in range(count):
             require_footage_key(env.services)  # before any GPU work: `clips` would fail an hour in
+            # and before the job exists: a drive with less room than the job needs writes nothing (D-33)
+            require_story_room(env.paths, env.log, ch, job_fmt, fake=env.fake)
             if script is not None:
                 ctx = jobs.make_script_job(env, ch, job_fmt, script, title, rng=rng)
             else:
@@ -308,11 +313,26 @@ def _daily(env: jobs.Env, dry_run: bool, policy: bool | None) -> None:
         typer.echo(f"job {j['job_id']} done: {j['stages']} stages ({j['channel']}){resumed}")
     for f in report["failures"]:
         typer.echo(f"job {f['job_id']} FAILED {f['code']}: {f['error']}")
+    for r in report.get("no_room", []):
+        typer.echo(f"{r['channel']}: {r['jobs']} x {r['format']} NOT STARTED, no room: {r['message']}")
     for bad_slug, problem in report.get("unreadable_profiles", []):
         typer.echo(f"channel {bad_slug} NOT RUN, its profile cannot be read: {problem}")
     typer.echo(f"backup: {report['backup']}")
-    if report["failures"]:
-        raise typer.Exit(1)
+    code = nightly_exit_code(report)
+    if code:
+        raise typer.Exit(code)
+
+
+def nightly_exit_code(report: dict[str, Any]) -> int:
+    """1 when a job failed, or when nothing was made and a lack of disk room is why (D-33), else 0.
+
+    The scheduled task's last result is this code. A night that refused every job for room made nothing and
+    must not read as a success; a night that made some videos and refused the rest exits 0 (the videos
+    exist) and says the rest in the morning note, the Last night card and the console.
+    """
+    if report.get("failures"):
+        return 1
+    return 1 if report.get("no_room") and not report.get("jobs") else 0
 
 
 

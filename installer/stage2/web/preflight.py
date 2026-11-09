@@ -15,7 +15,8 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
-from installer.stage2.devmode import MIN_FREE_GB, MIN_RAM_GB, relax_checks
+import ns_common.diskneed as diskneed
+from installer.stage2.devmode import MIN_RAM_GB, relax_checks
 from installer.stage2.sysinfo import is_blackwell
 from installer.stage2.web.pathcheck import (
     FOLDER_FOREIGN,
@@ -23,7 +24,7 @@ from installer.stage2.web.pathcheck import (
     foreign_warning,
     home_problem,
 )
-from installer.stage2.web.plan import pinned, required_free_gb
+from installer.stage2.web.plan import home_need, pinned
 
 COPY_FILE = Path(__file__).with_name("operator_copy.json")
 DRIVER_URL = "https://www.nvidia.com/Download/index.aspx"
@@ -96,7 +97,7 @@ ROW_COPY: dict[tuple[str, str], tuple[str, str]] = {
     ("ram", "warn"): ("Less memory than recommended", "Setup continues with the Small model only"),
     ("disk", "warn"): (
         "Less free space than recommended",
-        "Setup fits, but leaves little room for videos. 60 GB keeps about a month of them",
+        "Setup fits, but leaves little room for videos",
     ),
     ("winget", "warn"): (
         "winget is not available",
@@ -152,15 +153,40 @@ def folder_bytes(folder: str | Path) -> int:
     return total
 
 
-def raw_disk_rows(
-    pf: dict[str, Any], home: str, held_gb: Callable[[], float] | None = None
-) -> list[dict[str, Any]]:
-    """The disk and disktype lines for ``home``, with the same rules as stage 1's Get-PreflightRows.
+def default_need(pf: dict[str, Any], home: str, tier: str = "small") -> diskneed.Need:
+    """The space an install at ``home`` needs, with every default (the shipped manifest, Small).
 
-    ``held_gb`` (a locked resume) says how much of the install folder is setup's own work. Below the hard
-    limit the row is still only a warning when free space plus that amount reaches the limit: the shortfall
-    is the models, programs and environments already on the drive, and the 2 GB guard during downloads and
-    NS-E104 from the steps still protect the run.
+    The setup window passes the real thing (its manifest, the tier, the custom model, the models folder) as
+    ``need``; this is for a caller that has only the PC check, and for a dev install (the fixed 10 GB).
+    """
+    return home_need(
+        _shipped(), home, tier, dev=bool(pf.get("dev_mode")), profile=str(pf.get("profile") or "gpu"),
+        llama_pair=str(pf.get("llama_pair") or "") or None, cuda=str(pf.get("cuda") or "") or None,
+    )
+
+
+_shipped_cache: dict[str, Any] | None = None
+
+
+def _shipped() -> dict[str, Any]:
+    global _shipped_cache
+    if _shipped_cache is None:
+        _shipped_cache = diskneed.shipped_manifest()
+    return _shipped_cache
+
+
+def raw_disk_rows(
+    pf: dict[str, Any], home: str, held_gb: Callable[[], float] | None = None,
+    need: diskneed.Need | None = None,
+) -> list[dict[str, Any]]:
+    """The disk and disktype lines for ``home``: the space THIS install needs against the free space there.
+
+    ``need`` (``diskneed.Need``) is worked out from the manifest and from what is already in ``home``; without
+    it the defaults are used (``default_need``). The row says the number, what it is made of and how much is
+    free in one line, and fails when the free space is less than the number. ``held_gb`` (a locked resume)
+    says how much of the install folder is setup's own work: below the number the row is still only a warning
+    when free space plus that amount reaches it, and the 2 GB guard during downloads and NS-E104 from the
+    steps still protect the run.
     """
     letter = home[:1].upper() if len(home) > 1 and home[1] == ":" else ""
     drive = next((d for d in drives_view(pf) if d["letter"] == letter), None)
@@ -168,24 +194,24 @@ def raw_disk_rows(
     if drive is None:
         return [{**base, "status": "fail", "code": "NS-E104", "value": f"drive of {home} not found"},
                 {"id": "disktype", "label": "Disk type", "status": "ok", "code": "", "value": "unknown"}]
+    need = need if need is not None else default_need(pf, home)
     free = drive["freeGb"]
-    held = held_gb() if free < 40 and held_gb is not None else 0.0
+    free_bytes = int(free * diskneed.GIB)
+    short = free_bytes < need.total
+    held = held_gb() if short and held_gb is not None else 0.0
+    sentence = need.sentence(free_bytes, f"{letter}:", subject="This install")
     if pf.get("dev_mode"):
-        base = {**base, "label": "Free disk space"}
-        if free < MIN_FREE_GB:
+        if short:
             disk = {**base, "status": "fail", "code": "NS-E104",
-                    "value": f"{free:g} GB free on {letter}: (dev mode needs {MIN_FREE_GB} GB)"}
+                    "value": f"{free:g} GB free on {letter}: (dev mode needs {need.gb} GB)"}
         else:
             disk = {**base, "status": "ok", "value": f"{free:g} GB free on {letter}:"}
-    elif free < 40 and free + held >= 40:
-        disk = {**base, "status": "warn",
-                "value": f"{free:g} GB free on {letter}:; setup already holds {held:.0f} GB here"}
-    elif free < 40:
-        disk = {**base, "status": "fail", "code": "NS-E104", "value": f"{free:g} GB free on {letter}:"}
-    elif free < 60:
-        disk = {**base, "status": "warn", "value": f"{free:g} GB free on {letter}: (60 GB recommended)"}
+    elif short and free_bytes + held * diskneed.GIB >= need.total:
+        disk = {**base, "status": "warn", "value": f"{sentence}; setup already holds {held:.0f} GB here"}
+    elif short:
+        disk = {**base, "status": "fail", "code": "NS-E104", "value": sentence}
     else:
-        disk = {**base, "status": "ok", "value": f"{free:g} GB free on {letter}:"}
+        disk = {**base, "status": "ok", "value": sentence}
     if drive["type"] == "HDD":
         kind = {"id": "disktype", "label": "Disk type", "status": "warn", "code": "NS-W106",
                 "value": f"{letter}: is a hard disk"}
@@ -196,18 +222,19 @@ def raw_disk_rows(
 
 
 def check_rows(
-    pf: dict[str, Any], home: str | None = None, held_gb: Callable[[], float] | None = None
+    pf: dict[str, Any], home: str | None = None, held_gb: Callable[[], float] | None = None,
+    need: diskneed.Need | None = None,
 ) -> list[dict[str, Any]]:
     """One CheckRow per line of the hand-over JSON, in screen order.
 
     With ``home`` the disk lines are worked out again for that install folder (drive picker, typed path).
-    ``held_gb`` is given on a locked resume (see ``raw_disk_rows``).
+    ``held_gb`` is given on a locked resume and ``need`` is what the install needs there (``raw_disk_rows``).
     """
     rows: list[dict[str, Any]] = []
     source = list(pf.get("checks") or [])
     if home:
         source = [c for c in source if c.get("id") not in ("disk", "disktype")]
-        source += raw_disk_rows(pf, home, held_gb)
+        source += raw_disk_rows(pf, home, held_gb, need)
     for c in source:
         row_id = str(c.get("id", ""))
         if row_id not in CHECK_IDS:
@@ -225,8 +252,8 @@ def check_rows(
                 if row_id == "network":
                     what = NETWORK_FAIL_TEXT if status == "fail" else ROW_COPY[("network", "warn")][1]
                 if row_id == "disk" and status == "fail":
-                    need = MIN_FREE_GB if pf.get("dev_mode") else 60
-                    what = f"Free {need} GB on this drive, or pick another drive below"
+                    shown = need if need is not None else default_need(pf, home or str(diskneed.NO_HOME))
+                    what = f"Free {shown.gb} GB on this drive, or pick another drive below"
             elif (row_id, status) in ROW_COPY:
                 title, what = ROW_COPY[(row_id, status)]
             else:
@@ -279,8 +306,10 @@ def _gb(mb: float | None) -> float:
     return round((mb or 0) / 1024.0, 1)
 
 
-def machine_summary(pf: dict[str, Any], home: str, tier: str) -> dict[str, Any]:
-    """MachineSummary for the Hardware screen and its three meters."""
+def machine_summary(
+    pf: dict[str, Any], home: str, tier: str, need: diskneed.Need | None = None
+) -> dict[str, Any]:
+    """MachineSummary for the Hardware screen and its three meters (the disk meter's need is ``need``)."""
     gpu = pf.get("gpu") or {}
     drives = drives_view(pf)
     letter = home[:1].upper() if len(home) > 1 and home[1] == ":" else ""
@@ -292,6 +321,7 @@ def machine_summary(pf: dict[str, Any], home: str, tier: str) -> dict[str, Any]:
     default_os = str(os_row.get("value", "Windows"))
     windows = f"{caption} {pf.get('os_version', '')}".strip() if caption else default_os
     dev = bool(pf.get("dev_mode"))
+    need_gb = (need if need is not None else default_need(pf, home, tier)).gb
     return {
         "windows": windows,
         "gpuName": gpu.get("name") or None,
@@ -306,8 +336,7 @@ def machine_summary(pf: dict[str, Any], home: str, tier: str) -> dict[str, Any]:
             "vram": {"haveGb": _gb(vram_mb), "needGb": 16, "hardMinGb": 8},
             "ram": {"haveGb": round(ram, 1), "needGb": MIN_RAM_GB if dev else 16,
                     "hardMinGb": MIN_RAM_GB if dev else 8},
-            "disk": {"haveGb": free, "needGb": required_free_gb(tier, dev=dev),
-                     "hardMinGb": MIN_FREE_GB if dev else 40, "path": home},
+            "disk": {"haveGb": free, "needGb": need_gb, "hardMinGb": need_gb, "path": home},
         },
     }
 
@@ -409,12 +438,14 @@ def disk_check(
     existing_fn: Callable[[str], str | None] | None = None,
     kind_fn: Callable[[str], str] | None = None,
     dev: bool = False,
+    need_fn: Callable[[str], diskneed.Need] | None = None,
 ) -> dict[str, Any]:
     """DiskCheck for an install folder (or, with ``models``, for a models folder).
 
     The install folder must be an absolute path on a local fixed drive (no network or removable drives),
-    at most 120 characters, and the drive needs the plan's free space. Spaces and non-ASCII letters are fine.
-    Nothing is created: setup makes the folder when Install starts.
+    at most 120 characters, and the drive needs the space THIS install needs there: ``need_fn(path)`` (the
+    window passes its manifest, tier, custom model and models folder), else the defaults. Spaces and non-ASCII
+    letters are fine. Nothing is created: setup makes the folder when Install starts.
 
     ``layout_fn`` says why the folder clashes with where the program was extracted or lives in Downloads or
     OneDrive; ``existing_fn`` names an install that is already in the folder (setup then updates it).
@@ -422,7 +453,13 @@ def disk_check(
     folder is not looked at): ``folder`` carries the answer, and a foreign folder (other files, not
     Nightshift) gets a ``warning`` the window shows and the person confirms (D-21). It stays ``ok``.
     """
-    need = required_free_gb(tier, dev=dev)
+    def need_at(where: str) -> diskneed.Need:
+        if need_fn is not None:
+            return need_fn(where)
+        return home_need(_shipped(), where, tier, dev=dev)
+
+    need_obj = need_at(str(diskneed.NO_HOME))
+    need = need_obj.gb
     result: dict[str, Any] = {
         "path": path, "exists": os.path.exists(path), "drive": None, "freeGb": None, "type": "Unknown",
         "needGb": need, "ok": False, "message": None, "modelsFound": models,
@@ -460,8 +497,10 @@ def disk_check(
         except OSError:
             result["message"] = f"Drive {letter}: was not found"
             return result
+    need_obj = need_at(path)
+    need = result["needGb"] = need_obj.gb
     free = float(result["freeGb"])
-    result["ok"] = free >= need
+    result["ok"] = free * diskneed.GIB >= need_obj.total
     if result["ok"]:
         kind = f" ({result['type']})" if result["type"] != "Unknown" else ""
         result["message"] = f"{free:.0f} GB free on {letter}:{kind}"
@@ -474,7 +513,8 @@ def disk_check(
         elif what == FOLDER_KEPT:
             result["message"] += ". The data an earlier Nightshift left here is kept and used"
     else:
-        result["message"] = f"Only {free:.0f} GB free on {letter}:. Nightshift needs {need} GB"
+        result["message"] = (f"Only {free:.0f} GB free on {letter}:. This install needs about {need} GB "
+                             f"({need_obj.makeup()})")
     return result
 
 
