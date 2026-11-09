@@ -62,10 +62,9 @@ jobs:
   test-shard:
     name: test-shard (${{ matrix.shard }}/4)
     runs-on: windows-latest
-    # Predicted: about 9.5 minutes of tests plus about 3 of setup (the slowest shard, dev/ci_shards.py plan), 12.8 in
-    # all. Twice that is 26, which also leaves room for a slow runner. The old single job needed 28 minutes of tests
-    # alone.
-    timeout-minutes: 26
+    # Predicted: about 8 minutes of tests plus about 3 of setup (the slowest shard, dev/ci_shards.py plan), 11 in
+    # all. Twice that is 22; 25 leaves room for a slow runner. The old single job needed 28 minutes of tests alone.
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
