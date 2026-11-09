@@ -410,9 +410,86 @@ def test_the_failed_screen_names_the_host_and_says_it_is_their_side(tmp_path, mo
     assert g["title"] == "A download site cannot be reached" and "internet" in g["whatToDo"]
 
 
-def test_ns_e105_text_in_errors_json_says_the_site_side_and_the_rerun():
+def test_the_shared_ns_e105_hint_is_generic_and_only_the_site_error_says_it_waited():
+    """The hint is printed for every NS-E105 (uv, the bootstrap downloads, ``ns update --git``), and none of
+    those waited ten minutes or can say "run INSTALL.cmd again". The sentence belongs to the detail of the
+    one raiser that really waited."""
+    from installer.stage2.errors import uv_error
+    from installer.stage2.runner import RunResult
     from ns_common.errors import describe
 
     d = describe("NS-E105")
-    assert "site" in d.message
-    assert "their side" in d.hint and "INSTALL.cmd" in d.hint and "internet" in d.hint
+    assert "unreachable" in d.message
+    for claim in ("waited", "10 minutes", "INSTALL.cmd", "their side", "5xx", "continues"):
+        assert claim not in d.hint, claim
+    assert "internet" in d.hint and "huggingface.co" in d.hint
+    # an error that never waited carries no such claim anywhere in what a person reads
+    uv = uv_error("uv pip install", RunResult(2, "error: 503 Service Unavailable"))
+    assert uv.code == "NS-E105"
+    assert "waited" not in f"{uv.detail} {uv.definition.hint}"
+    # the raiser that did wait says it in its own detail
+    err = dl.site_error(URL, 503, "Service Unavailable", 600.0)
+    assert err.code == "NS-E105"
+    assert "for 10 min" in err.detail and "INSTALL.cmd again later" in err.detail
+    assert "continues where it stopped" in err.detail and "download site's side" in err.detail
+
+
+def test_the_wait_note_stays_on_the_row_through_every_progress_tick_of_a_window_run(tmp_path, monkeypatch):
+    """Real downloader -> real BridgeReporter -> the controller's ``_ev_file``, event by event. A wait longer
+    than 5 s sends a progress tick every 5 s; the row used to be blank for those other 55 s of each minute."""
+    from types import SimpleNamespace
+
+    from installer.stage2 import bridge
+    from tests.test_installer_web_controller import Setup
+
+    s = Setup(tmp_path, monkeypatch)
+    s.accept()
+    t = FakeTime()
+    monkeypatch.setattr(bridge, "time", SimpleNamespace(monotonic=t.clock))  # 5 s slices pass the throttle
+    out = io.StringIO()
+    item = dl.DownloadItem(name="llama", url=URL, dest=tmp_path / "a.bin", sha256=SHA)
+    client, _ = scripted([504, 504, 504, 504, 504])  # waits 2, 4, 8, 16, 32 s: 8, 16 and 32 are sliced
+    res = dl.run_plan([item], client=client, reporter=BridgeReporter(BridgeUi(out=out)), sleep=t.sleep)
+    assert res.downloaded == ["llama"]
+    events = [json.loads(x) for x in out.getvalue().splitlines()]
+    assert sum(1 for e in events if e["event"] == "progress") >= 8, "the slices did send progress ticks"
+
+    notes: list[tuple[str, str | None]] = []
+    for ev in events:
+        s.ctl._ev_file(ev)
+        row = next(r for r in s.snap()["downloads"]["items"] if r["key"] == "llama")
+        notes.append((ev["event"], row["note"]))
+    first_wait = next(i for i, (e, _n) in enumerate(notes) if e == "retry")
+    moved = next(i for i, e in enumerate(events) if e["event"] == "progress" and e["done"] > 0)
+    during = notes[first_wait:moved]  # every event from the first wait to the first byte of the file
+    assert during and all(n and "github.com answers 504 (their side)" in n for _e, n in during), during
+    final = next(r for r in s.snap()["downloads"]["items"] if r["key"] == "llama")
+    assert final["status"] == "done" and final["bytesDone"] == len(DATA)
+
+
+def test_the_wait_note_goes_once_the_file_moves_again(tmp_path, monkeypatch):
+    from tests.test_installer_web_controller import Setup
+
+    s = Setup(tmp_path, monkeypatch)
+    s.accept()
+
+    def row():
+        return next(r for r in s.snap()["downloads"]["items"] if r["key"] == "llama")
+
+    def ev(event, **kw):
+        s.ctl._ev_file({"type": "file", "key": "llama", "event": event, **kw})
+
+    def site_wait(left):
+        ev("retry", attempt=0, reason="site", waitS=8.0, of=0, host="github.com", status=504, leftS=left)
+
+    ev("start", total=1000)
+    ev("progress", done=400, total=1000)
+    site_wait(500.0)
+    ev("progress", done=400, total=1000)
+    assert "answers 504" in row()["note"], "a tick with the same bytes is still the wait"
+    ev("progress", done=500, total=1000)
+    assert row()["note"] is None, "bytes moved: the wait is over"
+    site_wait(400.0)
+    ev("retry", attempt=1, reason="stall", waitS=2.0, of=3)
+    ev("progress", done=500, total=1000)
+    assert row()["note"] is None, "another kind of retry ended the site wait"
