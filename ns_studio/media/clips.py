@@ -22,6 +22,8 @@ from ns_common.logging import NsLogger
 from ns_common.paths import Paths
 from ns_studio.context import JobContext
 from ns_studio.media.clip_sources import ClipCandidate, ClipSource, Orientation, give_log
+from ns_studio.media.formats import footage_orientation, shot_range
+from ns_studio.media.job_formats import job_format
 from ns_studio.media.presets import visual_treatment
 from ns_studio.media.shotplan import Shot, ShotSlot, beat_spans, plan_slots
 from ns_studio.media.transcribe import Word
@@ -508,6 +510,7 @@ class ClipsStage:
         parts = ctx.read_json("parts.json")
         plan = ctx.read_json("visual_plan.json")
         treatment = visual_treatment(ctx.combo.visual_treatment)
+        fmt = job_format(ctx, "short")
         cache = ClipCache(ctx.db, ctx.paths, ctx.services.clip_sources, log=ctx.log)
         cache.purge_expired()
         searcher = Searcher(ctx.services.clip_sources, log=ctx.log, lemma=make_lemmatizer(ctx.paths))
@@ -520,11 +523,11 @@ class ClipsStage:
             beats = [b for b in plan if b.get("part") in (n, None)] or [fallback_beat(ctx)]
             total_s = float(timeline["audio_s"])
             spans = beat_spans(beats, words, total_s)
-            slots = plan_slots(spans, treatment.cut_range_s)
+            slots = plan_slots(spans, shot_range(treatment.cut_range_s, fmt))
             seed = clip_seed(ctx, f"s{n}")
             shots = assign_clips(
                 beats=beats, slots=slots, searcher=searcher, cache=cache, blocked=blocked, seed=seed,
-                extra_keywords=ctx.channel.seed_keywords,
+                wanted=footage_orientation(fmt), extra_keywords=ctx.channel.seed_keywords,
             )
             out[f"s{n}"] = {
                 "total_s": total_s,

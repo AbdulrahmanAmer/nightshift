@@ -12,8 +12,10 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-from ns_common.models import Channel
+from ns_common.models import Channel, Format
 from ns_studio.media.captions import DEFAULT_SAFE_ZONES, Box, Variant, build_ass, group_words
+from ns_studio.media.formats import reference_canvas, variant_for, written
+from ns_studio.media.layout import caption_anchor_pct
 from ns_studio.media.presets import CaptionStyle, caption_style
 from ns_studio.media.transcribe import Word
 
@@ -150,6 +152,40 @@ class AssOptions:
     speaker_breaks: tuple[int, ...] = ()
     mask_profanity: bool = False
     anchor_y_pct: float | None = None
+    #: The frame size when it is not the variant's own, and the most words on screen: both come from a format.
+    canvas: tuple[int, int] | None = None
+    max_words: int | None = None
+
+    @classmethod
+    def for_format(cls, fmt: Format, **rest: Any) -> AssOptions:
+        """Options a format dictates: geometry variant, safe margins, caption anchor, frame size, word cap.
+
+        The anchor is the seam between the first two regions when the format puts captions on it, else the
+        file's own `captions.anchor_y_pct` when it writes one, else None (the caption style's own place). The
+        shipped Short gives exactly the options the renders used before formats were read. `rest` (emphasis,
+        avoid regions, speakers, ...) is passed on and wins over what the format says.
+        """
+        variant = variant_for(fmt)
+        # a file that writes no safe_margins keeps the platform zones of its variant, as before formats
+        zones = (
+            (fmt.safe_margins.top, fmt.safe_margins.bottom)
+            if written(fmt, "safe_margins")
+            else safe_zones_for(variant)
+        )
+        if fmt.layout.seam_captions and len(fmt.layout.regions) > 1:
+            anchor: float | None = caption_anchor_pct(fmt)
+        else:
+            anchor = fmt.captions.anchor_y_pct if written(fmt, "captions.anchor_y_pct") else None
+        size = (fmt.canvas.w, fmt.canvas.h)
+        args: dict[str, Any] = {
+            "variant": variant,
+            "safe_zones": zones if any(zones) else None,
+            "anchor_y_pct": anchor,
+            "canvas": None if size == reference_canvas(variant) else size,
+            "max_words": fmt.captions.words_on_screen if written(fmt, "captions.words_on_screen") else None,
+        }
+        args.update(rest)
+        return cls(**args)
 
     def kwargs(self) -> dict[str, Any]:
         """Keyword arguments for `build_ass` (empty collections become None, the builder's "off")."""
@@ -162,6 +198,8 @@ class AssOptions:
             "speaker_breaks": self.speaker_breaks,
             "mask_profanity": self.mask_profanity,
             "anchor_y_pct": self.anchor_y_pct,
+            "canvas": self.canvas,
+            "max_words": self.max_words,
         }
 
     def build(
@@ -182,6 +220,8 @@ class AssOptions:
             "speaker_breaks": list(self.speaker_breaks),
             "mask_profanity": self.mask_profanity,
             "anchor_y_pct": self.anchor_y_pct,
+            "canvas": list(self.canvas) if self.canvas else None,
+            "max_words": self.max_words,
         }
 
     @classmethod
@@ -190,6 +230,7 @@ class AssOptions:
         if not d:
             return cls()
         zones = d.get("safe_zones")
+        canvas = d.get("canvas")
         return cls(
             variant="landscape" if d.get("variant") == "landscape" else "vertical",
             safe_zones=(int(zones[0]), int(zones[1])) if zones else None,
@@ -199,4 +240,6 @@ class AssOptions:
             speaker_breaks=tuple(int(i) for i in d.get("speaker_breaks", [])),
             mask_profanity=bool(d.get("mask_profanity", False)),
             anchor_y_pct=None if d.get("anchor_y_pct") is None else float(d["anchor_y_pct"]),
+            canvas=(int(canvas[0]), int(canvas[1])) if canvas else None,
+            max_words=int(d["max_words"]) if d.get("max_words") else None,
         )

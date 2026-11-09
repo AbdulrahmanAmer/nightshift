@@ -2,9 +2,9 @@
 id: clip_screen_plus_cam
 name: "Clip: screen + camera"
 kind: clip
-canvas: {w: 1080, h: 1920, fps: 30}
+canvas: {w: 1080, h: 1920}
 duration: {min_s: 15, max_s: 90}
-captions: {styles_allowed: [punch_yellow, clean_white, boxed_dark, minimal_lower], anchor_y_pct: 33, words_on_screen: 3}
+captions: {styles_allowed: [punch_yellow, clean_white, boxed_dark, minimal_lower], anchor_y_pct: 33}
 layout:
   seam_captions: true
   regions:
@@ -12,5 +12,4 @@ layout:
     - {name: screen, x: 0, y: 640, w: 1080, h: 1280, source: screen}
 safe_margins: {top: 220, bottom: 320}
 shots: {min_s: 2, max_s: 6}
-encoder: {preset: p4}
 sheet: {hashtags_required: ["#Shorts"], description_rules: "Honest description with 'Clip from: <source title>'."}

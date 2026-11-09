@@ -1,0 +1,31 @@
+[Script Info]
+ScriptType: v4.00+
+PlayResX: 1080
+PlayResY: 1920
+WrapStyle: 0
+ScaledBorderAndShadow: yes
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,Arial,74,&H00FFFFFF,&H00FFFFFF,&H00000000,&H64000000,-1,0,0,0,100,100,0,0,1,5.0,1.0,2,80,80,499,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:00.00,0:00:00.40,Default,,0,0,0,,{\c&HFFE38F&}Someone{\c&HFFFFFF&\fscx100\fscy100} is watching.
+Dialogue: 0,0:00:00.40,0:00:00.60,Default,,0,0,0,,Someone {\c&HFFE38F&}is{\c&HFFFFFF&\fscx100\fscy100} watching.
+Dialogue: 0,0:00:00.60,0:00:01.60,Default,,0,0,0,,Someone is {\c&HFFE38F&}watching.{\c&HFFFFFF&\fscx100\fscy100}
+Dialogue: 0,0:00:01.60,0:00:01.80,Default,,0,0,0,,{\c&HFFE38F&}The{\c&HFFFFFF&\fscx100\fscy100} doorbell camera
+Dialogue: 0,0:00:01.80,0:00:02.30,Default,,0,0,0,,The {\c&HFFE38F&}doorbell{\c&HFFFFFF&\fscx100\fscy100} camera
+Dialogue: 0,0:00:02.30,0:00:02.84,Default,,0,0,0,,The doorbell {\c&HFFE38F&}camera{\c&HFFFFFF&\fscx100\fscy100}
+Dialogue: 0,0:00:02.80,0:00:03.20,Default,,0,0,0,,{\c&HFFE38F&}pings{\c&HFFFFFF&\fscx100\fscy100} every night.
+Dialogue: 0,0:00:03.20,0:00:03.50,Default,,0,0,0,,pings {\c&HFFE38F&}every{\c&HFFFFFF&\fscx100\fscy100} night.
+Dialogue: 0,0:00:03.50,0:00:04.45,Default,,0,0,0,,pings every {\c&HFFE38F&}night.{\c&HFFFFFF&\fscx100\fscy100}
+Dialogue: 0,0:00:04.80,0:00:04.90,Default,,0,0,0,,{\c&HFFE38F&}I{\c&HFFFFFF&\fscx100\fscy100} stopped checking
+Dialogue: 0,0:00:04.90,0:00:05.30,Default,,0,0,0,,I {\c&HFFE38F&}stopped{\c&HFFFFFF&\fscx100\fscy100} checking
+Dialogue: 0,0:00:05.30,0:00:05.84,Default,,0,0,0,,I stopped {\c&HFFE38F&}checking{\c&HFFFFFF&\fscx100\fscy100}
+Dialogue: 0,0:00:05.80,0:00:05.90,Default,,0,0,0,,{\c&HFFE38F&}the{\c&HFFFFFF&\fscx100\fscy100} {\c&HFFE38F&\fscx115\fscy115}clips.{\c&HFFFFFF&\fscx100\fscy100}
+Dialogue: 0,0:00:05.90,0:00:06.85,Default,,0,0,0,,the {\c&HFFE38F&\fscx115\fscy115}clips.{\c&HFFFFFF&\fscx100\fscy100}
+Dialogue: 0,0:00:07.20,0:00:07.50,Default,,0,0,0,,{\c&HFFE38F&}Watch{\c&HFFFFFF&\fscx100\fscy100} the full story.
+Dialogue: 0,0:00:07.50,0:00:07.60,Default,,0,0,0,,Watch {\c&HFFE38F&}the{\c&HFFFFFF&\fscx100\fscy100} full story.
+Dialogue: 0,0:00:07.60,0:00:07.90,Default,,0,0,0,,Watch the {\c&HFFE38F&}full{\c&HFFFFFF&\fscx100\fscy100} story.
+Dialogue: 0,0:00:07.90,0:00:08.75,Default,,0,0,0,,Watch the full {\c&HFFE38F&}story.{\c&HFFFFFF&\fscx100\fscy100}

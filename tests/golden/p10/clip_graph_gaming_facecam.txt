@@ -1,0 +1,1 @@
+[0:v]setpts=PTS-STARTPTS,fps=30,setsar=1[src];[src]split=2[src_0][src_1];[src_0]crop=320:180:944:16,scale=1080:608:flags=lanczos[r0];[src_1]crop=592:720:176:0,scale=1080:1312:flags=lanczos[r1];color=c=black:s=1080x1920:r=30:d=7.000[base];[base][r0]overlay=0:0:shortest=1[o0];[o0][r1]overlay=0:608:shortest=1[v0];[v0]format=yuv420p,ass='<TMP>/captions/c1.ass'[vout]
