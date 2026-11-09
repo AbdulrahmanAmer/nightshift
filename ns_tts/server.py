@@ -225,7 +225,8 @@ def create_app(engine: Engine, library: VoiceLibrary, *, log: NsLogger | None = 
             "model_loaded": bool(engine.loaded),
         }
         # The fake says how it speaks: voice_mode "sapi" (the text, in the Windows voice named by `voice`) or
-        # "tones" (bursts; `voice_fallback` and `voice_warning` when a SAPI voice was wanted but is missing).
+        # "tones" (bursts; `voice_fallback`, `voice_warning` and `voice_warning_code` (NS-W303) when a SAPI
+        # voice was wanted but is missing).
         describe = getattr(engine, "describe", None)
         info = describe() if callable(describe) else None
         if isinstance(info, dict):
