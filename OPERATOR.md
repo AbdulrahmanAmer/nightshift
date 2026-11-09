@@ -153,16 +153,19 @@ If the same red error comes back after one retry, do not guess: press **Save a h
 
 1. Open **Nightshift Dashboard** on your Desktop. A small "Nightshift Engine" window appears and the dashboard opens
    in its own Nightshift window (no browser tabs; it opens once, a second click brings it to the front). If that window
-   cannot start on this PC, Nightshift opens a browser app window instead by itself and you do nothing.
-2. Press **Run now**, then **shorts_only** (fastest) or **master_first** (a full long video plus Shorts).
-   The bar at the top shows the stages: loading, writing, voicing, captions, clips, rendering, checking, done.
-3. Open **Review**. Watch the video, read the notes, press **Approve** or **Reject** (add a reason).
-4. Press **Open Outbox**, drag the approved MP4 into YouTube Studio, copy the title, description and tags from
-   the sheet, set the answers it shows for AI disclosure and "made for kids", and publish.
-5. Paste the YouTube link into **Mark uploaded**.
-
-Until the Dashboard is part of your version (it arrives in a later release) the developer will tell you what to
-run instead.
+   cannot start on this PC, Nightshift opens a browser app window instead by itself and you do nothing. The
+   dashboard opens on the **Queue** page.
+2. Open **Create**, choose **A new story video**, then **One Short** (fastest, a few minutes) or
+   **Full video + Shorts** (a long video plus Shorts, about an hour). Pick the channel (change the idea or the voice
+   if you want to), leave **When** on now and press **Start**. The job's card in the Queue names the stage it is at:
+   Writing the story, Recording narration, Adding captions, Finding footage, Rendering, Checking quality. A full
+   video says Writing the chapters and Rendering the full video, and adds making thumbnails and cutting the Shorts.
+3. When it is done, open **Queue**, tab **Ready**. Watch the video, read the notes, press **Approve** or **Reject**
+   (Reject asks for a short reason).
+4. The **Post it** list on the right follows YouTube's upload order: **Open** the video file, open YouTube Studio
+   and drag it in, copy the title, description and tags, set the answers it shows for the audience ("made for
+   kids") and "Altered content", and publish.
+5. Paste the YouTube link into the box at the end of the list and press **Done**.
 
 ## Make a narrator voice
 
@@ -217,8 +220,9 @@ step is still to do.
 
 ## If stock footage stops at night
 
-Your Pexels and Pixabay keys are kept in Windows Credential Manager. The night run may start in a Windows session that
-cannot read it, so setup also stores the keys in `config\secrets.dpapi`, a file Windows encrypts for this PC. The night run
+Your stock footage keys (Pixabay, and Pexels if you added one) are kept in Windows Credential Manager. The night run
+may start in a Windows session that cannot read it, so setup also stores the keys in `config\secrets.dpapi`, a file
+Windows encrypts for this PC. The night run
 uses that file when Credential Manager has nothing. The file is useless on another PC and never goes into the
 diagnostics zip. If footage is missing after you moved to another PC, open **Settings > Stock footage keys** in the
 dashboard and save the keys again: it writes both places. Running INSTALL.cmd again does not ask for keys when
@@ -270,6 +274,43 @@ Put your own example stories in `exemplars\` (a `.md` or `.txt` file per story, 
 instead of ours. To change a prompt, copy its file from `ns_studio\prompts\` to `prompt_overrides\` and edit it
 (keep the lines between the `---` marks at the top); a file that does not parse is ignored. Both folders are in
 **Export settings**. Upload sheets show the time zone after the publish time.
+
+## If YouTube sends a warning or strike
+
+If YouTube sends a warning, a strike or a monetization notice about a channel, stop that channel first and look at
+what it made before it makes anything else. Videos that are already made stay in the Queue. The night run skips a
+paused channel and the Dashboard refuses to start a video for it.
+
+Type the commands in a terminal (Windows Terminal or Command Prompt, opened after setup finished) with the full
+path of the studio program in the install folder, `"<install folder>\venvs\studio\Scripts\studio.exe"`; they are
+written as `studio` below. The **Nightshift Studio** shortcut takes the same commands but splits what you type at
+every space, so it cannot take a notice with several words: use a terminal for step 1.
+
+1. **Pause the channel and keep the notice.** `studio pause <channel-id> --reason "<notice text>"` (`studio channel
+   list` shows the ids). The reason is required. It is stored as an incident and `studio status` shows it. The
+   switch on the channel's card in **Channels** pauses it too, but it records no notice text. To have the text on
+   record without the command, ask the **Assistant**: it can pause the channel with your words as the note.
+2. **Review the last 10 outputs** of the channel (`studio resume <channel-id>` lists them, newest first, and asks
+   before it does anything: answer `n` to stay paused; the Queue tabs show the same videos). Check each one against
+   the policy notes the app is built around (spec 18.2 to 18.4):
+   - Policies: is it original writing, not repetitive or template-like content or a repost? Does the sheet answer
+     "Altered content" with Yes when anything could be taken for real footage of a real person, place or event?
+   - Content safety: no real, named people or brands as villains, no real crimes or tragedies presented as fact, no
+     minors in sexual, violent or endangering situations, no graphic gore, self-harm methods, weapon or drug
+     instructions, hate or harassment, no medical, legal, financial or political advice, nothing that imitates
+     news or emergency alerts.
+   - Honest metadata: no "true story", "real" or "happened to me" in a title, description or tag of a fiction
+     video; the hook and the title match what happens; the tags are relevant; the thumbnail shows the story.
+3. **Raise the bar or trim the pools.** `studio channel edit <channel-id> --set critic_bar=8.5` raises the critic's
+   bar (the default is 8; the highest is 10); the Assistant can change it too. To drop the openings, structures,
+   caption looks or footage looks behind the flagged videos, open **Channels**, **Edit channel**, switch them off
+   under **How stories open**, **How stories are built**, **Caption look** and **Footage look**, or add a subject
+   under **Topics to avoid**. The editor warns when a list gets too short (at least 3 openings, 3 structures, 2
+   caption looks and 2 footage looks). Reject the videos you would not post: when at least 5 videos are reviewed and
+   you rejected 40 % or more of the last 10 reviewed, the night run raises the bar by 0.5 by itself, at most once a
+   week.
+4. **Resume.** `studio resume <channel-id>` (add `--yes` to skip the question). The switch in **Channels** resumes at
+   once and shows no list, so do steps 2 and 3 first.
 
 ## Update to a new version
 

@@ -37,7 +37,7 @@ The setup window opens on a short welcome of its own (what Nightshift makes, wha
   8. checks quality and YouTube-policy safety on everything
   9. drops the long-form video, its Shorts, and all upload details into the Outbox
 - **Nightshift Clipper** (in the Dashboard): drop in any long video you own (a stream VOD, a podcast episode, a talking-head recording). Nightshift transcribes it, finds the moments that stand on their own, and cuts each into a vertical clip with captions, using a layout template that fits the video: facecam on top of gameplay, stacked or single-speaker framing for podcasts, tracked crop for talking heads. Every clip gets a title, description and tags and lands in the Outbox like everything else.
-- **Nightshift Dashboard** (shortcut, opens in your browser): channels, the review queue with video preview and approve/reject, tonight's run and its log, the Clipper drop zone and templates, analytics import, pause/resume, and settings.
+- **Nightshift Dashboard** (shortcut, opens in its own Nightshift window): channels, the review queue with video preview and approve/reject, tonight's run and its log, the Clipper drop zone and templates, analytics import, pause/resume, and settings.
 - **You** review each video (`approve` / `reject`) in the Dashboard and upload approved ones in YouTube Studio.
 - Over time, you can feed it your YouTube Analytics export so it learns which hooks, styles and lengths work best for each channel.
 - **Nightshift Code** (optional shortcut): opens a terminal coding assistant (OpenCode) on the local model. It reads, writes and edits code in your projects folder, fully offline.
@@ -66,6 +66,15 @@ The setup window opens on a short welcome of its own (what Nightshift makes, wha
 | Daily run report: what was made, what was rejected and why, timings | Dashboard → Runs, `logs\`, `studio status` |
 | Coding: code changes in your projects | your Projects folder |
 
+
+## If YouTube sends a warning or strike
+
+Stop the channel first, then look at what it made. The longer version, with the review checklist, is in `OPERATOR.md` (spec 18.11).
+
+1. Pause the channel and keep the notice: `studio pause <channel-id> --reason "<notice text>"`. The reason is required. The night run skips a paused channel and `studio status` shows the incident. The switch on the channel's card in the Dashboard (Channels) also pauses it, but it records no notice text.
+2. Review the last 10 outputs against the policy notes in spec 18.2 to 18.4. `studio resume <channel-id>` lists them and asks before it resumes; answer `n` to stay paused.
+3. Raise `critic_bar` (`studio channel edit <channel-id> --set critic_bar=8.5`) or trim the pools (Dashboard, Channels, Edit channel).
+4. Resume: `studio resume <channel-id>`.
 
 ## Developer quick start
 
