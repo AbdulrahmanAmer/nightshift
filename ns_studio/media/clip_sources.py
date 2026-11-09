@@ -23,6 +23,7 @@ from ns_common import ffmpeg as ff
 from ns_common.errors import NsError
 from ns_common.logging import NsLogger
 from ns_studio.media.diskfull import classify_ffmpeg_error, disk_full_error, is_disk_full, remove_partial
+from ns_studio.media.formats import reference_canvas
 
 Orientation = Literal["landscape", "portrait"]
 PEXELS_URL = "https://api.pexels.com"
@@ -457,7 +458,7 @@ class FakeClipSource:
     def search(self, keyword: str, *, orientation: Orientation, per_page: int = 80) -> list[ClipCandidate]:
         """`per_keyword` deterministic candidates tagged with the keyword."""
         self.searches.append((keyword, orientation))
-        w, h = (1080, 1920) if orientation == "portrait" else (1920, 1080)
+        w, h = reference_canvas("vertical" if orientation == "portrait" else "landscape")
         slug = _slug(keyword)
         tag = hashlib.sha1(f"{keyword}|{orientation}".encode()).hexdigest()[:6]
         words = tuple(keyword.lower().split())

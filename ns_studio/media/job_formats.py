@@ -12,7 +12,9 @@ The choice, in this order (Head decision D1):
    or cannot be drawn does not stop the part (it rendered before formats were read): it is skipped, the
    next candidate is used and the job's record says so (`note`, and `why`);
 2. the channel's `formats_allowed`, in list order: the first allowed format of the kind ("first allowed of
-   that kind"), else the first allowed `square` one;
+   that kind"), else the first allowed `square` one. After a design format of the role's own kind was
+   skipped there is no square fallback: a Short the design meant to be 9:16 does not turn square, nor a
+   16:9 full video;
 3. the default (`short_9x16`, `long_16x9`), read through the loader, so the owner's edit of the shipped file
    counts.
 
@@ -43,10 +45,14 @@ if TYPE_CHECKING:
 
 JOB_FORMATS_FILE = "formats.json"
 DEFAULT_IDS = {"short": "short_9x16", "long": "long_16x9"}
-#: Video kinds whose renders draw from their format today. `long` joins when the master does (package P10b).
-ROLES_APPLIED: tuple[str, ...] = ("short",)
+#: Video kinds whose renders draw from their format: Shorts since P10a, full videos (masters and series
+#: parts) since P10b.
+ROLES_APPLIED: tuple[str, ...] = ("short", "long")
 #: Roles recorded per job format (`JobContext.fmt`); clips and series compilations choose per clip.
-ROLES_BY_PLAN: dict[str, tuple[str, ...]] = {"shorts_only": ("short",), "master_first": ("short",)}
+ROLES_BY_PLAN: dict[str, tuple[str, ...]] = {
+    "shorts_only": ("short",),
+    "master_first": ("short", "long"),
+}
 NO_ROLES = ("clip", "series_compilation")
 _PRIMARY_KINDS = {"short": ("short",), "long": ("long",)}
 
@@ -109,23 +115,27 @@ def _design_pick(
     primary: tuple[str, ...],
     paths: Paths | None,
     log: NsLogger | None,
-) -> tuple[Resolved | None, str | None]:
-    """(the design's format, None) when it can draw `role`; (None, why not) when it is named but unusable.
+) -> tuple[Resolved | None, str | None, str | None]:
+    """(the design's format, None, None) when it can draw `role`; (None, why not, its kind) when unusable.
 
-    (None, None) means the design's format is simply for the other kind of video (a `long` one has no
+    (None, None, None) means the design's format is simply for the other kind of video (a `long` one has no
     Short to shape): nothing to report. A format that is unknown, does not load or cannot be drawn is
-    reported with the reason; the caller carries on with the next candidate, as for `formats_allowed`.
+    reported with the reason; the caller carries on with the next candidate, as for `formats_allowed`. The
+    kind is the one the format's file declares (None when even that cannot be read).
     """
+    kind: str | None
     try:
         fmt = F.get_format(design_id, paths=paths)
     except StudioError as e:
         reason = e.detail
+        kind = F.declared_kind(design_id, paths=paths)
     else:
+        kind = fmt.kind
         if not (fmt.kind in primary or (role == "long" and fmt.kind == "square")):
-            return None, None
+            return None, None, None
         problems = F.story_role_problems(fmt)
         if not problems:
-            return _finish(role, design_id, "series design", paths, log), None
+            return _finish(role, design_id, "series design", paths, log), None, None
         reason = "; ".join(problems)
     reason = reason[:300]
     _warn(
@@ -136,7 +146,7 @@ def _design_pick(
         role=role,
         format_id=design_id,
     )
-    return None, reason
+    return None, reason, kind
 
 
 def resolve_role(
@@ -155,11 +165,16 @@ def resolve_role(
     nothing in a non-empty list fits, the default is used and `format_role_not_allowed` is logged.
     """
     skipped: str | None = None
+    squares_ok = True
     if design_id:
-        picked, skipped = _design_pick(role, design_id, _PRIMARY_KINDS[role], paths, log)
+        picked, skipped, kind = _design_pick(role, design_id, _PRIMARY_KINDS[role], paths, log)
         if picked is not None:
             return picked
-    res = _resolve_without_design(role, allowed, paths=paths, log=log)
+        # the owner chose a format of this role's own kind (or one whose kind cannot be told): if it cannot be
+        # drawn, a square the list happens to hold is not what they asked for. A skipped square design may
+        # fall back to another square, and a design for the other kind leaves this role as it was.
+        squares_ok = skipped is None or not (kind is None or kind in _PRIMARY_KINDS[role])
+    res = _resolve_without_design(role, allowed, paths=paths, log=log, squares_ok=squares_ok)
     if skipped is None:
         return res
     said = f"series design format {design_id!r} cannot be used ({skipped})"
@@ -172,8 +187,11 @@ def _resolve_without_design(
     *,
     paths: Paths | None,
     log: NsLogger | None,
+    squares_ok: bool = True,
 ) -> Resolved:
-    """The first allowed format of the kind, else the first allowed square one, else the default."""
+    """The first allowed format of the kind, else the first allowed square one, else the default.
+
+    `squares_ok` False leaves the square formats out (a design format of the role's own kind was skipped)."""
     primary = _PRIMARY_KINDS[role]
     formats = F.load_formats(paths=paths)
     problems_by_id = F.load_problems(paths=paths)
@@ -197,7 +215,7 @@ def _resolve_without_design(
             _warn(log, "format_skipped", f"{fid}: {'; '.join(problems)}", role=role, format_id=fid)
             continue
         (firsts if fmt.kind in primary else squares).append(fid)
-    pick = (firsts or squares or [None])[0]
+    pick = (firsts or (squares if squares_ok else []) or [None])[0]
     if pick is not None:
         why = "first allowed of that kind" if firsts else "first allowed square format"
         return _finish(role, pick, why, paths, log)
@@ -289,48 +307,92 @@ def _validate_doc(doc: Any, roles: Sequence[str]) -> dict[str, Any]:
     return doc
 
 
+def _design_id(ctx: JobContext) -> str | None:
+    """The format a series part's design names (`series_context.json["design"]["format"]`), if any."""
+    design = ctx.series.get("design") if ctx.series else None
+    if isinstance(design, dict) and isinstance(design.get("format"), str):
+        return design["format"]
+    return None
+
+
+def _choose(ctx: JobContext, role: str, *, legacy: bool) -> Resolved:
+    """The format of `role` for this job: the shipped one for a job from before the update, else chosen."""
+    if legacy:
+        return shipped_entry(role)
+    return resolve_role(role, ctx.channel.formats_allowed, _design_id(ctx), paths=ctx.paths, log=ctx.log)
+
+
+def _log_choice(ctx: JobContext, res: Resolved) -> None:
+    ctx.log.info(
+        "job_format",
+        f"{res.role} videos use {res.id} ({res.why})",
+        job_id=ctx.job_id,
+        role=res.role,
+        format_id=res.id,
+        why=res.why,
+        source=res.source,
+    )
+
+
+#: Roles a later package added to the record: a job that an earlier one started lacks them and is not damaged.
+LATER_ROLES: tuple[str, ...] = ("long",)
+ADDED_NOTE = (
+    "this job started before full videos read their format; "
+    "the full video's format was chosen when it resumed"
+)
+
+
+def _add_missing_roles(ctx: JobContext, doc: dict[str, Any], roles: Sequence[str]) -> dict[str, Any]:
+    """`doc` with an entry for each wanted role it lacks (a job that P10a started has no `long` one).
+
+    A job that already finished a stage keeps the shipped definition (what it drew before the update), so the
+    captions it wrote and the render that follows agree; a job that has not drawn anything yet chooses as a
+    new job would. The entry says it was added. The record is rewritten whole, atomically.
+    """
+    missing = [r for r in roles if r in LATER_ROLES and not isinstance(doc.get(r), dict)]
+    earlier = [r for r in roles if r not in LATER_ROLES]
+    if not missing or doc.get("version") != 1 or not all(isinstance(doc.get(r), dict) for r in earlier):
+        return doc  # nothing to add, or a damaged record: `_validate_doc` says what is wrong
+    legacy = _has_done_stage(ctx.job_dir)
+    out = dict(doc)
+    for role in missing:
+        res = _choose(ctx, role, legacy=legacy)
+        if not res.legacy:
+            res = replace(res, note=f"{ADDED_NOTE}; {res.note}" if res.note else ADDED_NOTE)
+        out[role] = res.entry()
+        _log_choice(ctx, res)
+    write_text_atomic(ctx.file(JOB_FORMATS_FILE), json.dumps(out, indent=2, ensure_ascii=False) + "\n")
+    return out
+
+
 def prepare_job_formats(ctx: JobContext) -> dict[str, Any] | None:
     """Choose, record and log the job's formats once; later calls read the record (None: this job has none).
 
     A job that already has completed stages and no `formats.json` was started before the update that brought
     formats into the renderer: it keeps the shipped definitions, so the captions it wrote and the render that
-    follows agree.
+    follows agree. A record that lacks a video kind the job now draws (a full video, for a job P10a started)
+    gets that entry added when the job resumes.
     """
     roles = roles_for(ctx.fmt)
     if not roles:
         return None
     f = ctx.file(JOB_FORMATS_FILE)
     if f.exists():
-        return _validate_doc(ctx.read_json(JOB_FORMATS_FILE), roles)
+        doc = ctx.read_json(JOB_FORMATS_FILE)
+        if isinstance(doc, dict):
+            doc = _add_missing_roles(ctx, doc, roles)
+        return _validate_doc(doc, roles)
     from ns_studio.media.format_notice import notify_owner_formats
 
     notify_owner_formats(ctx.paths, ctx.log)
-    design_id = None
-    series = ctx.series
-    if series:
-        design = series.get("design")
-        if isinstance(design, dict) and isinstance(design.get("format"), str):
-            design_id = design["format"]
     legacy = _has_done_stage(ctx.job_dir)
-    doc: dict[str, Any] = {"version": 1}
+    fresh: dict[str, Any] = {"version": 1}
     for role in roles:
-        res = (
-            shipped_entry(role)
-            if legacy
-            else resolve_role(role, ctx.channel.formats_allowed, design_id, paths=ctx.paths, log=ctx.log)
-        )
-        doc[role] = res.entry()
-        ctx.log.info(
-            "job_format",
-            f"{role} videos use {res.id} ({res.why})",
-            job_id=ctx.job_id,
-            role=role,
-            format_id=res.id,
-            why=res.why,
-            source=res.source,
-        )
-    write_text_atomic(f, json.dumps(doc, indent=2, ensure_ascii=False) + "\n")
-    return doc
+        res = _choose(ctx, role, legacy=legacy)
+        fresh[role] = res.entry()
+        _log_choice(ctx, res)
+    write_text_atomic(f, json.dumps(fresh, indent=2, ensure_ascii=False) + "\n")
+    return fresh
 
 
 def job_format(ctx: JobContext, role: str) -> Format:

@@ -21,7 +21,7 @@ from ns_common.paths import contracts_dir
 from ns_common.textstats import CJK_RANGES, WORD_PATTERN, normalize_tokens, split_sentences
 from ns_studio.context import JobContext
 from ns_studio.media.fake_voice import e403_detail
-from ns_studio.media.formats import style_for_format
+from ns_studio.media.formats import canvas_scale, reference_canvas, style_for_format
 from ns_studio.media.job_formats import job_format
 from ns_studio.media.presets import FONTS_DIR, CaptionStyle, CaptionVariant, caption_style
 from ns_studio.media.transcribe import Word
@@ -319,16 +319,16 @@ def canvas_geometry(
 ) -> tuple[CaptionVariant, int, int]:
     """(geometry, width px, height px) of a style on `canvas`.
 
-    The styles' pixel sizes are written for 1080x1920 (vertical) and 1920x1080 (landscape). On another canvas
-    (a format with its own frame size) font size, side margin, outline and shadow scale with the width, and
-    the
-    height is the canvas's. None or the reference canvas returns `geo` unchanged.
+    The styles' pixel sizes are written for the reference frame of the variant (`formats.reference_canvas`:
+    1080x1920 vertical, 1920x1080 landscape). On another canvas (a format with its own frame size) font
+    size, side margin, outline and shadow scale with the width (`formats.canvas_scale`, the factor the safe
+    margins use too) and the height is the canvas's. None or the reference canvas returns `geo` unchanged.
     """
-    ref_w, ref_h = (1080, 1920) if variant == "vertical" else (1920, 1080)
+    ref_w, ref_h = reference_canvas(variant)
     if canvas is None or (canvas[0], canvas[1]) == (ref_w, ref_h):
         return geo, ref_w, ref_h
     w_px, h_px = canvas
-    k = w_px / ref_w
+    k = canvas_scale(variant, canvas)
     scaled = geo.model_copy(
         update={
             "font_size": max(1, round(geo.font_size * k)),

@@ -559,10 +559,10 @@ def test_clip_and_series_compilation_jobs_record_no_story_formats(tmp_home: Path
         assert JF.prepare_job_formats(ctx) is None and not ctx.file("formats.json").exists()
 
 
-def test_master_first_jobs_record_the_short_format_and_say_so(tmp_home: Path) -> None:
+def test_master_first_jobs_record_the_short_and_the_long_format(tmp_home: Path) -> None:
     ctx = make_ctx(tmp_home, fmt="master_first")
     doc = JF.prepare_job_formats(ctx)
-    assert doc is not None and set(doc) == {"version", "short"}
+    assert doc is not None and set(doc) == {"version", "short", "long"}
 
 
 def probe_job(monkeypatch: pytest.MonkeyPatch, name: str) -> list[str]:

@@ -1,0 +1,134 @@
+# command 0
+-f
+lavfi
+-t
+3.50
+-i
+color=c=0x2A3350:s=1920x1080:r=30
+-ss
+0.00
+-t
+2.90
+-i
+./cache/clips/pexels/1000.mp4
+-ss
+0.50
+-t
+2.80
+-i
+./cache/clips/pexels/1001.mp4
+-filter_complex_script
+./data/jobs/<JOBID>/long/seg_card_parts_handheld_grit.parts/part0000.filtergraph.txt
+-map
+[vout]
+-an
+-c:v
+libx264
+-preset
+veryfast
+-crf
+23
+-maxrate
+12M
+-bufsize
+24M
+-r
+30
+-pix_fmt
+yuv420p
+./data/jobs/<JOBID>/long/seg_card_parts_handheld_grit.parts/part0000.mp4
+# graph
+[0:v]format=yuv420p,ass=filename='<TMP>/home/data/jobs/<JOBID>/captions/card_c1.ass',trim=end_frame=90,setpts=PTS-STARTPTS,setsar=1,fps=30[vc];[1:v]fps=30,setpts=PTS-STARTPTS,scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080,tpad=stop_mode=clone:stop_duration=2,trim=end_frame=72,setpts=PTS-STARTPTS,zoompan=z=1.07:x='iw/2-(iw/zoom/2)+sin(on/9+1.7)*14.0':y='ih/2-(ih/zoom/2)+cos(on/11+1.7)*14.0':d=1:s=1920x1080:fps=30,setsar=1,fps=30[v1];[2:v]fps=30,setpts=PTS-STARTPTS,scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080,tpad=stop_mode=clone:stop_duration=2,trim=end_frame=69,setpts=PTS-STARTPTS,zoompan=z=1.07:x='iw/2-(iw/zoom/2)+sin(on/9+3.4)*14.0':y='ih/2-(ih/zoom/2)+cos(on/11+3.4)*14.0':d=1:s=1920x1080:fps=30,setsar=1,fps=30[v2];[v1][v2]concat=n=2:v=1:a=0[cat];[cat]eq=brightness=-0.03:contrast=1.2:saturation=0.6,curves=preset=increase_contrast,vignette=angle=PI/5,noise=alls=22:allf=t+u,format=yuv420p[vs];[vc][vs]concat=n=2:v=1:a=0[cc];[cc]ass=filename='<TMP>/home/data/jobs/<JOBID>/captions/long_c1.ass':fontsdir='<FONTS>',format=yuv420p[vout]
+# command 1
+-ss
+1.00
+-t
+3.30
+-i
+./cache/clips/pexels/1002.mp4
+-ss
+1.50
+-t
+2.60
+-i
+./cache/clips/pexels/1003.mp4
+-filter_complex_script
+./data/jobs/<JOBID>/long/seg_card_parts_handheld_grit.parts/part0001.filtergraph.txt
+-map
+[vout]
+-an
+-c:v
+libx264
+-preset
+veryfast
+-crf
+23
+-maxrate
+12M
+-bufsize
+24M
+-r
+30
+-pix_fmt
+yuv420p
+./data/jobs/<JOBID>/long/seg_card_parts_handheld_grit.parts/part0001.mp4
+# graph
+[0:v]fps=30,setpts=PTS-STARTPTS,scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080,tpad=stop_mode=clone:stop_duration=2,trim=end_frame=84,setpts=PTS-STARTPTS,zoompan=z=1.07:x='iw/2-(iw/zoom/2)+sin(on/9+5.1)*14.0':y='ih/2-(ih/zoom/2)+cos(on/11+5.1)*14.0':d=1:s=1920x1080:fps=30,setsar=1,fps=30[v0];[1:v]fps=30,setpts=PTS-STARTPTS,scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080,tpad=stop_mode=clone:stop_duration=2,trim=end_frame=63,setpts=PTS-STARTPTS,zoompan=z=1.07:x='iw/2-(iw/zoom/2)+sin(on/9+6.8)*14.0':y='ih/2-(ih/zoom/2)+cos(on/11+6.8)*14.0':d=1:s=1920x1080:fps=30,setsar=1,fps=30[v1];[v0][v1]concat=n=2:v=1:a=0[cat];[cat]eq=brightness=-0.03:contrast=1.2:saturation=0.6,curves=preset=increase_contrast,vignette=angle=PI/5,noise=alls=22:allf=t+u,format=yuv420p[vs];[vs]setpts=PTS+round(7.700000/TB),ass=filename='<TMP>/home/data/jobs/<JOBID>/captions/long_c1.ass':fontsdir='<FONTS>',setpts=PTS-round(7.700000/TB),format=yuv420p[vout]
+# command 2
+-ss
+2.00
+-t
+2.90
+-i
+./cache/clips/pexels/1004.mp4
+-filter_complex_script
+./data/jobs/<JOBID>/long/seg_card_parts_handheld_grit.parts/part0002.filtergraph.txt
+-map
+[vout]
+-an
+-c:v
+libx264
+-preset
+veryfast
+-crf
+23
+-maxrate
+12M
+-bufsize
+24M
+-r
+30
+-pix_fmt
+yuv420p
+./data/jobs/<JOBID>/long/seg_card_parts_handheld_grit.parts/part0002.mp4
+# graph
+[0:v]fps=30,setpts=PTS-STARTPTS,scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080,tpad=stop_mode=clone:stop_duration=2,trim=end_frame=72,setpts=PTS-STARTPTS,zoompan=z=1.07:x='iw/2-(iw/zoom/2)+sin(on/9+8.5)*14.0':y='ih/2-(ih/zoom/2)+cos(on/11+8.5)*14.0':d=1:s=1920x1080:fps=30,setsar=1,fps=30[v0];[v0]concat=n=1:v=1:a=0[cat];[cat]eq=brightness=-0.03:contrast=1.2:saturation=0.6,curves=preset=increase_contrast,vignette=angle=PI/5,noise=alls=22:allf=t+u,format=yuv420p[vs];[vs]setpts=PTS+round(12.600000/TB),ass=filename='<TMP>/home/data/jobs/<JOBID>/captions/long_c1.ass':fontsdir='<FONTS>',setpts=PTS-round(12.600000/TB),format=yuv420p[vout]
+# command 3
+-f
+concat
+-safe
+0
+-i
+./seg_card_parts_handheld_grit.parts/parts.txt
+-map
+0:v
+-c:v
+copy
+-an
+./seg_card_parts_handheld_grit.mp4
+# card captions
+[Script Info]
+ScriptType: v4.00+
+PlayResX: 1920
+PlayResY: 1080
+WrapStyle: 0
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Title,Arial,84,&H00F2F2F2,&H00F2F2F2,&H00000000,&H00000000,-1,0,0,0,100,100,2,0,1,0,0,5,120,120,0,1
+Style: Number,Arial,34,&H00FFA88F,&H00FFA88F,&H00000000,&H00000000,-1,0,0,0,100,100,6,0,1,0,0,5,120,120,0,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:00.00,0:00:01.20,Title,,0,0,0,,{\fad(250,250)}One
+Dialogue: 0,0:00:00.00,0:00:01.20,Number,,0,0,170,,{\fad(250,250)}CHAPTER 1

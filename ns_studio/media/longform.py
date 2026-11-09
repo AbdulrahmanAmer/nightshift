@@ -11,14 +11,10 @@ from typing import Any
 from ns_common import ffmpeg as ff
 from ns_common.errors import NsError
 from ns_common.ffmpeg import concat_list_text
+from ns_common.models import Format
 from ns_studio.context import JobContext
 from ns_studio.media.audio import assemble_audio, loudnorm
-from ns_studio.media.caption_plan import (
-    AssOptions,
-    emphasis_from_beats,
-    mask_profanity_setting,
-    safe_zones_for,
-)
+from ns_studio.media.caption_plan import emphasis_from_beats
 from ns_studio.media.captions import _ass_color as ass_color
 from ns_studio.media.captions import _ass_time as ass_time
 from ns_studio.media.captions import build_ass, caption_band, ensure_contrast, shift_words
@@ -32,12 +28,15 @@ from ns_studio.media.clips import (
     make_lemmatizer,
 )
 from ns_studio.media.diskfull import run_ffmpeg
+from ns_studio.media.formats import canvas_scale, footage_orientation, shot_range
+from ns_studio.media.job_formats import job_format, job_format_entry
 from ns_studio.media.master import (
     CARD_S,
     ChapterTiming,
     load_chapters,
     load_words,
-    long_caption_style,
+    long_options,
+    master_caption_style,
     timeline_from_manifest,
 )
 from ns_studio.media.presets import (
@@ -55,7 +54,6 @@ from ns_studio.media.render import (
     LANDSCAPE,
     ass_filter,
     backdrop_luma,
-    cat_chains,
     clear_parts,
     clip_inputs,
     encoder_args,
@@ -63,7 +61,9 @@ from ns_studio.media.render import (
     join_parts,
     part_folder,
     part_path,
+    picture_chains,
     post_chain,
+    video_for_format,
     with_cpu_fallback,
 )
 from ns_studio.media.shotplan import Shot, beat_spans, plan_slots
@@ -109,19 +109,33 @@ def pick_card(job_id: str) -> ChapterCard:
     return chapter_card(names[zlib.crc32(job_id.encode()) % len(names)])
 
 
-def card_ass(title: str, n: int, card: ChapterCard, duration_s: float = CARD_S) -> str:
-    """ASS document for a title card (1920x1080): the title centred, an optional small chapter number."""
+def card_ass(
+    title: str, n: int, card: ChapterCard, duration_s: float = CARD_S, canvas: tuple[int, int] = LANDSCAPE
+) -> str:
+    """ASS document for a title card: the title centred, an optional small chapter number.
+
+    The sizes of a card are written for a 1920x1080 frame; on another `canvas` the script's PlayRes is the
+    frame and font sizes, spacing and margins scale with its width (identity at 1920x1080).
+    """
+    k = canvas_scale("landscape", canvas)
+
+    def px(v: int) -> int:
+        return round(v * k)
+
     fade = f"{{\\fad({card.fade_ms},{card.fade_ms})}}"
     header = [
-        "[Script Info]", "ScriptType: v4.00+", "PlayResX: 1920", "PlayResY: 1080", "WrapStyle: 0", "",
+        "[Script Info]", "ScriptType: v4.00+", f"PlayResX: {canvas[0]}", f"PlayResY: {canvas[1]}",
+        "WrapStyle: 0", "",
         "[V4+ Styles]",
         "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, "
         "Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
         "Alignment, MarginL, MarginR, MarginV, Encoding",
-        f"Style: Title,Arial,{card.font_size},{ass_color(card.text)},{ass_color(card.text)},"
-        f"{ass_color('#000000')},{ass_color('#000000')},-1,0,0,0,100,100,2,0,1,0,0,5,120,120,0,1",
-        f"Style: Number,Arial,{card.number_size},{ass_color(card.accent)},{ass_color(card.accent)},"
-        f"{ass_color('#000000')},{ass_color('#000000')},-1,0,0,0,100,100,6,0,1,0,0,5,120,120,0,1",
+        f"Style: Title,Arial,{px(card.font_size)},{ass_color(card.text)},{ass_color(card.text)},"
+        f"{ass_color('#000000')},{ass_color('#000000')},-1,0,0,0,100,100,{px(2)},0,1,0,0,5,"
+        f"{px(120)},{px(120)},0,1",
+        f"Style: Number,Arial,{px(card.number_size)},{ass_color(card.accent)},{ass_color(card.accent)},"
+        f"{ass_color('#000000')},{ass_color('#000000')},-1,0,0,0,100,100,{px(6)},0,1,0,0,5,"
+        f"{px(120)},{px(120)},0,1",
         "", "[Events]",
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
     ]
@@ -129,8 +143,16 @@ def card_ass(title: str, n: int, card: ChapterCard, duration_s: float = CARD_S) 
     safe = title.replace("{", "(").replace("}", ")").replace("\n", " ")
     events = [f"Dialogue: 0,{ass_time(0)},{end},Title,,0,0,0,,{fade}{safe}"]
     if card.show_number:
-        events.append(f"Dialogue: 0,{ass_time(0)},{end},Number,,0,0,170,,{fade}CHAPTER {n}")
+        events.append(f"Dialogue: 0,{ass_time(0)},{end},Number,,0,0,{px(170)},,{fade}CHAPTER {n}")
     return "\n".join([*header, *events]) + "\n"
+
+
+def card_source(card: ChapterCard, canvas: tuple[int, int], fps: int, card_frames: int) -> list[str]:
+    """The FFmpeg input that is the title card's background: a colour source of the frame's size and rate."""
+    return [
+        "-f", "lavfi", "-t", f"{card_frames / fps + 0.5:.2f}", "-i",
+        f"color=c={card.background.replace('#', '0x')}:s={canvas[0]}x{canvas[1]}:r={fps}",
+    ]
 
 
 def _shift(s: Shot, dt: float) -> Shot:
@@ -147,6 +169,8 @@ def run_clips_master(ctx: JobContext) -> None:
     timeline = timeline_from_manifest(ctx)
     plan = ctx.read_json("visual_plan.json")
     treatment = visual_treatment(ctx.combo.visual_treatment)
+    fmt = job_format(ctx, "long")
+    cut_range = shot_range(treatment.long_cut_range_s, fmt)
     cache = ClipCache(ctx.db, ctx.paths, ctx.services.clip_sources, log=ctx.log)
     cache.purge_expired()
     searcher = Searcher(ctx.services.clip_sources, log=ctx.log, lemma=make_lemmatizer(ctx.paths))
@@ -157,17 +181,18 @@ def run_clips_master(ctx: JobContext) -> None:
         beats = [b for b in plan if b.get("chapter") == ch.n] or [fallback_beat(ctx)]
         words = load_words(ctx, f"c{ch.n}")
         spans = beat_spans(beats, words, t.end - t.audio_start)
-        slots = plan_slots(spans, treatment.long_cut_range_s)
+        slots = plan_slots(spans, cut_range)
         seed = clip_seed(ctx, f"long|{ch.n}")
         got = assign_clips(
             beats=beats, slots=slots, searcher=searcher, cache=cache, blocked=blocked, seed=seed,
-            wanted="landscape", used=used, allow_other=False,
+            wanted=footage_orientation(fmt), used=used, allow_other=False,
             extra_keywords=ctx.channel.seed_keywords,
         )
         shots += [_shift(s, t.audio_start) for s in got]
         ctx.log.info("clips_selected", job_id=ctx.job_id, item="long", chapter=ch.n, shots=len(got))
     ctx.write_json("clips/shots.json", {"long": {
         "total_s": timeline[-1].end, "treatment": treatment.name, "shots": [s.to_json() for s in shots],
+        "format": fmt.id,
     }})
 
 
@@ -199,6 +224,7 @@ def build_segment_graph(
     *,
     ass_offset_s: float = 0.0,
     phase_start: int | None = None,
+    fmt: Format | None = None,
 ) -> str:
     """Filter graph of one chapter segment: optional title card, then its shots, then colour and captions.
 
@@ -206,13 +232,18 @@ def build_segment_graph(
     `render_segment`) is the same graph over some of the chapter's shots: `ass_offset_s` is where the part
     starts in chapter time (the chapter captions speak in chapter time), and `phase_start` the place of its
     first shot in the chapter, which the handheld drift follows.
+
+    `fmt` is the job's long format: the shots are drawn at its frame (or at the size of its picture region and
+    laid out by its regions, `picture_chains`); the title card stays one picture over the whole frame. No
+    format gives the 1920x1080 graph the master always had.
     """
     off = 1 if card_frames > 0 else 0
     frames = [edges[i + 1] - edges[i] for i in range(len(shots))]
-    chains = cat_chains(
-        shots, frames, LANDSCAPE, fps, treatment.zoom, first_input=off, phase_start=phase_start
+    size = (fmt.canvas.w, fmt.canvas.h) if fmt is not None else LANDSCAPE
+    chains, label = picture_chains(
+        shots, frames, size, fps, treatment.zoom, fmt, first_input=off, phase_start=phase_start
     )
-    chains.append(f"[cat]{post_chain(treatment, None, None)}[vs]")  # colour/grain never touch the card
+    chains.append(f"[{label}]{post_chain(treatment, None, None)}[vs]")  # colour/grain never touch the card
     last = "[vs]"
     if card_frames > 0:
         sub = f",ass=filename={escape_filter_path(card_ass_path)}" if card_ass_path else ""
@@ -233,21 +264,22 @@ def build_segment_graph(
 def fit_chapter_contrast(ctx: JobContext, t: ChapterTiming, shots: Sequence[Shot]) -> list[float]:
     """Rewrite a chapter's caption file in the boxed variant when the footage behind it is too bright (17.2).
 
-    The captions stage built `captions/long_c<n>.ass` blind; here the clips are known.
+    The captions stage built `captions/long_c<n>.ass` blind; here the clips are known. The caption options
+    and the frame the footage is sampled at come from the job's long format.
     Returns the luma samples (empty when sampling failed: best effort, a render never fails on it).
     """
     plan_file = ctx.file("visual_plan.json")
     beats: list[dict[str, Any]] = ctx.read_json("visual_plan.json") if plan_file.exists() else []
-    style = long_caption_style(ctx)
+    fmt = job_format(ctx, "long")
+    style = master_caption_style(ctx)
     st = caption_style(style)
-    opts = AssOptions(
-        variant="landscape", safe_zones=safe_zones_for("landscape"),
-        mask_profanity=mask_profanity_setting(ctx.channel), emphasis=emphasis_from_beats(beats, chapter=t.n),
+    opts = long_options(ctx, emphasis=emphasis_from_beats(beats, chapter=t.n))
+    band = caption_band(
+        st, opts.variant, safe_zones=opts.safe_zones, anchor_y_pct=opts.anchor_y_pct, canvas=opts.canvas
     )
-    band = caption_band(st, opts.variant, safe_zones=opts.safe_zones)
     local_shots = [_shift(s, -t.seg_start) for s in shots]
     try:
-        luma = backdrop_luma(local_shots, band, LANDSCAPE, t.end - t.seg_start)
+        luma = backdrop_luma(local_shots, band, (fmt.canvas.w, fmt.canvas.h), t.end - t.seg_start)
     except (NsError, OSError) as e:
         ctx.log.warn("caption_contrast_skipped", str(e)[:200])
         return []
@@ -277,7 +309,10 @@ def render_segment(
     `max_inputs` of them the chapter is rendered in parts of at most that many and the parts are copied
     together (`render_segment_in_parts`): the command line is the same size for 16 shots and for 1,000.
     """
-    fps = ctx.runtime.video.fps
+    fmt = job_format(ctx, "long")
+    canvas = (fmt.canvas.w, fmt.canvas.h)
+    video = video_for_format(ctx.runtime.video, fmt)
+    fps = video.fps
     seg_f, aud_f, end_f = round(t.seg_start * fps), round(t.audio_start * fps), round(t.end * fps)
     card_frames, content = aud_f - seg_f, end_f - aud_f
     if not shots:
@@ -289,9 +324,8 @@ def render_segment(
     card_input: list[str] = []
     if card_frames > 0:
         card_path = ctx.file(f"captions/card_c{t.n}.ass")
-        card_path.write_text(card_ass(t.title, t.n, card), encoding="utf-8")
-        card_input = ["-f", "lavfi", "-t", f"{card_frames / fps + 0.5:.2f}", "-i",
-                      f"color=c={card.background.replace('#', '0x')}:s=1920x1080:r={fps}"]
+        card_path.write_text(card_ass(t.title, t.n, card, canvas=canvas), encoding="utf-8")
+        card_input = card_source(card, canvas, fps, card_frames)
     out.parent.mkdir(parents=True, exist_ok=True)
     if len(shots) > max_inputs:
         return render_segment_in_parts(
@@ -301,9 +335,9 @@ def render_segment(
     base = ff.common_dir([*(s.path for s in shots), out])
     inputs = [*card_input, *clip_inputs(shots, frames, fps, base)]
     graph = build_segment_graph(
-        shots, edges, card_frames, fps, treatment, ctx.file(f"captions/long_c{t.n}.ass"), card_path, FONTS_DIR
+        shots, edges, card_frames, fps, treatment, ctx.file(f"captions/long_c{t.n}.ass"), card_path,
+        FONTS_DIR, fmt=fmt,
     )
-    video = ctx.runtime.video
     script = ff.filter_complex_args(
         graph, out.with_name(f"{out.stem}.filtergraph.txt"), log=ctx.log, base=base
     )
@@ -341,7 +375,8 @@ def render_segment_in_parts(
     file into `out`, a video-only mp4 like the one command makes. A part that fails on NVENC sends the whole
     chapter back to libx264: parts of two encoders cannot be joined by copying.
     """
-    video = ctx.runtime.video
+    fmt = job_format(ctx, "long")
+    video = video_for_format(ctx.runtime.video, fmt)
     fps = video.fps
     chapter_ass = ctx.file(f"captions/long_c{t.n}.ass")
     frames = [edges[i + 1] - edges[i] for i in range(len(shots))]
@@ -365,6 +400,7 @@ def render_segment_in_parts(
                 mine, edges[a : b + 1], card_frames if first else 0, fps, treatment, chapter_ass,
                 card_path if first else None, FONTS_DIR,
                 ass_offset_s=0.0 if first else (card_frames + edges[a]) / fps, phase_start=on_card + a,
+                fmt=fmt,
             )
             base = ff.common_dir([*(s.path for s in mine), part])
             script = ff.filter_complex_args(
@@ -437,9 +473,12 @@ class RenderMasterStage:
         ctx.write_json("long/chapters.json", chapters_json(timeline, total))
         for p in segs:
             p.unlink(missing_ok=True)
+        fmt = job_format(ctx, "long")
         ctx.write_json("render/long.json", entry_with_mark(ctx, {
             "path": str(master), "audio": str(audio), "duration_s": round(ff.duration_s(master), 3),
             "chapters": len(timeline), "shots": len(shots_all), "encoder": ctx.runtime.video.encoder,
+            "format": fmt.id, "format_why": job_format_entry(ctx, "long").get("why"),
+            "canvas": [fmt.canvas.w, fmt.canvas.h],
         }))
         ctx.log.info("render_done", job_id=ctx.job_id, item="long", duration_s=round(total, 2),
                      shots=len(shots_all))

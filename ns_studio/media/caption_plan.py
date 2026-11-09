@@ -14,7 +14,7 @@ from typing import Any
 
 from ns_common.models import Channel, Format
 from ns_studio.media.captions import DEFAULT_SAFE_ZONES, Box, Variant, build_ass, group_words
-from ns_studio.media.formats import reference_canvas, variant_for, written
+from ns_studio.media.formats import reference_canvas, scaled_margins, variant_for, written
 from ns_studio.media.layout import caption_anchor_pct
 from ns_studio.media.presets import CaptionStyle, caption_style
 from ns_studio.media.transcribe import Word
@@ -166,17 +166,20 @@ class AssOptions:
         avoid regions, speakers, ...) is passed on and wins over what the format says.
         """
         variant = variant_for(fmt)
-        # a file that writes no safe_margins keeps the platform zones of its variant, as before formats
-        zones = (
+        size = (fmt.canvas.w, fmt.canvas.h)
+        # a file that writes no safe_margins keeps the platform zones of its variant, as before formats were
+        # read. Written or platform, the pixels are those of the reference frame (1080x1920, 1920x1080) and
+        # scale with the frame, like the caption font: a duplicate at 720x1280 must not keep 1080x1920 pixels.
+        top, bottom = (
             (fmt.safe_margins.top, fmt.safe_margins.bottom)
             if written(fmt, "safe_margins")
             else safe_zones_for(variant)
         )
+        zones = scaled_margins(top, bottom, variant, size)
         if fmt.layout.seam_captions and len(fmt.layout.regions) > 1:
             anchor: float | None = caption_anchor_pct(fmt)
         else:
             anchor = fmt.captions.anchor_y_pct if written(fmt, "captions.anchor_y_pct") else None
-        size = (fmt.canvas.w, fmt.canvas.h)
         args: dict[str, Any] = {
             "variant": variant,
             "safe_zones": zones if any(zones) else None,

@@ -25,7 +25,6 @@ from ns_studio.media.caption_plan import (
     AssOptions,
     emphasis_from_beats,
     mask_profanity_setting,
-    safe_zones_for,
 )
 from ns_studio.media.captions import (
     DRIFT_LIMIT_MS,
@@ -36,6 +35,8 @@ from ns_studio.media.captions import (
     shift_words,
 )
 from ns_studio.media.fake_voice import e403_detail
+from ns_studio.media.formats import style_for_format
+from ns_studio.media.job_formats import job_format
 from ns_studio.media.transcribe import Word
 from ns_studio.media.voice import job_speed, job_voice, synthesize
 from ns_studio.stages import Tenant
@@ -285,8 +286,35 @@ class DurationCheckStage:
 
 
 def long_caption_style(ctx: JobContext) -> str:
-    """Masters use a clean caption style (spec §18.5); the combo's style only when it is already clean."""
+    """Masters use a clean caption style (spec §18.5); the combo's style only when it is already clean.
+
+    The full video's format may limit the styles further (`captions.styles_allowed`): `master_caption_style`
+    applies that.
+    """
     return ctx.combo.caption_style if ctx.combo.caption_style in CLEAN_STYLES else "clean_white"
+
+
+def master_caption_style(ctx: JobContext) -> str:
+    """The caption style of the master: `long_caption_style`, or the first style its long format allows."""
+    fmt = job_format(ctx, "long")
+    style, swapped = style_for_format(fmt, long_caption_style(ctx))
+    if swapped:
+        ctx.log.info(
+            "caption_style_not_in_format", f"{style} is used: {fmt.id} limits the caption styles",
+            format_id=fmt.id, item="long",
+        )
+    return style
+
+
+def long_options(ctx: JobContext, **rest: Any) -> AssOptions:
+    """Caption options of the master: geometry, safe margins, anchor and frame size of the job's long format.
+
+    The shipped `long_16x9` gives exactly what the master used before formats were read (landscape geometry,
+    54 px safe zones). `rest` (emphasis, ...) is passed on and wins over what the format says.
+    """
+    return AssOptions.for_format(
+        job_format(ctx, "long"), mask_profanity=mask_profanity_setting(ctx.channel), **rest
+    )
 
 
 def load_words(ctx: JobContext, ident: str) -> list[Word]:
@@ -318,13 +346,10 @@ def run_captions_master(ctx: JobContext) -> None:
     timeline = timeline_from_manifest(ctx)
     ctx.subdir("words")
     ctx.subdir("captions")
-    style = long_caption_style(ctx)
+    style = master_caption_style(ctx)
     plan_file = ctx.file("visual_plan.json")
     beats: list[dict[str, Any]] = ctx.read_json("visual_plan.json") if plan_file.exists() else []
-    base_opts = AssOptions(
-        variant="landscape", safe_zones=safe_zones_for("landscape"),
-        mask_profanity=mask_profanity_setting(ctx.channel),
-    )
+    base_opts = long_options(ctx)
     report: dict[str, Any] = {}
     failures: list[str] = []
     all_words: list[Word] = []

@@ -3,7 +3,9 @@
 Until this update no render read the Short, Full video or Square presets, so an owner's edited copy changed
 nothing. From now on a format the owner edited or added applies as written. On the first start after the
 update (the first job a studio process starts) one morning note names the formats that differ from the
-shipped ones and what changes. The note is the Queue notice: the dashboard's Queue page shows the morning
+shipped ones and what changes. Only formats the studio will draw are named: one it refuses (a region off the
+canvas, a shot range upside down, ...) is skipped, because naming it would promise a change that does not
+happen. The note is the Queue notice: the dashboard's Queue page shows the morning
 notes (`run/morning_note.json`, `ns_supervisor.notify`). A marker file keeps it to once per kind of format.
 
 Pure helpers (`describe_differences`, `owner_format_changes`) build the text; `notify_owner_formats`
@@ -25,8 +27,8 @@ from ns_studio.media import formats as F
 
 NOTICE_FILE = "formats_notice.json"
 #: Kinds whose renders draw from their format. A later package that makes another kind real adds it here, and
-#: the owner gets one more note for it.
-NOTICE_KINDS: tuple[str, ...] = ("short", "square")
+#: the owner gets one more note for it: `long` joined with the full videos (package P10b).
+NOTICE_KINDS: tuple[str, ...] = ("short", "square", "long")
 TITLE = "Nightshift"
 
 
@@ -88,8 +90,8 @@ def owner_format_changes(
     mine = F._load_dir(str(paths.formats_dir))
     out: list[tuple[str, str, list[str]]] = []
     for fid, fmt in sorted(mine.formats.items()):
-        if fmt.kind not in kinds:
-            continue
+        if fmt.kind not in kinds or F.story_role_problems(fmt):
+            continue  # a kind no render path uses yet, or a format the studio refuses: nothing would change
         if fid in shipped.formats:
             changes = describe_differences(mine.raw[fid], shipped.raw[fid])
             if changes:
@@ -106,7 +108,10 @@ def notice_text(changes: list[tuple[str, str, list[str]]]) -> str:
         if how == "edited":
             parts.append(f"{fid} (edited): {'; '.join(what)}")
         else:
-            parts.append(f"{fid} (yours): used when a channel lists it first in its allowed formats")
+            parts.append(
+                f"{fid} (yours): used when a channel lists it first in its allowed formats "
+                "or a series design chooses it"
+            )
     return (
         "Formats you edited or added in Library > Formats now shape your videos, as written. "
         + " | ".join(parts)

@@ -24,7 +24,7 @@ from ns_studio.media.audio import FINAL_LUFS, FINAL_TP, assemble_audio, loudnorm
 from ns_studio.media.caption_plan import AssOptions
 from ns_studio.media.captions import Box, caption_band, ensure_contrast, sample_luma
 from ns_studio.media.diskfull import run_ffmpeg
-from ns_studio.media.formats import encoder_preset_of, fps_of
+from ns_studio.media.formats import encoder_preset_of, fps_of, reference_canvas
 from ns_studio.media.job_formats import job_format, job_format_entry
 from ns_studio.media.layout import SourceSpec, build_regions_graph, covers_canvas
 from ns_studio.media.presets import (
@@ -40,8 +40,8 @@ from ns_studio.media.transcribe import Word
 from ns_studio.stages import Tenant
 from ns_studio.text.story_profile import with_mark
 
-VERTICAL = (1080, 1920)
-LANDSCAPE = (1920, 1080)
+VERTICAL = reference_canvas("vertical")
+LANDSCAPE = reference_canvas("landscape")
 X264_PRESETS = {
     "ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow",
 }
