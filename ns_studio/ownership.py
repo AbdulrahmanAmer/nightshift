@@ -629,6 +629,11 @@ class Interrupted:
     card_id: str | None = None
     dashboard_owned: bool = False
 
+    @property
+    def has_card(self) -> bool:
+        """True when a Retry card stands for the job in the Queue (ours, or the dashboard's own)."""
+        return self.card_id is not None or self.dashboard_owned
+
 
 @dataclass
 class Recovery:
@@ -671,30 +676,59 @@ def _has_output(db: SqlDb, job_id: str) -> bool:
     return db.one("select 1 from outputs where job_id = ? limit 1", (job_id,)) is not None
 
 
+def job_finished(paths: Paths, db: SqlDb, job_id: str, fmt: str | None = None) -> bool:
+    """Whether the job ran its whole plan: every stage of its format is `done` in `stage_state.json`.
+
+    An `outputs` row is not enough: the outbox stage records the long video first and the Shorts after it,
+    so a kill between the two leaves a video and a job that is not finished. Only a job with no readable stage
+    state or no known plan (a record from before the stage runner, or a plan that cannot be named) falls back
+    to "it has an output".
+    """
+    try:
+        entries = json.loads((paths.job_dir(job_id) / "stage_state.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        entries = None
+    names: list[str] = []
+    try:
+        from ns_studio.orchestrator import FORMAT_STAGES, plan_format
+
+        names = list(FORMAT_STAGES.get(plan_format(fmt or "", paths.job_dir(job_id))) or [])
+    except Exception:  # noqa: BLE001 - a plan that cannot be read: fall back to the output rows
+        names = []
+    if not isinstance(entries, dict) or not names:
+        return _has_output(db, job_id)
+    return all(isinstance(entries.get(n), dict) and entries[n].get("status") == "done" for n in names)
+
+
 def _close_job(paths: Paths, db: SqlDb, rec: dict[str, Any], now: datetime, owner: str) -> Interrupted | None:
+    """Close one dead job: offer it in the Queue first, then record it as interrupted.
+
+    The card comes first on purpose: the record is what tells the next `recover` that there is still
+    something open, so when the database refuses the card (locked) the record stays open and the next call
+    tries again, instead of losing the job for good. Raises what the database raised.
+    """
     job_id = str(rec["id"])
-    if _has_output(db, job_id):  # the kill came after the video was made: nothing was interrupted
+    info = job_info(paths, job_id)
+    fmt = rec.get("fmt") or info.get("fmt")
+    if job_finished(paths, db, job_id, fmt):  # the kill came after the job was made: nothing was interrupted
         write_record(paths, job_id, state="done", closed_at=_iso(now))
         return None
-    info = job_info(paths, job_id)
     if not info:  # killed before the job folder was written: there is nothing to continue or to tell
         write_record(paths, job_id, state="interrupted", closed_at=_iso(now), owner=owner)
         return None
     channel = rec.get("channel") or info.get("channel")
-    fmt = rec.get("fmt") or info.get("fmt")
     stage = reached_stage(paths, job_id, fmt)
     origin = str(rec.get("origin") or "manual")
-    rec = write_record(
-        paths,
-        job_id,
-        state="interrupted",
-        interrupted_at_stage=stage,
-        closed_at=_iso(now),
-        owner=owner,
-        channel=channel,
-        fmt=fmt,
-    )
-    problem = resume_problem(paths, rec, now) if origin == "daily" else None
+    closing = {
+        **rec,
+        "state": "interrupted",
+        "interrupted_at_stage": stage,
+        "closed_at": _iso(now),
+        "owner": owner,
+        "channel": channel,
+        "fmt": fmt,
+    }
+    problem = resume_problem(paths, closing, now) if origin == "daily" else None
     item = Interrupted(
         job_id,
         channel,
@@ -708,13 +742,29 @@ def _close_job(paths: Paths, db: SqlDb, rec: dict[str, Any], now: datetime, owne
     )
     # Only a job `make_job` announced is a story job someone started; a series part or a job reopened by hand
     # (a record made by `hold` alone) has its own way back, so the Queue gets no second card for it.
-    if origin in STORY_ORIGINS and info and rec.get("announced_at"):
+    if origin in STORY_ORIGINS and rec.get("announced_at"):
         resume = "pending" if item.resumable else "needs_retry"
         created = _parse(info.get("created_at")) or now
         item.card_id = offer_job(
-            db, job_id, rec, stage, resume=resume, reason=problem, when=_last_seen(paths, [job_id], created)
+            db,
+            job_id,
+            closing,
+            stage,
+            resume=resume,
+            reason=problem,
+            when=_last_seen(paths, [job_id], created),
         )
         item.dashboard_owned = item.card_id is None
+    write_record(
+        paths,
+        job_id,
+        state="interrupted",
+        interrupted_at_stage=stage,
+        closed_at=_iso(now),
+        owner=owner,
+        channel=channel,
+        fmt=fmt,
+    )
     return item
 
 
@@ -748,27 +798,29 @@ def _close_run(
     *,
     mode_note: str | None = None,
 ) -> dict[str, Any]:
+    # `jobs` is what the run made (the key the Queue counts videos from); what it left half made is listed
+    # apart, under `interrupted_jobs`, so an interrupted night never reads as "1 video made".
     summary: dict[str, Any] = {
         "interrupted": True,
         "owner": owner,
         "closed_at": _iso(now),
         "jobs": [],
-        "finished_jobs": [],
+        "interrupted_jobs": [],
     }
     for j in listed:
         job_id = str(j.get("job_id"))
         item = closed.get(job_id)
         earlier = read_record(paths, job_id) or {}
         if item is not None:
-            summary["jobs"].append(
+            summary["interrupted_jobs"].append(
                 {"job_id": job_id, "channel": j.get("channel") or item.channel, "stage": item.stage}
             )
         elif earlier.get("state") == "interrupted":
-            summary["jobs"].append(
+            summary["interrupted_jobs"].append(
                 {"job_id": job_id, "channel": j.get("channel"), "stage": earlier.get("interrupted_at_stage")}
             )
         else:
-            summary["finished_jobs"].append(job_id)
+            summary["jobs"].append({"job_id": job_id, "channel": j.get("channel")})
     floor = started or now
     seen = _last_seen(paths, [str(j.get("job_id")) for j in listed], floor, run_id)
     db.execute(
@@ -776,19 +828,30 @@ def _close_run(
         (_iso(seen), json.dumps(summary), run_id),
     )
     write_record(paths, run_id, state="interrupted", closed_at=_iso(now), owner=owner)
-    return {"run_id": run_id, "owner": owner, "jobs": summary["jobs"]}
+    return {"run_id": run_id, "owner": owner, "interrupted_jobs": summary["interrupted_jobs"]}
 
 
-def _recover_owned(paths: Paths, db: SqlDb, now: datetime, out: Recovery) -> None:
+def _recover_owned(
+    paths: Paths, db: SqlDb, now: datetime, out: Recovery, log: NsLogger | None = None
+) -> None:
+    """Close the dead jobs, then the dead runs. One job the database refuses (locked) never stops the others:
+    it stays open, and so does the run that listed it, so the next call closes both."""
     records = list_records(paths)
     closed: dict[str, Interrupted] = {}
+    stuck: set[str] = set()
     for rec in records:
         if rec.get("kind") != "job" or rec.get("state") not in OPEN_STATES:
             continue
         if liveness(paths, str(rec["id"]), rec) != "dead":
             continue
         pid = rec.get("pid")
-        item = _close_job(paths, db, rec, now, f"process {pid} is gone" if pid else "gone")
+        try:
+            item = _close_job(paths, db, rec, now, f"process {pid} is gone" if pid else "gone")
+        except Exception as e:  # noqa: BLE001 - sqlite3 errors, a locked database: retried by the next call
+            stuck.add(str(rec["id"]))
+            if log is not None:
+                log.warn("interrupted_job_not_closed", str(e), job_id=str(rec["id"]))
+            continue
         if item is not None:
             closed[item.job_id] = item
             out.jobs.append(item)
@@ -798,6 +861,8 @@ def _recover_owned(paths: Paths, db: SqlDb, now: datetime, out: Recovery) -> Non
         if liveness(paths, str(rec["id"]), rec) != "dead":
             continue
         run_id = str(rec["id"])
+        if stuck & {str(j.get("job_id")) for j in rec.get("jobs") or [] if isinstance(j, dict)}:
+            continue  # one of its jobs could not be closed yet: the run stays open with it
         row = db.one("select started_at, finished_at from runs where run_id = ?", (run_id,))
         if row is not None and row["finished_at"]:  # it finished; the process died before it let go
             write_record(paths, run_id, state="done", closed_at=_iso(now))
@@ -817,7 +882,9 @@ def _recover_owned(paths: Paths, db: SqlDb, now: datetime, out: Recovery) -> Non
         )
 
 
-def _recover_legacy(paths: Paths, db: SqlDb, now: datetime, out: Recovery) -> None:
+def _recover_legacy(
+    paths: Paths, db: SqlDb, now: datetime, out: Recovery, log: NsLogger | None = None
+) -> None:
     """Unfinished `runs` rows no owner file exists for (0.1.0 to 0.1.14): closed when older than the bound."""
     rows = list(
         db.query("select run_id, started_at, mode from runs where finished_at is null order by started_at")
@@ -833,6 +900,7 @@ def _recover_legacy(paths: Paths, db: SqlDb, now: datetime, out: Recovery) -> No
         end = _parse(later["s"]) if later is not None and later["s"] else None
         closed: dict[str, Interrupted] = {}
         listed: list[dict[str, Any]] = []
+        stuck = False
         if row["mode"] == "daily":
             for job_id, channel in _legacy_jobs(paths, db, started, end):
                 rec = write_record(
@@ -846,11 +914,20 @@ def _recover_legacy(paths: Paths, db: SqlDb, now: datetime, out: Recovery) -> No
                     run_id=run_id,
                     announced_at=_iso(started),
                 )
-                item = _close_job(paths, db, rec, now, "unknown")
+                try:
+                    item = _close_job(paths, db, rec, now, "unknown")
+                except Exception as e:  # noqa: BLE001 - a locked database: the whole row is retried next call
+                    forget(paths, job_id)
+                    stuck = True
+                    if log is not None:
+                        log.warn("interrupted_job_not_closed", str(e), job_id=job_id)
+                    continue
                 listed.append({"job_id": job_id, "channel": channel})
                 if item is not None:
                     closed[job_id] = item
                     out.jobs.append(item)
+        if stuck:
+            continue  # the row stays open with its jobs, so the next call closes them together
         out.runs.append(_close_run(paths, db, run_id, started, listed, "unknown", closed, now))
 
 
@@ -866,14 +943,34 @@ def _legacy_jobs(paths: Paths, db: SqlDb, started: datetime, end: datetime | Non
     out: list[tuple[str, str]] = []
     for r in db.query(sql, args):
         job_id = str(r["job_id"])
-        if read_record(paths, job_id) is not None or _has_output(db, job_id) or not job_info(paths, job_id):
+        info = job_info(paths, job_id)
+        if (
+            read_record(paths, job_id) is not None
+            or not info
+            or job_finished(paths, db, job_id, info.get("fmt"))
+        ):
             continue
         out.append((job_id, str(r["channel"])))
     return out
 
 
-def recovery_message(out: Recovery, *, will_resume: bool) -> str | None:
-    """The morning note for what `recover` closed, or None when nobody needs telling."""
+def _way_back(j: Interrupted) -> str:
+    """How the owner continues a job: its Queue card when there is one, else the command that reopens it."""
+    if j.has_card:
+        return "press Retry in the Queue"
+    return f"run studio run --resume {j.job_id}"
+
+
+def recovery_message(
+    out: Recovery, *, outcomes: Mapping[str, tuple[str, str | None]] | None = None
+) -> str | None:
+    """The morning note for what `recover` closed, or None when nobody needs telling.
+
+    `outcomes` is what the nightly then did with a resumable job, by job id: `("resumed", None)`,
+    `("failed", <code>)` or `("waiting", None)` (the GPU was busy). Without an outcome the note never claims
+    the job is being continued: it says when it will be, and how to continue it by hand.
+    """
+    outcomes = outcomes or {}
     lines: list[str] = []
     unknown = False
     for j in out.jobs:
@@ -881,12 +978,21 @@ def recovery_message(out: Recovery, *, will_resume: bool) -> str | None:
             continue  # the dashboard's own card says it
         unknown = unknown or j.owner == "unknown"
         where = f"stopped at {j.stage}" if j.stage else "stopped"
-        if j.resumable and will_resume:
-            tail = "Nightshift is continuing it now."
+        what, code = outcomes.get(j.job_id, ("", None))
+        if what == "resumed":
+            tail = "The nightly run continued it and it finished."
+        elif what == "failed":
+            tail = (
+                f"The nightly run continued it, but it stopped again ({code}); {_way_back(j)} to try again."
+            )
+        elif what == "waiting":
+            tail = f"The GPU was busy, so it waits for the next nightly run; or {_way_back(j)}."
         elif j.resumable:
-            tail = "It continues at the next nightly run, or press Retry in the Queue."
+            tail = f"It continues at the next nightly run, or {_way_back(j)}."
         else:
-            tail = "Press Retry in the Queue to continue it" + (f" ({j.problem})." if j.problem else ".")
+            tail = (
+                "Press Retry in the Queue to continue it" if j.has_card else f"To continue it, {_way_back(j)}"
+            ) + (f" ({j.problem})." if j.problem else ".")
         lines.append(f"{j.channel or j.job_id} {where}. {tail}")
     if not lines and out.runs:
         unknown = any(r.get("owner") == "unknown" for r in out.runs)
@@ -918,14 +1024,13 @@ def recover(
     *,
     now: datetime | None = None,
     log: NsLogger | None = None,
-    will_resume: bool = False,
     note: bool = True,
 ) -> Recovery:
     """Close what a dead process left open: unfinished runs, half-made jobs; tell the owner once.
 
     Safe to call from anywhere, any number of times: a run or job with a live owner is left alone, and what
-    was closed is closed (a second call finds nothing). `will_resume` says the caller will continue the
-    resumable jobs right away (the nightly), which changes the wording of the note.
+    was closed is closed (a second call finds nothing). The nightly passes `note=False` and leaves its own
+    note after it has tried to continue the jobs (`leave_recovery_note`), so the note says what happened.
     """
     now = now or _now()
     out = Recovery()
@@ -937,8 +1042,8 @@ def recover(
     except OSError:
         pass  # no lock file can be made here: carry on unguarded
     try:
-        _recover_owned(paths, db, now, out)
-        _recover_legacy(paths, db, now, out)
+        _recover_owned(paths, db, now, out, log)
+        _recover_legacy(paths, db, now, out, log)
         _prune(paths, now)
     finally:
         guard.release()
@@ -950,10 +1055,20 @@ def recover(
                 runs=[r["run_id"] for r in out.runs],
                 jobs=[j.job_id for j in out.jobs],
             )
-        message = recovery_message(out, will_resume=will_resume)
-        if note and message:
-            leave_note(paths, log, message)
+        if note:
+            leave_recovery_note(paths, log, out)
     return out
+
+
+def leave_recovery_note(
+    paths: Paths,
+    log: NsLogger | None,
+    out: Recovery,
+    outcomes: Mapping[str, tuple[str, str | None]] | None = None,
+) -> bool:
+    """Leave the morning note for `out` (see `recovery_message`); False when there was nothing to say."""
+    message = recovery_message(out, outcomes=outcomes)
+    return leave_note(paths, log, message) if message else False
 
 
 def pending_resumes(paths: Paths, db: SqlDb, now: datetime | None = None) -> list[dict[str, Any]]:
@@ -965,7 +1080,7 @@ def pending_resumes(paths: Paths, db: SqlDb, now: datetime | None = None) -> lis
         if rec.get("kind") != "job" or rec.get("state") != "interrupted" or rec.get("origin") != "daily":
             continue
         job_id = str(rec["id"])
-        if _has_output(db, job_id):
+        if job_finished(paths, db, job_id, rec.get("fmt")):
             write_record(paths, job_id, state="done")
             continue
         problem = resume_problem(paths, rec, now)
@@ -999,7 +1114,11 @@ def status_lines(paths: Paths, db: SqlDb, channel: str) -> list[str]:
         state = liveness(paths, job_id, rec)
         if state == "live":
             lines.append(f"  working: {live_description(paths, job_id)}")
-        elif state in ("dead", "interrupted") and not _has_output(db, job_id) and job_info(paths, job_id):
+        elif (
+            state in ("dead", "interrupted")
+            and job_info(paths, job_id)
+            and not job_finished(paths, db, job_id, rec.get("fmt"))
+        ):
             stage = rec.get("interrupted_at_stage") or reached_stage(paths, job_id, rec.get("fmt"))
             at = f" at stage {stage}" if stage else ""
             lines.append(

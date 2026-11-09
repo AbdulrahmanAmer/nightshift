@@ -17,7 +17,7 @@ from ns_common.errors import NsError
 from ns_common.keepawake import keep_awake
 from ns_studio import jobs, notifications, ownership
 from ns_studio.channels import cadence
-from ns_studio.channels.crud import get_channel
+from ns_studio.channels.crud import broken_channels, get_channel
 from ns_studio.context import JobContext
 from ns_studio.errors import UNEXPECTED, StudioError, describe_unexpected
 from ns_studio.footage_keys import require_footage_key
@@ -162,7 +162,10 @@ def _run_daily(
     run_id = f"daily-{now:%Y%m%d}-{secrets.token_hex(2)}"
     report: dict = {"run_id": run_id, "started_at": now.isoformat(timespec="seconds"), "channels": [],
                     "jobs": [], "failures": [], "interrupted_jobs": [], "not_due": {}}
-    _close_dead_work(env, now, report)
+    unreadable = broken_channels(env.paths)  # the plan below skips them; the report and the CLI name them
+    if unreadable:
+        report["unreadable_profiles"] = [list(pair) for pair in unreadable]
+    recovered = _close_dead_work(env, now, report)
     # this row has a live owner until it is closed
     with ownership.hold_run(env.paths, run_id, origin="daily"):
         env.db.execute(
@@ -170,7 +173,7 @@ def _run_daily(
             (run_id, now.isoformat(timespec="seconds"), "daily"),
         )
         try:
-            _tonight(env, run, rng, now, run_id, report)
+            _tonight(env, run, rng, now, run_id, report, recovered)
             done = [j["job_id"] for j in report["jobs"]]
             report["publish_times_set"] = apply_publish_times(env, done, rng, now)
             backup = env.db.backup(env.paths.backup_dir, today=now.date())
@@ -200,22 +203,32 @@ def _run_daily(
     return report
 
 
-def _close_dead_work(env: jobs.Env, now: datetime, report: dict) -> None:
-    """Close the runs and jobs whose process is gone (before this night plans), and tell the owner.
+def _close_dead_work(env: jobs.Env, now: datetime, report: dict) -> ownership.Recovery | None:
+    """Close the runs and jobs whose process is gone (before this night plans).
 
-    A job it cannot continue itself is listed in the report as interrupted (the toast says Retry). Never stops
-    the night: a failure here is logged and the night plans as if nothing was found.
+    A job it cannot continue itself is listed in the report as interrupted (the toast says Retry) and told in
+    a morning note at once. The note for a job it will continue is left by `_tonight` once it has tried, so
+    that it says what became of the job; this returns that part (None when there is none). If the night is
+    killed again before that, the next start closes the job again and tells it then. Never stops the night: a
+    failure here is logged and the night plans as if nothing was found.
     """
     try:
-        out = ownership.recover(env.paths, env.db, now=now, log=env.log, will_resume=True)
+        out = ownership.recover(env.paths, env.db, now=now, log=env.log, note=False)
     except Exception as e:  # noqa: BLE001 - recovery is a courtesy; the night must still run
         env.log.warn("recover_failed", str(e))
-        return
+        return None
     for j in out.jobs:
         if not j.resumable and not j.dashboard_owned:
             report["interrupted_jobs"].append(
                 {"job_id": j.job_id, "channel": j.channel, "stage": j.stage, "resumed": False}
             )
+    later = ownership.Recovery(jobs=[j for j in out.jobs if j.resumable])
+    now_part = ownership.Recovery(
+        runs=[] if later.jobs else out.runs, jobs=[j for j in out.jobs if not j.resumable]
+    )
+    if now_part.any:
+        ownership.leave_recovery_note(env.paths, env.log, now_part)
+    return later if later.any else None
 
 
 def _attempt(
@@ -256,16 +269,25 @@ def _attempt(
     return code
 
 
-def _resume_interrupted(env: jobs.Env, run: RunFn, now: datetime, run_id: str, report: dict) -> bool:
+Outcomes = dict[str, tuple[str, str | None]]
+
+
+def _resume_interrupted(
+    env: jobs.Env, run: RunFn, now: datetime, run_id: str, report: dict, outcomes: Outcomes
+) -> tuple[bool, set[str]]:
     """Continue the jobs an earlier night left half made: the same job from its stage, not a new idea.
 
-    Returns True when the GPU stayed busy (the rest of the night waits, as for any job).
+    Returns `(gpu_busy, failed_channels)`: True when the GPU stayed busy (the rest of the night waits, as for
+    any job), and the channels whose continued job failed again tonight (they get no second job from ideas
+    tonight: a failure at a late stage would only cost another full run). `outcomes` receives what became of
+    each job, for the morning note.
     """
+    failed_channels: set[str] = set()
     try:
         pending = ownership.pending_resumes(env.paths, env.db, now)
     except Exception as e:  # noqa: BLE001 - see _close_dead_work
         env.log.warn("resume_scan_failed", str(e))
-        return False
+        return False, failed_channels
     for rec in pending:
         job_id, slug = str(rec["id"]), str(rec.get("channel") or "")
         stage = rec.get("interrupted_at_stage")
@@ -275,23 +297,46 @@ def _resume_interrupted(env: jobs.Env, run: RunFn, now: datetime, run_id: str, r
         if code == "NS-E201":  # the GPU is busy: it stays interrupted, the next night tries again
             ownership.write_record(env.paths, job_id, state="interrupted")
             report.setdefault("skipped", []).append({"channel": slug, "jobs": 1})
-            return True
+            outcomes[job_id] = ("waiting", None)
+            return True, failed_channels
         item = {"job_id": job_id, "channel": slug, "stage": stage, "resumed": code is None}
         report["interrupted_jobs"].append(item)
         if code is None:
             rows = env.db.query("select output_id from outputs where job_id=?", (job_id,))
             ownership.settle_resumed(env.db, job_id, [r["output_id"] for r in rows])
+            outcomes[job_id] = ("resumed", None)
         else:
             last = report["failures"][-1]
             ownership.settle_failed(env.db, job_id, str(last["code"]), str(last["error"]))
-    return False
+            outcomes[job_id] = ("failed", str(last["code"]))
+            failed_channels.add(slug)
+    return False, failed_channels
 
 
-def _tonight(env: jobs.Env, run: RunFn, rng: random.Random, now: datetime, run_id: str, report: dict) -> None:
-    """Continue what was interrupted, then make what the governor says is due."""
-    gpu_busy = _resume_interrupted(env, run, now, run_id, report)
+def _tonight(
+    env: jobs.Env,
+    run: RunFn,
+    rng: random.Random,
+    now: datetime,
+    run_id: str,
+    report: dict,
+    recovered: ownership.Recovery | None = None,
+) -> None:
+    """Continue what was interrupted, tell the owner how that went, then make what is due."""
+    outcomes: Outcomes = {}
+    try:
+        gpu_busy, failed_channels = _resume_interrupted(env, run, now, run_id, report, outcomes)
+    finally:
+        if recovered is not None and recovered.any:
+            ownership.leave_recovery_note(env.paths, env.log, recovered, outcomes)
     why: dict[str, str] = {}
     due = cadence.plan_daily(env.paths, env.db, now, why=why)
+    for dj in due:
+        if dj.channel.slug in failed_channels:
+            why[dj.channel.slug] = (
+                "its interrupted job was continued tonight and stopped again; Retry it in the Queue"
+            )
+    due = [dj for dj in due if dj.channel.slug not in failed_channels]
     report["not_due"] = why
     for dj in due:
         if gpu_busy:  # J7: the GPU stayed busy for the whole wait; the other jobs wait for the next night
@@ -320,6 +365,10 @@ def nothing_due_message(report: dict) -> str:
     with no active channel the sentence says so instead of claiming every channel is done.
     """
     why: dict[str, str] = report.get("not_due") or {}
-    if not why:
+    unreadable: list[list[str]] = report.get("unreadable_profiles") or []
+    parts = [f"{slug}: {reason}" for slug, reason in why.items()]
+    if unreadable:  # a channel that was skipped for its profile is not "not active"
+        parts.append("not run, profile cannot be read: " + ", ".join(str(p[0]) for p in unreadable))
+    if not parts:
         return "nothing due tonight: no channel is active"
-    return "nothing due tonight: " + "; ".join(f"{slug}: {reason}" for slug, reason in why.items())
+    return "nothing due tonight: " + "; ".join(parts)

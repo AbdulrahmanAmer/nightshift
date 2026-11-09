@@ -648,3 +648,71 @@ def test_real_windows_speech_honours_the_requested_speed(real_sapi: PowerShellSa
     fast = len(trim_silence(speak(c, SENTENCE, speed=1.5)[0], 24000))
     assert slow > 1.15 * normal > 1.15 * 1.15 * fast * 0.8  # monotone, by clear steps
     assert normal > 1.2 * fast
+
+
+# ---------------------------------------------------------------- CR-H7-1: the tone-burst warning has a code
+
+
+def _log_rows(logs: Path) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for f in sorted(logs.glob("*.jsonl")):
+        rows += [json.loads(line) for line in f.read_text(encoding="utf-8").splitlines() if line.strip()]
+    return rows
+
+
+def test_every_way_into_tone_bursts_logs_and_reports_the_new_warning_code(tmp_path: Path):
+    from ns_common.errors import describe
+
+    class Broken(StandInSapi):
+        def speak(self, voice, lines, *, rate, sr, timeout_s):  # type: ignore[no-untyped-def]
+            raise NsError("NS-E310", "Windows speech (SAPI) failed (exit 1): the voice is damaged")
+
+    class Disk(StandInSapi):
+        def voices(self) -> list[SapiVoice]:
+            raise PermissionError("cache is read-only")
+
+    ways: dict[str, Any] = {
+        "no voice installed": StandInSapi(voices=[]),
+        "start-up sentence failed": Broken(),
+        "scratch folder or disk": Disk(),
+    }
+    for i, (way, backend) in enumerate(ways.items()):
+        logs = tmp_path / f"engine{i}" / "logs"
+        e = FakeEngine(speech="sapi", sapi=backend, log=NsLogger("tts", logs))
+        e.load()
+        h = e.describe()
+        assert h["voice_mode"] == "tones" and h["voice_warning"], way
+        assert h["voice_warning_code"] == "NS-W303", way  # /health carries the code next to the text
+        assert describe(h["voice_warning_code"]).hint, way  # and it is a code with a hint in errors.json
+        warns = [r for r in _log_rows(logs) if r["event"] == "fake_voice_tones_only"]
+        assert len(warns) == 1 and warns[0]["data"]["code"] == "NS-W303", way  # the log record carries it
+        assert warns[0]["msg"] == h["voice_warning"], way  # the wording the callers parse is unchanged
+
+
+def test_a_real_windows_voice_has_no_warning_code(tmp_path: Path):
+    e = FakeEngine(speech="sapi", sapi=StandInSapi(), log=NsLogger("tts", tmp_path / "logs"))
+    e.load()
+    h = e.describe()
+    assert h["voice_mode"] == "sapi" and "voice_warning" not in h and "voice_warning_code" not in h
+    assert [r for r in logged(tmp_path) if r["level"] == "WARN"] == []
+
+
+def test_the_no_voice_health_answer_carries_the_code_over_http(tmp_path: Path):
+    e = FakeEngine(speech="sapi", sapi=StandInSapi(voices=[]), log=NsLogger("tts", tmp_path / "logs"))
+    c, _ = make_app(tmp_path, e)
+    h = c.get("/health").json()
+    assert h["voice_warning_code"] == "NS-W303" and "tone bursts" in h["voice_warning"]
+    assert [r["data"].get("code") for r in logged(tmp_path) if r["event"] == "fake_voice_tones_only"] == [
+        "NS-W303"
+    ]
+
+
+def test_the_sapi_module_is_a_ruff_per_file_ignore_not_a_noqa():
+    import tomllib
+
+    root = Path(__file__).resolve().parents[1]
+    cfg = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+    ignores = cfg["tool"]["ruff"]["lint"]["per-file-ignores"]
+    assert ignores["ns_tts/sapi.py"] == ["TID251"] and ignores["ns_tts/engine.py"] == ["TID251"]
+    lines = (root / "ns_tts" / "sapi.py").read_text(encoding="utf-8").splitlines()
+    assert [ln for ln in lines if ln.startswith("import subprocess")] == ["import subprocess"]
