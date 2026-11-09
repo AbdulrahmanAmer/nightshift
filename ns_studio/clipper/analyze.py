@@ -165,3 +165,23 @@ def prompt_view(a: Analysis, w_start: float, w_end: float) -> dict[str, object]:
         "faces_detected": a.faces_detected,
         "window": window_view(a.scene_cuts, a.silences, a.loudness.peaks, w_start, w_end),
     }
+
+
+SCREEN_CUTS_PER_MIN = 3.0  # at or above this, with no face found, the picture is a screen or slides
+
+
+def kind_of_video(a: Analysis) -> str:
+    """The `video_kind` variable of `clip_select.md`, read from the analysis (spec 19.5), else "unknown".
+
+    A found facecam is a stream with a facecam; two stable faces a podcast; one a talking head; many scene
+    cuts with the face detector having run and found nobody, a screen recording or slides.
+    """
+    if a.facecam is not None:
+        return "stream with facecam"
+    if a.n_stable_faces >= 2:
+        return "podcast"
+    if a.n_stable_faces == 1:
+        return "talking head"
+    if a.faces_detected and a.scene_cuts_per_min >= SCREEN_CUTS_PER_MIN:
+        return "screen recording or slides"
+    return "unknown"
