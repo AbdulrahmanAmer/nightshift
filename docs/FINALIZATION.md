@@ -24,7 +24,7 @@ the first-run checklist with every line still open until the first real night; s
 - [x] F-A7 Tag `v0.1.12`; `release.yml` publishes `Nightshift-Setup-0.1.12.zip`, `Nightshift-Update-0.1.12.zip` and both `.sha256`; manifest inside says 0.1.12 (download, hash, unzip, read). laptop evidence: tag v0.1.12, release.yml success, verify_release.ps1: both zips sha256 ok, manifest 0.1.12.
 - [ ] F-A8 Dev install `D:\NightshiftDev3` updated from the official Update zip (Settings > Update from file; version 0.1.12 on the Settings page; keys kept; CLEAN after). laptop
 - [x] F-A9 Phone notified with the release link and the one-line position (PushNotification). laptop evidence: release line shown in the owner's live terminal 2026-11-09 (notification skipped as redundant by the harness).
-- [x] F-A10 `docs/HANDOFF.md` "In flight" says what 0.1.13 is and what is open (this file). laptop evidence: this PR (orchestrator/handoff-paths); HANDOFF "In flight" names v0.1.13 as the first finalization round and points at FINALIZATION.md and FEATURE_STATUS.md for what is open.
+- [x] F-A10 `docs/HANDOFF.md` "In flight" says what 0.1.13 is and what is open (this file). laptop evidence: PR #117 (the 0.1.13 bump, which wrote HANDOFF "In flight" on main: v0.1.13 is the first finalization round, FINALIZATION.md and FEATURE_STATUS.md list what is open); this PR (#132) corrects the Known gaps line to match main.
 
 ## B. Verification items still open on the laptop (U in docs/VERIFICATION.md section 5)
 
