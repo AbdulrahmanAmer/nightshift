@@ -21,7 +21,7 @@ from ns_common.errors import NsError
 from ns_common.logging import NsLogger
 from ns_common.paths import Paths
 from ns_studio.context import JobContext
-from ns_studio.media.clip_sources import ClipCandidate, ClipSource, Orientation
+from ns_studio.media.clip_sources import ClipCandidate, ClipSource, Orientation, give_log
 from ns_studio.media.presets import visual_treatment
 from ns_studio.media.shotplan import Shot, ShotSlot, beat_spans, plan_slots
 from ns_studio.media.transcribe import Word
@@ -81,6 +81,7 @@ class ClipCache:
         self.sources = {s.name: s for s in sources}
         self.now = now
         self.log = log
+        give_log(sources, log)
 
     def path_for(self, source: str, clip_id: str) -> Path:
         """Cache location of a clip."""
@@ -183,6 +184,7 @@ class Searcher:
         self.sources = list(sources)
         self.per_page = per_page
         self.log = log
+        give_log(self.sources, log)
         self._memo: dict[tuple[str, str, str], list[ClipCandidate]] = {}
         self.errors: list[NsError] = []
 

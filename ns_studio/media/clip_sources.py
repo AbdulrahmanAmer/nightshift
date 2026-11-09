@@ -11,7 +11,7 @@ import hashlib
 import json
 import re
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, Protocol
@@ -20,11 +20,13 @@ import httpx
 
 from ns_common import ffmpeg as ff
 from ns_common.errors import NsError
+from ns_common.logging import NsLogger
 
 Orientation = Literal["landscape", "portrait"]
 PEXELS_URL = "https://api.pexels.com"
 PIXABAY_URL = "https://pixabay.com/api/videos/"
 PIXABAY_CACHE_TTL_S = 24 * 3600
+OUTAGE_BACKOFF_S = (2.0, 5.0, 15.0)  # waits before the retries after a 5xx, a timeout or a reset connection
 
 
 @dataclass(frozen=True)
@@ -98,6 +100,15 @@ class TokenBucket:
         return waited
 
 
+def give_log(sources: Sequence[ClipSource], log: NsLogger | None) -> None:
+    """Let the stock-API sources log their waits and retries to the job's log (they are built without one)."""
+    if log is None:
+        return
+    for src in sources:
+        if isinstance(src, _HttpSource) and src.log is None:
+            src.log = log
+
+
 def retry_wait_s(resp: httpx.Response, wall_now: float) -> float:
     """Seconds to wait after a 429: Retry-After, else the reset header (epoch or seconds); 1..3600."""
     ra = resp.headers.get("Retry-After")
@@ -129,7 +140,9 @@ class _HttpSource:
         bucket: TokenBucket,
         sleep: Callable[[float], None],
         wall: Callable[[], float],
+        log: NsLogger | None = None,
     ) -> None:
+        self.log = log
         self._key = key
         self.cache_dir = cache_dir
         self.client = client or httpx.Client(timeout=60, follow_redirects=True)
@@ -137,23 +150,60 @@ class _HttpSource:
         self._sleep = sleep
         self._wall = wall
 
+    @property
+    def host(self) -> str:
+        """The name the owner knows the host by ("Pexels", "Pixabay")."""
+        return self.name.capitalize()
+
+    def _outage(self, reason: str) -> NsError:
+        """NS-E503 with outage wording: the host is down, the key is fine."""
+        return NsError(
+            "NS-E503", f"{self.host} is not answering right now; Nightshift will try again ({reason})"
+        )
+
     def _get(
         self, url: str, *, params: dict[str, Any], headers: dict[str, str] | None = None
     ) -> httpx.Response:
         if not self._key:
             raise NsError(self.api_error, f"{self.name} API key missing")
-        for _attempt in range(4):
+        rate_limited = 0
+        outage_retries = 0
+        while rate_limited < 4:
             self.bucket.acquire()
+            reason = ""
             try:
                 r = self.client.get(url, params=params, headers=headers)
+            except httpx.TransportError as e:  # timeouts, refused or reset connections, DNS
+                reason = type(e).__name__
             except httpx.HTTPError as e:
                 raise NsError("NS-E503", f"{self.name}: {type(e).__name__}") from e
-            if r.status_code == 429:
-                self._sleep(retry_wait_s(r, self._wall()))
-                continue
-            if r.status_code >= 400:
-                raise NsError(self.api_error, f"HTTP {r.status_code}")
-            return r
+            else:
+                if r.status_code == 429:
+                    wait = retry_wait_s(r, self._wall())
+                    rate_limited += 1
+                    if self.log:
+                        self.log.warn(
+                            "footage_rate_limited", source=self.name, wait_s=wait, attempt=rate_limited
+                        )
+                    self._sleep(wait)
+                    continue
+                if r.status_code >= 500:
+                    reason = f"HTTP {r.status_code}"
+                elif r.status_code >= 400:
+                    raise NsError(self.api_error, f"HTTP {r.status_code}")
+                else:
+                    return r
+            if outage_retries >= len(OUTAGE_BACKOFF_S):
+                if self.log:
+                    self.log.error("footage_host_down", source=self.name, reason=reason)
+                raise self._outage(f"{reason} after {outage_retries + 1} attempts")
+            wait = OUTAGE_BACKOFF_S[outage_retries]
+            outage_retries += 1
+            if self.log:
+                self.log.warn(
+                    "footage_host_retry", source=self.name, reason=reason, wait_s=wait, retry=outage_retries
+                )
+            self._sleep(wait)
         raise NsError(self.api_error, "rate limited (429) after 4 attempts")
 
     def _fetch_file(self, url: str, dest: Path) -> Path:
@@ -161,6 +211,8 @@ class _HttpSource:
         part = dest.with_name(dest.name + ".part")
         try:
             with self.client.stream("GET", url, follow_redirects=True) as r:
+                if r.status_code >= 500:
+                    raise self._outage(f"download HTTP {r.status_code}")
                 if r.status_code >= 400:
                     raise NsError(self.api_error, f"download HTTP {r.status_code}")
                 with part.open("wb") as fh:
@@ -237,10 +289,11 @@ class PexelsSource(_HttpSource):
         sleep: Callable[[float], None] = time.sleep,
         wall: Callable[[], float] = time.time,
         base_url: str = PEXELS_URL,
+        log: NsLogger | None = None,
     ) -> None:
         super().__init__(
             key, cache_dir, client=client, bucket=bucket or TokenBucket(180, 180 / 3600.0, sleep=sleep),
-            sleep=sleep, wall=wall,
+            sleep=sleep, wall=wall, log=log,
         )
         self.base_url = base_url.rstrip("/")
 
@@ -332,10 +385,11 @@ class PixabaySource(_HttpSource):
         wall: Callable[[], float] = time.time,
         base_url: str = PIXABAY_URL,
         cache_ttl_s: float = PIXABAY_CACHE_TTL_S,
+        log: NsLogger | None = None,
     ) -> None:
         super().__init__(
             key, cache_dir, client=client, bucket=bucket or TokenBucket(90, 90 / 60.0, sleep=sleep),
-            sleep=sleep, wall=wall,
+            sleep=sleep, wall=wall, log=log,
         )
         self.base_url = base_url
         self.cache_ttl_s = cache_ttl_s
