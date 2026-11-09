@@ -32,10 +32,10 @@ SPACY_MODEL_VERSION = "3.8.0"
 
 #: What each venv must be able to load before s04 may call it done (``import:`` loads the module, ``find:``
 #: only looks it up: spaCy and torch take seconds to load). The first-party packages come from the editable
-#: install of the app, the part a killed run leaves undone. ``ns_supervisor.cli`` is the module ``ns`` runs: it
-#: pulls in typer, pydantic, httpx, yaml, rich, numpy and psutil, which the studio and supervisor venvs get from
-#: ``pip install -e app[...]`` (the top-level ``ns_*`` packages import nothing third-party). The tts venv is
-#: installed with ``--no-deps``, so it is asked only for its own packages.
+#: install of the app, the part a killed run leaves undone. ``ns_supervisor.cli`` is the module ``ns`` runs:
+#: it pulls in typer, pydantic, httpx, yaml, rich, numpy and psutil, which the studio and supervisor venvs
+#: get from ``pip install -e app[...]`` (the top-level ``ns_*`` packages import nothing third-party). The tts
+#: venv is installed with ``--no-deps``, so it is asked only for its own packages.
 VENV_PROBES: dict[str, tuple[str, ...]] = {
     "studio": ("import:ns_common", "import:ns_studio", "import:ns_supervisor.cli", "find:spacy"),
     "supervisor": ("import:ns_common", "import:ns_supervisor.cli", "import:ns_dashboard", "find:fastapi",
