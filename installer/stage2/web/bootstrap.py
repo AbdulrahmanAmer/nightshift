@@ -31,6 +31,7 @@ from ns_common.avblock import is_blocked_error, looks_blocked
 from ns_common.uv import looks_full, uv_env, venv_args
 
 HOME_VAR = "NIGHTSHIFT_HOME"
+UV_VERSION = re.compile(r"(?:^|\s)uv\s+(\d+(?:\.\d+)+\S*)")      # "uv 0.13.6 (abc 2025-11-01)"
 TOP_DIRS = ("bin", "models", "venvs", "config", "data", "cache", "imports", "outbox", "rejected", "logs")
 # key, winget id, label, required. Git is not here: nothing in setup or at run time needs it (only the
 # optional ``ns update --git``), and its machine-wide installer would add an administrator prompt.
@@ -588,7 +589,7 @@ class B02Home:
         return (
             all((boot.home / d).is_dir() for d in TOP_DIRS)
             and boot.get_home_var(HOME_VAR) == str(boot.home)
-            and self._uv_runs(boot)
+            and self._uv_is_pinned(boot)
             and (boot.home / "config" / "answers.json").is_file()
             and (not boot.install_app or appcopy.is_current(boot.app_path, boot.home))
         )
@@ -599,10 +600,45 @@ class B02Home:
 
         A shim copied away from its folder fails here, and a file that merely exists proves nothing.
         """
+        return B02Home._uv_report(boot)[0]
+
+    @staticmethod
+    def _uv_report(boot: Boot) -> tuple[bool, str | None]:
+        """Whether the install folder's uv runs, and the version it prints (None when it prints none)."""
         target = boot.home / "bin" / "uv" / "uv.exe"
         if not target.is_file():
-            return False
-        return boot.cmd([str(target), "--version"], None, boot.home, 60).returncode == 0
+            return False, None
+        res = boot.cmd([str(target), "--version"], None, boot.home, 60)
+        if res.returncode != 0:
+            return False, None
+        found = UV_VERSION.search(res.stdout)
+        return True, found.group(1) if found else None
+
+    @staticmethod
+    def _uv_is_pinned(boot: Boot) -> bool:
+        """The install folder's uv runs and is the version the manifest pins (``bins.uv.version``).
+
+        A manifest pin without a version leaves nothing to compare with, so a uv that runs is accepted.
+        """
+        runs, version = B02Home._uv_report(boot)
+        want = str(boot.uv_pin.get("version") or "")
+        return runs and (not want or version == want)
+
+    @staticmethod
+    def _uv_mismatch(boot: Boot) -> str:
+        """Why the install folder's uv is refused: it does not run, or reports another version."""
+        runs, version = B02Home._uv_report(boot)
+        want = boot.uv_pin.get("version")
+        if not runs:
+            return "does not run from the install folder"
+        return f"reports {version or 'no version'}, not the pinned {want}"
+
+    @staticmethod
+    def _clear_uv_family(dest_dir: Path) -> None:
+        """Delete the ``uv*.exe`` files of a copy that was refused, so no unpinned uv stays in the folder."""
+        for item in dest_dir.glob("*.exe") if dest_dir.is_dir() else ():
+            if item.is_file() and item.name.lower().startswith("uv"):
+                item.unlink(missing_ok=True)
 
     @staticmethod
     def _copy_uv_family(src_dir: Path, dest_dir: Path) -> None:
@@ -615,41 +651,50 @@ class B02Home:
                 shutil.copy2(item, there)
 
     def _place_uv(self, boot: Boot) -> None:
-        """Put a uv that runs at ``bin\\uv\\uv.exe``.
+        """Put the pinned uv at ``bin\\uv\\uv.exe``.
 
-        Order: the hand-over copy; when that is a shim, the real exe behind it; else a fresh download of the
-        pinned release (``manifest.json`` ``bins.uv``).
+        A uv is accepted only when it runs from the install folder and reports ``bins.uv.version`` of the
+        manifest (a uv from PATH, such as winget's, is another version and changes the resolver). Order: the
+        hand-over copy; when that is a shim, the real exe behind it; else a fresh download of the pinned
+        release (``bins.uv``: url and sha256).
         """
         target = boot.home / "bin" / "uv" / "uv.exe"
         source = Path(boot.uv)
+        want = boot.uv_pin.get("version")
         problems: list[str] = []
         if source.is_file():
             self._copy_uv_family(source.parent, target.parent)
-            if self._uv_runs(boot):
+            if self._uv_is_pinned(boot):
+                boot.say(f"uv {want or 'found'} copied from {source}")
                 return
-            problems.append(f"{source} does not run from {target.parent}")
+            problems.append(f"{source} {self._uv_mismatch(boot)}")
             if is_shim(source):
                 real = shim_target(source) or self._self_where(boot, source)
                 if real is not None:
                     boot.say(f"uv at {source} is a shim; using {real}")
                     self._copy_uv_family(real.parent, target.parent)
-                    if self._uv_runs(boot):
+                    if self._uv_is_pinned(boot):
                         return
-                    problems.append(f"{real} does not run from {target.parent}")
+                    problems.append(f"{real} {self._uv_mismatch(boot)}")
+            boot.say(f"Not using the uv at {source}: " + "; ".join(problems))
+            self._clear_uv_family(target.parent)
         url, digest = boot.uv_pin.get("url"), boot.uv_pin.get("sha256")
         if not url or not digest:
             if problems:
                 raise BootstrapError(
-                    "NS-E105", "uv does not run and no download is pinned: " + "; ".join(problems)
+                    "NS-E105", "no usable uv and no download is pinned: " + "; ".join(problems)
                 )
             raise BootstrapError(
                 "NS-E105", f"uv was not found at {source}; run INSTALL.cmd again so stage 1 downloads it"
             )
-        boot.say("Downloading the pinned uv")
+        boot.say(f"Downloading the pinned uv {want or ''}".rstrip())
         boot.fetch_uv(str(url), str(digest), target.parent)
-        if not self._uv_runs(boot):
+        if not self._uv_is_pinned(boot):
+            self._clear_uv_family(target.parent)
             raise BootstrapError(
-                "NS-E105", f"the downloaded uv does not run from {target.parent}; " + "; ".join(problems)
+                "NS-E105",
+                f"the downloaded uv {self._uv_mismatch(boot)}"
+                + (f"; {'; '.join(problems)}" if problems else ""),
             )
 
     @staticmethod
@@ -700,7 +745,7 @@ class B02Home:
         if not boot.set_home_var(HOME_VAR, str(boot.home)):
             raise BootstrapError("NS-E104", "could not set the NIGHTSHIFT_HOME user variable")
         os.environ[HOME_VAR] = str(boot.home)
-        if not self._uv_runs(boot):
+        if not self._uv_is_pinned(boot):
             self._place_uv(boot)
         boot.write_answers()
 
@@ -715,6 +760,8 @@ class B02Home:
             raise BootstrapError("NS-E105", "uv was not copied into the install folder (bin/uv/uv.exe)")
         if not self._uv_runs(boot):
             raise BootstrapError("NS-E105", "uv in the install folder does not run (uv --version failed)")
+        if not self._uv_is_pinned(boot):
+            raise BootstrapError("NS-E105", f"the uv in the install folder {self._uv_mismatch(boot)}")
         if boot.install_app and not appcopy.is_current(boot.app_path, boot.home):
             raise BootstrapError("NS-E115", f"the program folder {appcopy.app_dir(boot.home)} is incomplete")
 
