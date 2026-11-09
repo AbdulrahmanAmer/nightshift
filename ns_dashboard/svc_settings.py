@@ -23,8 +23,8 @@ from ns_dashboard.state import (
     load_dashboard_settings,
     load_ui_prefs,
     save_dashboard_settings,
+    schedule_is_registered,
     scheduled_mode,
-    scheduled_run_time,
 )
 from ns_dashboard.svc_engine import EngineService
 from ns_dashboard.templates import load_templates
@@ -84,8 +84,10 @@ class SettingsService:
         prefs = load_ui_prefs(self.s.paths)
         return {
             "schedule_time": stored["run_time"],
-            # False when Windows has no 'Nightshift Daily' task (NS-W206): the time is then only a preference
-            "schedule_registered": scheduled_run_time(self.s.paths) is not None,
+            # True when an enabled 'Nightshift Daily' task exists (registered or interactive-only). False
+            # when Windows has none (NS-W206) or a dev install left it disabled; the time is then only a
+            # preference. `schedule_mode` tells registered from interactive_only (NS-W205)
+            "schedule_registered": schedule_is_registered(self.s.paths),
             "schedule_mode": scheduled_mode(self.s.paths),
             "home": str(self.s.paths.home),
             "profile": (runtime or {}).get("profile"),

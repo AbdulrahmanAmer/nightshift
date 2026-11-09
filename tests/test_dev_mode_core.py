@@ -325,7 +325,7 @@ def test_a_disabled_task_is_no_schedule_for_the_supervisor_or_the_dashboard(
     msg = schedule.install(paths, "03:00", tmp_path, disabled=True)
     assert "DISABLED" in msg
     assert json.loads(schedule_file(paths).read_text(encoding="utf-8"))["mode"] == "disabled"
-    assert read_run_time(paths) is None and read_schedule_mode(paths) == "none"
+    assert read_run_time(paths) is None and read_schedule_mode(paths) == "disabled"
     schedule.install(paths, "03:00", tmp_path)
     assert read_run_time(paths) == "03:00" and read_schedule_mode(paths) == "registered"
 
@@ -449,4 +449,4 @@ def test_a_dev_install_keeps_its_task_disabled_when_anything_re_registers_it(
 
     monkeypatch.setattr(pwsh, "run_powershell", capture)
     schedule.install(paths, "05:00", tmp_path)          # no disabled=True: the Settings page does this
-    assert "Disable-ScheduledTask" in scripts[0] and read_schedule_mode(paths) == "none"
+    assert "Disable-ScheduledTask" in scripts[0] and read_schedule_mode(paths) == "disabled"
