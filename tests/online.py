@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import functools
 import os
+import socket
 import threading
 import time
 from collections.abc import Callable
@@ -60,9 +61,22 @@ def transient_detail(exc: BaseException) -> str | None:
     if isinstance(exc, httpx.HTTPStatusError):
         code = exc.response.status_code
         return f"HTTP {code}" if is_transient_status(code) else None
+    if isinstance(exc, httpx.ConnectError) and _is_dns_failure(exc):
+        return None  # a host name that does not resolve is a wrong pin, not an outage
     if isinstance(exc, httpx.TimeoutException | httpx.NetworkError | httpx.RemoteProtocolError):
         return f"{type(exc).__name__}: {exc}".rstrip(": ")
     return None
+
+
+def _is_dns_failure(exc: BaseException) -> bool:
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    while cur is not None and id(cur) not in seen:
+        if isinstance(cur, socket.gaierror):
+            return True
+        seen.add(id(cur))
+        cur = cur.__cause__ or cur.__context__
+    return False
 
 
 def forget_outages() -> None:
@@ -74,6 +88,11 @@ def _recently_failed(host: str) -> bool:
     with _lock:
         at = _failed_hosts.get(host)
         return at is not None and time.monotonic() - at < MEMORY_S
+
+
+def _forget(host: str) -> None:
+    with _lock:
+        _failed_hosts.pop(host, None)
 
 
 def _remember(host: str) -> None:
@@ -104,6 +123,7 @@ def retry_call[T](
                 raise
         else:
             if not (isinstance(result, httpx.Response) and is_transient_status(result.status_code)):
+                _forget(host)
                 return result
             detail = f"HTTP {result.status_code}"
             result.close()

@@ -22,6 +22,14 @@ XML = """<?xml version="1.0" encoding="utf-8"?>
 """
 
 
+@pytest.fixture(autouse=True)
+def summary_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """GitHub sets GITHUB_STEP_SUMMARY for every CI step; these tests must never write into the real one."""
+    p = tmp_path / "step-summary.md"
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(p))
+    return p
+
+
 @pytest.fixture
 def xml_file(tmp_path: Path) -> Path:
     p = tmp_path / "report.xml"
@@ -67,3 +75,18 @@ def test_main_reads_ns_require_online_from_the_environment(
     monkeypatch.setenv("NS_REQUIRE_ONLINE", "1")
     assert cor.main([str(xml_file)]) == 1
     capsys.readouterr()
+
+
+def test_the_job_summary_gets_an_entry_for_an_outage_and_none_otherwise(
+    xml_file: Path, summary_file: Path, tmp_path: Path
+):
+    ok = tmp_path / "ok.xml"
+    ok.write_text(
+        '<testsuites><testsuite><testcase classname="a" name="b"/></testsuite></testsuites>', encoding="utf-8"
+    )
+    assert cor.report([ok], required=True, out=io.StringIO()) == 0
+    assert not summary_file.exists()
+    cor.report([xml_file], required=False, out=io.StringIO())
+    text = summary_file.read_text(encoding="utf-8")
+    assert text.count("### Upstream outage") == 1
+    assert "test_a_online" in text

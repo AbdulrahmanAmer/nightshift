@@ -311,3 +311,37 @@ def test_the_downloader_does_not_retry_a_404(tmp_path: Path):
         )
     assert ei.value.code == "NS-E105" and "404" in str(ei.value)
     assert [m for m, _ in seen].count("GET") == 1
+
+
+def test_a_host_name_that_does_not_resolve_is_a_failure_not_an_outage():
+    import socket
+
+    err = httpx.ConnectError("[Errno 11001] getaddrinfo failed")
+    err.__cause__ = socket.gaierror(11001, "getaddrinfo failed")
+    calls: list[int] = []
+
+    def fn():
+        calls.append(1)
+        raise err
+
+    with pytest.raises(httpx.ConnectError):
+        online.retry_call(fn, host="typo.example.test", sleep=lambda s: None)
+    assert len(calls) == 1
+
+
+def test_a_host_that_answers_again_is_waited_on_in_full_next_time():
+    online.forget_outages()
+    host = "flaky.example.test"
+    with pytest.raises(online.UpstreamOutageError):
+        online.retry_call(lambda: httpx.Response(504), host=host, sleep=lambda s: None)
+    # inside the memory window: one try, which succeeds and clears the memory
+    assert online.retry_call(lambda: httpx.Response(200), host=host, sleep=lambda s: None).status_code == 200
+    calls: list[int] = []
+
+    def fn():
+        calls.append(1)
+        return httpx.Response(504 if len(calls) < 3 else 200)
+
+    assert online.retry_call(fn, host=host, sleep=lambda s: None).status_code == 200
+    assert len(calls) == 3
+    online.forget_outages()
