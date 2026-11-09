@@ -92,8 +92,9 @@ def test_validate_all_reports_every_problem(tmp_path: Path) -> None:
     assert ei.value.code == "NS-E320"
     assert "must equal the file name" in msg and "leaves the" in msg and "unknown caption styles" in msg
     assert "broken.yaml" in msg
-    with pytest.raises(StudioError):
-        F.load_formats(tmp_path)
+    # loading no longer stops at the first bad file: the good one loads, the others are listed as problems
+    assert set(F.load_formats(tmp_path)) == {"good", "off_canvas", "bad_style"}
+    assert set(F.load_problems(tmp_path)) == {"wrong_id", "broken"}
 
 
 def test_validate_all_on_an_empty_folder_fails(tmp_path: Path) -> None:
@@ -192,6 +193,6 @@ def test_the_owners_edited_formats_shadow_and_extend_the_shipped_ones(tmp_home: 
     assert set(F.load_formats()) == SHIPPED | {"my_short"}
     assert set(F.load_formats(F.FORMATS_DIR)) == SHIPPED          # an explicit folder: no overlay
     (paths.formats_dir / "broken.yaml").write_text("id: broken\nname: no canvas\n", encoding="utf-8")
-    F._load_dir.cache_clear()                                     # one read per process (per studio job)
-    with pytest.raises(StudioError):
-        F.load_formats()
+    # a broken file is listed and left out: the shipped and the owner's good formats still load
+    assert set(F.load_formats()) == SHIPPED | {"my_short"}
+    assert "canvas is required" in F.load_problems()["broken"]

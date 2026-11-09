@@ -9,6 +9,7 @@ from pathlib import Path
 
 from ns_common.errors import NsError
 from ns_studio.context import JobContext, owner_script_of
+from ns_studio.media.job_formats import prepare_job_formats
 from ns_studio.stages import REGISTRY, Stage, Tenant, needs_embed, run_stage
 from ns_studio.text.story_profile import note_job
 
@@ -173,6 +174,7 @@ def run_job(ctx: JobContext, *, resume: bool = True, dry_run: bool = False) -> l
     if dry_run:
         return [s.name for s in stages]
     note_job(ctx)  # a job that runs with the engine-test switch on stays marked as a test video for good
+    prepare_job_formats(ctx)  # which format each video is drawn from, chosen once, before the first stage
     owner = f"studio:{ctx.job_id}"
     ran: list[str] = []
     for tenant, group in groupby(stages, key=_tenant_of):
