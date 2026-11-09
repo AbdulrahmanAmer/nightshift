@@ -22,6 +22,7 @@ from ns_dashboard.assistant.redact import redact_obj, redact_text
 from ns_dashboard.assistant.registry import Registry, ToolContext, ToolDef, render_confirm
 from ns_dashboard.assistant.store import AssistantStore
 from ns_dashboard.errors import AdapterUnavailable, ApiError
+from ns_studio.errors import hint_of
 
 PROMPT_FILE = Path(__file__).resolve().parents[1] / "prompts" / "assistant.md"
 MAX_STEPS = 8
@@ -69,7 +70,7 @@ def run_tool(td: ToolDef, ctx: ToolContext, args: dict[str, Any]) -> tuple[bool,
     except ApiError as e:
         return False, {"error": {"code": e.code, "message": e.message, "hint": e.hint, "details": e.details}}
     except NsError as e:
-        return False, {"error": {"code": e.code, "message": str(e), "hint": e.definition.hint}}
+        return False, {"error": {"code": e.code, "message": str(e), "hint": hint_of(e)}}
     except AdapterUnavailable as e:
         return False, {"error": {"code": "unavailable", "message": str(e)}}
     except Exception as e:  # a tool bug must come back to the model as text, not crash the turn
@@ -213,13 +214,13 @@ class Assistant:
             yield {"kind": "done", "payload": {"conversation_id": cid}}
             return
         except NsError as e:
-            yield {"kind": "error", "payload": {"code": e.code, "message": str(e), "hint": e.definition.hint}}
+            yield {"kind": "error", "payload": {"code": e.code, "message": str(e), "hint": hint_of(e)}}
             yield {"kind": "done", "payload": {"conversation_id": cid}}
             return
         try:
             yield from self._turn(llm, cid, context)
         except NsError as e:
-            yield {"kind": "error", "payload": {"code": e.code, "message": str(e), "hint": e.definition.hint}}
+            yield {"kind": "error", "payload": {"code": e.code, "message": str(e), "hint": hint_of(e)}}
         finally:
             self.provider.release()
         yield {"kind": "done", "payload": {"conversation_id": cid}}

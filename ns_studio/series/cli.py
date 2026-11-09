@@ -15,6 +15,7 @@ from pydantic import BaseModel
 
 from ns_common.errors import NsError
 from ns_studio.context import FAKEABLE
+from ns_studio.errors import hint_of
 from ns_studio.series.store import MAX_MINUTES, MIN_MINUTES, WorkshopError
 from ns_studio.series.workshop import Workshop, default_workshop
 
@@ -40,7 +41,7 @@ def _run(fake: bool, action: Callable[[Workshop], Any]) -> None:
         _show(action(_workshop(fake)))
     except NsError as e:
         typer.echo(f"error {e.code}: {e.definition.message} {e.detail}".strip(), err=True)
-        typer.echo(f"hint: {e.definition.hint}", err=True)
+        typer.echo(f"hint: {hint_of(e)}", err=True)
         raise typer.Exit(1) from e
     except WorkshopError as e:
         typer.echo(f"error: {e}", err=True)

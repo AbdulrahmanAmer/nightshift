@@ -97,9 +97,22 @@ RETRY_NOTES = {
 }
 
 
-def retry_note(reason: str, wait_s: float, attempt: int | None = None, of: int | None = None) -> str:
+def site_wait_text(host: str, status: int, wait_s: float, left_s: float) -> str:
+    """The wait line for a download site's 5xx or 429. The setup server runs on the bare Python and cannot
+    import the downloader; ``downloader.site_wait_text`` is the same text (a test keeps them equal)."""
+    left = f"{int(-(-left_s // 60))} min left" if left_s >= 60 else f"{int(max(left_s, 0))} s left"
+    return f"{host} answers {status} (their side). Trying again in {int(wait_s)} s, {left}"
+
+
+def retry_note(
+    reason: str, wait_s: float, attempt: int | None = None, of: int | None = None, *,
+    host: str | None = None, status: int | None = None, left_s: float | None = None,
+) -> str:
     """The row note while a transfer waits to be retried: what happened, how long until the next try and which
-    try that is ("try 2 of 3"; ``attempt`` is the attempt that just failed)."""
+    try that is ("try 2 of 3"; ``attempt`` is the attempt that just failed). A download site's 5xx or 429
+    (reason ``site``) names the host and the status and the time left of the ten minutes."""
+    if reason == "site" and host and status:
+        return site_wait_text(host, status, wait_s, left_s or 0.0)
     text = RETRY_NOTES.get(reason, "The download stopped, trying again")
     text = f"{text} in {int(wait_s)} s" if wait_s >= 1 else text
     if attempt and of and attempt < of:
@@ -392,6 +405,8 @@ class SetupController:
         self._keys_stored = {"pexelsKey": False, "pixabayKey": False}
         self._sub: dict[str, list[Any]] = {}      # wizard file key -> [done, total]
         self._finished: set[str] = set()
+        # wizard file key -> bytes on disk during its site wait (None until the first tick after it began)
+        self._site_waiting: dict[str, int | None] = {}
         self._progress_log: dict[str, float] = {}
         self._begun = time.monotonic()
         self._log_path: Path | None = cfg.data_dir / "bootstrap" / "setup-ui.jsonl"
@@ -1178,9 +1193,16 @@ class SetupController:
         self.store.update(fn)
 
     def _set_failure(
-        self, step: str, code: str, message: str, hint: str, detail: str, optional: bool
+        self, step: str, code: str, message: str, hint: str, detail: str, optional: bool,
+        site: tuple[str, int] | None = None,
     ) -> None:
         title, what = preflight.copy_for(code, message, hint)
+        if site is not None:       # NS-E105 after the ten minutes: the Failed screen says whose side it is
+            host, status = site
+            title = f"{host} is not answering ({status})"
+            what = ("This is the download site's side (their side); nothing on this PC is wrong. "
+                    "Press Retry to wait for it again, or close setup and run INSTALL.cmd later: "
+                    "it continues where it stopped")
         self._attempts[step] = self._attempts.get(step, 0) + 1
         view = {
             "step": step, "stepTitle": labels.STEP_TITLES.get(step, step), "code": code, "title": title,
@@ -1382,6 +1404,7 @@ class SetupController:
         )
         self._finished.clear()
         self._sub.clear()
+        self._site_waiting.clear()
         engine = self.fx.engine_factory(
             argv, env=wizard_env(self.run_app_path), cwd=self.run_app_path, on_event=self._on_event,
             on_line=self._on_line, on_exit=self._on_exit,
@@ -1602,16 +1625,37 @@ class SetupController:
         event = ev.get("event")
         if event == "start":
             self._sub[key] = [0, ev.get("total")]
+            self._site_waiting.pop(key, None)
         elif event == "progress":
             self._sub[key] = [int(ev.get("done") or 0), ev.get("total")]
             self.meter.update(key, int(ev.get("done") or 0))
             self._console_progress(key, rk)
+            # While a site wait runs, the downloader reports progress every 5 s (so Stop is seen) with the
+            # bytes it already had: that tick is not the file moving, and the wait line stays on the row. The
+            # first tick after the wait began is the baseline (the last progress seen before it may lag the
+            # .part on disk); bytes that differ from it later mean the file moves again.
+            if key in self._site_waiting:
+                done = int(ev.get("done") or 0)
+                if self._site_waiting[key] is None:
+                    self._site_waiting[key] = done
+                elif done != self._site_waiting[key]:
+                    del self._site_waiting[key]
         elif event == "finish":
             self._finished.add(key)
+            self._site_waiting.pop(key, None)
             self.meter.drop(key)
         elif event == "retry":
             self.meter.drop(key)
+            if ev.get("reason") == "site":
+                self._site_waiting[key] = None
+            else:
+                self._site_waiting.pop(key, None)
+            if ev.get("reason") == "site":      # the console of the window keeps the waits too
+                self.log("warn", retry_note(
+                    "site", float(ev.get("waitS") or 0), host=str(ev.get("host") or ""),
+                    status=int(ev.get("status") or 0), left_s=float(ev.get("leftS") or 0)))
         outcome = ev.get("outcome")
+        holding = key in self._site_waiting
 
         def fn(s: dict[str, Any]) -> None:
             items = s["downloads"]["items"]
@@ -1632,16 +1676,20 @@ class SetupController:
                 row["speedBps"] = speed
                 remaining = (row["bytesTotal"] or 0) - row["bytesDone"]
                 row["etaS"] = rows.eta_seconds(remaining, speed) if row["bytesTotal"] and speed else None
-                row["note"] = None
+                if not holding:
+                    row["note"] = None
             elif event == "retry":
                 row["speedBps"], row["etaS"] = None, None
                 row["note"] = retry_note(
                     str(ev.get("reason")), float(ev.get("waitS") or 0),
-                    int(ev.get("attempt") or 0), int(ev.get("of") or 0))
+                    int(ev.get("attempt") or 0), int(ev.get("of") or 0),
+                    host=str(ev.get("host") or "") or None, status=int(ev.get("status") or 0) or None,
+                    left_s=float(ev.get("leftS") or 0))
             elif event == "finish":
                 all_done = all(k in self._finished for k, _v in subs)
                 if outcome == "failed":
                     row["status"], row["speedBps"], row["etaS"] = "failed", None, None
+                    row["note"] = None      # "Trying again in 28 s" is not true of a row that gave up
                 elif outcome == "missing":
                     row["status"], row["note"] = "skipped", "not available, setup goes on without it"
                 elif all_done:
@@ -1696,8 +1744,10 @@ class SetupController:
 
     def _ev_failure(self, ev: dict[str, Any]) -> None:
         self._waiting_on = "engine"         # before the state shows "waiting": a quick Retry must find it
+        host, status = str(ev.get("host") or ""), int(ev.get("status") or 0)
+        site = (host, status) if ev.get("side") == "site" and host and status else None
         self._set_failure(str(ev.get("step")), str(ev.get("code")), str(ev.get("message", "")),
-                          str(ev.get("hint", "")), str(ev.get("detail", "")), bool(ev.get("optional")))
+                          str(ev.get("hint", "")), str(ev.get("detail", "")), bool(ev.get("optional")), site)
 
     def _verify_pending(self) -> None:
         rows = labels.VERIFY_PENDING_ROWS

@@ -15,8 +15,9 @@ import tempfile
 import threading
 import time
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from installer.stage2.answers import AnswersError, find_answers, load_raw
 from installer.stage2.base import Step
@@ -52,13 +53,14 @@ class Failure:
     message: str
     hint: str
     detail: str
+    data: dict[str, Any] = field(default_factory=dict)      # NsError.data: host, status, side ...
 
 
 def describe_failure(exc: Exception) -> Failure:
     """Turn any exception into code + plain message + fix hint."""
     if isinstance(exc, NsError):
         d = exc.definition
-        return Failure(exc.code, d.message, d.hint, exc.detail)
+        return Failure(exc.code, d.message, d.hint, exc.detail, dict(exc.data))
     if isinstance(exc, AnswersError):
         return Failure(
             "answers.json",
@@ -206,7 +208,11 @@ class Wizard:
         body = f"{failure.code}  {failure.message}"
         if failure.detail:
             body += f"\n{failure.detail}"
-        body += f"\n\nWhat to do: {failure.hint}"
+        hint = failure.hint
+        if failure.data.get("side") == "site":
+            # the site had its ten minutes: the generic "check the internet" would contradict the detail
+            hint = "Run INSTALL.cmd again later: setup continues where it stopped."
+        body += f"\n\nWhat to do: {hint}"
         self.ctx.ui.panel(body, title=f"{step.title} failed")
 
     def _on_failure(self, step: Step, failure: Failure, attempts: int) -> str:
@@ -217,6 +223,8 @@ class Wizard:
             return decision if decision != "skip" or step.optional else "quit"
         self._show_failure(step, failure)
         if ctx.unattended or not ui.interactive:
+            if failure.data.get("side") == "site":
+                return "quit"       # the site had its ten minutes already; another round would wait ten more
             if attempts <= len(self.backoff):
                 wait = self.backoff[attempts - 1]
                 ui.say(f"Retry {attempts} of {len(self.backoff)} in {wait:g} s ...")

@@ -14,6 +14,11 @@ Crash and rerun rules (the installer may be closed or killed at any moment, then
   downloaded again;
 * a wrong hash removes the ``.part`` and tries once more, then ``NS-E109``;
 * a full disk is ``NS-E104`` with the free space, never a retry loop;
+* a download site that answers 5xx, 408, 425 or 429 (GitHub's 504 incident) is waited out for
+  ``SITE_WINDOW_S`` (ten minutes of continuous outage: a fetch that gets bytes onto the disk starts the window
+  anew) with backoff 2, 4, 8 ... 60 s or ``Retry-After``, whichever is larger; every wait is reported (host,
+  status, time left) and the end is ``NS-E105`` naming the host and status, saying it is the site's side and
+  that a later try continues. 404, 403 and other 4xx, a wrong size and a wrong hash stop at once;
 * Stop and Pause keep the ``.part`` and hold no file handle or connection while waiting.
 """
 
@@ -31,6 +36,8 @@ import zipfile
 from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any, Literal, Protocol
 from urllib.parse import urlsplit
@@ -41,6 +48,7 @@ from installer.stage2.devmode import STUB_BYTES
 from installer.stage2.errors import make_error
 from ns_common.avblock import is_blocked_error
 from ns_common.errors import NsError
+from ns_common.logging import NsLogger
 from ns_common.models import HfFile, LlmCustom, Manifest
 from ns_common.paths import Paths
 
@@ -56,6 +64,10 @@ HASH_ATTEMPTS = 2                # a wrong hash is downloaded once more from scr
 OFFLINE_WAIT_S = 120.0           # after a network error wait up to this long for the internet first
 OFFLINE_PROBE_TIMEOUT_S = 5.0    # one reachability probe
 MAX_OFFLINE_WAITS = 12           # waits that ended with the network back (per file) that are not attempts
+SITE_WINDOW_S = 600.0            # a download site's 5xx or 429 is waited out for about this long (D-13)
+SITE_BACKOFF_CAP_S = 60.0        # outage wait n is min(2 ** n, this), or Retry-After if longer
+RETRY_AFTER_CAP_S = 300.0        # a Retry-After longer than this is shortened to it
+SITE_SLICE_S = 5.0               # a long wait is slept in slices so Stop is seen within this long
 ProgressFn = Callable[[int, int | None], None]
 RetryFn = Callable[[int, str, float], None]
 Tier = Literal["small", "balanced", "best"]
@@ -109,11 +121,82 @@ class Reporter(Protocol):
 
     # Optional: ``retrying(name, attempt, reason, wait_s)`` is called before a retry wait (reason stall,
     # network or hash). A reporter without it simply is not told.
+    # Optional: ``site_wait(name, host, status, wait_s, left_s)`` is called before each wait for a download
+    # site that answers 5xx or 429; a reporter without it gets ``retrying(name, n, "site", wait_s)``.
 
 
 # --------------------------------------------------------------------------------------------------------
 # helpers
 # --------------------------------------------------------------------------------------------------------
+@dataclass(frozen=True)
+class SiteWait:
+    """One wait for a download site that answers 5xx or 429: who, what it said, how long, window left."""
+
+    host: str
+    status: int
+    wait_s: float
+    left_s: float
+    tries: int                      # outage retries so far, this one included
+
+
+SiteWaitFn = Callable[[SiteWait], None]
+
+
+def is_site_side(status: int) -> bool:
+    """True for the answers that are the download site's own trouble and pass by themselves: 5xx, 408 (request
+    timeout), 425 (too early) and 429 (rate limit)."""
+    return status >= 500 or status in (408, 425, 429)
+
+
+def retry_after_seconds(value: str | None, *, now: datetime | None = None) -> float | None:
+    """A ``Retry-After`` header (seconds or an HTTP date) in seconds; None if absent or unreadable."""
+    text = (value or "").strip()
+    if not text:
+        return None
+    if text.isdigit():
+        return float(text)
+    try:
+        when = parsedate_to_datetime(text)
+    except (TypeError, ValueError):
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=UTC)
+    return max(0.0, (when - (now or datetime.now(UTC))).total_seconds())
+
+
+def left_text(left_s: float) -> str:
+    """Time left of the window: ``7 min left`` (rounded up) or ``30 s left``."""
+    if left_s >= 60:
+        return f"{int(-(-left_s // 60))} min left"
+    return f"{int(max(left_s, 0))} s left"
+
+
+def site_wait_text(host: str, status: int, wait_s: float, left_s: float) -> str:
+    """The wait line: ``github.com answers 504 (their side). Trying again in 40 s, 7 min left``."""
+    return f"{host} answers {status} (their side). Trying again in {int(wait_s)} s, {left_text(left_s)}"
+
+
+def site_error(url: str, status: int, phrase: str, waited_s: float) -> NsError:
+    """NS-E105 after the whole window: names the host and the status, says whose side it is and what to do."""
+    host = urlsplit(url).hostname or url
+    answer = f"{status} {phrase}".strip()
+    # a file that came after the window was used up never waited: it says so instead of "for 0 min"
+    how_long = f"for {round(waited_s / 60)} min" if waited_s >= 60 else "and was still not answering"
+    detail = (
+        f"{host} answered {answer} {how_long}. That is the download site's side, not this PC. "
+        "Try again later: what is already downloaded is kept and the download continues where it stopped."
+    )
+    return make_error("NS-E105", detail, status=status, host=host, side="site", waited_s=round(waited_s))
+
+
+def refused_error(url: str, status: int, phrase: str) -> NsError:
+    """NS-E105 for a 4xx other than a rate limit: the site refused this file, waiting will not change it."""
+    host = urlsplit(url).hostname or url
+    answer = f"{status} {phrase}".strip()
+    detail = f"{host} answered {answer} for {url}"
+    return make_error("NS-E105", detail, status=status, host=host, side="request")
+
+
 def hf_url(repo: str, revision: str, file: str) -> str:
     """Hugging Face file URL: https://huggingface.co/<repo>/resolve/<revision>/<file>."""
     return f"{HF}/{repo}/resolve/{revision}/{file}"
@@ -412,6 +495,23 @@ def wait_for_network(
     return "down"
 
 
+def _wait_checked(
+    sleep: Callable[[float], None], wait: float, progress: ProgressFn | None, dest: Path, size: int | None
+) -> None:
+    """Sleep ``wait`` seconds; a long wait is cut into slices of ``SITE_SLICE_S`` and ``progress`` is called
+    between them, so Stop (it raises from the progress hook) is seen within a few seconds."""
+    if wait <= SITE_SLICE_S or progress is None:
+        sleep(wait)
+        return
+    part = _part(dest)
+    remaining = wait
+    while remaining > 0:
+        step = min(SITE_SLICE_S, remaining)
+        sleep(step)
+        remaining -= step
+        progress(part.stat().st_size if part.exists() else 0, size)
+
+
 def download(
     url: str,
     dest: Path,
@@ -428,6 +528,8 @@ def download(
     stall_timeout: float = STALL_TIMEOUT_S,
     on_retry: RetryFn | None = None,
     clock: Callable[[], float] = time.monotonic,
+    on_site_wait: SiteWaitFn | None = None,
+    site_window_s: float = SITE_WINDOW_S,
 ) -> Path:
     """Download ``url`` to ``dest`` with resume, SHA256 check and atomic rename.
 
@@ -446,6 +548,15 @@ def download(
     counts as a network error: the next attempt follows after the backoff (2, 4, 8 ... capped at 30 s) and
     resumes with ``Range``. ``on_retry`` is told ``(attempt, reason, wait seconds)`` before each wait; reason
     is ``stall``, ``network`` or ``hash``. Stopping (an exception from ``progress``) keeps the ``.part``.
+
+    A download site that answers 5xx or 429 is not an attempt: it is waited out for ``site_window_s`` (ten
+    minutes) with the backoff 2, 4, 8 ... 60 s, or the site's ``Retry-After`` when that is longer (at most
+    ``RETRY_AFTER_CAP_S``). ``on_site_wait`` is told a ``SiteWait`` before each wait. The window is measured
+    by ``clock`` and by the waits themselves, whichever is larger, so a fake ``sleep`` makes it instant. When
+    it is used up the error is NS-E105 naming the host and the status, saying it is the site's side and that a
+    later try continues. A fetch that put bytes on the disk ends the outage: the next 5xx starts a window of
+    its own. 408 and 425 count as the site's side too. Any other 4xx (403, 410 ...) is NS-E105 at once,
+    without a wait.
     """
     dest = Path(dest)
     if is_verified(dest, sha256):
@@ -460,6 +571,11 @@ def download(
     attempt = 0
     hash_failures = 0
     offline_waits = 0
+    site_status, site_phrase, site_retry_after = 0, "", None
+    site_started: float | None = None
+    site_waited, site_tries = 0.0, 0
+    part = _part(dest)
+    last_size = part.stat().st_size if part.exists() else 0
     try:
         while attempt < retries:
             if gate is not None:
@@ -486,10 +602,40 @@ def download(
                 if is_disk_full(e):
                     raise disk_full_error(dest, e) from e
                 last, reason = make_error("NS-E105", f"{url}: {e}"), "network"
+            except httpx.HTTPStatusError as e:
+                code = e.response.status_code
+                if not is_site_side(code):
+                    raise refused_error(url, code, e.response.reason_phrase) from e
+                site_status, site_phrase = code, e.response.reason_phrase
+                site_retry_after = retry_after_seconds(e.response.headers.get("retry-after"))
+                last, reason = site_error(url, code, site_phrase, site_waited), "site"
             except httpx.HTTPError as e:
                 last, reason = make_error("NS-E105", f"{url}: {e}"), "network"
+            size_now = part.stat().st_size if part.exists() else 0
+            if size_now > last_size:
+                # the last fetch got bytes onto the disk: the site was answering, so a 5xx that follows is a
+                # new outage with a window of its own (the ten minutes mean continuous trouble)
+                site_started, site_waited, site_tries = None, 0.0, 0
+            last_size = size_now
             if gate is not None and not gate.is_set():
                 continue  # failed while paused: not a real attempt
+            if reason == "site":
+                # the site itself is in trouble (the network is fine): wait it out, no attempt is used
+                site_started = clock() if site_started is None else site_started
+                left = site_window_s - max(clock() - site_started, site_waited)
+                if left <= 0:
+                    raise site_error(url, site_status, site_phrase, site_window_s)
+                site_tries += 1
+                wait = min(float(2**site_tries), SITE_BACKOFF_CAP_S)
+                if site_retry_after is not None:
+                    wait = max(wait, min(site_retry_after, RETRY_AFTER_CAP_S))
+                wait = min(wait, left)
+                if on_site_wait is not None:
+                    host = urlsplit(url).hostname or url
+                    on_site_wait(SiteWait(host, site_status, wait, left - wait, site_tries))
+                _wait_checked(sleep, wait, progress, dest, size)
+                site_waited += wait
+                continue
             if reason in ("network", "stall") and offline_waits < MAX_OFFLINE_WAITS:
                 # a PC that woke from sleep has no network for a while: wait for it, do not burn the tries
                 online = wait_for_network(
@@ -959,11 +1105,18 @@ def run_plan(
     retries: int = 3,
     fetch: Callable[..., Any] | None = None,
     gate: threading.Event | None = None,
+    log: NsLogger | None = None,
+    site_window_s: float = SITE_WINDOW_S,
 ) -> PlanResult:
     """Fetch every item (copy from ``models_source`` when possible), two at a time, then extract zips.
 
     All items are attempted even if one fails; the first failure is raised afterwards so a rerun resumes.
     ``fetch`` replaces ``download`` (simulate mode and tests). ``gate`` is the pause switch.
+
+    A site that answers 5xx or 429 is waited out for ``site_window_s`` (see ``download``): each wait goes
+    to the reporter's ``site_wait`` (or its ``retrying`` with reason ``site``) and to ``log``. Once a host has
+    used its window up, the files still to come from it fail at their first 5xx without waiting again, so a
+    plan of five files does not wait fifty minutes.
     """
     rep: Reporter = reporter or _NullReporter()
     result = PlanResult()
@@ -971,6 +1124,7 @@ def run_plan(
     http = client or _new_client()
     do_fetch = fetch or download
     extra: dict[str, Any] = {"gate": gate} if gate is not None else {}
+    dead_hosts: set[str] = set()            # hosts whose window is used up (guarded by ``lock``)
 
     def outcome(item: DownloadItem, kind: str) -> None:
         with lock:
@@ -999,6 +1153,18 @@ def run_plan(
             if retrying is not None:
                 retrying(item.name, attempt, reason, wait_s)
 
+        def on_site_wait(w: SiteWait) -> None:
+            line = site_wait_text(w.host, w.status, w.wait_s, w.left_s)
+            if log is not None:
+                log.warn("download_site_down", line, file=item.name, host=w.host, status=w.status,
+                         wait_s=w.wait_s, left_s=w.left_s)
+            site_wait = getattr(rep, "site_wait", None)
+            if site_wait is not None:
+                site_wait(item.name, w.host, w.status, w.wait_s, w.left_s)
+            elif retrying is not None:
+                retrying(item.name, w.tries, "site", w.wait_s)
+
+        host = urlsplit(item.url).hostname or ""
         try:
             copied = False
             if models_source and item.kind == "file" and not is_verified(item.dest, item.sha256):
@@ -1008,9 +1174,12 @@ def run_plan(
             if copied:
                 outcome(item, "copied")
                 return
+            with lock:
+                window = 0.0 if host in dead_hosts else site_window_s
             do_fetch(
                 item.url, item.dest, item.sha256, progress=progress, client=http, size=item.size,
-                retries=retries, sleep=sleep, on_retry=on_retry, **extra,
+                retries=retries, sleep=sleep, on_retry=on_retry, on_site_wait=on_site_wait,
+                site_window_s=window, **extra,
             )
             if item.kind in ("zip", "nupkg"):
                 _extract_item(item)
@@ -1020,6 +1189,8 @@ def run_plan(
                 outcome(item, "missing_optional")
                 return
             with lock:
+                if e.code == "NS-E105" and e.data.get("side") == "site":
+                    dead_hosts.add(host)
                 result.failed[item.name] = e
             rep.finish(item.name, "failed")
         except OSError as e:        # unpacking or saving: a scanner (WinError 225) is NS-E113
