@@ -44,8 +44,11 @@ def test_limit_to_linear_stops_at_the_first_fit_and_reports_the_boost_used() -> 
         return _m(-17.0, -3.5) if len(seen) == 1 else _m(-14.2, -3.5)
 
     pre, got, boost = audio.limit_to_linear(measure, _m(-20.38, -0.47), i=-14.0, tp=-1.5)
+    # the source peak (-0.47) already stands 3.03 dB over the ceiling (-3.5), so the limiter bites from a
+    # boost of -3.03 dB (-23.41 LUFS). From that knee to (6.38 dB, -17.0) the loudness climbs 0.68 LU per dB,
+    # and the second boost aims 0.3 LU past the target: 6.38 + 3.3 / 0.68 = 11.22
     assert len(seen) == 2 and pre == seen[1] and got == _m(-14.2, -3.5)
-    assert boost == pytest.approx(9.38) and pre.startswith("volume=9.38dB,")
+    assert boost == pytest.approx(11.22, abs=0.01) and pre.startswith("volume=11.22dB,")
 
 
 def test_limit_to_linear_accepts_a_near_fit_on_the_first_try() -> None:
@@ -59,23 +62,48 @@ def test_limit_to_linear_accepts_a_near_fit_on_the_first_try() -> None:
     assert len(seen) == 1 and pre == seen[0] and got == _m(-14.9, -3.5) and boost == pytest.approx(6.38)
 
 
-def test_limit_to_linear_steps_by_the_secant_and_caps_the_step() -> None:
+def _boost_of(pre: str) -> float:
+    return float(pre.split("volume=")[1].split("dB")[0])
+
+
+def test_limit_to_linear_steps_by_the_chord_slope_and_caps_the_step() -> None:
     seen: list[str] = []
-    answers = [_m(-17.0, -3.5), _m(-15.8, -3.5), _m(-14.2, -3.5)]
+    answers = [_m(-17.0, -3.5), _m(-14.2, -3.5)]
 
     def measure(pre: str) -> dict[str, float] | None:
         seen.append(pre)
         return answers[len(seen) - 1]
 
     _, _, boost = audio.limit_to_linear(measure, _m(-20.38, -0.47), i=-14.0, tp=-1.5)
-    # first step: the raw shortfall 3.0; then 1.8 over the slope 1.2 / 3.0 = 4.5
-    assert [float(p.split("volume=")[1].split("dB")[0]) for p in seen] == pytest.approx([6.38, 9.38, 13.88])
-    assert boost == pytest.approx(13.88)
-    flat = [_m(-17.0, -3.5), _m(-16.9, -3.5), _m(-14.2, -3.5)]       # almost no gain for 3 dB: step is capped
+    # the slope from the knee is 0.68 LU per dB: (3.0 short + 0.3 past) / 0.68
+    assert [_boost_of(p) for p in seen] == pytest.approx([6.38, 11.22], abs=0.01)
+    assert boost == pytest.approx(11.22, abs=0.01)
     seen.clear()
-    answers[:] = flat
+    answers[:] = [_m(-20.3, -3.5), _m(-14.2, -3.5)]      # almost no gain for 6.4 dB: the step is capped
     audio.limit_to_linear(measure, _m(-20.38, -0.47), i=-14.0, tp=-1.5)
-    assert [float(p.split("volume=")[1].split("dB")[0]) for p in seen] == pytest.approx([6.38, 9.38, 15.38])
+    assert [_boost_of(p) for p in seen] == pytest.approx([6.38, 6.38 + audio.MAX_BOOST_STEP_DB])
+
+
+@pytest.mark.parametrize("knee", [0.0, -4.0, 3.0])
+@pytest.mark.parametrize("loss", [0.1, 0.2, 0.3, 0.4])
+@pytest.mark.parametrize("quiet", [-22.0, -20.0, -19.0])
+def test_limit_to_linear_needs_two_passes_when_the_loss_follows_the_boost(
+    quiet: float, loss: float, knee: float
+) -> None:
+    """The limiter takes `loss` of every dB of boost past its knee off: the first pass teaches the slope."""
+    seen: list[str] = []
+
+    def measure(pre: str) -> dict[str, float] | None:
+        boost = _boost_of(pre)
+        return _m(quiet + boost - loss * max(0.0, boost - knee), -3.5) if seen.append(pre) is None else None
+
+    source = _m(quiet, audio.limiter_ceiling_db(-1.5) - knee)    # the peak sits `knee` dB under the ceiling
+    _, got, boost = audio.limit_to_linear(measure, source, i=-14.0, tp=-1.5)
+    assert got is not None and len(seen) <= 2 <= audio.MAX_LIMITER_PASSES
+    shortfall = -14.0 - got["input_i"]
+    assert len(seen) == 1 or shortfall <= 0.0        # a second pass aims past the target: loudnorm trims
+    assert got["input_tp"] + shortfall <= -1.5 - audio.FIT_MARGIN_DB
+    assert boost == pytest.approx(_boost_of(seen[-1]), abs=0.01)    # the string is rounded to 0.01 dB
 
 
 def test_limit_to_linear_gives_up_after_the_last_pass_and_on_a_failed_measurement() -> None:
@@ -87,7 +115,7 @@ def test_limit_to_linear_gives_up_after_the_last_pass_and_on_a_failed_measuremen
 
     pre, got, boost = audio.limit_to_linear(never, _m(-20.38, -0.47), i=-14.0, tp=-1.5)
     assert len(calls) == audio.MAX_LIMITER_PASSES and pre == calls[-1] and got == _m(-17.0, -1.0)
-    assert boost == pytest.approx(6.38 + 3 * 3.0)
+    assert boost == pytest.approx(11.22, abs=0.01)
     assert audio.limit_to_linear(lambda pre: None, _m(-20.38, -0.47), i=-14.0, tp=-1.5) == ("", None, 0.0)
 
 
@@ -123,6 +151,36 @@ def test_loudnorm_reaches_the_target_on_quiet_peaky_audio(tmp_path: Path) -> Non
     (rec,) = [r for r in recs if r["event"] == "loudness_limited"]
     assert rec["data"]["ceiling_db"] == -3.5 and rec["data"]["boost_db"] > 6.0
     assert rec["data"]["input_i"] < 0 and rec["data"]["input_tp"] < -2.0
+
+
+@needs_ffmpeg
+def test_narration_is_limited_once_and_the_short_adds_no_second_limiter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The voice stage holds peaks to the Short's ceiling, so the Short only lifts it by 2 dB, linearly."""
+    from ns_studio.media.render import build_short_audio
+
+    src, voice = tmp_path / "peaky.wav", tmp_path / "voice.wav"
+    make_peaky_wav(src)
+    log = NsLogger("studio", tmp_path / "logs", echo=False)
+    audio.loudnorm(src, voice, i=audio.VOICE_LUFS, tp=audio.VOICE_TP, log=log)
+    narrated = audio.measure_loudness(voice)
+    assert abs(narrated.lufs - audio.VOICE_LUFS) <= 0.5
+    assert audio.linear_possible(narrated.lufs, narrated.true_peak, i=audio.FINAL_LUFS, tp=audio.FINAL_TP)
+    runs: list[list[str]] = []
+    real = audio.ff.run
+
+    def counting(args: list[str], **kw: Any) -> Any:
+        runs.append(args)
+        return real(args, **kw)
+
+    monkeypatch.setattr(audio.ff, "run", counting)
+    final = build_short_audio(None, voice, tmp_path / "raw.wav", tmp_path / "final.wav", 0.15, log=log)
+    monkeypatch.undo()
+    got = audio.measure_loudness(final)
+    assert abs(got.lufs - audio.FINAL_LUFS) <= 0.5 and got.true_peak <= -1.0
+    assert not any("alimiter" in a for args in runs for a in args)
+    assert [r["event"] for r in _records(tmp_path)].count("loudness_limited") == 1     # the voice stage's
 
 
 @needs_ffmpeg

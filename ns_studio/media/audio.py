@@ -76,8 +76,18 @@ LIMITER_HEADROOM_DB = OVERSHOOT_DB + 1.0   # The ceiling sits this far under `tp
 FIT_MARGIN_DB = 0.7         # `limit_to_linear` stops once the lifted peak is this far under `tp`.
 LIMITER_ATTACK_MS = 2.0
 LIMITER_RELEASE_MS = 120.0  # long enough not to ripple on low voices
-MAX_LIMITER_PASSES = 4
-MAX_BOOST_STEP_DB = 6.0
+MAX_LIMITER_PASSES = 2      # each pass is a whole FFmpeg run over the audio; the second is the best guess
+MAX_BOOST_STEP_DB = 15.0
+AIM_PAST_DB = 0.3           # the second boost aims this far over the target; loudnorm then only trims
+MIN_LOUDNESS_PER_DB = 0.15  # floor for the loudness a dB of boost buys: a flat curve must not ask for 40 dB
+
+FINAL_LUFS = -14.0          # what a Short or a master is delivered at (spec S1, §7.7)
+FINAL_TP = -1.5
+VOICE_LUFS = -16.0          # what the voice stage leaves each narration item at
+# The voice stage keeps peaks where the final +2 dB lift (-16 to -14 LUFS) still ends under `FINAL_TP`, so the
+# narration is limited once, at the voice stage, and the Short or master stage only has to apply a plain gain.
+# loudnorm may land up to half a LU under -16 (it only corrects beyond 0.5), and the lift grows by as much.
+VOICE_TP = FINAL_TP - (FINAL_LUFS - VOICE_LUFS) - 0.5
 
 
 def linear_possible(input_i: float, input_tp: float, *, i: float, tp: float) -> bool:
@@ -113,15 +123,18 @@ def limit_to_linear(
     """The `boost_limiter` stage that lets loudnorm reach `i` linearly, with its measurement and boost.
 
     `source` is the loudnorm pass-1 report of the unprocessed audio; `measure(pre)` repeats pass 1 after
-    `pre`. The first boost brings the loudness to `i`; the limiter then takes some off, so the next boost adds
-    the shortfall (the first repeat) or the shortfall scaled by the secant slope of boost against measured
-    loudness (later ones), at most `MAX_BOOST_STEP_DB` a step. It stops when the lifted peak is
-    `FIT_MARGIN_DB` under `tp`, or after `MAX_LIMITER_PASSES` (the last attempt is returned).
+    `pre`. The first boost brings the loudness to `i`; the limiter then takes some off. The loss starts where
+    the lifted peak reaches the ceiling and grows with the boost from there, so the next boost comes from the
+    secant through that knee (no loss) and the first measurement, aimed `AIM_PAST_DB` over the target: a
+    landing above it is fixed by loudnorm's linear gain alone, one just under it would leave the loudness
+    short. A step is at most `MAX_BOOST_STEP_DB`. It stops when the lifted peak is `FIT_MARGIN_DB` under `tp`,
+    or after `MAX_LIMITER_PASSES` (the last attempt is returned): speech takes two FFmpeg runs, not four.
     `("", None, 0.0)` when a measurement fails: the caller keeps the plain chain.
     """
     boost = i - source["input_i"]
     pre, got, used = "", None, boost
-    last: tuple[float, float] | None = None   # (boost, measured loudness) of the attempt before
+    knee = limiter_ceiling_db(tp) - source["input_tp"]   # the boost at which peaks first touch the ceiling
+    prior = (knee, source["input_i"] + knee)             # (boost, loudness) of the point before: no loss
     for _ in range(MAX_LIMITER_PASSES):
         pre, used = boost_limiter(boost, tp), boost
         got = measure(pre)
@@ -130,10 +143,11 @@ def limit_to_linear(
         shortfall = i - got["input_i"]
         if got["input_tp"] + shortfall <= tp - FIT_MARGIN_DB:
             break
-        step = shortfall
-        if last is not None and got["input_i"] - last[1] > 0.05:   # loudness per dB of boost, below 1
-            step = shortfall * (boost - last[0]) / (got["input_i"] - last[1])
-        last = (boost, got["input_i"])
+        boost_span = boost - prior[0]
+        slope = (got["input_i"] - prior[1]) / boost_span if abs(boost_span) > 0.05 else 1.0
+        slope = max(MIN_LOUDNESS_PER_DB, min(1.0, slope))   # a dB of boost never buys more than a dB
+        prior = (boost, got["input_i"])
+        step = (shortfall + AIM_PAST_DB) / slope
         boost += max(-MAX_BOOST_STEP_DB, min(MAX_BOOST_STEP_DB, step))
     return pre, got, used
 

@@ -15,7 +15,7 @@ from ns_common.textstats import split_sentences
 from ns_common.tts_client import TtsFile, TtsItem
 from ns_common.tts_timeout import TTS_TIMEOUT_CAP_S, batch_timeout_s, load_rtf
 from ns_studio.context import JobContext
-from ns_studio.media.audio import loudnorm, measure_lufs
+from ns_studio.media.audio import VOICE_LUFS, VOICE_TP, loudnorm, measure_lufs
 from ns_studio.stages import Tenant
 
 __all__ = ["VoiceStage", "loudnorm", "measure_lufs", "narration_items", "synthesize"]
@@ -85,7 +85,9 @@ def _speak(ctx: JobContext, todo: list[TtsItem], raw_dir: Path, seed: int, limit
 
 
 def synthesize(ctx: JobContext, items: list[TtsItem]) -> tuple[dict[str, dict], int]:
-    """Speak, normalize (-16 LUFS) and measure `items`; reuse files whose text, voice and speed are unchanged.
+    """Speak, normalize (-16 LUFS, peaks held for the final -14) and measure `items`; reuse unchanged files.
+
+    Peaks stay under `VOICE_TP` so the Short and master stages lift by 2 dB without a second limiter.
 
     Writes `audio/<id>.wav` and the `audio/<id>.txt` script sidecar. Returns (manifest entries by id, number
     of items actually synthesized). Does not write `audio/manifest.json`.
@@ -109,7 +111,8 @@ def synthesize(ctx: JobContext, items: list[TtsItem]) -> tuple[dict[str, dict], 
         by_id = {it.id: it for it in todo}
         for f in files:
             out = ctx.file(f"audio/{f.id}.wav")
-            loudnorm(f.path, out, log=ctx.log)
+            # the one limiting of the narration: the Short and master stages only lift it linearly
+            loudnorm(f.path, out, i=VOICE_LUFS, tp=VOICE_TP, log=ctx.log)
             lufs, tp = measure_lufs(out)
             out.with_suffix(".txt").write_text(by_id[f.id].text, encoding="utf-8")
             manifest[f.id] = {
