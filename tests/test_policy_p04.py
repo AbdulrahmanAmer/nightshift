@@ -646,10 +646,26 @@ def test_the_threshold_is_one_constant(tmp_home: Path, monkeypatch: pytest.Monke
 def test_the_qc_file_does_not_disturb_the_channel_pass_rate(tmp_home: Path, monkeypatch: pytest.MonkeyPatch):
     """channel_stats reads every qc/*.json that has a boolean `passed`: this file must not have one."""
     ctx = _audio_ctx(tmp_home, monkeypatch, _bed())
-    fc.AudioOnlyVoice().run(ctx)
+    ctx.write_json("qc/long.json", {"passed": True, "checks": {}})  # a real per-item QC verdict next to it
+    assert fc.AudioOnlyVoice().run(ctx).passed
+    written = ctx.file(QC_FLATNESS)
+    assert written.exists()  # without the file this test would pass on code that never writes it
+    assert "passed" not in ctx.read_json(QC_FLATNESS)
     from ns_dashboard.channel_stats import _verdicts
 
-    assert _verdicts(ctx.file("qc")) == []
+    assert _verdicts(ctx.file("qc")) == [True]  # the flatness file adds no verdict of its own
+
+
+def test_a_stale_flatness_file_is_removed_when_no_render_could_be_measured(
+    tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+):
+    ctx = _audio_ctx(tmp_home, monkeypatch, _bed())
+    assert fc.AudioOnlyVoice().run(ctx).passed and ctx.file(QC_FLATNESS).exists()
+    two_streams = {"streams": [{"codec_type": "audio"}, {"codec_type": "audio"}]}
+    monkeypatch.setattr(fc.ffmpeg, "probe", lambda p: two_streams)
+    res = fc.AudioOnlyVoice().run(ctx)
+    assert not res.passed and "2 audio streams" in res.detail
+    assert not ctx.file(QC_FLATNESS).exists()  # its values belonged to an earlier pass's renders
 
 
 def test_a_floor_failure_still_fails_and_still_measures_the_flatness(

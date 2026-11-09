@@ -23,6 +23,7 @@ from ns_common.models import Runtime
 from ns_studio.policy import final_checks as fc
 from ns_studio.policy import text_checks
 from ns_studio.stages import REGISTRY
+from ns_studio.text import prompts as P
 from ns_studio.text import stages_master as M
 from ns_studio.text import story_profile as sp
 from tests.helpers import make_channel, make_ctx
@@ -288,6 +289,82 @@ def test_short_must_open_with_its_hook_on_both_profiles(tmp_home: Path, profile:
     _short(ctx, 2, "The camera saw something it should not.", "The porch light flickered twice. It was cold.")
     res = fc.ShortHookPresent().run(ctx)
     assert not res.passed and "s2" in res.detail and "s1" not in res.detail
+
+
+# ---------------------------------------------------------------- the policy_rules prompt blocks
+class _Recorder:
+    """An LLM stand-in that keeps what the prompts rendered to (the system and user text of each call)."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    def complete_json(self, **kw: Any) -> dict[str, Any]:
+        self.calls.append(kw)
+        return {}
+
+    def complete_text(self, **kw: Any) -> str:
+        self.calls.append(kw)
+        return ""
+
+
+_IDEA = {"premise": "p", "twist": "t", "setting": "s", "protagonist": "q", "why_chapters": "w"}
+_CHAPTER = {"n": 1, "title": "Ch", "beats": ["b"], "cliff": "c"}
+_BUDGET = {
+    "words": 100,
+    "parts": 1,
+    "words_per_part": 100,
+    "min_words": 80,
+    "max_words": 120,
+    "target_words": 1000,
+    "target_minutes": 9,
+    "wpm": 155,
+    "chapters": 5,
+    "chapter_budgets": [200],
+}
+
+
+def _render_prompts(ctx: Any) -> dict[str, str]:
+    """Render the four prompts that carry `policy_rules` and `story_profile`; name -> system + user text."""
+    rec = _Recorder()
+    ctx.services.llm = rec
+    plan = {"beats": [], "ending_line_idea": "x", "chapters": [_CHAPTER]}
+    P.call_json(ctx, "story_plan", idea=_IDEA, budget=_BUDGET)
+    P.call_text(ctx, "story_draft", plan=plan, budget=_BUDGET)
+    P.call_json(ctx, "long_plan", idea=_IDEA, budget=_BUDGET)
+    P.call_json(
+        ctx,
+        "chapter_draft",
+        idea=_IDEA,
+        plan=plan,
+        chapter=_CHAPTER,
+        budget=_BUDGET,
+        summaries=[],
+        last_sentences=[],
+    )
+    names = ["story_plan", "story_draft", "long_plan", "chapter_draft"]
+    return {n: c["system"] + "\n" + c["user"] for n, c in zip(names, rec.calls, strict=True)}
+
+
+def test_the_policy_rules_in_the_prompts_are_the_same_on_both_profiles(tmp_home: Path, profile: str):
+    """The tiny profile moves the grade and the beat counts of the prompts, not their content rules."""
+    ctx = _profiled(tmp_home, profile)
+    texts = _render_prompts(ctx)
+    rules = P.policy_rules_text()
+    assert "Never claim the story is real" in rules and len(P.unsafe_categories()) >= 5
+    for name, text in texts.items():
+        assert "Content rules" in text, name
+        assert rules in text, name  # every unsafe-topic label and the "never claim it is real" line, whole
+        for cat in P.unsafe_categories():
+            assert str(cat["label"]) in text, (name, cat["id"])
+    p = sp.profile_of(ctx)
+    # the profile took effect in the same texts: the numbers it owns differ between the two profiles
+    assert f"grade {p.grade_ask}" in texts["story_draft"]
+    assert f"grade {p.grade_ask}" in texts["chapter_draft"]
+    assert f"{p.story_beats_lo}-{p.story_beats_hi} beats" in texts["story_plan"]
+    assert f"{p.chapter_beats_lo}-{p.chapter_beats_hi} concrete events" in texts["long_plan"]
+    other = sp.NORMAL if profile == "tiny" else sp.TINY
+    assert f"grade {other.grade_ask}" not in texts["story_draft"]
+    assert (sp.NORMAL.grade_ask, sp.TINY.grade_ask) == ("5-8", "3-8")
 
 
 # ---------------------------------------------------------------- F-H116 flatness: measured, warning only

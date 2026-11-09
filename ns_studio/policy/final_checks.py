@@ -331,6 +331,11 @@ def _decode_audio(path: Path) -> np.ndarray:
     return np.frombuffer(data, dtype=np.int16).astype(np.float64) / 32768.0
 
 
+def _round4(value: float | bool | None) -> float | None:
+    """A measured flatness as stored in the QC file and the log (4 decimals); None stays None."""
+    return None if value is None else round(float(value), 4)
+
+
 class AudioOnlyVoice(Check):
     """Exactly one audio stream and real silence between words, so no music bed (E614).
 
@@ -359,10 +364,7 @@ class AudioOnlyVoice(Check):
             samples = _decode_audio(path)
             flatness = quiet_flatness(samples)
             warned = flatness is not None and flatness < TONAL_FLATNESS_MAX
-            measured[item] = {
-                "quiet_flatness": None if flatness is None else round(flatness, 4),
-                "warned": warned,
-            }
+            measured[item] = {"quiet_flatness": flatness, "warned": warned}
             floor = quiet_floor_db(samples)
             if floor > BED_FLOOR_DBFS:
                 problems.append(f"{item}: no silence anywhere (floor {floor:.0f} dBFS), possible music bed")
@@ -379,10 +381,19 @@ class AudioOnlyVoice(Check):
         files that have one.
         """
         if not measured:
+            # every render failed the stream count: an earlier pass's values would disagree with these renders
+            ctx.file(QC_FLATNESS_FILE).unlink(missing_ok=True)
             return ""
+        rounded = {
+            item: {
+                "quiet_flatness": _round4(row["quiet_flatness"]),
+                "warned": row["warned"],
+            }
+            for item, row in measured.items()
+        }
         ctx.write_json(
             QC_FLATNESS_FILE,
-            {"warn_below": TONAL_FLATNESS_MAX, "mode": "warning only", "items": measured},
+            {"warn_below": TONAL_FLATNESS_MAX, "mode": "warning only", "items": rounded},
         )
         shown: list[str] = []
         warnings: list[str] = []
@@ -395,7 +406,13 @@ class AudioOnlyVoice(Check):
             event = "audio_flatness_warning" if row["warned"] else "audio_flatness"
             log = ctx.log.warn if row["warned"] else ctx.log.info
             # no NS-W code in contracts/errors.json fits a tonal quiet passage: logged without one
-            log(event, job_id=ctx.job_id, item=item, quiet_flatness=value, warn_below=TONAL_FLATNESS_MAX)
+            log(
+                event,
+                job_id=ctx.job_id,
+                item=item,
+                quiet_flatness=_round4(value),
+                warn_below=TONAL_FLATNESS_MAX,
+            )
         note = f"; quiet_flatness {', '.join(shown)} (warns under {TONAL_FLATNESS_MAX})"
         if warnings:
             note += (
