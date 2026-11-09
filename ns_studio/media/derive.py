@@ -29,7 +29,7 @@ from ns_studio.media.clips import (
     make_lemmatizer,
 )
 from ns_studio.media.formats import footage_orientation, shot_range, style_for_format
-from ns_studio.media.job_formats import job_format
+from ns_studio.media.job_formats import job_format, job_format_entry
 from ns_studio.media.master import ShortSpec, load_shorts, load_words
 from ns_studio.media.presets import FONTS_DIR, visual_treatment
 from ns_studio.media.render import (
@@ -162,7 +162,8 @@ def derive_short(
         "shots": len(shots),
         "encoder": ctx.runtime.video.encoder, "drift_ms": drift,
         "first_caption_s": first_event_start(ass_text), "backdrop_luma": luma,
-        "format": fmt.id, "canvas": list(canvas),
+        "format": fmt.id, "format_why": job_format_entry(ctx, "short").get("why"),
+        "canvas": list(canvas),
     }
     return report, {"total_s": total, "treatment": treatment.name, "shots": [s.to_json() for s in shots]}
 

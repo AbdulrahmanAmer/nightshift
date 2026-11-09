@@ -177,6 +177,16 @@ def load_raw(format_id: str, directory: Path | None = None, *, paths: Paths | No
     return found
 
 
+def broken_overrides(format_ids: Collection[str], *, paths: Paths | None = None) -> dict[str, str]:
+    """{id: what is wrong} for the given shipped ids whose owner file does not load.
+
+    `get_format` then quietly returns the shipped preset; callers that can tell the owner say so.
+    """
+    shipped = _load_dir(str(FORMATS_DIR)).formats
+    problems = load_problems(paths=paths)
+    return {fid: problems[fid] for fid in sorted(set(format_ids)) if fid in shipped and fid in problems}
+
+
 def shipped_raw(format_id: str) -> dict[str, Any]:
     """The shipped file's mapping for `format_id`, whatever the owner edited."""
     raw = _load_dir(str(FORMATS_DIR)).raw.get(format_id)

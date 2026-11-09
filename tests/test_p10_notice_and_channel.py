@@ -101,6 +101,31 @@ def test_the_first_job_after_the_update_leaves_the_note_and_the_second_does_not(
     assert first.read_json("formats.json")["short"]["source"] == "edited"
 
 
+def test_a_note_that_could_not_be_written_is_tried_again_by_the_next_job(
+    tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The dashboard holding morning_note.json open on Windows must not cost the owner the notice for good."""
+    import ns_supervisor.notify as notify
+
+    paths = Paths.from_env()
+    old_copy_of_short(paths)
+    real = notify.leave_note
+
+    def locked(*_a: Any, **_k: Any) -> None:
+        raise PermissionError("morning_note.json is in use")
+
+    monkeypatch.setattr(notify, "leave_note", locked)
+    assert N.notify_owner_formats(paths) is False
+    assert not N.marker_path(paths).exists() and notes(paths) == []
+    assert N.notify_owner_formats(paths) is False  # still locked: still no marker
+    assert not N.marker_path(paths).exists()
+    monkeypatch.setattr(notify, "leave_note", real)  # the lock is gone
+    assert N.notify_owner_formats(paths) is True
+    assert len(notes(paths)) == 1 and N.marker_path(paths).exists()
+    assert N.notify_owner_formats(paths) is False  # and now it is once only
+    assert len(notes(paths)) == 1
+
+
 def test_a_failing_note_never_stops_a_job(tmp_home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     paths = Paths.from_env()
     old_copy_of_short(paths)
@@ -125,6 +150,19 @@ def test_the_channel_route_names_the_format_each_kind_uses_and_why(tmp_home: Pat
     plain = client.get("/api/channels/plain/formats").json()
     assert plain["short"]["id"] == "short_9x16" and plain["short"]["why"].startswith("default")
     assert client.get("/api/channels/none/formats").status_code == 404
+
+
+def test_the_channel_read_itself_carries_the_format_per_kind(tmp_home: Path) -> None:
+    """Decision D1: the channel API payload (GET /api/channels/{slug}, also the Assistant's channel read) names it."""
+    client, state = make_env(tmp_home)
+    copy_id = create_format(state.paths, {"duplicate_of": "short_9x16"})["id"]
+    seed_channel(state.db, state.paths, "after-dark", formats_allowed=[copy_id, "long_16x9"])
+    body = client.get("/api/channels/after-dark").json()
+    assert body["profile"]["slug"] == "after-dark"
+    used = body["formats_in_use"]
+    assert used["short"]["id"] == copy_id and used["short"]["why"] == "first allowed of that kind"
+    assert used["long"]["id"] == "long_16x9" and used["long"]["applied"] is False
+    assert used == client.get("/api/channels/after-dark/formats").json()
 
 
 def test_the_route_reports_a_problem_instead_of_failing(tmp_home: Path) -> None:

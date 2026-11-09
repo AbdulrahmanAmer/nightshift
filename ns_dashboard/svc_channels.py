@@ -90,10 +90,14 @@ class ChannelsService:
         return [self._card(ch, counts, last, stats.get(ch.slug)) for ch in loaded]
 
     def get(self, slug: str) -> dict[str, Any]:
-        """Profile plus warnings."""
+        """Profile plus warnings, plus the format each kind of video uses (`formats_in_use`, decision D1)."""
         ch = self.load(slug)
         check = validate_profile(ch.model_dump(mode="json"), self.load_all(), ch.voice)
-        return {"profile": ch.model_dump(mode="json"), **_flat_warnings(check["warnings"])}
+        return {
+            "profile": ch.model_dump(mode="json"),
+            **_flat_warnings(check["warnings"]),
+            "formats_in_use": formats_in_use(ch, self.s.paths),
+        }
 
     def formats_in_use(self, slug: str) -> dict[str, Any]:
         """The format a new job of this channel draws each kind of video from, and why (Head decision D1).

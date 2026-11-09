@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import copy
 import json
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -173,6 +173,26 @@ def resolve_role(
         _warn(log, "format_override_broken", note, role=role, format_id=default)
         return Resolved(role, default, why, "shipped", copy.deepcopy(shipped), note)
     return _finish(role, default, why, paths, log)
+
+
+def warn_broken_overrides(
+    format_ids: Collection[str], *, paths: Paths | None, log: NsLogger | None, role: str = "clip"
+) -> list[str]:
+    """Log `format_override_broken` for each shipped id whose owner file does not load; returns those ids.
+
+    A clip job reads its layout by id, and a hand-broken copy of a clip preset used to be a loud NS-E320;
+    now the shipped preset is used, so the job log must say that the owner's file was not.
+    """
+    broken = F.broken_overrides(format_ids, paths=paths)
+    for fid, problem in broken.items():
+        _warn(
+            log,
+            "format_override_broken",
+            f"your file for {fid} does not load ({problem}); the shipped one is used",
+            role=role,
+            format_id=fid,
+        )
+    return list(broken)
 
 
 def shipped_entry(role: str) -> Resolved:

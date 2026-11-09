@@ -437,7 +437,9 @@ def test_a_derived_short_uses_the_channels_short_format(
         1920,
         1080,
     )  # the master is unchanged (package P10b)
-    short = Path(ctx.read_json("render/report.json")["s1"]["path"])
+    entry = ctx.read_json("render/report.json")["s1"]
+    assert entry["format"] == copy_id and entry["format_why"] == "first allowed of that kind"
+    short = Path(entry["path"])
     assert ff.video_size(short) == (720, 1280)
     ass = ctx.file("captions/s1.ass").read_text(encoding="utf-8")
     assert play_res(ass) == (720, 1280)
@@ -493,3 +495,27 @@ def test_a_composed_short_format_renders_at_its_canvas_for_as_long_as_the_audio(
     )
     assert ff.video_size(out) == (1080, 1920)
     assert abs(ff.duration_s(out) - 5.0) < 0.25
+
+
+@needs_ffmpeg
+def test_a_clip_job_logs_a_hand_broken_clip_layout_instead_of_ignoring_it(
+    tmp_home: Path, tmp_path: Path
+) -> None:
+    """The clip stages say `format_override_broken` when the owner's copy of the layout in use does not load."""
+    import json
+
+    from tests.test_clipper_stages import make_job, run_through
+
+    paths = Paths.from_env()
+    paths.formats_dir.mkdir(parents=True, exist_ok=True)
+    (paths.formats_dir / "clip_gaming_facecam.yaml").write_text("id: clip_gaming_facecam\n", encoding="utf-8")
+    ctx = make_job(tmp_path)
+    run_through(ctx, "clip_captions")
+    rows = [
+        json.loads(ln)
+        for f in paths.logs.glob("*.jsonl")
+        for ln in f.read_text(encoding="utf-8").splitlines()
+    ]
+    broken = [r for r in rows if r["event"] == "format_override_broken"]
+    assert broken and broken[0]["level"] == "WARN" and broken[0]["data"]["format_id"] == "clip_gaming_facecam"
+    assert ctx.file("captions/c1.ass").exists()  # and the job went on with the shipped layout

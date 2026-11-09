@@ -362,6 +362,26 @@ def test_an_explicit_design_format_that_is_missing_or_unusable_is_refused(tmp_ho
     assert "cannot be drawn" in ei3.value.detail and "leaves the" in ei3.value.detail
 
 
+def test_a_broken_owner_copy_of_a_clip_layout_is_named_not_silently_ignored(tmp_home: Path) -> None:
+    """`get_format` hands back the shipped clip preset; the job log must say the owner's file was not used."""
+    paths = Paths.from_env()
+    paths.formats_dir.mkdir(parents=True)
+    (paths.formats_dir / "clip_center_crop.yaml").write_text("id: clip_center_crop\n", encoding="utf-8")
+    (paths.formats_dir / "short_mine.yaml").write_text(
+        "id: short_mine\n", encoding="utf-8"
+    )  # not a shipped id
+    assert (
+        F.get_format("clip_center_crop", paths=paths).id == "clip_center_crop"
+    )  # the shipped one, as before
+    log = Rec()
+    ids = ["clip_center_crop", "clip_talking_head", "short_mine"]
+    assert JF.warn_broken_overrides(ids, paths=paths, log=log) == ["clip_center_crop"]
+    (event,) = [e for e in log.events if e[1] == "format_override_broken"]
+    assert event[0] == "warn" and event[3]["format_id"] == "clip_center_crop"
+    assert "does not load" in event[2] and "canvas is required" in event[2]
+    assert JF.warn_broken_overrides(["clip_talking_head"], paths=paths, log=log) == []
+
+
 def test_a_broken_owner_copy_of_the_default_falls_back_to_the_shipped_one_with_a_warning(
     tmp_home: Path,
 ) -> None:

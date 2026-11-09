@@ -134,8 +134,9 @@ def notify_owner_formats(paths: Paths, log: NsLogger | None = None) -> bool:
     """Leave the one-time note when the owner has formats that now apply; True when a note was written.
 
     The marker lists the kinds already covered, so a later package that makes another kind real notes it
-    once more. A first start with nothing to say still records the marker. Never raises: a notice must not
-    stop a job.
+    once more. A first start with nothing to say still records the marker; one whose note could not be
+    written (the morning note file is locked) does not, so the next job tries again. Never raises: a notice
+    must not stop a job.
     """
     try:
         marker = _read_marker(paths)
@@ -154,6 +155,8 @@ def notify_owner_formats(paths: Paths, log: NsLogger | None = None) -> bool:
                     formats=[c[0] for c in changes],
                     note_written=wrote,
                 )
+        if changes and not wrote:
+            return False  # the note could not be left (a locked file): no marker, the next job tries again
         target = marker_path(paths)
         target.parent.mkdir(parents=True, exist_ok=True)
         kinds = sorted({*done, *todo})
