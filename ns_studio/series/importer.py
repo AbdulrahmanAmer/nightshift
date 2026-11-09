@@ -15,13 +15,12 @@ from ns_common.errors import NsError
 from ns_common.models import Idea, Plan, PlanChapter, ShortsPlanItem, Story
 from ns_common.textstats import word_count
 from ns_studio.series.store import (
-    CLOSING_MAX_WORDS,
-    HOOK_MAX_WORDS,
     ConceptDoc,
     ScriptDoc,
     ShortDoc,
     resolve_span,
 )
+from ns_studio.text.budget import CLOSING_MAX_WORDS, HOOK_MAX_WORDS
 from ns_studio.text.stages_master import build_chapter
 
 

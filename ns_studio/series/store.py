@@ -25,8 +25,6 @@ MIN_MINUTES = 12
 MAX_MINUTES = 25
 DEFAULT_MINUTES = 15
 BREAK = "[BREAK]"
-HOOK_MAX_WORDS = 12
-CLOSING_MAX_WORDS = 15
 
 StoryStatus = Literal["drafting", "approved", "producing", "published"]
 PartStatus = Literal["planned", "written", "approved", "producing", "produced", "published"]
