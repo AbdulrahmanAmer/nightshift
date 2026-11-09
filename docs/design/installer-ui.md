@@ -1418,7 +1418,7 @@ export default defineConfig({
     rollupOptions: {
       output: {
         entryFileNames: "app.js",
-        chunkFileNames: "assets/[name]-[hash].js",
+        inlineDynamicImports: true, // one script: a chunk would import ../app.js without the ?v= token (F-6)
         assetFileNames: (i) => ((i.names?.[0] ?? i.name ?? "").endsWith(".css") ? "app.css" : "assets/[name]-[hash][extname]"),
       },
     },

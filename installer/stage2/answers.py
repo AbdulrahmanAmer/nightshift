@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from installer.stage2.web.modelcheck import MAX_BYTES, shape_problem, too_big_message
+from ns_common.atomic import read_text_retry, write_text_atomic
 from ns_common.models import VOICE_NAME_PATTERN, VOICE_NAME_RULE, Answers
 from ns_common.paths import Paths
 from ns_common.secrets_names import KEY_NAMES
@@ -38,6 +39,11 @@ class InstallerAnswers(Answers):
     # jobs run end to end without a stock-footage key (the footage is placeholder). runtime.json says
     # `fake_footage: true`. An answers.json setting only; the setup window never asks it.
     fake_footage: bool = False
+    # Engine test: the story text stages use the thresholds a 1 to 2 GB language model can meet (word budgets,
+    # chapter and beat counts, the length and reading-grade floors; `ns_studio.text.story_profile`), so a real
+    # tiny model can get a story past the text validators. runtime.json says `tiny_story: true`. Needs
+    # `allow_cpu`. An answers.json setting only: the setup window never asks it, the dashboard cannot set it.
+    tiny_story: bool = False
 
 
 def wants_voicedesign(ans: InstallerAnswers) -> bool:
@@ -60,7 +66,7 @@ def find_answers(app_path: Path, paths: Paths, explicit: Path | None = None) -> 
 def load_raw(path: Path) -> dict[str, Any]:
     """Read an answers file into a dict; blank strings become None. Raises AnswersError."""
     try:
-        data = json.loads(path.read_text(encoding="utf-8-sig"))
+        data = json.loads(read_text_retry(path, "utf-8-sig"))
     except (OSError, ValueError) as e:
         raise AnswersError(f"cannot read {path}: {e}") from e
     if not isinstance(data, dict):
@@ -124,6 +130,11 @@ def build_answers(raw: dict[str, Any], *, saved: bool = False) -> InstallerAnswe
         )
     if ans.voice.mode == "design" and not ans.voice.description:
         raise AnswersError("a designed voice needs voice.description")
+    if ans.tiny_story and not ans.allow_cpu:
+        raise AnswersError(
+            "tiny_story is for an engine test on a PC with no NVIDIA card: set allow_cpu to true as well, "
+            "or remove tiny_story"
+        )
     if ans.llm_custom is not None:
         problem = shape_problem(ans.llm_custom.repo, ans.llm_custom.file)
         if problem:
@@ -144,7 +155,7 @@ def dump_blanked(ans: InstallerAnswers) -> dict[str, Any]:
 def write_answers(path: Path, ans: InstallerAnswers) -> Path:
     """Write answers with blank secrets."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(dump_blanked(ans), indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    write_text_atomic(path, json.dumps(dump_blanked(ans), indent=2, ensure_ascii=False) + "\n")
     return path
 
 
@@ -153,7 +164,7 @@ def blank_secrets_in_file(path: Path) -> bool:
     if not path.is_file():
         return False
     try:
-        data = json.loads(path.read_text(encoding="utf-8-sig"))
+        data = json.loads(read_text_retry(path, "utf-8-sig"))
     except (OSError, ValueError):
         return False
     if not isinstance(data, dict):
@@ -164,7 +175,7 @@ def blank_secrets_in_file(path: Path) -> bool:
             data[key] = ""
             changed = True
     if changed:
-        path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        write_text_atomic(path, json.dumps(data, indent=2, ensure_ascii=False) + "\n")
     return changed
 
 
