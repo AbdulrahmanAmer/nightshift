@@ -18,6 +18,7 @@ from ns_studio.context import JobContext
 from ns_studio.media.audio import FINAL_LUFS, FINAL_TP, assemble_audio, loudnorm
 from ns_studio.media.caption_plan import AssOptions
 from ns_studio.media.captions import Box, caption_band, ensure_contrast, sample_luma
+from ns_studio.media.diskfull import run_ffmpeg
 from ns_studio.media.presets import (
     FONTS_DIR,
     CaptionStyle,
@@ -197,18 +198,19 @@ def render_video(
     out.parent.mkdir(parents=True, exist_ok=True)
 
     def attempt(force_cpu: bool) -> None:
-        ff.run(
+        run_ffmpeg(
             [*inputs, "-i", str(audio), "-filter_complex", graph,
              "-map", "[vout]", "-map", f"{audio_index}:a",
              *encoder_args(video, force_cpu=force_cpu), "-r", str(video.fps), "-pix_fmt", "yuv420p",
              "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "1", "-movflags", "+faststart", str(out)],
+            folder=out.parent,
             log=log,
         )
 
     try:
         attempt(False)
-    except NsError:
-        if video.encoder != "h264_nvenc":
+    except NsError as e:
+        if video.encoder != "h264_nvenc" or e.code == "NS-E104":  # a full disk is not an encoder problem
             raise
         if log:
             log.warn("nvenc_failed", code="NS-W401", msg="falling back to libx264")

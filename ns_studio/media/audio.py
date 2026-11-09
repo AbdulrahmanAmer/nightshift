@@ -13,6 +13,7 @@ from pathlib import Path
 from ns_common import ffmpeg as ff
 from ns_common.errors import NsError
 from ns_common.logging import NsLogger
+from ns_studio.media.diskfull import run_ffmpeg
 
 _NUM = r"(-?(?:\d+(?:\.\d+)?|inf))"
 _I_RE = re.compile(rf"\bI:\s*{_NUM} LUFS")
@@ -186,7 +187,10 @@ def loudnorm(
     )
     m = parse_loudnorm_json(first.stderr)
     if not math.isfinite(m.get("input_i", math.nan)):
-        ff.run(["-i", str(in_wav), "-vn", "-ar", str(sr), "-ac", "1", "-c:a", "pcm_s16le", str(out_wav)])
+        run_ffmpeg(
+            ["-i", str(in_wav), "-vn", "-ar", str(sr), "-ac", "1", "-c:a", "pcm_s16le", str(out_wav)],
+            folder=out_wav.parent,
+        )
         return
     pre = ""
     if not linear_possible(m["input_i"], m["input_tp"], i=i, tp=tp):  # quiet and peaky: lift and limit first
@@ -199,10 +203,11 @@ def loudnorm(
         f"measured_I={m['input_i']}:measured_TP={m['input_tp']}:measured_LRA={m['input_lra']}"
         f":measured_thresh={m['input_thresh']}:offset={m['target_offset']}"
     )
-    ff.run(
+    run_ffmpeg(
         ["-i", str(in_wav), "-vn", "-af",
          f"{pre + ',' if pre else ''}loudnorm={target}:{measured}:linear=true:print_format=summary",
-         "-ar", str(sr), "-ac", "1", "-c:a", "pcm_s16le", str(out_wav)]
+         "-ar", str(sr), "-ac", "1", "-c:a", "pcm_s16le", str(out_wav)],
+        folder=out_wav.parent,
     )
     got = measure_loudness(out_wav)
     if math.isfinite(got.lufs) and abs(got.lufs - i) > 0.5:
@@ -210,8 +215,8 @@ def loudnorm(
         if math.isfinite(got.true_peak):
             gain = min(gain, tp - got.true_peak)
         tmp = out_wav.with_suffix(".fix.wav")
-        ff.run(["-i", str(out_wav), "-af", f"volume={gain:.2f}dB", "-ar", str(sr), "-ac", "1",
-                "-c:a", "pcm_s16le", str(tmp)])
+        run_ffmpeg(["-i", str(out_wav), "-af", f"volume={gain:.2f}dB", "-ar", str(sr), "-ac", "1",
+                    "-c:a", "pcm_s16le", str(tmp)], folder=tmp.parent)
         shutil.move(str(tmp), str(out_wav))
 
 
@@ -230,8 +235,8 @@ def assemble_audio(segments: Sequence[Path | float], out_wav: Path, *, sr: int =
     joined = "".join(f"[a{k}]" for k in range(len(segments)))
     graph = ";".join(chains) + f";{joined}concat=n={len(segments)}:v=0:a=1[out]"
     out_wav.parent.mkdir(parents=True, exist_ok=True)
-    ff.run([*args, "-filter_complex", graph, "-map", "[out]", "-ar", str(sr), "-ac", "1",
-            "-c:a", "pcm_s16le", str(out_wav)])
+    run_ffmpeg([*args, "-filter_complex", graph, "-map", "[out]", "-ar", str(sr), "-ac", "1",
+                "-c:a", "pcm_s16le", str(out_wav)], folder=out_wav.parent)
     return out_wav
 
 

@@ -22,6 +22,7 @@ from ns_studio.media.captions import _ass_color as ass_color
 from ns_studio.media.captions import _ass_time as ass_time
 from ns_studio.media.captions import build_ass, caption_band, ensure_contrast, shift_words
 from ns_studio.media.clips import ClipCache, Searcher, assign_clips, blocked_for_job, clip_seed, fallback_beat
+from ns_studio.media.diskfull import run_ffmpeg
 from ns_studio.media.master import (
     CARD_S,
     ChapterTiming,
@@ -275,14 +276,16 @@ def render_segment(
     video = ctx.runtime.video
 
     def attempt(force_cpu: bool) -> None:
-        ff.run([*inputs, "-filter_complex", graph, "-map", "[vout]", "-an",
-                *encoder_args(video, force_cpu=force_cpu), "-r", str(fps), "-pix_fmt", "yuv420p", str(out)],
-               log=ctx.log)
+        run_ffmpeg(
+            [*inputs, "-filter_complex", graph, "-map", "[vout]", "-an",
+             *encoder_args(video, force_cpu=force_cpu), "-r", str(fps), "-pix_fmt", "yuv420p", str(out)],
+            folder=out.parent, log=ctx.log,
+        )
 
     try:
         attempt(False)
-    except NsError:
-        if video.encoder != "h264_nvenc":
+    except NsError as e:
+        if video.encoder != "h264_nvenc" or e.code == "NS-E104":  # a full disk is not an encoder problem
             raise
         ctx.log.warn("nvenc_failed", code="NS-W401", msg="falling back to libx264")
         attempt(True)
@@ -333,9 +336,12 @@ class RenderMasterStage:
         lst = out_dir / "segments.txt"
         lst.write_text(concat_list_text(segs), encoding="utf-8")
         master = out_dir / "master.mp4"
-        ff.run(["-f", "concat", "-safe", "0", "-i", str(lst), "-i", str(audio), "-map", "0:v", "-map", "1:a",
-                "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "1",
-                "-movflags", "+faststart", str(master)], log=ctx.log)
+        run_ffmpeg(
+            ["-f", "concat", "-safe", "0", "-i", str(lst), "-i", str(audio), "-map", "0:v", "-map", "1:a",
+             "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "1",
+             "-movflags", "+faststart", str(master)],
+            folder=master.parent, log=ctx.log,
+        )
         total = timeline[-1].end
         ctx.write_json("long/chapters.json", chapters_json(timeline, total))
         for p in segs:

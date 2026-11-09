@@ -7,6 +7,7 @@ Keys are passed in by the caller; they are never logged. Rate limits follow spec
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import re
@@ -21,6 +22,7 @@ import httpx
 from ns_common import ffmpeg as ff
 from ns_common.errors import NsError
 from ns_common.logging import NsLogger
+from ns_studio.media.diskfull import disk_full_error, is_disk_full
 
 Orientation = Literal["landscape", "portrait"]
 PEXELS_URL = "https://api.pexels.com"
@@ -207,9 +209,9 @@ class _HttpSource:
         raise NsError(self.api_error, "rate limited (429) after 4 attempts")
 
     def _fetch_file(self, url: str, dest: Path) -> Path:
-        dest.parent.mkdir(parents=True, exist_ok=True)
         part = dest.with_name(dest.name + ".part")
         try:
+            dest.parent.mkdir(parents=True, exist_ok=True)
             with self.client.stream("GET", url, follow_redirects=True) as r:
                 if r.status_code >= 500:
                     raise self._outage(f"download HTTP {r.status_code}")
@@ -218,13 +220,16 @@ class _HttpSource:
                 with part.open("wb") as fh:
                     for chunk in r.iter_bytes(1 << 16):
                         fh.write(chunk)
+            part.replace(dest)
         except httpx.HTTPError as e:
-            part.unlink(missing_ok=True)
             raise NsError("NS-E503", f"{self.name} download: {type(e).__name__}") from e
-        except NsError:
-            part.unlink(missing_ok=True)
+        except OSError as e:
+            if is_disk_full(e):
+                raise disk_full_error(dest.parent, self.log) from e
             raise
-        part.replace(dest)
+        finally:
+            with contextlib.suppress(OSError):
+                part.unlink(missing_ok=True)  # whatever went wrong, no half file stays in the cache
         return dest
 
 

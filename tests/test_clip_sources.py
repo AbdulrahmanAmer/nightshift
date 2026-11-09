@@ -1,3 +1,4 @@
+import errno
 import json
 from pathlib import Path
 
@@ -321,6 +322,77 @@ def test_d5_a_download_503_is_an_outage_not_a_key_error(tmp_path: Path):
     with pytest.raises(NsError) as ei2:
         bad.download(cand, tmp_path / "pexels" / "b.mp4")
     assert ei2.value.code == "NS-E501"
+
+
+def _enospc_open(real_open):
+    """A `Path.open` whose `.part` files take one chunk and then raise ENOSPC (no real full disk)."""
+
+    class FullFile:
+        def __init__(self, fh) -> None:
+            self._fh = fh
+            self._n = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc) -> None:
+            self._fh.close()
+
+        def write(self, data: bytes) -> int:
+            if self._n >= 1:
+                raise OSError(errno.ENOSPC, "No space left on device")
+            self._n += 1
+            return self._fh.write(data)
+
+    def fake_open(self: Path, *args, **kwargs):
+        fh = real_open(self, *args, **kwargs)
+        return FullFile(fh) if self.name.endswith(".part") else fh
+
+    return fake_open
+
+
+def test_d8_full_disk_during_a_download_is_ns_e104_naming_the_folder_and_leaves_no_part(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setattr(Path, "open", _enospc_open(Path.open))
+    src = PexelsSource("K", tmp_path, client=_client(lambda r: httpx.Response(200, content=b"x" * 300_000)))
+    cand = parse_pexels(_load("pexels_search.json"), "portrait")[0]
+    dest = tmp_path / "pexels" / "3571264.mp4"
+    with pytest.raises(NsError) as ei:
+        src.download(cand, dest)
+    assert ei.value.code == "NS-E104"
+    assert str(dest.parent) in ei.value.detail
+    assert not list(tmp_path.rglob("*.part")) and not dest.exists()
+
+
+def test_d8_winerror_112_counts_as_a_full_disk(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    real = Path.open
+
+    def fake_open(self: Path, *args, **kwargs):
+        if self.name.endswith(".part"):
+            raise OSError(0, "There is not enough space on the disk", None, 112)
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", fake_open)
+    src = PexelsSource("K", tmp_path, client=_client(lambda r: httpx.Response(200, content=b"x")))
+    cand = parse_pexels(_load("pexels_search.json"), "portrait")[0]
+    with pytest.raises(NsError) as ei:
+        src.download(cand, tmp_path / "pexels" / "a.mp4")
+    assert ei.value.code == "NS-E104"
+    assert not list(tmp_path.rglob("*.part"))
+
+
+def test_d8_any_other_failure_mid_download_also_removes_the_part(tmp_path: Path):
+    class Boom(httpx.SyncByteStream):
+        def __iter__(self):
+            yield b"x" * 70_000
+            raise RuntimeError("stream blew up")
+
+    src = PexelsSource("K", tmp_path, client=_client(lambda r: httpx.Response(200, stream=Boom())))
+    cand = parse_pexels(_load("pexels_search.json"), "portrait")[0]
+    with pytest.raises(RuntimeError):
+        src.download(cand, tmp_path / "pexels" / "a.mp4")
+    assert not list(tmp_path.rglob("*.part"))
 
 
 @pytest.mark.skipif(not ff.available(), reason="ffmpeg required")
