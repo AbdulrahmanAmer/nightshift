@@ -5,38 +5,38 @@ are kept between runs and maintained by the verification loop (docs/VERIFICATION
 starts as `U`; `tests/test_verification_inventory.py` fails when the code has an item this
 file does not list.
 
-Items: 260 (V-dev 115, V-ci 52, V-gpu 0, U 93).
+Items: 260 (V-dev 151, V-ci 52, V-gpu 0, U 57).
 
 | kind | id | status | evidence |
 |---|---|---|---|
 | api | `GET /api/health` | V-dev | probed in every test start |
 | api | `GET /api/status` | V-dev | version and engine state read after update/rollback |
-| api | `GET /api/events` | U |  |
-| api | `POST /api/engine/warmup` | U |  |
+| api | `GET /api/events` | V-dev | test-loop-2026-11-08.md 2026-11-09 08:50-08:58 (0.1.12 dev, runs/qa/croutes) |
+| api | `POST /api/engine/warmup` | V-dev | test-loop-2026-11-08.md 2026-11-09 08:50-08:58 (0.1.12 dev, runs/qa/croutes) |
 | api | `POST /api/engine/shutdown` | U |  |
 | api | `POST /api/engine/release_gpu` | U |  |
-| api | `POST /api/engine/stop_all` | U |  |
+| api | `POST /api/engine/stop_all` | V-dev | test-loop-2026-11-08.md 2026-11-09 08:50-08:58 (0.1.12 dev, runs/qa/croutes) |
 | api | `GET /api/channels` | V-dev | test-loop-2026-11-05.md (stats after analytics import) |
-| api | `POST /api/channels` | U |  |
-| api | `GET /api/channels/{slug}` | U |  |
-| api | `PUT /api/channels/{slug}` | U |  |
-| api | `POST /api/channels/{slug}/pause` | U |  |
-| api | `POST /api/channels/{slug}/resume` | U |  |
-| api | `POST /api/channels/{slug}/validate` | U |  |
+| api | `POST /api/channels` | V-dev | test-loop-2026-11-08.md 2026-11-09 08:50-08:58 (0.1.12 dev, runs/qa/croutes) |
+| api | `GET /api/channels/{slug}` | V-dev | test-loop-2026-11-08.md 2026-11-09 08:50-08:58 (0.1.12 dev, runs/qa/croutes) |
+| api | `PUT /api/channels/{slug}` | V-dev | test-loop-2026-11-08.md 2026-11-09 08:50-08:58 (0.1.12 dev, runs/qa/croutes) |
+| api | `POST /api/channels/{slug}/pause` | V-dev | test-loop-2026-11-08.md 2026-11-09 08:50-08:58 (0.1.12 dev, runs/qa/croutes) |
+| api | `POST /api/channels/{slug}/resume` | V-dev | test-loop-2026-11-08.md 2026-11-09 08:50-08:58 (0.1.12 dev, runs/qa/croutes) |
+| api | `POST /api/channels/{slug}/validate` | V-dev | test-loop-2026-11-08.md 2026-11-09 08:50-08:58 (0.1.12 dev, runs/qa/croutes) |
 | api | `GET /api/outputs` | V-dev | test-loop-2026-11-05.md |
 | api | `POST /api/outputs/{output_id:path}/approve` | V-dev | journey-2026-11-04.md (Queue approve and reject) |
 | api | `POST /api/outputs/{output_id:path}/reject` | V-dev | journey-2026-11-04.md (Queue approve and reject) |
-| api | `POST /api/outputs/{output_id:path}/uploaded` | U |  |
+| api | `POST /api/outputs/{output_id:path}/uploaded` | V-dev | test-loop-2026-11-08.md 2026-11-09 08:50-08:58 (0.1.12 dev, runs/qa/croutes) |
 | api | `POST /api/outputs/{output_id:path}/open-folder` | U |  |
-| api | `GET /api/outputs/{output_id:path}` | U |  |
+| api | `GET /api/outputs/{output_id:path}` | V-dev | test-loop-2026-11-08.md 2026-11-09 08:50-08:58 (0.1.12 dev, runs/qa/croutes) |
 | api | `GET /api/thumbs/{n}/{output_id:path}` | U |  |
-| api | `GET /api/media/{output_id:path}/thumb.jpg` | U |  |
+| api | `GET /api/media/{output_id:path}/thumb.jpg` | V-dev | test-loop-2026-11-08.md 2026-11-09 08:50-08:58 (0.1.12 dev, runs/qa/croutes) |
 | api | `POST /api/uploads` | V-dev | test-loop-2026-11-05.md |
-| api | `GET /api/uploads/{upload_id}` | U |  |
+| api | `GET /api/uploads/{upload_id}` | V-dev | test-loop-2026-11-08.md 2026-11-09 08:50-08:58 (0.1.12 dev, runs/qa/croutes) |
 | api | `PUT /api/uploads/{upload_id}` | V-dev | test-loop-2026-11-05.md |
 | api | `POST /api/uploads/{upload_id}/complete` | V-dev | test-loop-2026-11-05.md |
 | api | `POST /api/jobs/run` | V-dev | test-loop-2026-11-05.md (Shorts jobs) |
-| api | `POST /api/jobs/verify` | U |  |
+| api | `POST /api/jobs/verify` | V-dev | test-loop-2026-11-08.md 2026-11-09 08:50-08:58 (0.1.12 dev, runs/qa/croutes) |
 | api | `POST /api/jobs/clip` | V-dev | test-loop-2026-11-05.md (clip from a path and from an upload) |
 | api | `POST /api/jobs/clip/rerun` | U |  |
 | api | `GET /api/jobs` | V-dev | job polling in every job test |
@@ -44,54 +44,54 @@ Items: 260 (V-dev 115, V-ci 52, V-gpu 0, U 93).
 | api | `POST /api/jobs/{job_id}/resume` | V-dev | test-loop-2026-11-05.md (interrupted job resumed) |
 | api | `POST /api/jobs/{job_id}/cancel` | V-ci | tests/test_dashboard_jobs.py cancel tests |
 | api | `POST /api/jobs/{job_id}/dismiss` | V-dev | journey-2026-11-04.md (three failed cards hidden) |
-| api | `GET /api/notes` | U |  |
-| api | `POST /api/notes/clear` | U |  |
+| api | `GET /api/notes` | V-dev | test-loop-2026-11-08.md 2026-11-09 08:50-08:58 (0.1.12 dev, runs/qa/croutes) |
+| api | `POST /api/notes/clear` | V-dev | test-loop-2026-11-08.md 2026-11-09 08:50-08:58 (0.1.12 dev, runs/qa/croutes) |
 | api | `GET /api/runs` | V-dev | test-loop-2026-11-05.md |
-| api | `GET /api/logs/tail` | U |  |
-| api | `GET /api/logs/components` | U |  |
+| api | `GET /api/logs/tail` | V-dev | test-loop-2026-11-08.md 2026-11-09 08:50-08:58 (0.1.12 dev, runs/qa/croutes) |
+| api | `GET /api/logs/components` | V-dev | test-loop-2026-11-08.md 2026-11-09 08:50-08:58 (0.1.12 dev, runs/qa/croutes) |
 | api | `POST /api/learn/import` | V-dev | test-loop-2026-11-05.md |
 | api | `GET /api/learn/summary` | V-dev | test-loop-2026-11-05.md |
 | api | `GET /api/settings` | V-dev | test-loop-2026-11-05.md |
 | api | `PUT /api/settings` | V-dev | test-loop-2026-11-05.md (run time 04:30 round trip) |
 | api | `POST /api/settings/keys` | V-dev | journey-2026-11-04.md (bad key refused, good key accepted) |
-| api | `POST /api/diagnostics` | U |  |
-| api | `GET /api/diagnostics/latest` | U |  |
+| api | `POST /api/diagnostics` | V-dev | test-loop-2026-11-08.md 2026-11-09 08:50-08:58 (0.1.12 dev, runs/qa/croutes) |
+| api | `GET /api/diagnostics/latest` | V-dev | test-loop-2026-11-08.md 2026-11-09 08:50-08:58 (0.1.12 dev, runs/qa/croutes) |
 | api | `POST /api/settings/export` | V-dev | test-loop-2026-11-05.md |
-| api | `GET /api/settings/export/latest` | U |  |
+| api | `GET /api/settings/export/latest` | V-dev | test-loop-2026-11-08.md 2026-11-09 08:50-08:58 (0.1.12 dev, runs/qa/croutes) |
 | api | `POST /api/settings/import` | V-dev | test-loop-2026-11-05.md |
-| api | `GET /api/settings/uninstall` | U |  |
+| api | `GET /api/settings/uninstall` | V-dev | test-loop-2026-11-08.md 2026-11-09 08:50-08:58 (0.1.12 dev, runs/qa/croutes) |
 | api | `GET /api/templates` | V-dev | journey-2026-11-04.md (Create page) |
 | api | `GET /api/voices` | V-dev | journey-2026-11-04.md |
-| api | `POST /api/voices/preview` | U |  |
-| api | `GET /api/voices/pending` | U |  |
-| api | `POST /api/voices/apply-pending` | U |  |
-| api | `POST /api/voices/design` | U |  |
-| api | `POST /api/voices/clone` | U |  |
+| api | `POST /api/voices/preview` | V-dev | test-loop-2026-11-08.md 2026-11-09 08:50-08:58 (0.1.12 dev, runs/qa/croutes) |
+| api | `GET /api/voices/pending` | V-dev | test-loop-2026-11-08.md 2026-11-09 08:50-08:58 (0.1.12 dev, runs/qa/croutes) |
+| api | `POST /api/voices/apply-pending` | V-dev | test-loop-2026-11-08.md 2026-11-09 08:50-08:58 (0.1.12 dev, runs/qa/croutes) |
+| api | `POST /api/voices/design` | V-dev | test-loop-2026-11-08.md 2026-11-09 08:50-08:58 (0.1.12 dev, runs/qa/croutes) |
+| api | `POST /api/voices/clone` | V-dev | test-loop-2026-11-08.md 2026-11-09 08:50-08:58 (0.1.12 dev, runs/qa/croutes) |
 | api | `GET /api/library/ideas` | V-dev | journey-2026-11-04.md |
 | api | `POST /api/library/ideas` | V-dev | journey-2026-11-04.md |
 | api | `PUT /api/library/ideas/{idea_id}` | V-dev | journey-2026-11-04.md (approve for production) |
 | api | `GET /api/library/stories` | V-dev | journey-2026-11-04.md |
 | api | `GET /api/library/footage` | V-dev | journey-2026-11-04.md |
 | api | `POST /api/library/footage/fetch` | V-dev | journey-2026-11-04.md (real Pixabay clips) |
-| api | `DELETE /api/library/footage/{source}/{clip_id}` | U |  |
+| api | `DELETE /api/library/footage/{source}/{clip_id}` | V-dev | test-loop-2026-11-08.md 2026-11-09 08:50-08:58 (0.1.12 dev, runs/qa/croutes) |
 | api | `GET /api/library/formats` | V-dev | journey-2026-11-04.md |
-| api | `POST /api/library/formats` | U |  |
-| api | `PUT /api/library/formats/{format_id}` | U |  |
+| api | `POST /api/library/formats` | V-dev | test-loop-2026-11-08.md 2026-11-09 08:50-08:58 (0.1.12 dev, runs/qa/croutes) |
+| api | `PUT /api/library/formats/{format_id}` | V-dev | test-loop-2026-11-08.md 2026-11-09 08:50-08:58 (0.1.12 dev, runs/qa/croutes) |
 | api | `GET /api/library/series` | V-dev | journey-2026-11-04.md (tab rendered) |
 | api | `POST /api/library/series/{slug}/produce` | U |  |
 | api | `GET /api/update/check` | V-dev | test-loop-2026-11-05.md |
-| api | `GET /api/update/state` | U |  |
+| api | `GET /api/update/state` | V-dev | test-loop-2026-11-08.md 2026-11-09 08:50-08:58 (0.1.12 dev, runs/qa/croutes) |
 | api | `POST /api/models/get` | U |  |
-| api | `GET /api/models/state` | U |  |
+| api | `GET /api/models/state` | V-dev | test-loop-2026-11-08.md 2026-11-09 08:50-08:58 (0.1.12 dev, runs/qa/croutes) |
 | api | `POST /api/update/file` | U |  |
 | api | `POST /api/update/apply` | U |  |
 | api | `POST /api/assistant/chat` | V-dev | journey-2026-11-04.md (tool call, card) |
 | api | `POST /api/assistant/confirm` | V-dev | journey-2026-11-04.md (Yes ran fetch_footage) |
-| api | `POST /api/assistant/dismiss` | U |  |
+| api | `POST /api/assistant/dismiss` | V-dev | test-loop-2026-11-08.md 2026-11-09 08:50-08:58 (0.1.12 dev, runs/qa/croutes) |
 | api | `GET /api/assistant/history` | V-ci | tests/test_dashboard_assistant_history.py |
-| api | `GET /api/assistant/conversations` | U |  |
+| api | `GET /api/assistant/conversations` | V-dev | test-loop-2026-11-08.md 2026-11-09 08:50-08:58 (0.1.12 dev, runs/qa/croutes) |
 | api | `GET /api/assistant/tools` | V-dev | journey-2026-11-04.md |
-| api | `POST /api/assistant/queue/run` | U |  |
+| api | `POST /api/assistant/queue/run` | V-dev | test-loop-2026-11-08.md 2026-11-09 08:50-08:58 (0.1.12 dev, runs/qa/croutes) |
 | cli | `ns stop` | V-dev | test-loop-2026-11-05.md |
 | cli | `ns doctor` | V-ci | tests/test_ns_doctor.py |
 | cli | `ns verify` | V-dev | test-loop-2026-11-05.md (--quick, all checks passed) |
@@ -120,7 +120,7 @@ Items: 260 (V-dev 115, V-ci 52, V-gpu 0, U 93).
 | cli | `studio mark-uploaded` | V-ci | tests/test_review.py |
 | cli | `studio pause` | V-ci | tests/test_review.py |
 | cli | `studio resume` | V-ci | tests/test_review.py |
-| cli | `studio status` | U |  |
+| cli | `studio status` | V-dev | test-loop-2026-11-08.md 2026-11-09 08:50-08:58 (0.1.12 dev, runs/qa/croutes) |
 | cli | `studio dashboard` | U |  |
 | cli | `studio learn` | V-ci | tests/test_learn.py |
 | cli | `studio calibrate` | V-ci | tests/test_calibrate.py |

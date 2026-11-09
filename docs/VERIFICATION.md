@@ -72,7 +72,7 @@ L release and CI (ci.yml: lint, types, test, bundle, ui-build, powershell-parse,
 | F dashboard API | V-ci | V-ci | V-dev (20 groups probed, chunked upload → clips) | V-dev | V-dev | V-dev (update, uninstall routes) | **U** | V-dev (traversal 404, loopback only) | — | — | — |
 | G dashboard UI | V-ci | V-ci (callers, contract) | V-dev (Chrome) | V-dev (all pages) | — | — | — | — | — | partial | V-gpu (WebView2) |
 | H assistant | V-ci | V-ci (eval, router, redact) | V-dev (fake tool routing) | V-dev | — | — | **U** (engine busy, timeouts) | V-ci (redaction) | — | V-dev | V-gpu (real model answers) |
-| I engines/clients | V-ci | V-ci | V-dev (fakes; real Pixabay; engine test: real llama-server, embeddings and whisper on the CPU inside a clip job) | — | — | — | **U** (Pexels live; 429 handling live) | V-ci | — | — | V-gpu (all real engines) |
+| I engines/clients | V-ci | V-ci | V-dev (fakes; real Pixabay; engine test: real llama-server, embeddings and whisper on the CPU inside a clip job) | — | — | — | V-dev (Pexels and 429 through the QA fake endpoint; 5xx outage: defect D-5) | V-ci | — | — | V-gpu (all real engines) |
 | J contracts | V-ci | V-ci | — | — | — | — | — | — | — | V-ci | — |
 | K operations | V-ci | V-ci | V-dev (update, uninstall, diagnostics) | V-dev | V-dev | V-dev (task fires, rollback, export/import, backup/restore, notify command) / V-gpu toast visible, keep-awake | V-dev (restore while running refused, PR #87) / **U** disk full, network off | V-dev (keys forgotten) | V-dev (update 51 s) | partial | — |
 | L release/CI | V-ci | V-ci (release wiring) | V-dev (assets, sha256, manifest) | — | V-dev | — | — | — | — | V-dev | — |
@@ -110,7 +110,7 @@ L release and CI (ci.yml: lint, types, test, bundle, ui-build, powershell-parse,
 - [x] shorts_only, master_first (fresh install: Shorts; master on the 0.1.9 install), clipper, planner, QC drop, footage reuse (V-dev)
 - [x] master_first on the fresh 0.1.11 install through the scheduled task: 18.5 min, 199 MB master, Shorts 13-109 MB (V-dev 2026-11-05)
 - [ ] Series workshop end to end (concepts → map → scripts → produce) (U)
-- [ ] Review: approve, reject with note, mark uploaded, re-review (V-dev approve/reject; uploaded U)
+- [x] Review: approve, reject with note, mark uploaded, re-review: reject moves the files to rejected/, uploaded refused while rejected, approve then uploaded; card and `uploads` table agree (V-dev 0.1.12, 2026-11-09; the approved file stays under rejected/: defect D-6)
 - [x] Learn: a YouTube-Studio-style CSV naming two Shorts imported through `/api/learn/import`: 2 matched, weights moved in five pools, channel retention 61.5 % and a spark point (V-dev 2026-11-05); the Results page rendering those numbers is checked in the browser pass (U)
 - [ ] Calibrate (U)
 
@@ -132,15 +132,15 @@ L release and CI (ci.yml: lint, types, test, bundle, ui-build, powershell-parse,
 
 ### I. Engines and clients
 - [x] Pixabay live: search, cache, download, key check (V-dev)
-- [ ] Pexels live with a key (needs a Pexels key; keys are entered in Settings) (U)
-- [ ] 429 handling live (V-ci; live U)
+- [x] Pexels with a key, mimicked: the QA fake Pexels/Pixabay endpoint (local TLS proxy, `D:/NightShift/runs/qa/fakefootage`) answered the product's own key check, search and download on the 0.1.12 dev install: bad key refused and the old key kept, good key accepted, 1080x1920 clips cached (V-dev 2026-11-09). The real service's answers stay as pinned by `tests/`
+- [x] 429 handling on an install: 3x429 with Retry-After 5 waited out in 15.1 s, then the download; endless 429 → coded NS-E501 after 4 attempts (V-dev 0.1.12 via the fake endpoint, 2026-11-09). A 5xx outage is not retried and is worded as a key problem: defect D-5
 
 ### K. Operations
 - [x] `ns notify` exits 0 and the AppUserModelId registration exists (V-dev 2026-11-05); the toast being visible is a partner line (V-gpu)
 - [x] Rollback: 0.1.11 → 0.1.10 in 21 s, dashboard reports 0.1.10, update to 0.1.11 again in 32 s (V-dev 2026-11-05)
 - [x] Settings export (16-entry zip) → run time changed back → import restores it, machine-specific files skipped, keys kept (V-dev 2026-11-05 on the same install; a second PC is V-gpu)
 - [x] `ns backup` 16-entry zip; `ns restore` with nothing running restores config and studio.db; with the engine up it failed halfway and rolled back, now refused up front with NS-E703 (PR #87) (V-dev 2026-11-05)
-- [ ] Diagnostics zip contents: logs, settings without keys, reports (V-dev partial)
+- [x] Diagnostics zip contents: 83 entries with both keys stored; no key value anywhere, answers.json without key fields, every component log, reports, nvidia-smi placeholder (V-dev 0.1.12, 2026-11-09)
 - [x] Uninstall leftovers (V-dev)
 
 ### L. Release and CI
