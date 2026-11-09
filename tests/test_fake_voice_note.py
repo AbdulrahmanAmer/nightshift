@@ -262,3 +262,10 @@ def test_the_captions_detail_keeps_its_wording_with_the_code_in_the_record(tmp_h
         "the voice is the fake one of this engine test and it made tone bursts, which speech recognition "
         "cannot align (no Windows speech voice was available): this is the test voice, not a product fault"
     )
+
+
+def test_the_two_copies_of_the_tones_code_are_the_registered_one():
+    from ns_studio.media.fake_voice import FAKE_VOICE_TONES_CODE as studio_code
+    from ns_tts.engine import FAKE_VOICE_TONES_CODE as tts_code
+
+    assert studio_code == tts_code == "NS-W303"
