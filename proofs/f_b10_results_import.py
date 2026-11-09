@@ -1,11 +1,18 @@
 """F-B10: the Results page renders the numbers of an imported YouTube Studio CSV.
 
-Two Shorts (one per proof channel) are marked uploaded with 11-character video ids. A CSV in YouTube Studio's
-layout (a Total row and one row per video) is dropped on the Results page's own drop zone. The proof
+Every run makes two new Shorts in this run (one per channel of its own, `run_short`) and marks them uploaded
+with 11-character video ids of this run. A CSV in YouTube Studio's layout (a Total row and one row per video)
+is built for exactly those two output ids and dropped on the Results page's own drop zone. The proof
 then reads the effect at three levels that must agree: the `analytics` rows and `pool_weights`,
 GET /api/learn/summary (what the page loads) and the text Playwright reads off the rendered page (views,
 mix, weighted retention, per-video, the 7-day spark, the weight changes). Ported from runs/qa/fb10.py and
 pw_shot.py (evidence log 2026-11-09, 0.1.12 and 0.1.14).
+
+The CSV's figures are compared with the API and with the page on every run, on a fresh install and on one that
+already holds analytics of earlier runs: the summary and the analytics rows are read before the import, and
+what the page and the API must show is the baseline plus the CSV (3,150 views on the import day, all Shorts;
+the view-weighted stayed-to-watch figure of the listed videos with the CSV's two videos among them). On an
+install with no other analytics that is the box's own 3,150 views and 66 % retention.
 """
 
 from __future__ import annotations
@@ -13,6 +20,7 @@ from __future__ import annotations
 import csv
 import math
 import re
+import uuid
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
@@ -28,13 +36,16 @@ PROOF = {
     "fakes": [],
 }
 
-# one channel per Short: a fresh channel's idea history cannot refuse the Short (NS-E304); the niche differs
-# so the channels pass the cross-channel distinctness check of POST /api/channels
-CHANNELS = (("proof-results-a", "proof results alpha"), ("proof-results-b", "proof results beta"))
-VIDEO_IDS = ("PrfB10vidA1", "PrfB10vidB2")
-CSV_NAME = "proof-fb10-yt.csv"
+# One channel per Short, new in every run (a channel's idea history refuses repeated fake ideas, NS-E304, so a
+# second Short on the same channel could not be made); the niche differs so the channels pass the
+# cross-channel distinctness check of POST /api/channels. The run's stamp is added to the slug and the niche.
+CHANNEL_BASES = (("proof-results-a", "proof results alpha"), ("proof-results-b", "proof results beta"))
+# 11-character video ids: a prefix and five characters of this run, so the import never matches an old one
+VIDEO_PREFIXES = ("PrB10a", "PrB10b")
 LIST_SIZE = 5  # videos in the summary's top and in its bottom (ns_dashboard/learn_view.py)
 TARGET = 55  # the page's retention target, Results.tsx
+BOX_VIEWS = 3150  # the box's figures for the two CSV videos: total views and view-weighted retention (%)
+BOX_RETENTION = 66
 HEADER = [
     "Content",
     "Video title",
@@ -80,16 +91,8 @@ def _body(page: Any) -> str:
         return ""
 
 
-def _output_of(ctx: Any, channel: str) -> tuple[str, str]:
-    """(output_id, title) of the proof channel's Short: the one a former run left, else a new Short job."""
-    sql = (
-        "select output_id, title from outputs where channel=? and profile is null and kind='short'"
-        " and status != 'rejected' order by created_at desc"
-    )
-    rows = db_rows(ctx, sql, (channel,))
-    if rows:
-        ctx.step("a Short of the proof channel is already there", channel=channel, output=rows[0][0])
-        return str(rows[0][0]), str(rows[0][1])
+def _fresh_short(ctx: Any, channel: str) -> tuple[str, str]:
+    """(output_id, title) of a Short made now: a new Short job on the proof channel, never a former run's."""
     job = run_short(ctx, channel)
     ctx.check(
         job.get("status") == "done",
@@ -99,9 +102,47 @@ def _output_of(ctx: Any, channel: str) -> tuple[str, str]:
         status=job.get("status"),
         message=job.get("message"),
     )
-    rows = db_rows(ctx, sql, (channel,))
-    ctx.check(bool(rows), "the job left a Short on the proof channel", channel=channel)
+    ids = [str(i) for i in (job.get("result") or {}).get("output_ids") or []]
+    ctx.check(bool(ids), "the Short job names its outputs", channel=channel, output_ids=ids)
+    marks = ",".join("?" * len(ids))
+    rows = db_rows(
+        ctx,
+        f"select output_id, title from outputs where output_id in ({marks}) and channel=?"
+        " and profile is null and kind='short' order by created_at desc",
+        (*ids, channel),
+    )
+    ctx.check(
+        bool(rows),
+        "the job left a Short on the proof channel",
+        channel=channel,
+        output_ids=ids,
+        shorts=[r[0] for r in rows],
+    )
     return str(rows[0][0]), str(rows[0][1])
+
+
+def _latest_rows(ctx: Any) -> list[tuple[int, float]]:
+    """(views, stayed %) of every analysed video's latest analytics row, as the Results summary reads them."""
+    rows = db_rows(
+        ctx,
+        "select a.views, a.viewed_pct from analytics a join outputs o on o.output_id = a.output_id"
+        " where a.date = (select max(date) from analytics where output_id = a.output_id)",
+    )
+    return [(int(r[0] or 0), round(float(r[1] or 0), 1)) for r in rows]
+
+
+def _listed(rows: list[tuple[int, float]]) -> list[tuple[int, float]]:
+    """The videos the summary lists: the five most watched and the five least watched of the rest
+    (ns_dashboard/learn_view.py top_bottom)."""
+    ordered = sorted(rows, key=lambda r: -r[0])
+    return ordered[:LIST_SIZE] + list(reversed(ordered[LIST_SIZE:]))[:LIST_SIZE]
+
+
+def _weighted(rows: list[tuple[int, float]]) -> int | None:
+    """The page's retention: stayed-to-watch figures weighted by views, rounded as the page's script does."""
+    if not rows:
+        return None
+    return _js_round(sum(p * v for v, p in rows) / max(1, sum(v for v, _p in rows)))
 
 
 def _mark_uploaded(ctx: Any, oid: str, video_id: str) -> None:
@@ -128,29 +169,57 @@ def _learn_job_ids(ctx: Any) -> set[str]:
 def run(ctx: Any) -> None:
     base = f"http://127.0.0.1:{ctx.ports['dashboard']}"
 
-    # ---- 1. two uploaded Shorts with known video ids (the proof's own channels and ids)
+    # ---- 1. two new Shorts made in this run, uploaded with video ids of this run (own channels, own ids)
+    stamp = datetime.now().strftime("%m%d-%H%M%S")
+    channels = tuple((f"{base}-{stamp}", f"{niche} {stamp}") for base, niche in CHANNEL_BASES)
+    video_ids = tuple(f"{prefix}{uuid.uuid4().hex[:5]}" for prefix in VIDEO_PREFIXES)
+    csv_name = f"proof-fb10-yt-{stamp}.csv"
+    ctx.step(
+        "this run's own channels, video ids and CSV (new in every run)",
+        channels=[c[0] for c in channels],
+        video_ids=list(video_ids),
+        csv=csv_name,
+    )
     outputs: list[tuple[str, str]] = []
-    for (slug, niche), video_id in zip(CHANNELS, VIDEO_IDS, strict=True):
+    for (slug, niche), video_id in zip(channels, video_ids, strict=True):
         proof_channel(ctx, slug, niche=niche)
-        oid, title = _output_of(ctx, slug)
+        oid, title = _fresh_short(ctx, slug)
         _mark_uploaded(ctx, oid, video_id)
         outputs.append((oid, title))
     oid_a, oid_b = outputs[0][0], outputs[1][0]
     ctx.step("the two Shorts the CSV is about", outputs=outputs)
 
-    # ---- 2. the CSV in YouTube Studio's layout, written to the scratch folder
-    csv_path = ctx.scratch / CSV_NAME
+    # ---- 2. the CSV in YouTube Studio's layout, for exactly those two output ids, in the scratch folder
+    csv_path = ctx.scratch / csv_name
     total = sum(m[0] for m in METRICS)
     with csv_path.open("w", newline="", encoding="utf-8") as fh:
         w = csv.writer(fh)
         w.writerow(HEADER)
         w.writerow(["Total", "", "", "", total, "", "", "", "", "", "", ""])
-        for (_oid, title), vid, m in zip(outputs, VIDEO_IDS, METRICS, strict=True):
+        for (_oid, title), vid, m in zip(outputs, video_ids, METRICS, strict=True):
             w.writerow([vid, title, "Nov 9, 2026", 54, m[0], m[1], m[2], m[3], m[5], m[6], m[7], m[8]])
-    ctx.step("CSV written", path=str(csv_path), total_row_views=total)
-    other = db_rows(ctx, "select count(*) from analytics where output_id not in (?, ?)", (oid_a, oid_b))[0][0]
+    ctx.step("CSV written", path=str(csv_path), total_row_views=total, output_ids=[oid_a, oid_b])
     earlier = db_rows(ctx, "select count(*) from analytics where output_id in (?, ?)", (oid_a, oid_b))[0][0]
-    ctx.step("analytics rows already on this install", other_videos=other, of_these_two_before_import=earlier)
+    ctx.check(
+        earlier == 0,
+        "the two Shorts are new: no analytics row of theirs exists before the import",
+        output_ids=[oid_a, oid_b],
+        analytics_rows=earlier,
+    )
+    # what the install already shows before the import: every figure the page and the API show afterwards is
+    # this baseline plus the CSV, whatever earlier runs left on the install
+    status, base = ctx.api("GET", "/api/learn/summary")
+    ctx.check(
+        status == 200 and isinstance(base, dict), "baseline summary read before the import", status=status
+    )
+    before_daily = {str(d["date"]): (int(d["shorts"]), int(d["long"])) for d in base.get("daily") or []}
+    baseline_videos = _latest_rows(ctx)
+    ctx.step(
+        "analytics already on this install (before the import)",
+        analysed_videos=len(baseline_videos),
+        days_with_data=len(before_daily),
+        views_in_summary_days=sum(s + lg for s, lg in before_daily.values()),
+    )
 
     # ---- 3. the Results page: drop the CSV on its own drop zone
     jobs_before = _learn_job_ids(ctx)
@@ -174,7 +243,7 @@ def run(ctx: Any) -> None:
     page.locator("label", has_text="Drop your YouTube Studio analytics export").locator(
         "input[type=file]"
     ).set_input_files(str(csv_path))
-    ctx.step("CSV chosen on the Results drop zone", file=CSV_NAME)
+    ctx.step("CSV chosen on the Results drop zone", file=csv_name)
 
     def new_job() -> dict[str, Any] | None:
         status, jobs = ctx.api("GET", "/api/jobs?kind=learn&limit=100")
@@ -192,7 +261,7 @@ def run(ctx: Any) -> None:
         result=short(result),
     )
     ctx.check(not result.get("unmatched"), "no row is left unmatched", unmatched=result.get("unmatched"))
-    saved = sorted((ctx.home / "imports" / "analytics").glob(f"*-{CSV_NAME}"))
+    saved = sorted((ctx.home / "imports" / "analytics").glob(f"*-{csv_name}"))
     ctx.check(
         bool(saved) and saved[-1].read_bytes() == csv_path.read_bytes(),
         "the CSV was kept under imports/analytics, byte for byte",
@@ -201,7 +270,8 @@ def run(ctx: Any) -> None:
 
     # ---- 4. the database effects
     today = datetime.now(UTC).date()
-    for oid, vid, m in zip((oid_a, oid_b), VIDEO_IDS, METRICS, strict=True):
+    import_dates: list[str] = []
+    for oid, vid, m in zip((oid_a, oid_b), video_ids, METRICS, strict=True):
         got = db_rows(
             ctx,
             "select date, views, viewed_pct, avg_pct_viewed, avg_view_duration_s, likes, comments, shares,"
@@ -216,9 +286,16 @@ def run(ctx: Any) -> None:
             row=got,
             expected=want,
         )
+        import_dates.append(str(got[0][0]))
+    import_date = import_dates[0]
+    ctx.check(
+        len(set(import_dates)) == 1,
+        "both videos were stored under one import day",
+        import_dates=import_dates,
+    )
     changes = result.get("changes") or []
     ctx.check(bool(changes), "the import moved pool weights", moved=len(changes))
-    mine = tuple(c[0] for c in CHANNELS)
+    mine = tuple(c[0] for c in channels)
     weights = db_rows(
         ctx,
         "select channel, pool, option, weight, updated_at from pool_weights where channel in (?, ?)",
@@ -250,11 +327,13 @@ def run(ctx: Any) -> None:
     # missing one is judged against the database's per-video count, never taken as a failure by itself
     analysed = db_rows(ctx, "select count(distinct output_id) from analytics")[0][0]
     not_listed: list[str] = []
-    for (_oid, title), vid, m in zip(outputs, VIDEO_IDS, METRICS, strict=True):
+    for (_oid, title), vid, m in zip(outputs, video_ids, METRICS, strict=True):
+        # a Short of an earlier run with the same figures may take its place in the list: what counts is a
+        # listed Short with the CSV's views and stayed %, so the title is recorded, not required
         hit = [
             v
             for v in videos
-            if v.get("title") == title and v.get("views") == m[0] and v.get("viewed_pct") == m[1]
+            if v.get("views") == m[0] and v.get("viewed_pct") == m[1] and v.get("kind") == "short"
         ]
         if not hit and analysed > 2 * LIST_SIZE:
             not_listed.append(vid)
@@ -265,10 +344,12 @@ def run(ctx: Any) -> None:
             )
             continue
         ctx.check(
-            len(hit) == 1 and hit[0].get("kind") == "short",
-            f"summary lists the Short of {vid} with its views and stayed %",
+            len(hit) >= 1,
+            f"summary lists a Short with the views and stayed % of {vid}",
             expected=(m[0], m[1]),
+            title=title,
             found=hit,
+            same_title=sum(1 for v in hit if v.get("title") == title),
             analysed_videos=analysed,
         )
     daily = list(summ.get("daily") or [])
@@ -282,21 +363,43 @@ def run(ctx: Any) -> None:
         summary_changes=len(sum_changes),
         job_changes=len(changes),
     )
-    clean = other == 0 and earlier == 0  # nothing else adds to the day's or the 14 days' figures
-    if clean:
-        ctx.check(
-            last["shorts"] + last["long"] == total == 3150
-            and sum(d["shorts"] + d["long"] for d in daily) == 3150
-            and last["long"] == 0,
-            "daily views on the import day are the CSV's 3,150, all Shorts",
-            last_day=last,
-        )
-    else:
-        ctx.step(
-            "other analytics rows on this install: page figures are compared with the API's own",
-            other_videos=other,
-            of_these_two_before_import=earlier,
-        )
+    # the CSV against the API, on every run: the day-by-day views before the import plus the CSV's must be
+    # what the summary holds now (the CSV's views land on the import day, as Shorts, and no other day moves)
+    moved: dict[str, list[int]] = {}
+    for d in daily:
+        was = before_daily.get(str(d["date"]), (0, 0))
+        change = [int(d["shorts"]) - was[0], int(d["long"]) - was[1]]
+        if change != [0, 0]:
+            moved[str(d["date"])] = change
+    ctx.check(
+        total == BOX_VIEWS and moved == {import_date: [total, 0]},
+        "daily views: the CSV's 3,150 views arrived on the import day, all Shorts, and no other day moved",
+        csv_total=total,
+        import_date=import_date,
+        moved=moved,
+        days_with_data_before=len(before_daily),
+        last_day=last,
+    )
+    expected_views = sum(
+        sum(before_daily.get(str(d["date"]), (0, 0))) + (total if str(d["date"]) == import_date else 0)
+        for d in daily
+    )
+    expected_shorts = sum(
+        before_daily.get(str(d["date"]), (0, 0))[0] + (total if str(d["date"]) == import_date else 0)
+        for d in daily
+    )
+    expected_share = _js_round(expected_shorts / expected_views * 100) if expected_views else None
+    # retention: the listed videos are the baseline's analysed videos and the CSV's two, as the summary lists
+    csv_rows = [(int(m[0]), round(float(m[1]), 1)) for m in METRICS]
+    expected_retention = _weighted(_listed(baseline_videos + csv_rows))
+    csv_retention = _weighted(csv_rows)
+    ctx.check(
+        csv_retention == BOX_RETENTION and sum(r[0] for r in csv_rows) == BOX_VIEWS,
+        "the CSV's own figures: 3,150 views and a view-weighted stayed-to-watch of 66 %",
+        csv_rows=csv_rows,
+        csv_retention=csv_retention,
+        csv_views=sum(r[0] for r in csv_rows),
+    )
 
     # what the page should draw, from the API answer (Results.tsx)
     day_total = sum(d["shorts"] + d["long"] for d in daily)
@@ -308,6 +411,23 @@ def run(ctx: Any) -> None:
         else None
     )
     week = daily[-7:]
+    ctx.check(
+        day_total == expected_views and day_shorts == expected_shorts,
+        "summary: views of the last 14 days are the baseline's plus the CSV's 3,150, Shorts included",
+        api_views=day_total,
+        api_shorts=day_shorts,
+        expected_views=expected_views,
+        expected_shorts=expected_shorts,
+        baseline_views=sum(sum(v) for v in before_daily.values()),
+    )
+    ctx.check(
+        weighted is not None and weighted == expected_retention,
+        "summary: the view-weighted stayed-to-watch of the listed videos is the baseline's plus the CSV's",
+        api_retention=weighted,
+        expected_retention=expected_retention,
+        analysed_before=len(baseline_videos),
+        listed=[(v.get("views"), v.get("viewed_pct")) for v in videos],
+    )
 
     # ---- 6. the rendered page
     def drawn() -> bool:
@@ -323,40 +443,46 @@ def run(ctx: Any) -> None:
     )
     m_views = re.search(r"Views, last 14 days\s+([\d,]+)", text)
     ctx.check(
-        m_views is not None and m_views.group(1) == f"{day_total:,}",
-        "page: Views, last 14 days",
+        m_views is not None and m_views.group(1) == f"{day_total:,}" == f"{expected_views:,}",
+        "page: Views, last 14 days (the baseline's plus the CSV's 3,150, and the API's own figure)",
         shown=m_views.group(1) if m_views else None,
-        expected=f"{day_total:,}",
+        expected=f"{expected_views:,}",
+        api=f"{day_total:,}",
     )
     m_mix = re.search(r"(\d+)%\s+Mix", text)
     ctx.check(
         m_mix is not None
         and share is not None
-        and int(m_mix.group(1)) == share
+        and int(m_mix.group(1)) == share == expected_share
         and f"{share}% Shorts, {100 - share}% full videos" in text,
-        "page: mix of views from Shorts",
+        "page: mix of views from Shorts (the baseline's plus the CSV's, and the API's own figure)",
         shown=m_mix.group(1) if m_mix else None,
-        expected=share,
+        expected=expected_share,
+        api=share,
     )
     m_ret = re.search(r"(\d+)%\s+Retention", text)
     ctx.check(
         m_ret is not None
         and weighted is not None
-        and int(m_ret.group(1)) == weighted
+        and int(m_ret.group(1)) == weighted == expected_retention
         and "Average, weighted by views" in text
         and f"Target {TARGET}%" in text,
-        "page: retention is the view-weighted average of the stayed-to-watch figures",
+        "page: retention is the view-weighted average of the stayed-to-watch figures (baseline plus the CSV)",
         shown=m_ret.group(1) if m_ret else None,
-        expected=weighted,
+        expected=expected_retention,
+        api=weighted,
     )
-    if clean:
+    if not baseline_videos:  # an install with no other analytics: the box's own figures, as drawn
         ctx.check(
-            m_views is not None and m_views.group(1) == "3,150" and weighted == 66,
-            "page: the box's figures, 3,150 views and 66 % retention",
+            m_views is not None
+            and m_views.group(1) == f"{BOX_VIEWS:,}"
+            and m_ret is not None
+            and int(m_ret.group(1)) == BOX_RETENTION,
+            "page: on an install with no other analytics, the box's figures: 3,150 views and 66 % retention",
             views=m_views.group(1) if m_views else None,
-            retention=weighted,
+            retention=m_ret.group(1) if m_ret else None,
         )
-    for vid, m in zip(VIDEO_IDS, METRICS, strict=True):
+    for vid, m in zip(video_ids, METRICS, strict=True):
         if vid in not_listed:
             continue
         shown = f"{m[0]:,}"

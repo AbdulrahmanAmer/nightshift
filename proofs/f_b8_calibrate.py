@@ -3,9 +3,11 @@
 On a channel of its own: `studio calibrate --n 6` writes stories with critic rows (files and `calibration`
 table); `studio calibrate --score FILE` with human scores prints Spearman per rubric item, the critic's mean
 bias and a recommended critic_bar, and writes that bar to the channel (its YAML and what the Channels page
-reads). The proof computes Spearman, bias and the pass rates itself from the files and the human CSV, and
-compares them with what the command printed and wrote. Ported from runs/qa/fb8.py steps (scores-fb8b.csv;
-evidence log 2026-11-09, 0.1.12 and 0.1.14).
+reads). The proof computes Spearman, bias, the pass rates and the recommended critic_bar itself from the
+critic scores in stories.csv and the human CSV (the rule of ns_studio/calibrate/run.py recommend_bar: the
+highest candidate bar that lets 80 % of the human-passing and at most 20 % of the human-failing stories
+pass, else the bar with the best gap), and compares them with what the command printed and wrote. Ported
+from runs/qa/fb8.py steps (scores-fb8b.csv; evidence log 2026-11-09, 0.1.12 and 0.1.14).
 """
 
 from __future__ import annotations
@@ -79,6 +81,27 @@ def _pass_rates(
     g = sum(1 for c in good if c >= bar - 1e-9) / len(good) if good else 1.0
     b = sum(1 for c in bad if c >= bar - 1e-9) / len(bad) if bad else 0.0
     return g, b
+
+
+def _recommend_bar(
+    critic: list[float], human_avg: list[float], human_min: list[float]
+) -> tuple[float, float, float, bool]:
+    """(bar, good pass rate, bad pass rate, satisfied) by the product's rule, written again from its text.
+
+    Candidates are the critic averages cut to one decimal (floor, never up). A candidate is feasible when
+    at least 80 % of the human-passing stories and at most 20 % of the human-failing ones pass it. With a
+    feasible candidate and stories on both sides the highest feasible one is the bar (satisfied); otherwise
+    the bar is the candidate with the best (good rate - bad rate), the higher bar on a tie (not satisfied)."""
+    good = [c for c, a, m in zip(critic, human_avg, human_min, strict=True) if a >= 8 and m >= 6]
+    bad = [c for c, a, m in zip(critic, human_avg, human_min, strict=True) if not (a >= 8 and m >= 6)]
+    candidates = sorted({math.floor(round(c * 10, 6)) / 10 for c in critic})
+    rates = {c: _pass_rates(c, critic, human_avg, human_min) for c in candidates}
+    feasible = [c for c in candidates if rates[c][0] >= 0.80 and rates[c][1] <= 0.20]
+    if feasible and good and bad:
+        bar = max(feasible)
+        return bar, rates[bar][0], rates[bar][1], True
+    best = max(candidates, key=lambda c: (rates[c][0] - rates[c][1], c))
+    return best, rates[best][0], rates[best][1], False
 
 
 def _out(done: Any) -> str:
@@ -243,26 +266,34 @@ def _calibrate(ctx: Any, slug: str) -> None:
     )
     assert found_bar is not None
     bar = float(found_bar.group(1))
-    good_rate, bad_rate = _pass_rates(bar, c_avgs, h_avgs, h_mins)
+    want_bar, good_rate, bad_rate, want_meets = _recommend_bar(c_avgs, h_avgs, h_mins)
     ctx.check(
-        found_bar.group(2) == f"{good_rate:.0%}"[:-1] and found_bar.group(3) == f"{bad_rate:.0%}"[:-1],
+        abs(bar - want_bar) < 1e-9,
+        "the recommended critic_bar the command printed is the one the proof recomputes from the same scores",
+        printed_bar=bar,
+        recomputed_bar=want_bar,
+        critic_avgs=[round(c, 3) for c in c_avgs],
+        human_avgs=[round(h, 3) for h in h_avgs],
+        human_mins=h_mins,
+        recomputed_good_pass=good_rate,
+        recomputed_bad_pass=bad_rate,
+        recomputed_satisfied=want_meets,
+    )
+    ctx.check(
+        found_bar.group(2) == f"{round(good_rate, 4):.0%}"[:-1]
+        and found_bar.group(3) == f"{round(bad_rate, 4):.0%}"[:-1],
         "the pass rates printed for that bar match the proof's own count",
         printed=(found_bar.group(2), found_bar.group(3)),
-        computed=(f"{good_rate:.0%}", f"{bad_rate:.0%}"),
+        computed=(f"{round(good_rate, 4):.0%}", f"{round(bad_rate, 4):.0%}"),
     )
     meets = found_bar.group(4) == "meets"
     ctx.check(
-        (not meets) or (good_rate >= 0.8 and bad_rate <= 0.2),
-        "'meets the 80/20 target' is only claimed when 80 % of good and at most 20 % of bad stories pass",
+        meets == want_meets,
+        "'meets the 80/20 target' is claimed exactly when the recomputed rates and bar satisfy it",
         meets=meets,
+        recomputed_satisfied=want_meets,
         good=good_rate,
         bad=bad_rate,
-    )
-    ctx.check(
-        any(abs(bar - math.floor(round(c * 10, 6)) / 10) < 1e-9 for c in c_avgs),
-        "the bar is one of the critic's own score levels",
-        bar=bar,
-        critic_avgs=[round(c, 3) for c in c_avgs],
     )
     ctx.check("refusal rate: 0.0%" in out, "refusal rate 0.0% reported", output=short(out))
 
@@ -270,7 +301,7 @@ def _calibrate(ctx: Any, slug: str) -> None:
     report = json.loads((cal / "calibration_report.json").read_text(encoding="utf-8"))
     ctx.check(
         report["rows"] == N_STORIES
-        and abs(report["recommended_bar"] - bar) < 1e-9
+        and abs(report["recommended_bar"] - want_bar) < 1e-9
         and report["satisfied"] == meets
         and all(abs(report["per_item_spearman"][k] - want_rho[k]) <= 0.0001 for k in RUBRIC)
         and abs(report["overall_spearman"] - want_rho["overall"]) <= 0.0001
@@ -296,10 +327,13 @@ def _calibrate(ctx: Any, slug: str) -> None:
     profile = card.get("profile") if isinstance(card, dict) else None
     saved_after = yaml_file.stat().st_mtime_ns
     ctx.check(
-        written == min(10.0, max(5.0, bar)) and saved_after > saved_before,
-        "the recommended critic_bar (kept within 5 to 10) is written to the channel's YAML by the scoring",
+        written == min(10.0, max(5.0, want_bar)) and saved_after > saved_before,
+        "the recomputed critic_bar (kept within 5 to 10) is what the scoring wrote to the channel's YAML",
         yaml_critic_bar=written,
-        recommended=bar,
+        printed_bar=bar,
+        recomputed_bar=want_bar,
+        critic_avgs=[round(c, 3) for c in c_avgs],
+        human_avgs=[round(h, 3) for h in h_avgs],
         start_bar=START_BAR,
         equals_start_bar=written == START_BAR,
         yaml_saved_again=saved_after > saved_before,
