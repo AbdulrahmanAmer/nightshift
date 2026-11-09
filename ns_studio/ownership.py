@@ -15,6 +15,11 @@ system drops when the process ends can (`ns_common.singleton.FileLock`, the one 
   yet), `dead` when a run or job that said `running` has no holder, `ended` after a clean end,
   `interrupted` once `recover` has closed it, and `unknown` for rows with no owner file (studio.db written
   by 0.1.0 to 0.1.14).
+* A lock file or the `owners` folder that does not exist is made by the lock itself (`FileLock.acquire`), so a
+  home from 0.1.14, a restored backup, a cleaned folder or a file a crash left empty all work. A file error
+  while making it (an antivirus scan, a sharing violation) is tried again for about a second (`_acquire`); one
+  that lasts is refused as `LockUnavailable`, and another live process holding the lock as `JobBusy`. The
+  nightly turns either refusal into a `runs` row and a morning note (`daily._refuse_night`).
 * `recover` runs at the start of the engine (the dashboard worker), of `studio run` and of the nightly: a
   dead run row is closed as interrupted, a dead story job is closed at the stage it reached and offered in
   the Queue the way a killed dashboard job is (a failed `run` card with NS-E328 and its studio job id, so
@@ -67,6 +72,14 @@ KEEP_ENDED_DAYS = 30
 #: the lock for a few milliseconds and must not turn a start-up into a failure).
 ACQUIRE_TRIES = 6
 ACQUIRE_WAIT_S = 0.1
+#: A lock FILE that cannot be made or opened (an antivirus scan holding the new file, a sharing violation
+#: while another process deletes the old one: an `OSError` from the folder or the open) is tried again after
+#: each of these waits: five tries over about a second, then the work is refused. Never used for a lock
+#: another process HOLDS (`AlreadyRunning`: that is `ACQUIRE_TRIES` above). A MISSING file or folder is not
+#: an error at all: `FileLock.acquire` makes both.
+OPEN_RETRY_WAITS_S = (0.1, 0.2, 0.3, 0.4)
+#: The same for a liveness probe, which is asked often (every `/api/status`) and must stay quick.
+PROBE_RETRY_WAITS_S = (0.05, 0.1)
 #: `recover` waits this long for another process that is closing the same things (the engine and the nightly
 #: start together after a power cut), then scans again: the nightly must not plan before the job is closed.
 RECOVER_WAIT_S = 20.0
@@ -79,7 +92,26 @@ Liveness = Literal["live", "dead", "interrupted", "ended", "unknown"]
 
 
 class JobBusy(StudioError):
-    """Another process really owns the job right now (a Retry from the Queue is running it): not a failure."""
+    """Another process really owns the job right now (a Retry from the Queue is running it): not a failure.
+
+    `owner` is that process's pid when its lock file says so."""
+
+    def __init__(self, code: str, detail: str = "", owner: int | None = None) -> None:
+        super().__init__(code, detail)
+        self.owner = owner
+
+
+class LockUnavailable(StudioError):
+    """No lock file can be made at all, also after the tries (a folder that is a file, a lock path that is a
+    folder, a read-only or blocked disk): nobody could tell this work is alive, so it is refused, never run
+    unowned. `path` is the lock file and `cause` the `OSError` that stopped it."""
+
+    def __init__(
+        self, code: str, detail: str = "", path: Path | None = None, cause: OSError | None = None
+    ) -> None:
+        super().__init__(code, detail)
+        self.path = path
+        self.cause = cause
 
 
 class SqlDb(Protocol):
@@ -173,6 +205,20 @@ def forget(paths: Paths, owner_id: str) -> None:
 
 
 # ---------------------------------------------------------------- is anybody there
+def _acquire(lock: FileLock, waits: Sequence[float] | None = None) -> None:
+    """`lock.acquire()`, tried again after each of `waits` (default `OPEN_RETRY_WAITS_S`) while the lock FILE
+    cannot be made or opened (`OSError` from the folder or the open). `AlreadyRunning` (the file is there and
+    another process holds it) is no file error: it goes out at once, for the caller's own wait. The `OSError`
+    of the last try goes out after the last wait."""
+    for wait in OPEN_RETRY_WAITS_S if waits is None else waits:
+        try:
+            lock.acquire()
+            return
+        except OSError:  # `AlreadyRunning` is not an OSError and is not caught here
+            time.sleep(wait)
+    lock.acquire()
+
+
 def lock_held(paths: Paths, owner_id: str) -> bool:
     """True while some process (this one too) holds the lock of `owner_id`, or when it cannot be probed.
 
@@ -189,7 +235,7 @@ def lock_held(paths: Paths, owner_id: str) -> bool:
         return True
     probe = FileLock(path)
     try:
-        probe.acquire()
+        _acquire(probe, PROBE_RETRY_WAITS_S)  # a file that cannot be opened for a moment is not "not held"
     except AlreadyRunning:
         return True
     except OSError:
@@ -288,27 +334,31 @@ _HELD_GUARD = threading.Lock()
 
 
 def _take(paths: Paths, kind: str, owner_id: str) -> FileLock:
-    """The OS lock of `owner_id`; `JobBusy` when another process really owns it, StudioError when no lock file
-    can be made at all (a read-only home: refused, never run with no owner known)."""
+    """The OS lock of `owner_id`; `JobBusy` when another process really owns it, `LockUnavailable` when no
+    lock file can be made at all (a folder that is a file, a read-only or blocked disk; after five tries over
+    about a second: refused, never run with no owner known). A missing file or folder is made on the way."""
     lock = FileLock(lock_path(paths, owner_id))
     for attempt in range(ACQUIRE_TRIES):
         try:
-            lock.acquire()
+            _acquire(lock)
             return lock
         except AlreadyRunning as e:
             if attempt == ACQUIRE_TRIES - 1:
                 who = f" (process {e.owner})" if e.owner else ""
                 raise JobBusy(
-                    UNEXPECTED, f"{kind} {owner_id} is already running in another process{who}"
+                    UNEXPECTED, f"{kind} {owner_id} is already running in another process{who}", e.owner
                 ) from e
             time.sleep(ACQUIRE_WAIT_S)
         except OSError as e:
             # No lock file can be made: nobody could tell this work is alive, so a second start would close it
             # as dead and continue it next to the live one. Refuse rather than run unowned.
-            raise StudioError(
-                UNEXPECTED, f"{kind} {owner_id} cannot be owned, its lock file cannot be made: {e}"
+            raise LockUnavailable(
+                UNEXPECTED,
+                f"{kind} {owner_id} cannot be owned, its lock file cannot be made: {e}",
+                lock.path,
+                e,
             ) from e
-    raise StudioError(UNEXPECTED, f"{kind} {owner_id} cannot be owned")
+    raise LockUnavailable(UNEXPECTED, f"{kind} {owner_id} cannot be owned", lock.path)
 
 
 @contextlib.contextmanager
@@ -321,7 +371,9 @@ def hold(paths: Paths, kind: str, owner_id: str, **fields: Any) -> Iterator[None
     `liveness` calls dead, so `recover` closes it with its card, its stage and its note, the way it closes a
     killed process. Re-entrant inside one process (the nightly holds the job and `run_job_guarded` holds it
     again). Another process holding it raises `JobBusy` (NS-E327, with the pid); a lock that cannot be made at
-    all raises StudioError (NS-E327): work nobody could see as alive is never started.
+    all, also after five tries over about a second, raises `LockUnavailable` (NS-E327): work nobody could see
+    as alive is never started. Both are raised before the block runs, so a caller can tell them from a failure
+    of the work (the nightly does: `daily._refuse_night`).
     """
     key = (str(owners_dir(paths)), owner_id)
     with _HELD_GUARD:
@@ -499,7 +551,8 @@ def run_state(
     now = now or _now()
     if finished_at:
         if isinstance(summary, Mapping) and summary.get("failed"):
-            return "failed", f"the night stopped on a problem ({summary['failed']}) before it finished"
+            why = f": {summary['reason']}" if summary.get("reason") else ""  # a refused night says why
+            return "failed", f"the night stopped on a problem ({summary['failed']}) before it finished{why}"
         if isinstance(summary, Mapping) and summary.get("interrupted") is True:
             if summary.get("owner") == "unknown":
                 return (
@@ -1137,7 +1190,7 @@ def recover(
     deadline = time.monotonic() + RECOVER_WAIT_S
     while True:
         try:
-            guard.acquire()
+            _acquire(guard)
             break
         except AlreadyRunning:
             # Another process is closing the same things right now. Leaving at once would let the nightly plan
@@ -1147,7 +1200,7 @@ def recover(
                 return out
             time.sleep(0.1)
         except OSError:
-            break  # no lock file can be made here: carry on unguarded
+            break  # no lock file can be made here, also after the tries: carry on unguarded
     try:
         _recover_owned(paths, db, now, out, log)
         _recover_legacy(paths, db, now, out, log)
