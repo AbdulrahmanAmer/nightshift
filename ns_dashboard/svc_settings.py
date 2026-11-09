@@ -22,6 +22,7 @@ from ns_dashboard.state import (
     AppState,
     load_dashboard_settings,
     load_ui_prefs,
+    refresh_schedule_record,
     save_dashboard_settings,
     schedule_is_registered,
     scheduled_mode,
@@ -77,6 +78,7 @@ class SettingsService:
 
     def get_settings(self) -> dict[str, Any]:
         """`{schedule_time, home, profile, flags, keys, notifications, ...}`."""
+        refresh_schedule_record(self.s.paths)
         stored = load_dashboard_settings(self.s.paths)
         runtime = self.engine.runtime_summary()
         flags = runtime_flags.flatten(runtime or {})
@@ -84,9 +86,10 @@ class SettingsService:
         prefs = load_ui_prefs(self.s.paths)
         return {
             "schedule_time": stored["run_time"],
-            # True when an enabled 'Nightshift Daily' task exists (registered or interactive-only). False
-            # when Windows has none (NS-W206) or a dev install left it disabled; the time is then only a
-            # preference. `schedule_mode` tells registered from interactive_only (NS-W205)
+            # True when a 'Nightshift Daily' task the owner has exists (registered, interactive-only, or
+            # switched off by the owner in Task Scheduler: then `next_run` is None and the time is the
+            # task's own). False when Windows has none (NS-W206) or a dev install left it disabled; the time
+            # is then only a preference. `schedule_mode` tells registered from interactive_only (NS-W205)
             "schedule_registered": schedule_is_registered(self.s.paths),
             "schedule_mode": scheduled_mode(self.s.paths),
             "home": str(self.s.paths.home),

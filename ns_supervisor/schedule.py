@@ -10,6 +10,7 @@ from __future__ import annotations
 import re
 import subprocess
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone, tzinfo
 from pathlib import Path
 
 from ns_common.devmode import is_dev
@@ -17,6 +18,8 @@ from ns_common.logging import NsLogger
 from ns_common.paths import Paths
 from ns_supervisor import pwsh
 from ns_supervisor.schedule_cfg import (
+    MODE_DISABLED,
+    MODE_SWITCHED_OFF,
     TASK_NAME,
     clear_run_time,
     read_run_time,
@@ -143,7 +146,10 @@ INTERACTIVE_NOTE = f"runs {INTERACTIVE_MARK} (Windows refused the unattended mod
 DISABLED_NOTE = "DISABLED: dev mode, it never runs by itself"
 
 KEPT_OFF_MARK = "kept SWITCHED OFF"
-KEPT_OFF_NOTE = f"{KEPT_OFF_MARK}, as it was in Task Scheduler (it does not run until you switch it on there)"
+KEPT_OFF_NOTE = (
+    f"{KEPT_OFF_MARK}, as it was in Task Scheduler (it does not run until you switch it on there "
+    "or run 'ns schedule install --enable')"
+)
 
 
 @dataclass(frozen=True)
@@ -154,7 +160,8 @@ class TaskState:
     run_time: str | None
 
 
-_START_TIME = re.compile(r"T(\d{2}):(\d{2})")
+#: `2026-11-09T04:15:00`; `Z` or `+02:00` follows the seconds when the trigger synchronizes across time zones.
+_START = re.compile(r"(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(Z|[+-]\d{2}:\d{2})?")
 
 
 def build_read_script(task_name: str = TASK_NAME) -> str:
@@ -171,7 +178,29 @@ def build_read_script(task_name: str = TASK_NAME) -> str:
     )
 
 
-def parse_task_state(out: str) -> TaskState | None:
+def _local_clock(value: str, local_tz: tzinfo | None) -> str | None:
+    """The local `HH:MM` a StartBoundary means.
+
+    Without a zone the clock time is local already. With `Z` or an offset the trigger synchronizes across time
+    zones (one moment for every zone), so the moment is turned into this PC's clock time (`local_tz`, default
+    the PC's own zone); reading the written clock time would shift the run by the offset.
+    """
+    m = _START.search(value)
+    if m is None:
+        return None
+    year, month, day, hour, minute, second = (int(g) for g in m.groups()[:6])
+    zone = m.group(7)
+    when = datetime(year, month, day, hour, minute, second)
+    if zone:
+        sign = 1 if zone[0] != "-" else -1
+        hours, minutes = (0, 0) if zone == "Z" else (int(zone[1:3]), int(zone[4:6]))
+        offset = sign * timedelta(hours=hours, minutes=minutes)
+        when = when.replace(tzinfo=timezone(offset)).astimezone(local_tz)
+    clock = f"{when:%H:%M}"
+    return clock if valid_time(clock) else None
+
+
+def parse_task_state(out: str, local_tz: tzinfo | None = None) -> TaskState | None:
     """The `TaskState` a `build_read_script` run printed; None when it says there is no task."""
     state: str | None = None
     run_time: str | None = None
@@ -180,9 +209,7 @@ def parse_task_state(out: str) -> TaskState | None:
         if key.strip() == "state":
             state = value.strip()
         elif key.strip() == "start":
-            m = _START_TIME.search(value)         # the clock time as written, whatever offset follows it
-            if m is not None and valid_time(f"{m.group(1)}:{m.group(2)}"):
-                run_time = f"{m.group(1)}:{m.group(2)}"
+            run_time = _local_clock(value, local_tz)
     if not state:
         return None
     return TaskState(enabled=state.lower() != "disabled", run_time=run_time)
@@ -200,6 +227,7 @@ def install(
     *,
     disabled: bool = False,
     keep_state: bool = False,
+    enable: bool = False,
     log: NsLogger | None = None,
 ) -> str:
     """Register the task at `run_time` (default: the saved time, else 03:00) and remember it.
@@ -211,10 +239,14 @@ def install(
 
     With `keep_state` (an update, the Settings page, `ns schedule install`: anything that replaces a task the
     owner may have changed in Task Scheduler) the task is read BEFORE it is replaced: a task that was switched
-    off is registered switched off again, and without an explicit `run_time` the task's own trigger time is
-    kept. The task in Windows is the truth; `schedule.json` is rewritten to match it. When there is no task
-    the record in `schedule.json` is all there is: mode `disabled` registers it off, anything else on, as a
-    fresh install does. If the task cannot be read nothing is replaced (`ScheduleError`).
+    off is registered switched off again (mode `switched_off`), and without an explicit `run_time` the task's
+    own trigger time is kept. The task in Windows is the truth; `schedule.json` is rewritten to match it. A
+    disabled task that `schedule.json` records as `disabled` is a DEV install's task, not the owner's choice
+    (an install for real over a dev install, docs/DEV_MODE.md): it is registered enabled. `enable` is the
+    owner's explicit "switch it on" (`ns schedule install --enable`): the task is registered enabled whatever
+    it was, except in a dev install. When there is no task the record in `schedule.json` is all there is: mode
+    `switched_off` registers it off, anything else on, as a fresh install does. If the task cannot be read
+    nothing is replaced (`ScheduleError`).
     """
     before = read_task() if keep_state else None
     recorded = read_run_time(paths, include_disabled=keep_state)
@@ -229,14 +261,21 @@ def install(
     if not valid_time(when):
         raise ScheduleError(f"time must be HH:MM (24 h), got {when!r}")
     forced_off = disabled or is_dev(paths)      # a dev install never gets an enabled task, whoever asks
-    if before is not None:
-        kept_off = not before.enabled
+    recorded_mode = read_schedule_mode(paths)
+    if enable or not keep_state:
+        kept_off = False
+    elif before is not None:
+        # a `disabled` record is a dev install's task, not the owner's choice
+        kept_off = not before.enabled and recorded_mode != MODE_DISABLED
     else:
-        kept_off = keep_state and read_schedule_mode(paths) == "disabled"
+        kept_off = recorded_mode == MODE_SWITCHED_OFF
     disabled = forced_off or kept_off
     out = _run(build_install_script(paths, when, app_path, disabled=disabled))
     interactive = "registered:interactive" in out
-    mode = "disabled" if disabled else "interactive_only" if interactive else "registered"
+    mode = (
+        MODE_DISABLED if forced_off else MODE_SWITCHED_OFF if kept_off
+        else "interactive_only" if interactive else "registered"
+    )
     write_run_time(paths, when, mode)
     if keep_state:
         _log_kept(log or NsLogger("schedule", paths.logs), before, when, source, enabled=not disabled)
@@ -265,6 +304,31 @@ def _log_kept(log: NsLogger, before: TaskState | None, when: str, source: str, *
         before_enabled=before.enabled, before_time=before.run_time,
         after_enabled=enabled, after_time=when, time_source=source,
     )
+
+
+def sync_record(paths: Paths) -> bool:
+    """Make `schedule.json` follow a task the owner switched off once they change it in Task Scheduler.
+
+    Only a record in mode `switched_off` is looked at (a registered task has nothing to learn from Windows
+    here): if the task is switched on again the record says `registered`, and if its time was moved the record
+    takes the new time. Returns True when the record changed. Never raises: a task that cannot be read changes
+    nothing. This is the window D-28 leaves between "the owner switches it on" and the next re-registration.
+    """
+    if read_schedule_mode(paths) != MODE_SWITCHED_OFF:
+        return False
+    try:
+        task = read_task()
+    except ScheduleError:
+        return False
+    if task is None:
+        return False
+    recorded = read_run_time(paths, include_disabled=True)
+    when = task.run_time or recorded
+    mode = MODE_SWITCHED_OFF if not task.enabled else "registered"
+    if when is None or (when == recorded and mode == MODE_SWITCHED_OFF):
+        return False
+    write_run_time(paths, when, mode)
+    return True
 
 
 def remove(paths: Paths) -> str:
