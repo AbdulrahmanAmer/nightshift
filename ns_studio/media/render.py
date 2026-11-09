@@ -189,20 +189,28 @@ def render_video(
         raise NsError("NS-E401", "render needs at least one shot")
     edges = frame_edges([s.end for s in shots], video.fps)
     graph = build_graph(shots, edges, size, video.fps, treatment, ass_path, fonts_dir)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    # The command line stays short whatever the install path and the clip count: the graph goes into a script
+    # file next to the video, and FFmpeg starts in the folder the files share and names them relative to it.
+    base = ff.common_dir([*(s.path for s in shots), audio, out])
+
+    def rel(path: Path | str) -> str:
+        return ff.relative_arg(path, base)
+
+    script = ff.filter_complex_args(graph, out.with_name(f"{out.stem}.filtergraph.txt"), log=log, base=base)
     inputs: list[str] = []
     for i, s in enumerate(shots):
         need = (edges[i + 1] - edges[i]) / video.fps + 0.5
-        inputs += ["-ss", f"{s.ss:.2f}", "-t", f"{need:.2f}", "-i", s.path]
+        inputs += ["-ss", f"{s.ss:.2f}", "-t", f"{need:.2f}", "-i", rel(s.path)]
     audio_index = len(shots)
-    out.parent.mkdir(parents=True, exist_ok=True)
 
     def attempt(force_cpu: bool) -> None:
         ff.run(
-            [*inputs, "-i", str(audio), "-filter_complex", graph,
+            [*inputs, "-i", rel(audio), *script,
              "-map", "[vout]", "-map", f"{audio_index}:a",
              *encoder_args(video, force_cpu=force_cpu), "-r", str(video.fps), "-pix_fmt", "yuv420p",
-             "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "1", "-movflags", "+faststart", str(out)],
-            log=log,
+             "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "1", "-movflags", "+faststart", rel(out)],
+            log=log, cwd=base,
         )
 
     try:
