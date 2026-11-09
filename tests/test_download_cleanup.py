@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 import threading
 from pathlib import Path
@@ -145,12 +146,12 @@ def test_kill_process_tree_kills_the_tree_first_then_the_process_then_reaps_it()
         def kill(self) -> None:
             order.append("kill")
 
-        def wait(self) -> int:
-            order.append("wait")
+        def wait(self, timeout: float | None = None) -> int:
+            order.append(f"wait:{timeout}")
             return -9
 
     dc.kill_process_tree(Proc(), taskkill=lambda pid: order.append(f"tree:{pid}"))
-    assert order == ["tree:4242", "kill", "wait"]
+    assert order == ["tree:4242", "kill", f"wait:{dc.WAIT_TIMEOUT_S}"]
 
 
 def test_the_tree_kill_goes_through_the_supervisors_helper(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -174,12 +175,29 @@ def test_kill_process_tree_leaves_an_exited_process_alone() -> None:
         def kill(self) -> None:
             order.append("kill")
 
-        def wait(self) -> int:
-            order.append("wait")
+        def wait(self, timeout: float | None = None) -> int:
+            order.append(f"wait:{timeout}")
             return 0
 
     dc.kill_process_tree(Gone(), taskkill=lambda pid: order.append("tree"))
-    assert order == ["wait"]
+    assert order == [f"wait:{dc.WAIT_TIMEOUT_S}"]
+
+
+def test_kill_process_tree_gives_up_on_a_process_that_will_not_die() -> None:
+    class Stuck:
+        pid = 9
+
+        def poll(self) -> int | None:
+            return None
+
+        def kill(self) -> None:
+            pass
+
+        def wait(self, timeout: float | None = None) -> int:
+            assert timeout is not None, "an unbounded wait would hang the cancel watcher"
+            raise subprocess.TimeoutExpired("yt-dlp", timeout)
+
+    dc.kill_process_tree(Stuck(), taskkill=lambda pid: None)  # returns instead of raising or hanging
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="an open file only blocks its removal on Windows")

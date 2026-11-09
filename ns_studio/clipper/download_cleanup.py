@@ -27,6 +27,7 @@ DOWNLOADS = "_downloads"
 #: Removal attempts after the first one, and the pause before attempt n (n * BACKOFF_S seconds).
 RETRIES = 8
 BACKOFF_S = 0.2
+WAIT_TIMEOUT_S = 15.0
 #: A leftover folder is only swept when nothing in it was written for this long.
 STALE_AFTER_S = 300.0
 
@@ -62,7 +63,8 @@ def kill_process_tree(proc: Any, *, taskkill: Callable[[int], None] = _taskkill)
     """Kill `proc` with everything it started, then reap it; never raises.
 
     The tree goes first (yt-dlp's worker and FFmpeg hold the `.part` file), then `proc.kill()` as the
-    backstop, then `proc.wait()` so the caller knows the process is gone.
+    backstop, then `proc.wait(timeout=WAIT_TIMEOUT_S)` so the caller knows the process is gone; a process that
+    ignores the kill is given up on after the timeout instead of hanging the cancel watcher.
     """
     pid = getattr(proc, "pid", None)
     try:
@@ -74,8 +76,8 @@ def kill_process_tree(proc: Any, *, taskkill: Callable[[int], None] = _taskkill)
             taskkill(pid)
         with contextlib.suppress(OSError):
             proc.kill()
-    with contextlib.suppress(OSError):
-        proc.wait()
+    with contextlib.suppress(Exception):  # OSError, or TimeoutExpired when the kill is ignored
+        proc.wait(timeout=WAIT_TIMEOUT_S)
 
 
 def _logger(log: NsLogger | None) -> NsLogger | None:
