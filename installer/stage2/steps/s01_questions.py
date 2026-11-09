@@ -13,6 +13,7 @@ from typing import Any
 
 import httpx
 
+from installer.stage2 import reinstall
 from installer.stage2.answers import (
     AnswersError,
     InstallerAnswers,
@@ -128,8 +129,11 @@ class S01Questions(Step):
             return ctx.ui.ask(prompt, default)
         return default
 
+    _ran = False        # run() did the work in this process (verify() then has the lines already)
+
     def check(self, ctx: StepContext) -> bool:
-        """True when a valid answers file from an earlier run exists and its secrets are stored."""
+        """True when a valid answers file from an earlier run exists, its secrets are stored and the answers
+        in use (``--answers``, next to INSTALL.cmd, the window's choices) do not change it (D-14)."""
         if ctx.ui.bridge and not ctx.state.is_done(self.id):
             return False        # the setup window writes a first answers.json before this step has run
         f = self._answers_file(ctx)
@@ -139,6 +143,9 @@ class S01Questions(Step):
             ans = build_answers(load_raw(f))
         except AnswersError:
             return False
+        earlier = reinstall.kept_answers(ctx)
+        if earlier is not None and reinstall.changes(ctx, earlier[0], ctx.raw_answers):
+            return False        # the new answers win; run() says so and rebuilds what comes from them
         ctx.answers = ctx.constrain(ans)
         return True
 
@@ -277,6 +284,16 @@ class S01Questions(Step):
     # ---- run ----
     def run(self, ctx: StepContext) -> None:
         """Resolve every answer, prepare the home folder and write config/answers.json (no secrets)."""
+        self._ran = True
+        earlier = reinstall.kept_answers(ctx)
+        diff = reinstall.changes(ctx, earlier[0], ctx.raw_answers) if earlier else []
+        if earlier and diff:
+            ctx.ui.say(f"{earlier[1]} differ from your earlier install's (config\\answers.json): "
+                       f"{'; '.join(c.text() for c in diff)}. They win for every choice they name; the "
+                       "choices they leave out stay as they were.", "yellow")
+            ctx.log.info("answers_changed", changes=[c.key for c in diff])
+        if earlier:
+            reinstall.inherit(ctx, earlier[0])
         raw = ctx.raw_answers
         merged: dict[str, Any] = {k: v for k, v in raw.items() if k not in KEY_NAMES}
 
@@ -371,6 +388,9 @@ class S01Questions(Step):
         write_answers(self._answers_file(ctx), ans)
         ctx.log.info("answers_saved", channel=slugify(ans.channel.display_name), tier=tier)
         self._summary(ctx, ans)
+        for line in reinstall.apply(ctx, earlier[0] if earlier else {}, ans, diff):
+            ctx.ui.say(line)
+        reinstall.forget_kept(ctx)
 
     @staticmethod
     def _summary(ctx: StepContext, ans: InstallerAnswers) -> None:
@@ -400,3 +420,6 @@ class S01Questions(Step):
         if current != str(ctx.paths.home):
             raise make_error("NS-E104", f"NIGHTSHIFT_HOME is {current!r}, expected {str(ctx.paths.home)!r}")
         ctx.log.info("answers_verified", tier=ans.llm_tier, stock_key=any_key_stored(ctx.store))
+        if not self._ran:
+            for line in reinstall.kept_lines(ctx, ans):
+                ctx.ui.say(line)

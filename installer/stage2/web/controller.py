@@ -1320,6 +1320,7 @@ class SetupController:
         target = self.home / "config" / "answers.json"
         if self.snapshot()["answersLocked"] and target.is_file():
             return
+        answers_view.keep_earlier_answers(target)       # D-14: the wizard compares with the old file
         answers_view.write_answers(target, data)
 
     def _on_boot_row(self, key: str, status: str, note: str | None) -> None:
