@@ -44,7 +44,7 @@
   "additionalProperties": false,
   "properties": {
     "target_minutes": {
-      "minimum": 9,
+      "minimum": 1,
       "title": "Target Minutes",
       "type": "integer"
     },

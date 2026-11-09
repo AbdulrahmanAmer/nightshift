@@ -116,6 +116,7 @@ CREATE TABLE IF NOT EXISTS outputs (
   status TEXT NOT NULL DEFAULT 'pending',   -- pending | approved | rejected | uploaded
   review_note TEXT,
   source_id TEXT REFERENCES sources(source_id),   -- set for clips (spec 15.7)
+  profile TEXT,                      -- 'tiny_story' for a video made on an engine-test install (H-8b), else NULL
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_outputs_channel ON outputs(channel, created_at);
