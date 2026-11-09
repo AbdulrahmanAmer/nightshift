@@ -100,6 +100,86 @@ def test_dashboard_that_never_answers_exits_1_with_a_hint(monkeypatch: pytest.Mo
     assert r.exit_code == 1
     assert "dashboard" in r.output.lower()
     assert "8100" in r.output
+    # the dashboard runs no model: the "ns tune" hint of NS-E203 would send the owner the wrong way
+    assert "NS-E202" in r.output
+    assert "NS-E203" not in r.output
+    assert "ns tune" not in r.output
+    assert "ns doctor" in r.output
+    assert "always runs on port" not in r.output  # no --port given: nothing to explain
+
+
+def test_a_custom_port_that_never_answers_explains_the_fixed_port(
+    monkeypatch: pytest.MonkeyPatch, tmp_home: Path
+):
+    monkeypatch.setattr(dashboard_cmd, "open_engine", lambda paths: FakeEngine("ready"))
+    monkeypatch.setattr(dashboard_cmd, "probe_health", lambda port, wait_s=30.0: False)
+    r = runner.invoke(app, ["dashboard", "--port", "9123"])
+    assert r.exit_code == 1
+    assert "http://127.0.0.1:9123" in r.output
+    assert "always runs on port 8100" in r.output
+
+
+class RecordingEnsure:
+    """Stands in for `ns_supervisor.client.ensure_running`: records the call, optionally refuses."""
+
+    def __init__(self, error: NsError | None = None) -> None:
+        self.error = error
+        self.calls: list[dict] = []
+
+    def __call__(self, client, paths, **kwargs) -> None:
+        self.calls.append({"client": client, "paths": paths, **kwargs})
+        if self.error is not None:
+            raise self.error
+
+
+@pytest.fixture
+def real_wiring(monkeypatch: pytest.MonkeyPatch, tmp_home: Path):
+    """`open_engine` runs for real; only the supervisor client class and `ensure_running` are replaced."""
+    import ns_supervisor.client as client_module
+
+    engine = FakeEngine()
+    from_runtime_args: list[object] = []
+
+    def from_runtime(rt):
+        from_runtime_args.append(rt)
+        return engine
+
+    monkeypatch.setattr(client_module.SupervisorClient, "from_runtime", staticmethod(from_runtime))
+    monkeypatch.setattr(dashboard_cmd, "probe_health", lambda port, wait_s=30.0: True)
+    monkeypatch.setattr(dashboard_cmd, "open_in_browser", lambda url: pytest.fail("must not open"))
+    return client_module, engine, from_runtime_args
+
+
+def test_engine_is_started_headless_through_the_supervisor_client(
+    real_wiring, monkeypatch: pytest.MonkeyPatch
+):
+    client_module, engine, from_runtime_args = real_wiring
+    ensure = RecordingEnsure()
+    monkeypatch.setattr(client_module, "ensure_running", ensure)
+    r = runner.invoke(app, ["dashboard"])
+    assert r.exit_code == 0, r.output
+    assert "http://127.0.0.1:8100" in r.output
+    assert len(from_runtime_args) == 1  # no runtime.json in the test home: the default runtime is used
+    assert len(ensure.calls) == 1
+    assert ensure.calls[0]["client"] is engine
+    assert ensure.calls[0]["headless"] is True  # the nightly way: no window, nobody to click one away
+    assert engine.warmed == ["dashboard"]  # warmup only runs once the engine answers
+
+
+def test_engine_that_ensure_running_refuses_is_a_clean_exit_1(
+    real_wiring, monkeypatch: pytest.MonkeyPatch
+):
+    client_module, engine, _from_runtime_args = real_wiring
+    refusal = NsError("NS-E202", "supervisor did not answer at http://127.0.0.1:8099 within 30s")
+    ensure = RecordingEnsure(refusal)
+    monkeypatch.setattr(client_module, "ensure_running", ensure)
+    r = runner.invoke(app, ["dashboard"])
+    assert r.exit_code == 1
+    assert "NS-E202" in r.output
+    assert "Traceback" not in r.output
+    assert "http://127.0.0.1:8100" not in r.output  # no URL for a dashboard that is not there
+    assert len(ensure.calls) == 1
+    assert engine.warmed == []  # nothing was asked of an engine that never came up
 
 
 def test_a_failed_warmup_call_is_reported_not_raised(monkeypatch: pytest.MonkeyPatch, tmp_home: Path):

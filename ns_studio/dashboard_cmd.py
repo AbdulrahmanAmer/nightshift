@@ -80,11 +80,13 @@ def ensure_dashboard(port: int) -> str:
     engine = open_engine(paths)
     state = engine.warmup("dashboard")  # a no-op when it already runs
     if not probe_health(port):
+        # NS-E202 ("a service failed to start", hint: ns doctor and the logs): the dashboard runs no model,
+        # so the NS-E203 "model too large" hint would send the owner the wrong way.
         raise NsError(
-            "NS-E203",
-            f"the dashboard (service state: {state}) does not answer on {dashboard_url(port)}; "
-            f"it always runs on port {DEFAULT_PORT}"
-            + ("" if port == DEFAULT_PORT else f", so --port {port} only works through a forwarded port"),
+            "NS-E202",
+            f"the dashboard (service state: {state}) does not answer on {dashboard_url(port)}"
+            + ("" if port == DEFAULT_PORT else f"; it always runs on port {DEFAULT_PORT}, so --port only "
+               "works through a forwarded port"),
         )
     return dashboard_url(port)
 
