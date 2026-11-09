@@ -108,7 +108,11 @@ def _is_drive_root(path: str) -> bool:
 
 
 def layout_problem(
-    home: str, app_path: str | os.PathLike[str] | None, env: Mapping[str, str] | None = None
+    home: str,
+    app_path: str | os.PathLike[str] | None,
+    env: Mapping[str, str] | None = None,
+    *,
+    kind_fn: Callable[[str], str] | None = None,
 ) -> str | None:
     """Why ``home`` cannot be the install folder given where the program was extracted; None when it is fine.
 
@@ -116,10 +120,13 @@ def layout_problem(
       cannot sit inside the folder it is copied from, and the extracted folder is meant to be deleted later.
       A zip extracted straight into a drive root is the exception: the root holds every folder of the drive,
       so only the root itself is refused and the other folders of that drive are fine;
-    * a folder that has the extracted folder inside it (D-21: ``D:\\NightShift`` around
-      ``D:\\NightShift\\runs\\dev-0.1.12``): setup would build its folders around the zip's files, and
-      deleting the zip afterwards would be deleting inside the install folder. ``<home>\\app`` is the
-      installed copy and is fine;
+    * a NEW folder that has the extracted folder inside it (D-21: ``D:\\NightShift`` around
+      ``D:\\NightShift\\runs\\dev-0.1.12``, with other files in it): setup would build its folders around
+      the zip's files, and deleting the zip afterwards would be deleting inside the install folder.
+      ``<home>\\app`` is the installed copy and is fine. A folder that already is a Nightshift home, or kept
+      one (``kind_fn`` says: ``folder_kind`` by default), is not refused: an install made at the old default
+      ``D:\\Nightshift`` with the zip extracted inside it (what OPERATOR.md used to suggest) must stay
+      repairable;
     * Downloads and OneDrive folders: Windows cleans or syncs them, and sync locks break the update swap.
     """
     h = _norm(home.strip())
@@ -132,8 +139,10 @@ def layout_problem(
         if _inside(h, a) and not _is_drive_root(a):
             return "That folder is inside the folder you extracted Nightshift to. Pick a folder outside it"
         if _inside(a, h) and a != _norm(h.rstrip("\\") + "\\app"):        # <home>\app is the installed copy
-            return ("That folder has the folder you extracted Nightshift to inside it. Pick a folder "
-                    f"outside it, such as {EXAMPLE}")
+            kind = (kind_fn or folder_kind)(home.strip())
+            if kind in (FOLDER_NEW, FOLDER_EMPTY, FOLDER_FOREIGN):  # not an install that exists
+                return ("That folder has the folder you extracted Nightshift to inside it. Pick a folder "
+                        f"outside it, such as {EXAMPLE}")
     why = "Windows cleans or syncs it and Nightshift's files get locked"
     for label, root in sync_roots(env):
         if _inside(h, root):

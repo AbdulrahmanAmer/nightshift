@@ -696,7 +696,7 @@ class SetupController:
         """Why ``home`` clashes with the extracted folder or lives in Downloads or OneDrive (None: fine)."""
         if not self.installs_app:
             return None
-        return pathcheck.layout_problem(home, self.cfg.app_path)
+        return pathcheck.layout_problem(home, self.cfg.app_path, kind_fn=self.fx.folder_kind)
 
     def _existing_install_note(self, home: str) -> str | None:
         """A line for the folder picker when ``home`` already holds an install that setup would update."""

@@ -213,18 +213,58 @@ def test_an_answers_file_naming_a_folder_with_other_files_is_warned_not_refused(
 
 
 # ---- D-21: a home that has the extracted program inside it -----------------------------------------------
+def foreign(_home: str) -> str:
+    return "foreign"  # the folders of these tests need not exist: say what is in them
+
+
 def test_a_home_that_holds_the_extracted_folder_is_refused() -> None:
     bundle = "D:\\NightShift\\runs\\dev-0.1.12"
     for home in ("D:\\NightShift", "d:\\nightshift\\", "D:\\NightShift\\runs", "D:\\"):
-        message = pathcheck.layout_problem(home, bundle, BOB)
+        message = pathcheck.layout_problem(home, bundle, BOB, kind_fn=foreign)
         assert message is not None and "extracted" in message and "inside it" in message, home
-    assert pathcheck.layout_problem("D:\\Nightshift-2", bundle, BOB) is None
-    assert pathcheck.layout_problem("D:\\NightShift2", "D:\\NightShift", BOB) is None
+    assert pathcheck.layout_problem("D:\\Nightshift-2", bundle, BOB, kind_fn=foreign) is None
+    assert pathcheck.layout_problem("D:\\NightShift2", "D:\\NightShift", BOB, kind_fn=foreign) is None
 
 
 def test_the_installed_copy_in_the_home_is_not_a_bundle_inside_it() -> None:
-    assert pathcheck.layout_problem("D:\\Nightshift", "D:\\Nightshift\\app", BOB) is None
-    assert pathcheck.layout_problem("D:\\Nightshift", "D:\\Nightshift\\other", BOB) is not None
+    assert pathcheck.layout_problem("D:\\Nightshift", "D:\\Nightshift\\app", BOB, kind_fn=foreign) is None
+    assert (
+        pathcheck.layout_problem("D:\\Nightshift", "D:\\Nightshift\\other", BOB, kind_fn=foreign) is not None
+    )
+
+
+@pytest.mark.parametrize(
+    "files",
+    [("config/install_state.json",), ("app/VERSION",), ("config/runtime.json",), ("data/studio.db",)],
+)
+def test_an_install_at_the_old_default_folder_can_be_repaired_with_the_zip_inside_it(
+    tmp_path: Path, files: tuple[str, ...]
+) -> None:
+    """Review round 1, finding 6. OPERATOR.md used to say: extract under D:\\NightShift, and the old default
+    home was D:\\Nightshift, the same folder on NTFS. NIGHTSHIFT_HOME is that folder and the zip sits in it.
+    Running INSTALL.cmd again to repair or update must not be refused with 'pick a folder outside it'."""
+    home = folder(tmp_path, "Nightshift", *files)
+    bundle = folder(home, "nightshift-0.1.12", "installer/stage1.ps1")
+    assert pathcheck.layout_problem(str(home), str(bundle), BOB) is None
+    # the window's folder check (the controller's method, on the real folder rule) says the same
+    from types import SimpleNamespace
+
+    window = SimpleNamespace(
+        installs_app=True,
+        cfg=SimpleNamespace(app_path=bundle),
+        fx=SimpleNamespace(folder_kind=pathcheck.folder_kind),
+    )
+    assert SetupController._layout_problem(window, str(home)) is None  # type: ignore[arg-type]
+
+
+def test_a_folder_with_other_files_that_holds_the_zip_is_still_refused(tmp_path: Path) -> None:
+    busy = folder(tmp_path, "Documents", "notes.txt")
+    bundle = folder(busy, "nightshift-0.1.12", "installer/stage1.ps1")
+    message = pathcheck.layout_problem(str(busy), str(bundle), BOB)
+    assert message is not None and "has the folder you extracted Nightshift to inside it" in message
+    # a folder that is new or empty cannot have anything in it; the rule applies to what it is told
+    for kind in ("new", "empty"):
+        assert pathcheck.layout_problem(str(busy), str(bundle), BOB, kind_fn=lambda _h, k=kind: k) is not None
 
 
 # ---- D-21: the default suggestion ------------------------------------------------------------------------
