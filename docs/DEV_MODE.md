@@ -253,6 +253,31 @@ service, so set them before starting the engine, and restart the engine to chang
 | `"fake_footage": true` in `answers.json` | installer | the synthetic clip source with real models |
 | `NS_TTS_FAKE=1` | voice service | use the fake engine whatever `runtime.json` says (the test suite, CI); tone bursts |
 | `NS_TTS_FAKE_SPEECH=sapi` or `tones` | fake engine | force Windows speech or tone bursts for the fake voice (see "What the fake voice is") |
+| `NS_TTS_FAKE_DELAY_S=<seconds>` | fake engine | make design, clone and speech wait that long before they answer (below); default 0, at most 120 |
+
+### `NS_TTS_FAKE_DELAY_S`: a slow fake voice engine
+
+The fake engine designs and clones a voice in an instant, so a Cancel could never land while "Create it now" is
+running, and the release of the `studio:voice-<name>` lease could not be timed (box F-E12). With the variable
+set, the fake engine waits that many seconds, in slices of 0.1 s, before it answers a design, a clone or a
+speech request:
+
+- **Set it** in the environment of the process that starts the engine (the supervisor hands its environment to
+  the voice service) and start the engine afterwards: the voice service reads it once, when it starts, so a
+  running engine keeps what it began with. Unset, empty, `0`, negative or not a number mean no delay (a value
+  that is not a number is logged as `fake_delay_ignored`); anything above 120 is 120. `GET /health` of the voice
+  service shows `fake_delay_s` while a delay is on.
+- **One wait per request.** A clone waits once (the sample it stores is part of the same request); a speech
+  batch waits once per engine call. The log events `fake_delay` and `fake_delay_cancelled` (`logs\tts-*.jsonl`)
+  say when a wait started and why it ended early.
+- **Cancel ends it at once.** The wait stops within 0.1 s when the studio asks the service to cancel
+  (`POST /v1/audio/speech/cancel`, which its client sends when a batch times out) or when the client closes its
+  connection, which is what the dashboard's Cancel does to a running voice job (its child process is stopped).
+  The request then answers NS-E310 ("the wait of the fake engine was cancelled") before anything is written, so
+  no half-made voice folder, clip or resume marker is left, the service lock is free for the next request and
+  the same voice name can be used again.
+- **Only the fake.** The qwentts and PyTorch engines never read the variable; with a real engine it does
+  nothing.
 
 ## Where the code is
 

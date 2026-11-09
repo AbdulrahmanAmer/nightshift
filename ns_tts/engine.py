@@ -64,7 +64,7 @@ import tempfile
 import threading
 import time
 import zlib
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from typing import Any, Protocol
@@ -193,6 +193,33 @@ def _digest_bytes(seed: bytes, n: int = 256) -> bytes:
 
 FAKE_SPEECH_MODES = ("tones", "sapi")
 
+# A developer-only delay of the FAKE engine (head order H-7, box F-E12): design, clone and speech wait
+# this many seconds, in slices, before they answer, so a Cancel can land while "Create it now" runs.
+# Only `FakeEngine` reads it.
+FAKE_DELAY_ENV = "NS_TTS_FAKE_DELAY_S"
+FAKE_DELAY_CAP_S = 120.0
+FAKE_DELAY_SLICE_S = 0.1
+
+
+def fake_delay_from_env(log: NsLogger | None = None) -> float:
+    """Seconds `NS_TTS_FAKE_DELAY_S` asks the fake engine to wait: 0 when unset (the default), at most 120.
+
+    A value that is not a number, is NaN or is negative counts as 0 (said in the log); "inf" and anything
+    above the cap is the cap.
+    """
+    raw = os.environ.get(FAKE_DELAY_ENV, "").strip()
+    if not raw:
+        return 0.0
+    try:
+        seconds = float(raw)
+    except ValueError:
+        seconds = math.nan
+    if math.isnan(seconds) or seconds < 0:
+        if log is not None:
+            log.warn("fake_delay_ignored", f"{FAKE_DELAY_ENV}={raw!r} is not a number of seconds; no delay")
+        return 0.0
+    return min(seconds, FAKE_DELAY_CAP_S)
+
 
 def fake_speech_for(cfg: TtsCfg, *, dev_mode: bool) -> str:
     """How the fake engine speaks in this service: `sapi` for an engine-test install, else `tones`.
@@ -221,6 +248,12 @@ class FakeEngine:
       the engine speaks tone bursts instead and says so (`describe()`, /health, a warning in the tts log).
 
     `sapi` is a stand-in for the Windows speech synthesizer (tests); `tmp_dir` is its scratch folder.
+
+    Developer delay: with `NS_TTS_FAKE_DELAY_S` set (seconds, default 0, at most 120; read here and
+    nowhere else, once, when the engine is made) a design, a clone and every speech call first wait that
+    long, in 0.1 s slices. The wait ends at once, with NS-E310 and nothing written, when `cancel()` is
+    called (the studio's `POST /v1/audio/speech/cancel`) or when the service reports that the client
+    went away (`watch_client`).
     """
 
     name = "fake"
@@ -248,6 +281,11 @@ class FakeEngine:
         self.voice_name: str | None = None
         self.voice_wpm: float | None = None  # pace of the voice at SAPI Rate 0, measured at start-up
         self.voice_warning: str | None = None  # why a requested SAPI voice fell back to tone bursts
+        self.delay_s = fake_delay_from_env(log)  # the developer delay, 0 unless NS_TTS_FAKE_DELAY_S is set
+        self.waits = 0  # how many delays have started (tests)
+        self._cancel_wait = threading.Event()
+        self._wait_active = False
+        self._client_gone: Callable[[], bool] | None = None
 
     def load(self) -> None:
         self._probe()
@@ -303,12 +341,76 @@ class FakeEngine:
         """What `/health` adds for the fake: how it speaks, with which voice, and why it fell back."""
         self._probe()
         info: dict[str, Any] = {"voice_mode": self.voice_mode, "voice": self.voice_name}
+        if self.delay_s > 0:
+            info["fake_delay_s"] = self.delay_s
         if self.voice_wpm is not None:
             info["voice_wpm"] = self.voice_wpm
         if self.voice_warning:
             info["voice_fallback"] = True
             info["voice_warning"] = self.voice_warning
         return info
+
+    # ---- the developer delay ----
+    @property
+    def waiting(self) -> bool:
+        """True while a request is waiting out the developer delay."""
+        return self._wait_active
+
+    def cancel(self) -> bool:
+        """End the wait of the request that is in the developer delay; True when there was one to end."""
+        if not self._wait_active:
+            return False
+        self._cancel_wait.set()
+        return True
+
+    @contextmanager
+    def watch_client(self, gone: Callable[[], bool]) -> Iterator[None]:
+        """While the request runs, `gone()` tells the delay whether the client has disconnected."""
+        self._client_gone = gone
+        try:
+            yield
+        finally:
+            self._client_gone = None
+
+    def _pause(self, op: str) -> None:
+        """Wait out the developer delay before `op` ("design", "clone" or "speech"); no-op when it is 0.
+
+        Cancellable: `cancel()` or a client that went away raises `BatchInterrupted` (NS-E310, an NsError)
+        before anything is written, so no half-made voice or clip is left behind.
+        """
+        delay = self.delay_s
+        if delay <= 0:
+            return
+        self._cancel_wait.clear()
+        self._wait_active = True
+        self.waits += 1
+        if self.log is not None:
+            msg = f"the fake engine waits {delay:g} s before the {op}"
+            self.log.info("fake_delay", msg, op=op, delay_s=delay)
+        deadline = time.monotonic() + delay
+        try:
+            while True:
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    return
+                if self._cancel_wait.wait(min(FAKE_DELAY_SLICE_S, left)):
+                    why = "the request was cancelled"
+                else:
+                    gone = self._client_gone
+                    try:
+                        left_alone = gone is None or not gone()
+                    except Exception:  # a probe that cannot tell is not a reason to stop
+                        left_alone = True
+                    if left_alone:
+                        continue
+                    why = "the client went away"
+                if self.log is not None:
+                    self.log.warn("fake_delay_cancelled", f"{why} during the wait before the {op}", op=op)
+                raise BatchInterrupted(
+                    "NS-E310", f"the wait of the fake engine was cancelled: {why} ({op})", cancelled=True
+                )
+        finally:
+            self._wait_active = False
 
     def _speaks(self) -> bool:
         self._probe()
@@ -354,30 +456,37 @@ class FakeEngine:
         tone = 0.3 * np.sin(2.0 * math.pi * freq * idx / self.sr)
         return np.where(gate, tone, 0.0).astype(np.float32)
 
+    def _synth_spoken(self, texts: Sequence[str], voice: VoiceSpec, speed: float) -> list[np.ndarray]:
+        self._freq(voice)  # the same NS-E311 for a voice without stored data as the tone engine gives
+        self.languages.extend([voice.language] * len(texts))
+        return self._speak(texts, speed)
+
     def synth(
         self, text: str, voice: VoiceSpec, *, speed: float = 1.0, seed: int | None = None
     ) -> np.ndarray:
+        # no delay here: the sample a clone stores is part of the clone request, which waited once already
         if self._speaks():
-            return self.synth_batch([text], voice, speed=speed, seed=seed)[0]
+            return self._synth_spoken([text], voice, speed)[0]
         self.languages.append(voice.language)
         return self._tone(text, self._freq(voice), speed)
 
     def synth_batch(
         self, texts: Sequence[str], voice: VoiceSpec, *, speed: float = 1.0, seed: int | None = None
     ) -> list[np.ndarray]:
+        self._pause("speech")
         if self._speaks():
-            self._freq(voice)  # the same NS-E311 for a voice without stored data as the tone engine gives
-            self.languages.extend([voice.language] * len(texts))
-            return self._speak(texts, speed)
+            return self._synth_spoken(texts, voice, speed)
         return [self.synth(t, voice, speed=speed, seed=seed) for t in texts]
 
     def make_embedding(self, ref_wav: Path, ref_text: str, language: str = "English") -> EmbeddingData:
+        self._pause("clone")
         audio = ref_wav.read_bytes() if ref_wav.is_file() else ref_wav.name.encode()
         return _digest_bytes(b"clone:" + ref_text.encode() + audio)
 
     def design_to_embedding(
         self, description: str, language: str = "English"
     ) -> tuple[EmbeddingData, np.ndarray]:
+        self._pause("design")
         emb = _digest_bytes(b"design:" + description.encode())
         if self._speaks():  # the preview of a designed voice speaks the sample sentence too
             return emb, self._speak([SAMPLE_TEXT], 1.0)[0]
