@@ -110,6 +110,15 @@ def test_clip_select_prompt_asks_for_one_to_three_emphasis_words():
     assert p.version >= 3
 
 
+def test_clip_select_prompt_asks_for_cleaned_caption_text_and_the_schema_allows_it():
+    p = P.load_prompt("clip_select")
+    text = (P.PROMPTS_DIR / "clip_select.md").read_text(encoding="utf-8")
+    assert "caption_text" in text and "casing and punctuation" in text and "Do not add" in text
+    assert p.version >= 4
+    clip = P.PROMPT_SCHEMAS["clip_plan"]["properties"]["clips"]["items"]
+    assert clip["properties"]["caption_text"] == {"type": "string"} and "emphasis" in clip["properties"]
+
+
 def test_missing_frontmatter_is_rejected(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     (tmp_path / "bad.md").write_text("no front matter\n---USER---\nx\n", encoding="utf-8")
     (tmp_path / "half.md").write_text("---\nversion: 1\n---\nsys\n---USER---\nx\n", encoding="utf-8")

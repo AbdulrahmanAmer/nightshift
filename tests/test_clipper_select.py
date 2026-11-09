@@ -352,3 +352,174 @@ def test_plan_carries_validated_emphasis_and_none_when_the_model_gave_none() -> 
     assert with_em.emphasis is not None and with_em.emphasis[-1].lower() == word.lower()
     assert "zzzabsent" not in with_em.emphasis
     assert without.emphasis is None
+
+
+# ---------- title limit and cleaned caption text (spec 19.5, 17.2) ----------
+def test_to_cand_limits_the_title_to_70_characters_at_a_word_boundary() -> None:
+    long = " ".join(["ledge"] * 18)  # 107 characters
+    c = sel.to_cand({"start_s": 1, "end_s": 30, "title": long}, 100.0)
+    assert c is not None and 0 < len(c.title) <= 70
+    assert c.title.split() == ["ledge"] * len(c.title.split())  # no word cut in half
+    short = sel.to_cand({"start_s": 1, "end_s": 30, "title": "  Why the ledge forgives you  "}, 100.0)
+    assert short is not None and short.title == "Why the ledge forgives you"
+    assert sel.to_cand({"start_s": 1, "end_s": 30, "title": "   "}, 100.0).title == "Clip"  # type: ignore[union-attr]
+
+
+def test_plan_keeps_a_ninety_character_title_at_seventy_or_less() -> None:
+    title = "How a single forgotten ledge saves forty seconds on every run of the mountain level today"
+    assert len(title) >= 85
+    raw = {"clips": [{"k": 1, "start_s": 0.5, "end_s": 50.0, "title": title, "score": 0.9}]}
+    plan = sel.select_plan(sample(), params(), Asker(raw))
+    assert plan and all(0 < len(i.title) <= 70 for i in plan)
+    assert title.startswith(plan[0].title)
+
+
+def test_to_cand_reads_and_merge_keeps_the_caption_text() -> None:
+    c = sel.to_cand({"start_s": 1, "end_s": 30, "caption_text": "  Hello, world.  "}, 100.0)
+    assert c is not None and c.caption_text == "Hello, world."
+    for bad in (None, "", "   ", 7, ["Hello"]):
+        got = sel.to_cand({"start_s": 1, "end_s": 30, "caption_text": bad}, 100.0)
+        assert got is not None and got.caption_text is None
+    a = sel.Cand(10, 40, score=0.5, caption_text="old text")
+    b = sel.Cand(12, 42, score=0.9, caption_text="new text")
+    assert sel.merge_overlaps([a, b], max_s=60)[0].caption_text == "new text"
+    assert sel.merge_overlaps([a, sel.Cand(12, 42, score=0.9)], max_s=60)[0].caption_text == "old text"
+
+
+def test_align_caption_text_restores_case_and_punctuation_and_keeps_every_asr_word() -> None:
+    words = _spoken("hello there my friend today we have twenty items um left")
+    text = "Hello there, my friend! Today we have 20 items left."
+    got = sel.align_caption_text(words, text)
+    # numbers as spoken ("20" for "twenty" is accepted), the dropped "um" stays as heard, nothing is added
+    assert got == ["Hello", "there,", "my", "friend!", "Today", "we", "have", "20", "items", "um", "left."]
+    assert got is not None and len(got) == len(words)
+
+
+def test_align_caption_text_does_not_invent_or_trust_a_different_text() -> None:
+    words = _spoken("hello there my friend today we have twenty items left")
+    assert sel.align_caption_text(words, "Something else entirely, none of it said.") is None
+    assert sel.align_caption_text(words, "Hello there. A different ending follows right here.") is None
+    assert sel.align_caption_text(words, " ".join(w.w for w in words)) is None  # nothing to clean
+    assert sel.align_caption_text(words, None) is None and sel.align_caption_text(words, "  ") is None
+    assert sel.align_caption_text([], "Hello.") is None
+    # an extra word the model added is ignored; the recogniser's words and count stay
+    got = sel.align_caption_text(words, "Hello there, my dear friend! Today we have twenty items left.")
+    assert got is not None and len(got) == len(words) and "dear" not in got and got[1] == "there,"
+
+
+def test_plan_carries_the_cleaned_words_of_the_kept_clips_and_only_those() -> None:
+    tr = sample()
+    span = sel.words_in(tr.words, 0.5, 50.0)
+    raw = {"clips": [
+        {"k": 1, "start_s": 0.5, "end_s": 50.0, "title": "With", "score": 0.9,
+         "caption_text": " ".join(w.w.upper() for w in span)},
+        {"k": 2, "start_s": 64.0, "end_s": 118.0, "title": "Without", "score": 0.8},
+    ]}
+    items, captions = sel.select_plan_and_captions(tr, params(), Asker(raw))
+    with_text = next(i for i in items if i.title == "With")
+    without = next(i for i in items if i.title == "Without")
+    assert list(captions) == [str(with_text.k)] and str(without.k) not in captions
+    heard = sel.words_in(tr.words, with_text.start_s, with_text.end_s)
+    shown = captions[str(with_text.k)]
+    assert len(shown) == len(heard)  # one display string per ASR word: the word timings stay
+    assert all(s in (w.w, w.w.upper()) for s, w in zip(shown, heard, strict=True))
+    assert sum(s != w.w for s, w in zip(shown, heard, strict=True)) >= len(heard) // 2
+    assert sel.select_plan(tr, params(), Asker(raw)) == items
+
+
+# ---------- a partly applied rewrite never shows garbled text (break-it round) ----------
+def test_align_caption_text_does_not_take_a_symbol_that_swallows_the_next_word() -> None:
+    dollars = _spoken("so i paid twenty dollars for it and then we went home to the old house")
+    got = sel.align_caption_text(dollars, "So, I paid $20 for it and then we went home to the old house.")
+    assert got is not None and got[3:5] == ["twenty", "dollars"]  # not "$20 dollars"
+    assert got[:3] == ["So,", "I", "paid"] and got[-1] == "house."
+    percent = _spoken("yes it is five percent of the whole thing we did today")
+    got = sel.align_caption_text(percent, "Yes, it is 5%. Of the whole thing we did today.")
+    assert got is not None and got[:3] == ["Yes,", "it", "is"] and got[3:5] == ["five", "percent"]
+    assert "5%." not in got  # no token shows both the symbol and the word it replaced
+    assert sel.align_caption_text(_spoken("it is five percent"), "it is 5%.") is None
+
+
+def test_align_caption_text_takes_a_number_written_as_digits_when_its_neighbours_agree() -> None:
+    words = _spoken("i have twenty apples and five pears")
+    got = sel.align_caption_text(words, "I have 20 apples and 5 pears.")
+    assert got == ["I", "have", "20", "apples", "and", "5", "pears."]
+    edge = sel.align_caption_text(_spoken("we sold twenty"), "We sold 20.")
+    assert edge == ["We", "sold", "20."]
+
+
+def test_align_caption_text_leaves_a_clip_wider_than_the_models_span_in_the_recognisers_spelling() -> None:
+    # after a merge or a sentence snap the clip can run past the span the model wrote its text for
+    words = _spoken("one two three four five six seven eight nine ten")
+    narrow = "One, two, three, four, five, six."  # the first six words only
+    assert sel.align_caption_text(words, narrow) is None  # not half cleaned, half raw
+    near = "One, two, three, four, five, six, seven, eight, nine."  # nine of ten words
+    got = sel.align_caption_text(words, near)
+    assert got is not None and got[:2] == ["One,", "two,"] and got[-1] == "ten"
+
+
+# ---------- nothing is shown that was never spoken (review fix) ----------
+_TAIL = " and then we went home to the old house"
+
+
+@pytest.mark.parametrize(
+    ("spoken", "written", "kept", "symbol"),
+    [
+        ("i paid twenty for it" + _TAIL, "I paid $20 for it" + _TAIL + ".", "twenty", "$"),
+        ("i paid twenty for it" + _TAIL, "I paid \u20ac20 for it" + _TAIL + ".", "twenty", "\u20ac"),
+        ("it was twenty of them" + _TAIL, "It was 20% of them" + _TAIL + ".", "twenty", "%"),
+        ("he is one of them" + _TAIL, "He is #1 of them" + _TAIL + ".", "one", "#"),
+    ],
+)
+def test_align_caption_text_never_shows_a_symbol_the_speaker_did_not_say(
+    spoken: str, written: str, kept: str, symbol: str
+) -> None:
+    words = _spoken(spoken)
+    got = sel.align_caption_text(words, written)
+    assert got is not None  # the rest of the text is still cleaned
+    assert kept in got  # the recogniser's number word stays as it was heard
+    assert not any(symbol in s for s in got)
+    assert len(got) == len(words)
+
+
+def test_align_caption_text_strips_an_emoji_and_never_shows_one() -> None:
+    words = _spoken("this is my friend and he is great")
+    got = sel.align_caption_text(words, "This is my friend\U0001f525 and he is great!")
+    assert got == ["This", "is", "my", "friend", "and", "he", "is", "great!"]
+    # a variation selector, a joiner sequence and an emoji of its own are all gone as well
+    got = sel.align_caption_text(
+        words, "This is my friend\u2764\ufe0f and \U0001f525 he is great\U0001f468\u200d\U0001f469!"
+    )
+    assert got == ["This", "is", "my", "friend", "and", "he", "is", "great!"]
+    assert all(s.isascii() for s in got or [])
+
+
+def test_align_caption_text_still_takes_digits_with_ordinary_punctuation() -> None:
+    words = _spoken("so we got twenty and then five more of them to the old house")
+    got = sel.align_caption_text(words, "So, we got 20, and then 5 more of them to the old house.")
+    assert got is not None and got[3] == "20," and got[6] == "5"
+
+
+@pytest.mark.parametrize(
+    ("spoken", "written", "sign"),
+    [
+        ("it was twenty degrees" + _TAIL, "It was -20 degrees" + _TAIL + ".", "-20"),
+        ("it was twenty degrees" + _TAIL, "It was \u201320 degrees" + _TAIL + ".", "\u201320"),
+        ("it was five degrees" + _TAIL, "It was .5 degrees" + _TAIL + ".", ".5"),
+        ("it was five degrees" + _TAIL, "It was ,5 degrees" + _TAIL + ".", ",5"),
+    ],
+)
+def test_align_caption_text_never_adds_a_sign_or_a_decimal_point_to_a_spoken_number(
+    spoken: str, written: str, sign: str
+) -> None:
+    words = _spoken(spoken)
+    got = sel.align_caption_text(words, written)
+    assert got is not None  # the rest of the text is still cleaned
+    assert sign not in got  # "-20" is negative twenty, ".5" is a half: neither was said
+    assert got[2] in ("twenty", "five")  # the recogniser's number word stays as it was heard
+
+
+def test_align_caption_text_takes_digits_after_an_opening_bracket_or_quote() -> None:
+    words = _spoken("so we got twenty and then five more of them to the old house")
+    got = sel.align_caption_text(words, 'So we got "20" and then (5) more of them to the old house.')
+    assert got is not None and got[3] == '"20"' and got[6] == "(5)"
