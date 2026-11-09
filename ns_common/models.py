@@ -12,6 +12,12 @@ SLUG_RE = r"^[a-z0-9]+(?:-[a-z0-9]+)*$"
 JOB_ID_RE = r"^[a-z0-9]+(?:-[a-z0-9]+)*-\d{8}-[0-9a-f]{4}$"
 
 
+# The one rule for the name of a designed or cloned voice (it is the folder name in the voice library).
+# Setup, the dashboard, `studio voice` and the TTS service all check against this; none keeps its own copy.
+VOICE_NAME_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_-]{0,39}$"
+VOICE_NAME_RULE = "voice names are 1 to 40 letters, digits, - or _, starting with a letter or digit"
+
+
 class Strict(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -21,7 +27,7 @@ class Voice(Strict):
     mode: Literal["preset", "design", "clone"] = "preset"
     speaker: str | None = "Ryan"
     description: str | None = None
-    name: str | None = None          # library name for design/clone voices
+    name: str | None = Field(default=None, pattern=VOICE_NAME_PATTERN)  # library name for design/clone voices
     speed: float = Field(default=1.0, ge=0.7, le=1.3)
 
 

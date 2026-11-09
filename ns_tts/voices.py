@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING, Any, Literal
 import numpy as np
 
 from ns_common.errors import NsError
+from ns_common.models import VOICE_NAME_PATTERN
 from ns_tts.audio import write_wav
 
 if TYPE_CHECKING:
@@ -35,7 +36,7 @@ PRESETS = ["Ryan", "Aiden", "Vivian", "Serena", "Uncle_Fu", "Dylan", "Eric", "On
 SAMPLE_TEXT = "This is a short sample of the voice, so you can hear how it sounds before using it."
 
 Mode = Literal["preset", "design", "clone"]
-_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,39}$")
+_NAME_RE = re.compile(VOICE_NAME_PATTERN)
 _FILE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
 # What an engine hands back for a new voice: one blob (stored as `speaker.bin`) or named files.
@@ -114,7 +115,7 @@ class VoiceLibrary:
         """Return a voice by exact name; raises KeyError when it does not exist."""
         if name in PRESETS:
             return VoiceSpec(name=name, mode="preset", speaker=name)
-        if _NAME_RE.match(name):
+        if _NAME_RE.fullmatch(name):
             spec = self._load(self.root / name)
             if spec is not None:
                 return spec
@@ -149,7 +150,7 @@ class VoiceLibrary:
 
     # ---- writing ----
     def _check_new(self, name: str) -> None:
-        if not _NAME_RE.match(name):
+        if not _NAME_RE.fullmatch(name):
             raise ValueError("voice name: 1-40 letters, digits, _ or -, starting with a letter or digit")
         taken = {p.lower() for p in PRESETS}
         if self.root.is_dir():

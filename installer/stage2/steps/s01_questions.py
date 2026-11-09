@@ -17,6 +17,7 @@ from installer.stage2.answers import (
     AnswersError,
     InstallerAnswers,
     build_answers,
+    default_voice_name,
     load_raw,
     slugify,
     wants_voicedesign,
@@ -187,7 +188,7 @@ class S01Questions(Step):
                 preview_voice(ctx, name)
             speaker = ctx.ui.choose("Which voice do you want?", list(PRESET_VOICES), default=PRESET_VOICES[0])
             return {"mode": "preset", "speaker": speaker}
-        name = f"{slugify(channel_name)}-voice"
+        name = default_voice_name(channel_name)
         if mode == "design":
             desc = ctx.ui.ask("Describe the narrator in a sentence (age, tone, pace)")
             return {"mode": "design", "speaker": None, "description": desc, "name": name}

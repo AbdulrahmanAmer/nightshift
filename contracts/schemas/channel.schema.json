@@ -146,6 +146,7 @@
         "name": {
           "anyOf": [
             {
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,39}$",
               "type": "string"
             },
             {

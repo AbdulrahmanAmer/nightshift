@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from installer.stage2.web.modelcheck import MAX_BYTES, shape_problem, too_big_message
-from ns_common.models import Answers
+from ns_common.models import VOICE_NAME_PATTERN, VOICE_NAME_RULE, Answers
 from ns_common.paths import Paths
 from ns_common.secrets_names import KEY_NAMES
 
@@ -71,8 +71,34 @@ def load_raw(path: Path) -> dict[str, Any]:
     return data
 
 
+def suggest_voice_name(typed: str) -> str:
+    """A name the voice library accepts, made from what was typed ("Night Narrator" -> "Night-Narrator")."""
+    name = re.sub(r"[^A-Za-z0-9_-]+", "-", typed.strip()).strip("-_")[:40].rstrip("-_")
+    return name or "my-voice"
+
+
+def _check_voice_name(raw: dict[str, Any]) -> None:
+    """Refuse a voice name the voice service would refuse, here, where the answers are read (defect D-24).
+
+    The name is never changed behind the owner's back: the message quotes what was typed and offers one.
+    """
+    voice = raw.get("voice")
+    typed = voice.get("name") if isinstance(voice, dict) else None
+    if typed is None or (isinstance(typed, str) and re.fullmatch(VOICE_NAME_PATTERN, typed)):
+        return
+    shown = typed if isinstance(typed, str) else repr(typed)
+    hint = f" Try '{suggest_voice_name(typed)}'." if isinstance(typed, str) else ""
+    raise AnswersError(f"The voice name '{shown}' cannot be used: {VOICE_NAME_RULE}.{hint}")
+
+
+def default_voice_name(display_name: str) -> str:
+    """Voice name when none was given: the channel slug plus '-voice', at most 40 characters."""
+    return f"{slugify(display_name)[:34].strip('-')}-voice"
+
+
 def build_answers(raw: dict[str, Any]) -> InstallerAnswers:
     """Validate a merged answers dict. Raises AnswersError with a readable message."""
+    _check_voice_name(raw)
     try:
         ans = InstallerAnswers.model_validate(raw)
     except ValueError as e:
