@@ -281,6 +281,32 @@ def test_the_nightly_run_starts_what_fits(shorts_channel, monkeypatch: pytest.Mo
     assert len(ran) == 2 and "no_room" not in report and report["failures"] == []
 
 
+def test_the_nightly_does_not_continue_an_interrupted_job_into_a_full_drive(
+    tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """D-31 + D-33: a job a dead night left half made stays interrupted, and the next night continues it."""
+    from tests import d31_driver as driver
+    from tests.test_interrupted_nightly import _dead_daily_job, _setup
+
+    paths, db = _setup(tmp_home)
+    driver.install(monkeypatch)
+    dead = _dead_daily_job(paths, db)
+    attempts: list[str] = []
+
+    def run(ctx: Any) -> list[str]:
+        attempts.append(ctx.job_id)
+        return ["d31_a"]
+
+    free_space(monkeypatch, 5 * MIB)
+    report = daily.run_daily(jobs.open_env(light=True), rng=random.Random(1), run_fn=run)
+    assert attempts == [] and report["failures"] == [] and report["jobs"] == []
+    assert any(e["format"].endswith("(resumed)") for e in report["no_room"])  # the job is listed
+    assert "interrupted_jobs" in report and all(i["job_id"] != dead for i in report["interrupted_jobs"])
+    free_space(monkeypatch, 10 * GIB)  # the next night has room
+    again = daily.run_daily(jobs.open_env(light=True), rng=random.Random(1), run_fn=run)
+    assert attempts[0] == dead and again["failures"] == [] and "no_room" not in again
+
+
 def test_the_morning_note_line_for_jobs_that_were_not_started():
     report: dict[str, Any] = {
         "jobs": [],

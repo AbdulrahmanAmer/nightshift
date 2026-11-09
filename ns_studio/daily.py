@@ -157,12 +157,13 @@ def _no_room_to_resume(env: jobs.Env, report: dict, job_id: str, slug: str) -> b
     under ``no_room``. A job that cannot even be reopened is left to ``_attempt`` to report as before.
     """
     fmt = ""
+    job_dir = env.paths.job_dir(job_id)
     try:
-        ctx = jobs.load_job(env, job_id)
-        fmt = str(ctx.fmt)
-        require_story_room(
-            env.paths, env.log, ctx.channel, ctx.fmt, fake=env.fake, resume_dir=ctx.job_dir
-        )
+        # read job.json here: `jobs.load_job` is what `_attempt` calls, once, to reopen the job
+        info = json.loads((job_dir / "job.json").read_text(encoding="utf-8"))
+        fmt = str(info["fmt"])
+        channel = get_channel(env.paths, str(info["channel"]))
+        require_story_room(env.paths, env.log, channel, fmt, fake=env.fake, resume_dir=job_dir)
     except NsError as e:
         if e.code != "NS-E104":
             return False
