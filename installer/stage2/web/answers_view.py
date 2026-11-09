@@ -190,7 +190,9 @@ def draft_to_answers(
             "display_name": _text(channel["displayName"]),
             "niche": _text(channel["niche"]),
             "language": _text(channel.get("language")) or "en",
-            "seed_keywords": [],
+            # no seed_keywords: the Choices screen has no such field, and a key the window writes is a choice
+            # it made (D-14): an empty list would wipe the earlier install's seeds and the owner's edits. The
+            # window's wizard never asks, so a first install starts with none
         },
         "voice": {"mode": "preset", "speaker": draft["voice"]["speaker"], "description": None, "name": None,
                   "speed": 1.0},

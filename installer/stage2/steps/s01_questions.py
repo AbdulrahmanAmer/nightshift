@@ -146,6 +146,11 @@ class S01Questions(Step):
         earlier = reinstall.kept_answers(ctx)
         if earlier is not None and reinstall.changes(ctx, earlier[0], ctx.raw_answers):
             return False        # the new answers win; run() says so and rebuilds what comes from them
+        if reinstall.unfinished_choices(ctx):
+            return False  # a window's choices were saved, never applied; the file in use replaces them
+        if reinstall.new_keys(ctx):
+            return False  # a key the key store does not hold: run() checks and stores it (D-14)
+        reinstall.forget_kept(ctx)  # nothing differs: the window's copy of the earlier answers is used up
         ctx.answers = ctx.constrain(ans)
         return True
 
@@ -292,6 +297,18 @@ class S01Questions(Step):
                        f"{'; '.join(c.text() for c in diff)}. They win for every choice they name; the "
                        "choices they leave out stay as they were.", "yellow")
             ctx.log.info("answers_changed", changes=[c.key for c in diff])
+        unfinished = reinstall.unfinished_choices(ctx)
+        if unfinished:
+            ctx.ui.say(f"The answers in {ctx.answers_path} replace choices saved by a setup window that did "
+                       f"not finish ({'; '.join(c.text() for c in unfinished)}); the install follows the "
+                       "answers in that file.", "yellow")
+            ctx.log.info("unfinished_choices_replaced", changes=[c.key for c in unfinished])
+        keys = reinstall.new_keys(ctx)
+        if keys:        # never the value: the name of the service only
+            ctx.ui.say("Your answers carry a " + " and a ".join(reinstall.KEY_LABELS.get(k, k) for k in keys)
+                       + " API key: it is checked and kept in the Windows keyring, and removed from the "
+                       "file afterwards.", "yellow")
+            ctx.log.info("answers_keys_new", names=keys)
         if earlier:
             reinstall.inherit(ctx, earlier[0])
         raw = ctx.raw_answers
@@ -385,10 +402,13 @@ class S01Questions(Step):
         ctx.answers = ans
         if ans.voice.mode == "design" and ans.include_voicedesign is False:
             ctx.warn("NS-W114", ans.voice.name or ans.voice.description or "")
+        # What comes from the changed choices is applied BEFORE the answers are saved: when that fails, the
+        # saved file still says what the files were made from, and a rerun sees the same change again.
+        lines = reinstall.apply(ctx, earlier[0] if earlier else {}, ans, diff)
         write_answers(self._answers_file(ctx), ans)
         ctx.log.info("answers_saved", channel=slugify(ans.channel.display_name), tier=tier)
         self._summary(ctx, ans)
-        for line in reinstall.apply(ctx, earlier[0] if earlier else {}, ans, diff):
+        for line in lines:
             ctx.ui.say(line)
         reinstall.forget_kept(ctx)
 

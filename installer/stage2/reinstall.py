@@ -5,11 +5,16 @@ and its voice) and ``models``. A later setup may bring new answers, from a file 
 ``--answers`` or from the setup window. The rule, in one place:
 
 * The new answers win for every choice they name; a choice they leave out stays as the earlier install had
-  it. ``config/answers.json`` is then replaced by the result.
+  it. A tier named without a custom model drops the earlier custom model (the window does the same). API keys
+  are choices too: a key in the new answers is checked and stored in the key store, and only then removed from
+  the file. ``config/answers.json`` is replaced by the result once everything derived from the choices that
+  changed was applied, so a failure part way leaves the saved answers alone and a rerun sees the change.
 * ``runtime.json`` is made from the answers only once, so a changed tier used to download the new model while
   ``runtime.json`` kept the old ``model_path`` and its tuned flags. A changed tier or custom model rebuilds
-  the llama part (model, kv, n_cpu_moe, speculation, context) and forgets that tuning ran. Ports, the video
-  encoder, the whisper device and the voice engine the smoke test chose are the machine's, and stay.
+  the llama part (model, kv, n_cpu_moe, speculation, context) and forgets that tuning ran. That rebuild is
+  owed, not done, in s01: s06 does it once s03 has verified the new file (``apply_pending_runtime``), so the
+  nightly run keeps finding the model it was tuned for until then. Ports, the video encoder, the whisper
+  device and the voice engine the smoke test chose are the machine's, and stay.
 * The channel yaml and the voice hold what the owner changed in the dashboard since. They are replaced only
   where the new answers name something different from what the kept answers recorded, field by field. A new
   channel name makes a new channel; the old one stays and is named.
@@ -17,7 +22,9 @@ and its voice) and ``models``. A later setup may bring new answers, from a file 
   change it.
 
 The window writes its choices over ``config/answers.json`` before the wizard starts, so it first keeps the old
-file as ``answers.kept.json`` (``answers_view.keep_earlier_answers``). The wizard compares against that file,
+file as ``answers.kept.json`` (``answers_view.keep_earlier_answers``). The kept file is the answers the files
+on disk were made from, until s01 has applied the choices that replaced them: the wizard compares against it
+whoever started it (a window that stopped early leaves choices in ``answers.json`` that were never applied),
 and removes it when the choices are applied.
 """
 
@@ -31,9 +38,15 @@ from typing import Any
 from installer.stage2.answers import AnswersError, InstallerAnswers, load_raw, slugify
 from installer.stage2.context import StepContext
 from installer.stage2.runtime_cfg import build_runtime
+from installer.stage2.secrets import KEY_NAMES
 from installer.stage2.web.answers_view import KEPT_NAME
 from ns_common.config import load_channel, load_runtime, save_channel, save_runtime
 from ns_common.models import Voice
+
+#: Wizard flag: what s06 still has to do to runtime.json, ``{"whole": bool, "llama": bool, "engine": bool}``.
+#: Set by s01 when the answers ask for it, cleared by ``apply_pending_runtime`` once the files are in place.
+PENDING_FLAG = "runtime_pending"
+KEY_LABELS = {"pexels_api_key": "Pexels", "pixabay_api_key": "Pixabay"}
 
 #: Choices compared as they are (their defaults come from ``InstallerAnswers``).
 SIMPLE_KEYS = (
@@ -95,25 +108,70 @@ def _same_file(a: Path, b: Path) -> bool:
         return a == b
 
 
+def _elsewhere(ctx: StepContext) -> bool:
+    """True when the answers in use come from another file than the saved ``config/answers.json``."""
+    src = ctx.answers_path
+    return src is not None and not _same_file(src, ctx.paths.config / "answers.json")
+
+
 def kept_answers(ctx: StepContext) -> tuple[dict[str, Any], str] | None:
     """The answers the earlier install's files were made from, with a phrase for the new source.
 
-    The window keeps the old file as ``answers.kept.json``. Otherwise the saved ``config/answers.json`` counts
-    when the answers in use come from another file (``--answers``, or next to INSTALL.cmd).
+    The window keeps the old file as ``answers.kept.json`` before it writes its choices over
+    ``config/answers.json``. That copy is what the files on disk were made from until s01 applied the choices,
+    so it is the baseline for whoever runs setup next: after a window that stopped early, ``answers.json``
+    holds choices that were never applied, and trusting it would make a rerun think nothing changed. Without
+    a kept copy, the saved ``config/answers.json`` counts when the answers in use come from another file
+    (``--answers``, or next to INSTALL.cmd).
     """
     window = ctx.paths.config / KEPT_NAME
     saved = ctx.paths.config / "answers.json"
-    src = ctx.answers_path
+    elsewhere = _elsewhere(ctx)
+    choices: list[tuple[Path, str]] = []
     if window.is_file():
-        found, who = window, "The choices you made in the setup window"
-    elif saved.is_file() and src is not None and not _same_file(src, saved):
-        found, who = saved, f"The answers in {src}"
-    else:
-        return None
+        who = (
+            f"The answers in {ctx.answers_path}" if elsewhere else "The choices you made in the setup window"
+        )
+        choices.append((window, who))
+    if saved.is_file() and elsewhere:
+        choices.append((saved, f"The answers in {ctx.answers_path}"))
+    for found, who in choices:
+        try:
+            return load_raw(found), who
+        except AnswersError:
+            continue  # an unreadable kept copy cannot be a baseline
+    return None
+
+
+def unfinished_choices(ctx: StepContext) -> list[Change]:
+    """Choices a setup window saved in ``config/answers.json`` and never applied (its kept copy is still
+    there), which the answers in use from another file now change again.
+
+    ``kept_answers`` compares the answers in use with the kept copy. When they equal it (the owner runs setup
+    with their original file) that finds nothing, yet ``answers.json`` still holds the window's choices and
+    the install would end on those. The file the owner gave wins, so s01 has to run and replace them.
+    """
+    if not (ctx.paths.config / KEPT_NAME).is_file() or not _elsewhere(ctx):
+        return []
     try:
-        return load_raw(found), who
+        return changes(ctx, load_raw(ctx.paths.config / "answers.json"), ctx.raw_answers)
     except AnswersError:
-        return None
+        return []
+
+
+def new_keys(ctx: StepContext) -> list[str]:
+    """The API keys the answers in use carry that the key store does not hold yet (or holds differently).
+
+    Keys are choices that win like the rest (D-14: another voice, tier, run time, keys, or home). The saved
+    answers never hold a key, so the comparison is with the key store. A key left in the owner's file and not
+    stored used to be erased from that file by s07, the owner's only copy.
+    """
+    wanted = []
+    for name in KEY_NAMES:
+        value = ctx.raw_answers.get(name)
+        if isinstance(value, str) and value.strip() and ctx.store.get(name) != value:
+            wanted.append(name)
+    return wanted
 
 
 def _view(ctx: StepContext, d: dict[str, Any]) -> dict[str, Any]:
@@ -141,10 +199,16 @@ def _view(ctx: StepContext, d: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def _names_tier(new: dict[str, Any]) -> bool:
+    return new.get("llm_tier") not in (None, "")
+
+
 def _named(new: dict[str, Any], key: str) -> bool:
     if key.startswith("channel."):
         channel = new.get("channel")
         return isinstance(channel, dict) and key[8:] in channel
+    if key == "llm_custom":
+        return key in new or _names_tier(new)  # a tier without a custom model drops the earlier one
     return key in new
 
 
@@ -155,9 +219,16 @@ def changes(ctx: StepContext, kept: dict[str, Any], new: dict[str, Any]) -> list
 
 
 def inherit(ctx: StepContext, kept: dict[str, Any]) -> None:
-    """Fill the choices the new answers leave out from the kept ones (in ``ctx.raw_answers``)."""
+    """Fill the choices the new answers leave out from the kept ones (in ``ctx.raw_answers``).
+
+    A tier named without a custom model is a choice of the tier's model: the kept ``llm_custom`` is not
+    inherited (s01 would keep the custom model and force the plain tier, and the tier named would do nothing).
+    """
     raw = ctx.raw_answers
+    drops_custom = _names_tier(raw)  # asked before the loop: it inherits llm_tier itself
     for key in INHERITED:
+        if key == "llm_custom" and drops_custom:
+            continue
         if key in kept and key not in raw:
             raw[key] = kept[key]
     if isinstance(kept.get("channel"), dict) and isinstance(raw.get("channel"), dict):
@@ -176,6 +247,11 @@ def apply(ctx: StepContext, kept: dict[str, Any], ans: InstallerAnswers, diff: l
     """Bring runtime.json, the channel yaml, the voice and the UI preferences in line with the answers that
     changed. Returns one plain line per thing that was done or deliberately kept."""
     keys = {c.key for c in diff}
+    if "fake_voice" in keys:
+        # s02 decided about the voice engine program and the PyTorch fallback for the old answer (fake voice:
+        # none; real voice: the binary). With the flags left, s02 stays "done" and s08 ends on the 7 GB
+        # fallback.
+        ctx.clear_flags("qwentts", "tts_fallback")
     return [*_runtime(ctx, keys, bool(kept)), *_channel(ctx, kept, ans, keys), *_prefs(ctx, ans, keys)]
 
 
@@ -186,38 +262,95 @@ def _manifest_models(ctx: StepContext) -> set[str]:
 
 
 def _runtime(ctx: StepContext, keys: set[str], compared: bool) -> list[str]:
+    """Decide what runtime.json owes the answers, and record it for s06 (``apply_pending_runtime``).
+
+    Nothing is written here. The model s03 is about to download does not exist yet, and a scheduled run that
+    starts llama-server on a missing file is a broken install: runtime.json keeps naming the model it has
+    until s03 has verified the new one. The old file stays in models\\llm either way.
+    """
     if not ctx.paths.runtime_file.exists():
         return []
     rt, fresh = load_runtime(ctx.paths), build_runtime(ctx)
-    if (rt.profile, rt.dev_mode) != (fresh.profile, fresh.dev_mode):
-        save_runtime(ctx.paths, fresh)  # made for another kind of install: all of it
-        ctx.clear_flags("tuned")
-        return [
-            "config\\runtime.json was made for another kind of install (real or dev, GPU or not); "
-            "it is built again from your answers."
-        ]
+    owed: dict[str, bool] = dict(ctx.flag(PENDING_FLAG) or {})
     lines: list[str] = []
-    was = Path(rt.llama.model_path).name
-    # With no kept answers to compare (the saved file was deleted to start over) the model is the evidence:
-    # one of setup's own files, for another tier than the answers name, is the earlier install's.
-    asked = bool(keys & {"llm_tier", "llm_custom"}) or (not compared and was in _manifest_models(ctx))
-    now = Path(fresh.llama.model_path).name
-    if asked and was != now:
-        rt.llama.model_path, rt.llama.flags = fresh.llama.model_path, fresh.llama.flags
+    was, now = Path(rt.llama.model_path).name, Path(fresh.llama.model_path).name
+    if (rt.profile, rt.dev_mode) != (fresh.profile, fresh.dev_mode):
+        owed["whole"] = True  # made for another kind of install: all of it, once its models are there
         ctx.clear_flags("tuned")
         lines.append(
-            f"Language model: config\\runtime.json now uses {now} (it had {was}) with that model's "
-            f"settings, and tuning runs again. {was} stays in models\\llm; delete it by hand to free space."
+            "config\\runtime.json was made for another kind of install (real or dev, GPU or not); "
+            "it is built again from your answers once the models for this kind are downloaded."
         )
-    if keys & {"fake_voice", "fake_footage"}:
-        rt.fake_footage, rt.tts.engine = fresh.fake_footage, fresh.tts.engine
-        lines.append("Engine test: config\\runtime.json follows your fake_voice and fake_footage answers.")
-    if not lines:
+    else:
+        # With no kept answers to compare (the saved file was deleted to start over) the model is the
+        # evidence: one of setup's own files, for another tier than the answers name, is from the earlier
+        # install.
+        asked = bool(keys & {"llm_tier", "llm_custom"}) or (not compared and was in _manifest_models(ctx))
+        if asked and was != now:
+            owed["llama"] = True
+            ctx.clear_flags("tuned")
+            lines.append(
+                f"Language model: your answers name {now}. config\\runtime.json keeps using {was} until "
+                f"{now} is downloaded and checked, then points at {now} with that model's settings, and "
+                f"tuning runs again. {was} stays in models\\llm; delete it by hand to free space."
+            )
+        if keys & {"fake_voice", "fake_footage"}:
+            owed["engine"] = True
+            lines.append(
+                "Engine test: config\\runtime.json follows your fake_voice and fake_footage answers once "
+                "the voice engine is in place."
+            )
+    if owed:
+        ctx.set_flag(PENDING_FLAG, owed)
+        return lines
+    return [
+        "Kept config\\runtime.json (ports, tuning, engines). To make setup build it again from your "
+        "answers, delete it and run setup again."
+    ]
+
+
+def apply_pending_runtime(ctx: StepContext) -> list[str]:
+    """s06, before tuning: make runtime.json follow the answers s01 recorded, now that the files are there.
+
+    The language model is repointed only when its file is in models\\llm (s03 verified it); otherwise
+    runtime.json keeps the model it has and the work stays owed. Returns one line per thing done.
+    """
+    owed = ctx.flag(PENDING_FLAG)
+    if not owed:
+        return []
+    if not isinstance(owed, dict) or not ctx.paths.runtime_file.exists():
+        ctx.clear_flags(PENDING_FLAG)  # nothing to change: the baseline is made from the answers
+        return []
+    rt, fresh = load_runtime(ctx.paths), build_runtime(ctx)
+    was, wanted = Path(rt.llama.model_path).name, Path(fresh.llama.model_path)
+    if (owed.get("whole") or owed.get("llama")) and not wanted.is_file():
         return [
-            "Kept config\\runtime.json (ports, tuning, engines). To make setup build it again from your "
-            "answers, delete it and run setup again."
+            f"config\\runtime.json keeps using {was} because {wanted.name} is not in models\\llm yet; "
+            "it is switched once the file is there."
         ]
-    save_runtime(ctx.paths, rt)
+    lines: list[str] = []
+    if owed.get("whole"):
+        save_runtime(ctx.paths, fresh)
+        lines.append(
+            "config\\runtime.json is built again from your answers (it was made for another kind of install)."
+        )
+    else:
+        if owed.get("llama"):
+            # always the flags too: s03 already pointed model_path at a custom file, with the old tier's flags
+            rt.llama.model_path, rt.llama.flags = fresh.llama.model_path, fresh.llama.flags
+            had = f" (it had {was})" if was != wanted.name else ""
+            lines.append(
+                f"Language model: config\\runtime.json now uses {wanted.name}{had} with that model's "
+                "settings, and tuning runs again."
+                + (f" {was} stays in models\\llm; delete it by hand to free space." if had else "")
+            )
+        if owed.get("engine"):
+            rt.fake_footage, rt.tts.engine = fresh.fake_footage, fresh.tts.engine
+            lines.append(
+                "Engine test: config\\runtime.json now follows your fake_voice and fake_footage answers."
+            )
+        save_runtime(ctx.paths, rt)
+    ctx.clear_flags(PENDING_FLAG)
     return lines
 
 
@@ -242,6 +375,7 @@ def _channel(ctx: StepContext, kept: dict[str, Any], ans: InstallerAnswers, keys
     channel, wanted = load_channel(ctx.paths, slug), _s07().channel_from_answers(ans)
     done: list[str] = []
     for key, field in (
+        ("channel.display_name", "display_name"),  # the same slug, spelled another way: still a change
         ("channel.niche", "niche"),
         ("channel.language", "language"),
         ("channel.seed_keywords", "seed_keywords"),
@@ -312,9 +446,13 @@ def kept_lines(ctx: StepContext, ans: InstallerAnswers) -> list[str]:
     """When the answers were not applied over kept data: say which earlier files setup is using.
 
     Nothing changed, so ``apply`` with no changes only repairs a runtime.json made for another kind of install
-    and names the kept runtime.json and channel.
+    and names the kept runtime.json and channel. There is an earlier install only when there are saved answers
+    and a runtime.json and this run is not the resume of an install that already finished a step (its own
+    files are not "kept").
     """
-    if not ctx.paths.runtime_file.exists():
+    if ctx.resumed or not ctx.paths.runtime_file.exists():
+        return []
+    if not (ctx.paths.config / "answers.json").is_file():
         return []
     src = ctx.answers_path
     if src is not None and not _same_file(src, ctx.paths.config / "answers.json"):
