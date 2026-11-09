@@ -19,6 +19,13 @@ both. A rollback swaps the pair like it swaps the programs: the settings as they
 become the copy for the program that goes to `<app>.prev`, so a second `ns update --rollback` (going forward)
 gets back exactly what the newer version had, including what the owner changed after the update.
 
+A copy that reads back complete is written over only together with its own program (an update replacing
+`<app>.prev`, a rollback that has just put it back). One that belongs to another program may be the only copy
+of that program's settings: after a restore that failed, the zip still holds what the older program wrote
+while the live files are the newer version's, and saving those over it under the older program's name would
+make the next rollback "restore" the wrong files. So such a copy is left where it is (`before_update`,
+`Slot.free`); only a missing or damaged one may be replaced, and the result says so.
+
 Standard library plus `ns_common.atomic`, so the installer's bare Python can use it (`appcopy.install_app`).
 """
 
@@ -106,11 +113,13 @@ LEFT_ALONE: dict[str, str] = {
 
 
 class SnapshotError(Exception):
-    """A copy could not be made, read or applied. `missing` is True when there is simply no copy."""
+    """A copy could not be made, read or applied. `missing` is True when there is simply no copy, `damaged`
+    when there is one that does not read back complete (nothing in it can be used)."""
 
-    def __init__(self, message: str, *, missing: bool = False) -> None:
+    def __init__(self, message: str, *, missing: bool = False, damaged: bool = False) -> None:
         super().__init__(message)
         self.missing = missing
+        self.damaged = damaged
 
 
 @dataclass(frozen=True)
@@ -208,7 +217,7 @@ def build(
 
 
 def _damaged(reason: str) -> SnapshotError:
-    return SnapshotError(f"the saved copy is damaged: {reason}")
+    return SnapshotError(f"the saved copy is damaged: {reason}", damaged=True)
 
 
 def parse(data: bytes) -> Snapshot:
@@ -279,6 +288,75 @@ def read(path: Path) -> Snapshot:
     except OSError as e:
         raise SnapshotError(f"{path.name} cannot be read: {e}") from e
     return parse(data)
+
+
+@dataclass(frozen=True)
+class Slot:
+    """What is at `<app>.prev-config.zip` now: `copy` when it reads back complete, else `problem` says why."""
+
+    copy: Snapshot | None
+    problem: SnapshotError | None = None
+
+    @property
+    def damaged(self) -> bool:
+        return self.problem is not None and self.problem.damaged
+
+    @property
+    def free(self) -> bool:
+        """Nothing that could be needed is there: no zip, or a damaged one (which may be replaced; the caller
+        says so). A complete copy may be the only one of its settings, and a zip that could not be read at
+        all may still be whole: neither is ever written over unless it goes with its own program."""
+        return self.problem is not None and (self.problem.missing or self.problem.damaged)
+
+
+def look(path: Path) -> Slot:
+    """The copy at `path`, or why there is none. Never raises."""
+    try:
+        return Slot(read(path))
+    except SnapshotError as e:
+        return Slot(None, e)
+
+
+def version_of(fingerprint: str) -> str:
+    """The version part of a program fingerprint (`<version>|<manifest hash>|<pyproject hash>`)."""
+    return fingerprint.split("|", 1)[0]
+
+
+def before_update(path: Path, *, leaving: str, backup: str | None) -> tuple[bool, Slot]:
+    """Decide what an update does with the copy at `path` before the program whose fingerprint is `leaving`
+    becomes the program backup, in place of the backup whose fingerprint is `backup` (None: there is none).
+
+    Returns (save, slot). `save` True: the caller saves a new copy, because there is none, or a damaged one
+    (`slot.damaged`; the caller says it was replaced), or the copy of `backup`, which is replaced together
+    with its program (`slot.copy` is set). `save` False: the copy already belongs to `leaving` (a rollback or
+    a failed update could not put it back, so the settings files now may be a newer version's): it stays as
+    the copy for `leaving`, and the settings as they are now must not be saved over it under its name.
+
+    `SnapshotError` for a complete copy that belongs to neither program, or a zip that could not be read: it
+    is never written over (it may be the only copy of those settings files), so the update cannot keep a copy
+    for its program backup and must not start. The message says whose copy it is, where, and what to do.
+    """
+    slot = look(path)
+    snap = slot.copy
+    if snap is None:
+        if slot.free:
+            return True, slot
+        raise SnapshotError(
+            f"the settings copy {path} could not be read ({slot.problem}), so it was left as it is: it may "
+            "still be whole. Close programs that use the Nightshift folder and run the update again"
+        )
+    if snap.fingerprint == leaving:
+        return False, slot
+    if backup is not None and snap.fingerprint == backup:
+        return True, slot
+    others = f"this program ({version_of(leaving)})"
+    if backup is not None:
+        others += f" or the program backup ({version_of(backup)})"
+    raise SnapshotError(
+        f"the settings copy {path} belongs to {snap.version} (made {snap.created.replace('T', ' ')}), not to "
+        f"{others}. It was left as it is, because it may be the only copy of those settings files: move it "
+        f"out of {path.parent} (or delete it if you do not need it) and run the update again"
+    )
 
 
 def discard(path: Path) -> None:

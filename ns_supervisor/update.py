@@ -63,8 +63,9 @@ NO_GIT_HINT = (
     "(https://git-scm.com/download/win), or update without it: `ns update --github`, or the Update "
     "shortcut with a Nightshift-Update zip."
 )
+NOTHING_CHANGED = "Nothing was changed: the program and your settings are as they were."
 SETTINGS_REFUSED = (
-    "Nothing was changed: the program and your settings are as they were. Close programs that use the "
+    f"{NOTHING_CHANGED} Close programs that use the "
     "Nightshift folder, make room on the disk if it is full, and run the update again."
 )
 GIT_NO_COPY_NOTE = "no settings copy kept for ns update --rollback (a git install has no program backup)"
@@ -334,28 +335,60 @@ def _names(names: list[str]) -> str:
     return ", ".join(names) if names else "none"
 
 
-def _save_settings_copy(app: Path, paths: Paths, log: NsLogger) -> config_snapshot.Snapshot:
+@dataclass
+class _UpdateCopy:
+    """The settings side of an update, decided before anything is swapped."""
+
+    files: dict[str, bytes]  # the settings files when the update started (a failed update puts these back)
+    wrote: bool  # this update wrote the copy: it goes again when the update does not happen
+    had_backup_copy: bool  # the copy it replaced was the one of the program backup it replaces
+    notes: list[str]
+
+
+def _save_settings_copy(app: Path, prev: Path, paths: Paths, log: NsLogger) -> _UpdateCopy:
     """Copy the settings files beside the program backup BEFORE anything is swapped.
 
     An update that could not be undone completely is not started: `NS-E702`, nothing changed, and a copy that
-    is already there (the one for the program in `<app>.prev`) is left whole.
+    is already there is left whole. A copy is written over only together with its own program (the one in
+    `<app>.prev`) or when it is damaged; one that already belongs to the program leaving `<app>` stays as its
+    copy, and one of any other program is never written over (`config_snapshot.before_update`).
     """
+    zip_path = config_snapshot.path_for(app)
+    leaving = app_fingerprint(app)
     try:
-        snap = config_snapshot.save(
-            config_snapshot.path_for(app),
-            config_snapshot.capture(paths.config),
-            version=current_version(app),
-            fingerprint=app_fingerprint(app),
-            taken_by="update",
+        save, slot = config_snapshot.before_update(
+            zip_path, leaving=leaving, backup=app_fingerprint(prev) if prev.is_dir() else None
         )
+    except config_snapshot.SnapshotError as e:
+        log.error("settings_copy_not_replaced", str(e))
+        raise NsError("NS-E702", f"{e}. {NOTHING_CHANGED}") from e
+    try:
+        files = config_snapshot.capture(paths.config)
+        if save:
+            config_snapshot.save(
+                zip_path, files, version=current_version(app), fingerprint=leaving, taken_by="update"
+            )
     except config_snapshot.SnapshotError as e:
         log.error("settings_copy_failed", str(e))
         raise NsError(
             "NS-E702",
             f"could not save a copy of your settings files before the update ({e}). {SETTINGS_REFUSED}",
         ) from e
-    log.info("settings_copy_saved", files=sorted(snap.files), copy=str(config_snapshot.path_for(app)))
-    return snap
+    if not save:
+        kept = slot.copy
+        made = kept.created.replace("T", " ") if kept is not None else "?"
+        log.warn("settings_copy_kept", copy=str(zip_path), made=made)
+        note = (
+            f"the settings copy for {current_version(app)} (made {made}) is kept in {zip_path} for "
+            "ns update --rollback, not replaced by the settings files as they are now: it was never put "
+            "back, so those may be a newer version's"
+        )
+        return _UpdateCopy(files, False, False, [note])
+    log.info("settings_copy_saved", files=sorted(files), copy=str(zip_path))
+    notes = [f"settings files saved for ns update --rollback: {_names(sorted(files))}"]
+    if slot.damaged:
+        notes.append(f"the damaged settings copy that was in {zip_path} was replaced ({slot.problem})")
+    return _UpdateCopy(files, True, slot.copy is not None, notes)
 
 
 def _put_settings_back(paths: Paths, files: dict[str, bytes], log: NsLogger, copy: Path | None) -> str:
@@ -386,23 +419,49 @@ def _put_settings_back(paths: Paths, files: dict[str, bytes], log: NsLogger, cop
     return " Your settings files were put back as they were before the update."
 
 
-def _read_settings_copy(app: Path, prev: Path) -> tuple[config_snapshot.Snapshot | None, str]:
-    """The copy that belongs to the program in `prev`, else (None, why not)."""
-    try:
-        snap = config_snapshot.read(config_snapshot.path_for(app))
-    except config_snapshot.SnapshotError as e:
-        if e.missing:
-            return None, (
+def _read_settings_copy(
+    app: Path, prev: Path
+) -> tuple[config_snapshot.Snapshot | None, str, config_snapshot.Slot]:
+    """The copy that belongs to the program in `prev`, else (None, why not); and what the zip holds."""
+    slot = config_snapshot.look(config_snapshot.path_for(app))
+    snap, problem = slot.copy, slot.problem
+    if snap is None:
+        why = str(problem)
+        if problem is not None and problem.missing:
+            why = (
                 "no copy of them was saved when the version you are leaving was installed "
                 "(an update made by an older updater does not save one)"
             )
-        return None, str(e)
+        return None, why, slot
     if snap.fingerprint != app_fingerprint(prev):
-        return None, (
+        why = (
             f"the saved copy belongs to {snap.version}, "
             f"not to the program that was kept ({current_version(prev)})"
         )
-    return snap, ""
+        return None, why, slot
+    return snap, "", slot
+
+
+def _copy_left_alone(
+    slot: config_snapshot.Slot, zip_path: Path, left_fingerprint: str, left_version: str
+) -> str:
+    """Why a rollback did not replace the copy in `zip_path` with the settings as they are now."""
+    snap = slot.copy
+    if snap is None:
+        return (
+            f"the settings copy {zip_path} could not be read and was left as it is, as it may still be "
+            f"whole ({slot.problem})"
+        )
+    made = snap.created.replace("T", " ")
+    if snap.fingerprint == left_fingerprint:  # its restore never finished: it is still that program's copy
+        return (
+            f"the settings copy for {left_version} (made {made}) stays in {zip_path}: ns update --rollback "
+            f"again goes back to {left_version} with the settings files it wrote"
+        )
+    return (
+        f"the settings copy in {zip_path} belongs to {snap.version} (made {made}), another program, and was "
+        "left as it is: it may be the only copy of those settings files"
+    )
 
 
 def _live_settings(paths: Paths, log: NsLogger) -> tuple[dict[str, bytes] | None, str]:
@@ -449,6 +508,7 @@ def _swap_settings(
     live: dict[str, bytes] | None,
     live_error: str,
     *,
+    slot: config_snapshot.Slot,
     left_version: str,
     left_fingerprint: str,
     log: NsLogger,
@@ -456,7 +516,12 @@ def _swap_settings(
     """Right after a rollback swapped the programs: put `copy` back and keep the settings as they were just
     before (`live`) as the copy for the program that went to `<app>.prev`, so a second rollback goes forward
     with them. Returns (the sentence for the result line, detail lines). Never raises: a rollback is the way
-    out of a bad update and is not stopped by its settings."""
+    out of a bad update and is not stopped by its settings.
+
+    Without a `copy` to put back, the zip (`slot`) is replaced only when nothing in it can be used (there is
+    none, or it is damaged). A complete copy of another program stays: when it belongs to the program that
+    went to `<app>.prev` (its last restore failed), the live files are not that program's, and saving them
+    under its name would make the next rollback "restore" a newer version's files."""
     notes: list[str] = []
     restored_version = current_version(app)
     zip_path = config_snapshot.path_for(app)
@@ -485,7 +550,14 @@ def _swap_settings(
         return True
 
     if copy is None or live is None:
-        keep_forward_copy()
+        if copy is None and slot.free:  # no copy there, or a damaged one: nothing in it to lose
+            if keep_forward_copy() and slot.damaged:
+                notes.append(
+                    f"the damaged settings copy in {zip_path} was replaced: ns update --rollback again goes "
+                    f"forward to {left_version} with the settings as they were just before this rollback"
+                )
+        elif copy is None:  # a whole copy of another program, or one that could not be read: never replaced
+            notes.append(_copy_left_alone(slot, zip_path, left_fingerprint, left_version))
         why = why_not if copy is None else live_error
         log.warn("settings_not_restored", why)
         no = f"Your settings files could not be restored: {why}. They stay as they are now."
@@ -555,28 +627,30 @@ def update_app(zip_path: Path, app: Path, env: UpdateEnv, *, paths: Paths) -> Up
     old_version = current_version(app)
     new, prev = _sibling(app, ".new"), _sibling(app, ".prev")
     replaced = current_version(prev) if prev.is_dir() else ""
-    had_copy = replaced != "" and config_snapshot.path_for(app).is_file()
     log.info("update_start", old=old_version, new=new_version, zip=str(zip_path))
     env.stop()
-    saved: config_snapshot.Snapshot | None = None
+    saved: _UpdateCopy | None = None
+
+    def drop_copy() -> None:  # only a copy this update wrote goes with it; a kept one stays with its program
+        if saved is not None and saved.wrote:
+            config_snapshot.discard(config_snapshot.path_for(app))
+
     try:
         shutil.rmtree(new, ignore_errors=True)
         new.mkdir(parents=True)
         safe_extract(zip_path, new, prefix)
         notes = [f"kept {n}" for n in carry_over(app, new, env.untracked(app))]
         write_app_marker(new, log)
-        saved = _save_settings_copy(app, paths, log)   # last step before <app>.prev is replaced
+        saved = _save_settings_copy(app, prev, paths, log)  # last step before <app>.prev is replaced
         shutil.rmtree(prev, ignore_errors=True)
         rename_with_retry(app, prev)
     except NsError:
         shutil.rmtree(new, ignore_errors=True)
-        if saved is not None:
-            config_snapshot.discard(config_snapshot.path_for(app))
+        drop_copy()
         raise
     except OSError as e:
         shutil.rmtree(new, ignore_errors=True)
-        if saved is not None:        # <app>.prev is gone, so the copy that was made for it belongs to nothing
-            config_snapshot.discard(config_snapshot.path_for(app))
+        drop_copy()  # <app>.prev is gone, so the copy this update made for it belongs to nothing
         raise NsError("NS-E702", f"could not stage the update: {e}. {BUSY_HINT}") from e
     try:
         rename_with_retry(new, app)
@@ -585,7 +659,7 @@ def update_app(zip_path: Path, app: Path, env: UpdateEnv, *, paths: Paths) -> Up
             rename_with_retry(prev, app)
         except OSError as e2:
             raise NsError("NS-E702", f"could not swap directories: {e}; {RESTORE_HINT}") from e2
-        config_snapshot.discard(config_snapshot.path_for(app))
+        drop_copy()
         raise NsError("NS-E702", f"could not swap directories: {e}") from e
     try:
         env.sync(app)
@@ -599,15 +673,19 @@ def update_app(zip_path: Path, app: Path, env: UpdateEnv, *, paths: Paths) -> Up
             _restore(app, prev, log, env.settle)
         except OSError as e3:   # keep the cause of the failure: it is what the owner has to report
             raise NsError("NS-E702", f"{detail}. {RESTORE_HINT} ({e3})") from e
-        copy_path = config_snapshot.path_for(app)
-        put_back = _put_settings_back(paths, saved.files, log, copy_path) if saved is not None else ""
+        put_back = ""
+        if saved is not None:  # (a copy this update did not write is not its to discard: None keeps it)
+            copy_path = config_snapshot.path_for(app) if saved.wrote else None
+            put_back = _put_settings_back(paths, saved.files, log, copy_path)
         try:
             env.sync(app)
         except Exception as e2:  # best effort: report, the old tree is already back
             log.error("rollback_sync_failed", str(e2))
         raise NsError("NS-E702", detail.rstrip(".") + "." + put_back if put_back else detail) from e
+    had_copy = False
     if saved is not None:
-        notes.append(f"settings files saved for ns update --rollback: {_names(sorted(saved.files))}")
+        notes += saved.notes
+        had_copy = saved.had_backup_copy
     if replaced:
         notes.append(
             f"the earlier program backup ({replaced})"
@@ -625,7 +703,8 @@ def rollback_app(app: Path, env: UpdateEnv, *, paths: Paths) -> UpdateResult:
     What the owner changed in the settings between the update and the rollback is lost, and the result says
     which files it was. Without a usable copy (an update made by an older updater, a damaged copy, one that
     belongs to another program) the programs are swapped as before and the result says the settings were not
-    restored.
+    restored; a copy that reads back complete is then left where it is (it may be the only copy of another
+    program's settings), and the result says whose it is and where.
     """
     app = app.absolute()
     leave_app(app, paths)
@@ -636,7 +715,7 @@ def rollback_app(app: Path, env: UpdateEnv, *, paths: Paths) -> UpdateResult:
     old_version = current_version(app)
     env.stop()
     left_fingerprint = app_fingerprint(app)          # the program that is about to become <app>.prev
-    copy, why_not = _read_settings_copy(app, prev)
+    copy, why_not, slot = _read_settings_copy(app, prev)
     live, live_error = _live_settings(paths, log)
     tmp = _sibling(app, ".swap")
     try:
@@ -649,7 +728,7 @@ def rollback_app(app: Path, env: UpdateEnv, *, paths: Paths) -> UpdateResult:
     write_app_marker(app, log)
     sentence, notes = _swap_settings(
         paths, app, copy, why_not, live, live_error,
-        left_version=old_version, left_fingerprint=left_fingerprint, log=log,
+        slot=slot, left_version=old_version, left_fingerprint=left_fingerprint, log=log,
     )
     env.sync(app)
     log.info("rollback_done", old=old_version, restored=current_version(app))

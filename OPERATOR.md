@@ -304,7 +304,10 @@ that does the update, so it exists for an update made through `INSTALL.cmd` from
 made by a Nightshift that already has this feature (0.1.15 or later). An update made BY an older version with
 `ns update <zip>`, `ns update --github` or Settings > Update (for example 0.1.14 going to 0.1.15) saves no copy,
 because the older updater is the one that runs: the rollback then swaps the program as before and says it could
-not restore the settings.
+not restore the settings. A copy that belongs to another version is never written over, since it may be the only
+copy of that version's settings: if the settings could not be put back (a file was in use), the copy stays for the
+next `ns update --rollback`, and if an update finds a copy of a version that is no longer installed it stops,
+changes nothing and says where the copy is, so you can move it out of the folder (or delete it) and update again.
 
 ## Move your settings to another PC
 

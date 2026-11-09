@@ -196,8 +196,12 @@ def _carry(old: Path, new: Path) -> list[str]:
 
 
 def _save_settings_copy(
-    home: Path, dest: Path, old_version: str, before: Mapping[str, bytes] | None = None
-) -> None:
+    home: Path,
+    dest: Path,
+    old_version: str,
+    before: Mapping[str, bytes] | None = None,
+    say: Callable[[str], None] = lambda _t: None,
+) -> bool:
     """Copy the settings files beside the program backup before the old program becomes ``app.prev``.
 
     ``before`` is what the setup window read of ``config_snapshot.SETUP_TOUCHES`` before it rewrote them on
@@ -205,7 +209,29 @@ def _save_settings_copy(
     they were then, every other file as it is now. ``AppCopyError`` (``NS-E115``) when the copy cannot be
     made: the swap is not started, so nothing has changed. A copy that is already there (the one for the
     program in ``app.prev``) stays whole.
+
+    The copy there is written over only together with its program (the one in ``app.prev``) or when it is
+    damaged. One that already belongs to the program in ``dest`` stays as its copy (its restore never
+    finished, so the settings files now may be a newer version's): returns False, nothing was written. One
+    of any other program is never written over: ``NS-E115``, nothing changed
+    (``config_snapshot.before_update``).
     """
+    zip_path = config_snapshot.path_for(dest)
+    prev = dest.with_name(dest.name + ".prev")
+    leaving = fingerprint(dest)
+    try:
+        save, slot = config_snapshot.before_update(
+            zip_path, leaving=leaving, backup=fingerprint(prev) if prev.is_dir() else None
+        )
+    except config_snapshot.SnapshotError as e:
+        raise AppCopyError("NS-E115", f"{e}. Nothing was changed.") from e
+    if not save:
+        made = slot.copy.created.replace("T", " ") if slot.copy is not None else "?"
+        say(
+            f"The settings copy for {old_version} (made {made}) is kept in {zip_path} for ns update "
+            "--rollback: it was never put back, so the settings files now may be a newer version's"
+        )
+        return False
     try:
         files = config_snapshot.capture(home / "config")
         if before is not None:
@@ -213,13 +239,7 @@ def _save_settings_copy(
                 files.pop(name, None)
                 if name in before:
                     files[name] = before[name]
-        config_snapshot.save(
-            config_snapshot.path_for(dest),
-            files,
-            version=old_version,
-            fingerprint=fingerprint(dest),
-            taken_by="installer",
-        )
+        config_snapshot.save(zip_path, files, version=old_version, fingerprint=leaving, taken_by="installer")
     except config_snapshot.SnapshotError as e:
         raise AppCopyError(
             "NS-E115",
@@ -227,6 +247,9 @@ def _save_settings_copy(
             "changed. Close programs that use the Nightshift folder, make room on the disk if it is full, "
             "and run INSTALL.cmd again.",
         ) from e
+    if slot.damaged:
+        say(f"A damaged settings copy in {zip_path} was replaced ({slot.problem})")
+    return True
 
 
 def _error(e: OSError, what: str) -> AppCopyError:
@@ -277,7 +300,7 @@ def install_app(
                 stop_engine()
             kept = _carry(dest, new)
             try:
-                _save_settings_copy(Path(home), dest, old_version, settings_before)
+                wrote_copy = _save_settings_copy(Path(home), dest, old_version, settings_before, say)
             except AppCopyError:
                 shutil.rmtree(new, ignore_errors=True)
                 raise
@@ -290,7 +313,8 @@ def install_app(
                     _rename(prev, dest, sleep)  # put the old folder back
                     raise
             except OSError:
-                config_snapshot.discard(config_snapshot.path_for(dest))  # no program backup: no copy
+                if wrote_copy:  # no program backup: no copy (a kept one stays with the program it belongs to)
+                    config_snapshot.discard(config_snapshot.path_for(dest))
                 raise
             return CopyResult("updated", old_version, new_version, kept)
         if dest.exists():
