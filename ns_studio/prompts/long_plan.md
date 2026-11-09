@@ -13,4 +13,4 @@ Structure: {{ combo.structure }}. Hook style: {{ combo.hook }}. POV/tone: {{ com
 Content rules:
 {{ policy_rules }}
 Target: about {{ budget.target_words }} spoken words ({{ budget.target_minutes }} minutes at {{ budget.wpm }} words per minute), in {{ budget.chapters }} chapters of roughly {{ budget.chapter_budgets[0] }} words each. Use {{ budget.chapters }} chapters unless the story clearly needs one more or one fewer (never fewer than 5, never more than 7).
-Return working_title (a short in-world title, no "Part", never a claim that the story is real) and chapters. Each chapter: n (1-based), title (2-5 words), beats (2-4 concrete events), cliff (one sentence naming the cliff the chapter ends on), word_budget (integer).
+Return working_title (a short in-world title, no "Part", never a claim that the story is real) and chapters. Each chapter: n (1-based), title (2-5 words), beats ({{ story_profile.chapter_beats_lo }}-{{ story_profile.chapter_beats_hi }} concrete events), cliff (one sentence naming the cliff the chapter ends on), word_budget (integer).
