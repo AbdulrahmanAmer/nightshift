@@ -4,10 +4,12 @@ import pytest
 
 from ns_common.embed_client import to_blob
 from ns_common.errors import NsError
+from ns_studio.errors import hint_of
 from ns_studio.policy import text_checks as tc
 from ns_studio.policy.base import CODES, POLICY_CODES
+from ns_studio.policy.gate import run_gate
 from ns_studio.policy.meta import collect_items, policy_list, short_moments, story_text
-from tests.helpers import make_ctx
+from tests.helpers import add_output, make_ctx
 
 STORY = (
     "The porch light flickered twice before the knocking started again. "
@@ -161,7 +163,7 @@ def test_metadata_spam_limits_and_judge(tmp_home: Path):
     assert not res.passed and "celebrity" in res.detail
 
 
-def _insert_story(ctx, job_id: str, channel: str, text: str) -> None:
+def _insert_story(ctx, job_id: str, channel: str, text: str, *, finished: bool = True) -> None:
     ctx.db.execute(
         "insert or ignore into channels(slug, display_name, created_at) values (?,?,?)",
         (channel, channel, "2026-11-01T00:00:00"),
@@ -172,6 +174,8 @@ def _insert_story(ctx, job_id: str, channel: str, text: str) -> None:
         "values (?,?,?,?,?,?,?,?)",
         (job_id, channel, "shorts_only", text, 10, text[:20], to_blob(vec), "2026-10-01T00:00:00"),
     )
+    if finished:  # only a story whose video was made enters the comparison set (D-25)
+        add_output(ctx.db, job_id, "long", channel=channel)
 
 
 def test_self_similarity(tmp_home: Path):
@@ -226,3 +230,79 @@ def test_self_similarity_embeds_only_the_opening_window(tmp_home: Path):
     _insert_story(ctx, "other-20261001-aaaa", "after-dark", master[:1500])
     res = tc.SelfSimilarity(skip_when_fake=False).run(ctx)  # before the fix: NsError NS-E301
     assert not res.passed and "other-20261001-aaaa" in res.detail
+
+
+# ------------------------------------------------ D-25: only a finished video is compared with
+def _script_ctx(tmp_home: Path):
+    """A job made from the owner's own script, its story already imported."""
+    ctx = make_ctx(tmp_home, fake={"embed"})
+    ctx.write_json(
+        "script_source.json", {"kind": "script_import", "owner_script": True, "script": "script.md"}
+    )
+    assert ctx.owner_script
+    _job(ctx)
+    return ctx
+
+
+def test_failed_script_job_does_not_block_the_same_script(tmp_home: Path):
+    """The first job stopped at voice: its story row exists, its video does not. The same script passes."""
+    ctx = _script_ctx(tmp_home)
+    _insert_story(ctx, "engine-test-20261109-576e", "after-dark", STORY, finished=False)
+    res = tc.SelfSimilarity(skip_when_fake=False).run(ctx)
+    assert res.passed and "compared with 0 stories" in res.detail
+    # the effect: the gate raises nothing
+    assert run_gate(ctx, "text", [tc.SelfSimilarity(skip_when_fake=False)]).passed
+
+
+def test_finished_video_with_the_same_script_still_blocks_with_a_script_message(tmp_home: Path):
+    ctx = _script_ctx(tmp_home)
+    _insert_story(ctx, "engine-test-20261109-576e", "after-dark", STORY)  # finished: has an outputs row
+    with pytest.raises(NsError) as ei:
+        run_gate(ctx, "text", [tc.SelfSimilarity(skip_when_fake=False)])
+    err = ei.value
+    assert err.code == "NS-E605"
+    assert "engine-test-20261109-576e" in err.detail and "finished video" in err.detail
+    hint = hint_of(err)
+    assert "new idea" not in hint and "engine-test-20261109-576e" in hint
+    assert "change the script" in hint.lower()
+    assert "new idea" in err.definition.hint  # the generic text in errors.json is untouched
+
+
+def test_idea_job_keeps_the_idea_hint(tmp_home: Path):
+    ctx = make_ctx(tmp_home, fake={"embed"})  # no script_source.json: the story was drawn from an idea
+    assert not ctx.owner_script
+    _job(ctx)
+    _insert_story(ctx, "other-20261001-aaaa", "after-dark", STORY)
+    with pytest.raises(NsError) as ei:
+        run_gate(ctx, "text", [tc.SelfSimilarity(skip_when_fake=False)])
+    assert ei.value.code == "NS-E605" and "finished video" not in ei.value.detail
+    assert hint_of(ei.value) == ei.value.definition.hint
+    assert "a new idea will be drawn" in hint_of(ei.value)
+
+
+def test_a_failed_idea_story_is_not_compared_either(tmp_home: Path):
+    ctx = make_ctx(tmp_home, fake={"embed"})
+    _job(ctx)
+    _insert_story(ctx, "other-20261001-aaaa", "after-dark", STORY, finished=False)
+    assert tc.SelfSimilarity(skip_when_fake=False).run(ctx).passed
+
+
+def test_story_that_fails_after_it_was_recorded_leaves_the_comparison_set(tmp_home: Path):
+    """The ledger is read from outputs: a story whose video is gone again is ignored."""
+    ctx = _script_ctx(tmp_home)
+    _insert_story(ctx, "engine-test-20261109-576e", "after-dark", STORY)
+    assert not tc.SelfSimilarity(skip_when_fake=False).run(ctx).passed
+    ctx.db.execute("delete from outputs where job_id=?", ("engine-test-20261109-576e",))
+    assert tc.SelfSimilarity(skip_when_fake=False).run(ctx).passed
+
+
+def test_cli_prints_the_script_hint_not_the_idea_hint(capsys: pytest.CaptureFixture[str]):
+    import typer
+
+    from ns_studio.cli import guarded
+
+    err = NsError("NS-E605", "self_similarity: x", hint="Change the script, or use that video.")
+    with pytest.raises(typer.Exit), guarded():
+        raise err
+    out = capsys.readouterr().err
+    assert "hint: Change the script, or use that video." in out and "new idea" not in out

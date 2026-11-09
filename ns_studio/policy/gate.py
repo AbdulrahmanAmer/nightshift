@@ -49,7 +49,9 @@ def run_gate(ctx: JobContext, gate: Gate, checks: Sequence[Check]) -> PolicyResu
     for chk in checks:
         res = results[chk.name]
         if not res.passed and chk.code:
-            raise NsError(chk.code, f"{chk.name}: {res.detail}", check=chk.name)
+            hint = chk.hint(ctx)
+            extra = {"hint": hint} if hint else {}
+            raise NsError(chk.code, f"{chk.name}: {res.detail}", check=chk.name, **extra)
     return result
 
 

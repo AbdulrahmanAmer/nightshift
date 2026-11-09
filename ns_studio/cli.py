@@ -23,7 +23,7 @@ from ns_studio.channels import cadence, crud
 from ns_studio.clipper import cli as clipper_cli
 from ns_studio.context import JobContext
 from ns_studio.daily import run_daily
-from ns_studio.errors import UNEXPECTED, StudioError, describe_unexpected
+from ns_studio.errors import UNEXPECTED, StudioError, describe_unexpected, hint_of
 from ns_studio.footage_keys import require_footage_key
 from ns_studio.learn import importer, reweight, status
 from ns_studio.orchestrator import OWNER_SCRIPT_FORMATS, plan_job, run_job
@@ -107,7 +107,7 @@ def guarded() -> Iterator[None]:
     try:
         yield
     except (NsError, StudioError) as e:
-        hint = e.definition.hint if isinstance(e, NsError) else e.hint
+        hint = hint_of(e) if isinstance(e, NsError) else e.hint
         typer.echo(f"error {e}", err=True)
         if hint:
             typer.echo(f"hint: {hint}", err=True)
