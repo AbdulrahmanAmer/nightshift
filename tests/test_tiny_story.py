@@ -549,12 +549,18 @@ def test_critic_revise_keeps_failing_what_the_profile_says_is_too_little(
 
 @pytest.mark.parametrize("tiny", [False, True])
 def test_the_short_story_budget_comes_from_the_profile(tmp_home: Path, tiny: bool):
-    from ns_studio.text.stages_shorts import ideas_budget
+    from ns_studio.text.stages_shorts import HOOK_MAX_WORDS, SHORT_CLOSING_WORDS, ideas_budget
 
     ctx = make_ctx(tmp_home)
     if tiny:
         ctx.runtime = tiny_runtime(ctx.runtime)
-    want = short_budget(50, "standard", profile=profiles().TINY if tiny else profiles().NORMAL)
+    want = short_budget(
+        50,
+        "standard",
+        hook_words=HOOK_MAX_WORDS,  # the hook and the closing line the Short gets are part of its bucket
+        closing_words=SHORT_CLOSING_WORDS,
+        profile=profiles().TINY if tiny else profiles().NORMAL,
+    )
     assert ideas_budget(ctx) == want
 
 

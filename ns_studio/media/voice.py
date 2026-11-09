@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import zlib
 from pathlib import Path
 
@@ -39,6 +40,18 @@ def job_speed(ctx: JobContext) -> float:
     return pacing_speed(job_voice(ctx).speed, ctx.combo.pacing)
 
 
+def _words(text: str) -> list[str]:
+    """Lower-case words of `text` without the punctuation around them (so a cut ending on a comma matches)."""
+    return [w for w in (re.sub(r"^\W+|\W+$", "", t).lower() for t in text.split()) if w]
+
+
+def hook_opens_body(hook: str, body: str) -> bool:
+    """True when the hook is the first words of the body (the whole first sentence or a cut of it): the body
+    already says them, so voicing the hook as well would play the same words twice."""
+    h = _words(hook)
+    return bool(h) and _words(body)[: len(h)] == h
+
+
 def narration_items(
     parts: list[dict],
     voice_name: str,
@@ -46,8 +59,9 @@ def narration_items(
     language: str | None = None,
     closings: dict[str, str] | None = None,
 ) -> list[TtsItem]:
-    """One TTS item per part body (`p<n>`) plus `p<n>_hook` when the hook is not the first sentence and
-    `p<n>_close` for the part's closing line (`closings` maps the part number as text to the line).
+    """One TTS item per part body (`p<n>`) plus `p<n>_hook` when the hook does not open the body (so it is
+    neither the first sentence nor a cut of it) and `p<n>_close` for the part's closing line (`closings` maps
+    the part number as text to the line).
 
     `language` is the channel's ISO code; it travels with every item to `qwen-tts --lang`.
     """
@@ -57,7 +71,7 @@ def narration_items(
         cliff = (sentences[-1],) if p.get("cliffhanger") and sentences else ()
         items.append(TtsItem(f"p{p['n']}", p["text"], voice_name, speed, cliff, language))
         hook = (p.get("hook") or "").strip()
-        if hook and (not sentences or hook != sentences[0]):
+        if hook and not hook_opens_body(hook, p["text"]):
             items.append(TtsItem(f"p{p['n']}_hook", hook, voice_name, speed, language=language))
         closing = ((closings or {}).get(str(p["n"])) or "").strip()
         if closing:

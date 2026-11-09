@@ -406,7 +406,9 @@ def test_local_models_enforce_spec_constraints():
     clips = json.loads((FIXTURES_LLM / "clip_select.json").read_text(encoding="utf-8"))["clips"]
     assert [ClipPlanItem.model_validate(c).k for c in clips] == [1, 2, 3]
     assert all(c["end_s"] - c["start_s"] >= 20 for c in clips)
-    policy = PolicyCheckResult.model_validate_json((FIXTURES_LLM / "policy_check.json").read_text(encoding="utf-8"))
+    from ns_studio.text.prompts import parse_policy_check
+
+    policy = parse_policy_check(json.loads((FIXTURES_LLM / "policy_check.json").read_text(encoding="utf-8")), "fixture")
     assert policy.unsafe_categories == [] and policy.standalone is True
     with pytest.raises(ValidationError):
         PolicyCheckResult.model_validate({"unsafe_categories": [], "hook_honest": True})

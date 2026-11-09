@@ -232,3 +232,21 @@ def test_a_regeneration_gets_a_seed_of_its_own_attempt(tmp_home: Path, monkeypat
     seeds = _spy_seeds(ctx)
     synthesize(ctx, narration_items([{"n": 1, "text": TEXT, "hook": ""}], "Ryan", 1.0))
     assert seeds == [second]
+
+
+def test_the_voice_stage_stores_the_pace_it_measured_and_the_next_job_plans_with_it(
+    tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """F-H48 through `synthesize` (the call at the end of the voice stage), not `record_voice_wpm` alone:
+    the voice speaks at `SLOW`, and a second job of the same voice plans with that pace, not the table's."""
+    _no_ffmpeg(monkeypatch)
+    ctx = make_ctx(tmp_home)
+    ctx.services.tts = FakeTts(wpm=SLOW)
+    assert not voice_wpm_path(ctx.paths).exists()
+    synthesize(ctx, narration_items([{"n": 1, "text": TEXT, "hook": ""}], "Ryan", 1.0))
+    stored = load_voice_wpm(ctx.paths)["voices"]["Ryan"]
+    assert stored["wpm_1x"] == pytest.approx(SLOW, abs=1.0) and stored["jobs"] == 1
+    nxt = make_ctx(tmp_home)
+    assert job_wpm(nxt) == round(SLOW * pacing_speed(nxt.channel.voice.speed, nxt.combo.pacing))
+    assert job_wpm(nxt) != PACING_WPM[nxt.combo.pacing]
+    assert ideas_budget(nxt).wpm == job_wpm(nxt)

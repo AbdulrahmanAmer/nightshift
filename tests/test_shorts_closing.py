@@ -6,21 +6,24 @@ The audio is `FakeTts` tone bursts (no FFmpeg); the render's own audio assembly 
 
 import hashlib
 import json
+import shutil
 from pathlib import Path
 
 import pytest
 
 from ns_common.llm_client import FakeLlm
 from ns_common.pacing import PACING_WPM
-from ns_common.tts_client import FakeTts, wav_seconds
+from ns_common.tts_client import FakeTts, TtsItem, wav_seconds
 from ns_studio.context import FIXTURES_LLM, JobContext
+from ns_studio.media import voice as voice_mod
 from ns_studio.media.captions import CLOSE_GAP_S, HOOK_GAP_S, CaptionsStage, first_event_start
-from ns_studio.media.qc import BUCKET_TOLERANCE
+from ns_studio.media.qc import duration_check
 from ns_studio.media.voice import VoiceStage, narration_items, read_closings
 from ns_studio.stages import REGISTRY, inputs_hash, run_stage
 from ns_studio.text import stages_shorts as S
 from ns_studio.text.budget import short_budget
 from ns_studio.text.validators import load_banned
+from ns_studio.voice_wpm import record_voice_wpm
 from tests.helpers import make_combo, make_ctx
 
 LONG_SENTENCE = (
@@ -197,6 +200,10 @@ def test_a_part_without_a_closing_line_is_timed_as_before(tmp_home: Path):
 # ---- break-it round: the budget, the closing line's content, older jobs ------------------------------------
 
 BUCKETS = (35, 50, 75)
+DISTINCT_HOOK = " ".join(f"hook{i}" for i in range(12))  # not the opening words of any body: it is voiced
+MEASURED_WPM = 120.0  # a voice that speaks slower than the table (155 at standard pacing)
+MEASURED_SENTENCE = "The doorbell camera pings at three twelve every night and I never look at the clips."
+MEASURED_TEXT = " ".join([MEASURED_SENTENCE] * 12)
 
 
 def _story(words: int) -> str:
@@ -219,18 +226,78 @@ def _short_seconds(tmp_path: Path, wpm: float, body: int, hook: int, closing: in
     return total
 
 
+def _measured_ctx(tmp_home: Path, bucket: int, pacing: str) -> JobContext:
+    """A job planned after another job measured the voice slower than the pacing table says."""
+    first = make_ctx(tmp_home, combo=make_combo(length_bucket=bucket, pacing=pacing))
+    items = [TtsItem("p1", MEASURED_TEXT, "Ryan", 1.0)]
+    wav = first.subdir("audio") / "p1.wav"
+    FakeTts(wpm=MEASURED_WPM).speak(MEASURED_TEXT, "Ryan", 1.0, wav)
+    assert record_voice_wpm(first, "Ryan", items, {"p1": {"path": str(wav), "seconds": wav_seconds(wav)}})
+    return make_ctx(tmp_home, combo=make_combo(length_bucket=bucket, pacing=pacing))
+
+
+@pytest.mark.parametrize("source", ["table", "measured"])
 @pytest.mark.parametrize("pacing", sorted(PACING_WPM))
 @pytest.mark.parametrize("bucket", BUCKETS)
-def test_the_longest_body_with_hook_and_closing_stays_inside_the_qc_band(
-    tmp_home: Path, tmp_path: Path, bucket: int, pacing: str
+def test_the_longest_body_with_hook_and_the_closing_the_stage_picks_stays_inside_the_qc_band(
+    tmp_home: Path, tmp_path: Path, bucket: int, pacing: str, source: str
 ):
-    ctx = make_ctx(tmp_home, combo=make_combo(length_bucket=bucket, pacing=pacing))
+    """The model may write a 15-word closing line, but the budget reserves 10: for a body at the top of its
+    band `fit_closing` takes a line that fits, so the finished Short is not dropped by QC (NS-W406)."""
+    if source == "measured":
+        ctx = _measured_ctx(tmp_home, bucket, pacing)
+    else:
+        ctx = make_ctx(tmp_home, combo=make_combo(length_bucket=bucket, pacing=pacing))
     budget = S.ideas_budget(ctx)
-    wpm = PACING_WPM[pacing]
-    longest = _short_seconds(tmp_path, wpm, budget.max_words, S.HOOK_MAX_WORDS, 12)
-    assert longest <= bucket * (1 + BUCKET_TOLERANCE), (longest / bucket, budget)
-    target = _short_seconds(tmp_path, wpm, budget.words, S.HOOK_MAX_WORDS, 6)  # a short default line
-    assert bucket * (1 - BUCKET_TOLERANCE) <= target <= bucket * (1 + BUCKET_TOLERANCE), target / bucket
+    assert (budget.wpm == PACING_WPM[pacing]) == (source == "table")
+    hook = DISTINCT_HOOK
+    part = _part(1, _story(budget.max_words), hook=hook)
+    closing = S.fit_closing(ctx, part, hook, _story(S.CLOSING_MAX_WORDS), 1)
+    seconds = _short_seconds(tmp_path, budget.wpm, budget.max_words, S.HOOK_MAX_WORDS, len(closing.split()))
+    assert duration_check(seconds, "short", bucket).passed, (seconds / bucket, closing, budget)
+    target = _short_seconds(tmp_path, budget.wpm, budget.words, S.HOOK_MAX_WORDS, 6)  # a short default line
+    assert duration_check(target, "short", bucket).passed, target / bucket
+
+
+def test_a_budget_without_the_closing_allowance_let_the_longest_short_fail_qc(tmp_home: Path, tmp_path: Path):
+    """Before: closing_words=0, a body at the cap and a 12-word closing line gave 1.22 x the 50 s bucket."""
+    ctx = make_ctx(tmp_home)
+    old = short_budget(50, "standard", hook_words=S.HOOK_MAX_WORDS, wpm=155)
+    now = S.ideas_budget(ctx)
+    assert now.max_words < old.max_words
+    too_long = _short_seconds(tmp_path, 155, old.max_words, S.HOOK_MAX_WORDS, 12)
+    assert not duration_check(too_long, "short", 50).passed
+    assert duration_check(
+        _short_seconds(tmp_path, 155, now.max_words, S.HOOK_MAX_WORDS, 12), "short", 50
+    ).passed
+
+
+def test_a_long_closing_line_is_kept_when_the_body_leaves_room_for_it(tmp_home: Path):
+    ctx = make_ctx(tmp_home)
+    hook = DISTINCT_HOOK
+    twelve = " ".join(["word"] * 12)
+    part = _part(1, _story(S.ideas_budget(ctx).words), hook=hook)
+    assert S.fit_closing(ctx, part, hook, twelve, 1) == twelve
+
+
+def test_a_closing_line_the_short_has_no_room_for_is_replaced_by_a_default(tmp_home: Path):
+    ctx = make_ctx(tmp_home)
+    hook = DISTINCT_HOOK
+    fifteen = " ".join(["word"] * S.CLOSING_MAX_WORDS)
+    top = _part(1, _story(S.ideas_budget(ctx).max_words), hook=hook)
+    assert S.fit_closing(ctx, top, hook, fifteen, 2) == "Part 2 is up next."
+    far_over = _part(1, _story(S.ideas_budget(ctx).max_words * 2), hook=hook)
+    shortest = min(S.DEFAULT_SHORT_CLOSINGS + (S.default_closing(1, 1),), key=lambda c: len(c.split()))
+    assert S.fit_closing(ctx, far_over, hook, fifteen, 1) == shortest
+
+
+def test_the_hooks_stage_writes_the_line_that_fits(tmp_home: Path):
+    top = _part(1, _story(S.ideas_budget(make_ctx(tmp_home)).max_words))
+    answer = {"hooks": [DISTINCT_HOOK], "closing_line": _story(S.CLOSING_MAX_WORDS)}
+    ctx = _hooks_ctx(tmp_home, answer, [top])
+    REGISTRY["hooks"].run(ctx)
+    line = ctx.read_json("closings.json")["1"]
+    assert line == S.default_closing(1, 1) and len(line.split()) < S.CLOSING_MAX_WORDS
 
 
 def test_the_shorts_budget_counts_the_closing_line_the_audio_gets(tmp_home: Path):
@@ -296,3 +363,58 @@ def test_a_damaged_closings_file_means_no_closing_line_not_a_dead_voice_stage(tm
     assert read_closings(ctx) is None
     ctx.write_json("closings.json", {"1": "Follow."})
     assert read_closings(ctx) == {"1": "Follow."}
+
+
+# ---- review round: the cut fallback hook is not voiced a second time --------------------------------------
+
+
+def _no_ffmpeg(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`synthesize` without FFmpeg: the loudness pass copies, the measurements are stubs."""
+    monkeypatch.setattr(voice_mod, "loudnorm", lambda src, dst, **kw: shutil.copyfile(src, dst))
+    monkeypatch.setattr(voice_mod, "measure_lufs", lambda p: (-16.0, -3.0))
+    monkeypatch.setattr(voice_mod.ff, "duration_s", wav_seconds)
+
+
+def _spoken_words(ctx: JobContext, manifest: dict[str, dict]) -> list[str]:
+    """Every word the voice stage actually had spoken for the part, from the sidecar of each audio item."""
+    sidecars = [ctx.file(f"audio/{ident}.txt").read_text(encoding="utf-8") for ident in manifest]
+    return [w for text in sidecars for w in text.split()]
+
+
+def test_a_cut_fallback_hook_is_voiced_once_through_the_voice_stage(
+    tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The 12-word cut of a 26-word first sentence is the opening of the body: spoken as its own item it
+    would be heard, a gap, and then heard again in full (the effect, not only `parts.json["hook"]`)."""
+    _no_ffmpeg(monkeypatch)
+    ctx = _hooks_ctx(tmp_home, _all_too_long(), [_part(1)])
+    REGISTRY["hooks"].run(ctx)
+    part = ctx.read_json("parts.json")[0]
+    assert part["hook"] == " ".join(LONG_SENTENCE.split()[:12])  # the cut, as F-H53 asks
+    VoiceStage().run(ctx)
+    manifest = ctx.read_json("audio/manifest.json")
+    assert sorted(manifest) == ["p1", "p1_close"]  # no p1_hook: the body already opens with those words
+    said = _spoken_words(ctx, manifest)
+    assert said.count("Nobody") == 1 and said.count("house") == 1
+    assert said == BODY.split() + ctx.read_json("closings.json")["1"].split()
+
+
+def test_a_hook_that_opens_the_body_is_not_voiced_separately_however_it_is_written():
+    sentences_first = "Nobody told me that the house at the end of the road had been empty since ninety one."
+    body = f"{sentences_first} I went in anyway."
+    for hook in (
+        "Nobody told me that the house at the end of the road",  # the 12-word cut
+        "Nobody told me that the house,",  # a cut that ended on a comma
+        "NOBODY told me",  # case does not matter
+        "Nobody told me that the house at the end of the road had been empty since ninety one.",
+    ):
+        items = narration_items([_part(1, body, hook=hook)], "Ryan", 1.0)
+        assert [i.id for i in items] == ["p1"], hook
+
+
+def test_a_hook_the_body_does_not_open_with_is_still_voiced_first():
+    body = "The stairs were warm. I went up."
+    for hook in ("Nobody warned me about the stairs.", "The stairs were cold.", "I went up.", "warm"):
+        items = narration_items([_part(1, body, hook=hook)], "Ryan", 1.0)
+        assert [i.id for i in items] == ["p1", "p1_hook"], hook
+    assert [i.id for i in narration_items([_part(1, body, hook="")], "Ryan", 1.0)] == ["p1"]

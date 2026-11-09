@@ -12,6 +12,7 @@ from ns_common.devmode import is_dev
 from ns_common.embed_client import cosine, embed_window, from_blob, to_blob
 from ns_common.errors import NsError
 from ns_common.models import Idea, Part, Seo, VisualBeat
+from ns_common.pacing import PAUSE_PER_WORD_S, SHORT_QC_MARGIN
 from ns_common.textstats import est_seconds, split_sentences, word_count
 from ns_studio.context import JobContext
 from ns_studio.policy.meta import policy_list
@@ -28,7 +29,7 @@ __all__ = ["draw_banked_idea", "finalize_seo", "ideas_budget", "job_master_budge
 IDEA_SIMILARITY_LIMIT = 0.85
 HOOK_MAX_WORDS = 12  # spec 7.0: a hook is at most 12 words
 CLOSING_MAX_WORDS = 15  # spec 7.0: a closing line is at most 15 words
-SHORT_CLOSING_WORDS = 10  # the budget's allowance for the closing line the hooks stage adds after the body
+SHORT_CLOSING_WORDS = 10  # the budget reserves this many words for the closing line (see `fit_closing`)
 CLOSINGS_FILE = "closings.json"
 DEFAULT_SHORT_CLOSINGS = (
     "Follow for the next story.",
@@ -82,8 +83,10 @@ def pick_idea(ctx: JobContext, survivors: list[tuple[dict[str, Any], Any]]) -> t
     staying = [s for s in survivors if has_chapter_potential(s[0])]
     if not staying:
         ctx.log.warn(
-            "idea_no_chapter_potential", "no idea says how it stretches to chapters",
-            job_id=ctx.job_id, ideas=len(survivors),
+            "idea_no_chapter_potential",
+            "no idea says how it stretches to chapters",
+            job_id=ctx.job_id,
+            ideas=len(survivors),
         )
         staying = survivors
     if len(staying) == 1:
@@ -183,8 +186,11 @@ class IdeasStage:
 
         Writes `ideas_all.json` and the chosen `idea.json`; an invented idea is recorded in the `ideas` table.
         """
+        from ns_studio.policy import idea_check
+
         banked = draw_banked_idea(ctx)
         if banked is not None:
+            idea_check.require_safe_idea(ctx, banked)
             ctx.write_json("ideas_all.json", [banked])
             ctx.write_json("idea.json", banked)
             return
@@ -206,7 +212,21 @@ class IdeasStage:
         ]
         if not survivors:
             raise NsError("NS-E304", f"all {len(ideas)} ideas too similar to history")
-        idea, vec = pick_idea(ctx, survivors)
+        flagged: list[str] = []
+        chosen = None  # the pick (a master: with chapter potential) the unsafe-topic classifier accepts
+        remaining = list(survivors)
+        while remaining:
+            cand = pick_idea(ctx, remaining)
+            why = idea_check.idea_problem(ctx, cand[0])
+            if why is None:
+                chosen = cand
+                break
+            flagged.append(why)
+            ctx.log.warn("idea_unsafe", job_id=ctx.job_id, premise=cand[0]["premise"], detail=why)
+            remaining = [s for s in remaining if s is not cand]
+        if chosen is None:
+            raise NsError("NS-E601", f"all {len(survivors)} ideas were flagged as unsafe: {flagged[0]}")
+        idea, vec = chosen
         ctx.db.execute(
             "insert into ideas(channel, job_id, premise, twist, embedding, created_at, used) "
             "values (?,?,?,?,?,?,1)",
@@ -376,6 +396,31 @@ def closing_line(raw: Any, part_n: int, parts_total: int) -> str:
     return default_closing(part_n, parts_total)
 
 
+def fit_closing(ctx: JobContext, part: dict[str, Any], hook: str, closing: str, parts_total: int) -> str:
+    """`closing`, or a shorter line when it would carry the Short past QC's duration band.
+
+    The budget reserves `SHORT_CLOSING_WORDS` for the closing line, but the model may write up to
+    `CLOSING_MAX_WORDS`, and a body at the top of its band plus a long hook plus a long closing line lands
+    over the bucket by more than the 15 % QC allows (NS-W406, the Short is dropped). The hooks stage knows
+    the body and the hook, so it estimates the seconds the model's line leaves and takes the first of the
+    model's line, the part's default and the other defaults that stays within the budget's own +12 % margin;
+    when none does, the shortest default.
+    """
+    from ns_studio.media.captions import CLOSE_GAP_S, HOOK_GAP_S
+    from ns_studio.media.voice import hook_opens_body
+
+    per_word_s = 60.0 / job_wpm(ctx) + PAUSE_PER_WORD_S
+    bucket_s = float(ctx.combo.length_bucket or 50)
+    voiced_hook = 0 if hook_opens_body(hook, part["text"]) else word_count(hook)
+    spent_s = (word_count(part["text"]) + voiced_hook) * per_word_s + HOOK_GAP_S + CLOSE_GAP_S
+    room = int((bucket_s * (1 + SHORT_QC_MARGIN) - spent_s) / per_word_s)
+    candidates = [closing, default_closing(int(part["n"]), parts_total), *DEFAULT_SHORT_CLOSINGS]
+    for line in candidates:
+        if word_count(line) <= room:
+            return line
+    return min(candidates[1:], key=word_count)
+
+
 class HooksStage:
     """Shorts 6: five hooks per part, a judge picks one, plus a closing line per part (<= 15 words).
 
@@ -408,7 +453,7 @@ class HooksStage:
             out = call_json(
                 ctx, "hook", part_text=p["text"], next_part_text=nxt, part_n=p["n"], parts_total=len(parts)
             )
-            closings[str(p["n"])] = closing_line(out.get("closing_line"), p["n"], len(parts))
+            wanted = closing_line(out.get("closing_line"), p["n"], len(parts))
             hooks = [str(h).strip() for h in out["hooks"] if 0 < len(str(h).split()) <= HOOK_MAX_WORDS]
             hooks = hooks or [cut_words(split_sentences(p["text"])[0], HOOK_MAX_WORDS)]
             j = call_json(
@@ -420,6 +465,7 @@ class HooksStage:
             )
             idx = max(0, min(int(j["index"]), len(hooks) - 1))
             p["hook"] = hooks[idx]
+            closings[str(p["n"])] = fit_closing(ctx, p, p["hook"], wanted, len(parts))
             all_hooks.append(hooks)
         ctx.write_json(CLOSINGS_FILE, closings)
         ctx.write_json("hooks_all.json", all_hooks)
