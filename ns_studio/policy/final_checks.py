@@ -174,8 +174,36 @@ def _parse(ts: str) -> datetime | None:
     return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
 
 
+SHOT_FILES = ("clips/shots.json", "clips/shorts_shots.json")
+# A (source, clip id, item, relaxed) use: `relaxed` marks a pick made under the NS-W405 relaxation.
+ClipUse = tuple[str, str, str, bool]
+
+
+def picked_clip_uses(ctx: JobContext) -> list[ClipUse] | None:
+    """The clips this job picked, read from `clips/shots.json` and `clips/shorts_shots.json`.
+
+    `clip_usage` rows are only written by the outbox stage, after this gate, so the picks are the truth at
+    gate time (`blocked_for_job` reads the same files). None when the job has neither file.
+    """
+    found = [name for name in SHOT_FILES if ctx.file(name).exists()]
+    if not found:
+        return None
+    uses: list[ClipUse] = []
+    for name in found:
+        for item, entry in ctx.read_json(name).items():
+            for shot in entry.get("shots", []):
+                uses.append((str(shot["source"]), str(shot["clip_id"]), str(item), bool(shot.get("relaxed"))))
+    return uses
+
+
 class ClipReuse(Check):
-    """Spec 7.4: no clip twice in a video, 14 days per channel, 30 days across channels (E613)."""
+    """Spec 7.4: no clip twice in a video, 14 days per channel, 30 days across channels (E613).
+
+    The job's own picks come from the shot files (the `clip_usage` rows of a job do not exist yet when this
+    gate runs; they are the fallback for a job without shot files). A clip picked by the NS-W405 relaxation,
+    the documented last resort when every fresh clip is used up, is reported as a warning; any other breach
+    of the windows fails.
+    """
 
     name = "clip_reuse"
     gate = "final"
@@ -184,17 +212,24 @@ class ClipReuse(Check):
         self.clock = clock or (lambda: datetime.now(UTC))
 
     def run(self, ctx: JobContext) -> PolicyCheck:
-        """Check this job's `clip_usage` rows against earlier usage."""
+        """Check this job's clip picks against each other and against earlier usage."""
         now = self.clock()
-        mine = ctx.db.query("select source, clip_id, item from clip_usage where job_id=?", (ctx.job_id,))
-        problems: list[str] = []
+        uses = picked_clip_uses(ctx)
+        if uses is None:
+            rows = ctx.db.query("select source, clip_id, item from clip_usage where job_id=?", (ctx.job_id,))
+            uses = [(r["source"], r["clip_id"], r["item"], False) for r in rows]
+        problems: set[str] = set()
+        warnings: set[str] = set()
         seen: set[tuple[str, str, str]] = set()
-        for r in mine:
-            key = (r["source"], r["clip_id"], r["item"])
+        for source, clip_id, item, _relaxed in uses:
+            key = (source, clip_id, item)
             if key in seen:
-                problems.append(f"{r['source']}/{r['clip_id']} used twice in {r['item']}")
+                (warnings if self._has_relaxed(uses, key) else problems).add(
+                    f"{source}/{clip_id} used twice in {item}"
+                )
             seen.add(key)
-        for source, clip_id in {(r["source"], r["clip_id"]) for r in mine}:
+        for source, clip_id in {(s, c) for s, c, _i, _r in uses}:
+            all_relaxed = all(rl for s, c, _i, rl in uses if (s, c) == (source, clip_id))
             others = ctx.db.query(
                 "select channel, job_id, used_at from clip_usage "
                 "where source=? and clip_id=? and job_id != ?",
@@ -208,8 +243,21 @@ class ClipReuse(Check):
                 limit = timedelta(days=SAME_CHANNEL_DAYS if same else OTHER_CHANNEL_DAYS)
                 if now - when < limit:
                     where = "this channel" if same else f"channel {o['channel']}"
-                    problems.append(f"{source}/{clip_id} already used on {where} by {o['job_id']}")
-        return fail("; ".join(sorted(set(problems)))) if problems else ok(f"{len(mine)} clip uses checked")
+                    (warnings if all_relaxed else problems).add(
+                        f"{source}/{clip_id} already used on {where} by {o['job_id']}"
+                    )
+        if problems:
+            return fail("; ".join(sorted(problems)))
+        if warnings:
+            detail = "NS-W405 warning, relaxed pick: " + "; ".join(sorted(warnings))
+            ctx.log.warn("clip_reuse_relaxed", code="NS-W405", job_id=ctx.job_id, detail=detail)
+            return ok(f"{len(uses)} clip uses checked; {detail}")
+        return ok(f"{len(uses)} clip uses checked")
+
+    @staticmethod
+    def _has_relaxed(uses: list[ClipUse], key: tuple[str, str, str]) -> bool:
+        """True when some use of `key` was a relaxed pick (the repeat inside a video is the relaxation)."""
+        return any(rl for s, c, i, rl in uses if (s, c, i) == key)
 
 
 # ---------------------------------------------------------------- audio
