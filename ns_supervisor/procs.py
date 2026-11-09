@@ -34,7 +34,7 @@ LAUNCHER_ONLY_ENV = ("NS_DASHBOARD_NO_HOST",)
 
 
 def scrubbed(env: Mapping[str, str], also: Iterable[str] = ()) -> dict[str, str]:
-    """A copy of `env` without `LAUNCHER_ONLY_ENV` and the names in `also` (every child env goes through this)."""
+    """A copy of `env` without `LAUNCHER_ONLY_ENV` and the names in `also` (every child env uses it)."""
     drop = {*LAUNCHER_ONLY_ENV, *also}
     return {k: v for k, v in env.items() if k not in drop}
 
