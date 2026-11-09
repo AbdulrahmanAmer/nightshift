@@ -108,6 +108,9 @@ class Wizard:
         ctx = self.ctx
         ctx.resumed = ctx.state.any_done()
         ctx.state.begin(ctx.profile, ctx.dev_mode)
+        dropped = ctx.reconcile_flags()
+        if dropped:
+            ctx.log.warn("stale_flags_dropped", f"flags of an install that no longer exists: {dropped}")
         ctx.log.info(
             "wizard_start", resumed=ctx.resumed, simulate=ctx.simulate, unattended=ctx.unattended,
             dev_mode=ctx.dev_mode,
@@ -159,6 +162,14 @@ class Wizard:
             t0 = time.perf_counter()
             try:
                 if not step.check(ctx):
+                    # the work starts: what said "finished" (the step's state, its flags and those of the
+                    # steps that test its result) is cleared first, so a run that dies half way leaves nothing
+                    # that a rerun could take for the finished work
+                    if ctx.state.is_done(step.id):
+                        ctx.state.mark(step.id, "pending")
+                    cleared = ctx.clear_flags(*step.clears_on_run)
+                    if cleared:
+                        ctx.log.info("flags_cleared", step=step.id, flags=cleared)
                     step.run(ctx)
                 step.verify(ctx)
             except Exception as exc:

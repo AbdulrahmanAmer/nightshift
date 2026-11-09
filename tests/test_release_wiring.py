@@ -218,13 +218,8 @@ def test_a_rerun_refreshes_the_venvs_and_the_smoke_test_when_the_manifest_versio
     from installer.stage2.testing import example_answers, make_test_context
 
     ctx = make_test_context(tmp_path, raw_answers=example_answers(), resolve=True)
-    for name in ("studio", "supervisor"):
-        py = ctx.venv_python(name)
-        py.parent.mkdir(parents=True)
-        py.write_bytes(b"MZ")
-    for name, value in (("venvs_installed", True), ("venvs_version", ctx.manifest.version),
-                        ("venvs_app", str(ctx.app_path)), ("smoke", "passed"),
-                        ("smoke_version", ctx.manifest.version)):
+    S04Venvs().run(ctx)                       # packages in both venvs, not just an interpreter
+    for name, value in (("smoke", "passed"), ("smoke_version", ctx.manifest.version)):
         ctx.set_flag(name, value)
     assert S04Venvs().check(ctx) and S08Smoke().check(ctx)
     newer = ctx.manifest.model_copy(update={"version": ctx.manifest.version + ".1"})
@@ -237,12 +232,7 @@ def test_the_venvs_are_refreshed_when_the_program_folder_moved(tmp_path):
     from installer.stage2.testing import example_answers, make_test_context
 
     ctx = make_test_context(tmp_path, raw_answers=example_answers(), resolve=True)
-    for name in ("studio", "supervisor"):
-        py = ctx.venv_python(name)
-        py.parent.mkdir(parents=True)
-        py.write_bytes(b"MZ")
-    ctx.set_flag("venvs_installed", True)
-    ctx.set_flag("venvs_version", ctx.manifest.version)
+    S04Venvs().run(ctx)
     ctx.set_flag("venvs_app", str(tmp_path / "somewhere else"))
     assert not S04Venvs().check(ctx)                      # editable installs still point at the old folder
     ctx.set_flag("venvs_app", str(ctx.app_path))

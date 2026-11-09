@@ -38,6 +38,7 @@ class S05OpencodePrewarm(Step):
     id = "s05_opencode_prewarm"
     title = "Nightshift Code check"
     optional = True
+    clears_on_run = ("opencode_ok", "smoke", "smoke_version")
 
     def skip_reason(self, ctx: StepContext) -> str | None:
         """Only when the operator chose Nightshift Code (a dev install never does: no OpenCode download)."""

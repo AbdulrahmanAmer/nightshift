@@ -110,6 +110,7 @@ class S01Questions(Step):
 
     id = "s01_questions"
     title = "Questions"
+    clears_on_run = ("smoke", "smoke_version")          # other answers (tier, voice, code): test again
 
     # ---- helpers ----
     @staticmethod

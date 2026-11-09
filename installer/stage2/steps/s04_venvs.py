@@ -30,6 +30,42 @@ UV_CACHE_NEED_DEV_GB = 2
 #: Used only by a manifest without ``python.spacy_wheel`` (no hash to check); the repo manifest pins it.
 SPACY_MODEL_VERSION = "3.8.0"
 
+#: What each venv must be able to load before s04 may call it done (``import:`` loads the module, ``find:``
+#: only looks it up: spaCy and torch take seconds to load). The first-party packages come from the editable
+#: install of the app, the part a killed run leaves undone.
+VENV_PROBES: dict[str, tuple[str, ...]] = {
+    "studio": ("import:ns_common", "import:ns_studio", "import:ns_supervisor", "find:spacy"),
+    "supervisor": ("import:ns_common", "import:ns_supervisor", "import:ns_dashboard", "find:fastapi",
+                   "find:uvicorn"),
+    "tts": ("import:ns_common", "import:ns_tts", "find:torch"),
+}
+
+#: Run by ``python -I -c``: exits 1 and names what could not be loaded. ``-I`` keeps the current folder and
+#: the user's site-packages out of ``sys.path``; without it ``import ns_studio`` succeeds in an empty venv
+#: when the working directory is the program folder, which is the folder the packages come from.
+PROBE_CODE = """\
+import importlib
+import importlib.util
+import sys
+
+bad = []
+for spec in sys.argv[1:]:
+    kind, _, name = spec.partition(":")
+    try:
+        if kind == "import":
+            importlib.import_module(name)
+            found = True
+        else:
+            found = importlib.util.find_spec(name) is not None
+    except Exception:
+        found = False
+    if not found:
+        bad.append(name)
+if bad:
+    sys.stderr.write("cannot load: " + ", ".join(bad))
+    sys.exit(1)
+"""
+
 
 def spacy_wheel_url(model: str, version: str = SPACY_MODEL_VERSION) -> str:
     """Release URL of the spaCy model wheel (spec 21.3)."""
@@ -58,23 +94,61 @@ def check_cache_space(ctx: StepContext) -> None:
         )
 
 
+def venv_names(ctx: StepContext) -> tuple[str, ...]:
+    """The environments this install has: studio and supervisor, and tts when the fallback is flagged."""
+    return ("studio", "supervisor", "tts") if ctx.flag("tts_fallback", False) else ("studio", "supervisor")
+
+
+def probe_argv(ctx: StepContext, name: str) -> list[str]:
+    """The command that asks the venv ``name`` whether it holds what the install put there."""
+    specs = list(VENV_PROBES[name])
+    if name == "studio":
+        specs.append(f"find:{ctx.manifest.spacy_model}")
+    return [str(ctx.venv_python(name)), "-I", "-c", PROBE_CODE, *specs]
+
+
+def cannot_load(ctx: StepContext, name: str) -> str | None:
+    """None when the venv ``name`` loads the product, else why not (the interpreter, or what is missing).
+
+    This asks the environment itself. A flag, or an interpreter that exists, says nothing about the packages:
+    an install killed after ``uv venv`` leaves an interpreter with an empty site-packages (D-15).
+    """
+    if not ctx.venv_python(name).exists():
+        return f"the {name} environment has no interpreter"
+    res = ctx.runner.run(
+        probe_argv(ctx, name), cwd=ctx.paths.home, timeout=300, tag=f"{name} import check",
+        meta={"venv": name},
+    )
+    if res.ok:
+        return None
+    return f"the {name} environment cannot load Nightshift: {res.text[-200:] or 'no answer'}"
+
+
 class S04Venvs(Step):
     """Create and fill the Python environments."""
 
     id = "s04_venvs"
     title = "Python environments"
+    # the done-state goes before the work starts and comes back only after every venv is filled; a new set of
+    # environments also voids the smoke test that tested the old ones
+    clears_on_run = ("venvs_installed", "venvs_version", "venvs_app", "tts_venv_installed", "smoke",
+                     "smoke_version")
 
     def check(self, ctx: StepContext) -> bool:
-        """Environments exist and were filled (and the tts venv too when the fallback is flagged)."""
+        """The environments hold the packages: recorded as done for this version and program folder, and the
+        interpreters of every venv load the product (a probe, not the flag)."""
         if not ctx.flag("venvs_installed", False) or ctx.flag("venvs_version") != ctx.manifest.version:
             return False
         if ctx.flag("venvs_app") != str(ctx.app_path):
             return False                    # the editable installs point at another program folder
-        if not (ctx.venv_python("studio").exists() and ctx.venv_python("supervisor").exists()):
+        if ctx.flag("tts_fallback", False) and not ctx.flag("tts_venv_installed", False):
             return False
-        return not ctx.flag("tts_fallback", False) or (
-            bool(ctx.flag("tts_venv_installed", False)) and ctx.venv_python("tts").exists()
-        )
+        for name in venv_names(ctx):
+            problem = cannot_load(ctx, name)
+            if problem is not None:
+                ctx.log.info("venv_check_failed", venv=name, why=problem)
+                return False
+        return True
 
     def _venv(self, ctx: StepContext, name: str) -> None:
         py = ctx.venv_python(name)
@@ -135,20 +209,19 @@ class S04Venvs(Step):
 
         if ctx.flag("tts_fallback", False):
             ensure_tts_venv(ctx)
+        # the done-state is written last, after every venv was filled (the wizard cleared it before the work)
         ctx.set_flag("venvs_installed", True)
         ctx.set_flag("venvs_version", ctx.manifest.version)
         ctx.set_flag("venvs_app", str(ctx.app_path))
 
     def verify(self, ctx: StepContext) -> None:
-        """The venv interpreters exist and the studio venv imports the app."""
+        """Every venv has its interpreter and loads the product (studio, supervisor and the flagged tts)."""
         for name in ("studio", "supervisor"):
             if not ctx.venv_python(name).exists():
                 raise make_error("NS-E105", f"{name} environment is missing")
-        res = ctx.runner.run(
-            [str(ctx.venv_python("studio")), "-c", "import ns_common, ns_studio, ns_supervisor"],
-            cwd=ctx.app_path, timeout=300, tag="studio import check",
-        )
-        if not res.ok:
-            raise make_error("NS-E105", f"the studio environment cannot import Nightshift: {res.text[-200:]}")
         if ctx.flag("tts_fallback", False) and not ctx.venv_python("tts").exists():
             raise make_error("NS-E108", "the tts environment was not created")
+        for name in venv_names(ctx):
+            problem = cannot_load(ctx, name)
+            if problem is not None:
+                raise make_error("NS-E108" if name == "tts" else "NS-E105", problem)

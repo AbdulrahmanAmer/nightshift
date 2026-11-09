@@ -166,6 +166,8 @@ class S08Smoke(Step):
 
     id = "s08_smoke"
     title = "Test everything"
+    # "passed" goes before the test starts: a run killed during `ns verify` must not leave the old pass
+    clears_on_run = ("smoke", "smoke_version")
 
     def check(self, ctx: StepContext) -> bool:
         """True after a passing run."""

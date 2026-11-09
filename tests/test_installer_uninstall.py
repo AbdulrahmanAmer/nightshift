@@ -1,5 +1,6 @@
 """C1: installer/uninstall.ps1 against a temporary home folder (system integration skipped)."""
 
+import json
 import os
 import shutil
 import subprocess
@@ -240,6 +241,33 @@ def test_uninstall_removes_the_secrets_file(tmp_path: Path):
     proc = _run(home, "-SkipSystem")
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert not (home / "config" / "secrets.dpapi").exists() and (home / "config").exists()
+
+
+def test_uninstall_removes_the_wizard_flags_but_keeps_the_choices(tmp_path: Path):
+    """D-15: wizard_flags.json kept ``venvs_installed`` and ``smoke: passed`` of the install that was removed,
+    so the next setup skipped its venvs and its smoke test. The flags go with the install they describe."""
+    home = _make_home(tmp_path)
+    flags = {"venvs_installed": True, "smoke": "passed", "smoke_version": "0.1.12", "_install": "2026-11-09"}
+    (home / "config" / "wizard_flags.json").write_text(json.dumps(flags), encoding="utf-8")
+    (home / "config" / "answers.json").write_text("{}", encoding="utf-8")
+    (home / "config" / "answers.source.json").write_text("{}", encoding="utf-8")
+    (home / "config" / "runtime.json").write_text("{}", encoding="utf-8")
+    proc = _run(home, "-SkipSystem")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert not (home / "config" / "wizard_flags.json").exists()
+    assert "wizard_flags.json" in proc.stdout
+    for kept in ("answers.json", "answers.source.json", "runtime.json"):
+        assert (home / "config" / kept).exists(), kept
+
+
+def test_the_dry_run_names_the_wizard_flags_and_keeps_them(tmp_path: Path):
+    home = _make_home(tmp_path)
+    flag_file = home / "config" / "wizard_flags.json"
+    flag_file.write_text("{}", encoding="utf-8")
+    proc = _run(home, "-SkipSystem", "-DryRun")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert flag_file.exists()
+    assert f"[dry-run] delete {flag_file}" in proc.stdout
 
 
 def test_uninstall_removes_the_install_state_but_keeps_the_answers(tmp_path: Path):

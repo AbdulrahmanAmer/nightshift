@@ -221,7 +221,9 @@ if (Test-Path -LiteralPath $secretsFile) {
 
 # The install state describes the program being removed; the next setup must run its steps again (the
 # answers and channels stay in config). The window trusted this file and showed Done over an empty folder.
-foreach ($leaf in @('install_state.json', 'install_state.json.bak')) {
+# wizard_flags.json is the same record in smaller print (venvs_installed, smoke: passed, the shortcuts, the
+# nightly task): kept, it made the next setup skip its venvs and its smoke test over empty folders (D-15).
+foreach ($leaf in @('install_state.json', 'install_state.json.bak', 'wizard_flags.json')) {
     $stateFile = Join-Path (Join-Path $nsHome 'config') $leaf
     if (Test-Path -LiteralPath $stateFile) {
         if ($script:IsDry) { Show-Action "delete $stateFile" }

@@ -150,6 +150,7 @@ class S07Configs(Step):
 
     id = "s07_configs"
     title = "Settings and secrets"
+    clears_on_run = ("smoke", "smoke_version")          # the smoke test reads the configs written here
 
     def check(self, ctx: StepContext) -> bool:
         """True when every config exists and no answers file still holds a key."""
