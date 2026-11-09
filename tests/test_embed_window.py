@@ -120,6 +120,8 @@ def test_a_master_first_job_in_this_language_stores_its_embedding(
     run_job(ctx)
     revised = ctx.read_json("story_revised.json")
     ctx.write_json("story_revised.json", {**revised, "chapters": chapters_for(lang)})
+    # these short fixture chapters are far below the 9:00 floor; the floor has its own tests (test_master_rules)
+    ctx.write_json("plan_meta.json", {**ctx.read_json("plan_meta.json"), "min_words": 0})
     ctx.services.embed = FakeEmbed()  # the stage must not exceed 512 tokens
     REGISTRY["continuity"].run(ctx)
     story = Story.model_validate(ctx.read_json("story.json"))

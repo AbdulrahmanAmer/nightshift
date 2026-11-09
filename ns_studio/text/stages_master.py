@@ -27,7 +27,6 @@ from ns_common.textstats import split_sentences, word_count
 from ns_studio.context import JobContext
 from ns_studio.stages import Tenant, register
 from ns_studio.text.budget import (
-    PACING_WPM,
     SHORT_TOLERANCE,
     chapter_budget,
     distribute_words,
@@ -37,7 +36,15 @@ from ns_studio.text.budget import (
 from ns_studio.text.models_local import ChapterDraft
 from ns_studio.text.prompts import call_json, call_text, parse_model
 from ns_studio.text.seo import finalize_seo, finalize_seo_long
-from ns_studio.text.stages_shorts import critic_numbers, job_master_budget, now_iso, repair_beats
+from ns_studio.text.stages_shorts import (
+    CLOSING_MAX_WORDS,
+    HOOK_MAX_WORDS,
+    closing_is_clean,
+    critic_numbers,
+    job_master_budget,
+    now_iso,
+    repair_beats,
+)
 from ns_studio.text.story_profile import profile_of
 from ns_studio.text.validators import (
     check_banned,
@@ -50,6 +57,7 @@ from ns_studio.text.validators import (
     validate_chapter,
 )
 from ns_studio.variation.short_draw import draw_short_combos, load_short_combos
+from ns_studio.voice_wpm import job_wpm
 
 __all__ = ["expand_chapter", "expansion_plan", "resolve_moments"]
 
@@ -64,8 +72,6 @@ MASTER_STAGES = [
     "visual_plan_long",
     "seo_shorts",
 ]
-HOOK_MAX_WORDS = 12
-CLOSING_MAX_WORDS = 15
 SIZE_TOLERANCE = SHORT_TOLERANCE  # a Short moment fits its bucket when within the QC band (+-15 %)
 HOOK_CONSTRAINTS = "Max {max} words. Must make sense without the rest of the story. Style: {style}"
 TITLE_CONSTRAINTS ="At most 70 characters. {kw!r} in the first 40 characters. Never claim the story is real."
@@ -77,7 +83,7 @@ DEFAULT_CLOSINGS = (
 
 
 def _wpm(ctx: JobContext) -> int:
-    return PACING_WPM[ctx.combo.pacing]
+    return job_wpm(ctx)  # the voice's measured pace when a job has measured it, else the pacing table
 
 
 def _kw(ctx: JobContext) -> str:
@@ -271,6 +277,37 @@ class ChaptersCriticStage:
         )
 
 
+FLOOR_MAX_EXPANSIONS = 3  # +120..200 words each, tried before the 9:00 floor fails the story
+
+
+def enforce_word_floor(ctx: JobContext, total_words: int) -> None:
+    """Spec 7.0: a story below `plan_meta.min_words` (the 9:00 planning floor) is lengthened, or refused.
+
+    The shortest chapter gets `expand_chapter` (+120..200 words, the llama tenant is already held by the
+    continuity stage), up to `FLOOR_MAX_EXPANSIONS` times; a story still below the floor raises NS-E303.
+    Without `plan_meta.json` (or a `min_words` in it) there is no floor to hold.
+    """
+    try:
+        floor = int(ctx.read_json("plan_meta.json")["min_words"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return
+    expansions = 0
+    while total_words < floor:
+        if ctx.owner_script or expansions >= FLOOR_MAX_EXPANSIONS:  # the owner's words are never extended
+            raise NsError(
+                "NS-E303",
+                f"story has {total_words} words after {expansions} expansions, 9:00 floor is {floor}",
+            )
+        chapter, add_words = expansion_plan(load_story(ctx), floor - total_words)
+        ctx.log.warn(
+            "story_below_floor", "story is below the 9:00 floor: expanding its shortest chapter",
+            job_id=ctx.job_id, words=total_words, floor=floor, chapter=chapter, add_words=add_words,
+        )
+        expand_chapter(ctx, chapter, add_words)
+        expansions += 1
+        total_words = sum(c.word_count for c in load_story(ctx).chapters)
+
+
 def pairwise_continuity(ctx: JobContext) -> bool:
     """True when continuity runs on chapter pairs: the `cpu-dev` profile or a context of 8K tokens or less."""
     return ctx.runtime.profile == "cpu-dev" or ctx.runtime.llama.flags.ctx <= 8192
@@ -282,6 +319,9 @@ class ContinuityStage:
     name: str = "continuity"
     tenant: Tenant = "llama"
     uses_embed: bool = True  # calls the embed service; the orchestrator leases it around run()
+    # plan_meta.json (the 9:00 floor `enforce_word_floor` reads) is not an input on purpose: it only changes
+    # when the plan stage reruns, which rewrites the chapters and so `story_revised.json` as well. Declared,
+    # it would change the stored hash of every older job and `--resume` would redo this LLM stage.
     inputs: tuple[str, ...] = ("story_revised.json", "critic.json")
     outputs: tuple[str, ...] = ("story.json", "continuity.json")
 
@@ -369,6 +409,7 @@ class ContinuityStage:
         )
         ctx.write_json("continuity.json", {"pairwise": pairwise, "issues": issues, "revised": sorted(fixes)})
         ctx.write_json("story.json", story.model_dump())
+        enforce_word_floor(ctx, total_words)  # may rewrite story.json and the stories row
 
 
 class SeoLongStage:
@@ -583,7 +624,7 @@ class ShortsSelectStage:
             )
             chosen = hooks[max(0, min(int(judged["index"]), len(hooks) - 1))]
             closing = str(out["closing_line"]).strip()
-            if not closing or len(closing.split()) > CLOSING_MAX_WORDS:
+            if not closing or len(closing.split()) > CLOSING_MAX_WORDS or not closing_is_clean(closing):
                 closing = DEFAULT_CLOSINGS[(k - 1) % len(DEFAULT_CLOSINGS)]
             item = ShortsPlanItem(
                 k=k,
