@@ -28,6 +28,7 @@ import hashlib
 import io
 import json
 import zipfile
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path, PurePosixPath
@@ -75,6 +76,17 @@ TREES: dict[str, str] = {
         "Format is strict and Library > Formats saves the owner's edited formats with the full current model."
     ),
 }
+
+#: The files INSTALL.cmd's setup window rewrites on its own, before it copies the new program (it records the
+#: new version and the update steps in install_state.json as soon as it opens; a mode switch drops
+#: wizard_flags.json and runtime.json). The window takes these as they were when it opened and hands them to
+#: `appcopy.install_app`, so the copy holds what the older program wrote, not what the window made of it.
+SETUP_TOUCHES: tuple[str, ...] = (
+    "install_state.json",
+    "install_state.json.bak",
+    "wizard_flags.json",
+    "runtime.json",
+)
 
 #: Files under `<home>\config` the code names and the copy does NOT hold, with why (a test keeps this list and
 #: FILES covering every name the code mentions, so a file added in a later release has to be decided here).
@@ -157,10 +169,14 @@ def tracked_names(config: Path) -> list[str]:
     return names
 
 
-def capture(config: Path) -> dict[str, bytes]:
-    """The bytes of every tracked file. `SnapshotError` naming the file when one cannot be read."""
+def capture(config: Path, only: Iterable[str] | None = None) -> dict[str, bytes]:
+    """The bytes of every tracked file (with `only`: of those among them). `SnapshotError` naming the file
+    when one cannot be read."""
     out: dict[str, bytes] = {}
+    wanted = None if only is None else set(only)
     for name in tracked_names(config):
+        if wanted is not None and name not in wanted:
+            continue
         try:
             out[name] = read_bytes_retry(_path(config, name))
         except OSError as e:
@@ -240,7 +256,12 @@ def save(
     now: datetime | None = None,
 ) -> Snapshot:
     """Publish a copy at `path` (atomically); the copy there stays whole unless this one is complete."""
-    data = build(files, version=version, fingerprint=fingerprint, taken_by=taken_by, now=now)
+    return publish(path, build(files, version=version, fingerprint=fingerprint, taken_by=taken_by, now=now))
+
+
+def publish(path: Path, data: bytes) -> Snapshot:
+    """Write a zip made by `build` to `path` (atomically). Splitting `build` from `publish` lets a caller
+    check that a copy can be made, do something else, and only then replace the copy that is there."""
     try:
         sweep_stale_tmp(path.parent)
         write_bytes_atomic(path, data)
@@ -294,6 +315,26 @@ def restore(config: Path, files: dict[str, bytes], *, live: dict[str, bytes], re
         _undo(config, live, written, removed)
         raise SnapshotError(f"could not restore {current}: {e}") from e
     return Restored(written, [n for n in written if live.get(n) != files[n]], removed)
+
+
+def set_aside(
+    config: Path, files: dict[str, bytes], *, live: dict[str, bytes]
+) -> tuple[list[str], list[str]]:
+    """Delete every tracked file that exists now (`live`) and is not in `files`: (deleted, could not delete).
+
+    Only for the caller that has kept those files elsewhere. A file that stays is reported, never fatal.
+    """
+    removed: list[str] = []
+    stayed: list[str] = []
+    for name in live:
+        if name in files:
+            continue
+        try:
+            _path(config, name).unlink(missing_ok=True)
+            removed.append(name)
+        except OSError:
+            stayed.append(name)
+    return removed, stayed
 
 
 def _undo(config: Path, live: dict[str, bytes], written: list[str], removed: list[str]) -> None:

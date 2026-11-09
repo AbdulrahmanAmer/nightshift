@@ -364,7 +364,8 @@ def _put_settings_back(paths: Paths, files: dict[str, bytes], log: NsLogger, cop
     does not). Returns the sentence that goes into the error."""
     try:
         live = config_snapshot.capture(paths.config)
-        done = config_snapshot.restore(paths.config, files, live=live, remove_extra=False)
+        # (a settings file only the failed new version made goes too: the rollback does the same)
+        done = config_snapshot.restore(paths.config, files, live=live, remove_extra=True)
     except config_snapshot.SnapshotError as e:
         log.error("settings_restore_failed", str(e))
         where = (
@@ -376,7 +377,12 @@ def _put_settings_back(paths: Paths, files: dict[str, bytes], log: NsLogger, cop
         return f" Your settings files could not be put back ({e}).{where}"
     if copy is not None:
         config_snapshot.discard(copy)       # its program backup is gone: the old program is back in place
-    log.info("settings_restored_after_failed_update", files=done.written, changed=done.changed)
+    log.info(
+        "settings_restored_after_failed_update",
+        files=done.written,
+        changed=done.changed,
+        removed=done.removed,
+    )
     return " Your settings files were put back as they were before the update."
 
 
@@ -453,50 +459,74 @@ def _swap_settings(
     out of a bad update and is not stopped by its settings."""
     notes: list[str] = []
     restored_version = current_version(app)
-    kept = False
+    zip_path = config_snapshot.path_for(app)
+    # The forward copy is built (and read back) first so that we know it can be made, but it replaces the
+    # zip only AFTER the restore worked: the zip holds the original copy for the older program, and a restore
+    # that fails half way must leave it there.
+    forward: bytes | None = None
     if live is not None:
         try:
-            config_snapshot.save(
-                config_snapshot.path_for(app),
-                live,
-                version=left_version,
-                fingerprint=left_fingerprint,
-                taken_by="rollback",
+            forward = config_snapshot.build(
+                live, version=left_version, fingerprint=left_fingerprint, taken_by="rollback"
             )
-            kept = True
         except config_snapshot.SnapshotError as e:
             log.warn("settings_copy_failed", str(e))
             notes.append(f"could not keep a copy of the current settings for going forward again: {e}")
+
+    def keep_forward_copy() -> bool:
+        if forward is None:
+            return False
+        try:
+            config_snapshot.publish(zip_path, forward)
+        except config_snapshot.SnapshotError as e:
+            log.warn("settings_copy_failed", str(e))
+            notes.append(f"could not keep a copy of the current settings for going forward again: {e}")
+            return False
+        return True
+
     if copy is None or live is None:
+        keep_forward_copy()
         why = why_not if copy is None else live_error
         log.warn("settings_not_restored", why)
         no = f"Your settings files could not be restored: {why}. They stay as they are now."
         return f"{no} {SETTINGS_BACKUP_HINT}", notes
     try:
-        done = config_snapshot.restore(
-            paths.config, copy.files, live=live, remove_extra=kept and bool(copy.files)
-        )
+        done = config_snapshot.restore(paths.config, copy.files, live=live, remove_extra=False)
     except config_snapshot.SnapshotError as e:
         log.error("settings_restore_failed", str(e))
         no = f"Your settings files could not be restored: {e}. They stay as they are now."
-        return f"{no} {SETTINGS_BACKUP_HINT}", notes
+        left = (
+            f"The copy made for {restored_version} is still in {zip_path} "
+            f"(a zip: the files in its config folder are what {restored_version} wrote)."
+        )
+        return f"{no} {left} {SETTINGS_BACKUP_HINT}", notes
+    kept = keep_forward_copy()
+    if kept:  # files the older version never had leave only now that they are saved for going forward
+        done.removed, stayed = config_snapshot.set_aside(paths.config, copy.files, live=live)
+        if stayed:
+            notes.append(f"could not set aside (still there): {_names(stayed)}")
     log.info("settings_restored", files=done.written, changed=done.changed, set_aside=done.removed)
+    back = "back as " + (
+        f"{restored_version} had them when you went back"
+        if copy.taken_by == "rollback"
+        else f"{restored_version} left them"
+    )
     sentence = (
-        f"Your settings files are back as {restored_version} left them (copy made "
-        f"{copy.created.replace('T', ' ')}): {_names(done.written)}."
+        f"Your settings files are {back} (copy made {copy.created.replace('T', ' ')}): "
+        f"{_names(done.written)}."
     )
     if not done.written:
         sentence = (
-            f"No settings files were saved with {restored_version} (there were none when the update was "
+            f"No settings files were saved with {restored_version} (there were none when the copy was "
             "made), so none were restored."
         )
     elif done.changed:
         sentence += (
-            f" These had changed since the update and went back (anything you changed in them is lost): "
-            f"{_names(done.changed)}."
+            " These were different from the copy and went back to it (the update itself saved some of them "
+            f"again; anything you changed in them is lost): {_names(done.changed)}."
         )
     else:
-        sentence += " None of them had changed since the update."
+        sentence += " None of them was different from the copy."
     if done.removed:
         notes.append(f"set aside, because {restored_version} never had them: {_names(done.removed)}")
     if kept:
@@ -525,6 +555,7 @@ def update_app(zip_path: Path, app: Path, env: UpdateEnv, *, paths: Paths) -> Up
     old_version = current_version(app)
     new, prev = _sibling(app, ".new"), _sibling(app, ".prev")
     replaced = current_version(prev) if prev.is_dir() else ""
+    had_copy = replaced != "" and config_snapshot.path_for(app).is_file()
     log.info("update_start", old=old_version, new=new_version, zip=str(zip_path))
     env.stop()
     saved: config_snapshot.Snapshot | None = None
@@ -579,8 +610,9 @@ def update_app(zip_path: Path, app: Path, env: UpdateEnv, *, paths: Paths) -> Up
         notes.append(f"settings files saved for ns update --rollback: {_names(sorted(saved.files))}")
     if replaced:
         notes.append(
-            f"the earlier program backup ({replaced}) and its settings copy were replaced: "
-            f"ns update --rollback now goes back to {old_version} only"
+            f"the earlier program backup ({replaced})"
+            + (" and its settings copy were" if had_copy else " was")
+            + f" replaced: ns update --rollback now goes back to {old_version} only"
         )
     log.info("update_done", old=old_version, new=new_version)
     return UpdateResult(old_version, new_version, notes, release_notes(app, new_version))

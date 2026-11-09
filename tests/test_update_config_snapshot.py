@@ -155,11 +155,11 @@ def test_the_snapshot_is_taken_before_the_new_program_runs_and_lives_next_to_the
     seen: dict[str, bytes] = {}
 
     class Spy(NewVersion):
-        def sync(self, a: Path) -> None:
+        def sync(self, app: Path) -> None:
             snap = snapshot_file(app)
             assert snap.is_file()  # already there when the new tree is synced
             seen.update(config_snapshot.read(snap).files)
-            super().sync(a)
+            super().sync(app)
 
     res = update.update_app(make_zip(tmp_path), app, Spy(paths).env(), paths=paths)
     assert snapshot_file(app).parent == (tmp_path / "NightShift.prev").parent
@@ -215,6 +215,8 @@ def test_a_second_rollback_goes_forward_with_the_settings_the_owner_had_just_bef
     assert (app / "VERSION").read_text(encoding="utf-8").strip() == "0.2.0"
     assert read_config(paths) == just_before  # nothing the owner did is gone for good
     assert "runtime.json" in res.settings
+    assert "had them when you went back" in res.settings  # going forward is not "as the update left them"
+    assert "since the update" not in res.settings
     update.rollback_app(app, Env().env(), paths=paths)  # and back once more
     assert read_config(paths) == before
 
@@ -226,6 +228,24 @@ def test_a_home_without_settings_files_updates_and_rolls_back_without_complaint(
     back = update.rollback_app(app, Env().env(), paths=paths)
     assert (app / "VERSION").read_text(encoding="utf-8").strip() == "0.1.0"
     assert "none were restored" in back.settings and not paths.config.exists()
+
+
+def test_a_copy_of_an_empty_config_still_sets_aside_the_files_the_new_version_made(tmp_path: Path) -> None:
+    """The older version had no settings files; it must not meet the new version's runtime.json either."""
+    paths, app = Paths(tmp_path / "ns"), make_app(tmp_path)  # no config folder when the update is made
+    update.update_app(make_zip(tmp_path), app, Env().env(), paths=paths)
+    paths.config.mkdir(parents=True)
+    (paths.config / "runtime.json").write_text('{"profile": "gpu", "a_new_field": 1}\n', encoding="utf-8")
+    (paths.config / "secrets.dpapi").write_text("keys", encoding="utf-8")
+
+    res = update.rollback_app(app, Env().env(), paths=paths)
+
+    assert not (paths.config / "runtime.json").exists()  # the 0.1.0 program never had one
+    assert (paths.config / "secrets.dpapi").read_text(encoding="utf-8") == "keys"  # keys are never touched
+    assert "none were restored" in res.settings
+    assert any("runtime.json" in n and "set aside" in n for n in res.notes)
+    update.rollback_app(app, Env().env(), paths=paths)  # and going forward gives the new file back
+    assert (paths.config / "runtime.json").is_file()
 
 
 # --------------------------------------------------------------------------------------- no / bad snapshot
@@ -331,6 +351,38 @@ def test_a_snapshot_that_cannot_be_written_never_replaces_a_good_one_and_stops_t
     assert read_config(paths) == before
 
 
+def test_a_rollback_whose_restore_fails_leaves_the_original_copy_in_the_zip(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The zip is the only place the older version's files are kept: the copy of the settings as they are now
+    (for going forward) may replace it only after the restore worked."""
+    paths, app = Paths(tmp_path / "ns"), make_app(tmp_path)
+    before = seed_config(paths)
+    update.update_app(make_zip(tmp_path), app, NewVersion(paths).env(), paths=paths)
+    after_update = read_config(paths)
+    original = config_snapshot.read(snapshot_file(app))
+    real = config_snapshot.write_bytes_atomic
+    calls: list[str] = []
+
+    def one_file_is_locked(path: Path, data: bytes) -> Path:
+        calls.append(path.name)
+        if path.name == "wizard_flags.json" and calls.count("wizard_flags.json") == 1:
+            raise OSError(32, "in use by another program")
+        return real(path, data)
+
+    with monkeypatch.context() as m:
+        m.setattr(config_snapshot, "write_bytes_atomic", one_file_is_locked)
+        res = update.rollback_app(app, Env().env(), paths=paths)
+
+    assert (app / "VERSION").read_text(encoding="utf-8").strip() == "0.1.0"  # the program did go back
+    assert read_config(paths) == after_update  # the restore was all or nothing
+    assert "could not be restored" in res.settings and "wizard_flags.json" in res.settings
+    kept = config_snapshot.read(snapshot_file(app))  # still readable, still the 0.1.0 files
+    assert kept.files == original.files == {n: b for n, b in before.items() if n in kept.files}
+    assert (kept.version, kept.taken_by) == ("0.1.0", "update")
+    assert str(snapshot_file(app)) in res.settings  # and the owner is told where it is
+
+
 def test_a_config_file_that_cannot_be_read_stops_the_update_before_anything_changes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -376,6 +428,22 @@ def test_a_failed_update_puts_the_settings_back_with_the_program(tmp_path: Path)
     assert not snapshot_file(app).exists()  # no program backup is left, so no copy either
 
 
+def test_a_failed_update_also_removes_a_settings_file_only_the_new_version_made(tmp_path: Path) -> None:
+    """Same as the rollback: the older program gets the files it had, not one it has never seen."""
+    paths, app = Paths(tmp_path / "ns"), make_app(tmp_path)
+    before = seed_config(paths)
+
+    class MakesAChannel(NewVersion):
+        def verify(self, app: Path) -> bool:
+            (paths.config / "channels" / "made-by-new.yaml").write_text("slug: x\n", encoding="utf-8")
+            return super().verify(app)
+
+    with pytest.raises(NsError):
+        update.update_app(make_zip(tmp_path), app, MakesAChannel(paths, verify_ok=False).env(), paths=paths)
+    assert not (paths.config / "channels" / "made-by-new.yaml").exists()
+    assert read_config(paths) == before
+
+
 def test_the_snapshot_survives_a_failed_update_whose_program_cannot_be_put_back(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -387,8 +455,8 @@ def test_the_snapshot_survives_a_failed_update_whose_program_cannot_be_put_back(
     state = {"armed": False}
 
     class VerifyFails(NewVersion):
-        def verify(self, a: Path) -> bool:
-            super().verify(a)
+        def verify(self, app: Path) -> bool:
+            super().verify(app)
             state["armed"] = True  # from here on the new tree is "held" by a process
             return False
 
@@ -426,6 +494,16 @@ def test_a_second_update_before_any_rollback_keeps_only_the_latest_pair_and_says
     update.rollback_app(app, Env().env(), paths=paths)
     assert (app / "VERSION").read_text(encoding="utf-8").strip() == "0.2.0"
     assert read_config(paths) == config_at_020  # the settings 0.2.0 had, not 0.1.0's
+
+
+def test_a_backup_left_by_an_older_updater_is_not_said_to_have_had_a_settings_copy(tmp_path: Path) -> None:
+    paths, app = Paths(tmp_path / "ns"), make_app(tmp_path)
+    seed_config(paths)
+    update.update_app(make_zip(tmp_path, "0.2.0"), app, Env().env(), paths=paths)
+    snapshot_file(app).unlink()  # <app>.prev as an update by an older updater leaves it: no copy beside it
+    res = update.update_app(make_zip(tmp_path, "0.3.0"), app, Env().env(), paths=paths)
+    note = next(n for n in res.notes if "earlier program backup" in n)
+    assert "0.1.0" in note and "settings copy" not in note
 
 
 # --------------------------------------------------------------------------------------- --git
@@ -523,6 +601,66 @@ def test_an_install_cmd_update_replaces_the_snapshot_of_an_earlier_update(tmp_pa
     snap = config_snapshot.read(home / "app.prev-config.zip")
     assert snap.version == "0.1.5" and snap.taken_by == "installer"
     assert snap.fingerprint == update.app_fingerprint(home / "app.prev")
+
+
+def test_an_install_cmd_update_whose_swap_fails_leaves_no_copy_for_a_program_backup_that_is_not_there(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home, paths = tmp_path / "home", Paths(tmp_path / "home")
+    appcopy.install_app(make_source(tmp_path / "zip-014", "0.1.4"), home)
+    before = seed_config(paths)
+    real = appcopy._rename
+    calls: list[str] = []
+
+    def second_rename_fails(src: Path, dst: Path, sleep: object) -> None:
+        calls.append(dst.name)
+        if src.name == "app.new":
+            raise PermissionError(32, "being used by another process")
+        real(src, dst, sleep)  # type: ignore[arg-type]
+
+    with monkeypatch.context() as m:
+        m.setattr(appcopy, "_rename", second_rename_fails)
+        with pytest.raises(appcopy.AppCopyError):
+            appcopy.install_app(make_source(tmp_path / "zip-015", "0.1.5"), home)
+    # the old folder went aside, the new one could not follow, the old one came back
+    assert calls == ["app.prev", "app", "app"]
+    assert appcopy.installed_version(home) == "0.1.4" and not (home / "app.new").exists()
+    assert not (home / "app.prev-config.zip").exists()  # nothing in <app>.prev: no copy waits for it
+    assert read_config(paths) == before
+
+
+def test_an_install_cmd_update_through_the_setup_window_keeps_the_state_file_the_old_program_wrote(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The window records the new version in install_state.json the moment it opens, long before Continue
+    copies the program. The copy for `ns update --rollback` must hold the file as 0.1.4 wrote it, so that
+    after the rollback the older version has exactly its own state (the route INSTALL.cmd takes)."""
+    from tests.test_installer_app_copy import app_setup, fake_zip_folder
+    from tests.test_installer_web_controller import finish_script, finished_install
+
+    zip_old = fake_zip_folder(tmp_path / "zip-old", "0.1.4")
+    finished_install(app_setup(tmp_path, monkeypatch, zip_old), zip_old)
+    home, paths = tmp_path / "home", Paths(tmp_path / "home")
+    before = read_config(paths)
+    assert json.loads(before["install_state.json"])["version"] == "0.1.4"
+
+    s = app_setup(tmp_path, monkeypatch, fake_zip_folder(tmp_path / "zip-new", "0.1.5"), finish_script)
+    opened = json.loads((paths.config / "install_state.json").read_text(encoding="utf-8"))
+    assert opened["version"] == "0.1.5"  # the window has rewritten it already (the cause of the defect)
+    assert s.ctl.do_action("start")[0] == 200
+    s.until(lambda st: st["run"] == "finished", what="the update to finish")
+    assert appcopy.installed_version(home) == "0.1.5"
+
+    snap = config_snapshot.read(home / "app.prev-config.zip")
+    assert snap.files["install_state.json"] == before["install_state.json"]
+    assert "install_state.json.bak" not in snap.files  # the 0.1.4 install had none; the window made it
+
+    res = update.rollback_app(home / "app", Env().env(), paths=paths)
+
+    assert (home / "app" / "VERSION").read_text(encoding="utf-8").strip() == "0.1.4"
+    assert (paths.config / "install_state.json").read_bytes() == before["install_state.json"]
+    assert not (paths.config / "install_state.json.bak").exists()
+    assert "install_state.json" in res.settings
 
 
 # --------------------------------------------------------------------------------------- uninstall

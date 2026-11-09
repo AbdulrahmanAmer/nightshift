@@ -25,7 +25,7 @@ import ntpath
 import os
 import shutil
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -195,16 +195,27 @@ def _carry(old: Path, new: Path) -> list[str]:
     return kept
 
 
-def _save_settings_copy(home: Path, dest: Path, old_version: str) -> None:
+def _save_settings_copy(
+    home: Path, dest: Path, old_version: str, before: Mapping[str, bytes] | None = None
+) -> None:
     """Copy the settings files beside the program backup before the old program becomes ``app.prev``.
 
-    ``AppCopyError`` (``NS-E115``) when that cannot be done: the swap is not started, so nothing has changed.
-    A copy that is already there (the one for the program in ``app.prev``) stays whole.
+    ``before`` is what the setup window read of ``config_snapshot.SETUP_TOUCHES`` before it rewrote them on
+    opening (it records the new version in ``install_state.json`` at once); those files go into the copy as
+    they were then, every other file as it is now. ``AppCopyError`` (``NS-E115``) when the copy cannot be
+    made: the swap is not started, so nothing has changed. A copy that is already there (the one for the
+    program in ``app.prev``) stays whole.
     """
     try:
+        files = config_snapshot.capture(home / "config")
+        if before is not None:
+            for name in config_snapshot.SETUP_TOUCHES:
+                files.pop(name, None)
+                if name in before:
+                    files[name] = before[name]
         config_snapshot.save(
             config_snapshot.path_for(dest),
-            config_snapshot.capture(home / "config"),
+            files,
             version=old_version,
             fingerprint=fingerprint(dest),
             taken_by="installer",
@@ -233,10 +244,13 @@ def install_app(
     stop_engine: Callable[[], None] | None = None,
     say: Callable[[str], None] | None = None,
     sleep: Callable[[float], None] = time.sleep,
+    settings_before: Mapping[str, bytes] | None = None,
 ) -> CopyResult:
     """Put a complete copy of ``source`` at ``<home>\\app`` (a fresh copy, or the update swap over it).
 
-    ``stop_engine`` is called before an existing program folder is renamed. Raises ``AppCopyError``:
+    ``stop_engine`` is called before an existing program folder is renamed. ``settings_before`` is what the
+    caller read of ``config_snapshot.SETUP_TOUCHES`` before it changed them (see ``_save_settings_copy``).
+    Raises ``AppCopyError``:
     ``NS-E115`` (cannot copy: the folders overlap, a file is locked), ``NS-E104`` (disk full), ``NS-E113``
     (antivirus).
     """
@@ -261,18 +275,22 @@ def install_app(
             say(f"Updating the Nightshift in {dest} from {old_version} to {new_version}")
             if stop_engine is not None:
                 stop_engine()
+            kept = _carry(dest, new)
             try:
-                _save_settings_copy(Path(home), dest, old_version)
+                _save_settings_copy(Path(home), dest, old_version, settings_before)
             except AppCopyError:
                 shutil.rmtree(new, ignore_errors=True)
                 raise
-            kept = _carry(dest, new)
-            shutil.rmtree(prev, ignore_errors=True)
-            _rename(dest, prev, sleep)
-            try:
-                _rename(new, dest, sleep)
+            try:  # from here the copy is replaced for good: it must never outlive its program backup
+                shutil.rmtree(prev, ignore_errors=True)
+                _rename(dest, prev, sleep)
+                try:
+                    _rename(new, dest, sleep)
+                except OSError:
+                    _rename(prev, dest, sleep)  # put the old folder back
+                    raise
             except OSError:
-                _rename(prev, dest, sleep)                 # put the old folder back
+                config_snapshot.discard(config_snapshot.path_for(dest))  # no program backup: no copy
                 raise
             return CopyResult("updated", old_version, new_version, kept)
         if dest.exists():
