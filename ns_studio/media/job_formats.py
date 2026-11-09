@@ -8,7 +8,9 @@ the job runs, or a resume after an update, never changes half a video.
 The choice, in this order (Head decision D1):
 
 1. an explicit series design format (`series_context.json["design"]["format"]`): a `short` format shapes the
-   part's Shorts, a `long` or `square` one its full video;
+   part's Shorts, a `long` or `square` one its full video. A design format that is missing, does not load
+   or cannot be drawn does not stop the part (it rendered before formats were read): it is skipped, the
+   next candidate is used and the job's record says so (`note`, and `why`);
 2. the channel's `formats_allowed`, in list order: the first allowed format of the kind ("first allowed of
    that kind"), else the first allowed `square` one;
 3. the default (`short_9x16`, `long_16x9`), read through the loader, so the owner's edit of the shipped file
@@ -23,7 +25,7 @@ from __future__ import annotations
 import copy
 import json
 from collections.abc import Collection, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -101,6 +103,42 @@ def _finish(
     return Resolved(role, fid, why, F.format_source(fid, paths=paths), raw, note)
 
 
+def _design_pick(
+    role: str,
+    design_id: str,
+    primary: tuple[str, ...],
+    paths: Paths | None,
+    log: NsLogger | None,
+) -> tuple[Resolved | None, str | None]:
+    """(the design's format, None) when it can draw `role`; (None, why not) when it is named but unusable.
+
+    (None, None) means the design's format is simply for the other kind of video (a `long` one has no
+    Short to shape): nothing to report. A format that is unknown, does not load or cannot be drawn is
+    reported with the reason; the caller carries on with the next candidate, as for `formats_allowed`.
+    """
+    try:
+        fmt = F.get_format(design_id, paths=paths)
+    except StudioError as e:
+        reason = e.detail
+    else:
+        if not (fmt.kind in primary or (role == "long" and fmt.kind == "square")):
+            return None, None
+        problems = F.story_role_problems(fmt)
+        if not problems:
+            return _finish(role, design_id, "series design", paths, log), None
+        reason = "; ".join(problems)
+    reason = reason[:300]
+    _warn(
+        log,
+        "format_design_skipped",
+        f"the series design names format {design_id!r}, which cannot be used ({reason}); "
+        "the next candidate is used instead",
+        role=role,
+        format_id=design_id,
+    )
+    return None, reason
+
+
 def resolve_role(
     role: str,
     allowed: Sequence[str],
@@ -111,23 +149,32 @@ def resolve_role(
 ) -> Resolved:
     """The format for `role` (`short` or `long`): series design, first allowed of the kind, then the default.
 
-    An explicit series design format that is unknown, broken or cannot be drawn raises NS-E320 naming it.
-    A format in `formats_allowed` that does not load or cannot be drawn is skipped with a warning; when
+    A series design format that is unknown, does not load or cannot be drawn is skipped with a warning (a
+    part that renders without a format must not fail because of one) and the entry's `why` and `note` say
+    so. A format in `formats_allowed` that does not load or cannot be drawn is skipped the same way; when
     nothing in a non-empty list fits, the default is used and `format_role_not_allowed` is logged.
     """
-    primary = _PRIMARY_KINDS[role]
+    skipped: str | None = None
     if design_id:
-        fmt = F.get_format(design_id, paths=paths)
-        fits = fmt.kind in primary or (role == "long" and fmt.kind == "square")
-        if fits:
-            problems = F.story_role_problems(fmt)
-            if problems:
-                raise StudioError(
-                    "NS-E320",
-                    f"the series design names format {design_id!r}, which cannot be drawn: "
-                    f"{'; '.join(problems)}. Fix it in Library > Formats or pick another format.",
-                )
-            return _finish(role, design_id, "series design", paths, log)
+        picked, skipped = _design_pick(role, design_id, _PRIMARY_KINDS[role], paths, log)
+        if picked is not None:
+            return picked
+    res = _resolve_without_design(role, allowed, paths=paths, log=log)
+    if skipped is None:
+        return res
+    said = f"series design format {design_id!r} cannot be used ({skipped})"
+    return replace(res, why=f"{res.why}; {said}", note=f"{said}; {res.note}" if res.note else said)
+
+
+def _resolve_without_design(
+    role: str,
+    allowed: Sequence[str],
+    *,
+    paths: Paths | None,
+    log: NsLogger | None,
+) -> Resolved:
+    """The first allowed format of the kind, else the first allowed square one, else the default."""
+    primary = _PRIMARY_KINDS[role]
     formats = F.load_formats(paths=paths)
     problems_by_id = F.load_problems(paths=paths)
     firsts: list[str] = []
@@ -218,14 +265,21 @@ def _has_done_stage(job_dir: Path) -> bool:
     return any(isinstance(e, dict) and e.get("status") == "done" for e in entries.values())
 
 
+_REDO = (
+    "the job's record of its formats is damaged. A job with no finished stage chooses again when the file "
+    "is deleted; a job with finished stages would then fall back to the shipped formats, so start it again "
+    "from the beginning instead"
+)
+
+
 def _validate_doc(doc: Any, roles: Sequence[str]) -> dict[str, Any]:
     """`formats.json` checked: every wanted role present and valid (NS-E320 naming the field)."""
     if not isinstance(doc, dict):
-        raise StudioError("NS-E320", f"{JOB_FORMATS_FILE} is not a mapping; delete it to choose again")
+        raise StudioError("NS-E320", f"{JOB_FORMATS_FILE} is not a mapping; {_REDO}")
     for role in roles:
         entry = doc.get(role)
         if not isinstance(entry, dict) or not isinstance(entry.get("definition"), dict):
-            raise StudioError("NS-E320", f"{JOB_FORMATS_FILE} has no {role} format; delete it to redo it")
+            raise StudioError("NS-E320", f"{JOB_FORMATS_FILE} has no {role} format; {_REDO}")
         try:
             Format.model_validate(entry["definition"])
         except ValidationError as e:

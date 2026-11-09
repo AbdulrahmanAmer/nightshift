@@ -366,22 +366,54 @@ def test_nothing_usable_in_a_non_empty_list_falls_back_with_a_log_line(tmp_home:
     assert "format_role_not_allowed" in log.names("warn")
 
 
-def test_an_explicit_design_format_that_is_missing_or_unusable_is_refused(tmp_home: Path) -> None:
+def test_an_explicit_design_format_that_is_missing_or_unusable_falls_back_with_a_note(
+    tmp_home: Path,
+) -> None:
+    """Review blocker 1: a series part that renders on main must not die on its design format."""
     paths = Paths.from_env()
-    (paths.formats_dir).mkdir(parents=True)
+    put(paths, "short_copy", **SMALL)
     (paths.formats_dir / "short_broken.yaml").write_text("id: short_broken\n", encoding="utf-8")
-    with pytest.raises(StudioError) as ei:
-        channel_roles(tmp_home, [], design="gone")
-    assert ei.value.code == "NS-E320" and "gone" in ei.value.detail
-    with pytest.raises(StudioError) as ei2:
-        channel_roles(tmp_home, [], design="short_broken")
-    assert ei2.value.code == "NS-E320" and "canvas is required" in ei2.value.detail
     off = shipped("short_9x16")
     off["layout"]["regions"][0]["w"] = 5000
     put(paths, "short_off", layout=off["layout"])
-    with pytest.raises(StudioError) as ei3:
-        channel_roles(tmp_home, [], design="short_off")
-    assert "cannot be drawn" in ei3.value.detail and "leaves the" in ei3.value.detail
+    put(paths, "short_shots", shots={"min_s": 5, "max_s": 2})
+    # missing: the next candidate (first allowed of the kind) is used and the entry says why
+    res, log = channel_roles(tmp_home, ["short_copy"], design="gone")
+    assert res.id == "short_copy" and res.source == "yours"
+    assert "gone" in res.why and "series design" in res.why and "first allowed of that kind" in res.why
+    assert res.note is not None and "gone" in res.note and "unknown format" in res.note
+    assert "format_design_skipped" in log.names("warn")
+    # no allowed list: the shipped default
+    res, log = channel_roles(tmp_home, [], design="gone")
+    assert res.id == "short_9x16" and "gone" in res.why and "default" in res.why
+    # a file that does not load, a region off the canvas, shots.min_s > shots.max_s
+    for design, needle in (
+        ("short_broken", "canvas is required"),
+        ("short_off", "leaves the"),
+        ("short_shots", "shots.min_s"),
+    ):
+        res, log = channel_roles(tmp_home, [], design=design)
+        assert res.id == "short_9x16", design
+        assert res.note is not None and design in res.note and needle in res.note, design
+        assert design in res.why and "format_design_skipped" in log.names("warn"), design
+        entry = res.entry()
+        assert entry["note"] == res.note and entry["id"] == "short_9x16"
+
+
+def test_a_series_design_with_a_valid_long_format_leaves_the_short_role_alone(tmp_home: Path) -> None:
+    paths = Paths.from_env()
+    put(paths, "long_copy", base="long_16x9")
+    res, log = channel_roles(tmp_home, [], design="long_copy")
+    assert res.id == "short_9x16" and res.why == "default (formats_allowed is empty)" and res.note is None
+    assert "format_design_skipped" not in log.names("warn")
+
+
+def test_a_series_design_naming_a_broken_long_duplicate_does_not_stop_the_short(tmp_home: Path) -> None:
+    paths = Paths.from_env()
+    (paths.formats_dir).mkdir(parents=True)
+    (paths.formats_dir / "long_broken.yaml").write_text("id: long_broken\n", encoding="utf-8")
+    res, _ = channel_roles(tmp_home, [], design="long_broken")
+    assert res.id == "short_9x16" and res.note is not None and "long_broken" in res.note
 
 
 def test_a_broken_owner_copy_of_a_clip_layout_is_named_not_silently_ignored(tmp_home: Path) -> None:
@@ -458,6 +490,19 @@ def test_a_job_with_a_hand_broken_record_is_refused_naming_the_field(tmp_home: P
     assert ei.value.code == "NS-E320" and "canvas.w" in ei.value.detail
 
 
+def test_a_damaged_record_does_not_advise_deleting_it_for_a_job_with_finished_stages(tmp_home: Path) -> None:
+    ctx = make_ctx(tmp_home)
+    ctx.file("formats.json").write_text("[]", encoding="utf-8")
+    with pytest.raises(StudioError) as ei:
+        JF.prepare_job_formats(ctx)
+    assert "not a mapping" in ei.value.detail and "start it again from the beginning" in ei.value.detail
+    assert "no finished stage" in ei.value.detail
+    ctx.file("formats.json").write_text(json.dumps({"version": 1}), encoding="utf-8")
+    with pytest.raises(StudioError) as ei2:
+        JF.prepare_job_formats(ctx)
+    assert "has no short format" in ei2.value.detail and "start it again" in ei2.value.detail
+
+
 def test_a_job_from_before_the_update_keeps_the_shipped_definitions(tmp_home: Path) -> None:
     paths = Paths.from_env()
     put(paths, "short_9x16", **SMALL)  # the owner's override, made after the job started
@@ -481,33 +526,47 @@ def test_master_first_jobs_record_the_short_format_and_say_so(tmp_home: Path) ->
     assert doc is not None and set(doc) == {"version", "short"}
 
 
-def test_a_series_design_naming_a_missing_format_stops_before_the_first_stage(
-    tmp_home: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def probe_job(monkeypatch: pytest.MonkeyPatch, name: str) -> list[str]:
     ran: list[str] = []
 
     class Probe:
-        name = "p10_probe"
         tenant = None
         inputs: tuple[str, ...] = ()
-        outputs = ("p10_probe.json",)
+
+        def __init__(self) -> None:
+            self.name = name
+            self.outputs = (f"{name}.json",)
 
         def run(self, ctx: Any) -> None:
             ran.append(self.name)
-            ctx.write_json("p10_probe.json", {})
+            ctx.write_json(f"{name}.json", {})
 
-    monkeypatch.setitem(REGISTRY, "p10_probe", register(Probe()))  # type: ignore[arg-type]
-    monkeypatch.setitem(FORMAT_STAGES, "shorts_only", ["p10_probe"])
+    monkeypatch.setitem(REGISTRY, name, register(Probe()))  # type: ignore[arg-type]
+    monkeypatch.setitem(FORMAT_STAGES, "shorts_only", [name])
+    return ran
+
+
+@pytest.mark.parametrize(
+    ("design", "needle"),
+    [("short_missing", "unknown format"), ("short_shots", "shots.min_s"), ("long_copy", None)],
+)
+def test_a_series_part_whose_design_format_is_missing_or_broken_still_runs_and_says_so(
+    tmp_home: Path, monkeypatch: pytest.MonkeyPatch, design: str, needle: str | None
+) -> None:
+    ran = probe_job(monkeypatch, "p10_probe")
+    paths = Paths.from_env()
+    put(paths, "short_shots", shots={"min_s": 5, "max_s": 2})
+    put(paths, "long_copy", base="long_16x9")
     ctx = make_ctx(tmp_home)
-    ctx.write_json("series_context.json", {"series_title": "S", "design": {"format": "short_missing"}})
-    with pytest.raises(StudioError) as ei:
-        run_job(ctx)
-    assert ei.value.code == "NS-E320" and "short_missing" in ei.value.detail
-    assert ran == [] and not ctx.file("formats.json").exists()
-    # a good design format starts the job, and the dry run writes nothing
-    ctx.write_json("series_context.json", {"series_title": "S", "design": {"format": "long_16x9"}})
+    ctx.write_json("series_context.json", {"series_title": "S", "design": {"format": design}})
     assert run_job(ctx, dry_run=True) == ["p10_probe"] and not ctx.file("formats.json").exists()
-    assert run_job(ctx) == ["p10_probe"] and ran == ["p10_probe"] and ctx.file("formats.json").exists()
+    assert run_job(ctx) == ["p10_probe"] and ran == ["p10_probe"]
+    entry = json.loads(ctx.file("formats.json").read_text(encoding="utf-8"))["short"]
+    assert entry["id"] == "short_9x16"
+    if needle is None:  # a valid long format is not for the Short: nothing to report
+        assert "note" not in entry and design not in entry["why"]
+    else:
+        assert design in entry["note"] and needle in entry["note"] and design in entry["why"]
 
 
 def test_run_job_records_the_formats_before_the_first_stage(
