@@ -258,6 +258,9 @@ class FakeDoctorAdapter:
     def __init__(self, paths: Paths) -> None:
         self.paths = paths
 
+    def available(self) -> None:
+        """The fake can always write its zip."""
+
     def bundle(self) -> Path:
         """Create `diagnostics/nightshift-diagnostics-<ts>.zip`."""
         stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")

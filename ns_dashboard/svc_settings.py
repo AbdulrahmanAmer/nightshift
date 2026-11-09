@@ -197,15 +197,29 @@ class SettingsService:
         return out
 
     # --- diagnostics ---
+    @staticmethod
+    def _diagnostics_unavailable(e: AdapterUnavailable) -> ApiError:
+        return ApiError(
+            501, "diagnostics_unavailable", str(e),
+            hint="Use the 'Nightshift - Diagnostics' desktop shortcut instead.",
+        )
+
+    def check_diagnostics(self) -> None:
+        """Refuse (501 `diagnostics_unavailable`) when the doctor that writes the zip cannot be loaded.
+
+        The Assistant runs this before it shows its confirm card (D-27); nothing is written.
+        """
+        try:
+            self.s.adapters.doctor.available()
+        except AdapterUnavailable as e:
+            raise self._diagnostics_unavailable(e) from e
+
     def diagnostics(self) -> dict[str, Any]:
         """Create the diagnostics zip (`ns doctor --bundle`)."""
         try:
             path = Path(self.s.adapters.doctor.bundle())
         except AdapterUnavailable as e:
-            raise ApiError(
-                501, "diagnostics_unavailable", str(e),
-                hint="Use the 'Nightshift - Diagnostics' desktop shortcut instead.",
-            ) from e
+            raise self._diagnostics_unavailable(e) from e
         self.s.last_bundle = path
         size = path.stat().st_size if path.exists() else None
         return {"path": str(path), "name": path.name, "size": size, "download_url": "/api/diagnostics/latest"}

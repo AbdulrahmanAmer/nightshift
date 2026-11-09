@@ -20,7 +20,9 @@ from ns_dashboard.assistant.llm import ScriptedToolLlm, StaticProvider, call, sa
 from ns_dashboard.assistant.loop import refusal_text, run_tool
 from ns_dashboard.assistant.registry import ToolContext
 from ns_dashboard.assistant.tools import SCHEMA_ONLY, build_registry
-from ns_dashboard.errors import ApiError
+from ns_dashboard.errors import AdapterUnavailable, ApiError
+from ns_dashboard.fakes import FakeSupervisor
+from ns_dashboard.supervisor_link import SupervisorLink
 from tests.assistant_eval import fixture_home
 
 SCRIPT = (
@@ -31,9 +33,12 @@ SCRIPT = (
 )
 BAD_SCHEDULE = "2026-11-09T12:54Z', "  # the value the real Qwen3-1.7B wrote on the engine test (defect D-27)
 
-#: For every changing tool that has a dry run: arguments that pass the JSON schema but that the real run refuses,
-#: and a phrase the plain-words error must contain. A new changing tool without a row fails `test_every_...`.
+#: For every changing tool that has a dry run: arguments that pass the JSON schema but that the real run refuses
+#: (in the fixture home the engine does not answer), and a phrase the plain-words error must contain. A new changing
+#: tool without a row fails `test_every_...`; `test_every_invalid_row_passes_the_json_schema` keeps the rows honest.
 INVALID: dict[str, tuple[dict[str, Any], str]] = {
+    "warmup_engine": ({"service": "llama"}, "engine is not running"),
+    "shutdown_engine": ({"grace_s": 5}, "engine is not running"),
     "create_channel": ({"profile": {"slug": "Not A Slug"}}, "channel"),
     "edit_channel": ({"slug": "no-such-channel", "changes": {"niche": "x"}}, "no-such-channel"),
     "pause_channel": ({"slug": "no-such-channel"}, "no-such-channel"),
@@ -76,7 +81,11 @@ INVALID: dict[str, tuple[dict[str, Any], str]] = {
     "workshop_design": ({"slug": "no-such-story", "visual_treatment": "dark"}, "no-such-story"),
     "workshop_produce": ({"slug": "no-such-story"}, "no-such-story"),
 }
-# start_verify has no row: its only refusal is the shutdown state (`test_a_job_is_not_offered_while_shutting_down`)
+#: Changing tools whose refusal is a state, not an argument, with the test that pins it.
+STATE_ONLY: dict[str, str] = {
+    "start_verify": "test_a_job_is_not_offered_while_shutting_down",
+    "make_diagnostics": "test_diagnostics_are_refused_before_the_card_when_the_doctor_is_missing",
+}
 
 #: Changing tools with arguments that are valid: they still get their card.
 VALID: dict[str, dict[str, Any]] = {
@@ -93,7 +102,6 @@ VALID: dict[str, dict[str, Any]] = {
     "set_schedule": {"schedule_time": "03:30"},
     "start_verify": {"quick": True},
     "workshop_start": {"channel": "after-dark", "premise": "A ferry that arrives before it leaves"},
-    "warmup_engine": {"service": "llama"},
     "make_diagnostics": {},
 }
 
@@ -111,6 +119,12 @@ def turn(home: fixture_home.FixtureHome, *steps: dict[str, Any]) -> list[dict[st
     """One chat turn on the scripted model: the given tool calls, then a closing sentence."""
     llm = ScriptedToolLlm([*steps, say("Done for now.")])
     home.dash.assistant.provider = StaticProvider(llm)
+    return list(home.dash.assistant.chat("do it", None, {}))
+
+
+def turn_with(home: fixture_home.FixtureHome, *script: dict[str, Any]) -> list[dict[str, Any]]:
+    """One chat turn on exactly the given model messages (no closing sentence added)."""
+    home.dash.assistant.provider = StaticProvider(ScriptedToolLlm(list(script)))
     return list(home.dash.assistant.chat("do it", None, {}))
 
 
@@ -190,19 +204,6 @@ def test_a_story_job_is_refused_before_the_card_when_no_footage_key_is_stored(ho
 # ------------------------------------------------------------------ every changing tool, from the registry
 
 
-@pytest.mark.parametrize("name", changing_tools())
-def test_every_changing_tool_is_checked_before_its_card_with_bad_arguments(
-    home: fixture_home.FixtureHome, name: str
-):
-    """Arguments the JSON schema rejects (an argument the tool does not have) never reach a card either."""
-    events = turn(home, call(name, {"not_an_argument": 1}))
-    assert not [e for e in events if e["kind"] == "confirm"], name
-    result = result_of(events)
-    assert result["ok"] is False, result
-    assert "not an accepted argument" in result["error"] or "required" in result["error"], result
-    assert cards(home) == 0
-
-
 @pytest.mark.parametrize("name", sorted(INVALID))
 def test_arguments_the_real_run_refuses_give_a_tool_error_and_no_confirm_event(
     home: fixture_home.FixtureHome, name: str
@@ -232,10 +233,20 @@ def test_every_changing_tool_has_a_dry_run_or_a_reason_and_a_case_here():
         f"changing tools without a dry run must be listed in SCHEMA_ONLY with a reason: {sorted(bare ^ set(SCHEMA_ONLY))}"
     )
     assert all(reason.strip() for reason in SCHEMA_ONLY.values())
-    missing = sorted(set(changing) - set(INVALID) - set(SCHEMA_ONLY) - {"start_verify"})
-    assert not missing, f"add an INVALID case for: {missing}"
-    stale = sorted(set(INVALID) - set(changing))
-    assert not stale, f"INVALID names tools that no longer exist: {stale}"
+    missing = sorted(set(changing) - set(INVALID) - set(SCHEMA_ONLY) - set(STATE_ONLY))
+    assert not missing, f"add an INVALID case (or a STATE_ONLY test) for: {missing}"
+    stale = sorted((set(INVALID) | set(STATE_ONLY)) - set(changing))
+    assert not stale, f"INVALID or STATE_ONLY name tools that no longer exist: {stale}"
+    assert not set(INVALID) & set(STATE_ONLY)
+    here = Path(__file__).read_text(encoding="utf-8")
+    assert all(f"def {test}(" in here for test in STATE_ONLY.values()), STATE_ONLY
+
+
+def test_every_invalid_row_passes_the_json_schema():
+    """A row the schema already rejects would pass without any dry run (the 34-row test this replaces did)."""
+    reg = build_registry()
+    for name, (args, _phrase) in INVALID.items():
+        assert reg.validate(name, args) is None, (name, reg.validate(name, args))
 
 
 @pytest.mark.parametrize("name", sorted(VALID))
@@ -274,6 +285,40 @@ def test_workshop_checks_know_the_state_of_the_story(home: fixture_home.FixtureH
         assert not [e for e in events if e["kind"] == "confirm"], name
         assert phrase in result_of(events)["error"], (name, result_of(events))
     assert cards(home) == 0
+
+
+def test_warmup_and_shutdown_get_their_card_only_when_the_engine_answers(home: fixture_home.FixtureHome):
+    """D-27 for the engine tools: with the engine off the card was a Yes that ended in "not running"."""
+    with FakeSupervisor() as sup:
+        home.state.link = SupervisorLink(sup.url)
+        for name, args in (("warmup_engine", {"service": "llama"}), ("shutdown_engine", {"grace_s": 5})):
+            events = turn(home, call(name, args))
+            shown = [e["payload"]["tool"] for e in events if e["kind"] == "confirm"]
+            assert shown == [name], (name, [e for e in events if e["kind"] == "tool_result"])
+        assert not [
+            p for m, p, _b in sup.calls if m == "POST"
+        ]  # looking asked the engine for its status only
+    assert cards(home) == 2
+
+
+def test_diagnostics_are_refused_before_the_card_when_the_doctor_is_missing(
+    home: fixture_home.FixtureHome, monkeypatch: pytest.MonkeyPatch
+):
+    def missing(*_a: Any, **_k: Any) -> None:
+        raise AdapterUnavailable("ns_supervisor.doctor.build_bundle is not installed yet")
+
+    monkeypatch.setattr(home.state.adapters.doctor, "available", missing)
+    events = turn(home, call("make_diagnostics", {}))
+    result = result_of(events)
+    assert result["ok"] is False and "not installed yet" in result["error"] and "shortcut" in result["error"]
+    assert not [e for e in events if e["kind"] == "confirm"] and cards(home) == 0
+    td = home.dash.registry.get("make_diagnostics")
+    assert td is not None
+    monkeypatch.setattr(home.state.adapters.doctor, "bundle", missing)
+    ok, real = run_tool(td, ToolContext(home.dash, {}), {})
+    assert (
+        ok is False and real["error"]["code"] == "diagnostics_unavailable"
+    )  # the Yes would have met the same 501
 
 
 def test_a_job_is_not_offered_while_shutting_down(home: fixture_home.FixtureHome):
@@ -326,6 +371,64 @@ def test_a_check_that_breaks_never_becomes_a_card(
     events = turn(home, call("start_story_job", {"channel": "after-dark"}))
     assert "could not be checked" in result_of(events)["error"] and "disk gone" in result_of(events)["error"]
     assert cards(home) == 0
+
+
+# ------------------------------------------------------------------ the owner hears the refusal
+
+
+def test_a_model_that_repeats_the_bad_call_until_it_runs_out_of_steps_still_tells_the_owner_why(
+    home: fixture_home.FixtureHome,
+):
+    """A small model may repeat the call; the stop note carries the plain-words reason instead of hiding it."""
+    bad = call("start_story_job", {"channel": "after-dark", "schedule_at": BAD_SCHEDULE})
+    llm = ScriptedToolLlm([bad, bad, bad])
+    home.dash.assistant.provider = StaticProvider(llm)
+    home.dash.assistant.max_steps = 3
+    events = list(home.dash.assistant.chat("a video at 12:54", None, {}))
+    messages = [e["payload"]["text"] for e in events if e["kind"] == "message"]
+    assert len(messages) == 1
+    assert "I stopped after several steps" in messages[0]
+    assert "'schedule_at' must be a date and time" in messages[0], messages
+    assert cards(home) == 0
+
+
+def test_a_model_that_answers_nothing_after_a_refusal_still_tells_the_owner_why(
+    home: fixture_home.FixtureHome,
+):
+    """Empty content after the refusal used to show "I have nothing to add."; the owner now gets the reason."""
+    events = turn_with(home, call("cancel_job", {"job_id": "no-such-job"}), say(""))
+    messages = [e["payload"]["text"] for e in events if e["kind"] == "message"]
+    assert (
+        len(messages) == 1 and "nothing to confirm" in messages[0] and "job was not found" in messages[0]
+    ), messages
+    assert "nothing to add" not in messages[0]
+    stored = [
+        m["content"] for m in home.dash.assistant_store.messages(events[0]["payload"]["conversation_id"])
+    ]
+    assert messages[0] in stored  # a reloaded conversation shows it too
+
+
+def test_an_answer_the_model_wrote_is_not_replaced_by_the_refusal(home: fixture_home.FixtureHome):
+    events = turn_with(
+        home,
+        call("cancel_job", {"job_id": "no-such-job"}),
+        say("That job does not exist; which one do you mean?"),
+    )
+    messages = [e["payload"]["text"] for e in events if e["kind"] == "message"]
+    assert messages == ["That job does not exist; which one do you mean?"]
+
+
+def test_a_refusal_before_a_card_is_not_repeated_at_the_end_of_the_turn(home: fixture_home.FixtureHome):
+    """The model corrected itself and the owner has the card: an empty closing message stays as it was."""
+    events = turn_with(
+        home,
+        call("cancel_job", {"job_id": "no-such-job"}),
+        call("pause_channel", {"slug": "after-dark"}),
+        say(""),
+    )
+    messages = [e["payload"]["text"] for e in events if e["kind"] == "message"]
+    assert messages == ["I have nothing to add."]
+    assert [e["payload"]["tool"] for e in events if e["kind"] == "confirm"] == ["pause_channel"]
 
 
 # ------------------------------------------------------------------ the two tool descriptions
