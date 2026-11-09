@@ -1,4 +1,3 @@
-from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -34,19 +33,3 @@ def _network_is_up(monkeypatch: pytest.MonkeyPatch) -> None:
     from installer.stage2 import downloader
 
     monkeypatch.setattr(downloader, "network_is_up", lambda url, timeout=5.0: True)
-
-
-@pytest.fixture
-def ticking_clock(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Every clock read of the install state is a minute later than the one before, so two installs made
-    within one test never get the same ``started_at`` (they are minutes apart on a real PC)."""
-    real = datetime
-    ticks = {"n": 0}
-
-    class Ticking:
-        @staticmethod
-        def now(tz=None):
-            ticks["n"] += 1
-            return real(2026, 11, 9, 9, 0, 0, tzinfo=UTC) + timedelta(minutes=ticks["n"])
-
-    monkeypatch.setattr("installer.stage2.state.datetime", Ticking)

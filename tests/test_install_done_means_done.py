@@ -18,6 +18,7 @@ import os
 import shutil
 import subprocess
 import sys
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -47,6 +48,22 @@ class Killed(BaseException):
 @pytest.fixture(autouse=True)
 def _no_real_home(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("NIGHTSHIFT_HOME", raising=False)
+
+
+@pytest.fixture
+def ticking_clock(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every clock read of the install state is a minute later than the one before, so two installs made
+    within one test never get the same ``started_at`` (they are minutes apart on a real PC)."""
+    real = datetime
+    ticks = {"n": 0}
+
+    class Ticking:
+        @staticmethod
+        def now(tz=None):
+            ticks["n"] += 1
+            return real(2026, 11, 9, 9, 0, 0, tzinfo=UTC) + timedelta(minutes=ticks["n"])
+
+    monkeypatch.setattr("installer.stage2.state.datetime", Ticking)
 
 
 def resolved(tmp_path: Path, runner: FakeRunner | None = None, **answers):

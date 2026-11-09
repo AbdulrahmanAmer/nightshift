@@ -91,7 +91,7 @@ def test_s01_ignores_the_api_keys_in_the_file_and_the_saved_copy_itself(tmp_path
     assert S01Questions().check(inside) is True
 
 
-def test_a_changed_answers_file_wins_after_an_uninstall_that_keeps_the_data(tmp_path: Path, ticking_clock):
+def test_a_changed_answers_file_wins_after_an_uninstall_that_keeps_the_data(tmp_path: Path):
     answers = write_answers(tmp_path)
     home = tmp_path / "home"
     assert main(args(tmp_path, answers)) == 0
