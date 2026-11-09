@@ -21,12 +21,12 @@ from pydantic import BaseModel
 from ns_common import first_start
 from ns_common.atomic import sweep_stale_tmp
 from ns_common.config import load_runtime
-from ns_common.errors import NsError
+from ns_common.errors import NsError, describe
 from ns_common.models import Runtime
 from ns_common.paths import Paths
 from ns_common.secret_file import relock_existing
 from ns_common.singleton import AlreadyRunning, FileLock
-from ns_supervisor import tmpsweep, update_check
+from ns_supervisor import notify, tmpsweep, update_check
 from ns_supervisor.core import Supervisor, SupervisorConfig
 from ns_supervisor.health_cfg import read_health_timeout
 from ns_supervisor.scheduled import overdue_scheduled_jobs
@@ -239,11 +239,47 @@ def relock_secret_files(paths: Paths, log: Any) -> int:
     A `config/secrets.dpapi` written by 0.1.0 to 0.1.14 (or copied by an old restore into
     `data/backup/pre-restore-*`) can still carry Users / Authenticated Users, and nothing else would lock it
     before the next key save. The engine starts either way. Returns how many files would not lock.
+
+    The log is not where the owner looks, so each failure is also a coded morning note
+    (`run/morning_note.json`, shown by the dashboard on the Queue page): `NS-E120: <message> (<file>: <why>)
+    <what to do>`, left once while it waits (the next start does not queue it again). A keys file on a drive
+    without permissions is no failure: it gets the one-time `NS-W116` note when nobody has given it yet.
     """
-    problems = relock_existing(paths)
+
+    def say(code: str, line: str) -> None:  # the one-time NS-W116
+        log.warn("secret_file_unprotected", line, code=code)
+        _note_once(paths, log, _with_hint(code, line), code, "")
+
+    problems = relock_existing(paths, notice=say)
     for path, why in problems:
         log.warn("secret_file_unlocked", f"{path}: {why}", path=str(path))
+        code = why.split(":", 1)[0] if why.startswith("NS-") else "NS-E120"
+        detail = why.split(": ", 1)[1] if why.startswith("NS-") and ": " in why else why
+        try:
+            message = describe(code).message
+        except (KeyError, OSError, ValueError):
+            message = "The file that holds your API keys could not be limited to your Windows account."
+        _note_once(paths, log, _with_hint(code, f"{code}: {message} ({path}: {detail})"), code, str(path))
     return len(problems)
+
+
+def _with_hint(code: str, line: str) -> str:
+    """`line` and then what to do (the code's hint): the Queue page shows a note's text and nothing else."""
+    try:
+        return f"{line} {describe(code).hint}"
+    except (KeyError, OSError, ValueError):
+        return line
+
+
+def _note_once(paths: Paths, log: Any, message: str, code: str, about: str) -> None:
+    """Leave `message` as a morning note unless a note with the same code about the same file still waits."""
+    waiting = notify.read_notes(paths)
+    if any(n.get("message", "").startswith(f"{code}:") and about in n.get("message", "") for n in waiting):
+        return
+    try:
+        notify.leave_note(paths, "Nightshift", message)
+    except OSError as e:  # a note must never stop an engine start
+        log.warn("morning_note_failed", str(e))
 
 
 def _serve(args: argparse.Namespace, paths: Paths) -> int:

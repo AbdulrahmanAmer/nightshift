@@ -566,11 +566,15 @@ class FakeBackupAdapter:
         self.restored: list[Path] = []
         self.fail_restore = False
         self.on_restore: Callable[[], None] | None = None  # tests look at the dashboard while the restore runs
+        self.last_notes: list[str] = []  # what the last export left out on purpose (like `RealBackupAdapter`)
+        self.leave_out: list[str] = []  # lines the next exports report as left out (a keys file, NS-W116)
+        self.restore_lines: list[str] = []  # extra result lines of a restore, e.g. a skipped keys file
 
     def export(self) -> Path:
         """Create `exports/nightshift-backup-<ts>.zip`."""
         stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
         out = self.paths.home / "exports" / f"nightshift-backup-{stamp}.zip"
+        self.last_notes = list(self.leave_out)
         out.parent.mkdir(parents=True, exist_ok=True)
         with zipfile.ZipFile(out, "w") as z:
             z.writestr("manifest.json", "{}")
@@ -585,7 +589,7 @@ class FakeBackupAdapter:
         if self.fail_restore:
             raise ApiError(422, "restore_failed", "That file could not be restored.", hint="not a backup")
         self.restored.append(zip_path)
-        return [f"restored {zip_path.name}"]
+        return [f"restored {zip_path.name}", *self.restore_lines]
 
     def uninstall_path(self) -> Path:
         """A path under the temp home."""

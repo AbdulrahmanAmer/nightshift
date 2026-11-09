@@ -96,7 +96,8 @@ class ResilientStore:
     to the file. When only the file refused (its lock failed, ``NS-E120``, or the disk did), the key is in
     Credential Manager and ``warn`` says so (setup shows, logs and keeps the line as a notice). The file keeps
     what it had unless only the check after the swap failed: ``NS-E120`` then says "the new file is in place",
-    and the new key IS in the file.
+    and the new key IS in the file. On a drive without permissions (FAT, exFAT) the file is saved without a
+    lock and ``warn`` gets the one-time ``NS-W116`` line (setup's notice, its summary and install report).
     """
 
     def __init__(
@@ -132,7 +133,7 @@ class ResilientStore:
         except Exception as e:  # noqa: BLE001 - best effort, the file copy is still removed
             keyring_said = f"could not be removed from Credential Manager ({type(e).__name__})"
         try:
-            delete_secret(self.paths, name, lock_down=self._lock_down)
+            delete_secret(self.paths, name, lock_down=self._lock_down, notice=self._notice)
         except OSError as e:  # the file may still hold the key; the nightly fallback may still find it
             self.warn(f"The {name} key {keyring_said}, and it was not removed from {FILE_NAME}: {e}")
 
@@ -146,7 +147,9 @@ class ResilientStore:
             keyring_ok = False
             failures.append(f"keyring: {type(e).__name__}")
         try:
-            store_secret(self.paths, name, value, protect=self._protect, lock_down=self._lock_down)
+            store_secret(
+                self.paths, name, value, protect=self._protect, lock_down=self._lock_down, notice=self._notice
+            )
         except OSError as e:
             failures.append(f"file: {e}")
             if keyring_ok:
@@ -156,3 +159,8 @@ class ResilientStore:
                 )
         if len(failures) == 2:
             raise OSError("could not store the key (" + "; ".join(failures) + ")")
+
+    def _notice(self, code: str, line: str) -> None:
+        """The one-time warning of a keys file saved on a drive without permissions: the same channel as a
+        failure (``warn`` finds the code in the line), because the owner should hear it in the same place."""
+        self.warn(line if line.startswith(code) else f"{code}: {line}")

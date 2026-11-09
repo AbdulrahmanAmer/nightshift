@@ -173,6 +173,11 @@ def test_report_exports_and_settings_answers(seeded: Any):
         r = client.post(path)
         assert r.status_code == 200, f"{path}: {r.text[:200]}"
         assert_clean("FileMade", r.json(), f"POST {path}")
+    # an export that left the keys file out (a zip for a drive without permissions): `left_out` and `note`
+    _state.adapters.backup.leave_out = ["Warning NS-W116: left out config/secrets.dpapi: no file permissions"]
+    left = client.post("/api/settings/export")
+    assert_clean("FileMade", left.json(), "POST /settings/export (keys left out)")
+    assert left.json()["left_out"] and "NS-W116" in left.json()["note"]
     put = client.put("/api/settings", json={"schedule_time": "04:30", "notifications": True})
     assert put.status_code == 200
     assert_clean("Settings", put.json(), "PUT /settings")

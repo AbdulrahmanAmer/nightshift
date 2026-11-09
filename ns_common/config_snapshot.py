@@ -134,6 +134,10 @@ LEFT_ALONE: dict[str, str] = {
         "Where the first start records that it could not save the copy when the program folder cannot be "
         "written (`first_start.write_state`); not a setting."
     ),
+    "keys_unprotected.json": (
+        "The mark that the one-time NS-W116 was given for this home (F-9b): never removed, and an update "
+        "does not rewrite it, so a rollback has nothing to put back."
+    ),
 }
 
 

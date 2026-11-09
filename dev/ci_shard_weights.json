@@ -2,7 +2,7 @@
  "about": "Seconds per test file for dev/ci_shards.py: the median over the JUnit reports of real CI runs. A file not listed is placed by hash and counts as the larger of the mean and the median of these. Refresh: python dev/ci_shards.py refresh --run latest (or --run <id>, or --junit <folder of report-shard-*.xml>)",
  "measured": {
   "source": "run 42668170598, plus 8 files not in it (the three newest test files, the four test_p10_* files and test_tiny_story_length.py) from run 42686504308 (main, f4f3948) ; plus tests/test_diskneed.py, tests/test_installer_disk_need.py and tests/test_job_disk_room.py (PR 189) from run 42687368408; plus tests/test_prove.py at 4.0 s, an ESTIMATE (not yet in any CI report) until the next refresh after this branch has run in CI",
-  "files": 322
+  "files": 326
  },
  "shard_extra_seconds": {
   "1": 15
@@ -111,6 +111,7 @@
   "tests/test_embed_window.py": 2.1,
   "tests/test_errors.py": 0.1,
   "tests/test_errors_json.py": 0.5,
+  "tests/test_errors_json_unique_codes.py": 0.1,
   "tests/test_exemplars.py": 0.1,
   "tests/test_fake_llm_clip_fit.py": 0.1,
   "tests/test_fake_voice_note.py": 5.1,
@@ -197,6 +198,7 @@
   "tests/test_online_helper.py": 0.2,
   "tests/test_orchestrator.py": 0.8,
   "tests/test_outbox.py": 22.6,
+  "tests/test_owner_lock_fail_closed.py": 7.2,
   "tests/test_owner_lock_file.py": 8.5,
   "tests/test_owner_overrides.py": 0.1,
   "tests/test_p01_p02_voice_regen.py": 0.4,
@@ -240,7 +242,9 @@
   "tests/test_script_job.py": 388.5,
   "tests/test_secret_fallback.py": 0.1,
   "tests/test_secret_file_acl.py": 2.3,
+  "tests/test_secret_file_dashboard_routes.py": 12.9,
   "tests/test_secret_file_lock.py": 2.0,
+  "tests/test_secret_file_no_permissions.py": 2.5,
   "tests/test_secret_names.py": 0.2,
   "tests/test_seo_long.py": 0.1,
   "tests/test_series_context.py": 0.5,
