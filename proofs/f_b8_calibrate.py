@@ -17,7 +17,7 @@ import re
 from datetime import datetime
 from typing import Any
 
-from proofs._lib import db_rows, proof_channel, short
+from proofs._lib import db_rows, pauses_proof_channels, proof_channel, short
 
 PROOF = {
     "id": "f-b8-calibrate",
@@ -96,26 +96,12 @@ def _yaml_bar(ctx: Any, slug: str) -> float | None:
     return float(found.group(1)) if found else None
 
 
+@pauses_proof_channels
 def run(ctx: Any) -> None:
+    # Each run calibrates a channel of its own (its idea history refuses repeated fake ideas, NS-E304);
+    # @pauses_proof_channels leaves it paused at the end, pass or fail, so the nightly never picks it up.
     slug = "proof-cal-" + datetime.now().strftime("%m%d-%H%M%S")
-    try:
-        _calibrate(ctx, slug)
-    finally:
-        # each run makes a new active channel (there is no delete route): pause it, so the nightly run never
-        # produces videos for it. A skip or a failed check passes through this block too.
-        try:
-            status, answer = ctx.api(
-                "POST", f"/api/channels/{slug}/pause", {"note": "proof F-B8: left paused"}
-            )
-        except Exception as exc:  # dashboard gone or time up (ProofFailed): the first error stays the result
-            ctx.step("the proof channel could not be paused", channel=slug, reason=str(exc))
-        else:
-            ctx.step(
-                "the proof channel is left paused, so the nightly run never picks it up",
-                channel=slug,
-                status=status,
-                answer=short(answer),
-            )
+    _calibrate(ctx, slug)
 
 
 def _calibrate(ctx: Any, slug: str) -> None:

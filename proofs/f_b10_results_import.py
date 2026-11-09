@@ -16,7 +16,7 @@ import re
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
-from proofs._lib import db_rows, proof_channel, run_short, short
+from proofs._lib import db_rows, pauses_proof_channels, proof_channel, run_short, short
 
 PROOF = {
     "id": "f-b10-results-import",
@@ -124,6 +124,7 @@ def _learn_job_ids(ctx: Any) -> set[str]:
     return {str(j.get("job_id")) for j in jobs}
 
 
+@pauses_proof_channels
 def run(ctx: Any) -> None:
     base = f"http://127.0.0.1:{ctx.ports['dashboard']}"
 
