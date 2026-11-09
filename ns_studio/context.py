@@ -169,14 +169,35 @@ class JobContext:
         """True for a job made from the owner's own script (`owner_script_of`)."""
         return owner_script_of(self.job_dir)
 
+    def _attempts_data(self) -> dict[str, Any]:
+        f = self.job_dir / "policy_attempts.json"
+        try:
+            data = json.loads(f.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
     @property
     def attempt(self) -> int:
         """How many times the policy gate has already sent this job back (0 on the first pass)."""
-        f = self.job_dir / "policy_attempts.json"
         try:
-            return int(json.loads(f.read_text(encoding="utf-8")).get("regenerations", 0))
-        except (OSError, ValueError, AttributeError):
+            return int(self._attempts_data().get("regenerations", 0))
+        except (TypeError, ValueError):
             return 0
+
+    @property
+    def generation(self) -> int:
+        """Which pass of the text this job is on: regenerations plus idea redraws (0 on the first pass).
+
+        A cached draft or memo is keyed on it. The same generation (a resume, a retry of an interrupted job)
+        reuses what was saved; the next one (a regeneration restarts a stage, a redraw starts a new idea)
+        makes the stage do its work again instead of handing back the text that just failed. A job folder
+        from before this key has none: its drafts count as generation 0.
+        """
+        history = self._attempts_data().get("history", [])
+        if not isinstance(history, list):
+            history = []
+        return self.attempt + sum(1 for h in history if isinstance(h, dict) and "idea" in h)
 
     def file(self, name: str) -> Path:
         """Path of `name` inside the job directory."""

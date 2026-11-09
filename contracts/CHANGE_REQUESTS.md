@@ -533,3 +533,11 @@ Format per entry:
 - **Why:** no existing `NS-W` code means this (`NS-W301` is the PyTorch fallback of the real engine), and the branch is `wf/*`, which may not edit `contracts/` or `pyproject.toml`.
 - **Workaround until applied:** the `subprocess` import carries `# noqa: TID251`; the warning is logged uncoded as the event `fake_voice_tones_only` and is in `/health` (`voice_warning`), `audio/voice_engine.json` and the NS-E403 detail.
 - **Status:** applied in bd99871 and merged in PR 156 (main f86bda0, 2026-11-09; the PR head was bbc6d3e): `pyproject.toml` has the `ns_tts/sapi.py` TID251 ignore and the `noqa` is gone; `contracts/errors.json` has `NS-W303`; `FakeEngine` logs `fake_voice_tones_only` with `code="NS-W303"` and `/health` adds `voice_warning_code`; `note_voice_engine` logs the same code and writes `code` into `audio/voice_engine.json` when the mode is `tones`. The wording of `voice_warning` and of the NS-E403 detail is unchanged.
+
+## CR-H106-1: `intensity` and `real_setting` on the shared `PolicyCheckResult` (filed by the Head for QA)
+- **From:** QA, box F-H106 (a mature channel with an intense story gets "Age restriction suggested: Yes" in the upload sheet), 2026-11-09
+- **Change:** `ns_common.models.PolicyCheckResult` gains `intensity` (`low|medium|high`, default `low`) and `real_setting` (bool or null, default null), and `contracts/schemas/policy_check.schema.json` the same two properties. Today `parse_policy_check` drops both keys; only the studio's own prompt schema (`ns_studio/text/prompts.py`, `POLICY_STUDIO_KEYS`) carries them, so any reader of the shared model sees `low` whatever the judge said.
+- **With it, when applied:** one test that goes from a judge answer with `intensity: high` on a mature channel to the upload sheet text `Age restriction suggested: Yes`, and the same story on a general channel to `No`. No test spans that path today: `test_outbox` builds the line from a hand-made `PolicyAdvice` and `test_policy_p04` stops at `compute_advice`.
+- **Why:** the behaviour works in the studio path, but the shared model disagrees with it, and old files must still load (both fields have defaults).
+- **Workaround until applied:** none needed for the product; F-H106 is proven on the engine install in the 0.1.15 round (QA proof 5.5).
+- **Status:** open
