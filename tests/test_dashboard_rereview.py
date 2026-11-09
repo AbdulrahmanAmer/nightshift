@@ -149,8 +149,11 @@ def test_cancel_frees_every_owner_the_child_took_not_only_the_studio_job_ids(
     assert rec.result["lease_owners"] == ["studio:voice-nova", "dashboard:helper-1"]
 
 
-def test_a_failed_job_frees_every_owner_it_took_too(child: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("CHILD_OWNERS", "studio:voice-nova,studio:voice-nova")  # announced twice, released once
+def test_a_failed_job_frees_every_owner_it_took_too(
+    child: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    # announced twice, released once
+    monkeypatch.setenv("CHILD_OWNERS", "studio:voice-nova,studio:voice-nova")
     monkeypatch.setenv("CHILD_MODE", "crash")
     paths = Paths.from_env()
     _store, ctl = make_ctl(paths)
