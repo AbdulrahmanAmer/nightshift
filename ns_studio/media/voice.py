@@ -73,6 +73,19 @@ def tts_seed(ctx: JobContext) -> int | None:
         return None
     return (zlib.crc32(ctx.job_id.encode()) + ctx.attempt) & 0x7FFFFFFF
 
+
+def read_closings(ctx: JobContext) -> dict[str, str] | None:
+    """`closings.json` as a dict, or None (no closing line) when the hooks stage did not run (an owner's
+    script, a job from before closing lines) or the file is damaged or not an object."""
+    if not ctx.file("closings.json").exists():
+        return None
+    try:
+        closings = ctx.read_json("closings.json")
+    except (OSError, ValueError):
+        return None
+    return closings if isinstance(closings, dict) else None
+
+
 def _signature(it: TtsItem) -> str:
     base = f"{it.voice}|{it.speed}|{it.text}"
     if it.cliff_lines:  # unchanged for items without one, so earlier jobs keep their cache
@@ -158,7 +171,8 @@ class VoiceStage:
 
     name: str = "voice"
     tenant: Tenant = "tts"
-    inputs: tuple[str, ...] = ("parts.json", "story.json", "shorts_plan.json", "closings.json")
+    inputs: tuple[str, ...] = ("parts.json", "story.json", "shorts_plan.json")
+    optional_inputs: tuple[str, ...] = ("closings.json",)  # absent in jobs from before closing lines
     outputs: tuple[str, ...] = ("audio/manifest.json",)
 
     def run(self, ctx: JobContext) -> None:
@@ -171,9 +185,7 @@ class VoiceStage:
         parts = ctx.read_json("parts.json")
         voice = job_voice(ctx)
         voice_name = voice.name or voice.speaker or "Ryan"
-        closings = ctx.read_json("closings.json") if ctx.file("closings.json").exists() else None
-        if not isinstance(closings, dict):
-            closings = None  # no hooks stage ran (an owner's script) or the file is damaged: no closing line
+        closings = read_closings(ctx)
         items = narration_items(parts, voice_name, job_speed(ctx), ctx.channel.language, closings)
         manifest, synthesized = synthesize(ctx, items)
         # Measured seconds live in audio/manifest.json only: rewriting parts.json (an input of hooks, seo,

@@ -12,7 +12,7 @@ from ns_common.models import Story
 from ns_common.textstats import word_count
 from ns_studio.context import FIXTURES_LLM
 from ns_studio.orchestrator import FORMAT_STAGES, run_job
-from ns_studio.stages import REGISTRY
+from ns_studio.stages import REGISTRY, inputs_hash
 from ns_studio.text import stages_master as M
 from ns_studio.text import stages_shorts as S
 from tests.helpers import make_channel, make_ctx
@@ -148,3 +148,15 @@ def test_no_plan_meta_means_no_floor(tmp_home: Path, monkeypatch: pytest.MonkeyP
     ctx.file("plan_meta.json").unlink()
     REGISTRY["continuity"].run(ctx)
     assert json.loads(ctx.file("story.json").read_text(encoding="utf-8"))["chapters"]
+
+
+def test_the_plan_meta_floor_is_not_an_input_of_the_continuity_stage(
+    tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Declared, it would change the stored hash of every older job and `--resume` would redo continuity."""
+    ctx = _upto_critic(monkeypatch, tmp_home)
+    stage = REGISTRY["continuity"]
+    assert "plan_meta.json" not in stage.inputs
+    before = inputs_hash(ctx, stage)
+    ctx.write_json("plan_meta.json", {**ctx.read_json("plan_meta.json"), "min_words": 123})
+    assert inputs_hash(ctx, stage) == before

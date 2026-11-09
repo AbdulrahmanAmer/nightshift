@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import random
+import re
 from datetime import UTC, datetime
 from typing import Any
 
@@ -13,11 +14,12 @@ from ns_common.errors import NsError
 from ns_common.models import Idea, Part, Seo, VisualBeat
 from ns_common.textstats import est_seconds, split_sentences, word_count
 from ns_studio.context import JobContext
+from ns_studio.policy.meta import policy_list
 from ns_studio.stages import Tenant, register
 from ns_studio.text.budget import Budget, MasterBudget, master_as_budget, master_budget, short_budget
 from ns_studio.text.prompts import RUBRIC_KEYS, call_json, call_text, parse_model
 from ns_studio.text.seo import finalize_seo
-from ns_studio.text.validators import load_banned, raise_if, validate_story
+from ns_studio.text.validators import check_banned, load_banned, raise_if, validate_story
 from ns_studio.voice_wpm import job_wpm
 
 __all__ = ["draw_banked_idea", "finalize_seo", "ideas_budget", "job_master_budget", "now_iso"]
@@ -25,6 +27,7 @@ __all__ = ["draw_banked_idea", "finalize_seo", "ideas_budget", "job_master_budge
 IDEA_SIMILARITY_LIMIT = 0.85
 HOOK_MAX_WORDS = 12  # spec 7.0: a hook is at most 12 words
 CLOSING_MAX_WORDS = 15  # spec 7.0: a closing line is at most 15 words
+SHORT_CLOSING_WORDS = 10  # the budget's allowance for the closing line the hooks stage adds after the body
 CLOSINGS_FILE = "closings.json"
 DEFAULT_SHORT_CLOSINGS = (
     "Follow for the next story.",
@@ -45,7 +48,14 @@ def ideas_budget(ctx: JobContext) -> Budget:
     """Word budget of the story: the master (master-first) or one part of `combo.length_bucket` (50 s)."""
     if ctx.fmt == "master_first":
         return master_as_budget(job_master_budget(ctx))
-    return short_budget(ctx.combo.length_bucket or 50, ctx.combo.pacing, parts=1, wpm=job_wpm(ctx))
+    return short_budget(
+        ctx.combo.length_bucket or 50,
+        ctx.combo.pacing,
+        parts=1,
+        hook_words=HOOK_MAX_WORDS,
+        closing_words=SHORT_CLOSING_WORDS,
+        wpm=job_wpm(ctx),
+    )
 
 
 def has_chapter_potential(idea: dict[str, Any]) -> bool:
@@ -338,10 +348,22 @@ def default_closing(part_n: int, parts_total: int) -> str:
     return DEFAULT_SHORT_CLOSINGS[(part_n - 1) % len(DEFAULT_SHORT_CLOSINGS)]
 
 
+def closing_is_clean(text: str) -> bool:
+    """False when the closing line holds a banned phrase (`contracts/policy/banned_phrases.txt`) or a claim
+    that the story is real (`misleading_claims.txt`, the E603 list). The line is spoken, captioned and
+    published, and the policy gate reads only the metadata, so the stage that takes it checks it."""
+    if check_banned(text, load_banned()):
+        return False
+    low = text.lower()
+    return not any(re.search(rf"\b{re.escape(p)}\b", low) for p in policy_list("misleading_claims.txt"))
+
+
 def closing_line(raw: Any, part_n: int, parts_total: int) -> str:
-    """The model's closing line when it is 1-15 words, else the default for this part."""
+    """The model's closing line when it is 1-15 words and clean, else the default for this part."""
     text = str(raw or "").strip()
-    return text if 0 < len(text.split()) <= CLOSING_MAX_WORDS else default_closing(part_n, parts_total)
+    if 0 < len(text.split()) <= CLOSING_MAX_WORDS and closing_is_clean(text):
+        return text
+    return default_closing(part_n, parts_total)
 
 
 class HooksStage:
@@ -354,11 +376,19 @@ class HooksStage:
     name: str = "hooks"
     tenant: Tenant = "llama"
     inputs: tuple[str, ...] = ("parts.json",)
-    outputs: tuple[str, ...] = ("parts.json", "hooks_all.json", CLOSINGS_FILE)
+    # `closings.json` is written here but is not a declared output: a shorts_only job from before closing
+    # lines would otherwise count as missing an output and `--resume` would pick new hooks and redo the
+    # voice and captions. Such a job keeps the hooks it has and gets no closing line.
+    outputs: tuple[str, ...] = ("parts.json", "hooks_all.json")
 
     def run(self, ctx: JobContext) -> None:
-        """Set `hook` on every part and write its closing line; skip when both files exist for these parts."""
-        if ctx.file("hooks_all.json").exists() and ctx.file(CLOSINGS_FILE).exists():
+        """Set `hook` on every part and write its closing line; skip when `hooks_all.json` exists for these parts.
+
+        `closings.json` is written before `hooks_all.json`, so a job made by this code has both when it skips.
+        A job from before closing lines has only the hooks: it keeps them and gets no closing line, rather
+        than picking new hooks (and redoing the voice and captions) on `--resume`.
+        """
+        if ctx.file("hooks_all.json").exists():
             return
         parts: list[dict[str, Any]] = ctx.read_json("parts.json")
         all_hooks: list[list[str]] = []

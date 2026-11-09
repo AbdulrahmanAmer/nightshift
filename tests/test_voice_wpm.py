@@ -101,6 +101,43 @@ def test_a_damaged_file_means_no_measurement_and_the_table(tmp_home: Path):
     assert _measure(ctx, SLOW) == pytest.approx(SLOW, abs=1.0)  # and it is replaced by a good one
 
 
+def test_a_fake_voice_is_never_recorded_as_the_pace_of_the_real_one(tmp_home: Path):
+    """The tone-burst engine speaks 155 x speed by construction: stored as Ryan's, it would drive budgets."""
+    ctx = make_ctx(tmp_home)
+    ctx.runtime.tts.engine = "fake"
+    assert _measure(ctx, SLOW) is None
+    assert not voice_wpm_path(ctx.paths).exists()
+    dev = make_ctx(tmp_home)
+    dev.runtime.dev_mode = True
+    assert _measure(dev, SLOW) is None and not voice_wpm_path(dev.paths).exists()
+    real = make_ctx(tmp_home)
+    assert _measure(real, SLOW) == pytest.approx(SLOW, abs=1.0)  # the same samples on a real engine count
+
+
+def test_one_malformed_sample_does_not_block_every_later_record(tmp_home: Path):
+    ctx = make_ctx(tmp_home)
+    bad = {"voices": {"Ryan": {"wpm_1x": 150, "samples": {"j-old": {"speech_s_1x": 60}, "j-str": "x"}}}}
+    voice_wpm_path(ctx.paths).write_text(json.dumps(bad), encoding="utf-8")
+    assert _measure(ctx, SLOW) == pytest.approx(SLOW, abs=1.0)  # no KeyError swallowed into a warning
+    stored = load_voice_wpm(ctx.paths)["voices"]["Ryan"]
+    assert list(stored["samples"]) == [ctx.job_id] and stored["jobs"] == 1  # the unusable ones are dropped
+
+
+def test_a_job_planned_before_the_pace_was_pinned_keeps_the_table(tmp_home: Path):
+    """A resume of an older job must not plan chapters with a pace the first half of the plan never saw."""
+    _measure(make_ctx(tmp_home), SLOW)
+    older = make_ctx(tmp_home, fmt="master_first", channel=make_channel(format="master_first"))
+    older.write_json("plan_meta.json", {"working_title": "t", "wpm": 155, "min_words": 1395})
+    assert not older.file(PINNED_FILE).exists()
+    assert job_wpm(older) == PACING_WPM["standard"]
+    pinned = json.loads(older.file(PINNED_FILE).read_text(encoding="utf-8"))
+    assert pinned["source"] == "table" and pinned["wpm_1x"] == pytest.approx(SLOW, abs=1.0)
+    assert job_master_budget(older).wpm == 155
+    fresh = make_ctx(tmp_home, fmt="master_first", channel=make_channel(format="master_first"))
+    fresh.write_json("idea.json", {"premise": "p", "twist": "t"})  # a banked idea is not a plan
+    assert job_wpm(fresh) == round(SLOW * pacing_speed(fresh.channel.voice.speed, "standard"))
+
+
 def test_budgets_take_a_measured_pace_over_the_pacing_table():
     table = short_budget(50, "standard")
     slow = short_budget(50, "standard", wpm=120)
@@ -120,7 +157,8 @@ def test_the_second_job_plans_with_the_pace_the_first_job_measured(tmp_home: Pat
     mb = job_master_budget(second)
     assert mb.wpm == round(SLOW * pacing_speed(second.channel.voice.speed, "standard"))
     assert mb.wpm != PACING_WPM["standard"]
-    assert mb.target_words < job_master_budget(first).target_words
+    table = job_master_budget(first)  # the target minutes are drawn from the job id: compare words per minute
+    assert mb.target_words / mb.target_minutes < table.target_words / table.target_minutes
     pinned = json.loads(second.file(PINNED_FILE).read_text(encoding="utf-8"))
     assert pinned["source"] == "measured" and pinned["table_wpm"] == 155 and pinned["voice"] == "Ryan"
 

@@ -32,6 +32,10 @@ MIN_SAMPLE_WORDS = 120  # a job that voiced fewer words says nothing about the v
 MAX_SAMPLES = 12  # jobs kept per voice: the figure follows the voice, not the first week
 SANE_RATIO = (0.5, 1.6)  # a measured pace outside this band of the nominal 155 wpm is a broken sample
 CLAMP_RATIO = (0.6, 1.6)  # a job's planning pace stays within this band of its pacing table figure
+# Artifacts that exist only once a plan was made. A job that has them but no `wpm_used.json` was planned
+# before this file existed, with the pacing table (`idea.json` is not one: a banked idea writes it before
+# the first budget is asked for).
+PLAN_ARTIFACTS = ("plan.json", "plan_meta.json", "story.json", "story_revised.json", "parts.json")
 
 
 def voice_wpm_path(paths: Paths) -> Path:
@@ -90,6 +94,25 @@ def _write_atomic(path: Path, doc: dict[str, Any]) -> None:
     os.replace(tmp, path)
 
 
+def fake_engine(ctx: JobContext) -> bool:
+    """True when the voice is a fake: the `fake` engine of an engine test or any dev-mode install."""
+    return ctx.runtime.tts.engine == "fake" or ctx.runtime.dev_mode
+
+
+def _good_samples(entry: Any) -> dict[str, Any]:
+    """The stored per-job samples of a voice without the ones that cannot be added up (a hand-edited or
+    older file with a missing or non-numeric field), so one bad sample never blocks every later record."""
+    raw = entry.get("samples") if isinstance(entry, dict) else None
+    good: dict[str, Any] = {}
+    for job_id, sample in (raw if isinstance(raw, dict) else {}).items():
+        try:
+            if isinstance(sample, dict) and int(sample["words"]) > 0 and float(sample["speech_s_1x"]) > 0:
+                good[job_id] = sample
+        except (KeyError, TypeError, ValueError):
+            continue
+    return good
+
+
 def record_voice_wpm(
     ctx: JobContext, voice_name: str, items: list[TtsItem], manifest: dict[str, dict]
 ) -> float | None:
@@ -99,6 +122,8 @@ def record_voice_wpm(
     the last `MAX_SAMPLES` jobs count. Returns None, and stores nothing, when the job voiced too little or
     measured an impossible pace. Never raises: a measurement must not stop a job.
     """
+    if fake_engine(ctx):
+        return None  # the tone-burst engine speaks 155 x speed by construction: not the voice's pace
     sample = job_sample(items, manifest)
     if sample is None:
         return None
@@ -116,7 +141,7 @@ def record_voice_wpm(
     try:
         doc = load_voice_wpm(ctx.paths)
         entry = doc["voices"].get(voice_name)
-        samples: dict[str, Any] = dict(entry.get("samples", {})) if isinstance(entry, dict) else {}
+        samples = _good_samples(entry)
         samples.pop(ctx.job_id, None)  # re-recording a job moves it to the newest position
         samples[ctx.job_id] = {"words": words, "speech_s_1x": round(speech_1x, 3)}
         while len(samples) > MAX_SAMPLES:
@@ -143,7 +168,9 @@ def job_wpm(ctx: JobContext) -> int:
     """Words per minute the job plans with: its voice's measured pace at the job's speed, else the table.
 
     The first call of a job decides and writes `wpm_used.json`; later calls (other stages, a resume) read it,
-    so a measurement that lands while the job runs does not change its plan half way.
+    so a measurement that lands while the job runs does not change its plan half way. A job that already holds
+    plan artifacts (`PLAN_ARTIFACTS`) but no `wpm_used.json` was planned with the pacing table before this
+    file existed: it is pinned to the table, however the voice has been measured since.
     """
     pinned = ctx.file(PINNED_FILE)
     try:
@@ -154,6 +181,7 @@ def job_wpm(ctx: JobContext) -> int:
         pass
     table = PACING_WPM[ctx.combo.pacing]
     wpm, source, voice_name, speed, wpm_1x = table, "table", None, None, None
+    planned_before = any(ctx.file(name).exists() for name in PLAN_ARTIFACTS)
     try:
         from ns_studio.media.voice import job_speed, job_voice
 
@@ -161,7 +189,7 @@ def job_wpm(ctx: JobContext) -> int:
         voice_name = voice.name or voice.speaker or "Ryan"
         speed = job_speed(ctx)
         wpm_1x = measured_wpm_1x(ctx.paths, voice_name)
-        if wpm_1x is not None:
+        if wpm_1x is not None and not planned_before:
             lo, hi = (table * r for r in CLAMP_RATIO)
             wpm, source = round(min(hi, max(lo, wpm_1x * speed))), "measured"
     except (OSError, ValueError, KeyError, AttributeError):
@@ -174,6 +202,8 @@ def job_wpm(ctx: JobContext) -> int:
         "speed": speed,
         "wpm_1x": wpm_1x,
     }
+    if planned_before:  # one job, one pace: the plan on disk was made with the table, so this job keeps it
+        doc["reason"] = "planned before the pace was pinned"
     try:
         pinned.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
     except OSError:

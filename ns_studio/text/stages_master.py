@@ -35,7 +35,13 @@ from ns_studio.text.budget import (
 from ns_studio.text.models_local import ChapterDraft
 from ns_studio.text.prompts import call_json, call_text, parse_model
 from ns_studio.text.seo import finalize_seo, finalize_seo_long
-from ns_studio.text.stages_shorts import critic_numbers, job_master_budget, now_iso, repair_beats
+from ns_studio.text.stages_shorts import (
+    closing_is_clean,
+    critic_numbers,
+    job_master_budget,
+    now_iso,
+    repair_beats,
+)
 from ns_studio.text.validators import (
     check_banned,
     check_cliff_variety,
@@ -310,7 +316,10 @@ class ContinuityStage:
     name: str = "continuity"
     tenant: Tenant = "llama"
     uses_embed: bool = True  # calls the embed service; the orchestrator leases it around run()
-    inputs: tuple[str, ...] = ("story_revised.json", "critic.json", "plan_meta.json")
+    # plan_meta.json (the 9:00 floor `enforce_word_floor` reads) is not an input on purpose: it only changes
+    # when the plan stage reruns, which rewrites the chapters and so `story_revised.json` as well. Declared,
+    # it would change the stored hash of every older job and `--resume` would redo this LLM stage.
+    inputs: tuple[str, ...] = ("story_revised.json", "critic.json")
     outputs: tuple[str, ...] = ("story.json", "continuity.json")
 
     def run(self, ctx: JobContext) -> None:
@@ -609,7 +618,7 @@ class ShortsSelectStage:
             )
             chosen = hooks[max(0, min(int(judged["index"]), len(hooks) - 1))]
             closing = str(out["closing_line"]).strip()
-            if not closing or len(closing.split()) > CLOSING_MAX_WORDS:
+            if not closing or len(closing.split()) > CLOSING_MAX_WORDS or not closing_is_clean(closing):
                 closing = DEFAULT_CLOSINGS[(k - 1) % len(DEFAULT_CLOSINGS)]
             item = ShortsPlanItem(
                 k=k,

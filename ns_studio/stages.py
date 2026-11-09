@@ -58,13 +58,32 @@ class StageState:
         return bool(e and e.get("status") == "done" and e.get("inputs_hash") == h)
 
 
+def optional_inputs(stage: Stage) -> tuple[str, ...]:
+    """Files `stage` reads only when they exist (class attribute `optional_inputs`).
+
+    Unlike `inputs`, a missing optional file adds nothing to the hash, so a stage that learns to read a new
+    file keeps the hash it had for every job made before that file existed: `--resume` of an older job does
+    not redo the stage (and, through it, everything downstream).
+    """
+    return tuple(getattr(stage, "optional_inputs", ()))
+
+
 def inputs_hash(ctx: JobContext, stage: Stage) -> str:
-    """SHA-256 over the names and bytes of every input file of `stage` that exists."""
+    """SHA-256 over the names and bytes of every input file of `stage` that exists.
+
+    A name in `inputs` counts even when its file is missing; a name in `optional_inputs` counts only when it
+    exists.
+    """
     hsh = hashlib.sha256()
     for name in stage.inputs:
         p = ctx.file(name)
         hsh.update(name.encode())
         if p.exists():
+            hsh.update(p.read_bytes() if p.is_file() else b"dir")
+    for name in optional_inputs(stage):
+        p = ctx.file(name)
+        if p.exists():
+            hsh.update(name.encode())
             hsh.update(p.read_bytes() if p.is_file() else b"dir")
     return hsh.hexdigest()
 
@@ -108,7 +127,7 @@ def refresh_upstream_hashes(ctx: JobContext, state: StageState, files: tuple[str
         other = REGISTRY.get(name)
         if name == skip or other is None or entry.get("status") != "done":
             continue
-        if set(other.inputs) & set(files):
+        if (set(other.inputs) | set(optional_inputs(other))) & set(files):
             entry["inputs_hash"] = inputs_hash(ctx, other)
 
 
