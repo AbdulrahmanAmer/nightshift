@@ -252,8 +252,13 @@ class S01Questions(Step):
         finally:
             client.close()
         if not any_key_stored(ctx.store):
-            ctx.ui.say(NO_KEY_NOTICE, "yellow")
-            ctx.log.warn("no_stock_key", hint="add a Pixabay key in Settings before the first video")
+            # the answers are not resolved yet at this point, so read the raw one (a dev install ignores it)
+            if ctx.raw_answers.get("fake_footage") is True and not ctx.dev_mode:
+                ctx.ui.say("Engine test (fake_footage): story jobs use placeholder footage; "
+                           "no stock-footage key is needed.")
+            else:
+                ctx.ui.say(NO_KEY_NOTICE, "yellow")
+                ctx.log.warn("no_stock_key", hint="add a Pixabay key in Settings before the first video")
 
     # ---- run ----
     def run(self, ctx: StepContext) -> None:

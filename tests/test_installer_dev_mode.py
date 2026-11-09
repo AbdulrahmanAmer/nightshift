@@ -28,7 +28,8 @@ from installer.stage2.steps.s09_shortcuts_scheduler import S09ShortcutsScheduler
 from installer.stage2.steps.s10_summary import S10Summary
 from installer.stage2.testing import FakeUi, example_answers, make_test_context
 from installer.stage2.wizard import main
-from ns_common.config import load_install_state, load_manifest, load_runtime
+from ns_common.config import load_install_state, load_manifest, load_runtime, save_runtime
+from ns_common.models import Runtime
 from ns_common.paths import Paths
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -513,7 +514,32 @@ def test_fake_footage_is_written_into_runtime_json_of_a_real_install(tmp_path: P
 
 
 def test_fake_footage_is_ignored_by_a_dev_install_which_fakes_its_footage_anyway(tmp_path: Path):
+    """A dev install already has fake footage through dev_mode; the answer must not double up on it."""
     ctx = dev_ctx(tmp_path, fake_footage=True)
     assert ctx.fake_footage is False
     rt = build_runtime(ctx)
     assert rt.fake_footage is False and rt.dev_mode is True
+
+
+def test_s07_applies_the_engine_test_answers_to_an_existing_runtime_json(tmp_path: Path):
+    """ensure_baseline writes runtime.json only once, so a re-run must still take the answers from s07."""
+    ctx = make_test_context(
+        tmp_path, raw_answers=example_answers(allow_cpu=True, fake_footage=True, fake_voice=True),
+        resolve=True, dev_mode=False, preflight={"profile": "cpu-dev"},
+    )
+    older = Runtime.default("cpu-dev")                   # an earlier install: no flag, a real voice engine
+    older.tts.engine = "qwentts"
+    save_runtime(ctx.paths, older)
+    assert load_runtime(ctx.paths).fake_footage is False
+    S07Configs().run(ctx)
+    rt = load_runtime(ctx.paths)
+    assert rt.fake_footage is True and rt.tts.engine == "fake" and rt.dev_mode is False
+    # the answer removed again: the footage switch follows it, the voice engine is left as it is
+    ctx2 = make_test_context(
+        tmp_path / "again", raw_answers=example_answers(allow_cpu=True), resolve=True, dev_mode=False,
+        preflight={"profile": "cpu-dev"},
+    )
+    save_runtime(ctx2.paths, rt)
+    S07Configs().run(ctx2)
+    rt2 = load_runtime(ctx2.paths)
+    assert rt2.fake_footage is False and rt2.tts.engine == "fake"

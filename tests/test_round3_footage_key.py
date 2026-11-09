@@ -178,6 +178,7 @@ def test_runtime_fake_footage_brings_the_fake_clip_source_and_needs_no_key(tmp_h
 
 
 def test_the_helper_reads_runtime_json_like_is_dev(tmp_home: Path):
+    """The dashboard asks the helper, so it must follow dev_mode and fake_footage and nothing else."""
     import json
 
     from ns_common.devmode import fake_footage, is_dev
@@ -194,6 +195,7 @@ def test_the_helper_reads_runtime_json_like_is_dev(tmp_home: Path):
 
 
 def test_the_dashboard_job_refusal_stands_down_for_fake_footage(tmp_home: Path):
+    """Without a key the dashboard refuses a story job; with fake_footage in runtime.json it must not."""
     import json
 
     from ns_dashboard.svc_channels import ChannelsService
@@ -204,5 +206,8 @@ def test_the_dashboard_job_refusal_stands_down_for_fake_footage(tmp_home: Path):
     state = build_state(paths, fake_services=True, link=SupervisorLink("http://127.0.0.1:9", timeout_s=0.2))
     state.fake_services = False                                     # real adapters, empty keyring
     jobs_svc = JobsService(state, ChannelsService(state))
+    with pytest.raises(ApiError) as ei:
+        jobs_svc._require_footage_key()
+    assert ei.value.code == "NS-E502"
     paths.runtime_file.write_text(json.dumps({"fake_footage": True}), encoding="utf-8")
     jobs_svc._require_footage_key()                                 # no NS-E502

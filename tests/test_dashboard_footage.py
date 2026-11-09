@@ -246,7 +246,8 @@ def test_a_dev_install_fetches_from_the_fake_source_without_a_key(tmp_home: Path
 
 
 def test_fake_footage_fetches_from_the_fake_source_without_a_key_or_dev_mode(tmp_home: Path):
-    """The fake_footage engine test (docs/DEV_MODE.md): a real install with no key still gets placeholder clips."""
+    """The fake_footage engine test (docs/DEV_MODE.md): a real install with no key still gets
+    placeholder clips."""
     if not shutil.which("ffmpeg"):
         pytest.skip("ffmpeg is not installed")
     dash, state, seen = make(tmp_home, {}, [])
