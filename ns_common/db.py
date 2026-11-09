@@ -19,6 +19,7 @@ def new_job_id(slug: str, when: datetime | None = None) -> str:
 _ADDED_COLUMNS: dict[str, tuple[tuple[str, str], ...]] = {
     "sources": (("rights_confirmed", "INTEGER NOT NULL DEFAULT 0"), ("title", "TEXT")),
     "ideas": (("status", "TEXT NOT NULL DEFAULT 'new'"), ("title", "TEXT"), ("source", "TEXT")),
+    "outputs": (("profile", "TEXT"),),  # H-8b: 'tiny_story' for a video made on an engine-test install
 }
 
 
