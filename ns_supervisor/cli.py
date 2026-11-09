@@ -10,6 +10,7 @@ import typer
 from ns_common import __version__
 from ns_common.config import load_runtime
 from ns_common.errors import NsError
+from ns_common.logging import NsLogger
 from ns_common.paths import Paths
 from ns_supervisor import (
     backup,
@@ -27,7 +28,7 @@ from ns_supervisor import (
     verify,
 )
 from ns_supervisor.client import SupervisorClient, ensure_running
-from ns_supervisor.schedule_cfg import read_run_time
+from ns_supervisor.schedule_cfg import MODE_DISABLED, MODE_SWITCHED_OFF, read_run_time, read_schedule_mode
 from ns_supervisor.services import venv_python
 
 app = typer.Typer(help="Nightshift runtime tools", add_completion=False)
@@ -174,13 +175,29 @@ def _sync(paths: Paths, app_dir: Path) -> None:
 
 
 def _reregister(paths: Paths, app_dir: Path) -> list[str]:
+    """Point the nightly task at the updated program, keeping what the owner set (D-28).
+
+    The task's state (switched on or off) and run time are read before it is replaced and restored after; the
+    update log says what was kept. A task that `schedule.json` records as `disabled` (a dev install's task, or
+    one the owner registered with `ns schedule install --disabled`) is not touched by an update, as before
+    D-28. `ns schedule install` and the Settings run-time change DO register such a task enabled (setup's
+    `ns schedule install --time T` relies on it for a real install made over a dev one); `--disabled` again
+    keeps it off.
+    """
     notes: list[str] = []
-    if read_run_time(paths) is not None:
-        try:
-            schedule.install(paths, None, app_dir)
-            notes.append("scheduled task re-registered")
-        except schedule.ScheduleError as e:
-            notes.append(f"scheduled task NOT re-registered: {e}")
+    mode = read_schedule_mode(paths)
+    if mode in ("none", MODE_DISABLED):
+        return notes
+    try:
+        schedule.install(paths, None, app_dir, keep_state=True, log=NsLogger("update", paths.logs))
+    except schedule.ScheduleError as e:
+        return [f"scheduled task NOT re-registered: {e}"]
+    off = read_schedule_mode(paths) == MODE_SWITCHED_OFF
+    when = read_run_time(paths, include_disabled=True)
+    notes.append(
+        f"scheduled task re-registered (still switched off, daily at {when})" if off
+        else f"scheduled task re-registered (daily at {when})"
+    )
     return notes
 
 
@@ -354,11 +371,15 @@ def cmd_restore(
         typer.echo(ln)
 
 
-def _schedule_call(fn_name: str, time: str | None = None, disabled: bool = False) -> None:
+def _schedule_call(
+    fn_name: str, time: str | None = None, disabled: bool = False, enable: bool = False
+) -> None:
     paths = Paths.from_env()
     try:
         if fn_name == "install":
-            msg = schedule.install(paths, time, control.app_path(paths), disabled=disabled)
+            msg = schedule.install(
+                paths, time, control.app_path(paths), disabled=disabled, keep_state=True, enable=enable
+            )
         elif fn_name == "remove":
             msg = schedule.remove(paths)
         else:
@@ -372,11 +393,26 @@ def _schedule_call(fn_name: str, time: str | None = None, disabled: bool = False
 def schedule_install(
     time: Annotated[str | None, typer.Option("--time", help="Local time HH:MM (default 03:00).")] = None,
     disabled: Annotated[
-        bool, typer.Option("--disabled", help="Register the task but switch it off (a dev install).")
+        bool,
+        typer.Option(
+            "--disabled",
+            help="Register the task but switch it off (a dev install, or a pause). ns update leaves it off.",
+        ),
+    ] = False,
+    enable: Annotated[
+        bool,
+        typer.Option("--enable", help="Switch the task on, even if you switched it off in Task Scheduler."),
     ] = False,
 ) -> None:
-    """Register the daily task (wake the PC, run whether logged on or not, stop after 6 h)."""
-    _schedule_call("install", time, disabled)
+    """Register the daily task (wake the PC, run whether logged on or not, stop after 6 h).
+
+    A task that already exists keeps its run time (without --time) and its state: a task you switched off in
+    Task Scheduler stays off unless --enable. A task registered with --disabled is the exception: a plain
+    `ns schedule install` registers it enabled (ns update leaves it off).
+    """
+    if enable and disabled:
+        raise _die(NsError("NS-E204", "schedule install: --enable and --disabled cannot be used together"))
+    _schedule_call("install", time, disabled, enable)
 
 
 @schedule_app.command("remove")
