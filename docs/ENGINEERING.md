@@ -125,7 +125,7 @@ Spec §12 slices map onto milestones as follows. The spec's slice gates become C
 - **Scope:** C8 and C9 are built in parallel by separate builders on disjoint paths (C9 uses a fake job worker until C8 lands). C8: import, transcribe, select, detect, templates, cut, clip SEO, `studio clip`. C9: API per spec §20.3, static UI ported from `docs/superpowers/mockups/dashboard.html`, job worker, range streaming, chunked upload. C2 adds the `dashboard` service entry and `/events`. C1 adds the Dashboard shortcut.
 - **Exit criteria (CI):** `dev/gate_m3.py`: the clipper fixture yields at least 2 clips at 1080x1920 with the facecam found within 5 % of its true position, QC and sheets valid; every dashboard route passes under `TestClient`; a fake clip job started through `/api/jobs/clip` finishes and appears in the review queue; approve and reject write `outputs.status`.
 - **Exit criteria (partner):** the partner drops a video on the Clipper page and reviews the resulting clips in the Dashboard.
-- **Release tag:** `contracts-m3` (adds `transcript`, `clip_plan`, `clip_layout`, `clip_template`, `dashboard_job` if not already in v1), then `v0.4.0`.
+- **Release tag:** `contracts-m3` (adds `transcript`, `clip_plan`, `clip_layout`, `clip_template`; no `dashboard_job` schema, a dashboard job is a `dashboard_jobs` row, see BUILD_SPEC.md 15.6), then `v0.4.0`.
 - **Partner receives:** `Nightshift-0.4.0.zip`.
 
 ### M4 "Release hardening"
@@ -263,7 +263,7 @@ Rules: no test depends on wall-clock timing, GPU, the real home folder or the in
 
 ## 7. CI and release
 
-**Workflow `.github/workflows/ci.yml`** runs on `pull_request`, on `push` to `main` and to tags, and nightly (a pull request branch is tested by its `pull_request` run alone), on `windows-latest`, Python 3.12, FFmpeg via `choco install ffmpeg -y --no-progress`. The workflow from the foundations plan, Task 1, is a single `test` job running `ruff`, `pyright` and `pytest`; it stays as is. Plan `m0-c10-ci-bundle.md` splits and extends it:
+**Workflow `.github/workflows/ci.yml`** runs on `pull_request`, on `push` to `main` and to tags, and nightly (a pull request branch is tested by its `pull_request` run alone), on `windows-latest`, Python 3.12, FFmpeg from the composite action `.github/actions/install-ffmpeg` (H-9): the build `manifest.json` pins under `bins.ffmpeg` (the one the product itself falls back to), restored from the Actions cache or downloaded and checked against the manifest's sha256 by `dev/ci_install_ffmpeg.py`, Chocolatey only as a second source, and a final `ffmpeg -version` / `ffprobe -version` that fails the step with `FFmpeg could not be installed: <source> answered <status>` (and says `upstream outage` in the job summary when the host kept answering 5xx), so a missing FFmpeg never reaches pytest. The workflow from the foundations plan, Task 1, is a single `test` job running `ruff`, `pyright` and `pytest`; it stays as is. Plan `m0-c10-ci-bundle.md` splits and extends it:
 
 | Job | Steps | Required |
 |---|---|---|
