@@ -87,7 +87,18 @@ def nightly_message(report: dict[str, Any], masters: int, shorts: int) -> str | 
     unreadable = report.get("unreadable_profiles", [])
     if unreadable:
         parts.append(f"{_plural(len(unreadable), 'channel', 'channels')} skipped, profile cannot be read")
+    parts.extend(no_room_message(report))
     return "; ".join(parts) if parts else None
+
+
+def no_room_message(report: dict[str, Any]) -> list[str]:
+    """The morning-note line for jobs the night did not start because the drive was too full (D-33)."""
+    refused: list[dict[str, Any]] = report.get("no_room", [])
+    if not refused:
+        return []
+    left = sum(int(r.get("jobs", 1)) for r in refused)
+    why = refused[0].get("short", "")
+    return [f"{_plural(left, 'job', 'jobs')} not started, not enough disk space ({why})"]
 
 
 def failure_message(code: str) -> str:

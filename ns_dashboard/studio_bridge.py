@@ -112,7 +112,7 @@ def run_story_jobs(
     story text, `studio run --script`) one job is made from that text instead of one the model writes
     (`jobs.make_script_job`).
     """
-    from ns_studio import jobs
+    from ns_studio import diskroom, jobs
     from ns_studio.channels.crud import get_channel
     from ns_studio.orchestrator import plan_format, plan_job
     from ns_studio.policy.regen import run_job_guarded
@@ -120,6 +120,9 @@ def run_story_jobs(
     env = open_env(fake, acquirer, paths=paths)
     if resume_job_id:
         ctx = jobs.load_job(env, resume_job_id)
+        # NS-E104 before the job runs again, for the stages it has left (a drive that filled up meanwhile)
+        diskroom.require_story_room(
+            env.paths, env.log, ctx.channel, ctx.fmt, fake=fake, resume_dir=ctx.job_dir)
         jobs.prepare_plan(ctx.fmt, None)
         names = [s.name for s in plan_job(plan_format(ctx.fmt, ctx.job_dir))]
         if seen is not None:
@@ -135,6 +138,8 @@ def run_story_jobs(
     rng = random.Random()
     out: list[str] = []
     for i in range(n):
+        # every job of a batch, a scheduled one too: the drive may have filled up since the request was made
+        diskroom.require_story_room(env.paths, env.log, ch, fmt, fake=fake)
         if script is not None:
             ctx = jobs.make_script_job(env, ch, fmt, script, script_title, rng=rng)
             names = [s.name for s in plan_job(plan_format(ctx.fmt, ctx.job_dir))]
@@ -247,6 +252,7 @@ def run_clip(
     `params` carries `channel`, `template`, `max_clips`, `min_s`, `max_s` and `rights_confirmed` as the
     dashboard stores them. A video that was downloaded for the job is deleted once it has been imported.
     """
+    from ns_studio import diskroom
     from ns_studio.channels.crud import get_channel
     from ns_studio.clipper.stages_clip import create_clip_job
     from ns_studio.orchestrator import run_job
@@ -255,6 +261,11 @@ def run_clip(
     channel = get_channel(home, str(params["channel"]))
     clip_params = clip_params_of(source_path, channel.slug, params)
     clip_params.validate()
+    # a linked video was downloaded for this job (already on the drive); a file is copied in by the import
+    diskroom.require_clip_room(
+        home, NsLogger("dashboard", home.logs, echo=False), max_clips=clip_params.max_clips,
+        source=None if source_path.parent.parent.name == DOWNLOADS else source_path, fake=fake,
+    )
     ctx = with_acquirer(create_clip_job(home, channel, clip_params, fake=frozenset(fake)), acquirer)
     if seen is not None:
         seen.append(ctx.job_id)
@@ -278,6 +289,7 @@ def rerun_clip(
     The import, audio, analysis and transcript are kept; selection, layout, captions, render, QC and
     the outbox run again. `changes` may hold `template`, `max_clips`, `min_s` and `max_s`.
     """
+    from ns_studio import diskroom
     from ns_studio.channels.crud import get_channel
     from ns_studio.clipper.models import ClipParams
     from ns_studio.clipper.stages_clip import resume_clip_job
@@ -296,6 +308,8 @@ def rerun_clip(
     if style and "caption_style" in {f.name for f in dataclasses.fields(ClipParams)}:
         new = dataclasses.replace(new, caption_style=str(style))
     new.validate()
+    diskroom.require_clip_room(  # the later stages only: the renders
+        home, NsLogger("dashboard", home.logs, echo=False), max_clips=new.max_clips, rerun=True, fake=fake)
     ctx = with_acquirer(
         resume_clip_job(home, studio_job_id, get_channel(home, old.channel), fake=frozenset(fake)), acquirer
     )
@@ -392,7 +406,7 @@ def run_series_part(
     directory already holds `script_source.json`, so `run_job` switches to the `master_from_script` plan.
     A resumed job (its `job.json` exists) continues where `stage_state.json` says.
     """
-    from ns_studio import jobs
+    from ns_studio import diskroom, jobs
     from ns_studio.channels.crud import get_channel
     from ns_studio.context import JobContext
     from ns_studio.orchestrator import plan_job
@@ -405,6 +419,7 @@ def run_series_part(
     channel = get_channel(env.paths, str(params["channel"]))
     jobs.prepare_plan("master_first", None)
     job_dir = env.paths.job_dir(job_id)
+    diskroom.require_series_part_room(env.paths, env.log, fake=fake, resume_dir=job_dir)
     if (job_dir / "job.json").exists():
         ctx = jobs.load_job(env, job_id)
     else:

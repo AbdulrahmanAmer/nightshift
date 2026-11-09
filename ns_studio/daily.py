@@ -19,6 +19,7 @@ from ns_studio import jobs, notifications
 from ns_studio.channels import cadence
 from ns_studio.channels.crud import broken_channels, get_channel
 from ns_studio.context import JobContext
+from ns_studio.diskroom import require_story_room
 from ns_studio.errors import UNEXPECTED, StudioError, describe_unexpected
 from ns_studio.footage_keys import require_footage_key
 from ns_studio.media.outbox import retime_sheet
@@ -121,6 +122,15 @@ def apply_publish_times(
     return rewritten
 
 
+def no_room_entry(channel: str, fmt: str, jobs_left: int, e: NsError) -> dict[str, Any]:
+    """The report line for jobs the nightly did not start for lack of disk space (``NS-E104``, D-33)."""
+    return {
+        "channel": channel, "format": fmt, "jobs": jobs_left, "message": e.detail,
+        "short": e.data.get("short", e.detail), "need_bytes": e.data.get("need_bytes"),
+        "free_bytes": e.data.get("free_bytes"),
+    }
+
+
 def run_daily(
     env: jobs.Env,
     *,
@@ -185,6 +195,16 @@ def _run_daily(
             try:
                 # No stock-footage key: every story would fail at `clips` after an hour of GPU work (gap L3).
                 require_footage_key(env.services)
+                try:
+                    # Less room than one job writes (D-33): nothing is created, the rest of this channel's
+                    # jobs would not fit either, and the morning note says why (not a failure one stage in).
+                    require_story_room(env.paths, env.log, ch, dj.fmt, fake=env.fake)
+                except NsError as room:
+                    if room.code != "NS-E104":
+                        raise
+                    entry = no_room_entry(ch.slug, dj.fmt, dj.count - n, room)
+                    report.setdefault("no_room", []).append(entry)
+                    break
                 ctx = jobs.make_job(env, ch, dj.fmt, now=now, rng=rng)
                 job_id = ctx.job_id
                 ran = run(ctx)
