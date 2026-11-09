@@ -84,11 +84,9 @@ from ns_studio.text.validators import (
     load_banned,
 )
 
-CHAPTER_WORDS = 350  # target words per chapter: 20 minutes at 155 wpm gives 9 chapters (spec 23.3)
 MIN_CHAPTERS = 5
 MAX_CHAPTERS = 12
 MAX_PARTS = 40
-HARD_FLOOR = 0.75  # a part below this share of its word target is rejected (NS-E303)
 SOFT_BAND = 0.2  # outside +-20 % of the target is only reported in notes.md
 DEFAULT_FORMATS = ("short_9x16", "long_16x9", "square_1x1")
 FEEDBACK = "Owner feedback"

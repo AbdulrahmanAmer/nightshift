@@ -15,7 +15,6 @@ from ns_common.pacing import (  # PACING_WPM is re-exported: the voice stage and
 from ns_studio.text.story_profile import NORMAL, StoryProfile
 
 SHORT_TOLERANCE = 0.15  # Shorts: words within +-15 % of the target, the same band QC applies to seconds
-CHAPTER_TOLERANCE = 0.2  # chapters: spec 7.0 allows +-20 % (the normal profile's `chapter_band`)
 MASTER_MAX_MINUTES = 14  # the longest draw of `long_minutes`; the budget below already counts the pauses
 MASTER_MAX_SECONDS = 870  # a finished master may estimate up to 14:30 (QC fails over 15:00 after the render)
 

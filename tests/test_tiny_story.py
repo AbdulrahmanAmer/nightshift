@@ -7,6 +7,7 @@ move. With the switch off the numbers are byte-for-byte what they were. The swit
 without `allow_cpu`, the dashboard) is in `test_tiny_story_switch.py`.
 """
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -26,7 +27,6 @@ from ns_studio.stages import REGISTRY
 from ns_studio.text import stages_master as M
 from ns_studio.text import validators as V
 from ns_studio.text.budget import (
-    CHAPTER_TOLERANCE,
     chapter_budget,
     distribute_words,
     master_budget,
@@ -153,7 +153,7 @@ def test_the_normal_profile_holds_todays_numbers():
     sp = profiles()
     n = sp.NORMAL
     assert (n.grade_lo, n.grade_hi) == (5.0, 8.0) and n.grade_ask == "5-8"
-    assert n.chapter_band == (1 - CHAPTER_TOLERANCE, 1 + CHAPTER_TOLERANCE) == (0.8, 1.2)
+    assert n.chapter_band == (0.8, 1.2)  # spec 7.0: +-20 %
     assert (n.chapter_beats_lo, n.chapter_beats_hi, n.story_beats_lo, n.story_beats_hi) == (2, 4, 4, 7)
     assert n.short_band is None and n.master_minutes is None and n.master_chapters is None
     assert n.master_floor_share is None and n.master_floor_s is None and n.moments_cap is None
@@ -397,6 +397,74 @@ def test_the_same_model_with_the_switch_off_fails_the_normal_thresholds(
     assert first in ei.value.detail and "reading_level: grade" in ei.value.detail
 
 
+class ReviseLlm(FakeLlm):
+    """Answers `revise` with a chapter of 13 plain sentences (about 130 words), the scale a small model writes."""
+
+    def complete_text(
+        self,
+        *,
+        prompt_name: str,
+        system: str,
+        user: str,
+        thinking: bool = False,
+        temperature: float = 0.8,
+        max_tokens: int = 2048,
+    ) -> str:
+        if prompt_name == "revise":
+            self._record(prompt_name=prompt_name, system=system, user=user, thinking=thinking)
+            return chapter_text(2, 13)
+        return super().complete_text(prompt_name=prompt_name, system=system, user=user, thinking=thinking)
+
+
+def logged(ctx: Any, event: str) -> list[dict[str, Any]]:
+    """The records of `event` the job wrote to its studio log."""
+    out = []
+    for f in sorted(ctx.log.logs_dir.glob("studio-*.jsonl")):
+        out += [json.loads(line) for line in f.read_text(encoding="utf-8").splitlines()]
+    return [r for r in out if r["event"] == event]
+
+
+def test_a_continuity_revision_of_a_tiny_chapter_is_validated_by_the_profile(
+    tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The continuity stage revises a chapter and validates the new text again: that call reads the profile."""
+    ctx = master_ctx(monkeypatch, tmp_home, tiny=True)
+    found = {"chapter": 2, "problem": "The lamp changes colour.", "fix": "Keep it red."}
+    answers = [{"ok": False, "issues": [found]}, *[{"ok": True, "issues": []}] * 5]  # six chapter pairs
+    llm = ReviseLlm(FIXTURES_LLM, overrides={**ctx.services.llm.overrides, "continuity": answers})  # type: ignore[attr-defined]
+    ctx.services.llm = llm
+    assert run_job(ctx) == M.MASTER_STAGES
+    revisions = [c for c in llm.calls if c["prompt_name"] == "revise"]
+    assert len(revisions) == 1 and "Keep it red." in revisions[0]["user"]
+    story = Story.model_validate(ctx.read_json("story.json"))
+    assert story.chapters[1].word_count == word_count(chapter_text(2, 13)) and story.revisions == 1
+    assert ctx.read_json("continuity.json")["revised"] == [2]
+
+    ctx.runtime = Runtime.default("cpu-dev")  # the same revision with the switch off is a normal install's
+    with pytest.raises(NsError) as ei:
+        REGISTRY["continuity"].run(ctx)
+    assert ei.value.code == "NS-E303" and "length:" in ei.value.detail and "reading_level:" in ei.value.detail
+
+
+def test_the_story_is_short_warning_is_at_the_profiles_share_of_the_target(
+    tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+):
+    ctx = master_ctx(monkeypatch, tmp_home, tiny=True)
+    run_job(ctx)
+    plan = Plan.model_validate(ctx.read_json("plan.json"))
+    words = sum(c.word_count for c in Story.model_validate(ctx.read_json("story.json")).chapters)
+    assert (
+        0.5 * plan.target_words <= words < 0.8 * plan.target_words
+    )  # short for a normal install, not a tiny one
+    assert logged(ctx, "story_short") == []
+
+    ctx.runtime = Runtime.default("cpu-dev")
+    REGISTRY["continuity"].run(ctx)  # the same story on a normal install is reported
+    warned = logged(ctx, "story_short")
+    assert len(warned) == 1 and warned[0]["level"] == "WARN"
+    assert warned[0]["data"]["words"] == words and warned[0]["data"]["target"] == plan.target_words
+
+
 @pytest.mark.parametrize("tiny", [False, True])
 def test_shorts_selection_needs_four_moments_normally_and_two_when_tiny(
     tmp_home: Path, monkeypatch: pytest.MonkeyPatch, tiny: bool
@@ -537,9 +605,10 @@ def test_a_prompt_rendered_without_a_profile_says_what_it_always_said(tmp_home: 
 # --------------------------------------------------------------------------- the media floor and workshop
 @dataclass
 class Job:
-    """All `floor_s` needs of a job context: the install's runtime."""
+    """All `floor_s` needs of a job context: the install's runtime and whether the script is the owner's."""
 
     runtime: Runtime
+    owner_script: bool = False
 
 
 def test_the_duration_floor_is_the_profiles_and_never_under_qc():
@@ -550,9 +619,16 @@ def test_the_duration_floor_is_the_profiles_and_never_under_qc():
     ctx = Job(Runtime.default("cpu-dev"))
     assert MM.floor_s(ctx) == MM.FLOOR_S == 540.0
     ctx.runtime = tiny_runtime()
-    assert (
-        MM.floor_s(ctx) == sp.TINY.master_floor_s == LONG_RANGE_S[0]
-    )  # the planning margin goes, QC's 8:30 stays
+    # the 30 s planning margin goes, QC's 8:30 stays and a few seconds over it keep a master off QC's edge
+    assert MM.floor_s(ctx) == sp.TINY.master_floor_s
+    assert LONG_RANGE_S[0] + 5 <= MM.floor_s(ctx) < MM.FLOOR_S
+
+
+def test_an_owners_own_script_keeps_the_normal_floor_on_a_tiny_install():
+    import ns_studio.media.master as MM
+
+    ctx = Job(tiny_runtime(), owner_script=True)
+    assert MM.floor_s(ctx) == MM.FLOOR_S == 540.0  # not a model-size problem: 8:30 to 9:00 still fails
 
 
 def test_series_parts_are_planned_in_more_and_smaller_chapters_when_tiny(tmp_home: Path):
@@ -563,7 +639,7 @@ def test_series_parts_are_planned_in_more_and_smaller_chapters_when_tiny(tmp_hom
     from ns_studio.series import workshop as W
 
     sp = profiles()
-    assert (W.CHAPTER_WORDS, W.HARD_FLOOR) == (sp.NORMAL.part_chapter_words, sp.NORMAL.part_hard_floor)
+    assert not hasattr(W, "CHAPTER_WORDS") and not hasattr(W, "HARD_FLOOR")  # the profile is the one place
     assert W.chapter_count(15 * 155) == 7 and W.chapter_count(15 * 155, profile=sp.NORMAL) == 7
     assert [W.chapter_count(m * 155, profile=sp.TINY) for m in (9, 12, 15, 25)] == [7, 10, 12, 12]
 
@@ -588,3 +664,74 @@ def test_series_parts_are_planned_in_more_and_smaller_chapters_when_tiny(tmp_hom
     assert not [n for n in notes if n.startswith("chapter")]  # every chapter fits the tiny band
     with pytest.raises(NsError):  # and the floor is still a floor
         ws._check_part(drafted, target, 155, int(0.3 * target), profile=sp.TINY)
+
+
+# ------------------------------------------------------------------ the series route end to end (write_part)
+def workshop_with(tmp_home: Path, *, tiny: bool, overrides: dict[str, Any]):
+    """A workshop on fakes whose runtime has the switch `tiny`, a story with 3 parts of 12 minutes mapped."""
+    from ns_common.config import save_channel
+    from ns_common.db import Db
+    from ns_common.logging import NsLogger
+    from ns_common.paths import Paths
+    from ns_studio.context import FAKEABLE, build_services
+    from ns_studio.series import workshop as W
+
+    paths = Paths.from_env()
+    paths.ensure()
+    runtime = Runtime.default("cpu-dev")
+    if tiny:
+        runtime = tiny_runtime(runtime)
+    services = build_services(runtime, fake=set(FAKEABLE), paths=paths)
+    services.llm = FakeLlm(FIXTURES_LLM, overrides=overrides)
+    db = Db(paths.db_path)
+    db.migrate()
+    save_channel(paths, make_channel(format="master_first"))
+    ws = W.Workshop(paths, services, runtime, db, NsLogger("studio", paths.logs, echo=False), None)
+    slug = ws.start("after-dark", "A night nurse's doorbell camera shows a hooded figure")
+    ws.concepts(slug)
+    ws.choose(slug, "A")
+    ws.map_parts(slug, 3, 12)
+    return ws, slug
+
+
+def calls_named(ws: Any, name: str) -> list[dict[str, Any]]:
+    return [c for c in ws.services.llm.calls if c["prompt_name"] == name]
+
+
+def test_a_series_part_at_the_tiny_scale_is_written_when_tiny_and_refused_when_not(tmp_home: Path):
+    """5 chapters of about 188 words are 50 % of a 12 minute part (1,860 words): the floor is 40 % or 75 %."""
+    sp = profiles()
+    small = {
+        f"chapter_draft_{n}": {"text": chapter_text(n, 19), "summary": "Two plain facts."}
+        for n in range(1, 6)
+    }
+    overrides = {**small, "shorts_select": {"moments": moments((1, 2))}}
+    total = sum(word_count(chapter_text(n, 19)) for n in range(1, 6))
+    assert 0.4 * 1860 < total < 0.75 * 1860  # under the normal hard floor, over the tiny one
+
+    ws, slug = workshop_with(tmp_home, tiny=True, overrides=overrides)
+    summary = ws.write_part(slug, 1)
+    assert summary["chapters"] == 5 and len(summary["shorts"]) == 2  # a normal install wants 4
+    assert not [w for w in summary["warnings"] if w.startswith("chapter")]  # every chapter fits the tiny band
+    outline = calls_named(ws, "workshop_part_outline")[0]["user"]
+    assert "in about 10 chapters of roughly 186 words" in outline  # 1,860 words in chapters of 190, not 350
+    b = chapter_budget(372, 155, profile=sp.TINY)
+    assert f"between {b.min_words} and {b.max_words})" in calls_named(ws, "chapter_draft_1")[0]["user"]
+
+    ws, slug = workshop_with(tmp_home, tiny=False, overrides=overrides)
+    with pytest.raises(NsError) as ei:
+        ws.write_part(slug, 1)
+    assert ei.value.code == "NS-E303" and "target is 1860" in ei.value.detail
+    assert "in about 5 chapters of roughly 372 words" in calls_named(ws, "workshop_part_outline")[0]["user"]
+
+
+@pytest.mark.parametrize("tiny", [False, True])
+def test_a_series_part_needs_four_standalone_shorts_normally_and_two_when_tiny(tmp_home: Path, tiny: bool):
+    two = json.loads((FIXTURES_LLM / "shorts_select.json").read_text(encoding="utf-8"))["moments"][:2]
+    ws, slug = workshop_with(tmp_home, tiny=tiny, overrides={"shorts_select": {"moments": two}})
+    if tiny:
+        assert len(ws.write_part(slug, 1)["shorts"]) == 2
+    else:
+        with pytest.raises(NsError) as ei:
+            ws.write_part(slug, 1)
+        assert ei.value.code == "NS-E303" and "need 4" in ei.value.detail

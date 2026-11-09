@@ -191,7 +191,11 @@ def run_voice_master(ctx: JobContext) -> None:
 
 def floor_s(ctx: HasRuntime) -> float:
     """The master's planning floor in seconds: 9:00, or the story profile's own (the engine test's tiny model
-    plans down to QC's 8:30; QC and the policy check still hold the master to 8:30)."""
+    plans down to 8:40, 10 s over QC's 8:30; QC and the policy check still hold the master to 8:30).
+
+    The owner's own script is not a model-size problem: it keeps the 9:00 floor on every install."""
+    if getattr(ctx, "owner_script", False) is True:
+        return FLOOR_S
     own = profile_of(ctx).master_floor_s
     return FLOOR_S if own is None else own
 

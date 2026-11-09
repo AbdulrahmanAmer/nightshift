@@ -12,16 +12,17 @@ refuses it without `allow_cpu`; the dashboard cannot set it). It moves threshold
 validator still runs and can still fail, and the policy gates, the safety checks, QC and the banned phrases
 do not read this module at all.
 
-Where the tiny numbers come from (the real Qwen3-1.7B on the engine-test install, 2026-11-09):
-
-* chapters of 101, 127, 148, 163 and 328 words (mean 173) and 120 after a revision, against a budget of
-  315 to 473 words; reading grades 2.28 to 4.06 (the floor was 5.0);
-* Short stories of 40 words (1.7B, budget 54 to 72, grade 0.21) and 104 words (0.6B, budget 60 to 80).
+Where the tiny numbers come from. Logged (`test-loop-2026-11-08.md` in the refs folder, the engine-test
+Shorts jobs of 2026-11-09): a Short of 40 words at reading grade 0.21 against a budget of 54 to 72
+(Qwen3-1.7B) and one of 104 words at grade 10.1 against 60 to 80 (Qwen3-0.6B). The chapter band (0.5 to 2
+times the budget) and the grade floor (-2) are design choices that leave a wide margin around those; the
+sizes of master chapters from a real 1.7B run are not in any log, so no number here claims them.
 
 A tiny master is planned as the shortest master the pipeline accepts (9:00) in the most chapters its plan
 allows (7), about 179 words each, so a chapter the model can write is also a chapter the master needs; the
-band around it takes the 101 to 328 words above. A Short is still asked for the words that fill its length
-bucket (QC measures the rendered Short against that bucket); only the floor under it comes down.
+band around it (0.5 to 2 times) leaves room for a model that lands well off its budget. A Short is still
+asked for the words that fill its length bucket (QC measures the rendered Short against that bucket); only
+the floor under it comes down.
 """
 
 from __future__ import annotations
@@ -64,7 +65,8 @@ class StoryProfile:
     moments_cap: int | None = None
     # An expansion must add at least a 1/n of the words it asked for.
     expand_divisor: int = 2
-    # A series part: the words of a chapter, and the share of the part's target below which it is rejected.
+    # A series part: the words of a chapter (350: a 20 minute part at 155 wpm gives 9 chapters, spec 23.3)
+    # and the share of the part's target below which it is rejected with NS-E303.
     part_chapter_words: int = 350
     part_hard_floor: float = 0.75
 
@@ -82,7 +84,7 @@ NORMAL = StoryProfile()
 
 TINY = StoryProfile(
     name="tiny",
-    grade_lo=-2.0,  # the model wrote grade 0.2 to 4.1; fragments of one-syllable words are below -2
+    grade_lo=-2.0,  # the 1.7B wrote grade 0.21; fragments of one-syllable words are below -2
     grade_hi=8.0,  # unchanged: the ceiling is not what a small model misses
     grade_ask="3-8",
     chapter_beats_lo=1,
@@ -94,7 +96,7 @@ TINY = StoryProfile(
     master_minutes=9,
     master_chapters=7,
     master_floor_share=0.5,
-    master_floor_s=510.0,  # QC's own 8:30: the planning margin goes, QC and the policy check stay
+    master_floor_s=520.0,  # QC's own 8:30 plus 10 s for the voice: the 30 s planning margin goes, QC stays
     master_short_share=0.5,
     moments_cap=2,
     expand_divisor=4,

@@ -248,9 +248,9 @@ is for an engine test only and never for the partner's PC. Settings shows it as 
 ### A tiny model finishes a story (`tiny_story`)
 
 The shipped word budgets assume a model that writes 300 to 450 words a chapter. A 1 to 2 GB model on the
-processor (Qwen3-1.7B on the engine-test laptop) wrote chapters of 101 to 328 words (mean 173) at reading grades
-2.3 to 4.1, and a Short of 40 words at grade 0.2, so every story job, nightly run and series part stopped at the
-text validators with `NS-E303` and never reached the voice. The third engine-test answer, `"tiny_story": true`,
+processor (the engine-test laptop) wrote a Short of 40 words at reading grade 0.21 against a budget of 54 to 72
+(Qwen3-1.7B) and one of 104 words at grade 10.1 against 60 to 80 (Qwen3-0.6B), both in `test-loop-2026-11-08.md`,
+so the story job stopped at the text validators with `NS-E303` and never reached the voice. The third engine-test answer, `"tiny_story": true`,
 puts the text stages on the thresholds such a model can meet:
 
 - **Where it lives.** `ns_studio/text/story_profile.py` is the one place. `NORMAL` holds the numbers every install
@@ -261,7 +261,8 @@ puts the text stages on the thresholds such a model can meet:
   still asked for the words that fill its length bucket, because QC measures the rendered Short against that
   bucket, but may have 0.35 to 1.6 times them (about 0.85 to 1.15). A master is planned as the shortest master the
   pipeline accepts, 9 minutes, in 7 chapters (about 179 words each, 1,250 words), with a planning floor of half
-  its words, a "story is short" warning at half its target (80 %), and a duration-check floor of 8:30 (9:00). The reading
+  its words, a "story is short" warning at half its target (80 %), and a duration-check floor of 8:40 (9:00, and 9:00 for
+  a script of the owner's own). The reading
   grade floor is -2 (5); the prompts ask for grade 3-8 (5-8), 1 to 2 beats a chapter (2 to 4) and 3 to 4 beats a
   Short (4 to 7). A master must yield 2 Shorts (the channel's 4), an expansion must add a quarter of the words
   it asked for (half), and a series part uses chapters of about 190 words (350) and is rejected below 40 % of its
@@ -270,7 +271,7 @@ puts the text stages on the thresholds such a model can meet:
   grade under -2, a banned phrase, a sentence over 35 words, a repeated opening, repeated cliffs and a master over
   14:30 all stop the job with `NS-E303`, as before. The reading-grade ceiling (8) is unchanged. The policy gates,
   the safety checks, QC (a master of 8:30 to 15:00, a Short within 15 % of its bucket, loudness, drift) and the
-  banned phrases do not read the profile. A tiny model that writes a master shorter than 8:30 therefore gets past
+  banned phrases do not read the profile. A tiny model that writes a master shorter than 8:40 therefore gets past
   the text stages and then stops, coded, at the duration check (`NS-E305`) or at QC (`NS-E404`).
 - **How to switch it on.** `answers.json` of a PC with no NVIDIA card: `"allow_cpu": true, "tiny_story": true`.
   Setup refuses the answer without `allow_cpu` (`tiny_story is for an engine test ...`), writes
