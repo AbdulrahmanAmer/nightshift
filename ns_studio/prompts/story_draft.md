@@ -7,7 +7,7 @@ You write short fiction to be read aloud. Spoken rhythm: short sentences, concre
 ---USER---
 Channel voice notes: {{ channel.voice_notes }}
 POV/tone: {{ combo.pov_tone }}. Pacing: {{ combo.pacing }}. Structure: {{ combo.structure }}. Hook style: {{ combo.hook }}.
-Reading level: grade 5-8. No sentence longer than 30 words.
+Reading level: grade {{ story_profile.grade_ask }}. No sentence longer than 30 words.
 {% if exemplars %}
 Study the craft (not the content) of these exemplars from the channel:
 {% for ex in exemplars %}

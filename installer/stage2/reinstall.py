@@ -58,6 +58,7 @@ SIMPLE_KEYS = (
     "install_code",
     "fake_voice",
     "fake_footage",
+    "tiny_story",
     "owner_name",
     "ui_theme",
 )
@@ -295,11 +296,11 @@ def _runtime(ctx: StepContext, keys: set[str], compared: bool) -> list[str]:
                 f"{now} is downloaded and checked, then points at {now} with that model's settings, and "
                 f"tuning runs again. {was} stays in models\\llm; delete it by hand to free space."
             )
-        if keys & {"fake_voice", "fake_footage"}:
+        if keys & {"fake_voice", "fake_footage", "tiny_story"}:
             owed["engine"] = True
             lines.append(
-                "Engine test: config\\runtime.json follows your fake_voice and fake_footage answers once "
-                "the voice engine is in place."
+                "Engine test: config\\runtime.json follows your fake_voice, fake_footage and tiny_story "
+                "answers once the voice engine is in place."
             )
     if owed:
         ctx.set_flag(PENDING_FLAG, owed)
@@ -346,9 +347,11 @@ def apply_pending_runtime(ctx: StepContext) -> list[str]:
                 + (f" {was} stays in models\\llm; delete it by hand to free space." if had else "")
             )
         if owed.get("engine"):
-            rt.fake_footage, rt.tts.engine = fresh.fake_footage, fresh.tts.engine
+            rt.fake_footage, rt.tiny_story = fresh.fake_footage, fresh.tiny_story
+            rt.tts.engine = fresh.tts.engine
             lines.append(
-                "Engine test: config\\runtime.json now follows your fake_voice and fake_footage answers."
+                "Engine test: config\\runtime.json now follows your fake_voice, fake_footage and tiny_story "
+                "answers."
             )
         save_runtime(ctx.paths, rt)
     ctx.clear_flags(PENDING_FLAG)
