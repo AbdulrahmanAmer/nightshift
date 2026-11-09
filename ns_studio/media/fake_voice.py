@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     from ns_studio.context import JobContext
 
 VOICE_ENGINE_FILE = "audio/voice_engine.json"
+FAKE_VOICE_TONES_CODE = "NS-W303"  # contracts/errors.json: the fake voice made tone bursts (CR-H7-1)
 
 
 def is_fake_voice(ctx: JobContext) -> bool:
@@ -48,12 +49,14 @@ def note_voice_engine(
         return None
     health = fetch(ctx.runtime.tts.base_url) or {}
     mode = health.get("voice_mode")  # "sapi", "tones", or absent (the service did not answer or is older)
-    info = {
+    info: dict[str, Any] = {
         "engine": "fake",
         "mode": mode if mode in ("sapi", "tones") else None,
         "voice": health.get("voice"),
         "warning": health.get("voice_warning"),
     }
+    if info["mode"] == "tones":  # an older voice service sends no code: the warning is the same one
+        info["code"] = health.get("voice_warning_code") or FAKE_VOICE_TONES_CODE
     try:
         ctx.write_json(VOICE_ENGINE_FILE, info)
     except OSError:
@@ -62,6 +65,7 @@ def note_voice_engine(
         ctx.log.warn(
             "fake_voice_tones_only",
             info["warning"] or "the fake voice made tone bursts; speech recognition cannot align them",
+            code=info["code"],
             job_id=ctx.job_id,
         )
     elif info["mode"] == "sapi":

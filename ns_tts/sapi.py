@@ -25,7 +25,7 @@ import json
 import math
 import os
 import shutil
-import subprocess  # noqa: TID251  (CR-H7-1: a ruff per-file ignore for this module, like ns_tts/engine.py)
+import subprocess
 import sys
 import tempfile
 from collections.abc import Iterator, Sequence
