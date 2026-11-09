@@ -10,14 +10,20 @@ regression 14:44, 0.1.14).
 The export writes Desktop\\nightshift-backup-YYYY-MM-DD.zip (ns_supervisor/backup.py). The proof skips at the
 start when that file already exists: an owner's backup is never overwritten or deleted. The new zip is moved
 into scratch before any check on it. It holds config/secrets.dpapi and studio.db, so after the manifest and
-the entry names are read the scratch copy is deleted and the evidence keeps only names and sizes.
+the entry names are read the scratch copy is deleted and the evidence keeps only names and sizes. A
+DesktopGuard is open before the click, so a failed run still moves a backup the product wrote off the Desktop.
+
+The export goes through the Settings page (Playwright): the click on Export in the "Export settings" row
+sends POST /api/settings/export (the response is read), the row then says "Saved as <path>" and offers a
+Download link to /api/settings/export/latest; the Uninstall row names the folder of
+GET /api/settings/uninstall.
 """
 
 from __future__ import annotations
 
 import io
 import json
-import sys
+import re
 import urllib.error
 import urllib.request
 import zipfile
@@ -26,13 +32,13 @@ from pathlib import Path
 from typing import Any
 
 from proofs._fakes import dashboard_no_worker
-from proofs._lib import short, take_off_desktop
+from proofs._lib import DesktopGuard, desktop, short
 
 PROOF = {
     "id": "f-c6-settings-export-uninstall",
     "boxes": ["F-C6"],
     "install": "any",
-    "window": False,
+    "window": True,
     "needs": ["engine"],
     "timeout_s": 300,
     "fakes": [],
@@ -41,6 +47,7 @@ PROOF = {
 # ns_supervisor/backup.py: what a backup holds
 ALLOWED = ("config/", "models/tts/voices/", "exemplars/", "prompt_overrides/", "data/studio.db")
 MANIFEST = "backup-manifest.json"
+BACKUP_GLOB = "nightshift-backup-*.zip"
 BLOCKED = (".gguf", ".safetensors", ".onnx", ".mp4", ".mkv", ".mov", ".webm", ".avi")
 MAX_LISTED = 300  # entries named in the evidence
 _NO_PROXY = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -112,31 +119,19 @@ def _fresh_dashboard(ctx: Any) -> str | None:
     return base
 
 
-# ---------------------------------------------------------------------------- the Desktop is not ours
-def _desktop() -> Path:
-    """Where the product writes the backup: the user's Desktop (the same lookup the product uses)."""
-    if sys.platform == "win32":
-        import winreg
-
-        try:
-            with winreg.OpenKey(
-                winreg.HKEY_CURRENT_USER,
-                r"Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders",
-            ) as key:
-                value, _ = winreg.QueryValueEx(key, "Desktop")
-            if isinstance(value, str) and value:
-                return Path(value)
-        except OSError:
-            pass
-    return Path.home() / "Desktop"
+def _row(page: Any, title: str) -> Any:
+    """The SettingRow whose title is `title`: the title <p> sits in a div inside the row div."""
+    return page.locator("p").filter(has_text=re.compile(rf"^{re.escape(title)}$")).locator("xpath=../..")
 
 
-def _take(ctx: Any, src: Path, tag: str) -> Path | None:
-    """Move the product's file off the Desktop into scratch (fails if it stays on C:); None if absent."""
-    if not src.is_file():
-        ctx.step("no file at the path the product reported", path=str(src))
-        return None
-    return take_off_desktop(ctx, src, tag)
+def _flat(text: str) -> str:
+    return " ".join(str(text).split())
+
+
+def _row_says(row: Any, expected: str) -> str:
+    """The row's whitespace-flattened text when it contains `expected`, else an empty string."""
+    text = _flat(row.inner_text())
+    return text if expected in text else ""
 
 
 def _read_backup(raw: bytes) -> dict[str, Any] | None:
@@ -162,7 +157,7 @@ def _read_backup(raw: bytes) -> dict[str, Any] | None:
 
 
 def run(ctx: Any) -> None:
-    target = _desktop() / f"nightshift-backup-{datetime.now():%Y-%m-%d}.zip"
+    target = desktop() / f"nightshift-backup-{datetime.now():%Y-%m-%d}.zip"
     if target.exists():
         ctx.skip(
             f"{target} already exists on the Desktop: the export would overwrite it and the proof never "
@@ -196,29 +191,44 @@ def run(ctx: Any) -> None:
             code=code,
         )
 
-    # 2. export on the live dashboard: the route reports a path, a name and a size
-    status, export = ctx.api("POST", "/api/settings/export", timeout=600)
-    reported = export.get("path") if status == 200 and isinstance(export, dict) else None
-    src = Path(str(reported)) if reported else None
-    on_disk = src.stat().st_size if src is not None and src.is_file() else None
-    # the route serves the file from the Desktop, so the download comes first; then the zip leaves the Desktop
-    # and only then is anything checked
+    # 2. export through the Settings page: the click sends POST /api/settings/export and the response is read
+    page = ctx.page()
+    page.goto(f"http://127.0.0.1:{ctx.ports['dashboard']}/#/settings", wait_until="load")
+    export_row = _row(page, "Export settings")
+    button = export_row.get_by_role("button", name="Export", exact=True)
+    button.wait_for(timeout=30000)
     dl: tuple[int, dict[str, str], bytes] | None = None
     kept: Path | None = None
-    try:
-        if on_disk is not None:
-            dl = _download(ctx, "/api/settings/export/latest")
-    finally:
-        if src is not None:
-            kept = _take(ctx, src, "f-c6")
     raw = b""
-    try:
-        raw = kept.read_bytes() if kept is not None else b""
-    finally:
-        # the backup holds config/secrets.dpapi and studio.db: its copy in scratch goes as soon as it is read
-        if kept is not None:
-            kept.unlink(missing_ok=True)
-            ctx.step("scratch copy of the backup deleted", bytes_read=len(raw), still_there=kept.exists())
+    export: Any = None
+    src: Path | None = None
+    on_disk: int | None = None
+    # the guard is open before the click: whatever the product writes to the Desktop leaves it on the way out,
+    # pass or fail
+    with DesktopGuard(ctx, BACKUP_GLOB, "f-c6") as guard:
+        with page.expect_response("**/api/settings/export", timeout=600000) as seen:
+            button.click()
+        response = seen.value
+        status = response.status
+        try:
+            export = response.json()
+        except Exception:  # noqa: BLE001  (an error answer that is not JSON: the checks below name it)
+            export = response.text()
+        ctx.step("the Export click sent POST /api/settings/export", status=status, answer=short(export))
+        reported = export.get("path") if status == 200 and isinstance(export, dict) else None
+        src = Path(str(reported)) if reported else None
+        on_disk = src.stat().st_size if src is not None and src.is_file() else None
+        # the route serves the file from the Desktop, so the download comes first; then the zip leaves the
+        # Desktop and only then is anything checked
+        if on_disk is not None and src is not None:
+            dl = _download(ctx, "/api/settings/export/latest")
+            kept = guard.take(src)
+            # the backup holds secrets.dpapi and studio.db: its scratch copy goes as soon as it is read
+            try:
+                raw = kept.read_bytes()
+            finally:
+                kept.unlink(missing_ok=True)
+                ctx.step("scratch copy of the backup deleted", bytes_read=len(raw), still_there=kept.exists())
     parsed = _read_backup(raw)
 
     ctx.check(
@@ -238,6 +248,31 @@ def run(ctx: Any) -> None:
         path=str(src),
         reported=export.get("size"),
         on_disk=on_disk,
+    )
+
+    # the row the click was in now names the file and offers the download
+    saved = _flat(f"Saved as {export.get('path')}")
+    row_text = ctx.wait(
+        lambda: _row_says(export_row, saved),
+        30,
+        every=1,
+        what="the Export settings row to say Saved as <path>",
+    )
+    ctx.check(
+        saved in row_text,
+        "the Export settings row says Saved as the reported path",
+        row=row_text,
+        expected=saved,
+    )
+    link = export_row.get_by_role("link", name="Download")
+    link.wait_for(timeout=15000)
+    href, download = link.get_attribute("href"), link.get_attribute("download")
+    ctx.check(
+        href == "/api/settings/export/latest" and download == export.get("name"),
+        "the row has a Download link to /api/settings/export/latest named for the zip",
+        href=href,
+        download=download,
+        zip_name=export.get("name"),
     )
 
     # 3. export/latest downloaded a zip of that size
@@ -313,6 +348,22 @@ def run(ctx: Any) -> None:
         "exists is true and the file is on disk",
         exists=info["exists"],
         is_file=uninstall.is_file(),
+    )
+    uninstall_dir = re.sub(r"[\/][^\/]*$", "", str(info["path"]))  # the page's own cut of the path
+    expected_sub = _flat(f"Run UNINSTALL.cmd in {uninstall_dir}")
+    uninstall_row = _row(page, "Uninstall")
+    sub_text = ctx.wait(
+        lambda: _row_says(uninstall_row, expected_sub),
+        30,
+        every=1,
+        what="the Uninstall row to name the folder of UNINSTALL.cmd",
+    )
+    ctx.check(
+        expected_sub in sub_text,
+        "the Uninstall row says Run UNINSTALL.cmd in the folder of the path the route reports",
+        row=sub_text,
+        expected=expected_sub,
+        path=str(uninstall),
     )
     try:
         state = json.loads((ctx.home / "config" / "install_state.json").read_text(encoding="utf-8-sig"))

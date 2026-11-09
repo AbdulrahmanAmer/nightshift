@@ -22,7 +22,6 @@ from __future__ import annotations
 import io
 import json
 import re
-import sys
 import time
 import urllib.error
 import urllib.parse
@@ -33,7 +32,7 @@ from pathlib import Path
 from typing import Any
 
 from proofs._fakes import dashboard_no_worker
-from proofs._lib import short, take_off_desktop
+from proofs._lib import DesktopGuard, free_diag_minute, short
 
 PROOF = {
     "id": "f-c5-notes-logs-diagnostics",
@@ -48,6 +47,7 @@ PROOF = {
 LEVELS_ABOVE_INFO = {"INFO", "WARN", "WARNING", "ERROR"}
 LEVELS_ABOVE_WARN = {"WARN", "WARNING", "ERROR"}
 BUNDLE_PREFIX = "nightshift-diagnostics-"
+BUNDLE_GLOB = "nightshift-diagnostics-*.zip"
 _NO_PROXY = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 BUNDLE_RE = re.compile(r"[A-Za-z]:[\\/][^\n]*?nightshift-diagnostics-[0-9-]+\.zip")
 
@@ -208,45 +208,6 @@ def _fresh_dashboard(ctx: Any) -> str | None:
     return base
 
 
-# ---------------------------------------------------------------------------- the Desktop is not ours
-def _desktop() -> Path:
-    """Where the product writes bundles: the user's Desktop (the same lookup the product uses)."""
-    if sys.platform == "win32":
-        import winreg
-
-        try:
-            with winreg.OpenKey(
-                winreg.HKEY_CURRENT_USER,
-                r"Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders",
-            ) as key:
-                value, _ = winreg.QueryValueEx(key, "Desktop")
-            if isinstance(value, str) and value:
-                return Path(value)
-        except OSError:
-            pass
-    return Path.home() / "Desktop"
-
-
-def _free_minute(ctx: Any) -> None:
-    """The bundle's name carries the minute; the product would overwrite an owner's zip of this minute.
-    Wait for the next minute rather than touch it."""
-
-    def free() -> bool:
-        return not (_desktop() / f"{BUNDLE_PREFIX}{datetime.now():%Y-%m-%d-%H%M}.zip").exists()
-
-    if not free():
-        ctx.step("a diagnostics zip of this minute is on the Desktop (not the proof's): waiting for the next")
-        ctx.wait(free, 75, every=5, what="the minute of an existing diagnostics zip to pass")
-
-
-def _take(ctx: Any, src: Path, tag: str) -> Path | None:
-    """Move the product's file off the Desktop into scratch (fails if it stays on C:); None if absent."""
-    if not src.is_file():
-        ctx.step("no file at the path the product reported", path=str(src))
-        return None
-    return take_off_desktop(ctx, src, tag)
-
-
 def _latest_is_404_first(ctx: Any, skips: list[str]) -> None:
     """diagnostics/latest before any bundle: 404 not_found, on a dashboard app that has made none."""
     status, _ = ctx.api("GET", "/api/diagnostics/latest")
@@ -273,23 +234,23 @@ def _latest_is_404_first(ctx: Any, skips: list[str]) -> None:
 
 def _bundle(ctx: Any, skips: list[str]) -> bool:
     """POST /api/diagnostics, the download. False when the doctor cannot run on this install."""
-    _free_minute(ctx)
-    status, made = ctx.api("POST", "/api/diagnostics", timeout=600)
-    if status == 501:
-        skips.append(f"POST /api/diagnostics answered 501 ({short(made)}): the doctor cannot run here")
-        return False
-    reported = made.get("path") if status == 200 and isinstance(made, dict) else None
-    src = Path(str(reported)) if reported else None
-    # the route serves the file from the Desktop, so the download comes first; then the zip leaves the Desktop
-    # and only then is anything checked
+    free_diag_minute(ctx)
     dl: tuple[int, dict[str, str], bytes] | None = None
     kept: Path | None = None
-    try:
+    # the guard is open before the POST: whatever the product writes to the Desktop leaves it on the way out,
+    # pass or fail
+    with DesktopGuard(ctx, BUNDLE_GLOB, "api") as guard:
+        status, made = ctx.api("POST", "/api/diagnostics", timeout=600)
+        if status == 501:
+            skips.append(f"POST /api/diagnostics answered 501 ({short(made)}): the doctor cannot run here")
+            return False
+        reported = made.get("path") if status == 200 and isinstance(made, dict) else None
+        src = Path(str(reported)) if reported else None
+        # the route serves the file from the Desktop, so the download comes first; then the zip leaves the
+        # Desktop and only then is anything checked
         if src is not None and src.is_file():
             dl = _download(ctx, "/api/diagnostics/latest")
-    finally:
-        if src is not None:
-            kept = _take(ctx, src, "api")
+            kept = guard.take(src)
     ctx.check(
         status == 200
         and isinstance(made, dict)
@@ -442,24 +403,24 @@ def _notes_and_bell(ctx: Any, skips: list[str]) -> None:
 
 def _make_report(ctx: Any) -> None:
     """Settings > Make report: the page sends POST /api/diagnostics and names the zip."""
-    _free_minute(ctx)
+    free_diag_minute(ctx)
     page = ctx.page()
     page.goto(f"http://127.0.0.1:{ctx.ports['dashboard']}/#/settings", wait_until="load")
     button = page.get_by_role("button", name="Make report")
     button.wait_for(timeout=30000)
-    button.click()
 
     def named() -> str | None:
         m = BUNDLE_RE.search(page.inner_text("body"))
         return m.group(0) if m else None
 
-    shown = ctx.wait(named, 120, every=2, what="the Settings page to name the diagnostics zip")
-    ctx.step("the page names the zip", text=shown)
-    zip_path = Path(shown)
-    ctx.check(zip_path.is_file(), "the zip the page names exists", path=shown)
-    kept = _take(ctx, zip_path, "ui")  # off the Desktop before anything else is checked on it
-    ctx.check(kept is not None, "the named zip was taken into scratch", path=shown)
-    assert kept is not None
+    # the guard is open before the click: whatever the page makes the product write leaves the Desktop
+    with DesktopGuard(ctx, BUNDLE_GLOB, "ui") as guard:
+        button.click()
+        shown = ctx.wait(named, 120, every=2, what="the Settings page to name the diagnostics zip")
+        ctx.step("the page names the zip", text=shown)
+        zip_path = Path(shown)
+        ctx.check(zip_path.is_file(), "the zip the page names exists", path=shown)
+        kept = guard.take(zip_path)  # off the Desktop before anything else is checked on it
     raw = kept.read_bytes()
     names = zipfile.ZipFile(io.BytesIO(raw)).namelist()
     ctx.check(
