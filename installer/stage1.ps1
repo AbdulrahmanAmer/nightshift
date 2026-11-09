@@ -241,13 +241,39 @@ function Test-InsideExtracted {
     return (Test-PathInside -Path $Path -Folder $AppFolder)
 }
 
+function Get-FolderKind {
+    # What is in $Path: 'new' (not there), 'empty', 'home' (a Nightshift install), 'kept' (an uninstalled
+    # home that kept its data: the uninstaller deletes config\install_state.json and the program folder, and
+    # keeps the settings and the studio database) or 'foreign' (someone else's files). The same rule and the
+    # same marker lists as installer/stage2/web/pathcheck.py (folder_kind); a test keeps the two together.
+    param([string]$Path)
+    if (-not (Test-Path -LiteralPath $Path -PathType Container)) { return 'new' }
+    try { $any = @(Get-ChildItem -LiteralPath $Path -Force -ErrorAction Stop | Select-Object -First 1) }
+    catch { return 'new' }
+    if ($any.Count -eq 0) { return 'empty' }
+    foreach ($marker in @('config\install_state.json', 'app\VERSION')) {
+        if (Test-Path -LiteralPath (Join-Path $Path $marker) -PathType Leaf) { return 'home' }
+    }
+    foreach ($marker in @('config\answers.json', 'config\runtime.json', 'data\studio.db')) {
+        if (Test-Path -LiteralPath (Join-Path $Path $marker) -PathType Leaf) { return 'kept' }
+    }
+    return 'foreign'
+}
+
 function Select-DefaultHome {
     # $AppFolder is where the zip was extracted. The install folder must not be that folder or inside it:
     # setup copies the program into <home>\app. NTFS ignores case, so D:\NightShift (the extract folder
     # OPERATOR.md used to suggest) and D:\Nightshift (the default home) are the same folder.
+    # A folder is also skipped when it holds someone else's files (D-21: D:\NightShift is D:\Nightshift, and
+    # setup used to install straight into it) or has the extracted folder inside it. An earlier install or its
+    # kept data is offered: it is the way back to the videos and settings.
     # Order: <best drive>\Nightshift, <best drive>\Nightshift-home, then the same two on the next drives;
     # '' when none is usable (the caller then uses a folder under the user's data directory).
-    param($Drives, [string]$AppFolder = '')
+    # $IsTaken says a candidate cannot be offered (tests pass their own).
+    param($Drives, [string]$AppFolder = '', [scriptblock]$IsTaken = $null)
+    # Not under -FakeProbe: that is CI and the tests, which describe the machine themselves and must not see
+    # the folders of the developer's PC (the same rule as for the NIGHTSHIFT_HOME variable in Resolve-NsHome).
+    if (-not $IsTaken) { $IsTaken = { param($p) (-not $FakeProbe) -and ((Get-FolderKind -Path $p) -eq 'foreign') } }
     $all = @($Drives)
     if ($all.Count -eq 0) { return '' }
     $roomy = @($all | Where-Object { [double]$_.free_gb -ge $script:MinFreeGbRecommended })
@@ -260,7 +286,10 @@ function Select-DefaultHome {
     foreach ($d in $ranked) {
         foreach ($name in @('Nightshift', 'Nightshift-home')) {
             $candidate = ('{0}:\{1}' -f $d.letter, $name)
-            if (-not (Test-InsideExtracted -Path $candidate -AppFolder $AppFolder)) { return $candidate }
+            if (Test-InsideExtracted -Path $candidate -AppFolder $AppFolder) { continue }
+            if ($AppFolder -and (Test-PathInside -Path $AppFolder -Folder $candidate)) { continue }
+            if (& $IsTaken $candidate) { continue }
+            return $candidate
         }
     }
     return ''

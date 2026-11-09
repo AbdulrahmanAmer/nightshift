@@ -6,6 +6,7 @@ A failed tune is not fatal: the safe defaults in the baseline stay and the opera
 
 from __future__ import annotations
 
+from installer.stage2 import reinstall
 from installer.stage2.base import Step
 from installer.stage2.context import StepContext
 from installer.stage2.runtime_cfg import ensure_baseline
@@ -21,12 +22,21 @@ class S06Tune(Step):
     clears_on_run = ("tuned", "smoke", "smoke_version")
 
     def check(self, ctx: StepContext) -> bool:
-        """True once tuning ran (or fell back to defaults) on an earlier run."""
-        return ctx.flag("tuned") in ("tuned", "defaults") and ctx.paths.runtime_file.exists()
+        """True once tuning ran (or fell back to defaults) on an earlier run, and no change that the answers
+        asked of runtime.json (a new model, the engine test) is still owed (D-14)."""
+        return (
+            ctx.flag("tuned") in ("tuned", "defaults")
+            and ctx.paths.runtime_file.exists()
+            and not ctx.flag(reinstall.PENDING_FLAG)
+        )
 
     def run(self, ctx: StepContext) -> None:
-        """Write the baseline, then call ``ns tune`` and show what it found."""
+        """Write the baseline, make runtime.json follow the answers, then call ``ns tune``."""
         ensure_baseline(ctx)
+        # The models are downloaded and verified (s03): only now does runtime.json name the new one, so the
+        # nightly run never starts llama-server on a file that is still downloading (D-14).
+        for line in reinstall.apply_pending_runtime(ctx):
+            ctx.ui.say(line)
         if ctx.dev_mode:
             ctx.ui.say("Dev mode: the language model is a fake, so there is nothing to tune.")
             ctx.set_flag("tuned", "defaults")
