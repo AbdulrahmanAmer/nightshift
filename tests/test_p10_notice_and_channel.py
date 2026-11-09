@@ -145,7 +145,7 @@ def test_the_channel_route_names_the_format_each_kind_uses_and_why(tmp_home: Pat
     body = client.get("/api/channels/after-dark/formats").json()
     assert body["short"]["id"] == copy_id and body["short"]["why"] == "first allowed of that kind"
     assert body["short"]["source"] == "yours" and body["short"]["applied"] is True
-    assert body["long"]["id"] == "long_16x9" and body["long"]["applied"] is False
+    assert body["long"]["id"] == "long_16x9" and body["long"]["applied"] is True
     seed_channel(state.db, state.paths, "plain")
     plain = client.get("/api/channels/plain/formats").json()
     assert plain["short"]["id"] == "short_9x16" and plain["short"]["why"].startswith("default")
@@ -161,7 +161,7 @@ def test_the_channel_read_itself_carries_the_format_per_kind(tmp_home: Path) -> 
     assert body["profile"]["slug"] == "after-dark"
     used = body["formats_in_use"]
     assert used["short"]["id"] == copy_id and used["short"]["why"] == "first allowed of that kind"
-    assert used["long"]["id"] == "long_16x9" and used["long"]["applied"] is False
+    assert used["long"]["id"] == "long_16x9" and used["long"]["applied"] is True
     assert used == client.get("/api/channels/after-dark/formats").json()
 
 
@@ -199,7 +199,11 @@ def test_the_marker_is_written_with_the_atomic_helper_and_never_left_half_writte
     monkeypatch.setattr(N, "write_text_atomic", spy)
     assert N.notify_owner_formats(paths) is True
     assert written == [N.marker_path(paths)]
-    assert json.loads(N.marker_path(paths).read_text(encoding="utf-8"))["kinds"] == ["short", "square"]
+    assert json.loads(N.marker_path(paths).read_text(encoding="utf-8"))["kinds"] == [
+        "long",
+        "short",
+        "square",
+    ]
     assert [p.name for p in N.marker_path(paths).parent.iterdir() if p.name.startswith("formats_notice")] == [
         "formats_notice.json"
     ]
