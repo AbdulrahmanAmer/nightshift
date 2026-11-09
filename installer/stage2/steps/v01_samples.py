@@ -39,6 +39,7 @@ class V01Samples(Step):
     id = "v01_samples"
     title = "Test samples"
     optional = True
+    clears_on_run = ("samples",)
 
     def check(self, ctx: StepContext) -> bool:
         """True once the step ran (a failed attempt is not repeated on resume)."""

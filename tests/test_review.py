@@ -233,6 +233,7 @@ def test_cli_daily_dry_run_and_real(tmp_home: Path, monkeypatch: pytest.MonkeyPa
     monkeypatch.setitem(orch.FORMAT_STAGES, "shorts_only", ["d_stub"])
     monkeypatch.setattr(jobs, "STAGE_MODULES", ())
     monkeypatch.setattr("ns_studio.policy.gate.available", lambda: False)
+    monkeypatch.setattr("ns_studio.notifications.default_notifier", lambda: lambda title, message: True)
     paths, db = _env(tmp_home)
     crud.edit_channel(paths, db, "after-dark", {"format": "shorts_only"})
     dry = runner.invoke(app, ["run", "--daily", "--dry-run", "--fake-services"])

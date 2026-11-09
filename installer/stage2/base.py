@@ -20,6 +20,10 @@ class Step(ABC):
     id: str = ""
     title: str = ""
     optional: bool = False
+    #: Flags the wizard forgets just before ``run()`` starts. A step lists the flags that say its own work is
+    #: finished (a run that dies half way must not leave them true) and the flags of later steps that its work
+    #: makes untrue (``smoke`` after anything the smoke test would test). Set again by the step at its end.
+    clears_on_run: tuple[str, ...] = ()
 
     def skip_reason(self, ctx: StepContext) -> str | None:
         """Return a reason when this step does not apply (it is then recorded as skipped)."""

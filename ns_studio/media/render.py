@@ -6,6 +6,7 @@ grain and burned-in ASS captions. Shorts are 1080x1920, masters 1920x1080, 30 fp
 
 from __future__ import annotations
 
+import os
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,7 @@ from ns_studio.context import JobContext
 from ns_studio.media.audio import FINAL_LUFS, FINAL_TP, assemble_audio, loudnorm
 from ns_studio.media.caption_plan import AssOptions
 from ns_studio.media.captions import Box, caption_band, ensure_contrast, sample_luma
+from ns_studio.media.diskfull import run_ffmpeg
 from ns_studio.media.presets import (
     FONTS_DIR,
     CaptionStyle,
@@ -43,12 +45,15 @@ _QUOTE_IN_QUOTES = chr(39) + chr(92) * 3 + chr(39) + chr(39)
 
 
 def escape_filter_path(path: Path) -> str:
-    """A path as a single-quoted filtergraph option value: forward slashes, `:` and `'` escaped.
+    """A path as a single-quoted filtergraph option value: absolute, forward slashes, `:` and `'` escaped.
+
+    The path is made absolute HERE, the one place graph text is built: FFmpeg starts in the folder the job
+    files share, so a relative path (a relative `NIGHTSHIFT_HOME`) would be read against that folder.
 
     An apostrophe used to be deleted, which pointed FFmpeg at a folder that does not exist (a home under
     `C:/Users/O'Brien` failed every render).
     """
-    p = path.as_posix().replace(":", "\\:").replace("'", _QUOTE_IN_QUOTES)
+    p = Path(os.path.abspath(path)).as_posix().replace(":", "\\:").replace("'", _QUOTE_IN_QUOTES)
     return f"'{p}'"
 
 
@@ -205,18 +210,21 @@ def render_video(
     audio_index = len(shots)
 
     def attempt(force_cpu: bool) -> None:
-        ff.run(
+        run_ffmpeg(
             [*inputs, "-i", rel(audio), *script,
              "-map", "[vout]", "-map", f"{audio_index}:a",
              *encoder_args(video, force_cpu=force_cpu), "-r", str(video.fps), "-pix_fmt", "yuv420p",
              "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "1", "-movflags", "+faststart", rel(out)],
-            log=log, cwd=base,
+            folder=out.parent,
+            out=out,
+            log=log,
+            cwd=base,
         )
 
     try:
         attempt(False)
-    except NsError:
-        if video.encoder != "h264_nvenc":
+    except NsError as e:
+        if video.encoder != "h264_nvenc" or e.code == "NS-E104":  # a full disk is not an encoder problem
             raise
         if log:
             log.warn("nvenc_failed", code="NS-W401", msg="falling back to libx264")

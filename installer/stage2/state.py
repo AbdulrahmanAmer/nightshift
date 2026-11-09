@@ -70,6 +70,10 @@ class StateStore:
         self.save()
 
 
+#: Key in ``wizard_flags.json`` that names the install the flags belong to (``install_state.started_at``).
+INSTALL_KEY = "_install"
+
+
 def flags_path(paths: Paths) -> Path:
     """Where wizard-internal flags live (not part of the install_state contract)."""
     return paths.config / "wizard_flags.json"
@@ -89,3 +93,38 @@ def save_flags(paths: Paths, flags: dict[str, Any]) -> None:
     f = flags_path(paths)
     f.parent.mkdir(parents=True, exist_ok=True)
     f.write_text(json.dumps(flags, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def is_stale(flags: dict[str, Any], install_id: str | None) -> bool:
+    """True when the flags were written by another install than ``install_id``.
+
+    A flag file without a stamp (written before stamping existed, or by a test) is not called stale here:
+    ``reconcile_flag_file`` decides about those once, at the start of a run.
+    """
+    stamp = flags.get(INSTALL_KEY)
+    return install_id is not None and stamp is not None and stamp != install_id
+
+
+def reconcile_flag_file(paths: Paths, install_id: str, *, resumed: bool) -> list[str]:
+    """Make the flag file describe this install; returns the names of the flags it dropped.
+
+    ``install_id`` is ``install_state.started_at``: it is made when a setup starts from nothing and it goes
+    with ``install_state.json`` when the uninstaller removes that. Flags stamped with another id belong to
+    an install that no longer exists (an old uninstaller kept this file: ``venvs_installed`` and
+    ``smoke: passed`` then made a reinstall skip its venvs and its smoke test, D-15). Flags with no stamp
+    belong to this install only when the run is a resume of one (a version older than the stamping); on a
+    fresh state they are stale.
+    """
+    flags = load_flags(paths)
+    if not flags:
+        return []
+    stamp = flags.get(INSTALL_KEY)
+    if stamp == install_id:
+        return []
+    if stamp is None and resumed:
+        flags[INSTALL_KEY] = install_id
+        save_flags(paths, flags)
+        return []
+    dropped = sorted(name for name in flags if name != INSTALL_KEY)
+    save_flags(paths, {INSTALL_KEY: install_id})
+    return dropped

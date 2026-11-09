@@ -255,7 +255,7 @@ def _daily(env: jobs.Env, dry_run: bool, policy: bool | None) -> None:
         for dj in due:
             typer.echo(f"{dj.channel.slug}: {dj.count} x {dj.fmt} ({dj.plan.describe()})")
         return
-    notifier = None if env.fake else notifications.default_notifier()
+    notifier = notifications.nightly_notifier(env.paths, env.log)
     try:
         report = run_daily(env, now=now, notifier=notifier)
     except (NsError, StudioError) as e:  # the night itself broke (not one job): say so before exiting
@@ -687,6 +687,9 @@ def calibrate_cmd(
                 f"{'meets' if rep.satisfied else 'does NOT meet'} the 80/20 target)"
             )
             typer.echo(f"refusal rate: {rep.refusal_rate:.1%}")
+            failed_line = calibration.failure_summary(rep.failed, rep.failed_codes)
+            if failed_line:
+                typer.echo(failed_line)
             if rep.two_model_recommended:
                 if env.runtime.llama.story_model_path:
                     typer.echo("refusal rate is above 2 %: switch to two-model mode (spec decision D3)")
@@ -711,10 +714,10 @@ def calibrate_cmd(
         finally:
             acq.release("llama", owner)
         out = calibration.write_generation(env.paths, env.db, channel, stories)
-        refused = sum(1 for s in stories if s.refusal)
         typer.echo(f"wrote {len(stories)} stories to {out}")
         typer.echo(f"fill in {out / 'scores.csv'}, then: studio calibrate --channel {channel} --score FILE")
-        typer.echo(f"refusal rate so far: {refused / len(stories):.1%}")
+        for line in calibration.generation_report(stories):
+            typer.echo(line)
 
 
 def main() -> None:

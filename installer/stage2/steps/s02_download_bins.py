@@ -96,6 +96,7 @@ class S02DownloadBins(Step):
 
     id = "s02_download_bins"
     title = "Download programs"
+    clears_on_run = ("smoke", "smoke_version")          # new programs: the smoke test tested the old ones
 
     def _items(self, ctx: StepContext) -> list[DownloadItem]:
         answers = ctx.ensure_answers()

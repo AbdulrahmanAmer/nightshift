@@ -33,6 +33,12 @@ def ps_b64(text: str) -> str:
 # The checks `ns verify --quick` really reports (a test runs the real verify and compares the names).
 VERIFY_CHECKS = names.QUICK_CHECKS
 
+#: Where a venv keeps its packages, and the dist-info the simulated `uv pip install -e <app>` leaves there.
+SITE_PACKAGES = Path("Lib") / "site-packages"
+PRODUCT_DIST_INFO = "nightshift-0-editable.dist-info"
+#: The simulated user environment variables, in the simulated desktop folder (the registry outlives a run).
+USER_ENV_FILE = "_simulated_user_env.json"
+
 
 @dataclass
 class Call:
@@ -68,7 +74,8 @@ class FakeRunner:
         self.verify_failures = set(verify_failures or ())
         self.results: dict[str, RunResult | Handler] = dict(results or {})
         self.calls: list[Call] = []
-        self.user_env: dict[str, str] = {}
+        # the user environment is in the registry, which outlives a process: the simulated one is on disk
+        self.user_env: dict[str, str] = self._load_user_env()
         self.torch_installed = False
 
     def run(
@@ -90,6 +97,21 @@ class FakeRunner:
             return override(call) if callable(override) else override
         return self._default(call)
 
+    @property
+    def _env_file(self) -> Path:
+        return self.desktop / USER_ENV_FILE
+
+    def _load_user_env(self) -> dict[str, str]:
+        try:
+            data = json.loads(self._env_file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        return {str(k): str(v) for k, v in data.items()} if isinstance(data, dict) else {}
+
+    def _save_user_env(self) -> None:
+        self._env_file.parent.mkdir(parents=True, exist_ok=True)
+        self._env_file.write_text(json.dumps(self.user_env), encoding="utf-8")
+
     def called(self, tag_prefix: str) -> list[Call]:
         """Recorded calls whose tag starts with ``tag_prefix``."""
         return [c for c in self.calls if c.tag.startswith(tag_prefix)]
@@ -99,6 +121,7 @@ class FakeRunner:
         tag = call.tag
         if tag == "ps:set-env":
             self.user_env[call.meta["name"]] = call.meta["value"]
+            self._save_user_env()
             return RunResult(0)
         if tag == "ps:get-env":
             return RunResult(0, ps_b64(self.user_env.get(call.meta["name"], "")) + "\n")
@@ -113,14 +136,25 @@ class FakeRunner:
             py = Path(call.meta["path"]) / "Scripts" / "python.exe"
             py.parent.mkdir(parents=True, exist_ok=True)
             py.write_bytes(b"")
+            (Path(call.meta["path"]) / SITE_PACKAGES).mkdir(parents=True, exist_ok=True)    # empty, like uv's
             return RunResult(0)
-        if tag.startswith("uv pip install") and any(a.startswith("torch") for a in call.argv):
-            self.torch_installed = True
+        if tag.startswith("uv pip install"):
+            self._pip_install(call)
+            if any(a.startswith("torch") for a in call.argv):
+                self.torch_installed = True
             return RunResult(0)
+        if tag.endswith(" import check"):
+            return self._import_check(call)
         if tag == "ns tune":
             return RunResult(0, "best: 51.2 tokens/s\n")
         if tag == "ns verify --quick":
-            return RunResult(0, json.dumps(self._verify_report()))
+            report = self._verify_report()
+            home = call.env.get("NIGHTSHIFT_HOME")
+            if home:                    # the real `ns verify` leaves its report in the logs folder
+                logs = Path(home) / "logs"
+                logs.mkdir(parents=True, exist_ok=True)
+                (logs / "verify-report.json").write_text(json.dumps(report), encoding="utf-8")
+            return RunResult(0, json.dumps(report))
         if tag == "ns doctor --bundle":
             self.desktop.mkdir(parents=True, exist_ok=True)
             zip_path = self.desktop / f"nightshift-diagnostics-{date.today():%Y%m%d}.zip"
@@ -132,6 +166,28 @@ class FakeRunner:
         if tag == "opencode --version":
             return RunResult(0, "1.19.5\n")
         return RunResult(0)
+
+    @staticmethod
+    def _pip_install(call: Call) -> None:
+        """Put the product into the venv named by ``--python``: a dist-info in its site-packages.
+
+        Only the install of the app itself (``-e <app>[extras]``) counts. That is the install an interrupted
+        setup is missing, and the one the import check looks for; the other wheels are not simulated.
+        """
+        if "--python" not in call.argv or "-e" not in call.argv:
+            return
+        venv = Path(call.argv[call.argv.index("--python") + 1]).parent.parent
+        info = venv / SITE_PACKAGES / PRODUCT_DIST_INFO
+        info.mkdir(parents=True, exist_ok=True)
+        (info / "METADATA").write_text("Name: nightshift\n", encoding="utf-8")
+
+    @staticmethod
+    def _import_check(call: Call) -> RunResult:
+        """``<venv python> -I -c <probe>``: loads the product only when the app was installed in that venv."""
+        venv = Path(call.argv[0]).parent.parent
+        if (venv / SITE_PACKAGES / PRODUCT_DIST_INFO).is_dir():
+            return RunResult(0)
+        return RunResult(1, "", "cannot load: ns_common, ns_supervisor")
 
     def _verify_report(self) -> dict[str, Any]:
         failing = set(self.verify_failures)
