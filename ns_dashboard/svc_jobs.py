@@ -379,6 +379,13 @@ class JobsService:
         rec = self.s.store.get(str(body.get("job_id") or ""))
         if rec is None or rec.kind != "clip":
             raise ApiError(404, "not_found", "That clip job was not found.")
+        if rec.status in ("failed", "cancelled"):
+            how = "stopped with an error" if rec.status == "failed" else "was cancelled"
+            raise ApiError(
+                409, "not_finished", f"Only a finished clip job can be cut again, and that one {how}.",
+                hint="Start the clips again from the Create page"
+                + (", or fix the cause shown on its card first." if rec.status == "failed" else "."),
+            )
         if rec.status != "done":
             raise ApiError(409, "not_finished", "Wait until that clip job has finished.")
         template = self._clip_layout(str(body.get("template") or ""))

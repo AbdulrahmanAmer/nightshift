@@ -288,6 +288,42 @@ def test_clip_rerun_route_rejects_bad_requests(tmp_home: Path):
     assert old.status_code == 409 and err(old)["code"] == "cannot_rerun"
 
 
+def test_clip_rerun_message_says_what_is_true_for_each_job_state(tmp_home: Path):
+    """D-18: a failed clip job was told to 'wait'; only a running or queued one should be."""
+    client, state = make_env(tmp_home)
+
+    def rerun_error(status: str | None):
+        clip = state.store.create("clip", "after-dark", {})
+        if status in ("running", "failed", "cancelled", "done"):
+            state.store.mark_running(clip.job_id)
+        if status in ("failed", "cancelled", "done"):
+            state.store.finish(clip.job_id, status, status, {"output_ids": []})
+        got = state.store.get(clip.job_id)
+        assert got is not None and got.status == (status or "queued")
+        r = client.post("/api/jobs/clip/rerun", json={"job_id": clip.job_id, "template": "auto"})
+        return r.status_code, err(r)
+
+    for waiting in ("queued", "running"):
+        code, e = rerun_error(None if waiting == "queued" else waiting)
+        assert code == 409 and e["code"] == "not_finished"
+        assert e["message"] == "Wait until that clip job has finished."
+
+    code, e = rerun_error("failed")
+    assert code == 409 and e["code"] == "not_finished"
+    assert "wait" not in e["message"].lower()
+    assert e["message"] == "Only a finished clip job can be cut again, and that one stopped with an error."
+    assert "Create page" in e["hint"] and "card" in e["hint"]
+
+    code, e = rerun_error("cancelled")
+    assert code == 409 and e["code"] == "not_finished"
+    assert "wait" not in e["message"].lower()
+    assert e["message"] == "Only a finished clip job can be cut again, and that one was cancelled."
+    assert "Create page" in e["hint"]
+
+    code, e = rerun_error("done")  # a done job passes the state check; it has no studio job here
+    assert code == 409 and e["code"] == "cannot_rerun"
+
+
 # ---------------------------------------------------------------- gap 23: Library > Formats edit form -> PUT
 
 

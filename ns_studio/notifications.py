@@ -34,6 +34,21 @@ def default_notifier() -> Notifier | None:
         return None
 
 
+def nightly_notifier(paths: Paths, log: NsLogger) -> Notifier | None:
+    """The notifier for the nightly run, decided by Settings > Notifications alone.
+
+    Fake services (a dev or engine-test install) do not matter: the toast is a Windows integration that does
+    not depend on the engines. When no notifier is returned, `toast_skipped` says why.
+    """
+    if not notifications_enabled(paths):
+        log.info("toast_skipped", reason="notifications_off")
+        return None
+    notifier = default_notifier()
+    if notifier is None:
+        log.info("toast_skipped", reason="no_notifier")
+    return notifier
+
+
 def output_counts(db: Db, job_ids: Sequence[str]) -> tuple[int, int]:
     """(masters, Shorts) the given jobs put in the review queue."""
     if not job_ids:
