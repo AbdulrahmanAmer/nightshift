@@ -10,19 +10,30 @@ Placement is deterministic and does not depend on which other files exist:
   bin-packing over EVERY file in that table, so the answer is a pure function of the table and the shard
   count, not of the files currently in ``tests/``;
 * a file that is not in the table (a new test file) goes to ``sha256(path) % shards``, so adding a test file
-  needs no change here and never moves another file.
+  needs no change here and never moves another file. Until the table is refreshed it counts as
+  ``default_seconds`` of the table: the larger of the mean and the median of the measured files, never a
+  flattering guess (the suite is skewed: half the files take under two seconds, a few take minutes).
 
-Only a change of the shard count, or of the table (``weights`` below), moves a file.
+Only a change of the shard count, or of the table (``refresh`` below), moves a file.
+
+``SHARDS`` is the shard count: the test-shard matrices in .github/workflows/ci.yml and release.yml must say
+the same (tests/test_ci_workflow.py checks every place).
 
 Commands (``python dev/ci_shards.py <command> ...``)::
 
     files   --shard N --of M                 the test files of one shard, one per line
     run     --shard N --of M -- <pytest args>  run pytest on the files of one shard
-    plan    --of M [--limit SECONDS]         predicted seconds per shard; exit 1 over the limit
+    plan    --of M [--limit SECONDS] [--summary]
+                                             predicted seconds per shard; exit 1 over the limit; the summary
+                                             names the files with no measured weight
     verify  --of M --collected FILE --reports DIR [--summary]
                                              the completeness proof: the node ids the shards reported are
                                              exactly the node ids the unsharded run collected
-    weights REPORT.xml ... [--write FILE]    median seconds per test file from JUnit reports
+    refresh [--run ID|latest ...] [--junit DIR ...] [--write FILE]
+                                             re-measure dev/ci_shard_weights.json from the JUnit reports of a
+                                             CI run (downloaded with gh; `latest` is the last green main push
+                                             run) or of report folders
+    weights REPORT.xml ... [--write FILE]    the same table from report files given one by one
 
 Standard library only, so the CI jobs that call it need no install.
 """
@@ -32,11 +43,13 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import re
 import statistics
 import subprocess
 import sys
+import tempfile
 import xml.etree.ElementTree as ET
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
@@ -47,8 +60,21 @@ ROOT = Path(__file__).resolve().parents[1]
 WEIGHTS_PATH = ROOT / "dev" / "ci_shard_weights.json"
 TESTS_DIR = ROOT / "tests"
 
+#: The number of test shards (H-3b). The workflows' test-shard matrices, check names and ``--of`` say the
+#: same number (tests/test_ci_workflow.py fails on any other). Six, not five: on the measured weights five
+#: shards are predicted at 558 to 567 s against the guard's 570 s (25 min / 2 - 180 s of setup), so one new
+#: test file in the wrong shard turns every pull request red; six leave about 100 s per shard.
+SHARDS = 6
+
+#: What to run when a shard is predicted over its budget (printed by the guards).
+REFRESH_COMMAND = "python dev/ci_shards.py refresh --run latest"
+
 #: How many problems of one kind are listed before "... and N more" (the log stays readable).
 LIST_LIMIT = 25
+
+#: A file whose tests ran in no shard (all of them `network`, run in shard 1's own step) costs this much in
+#: the unit step; its real seconds are part of ``shard_extra_seconds`` for shard 1.
+NETWORK_ONLY_SECONDS = 0.1
 
 
 @dataclass(frozen=True)
@@ -61,12 +87,80 @@ class Weights:
     extra_seconds: dict[int, float] = field(default_factory=dict)
 
 
+def default_seconds(files: Mapping[str, float]) -> float:
+    """The weight of a test file the table does not list: the larger of the mean and the median of the
+    measured files. The median alone flatters a new file (most files take a second or two, the few heavy ones
+    take minutes); the mean is what a file adds to a shard on average."""
+    values = list(files.values())
+    if not values:
+        return 1.0
+    # rounded up to a tenth of a second: never below the mean or the median it stands for
+    return math.ceil(max(statistics.mean(values), statistics.median(values)) * 10) / 10
+
+
 def load_weights(path: Path = WEIGHTS_PATH) -> Weights:
     raw = json.loads(path.read_text(encoding="utf-8"))
+    files = {normalize(k): float(v) for k, v in raw["files"].items()}
     return Weights(
-        files={normalize(k): float(v) for k, v in raw["files"].items()},
-        default_seconds=float(raw["default_seconds"]),
+        files=files,
+        default_seconds=default_seconds(files),
         extra_seconds={int(k): float(v) for k, v in raw.get("shard_extra_seconds", {}).items()},
+    )
+
+
+def raise_shards_text(shards: int) -> str:
+    """The last remedy of every guard message: one more shard, with the command that previews it."""
+    return (
+        f"raise SHARDS in dev/ci_shards.py and, to the same number, the test-shard matrices, check names and "
+        f"`--of` in .github/workflows/ci.yml and release.yml (tests/test_ci_workflow.py names every place); "
+        f"preview it first with `python dev/ci_shards.py plan --of {shards + 1}`"
+    )
+
+
+def over_budget_message(
+    shard: int,
+    shards: int,
+    predicted_s: float,
+    setup_s: float,
+    why: str,
+    unweighted: Sequence[str] = (),
+    default_s: float | None = None,
+) -> str:
+    """What a guard says when a shard is predicted over its budget: which shard, by how much, what to run.
+
+    ``unweighted`` are the shard's test files with no measured weight. They decide the first remedy: a refresh
+    re-measures only the files of the last green main run, so it cannot help a file a pull request adds (that
+    file counts at the default until the first refresh after it merges).
+    """
+    total = predicted_s + setup_s
+    amount = (
+        f"{predicted_s:.0f} s of tests + {setup_s:.0f} s of setup = {total:.0f} s"
+        if setup_s
+        else f"{predicted_s:.0f} s of tests"
+    )
+    head = f"shard {shard}/{shards} is predicted at {amount}: {why}."
+    if not unweighted:
+        return (
+            f"{head} Every file in it has a measured weight, so the table may be stale: refresh the weights "
+            f"from the last green main run with `{REFRESH_COMMAND}` (needs gh) and commit "
+            f"dev/ci_shard_weights.json. If the refreshed table still predicts it over, "
+            f"{raise_shards_text(shards)}."
+        )
+    each = f"{default_s:.1f} s" if default_s is not None else "the default weight"
+    names = ", ".join(unweighted[:LIST_LIMIT]) + (
+        f" and {len(unweighted) - LIST_LIMIT} more" if len(unweighted) > LIST_LIMIT else ""
+    )
+    return (
+        f"{head} {len(unweighted)} of its test files have no measured weight and count as {each} each: "
+        f"{names}. `{REFRESH_COMMAND}` does not help them: it re-measures the files of the last green main "
+        "run, and a test file this pull request adds is in no main run; it counts at the default until the "
+        "first refresh after it merges. What helps: (1) measure them from this pull request's own CI run "
+        "(the shards upload their JUnit reports even when a test fails): `gh run list --workflow ci --branch "
+        "<this branch> --limit 1` for the run id, then `python dev/ci_shards.py refresh --run <run id>` and "
+        "commit dev/ci_shard_weights.json; (2) split or rename the new file: a file with no weight goes to "
+        f"the shard sha256(path) % {shards} names, so a new name moves it, and each part of a split counts "
+        f"{each} until it is measured; check with `python dev/ci_shards.py plan --of {shards}`; "
+        f"(3) {raise_shards_text(shards)}."
     )
 
 
@@ -387,8 +481,7 @@ def render_summary(verdict: Verdict, shards: int, unweighted: int) -> str:
     if unweighted:
         lines.append(
             f"{unweighted} test file(s) are not in `dev/ci_shard_weights.json` and were placed by hash; "
-            "refresh the table with `python dev/ci_shards.py weights report-shard-*.xml --write "
-            "dev/ci_shard_weights.json` when the shards drift apart."
+            f"refresh the table with `{REFRESH_COMMAND}` when the shards drift apart."
         )
         lines.append("")
     if verdict.problems:
@@ -467,20 +560,60 @@ def _cmd_run(args: argparse.Namespace, pytest_args: list[str]) -> int:
     ).returncode
 
 
+def render_plan_summary(groups: Sequence[Sequence[str]], weights: Weights, unweighted: Sequence[str]) -> str:
+    """The job-summary section of `plan`: predicted seconds per shard, the files with no measured weight."""
+    loads = predicted_seconds(groups, weights)
+    lines = [
+        "### Shard plan",
+        "",
+        "| shard | files | predicted s | files with no measured weight |",
+        "|---|---|---|---|",
+    ]
+    for s, (group, load) in enumerate(zip(groups, loads, strict=True), start=1):
+        missing = sum(1 for f in group if f not in weights.files)
+        lines.append(f"| {s}/{len(groups)} | {len(group)} | {load:.0f} | {missing} |")
+    lines.append("")
+    if unweighted:
+        lines.append(
+            f"{len(unweighted)} test file(s) have no measured weight in `dev/ci_shard_weights.json` and "
+            f"count as {weights.default_seconds:.1f} s each (the larger of the mean and the median of the "
+            f"measured files) until the table is refreshed with `{REFRESH_COMMAND}`:"
+        )
+        lines += [f"- `{f}`" for f in _capped(list(unweighted))]
+    else:
+        lines.append(
+            "Every test file has a measured weight (a new one would count as "
+            f"{weights.default_seconds:.1f} s, the larger of the mean and the median of the measured files)."
+        )
+    return "\n".join(lines) + "\n"
+
+
 def _cmd_plan(args: argparse.Namespace) -> int:
     weights = load_weights()
     files = discover_test_files()
     groups = split(files, args.shards, weights)
     print(render_plan(groups, weights))
     unweighted = [f for f in files if f not in weights.files]
-    print(f"{len(unweighted)} of {len(files)} test files are not in the weights table (placed by hash)")
-    worst = max(predicted_seconds(groups, weights))
-    if args.limit is not None and worst > args.limit:
-        print(
-            f"::error::the slowest shard is predicted at {worst:.0f} s, over the limit of {args.limit:.0f} s"
-        )
-        return 1
-    return 0
+    print(
+        f"{len(unweighted)} of {len(files)} test files are not in the weights table (placed by hash, "
+        f"{weights.default_seconds:.1f} s each)"
+    )
+    for f in _capped(unweighted):
+        print(f"  no measured weight: {f}")
+    summary = os.environ.get("GITHUB_STEP_SUMMARY")
+    if args.summary and summary:
+        with open(summary, "a", encoding="utf-8") as fh:
+            fh.write(render_plan_summary(groups, weights, unweighted))
+    loads = predicted_seconds(groups, weights)
+    if args.limit is None:
+        return 0
+    over = [(s, load) for s, load in enumerate(loads, start=1) if load > args.limit]
+    for s, load in over:
+        why = f"over the limit of {args.limit:.0f} s"
+        new = [f for f in groups[s - 1] if f not in weights.files]
+        msg = over_budget_message(s, args.shards, load, 0, why, new, weights.default_seconds)
+        print(f"::error::{msg}")
+    return 1 if over else 0
 
 
 def _cmd_verify(args: argparse.Namespace) -> int:
@@ -514,30 +647,133 @@ def _cmd_verify(args: argparse.Namespace) -> int:
     return 1 if problems else 0
 
 
+def weights_table(
+    shard_reports: Sequence[Path],
+    network_reports: Sequence[Path],
+    source: str,
+    previous: Mapping[str, object],
+) -> dict[str, object]:
+    """The content of dev/ci_shard_weights.json from the JUnit reports of the shards (and the network
+    step)."""
+    known = discover_test_files()
+    files = build_weights(shard_reports, known)
+    # all of a file's tests are `network`: the unit step deselects them, shard 1's own step runs them
+    for name in build_weights(network_reports, known):
+        files.setdefault(name, NETWORK_ONLY_SECONDS)
+    return {
+        "about": (
+            "Seconds per test file for dev/ci_shards.py: the median over the JUnit reports of real CI "
+            "runs. A file not listed is placed by hash and counts as the larger of the mean and the median "
+            "of these. "
+            f"Refresh: {REFRESH_COMMAND} (or --run <id>, or --junit <folder of report-shard-*.xml>)"
+        ),
+        "measured": {"source": source, "files": len(files)},
+        "shard_extra_seconds": previous.get("shard_extra_seconds", {"1": 15}),
+        "files": dict(sorted(files.items())),
+    }
+
+
+def _write_table(data: Mapping[str, object], target: Path | None) -> None:
+    text = json.dumps(data, indent=1) + "\n"
+    if target is None:
+        sys.stdout.write(text)
+        return
+    target.write_text(text, encoding="utf-8", newline="\n")
+    files = data["files"]
+    assert isinstance(files, dict)
+    print(f"{len(files)} files -> {target}")
+    not_measured = [f for f in discover_test_files() if f not in files]
+    if not_measured:
+        print(f"{len(not_measured)} test file(s) not measured (they will count as the default):")
+        for f in _capped(not_measured):
+            print(f"  {f}")
+
+
+def _previous(target: Path | None) -> dict[str, object]:
+    if target is None or not target.is_file():
+        return {}
+    try:
+        loaded = json.loads(target.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return loaded if isinstance(loaded, dict) else {}
+
+
 def _cmd_weights(args: argparse.Namespace) -> int:
     reports = [Path(r) for r in args.reports if Path(r).is_file()]
     if not reports:
         print("no readable report given")
         return 2
-    computed = build_weights(reports, discover_test_files())
     target = Path(args.write) if args.write else None
-    previous = json.loads(target.read_text(encoding="utf-8")) if target and target.is_file() else {}
-    data = {
-        "about": (
-            "Seconds per test file for dev/ci_shards.py (median over JUnit reports of real CI runs). "
-            "A file not listed is placed by hash. Refresh: python dev/ci_shards.py weights "
-            "report-shard-*.xml --write dev/ci_shard_weights.json"
-        ),
-        "default_seconds": previous.get("default_seconds") or round(statistics.mean(computed.values()), 1),
-        "shard_extra_seconds": previous.get("shard_extra_seconds", {"1": 15}),
-        "files": computed,
-    }
-    text = json.dumps(data, indent=1) + "\n"
-    if target:
-        target.write_text(text, encoding="utf-8", newline="\n")
-        print(f"{len(computed)} files -> {target}")
-    else:
-        sys.stdout.write(text)
+    shard = [r for r in reports if r.name != "report-network.xml"]
+    network = [r for r in reports if r.name == "report-network.xml"]
+    source = "JUnit reports: " + ", ".join(r.name for r in reports)
+    _write_table(weights_table(shard, network, source, _previous(target)), target)
+    return 0
+
+
+def _gh(argv: list[str]) -> subprocess.CompletedProcess[str]:
+    """Run the GitHub command line from the repository (it finds the repo from the checkout's remote)."""
+    proc = subprocess.run(["gh", *argv], cwd=ROOT, capture_output=True, text=True, check=False)
+    if proc.returncode != 0:
+        raise RuntimeError(f"gh {' '.join(argv[:2])} exited {proc.returncode}: {(proc.stderr or '').strip()}")
+    return proc
+
+
+def _last_green_main_run() -> str:
+    proc = _gh(
+        [
+            "run",
+            "list",
+            "--workflow",
+            "ci",
+            "--branch",
+            "main",
+            "--event",
+            "push",
+            "--status",
+            "success",
+            "--limit",
+            "1",
+            "--json",
+            "databaseId",
+        ]
+    )
+    runs = json.loads(proc.stdout or "[]")
+    if not runs:
+        raise RuntimeError("gh found no successful ci run of a push to main")
+    return str(runs[0]["databaseId"])
+
+
+def _cmd_refresh(args: argparse.Namespace) -> int:
+    target = Path(args.write)
+    sources: list[str] = []
+    try:
+        with tempfile.TemporaryDirectory(prefix="ci-shards-") as tmp:
+            folders: list[Path] = []
+            for run in args.run:
+                run_id = _last_green_main_run() if run == "latest" else run
+                folder = Path(tmp) / f"run-{run_id}"
+                _gh(["run", "download", run_id, "--pattern", "junit-report-shard-*", "--dir", str(folder)])
+                folders.append(folder)
+                sources.append(f"run {run_id}")
+            for given in args.junit:
+                folders.append(Path(given))
+                sources.append(f"JUnit reports in {given}")
+            shard = sorted(r for f in folders if f.is_dir() for r in f.rglob("report-shard-*.xml"))
+            network = sorted(r for f in folders if f.is_dir() for r in f.rglob("report-network.xml"))
+            if not shard:
+                where = ", ".join(sources) or "nothing given (use --run or --junit)"
+                print(f"no JUnit report (report-shard-*.xml) in {where}; {target} is unchanged")
+                return 2
+            data = weights_table(shard, network, "; ".join(sources), _previous(target))
+            _write_table(data, target)
+    except FileNotFoundError as exc:
+        print(f"the gh command line is not installed or not on PATH ({exc}); {target} is unchanged")
+        return 2
+    except (RuntimeError, ValueError, KeyError) as exc:
+        print(f"{exc}; {target} is unchanged")
+        return 2
     return 0
 
 
@@ -554,13 +790,20 @@ def main(argv: list[str] | None = None) -> int:
     plan = sub.add_parser("plan", help="print the predicted seconds per shard")
     _shard_args(plan, with_shard=False)
     plan.add_argument(
-        "--limit", type=float, default=None, help="fail when the slowest shard is predicted over this"
+        "--limit", type=float, default=None, help="fail when a shard is predicted over this many seconds"
     )
+    plan.add_argument("--summary", action="store_true", help="append the plan to $GITHUB_STEP_SUMMARY")
     ver = sub.add_parser("verify", help="prove that the shards are exactly the unsharded collection")
     _shard_args(ver, with_shard=False)
     ver.add_argument("--collected", required=True, help="output of pytest --collect-only -q -o addopts=")
     ver.add_argument("--reports", required=True, help="folder with report-shard-N.xml")
     ver.add_argument("--summary", action="store_true", help="append a table to $GITHUB_STEP_SUMMARY")
+    ref = sub.add_parser("refresh", help="re-measure the weights from a CI run's JUnit reports")
+    ref.add_argument("--run", action="append", default=[], help="a CI run id, or `latest` (repeatable)")
+    ref.add_argument(
+        "--junit", action="append", default=[], help="a folder of report-shard-*.xml (repeatable)"
+    )
+    ref.add_argument("--write", default=str(WEIGHTS_PATH), help="the JSON file to write")
     wts = sub.add_parser("weights", help="median seconds per test file from JUnit reports")
     wts.add_argument("reports", nargs="+")
     wts.add_argument("--write", default=None, help="write this JSON file (default: print)")
@@ -578,6 +821,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_plan(args)
     if args.command == "verify":
         return _cmd_verify(args)
+    if args.command == "refresh":
+        return _cmd_refresh(args)
     return _cmd_weights(args)
 
 
