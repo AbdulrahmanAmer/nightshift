@@ -125,7 +125,6 @@ def run_b02(boot: Boot) -> None:
     assert not step.check(boot)
     step.run(boot)
     step.verify(boot)
-    assert step._uv_is_pinned(boot)
 
 
 def test_a_path_uv_of_another_version_is_not_copied_and_the_pin_is_downloaded(tmp_path: Path) -> None:
@@ -172,7 +171,8 @@ def test_a_wrong_version_already_in_the_install_folder_is_replaced_by_the_pin(tm
     (boot.home / "config" / "answers.json").write_text("{}", encoding="utf-8")
     boot.set_home_var(bootstrap.HOME_VAR, str(boot.home))
     step = bootstrap.B02Home()
-    assert step._uv_is_pinned(boot) is False  # it runs, but it is not the pin: not "done"
+    assert reported(boot, cmd) == WINGET  # it runs, but it is not the pin: not "done"
+    assert not step.check(boot)
     step.run(boot)
     step.verify(boot)
     assert reported(boot, cmd) == PINNED
@@ -285,7 +285,7 @@ def test_the_stage1_pinned_uv_replaces_a_wrong_install_folder_copy_without_a_dow
     cmd, net = VersionCmd(), Unreachable()
     boot = controller_boot(tmp_path, monkeypatch, cmd, net, PINNED, stale=WINGET)
     step = bootstrap.B02Home()
-    assert step._uv_is_pinned(boot) is False
+    assert reported(boot, cmd) == WINGET  # the install folder holds winget's copy
     step._place_uv(boot)
     assert net.urls == []  # nothing was downloaded
     assert reported(boot, cmd) == PINNED
@@ -295,13 +295,15 @@ def test_the_stage1_pinned_uv_replaces_a_wrong_install_folder_copy_without_a_dow
 def test_the_pin_is_downloaded_only_after_the_install_folder_and_the_stage1_uv_were_both_wrong(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    stage1_handover(tmp_path, monkeypatch, version=WINGET)  # the hand-over is not the pin either
+    handed = stage1_handover(tmp_path, monkeypatch, version=WINGET)  # the hand-over is not the pin either
     cmd, net = VersionCmd(), Unreachable()
     boot = controller_boot(tmp_path, monkeypatch, cmd, net, PINNED, stale=WINGET)
+    boot.say = SAID.append
     with pytest.raises(BootstrapError) as err:
         bootstrap.B02Home()._place_uv(boot)
     assert err.value.code == "NS-E105" and "could not download" in err.value.detail
     assert len(net.urls) == 1  # the pin was tried only after both local copies were found wrong
+    assert any(str(handed) in line for line in SAID)  # the hand-over uv was looked at, found wrong, said so
 
 
 def test_a_uv_that_cannot_be_deleted_is_a_clear_ns_e105_not_an_unexpected_error(
@@ -320,3 +322,23 @@ def test_a_uv_that_cannot_be_deleted_is_a_clear_ns_e105_not_an_unexpected_error(
     with pytest.raises(BootstrapError) as err:
         bootstrap.B02Home()._place_uv(boot)
     assert err.value.code == "NS-E105" and "uv.exe" in err.value.detail and "in use" in err.value.detail
+
+
+def test_a_uv_that_cannot_be_overwritten_is_a_clear_ns_e105_not_an_unexpected_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The stage-1 pin is to replace a wrong uv.exe in the install folder, but a running uv holds it."""
+    cmd, net = VersionCmd(), Transport()
+    boot = make_boot(tmp_path, path_uv(tmp_path, PINNED), cmd, net, pin_for(tmp_path))
+    target = home_uv(boot)
+    target.parent.mkdir(parents=True)
+    target.write_bytes(uv_bytes(WINGET))
+
+    def locked(src: Any, dst: Any, **kw: Any) -> None:
+        raise PermissionError(13, "The process cannot access the file because it is being used", str(dst))
+
+    monkeypatch.setattr(bootstrap.shutil, "copy2", locked)
+    with pytest.raises(BootstrapError) as err:
+        bootstrap.B02Home()._place_uv(boot)
+    assert err.value.code == "NS-E105" and "uv.exe" in err.value.detail and "in use" in err.value.detail
+    assert target.read_bytes() == uv_bytes(WINGET)  # nothing half-written: the old file is as it was

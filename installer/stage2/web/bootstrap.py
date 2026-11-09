@@ -31,7 +31,7 @@ from ns_common.avblock import is_blocked_error, looks_blocked
 from ns_common.uv import looks_full, uv_env, venv_args
 
 HOME_VAR = "NIGHTSHIFT_HOME"
-UV_VERSION = re.compile(r"(?:^|\s)uv\s+(\d+(?:\.\d+)+\S*)")      # "uv 0.13.6 (abc 2025-11-01)"
+UV_VERSION = re.compile(r"(?:^|\s)uv\s+(\d+(?:\.\d+)+\S*)")  # "uv 0.13.6 (abc 2025-11-01)"
 TOP_DIRS = ("bin", "models", "venvs", "config", "data", "cache", "imports", "outbox", "rejected", "logs")
 # key, winget id, label, required. Git is not here: nothing in setup or at run time needs it (only the
 # optional ``ns update --git``), and its machine-wide installer would add an administrator prompt.
@@ -661,7 +661,14 @@ class B02Home:
                 there = dest_dir / item.name
                 if there.exists() and there.samefile(item):
                     continue
-                shutil.copy2(item, there)
+                try:
+                    shutil.copy2(item, there)
+                except OSError as e:
+                    raise BootstrapError(
+                        "NS-E105",
+                        f"{item.name} could not be copied to {there} ({e}); it is probably in use. "
+                        "Close any running uv or Nightshift process and run setup again",
+                    ) from e
 
     @staticmethod
     def _uv_candidates(boot: Boot, target: Path) -> list[Path]:
@@ -681,7 +688,7 @@ class B02Home:
     ) -> bool:
         """Copy the uv family of ``source`` into the install folder; True when that gave the pinned uv."""
         if source.parent == target.parent:
-            problems.append(f"{source} {self._uv_mismatch(boot)}")      # already there and not the pin
+            problems.append(f"{source} {self._uv_mismatch(boot)}")  # already there and not the pin
             return False
         self._copy_uv_family(source.parent, target.parent)
         if self._uv_is_pinned(boot):

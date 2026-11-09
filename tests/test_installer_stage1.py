@@ -322,13 +322,18 @@ PIN = "0.13.6"
 
 
 def _install_uv_harness(
-    tmp_path: Path, winget: str, path_uv: str | None = None, pin: str | None = PIN
+    tmp_path: Path,
+    winget: str,
+    path_uv: str | None = None,
+    pin: str | None = PIN,
+    shadow_uv: str | None = None,
 ) -> subprocess.CompletedProcess:
     """Run the real Install-Uv from stage1.ps1 with a dead download URL and a chosen 'winget'.
 
     ``path_uv`` is the version the uv on PATH reports after winget ran (None: there is none); ``pin`` is
-    ``bins.uv.version`` of the manifest (None: the manifest pins no version). The winget stub writes its
-    arguments to ``winget-args.txt`` next to the harness.
+    ``bins.uv.version`` of the manifest (None: the manifest has no ``version`` property at all);
+    ``shadow_uv`` is a uv of another version that sits earlier on PATH. The winget stub writes its arguments
+    to ``winget-args.txt`` next to the harness. The harness runs under the same StrictMode as stage 1.
     """
     args_file = tmp_path / "winget-args.txt"
     stubs = {
@@ -338,20 +343,28 @@ def _install_uv_harness(
         "ok": "function Test-Tool { param($Name) return $true }\n"
               f"function winget.exe {{ Set-Content -LiteralPath '{args_file}' -Value ($args -join ' ') }}",
     }[winget]
-    on_path = (
-        "$null" if path_uv is None else "[pscustomobject]@{ Source = 'C:/fake/Links/uv.exe' }"
-    )
+    entries = []
+    if shadow_uv is not None:
+        entries.append("[pscustomobject]@{ Source = 'C:/fake/Shadow/uv.exe' }")
+    if path_uv is not None:
+        entries.append("[pscustomobject]@{ Source = 'C:/fake/Links/uv.exe' }")
+    on_path = "@(" + ", ".join(entries) + ")"
+    versions = {"C:/fake/Shadow/uv.exe": shadow_uv or "?", "C:/fake/Links/uv.exe": path_uv or "?"}
+    version_map = "@{ " + "; ".join(f"'{k}' = '{v}'" for k, v in versions.items()) + " }"
     version = "" if pin is None else f"; version = '{pin}'"
     script = f"""
+Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $ast = [System.Management.Automation.Language.Parser]::ParseFile('{STAGE1}', [ref]$null, [ref]$null)
 $fnType = [System.Management.Automation.Language.FunctionDefinitionAst]
-$isFn = {{ param($n) $n -is $fnType -and $n.Name -eq 'Install-Uv' }}
-$fn = $ast.FindAll($isFn, $true)[0]
-. ([scriptblock]::Create($fn.Extent.Text))
+foreach ($name in 'Get-Prop', 'Install-Uv') {{
+    $fn = $ast.FindAll({{ param($n) $n -is $fnType -and $n.Name -eq $name }}, $true)[0]
+    . ([scriptblock]::Create($fn.Extent.Text))
+}}
 {stubs}
-function Get-Command {{ [CmdletBinding()] param([string]$Name) return {on_path} }}
-function Get-UvVersion {{ param([string]$Uv) return '{path_uv or "?"}' }}
+function Get-Command {{ [CmdletBinding()] param([string]$Name, [switch]$All) return {on_path} }}
+$uvVersions = {version_map}
+function Get-UvVersion {{ param([string]$Uv) return $uvVersions[$Uv] }}
 function Get-DataDir {{ return '{tmp_path}' }}
 function Join-Str {{ param($a, $b) return (Join-Path $a $b) }}
 function Update-SessionPath {{ }}
@@ -402,10 +415,18 @@ def test_uv_fallback_accepts_a_uv_of_the_pinned_version(tmp_path: Path):
     assert "RESULT:C:/fake/Links/uv.exe" in proc.stdout
 
 
+def test_uv_fallback_takes_the_pinned_uv_that_an_older_uv_earlier_on_path_hides(tmp_path: Path):
+    """winget installed the pin, but a cargo or pip uv comes first on PATH: the pin is the one returned."""
+    proc = _install_uv_harness(tmp_path, "ok", path_uv=PIN, shadow_uv="0.9.0")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "RESULT:C:/fake/Links/uv.exe" in proc.stdout
+
+
 def test_uv_fallback_without_a_manifest_version_takes_the_uv_that_runs(tmp_path: Path):
     proc = _install_uv_harness(tmp_path, "ok", path_uv="0.13.7", pin=None)
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert "RESULT:C:/fake/Links/uv.exe" in proc.stdout
+    assert "--version" not in (tmp_path / "winget-args.txt").read_text(encoding="utf-8")
 
 
 def test_select_default_home_avoids_the_extracted_folder_and_treats_a_root_specially(tmp_path: Path):
