@@ -238,3 +238,38 @@ function Wait-NsPort {
     }
     return $false
 }
+
+function Sync-NsOpenCodePort {
+    # OpenCode talks straight to llama-server, and config\opencode.json bakes the address in when it is written
+    # at install time. If runtime.json llama.host/port changed since (ns tune, a hand edit), OpenCode would talk
+    # to the wrong port, so point the baseURL at the current one right before it starts. Only that one value
+    # changes; the file is left alone when it already matches or does not exist, and a problem here is a note,
+    # never a reason to stop the launcher.
+    $file = Join-Path (Get-NsHome) 'config\opencode.json'
+    try {
+        if (-not (Test-Path -LiteralPath $file)) { return }
+        $hostName = '127.0.0.1'
+        $port = 8080
+        $runtime = Join-Path (Get-NsHome) 'config\runtime.json'
+        if (Test-Path -LiteralPath $runtime) {
+            $rt = Get-Content -LiteralPath $runtime -Raw | ConvertFrom-Json
+            if ($rt.PSObject.Properties.Name -contains 'llama') {
+                $llama = $rt.llama
+                if ($llama.PSObject.Properties.Name -contains 'host') { $hostName = [string]$llama.host }
+                if ($llama.PSObject.Properties.Name -contains 'port') { $port = [int]$llama.port }
+            }
+        }
+        $url = 'http://' + $hostName + ':' + $port + '/v1'
+        $cfg = Get-Content -LiteralPath $file -Raw | ConvertFrom-Json
+        if (-not ($cfg.PSObject.Properties.Name -contains 'provider')) { return }
+        if (-not ($cfg.provider.PSObject.Properties.Name -contains 'local')) { return }
+        $options = $cfg.provider.local.options
+        if ($options.baseURL -eq $url) { return }
+        $options.baseURL = $url
+        $json = ($cfg | ConvertTo-Json -Depth 20) + "`n"
+        [System.IO.File]::WriteAllText($file, $json, (New-Object System.Text.UTF8Encoding $false))
+    }
+    catch {
+        Write-Host ('Could not update the port in ' + $file + ': ' + $_.Exception.Message)
+    }
+}

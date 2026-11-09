@@ -149,6 +149,77 @@ def test_code_launcher_acquires_as_opencode_and_releases_in_finally() -> None:
     assert "OPENCODE_CONFIG" in text and "opencode.json" in text
     assert text.index("/acquire") < text.index("OPENCODE_CONFIG") < text.rindex("/release")
     assert "finally" in text[text.index("OPENCODE_CONFIG") :]
+    # the baseURL is refreshed from runtime.json after the model is up and before OpenCode starts
+    assert text.index("/acquire") < text.index("Sync-NsOpenCodePort") < text.index("OPENCODE_CONFIG")
+
+
+OPENCODE_JSON = {
+    "$schema": "https://opencode.ai/config.json",
+    "enabled_providers": ["local"],
+    "provider": {"local": {
+        "npm": "@ai-sdk/openai-compatible",
+        "name": "Nightshift Local Qwen",
+        "options": {"baseURL": "http://127.0.0.1:8080/v1", "apiKey": "local"},
+        "models": {"code": {"name": "Qwen3.6 35B-A3B (local)"}},
+    }},
+    "model": "local/code",
+    "small_model": "local/code",
+    "autoupdate": False,
+    "share": "disabled",
+}
+
+
+def run_sync(tmp_path: Path, runtime: str | None, opencode: str | None) -> tuple[str, Path]:
+    """Run Sync-NsOpenCodePort against a throwaway home; returns the helper's output and opencode.json."""
+    import os
+    import subprocess
+
+    exe = pwsh.find_powershell()
+    if exe is None:
+        pytest.skip("powershell not available")
+    home = tmp_path / "Night Home"
+    (home / "config").mkdir(parents=True)
+    (home / "config" / "runtime.json").write_text(runtime if runtime is not None else "{}", encoding="utf-8")
+    target = home / "config" / "opencode.json"
+    if opencode is not None:
+        target.write_text(opencode, encoding="utf-8")
+    script = f". '{LAUNCHERS / '_common.ps1'}'\nSync-NsOpenCodePort\n"
+    env = {k: v for k, v in os.environ.items() if k.lower() != "psmodulepath"}
+    env["NIGHTSHIFT_HOME"] = str(home)
+    out = subprocess.run([exe, "-NoProfile", "-NonInteractive", "-Command", script], capture_output=True,
+                         text=True, timeout=60, env=env, check=False)
+    assert out.returncode == 0, out.stdout + out.stderr
+    return out.stdout, target
+
+
+@needs_powershell
+def test_sync_opencode_port_rewrites_only_the_base_url(tmp_path: Path) -> None:
+    runtime = json.dumps({"llama": {"host": "127.0.0.1", "port": 9191}})
+    _out, target = run_sync(tmp_path, runtime, json.dumps(OPENCODE_JSON, indent=2) + "\n")
+    raw = target.read_bytes()
+    assert raw[:3] != bytes([0xEF, 0xBB, 0xBF])                       # no BOM
+    got = json.loads(raw.decode("utf-8"))
+    expected = json.loads(json.dumps(OPENCODE_JSON))
+    expected["provider"]["local"]["options"]["baseURL"] = "http://127.0.0.1:9191/v1"
+    assert got == expected  # nothing else changed (arrays stay arrays)
+
+
+@needs_powershell
+def test_sync_opencode_port_leaves_a_matching_or_absent_file_alone(tmp_path: Path) -> None:
+    same = json.dumps(OPENCODE_JSON)
+    _out, target = run_sync(tmp_path / "a", json.dumps({"llama": {"port": 8080}}), same)
+    assert target.read_text(encoding="utf-8") == same                 # already right: not rewritten
+    _out, target = run_sync(tmp_path / "b", json.dumps({"llama": {"port": 9191}}), None)
+    assert not target.exists()  # no Nightshift Code config: nothing made
+    _out, target = run_sync(tmp_path / "c", "{}", same)  # no llama block: default 8080 stays
+    assert target.read_text(encoding="utf-8") == same
+
+
+@needs_powershell
+def test_sync_opencode_port_never_stops_the_launcher(tmp_path: Path) -> None:
+    out, target = run_sync(tmp_path, json.dumps({"llama": {"port": 9191}}), "{ not json")
+    assert target.read_text(encoding="utf-8") == "{ not json"
+    assert "opencode.json" in out                                      # a plain note, no exception
 
 
 def test_update_launcher_filters_release_zips_and_calls_ns_update() -> None:

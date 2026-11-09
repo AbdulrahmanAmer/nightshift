@@ -19,6 +19,8 @@ Write-Host 'Loading the coding model (a minute or two the first time)...'
 $body = @{ service = 'llama'; owner = $owner; model_alias = 'code'; wait = $true; timeout_s = 7200 }
 Invoke-NsPost -Path '/acquire' -Body $body -TimeoutSec 7500 | Out-Null
 
+Sync-NsOpenCodePort
+
 try {
     $env:OPENCODE_CONFIG = Join-Path (Get-NsHome) 'config\opencode.json'
     $projects = Join-Path $env:USERPROFILE 'Projects'
