@@ -211,6 +211,7 @@
   "tests/test_policy_text.py": 29.7,
   "tests/test_ports.py": 0.2,
   "tests/test_prompts.py": 1.2,
+  "tests/test_prove.py": 4.0,
   "tests/test_publish_slots.py": 1.3,
   "tests/test_qc.py": 13.7,
   "tests/test_regen_attempts.py": 1.9,
