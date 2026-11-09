@@ -13,7 +13,9 @@
 ### A.1 One line
 **Nightshift works while you sleep: it writes an original story, turns it into a full long-form YouTube video, then cuts the best moments into Shorts that send viewers back to it. Everything runs on your own PC.**
 
-### A.2 Installer welcome screen (exact text shown by `INSTALL.cmd`)
+### A.2 Installer welcome text (printed by the headless console path; the setup window shows a short welcome)
+The setup window opens on a short welcome of its own (what Nightshift makes, what setup installs with sizes, the time; `installer/ui/src/copy.ts`, `welcome`). The text below is `installer/welcome.txt`: the headless console path (`-NoUi`, or an `answers.json` next to `INSTALL.cmd`) prints it as step `s00_welcome` (§13 D26).
+
 > **Welcome to Nightshift**
 >
 > Nightshift sets up a story-to-video factory on this PC. It writes an original story, narrates it, adds captions and matching stock footage, and produces **one long-form video (10+ minutes, with chapters and ad-break points)** plus **several vertical Shorts cut from it**, each with its own hook. Everything lands in your Outbox, ready for you to review and post.
@@ -22,12 +24,12 @@
 >
 > **What setup will do:** check your PC (graphics card, driver, memory, disk space), install the free tools Nightshift needs, download the AI models (~20 GB, or copy them from a folder you already have), tune them for your hardware, and run a quick test of everything. You'll answer a few questions along the way. You can close and re-run setup at any time; it picks up where it left off.
 >
-> **You'll need:** an NVIDIA RTX GPU with 16 GB, ~40 GB of free disk space, an internet connection during setup (or a folder with the model files), and two free stock-footage API keys (Pexels and Pixabay). Setup shows you where to get them.
+> **You'll need:** an NVIDIA RTX GPU with 16 GB, at least 60 GB of free disk space (74 GB with the recommended Balanced model, 81 GB with the Best one), an internet connection during setup (or a folder with the model files), and, optionally, a free stock-footage API key from Pixabay (or Pexels, if you already have one). At least one is recommended; setup finishes without, and you can add it later in Settings. Setup shows you where to get them.
 
 ### A.3 How it installs itself
 1. **Checks the PC**: Windows version, NVIDIA GPU, driver, RAM, free disk, internet, power settings. It tells you exactly what to fix if something is missing.
-2. **Installs free tools**: Git, Windows Terminal, FFmpeg, Python (via uv). Everything it already finds is skipped.
-3. **Asks you a few questions**: first channel name and niche, language, narrator voice (listen to samples), stock-footage keys, how many videos per week, what time to run, whether to install Nightshift Code.
+2. **Installs free tools**: the Visual C++ runtime, FFmpeg, Windows Terminal and Python (via uv); winget first, then a pinned direct download for the runtime and FFmpeg. Everything it already finds is skipped. Git is not needed (only the optional `ns update --git` uses it; without Git that command stops with an `NS-E702` hint).
+3. **Asks you a few questions**: first channel name and niche, language, narrator voice (listen to samples), stock-footage keys (optional), how many videos per week, what time to run, whether to install Nightshift Code.
 4. **Downloads the AI engine and models** from their official sources, verifying every file.
 5. **Tunes itself** to your exact hardware for maximum speed.
 6. **Tests everything** and shows a pass/fail checklist.
@@ -55,7 +57,7 @@
 |---|---|---|
 | Channel name, niche, language | Setup / `studio channel add` | Yes |
 | Narrator voice: preset, described in words, or cloned from a 3–10 s clip **you have rights to** | Setup / anytime | Yes |
-| Pexels + Pixabay API keys (free) | Setup | Yes |
+| Pexels + Pixabay API keys (free; at least one recommended; Pexels is not issuing new keys, so Pixabay is the one to get) | Setup, or Settings at any time | No |
 | Masters per week, run time, publish window | Setup | Defaults provided |
 | Optional: seed keywords, topics to avoid, style notes | Channel profile | No |
 | Optional: your own example stories | `studio/exemplars/` | No |
@@ -120,18 +122,18 @@ Therefore every heavy dependency sits behind an interface with a **fake** that p
 | GPU | RTX 5060 Ti 16 GB (Blackwell, **sm_120**) | `nvidia-smi`; block if no NVIDIA GPU (`NS-E102`); warn if VRAM < 16 GB |
 | Driver | `nvidia-smi` reports CUDA ≥ 13.0 (driver 580+; the llama.cpp CUDA 13.4 build, the only one with Blackwell code); a pre-Blackwell card with CUDA 12.4–12.x is accepted with the CUDA 12.4 build | Below 12.4, or an RTX 50-series / RTX PRO card below CUDA 13.0: open the NVIDIA driver page, pause, re-check (`NS-E103`) |
 | RAM | 32 GB recommended, 16 GB minimum | Selects the hardware profile (§3) |
-| Disk | ≥ 60 GB free for the default install (Balanced: about 20 GB of models + venvs + working space); 74 GB with Balanced, 60 GB with the Small fallback, 81 GB with Best (the installer checks the chosen tier); +20 GB two-model mode | Block if too small (`NS-E104`) |
+| Disk | Free space on the home drive depends on the model tier: 60 GB with the Small fallback, 74 GB with Balanced (the recommended default: about 20 GB of models + venvs + working space), 81 GB with Best; a custom model needs 60 GB plus its size beyond 9 GB; +20 GB two-model mode | The Checks screen is red (`NS-E104`) only below the hard minimum of 40 GB and amber from 40 to 60 GB; the tier-aware block (60 / 74 / 81 GB) comes on Choices, and step `s01_questions` blocks again with `NS-E104` (§13 D23) |
 | Disk type | NVMe/SSD for `NIGHTSHIFT_HOME` | Warn on HDD (`NS-W106`): load times will miss §14.6 |
-| Network | HF, GitHub, PyTorch, Pexels, Pixabay reachable | `NS-E105` |
+| Network | `huggingface.co`, `github.com`, `download.pytorch.org`, `api.pexels.com`, `pixabay.com` and five more hosts setup downloads from (PyPI and its file host, the GitHub API, NuGet, Visual Studio downloads) are probed | Red (`NS-E105`) only when `github.com`, `pypi.org` or `files.pythonhosted.org` cannot be reached; any other unreachable host, Hugging Face, PyTorch, Pexels and Pixabay included, is a warning (an amber `NS-E105` row) and setup continues: with Hugging Face blocked, point Choices at a models folder or zip; a download that still cannot reach its site stops with `NS-E105` naming the host (§13 D28) |
 | Power | Scheduled task can wake the PC; sleep allowed, hibernate discouraged | Set task `WakeToRun`; warn if "wake timers" disabled (`NS-W107`) |
-| winget | `winget --version` works (App Installer present) | If missing: open the Microsoft Store App Installer page and the direct installer links from §21.1, pause, re-check (`NS-E111`) |
+| winget | `winget --version` works (App Installer present) | If missing: a warning (amber row), and only when FFmpeg or the Visual C++ runtime is also missing; setup downloads the pinned FFmpeg and Visual C++ runtime builds itself (pinned direct downloads, §21.1), with no page to open and no pause (§13 D27) |
 | Long paths | Registry `LongPathsEnabled` = 1 (model file names and job paths can exceed 260 chars) | Set it (needs admin) or warn and keep paths short (`NS-W112`) |
 
 **Blackwell:** PyTorch must be a **CUDA 12.8+ build (2.7+)**, installed from the cu128 (or newer) index URL.
 
 ### 1.3 Shipping and the first run (decision D1, §13)
 - **The bundle is the repository.** `dev\make_bundle.ps1` produces `Nightshift-<version>.zip`: the full codebase (code, tests, contracts, prompts, presets, docs, plans, `CLAUDE.md`, `uv.lock`), `INSTALL.cmd` at the root, `answers.example.json`, and `OPERATOR.md`. No models, no binaries, no venvs (§0 rule 1). It is uploaded to a **Google Drive folder**.
-- **The partner** extracts the zip to a folder of their choice (recommended `D:\NightShift`) and double-clicks `INSTALL.cmd`. That runs `installer\stage1.ps1` with execution policy bypassed for that process only, which installs tools, creates `NIGHTSHIFT_HOME` (`%LOCALAPPDATA%\Nightshift`) for models, venvs, config and outputs, records the repo path as `app_path` in `install_state.json`, and runs the wizard. Every model and tool is downloaded from pinned sources on that machine.
+- **The partner** extracts the zip to a folder of their choice (recommended `D:\NightShift`) and double-clicks `INSTALL.cmd`. That runs `installer\stage1.ps1` with execution policy bypassed for that process only, which installs tools, creates `NIGHTSHIFT_HOME` (by default `Nightshift` on the drive with the most free space, an SSD preferred; §5 `s01_questions`, §13 D29) for models, venvs, config and outputs, records the repo path as `app_path` in `install_state.json`, and runs the wizard. Every model and tool is downloaded from pinned sources on that machine.
 - Setup needs **zero decisions** when `answers.json` is present next to `INSTALL.cmd`; questions are asked only for missing answers.
 - At the end of setup, and on demand, **`ns doctor --bundle`** writes `%USERPROFILE%\Desktop\nightshift-diagnostics-<date>.zip` (logs, `install_state.json`, `runtime.json`, `verify-report.json`, `nvidia-smi` output, `pip freeze` per venv, the last 3 job directories without media) for upload to Drive if the developer is not at the machine.
 - **The codebase stays on the work machine as the development checkout.** After the first run, further work (hardware gates, tuning, prompt iteration, Slices 2+ if they were not finished) continues there with Claude Code against the real GPU. `ns update <zip>` exists for the case where fixes are shipped from elsewhere: it replaces the repo contents (keeping `.git`, `config`, and untracked data), re-syncs venvs from `uv.lock`, and re-runs `ns verify --quick`.
@@ -229,15 +231,15 @@ Work packages: **A** installer+launchers · **B** supervisor+tune+opencode · **
 
 **Stage 0 — `INSTALL.cmd`:** `powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0installer\stage1.ps1" -AppPath "%~dp0."` and pauses on exit so the window stays readable.
 
-**Stage 1 — `stage1.ps1`:** preflight (§1.2) → winget installs (Git, Windows Terminal, FFmpeg) → uv → Python 3.12 → create `NIGHTSHIFT_HOME` tree → bootstrap venv `venvs\studio` with `uv sync --locked --extra studio` from the repo → run `wizard.py [--answers <path>]`.
+**Stage 1 — `stage1.ps1`:** preflight (§1.2) → uv → Python 3.12 → Visual C++ runtime → setup server, whose tools step installs what is still missing (the runtime, FFmpeg, Windows Terminal: winget first, then a pinned direct download for the runtime and FFmpeg; Git is not installed, §13 D25) → create `NIGHTSHIFT_HOME` tree → bootstrap venv `venvs\studio` with `uv sync --locked --extra studio` from the repo → run `wizard.py [--answers <path>]`.
 
 **Unattended mode:** the installer looks for `answers.json` next to `INSTALL.cmd`, then in `%NIGHTSHIFT_HOME%\config\`. Every question in `s01_questions` is answered from it when present; missing keys are asked interactively. Schema: `contracts/schemas/answers.schema.json` (`home_path?, models_source?, llm_tier:"small"|"balanced"|"best"="small" (the schema default is the safe fallback; the installer preselects "balanced", or "small" under 32 GB RAM), llm_custom:{repo,file,size}|null, channel{display_name,niche,language,seed_keywords[]}, voice{mode,speaker|description|ref_audio_path+ref_text+rights_confirmed}, pexels_api_key?, pixabay_api_key?, masters_per_week, run_time, install_code:bool, allow_cpu:bool`). A template `installer/answers.example.json` ships in the Drive folder.
 
 **Stage 2 — `wizard.py`** (rich TUI; each step = `check()` / `run()` / `verify()`; every step writes its result to `install_state.json` so a crash or reboot resumes at the failed step):
 | Step | Does |
 |---|---|
-| `s00_welcome` | Shows A.2 text + the hardware check summary (incl. disk type, wake timers) |
-| `s01_questions` | **Home folder** for models, venvs, config and videos (default: `<drive with most free space, SSD preferred>\Nightshift`, must pass the 60 GB check; written to the user environment variable `NIGHTSHIFT_HOME`, so every later shortcut, task and shell sees it) · Channel (name, niche, language) · voice (preview 4 presets / design / clone, with a rights confirmation for clones) · Pexels + Pixabay keys (validated live, with links to get them, §21.6) · masters/week (default 1 for a new channel, §18.6) · run time (default 03:00) · install Nightshift Code? (default yes) |
+| `s00_welcome` | Console path only (the setup window has its own short welcome, §A.2): shows A.2 text + the hardware check summary (incl. disk type, wake timers) |
+| `s01_questions` | **Home folder** for models, venvs, config and videos (default: `<drive with most free space, SSD preferred>\Nightshift`, must pass the tier's free-space check, 60 GB Small / 74 GB Balanced / 81 GB Best, §1.2; written to the user environment variable `NIGHTSHIFT_HOME`, so every later shortcut, task and shell sees it) · Channel (name, niche, language) · voice (preview 4 presets / design / clone, with a rights confirmation for clones) · Pexels + Pixabay keys (both optional, at least one recommended; validated live when given, with links to get them, §21.6) · masters/week (default 1 for a new channel, §18.6) · run time (default 03:00) · install Nightshift Code? (default yes) |
 | `s02_download_bins` | llama.cpp + cudart, OpenCode (if chosen) |
 | `s03_download_models` | LLM GGUF (or the custom GGUF named in `llm_custom`, downloaded with no SHA256 and flagged `NS-W113`), embed GGUF, TTS GGUFs (CustomVoice, Base, tokenizer), faster-whisper `distil-large-v3`, YuNet, spaCy wheel (resumable, SHA256). **Local source mode:** if `answers.models_source` (or the wizard's "I have the model files" option) points at a folder, every file whose name and SHA256 match is copied from there instead of downloaded; the rest is downloaded. |
 | `s04_venvs` | `studio` (incl. spaCy, faster-whisper + cuBLAS/cuDNN wheels, OpenCV), `supervisor` (+ dashboard). No `tts` venv unless the PyTorch fallback is triggered (§2). |
@@ -254,7 +256,7 @@ Work packages: **A** installer+launchers · **B** supervisor+tune+opencode · **
 
 **`UNINSTALL.cmd` → `installer\uninstall.ps1`:** removes the scheduled task, desktop shortcuts, `venvs\`, `bin\` and the `NIGHTSHIFT_HOME` user env var; asks separately (default **No**) whether to delete `models\` and whether to delete `outbox\`, `data\`, `imports\`, `cache\`; prints what was kept and where. Idempotent. Also reachable from Dashboard → Settings → Uninstall (opens the console).
 
-**`ns update`** (three sources, same safety): `ns update --github [--channel stable|main]` asks the GitHub Releases API for the latest `v*` release (or the tip of `main` when `--channel main`), downloads `nightshift-app-<ver>.zip` + `.sha256` from https://github.com/AbdulrahmanAmer/nightshift/releases, verifies, and applies; `ns update <zip>` applies a file received by other means; `ns update --git` runs `git pull --ff-only` when the install is a clone. Apply = extract to `<app_path>.new\` → copy `.git\`, `config\` and untracked data over → `uv pip install -e` per venv → swap directories keeping `<app_path>.prev\` (`ns update --rollback`) → `ns verify --quick` → re-register shortcuts and the task → show the changelog section for the new version. `ns update --check` only reports current vs latest; the supervisor runs it weekly and posts a notification, never auto-installs. The Dashboard's Settings → Update button calls the same code. The UI (`ns_dashboard/static`) and prompts/presets update this way too, so quality work on them can ship any time without touching the engine or models.
+**`ns update`** (three sources, same safety): `ns update --github [--channel stable|main]` asks the GitHub Releases API for the latest `v*` release (or the tip of `main` when `--channel main`), downloads `nightshift-app-<ver>.zip` + `.sha256` from https://github.com/AbdulrahmanAmer/nightshift/releases, verifies, and applies; `ns update <zip>` applies a file received by other means; `ns update --git` runs `git pull --ff-only` when the install is a clone (an optional developer path: setup does not install Git, and without Git on `PATH` the command stops with `NS-E702` and a hint to use `--github` or an update zip, §13 D25). Apply = extract to `<app_path>.new\` → copy `.git\`, `config\` and untracked data over → `uv pip install -e` per venv → swap directories keeping `<app_path>.prev\` (`ns update --rollback`) → `ns verify --quick` → re-register shortcuts and the task → show the changelog section for the new version. `ns update --check` only reports current vs latest; the supervisor runs it weekly and posts a notification, never auto-installs. The Dashboard's Settings → Update button calls the same code. The UI (`ns_dashboard/static`) and prompts/presets update this way too, so quality work on them can ship any time without touching the engine or models.
 
 ---
 
@@ -486,6 +488,14 @@ Deferred to after Slice 9: `series_compilation`, API upload, non-English caption
 | D20 | Sentence splitting (§7.5) | Regex plus abbreviation list (`ns_common.textstats.split_sentences`), shared by TTS chunking and `pause_plan`; not spaCy | One splitter for budget, voice and captions, no model load. spaCy is used only for the policy NER and keyword lemmas |
 | D21 | Tenant grouping (§15.8) | Per job: consecutive stages of one job share one acquisition; a daily run does not batch stages across jobs | Simple and resumable per job (`stage_state.json`); the next job acquires the tenants again |
 | D22 | Setup window: waits, install folder, wording | Setup window as shipped (`docs/design/installer-ui.md` is the detail): P1 gets 60 s to answer `/api/ping` (a "still waiting" note after 15 s, exit 14 after 60 s); the WebView2 host started with `-Role setup` is ready when `run/apphost-setup.json` is written, within 20 s; the install folder is printable ASCII only (`NS-E117`; llama.cpp and qwentts.cpp open files via the ANSI code page) and Downloads/OneDrive folders are refused; the hardware check has 11 rows (incl. "Visual C++ runtime"); the window and its dialogs call the console "Nightshift setup" | Spec text now matches the shipped behaviour (owner decision taken: keep the code) |
+| D23 | Free disk space (§1.2, A.2, §5 s01, §21.5) | 60 GB with Small, 74 GB with Balanced (the recommended tier), 81 GB with Best (`installer/stage2/sysinfo.py` `required_free_gb`: 60 GB plus 0 / 14 / 21); a custom model needs 60 GB plus its size beyond 9 GB. The Checks screen (`stage1.ps1` `MinFreeGbHard`, `installer/stage2/web/preflight.py`) is red with `NS-E104` only below the hard minimum of 40 GB and amber from 40 to 60 GB; the tier-aware block comes on Choices (`answers_view.py`) and again in `s01_questions`. A.2 and `welcome.txt` say 60 GB, 74 GB with Balanced and 81 GB with Best, not ~40 GB | Owner decision 2026-11-09: the code's figures are the truth. The tier is chosen after the hardware check, so the Checks screen cannot yet know which amount applies |
+| D24 | Stock-footage keys (A.2, A.5, §5 s01, §21.6, J1 step 4) | Both keys are optional, at least one recommended (Pixabay; Pexels if the person already has a key). Setup finishes without any and shows a notice (`NO_KEY_NOTICE` in `s01_questions.py`, the window's "no-stock-key" notice); a video job then stops up front with `NS-E502` until a key is added in Settings > Stock footage keys. A key that is given is still checked live | Owner decision 2026-11-09: Pexels stopped issuing new keys, so requiring both would block installs for nothing |
+| D25 | Git (A.3 step 2, §5 Stage 1, §21.1, J1 step 3) | Git is not installed by setup; nothing in setup or at run time needs it (`installer/stage2/web/bootstrap.py` `TOOLS` has the Visual C++ runtime, FFmpeg and Windows Terminal). `ns update --git` is the optional developer path for a cloned install; without Git on `PATH` it stops with `NS-E702` and the hint in `ns_supervisor/update.py` (`NO_GIT_HINT`: install Git, or use `ns update --github` or an update zip) | Owner decision 2026-11-09: Git's machine-wide installer would add an administrator prompt, and `ns update --github` and the update zip cover everyone else |
+| D26 | Welcome text (A.2, J1 step 2) | The setup window opens on a short welcome of its own (`installer/ui/src/copy.ts` `welcome`: the plan, its size and the time). The full A.2 text, `installer/welcome.txt`, is printed by the headless console path as step `s00_welcome` (`-NoUi`, or an `answers.json` next to `INSTALL.cmd`). The machine check table is the window's Checks screen; red rows block | Owner decision 2026-11-09: keep the window's design; `tests/test_installer_files.py` pins A.2 to `welcome.txt` |
+| D27 | winget missing (§1.2, §21.1; `NS-E111`) | A missing winget is a warning (amber row), and only when FFmpeg or the Visual C++ runtime is also missing. Setup downloads the pinned FFmpeg and Visual C++ runtime builds itself (`manifest.json` `bins.ffmpeg`, `bins.vcredist`, SHA256 checked) as pinned direct downloads; no page is opened and setup does not pause. Windows Terminal is skipped when winget cannot install it. `NS-E111` stays in `errors.json` but is not raised | Owner decision 2026-11-09: setup must not depend on App Installer, and a pinned build is the same on every PC |
+| D28 | Network reachability (§1.2) | Only `github.com`, `pypi.org` and `files.pythonhosted.org` block setup (`NS-E105`, `stage1.ps1` `CriticalHosts`). An unreachable `huggingface.co`, `download.pytorch.org`, `api.pexels.com`, `pixabay.com` or any other probed host is a warning and setup continues; a download that still cannot reach its site stops with `NS-E105` naming the host | Owner decision 2026-11-09: Hugging Face can be bypassed with a models folder or zip (`models_source`), PyTorch is needed only for the fallback (§2) and the keys are optional (D24) |
+| D29 | Default install folder (§1.3, §5 s01, §21.5) | The default `NIGHTSHIFT_HOME` is `Nightshift` on the drive with the most free space, an SSD preferred (`Nightshift-home` when the folder holds someone else's files or the extracted program), not `%LOCALAPPDATA%\Nightshift`. A `home_path` in `answers.json`, or the home of an earlier install (the user variable), wins. `ns_common/paths.py` falls back to `%LOCALAPPDATA%\Nightshift` only when `NIGHTSHIFT_HOME` is unset | Owner decision 2026-11-09: the models need 60 to 81 GB and the system drive is often the smallest |
+| D30 | NVIDIA driver and CUDA (§1.2, §21.1, §21.2) | CUDA 12.4 or newer is enough: 12.4 to 12.x takes the CUDA 12.4 llama.cpp build, 13.0 or newer the 13.4 build. An RTX 50-series / RTX PRO card needs CUDA 13.0 (driver 580 or newer) and below that stops with `NS-E103`; so does any card below CUDA 12.4. A version that cannot be read is `NS-W115` and uses the 12.4 build (13.4 on an RTX 50-series card). Code: `installer/stage2/sysinfo.py` `llama_pair_for`, `s02_download_bins.py` `choose_pair`, `stage1.ps1` | Owner decision 2026-11-09: only the 13.4 build has Blackwell code; every other card runs the 12.4 build on the widest range of drivers |
 
 ---
 
@@ -526,7 +536,7 @@ Plan → draft → critique → revise; best-of-5 + judge for hooks and titles; 
 | Thing | Value |
 |---|---|
 | Product | `Nightshift` |
-| Home env var | `NIGHTSHIFT_HOME` (default `%LOCALAPPDATA%\Nightshift`) |
+| Home env var | `NIGHTSHIFT_HOME` (set by setup, default `Nightshift` on the drive with the most free space, §13 D29; `%LOCALAPPDATA%\Nightshift` only when the variable is unset) |
 | Python packages | `ns_common`, `ns_supervisor`, `ns_tts`, `ns_studio` |
 | Console scripts | `ns` (tune, verify, doctor, stop, gate), `studio` |
 | Logical models | `code`, `story` (aliases; same file in one-model mode) |
@@ -976,15 +986,17 @@ A single background thread drains `dashboard_jobs` (FIFO). Job kinds: `run` (stu
 
 Everything below is pinned in `manifest.json` (exact versions, URLs, SHA256) by `tools/resolve_manifest.py` in Slice 0 Task 14 and verified by `--check`. This section is the human-readable list; the manifest is the machine-readable truth. Nothing is bundled (§0 rule 1).
 
-### 21.1 System tools (`stage1.ps1`, via winget; direct links shown when winget is unavailable)
-| Tool | winget id | Direct fallback | Used for |
+### 21.1 System tools (`stage1.ps1` and the setup window's tools step, `installer/stage2/web/bootstrap.py`; winget where it works, otherwise pinned direct downloads)
+| Tool | winget id | Direct download | Used for |
 |---|---|---|---|
-| Git | `Git.Git` | https://git-scm.com/download/win | `ns update`, future `git pull` |
-| Windows Terminal | `Microsoft.WindowsTerminal` | Microsoft Store | Wizard and launchers (optional; falls back to conhost) |
-| FFmpeg (full build) | `Gyan.FFmpeg` | https://www.gyan.dev/ffmpeg/builds/ | Render, probe, loudness, captions (`libass` included in the full build) |
-| uv | manifest `bins.uv` zip from https://github.com/astral-sh/uv/releases | `winget install astral-sh.uv` | Python install + venvs; no system Python needed |
-| Python 3.12 | `uv python install 3.12` (uv-managed, under `%APPDATA%\uv\python`) | python.org 3.12 installer | All venvs |
-| NVIDIA driver | — | https://www.nvidia.com/Download/index.aspx | Must report CUDA ≥ 12.4 in `nvidia-smi`, and ≥ 13.0 (driver 580) for an RTX 50-series / RTX PRO card (`NS-E103`) |
+| Visual C++ runtime | `Microsoft.VCRedist.2015+.x64` | manifest `bins.vcredist` (`vc_redist.x64.exe`, SHA256 checked, run with a Windows permission prompt) | llama.cpp and the voice programs do not start without it |
+| Windows Terminal | `Microsoft.WindowsTerminal` | none (winget only; skipped when it cannot be installed) | Wizard and launchers (optional; falls back to conhost) |
+| FFmpeg (full build) | `Gyan.FFmpeg` | manifest `bins.ffmpeg` (static build from BtbN FFmpeg-Builds, SHA256 checked, unpacked and put on the user `PATH`) | Render, probe, loudness, captions (`libass` included in the full build) |
+| uv | `astral-sh.uv` (only when the direct download fails) | manifest `bins.uv` zip from https://github.com/astral-sh/uv/releases | Python install + venvs; no system Python needed |
+| Python 3.12 | — (`uv python install 3.12`, uv-managed, under `%APPDATA%\uv\python`) | none; when uv cannot fetch it, setup stops with `NS-E105` | All venvs |
+| NVIDIA driver | — | https://www.nvidia.com/Download/index.aspx | Must report CUDA ≥ 12.4 in `nvidia-smi` (12.4 to 12.x takes the CUDA 12.4 build of llama.cpp, 13.0 or newer the 13.4 build), and ≥ 13.0 (driver 580) for an RTX 50-series / RTX PRO card, which only runs the 13.4 build (`NS-E103`) |
+
+A missing winget is a warning, not a stop: setup fetches the pinned builds itself and shows no download pages to open (§13 D27). Git is not in this table: setup does not install it. Only the optional `ns update --git` needs it, and without it that command stops with `NS-E702` and says so (§13 D25); Git for Windows is at https://git-scm.com/download/win.
 
 ### 21.2 Binaries (`s02_download_bins`, into `%NIGHTSHIFT_HOME%\bin\`)
 | What | Source pattern | Notes |
@@ -993,7 +1005,7 @@ Everything below is pinned in `manifest.json` (exact versions, URLs, SHA256) by 
 | cudart for llama.cpp | `https://github.com/ggml-org/llama.cpp/releases/download/<tag>/cudart-llama-bin-win-cuda-12.4-x64.zip` (or `-13.4-`) | Same tag; DLLs next to `llama-server.exe` |
 | llama.cpp CPU build | `…/llama-<tag>-bin-win-cpu-x64.zip` | Only for `cpu-dev` and as the embed server fallback |
 | qwentts.cpp CUDA build | The upstream project publishes **no Windows CUDA binary** (verified 2026-11-01, `bins.qwentts = null`). Nightshift builds it in GitHub Actions (`.github/workflows/build-qwentts.yml`, pinned commit, CUDA ≥ 12.8 toolkit, sm_120) and attaches `qwentts-win-cuda-x64.zip` to its own Releases; the installer fetches it from there. Until that asset exists the installer uses the PyTorch fallback path (§2, `NS-W301`) | `bin\qwentts\` |
-| llama.cpp CUDA variants | Releases ship **CUDA 12.4 and 13.4** assets (no 12.8). Blackwell (RTX 50) uses the 13.4 pair (`llama_cuda13`, `cudart13`); older drivers get the 12.4 pair | `bin\llama\` |
+| llama.cpp CUDA variants | Releases ship **CUDA 12.4 and 13.4** assets (no 12.8). The pair follows the driver's CUDA version: 13.0 or newer takes the 13.4 pair (`llama_cuda13`, `cudart13`; the only one with Blackwell code, so an RTX 50-series card needs it), 12.4 to 12.x the 12.4 pair; an unreadable version gets the 12.4 pair (13.4 on an RTX 50-series card, `NS-W115`); §13 D30 | `bin\llama\` |
 | OpenCode (optional) | `https://github.com/anomalyco/opencode/releases/download/v<ver>/opencode-windows-x64.zip` | `bin\opencode\` |
 | YuNet face detector | `https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx` | `models\cv\yunet.onnx` (~230 KB) |
 
@@ -1040,9 +1052,11 @@ All venvs are created from the same repo checkout (`install_state.app_path`), so
   rejected\  logs\
 <app_path>\                   the extracted repo (code only), e.g. D:\NightShift
 ```
-Disk budget: models ~20 GB (Balanced) + venvs ~1.5 GB + working space ≥ 20 GB → the 60 GB check in §1.2 (74 GB with Balanced, 81 GB with Best); two-model mode +20 GB; PyTorch fallback +10 GB.
+Disk budget: models ~20 GB (Balanced) + venvs ~1.5 GB + working space ≥ 20 GB → the tier-aware check in §1.2 (60 GB Small, 74 GB Balanced, 81 GB Best); two-model mode +20 GB; PyTorch fallback +10 GB.
 
 ### 21.6 Accounts and keys the user needs
+Both stock-footage keys are optional and at least one is recommended; Pexels is not issuing new keys, so Pixabay is the one to get. Setup finishes without any and says so; a video job without a key stops up front with `NS-E502` until one is added in Settings > Stock footage keys (§13 D24).
+
 | Key | Where to get it | Stored |
 |---|---|---|
 | Pexels API key (free) | https://www.pexels.com/api/ → "Get Started" | Windows keyring `Nightshift/pexels_api_key` |
@@ -1061,9 +1075,9 @@ Each step names the component that serves it, so coverage can be checked against
 
 ### J1 — Install (day 0, ~1 hour mostly waiting)
 1. Owner downloads `Nightshift-<ver>.zip` (and, if provided, the `models\` folder) from the Drive link, extracts to `D:\NightShift`. **C10**
-2. Double-clicks `INSTALL.cmd`. A console opens with the welcome text (§A.2) and the **machine check table**: each row green/red with a fix hint; red blocks. **C1**
-3. Tools install (Git, FFmpeg, uv, Python) with "already present, skipped" lines. **C1**
-4. Questions (skipped when `answers.json` is present): home folder (default suggested with free space shown), channel name/niche/language, voice (plays 4 preset samples, pick one), Pexels/Pixabay keys (links shown; validated live), masters per week, run time, install Nightshift Code. **C1**
+2. Double-clicks `INSTALL.cmd`. The setup window opens on a short welcome (the plan, its size and the time; the headless console path prints the full welcome text of §A.2 instead), then its Checks screen shows the **machine check table**: each row green/amber/red with a fix hint; red blocks. **C1**
+3. Tools install (Visual C++ runtime, FFmpeg, Windows Terminal, uv, Python) with "already here" rows; setup does not install Git (only the optional `ns update --git` needs it). **C1**
+4. Questions (skipped when `answers.json` is present): home folder (default suggested with free space shown), channel name/niche/language, voice (plays 4 preset samples, pick one), Pexels/Pixabay keys (both optional; links shown; validated live when given), masters per week, run time, install Nightshift Code. **C1**
 5. Download screen: list of files with sizes, one progress bar per file and one overall, speed and ETA; "you can close this window and re-run INSTALL.cmd to resume". Files found in `models_source` are copied, not downloaded. **C1**
 6. Venvs created; tuning runs (1–3 min; shows tokens/s found); smoke test table (NVENC, TTS, whisper, LLM) with fallbacks noted. **C1 C2**
 7. Summary: where things live, the three shortcuts created, the nightly time, and "Next: open Nightshift Dashboard and press Run now to make your first video." A diagnostics zip is written to the Desktop. **C1**
