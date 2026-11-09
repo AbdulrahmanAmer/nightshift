@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 import installer.stage2.devmode as devmode
+from installer.stage2.downloader import site_wait_text
 from installer.stage2.web import (
     answers_view,
     appcopy,
@@ -97,9 +98,15 @@ RETRY_NOTES = {
 }
 
 
-def retry_note(reason: str, wait_s: float, attempt: int | None = None, of: int | None = None) -> str:
+def retry_note(
+    reason: str, wait_s: float, attempt: int | None = None, of: int | None = None, *,
+    host: str | None = None, status: int | None = None, left_s: float | None = None,
+) -> str:
     """The row note while a transfer waits to be retried: what happened, how long until the next try and which
-    try that is ("try 2 of 3"; ``attempt`` is the attempt that just failed)."""
+    try that is ("try 2 of 3"; ``attempt`` is the attempt that just failed). A download site's 5xx or 429
+    (reason ``site``) names the host and the status and the time left of the ten minutes."""
+    if reason == "site" and host and status:
+        return site_wait_text(host, status, wait_s, left_s or 0.0)
     text = RETRY_NOTES.get(reason, "The download stopped, trying again")
     text = f"{text} in {int(wait_s)} s" if wait_s >= 1 else text
     if attempt and of and attempt < of:
@@ -1176,9 +1183,16 @@ class SetupController:
         self.store.update(fn)
 
     def _set_failure(
-        self, step: str, code: str, message: str, hint: str, detail: str, optional: bool
+        self, step: str, code: str, message: str, hint: str, detail: str, optional: bool,
+        site: tuple[str, int] | None = None,
     ) -> None:
         title, what = preflight.copy_for(code, message, hint)
+        if site is not None:       # NS-E105 after the ten minutes: the Failed screen says whose side it is
+            host, status = site
+            title = f"{host} is not answering ({status})"
+            what = ("This is the download site's side (their side); nothing on this PC is wrong. "
+                    "Press Retry to wait for it again, or close setup and run INSTALL.cmd later: "
+                    "it continues where it stopped")
         self._attempts[step] = self._attempts.get(step, 0) + 1
         view = {
             "step": step, "stepTitle": labels.STEP_TITLES.get(step, step), "code": code, "title": title,
@@ -1608,6 +1622,10 @@ class SetupController:
             self.meter.drop(key)
         elif event == "retry":
             self.meter.drop(key)
+            if ev.get("reason") == "site":      # the console of the window keeps the waits too
+                self.log("warn", retry_note(
+                    "site", float(ev.get("waitS") or 0), host=str(ev.get("host") or ""),
+                    status=int(ev.get("status") or 0), left_s=float(ev.get("leftS") or 0)))
         outcome = ev.get("outcome")
 
         def fn(s: dict[str, Any]) -> None:
@@ -1634,7 +1652,9 @@ class SetupController:
                 row["speedBps"], row["etaS"] = None, None
                 row["note"] = retry_note(
                     str(ev.get("reason")), float(ev.get("waitS") or 0),
-                    int(ev.get("attempt") or 0), int(ev.get("of") or 0))
+                    int(ev.get("attempt") or 0), int(ev.get("of") or 0),
+                    host=str(ev.get("host") or "") or None, status=int(ev.get("status") or 0) or None,
+                    left_s=float(ev.get("leftS") or 0))
             elif event == "finish":
                 all_done = all(k in self._finished for k, _v in subs)
                 if outcome == "failed":
@@ -1693,8 +1713,10 @@ class SetupController:
 
     def _ev_failure(self, ev: dict[str, Any]) -> None:
         self._waiting_on = "engine"         # before the state shows "waiting": a quick Retry must find it
+        host, status = str(ev.get("host") or ""), int(ev.get("status") or 0)
+        site = (host, status) if ev.get("side") == "site" and host and status else None
         self._set_failure(str(ev.get("step")), str(ev.get("code")), str(ev.get("message", "")),
-                          str(ev.get("hint", "")), str(ev.get("detail", "")), bool(ev.get("optional")))
+                          str(ev.get("hint", "")), str(ev.get("detail", "")), bool(ev.get("optional")), site)
 
     def _verify_pending(self) -> None:
         rows = labels.VERIFY_PENDING_ROWS
