@@ -40,6 +40,7 @@ from ns_studio.text.budget import (
     MAX_CHAPTERS,
     MIN_CHAPTERS,
     SHORT_CLOSING_WORDS,
+    SHORT_MIN_CLOSING_WORDS,
 )
 from ns_studio.text.validators import check_banned, check_master_length, check_sentence_length, load_banned
 
@@ -76,15 +77,20 @@ def spoken_wpm(pacing: str, voice_speed: float = 1.0) -> float:
 
 
 def closing_reserve_s(wpm: float) -> float:
-    """Seconds a Short's bucket holds for its closing line: the gap before it and `SHORT_CLOSING_WORDS` words.
+    """Seconds a Short's bucket holds for its closing line: the gap before it and the middle of its words.
 
     Every Short gets a closing line of at most 15 words, counted in the bucket (spec 7.0, D16), also a Short
     made from the owner's own script: the owner's words are not shortened to make room, so the bucket of such
-    a Short is the body plus this reserve. The hooks stage then takes a line that fits (`fit_closing`).
+    a Short is the body plus this reserve. The reserve is sized the way `short_budget` sizes a Short: between
+    the shortest line the stage takes (`SHORT_MIN_CLOSING_WORDS`) and the longest it reserves for
+    (`SHORT_CLOSING_WORDS`), so either one leaves the Short inside QC's band, also a Short of 10 to 12 seconds
+    where a full 10-word reserve left the shortest line under the band. The hooks stage then takes a line that
+    fits (`fit_closing`), refusing one that leaves the Short under the band.
     """
     from ns_studio.media.captions import CLOSE_GAP_S  # lazy: the caption module is heavy for a pure planner
 
-    return CLOSE_GAP_S + SHORT_CLOSING_WORDS * (60.0 / wpm + PAUSE_PER_WORD_S)
+    words = (SHORT_CLOSING_WORDS + SHORT_MIN_CLOSING_WORDS) // 2
+    return CLOSE_GAP_S + words * (60.0 / wpm + PAUSE_PER_WORD_S)
 
 
 def _balanced(units: list[str], n: int) -> list[list[str]]:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import random
 import re
 from datetime import UTC, datetime
@@ -424,7 +425,9 @@ def fit_closing(
     model's line, the part's default and the other defaults that stays within the budget's own +12 % margin;
     when none does, the shortest default. With `must_fit` (a Short made from the owner's own script, whose
     words are never shortened) a line that still does not fit is no line: "" is returned, so a job planned
-    before its bucket held a closing line is not dropped by QC for the line it never had room for.
+    before its bucket held a closing line is not dropped by QC for the line it never had room for. The same
+    Short has no body to trim either, so a line must also not leave it UNDER the band (a one-word line after
+    a 10 s script is 12 % short of its bucket): the next candidate, a longer default, is taken instead.
     """
     from ns_studio.media.captions import CLOSE_GAP_S, HOOK_GAP_S
     from ns_studio.media.voice import hook_opens_body
@@ -434,9 +437,10 @@ def fit_closing(
     voiced_hook = 0 if hook_opens_body(hook, part["text"]) else word_count(hook)
     spent_s = (word_count(part["text"]) + voiced_hook) * per_word_s + HOOK_GAP_S + CLOSE_GAP_S
     room = int((bucket_s * (1 + SHORT_QC_MARGIN) - spent_s) / per_word_s)
+    least = math.ceil((bucket_s * (1 - SHORT_QC_MARGIN) - spent_s) / per_word_s) if must_fit else 0
     candidates = [closing, default_closing(int(part["n"]), parts_total), *DEFAULT_SHORT_CLOSINGS]
     for line in candidates:
-        if word_count(line) <= room:
+        if least <= word_count(line) <= room:
             return line
     return "" if must_fit else min(candidates[1:], key=word_count)
 

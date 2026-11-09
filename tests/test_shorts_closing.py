@@ -607,7 +607,10 @@ def test_a_regeneration_from_the_hooks_stage_voices_the_closing_line_again(
 
 
 def test_the_hooks_stage_keeps_an_owner_script_short_as_written_and_adds_only_the_closing(tmp_home: Path):
-    ctx = make_ctx(tmp_home)
+    from ns_studio.series.plain import plan_script
+
+    bucket = plan_script(OWNER_TINY, "shorts_only", ["standard"]).length_bucket  # what the job would hold
+    ctx = make_ctx(tmp_home, combo=make_combo(length_bucket=bucket, pacing="standard"))
     source = {"kind": "script_import", "owner_script": True, "script": "script.md"}
     ctx.write_json("script_source.json", source)
     owner_hook = S.split_sentences(OWNER_TINY)[0]
@@ -667,6 +670,77 @@ def test_a_longer_owner_short_made_before_the_closing_reserve_gets_its_closing_l
     ctx, names, run_job = _job_through_voice(tmp_home, monkeypatch, _owner_text(100), old_bucket=True)
     assert run_job(ctx) == names
     _assert_every_short_is_closed(ctx)
+
+
+def _owner_words(words: int, sentence: int = 10) -> str:
+    """An owner's script of exactly `words` words in sentences of `sentence` words (the last one shorter)."""
+    out, left = [], words
+    while left > 0:
+        n = min(sentence, left)
+        out.append(" ".join(["lamp"] * (n - 1) + ["glowed"]) + ".")
+        left -= n
+    return " ".join(out)
+
+
+# ---- break-it round 2: the low end of the band (26, 29 and 35 words), closing line short of the reserve ----
+
+
+@pytest.mark.parametrize("model_line", ["Follow for the next story.", "Follow for more.", "Follow."])
+@pytest.mark.parametrize("sentence", [6, 10])
+@pytest.mark.parametrize("words", [26, 29, 35])
+def test_a_ten_second_owner_short_with_its_closing_line_stays_inside_the_qc_band(
+    tmp_home: Path, monkeypatch: pytest.MonkeyPatch, words: int, sentence: int, model_line: str
+):
+    """The bucket holds a reserve for the closing line; the line a short script gets (5 words by default, 3 or
+    1 from the model) must not leave the Short under the band, or QC drops it (NS-W406) and an owner's job,
+    which has no restart stage for it, fails. Whenever a closing line is added it is in the manifest."""
+    script = _owner_words(words, sentence)
+    ctx, names, run_job = _job_through_voice(tmp_home, monkeypatch, script)
+    answer = {"hooks": ["A hook the model wrote."], "closing_line": model_line}
+    ctx.services.llm = FakeLlm(FIXTURES_LLM, overrides={"hook": answer})
+    assert run_job(ctx) == names
+    manifest = ctx.read_json("audio/manifest.json")
+    bucket = ctx.combo.length_bucket
+    assert bucket and ctx.file("audio/p1.txt").read_text(encoding="utf-8").split() == script.split()
+    if ctx.file("closings.json").exists():  # a closing line was added: it is voiced and the Short is in band
+        _assert_every_short_is_closed(ctx)
+    else:
+        assert "p1_close" not in manifest
+        assert duration_check(manifest["p1"]["seconds"], "short", bucket).passed
+    assert ctx.file("closings.json").exists()  # these scripts are long enough to carry a closing line
+
+
+@pytest.mark.parametrize("sentence", [4, 6, 10, 20])
+@pytest.mark.parametrize("words", range(24, 61, 2))
+def test_every_owner_short_length_from_ten_seconds_up_passes_qc_with_its_closing_line(
+    tmp_home: Path, words: int, sentence: int
+):
+    """The bucket and the closing line agree: for every script length from the 10 s minimum up, the shortest
+    line the stage takes (a 5-word default) and the longest the bucket reserves (10 words) both stay in
+    QC's band, at every pacing."""
+    from ns_common.pacing import PAUSE_PER_WORD_S
+    from ns_studio.series.plain import ScriptRefused, plan_script, spoken_wpm
+
+    for pacing in sorted(PACING_WPM):
+        try:
+            plan = plan_script(_owner_words(words, sentence), "shorts_only", [pacing])
+        except ScriptRefused:
+            continue  # under the 10 s minimum at this pace: no Short, so no closing line to size
+        wpm = spoken_wpm(plan.pacing)
+        for line_words in (SHORT_MIN_CLOSING_WORDS, S.SHORT_CLOSING_WORDS):
+            total = plan.seconds + CLOSE_GAP_S + line_words * (60.0 / wpm + PAUSE_PER_WORD_S)
+            check = duration_check(total, "short", plan.length_bucket)
+            assert check.passed, (words, pacing, line_words, total)
+
+
+def test_fit_closing_refuses_a_line_that_leaves_an_owner_short_under_the_band(tmp_home: Path):
+    """A one-word model line leaves a 26-word script (bucket about 15 s) under the band: an owner's Short
+    takes the default that fits instead; a shorts_only Short is sized by `short_budget` and keeps the line."""
+    ctx = make_ctx(tmp_home, combo=make_combo(length_bucket=15))
+    part = _part(1, _owner_words(26), hook="")
+    owner = S.fit_closing(ctx, part, "", "Follow.", 1, must_fit=True)
+    assert owner == S.DEFAULT_SHORT_CLOSINGS[0] and len(owner.split()) >= SHORT_MIN_CLOSING_WORDS
+    assert S.fit_closing(ctx, part, "", "Follow.", 1) == "Follow."
 
 
 def test_fit_closing_without_room_is_no_line_for_an_owner_short_and_a_default_otherwise(tmp_home: Path):
