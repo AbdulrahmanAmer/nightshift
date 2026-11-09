@@ -115,7 +115,7 @@ STDLIB_ONLY_NS_COMMON = {
     "ns_common.pathrules",
     "ns_common.uv", "ns_common.vcruntime", "ns_common.secret_file", "ns_common.secrets_names",
     "ns_common.singleton",
-    "ns_common.diskneed", "ns_common.errors",     # H-6: the space an install needs (diskneed raises NsError)
+    "ns_common.diskneed",     # H-6: the space an install needs (diskneed raises NsError)
     # F-10a: the settings copy `ns update` keeps, also made by the setup server when INSTALL.cmd updates an
     # install (appcopy.install_app). It lives beside the updater, not in ns_common (protected), and is
     # standard library plus ns_common.atomic like the rest of this list.
