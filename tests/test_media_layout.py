@@ -112,8 +112,10 @@ def test_caption_anchor_is_the_seam_or_the_preset_value() -> None:
     gaming = F.get_format("clip_gaming_facecam")
     assert L.caption_anchor_pct(gaming) == pytest.approx(100 * 640 / 1920)
     assert L.caption_anchor_pct(L.fit_facecam_height(gaming, 320, 180)) == pytest.approx(100 * 608 / 1920)
-    assert L.caption_anchor_pct(F.get_format("short_9x16")) == 72.0
+    assert L.caption_anchor_pct(F.get_format("clip_center_crop")) == 72.0
     assert L.caption_anchor_pct(F.get_format("clip_podcast_stacked")) == 75.0
+    # the Short preset no longer writes an anchor (the caption style's own place applies): the model default
+    assert not F.written(F.get_format("short_9x16"), "captions.anchor_y_pct")
 
 
 # ---------- graphs ----------

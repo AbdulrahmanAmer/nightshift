@@ -295,10 +295,10 @@ HEAD_BOXES = {
 
 
 @pytest.mark.parametrize("box_id", sorted(HEAD_BOXES))
-def test_h_box_cites_its_section_13_row_and_is_not_ticked(box_id):
-    """The box names the decision row (QA turns it into `evidence:`); P37 never ticks a box."""
+def test_h_box_cites_its_section_13_row_and_is_ticked_only_with_evidence(box_id):
+    """The box names the decision row. P37 never ticks a box; QA ticks it, only with `evidence:`."""
     line = box(box_id)
-    assert line.startswith("- [ ] ")
+    assert line.startswith("- [ ] ") or (line.startswith("- [x] ") and " evidence: " in line)
     assert f"section 13 {decision_id(HEAD_BOXES[box_id])}" in line
 
 

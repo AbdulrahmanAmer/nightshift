@@ -75,7 +75,7 @@ from ns_studio.text.stages_master import (
     span_text,
 )
 from ns_studio.text.stages_shorts import critic_numbers
-from ns_studio.text.story_profile import NORMAL, StoryProfile, profile_of
+from ns_studio.text.story_profile import NORMAL, PROFILE_FILE, StoryProfile, profile_of
 from ns_studio.text.validators import (
     Violation,
     check_banned,
@@ -1120,6 +1120,10 @@ class Workshop:
         """Create the job directory with `script_source.json` and `series_context.json`."""
         d = self.paths.job_dir(req.job_id)
         d.mkdir(parents=True, exist_ok=True)
+        if profile_of(self).mark is not None:  # the part's videos are test videos (H-8b)
+            write_text_atomic(
+                d / PROFILE_FILE, json.dumps({"profile": profile_of(self).mark}) + chr(10), newline=None
+            )
         source = {"kind": "script_import", **asdict(req)}
         write_text_atomic(
             d / "script_source.json", json.dumps(source, indent=2, ensure_ascii=False) + "\n", newline=None

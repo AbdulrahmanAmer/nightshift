@@ -17,7 +17,6 @@ from ns_studio.media.caption_plan import (
     AssOptions,
     emphasis_from_beats,
     mask_profanity_setting,
-    safe_zones_for,
 )
 from ns_studio.media.captions import first_event_start, shift_words
 from ns_studio.media.clips import (
@@ -29,12 +28,21 @@ from ns_studio.media.clips import (
     fallback_beat,
     make_lemmatizer,
 )
+from ns_studio.media.formats import footage_orientation, shot_range, style_for_format
+from ns_studio.media.job_formats import job_format, job_format_entry
 from ns_studio.media.master import ShortSpec, load_shorts, load_words
 from ns_studio.media.presets import FONTS_DIR, visual_treatment
-from ns_studio.media.render import FINAL_LUFS, FINAL_TP, VERTICAL, fit_caption_contrast, render_video
+from ns_studio.media.render import (
+    FINAL_LUFS,
+    FINAL_TP,
+    fit_caption_contrast,
+    render_video,
+    video_for_format,
+)
 from ns_studio.media.shotplan import beat_spans, plan_slots
 from ns_studio.media.transcribe import Word
 from ns_studio.stages import Tenant
+from ns_studio.text.story_profile import with_mark
 
 HOOK_GAP_S = 0.15
 CLOSE_GAP_S = 0.35
@@ -108,9 +116,14 @@ def derive_short(
     loudnorm(raw, audio, i=FINAL_LUFS, tp=FINAL_TP, log=ctx.log)
     total = ff.duration_s(audio)
 
-    style = spec.caption_style or ctx.combo.caption_style
-    opts = AssOptions(
-        variant="vertical", safe_zones=safe_zones_for("vertical"),
+    fmt = job_format(ctx, "short")
+    canvas = (fmt.canvas.w, fmt.canvas.h)
+    style, swapped = style_for_format(fmt, spec.caption_style or ctx.combo.caption_style)
+    if swapped:
+        ctx.log.info("caption_style_not_in_format", f"{style} is used: {fmt.id} limits the caption styles",
+                     format_id=fmt.id, item=item)
+    opts = AssOptions.for_format(
+        fmt,
         emphasis=emphasis_from_beats(plan, chapter=spec.chapter, shift=spec.sentence_start,
                                      last=spec.sentence_end),
         mask_profanity=mask_profanity_setting(ctx.channel),
@@ -127,19 +140,20 @@ def derive_short(
     treatment = visual_treatment(spec.visual_treatment or ctx.combo.visual_treatment)
     beats = short_beats(plan, spec, fallback_beat(ctx))
     spans = beat_spans(beats, words, total)
-    slots = plan_slots(spans, treatment.cut_range_s)
+    slots = plan_slots(spans, shot_range(treatment.cut_range_s, fmt))
     seed = clip_seed(ctx, item)
     shots = assign_clips(
         beats=beats, slots=slots, searcher=searcher, cache=cache, blocked=blocked, seed=seed,
-        wanted="portrait", used=used, extra_keywords=ctx.channel.seed_keywords,
+        wanted=footage_orientation(fmt), used=used, extra_keywords=ctx.channel.seed_keywords,
     )
     luma = fit_caption_contrast(
-        words=words, style=style, opts=opts, shots=shots, total_s=total, size=VERTICAL, ass_path=ass,
+        words=words, style=style, opts=opts, shots=shots, total_s=total, size=canvas, ass_path=ass,
         log=ctx.log,
     )
     out = render_video(
-        shots=shots, audio=audio, out=out_dir / "short.mp4", size=VERTICAL, treatment=treatment,
-        video=ctx.runtime.video, ass_path=ass, fonts_dir=FONTS_DIR, log=ctx.log,
+        shots=shots, audio=audio, out=out_dir / "short.mp4", size=canvas, treatment=treatment,
+        video=video_for_format(ctx.runtime.video, fmt), ass_path=ass, fonts_dir=FONTS_DIR, log=ctx.log,
+        fmt=fmt,
     )
     keys = [k for k in ("long", f"h{spec.k}", f"x{spec.k}") if k in captions_report]
     vals = [captions_report[k].get("drift_ms") for k in keys]
@@ -149,6 +163,8 @@ def derive_short(
         "shots": len(shots),
         "encoder": ctx.runtime.video.encoder, "drift_ms": drift,
         "first_caption_s": first_event_start(ass_text), "backdrop_luma": luma,
+        "format": fmt.id, "format_why": job_format_entry(ctx, "short").get("why"),
+        "canvas": list(canvas),
     }
     return report, {"total_s": total, "treatment": treatment.name, "shots": [s.to_json() for s in shots]}
 
@@ -187,4 +203,4 @@ class ShortsDeriveStage:
             ctx.log.info("render_done", job_id=ctx.job_id, item=item, duration_s=report[item]["duration_s"],
                          shots=report[item]["shots"])
         ctx.write_json("clips/shorts_shots.json", shots_out)
-        ctx.write_json("render/report.json", report)
+        ctx.write_json("render/report.json", with_mark(ctx, report))

@@ -1043,10 +1043,12 @@ def test_a_lock_that_cannot_be_taken_refuses_the_job_instead_of_running_it_unown
             pass
 
     monkeypatch.setattr(ownership, "FileLock", NoLockFiles)
+    monkeypatch.setattr(ownership, "OPEN_RETRY_WAITS_S", (0.0,) * 4)  # the tries stay five, the waits do not
     ran: list[str] = []
     with pytest.raises(StudioError) as ei, ownership.hold_job(paths, "j-9"):
         ran.append("ran")
     assert ran == [] and "read-only" in str(ei.value)
+    assert isinstance(ei.value, ownership.LockUnavailable)
 
 
 def test_the_card_lookup_does_not_treat_an_underscore_as_a_wildcard(tmp_home: Path) -> None:
