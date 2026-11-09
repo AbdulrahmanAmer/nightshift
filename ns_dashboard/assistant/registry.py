@@ -9,6 +9,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from ns_common.textstats import word_count
+
 if TYPE_CHECKING:
     from ns_dashboard.handlers import Dashboard
 
@@ -152,6 +154,9 @@ def render_confirm(spec: ToolSpec, args: dict[str, Any]) -> str:
         if "default" in prop:
             flat.setdefault(key, str(prop["default"]))
     flat.setdefault("source", args.get("url") or args.get("path") or "(default)")
+    if "script" in args:  # the card says how long the text is, never the text itself
+        flat.setdefault("words", str(word_count(str(args["script"]))))
+        flat.setdefault("format", "video")
     flat.setdefault("schedule_at", "now")
     return (spec.confirm_text or spec.description).format_map(flat)
 

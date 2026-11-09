@@ -117,15 +117,23 @@ class FakeRunAdapter:
         self.stages = stages or list(DEFAULT_RUN_STAGES)
         self.calls: list[tuple[str, str, int | None]] = []
         self.resumed: list[str] = []
+        self.scripts: list[tuple[str, str | None]] = []
+        self.last_stages: list[str] = []
 
     def run(
-        self, ctl: JobControl, channel: str, fmt: str, count: int | None, *, resume_job_id: str | None = None
+        self, ctl: JobControl, channel: str, fmt: str, count: int | None, *, resume_job_id: str | None = None,
+        script: str | None = None, script_title: str | None = None,
     ) -> list[str]:
         """Run the stages and register the outputs."""
         self.calls.append((channel, fmt, count))
+        stages = self.stages
+        if script:  # the owner's text replaces the stages that write the story
+            self.scripts.append((script, script_title))
+            stages = ["script_import", *[s for s in stages if s not in ("ideas", "story")]]
         if resume_job_id:
             self.resumed.append(resume_job_id)
-        for _ in ctl.stages(self.stages):
+        self.last_stages = list(stages)
+        for _ in ctl.stages(stages):
             pass
         job_id = new_job_id(channel)
         ids: list[str] = []

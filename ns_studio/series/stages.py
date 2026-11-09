@@ -5,6 +5,11 @@ Replaces M1-M4 for series parts: it reads the owner-approved `script.md` and `sh
 `shorts_plan.json` in the shapes C5's master stages produce, so everything from `seo_long` on runs unchanged.
 The files are read when the stage runs, so a hand edit made after `produce` is used; re-running a finished
 job needs `force` (the stage hash only covers `script_source.json`).
+
+A story the owner typed or pasted (`JobRunRequest.script`) takes the same road: `jobs.make_script_job` writes
+it as `script.md` into the job folder next to a `script_source.json` that names it. For a Short
+(`shorts_only`) the stage writes only what the Shorts pipeline reads (`idea.json` and `story.json` with the
+plain text), so `split`, `hooks` and everything after run unchanged.
 """
 
 from __future__ import annotations
@@ -22,8 +27,11 @@ from ns_studio.text.budget import PACING_WPM
 from ns_studio.text.stages_shorts import now_iso
 
 
-def _read(path: str, what: str) -> str:
+def _read(path: str, what: str, base: Path | None = None) -> str:
+    """Text of a source file; a relative `path` is looked up in the job folder (`base`)."""
     p = Path(path)
+    if base is not None and not p.is_absolute():
+        p = base / p
     if not p.is_file():
         raise NsError("NS-E303", f"script_import: {what} not found at {p}")
     return read_text(p)
@@ -47,7 +55,7 @@ class ScriptImportStage:
     def run(self, ctx: JobContext) -> None:
         """Write the master artifacts from `script_source.json`; NS-E303 when a file is missing or invalid."""
         src: dict[str, Any] = ctx.read_json("script_source.json")
-        script = parse_script(_read(src["script"], "script"))
+        script = parse_script(_read(src["script"], "script", ctx.job_dir))
         shorts = [parse_short(_read(p, "short file")) for p in src.get("shorts", [])]
         concept = parse_concept(_read(src["concept"], "concept")) if src.get("concept") else None
         wpm = PACING_WPM.get(ctx.combo.pacing, 155)
@@ -76,6 +84,15 @@ class ScriptImportStage:
                 now_iso(),
             ),
         )
+        if ctx.fmt == "shorts_only":  # no chapters in the Shorts pipeline: `split` cuts this text into Shorts
+            ctx.write_json("idea.json", art.idea)
+            ctx.write_json(
+                "story.json",
+                {"text": full_text, "word_count": total_words, "revisions": 0,
+                 "critic_avg": script.critic_avg},
+            )
+            ctx.log.info("script_import", job_id=ctx.job_id, words=total_words, shorts=0)
+            return
         ctx.write_json("idea.json", art.idea)
         ctx.write_json("plan.json", art.plan)
         ctx.write_json("plan_meta.json", art.plan_meta)

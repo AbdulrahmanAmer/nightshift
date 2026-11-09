@@ -13,14 +13,17 @@ from typing import Any
 
 from ns_common.errors import NsError
 from ns_common.models import Idea, Plan, PlanChapter, ShortsPlanItem, Story
-from ns_common.textstats import word_count
+from ns_common.textstats import split_sentences, word_count
 from ns_studio.series.store import (
+    _HEAD,
     CLOSING_MAX_WORDS,
     HOOK_MAX_WORDS,
     ConceptDoc,
     ScriptDoc,
     ShortDoc,
+    join_front_matter,
     resolve_span,
+    split_front_matter,
 )
 from ns_studio.text.stages_master import build_chapter
 
@@ -130,3 +133,61 @@ def build_artifacts(
     return PartArtifacts(
         story=story, plan=plan, plan_meta=plan_meta, idea=_idea(concept, script), shorts_plan=items
     )
+
+
+# --- a script typed or pasted as plain text (JobRunRequest.script) ---------------------------------
+
+PLAIN_CHAPTER_WORDS = 700  # a long video from plain text gets about one chapter per this many words
+PLAIN_MAX_CHAPTERS = 7
+TITLE_MAX_CHARS = 60
+
+
+def _balanced(units: list[str], n: int) -> list[list[str]]:
+    """Cut `units` into `n` consecutive groups of about the same number of words (none empty)."""
+    words = [word_count(u) for u in units]
+    total = max(1, sum(words))
+    groups: list[list[str]] = [[]]
+    seen = 0
+    for i, (unit, w) in enumerate(zip(units, words, strict=True)):
+        groups_left = n - len(groups)
+        must_split = len(units) - i <= groups_left
+        past_boundary = seen + w / 2 > total * len(groups) / n
+        if groups[-1] and groups_left > 0 and (must_split or past_boundary):
+            groups.append([])
+        groups[-1].append(unit)
+        seen += w
+    return groups
+
+
+def script_markdown(text: str, title: str | None, *, chaptered: bool) -> str:
+    """The `script.md` for a story the owner wrote as plain text, so `script_import` reads it like a part.
+
+    A text that already has `## 1. Title` chapter headings (and optional front-matter) is kept as it is. Plain
+    text becomes one chapter for a Short; for a long video it is cut into chapters of about
+    `PLAIN_CHAPTER_WORDS` words at paragraph ends (at sentence ends when it has too few paragraphs), because
+    the long video's chapter cards, cliff lines and Shorts selection work per chapter. The title is `title`,
+    else the front-matter title, else a leading `# Heading` line, else the first words of the text.
+    """
+    text = text.replace("\r\n", "\n").strip()
+    meta, body = split_front_matter(text)
+    body = body.strip()
+    lead = re.match(r"#[ \t]+(.+?)[ \t]*\n", body + "\n")
+    if lead and not _HEAD.search(body):
+        body = body[lead.end() :].strip()
+    named = (title or "").strip() or str(meta.get("title") or "").strip() or (lead.group(1) if lead else "")
+    if not named:
+        named = " ".join(body.split()[:8]).rstrip(".,;:!?") or "Untitled"
+    named = named[:TITLE_MAX_CHARS].rstrip()
+    if _HEAD.search(body):
+        return join_front_matter({**meta, "title": named}, body)
+    paragraphs = [p.strip() for p in re.split(r"\n\s*\n", body) if p.strip()]
+    n = 1
+    if chaptered:
+        n = max(1, min(PLAIN_MAX_CHAPTERS, round(word_count(body) / PLAIN_CHAPTER_WORDS)))
+    units = paragraphs if len(paragraphs) >= n else split_sentences(body)
+    groups = _balanced(units, min(n, len(units)))
+    blocks = [
+        f"## {i}. {named if len(groups) == 1 else f'Part {i}'}\n\n" + "\n\n".join(g)
+        for i, g in enumerate(groups, start=1)
+    ]
+    return join_front_matter({"part": 1, "title": named}, "\n\n".join(blocks))

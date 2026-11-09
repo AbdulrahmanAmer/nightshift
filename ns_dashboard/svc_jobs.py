@@ -8,10 +8,14 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, BinaryIO
 
+from pydantic import ValidationError
+
 from ns_common.db import new_job_id
 from ns_common.devmode import is_dev
+from ns_common.models import JobRunRequest
 from ns_common.paths import Paths
 from ns_common.secrets_names import SHORT_NAMES
+from ns_common.textstats import script_problem
 from ns_dashboard.adapters import Adapters
 from ns_dashboard.common import KNOWN_FORMATS, now_iso, offered_formats
 from ns_dashboard.errors import AdapterUnavailable, ApiError
@@ -75,6 +79,12 @@ def build_handlers(adapters: Adapters, paths: Paths | None = None) -> dict[str, 
                 ctl, str(p["channel"]), str(p["format"]), p.get("count"), resume_job_id=again
             )
             return {"output_ids": ids, "resumed": p.get("resume_job_id"), **ctl.extras}
+        if p.get("script"):  # the owner's own story text: one video made from it, the model writes nothing
+            ids = adapters.run.run(
+                ctl, str(p["channel"]), str(p["format"]), 1,
+                script=str(p["script"]), script_title=p.get("script_title"),
+            )
+            return {"output_ids": ids, **ctl.extras}
         ids = adapters.run.run(ctl, str(p["channel"]), str(p["format"]), p.get("count"))
         return {"output_ids": ids, **ctl.extras}
 
@@ -264,9 +274,33 @@ class JobsService:
             raise ApiError(422, "invalid_options", f"Unknown video type '{fmt}'.")
         count = body.get("count")
         n = _int(body, "count", 1, 1, 20) if count else None
-        self._require_footage_key()
         params: dict[str, Any] = {"channel": slug, "format": fmt, "count": n}
+        if body.get("script") is not None:
+            params.update(self._script_params(body, fmt, n))
+        self._require_footage_key()
         return self._enqueue("run", slug, params, self._schedule(body))
+
+    @staticmethod
+    def _script_params(body: dict[str, Any], fmt: str, count: int | None) -> dict[str, Any]:
+        """The story text of `JobRunRequest` (`script`, `script_title`), checked for a Short or a long video.
+
+        `JobRunRequest` is the one place that knows the length limits and the one-video rule.
+        """
+        if fmt not in ("shorts_only", "master_first"):
+            raise ApiError(422, "invalid_options", "A script becomes a Short or a long video, not that type.")
+        try:
+            req = JobRunRequest(
+                channel=str(body.get("channel") or ""), format=fmt, count=count,
+                script=body.get("script"), script_title=body.get("script_title"),
+            )
+        except ValidationError as e:
+            first = e.errors()[0]
+            msg = str(first.get("msg", "")).removeprefix("Value error, ") or "That script cannot be used."
+            raise ApiError(422, "invalid_options", msg) from e
+        problem = script_problem(str(req.script), fmt)
+        if problem:
+            raise ApiError(422, "invalid_options", problem)
+        return {"script": req.script, "script_title": req.script_title, "count": 1}
 
     def create_resume(self, job_id: str) -> dict[str, Any]:
         """Queue the failed story job `job_id` again from the stage where it stopped (same studio job).

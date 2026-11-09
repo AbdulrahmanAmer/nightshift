@@ -100,24 +100,28 @@ def run_story_jobs(
     paths: Paths | None = None,
     seen: list[str] | None = None,
     resume_job_id: str | None = None,
+    script: str | None = None,
+    script_title: str | None = None,
 ) -> list[str]:
     """`studio run --channel <channel> --format <fmt> --count <count>`: returns the new output ids.
 
     Runs `ns_studio.policy.regen.run_job_guarded` (the orchestrator plus the regenerate-once policy) on
     each job. `seen` collects the studio job ids as they are created. With `resume_job_id` no job is created:
     that earlier job (the one that failed) is opened again and runs from its failed stage (`studio run
-    --resume`), keeping the story, the voice and everything else it had finished.
+    --resume`), keeping the story, the voice and everything else it had finished. With `script` (the owner's
+    story text, `studio run --script`) one job is made from that text instead of one the model writes
+    (`jobs.make_script_job`).
     """
     from ns_studio import jobs
     from ns_studio.channels.crud import get_channel
-    from ns_studio.orchestrator import plan_job
+    from ns_studio.orchestrator import SCRIPT_FORMATS, plan_format, plan_job
     from ns_studio.policy.regen import run_job_guarded
 
     env = open_env(fake, acquirer, paths=paths)
     if resume_job_id:
         ctx = jobs.load_job(env, resume_job_id)
         jobs.prepare_plan(ctx.fmt, None)
-        names = [s.name for s in plan_job(ctx.fmt)]
+        names = [s.name for s in plan_job(plan_format(ctx.fmt, ctx.job_dir))]
         if seen is not None:
             seen.append(ctx.job_id)
         run_job_guarded(watched(ctx, names, 0, 1, report), resume=True)
@@ -126,10 +130,16 @@ def run_story_jobs(
     jobs.prepare_plan(fmt, None)
     names = [s.name for s in plan_job(fmt)]
     n = max(1, int(count or 1))
+    if script is not None:
+        n = 1
+        names = [s.name for s in plan_job(SCRIPT_FORMATS.get(fmt, fmt))]
     rng = random.Random()
     out: list[str] = []
     for i in range(n):
-        ctx = jobs.make_job(env, ch, fmt, rng=rng)
+        if script is not None:
+            ctx = jobs.make_script_job(env, ch, fmt, script, script_title, rng=rng)
+        else:
+            ctx = jobs.make_job(env, ch, fmt, rng=rng)
         if seen is not None:
             seen.append(ctx.job_id)
         run_job_guarded(watched(ctx, names, i, n, report))

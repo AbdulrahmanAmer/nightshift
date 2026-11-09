@@ -5,7 +5,7 @@ are kept between runs and maintained by the verification loop (docs/VERIFICATION
 starts as `U`; `tests/test_verification_inventory.py` fails when the code has an item this
 file does not list.
 
-Items: 256 (V-dev 115, V-ci 52, V-gpu 0, U 89).
+Items: 257 (V-dev 115, V-ci 52, V-gpu 0, U 90).
 
 | kind | id | status | evidence |
 |---|---|---|---|
@@ -205,6 +205,7 @@ Items: 256 (V-dev 115, V-ci 52, V-gpu 0, U 89).
 | assistant-tool | `get_story` | U |  |
 | assistant-tool | `open_folder` | U |  |
 | assistant-tool | `start_story_job` | U |  |
+| assistant-tool | `start_script_job` | U |  |
 | assistant-tool | `start_clip_job` | U |  |
 | assistant-tool | `tonight_plan` | V-ci | tests/test_assistant_composite.py |
 | assistant-tool | `list_jobs` | U |  |

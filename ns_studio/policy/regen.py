@@ -13,7 +13,7 @@ from pathlib import Path
 
 from ns_common.errors import NsError
 from ns_studio.context import JobContext
-from ns_studio.orchestrator import plan_job, run_job
+from ns_studio.orchestrator import plan_format, plan_job, run_job
 from ns_studio.policy.base import POLICY_CODES
 from ns_studio.stages import StageState
 
@@ -22,8 +22,10 @@ MAX_REGENERATIONS = 1
 
 # Candidate restart stages per code, earliest sensible first; the first one present in the plan wins. Each
 # tuple names the stages of every plan: shorts_only (`draft`, `hooks`, `seo`), master_first (`chapters_draft`,
-# `shorts_select`, `seo_long`, `seo_shorts`) and master_from_script (`seo_long`, `seo_shorts`). A name that is
-# in no plan sends the job back to `ideas`: an hour of LLM work for one disliked tag.
+# `shorts_select`, `seo_long`, `seo_shorts`), master_from_script (`seo_long`, `seo_shorts`) and
+# shorts_from_script (`hooks`, `seo`). A name that is in no plan sends the job back to the first stage of its
+# plan: an hour of LLM work for one disliked tag, or for a script job the cheap `script_import` (the text is
+# the owner's, so it is never rewritten).
 REGEN_FROM: dict[str, tuple[str, ...]] = {
     "NS-E601": ("ideas",),
     "NS-E602": ("draft", "chapters_draft", "ideas"),
@@ -161,7 +163,7 @@ def run_job_guarded(ctx: JobContext, *, resume: bool = True) -> list[str]:
                 raise
             att["regenerations"] = n + 1
             ctx.write_json(ATTEMPTS_FILE, att)
-            names = [s.name for s in plan_job(ctx.fmt)]
+            names = [s.name for s in plan_job(plan_format(ctx.fmt, ctx.job_dir))]
             start = earliest_stage(e.code, names)
             ctx.log.warn("policy_regenerate", code=e.code, restart_at=start, job_id=ctx.job_id)
             only = REGEN_ONLY.get(e.code)

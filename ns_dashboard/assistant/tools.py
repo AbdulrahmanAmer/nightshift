@@ -14,6 +14,8 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+from ns_common.models import SCRIPT_MAX_CHARS, SCRIPT_MIN_CHARS
+from ns_common.textstats import script_problem
 from ns_dashboard.assistant import composite, orientation
 from ns_dashboard.assistant.registry import TOPICS, Registry, ToolCall, ToolContext, ToolDef, ToolSpec, obj
 from ns_dashboard.common import offered_formats
@@ -134,6 +136,20 @@ def _start_clip(c: ToolContext, a: dict[str, Any]) -> Any:
     return c.dash.jobs.create_clip({**a, "rights_confirmed": True})
 
 
+def _script_ok(args: dict[str, Any]) -> str | None:
+    """Refuse a script the run would refuse, before the owner is asked to confirm it."""
+    text = str(args.get("script") or "").strip()
+    if len(text) < SCRIPT_MIN_CHARS:
+        return f"The script is too short: it needs at least {SCRIPT_MIN_CHARS} characters, it has {len(text)}."
+    return script_problem(text, str(args.get("format") or "")) if args.get("format") else None
+
+
+def _start_script(c: ToolContext, a: dict[str, Any]) -> Any:
+    body = {"channel": a["channel"], "format": a.get("format"), "script": a["script"],
+            "script_title": a.get("title"), "count": 1}
+    return c.dash.jobs.create_run(body)
+
+
 def _formats_brief(c: ToolContext, _a: dict[str, Any]) -> Any:
     keys = ("id", "name", "kind", "canvas", "source", "valid")
     return [{k: f[k] for k in keys} for f in c.dash.library.list_formats()]
@@ -222,6 +238,14 @@ def _tools() -> list[ToolDef]:
                   "schedule_at": _s("start later: local date and time such as 2026-11-03T02:00; leave out to start now")},
            required=["channel"], side=True,
            confirm="Make a new {format} for {channel}, start: {schedule_at}. This uses the GPU for a while."),
+        _t("start_script_job", "create", "Make one video from a story the owner wrote or pasted: the script is narrated as written, nothing is invented.",
+           _start_script,
+           props={"channel": _s("channel slug"),
+                  "format": _s("what to make: a Short or a long video; leave out for the channel's own type", enum=["shorts_only", "master_first"]),
+                  "script": _s("the full story text to narrate, 200 to 30000 characters", maxLength=SCRIPT_MAX_CHARS),
+                  "title": _s("working title; leave out to use the first words")},
+           required=["channel", "script"], side=True, precheck=_script_ok,
+           confirm="Make a {format} for {channel} from the script you gave ({words} words). This uses the GPU for a while."),
         _t("start_clip_job", "create", "Cut clips from one of the owner's own videos: a file on this PC or a web link.",
            _start_clip, route=("POST", "/api/jobs/clip"),
            props={"path": _s("full path of the video file on this PC"), "url": _s("http or https link to the video"),

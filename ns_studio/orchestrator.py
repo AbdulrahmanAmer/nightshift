@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from contextlib import contextmanager
 from itertools import groupby
+from pathlib import Path
 
 from ns_common.errors import NsError
 from ns_studio.context import JobContext
@@ -67,18 +68,47 @@ MASTER_FROM_SCRIPT_STAGES: tuple[str, ...] = (
     "qc",
     "outbox",
 )
+# A Short made from a script the owner wrote (JobRunRequest.script): `script_import` replaces ideas, plan,
+# draft and critic_revise; chosen by `plan_format` when a shorts_only job folder holds `script_source.json`.
+SHORTS_FROM_SCRIPT_STAGES: tuple[str, ...] = (
+    "script_import",
+    "split",
+    "hooks",
+    "seo",
+    "visual_plan",
+    "voice",
+    "captions",
+    "clips",
+    "render",
+    "qc",
+    "outbox",
+)
 FORMAT_STAGES: dict[str, list[str]] = {
     "shorts_only": list(SHORTS_ONLY_STAGES),
     "master_first": list(MASTER_FIRST_STAGES),
     "master_from_script": list(MASTER_FROM_SCRIPT_STAGES),
+    "shorts_from_script": list(SHORTS_FROM_SCRIPT_STAGES),
     "series_compilation": [],
     "clip": [],
 }
+# The plan a job of this format runs when its story comes from a script file (`plan_format`).
+SCRIPT_FORMATS: dict[str, str] = {"master_first": "master_from_script", "shorts_only": "shorts_from_script"}
 
 
 def _tenant_of(stage: Stage) -> Tenant:
     """GPU tenant of `stage` (grouping key)."""
     return stage.tenant
+
+
+def plan_format(fmt: str, job_dir: Path) -> str:
+    """The `FORMAT_STAGES` key a job runs: its format, or the script variant when it has a source script.
+
+    A job directory that holds `script_source.json` (a series part, or a story the owner wrote) skips the
+    stages that write the story.
+    """
+    if (job_dir / "script_source.json").exists():
+        return SCRIPT_FORMATS.get(fmt, fmt)
+    return fmt
 
 
 def plan_job(fmt: str) -> list[Stage]:
@@ -115,10 +145,7 @@ def run_job(ctx: JobContext, *, resume: bool = True, dry_run: bool = False) -> l
 
     Consecutive stages with the same GPU tenant share one acquisition; `dry_run` only lists the plan.
     """
-    fmt = ctx.fmt
-    if fmt == "master_first" and ctx.file("script_source.json").exists():
-        fmt = "master_from_script"
-    stages = plan_job(fmt)
+    stages = plan_job(plan_format(ctx.fmt, ctx.job_dir))
     if dry_run:
         return [s.name for s in stages]
     owner = f"studio:{ctx.job_id}"
