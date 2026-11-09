@@ -56,7 +56,15 @@ def _status_row(feature_start: str) -> list[str]:
 
 
 def _box(box_id: str) -> str:
-    return next(ln for ln in STATUS.splitlines() if ln.startswith((f"- [ ] {box_id} ", f"- [x] {box_id} ")))
+    line = next(ln for ln in STATUS.splitlines() if ln.startswith((f"- [ ] {box_id} ", f"- [x] {box_id} ")))
+    assert line.startswith("- [ ] ") or " evidence: " in line, f"{box_id} is ticked without evidence"
+    if box_id in STAYS_OPEN:
+        assert line.startswith("- [ ] "), f"{box_id} must stay open: the remove_fillers crash (D-38) is still on main"
+    return line
+
+
+# Open until the remove_fillers crash is fixed (the strict xfail below; D-38).
+STAYS_OPEN = ("F-H95", "F-H127")
 
 
 FACECAM_QUESTION = "Facecam candidate limits"
