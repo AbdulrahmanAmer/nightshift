@@ -305,12 +305,23 @@ made by a Nightshift that already has this feature (0.1.15 or later). An update 
 `ns update <zip>`, `ns update --github` or Settings > Update (for example 0.1.14 going to 0.1.15) runs the older
 updater, which saves no copy; so the new version saves it itself the first time it starts, before it changes
 any settings file (it sees `<folder>.prev` with no copy that belongs to it). If that copy cannot be saved (a full
-disk, a locked file), Nightshift still starts and writes one line about it in `logs\first_start-<date>.jsonl`.
-Whenever `ns update --rollback` has no usable copy (none was saved, or it is damaged), it keeps your settings files
-as they are but takes out of them every setting the older version does not know, and names each one (for example
-`runtime.json (tiny_story)`), so the older version can always start. And from 0.1.15 on, a setting that a newer
-version added is written to its file only when you use it: an install that never used a new feature keeps files
-the older version reads as its own.
+disk, a locked file, or a copy of another version is in its place), Nightshift still starts and writes one line
+about it in `logs\first_start-<date>.jsonl`. Whenever `ns update --rollback` has no usable copy (none was saved,
+or it is damaged), it keeps your settings files as they are but takes out of them every setting the older version
+does not know, and names each one (for example `runtime.json (tiny_story)`), so the older version can always
+start. And from 0.1.15 on, a setting that a newer version added is written to its file only when you use it: an
+install that never used a new feature keeps files the older version reads as its own.
+A copy is replaced only together with the program it belongs to (an update replaces the
+program backup and its copy together, and a rollback swaps the pair). Two things are never done to a copy: it is never overwritten with settings
+that are not its program's, and a whole copy of a version that is not installed (it may be the only copy of that
+version's settings) is never deleted. If the settings could not be put back by a rollback (a file was in use), the
+copy stays for the next `ns update --rollback`, and the next update keeps it as it is. If an update finds a whole
+copy of a version that is neither the one running nor the program backup (for example after you deleted the
+`<folder>.prev` folder), it goes on, leaves that copy where it is, keeps no copy for its own program backup, and
+says whose copy it is and where; move `<folder>.prev-config.zip` out of the folder (or delete it) before the next
+update if you want a copy kept again. A damaged copy is replaced and the result says so. A copy that cannot be read
+at all (a program holds it open) stops the update before anything changes (`NS-E702`, or `NS-E115` from
+`INSTALL.cmd`); close the program and run the update again.
 
 ## Move your settings to another PC
 

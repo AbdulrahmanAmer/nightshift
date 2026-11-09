@@ -111,7 +111,7 @@ def deferred_script(home: Path, wait_pids: list[int], local_root: Path | None = 
     # the program folder is a copy of the zip (setup copies it to <home>/app): it goes with the programs
     # (app.prev-config.zip: the settings copy `ns update` keeps beside the program backup)
     targets = [home / "bin", home / "run", home / "app", home / "app.new", home / "app.prev"]
-    targets += [home / "app.prev-config.zip"]
+    targets += [home / "app.prev-config.zip", home / "app.prev-config.zip.unrestored"]
     if local_root is not None:
         targets += [local_root / "browser", local_root / "webview2"]
     listed = ", ".join(f"'{ps_quote(str(t))}'" for t in targets)

@@ -22,7 +22,18 @@ gets back exactly what the newer version had, including what the owner changed a
 Who makes the copy: `ns update` (`taken_by` update), INSTALL.cmd's setup window (installer), a rollback (the
 copy for going forward again), and since F-10c the first start of a version that an OLDER updater installed
 (first-start, `ns_common.first_start`): 0.1.14's `ns update` takes no copy, so the new version takes it
-itself before it changes any settings file.
+itself before it changes any settings file. The first start follows the same rules as the updater below.
+
+A copy that reads back complete is written over only together with its own program (an update replacing
+`<app>.prev`, a rollback that has just put it back), with one more case: a copy that belongs to the program
+leaving `<app>` is replaced too, UNLESS a rollback recorded that its restore never finished (a marker beside
+the zip, `mark_unrestored`: the live files are then a newer version's, and saving them over it under the
+older program's name would make the next rollback "restore" the wrong files). A copy of any other program may
+be the only copy of that program's settings, so an update leaves it where it is, goes on without keeping a
+copy for its own program backup, and says whose copy it is and where (`before_update`); only a missing or
+damaged one may be replaced, and the result says so. A fingerprint alone proves nothing about a restore: a
+normal rollback, or an older updater that ignores the zip, also leaves a copy that carries the fingerprint of
+the program now in `<app>`.
 
 Standard library plus `ns_common.atomic`, so the installer's bare Python can use it (`appcopy.install_app`).
 It lives in `ns_common` (F-10c; it was `ns_supervisor/config_snapshot.py` in F-10a) because every process
@@ -43,6 +54,7 @@ from pathlib import Path, PurePosixPath
 from ns_common.atomic import read_bytes_retry, sweep_stale_tmp, write_bytes_atomic
 
 SUFFIX = ".prev-config.zip"
+UNRESTORED_SUFFIX = ".unrestored"  # `<app>.prev-config.zip.unrestored`: see mark_unrestored
 MANIFEST = "snapshot.json"
 MEMBER_ROOT = "config/"
 FORMAT = 1
@@ -113,11 +125,13 @@ LEFT_ALONE: dict[str, str] = {
 
 
 class SnapshotError(Exception):
-    """A copy could not be made, read or applied. `missing` is True when there is simply no copy."""
+    """A copy could not be made, read or applied. `missing` is True when there is simply no copy, `damaged`
+    when there is one that does not read back complete (nothing in it can be used)."""
 
-    def __init__(self, message: str, *, missing: bool = False) -> None:
+    def __init__(self, message: str, *, missing: bool = False, damaged: bool = False) -> None:
         super().__init__(message)
         self.missing = missing
+        self.damaged = damaged
 
 
 @dataclass(frozen=True)
@@ -251,7 +265,7 @@ def build(
 
 
 def _damaged(reason: str) -> SnapshotError:
-    return SnapshotError(f"the saved copy is damaged: {reason}")
+    return SnapshotError(f"the saved copy is damaged: {reason}", damaged=True)
 
 
 def parse(data: bytes) -> Snapshot:
@@ -311,6 +325,7 @@ def publish(path: Path, data: bytes) -> Snapshot:
         write_bytes_atomic(path, data)
     except OSError as e:
         raise SnapshotError(f"could not write {path.name}: {e}") from e
+    _clear_marker(path)  # a new zip is a new copy: whatever was said about the old one does not apply
     return parse(data)
 
 
@@ -325,12 +340,131 @@ def read(path: Path) -> Snapshot:
     return parse(data)
 
 
+@dataclass(frozen=True)
+class Slot:
+    """What is at `<app>.prev-config.zip` now: `copy` when it reads back complete, else `problem` says why."""
+
+    copy: Snapshot | None
+    problem: SnapshotError | None = None
+
+    @property
+    def damaged(self) -> bool:
+        return self.problem is not None and self.problem.damaged
+
+    @property
+    def free(self) -> bool:
+        """Nothing that could be needed is there: no zip, or a damaged one (which may be replaced; the caller
+        says so). A complete copy may be the only one of its settings, and a zip that could not be read at
+        all may still be whole: neither is ever written over unless it goes with its own program."""
+        return self.problem is not None and (self.problem.missing or self.problem.damaged)
+
+
+def look(path: Path) -> Slot:
+    """The copy at `path`, or why there is none. Never raises."""
+    try:
+        return Slot(read(path))
+    except SnapshotError as e:
+        return Slot(None, e)
+
+
+def version_of(fingerprint: str) -> str:
+    """The version part of a program fingerprint (`<version>|<manifest hash>|<pyproject hash>`)."""
+    return fingerprint.split("|", 1)[0]
+
+
+#: What `before_update` decides.
+SAVE = "save"  # the caller saves a new copy
+KEEP = "keep"  # the copy of the program leaving `<app>` stays: its restore never finished
+FOREIGN = "foreign"  # a whole copy of another program stays: no copy is kept for this update
+
+
+def before_update(path: Path, *, leaving: str, backup: str | None) -> tuple[str, Slot]:
+    """Decide what an update does with the copy at `path` before the program whose fingerprint is `leaving`
+    becomes the program backup, in place of the backup whose fingerprint is `backup` (None: there is none).
+
+    Returns (action, slot):
+
+    * `SAVE`: the caller saves a new copy. There is none, or a damaged one (`slot.damaged`; the caller says it
+      was replaced), or the copy is the one of `backup` (replaced together with its program), or it belongs
+      to `leaving` and nothing says its restore failed (a normal rollback, or an older updater that ignores
+      the zip, leaves such a copy; the settings files now are `leaving`'s own, so they replace it).
+    * `KEEP`: the copy belongs to `leaving` and a rollback recorded that it could not be put back
+      (`mark_unrestored`), so the settings files now may be a newer version's: the copy stays as the copy for
+      `leaving`, and those files must not be saved over it under its name.
+    * `FOREIGN`: a whole copy of a program that is neither: it may be the only copy of those settings files,
+      so it is left where it is (`slot.copy` says whose it is). The update goes on without a copy of its own.
+
+    `SnapshotError` for a zip that could not be read (a program holds it open; it may still be whole): it is
+    not written over, and the update does not start until it can be read.
+    """
+    slot = look(path)
+    snap = slot.copy
+    if snap is None:
+        if slot.free:
+            return SAVE, slot
+        raise SnapshotError(
+            f"the settings copy {path} could not be read ({slot.problem}), so it was left as it is: it may "
+            "still be whole. Close programs that use the Nightshift folder, then try again"
+        )
+    if snap.fingerprint == leaving:
+        return (KEEP if is_unrestored(path) else SAVE), slot
+    if backup is not None and snap.fingerprint == backup:
+        return SAVE, slot
+    return FOREIGN, slot
+
+
+def foreign_note(path: Path, snap: Snapshot, *, leaving: str, backup: str | None) -> str:
+    """The sentence for an update that left the copy of another program where it is."""
+    others = f"this program ({version_of(leaving)})"
+    if backup is not None:
+        others += f" or the program backup ({version_of(backup)})"
+    return (
+        f"the settings copy {path} belongs to {snap.version} (made {snap.created.replace('T', ' ')}), not to "
+        f"{others}, and was left as it is, because it may be the only copy of those settings files. No "
+        f"settings copy is kept for this update, so ns update --rollback will not restore settings files. To "
+        f"have one kept again, move {path.name} out of {path.parent} (or delete it if you do not need it) "
+        "before the next update"
+    )
+
+
+def _marker(path: Path) -> Path:
+    return path.with_name(path.name + UNRESTORED_SUFFIX)
+
+
+def _clear_marker(path: Path) -> None:
+    try:
+        _marker(path).unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def mark_unrestored(path: Path) -> None:
+    """Record that the copy now at `path` could not be put back (a rollback's restore raised): the settings
+    files are a newer version's while the program in `<app>` is the one the copy belongs to. The marker holds
+    the SHA256 of the zip, so it applies to this copy only. `SnapshotError` when it cannot be written."""
+    try:
+        digest = _sha(read_bytes_retry(path))
+        write_bytes_atomic(_marker(path), json.dumps({"zip_sha256": digest}).encode("utf-8"))
+    except OSError as e:
+        raise SnapshotError(f"could not record that {path.name} was not put back: {e}") from e
+
+
+def is_unrestored(path: Path) -> bool:
+    """True when `mark_unrestored` was called for the copy that is at `path` now (never raises)."""
+    try:
+        marked = json.loads(read_bytes_retry(_marker(path)).decode("utf-8"))["zip_sha256"]
+        return bool(marked == _sha(read_bytes_retry(path)))
+    except Exception:  # no marker, a torn one, an unreadable zip: nothing says the restore failed
+        return False
+
+
 def discard(path: Path) -> None:
     """Delete the copy at `path` (best effort: a copy that stays is checked against its program anyway)."""
     try:
         path.unlink(missing_ok=True)
     except OSError:
         pass
+    _clear_marker(path)
 
 
 def restore(config: Path, files: dict[str, bytes], *, live: dict[str, bytes], remove_extra: bool) -> Restored:
