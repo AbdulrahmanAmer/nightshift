@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, BinaryIO
 
 from ns_common.db import new_job_id
-from ns_common.devmode import is_dev
+from ns_common.devmode import fake_footage
 from ns_common.paths import Paths
 from ns_common.secrets_names import SHORT_NAMES
 from ns_dashboard.adapters import Adapters
@@ -233,11 +233,12 @@ class JobsService:
     def _require_footage_key(self) -> None:
         """Refuse a story video when no stock-footage key is stored (gap L3): `clips` would fail an hour in.
 
-        Not checked with fake services (they bring their own footage) or when the keyring cannot be read at
-        all (then nothing is known, and the run itself reports what it finds).
+        Not checked with fake services, in dev mode or in the `fake_footage` engine test (docs/DEV_MODE.md):
+        they bring their own footage. Nor when the keyring cannot be read at all (then nothing is known, and
+        the run itself reports what it finds).
         """
-        if self.s.fake_services or is_dev(self.s.paths):
-            return                                     # fakes (and dev mode) bring their own footage
+        if self.s.fake_services or fake_footage(self.s.paths):
+            return              # fakes, dev mode and the fake_footage engine test bring their own footage
         for name in SHORT_NAMES:
             try:
                 if self.s.adapters.keyring.get(name):

@@ -56,6 +56,7 @@ def build_runtime(ctx: StepContext) -> Runtime:
     rt.tts.engine = "reference" if ctx.flag("tts_fallback", False) else "qwentts"
     if ctx.fake_voice:
         rt.tts.engine = "fake"
+    rt.fake_footage = ctx.fake_footage      # engine test: placeholder footage instead of a stock-footage key
     if ctx.dev_mode:
         # docs/DEV_MODE.md: fake engines. The voice service runs in the supervisor venv (there is no PyTorch
         # venv), and every consumer of runtime.json reads dev_mode to start the fakes.

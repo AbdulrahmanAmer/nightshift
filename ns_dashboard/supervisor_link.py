@@ -22,6 +22,7 @@ from ns_dashboard.errors import ApiError, SupervisorUnavailable
 from ns_dashboard.events import EventHub
 
 DEFAULT_SUPERVISOR_PORT = 8099
+RESERVED_HUB_KINDS = frozenset({"dashboard_job"})  # published by the dashboard itself, never relayed
 GPU_IN_USE = "A video job is still using the GPU; stop it from the Queue instead."
 
 
@@ -154,11 +155,18 @@ class EventRelay:
         self._thread = None
 
     def relay_once(self) -> int:
-        """Relay one connection's worth of events; returns how many were published."""
+        """Relay one connection's worth of events; returns how many were published.
+
+        The supervisor's own kind (`service`, `job`, `update`, `run`) is kept so consumers can tell them
+        apart. Only a missing kind, or the dashboard's reserved `dashboard_job` kind (which a supervisor
+        event must never be able to pose as), is published as `service`.
+        """
         n = 0
         for item in self.link.events(self._stop):
             kind = item.get("kind")
-            self.hub.publish(kind if kind in ("service", "job") else "service", item)
+            if not isinstance(kind, str) or not kind or kind in RESERVED_HUB_KINDS:
+                kind = "service"
+            self.hub.publish(kind, item)
             n += 1
         return n
 

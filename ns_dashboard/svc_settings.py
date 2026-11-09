@@ -89,6 +89,9 @@ class SettingsService:
             "schedule_mode": scheduled_mode(self.s.paths),
             "home": str(self.s.paths.home),
             "profile": (runtime or {}).get("profile"),
+            "dev_mode": bool((runtime or {}).get("dev_mode")),
+            # engine test (docs/DEV_MODE.md): jobs use placeholder footage; not an editable engine flag
+            "fake_footage": bool((runtime or {}).get("fake_footage")),
             "flags": flags,
             "keys": self._key_flags(),
             "notifications": bool(stored["notifications"]),

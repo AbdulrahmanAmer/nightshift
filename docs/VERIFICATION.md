@@ -60,19 +60,19 @@ L release and CI (ci.yml: lint, types, test, bundle, ui-build, powershell-parse,
 10. **Docs and copy**: every screen's words true for the build that ships; OPERATOR.md, DEV_MODE.md, HANDOFF.
 11. **GPU-only**: the partner checklist, one line per item, with the measurement it must return.
 
-## 4. Status table (per block, honest as of 2026-11-05)
+## 4. Status table (per block, honest as of 2026-11-09; the engine test of 2026-11-08 is docs/DEV_MODE.md "Real engines, fake voice", report `D:\NightShift-refs\test-loop-2026-11-08.md`)
 
 | Block | Static | Unit/contract | Dev integration | E2E journeys | Lifecycle | Operations | Resilience | Security | Perf | Docs | GPU-only |
 |---|---|---|---|---|---|---|---|---|---|---|---|
 | A stage 1 | V-ci | V-ci | V-dev (headless, dev flag; window run via its API) | partial (window run proven by API; clicks U) | V-dev | — | **U** (console closed mid-run) | V-ci | V-dev 258 s | V-dev | V-gpu |
-| B stage 2 | V-ci | V-ci | V-dev | **U** (wizard clicks) | V-dev | — | **U** (network off, retry) | V-ci | V-dev | partial | V-gpu (downloads, smoke) |
+| B stage 2 | V-ci | V-ci | V-dev (dev install; engine test: real downloads with hash checks, `ns tune` and the smoke test on a real model, fake voice) | **U** (wizard clicks) | V-dev | — | **U** (network off, retry) | V-ci | V-dev | partial | V-gpu (downloads, smoke) |
 | C launchers | V-ci | V-ci | V-dev (dashboard, host, stop-all, update) | V-dev | V-dev | V-dev | V-dev (dead server → window closes) | — | — | V-dev | V-gpu (host on a stock PC) |
 | D supervisor | V-ci | V-ci | V-dev (services, leases, verify) | — | V-dev | V-dev (task fired by hand: headless engine, master, engine left) / **U** keep-awake | V-dev (kill mid-job → NS-E328 at its stage, Retry continues; PR #86) / **U** lease TTL | V-ci | V-dev | partial | V-gpu (GPU gate, tune) |
-| E studio | V-ci | V-ci | V-dev (Shorts, master, clip, planner, QC) | V-dev | — | — | partial (resume proven; kill mid-stage U) | V-ci | V-dev (Short 83 s) | partial | V-gpu (quality, timing) |
+| E studio | V-ci | V-ci | V-dev (Shorts, master, clip, planner, QC; a clip job on real engines) | V-dev | — | — | partial (resume proven; kill mid-stage U) | V-ci | V-dev (Short 83 s) | partial | V-gpu (quality, timing) |
 | F dashboard API | V-ci | V-ci | V-dev (20 groups probed, chunked upload → clips) | V-dev | V-dev | V-dev (update, uninstall routes) | **U** | V-dev (traversal 404, loopback only) | — | — | — |
 | G dashboard UI | V-ci | V-ci (callers, contract) | V-dev (Chrome) | V-dev (all pages) | — | — | — | — | — | partial | V-gpu (WebView2) |
 | H assistant | V-ci | V-ci (eval, router, redact) | V-dev (fake tool routing) | V-dev | — | — | **U** (engine busy, timeouts) | V-ci (redaction) | — | V-dev | V-gpu (real model answers) |
-| I engines/clients | V-ci | V-ci | V-dev (fakes; real Pixabay) | — | — | — | **U** (Pexels live; 429 handling live) | V-ci | — | — | V-gpu (all real engines) |
+| I engines/clients | V-ci | V-ci | V-dev (fakes; real Pixabay; engine test: real llama-server, embeddings and whisper on the CPU inside a clip job) | — | — | — | **U** (Pexels live; 429 handling live) | V-ci | — | — | V-gpu (all real engines) |
 | J contracts | V-ci | V-ci | — | — | — | — | — | — | — | V-ci | — |
 | K operations | V-ci | V-ci | V-dev (update, uninstall, diagnostics) | V-dev | V-dev | V-dev (task fires, rollback, export/import, backup/restore, notify command) / V-gpu toast visible, keep-awake | V-dev (restore while running refused, PR #87) / **U** disk full, network off | V-dev (keys forgotten) | V-dev (update 51 s) | partial | — |
 | L release/CI | V-ci | V-ci (release wiring) | V-dev (assets, sha256, manifest) | — | V-dev | — | — | — | — | V-dev | — |
@@ -157,6 +157,9 @@ fails in CI when the code defines an item the inventory does not list or the fil
 or stage cannot appear without a status. The loop marks items there as it proves them; the block checklists
 above hold the narrative, the inventory holds the count.
 
+`docs/FINALIZATION.md` is the box list: every open item from this file, the inventory, the plumbing map, the
+partner column and the handoff gaps as one line with its proof; `dev/finalization_status.py` counts the boxes
+and refuses a ticked box without evidence.
 `docs/PLUMBING.md` is the third view: the wiring. Every port, process, file, environment variable, event
 channel, external host, Windows integration point and configuration key, derived from the code with a
 `file:line` each, a coverage table per section (what is V-dev, V-ci, V-gpu or U) and the disposition of every
