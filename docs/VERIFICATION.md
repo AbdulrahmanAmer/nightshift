@@ -157,6 +157,9 @@ fails in CI when the code defines an item the inventory does not list or the fil
 or stage cannot appear without a status. The loop marks items there as it proves them; the block checklists
 above hold the narrative, the inventory holds the count.
 
+`docs/FINALIZATION.md` is the box list: every open item from this file, the inventory, the plumbing map, the
+partner column and the handoff gaps as one line with its proof; `dev/finalization_status.py` counts the boxes
+and refuses a ticked box without evidence.
 `docs/PLUMBING.md` is the third view: the wiring. Every port, process, file, environment variable, event
 channel, external host, Windows integration point and configuration key, derived from the code with a
 `file:line` each, a coverage table per section (what is V-dev, V-ci, V-gpu or U) and the disposition of every
