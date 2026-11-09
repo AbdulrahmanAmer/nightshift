@@ -181,9 +181,8 @@ TOOLS: list[dict[str, Any]] = [
     ),
     _spec(
         "workshop_design",
-        "Save the series design (format, visual treatment, caption style, voice, thumbnail style, cadence). "
-        "A long or square format shapes each part's full video, a short format its Shorts; a format that "
-        "is missing or cannot be drawn is refused (NS-E320).",
+        "Save the series design (format, treatment, caption style, voice, thumbnail style, cadence). "
+        "A format that is missing or cannot be drawn is refused (NS-E320).",
         {
             "slug": _SLUG,
             "format": _STR,
