@@ -11,6 +11,7 @@ import mimetypes
 import os
 import secrets
 import threading
+import time
 from collections.abc import Callable
 from http import HTTPStatus
 from http.cookies import SimpleCookie
@@ -22,6 +23,11 @@ from urllib.parse import parse_qs, unquote, urlsplit
 from installer.stage2.web.model import ACTIONS, UI_STEPS
 
 MAX_BODY = 64 * 1024
+#: How much of a request body nobody asked for is read and dropped before the connection closes (see
+#: ``Handler._drain_unread``). More than MAX_BODY on purpose: the 413 answer is for a body over MAX_BODY, and
+#: that body is what has to be consumed.
+DRAIN_LIMIT = 16 * MAX_BODY
+DRAIN_SECONDS = 3.0
 COOKIE = "ns_setup"
 CSP = (
     "default-src 'self'; img-src 'self' data:; media-src 'self'; "
@@ -52,9 +58,61 @@ class Handler(BaseHTTPRequestHandler):
     server_version = "NightshiftSetup"
     server: SetupHTTPServer
     _body_read = False
+    _unread = 0  # bytes of the body this request declared that nothing has read yet
 
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A002 - signature of the base class
         return None
+
+    # ---- one request, and what is left of it afterwards ----
+    def parse_request(self) -> bool:
+        self._unread = 0
+        ok = super().parse_request()
+        if ok:
+            try:
+                self._unread = max(0, int(self.headers.get("Content-Length", "0")))
+            except ValueError:
+                self._unread = 0
+        return ok
+
+    def handle_one_request(self) -> None:
+        self._unread = 0
+        super().handle_one_request()
+        if self._unread:
+            self._drain_unread()
+
+    def _drain_unread(self) -> None:
+        """Read and drop the declared request body that no route read, after the answer has been sent.
+
+        Closing a socket with received data still unread makes the OS send a reset (RST) instead of a
+        graceful FIN. On Windows the reset can overtake the answer, so the client gets WinError 10053 or
+        10054 instead of the 401, 415 or 413 we sent (a browser or the stage 1 health ping could hit it
+        too). Every early answer (wrong token, no cookie, wrong host, wrong type, too big) leaves the body
+        unread, so the body is drained here, bounded by DRAIN_LIMIT bytes and DRAIN_SECONDS. A body that
+        is longer than the limit, or does not arrive in time, closes the connection as before.
+        """
+        left, self._unread = self._unread, 0
+        if left > DRAIN_LIMIT:
+            left = DRAIN_LIMIT
+            self.close_connection = True  # the rest cannot be skipped: do not reuse the connection
+        sock = self.connection
+        try:
+            previous = sock.gettimeout()
+            deadline = time.monotonic() + DRAIN_SECONDS
+            try:
+                while left > 0:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise TimeoutError("request body not delivered")
+                    sock.settimeout(remaining)
+                    chunk = self.rfile.read1(min(left, 1 << 16))
+                    if not chunk:
+                        self.close_connection = True  # the client hung up
+                        return
+                    left -= len(chunk)
+            finally:
+                sock.settimeout(previous)
+        except OSError:
+            self.close_connection = True
 
     # ---- entry points ----
     def do_GET(self) -> None:  # noqa: N802 - http.server API
@@ -132,6 +190,7 @@ class Handler(BaseHTTPRequestHandler):
             self._json(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"ok": False, "message": message})
             return None
         self._body_read = True
+        self._unread = 0
         raw = self.rfile.read(length) if length else b"{}"
         try:
             data = json.loads(raw.decode("utf-8") or "{}")
