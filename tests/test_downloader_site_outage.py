@@ -296,6 +296,13 @@ def test_the_setup_window_gets_a_retry_event_with_host_status_and_time_left():
     assert (ev["host"], ev["status"], ev["waitS"], ev["leftS"]) == ("github.com", 504, 40.0, 420.0)
 
 
+def test_the_setup_servers_copy_of_the_wait_line_equals_the_downloaders():
+    for wait_s, left_s in [(2, 598), (40, 420), (60, 61), (5, 30), (45, 0)]:
+        assert controller.site_wait_text("github.com", 504, wait_s, left_s) == dl.site_wait_text(
+            "github.com", 504, wait_s, left_s
+        )
+
+
 def test_the_row_note_in_the_window_reads_like_the_console_line():
     note = controller.retry_note("site", 40.0, host="github.com", status=504, left_s=420.0)
     assert note == "github.com answers 504 (their side). Trying again in 40 s, 7 min left"

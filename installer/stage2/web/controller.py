@@ -23,7 +23,6 @@ from pathlib import Path
 from typing import Any
 
 import installer.stage2.devmode as devmode
-from installer.stage2.downloader import site_wait_text
 from installer.stage2.web import (
     answers_view,
     appcopy,
@@ -96,6 +95,13 @@ RETRY_NOTES = {
     "offline": "No internet right now, waiting for it to come back",
     "hash": "The file failed its check, downloading it again",
 }
+
+
+def site_wait_text(host: str, status: int, wait_s: float, left_s: float) -> str:
+    """The wait line for a download site's 5xx or 429. The setup server runs on the bare Python and cannot
+    import the downloader; ``downloader.site_wait_text`` is the same text (a test keeps them equal)."""
+    left = f"{int(-(-left_s // 60))} min left" if left_s >= 60 else f"{int(max(left_s, 0))} s left"
+    return f"{host} answers {status} (their side). Trying again in {int(wait_s)} s, {left}"
 
 
 def retry_note(
