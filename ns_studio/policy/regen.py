@@ -135,10 +135,10 @@ def has_restart_stage(code: str, names: list[str], detail: str = "") -> bool:
 
 #: Files a stage keeps as its own memo and returns early on; the retry would reproduce them unchanged.
 #: Deleted here for every stage a regeneration restarts. A memo that lives in a folder of its own is keyed on
-#: `JobContext.generation` instead (`drafts/ch<n>.json` of `chapters_draft`, the voice signature, the hooks
-#: memo): a regeneration changes the generation, a plain resume does not.
+#: `JobContext.generation` instead (`drafts/ch<n>.json` of `chapters_draft`, the voice signature): a
+#: regeneration changes the generation, a plain resume does not.
 STAGE_MEMOS: dict[str, tuple[str, ...]] = {
-    "hooks": ("hooks_all.json", "hooks_generation.json"),  # HooksStage skips when this exists
+    "hooks": ("hooks_all.json",),  # HooksStage skips when this exists
     "voice": ("audio/manifest.json",),  # synthesize() reuses every WAV with an unchanged signature
 }
 

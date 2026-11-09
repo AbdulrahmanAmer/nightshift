@@ -61,6 +61,9 @@ class VaryingLlm(FakeLlm):
                 self.crash_on = None
                 raise NsError("NS-E301", "the model server went away")
             data = {**data, "text": f"{data['text']}\n\nTake {self._takes(name)}."}
+        elif name == "hook":  # other words on every call, still under twelve
+            take = self._takes(name)
+            data = {**data, "hooks": [f"{h} Take {take}." for h in data["hooks"]]}
         return data
 
     def complete_text(self, **kw):
@@ -284,6 +287,52 @@ def test_a_resumed_short_keeps_its_story_and_its_hooks(tmp_home: Path, monkeypat
     state.save(ctx.job_dir)
     regen.run_job_guarded(ctx)
     assert ctx.file("story.json").read_bytes() == story and len(ctx.services.llm.calls) == calls
+
+
+def _hooks_job(monkeypatch, tmp_home: Path, gate: Gate):
+    ctx = _shorts(monkeypatch, tmp_home, gate)
+    monkeypatch.setitem(orch.FORMAT_STAGES, "gen_shorts", [*SHORTS_PLAN[:-1], "split", "hooks", "gate"])
+    return ctx
+
+
+def _hooks(raw: str) -> list[str]:
+    return [p["hook"] for p in json.loads(raw)]
+
+
+def test_a_regenerated_short_gets_other_hooks_than_the_first_attempt(
+    tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The hooks memo (`hooks_all.json`) goes with the restart at `draft`.
+
+    Without the `STAGE_MEMOS["hooks"]` entry the second pass keeps the first pass's hooks."""
+    gate = Gate("NS-E303", "parts.json")
+    ctx = _hooks_job(monkeypatch, tmp_home, gate)
+    regen.run_job_guarded(ctx)
+    first, second = (_hooks(s) for s in gate.seen)
+    assert len(gate.seen) == 2 and first and len(first) == len(second)
+    assert all(a != b for a, b in zip(first, second, strict=True)), "a hook was reused"
+    # written by the model in the second pass, not the split's own first sentence left by a skipped stage
+    assert all(h.endswith("Take 1.") for h in first) and all(h.endswith("Take 2.") for h in second)
+    assert ctx.services.llm._takes("hook") == 2 * len(first)
+
+
+def test_a_resumed_short_keeps_its_hooks(tmp_home: Path, monkeypatch: pytest.MonkeyPatch):
+    gate = Gate("NS-E303", "parts.json", fail_times=0)
+    ctx = _hooks_job(monkeypatch, tmp_home, gate)
+    regen.run_job_guarded(ctx)
+    parts, hooks_all, calls = (
+        ctx.file("parts.json").read_bytes(),
+        ctx.file("hooks_all.json").read_bytes(),
+        ctx.services.llm._takes("hook"),
+    )
+    state = StageState.load(ctx.job_dir)
+    state.entries.pop("hooks")  # the stage forgot it finished: its memo is what keeps the hooks
+    state.entries.pop("gate")
+    state.save(ctx.job_dir)
+    regen.run_job_guarded(ctx)
+    assert ctx.services.llm._takes("hook") == calls  # not one hook was asked for again
+    assert ctx.file("parts.json").read_bytes() == parts
+    assert ctx.file("hooks_all.json").read_bytes() == hooks_all
 
 
 def test_a_regenerated_short_after_a_story_failure_ends_after_one_regeneration(

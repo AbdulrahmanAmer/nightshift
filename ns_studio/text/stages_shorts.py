@@ -295,17 +295,6 @@ class SplitStage:
         ctx.write_json("parts.json", parts)
 
 
-HOOKS_GENERATION_FILE = "hooks_generation.json"
-
-
-def _hooks_generation(ctx: JobContext) -> int:
-    """The generation the hooks memo was written in; 0 for a memo without the key or an unreadable one."""
-    try:
-        return int(ctx.read_json(HOOKS_GENERATION_FILE)["generation"])
-    except (OSError, ValueError, KeyError, TypeError):
-        return 0
-
-
 class HooksStage:
     """Shorts 6: five hooks per part, a judge picks one; all candidates go to `hooks_all.json`."""
 
@@ -317,10 +306,10 @@ class HooksStage:
     def run(self, ctx: JobContext) -> None:
         """Set `hook` on every part; skip when `hooks_all.json` already exists for these parts.
 
-        The memo is keyed on the generation (`hooks_generation.json`): hooks picked in an earlier pass of the
-        text are not reused by a regeneration. A memo without the key is generation 0.
+        A regeneration that restarts at or before this stage deletes the memo (`regen.STAGE_MEMOS`), so the
+        hooks of a regenerated text are new; a resume keeps the memo and with it the hooks.
         """
-        if ctx.file("hooks_all.json").exists() and _hooks_generation(ctx) == ctx.generation:
+        if ctx.file("hooks_all.json").exists():
             return
         parts: list[dict[str, Any]] = ctx.read_json("parts.json")
         all_hooks: list[list[str]] = []
@@ -340,7 +329,6 @@ class HooksStage:
             p["hook"] = hooks[idx]
             all_hooks.append(hooks)
         ctx.write_json("hooks_all.json", all_hooks)
-        ctx.write_json(HOOKS_GENERATION_FILE, {"generation": ctx.generation})
         ctx.write_json("parts.json", parts)
 
 
