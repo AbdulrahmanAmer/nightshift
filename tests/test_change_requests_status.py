@@ -139,7 +139,11 @@ def test_wizard_flags_claims_in_the_llama_pair_rejection_hold() -> None:
     # config_snapshot.py (F-10a, moved to ns_common by F-10c: the settings copy for `ns update --rollback`)
     # touch the flags file, and both only copy its bytes.
     ns = py_sources("ns_common", "ns_dashboard", "ns_studio", "ns_supervisor", "ns_tts")
-    assert [rel for rel, text in ns.items() if "llama_pair" in text] == []
+    # ns_common/diskneed.py (H-6) takes the pair as an ARGUMENT, from the setup plan that chose it, to size
+    # the llama build; it never reads the flags file.
+    assert [rel for rel, text in ns.items() if "llama_pair" in text] == ["ns_common/diskneed.py"]
+    source_text = ns["ns_common/diskneed.py"]
+    assert "wizard_flags" not in source_text and "flags.json" not in source_text
     assert sorted(rel for rel, text in ns.items() if "wizard_flags" in text) == [
         "ns_common/config_snapshot.py",
         "ns_supervisor/doctor.py",

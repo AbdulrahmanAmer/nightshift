@@ -62,6 +62,7 @@ needs_ffmpeg = pytest.mark.skipif(not ff.available(), reason="ffmpeg required")
 def test_the_voice_stage_sends_the_channel_language_to_the_tts_service(tmp_home: Path):
     ctx = make_ctx(tmp_home, channel=make_channel(language="ja"))
     ctx.write_json("parts.json", [{"n": 1, "text": "彼女は扉を開けた。", "hook": "扉が開いた。"}])
+    jobs.load_stage_modules()  # the stages register themselves on import: do not depend on test order or shard
     REGISTRY["voice"].run(ctx)
     tts = ctx.services.tts
     assert isinstance(tts, FakeTts) and tts.items and {i.language for i in tts.items} == {"ja"}

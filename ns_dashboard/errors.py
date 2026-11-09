@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from ns_common.errors import NsError
+
 
 class ApiError(Exception):
     """An error the API reports as `{"error": {code, message, hint, details?}}` with an HTTP status."""
@@ -30,6 +32,18 @@ class ApiError(Exception):
         if self.details is not None:
             err["details"] = self.details
         return {"error": err}
+
+
+def room_refusal(e: NsError) -> ApiError:
+    """The API answer (507) for an NS-E104 raised before a job starts: nothing was queued or written (D-33).
+
+    The message says what THIS job needs and what the drive has (``This needs about 100 MB (...); D: has 20 MB
+    free``), the hint what to do about it; ``details`` carries the two numbers in bytes.
+    """
+    return ApiError(
+        507, "NS-E104", f"{e.definition.message} {e.detail}".strip(), hint=e.definition.hint,
+        details={"need_bytes": e.data.get("need_bytes"), "free_bytes": e.data.get("free_bytes")},
+    )
 
 
 class AdapterUnavailable(Exception):

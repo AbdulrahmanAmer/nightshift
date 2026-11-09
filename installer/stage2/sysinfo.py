@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import math
 import re
 import shutil
 import string
@@ -12,8 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-BASE_FREE_GB = 60
-TIER_EXTRA_GB = {"small": 0, "balanced": 14, "best": 21}
+from ns_common import diskneed
 
 
 @dataclass(frozen=True)
@@ -31,13 +29,15 @@ def recommended_tier(ram_gb: float) -> str:
 
 
 def required_free_gb(tier: str, custom_bytes: int | None = None) -> int:
-    """Free space the install needs on the home drive (spec 5: 60 GB check, plus the tier's larger model).
+    """Free space a first install of this tier needs on the home drive, from ``ns_common.diskneed`` (H-6).
 
-    A custom model adds what it is larger than Small's 9 GB (same rule as the setup window's plan).
+    A sum over the manifest (the files setup downloads, the programs and environments it unpacks) plus the
+    working reserve for videos, rounded up to a whole GB: about 60 GB for Small with today's manifest. A
+    custom model replaces the tier's story model with its own size. The step and the setup window ask the same
+    function for a particular home, which also knows what is already there.
     """
-    if custom_bytes:
-        return BASE_FREE_GB + max(0, math.ceil(custom_bytes / 1e9) - 9)
-    return BASE_FREE_GB + TIER_EXTRA_GB.get(tier, 0)
+    custom = {"repo": "custom/custom", "file": "custom.gguf", "size": custom_bytes} if custom_bytes else None
+    return diskneed.install_need(diskneed.shipped_manifest(), diskneed.NO_HOME, tier=tier, custom=custom).gb
 
 
 def load_preflight(path: Path) -> dict[str, Any] | None:
@@ -60,7 +60,7 @@ def sample_preflight(home: Path, app_path: Path, *, cuda: str = "13.0") -> dict[
             ("gpu", "NVIDIA RTX GPU, 16 GB", "simulated RTX, 16311 MB"),
             ("driver", "NVIDIA driver (CUDA 12.4 or newer; 13.0+ for RTX 50-series)", f"CUDA {cuda}"),
             ("ram", "Memory, 16 GB minimum", "32 GB"),
-            ("disk", "Free disk space, 60 GB", "500 GB"),
+            ("disk", "Free disk space", "500 GB"),
             ("disktype", "Disk type, SSD", "SSD"),
             ("network", "Internet", "all reachable"),
             ("winget", "winget (App Installer)", "available"),
@@ -130,7 +130,7 @@ def local_drives() -> list[Drive]:
 
 
 def choose_default_home(
-    drives: list[Drive], min_free_gb: float = BASE_FREE_GB, skip: Callable[[Path], bool] | None = None
+    drives: list[Drive], min_free_gb: float | None = None, skip: Callable[[Path], bool] | None = None
 ) -> Path | None:
     """<drive with most free space, SSD preferred>\\Nightshift; drives under ``min_free_gb`` come last.
 
@@ -140,6 +140,8 @@ def choose_default_home(
     """
     if not drives:
         return None
+    if min_free_gb is None:
+        min_free_gb = required_free_gb("small")
     pool = [d for d in drives if d.free_gb >= min_free_gb] or list(drives)
     first = [d for d in pool if d.type == "SSD"] or pool
     by_room = sorted(first, key=lambda d: d.free_gb, reverse=True)

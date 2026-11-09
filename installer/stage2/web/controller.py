@@ -25,6 +25,7 @@ from typing import Any
 
 import installer.stage2.devmode as devmode
 import ns_common.config_snapshot as config_snapshot
+import ns_common.diskneed as diskneed
 import ns_common.first_start as first_start
 from installer.stage2.web import (
     answers_view,
@@ -508,6 +509,37 @@ class SetupController:
         except (OSError, ValueError):
             return None
 
+    def _need_for(self, home: str, tier: str, view: dict[str, Any] | None) -> diskneed.Need:
+        """The space this install needs at ``home`` (H-6), from what the window knows about it.
+
+        ``view`` is the answers (camelCase, as the window shows them) or the draft being checked: the tier's
+        or the owner's own story model, Nightshift Code, the voice design model and a models folder. The
+        engine test's ``fake_voice`` comes from the answers file the window was started with. What is
+        already in ``home`` costs nothing.
+        """
+        view = view or {}
+        pf = self.pf
+        source = view.get("modelsSource") if isinstance(view.get("modelsSource"), dict) else {}
+        folder = str(source.get("path") or "") if source.get("kind", "internet") != "internet" else ""
+        custom = view.get("llmCustom") if isinstance(view.get("llmCustom"), dict) else None
+        fake_voice = (self._prefill_raw() or {}).get("fake_voice") is True and not self.dev
+        return plan.home_need(
+            self.manifest, home, tier, custom=plan.custom_entry(custom), dev=self.dev,
+            profile=str(pf.get("profile") or "gpu"), include_code=bool(view.get("installCode", True)),
+            llama_pair=str(pf.get("llama_pair") or "") or None, cuda=str(pf.get("cuda") or "") or None,
+            voice=not fake_voice, voicedesign=bool(view.get("includeVoicedesign")),
+            models_source=folder or None,
+        )
+
+    def _plan_extras(self, home: str, view: dict[str, Any] | None) -> dict[str, Any]:
+        """The keyword arguments of ``plan.build_plan`` that say what the install's disk need is for."""
+        view = view or {}
+        source = view.get("modelsSource") if isinstance(view.get("modelsSource"), dict) else {}
+        folder = str(source.get("path") or "") if source.get("kind", "internet") != "internet" else ""
+        fake_voice = (self._prefill_raw() or {}).get("fake_voice") is True and not self.dev
+        return {"home": home, "voice": not fake_voice, "voicedesign": bool(view.get("includeVoicedesign")),
+                "models_source": folder or None}
+
     def _initial_state(self) -> dict[str, Any]:
         prefill = self._prefill_raw()
         saved = read_install_state(self.home)
@@ -544,7 +576,9 @@ class SetupController:
             llama_pair=pf.get("llama_pair") or None,
             ram_gb=float(pf.get("ram_gb") or 0), vram_mb=gpu.get("vram_mb"),
             custom=(view or {}).get("llmCustom"), dev=self.dev,
+            **self._plan_extras(str(self.home), view),
         )
+        chosen_need = self._need_for(str(self.home), tier, view)
         steps = []
         for sid in STEP_ORDER:
             st = saved_steps.get(sid) if isinstance(saved_steps.get(sid), dict) else {}
@@ -591,8 +625,8 @@ class SetupController:
             "prefilledFrom": str(self.cfg.answers) if self.cfg.answers and prefill is not None else None,
             "startedAt": saved.get("started_at") if done_before else None, "updatedAt": now_iso(),
             "host": "none", "devMode": self.dev,
-            "machine": preflight.machine_summary(pf, str(self.home), tier),
-            "checks": preflight.check_rows(pf, str(self.home), self._held_gb_fn(locked)),
+            "machine": preflight.machine_summary(pf, str(self.home), tier, chosen_need),
+            "checks": preflight.check_rows(pf, str(self.home), self._held_gb_fn(locked), chosen_need),
             "checkedAt": hhmm(), "checking": False,
             "blocking": False, "plan": the_plan, "answers": view, "answersLocked": locked, "steps": steps,
             "downloads": {"items": [], "overall": {}, "source": (view or {}).get("modelsSource", {}).get(
@@ -756,6 +790,8 @@ class SetupController:
             free_gb=lambda p: next((d["freeGb"] for d in state["machine"]["drives"]
                                     if d["letter"] == p[:1].upper()), None),
             keys_stored=self._keys_stored, layout_problem=self._layout_problem, dev=self.dev,
+            need_fn=lambda home, tier, custom, draft: self._need_for(
+                home, tier, {**draft, "llmCustom": custom}),
         )
 
     def submit_answers(self, draft: dict[str, Any]) -> dict[str, Any]:
@@ -769,7 +805,7 @@ class SetupController:
         errors = answers_view.validate(draft, self._env(state))
         home = str(draft.get("homePath") or "").strip()
         if answers_view.DRIVE_PATH_RE.match(home):
-            self._apply_home(home, str(draft.get("llmTier") or "small"))
+            self._apply_home(home, str(draft.get("llmTier") or "small"), draft)
         if errors:
             return {"ok": False, "errors": errors}
         for field_name, key_name in (("pexelsKey", "pexels_api_key"), ("pixabayKey", "pixabay_api_key")):
@@ -790,6 +826,7 @@ class SetupController:
             vram_mb=(pf.get("gpu") or {}).get("vram_mb"),
             llama_pair=pf.get("llama_pair") or None,
             custom=raw.get("llm_custom"), dev=self.dev,
+            **self._plan_extras(str(self.home), view),
         )
 
         def fn(s: dict[str, Any]) -> None:
@@ -821,13 +858,14 @@ class SetupController:
         prefill = self._prefill_raw() or {}
         return bool(prefill.get("allow_cpu", False))
 
-    def _apply_home(self, home: str, tier: str) -> None:
-        """Re-evaluate the disk rows and meters for a chosen install folder."""
+    def _apply_home(self, home: str, tier: str, view: dict[str, Any] | None = None) -> None:
+        """Re-evaluate the disk rows and meters for a chosen install folder (what is in it costs nothing)."""
         self.home = Path(home)
+        need = self._need_for(home, tier, view if view is not None else self.snapshot().get("answers"))
 
         def fn(s: dict[str, Any]) -> None:
-            s["checks"] = preflight.check_rows(self.pf, home)
-            s["machine"] = preflight.machine_summary(self.pf, home, tier)
+            s["checks"] = preflight.check_rows(self.pf, home, None, need)
+            s["machine"] = preflight.machine_summary(self.pf, home, tier, need)
 
         self.store.update(fn)
 
@@ -839,17 +877,29 @@ class SetupController:
         """``GET /api/model-check``: does this Hugging Face file exist, and does it fit a 16 GB card."""
         return modelcheck.check_model(repo, file, self.fx.head)
 
-    def disk(self, path: str, tier: str, source: bool) -> dict[str, Any]:
-        """``GET /api/disk``."""
+    def disk(
+        self, path: str, tier: str, source: bool, custom: dict[str, Any] | None = None,
+        draft: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """``GET /api/disk``: the folder check, with the space THIS install needs there.
+
+        ``custom`` is the story model the window has picked (``repo``, ``file``, ``size``) and ``draft`` the
+        other choices that change the number (``installCode``, ``includeVoicedesign``, ``modelsSource``): the
+        saved answers do not hold them yet, and Install checks the DRAFT, so the picker line, the folder error
+        and the refusal on Install all use one number and the window has no rule of its own for it. A choice
+        the draft does not name falls back to the saved answers; without any the check is for the tier.
+        """
         state = self.snapshot()
         if source:
             expected = preflight.expected_model_files(self.manifest, self.pf.get("profile", "gpu"), tier)
             found = preflight.scan_models_source(Path(path), expected)
             return preflight.disk_check(path, tier, state["machine"]["drives"], self.fx.free_gb, models=found)
+        view = {**(state.get("answers") or {}), **plan.need_fields(draft),
+                "llmCustom": plan.custom_entry(custom)}
         return preflight.disk_check(path, tier, state["machine"]["drives"], self.fx.free_gb,
                                     drive_type_fn=self.fx.drive_type, layout_fn=self._layout_problem,
                                     existing_fn=self._existing_install_note, kind_fn=self.fx.folder_kind,
-                                    dev=self.dev)
+                                    dev=self.dev, need_fn=lambda where: self._need_for(where, tier, view))
 
     def pick_folder(self, body: dict[str, Any]) -> dict[str, Any]:
         """``POST /api/pick-folder``: the Windows folder dialog, then the same check as typing the path.
@@ -877,7 +927,8 @@ class SetupController:
             return {"ok": True, "path": None, "cancelled": True, "message": None, "check": None}
         path = folderdialog.install_folder_for(picked) if target == "install" else picked
         return {"ok": True, "path": path, "cancelled": False, "message": None,
-                "check": self.disk(path, tier, target == "models")}
+                "check": self.disk(path, tier, target == "models", plan.custom_entry(body.get("custom")),
+                                   body)}
 
     # ---- actions ----
     def _reply(self, status: int, ok: bool, message: str | None) -> tuple[int, dict[str, Any]]:
@@ -1023,9 +1074,12 @@ class SetupController:
             new = preflight.apply_dev(new)
         self.pf = new
 
+        recheck_need = self._need_for(str(self.home), tier, self.snapshot().get("answers"))
+
         def fn(s: dict[str, Any]) -> None:
-            s["checks"] = preflight.check_rows(new, str(self.home), self._held_gb_fn(s["answersLocked"]))
-            s["machine"] = preflight.machine_summary(new, str(self.home), tier)
+            s["checks"] = preflight.check_rows(new, str(self.home), self._held_gb_fn(s["answersLocked"]),
+                                               recheck_need)
+            s["machine"] = preflight.machine_summary(new, str(self.home), tier, recheck_need)
             s["checkedAt"] = hhmm()
             s["checking"] = False
 

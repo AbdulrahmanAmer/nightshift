@@ -15,12 +15,13 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+import ns_common.diskneed as diskneed
 import ns_common.first_start as first_start
 from installer.stage2.web.model import PRESET_VOICES, TIERS
 from installer.stage2.web.modelcheck import MAX_BYTES, shape_problem, too_big_message
 from installer.stage2.web.pathcheck import DRIVE_PATH_RE as DRIVE_PATH_RE
 from installer.stage2.web.pathcheck import home_problem
-from installer.stage2.web.plan import required_free_gb
+from installer.stage2.web.plan import home_need
 from ns_common.atomic import copy_atomic, read_text_retry, write_text_atomic
 from ns_common.new_fields import plain_disk_dict
 
@@ -67,6 +68,7 @@ class Env:
         keys_stored: dict[str, bool] | None = None,
         layout_problem: Callable[[str], str | None] | None = None,
         dev: bool = False,
+        need_fn: Callable[[str, str, dict[str, Any] | None, dict[str, Any]], diskneed.Need] | None = None,
     ) -> None:
         self.dev = dev              # a dev install needs 10 GB free, not 60 (docs/DEV_MODE.md)
         self.ram_gb = ram_gb
@@ -76,6 +78,15 @@ class Env:
         self.isdir = isdir
         self.keys_stored = keys_stored or {}
         self.layout_problem = layout_problem or (lambda _home: None)
+        self.need_fn = need_fn      # (home, tier, custom, draft) -> the space that install needs (H-6)
+
+    def need_for(
+        self, home: str, tier: str, custom: dict[str, Any] | None, draft: dict[str, Any]
+    ) -> diskneed.Need:
+        """The space this install needs at ``home``: the window's own sum when given, else the defaults."""
+        if self.need_fn is not None:
+            return self.need_fn(home, tier, custom, draft)
+        return home_need(diskneed.shipped_manifest(), home, tier, custom=custom, dev=self.dev)
 
 
 def validate(draft: dict[str, Any], env: Env) -> list[dict[str, Any]]:
@@ -100,14 +111,16 @@ def validate(draft: dict[str, Any], env: Env) -> list[dict[str, Any]]:
         errors.append(_err("llmTier", "Pick Small, Balanced or Best"))
         tier = "small"
     custom = draft.get("llmCustom")
-    custom_bytes: int | None = None
+    custom_entry: dict[str, Any] | None = None
     if custom is not None:
         problem = custom_problem(custom)
         if problem:
             errors.append(_err("llmCustom", problem))
         else:
-            custom_bytes = int(custom["size"])
-    errors += _home_errors(_text(draft.get("homePath")), str(tier), env, custom_bytes)
+            custom_entry = {
+                "repo": _text(custom["repo"]), "file": _text(custom["file"]), "size": int(custom["size"]),
+            }
+    errors += _home_errors(_text(draft.get("homePath")), str(tier), env, custom_entry, draft)
     info = env.tiers.get(str(tier), {})
     if custom is None and tier != "small" and not info.get("allowed", True):
         reason = info.get("reason") or "Not available on this PC"
@@ -148,17 +161,21 @@ def custom_problem(custom: Any) -> str | None:
     return too_big_message(size) if size > MAX_BYTES else None
 
 
-def _home_errors(home: str, tier: str, env: Env, custom_bytes: int | None = None) -> list[dict[str, Any]]:
-    need = required_free_gb(tier, custom_bytes, dev=env.dev)
+def _home_errors(
+    home: str, tier: str, env: Env, custom: dict[str, Any] | None = None, draft: dict[str, Any] | None = None
+) -> list[dict[str, Any]]:
     problem = home_problem(home, MAX_HOME_LEN) or env.layout_problem(home)
     if problem:
         return [_err("homePath", problem)]
     if env.drive_letters is not None and home[0].upper() not in env.drive_letters:
         return [_err("homePath", "Pick a folder on a fixed drive of this PC")]
     free = env.free_gb(home)
-    if free is not None and free < need:
-        return [_err("homePath", f"Pick a folder on a drive with {need} GB free. This one has {free:.0f} GB",
-                     "NS-E104")]
+    if free is None:
+        return []
+    need = env.need_for(home, tier, custom, draft or {})
+    if free * diskneed.GIB < need.total:
+        pick = f"Pick a folder on a drive with {need.gb} GB free. This one has {free:.0f} GB"
+        return [_err("homePath", pick, "NS-E104")]
     return []
 
 

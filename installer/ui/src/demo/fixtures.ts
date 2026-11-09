@@ -5,7 +5,7 @@ import type {
   LlmCustom, SetupState, StepId, StepView, Tier, TierInfo, UninstallView, VerifyView,
 } from "../api/types";
 import { stepTitle } from "../copy";
-import { customNeedFreeGb, vramLeftGb } from "../format";
+import { vramLeftGb } from "../format";
 
 export const NOW = () => new Date();
 const iso = (offsetS = 0): string => {
@@ -16,6 +16,13 @@ const iso = (offsetS = 0): string => {
 export const isoNow = iso;
 
 /* ------------------------------------------------------------------ machine and checks */
+
+/** What a first Small install needs on an empty drive, as the server's sum comes out with today's manifest (60 GB, 59.05 before rounding up). */
+const SMALL_NEED_GB = 60;
+const SMALL_NEED_EXACT_GB = 59.05;
+/** The one line the PC check row shows: the number, what it is made of, and what the drive has. */
+const diskSentence = (d: { letter: string; freeGb: number }): string =>
+  `This install needs about ${SMALL_NEED_GB} GB (13.7 GB of models to download, 7 GB of programs and environments and 38 GB working reserve for videos); ${d.letter}: has ${d.freeGb} GB free`;
 
 export const DRIVES: DriveView[] = [
   { letter: "C", freeGb: 31, type: "SSD" },
@@ -28,13 +35,13 @@ export function machine(homeDrive: string, ramGb = 32): MachineSummary {
   return {
     windows: "Windows 11 Pro 10.0.26200", gpuName: "NVIDIA GeForce RTX 5060 Ti", vramMb: 16311, driver: "581.57", cuda: "13.0", ramGb,
     profile: "gpu", isAdmin: false, drives: DRIVES,
-    meters: { vram: { haveGb: 16, needGb: 16, hardMinGb: 12 }, ram: { haveGb: ramGb, needGb: 16, hardMinGb: 8 }, disk: { haveGb: d.freeGb, needGb: 60, hardMinGb: 40, path: `${d.letter}:\\Nightshift` } },
+    meters: { vram: { haveGb: 16, needGb: 16, hardMinGb: 12 }, ram: { haveGb: ramGb, needGb: 16, hardMinGb: 8 }, disk: { haveGb: d.freeGb, needGb: SMALL_NEED_GB, hardMinGb: SMALL_NEED_GB, path: `${d.letter}:\\Nightshift` } },
   };
 }
 
 export function checkRows(homeDrive: string, o: { blocking?: boolean } = {}): CheckRow[] {
   const d = DRIVES.find((x) => x.letter === homeDrive) ?? DRIVES[1]!;
-  const diskFail = d.freeGb < 40; const diskWarn = !diskFail && d.freeGb < 60;
+  const diskFail = d.freeGb < SMALL_NEED_GB;
   const rows: CheckRow[] = [
     { id: "os", label: "Windows 10/11, 64-bit", status: "ok", blocking: false, value: "Windows 11 Pro 10.0.26200", code: null, title: null, whatToDo: null, fix: null },
     { id: "gpu", label: "Graphics card", status: "ok", blocking: false, value: "RTX 5060 Ti, 16 GB", code: null, title: null, whatToDo: null, fix: null },
@@ -43,10 +50,8 @@ export function checkRows(homeDrive: string, o: { blocking?: boolean } = {}): Ch
       : { id: "driver", label: "NVIDIA driver", status: "ok", blocking: false, value: "CUDA 13.0, driver 581.57", code: null, title: null, whatToDo: null, fix: null },
     { id: "ram", label: "Memory", status: "ok", blocking: false, value: "32 GB, all model sizes", code: null, title: null, whatToDo: null, fix: null },
     diskFail
-      ? { id: "disk", label: "Free disk space", status: "fail", blocking: true, value: `${d.freeGb} GB free on ${d.letter}:`, code: "NS-E104", title: "Not enough free disk space", whatToDo: "Free 60 GB on this drive, or pick another drive below", fix: { kind: "choose-drive", label: "Pick another drive" } }
-      : diskWarn
-        ? { id: "disk", label: "Free disk space", status: "warn", blocking: false, value: `${d.freeGb} GB free on ${d.letter}:`, code: "NS-E104", title: "Less free space than recommended", whatToDo: "Setup fits, but leaves little room for videos. 60 GB keeps about a month of them", fix: { kind: "choose-drive", label: "Pick another drive" } }
-        : { id: "disk", label: "Free disk space", status: "ok", blocking: false, value: `${d.freeGb} GB free on ${d.letter}:`, code: null, title: null, whatToDo: null, fix: null },
+      ? { id: "disk", label: "Free disk space", status: "fail", blocking: true, value: diskSentence(d), code: "NS-E104", title: "Not enough free disk space", whatToDo: `Free ${SMALL_NEED_GB} GB on this drive, or pick another drive below`, fix: { kind: "choose-drive", label: "Pick another drive" } }
+      : { id: "disk", label: "Free disk space", status: "ok", blocking: false, value: diskSentence(d), code: null, title: null, whatToDo: null, fix: null },
     { id: "disktype", label: "Disk type", status: "ok", blocking: false, value: `${d.letter}: ${d.type}`, code: null, title: null, whatToDo: null, fix: null },
     { id: "network", label: "Internet", status: "ok", blocking: false, value: "all sites reachable", code: null, title: null, whatToDo: null, fix: null },
     { id: "winget", label: "Windows app installer (optional)", status: "ok", blocking: false, value: "available", code: null, title: null, whatToDo: null, fix: null },
@@ -100,7 +105,11 @@ const tierInfo = (tier: Tier, needFreeGb: number, needsRamGb: number): TierInfo 
   const m = TIER_LLM[tier];
   return { repo: m.repo, file: m.file, llmBytes: m.bytes, totalBytes: BASE_BYTES + m.bytes, vramLeftGb: vramLeftGb(m.bytes), recommended: tier === "balanced", needFreeGb, needsRamGb, allowed: true, reason: null };
 };
-const TIERS: Record<Tier, TierInfo> = { small: tierInfo("small", 60, 16), balanced: tierInfo("balanced", 74, 32), best: tierInfo("best", 81, 32) };
+const TIERS: Record<Tier, TierInfo> = { small: tierInfo("small", SMALL_NEED_GB, 16), balanced: tierInfo("balanced", 64, 32), best: tierInfo("best", 72, 32) };
+
+/** The demo has no server: this stands in for the space the real one works out (a first install on an empty drive: the files it downloads, the programs it unpacks and a 38 GB reserve for videos). A custom model replaces the 9 GB Small model with its own size. The real page never computes this; it shows the server's `needGb`. */
+export const demoNeedGb = (tier: Tier, custom: LlmCustom | null = null): number =>
+  custom ? Math.ceil(SMALL_NEED_EXACT_GB - Math.max(0, TIER_LLM.small.bytes - custom.size) / 2 ** 30) : TIERS[tier].needFreeGb;
 
 export function estimateLabel(totalBytes: number): { downloadMin: number; installMin: number; label: string } {
   const downloadMin = Math.ceil((totalBytes * 8) / (50e6 * 60));
@@ -121,7 +130,7 @@ export function plan(tier: Tier = "balanced", ramGb = 32, custom: LlmCustom | nu
     tiers.balanced = { ...tiers.balanced, allowed: false, reason: "Needs 32 GB of memory" };
     tiers.best = { ...tiers.best, allowed: false, reason: "Needs 32 GB of memory" };
   }
-  return { tier, profile: "gpu", groups, totalBytes, unknownCount: 4, needFreeGb: custom ? customNeedFreeGb(custom.size) : TIERS[tier].needFreeGb, estimate: estimateLabel(totalBytes), recommendedTier: ramGb < 31 ? "small" : "balanced", tiers };
+  return { tier, profile: "gpu", groups, totalBytes, unknownCount: 4, needFreeGb: demoNeedGb(tier, custom), estimate: estimateLabel(totalBytes), recommendedTier: ramGb < 31 ? "small" : "balanced", tiers };
 }
 
 /* ------------------------------------------------------------------ steps, downloads, verify */

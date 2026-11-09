@@ -112,12 +112,12 @@ def test_a_resume_only_warns_when_setups_own_files_explain_the_shortfall(tmp_pat
         return next(r for r in rows if r["id"] == "disk")
 
     assert disk(None)["status"] == "fail" and disk(None)["blocking"]          # a first run is still stopped
-    assert disk(5.0)["status"] == "fail" and disk(5.0)["blocking"]            # 31 + 5 < 40: not setup's doing
-    ok = disk(25.0)                                                           # 31 + 25 >= 40
+    assert disk(5.0)["status"] == "fail" and disk(5.0)["blocking"]            # 31 + 5 < 60: not setup's doing
+    ok = disk(30.0)                                                           # 31 + 30 >= 60
     assert ok["status"] == "warn" and not ok["blocking"] and ok["code"] is None
-    assert "31 GB free on D:" in ok["value"] and "setup already holds 25 GB here" in ok["value"]
-    pf["drives"][0]["free_gb"] = 50.0                                 # above the hard limit: unchanged
-    assert disk(25.0)["status"] == "warn" and "holds" not in disk(25.0)["value"]
+    assert "D: has 31 GB free" in ok["value"] and "setup already holds 30 GB here" in ok["value"]
+    pf["drives"][0]["free_gb"] = 61.0                                 # enough on its own: unchanged
+    assert disk(30.0)["status"] == "ok" and "holds" not in disk(30.0)["value"]
     (tmp_path / "models").mkdir()
     (tmp_path / "models" / "a.bin").write_bytes(b"x" * 1000)
     (tmp_path / "b.txt").write_bytes(b"y" * 24)
@@ -132,7 +132,7 @@ def test_disk_rows_are_worked_out_again_for_another_install_folder():
     ]
     c_disk = row(pf, "disk", "C:\\Nightshift")
     assert c_disk["status"] == "fail" and c_disk["blocking"]
-    assert row(pf, "disk", "E:\\Nightshift")["status"] == "warn"
+    assert row(pf, "disk", "E:\\Nightshift")["status"] == "fail"         # 50 GB < the 60 needed
     assert row(pf, "disk", "D:\\Nightshift")["status"] == "ok"
     assert row(pf, "disktype", "D:\\Nightshift")["status"] == "warn"
     assert row(pf, "disktype", "E:\\Nightshift")["status"] == "ok"
@@ -146,8 +146,9 @@ def test_machine_summary_and_meters():
     assert m["windows"] == "Windows 11 Pro 10.0.26200" and m["gpuName"] == "NVIDIA GeForce RTX 5060 Ti"
     assert m["vramMb"] == 16311 and m["cuda"] == "13.0" and m["ramGb"] == 32.0 and m["profile"] == "gpu"
     assert m["meters"]["vram"]["haveGb"] == 15.9 and m["meters"]["vram"]["needGb"] == 16
-    assert m["meters"]["disk"] == {"haveGb": 500.0, "needGb": 60, "hardMinGb": 40, "path": "D:\\Nightshift"}
-    assert preflight.machine_summary(pf, "D:\\Nightshift", "best")["meters"]["disk"]["needGb"] == 81
+    assert m["meters"]["disk"] == {"haveGb": 500.0, "needGb": 60, "hardMinGb": 60, "path": "D:\\Nightshift"}
+    best = preflight.machine_summary(pf, "D:\\Nightshift", "best")["meters"]["disk"]["needGb"]
+    assert 60 < best <= 81                       # the bigger model adds its bytes (was a fixed 81)
     assert {d["letter"] for d in m["drives"]} >= {"C", "D"}
     no_gpu = dict(pf, gpu={"name": "", "vram_mb": 0, "driver": ""}, cuda="")
     s = preflight.machine_summary(no_gpu, "D:\\Nightshift", "small")
@@ -160,7 +161,8 @@ def test_disk_check_messages():
     assert ok["ok"] and ok["message"] == "412 GB free on D: (SSD)"
     assert ok["drive"] == "D" and ok["needGb"] == 60
     low = preflight.disk_check("C:\\Nightshift", "small", drives, lambda _p: 0.0)
-    assert not low["ok"] and low["message"] == "Only 31 GB free on C:. Nightshift needs 60 GB"
+    assert not low["ok"] and low["needGb"] == 60
+    assert low["message"].startswith("Only 31 GB free on C:. This install needs about 60 GB (")
     asked = preflight.disk_check("F:\\x", "small", drives, lambda _p: 77.0)
     assert asked["ok"] and asked["freeGb"] == 77.0
     bad = preflight.disk_check("not a path", "small", drives, lambda _p: 0.0)
