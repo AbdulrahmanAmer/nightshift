@@ -8,6 +8,7 @@ from pathlib import Path
 
 from ns_common.logging import NsLogger
 from ns_common.paths import Paths
+from ns_dashboard import studio_bridge
 from ns_dashboard.adapters import Adapters, real_adapters
 from ns_dashboard.assistant.llm import LlmProvider, SupervisorLlmProvider
 from ns_dashboard.assistant.loop import Assistant
@@ -86,13 +87,28 @@ def build_state(
         adapters.series.finish({**rec.params, "job_id": rec.job_id})
 
     store = JobStore(db)
+
+    def sweep_at_start(active_ids: set[str], part_statuses: dict[str, str]) -> None:
+        """Series parts without a live job settle; link-download folders without a live job are removed."""
+        try:
+            live = {
+                str(rec.params.get("source_id"))
+                for status in ("queued", "running")
+                for rec in store.list_jobs(status=status, kind="clip", limit=1000)
+                if rec.params.get("source_id")
+            }
+            studio_bridge.sweep_downloads(paths, live, log)
+        except Exception as e:  # a sweep that fails must never stop the worker from starting
+            log.warn("download_sweep_failed", str(e))
+        adapters.series.sweep(active_ids, part_statuses)
+
     worker = JobWorker(
         store, build_handlers(adapters, paths), hub, log, gpu_gate=make_gpu_gate(link.status),
         pulse=None if fake_services else (lambda: link.heartbeat(JOB_OWNER)),
         on_recover={"series_part": release_part_of},
         on_end={"series_part": release_part_of},
         on_done={"series_part": finish_part_of},
-        sweep=adapters.series.sweep,
+        sweep=sweep_at_start,
     )
     return AppState(
         paths=paths, db=db, log=log, hub=hub, link=link, adapters=adapters, store=store, worker=worker,
