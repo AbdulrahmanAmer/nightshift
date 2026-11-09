@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+import yaml
 
 from ns_common.config import load_channel
 from ns_common.errors import NsError
@@ -187,7 +188,7 @@ def _channel_language(env: Env, slug: object) -> str:
     """The language of the channel that queued the voice (setup writes no language), else English."""
     try:
         return load_channel(env.paths, str(slug)).language if slug else "en"
-    except (OSError, ValueError):
+    except (OSError, ValueError, yaml.YAMLError):
         return "en"
 
 

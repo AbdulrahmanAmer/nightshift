@@ -273,3 +273,48 @@ def test_an_update_may_replace_an_old_bad_name_with_a_good_one(tmp_path: Path):
     ctx = _update(tmp_path, {"voice": typed})
     S01Questions().run(ctx)
     assert _saved(ctx)["voice"]["name"] == "after-dark-voice"
+
+
+# ---- the answers in use ARE the saved config/answers.json (break-it round 2) ----
+
+
+@pytest.mark.parametrize("shape", sorted(OLD_SHAPES))
+def test_a_new_api_key_in_the_saved_answers_file_keeps_an_old_voice_name(tmp_path: Path, shape: str):
+    """The owner adds a pexels key to config/answers.json of a 0.1.x install: check() is False (the key
+    store lacks it), run() has no kept copy to compare with, and still reads the saved voice as saved."""
+    earlier = make_test_context(tmp_path, ui=FakeUi(interactive=False))
+    f = _saved_answers(earlier, OLD_SHAPES[shape])
+    raw = {**json.loads(f.read_text(encoding="utf-8")), "pexels_api_key": "pk-owner-secret-1"}
+    f.write_text(json.dumps(raw), encoding="utf-8")
+    ctx = make_test_context(tmp_path, raw_answers=raw, ui=FakeUi(interactive=False))
+    ctx.answers_path = f
+    assert S01Questions().check(ctx) is False  # the key is new: run() has to store it
+    S01Questions().run(ctx)  # used to raise AnswersError "The voice name '...' cannot be used"
+    assert ctx.store.get("pexels_api_key") == "pk-owner-secret-1"
+    assert _saved(ctx)["voice"]["name"] == OLD_SHAPES[shape]["name"]
+
+
+def test_a_first_install_window_that_wrote_a_bad_name_is_still_refused(tmp_path: Path):
+    """The setup window writes config/answers.json with choices typed now; with no earlier install (no kept
+    copy) those are not saved answers, even though the file in use is the saved one."""
+    ui = FakeUi(interactive=False)
+    ui.bridge = True
+    earlier = make_test_context(tmp_path, ui=FakeUi(interactive=False))
+    f = _saved_answers(earlier, OLD_SHAPES["long design name"])
+    raw = json.loads(f.read_text(encoding="utf-8"))
+    ctx = make_test_context(tmp_path, raw_answers=raw, ui=ui)
+    ctx.answers_path = f
+    with pytest.raises(AnswersError, match="cannot be used"):
+        S01Questions().run(ctx)
+
+
+def test_the_language_of_a_channel_whose_yaml_is_not_yaml_falls_back_to_english(tmp_path: Path):
+    from types import SimpleNamespace
+
+    from ns_common.paths import Paths
+
+    paths = Paths(tmp_path / "home")
+    paths.channels_dir.mkdir(parents=True)
+    paths.channel_file("broken").write_text("display_name: [unclosed\n", encoding="utf-8")
+    env = SimpleNamespace(paths=paths)
+    assert voice_setup._channel_language(env, "broken") == "en"  # type: ignore[arg-type]

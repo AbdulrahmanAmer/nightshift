@@ -288,6 +288,31 @@ class S01Questions(Step):
                 ctx.log.warn("no_stock_key", hint="add a Pixabay key in Settings before the first video")
 
     # ---- run ----
+    def _voice_carried(
+        self,
+        ctx: StepContext,
+        earlier: tuple[dict[str, Any], str] | None,
+        diff: list[reinstall.Change],
+        voice: dict[str, Any],
+    ) -> bool:
+        """True when the voice is the one an earlier install already had, so the name rule is not applied.
+
+        With kept answers (another file in use, or the window's copy) it is carried when the new answers do
+        not change it. Without them, the answers in use may be the saved ``config/answers.json`` itself (the
+        fallback of ``find_answers``; an update that only adds an API key): the voice is carried when it
+        equals the saved one. A window on a first install writes that same file with choices typed now, so
+        a window never counts.
+        """
+        if earlier:
+            return "voice" not in {c.key for c in diff}
+        saved = self._answers_file(ctx)
+        if ctx.ui.bridge or not saved.is_file():
+            return False
+        try:
+            return load_raw(saved).get("voice") == voice
+        except (AnswersError, OSError):
+            return False
+
     def run(self, ctx: StepContext) -> None:
         """Resolve every answer, prepare the home folder and write config/answers.json (no secrets)."""
         self._ran = True
@@ -399,7 +424,7 @@ class S01Questions(Step):
         # The name rule is for a voice typed now. A voice the earlier install already had (inherited because
         # the new answers leave it out, or named again unchanged) was accepted by 0.1.x, so it is read as
         # saved answers; a voice the new answers change keeps the rule on (defect D-24).
-        carried = bool(earlier) and "voice" not in {c.key for c in diff}
+        carried = self._voice_carried(ctx, earlier, diff, merged["voice"])
         ans = build_answers({**merged, PEXELS_KEY: None, PIXABAY_KEY: None}, saved=carried)
 
         self._keys(ctx)
