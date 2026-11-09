@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from ns_common.errors import NsError
+from ns_studio import ownership
 from ns_studio.context import JobContext
 from ns_studio.orchestrator import plan_format, plan_job, run_job
 from ns_studio.policy.base import POLICY_CODES
@@ -77,7 +78,7 @@ def earliest_stage(code: str, names: list[str], check: str | None = None) -> str
 
 #: Files a stage keeps as its own memo and returns early on; the retry would reproduce them unchanged.
 STAGE_MEMOS: dict[str, tuple[str, ...]] = {
-    "hooks": ("hooks_all.json",),  # HooksStage skips when this exists
+    "hooks": ("hooks_all.json", "closings.json"),  # HooksStage skips on the first; a redo drops both
     "voice": ("audio/manifest.json",),  # synthesize() reuses every WAV with an unchanged signature
 }
 
@@ -140,7 +141,15 @@ def run_job_guarded(ctx: JobContext, *, resume: bool = True) -> list[str]:
 
     The voice setup queued (`config/pending_voice.json`) is created first, so every path that runs a job
     (`studio run`, the dashboard's Run now, a series part) has it before the voice stage asks for it.
+
+    The job is owned for as long as it runs (`ownership.hold_job`: an OS lock that dies with the process), so
+    a kill leaves a job the next start can tell is dead, and a second process cannot run the same job at once.
     """
+    with ownership.hold_job(ctx.paths, ctx.job_id, channel=ctx.channel.slug, fmt=str(ctx.fmt)):
+        return _run_job_guarded(ctx, resume=resume)
+
+
+def _run_job_guarded(ctx: JobContext, *, resume: bool) -> list[str]:
     from ns_studio.channels.crud import design_name_problems, pool_name_problems, sync_channel_row
     from ns_studio.errors import StudioError
     from ns_studio.voice_setup import apply_pending_voices

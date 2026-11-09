@@ -607,7 +607,7 @@ Job progress is not a supervisor event. The dashboard's own `GET /api/events` (p
 Standard llama-server `POST /v1/embeddings` `{input:[...]}` → OpenAI-shaped response. `ns_common.embed_client.embed(texts) -> list[list[float]]`, `cosine(a,b)`.
 
 ### 15.6 JSON schemas (`contracts/schemas/`)
-`channel, runtime, install_state, answers, manifest, idea, plan, story, parts, seo, seo_long, shorts_plan, chapters, visual_plan, qc, policy, metadata, combo, analytics_row, calibration_row, gate_report, transcript, clip_plan, clip_layout, clip_template, dashboard_job`.
+`channel, runtime, install_state, answers, manifest, idea, plan, story, parts, seo, seo_long, shorts_plan, chapters, visual_plan, qc, policy, metadata, combo, analytics_row, calibration_row, gate_report, transcript, clip_plan, clip_layout, clip_template`. There is no `dashboard_job` schema: a dashboard job is a row of the `dashboard_jobs` table (§15.7), read by the dashboard-local `ns_dashboard.jobs.JobRecord` whose `to_dict()` is the API object of `/api/jobs` (the request bodies are `job_run_request` and `job_clip_request`).
 - `transcript`: `{source, duration_s, language, segments:[{i, start, end, text, speaker?}], words:[{w, start, end, seg}]}`
 - `clip_plan`: `[{k, start_s, end_s, title, hook_line?, why, score:0-1, speakers?:[..], keywords[]}]`
 - `clip_layout`: `{template, facecam?:{x,y,w,h}, faces:[{t, boxes:[{x,y,w,h}]}], crops:[{t_start, t_end, region:{x,y,w,h}}]}`
@@ -852,7 +852,7 @@ Horror and dark themes are allowed **as fiction** with implied, not graphic, vio
 | `render_uniqueness` | final | Perceptual hash (pHash of 10 sampled frames) too close to any prior render on any channel. A Short may share narration with its parent master but must differ in visuals and include its new hook | E611 |
 | `long_runtime` | final | Master < 8:30, or a mid-roll suggestion in the first/last 2 min | E612 |
 | `clip_reuse` | final | Violates §7.4 rules | E613 |
-| `audio_only_voice` | final | Any non-voice audio track present (no music by design); checked by stream count and spectral flatness on silent stretches | E614 |
+| `audio_only_voice` | final | Any non-voice audio track present (no music by design); fails on the stream count and on a noise floor above -55 dBFS; spectral flatness of the quiet frames is measured and warned only (`qc/audio_flatness.json`, no code) until calibrated on real narration | E614 |
 | `disclosure_advice` | final | Always runs; writes the §18.7 answers | — |
 
 A failure moves the item to `rejected\` with the reason, regenerates once from the earliest affected stage, and logs the code. Second failure ends the job.

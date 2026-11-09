@@ -16,6 +16,7 @@ from ns_common.logging import NsLogger
 from ns_common.models import Channel, Combo, Runtime
 from ns_common.paths import Paths
 from ns_common.secrets_names import KEYRING_SERVICE, SHORT_NAMES
+from ns_studio import ownership
 from ns_studio.channels.crud import (
     add_channel,
     all_channels,
@@ -194,8 +195,14 @@ def make_job(
     rng: random.Random | None = None,
     fixed: dict[str, str] | None = None,
     record: bool = True,
+    origin: str = "manual",
+    run_id: str | None = None,
 ) -> JobContext:
-    """Draw a combo, record it in the ledger unless `record` is False, create the job dir and context."""
+    """Draw a combo, record it in the ledger unless `record` is False, create the job dir and context.
+
+    `origin` says who made the job: `daily` (the nightly run, `run_id` its run row: after a kill the next
+    nightly resumes it) or `manual` (`studio run`, the dashboard: offered in the Queue with Retry). The owner
+    file is written before the combos row (`ownership`), so a job the ledger knows is never unowned."""
     now = now or datetime.now(UTC)
     rng = rng or random.Random()
     # The setup channel exists only as YAML; `ideas`, `stories`, `combos` and `outputs` reference its row.
@@ -212,6 +219,9 @@ def make_job(
     job_id = new_job_id(channel.slug, now)
     item = "long" if fmt == "master_first" else "s1"
     if record:
+        ownership.announce_job(
+            env.paths, job_id, origin=origin, channel=channel.slug, fmt=fmt, run_id=run_id, created=now
+        )
         record_combo(env.db, channel.slug, job_id, item, combo, now)
     job_dir = env.paths.job_dir(job_id)
     job_dir.mkdir(parents=True, exist_ok=True)
