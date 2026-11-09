@@ -16,7 +16,7 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 
 #: Allowed in text: tab, line feed, carriage return (CRLF files exist in this repository).
-ALLOWED = {0x09, 0x0A, 0x0D}
+ALLOWED = {0x09, 0x0A}
 #: Files that are binary by extension: not text, never scanned.
 BINARY_SUFFIXES = {
     ".png",
@@ -74,11 +74,20 @@ def control_characters(data: bytes) -> list[tuple[int, int, int]]:
     except UnicodeDecodeError:
         return []  # not UTF-8 text (an odd encoding or binary): out of scope for this check
     found: list[tuple[int, int, int]] = []
-    for lineno, line in enumerate(text.split("\n"), start=1):
-        for col, ch in enumerate(line, start=1):
-            code = ord(ch)
-            if (code < 0x20 or code == 0x7F) and code not in ALLOWED:
-                found.append((lineno, col, code))
+    line, col = 1, 0
+    for i, ch in enumerate(text):
+        if ch == "\n":
+            line, col = line + 1, 0
+            continue
+        col += 1
+        code = ord(ch)
+        if ch == "\r":
+            # A carriage return is allowed only as the first half of a CRLF line end. A lone CR is the
+            # likeliest escape in this repository's paths (backslash-r in \runs, \refs, \render, \rejected).
+            if text[i + 1 : i + 2] != "\n":
+                found.append((line, col, code))
+        elif (code < 0x20 or code == 0x7F) and code not in ALLOWED:
+            found.append((line, col, code))
     return found
 
 
@@ -88,6 +97,10 @@ def test_the_scanner_finds_a_bel_byte_and_lets_tabs_and_crlf_through():
     assert control_characters(b"\x1b[0m escape\n") == [(1, 1, 27)]
     assert control_characters(b"del\x7f\n") == [(1, 4, 127)]
     assert control_characters(b"binary\0\x07 stuff") == []  # NUL early: binary
+    # a lone CR in the middle of a path ("D:\NightShift" + CR + "uns"), and at the end of a file, is found
+    assert control_characters(b"D:\\NightShift\runs\n") == [(1, 14, 13)]
+    assert control_characters(b"end\r") == [(1, 4, 13)]
+    assert control_characters(b"a\r\nb\r\n") == []  # CRLF passes
 
 
 def test_no_tracked_text_file_carries_a_control_character():
