@@ -101,8 +101,10 @@ def read_closings(ctx: JobContext) -> dict[str, str] | None:
     return closings if isinstance(closings, dict) else None
 
 
-def _signature(it: TtsItem) -> str:
+def _signature(it: TtsItem, generation: int = 0) -> str:
     base = f"{it.voice}|{it.speed}|{it.text}"
+    if generation:  # a regeneration never reuses an earlier take; generation 0 keeps the old cache
+        base += f"|gen:{generation}"
     if it.cliff_lines:  # unchanged for items without one, so earlier jobs keep their cache
         base += "|cliff:" + "|".join(it.cliff_lines)
     if qwen_language(it.language)[0] != "English":  # English items keep the signature (and cache) they had
@@ -142,10 +144,14 @@ def synthesize(ctx: JobContext, items: list[TtsItem]) -> tuple[dict[str, dict], 
     """
     manifest_path = ctx.file("audio/manifest.json")
     prev: dict[str, dict] = ctx.read_json("audio/manifest.json") if manifest_path.exists() else {}
+    generation = ctx.generation
     todo = [
         it
         for it in items
-        if not (prev.get(it.id, {}).get("sig") == _signature(it) and Path(prev[it.id]["path"]).exists())
+        if not (
+            prev.get(it.id, {}).get("sig") == _signature(it, generation)
+            and Path(prev[it.id]["path"]).exists()
+        )
     ]
     todo_ids = {it.id for it in todo}
     raw_dir = ctx.subdir("audio/raw")
@@ -169,7 +175,7 @@ def synthesize(ctx: JobContext, items: list[TtsItem]) -> tuple[dict[str, dict], 
                 "seconds": round(ff.duration_s(out), 3),
                 "lufs": lufs,
                 "tp": tp,
-                "sig": _signature(by_id[f.id]),
+                "sig": _signature(by_id[f.id], generation),
             }
     if items:
         record_voice_wpm(ctx, items[0].voice, items, manifest)  # words per minute this voice really speaks

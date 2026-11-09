@@ -29,6 +29,7 @@ from ns_studio.text.budget import (
     master_budget,
     short_budget,
 )
+from ns_studio.text.idea_redraw import next_unused_idea
 from ns_studio.text.prompts import RUBRIC_KEYS, call_json, call_text, parse_model
 from ns_studio.text.seo import finalize_seo
 from ns_studio.text.story_profile import profile_of
@@ -198,6 +199,8 @@ class IdeasStage:
         """
         from ns_studio.policy import idea_check
 
+        if next_unused_idea(ctx) is not None:  # after a critic failure: next idea of the batch (16.2)
+            return
         banked = draw_banked_idea(ctx)
         if banked is not None:
             idea_check.require_safe_idea(ctx, banked)
@@ -488,6 +491,9 @@ class HooksStage:
         `closings.json` is written before `hooks_all.json`, so a job made by this code has both when it skips.
         A job from before closing lines has only the hooks: it keeps them and gets no closing line, rather
         than picking new hooks (and redoing the voice and captions) on `--resume`.
+
+        A regeneration that restarts at or before this stage deletes both memos (`regen.STAGE_MEMOS`), so the
+        hooks and closing lines of a regenerated text are new; a resume keeps the memos and the hooks.
         """
         if ctx.file("hooks_all.json").exists():
             return

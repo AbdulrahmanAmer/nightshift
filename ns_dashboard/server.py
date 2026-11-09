@@ -332,6 +332,10 @@ def create_app(
     async def channels_get(slug: str) -> SafeJSONResponse:
         return ok(await run_in_threadpool(dash.channels.get, slug))
 
+    @app.get("/api/channels/{slug}/formats")
+    async def channels_formats(slug: str) -> SafeJSONResponse:
+        return ok(await run_in_threadpool(dash.channels.formats_in_use, slug))
+
     @app.put("/api/channels/{slug}")
     async def channels_update(slug: str, request: Request) -> SafeJSONResponse:
         return ok(await run_in_threadpool(dash.channels.update, slug, await body_json(request)))

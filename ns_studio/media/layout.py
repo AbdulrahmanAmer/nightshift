@@ -140,12 +140,14 @@ def build_regions_graph(
     *,
     out_label: str = "v0",
     duration_s: float | None = None,
+    fps: int | None = None,
 ) -> list[str]:
     """`filter_complex` fragments drawing every region of `fmt` onto its canvas; the result is `[out_label]`.
 
     The input pads named by the `SourceSpec`s (default `[src]`) must be produced by the caller. A source
     used by several regions is split first. Regions are overlaid in list order over the first region when
-    it fills the canvas, else over a black canvas (`duration_s` ends that canvas with the video).
+    it fills the canvas, else over a black canvas (`duration_s` ends that canvas with the video; `fps` is
+    its frame rate, the format's own `canvas.fps` when not given: a render passes the rate its shots run at).
     """
     regions = fmt.layout.regions
     specs = [_spec_for(r, sources) for r in regions]
@@ -172,7 +174,7 @@ def build_regions_graph(
         base, rest = pads[0], list(zip(regions[1:], pads[1:], strict=True))
     else:
         d = f":d={duration_s:.3f}" if duration_s else ""
-        fragments.append(f"color=c=black:s={fmt.canvas.w}x{fmt.canvas.h}:r={fmt.canvas.fps}{d}[base]")
+        fragments.append(f"color=c=black:s={fmt.canvas.w}x{fmt.canvas.h}:r={fps or fmt.canvas.fps}{d}[base]")
         base, rest = "base", list(zip(regions, pads, strict=True))
     for k, (region, pad) in enumerate(rest):
         last = k == len(rest) - 1
