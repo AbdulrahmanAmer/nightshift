@@ -508,6 +508,11 @@ class FakeSeriesAdapter:
         part = next((p for p in story["parts"] if p["status"] == "approved"), None)
         if part is None:
             raise ApiError(409, "cannot_produce", f"story {slug!r} has no approved part waiting")
+        # like `Workshop.produce` (D-33): NS-E104, nothing queued, when the home's volume cannot hold the
+        # part; the fakes' own clip source is fake, so the estimate is the fake-footage one
+        from ns_studio import diskroom
+
+        diskroom.require_series_part_room(self.paths, None, fake=("clips",))
         job_id = new_job_id(str(story["channel"]))
         title = f"{story['title']} - Part {part['n']:02d}"
         self.db.execute(

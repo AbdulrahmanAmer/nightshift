@@ -52,8 +52,8 @@ def relax_checks(
 
     The graphics card and driver rows are ``ok`` with a value that says what was found and that dev mode does
     not need it; the memory row only warns under ``MIN_RAM_GB``. ``disk_rows(pf, home)`` (the setup server
-    passes ``preflight.raw_disk_rows``) replaces the disk rows, which stage 1 may have judged by the real
-    thresholds of 40 and 60 GB; without it they are left alone (step s01 checks the 10 GB itself).
+    passes ``preflight.raw_disk_rows``) replaces the disk rows, which stage 1 may have judged as for a
+    real install; without it they are left alone (step s01 checks the 10 GB itself).
     Idempotent, so a hand-over that stage 1 already wrote for ``-Dev`` comes out the same.
     """
     out = {**pf, "dev_mode": True, "profile": PROFILE, "llama_pair": ""}

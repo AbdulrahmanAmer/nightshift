@@ -602,7 +602,7 @@ def test_a_locked_resume_on_a_nearly_full_drive_is_not_blocked_by_its_own_files(
     state["steps"]["s08_smoke"]["status"] = "pending"
     (s.home / "config" / "install_state.json").write_text(json.dumps(state), encoding="utf-8")
     letter = str(s.home)[0].upper()
-    monkeypatch.setattr(preflight, "folder_bytes", lambda _home: 20 * 1024 ** 3)       # setup's own downloads
+    monkeypatch.setattr(preflight, "folder_bytes", lambda _home: 40 * 1024 ** 3)       # setup's own downloads
     again = app_setup(tmp_path, monkeypatch, zip_a)
     again.ctl.pf["drives"] = [{"letter": letter, "free_gb": 30.0, "type": "SSD"}]
     again.fx.probe = lambda app, out, home: again.ctl.pf
@@ -610,7 +610,7 @@ def test_a_locked_resume_on_a_nearly_full_drive_is_not_blocked_by_its_own_files(
     snap = again.snap()
     disk = next(c for c in snap["checks"] if c["id"] == "disk")
     assert snap["answersLocked"] is True
-    assert disk["status"] == "warn" and "setup already holds 20 GB" in disk["value"] and not snap["blocking"]
+    assert disk["status"] == "warn" and "setup already holds 40 GB" in disk["value"] and not snap["blocking"]
     # the same drive on a first run (nothing locked) still blocks
     fresh = Setup(tmp_path / "other", monkeypatch)
     fresh.ctl.pf["drives"] = [{"letter": str(fresh.home)[0].upper(), "free_gb": 30.0, "type": "SSD"}]

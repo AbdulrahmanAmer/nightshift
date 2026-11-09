@@ -244,7 +244,8 @@ def test_unexpected_exception_is_shown_without_a_code(tmp_path: Path):
 # ---------------------------------------------------------------------------------------------- helpers
 def test_describe_failure_variants():
     f = describe_failure(make_error("NS-E104", "10 GB free"))
-    assert (f.code, f.detail) == ("NS-E104", "10 GB free") and "60 GB" in f.hint
+    assert (f.code, f.detail) == ("NS-E104", "10 GB free") and "NIGHTSHIFT_HOME" in f.hint
+    assert "60 GB" not in f.hint                      # the number is in the message, per install
     g = describe_failure(AnswersError("bad run_time"))
     assert g.code == "answers.json" and "bad run_time" in g.detail
     h = describe_failure(ValueError("x"))

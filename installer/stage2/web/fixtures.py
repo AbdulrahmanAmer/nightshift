@@ -14,6 +14,8 @@ import threading
 from pathlib import Path
 from typing import Any
 
+import ns_common.diskneed as diskneed
+from installer.stage2.web import plan
 from installer.stage2.web.controller import Config, SetupController
 from installer.stage2.web.fakes import fake_effects
 from installer.stage2.web.model import STEP_ORDER
@@ -92,11 +94,13 @@ def build(name: str, app_path: Path | None = None) -> dict[str, Any]:
         state["uiStep"] = "checks"
     elif name == "checks-blocking":
         state["uiStep"] = "checks"
+        need = plan.home_need(ctl.manifest, tmp / "home", "small")  # what the real row says (H-6)
         for c in state["checks"]:
             if c["id"] == "disk":
-                c.update(status="fail", blocking=True, code="NS-E104", value="31 GB free on C:",
+                c.update(status="fail", blocking=True, code="NS-E104",
+                         value=need.sentence(31 * diskneed.GIB, "C:", subject="This install"),
                          title="Not enough free disk space",
-                         whatToDo="Free 60 GB on this drive, or pick another drive below",
+                         whatToDo=f"Free {need.gb} GB on this drive, or pick another drive below",
                          fix={"kind": "choose-drive", "label": "Pick another drive"})
         state["blocking"] = True
     elif name == "choices":
@@ -204,11 +208,14 @@ class FixtureController:
         """Any non-empty key works."""
         return {"ok": bool(key), "code": None if key else "NS-E501", "message": None}
 
-    def disk(self, path: str, tier: str, source: bool) -> dict[str, Any]:
+    def disk(
+        self, path: str, tier: str, source: bool, custom: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         """A roomy drive."""
         return {"path": path, "exists": True, "drive": path[:1].upper() or "D", "freeGb": 412.0,
                 "type": "SSD",
-                "needGb": 60, "ok": True, "message": "412 GB free on D: (SSD)", "modelsFound": None}
+                "needGb": plan.required_free_gb(tier), "ok": True, "message": "412 GB free on D: (SSD)",
+                "modelsFound": None}
 
     def do_action(self, name: str, body: dict[str, Any] | None = None) -> tuple[int, dict[str, Any]]:
         """Accept everything, change nothing (close-setup ends the server)."""

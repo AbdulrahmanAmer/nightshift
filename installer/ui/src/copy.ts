@@ -176,6 +176,7 @@ export const choices = {
     lowRam: (ram: number) => `This PC has ${ram} GB of memory, so Small is selected. Balanced needs 32 GB`,
     need: (total: string, need: number) => `Download ${total} GB, needs ${need} GB free`,
     needCustom: (need: number) => `Needs ${need} GB free`,
+    needChecking: "Checking how much space it needs",
     other: {
       name: "Other",
       about: "For the developer: a different model file (any Hugging Face GGUF, up to 15.5 GB)",

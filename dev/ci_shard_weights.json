@@ -1,8 +1,8 @@
 {
  "about": "Seconds per test file for dev/ci_shards.py: the median over the JUnit reports of real CI runs. A file not listed is placed by hash and counts as the larger of the mean and the median of these. Refresh: python dev/ci_shards.py refresh --run latest (or --run <id>, or --junit <folder of report-shard-*.xml>)",
  "measured": {
-  "source": "run 42668170598, plus 8 files not in it (the three newest test files, the four test_p10_* files and test_tiny_story_length.py) from run 42686504308 (main, f4f3948); plus 7 files (tests/test_ci_changes.py, test_clip_select_stage.py, test_errors_json_unique_codes.py, test_owner_lock_fail_closed.py, test_secret_file_dashboard_routes.py, test_secret_file_no_permissions.py, test_stale_tmp_sweep.py) from run 42709820235 (this pull request, 855837c)",
-  "files": 318
+  "source": "run 42668170598, plus 8 files not in it (the three newest test files, the four test_p10_* files and test_tiny_story_length.py) from run 42686504308 (main, f4f3948) ; plus tests/test_diskneed.py, tests/test_installer_disk_need.py and tests/test_job_disk_room.py (PR 189) from run 42687368408; plus tests/test_ci_changes.py, test_clip_select_stage.py, test_errors_json_unique_codes.py, test_owner_lock_fail_closed.py, test_secret_file_dashboard_routes.py, test_secret_file_no_permissions.py and test_stale_tmp_sweep.py from run 42709820235 (this pull request, 855837c)",
+  "files": 321
  },
  "shard_extra_seconds": {
   "1": 15
@@ -98,6 +98,7 @@
   "tests/test_dev_mode_job.py": 85.1,
   "tests/test_devfake_tool_cue.py": 42.2,
   "tests/test_diskfull.py": 0.1,
+  "tests/test_diskneed.py": 0.1,
   "tests/test_download_cleanup.py": 3.5,
   "tests/test_downloader.py": 3.1,
   "tests/test_downloader_hardening.py": 0.5,
@@ -129,6 +130,7 @@
   "tests/test_installer_custom_model.py": 1.2,
   "tests/test_installer_dev_mode.py": 9.5,
   "tests/test_installer_devrun_fixes.py": 0.1,
+  "tests/test_installer_disk_need.py": 0.9,
   "tests/test_installer_driver_detection.py": 26.2,
   "tests/test_installer_files.py": 0.3,
   "tests/test_installer_first_run.py": 0.5,
@@ -161,6 +163,7 @@
   "tests/test_installer_web_server.py": 8.1,
   "tests/test_installer_web_uninstall.py": 0.6,
   "tests/test_interrupted_nightly.py": 47.4,
+  "tests/test_job_disk_room.py": 12.5,
   "tests/test_keepawake.py": 0.6,
   "tests/test_launcher_atomic_writes.py": 22.0,
   "tests/test_launchers.py": 23.5,

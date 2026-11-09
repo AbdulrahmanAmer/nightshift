@@ -83,8 +83,8 @@ def test_home_path_rules():
         assert "homePath" in fields(answers_view.validate(good_draft(homePath=bad), make_env())), bad
     assert "homePath" in fields(answers_view.validate(good_draft(homePath="D:\\" + "a" * 130), make_env()))
     assert "homePath" in fields(answers_view.validate(good_draft(homePath="Z:\\Nightshift"), make_env()))
-    # the balanced tier needs 74 GB free
-    env = make_env(free=70.0)
+    # the balanced tier needs more than the small one (its model is bigger): 64 GB with today's manifest
+    env = make_env(free=62.0)
     assert "homePath" in fields(answers_view.validate(good_draft(llmTier="balanced"), env))
     assert "homePath" not in fields(answers_view.validate(good_draft(), env))
 

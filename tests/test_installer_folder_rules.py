@@ -289,7 +289,7 @@ def powershell(tmp_path: Path, *lines: str) -> list[str]:
                 f"$text = Get-Content -LiteralPath '{STAGE1}' -Raw",
                 "$start = $text.IndexOf('function Test-PathInside')",
                 "$end = $text.IndexOf('# Machine probes')",
-                "$script:MinFreeGbRecommended = 80",
+                "$script:RoomyGb = 80",
                 "Invoke-Expression $text.Substring($start, $end - $start)",
                 *lines,
             ]

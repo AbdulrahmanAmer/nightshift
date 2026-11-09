@@ -7,7 +7,9 @@ Keep this file next to `INSTALL.cmd`.
 
 - A Windows 10 or 11 PC with an NVIDIA RTX graphics card (16 GB) and 32 GB of memory for the recommended
   Balanced model. With less memory setup picks the smaller Small model for you.
-- At least 60 GB of free disk space (74 GB with the recommended Balanced model, 81 GB with the Best one).
+- About 64 GB of free disk space for the recommended Balanced model on a first install (60 GB with Small, 72 GB
+  with Best). The setup window says the exact number for your PC and your choices, and what it is made of; it
+  asks for less when the models are already on the drive.
 - An internet connection: setup downloads about 20 GB with Balanced (about 15 GB with Small), or use a
   `models` folder you were given on Drive.
 - Optional: a free stock footage key from Pixabay (or Pexels, if you already have one). One is recommended, but
@@ -114,7 +116,7 @@ Every message has a code like `NS-E104`, a sentence and a "What to do". In the s
 | NS-E103 | NVIDIA driver too old (CUDA below 12.4) | Setup opens the driver page. Install the newest driver, restart, run INSTALL.cmd again. |
 | NS-W115 | The driver version could not be read | Nothing: setup uses the CUDA 12.4 build. If a video fails on the graphics card later, install the newest driver. |
 | NS-W404 | Captions will be slow: speech recognition runs on the processor, not the graphics card | Nothing blocks you; videos still work. Send the diagnostics zip if the captions step takes too long. |
-| NS-E104 | Not enough free disk space | Free 60 GB, or choose another drive when asked for the install folder. |
+| NS-E104 | Not enough free disk space | Free some space (the message says what this install or this video needs and what the drive has, when it knows), or choose another drive when asked for the install folder. |
 | NS-E105 | A download site cannot be reached | If the detail says the download site answered a 5xx, 408, 425 or 429 (the setup plan's file downloads wait up to 10 minutes for that, the other downloads do not), it is the site's side (for example GitHub having an outage): nothing on this PC is wrong, run INSTALL.cmd again later (or press Retry; for a model download from the dashboard or `ns models get`, start it again) and it continues where it stopped. Otherwise check the internet, switch off any VPN or proxy, run INSTALL.cmd again. |
 | NS-E109 | A downloaded file is damaged | Run INSTALL.cmd again. If it repeats, send the diagnostics zip. |
 | NS-E110 | FFmpeg could not be installed | Setup tries winget first and then downloads a fixed FFmpeg build itself. Press Retry once; if it repeats, install FFmpeg yourself (`winget install Gyan.FFmpeg`) and press Retry. Git is not needed. |
@@ -122,6 +124,7 @@ Every message has a code like `NS-E104`, a sentence and a "What to do". In the s
 | NS-E114 | The Visual C++ runtime is missing (the model runner cannot start without it) | Stage 1 (the Nightshift setup window with text) asks for permission first: press **Yes**. If it was declined, look for a flashing shield icon on the taskbar and press **Yes**, or install it from `https://aka.ms/vs/17/release/vc_redist.x64.exe` and press Retry. |
 | NS-E116 | A network port Nightshift needs is already in use | The message names the port and the program that holds it. Close that program (or restart the PC) and press Retry. |
 | NS-E117 | The install folder name has characters the model programs cannot open | Use a folder name with plain English letters, digits, spaces, - and _, then press Retry. |
+| NS-E121 | The install folder or the NIGHTSHIFT_HOME setting could not be set up (not a space problem) | Check that the install folder is on a drive this account can write to and that no program or policy locks the account's settings, then press Retry. |
 | NS-E115 | The program files could not be copied into the install folder | Make sure the install folder is not the folder you extracted the zip to, close any window that shows it, press Retry. |
 | NS-E113 | Antivirus blocked a file | Press **Open Protection history**, allow the Nightshift file there, then press Retry. Adding the install folder as an exclusion stops it happening again. If the message says Smart App Control: it blocks programs it does not know and cannot allow one file; turn it off in Windows Security > App & browser control > Smart App Control settings (it cannot be turned back on without reinstalling Windows), then press Retry. It is also the code when a downloaded program (`llama-server.exe`, `qwen-tts.exe`, `yt-dlp.exe`) is missing after it was unpacked: the scanner removed it. |
 | NS-E120 | The file that holds your API keys (`config\secrets.dpapi`) could not be limited to your Windows account | Press Retry (or save the key again in Settings). If the drive is FAT or exFAT Windows cannot keep it private: move NIGHTSHIFT_HOME to an NTFS drive. On an NTFS drive, check that your account owns the Nightshift folder and that no sync or backup tool changes its permissions, then send the diagnostics zip. The keys in Credential Manager are not affected. |
