@@ -82,7 +82,7 @@ def test_profile_on_the_floor_is_the_profiles_share_of_the_target_at_the_voices_
     ctx = _measured(tmp_home, tiny=True)
     mb = S.job_master_budget(ctx)
     assert mb.wpm != 155
-    assert (mb.target_minutes, mb.chapters) == (9, 7)
+    assert (mb.target_minutes, mb.chapters) == (4, 5)  # the tiny plan since H-8b: 4 minutes in 5 chapters
     assert TINY.master_floor_share is not None
     assert mb.min_words == round(mb.target_words * TINY.master_floor_share)
     nine_minutes = words_for_seconds(540, mb.wpm, fixed_s=master_fixed_seconds(5))

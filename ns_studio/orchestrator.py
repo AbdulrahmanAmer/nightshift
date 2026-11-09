@@ -11,6 +11,7 @@ from ns_common.errors import NsError
 from ns_studio.context import JobContext, owner_script_of
 from ns_studio.media.job_formats import prepare_job_formats
 from ns_studio.stages import REGISTRY, Stage, Tenant, needs_embed, run_stage
+from ns_studio.text.story_profile import note_job
 
 # Canonical stage order per format. Stage modules only `register()` their stages; the order lives here so
 # it never depends on import order. Names not registered yet are reported by `plan_job` (NS-E306).
@@ -172,6 +173,7 @@ def run_job(ctx: JobContext, *, resume: bool = True, dry_run: bool = False) -> l
     stages = plan_job(plan_format(ctx.fmt, ctx.job_dir))
     if dry_run:
         return [s.name for s in stages]
+    note_job(ctx)  # a job that runs with the engine-test switch on stays marked as a test video for good
     prepare_job_formats(ctx)  # which format each video is drawn from, chosen once, before the first stage
     owner = f"studio:{ctx.job_id}"
     ran: list[str] = []

@@ -1,6 +1,6 @@
 """Studio-level coded conditions (component C7).
 
-`StudioError` carries one of the studio codes NS-E320 to NS-E326 and takes message and hint from
+`StudioError` carries one of the studio codes NS-E320 to NS-E326 and NS-E329 and takes message and hint from
 `contracts/errors.json` through `ns_common.errors.describe` (CR-C7-1 is applied).
 """
 

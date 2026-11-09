@@ -7,7 +7,15 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SerializerFunctionWrapHandler,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
 
 SLUG_RE = r"^[a-z0-9]+(?:-[a-z0-9]+)*$"
 JOB_ID_RE = r"^[a-z0-9]+(?:-[a-z0-9]+)*-\d{8}-[0-9a-f]{4}$"
@@ -21,6 +29,18 @@ VOICE_NAME_RULE = "voice names are 1 to 40 letters, digits, - or _, starting wit
 
 class Strict(BaseModel):
     model_config = ConfigDict(extra="forbid")
+
+
+class MarkedWhenTest(Strict):
+    """A record that carries `profile: tiny_story` when an engine-test install made it (H-8b) and has no
+    `profile` key at all otherwise, so every record a normal install writes is byte-for-byte what it was."""
+
+    @model_serializer(mode="wrap")
+    def _leave_out_an_empty_mark(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        data: dict[str, Any] = handler(self)
+        if data.get("profile") is None:
+            data.pop("profile", None)
+        return data
 
 
 # ---------- channel ----------
@@ -378,11 +398,12 @@ class QcCheck(Strict):
     limit: str | None = None
 
 
-class QcResult(Strict):
+class QcResult(MarkedWhenTest):
     item: str                      # "long" | "s<k>"
     passed: bool
     checks: dict[str, QcCheck]
     reason: str | None = None
+    profile: Literal["tiny_story"] | None = None   # set for a video made on an engine-test install (H-8b)
 
 
 class PolicyCheck(Strict):
@@ -410,7 +431,7 @@ class ClipRef(Strict):
     license: str
 
 
-class Metadata(Strict):
+class Metadata(MarkedWhenTest):
     channel: str = Field(pattern=SLUG_RE)
     job_id: str = Field(pattern=JOB_ID_RE)
     kind: Literal["long", "short", "clip"]
@@ -433,6 +454,7 @@ class Metadata(Strict):
     prompt_versions: dict[str, int]
     source_video: str | None = None      # set for clips (spec 15.6)
     template: str | None = None          # clip layout template used
+    profile: Literal["tiny_story"] | None = None   # set for a video made on an engine-test install (H-8b)
 
 
 class CalibrationRow(Strict):
@@ -474,7 +496,9 @@ class PlanChapter(Strict):
 
 
 class Plan(Strict):
-    target_minutes: int = Field(ge=9)
+    # 9 minutes is the shortest master a normal install plans (`master_budget` refuses less); the engine-test
+    # profile plans 4 (H-8b), so the model itself only asks for a positive number.
+    target_minutes: int = Field(ge=1)
     target_words: int = Field(ge=1)
     chapters: list[PlanChapter] = Field(min_length=5, max_length=7)
 

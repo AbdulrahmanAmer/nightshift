@@ -38,6 +38,7 @@ from ns_studio.media.presets import (
 from ns_studio.media.shotplan import Shot, frame_edges
 from ns_studio.media.transcribe import Word
 from ns_studio.stages import Tenant
+from ns_studio.text.story_profile import with_mark
 
 VERTICAL = (1080, 1920)
 LANDSCAPE = (1920, 1080)
@@ -651,4 +652,4 @@ class RenderStage:
                 "render_done", job_id=ctx.job_id, item=item,
                 duration_s=report[item]["duration_s"], shots=len(shots), format=fmt.id,
             )
-        ctx.write_json("render/report.json", report)
+        ctx.write_json("render/report.json", with_mark(ctx, report))
