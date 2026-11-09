@@ -566,7 +566,8 @@ class StoryDir:
             raise WorkshopError(f"{slug!r} is not a valid story slug (lowercase letters, digits, dashes)")
         sd = cls(stories_dir(paths) / slug)
         if must_exist and not sd.root.is_dir():
-            raise WorkshopError(f"no story {slug!r}; run `studio series list`")
+            # an owner-facing message: the dashboard and the Assistant show it, so no CLI command here
+            raise WorkshopError(f"no story {slug!r}: Library > Series lists the stories, or ask the Assistant")
         return sd
 
     @property
