@@ -57,13 +57,13 @@ jobs:
       - run: python -m pyright
 
   # The unit tests run as a matrix of shards (H-3): dev/ci_shards.py gives each shard whole test files, split by
-  # measured seconds (dev/ci_shard_weights.json), so no shard runs longer than about 10 minutes where the one
-  # job ran about 28. The required check `test` further down is the job that says whether all of them passed.
+  # measured seconds (dev/ci_shard_weights.json), so each shard needs about 8 minutes of tests where the one
+  # job needed about 28. The required check `test` further down is the job that says whether all of them passed.
   test-shard:
     name: test-shard (${{ matrix.shard }}/4)
     runs-on: windows-latest
-    # Predicted: about 7 minutes of tests plus about 3 of setup (the slowest shard, dev/ci_shards.py plan). Twice
-    # that is 20; 25 leaves room for a slow runner. The old single job needed 28 minutes of tests alone.
+    # Predicted: about 8 minutes of tests plus about 3 of setup (the slowest shard, dev/ci_shards.py plan), 11 in
+    # all. Twice that is 22; 25 leaves room for a slow runner. The old single job needed 28 minutes of tests alone.
     timeout-minutes: 25
     strategy:
       fail-fast: false

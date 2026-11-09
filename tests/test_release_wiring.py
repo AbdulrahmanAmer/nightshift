@@ -77,7 +77,7 @@ def test_repo_settings_describe_the_tag_to_pin_loop():
 
 
 def test_the_test_shards_have_a_cap_well_under_the_old_forty_minutes_in_ci_and_release():
-    # the single test job (40 minutes, about 28 used) became four shards of about 7 minutes of tests (H-3)
+    # the single test job (40 minutes, about 28 used) became four shards of about 8 minutes of tests (H-3)
     for rel in (".github/workflows/ci.yml", ".github/workflows/release.yml"):
         jobs = yaml.safe_load(read(rel))["jobs"]
         assert 15 <= jobs["test-shard"]["timeout-minutes"] < 40, rel

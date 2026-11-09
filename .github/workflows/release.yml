@@ -24,7 +24,7 @@ jobs:
   test-shard:
     name: test-shard (${{ matrix.shard }}/4)
     runs-on: windows-latest
-    # About 7 minutes of tests plus about 3 of setup per shard; twice that is 20, 25 leaves room for a slow runner.
+    # About 8 minutes of tests plus about 3 of setup per shard; twice that is 22, 25 leaves room for a slow runner.
     timeout-minutes: 25
     strategy:
       fail-fast: false
