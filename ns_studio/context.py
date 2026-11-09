@@ -56,6 +56,7 @@ def build_services(
     (Pexels is optional since 2026), and when neither key is present both stay in so the first search raises
     the coded error (`NS-E501`/`NS-E502`) instead of finding nothing. `Services.footage_key` says whether any
     key exists: the nightly planner, `studio run` and the dashboard refuse a story job without one up front.
+    `runtime.fake_footage` (the engine test) counts as fake footage: the fake source, and a key is not needed.
 
     `acquirer` defaults to the supervisor-backed `StudioAcquirer` when no model service is faked (it connects
     on first use, so building the bundle never contacts anything) and to `DevAcquirer` when any of llm, tts,
@@ -76,7 +77,8 @@ def build_services(
     )
     sources: list[ClipSource]
     footage_key = True
-    if "clips" in fake:
+    if "clips" in fake or runtime.fake_footage:
+        # `runtime.fake_footage` is the engine test (docs/DEV_MODE.md): real models, placeholder footage
         sources = [FakeClipSource(paths.cache_clips / "fake")]
     else:
         every: list[ClipSource] = [

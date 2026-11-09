@@ -155,3 +155,54 @@ def test_run_now_is_not_blocked_when_the_keyring_cannot_be_read_or_footage_is_fa
     assert make_dash(tmp_home, Keyring(), fake_services=True).jobs.create_run(
         {"channel": "after-dark", "format": "shorts_only"}
     )["status"] == "queued"
+
+
+# ------------------------------------------- the fake_footage engine test: real models, placeholder footage
+
+
+def test_runtime_fake_footage_brings_the_fake_clip_source_and_needs_no_key(tmp_home: Path):
+    """docs/DEV_MODE.md "Real engines, fake voice": no dev mode, no key, no `clips` fake, and no NS-E502."""
+    paths = Paths.from_env()
+    paths.ensure()
+    real = Runtime.default("cpu-dev")
+    with pytest.raises(NsError):
+        require_footage_key(build_services(real, fake=set(), paths=paths, keys={}))
+    rt = real.model_copy(update={"fake_footage": True})
+    services = build_services(rt, fake=set(), paths=paths, keys={})
+    require_footage_key(services)                                   # passes
+    assert services.footage_key is True
+    assert [s.name for s in services.clip_sources] == ["fake"]
+    # the real model services stay real: only the footage is placeholder
+    assert type(services.llm).__name__ == "LlmClient"
+    assert type(services.transcriber).__name__ != "FakeTranscriber"
+
+
+def test_the_helper_reads_runtime_json_like_is_dev(tmp_home: Path):
+    import json
+
+    from ns_common.devmode import fake_footage, is_dev
+
+    paths = Paths.from_env()
+    paths.ensure()
+    assert fake_footage(paths) is False                             # no runtime.json: a real install
+    paths.runtime_file.write_text(json.dumps({"fake_footage": True}), encoding="utf-8")
+    assert fake_footage(paths) is True and is_dev(paths) is False
+    paths.runtime_file.write_text(json.dumps({"dev_mode": True}), encoding="utf-8")
+    assert fake_footage(paths) is True and is_dev(paths) is True
+    paths.runtime_file.write_text(json.dumps({"fake_footage": False}), encoding="utf-8")
+    assert fake_footage(paths) is False
+
+
+def test_the_dashboard_job_refusal_stands_down_for_fake_footage(tmp_home: Path):
+    import json
+
+    from ns_dashboard.svc_channels import ChannelsService
+    from ns_dashboard.svc_jobs import JobsService
+
+    paths = Paths.from_env()
+    paths.ensure()
+    state = build_state(paths, fake_services=True, link=SupervisorLink("http://127.0.0.1:9", timeout_s=0.2))
+    state.fake_services = False                                     # real adapters, empty keyring
+    jobs_svc = JobsService(state, ChannelsService(state))
+    paths.runtime_file.write_text(json.dumps({"fake_footage": True}), encoding="utf-8")
+    jobs_svc._require_footage_key()                                 # no NS-E502

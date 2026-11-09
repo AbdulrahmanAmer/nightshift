@@ -491,3 +491,29 @@ def test_fake_voice_is_ignored_by_a_dev_install_which_fakes_the_voice_anyway(tmp
     assert "Dev mode" in ctx.ui.text and "Engine test" not in ctx.ui.text
     rt = build_runtime(ctx)
     assert rt.tts.engine == "qwentts" and rt.dev_mode is True
+
+
+# ----------------------------------------------------------------------------- engine test: fake_footage
+def test_fake_footage_is_written_into_runtime_json_of_a_real_install(tmp_path: Path):
+    """The twin of fake_voice: the answer reaches runtime.json, and a plain real install does not carry it."""
+    ctx = make_test_context(
+        tmp_path / "r", raw_answers=example_answers(allow_cpu=True, fake_footage=True), resolve=True,
+        dev_mode=False, preflight={"profile": "cpu-dev"},
+    )
+    assert ctx.fake_footage is True and ctx.fake_voice is False
+    rt = ensure_baseline(ctx)
+    on_disk = json.loads(ctx.paths.runtime_file.read_text(encoding="utf-8"))
+    assert on_disk["fake_footage"] is True and on_disk["dev_mode"] is False
+    assert rt.tts.engine == "qwentts" and load_runtime(ctx.paths).fake_footage is True
+    plain = make_test_context(
+        tmp_path / "p", raw_answers=example_answers(allow_cpu=True), resolve=True, dev_mode=False,
+        preflight={"profile": "cpu-dev"},
+    )
+    assert plain.fake_footage is False and build_runtime(plain).fake_footage is False
+
+
+def test_fake_footage_is_ignored_by_a_dev_install_which_fakes_its_footage_anyway(tmp_path: Path):
+    ctx = dev_ctx(tmp_path, fake_footage=True)
+    assert ctx.fake_footage is False
+    rt = build_runtime(ctx)
+    assert rt.fake_footage is False and rt.dev_mode is True

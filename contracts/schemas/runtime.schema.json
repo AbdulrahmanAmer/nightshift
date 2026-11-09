@@ -359,6 +359,11 @@
       "default": false,
       "title": "Dev Mode",
       "type": "boolean"
+    },
+    "fake_footage": {
+      "default": false,
+      "title": "Fake Footage",
+      "type": "boolean"
     }
   },
   "title": "Runtime",
