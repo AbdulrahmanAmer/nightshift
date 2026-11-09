@@ -10,6 +10,7 @@ is refused (`NS-E701`). Only https URLs on GitHub hosts are followed. No other n
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import re
 from dataclasses import dataclass
@@ -174,13 +175,22 @@ def expected_digest(rel: Release, client: httpx.Client) -> str:
     raise NsError("NS-E701", f"release {rel.tag} publishes no SHA256 for its update package")
 
 
+def _forget(target: Path) -> None:
+    """Delete an older zip of the name; one that cannot be deleted (open elsewhere) hides no error."""
+    with contextlib.suppress(OSError):
+        target.unlink(missing_ok=True)
+
+
 def download(rel: Release, dest_dir: Path, client: httpx.Client | None = None) -> Path:
     """Download the update zip into `dest_dir`, verify its SHA256 and write `<zip>.sha256` next to it.
 
     The result is what `ns_supervisor.update.update_app` takes. The download goes to a temporary file beside
     the final name; its SHA256 is checked on that file and only a match is moved under the final name. A
-    mismatch (`NS-E701`), a cut connection or any other failure leaves nothing under the final name, not even
-    an older zip of the same name.
+    mismatch (`NS-E701`), a cut connection (`NS-E105`/`NS-E118`) or a write that fails (disk full) leaves
+    nothing under the final name, and an older zip of the same name is deleted. The one exception is a program
+    that holds the name open (`NS-E119`): Windows will not delete or replace it, so an older zip stays and the
+    error says why. An older zip that cannot be deleted for that reason after a mismatch also stays; the
+    mismatch is still the error raised.
     """
     if rel.zip_url is None or rel.zip_name is None:
         raise NsError("NS-E701", f"release {rel.tag} has no Nightshift-Update-{rel.version}.zip")
@@ -210,12 +220,12 @@ def download(rel: Release, dest_dir: Path, client: httpx.Client | None = None) -
                 # leaves no torn zip, and a zip nobody checked is never there for a later step to pick up.
                 write_chunks_atomic(target, r.iter_bytes(1024 * 1024), verify=check)
         except httpx.HTTPError as e:
-            target.unlink(missing_ok=True)
+            _forget(target)
             raise _unreachable(e) from e
         except FileInUseError:
             raise  # a program holds the name open: it cannot be deleted either; the swap left it as it was
-        except NsError:
-            target.unlink(missing_ok=True)
+        except (NsError, OSError):
+            _forget(target)
             raise
         sidecar = target.with_name(target.name + ".sha256")
         write_text_atomic(sidecar, f"{want}  {rel.zip_name}\n", newline=None)

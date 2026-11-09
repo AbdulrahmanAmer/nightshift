@@ -63,6 +63,8 @@ LEASED_PREFIXES: tuple[str, ...] = ("studio:", "dashboard:assistant")
 ACTIVITY_PREFIXES: tuple[str, ...] = ("studio:", "dashboard:job")
 #: `/status` says `busy` for this long after the last acquire, release or warmup (a run between two stages).
 BUSY_RECENT_S = 120.0
+#: How long `write_state` waits for a program that holds `run\supervisor.json` open before it fails (NS-E119).
+STATE_WAIT_S = 2.0
 
 
 @dataclass
@@ -180,7 +182,9 @@ class Supervisor:
             "started_at": self.started_wall,
             "children": children,
         }
-        write_text_atomic(self.state_file, json.dumps(data, indent=2) + "\n")  # `ns stop` reads it
+        # `ns stop` and `ns status` read it. Called on the event loop, so a program that holds the file (they
+        # open it only briefly) costs STATE_WAIT_S at most, then the write fails with NS-E119.
+        write_text_atomic(self.state_file, json.dumps(data, indent=2) + "\n", wait_s=STATE_WAIT_S)
 
     def remove_state(self) -> None:
         """Delete the pid file (clean exit)."""

@@ -1146,15 +1146,19 @@ def test_an_update_upload_that_is_too_big_or_empty_leaves_nothing_under_its_name
 def test_the_uploaded_updates_checksum_file_is_swapped_in_whole(
     tmp_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from tests.test_round3_misc import ZIP, update_dash
+    from tests.test_round3_misc import ZIP, sha_of, update_dash
 
     dash, fake = update_dash(tmp_home)
     swaps = _watch_swaps(monkeypatch)
-    sidecar = io.BytesIO(b"ab" * 32 + f"  {ZIP}\n".encode())
+    sidecar = io.BytesIO(sha_of(b"PK\x03\x04zip"))
     dash.library.update_apply_file(ZIP, io.BytesIO(b"PK\x03\x04zip"), sidecar)
     assert [name for name, _ in swaps] == [ZIP, ZIP + ".sha256"], "`ns update` reads the checksum file next"
     (zip_path,) = fake.files
-    assert zip_path.with_name(ZIP + ".sha256").read_text(encoding="utf-8").startswith("ab" * 32)
+    assert (
+        zip_path.with_name(ZIP + ".sha256")
+        .read_text(encoding="utf-8")
+        .startswith(hashlib.sha256(b"PK\x03\x04zip").hexdigest())
+    )
     assert not list(zip_path.parent.glob("*.tmp"))
 
 
@@ -1206,3 +1210,176 @@ def test_the_updater_goes_on_when_a_progress_line_cannot_be_written(
     monkeypatch.undo()
     assert "could not write update_state.json" in capsys.readouterr().err
     assert update_job.read_status(paths)["message"] == "Step 1."
+
+
+# ---------------------------------------------------------------- F-9 break-it round
+
+
+def test_an_uploaded_update_zip_that_does_not_match_its_checksum_is_never_put_under_its_name(
+    tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The zip used to be published under its final name by `_save_upload` before any digest check; the check
+    came later in `ns update`, and a refusal there left the unverified zip in `data/updates`."""
+    from ns_dashboard.errors import ApiError
+    from tests.test_round3_misc import ZIP, sha_of, update_dash
+
+    dash, fake = update_dash(tmp_home)
+    folder = dash.state.paths.data / "updates"
+    swaps = _watch_swaps(monkeypatch)
+    with pytest.raises(ApiError) as ei:
+        dash.library.update_apply_file(ZIP, io.BytesIO(b"PK-other"), io.BytesIO(sha_of(b"PK-pinned")))
+    assert ei.value.status == 409 and ei.value.code == "update_refused"
+    assert "NS-E701" in str(ei.value) and "mismatch" in str(ei.value) and "not saved" in str(ei.value)
+    assert swaps == [], f"the unchecked zip was moved to {swaps}: for a moment it had its final name"
+    assert fake.files == [] and list(folder.iterdir()) == []
+
+
+def test_a_refused_update_upload_leaves_the_earlier_pair_of_that_name_as_it_was(tmp_home: Path) -> None:
+    from ns_dashboard.errors import ApiError
+    from tests.test_round3_misc import ZIP, sha_of, update_dash
+
+    dash, fake = update_dash(tmp_home)
+    dash.library.update_apply_file(ZIP, io.BytesIO(b"PK-first"), io.BytesIO(sha_of(b"PK-first")))
+    (zip_path,) = fake.files
+    side = zip_path.with_name(ZIP + ".sha256")
+    before = (zip_path.read_bytes(), side.read_bytes())
+    with pytest.raises(ApiError):
+        dash.library.update_apply_file(ZIP, io.BytesIO(b"PK-second"), io.BytesIO(sha_of(b"PK-other")))
+    assert (zip_path.read_bytes(), side.read_bytes()) == before
+    assert sorted(p.name for p in zip_path.parent.iterdir()) == [ZIP, ZIP + ".sha256"]
+
+
+@pytest.mark.parametrize(
+    ("checksum", "code"),
+    [(b"  \n", "empty_file"), (b"not a digest\n", "bad_checksum"), (b"ab" * 31 + b"\n", "bad_checksum")],
+)
+def test_a_checksum_file_that_is_not_a_digest_saves_neither_file(
+    tmp_home: Path, checksum: bytes, code: str
+) -> None:
+    from ns_dashboard.errors import ApiError
+    from tests.test_round3_misc import ZIP, update_dash
+
+    dash, fake = update_dash(tmp_home)
+    with pytest.raises(ApiError) as ei:
+        dash.library.update_apply_file(ZIP, io.BytesIO(b"PK-zip"), io.BytesIO(checksum))
+    assert ei.value.code == code and fake.files == []
+    assert not (dash.state.paths.data / "updates").exists(), "refused before anything was saved"
+
+
+def test_an_empty_update_zip_with_a_matching_checksum_is_not_saved(tmp_home: Path) -> None:
+    from ns_dashboard.errors import ApiError
+    from tests.test_round3_misc import ZIP, sha_of, update_dash
+
+    dash, fake = update_dash(tmp_home)
+    with pytest.raises(ApiError) as ei:
+        dash.library.update_apply_file(ZIP, io.BytesIO(b""), io.BytesIO(sha_of(b"")))
+    assert ei.value.code == "empty_file" and fake.files == []
+    assert list((dash.state.paths.data / "updates").iterdir()) == []
+
+
+def _good_download(tmp_path: Path) -> tuple[Any, dict[str, Any], Path]:
+    from ns_supervisor import releases
+    from tests.test_ns_update_github import client_for, release_json
+
+    data = release_json("0.2.0")
+    rel = releases.parse_release(data)
+    return rel, data, releases.download(rel, tmp_path, client_for(data))
+
+
+def test_a_download_whose_write_fails_removes_an_older_zip_of_that_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A full disk left the older zip under the name although the docstring promised nothing would."""
+    from ns_supervisor import releases
+    from tests.test_ns_update_github import client_for
+
+    rel, data, older = _good_download(tmp_path)
+
+    def full(src: Any, dst: Any) -> None:
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(atomic.os, "replace", full)
+    with pytest.raises(OSError, match="No space"):
+        releases.download(rel, tmp_path, client_for(data))
+    monkeypatch.undo()
+    assert not older.exists() and not list(tmp_path.glob("*.tmp"))
+
+
+@windows_only
+def test_a_mismatch_says_so_even_when_the_older_zip_is_open_in_another_program(tmp_path: Path) -> None:
+    """`unlink` of the older zip raised a bare PermissionError that hid the NS-E701 message."""
+    from ns_supervisor import releases
+    from tests.test_ns_update_github import client_for
+
+    rel, data, older = _good_download(tmp_path)
+    bad = {**data, "assets": [dict(a) for a in data["assets"]]}
+    bad["assets"][1]["digest"] = "sha256:" + "f" * 64
+    with older.open("rb"):  # a plain open: Windows will not delete the file under it
+        with pytest.raises(NsError) as ei:
+            releases.download(releases.parse_release(bad), tmp_path, client_for(bad))
+    assert ei.value.code == "NS-E701" and "mismatch" in ei.value.detail
+    assert not list(tmp_path.glob("*.tmp"))
+
+
+@windows_only
+def test_a_download_whose_older_zip_is_open_in_another_program_says_why_and_keeps_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The documented exception: Windows will neither replace nor delete the open name, so the older zip stays
+    and the error is the coded one."""
+    from ns_supervisor import releases
+    from tests.test_ns_update_github import ZIP_BYTES, client_for
+
+    rel, data, older = _good_download(tmp_path)
+    monkeypatch.setattr(atomic, "time", FakeClock())
+    with older.open("rb"), pytest.raises(NsError) as ei:
+        releases.download(rel, tmp_path, client_for(data))
+    assert ei.value.code == "NS-E119"
+    assert older.read_bytes() == ZIP_BYTES and not list(tmp_path.glob("*.tmp"))
+
+
+def test_the_updaters_lines_do_not_stall_it_for_long_while_a_program_holds_the_state_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each write could wait the full 15 s, and `_final` tries ten times: a holder that kept
+    `update_state.json` for the whole run stalled the updater for about 150 s at the end."""
+    from ns_supervisor import update_job
+
+    paths = Paths(tmp_path / "home")
+    update_job.write_status(paths, "running", "Step 1.", pid=os.getpid())
+    refuse_every_swap(monkeypatch)
+    clock = FakeClock()
+    monkeypatch.setattr(atomic, "time", clock)
+    update_job._progress(paths, "running", "Step 2.", pid=os.getpid())  # noqa: SLF001
+    assert 0.5 <= clock.slept <= update_job.PROGRESS_WAIT_S + 0.01, (
+        f"one progress line waited {clock.slept} s"
+    )
+
+    clock.slept = 0.0
+
+    def sleep(seconds: float) -> None:
+        clock.sleep(seconds)
+
+    update_job._final(paths, "done", "Done.", sleep=sleep)  # noqa: SLF001
+    assert clock.slept <= 13.0, f"the final line stalled the updater for {clock.slept:.0f} s"
+    monkeypatch.undo()
+    assert update_job.read_status(paths)["message"] == "Step 1."
+
+
+def test_the_supervisors_pid_file_does_not_block_its_event_loop_for_15_seconds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from ns_supervisor.core import STATE_WAIT_S
+    from tests.test_supervisor_core import make
+
+    sup, _, _ = make(tmp_path)
+    sup.write_state()
+    refuse_every_swap(monkeypatch)
+    clock = FakeClock()
+    monkeypatch.setattr(atomic, "time", clock)
+    with pytest.raises(NsError) as ei:
+        sup.write_state()
+    monkeypatch.undo()
+    assert ei.value.code == "NS-E119"
+    assert 1.0 <= clock.slept <= STATE_WAIT_S + 0.01, f"write_state waited {clock.slept} s"
+    sup.close_job()

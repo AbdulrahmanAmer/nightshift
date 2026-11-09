@@ -141,12 +141,13 @@ def _waiting_cannot_help(dst: Path) -> bool:
         return False
 
 
-def replace_atomic(src: Path, dst: Path) -> None:
+def replace_atomic(src: Path, dst: Path, *, wait_s: float = REPLACE_WAIT_S) -> None:
     """`os.replace(src, dst)`, retried while Windows refuses it because another program has `dst` open.
 
-    The pause starts at 10 ms and doubles up to 250 ms; after `REPLACE_WAIT_S` in all it raises
-    `FileInUseError` (`NS-E119`) and `dst` is as it was. A folder in the way or a read-only `dst` raises the
-    plain `PermissionError` at once: waiting does not change that.
+    The pause starts at 10 ms and doubles up to 250 ms; after `wait_s` (default `REPLACE_WAIT_S`) in all it
+    raises `FileInUseError` (`NS-E119`) and `dst` is as it was. A caller that must not stall (the updater's
+    progress lines, the supervisor's pid file) passes a shorter `wait_s`. A folder in the way or a read-only
+    `dst` raises the plain `PermissionError` at once: waiting does not change that.
     """
     started = time.monotonic()
     pause = _PAUSE_FIRST_S
@@ -158,33 +159,40 @@ def replace_atomic(src: Path, dst: Path) -> None:
             if _waiting_cannot_help(dst):
                 raise
             waited = time.monotonic() - started
-            if waited >= REPLACE_WAIT_S:
+            if waited >= wait_s:
                 raise _in_use(dst, waited, e) from e
-            time.sleep(min(pause, REPLACE_WAIT_S - waited))
+            time.sleep(min(pause, wait_s - waited))
             pause = min(pause * 2, _PAUSE_MAX_S)
 
 
-def _publish(tmp: Path, path: Path) -> None:
+def _publish(tmp: Path, path: Path, wait_s: float = REPLACE_WAIT_S) -> None:
     """Swap the finished temp file in; the temp file is removed whatever happens.
 
-    When the swap stays refused for `REPLACE_WAIT_S` the write fails (`FileInUseError`) and `path` keeps its
+    When the swap stays refused for `wait_s` the write fails (`FileInUseError`) and `path` keeps its
     old content. It is deliberately NOT copied over the old file in place: that is the torn write this module
     exists to prevent, and a crash in the middle of it leaves the file half written.
     """
     try:
-        replace_atomic(tmp, path)
+        replace_atomic(tmp, path, wait_s=wait_s)
     except BaseException:
         _discard(tmp)
         raise
 
 
-def write_text_atomic(path: Path, text: str, *, keep_backup: bool = False, newline: str | None = "") -> Path:
+def write_text_atomic(
+    path: Path,
+    text: str,
+    *,
+    keep_backup: bool = False,
+    newline: str | None = "",
+    wait_s: float = REPLACE_WAIT_S,
+) -> Path:
     """Write `text` to `path` through a temp file and `os.replace`; optionally keep the old file as `.bak`.
 
     The previous file is copied to the backup only when it exists, so a reader that finds the new file torn
     (which atomic writes prevent, but a disk can still fail) has the last copy that was written before it.
     `newline` is `open`'s: the default writes LF as it is; `None` gives `Path.write_text`'s CRLF on Windows
-    for files a person reads in Notepad.
+    for files a person reads in Notepad. `wait_s`: how long a refused swap is retried (`replace_atomic`).
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = _tmp_for(path)
@@ -197,7 +205,7 @@ def write_text_atomic(path: Path, text: str, *, keep_backup: bool = False, newli
         if keep_backup and path.exists():
             with contextlib.suppress(OSError):
                 shutil.copy2(path, path.with_name(path.name + BACKUP_SUFFIX))
-        _publish(tmp, path)
+        _publish(tmp, path, wait_s)
     except BaseException:
         _discard(tmp)
         raise
