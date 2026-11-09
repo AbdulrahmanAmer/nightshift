@@ -63,9 +63,13 @@ small elevated helper that does the admin-only reads on an allowlist (`powercfg 
 The proofs themselves run as the person, so the engine and the files it writes are not elevated. At the end of
 run 1, when a night is still waited for, the helper checks that `powercfg /a` lists a sleep state and that
 `powercfg /waketimers` lists the product task's timer (F-F5 part 2). It then closes any Nightshift dashboard window
-through its own Close button and "Close window" (never "Quit"; F-F5 part 6 needs the window closed), stops an
-engine the kit started, writes the zip, prints a sentence that the PC sleeps in 60 seconds, and sleeps it (sleep,
-not hibernate). The kit adds no wake timer of its own: the task's `WakeToRun` timer wakes the PC. If the timer is
+through its own Close button and "Close window" (never "Quit"). Closing the window does not stop the dashboard
+service, and while that service runs the engine never leaves after the night (`dashboard_open()`,
+`ns_supervisor/core.py:700, :716-751`). So the kit then runs Stop All (`POST /api/engine/stop_all`,
+`ns_dashboard/server.py:318`), whoever started the engine, and waits until the supervisor port stops answering.
+It sleeps the PC only when, just before, `engine.vram_owner` was null (nothing holds the GPU, so the night's jobs
+are not skipped) and the engine is down; otherwise it does not sleep, and the progress line names the holder. It
+then writes the zip, prints a sentence that the PC sleeps in 60 seconds, and sleeps it (sleep, not hibernate). The kit adds no wake timer of its own: the task's `WakeToRun` timer wakes the PC. If the timer is
 not listed, the kit does not sleep the PC and F-F5 part 2 fails with that reason. Nobody has to be at the PC.
 The sleep time goes into the defer data, for F-F5 part 3.
 
@@ -217,8 +221,11 @@ against the 120 ms gate.
    one entry `s<k>` per Short with `drift_ms` and `match_ratio`; the master's entry `long`
    (`ns_studio/media/derive.py:158`, `ns_studio/media/master.py:299`). Pass: every `drift_ms` is a number and at
    most 120 (`DRIFT_LIMIT_MS`, `captions.py:30` and `ns_studio/media/qc.py:24`). Recorded: max, median, and the
-   margin to 120. "Well under 120" is a number the Head sets from this evidence (proposed: 60 ms); the script
-   reports it, it does not invent it.
+   margin to 120. That part can never fail by itself, because the product already rejects a Short over 120 ms
+   (`captions.py:30`), so "well under 120" has its own threshold: pass when every Short's `drift_ms` is at most
+   60 ms (half the gate) and the median at most 40 ms. These two numbers are QA's proposal for the Head to
+   confirm or change before the kit ships; the evidence records the values either way, so a change of threshold
+   needs no new run.
 
 **(c) Starts and stops.** Nothing. Reads only.
 
@@ -333,8 +340,8 @@ afterwards (after H-15 item 4); 7 the morning message was shown; 8 a master was 
    the log line `run_finished`, then `auto_exit` with `reason: "nightly run finished"` (`core.py:717-739`, grace
    60 s at `core.py:48`). Pass: the recorded exit has that reason, with `after_s <= 120`, and the port and state
    file agree. If `run_finished` shows `dashboard_open: true` the product kept the engine on purpose: the part is
-   "not applicable" and defers one more night. The kit closes the dashboard window before it sleeps the PC, so
-   this is not expected.
+   "not applicable" and defers one more night. The kit runs Stop All before it sleeps the PC (section 1), so
+   the dashboard service is not running at 03:00 and this is not expected.
 7. An S4U run is in session 0 and cannot show a toast (`ns_supervisor/notify.py:73-75`); it leaves
    `run\morning_note.json` instead (`notify.py:56, :106-124`). Pass: the night's `toast` log line says
    `shown: false` (`ns_studio/notifications.py:146`), `GET /api/notes` (`ns_dashboard/svc_engine.py:287-301`)
@@ -500,9 +507,13 @@ it exits.
    not a leased owner (`ns_supervisor/core.py:56-59`), so a missed release would hold the GPU until Release in the
    Queue: a fail here is a real finding.
 
-**(c) Starts and stops.** The launcher (recorded pid). With `-Prompt` it ends by itself. A hard stop would skip
-its `finally` and leave the lock held, so the proof never stops it; on a time-out it fails and records the
-holder. The launcher creates `%USERPROFILE%\Projects` on C: (`nightshift-code.ps1:32-34`) and rewrites
+**(c) Starts and stops.** The launcher (recorded pid). With `-Prompt` it ends by itself. A hard stop by the runner
+would skip the launcher's own `finally` and leave the lock held (`opencode` is not a leased owner, so nothing
+expires it). So the proof's own `finally`, pass, fail or time-out, and before the runner may stop the launcher:
+reads `engine.vram_owner`, and when it is still `opencode` releases it through the product
+(`POST /api/engine/release_gpu {"owner": "opencode"}`, a call with no deadline) and reads it back null; the
+proof then fails if it had to do that, naming the holder. The kit's sleep step is gated on `vram_owner` being
+null (section 1, "Sleep and UAC"), so the PC never sleeps with the GPU held. The launcher creates `%USERPROFILE%\Projects` on C: (`nightshift-code.ps1:32-34`) and rewrites
 `config\opencode.json`'s port: both are the product's own effects; the proof records whether `Projects` existed
 before.
 
