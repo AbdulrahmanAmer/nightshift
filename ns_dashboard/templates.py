@@ -1,227 +1,111 @@
-"""Clip templates for the Clipper page: yaml loader with a built-in fallback, Pillow previews (C9)."""
+"""Clip layouts for the Clipper page, read from the `clip` format presets (spec 17.1).
+
+Ids, labels, regions and caption anchors come from `ns_studio.media.formats.load_formats`, so a layout the
+owner edited or added in Library > Formats (`<home>\\config\\formats`) shows up here with no change in code.
+Only the plain-language description and "when" lines of the six shipped layouts are kept below: a preset
+carries no prose of its own.
+"""
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
-import yaml
-
+from ns_common.models import Format
 from ns_common.paths import Paths
+from ns_studio.errors import StudioError
+from ns_studio.media.formats import FORMATS_DIR, forget_loaded_formats, load_formats
 
-FRAME_W = 1080
-FRAME_H = 1920
+# A layout id is its preset id without the `clip_` prefix, the name the Clipper and the saved jobs use.
+PREFIX = "clip_"
 
+AUTO: dict[str, Any] = {
+    "id": "auto",
+    "label": "Let Nightshift choose",
+    "description": "Looks at the video and picks the layout that fits.",
+    "when": "Default",
+    "regions": [],
+    "caption_y_pct": 70,
+    "title_card": False,
+}
 
-def _box(name: str, x: float, y: float, w: float, h: float) -> dict[str, Any]:
-    return {"name": name, "x": x, "y": y, "w": w, "h": h}
-
-
-# Spec 19.3 layouts as fractions of the 1080x1920 frame.
-BUILTIN: list[dict[str, Any]] = [
-    {
-        "id": "auto",
-        "label": "Let Nightshift choose",
-        "description": "Looks at the video and picks the layout that fits.",
-        "when": "Default",
-        "regions": [],
-        "caption_y_pct": 70,
-        "title_card": False,
-    },
-    {
-        "id": "gaming_facecam",
-        "label": "Gameplay with face cam",
-        "description": "Your face cam on top, the game filling the rest.",
-        "when": "A face cam is found in a corner",
-        "regions": [_box("facecam", 0, 0, 1, 0.3333), _box("gameplay", 0, 0.3333, 1, 0.6667)],
-        "caption_y_pct": 33,
-        "title_card": False,
-    },
-    {
-        "id": "podcast_stacked",
-        "label": "Two people, stacked",
-        "description": "Both speakers one above the other; the talker gets a thin border.",
-        "when": "Two faces on screen",
-        "regions": [_box("speaker 1", 0, 0, 1, 0.5), _box("speaker 2", 0, 0.5, 1, 0.5)],
-        "caption_y_pct": 72,
-        "title_card": False,
-    },
-    {
-        "id": "podcast_single",
-        "label": "One person, follows the face",
-        "description": "A single tall crop that follows whoever is on screen.",
-        "when": "Two faces, but you want one",
-        "regions": [_box("face", 0, 0, 1, 1)],
-        "caption_y_pct": 68,
-        "title_card": False,
-    },
-    {
-        "id": "talking_head",
-        "label": "Talking head",
-        "description": "A tall crop that follows one speaker.",
-        "when": "One face on screen",
-        "regions": [_box("face", 0, 0, 1, 1)],
-        "caption_y_pct": 68,
-        "title_card": False,
-    },
-    {
-        "id": "center_crop",
-        "label": "Centre crop on blur",
-        "description": "The picture in the middle over a soft blurred background.",
-        "when": "Slides, screen recordings, no faces",
-        "regions": [_box("blurred fill", 0, 0, 1, 1), _box("picture", 0, 0.34, 1, 0.32)],
-        "caption_y_pct": 72,
-        "title_card": False,
-    },
-    {
-        "id": "screen_plus_cam",
-        "label": "Screen with small cam",
-        "description": "Face cam on top, the whole screen below it.",
-        "when": "Tutorials with a small cam",
-        "regions": [_box("facecam", 0, 0, 1, 0.3333), _box("screen", 0, 0.3333, 1, 0.3167)],
-        "caption_y_pct": 70,
-        "title_card": False,
-    },
-]
+# Shipped layouts in the order the page shows them, with their owner-facing wording.
+SHIPPED: dict[str, tuple[str, str]] = {
+    "gaming_facecam": ("Your face cam on top, the game filling the rest.", "A face cam is found in a corner"),
+    "podcast_stacked": (
+        "Both speakers one above the other; the talker gets a thin border.", "Two faces on screen",
+    ),
+    "podcast_single": (
+        "A single tall crop that follows whoever is on screen.", "Two faces, but you want one",
+    ),
+    "talking_head": ("A tall crop that follows one speaker.", "One face on screen"),
+    "center_crop": (
+        "The picture in the middle over a soft blurred background.", "Slides, screen recordings, no faces",
+    ),
+    "screen_plus_cam": ("Face cam on top, the whole screen below it.", "Tutorials with a small cam"),
+}
 
 
-def yaml_path() -> Path | None:
-    """`ns_studio/presets/clip_templates.yaml` when C8 has added it."""
-    try:
-        import ns_studio
-    except ImportError:
-        return None
-    f = Path(ns_studio.__file__).resolve().parent / "presets" / "clip_templates.yaml"
-    return f if f.exists() else None
+def clipper_can_run(layout_id: str) -> bool:
+    """True for `auto` and the shipped layout ids: the only ones `ns_studio.clipper` can lay out today.
+
+    A layout the owner added in Library > Formats is listed on the Create page, but the clipper
+    (`detect.TEMPLATE_NEEDS`) has no way to cut it, so a job for it would fail in the Layout stage after
+    minutes of GPU and LLM work. Owner edits of a shipped layout keep its id and are accepted.
+    """
+    return layout_id == AUTO["id"] or layout_id in SHIPPED
 
 
-def _fraction(value: Any, full: int) -> float:
-    v = float(value)
-    return round(v / full if v > 1.5 else v, 4)
+def _label(fmt: Format) -> str:
+    name = fmt.name.strip()
+    name = name[len("Clip:"):].strip() if name.lower().startswith("clip:") else name
+    return (name[:1].upper() + name[1:]) or fmt.id.removeprefix(PREFIX).replace("_", " ").capitalize()
 
 
-def _normalise_box(name: str, raw: Any) -> dict[str, Any] | None:
-    d: dict[str, Any]
-    if isinstance(raw, dict):
-        d = raw
-    elif isinstance(raw, list | tuple) and len(raw) == 4:
-        d = dict(zip(("x", "y", "w", "h"), raw, strict=True))
-    else:
-        return None
-    try:
-        return {
-            "name": str(d.get("name", name)),
-            "x": _fraction(d["x"], FRAME_W),
-            "y": _fraction(d["y"], FRAME_H),
-            "w": _fraction(d["w"], FRAME_W),
-            "h": _fraction(d["h"], FRAME_H),
+def _caption_y_pct(fmt: Format) -> float:
+    """Where captions sit; on the seam below the first panel when the preset puts them there."""
+    first = fmt.layout.regions[0]
+    if fmt.layout.seam_captions and len(fmt.layout.regions) > 1:
+        return round((first.y + first.h) / fmt.canvas.h * 100, 1)
+    return round(fmt.captions.anchor_y_pct, 1)
+
+
+def _entry(fmt: Format) -> dict[str, Any]:
+    layout_id = fmt.id.removeprefix(PREFIX)
+    regions = [
+        {
+            "name": r.name,
+            "x": round(r.x / fmt.canvas.w, 4),
+            "y": round(r.y / fmt.canvas.h, 4),
+            "w": round(r.w / fmt.canvas.w, 4),
+            "h": round(r.h / fmt.canvas.h, 4),
         }
-    except (KeyError, TypeError, ValueError):
-        return None
-
-
-def _resolve_list(regions: list[Any]) -> tuple[list[dict[str, Any]], float | None]:
-    """Pixel-resolve a region list: `y: seam` follows the previous panel, `h: auto|rest` fill the rest."""
-    out: list[dict[str, Any]] = []
-    seam: float | None = None
-    cursor = 0.0
-    for i, r in enumerate(regions):
-        if not isinstance(r, dict):
-            continue
-        y: Any = r.get("y", 0)
-        if y == "seam":
-            y, seam = cursor, cursor
-        h: Any = r.get("h")
-        try:
-            if h == "auto":
-                h = r.get("max_h") or 640
-            elif h == "rest":
-                h = FRAME_H - float(y)
-            cursor = float(y) + float(h)
-        except (TypeError, ValueError):
-            pass
-        out.append({**r, "y": y, "h": h, "name": r.get("name") or r.get("id") or f"region {i + 1}"})
-    return out, seam
-
-
-def _titled(template_id: str) -> str:
-    return template_id.replace("_", " ").title()
-
-
-def normalise_template(template_id: str, raw: dict[str, Any], *, auto_label: bool = True) -> dict[str, Any]:
-    """Convert one yaml template (several shapes accepted) into the API shape."""
-    regions: list[dict[str, Any]] = []
-    seam_y: float | None = None
-    raw_regions = raw.get("regions") or {}
-    if isinstance(raw_regions, dict):
-        items = list(raw_regions.items())
-    elif isinstance(raw_regions, list):
-        resolved, seam_y = _resolve_list(raw_regions)
-        items = [(str(d["name"]), d) for d in resolved]
-    else:
-        items = []
-    for name, value in items:
-        box = _normalise_box(str(name), value)
-        if box:
-            regions.append(box)
-    caption = raw.get("caption")
-    cap = raw.get("caption_y_pct", raw.get("caption_anchor_y_pct"))
-    if cap == "seam":
-        cap = (seam_y / FRAME_H * 100) if seam_y is not None else 33.0
-    if cap is None and isinstance(caption, dict):
-        cap = caption.get("y_pct", caption.get("y"))
-    try:
-        cap_f = float(cap) if cap is not None else 70.0
-    except (TypeError, ValueError):
-        cap_f = 70.0
-    if cap_f <= 1.0:
-        cap_f *= 100
-    title_card = raw.get("title_card", False)
-    if isinstance(title_card, dict):
-        title_card = bool(title_card.get("enabled", False))
+        for r in fmt.layout.regions
+    ]
+    description, when = SHIPPED.get(
+        layout_id, ("Your own layout: " + ", ".join(r.name for r in fmt.layout.regions) + ".", "Your choice")
+    )
     return {
-        "id": template_id,
-        "label": str(raw.get("label") or raw.get("name") or (_titled(template_id) if auto_label else "")),
-        "description": str(raw.get("description") or ""),
-        "when": str(raw.get("when") or ""),
+        "id": layout_id,
+        "label": _label(fmt),
+        "description": description,
+        "when": when,
         "regions": regions,
-        "caption_y_pct": round(cap_f, 1),
-        "title_card": bool(title_card),
+        "caption_y_pct": _caption_y_pct(fmt),
+        "title_card": False,
     }
 
 
-def _from_yaml(f: Path) -> list[dict[str, Any]]:
-    data = yaml.safe_load(f.read_text(encoding="utf-8"))
-    if isinstance(data, dict) and isinstance(data.get("templates"), dict | list):
-        data = data["templates"]
-    out: list[dict[str, Any]] = []
-    if isinstance(data, dict):
-        for tid, raw in data.items():
-            if isinstance(raw, dict):
-                out.append(normalise_template(str(tid), raw, auto_label=False))
-    elif isinstance(data, list):
-        for raw in data:
-            if isinstance(raw, dict) and raw.get("id"):
-                out.append(normalise_template(str(raw["id"]), raw, auto_label=False))
-    return out
-
-
 def load_templates(paths: Paths | None = None) -> list[dict[str, Any]]:
-    """Built-in templates overlaid with the C8 yaml (by id)."""
-    by_id: dict[str, dict[str, Any]] = {t["id"]: dict(t) for t in BUILTIN}
-    f = yaml_path()
-    if f is not None:
-        try:
-            for t in _from_yaml(f):
-                base = by_id.get(t["id"], {})
-                merged = {**base, **{k: v for k, v in t.items() if v not in ("", [], None)}}
-                by_id[t["id"]] = merged
-        except (OSError, ValueError, yaml.YAMLError):
-            pass
-    out = []
-    for t in by_id.values():
-        t.setdefault("regions", [])
-        if not t.get("label"):
-            t["label"] = t["id"].replace("_", " ").title()
-        out.append(t)
-    return out
+    """`auto` followed by every `clip` format: the shipped layouts first, then the owner's own by id.
+
+    An owner file with a shipped id replaces that preset, so the edit reaches the list at once. A format file
+    that fails to load (hand-edited yaml) must not empty the Create page: the shipped presets are listed then.
+    """
+    forget_loaded_formats()  # the dashboard outlives edits made in Library > Formats
+    try:
+        formats = load_formats(paths=paths)
+    except StudioError:
+        formats = load_formats(FORMATS_DIR)
+    clips = {f.id.removeprefix(PREFIX): f for f in formats.values() if f.kind == "clip"}
+    order = [i for i in SHIPPED if i in clips] + sorted(i for i in clips if i not in SHIPPED)
+    return [dict(AUTO), *(_entry(clips[i]) for i in order)]
