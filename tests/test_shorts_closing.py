@@ -492,13 +492,18 @@ def _owner_text(words: int) -> str:
 
 
 def _job_through_voice(
-    tmp_home: Path, monkeypatch: pytest.MonkeyPatch, script: str | None, *, old_bucket: bool = False
+    tmp_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    script: str | None,
+    *,
+    old_bucket: bool = False,
+    speed: float = 1.0,
 ):
     """A fake-services job run up to and including the voice stage: a shorts_only job (`script` None) or a
     Short made from the owner's `script`. Returns (ctx, the stage names it runs, run_job).
 
     `old_bucket` makes the job as it was before P02b: its `job.json` bucket is the body alone, with no room
-    for a closing line."""
+    for a closing line. `speed` is the channel voice's speed (0.7 to 1.3)."""
     from ns_studio import jobs
     from ns_studio.context import FAKEABLE
     from ns_studio.orchestrator import FORMAT_STAGES, plan_format, run_job
@@ -507,6 +512,8 @@ def _job_through_voice(
     jobs.load_stage_modules()
     env = jobs.open_env(FAKEABLE)
     ch = jobs.ensure_demo_channel(env)
+    if speed != 1.0:
+        ch = ch.model_copy(update={"voice": ch.voice.model_copy(update={"speed": speed})})
     if script is None:
         ctx = jobs.make_job(env, ch, "shorts_only")
     else:
@@ -686,28 +693,44 @@ def _owner_words(words: int, sentence: int = 10) -> str:
 
 
 @pytest.mark.parametrize("model_line", ["Follow for the next story.", "Follow for more.", "Follow."])
-@pytest.mark.parametrize("sentence", [6, 10])
+@pytest.mark.parametrize("sentence", [6, 10, 26, 35])
 @pytest.mark.parametrize("words", [26, 29, 35])
 def test_a_ten_second_owner_short_with_its_closing_line_stays_inside_the_qc_band(
     tmp_home: Path, monkeypatch: pytest.MonkeyPatch, words: int, sentence: int, model_line: str
 ):
     """The bucket holds a reserve for the closing line; the line a short script gets (5 words by default, 3 or
     1 from the model) must not leave the Short under the band, or QC drops it (NS-W406) and an owner's job,
-    which has no restart stage for it, fails. Whenever a closing line is added it is in the manifest."""
+    which has no restart stage for it, fails. These scripts are long enough to carry a line, so the manifest
+    has the closing item and the whole Short (body, gap, closing) is inside the band of its bucket."""
     script = _owner_words(words, sentence)
     ctx, names, run_job = _job_through_voice(tmp_home, monkeypatch, script)
     answer = {"hooks": ["A hook the model wrote."], "closing_line": model_line}
     ctx.services.llm = FakeLlm(FIXTURES_LLM, overrides={"hook": answer})
     assert run_job(ctx) == names
-    manifest = ctx.read_json("audio/manifest.json")
-    bucket = ctx.combo.length_bucket
-    assert bucket and ctx.file("audio/p1.txt").read_text(encoding="utf-8").split() == script.split()
-    if ctx.file("closings.json").exists():  # a closing line was added: it is voiced and the Short is in band
-        _assert_every_short_is_closed(ctx)
-    else:
-        assert "p1_close" not in manifest
-        assert duration_check(manifest["p1"]["seconds"], "short", bucket).passed
-    assert ctx.file("closings.json").exists()  # these scripts are long enough to carry a closing line
+    assert ctx.file("audio/p1.txt").read_text(encoding="utf-8").split() == script.split()
+    manifest = _assert_every_short_is_closed(ctx)
+    assert "p1_close" in manifest
+
+
+# ---- break-it round 3: a channel voice at another speed than 1.0 ----------------------------------------
+
+
+@pytest.mark.parametrize("words", [30, 60, 100])
+@pytest.mark.parametrize("speed", [0.7, 0.85, 1.15, 1.3])
+def test_an_owner_short_on_a_channel_voice_at_another_speed_gets_its_closing_line_inside_the_band(
+    tmp_home: Path, monkeypatch: pytest.MonkeyPatch, speed: float, words: int
+):
+    """The planner sizes the bucket with the pace the voice really speaks at (its speed times the pacing); the
+    hooks stage must size the closing line with the same pace. With the table pace alone, a voice at 0.7 made
+    the line look 30 % cheaper than it is (a 15-word line accepted, the Short over the band) and a voice at
+    1.3 made it look dearer (no line fits, and the Short is under the band): QC drops either one (NS-W406)."""
+    ctx, names, run_job = _job_through_voice(tmp_home, monkeypatch, _owner_words(words, 10), speed=speed)
+    assert ctx.channel.voice.speed == speed
+    answer = {"hooks": ["A hook the model wrote."], "closing_line": " ".join(["more"] * 15)}
+    ctx.services.llm = FakeLlm(FIXTURES_LLM, overrides={"hook": answer})
+    assert run_job(ctx) == names
+    manifest = _assert_every_short_is_closed(ctx)  # duration_check passes with the closing line
+    assert "p1_close" in manifest
 
 
 @pytest.mark.parametrize("sentence", [4, 6, 10, 20])
@@ -734,12 +757,19 @@ def test_every_owner_short_length_from_ten_seconds_up_passes_qc_with_its_closing
 
 
 def test_fit_closing_refuses_a_line_that_leaves_an_owner_short_under_the_band(tmp_home: Path):
-    """A one-word model line leaves a 26-word script (bucket about 15 s) under the band: an owner's Short
-    takes the default that fits instead; a shorts_only Short is sized by `short_budget` and keeps the line."""
+    """A one-word model line leaves a 26-word script (bucket 15 s) under the band: an owner's Short takes the
+    default that fits instead, measured on the owner's text; a shorts_only Short is sized by `short_budget`
+    and keeps the line."""
+    from ns_common.pacing import NOMINAL_WPM, narration_seconds
+    from ns_studio.media.voice import job_speed
+
     ctx = make_ctx(tmp_home, combo=make_combo(length_bucket=15))
     part = _part(1, _owner_words(26), hook="")
     owner = S.fit_closing(ctx, part, "", "Follow.", 1, must_fit=True)
-    assert owner == S.DEFAULT_SHORT_CLOSINGS[0] and len(owner.split()) >= SHORT_MIN_CLOSING_WORDS
+    assert owner in S.DEFAULT_SHORT_CLOSINGS and len(owner.split()) >= SHORT_MIN_CLOSING_WORDS
+    wpm = NOMINAL_WPM * job_speed(ctx)
+    total = narration_seconds(part["text"], wpm) + CLOSE_GAP_S + narration_seconds(owner, wpm)
+    assert 15 * 0.88 <= total <= 15 * 1.12
     assert S.fit_closing(ctx, part, "", "Follow.", 1) == "Follow."
 
 

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import math
 import random
 import re
 from datetime import UTC, datetime
@@ -13,7 +12,7 @@ from ns_common.devmode import is_dev
 from ns_common.embed_client import cosine, embed_window, from_blob, to_blob
 from ns_common.errors import NsError
 from ns_common.models import Idea, Part, Seo, VisualBeat
-from ns_common.pacing import PAUSE_PER_WORD_S, SHORT_QC_MARGIN
+from ns_common.pacing import NOMINAL_WPM, PAUSE_PER_WORD_S, SHORT_QC_MARGIN, narration_seconds
 from ns_common.textstats import est_seconds, split_sentences, word_count
 from ns_studio.context import JobContext
 from ns_studio.policy.meta import policy_list
@@ -427,22 +426,39 @@ def fit_closing(
     words are never shortened) a line that still does not fit is no line: "" is returned, so a job planned
     before its bucket held a closing line is not dropped by QC for the line it never had room for. The same
     Short has no body to trim either, so a line must also not leave it UNDER the band (a one-word line after
-    a 10 s script is 12 % short of its bucket): the next candidate, a longer default, is taken instead.
+    a 10 s script is 12 % short of its bucket): the next candidate, a longer default, is taken instead. The
+    floor and the cap use the budget's 12 % margin on purpose, not QC's 15 %: 3 points stay for the voice. The
+    owner route measures the owner's text (its pauses and the voice's real pace) instead of estimating it.
     """
     from ns_studio.media.captions import CLOSE_GAP_S, HOOK_GAP_S
-    from ns_studio.media.voice import hook_opens_body
+    from ns_studio.media.voice import hook_opens_body, job_speed
 
-    per_word_s = 60.0 / job_wpm(ctx) + PAUSE_PER_WORD_S
+    candidates = [closing, default_closing(int(part["n"]), parts_total), *DEFAULT_SHORT_CLOSINGS]
     bucket_s = float(ctx.combo.length_bucket or 50)
     voiced_hook = 0 if hook_opens_body(hook, part["text"]) else word_count(hook)
+    if must_fit:
+        # A Short made from the owner's script was sized by the planner with the pace the voice really speaks
+        # at (`spoken_wpm`: the voice's speed scaled by the pacing) and with the pauses of the owner's own
+        # text (`narration_seconds`). Its parts.json already exists here, so `job_wpm` would pin the table
+        # pace and ignore a channel voice at another speed, and the typical-sentence pause estimate is wrong
+        # for a script of one long sentence or of many short ones: the floor and the cap would be off by a
+        # second or two, which is the whole width of a 10 s Short's band. The owner route measures the text.
+        wpm = NOMINAL_WPM * job_speed(ctx)
+        spent_s = narration_seconds(part["text"], wpm) + CLOSE_GAP_S
+        if voiced_hook:
+            spent_s += narration_seconds(hook, wpm) + HOOK_GAP_S
+        low, high = bucket_s * (1 - SHORT_QC_MARGIN), bucket_s * (1 + SHORT_QC_MARGIN)
+        for line in candidates:
+            if low <= spent_s + narration_seconds(line, wpm) <= high:
+                return line
+        return ""
+    per_word_s = 60.0 / job_wpm(ctx) + PAUSE_PER_WORD_S
     spent_s = (word_count(part["text"]) + voiced_hook) * per_word_s + HOOK_GAP_S + CLOSE_GAP_S
     room = int((bucket_s * (1 + SHORT_QC_MARGIN) - spent_s) / per_word_s)
-    least = math.ceil((bucket_s * (1 - SHORT_QC_MARGIN) - spent_s) / per_word_s) if must_fit else 0
-    candidates = [closing, default_closing(int(part["n"]), parts_total), *DEFAULT_SHORT_CLOSINGS]
     for line in candidates:
-        if least <= word_count(line) <= room:
+        if word_count(line) <= room:
             return line
-    return "" if must_fit else min(candidates[1:], key=word_count)
+    return min(candidates[1:], key=word_count)
 
 
 class HooksStage:
