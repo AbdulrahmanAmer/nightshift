@@ -294,6 +294,17 @@ A cloned-repo install updates with `ns update --git` (newest release) or `ns upd
 needs Git for Windows (setup does not install it: without Git the command says "install Git for this"). The
 update installs exactly the packages setup installed. The old version is kept next to it as `<folder>.prev`;
 run `ns update --rollback` to go back. If a step fails, the old version is put back and the message names the step.
+An update also keeps a copy of your settings files (engine settings, setup answers, the nightly time, dashboard
+settings, channels and formats) as `<folder>.prev-config.zip`, and `ns update --rollback` puts them back with the old
+version, because an older version cannot always read a file a newer one saved. What you changed in those settings
+after the update is lost by the rollback, and the rollback names the files it put back and the ones that had
+changed; running `ns update --rollback` a second time goes forward again with the settings as they were. Only the
+latest update is kept this way (a second update replaces the first one's copy). The copy is made by the version
+that does the update, so it exists for an update made through `INSTALL.cmd` from a new zip, and for any update
+made by a Nightshift that already has this feature (0.1.15 or later). An update made BY an older version with
+`ns update <zip>`, `ns update --github` or Settings > Update (for example 0.1.14 going to 0.1.15) saves no copy,
+because the older updater is the one that runs: the rollback then swaps the program as before and says it could
+not restore the settings.
 
 ## Move your settings to another PC
 

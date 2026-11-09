@@ -9,7 +9,10 @@ task, the launchers and ``ns update`` all point at it. Setup therefore copies th
   (the marker file is written last), so a crash never leaves a half program folder that looks finished.
 * Re-run from a newer zip: the same swap ``ns update`` does. The old folder becomes ``<home>\\app.prev`` (the
   rollback target of ``ns update --rollback``), and ``.git``, ``config`` and ``answers.json`` of the old tree
-  are carried into the new one.
+  are carried into the new one. Before that, the settings files of ``<home>\\config`` are copied to
+  ``<home>\\app.prev-config.zip`` (``ns_supervisor.config_snapshot``, standard library only) so the
+  rollback can put them back with the program; when that copy cannot be made nothing is swapped
+  (``NS-E115``).
 * Never copied: ``venvs`` and ``models`` (somebody extracted into the home), every ``bin`` folder except the
   bundle's ``bin\\webview2``, caches and ``node_modules``, and ``answers.json`` (the owner's input next to
   ``INSTALL.cmd``; it may hold API keys that setup moves to the keyring, so it is not duplicated).
@@ -22,10 +25,11 @@ import ntpath
 import os
 import shutil
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import ns_supervisor.config_snapshot as config_snapshot
 from ns_common.avblock import is_blocked_error
 
 APP_DIR = "app"
@@ -191,6 +195,40 @@ def _carry(old: Path, new: Path) -> list[str]:
     return kept
 
 
+def _save_settings_copy(
+    home: Path, dest: Path, old_version: str, before: Mapping[str, bytes] | None = None
+) -> None:
+    """Copy the settings files beside the program backup before the old program becomes ``app.prev``.
+
+    ``before`` is what the setup window read of ``config_snapshot.SETUP_TOUCHES`` before it rewrote them on
+    opening (it records the new version in ``install_state.json`` at once); those files go into the copy as
+    they were then, every other file as it is now. ``AppCopyError`` (``NS-E115``) when the copy cannot be
+    made: the swap is not started, so nothing has changed. A copy that is already there (the one for the
+    program in ``app.prev``) stays whole.
+    """
+    try:
+        files = config_snapshot.capture(home / "config")
+        if before is not None:
+            for name in config_snapshot.SETUP_TOUCHES:
+                files.pop(name, None)
+                if name in before:
+                    files[name] = before[name]
+        config_snapshot.save(
+            config_snapshot.path_for(dest),
+            files,
+            version=old_version,
+            fingerprint=fingerprint(dest),
+            taken_by="installer",
+        )
+    except config_snapshot.SnapshotError as e:
+        raise AppCopyError(
+            "NS-E115",
+            f"could not save a copy of your settings files before replacing the program ({e}). Nothing was "
+            "changed. Close programs that use the Nightshift folder, make room on the disk if it is full, "
+            "and run INSTALL.cmd again.",
+        ) from e
+
+
 def _error(e: OSError, what: str) -> AppCopyError:
     if is_blocked_error(e):
         return AppCopyError("NS-E113", f"{what}: Windows Security blocked a file ({e})")
@@ -206,10 +244,13 @@ def install_app(
     stop_engine: Callable[[], None] | None = None,
     say: Callable[[str], None] | None = None,
     sleep: Callable[[float], None] = time.sleep,
+    settings_before: Mapping[str, bytes] | None = None,
 ) -> CopyResult:
     """Put a complete copy of ``source`` at ``<home>\\app`` (a fresh copy, or the update swap over it).
 
-    ``stop_engine`` is called before an existing program folder is renamed. Raises ``AppCopyError``:
+    ``stop_engine`` is called before an existing program folder is renamed. ``settings_before`` is what the
+    caller read of ``config_snapshot.SETUP_TOUCHES`` before it changed them (see ``_save_settings_copy``).
+    Raises ``AppCopyError``:
     ``NS-E115`` (cannot copy: the folders overlap, a file is locked), ``NS-E104`` (disk full), ``NS-E113``
     (antivirus).
     """
@@ -235,12 +276,21 @@ def install_app(
             if stop_engine is not None:
                 stop_engine()
             kept = _carry(dest, new)
-            shutil.rmtree(prev, ignore_errors=True)
-            _rename(dest, prev, sleep)
             try:
-                _rename(new, dest, sleep)
+                _save_settings_copy(Path(home), dest, old_version, settings_before)
+            except AppCopyError:
+                shutil.rmtree(new, ignore_errors=True)
+                raise
+            try:  # from here the copy is replaced for good: it must never outlive its program backup
+                shutil.rmtree(prev, ignore_errors=True)
+                _rename(dest, prev, sleep)
+                try:
+                    _rename(new, dest, sleep)
+                except OSError:
+                    _rename(prev, dest, sleep)  # put the old folder back
+                    raise
             except OSError:
-                _rename(prev, dest, sleep)                 # put the old folder back
+                config_snapshot.discard(config_snapshot.path_for(dest))  # no program backup: no copy
                 raise
             return CopyResult("updated", old_version, new_version, kept)
         if dest.exists():
