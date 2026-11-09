@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import re
 from pathlib import Path
@@ -56,18 +55,6 @@ def find_answers(app_path: Path, paths: Paths, explicit: Path | None = None) -> 
         if cand.is_file():
             return cand
     return None
-
-
-#: ``config/answers.source.json``: which answers file (outside ``config``) the saved answers came from, and a
-#: hash of its choices. s01 compares it with that file on a rerun, so a changed file is not ignored (D-14).
-SOURCE_NOTE = "answers.source.json"
-
-
-def answers_digest(raw: dict[str, Any]) -> str:
-    """Hash of the choices in an answers file, API keys left out (they are blanked once stored)."""
-    body = {k: v for k, v in raw.items() if k not in SECRET_KEYS}
-    text = json.dumps(body, sort_keys=True, ensure_ascii=False, default=str)
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def load_raw(path: Path) -> dict[str, Any]:

@@ -6,7 +6,6 @@ is at the keyboard and fall back to their defaults (or fail for required values)
 
 from __future__ import annotations
 
-import json
 import re
 import tempfile
 from pathlib import Path
@@ -15,10 +14,8 @@ from typing import Any
 import httpx
 
 from installer.stage2.answers import (
-    SOURCE_NOTE,
     AnswersError,
     InstallerAnswers,
-    answers_digest,
     build_answers,
     load_raw,
     slugify,
@@ -131,8 +128,7 @@ class S01Questions(Step):
         return default
 
     def check(self, ctx: StepContext) -> bool:
-        """True when a valid answers file from an earlier run exists, its secrets are stored and no newer
-        answers file (explicit, or next to INSTALL.cmd) has been given since."""
+        """True when a valid answers file from an earlier run exists and its secrets are stored."""
         if ctx.ui.bridge and not ctx.state.is_done(self.id):
             return False        # the setup window writes a first answers.json before this step has run
         f = self._answers_file(ctx)
@@ -142,44 +138,8 @@ class S01Questions(Step):
             ans = build_answers(load_raw(f))
         except AnswersError:
             return False
-        if self._changed_source(ctx) is not None:
-            return False        # `find_answers` puts that file before config: its choices win (D-14)
         ctx.answers = ctx.constrain(ans)
         return True
-
-    # ---- the file the saved answers came from ----
-    def _changed_source(self, ctx: StepContext) -> Path | None:
-        """The answers file outside ``config`` when its choices differ from the ones that were saved.
-
-        The saved copy in ``config`` is what a rerun used to trust whatever the file next to INSTALL.cmd said;
-        after an uninstall that keeps data, a new answers.json (another voice, tier, run time) was ignored
-        with no message (D-14). None when there is no such file, when it is the saved copy itself, or when
-        its choices are the ones recorded in ``config/answers.source.json`` when s01 last ran.
-        """
-        src = ctx.answers_path
-        if src is None or not src.is_file():
-            return None
-        try:
-            if src.resolve() == self._answers_file(ctx).resolve():
-                return None
-            digest = answers_digest(load_raw(src))
-        except (OSError, AnswersError):
-            return src          # unreadable now: let run() report it
-        try:
-            recorded = json.loads((ctx.paths.config / SOURCE_NOTE).read_text(encoding="utf-8")).get("sha256")
-        except (OSError, ValueError, AttributeError):
-            recorded = None
-        return None if recorded == digest else src
-
-    def _remember_source(self, ctx: StepContext) -> None:
-        """Record which answers file the saved answers came from (or that none did)."""
-        note = ctx.paths.config / SOURCE_NOTE
-        src = ctx.answers_path
-        if src is None or not src.is_file() or src.resolve() == self._answers_file(ctx).resolve():
-            note.unlink(missing_ok=True)
-            return
-        body = {"path": str(src), "sha256": answers_digest(load_raw(src))}
-        note.write_text(json.dumps(body, indent=2) + "\n", encoding="utf-8")
 
     # ---- home ----
     def _pick_home(self, ctx: StepContext, tier: str, custom_bytes: int | None = None) -> Path:
@@ -304,11 +264,6 @@ class S01Questions(Step):
     # ---- run ----
     def run(self, ctx: StepContext) -> None:
         """Resolve every answer, prepare the home folder and write config/answers.json (no secrets)."""
-        newer = self._changed_source(ctx) if self._answers_file(ctx).is_file() else None
-        if newer is not None:
-            ctx.ui.say(f"The answers in {newer} differ from the ones your earlier setup saved; "
-                       "the file wins and the saved choices are replaced.", "yellow")
-            ctx.log.info("answers_source_changed", source=str(newer))
         raw = ctx.raw_answers
         merged: dict[str, Any] = {k: v for k, v in raw.items() if k not in KEY_NAMES}
 
@@ -401,7 +356,6 @@ class S01Questions(Step):
         if ans.voice.mode == "design" and ans.include_voicedesign is False:
             ctx.warn("NS-W114", ans.voice.name or ans.voice.description or "")
         write_answers(self._answers_file(ctx), ans)
-        self._remember_source(ctx)
         ctx.log.info("answers_saved", channel=slugify(ans.channel.display_name), tier=tier)
         self._summary(ctx, ans)
 
