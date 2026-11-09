@@ -64,7 +64,8 @@ def test_every_unverified_assistant_tool_is_reached_through_the_cue_in_the_real_
     monkeypatch.setattr(dash.library, "update_check", lambda: {"update_available": False})  # no GitHub call
     registry = build_registry()
     rows = _unverified_assistant_tools()
-    assert len(rows) >= 20 and rows <= set(registry.names()), rows - set(registry.names())
+    # no floor on len(rows): the F-C11 tick moves rows from U to V-dev and this test must not fail then
+    assert rows <= set(registry.names()), rows - set(registry.names())
     # the tools the review found out of the router's reach, whatever the inventory says about them today
     must = rows | {
         "system_map",
