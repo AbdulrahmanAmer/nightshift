@@ -861,20 +861,24 @@ class SetupController:
         return modelcheck.check_model(repo, file, self.fx.head)
 
     def disk(
-        self, path: str, tier: str, source: bool, custom: dict[str, Any] | None = None
+        self, path: str, tier: str, source: bool, custom: dict[str, Any] | None = None,
+        draft: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """``GET /api/disk``: the folder check, with the space THIS install needs there.
 
-        ``custom`` is the story model the window has picked (``repo``, ``file``, ``size``), which the saved
-        answers do not hold yet: the number the picker and the folder error show is this one, so the window
-        has no rule of its own for it. Without it the check is for the tier.
+        ``custom`` is the story model the window has picked (``repo``, ``file``, ``size``) and ``draft`` the
+        other choices that change the number (``installCode``, ``includeVoicedesign``, ``modelsSource``): the
+        saved answers do not hold them yet, and Install checks the DRAFT, so the picker line, the folder error
+        and the refusal on Install all use one number and the window has no rule of its own for it. A choice
+        the draft does not name falls back to the saved answers; without any the check is for the tier.
         """
         state = self.snapshot()
         if source:
             expected = preflight.expected_model_files(self.manifest, self.pf.get("profile", "gpu"), tier)
             found = preflight.scan_models_source(Path(path), expected)
             return preflight.disk_check(path, tier, state["machine"]["drives"], self.fx.free_gb, models=found)
-        view = {**(state.get("answers") or {}), "llmCustom": plan.custom_entry(custom)}
+        view = {**(state.get("answers") or {}), **plan.need_fields(draft),
+                "llmCustom": plan.custom_entry(custom)}
         return preflight.disk_check(path, tier, state["machine"]["drives"], self.fx.free_gb,
                                     drive_type_fn=self.fx.drive_type, layout_fn=self._layout_problem,
                                     existing_fn=self._existing_install_note, kind_fn=self.fx.folder_kind,
@@ -906,7 +910,8 @@ class SetupController:
             return {"ok": True, "path": None, "cancelled": True, "message": None, "check": None}
         path = folderdialog.install_folder_for(picked) if target == "install" else picked
         return {"ok": True, "path": path, "cancelled": False, "message": None,
-                "check": self.disk(path, tier, target == "models", plan.custom_entry(body.get("custom")))}
+                "check": self.disk(path, tier, target == "models", plan.custom_entry(body.get("custom")),
+                                   body)}
 
     # ---- actions ----
     def _reply(self, status: int, ok: bool, message: str | None) -> tuple[int, dict[str, Any]]:

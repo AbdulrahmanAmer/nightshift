@@ -435,3 +435,251 @@ def test_the_blocking_checks_fixture_shows_the_row_the_real_check_gives(raw):
     assert disk["value"].startswith(f"This install needs about {need} GB (")
     assert disk["value"].endswith("C: has 31 GB free")
     assert disk["whatToDo"] == f"Free {need} GB on this drive, or pick another drive below"
+
+
+# ------------------------------------------------ the second break-it round (orchestrator/h6-disk-need)
+MALFORMED_ANSWER_CUSTOMS: list[Any] = [
+    {"repo": "a/b", "size": 1000},  # no file: KeyError in install_pieces
+    {"file": "x.gguf", "size": 1_000_000_000},  # no repo
+    {"repo": "a/b", "file": "x.gguf"},  # no size
+    {"repo": "a/b", "file": 12, "size": 1_000_000_000},  # file is not text
+    {"repo": "a/b", "file": "x.gguf", "size": -1},
+    {"repo": "", "file": "x.gguf", "size": 1_000_000_000},
+    "not a dict",
+    ["a/b", "x.gguf"],
+    7,
+]
+
+
+# the answers model coerces these to a whole number, so the check lets them through; the need must not crash
+COERCED_ANSWER_CUSTOMS: list[Any] = [
+    {"repo": "a/b", "file": "x.gguf", "size": "9"},
+    {"repo": "a/b", "file": "x.gguf", "size": True},
+]
+
+
+@pytest.mark.parametrize("bad", MALFORMED_ANSWER_CUSTOMS, ids=lambda b: repr(b)[:44])
+def test_s01_a_malformed_custom_model_in_an_answers_file_is_an_answers_error_not_a_key_error(tmp_path, bad):
+    """The console path worked the need out from the raw dict before the answers were validated: the file
+    {"repo": "a/b", "size": 1000} used to end in a KeyError in `install_pieces`; the AnswersError text is
+    what the owner has to see."""
+    from installer.stage2.answers import AnswersError
+
+    ctx = make_test_context(
+        tmp_path, raw_answers=provided(tmp_path, llm_custom=bad), ui=FakeUi(interactive=False)
+    )
+    ctx.free_gb_fn = lambda _p: 500.0
+    with pytest.raises(AnswersError):
+        S01Questions().run(ctx)
+
+
+@pytest.mark.parametrize("odd", COERCED_ANSWER_CUSTOMS, ids=lambda b: repr(b)[:44])
+def test_s01_a_custom_size_the_answers_model_coerces_does_not_crash_the_need(tmp_path, odd):
+    from installer.stage2.answers import AnswersError
+
+    ctx = make_test_context(
+        tmp_path, raw_answers=provided(tmp_path, llm_custom=odd), ui=FakeUi(interactive=False)
+    )
+    ctx.free_gb_fn = lambda _p: 500.0
+    try:
+        S01Questions().run(ctx)
+    except AnswersError:
+        pass  # either way: the owner reads an answers message, never a KeyError or a TypeError
+
+
+def test_ctx_need_gives_the_tiers_number_for_a_custom_model_it_cannot_use(tmp_path):
+    from installer.stage2.diskplan import ctx_need
+
+    tier = ctx_need(
+        make_test_context(tmp_path, raw_answers=provided(tmp_path), ui=FakeUi(interactive=False)),
+        tmp_path / "h",
+        tier="small",
+    )
+    for bad in MALFORMED_ANSWER_CUSTOMS + COERCED_ANSWER_CUSTOMS:
+        ctx = make_test_context(
+            tmp_path, raw_answers=provided(tmp_path, llm_custom=bad), ui=FakeUi(interactive=False)
+        )
+        assert ctx_need(ctx, tmp_path / "h", tier="small").total == tier.total, bad
+        assert ctx_need(ctx, tmp_path / "h", tier="small", custom=bad).total == tier.total, bad
+
+
+def _small_setup_with_free(tmp_path, monkeypatch, free_gb: float):
+    from tests.test_installer_web_controller import Setup
+
+    s = Setup(tmp_path, monkeypatch)
+    s.ctl.pf["drives"] = [{"letter": str(s.home)[0].upper(), "free_gb": free_gb, "type": "SSD"}]
+    s.ctl._apply_home(str(s.home), "small")  # the machine's drives as the window reads them
+    return s
+
+
+def _refusal_number(s, **over) -> int | None:
+    """The GB the submit refusal names (None when Install would be accepted)."""
+    from tests.test_installer_web_controller import draft
+
+    result = s.ctl.submit_answers(draft(s.home, **over))
+    if result["ok"]:
+        return None
+    (err,) = [e for e in result["errors"] if e["field"] == "homePath"]
+    found = re.search(r"with (\d+) GB free", err["message"])
+    assert found, err
+    return int(found.group(1))
+
+
+def test_the_folder_check_and_the_submit_refusal_use_the_drafts_number(tmp_path, monkeypatch):
+    """Small, 60.2 GB free, no saved answers. The folder check said OK at 60 GB while the voice design model
+    (about 2 GB more) was ticked; Install then refused with "61 GB". The window sends the draft's toggles with
+    the folder check, and the picker line, the folder error and the refusal are one number."""
+    free = 60.2
+    s = _small_setup_with_free(tmp_path, monkeypatch, free)
+    home = str(s.home)
+    assert s.snap()["answers"] is None
+    plain = s.ctl._need_for(home, "small", {})
+    with_design = s.ctl._need_for(home, "small", {"includeVoicedesign": True})
+    assert plain.total <= free * GIB < with_design.total  # the failing case: fits at 60, not at 61
+    folder = s.ctl.disk(home, "small", False)
+    assert folder["ok"] is True and folder["needGb"] == plain.gb == 60
+    ticked = s.ctl.disk(home, "small", False, None, {"includeVoicedesign": True})
+    assert ticked["ok"] is False and ticked["needGb"] == with_design.gb == 61
+    assert "needs about 61 GB" in ticked["message"]
+    assert _refusal_number(s, includeVoicedesign=True) == ticked["needGb"]
+    # nothing ticked: the same folder is accepted by both
+    assert _refusal_number(s) is None and s.ctl.disk(home, "small", False, None, {})["ok"] is True
+
+
+def test_every_draft_choice_that_changes_the_number_reaches_the_folder_check(tmp_path, monkeypatch):
+    s = _small_setup_with_free(tmp_path, monkeypatch, 500.0)
+    home = str(s.home)
+    base = s.ctl.disk(home, "small", False)["needGb"]
+    no_code = s.ctl.disk(home, "small", False, None, {"installCode": False})["needGb"]
+    design = s.ctl.disk(home, "small", False, None, {"includeVoicedesign": True})["needGb"]
+    assert no_code == s.ctl._need_for(home, "small", {"installCode": False}).gb < base < design
+    # a draft that names nothing falls back to the saved answers; a choice it names overrides the saved one
+    s.accept(includeVoicedesign=True)
+    assert s.ctl.disk(home, "small", False)["needGb"] == design
+    assert s.ctl.disk(home, "small", False, None, {"includeVoicedesign": False})["needGb"] == base
+
+
+def test_need_fields_takes_only_usable_choices():
+    assert plan.need_fields(None) == {} and plan.need_fields("x") == {} and plan.need_fields([]) == {}
+    assert plan.need_fields({"installCode": "no", "includeVoicedesign": 1, "modelsSource": "x"}) == {}
+    assert plan.need_fields({"modelsSource": {"kind": 3}}) == {}
+    got = plan.need_fields(
+        {
+            "installCode": False,
+            "includeVoicedesign": True,
+            "homePath": "ignored",
+            "modelsSource": {"kind": "folder", "path": "E:\\M"},
+        }
+    )
+    assert got == {
+        "installCode": False,
+        "includeVoicedesign": True,
+        "modelsSource": {"kind": "folder", "path": "E:\\M"},
+    }
+    assert plan.need_fields({"modelsSource": {"kind": "internet", "path": 5}}) == {
+        "modelsSource": {"kind": "internet", "path": None}
+    }
+
+
+def _live_server(s, tmp_path):
+    from installer.stage2.web.server import SetupServer
+    from tests.test_installer_web_server import Client
+
+    static = tmp_path / "static"
+    (static / "assets").mkdir(parents=True)
+    (static / "index.html").write_text("<!doctype html><title>setup</title>", encoding="utf-8")
+    (static / "app.js").write_text("console.log(1)", encoding="utf-8")
+    (static / "app.css").write_text("body{}", encoding="utf-8")
+    server = SetupServer(
+        s.ctl, static_dir=static, version="9.9.9", long_poll_s=0.6, on_open_window=lambda: None
+    )
+    server.start()
+    client = Client(server)
+    client.login()
+    return server, client
+
+
+def test_through_the_server_the_picker_the_folder_check_and_the_submit_agree(tmp_path, monkeypatch):
+    """The same failing case over HTTP: GET /api/disk and POST /api/pick-folder carry the draft's toggles."""
+    import json
+    from urllib.parse import quote
+
+    s = _small_setup_with_free(tmp_path, monkeypatch, 60.2)
+    s.fx.pick_folder = lambda _title, _start: str(s.home)
+    server, client = _live_server(s, tmp_path)
+    try:
+        where = quote(str(s.home), safe="")
+        query = f"/api/disk?path={where}&tier=small"
+        plain = json.loads(client.call("GET", f"{query}&code=1&voicedesign=0&msKind=internet")[2])
+        assert plain["ok"] is True and plain["needGb"] == 60
+        ticked = json.loads(client.call("GET", f"{query}&code=1&voicedesign=1&msKind=internet")[2])
+        assert ticked["ok"] is False and ticked["needGb"] == 61
+        body = {
+            "target": "install",
+            "start": "",
+            "tier": "small",
+            "custom": None,
+            "installCode": True,
+            "includeVoicedesign": True,
+            "modelsSource": {"kind": "internet", "path": None},
+        }
+        picked = json.loads(client.call("POST", "/api/pick-folder", body)[2])
+        assert picked["ok"] and picked["check"]["needGb"] == ticked["needGb"]
+        assert picked["check"]["ok"] is False
+        body["includeVoicedesign"] = False
+        assert json.loads(client.call("POST", "/api/pick-folder", body)[2])["check"]["ok"] is True
+        assert _refusal_number(s, includeVoicedesign=True) == ticked["needGb"]
+    finally:
+        server.stop()
+
+
+def test_the_setup_window_sends_its_draft_with_the_folder_check():
+    ui = ROOT / "installer" / "ui"
+    client = (ui / "src" / "api" / "client.ts").read_text(encoding="utf-8")
+    assert "voicedesign=" in client and "includeVoicedesign" in client and "installCode" in client
+    bundle = (ui / "static" / "app.js").read_text(encoding="utf-8")
+    assert "voicedesign=" in bundle and "msKind=" in bundle
+
+
+# ------------------------------------------------ NS-E104 is for space only (nit 5 of the second round)
+def test_a_home_that_could_not_be_set_up_is_not_called_a_disk_space_problem(tmp_path, monkeypatch):
+    """NIGHTSHIFT_HOME not set or the folders not created is NS-E119; its hint is not "free some space"."""
+    from installer.stage2.web import bootstrap
+    from ns_common.errors import describe
+    from tests.test_installer_uv_pin import Transport, VersionCmd, make_boot, pin_for
+
+    ctx = make_test_context(tmp_path, raw_answers=provided(tmp_path), ui=FakeUi(interactive=False))
+    ctx.free_gb_fn = lambda _p: 500.0
+    monkeypatch.setattr("installer.stage2.steps.s01_questions.set_user_env", lambda *a, **k: False)
+    with pytest.raises(NsError) as ei:
+        S01Questions().run(ctx)
+    assert ei.value.code == "NS-E119" and "NIGHTSHIFT_HOME" in ei.value.detail
+
+    boot = make_boot(tmp_path, tmp_path / "uv.exe", VersionCmd(), Transport(), pin_for(tmp_path))
+    step = bootstrap.B02Home()
+    with pytest.raises(bootstrap.BootstrapError) as lacks:  # no folders yet
+        step.verify(boot)
+    assert lacks.value.code == "NS-E119"
+    for d in bootstrap.TOP_DIRS:
+        (boot.home / d).mkdir(parents=True, exist_ok=True)
+    with pytest.raises(bootstrap.BootstrapError) as unset:  # the variable was never set
+        step.verify(boot)
+    assert unset.value.code == "NS-E119"
+
+    hint = describe("NS-E119").hint
+    assert "Free some space" not in hint and "not about free space" in hint
+    web = ROOT / "installer" / "stage2" / "web"
+    import json
+
+    copy = json.loads((web / "operator_copy.json").read_text(encoding="utf-8"))
+    assert copy["NS-E119"]["whatToDo"] and "Free some space" not in copy["NS-E119"]["whatToDo"]
+    assert "| NS-E119 |" in (ROOT / "OPERATOR.md").read_text(encoding="utf-8")
+
+
+def test_the_picker_line_does_not_pair_the_tiers_download_with_another_need():
+    """Choices.tsx: a failed folder check clears the previous answer, and "Download X GB, needs Y GB free"
+    is shown only where Y is the tier's own number."""
+    src = (ROOT / "installer" / "ui" / "src" / "screens" / "Choices.tsx").read_text(encoding="utf-8")
+    assert "setDisk(null)" in src and "tierLine" in src
+    assert "t.picker.need(gbNum(tierInfo.totalBytes), needFreeGb)" in src
+    assert re.search(r"tierLine\s*=\s*!checked\s*\|\|\s*disk\.needGb\s*===\s*tierInfo\.needFreeGb", src)

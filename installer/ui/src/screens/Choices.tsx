@@ -66,14 +66,16 @@ export function Choices() {
   useDismiss(more, () => setMore(false), moreRef);
   useDismiss(keyPop, () => setKeyPop(false), keyRef);
 
+  // What the window picked besides the folder and the tier goes with every folder check (the model file, Nightshift Code, the voice design model, the models folder): Install checks the draft, so the server answers with the same number.
+  const diskDraft = useMemo(() => ({ llmCustom: d.llmCustom, installCode: d.installCode, includeVoicedesign: d.includeVoicedesign, modelsSource: d.modelsSource }), [d.llmCustom, d.installCode, d.includeVoicedesign, d.modelsSource]);
   // The install folder: checked 400 ms after the last keystroke.
   useEffect(() => {
     setDiskBusy(true);
     let live = true;
-    // the model file the window picked goes with the question: the server works out what it needs there
-    const id = window.setTimeout(() => { api.disk(d.homePath, d.llmTier, false, d.llmCustom).then((r) => { if (live) { setDisk(r); setDiskBusy(false); } }).catch(() => live && setDiskBusy(false)); }, 400);
+    // a check that fails leaves no answer on screen: the previous choice's number would not belong to this one
+    const id = window.setTimeout(() => { api.disk(d.homePath, d.llmTier, false, diskDraft).then((r) => { if (live) { setDisk(r); setDiskBusy(false); } }).catch(() => { if (live) { setDisk(null); setDiskBusy(false); } }); }, 400);
     return () => { live = false; window.clearTimeout(id); };
-  }, [api, d.homePath, d.llmTier, d.llmCustom]);
+  }, [api, d.homePath, d.llmTier, diskDraft]);
   // The models folder (folder or Drive zip).
   useEffect(() => {
     if (d.modelsSource.kind === "internet" || !d.modelsSource.path?.trim()) { setFolder(null); return; }
@@ -86,6 +88,8 @@ export function Choices() {
   // One number everywhere: the one the server worked out for this folder, tier or model file (the folder error and the picker line agree with the check that refused it). Until the check answers, the plan's number for the tier.
   const checked = disk && !diskBusy;
   const needFreeGb = checked ? disk.needGb : tierInfo.needFreeGb;
+  // "Download X GB, needs Y GB free" only where both numbers are the tier's own; once the server's answer differs (models already in the folder, a model file or the voice design model picked) the line says what is needed and nothing else.
+  const tierLine = !checked || disk.needGb === tierInfo.needFreeGb;
   const ram = state.machine.ramGb;
   const keySet = { pexels: state.answers?.pexelsKeySet ?? false, pixabay: state.answers?.pixabayKeySet ?? false };
 
@@ -113,7 +117,7 @@ export function Choices() {
     if (picking || locked) return;
     setPicking(target);
     try {
-      const r = await api.pickFolder(target, target === "install" ? d.homePath : d.modelsSource.path ?? "", d.llmTier, d.llmCustom);
+      const r = await api.pickFolder(target, target === "install" ? d.homePath : d.modelsSource.path ?? "", d.llmTier, diskDraft);
       if (!r.ok) { toast(r.message ?? t.more.browseFailed); return; }
       if (r.cancelled || !r.path) return;
       if (target === "install") { set("homePath", r.path); if (r.check) setDisk(r.check); touch("homePath"); }
@@ -264,7 +268,7 @@ export function Choices() {
             other={<OtherModelCard selected={other.selected} disabled={locked} repo={other.repo} file={other.file} lookup={lookup} error={shown("llmCustom")} onSelect={pickOther}
               onRepo={(v) => editOther({ repo: v })} onFile={(v) => editOther({ file: v })} onCheck={() => void checkModel()} />}>
             {state.plan.recommendedTier === "small" && ram < 31 && <p className="text-ds-sm text-ds-text-2">{t.picker.lowRam(ram)}</p>}
-            <p className="text-ds-xs text-ds-muted ds-num">{other.selected ? (d.llmCustom && !checked ? t.picker.needChecking : t.picker.needCustom(needFreeGb)) : t.picker.need(gbNum(tierInfo.totalBytes), needFreeGb)}</p>
+            <p className="text-ds-xs text-ds-muted ds-num">{other.selected ? (d.llmCustom && !checked ? t.picker.needChecking : t.picker.needCustom(needFreeGb)) : (tierLine ? t.picker.need(gbNum(tierInfo.totalBytes), needFreeGb) : t.picker.needCustom(needFreeGb))}</p>
           </ModelPicker>
         </Card>
       </Area>

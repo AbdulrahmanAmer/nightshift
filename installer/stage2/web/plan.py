@@ -361,6 +361,26 @@ def custom_entry(custom: Any) -> dict[str, Any] | None:
     return {"repo": repo, "file": file, "size": size}
 
 
+def need_fields(draft: Any) -> dict[str, Any]:
+    """The choices in a draft (or in the query / body of a folder check) that change the disk need.
+
+    ``installCode`` and ``includeVoicedesign`` (booleans) and ``modelsSource`` (``kind`` and ``path``). The
+    folder check and Install both read them through here, so a window that sends them gets the number
+    Install will check. Only what is present and usable is returned (anything else keeps the saved value).
+    """
+    if not isinstance(draft, dict):
+        return {}
+    out: dict[str, Any] = {}
+    for key in ("installCode", "includeVoicedesign"):
+        if isinstance(draft.get(key), bool):
+            out[key] = draft[key]
+    source = draft.get("modelsSource")
+    if isinstance(source, dict) and isinstance(source.get("kind"), str):
+        path = source.get("path")
+        out["modelsSource"] = {"kind": source["kind"], "path": path if isinstance(path, str) else None}
+    return out
+
+
 def planned_sizes(
     manifest: dict[str, Any], profile: str, tier: str, *, include_code: bool, llama_pair: str | None
 ) -> dict[str, int | None]:

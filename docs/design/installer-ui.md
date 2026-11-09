@@ -598,7 +598,7 @@ Purpose: everything `s01_questions` asks, on one screen, next to the sizes that 
 │▌  │ Channel name [After Dark Tales│ │ [ Small | Balanced | Best ]   │ │ ( 03 h )( 00 m )          │ │
 │▌  │ About        [horror fiction ]│ │ 9.0 GB · fits 16 GB of video  │ │ [01:00|03:00|05:00|Other] │ │
 │▌  │ Your name    [Abdo           ]│ │ Fastest. Good stories, Shorts │ │ The PC wakes at this time │ │
-│▌  └───────────────────────────────┘ │ Download 17.3 GB · 60 GB free │ └───────────────────────────┘ │
+│▌  └───────────────────────────────┘ │ Download 17.3 GB, needs 60 GB │ └───────────────────────────┘ │
 │▌  ┌───────────────────────────────┐ └───────────────────────────────┘ ┌───────────────────────────┐ │
 │▌  │ Narrator                      │ ┌───────────────────────────────┐ │ Stock footage keys        │ │
 │▌  │ (Ryan)(Aiden)(Serena)(Vivian) │ │ Model files come from         │ │ Pexels  [••••••••]  Works │ │

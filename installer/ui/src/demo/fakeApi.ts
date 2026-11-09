@@ -230,16 +230,16 @@ export function createDemoApi({ screen }: { screen: string | null }): Api {
     },
 
     // The demo has no dialog: it "picks" the next folder of a short list and then starts over (the real one is the Windows dialog).
-    async pickFolder(target, _start, tier, custom): Promise<PickFolderResult> {
+    async pickFolder(target, _start, tier, draft): Promise<PickFolderResult> {
       await sleep(350);
       const folders = target === "models" ? ["D:\\Models", "E:\\Downloads\\Model files"] : ["E:\\Nightshift", "D:\\My Studio\\Nightshift"];
       const path = folders[pickCount++ % folders.length];
-      return { ok: true, path, cancelled: false, message: null, check: await api.disk(path, tier, target === "models", custom) };
+      return { ok: true, path, cancelled: false, message: null, check: await api.disk(path, tier, target === "models", draft) };
     },
 
-    async disk(path, tier, source, custom): Promise<DiskCheck> {
+    async disk(path, tier, source, draft): Promise<DiskCheck> {
       await sleep(180);
-      const need = demoNeedGb(tier, custom ?? null);
+      const need = demoNeedGb(tier, draft?.llmCustom ?? null) + (draft?.includeVoicedesign ? 2 : 0);   // the voice design model is about 2 GB
       if (source) {
         const exists = !/missing|none/i.test(path) && path.trim().length > 2;
         return { path, exists, drive: null, freeGb: null, type: "Unknown", needGb: need, ok: exists, message: exists ? null : "That folder was not found", modelsFound: exists ? { files: 7, of: 9, bytes: 13.4e9 } : null };

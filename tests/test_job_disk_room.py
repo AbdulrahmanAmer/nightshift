@@ -570,6 +570,30 @@ def test_the_dashboards_produce_next_part_answers_507_through_the_real_adapter(
     assert [q["part"] for q in dash.library.produce_next_part(slug)["queued"]] == [1]
 
 
+def test_the_fake_series_adapter_refuses_a_part_that_does_not_fit_like_the_workshop(
+    tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A dashboard on fakes (--fake-services) answered 507 for Produce next part until the check moved into
+    `Workshop.produce`; its fake adapter has to refuse the same way, with nothing queued or marked."""
+    dash = make(tmp_home)
+    dash.state.adapters.series.stories = [  # type: ignore[attr-defined]
+        {
+            "slug": "the-lift",
+            "channel": "after-dark",
+            "title": "The Lift",
+            "parts": [{"n": 1, "title": "One", "status": "approved", "job_id": None}],
+        }
+    ]
+    free_space(monkeypatch, 40 * MIB)
+    with pytest.raises(ApiError) as ei:
+        dash.library.produce_next_part("the-lift")
+    assert ei.value.status == 507 and ei.value.code == "NS-E104" and "has 40 MB free" in ei.value.message
+    assert dash.state.store.next_queued() is None
+    assert dash.state.adapters.series.stories[0]["parts"][0]["status"] == "approved"  # type: ignore[attr-defined]
+    free_space(monkeypatch, 10 * GIB)
+    assert [q["part"] for q in dash.library.produce_next_part("the-lift")["queued"]] == [1]
+
+
 # ------------------------------------------------ the nightly's result (break-it nit 3)
 def test_the_nightly_exit_code_is_non_zero_only_when_nothing_was_made_for_lack_of_room():
     """Part of the night ran: the videos exist and the morning note names the rest."""

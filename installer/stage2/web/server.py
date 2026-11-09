@@ -56,6 +56,19 @@ def _custom_of(query: dict[str, list[str]]) -> dict[str, object] | None:
     return {"repo": repo, "file": file, "size": size}
 
 
+def _draft_of(query: dict[str, list[str]]) -> dict[str, object]:
+    """The other draft choices a ``/api/disk`` query names: ``code`` and ``voicedesign`` (0 or 1), ``msKind``
+    and ``msPath`` (the models folder). Absent ones are left out, so the saved answers fill them in."""
+    draft: dict[str, object] = {}
+    for param, key in (("code", "installCode"), ("voicedesign", "includeVoicedesign")):
+        if query.get(param, [""])[0] in ("0", "1"):
+            draft[key] = query[param][0] == "1"
+    kind = query.get("msKind", [""])[0]
+    if kind:
+        draft["modelsSource"] = {"kind": kind, "path": query.get("msPath", [""])[0] or None}
+    return draft
+
+
 class SetupHTTPServer(ThreadingHTTPServer):
     """A ThreadingHTTPServer that carries the things the handler needs."""
 
@@ -382,7 +395,8 @@ class Handler(BaseHTTPRequestHandler):
             self._json(HTTPStatus.OK, ctl.check_model(query.get("repo", [""])[0], query.get("file", [""])[0]))
         elif name == "disk" and method == "GET" and ctl is not None:
             self._json(HTTPStatus.OK, ctl.disk(query.get("path", [""])[0], query.get("tier", ["small"])[0],
-                                               query.get("source", ["0"])[0] == "1", _custom_of(query)))
+                                               query.get("source", ["0"])[0] == "1", _custom_of(query),
+                                               _draft_of(query)))
         elif name == "pick-folder" and method == "POST" and getattr(ctl, "pick_folder", None) is not None:
             body = self._body()
             if body is not None:

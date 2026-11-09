@@ -137,6 +137,8 @@ export interface FieldError { field: ChoicesField; message: string; code: string
 export type AnswersResult = { ok: true; answers: AnswersView; plan: InstallPlan } | { ok: false; errors: FieldError[] };
 
 export interface KeyCheck { ok: boolean; code: "NS-E501" | "NS-E502" | "NS-E503" | null; message: string | null }
+/** The choices besides the folder and the tier that change the space an install needs: they go with every folder check, so the picker line, the folder error and the refusal on Install use one number (Install checks the draft). */
+export type DiskDraft = Pick<ChoicesDraft, "llmCustom" | "installCode" | "includeVoicedesign" | "modelsSource">;
 export interface DiskCheck {
   path: string;
   exists: boolean;

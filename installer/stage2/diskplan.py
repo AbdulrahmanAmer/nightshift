@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from installer.stage2.sysinfo import llama_pair_for
+from installer.stage2.web.plan import custom_entry
 from ns_common import diskneed
 
 if TYPE_CHECKING:
@@ -26,8 +27,10 @@ def ctx_need(
     """
     raw = ctx.raw_answers
     if custom is None and not ctx.dev_mode:
-        found = raw.get("llm_custom")
-        custom = found if isinstance(found, dict) else None
+        custom = raw.get("llm_custom")
+    # the window's rule: an entry without a repo, a file name or a whole size is not a model yet (the answers
+    # check reports it); the need is then the tier's, and never a KeyError before that message
+    custom = custom_entry(custom)
     pf = ctx.preflight or {}
     profile = ctx.profile
     pair = (

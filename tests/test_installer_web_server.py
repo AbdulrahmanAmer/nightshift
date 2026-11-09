@@ -41,8 +41,8 @@ class StubController:
     def check_model(self, repo, file):
         return {"ok": bool(repo and file), "size": 9, "message": f"{repo}|{file}", "code": None}
 
-    def disk(self, path, tier, source, custom=None):
-        return {"path": path, "tier": tier, "source": source, "custom": custom}
+    def disk(self, path, tier, source, custom=None, draft=None):
+        return {"path": path, "tier": tier, "source": source, "custom": custom, "draft": draft}
 
     def do_action(self, name, body=None):
         self.actions.append((name, body or {}))
@@ -166,7 +166,14 @@ def test_api_routes_reach_the_controller(env):
     assert json.loads(client.call("POST", "/api/check-key", {"service": "pexels", "key": "good"})[2])["ok"]
     assert not json.loads(client.call("POST", "/api/check-key", {"service": "pexels", "key": "bad"})[2])["ok"]
     disk = json.loads(client.call("GET", "/api/disk?path=D%3A%5CNightshift&tier=best&source=1")[2])
-    assert disk == {"path": "D:\\Nightshift", "tier": "best", "source": True, "custom": None}
+    assert disk == {"path": "D:\\Nightshift", "tier": "best", "source": True, "custom": None, "draft": {}}
+    # the draft's toggles that change the number reach the controller too (Install checks the draft)
+    named = "path=D%3A%5CN&tier=small&code=0&voicedesign=1&msKind=folder&msPath=E%3A%5CModels"
+    seen = json.loads(client.call("GET", f"/api/disk?{named}")[2])["draft"]
+    assert seen == {"installCode": False, "includeVoicedesign": True,
+                    "modelsSource": {"kind": "folder", "path": "E:\\Models"}}
+    unusable = "/api/disk?path=D%3A%5CN&tier=small&code=x&voicedesign=2"
+    assert json.loads(client.call("GET", unusable)[2])["draft"] == {}
     # a custom model in the query reaches the controller as one (the setup window sends it, so the number the
     # picker and the folder error show is the server's, not a rule of the page's own)
     named = "path=D%3A%5CNightshift&tier=small&repo=a%2Fb&file=tiny.gguf&size=1000000000"
