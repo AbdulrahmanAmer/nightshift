@@ -266,6 +266,14 @@ If one job of the night fails for a reason Nightshift did not expect, it is reco
 `logs\nightly-<date>.json` and the other jobs still run. A clip that fails its checks is left out of the Outbox
 (the reason is in `outbox\skipped.json` of its job folder) and the other clips are delivered.
 
+A night never runs without an owner mark: a small lock file in `data\owners` tells a restart that the run is alive. A
+file that is missing is simply made again, and a file that cannot be opened for a moment (an antivirus scan) is tried
+again for about a second. If it still cannot be made (the folder is read-only, full or blocked) or another Nightshift
+run really is running with the same name, the night does not start: **Last night** in the Queue shows a red
+"Something stopped" line, "The night: NS-E327." followed by the reason, and the Dashboard leaves a morning note with
+the same reason in plain words (unless notifications are off in Settings; the **Last night** line stays either way).
+The next nightly run tries again.
+
 ### Your own examples and prompts
 
 Put your own example stories in `exemplars\` (a `.md` or `.txt` file per story, or a folder named `horror`,
@@ -297,6 +305,27 @@ A cloned-repo install updates with `ns update --git` (newest release) or `ns upd
 needs Git for Windows (setup does not install it: without Git the command says "install Git for this"). The
 update installs exactly the packages setup installed. The old version is kept next to it as `<folder>.prev`;
 run `ns update --rollback` to go back. If a step fails, the old version is put back and the message names the step.
+An update also keeps a copy of your settings files (engine settings, setup answers, the nightly time, dashboard
+settings, channels and formats) as `<folder>.prev-config.zip`, and `ns update --rollback` puts them back with the old
+version, because an older version cannot always read a file a newer one saved. What you changed in those settings
+after the update is lost by the rollback, and the rollback names the files it put back and the ones that had
+changed; running `ns update --rollback` a second time goes forward again with the settings as they were. Only the
+latest update is kept this way (a second update replaces the first one's copy). The copy is made by the version
+that does the update, so it exists for an update made through `INSTALL.cmd` from a new zip, and for any update
+made by a Nightshift that already has this feature (0.1.15 or later). An update made BY an older version with
+`ns update <zip>`, `ns update --github` or Settings > Update (for example 0.1.14 going to 0.1.15) saves no copy,
+because the older updater is the one that runs: the rollback then swaps the program as before and says it could
+not restore the settings. A copy is replaced only together with the program it belongs to (an update replaces the
+program backup and its copy together, and a rollback swaps the pair). Two things are never done to a copy: it is never overwritten with settings
+that are not its program's, and a whole copy of a version that is not installed (it may be the only copy of that
+version's settings) is never deleted. If the settings could not be put back by a rollback (a file was in use), the
+copy stays for the next `ns update --rollback`, and the next update keeps it as it is. If an update finds a whole
+copy of a version that is neither the one running nor the program backup (for example after you deleted the
+`<folder>.prev` folder), it goes on, leaves that copy where it is, keeps no copy for its own program backup, and
+says whose copy it is and where; move `<folder>.prev-config.zip` out of the folder (or delete it) before the next
+update if you want a copy kept again. A damaged copy is replaced and the result says so. A copy that cannot be read
+at all (a program holds it open) stops the update before anything changes (`NS-E702`, or `NS-E115` from
+`INSTALL.cmd`); close the program and run the update again.
 
 ## Move your settings to another PC
 

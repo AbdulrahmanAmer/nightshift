@@ -25,6 +25,7 @@ from typing import Any
 
 import installer.stage2.devmode as devmode
 import ns_common.diskneed as diskneed
+import ns_supervisor.config_snapshot as config_snapshot
 from installer.stage2.web import (
     answers_view,
     appcopy,
@@ -427,6 +428,10 @@ class SetupController:
         if self.dev:
             self.pf = preflight.apply_dev(self.pf)
         self.home = self._initial_home()
+        # the files this window rewrites on opening (the install state records the new version at once), read
+        # first: if Continue updates the program, the settings copy for `ns update --rollback` holds them as
+        # the program being replaced wrote them (F-10a)
+        self._settings_before = self._read_settings_before()
         if devmode.reset_for_mode_switch(self.home, self.dev):
             self.fx.console("This folder holds an install of the other kind (real or dev): its later steps "
                             "run again.", "info")
@@ -449,6 +454,14 @@ class SetupController:
         return self.cfg.app_path
 
     # ---- construction ----
+    def _read_settings_before(self) -> dict[str, bytes] | None:
+        """The settings files this window rewrites before the program copy (None when one cannot be read: the
+        copy step then reads them itself and refuses to go on if it cannot)."""
+        try:
+            return config_snapshot.capture(self.home / "config", config_snapshot.SETUP_TOUCHES)
+        except config_snapshot.SnapshotError:
+            return None
+
     def _read_version(self) -> str:
         try:
             return (self.cfg.app_path / "VERSION").read_text(encoding="utf-8-sig").strip() or "0.0.0"
@@ -1351,7 +1364,7 @@ class SetupController:
             uv_pin=(self.manifest.get("bins") or {}).get("uv") or {},
             bin_pins=self.manifest.get("bins") or {}, vc_missing=fx.vc_missing, fetch_file=fx.fetch_file,
             run_elevated=fx.run_elevated, add_user_path=fx.add_user_path, install_app=self.installs_app,
-            copy_app=fx.copy_app,
+            copy_app=fx.copy_app, settings_before=self._settings_before,
         )
 
     def _run_bootstrap_step(self, step: Any) -> None:

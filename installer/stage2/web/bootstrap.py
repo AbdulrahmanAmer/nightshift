@@ -412,6 +412,8 @@ class Boot:
     # (the setup environment, the wizard, the shortcuts, the nightly task, ns update) runs from there
     install_app: bool = False
     copy_app: Callable[..., appcopy.CopyResult] = appcopy.install_app
+    # install_state.json and the other files the setup window rewrites on opening, as they were before (F-10a)
+    settings_before: Mapping[str, bytes] | None = None
     gate: threading.Event = field(default_factory=threading.Event)
     stop: threading.Event = field(default_factory=threading.Event)
 
@@ -776,7 +778,8 @@ class B02Home:
             return
         try:
             res = boot.copy_app(
-                boot.app_path, boot.home, stop_engine=lambda: self._stop_engine(boot), say=boot.say
+                boot.app_path, boot.home, stop_engine=lambda: self._stop_engine(boot), say=boot.say,
+                settings_before=boot.settings_before,
             )
         except appcopy.AppCopyError as e:
             raise BootstrapError(e.code, e.detail) from e

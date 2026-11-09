@@ -16,6 +16,7 @@ from ns_common.models import ClipPlanItem, Idea, Part, PolicyCheckResult, Seo, V
 from ns_common.paths import Paths, contracts_dir, repo_root
 from ns_studio.context import JobContext
 from ns_studio.text.exemplars import load_exemplars
+from ns_studio.text.llm_retry import retry_once
 from ns_studio.text.story_profile import NORMAL, profile_of
 
 PROMPTS_DIR = Path(__file__).resolve().parents[1] / "prompts"
@@ -371,13 +372,17 @@ def call_json(
     ctx.note_prompt(name, p.version)
     all_vars = _common_vars(ctx) | vars
     user = render(p, **all_vars)
-    return ctx.services.llm.complete_json(
-        prompt_name=fixture or name,
-        system=render_system(p, **all_vars),
-        user=user,
-        schema=PROMPT_SCHEMAS[schema_key],
-        thinking=p.thinking,
-        **attempt_kwargs(ctx),
+    system = render_system(p, **all_vars)
+    return retry_once(
+        ctx,
+        lambda: ctx.services.llm.complete_json(
+            prompt_name=fixture or name,
+            system=system,
+            user=user,
+            schema=PROMPT_SCHEMAS[schema_key],
+            thinking=p.thinking,
+            **attempt_kwargs(ctx),
+        ),
     )
 
 
@@ -387,12 +392,16 @@ def call_text(ctx: JobContext, name: str, *, fixture: str | None = None, **vars:
     ctx.note_prompt(name, p.version)
     all_vars = _common_vars(ctx) | vars
     user = render(p, **all_vars)
-    return ctx.services.llm.complete_text(
-        prompt_name=fixture or name,
-        system=render_system(p, **all_vars),
-        user=user,
-        thinking=p.thinking,
-        **attempt_kwargs(ctx),
+    system = render_system(p, **all_vars)
+    return retry_once(
+        ctx,
+        lambda: ctx.services.llm.complete_text(
+            prompt_name=fixture or name,
+            system=system,
+            user=user,
+            thinking=p.thinking,
+            **attempt_kwargs(ctx),
+        ),
     )
 
 

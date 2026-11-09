@@ -154,7 +154,7 @@ def test_format_validation_uses_the_shared_model():
         (lambda d: d["canvas"].update(fps=0), "canvas.fps"),
         (lambda d: d["layout"]["regions"][0].update(source="webcam"), "layout.regions.0.source"),
         (lambda d: d["layout"].update(regions=[]), "layout.regions"),
-        (lambda d: d["duration"].update(min_s=90, max_s=30), "must not be smaller"),
+        (lambda d: d["duration"].update(min_s=90, max_s=30), "larger than duration.max_s"),
         (lambda d: d["layout"]["regions"][0].pop("w"), "layout.regions.0.w is required"),
         (lambda d: d.update(colour="red"), "colour is not a known setting"),
         (lambda d: d.pop("name"), "name is required"),
@@ -163,10 +163,49 @@ def test_format_validation_uses_the_shared_model():
         mutate(d)
         assert any(needle in p for p in formats.validate_format(d)), needle
     d = json.loads(json.dumps(GOOD_FORMAT))
-    d["layout"]["regions"][0]["source"] = "face:2"
-    assert formats.validate_format(d) == []
-    assert formats.validate_format("nope") == ["a format must be a mapping"]
+    d["layout"]["regions"][0]["source"] = "face:2"  # the model accepts it, a Short or full video cannot show it
+    assert any("need a camera" in p for p in formats.validate_format(d))
+    assert formats.validate_format("nope") == ["a format must be a mapping of settings"]
     assert formats.validate_format({"kind": "short"}) != []
+
+
+def test_the_editor_refuses_what_the_studio_refuses(tmp_home: Path):
+    """A card that says valid is one a job can use (review of P10a): same function as the studio's."""
+    from ns_studio.media.formats import definition_problems
+
+    cases = (
+        (lambda d: d.update(shots={"min_s": 5, "max_s": 2}), "shots.min_s is larger than shots.max_s"),
+        (lambda d: d["layout"]["regions"][0].update(w=5000), "leaves the"),
+        (lambda d: d["captions"].update(styles_allowed=["no_such_style"]), "unknown caption styles"),
+        (lambda d: d["canvas"].update(w=1081), "must be even"),
+    )
+    for mutate, needle in cases:
+        d = json.loads(json.dumps(GOOD_FORMAT))
+        mutate(d)
+        problems = formats.validate_format(d)
+        assert any(needle in p for p in problems), (needle, problems)
+        assert problems == definition_problems(d)
+    # good formats and the model's own refusals: the same verdict from both
+    from ns_studio.media import formats as studio_formats
+
+    shipped_docs = [
+        yaml.safe_load(p.read_text(encoding="utf-8")) for p in sorted(studio_formats.FORMATS_DIR.glob("*.yaml"))
+    ]
+    broken = json.loads(json.dumps(GOOD_FORMAT))
+    broken["canvas"]["fps"] = 0
+    for doc in [GOOD_FORMAT, *shipped_docs, broken, {"kind": "short"}, "nope", None]:
+        assert formats.validate_format(doc) == definition_problems(doc)
+    assert formats.validate_format(GOOD_FORMAT) == [] and all(formats.validate_format(d) == [] for d in shipped_docs)
+    assert formats.validate_format(broken) != []
+    dash, state = make(tmp_home)
+    bad = json.loads(json.dumps(GOOD_FORMAT))
+    bad["shots"] = {"min_s": 5, "max_s": 2}
+    assert code_of(dash.library.create_format, {"id": "shots_off", "definition": bad}) == "invalid_format"
+    assert not (state.paths.config / "formats" / "shots_off.yaml").exists()
+    made = dash.library.create_format({"id": "shots_ok", "definition": GOOD_FORMAT})
+    assert made["valid"] is True
+    changes = {"changes": {"shots": {"min_s": 5, "max_s": 2}}}
+    assert code_of(dash.library.update_format, "shots_ok", changes) == "invalid_format"
 
 
 def test_formats_create_duplicate_edit(tmp_home: Path, monkeypatch: pytest.MonkeyPatch):

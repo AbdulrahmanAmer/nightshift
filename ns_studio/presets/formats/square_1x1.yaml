@@ -2,16 +2,15 @@
 id: square_1x1
 name: Square 1:1
 kind: square
-canvas: {w: 1080, h: 1080, fps: 30}
+canvas: {w: 1080, h: 1080}
 duration: {min_s: 15, max_s: 60}
-captions: {styles_allowed: [punch_yellow, clean_white, boxed_dark, minimal_lower], anchor_y_pct: 78, words_on_screen: 3}
+captions: {styles_allowed: [punch_yellow, clean_white, boxed_dark, minimal_lower]}
 layout:
   seam_captions: false
   regions:
     - {name: main, x: 0, y: 0, w: 1080, h: 1080, source: full}
 safe_margins: {top: 54, bottom: 54}
 shots: {min_s: 2, max_s: 5}
-encoder: {preset: p4}
 sheet:
   hashtags_required: []
   description_rules: "Honest description, no bait."
