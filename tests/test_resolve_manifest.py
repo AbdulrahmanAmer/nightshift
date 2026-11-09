@@ -3,8 +3,8 @@ import json
 import re
 
 import httpx
-import pytest
 
+from tests.online import give_up, online_client, retry_call, skip_on_outage, split_outage
 from tools import resolve_manifest as rm
 
 GGUF = "Qwen3.6-35B-A3B-MTP-UD-Q4_K_XL.gguf"
@@ -179,29 +179,35 @@ def test_every_sha256_is_64_hex():
         assert sha is not None and re.fullmatch(r"[0-9a-f]{64}", sha), where
 
 
+@skip_on_outage
 def test_repo_manifest_check_online(repo_root):
-    """Same as `tools/resolve_manifest.py --check`: every URL answers HEAD, every sha256 is set."""
+    """Same as `tools/resolve_manifest.py --check`: every URL answers HEAD, every sha256 is set.
+
+    A 5xx, a timeout or a reset connection is retried (tests/online.py); if it lasts it is an outage and the
+    test skips. A 404 or a missing hash is a wrong pin and fails."""
     import json
 
     mf = json.loads((repo_root / "manifest.json").read_text(encoding="utf-8"))
-    with httpx.Client(timeout=60, headers={"User-Agent": "nightshift-resolve"}) as client:
-        try:
-            client.head("https://huggingface.co", follow_redirects=True)
-        except httpx.HTTPError:
-            pytest.skip("no network")
-        assert rm.check(mf, client) == []
+    with online_client(timeout=60, headers={"User-Agent": "nightshift-resolve"}) as client:
+        client.head("https://huggingface.co", follow_redirects=True)     # an outage here skips the test
+        problems = rm.check(mf, client)
+    real, outage = split_outage(problems)
+    assert real == []
+    if outage:
+        give_up(outage[0])
 
 
 def _online_client() -> httpx.Client:
-    client = httpx.Client(timeout=300, headers={"User-Agent": "nightshift-resolve"}, follow_redirects=True)
+    client = online_client(timeout=300, headers={"User-Agent": "nightshift-resolve"}, follow_redirects=True)
     try:
-        client.head("https://pypi.org")
-    except httpx.HTTPError:
+        client.head("https://pypi.org")                                  # an outage here skips the test
+    except BaseException:
         client.close()
-        pytest.skip("no network")
+        raise
     return client
 
 
+@skip_on_outage
 def test_whisper_cuda_pins_match_the_pypi_hashes_online(repo_root):
     """The sha256 of each pinned cuBLAS/cuDNN wheel is the one PyPI lists for its win_amd64 file."""
     lines = json.loads((repo_root / "manifest.json").read_text(encoding="utf-8"))["python"]["whisper_cuda"]
@@ -219,16 +225,23 @@ def test_whisper_cuda_pins_match_the_pypi_hashes_online(repo_root):
         client.close()
 
 
+def _sha256_of_download(client: httpx.Client, url: str) -> str:
+    digest = hashlib.sha256()
+    with client.stream("GET", url) as r:
+        r.raise_for_status()
+        for chunk in r.iter_bytes(1 << 20):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+@skip_on_outage
 def test_spacy_wheel_pin_matches_the_download_online(repo_root):
     """Streams the pinned spaCy model wheel (about 33 MB) and compares its sha256 with the manifest."""
     pin = json.loads((repo_root / "manifest.json").read_text(encoding="utf-8"))["python"]["spacy_wheel"]
-    digest = hashlib.sha256()
     client = _online_client()
     try:
-        with client.stream("GET", pin["url"]) as r:
-            r.raise_for_status()
-            for chunk in r.iter_bytes(1 << 20):
-                digest.update(chunk)
+        # the transport retries the connection and a 5xx; this also retries a download cut off half way
+        got = retry_call(lambda: _sha256_of_download(client, pin["url"]), host=httpx.URL(pin["url"]).host)
     finally:
         client.close()
-    assert digest.hexdigest() == pin["sha256"]
+    assert got == pin["sha256"]
