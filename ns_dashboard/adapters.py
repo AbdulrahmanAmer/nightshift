@@ -419,7 +419,9 @@ class RealClipAdapter(StudioAdapter):
                 ctl, "download", {"url": url, "source_id": source_id, "cancel_file": str(flag)}, signal_cancel
             )
         except BaseException:
-            shutil.rmtree(studio_bridge.download_dir(self.paths, source_id), ignore_errors=True)
+            # the runner has killed the child's tree and reaped it; a file it held open may take a moment to
+            # let go, so the folder is removed with retries and a failure is logged, never swallowed (D-9)
+            studio_bridge.remove_download(self.paths, source_id)
             raise
         finally:
             flag.unlink(missing_ok=True)
