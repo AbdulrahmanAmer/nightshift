@@ -32,6 +32,23 @@ def test_a_good_pc_has_eleven_ok_rows_and_nothing_blocks():
     assert row(handover(), "gpu")["label"] == "Graphics card"
 
 
+def test_an_unread_driver_on_an_rtx_50_card_says_cuda_13_not_12_4():
+    pf = handover(driver=("warn", "NS-W115", "driver version not reported; the CUDA 13 build will be used"))
+    r = row(pf, "driver")
+    assert r["code"] == "NS-W115" and "CUDA 13" in r["whatToDo"] and "12.4" not in r["whatToDo"]
+    pf["gpu"] = {"name": "NVIDIA GeForce RTX 4070", "vram_mb": 12282, "driver": ""}
+    assert "CUDA 12.4" in row(pf, "driver")["whatToDo"]
+
+
+@pytest.mark.parametrize(
+    "value", ["not checked (no NVIDIA graphics card found)", "skipped (cpu-dev profile)"]
+)
+def test_a_driver_that_was_not_looked_at_is_not_called_too_old(value):
+    r = row(handover(driver=("warn", "", value)), "driver")
+    assert r["title"] == "The driver was not checked" and "570" not in r["whatToDo"]
+    assert not r["blocking"] and r["code"] is None
+
+
 @pytest.mark.parametrize(
     ("row_id", "change", "title", "fix_kind", "blocking"),
     [

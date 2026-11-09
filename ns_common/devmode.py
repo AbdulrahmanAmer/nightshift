@@ -20,18 +20,39 @@ DEV_FAKES: tuple[str, ...] = ("llm", "tts", "whisper", "embed", "clips")
 BANNER = "DEV MODE: fake engines, no models"
 
 
-def runtime_is_dev(runtime_file: Path) -> bool:
-    """True when the `runtime.json` at `runtime_file` says `"dev_mode": true`."""
+def _runtime_flags(runtime_file: Path, *names: str) -> list[bool]:
+    """For each name, whether the `runtime.json` at `runtime_file` says `"<name>": true`; one read.
+
+    An unreadable or missing file means every answer is False.
+    """
     try:
         data = json.loads(runtime_file.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
-        return False
-    return isinstance(data, dict) and data.get("dev_mode") is True
+        return [False] * len(names)
+    if not isinstance(data, dict):
+        return [False] * len(names)
+    return [data.get(name) is True for name in names]
+
+
+def runtime_is_dev(runtime_file: Path) -> bool:
+    """True when the `runtime.json` at `runtime_file` says `"dev_mode": true`."""
+    return _runtime_flags(runtime_file, "dev_mode")[0]
 
 
 def is_dev(paths: Paths) -> bool:
     """True when this install (`NIGHTSHIFT_HOME`) is a dev install."""
     return runtime_is_dev(paths.runtime_file)
+
+
+def fake_footage(paths: Paths) -> bool:
+    """True when this install stands the fake clip source in for Pexels and Pixabay.
+
+    A dev install does (`is_dev`); so does a real install whose owner set `"fake_footage": true` in
+    `answers.json` for the engine test (docs/DEV_MODE.md, "Real engines, fake voice"): the real models run
+    on a PC with no stock-footage account and the footage is placeholder. Callers that decide "is there
+    footage" or "which clip sources" ask this, so the two cases cannot drift apart.
+    """
+    return any(_runtime_flags(paths.runtime_file, "dev_mode", "fake_footage"))
 
 
 def dev_fakes(paths: Paths) -> frozenset[str]:

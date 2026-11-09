@@ -75,7 +75,7 @@ def parse_update_output(code: int, stdout: str, stderr: str) -> dict[str, Any]:
                 continue
             if isinstance(data, dict):
                 out.update(
-                    {k: v for k, v in data.items() if k in ("update_available", "current", "latest", "notes", "updated", "started", "old", "new")}
+                    {k: v for k, v in data.items() if k in ("update_available", "current", "latest", "notes", "updated", "started", "old", "new", "release_notes")}
                 )
                 return out
     low = stdout.lower()
@@ -276,6 +276,8 @@ def read_update_state(
         value = raw.get(key)
         out[key] = str(value) if value is not None else None
     out["state"] = raw["state"]
+    if isinstance(raw.get("release_notes"), str) and raw["release_notes"]:
+        out["release_notes"] = raw["release_notes"]       # added only when there is some: the shape is unchanged
     if was_running and out["state"] == "failed":
         out["stale"] = True
     return out

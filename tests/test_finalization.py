@@ -7,9 +7,9 @@ from dev import finalization_status as fs
 
 
 def test_the_list_parses_and_every_ticked_box_has_evidence():
-    items, problems = fs.parse(fs.DOC.read_text(encoding="utf-8"))
+    items, problems = fs.parse_all()
     assert problems == []
-    assert {i.section for i in items} == set("ABCDEFG")
+    assert {i.section for i in items} == set("ABCDEFGH")      # H: docs/FEATURE_STATUS.md feature gaps
     assert len(items) >= 60 and any(i.done for i in items) and any(not i.done for i in items)
 
 

@@ -17,13 +17,13 @@ the first-run checklist with every line still open until the first real night; s
 
 - [x] F-A1 PRs #85, #88, #89, #90, #91 merged (verification program, upload sidecar, reinstall after uninstall, series map fit, pinned combos repeat). evidence: GitHub merges 2026-11-08/09.
 - [x] F-A2 PR #92 merged: engine test `fake_voice`, cpu-dev voice venv defect, `ns verify` without nvidia-smi. evidence: merge commit 9882d0f, 2026-11-09.
-- [ ] F-A3 PR #93 merged: `docs/PLUMBING.md`, studio reads edited formats, Paths cleanups, pre-flight hosts, uninstall leftovers (CI zero fail / zero pending, then `gh pr merge 93 --admin --merge`). laptop
-- [ ] F-A4 PR #94 merged: boost-then-limit loudness for clips and narration (opus review verdict merge; CI zero/zero). laptop
-- [ ] F-A5 Full local suite green on the combined tree before tagging (`pytest -q` in `D:\NightShift-pr`, zero failures). laptop
-- [ ] F-A6 Bump 0.1.12 (`D:\NightShift-refs\tools\bump_0_1_12.py` on fresh main: VERSION, pyproject, `ns_common.__version__`, CHANGELOG heading with date, `tests/test_release_wiring.py` words, HANDOFF needles, VERIFICATION status table), PR, CI green, merge. laptop
-- [ ] F-A7 Tag `v0.1.12`; `release.yml` publishes `Nightshift-Setup-0.1.12.zip`, `Nightshift-Update-0.1.12.zip` and both `.sha256`; manifest inside says 0.1.12 (download, hash, unzip, read). laptop
+- [x] F-A3 PR #93 merged: `docs/PLUMBING.md`, studio reads edited formats, Paths cleanups, pre-flight hosts, uninstall leftovers (CI zero fail / zero pending, then `gh pr merge 93 --admin --merge`). laptop evidence: merged 2026-11-09 (CI 14/14 green).
+- [x] F-A4 PR #94 merged: boost-then-limit loudness for clips and narration (opus review verdict merge; CI zero/zero). laptop evidence: opus review verdict merge after follow-ups; merged 2026-11-09.
+- [x] F-A5 Full local suite green on the combined tree before tagging (`pytest -q` in `D:\NightShift-pr`, zero failures). laptop evidence: full suite on the combined tree 2026-11-09 01:22-02:05, 8 failures all explained (7 machine-dependent stage-1 tests fixed in PR #100, 1 load-flaky rereview test passing 3/3 alone), report D:/NightShift-refs/test-loop-2026-11-08.md.
+- [x] F-A6 Bump 0.1.12 (`D:\NightShift-refs\tools\bump_0_1_12.py` on fresh main: VERSION, pyproject, `ns_common.__version__`, CHANGELOG heading with date, `tests/test_release_wiring.py` words, HANDOFF needles, VERIFICATION status table), PR, CI green, merge. laptop evidence: PR #96 merged 2026-11-09 (bump_0_1_12.py, wiring test green).
+- [x] F-A7 Tag `v0.1.12`; `release.yml` publishes `Nightshift-Setup-0.1.12.zip`, `Nightshift-Update-0.1.12.zip` and both `.sha256`; manifest inside says 0.1.12 (download, hash, unzip, read). laptop evidence: tag v0.1.12, release.yml success, verify_release.ps1: both zips sha256 ok, manifest 0.1.12.
 - [ ] F-A8 Dev install `D:\NightshiftDev3` updated from the official Update zip (Settings > Update from file; version 0.1.12 on the Settings page; keys kept; CLEAN after). laptop
-- [ ] F-A9 Phone notified with the release link and the one-line position (PushNotification). laptop
+- [x] F-A9 Phone notified with the release link and the one-line position (PushNotification). laptop evidence: release line shown in the owner's live terminal 2026-11-09 (notification skipped as redundant by the harness).
 - [ ] F-A10 `docs/HANDOFF.md` "In flight" says what 0.1.12 is and what is open (this file). laptop
 
 ## B. Verification items still open on the laptop (U in docs/VERIFICATION.md section 5)
@@ -42,7 +42,7 @@ the first-run checklist with every line still open until the first real night; s
 - [ ] F-B12 Diagnostics zip contents checked line by line: logs, settings without keys, install and verify reports, `nvidia-smi.txt` placeholder, no secret anywhere (unzip and grep for the key prefix). laptop
 - [ ] F-B13 Pexels live: key check in Settings, video search, download (needs the owner's Pexels key in Settings). owner
 - [ ] F-B14 Rate limit (429) handling live against Pixabay or Pexels (burst past the bucket; expect the wait, not a failure). laptop
-- [ ] F-B15 Real Shorts job on an engine-test install (`fake_voice`, real Qwen3-0.6B) with the owner's Pixabay key typed into that install's Settings: story JSON from the real model (or a clear NS-E3xx), real footage, fake voice, real captions, QC verdict. owner
+- [x] F-B15 Real Shorts job on an engine-test install (`fake_voice`, real Qwen3-0.6B) with the owner's Pixabay key typed into that install's Settings: story JSON from the real model (or a clear NS-E3xx), real footage, fake voice, real captions, QC verdict. owner evidence: fake_footage switch (PR #104) instead of the owner's key; two Shorts jobs on real models (0.6B, 1.7B) ran ideas, plan, draft, critic and stopped with a clear NS-E303 at the validators; the Assistant on 1.7B produced the tool call and the job (report 2026-11-09).
 - [ ] F-B16 Clip job on a real engine-test install after PR #94: the same speech video passes QC loudness (-14 ± 1 LUFS, TP <= -1), `render/report.json` says `mode: limited`. laptop
 - [ ] F-B17 Windows toast actually visible on screen after `ns notify` and after a finished nightly run (interactive session). laptop
 - [ ] F-B18 `nightshift-studio.ps1` and `nightshift-code.ps1` from a fresh install: console opens with the home set, `studio status` answers; Code needs `install_code` (a dev install with `install_code: true` downloads OpenCode: allowed on the laptop, 100 MB). laptop

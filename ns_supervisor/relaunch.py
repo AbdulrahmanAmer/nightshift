@@ -20,7 +20,7 @@ from ns_common.errors import NsError
 from ns_common.paths import Paths
 from ns_supervisor import control, presence, pwsh
 from ns_supervisor.client import SupervisorClient, ensure_running, spawn_supervisor
-from ns_supervisor.procs import UNDER_ENGINE_ENV
+from ns_supervisor.procs import LAUNCHER_ONLY_ENV, UNDER_ENGINE_ENV, scrubbed
 
 CREATE_NEW_PROCESS_GROUP = 0x00000200
 CREATE_NO_WINDOW = 0x08000000
@@ -28,14 +28,14 @@ DASHBOARD_LAUNCHER = ("launchers", "nightshift-dashboard.ps1")
 ENGINE_WAIT_S = 90.0
 #: Environment the relaunched processes must not inherit from the worker: the worker may run below the engine
 #: (marked as such) and the setup window's "no host window" switch.
-SCRUBBED_ENV = (UNDER_ENGINE_ENV, "NS_DASHBOARD_NO_HOST")
+SCRUBBED_ENV = (UNDER_ENGINE_ENV, *LAUNCHER_ONLY_ENV)
 
 PopenFn = Callable[..., object]
 
 
 def clean_env(env: Mapping[str, str] | None = None) -> dict[str, str]:
     """A copy of the environment without the variables in `SCRUBBED_ENV`."""
-    return {k: v for k, v in (os.environ if env is None else env).items() if k not in SCRUBBED_ENV}
+    return scrubbed(os.environ if env is None else env, also=SCRUBBED_ENV)
 
 
 def start_dashboard_launcher(paths: Paths, app: Path, *, popen: PopenFn | None = None) -> None:

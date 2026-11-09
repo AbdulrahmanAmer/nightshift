@@ -359,6 +359,7 @@ class Outcome:
     old: str = ""
     new: str = ""
     updated: bool = True
+    release_notes: str = ""         # the new version's CHANGELOG section, for the Settings > Update card
 
 
 def run_worker(
@@ -413,6 +414,8 @@ def run_worker(
             message = f"{type(e).__name__}: {e}"
         else:
             versions = {**base, "old": out.old or old_version, "new": out.new, "updated": out.updated}
+            if out.release_notes:
+                versions["release_notes"] = out.release_notes
             if _restart(relaunch):
                 _final(paths, "failed", f"{out.message} {RESTART_HINT}", exit_code=1,
                        restart_failed=True, **versions)

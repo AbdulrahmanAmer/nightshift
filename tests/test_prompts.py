@@ -102,6 +102,14 @@ def test_policy_rules_text_lists_every_category_and_claims():
     assert "true story" in text
 
 
+def test_clip_select_prompt_asks_for_one_to_three_emphasis_words():
+    p = P.load_prompt("clip_select")
+    text = p.system + (P.PROMPTS_DIR / "clip_select.md").read_text(encoding="utf-8")
+    assert "emphasis" in text and "1 to 3" in text
+    assert "appear" in text and "transcript" in text  # words must be taken from the clip's own words
+    assert p.version >= 3
+
+
 def test_missing_frontmatter_is_rejected(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     (tmp_path / "bad.md").write_text("no front matter\n---USER---\nx\n", encoding="utf-8")
     (tmp_path / "half.md").write_text("---\nversion: 1\n---\nsys\n---USER---\nx\n", encoding="utf-8")
