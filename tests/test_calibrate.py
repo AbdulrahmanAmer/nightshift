@@ -1,5 +1,11 @@
 import csv
+import ctypes
+import json
+import os
+import sys
+import threading
 from pathlib import Path
+from typing import Any
 
 import pytest
 import yaml
@@ -330,3 +336,103 @@ def test_score_leaves_failed_stories_out_of_the_refusal_rate(tmp_home: Path):
     assert res.exit_code == 0, res.output
     assert "refusal rate: 0.0%" in res.output and "switch to two-model mode" not in res.output
     assert "3 stories could not be made: NS-E304 x3" in res.output
+
+
+# --- F-8b: the outputs are written whole (ns_common.atomic) and read through the retry -------------------
+def _snapshot(folder: Path) -> dict[str, bytes]:
+    return {p.name: p.read_bytes() for p in sorted(folder.iterdir())}
+
+
+def test_a_generation_that_fails_part_way_leaves_the_previous_files_whole(tmp_home: Path):
+    """The CSVs are built in memory and swapped in; a malformed row or an unwritable story touches nothing
+    that was already there (the old code truncated stories.csv first and left a header and half the rows)."""
+    paths, db = _env(tmp_home)
+    d = cal.write_generation(paths, db, "after-dark", _make_stories([8.0, 7.0, 9.0]))
+    before = _snapshot(d)
+
+    broken = _make_stories([5.0, 6.0, 4.0])
+    broken[1].scores = {"hook": "x"}  # type: ignore[dict-item]  # formatting row 2 fails after row 1 is done
+    with pytest.raises(ValueError):
+        cal.write_generation(paths, db, "after-dark", broken)
+    assert _snapshot(d) == before  # stories.csv, scores.csv and every story text: the first run's, whole
+
+    unwritable = _make_stories([5.0, 6.0, 4.0])
+    unwritable[1].text = "ends in a lone surrogate \ud800"  # cannot be encoded as UTF-8
+    with pytest.raises(UnicodeEncodeError):
+        cal.write_generation(paths, db, "after-dark", unwritable)
+    assert (d / "cal-02.txt").read_bytes() == before["cal-02.txt"]  # not truncated to nothing
+    assert not [p for p in d.iterdir() if p.name.startswith("~ns")]  # and no temp file is left
+
+
+def test_the_calibration_files_keep_their_line_endings_and_encoding(tmp_home: Path):
+    paths, db = _env(tmp_home)
+    d = cal.write_generation(paths, db, "after-dark", _make_stories([8.0, 7.0]))
+    raw = (d / "stories.csv").read_bytes()
+    assert raw.startswith(b"story_id,words,critic_avg,") and raw.count(b"\r\n") == 3  # csv's own CRLF
+    assert (d / "scores.csv").read_bytes().count(b"\r\n") == 3
+    text = (d / "cal-01.txt").read_bytes()
+    assert text.endswith((STORY + "\n").encode().replace(b"\n", os.linesep.encode()))  # as Notepad shows it
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows file sharing")
+def test_score_writes_its_report_whole_even_while_a_reader_holds_the_old_one(tmp_home: Path):
+    paths, db = _env(tmp_home)
+    d = cal.write_generation(paths, db, "after-dark", _make_stories([9.0, 8.8, 8.5, 8.2, 7.9, 6.0, 6.5]))
+    scores = tmp_home / "human.csv"
+    _write_human(scores, d / "scores.csv", {f"cal-{i:02d}": (8.5 if i <= 4 else 6.0) for i in range(1, 8)})
+    report = d / "calibration_report.json"
+    report.write_text('{"old": true}\n', encoding="utf-8")
+    before = report.stat().st_ino
+    hold = _Hold(report)  # an editor or a sync client has it open without sharing
+    threading.Timer(0.2, hold.release).start()
+    try:
+        rep = cal.score(paths, db, "after-dark", scores)  # the old code could not even open the file
+    finally:
+        hold.release()
+    assert json.loads(report.read_text(encoding="utf-8"))["rows"] == rep.rows == 7
+    assert report.stat().st_ino != before  # swapped in whole, not written over the old one
+    assert not [p for p in d.iterdir() if p.name.startswith("~ns")]
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows file sharing")
+def test_the_score_readers_ride_out_a_file_that_is_refused_for_a_moment(tmp_home: Path):
+    paths, db = _env(tmp_home)
+    d = cal.write_generation(paths, db, "after-dark", _make_stories([8.0, 7.0, 9.0]))
+    hold = _Hold(d / "stories.csv")
+    # released well inside the reader's retry window (about 125 ms in all), so a slow runner cannot flake it
+    threading.Timer(0.01, hold.release).start()
+    try:
+        rows = cal._read_rows(d / "stories.csv")  # the old code turned a refused open into NS-E324 at once
+    finally:
+        hold.release()
+    assert [r["story_id"] for r in rows] == ["cal-01", "cal-02", "cal-03"]
+    # a file that stays shut is still an error the person is told about, never "no rows"
+    hold = _Hold(d / "stories.csv")
+    try:
+        with pytest.raises(StudioError) as ei:
+            cal._read_rows(d / "stories.csv")
+    finally:
+        hold.release()
+    assert ei.value.code == "NS-E324"
+
+
+class _Hold:
+    """Open `path` with no sharing at all (as a program holds a file shut): every other open is refused."""
+
+    def __init__(self, path: Path) -> None:
+        k32: Any = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.CreateFileW.restype = ctypes.c_void_p
+        k32.CreateFileW.argtypes = [
+            ctypes.c_wchar_p, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p,
+            ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p,
+        ]  # fmt: skip
+        k32.CloseHandle.argtypes = [ctypes.c_void_p]
+        self._k32 = k32
+        handle = k32.CreateFileW(str(path), 0x80000000, 0, None, 3, 0x80, None)
+        assert handle not in (None, ctypes.c_void_p(-1).value), ctypes.get_last_error()
+        self._handle: int | None = handle
+
+    def release(self) -> None:
+        if self._handle is not None:
+            self._k32.CloseHandle(self._handle)
+            self._handle = None

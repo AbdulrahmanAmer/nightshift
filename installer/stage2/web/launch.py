@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import tempfile
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
@@ -17,7 +18,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from ns_common.atomic import read_text_retry, write_text_atomic
+from ns_common.atomic import read_text_retry, sweep_stale_tmp, write_text_atomic
 
 HOST_UNAVAILABLE = 3
 HOST_WAIT_S = 20.0
@@ -34,6 +35,18 @@ def data_dir(env: Mapping[str, str] | None = None) -> Path:
     e = env if env is not None else os.environ
     base = e.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
     return Path(base) / "Nightshift"
+
+
+def sweep_leftover_tmp(*, temp_dir: Path | None = None, env: Mapping[str, str] | None = None) -> int:
+    """Remove the ``~ns*.tmp`` files a crashed stage 1 or folder dialog left (over an hour old); the count.
+
+    ``installer/stage1.ps1`` (the preflight hand-over file) and ``installer/pick-folder.ps1`` (the dialog's
+    result file) write through a temp file named ``~ns<pid>-0-<n>.tmp`` beside the target in ``%TEMP%``, and
+    the server's own files live in ``%LOCALAPPDATA%\\Nightshift``. Only that exact name goes
+    (``ns_common.atomic.sweep_stale_tmp``), so nothing else in the shared ``%TEMP%`` is ever touched.
+    """
+    folders = [temp_dir if temp_dir is not None else Path(tempfile.gettempdir()), data_dir(env)]
+    return sum(sweep_stale_tmp(folder) for folder in folders)
 
 
 def write_server_files(

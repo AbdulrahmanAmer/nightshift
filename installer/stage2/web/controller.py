@@ -53,6 +53,7 @@ from ns_common.atomic import (
     write_text_atomic,
     write_zip_atomic,
 )
+from ns_common.errors import describe as describe_error
 from ns_common.paths import Paths
 from ns_common.secret_file import stored_names
 from ns_common.secrets_names import PEXELS_KEY, PIXABAY_KEY
@@ -1757,7 +1758,15 @@ class SetupController:
         if code == "prompt":
             self.log("warn", f"The setup program asked a question it should not ask: {ev.get('detail')}")
             return
-        title, what = preflight.copy_for(code)
+        # A code the window's own table does not know (NS-E119, NS-E120 from the key file) shows the
+        # errors.json message and hint, never the bare code with "send a help file".
+        try:
+            known = describe_error(code)
+            message, hint = known.message, known.hint
+        except (KeyError, OSError, ValueError):
+            message = hint = ""
+        title, what = preflight.copy_for(code, message, hint)
+        detail = str(ev.get("detail") or "").strip()
         step = next((s["id"] for s in self.snapshot()["steps"] if s["status"] == "running"), None)
 
         def fn(s: dict[str, Any]) -> None:
@@ -1765,7 +1774,7 @@ class SetupController:
                 s["notices"].append({"code": code, "title": title, "whatToDo": what, "step": step})
 
         self.store.update(fn)
-        self.log("warn", f"{code}  {title}")
+        self.log("warn", f"{code}  {title}" + (f" ({detail[:300]})" if detail else ""))
 
     def _ev_failure(self, ev: dict[str, Any]) -> None:
         self._waiting_on = "engine"         # before the state shows "waiting": a quick Retry must find it
