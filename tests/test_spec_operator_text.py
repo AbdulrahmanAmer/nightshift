@@ -22,6 +22,7 @@ from installer.stage2 import sysinfo
 from ns_common.db import Db
 from ns_common.models import Pools
 from ns_common.paths import Paths
+from ns_dashboard import svc_engine, svc_jobs
 from ns_studio import review
 from ns_studio.channels import cadence, crud
 from ns_studio.cli import app
@@ -199,6 +200,22 @@ def test_resume_in_the_dashboard_shows_no_review_and_the_section_says_so():
     assert "resumes at once" in body
 
 
+def test_only_story_runs_are_refused_for_a_paused_channel_and_the_texts_say_so():
+    cls = svc_jobs.JobsService
+    assert "channel_paused" in inspect.getsource(cls._run_params)
+    assert "channel_paused" not in inspect.getsource(cls._clip_params)
+    assert inspect.getsource(svc_jobs).count("channel_paused") == 1
+    section = doc_section(GUIDE, HEADING)
+    flat = " ".join(section.split())
+    assert "refuses to start a video for it" not in flat
+    assert "refuses to start a story video for it" in flat
+    assert "Clipper" in flat and "does not check" in flat
+    d = decision("Incident procedure")
+    assert "A story run request" in d and "`_clip_params`" in d and "Clipper" in d
+    assert "A run request for a paused channel" not in d
+    assert "refuse" not in doc_section(README, HEADING)
+
+
 # ---------------------------------------------------------------------------------------------------------
 # OPERATOR.md leftovers of the P37 break-it round
 # ---------------------------------------------------------------------------------------------------------
@@ -253,7 +270,7 @@ def test_j2_words_are_the_words_of_the_pages():
     app_ts = tsx("lib/app.tsx")
     assert 'ROUTES[n] ?? "queue"' in app_ts
     shell = tsx("shell/Shell.tsx")
-    for text in ('"Idle"', "Loading model", "Working: ", ", step ${e.step} of ${e.steps}", '"Ready"'):
+    for text in ('"Idle"', "Loading model", "Working: ", '"Ready"'):
         assert text in shell, text
     adapters = (ROOT / "ns_dashboard" / "adapters.py").read_text(encoding="utf-8")
     assert (
@@ -263,6 +280,29 @@ def test_j2_words_are_the_words_of_the_pages():
     assert '"Services idle"' in engine
     queue = tsx("pages/Queue.tsx")
     assert "stageWords(j.stage)" in queue
+
+
+def test_top_bar_step_count_is_not_in_the_spec_because_the_engine_never_sends_it():
+    # Shell.tsx adds ", step N of M" only when the engine object carries step and steps ...
+    shell = tsx("shell/Shell.tsx")
+    assert "e.step && e.steps" in shell and ", step ${e.step} of ${e.steps}" in shell
+    # ... and the engine object the API serves never carries them (only the demo data does).
+    engine_src = inspect.getsource(svc_engine.EngineService.engine)
+    returned = engine_src.split("return {", 1)[1].split("}", 1)[0]
+    assert '"step"' not in returned and '"steps"' not in returned
+    # so the spec must not promise it in the top bar; the job card on Create carries it
+    d34 = decision("Dashboard home")
+    top_bar = d34.split("The top bar reads", 1)[1].split("There is no", 1)[0]
+    assert "Working: <stage> (i/n)" in top_bar
+    assert "step i of n" not in top_bar
+    j2_step2 = next(ln for ln in spec_section("### J2").splitlines() if ln.startswith("2. "))
+    bar_text = j2_step2.split("The top bar reads", 1)[1].split("; the job", 1)[0]
+    assert "Working: <stage> (i/n)" in bar_text and "step i of n" not in bar_text
+    # the card text is stated separately, and the Create card does show it
+    for text in (d34, j2_step2):
+        assert "step i of n" in text.split("card", 1)[1]
+    create = tsx("pages/Create.tsx")
+    assert "`, step ${j.step} of ${j.steps}`" in create
 
 
 def test_j2_window_is_the_app_window_not_a_browser_tab():
@@ -292,6 +332,16 @@ def test_operator_first_video_steps_use_the_dashboard_words():
     assert "arrives in a later release" not in steps
 
 
+def test_setup_summary_still_says_run_now_and_the_spec_names_it_as_open():
+    summary = (ROOT / "installer" / "stage2" / "steps" / "s10_summary.py").read_text(encoding="utf-8")
+    assert "press Run now to make your first video" in summary
+    d34 = decision("Dashboard home")
+    assert "installer/stage2/steps/s10_summary.py" in d34 and "J1 step 7" in d34
+    assert "still says" in d34.split("s10_summary.py", 1)[1]
+    step7 = next(ln for ln in spec_section("### J1").splitlines() if ln.startswith("7. "))
+    assert "Run now" in step7 and cites(step7, decision_id("Dashboard home"))
+
+
 # ---------------------------------------------------------------------------------------------------------
 # F-H100: 16.3 opening-line similarity
 # ---------------------------------------------------------------------------------------------------------
@@ -313,6 +363,9 @@ def test_opening_similarity_is_skipped_in_dev_and_reads_the_last_50():
         assert "order by created_at desc limit 50" in src and "job_id!=?" in src
     chapter = inspect.getsource(validators.validate_chapter)
     assert "if chapter_n == 1 else None" in chapter
+    d35 = decision("Opening-line similarity")
+    for path in ("ns_studio/text/stages_master.py", "ns_studio/text/stages_shorts.py"):
+        assert path in d35, path
     row = decision("Opening-line similarity")
     assert "0.9" in row and "0.8" in row and "dev" in row and "NS-E303" in row and "chapter 1" in row
 

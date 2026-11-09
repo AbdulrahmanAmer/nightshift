@@ -279,7 +279,8 @@ instead of ours. To change a prompt, copy its file from `ns_studio\prompts\` to 
 
 If YouTube sends a warning, a strike or a monetization notice about a channel, stop that channel first and look at
 what it made before it makes anything else. Videos that are already made stay in the Queue. The night run skips a
-paused channel and the Dashboard refuses to start a video for it.
+paused channel and the Dashboard refuses to start a story video for it (the Clipper does not check whether the
+channel is paused).
 
 Type the commands in a terminal (Windows Terminal or Command Prompt, opened after setup finished) with the full
 path of the studio program in the install folder, `"<install folder>\venvs\studio\Scripts\studio.exe"`; they are
