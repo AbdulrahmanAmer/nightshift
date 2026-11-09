@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from ns_common import ffmpeg as ff
-from ns_studio.media.audio import parse_ebur128, parse_silences
+from ns_studio.media.audio import VOICE_LUFS, VOICE_TP, linear_possible, parse_ebur128, parse_silences
 from ns_studio.media.stages_media import MASTER_MEDIA_STAGES, SHORTS_MEDIA_STAGES
 from ns_studio.media.voice import loudnorm, measure_lufs, narration_items
 from ns_studio.orchestrator import FORMAT_STAGES, SHORTS_ONLY_STAGES
@@ -69,14 +69,27 @@ def test_parse_silences():
 
 
 @needs_ffmpeg
-def test_voice_stage_normalizes(tmp_home: Path):
+def test_voice_stage_normalizes(tmp_home: Path, monkeypatch: pytest.MonkeyPatch):
+    # The fake TTS tone never needs the limiter, so the numbers below cannot show that voice.py asks for the
+    # voice target and its lowered true-peak ceiling; record what it passes to loudnorm and check that.
+    calls: list[dict] = []
+
+    def recording_loudnorm(in_wav: Path, out_wav: Path, **kw):
+        calls.append(kw)
+        return loudnorm(in_wav, out_wav, **kw)
+
+    monkeypatch.setattr("ns_studio.media.voice.loudnorm", recording_loudnorm)
     ctx = make_ctx(tmp_home)
     ctx.write_json("parts.json", PARTS)
     REGISTRY["voice"].run(ctx)
+    assert len(calls) == 2
+    assert all(c["i"] == VOICE_LUFS and c["tp"] == VOICE_TP for c in calls)
     man = ctx.read_json("audio/manifest.json")
     assert set(man) == {"p1", "p1_hook"}
     lufs, tp = measure_lufs(Path(man["p1"]["path"]))
     assert -17 <= lufs <= -15 and tp <= -1.0
+    for item in man.values():     # peaks already sit where the Short's +2 dB lift stays linear (limit once)
+        assert linear_possible(item["lufs"], item["tp"], i=-14.0, tp=-1.5)
     parts = ctx.read_json("parts.json")
     assert parts == PARTS  # measured seconds live in the manifest; parts.json is an input of the LLM stages
     sidecar = Path(man["p1"]["path"]).with_suffix(".txt")
