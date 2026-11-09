@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from ns_common.models import Seo
+from ns_common.models import ClipPlanItem, Seo, Word
 from ns_studio.clipper import detect as det
 from ns_studio.clipper import layout as lay
 from ns_studio.clipper import select
@@ -118,13 +118,46 @@ def test_text_source_lists_the_hesitations_and_keeps_like_on_purpose():
     assert "C4" in line and "removes no word" in line
 
 
-def test_text_source_says_where_casing_and_punctuation_come_from():
-    """17.2 does not claim a restoration step that the clip_select prompt never asks for (F-H95)."""
+def test_text_source_says_how_the_cleaned_clip_text_reaches_the_captions():
+    """17.2 describes what the merged clip_select v4 and the captions stage do with `caption_text` (F-H95)."""
     line = _text_source()
-    assert "restored by the model" not in line
-    assert "speech recogniser" in line and "not asked to restore" in line
-    prompt = (ROOT / "ns_studio" / "prompts" / "clip_select.md").read_text(encoding="utf-8").lower()
-    assert not any(w in prompt for w in ("restor", "punctuation", "casing", "capitaliz"))
+    assert "not asked to restore" not in line and "restored by the model" not in line
+    prompt = (ROOT / "ns_studio" / "prompts" / "clip_select.md").read_text(encoding="utf-8")
+    assert "caption_text" in prompt and "caption_text" in line  # the model is asked, and 17.2 names the field
+    version = re.search(r"^version: (\d+)$", prompt, re.MULTILINE)
+    assert version is not None and f"version {version.group(1)}" in line
+    assert "caption_text" in select.Cand.__dataclass_fields__
+    # the sidecar: its file name is the constant the stages use, and the plan is not where it lives
+    assert sc.CAPTION_WORDS_FILE == "clip_caption_words.json"
+    assert f"`{sc.CAPTION_WORDS_FILE}`" in line and "`CAPTION_WORDS_FILE`" in line
+    assert "not in `clip_plan.json`" in line
+    assert "caption_text" not in ClipPlanItem.model_fields  # nothing to put it in: the plan has no such field
+    assert sc.CAPTION_WORDS_FILE not in sc.SelectStage.outputs  # a listed output would redo the selection on resume
+    assert sc.CAPTION_WORDS_FILE in sc.CaptionsStage.optional_inputs
+    # the acceptance rule: ASR words stay, a model word is taken on its letters, the share is the constant
+    assert f"{round(select.MIN_CLEANED_SHARE * 100)} % of its spoken words" in line and "`MIN_CLEANED_SHARE`" in line
+    for symbol in ("align_caption_text", "_display", "_is_spoken_digits"):
+        assert callable(getattr(select, symbol)) and f"`{symbol}`" in line, symbol
+    for banned in ("sign", "decimal point", "currency", "percent", "hash", "emoji"):
+        assert banned in line, banned
+    assert "stays uncleaned with the ASR spelling" in line
+    assert "hesitation removal stays the captions stage's job" in line.lower()
+
+
+def test_the_acceptance_rule_17_2_states_is_the_rule_align_caption_text_applies():
+    """Letters must match; digits only for a spoken number; a symbol, a sign, a decimal or a poor match keeps ASR."""
+    spoken = "so we got twenty dollars and then five more of them to the old house".split()
+    words = [Word(w=w, start=i / 3.0, end=i / 3.0 + 0.3, seg=0) for i, w in enumerate(spoken)]
+    text = "So we got 20 dollars and then 5 more of them to the old house."
+    got = select.align_caption_text(words, text)
+    assert got is not None and got[0] == "So" and got[3] == "20" and got[-1] == "house."
+    assert select._is_spoken_digits('"20",') and select._is_spoken_digits("(5)")
+    assert select._display("$20") is None and select._display("20%") is None and select._display("#1") is None
+    assert select._display("20" + chr(0x1F600)) == "20"  # an emoji is taken off, never shown
+    assert not select._is_spoken_digits("-20") and not select._is_spoken_digits("3.5")
+    point = select.align_caption_text(words, "So we got 20 dollars and then 3.5 more of them to the old house.")
+    assert point is not None and point[7] == "five" and point[3] == "20"  # the decimal keeps the ASR word
+    assert select.align_caption_text(words, "completely different words that never matched anything here") is None
 
 
 def test_c4_row_lists_the_filler_tokens_the_candidate_filter_counts():
