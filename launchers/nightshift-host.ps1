@@ -48,6 +48,38 @@ function Get-HostHome {
     return (Join-Path $env:LOCALAPPDATA 'Nightshift')
 }
 
+# The WebView2 profile (state\webview2) outlives every update, and so does its HTTP cache. An entry stored by a
+# version that sent no Cache-Control is reused for a tenth of its age, so the first window after an update could
+# still run the old page. The cache folders are wiped once per app version (a stamp file records the version
+# that last ran on this profile); cookies, local storage and settings are not touched. No browser argument is
+# changed, so a profile that an older host still holds open is never refused. A cache that is locked (a window
+# is still open on this profile) is left alone, the stamp is not written, and the next start tries again.
+# Returns $true when the cache was cleared.
+function Reset-StaleHttpCache {
+    param([string]$ProfileDir, [string]$AppDir)
+    try {
+        $versionFile = Join-Path $AppDir 'VERSION'
+        if (-not (Test-Path -LiteralPath $versionFile)) { return $false }
+        $current = ([string](Get-Content -LiteralPath $versionFile -Raw)).Trim()
+        if (-not $current) { return $false }
+        $stamp = Join-Path $ProfileDir 'ns-cache-version.txt'
+        if (Test-Path -LiteralPath $stamp) {
+            if (([string](Get-Content -LiteralPath $stamp -Raw)).Trim() -eq $current) { return $false }
+        }
+        foreach ($name in @('Cache', 'Code Cache')) {
+            $dir = Join-Path $ProfileDir "EBWebView\Default\$name"
+            if (Test-Path -LiteralPath $dir) { Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction Stop }
+        }
+        [void](New-Item -ItemType Directory -Force -Path $ProfileDir)
+        Set-Content -LiteralPath $stamp -Value $current -Encoding ascii
+        return $true
+    }
+    catch {
+        Write-Verbose "http cache not cleared: $($_.Exception.Message)"
+        return $false
+    }
+}
+
 function Get-WebView2Version {
     $roots = @(
         "HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\$ClientKey",
@@ -389,10 +421,8 @@ try {
     $script:wv = New-Object Microsoft.Web.WebView2.Wpf.WebView2
     $props = New-Object Microsoft.Web.WebView2.Wpf.CoreWebView2CreationProperties
     $props.UserDataFolder = Join-Path (Get-HostHome) 'state\webview2'
-    # The profile folder persists across versions. The dashboard now sends Cache-Control: no-cache, but an
-    # entry stored by an older version carries no rule and would be reused for a tenth of its age: after an
-    # update the window would run the old UI. The page is on 127.0.0.1, so the HTTP cache buys nothing.
-    $props.AdditionalBrowserArguments = '--disable-http-cache'
+    # The profile folder persists across versions, and so does its HTTP cache (see Reset-StaleHttpCache).
+    [void](Reset-StaleHttpCache -ProfileDir $props.UserDataFolder -AppDir $AppPath)
     $script:wv.CreationProperties = $props
     $script:wv.DefaultBackgroundColor = [System.Drawing.ColorTranslator]::FromHtml($BackgroundHex)
     $script:win.Content = $script:wv

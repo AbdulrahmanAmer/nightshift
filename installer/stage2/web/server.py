@@ -6,6 +6,7 @@ Host check against DNS rebinding, a strict Content-Security-Policy, the static U
 
 from __future__ import annotations
 
+import hashlib
 import json
 import mimetypes
 import os
@@ -36,6 +37,9 @@ CSP = (
 MIME = {".js": "text/javascript", ".css": "text/css", ".html": "text/html", ".svg": "image/svg+xml",
         ".json": "application/json", ".wav": "audio/wav", ".mp4": "video/mp4", ".jpg": "image/jpeg",
         ".png": "image/png", ".woff2": "font/woff2", ".woff": "font/woff", ".ico": "image/x-icon"}
+
+
+BUNDLE_FILES = ("app.js", "app.css")  # the fixed-name files index.html loads; see Handler._index
 
 
 class SetupHTTPServer(ThreadingHTTPServer):
@@ -261,7 +265,33 @@ class Handler(BaseHTTPRequestHandler):
         if not target.is_file():
             self._text(HTTPStatus.NOT_FOUND, "Not found")
             return
-        self._file(target, cache="no-store" if target.name == "index.html" else "no-cache")
+        if target == (root / "index.html").resolve():
+            self._index(target)
+            return
+        self._file(target, cache="no-cache")
+
+    def _index(self, target: Path) -> None:
+        """`index.html` names `app.js` and `app.css` with a version token (D-29): a window whose profile
+        cached the old bundle under the plain URL asks for a URL it has never seen once the page is new."""
+        root = target.parent
+        parts = []
+        for name in BUNDLE_FILES:
+            try:
+                st = (root / name).stat()
+                parts.append(f"{name}:{st.st_mtime_ns}:{st.st_size}")
+            except OSError:
+                parts.append(f"{name}:-")
+        token = hashlib.sha1("|".join(parts).encode()).hexdigest()[:10]
+        text = target.read_text(encoding="utf-8")
+        for name in BUNDLE_FILES:
+            text = text.replace(f'"./{name}"', f'"./{name}?v={token}"')
+        body = text.encode("utf-8")
+        self.send_response(int(HTTPStatus.OK))
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self._common(len(body))
+        if self.command != "HEAD":
+            self.wfile.write(body)
 
     def _file(self, target: Path, *, cache: str = "") -> None:
         size = target.stat().st_size

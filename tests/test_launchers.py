@@ -1,5 +1,6 @@
 import json
 import subprocess
+import sys
 import threading
 from collections.abc import Iterator
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -141,16 +142,6 @@ def test_host_script_follows_the_app_host_protocol() -> None:
     ):
         assert needle in text, needle
     assert "$uri.Scheme -in @('http', 'https')" in text      # open-external is http(s) only
-
-
-def test_host_window_never_keeps_a_cached_page_across_an_update() -> None:
-    """D-29: the host's WebView2 profile (state/webview2) is persistent, so the page and app.js of the version
-    before an update were reused from its HTTP cache. The server now sends no-cache, but the window that is
-    relaunched after the first update to this fix still holds old entries stored without a rule: the host
-    starts Chromium with its HTTP cache off so that window can never run the old UI."""
-    text = read("nightshift-host.ps1")
-    assert "AdditionalBrowserArguments" in text and "--disable-http-cache" in text
-    assert text.index("AdditionalBrowserArguments") < text.index("$script:wv.CreationProperties = $props")
 
 
 def test_code_launcher_acquires_as_opencode_and_releases_in_finally() -> None:
@@ -640,3 +631,78 @@ def test_the_engine_is_started_from_the_install_home_without_stage_ones_python_p
     start = body.index("Start-Process")
     assert body.index("Remove-Item Env:PYTHONPATH") < start
     assert body.index("Remove-Item Env:NIGHTSHIFT_BOOTSTRAP_UV") < start
+
+
+def host_cache_reset(tmp_path: Path, version: str | None, profile: Path) -> str:
+    """Run `Reset-StaleHttpCache` from nightshift-host.ps1 on its own and return what it printed."""
+    import re
+
+    text = read("nightshift-host.ps1")
+    m = re.search(r"^function Reset-StaleHttpCache \{.*?^\}\n", text, re.S | re.M)
+    assert m, "nightshift-host.ps1 has no Reset-StaleHttpCache"
+    app = tmp_path / "app"
+    app.mkdir(parents=True, exist_ok=True)
+    if version is not None:
+        (app / "VERSION").write_text(version + "\n", encoding="ascii")
+    script = f"{m.group(0)}\nWrite-Output (Reset-StaleHttpCache -ProfileDir '{profile}' -AppDir '{app}')\n"
+    r = pwsh.run_powershell(script, timeout_s=90)
+    assert r.returncode == 0, r.stdout + r.stderr
+    return r.stdout.strip().splitlines()[-1]
+
+
+def make_profile(profile: Path) -> dict[str, Path]:
+    files = {
+        "cache": profile / "EBWebView" / "Default" / "Cache" / "Cache_Data" / "f_000001",
+        "code": profile / "EBWebView" / "Default" / "Code Cache" / "js" / "0",
+        "storage": profile / "EBWebView" / "Default" / "Local Storage" / "leveldb" / "000003.log",
+    }
+    for f in files.values():
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_bytes(b"x")
+    return files
+
+
+@needs_powershell
+def test_the_host_clears_the_http_cache_once_per_app_version_and_keeps_the_profile(tmp_path: Path) -> None:
+    """D-29: the profile (state/webview2) outlives an update, so its cache holds the old page and bundle."""
+    profile = tmp_path / "state" / "webview2"
+    files = make_profile(profile)
+    assert host_cache_reset(tmp_path, "0.1.15", profile) == "True"
+    assert not files["cache"].parent.parent.exists() and not files["code"].parent.parent.exists()
+    assert files["storage"].exists()  # settings and storage are kept
+    assert (profile / "ns-cache-version.txt").read_text(encoding="ascii").strip() == "0.1.15"
+    files = make_profile(profile)  # the window caches again
+    assert host_cache_reset(tmp_path, "0.1.15", profile) == "False"  # same version: left alone
+    assert files["cache"].exists()
+    assert host_cache_reset(tmp_path, "0.1.16", profile) == "True"  # after the next update
+    assert not files["cache"].exists() and files["storage"].exists()
+
+
+@needs_powershell
+def test_the_host_cache_reset_never_stops_the_window_from_starting(tmp_path: Path) -> None:
+    profile = tmp_path / "state" / "webview2"
+    assert host_cache_reset(tmp_path / "none", None, profile) == "False"  # no VERSION file
+    assert host_cache_reset(tmp_path, "0.1.15", profile) == "True"  # no profile yet: stamp only
+    assert (profile / "ns-cache-version.txt").exists()
+
+
+@needs_powershell
+@pytest.mark.skipif(sys.platform != "win32", reason="an open file blocks a delete only on Windows")
+def test_a_cache_that_is_still_in_use_is_left_alone_and_retried_at_the_next_start(tmp_path: Path) -> None:
+    """Another window of the same profile is open: nothing is half-stamped, the next start clears it."""
+    profile = tmp_path / "state" / "webview2"
+    files = make_profile(profile)
+    with files["cache"].open("rb"):
+        assert host_cache_reset(tmp_path, "0.1.15", profile) == "False"
+        assert not (profile / "ns-cache-version.txt").exists() and files["storage"].exists()
+    assert host_cache_reset(tmp_path, "0.1.15", profile) == "True"
+    assert not files["cache"].exists()
+
+
+def test_host_script_does_not_change_the_browser_arguments() -> None:
+    """The profile is shared by the dashboard and setup roles and by every version: WebView2 refuses to start
+    in a user data folder whose browser process was created with other arguments, so the host sets none."""
+    text = read("nightshift-host.ps1")
+    assert "AdditionalBrowserArguments" not in text and "--disable-http-cache" not in text
+    call = text.index("Reset-StaleHttpCache -ProfileDir")
+    assert call < text.index("$script:wv.CreationProperties = $props")

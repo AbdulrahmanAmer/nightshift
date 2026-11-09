@@ -7,7 +7,9 @@ This module only routes: every operation lives in the framework-free service lay
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import os
 import re
 import sys
 import tempfile
@@ -21,8 +23,10 @@ from typing import Any
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from starlette.concurrency import run_in_threadpool
+from starlette.datastructures import Headers
 from starlette.exceptions import HTTPException as StarletteHTTPException
-from starlette.staticfiles import StaticFiles
+from starlette.staticfiles import NotModifiedResponse, StaticFiles
+from starlette.types import Scope
 
 from ns_common.errors import NsError
 from ns_common.paths import Paths
@@ -48,7 +52,66 @@ CSP = (
 
 #: A built file whose name carries its content hash (`assets/geist-latin-wght-normal-BgDaEnEv.woff2`, the
 #: Vite `[name]-[hash]` pattern): the name changes whenever the bytes do, so it can be cached for good.
-HASHED_ASSET = re.compile(r"^/assets/[^/]+-[A-Za-z0-9_-]{8}\.[A-Za-z0-9]+$")
+#: The hash part must hold a digit or a capital (a lower-case word such as `assets/foo-original.png` is not a
+#: hash) and the extension must be one the build emits there, so a hand-added file is never cached for a year.
+HASHED_ASSET = re.compile(r"^/assets/[^/]+-([A-Za-z0-9_-]{8})\.(?:woff2?|ttf|js|css|png|jpe?g|webp|svg|gif)$")
+HASH_CHARS = re.compile(r"[0-9A-Z]")
+
+#: The two fixed-name files `index.html` loads. They change with every update under the same URL, so the page
+#: names them with a version token (`./app.js?v=<token>`): a window that cached the old `app.js` (stored by a
+#: version that sent no Cache-Control) asks for a URL it has never seen as soon as the page itself is new.
+BUNDLE_FILES = ("app.js", "app.css")
+
+
+def bundle_token(root: Path) -> str:
+    """A short token that changes whenever `app.js` or `app.css` changes (modification time and size)."""
+    parts: list[str] = []
+    for name in BUNDLE_FILES:
+        try:
+            st = (root / name).stat()
+        except OSError:
+            parts.append(f"{name}:-")
+        else:
+            parts.append(f"{name}:{st.st_mtime_ns}:{st.st_size}")
+    return hashlib.sha1("|".join(parts).encode()).hexdigest()[:10]
+
+
+def versioned_page(html: str, token: str) -> str:
+    """`index.html` with `./app.js` and `./app.css` pointing at the versioned URLs."""
+    for name in BUNDLE_FILES:
+        html = html.replace(f'"./{name}"', f'"./{name}?v={token}"')
+    return html
+
+
+class DashboardFiles(StaticFiles):
+    """`StaticFiles` that serves `index.html` with versioned bundle URLs (D-29).
+
+    The page never answers 304 to a validator it did not issue: an `If-None-Match` or `If-Modified-Since` kept
+    from an older version describes the old page (without the `?v=` token), so the page is sent again.
+    """
+
+    def file_response(
+        self,
+        full_path: str | os.PathLike[str],
+        stat_result: os.stat_result,
+        scope: Scope,
+        status_code: int = 200,
+    ) -> Response:
+        root = Path(self.directory or ".").resolve()
+        if status_code != 200 or Path(full_path).resolve() != root / "index.html":
+            return super().file_response(full_path, stat_result, scope, status_code)
+        body = versioned_page(Path(full_path).read_text(encoding="utf-8"), bundle_token(root))
+        raw = body.encode("utf-8")
+        etag = '"' + hashlib.sha1(raw).hexdigest()[:20] + '"'
+        sent = [v.strip() for v in Headers(scope=scope).get("if-none-match", "").split(",")]
+        if etag in sent:
+            return NotModifiedResponse(Headers({"etag": etag}))
+        head = scope.get("method") == "HEAD"
+        return Response(
+            b"" if head else raw,
+            media_type="text/html",
+            headers={"etag": etag, "content-length": str(len(raw))},
+        )
 
 
 def static_cache_control(path: str, status: int = 200) -> str:
@@ -58,7 +121,8 @@ def static_cache_control(path: str, status: int = 200) -> str:
     URL, so the browser must ask first: `no-cache` keeps the ETag round trip (an unchanged file is answered
     304, no body). Only a content-hashed file under `/assets/` is immutable, and an error answer never is.
     """
-    if status < 400 and HASHED_ASSET.match(path):
+    hashed = HASHED_ASSET.match(path)
+    if status < 400 and hashed and HASH_CHARS.search(hashed.group(1)):
         return "public, max-age=31536000, immutable"
     return "no-cache"
 
@@ -708,7 +772,7 @@ def create_app(
     root = static_dir or default_static_dir()
     # StaticFiles raises at request time for a missing folder, so mount it only when it exists
     if root.is_dir():
-        app.mount("/", StaticFiles(directory=str(root), html=True), name="static")
+        app.mount("/", DashboardFiles(directory=str(root), html=True), name="static")
 
     app.add_middleware(LoopbackMiddleware, log=st.log)
     return app

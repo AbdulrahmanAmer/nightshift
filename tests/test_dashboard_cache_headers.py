@@ -87,3 +87,46 @@ def test_a_changed_file_is_fetched_after_the_update_even_with_the_old_etag(env):
     assert new.headers["etag"] != old_etag
     page = client.get("/", headers={"If-None-Match": old_page_etag})
     assert page.status_code == 200 and "Nightshift 2" in page.text
+
+
+def bundle_urls(page: str) -> tuple[str, str]:
+    js = page.split('src="')[1].split('"')[0]
+    css = "./app.css" + page.split('href="./app.css')[1].split('"')[0]
+    return js, css
+
+
+def test_the_page_names_the_bundle_with_a_token_so_a_window_that_cached_the_old_bundle_fetches_the_new(env):
+    """The first update to this fix: the browser holds app.js stored without a rule under `./app.js`."""
+    client, static = env
+    (static / "index.html").write_text(
+        '<!doctype html><title>Nightshift</title><script type="module" src="./app.js"></script>'
+        '<link rel="stylesheet" href="./app.css">',
+        encoding="utf-8",
+    )
+    (static / "app.css").write_text("body{}", encoding="utf-8")
+    first = client.get("/")
+    js, css = bundle_urls(first.text)
+    assert js.startswith("./app.js?v=") and css.startswith("./app.css?v="), first.text
+    assert client.get(js[1:]).text == "// ui"  # the query string does not change what is served
+    # An update changes the bundle: the page must point at URLs the old window has never cached.
+    (static / "app.js").write_text("// ui of the new version, a bit longer", encoding="utf-8")
+    second = client.get("/")
+    assert bundle_urls(second.text)[0] != js and second.headers["etag"] != first.headers["etag"]
+    # The window asks again with the validators of the old page: it gets the new page, not a 304.
+    stale = client.get("/", headers={"If-None-Match": first.headers["etag"]})
+    assert stale.status_code == 200 and bundle_urls(stale.text)[0] == bundle_urls(second.text)[0]
+    # A validator the old server issued (Last-Modified of the file) never answers 304 either.
+    old = client.get("/", headers={"If-Modified-Since": "Wed, 01 Jan 2031 00:00:00 GMT"})
+    assert old.status_code == 200 and "?v=" in old.text
+    current = client.get("/", headers={"If-None-Match": second.headers["etag"]})
+    assert current.status_code == 304 and revalidates(current)
+
+
+def test_a_file_that_only_looks_hashed_is_not_cached_for_a_year(env):
+    client, static = env
+    for name, body in (("foo-original.png", b"png"), ("notes-Abcdefg1.txt", b"txt")):
+        (static / "assets" / name).write_bytes(body)
+        r = client.get(f"/assets/{name}")
+        assert r.status_code == 200 and "immutable" not in directives(r), name
+    (static / "assets" / "app-Dk3Xz9aQ.js").write_text("1", encoding="utf-8")
+    assert "immutable" in directives(client.get("/assets/app-Dk3Xz9aQ.js"))
