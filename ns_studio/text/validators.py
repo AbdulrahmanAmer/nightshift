@@ -37,7 +37,7 @@ def check_length(text: str, budget: Budget) -> Violation | None:
     return None
 
 
-def check_master_length(chapters: Sequence[str], wpm: int) -> Violation | None:
+def check_master_length(chapters: Sequence[str], wpm: float) -> Violation | None:
     """The chapters may add up to at most 14:30 of audio at `wpm`: QC fails anything over 15:00 (NS-E404).
 
     The estimate counts the TTS pauses (350 ms per sentence, 700 ms per paragraph, 1.2 s before each cliff

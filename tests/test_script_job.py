@@ -36,7 +36,7 @@ from ns_studio.cli import app
 from ns_studio.context import FAKEABLE
 from ns_studio.errors import StudioError
 from ns_studio.orchestrator import FORMAT_STAGES, plan_format, run_job
-from ns_studio.series.plain import ScriptRefused, plan_script, script_markdown, script_problem
+from ns_studio.series.plain import ScriptRefused, plan_script, script_markdown, script_problem, spoken_wpm
 from ns_studio.series.store import parse_script
 from ns_studio.stages import REGISTRY, run_stage
 from ns_supervisor import devfake
@@ -403,6 +403,74 @@ def test_studio_run_script_long_renders_the_owners_chapters_and_cuts_shorts(tmp_
     qc = json.loads((job_dir / "qc" / "report.json").read_text(encoding="utf-8"))
     assert qc["long"]["passed"] is True, qc
     assert list(Paths.from_env().outbox.rglob("*.mp4"))
+
+
+@pytest.mark.skipif(not ffmpeg.available(), reason="ffmpeg not installed")
+def test_a_slow_voice_gets_a_longer_bucket_and_still_lands_inside_the_qc_band(tmp_home: Path, monkeypatch: pytest.MonkeyPatch):
+    """The review's case: 260 words with the channel voice at speed 0.85 ran 123 s against a 105 s estimate."""
+    from ns_common.models import Voice
+
+    text = long_script(240)
+    paths = Paths.from_env()
+    paths.ensure()
+    ch = yaml_only_channel(paths, voice=Voice(speed=0.85))
+    normal = plan_script(text, "shorts_only", list(ch.pools.pacings))
+    slow = plan_script(text, "shorts_only", list(ch.pools.pacings), voice_speed=0.85)
+    assert slow.pacing == normal.pacing and slow.seconds > normal.seconds * 1.1
+    assert slow.length_bucket is not None and normal.length_bucket is not None and slow.length_bucket > normal.length_bucket
+    job_dir = _fake_run(monkeypatch, tmp_home, "shorts_only", text, "--channel", ch.slug)
+    combo = json.loads((job_dir / "job.json").read_text(encoding="utf-8"))["combo"]
+    assert combo["length_bucket"] == slow.length_bucket
+    (part,) = json.loads((job_dir / "parts.json").read_text(encoding="utf-8"))
+    assert abs(part["est_seconds"] - slow.seconds) < 0.01  # the stage estimates at the speed the voice speaks at
+    qc = json.loads((job_dir / "qc" / "report.json").read_text(encoding="utf-8"))
+    assert all(v["passed"] for v in qc.values()), qc
+    video = next(paths.outbox.rglob("*.mp4"))
+    assert abs(ffmpeg.duration_s(video) - combo["length_bucket"]) <= 0.15 * combo["length_bucket"]
+
+
+def test_the_long_window_moves_with_the_voice_speed():
+    fast_only = long_script(1100)  # about 8:30 at speed 1.0: too short, long enough at 1.15
+    assert script_problem(fast_only, "master_first", ["standard"]) is not None
+    assert script_problem(fast_only, "master_first", ["standard"], voice_speed=0.85) is None  # slower voice: longer
+    near_top = long_script(1950)  # about 14:00 at speed 1.0
+    assert script_problem(near_top, "master_first", ["standard"]) is None
+    with pytest.raises(ScriptRefused, match="can be about 14:30 at most"):
+        plan_script(near_top, "master_first", ["standard"], voice_speed=0.85)
+    short = plan_script(SHORT, "shorts_only", ["standard"])
+    assert plan_script(SHORT, "shorts_only", ["standard"], voice_speed=0.85).seconds > short.seconds * 1.1
+    assert spoken_wpm("standard", 1.0) == 155 and round(spoken_wpm("standard", 0.85)) == 132
+
+
+def test_a_script_job_fails_at_once_when_only_its_own_import_would_be_redone(tmp_home: Path, monkeypatch: pytest.MonkeyPatch):
+    from ns_common.errors import NsError
+    from ns_studio.policy import regen
+
+    env, ch = _env(tmp_home)
+    ctx = jobs.make_script_job(env, ch, "shorts_only", SHORT)
+    calls: list[int] = []
+
+    def fails(c, resume=True, dry_run=False):
+        calls.append(1)
+        raise NsError("NS-E601", "unsafe topic")
+
+    monkeypatch.setattr(regen, "run_job", fails)
+    with pytest.raises(NsError) as ei:
+        regen.run_job_guarded(ctx)
+    assert ei.value.code == "NS-E601" and calls == [1]  # no second pass over the same text
+    assert not (ctx.job_dir / "rejected").exists() and len(ctx.read_json("policy_attempts.json")["history"]) == 1
+    # a metadata failure can still be fixed by writing the metadata again
+    ctx2 = jobs.make_script_job(env, ch, "shorts_only", SHORT)
+    seen: list[int] = []
+
+    def once(c, resume=True, dry_run=False):
+        seen.append(1)
+        if len(seen) == 1:
+            raise NsError("NS-E603", "misleading claim")
+        return ["seo"]
+
+    monkeypatch.setattr(regen, "run_job", once)
+    assert regen.run_job_guarded(ctx2) == ["seo"] and seen == [1, 1]
 
 
 def test_studio_run_script_dry_run_prints_the_owner_script_plan(tmp_home: Path, monkeypatch: pytest.MonkeyPatch):

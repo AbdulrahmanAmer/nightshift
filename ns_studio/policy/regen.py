@@ -22,10 +22,11 @@ MAX_REGENERATIONS = 1
 
 # Candidate restart stages per code, earliest sensible first; the first one present in the plan wins. Each
 # tuple names the stages of every plan: shorts_only (`draft`, `hooks`, `seo`), master_first (`chapters_draft`,
-# `shorts_select`, `seo_long`, `seo_shorts`), master_from_script (`seo_long`, `seo_shorts`) and
-# shorts_from_script (`hooks`, `seo`). A name that is in no plan sends the job back to the first stage of its
-# plan: an hour of LLM work for one disliked tag, or for a script job the cheap `script_import` (the text is
-# the owner's, so it is never rewritten).
+# `shorts_select`, `seo_long`, `seo_shorts`), master_from_script (`seo_long`, `seo_shorts`) and the owner
+# script plans (Short: `seo`, `visual_plan`; long: `shorts_select`, `seo_long`, `seo_shorts`). A name that is
+# in no plan sends the job back to the first stage of its plan: an hour of LLM work for one disliked tag.
+# For an owner's own script that stage is only the import of the same text, so the job fails at once with
+# the original code.
 REGEN_FROM: dict[str, tuple[str, ...]] = {
     "NS-E601": ("ideas",),
     "NS-E602": ("draft", "chapters_draft", "ideas"),
@@ -155,6 +156,14 @@ def run_job_guarded(ctx: JobContext, *, resume: bool = True) -> list[str]:
                 raise
             att = _attempts(ctx)
             n = int(att["regenerations"])
+            names = [s.name for s in plan_job(plan_format(ctx.fmt, ctx.job_dir))]
+            start = earliest_stage(e.code, names)
+            if ctx.owner_script and start == names[0]:
+                # Only the import of the owner's own text would be redone: it would fail the same way.
+                att["history"].append({"code": e.code, "detail": e.detail, "rejected_to": None})
+                ctx.write_json(ATTEMPTS_FILE, att)
+                ctx.log.error("policy_fail_final", code=e.code, job_id=ctx.job_id, detail=e.detail)
+                raise
             dest = reject_artifacts(ctx, e, n + 1)
             att["history"].append({"code": e.code, "detail": e.detail, "rejected_to": str(dest)})
             if n >= MAX_REGENERATIONS:
@@ -163,8 +172,6 @@ def run_job_guarded(ctx: JobContext, *, resume: bool = True) -> list[str]:
                 raise
             att["regenerations"] = n + 1
             ctx.write_json(ATTEMPTS_FILE, att)
-            names = [s.name for s in plan_job(plan_format(ctx.fmt, ctx.job_dir))]
-            start = earliest_stage(e.code, names)
             ctx.log.warn("policy_regenerate", code=e.code, restart_at=start, job_id=ctx.job_id)
             only = REGEN_ONLY.get(e.code)
             if not (only and invalidate_only(ctx, names, only)):

@@ -24,7 +24,9 @@ from ns_common.models import Part
 from ns_common.pacing import narration_seconds
 from ns_common.textstats import split_sentences, word_count
 from ns_studio.context import JobContext
+from ns_studio.media.voice import job_voice
 from ns_studio.series.importer import PartArtifacts, build_artifacts
+from ns_studio.series.plain import spoken_wpm
 from ns_studio.series.store import ScriptDoc, parse_concept, parse_script, parse_short, read_text
 from ns_studio.stages import Tenant, register
 from ns_studio.text.budget import PACING_WPM
@@ -149,7 +151,7 @@ class ScriptImportShortStage:
         """Write `idea.json`, `story.json` ({text, word_count, revisions}) and `parts.json` (one part)."""
         script, art, _shorts = _build(ctx)
         text, words = _store(ctx, script, art)
-        wpm = PACING_WPM.get(ctx.combo.pacing, 155)
+        wpm = spoken_wpm(ctx.combo.pacing, job_voice(ctx).speed)  # what the voice stage will speak at
         part = Part(
             n=1,
             text=text,

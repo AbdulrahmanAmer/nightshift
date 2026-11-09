@@ -265,7 +265,7 @@ def make_script_job(
     if fmt not in ("shorts_only", "master_first"):
         raise StudioError("NS-E306", f"a script becomes a Short or a long video, not {fmt!r}")
     try:
-        plan = plan_script(script, fmt, list(channel.pools.pacings), title)
+        plan = plan_script(script, fmt, list(channel.pools.pacings), title, channel.voice.speed)
     except ScriptRefused as e:
         raise StudioError("NS-E303", str(e)) from e
     fixed = {"pacing": plan.pacing}

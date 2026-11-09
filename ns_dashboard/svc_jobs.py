@@ -290,12 +290,12 @@ class JobsService:
         n = _int(body, "count", 1, 1, 20) if count else None
         params: dict[str, Any] = {"channel": slug, "format": fmt, "count": n}
         if body.get("script") is not None:
-            params.update(self._script_params(body, fmt, n, list(ch.pools.pacings)))
+            params.update(self._script_params(body, fmt, n, list(ch.pools.pacings), ch.voice.speed))
         return slug, params
 
     @staticmethod
     def _script_params(
-        body: dict[str, Any], fmt: str, count: int | None, pacings: list[str]
+        body: dict[str, Any], fmt: str, count: int | None, pacings: list[str], voice_speed: float = 1.0
     ) -> dict[str, Any]:
         """The story text of `JobRunRequest` (`script`, `script_title`), checked for a Short or a long video.
 
@@ -314,7 +314,7 @@ class JobsService:
             first = e.errors()[0]
             msg = str(first.get("msg", "")).removeprefix("Value error, ") or "That script cannot be used."
             raise ApiError(422, "invalid_options", msg) from e
-        problem = script_problem(str(req.script), fmt, pacings, req.script_title)
+        problem = script_problem(str(req.script), fmt, pacings, req.script_title, voice_speed)
         if problem:
             raise ApiError(422, "invalid_options", problem)
         return {"script": req.script, "script_title": req.script_title, "count": 1}

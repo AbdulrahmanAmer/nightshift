@@ -17,10 +17,12 @@ from dataclasses import dataclass
 
 from ns_common.errors import NsError
 from ns_common.pacing import (
+    NOMINAL_WPM,
     PACING_WPM,
     master_fixed_seconds,
     master_seconds,
     narration_seconds,
+    pacing_speed,
     words_for_seconds,
 )
 from ns_common.textstats import split_sentences, word_count
@@ -55,6 +57,15 @@ class ScriptPlan:
     pacing: str
     seconds: float                  # estimated narration, pauses and chapter cards included
     length_bucket: int | None       # a Short's QC bucket (the estimate); None for a long video
+
+
+def spoken_wpm(pacing: str, voice_speed: float = 1.0) -> float:
+    """Words per minute the voice stage really speaks at (TTS speed is `pacing_speed(voice speed, pacing)`).
+
+    The pace alone (`PACING_WPM`) is right only for a voice at speed 1.0; a voice set to 0.85 talks
+    15 % slower and a Short sized for the pace would come out longer than its QC band.
+    """
+    return NOMINAL_WPM * pacing_speed(voice_speed, pacing)
 
 
 def _balanced(units: list[str], n: int) -> list[list[str]]:
@@ -132,17 +143,17 @@ def _text_problems(doc: ScriptDoc) -> None:
         )
 
 
-def _short(text: str, title: str | None, pacings: list[str]) -> ScriptPlan:
+def _short(text: str, title: str | None, pacings: list[str], speed: float) -> ScriptPlan:
     markdown, doc = _parse(text, title, 1)
     _text_problems(doc)
     full = "\n\n".join(c.text for c in doc.chapters)
-    estimates = {p: narration_seconds(full, PACING_WPM[p]) for p in pacings}
+    estimates = {p: narration_seconds(full, spoken_wpm(p, speed)) for p in pacings}
     for pacing, seconds in estimates.items():
         if SHORT_MIN_S <= seconds <= SHORT_MAX_S:
             return ScriptPlan("shorts_only", markdown, doc, pacing, seconds, max(1, round(seconds)))
     first = pacings[0]
     seconds = estimates[first]
-    top = words_for_seconds(SHORT_MAX_S, PACING_WPM[first])
+    top = words_for_seconds(SHORT_MAX_S, spoken_wpm(first, speed))
     if seconds > SHORT_MAX_S:
         raise ScriptRefused(
             f"This script would run about {_minutes(seconds)} as a Short. A Short can be about "
@@ -155,7 +166,7 @@ def _short(text: str, title: str | None, pacings: list[str]) -> ScriptPlan:
     )
 
 
-def _long(text: str, title: str | None, pacings: list[str]) -> ScriptPlan:
+def _long(text: str, title: str | None, pacings: list[str], speed: float) -> ScriptPlan:
     words = word_count(text)
     chapters = max(MIN_CHAPTERS, min(MAX_CHAPTERS, round(words / CHAPTER_WORDS_MID)))
     markdown, doc = _parse(text, title, chapters)
@@ -163,9 +174,9 @@ def _long(text: str, title: str | None, pacings: list[str]) -> ScriptPlan:
     texts = [c.text for c in doc.chapters]
     fits: dict[str, float] = {}
     for pacing in pacings:
-        seconds = master_seconds(texts, PACING_WPM[pacing])
+        seconds = master_seconds(texts, spoken_wpm(pacing, speed))
         fits[pacing] = seconds
-        if seconds >= MASTER_MIN_S and check_master_length(texts, PACING_WPM[pacing]) is None:
+        if seconds >= MASTER_MIN_S and check_master_length(texts, spoken_wpm(pacing, speed)) is None:
             if not MIN_CHAPTERS <= len(doc.chapters) <= MAX_CHAPTERS:
                 raise ScriptRefused(
                     f"A long video is told in {MIN_CHAPTERS} to {MAX_CHAPTERS} chapters, but the script has "
@@ -174,8 +185,8 @@ def _long(text: str, title: str | None, pacings: list[str]) -> ScriptPlan:
                 )
             return ScriptPlan("master_first", markdown, doc, pacing, seconds, None)
     fixed_lo, fixed_hi = master_fixed_seconds(MAX_CHAPTERS), master_fixed_seconds(MIN_CHAPTERS)
-    lo = min(words_for_seconds(MASTER_MIN_S, PACING_WPM[p], fixed_s=fixed_lo) for p in pacings)
-    hi = max(words_for_seconds(MASTER_MAX_SECONDS, PACING_WPM[p], fixed_s=fixed_hi) for p in pacings)
+    lo = min(words_for_seconds(MASTER_MIN_S, spoken_wpm(p, speed), fixed_s=fixed_lo) for p in pacings)
+    hi = max(words_for_seconds(MASTER_MAX_SECONDS, spoken_wpm(p, speed), fixed_s=fixed_hi) for p in pacings)
     seconds = fits[pacings[0]]
     if seconds < MASTER_MIN_S:
         raise ScriptRefused(
@@ -190,24 +201,30 @@ def _long(text: str, title: str | None, pacings: list[str]) -> ScriptPlan:
     )
 
 
-def plan_script(text: str, fmt: str, pacings: list[str], title: str | None = None) -> ScriptPlan:
+def plan_script(
+    text: str, fmt: str, pacings: list[str], title: str | None = None, voice_speed: float = 1.0
+) -> ScriptPlan:
     """Check `text` for a Short (`shorts_only`) or a long video (`master_first`) and plan its job.
 
     `pacings` is the channel's own pool; the first pace at which the text fits the video's length is used.
+    `voice_speed` is the speed of the channel's voice (`Voice.speed`): the lengths are estimated at the speed
+    the voice stage will really speak at (`spoken_wpm`).
     Raises `ScriptRefused` with a plain-words reason when no pace fits or a text rule fails.
     """
     pool = [p for p in pacings if p in PACING_WPM] or ["standard"]
     if fmt == "shorts_only":
-        return _short(text, title, pool)
+        return _short(text, title, pool, voice_speed)
     if fmt == "master_first":
-        return _long(text, title, pool)
+        return _long(text, title, pool, voice_speed)
     raise ScriptRefused("A script becomes a Short or a long video, not that type.")
 
 
-def script_problem(text: str, fmt: str, pacings: list[str], title: str | None = None) -> str | None:
+def script_problem(
+    text: str, fmt: str, pacings: list[str], title: str | None = None, voice_speed: float = 1.0
+) -> str | None:
     """The reason `plan_script` refuses `text`, or None when it can become a video of `fmt`."""
     try:
-        plan_script(text, fmt, pacings, title)
+        plan_script(text, fmt, pacings, title, voice_speed)
     except ScriptRefused as e:
         return str(e)
     return None
