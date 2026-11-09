@@ -28,6 +28,7 @@ from ns_studio.stages import Tenant
 DRIFT_LIMIT_MS = 120.0
 MIN_MATCH_RATIO = 0.6
 HOOK_GAP_S = 0.15
+CLOSE_GAP_S = 0.35  # silence between a Short's body and its closing line (same as a derived Short)
 Variant = Literal["vertical", "landscape"]
 _SENTENCE_END = re.compile(r"[.!?…][\"'”’)\]]*$")
 
@@ -670,13 +671,26 @@ def shift_words(words: Sequence[Word], offset: float, *, sentence_idx: int | Non
     ]
 
 
-def _final_audio_check(ctx: JobContext, n: int, p: dict, hook: dict, body: dict) -> Path:
-    """Hook + gap + body as one file (what the renderer plays, without the loudness pass) and its sidecar."""
+def _final_audio_check(
+    ctx: JobContext, n: int, p: dict, hook: dict | None, body: dict, close: dict | None = None
+) -> Path:
+    """Hook + gap + body + gap + closing line as one file (what the renderer plays, without the loudness
+    pass) and its sidecar."""
     from ns_studio.media.audio import assemble_audio
 
     check = ctx.file(f"captions/s{n}_check.wav")
-    assemble_audio([Path(hook["path"]), HOOK_GAP_S, Path(body["path"])], check)
-    check.with_suffix(".txt").write_text(f"{p['hook']} {p['text']}", encoding="utf-8")
+    segments: list[Path | float] = []
+    words: list[str] = []
+    if hook:
+        segments += [Path(hook["path"]), HOOK_GAP_S]
+        words.append(p["hook"])
+    segments.append(Path(body["path"]))
+    words.append(p["text"])
+    if close:
+        segments += [CLOSE_GAP_S, Path(close["path"])]
+        words.append(Path(close["path"]).with_suffix(".txt").read_text(encoding="utf-8"))
+    assemble_audio(segments, check)
+    check.with_suffix(".txt").write_text(" ".join(words), encoding="utf-8")
     return check
 
 
@@ -695,9 +709,16 @@ class CaptionsStage:
 
     @staticmethod
     def _final_audio_drift(
-        ctx: JobContext, n: int, p: dict, hook: dict, body: dict, timeline: list[Word], lang: str
+        ctx: JobContext,
+        n: int,
+        p: dict,
+        hook: dict | None,
+        body: dict,
+        timeline: list[Word],
+        lang: str,
+        close: dict | None = None,
     ) -> float:
-        check = _final_audio_check(ctx, n, p, hook, body)
+        check = _final_audio_check(ctx, n, p, hook, body, close)
         return caption_drift(timeline, ctx.services.transcriber.words(check, lang))
 
     def run(self, ctx: JobContext) -> None:
@@ -747,10 +768,26 @@ class CaptionsStage:
                 ratio = min(ratio, hook_res.match_ratio)
             timeline += shift_words(body_res.words, offset)
             total_s = offset + float(body["seconds"])
-            if hook_entry and getattr(tr, "name", "") != "fake":
+            close_entry = manifest.get(f"p{n}_close")
+            close_offset = 0.0
+            if close_entry:
+                close_wav = Path(close_entry["path"])
+                close_text = close_wav.with_suffix(".txt").read_text(encoding="utf-8")
+                close_res = align_words(
+                    close_text, tr.words(close_wav, lang), total_s=float(close_entry["seconds"])
+                )
+                ctx.write_json(f"words/p{n}_close.json", [w.to_json() for w in close_res.words])
+                close_offset = total_s + CLOSE_GAP_S
+                timeline += shift_words(close_res.words, close_offset, sentence_idx=-2)
+                total_s = close_offset + float(close_entry["seconds"])
+                drift = max(drift, close_res.drift_ms)
+                ratio = min(ratio, close_res.match_ratio)
+            if (hook_entry or close_entry) and getattr(tr, "name", "") != "fake":
                 # The fake cannot hear the audio it is given; a real recogniser can say whether the
-                # captions sit where the hook, the gap and the body really are.
-                drift = max(drift, self._final_audio_drift(ctx, n, p, hook_entry, body, timeline, lang))
+                # captions sit where the hook, the gap, the body and the closing line really are.
+                drift = max(
+                    drift, self._final_audio_drift(ctx, n, p, hook_entry, body, timeline, lang, close_entry)
+                )
             style_name = ctx.combo.caption_style
             opts = AssOptions(
                 variant="vertical", safe_zones=safe_zones_for("vertical"),
@@ -766,6 +803,9 @@ class CaptionsStage:
                     "hook_s": float(hook_entry["seconds"]) if hook_entry else 0.0,
                     "body_offset_s": offset,
                     "audio_s": round(total_s, 3),
+                    "close_s": float(close_entry["seconds"]) if close_entry else 0.0,
+                    "close_offset_s": close_offset,
+                    "close_gap_s": CLOSE_GAP_S if close_entry else 0.0,
                     "ass_opts": opts.to_json(),
                     "words": [w.to_json() for w in timeline],
                 },
