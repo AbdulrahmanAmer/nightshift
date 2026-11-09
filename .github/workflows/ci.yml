@@ -15,10 +15,14 @@ on:
   schedule:
     - cron: "23 4 * * *"
 
-# One run per branch and event type; a newer push cancels the older run of the same kind.
+# A newer push to a pull request branch cancels the older run of that pull request (one group per branch). A push
+# to main, a tag and the nightly run are NEVER cancelled (H-12: six main runs in a row were, so a green main could
+# not be shown). Their group carries the commit: a group keeps one running and one pending run and cancels an older
+# pending one when a newer arrives even with cancel-in-progress false, so a shared group would still lose runs.
+# The `ci-` prefix keeps these groups apart from release.yml's and build-qwentts.yml's (group names are repo-wide).
 concurrency:
-  group: ci-${{ github.event_name }}-${{ github.head_ref || github.ref_name }}
-  cancel-in-progress: true
+  group: ci-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.head_ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read

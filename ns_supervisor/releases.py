@@ -51,6 +51,8 @@ def parse_version(text: str) -> tuple[int, int, int, int, str]:
     if not m:
         raise ValueError(f"not a version: {text!r}")
     pre = m.group(4) or ""
+    # numbers inside the prerelease part sort as numbers: rc2 is before rc10 (as text "rc10" < "rc2")
+    pre = re.sub(r"\d+", lambda d: d.group().zfill(9), pre)
     return int(m.group(1)), int(m.group(2)), int(m.group(3)), 0 if pre else 1, pre
 
 

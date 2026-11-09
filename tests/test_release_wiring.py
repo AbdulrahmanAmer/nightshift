@@ -20,7 +20,8 @@ def read(rel: str) -> str:
 
 
 def test_changelog_has_a_heading_for_the_version_file():
-    version = read("VERSION").strip()
+    # a release candidate (VERSION 0.1.15-rc1) uses the heading of the final version it previews (H-12)
+    version = read("VERSION").strip().split("-rc", 1)[0]
     text = read("CHANGELOG.md")
     m = re.search(rf"^## \[{re.escape(version)}\] - \d{{4}}-\d{{2}}-\d{{2}}\s*$", text, re.MULTILINE)
     assert m, f"CHANGELOG.md needs '## [{version}] - <date>' (release.yml reads the release notes from it)"
@@ -247,3 +248,206 @@ def test_the_venvs_are_refreshed_when_the_program_folder_moved(tmp_path):
     assert not S04Venvs().check(ctx)                      # editable installs still point at the old folder
     ctx.set_flag("venvs_app", str(ctx.app_path))
     assert S04Venvs().check(ctx)
+
+
+# ---- H-12: a tag like v0.1.15-rc1 is a prerelease candidate, never "latest" ----------------------------
+#
+# The decision (recorded here because the workflow is YAML and cannot say it in a test name):
+#   * a candidate tag is `vX.Y.Z-rcN` (N >= 1); VERSION holds `X.Y.Z-rcN`, the tag without the `v`;
+#   * its changelog check demands the heading of the FINAL version, `## [X.Y.Z]` (the entries a candidate
+#     previews are the ones the final will carry), and also accepts an exact `## [X.Y.Z-rcN]` heading;
+#   * a plain `vX.Y.Z` tag demands `## [X.Y.Z]` exactly as before;
+#   * any other suffix (`-beta1`, `-rc`, `rc1`, `-rc0`, a fourth number) fails the check.
+RELEASE_YML = ".github/workflows/release.yml"
+CHANGELOG_SAMPLE = """# Changelog
+
+## [Unreleased]
+
+## [0.1.15] - 2026-11-10
+
+### Fixed
+- the entry the release body must carry
+
+## [0.1.14] - 2026-11-09
+
+- older
+"""
+
+
+def _release_step(needle: str) -> str:
+    wf = yaml.safe_load(read(RELEASE_YML))
+    found = [s for s in wf["jobs"]["release"]["steps"] if needle in s.get("name", "")]
+    assert len(found) == 1, needle
+    assert found[0]["shell"] == "pwsh"
+    return found[0]["run"]
+
+
+def _run_pwsh(script: str, cwd: Path, env_extra: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    exe = pwsh.find_powershell()
+    if exe is None:
+        pytest.skip("powershell not available")
+    file = cwd / "step.ps1"
+    file.write_text(script, encoding="utf-8-sig")  # a BOM keeps Windows PowerShell 5.1 reading it as UTF-8
+    env = {k: v for k, v in os.environ.items() if k.lower() != "psmodulepath"}
+    env.update(env_extra)
+    return subprocess.run(
+        [exe, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(file)],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        cwd=cwd,
+        env=env,
+        check=False,
+    )
+
+
+def _check_tag(tmp_path: Path, tag: str, version_file: str, changelog: str = CHANGELOG_SAMPLE):
+    (tmp_path / "dev").mkdir(exist_ok=True)
+    (tmp_path / "release-notes.md").unlink(missing_ok=True)
+    (tmp_path / "VERSION").write_text(version_file + "\n", encoding="utf-8")
+    (tmp_path / "CHANGELOG.md").write_text(changelog, encoding="utf-8")
+    template = tmp_path / "dev" / "release_notes.md"
+    template.write_text("Download Nightshift-Setup-<ver>.zip\n", encoding="utf-8")
+    return _run_pwsh(_release_step("Tag, VERSION and CHANGELOG agree"), tmp_path, {"TAG": tag})
+
+
+@pytest.mark.parametrize("tag", ["v0.1.15", "v0.1.15-rc1", "v0.1.15-rc2", "v0.1.15-rc12"])
+def test_the_release_check_accepts_a_final_tag_and_a_candidate_tag(tmp_path: Path, tag: str):
+    proc = _check_tag(tmp_path, tag, tag[1:])
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    notes = (tmp_path / "release-notes.md").read_text(encoding="utf-8")
+    assert f"Nightshift-Setup-{tag[1:]}.zip" in notes  # the download table names the candidate's own files
+    # a candidate carries the changelog entries of the final version it previews
+    assert "the entry the release body must carry" in notes
+
+
+@pytest.mark.parametrize(
+    "tag",
+    [
+        "v0.1.15rc1",
+        "v0.1.15-rc",
+        "v0.1.15-rc0",
+        "v0.1.15-beta1",
+        "v0.1.15-rc1-x",
+        "v0.1.15.1",
+        "v0.1",
+        "vfoo",
+    ],
+)
+def test_the_release_check_rejects_bad_tag_forms(tmp_path: Path, tag: str):
+    proc = _check_tag(tmp_path, tag, tag[1:])  # VERSION agrees with the tag, so only the form can fail it
+    assert proc.returncode != 0, proc.stdout
+    assert "not a release tag" in proc.stdout + proc.stderr
+    assert not (tmp_path / "release-notes.md").exists()
+
+
+def test_the_release_check_still_requires_the_tag_to_equal_version(tmp_path: Path):
+    for tag, version in (("v0.1.15-rc2", "0.1.15-rc1"), ("v0.1.15", "0.1.15-rc1"), ("v0.1.15-rc1", "0.1.15")):
+        proc = _check_tag(tmp_path, tag, version)
+        assert proc.returncode != 0, (tag, version)
+        assert "does not match VERSION" in proc.stdout + proc.stderr
+
+
+def test_a_final_tag_needs_its_own_changelog_heading_and_a_candidate_may_use_the_final_one(tmp_path: Path):
+    only_rc_heading = CHANGELOG_SAMPLE.replace("## [0.1.15] - 2026-11-10", "## [0.1.15-rc1] - 2026-11-10")
+    # the final release must have the final heading: an rc heading is not enough
+    proc = _check_tag(tmp_path, "v0.1.15", "0.1.15", only_rc_heading)
+    assert proc.returncode != 0 and "no '## [0.1.15]' heading" in proc.stdout + proc.stderr
+    # a candidate accepts its own exact heading ...
+    proc = _check_tag(tmp_path, "v0.1.15-rc1", "0.1.15-rc1", only_rc_heading)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    # ... and with no heading for the version at all it fails, naming the final heading to add
+    proc = _check_tag(tmp_path, "v0.1.16-rc1", "0.1.16-rc1")
+    assert proc.returncode != 0 and "no '## [0.1.16]' heading" in proc.stdout + proc.stderr
+
+
+FAKE_GH = """
+$global:LASTEXITCODE = 0
+function gh {
+  Add-Content -LiteralPath $env:GH_LOG -Value ($args -join ' ')
+  $code = 0
+  if ($args[0] -eq 'release' -and $args[1] -eq 'view') { $code = [int]$env:GH_VIEW_EXIT }
+  $global:LASTEXITCODE = $code
+}
+"""
+
+
+def _publish(tmp_path: Path, tag: str, release_exists: bool) -> list[str]:
+    log = tmp_path / "gh.log"
+    log.write_text("", encoding="utf-8")
+    env = {"TAG": tag, "GH_LOG": str(log), "GH_VIEW_EXIT": "0" if release_exists else "1"}
+    proc = _run_pwsh(FAKE_GH + _release_step("Publish GitHub Release"), tmp_path, env)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    return [line for line in log.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+def test_a_candidate_tag_is_published_as_a_prerelease_and_never_as_latest(tmp_path: Path):
+    calls = _publish(tmp_path, "v0.1.15-rc1", release_exists=False)
+    create = [c for c in calls if c.startswith("release create")]
+    assert len(create) == 1 and "--prerelease" in create[0].split() and "--latest=false" in create[0].split()
+    # build-qwentts.yml may have made the release first, as a final: the flags are forced on whichever made it
+    calls = _publish(tmp_path, "v0.1.15-rc1", release_exists=True)
+    assert not [c for c in calls if c.startswith("release create")]
+    edit = [c for c in calls if c.startswith("release edit")]
+    assert edit == ["release edit v0.1.15-rc1 --prerelease --latest=false"]
+    # the flags are in place before the assets arrive
+    assert calls.index(edit[0]) < next(i for i, c in enumerate(calls) if c.startswith("release upload"))
+
+
+def test_a_final_tag_is_published_as_today_without_the_prerelease_flags(tmp_path: Path):
+    for exists in (False, True):
+        calls = _publish(tmp_path, "v0.1.15", release_exists=exists)
+        flagged = [c for c in calls if "--prerelease" in c or "--latest" in c or c.startswith("release edit")]
+        assert not flagged
+        assert any(c.startswith("release upload v0.1.15 ") for c in calls)
+    assert any(c.startswith("release create v0.1.15 --title") for c in _publish(tmp_path, "v0.1.15", False))
+
+
+def test_build_qwentts_makes_a_candidate_release_a_prerelease_too():
+    # whichever of release.yml and build-qwentts.yml creates the release first, a -rcN tag is a prerelease
+    wf = read(".github/workflows/build-qwentts.yml")
+    assert "--prerelease" in wf and "--latest=false" in wf
+    assert re.search(r"case \"\$TAG\" in\s+v\*-\*\)", wf), "the flags depend on a prerelease part"
+    create = wf[wf.index("gh release create") :].split("\n", 1)[0]
+    assert "flags[@]" in create
+
+
+# ---- the updater never offers a prerelease -------------------------------------------------------------
+def _github_api(requests: list[str]):
+    """A GitHub with the final v0.1.14 and a newer candidate; /releases/latest never returns a prerelease."""
+    import httpx
+
+    final = {"tag_name": "v0.1.14", "html_url": "https://github.com/x/y/releases/tag/v0.1.14", "assets": []}
+    candidate = {**final, "tag_name": "v0.1.15-rc1", "prerelease": True}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        requests.append(req.url.path)
+        if req.url.path.endswith("/releases/latest"):
+            return httpx.Response(200, json=final)
+        if req.url.path.endswith("/releases"):  # the list: newest first, the candidate on top
+            return httpx.Response(200, json=[candidate, final])
+        return httpx.Response(404, json={"message": "Not Found"})
+
+    return httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=True)
+
+
+def test_a_prerelease_is_not_offered_as_the_update():
+    from ns_supervisor import releases
+
+    requests: list[str] = []
+    res = releases.check("0.1.14", _github_api(requests))
+    assert res["update_available"] is False and res["latest"] == "0.1.14"
+    # the updater reads only GitHub's "latest release" endpoint, which skips prereleases and drafts; it never
+    # reads the list of releases, where the candidate would be the newest entry
+    assert requests == ["/repos/AbdulrahmanAmer/nightshift/releases/latest"]
+
+
+def test_candidates_sort_below_their_final_and_in_number_order():
+    from ns_supervisor import releases
+
+    assert releases.is_newer("0.1.15", "0.1.15-rc1") and not releases.is_newer("0.1.15-rc1", "0.1.15")
+    assert releases.is_newer("0.1.15-rc2", "0.1.15-rc1") and not releases.is_newer("0.1.15-rc1", "0.1.15-rc2")
+    assert releases.is_newer("0.1.15-rc10", "0.1.15-rc2")  # rc10 is after rc2, not before it as text
+    assert releases.is_newer("0.1.15-rc1", "0.1.14") and not releases.is_newer("0.1.14", "0.1.15-rc1")
+    # an installation on a candidate is offered the final, and never an older final
+    assert releases.is_newer("0.1.15", "0.1.15-rc3") and not releases.is_newer("0.1.14", "0.1.15-rc3")
