@@ -11,7 +11,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from proofs._lib import db_rows, files_under, proof_channel, run_short, short
+from proofs._lib import db_rows, files_under, pauses_proof_channels, proof_channel, run_short, short
 
 PROOF = {
     "id": "f-b7-review-reject",
@@ -42,6 +42,7 @@ def _output_of(ctx: Any, job: dict[str, Any]) -> str:
     return str(mine[0]["output_id"])
 
 
+@pauses_proof_channels
 def run(ctx: Any) -> None:
     proof_channel(ctx, CHANNEL)
     job = run_short(ctx, CHANNEL)
