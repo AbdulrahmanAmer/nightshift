@@ -15,6 +15,7 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
+import ns_common.diskneed as diskneed
 from installer.stage2.devmode import MIN_RAM_GB, relax_checks
 from installer.stage2.sysinfo import is_blackwell
 from installer.stage2.web.pathcheck import (
@@ -24,7 +25,6 @@ from installer.stage2.web.pathcheck import (
     home_problem,
 )
 from installer.stage2.web.plan import home_need, pinned
-from ns_common import diskneed
 
 COPY_FILE = Path(__file__).with_name("operator_copy.json")
 DRIVER_URL = "https://www.nvidia.com/Download/index.aspx"

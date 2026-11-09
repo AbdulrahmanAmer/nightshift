@@ -12,9 +12,9 @@ from collections.abc import Callable
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+import ns_common.diskneed as diskneed
 from installer.stage2.devmode import MIN_RAM_GB, STUB_BYTES
 from installer.stage2.web.labels import GROUP_LABELS, llm_label
-from ns_common import diskneed
 
 LINE_MBIT = 50.0
 CARD_GB = 16.0               # the graphics card the product is built for

@@ -230,7 +230,9 @@ def test_the_engine_test_shape_is_about_one_gb_of_files_plus_the_reserve(manifes
 
 def test_a_dev_install_keeps_its_ten_gb_rule(manifest, tmp_path):
     need = install_need(manifest, tmp_path / "home", profile="cpu-dev", dev=True)
-    assert need.gb == 10 == diskneed.DEV_INSTALL_BYTES // GIB
+    from installer.stage2 import devmode
+
+    assert need.gb == 10 == diskneed.DEV_INSTALL_BYTES // GIB == devmode.MIN_FREE_GB
 
 
 def test_the_makeup_is_one_line_with_the_number_and_the_free_space(manifest, tmp_path):

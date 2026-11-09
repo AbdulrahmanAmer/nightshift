@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any
 
 import installer.stage2.devmode as devmode
+import ns_common.diskneed as diskneed
 from installer.stage2.web import (
     answers_view,
     appcopy,
@@ -44,7 +45,6 @@ from installer.stage2.web.engine import EngineProcess, wizard_argv, wizard_env
 from installer.stage2.web.keys import check_key
 from installer.stage2.web.model import BOOTSTRAP_STEPS, FILE_NAMES, STEP_ORDER, STEP_PHASE
 from installer.stage2.web.store import SetupStore
-from ns_common import diskneed
 from ns_common.atomic import (
     BACKUP_SUFFIX,
     append_to_zip_atomic,

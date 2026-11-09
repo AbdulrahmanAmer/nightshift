@@ -114,6 +114,7 @@ STDLIB_ONLY_NS_COMMON = {
     "ns_common.atomic", "ns_common.avblock", "ns_common.devmode", "ns_common.paths", "ns_common.pathrules",
     "ns_common.uv", "ns_common.vcruntime", "ns_common.secret_file", "ns_common.secrets_names",
     "ns_common.singleton",
+    "ns_common.diskneed", "ns_common.errors",     # H-6: the space an install needs (diskneed raises NsError)
 }
 # installer.stage2.devmode (dev mode numbers, stubs, mode switch) is stdlib-only too and shared by the setup
 # server and the wizard; the test below keeps it that way.

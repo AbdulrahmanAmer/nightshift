@@ -15,12 +15,12 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+import ns_common.diskneed as diskneed
 from installer.stage2.web.model import PRESET_VOICES, TIERS
 from installer.stage2.web.modelcheck import MAX_BYTES, shape_problem, too_big_message
 from installer.stage2.web.pathcheck import DRIVE_PATH_RE as DRIVE_PATH_RE
 from installer.stage2.web.pathcheck import home_problem
 from installer.stage2.web.plan import home_need
-from ns_common import diskneed
 from ns_common.atomic import copy_atomic, read_text_retry, write_text_atomic
 
 RUN_TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
