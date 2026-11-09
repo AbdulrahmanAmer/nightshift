@@ -26,6 +26,7 @@ from installer.stage2.bridge import BridgeUi, SetupStopped
 from installer.stage2.context import StepContext
 from installer.stage2.devmode import BANNER, env_enabled, relax_checks, reset_for_mode_switch
 from installer.stage2.diagzip import write_console_install_report, write_fallback_bundle
+from installer.stage2.errors import describe_code
 from installer.stage2.runner import SubprocessRunner
 from installer.stage2.secrets import KEY_NAMES, KeyringStore, MemoryStore, ResilientStore
 from installer.stage2.simulate import FakeRunner
@@ -351,7 +352,12 @@ def build_context(args: argparse.Namespace, ui: Ui | None = None) -> StepContext
             code = found.group(0) if found else "NS-E120"
             log.warn("secret_file_unprotected" if code == "NS-W116" else "secret_file_failed", line)
             say.say(line, "yellow")
-            warnings_sink.append((code, line))
+            if not bridge:  # the console has no notice card: the hint is printed as `ctx.warn` prints it
+                hint = describe_code(code).hint
+                if hint:
+                    say.say(f"    {hint}", "dim")
+            # the summary lists `<code> <detail>`: the line starts with the code, so it is not said twice
+            warnings_sink.append((code, re.sub(rf"^{code}:\s*", "", line)))
             say.notice(code, line)
 
         store = ResilientStore(KeyringStore(), paths, warn=warn)

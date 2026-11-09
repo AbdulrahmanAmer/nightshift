@@ -434,7 +434,15 @@ class SettingsService:
         self.s.last_backup = path
         size = path.stat().st_size if path.exists() else None
         self.s.log.info("settings_exported", path=str(path))
-        return {"path": str(path), "name": path.name, "size": size, "download_url": "/api/settings/export/latest"}
+        out: dict[str, Any] = {
+            "path": str(path), "name": path.name, "size": size, "download_url": "/api/settings/export/latest",
+        }
+        # what `ns backup` left out on purpose (the keys file, when the zip goes to a drive without permissions)
+        notes = [str(n) for n in getattr(self.s.adapters.backup, "last_notes", None) or []]
+        if notes:
+            out["left_out"] = notes
+            out["note"] = " ".join(notes)
+        return out
 
     def latest_backup(self) -> Path:
         """The backup zip made most recently in this session."""
@@ -495,7 +503,13 @@ class SettingsService:
             raise ApiError(400, "empty_file", "That file is empty.")
         lines = self._restore_with_db_closed(dest)
         self.s.log.warn("settings_restored", "settings restored from an uploaded backup", file=name)
-        return {"restored": True, "file": name, "lines": lines, "note": "Restart Nightshift to use the restored settings."}
+        # the keys file is the one file a restore may leave as it was (NS-W116 on a drive without permissions,
+        # NS-E120 when its lock fails): the page shows that line, not only "restored"
+        left_out = [ln for ln in lines if "secrets.dpapi" in ln and ln != "restored config/secrets.dpapi"]
+        note = "Restart Nightshift to use the restored settings."
+        if left_out:
+            note = f"{note} {' '.join(left_out)}"
+        return {"restored": True, "file": name, "lines": lines, "left_out": left_out, "note": note}
 
     def uninstall_info(self) -> dict[str, Any]:
         """Where UNINSTALL.cmd is (the page copies the path; Windows asks before deleting anything)."""

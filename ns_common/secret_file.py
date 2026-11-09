@@ -159,8 +159,11 @@ def claim_unprotected_notice(paths: Paths, *, now: datetime | None = None) -> bo
     that refuses new files) answers True: the warning is given, and may come again, rather than never.
     """
     marker = notice_marker(paths)
-    if marker.exists():
-        return False
+    try:
+        if marker.exists():
+            return False
+    except OSError:  # a marker that cannot even be looked up (access denied): give the warning, never raise
+        return True
     body = {
         "code": UNPROTECTED_CODE,
         "noticed_at": (now or datetime.now()).isoformat(timespec="seconds"),

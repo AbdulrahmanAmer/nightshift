@@ -32,7 +32,7 @@ export default function Settings() {
   const setKey = async (name: string) => {
     const v = await confirm({ title: `${name[0]!.toUpperCase() + name.slice(1)} key`, body: "Paste the free key from your account page. It is stored in Windows Credential Manager, never in a file", ok: "Save key", input: { label: "Key", placeholder: "Paste the key" } });
     if (typeof v !== "string" || !v.trim()) return;
-    try { const r = await api.post("/settings/keys", { name, value: v.trim() }); toast(r?.message || "Key saved", r?.checked === false ? "warn" : "ok"); st.reload(); } catch (e: any) { toast(e.message, "bad"); }
+    try { const r = await api.post("/settings/keys", { name, value: v.trim() }); toast(r?.message || "Key saved", r?.checked === false || r?.warning ? "warn" : "ok"); st.reload(); } catch (e: any) { toast(e.message, "bad"); }
   };
   const check = async () => { setChecking(true); try { setUpd(await api.get("/update/check")); } catch (e: any) { toast(e.message, "bad"); } setChecking(false); };
   // The updater runs detached and stops this very service, so the POST may never be answered. What is shown comes from the
@@ -111,12 +111,12 @@ export default function Settings() {
   const [report, setReport] = useState<{ path?: string; name?: string; download_url?: string } | null>(null);
   const diag = async () => { try { const r = await api.post("/diagnostics"); setReport(r); toast(`Report saved to ${r?.path || "your Desktop"}`, "ok"); } catch (e: any) { toast(e.message, "bad"); } };
   const [backup, setBackup] = useState<{ path?: string; name?: string; download_url?: string } | null>(null);
-  const exportSettings = async () => { try { const r = await api.post("/settings/export"); setBackup(r); toast(`Settings saved to ${r?.path || "your Desktop"}`, "ok"); } catch (e: any) { toast(e.message, "bad"); } };
+  const exportSettings = async () => { try { const r = await api.post("/settings/export"); setBackup(r); toast(`Settings saved to ${r?.path || "your Desktop"}${r?.note ? `. ${r.note}` : ""}`, r?.left_out?.length ? "warn" : "ok"); } catch (e: any) { toast(e.message, "bad"); } };
   const importSettings = async (f: File) => {
     const ok = await confirm({ title: "Restore these settings?", body: `${f.name} replaces your channels, voices and settings. What it replaces is kept in a backup folder first`, ok: "Restore" });
     if (!ok) return;
     const fd = new FormData(); fd.append("file", f);
-    try { const r = await api.upload("/settings/import", fd, () => {}); toast(r?.note || "Settings restored", "ok"); st.reload(); } catch (e: any) { toast(e.message, "bad"); }
+    try { const r = await api.upload("/settings/import", fd, () => {}); toast(r?.note || "Settings restored", r?.left_out?.length ? "warn" : "ok"); st.reload(); } catch (e: any) { toast(e.message, "bad"); }
   };
   const models = useLoad<ModelsState>(() => api.get("/models/state"), [], {});
   // Where UNINSTALL.cmd really is (<install folder>\app), so the row names the folder instead of "the Nightshift folder".
@@ -178,7 +178,7 @@ export default function Settings() {
           <Card as="section" aria-labelledby="s-keys">
             <CardHeader id="s-keys" title="Stock footage keys" className="!mb-1" />
             {["pexels", "pixabay"].map((k) => (
-              <SettingRow key={k} title={k[0]!.toUpperCase() + k.slice(1)} sub={s?.keys?.[k] ? <span className="font-mono">••••••••••••••••</span> : "Missing. Stories may run short of footage"}>
+              <SettingRow key={k} title={k[0]!.toUpperCase() + k.slice(1)} sub={<>{s?.keys?.[k] ? <span className="font-mono">••••••••••••••••</span> : "Missing. Stories may run short of footage"}{s?.key_warnings?.[k] && <span role="status" className="mt-1 block text-ds-danger">{s.key_warnings[k].code}: {s.key_warnings[k].message} {s.key_warnings[k].hint}</span>}</>}>
                 <Button size="sm" variant={s?.keys?.[k] ? "soft" : "primary"} leadingIcon="key" onClick={() => setKey(k)}>{s?.keys?.[k] ? "Replace" : "Add key"}</Button>
               </SettingRow>
             ))}

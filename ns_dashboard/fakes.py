@@ -548,6 +548,8 @@ class FakeBackupAdapter:
         self.restored: list[Path] = []
         self.fail_restore = False
         self.on_restore: Callable[[], None] | None = None  # tests look at the dashboard while the restore runs
+        self.last_notes: list[str] = []  # what the last export left out on purpose (like `RealBackupAdapter`)
+        self.restore_lines: list[str] = []  # extra result lines of a restore, e.g. a skipped keys file
 
     def export(self) -> Path:
         """Create `exports/nightshift-backup-<ts>.zip`."""
@@ -567,7 +569,7 @@ class FakeBackupAdapter:
         if self.fail_restore:
             raise ApiError(422, "restore_failed", "That file could not be restored.", hint="not a backup")
         self.restored.append(zip_path)
-        return [f"restored {zip_path.name}"]
+        return [f"restored {zip_path.name}", *self.restore_lines]
 
     def uninstall_path(self) -> Path:
         """A path under the temp home."""

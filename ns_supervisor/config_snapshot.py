@@ -114,6 +114,10 @@ LEFT_ALONE: dict[str, str] = {
     "ui_prefs.json": "Owner name and theme from the setup window, read as a plain dict (extra keys skipped).",
     "answers.kept.json": "The old answers a setup window keeps until the new choices are applied.",
     "pending_voice.json": "A voice setup queued for the first start; deleted once it is made.",
+    "keys_unprotected.json": (
+        "The mark that the one-time NS-W116 was given for this home (F-9b): never removed, and an update "
+        "does not rewrite it, so a rollback has nothing to put back."
+    ),
 }
 
 

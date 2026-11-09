@@ -23,6 +23,7 @@ from ns_common.errors import NsError
 from ns_common.paths import Paths
 from ns_common.secret_file import FILE_NAME as SECRETS_FILE
 from ns_common.secret_file import (
+    NOTICE_FILE,
     UNPROTECTED_CODE,
     SecretFileLockError,
     restrict_to_user,
@@ -38,7 +39,16 @@ BLOCK_SUFFIXES = frozenset({".gguf", ".safetensors", ".onnx", ".mp4", ".mkv", ".
 MAX_FILE_BYTES = 200 * 1024 * 1024
 TREES = ("config", "models/tts/voices", "exemplars", "prompt_overrides")
 RESTORE_ALLOWED = (*(t + "/" for t in TREES), "data/studio.db")
-MACHINE_FILES = frozenset({"config/runtime.json", "config/install_state.json", "config/schedule.json"})
+#: `keys_unprotected.json` says the one-time NS-W116 was given for THIS home's drive: restored onto another
+#: home (a FAT stick) it would hide the warning that home still has to give, so it is machine specific too.
+MACHINE_FILES = frozenset(
+    {
+        "config/runtime.json",
+        "config/install_state.json",
+        "config/schedule.json",
+        f"config/{NOTICE_FILE}",
+    }
+)
 
 
 def snapshot_db(db: Path, dest: Path) -> None:
