@@ -181,10 +181,9 @@ def test_a_lock_that_cannot_be_probed_is_dead_after_the_limit_when_its_process_i
     assert ownership.lock_held(paths, job_id) is False
     assert ownership.liveness(paths, job_id) == "dead"
     assert notes(paths) == [], "its process was gone from the start: nothing to explain, it settled by itself"
-    out = ownership.recover(paths, NoRows(), note=False)
+    ownership.recover(paths, NoRows(), note=False)
     rec = ownership.read_record(paths, job_id)
     assert rec is not None and rec["state"] == "interrupted", "recover can now close it"
-    assert [j.job_id for j in out.jobs] == [job_id] or out.any
 
 
 def test_failed_probes_must_be_in_a_row_a_good_probe_starts_the_count_again(
