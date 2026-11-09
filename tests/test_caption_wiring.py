@@ -26,6 +26,7 @@ from ns_studio.media.presets import caption_style
 from ns_studio.media.render import VERTICAL, backdrop_luma, fit_caption_contrast, sample_times, shot_at
 from ns_studio.media.shotplan import Shot
 from ns_studio.media.transcribe import Word
+from ns_studio.stages import inputs_hash, run_stage
 from tests.helpers import make_channel, make_combo, make_ctx
 
 needs_ffmpeg = pytest.mark.skipif(not ff.available(), reason="ffmpeg required")
@@ -359,3 +360,85 @@ def test_master_captions_use_chapter_emphasis_and_keep_landscape_geometry(tmp_ho
     assert "fscx115" in ch2 and "fscx115" not in ch1
     assert "PlayResX: 1920" in ch2
     assert "fscx115" not in ctx.file("captions/long.ass").read_text(encoding="utf-8")
+
+
+def _timings(ass: str) -> list[tuple[str, str]]:
+    return [(p[1], p[2]) for p in (ln.split(",") for ln in ass.splitlines() if ln.startswith("Dialogue:"))]
+
+
+def test_clip_captions_show_the_models_cleaned_words_on_the_asr_timings(tmp_home: Path) -> None:
+    plain_ctx = _clip_job(tmp_home, emphasis=["friend", "great"])
+    sc.CaptionsStage().run(plain_ctx)
+    plain = plain_ctx.file("captions/c1.ass").read_text(encoding="utf-8")
+    assert "friend." in plain and "friend!" not in plain
+
+    ctx = _clip_job(tmp_home, emphasis=["friend", "great"])
+    ctx.write_json(sc.CAPTION_WORDS_FILE, {
+        "1": ["Hello,", "there,", "damn", "friend!", "This", "is", "truly", "great!"],
+    })
+    sc.CaptionsStage().run(ctx)
+    ass = ctx.file("captions/c1.ass").read_text(encoding="utf-8")
+    assert "friend!" in ass and "friend." not in ass and "there," in ass
+    assert any("friend!" in ln and "fscx115" in ln for ln in ass.splitlines())  # the key word still accents
+    assert _timings(ass) == _timings(plain)  # the ASR word timings are untouched
+    assert ctx.read_json("captions/report.json")["c1"]["cleaned"] is True
+    assert "cleaned" not in plain_ctx.read_json("captions/report.json")["c1"]
+
+
+def test_clip_captions_ignore_cleaned_words_written_for_another_span(tmp_home: Path) -> None:
+    ctx = _clip_job(tmp_home)
+    ctx.write_json(sc.CAPTION_WORDS_FILE, {"1": ["Only", "three", "words!"], "9": ["Other", "clip"]})
+    sc.CaptionsStage().run(ctx)
+    ass = ctx.file("captions/c1.ass").read_text(encoding="utf-8")
+    assert "friend." in ass and "words!" not in ass
+    assert "cleaned" not in ctx.read_json("captions/report.json")["c1"]
+
+
+@pytest.mark.parametrize(
+    "sidecar",
+    [
+        "{not json",
+        "[1, 2, 3]",
+        '"text"',
+        '{"1": "Hello, there, damn friend! This is truly great!"}',
+        '{"1": [1, 2, 3, 4, 5, 6, 7, 8]}',
+        '{"1": null}',
+        "{}",
+    ],
+)
+def test_clip_captions_survive_a_sidecar_that_is_corrupt_or_the_wrong_shape(
+    tmp_home: Path, sidecar: str
+) -> None:
+    plain_ctx = _clip_job(tmp_home)
+    sc.CaptionsStage().run(plain_ctx)
+    plain = plain_ctx.file("captions/c1.ass").read_text(encoding="utf-8")
+    ctx = _clip_job(tmp_home)
+    ctx.file(sc.CAPTION_WORDS_FILE).write_text(sidecar, encoding="utf-8")
+    sc.CaptionsStage().run(ctx)  # one bad file must not stop the job
+    assert ctx.file("captions/c1.ass").read_text(encoding="utf-8") == plain
+    assert "cleaned" not in ctx.read_json("captions/report.json")["c1"]
+
+
+def test_a_resumed_older_job_does_not_run_captions_again_and_a_new_sidecar_does(tmp_home: Path) -> None:
+    """A job finished before the sidecar existed has no `clip_caption_words.json` and a stage state written
+    with the old input list. The sidecar is an optional input, so the input hash is the old one and resuming
+    skips the caption stage (and, through its report, the render). A job whose selection wrote cleaned words
+    does run it."""
+
+    class OldCaptions(sc.CaptionsStage):
+        inputs = ("transcript.json", "clip_plan.json", "clip_layout.json")
+        optional_inputs = ()
+
+    ctx = _clip_job(tmp_home)
+    assert not ctx.file(sc.CAPTION_WORDS_FILE).exists()
+    assert inputs_hash(ctx, sc.CaptionsStage()) == inputs_hash(ctx, OldCaptions())  # nothing new in the hash
+    assert run_stage(ctx, OldCaptions()) is True
+    before = ctx.file("captions/report.json").read_bytes()
+    render_before = inputs_hash(ctx, sc.RenderStage())
+    assert run_stage(ctx, sc.CaptionsStage()) is False  # the older job is not redone on resume
+    assert ctx.file("captions/report.json").read_bytes() == before
+    assert inputs_hash(ctx, sc.RenderStage()) == render_before
+    # a re-select wrote cleaned words
+    ctx.write_json(sc.CAPTION_WORDS_FILE, {"1": ["Hello", "there", "damn", "friend."]})
+    assert run_stage(ctx, sc.CaptionsStage()) is True
+    assert run_stage(ctx, sc.CaptionsStage()) is False
