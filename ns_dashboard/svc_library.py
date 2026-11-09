@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import sqlite3
@@ -12,13 +13,13 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, BinaryIO
 
-from ns_common.atomic import write_chunks_atomic
+from ns_common.atomic import write_chunks_atomic, write_text_atomic
 from ns_common.devmode import fake_footage
 from ns_common.errors import NsError
 from ns_common.secrets_names import SHORT_NAMES
 from ns_dashboard import formats, updater
 from ns_dashboard.common import now_iso
-from ns_dashboard.errors import AdapterUnavailable, ApiError
+from ns_dashboard.errors import AdapterUnavailable, ApiError, room_refusal
 from ns_dashboard.state import AppState
 from ns_dashboard.svc_channels import ChannelsService
 from ns_studio.footage_keys import NO_FOOTAGE_KEY
@@ -46,8 +47,15 @@ UPDATE_ZIP_RE = re.compile(r"^(?:Nightshift-Update|nightshift-app)-\d+\.\d+\.\d+
 MAX_UPDATE_BYTES = 200 * 1024 * 1024  # the Update zip is a few MB; the bundle check allows 25 MB
 
 
-def _save_upload(fh: BinaryIO, dest: Path, limit: int, too_big: str) -> int:
-    """Write `fh` to `dest` in 1 MB blocks; more than `limit` bytes deletes the file and raises 413."""
+def _save_upload(
+    fh: BinaryIO, dest: Path, limit: int, too_big: str, *, verify: Callable[[Path], None] | None = None
+) -> int:
+    """Write `fh` to `dest` in 1 MB blocks (through a temp file, so `dest` shows only when all of it arrived).
+
+    More than `limit` bytes raises 413 and nothing is saved: a same-named earlier upload is kept as it was.
+    `verify(temp file)` runs on the finished temporary file before it is moved under `dest`; what it raises
+    (a digest that does not match) is raised here and nothing is saved. Without it, an empty upload also
+    saves nothing and an earlier file of that name is removed."""
     size = 0
 
     def blocks() -> Iterator[bytes]:
@@ -58,7 +66,7 @@ def _save_upload(fh: BinaryIO, dest: Path, limit: int, too_big: str) -> int:
                 raise ApiError(413, "file_too_large", too_big)
             yield block
 
-    write_chunks_atomic(dest, blocks())  # an upload too big or cut short never shows under its name
+    write_chunks_atomic(dest, blocks(), verify=verify)  # a bad upload never shows under its name
     if size == 0:
         dest.unlink(missing_ok=True)
     return size
@@ -524,7 +532,9 @@ class LibraryService:
 
         Both are saved under `data/updates/` (the sidecar as `<zip name>.sha256`, where `ns update` looks for
         it) and `ns update <zip>` does the rest: it refuses a zip without a matching digest (`NS-E701`) before
-        anything is stopped, then installs with a rollback.
+        anything is stopped, then installs with a rollback. The digest is checked here too, on the finished
+        temporary file, so a zip that does not match its checksum file is never put under its name in
+        `data/updates` (409, nothing saved); `ns update` checks it again.
         """
         if self.s.draining:
             raise ApiError(503, "shutting_down", "Nightshift is shutting down.")
@@ -544,18 +554,36 @@ class LibraryService:
                 400, "no_checksum", f"Choose {name}.sha256 as well.",
                 hint="Pick both files at once. The update is refused without its checksum file.",
             )
+        text = sha_fh.read(4096).decode("utf-8", errors="replace").strip()
+        if not text:
+            raise ApiError(400, "empty_file", f"{name}.sha256 is empty.")
+        want = text.split()[0].lower()
+        if len(want) != 64 or any(c not in "0123456789abcdef" for c in want):
+            raise ApiError(
+                400, "bad_checksum", f"{name}.sha256 does not hold a SHA256 digest.",
+                hint="Choose the .sha256 file that belongs to this release, as it was downloaded.",
+            )
         folder = self.s.paths.data / "updates"
         folder.mkdir(parents=True, exist_ok=True)
         dest = folder / name
         side = folder / f"{name}.sha256"
-        size = _save_upload(zip_fh, dest, MAX_UPDATE_BYTES, "That file is larger than 200 MB, so it is not an update.")
-        if size == 0:
-            raise ApiError(400, "empty_file", "That file is empty.")
-        text = sha_fh.read(4096).decode("utf-8", errors="replace").strip()
-        if not text:
-            dest.unlink(missing_ok=True)
-            raise ApiError(400, "empty_file", f"{name}.sha256 is empty.")
-        side.write_text(text.splitlines()[0] + "\n", encoding="utf-8")
+
+        def check(tmp: Path) -> None:
+            """The digest of the finished temporary file, before it is moved under the name `ns update` takes."""
+            if tmp.stat().st_size == 0:
+                raise ApiError(400, "empty_file", "That file is empty.")
+            with tmp.open("rb") as f:
+                got = hashlib.file_digest(f, "sha256").hexdigest()
+            if got != want:
+                raise ApiError(
+                    409, "update_refused",
+                    f"NS-E701: SHA256 mismatch for {name}: expected {want[:12]}, got {got[:12]}; "
+                    "the file was not saved.",
+                    hint="Download the Update zip and its .sha256 again, both from the same release.",
+                )
+
+        _save_upload(zip_fh, dest, MAX_UPDATE_BYTES, "That file is larger than 200 MB, so it is not an update.", verify=check)
+        write_text_atomic(side, f"{want}  {name}\n", newline=None)  # `ns update` reads it next
         self.s.log.warn("update_apply_file", "update started from an uploaded file", file=name)
         res = self.s.adapters.update.apply_file(dest)
         if res.get("state") == "error":
@@ -573,7 +601,12 @@ class LibraryService:
         """Queue the next approved part of `slug` as a `series_part` job and wake the worker."""
         if self.s.draining:
             raise ApiError(503, "shutting_down", "Nightshift is shutting down and not accepting new jobs.")
-        queued = self.s.adapters.series.queue_next(slug)
+        try:  # NS-E104 comes from `Workshop.produce` (D-33), before any job folder or queue row is made
+            queued = self.s.adapters.series.queue_next(slug)
+        except NsError as e:
+            if e.code != "NS-E104":
+                raise
+            raise room_refusal(e) from e
         for item in queued:
             self.s.worker.enqueue(str(item["job_id"]))
             rec = self.s.store.get(str(item["job_id"]))

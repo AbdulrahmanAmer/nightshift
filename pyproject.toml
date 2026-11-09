@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "nightshift"
-version = "0.1.14"
+version = "0.1.15-rc1"
 description = "Nightshift: local story-to-video studio for YouTube long-form + Shorts"
 requires-python = ">=3.12,<3.13"
 dependencies = [
@@ -75,10 +75,11 @@ target-version = "py312"
 select = ["E", "F", "I", "B", "UP", "TID251"]
 
 [tool.ruff.lint.flake8-tidy-imports.banned-api]
-"subprocess".msg = "Use ns_common.ffmpeg.run or the supervisor. subprocess is allowed only in ns_common/ffmpeg.py, ns_supervisor/, installer/, tools/, dev/ and tests/ (docs/ENGINEERING.md section 8)."
+"subprocess".msg = "Use ns_common.ffmpeg.run or the supervisor. subprocess is allowed only in ns_common/ffmpeg.py, ns_common/secret_file.py (icacls), ns_supervisor/, installer/, tools/, dev/ and tests/ (docs/ENGINEERING.md section 8)."
 
 [tool.ruff.lint.per-file-ignores]
 "ns_common/ffmpeg.py" = ["TID251"]
+"ns_common/secret_file.py" = ["TID251"]  # icacls: the secrets file keeps its user-only ACL
 "ns_supervisor/**" = ["TID251"]
 "ns_tts/engine.py" = ["TID251"]
 "ns_tts/sapi.py" = ["TID251"]

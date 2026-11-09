@@ -92,6 +92,19 @@ def test_a_crash_in_the_middle_leaves_nothing_that_looks_finished(tmp_path: Path
     assert not (home / "app.new").exists() and not (home / "app" / "junk.txt").exists()
 
 
+def test_the_proof_runner_and_the_proofs_are_part_of_the_installed_program(tmp_path: Path) -> None:
+    """H-13: `dev/prove.py --home <install>` runs from the install's app folder, proofs/ beside dev/."""
+    src = make_source(
+        tmp_path / "Nightshift-Setup-0.1.4",
+        **{"dev/prove.py": "# runner", "dev/prove_ctx.py": "# ctx", "proofs/__init__.py": "",
+           "proofs/f_b18_studio_status.py": "# proof"},
+    )
+    appcopy.install_app(src, tmp_path / "home")
+    got = tree(tmp_path / "home" / "app")
+    assert {"dev/prove.py", "dev/prove_ctx.py", "proofs/__init__.py", "proofs/f_b18_studio_status.py"} <= got
+    assert {"dev", "proofs"} <= appcopy.ROOT_ENTRIES  # also when the zip is extracted into a drive root
+
+
 def test_running_setup_from_the_installed_program_folder_copies_nothing(tmp_path: Path) -> None:
     home = tmp_path / "home"
     make_source(home / "app")

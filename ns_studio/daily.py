@@ -16,10 +16,12 @@ from typing import Any
 from ns_common.atomic import read_text_retry, write_text_atomic
 from ns_common.errors import NsError, describe
 from ns_common.keepawake import keep_awake
+from ns_common.models import Channel
 from ns_studio import jobs, notifications, ownership
 from ns_studio.channels import cadence
 from ns_studio.channels.crud import broken_channels, get_channel
 from ns_studio.context import JobContext
+from ns_studio.diskroom import require_story_room
 from ns_studio.errors import UNEXPECTED, StudioError, describe_unexpected
 from ns_studio.footage_keys import require_footage_key
 from ns_studio.media.outbox import retime_sheet
@@ -36,7 +38,7 @@ def _series_delay(env: jobs.Env, job_id: str) -> int:
     """Days a series part waits after the nightly slot (`publish_not_before_days` of its design)."""
     f = env.paths.job_dir(job_id) / "series_context.json"
     try:
-        return max(0, int(json.loads(f.read_text(encoding="utf-8")).get("publish_not_before_days", 0) or 0))
+        return max(0, int(json.loads(read_text_retry(f)).get("publish_not_before_days", 0) or 0))
     except (OSError, ValueError, AttributeError):
         return 0
 
@@ -124,6 +126,56 @@ def apply_publish_times(
             if retime_sheet(entry, when.isoformat(timespec="minutes")) is not None:
                 rewritten += 1
     return rewritten
+
+
+def no_room_entry(channel: str, fmt: str, jobs_left: int, e: NsError) -> dict[str, Any]:
+    """The report line for jobs the nightly did not start for lack of disk space (``NS-E104``, D-33)."""
+    return {
+        "channel": channel, "format": fmt, "jobs": jobs_left, "message": e.detail,
+        "short": e.data.get("short", e.detail), "need_bytes": e.data.get("need_bytes"),
+        "free_bytes": e.data.get("free_bytes"),
+    }
+
+
+def _no_room(env: jobs.Env, report: dict, ch: Channel, fmt: str, jobs_left: int) -> bool:
+    """D-33: True when the drive cannot hold one more job of ``fmt``; the report then lists the jobs left.
+
+    Nothing is created, so nothing is half made. Any other trouble reading the answer is not a reason to stop
+    the night (``diskneed`` already treats an unreadable volume as room enough).
+    """
+    try:
+        require_story_room(env.paths, env.log, ch, fmt, fake=env.fake)
+    except NsError as e:
+        if e.code != "NS-E104":
+            env.log.warn("room_check_failed", str(e))
+            return False
+        report.setdefault("no_room", []).append(no_room_entry(ch.slug, fmt, jobs_left, e))
+        return True
+    return False
+
+
+def _no_room_to_resume(env: jobs.Env, report: dict, job_id: str, slug: str) -> bool:
+    """D-33: True when the drive cannot hold what an interrupted job still has to write.
+
+    The job stays interrupted (the next night tries again, the morning note says so) and the report lists it
+    under ``no_room``. A job that cannot even be reopened is left to ``_attempt`` to report as before.
+    """
+    fmt = ""
+    job_dir = env.paths.job_dir(job_id)
+    try:
+        # read job.json here: `jobs.load_job` is what `_attempt` calls, once, to reopen the job
+        info = json.loads((job_dir / "job.json").read_text(encoding="utf-8"))
+        fmt = str(info["fmt"])
+        channel = get_channel(env.paths, str(info["channel"]))
+        require_story_room(env.paths, env.log, channel, fmt, fake=env.fake, resume_dir=job_dir)
+    except NsError as e:
+        if e.code != "NS-E104":
+            return False
+        report.setdefault("no_room", []).append(no_room_entry(slug, f"{fmt} (resumed)", 1, e))
+        return True
+    except Exception:  # noqa: BLE001 - `_attempt` meets the same trouble and reports it
+        return False
+    return False
 
 
 def run_daily(
@@ -385,6 +437,9 @@ def _resume_interrupted(
         job_id, slug = str(rec["id"]), str(rec.get("channel") or "")
         stage = rec.get("interrupted_at_stage")
         env.log.info("daily_job_resume", job_id=job_id, channel=slug, stage=stage)
+        if _no_room_to_resume(env, report, job_id, slug):
+            ownership.write_record(env.paths, job_id, state="interrupted")
+            continue
         reopen = partial(jobs.load_job, env, job_id)
         code = _attempt(env, run, report, reopen, slug, run_id=run_id, resumed=True)
         has_card = ownership.has_card(rec)
@@ -457,6 +512,10 @@ def _tonight(
              "reasons": dj.plan.reasons}
         )
         for n in range(dj.count):
+            # Less room than one job writes (D-33): nothing is created, the rest of this channel's jobs
+            # would not fit either, and the morning note says why (not a failure one stage in).
+            if _no_room(env, report, ch, dj.fmt, dj.count - n):
+                break
             make = partial(jobs.make_job, env, ch, dj.fmt, now=now, rng=rng, origin="daily", run_id=run_id)
             if _attempt(env, run, report, make, ch.slug, run_id=run_id) == "NS-E201":
                 gpu_busy = True

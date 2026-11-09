@@ -28,7 +28,7 @@ from typing import Any, Protocol, TextIO
 
 import psutil
 
-from ns_common.atomic import read_text_retry, write_text_atomic
+from ns_common.atomic import REPLACE_WAIT_S, read_text_retry, write_text_atomic
 from ns_common.errors import NsError
 from ns_common.paths import Paths
 from ns_supervisor import pwsh, updater_copy
@@ -71,23 +71,32 @@ def status_file(paths: Paths) -> Path:
     return paths.home / "run" / "update_state.json"
 
 
-def write_status(paths: Paths, state: str, message: str = "", **extra: Any) -> None:
+def write_status(
+    paths: Paths, state: str, message: str = "", *, wait_s: float = REPLACE_WAIT_S, **extra: Any
+) -> None:
     """Replace the state file atomically: `{state, old, new, message, updated_at}` plus log/pid extras.
 
     Goes through `write_text_atomic`, which retries `os.replace` while Windows refuses it because the
-    dashboard has the file open for its 3-second poll.
+    dashboard has the file open for its 3-second poll, for at most `wait_s` (then `NS-E119`).
     """
     data = {
         "state": state, "old": "", "new": "", "message": message,
         "updated_at": datetime.now().isoformat(timespec="seconds"), **extra,
     }
-    write_text_atomic(status_file(paths), json.dumps(data))
+    write_text_atomic(status_file(paths), json.dumps(data), wait_s=wait_s)
+
+
+#: The longest one progress line or one try at the final line waits for a program that holds the state file.
+#: A holder that keeps it for the whole update therefore costs the updater PROGRESS_WAIT_S per progress line
+#: and, at the end, at most FINAL_TRIES * FINAL_WAIT_S + (FINAL_TRIES - 1) * FINAL_PAUSE_S (about 13 s).
+PROGRESS_WAIT_S = 1.0
+FINAL_WAIT_S = 1.0
 
 
 def _progress(paths: Paths, state: str, message: str, **extra: Any) -> None:
-    """A progress line in the state file. Failing to write it must not stop the update."""
+    """A progress line in the state file. Failing to write it must not stop the update, nor stall it long."""
     try:
-        write_status(paths, state, message, **extra)
+        write_status(paths, state, message, wait_s=PROGRESS_WAIT_S, **extra)
     except OSError as e:
         sys.stderr.write(f"could not write {status_file(paths).name}: {e}\n")
 
@@ -102,7 +111,7 @@ def _final(
     """The `done` / `failed` line: retried for a few seconds, then given up on (readers notice a dead pid)."""
     for attempt in range(FINAL_TRIES):
         try:
-            write_status(paths, state, message, **extra)
+            write_status(paths, state, message, wait_s=FINAL_WAIT_S, **extra)
             return
         except OSError as e:
             if attempt == FINAL_TRIES - 1:

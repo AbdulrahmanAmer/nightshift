@@ -10,9 +10,9 @@ is refused (`NS-E701`). Only https URLs on GitHub hosts are followed. No other n
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import re
-from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -20,7 +20,7 @@ from urllib.parse import urlparse
 
 import httpx
 
-from ns_common.atomic import write_chunks_atomic, write_text_atomic
+from ns_common.atomic import FileInUseError, write_chunks_atomic, write_text_atomic
 from ns_common.errors import NsError
 
 REPO = "AbdulrahmanAmer/nightshift"
@@ -51,6 +51,8 @@ def parse_version(text: str) -> tuple[int, int, int, int, str]:
     if not m:
         raise ValueError(f"not a version: {text!r}")
     pre = m.group(4) or ""
+    # numbers inside the prerelease part sort as numbers: rc2 is before rc10 (as text "rc10" < "rc2")
+    pre = re.sub(r"\d+", lambda d: d.group().zfill(9), pre)
     return int(m.group(1)), int(m.group(2)), int(m.group(3)), 0 if pre else 1, pre
 
 
@@ -98,8 +100,13 @@ def status_words(r: httpx.Response) -> str:
 
 
 def parse_release(data: dict[str, Any]) -> Release:
-    """A `Release` from the API's JSON. `NS-E701` when it has no usable tag."""
+    """A `Release` from the API's JSON. `NS-E701` when it has no usable tag or is a prerelease or a draft.
+
+    GitHub's `/releases/latest` never returns either, but the updater does not rely on that alone (H-12): a
+    release candidate (`v0.1.15-rc1`) must never be offered as the update, whatever the endpoint answers."""
     tag = str(data.get("tag_name") or "")
+    if data.get("prerelease") or data.get("draft"):
+        raise NsError("NS-E701", f"the latest release {tag!r} is a prerelease or a draft, not an update")
     try:
         parse_version(tag)
     except ValueError as e:
@@ -175,10 +182,24 @@ def expected_digest(rel: Release, client: httpx.Client) -> str:
     raise NsError("NS-E701", f"release {rel.tag} publishes no SHA256 for its update package")
 
 
+def _forget(target: Path) -> None:
+    """Delete an older zip of the name and its `.sha256`; one that cannot be deleted (open elsewhere) hides no
+    error. The sidecar goes too: it vouches for the zip that was just refused, not for whatever comes next."""
+    for f in (target, target.with_name(target.name + ".sha256")):
+        with contextlib.suppress(OSError):
+            f.unlink(missing_ok=True)
+
+
 def download(rel: Release, dest_dir: Path, client: httpx.Client | None = None) -> Path:
     """Download the update zip into `dest_dir`, verify its SHA256 and write `<zip>.sha256` next to it.
 
-    The result is what `ns_supervisor.update.update_app` takes. A mismatch deletes the file (`NS-E701`).
+    The result is what `ns_supervisor.update.update_app` takes. The download goes to a temporary file beside
+    the final name; its SHA256 is checked on that file and only a match is moved under the final name. A
+    mismatch (`NS-E701`), a cut connection (`NS-E105`/`NS-E118`) or a write that fails (disk full) leaves
+    nothing under the final name, and an older zip of the same name is deleted. The one exception is a program
+    that holds the name open (`NS-E119`): Windows will not delete or replace it, so an older zip stays and the
+    error says why. An older zip that cannot be deleted for that reason after a mismatch also stays; the
+    mismatch is still the error raised.
     """
     if rel.zip_url is None or rel.zip_name is None:
         raise NsError("NS-E701", f"release {rel.tag} has no Nightshift-Update-{rel.version}.zip")
@@ -187,33 +208,36 @@ def download(rel: Release, dest_dir: Path, client: httpx.Client | None = None) -
         want = expected_digest(rel, http)
         dest_dir.mkdir(parents=True, exist_ok=True)
         target = dest_dir / rel.zip_name
-        h = hashlib.sha256()
+
+        def check(tmp: Path) -> None:
+            """The digest of the finished temporary file (what is on disk, not what the socket delivered)."""
+            with tmp.open("rb") as fh:
+                got = hashlib.file_digest(fh, "sha256").hexdigest()
+            if got != want:
+                raise NsError(
+                    "NS-E701",
+                    f"SHA256 mismatch for {rel.zip_name}: expected {want[:12]}, got {got[:12]}; "
+                    "the download was discarded and nothing was saved",
+                )
+
         try:
             with http.stream("GET", rel.zip_url) as r:
                 r.raise_for_status()
                 if not trusted(str(r.url)):
                     raise NsError("NS-E701", f"the download was redirected away from GitHub ({r.url.host})")
-
-                def blocks() -> Iterator[bytes]:
-                    for block in r.iter_bytes(1024 * 1024):
-                        h.update(block)
-                        yield block
-
-                # The zip appears under its name only when all of it arrived: a crash leaves no torn zip.
-                write_chunks_atomic(target, blocks())
+                # The zip appears under its name only when all of it arrived AND its digest matched: a crash
+                # leaves no torn zip, and a zip nobody checked is never there for a later step to pick up.
+                write_chunks_atomic(target, r.iter_bytes(1024 * 1024), verify=check)
         except httpx.HTTPError as e:
-            target.unlink(missing_ok=True)
+            _forget(target)
             raise _unreachable(e) from e
-        except NsError:
-            target.unlink(missing_ok=True)
+        except FileInUseError:
+            raise  # a program holds the name open: it cannot be deleted either; the swap left it as it was
+        except (NsError, OSError):
+            _forget(target)
             raise
-        got = h.hexdigest()
-        if got != want:
-            target.unlink(missing_ok=True)
-            raise NsError(
-                "NS-E701", f"SHA256 mismatch for {rel.zip_name}: expected {want[:12]}, got {got[:12]}"
-            )
-        write_text_atomic(target.with_name(target.name + ".sha256"), f"{got}  {rel.zip_name}\n", newline=None)
+        sidecar = target.with_name(target.name + ".sha256")
+        write_text_atomic(sidecar, f"{want}  {rel.zip_name}\n", newline=None)
         return target
     finally:
         if client is None:

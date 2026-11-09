@@ -41,8 +41,13 @@ $ProgressPreference = 'SilentlyContinue'
 $script:IsDry = [bool]$DryRun
 $script:Unattended = $false
 $script:ErrorsJson = $null
-$script:MinFreeGbHard = 40
-$script:MinFreeGbRecommended = 60
+# Stage 1 does not know what the install will use: that depends on the models already on the drive, the model
+# size chosen and the offline folder, so stage 2 works it out (ns_common/diskneed.py) and makes the real check
+# (the setup window's PC check and step s01). Here only a drive that cannot even hold the setup tools fails.
+$script:MinFreeGbHard = 2
+# Used only to rank drives when picking the default home: the full Small install by the same sum
+# (tests/test_installer_stage1.py keeps it equal to the number stage 2 computes).
+$script:RoomyGb = 60
 $script:MinRamGb = 15
 $script:MinVramMb = 15000
 # a dev install (docs/DEV_MODE.md) writes stub models, so it needs far less
@@ -61,7 +66,7 @@ $script:FallbackErrors = @{
     'NS-E102' = @('No NVIDIA GPU detected.', 'Nightshift needs an NVIDIA RTX GPU with 16 GB. Check that the GPU driver is installed (nvidia-smi must work).')
     'NS-E103' = @('NVIDIA driver too old (CUDA too low).', 'Install the latest Game Ready or Studio driver from nvidia.com/drivers, reboot, then re-run setup.')
     'NS-W115' = @('Could not read the NVIDIA driver version.', 'Setup continues with the CUDA 12.4 build. If a video later fails on the graphics card, install the latest driver from nvidia.com/drivers.')
-    'NS-E104' = @('Not enough free disk space.', 'Free at least 60 GB on the drive that holds NIGHTSHIFT_HOME, or choose a bigger drive.')
+    'NS-E104' = @('Not enough free disk space.', 'Free some space on the drive that holds NIGHTSHIFT_HOME (empty the Recycle Bin, move old videos out of the Outbox); where the message gives the amount it needs, free at least that. Or set NIGHTSHIFT_HOME to a bigger drive.')
     'NS-E105' = @('A required download site is unreachable.', 'Check the internet connection and any firewall or proxy.')
     'NS-W106' = @('NIGHTSHIFT_HOME is on a hard disk, not an SSD.', 'Model loading will be slow. Consider an NVMe/SSD drive.')
     'NS-W107' = @('Wake timers are not fully enabled in the power plan.', 'In Power Options > Change advanced power settings > Sleep > Allow wake timers, choose Enable (not Disable, and not Important wake timers only).')
@@ -82,9 +87,16 @@ function Write-NsFileSwap {
     # A hand-over file the setup server reads is either absent or whole: the text goes to a temp file in the
     # same folder, is flushed, and is then swapped over -Path (File.Replace, or Move for a new file). A crash
     # or a second setup run in the middle of an in-place write left an empty or half file that the server then
-    # parsed. Same contract as Write-NsFileAtomic in launchers/_common.ps1 (this script runs before the app is
-    # installed and does not load that file). UTF-8 without a BOM.
-    param([Parameter(Mandatory = $true)][string]$Path, [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Text)
+    # parsed. Windows refuses the swap for a moment while another process has -Path open without sharing
+    # delete (the setup server of an earlier run reading it, an antivirus scan): that is retried, as
+    # launchers/_common.ps1 Write-NsFileAtomic does (-Tries, a growing pause, the error thrown after the last
+    # try, the old file untouched). This script runs before the app is installed and does not load that file;
+    # it swaps with File.Replace, not MoveFileEx. UTF-8 without a BOM.
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Text,
+        [int]$Tries = 20
+    )
     $full = [System.IO.Path]::GetFullPath($Path)
     $tmp = Join-Path ([System.IO.Path]::GetDirectoryName($full)) ('~ns' + $PID + '-0-' + (Get-Random -Maximum 2000000000) + '.tmp')
     try {
@@ -92,8 +104,18 @@ function Write-NsFileSwap {
         $fs = New-Object System.IO.FileStream($tmp, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
         try { $fs.Write($bytes, 0, $bytes.Length); $fs.Flush($true) }
         finally { $fs.Dispose() }
-        if ([System.IO.File]::Exists($full)) { [System.IO.File]::Replace($tmp, $full, [NullString]::Value) }
-        else { [System.IO.File]::Move($tmp, $full) }
+        for ($attempt = 1; ; $attempt++) {
+            try {
+                if ([System.IO.File]::Exists($full)) { [System.IO.File]::Replace($tmp, $full, [NullString]::Value) }
+                else { [System.IO.File]::Move($tmp, $full) }
+                break
+            }
+            catch [System.IO.IOException], [System.UnauthorizedAccessException] {
+                # a sharing or lock violation, or access denied while a reader has the target open
+                if ($attempt -ge $Tries) { throw }
+                Start-Sleep -Milliseconds ([Math]::Min(10 * $attempt, 100))
+            }
+        }
     }
     finally {
         try { if ([System.IO.File]::Exists($tmp)) { [System.IO.File]::Delete($tmp) } }
@@ -299,7 +321,7 @@ function Select-DefaultHome {
     if (-not $IsTaken) { $IsTaken = { param($p) (-not $FakeProbe) -and ((Get-FolderKind -Path $p) -eq 'foreign') } }
     $all = @($Drives)
     if ($all.Count -eq 0) { return '' }
-    $roomy = @($all | Where-Object { [double]$_.free_gb -ge $script:MinFreeGbRecommended })
+    $roomy = @($all | Where-Object { [double]$_.free_gb -ge $script:RoomyGb })
     if ($roomy.Count -eq 0) { $roomy = $all }
     $ssd = @($roomy | Where-Object { $_.type -eq 'SSD' })
     if ($ssd.Count -gt 0) { $roomy = $ssd }
@@ -689,13 +711,15 @@ function Get-PreflightRows {
     $letter = ''
     if ($NsHome.Length -ge 2 -and $NsHome[1] -eq ':') { $letter = $NsHome.Substring(0, 1).ToUpper() }
     $drive = @(@($Probe.drives) | Where-Object { ([string]$_.letter).ToUpper() -eq $letter }) | Select-Object -First 1
-    $diskLabel = 'Free disk space, 60 GB'
+    $diskLabel = 'Free disk space'
     $diskHard = $script:MinFreeGbHard
-    $diskRecommended = $script:MinFreeGbRecommended
+    $diskNote = ' (setup works out what this install needs from what is already there, then checks again)'
+    $diskFailNote = " (setup needs at least $diskHard GB just to start)"
     if ($DevMode) {
         $diskLabel = 'Free disk space, 10 GB for dev mode'
         $diskHard = $script:DevMinFreeGb
-        $diskRecommended = $script:DevMinFreeGb
+        $diskNote = ''
+        $diskFailNote = ''
     }
     if ($null -eq $drive) {
         $rows.Add((New-Row 'disk' $diskLabel 'fail' 'NS-E104' "drive of $NsHome not found"))
@@ -705,13 +729,10 @@ function Get-PreflightRows {
         $free = [double]$drive.free_gb
         $dtype = [string](Get-Prop $drive 'type' 'Unknown')
         if ($free -lt $diskHard) {
-            $rows.Add((New-Row 'disk' $diskLabel 'fail' 'NS-E104' "$free GB free on ${letter}:"))
-        }
-        elseif ($free -lt $diskRecommended) {
-            $rows.Add((New-Row 'disk' $diskLabel 'warn' '' "$free GB free on ${letter}: (60 GB recommended)"))
+            $rows.Add((New-Row 'disk' $diskLabel 'fail' 'NS-E104' "$free GB free on ${letter}:$diskFailNote"))
         }
         else {
-            $rows.Add((New-Row 'disk' $diskLabel 'ok' '' "$free GB free on ${letter}:"))
+            $rows.Add((New-Row 'disk' $diskLabel 'ok' '' "$free GB free on ${letter}:$diskNote"))
         }
         if ($dtype -eq 'HDD') {
             $rows.Add((New-Row 'disktype' 'Disk type, SSD' 'warn' 'NS-W106' "${letter}: is a hard disk"))
