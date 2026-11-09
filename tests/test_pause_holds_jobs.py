@@ -338,15 +338,17 @@ def test_the_night_without_a_pause_makes_both_jobs(tmp_home: Path):
     """The control: the same night, nobody pauses, two jobs are made (so the next test means something)."""
     report, ran, _, _ = night(tmp_home, None)
     assert len(ran) == 2 and len(report["jobs"]) == 2 and not report.get("skipped")
+    assert not report.get("paused")
 
 
 def test_a_channel_paused_during_the_night_gets_no_further_job_that_night(tmp_home: Path):
     report, ran, paths, db = night(tmp_home, pause_after=1)
     assert len(ran) == 1, "the second job must not start after the pause"
     assert len(report["jobs"]) == 1 and report["failures"] == []
-    held = report["skipped"]
+    held = report["paused"]
     assert [(s["channel"], s["jobs"]) for s in held] == [(CH, 1)]
     assert "paused" in held[0]["reason"]
+    assert not report.get("skipped"), "skipped keeps its meaning: an earlier job stopped"
     assert crud.get_channel(paths, CH).status == "paused"
 
 
@@ -354,7 +356,7 @@ def test_only_the_paused_channel_stops_the_others_carry_on(tmp_home: Path):
     report, ran, _, _ = night(tmp_home, pause_after=1, slugs=(CH, "tiny-mysteries"))
     channels = [j["channel"] for j in report["jobs"]]
     assert channels.count(CH) == 1 and channels.count("tiny-mysteries") == 2
-    assert [s["channel"] for s in report["skipped"]] == [CH]
+    assert [s["channel"] for s in report["paused"]] == [CH]
 
 
 # ------------------------------------------------------------------ break-it round (independent review)
@@ -653,3 +655,59 @@ def test_a_series_part_of_a_paused_channel_makes_no_video_and_no_job_folder(tmp_
         studio_bridge.run_series_part(params, lambda *_a: None, fake=tuple(FAKEABLE))
     assert not env.paths.job_dir("series-p47-1").exists()
     assert env.db.query("select 1 from combos where job_id = ?", ("series-p47-1",)) == []
+
+
+# ------------------------------------------------------------------ the night's resume loop
+
+
+def test_the_nights_resume_loop_starts_no_further_job_of_a_channel_paused_mid_night(
+    tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from ns_studio import ownership
+    from tests import d31_driver as driver
+    from tests.test_interrupted_nightly import _dead_daily_job, _setup
+
+    paths, db = _setup(tmp_home)
+    driver.install(monkeypatch)
+    first = _dead_daily_job(paths, db)
+    second = _dead_daily_job(paths, db)
+    attempts: list[str] = []
+
+    def run_fn(ctx: Any) -> list[str]:
+        attempts.append(ctx.job_id)
+        if len(attempts) == 1:
+            review.pause(paths, db, "after-dark", "warning arrived during the night")
+        return []
+
+    report = daily.run_daily(jobs.open_env(light=True), rng=random.Random(5), run_fn=run_fn)
+    assert len(attempts) == 1, "the second half-made job must not be continued after the pause"
+    (stays,) = {first, second} - set(attempts)
+    record = next(r for r in ownership.list_records(paths) if r["id"] == stays)
+    assert record["state"] == "interrupted", "it stays interrupted: nothing was changed to pass"
+    (held,) = report["paused"]
+    assert held["channel"] == "after-dark" and held["jobs"] == 1 and "paused" in held["reason"]
+    assert not report.get("skipped"), "skipped keeps its meaning: an earlier job stopped"
+    # the channel is resumed: the next night continues the job
+    review.resume(paths, db, "after-dark")
+    attempts.clear()
+    again = daily.run_daily(jobs.open_env(light=True), rng=random.Random(5), run_fn=run_fn)
+    assert attempts == [stays] and not again.get("paused")
+
+
+def test_the_morning_note_says_the_job_of_a_paused_channel_waits():
+    from ns_studio import ownership
+
+    job = ownership.Interrupted(
+        job_id="j1",
+        channel="after-dark",
+        fmt="master_first",
+        stage="d31_b",
+        origin="daily",
+        run_id=None,
+        owner="x",
+        resumable=True,
+    )
+    note = ownership.recovery_message(ownership.Recovery(jobs=[job]), outcomes={"j1": ("paused", None)})
+    assert note is not None
+    assert "channel was paused during the night" in note and "resume the channel" in note
+    assert "It continues at the next nightly run" not in note

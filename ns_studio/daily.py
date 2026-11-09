@@ -384,6 +384,10 @@ def _resume_interrupted(
     for rec in pending:
         job_id, slug = str(rec["id"]), str(rec.get("channel") or "")
         stage = rec.get("interrupted_at_stage")
+        if slug and _paused_now(env, slug):  # paused since the scan, or during an earlier job: leave it
+            _hold_for_pause(env, report, None, slug, 1, job_id=job_id)
+            outcomes[job_id] = ("paused", None)
+            continue
         env.log.info("daily_job_resume", job_id=job_id, channel=slug, stage=stage)
         reopen = partial(jobs.load_job, env, job_id)
         code = _attempt(env, run, report, reopen, slug, run_id=run_id, resumed=True)
@@ -470,7 +474,7 @@ def _tonight(
                 break
 
 
-PAUSED_TONIGHT = "its channel was paused during the night; resume it and the next night makes its video"
+PAUSED_TONIGHT = "its channel was paused during the night; resume it and the next night continues"
 
 
 def _paused_now(env: jobs.Env, slug: str) -> bool:
@@ -482,11 +486,27 @@ def _paused_now(env: jobs.Env, slug: str) -> bool:
         return False
 
 
-def _hold_for_pause(env: jobs.Env, report: dict, why: dict[str, str], slug: str, jobs_left: int) -> None:
-    """A channel paused mid-night: its remaining jobs are listed as skipped, with the reason, not started."""
-    report.setdefault("skipped", []).append({"channel": slug, "jobs": jobs_left, "reason": PAUSED_TONIGHT})
-    why[slug] = PAUSED_TONIGHT
-    env.log.info("daily_channel_paused", channel=slug, jobs=jobs_left)
+def _hold_for_pause(
+    env: jobs.Env,
+    report: dict,
+    why: dict[str, str] | None,
+    slug: str,
+    jobs_left: int,
+    *,
+    job_id: str | None = None,
+) -> None:
+    """A channel paused mid-night: its remaining jobs are listed under `paused` with the reason, not started.
+
+    `skipped` keeps its old meaning (an earlier job stopped, so the others wait), which the Queue page words
+    as such; a pause has its own key. A half-made job (`job_id`) is left exactly as it was: still interrupted,
+    so the next night continues it once the channel is resumed."""
+    entry: dict[str, Any] = {"channel": slug, "jobs": jobs_left, "reason": PAUSED_TONIGHT}
+    if job_id:
+        entry["job_id"] = job_id
+    report.setdefault("paused", []).append(entry)
+    if why is not None:
+        why[slug] = PAUSED_TONIGHT
+    env.log.info("daily_channel_paused", channel=slug, jobs=jobs_left, job_id=job_id)
 
 
 def nothing_due_message(report: dict) -> str:
