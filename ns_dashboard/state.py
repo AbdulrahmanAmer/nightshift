@@ -111,12 +111,13 @@ def scheduled_mode(paths: Paths) -> str:
 
 
 def schedule_is_registered(paths: Paths) -> bool:
-    """True only for a task that wakes the PC and runs while the owner is away.
+    """True when Windows holds an enabled 'Nightshift Daily' task: `registered` or `interactive_only`.
 
-    `schedule.json` existing is not enough: a task Windows registered "only while signed in" (NS-W205) or
-    one a dev install left disabled would not start a night run, so the top bar must not promise one.
+    `schedule.json` existing is not enough: a dev install's `disabled` task never fires, so the page must
+    not say a task exists. An `interactive_only` task (NS-W205) does exist and runs whenever the owner is
+    signed in, so it stays registered here and `schedule_mode` carries the difference.
     """
-    return scheduled_mode(paths) == "registered"
+    return scheduled_mode(paths) in ("registered", "interactive_only")
 
 
 def status_schedule_mode(paths: Paths) -> str:

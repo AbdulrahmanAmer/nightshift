@@ -57,12 +57,13 @@ def test_status_and_settings_carry_the_mode_and_the_contract_accepts_it(tmp_home
     assert client.get("/api/status").json()["schedule_mode"] == "registered"
     write_run_time(state.paths, "03:00", "interactive_only")
     body = client.get("/api/status").json()
-    assert body["schedule_mode"] == "interactive_only" and body["schedule_registered"] is False
+    assert body["schedule_mode"] == "interactive_only" and body["schedule_registered"] is True
     assert client.get("/api/settings").json()["schedule_mode"] == "interactive_only"
     assert Status.model_validate(body).schedule_mode == "interactive_only"  # the contract (and its schema)
 
 
-# F-E11: `schedule_registered` is "a task that will run", not "schedule.json exists".
+# F-E11: `schedule_registered` is "an enabled task exists", not "schedule.json exists"; interactive-only
+# is a task that exists (the UI keeps saying so) and `schedule_mode` carries the difference.
 SHAPES: list[tuple[str, object | None, str, bool]] = [
     # (case, schedule.json content (dict is dumped, str written raw, None = no file), mode, registered)
     ("no file", None, "none", False),
@@ -71,7 +72,7 @@ SHAPES: list[tuple[str, object | None, str, bool]] = [
     ("registered", {"run_time": "03:00", "task_name": "x", "mode": "registered"}, "registered", True),
     ("s4u spelling", {"run_time": "03:00", "task_name": "x", "mode": "s4u"}, "registered", True),
     ("interactive only", {"run_time": "03:00", "task_name": "x", "mode": "interactive_only"},
-     "interactive_only", False),
+     "interactive_only", True),
     ("disabled (dev install)", {"run_time": "03:00", "task_name": "x", "mode": "disabled"},
      "disabled", False),
     ("bad time", {"run_time": "25:99", "task_name": "x", "mode": "registered"}, "none", False),
@@ -79,7 +80,7 @@ SHAPES: list[tuple[str, object | None, str, bool]] = [
 
 
 @pytest.mark.parametrize(("case", "content", "mode", "registered"), SHAPES, ids=[s[0] for s in SHAPES])
-def test_settings_report_a_task_as_registered_only_when_it_will_run(
+def test_settings_report_a_task_as_registered_only_when_an_enabled_task_exists(
     tmp_home: Path, case: str, content: object | None, mode: str, registered: bool
 ):
     client, state = make_env(tmp_home)

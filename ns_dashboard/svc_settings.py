@@ -84,9 +84,9 @@ class SettingsService:
         prefs = load_ui_prefs(self.s.paths)
         return {
             "schedule_time": stored["run_time"],
-            # True only for a task that runs unattended (mode `registered`). False when Windows has no
-            # 'Nightshift Daily' task (NS-W206), the task is interactive-only (NS-W205) or disabled (dev
-            # install); `schedule_mode` says which, and the time is then only a preference
+            # True when an enabled 'Nightshift Daily' task exists (registered or interactive-only). False
+            # when Windows has none (NS-W206) or a dev install left it disabled; the time is then only a
+            # preference. `schedule_mode` tells registered from interactive_only (NS-W205)
             "schedule_registered": schedule_is_registered(self.s.paths),
             "schedule_mode": scheduled_mode(self.s.paths),
             "home": str(self.s.paths.home),
