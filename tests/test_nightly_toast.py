@@ -7,12 +7,21 @@ import random
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
+from typer.testing import CliRunner
+
 from ns_common.config import notifications_enabled
 from ns_common.errors import NsError
+from ns_common.logging import NsLogger
 from ns_common.paths import Paths
 from ns_studio import daily, jobs, notifications
+from ns_studio import orchestrator as orch
+from ns_studio.channels import crud
+from ns_studio.cli import app
+from ns_studio.stages import REGISTRY
 from tests.helpers import add_output
 from tests.test_cadence import _channel, _env
+from tests.test_review import _env as _review_env
 
 NOW = datetime(2026, 11, 20, 3, 0, tzinfo=UTC)
 
@@ -119,3 +128,60 @@ def test_default_notifier_is_the_supervisor_toast_or_note():
     from ns_supervisor.notify import toast_or_note
 
     assert notifications.default_notifier() is toast_or_note
+
+
+class _StubStage:
+    name = "d20_stub"
+    tenant = None
+    inputs = ()
+    outputs = ("o.json",)
+
+    def run(self, ctx):
+        ctx.write_json("o.json", {})
+
+
+def _nightly_cli(tmp_home: Path, monkeypatch: pytest.MonkeyPatch, toasts: Toasts, *, notifications_on: bool):
+    """`studio run --daily --fake-services` (every service faked, as on a dev or engine-test install)."""
+    monkeypatch.setitem(REGISTRY, "d20_stub", _StubStage())
+    monkeypatch.setitem(orch.FORMAT_STAGES, "shorts_only", ["d20_stub"])
+    monkeypatch.setattr(jobs, "STAGE_MODULES", ())
+    monkeypatch.setattr("ns_studio.policy.gate.available", lambda: False)
+    monkeypatch.setattr(notifications, "default_notifier", lambda: toasts)
+    paths, db = _review_env(tmp_home)
+    crud.edit_channel(paths, db, "after-dark", {"format": "shorts_only"})
+    (paths.config / "dashboard.json").write_text(
+        json.dumps({"notifications": notifications_on}), encoding="utf-8"
+    )
+    result = CliRunner().invoke(app, ["run", "--daily", "--fake-services"])
+    assert result.exit_code == 0, result.output
+    assert "done: 1 stages" in result.output
+    logged = "".join(f.read_text(encoding="utf-8") for f in sorted(paths.logs.glob("studio-*.jsonl")))
+    return [json.loads(line) for line in logged.splitlines() if line.strip()]
+
+
+def test_d20_fake_services_with_notifications_on_still_toast(tmp_home: Path, monkeypatch: pytest.MonkeyPatch):
+    toasts = Toasts()
+    events = _nightly_cli(tmp_home, monkeypatch, toasts, notifications_on=True)
+    assert toasts.shown == [("Nightshift", "1 job finished, open Dashboard to review")]
+    toast = [e for e in events if e["event"] == "toast"]
+    assert len(toast) == 1 and toast[0]["data"]["shown"] is True
+    assert not [e for e in events if e["event"] == "toast_skipped"]
+
+
+def test_d20_notifications_off_skips_the_toast_and_says_why(tmp_home: Path, monkeypatch: pytest.MonkeyPatch):
+    toasts = Toasts()
+    events = _nightly_cli(tmp_home, monkeypatch, toasts, notifications_on=False)
+    assert toasts.shown == []
+    skipped = [e for e in events if e["event"] == "toast_skipped"]
+    assert len(skipped) == 1 and skipped[0]["data"]["reason"] == "notifications_off"
+
+
+def test_d20_no_notifier_on_this_machine_is_logged(tmp_home: Path, monkeypatch: pytest.MonkeyPatch):
+    paths = Paths.from_env()
+    paths.ensure()
+    log = NsLogger("studio", paths.logs, echo=False)
+    monkeypatch.setattr(notifications, "default_notifier", lambda: None)
+    assert notifications.nightly_notifier(paths, log) is None
+    (logfile,) = paths.logs.glob("studio-*.jsonl")
+    (entry,) = [json.loads(x) for x in logfile.read_text(encoding="utf-8").splitlines()]
+    assert entry["event"] == "toast_skipped" and entry["data"]["reason"] == "no_notifier"
