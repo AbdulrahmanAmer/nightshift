@@ -72,7 +72,11 @@ jobs:
       - run: choco install ffmpeg -y --no-progress
       - run: python -m pip install -e ".[dev]"
       # The real-network resume tests run on their own so their evidence (bytes before the pause, the Range
-      # header, the final hash) is printed in the log. They must run: a skipped one fails the step.
+      # header, the final hash) is printed in the log. They must run: a skip fails the step, with ONE exception:
+      # a test skipped as "upstream outage: <host> <status>" (the host kept answering 5xx through every retry in
+      # tests/online.py). A GitHub incident can last hours, so on a push or pull request that is a visible
+      # warning and the step passes; on the nightly run and tag pushes (NS_REQUIRE_ONLINE=1) the test fails.
+      # A 4xx, a wrong size or a wrong hash fails on every kind of run.
       - name: Real-network download tests
         shell: bash
         timeout-minutes: 12
@@ -81,8 +85,8 @@ jobs:
           timeout 300 python -m pytest -o addopts= -v -s -m network tests/test_downloader_network.py --junitxml=report-network.xml --tb=short -o faulthandler_timeout=120
           rc=$?
           set -e
-          # An outage that outlasts the retries in tests/online.py fails a test with "upstream outage: <host> <status>";
-          # name it in the log so it is not read as a wrong pin.
+          # An outage that outlasts the retries in tests/online.py skips a test with "upstream outage: <host> <status>"
+          # (fails it where NS_REQUIRE_ONLINE is set); name it in the log so it is not read as a wrong pin.
           python dev/ci_outage_report.py report-network.xml || true
           if [ "$rc" -ne 0 ]; then exit "$rc"; fi
           python - <<'EOF'
@@ -90,8 +94,14 @@ jobs:
           root = ET.parse("report-network.xml").getroot()
           suite = root if root.tag == "testsuite" else root.find("testsuite")
           tests, skipped = int(suite.get("tests")), int(suite.get("skipped"))
-          print(f"network tests: {tests} ran, {skipped} skipped")
-          assert tests >= 4 and skipped == 0, "the real-network tests must run in CI, not be skipped"
+          outage = 0
+          for case in root.iter("testcase"):
+              node = case.find("skipped")
+              if node is not None and "upstream outage" in f"{node.get('message', '')} {node.text or ''}":
+                  outage += 1
+          print(f"network tests: {tests} ran, {skipped} skipped, {outage} of them for an upstream outage")
+          assert tests >= 4, "the real-network tests must run in CI"
+          assert skipped == outage, "the real-network tests must run in CI, not be skipped (except for an upstream outage)"
           EOF
       - name: Unit tests (everything but the real-network ones)
         if: always()

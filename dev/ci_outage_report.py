@@ -2,9 +2,9 @@
 
 ``python dev/ci_outage_report.py report.xml [more.xml ...]`` reads pytest JUnit files. A test whose skip
 reason or failure message contains ``upstream outage`` (tests/online.py) is counted: the online pin checks
-skip for an
-outage, the real-network download tests fail with it. The count goes to the log as a ``::warning::`` (or an
-``::error::`` for a failure) and to the job summary, so a run that skipped them is visible.
+and the real-network download tests skip for an outage (and fail with it only where ``NS_REQUIRE_ONLINE`` is
+set). The count goes to the log as a ``::warning::`` (or an ``::error::`` for a failure) and to the job
+summary, so a run that skipped them is visible.
 
 Exit status: 0, except when ``NS_REQUIRE_ONLINE`` is set (the nightly run and every tag run) and any test was
 skipped or failed for an outage: then 1, so these checks cannot be skipped every day without anyone noticing.

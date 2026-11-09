@@ -14,8 +14,11 @@ What an outage then means depends on the test:
 * an ``_online`` pin check (``skip_on_outage``) skips, with a reason that names the host and the status. CI
   prints how many were skipped (``dev/ci_outage_report.py``), and a nightly run and every tag run set
   ``NS_REQUIRE_ONLINE=1``, which turns that skip into a failure, so the checks cannot be skipped every day;
-* a must-run real-network download test (``fail_on_outage``) fails with ``upstream outage: ...`` instead of an
-  assertion about bytes.
+* a must-run real-network download test (``give_up_on_outage``) does the same: on a push or pull request
+  run an outage that outlasts the retries skips it with ``upstream outage: <host> <status>`` (the CI step
+  passes and warns, because a GitHub incident can last hours and must not keep every PR red); where
+  ``NS_REQUIRE_ONLINE`` is set it fails with that text, never with an assertion about bytes. A skip for any
+  other reason still fails the CI step.
 
 A host that has just failed is not waited on again for ``MEMORY_S`` seconds (one try per request), so one dead
 host costs the backoff once, not once per request.
@@ -206,9 +209,11 @@ def skip_on_outage[T](fn: Callable[..., T]) -> Callable[..., T]:
     return wrapper
 
 
-def fail_on_outage[T](fn: Callable[..., T]) -> Callable[..., T]:
-    """For a must-run real-network test: an outage that outlasts the retries fails the test with
-    ``upstream outage: <host> <status>``, never with an assertion about bytes. Other failures are kept."""
+def give_up_on_outage[T](fn: Callable[..., T]) -> Callable[..., T]:
+    """For a must-run real-network test: an outage that outlasts the retries (also one wrapped in the
+    downloader's NS-E105) skips the test with ``upstream outage: <host> <status>`` (fails it where
+    ``NS_REQUIRE_ONLINE`` is set), never an assertion about bytes. Other failures, 4xx and hash mismatches
+    among them, are kept as failures."""
 
     @functools.wraps(fn)
     def wrapper(*args: Any, **kw: Any) -> T:
@@ -218,6 +223,6 @@ def fail_on_outage[T](fn: Callable[..., T]) -> Callable[..., T]:
             text = outage_in(e)
             if text is None:
                 raise
-            pytest.fail(text, pytrace=False)
+            give_up(text)
 
     return wrapper

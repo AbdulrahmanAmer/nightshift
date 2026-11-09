@@ -20,7 +20,7 @@ from tests.online import (
     OUTAGE_MARK,
     RetryTransport,
     UpstreamOutageError,
-    fail_on_outage,
+    give_up_on_outage,
     online_client,
     retry_call,
     skip_on_outage,
@@ -209,16 +209,26 @@ def test_problems_with_an_outage_are_told_apart_from_real_ones():
     assert real == problems[1:] and outage == problems[:1]
 
 
-def test_a_real_network_test_fails_with_upstream_outage_not_with_an_assertion_about_bytes():
-    @fail_on_outage
+def test_a_real_network_test_skips_on_an_outage_and_never_asserts_about_bytes(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.delenv("NS_REQUIRE_ONLINE", raising=False)
+
+    @give_up_on_outage
     def bytes_test() -> None:
         raise UpstreamOutageError("github.example.test", "HTTP 504 after 4 attempt(s)")
 
-    with pytest.raises(pytest.fail.Exception) as ei:
+    with pytest.raises(pytest.skip.Exception) as ei:
         bytes_test()
     assert str(ei.value).startswith(OUTAGE_MARK) and "github.example.test" in str(ei.value)
 
-    @fail_on_outage
+    monkeypatch.setenv("NS_REQUIRE_ONLINE", "1")
+    with pytest.raises(pytest.fail.Exception) as ei_req:
+        bytes_test()
+    assert str(ei_req.value).startswith(OUTAGE_MARK) and "github.example.test" in str(ei_req.value)
+    monkeypatch.delenv("NS_REQUIRE_ONLINE")
+
+    @give_up_on_outage
     def wrapped_by_the_downloader() -> None:  # the downloader re-raises the outage as NS-E105
         try:
             raise UpstreamOutageError("github.example.test", "HTTP 504 after 4 attempt(s)")
@@ -227,11 +237,11 @@ def test_a_real_network_test_fails_with_upstream_outage_not_with_an_assertion_ab
 
             raise make_error("NS-E105", f"https://github.example.test/f: {e}") from e
 
-    with pytest.raises(pytest.fail.Exception) as ei2:
+    with pytest.raises(pytest.skip.Exception) as ei2:
         wrapped_by_the_downloader()
     assert OUTAGE_MARK in str(ei2.value)
 
-    @fail_on_outage
+    @give_up_on_outage
     def real_failure() -> None:
         assert 1 == 2, "504 == 200"
 
