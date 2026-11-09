@@ -1,13 +1,16 @@
 """C1: the setup server over real HTTP on 127.0.0.1 (a stub controller; no window, no install)."""
 
+import collections
 import http.client
 import json
+import socket
 import threading
 import time
 from pathlib import Path
 
 import pytest
 
+from installer.stage2.web import server as server_module
 from installer.stage2.web.server import CSP, SetupServer
 from installer.stage2.web.store import SetupStore
 
@@ -215,6 +218,109 @@ def test_a_second_install_cmd_can_reopen_the_window_with_the_token_only(env):
     assert status == 200 and opened.wait(5)
     assert client.call("POST", "/api/internal/open-window", {}, headers={"X-NS-Token": server.token},
                        host="evil.example", cookie=False)[0] == 421
+
+
+ROUNDS = 100
+
+
+def _padded_json(size: int) -> bytes:
+    """A JSON object of about ``size`` bytes."""
+    if size <= 2:
+        return b"{}"
+    return json.dumps({"pad": "x" * (size - 12)}).encode("utf-8")
+
+
+def _post_rounds(server: SetupServer, path: str, body: bytes, headers: dict[str, str]) -> collections.Counter:
+    """POST ``body`` ROUNDS times on new connections; count each status, or the error that replaced it."""
+    outcomes: collections.Counter = collections.Counter()
+    for _ in range(ROUNDS):
+        conn = http.client.HTTPConnection("127.0.0.1", server.port, timeout=10)
+        try:
+            conn.request("POST", path, body=body, headers={"Host": f"127.0.0.1:{server.port}", **headers})
+            resp = conn.getresponse()
+            resp.read()
+            outcomes[resp.status] += 1
+        except OSError as e:
+            outcomes[f"{type(e).__name__} (winerror {getattr(e, 'winerror', None)})"] += 1
+        finally:
+            conn.close()
+    return outcomes
+
+
+# (path, who asks, content type, body bytes, status the answer must carry). Every one of these is answered
+# before the route reads the body (F-2: closing a socket with the body unread made Windows reset the
+# connection, and the client got WinError 10053 instead of the answer).
+UNREAD_BODY_ANSWERS = [
+    ("/api/internal/open-window", "nobody", "application/json", 2, 401),
+    ("/api/internal/open-window", "wrong token", "application/json", 10_000, 401),
+    ("/api/internal/open-window", "nobody", "application/json", 200_000, 401),
+    ("/api/internal/open-window", "token", "application/json", 10_000, 200),
+    ("/api/answers", "nobody", "application/json", 60_000, 401),
+    ("/api/answers", "cookie", "text/plain", 10_000, 415),
+    ("/api/answers", "cookie", "application/json", 70_000, 413),
+    ("/api/answers", "cookie", "application/json", 200_000, 413),
+    ("/api/answers", "bad host", "application/json", 10_000, 421),
+]
+
+
+@pytest.mark.parametrize(
+    ("path", "who", "ctype", "size", "status"),
+    UNREAD_BODY_ANSWERS,
+    ids=[f"{c[0].rsplit('/', 1)[1]}-{c[1].replace(' ', '-')}-{c[3]}B-{c[4]}" for c in UNREAD_BODY_ANSWERS],
+)
+def test_an_answer_given_before_the_body_was_read_is_still_delivered(env, path, who, ctype, size, status):
+    _, server, client, opened = env
+    client.login()
+    headers = {"Content-Type": ctype}
+    if who == "cookie":
+        headers["Cookie"] = f"ns_setup={client.cookie}"
+    elif who == "wrong token":
+        headers["X-NS-Token"] = "wrong"
+    elif who == "token":
+        headers["X-NS-Token"] = server.token
+    elif who == "bad host":
+        headers["Host"] = "evil.example"
+    outcomes = _post_rounds(server, path, _padded_json(size), headers)
+    assert outcomes == {status: ROUNDS}  # the status every time, never a reset connection
+    assert opened.is_set() == (who == "token")  # and the route did what the status says
+    assert client.call("GET", "/api/ping")[0] == 200  # the server is still serving afterwards
+
+
+def test_a_body_nobody_read_does_not_spoil_the_next_request_on_the_same_connection(env):
+    _, server, client, _ = env
+    client.login()
+    headers = {"Host": f"127.0.0.1:{server.port}", "Cookie": f"ns_setup={client.cookie}"}
+    conn = http.client.HTTPConnection("127.0.0.1", server.port, timeout=10)
+    try:
+        for _ in range(20):
+            conn.request("GET", "/api/ping", body=b"x" * 3000, headers=headers)  # a GET route reads no body
+            resp = conn.getresponse()
+            assert resp.status == 200 and json.loads(resp.read())["ok"] is True
+    finally:
+        conn.close()
+
+
+def test_a_body_that_never_arrives_does_not_hold_the_connection_open(env, monkeypatch):
+    _, server, _, _ = env
+    monkeypatch.setattr(server_module, "DRAIN_SECONDS", 0.3)
+    head = (
+        "POST /api/internal/open-window HTTP/1.1\r\n"
+        f"Host: 127.0.0.1:{server.port}\r\n"
+        "Content-Type: application/json\r\n"
+        "Content-Length: 1000\r\n\r\n"
+    )
+    with socket.create_connection(("127.0.0.1", server.port), timeout=10) as sock:
+        sock.sendall(head.encode("ascii") + b"x" * 10)  # the other 990 bytes never come
+        t0 = time.monotonic()
+        data = b""
+        while True:  # until the server closes: a hang would end in the 10 s socket timeout
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            data += chunk
+        waited = time.monotonic() - t0
+    assert data.startswith(b"HTTP/1.1 401") and b"Wrong token" in data
+    assert 0.25 <= waited < 5  # it waited for the body (the drain), then gave up and closed
 
 
 def test_uninstall_mode_serves_its_own_endpoints(tmp_path: Path):
