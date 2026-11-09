@@ -86,10 +86,15 @@ def test_the_test_shards_have_a_cap_well_under_the_old_forty_minutes_in_ci_and_r
 
 
 def test_the_0_1_5_to_0_1_1_changelog_entries_are_in_place():
+    # a release or a release candidate; the three version files agree; the changelog has a dated heading for
+    # its base version. No literal number here, so the next bump needs no edit of this test
     version = read("VERSION").strip()
-    # 0.1.14 or later, a candidate such as 0.1.15-rc1 included: the 0.1.14 entries stay in place below
-    assert tuple(int(p) for p in version.split("-rc", 1)[0].split(".")) >= (0, 1, 14), version
+    assert re.fullmatch(r"\d+\.\d+\.\d+(-rc[1-9]\d*)?", version), version
+    assert f'version = "{version}"' in read("pyproject.toml").splitlines()
+    assert f'__version__ = "{version}"' in read("ns_common/__init__.py")
+    base = version.split("-rc", 1)[0]
     text = read("CHANGELOG.md")
+    assert re.search(rf"^## \[{re.escape(base)}\] - \d{{4}}-\d{{2}}-\d{{2}}\s*$", text, re.MULTILINE), base
     assert re.search(r"^## \[0\.1\.14\] - 2026-11-09\s*$", text, re.MULTILINE)
     fourteen = re.search(r"(?ms)^## \[0\.1\.14\][^\r\n]*\r?\n(?P<body>.*?)(?=^## \[|\Z)", text)
     assert fourteen is not None

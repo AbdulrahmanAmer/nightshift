@@ -59,10 +59,10 @@ limit the change shipped with.
   skipped, profile cannot be read". Not covered: a saved voice whose old name the rule refuses is kept, and
   creating it still fails with NS-E310; nothing renames it for you (an install that hit this must rename the voice
   in its answers file).
-- The welcome text of the console (headless) setup, `OPERATOR.md` and `README.md` now say what setup really
-  needs, which is what the installer already checked: at least 60 GB of free disk space (74 GB with the Balanced
-  model, 81 GB with the Best one; they said about 40 GB or 75 GB), and stock-footage keys are optional. Text only;
-  no installer behaviour changed.
+- The welcome text of the console (headless) setup, `OPERATOR.md` and `README.md` now say what the installer
+  already checked: at least 60 GB of free disk space (they said about 40 GB), and stock-footage keys are optional.
+  Text only; no installer behaviour changed. Not covered: the setup disk-need check (pull request 189) is still
+  open, and the figures per model tier (74 GB Balanced, 81 GB Best) these documents also give are not final.
 
 ### Updates, files and safety
 
@@ -91,11 +91,17 @@ limit the change shipped with.
   zips, the backup zip and restored files, the config and state files, the job `stage_state.json` and the outbox
   videos and sheets are written beside the file and swapped in whole, and readers retry while Windows refuses an
   open. If a player, sync client or virus scan keeps the file open for 15 s, the save fails with NS-E119 and the
-  old file stays whole (0.1.14 wrote over it after the wait, which could leave it half written). Not covered:
+  old file stays whole. In 0.1.14 these were written in place, with no swap at
+  all: the zips (diagnostics, backup), restored files, the outbox videos and sheets and the job
+  `stage_state.json`, so a reader or a power cut could meet a half-written file. Not covered:
   some readers (`svc_outputs`, formats, the clip layout, the Settings preview) and writers (`ns_supervisor/tune.py`,
   `policy/regen.py`, `clip_sources.py`, the outbox folder marker) are not converted; stale `~ns*.tmp` files are
-  swept only in the outbox, diagnostics and `config/` folders; the pull request notes that text files are now
-  written with LF where Windows wrote CRLF, so a job resumed across the update may run a later stage once more.
+  swept only in the outbox, diagnostics, `config/`, `run/`, `%TEMP%` and the setup data folder (at engine and
+  setup-server start, and when those folders are written to), nowhere else; text files written through the
+  default call now get LF line endings where Windows wrote CRLF (the job, stage, schedule and state JSON files), while the outbox
+  sheets and sidecars, the clip sheets, the workshop files, the calibrate story texts and report and the `.sha256`
+  files keep the platform's CRLF; the pull request notes that a job resumed across the update may therefore run a
+  later stage once more.
 - The launchers and the setup's hand-over files are swapped in whole too, so a reader never meets an empty file:
   the window host's run file in `run/`, `config/window.json`, `config/opencode.json`, the WebView2 cache stamp,
   the setup preflight and folder-dialog files and the calibrate outputs (`stories.csv`, `scores.csv`, story texts,
@@ -133,7 +139,7 @@ limit the change shipped with.
   Runs and jobs hold a lock file in `data/owners`; engine start, `studio run` and the nightly close any whose
   owner is gone. The half-made job shows in the Queue as a failed card with NS-E328 (Retry continues it), the next
   nightly continues it before planning, a morning note says what became of it, and the "Last night" card shows
-  "Interrupted". A lock file that cannot be made (5 tries in about 1 s) or is held by another run refuses the
+  "Interrupted". A lock file that cannot be made (5 tries in about 1 s) refuses the
   night with NS-E327 ("Something stopped" on the card) and a note. Not covered: a 0.1.14 nightly job that failed
   before the kill is resumed once; the refusal has no code of its own.
 
@@ -157,13 +163,16 @@ limit the change shipped with.
   and the unsafe-topic classifier NS-E601); the chosen or banked idea is classified before planning, and the
   finished script and metadata get a final unsafe-topic re-check. The altered-content advice is "yes" for any
   place spaCy recognises, a real-setting answer or an unclear one, and an intense story on a mature channel sets
-  "Age restriction suggested". A Short that does not open with its own hook fails NS-E611 and is voiced again.
+  "Age restriction suggested". A Short cut from a master that does not open with its own hook fails NS-E611 and is voiced again.
   Tonal audio in quiet passages is only measured and warned (`qc/audio_flatness.json`, `audio_flatness_warning`
   in the job log), never failed; the -55 dBFS noise floor still fails. Not covered: the flatness limit is not yet
   measured on real qwen-tts narration (the partner's first night is asked for its values); `intensity` is kept in
   `policy_notes.json`, not on the shared policy result; almost every story gets "yes" for altered content; the
   classifier now runs 3 to 4 times per job, so a false positive can cost a full render; the NS-E611 message still
-  reads "render too similar to a previous video" for a missing hook.
+  reads "render too similar to a previous video" for a missing hook; the words the duration check adds are
+  scanned against `misleading_claims.txt`, a list written for titles and tags, so ordinary story prose ("happened
+  to me", "real life") can fail the video with NS-E603, and the regeneration that follows redoes only the metadata,
+  which cannot change the prose.
 - Story length follows the voice. The word budget uses the pace each voice really spoke in its last jobs
   (`config/voice_wpm.json`, mean of the last 12 jobs; a job under 120 words is not counted) instead of a fixed
   table. A story under the 9:00 floor has its shortest chapter lengthened up to three times, then fails NS-E303
@@ -194,10 +203,13 @@ limit the change shipped with.
   position and words on screen, shot lengths, frame rate and encoder preset, so a duplicated or edited Short
   format changes the video. The format comes from the series design, else the first allowed one of that kind in
   the channel's `formats_allowed`, else the default; the job records it in `formats.json` and the render report.
-  The first start after the update leaves one morning note naming edited or added formats. The Formats editor now
-  refuses at save what the studio refuses (shot range reversed, region off the canvas, odd canvas size, unknown
-  caption style, id different from the file name), and a hand-edited format file that is broken is flagged as not
-  valid in the formats list and left out while the others still load. Not covered: full videos, the square master,
+  The first job a studio process starts after the update leaves one morning note naming the edited or added
+  formats that differ from the shipped ones (when there are any). The Formats editor now refuses at save what the
+  studio refuses (shot range reversed, region off the canvas, odd canvas size, unknown caption style), and a
+  hand-edited format file that is broken is flagged as not valid in the formats list and left out while the others
+  still load. Owner copies of `short_9x16` or `square_1x1` made before this update hold the old values
+  (`anchor_y_pct` 72, `words_on_screen` 3, fps 30, preset p4); those values now apply, and the morning note does
+  not mention them. Not covered: full videos, the square master,
   clip layouts and the Anton font still ignore formats; a series design format that is skipped is reported only in
   the log and the render report; a channel whose `formats_allowed` lists `square_1x1` but no Short format now
   gets 1080x1080 Shorts where it got 9:16; the editor has no fields for region, caption style or canvas.
@@ -240,8 +252,8 @@ limit the change shipped with.
   made under it is marked `profile: tiny_story`, its sheet opens with "TEST OUTPUT", the Queue shows a "Test
   output" badge, and marking it posted is refused with NS-E329. Not covered: never run end to end with the real
   1.7B model; a tiny master can still stop at NS-E305 or a Short at NS-E404 if the model writes far less than the
-  target; cadence and notifications still count test outputs; `ns update --rollback` to an older version cannot
-  load a `runtime.json` that has `tiny_story`; the dashboard cannot set the switch (it appears only in the
+  target; cadence and notifications still count test outputs; a `runtime.json` saved by this version cannot be loaded
+  by 0.1.14 (every one carries the `tiny_story` field), and the hop from 0.1.14 saves no settings copy; the dashboard cannot set the switch (it appears only in the
   settings data).
 
 ### Behind the scenes
@@ -251,8 +263,8 @@ limit the change shipped with.
   one; a test fails on stray control characters in tracked text files; the dashboard and setup window now each
   load one script file (`app.js`), so the versioned entry cannot load twice.
 - Documents: the pipeline, setup-window, runtime and installer specs and the operator documents (the incident
-  procedure and first-run wording in `OPERATOR.md`) were brought in line with the code; eleven done-elsewhere
-  change requests were closed and CR-H106-1 filed; the finalization lists carry the boxes ticked on the 0.1.14
+  procedure and first-run wording in `OPERATOR.md`) and the Clipper spec text were brought in line with the code;
+  change requests that were applied elsewhere were marked closed, stale ones rejected, and CR-H106-1 filed; the finalization lists carry the boxes ticked on the 0.1.14
   installs. No product behaviour.
 
 ## [0.1.14] - 2026-11-09
