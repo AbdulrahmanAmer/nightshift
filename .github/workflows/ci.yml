@@ -1,7 +1,10 @@
 name: ci
 
 # Owner: C10 (docs/ENGINEERING.md section 7). Required status checks on main: lint, types, test, ui-build, powershell-parse, scope-check.
-# `test` is the job that gathers the test shards (test-shard (1/4) ... (4/4)); see the comment above it.
+# `test` is the job that gathers the test shards (test-shard (1/6) ... (6/6)); see the comment above it.
+# A pull request that changes documents only (H-11, dev/ci_changes.py) runs the light path: the `changes` job decides,
+# `test-docs` runs the tests that read documents, types and ui-build say "not applicable", the shards, test-collect
+# and bundle do not run, and every required check still reports. Any doubt runs everything.
 on:
   # A pull request branch is tested by its pull_request run alone: a push to it starts nothing a second time (H-3).
   # push runs for main (the merge result is tested again where it lands) and for tags (the release gate). A branch
@@ -34,6 +37,28 @@ env:
   PIP_DISABLE_PIP_VERSION_CHECK: "1"
 
 jobs:
+  # H-11: is this run a docs-only change? Only a pull request whose tested tree (github.sha, the merge commit)
+  # differs from its base in documents alone is (docs/**, a top-level *.md, contracts/CHANGE_REQUESTS.md). Every
+  # push, tag and nightly run, an empty or failed diff and a missing base say false: everything runs. The decide
+  # step is the last step, so nothing can fail this job after the answer is written. If this job fails anyway, its
+  # output is empty, every job below runs as for code, and the final `test` job fails on its result.
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      docs_only: ${{ steps.decide.outputs.docs_only }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Is this a docs-only change? (dev/ci_changes.py decide)
+        id: decide
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.sha }}
+        run: python3 dev/ci_changes.py decide --event "$EVENT_NAME" --base "$BASE_SHA" --head "$HEAD_SHA" --summary
+
   lint:
     if: github.event_name != 'schedule'
     runs-on: windows-latest
@@ -48,33 +73,52 @@ jobs:
       - run: python -m pip install -e ".[dev]"
       - run: python -m ruff check .
 
+  # A required check. A skipped required job counts as passed, so on a docs-only change this job still runs: one
+  # step on a small runner says pyright is not applicable (it reads the Python sources listed in pyproject.toml
+  # [tool.pyright], none of which is a document). `!cancelled()` keeps it running in full if `changes` failed.
   types:
-    if: github.event_name != 'schedule'
-    runs-on: windows-latest
+    needs: changes
+    if: ${{ !cancelled() && github.event_name != 'schedule' }}
+    runs-on: ${{ needs.changes.outputs.docs_only == 'true' && 'ubuntu-latest' || 'windows-latest' }}
     timeout-minutes: 10
     steps:
+      - name: Docs-only change (pyright not applicable)
+        if: needs.changes.outputs.docs_only == 'true'
+        shell: bash
+        run: |
+          msg="docs-only change: not applicable. pyright reads the Python sources only; the changes job found documents only in this pull request (dev/ci_changes.py decide)."
+          echo "$msg"
+          echo "$msg" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/checkout@v4
+        if: needs.changes.outputs.docs_only != 'true'
       - uses: actions/setup-python@v5
+        if: needs.changes.outputs.docs_only != 'true'
         with:
           python-version: "3.12"
           cache: pip
           cache-dependency-path: pyproject.toml
       - run: python -m pip install -e ".[dev]"
+        if: needs.changes.outputs.docs_only != 'true'
       - run: python -m pyright
+        if: needs.changes.outputs.docs_only != 'true'
 
-  # The unit tests run as a matrix of shards (H-3): dev/ci_shards.py gives each shard whole test files, split by
-  # measured seconds (dev/ci_shard_weights.json), so each shard needs about 8 minutes of tests where the one
-  # job needed about 28. The required check `test` further down is the job that says whether all of them passed.
+  # The unit tests run as a matrix of shards (H-3, H-3b): dev/ci_shards.py gives each shard whole test files, split
+  # by measured seconds (dev/ci_shard_weights.json, refreshed from real JUnit timings), so each shard runs about 8
+  # minutes of a suite of about 46 (SHARDS in dev/ci_shards.py is the count). The required check `test` further
+  # down is the job that says whether all of them passed. On a docs-only change they do not run (`test` then
+  # gathers `test-docs` instead).
   test-shard:
-    name: test-shard (${{ matrix.shard }}/4)
+    name: test-shard (${{ matrix.shard }}/6)
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.docs_only != 'true' }}
     runs-on: windows-latest
     # Predicted: about 8 minutes of tests plus about 3 of setup (the slowest shard, dev/ci_shards.py plan), 11 in
-    # all. Twice that is 22; 25 leaves room for a slow runner. The old single job needed 28 minutes of tests alone.
+    # all; tests/test_ci_workflow.py keeps the timeout at least twice the prediction of every shard.
     timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: [1, 2, 3, 4, 5, 6]
     env:
       # Turns on the tests marked `network` (tests/test_downloader_network.py): real downloads from GitHub and
       # Hugging Face to prove pause/resume/Range/SHA256 against the real servers. Unset on a laptop = skipped.
@@ -133,7 +177,7 @@ jobs:
       - name: Unit tests (the files of this shard, everything but the real-network ones)
         if: ${{ !cancelled() }}
         shell: bash
-        run: python dev/ci_shards.py run --shard ${{ matrix.shard }} --of 4 -- -q -rs -m "not network" --junitxml=report-shard-${{ matrix.shard }}.xml
+        run: python dev/ci_shards.py run --shard ${{ matrix.shard }} --of 6 -- -q -rs -m "not network" --junitxml=report-shard-${{ matrix.shard }}.xml
       # The _online pin checks (tests/test_resolve_manifest.py) skip when a real host is in an outage that outlasts
       # three retries. Say how many did, as a warning; where NS_REQUIRE_ONLINE is set this step fails on any.
       # The final `test` job counts them again across all shards.
@@ -156,6 +200,8 @@ jobs:
   # this list, by node id, with what the shards were given and what they ran (dev/ci_shards.py verify).
   test-collect:
     name: test-collect
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.docs_only != 'true' }}
     runs-on: windows-latest
     timeout-minutes: 15
     env:
@@ -187,93 +233,156 @@ jobs:
           path: collected.txt
           retention-days: 14
 
-  # THE required check `test` (branch protection names it; the shards are test-shard (1/4) ... (4/4)). It runs
-  # even when a shard failed or was skipped or cancelled (`always()`), and passes only when every shard and the
-  # collection job succeeded AND the set of node ids the shards ran (from their JUnit reports) equals the set the
-  # unsharded collection found: no id missing, none twice, none extra. It also counts the upstream-outage skips over all shards and lists the twenty
-  # slowest tests.
+  # The docs-only path's tests (H-11): the test files that read documents (dev/ci_changes.py DOC_TESTS, one list;
+  # tests/test_ci_changes.py fails when a test file that reads a document, itself or through the repository's own
+  # imports, is missing from it). Not a required
+  # check: the final `test` job needs it and passes on the docs path only when it passed. No FFmpeg is installed
+  # here: the one FFmpeg render among those files (tests/test_captions.py, guarded by skipif) skips on this path
+  # and is counted as skipped; the shards run it on every code change.
+  test-docs:
+    name: test-docs
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.docs_only == 'true' }}
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - run: git config --global core.longpaths true
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - run: python -m pip install -e ".[dev]"
+      - name: The tests that read documents (dev/ci_changes.py run-doc-tests)
+        shell: bash
+        run: python dev/ci_changes.py run-doc-tests -- -q -rs -m "not network" --junitxml=report-docs.xml
+      - name: Upload the report of the document tests
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-report-docs
+          path: report-docs.xml
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # THE required check `test` (branch protection names it; the shards are test-shard (1/6) ... (6/6)). The job
+  # runs whatever happened before it (`always()`): a skipped required check would count as passed. Its steps
+  # run unless the run was cancelled (`!cancelled()`), so a superseded run costs one step, not a checkout, a
+  # Python and the gate; the last step then fails the job, so a cancelled run never shows a green `test`. The
+  # gate takes one of two paths (dev/ci_changes.py gate):
+  # - code (every push, tag and nightly run, and every pull request that is not docs-only): it passes only when
+  #   every shard and the collection job succeeded (a failed, skipped or cancelled shard fails it) AND the set of
+  #   node ids the shards ran (from their JUnit reports) equals the set the unsharded collection found: no id
+  #   missing, none twice, none extra. It also counts the upstream-outage skips over all shards and lists the
+  #   twenty slowest tests;
+  # - docs-only: it passes only when test-docs passed with at least one test run, and its summary says
+  #   "docs-only change: N document tests ran, the code suite was not run".
+  # Either way the decision job itself must have succeeded.
   test:
-    needs: [test-shard, test-collect]
+    needs: [changes, test-shard, test-collect, test-docs]
     if: always()
     runs-on: windows-latest
     timeout-minutes: 15
     env:
       NS_REQUIRE_ONLINE: ${{ (github.event_name == 'schedule' || startsWith(github.ref, 'refs/tags/')) && '1' || '' }}
     steps:
-      - name: Every shard and the collection must have succeeded
-        shell: bash
-        env:
-          SHARD_RESULT: ${{ needs.test-shard.result }}
-          COLLECT_RESULT: ${{ needs.test-collect.result }}
-        run: |
-          echo "test-shard (all four): $SHARD_RESULT"
-          echo "test-collect: $COLLECT_RESULT"
-          status=0
-          if [ "$SHARD_RESULT" != "success" ]; then
-            echo "::error::the test shards did not all succeed (result: $SHARD_RESULT); a failed, skipped or cancelled shard fails the required check"
-            status=1
-          fi
-          if [ "$COLLECT_RESULT" != "success" ]; then
-            echo "::error::test-collect did not succeed (result: $COLLECT_RESULT)"
-            status=1
-          fi
-          exit "$status"
       - uses: actions/checkout@v4
         if: ${{ !cancelled() }}
       - uses: actions/setup-python@v5
         if: ${{ !cancelled() }}
         with:
           python-version: "3.12"
-      - name: Download the JUnit reports of all shards
+      - name: Download the report of the document tests
+        if: ${{ !cancelled() && needs.changes.outputs.docs_only == 'true' }}
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: junit-report-docs
+          path: docs-report
+      - name: The run's path and its jobs must have succeeded (dev/ci_changes.py gate)
         if: ${{ !cancelled() }}
+        shell: bash
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          DOCS_ONLY: ${{ needs.changes.outputs.docs_only }}
+          DOC_TESTS_RESULT: ${{ needs.test-docs.result }}
+          SHARD_RESULT: ${{ needs.test-shard.result }}
+          COLLECT_RESULT: ${{ needs.test-collect.result }}
+        run: python dev/ci_changes.py gate --doc-report docs-report/report-docs.xml --summary
+      - name: Download the JUnit reports of all shards
+        if: ${{ !cancelled() && needs.changes.outputs.docs_only != 'true' }}
         uses: actions/download-artifact@v4
         with:
           pattern: junit-report-shard-*
           path: reports
           merge-multiple: true
       - name: Download the unsharded collection
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && needs.changes.outputs.docs_only != 'true' }}
         uses: actions/download-artifact@v4
         with:
           name: collected-tests
           path: collected
       - name: Predicted time per shard
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && needs.changes.outputs.docs_only != 'true' }}
         shell: bash
-        run: python dev/ci_shards.py plan --of 4 --limit 720
+        run: python dev/ci_shards.py plan --of 6 --limit 720 --summary
       - name: The node ids the shards ran are exactly the node ids collected unsharded
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && needs.changes.outputs.docs_only != 'true' }}
         shell: bash
-        run: python dev/ci_shards.py verify --of 4 --collected collected/collected.txt --reports reports --summary
+        run: python dev/ci_shards.py verify --of 6 --collected collected/collected.txt --reports reports --summary
       - name: Online checks skipped for an upstream outage (all shards)
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && needs.changes.outputs.docs_only != 'true' }}
         shell: bash
         run: python dev/ci_outage_report.py reports/*.xml
       - name: Twenty slowest tests
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && needs.changes.outputs.docs_only != 'true' }}
         shell: bash
         run: python dev/ci_slowest.py --top 20 --summary reports/*.xml
+      # Last: a cancelled run (a newer push superseded it, or someone cancelled it) skipped every step above;
+      # without this one the job would end green. It runs only then, and fails.
+      - name: A cancelled run is not a result
+        if: cancelled()
+        shell: bash
+        run: |
+          echo "::error::this run was cancelled: the shards, the document tests and the gate did not all run"
+          exit 1
 
   # The dashboard front-end sources live in ns_dashboard/ui; the build output is committed in ns_dashboard/static
   # (the bundle is a git archive and the partner PC has no node). This job rebuilds it and fails on any difference.
+  # A required check: on a docs-only change it runs one step that says it is not applicable (the build reads
+  # ns_dashboard/ui and installer/ui, and no document is under either), as `types` does.
   ui-build:
-    if: github.event_name != 'schedule'
-    runs-on: windows-latest
+    needs: changes
+    if: ${{ !cancelled() && github.event_name != 'schedule' }}
+    runs-on: ${{ needs.changes.outputs.docs_only == 'true' && 'ubuntu-latest' || 'windows-latest' }}
     timeout-minutes: 10
     steps:
+      - name: Docs-only change (the UI build not applicable)
+        if: needs.changes.outputs.docs_only == 'true'
+        shell: bash
+        run: |
+          msg="docs-only change: not applicable. The UI build reads ns_dashboard/ui and installer/ui only; the changes job found documents only in this pull request (dev/ci_changes.py decide)."
+          echo "$msg"
+          echo "$msg" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/checkout@v4
+        if: needs.changes.outputs.docs_only != 'true'
       - uses: actions/setup-node@v4
+        if: needs.changes.outputs.docs_only != 'true'
         with:
           node-version: "20"
           cache: npm
           cache-dependency-path: ns_dashboard/ui/package-lock.json
       - name: npm ci
+        if: needs.changes.outputs.docs_only != 'true'
         working-directory: ns_dashboard/ui
         run: npm ci --no-audit --no-fund
       - name: npm run build
+        if: needs.changes.outputs.docs_only != 'true'
         working-directory: ns_dashboard/ui
         run: npm run build
       - name: Committed build equals the sources
+        if: needs.changes.outputs.docs_only != 'true'
         shell: bash
         run: |
           changes="$(git status --porcelain ns_dashboard/static)"
@@ -360,9 +469,11 @@ jobs:
           powershell -NoProfile -ExecutionPolicy Bypass -File dev/make_bundle.ps1 -DryRun
           if ($LASTEXITCODE -ne 0) { throw "make_bundle.ps1 -DryRun exited with $LASTEXITCODE" }
 
-  # Builds the real zip with pwsh (the shell release.yml uses) so the release path is exercised on every push.
+  # Builds the real zip with pwsh (the shell release.yml uses) so the release path is exercised on every push and
+  # every pull request that changes code (not a required check; a docs-only change does not build it).
   bundle:
-    if: github.event_name != 'schedule'
+    needs: changes
+    if: ${{ !cancelled() && github.event_name != 'schedule' && needs.changes.outputs.docs_only != 'true' }}
     runs-on: windows-latest
     timeout-minutes: 10
     steps:
