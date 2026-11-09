@@ -139,7 +139,7 @@ def test_the_selection_call_asks_for_room_for_the_spoken_text_of_every_candidate
 def test_cleaned_words_go_from_the_model_answer_through_both_stages_to_the_ass_file(tmp_home: Path) -> None:
     tr = Transcript.model_validate(build_transcript())
     heard = select.words_in(tr.words, 0.5, 50.0)
-    text = " ".join(f"{w.w.capitalize()}~" for w in heard)
+    text = " ".join(f"{w.w.capitalize()}\u2026" for w in heard)  # an ellipsis marks the cleaned words
     ctx = _job(
         tmp_home, [_clip(caption_text=text), _clip(k=2, start_s=64.0, end_s=118.0, title="Plain", score=0.8)]
     )
@@ -171,6 +171,6 @@ def test_cleaned_words_go_from_the_model_answer_through_both_stages_to_the_ass_f
     sc.CaptionsStage().run(ctx)
     marked = ctx.file(f"captions/c{k}.ass").read_text(encoding="utf-8")
     unmarked = ctx.file(f"captions/c{k_plain}.ass").read_text(encoding="utf-8")
-    assert "~" in marked and "~" not in unmarked  # the sidecar key is the clip's k in the plan
+    assert "\u2026" in marked and "\u2026" not in unmarked  # the sidecar key is the clip's k in the plan
     assert ctx.read_json("captions/report.json")[f"c{k}"]["cleaned"] is True
     assert "cleaned" not in ctx.read_json("captions/report.json")[f"c{k_plain}"]

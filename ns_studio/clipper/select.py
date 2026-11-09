@@ -455,17 +455,39 @@ def _plain(token: str) -> str:
     return _NOT_ALNUM.sub("", token).lower()
 
 
+# Pictographs, arrows, the emoji joiner, variation selectors and keycap marks: dropped from a shown word
+# (spec 17.2 and F-H94: no emoji on screen).
+_EMOJI = re.compile(
+    "[\U0001f000-\U0001faff\u2190-\u21ff\u2300-\u23ff\u2600-\u27bf\u2b00-\u2bff\ufe00-\ufe0f"
+    "\u200d\u20e3\u00a9\u00ae\u203c\u2049\u2122\u2139\u3030\u303d\u3297\u3299]"
+)
+# Punctuation a caption word may carry. Anything else that is not a letter or digit ($ % # & @ + = * / a
+# currency or other symbol) says something the speaker never said.
+_ORDINARY_PUNCT = frozenset(
+    ".,!?;:'\"()[]{}-\u2010\u2011\u2013\u2014\u2026\u2018\u2019\u201c\u201d\u00ab\u00bb\u00bf\u00a1"
+)
+_DIGITS = re.compile(r"[0-9]+")
+
+
+def _display(token: str) -> str | None:
+    """The model's token as it may be shown: emoji removed; None when it still carries a symbol."""
+    shown = _EMOJI.sub("", token)
+    ok = all((ch.isalnum() and (ch.isascii() or ch.isalpha())) or ch in _ORDINARY_PUNCT for ch in shown)
+    return shown if shown and ok else None
+
+
 def align_caption_text(words: list[Word], text: str | None) -> list[str] | None:
     """The model's cleaned `text` laid over the clip's ASR words, one display string per word (spec 17.2).
 
     Only a word the model kept (same spoken form, ignoring case and punctuation) takes the model's spelling;
     a word the model dropped, added or rephrased stays as the recogniser heard it, so the word count and every
-    timing are unchanged and nothing is invented. A number the model wrote another way ("$20" for "twenty",
-    "5%" for "five") is taken only when the words on both sides of it are the model's as well, because such a
-    symbol usually swallows the next word ("twenty dollars", "five percent") and taking it alone would show
-    "$20 dollars". None when the model gave no text, when it matches fewer than MIN_CLEANED_SHARE of the
-    spoken (not hesitation) words, which is also what a clip wider than the model's span after a merge or a
-    sentence snap looks like, or when it changes nothing.
+    timing are unchanged and nothing is invented. A number the model wrote as digits ("20," for "twenty") is
+    taken only when the words on both sides of it are the model's as well. A token with a currency, percent,
+    "#" or other symbol ("$20", "20%", "#1") is never taken: it would show words nobody said ("dollars",
+    "percent", "number"), so the recogniser's spelling stays. Emoji are removed from a taken word.
+    None when the model gave no text, when it matches fewer than MIN_CLEANED_SHARE of the spoken (not
+    hesitation) words, which is also what a clip wider than the model's span after a merge or a sentence snap
+    looks like, or when it changes nothing.
     """
     if not words or not text or not text.strip():
         return None
@@ -484,8 +506,11 @@ def align_caption_text(words: list[Word], text: str | None) -> list[str] | None:
     out = [w.w for w in words]
     taken: set[int] = set()
     for i, j in pairs.items():
-        if _plain(tokens[j]) == _plain(words[i].w) or framed(i, j):
-            out[i] = tokens[j]
+        shown = _display(tokens[j])
+        if shown is None:  # "$20", "20%", "#1": a symbol the speaker did not say stays the recogniser's word
+            continue
+        if _plain(shown) == _plain(words[i].w) or (framed(i, j) and _DIGITS.fullmatch(_plain(shown))):
+            out[i] = shown
             taken.add(i)
     spoken = [i for i, w in enumerate(words) if _key(w.w) and not is_filler_word(w.w)]
     if not spoken or len(taken.intersection(spoken)) < MIN_CLEANED_SHARE * len(spoken):

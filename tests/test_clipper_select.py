@@ -456,3 +456,45 @@ def test_align_caption_text_leaves_a_clip_wider_than_the_models_span_in_the_reco
     near = "One, two, three, four, five, six, seven, eight, nine."  # nine of ten words
     got = sel.align_caption_text(words, near)
     assert got is not None and got[:2] == ["One,", "two,"] and got[-1] == "ten"
+
+
+# ---------- nothing is shown that was never spoken (review fix) ----------
+_TAIL = " and then we went home to the old house"
+
+
+@pytest.mark.parametrize(
+    ("spoken", "written", "kept", "symbol"),
+    [
+        ("i paid twenty for it" + _TAIL, "I paid $20 for it" + _TAIL + ".", "twenty", "$"),
+        ("i paid twenty for it" + _TAIL, "I paid \u20ac20 for it" + _TAIL + ".", "twenty", "\u20ac"),
+        ("it was twenty of them" + _TAIL, "It was 20% of them" + _TAIL + ".", "twenty", "%"),
+        ("he is one of them" + _TAIL, "He is #1 of them" + _TAIL + ".", "one", "#"),
+    ],
+)
+def test_align_caption_text_never_shows_a_symbol_the_speaker_did_not_say(
+    spoken: str, written: str, kept: str, symbol: str
+) -> None:
+    words = _spoken(spoken)
+    got = sel.align_caption_text(words, written)
+    assert got is not None  # the rest of the text is still cleaned
+    assert kept in got  # the recogniser's number word stays as it was heard
+    assert not any(symbol in s for s in got)
+    assert len(got) == len(words)
+
+
+def test_align_caption_text_strips_an_emoji_and_never_shows_one() -> None:
+    words = _spoken("this is my friend and he is great")
+    got = sel.align_caption_text(words, "This is my friend\U0001f525 and he is great!")
+    assert got == ["This", "is", "my", "friend", "and", "he", "is", "great!"]
+    # a variation selector, a joiner sequence and an emoji of its own are all gone as well
+    got = sel.align_caption_text(
+        words, "This is my friend\u2764\ufe0f and \U0001f525 he is great\U0001f468\u200d\U0001f469!"
+    )
+    assert got == ["This", "is", "my", "friend", "and", "he", "is", "great!"]
+    assert all(s.isascii() for s in got or [])
+
+
+def test_align_caption_text_still_takes_digits_with_ordinary_punctuation() -> None:
+    words = _spoken("so we got twenty and then five more of them to the old house")
+    got = sel.align_caption_text(words, "So, we got 20, and then 5 more of them to the old house.")
+    assert got is not None and got[3] == "20," and got[6] == "5"
