@@ -405,6 +405,7 @@ class SetupController:
         self._keys_stored = {"pexelsKey": False, "pixabayKey": False}
         self._sub: dict[str, list[Any]] = {}      # wizard file key -> [done, total]
         self._finished: set[str] = set()
+        self._site_waiting: dict[str, int] = {}   # wizard file key -> bytes done when its site wait began
         self._progress_log: dict[str, float] = {}
         self._begun = time.monotonic()
         self._log_path: Path | None = cfg.data_dir / "bootstrap" / "setup-ui.jsonl"
@@ -1402,6 +1403,7 @@ class SetupController:
         )
         self._finished.clear()
         self._sub.clear()
+        self._site_waiting.clear()
         engine = self.fx.engine_factory(
             argv, env=wizard_env(self.run_app_path), cwd=self.run_app_path, on_event=self._on_event,
             on_line=self._on_line, on_exit=self._on_exit,
@@ -1626,16 +1628,28 @@ class SetupController:
             self._sub[key] = [int(ev.get("done") or 0), ev.get("total")]
             self.meter.update(key, int(ev.get("done") or 0))
             self._console_progress(key, rk)
+            # While a site wait runs, the downloader reports progress every 5 s (so Stop is seen) with the
+            # bytes it already had: that tick is not the file moving, and the wait line stays on the row.
+            if key in self._site_waiting and int(ev.get("done") or 0) > self._site_waiting[key]:
+                del self._site_waiting[key]
         elif event == "finish":
             self._finished.add(key)
+            self._site_waiting.pop(key, None)
             self.meter.drop(key)
+        elif event == "start":
+            self._site_waiting.pop(key, None)
         elif event == "retry":
             self.meter.drop(key)
+            if ev.get("reason") == "site":
+                self._site_waiting[key] = int(self._sub.get(key, [0])[0] or 0)
+            else:
+                self._site_waiting.pop(key, None)
             if ev.get("reason") == "site":      # the console of the window keeps the waits too
                 self.log("warn", retry_note(
                     "site", float(ev.get("waitS") or 0), host=str(ev.get("host") or ""),
                     status=int(ev.get("status") or 0), left_s=float(ev.get("leftS") or 0)))
         outcome = ev.get("outcome")
+        holding = key in self._site_waiting
 
         def fn(s: dict[str, Any]) -> None:
             items = s["downloads"]["items"]
@@ -1656,7 +1670,8 @@ class SetupController:
                 row["speedBps"] = speed
                 remaining = (row["bytesTotal"] or 0) - row["bytesDone"]
                 row["etaS"] = rows.eta_seconds(remaining, speed) if row["bytesTotal"] and speed else None
-                row["note"] = None
+                if not holding:
+                    row["note"] = None
             elif event == "retry":
                 row["speedBps"], row["etaS"] = None, None
                 row["note"] = retry_note(
