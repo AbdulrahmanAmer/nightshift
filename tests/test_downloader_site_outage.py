@@ -100,7 +100,8 @@ def test_a_site_that_stays_down_for_the_whole_window_ends_in_e105_naming_host_an
     assert err.code == "NS-E105"
     assert "github.com" in text and "504" in text  # whose answer it was
     assert "site's side" in text and "not this PC" in text  # whose fault it is
-    assert "INSTALL.cmd" in text and "continues" in text  # what to do
+    assert "Try again later" in text and "continues" in text  # what to do
+    assert "INSTALL.cmd" not in text, "the error is also raised for `ns models get` and the dashboard"
     assert err.data["host"] == "github.com" and err.data["status"] == 504 and err.data["side"] == "site"
     assert sum(t.sleeps) == dl.SITE_WINDOW_S == 600.0  # about ten minutes, never more
     assert len(gets) == len(waits) + 1 and len(waits) >= 8
@@ -341,7 +342,9 @@ def test_console_run_exit_code_3_and_the_screen_says_their_side_and_to_run_insta
     assert code == EXIT_FAILED == 3
     shown = ctx.ui.text
     assert "NS-E105" in shown and "github.com" in shown and "504" in shown
-    assert "site's side" in shown and "INSTALL.cmd" in shown
+    assert "site's side" in shown
+    assert "What to do: Run INSTALL.cmd again later" in shown, "the console says what to do for a setup run"
+    assert "firewall" not in shown, "the generic hint would contradict the detail"
     assert sum(t.sleeps) == 600.0, "one window, not one per unattended retry (that would be 40 minutes)"
     assert ctx.state.status("s02_download_bins") == "failed"
 
@@ -430,8 +433,9 @@ def test_the_shared_ns_e105_hint_is_generic_and_only_the_site_error_says_it_wait
     # the raiser that did wait says it in its own detail
     err = dl.site_error(URL, 503, "Service Unavailable", 600.0)
     assert err.code == "NS-E105"
-    assert "for 10 min" in err.detail and "INSTALL.cmd again later" in err.detail
+    assert "for 10 min" in err.detail and "Try again later" in err.detail
     assert "continues where it stopped" in err.detail and "download site's side" in err.detail
+    assert "INSTALL.cmd" not in err.detail, "a dashboard or `ns models get` download has no INSTALL.cmd"
 
 
 def test_the_wait_note_stays_on_the_row_through_every_progress_tick_of_a_window_run(tmp_path, monkeypatch):
@@ -493,3 +497,159 @@ def test_the_wait_note_goes_once_the_file_moves_again(tmp_path, monkeypatch):
     ev("retry", attempt=1, reason="stall", waitS=2.0, of=3)
     ev("progress", done=500, total=1000)
     assert row()["note"] is None, "another kind of retry ended the site wait"
+
+
+def test_408_and_425_are_the_sites_trouble_and_waited_out_like_a_5xx(tmp_path: Path):
+    client, gets = scripted([408, 425, 429])
+    t, waits = FakeTime(), []
+    dest = tmp_path / "a.bin"
+    dl.download(URL, dest, SHA, client=client, sleep=t.sleep, clock=t.clock, on_site_wait=waits.append)
+    assert dl.is_verified(dest, SHA) and gets == [408, 425, 429]
+    assert [w.status for w in waits] == [408, 425, 429] and t.sleeps == [2, 4, 8]
+
+
+# ------------------------------------------------------------------------------------- a window per outage
+class _Drops(httpx.SyncByteStream):
+    """A 200 that delivers 100 bytes, then lets an hour pass and drops the connection."""
+
+    def __init__(self, t: FakeTime) -> None:
+        self.t = t
+
+    def __iter__(self):
+        yield DATA[:100]
+        self.t.now += 3600.0
+        raise httpx.ReadError("connection reset")
+
+
+def test_good_transfer_between_two_outages_gives_the_second_a_window_of_its_own(tmp_path: Path):
+    """503, then a 200 that delivered bytes and ran for an hour before it dropped, then 503 again. The second
+    outage is a new one: it waits (2 s, not nothing) and the error text can never say 'for 10 min'."""
+    t = FakeTime()
+    script: list = [503, "drops", 503]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "HEAD":
+            return httpx.Response(200, headers={"content-length": str(len(DATA))})
+        step = script.pop(0) if script else None
+        if step == "drops":
+            return httpx.Response(200, headers={"content-length": str(len(DATA))}, stream=_Drops(t))
+        if step is None:
+            return httpx.Response(200, content=DATA)
+        return httpx.Response(step)
+
+    waits: list[dl.SiteWait] = []
+    dest = tmp_path / "a.bin"
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    dl.download(URL, dest, SHA, client=client, sleep=t.sleep, clock=t.clock, on_site_wait=waits.append)
+    assert dl.is_verified(dest, SHA) and dest.read_bytes() == DATA
+    assert [(w.status, w.tries) for w in waits] == [(503, 1), (503, 1)], "the second outage counts from one"
+    assert waits[1].left_s == dl.SITE_WINDOW_S - waits[1].wait_s, "and has the whole window"
+
+
+def test_an_outage_without_progress_in_between_still_uses_one_window(tmp_path: Path):
+    client, gets = scripted([], forever=503)
+    t = FakeTime()
+    with pytest.raises(NsError):
+        dl.download(URL, tmp_path / "a.bin", SHA, client=client, sleep=t.sleep, clock=t.clock)
+    assert sum(t.sleeps) == dl.SITE_WINDOW_S
+
+
+# ---------------------------------------------------------------------------------------------- ns models get
+def test_ns_models_get_says_the_wait_and_logs_it_instead_of_ten_minutes_of_silence(tmp_path: Path):
+    """``ns models get`` and the dashboard's model download go through ``get_model`` -> ``run_plan`` with the
+    EchoReporter. The dashboard shows these lines; before, a 5xx printed nothing for ten minutes."""
+    from ns_common.paths import Paths, repo_root
+    from ns_supervisor import models_get
+
+    paths = Paths(tmp_path)
+    paths.ensure()
+    t = FakeTime()
+    client, _ = scripted([503, 504])
+    item = dl.DownloadItem(name="story.gguf", url=URL, dest=tmp_path / "story.gguf", sha256=SHA)
+    kept: dict = {}
+
+    def run_plan(items, **kw):
+        kept.update(kw)
+        return dl.run_plan([item], client=client, sleep=t.sleep, **kw)
+
+    lines: list[str] = []
+    models_get.get_model("voicedesign", paths, repo_root(), lines.append, run_plan=run_plan)
+    waits = [x for x in lines if "their side" in x]
+    assert waits == [
+        "story.gguf: github.com answers 503 (their side). Trying again in 2 s, 10 min left",
+        "story.gguf: github.com answers 504 (their side). Trying again in 4 s, 10 min left",
+    ]
+    assert "story.gguf: downloaded" in lines
+    assert item.dest.read_bytes() == DATA
+    assert kept["log"] is not None
+    logged = "".join(p.read_text(encoding="utf-8") for p in paths.logs.glob("*.jsonl"))
+    assert "download_site_down" in logged
+
+
+def test_the_error_of_a_model_download_does_not_send_anyone_to_install_cmd(tmp_path: Path):
+    client, _ = scripted([], forever=504)
+    t = FakeTime()
+    with pytest.raises(NsError) as ei:
+        dl.run_plan(
+            [dl.DownloadItem(name="m", url=URL, dest=tmp_path / "m.bin", sha256=SHA)],
+            client=client,
+            sleep=t.sleep,
+        )
+    assert "INSTALL.cmd" not in ei.value.detail and "Try again later" in ei.value.detail
+
+
+# ------------------------------------------------------------------------------- the row in the window
+def _row_harness(tmp_path, monkeypatch):
+    from tests.test_installer_web_controller import Setup
+
+    s = Setup(tmp_path, monkeypatch)
+    s.accept()
+
+    def row():
+        return next(r for r in s.snap()["downloads"]["items"] if r["key"] == "llama")
+
+    def ev(event, **kw):
+        s.ctl._ev_file({"type": "file", "key": "llama", "event": event, **kw})
+
+    def site_wait(left):
+        ev("retry", attempt=0, reason="site", waitS=8.0, of=0, host="github.com", status=504, leftS=left)
+
+    return row, ev, site_wait
+
+
+def test_the_wait_note_stays_when_the_last_progress_lagged_behind_the_part_on_disk(tmp_path, monkeypatch):
+    """The bridge throttles progress, so the last event the window saw (400) can be older than the bytes on
+    disk (430) when a resumed fetch gets a 5xx. The first tick of the wait carries the real size."""
+    row, ev, site_wait = _row_harness(tmp_path, monkeypatch)
+    ev("start", total=1000)
+    ev("progress", done=400, total=1000)
+    site_wait(500.0)
+    ev("progress", done=430, total=1000)
+    assert "answers 504" in row()["note"], "the first tick is the baseline, not the file moving"
+    ev("progress", done=430, total=1000)
+    assert "answers 504" in row()["note"]
+    ev("progress", done=480, total=1000)
+    assert row()["note"] is None, "the file moves again"
+
+
+def test_the_wait_note_stays_on_a_resume_that_sent_no_progress_before_the_5xx(tmp_path, monkeypatch):
+    row, ev, site_wait = _row_harness(tmp_path, monkeypatch)
+    ev("start", total=1000)
+    site_wait(500.0)
+    ev("progress", done=430, total=1000)
+    ev("progress", done=430, total=1000)
+    assert "answers 504" in row()["note"]
+    site_wait(480.0)  # the next wait takes its own baseline
+    ev("progress", done=430, total=1000)
+    assert "answers 504" in row()["note"]
+
+
+def test_a_row_that_used_up_its_window_ends_failed_without_the_trying_again_note(tmp_path, monkeypatch):
+    row, ev, site_wait = _row_harness(tmp_path, monkeypatch)
+    ev("start", total=1000)
+    ev("progress", done=400, total=1000)
+    site_wait(0.0)
+    assert "Trying again in 8 s, 0 s left" in row()["note"]
+    ev("finish", outcome="failed")
+    assert row()["status"] == "failed"
+    assert row()["note"] is None, "a red row must not say it is trying again"

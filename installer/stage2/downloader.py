@@ -14,10 +14,11 @@ Crash and rerun rules (the installer may be closed or killed at any moment, then
   downloaded again;
 * a wrong hash removes the ``.part`` and tries once more, then ``NS-E109``;
 * a full disk is ``NS-E104`` with the free space, never a retry loop;
-* a download site that answers 5xx or 429 (GitHub's 504 incident) is waited out for ``SITE_WINDOW_S``
-  (ten minutes) with backoff 2, 4, 8 ... 60 s and ``Retry-After``; every wait is reported (host, status, time
-  left) and the end is ``NS-E105`` naming the host and status, saying it is the site's side and that running
-  INSTALL.cmd again continues. 404, 403 and other 4xx, a wrong size and a wrong hash stop at once;
+* a download site that answers 5xx, 408, 425 or 429 (GitHub's 504 incident) is waited out for
+  ``SITE_WINDOW_S`` (ten minutes of continuous outage: a fetch that gets bytes onto the disk starts the window
+  anew) with backoff 2, 4, 8 ... 60 s or ``Retry-After``, whichever is larger; every wait is reported (host,
+  status, time left) and the end is ``NS-E105`` naming the host and status, saying it is the site's side and
+  that a later try continues. 404, 403 and other 4xx, a wrong size and a wrong hash stop at once;
 * Stop and Pause keep the ``.part`` and hold no file handle or connection while waiting.
 """
 
@@ -142,8 +143,9 @@ SiteWaitFn = Callable[[SiteWait], None]
 
 
 def is_site_side(status: int) -> bool:
-    """True for the answers that are the download site's own trouble and pass by themselves: 5xx and 429."""
-    return status >= 500 or status == 429
+    """True for the answers that are the download site's own trouble and pass by themselves: 5xx, 408 (request
+    timeout), 425 (too early) and 429 (rate limit)."""
+    return status >= 500 or status in (408, 425, 429)
 
 
 def retry_after_seconds(value: str | None, *, now: datetime | None = None) -> float | None:
@@ -182,7 +184,7 @@ def site_error(url: str, status: int, phrase: str, waited_s: float) -> NsError:
     how_long = f"for {round(waited_s / 60)} min" if waited_s >= 60 else "and was still not answering"
     detail = (
         f"{host} answered {answer} {how_long}. That is the download site's side, not this PC. "
-        "Run INSTALL.cmd again later: setup continues where it stopped."
+        "Try again later: what is already downloaded is kept and the download continues where it stopped."
     )
     return make_error("NS-E105", detail, status=status, host=host, side="site", waited_s=round(waited_s))
 
@@ -551,8 +553,10 @@ def download(
     minutes) with the backoff 2, 4, 8 ... 60 s, or the site's ``Retry-After`` when that is longer (at most
     ``RETRY_AFTER_CAP_S``). ``on_site_wait`` is told a ``SiteWait`` before each wait. The window is measured
     by ``clock`` and by the waits themselves, whichever is larger, so a fake ``sleep`` makes it instant. When
-    it is used up the error is NS-E105 naming the host and the status, saying it is the site's side and that
-    running INSTALL.cmd again continues. Any other 4xx (403, 410 ...) is NS-E105 at once, without a wait.
+    it is used up the error is NS-E105 naming the host and the status, saying it is the site's side and that a
+    later try continues. A fetch that put bytes on the disk ends the outage: the next 5xx starts a window of
+    its own. 408 and 425 count as the site's side too. Any other 4xx (403, 410 ...) is NS-E105 at once,
+    without a wait.
     """
     dest = Path(dest)
     if is_verified(dest, sha256):
@@ -570,6 +574,8 @@ def download(
     site_status, site_phrase, site_retry_after = 0, "", None
     site_started: float | None = None
     site_waited, site_tries = 0.0, 0
+    part = _part(dest)
+    last_size = part.stat().st_size if part.exists() else 0
     try:
         while attempt < retries:
             if gate is not None:
@@ -605,6 +611,12 @@ def download(
                 last, reason = site_error(url, code, site_phrase, site_waited), "site"
             except httpx.HTTPError as e:
                 last, reason = make_error("NS-E105", f"{url}: {e}"), "network"
+            size_now = part.stat().st_size if part.exists() else 0
+            if size_now > last_size:
+                # the last fetch got bytes onto the disk: the site was answering, so a 5xx that follows is a
+                # new outage with a window of its own (the ten minutes mean continuous trouble)
+                site_started, site_waited, site_tries = None, 0.0, 0
+            last_size = size_now
             if gate is not None and not gate.is_set():
                 continue  # failed while paused: not a real attempt
             if reason == "site":

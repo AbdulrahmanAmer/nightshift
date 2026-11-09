@@ -208,7 +208,11 @@ class Wizard:
         body = f"{failure.code}  {failure.message}"
         if failure.detail:
             body += f"\n{failure.detail}"
-        body += f"\n\nWhat to do: {failure.hint}"
+        hint = failure.hint
+        if failure.data.get("side") == "site":
+            # the site had its ten minutes: the generic "check the internet" would contradict the detail
+            hint = "Run INSTALL.cmd again later: setup continues where it stopped."
+        body += f"\n\nWhat to do: {hint}"
         self.ctx.ui.panel(body, title=f"{step.title} failed")
 
     def _on_failure(self, step: Step, failure: Failure, attempts: int) -> str:

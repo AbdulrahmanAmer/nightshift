@@ -405,7 +405,8 @@ class SetupController:
         self._keys_stored = {"pexelsKey": False, "pixabayKey": False}
         self._sub: dict[str, list[Any]] = {}      # wizard file key -> [done, total]
         self._finished: set[str] = set()
-        self._site_waiting: dict[str, int] = {}   # wizard file key -> bytes done when its site wait began
+        # wizard file key -> bytes on disk during its site wait (None until the first tick after it began)
+        self._site_waiting: dict[str, int | None] = {}
         self._progress_log: dict[str, float] = {}
         self._begun = time.monotonic()
         self._log_path: Path | None = cfg.data_dir / "bootstrap" / "setup-ui.jsonl"
@@ -1624,24 +1625,29 @@ class SetupController:
         event = ev.get("event")
         if event == "start":
             self._sub[key] = [0, ev.get("total")]
+            self._site_waiting.pop(key, None)
         elif event == "progress":
             self._sub[key] = [int(ev.get("done") or 0), ev.get("total")]
             self.meter.update(key, int(ev.get("done") or 0))
             self._console_progress(key, rk)
             # While a site wait runs, the downloader reports progress every 5 s (so Stop is seen) with the
-            # bytes it already had: that tick is not the file moving, and the wait line stays on the row.
-            if key in self._site_waiting and int(ev.get("done") or 0) > self._site_waiting[key]:
-                del self._site_waiting[key]
+            # bytes it already had: that tick is not the file moving, and the wait line stays on the row. The
+            # first tick after the wait began is the baseline (the last progress seen before it may lag the
+            # .part on disk); bytes that differ from it later mean the file moves again.
+            if key in self._site_waiting:
+                done = int(ev.get("done") or 0)
+                if self._site_waiting[key] is None:
+                    self._site_waiting[key] = done
+                elif done != self._site_waiting[key]:
+                    del self._site_waiting[key]
         elif event == "finish":
             self._finished.add(key)
             self._site_waiting.pop(key, None)
             self.meter.drop(key)
-        elif event == "start":
-            self._site_waiting.pop(key, None)
         elif event == "retry":
             self.meter.drop(key)
             if ev.get("reason") == "site":
-                self._site_waiting[key] = int(self._sub.get(key, [0])[0] or 0)
+                self._site_waiting[key] = None
             else:
                 self._site_waiting.pop(key, None)
             if ev.get("reason") == "site":      # the console of the window keeps the waits too
@@ -1683,6 +1689,7 @@ class SetupController:
                 all_done = all(k in self._finished for k, _v in subs)
                 if outcome == "failed":
                     row["status"], row["speedBps"], row["etaS"] = "failed", None, None
+                    row["note"] = None      # "Trying again in 28 s" is not true of a row that gave up
                 elif outcome == "missing":
                     row["status"], row["note"] = "skipped", "not available, setup goes on without it"
                 elif all_done:
