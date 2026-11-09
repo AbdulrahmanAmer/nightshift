@@ -23,7 +23,7 @@ from ns_common.errors import NsError
 from ns_common.models import Runtime
 from ns_common.paths import Paths
 from ns_common.singleton import AlreadyRunning, FileLock
-from ns_supervisor import update_check
+from ns_supervisor import tmpsweep, update_check
 from ns_supervisor.core import Supervisor, SupervisorConfig
 from ns_supervisor.health_cfg import read_health_timeout
 from ns_supervisor.scheduled import overdue_scheduled_jobs
@@ -89,6 +89,7 @@ def create_app(sup: Supervisor, *, start_dashboard: bool = False, run_monitor: b
 
     @contextlib.asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        tmpsweep.sweep_state_tmp(sup.paths)  # a crash between "create" and "swap" left a ~ns*.tmp behind
         sup.write_state()
         tasks: list[asyncio.Task[Any]] = []
         if run_monitor:
