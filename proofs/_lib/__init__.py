@@ -6,12 +6,16 @@ records what it observed through `ctx.step` / `ctx.check`, so the evidence carri
 
 from __future__ import annotations
 
+import functools
 import json
 import re
 import shutil
 import subprocess  # noqa: TID251  (proof helpers measure files with FFmpeg, like the tests and dev/ do)
 import sys
 import time
+import urllib.error
+import urllib.request
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -47,8 +51,71 @@ def wait_job(ctx: Any, job_id: str, timeout: float = 600, every: float = 3) -> d
     return job
 
 
+def api_no_deadline(
+    ctx: Any, method: str, path: str, body: Any = None, timeout: float = 60
+) -> tuple[int, Any]:
+    """A dashboard call that is not bound by the proof's deadline: for cleanup in a finally, which must still
+    run after the proof has used up its time (ctx.api refuses then)."""
+    url = f"http://127.0.0.1:{ctx.ports['dashboard']}{path}"
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(url, data=data, method=method, headers={"Content-Type": "application/json"})
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        with opener.open(req, timeout=timeout) as resp:
+            raw = resp.read()
+            status = resp.status
+    except urllib.error.HTTPError as err:
+        raw, status = err.read(), err.code
+    try:
+        return status, json.loads(raw or b"null")
+    except ValueError:
+        return status, raw.decode("utf-8", errors="replace")[:400]
+
+
+_OPENED: dict[int, list[str]] = {}  # id(ctx) -> the proof channels this run made active
+
+
+def pauses_proof_channels(run: Callable[[Any], None]) -> Callable[[Any], None]:
+    """Decorate a proof's `run`: every proof channel it made active is paused again at the end, pass or fail,
+    through calls with no deadline, so the nightly never makes videos on a proof channel."""
+
+    @functools.wraps(run)
+    def wrapper(ctx: Any) -> None:
+        try:
+            run(ctx)
+        finally:
+            for slug in _OPENED.pop(id(ctx), []):
+                try:
+                    status, answer = api_no_deadline(ctx, "POST", f"/api/channels/{slug}/pause")
+                    ctx.step(
+                        "cleanup: proof channel paused", channel=slug, status=status, answer=_short(answer)
+                    )
+                except Exception as exc:  # noqa: BLE001  (a cleanup error must not hide the proof's own result)
+                    ctx.step("cleanup: proof channel pause failed", channel=slug, error=str(exc))
+
+    return wrapper
+
+
+def _activate(ctx: Any, slug: str, status_now: str | None) -> None:
+    """Resume a paused proof channel (a manual run on a paused channel is refused with 409) and remember it,
+    so `pauses_proof_channels` pauses it again."""
+    opened = _OPENED.setdefault(id(ctx), [])
+    if slug not in opened:
+        opened.append(slug)
+    if status_now == "paused":
+        status, answer = ctx.api("POST", f"/api/channels/{slug}/resume")
+        ctx.check(
+            status == 200,
+            "proof channel resumed for this run",
+            channel=slug,
+            status=status,
+            answer=_short(answer),
+        )
+
+
 def proof_channel(ctx: Any, slug: str, **overrides: Any) -> str:
-    """Make sure the proof's own channel exists (created through POST /api/channels when missing).
+    """Make sure the proof's own channel exists (created through POST /api/channels if missing) and is active
+    for this run. The proof's `run` must be decorated with `pauses_proof_channels`.
 
     The body is the one the dev install's own channels use, taken from an existing channel with the fields
     `overrides` changes. Returns the slug. The channel's name starts with `proof-` so it is plainly a test's.
@@ -70,6 +137,7 @@ def proof_channel(ctx: Any, slug: str, **overrides: Any) -> str:
                 status=status,
                 answer=_short(body),
             )
+        _activate(ctx, slug, str(profile.get("status") or ""))
         return slug
     status, channels = ctx.api("GET", "/api/channels")
     ctx.check(
@@ -90,7 +158,14 @@ def proof_channel(ctx: Any, slug: str, **overrides: Any) -> str:
     body = {k: v for k, v in full["profile"].items() if k not in ("created_at", "updated_at")}
     # A preset voice, never the template's: the template may carry the setup's designed voice, which a proof
     # must not use or consume (it may still be pending, and F-E12 needs it).
-    body.update({"slug": slug, "display_name": slug.replace("-", " ").title(), "voice": dict(PRESET_VOICE)})
+    body.update(
+        {
+            "slug": slug,
+            "display_name": slug.replace("-", " ").title(),
+            "voice": dict(PRESET_VOICE),
+            "status": "active",
+        }
+    )
     body.update(overrides)
     status, answer = ctx.api("POST", "/api/channels", body)
     ctx.check(
@@ -100,6 +175,7 @@ def proof_channel(ctx: Any, slug: str, **overrides: Any) -> str:
         status=status,
         answer=_short(answer),
     )
+    _activate(ctx, slug, "active")
     return slug
 
 
@@ -173,6 +249,54 @@ def take_off_desktop(ctx: Any, src: Path, tag: str) -> Path:
         error=error,
     )
     return kept
+
+
+class DesktopGuard:
+    """Around a POST or a click that makes the product write a zip to the Desktop (C:):
+
+        with DesktopGuard(ctx, "nightshift-diagnostics-*.zip", "api") as guard:
+            status, made = ctx.api("POST", "/api/diagnostics")
+            kept = guard.take(Path(made["path"]))
+
+    On the way out, pass or fail, every matching file that was not on the Desktop before moves into scratch,
+    so no failed check, timeout or crash leaves a product file on C:. Files that were there before are never
+    touched."""
+
+    def __init__(self, ctx: Any, pattern: str, tag: str) -> None:
+        self.ctx, self.pattern, self.tag = ctx, pattern, tag
+        self.before: set[str] = set()
+        self.taken: dict[str, Path] = {}
+
+    def __enter__(self) -> DesktopGuard:
+        self.before = {p.name for p in desktop().glob(self.pattern)}
+        return self
+
+    def take(self, src: Path) -> Path:
+        if src.name in self.before:
+            self.ctx.check(False, "the product's file is new, not an owner's file", path=str(src))
+        if src.name not in self.taken:
+            self.taken[src.name] = take_off_desktop(self.ctx, src, self.tag)
+        return self.taken[src.name]
+
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> bool:
+        left = [
+            p for p in desktop().glob(self.pattern) if p.name not in self.before and p.name not in self.taken
+        ]
+        problems = []
+        for p in left:
+            try:
+                self.take(p)
+            except Exception as err:  # noqa: BLE001  (a ProofFailed here must not hide the first error)
+                problems.append(f"{p}: {err}")
+        if left:
+            self.ctx.step(
+                "Desktop guard: product files moved off the Desktop on the way out",
+                files=[str(p) for p in left],
+                problems=problems,
+            )
+        if problems and exc_type is None:
+            self.ctx.check(False, "every product file left the Desktop", problems=problems)
+        return False
 
 
 def ffmpeg_path() -> str | None:
