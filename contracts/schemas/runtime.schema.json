@@ -364,6 +364,11 @@
       "default": false,
       "title": "Fake Footage",
       "type": "boolean"
+    },
+    "tiny_story": {
+      "default": false,
+      "title": "Tiny Story",
+      "type": "boolean"
     }
   },
   "title": "Runtime",

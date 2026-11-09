@@ -12,9 +12,10 @@ from ns_common.pacing import (  # PACING_WPM is re-exported: the voice stage and
     master_fixed_seconds,
     words_for_seconds,
 )
+from ns_studio.text.story_profile import NORMAL, StoryProfile
 
 SHORT_TOLERANCE = 0.15  # Shorts: words within +-15 % of the target, the same band QC applies to seconds
-CHAPTER_TOLERANCE = 0.2  # chapters: spec 7.0 allows +-20 %
+CHAPTER_TOLERANCE = 0.2  # chapters: spec 7.0 allows +-20 % (the normal profile's `chapter_band`)
 MASTER_MAX_MINUTES = 14  # the longest draw of `long_minutes`; the budget below already counts the pauses
 MASTER_MAX_SECONDS = 870  # a finished master may estimate up to 14:30 (QC fails over 15:00 after the render)
 
@@ -32,7 +33,13 @@ class Budget:
 
 
 def short_budget(
-    length_bucket_s: int, pacing: str, *, parts: int = 1, hook_words: int = 12, closing_words: int = 0
+    length_bucket_s: int,
+    pacing: str,
+    *,
+    parts: int = 1,
+    hook_words: int = 12,
+    closing_words: int = 0,
+    profile: StoryProfile = NORMAL,
 ) -> Budget:
     """Body budget of a Short: the words that fill `length_bucket_s` per part, pauses included, minus hook and
     closing words (min 40).
@@ -41,7 +48,8 @@ def short_budget(
     sentence, 700 ms per paragraph), so the words are `seconds / (60/wpm + 0.035)`, not `seconds*wpm/60`.
     Limits are +-15 % of the target, narrowed so a story at either edge is still within 12 % of the bucket in
     seconds (hook and closing included): inside QC's +-15 % duration band with room for sentence-length
-    variation.
+    variation. A profile with a `short_band` (the engine test's tiny model) keeps the target and takes its
+    limits from that band instead.
     """
     wpm = PACING_WPM[pacing]
     total = words_for_seconds(length_bucket_s * parts, wpm)
@@ -49,10 +57,14 @@ def short_budget(
     voiced_extra_s = (hook_words * parts + closing_words) * (60.0 / wpm + PAUSE_PER_WORD_S)
     qc_cap = words_for_seconds(length_bucket_s * parts * (1 + SHORT_QC_MARGIN) - voiced_extra_s, wpm)
     qc_floor = words_for_seconds(length_bucket_s * parts * (1 - SHORT_QC_MARGIN) - voiced_extra_s, wpm)
+    lo = min(words, max(round(words * (1 - SHORT_TOLERANCE)), qc_floor))
+    hi = max(words, min(round(words * (1 + SHORT_TOLERANCE)), qc_cap))
+    if profile.short_band is not None:
+        lo, hi = round(words * profile.short_band[0]), round(words * profile.short_band[1])
     return Budget(
         words=words,
-        min_words=min(words, max(round(words * (1 - SHORT_TOLERANCE)), qc_floor)),
-        max_words=max(words, min(round(words * (1 + SHORT_TOLERANCE)), qc_cap)),
+        min_words=lo,
+        max_words=hi,
         parts=parts,
         words_per_part=words // parts,
         wpm=wpm,
@@ -84,7 +96,11 @@ def distribute_words(total: int, n: int) -> tuple[int, ...]:
 
 
 def master_budget(
-    long_minutes: int | tuple[int, int], pacing: str, *, rng: random.Random | None = None
+    long_minutes: int | tuple[int, int],
+    pacing: str,
+    *,
+    rng: random.Random | None = None,
+    profile: StoryProfile = NORMAL,
 ) -> MasterBudget:
     """Budget of a master: the words that fill `minutes` of audio, pauses and cards included; 5-7 chapters.
 
@@ -96,6 +112,9 @@ def master_budget(
     `long_minutes` is a fixed number of minutes or the channel's `(lo, hi)` range: with `rng` the target is
     drawn with `rng.randint(lo, hi)`, without it the rounded-up midpoint is used (deterministic).
     Raises ValueError when the minutes are below the 9-minute planning floor.
+
+    A profile with `master_minutes` (the engine test's tiny model) plans at most that many minutes, with
+    `master_chapters` chapters when it names a count, and scales the planning floor by `master_floor_share`.
     """
     wpm = PACING_WPM[pacing]
     if isinstance(long_minutes, tuple):
@@ -107,30 +126,39 @@ def master_budget(
         raise ValueError(f"long_minutes {minutes} is below the {MASTER_FLOOR_MINUTES}-minute floor")
     if minutes > MASTER_MAX_MINUTES:
         raise ValueError(f"long_minutes {minutes} is above the {MASTER_MAX_MINUTES}-minute ceiling")
+    if profile.master_minutes is not None:
+        minutes = min(minutes, profile.master_minutes)
     chapters = MIN_CHAPTERS
-    for _ in range(3):  # the chapter count depends on the words, the words on the chapter count
-        target = words_for_seconds(minutes * 60, wpm, fixed_s=master_fixed_seconds(chapters))
-        chapters = max(MIN_CHAPTERS, min(MAX_CHAPTERS, round(target / CHAPTER_WORDS_MID)))
+    if profile.master_chapters is not None:
+        chapters = profile.master_chapters
+    else:
+        for _ in range(3):  # the chapter count depends on the words, the words on the chapter count
+            target = words_for_seconds(minutes * 60, wpm, fixed_s=master_fixed_seconds(chapters))
+            chapters = max(MIN_CHAPTERS, min(MAX_CHAPTERS, round(target / CHAPTER_WORDS_MID)))
     target = words_for_seconds(minutes * 60, wpm, fixed_s=master_fixed_seconds(chapters))
     floor_words = words_for_seconds(
         MASTER_FLOOR_MINUTES * 60, wpm, fixed_s=master_fixed_seconds(MIN_CHAPTERS)
     )
+    min_words = min(floor_words, target)
+    if profile.master_floor_share is not None:
+        min_words = round(target * profile.master_floor_share)
     return MasterBudget(
         target_minutes=minutes,
         target_words=target,
-        min_words=min(floor_words, target),
+        min_words=min_words,
         wpm=wpm,
         chapters=chapters,
         chapter_budgets=distribute_words(target, chapters),
     )
 
 
-def chapter_budget(words: int, wpm: int) -> Budget:
-    """Budget of one chapter: `words` +-20 %, a single part."""
+def chapter_budget(words: int, wpm: int, profile: StoryProfile = NORMAL) -> Budget:
+    """Budget of one chapter: `words` within the profile's band (+-20 % normally), a single part."""
+    lo, hi = profile.chapter_band
     return Budget(
         words=words,
-        min_words=round(words * (1 - CHAPTER_TOLERANCE)),
-        max_words=round(words * (1 + CHAPTER_TOLERANCE)),
+        min_words=round(words * lo),
+        max_words=round(words * hi),
         parts=1,
         words_per_part=words,
         wpm=wpm,

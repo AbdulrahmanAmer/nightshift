@@ -203,6 +203,45 @@ model, embeddings and speech recognition stay real. The videos then carry placeh
 is for an engine test only and never for the partner's PC. Settings shows it as `fake_footage` next to
 `dev_mode` in the settings payload.
 
+### A tiny model finishes a story (`tiny_story`)
+
+The shipped word budgets assume a model that writes 300 to 450 words a chapter. A 1 to 2 GB model on the
+processor (Qwen3-1.7B on the engine-test laptop) wrote chapters of 101 to 328 words (mean 173) at reading grades
+2.3 to 4.1, and a Short of 40 words at grade 0.2, so every story job, nightly run and series part stopped at the
+text validators with `NS-E303` and never reached the voice. The third engine-test answer, `"tiny_story": true`,
+puts the text stages on the thresholds such a model can meet:
+
+- **Where it lives.** `ns_studio/text/story_profile.py` is the one place. `NORMAL` holds the numbers every install
+  has always used; `TINY` holds the scaled ones. The budgets (`ns_studio/text/budget.py`), the validators
+  (`validators.py`), the stages, the series workshop, the duration check and the prompts take the profile of the
+  job (`profile_of(ctx)`, read from `runtime.json`) and read its fields; nothing else knows the profile exists.
+- **What moves** (tiny against normal). A chapter may have 0.5 to 2 times its word budget (0.8 to 1.2). A Short is
+  still asked for the words that fill its length bucket, because QC measures the rendered Short against that
+  bucket, but may have 0.35 to 1.6 times them (about 0.85 to 1.15). A master is planned as the shortest master the
+  pipeline accepts, 9 minutes, in 7 chapters (about 179 words each, 1,250 words), with a planning floor of half its words, a
+  "story is short" warning at half its target (80 %), and a duration-check floor of 8:30 (9:00). The reading
+  grade floor is -2 (5); the prompts ask for grade 3-8 (5-8), 1 to 2 beats a chapter (2 to 4) and 3 to 4 beats a
+  Short (4 to 7). A master must yield 2 Shorts (the channel's 4), an expansion must add a quarter of the words
+  it asked for (half), and a series part uses chapters of about 190 words (350) and is rejected below 40 % of its
+  word target (75 %).
+- **What does not move.** Every validator still runs and can still fail: a chapter under 0.5 times its budget, a
+  grade under -2, a banned phrase, a sentence over 35 words, a repeated opening, repeated cliffs and a master over
+  14:30 all stop the job with `NS-E303`, as before. The reading-grade ceiling (8) is unchanged. The policy gates,
+  the safety checks, QC (a master of 8:30 to 15:00, a Short within 15 % of its bucket, loudness, drift) and the
+  banned phrases do not read the profile. A tiny model that writes a master shorter than 8:30 therefore gets past
+  the text stages and then stops, coded, at the duration check (`NS-E305`) or at QC (`NS-E404`).
+- **How to switch it on.** `answers.json` of a PC with no NVIDIA card: `"allow_cpu": true, "tiny_story": true`.
+  Setup refuses the answer without `allow_cpu` (`tiny_story is for an engine test ...`), writes
+  `"tiny_story": true` into `runtime.json`, and a dev install ignores it (it runs a fake model on fixtures). The
+  setup window never asks it. Settings shows it as `tiny_story` next to `dev_mode` and `fake_footage`; it is not
+  an engine flag, and a settings call that names `tiny_story`, `fake_footage` or `dev_mode` is refused with
+  `test_switch` (HTTP 422) however it is sent, so a normal install cannot turn it on from the dashboard.
+- **Tests.** `tests/test_tiny_story.py` (a fake model that writes at the tiny scale passes all nine master text
+  stages, one that writes less still fails with `NS-E303`, the same model fails on a normal install, and every
+  normal-profile number is asserted as it was), `tests/test_tiny_story_switch.py` (refused without `allow_cpu`,
+  setup to `runtime.json`, the dashboard cannot set it) and one reinstall test in
+  `tests/test_installer_reinstall.py`.
+
 ## Where the code is
 
 | What | Where |

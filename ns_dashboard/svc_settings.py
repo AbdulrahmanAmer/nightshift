@@ -94,6 +94,8 @@ class SettingsService:
             "dev_mode": bool((runtime or {}).get("dev_mode")),
             # engine test (docs/DEV_MODE.md): jobs use placeholder footage; not an editable engine flag
             "fake_footage": bool((runtime or {}).get("fake_footage")),
+            # engine test (docs/DEV_MODE.md): the story text stages use a 1 to 2 GB model's thresholds
+            "tiny_story": bool((runtime or {}).get("tiny_story")),
             "flags": flags,
             "keys": self._key_flags(),
             "notifications": bool(stored["notifications"]),
@@ -145,7 +147,15 @@ class SettingsService:
         current = self.engine.runtime_summary()
         if current is None:
             raise ApiError(409, "no_runtime", "runtime.json does not exist yet; run the installer first.")
-        merged = runtime_flags.apply_flags(current, body.get("flags") or {})
+        try:
+            merged = runtime_flags.apply_flags(current, body.get("flags") or {})
+        except ValueError as e:
+            raise ApiError(
+                422,
+                "test_switch",
+                f"'{e}' belongs to an install made for testing; the dashboard cannot set it.",
+                hint="It is an answer in answers.json at setup (docs/DEV_MODE.md).",
+            ) from e
         if body.get("profile"):
             merged["profile"] = body["profile"]
         try:

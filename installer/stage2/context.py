@@ -172,6 +172,12 @@ class StepContext:
         return not self.dev_mode and self.ensure_answers().fake_footage
 
     @property
+    def tiny_story(self) -> bool:
+        """Engine test (docs/DEV_MODE.md): a real install whose text stages use a tiny model's thresholds.
+        A dev install runs a fake language model on fixtures, so the answer counts for a real install only."""
+        return not self.dev_mode and self.ensure_answers().tiny_story
+
+    @property
     def tier(self) -> str:
         """LLM tier from the answers (small, balanced, best)."""
         return self.ensure_answers().llm_tier
