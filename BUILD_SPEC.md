@@ -591,7 +591,7 @@ States: `stopped|starting|ready|stopping|error`. Owners: `opencode`, `studio:<jo
 Standard llama-server `POST /v1/embeddings` `{input:[...]}` → OpenAI-shaped response. `ns_common.embed_client.embed(texts) -> list[list[float]]`, `cosine(a,b)`.
 
 ### 15.6 JSON schemas (`contracts/schemas/`)
-`channel, runtime, install_state, answers, manifest, idea, plan, story, parts, seo, seo_long, shorts_plan, chapters, visual_plan, qc, policy, metadata, combo, analytics_row, calibration_row, gate_report, transcript, clip_plan, clip_layout, clip_template, dashboard_job`.
+`channel, runtime, install_state, answers, manifest, idea, plan, story, parts, seo, seo_long, shorts_plan, chapters, visual_plan, qc, policy, metadata, combo, analytics_row, calibration_row, gate_report, transcript, clip_plan, clip_layout, clip_template`. There is no `dashboard_job` schema: a dashboard job is a row of the `dashboard_jobs` table (§15.7), read by the dashboard-local `ns_dashboard.jobs.JobRecord` whose `to_dict()` is the API object of `/api/jobs` (the request bodies are `job_run_request` and `job_clip_request`).
 - `transcript`: `{source, duration_s, language, segments:[{i, start, end, text, speaker?}], words:[{w, start, end, seg}]}`
 - `clip_plan`: `[{k, start_s, end_s, title, hook_line?, why, score:0-1, speakers?:[..], keywords[]}]`
 - `clip_layout`: `{template, facecam?:{x,y,w,h}, faces:[{t, boxes:[{x,y,w,h}]}], crops:[{t_start, t_end, region:{x,y,w,h}}]}`
