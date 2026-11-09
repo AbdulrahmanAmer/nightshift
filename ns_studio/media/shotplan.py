@@ -40,6 +40,7 @@ class Shot:
     url: str
     license: str
     keyword: str
+    relaxed: bool = False  # picked by the NS-W405 relaxation: the reuse windows were dropped
 
     @property
     def length(self) -> float:

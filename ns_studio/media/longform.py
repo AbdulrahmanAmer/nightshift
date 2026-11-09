@@ -21,7 +21,15 @@ from ns_studio.media.caption_plan import (
 from ns_studio.media.captions import _ass_color as ass_color
 from ns_studio.media.captions import _ass_time as ass_time
 from ns_studio.media.captions import build_ass, caption_band, ensure_contrast, shift_words
-from ns_studio.media.clips import ClipCache, Searcher, assign_clips, blocked_for_job, clip_seed, fallback_beat
+from ns_studio.media.clips import (
+    ClipCache,
+    Searcher,
+    assign_clips,
+    blocked_for_job,
+    clip_seed,
+    fallback_beat,
+    make_lemmatizer,
+)
 from ns_studio.media.master import (
     CARD_S,
     ChapterTiming,
@@ -131,7 +139,7 @@ def run_clips_master(ctx: JobContext) -> None:
     treatment = visual_treatment(ctx.combo.visual_treatment)
     cache = ClipCache(ctx.db, ctx.paths, ctx.services.clip_sources, log=ctx.log)
     cache.purge_expired()
-    searcher = Searcher(ctx.services.clip_sources, log=ctx.log)
+    searcher = Searcher(ctx.services.clip_sources, log=ctx.log, lemma=make_lemmatizer(ctx.paths))
     blocked = blocked_for_job(ctx, ("clips/shots.json",))
     used: set[tuple[str, str]] = set()
     shots: list[Shot] = []
@@ -144,6 +152,7 @@ def run_clips_master(ctx: JobContext) -> None:
         got = assign_clips(
             beats=beats, slots=slots, searcher=searcher, cache=cache, blocked=blocked, seed=seed,
             wanted="landscape", used=used, allow_other=False,
+            extra_keywords=ctx.channel.seed_keywords,
         )
         shots += [_shift(s, t.audio_start) for s in got]
         ctx.log.info("clips_selected", job_id=ctx.job_id, item="long", chapter=ch.n, shots=len(got))
