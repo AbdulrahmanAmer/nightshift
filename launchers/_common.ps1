@@ -252,7 +252,7 @@ function Sync-NsOpenCodePort {
         $port = 8080
         $runtime = Join-Path (Get-NsHome) 'config\runtime.json'
         if (Test-Path -LiteralPath $runtime) {
-            $rt = Get-Content -LiteralPath $runtime -Raw | ConvertFrom-Json
+            $rt = Get-Content -LiteralPath $runtime -Raw -Encoding UTF8 | ConvertFrom-Json
             if ($rt.PSObject.Properties.Name -contains 'llama') {
                 $llama = $rt.llama
                 if ($llama.PSObject.Properties.Name -contains 'host') { $hostName = [string]$llama.host }
@@ -260,7 +260,9 @@ function Sync-NsOpenCodePort {
             }
         }
         $url = 'http://' + $hostName + ':' + $port + '/v1'
-        $cfg = Get-Content -LiteralPath $file -Raw | ConvertFrom-Json
+        # -Encoding UTF8: Windows PowerShell 5.1 reads a BOM-less file as ANSI, which would double-encode any
+        # non-ASCII text the owner put in the file when it is written back as UTF-8 below.
+        $cfg = Get-Content -LiteralPath $file -Raw -Encoding UTF8 | ConvertFrom-Json
         if (-not ($cfg.PSObject.Properties.Name -contains 'provider')) { return }
         if (-not ($cfg.provider.PSObject.Properties.Name -contains 'local')) { return }
         $options = $cfg.provider.local.options

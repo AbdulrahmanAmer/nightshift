@@ -205,6 +205,20 @@ def test_sync_opencode_port_rewrites_only_the_base_url(tmp_path: Path) -> None:
 
 
 @needs_powershell
+def test_sync_opencode_port_keeps_non_ascii_text_intact(tmp_path: Path) -> None:
+    """Windows PowerShell 5.1 reads a BOM-less file as ANSI unless told UTF-8; edited text must survive."""
+    edited = json.loads(json.dumps(OPENCODE_JSON))
+    edited["provider"]["local"]["name"] = "Nightshift Local Qwen — café مرحبا"
+    runtime = json.dumps({"llama": {"host": "127.0.0.1", "port": 9191}})
+    text = json.dumps(edited, indent=2, ensure_ascii=False) + "\n"
+    assert "café" in text                                          # really raw UTF-8 on disk
+    _out, target = run_sync(tmp_path, runtime, text)
+    got = json.loads(target.read_bytes().decode("utf-8"))
+    edited["provider"]["local"]["options"]["baseURL"] = "http://127.0.0.1:9191/v1"
+    assert got == edited
+
+
+@needs_powershell
 def test_sync_opencode_port_leaves_a_matching_or_absent_file_alone(tmp_path: Path) -> None:
     same = json.dumps(OPENCODE_JSON)
     _out, target = run_sync(tmp_path / "a", json.dumps({"llama": {"port": 8080}}), same)
