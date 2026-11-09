@@ -326,6 +326,18 @@ class JobStore:
                 "UPDATE dashboard_jobs SET progress = ?, message = ? WHERE job_id = ?", (p, message, job_id)
             )
 
+    def set_queued_message(self, job_id: str, message: str) -> bool:
+        """Write the message of a job only while it is still `queued`; True when it was written.
+
+        The hold text is written from a snapshot taken a moment earlier, on the request thread (Channels pause
+        and resume) or the worker's; the job may have started or been cancelled since, and then its own
+        message and progress must stay (one UPDATE with the status in the WHERE, no read-then-write)."""
+        changed = self.db.execute(
+            "UPDATE dashboard_jobs SET progress = 0.0, message = ? WHERE job_id = ? AND status = 'queued'",
+            (message, job_id),
+        )
+        return changed > 0
+
     def finish(self, job_id: str, status: str, message: str, result: dict[str, Any] | None = None) -> None:
         """Terminal state; merges `result` into `params_json`."""
         with self.db.tx():
@@ -719,16 +731,16 @@ class JobWorker:
             self.log.warn("hold_check_failed", str(e), job_id=rec.job_id)
             reason = None
         if reason is not None:
-            if rec.message != reason:
-                self.store.update_progress(rec.job_id, 0.0, reason)
+            if rec.message != reason and self.store.set_queued_message(rec.job_id, reason):
                 self.log.info("job_held", job_id=rec.job_id, channel=rec.channel, reason=reason)
                 self._publish(rec.job_id)
         elif rec.message.startswith(HELD_PREFIX):
             at = rec.not_before()
             later = at is not None and not self.store.is_due(rec)
-            self.store.update_progress(rec.job_id, 0.0, scheduled_text(at) if at and later else "Queued")
-            self.log.info("job_released", job_id=rec.job_id, channel=rec.channel)
-            self._publish(rec.job_id)
+            text = scheduled_text(at) if at and later else "Queued"
+            if self.store.set_queued_message(rec.job_id, text):
+                self.log.info("job_released", job_id=rec.job_id, channel=rec.channel)
+                self._publish(rec.job_id)
         return reason
 
     def refresh_holds(self) -> None:

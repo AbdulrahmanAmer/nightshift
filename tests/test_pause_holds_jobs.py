@@ -419,3 +419,38 @@ def test_a_run_job_with_a_count_makes_all_videos_when_nobody_pauses(pausing_stag
     assert PausingStage.made == 3 and len(seen) == 3
 
 
+def test_a_stale_hold_never_overwrites_the_message_of_a_job_that_started(tmp_home: Path):
+    """The Channels pause (request thread) holds a snapshot of the job; the worker may start the job before
+    the message is written. The running job keeps its own message and progress."""
+    client, state, _, _ = setup(tmp_home)
+    job = queue_run(client)
+    stale = state.store.get(job["job_id"])
+    assert stale is not None
+    state.store.mark_running(job["job_id"])
+    state.store.update_progress(job["job_id"], 0.4, "Writing the story")
+    state.worker.hold = lambda rec: "Paused: After Dark is paused; resume it to release this job"
+    assert state.worker._held(stale) is not None
+    now = job_of(client, job["job_id"])
+    assert now["status"] == "running"
+    assert now["message"] == "Writing the story" and now["progress"] == pytest.approx(40.0)
+    # the release path (a snapshot that still reads "Paused: ...") is guarded the same way
+    stale.message = "Paused: After Dark is paused; resume it to release this job"
+    state.worker.hold = lambda rec: None
+    assert state.worker._held(stale) is None
+    now = job_of(client, job["job_id"])
+    assert now["message"] == "Writing the story" and now["progress"] == pytest.approx(40.0)
+
+
+def test_a_stale_hold_never_overwrites_the_message_of_a_cancelled_job(tmp_home: Path):
+    client, state, _, _ = setup(tmp_home)
+    job = queue_run(client)
+    stale = state.store.get(job["job_id"])
+    assert stale is not None
+    cancelled = client.post(f"/api/jobs/{job['job_id']}/cancel").json()
+    state.worker.hold = lambda rec: "Paused: After Dark is paused; resume it to release this job"
+    state.worker._held(stale)
+    now = job_of(client, job["job_id"])
+    assert now["status"] == "cancelled" and now["message"] == cancelled["message"]
+    assert not now["message"].startswith("Paused")
+
+
