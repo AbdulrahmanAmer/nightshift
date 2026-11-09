@@ -153,11 +153,12 @@ If the same red error comes back after one retry, do not guess: press **Save a h
 
 1. Open **Nightshift Dashboard** on your Desktop. A small "Nightshift Engine" window appears and the dashboard opens
    in its own Nightshift window (no browser tabs; it opens once, a second click brings it to the front). If that window
-   cannot start on this PC, Nightshift opens a browser app window instead by itself and you do nothing. The
+   cannot start on this PC, Nightshift opens an Edge or Chrome app window instead by itself (your default browser
+   when neither is installed) and you do nothing. The
    dashboard opens on the **Queue** page.
 2. Open **Create**, choose **A new story video**, then **One Short** (fastest, a few minutes) or
    **Full video + Shorts** (a long video plus Shorts, about an hour). Pick the channel (change the idea or the voice
-   if you want to), leave **When** on now and press **Start**. The job's card in the Queue names the stage it is at:
+   if you want to), leave **When to start** on **Now** and press **Start**. The job's card in the Queue names the stage it is at:
    Writing the story, Recording narration, Adding captions, Finding footage, Rendering, Checking quality. A full
    video says Writing the chapters and Rendering the full video, and adds making thumbnails and cutting the Shorts.
 3. When it is done, open **Queue**, tab **Ready**. Watch the video, read the notes, press **Approve** or **Reject**
@@ -231,7 +232,7 @@ the install is finished: the window then opens on **Nightshift is ready** (same 
 
 ## Start a video later
 
-In **Create**, the **When** step lets you choose a start time instead of "now". The job waits in the queue
+In **Create**, the **When** step lets you choose **Pick a time** instead of **Now**. The job waits in the queue
 (Queue shows "Scheduled for ...") and starts at that time or as soon as Nightshift is running after it.
 You can cancel it any time before. A waiting job does not keep Nightshift awake: if the PC is asleep or Nightshift
 was closed at that time, the job starts the next time the Dashboard opens or the nightly run begins. Nothing wakes a closed Nightshift at that time, and **Quit Nightshift** warns you when jobs are waiting.
@@ -278,14 +279,23 @@ instead of ours. To change a prompt, copy its file from `ns_studio\prompts\` to 
 ## If YouTube sends a warning or strike
 
 If YouTube sends a warning, a strike or a monetization notice about a channel, stop that channel first and look at
-what it made before it makes anything else. Videos that are already made stay in the Queue. The night run skips a
-paused channel and the Dashboard refuses to start a story video for it (the Clipper does not check whether the
-channel is paused).
+what it made. A pause stops only new work: the night run skips a paused channel and the Dashboard refuses to start
+a story video for it (the Clipper does not check whether the channel is paused). Videos that are already made
+stay in the Queue. A story video that is already queued or scheduled (Create > **Pick a time**) still runs after
+the pause, because the Dashboard does not look at the channel again when it starts a waiting job: open **Create**
+and press **Cancel** on every job of that channel under **Working now**.
 
-Type the commands in a terminal (Windows Terminal or Command Prompt, opened after setup finished) with the full
-path of the studio program in the install folder, `"<install folder>\venvs\studio\Scripts\studio.exe"`; they are
-written as `studio` below. The **Nightshift Studio** shortcut takes the same commands but splits what you type at
-every space, so it cannot take a notice with several words: use a terminal for step 1.
+Type the commands in a terminal opened after setup finished, with the full path of the studio program in the
+install folder. Windows Terminal opens PowerShell, and there the quoted path needs `&` in front of it, or
+PowerShell stops with "Unexpected token":
+
+- PowerShell: `& "<install folder>\venvs\studio\Scripts\studio.exe" pause <channel-id> --reason "<notice text>"`
+- Command Prompt: `"<install folder>\venvs\studio\Scripts\studio.exe" pause <channel-id> --reason "<notice text>"`
+
+To resume, the same with `resume <channel-id>` in place of the `pause` part (`& "<install folder>\venvs\studio\Scripts\studio.exe" resume <channel-id>`
+in PowerShell). The same goes for every other command below (`status`, `channel`); they are written as `studio` from
+here on. The **Nightshift Studio** shortcut takes the same commands but splits what you type at every space, so it cannot
+take a notice with several words: use a terminal for step 1.
 
 1. **Pause the channel and keep the notice.** `studio pause <channel-id> --reason "<notice text>"` (`studio channel
    list` shows the ids). The reason is required. It is stored as an incident and `studio status` shows it. The
@@ -296,7 +306,7 @@ every space, so it cannot take a notice with several words: use a terminal for s
    the policy notes the app is built around (spec 18.2 to 18.4):
    - Policies: is it original writing, not repetitive or template-like content or a repost? Does the sheet answer
      "Altered content" with Yes when anything could be taken for real footage of a real person, place or event?
-   - Content safety: no real, named people or brands as villains, no real crimes or tragedies presented as fact, no
+   - Content safety: no real, named people (living or dead) in any role, no real brands as villains, no real crimes or tragedies presented as fact, no
      minors in sexual, violent or endangering situations, no graphic gore, self-harm methods, weapon or drug
      instructions, hate or harassment, no medical, legal, financial or political advice, nothing that imitates
      news or emergency alerts.

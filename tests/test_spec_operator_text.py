@@ -555,3 +555,92 @@ def test_counts_table_matches_every_area():
     total = by_name["All"]
     assert [int(total[i]) for i in (2, 3, 4)] == [sum(c[s] for c in per_area.values()) for s in statuses]
     assert sum(int(total[i]) for i in (1, 2, 3, 4)) == int(total[5])
+
+
+# ---------------------------------------------------------------------------------------------------------
+# P41 review round: PowerShell-safe commands, what a pause stops, 18.3, section 8, window and label words
+# ---------------------------------------------------------------------------------------------------------
+STUDIO_PATH = "venvs\\studio\\Scripts\\studio.exe"
+STUDIO_EXE = '"<install folder>\\' + STUDIO_PATH + '"'
+
+
+def _flat(text: str) -> str:
+    return " ".join(text.split())
+
+
+@pytest.mark.parametrize("name", ["README.md", "OPERATOR.md"])
+def test_a_quoted_path_with_arguments_is_safe_in_powershell(name):
+    """Windows Terminal opens PowerShell, where `"path" pause x` is a parse error: it needs `& ` in front.
+
+    Every command line in the incident section that starts with the quoted path and carries arguments must
+    have the call operator before it, or be labelled "Command Prompt" right in front of the command (cmd.exe
+    runs it as is). The section must show the PowerShell form for pause and for resume.
+    """
+    flat = _flat(doc_section(README if name == "README.md" else GUIDE, HEADING))
+    assert f"& {STUDIO_EXE} pause" in flat
+    assert f"& {STUDIO_EXE} resume" in flat
+    assert "Command Prompt" in flat and "PowerShell" in flat
+    for m in re.finditer(re.escape(STUDIO_EXE) + r" [a-z]", flat):
+        before = flat[: m.start()]
+        label = before[-30:]  # the list label right in front of the command, e.g. "- Command Prompt: "
+        assert before.endswith("& ") or "Command Prompt" in label, flat[m.start() - 60 : m.end() + 20]
+
+
+def test_readme_names_the_full_path_of_the_studio_program():
+    """Nothing puts `studio` on the PATH: the README section says what to type instead."""
+    flat = _flat(doc_section(README, HEADING))
+    assert STUDIO_PATH in flat and "OPERATOR.md" in flat
+
+
+def test_a_pause_stops_new_work_only_and_the_guide_says_so():
+    """`ns_dashboard/jobs.py` runs a queued or scheduled job without looking at the channel's status."""
+    from ns_dashboard import jobs
+
+    assert "paused" not in inspect.getsource(jobs), "jobs.py checks the channel now: update the guide and D38"
+    flat = _flat(doc_section(GUIDE, HEADING))
+    assert "only new work" in flat and "Pick a time" in flat
+    assert "already queued or scheduled" in flat and "Cancel" in flat
+    assert "before it makes anything else" not in flat
+    d = decision("Incident procedure")
+    assert "ns_dashboard/jobs.py" in d and "scheduled" in d
+
+
+def test_the_content_safety_checklist_is_not_narrower_than_18_3():
+    rules = spec_section("### 18.3")
+    first = next(ln for ln in rules.splitlines() if ln.startswith("- Real, named people"))
+    assert "(living or dead)" in first and "real brands as villains" in first
+    flat = _flat(doc_section(GUIDE, HEADING))
+    assert "no real, named people (living or dead) in any role" in flat
+    assert "no real brands as villains" in flat
+    assert "named people or brands as villains" not in flat
+
+
+def test_section_8_bullet_says_a_derived_short_gets_its_bucket_from_the_plan():
+    """`draw_short_combos` fixes structure, pov_tone, pacing and length_bucket; D37 says so."""
+    from ns_studio.variation import short_draw
+
+    src = inspect.getsource(short_draw.draw_short_combos)
+    fixed = src.split("fixed = {", 1)[1].split("}", 1)[0]
+    for key in ("structure", "pov_tone", "pacing", "length_bucket"):
+        assert f'"{key}"' in fixed, key
+    for key in ("hook", "caption_style", "visual_treatment", "title_formula"):
+        assert f'"{key}"' not in fixed, key
+    bullet = next(ln for ln in spec_section("## 8.").splitlines() if ln.startswith("- Combo per video"))
+    flat = _flat(bullet)
+    assert "each Short draws its own `hook, caption_style, visual_treatment, title_formula`" in flat
+    assert "draws its own `hook, caption_style, visual_treatment, title_formula, length_bucket`" not in flat
+    assert "`length_bucket` is the one the Shorts plan gives" in flat
+    assert cites(flat, decision_id("Derived Shorts"))
+
+
+def test_the_when_control_is_called_by_its_label_and_the_window_may_be_a_browser():
+    create = tsx("pages/Create.tsx")
+    assert 'label="When to start"' in create and '"Pick a time"' in create
+    first = _flat(doc_section(GUIDE, "## Make your first video"))
+    assert "leave **When to start** on **Now**" in first and "leave **When** on now" not in first
+    later = _flat(doc_section(GUIDE, "## Start a video later"))
+    assert "**When** step" in later and "**Pick a time**" in later
+    launcher = (ROOT / "launchers" / "nightshift-dashboard.ps1").read_text(encoding="utf-8")
+    assert "otherwise the default browser" in launcher and "Start-Process $url" in launcher
+    for text in (first, _flat(spec_section("### J2")), _flat(decision("Dashboard home"))):
+        assert "default browser" in text
