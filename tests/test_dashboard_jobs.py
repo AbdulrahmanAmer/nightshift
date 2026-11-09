@@ -147,6 +147,26 @@ def test_failure_paths_record_message(tmp_home: Path):
     assert rc.status == "failed" and "no handler" in rc.message
 
 
+def test_a_hint_attached_to_the_error_reaches_the_failed_job(tmp_home: Path):
+    """D-25: a script job's NS-E605 says what to do with a script, not 'a new idea will be drawn'."""
+
+    def script_too_similar(ctl: JobControl) -> None:
+        raise NsError("NS-E605", "self_similarity: x", hint="Change the script, or use the finished video.")
+
+    def idea_too_similar(ctl: JobControl) -> None:
+        raise NsError("NS-E605", "self_similarity: x")
+
+    store, worker, _hub, _ = build(tmp_home, {"run": script_too_similar, "clip": idea_too_similar})
+    a = store.create("run", None, {})
+    b = store.create("clip", None, {})
+    worker.run_next()
+    worker.run_next()
+    ra, rb = store.get(a.job_id), store.get(b.job_id)
+    assert ra is not None and rb is not None and ra.result is not None and rb.result is not None
+    assert ra.result["error"]["hint"] == "Change the script, or use the finished video."
+    assert "a new idea will be drawn" in rb.result["error"]["hint"]
+
+
 def test_recover_interrupted_on_start(tmp_home: Path):
     """A job killed mid-run (engine stopped, PC restarted) keeps its stage and the studio jobs it
     announced."""

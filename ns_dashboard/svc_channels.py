@@ -115,24 +115,32 @@ class ChannelsService:
 
     def create(self, body: dict[str, Any]) -> dict[str, Any]:
         """New channel; 409 when the slug is taken."""
-        slug = str(body.get("slug", ""))
-        if slug and self.exists(slug):
-            raise ApiError(409, "channel_exists", f"A channel called '{slug}' already exists.")
-        ch, warnings = self._checked(body)
+        ch, warnings = self.check_create(body)
         ch = ch.model_copy(update={"created_at": ch.created_at or now_iso()})
         save_channel(self.s.paths, ch)
         self._mirror(ch)
         self.s.log.info("channel_created", slug=ch.slug)
         return {"profile": ch.model_dump(mode="json"), **_flat_warnings(warnings)}
 
-    def update(self, slug: str, body: dict[str, Any]) -> dict[str, Any]:
-        """Replace a profile; the slug cannot change."""
+    def check_create(self, body: dict[str, Any]) -> tuple[Channel, list[dict[str, str]]]:
+        """The channel `create` would save, or the ApiError it would raise (nothing is written)."""
+        slug = str(body.get("slug", ""))
+        if slug and self.exists(slug):
+            raise ApiError(409, "channel_exists", f"A channel called '{slug}' already exists.")
+        return self._checked(body)
+
+    def check_update(self, slug: str, body: dict[str, Any]) -> tuple[Channel, list[dict[str, str]]]:
+        """The channel `update` would save, or the ApiError it would raise (nothing is written)."""
         old = self.load(slug)
         if body.get("slug", slug) != slug:
             raise ApiError(422, "invalid_profile", "The channel id cannot be changed.",
                            details=[{"field": "slug", "message": "The channel id cannot be changed."}])
         draft = {**body, "slug": slug, "created_at": body.get("created_at") or old.created_at}
-        ch, warnings = self._checked(draft, slug, old.voice)
+        return self._checked(draft, slug, old.voice)
+
+    def update(self, slug: str, body: dict[str, Any]) -> dict[str, Any]:
+        """Replace a profile; the slug cannot change."""
+        ch, warnings = self.check_update(slug, body)
         save_channel(self.s.paths, ch)
         self._mirror(ch)
         self.s.log.info("channel_updated", slug=slug)

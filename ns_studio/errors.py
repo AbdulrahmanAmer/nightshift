@@ -6,10 +6,20 @@
 
 from __future__ import annotations
 
-from ns_common.errors import describe
+from ns_common.errors import NsError, describe
 
 #: Code used when a job dies on an exception that carries no code of its own (a bug or a corrupt file).
 UNEXPECTED = "NS-E327"
+
+
+def hint_of(e: NsError) -> str:
+    """The hint to show for `e`: the one a check attached for this very job, else the one in `errors.json`.
+
+    A check passes `hint=...` to `NsError` when the generic text would mislead (NS-E605 on a job made from
+    the owner's own script must not promise that a new idea will be drawn).
+    """
+    custom = e.data.get("hint")
+    return custom if isinstance(custom, str) and custom else e.definition.hint
 
 
 def describe_unexpected(e: BaseException) -> str:

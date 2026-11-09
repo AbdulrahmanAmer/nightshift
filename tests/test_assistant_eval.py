@@ -1,5 +1,6 @@
 # ruff: noqa: E501
-"""The offline Assistant evaluation: the partner's 20 questions on the scripted fake model, in ordinary pytest.
+"""The offline Assistant evaluation: the partner's 20 questions and the two ways to ask for a video (a story the
+model writes, a script the owner gives), on the scripted fake model, in ordinary pytest.
 
 For every case: topics and tools offered (router), what `search_docs` may serve (retrieval scope), the token
 budget of every request, and the confirm gate. See `ns_dashboard/assistant/eval.py` and
@@ -24,16 +25,22 @@ def home(tmp_home: Path) -> fixture_home.FixtureHome:
     return fixture_home.build(tmp_home)
 
 
-def test_the_cases_file_holds_the_twenty_questions(home: fixture_home.FixtureHome):
+def test_the_cases_file_holds_the_questions_and_both_video_phrasings(home: fixture_home.FixtureHome):
     cases = load_cases(CASES, home.ids, fixture_home.SECRET)
-    assert [c.id for c in cases] == list(range(1, 21))
+    assert [c.id for c in cases] == list(range(1, 23))
+    # D-27: a story request and a script request, each with the tool it must reach and the tool it must not
+    story = next(c for c in cases if c.id == 21)
+    script = next(c for c in cases if c.id == 22)
+    assert story.confirm == ["start_story_job"] and story.forbidden == ["start_script_job"]
+    assert script.confirm == ["start_script_job"] and script.forbidden == ["start_story_job"]
+    assert "script" in script.question.lower() and "script" not in story.question.lower()
     assert all(c.gold and c.topics for c in cases)
     assert fixture_home.SECRET in next(c for c in cases if c.id == 3).question
     assert next(c for c in cases if c.id == 5).context["output_id"] == home.ids["review_id"]
 
 
 @pytest.mark.parametrize("ctx", [16384, 32768])
-def test_all_twenty_cases_pass_offline(home: fixture_home.FixtureHome, ctx: int):
+def test_all_cases_pass_offline(home: fixture_home.FixtureHome, ctx: int):
     results = [run_case(home.dash, c, ctx_tokens=ctx) for c in load_cases(CASES, home.ids, fixture_home.SECRET)]
     failed = [r for r in results if not r.ok]
     assert not failed, "\n" + render_markdown(results)

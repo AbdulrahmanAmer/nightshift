@@ -243,7 +243,7 @@ class StepContext:
             with self.ui.reporter(total_bytes(pending(items))) as rep:
                 return run_plan(
                     items, client=client, models_source=models_source, reporter=rep, sleep=self.sleep,
-                    fetch=fetch, gate=self.gate,
+                    fetch=fetch, gate=self.gate, log=self.log,
                 )
         finally:
             client.close()

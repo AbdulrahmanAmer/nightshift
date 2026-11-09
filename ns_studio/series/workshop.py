@@ -418,18 +418,9 @@ class Workshop:
         that the arc pays off; open problems are listed in `warnings`. Raises WorkshopError when the
         numbers are out of range or parts were already written.
         """
-        if not MIN_MINUTES <= minutes_per_part <= MAX_MINUTES:
-            raise WorkshopError(
-                f"minutes_per_part must be {MIN_MINUTES}-{MAX_MINUTES}, got {minutes_per_part}"
-            )
-        if not 1 <= parts <= MAX_PARTS:
-            raise WorkshopError(f"parts must be 1-{MAX_PARTS}, got {parts}")
+        self._check_map_numbers(parts, minutes_per_part)
         sd, status, ch = self._open(slug)
-        concept = sd.read_concept()
-        if not concept.premise.strip() or concept.title == "Untitled":
-            raise WorkshopError("choose a concept first (Library > Series, or ask the Assistant to pick one)")
-        if any(p.status != "planned" for p in status.parts.values()):
-            raise WorkshopError("parts are already written; edit series.md by hand instead of re-mapping")
+        concept = self._check_map_state(sd, status)
         with self._llm(slug):
             ctx = self._ctx(ch, slug, "map")
             out = call_json(ctx, "workshop_map", concept=concept.model_dump(), parts=parts,
@@ -921,6 +912,12 @@ class Workshop:
         formats when the channel has no such list); styles must exist in the preset files.
         """
         sd, _status, ch = self._open(slug)
+        doc = self._design_doc(sd, ch, fields)
+        sd.write_design(doc)
+        return doc
+
+    def _design_doc(self, sd: StoryDir, ch: Channel, fields: dict[str, Any]) -> DesignDoc:
+        """`fields` merged into the saved design and validated; WorkshopError names what is wrong."""
         data = (sd.read_design() or DesignDoc()).model_dump()
         for key, value in fields.items():
             if value is None:
@@ -945,8 +942,69 @@ class Workshop:
         for key, allowed in options.items():
             if getattr(doc, key) not in allowed:
                 raise WorkshopError(f"{key} {getattr(doc, key)!r} is not allowed; choose from {allowed}")
-        sd.write_design(doc)
         return doc
+
+    def check(self, tool: str, args: dict[str, Any]) -> None:
+        """Refuse what workshop tool `tool` would refuse before it calls a model or writes a file.
+
+        The Assistant calls this before it shows a confirm card, so the owner is never asked to say Yes to a
+        step that stops at once (WorkshopError): unknown story or channel, a missing draft, a bad part number
+        for the map, a part in the wrong state, a missing design, a design value that is not allowed.
+        """
+        if tool == "workshop_start":
+            self.channel(str(args["channel"]))
+            return
+        sd, status, ch = self._open(str(args["slug"]))
+        if tool in ("workshop_regenerate", "workshop_choose"):
+            letter = str(args["letter"]).strip().upper()
+            if tool == "workshop_regenerate" and not str(args["feedback"]).strip():
+                raise WorkshopError("feedback is empty; say what should change")
+            if not sd.draft(letter).exists():
+                drafts = sd.draft_letters()
+                raise WorkshopError(f"story {args['slug']!r} has no draft {letter}; drafts: {drafts}")
+        elif tool == "workshop_map":
+            self._check_map_numbers(int(args["parts"]), int(args.get("minutes_per_part", DEFAULT_MINUTES)))
+            self._check_map_state(sd, status)
+        elif tool in ("workshop_write_part", "workshop_revise_part"):
+            n = int(args["n"])
+            sd.read_series().entry(n)
+            if status.parts.get(n, PartState()).status in ("producing", "produced", "published"):
+                verb = "rewritten" if tool == "workshop_write_part" else "revised"
+                raise WorkshopError(f"part {n} is already in production; it cannot be {verb}")
+            if tool == "workshop_revise_part":
+                if not str(args["feedback"]).strip():
+                    raise WorkshopError("feedback is empty; say what should change")
+                sd.read_script(n)
+        elif tool == "workshop_approve":
+            self._pick(status, sd.read_series(), args.get("part", "all"), ("written", "approved"), "approve")
+        elif tool == "workshop_produce":
+            series = sd.read_series()
+            if sd.read_design() is None:
+                raise WorkshopError(
+                    "no design yet: set the series design first (Library > Series, or ask the Assistant)"
+                )
+            self._pick(status, series, args.get("part", "all"), ("approved",), "produce")
+        elif tool == "workshop_design":
+            self._design_doc(sd, ch, {k: v for k, v in args.items() if k != "slug"})
+
+    @staticmethod
+    def _check_map_numbers(parts: int, minutes_per_part: int) -> None:
+        if not MIN_MINUTES <= minutes_per_part <= MAX_MINUTES:
+            raise WorkshopError(
+                f"minutes_per_part must be {MIN_MINUTES}-{MAX_MINUTES}, got {minutes_per_part}"
+            )
+        if not 1 <= parts <= MAX_PARTS:
+            raise WorkshopError(f"parts must be 1-{MAX_PARTS}, got {parts}")
+
+    @staticmethod
+    def _check_map_state(sd: StoryDir, status: StatusDoc) -> ConceptDoc:
+        """The chosen concept; WorkshopError when none is chosen yet or parts were already written."""
+        concept = sd.read_concept()
+        if not concept.premise.strip() or concept.title == "Untitled":
+            raise WorkshopError("choose a concept first (Library > Series, or ask the Assistant to pick one)")
+        if any(p.status != "planned" for p in status.parts.values()):
+            raise WorkshopError("parts are already written; edit series.md by hand instead of re-mapping")
+        return concept
 
     def design_choices(self, slug: str) -> dict[str, list[str]]:
         """The allowed values per design field for the story's channel."""

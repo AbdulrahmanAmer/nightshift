@@ -35,6 +35,7 @@ from ns_dashboard.security import is_loopback_host, is_loopback_origin
 from ns_dashboard.state import AppState
 from ns_dashboard.supervisor_link import EventRelay, SupervisorLink
 from ns_dashboard.uploads import tmp_dir
+from ns_studio.errors import hint_of
 
 TRUE_WORDS = {"true", "1", "on", "yes"}
 CSP = (
@@ -182,7 +183,7 @@ def create_app(
 
     @app.exception_handler(NsError)
     async def _ns_error(_req: Request, exc: NsError) -> SafeJSONResponse:
-        body = {"error": {"code": exc.code, "message": str(exc), "hint": exc.definition.hint}}
+        body = {"error": {"code": exc.code, "message": str(exc), "hint": hint_of(exc)}}
         return ok(body, 500)
 
     @app.exception_handler(AdapterUnavailable)

@@ -75,6 +75,9 @@ def run_stage(ctx: JobContext, stage: Stage, *, force: bool = False) -> bool:
     outputs_exist = all(ctx.file(o).exists() for o in stage.outputs)
     if not force and outputs_exist and StageState.load(ctx.job_dir).is_done(stage.name, h):
         ctx.log.info("stage_skip", stage=stage.name, job_id=ctx.job_id)
+        recheck = getattr(stage, "recheck_on_skip", None)  # a gate that reads state outside its inputs
+        if recheck is not None:
+            recheck(ctx)
         return False
     with ctx.log.timed("stage", stage=stage.name, job_id=ctx.job_id, tenant=stage.tenant):
         stage.run(ctx)

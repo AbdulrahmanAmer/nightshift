@@ -20,7 +20,8 @@ DATA = bytes(range(256)) * 4096          # 1 MiB
 SHA = hashlib.sha256(DATA).hexdigest()
 
 
-def make_client(data: bytes = DATA, *, ranges: bool = True, calls: list | None = None, fail_first: int = 0):
+def make_client(data: bytes = DATA, *, ranges: bool = True, calls: list | None = None, fail_first: int = 0,
+                fail_error: bool = False):
     state = {"gets": 0}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -30,6 +31,8 @@ def make_client(data: bytes = DATA, *, ranges: bool = True, calls: list | None =
             return httpx.Response(200, headers={"content-length": str(len(data))})
         state["gets"] += 1
         if state["gets"] <= fail_first:
+            if fail_error:      # a dropped connection; a 5xx is the site's trouble
+                raise httpx.ConnectError("connection reset", request=request)
             return httpx.Response(500)
         rng = request.headers.get("range")
         if rng and ranges:
@@ -753,7 +756,7 @@ def test_run_plan_tells_the_reporter_about_a_retry(tmp_path: Path):
 
     rec = Rec()
     item = dl.DownloadItem(name="f0", url="https://x.test/f0", dest=tmp_path / "f0", sha256=SHA)
-    res = dl.run_plan([item], client=make_client(fail_first=1), reporter=rec, sleep=no_sleep)
+    res = dl.run_plan([item], client=make_client(fail_first=1, fail_error=True), reporter=rec, sleep=no_sleep)
     assert res.downloaded == ["f0"] and rec.retries == [("f0", 1, "network", 2.0)]
     plain = _Rec()                                       # a reporter without ``retrying`` is simply not told
     item2 = dl.DownloadItem(name="f1", url="https://x.test/f1", dest=tmp_path / "f1", sha256=SHA)

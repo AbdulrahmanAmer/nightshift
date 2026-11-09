@@ -104,6 +104,14 @@ class SettingsService:
             "next_run": nxt.isoformat(timespec="minutes") if nxt else None,
         }
 
+    @staticmethod
+    def check_settings(body: dict[str, Any]) -> None:
+        """Refuse a schedule time or notifications value `put_settings` would refuse (also the Assistant's card gate)."""
+        if "schedule_time" in body and not TIME_RE.match(str(body["schedule_time"])):
+            raise ApiError(422, "bad_time", "Use a 24-hour time like 03:00.")
+        if "notifications" in body and not isinstance(body["notifications"], bool):
+            raise ApiError(422, "invalid_options", "'notifications' must be true or false.")
+
     def put_settings(self, body: dict[str, Any], unlock: bool = False) -> dict[str, Any]:
         """Save the schedule, notifications and (only when unlocked) runtime flags."""
         unlocked = unlock or body.get("unlock") is True
@@ -116,14 +124,10 @@ class SettingsService:
                 )
             self._save_runtime(body)
         updates: dict[str, Any] = {}
+        self.check_settings(body)
         if "schedule_time" in body:
-            value = str(body["schedule_time"])
-            if not TIME_RE.match(value):
-                raise ApiError(422, "bad_time", "Use a 24-hour time like 03:00.")
-            updates["run_time"] = value
+            updates["run_time"] = str(body["schedule_time"])
         if "notifications" in body:
-            if not isinstance(body["notifications"], bool):
-                raise ApiError(422, "invalid_options", "'notifications' must be true or false.")
             updates["notifications"] = body["notifications"]
         if "run_time" in updates:  # the task first: a time Windows refused must not be remembered as the schedule
             schedule_result = self.s.adapters.schedule.apply(updates["run_time"])

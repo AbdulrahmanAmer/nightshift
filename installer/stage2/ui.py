@@ -76,6 +76,13 @@ class RichReporter:
             if task is not None:
                 self._progress.update(task, description=f"{name[-30:]} [{outcome}]")
 
+    def site_wait(self, name: str, host: str, status: int, wait_s: float, left_s: float) -> None:
+        """A download site answered 5xx or 429: print the wait above the bars (host, status, time left)."""
+        from installer.stage2.downloader import site_wait_text
+
+        self._progress.console.print(f"{name[-38:]}: {site_wait_text(host, status, wait_s, left_s)}",
+                                     markup=False, highlight=False)
+
 
 class Ui:
     """Rich-based console for the wizard."""
