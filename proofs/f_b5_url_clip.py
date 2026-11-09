@@ -5,9 +5,15 @@ its generic extractor). Three things are shown, each at its effect:
 
 1. `file://` is refused by design: POST /api/jobs/clip answers 400 `bad_url` and no clip job is queued.
 2. The same link served slowly and cancelled while the `.part` file is growing: the job ends `cancelled` and
-   the `_downloads/dl-*` folder, the `.part` file and the source folder are gone (D-9).
-3. The link served at full speed: the clip job ends `done`, the `outputs` row and the clip file exist, the
-   `sources` row names the proof channel and the stored source is byte for byte what the link served.
+   the job's download folder, the `.part` file and the source folder are gone (D-9).
+3. The link served at a pace that lets the download folder be seen: the clip job ends `done`, the `outputs`
+   row and the clip file exist, the `sources` row names the proof channel, the stored source is byte for byte
+   what the link served, and the job's download folder appeared and is gone again.
+
+The dashboard route downloads into `imports/clipper/_downloads/<the job's source_id>` (ns_dashboard
+RealClipAdapter.fetch_url and studio_bridge.download_dir; the job's `params.source_id`, made at POST time),
+not into the `dl-<sha1 of the link>` folder that `studio clip <url>` makes. The Clipper then imports the
+downloaded local file, so `source.json` records that local path as its `origin`, not the link.
 
 Ported from runs/qa/fb5.py (evidence log 2026-11-09, 0.1.14). The box also names a real YouTube link, which
 needs the internet and a third party: after all the checks above the proof ends as skipped for that part,
@@ -19,13 +25,23 @@ from __future__ import annotations
 import hashlib
 import http.server
 import json
+import os
 import threading
 import time
 import uuid
 from pathlib import Path
 from typing import Any
 
-from proofs._lib import db_rows, ffmpeg_path, pauses_proof_channels, proof_channel, short, wait_job
+from proofs._lib import (
+    FINAL,
+    api_no_deadline,
+    db_rows,
+    ffmpeg_path,
+    pauses_proof_channels,
+    proof_channel,
+    short,
+    wait_job,
+)
 
 PROOF = {
     "id": "f-b5-url-clip",
@@ -192,6 +208,19 @@ def _part_bytes(folder: Path) -> int:
     return sum(f.stat().st_size for f in folder.rglob("*.part") if f.is_file())
 
 
+def _files_in(folder: Path) -> dict[str, int]:
+    """Relative path -> bytes of every file under `folder` (empty when it is not there)."""
+    if not folder.is_dir():
+        return {}
+    return {str(f.relative_to(folder)): f.stat().st_size for f in folder.rglob("*") if f.is_file()}
+
+
+def _job_source_id(job: Any) -> str:
+    """The `source_id` the dashboard made for a link job (it names the job's download folder)."""
+    params = job.get("params") if isinstance(job, dict) else None
+    return str(params.get("source_id") or "") if isinstance(params, dict) else ""
+
+
 def _size(path: str) -> int | None:
     p = Path(path)
     return p.stat().st_size if p.is_file() else None
@@ -213,12 +242,13 @@ def run(ctx: Any) -> None:
     _make_video(ctx, video, uuid.uuid4().hex[:10])
     data = video.read_bytes()
     digest = _sha256(video)
-    source_id = f"src-{digest[:10]}"
-    src_dir = clipper / source_id
+    stored_id = f"src-{digest[:10]}"  # the content-hash id of the stored source (sources row, source folder)
+    src_dir = clipper / stored_id
+    downloads = clipper / "_downloads"
     ctx.check(
         not src_dir.exists() and not db_rows(ctx, "select 1 from sources where sha256=?", (digest,)),
         "the generated video is new to the install (no source folder, no sources row for its hash)",
-        source_id=source_id,
+        source_id=stored_id,
     )
 
     # 1. file:// is refused by design
@@ -238,11 +268,10 @@ def run(ctx: Any) -> None:
     )
 
     server, state = _serve(data)
+    started: list[str] = []  # the clip jobs this proof queued: any still running is cancelled on the way out
     try:
         link = f"http://127.0.0.1:{server.server_address[1]}/proof-f-b5-{digest[:8]}.mp4"
-        link_hash = hashlib.sha1(link.encode(), usedforsecurity=False).hexdigest()[:10]
-        dl = clipper / "_downloads" / f"dl-{link_hash}"
-        ctx.step("local link served by the proof", link=link, bytes=len(data), source_id=source_id)
+        ctx.step("local link served by the proof", link=link, bytes=len(data), stored_source_id=stored_id)
 
         # 2. cancel mid-download
         state["bps"] = max(len(data) / 45, 5000.0)
@@ -254,11 +283,26 @@ def run(ctx: Any) -> None:
             answer=short(job),
         )
         cancel_id = job["job_id"]
-        ctx.wait(lambda: _part_bytes(dl) > 0, 180, every=0.25, what="the .part file to start growing")
+        started.append(cancel_id)
+        cancel_src = _job_source_id(job)
+        dl = downloads / cancel_src
+        ctx.check(
+            cancel_src.startswith("src-") and cancel_src != stored_id and job["params"].get("url") == link,
+            "the dashboard job carries its own source_id, which names its download folder under _downloads",
+            job_source_id=cancel_src,
+            content_hash_id=stored_id,
+            folder=str(dl),
+            url=job["params"].get("url"),
+        )
+        ctx.wait(
+            lambda: _part_bytes(dl) > 0, 180, every=0.25, what=f"the .part file in {dl.name} to start growing"
+        )
         part_at_cancel = _part_bytes(dl)
         ctx.check(
             0 < part_at_cancel < len(data),
-            "the download is part way when the proof cancels it",
+            "the download is part way when the proof cancels it, in the job's own download folder",
+            folder=str(dl),
+            files=_files_in(dl),
             part_bytes=part_at_cancel,
             video_bytes=len(data),
             percent=round(100 * part_at_cancel / len(data), 1),
@@ -270,8 +314,9 @@ def run(ctx: Any) -> None:
         ctx.wait(lambda: not dl.exists(), 60, every=0.5, what=f"{dl.name} to be removed")
         ctx.check(
             not dl.exists() and _part_bytes(dl) == 0,
-            "the download folder and its .part file are gone",
+            "the job's download folder and its .part file are gone",
             folder=str(dl),
+            files=_files_in(dl),
         )
         ctx.check(
             not src_dir.exists() and not db_rows(ctx, "select 1 from sources where sha256=?", (digest,)),
@@ -279,8 +324,8 @@ def run(ctx: Any) -> None:
             source_dir=str(src_dir),
         )
 
-        # 3. the same link at full speed
-        state["bps"] = 50_000_000.0
+        # 3. the same link, fast but not instant: the job's download folder can be seen before it is cleaned
+        state["bps"] = max(len(data) / 8, 5000.0)
         src_dir.mkdir(parents=True, exist_ok=True)
         (src_dir / "source.transcript.json").write_text(json.dumps(_sidecar()), encoding="utf-8")
         ctx.step(
@@ -295,6 +340,23 @@ def run(ctx: Any) -> None:
             status=status,
             answer=short(job),
         )
+        started.append(job["job_id"])
+        job_src = _job_source_id(job)
+        dl_done = downloads / job_src
+        ctx.check(
+            job_src.startswith("src-") and job_src not in (stored_id, cancel_src),
+            "this job has a source_id of its own, which names its download folder",
+            job_source_id=job_src,
+            folder=str(dl_done),
+        )
+        ctx.wait(lambda: bool(_files_in(dl_done)), 120, every=0.1, what=f"files to appear in {dl_done.name}")
+        seen = _files_in(dl_done)
+        ctx.check(
+            dl_done.is_dir() and sum(seen.values()) > 0,
+            "the job's download folder appears under _downloads while the link downloads",
+            folder=str(dl_done),
+            files=seen,
+        )
         done = wait_job(ctx, job["job_id"], timeout=600, every=2)
         ctx.check(
             done.get("status") == "done",
@@ -304,6 +366,16 @@ def run(ctx: Any) -> None:
             result=short(done.get("result")),
         )
     finally:
+        for job_id in started:
+            try:  # cleanup through calls with no deadline: a job still downloading must not outlive the proof
+                st, current = api_no_deadline(ctx, "GET", f"/api/jobs/{job_id}")
+                if st == 200 and isinstance(current, dict) and current.get("status") not in FINAL:
+                    st, answer = api_no_deadline(ctx, "POST", f"/api/jobs/{job_id}/cancel")
+                    ctx.step(
+                        "cleanup: proof clip job cancelled", job_id=job_id, status=st, answer=short(answer)
+                    )
+            except Exception as exc:  # noqa: BLE001  (a cleanup error must not hide the proof's own result)
+                ctx.step("cleanup: proof clip job cancel failed", job_id=job_id, error=str(exc))
         server.shutdown()
         server.server_close()
 
@@ -331,7 +403,7 @@ def run(ctx: Any) -> None:
         ctx, "select source_id, channel, rights_confirmed from sources where sha256=?", (digest,)
     )
     ctx.check(
-        sources == [(source_id, CHANNEL, 1)] and all(r["source_id"] == source_id for r in rows),
+        sources == [(stored_id, CHANNEL, 1)] and all(r["source_id"] == stored_id for r in rows),
         "sources row: the downloaded video under its content-hash id, rights confirmed, on the proof channel",
         sources=sources,
     )
@@ -341,10 +413,29 @@ def run(ctx: Any) -> None:
         "the stored source is byte for byte the video the link served",
         stored=str(stored),
     )
-    ctx.check(not dl.exists(), "the download folder is removed after the import", folder=str(dl))
-    source_json = ctx.home / "data" / "jobs" / ids[0].split("/")[0] / "source.json"
-    origin = json.loads(source_json.read_text("utf-8")).get("origin")
-    ctx.check(origin == link, "the job's source.json records the link as its origin", origin=origin)
+    ctx.check(
+        not dl_done.exists() and not dl.exists() and not list(downloads.glob(f"{job_src}*")),
+        "the job's download folder is gone after the import, and the cancelled job's is still gone",
+        folder=str(dl_done),
+        cancelled_folder=str(dl),
+        left_under_downloads=sorted(p.name for p in downloads.glob("*")) if downloads.is_dir() else [],
+    )
+    studio_job = str((done.get("result") or {}).get("studio_job_id") or ids[0].split("/")[0])
+    source_json = ctx.home / "data" / "jobs" / studio_job / "source.json"
+    record = json.loads(source_json.read_text("utf-8"))
+    origin = record.get("origin")
+    want_origin = dl_done / "source.mp4"
+    ctx.check(
+        isinstance(origin, str)
+        and origin != link
+        and os.path.normcase(os.path.realpath(origin)) == os.path.normcase(os.path.realpath(want_origin)),
+        "source.json records the downloaded local file as the origin (the Clipper imports it, not the link)",
+        origin=origin,
+        expected=str(want_origin),
+        link=link,
+        studio_job_id=studio_job,
+        stored_path=record.get("path"),
+    )
     # the box also names a real short YouTube URL: it needs the internet and a third party
     ctx.skip(
         "F-B5's real short YouTube URL (yt-dlp downloading from youtube.com): the runner needs internet "
