@@ -84,7 +84,23 @@ def nightly_message(report: dict[str, Any], masters: int, shorts: int) -> str | 
             parts.append(f"{_plural(len(failures), 'job', 'jobs')} failed ({codes})")
         else:
             parts.append(failure_message(codes))
+    parts.extend(_interrupted_parts(report.get("interrupted_jobs") or []))
     return "; ".join(parts) if parts else None
+
+
+def _interrupted_parts(items: Sequence[dict[str, Any]]) -> list[str]:
+    """What the toast says about an earlier night that was killed (power cut, crash)."""
+    out: list[str] = []
+    for resumed, text in (
+        (True, "an interrupted night was resumed (it had stopped at {at})"),
+        (False, "an interrupted night needs Retry in the Queue (it stopped at {at})"),
+    ):
+        stages = [
+            str(i.get("stage") or "an unknown stage") for i in items if bool(i.get("resumed")) is resumed
+        ]
+        if stages:
+            out.append(text.format(at=", ".join(dict.fromkeys(stages))))
+    return out
 
 
 def failure_message(code: str) -> str:

@@ -17,12 +17,12 @@ from ns_common import __version__
 from ns_common.errors import NsError
 from ns_common.keepawake import keep_awake
 from ns_common.models import Channel, JobRunRequest, Voice
-from ns_studio import dashboard_cmd, jobs, notifications, review, voice_setup
+from ns_studio import dashboard_cmd, jobs, notifications, ownership, review, voice_setup
 from ns_studio.calibrate import run as calibration
 from ns_studio.channels import cadence, crud
 from ns_studio.clipper import cli as clipper_cli
 from ns_studio.context import JobContext
-from ns_studio.daily import run_daily
+from ns_studio.daily import nothing_due_message, run_daily
 from ns_studio.errors import UNEXPECTED, StudioError, describe_unexpected, hint_of
 from ns_studio.footage_keys import require_footage_key
 from ns_studio.learn import importer, reweight, status
@@ -175,11 +175,25 @@ def run_cmd(
         if daily:
             _daily(env, dry_run, policy)
             return
+        if not dry_run:
+            _close_dead_work(env)
         with keep_awake():  # the PC must not sleep under a run (`run_daily` holds its own)
             _run_jobs(
                 env, fmt=fmt, channel=channel, count=count, dry_run=dry_run, resume=resume, policy=policy,
                 script=script_text, title=title,
             )
+
+
+def _close_dead_work(env: jobs.Env) -> None:
+    """At the start of a run: close what a killed earlier run left open (D-31). Never stops the run."""
+    try:
+        recovered = ownership.recover(env.paths, env.db, log=env.log)
+    except Exception as e:  # noqa: BLE001 - a courtesy, not a condition of the run
+        env.log.warn("recover_failed", str(e))
+        return
+    for j in recovered.jobs:
+        if not j.dashboard_owned:
+            typer.echo(f"job {j.job_id} was interrupted at {j.stage}: Retry it in the Queue or with --resume")
 
 
 def _script_text(
@@ -224,6 +238,9 @@ def _run_jobs(
             typer.echo("plan: " + " -> ".join(run_job(ctx, dry_run=True)))
             return
         ran = run_job_guarded(ctx, resume=True)
+        rows = env.db.query("select output_id from outputs where job_id=?", (ctx.job_id,))
+        # the Queue card of an interrupted job is done now
+        ownership.settle_resumed(env.db, ctx.job_id, [r["output_id"] for r in rows])
         typer.echo(f"job {ctx.job_id} resumed: {len(ran)} stages visited")
         return
     rng = random.Random()
@@ -261,12 +278,18 @@ def _daily(env: jobs.Env, dry_run: bool, policy: bool | None) -> None:
     except (NsError, StudioError) as e:  # the night itself broke (not one job): say so before exiting
         notifications.send(env.paths, env.log, notifier, notifications.failure_message(e.code))
         raise
-    if not report["channels"]:
-        typer.echo("nothing due tonight: every channel already has this week's full video or today's Shorts")
+    for item in report.get("interrupted_jobs", []):
+        if item["resumed"]:
+            typer.echo(f"job {item['job_id']} was interrupted at {item['stage']} and has been resumed")
+        else:
+            typer.echo(f"job {item['job_id']} was interrupted at {item['stage']}: press Retry in the Queue")
+    if not (report["channels"] or report["jobs"] or report["failures"]):
+        typer.echo(nothing_due_message(report))
     for c in report["channels"]:
         typer.echo(f"{c['channel']}: {c['jobs']} job(s), {c['plan']}")
     for j in report["jobs"]:
-        typer.echo(f"job {j['job_id']} done: {j['stages']} stages ({j['channel']})")
+        resumed = " (resumed)" if j.get("resumed") else ""
+        typer.echo(f"job {j['job_id']} done: {j['stages']} stages ({j['channel']}){resumed}")
     for f in report["failures"]:
         typer.echo(f"job {f['job_id']} FAILED {f['code']}: {f['error']}")
     typer.echo(f"backup: {report['backup']}")
@@ -599,6 +622,7 @@ def status_cmd(
             else:
                 plan = cadence.plan_channel(env.db, ch, datetime.now(UTC))
                 lines = status.format_status(status.channel_status(env.db, env.paths, ch), plan.describe())
+                lines += ownership.status_lines(env.paths, env.db, ch.slug)
             for line in lines:
                 typer.echo(line)
 

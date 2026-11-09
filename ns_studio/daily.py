@@ -9,12 +9,13 @@ import traceback
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 from datetime import UTC, date, datetime, timedelta, tzinfo
+from functools import partial
 from pathlib import Path
 from typing import Any
 
 from ns_common.errors import NsError
 from ns_common.keepawake import keep_awake
-from ns_studio import jobs, notifications
+from ns_studio import jobs, notifications, ownership
 from ns_studio.channels import cadence
 from ns_studio.channels.crud import get_channel
 from ns_studio.context import JobContext
@@ -149,22 +150,150 @@ def _run_daily(
 ) -> dict:
     """Plan with the governor, run every due job, back up the database and write the nightly report.
 
-    One failing job never stops the others; failures are listed in the report. When a `notifier` is given
-    the night ends with a toast (spec J10: videos ready, or the failure code), unless Settings turned
-    notifications off. Returns the report dict.
+    First it closes what a dead process left open (a night killed by a power cut or a crash: its run row, its
+    half-made job, a morning note) and continues that job from the stage it reached instead of starting from
+    ideas. One failing job never stops the others; failures are listed in the report. When a `notifier` is
+    given the night ends with a toast (spec J10: videos ready, or the failure code, and a word about an
+    interrupted night), unless Settings turned notifications off. Returns the report dict.
     """
     now = now or datetime.now(UTC)
     rng = rng or random.Random()
     run = run_fn or _default_run
     run_id = f"daily-{now:%Y%m%d}-{secrets.token_hex(2)}"
-    env.db.execute(
-        "insert into runs(run_id, started_at, mode) values (?,?,?)",
-        (run_id, now.isoformat(timespec="seconds"), "daily"),
-    )
     report: dict = {"run_id": run_id, "started_at": now.isoformat(timespec="seconds"), "channels": [],
-                    "jobs": [], "failures": []}
-    gpu_busy = False
-    for dj in cadence.plan_daily(env.paths, env.db, now):
+                    "jobs": [], "failures": [], "interrupted_jobs": [], "not_due": {}}
+    _close_dead_work(env, now, report)
+    # this row has a live owner until it is closed
+    with ownership.hold_run(env.paths, run_id, origin="daily"):
+        env.db.execute(
+            "insert into runs(run_id, started_at, mode) values (?,?,?)",
+            (run_id, now.isoformat(timespec="seconds"), "daily"),
+        )
+        try:
+            _tonight(env, run, rng, now, run_id, report)
+            done = [j["job_id"] for j in report["jobs"]]
+            report["publish_times_set"] = apply_publish_times(env, done, rng, now)
+            backup = env.db.backup(env.paths.backup_dir, today=now.date())
+            report["backup"] = str(backup)
+        except BaseException as e:  # the night itself broke: close its row, so it never looks unfinished
+            report["failed"] = getattr(e, "code", UNEXPECTED)
+            env.db.execute(
+                "update runs set finished_at=?, summary_json=? where run_id=?",
+                (datetime.now(UTC).isoformat(timespec="seconds"), json.dumps(report), run_id),
+            )
+            raise
+        finished = datetime.now(UTC)
+        report["finished_at"] = finished.isoformat(timespec="seconds")
+        env.db.execute(
+            "update runs set finished_at=?, summary_json=? where run_id=?",
+            (report["finished_at"], json.dumps(report), run_id),
+        )
+    env.paths.logs.mkdir(parents=True, exist_ok=True)
+    nightly = env.paths.logs / f"nightly-{now:%Y%m%d}.json"
+    nightly.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    env.log.info("daily_done", run_id=run_id, jobs=len(done), failures=len(report["failures"]))
+    masters, shorts = notifications.output_counts(env.db, done)
+    notifications.send(env.paths, env.log, notifier, notifications.nightly_message(report, masters, shorts))
+    finish = getattr(env.services.acquirer, "run_finished", None)
+    if finish is not None:  # gap 25: the engine this run needed leaves once nobody else uses it
+        finish()
+    return report
+
+
+def _close_dead_work(env: jobs.Env, now: datetime, report: dict) -> None:
+    """Close the runs and jobs whose process is gone (before this night plans), and tell the owner.
+
+    A job it cannot continue itself is listed in the report as interrupted (the toast says Retry). Never stops
+    the night: a failure here is logged and the night plans as if nothing was found.
+    """
+    try:
+        out = ownership.recover(env.paths, env.db, now=now, log=env.log, will_resume=True)
+    except Exception as e:  # noqa: BLE001 - recovery is a courtesy; the night must still run
+        env.log.warn("recover_failed", str(e))
+        return
+    for j in out.jobs:
+        if not j.resumable and not j.dashboard_owned:
+            report["interrupted_jobs"].append(
+                {"job_id": j.job_id, "channel": j.channel, "stage": j.stage, "resumed": False}
+            )
+
+
+def _attempt(
+    env: jobs.Env,
+    run: RunFn,
+    report: dict,
+    make: Callable[[], JobContext],
+    slug: str,
+    *,
+    run_id: str,
+    resumed: bool = False,
+) -> str | None:
+    """Make (or reopen) one job and run it, owned for as long as it runs. Returns the error code on failure.
+
+    A failure (coded or not) ends this job and is listed in the report, never the night.
+    """
+    job_id = "(not created)"
+    try:
+        # No stock-footage key: every story would fail at `clips` after an hour of GPU work (gap L3).
+        require_footage_key(env.services)
+        ctx = make()
+        job_id = ctx.job_id
+        ownership.note_run_job(env.paths, run_id, job_id, slug)
+        with ownership.hold_job(env.paths, job_id, run_id=run_id, channel=slug, fmt=str(ctx.fmt)):
+            ran = run(ctx)
+        entry: dict[str, Any] = {"job_id": job_id, "channel": slug, "stages": len(ran)}
+        if resumed:
+            entry["resumed"] = True
+        report["jobs"].append(entry)
+        return None
+    except (NsError, StudioError) as e:
+        code, detail = e.code, str(e)
+    except Exception as e:  # an uncoded bug or corrupt file ends this job, never the night
+        code, detail = UNEXPECTED, f"{UNEXPECTED}: {describe_unexpected(e)}"
+        env.log.error("daily_job_crashed", job_id=job_id, traceback=traceback.format_exc())
+    env.log.error("daily_job_failed", job_id=job_id, code=code, detail=detail)
+    report["failures"].append({"job_id": job_id, "channel": slug, "code": code, "error": detail})
+    return code
+
+
+def _resume_interrupted(env: jobs.Env, run: RunFn, now: datetime, run_id: str, report: dict) -> bool:
+    """Continue the jobs an earlier night left half made: the same job from its stage, not a new idea.
+
+    Returns True when the GPU stayed busy (the rest of the night waits, as for any job).
+    """
+    try:
+        pending = ownership.pending_resumes(env.paths, env.db, now)
+    except Exception as e:  # noqa: BLE001 - see _close_dead_work
+        env.log.warn("resume_scan_failed", str(e))
+        return False
+    for rec in pending:
+        job_id, slug = str(rec["id"]), str(rec.get("channel") or "")
+        stage = rec.get("interrupted_at_stage")
+        env.log.info("daily_job_resume", job_id=job_id, channel=slug, stage=stage)
+        reopen = partial(jobs.load_job, env, job_id)
+        code = _attempt(env, run, report, reopen, slug, run_id=run_id, resumed=True)
+        if code == "NS-E201":  # the GPU is busy: it stays interrupted, the next night tries again
+            ownership.write_record(env.paths, job_id, state="interrupted")
+            report.setdefault("skipped", []).append({"channel": slug, "jobs": 1})
+            return True
+        item = {"job_id": job_id, "channel": slug, "stage": stage, "resumed": code is None}
+        report["interrupted_jobs"].append(item)
+        if code is None:
+            rows = env.db.query("select output_id from outputs where job_id=?", (job_id,))
+            ownership.settle_resumed(env.db, job_id, [r["output_id"] for r in rows])
+        else:
+            last = report["failures"][-1]
+            ownership.settle_failed(env.db, job_id, str(last["code"]), str(last["error"]))
+    return False
+
+
+def _tonight(env: jobs.Env, run: RunFn, rng: random.Random, now: datetime, run_id: str, report: dict) -> None:
+    """Continue what was interrupted, then make what the governor says is due."""
+    gpu_busy = _resume_interrupted(env, run, now, run_id, report)
+    why: dict[str, str] = {}
+    due = cadence.plan_daily(env.paths, env.db, now, why=why)
+    report["not_due"] = why
+    for dj in due:
         if gpu_busy:  # J7: the GPU stayed busy for the whole wait; the other jobs wait for the next night
             report.setdefault("skipped", []).append({"channel": dj.channel.slug, "jobs": dj.count})
             continue
@@ -177,43 +306,20 @@ def _run_daily(
              "reasons": dj.plan.reasons}
         )
         for n in range(dj.count):
-            job_id = "(not created)"
-            try:
-                # No stock-footage key: every story would fail at `clips` after an hour of GPU work (gap L3).
-                require_footage_key(env.services)
-                ctx = jobs.make_job(env, ch, dj.fmt, now=now, rng=rng)
-                job_id = ctx.job_id
-                ran = run(ctx)
-                report["jobs"].append({"job_id": job_id, "channel": ch.slug, "stages": len(ran)})
-                continue
-            except (NsError, StudioError) as e:
-                code, detail = e.code, str(e)
-            except Exception as e:  # an uncoded bug or corrupt file ends this job, never the night
-                code, detail = UNEXPECTED, f"{UNEXPECTED}: {describe_unexpected(e)}"
-                env.log.error("daily_job_crashed", job_id=job_id, traceback=traceback.format_exc())
-            env.log.error("daily_job_failed", job_id=job_id, code=code, detail=detail)
-            report["failures"].append({"job_id": job_id, "channel": ch.slug, "code": code, "error": detail})
-            if code == "NS-E201":
+            make = partial(jobs.make_job, env, ch, dj.fmt, now=now, rng=rng, origin="daily", run_id=run_id)
+            if _attempt(env, run, report, make, ch.slug, run_id=run_id) == "NS-E201":
                 gpu_busy = True
                 report.setdefault("skipped", []).append({"channel": ch.slug, "jobs": dj.count - n})
                 break
-    done = [j["job_id"] for j in report["jobs"]]
-    report["publish_times_set"] = apply_publish_times(env, done, rng, now)
-    backup = env.db.backup(env.paths.backup_dir, today=now.date())
-    report["backup"] = str(backup)
-    finished = datetime.now(UTC)
-    report["finished_at"] = finished.isoformat(timespec="seconds")
-    env.db.execute(
-        "update runs set finished_at=?, summary_json=? where run_id=?",
-        (report["finished_at"], json.dumps(report), run_id),
-    )
-    env.paths.logs.mkdir(parents=True, exist_ok=True)
-    nightly = env.paths.logs / f"nightly-{now:%Y%m%d}.json"
-    nightly.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
-    env.log.info("daily_done", run_id=run_id, jobs=len(done), failures=len(report["failures"]))
-    masters, shorts = notifications.output_counts(env.db, done)
-    notifications.send(env.paths, env.log, notifier, notifications.nightly_message(report, masters, shorts))
-    finish = getattr(env.services.acquirer, "run_finished", None)
-    if finish is not None:  # gap 25: the engine this run needed leaves once nobody else uses it
-        finish()
-    return report
+
+
+def nothing_due_message(report: dict) -> str:
+    """The console sentence when the night planned nothing, with the true reason for each channel.
+
+    A channel with a job still being made says so (job, stage, process); one that has its video says that;
+    with no active channel the sentence says so instead of claiming every channel is done.
+    """
+    why: dict[str, str] = report.get("not_due") or {}
+    if not why:
+        return "nothing due tonight: no channel is active"
+    return "nothing due tonight: " + "; ".join(f"{slug}: {reason}" for slug, reason in why.items())
