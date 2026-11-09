@@ -143,6 +143,16 @@ def test_host_script_follows_the_app_host_protocol() -> None:
     assert "$uri.Scheme -in @('http', 'https')" in text      # open-external is http(s) only
 
 
+def test_host_window_never_keeps_a_cached_page_across_an_update() -> None:
+    """D-29: the host's WebView2 profile (state/webview2) is persistent, so the page and app.js of the version
+    before an update were reused from its HTTP cache. The server now sends no-cache, but the window that is
+    relaunched after the first update to this fix still holds old entries stored without a rule: the host
+    starts Chromium with its HTTP cache off so that window can never run the old UI."""
+    text = read("nightshift-host.ps1")
+    assert "AdditionalBrowserArguments" in text and "--disable-http-cache" in text
+    assert text.index("AdditionalBrowserArguments") < text.index("$script:wv.CreationProperties = $props")
+
+
 def test_code_launcher_acquires_as_opencode_and_releases_in_finally() -> None:
     text = read("nightshift-code.ps1")
     assert "$owner = 'opencode'" in text and "model_alias = 'code'" in text

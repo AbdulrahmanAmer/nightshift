@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import tempfile
 import threading
@@ -43,6 +44,23 @@ CSP = (
     "style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; "
     "frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
 )
+
+
+#: A built file whose name carries its content hash (`assets/geist-latin-wght-normal-BgDaEnEv.woff2`, the
+#: Vite `[name]-[hash]` pattern): the name changes whenever the bytes do, so it can be cached for good.
+HASHED_ASSET = re.compile(r"^/assets/[^/]+-[A-Za-z0-9_-]{8}\.[A-Za-z0-9]+$")
+
+
+def static_cache_control(path: str, status: int = 200) -> str:
+    """The Cache-Control rule of one non-API path (D-29).
+
+    `index.html` and the fixed-name bundle (`app.js`, `app.css`) change with every update under the same
+    URL, so the browser must ask first: `no-cache` keeps the ETag round trip (an unchanged file is answered
+    304, no body). Only a content-hashed file under `/assets/` is immutable, and an error answer never is.
+    """
+    if status < 400 and HASHED_ASSET.match(path):
+        return "public, max-age=31536000, immutable"
+    return "no-cache"
 
 
 class SafeJSONResponse(JSONResponse):
@@ -94,6 +112,8 @@ class LoopbackMiddleware:
                 extra = [(b"x-content-type-options", b"nosniff"), (b"referrer-policy", b"no-referrer")]
                 if not path.startswith("/api/"):
                     extra.append((b"content-security-policy", CSP.encode()))
+                    rule = static_cache_control(path, int(message.get("status", 200)))
+                    extra.append((b"cache-control", rule.encode()))
                 elif not path.startswith("/api/media/") and path != "/api/events":
                     extra.append((b"cache-control", b"no-store"))
                 message = {**message, "headers": [*message.get("headers", []), *extra]}

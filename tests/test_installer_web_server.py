@@ -351,3 +351,13 @@ def test_uninstall_mode_serves_its_own_endpoints(tmp_path: Path):
         assert client.call("GET", "/api/state")[0] == 404                       # no setup state in this mode
     finally:
         server.stop()
+
+
+def test_static_files_other_than_index_are_revalidated_not_reused_blindly(env):
+    """D-29: only `index.html` was marked; app.js and the others carried no rule at all."""
+    _, _, client, _ = env
+    for path in ("/app.js", "/app.css"):
+        status, headers, _ = client.call("GET", path)
+        assert status == 200 and headers["cache-control"] == "no-cache", path
+        assert headers["content-security-policy"] == CSP and headers["x-content-type-options"] == "nosniff"
+    assert client.call("GET", "/")[1]["cache-control"] == "no-store"

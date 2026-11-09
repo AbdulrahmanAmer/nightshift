@@ -389,6 +389,10 @@ try {
     $script:wv = New-Object Microsoft.Web.WebView2.Wpf.WebView2
     $props = New-Object Microsoft.Web.WebView2.Wpf.CoreWebView2CreationProperties
     $props.UserDataFolder = Join-Path (Get-HostHome) 'state\webview2'
+    # The profile folder persists across versions. The dashboard now sends Cache-Control: no-cache, but an
+    # entry stored by an older version carries no rule and would be reused for a tenth of its age: after an
+    # update the window would run the old UI. The page is on 127.0.0.1, so the HTTP cache buys nothing.
+    $props.AdditionalBrowserArguments = '--disable-http-cache'
     $script:wv.CreationProperties = $props
     $script:wv.DefaultBackgroundColor = [System.Drawing.ColorTranslator]::FromHtml($BackgroundHex)
     $script:win.Content = $script:wv

@@ -261,9 +261,9 @@ class Handler(BaseHTTPRequestHandler):
         if not target.is_file():
             self._text(HTTPStatus.NOT_FOUND, "Not found")
             return
-        self._file(target, no_store=target.name == "index.html")
+        self._file(target, cache="no-store" if target.name == "index.html" else "no-cache")
 
-    def _file(self, target: Path, *, no_store: bool = False) -> None:
+    def _file(self, target: Path, *, cache: str = "") -> None:
         size = target.stat().st_size
         ctype = MIME.get(target.suffix.lower()) or mimetypes.guess_type(target.name)[0]
         ctype = ctype or "application/octet-stream"
@@ -292,8 +292,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Accept-Ranges", "bytes")
         if status == HTTPStatus.PARTIAL_CONTENT:
             self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
-        if no_store:
-            self.send_header("Cache-Control", "no-store")
+        if cache:
+            self.send_header("Cache-Control", cache)
         self._common(length)
         if self.command == "HEAD" or not length:
             return
