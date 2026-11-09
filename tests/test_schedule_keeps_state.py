@@ -571,6 +571,49 @@ def test_the_read_script_tells_not_found_from_other_errors():
     assert "-ErrorVariable" in script and "ObjectNotFound" in script and "'error: '" in script
 
 
+needs_powershell = pytest.mark.skipif(pwsh.find_powershell() is None, reason="powershell not on PATH")
+
+# A Get-ScheduledTask stand-in that fails (or succeeds) the way the real cmdlet does: a non-terminating error
+# in a given category, which the read script collects with -ErrorVariable.
+GET_TASK_STUB = """
+function Get-ScheduledTask {
+    [CmdletBinding()] param($TaskName)
+    switch ($env:NS_GET) {
+        'denied' { Write-Error -Message 'Access is denied.' -Category PermissionDenied }
+        'missing' { Write-Error -Message 'No task found.' -Category ObjectNotFound }
+        'found' { [pscustomobject]@{ State = 'Disabled'
+            Triggers = @([pscustomobject]@{ StartBoundary = '2026-11-01T04:15:00' }) } }
+    }
+}
+"""
+
+
+def run_read_script(**env: str) -> str:
+    r = pwsh.run_powershell(GET_TASK_STUB + schedule.build_read_script(), env_extra=env)
+    assert r.returncode == 0, r.stdout + r.stderr
+    return r.stdout.strip()
+
+
+@needs_powershell
+def test_the_read_script_run_in_powershell_reports_an_access_error_as_an_error_not_as_no_task():
+    out = run_read_script(NS_GET="denied")
+    assert out.startswith("error: PermissionDenied: ") and "Access is denied" in out
+    with pytest.raises(schedule.ScheduleError, match="could not be read"):
+        schedule.parse_task_state(out)
+
+
+@needs_powershell
+def test_the_read_script_run_in_powershell_reports_a_missing_task_as_not_registered():
+    out = run_read_script(NS_GET="missing")
+    assert out == "not registered" and schedule.parse_task_state(out) is None
+
+
+@needs_powershell
+def test_the_read_script_run_in_powershell_reads_state_and_time_of_a_task_that_exists():
+    state = schedule.parse_task_state(run_read_script(NS_GET="found"))
+    assert state == schedule.TaskState(enabled=False, run_time="04:15")
+
+
 # ------------------------------------------ D-28 round 2: a kept-off task is registered disabled in one step
 def test_a_kept_off_task_is_registered_disabled_in_one_call_never_enabled_first(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch

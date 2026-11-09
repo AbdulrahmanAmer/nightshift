@@ -948,6 +948,7 @@ class RealScheduleAdapter:
     """Re-registers the 'Nightshift Daily' task at the new time (`ns_supervisor.schedule.install`).
 
     A task the owner switched off in Task Scheduler gets the new time and stays switched off (D-28).
+    A task registered with `ns schedule install --disabled` (record mode `disabled`) is registered enabled.
     """
 
     def __init__(self, paths: Paths) -> None:

@@ -260,8 +260,10 @@ def install(
     owner may have changed in Task Scheduler) the task is read BEFORE it is replaced: a task that was switched
     off is registered switched off again (mode `switched_off`), and without an explicit `run_time` the task's
     own trigger time is kept. The task in Windows is the truth; `schedule.json` is rewritten to match it. A
-    disabled task that `schedule.json` records as `disabled` is a DEV install's task, not the owner's choice
-    (an install for real over a dev install, docs/DEV_MODE.md): it is registered enabled. `enable` is the
+    disabled task that `schedule.json` records as `disabled` (a dev install's task, or one registered with
+    `disabled=True`) is not read as the owner's switch-off: install() registers it enabled (an install for
+    real over a dev install, docs/DEV_MODE.md), while `ns update` does not call install() for it at all
+    (`cli._reregister`). `enable` is the
     owner's explicit "switch it on" (`ns schedule install --enable`): the task is registered enabled whatever
     it was, except in a dev install. When there is no task the record in `schedule.json` is all there is: mode
     `switched_off` registers it off, anything else on, as a fresh install does. If the task cannot be read

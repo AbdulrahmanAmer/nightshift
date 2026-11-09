@@ -178,10 +178,11 @@ def _reregister(paths: Paths, app_dir: Path) -> list[str]:
     """Point the nightly task at the updated program, keeping what the owner set (D-28).
 
     The task's state (switched on or off) and run time are read before it is replaced and restored after; the
-    update log says what was kept. A task that `schedule.json` records as `disabled` is not touched by an
-    update, as before D-28: on a dev install it never fires by design, on a real install it is what the owner
-    asked for with `ns schedule install --disabled`. Only an explicit `ns schedule install` switches it on
-    again (`--enable`, or setup's `ns schedule install --time T` for a real install made over a dev one).
+    update log says what was kept. A task that `schedule.json` records as `disabled` (a dev install's task, or
+    one the owner registered with `ns schedule install --disabled`) is not touched by an update, as before
+    D-28. `ns schedule install` and the Settings run-time change DO register such a task enabled (setup's
+    `ns schedule install --time T` relies on it for a real install made over a dev one); `--disabled` again
+    keeps it off.
     """
     notes: list[str] = []
     mode = read_schedule_mode(paths)
@@ -392,7 +393,11 @@ def _schedule_call(
 def schedule_install(
     time: Annotated[str | None, typer.Option("--time", help="Local time HH:MM (default 03:00).")] = None,
     disabled: Annotated[
-        bool, typer.Option("--disabled", help="Register the task but switch it off (a dev install).")
+        bool,
+        typer.Option(
+            "--disabled",
+            help="Register the task but switch it off (a dev install, or a pause). ns update leaves it off.",
+        ),
     ] = False,
     enable: Annotated[
         bool,
@@ -401,8 +406,9 @@ def schedule_install(
 ) -> None:
     """Register the daily task (wake the PC, run whether logged on or not, stop after 6 h).
 
-    A task that already exists keeps its state (switched off stays off, unless --enable) and, without --time,
-    its run time.
+    A task that already exists keeps its run time (without --time) and its state: a task you switched off in
+    Task Scheduler stays off unless --enable. A task registered with --disabled is the exception: a plain
+    `ns schedule install` registers it enabled (ns update leaves it off).
     """
     if enable and disabled:
         raise _die(NsError("NS-E204", "schedule install: --enable and --disabled cannot be used together"))
