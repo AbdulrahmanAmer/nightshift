@@ -16,7 +16,7 @@ from ns_common import __version__
 from ns_common.errors import NsError
 from ns_common.keepawake import keep_awake
 from ns_common.models import Channel, Voice
-from ns_studio import jobs, notifications, review, voice_setup
+from ns_studio import dashboard_cmd, jobs, notifications, review, voice_setup
 from ns_studio.calibrate import run as calibration
 from ns_studio.channels import cadence, crud
 from ns_studio.clipper import cli as clipper_cli
@@ -554,6 +554,30 @@ def status_cmd(
                 lines = status.format_status(status.channel_status(env.db, env.paths, ch), plan.describe())
             for line in lines:
                 typer.echo(line)
+
+
+@app.command("dashboard")
+def dashboard_command(
+    port: Annotated[
+        int,
+        typer.Option(
+            "--port",
+            min=1,
+            max=65535,
+            help="Address to probe and print. The dashboard itself always runs on port 8100 "
+            "(the DASHBOARD_PORT constant), so change this only for a forwarded port.",
+        ),
+    ] = dashboard_cmd.DEFAULT_PORT,
+    open_browser: Annotated[
+        bool, typer.Option("--open", help="Open the dashboard in the default browser.")
+    ] = False,
+) -> None:
+    """Start the engine if needed, make sure the dashboard is ready, and print its address."""
+    with guarded():
+        url = dashboard_cmd.ensure_dashboard(port)
+        typer.echo(url)
+        if open_browser and not dashboard_cmd.open_in_browser(url):
+            typer.echo(f"Could not start a browser here. Open that address ({url}) in one yourself.")
 
 
 @app.command("learn")

@@ -5,7 +5,7 @@ are kept between runs and maintained by the verification loop (docs/VERIFICATION
 starts as `U`; `tests/test_verification_inventory.py` fails when the code has an item this
 file does not list.
 
-Items: 256 (V-dev 115, V-ci 52, V-gpu 0, U 89).
+Items: 257 (V-dev 115, V-ci 52, V-gpu 0, U 90).
 
 | kind | id | status | evidence |
 |---|---|---|---|
@@ -121,6 +121,7 @@ Items: 256 (V-dev 115, V-ci 52, V-gpu 0, U 89).
 | cli | `studio pause` | V-ci | tests/test_review.py |
 | cli | `studio resume` | V-ci | tests/test_review.py |
 | cli | `studio status` | U |  |
+| cli | `studio dashboard` | U |  |
 | cli | `studio learn` | V-ci | tests/test_learn.py |
 | cli | `studio calibrate` | V-ci | tests/test_calibrate.py |
 | stage | `story ideas` | V-dev | test-loop-2026-11-05.md (master via the task: 22 stages; Shorts jobs: 16 stages) |
