@@ -289,7 +289,10 @@ def test_retry_of_a_job_whose_channel_profile_is_gone_keeps_its_old_answer(tmp_h
     failed = failed_run(state)
     state.paths.channel_file(CH).unlink()
     r = client.post(f"/api/jobs/{failed}/resume")
-    assert r.status_code == 201
+    # main's disk-room check (D-33) loads the channel and answers not_found: that is the old answer now,
+    # and it is not a pause
+    assert r.status_code == 404 and r.json()["error"]["code"] != "channel_paused"
+    assert state.store.counts() == {"queued": 0, "running": 0}
 
 
 # ------------------------------------------------------------------ the nightly run
@@ -350,6 +353,25 @@ def test_a_channel_paused_during_the_night_gets_no_further_job_that_night(tmp_ho
     assert "paused" in held[0]["reason"]
     assert not report.get("skipped"), "skipped keeps its meaning: an earlier job stopped"
     assert crud.get_channel(paths, CH).status == "paused"
+
+
+def test_a_channel_paused_after_the_plan_but_before_its_first_job_makes_nothing_that_night(
+    tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The pause lands between the planner and the first job: the first job is held too."""
+    real_plan = daily.cadence.plan_daily
+
+    def plan_then_pause(paths: Paths, db: Db, now: datetime, **kw: Any):
+        due = real_plan(paths, db, now, **kw)
+        review.pause(paths, db, CH, "warning arrived after the plan was made")
+        return due
+
+    monkeypatch.setattr(daily.cadence, "plan_daily", plan_then_pause)
+    report, ran, _, _ = night(tmp_home, None)
+    assert ran == [], "no job of the paused channel may start"
+    assert report["jobs"] == [] and report["failures"] == []
+    assert [(s["channel"], s["jobs"]) for s in report["paused"]] == [(CH, 2)]
+    assert not report.get("skipped")
 
 
 def test_only_the_paused_channel_stops_the_others_carry_on(tmp_home: Path):
