@@ -12,7 +12,11 @@ How it notices: the program this process runs (`program_dir()`, the folder `ns_c
 copy that belongs to that backup (`<app>.prev-config.zip` with the backup's fingerprint). Then this is the
 first start after an update that took no copy, and the copy is taken now: the settings are still exactly as
 the older version (and its updater) left them, because every writer of a settings file calls `guard` first.
-A copy made by the updater, by INSTALL.cmd or by a rollback is never replaced.
+A copy made for the backup by the updater, by INSTALL.cmd or by a rollback is never replaced, and the zip in
+the copy's place is written over only by the rules an update follows (`config_snapshot.before_update`): a
+missing or damaged one, this program's own copy (for going forward again: it runs now), a first-start copy
+an earlier install of this program took; never a whole copy of another program (it may be the only copy of
+its settings), one a rollback could not put back, or one that cannot be read.
 
 Where it runs: `guard(path)` is called by every writer of a file in `config_snapshot.FILES` / `TREES`
 (`ns_common.config` for runtime.json, install_state.json and the channels; the setup steps, the setup window,
@@ -20,11 +24,11 @@ the dashboard, `ns schedule`, `ns restore`; tests/test_first_start_snapshot.py f
 kept for the process: after the first call it costs one dictionary lookup and no file access. A process that
 runs the updater or the rollback calls `settled` instead (it manages the copy itself).
 
-When the copy cannot be made (a file locked, the disk full, the home not writable) the write still goes
-ahead: an unwritable copy must not stop the product. One plain line goes to `logs\first_start-<date>.jsonl`,
-and `<app>\.ns-first-start.json` records it, so a later start does not take a copy of settings this version
-has already changed: `ns update --rollback` then says it has no copy and removes the settings the older
-version does not know instead (`ns_common.config_compat`).
+When the copy cannot be made (a file locked, the disk full, the home not writable, a zip in its place that
+must not be written over) the write still goes ahead: an unwritable copy must not stop the product. One
+plain line goes to `logs\first_start-<date>.jsonl`, and `<app>\.ns-first-start.json` records it, so a later
+start does not take a copy of settings this version has already changed: `ns update --rollback` then says it
+has no copy and removes the settings the older version does not know instead (`ns_common.config_compat`).
 
 Standard library plus `ns_common` modules that are themselves standard library only: the setup window's bare
 Python calls it too.
@@ -158,20 +162,26 @@ def _first_start(config: Path) -> None:
     backup = config_snapshot.program_fingerprint(prev)
     stamp = install_stamp(program)
     zip_path = config_snapshot.path_for(program)
-    try:
-        snap: config_snapshot.Snapshot | None = config_snapshot.read(zip_path)
-    except config_snapshot.SnapshotError:
-        snap = None  # none, damaged or unreadable: nothing a rollback could use
+    slot = config_snapshot.look(zip_path)
+    snap = slot.copy
+    unrestored = snap is not None and config_snapshot.is_unrestored(zip_path)
     if snap is not None and snap.fingerprint == backup:
-        if snap.taken_by != TAKEN_BY or snap.for_program == stamp:
-            return  # the updater, INSTALL.cmd, a rollback or an earlier start of this install made it
+        if snap.taken_by != TAKEN_BY or snap.for_program == stamp or unrestored:
+            # the backup's own copy: made by the updater, INSTALL.cmd, a rollback or an earlier start of this
+            # install, or one a rollback could not put back (then the settings now may be a newer version's)
+            return
     state = read_state(program)
     if state.get("backup") == backup and state.get("installed") == stamp:
         # An earlier start of this program could not take the copy and went on: the settings have changed
         # since, so a copy taken now would hand the older version what this one wrote.
         return
     version = config_snapshot.program_version(prev)
+    now = config_snapshot.program_version(program)
+    running = config_snapshot.program_fingerprint(program)
+    why = _left_alone(slot, zip_path, unrestored, backup=backup, running=running)
     try:
+        if why:
+            raise config_snapshot.SnapshotError(why)
         files = config_snapshot.capture(config)
         data = config_snapshot.build(
             files, version=version, fingerprint=backup, taken_by=TAKEN_BY, for_program=stamp
@@ -179,27 +189,51 @@ def _first_start(config: Path) -> None:
         config_snapshot.publish(zip_path, data)
     except config_snapshot.SnapshotError as e:
         why = str(e)
-        now = config_snapshot.program_version(program)
         _say(
             config,
             "WARN",
             "first_start_copy_failed",
             f"This is the first start of {now} after an update that kept no copy of the settings for "
-            f"{version}, and the copy could not be made now ({why}). Nightshift goes on; `ns update "
-            f"--rollback` will have no copy and will remove the settings {version} does not know instead.",
+            f"{version}, and no copy was made now: {why}. Nightshift goes on; `ns update --rollback` will "
+            f"have no copy and will remove the settings {version} does not know instead.",
             copy=str(zip_path),
         )
         write_state(program, {"backup": backup, "installed": stamp, "outcome": "no copy", "why": why})
         return
+    replaced = f" (the damaged copy that was there was replaced: {slot.problem})" if slot.damaged else ""
     _say(
         config,
         "INFO",
         "first_start_copy_saved",
-        f"First start of {config_snapshot.program_version(program)} after an update that kept no copy of "
-        f"the settings: saved them as {version} left them, for `ns update --rollback`.",
+        f"First start of {now} after an update that kept no copy of the settings: saved them as {version} "
+        f"left them, for `ns update --rollback`{replaced}.",
         files=sorted(files),
         copy=str(zip_path),
     )
+
+
+def _left_alone(
+    slot: config_snapshot.Slot, zip_path: Path, unrestored: bool, *, backup: str, running: str
+) -> str:
+    """Why the zip in the copy's place must not be written over (empty: it may be). The same rules as an
+    update (`config_snapshot.before_update`): a missing or damaged zip may be replaced; so may this program's
+    own copy (the one for going forward again: it runs now) and a first-start copy of the backup that an
+    earlier install of this program took (a failed update that was tried again: the settings now are the
+    backup's own), unless a rollback recorded that it could not put that copy back. A whole copy of any other
+    program may be the only copy of its settings, and a zip that cannot be read may still be whole."""
+    snap = slot.copy
+    if snap is None:
+        if slot.free:
+            return ""
+        return f"the settings copy {zip_path} could not be read ({slot.problem}) and was left as it is"
+    if unrestored:
+        return (
+            f"the settings copy for {snap.version} in {zip_path} is one a rollback could not put back, and "
+            "it stays as that version's copy"
+        )
+    if snap.fingerprint in (backup, running):
+        return ""
+    return config_snapshot.foreign_note(zip_path, snap, leaving=running, backup=backup)
 
 
 def read_state(program: Path) -> dict[str, Any]:

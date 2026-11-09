@@ -313,27 +313,98 @@ def log_lines(paths: Paths) -> list[dict[str, Any]]:
     return lines
 
 
-def test_a_first_start_that_cannot_save_the_copy_goes_on_and_never_takes_a_late_one(inst: Install) -> None:
+def test_a_first_start_that_cannot_save_the_copy_goes_on_and_never_takes_a_late_one(
+    inst: Install, monkeypatch: pytest.MonkeyPatch
+) -> None:
     seed(inst.paths)
     inst.old_updater("0.1.15")
-    inst.copy.mkdir()  # the copy's place cannot be written (a stand-in for a full or locked disk)
+    real = os.replace
+
+    def disk_full(src: str | Path, dst: str | Path) -> None:
+        if str(dst).endswith(".prev-config.zip"):  # the copy is built, but cannot be published
+            raise OSError(28, "No space left on device")
+        real(src, dst)
 
     inst.start()
-    owner_uses_the_new_version(inst.paths)  # the write is not stopped
+    with monkeypatch.context() as m:
+        m.setattr(os, "replace", disk_full)
+        owner_uses_the_new_version(inst.paths)  # the write is not stopped
 
     assert json.loads((inst.paths.config / "runtime.json").read_text(encoding="utf-8"))["tiny_story"] is True
+    assert not inst.copy.exists() and not list(inst.home.glob("~ns*.tmp"))
     failed = [r for r in log_lines(inst.paths) if r["event"] == "first_start_copy_failed"]
-    assert len(failed) == 1 and failed[0]["level"] == "WARN"
+    assert len(failed) == 1 and failed[0]["level"] == "WARN" and "No space left" in failed[0]["msg"]
     assert "ns update --rollback will have no copy" in failed[0]["msg"].replace("`", "")
     assert first_start.read_state(inst.app)["outcome"] == "no copy"
 
-    inst.copy.rmdir()  # writable again: a later start must not copy what this version has already changed
-    inst.start()
+    inst.start()  # the disk has room again: a later start must not copy what this version already changed
     save_runtime(inst.paths, load_runtime(inst.paths))
     assert not inst.copy.exists()
 
     res = inst.rollback()
     assert "no copy" in res.settings and "runtime.json (tiny_story)" in res.settings
+    older_version_loads_everything(inst.paths)
+
+
+def _foreign(inst: Install) -> None:
+    config_snapshot.save(inst.copy, {}, version="0.1.9", fingerprint="0.1.9|a|b", taken_by="update")
+
+
+def _own_unrestored(inst: Install) -> None:
+    fp = config_snapshot.program_fingerprint(inst.app)
+    config_snapshot.save(inst.copy, {}, version="0.1.15", fingerprint=fp, taken_by="rollback")
+    config_snapshot.mark_unrestored(inst.copy)
+
+
+def _own(inst: Install) -> None:
+    fp = config_snapshot.program_fingerprint(inst.app)
+    config_snapshot.save(inst.copy, {}, version="0.1.15", fingerprint=fp, taken_by="rollback")
+
+
+def _damaged(inst: Install) -> None:
+    _own(inst)
+    inst.copy.write_bytes(inst.copy.read_bytes()[:-30])
+
+
+def _unreadable(inst: Install) -> None:
+    inst.copy.mkdir()  # a stand-in for a zip a program holds open: it cannot be read, it may be whole
+
+
+#: What may be in the copy's place at the first start, and whether the first start may write over it (the
+#: rules of an update, `config_snapshot.before_update`).
+IN_ITS_PLACE: dict[str, tuple[Callable[[Install], None], bool]] = {
+    "a whole copy of another program": (_foreign, False),
+    "this program's copy a rollback could not put back": (_own_unrestored, False),
+    "a zip that cannot be read": (_unreadable, False),
+    "this program's own copy for going forward": (_own, True),
+    "a damaged copy": (_damaged, True),
+}
+
+
+@pytest.mark.parametrize("what", sorted(IN_ITS_PLACE))
+def test_the_first_start_writes_over_only_what_an_update_may_write_over(inst: Install, what: str) -> None:
+    make, replaced = IN_ITS_PLACE[what]
+    before = seed(inst.paths)
+    inst.old_updater("0.1.15")
+    make(inst)
+    there = inst.copy.read_bytes() if inst.copy.is_file() else None
+
+    inst.start()
+    owner_uses_the_new_version(inst.paths)  # never stopped
+
+    if replaced:
+        snap = config_snapshot.read(inst.copy)
+        assert snap.taken_by == "first-start" and snap.files == {n: before[n] for n in snap.files}
+        assert inst.rollback().settings.count("runtime.json") >= 1
+        assert read_config(inst.paths) == before
+    else:
+        assert (inst.copy.read_bytes() if inst.copy.is_file() else None) == there  # left exactly as it was
+        failed = [r for r in log_lines(inst.paths) if r["event"] == "first_start_copy_failed"]
+        assert len(failed) == 1 and str(inst.copy) in failed[0]["msg"]
+        if inst.copy.is_dir():
+            inst.copy.rmdir()
+        res = inst.rollback()
+        assert "runtime.json (tiny_story)" in res.settings  # no usable copy: what 0.1.14 lacks is taken out
     older_version_loads_everything(inst.paths)
 
 
