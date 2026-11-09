@@ -8,6 +8,7 @@ from collections.abc import Sequence
 from difflib import SequenceMatcher
 from typing import Any
 
+from ns_common.atomic import write_text_atomic
 from ns_common.devmode import is_dev
 from ns_common.embed_client import embed_window, to_blob
 from ns_common.errors import NsError
@@ -37,6 +38,7 @@ from ns_studio.text.models_local import ChapterDraft
 from ns_studio.text.prompts import call_json, call_text, parse_model
 from ns_studio.text.seo import finalize_seo, finalize_seo_long
 from ns_studio.text.stages_shorts import critic_numbers, job_master_budget, now_iso, repair_beats
+from ns_studio.text.story_profile import profile_of
 from ns_studio.text.validators import (
     check_banned,
     check_cliff_variety,
@@ -187,12 +189,11 @@ class ChaptersDraftStage:
                     chapter=ch.model_dump(),
                     summaries=summaries,
                     last_sentences=split_sentences(previous)[-2:] if previous else [],
-                    budget=chapter_budget(ch.word_budget, wpm),
+                    budget=chapter_budget(ch.word_budget, wpm, profile_of(ctx)),
                 )
                 draft = parse_model(ChapterDraft, raw, f"chapter_draft {ch.n}")
-                f.write_text(
-                    json.dumps({"plan_sha": plan_sha, "draft": draft.model_dump()}, ensure_ascii=False),
-                    encoding="utf-8",
+                write_text_atomic(
+                    f, json.dumps({"plan_sha": plan_sha, "draft": draft.model_dump()}, ensure_ascii=False)
                 )
             text = draft.text.strip()
             summaries.append({"n": ch.n, "title": ch.title, "summary": draft.summary.strip()})
@@ -217,6 +218,7 @@ class ChaptersCriticStage:
         budgets = {c.n: c.word_budget for c in plan.chapters}
         bar = ctx.channel.critic_bar
         wpm = _wpm(ctx)
+        profile = profile_of(ctx)
         past = _past_openings(ctx)
         total = len(draft["chapters"])
         revised: list[dict[str, Any]] = []
@@ -247,10 +249,11 @@ class ChaptersCriticStage:
             raise_if(
                 validate_chapter(
                     text,
-                    chapter_budget(budgets.get(ch["n"], plan.target_words // total), wpm),
+                    chapter_budget(budgets.get(ch["n"], plan.target_words // total), wpm, profile),
                     chapter_n=ch["n"],
                     past_openings=past,
                     embed=ctx.services.embed,
+                    profile=profile,
                 )
             )
             revisions_total += revisions
@@ -308,6 +311,7 @@ class ContinuityStage:
                     fixes.setdefault(n, []).append(str(issue["fix"]))
                     issues.append({"chapter": n, "problem": issue["problem"], "fix": issue["fix"]})
         wpm = _wpm(ctx)
+        profile = profile_of(ctx)
         plan = parse_model(Plan, ctx.read_json("plan.json"), "plan.json")
         budgets = {c.n: c.word_budget for c in plan.chapters}
         past = _past_openings(ctx)
@@ -316,10 +320,11 @@ class ContinuityStage:
             raise_if(
                 validate_chapter(
                     text,
-                    chapter_budget(budgets.get(n, 0) or plan.target_words // len(chapters), wpm),
+                    chapter_budget(budgets.get(n, 0) or plan.target_words // len(chapters), wpm, profile),
                     chapter_n=n,
                     past_openings=past,
                     embed=ctx.services.embed,
+                    profile=profile,
                 )
             )
             by_n[n] = {**by_n[n], "text": text}
@@ -341,7 +346,7 @@ class ContinuityStage:
         total_words = sum(c.word_count for c in built)
         # Chapters may each run 20 % over; together they must still fit the 15:00 QC ceiling.
         raise_if([v for v in [check_master_length([c.text for c in built], wpm)] if v is not None])
-        if total_words < plan.target_words * 0.8:
+        if total_words < plan.target_words * profile.master_short_share:
             ctx.log.warn("story_short", words=total_words, target=plan.target_words, job_id=ctx.job_id)
         vec = ctx.services.embed.embed([embed_window(full_text, ctx.runtime.embed.batch_size)])[0]
         critic_avg = float(ctx.read_json("critic.json")["critic_avg"])
@@ -519,6 +524,7 @@ class ShortsSelectStage:
         wpm = _wpm(ctx)
         buckets = sorted(ctx.channel.length_buckets)
         count_min, count_max = ctx.channel.shorts_per_master
+        count_min = profile_of(ctx).moments_min(count_min)
         raw = call_json(
             ctx,
             "shorts_select",
@@ -776,11 +782,20 @@ def expand_chapter(ctx: JobContext, chapter_n: int, add_words: int) -> StoryChap
         add_words=add_words,
         chapter_text=old.text,
     ).strip()
+    profile = profile_of(ctx)
     added = word_count(text) - old.word_count
-    if added < add_words // 2:
+    if added < add_words // profile.expand_divisor:
         raise NsError("NS-E303", f"expansion of chapter {chapter_n} added {added} words, wanted {add_words}")
-    checks = (check_banned(text, load_banned()), check_reading_level(text), check_sentence_length(text))
+    checks = (
+        check_banned(text, load_banned()),
+        check_reading_level(text, profile=profile),
+        check_sentence_length(text),
+    )
     raise_if([v for v in checks if v is not None])
+    if ctx.file("policy_text.json").exists():  # the text gate already ran: it never sees these new words
+        from ns_studio.policy.text_checks import check_added_text
+
+        check_added_text(ctx, text, old_text=old.text)
     is_last = idx == len(story.chapters) - 1
     new = build_chapter(old.n, old.title, text, old.summary, wpm=_wpm(ctx), is_last=is_last)
     mapping = sentence_index_map([s.text for s in old.sentences], [s.text for s in new.sentences])

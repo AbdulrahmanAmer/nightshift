@@ -883,3 +883,17 @@ def test_a_failing_apply_leaves_the_saved_answers_alone_so_a_rerun_still_sees_th
     assert saved["llm_tier"] == "balanced"
     rerun = reinstall_ctx(tmp_path, example_answers(llm_tier="best"), "again.json")
     assert S01Questions().check(rerun) is False
+
+
+def test_the_tiny_story_answer_reaches_runtime_json_and_goes_back_out(tmp_path: Path) -> None:
+    """H-8: `tiny_story` is an engine-test answer like `fake_voice`: a reinstall that changes it applies."""
+    install_with(tmp_path)
+    ctx = reinstall_ctx(tmp_path, example_answers(tiny_story=True, allow_cpu=True))
+    S01Questions().run(ctx)
+    assert "tiny_story" in ctx.ui.text  # setup says which answer changed
+    S06Tune().run(ctx)
+    assert load_runtime(ctx.paths).tiny_story is True
+    back = reinstall_ctx(tmp_path, example_answers(tiny_story=False, allow_cpu=True), "back.json")
+    S01Questions().run(back)
+    S06Tune().run(back)
+    assert load_runtime(back.paths).tiny_story is False

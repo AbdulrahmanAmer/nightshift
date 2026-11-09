@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from statistics import mean
 
+from ns_common.atomic import read_text_retry, write_text_atomic
 from ns_common.db import Db
 from ns_common.models import Channel
 from ns_common.paths import Paths
@@ -123,15 +124,14 @@ def save_snapshot(
 ) -> Path:
     """Remember what the last import changed (shown by `studio status`)."""
     f = paths.data / SNAPSHOT_FILE
-    data = json.loads(f.read_text(encoding="utf-8")) if f.exists() else {}
+    data = json.loads(read_text_retry(f)) if f.exists() else {}
     data[channel] = {
         "at": (now or datetime.now(UTC)).isoformat(timespec="seconds"),
         "changes": {
             p: {o: [round(a, 4), round(b, 4)] for o, (a, b) in c.items()} for p, c in changes.items()
         },
     }
-    f.parent.mkdir(parents=True, exist_ok=True)
-    f.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    write_text_atomic(f, json.dumps(data, indent=2) + "\n")
     return f
 
 

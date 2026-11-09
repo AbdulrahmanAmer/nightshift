@@ -12,6 +12,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path, PureWindowsPath
 from typing import Any
 
+from ns_common.atomic import read_text_retry, write_text_atomic
 from ns_common.db import new_job_id
 from ns_common.paths import Paths
 from ns_dashboard.errors import ApiError
@@ -86,7 +87,7 @@ class UploadManager:
         f = d / META
         if not f.exists():
             raise ApiError(404, "not_found", "Unknown upload.")
-        return d, json.loads(f.read_text(encoding="utf-8"))
+        return d, json.loads(read_text_retry(f))
 
     def _info(self, d: Path, meta: dict[str, Any]) -> UploadInfo:
         part = d / f"source{meta['ext']}.part"
@@ -120,7 +121,7 @@ class UploadManager:
         d = clipper_dir(self.paths) / source_id
         d.mkdir(parents=True, exist_ok=True)
         meta = {"source_id": source_id, "filename": name, "ext": ext, "size": size, "status": "uploading"}
-        (d / META).write_text(json.dumps(meta, indent=2), encoding="utf-8")
+        write_text_atomic(d / META, json.dumps(meta, indent=2))
         (d / f"source{ext}.part").write_bytes(b"")
         return self._info(d, meta)
 
@@ -172,7 +173,7 @@ class UploadManager:
             os.replace(part, final)
             meta["status"] = "complete"
             meta["sha256"] = h.hexdigest()
-            (d / META).write_text(json.dumps(meta, indent=2), encoding="utf-8")
+            write_text_atomic(d / META, json.dumps(meta, indent=2))
             return self._info(d, meta)
 
 
@@ -189,7 +190,7 @@ def adopt_upload(paths: Paths, source_path: Path) -> Path:
     if folder.parent != clipper_dir(paths) or not meta_file.is_file():
         return source_path
     try:
-        meta = json.loads(meta_file.read_text(encoding="utf-8"))
+        meta = json.loads(read_text_retry(meta_file))
     except (OSError, ValueError):
         return source_path
     digest = meta.get("sha256") if isinstance(meta, dict) else None

@@ -12,6 +12,7 @@ from ns_common.pacing import master_seconds
 from ns_common.paths import contracts_dir
 from ns_common.textstats import fk_grade, split_sentences, word_count
 from ns_studio.text.budget import MASTER_MAX_SECONDS, Budget
+from ns_studio.text.story_profile import NORMAL, StoryProfile
 
 
 @dataclass(frozen=True)
@@ -58,8 +59,12 @@ def check_banned(text: str, banned: list[str]) -> Violation | None:
     return Violation("banned_phrase", ", ".join(hits)) if hits else None
 
 
-def check_reading_level(text: str, lo: float = 5.0, hi: float = 8.0) -> Violation | None:
-    """Flesch-Kincaid grade of `text` must lie in `[lo, hi]`."""
+def check_reading_level(
+    text: str, lo: float | None = None, hi: float | None = None, *, profile: StoryProfile = NORMAL
+) -> Violation | None:
+    """Flesch-Kincaid grade of `text` must lie in `[lo, hi]` (the profile's grades unless given: 5 to 8)."""
+    lo = profile.grade_lo if lo is None else lo
+    hi = profile.grade_hi if hi is None else hi
     letters = [c for c in text if c.isalpha()]
     if letters and sum(c.isascii() for c in letters) / len(letters) < 0.8:
         return None  # Flesch-Kincaid is an English formula; other scripts would always read as "too easy"
@@ -91,14 +96,14 @@ def check_opening_similarity(
 
 
 def validate_story(
-    text: str, budget: Budget, *, past_openings: list[str], embed: Embed
+    text: str, budget: Budget, *, past_openings: list[str], embed: Embed, profile: StoryProfile = NORMAL
 ) -> list[Violation]:
     """Run every story validator and return the violations (empty when the text passes)."""
     opening = split_sentences(text)[0] if text.strip() else ""
     checks = [
         check_length(text, budget),
         check_banned(text, load_banned()),
-        check_reading_level(text),
+        check_reading_level(text, profile=profile),
         check_sentence_length(text),
         check_opening_similarity(opening, past_openings, embed),
     ]
@@ -118,6 +123,7 @@ def validate_chapter(
     chapter_n: int,
     past_openings: list[str],
     embed: Embed,
+    profile: StoryProfile = NORMAL,
 ) -> list[Violation]:
     """Validators for one chapter: length against its budget, banned phrases, reading level, rhythm.
 
@@ -127,7 +133,7 @@ def validate_chapter(
     checks = [
         check_length(text, budget),
         check_banned(text, load_banned()),
-        check_reading_level(text),
+        check_reading_level(text, profile=profile),
         check_sentence_length(text),
         check_opening_similarity(opening, past_openings, embed) if chapter_n == 1 else None,
     ]

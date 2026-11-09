@@ -5,12 +5,14 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
-from collections.abc import Iterator, Mapping, Sequence
+import time
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from ns_common.atomic import read_text_retry, write_text_atomic
 from ns_common.db import Db
 from ns_common.logging import NsLogger
 from ns_common.paths import Paths
@@ -92,17 +94,22 @@ def settings_file(paths: Paths) -> Path:
 
 
 def scheduled_run_time(paths: Paths) -> str | None:
-    """The nightly time of the registered Windows task (`config/schedule.json`, written by `ns schedule`)."""
+    """The nightly time of the registered Windows task (`config/schedule.json`, written by `ns schedule`).
+
+    A task the owner switched off (mode `switched_off`) still has its time, and that is the one to show: the
+    page must not name another time than the task has (D-28). A dev install's `disabled` task has none.
+    """
     try:
-        from ns_supervisor.schedule_cfg import read_run_time
+        from ns_supervisor.schedule_cfg import MODE_SWITCHED_OFF, read_run_time, read_schedule_mode
     except ImportError:
         return None
-    return read_run_time(paths)
+    return read_run_time(paths, include_disabled=read_schedule_mode(paths) == MODE_SWITCHED_OFF)
 
 
 def scheduled_mode(paths: Paths) -> str:
     """`registered`, `interactive_only` (NS-W205: runs only while signed in), `disabled` (a dev install's
-    task that never fires) or `none` (no nightly task)."""
+    task that never fires), `switched_off` (the owner turned the task off in Task Scheduler; D-28) or `none`
+    (no nightly task)."""
     try:
         from ns_supervisor.schedule_cfg import read_schedule_mode
     except ImportError:
@@ -111,19 +118,48 @@ def scheduled_mode(paths: Paths) -> str:
 
 
 def schedule_is_registered(paths: Paths) -> bool:
-    """True when Windows holds an enabled 'Nightshift Daily' task: `registered` or `interactive_only`.
+    """True when Windows holds a 'Nightshift Daily' task the owner has: `registered`, `interactive_only` or
+    `switched_off`.
 
     `schedule.json` existing is not enough: a dev install's `disabled` task never fires, so the page must
     not say a task exists. An `interactive_only` task (NS-W205) does exist and runs whenever the owner is
-    signed in, so it stays registered here and `schedule_mode` carries the difference.
+    signed in, so it stays registered here and `schedule_mode` carries the difference. A `switched_off` task
+    exists too, so the page must not say Windows refused it; `EngineService.next_run` says None for it, so the
+    page shows "Automatic runs off" instead of a coming run.
     """
-    return scheduled_mode(paths) in ("registered", "interactive_only")
+    return scheduled_mode(paths) in ("registered", "interactive_only", "switched_off")
 
 
 def status_schedule_mode(paths: Paths) -> str:
-    """`scheduled_mode` as the Status contract spells it: it has no `disabled`, so that reads as `none`."""
+    """`scheduled_mode` as the Status contract spells it: only `registered` and `interactive_only`, the rest
+    (`disabled`, `switched_off`) read as `none`."""
     mode = scheduled_mode(paths)
-    return "none" if mode == "disabled" else mode
+    return mode if mode in ("registered", "interactive_only") else "none"
+
+
+_RECORD_CHECK_EVERY_S = 60.0
+_record_checked: dict[str, float] = {}
+
+
+def refresh_schedule_record(paths: Paths, *, now: Callable[[], float] = time.monotonic) -> None:
+    """Let `schedule.json` follow a task the owner switched off once they change it in Task Scheduler.
+
+    Only when the record says `switched_off`, at most once a minute (it asks PowerShell), and never raising:
+    without it the page would go on saying "Automatic runs off" after the owner switched the task back on.
+    """
+    if scheduled_mode(paths) != "switched_off":
+        return
+    key = str(paths.home)
+    t = now()
+    if t - _record_checked.get(key, -_RECORD_CHECK_EVERY_S) < _RECORD_CHECK_EVERY_S:
+        return
+    _record_checked[key] = t
+    try:
+        from ns_supervisor.schedule import sync_record
+
+        sync_record(paths)
+    except Exception:  # a task that cannot be read changes nothing
+        return
 
 
 def load_dashboard_settings(paths: Paths) -> dict[str, Any]:
@@ -136,7 +172,7 @@ def load_dashboard_settings(paths: Paths) -> dict[str, Any]:
     f = settings_file(paths)
     if f.exists():
         try:
-            raw = json.loads(f.read_text(encoding="utf-8"))
+            raw = json.loads(read_text_retry(f))
         except (OSError, ValueError):
             raw = {}
         if isinstance(raw, dict):
@@ -151,9 +187,7 @@ def save_dashboard_settings(paths: Paths, data: Mapping[str, Any]) -> dict[str, 
     """Merge `data` into the stored settings and return the result."""
     merged = load_dashboard_settings(paths)
     merged.update({k: v for k, v in data.items() if k in DEFAULT_SETTINGS})
-    f = settings_file(paths)
-    f.parent.mkdir(parents=True, exist_ok=True)
-    f.write_text(json.dumps(merged, indent=2) + "\n", encoding="utf-8")
+    write_text_atomic(settings_file(paths), json.dumps(merged, indent=2) + "\n")
     return merged
 
 
@@ -194,7 +228,7 @@ def load_ui_prefs(paths: Paths) -> dict[str, Any]:
     """
     out: dict[str, Any] = {"owner_name": None, "theme": None}
     try:
-        raw = json.loads(ui_prefs_file(paths).read_text(encoding="utf-8"))
+        raw = json.loads(read_text_retry(ui_prefs_file(paths)))
     except (OSError, ValueError):
         return out
     if not isinstance(raw, dict):

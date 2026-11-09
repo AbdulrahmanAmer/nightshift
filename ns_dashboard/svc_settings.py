@@ -12,6 +12,7 @@ from typing import Any, BinaryIO
 
 from pydantic import ValidationError
 
+from ns_common.atomic import write_bytes_atomic
 from ns_common.config import save_runtime
 from ns_common.models import Runtime
 from ns_common.secrets_names import KEY_NAMES, SHORT_NAMES
@@ -22,6 +23,7 @@ from ns_dashboard.state import (
     AppState,
     load_dashboard_settings,
     load_ui_prefs,
+    refresh_schedule_record,
     save_dashboard_settings,
     schedule_is_registered,
     scheduled_mode,
@@ -77,6 +79,7 @@ class SettingsService:
 
     def get_settings(self) -> dict[str, Any]:
         """`{schedule_time, home, profile, flags, keys, notifications, ...}`."""
+        refresh_schedule_record(self.s.paths)
         stored = load_dashboard_settings(self.s.paths)
         runtime = self.engine.runtime_summary()
         flags = runtime_flags.flatten(runtime or {})
@@ -84,9 +87,10 @@ class SettingsService:
         prefs = load_ui_prefs(self.s.paths)
         return {
             "schedule_time": stored["run_time"],
-            # True when an enabled 'Nightshift Daily' task exists (registered or interactive-only). False
-            # when Windows has none (NS-W206) or a dev install left it disabled; the time is then only a
-            # preference. `schedule_mode` tells registered from interactive_only (NS-W205)
+            # True when a 'Nightshift Daily' task the owner has exists (registered, interactive-only, or
+            # switched off by the owner in Task Scheduler: then `next_run` is None and the time is the
+            # task's own). False when Windows has none (NS-W206) or a dev install left it disabled; the time
+            # is then only a preference. `schedule_mode` tells registered from interactive_only (NS-W205)
             "schedule_registered": schedule_is_registered(self.s.paths),
             "schedule_mode": scheduled_mode(self.s.paths),
             "home": str(self.s.paths.home),
@@ -94,6 +98,8 @@ class SettingsService:
             "dev_mode": bool((runtime or {}).get("dev_mode")),
             # engine test (docs/DEV_MODE.md): jobs use placeholder footage; not an editable engine flag
             "fake_footage": bool((runtime or {}).get("fake_footage")),
+            # engine test (docs/DEV_MODE.md): the story text stages use a 1 to 2 GB model's thresholds
+            "tiny_story": bool((runtime or {}).get("tiny_story")),
             "flags": flags,
             "keys": self._key_flags(),
             "notifications": bool(stored["notifications"]),
@@ -145,7 +151,15 @@ class SettingsService:
         current = self.engine.runtime_summary()
         if current is None:
             raise ApiError(409, "no_runtime", "runtime.json does not exist yet; run the installer first.")
-        merged = runtime_flags.apply_flags(current, body.get("flags") or {})
+        try:
+            merged = runtime_flags.apply_flags(current, body.get("flags") or {})
+        except ValueError as e:
+            raise ApiError(
+                422,
+                "test_switch",
+                f"'{e}' belongs to an install made for testing; the dashboard cannot set it.",
+                hint="It is an answer in answers.json at setup (docs/DEV_MODE.md).",
+            ) from e
         if body.get("profile"):
             merged["profile"] = body["profile"]
         try:
@@ -264,8 +278,7 @@ class SettingsService:
             data = self.s.adapters.tts.preview(voice, text, speed)
         except AdapterUnavailable as e:
             raise ApiError(503, "tts_unavailable", str(e)) from e
-        cache.parent.mkdir(parents=True, exist_ok=True)
-        cache.write_bytes(data)
+        write_bytes_atomic(cache, data)  # a second preview request must not be served half a wav
         return data
 
     # --- logs ---

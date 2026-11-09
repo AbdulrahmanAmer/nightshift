@@ -40,6 +40,7 @@ from installer.stage2.context import StepContext
 from installer.stage2.runtime_cfg import build_runtime
 from installer.stage2.secrets import KEY_NAMES
 from installer.stage2.web.answers_view import KEPT_NAME
+from ns_common.atomic import write_text_atomic
 from ns_common.config import load_channel, load_runtime, save_channel, save_runtime
 from ns_common.models import Voice
 
@@ -57,6 +58,7 @@ SIMPLE_KEYS = (
     "install_code",
     "fake_voice",
     "fake_footage",
+    "tiny_story",
     "owner_name",
     "ui_theme",
 )
@@ -294,11 +296,11 @@ def _runtime(ctx: StepContext, keys: set[str], compared: bool) -> list[str]:
                 f"{now} is downloaded and checked, then points at {now} with that model's settings, and "
                 f"tuning runs again. {was} stays in models\\llm; delete it by hand to free space."
             )
-        if keys & {"fake_voice", "fake_footage"}:
+        if keys & {"fake_voice", "fake_footage", "tiny_story"}:
             owed["engine"] = True
             lines.append(
-                "Engine test: config\\runtime.json follows your fake_voice and fake_footage answers once "
-                "the voice engine is in place."
+                "Engine test: config\\runtime.json follows your fake_voice, fake_footage and tiny_story "
+                "answers once the voice engine is in place."
             )
     if owed:
         ctx.set_flag(PENDING_FLAG, owed)
@@ -345,9 +347,11 @@ def apply_pending_runtime(ctx: StepContext) -> list[str]:
                 + (f" {was} stays in models\\llm; delete it by hand to free space." if had else "")
             )
         if owed.get("engine"):
-            rt.fake_footage, rt.tts.engine = fresh.fake_footage, fresh.tts.engine
+            rt.fake_footage, rt.tiny_story = fresh.fake_footage, fresh.tiny_story
+            rt.tts.engine = fresh.tts.engine
             lines.append(
-                "Engine test: config\\runtime.json now follows your fake_voice and fake_footage answers."
+                "Engine test: config\\runtime.json now follows your fake_voice, fake_footage and tiny_story "
+                "answers."
             )
         save_runtime(ctx.paths, rt)
     ctx.clear_flags(PENDING_FLAG)
@@ -435,7 +439,7 @@ def _prefs(ctx: StepContext, ans: InstallerAnswers, keys: set[str]) -> list[str]
         prefs["owner_name"] = ans.owner_name
     if "ui_theme" in keys:
         prefs["theme"] = ans.ui_theme
-    f.write_text(json.dumps(prefs, indent=2) + "\n", encoding="utf-8")
+    write_text_atomic(f, json.dumps(prefs, indent=2) + "\n")
     return ["Your name and theme in config\\ui_prefs.json follow your answers now."]
 
 

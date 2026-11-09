@@ -212,23 +212,27 @@ def test_audio_only_voice_flags_second_audio_stream(tmp_home: Path):
 def test_disclosure_advice(tmp_home: Path):
     ctx = make_ctx(tmp_home)
     ctx.write_json("story.json", {"text": "A man heard knocking in an old farmhouse."})
-    a = fc.compute_advice(ctx)
+    ctx.write_json("policy_notes.json", {"intensity": "low", "real_setting": False})  # the text gate's answer
+    a = fc.compute_advice(ctx, place_ner=lambda t: [])
     assert a.ai_disclosure == "no" and not a.made_for_kids and not a.age_restrict_suggested
-    ctx.write_json("story.json", {"text": "It happened in Chicago last winter."})
-    assert fc.compute_advice(ctx).ai_disclosure == "yes"
+    ctx.write_json("policy_notes.json", {"intensity": "low", "real_setting": True})
+    assert fc.compute_advice(ctx, place_ner=lambda t: []).ai_disclosure == "yes"
+    ctx.write_json("policy_notes.json", {"intensity": "low", "real_setting": False})
     ctx.write_json("story.json", {"text": "Honestly, this really happened to me."})
-    assert fc.compute_advice(ctx).ai_disclosure == "yes"
+    assert fc.compute_advice(ctx, place_ner=lambda t: []).ai_disclosure == "yes"
     mature = make_ctx(tmp_home, channel=make_channel(slug="grim", audience="mature"))
-    mature.write_json("policy_notes.json", {"intensity": "high"})
-    assert fc.compute_advice(mature).age_restrict_suggested
+    mature.write_json("policy_notes.json", {"intensity": "high", "real_setting": False})
+    assert fc.compute_advice(mature, place_ner=lambda t: []).age_restrict_suggested
     assert fc.DisclosureAdvice().run(mature).passed
 
 
 def test_final_checks_order():
     assert [c.name for c in fc.final_checks()] == [
+        "unsafe_topics",
         "render_uniqueness",
         "long_runtime",
         "clip_reuse",
         "audio_only_voice",
+        "short_hook",
         "disclosure_advice",
     ]

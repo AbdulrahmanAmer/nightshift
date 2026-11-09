@@ -20,7 +20,7 @@ import sys
 from collections.abc import Callable
 from pathlib import Path
 
-from ns_common.atomic import write_text_atomic
+from ns_common.atomic import read_text_retry, write_text_atomic
 from ns_common.paths import Paths
 
 FILE_NAME = "secrets.dpapi"
@@ -80,7 +80,7 @@ def dpapi_unprotect(blob: bytes) -> bytes:
 
 def _read_all(paths: Paths) -> dict[str, str]:
     try:
-        data = json.loads(secret_path(paths).read_text(encoding="utf-8"))
+        data = json.loads(read_text_retry(secret_path(paths)))
     except (OSError, ValueError):
         return {}
     return {str(k): str(v) for k, v in data.items()} if isinstance(data, dict) else {}

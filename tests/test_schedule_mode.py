@@ -75,14 +75,23 @@ SHAPES: list[tuple[str, object | None, str, bool]] = [
      "interactive_only", True),
     ("disabled (dev install)", {"run_time": "03:00", "task_name": "x", "mode": "disabled"},
      "disabled", False),
+    ("switched off by the owner (D-28)", {"run_time": "03:00", "task_name": "x", "mode": "switched_off"},
+     "switched_off", True),
     ("bad time", {"run_time": "25:99", "task_name": "x", "mode": "registered"}, "none", False),
 ]
 
 
 @pytest.mark.parametrize(("case", "content", "mode", "registered"), SHAPES, ids=[s[0] for s in SHAPES])
 def test_settings_report_a_task_as_registered_only_when_an_enabled_task_exists(
-    tmp_home: Path, case: str, content: object | None, mode: str, registered: bool
+    tmp_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    case: str,
+    content: object | None,
+    mode: str,
+    registered: bool,
 ):
+    # a `switched_off` record makes the page look at the task: Windows has none here, so nothing changes
+    monkeypatch.setattr(pwsh, "run_powershell", lambda script, **kw: done("not registered\n"))
     client, state = make_env(tmp_home)
     if content is not None:
         state.paths.config.mkdir(parents=True, exist_ok=True)
@@ -95,7 +104,7 @@ def test_settings_report_a_task_as_registered_only_when_an_enabled_task_exists(
     status = client.get("/api/status").json()
     assert status["schedule_registered"] is registered
     # the Status contract has no `disabled`; a task that never fires reads as no task there
-    assert status["schedule_mode"] == ("none" if mode == "disabled" else mode)
+    assert status["schedule_mode"] == ("none" if mode in ("disabled", "switched_off") else mode)
     assert Status.model_validate(status).schedule_registered is registered
 
 

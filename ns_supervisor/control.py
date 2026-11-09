@@ -8,6 +8,7 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
+from ns_common.atomic import read_text_retry
 from ns_common.config import load_install_state, load_runtime
 from ns_common.errors import NsError
 from ns_common.models import Runtime
@@ -86,7 +87,7 @@ def stop(
     if not state_file.exists():
         return ["The engine is not running."]
     try:
-        data = json.loads(state_file.read_text(encoding="utf-8"))
+        data = json.loads(read_text_retry(state_file))
         sup_pid = int(data["pid"])
         children = {str(k): int(v) for k, v in dict(data.get("children", {})).items()}
     except (OSError, ValueError, KeyError, TypeError):

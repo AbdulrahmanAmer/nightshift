@@ -12,12 +12,20 @@ from pathlib import Path
 from typing import Any
 
 import ns_common
+from ns_common.atomic import read_text_retry
 from ns_common.config import load_install_state, load_runtime
 from ns_common.errors import NsError
 from ns_common.models import GpuStatus
 from ns_dashboard.errors import ApiError, SupervisorUnavailable
 from ns_dashboard.events import iter_sse
-from ns_dashboard.state import AppState, load_dashboard_settings, schedule_is_registered, status_schedule_mode
+from ns_dashboard.state import (
+    AppState,
+    load_dashboard_settings,
+    refresh_schedule_record,
+    schedule_is_registered,
+    scheduled_mode,
+    status_schedule_mode,
+)
 from ns_dashboard.svc_channels import ChannelsService
 from ns_dashboard.svc_outputs import OutputsService
 
@@ -90,8 +98,14 @@ class EngineService:
 
     # --- schedule ---
     def next_run(self) -> datetime | None:
-        """Next occurrence of the nightly run time (local time), or None without active channels."""
+        """Next occurrence of the nightly run time (local time), or None without active channels.
+
+        Also None while the owner has the task switched off (D-28): no run is coming, so the page must not
+        show one.
+        """
         if not any(c.status == "active" for c in self.channels.load_all()):
+            return None
+        if scheduled_mode(self.s.paths) == "switched_off":
             return None
         hh, mm = (int(x) for x in str(load_dashboard_settings(self.s.paths)["run_time"]).split(":"))
         now = self.clock()
@@ -145,6 +159,7 @@ class EngineService:
     # --- /api/status ---
     def status(self) -> dict[str, Any]:
         """The object behind `GET /api/status` and every `status` event."""
+        refresh_schedule_record(self.s.paths)
         st = self.s.link.status()
         engine = self.engine(st)
         cards = self.channels.load_all()
@@ -255,7 +270,7 @@ class EngineService:
     def notes(self) -> list[dict[str, Any]]:
         """Notes the nightly run left when no toast could show (`run/morning_note.json`), oldest first."""
         try:
-            raw = json.loads((self.s.paths.home / "run" / "morning_note.json").read_text(encoding="utf-8"))
+            raw = json.loads(read_text_retry(self.s.paths.home / "run" / "morning_note.json"))
         except (OSError, ValueError):
             return []
         items = raw.get("notes") if isinstance(raw, dict) else None

@@ -1,5 +1,5 @@
 ---
-version: 1
+version: 2
 thinking: true
 schema: story_plan
 ---
@@ -9,5 +9,7 @@ Premise: {{ idea.premise }}
 Twist: {{ idea.twist }}
 Setting: {{ idea.setting }}. Protagonist: {{ idea.protagonist }}.
 Structure: {{ combo.structure }}. Hook style: {{ combo.hook }}. POV/tone: {{ combo.pov_tone }}.
+Content rules:
+{{ policy_rules }}
 Total length about {{ budget.words }} words, to be split into {{ budget.parts }} part(s) of roughly {{ budget.words_per_part }} words.
-Return beats (name + one-sentence summary; 4-7 beats: setup, escalation, turn, payoff and what sits between), part_breaks (beat indices where a part ends on a cliffhanger; empty for a single part), and ending_line_idea (for a single part: a last line that loops back to the opening image; for a series: the final cliff).
+Return beats (name + one-sentence summary; {{ story_profile.story_beats_lo }}-{{ story_profile.story_beats_hi }} beats: setup, escalation, turn, payoff and what sits between), part_breaks (beat indices where a part ends on a cliffhanger; empty for a single part), and ending_line_idea (for a single part: a last line that loops back to the opening image; for a series: the final cliff).
