@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Callable
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, BinaryIO
@@ -12,17 +13,19 @@ from pydantic import ValidationError
 
 from ns_common.db import new_job_id
 from ns_common.devmode import fake_footage
+from ns_common.errors import NsError
 from ns_common.models import JobRunRequest
 from ns_common.paths import Paths
 from ns_common.secrets_names import SHORT_NAMES
 from ns_dashboard.adapters import Adapters
 from ns_dashboard.common import KNOWN_FORMATS, now_iso, offered_formats
-from ns_dashboard.errors import AdapterUnavailable, ApiError
+from ns_dashboard.errors import AdapterUnavailable, ApiError, room_refusal
 from ns_dashboard.jobs import Handler, JobControl, JobRecord, scheduled_text
 from ns_dashboard.state import AppState
 from ns_dashboard.svc_channels import ChannelsService
 from ns_dashboard.templates import clipper_can_run, load_templates
 from ns_dashboard.uploads import ALLOWED_EXT, CHUNK, UploadInfo, UploadManager, find_source
+from ns_studio import diskroom
 from ns_studio.footage_keys import NO_FOOTAGE_KEY
 from ns_studio.series.plain import script_problem
 
@@ -240,6 +243,26 @@ class JobsService:
         self.s.hub.publish("dashboard_job", rec.to_dict())
         return rec.to_dict()
 
+    def _room(self, check: Callable[[], object]) -> None:
+        """Run a free-space check (``ns_studio.diskroom``): NS-E104 is the API's 507, nothing is queued."""
+        try:
+            check()
+        except NsError as e:
+            if e.code != "NS-E104":
+                raise
+            raise room_refusal(e) from e
+
+    def _fake(self) -> tuple[str, ...]:
+        """The services faked for the room estimate: the clip source, when the dashboard runs on fakes."""
+        return ("clips",) if self.s.fake_services else ()
+
+    def _story_room(self, slug: str, fmt: str, resume_dir: Path | None = None) -> None:
+        """Refuse a story job (D-33) when the home's volume has less room than ``fmt`` needs (a resume: the
+        rest)."""
+        channel = self.channels.load(slug)
+        self._room(lambda: diskroom.require_story_room(
+            self.s.paths, self.s.log, channel, fmt, fake=self._fake(), resume_dir=resume_dir))
+
     def _require_footage_key(self) -> None:
         """Refuse a story video when no stock-footage key is stored (gap L3): `clips` would fail an hour in.
 
@@ -266,6 +289,7 @@ class JobsService:
         self._accepting()
         slug, params = self._run_params(body)
         self._require_footage_key()
+        self._story_room(slug, params["format"])
         return self._enqueue("run", slug, params, self._schedule(body))
 
     def check_run(self, body: dict[str, Any]) -> None:
@@ -275,8 +299,9 @@ class JobsService:
         request that `create_run` would turn down: it makes the same checks, in the same order.
         """
         self._accepting()
-        self._run_params(body)
+        slug, params = self._run_params(body)
         self._require_footage_key()
+        self._story_room(slug, params["format"])
         self._schedule(body)
 
     def _run_params(self, body: dict[str, Any]) -> tuple[str, dict[str, Any]]:
@@ -369,6 +394,8 @@ class JobsService:
                 raise ApiError(409, "already_queued", "That job is already being continued.")
         channel = rec.channel or str(rec.params.get("channel") or "")
         self._require_footage_key()
+        # a resume writes only what the unfinished stages write (the finished ones are kept)
+        self._story_room(channel, str(rec.params.get("format") or ""), self.s.paths.job_dir(studio_job))
         params: dict[str, Any] = {
             "channel": channel, "format": str(rec.params.get("format") or ""), "count": 1,
             "resume_job_id": studio_job, "resume_of": rec.job_id,
@@ -436,16 +463,20 @@ class JobsService:
                 hint="Start a new clip job from the Create page.",
             )
         params = {k: rec.params.get(k) for k in CLIP_PARAM_KEYS}
+        max_clips = _int(body, "max_clips", int(params.get("max_clips") or 6), 1, 10)
         params.update(
             {
                 "template": template,
-                "max_clips": _int(body, "max_clips", int(params.get("max_clips") or 6), 1, 10),
+                "max_clips": max_clips,
                 "studio_job_id": studio_job_id,
                 "rerun_of": rec.job_id,
                 "source_id": rec.params.get("source_id"),
                 "rights_confirmed": True,
             }
         )
+        # the later stages only (selection, layout, captions, render, QC, outbox): the renders
+        self._room(lambda: diskroom.require_clip_room(
+            self.s.paths, self.s.log, max_clips=max_clips, rerun=True, fake=self._fake()))
         return rec, params
 
     def _studio_job_id(self, result: dict[str, Any]) -> str | None:
@@ -583,6 +614,9 @@ class JobsService:
             source_id, source_path, rerun = self._resolve_source(body, uploaded)
         params.update({"source_id": source_id, "source_path": str(source_path) if source_path else None,
                        "rerun": rerun})
+        self._room(lambda: diskroom.require_clip_room(
+            self.s.paths, self.s.log, max_clips=int(params["max_clips"]), url_source=bool(url),
+            source=source_path, fake=self._fake()))
         return slug, params, schedule_at, source_id
 
     def _registered_source(self, source_id: str) -> Path | None:

@@ -119,7 +119,7 @@ def run_story_jobs(
     story text, `studio run --script`) one job is made from that text instead of one the model writes
     (`jobs.make_script_job`).
     """
-    from ns_studio import jobs
+    from ns_studio import diskroom, jobs
     from ns_studio.channels.crud import get_channel
     from ns_studio.orchestrator import plan_format, plan_job
     from ns_studio.policy.regen import run_job_guarded
@@ -128,6 +128,9 @@ def run_story_jobs(
     if resume_job_id:
         _require_not_paused(env, channel)
         ctx = jobs.load_job(env, resume_job_id)
+        # NS-E104 before the job runs again, for the stages it has left (a drive that filled up meanwhile)
+        diskroom.require_story_room(
+            env.paths, env.log, ctx.channel, ctx.fmt, fake=fake, resume_dir=ctx.job_dir)
         jobs.prepare_plan(ctx.fmt, None)
         names = [s.name for s in plan_job(plan_format(ctx.fmt, ctx.job_dir))]
         if seen is not None:
@@ -148,6 +151,8 @@ def run_story_jobs(
             if i == 0:  # nothing was made: say so, never report a job that made no video as done
                 raise ChannelPaused(_paused_text(ch.display_name))
             break
+        # every job of a batch, a scheduled one too: the drive may have filled up since the request was made
+        diskroom.require_story_room(env.paths, env.log, ch, fmt, fake=fake)
         if script is not None:
             ctx = jobs.make_script_job(env, ch, fmt, script, script_title, rng=rng)
             names = [s.name for s in plan_job(plan_format(ctx.fmt, ctx.job_dir))]
@@ -283,6 +288,7 @@ def run_clip(
     `params` carries `channel`, `template`, `max_clips`, `min_s`, `max_s` and `rights_confirmed` as the
     dashboard stores them. A video that was downloaded for the job is deleted once it has been imported.
     """
+    from ns_studio import diskroom
     from ns_studio.channels.crud import get_channel
     from ns_studio.clipper.stages_clip import create_clip_job
     from ns_studio.orchestrator import run_job
@@ -291,6 +297,13 @@ def run_clip(
     channel = get_channel(home, str(params["channel"]))
     clip_params = clip_params_of(source_path, channel.slug, params)
     clip_params.validate()
+    # the import copies the video into the clip's own folder, a linked video that was downloaded for this job
+    # too (`ImportStage` gets a file path, so it copies; the download is deleted after the import): both
+    # are on the drive twice for a moment, so `source_path` is always counted
+    diskroom.require_clip_room(
+        home, NsLogger("dashboard", home.logs, echo=False), max_clips=clip_params.max_clips,
+        source=source_path, fake=fake,
+    )
     ctx = with_acquirer(create_clip_job(home, channel, clip_params, fake=frozenset(fake)), acquirer)
     if seen is not None:
         seen.append(ctx.job_id)
@@ -314,6 +327,7 @@ def rerun_clip(
     The import, audio, analysis and transcript are kept; selection, layout, captions, render, QC and
     the outbox run again. `changes` may hold `template`, `max_clips`, `min_s` and `max_s`.
     """
+    from ns_studio import diskroom
     from ns_studio.channels.crud import get_channel
     from ns_studio.clipper.models import ClipParams
     from ns_studio.clipper.stages_clip import resume_clip_job
@@ -332,6 +346,8 @@ def rerun_clip(
     if style and "caption_style" in {f.name for f in dataclasses.fields(ClipParams)}:
         new = dataclasses.replace(new, caption_style=str(style))
     new.validate()
+    diskroom.require_clip_room(  # the later stages only: the renders
+        home, NsLogger("dashboard", home.logs, echo=False), max_clips=new.max_clips, rerun=True, fake=fake)
     ctx = with_acquirer(
         resume_clip_job(home, studio_job_id, get_channel(home, old.channel), fake=frozenset(fake)), acquirer
     )
@@ -345,15 +361,20 @@ def rerun_clip(
 
 @contextmanager
 def workshop_session(
-    *, acquirer: Acquirer | None = None, fake: Collection[str] = ()
+    *, acquirer: Acquirer | None = None, fake: Collection[str] = (), job_fake: Collection[str] | None = None
 ) -> Iterator[Workshop]:
     """A `Workshop` over `NIGHTSHIFT_HOME` (`ns_studio.series.workshop.default_workshop`), closed afterwards.
 
     Production rows go to `dashboard_jobs` as kind `series_part`; the supervisor is the GPU owner when given.
+    `fake` is what the session itself runs on (a read-only one fakes every service so that no model is
+    called); `job_fake` is what the part jobs it queues will run on, which the free-space check reads (the
+    dashboard's own services, not the session's). It defaults to `fake`.
     """
     from ns_studio.series.workshop import default_workshop
 
     ws = default_workshop(frozenset(fake))
+    if job_fake is not None:
+        ws.fake = frozenset(job_fake)
     if acquirer is not None:
         ws.services = replace(ws.services, acquirer=acquirer)
     try:
@@ -428,7 +449,7 @@ def run_series_part(
     directory already holds `script_source.json`, so `run_job` switches to the `master_from_script` plan.
     A resumed job (its `job.json` exists) continues where `stage_state.json` says.
     """
-    from ns_studio import jobs
+    from ns_studio import diskroom, jobs
     from ns_studio.channels.crud import get_channel
     from ns_studio.context import JobContext
     from ns_studio.orchestrator import plan_job
@@ -442,6 +463,7 @@ def run_series_part(
     _require_not_paused(env, channel.slug)  # before a combo is drawn or a job folder made (P47)
     jobs.prepare_plan("master_first", None)
     job_dir = env.paths.job_dir(job_id)
+    diskroom.require_series_part_room(env.paths, env.log, fake=fake, resume_dir=job_dir)
     if (job_dir / "job.json").exists():
         ctx = jobs.load_job(env, job_id)
     else:
@@ -480,15 +502,16 @@ def run_series_part(
     return output_ids(env.db, job_id)
 
 
-def queue_next_part(slug: str) -> list[dict[str, Any]]:
+def queue_next_part(slug: str, fake: Collection[str] = ()) -> list[dict[str, Any]]:
     """Queue production of the lowest approved part of story `slug` (`Workshop.produce`); no model is called.
 
     Returns `[{part, job_id, title}]`. Raises `WorkshopError` when the story is unknown, has no design yet
-    or has no approved part.
+    or has no approved part, and `NsError` NS-E104 (nothing queued or written) when the home's volume cannot
+    hold the part. `fake` is what the part's job will run on: the free-space estimate reads its clip source.
     """
     from ns_studio.series.store import WorkshopError
 
-    with workshop_session(fake=READ_ONLY) as ws:
+    with workshop_session(fake=READ_ONLY, job_fake=fake) as ws:
         parts = ws.status(slug)["parts"]
         nxt = next((int(p["n"]) for p in parts if p["status"] == "approved"), None)
         if nxt is None:

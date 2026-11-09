@@ -88,29 +88,29 @@ def ps1_int(name: str) -> int:
 # ---------------------------------------------------------------------------------------------------------
 # F-H2: free disk. F-H7: where the check blocks
 # ---------------------------------------------------------------------------------------------------------
-def test_welcome_names_the_tier_disk_amounts_not_40_gb():
-    """A.2 and welcome.txt give the figures setup enforces (sysinfo.required_free_gb), not ~40 GB."""
-    small, balanced, best = (sysinfo.required_free_gb(t) for t in ("small", "balanced", "best"))
-    assert (small, balanced, best) == (60, 74, 81)
+def test_welcome_names_the_computed_disk_amount_not_40_gb():
+    """A.2 and welcome.txt give the first-install figure setup computes (H-6), not ~40 GB."""
+    small = sysinfo.required_free_gb("small")
+    assert small == 60
     a2 = section("### A.2")
     for text in (a2, WELCOME):
         assert "~40 GB" not in text
-        assert f"{small} GB" in text and f"{balanced} GB" in text and f"{best} GB" in text
+        assert f"{small} GB" in text and "exact number" in text
 
 
 def test_disk_row_says_where_it_blocks():
-    """1.2: Checks is red under the hard minimum, amber up to 60 GB; the tier block is on Choices."""
-    hard, recommended = ps1_int("MinFreeGbHard"), ps1_int("MinFreeGbRecommended")
-    assert (hard, recommended) == (40, sysinfo.BASE_FREE_GB)
+    """1.2: Checks, Choices and s01 block under the one computed number; stage 1 only a drive with no room for
+    the setup tools and it ranks drives with the same figure."""
+    assert ps1_int("MinFreeGbHard") == 2 and ps1_int("RoomyGb") == sysinfo.required_free_gb("small")
     row = table_row(section("### 1.2"), "Disk |")
-    assert f"{hard} GB" in row and "Choices" in row and "NS-E104" in row
+    assert "Choices" in row and "NS-E104" in row and "diskneed" in row
     for tier in ("small", "balanced", "best"):
         assert f"{sysinfo.required_free_gb(tier)} GB" in row
 
 
 def test_disk_decision_row():
     row = decision("Free disk space")
-    for needle in ("60 GB", "74 GB", "81 GB", "40 GB", "Choices", "NS-E104"):
+    for needle in ("60 GB", "Balanced 64", "Best 72", "diskneed", "Choices", "NS-E104"):
         assert needle in row
 
 
@@ -409,7 +409,7 @@ def test_operator_guide_agrees_with_the_welcome_text():
 def test_default_home_rules_include_the_drive_size_and_last_resort():
     """D29 states Select-DefaultHome as it is: roomy drives first, SSD over HDD, a last resort."""
     body = ps1_function("Select-DefaultHome")
-    assert "MinFreeGbRecommended" in body and "'SSD'" in body
+    assert "RoomyGb" in body and "'SSD'" in body
     assert "Join-Path (Get-DataDir) 'Home'" in STAGE1
     row = decision("Default install folder")
     assert "60 GB" in row and "SSD" in row and "LOCALAPPDATA" in row

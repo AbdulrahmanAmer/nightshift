@@ -1,7 +1,7 @@
 // Transport to the setup server (docs/design/installer-ui.md section 1.4). Same origin, cookie auth (nothing to do here).
 // The real client talks JSON over fetch. The demo transport (src/demo) implements the same Api interface in memory; it is
 // loaded on demand, only when ?demo or ?screen= is in the address or when the server answers with something that is not JSON.
-import type { ActionBody, ActionName, ActionResult, AnswersResult, ChoicesDraft, DiskCheck, KeyCheck, ModelCheck, PickFolderResult, SetupState, Tier, UiStep, UninstallView } from "./types";
+import type { ActionBody, ActionName, ActionResult, AnswersResult, ChoicesDraft, DiskCheck, DiskDraft, KeyCheck, ModelCheck, PickFolderResult, SetupState, Tier, UiStep, UninstallView } from "./types";
 
 export interface Api {
   readonly demo: boolean;
@@ -12,9 +12,10 @@ export interface Api {
   /** Ask the server to read an answers.json from a path and validate it like POST /api/answers. */
   loadAnswersFile(path: string): Promise<AnswersResult>;
   checkKey(service: "pexels" | "pixabay", key: string): Promise<KeyCheck>;
-  disk(path: string, tier: Tier, source?: boolean): Promise<DiskCheck>;
+  /** The folder check. `draft` is what the window has picked (the model file, Nightshift Code, the voice design model, the models folder): the server works out the space it needs (`needGb`) from the same draft Install checks, the page has no rule of its own. */
+  disk(path: string, tier: Tier, source?: boolean, draft?: DiskDraft | null): Promise<DiskCheck>;
   /** Opens the Windows folder dialog on the PC (the server shows it, in front of this window) and resolves when it closes. */
-  pickFolder(target: "install" | "models", start: string, tier: Tier): Promise<PickFolderResult>;
+  pickFolder(target: "install" | "models", start: string, tier: Tier, draft?: DiskDraft | null): Promise<PickFolderResult>;
   /** Does this Hugging Face GGUF exist, how big is it, does it fit a 16 GB card (the server does a HEAD request). */
   checkModel(repo: string, file: string): Promise<ModelCheck>;
   action(name: ActionName, body?: ActionBody): Promise<ActionResult>;
@@ -61,6 +62,14 @@ async function postAction(path: string, body?: unknown): Promise<ActionResult> {
   }
 }
 
+/** The draft's part of the folder check, as query parameters (read by `_draft_of` and `_custom_of` in server.py). */
+const diskDraftQuery = (d?: DiskDraft | null): string => {
+  if (!d) return "";
+  const custom = d.llmCustom ? `&repo=${encodeURIComponent(d.llmCustom.repo)}&file=${encodeURIComponent(d.llmCustom.file)}&size=${d.llmCustom.size}` : "";
+  const folder = d.modelsSource.path ? `&msPath=${encodeURIComponent(d.modelsSource.path)}` : "";
+  return `${custom}&code=${d.installCode ? 1 : 0}&voicedesign=${d.includeVoicedesign ? 1 : 0}&msKind=${d.modelsSource.kind}${folder}`;
+};
+
 export const httpApi: Api = {
   demo: false,
   getState: (since, signal) => call<SetupState>(`/api/state?since=${since}`, { signal }),
@@ -68,8 +77,10 @@ export const httpApi: Api = {
   postAnswers: (draft) => post<AnswersResult>("/api/answers", draft),
   loadAnswersFile: (path) => post<AnswersResult>("/api/answers", { path }),
   checkKey: (service, key) => post<KeyCheck>("/api/check-key", { service, key }),
-  disk: (path, tier, source) => call<DiskCheck>(`/api/disk?path=${encodeURIComponent(path)}&tier=${tier}${source ? "&source=1" : ""}`),
-  pickFolder: (target, start, tier) => post<PickFolderResult>("/api/pick-folder", { target, start, tier }),
+  disk: (path, tier, source, draft) => call<DiskCheck>(`/api/disk?path=${encodeURIComponent(path)}&tier=${tier}${source ? "&source=1" : ""}${diskDraftQuery(draft)}`),
+  pickFolder: (target, start, tier, draft) => post<PickFolderResult>("/api/pick-folder", {
+    target, start, tier, custom: draft?.llmCustom ?? null, installCode: draft?.installCode, includeVoicedesign: draft?.includeVoicedesign, modelsSource: draft?.modelsSource,
+  }),
   checkModel: (repo, file) => call<ModelCheck>(`/api/model-check?repo=${encodeURIComponent(repo)}&file=${encodeURIComponent(file)}`),
   action: (name, body) => postAction(`/api/action/${name}`, body ?? {}),
   async getUninstall() {

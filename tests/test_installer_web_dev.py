@@ -59,18 +59,20 @@ def test_apply_dev_names_a_card_that_is_there_and_warns_under_4_gb():
     assert row(low["checks"], "ram")["status"] == "warn" and "4 GB" in row(low["checks"], "ram")["value"]
 
 
-def test_the_disk_rule_of_a_dev_install_is_10_gb_and_a_real_install_keeps_60():
+def test_the_disk_rule_of_a_dev_install_is_10_gb_and_a_real_install_is_computed():
     dev = preflight.apply_dev(laptop())
     assert row(preflight.raw_disk_rows(dev, "C:\\Nightshift"), "disk")["status"] == "ok"
     dev["drives"][0]["free_gb"] = 9.0
     bad = row(preflight.raw_disk_rows(dev, "C:\\Nightshift"), "disk")
     assert bad["status"] == "fail" and bad["code"] == "NS-E104" and "10 GB" in bad["value"]
     assert "Free 10 GB" in row(preflight.check_rows(dev, "C:\\Nightshift"), "disk")["whatToDo"]
-    real = laptop()
+    real = laptop()                                   # the CPU build of the story model: about 43 GB, not 60
+    need = preflight.default_need(real, "C:\\Nightshift")
+    assert 40 <= need.gb < 50
     assert row(preflight.raw_disk_rows(real, "C:\\Nightshift"), "disk")["status"] == "fail"       # 30 GB
-    real["drives"][0]["free_gb"] = 50.0
-    assert row(preflight.raw_disk_rows(real, "C:\\Nightshift"), "disk")["status"] == "warn"
-    assert "Free 60 GB" in row(preflight.check_rows(laptop(), "C:\\Nightshift"), "disk")["whatToDo"]
+    real["drives"][0]["free_gb"] = float(need.gb + 1)
+    assert row(preflight.raw_disk_rows(real, "C:\\Nightshift"), "disk")["status"] == "ok"
+    assert f"Free {need.gb} GB" in row(preflight.check_rows(laptop(), "C:\\Nightshift"), "disk")["whatToDo"]
 
 
 def test_the_meters_ask_for_4_gb_of_memory_and_10_of_disk_in_dev_mode():
@@ -78,7 +80,8 @@ def test_the_meters_ask_for_4_gb_of_memory_and_10_of_disk_in_dev_mode():
     assert dev["meters"]["ram"] == {"haveGb": 8.0, "needGb": 4, "hardMinGb": 4}
     assert (dev["meters"]["disk"]["needGb"], dev["meters"]["disk"]["hardMinGb"]) == (10, 10)
     real = preflight.machine_summary(laptop(), "C:\\Nightshift", "small")
-    assert (real["meters"]["disk"]["needGb"], real["meters"]["ram"]["needGb"]) == (60, 16)
+    want = preflight.default_need(laptop(), "C:\\Nightshift").gb
+    assert (real["meters"]["disk"]["needGb"], real["meters"]["ram"]["needGb"]) == (want, 16)
 
 
 def test_disk_check_and_the_home_validation_use_the_dev_threshold():
@@ -113,7 +116,8 @@ def test_the_real_cpu_plan_is_not_changed_by_the_dev_code(tmp_path: Path):
     manifest = plan.load_manifest(ROOT)
     p = plan.build_plan(manifest, profile="cpu-dev", tier="small", include_code=True, cuda=None, ram_gb=16.0, vram_mb=None)
     labels = [i["label"] for g in p["groups"] for i in g["items"]]
-    assert not any("stub" in x for x in labels) and p["needFreeGb"] == 60 and "Nightshift Code" in labels
+    assert not any("stub" in x for x in labels) and "Nightshift Code" in labels
+    assert p["needFreeGb"] == plan.required_free_gb("small", profile="cpu-dev") > 10     # computed, not the dev 10
 
 
 # ---------------------------------------------------------------------------------------------- the controller

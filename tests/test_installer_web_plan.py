@@ -63,7 +63,7 @@ def test_build_plan_groups_and_totals(raw):
                         vram_mb=16311)
     assert [g["id"] for g in p["groups"]] == ["tools", "python", "programs", "models"]
     assert p["totalBytes"] == sum(i["bytes"] or 0 for g in p["groups"] for i in g["items"])
-    assert p["needFreeGb"] == 60 and p["tier"] == "small" and p["profile"] == "gpu"
+    assert p["needFreeGb"] == 60 and p["tier"] == "small" and p["profile"] == "gpu"      # computed (H-6)
     assert p["unknownCount"] > 0                    # programs and whisper learn their size later
     keys = [i["key"] for g in p["groups"] for i in g["items"]]
     assert "llama_cuda13" in keys and "cudart13" in keys and "opencode" in keys

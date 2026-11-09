@@ -26,7 +26,7 @@ from installer.stage2.answers import (
 )
 from installer.stage2.base import Step
 from installer.stage2.context import StepContext
-from installer.stage2.devmode import MIN_FREE_GB
+from installer.stage2.diskplan import ctx_need, free_bytes_of
 from installer.stage2.downloader import human_bytes
 from installer.stage2.errors import make_error
 from installer.stage2.secrets import KEY_NAMES, PEXELS_KEY, PIXABAY_KEY, any_key_stored
@@ -36,10 +36,10 @@ from installer.stage2.sysinfo import (
     drives_from_preflight,
     local_drives,
     recommended_tier,
-    required_free_gb,
 )
 from installer.stage2.web.pathcheck import FOLDER_FOREIGN, folder_kind, foreign_warning, layout_problem
 from installer.stage2.winenv import HOME_VAR, get_user_env, set_user_env
+from ns_common import diskneed
 from ns_common.errors import NsError
 from ns_common.pathrules import ascii_problem
 
@@ -163,8 +163,7 @@ class S01Questions(Step):
         return (folder_kind(str(candidate)) == FOLDER_FOREIGN
                 or layout_problem(str(candidate), ctx.app_path) is not None)
 
-    def _pick_home(self, ctx: StepContext, tier: str, custom_bytes: int | None = None) -> Path:
-        need = MIN_FREE_GB if ctx.dev_mode else required_free_gb(tier, custom_bytes)
+    def _pick_home(self, ctx: StepContext, tier: str, custom: dict[str, Any] | None = None) -> Path:
         provided = ctx.raw_answers.get("home_path")
         while True:
             if provided:
@@ -173,10 +172,17 @@ class S01Questions(Step):
                 home = ctx.paths.home
             else:
                 drives = drives_from_preflight(ctx.preflight) or local_drives()
-                default = choose_default_home(drives, need, lambda p: self._taken(ctx, p)) or ctx.paths.home
-                free = ctx.free_gb_fn(default)
+                # rank by a FIRST install (nothing in place): the home setup is running in may already hold
+                # the models, another drive does not; the folder that is picked is checked on its own below
+                need = ctx_need(ctx, diskneed.NO_HOME, tier=tier, custom=custom)
+                default = choose_default_home(drives, need.gb, lambda p: self._taken(ctx, p))
+                default = default or ctx.paths.home
+                free = free_bytes_of(ctx, default)
                 if ctx.ui.interactive:
-                    reply = ctx.ui.ask(f"Install folder ({free:.0f} GB free there)", str(default))
+                    text = "free space unknown"
+                    if free is not None:
+                        text = f"{free / diskneed.GIB:.0f} GB free there"
+                    reply = ctx.ui.ask(f"Install folder ({text})", str(default))
                     home = Path(reply.strip().strip('"'))
                 else:
                     home = default
@@ -190,13 +196,18 @@ class S01Questions(Step):
                 typed = not (provided or ctx.home_forced) and ctx.ui.interactive
                 if typed and not ctx.ui.confirm("Install there anyway?", False):
                     continue
-            free = ctx.free_gb_fn(home)
-            if free >= need:
+            # what THIS install will use at this home (files already in place and a models folder count),
+            # against the free space there; a volume that cannot be read never blocks (it is logged)
+            verdict = diskneed.check(
+                ctx_need(ctx, home, tier=tier, custom=custom), home, free=free_bytes_of(ctx, home),
+                subject="This install",
+            )
+            if verdict.ok:
                 return home
-            detail = f"{free:.0f} GB free at {home}, {need} GB needed"
             if provided or ctx.home_forced or not ctx.ui.interactive:
-                raise make_error("NS-E104", detail)
-            ctx.ui.say(f"Not enough space: {detail}. Pick another drive.", "red")
+                raise make_error("NS-E104", verdict.message, need_bytes=verdict.need.total,
+                                 free_bytes=verdict.free, where=verdict.where)
+            ctx.ui.say(f"Not enough space: {verdict.message}. Pick another drive.", "red")
 
     # ---- voice ----
     def _voice(self, ctx: StepContext, channel_name: str) -> dict[str, Any]:
@@ -342,8 +353,7 @@ class S01Questions(Step):
 
         ram = float((ctx.preflight or {}).get("ram_gb") or 32)
         custom = None if ctx.dev_mode else raw.get("llm_custom") or None      # a dev install stubs Small only
-        size = custom.get("size") if isinstance(custom, dict) else None
-        custom_bytes = size if isinstance(size, int) and size > 0 else None
+        custom_need = diskneed.custom_entry(custom)   # the window's rule; a malformed entry is reported below
         # Balanced is the recommended default; a PC under 32 GB of RAM starts on Small (the fallback).
         default_tier = recommended_tier(ram)
         if custom:
@@ -361,13 +371,13 @@ class S01Questions(Step):
             raise AnswersError(f"llm_tier '{tier}' needs 32 GB of RAM; this PC has {ram:.0f} GB")
         merged["llm_tier"] = tier
 
-        home = self._pick_home(ctx, tier, custom_bytes)
+        home = self._pick_home(ctx, tier, custom_need)
         ctx.relocate(home)
         ctx.paths.ensure()
         if drive_type(ctx.preflight, home) == "HDD":
             ctx.warn("NS-W106", str(home))
         if not set_user_env(ctx.runner, HOME_VAR, str(home)):
-            raise make_error("NS-E104", "could not set the NIGHTSHIFT_HOME user variable")
+            raise make_error("NS-E121", "could not set the NIGHTSHIFT_HOME user variable")
         merged["home_path"] = str(home)
 
         chan = dict(raw.get("channel") or {})
@@ -470,10 +480,10 @@ class S01Questions(Step):
         if not self._answers_file(ctx).is_file():
             raise AnswersError("config/answers.json was not written")
         if not ctx.paths.config.is_dir():
-            raise make_error("NS-E104", f"{ctx.paths.home} was not created")
+            raise make_error("NS-E121", f"{ctx.paths.home} was not created")
         current = get_user_env(ctx.runner, HOME_VAR)
         if current != str(ctx.paths.home):
-            raise make_error("NS-E104", f"NIGHTSHIFT_HOME is {current!r}, expected {str(ctx.paths.home)!r}")
+            raise make_error("NS-E121", f"NIGHTSHIFT_HOME is {current!r}, expected {str(ctx.paths.home)!r}")
         ctx.log.info("answers_verified", tier=ans.llm_tier, stock_key=any_key_stored(ctx.store))
         if not self._ran:
             for line in reinstall.kept_lines(ctx, ans):

@@ -94,7 +94,8 @@ def test_llama_pair_for_cuda_versions():
 
 
 def test_required_free_gb_and_drive_type():
-    assert [sysinfo.required_free_gb(t) for t in ("small", "balanced", "best")] == [60, 74, 81]
+    small, balanced, best = (sysinfo.required_free_gb(t) for t in ("small", "balanced", "best"))
+    assert small == 60 and small < balanced < best <= 81         # computed from the manifest (H-6), not fixed
     pf = {"drives": [{"letter": "d", "free_gb": 5, "type": "HDD"}]}
     assert sysinfo.drive_type(pf, Path("D:\\Nightshift")) == "HDD"
     assert sysinfo.drive_type(pf, Path("E:\\x")) == "Unknown"
@@ -230,16 +231,16 @@ def test_s01_disk_space_check_is_e104(tmp_path: Path):
     with pytest.raises(NsError) as ei:
         S01Questions().run(ctx)
     assert ei.value.code == "NS-E104"
-    assert "25 GB free" in ei.value.detail and "60 GB needed" in ei.value.detail
+    assert "has 25 GB free" in ei.value.detail and "needs about 60 GB" in ei.value.detail
 
 
 def test_s01_bigger_tier_needs_more_space_and_ram(tmp_path: Path):
     ctx = make_test_context(tmp_path, raw_answers=provided(tmp_path, llm_tier="best"),
                             ui=FakeUi(interactive=False))
-    ctx.free_gb_fn = lambda _p: 70.0                      # enough for small (60), not for best (81)
+    ctx.free_gb_fn = lambda _p: 66.0                      # enough for small (60), not for best (72)
     with pytest.raises(NsError) as ei:
         S01Questions().run(ctx)
-    assert "81 GB needed" in ei.value.detail
+    assert f"needs about {sysinfo.required_free_gb('best')} GB" in ei.value.detail
     pf = sysinfo.sample_preflight(tmp_path / "home", ROOT)
     pf["ram_gb"] = 16
     ctx2 = make_test_context(tmp_path / "b", raw_answers=provided(tmp_path / "b", llm_tier="balanced"),
