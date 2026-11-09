@@ -239,15 +239,19 @@ def _concurrency_for(
 ) -> tuple[str, bool]:
     """Evaluate ci.yml's concurrency group and cancel-in-progress for one event.
 
-    The two expressions use only `github.<field>`, `==`, `&&`, `||` and quoted strings, which Python reads the
-    same way (GitHub's `&&`/`||` also return an operand), so they are evaluated here, not pattern-matched."""
+    The two expressions use only `github.<field>`, `format()`, `==`, `&&`, `||` and quoted strings, which
+    Python reads the same way (GitHub's `&&`/`||` also return an operand), so they are evaluated here and
+    not pattern-matched."""
     from types import SimpleNamespace
 
-    github = SimpleNamespace(event_name=event, ref_name=ref, head_ref=head_ref, sha=sha)
+    # `ref` is the short name; GitHub's github.ref is refs/tags/<name> for a v* tag and refs/heads/<name> else
+    full = f"refs/tags/{ref}" if re.match(r"v\d", ref) else f"refs/heads/{ref}"
+    github = SimpleNamespace(event_name=event, ref_name=ref, ref=full, head_ref=head_ref, sha=sha)
 
     def value(expr: str) -> Any:
         py = expr.replace("&&", " and ").replace("||", " or ")
-        return eval(py, {"__builtins__": {}}, {"github": github})  # noqa: S307
+        # format('{0}-{1}', a, b) is GitHub's format(); Python's str.format reads the same template
+        return eval(py, {"__builtins__": {}}, {"github": github, "format": lambda t, *a: t.format(*a)})  # noqa: S307
 
     conc = ci["concurrency"]
     group = re.sub(r"\$\{\{(.*?)\}\}", lambda m: str(value(m.group(1).strip())), conc["group"])
@@ -277,6 +281,18 @@ def test_every_push_to_main_has_its_own_concurrency_group(ci: dict[str, Any]):
     pr2 = _concurrency_for(ci, "pull_request", "190/merge", head_ref="feat/x", sha="2" * 40)[0]
     other = _concurrency_for(ci, "pull_request", "191/merge", head_ref="feat/y", sha="3" * 40)[0]
     assert pr1 == pr2 and pr1 != other
+
+
+def test_a_tag_run_never_shares_a_group_with_the_main_push_or_another_tag_on_the_same_commit(
+    ci: dict[str, Any],
+):
+    # a release tag points at the commit the main push already ran on, and an rc and the final can be tagged
+    # on one commit. With only the sha in the group they would share a group, and the second would queue
+    # behind the first, and a third would replace the pending one. Each ref gets its own group.
+    sha = "c" * 40
+    refs = ("main", "v0.1.15-rc1", "v0.1.15-rc2", "v0.1.15")
+    groups = {_concurrency_for(ci, "push", ref, sha=sha)[0] for ref in refs}
+    assert len(groups) == 4, groups
 
 
 def test_the_ci_concurrency_group_cannot_cancel_another_workflow(ci: dict[str, Any], release: dict[str, Any]):

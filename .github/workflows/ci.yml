@@ -17,11 +17,13 @@ on:
 
 # A newer push to a pull request branch cancels the older run of that pull request (one group per branch). A push
 # to main, a tag and the nightly run are NEVER cancelled (H-12: six main runs in a row were, so a green main could
-# not be shown). Their group carries the commit: a group keeps one running and one pending run and cancels an older
-# pending one when a newer arrives even with cancel-in-progress false, so a shared group would still lose runs.
+# not be shown). Their group carries the ref AND the commit: a group keeps one running and one pending run and cancels
+# an older pending one when a newer arrives even with cancel-in-progress false, so a shared group would still lose
+# runs. The ref matters because a release tag points at the same commit as the main push (the push to main and the
+# tag run must not queue behind each other) and an rc tag and the final tag can be on one commit too.
 # The `ci-` prefix keeps these groups apart from release.yml's and build-qwentts.yml's (group names are repo-wide).
 concurrency:
-  group: ci-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.head_ref || github.sha }}
+  group: ci-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.head_ref || format('{0}-{1}', github.ref, github.sha) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:

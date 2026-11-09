@@ -442,6 +442,30 @@ def test_a_prerelease_is_not_offered_as_the_update():
     assert requests == ["/repos/AbdulrahmanAmer/nightshift/releases/latest"]
 
 
+def test_a_prerelease_or_draft_answered_as_the_latest_release_is_refused():
+    # the guard is in the code, not in the endpoint: if /releases/latest ever returned a candidate (or a
+    # draft), `ns update --check`, `--github`, the stable git channel and the dashboard would offer it.
+    import httpx
+    import pytest
+
+    from ns_common.errors import NsError
+    from ns_supervisor import releases
+
+    for flag in ("prerelease", "draft"):
+        body = {"tag_name": "v0.1.15-rc1", "html_url": "https://github.com/x/y", "assets": [], flag: True}
+        client = httpx.Client(transport=httpx.MockTransport(lambda req, b=body: httpx.Response(200, json=b)))
+        with pytest.raises(NsError) as e:
+            releases.check("0.1.14", client)
+        assert e.value.code == "NS-E701", flag
+        with pytest.raises(NsError):
+            releases.fetch_latest(client)
+        with pytest.raises(NsError):
+            releases.parse_release(body)
+    # a normal final release (both flags false) is still read
+    ok = {"tag_name": "v0.1.15", "assets": [], "prerelease": False, "draft": False}
+    assert releases.parse_release(ok).version == "0.1.15"
+
+
 def test_candidates_sort_below_their_final_and_in_number_order():
     from ns_supervisor import releases
 
