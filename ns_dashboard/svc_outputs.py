@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import shutil
@@ -55,6 +56,20 @@ def policy_notes(policy: Any) -> list[str]:
         else:
             passed.append(f"OK: {label}")
     return [*problems, *passed]
+
+
+def _same_file(a: Path, b: Path) -> bool:
+    """True when both files have the same size and the same SHA-256 (size alone can match another file)."""
+    if a.stat().st_size != b.stat().st_size:
+        return False
+    digests = []
+    for f in (a, b):
+        h = hashlib.sha256()
+        with f.open("rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                h.update(chunk)
+        digests.append(h.digest())
+    return digests[0] == digests[1]
 
 
 class OutputsService:
@@ -194,12 +209,13 @@ class OutputsService:
     # --- actions ---
     def approve(self, output_id: str) -> dict[str, Any]:
         """pending/rejected -> approved; a rejected video's files go back to the Outbox first."""
-        row = self._row(output_id)
-        if row["status"] == "uploaded":
-            raise ApiError(409, "already_uploaded", "This video is already marked as uploaded.")
-        moved = self._move_back_to_outbox(output_id, row)  # raises NsError, the row stays rejected
-        if moved is None:
-            self.s.db.execute("UPDATE outputs SET status = 'approved' WHERE output_id = ?", (output_id,))
+        with self.s.db.lock:  # as _move_to_rejected: a second approve waits, then sees the row already moved
+            row = self._row(output_id)
+            if row["status"] == "uploaded":
+                raise ApiError(409, "already_uploaded", "This video is already marked as uploaded.")
+            moved = self._move_back_to_outbox(output_id, row)  # raises NsError, the row stays rejected
+            if moved is None:
+                self.s.db.execute("UPDATE outputs SET status = 'approved' WHERE output_id = ?", (output_id,))
         self.s.log.info("output_approved", output_id=output_id, moved_to=str(moved or ""))
         return output_item(self._row(output_id))
 
@@ -265,7 +281,7 @@ class OutputsService:
             siblings += [p for p in src.parent.glob("thumb_*.jpg") if p.is_file()]
         for p in siblings:  # check everything first, so a conflict leaves all files where they are
             target = dest.parent / p.name
-            if target.exists() and target.stat().st_size != p.stat().st_size:
+            if target.exists() and not _same_file(target, p):
                 raise NsError(
                     "NS-E326",
                     f"{target} is already in the Outbox and is a different file, "

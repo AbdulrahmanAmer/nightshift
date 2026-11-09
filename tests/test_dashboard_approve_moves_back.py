@@ -155,3 +155,47 @@ def test_approve_over_http_moves_the_files_back(tmp_home: Path):
     assert r.status_code == 200 and r.json()["status"] == "approved"
     assert row_path(state, oid) == original and original.is_file()
     assert files_under(state.paths.rejected) == []
+
+
+def test_approve_does_not_overwrite_a_different_file_of_the_same_size(tmp_home: Path):
+    dash, state, oid = seed(tmp_home, kind="short", k=7)
+    original = row_path(state, oid)
+    dash.outputs.reject(oid, "meh")
+    rejected_video = row_path(state, oid)
+    size = rejected_video.stat().st_size
+    original.parent.mkdir(parents=True, exist_ok=True)
+    other = b"\x01" * size
+    original.write_bytes(other)  # same size, different bytes
+
+    with pytest.raises(NsError) as ei:
+        dash.outputs.approve(oid)
+
+    assert ei.value.code == "NS-E326"
+    assert original.read_bytes() == other and rejected_video.is_file()
+    row = state.db.one("SELECT status, path FROM outputs WHERE output_id = ?", (oid,))
+    assert row is not None and row["status"] == "rejected" and Path(row["path"]) == rejected_video
+
+
+def test_two_approves_at_once_both_end_approved_with_the_files_back(tmp_home: Path):
+    import threading
+
+    dash, state, oid = seed(tmp_home, kind="short", k=8)
+    original = row_path(state, oid)
+    dash.outputs.reject(oid, "meh")
+    results: list[object] = []
+
+    def go() -> None:
+        try:
+            results.append(dash.outputs.approve(oid)["status"])
+        except Exception as e:  # noqa: BLE001 - the test reports whatever came out
+            results.append(e)
+
+    threads = [threading.Thread(target=go) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(30)
+
+    assert results == ["approved"] * 4
+    assert row_path(state, oid) == original and original.is_file()
+    assert files_under(state.paths.rejected) == []
