@@ -87,10 +87,14 @@ class PolicyTextStage:
 
 
 class PolicyFinalStage:
-    """Final gate: runs after QC, before the outbox is written."""
+    """Final gate: runs after QC, before the outbox is written.
+
+    It leases the LLM: the unsafe-topic re-check of the final script and metadata (spec 18.3, "both gates")
+    asks the classifier once.
+    """
 
     name = FINAL_STAGE
-    tenant: Tenant = None
+    tenant: Tenant = "llama"
     inputs: tuple[str, ...] = ("policy_text.json", "long/master.mp4")
     outputs: tuple[str, ...] = ("policy_final.json",)
 

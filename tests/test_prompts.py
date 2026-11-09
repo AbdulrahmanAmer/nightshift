@@ -283,5 +283,13 @@ def test_master_prompt_schemas():
     }
     assert {n: P.load_prompt(n).schema for n in expected} == expected
     required = set(P.PROMPT_SCHEMAS["policy_check"]["required"])
-    assert required == {"unsafe_categories", "hook_honest", "title_honest", "standalone", "notes"}
+    assert required == {
+        "unsafe_categories",
+        "hook_honest",
+        "title_honest",
+        "standalone",
+        "notes",
+        "intensity",
+        "real_setting",
+    }  # the last two are studio-side keys (P04); ns_common's PolicyCheckResult keeps the five
     assert P.PROMPT_SCHEMAS["policy_check"]["properties"]["standalone"]["anyOf"]
