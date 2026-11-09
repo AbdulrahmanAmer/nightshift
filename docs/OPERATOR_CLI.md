@@ -14,7 +14,7 @@ on/off switch.
 | Command | What it does |
 |---|---|
 | `studio` | Print the version. |
-| `studio run` | Create and run jobs through the stage pipeline. Options: `--daily` (cadence-planned nightly run), `--channel SLUG`, `--count N`, `--format master_first\|shorts_only\|series_compilation`, `--dry-run` (print the stage plan), `--resume JOB_ID`, `--policy/--no-policy`, `--fake-services`. |
+| `studio run` | Create and run jobs through the stage pipeline. Options: `--daily` (cadence-planned nightly run), `--channel SLUG`, `--count N`, `--format master_first\|shorts_only\|series_compilation`, `--dry-run` (print the stage plan), `--resume JOB_ID`, `--script FILE` with `--title TEXT` (one video from a story you wrote, 200 to 30000 characters, narrated exactly as written; a Short must come to at most about 2:45, a long video to 9:00 to 14:30 at the channel's pace, otherwise it is refused before anything runs; `--count` must stay 1), `--policy/--no-policy`, `--fake-services`. |
 | `studio channel add` | Add a channel (`--slug --name --niche ...` or `--from-yaml FILE`); pool minimums and distinctness are enforced. |
 | `studio channel list` | List configured channels with status, format and pool size. |
 | `studio channel edit SLUG --set key=value` | Change channel fields; the result is re-validated before it is saved. |

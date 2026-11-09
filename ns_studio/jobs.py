@@ -241,6 +241,50 @@ def make_job(
     return ctx
 
 
+def make_script_job(
+    env: Env,
+    channel: Channel,
+    fmt: str,
+    script: str,
+    title: str | None = None,
+    *,
+    rng: random.Random | None = None,
+) -> JobContext:
+    """`make_job` for a story the owner wrote: the text becomes the job's `script.md`, not the model's idea.
+
+    The text goes in the job folder as `script.md` (the file a series part's `script_source.json` points at)
+    and `script_source.json` names it, marked `owner_script`, so `run_job` runs the owner-script plan
+    (`plan_format`) and every stage after the import is unchanged. `plan_script` checks everything that would
+    fail only after the voice or the render, before a job exists (NS-E303): banned phrases, sentence length,
+    chapters, and the video length. It also picks the pace from the channel's own pool and, for a Short, the
+    length bucket, so the finished video lands inside the QC band.
+    """
+    from ns_studio.series.plain import ScriptRefused, plan_script
+    from ns_studio.series.store import write_text
+
+    if fmt not in ("shorts_only", "master_first"):
+        raise StudioError("NS-E306", f"a script becomes a Short or a long video, not {fmt!r}")
+    try:
+        plan = plan_script(script, fmt, list(channel.pools.pacings), title, channel.voice.speed)
+    except ScriptRefused as e:
+        raise StudioError("NS-E303", str(e)) from e
+    fixed = {"pacing": plan.pacing}
+    if plan.length_bucket is not None:
+        fixed["length_bucket"] = str(plan.length_bucket)
+    ctx = make_job(env, channel, fmt, rng=rng, fixed=fixed)
+    write_text(ctx.file("script.md"), plan.markdown)
+    ctx.write_json(
+        "script_source.json",
+        {"kind": "script_import", "owner_script": True, "script": "script.md", "shorts": [],
+         "title": plan.doc.title},
+    )
+    env.log.info(
+        "script_job_created", job_id=ctx.job_id, words=plan.doc.words(), chapters=len(plan.doc.chapters),
+        pacing=plan.pacing, seconds=round(plan.seconds),
+    )
+    return ctx
+
+
 def load_job(env: Env, job_id: str) -> JobContext:
     """Rebuild the context of an existing job from its `job.json` (used by `--resume`)."""
     job_dir = env.paths.job_dir(job_id)
@@ -276,10 +320,14 @@ def prepare_plan(fmt: str, policy: bool | None) -> bool:
     install_short_combos(fmt)
     if fmt == "master_first":  # series parts run the script-import plan (CR-C11-3) with their own combos
         install_short_combos("master_from_script")
+        install_short_combos("master_from_owner_script")
 
     enabled = gate.available() if policy is None else policy
     if enabled:
         gate.install_gates(fmt)
         if fmt == "master_first":
             gate.install_gates("master_from_script")
+            gate.install_gates("master_from_owner_script")
+        if fmt == "shorts_only":  # the owner's own script: the same gates, after its own text stages
+            gate.install_gates("shorts_from_owner_script")
     return enabled

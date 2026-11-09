@@ -17,6 +17,7 @@ from ns_common.db import new_job_id
 from ns_common.errors import NsError
 from ns_common.keepawake import keep_awake
 from ns_common.logging import NsLogger
+from ns_common.textstats import word_count
 from ns_dashboard.errors import AdapterUnavailable
 from ns_dashboard.events import EventHub
 from ns_dashboard.state import LockedDb
@@ -91,12 +92,24 @@ class JobRecord:
             "created_at": self.created_at,
             "started_at": self.started_at,
             "finished_at": self.finished_at,
-            "params": self.params,
+            "params": public_params(self.params),
             "result": self.result,
             "cancel_requested": self.cancel_requested,
             "schedule_at": self.schedule_at,
             "dismissed_at": self.dismissed_at,
         }
+
+
+def public_params(params: dict[str, Any]) -> dict[str, Any]:
+    """The params as the API shows them: the owner's script (up to 30 KB) becomes its word count.
+
+    The job keeps the full text for the studio child; a list of jobs polled every few seconds should not
+    carry it each time.
+    """
+    if "script" not in params:
+        return params
+    text = str(params.get("script") or "")
+    return {**{k: v for k, v in params.items() if k != "script"}, "script_words": word_count(text)}
 
 
 _STAGE_RE = re.compile(r"^(.*) \((\d+)/(\d+)\)$")

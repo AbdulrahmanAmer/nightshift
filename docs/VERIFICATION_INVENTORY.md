@@ -5,7 +5,7 @@ are kept between runs and maintained by the verification loop (docs/VERIFICATION
 starts as `U`; `tests/test_verification_inventory.py` fails when the code has an item this
 file does not list.
 
-Items: 257 (V-dev 115, V-ci 52, V-gpu 0, U 90).
+Items: 260 (V-dev 115, V-ci 52, V-gpu 0, U 93).
 
 | kind | id | status | evidence |
 |---|---|---|---|
@@ -152,6 +152,8 @@ Items: 257 (V-dev 115, V-ci 52, V-gpu 0, U 90).
 | stage | `story thumbnails` | V-dev | test-loop-2026-11-05.md (master via the task: 22 stages; Shorts jobs: 16 stages) |
 | stage | `story shorts_derive` | V-dev | test-loop-2026-11-05.md (master via the task: 22 stages; Shorts jobs: 16 stages) |
 | stage | `story script_import` | U |  |
+| stage | `story script_import_short` | U |  |
+| stage | `story script_import_long` | U |  |
 | stage | `clip clip_import` | V-dev | test-loop-2026-11-05.md (clip job from a path and from an upload) |
 | stage | `clip clip_audio` | V-dev | test-loop-2026-11-05.md (clip job from a path and from an upload) |
 | stage | `clip clip_transcribe` | V-dev | test-loop-2026-11-05.md (clip job from a path and from an upload) |
@@ -206,6 +208,7 @@ Items: 257 (V-dev 115, V-ci 52, V-gpu 0, U 90).
 | assistant-tool | `get_story` | U |  |
 | assistant-tool | `open_folder` | U |  |
 | assistant-tool | `start_story_job` | U |  |
+| assistant-tool | `start_script_job` | U |  |
 | assistant-tool | `start_clip_job` | U |  |
 | assistant-tool | `tonight_plan` | V-ci | tests/test_assistant_composite.py |
 | assistant-tool | `list_jobs` | U |  |

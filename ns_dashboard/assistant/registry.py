@@ -9,6 +9,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from ns_common.textstats import word_count
+
 if TYPE_CHECKING:
     from ns_dashboard.handlers import Dashboard
 
@@ -71,6 +73,9 @@ class ToolDef:
     call: ToolCall
     route: tuple[str, str] | None = None
     precheck: Callable[[dict[str, Any]], str | None] | None = None  # extra argument rules a schema cannot say
+    #: Looks the request up against the live system before the confirm card is shown and raises `ApiError`
+    #: for what `call` would refuse anyway (so the owner is never asked to confirm something that cannot run).
+    dry_run: Callable[[ToolContext, dict[str, Any]], None] | None = None
 
 
 def obj(props: dict[str, Any] | None = None, required: list[str] | None = None) -> dict[str, Any]:
@@ -132,6 +137,9 @@ def check_value(schema: dict[str, Any], value: Any, path: str = "args") -> str |
     return None
 
 
+VIDEO_LABELS = {"shorts_only": "Short", "master_first": "long video"}  # the owner's words for the formats
+
+
 class _Safe(dict):
     def __missing__(self, key: str) -> str:
         return "(default)"
@@ -152,6 +160,9 @@ def render_confirm(spec: ToolSpec, args: dict[str, Any]) -> str:
         if "default" in prop:
             flat.setdefault(key, str(prop["default"]))
     flat.setdefault("source", args.get("url") or args.get("path") or "(default)")
+    if "script" in args:  # the card says how long the text is, never the text itself
+        flat.setdefault("words", str(word_count(str(args["script"]))))
+        flat["format"] = VIDEO_LABELS.get(str(args.get("format") or ""), "video")
     flat.setdefault("schedule_at", "now")
     return (spec.confirm_text or spec.description).format_map(flat)
 

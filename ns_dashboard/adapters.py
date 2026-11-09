@@ -43,9 +43,12 @@ class RunAdapter(Protocol):
     """Runs one studio job (spec 15.9 `studio run`) and returns the new output ids."""
 
     def run(
-        self, ctl: JobControl, channel: str, fmt: str, count: int | None, *, resume_job_id: str | None = None
+        self, ctl: JobControl, channel: str, fmt: str, count: int | None, *, resume_job_id: str | None = None,
+        script: str | None = None, script_title: str | None = None,
     ) -> list[str]:
-        """Run `count` new jobs, or (with `resume_job_id`) continue that failed studio job from its stage."""
+        """Run `count` new jobs, or (with `resume_job_id`) continue that failed studio job from its stage.
+
+        With `script` one job is made from that text (the owner's story) instead of one the model writes."""
         ...
 
 
@@ -347,13 +350,17 @@ class RealRunAdapter(StudioAdapter):
     """
 
     def run(
-        self, ctl: JobControl, channel: str, fmt: str, count: int | None, *, resume_job_id: str | None = None
+        self, ctl: JobControl, channel: str, fmt: str, count: int | None, *, resume_job_id: str | None = None,
+        script: str | None = None, script_title: str | None = None,
     ) -> list[str]:
-        """Run `count` studio jobs for `channel` (or resume `resume_job_id`); returns the output ids and
-        notes the studio job ids."""
+        """Run `count` studio jobs for `channel` (or resume `resume_job_id`, or make one from `script`);
+        returns the output ids and notes the studio job ids."""
         args: dict[str, Any] = {"channel": channel, "fmt": fmt, "count": count}
         if resume_job_id:
             args["resume_job_id"] = resume_job_id
+        if script:
+            args["script"] = script
+            args["script_title"] = script_title
         done = self.child(ctl, "run", args)
         ctl.extras["studio_job_ids"] = list(done.get("job_ids") or ctl.extras.get("studio_job_ids") or [])
         return [str(i) for i in done.get("output_ids") or []]

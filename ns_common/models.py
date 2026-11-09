@@ -826,11 +826,48 @@ class Status(Strict):
 
 
 # `POST /api/jobs/run`: queue a story for one channel (Create wizard, "When" step).
+SCRIPT_MIN_CHARS = 200
+SCRIPT_MAX_CHARS = 30000
+
+
 class JobRunRequest(Strict):
     channel: str
     format: str | None = None            # None = the channel's own format
     count: int | None = Field(default=None, ge=1, le=20)
     schedule_at: datetime | None = None  # null = run now; a naive time is the PC's local time (CR-C3-UI-5)
+    # A story the owner (or the Assistant) wrote: the run turns this text into the video instead of having the
+    # language model write one. 200 to 30000 characters after trimming, one video per script.
+    script: str | None = None
+    script_title: str | None = None      # the working title; null = the first words of the script
+
+    @field_validator("script")
+    @classmethod
+    def _script_length(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        text = v.strip()
+        if not SCRIPT_MIN_CHARS <= len(text) <= SCRIPT_MAX_CHARS:
+            raise ValueError(
+                f"the script must be {SCRIPT_MIN_CHARS} to {SCRIPT_MAX_CHARS} characters long, "
+                f"it has {len(text)}"
+            )
+        return text
+
+    @field_validator("script_title")
+    @classmethod
+    def _script_title(cls, v: str | None) -> str | None:
+        title = " ".join(v.split()) if v else ""
+        if len(title) > 120:
+            raise ValueError("the title must be 120 characters or fewer")
+        return title or None
+
+    @model_validator(mode="after")
+    def _script_means_one_video(self) -> JobRunRequest:
+        if self.script is not None and self.count not in (None, 1):
+            raise ValueError("a script makes exactly one video, so the count must be 1")
+        if self.script_title and self.script is None:
+            raise ValueError("a title only goes with a script")
+        return self
 
 
 # `POST /api/jobs/clip` (JSON body; the multipart variant sends the same fields as text plus a `file` part).

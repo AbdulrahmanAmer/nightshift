@@ -111,6 +111,13 @@ _SUBJECT = re.compile(
 )
 _SLUG = re.compile(r"\b[a-z0-9]+(?:-[a-z0-9]+)+\b")
 _TITLE = re.compile(r"\b([A-Z][a-z0-9]+(?:\s+[A-Z][a-z0-9]+)+)\b")
+# "make a short from this script: ...", "use this script ...", "make a video of this text ...": the owner's
+# own story follows the cue (after a colon or a line break); what comes before says what to make and for whom.
+_SCRIPT_CUE = re.compile(
+    r"\b(?:from|using|use|of|out of|with)\s+(?:this|my|the following)\s+(?:script|text|story)\b", re.I
+)
+_SCRIPT_MIN_CHARS = 200  # `ns_common.models.SCRIPT_MIN_CHARS`; this module takes nothing from the packages
+_SCRIPT_TITLE = re.compile(r"\b(?:titled|called)\s+[\"“']?([^\"”'\n:,.]{2,80})", re.I)
 
 
 def _tool_names(tools: Any) -> set[str]:
@@ -175,6 +182,21 @@ def plan_tool_call(messages: list[dict[str, Any]], tools: Any) -> dict[str, Any]
             return None
         return {"name": name, "args": {k: v for k, v in args.items() if v is not None}}
 
+    cue = _SCRIPT_CUE.search(text)
+    if cue:  # first: the owner's story may itself contain words such as "get" and "video"
+        tail = text[cue.end():]
+        parts = re.split(r"[:\n]", tail, maxsplit=1)
+        intro = text[: cue.end()] + parts[0]
+        body = (parts[1] if len(parts) == 2 else "").strip()
+        long_video = re.search(r"\b(long|long-form|full-length|master)\b", intro.lower())
+        fmt = "master_first" if long_video else None
+        if re.search(r"\bshorts?\b", intro.lower()):
+            fmt = "shorts_only"
+        title = _SCRIPT_TITLE.search(intro)
+        # a real script is a whole story, not an idea or a note: a short body or the word "idea" is not one
+        if len(body) >= _SCRIPT_MIN_CHARS and not re.search(r"\bideas?\b", intro, re.I):
+            return pick("start_script_job", channel=_channel(intro), format=fmt, script=body,
+                        title=title.group(1).strip() if title else None)
     if re.search(r"\b(fetch|pull|download|grab|get)\b.*\b(clips?|footage|stock|videos?)\b", low):
         orientation = "portrait" if re.search(r"\b(vertical|portrait|shorts?)\b", low) else "landscape"
         return pick("fetch_footage", q=_subject(text, "night street"), count=_count(low, 1),

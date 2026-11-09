@@ -260,6 +260,13 @@ class Assistant:
             reply({"error": {"code": "bad_arguments", "message": problem}})
             yield {"kind": "tool_result", "payload": {"tool": name, "ok": False, "error": problem}}
             return
+        if td.spec.side_effect and td.dry_run is not None:
+            try:
+                td.dry_run(ctx, args)
+            except ApiError as e:  # the same refusal the action would meet after a Yes, said before the card
+                reply({"error": {"code": "bad_arguments", "message": e.message}})
+                yield {"kind": "tool_result", "payload": {"tool": name, "ok": False, "error": e.message}}
+                return
         if td.spec.side_effect:
             text = render_confirm(td.spec, args)
             aid = self.store.add_action(cid, name, args, text, ctx.context)

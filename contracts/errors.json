@@ -31,7 +31,7 @@
   "NS-E302": {"message": "The model's answer did not match the required JSON schema.", "hint": "Usually transient; the stage retries with a repair prompt. If persistent, the prompt or schema needs a fix."},
   "NS-E303": {"message": "A text validator rejected the story.", "hint": "See the detail for which rule (length, banned phrase, repeated opening, reading level)."},
   "NS-E304": {"message": "No story passed the critic after 3 ideas.", "hint": "Lower critic_bar in the channel profile or widen the pools."},
-  "NS-E305": {"message": "The long-form story is still under 9 minutes after 2 expansions.", "hint": "Raise long_minutes or the chapter count in the channel profile."},
+  "NS-E305": {"message": "The long video's narration is under 9 minutes.", "hint": "A written story is expanded twice before this; for your own script, add text and run it again."},
   "NS-E306": {"message": "This format is not implemented yet.", "hint": "Use --format master_first or shorts_only."},
   "NS-E310": {"message": "The TTS engine failed to synthesize.", "hint": "Check logs\\tts-*.jsonl; run 'ns verify --quick' to re-test the engine. The installer falls back to the reference engine if qwentts keeps failing."},
   "NS-E311": {"message": "Stored voice data is invalid or was made by a different TTS engine.", "hint": "Re-create the voice (design or clone) with the current engine; voices are stored under models\\tts\\voices."},

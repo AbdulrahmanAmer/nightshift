@@ -14,6 +14,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+from ns_common.models import SCRIPT_MAX_CHARS, SCRIPT_MIN_CHARS
 from ns_dashboard.assistant import composite, orientation
 from ns_dashboard.assistant.registry import TOPICS, Registry, ToolCall, ToolContext, ToolDef, ToolSpec, obj
 from ns_dashboard.common import offered_formats
@@ -89,12 +90,13 @@ def _t(
     name: str, topic: str, description: str, call: ToolCall, *, route: Route | None = None,
     props: dict[str, Any] | None = None, required: list[str] | None = None,
     side: bool = False, confirm: str = "", precheck: Callable[[dict[str, Any]], str | None] | None = None,
+    dry_run: Callable[[ToolContext, dict[str, Any]], None] | None = None,
 ) -> ToolDef:
     spec = ToolSpec(
         name=name, description=description, args_schema=obj(props, required), side_effect=side,
         confirm_text=confirm if side else "", topic=topic,
     )
-    return ToolDef(spec=spec, call=call, route=route, precheck=precheck)
+    return ToolDef(spec=spec, call=call, route=route, precheck=precheck, dry_run=dry_run)
 
 
 def _outputs(c: ToolContext, a: dict[str, Any]) -> Any:
@@ -132,6 +134,28 @@ def _start_clip(c: ToolContext, a: dict[str, Any]) -> Any:
     if not (a.get("path") or a.get("url")):
         raise ApiError(422, "invalid_options", "Give the video as a path on this PC or as a web link (url).")
     return c.dash.jobs.create_clip({**a, "rights_confirmed": True})
+
+
+def _script_ok(args: dict[str, Any]) -> str | None:
+    """The one rule the schema cannot say; the rest is `_check_script`, which knows the channel."""
+    text = str(args.get("script") or "").strip()
+    if len(text) < SCRIPT_MIN_CHARS:
+        return f"The script is too short: it needs at least {SCRIPT_MIN_CHARS} characters, it has {len(text)}."
+    return None
+
+
+def _script_body(a: dict[str, Any]) -> dict[str, Any]:
+    return {"channel": a["channel"], "format": a.get("format"), "script": a["script"],
+            "script_title": a.get("title"), "count": 1}
+
+
+def _check_script(c: ToolContext, a: dict[str, Any]) -> None:
+    """Refuse a script the run would refuse (length at the channel's pace, banned phrases, headings...)."""
+    c.dash.jobs.check_run(_script_body(a))
+
+
+def _start_script(c: ToolContext, a: dict[str, Any]) -> Any:
+    return c.dash.jobs.create_run(_script_body(a))
 
 
 def _formats_brief(c: ToolContext, _a: dict[str, Any]) -> Any:
@@ -222,6 +246,14 @@ def _tools() -> list[ToolDef]:
                   "schedule_at": _s("start later: local date and time such as 2026-11-03T02:00; leave out to start now")},
            required=["channel"], side=True,
            confirm="Make a new {format} for {channel}, start: {schedule_at}. This uses the GPU for a while."),
+        _t("start_script_job", "create", "Make one video from a story the owner wrote or pasted, narrated as written. The model writes only the title, tags and the hooks of Shorts cut from it.",
+           _start_script,
+           props={"channel": _s("channel slug"),
+                  "format": _s("what to make: a Short or a long video; leave out for the channel's own type", enum=["shorts_only", "master_first"]),
+                  "script": _s("the full story text to narrate, 200 to 30000 characters", maxLength=SCRIPT_MAX_CHARS),
+                  "title": _s("working title; leave out to use the first words")},
+           required=["channel", "script"], side=True, precheck=_script_ok, dry_run=_check_script,
+           confirm="Make a {format} for {channel} from the script you gave ({words} words). This uses the GPU for a while."),
         _t("start_clip_job", "create", "Cut clips from one of the owner's own videos: a file on this PC or a web link.",
            _start_clip, route=("POST", "/api/jobs/clip"),
            props={"path": _s("full path of the video file on this PC"), "url": _s("http or https link to the video"),
