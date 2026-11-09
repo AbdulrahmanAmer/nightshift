@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from pydantic import ValidationError
 
 from installer.stage2.answers import AnswersError, build_answers, default_voice_name, slugify
 from installer.stage2.steps.s01_questions import S01Questions
@@ -39,17 +38,17 @@ def test_voice_name_has_one_pattern_in_ns_common_and_every_validator_uses_it():
     from ns_dashboard import svc_voices
     from ns_tts import voices
 
-    assert m.Voice.model_json_schema()["properties"]["name"]["anyOf"][0]["pattern"] == m.VOICE_NAME_PATTERN
     for rule in (voice_setup.NAME_RE, svc_voices.NAME_RE, voices._NAME_RE):
         assert rule.pattern == m.VOICE_NAME_PATTERN
 
 
 @pytest.mark.parametrize(
-    "name", ["Night Narrator", "", " night", "-night", "_night", "a" * 41, "caf\u00e9", "a.b"]
+    "name", ["Night Narrator", "", " night", "-night", "_night", "a" * 41, "caf\u00e9", "a.b", "a" * 53]
 )
-def test_the_voice_model_refuses_a_name_the_voice_service_would_refuse(name):
-    with pytest.raises(ValidationError):
-        m.Voice(mode="design", description="x", name=name)
+def test_the_voice_model_still_loads_a_stored_name_the_rule_refuses(name):
+    """The rule is for names being typed; a profile already on disk must keep loading (D-24 review)."""
+    assert m.Voice(mode="design", description="x", name=name).name == name
+    assert "pattern" not in m.Voice.model_json_schema()["properties"]["name"]["anyOf"][0]
 
 
 @pytest.mark.parametrize("name", [None, "n", "Night-Narrator", "night_narrator", "9lives", "a" * 40])

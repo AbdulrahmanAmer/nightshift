@@ -27,7 +27,10 @@ class Voice(Strict):
     mode: Literal["preset", "design", "clone"] = "preset"
     speaker: str | None = "Ryan"
     description: str | None = None
-    name: str | None = Field(default=None, pattern=VOICE_NAME_PATTERN)  # library name for design/clone voices
+    # Library name for design/clone voices. No pattern here: profiles written by 0.1.0 to 0.1.14 hold
+    # names the rule above refuses (over 40 characters, a space) and must keep loading. The rule is
+    # applied where a name is typed or created (setup answers, channel add/edit, the voice service).
+    name: str | None = None
     speed: float = Field(default=1.0, ge=0.7, le=1.3)
 
 
