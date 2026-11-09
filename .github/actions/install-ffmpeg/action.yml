@@ -1,0 +1,45 @@
+name: Install FFmpeg (pinned build)
+description: >-
+  FFmpeg for the tests, restored from the Actions cache or downloaded once from the build that manifest.json pins
+  (bins.ffmpeg) and checked against the manifest; Chocolatey only as a second source. The step fails by itself,
+  with "FFmpeg could not be installed: <source> answered <status>", when ffmpeg or ffprobe cannot run, so a
+  missing FFmpeg never reaches pytest (H-9). All the logic is in dev/ci_install_ffmpeg.py. Use it after
+  actions/checkout and actions/setup-python.
+
+outputs:
+  source:
+    description: Where the programs came from, cache, download or chocolatey.
+    value: ${{ steps.install.outputs.source }}
+
+runs:
+  using: composite
+  steps:
+    # key, dir and version of the pinned build, from manifest.json (a changed pin is a new cache key)
+    - name: Work out the pinned FFmpeg build
+      id: pin
+      shell: bash
+      run: python dev/ci_install_ffmpeg.py pin
+
+    # restore only: the cache is saved further down, after the install has proved itself, so a failing test
+    # later in the job cannot stop a good FFmpeg from being cached
+    - name: Restore FFmpeg from the cache
+      id: cache
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.pin.outputs.dir }}
+        key: ${{ steps.pin.outputs.key }}
+
+    # cache folder, else the pinned download, else Chocolatey; ends by running both programs and fails the step
+    # (and the job summary says why) when either does not run
+    - name: Install FFmpeg and prove it runs
+      id: install
+      shell: bash
+      run: python dev/ci_install_ffmpeg.py install
+
+    # only what was downloaded and verified is cached (never a Chocolatey install); an exact key hit exists already
+    - name: Save FFmpeg to the cache
+      if: steps.install.outputs.source == 'download' && steps.cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.pin.outputs.dir }}
+        key: ${{ steps.pin.outputs.key }}
