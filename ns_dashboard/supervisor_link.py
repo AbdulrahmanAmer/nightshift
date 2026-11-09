@@ -23,7 +23,7 @@ from ns_dashboard.events import EventHub
 
 DEFAULT_SUPERVISOR_PORT = 8099
 RESERVED_HUB_KINDS = frozenset({"dashboard_job"})  # published by the dashboard itself, never relayed
-GPU_IN_USE ="A video job is still using the GPU; stop it from the Queue instead."
+GPU_IN_USE = "A video job is still using the GPU; stop it from the Queue instead."
 
 
 def supervisor_url(paths: Paths) -> str:
