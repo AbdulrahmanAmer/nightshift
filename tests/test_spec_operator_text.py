@@ -605,6 +605,40 @@ def test_a_pause_stops_new_work_only_and_the_guide_says_so():
     assert "ns_dashboard/jobs.py" in d and "scheduled" in d
 
 
+def test_retry_from_where_it_stopped_ignores_a_pause_and_the_texts_say_so():
+    """A failed story card of a paused channel can be started again: Create and Queue show the button."""
+    from ns_dashboard import adapters, jobs, studio_bridge, studio_job, studio_runner
+
+    cls = svc_jobs.JobsService
+    err = tsx("ui/JobError.tsx")
+    assert "Retry from where it stopped" in err and 'j.kind === "run"' in err and "studio_job_ids" in err
+    assert "<JobError" in tsx("pages/Create.tsx") and "<JobError" in tsx("pages/Queue.tsx")
+    server = (ROOT / "ns_dashboard" / "server.py").read_text(encoding="utf-8")
+    assert "dash.jobs.create_resume, job_id" in server
+    # the route reaches `_resume_params` (and the Assistant's gate `check_resume`): no look at the channel
+    assert "_resume_params" in inspect.getsource(cls.create_resume)
+    assert "_resume_params" in inspect.getsource(cls.check_resume)
+    resume_src = inspect.getsource(cls._resume_params)
+    assert "paused" not in resume_src and "get_channel" not in resume_src, (
+        "the resume route checks the channel now: update the guide, the README and D38"
+    )
+    for mod in (jobs, adapters, studio_bridge, studio_job, studio_runner):
+        assert "paused" not in inspect.getsource(mod), (
+            f"{mod.__name__} checks the channel now: update the guide"
+        )
+    for name, text in (
+        ("OPERATOR.md", doc_section(GUIDE, HEADING)),
+        ("README.md", doc_section(README, HEADING)),
+        ("D38", decision("Incident procedure")),
+    ):
+        flat = _flat(text)
+        assert "Retry from where it stopped" in flat, name
+        assert "stopped with an error" in flat or "failed" in flat, name
+    assert "does not refuse a paused channel" in _flat(doc_section(GUIDE, HEADING))
+    for text in (doc_section(GUIDE, HEADING), doc_section(README, HEADING)):
+        assert "do not press" in _flat(text)
+
+
 def test_the_content_safety_checklist_is_not_narrower_than_18_3():
     rules = spec_section("### 18.3")
     first = next(ln for ln in rules.splitlines() if ln.startswith("- Real, named people"))

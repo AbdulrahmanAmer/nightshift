@@ -283,7 +283,10 @@ what it made. A pause stops only new work: the night run skips a paused channel 
 a story video for it (the Clipper does not check whether the channel is paused). Videos that are already made
 stay in the Queue. A story video that is already queued or scheduled (Create > **Pick a time**) still runs after
 the pause, because the Dashboard does not look at the channel again when it starts a waiting job: open **Create**
-and press **Cancel** on every job of that channel under **Working now**.
+and press **Cancel** on every job of that channel under **Working now**. The same goes for a story video that
+stopped with an error: **Retry from where it stopped** (on its card in **Create** and **Queue**) does not refuse a
+paused channel and starts that video again, so do not press it on any stopped card of that channel until you
+resume the channel.
 
 Type the commands in a terminal opened after setup finished, with the full path of the studio program in the
 install folder. Windows Terminal opens PowerShell, and there the quoted path needs `&` in front of it, or
