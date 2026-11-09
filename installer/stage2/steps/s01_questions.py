@@ -38,7 +38,6 @@ from installer.stage2.sysinfo import (
     recommended_tier,
 )
 from installer.stage2.web.pathcheck import FOLDER_FOREIGN, folder_kind, foreign_warning, layout_problem
-from installer.stage2.web.plan import custom_entry
 from installer.stage2.winenv import HOME_VAR, get_user_env, set_user_env
 from ns_common import diskneed
 from ns_common.errors import NsError
@@ -354,7 +353,7 @@ class S01Questions(Step):
 
         ram = float((ctx.preflight or {}).get("ram_gb") or 32)
         custom = None if ctx.dev_mode else raw.get("llm_custom") or None      # a dev install stubs Small only
-        custom_need = custom_entry(custom)      # the window's rule; a malformed entry is reported below
+        custom_need = diskneed.custom_entry(custom)   # the window's rule; a malformed entry is reported below
         # Balanced is the recommended default; a PC under 32 GB of RAM starts on Small (the fallback).
         default_tier = recommended_tier(ram)
         if custom:

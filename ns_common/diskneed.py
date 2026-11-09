@@ -703,6 +703,25 @@ def _installed(paths: Paths) -> bool:
     return (paths.config / "answers.json").is_file() and _venv_ready(paths.venvs / "studio")
 
 
+def custom_entry(custom: Any) -> dict[str, Any] | None:
+    """The story model the owner named, as ``install_need`` wants it (``repo``, ``file``, ``size``).
+
+    ``custom`` can be anything a draft, a query or an answers file held: a shape it cannot use (not an object,
+    no repo or file name, a size that is not a positive whole number) is None, so the number is worked out for
+    the tier instead and the answers check reports the bad entry as a field error (it never raises). One rule
+    for the setup window and the console wizard.
+    """
+    if not isinstance(custom, dict):
+        return None
+    size = custom.get("size")
+    if not isinstance(size, int) or isinstance(size, bool) or size <= 0:
+        return None
+    repo, file = custom.get("repo"), custom.get("file")
+    if not isinstance(repo, str) or not isinstance(file, str) or not repo.strip() or not file.strip():
+        return None
+    return {"repo": repo, "file": file, "size": size}
+
+
 def install_need(
     manifest: Mapping[str, Any],
     home: Path | str,
