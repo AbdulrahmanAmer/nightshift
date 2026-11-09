@@ -51,6 +51,16 @@ def test_iter_sse_initial_status_event_then_status_and_limit():
     assert hub.subscriber_count == 0
 
 
+def test_iter_sse_update_and_run_events_only_refresh_status():
+    hub = EventHub()
+    sub = hub.subscribe()
+    hub.publish("update", {"state": "ready"})
+    hub.publish("run", {"event": "finished"})
+    frames = list(iter_sse(sub, lambda: {"state": "idle"}, heartbeat_s=0.01, limit=4))
+    kinds = [json.loads(f.split("data: ", 1)[1])["kind"] for f in frames]
+    assert kinds == ["status"] * 4
+
+
 def test_iter_sse_heartbeat_when_idle():
     hub = EventHub()
     frames = list(iter_sse(hub.subscribe(), lambda: {"s": 1}, heartbeat_s=0.01, limit=3))
