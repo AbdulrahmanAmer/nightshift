@@ -131,7 +131,7 @@ def test_s01_dev_needs_10_gb_and_ignores_the_tier_and_the_custom_model(tmp_path:
     assert "NS-E104" in str(ei.value) or getattr(ei.value, "code", "") == "NS-E104"
 
 
-def test_s01_real_mode_still_needs_60_gb(tmp_path: Path):
+def test_s01_real_mode_still_refuses_a_small_drive(tmp_path: Path):
     ctx = make_test_context(tmp_path, raw_answers=example_answers())
     ctx.free_gb_fn = lambda _p: 12.0
     with pytest.raises(Exception) as ei:

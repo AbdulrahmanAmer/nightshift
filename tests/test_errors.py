@@ -13,6 +13,30 @@ def test_errors_json_is_well_formed():
         assert set(d) == {"message", "hint"}, code
 
 
+def _no_repeated_key(pairs):
+    """``json`` keeps the last of two equal keys without a word; two merged branches can add the same code."""
+    seen: dict = {}
+    for key, value in pairs:
+        if key in seen:
+            raise ValueError(f"repeated key {key!r}")
+        seen[key] = value
+    return seen
+
+
+def test_errors_json_has_no_code_twice():
+    """Git merges two lines that add the same code without a conflict (NS-E120 in two
+    branches, 2026-11-09)."""
+    text = (contracts_dir() / "errors.json").read_text(encoding="utf-8")
+    data = json.loads(text, object_pairs_hook=_no_repeated_key)
+    assert len(data) > 50
+
+
+def test_the_duplicate_key_loader_does_fail_on_a_repeated_code():
+    two = '{"NS-E120": {"message": "a", "hint": "b"}, "NS-E120": {"message": "c", "hint": "d"}}'
+    with pytest.raises(ValueError, match="repeated key 'NS-E120'"):
+        json.loads(two, object_pairs_hook=_no_repeated_key)
+
+
 def test_describe_known_code():
     d = describe("NS-E102")
     assert d.kind == "error"

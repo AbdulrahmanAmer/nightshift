@@ -49,7 +49,7 @@ def sample_handover(app_path: Path, *, cuda: str = "13.0", home: str = r"C:\Nigh
         ("driver", "NVIDIA driver (CUDA 12.4 or newer; 13.0+ for RTX 50-series)",
          f"CUDA {cuda}, driver 581.57"),
         ("ram", "Memory, 16 GB minimum", "32 GB (Balanced and Best models available)"),
-        ("disk", "Free disk space, 60 GB", "500 GB free on C:"),
+        ("disk", "Free disk space", "500 GB free on C:"),
         ("disktype", "Disk type, SSD", "C: SSD"),
         ("network", "Internet", "all reachable"),
         ("winget", "winget (App Installer)", "available"),

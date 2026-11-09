@@ -221,12 +221,15 @@ def test_the_free_space_rule_follows_the_custom_size():
     assert plan.required_free_gb("small", None) == 60 == wizard_free_gb("small", None)
     for size in (5_000_000_000, 9_000_000_000, 12_100_000_000, 15_500_000_000):
         assert plan.required_free_gb("small", size) == wizard_free_gb("small", size)
-    assert plan.required_free_gb("small", 15_500_000_000) == 67          # 60 + (16 - 9)
-    assert plan.required_free_gb("small", 5_000_000_000) == 60           # never below the base
+    # the owner's file replaces the tier's 9 GB story model: the number moves by the difference, both ways
+    assert plan.required_free_gb("small", 15_500_000_000) in (66, 67)    # 60 + (15.5 - 9.0) GB, in GiB
+    assert plan.required_free_gb("small", 5_000_000_000) in (55, 56)     # a small model asks for less space
     env = make_env(free_gb=lambda _p: 62.0)
     draft = good_draft(llmCustom={**CUSTOM, "size": 15_000_000_000})
     errs = {e["field"] for e in answers_view.validate(draft, env)}
-    assert "homePath" in errs                                              # 62 GB free, 66 GB needed
+    assert "homePath" in errs                                              # 62 GB free, 65 GB needed
+    small_draft = good_draft(llmCustom={**CUSTOM, "size": 5_000_000_000})
+    assert "homePath" not in {e["field"] for e in answers_view.validate(small_draft, env)}   # 56 fits in 62
 
 
 def test_build_answers_enforces_the_limit_and_the_name_for_unattended_files():

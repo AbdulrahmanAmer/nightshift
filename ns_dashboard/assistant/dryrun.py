@@ -22,8 +22,9 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from ns_common.errors import NsError
 from ns_dashboard.assistant.registry import ToolContext
-from ns_dashboard.errors import ApiError
+from ns_dashboard.errors import ApiError, room_refusal
 from ns_dashboard.formats import merge_dicts
 from ns_studio.series.store import WorkshopError
 
@@ -166,10 +167,15 @@ def workshop_check(name: str) -> DryRun:
     def check(c: ToolContext, a: dict[str, Any]) -> None:
         from ns_dashboard import studio_bridge
 
+        faked = studio_bridge.FAKE_ALL if c.dash.state.fake_services else ()
         try:
-            with studio_bridge.workshop_session(fake=studio_bridge.READ_ONLY) as ws:
+            with studio_bridge.workshop_session(fake=studio_bridge.READ_ONLY, job_fake=faked) as ws:
                 ws.check(name, a)
         except WorkshopError as e:
             raise ApiError(422, "invalid_options", str(e)) from e
+        except NsError as e:  # NS-E104: the drive has no room for the part (the card would stop at once)
+            if e.code != "NS-E104":
+                raise
+            raise room_refusal(e) from e
 
     return check

@@ -83,8 +83,6 @@ export function estimateFor(bytes: number): { downloadMin: number; installMin: n
   return { downloadMin, installMin, label };
 }
 
-/** Free space a custom model needs: the base 60 GB plus what it is larger than Small's 9 GB (the same rule as plan.required_free_gb). */
-export const customNeedFreeGb = (bytes: number): number => 60 + Math.max(0, Math.ceil(bytes / 1e9) - 9);
 /** Video memory a 16 GB card has left for context: 16 GB minus the file minus 0.6 GB of runtime (the same rule as plan.vram_left_gb). */
 export const vramLeftGb = (bytes: number): number => Math.round((16 - bytes / 1e9 - 0.6) * 10) / 10;
 

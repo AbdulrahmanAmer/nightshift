@@ -64,7 +64,8 @@ def test_the_same_laptop_is_refused_without_dev(tmp_path: Path):
     proc = run(tmp_path, LAPTOP)
     s = summary(proc)
     assert (row(s, "gpu")["status"], row(s, "gpu")["code"]) == ("fail", "NS-E102")
-    assert (row(s, "disk")["status"], row(s, "ram")["status"]) == ("fail", "warn")
+    assert row(s, "disk")["status"] == "ok"          # 30 GB: stage 2 works out what the install needs
+    assert row(s, "ram")["status"] == "warn"
     assert s["dev_mode"] is False
 
 
