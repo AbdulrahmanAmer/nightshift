@@ -54,11 +54,28 @@ def test_the_page_loads_only_the_entry_script(name: str) -> None:
     assert preloads == [], preloads
 
 
+def _inlines_dynamic_imports(config_text: str) -> bool:
+    """True when `inlineDynamicImports: true` is live code; comments are cut out first."""
+    code = re.sub(r"/\*.*?\*/", "", config_text, flags=re.DOTALL)
+    code = re.sub(r"//[^\n]*", "", code)
+    return re.search(r"inlineDynamicImports\s*:\s*true", code) is not None
+
+
 @pytest.mark.parametrize("name", sorted(CONFIGS))
 def test_vite_config_forbids_code_splitting(name: str) -> None:
     """A future `lazy(() => import(...))` must fold into `app.js`, not become a chunk that imports it."""
     text = CONFIGS[name].read_text(encoding="utf-8")
-    assert re.search(r"inlineDynamicImports\s*:\s*true", text), f"{CONFIGS[name].name} allows a second chunk"
+    assert _inlines_dynamic_imports(text), f"{CONFIGS[name].name} allows a second chunk"
+
+
+def test_a_commented_out_inline_option_does_not_count() -> None:
+    """The config check reads code, not comments (Break-it round, F-6)."""
+    assert _inlines_dynamic_imports("output: {\n  inlineDynamicImports: true,\n}")
+    assert not _inlines_dynamic_imports("output: {\n  // inlineDynamicImports: true,\n}")
+    assert not _inlines_dynamic_imports("output: {\n  /* inlineDynamicImports: true, */\n}")
+    assert not _inlines_dynamic_imports(
+        "output: {\n  inlineDynamicImports: false, // inlineDynamicImports: true\n}"
+    )
 
 
 def test_the_checks_catch_a_chunk_that_imports_the_entry(tmp_path: Path) -> None:
