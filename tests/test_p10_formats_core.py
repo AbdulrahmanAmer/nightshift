@@ -280,6 +280,28 @@ def test_caption_style_not_allowed_by_the_format_is_swapped() -> None:
     assert F.style_for_format(F.get_format("short_9x16"), "boxed_dark") == ("boxed_dark", False)
 
 
+def test_a_format_file_replaced_while_it_is_read_is_read_again(
+    tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review nit: a dashboard save landing at job start must not make the owner's file a problem."""
+    paths = Paths.from_env()
+    put(paths, "short_copy", **SMALL)
+    target = paths.formats_dir / "short_copy.yaml"
+    real = Path.read_text
+    refused: list[int] = []
+
+    def busy_once(self: Path, *args: Any, **kwargs: Any) -> str:
+        if self == target and not refused:
+            refused.append(1)
+            raise PermissionError("the file is being replaced")
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", busy_once)
+    F.forget_loaded_formats()
+    assert "short_copy" in F.load_formats(paths=paths) and F.load_problems(paths=paths) == {}
+    assert refused == [1]
+
+
 # ---------- which format a role uses ----------
 def channel_roles(tmp_home: Path, allowed: list[str], design: str | None = None, role: str = "short") -> Any:
     log = Rec()

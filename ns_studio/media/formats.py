@@ -20,6 +20,7 @@ from typing import Any, Literal
 import yaml
 from pydantic import BaseModel, ValidationError
 
+from ns_common.atomic import read_text_retry
 from ns_common.models import Channel, Format
 from ns_common.paths import Paths
 from ns_studio.errors import StudioError
@@ -52,7 +53,7 @@ def fields_problem(e: ValidationError) -> str:
 def _parse_file(path: Path) -> tuple[dict[str, Any], Format]:
     """(the mapping as written, the validated model) of one file; NS-E320 naming the file and the field."""
     try:
-        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+        raw = yaml.safe_load(read_text_retry(path))
     except (OSError, yaml.YAMLError) as e:
         raise StudioError("NS-E320", f"formats/{path.name}: {str(e)[:300]}") from e
     if not isinstance(raw, dict):

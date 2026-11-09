@@ -18,6 +18,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from ns_common.atomic import read_text_retry, write_text_atomic
 from ns_common.logging import NsLogger
 from ns_common.paths import Paths
 from ns_studio.media import formats as F
@@ -115,7 +116,7 @@ def notice_text(changes: list[tuple[str, str, list[str]]]) -> str:
 
 def _read_marker(paths: Paths) -> dict[str, Any] | None:
     try:
-        data = json.loads(marker_path(paths).read_text(encoding="utf-8"))
+        data = json.loads(read_text_retry(marker_path(paths)))
     except (OSError, ValueError):
         return None
     return data if isinstance(data, dict) else None
@@ -160,7 +161,7 @@ def notify_owner_formats(paths: Paths, log: NsLogger | None = None) -> bool:
         target = marker_path(paths)
         target.parent.mkdir(parents=True, exist_ok=True)
         kinds = sorted({*done, *todo})
-        target.write_text(json.dumps({"version": 1, "kinds": kinds}) + "\n", encoding="utf-8")
+        write_text_atomic(target, json.dumps({"version": 1, "kinds": kinds}) + "\n")
         return wrote
     except Exception as e:  # a notice must never fail a job
         if log is not None:

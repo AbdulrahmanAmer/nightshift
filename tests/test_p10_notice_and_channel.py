@@ -182,3 +182,24 @@ def test_formats_in_use_matches_what_a_job_would_record(tmp_home: Path) -> None:
     assert (
         shown["short"]["id"] == recorded["short"]["id"] and shown["short"]["why"] == recorded["short"]["why"]
     )
+
+
+def test_the_marker_is_written_with_the_atomic_helper_and_never_left_half_written(
+    tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = Paths.from_env()
+    old_copy_of_short(paths)
+    written: list[Path] = []
+    real = N.write_text_atomic
+
+    def spy(path: Path, text: str, **kw: Any) -> Path:
+        written.append(path)
+        return real(path, text, **kw)
+
+    monkeypatch.setattr(N, "write_text_atomic", spy)
+    assert N.notify_owner_formats(paths) is True
+    assert written == [N.marker_path(paths)]
+    assert json.loads(N.marker_path(paths).read_text(encoding="utf-8"))["kinds"] == ["short", "square"]
+    assert [p.name for p in N.marker_path(paths).parent.iterdir() if p.name.startswith("formats_notice")] == [
+        "formats_notice.json"
+    ]
