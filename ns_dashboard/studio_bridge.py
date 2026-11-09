@@ -135,6 +135,9 @@ def run_story_jobs(
     rng = random.Random()
     out: list[str] = []
     for i in range(n):
+        if i and paused_now(env, ch.slug):  # paused while video 1..i was made: no further video starts (P47)
+            env.log.info("story_run_paused", channel=ch.slug, made=i, left=n - i)
+            break
         if script is not None:
             ctx = jobs.make_script_job(env, ch, fmt, script, script_title, rng=rng)
             names = [s.name for s in plan_job(plan_format(ctx.fmt, ctx.job_dir))]
@@ -145,6 +148,18 @@ def run_story_jobs(
         run_job_guarded(watched(ctx, names, i, n, report))
         out.extend(output_ids(env.db, ctx.job_id))
     return out
+
+
+def paused_now(env: Env, slug: str) -> bool:
+    """True when the channel's profile says `paused` right now (read again between the videos of one run job;
+    a pause can come at any time). A profile that cannot be read is not a pause."""
+    from ns_studio.channels.crud import get_channel
+    from ns_studio.errors import StudioError
+
+    try:
+        return get_channel(env.paths, slug).status == "paused"
+    except StudioError:
+        return False
 
 
 def with_acquirer(ctx: JobContext, acquirer: Acquirer | None) -> JobContext:

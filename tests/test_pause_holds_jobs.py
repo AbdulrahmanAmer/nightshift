@@ -354,3 +354,68 @@ def test_only_the_paused_channel_stops_the_others_carry_on(tmp_home: Path):
     channels = [j["channel"] for j in report["jobs"]]
     assert channels.count(CH) == 1 and channels.count("tiny-mysteries") == 2
     assert [s["channel"] for s in report["skipped"]] == [CH]
+
+
+# ------------------------------------------------------------------ break-it round (independent review)
+
+
+class PausingStage:
+    """A stage that pauses the channel while the first video of a run job is made (a warning arrives)."""
+
+    name = "p47_pause_stage"
+    tenant = None
+    inputs = ()
+    outputs = ("p47.json",)
+    made = 0
+    pause_at = 1
+
+    def run(self, ctx: Any) -> None:
+        type(self).made += 1
+        if type(self).made == type(self).pause_at:
+            paths = Paths.from_env()
+            review.pause(paths, Db(paths.db_path), "demo", "warning arrived while the first video was made")
+        ctx.write_json("p47.json", {"n": type(self).made})
+
+
+@pytest.fixture
+def pausing_stage(tmp_home: Path, monkeypatch: pytest.MonkeyPatch):
+    from ns_studio.orchestrator import FORMAT_STAGES
+    from ns_studio.stages import register
+
+    PausingStage.made = 0
+    PausingStage.pause_at = 1
+    register(PausingStage())
+    monkeypatch.setitem(FORMAT_STAGES, "shorts_only", ["p47_pause_stage"])
+    monkeypatch.setattr(jobs, "STAGE_MODULES", ())
+    monkeypatch.setattr("ns_studio.policy.gate.available", lambda: False)
+
+
+def run_three(seen: list[str]) -> list[str]:
+    from ns_dashboard import studio_bridge
+    from ns_studio.context import FAKEABLE
+
+    env = jobs.open_env(FAKEABLE)
+    jobs.ensure_demo_channel(env)
+    return studio_bridge.run_story_jobs(
+        "demo", "shorts_only", 3, lambda *_a: None, fake=tuple(FAKEABLE), seen=seen
+    )
+
+
+def test_a_run_job_with_a_count_makes_no_further_video_after_the_pause(pausing_stage):
+    """A dashboard run job with count 3 is one worker job that makes 3 videos in a loop: a pause after the
+    first one must stop the loop (the worker's hold only gates the start of a queued job)."""
+    seen: list[str] = []
+    run_three(seen)
+    assert PausingStage.made == 1, "videos 2 and 3 must not start after the pause"
+    assert len(seen) == 1
+    assert crud.get_channel(Paths.from_env(), "demo").status == "paused"
+
+
+def test_a_run_job_with_a_count_makes_all_videos_when_nobody_pauses(pausing_stage):
+    """The control for the test above: with no pause the same run job makes all 3 videos."""
+    PausingStage.pause_at = 99
+    seen: list[str] = []
+    run_three(seen)
+    assert PausingStage.made == 3 and len(seen) == 3
+
+

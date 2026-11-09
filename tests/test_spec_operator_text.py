@@ -629,7 +629,8 @@ def test_retry_from_where_it_stopped_is_refused_for_a_paused_channel_and_the_tex
     assert "_resume_params" in inspect.getsource(cls.check_resume)
     assert "_require_channel_not_paused" in inspect.getsource(cls._resume_params)
     assert "_require_not_paused" in inspect.getsource(cls._require_channel_not_paused)
-    for mod in (adapters, studio_bridge, studio_job, studio_runner):
+    assert "paused_now" in inspect.getsource(studio_bridge.run_story_jobs)  # a count loop stops at a pause
+    for mod in (adapters, studio_job, studio_runner):
         src = inspect.getsource(mod)
         assert "paused" not in src, f"{mod.__name__} checks the channel now: update the guide"
     for name, text in (
