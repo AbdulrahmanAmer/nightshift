@@ -37,6 +37,8 @@ from ns_studio.text.models_local import ChapterDraft
 from ns_studio.text.prompts import call_json, call_text, parse_model
 from ns_studio.text.seo import finalize_seo, finalize_seo_long
 from ns_studio.text.stages_shorts import (
+    CLOSING_MAX_WORDS,
+    HOOK_MAX_WORDS,
     closing_is_clean,
     critic_numbers,
     job_master_budget,
@@ -70,8 +72,6 @@ MASTER_STAGES = [
     "visual_plan_long",
     "seo_shorts",
 ]
-HOOK_MAX_WORDS = 12
-CLOSING_MAX_WORDS = 15
 SIZE_TOLERANCE = SHORT_TOLERANCE  # a Short moment fits its bucket when within the QC band (+-15 %)
 HOOK_CONSTRAINTS = "Max {max} words. Must make sense without the rest of the story. Style: {style}"
 TITLE_CONSTRAINTS ="At most 70 characters. {kw!r} in the first 40 characters. Never claim the story is real."

@@ -13,11 +13,11 @@ Everything here is best effort: a missing, damaged or unwritable file means the 
 from __future__ import annotations
 
 import json
-import os
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from ns_common.atomic import read_text_retry, write_text_atomic
 from ns_common.pacing import NOMINAL_WPM, PACING_WPM, pause_plan
 from ns_common.textstats import word_count
 
@@ -46,7 +46,7 @@ def voice_wpm_path(paths: Paths) -> Path:
 def load_voice_wpm(paths: Paths) -> dict[str, Any]:
     """The stored measurements as `{"voices": {name: {...}}}`; empty when the file is missing or damaged."""
     try:
-        doc = json.loads(voice_wpm_path(paths).read_text(encoding="utf-8"))
+        doc = json.loads(read_text_retry(voice_wpm_path(paths)))
     except (OSError, ValueError):
         return {"voices": {}}
     voices = doc.get("voices") if isinstance(doc, dict) else None
@@ -85,13 +85,6 @@ def job_sample(items: list[TtsItem], manifest: dict[str, dict]) -> tuple[int, fl
     if words < MIN_SAMPLE_WORDS or speech_1x <= 0:
         return None
     return words, speech_1x
-
-
-def _write_atomic(path: Path, doc: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + f".{os.getpid()}.tmp")
-    tmp.write_text(json.dumps(doc, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    os.replace(tmp, path)
 
 
 def fake_engine(ctx: JobContext) -> bool:
@@ -156,7 +149,8 @@ def record_voice_wpm(
             "samples": samples,
             "updated_at": datetime.now(UTC).isoformat(timespec="seconds"),
         }
-        _write_atomic(voice_wpm_path(ctx.paths), {"version": 1, **doc})
+        text = json.dumps({"version": 1, **doc}, indent=2, ensure_ascii=False) + "\n"
+        write_text_atomic(voice_wpm_path(ctx.paths), text)
     except (OSError, ValueError, TypeError, KeyError, AttributeError) as e:
         ctx.log.warn("voice_wpm_not_stored", str(e)[:200], job_id=ctx.job_id, voice=voice_name)
         return None
@@ -174,7 +168,7 @@ def job_wpm(ctx: JobContext) -> int:
     """
     pinned = ctx.file(PINNED_FILE)
     try:
-        value = int(json.loads(pinned.read_text(encoding="utf-8"))["wpm"])
+        value = int(json.loads(read_text_retry(pinned))["wpm"])
         if value > 0:
             return value
     except (OSError, ValueError, KeyError, TypeError):
@@ -205,7 +199,7 @@ def job_wpm(ctx: JobContext) -> int:
     if planned_before:  # one job, one pace: the plan on disk was made with the table, so this job keeps it
         doc["reason"] = "planned before the pace was pinned"
     try:
-        pinned.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+        write_text_atomic(pinned, json.dumps(doc, indent=2) + "\n")
     except OSError:
         pass  # the plan still uses this call's figure
     return wpm

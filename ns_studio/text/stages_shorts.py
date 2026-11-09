@@ -17,7 +17,17 @@ from ns_common.textstats import est_seconds, split_sentences, word_count
 from ns_studio.context import JobContext
 from ns_studio.policy.meta import policy_list
 from ns_studio.stages import Tenant, register
-from ns_studio.text.budget import Budget, MasterBudget, master_as_budget, master_budget, short_budget
+from ns_studio.text.budget import (
+    CLOSING_MAX_WORDS,
+    HOOK_MAX_WORDS,
+    SHORT_MIN_CLOSING_WORDS,
+    SHORT_MIN_HOOK_WORDS,
+    Budget,
+    MasterBudget,
+    master_as_budget,
+    master_budget,
+    short_budget,
+)
 from ns_studio.text.prompts import RUBRIC_KEYS, call_json, call_text, parse_model
 from ns_studio.text.seo import finalize_seo
 from ns_studio.text.story_profile import profile_of
@@ -27,8 +37,6 @@ from ns_studio.voice_wpm import job_wpm
 __all__ = ["draw_banked_idea", "finalize_seo", "ideas_budget", "job_master_budget", "now_iso"]
 
 IDEA_SIMILARITY_LIMIT = 0.85
-HOOK_MAX_WORDS = 12  # spec 7.0: a hook is at most 12 words
-CLOSING_MAX_WORDS = 15  # spec 7.0: a closing line is at most 15 words
 SHORT_CLOSING_WORDS = 10  # the budget reserves this many words for the closing line (see `fit_closing`)
 CLOSINGS_FILE = "closings.json"
 DEFAULT_SHORT_CLOSINGS = (
@@ -60,6 +68,8 @@ def ideas_budget(ctx: JobContext) -> Budget:
         parts=1,
         hook_words=HOOK_MAX_WORDS,
         closing_words=SHORT_CLOSING_WORDS,
+        min_hook_words=SHORT_MIN_HOOK_WORDS,
+        min_closing_words=SHORT_MIN_CLOSING_WORDS,
         wpm=job_wpm(ctx),
         profile=profile_of(ctx),
     )

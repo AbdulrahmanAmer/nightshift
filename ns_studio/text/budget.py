@@ -17,6 +17,10 @@ from ns_studio.text.story_profile import NORMAL, StoryProfile
 SHORT_TOLERANCE = 0.15  # Shorts: words within +-15 % of the target, the same band QC applies to seconds
 MASTER_MAX_MINUTES = 14  # the longest draw of `long_minutes`; the budget below already counts the pauses
 MASTER_MAX_SECONDS = 870  # a finished master may estimate up to 14:30 (QC fails over 15:00 after the render)
+HOOK_MAX_WORDS = 12  # spec 7.0: a hook is at most 12 words (the one definition, imported by the stages)
+CLOSING_MAX_WORDS = 15  # spec 7.0: a closing line is at most 15 words
+SHORT_MIN_HOOK_WORDS = 6  # the shortest hook a Short plausibly gets: the lower word limit is sized with it
+SHORT_MIN_CLOSING_WORDS = 5  # the shortest default closing line ("Part 2 is up next.")
 
 
 @dataclass(frozen=True)
@@ -38,6 +42,8 @@ def short_budget(
     parts: int = 1,
     hook_words: int = 12,
     closing_words: int = 0,
+    min_hook_words: int | None = None,
+    min_closing_words: int | None = None,
     wpm: int | None = None,
     profile: StoryProfile = NORMAL,
 ) -> Budget:
@@ -51,13 +57,25 @@ def short_budget(
     seconds (hook and closing included): inside QC's +-15 % duration band with room for sentence-length
     variation. A profile with a `short_band` (the engine test's tiny model) keeps the target and takes its
     limits from that band instead.
+
+    `hook_words` and `closing_words` are the most the Short can carry and size the upper limit;
+    `min_hook_words` and `min_closing_words` (default: the same figures) are the least it can carry and size
+    the lower limit, because a short hook and a short closing line leave the shortest body further under the
+    bucket than a long pair does. The target reserves the middle of the two, so it is inside the band for
+    either pair. Without the `min_` figures the reservation is `hook_words` and `closing_words` as given.
     """
     wpm = wpm or PACING_WPM[pacing]
+    per_word_s = 60.0 / wpm + PAUSE_PER_WORD_S
+    most_words = hook_words * parts + closing_words
+    least_words = (hook_words if min_hook_words is None else min_hook_words) * parts + (
+        closing_words if min_closing_words is None else min_closing_words
+    )
     total = words_for_seconds(length_bucket_s * parts, wpm)
-    words = max(40, total - hook_words * parts - closing_words)
-    voiced_extra_s = (hook_words * parts + closing_words) * (60.0 / wpm + PAUSE_PER_WORD_S)
-    qc_cap = words_for_seconds(length_bucket_s * parts * (1 + SHORT_QC_MARGIN) - voiced_extra_s, wpm)
-    qc_floor = words_for_seconds(length_bucket_s * parts * (1 - SHORT_QC_MARGIN) - voiced_extra_s, wpm)
+    words = max(40, total - (most_words + least_words) // 2)
+    qc_cap = words_for_seconds(length_bucket_s * parts * (1 + SHORT_QC_MARGIN) - most_words * per_word_s, wpm)
+    qc_floor = words_for_seconds(
+        length_bucket_s * parts * (1 - SHORT_QC_MARGIN) - least_words * per_word_s, wpm
+    )
     lo = min(words, max(round(words * (1 - SHORT_TOLERANCE)), qc_floor))
     hi = max(words, min(round(words * (1 + SHORT_TOLERANCE)), qc_cap))
     if profile.short_band is not None:

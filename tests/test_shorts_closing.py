@@ -21,7 +21,8 @@ from ns_studio.media.qc import duration_check
 from ns_studio.media.voice import VoiceStage, narration_items, read_closings
 from ns_studio.stages import REGISTRY, inputs_hash, run_stage
 from ns_studio.text import stages_shorts as S
-from ns_studio.text.budget import short_budget
+from ns_studio.text.budget import SHORT_MIN_CLOSING_WORDS, SHORT_MIN_HOOK_WORDS, short_budget
+from ns_studio.text.story_profile import TINY
 from ns_studio.text.validators import load_banned
 from ns_studio.voice_wpm import record_voice_wpm
 from tests.helpers import make_combo, make_ctx
@@ -259,6 +260,54 @@ def test_the_longest_body_with_hook_and_the_closing_the_stage_picks_stays_inside
     assert duration_check(target, "short", bucket).passed, target / bucket
 
 
+@pytest.mark.parametrize("source", ["table", "measured"])
+@pytest.mark.parametrize("pacing", sorted(PACING_WPM))
+@pytest.mark.parametrize("bucket", BUCKETS)
+def test_the_shortest_body_with_the_shortest_hook_and_closing_stays_inside_the_qc_band(
+    tmp_home: Path, tmp_path: Path, bucket: int, pacing: str, source: str
+):
+    """The budget reserves the longest hook and closing for its target, so a Short with a 6-word hook and the
+    5-word default closing line is shorter than the target by their difference: the lower limit is sized
+    with them, so even the shortest body the validator accepts is not under QC's -15 % (NS-W406)."""
+    if source == "measured":
+        ctx = _measured_ctx(tmp_home, bucket, pacing)
+    else:
+        ctx = make_ctx(tmp_home, combo=make_combo(length_bucket=bucket, pacing=pacing))
+    budget = S.ideas_budget(ctx)
+    shortest = _short_seconds(
+        tmp_path, budget.wpm, budget.min_words, SHORT_MIN_HOOK_WORDS, SHORT_MIN_CLOSING_WORDS
+    )
+    assert duration_check(shortest, "short", bucket).passed, (shortest / bucket, budget)
+    assert len(S.default_closing(1, 2).split()) >= SHORT_MIN_CLOSING_WORDS
+
+
+def test_the_lower_limit_is_sized_with_the_least_the_short_carries_the_rest_with_the_most():
+    most = short_budget(50, "standard", hook_words=12, closing_words=10, wpm=155)
+    sized = short_budget(
+        50, "standard", hook_words=12, closing_words=10, min_hook_words=6, min_closing_words=5, wpm=155
+    )
+    assert sized.max_words <= most.max_words  # the top is still sized with the longest pair
+    assert sized.words == most.words + (22 - 33 // 2)  # the target reserves the middle of 22 and 11 words
+    assert sized.min_words > most.min_words and sized.min_words <= sized.words
+    assert short_budget(50, "standard", hook_words=12, closing_words=10, min_hook_words=12, wpm=155) == most
+
+
+def test_a_profile_with_its_own_band_takes_its_limits_from_the_target_not_from_the_least_the_short_carries():
+    tiny = TINY
+    plain = short_budget(50, "standard", hook_words=12, closing_words=10, profile=tiny)
+    sized = short_budget(
+        50, "standard", hook_words=12, closing_words=10, min_hook_words=6, min_closing_words=5, profile=tiny
+    )
+    assert (sized.min_words, sized.max_words) == (
+        round(sized.words * tiny.short_band[0]),
+        round(sized.words * tiny.short_band[1]),
+    )
+    assert (plain.min_words, plain.max_words) == (
+        round(plain.words * tiny.short_band[0]),
+        round(plain.words * tiny.short_band[1]),
+    )
+
+
 def test_a_budget_without_the_closing_allowance_let_the_longest_short_fail_qc(tmp_home: Path, tmp_path: Path):
     """Before: closing_words=0, a body at the cap and a 12-word closing line gave 1.22 x the 50 s bucket."""
     ctx = make_ctx(tmp_home)
@@ -304,7 +353,8 @@ def test_the_shorts_budget_counts_the_closing_line_the_audio_gets(tmp_home: Path
     ctx = make_ctx(tmp_home)
     with_close = S.ideas_budget(ctx)
     without = short_budget(50, "standard", hook_words=S.HOOK_MAX_WORDS, wpm=with_close.wpm)
-    assert without.words - with_close.words == S.SHORT_CLOSING_WORDS
+    middle = (S.HOOK_MAX_WORDS + S.SHORT_CLOSING_WORDS + SHORT_MIN_HOOK_WORDS + SHORT_MIN_CLOSING_WORDS) // 2
+    assert without.words - with_close.words == middle - S.HOOK_MAX_WORDS  # the target reserves the middle
 
 
 def test_a_closing_line_that_claims_the_story_is_real_is_replaced(tmp_home: Path):
