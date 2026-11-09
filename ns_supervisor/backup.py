@@ -11,6 +11,7 @@ from datetime import datetime
 from pathlib import Path, PurePosixPath
 
 from ns_common import __version__
+from ns_common.atomic import write_stream_atomic, write_zip_atomic
 from ns_common.errors import NsError
 from ns_common.paths import Paths
 from ns_supervisor.doctor import desktop_dir
@@ -46,7 +47,8 @@ def make_backup(paths: Paths, out: Path | None = None, *, now: datetime | None =
     target = out or (desktop_dir() / f"nightshift-backup-{when:%Y-%m-%d}.zip")
     target.parent.mkdir(parents=True, exist_ok=True)
     entries: list[str] = []
-    with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as z:
+
+    def fill(z: zipfile.ZipFile) -> None:
         for tree in TREES:
             root = paths.home / Path(*tree.split("/"))
             if not root.is_dir():
@@ -64,6 +66,8 @@ def make_backup(paths: Paths, out: Path | None = None, *, now: datetime | None =
             entries.append("data/studio.db")
         info = {"created": when.isoformat(timespec="seconds"), "version": __version__, "entries": entries}
         z.writestr(MANIFEST, json.dumps(info, indent=2) + "\n")
+
+    write_zip_atomic(target, fill)  # the Desktop never shows a backup that is still being written
     return target
 
 
@@ -112,8 +116,8 @@ def restore_backup(
                     for suffix in ("-wal", "-shm"):  # stale WAL files would corrupt the restored database
                         Path(str(dest) + suffix).unlink(missing_ok=True)
                 dest.parent.mkdir(parents=True, exist_ok=True)
-                with z.open(info) as src, dest.open("wb") as dst:
-                    shutil.copyfileobj(src, dst)
+                with z.open(info) as src:
+                    write_stream_atomic(dest, src)  # a restored file is whole, or still the old one
             except OSError as e:  # disk full, a locked database, no permission: put everything back
                 undone = _roll_back(touched)
                 raise NsError(

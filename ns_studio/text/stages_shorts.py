@@ -19,6 +19,7 @@ from ns_studio.stages import Tenant, register
 from ns_studio.text.budget import Budget, MasterBudget, master_as_budget, master_budget, short_budget
 from ns_studio.text.prompts import RUBRIC_KEYS, call_json, call_text, parse_model
 from ns_studio.text.seo import finalize_seo
+from ns_studio.text.story_profile import profile_of
 from ns_studio.text.validators import check_banned, load_banned, raise_if, validate_story
 from ns_studio.voice_wpm import job_wpm
 
@@ -40,7 +41,11 @@ NO_CHAPTER_POTENTIAL = {"", "n/a", "na", "none", "-"}
 def job_master_budget(ctx: JobContext) -> MasterBudget:
     """Master budget of this job; the target minutes are drawn from `long_minutes` seeded by the job id."""
     return master_budget(
-        ctx.channel.long_minutes, ctx.combo.pacing, rng=random.Random(ctx.job_id), wpm=job_wpm(ctx)
+        ctx.channel.long_minutes,
+        ctx.combo.pacing,
+        rng=random.Random(ctx.job_id),
+        wpm=job_wpm(ctx),
+        profile=profile_of(ctx),
     )
 
 
@@ -55,6 +60,7 @@ def ideas_budget(ctx: JobContext) -> Budget:
         hook_words=HOOK_MAX_WORDS,
         closing_words=SHORT_CLOSING_WORDS,
         wpm=job_wpm(ctx),
+        profile=profile_of(ctx),
     )
 
 
@@ -276,7 +282,11 @@ class CriticReviseStage:
         ]
         if is_dev(ctx.paths):
             past = []      # the fake LLM tells the same story every run; dev mode must not fail on that
-        raise_if(validate_story(text, ideas_budget(ctx), past_openings=past, embed=ctx.services.embed))
+        raise_if(
+            validate_story(
+                text, ideas_budget(ctx), past_openings=past, embed=ctx.services.embed, profile=profile_of(ctx)
+            )
+        )
         avg, _ = critic_numbers(critique)
         vec = ctx.services.embed.embed([embed_window(text, ctx.runtime.embed.batch_size)])[0]
         ctx.db.execute(
@@ -382,7 +392,7 @@ class HooksStage:
     outputs: tuple[str, ...] = ("parts.json", "hooks_all.json")
 
     def run(self, ctx: JobContext) -> None:
-        """Set `hook` on every part and write its closing line; skip when `hooks_all.json` exists for these parts.
+        """Set `hook` on every part and write its closing line; skip when `hooks_all.json` exists.
 
         `closings.json` is written before `hooks_all.json`, so a job made by this code has both when it skips.
         A job from before closing lines has only the hooks: it keeps them and gets no closing line, rather

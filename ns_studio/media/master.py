@@ -39,6 +39,7 @@ from ns_studio.media.fake_voice import e403_detail
 from ns_studio.media.transcribe import Word
 from ns_studio.media.voice import job_speed, job_voice, synthesize
 from ns_studio.stages import Tenant
+from ns_studio.text.story_profile import HasRuntime, profile_of
 from ns_studio.voice_wpm import job_wpm
 
 CARD_S = 1.2
@@ -188,6 +189,17 @@ def run_voice_master(ctx: JobContext) -> None:
 # ---------------------------------------------------------------------------------------------------------
 
 
+def floor_s(ctx: HasRuntime) -> float:
+    """The master's planning floor in seconds: 9:00, or the story profile's own (the engine test's tiny model
+    plans down to 8:40, 10 s over QC's 8:30; QC and the policy check still hold the master to 8:30).
+
+    The owner's own script is not a model-size problem: it keeps the 9:00 floor on every install."""
+    if getattr(ctx, "owner_script", False) is True:
+        return FLOOR_S
+    own = profile_of(ctx).master_floor_s
+    return FLOOR_S if own is None else own
+
+
 def load_expand_chapter() -> Callable[[JobContext, int, int], None]:
     """C5's `expand_chapter(ctx, chapter_n, add_words)` (imported lazily; NS-E305 when unavailable)."""
     try:
@@ -228,25 +240,26 @@ class DurationCheckStage:
     def run(self, ctx: JobContext) -> None:
         """Measure, expand and re-voice until the floor is met or the budget of expansions is spent."""
         wpm = float(job_wpm(ctx))
+        floor = floor_s(ctx)
         expansions: list[dict[str, Any]] = []
         while True:
             timeline = timeline_from_manifest(ctx)
             total = timeline[-1].end if timeline else 0.0
-            if total >= FLOOR_S:
+            if total >= floor:
                 break
             if ctx.owner_script:  # the owner's words are never extended with model text
-                self._write(ctx, total, expansions)
+                self._write(ctx, total, expansions, floor)
                 raise NsError(
-                    "NS-E305", f"{total:.0f} s of narration, the floor is {FLOOR_S:.0f} s: script too short"
+                    "NS-E305", f"{total:.0f} s of narration, the floor is {floor:.0f} s: script too short"
                 )
             if len(expansions) >= MAX_EXPANSIONS:
-                self._write(ctx, total, expansions)
+                self._write(ctx, total, expansions, floor)
                 raise NsError(
-                    "NS-E305", f"{total:.0f} s after {len(expansions)} expansions (floor {FLOOR_S:.0f} s)"
+                    "NS-E305", f"{total:.0f} s after {len(expansions)} expansions (floor {floor:.0f} s)"
                 )
             lengths = {t.n: t.end - t.audio_start for t in timeline}
             shortest = min(lengths, key=lambda n: lengths[n])
-            deficit_words = math.ceil((FLOOR_S - total) / 60.0 * wpm)
+            deficit_words = math.ceil((floor - total) / 60.0 * wpm)
             add_words = max(120, min(200, deficit_words))
             expand = load_expand_chapter()
             with swapped_tenant(ctx, "tts", "llama"):
@@ -254,11 +267,11 @@ class DurationCheckStage:
             run_voice_master(ctx)
             expansions.append({"chapter": shortest, "add_words": add_words, "before_s": round(total, 2)})
             ctx.log.info("expanded", job_id=ctx.job_id, chapter=shortest, add_words=add_words)
-        self._write(ctx, total, expansions)
+        self._write(ctx, total, expansions, floor)
 
     @staticmethod
-    def _write(ctx: JobContext, total: float, expansions: list[dict[str, Any]]) -> None:
-        data = {"total_s": round(total, 2), "floor_s": FLOOR_S, "expansions": expansions}
+    def _write(ctx: JobContext, total: float, expansions: list[dict[str, Any]], floor: float) -> None:
+        data = {"total_s": round(total, 2), "floor_s": floor, "expansions": expansions}
         ctx.write_json("duration_check.json", data)
 
 

@@ -17,6 +17,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from ns_common.atomic import read_text_retry
 from ns_common.paths import Paths
 
 Runner = Callable[[list[str], int], tuple[int, str, str]]
@@ -259,7 +260,7 @@ def read_update_state(
     """
     out: dict[str, Any] = {"state": "idle", "old": None, "new": None, "message": None, "updated_at": None}
     try:
-        raw = json.loads(update_state_path(paths).read_text(encoding="utf-8"))
+        raw = json.loads(read_text_retry(update_state_path(paths)))  # the updater swaps the file in under us
     except (OSError, ValueError):
         return out
     if not isinstance(raw, dict) or raw.get("state") not in UPDATE_STATES:

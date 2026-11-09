@@ -18,6 +18,7 @@ from installer.stage2.context import StepContext
 from installer.stage2.errors import make_error
 from installer.stage2.runtime_cfg import ensure_baseline, update_runtime
 from installer.stage2.secrets import KEY_NAMES
+from ns_common.atomic import write_text_atomic
 from ns_common.config import load_channel, load_runtime, save_channel
 from ns_common.models import Channel, Runtime, Voice
 
@@ -55,10 +56,11 @@ def apply_engine_test(ctx: StepContext, rt: Runtime) -> None:
 
     ``build_runtime`` writes them only when runtime.json does not exist yet, so a re-run or an upgrade over an
     existing runtime.json would keep the old values and the answer would silently do nothing. The footage
-    switch follows the answer both ways; the fake voice engine is set only when asked, because without the
-    answer nothing here knows which real engine the earlier steps chose.
+    and tiny-story switches follow their answers both ways; the fake voice engine is set only when asked,
+    because without the answer nothing here knows which real engine the earlier steps chose.
     """
     rt.fake_footage = ctx.fake_footage
+    rt.tiny_story = ctx.tiny_story
     if ctx.fake_voice:
         rt.tts.engine = "fake"
 
@@ -91,7 +93,7 @@ def write_ui_prefs(ctx: StepContext, ans: InstallerAnswers) -> None:
     f = ui_prefs_file(ctx)
     f.parent.mkdir(parents=True, exist_ok=True)
     prefs = {"owner_name": ans.owner_name, "theme": ans.ui_theme}
-    f.write_text(json.dumps(prefs, indent=2) + "\n", encoding="utf-8")
+    write_text_atomic(f, json.dumps(prefs, indent=2) + "\n")
 
 
 def pending_voice_file(ctx: StepContext) -> Path:
@@ -123,7 +125,7 @@ def queue_voice(ctx: StepContext, ans: InstallerAnswers, channel: Channel) -> bo
         )
     f = pending_voice_file(ctx)
     f.parent.mkdir(parents=True, exist_ok=True)
-    f.write_text(json.dumps(request, indent=2) + "\n", encoding="utf-8")
+    write_text_atomic(f, json.dumps(request, indent=2) + "\n")
     return True
 
 
@@ -182,8 +184,8 @@ class S07Configs(Step):
         if ans.install_code:
             llama = load_runtime(ctx.paths).llama
             ctx.paths.opencode_file.parent.mkdir(parents=True, exist_ok=True)
-            ctx.paths.opencode_file.write_text(
-                json.dumps(opencode_config(llama.host, llama.port), indent=2) + "\n", encoding="utf-8")
+            write_text_atomic(
+                ctx.paths.opencode_file, json.dumps(opencode_config(llama.host, llama.port), indent=2) + "\n")
 
         for key in KEY_NAMES:
             value = getattr(ans, key)

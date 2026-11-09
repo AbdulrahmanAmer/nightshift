@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -19,6 +20,7 @@ from urllib.parse import urlparse
 
 import httpx
 
+from ns_common.atomic import write_chunks_atomic, write_text_atomic
 from ns_common.errors import NsError
 
 REPO = "AbdulrahmanAmer/nightshift"
@@ -191,10 +193,14 @@ def download(rel: Release, dest_dir: Path, client: httpx.Client | None = None) -
                 r.raise_for_status()
                 if not trusted(str(r.url)):
                     raise NsError("NS-E701", f"the download was redirected away from GitHub ({r.url.host})")
-                with target.open("wb") as fh:
+
+                def blocks() -> Iterator[bytes]:
                     for block in r.iter_bytes(1024 * 1024):
                         h.update(block)
-                        fh.write(block)
+                        yield block
+
+                # The zip appears under its name only when all of it arrived: a crash leaves no torn zip.
+                write_chunks_atomic(target, blocks())
         except httpx.HTTPError as e:
             target.unlink(missing_ok=True)
             raise _unreachable(e) from e
@@ -207,7 +213,7 @@ def download(rel: Release, dest_dir: Path, client: httpx.Client | None = None) -
             raise NsError(
                 "NS-E701", f"SHA256 mismatch for {rel.zip_name}: expected {want[:12]}, got {got[:12]}"
             )
-        target.with_name(target.name + ".sha256").write_text(f"{got}  {rel.zip_name}\n", encoding="utf-8")
+        write_text_atomic(target.with_name(target.name + ".sha256"), f"{got}  {rel.zip_name}\n", newline=None)
         return target
     finally:
         if client is None:

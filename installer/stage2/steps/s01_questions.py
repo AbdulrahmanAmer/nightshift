@@ -430,6 +430,11 @@ class S01Questions(Step):
         self._keys(ctx)
         ans = ctx.constrain(ans)
         ctx.answers = ans
+        if ctx.tiny_story:
+            ctx.ui.say(
+                "Engine test (tiny_story): the story text stages use the thresholds of a 1 to 2 GB "
+                "model, so a tiny model can finish a story. For testing only."
+            )
         if ans.voice.mode == "design" and ans.include_voicedesign is False:
             ctx.warn("NS-W114", ans.voice.name or ans.voice.description or "")
         # What comes from the changed choices is applied BEFORE the answers are saved: when that fails, the
