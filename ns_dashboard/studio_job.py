@@ -7,6 +7,8 @@ module prints: one JSON object per line, each behind the prefix `NSJOB ` so a st
 cannot be mistaken for an event. The events are
 
 - `job`: a studio job was created (`job_id`),
+- `owner`: a GPU lease owner the child is about to use (`owner`), sent before the acquire so Cancel or a
+  failure can free it even if the child is killed while it waits for the lease,
 - `stage`: a stage starts (`stage`, `index`, `total`, `job_index`, `job_total`),
 - `download`: link download progress (`percent`),
 - `result`: the work is done (the payload, for example `output_ids`),
@@ -94,7 +96,10 @@ def _acquirer(args: dict[str, Any]) -> Any:
     except Exception:  # no or unreadable runtime.json: the defaults
         runtime = Runtime.default("gpu")
     client: Any = make_acquirer(str(url))  # a SupervisorClient (has `heartbeat`) or the HTTP fallback
-    return StudioAcquirer(runtime, paths, client=client, ensure=lambda _client: None)
+    return StudioAcquirer(
+        runtime, paths, client=client, ensure=lambda _client: None,
+        on_owner=lambda owner: emit("owner", owner=owner),  # the dashboard frees every one on Cancel
+    )
 
 
 def _common(args: dict[str, Any]) -> dict[str, Any]:

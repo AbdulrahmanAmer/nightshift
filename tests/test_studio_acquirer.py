@@ -98,6 +98,27 @@ def test_first_use_starts_the_supervisor_once_then_forwards(tmp_home: Path):
     assert acq.warmup("embed") == "ready" and client.calls[-1] == ("warmup", "embed")
 
 
+def test_every_new_owner_is_announced_once_before_it_can_hold_a_lease(tmp_home: Path):
+    seen: list[str] = []
+
+    class Refusing(FakeClient):
+        def acquire(self, service, owner, *, model_alias=None, timeout_s=7200) -> Endpoint:
+            assert owner in seen  # the dashboard knows the owner before the lease can exist
+            raise NsError("NS-E201", "busy")
+
+    acq, _client, _ = make(tmp_home, Refusing(), on_owner=seen.append)
+    with pytest.raises(NsError):
+        acq.acquire("tts", "studio:voice-nova")
+    assert seen == ["studio:voice-nova"]
+    again: list[str] = []
+    ok, _client2, _ = make(tmp_home, on_owner=again.append)
+    ok.acquire("tts", "studio:j1")
+    ok.acquire("whisper", "studio:j1")
+    ok.acquire("tts", "studio:voice-nova")
+    ok.acquire("tts", "studio:voice-nova")
+    assert again == ["studio:j1", "studio:voice-nova"]  # each owner once, in order
+
+
 def test_default_connection_uses_ns_supervisor_ensure_running(
     tmp_home: Path, monkeypatch: pytest.MonkeyPatch
 ):

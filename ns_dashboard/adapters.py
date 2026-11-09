@@ -258,7 +258,8 @@ def job_reporter(ctl: JobControl) -> studio_bridge.Report:
 
 
 def studio_owners(ctl: JobControl, args: dict[str, Any]) -> list[str]:
-    """The GPU owners (`studio:<job id>`) a job may have used: announced ids, and those the arguments name."""
+    """Every GPU owner a job may hold: the owners its child announced (`lease_owners`: a setup voice made at
+    the start of a run, a helper), `studio:<job id>` for the announced ids and those the arguments name."""
     ids: list[Any] = list(ctl.extras.get("studio_job_ids") or [])
     params = args.get("params")
     ids += [
@@ -266,7 +267,8 @@ def studio_owners(ctl: JobControl, args: dict[str, Any]) -> list[str]:
         args.get("studio_job_id"),  # a re-run
         params.get("job_id") if isinstance(params, dict) else None,  # a series part
     ]
-    return sorted({f"studio:{i}" for i in ids if i})
+    named = {f"studio:{i}" for i in ids if i}
+    return sorted(named | {str(o) for o in ctl.extras.get("lease_owners") or [] if o})
 
 
 class StudioAdapter:
@@ -300,9 +302,11 @@ class StudioAdapter:
         """Run `kind` in the studio venv for the job `ctl`; progress and cancel flow through `ctl`.
 
         The studio job ids announced by the child are kept in `ctl.extras["studio_job_ids"]` as they appear,
-        so a failed job still says which studio job to look at.
+        so a failed job still says which studio job to look at; the GPU owners it announces go to
+        `ctl.extras["lease_owners"]`, and `release_leases` frees them all when the child is gone.
         """
         report = job_reporter(ctl)
+        ended = False  # set once the run is over: an owner announced after that is released on arrival
 
         def on_event(event: dict[str, Any]) -> None:
             name = event.get("ev")
@@ -314,6 +318,14 @@ class StudioAdapter:
                     int(event.get("job_index", 0)),
                     int(event.get("job_total", 1)),
                 )
+            elif name == "owner":
+                owners = ctl.extras.setdefault("lease_owners", [])
+                owner = str(event.get("owner", ""))
+                if owner and owner not in owners:
+                    owners.append(owner)
+                    ctl.note(lease_owners=list(owners))  # written now, like the job ids
+                    if ended or ctl.cancelled():  # late: the job was cancelled before this arrived
+                        self._release_late(ctl, owner)
             elif name == "download":
                 ctl.download(float(event.get("percent", 0)))
             elif name == "job":
@@ -327,8 +339,18 @@ class StudioAdapter:
                 kind, full, on_event=on_event, check_cancel=ctl.check_cancel, on_cancel=on_cancel
             )
         except BaseException:
+            ended = True
             self.release_leases(ctl, full)  # the child is gone (stopped itself or killed): free its lease
             raise
+
+    def _release_late(self, ctl: JobControl, owner: str) -> None:
+        """Free `owner` at once: it was announced after its job was cancelled or had ended, so nothing else
+        would ever release it and the lease would sit there until it expired."""
+        NsLogger("dashboard", self.paths.logs).info(
+            "lease_owner_released_late", job_id=ctl.job_id, owner=owner
+        )
+        with contextlib.suppress(Exception):  # an engine that is down holds nothing
+            self.link.release_owner(owner)
 
     def release_leases(self, ctl: JobControl, args: dict[str, Any]) -> None:
         """Tell the supervisor that the studio owners of this job are gone, whatever they still held.
