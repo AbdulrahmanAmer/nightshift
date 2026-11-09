@@ -6,6 +6,9 @@ fails on a ticked box without evidence.
 
 A tick may cite a proof script as its evidence: `evidence: proof:<proof id> (runs/proofs/<ver>/F-B7.json)`.
 `--check` then also fails when no `proofs/*.py` declares that id, or it does not declare the box (H-13).
+It checks only that the id exists: it does not read the evidence file, which lives under `runs/` and not in
+the repository. That the proof passed on the named version is for Review to see in the evidence that the
+tick PR cites.
 
 Every item is one line `- [ ] F-<section><n> <text>` or `- [x] ... evidence: <pointer>`; the section letter
 must match the heading it sits under. `tests/test_finalization.py` runs the check in CI.

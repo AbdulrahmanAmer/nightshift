@@ -86,6 +86,7 @@ class Tools:
         (self.dir / "nsup.ps1").write_text("", encoding="utf-8")
         (self.dir / "nsproc.ps1").write_text("", encoding="utf-8")
         self.up, self.nsup_rc, self.calls, self.busy = up, nsup_rc, [], busy
+        self.reports: str | None = None  # the home the stub dashboard says it serves (default: the asked one)
 
     def ps(self, script: Path, args: list[str], timeout: float) -> tuple[int, str]:
         self.calls.append((script.name, list(args)))
@@ -128,7 +129,13 @@ def run_main(env, *args: str, tools: Tools | None = None, home: Path | None = No
     return prove.main(
         ["--home", str(home or env.home), "--runs", str(env.runs), "--proofs-dir", str(env.pdir)]
         + ["--tools", str(t.dir), "--lock-file", str(env.lock), "--dept", "qa", *args],
-        runner_options={"commit": "abc123", "ps": t.ps, "probe": t.probe, "hard_grace_s": 0.2},
+        runner_options={
+            "commit": "abc123",
+            "ps": t.ps,
+            "probe": t.probe,
+            "dashboard_home": lambda info: t.reports or str(home or env.home),
+            "hard_grace_s": 0.2,
+        },
     )
 
 
@@ -473,7 +480,8 @@ def test_every_run_needs_the_callers_lock_wherever_the_home_is(env, capsys):
     def go(dept: str) -> int:
         argv = ["--home", str(home), "--all", "--runs", str(env.runs), "--proofs-dir", str(env.pdir)]
         argv += ["--tools", str(env.tools.dir), "--lock-file", str(env.lock), "--dept", dept]
-        return prove.main(argv, runner_options={"commit": "c", "ps": env.tools.ps, "probe": env.tools.probe})
+        opts = {"commit": "c", "ps": env.tools.ps, "probe": env.tools.probe}
+        return prove.main(argv, runner_options={**opts, "dashboard_home": lambda info: str(home)})
 
     env.lock.unlink()
     assert go("qa") == 2  # no lock file: take it first
@@ -893,6 +901,7 @@ def test_worked_dashboard_proof_passes_against_a_stub_dashboard(env, monkeypatch
     seed_channel(env, "tales", [])
     status = {"version": "9.9.9", "engine": {"reachable": True}, "channels": [{"slug": "tales"}]}
     urls, _ = dashboard_stub(monkeypatch, status)
+    stub_cli(monkeypatch, "", listing="tales\tactive\tshorts\tpairs=1\tTales\n")
     ctx = make_ctx(env)
     worked("f_c1_status_events").run(ctx)
     assert [u[1] for u in urls] == [
@@ -907,8 +916,9 @@ def test_worked_dashboard_proof_fails_on_a_wrong_version_a_dead_engine_or_a_ghos
     for broken, match in (
         ({**good, "version": "0.0.1"}, "installed version"),
         ({**good, "engine": {"reachable": False}}, "engine is reachable"),
-        ({**good, "channels": [{"slug": "ghost"}]}, "has its file"),
+        ({**good, "channels": [{"slug": "ghost"}]}, "exactly the channels"),
     ):
+        stub_cli(monkeypatch, "")
         dashboard_stub(monkeypatch, broken)
         with pytest.raises(ProofFailed, match=match):
             worked("f_c1_status_events").run(make_ctx(env))
@@ -917,10 +927,25 @@ def test_worked_dashboard_proof_fails_on_a_wrong_version_a_dead_engine_or_a_ghos
         worked("f_c1_status_events").run(make_ctx(env))
 
 
+def test_worked_dashboard_proof_fails_when_a_loadable_channel_is_missing_and_skips_an_unreadable_one(
+    env, monkeypatch
+):
+    seed_channel(env, "tales", [])
+    (env.home / "config" / "channels" / "broken.yaml").write_text("not: [valid\n", encoding="utf-8")
+    listing = "tales\tactive\tshorts\tpairs=1\tTales\nbroken\tUNREADABLE\tbroken.yaml: bad\n"
+    good = {"version": "9.9.9", "engine": {"reachable": True}, "channels": [{"slug": "tales"}]}
+    stub_cli(monkeypatch, "", listing=listing)
+    dashboard_stub(monkeypatch, good)
+    worked("f_c1_status_events").run(make_ctx(env))  # the broken profile is not expected in the status
+    dashboard_stub(monkeypatch, {**good, "channels": []})  # but the loadable one must be listed
+    with pytest.raises(ProofFailed, match="exactly the channels"):
+        worked("f_c1_status_events").run(make_ctx(env))
+
+
 def test_the_worked_proofs_run_through_the_runner_with_stubs_and_leave_evidence(env, monkeypatch):
     """The real proofs/ folder, a fake home, stubs for the shell and HTTP: what QA sees, no install."""
     dashboard_stub(monkeypatch, {"version": "9.9.9", "engine": {"reachable": True}, "channels": []})
-    stub_cli(monkeypatch, "no channels configured\n")
+    stub_cli(monkeypatch, "no channels configured\n", listing="")
     env.pdir = prove.DEFAULT_PROOFS
     env.tools.up = True
     assert run_main(env, "--box", "F-B18", "F-C1") == 0
@@ -928,3 +953,90 @@ def test_the_worked_proofs_run_through_the_runner_with_stubs_and_leave_evidence(
     ev = evidence(env, "F-C1")
     assert (ev["result"], ev["proof_id"]) == ("pass", "f-c1-status-events")
     assert ev["steps"][-1]["ok"] is True
+
+
+# --- review round: --dept, whose dashboard, shallow homes, page ------------------------------------------
+
+
+def test_dept_is_required_to_run_and_a_missing_one_is_exit_2_with_a_plain_message(env, capsys):
+    write_proof(env.pdir, "p", boxes=["F-D1"])
+    argv = ["--home", str(env.home), "--all", "--runs", str(env.runs), "--proofs-dir", str(env.pdir)]
+    argv += ["--tools", str(env.tools.dir), "--lock-file", str(env.lock)]  # QA holds the lock; no --dept
+    opts = {"ps": env.tools.ps, "probe": env.tools.probe}
+    assert prove.main(argv, runner_options=opts) == 2
+    err = capsys.readouterr().err
+    assert "--dept" in err and "required" in err
+    assert evidence_files(env) == [] and env.tools.calls == []  # nothing started on QA's lock
+    assert prove.main(["--list", "--proofs-dir", str(env.pdir)]) == 0  # --list needs neither home nor dept
+
+
+def other_home(env) -> Path:
+    return make_home(env.tmp / "other")
+
+
+def test_a_proof_for_one_install_is_not_run_against_another_installs_dashboard_that_is_up(env, capsys):
+    env.tools.up = True
+    env.tools.reports = str(other_home(env))  # :8100 answers, but for installs\\dev, not for this home
+    write_proof(
+        env.pdir, "needs_engine", boxes=["F-O1"], needs=["engine"], body="raise AssertionError('ran')"
+    )
+    assert run_main(env, "--all") == 2
+    err = capsys.readouterr().err
+    assert "wrong install" in err and str(env.tools.reports) in err
+    assert evidence_files(env) == []  # no pass (or any) evidence is written against the wrong install
+    assert "nsproc.ps1 -Down" not in env.tools.names() and env.tools.up is True  # their engine is left alone
+
+
+def test_a_dashboard_that_started_but_serves_another_home_is_refused_and_still_brought_down(env, capsys):
+    env.tools.reports = str(other_home(env))
+    write_proof(
+        env.pdir, "needs_engine", boxes=["F-O2"], needs=["engine"], body="raise AssertionError('ran')"
+    )
+    assert run_main(env, "--all") == 2
+    assert "wrong install" in capsys.readouterr().err
+    assert env.tools.names()[-1] == "nsproc.ps1 -Down" and env.tools.up is False  # what the runner started
+    assert evidence_files(env) == []
+
+
+def test_a_dashboard_that_does_not_say_its_home_is_refused(env, capsys):
+    env.tools.up = True
+    write_proof(env.pdir, "needs_engine", boxes=["F-O3"], needs=["engine"])
+    runs = prove.Runner(
+        env.home,
+        runs=env.runs,
+        proofs_dir=env.pdir,
+        tools=env.tools.dir,
+        lock_path=env.lock,
+        commit="c",
+        ps=env.tools.ps,
+        probe=env.tools.probe,
+        dashboard_home=lambda info: None,
+    )
+    with pytest.raises(prove_ctx.SetupError, match="does not say which home"):
+        runs.execute(prove.discover(env.pdir))
+
+
+def test_the_default_dashboard_home_reads_disk_home_of_api_status(env, monkeypatch):
+    home = "D:/NightShift/installs/dev"
+    urls, _ = fake_opener(
+        monkeypatch, lambda req: FakeResponse(200, json.dumps({"disk": {"home": home}}).encode())
+    )
+    info = prove_ctx.read_install(env.home)
+    assert prove._default_dashboard_home(info) == home
+    assert [u[1] for u in urls] == ["http://127.0.0.1:8100/api/status"]
+    assert prove._same_folder("D:/NightShift/installs/DEV", "d:/nightshift/installs/dev")
+    fake_opener(monkeypatch, lambda req: FakeResponse(200, b"{}"))
+    assert prove._default_dashboard_home(info) is None  # a dashboard that does not say
+
+
+def test_the_evidence_folder_default_does_not_crash_for_a_home_close_to_the_drive_root():
+    assert prove.default_runs(Path("D:/NightShift/installs/dev")) == Path("D:/NightShift/runs").absolute()
+    for shallow in (Path("D:/home"), Path("D:/")):
+        assert prove.default_runs(shallow).name == "runs"  # a path, not an IndexError
+
+
+def test_page_on_a_stopped_proof_opens_no_window(env):
+    ctx = make_ctx(env, playwright_factory=lambda: pytest.fail("must not start"))
+    ctx.abort()
+    with pytest.raises(ProofFailed, match="stopped by the runner"):
+        ctx.page()

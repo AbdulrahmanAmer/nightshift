@@ -5,6 +5,8 @@ Box F-B18 (docs/FINALIZATION.md), its `studio status answers` half only: the lau
 evidence. The effect is the command's own text, read back and compared with the files and rows behind it.
 """
 
+from proofs._channels import loadable_channels
+
 PROOF = {
     "id": "f-b18-studio-status",
     "boxes": ["F-B18"],
@@ -22,18 +24,8 @@ def run(ctx):
         covers="`studio status` answers on this home",
         not_covered="nightshift-studio.ps1 / nightshift-code.ps1 launcher consoles",
     )
-    channels_dir = ctx.home / "config" / "channels"
-    on_disk = sorted(p.stem for p in channels_dir.glob("*.yaml")) if channels_dir.is_dir() else []
-    # `studio status` skips a profile that cannot be loaded (the others still print); the product's own
-    # `studio channel list` names those as UNREADABLE, so they are not expected in the status text.
-    listing = ctx.cli(["studio", "channel", "list"], 120)
-    unreadable = {
-        parts[0]
-        for parts in (line.split("\t") for line in (listing.stdout or "").splitlines())
-        if len(parts) > 1 and parts[1] == "UNREADABLE"
-    }
-    slugs = [s for s in on_disk if s not in unreadable]
-    ctx.step("channel files on disk", channels=on_disk, unreadable_profiles=sorted(unreadable))
+    on_disk, unreadable, slugs = loadable_channels(ctx)
+    ctx.step("channel files on disk", channels=on_disk, unreadable_profiles=unreadable)
 
     done = ctx.cli(["studio", "status"], 120)
     out = done.stdout or ""

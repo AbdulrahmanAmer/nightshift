@@ -1,9 +1,12 @@
 """Proofs are code (H-13): one runner for every proof script under ``proofs/``.
 
     python dev/prove.py --list
-    python dev/prove.py --home D:\\NightShift\\installs\\dev --box F-B7 [--box F-C2 ...]
-    python dev/prove.py --home D:\\NightShift\\installs\\dev --proof f-b7-review-reject
-    python dev/prove.py --home D:\\NightShift\\installs\\dev --all [--no-window]
+    python dev/prove.py --home D:\\NightShift\\installs\\dev --dept qa --box F-B7 [--box F-C2 ...]
+    python dev/prove.py --home D:\\NightShift\\installs\\dev --dept qa --proof f-b7-review-reject
+    python dev/prove.py --home D:\\NightShift\\installs\\dev --dept qa --all [--no-window]
+
+``--dept`` is required (it has no default): it names the department that holds ``LAPTOP.lock`` and must be
+the caller's own, so a run can never borrow another department's lock.
 
 A proof is ``proofs/<slug>.py`` (the folder is a package; every name that starts with ``_`` is skipped:
 ``_lib``, ``_fakes``, ``_fixtures``) with a module-level literal and a ``run`` function::
@@ -21,8 +24,10 @@ literal is read with ``ast`` and the module is imported as ``<package>.<stem>`` 
 What the runner does, and only that: reads version, kind and ports from the install; requires that the
 caller holds ``LAPTOP.lock`` (every run: it starts the product's own programs, and a proof may start a helper
 or a window); starts the engine with ``refs\\tools\\nsup.ps1`` when a proof needs it and it is not up (and
-refuses when ``nsproc.ps1`` lists processes it did not start), and brings it down with ``nsproc.ps1 -Down``
-only if it started it (that stop is nsproc's pattern kill for this home, not a pid kill); gives each proof a
+refuses when ``nsproc.ps1`` lists processes it did not start, or when the dashboard already answering on
+the port reports another home than ``--home``: exit 2, 'wrong install'), and brings it down with
+``nsproc.ps1 -Down`` only if it started it (that stop is nsproc's pattern kill for this home, not a pid
+kill); gives each proof a
 ``ctx`` (see ``dev/prove_ctx.py``) under a hard deadline of ``timeout_s`` plus a grace, and kills exactly the
 pids that proof spawned; writes ``<runs>/proofs/<version>/<box>.json`` for every box of every proof it ran,
 as soon as each proof ends. Two proofs of one box share that file: it holds both records and a failure wins
@@ -290,6 +295,42 @@ def _default_probe(info: InstallInfo) -> bool:
         return False
 
 
+def _default_dashboard_home(info: InstallInfo) -> str | None:
+    """The home the dashboard on the install's port says it serves (``disk.home`` of ``GET /api/status``),
+    or None when it does not answer or does not say."""
+    import urllib.request
+
+    url = f"http://127.0.0.1:{info.ports['dashboard']}/api/status"
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        with opener.open(urllib.request.Request(url), timeout=30) as resp:
+            body = json.loads(resp.read(2_000_000).decode("utf-8", errors="replace"))
+    except (OSError, ValueError):
+        return None
+    disk = body.get("disk") if isinstance(body, dict) else None
+    home = disk.get("home") if isinstance(disk, dict) else None
+    return home if isinstance(home, str) and home else None
+
+
+def _same_folder(a: str | Path, b: str | Path) -> bool:
+    def norm(x: str | Path) -> str:
+        try:
+            return os.path.normcase(str(Path(x).resolve()))
+        except OSError:
+            return os.path.normcase(os.path.abspath(str(x)))
+
+    return norm(a) == norm(b)
+
+
+def default_runs(home: Path) -> Path:
+    """``<home>\\..\\..\\runs`` (``D:\\NightShift\\installs\\dev`` -> ``D:\\NightShift\\runs``); a home with
+    fewer parents puts ``runs`` beside it or inside it, never a crash."""
+    parents = Path(os.path.abspath(home)).parents
+    if len(parents) > 1:
+        return parents[1] / "runs"
+    return (parents[0] if parents else Path(os.path.abspath(home))) / "runs"
+
+
 def _git_commit() -> str:
     try:
         done = subprocess.run(
@@ -319,6 +360,7 @@ class Runner:
         commit: str | None = None,
         ps: Callable[[Path, list[str], float], tuple[int, str]] = _default_ps,
         probe: Callable[[InstallInfo], bool] = _default_probe,
+        dashboard_home: Callable[[InstallInfo], str | None] = _default_dashboard_home,
         ctx_options: dict[str, Any] | None = None,
         out: Callable[[str], None] = print,
         hard_grace_s: float = HARD_GRACE_S,
@@ -332,6 +374,7 @@ class Runner:
         self.commit = commit if commit is not None else _git_commit()
         self.info = read_install(self.home)
         self.ps, self.probe, self.out = ps, probe, out
+        self.dashboard_home = dashboard_home
         self.ctx_options = ctx_options or {}
         self.hard_grace_s = hard_grace_s
         self.evidence_dir = self.runs / "proofs" / self.info.version
@@ -345,6 +388,7 @@ class Runner:
         """Start supervisor and dashboard when they are not up. Returns an error text, or None."""
         life = self.lifecycle
         if self.probe(self.info):
+            self._check_owner()
             life["engine"] = "already up (not started by the runner)"
             return None
         before = str(life.get("nsproc_before", ""))
@@ -368,8 +412,26 @@ class Runner:
         if rc != 0 or not self.probe(self.info):
             life["engine"] = "start failed"
             return f"engine did not start (nsup exit {rc}): {text[-300:]}"
+        self._check_owner()
         life["engine"] = "started by the runner"
         return None
+
+    def _check_owner(self) -> None:
+        """The dashboard that answers must belong to --home: a proof for one install must not pass against
+        another install's engine that happens to hold the same port."""
+        port = self.info.ports["dashboard"]
+        owner = self.dashboard_home(self.info)
+        self.lifecycle["dashboard_home"] = owner
+        if owner is None:
+            raise SetupError(
+                f"wrong install? the dashboard on port {port} does not say which home it serves "
+                f"(GET /api/status disk.home); not proving {self.home} against it"
+            )
+        if not _same_folder(owner, self.home):
+            raise SetupError(
+                f"wrong install: the dashboard on port {port} serves {owner}, not {self.home}; "
+                "stop it or prove that install instead"
+            )
 
     def _bring_down(self) -> None:
         life = self.lifecycle
@@ -613,9 +675,7 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument(
         "--lock-file", type=Path, default=Path(os.environ.get("NS_LAPTOP_LOCK_FILE", DEFAULT_LOCK))
     )
-    ap.add_argument(
-        "--dept", default=os.environ.get("NS_DEPT", "qa"), help="the department holding LAPTOP.lock"
-    )
+    ap.add_argument("--dept", help="REQUIRED to run: the department that holds LAPTOP.lock, yours")
     return ap
 
 
@@ -631,6 +691,9 @@ def main(argv: list[str] | None = None, *, runner_options: dict[str, Any] | None
     if args.home is None:
         print("prove.py: --home <install> is required to run proofs", file=sys.stderr)
         return 2
+    if not args.dept:
+        print("prove.py: --dept <your department> is required (it must hold LAPTOP.lock)", file=sys.stderr)
+        return 2
     chosen, errors = select(proofs, args.box, args.proof, args.everything)
     if errors:
         print("prove.py: " + "; ".join(errors), file=sys.stderr)
@@ -645,7 +708,7 @@ def main(argv: list[str] | None = None, *, runner_options: dict[str, Any] | None
     if problem:
         print(f"prove.py: {problem}", file=sys.stderr)
         return 2
-    runs = args.runs or Path(os.path.abspath(args.home)).parents[1] / "runs"
+    runs = args.runs or default_runs(args.home)
     try:
         runner = Runner(
             args.home,

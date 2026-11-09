@@ -8,6 +8,8 @@ channel files on disk, and an event-stream frame carrying the same status object
 
 import json
 
+from proofs._channels import loadable_channels
+
 PROOF = {
     "id": "f-c1-status-events",
     "boxes": ["F-C1"],
@@ -38,14 +40,14 @@ def run(ctx):
     engine = status.get("engine") or {}
     ctx.check(engine.get("reachable") is True, "the engine is reachable", engine=engine)
 
-    channels_dir = ctx.home / "config" / "channels"
-    on_disk = {p.stem for p in channels_dir.glob("*.yaml")} if channels_dir.is_dir() else set()
-    listed = {c.get("slug") for c in status.get("channels", [])}
+    on_disk, unreadable, loadable = loadable_channels(ctx)
+    listed = sorted(c.get("slug") for c in status.get("channels", []))
+    ctx.step("channel files on disk", channels=on_disk, unreadable_profiles=unreadable)
     ctx.check(
-        listed <= on_disk,
-        "every channel the status lists has its file",
-        listed=sorted(listed),
-        on_disk=sorted(on_disk),
+        listed == loadable,
+        "the status lists exactly the channels whose profile loads",
+        listed=listed,
+        loadable=loadable,
     )
 
     code, stream = ctx.api("GET", "/api/events?limit=1", timeout=30)

@@ -339,6 +339,7 @@ class Ctx:
 
     def page(self) -> Any:
         """Window proofs: a Playwright page on Edge (channel 'msedge'), headed, at the dashboard URL."""
+        self._remaining()  # a proof the runner has stopped opens no window
         if self._browser is None:
             factory = self._pw_factory
             if factory is None:
