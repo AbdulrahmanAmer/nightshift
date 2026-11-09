@@ -17,7 +17,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from proofs._lib import db_rows, ebur128, ffmpeg_path, proof_channel, run_short
+from proofs._lib import db_rows, ebur128, ffmpeg_path, pauses_proof_channels, proof_channel, run_short
 
 PROOF = {
     "id": "f-d10-narration-limited-once",
@@ -35,6 +35,7 @@ VOICE_PEAK_MAX = -3.5  # the Short's -1.5 ceiling less the 2 dB lift, with half 
 MAX_ITEMS = 6
 
 
+@pauses_proof_channels
 def run(ctx: Any) -> None:
     if not ffmpeg_path():
         ctx.skip("FFmpeg is not on PATH: the narration cannot be measured")

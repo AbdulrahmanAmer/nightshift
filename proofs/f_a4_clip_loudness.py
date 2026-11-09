@@ -15,7 +15,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from proofs._lib import db_rows, ebur128, ffmpeg_path, proof_channel, short, wait_job
+from proofs._lib import db_rows, ebur128, ffmpeg_path, pauses_proof_channels, proof_channel, short, wait_job
 
 PROOF = {
     "id": "f-a4-clip-loudness",
@@ -99,6 +99,7 @@ def _sidecar(ctx: Any, video: Path) -> float:
     return float(tr["duration_s"])
 
 
+@pauses_proof_channels
 def run(ctx: Any) -> None:
     exe = ffmpeg_path()
     if not exe:

@@ -21,7 +21,7 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-from proofs._lib import db_rows, proof_channel, short, wait_job
+from proofs._lib import db_rows, pauses_proof_channels, proof_channel, short, wait_job
 
 PROOF = {
     "id": "f-b6-series-workshop",
@@ -120,6 +120,7 @@ def _probe(ctx: Any, video: Path) -> dict[str, Any]:
     return json.loads(text)
 
 
+@pauses_proof_channels
 def run(ctx: Any) -> None:
     proof_channel(ctx, CHANNEL)
 

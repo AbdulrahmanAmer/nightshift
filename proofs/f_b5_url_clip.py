@@ -25,7 +25,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from proofs._lib import db_rows, ffmpeg_path, proof_channel, short, wait_job
+from proofs._lib import db_rows, ffmpeg_path, pauses_proof_channels, proof_channel, short, wait_job
 
 PROOF = {
     "id": "f-b5-url-clip",
@@ -202,6 +202,7 @@ def _error_code(answer: Any) -> Any:
     return err.get("code") if isinstance(err, dict) else None
 
 
+@pauses_proof_channels
 def run(ctx: Any) -> None:
     if ffmpeg_path() is None:
         ctx.skip("FFmpeg is not on PATH: the proof generates its source video with it")
