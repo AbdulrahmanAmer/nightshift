@@ -204,12 +204,29 @@ def test_two_linked_videos_never_share_a_download_folder(tmp_home: Path, monkeyp
     from tests.test_dashboard_url_clips import URL, body, make
 
     dash, state = make(tmp_home)
-    repeat(monkeypatch, "aaaa", "aaaa", "bbbb")
-    # the queue row's own id comes from the same draw; only the source ids matter here
+    # One clip job draws three times: the candidate source id, the real source id, the queue row's id.
+    # The second job is handed the first job's real source id ("aaaa") for both of its source draws.
+    given = repeat(monkeypatch, "1111", "aaaa", "2222", "aaaa", "aaaa", "bbbb", "3333")
     first = dash.jobs.create_clip(body(url=URL, template="auto"))["params"]["source_id"]
+    assert first.endswith("-aaaa") and given == ["1111", "aaaa", "2222"]
     second = dash.jobs.create_clip(body(url=URL + "&n=2", template="auto"))["params"]["source_id"]
-    assert first != second
-    assert studio_bridge.download_dir(state.paths, first) != studio_bridge.download_dir(state.paths, second)
+    assert second.endswith("-bbbb"), "the second link took the first link's id and its download folder"
+    folders = {studio_bridge.download_dir(state.paths, i) for i in (first, second)}
+    assert len(folders) == 2 and all(f.is_dir() for f in folders)
+
+
+def test_a_dry_run_and_a_refused_link_leave_no_folder(tmp_home: Path, monkeypatch: pytest.MonkeyPatch):
+    """`check_clip` is the Assistant asking "would this work"; a refusal makes no job. Neither may claim."""
+    from ns_dashboard import studio_bridge
+    from ns_dashboard.errors import ApiError
+    from tests.test_dashboard_url_clips import URL, body, make
+
+    dash, state = make(tmp_home)
+    downloads = studio_bridge.download_dir(state.paths, "x").parent
+    dash.jobs.check_clip(body(url=URL, template="auto"))
+    with pytest.raises(ApiError):
+        dash.jobs.create_clip(body(url=URL, template="auto", rights_confirmed=False))
+    assert not downloads.exists() or not any(downloads.iterdir())
 
 
 class OkStage:

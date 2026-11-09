@@ -184,8 +184,10 @@ def _claim_run_id(env: jobs.Env, run_id: str) -> None:
 
     A night's id names its row in `runs` and its owner file. A second night on the same day (after a refusal,
     a retry, a test) drew from the same 65536 ids, and an id drawn twice made the new night fail on its
-    `runs` row. This looks, it does not take: two nights cannot start together (the night's lock), and the
-    row itself still refuses a duplicate, loudly."""
+    `runs` row. This looks, it does not take: a run's lock is keyed by its id, so two nights that start in
+    the same moment and draw the same id are not kept apart here. The `runs` row then refuses the second one
+    with an IntegrityError: loud, and no job has been made yet, where the old id clash was the same error on
+    every unlucky second night of a day."""
     if env.db.one("select 1 from runs where run_id=?", (run_id,)) or ownership.read_record(env.paths, run_id):
         raise sqlite3.IntegrityError(f"run id {run_id} is taken")
 

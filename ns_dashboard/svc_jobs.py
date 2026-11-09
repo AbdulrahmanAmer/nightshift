@@ -559,6 +559,11 @@ class JobsService:
     def create_clip(self, body: dict[str, Any], uploaded: UploadInfo | None = None) -> dict[str, Any]:
         """Queue a Clipper job. `uploaded` is a multipart file already stored via `import_stream`."""
         slug, params, schedule_at, source_id = self._clip_params(body, uploaded)
+        if params.get("url"):
+            # A linked video is downloaded into a folder named by its source id, and that folder is deleted
+            # when the job ends. The id is taken by making the folder, so two links never share one (D-ids).
+            folder = partial(studio_bridge.download_dir, self.s.paths)
+            source_id = params["source_id"] = claim_job_id("src", claim_dir(folder))
         # the Clipper import creates the `sources` row; for a re-run it exists, so record the rights now
         self.s.db.execute("UPDATE sources SET rights_confirmed = 1 WHERE source_id = ?", (source_id,))
         return self._enqueue("clip", slug, params, schedule_at)
@@ -593,12 +598,9 @@ class JobsService:
         if url:
             if uploaded is not None or any(body.get(k) for k in ("path", "upload_id", "source_id")):
                 raise ApiError(422, "invalid_options", "Give either a link, a file, or a path, not several.")
-            # A linked video is downloaded into a folder named by this id and that folder is deleted when the
-            # job ends, so the id is taken by making the folder: two links never share one (D-ids). A job that
-            # is refused below leaves an empty folder, which the next start sweeps (`sweep_downloads`).
-            folder = partial(studio_bridge.download_dir, self.s.paths)
-            source_id = claim_job_id("src", claim_dir(folder))
-            source_path, rerun = None, False
+            # a candidate only: `check_clip` (the Assistant's dry run) and a refusal below must leave nothing
+            # behind, so `create_clip` takes the real id once nothing can refuse the job any more
+            source_id, source_path, rerun = new_job_id("src"), None, False
             params["url"] = url
         else:
             source_id, source_path, rerun = self._resolve_source(body, uploaded)
