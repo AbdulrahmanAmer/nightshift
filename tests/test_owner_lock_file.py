@@ -11,8 +11,11 @@ that a missing lock file now refuses the whole night. What is true, established 
   holding the new file for a moment, a sharing violation while another process deletes the old one). It was
   not retried, and for the nightly's own run lock it escaped `run_daily` before anything was written: no
   `runs` row, no morning note, only a one-line toast with a code. A permanent cause (the folder is a file, the
-  lock path is a folder, the disk is read-only) and a nightly that really is held by another live process
-  vanished the same way.
+  lock path is a folder, the disk is read-only) vanished the same way. A run lock held by another live
+  process vanished the same way too, but only with a forced run id: the id is `daily-<date>-<4 hex>`, so
+  two real nightlies do not share a run lock and are NOT refused by it (they meet at a job's lock, which
+  `_attempt` already treats as not-a-failure). Case 7 therefore fixes the id to test the code path; it is not
+  a claim that two nightlies at once is an ordinary event.
 
 After: a transient error is retried (5 tries over about 1 s, never for a lock another process holds), and a
 night that still cannot be owned is refused on purpose and says so: the `runs` row, a morning note in plain
@@ -53,6 +56,7 @@ from ns_studio.stages import REGISTRY, StageState, inputs_hash
 from tests import d31_driver as driver
 from tests.test_interrupted_nightly import (
     _add_long_output,
+    _dashboard,
     _dead_daily_job,
     _long_jobs,
     _notes,
@@ -565,6 +569,8 @@ def test_a_night_that_another_live_nightly_owns_is_refused_and_the_morning_note_
     assert ownership.lock_held(paths, run_id) is True, "the other nightly still owns it, untouched"
     row = _the_failed_row(db, run_id)
     assert row["finished_at"] and row["summary"]["failed"] == "NS-E327"
+    (stop,) = row["summary"]["failures"]  # what the "Last night" card shows, whatever happens to the note
+    assert stop["job_id"] == daily.NIGHT_NOT_STARTED and f"process {pid}" in stop["error"]
     (note,) = _notes(tmp_home)
     text = note["message"]
     assert "did not start" in text and "already running" in text and f"process {pid}" in text, text
@@ -602,3 +608,36 @@ def test_the_refusal_words_do_not_invent_a_process_when_the_lock_file_names_none
     assert "already running" in named[0] and "process 4242" in named[0]
     assert "process" not in unnamed[1].replace("another process is holding", "")
     assert "did not start" in unnamed[0] and "NS-E327" not in unnamed[0]
+
+
+@pytest.mark.parametrize("notes", ["cleared_with_mark_all_read", "notifications_off"])
+def test_a_refused_night_stays_on_screen_in_last_night_after_the_note_is_gone(
+    tmp_home: Path, monkeypatch: pytest.MonkeyPatch, fast_retry: None, notes: str
+) -> None:
+    """The Queue's "Last night" card shows a stop only from `summary.failures` (red dot, "<channel>: <code>.
+    <error>"); the morning-note list in it is cleared by "Mark all read" and is never left when notifications
+    are off. So the cause must be in what GET /runs serves, not only in the note (review finding, D31B)."""
+    paths, db = _setup(tmp_home)
+    driver.install(monkeypatch)
+    now = datetime.now(UTC)
+    run_id = _fixed_run_id(monkeypatch, now)
+    shutil.rmtree(ownership.owners_dir(paths), ignore_errors=True)
+    ownership.owners_dir(paths).write_text("not a folder", encoding="utf-8")
+    if notes == "notifications_off":
+        monkeypatch.setattr(ownership, "notifications_enabled", lambda _paths: False)
+    with pytest.raises(ownership.LockUnavailable):
+        _night(jobs.open_env(light=True), now)
+
+    dash = _dashboard(tmp_home)
+    if notes == "cleared_with_mark_all_read":
+        assert len(dash.engine.notes()) == 1
+        dash.engine.clear_notes()  # what Shell.tsx `markRead` posts to /notes/clear
+    assert dash.engine.notes() == [], "the morning note is gone from the screen"
+
+    (last,) = dash.engine.runs(1)  # what the Queue page reads for its "Last night" card
+    assert last["run_id"] == run_id and last["state"] == "failed" and "owners" in last["note"]
+    (stop,) = last["summary"]["failures"]  # the card's red dot and its red line come from this list
+    assert stop["code"] == "NS-E327" and stop["job_id"] == daily.NIGHT_NOT_STARTED
+    assert stop["channel"] == "The night", "shown as written: 'The night: NS-E327. <reason>'"
+    assert "owners" in stop["error"] and "cannot be made" in stop["error"], stop
+    assert last["summary"]["jobs"] == [], "nothing was made"

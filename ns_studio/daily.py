@@ -255,6 +255,12 @@ def _refuse_night(
     """
     note, reason = _refusal_words(error)
     report["failed"], report["reason"] = error.code, reason
+    # The Queue's "Last night" card shows a stop only from `failures` (a red dot and "<channel>: <code>.
+    # <error>"). The morning note can be cleared ("Mark all read") or never left (notifications off), so one
+    # entry here keeps the cause on screen. `channel` is shown as written: "The night: NS-E327. <reason>".
+    report["failures"].append(
+        {"job_id": NIGHT_NOT_STARTED, "channel": "The night", "code": error.code, "error": reason}
+    )
     env.log.error("daily_not_started", run_id=run_id, code=error.code, detail=str(error), reason=reason)
     try:
         env.db.execute(
@@ -351,6 +357,8 @@ def _attempt(
 Outcomes = dict[str, tuple[str, str | None]]
 #: What `_attempt` returns for a job another process is running (a Retry from the Queue): not an error code.
 BUSY = "busy"
+#: The `job_id` of the one `failures` entry that a night which could not be owned leaves (`_refuse_night`).
+NIGHT_NOT_STARTED = "(night did not start)"
 
 
 def _resume_interrupted(
