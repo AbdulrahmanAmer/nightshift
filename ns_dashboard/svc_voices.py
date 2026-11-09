@@ -16,12 +16,12 @@ from pathlib import Path
 from typing import Any
 
 from ns_common.errors import NsError, describe
-from ns_common.models import VoiceMakeResponse
+from ns_common.models import VOICE_NAME_PATTERN, VoiceMakeResponse
 from ns_dashboard.adapters import MadeVoice
 from ns_dashboard.errors import ApiError
 from ns_dashboard.state import AppState
 
-NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,39}$")
+NAME_RE = re.compile(VOICE_NAME_PATTERN)
 MAX_DESCRIPTION = 500
 MAX_TEST_LINE = 300
 
@@ -54,7 +54,7 @@ class VoicesService:
         from ns_tts.voices import PRESETS
 
         name = str(body.get("name") or "").strip()
-        if not NAME_RE.match(name):
+        if not NAME_RE.fullmatch(name):
             raise ApiError(
                 422,
                 "invalid_voice",

@@ -16,7 +16,7 @@ from ns_common.errors import NsError
 from ns_common.keepawake import keep_awake
 from ns_studio import jobs, notifications
 from ns_studio.channels import cadence
-from ns_studio.channels.crud import get_channel
+from ns_studio.channels.crud import broken_channels, get_channel
 from ns_studio.context import JobContext
 from ns_studio.errors import UNEXPECTED, StudioError, describe_unexpected
 from ns_studio.footage_keys import require_footage_key
@@ -164,6 +164,9 @@ def _run_daily(
     report: dict = {"run_id": run_id, "started_at": now.isoformat(timespec="seconds"), "channels": [],
                     "jobs": [], "failures": []}
     gpu_busy = False
+    unreadable = broken_channels(env.paths)  # the plan below skips them; the report and the CLI name them
+    if unreadable:
+        report["unreadable_profiles"] = [list(pair) for pair in unreadable]
     for dj in cadence.plan_daily(env.paths, env.db, now):
         if gpu_busy:  # J7: the GPU stayed busy for the whole wait; the other jobs wait for the next night
             report.setdefault("skipped", []).append({"channel": dj.channel.slug, "jobs": dj.count})

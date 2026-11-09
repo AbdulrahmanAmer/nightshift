@@ -18,6 +18,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 from ns_common import ffmpeg
 from ns_common.db import new_job_id
 from ns_common.paths import Paths
@@ -55,7 +57,7 @@ def fake_outbox_path(paths: Paths, channel: str, job_id: str, kind: str, k: int,
 
     try:
         ch = load_channel(paths, channel)
-    except (OSError, ValueError):
+    except (OSError, ValueError, yaml.YAMLError):
         ch = Channel(slug=channel, display_name=channel, niche="fake channel")
     job_dir = paths.job_dir(job_id)
     job_dir.mkdir(parents=True, exist_ok=True)
