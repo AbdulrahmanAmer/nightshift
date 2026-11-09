@@ -104,7 +104,7 @@ class S09ShortcutsScheduler(Step):
 
     id = "s09_shortcuts_scheduler"
     title = "Shortcuts and nightly task"
-    clears_on_run = ("schedule", "schedule_mode", "aumid", "shortcuts_app")
+    clears_on_run = ("schedule", "schedule_mode", "schedule_time", "aumid", "shortcuts_app")
 
     def check(self, ctx: StepContext) -> bool:
         """Shortcuts exist and the task decision is recorded."""
@@ -114,6 +114,9 @@ class S09ShortcutsScheduler(Step):
         # still point at the folder the zip was extracted to (which the owner may delete) until s09 re-runs.
         if ctx.flag("shortcuts_app") != str(ctx.app_path):
             return False
+        asked = ctx.ensure_answers().run_time
+        if ctx.flag("schedule_time", asked) != asked:
+            return False                    # the answers ask for another time than the task was made for
         folder = desktop(ctx)
         return all((folder / f"{name}.lnk").exists() for name, _ in wanted_shortcuts(ctx))
 
@@ -165,6 +168,7 @@ class S09ShortcutsScheduler(Step):
             ctx.log.warn("schedule_failed", f"exit {res.returncode}: {res.text[-300:]}")
             remember_run_time(ctx.paths, run_time)       # a preference only: no schedule.json without a task
             ctx.warn("NS-W206", res.text.strip()[-200:])
+        ctx.set_flag("schedule_time", run_time)             # the time the task was made for
         ctx.set_flag("shortcuts_app", str(ctx.app_path))     # the app folder the shortcuts and the task use
 
     @staticmethod
