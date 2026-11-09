@@ -34,6 +34,10 @@ class InstallerAnswers(Answers):
     # speech recognition with the fake voice engine. No voice model and no qwentts.cpp are downloaded and
     # runtime.json says `tts.engine: fake`. An answers.json setting only; the setup window never asks it.
     fake_voice: bool = False
+    # Engine test, the twin of `fake_voice`: the fake clip source stands in for Pexels and Pixabay, so story
+    # jobs run end to end without a stock-footage key (the footage is placeholder). runtime.json says
+    # `fake_footage: true`. An answers.json setting only; the setup window never asks it.
+    fake_footage: bool = False
 
 
 def wants_voicedesign(ans: InstallerAnswers) -> bool:

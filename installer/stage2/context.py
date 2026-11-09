@@ -124,6 +124,12 @@ class StepContext:
         return not self.dev_mode and self.ensure_answers().fake_voice
 
     @property
+    def fake_footage(self) -> bool:
+        """Engine test (docs/DEV_MODE.md): a real install whose clips come from the fake source. A dev install
+        already fakes its footage through ``dev_mode``, so the answer counts for a real install only."""
+        return not self.dev_mode and self.ensure_answers().fake_footage
+
+    @property
     def tier(self) -> str:
         """LLM tier from the answers (small, balanced, best)."""
         return self.ensure_answers().llm_tier

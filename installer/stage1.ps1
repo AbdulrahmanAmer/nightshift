@@ -600,7 +600,10 @@ function Get-PreflightRows {
         $rows.Add((New-Row 'driver' $driverLabel 'warn' '' 'not checked (no NVIDIA graphics card found)'))
     }
     elseif ($null -eq $cuda) {
-        $rows.Add((New-Row 'driver' $driverLabel 'warn' 'NS-W115' 'driver version not reported; the CUDA 12.4 build will be used'))
+        # the same pair rule as below the preflight (and as s02 choose_pair): an RTX 50-series card gets CUDA 13
+        $unreadBuild = 'CUDA 12.4'
+        if ($blackwell) { $unreadBuild = 'CUDA 13' }
+        $rows.Add((New-Row 'driver' $driverLabel 'warn' 'NS-W115' "driver version not reported; the $unreadBuild build will be used"))
     }
     elseif ($cuda -lt $min) {
         $rows.Add((New-Row 'driver' $driverLabel 'fail' 'NS-E103' $cudaText))
@@ -824,9 +827,14 @@ function Resolve-NsHome {
     if ($Forced) { return $Forced }
     $fromAnswers = [string](Get-Prop $AnswersObj 'home_path' '')
     if ($fromAnswers) { return $fromAnswers }
-    $existing = [Environment]::GetEnvironmentVariable('NIGHTSHIFT_HOME', 'User')
-    if ($existing) { return $existing }
-    if ($env:NIGHTSHIFT_HOME) { return $env:NIGHTSHIFT_HOME }
+    # A previous install's home (the user variable setup writes) wins, so a rerun lands in the same folder.
+    # Not under -FakeProbe: that is CI and the tests, which describe the machine themselves and must not see
+    # whatever install the developer's PC carries.
+    if (-not $FakeProbe) {
+        $existing = [Environment]::GetEnvironmentVariable('NIGHTSHIFT_HOME', 'User')
+        if ($existing) { return $existing }
+        if ($env:NIGHTSHIFT_HOME) { return $env:NIGHTSHIFT_HOME }
+    }
     $default = Select-DefaultHome -Drives $Drives -AppFolder $AppFolder
     if (-not $default) { $default = Join-Path (Get-DataDir) 'Home' }
     return $default

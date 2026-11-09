@@ -3,6 +3,7 @@ import subprocess
 import sys
 import types
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
@@ -145,6 +146,30 @@ def test_gpu_memory_used_sums_gpus(monkeypatch: pytest.MonkeyPatch) -> None:
     assert procs.gpu_memory_used_mb() is None
 
 
+SMI_5060_TI = Path(__file__).parent / "fixtures" / "supervisor" / "nvidia-smi-rtx-5060-ti.txt"
+
+
+def test_rtx_5060_ti_readouts(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The partner's card: driver 580.88 / CUDA 13.0 / 16311 MiB, in nvidia-smi's own output formats."""
+    full = SMI_5060_TI.read_text(encoding="utf-8")
+    answers = {
+        "--query-gpu=name": "NVIDIA GeForce RTX 5060 Ti\n",
+        "--query-gpu=memory.used": "812\n",
+        "--query-compute-apps=pid,used_memory": "4242, 9100 MiB\n",
+    }
+
+    def fake(args: list[str]) -> str:
+        return answers[args[0]] if args else full
+
+    monkeypatch.setattr(procs, "_nvsmi", fake)
+    assert procs.gpu_name() == "NVIDIA GeForce RTX 5060 Ti"
+    assert procs.gpu_memory_used_mb() == 812
+    assert procs.vram_mb(4242) == 9100
+    assert procs.vram_mb(1234) == 0              # dwm.exe shows N/A under WDDM and is not a compute app
+    report = procs.nvidia_smi_report()
+    assert report is not None and "CUDA Version: 13.0" in report and "16311MiB" in report
+
+
 class FakePopen:
     """Records what terminate() does to a process; `exits_on` says which call makes it exit."""
 
@@ -245,3 +270,35 @@ def test_a_real_windowless_service_is_stopped_even_if_it_refuses_the_polite_requ
     assert wait_until(lambda: _healthy(d.health_url))
     procs.terminate(proc, grace_s=5)
     assert not proc.alive()
+
+
+# ------------------------------------------------------------ launcher-only variables stay out of children
+def test_scrubbed_drops_the_launcher_only_variables_and_keeps_the_rest() -> None:
+    env = {"NIGHTSHIFT_HOME": "C:/h", "NS_DASHBOARD_NO_HOST": "1", "PATH": "p", procs.UNDER_ENGINE_ENV: "1"}
+    out = procs.scrubbed(env)
+    assert out == {"NIGHTSHIFT_HOME": "C:/h", "PATH": "p", procs.UNDER_ENGINE_ENV: "1"}
+    assert "NS_DASHBOARD_NO_HOST" not in procs.scrubbed(env, also=(procs.UNDER_ENGINE_ENV,))
+    assert env["NS_DASHBOARD_NO_HOST"] == "1"      # the input is not modified
+
+
+def test_a_service_does_not_inherit_the_setup_windows_no_host_switch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: dict[str, Any] = {}
+
+    class Stop(Exception):
+        pass
+
+    def fake_popen(argv: list[str], **kw: Any) -> None:
+        seen.update(kw)
+        raise Stop
+
+    monkeypatch.setenv("NS_DASHBOARD_NO_HOST", "1")
+    monkeypatch.setenv("NIGHTSHIFT_HOME", str(tmp_path))
+    monkeypatch.setattr(procs.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(procs.ports, "ensure_free", lambda *a, **k: None)
+    d = ServiceDef(name="tts", cmd=["x"], host="127.0.0.1", port=1, gpu=False)
+    with pytest.raises(Stop):
+        procs.start(d, tmp_path / "logs")
+    assert "NS_DASHBOARD_NO_HOST" not in seen["env"]
+    assert seen["env"]["NIGHTSHIFT_HOME"] == str(tmp_path) and seen["env"][procs.UNDER_ENGINE_ENV] == "1"

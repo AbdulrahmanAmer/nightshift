@@ -118,7 +118,7 @@ Therefore every heavy dependency sits behind an interface with a **fake** that p
 |---|---|---|
 | OS | Windows 10/11 x64 | Block on ARM64 or 32-bit (`NS-E101`) |
 | GPU | RTX 5060 Ti 16 GB (Blackwell, **sm_120**) | `nvidia-smi`; block if no NVIDIA GPU (`NS-E102`); warn if VRAM < 16 GB |
-| Driver | `nvidia-smi` reports CUDA ≥ 13.0 (Blackwell path: llama.cpp CUDA 13.4 build); 12.4–12.x accepted with the CUDA 12.4 build and a warning | Below 12.4: open the NVIDIA driver page, pause, re-check (`NS-E103`) |
+| Driver | `nvidia-smi` reports CUDA ≥ 13.0 (driver 580+; the llama.cpp CUDA 13.4 build, the only one with Blackwell code); a pre-Blackwell card with CUDA 12.4–12.x is accepted with the CUDA 12.4 build | Below 12.4, or an RTX 50-series / RTX PRO card below CUDA 13.0: open the NVIDIA driver page, pause, re-check (`NS-E103`) |
 | RAM | 32 GB recommended, 16 GB minimum | Selects the hardware profile (§3) |
 | Disk | ≥ 60 GB free for the default install (Balanced: about 20 GB of models + venvs + working space); 74 GB with Balanced, 60 GB with the Small fallback, 81 GB with Best (the installer checks the chosen tier); +20 GB two-model mode | Block if too small (`NS-E104`) |
 | Disk type | NVMe/SSD for `NIGHTSHIFT_HOME` | Warn on HDD (`NS-W106`): load times will miss §14.6 |
@@ -976,13 +976,13 @@ Everything below is pinned in `manifest.json` (exact versions, URLs, SHA256) by 
 | FFmpeg (full build) | `Gyan.FFmpeg` | https://www.gyan.dev/ffmpeg/builds/ | Render, probe, loudness, captions (`libass` included in the full build) |
 | uv | manifest `bins.uv` zip from https://github.com/astral-sh/uv/releases | `winget install astral-sh.uv` | Python install + venvs; no system Python needed |
 | Python 3.12 | `uv python install 3.12` (uv-managed, under `%APPDATA%\uv\python`) | python.org 3.12 installer | All venvs |
-| NVIDIA driver | — | https://www.nvidia.com/Download/index.aspx | Must report CUDA ≥ 12.8 in `nvidia-smi` (`NS-E103`) |
+| NVIDIA driver | — | https://www.nvidia.com/Download/index.aspx | Must report CUDA ≥ 12.4 in `nvidia-smi`, and ≥ 13.0 (driver 580) for an RTX 50-series / RTX PRO card (`NS-E103`) |
 
 ### 21.2 Binaries (`s02_download_bins`, into `%NIGHTSHIFT_HOME%\bin\`)
 | What | Source pattern | Notes |
 |---|---|---|
-| llama.cpp CUDA build | `https://github.com/ggml-org/llama.cpp/releases/download/<tag>/llama-<tag>-bin-win-cuda-12.8-x64.zip` | Tag pinned to a release with MTP (`--spec-type draft-mtp`) support; unzip to `bin\llama\` |
-| cudart for llama.cpp | `https://github.com/ggml-org/llama.cpp/releases/download/<tag>/cudart-llama-bin-win-cuda-12.8-x64.zip` | Same tag; DLLs next to `llama-server.exe` |
+| llama.cpp CUDA build | `https://github.com/ggml-org/llama.cpp/releases/download/<tag>/llama-<tag>-bin-win-cuda-12.4-x64.zip` (or `-13.4-`, see the variants row) | Tag pinned to a release with MTP (`--spec-type draft-mtp`) support; unzip to `bin\llama\` |
+| cudart for llama.cpp | `https://github.com/ggml-org/llama.cpp/releases/download/<tag>/cudart-llama-bin-win-cuda-12.4-x64.zip` (or `-13.4-`) | Same tag; DLLs next to `llama-server.exe` |
 | llama.cpp CPU build | `…/llama-<tag>-bin-win-cpu-x64.zip` | Only for `cpu-dev` and as the embed server fallback |
 | qwentts.cpp CUDA build | The upstream project publishes **no Windows CUDA binary** (verified 2026-11-01, `bins.qwentts = null`). Nightshift builds it in GitHub Actions (`.github/workflows/build-qwentts.yml`, pinned commit, CUDA ≥ 12.8 toolkit, sm_120) and attaches `qwentts-win-cuda-x64.zip` to its own Releases; the installer fetches it from there. Until that asset exists the installer uses the PyTorch fallback path (§2, `NS-W301`) | `bin\qwentts\` |
 | llama.cpp CUDA variants | Releases ship **CUDA 12.4 and 13.4** assets (no 12.8). Blackwell (RTX 50) uses the 13.4 pair (`llama_cuda13`, `cudart13`); older drivers get the 12.4 pair | `bin\llama\` |

@@ -190,7 +190,7 @@ def test_shorts_captions_without_plan_or_channel_options_stay_plain(tmp_home: Pa
 CAM = Rect(x=944, y=16, w=320, h=180)
 
 
-def _clip_job(tmp_home: Path, *, mask: bool = False):
+def _clip_job(tmp_home: Path, *, mask: bool = False, emphasis: list[str] | None = None):
     ctx = make_ctx(
         tmp_home, fmt="clip", combo=make_combo(caption_style="clean_white"),
         channel=make_channel(captions={"mask_profanity": mask}),
@@ -210,7 +210,7 @@ def _clip_job(tmp_home: Path, *, mask: bool = False):
     ctx.write_json("transcript.json", tr.model_dump(mode="json"))
     ctx.write_json("source.json", {"path": str(ctx.job_dir / "missing.mp4"), "width": 1280, "height": 720,
                                    "duration_s": 20.0, "fps": 30.0, "source_id": "src-test"})
-    clip = ClipItem(k=1, start_s=0.0, end_s=8.0, title="t", score=0.9, emphasis=["friend", "great"])
+    clip = ClipItem(k=1, start_s=0.0, end_s=8.0, title="t", score=0.9, emphasis=emphasis)
     ctx.write_json("clip_plan.json", [clip.model_dump(mode="json")])
     base = ClipLayout(template="gaming_facecam", facecam=CAM)
     crops = lay.plan_layout("gaming_facecam", 1280, 720, base, t_start=0.0, t_end=8.0)
@@ -220,7 +220,7 @@ def _clip_job(tmp_home: Path, *, mask: bool = False):
 
 
 def test_clip_captions_stay_off_the_facecam_and_out_of_the_ui_zones(tmp_home: Path) -> None:
-    ctx = _clip_job(tmp_home)
+    ctx = _clip_job(tmp_home, emphasis=["friend", "great"])
     sc.CaptionsStage().run(ctx)
     rep = ctx.read_json("captions/report.json")["c1"]
     assert rep["avoid_regions"] >= 1 and rep["speakers"] == 2
@@ -234,6 +234,21 @@ def test_clip_captions_stay_off_the_facecam_and_out_of_the_ui_zones(tmp_home: Pa
     assert 1920 - margin_v <= 1920 - 320  # above the bottom UI zone
     assert "fscx115" in ass  # "friend" and "great" emphasised
     assert "damn" in ass  # no masking unless the channel asks for it
+
+
+def test_clip_captions_without_emphasis_have_no_accent_words(tmp_home: Path) -> None:
+    ctx = _clip_job(tmp_home)
+    sc.CaptionsStage().run(ctx)
+    ass = ctx.file("captions/c1.ass").read_text(encoding="utf-8")
+    assert "fscx115" not in ass and "friend" in ass
+
+
+def test_clip_captions_accent_only_the_sentence_the_plan_names(tmp_home: Path) -> None:
+    ctx = _clip_job(tmp_home, emphasis=["", "great"])  # nothing in sentence 0, "great" in sentence 1
+    sc.CaptionsStage().run(ctx)
+    lines = ctx.file("captions/c1.ass").read_text(encoding="utf-8").splitlines()
+    assert any("great" in ln and "fscx115" in ln for ln in lines)
+    assert not any("friend" in ln and "fscx115" in ln for ln in lines)
 
 
 def test_clip_captions_mask_profanity_when_the_channel_asks(tmp_home: Path) -> None:

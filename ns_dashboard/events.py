@@ -91,7 +91,8 @@ def iter_sse(
 
     A `status` frame comes first, after every relayed event, and whenever `heartbeat_s` passes
     without events. Hub kind `dashboard_job` and supervisor `job` events become `job` frames;
-    supervisor `service` events only trigger a fresh `status` frame. Stops after `limit` frames
+    every other supervisor kind (`service`, `update`, `run`, anything new) only triggers a fresh
+    `status` frame, so a kind the UI has never heard of is harmless. Stops after `limit` frames
     (tests) or when `stop` is set; always detaches the subscription.
     """
     stop = stop or threading.Event()

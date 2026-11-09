@@ -7,6 +7,20 @@ All notable changes to Nightshift are recorded here. The format follows
 
 ## [Unreleased]
 
+- Setup window, PC check: a PC with no graphics card no longer shows the driver line as "The driver is older than
+  RTX 50-series cards need ... driver 570" (a stale text; the line now says the driver was not checked, and the red
+  graphics card row carries the fix). An RTX 50-series card whose driver version cannot be read (`NS-W115`) is told
+  it gets the CUDA 13 build, which is what step 2 downloads, not "the CUDA 12.4 build". `BUILD_SPEC.md` 1.2 and 21
+  now state the real driver rule (CUDA 12.4 for older cards, CUDA 13 / driver 580 for RTX 50-series). Found by the
+  GPU path proof, which also adds an `nvidia-smi` fixture for an RTX 5060 Ti to the stage 1 and supervisor tests.
+
+## [0.1.12] - 2026-11-09
+
+From the verification loop of 2026-11-05 (seven defects on the dev install) and the plumbing pass of
+2026-11-08 (`docs/PLUMBING.md`; a real-engine install on a PC without a graphics card: real language model,
+embeddings and speech recognition with the fake voice, report `D:\NightShift-refs\test-loop-2026-11-08.md`).
+Send `Nightshift-Setup-0.1.12.zip`; an install started with 0.1.6 to 0.1.11 resumes under it.
+
 - Clipper: a quiet clip with high peaks (a phone recording, a podcast) now reaches -14 LUFS instead of failing
   QC with NS-E404 at about -17 LUFS. The clip is lifted and its peaks held down before the loudness pass, and
   `render/report.json` says which path each clip took (`loudness.mode` is `linear` or `limited`, with the

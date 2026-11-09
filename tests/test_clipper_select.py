@@ -298,3 +298,57 @@ def test_hesitations_can_be_left_out_of_the_captions():
     ]
     assert make_channel().captions.remove_fillers is False
     assert make_channel(captions={"remove_fillers": True}).captions.remove_fillers is True
+
+
+# ---------- emphasis words (spec 17.2) ----------
+def _spoken(text: str) -> list[Word]:
+    """Words of `text` at 3 per second, sentences ending on their full stops."""
+    return [
+        Word(w=tok, start=i / 3.0, end=i / 3.0 + 0.3, seg=0) for i, tok in enumerate(text.split())
+    ]
+
+
+def test_to_cand_reads_up_to_three_single_emphasis_words() -> None:
+    raw = {"start_s": 1, "end_s": 30, "emphasis": [" Ledge ", "two words", "", 7, "door", "wall", "extra"]}
+    c = sel.to_cand(raw, 100.0)
+    assert c is not None and c.emphasis == ["Ledge", "door", "wall"]
+    plain = sel.to_cand({"start_s": 1, "end_s": 30}, 100.0)
+    assert plain is not None and plain.emphasis == []
+    assert sel.to_cand({"start_s": 1, "end_s": 30, "emphasis": "ledge"}, 100.0).emphasis == []  # type: ignore[union-attr]
+
+
+def test_merge_keeps_the_better_candidates_emphasis() -> None:
+    a = sel.Cand(10, 40, score=0.5, emphasis=["old"])
+    b = sel.Cand(12, 42, score=0.9, emphasis=["new"])
+    assert sel.merge_overlaps([a, b], max_s=60)[0].emphasis == ["new"]
+    c = sel.Cand(12, 42, score=0.9)
+    assert sel.merge_overlaps([a, c], max_s=60)[0].emphasis == ["old"]
+
+
+def test_emphasis_must_appear_in_the_clip_and_lands_on_its_sentence() -> None:
+    words = _spoken("We hug the wall. The ledge hides a door! Nothing else matters.")
+    # "Ledge" is in sentence 1, "WALL" matches "wall." ignoring case and punctuation, "door" shares sentence 1
+    # with "Ledge" (one key word per sentence); "absent" is not in the clip (and only three words count)
+    got = sel.sentence_emphasis(words, ["Ledge", "WALL", "door", "absent"])
+    assert got == ["wall", "ledge"]
+    assert sel.sentence_emphasis(words, ["matters"]) == ["", "", "matters"]
+    assert sel.sentence_emphasis(words, ["absent", ""]) is None
+    assert sel.sentence_emphasis(words, []) is None
+    assert sel.sentence_emphasis([], ["wall"]) is None
+
+
+def test_plan_carries_validated_emphasis_and_none_when_the_model_gave_none() -> None:
+    tr = sample()
+    first = tr.words[0:40]
+    word = next(w.w.strip(".,?!") for w in first if len(w.w) > 6)
+    raw = {"clips": [
+        {"k": 1, "start_s": 0.5, "end_s": 50.0, "title": "With", "score": 0.9,
+         "emphasis": [word, "zzzabsent"]},
+        {"k": 2, "start_s": 64.0, "end_s": 118.0, "title": "Without", "score": 0.8},
+    ]}
+    clips = sel.select_clips(tr, params(), Asker(raw))
+    with_em = next(c for c in clips if c.title == "With")
+    without = next(c for c in clips if c.title == "Without")
+    assert with_em.emphasis is not None and with_em.emphasis[-1].lower() == word.lower()
+    assert "zzzabsent" not in with_em.emphasis
+    assert without.emphasis is None
