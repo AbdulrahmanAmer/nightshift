@@ -30,7 +30,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from proofs._fakes import dashboard_no_worker, footage
-from proofs._lib import ffmpeg_path, short, take_off_desktop
+from proofs._lib import api_no_deadline, ffmpeg_path, short, take_off_desktop
 
 PROOF = {
     "id": "f-b12-diagnostics-zip",
@@ -257,7 +257,9 @@ def _clear_keys(ctx: Any, base: str) -> None:
             try:
                 status, answer = _http("POST", base + "/api/settings/keys", {"name": name, "value": ""})
             except OSError:
-                status, answer = ctx.api("POST", "/api/settings/keys", {"name": name, "value": ""})
+                status, answer = api_no_deadline(
+                    ctx, "POST", "/api/settings/keys", {"name": name, "value": ""}
+                )
             ctx.step("key cleared", name=name, status=status, answer=short(answer))
         except Exception as exc:  # noqa: BLE001  (cleanup must try the next one)
             ctx.step("key clear failed", name=name, error=str(exc))
