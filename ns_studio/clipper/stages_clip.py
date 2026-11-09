@@ -318,6 +318,45 @@ def edge_sentences(words: list[Word]) -> tuple[str, str]:
     return first, last
 
 
+def prompt_video_kind(p: ClipParams, an: Analysis) -> str:
+    """The kind of video the selection prompt is told: the owner's pick, else a template they chose, else the
+    kind read from the analysis ("unknown" only when the analysis cannot tell)."""
+    if p.video_kind and p.video_kind != "unknown":
+        return p.video_kind
+    if p.template != "auto":
+        return p.template
+    return analyze.kind_of_video(an)
+
+
+CAPTION_WORDS_FILE = "clip_caption_words.json"  # per clip: the model's cleaned spelling of each ASR word
+# The answer now holds the spoken text of every candidate besides the thinking, so it needs more room than the
+# 4096 tokens `complete_json` allows by default (a cut-off answer is NS-E302 and loses the whole window). The
+# llama server runs with at least 16K of context on the gpu profile and 8K on cpu-dev
+# (`ns_supervisor.tune.min_ctx_for`); a 720 s window prompt is about 4K tokens, so cpu-dev never reaches 8192.
+CLIP_SELECT_MAX_TOKENS = 8192
+
+
+def load_caption_words(ctx: JobContext) -> dict[str, list[str]]:
+    """`CAPTION_WORDS_FILE` as {k: display strings}; an absent, unreadable or odd file or entry is skipped.
+
+    The sidecar only improves spelling, so one bad file or value must not stop the job (the captions then
+    show the recogniser's words).
+    """
+    if not ctx.file(CAPTION_WORDS_FILE).exists():
+        return {}
+    try:
+        raw = ctx.read_json(CAPTION_WORDS_FILE)
+    except (OSError, ValueError) as e:
+        ctx.log.warn("caption_words_skipped", str(e)[:200], file=CAPTION_WORDS_FILE)
+        return {}
+    if not isinstance(raw, dict):
+        ctx.log.warn("caption_words_skipped", "not an object", file=CAPTION_WORDS_FILE)
+        return {}
+    return {
+        str(k): v for k, v in raw.items() if isinstance(v, list) and all(isinstance(x, str) for x in v)
+    }
+
+
 class SelectStage:
     """Pick and judge the clips: `clip_plan.json` lists kept clips (k in score order) and dropped ones.
 
@@ -330,6 +369,9 @@ class SelectStage:
     name: str = "clip_select"
     tenant: Tenant = "llama"
     inputs: tuple[str, ...] = ("transcript.json", "analysis.json", "clip_params.json")
+    # `clip_caption_words.json` is written beside the plan but is not listed: an older job has no such file,
+    # and a listed output that is missing would make `--resume` ask the model for the whole selection again.
+    # A missing sidecar is harmless, the captions then show the recogniser's words.
     outputs: tuple[str, ...] = ("clip_plan.json",)
 
     def run(self, ctx: JobContext) -> None:
@@ -351,8 +393,9 @@ class SelectStage:
                 clip_min_s=p.min_s,
                 clip_max_s=p.max_s,
                 max_candidates=10,
-                video_kind=p.video_kind if p.template == "auto" else p.template,
+                video_kind=prompt_video_kind(p, an),
                 analysis=analyze.prompt_view(an, ws, we),
+                max_tokens=CLIP_SELECT_MAX_TOKENS,
             )
 
         judged = {"n": 0}
@@ -382,9 +425,10 @@ class SelectStage:
             return bool(raw.get("ok")), [str(r) for r in raw.get("reasons", [])]
 
         try:
-            items = select.select_plan(tr, p, ask, cache, judge)
+            items, cleaned = select.select_plan_and_captions(tr, p, ask, cache, judge)
         finally:
             ctx.write_json("clip_candidates.json", cache)
+        ctx.write_json(CAPTION_WORDS_FILE, cleaned)
         ctx.write_json("clip_plan.json", [c.model_dump(mode="json") for c in items])
         select.ensure_some_kept(items)
 
@@ -555,6 +599,9 @@ class CaptionsStage:
     name: str = "clip_captions"
     tenant: Tenant = None
     inputs: tuple[str, ...] = ("transcript.json", "clip_plan.json", "clip_layout.json")
+    # Absent in a job made before the cleaned words existed: a missing file adds nothing to the hash, so
+    # resuming an older job does not run this stage again (and render nothing again).
+    optional_inputs: tuple[str, ...] = (CAPTION_WORDS_FILE,)
     outputs: tuple[str, ...] = ("captions/report.json",)
 
     def run(self, ctx: JobContext) -> None:
@@ -567,15 +614,24 @@ class CaptionsStage:
         mask = mask_profanity_setting(ctx.channel)
         picked = _picked_caption_style(ctx)  # the owner's choice on Create wins
         drop_fillers = ctx.channel.captions.remove_fillers
+        cleaned_words = load_caption_words(ctx)
         seg_speaker = {s.i: s.speaker for s in tr.segments}
         ctx.subdir("captions")
         report: dict[str, Any] = {}
         for clip in plan:
             dur = clip.end_s - clip.start_s
             src_words = select.words_in(tr.words, clip.start_s, clip.end_s)
+            shown = cleaned_words.get(str(clip.k))
+            if shown is not None and len(shown) != len(src_words):
+                shown = None  # written for another span of this clip: keep the recogniser's spelling
             words = [
-                tmod.Word(w.w, max(0.0, w.start - clip.start_s), min(dur, max(0.0, w.end - clip.start_s)), si)
-                for w, si in zip(src_words, sentence_indices(src_words), strict=True)
+                tmod.Word(
+                    shown[n] if shown else w.w,
+                    max(0.0, w.start - clip.start_s),
+                    min(dur, max(0.0, w.end - clip.start_s)),
+                    si,
+                )
+                for n, (w, si) in enumerate(zip(src_words, sentence_indices(src_words), strict=True))
                 if not (drop_fillers and select.is_filler_word(w.w))
             ]
             style = picked or (
@@ -604,12 +660,16 @@ class CaptionsStage:
                 "words": len(words),
                 "style": style,
                 "first_caption_s": caps.first_event_start(ass),
-                "drift_ms": 0.0,  # captions are the ASR words themselves
+                "drift_ms": 0.0,  # captions keep the ASR word timings
                 "avoid_regions": len(avoid),
                 "speakers": len(set(speakers.values())),
                 "backdrop_luma": luma,
                 "boxed": bool(luma) and caps.ensure_contrast(caps.caption_style(style), luma).box,
             }
+            if shown is not None:
+                # only then: a job without cleaned words writes the same report bytes as before, so
+                # the render stage (which hashes this file) does not run again on a resumed older job
+                report[f"c{clip.k}"]["cleaned"] = True
         ctx.write_json("captions/report.json", report)
 
 
