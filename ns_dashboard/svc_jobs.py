@@ -18,7 +18,7 @@ from ns_common.secrets_names import SHORT_NAMES
 from ns_dashboard.adapters import Adapters
 from ns_dashboard.common import KNOWN_FORMATS, now_iso, offered_formats
 from ns_dashboard.errors import AdapterUnavailable, ApiError
-from ns_dashboard.jobs import Handler, JobControl
+from ns_dashboard.jobs import Handler, JobControl, JobRecord
 from ns_dashboard.state import AppState
 from ns_dashboard.svc_channels import ChannelsService
 from ns_dashboard.templates import clipper_can_run, load_templates
@@ -272,9 +272,12 @@ class JobsService:
         """Refuse a run request for what is wrong with it (channel, type, script) without queuing anything.
 
         The Assistant calls this before it shows a confirm card, so the owner is never asked to say Yes to a
-        script that `create_run` would turn down.
+        request that `create_run` would turn down: it makes the same checks, in the same order.
         """
+        self._accepting()
         self._run_params(body)
+        self._require_footage_key()
+        self._schedule(body)
 
     def _run_params(self, body: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         """The channel slug and stored params of a run request; ApiError for anything that cannot run."""
@@ -328,6 +331,16 @@ class JobsService:
         not repeat the language-model pass or write a different story.
         """
         self._accepting()
+        channel, params = self._resume_params(job_id)
+        return self._enqueue("run", channel, params)
+
+    def check_resume(self, job_id: str) -> None:
+        """Refuse `create_resume` for what is wrong with it, queuing nothing (the Assistant's card gate)."""
+        self._accepting()
+        self._resume_params(job_id)
+
+    def _resume_params(self, job_id: str) -> tuple[str, dict[str, Any]]:
+        """The channel and stored params of a resume request; ApiError for a job that cannot be continued."""
         rec = self.s.store.get(job_id)
         if rec is None or rec.kind != "run":
             raise ApiError(404, "not_found", "That story job was not found.")
@@ -354,7 +367,7 @@ class JobsService:
             "channel": channel, "format": str(rec.params.get("format") or ""), "count": 1,
             "resume_job_id": studio_job, "resume_of": rec.job_id,
         }
-        return self._enqueue("run", channel, params)
+        return channel, params
 
     def _clip_layout(self, template: str) -> str:
         """The layout id of a clip request, refused before anything is queued when the clipper cannot cut it.
@@ -376,6 +389,16 @@ class JobsService:
     def create_clip_rerun(self, body: dict[str, Any]) -> dict[str, Any]:
         """Run the later stages of a finished clip job again with another template (no new transcription)."""
         self._accepting()
+        rec, params = self._rerun_params(body)
+        return self._enqueue("clip", rec.channel, params)
+
+    def check_clip_rerun(self, body: dict[str, Any]) -> None:
+        """Refuse `create_clip_rerun` for what is wrong with it, queuing nothing (the Assistant card gate)."""
+        self._accepting()
+        self._rerun_params(body)
+
+    def _rerun_params(self, body: dict[str, Any]) -> tuple[JobRecord, dict[str, Any]]:
+        """The finished clip job and the params of its re-run; ApiError for anything that cannot run."""
         rec = self.s.store.get(str(body.get("job_id") or ""))
         if rec is None or rec.kind != "clip":
             raise ApiError(404, "not_found", "That clip job was not found.")
@@ -406,7 +429,7 @@ class JobsService:
                 "rights_confirmed": True,
             }
         )
-        return self._enqueue("clip", rec.channel, params)
+        return rec, params
 
     def _studio_job_id(self, result: dict[str, Any]) -> str | None:
         """The studio job directory of a finished clip job: noted in its result, else from its outputs."""
@@ -422,20 +445,41 @@ class JobsService:
 
     def create_verify(self, body: dict[str, Any]) -> dict[str, Any]:
         """Queue `ns verify`."""
-        self._accepting()
+        self.check_verify()
         return self._enqueue("verify", None, {"quick": bool(body.get("quick", True))})
+
+    def check_verify(self) -> None:
+        """Refuse `create_verify` while Nightshift is shutting down (the Assistant's card gate)."""
+        self._accepting()
+
+    @staticmethod
+    def _csv_name(filename: str) -> str:
+        name = re.sub(r"[^A-Za-z0-9._-]+", "_", Path(filename or "analytics.csv").name) or "analytics.csv"
+        if not name.lower().endswith(".csv"):
+            raise ApiError(400, "bad_file_type", "Please choose the .csv file exported from YouTube Studio.")
+        return name
+
+    @staticmethod
+    def _csv_size(size: int) -> None:
+        if size <= 0:
+            raise ApiError(400, "empty_file", "That file is empty.")
+        if size > MAX_CSV_BYTES:
+            raise ApiError(413, "file_too_large", "That CSV is larger than 20 MB.")
+
+    def check_csv_file(self, path: Path) -> None:
+        """Refuse `import_learn` for a file it would turn down, saving nothing (the Assistant's card gate)."""
+        self._accepting()
+        if not path.is_file():
+            raise ApiError(400, "bad_path", f"'{path}' is not a file on this PC.")
+        self._csv_name(path.name)
+        self._csv_size(path.stat().st_size)
 
     def _save_csv(self, filename: str, fh: BinaryIO) -> dict[str, Any]:
         """Save an analytics CSV under `imports/analytics` and create its (inline) learn job."""
         self._accepting()
-        name = re.sub(r"[^A-Za-z0-9._-]+", "_", Path(filename or "analytics.csv").name) or "analytics.csv"
-        if not name.lower().endswith(".csv"):
-            raise ApiError(400, "bad_file_type", "Please choose the .csv file exported from YouTube Studio.")
+        name = self._csv_name(filename)
         data = fh.read(MAX_CSV_BYTES + 1)
-        if not data:
-            raise ApiError(400, "empty_file", "That file is empty.")
-        if len(data) > MAX_CSV_BYTES:
-            raise ApiError(413, "file_too_large", "That CSV is larger than 20 MB.")
+        self._csv_size(len(data))
         dest_dir = self.s.paths.imports_analytics
         dest_dir.mkdir(parents=True, exist_ok=True)
         stamp = now_iso().replace(":", "").replace("-", "")[:15]
@@ -481,6 +525,19 @@ class JobsService:
 
     def create_clip(self, body: dict[str, Any], uploaded: UploadInfo | None = None) -> dict[str, Any]:
         """Queue a Clipper job. `uploaded` is a multipart file already stored via `import_stream`."""
+        slug, params, schedule_at, source_id = self._clip_params(body, uploaded)
+        # the Clipper import creates the `sources` row; for a re-run it exists, so record the rights now
+        self.s.db.execute("UPDATE sources SET rights_confirmed = 1 WHERE source_id = ?", (source_id,))
+        return self._enqueue("clip", slug, params, schedule_at)
+
+    def check_clip(self, body: dict[str, Any]) -> None:
+        """Refuse `create_clip` for what is wrong with it, queuing nothing (the Assistant's card gate)."""
+        self._clip_params(body, None)
+
+    def _clip_params(
+        self, body: dict[str, Any], uploaded: UploadInfo | None
+    ) -> tuple[str, dict[str, Any], datetime | None, str]:
+        """Channel, stored params, start time and source id of a clip request; ApiError if it cannot run."""
         self.require_rights(body)
         schedule_at = self._schedule(body)
         slug = str(body.get("channel") or "")
@@ -509,9 +566,7 @@ class JobsService:
             source_id, source_path, rerun = self._resolve_source(body, uploaded)
         params.update({"source_id": source_id, "source_path": str(source_path) if source_path else None,
                        "rerun": rerun})
-        # the Clipper import creates the `sources` row; for a re-run it exists, so record the rights now
-        self.s.db.execute("UPDATE sources SET rights_confirmed = 1 WHERE source_id = ?", (source_id,))
-        return self._enqueue("clip", slug, params, schedule_at)
+        return slug, params, schedule_at, source_id
 
     def _registered_source(self, source_id: str) -> Path | None:
         """Path stored in the `sources` table (set by the Clipper import), if the file still exists."""
@@ -568,10 +623,14 @@ class JobsService:
 
     def cancel(self, job_id: str) -> dict[str, Any]:
         """Cancel a queued or running job; 409 when it already ended."""
+        self.check_cancel(job_id)
+        self.s.worker.cancel(job_id)
+        return self.get(job_id)
+
+    def check_cancel(self, job_id: str) -> None:
+        """Refuse `cancel` for a job that is unknown or already ended (also the Assistant's card gate)."""
         rec = self.s.store.get(job_id)
         if rec is None:
             raise ApiError(404, "not_found", "That job was not found.")
         if rec.status not in ("queued", "running"):
             raise ApiError(409, "already_finished", f"That job already ended ({rec.status}).")
-        self.s.worker.cancel(job_id)
-        return self.get(job_id)

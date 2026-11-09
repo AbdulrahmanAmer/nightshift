@@ -15,13 +15,21 @@ from pathlib import Path
 from typing import Any
 
 from ns_common.models import SCRIPT_MAX_CHARS, SCRIPT_MIN_CHARS
-from ns_dashboard.assistant import composite, orientation
+from ns_dashboard.assistant import composite, dryrun, orientation
 from ns_dashboard.assistant.registry import TOPICS, Registry, ToolCall, ToolContext, ToolDef, ToolSpec, obj
 from ns_dashboard.common import offered_formats
 from ns_dashboard.errors import ApiError
-from ns_dashboard.formats import merge_dicts
 
 Route = tuple[str, str]
+
+#: Changing tools without a `dry_run`: every argument they take is an enum or a range the JSON schema already
+#: checks, and nothing about the system's state can make the run refuse (the reason is the value). A changing tool
+#: is in `dryrun` or here, never neither (`tests/test_assistant_validate_before_card.py`).
+SCHEMA_ONLY: dict[str, str] = {
+    "warmup_engine": "the only argument is an enum of service names; loading a service has no precondition",
+    "shutdown_engine": "the only argument is a number of seconds in a range; shutting down has no precondition",
+    "make_diagnostics": "no arguments; writing the zip has no precondition",
+}
 
 # Routes that are deliberately not tools, with the reason (never-registered actions first).
 NO_TOOL: dict[Route, str] = {
@@ -104,8 +112,7 @@ def _outputs(c: ToolContext, a: dict[str, Any]) -> Any:
 
 
 def _edit_channel(c: ToolContext, a: dict[str, Any]) -> Any:
-    current = c.dash.channels.load(a["slug"]).model_dump(mode="json")
-    return c.dash.channels.update(a["slug"], merge_dicts(current, a["changes"]))
+    return c.dash.channels.update(a["slug"], dryrun.merged_channel(c, a))
 
 
 def _set_schedule(c: ToolContext, a: dict[str, Any]) -> Any:
@@ -144,18 +151,8 @@ def _script_ok(args: dict[str, Any]) -> str | None:
     return None
 
 
-def _script_body(a: dict[str, Any]) -> dict[str, Any]:
-    return {"channel": a["channel"], "format": a.get("format"), "script": a["script"],
-            "script_title": a.get("title"), "count": 1}
-
-
-def _check_script(c: ToolContext, a: dict[str, Any]) -> None:
-    """Refuse a script the run would refuse (length at the channel's pace, banned phrases, headings...)."""
-    c.dash.jobs.check_run(_script_body(a))
-
-
 def _start_script(c: ToolContext, a: dict[str, Any]) -> Any:
-    return c.dash.jobs.create_run(_script_body(a))
+    return c.dash.jobs.create_run(dryrun.script_body(a))
 
 
 def _formats_brief(c: ToolContext, _a: dict[str, Any]) -> Any:
@@ -206,20 +203,20 @@ def _tools() -> list[ToolDef]:
            props=ch, required=["slug"]),
         _t("create_channel", "channels", "Create a channel from a full profile (slug, display_name, niche, ...).",
            lambda c, a: c.dash.channels.create(a["profile"]), route=("POST", "/api/channels"),
-           props={"profile": _o("channel profile fields")}, required=["profile"], side=True,
+           props={"profile": _o("channel profile fields")}, required=["profile"], side=True, dry_run=dryrun.check_create_channel,
            confirm="Create the channel '{profile}'."),
         _t("edit_channel", "channels", "Change some fields of a channel profile (give only the changed fields).",
            _edit_channel, route=("PUT", "/api/channels/{slug}"),
            props={**ch, "changes": _o("fields to change, e.g. {\"voice_notes\": \"calmer\"}")},
-           required=["slug", "changes"], side=True, confirm="Change channel {slug}: {changes}"),
+           required=["slug", "changes"], side=True, dry_run=dryrun.check_edit_channel, confirm="Change channel {slug}: {changes}"),
         _t("pause_channel", "channels", "Stop producing for a channel until it is resumed.",
            lambda c, a: c.dash.channels.pause(a["slug"], a.get("note")),
            route=("POST", "/api/channels/{slug}/pause"), props={**ch, "note": _s("why")},
-           required=["slug"], side=True, confirm="Pause channel {slug}. Nothing is made for it until you resume it."),
+           required=["slug"], side=True, dry_run=dryrun.check_channel_exists, confirm="Pause channel {slug}. Nothing is made for it until you resume it."),
         _t("resume_channel", "channels", "Start producing for a paused channel again.",
            lambda c, a: c.dash.channels.resume(a["slug"], a.get("note")),
            route=("POST", "/api/channels/{slug}/resume"), props={**ch, "note": _s("why")},
-           required=["slug"], side=True, confirm="Resume channel {slug}."),
+           required=["slug"], side=True, dry_run=dryrun.check_channel_exists, confirm="Resume channel {slug}."),
         _t("validate_channel", "channels", "Check a channel profile (saved, or a draft) and list warnings.",
            lambda c, a: c.dash.channels.validate(a["slug"], a.get("draft")),
            route=("POST", "/api/channels/{slug}/validate"), props={**ch, "draft": _o("optional draft profile")},
@@ -238,21 +235,21 @@ def _tools() -> list[ToolDef]:
            route=("POST", "/api/outputs/{output_id:path}/open-folder"),
            props={"output_id": _s("output id")}, required=["output_id"]),
         # ------------------------------------------------ create / jobs
-        _t("start_story_job", "create", "Make a new story video (and Shorts) for a channel now.",
+        _t("start_story_job", "create", "The model writes a NEW story and makes the video (and Shorts) for a channel. If the owner gives story text, use start_script_job.",
            lambda c, a: c.dash.jobs.create_run(a), route=("POST", "/api/jobs/run"),
            props={"channel": _s("channel slug"), "format": _s(
                "what to make", enum=list(offered_formats())),
                   "count": _i("how many", minimum=1, maximum=20),
                   "schedule_at": _s("start later: local date and time such as 2026-11-03T02:00; leave out to start now")},
-           required=["channel"], side=True,
+           required=["channel"], side=True, dry_run=dryrun.check_story,
            confirm="Make a new {format} for {channel}, start: {schedule_at}. This uses the GPU for a while."),
-        _t("start_script_job", "create", "Make one video from a story the owner wrote or pasted, narrated as written. The model writes only the title, tags and the hooks of Shorts cut from it.",
+        _t("start_script_job", "create", "Make one video from story text the owner wrote or pasted, narrated as written. For a story the model writes itself, use start_story_job.",
            _start_script,
            props={"channel": _s("channel slug"),
                   "format": _s("what to make: a Short or a long video; leave out for the channel's own type", enum=["shorts_only", "master_first"]),
                   "script": _s("the full story text to narrate, 200 to 30000 characters", maxLength=SCRIPT_MAX_CHARS),
                   "title": _s("working title; leave out to use the first words")},
-           required=["channel", "script"], side=True, precheck=_script_ok, dry_run=_check_script,
+           required=["channel", "script"], side=True, precheck=_script_ok, dry_run=dryrun.check_script,
            confirm="Make a {format} for {channel} from the script you gave ({words} words). This uses the GPU for a while."),
         _t("start_clip_job", "create", "Cut clips from one of the owner's own videos: a file on this PC or a web link.",
            _start_clip, route=("POST", "/api/jobs/clip"),
@@ -263,18 +260,18 @@ def _tools() -> list[ToolDef]:
                   "min_s": _i("shortest clip, seconds", minimum=5, maximum=120),
                   "max_s": _i("longest clip, seconds", minimum=10, maximum=179),
                   "caption_style": _s("caption style name")},
-           required=["channel"], side=True, precheck=_clip_source_given,
+           required=["channel"], side=True, dry_run=dryrun.check_clip, precheck=_clip_source_given,
            confirm=("Make up to {max_clips} clips for {channel} from {source} (layout {template}). By pressing Yes "
                     "you confirm you own this video or are licensed to use it.")),
         _t("rerun_clips", "create", "Make the clips of a finished clip job again with another layout, without transcribing again.",
            lambda c, a: c.dash.jobs.create_clip_rerun(a), route=("POST", "/api/jobs/clip/rerun"),
            props={"job_id": _s("id of the finished clip job"), "template": _s("layout id, 'auto' lets Nightshift choose"),
                   "max_clips": _i("most clips", minimum=1, maximum=10)},
-           required=["job_id", "template"], side=True,
+           required=["job_id", "template"], side=True, dry_run=dryrun.check_rerun,
            confirm="Make the clips of job {job_id} again with the {template} layout. The old clips are replaced."),
         _t("start_verify", "create", "Run the machine self-check (ns verify).",
            lambda c, a: c.dash.jobs.create_verify(a), route=("POST", "/api/jobs/verify"),
-           props={"quick": _b("quick check only")}, side=True, confirm="Run the Nightshift self-check."),
+           props={"quick": _b("quick check only")}, side=True, dry_run=dryrun.check_verify, confirm="Run the Nightshift self-check."),
         _t("list_jobs", "create", "Recent jobs with status and progress.",
            lambda c, a: c.dash.jobs.list_jobs(a.get("status"), a.get("kind"), int(a.get("limit", 10))),
            route=("GET", "/api/jobs"),
@@ -286,11 +283,11 @@ def _tools() -> list[ToolDef]:
            props={"job_id": _s("job id")}, required=["job_id"]),
         _t("resume_job", "create", "Continue a story job that stopped with an error from the stage where it stopped (same story).",
            lambda c, a: c.dash.jobs.create_resume(a["job_id"]), route=("POST", "/api/jobs/{job_id}/resume"),
-           props={"job_id": _s("id of the job that stopped")}, required=["job_id"], side=True,
+           props={"job_id": _s("id of the job that stopped")}, required=["job_id"], side=True, dry_run=dryrun.check_resume,
            confirm="Continue job {job_id} from the stage where it stopped. This uses the GPU for a while."),
         _t("cancel_job", "create", "Cancel a queued or running job (a running one stops after its current stage).",
            lambda c, a: c.dash.jobs.cancel(a["job_id"]), route=("POST", "/api/jobs/{job_id}/cancel"),
-           props={"job_id": _s("job id")}, required=["job_id"], side=True, confirm="Cancel job {job_id}."),
+           props={"job_id": _s("job id")}, required=["job_id"], side=True, dry_run=dryrun.check_cancel, confirm="Cancel job {job_id}."),
         # ------------------------------------------------ results / learn
         _t("list_runs", "results", "Recent nightly and manual runs with timings.",
            lambda c, a: c.dash.engine.runs(int(a.get("limit", 10))), route=("GET", "/api/runs"),
@@ -299,7 +296,7 @@ def _tools() -> list[ToolDef]:
            lambda c, a: c.dash.settings.learn_summary(), route=("GET", "/api/learn/summary")),
         _t("import_analytics", "results", "Import a YouTube Studio analytics CSV file from this PC.",
            _import_analytics, route=("POST", "/api/learn/import"),
-           props={"path": _s("full path of the .csv file")}, required=["path"], side=True,
+           props={"path": _s("full path of the .csv file")}, required=["path"], side=True, dry_run=dryrun.check_import,
            confirm="Import the YouTube analytics file {path} and update what Nightshift learns."),
         # ------------------------------------------------ settings / diagnostics
         _t("get_settings", "settings", "Run time, notifications, engine profile and flags, which keys are set (never the keys).",
@@ -307,7 +304,7 @@ def _tools() -> list[ToolDef]:
         _t("set_schedule", "settings", "Change the nightly run time (HH:MM) or turn notifications on or off.",
            _set_schedule, route=("PUT", "/api/settings"),
            props={"schedule_time": _s("24-hour time", pattern=r"^([01]\d|2[0-3]):[0-5]\d$"),
-                  "notifications": _b("show Windows notifications")}, side=True,
+                  "notifications": _b("show Windows notifications")}, side=True, dry_run=dryrun.check_schedule,
            confirm="Set the nightly run time to {schedule_time} (notifications: {notifications})."),
         _t("tail_logs", "diagnostics", "Latest log lines, optionally for one component and a minimum level.",
            lambda c, a: c.dash.settings.tail(a.get("component"), a.get("level"), int(a.get("n", 40)), None),
@@ -330,13 +327,13 @@ def _tools() -> list[ToolDef]:
            lambda c, a: c.dash.voices.design(a), route=("POST", "/api/voices/design"),
            props={"name": _s("voice name: letters, digits, - or _"), "description": _s("how the voice sounds, in plain English"),
                   "test_line": _s("a sentence the new voice speaks as a preview")},
-           required=["name", "description", "test_line"], side=True,
+           required=["name", "description", "test_line"], side=True, dry_run=dryrun.check_voice_design,
            confirm="Create the voice '{name}' ({description}) and speak: {test_line}. This uses the GPU for about a minute."),
         _t("clone_voice", "library", "Create a narration voice from a recording of a speaker, and speak a test line.",
            lambda c, a: c.dash.voices.clone({**a, "consent": True}), route=("POST", "/api/voices/clone"),
            props={"name": _s("voice name: letters, digits, - or _"), "sample_path": _s("full path of a 3-30 second recording of one speaker on this PC"),
                   "test_line": _s("a sentence the new voice speaks as a preview")},
-           required=["name", "sample_path", "test_line"], side=True,
+           required=["name", "sample_path", "test_line"], side=True, dry_run=dryrun.check_voice_clone,
            confirm=("Clone the voice in {sample_path} as '{name}' and speak: {test_line}. By pressing Yes you confirm "
                     "you have the right to clone this voice.")),
         # ------------------------------------------------ library
@@ -350,12 +347,12 @@ def _tools() -> list[ToolDef]:
            props={"channel": _s("channel slug"), "premise": _s("the idea in 1-3 sentences"),
                   "title": _s("short title"), "twist": _s("the twist"),
                   "status": _s("start as", enum=["new", "approved"])},
-           required=["channel", "premise"], side=True, confirm="Add this idea for {channel}: {premise}"),
+           required=["channel", "premise"], side=True, dry_run=dryrun.check_add_idea, confirm="Add this idea for {channel}: {premise}"),
         _t("set_idea_status", "library", "Mark an idea new, approved for production, used or rejected.",
            lambda c, a: c.dash.library.set_idea_status(int(a["idea_id"]), a.get("status")),
            route=("PUT", "/api/library/ideas/{idea_id}"),
            props={"idea_id": _i("idea id"), "status": _s("new status", enum=["new", "approved", "used", "rejected"])},
-           required=["idea_id", "status"], side=True, confirm="Mark idea {idea_id} as {status}."),
+           required=["idea_id", "status"], side=True, dry_run=dryrun.check_idea_status, confirm="Mark idea {idea_id} as {status}."),
         _t("search_stories", "library", "Written stories with their videos and where they were posted.",
            lambda c, a: c.dash.library.stories(a.get("q"), a.get("channel"), int(a.get("limit", 10))),
            route=("GET", "/api/library/stories"),
@@ -372,7 +369,7 @@ def _tools() -> list[ToolDef]:
                   "orientation": _s("clip shape", enum=["landscape", "portrait"], default="landscape"),
                   "count": _i("how many clips (at most 5)", minimum=1, maximum=5, default=1),
                   "source": _s("where to look", enum=["auto", "pixabay", "pexels"], default="auto")},
-           required=["q"], side=True,
+           required=["q"], side=True, dry_run=dryrun.check_footage,
            confirm="Download up to {count} {orientation} stock clips for '{q}' from {source} into the footage cache."),
         _t("list_formats", "library", "Video formats and clip layouts (editable presets).", _formats_brief,
            route=("GET", "/api/library/formats")),
@@ -380,12 +377,12 @@ def _tools() -> list[ToolDef]:
            lambda c, a: c.dash.library.create_format(a), route=("POST", "/api/library/formats"),
            props={"duplicate_of": _s("format id to copy"), "id": _s("new format id"),
                   "changes": _o("fields to change in the copy")},
-           required=["duplicate_of"], side=True, confirm="Copy format {duplicate_of} as {id}."),
+           required=["duplicate_of"], side=True, dry_run=dryrun.check_format_copy, confirm="Copy format {duplicate_of} as {id}."),
         _t("edit_format", "library", "Change fields of a format (editing a shipped one saves your own copy).",
            lambda c, a: c.dash.library.update_format(a["id"], {"changes": a["changes"]}),
            route=("PUT", "/api/library/formats/{format_id}"),
            props={"id": _s("format id"), "changes": _o("fields to change")}, required=["id", "changes"],
-           side=True, confirm="Change format {id}: {changes}"),
+           side=True, dry_run=dryrun.check_format_edit, confirm="Change format {id}: {changes}"),
         # ------------------------------------------------ orientation (no route)
         _t("system_map", "orientation", "Compact map: pages, folders, services, channels, formats, engine state.",
            orientation.system_map),
@@ -448,7 +445,7 @@ def _workshop_tools() -> list[ToolDef]:
             name=d["name"], description=d["description"], args_schema=_described(d["args_schema"]),
             side_effect=side, confirm_text=d["confirm_text"] if side else "", topic="series",
         )
-        out.append(ToolDef(spec=spec, call=_workshop_call(d["name"])))
+        out.append(ToolDef(spec=spec, call=_workshop_call(d["name"]), dry_run=dryrun.workshop_check(d["name"]) if side else None))
     return out
 
 

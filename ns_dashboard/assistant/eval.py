@@ -11,7 +11,8 @@ everything around the model, for each of the partner's questions in a cases file
    changes only produce confirm cards (the action stays pending), forbidden tools never run, and a key pasted
    in the question reaches neither `assistant.db` nor the model.
 
-`tests/test_assistant_eval.py` runs the 20 cases from `tests/assistant_eval/cases.yaml` on every CI run.
+`tests/test_assistant_eval.py` runs the cases (the partner's 20 questions, then the story and the script phrasing of a
+video request) from `tests/assistant_eval/cases.yaml` on every CI run.
 """
 # Dense descriptor tables and long signatures: wrapping them hurts readability.
 # ruff: noqa: E501
