@@ -19,6 +19,7 @@ import pytest
 
 from installer.stage2 import downloader as dl
 from ns_common.config import load_manifest
+from tests.online import RetryTransport, give_up_on_outage
 
 pytestmark = [
     pytest.mark.network,
@@ -46,14 +47,18 @@ def evidence(*lines: str) -> None:
 class Wire:
     """An httpx client like the installer's that logs every request and response, redirect hops included."""
 
-    requests: list[tuple[str, str, str | None]] = field(default_factory=list)   # method, url, Range header
+    requests: list[tuple[str, str, str | None]] = field(default_factory=list)  # method, url, Range header
     # method, url, status, x-linked-size
     responses: list[tuple[str, str, int, str | None]] = field(default_factory=list)
     client: httpx.Client = field(init=False)
 
     def __post_init__(self) -> None:
+        # RetryTransport: a 5xx, a timeout or a reset is retried before the downloader sees it; an outage that
+        # outlasts the retries skips the test as "upstream outage" (fails it on the nightly and tag runs).
         self.client = httpx.Client(
-            follow_redirects=True, timeout=httpx.Timeout(30.0, read=dl.STALL_TIMEOUT_S),
+            transport=RetryTransport(),
+            follow_redirects=True,
+            timeout=httpx.Timeout(30.0, read=dl.STALL_TIMEOUT_S),
             event_hooks={"request": [self._on_request], "response": [self._on_response]},
         )
 
@@ -61,8 +66,14 @@ class Wire:
         self.requests.append((request.method, str(request.url), request.headers.get("range")))
 
     def _on_response(self, response: httpx.Response) -> None:
-        self.responses.append((response.request.method, str(response.request.url), response.status_code,
-                               response.headers.get("x-linked-size")))
+        self.responses.append(
+            (
+                response.request.method,
+                str(response.request.url),
+                response.status_code,
+                response.headers.get("x-linked-size"),
+            )
+        )
 
     def gets(self) -> list[tuple[str, str, str | None]]:
         return [r for r in self.requests if r[0] == "GET"]
@@ -107,22 +118,23 @@ def interrupted_download(url: str, dest: Path, sha256: str | None, wire: Wire, p
     def progress(done: int, total: int | None) -> None:
         outcome["total"] = total
         if not gate.is_set():
-            parked.set()                  # the report made after the file and the connection were closed
+            parked.set()  # the report made after the file and the connection were closed
         elif done >= pause_after and not outcome.get("pressed"):
-            outcome["pressed"] = True     # Pause is pressed once; after Resume the transfer runs on
-            gate.clear()                  # the downloader stops after the next block
+            outcome["pressed"] = True  # Pause is pressed once; after Resume the transfer runs on
+            gate.clear()  # the downloader stops after the next block
 
     def work() -> None:
         try:
-            outcome["path"] = dl.download(url, dest, sha256, client=wire.client, gate=gate, progress=progress,
-                                          sleep=lambda s: None)
-        except BaseException as e:        # re-raised in the test thread
+            outcome["path"] = dl.download(
+                url, dest, sha256, client=wire.client, gate=gate, progress=progress, sleep=lambda s: None
+            )
+        except BaseException as e:  # re-raised in the test thread
             outcome["error"] = e
 
     worker = threading.Thread(target=work, name="download", daemon=True)
     worker.start()
     try:
-        for _ in range(180):                                 # up to 3 minutes, but fail at once if it died
+        for _ in range(180):  # up to 3 minutes, but fail at once if it died
             if parked.wait(1):
                 break
             if not worker.is_alive():
@@ -132,13 +144,13 @@ def interrupted_download(url: str, dest: Path, sha256: str | None, wire: Wire, p
         part = dest.with_name(dest.name + ".part")
         outcome["paused_at"] = part.stat().st_size
         outcome["requests_before_resume"] = list(wire.requests)
-        assert not dest.exists() and not dl._marker(dest).exists()      # nothing published while paused
-        rename_back_and_forth(part)                                      # Windows refuses if a handle is open
+        assert not dest.exists() and not dl._marker(dest).exists()  # nothing published while paused
+        rename_back_and_forth(part)  # Windows refuses if a handle is open
         assert part.stat().st_size == outcome["paused_at"]
         threading.Event().wait(0.5)
-        assert part.stat().st_size == outcome["paused_at"]               # the connection really is closed
+        assert part.stat().st_size == outcome["paused_at"]  # the connection really is closed
     finally:
-        gate.set()                                                       # Resume, and never leave it parked
+        gate.set()  # Resume, and never leave it parked
     worker.join(300)
     assert not worker.is_alive(), "the download did not finish after Resume"
     if "error" in outcome:
@@ -147,8 +159,10 @@ def interrupted_download(url: str, dest: Path, sha256: str | None, wire: Wire, p
 
 
 # ---------------------------------------------------------------------------------------------- (a) GitHub
-def test_github_release_asset_pause_resume_one_range_request_and_the_pinned_hash(tmp_path: Path, wire: Wire,
-                                                                                monkeypatch):
+@give_up_on_outage
+def test_github_release_asset_pause_resume_one_range_request_and_the_pinned_hash(
+    tmp_path: Path, wire: Wire, monkeypatch
+):
     pin = load_manifest().bins["yt_dlp"]
     assert pin.sha256 and len(pin.sha256) == 64
     url = pin.url
@@ -182,7 +196,7 @@ def test_github_release_asset_pause_resume_one_range_request_and_the_pinned_hash
     assert len(on_original) == 1 and on_original[0][2] == want  # exactly one Range request, from the .part
     assert {r[2] for r in ranged} == {want}  # and the redirect hops repeated it as is
     assert len([r for r in wire.gets() if r[1] == url]) == 2  # the whole story: first GET and one resume
-    assert order == ["hash", "marker"]                                       # .ok only after the hash
+    assert order == ["hash", "marker"]  # .ok only after the hash
     final = real_hash(dest)
     assert final == pin.sha256.lower() and dl.is_verified(dest, pin.sha256)
     assert not dest.with_name("yt-dlp.exe.part").exists()
@@ -206,7 +220,7 @@ def pick_small_hf_file(manifest) -> tuple[str, str, str, int]:
 
     Returns ``(repo, revision, file, size)``. The size comes from ``x-linked-size`` on the redirect, exactly
     as the installer reads it."""
-    client = httpx.Client(follow_redirects=True, timeout=30.0)
+    client = httpx.Client(transport=RetryTransport(), follow_redirects=True, timeout=30.0)
     best: tuple[str, str, str, int] | None = None
     try:
         for pm in manifest.profiles.values():
@@ -221,14 +235,17 @@ def pick_small_hf_file(manifest) -> tuple[str, str, str, int]:
     return best
 
 
-def test_hugging_face_cdn_pause_resume_through_the_redirect_matches_a_straight_download(tmp_path: Path,
-                                                                                         wire: Wire):
+@give_up_on_outage
+def test_hugging_face_cdn_pause_resume_through_the_redirect_matches_a_straight_download(
+    tmp_path: Path, wire: Wire
+):
     repo, revision, fname, size = pick_small_hf_file(load_manifest())
     url = dl.hf_url(repo, revision, fname)
     straight_wire = Wire()
     try:
-        straight = dl.download(url, tmp_path / "straight" / fname, None, client=straight_wire.client,
-                               sleep=lambda s: None)
+        straight = dl.download(
+            url, tmp_path / "straight" / fname, None, client=straight_wire.client, sleep=lambda s: None
+        )
     finally:
         straight_wire.close()
     straight_hash = dl.sha256_file(straight)
@@ -267,6 +284,7 @@ class Crash(BaseException):
     """A killed installer: not an Exception, so no handler in the downloader may swallow it."""
 
 
+@give_up_on_outage
 def test_hugging_face_part_truncated_by_hand_resumes_from_the_truncated_size(tmp_path: Path, wire: Wire):
     repo, revision, fname, size = pick_small_hf_file(load_manifest())
     url = dl.hf_url(repo, revision, fname)
@@ -284,7 +302,7 @@ def test_hugging_face_part_truncated_by_hand_resumes_from_the_truncated_size(tmp
     with pytest.raises(Crash):
         dl.download(url, dest, None, client=wire.client, progress=kill, sleep=lambda s: None)
     part = dest.with_name(dest.name + ".part")
-    cut = part.stat().st_size - 4097                         # the last written bytes were lost in the crash
+    cut = part.stat().st_size - 4097  # the last written bytes were lost in the crash
     with part.open("r+b") as fh:
         fh.truncate(cut)
     wire.requests.clear()
@@ -294,10 +312,13 @@ def test_hugging_face_part_truncated_by_hand_resumes_from_the_truncated_size(tmp
     assert len([r for r in wire.ranged() if r[1] == url]) == 1
     final = dl.sha256_file(dest)
     assert final == reference_hash and dl.is_verified(dest, None)
-    evidence(f"{fname}: crash left {cut + 4097} bytes, hand-truncated to {cut}; resumed with {want}; "
-             f"sha256 {final} == full download {reference_hash}: {final == reference_hash}")
+    evidence(
+        f"{fname}: crash left {cut + 4097} bytes, hand-truncated to {cut}; resumed with {want}; "
+        f"sha256 {final} == full download {reference_hash}: {final == reference_hash}"
+    )
 
 
+@give_up_on_outage
 def test_the_real_servers_honour_the_head_size_the_downloader_trusts(wire: Wire):
     """HEAD on both sites gives the size the resume maths relies on (HF: the x-linked-size header)."""
     pin = load_manifest().bins["yt_dlp"]
