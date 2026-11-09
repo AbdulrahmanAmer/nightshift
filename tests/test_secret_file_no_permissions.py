@@ -451,11 +451,13 @@ def test_ns_backup_to_a_drive_without_permissions_leaves_the_keys_out_and_says_s
     r = CliRunner().invoke(cli.app, ["backup", "--out", str(out)], env={"NIGHTSHIFT_HOME": str(paths.home)})
     assert r.exit_code == 0, r.output
     assert f"Backup written to {out}" in r.output
-    assert f"left out {SECRETS} (NS-W116" in r.output, r.output
+    assert f"Warning NS-W116: left out {SECRETS}" in r.output, r.output
+    assert "no file permissions" in r.output, "it says why"
     with zipfile.ZipFile(out) as z:
         names = z.namelist()
         manifest = json.loads(z.read("backup-manifest.json"))
     assert SECRETS not in names and SECRETS not in manifest["entries"]
+    assert manifest["left_out"] == [SECRETS] and "NS-W116" in manifest["note"], "the zip says what it lacks"
     assert "config/ui_prefs.json" in names
     assert icacls.calls == [], "nothing to lock: the keys never went to that drive"
 

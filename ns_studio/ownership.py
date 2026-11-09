@@ -80,6 +80,14 @@ ACQUIRE_WAIT_S = 0.1
 OPEN_RETRY_WAITS_S = (0.1, 0.2, 0.3, 0.4)
 #: The same for a liveness probe, which is asked often (every `/api/status`) and must stay quick.
 PROBE_RETRY_WAITS_S = (0.05, 0.1)
+#: A lock that cannot be probed at all (an `OSError` that lasts: an antivirus or backup tool holding the file,
+#: a permission the folder lost) counts as HELD, so nobody closes work that may be running. That has a bound:
+#: after this many probes in a row that failed, and the owner's pid (from its record) is gone, the owner is
+#: dead; when the record has no pid the bound is `UNPROBED_UNKNOWN_PID_S` after the job was announced. A pid
+#: that is still alive keeps it held, with a coded note (`UNPROBED_CODE`) saying why work is held.
+UNPROBED_LIMIT = 3
+UNPROBED_UNKNOWN_PID_S = 3600.0
+UNPROBED_CODE = "NS-W117"
 #: `recover` waits this long for another process that is closing the same things (the engine and the nightly
 #: start together after a power cut), then scans again: the nightly must not plan before the job is closed.
 RECOVER_WAIT_S = 20.0
@@ -219,28 +227,92 @@ def _acquire(lock: FileLock, waits: Sequence[float] | None = None) -> None:
     lock.acquire()
 
 
+#: Per owner (home + id), probes in a row whose lock could not be opened, and whether the owner has been told.
+_UNPROBED: dict[tuple[str, str], list[Any]] = {}
+
+
+def _pid_alive(pid: int) -> bool:
+    """True while a process with this pid exists. Tests replace this; a check that itself fails says alive."""
+    if pid == os.getpid():
+        return True
+    try:
+        from ns_supervisor.update_job import pid_alive
+
+        return bool(pid_alive(pid))
+    except Exception:  # noqa: BLE001 - cannot tell: the owner may be alive (fail closed)
+        return True
+
+
+def unprobed_message(owner_id: str, pid: int | None = None) -> str:
+    """The sentence the owner reads (morning note, `studio status`) while `owner_id` is held only because its
+    lock cannot be probed: the code's message and hint, and which work it is."""
+    d = describe(UNPROBED_CODE)
+    who = f" (process {pid} is still running)" if pid else ""
+    return f"{UNPROBED_CODE}: {d.message} {owner_id}{who}. {d.hint}"
+
+
+def unprobed_owners(paths: Paths) -> list[str]:
+    """Owners of this home held at the moment only because their lock could not be probed."""
+    return sorted(o for (home, o), st in _UNPROBED.items() if home == str(paths.home) and st[0] > 0)
+
+
+def _unprobed(paths: Paths, owner_id: str) -> bool:
+    """The answer of `lock_held` when the lock cannot be probed: True (held) or, once bounded, False (dead).
+
+    Dead when the record's pid is gone after `UNPROBED_LIMIT` failed probes in a row, or (a record with no
+    pid) `UNPROBED_UNKNOWN_PID_S` after it was announced. While it stays held the owner is told once, in a
+    coded morning note (`UNPROBED_CODE`), and `studio status` lists it.
+    """
+    key = (str(paths.home), owner_id)
+    state = _UNPROBED.setdefault(key, [0, False])
+    state[0] += 1
+    rec = read_record(paths, owner_id) or {}
+    pid = rec.get("pid")
+    pid = pid if isinstance(pid, int) and pid > 0 else None
+    if pid is not None:
+        gone = not _pid_alive(pid)
+    else:
+        announced = _parse(rec.get("announced_at")) or _parse(rec.get("started_at"))
+        gone = announced is not None and (_now() - announced).total_seconds() > UNPROBED_UNKNOWN_PID_S
+    if gone and (state[0] >= UNPROBED_LIMIT or pid is None):
+        return False
+    if gone:
+        return True  # its process is gone: a probe or two more settles it, nothing to tell the owner
+    if not state[1]:
+        state[1] = True
+        with contextlib.suppress(Exception):  # a note must never make the probe fail
+            leave_note(paths, None, unprobed_message(owner_id, pid))
+    return True
+
+
 def lock_held(paths: Paths, owner_id: str) -> bool:
     """True while some process (this one too) holds the lock of `owner_id`, or when it cannot be probed.
 
-    Fails closed: an `OSError` while opening the lock file (another program holds it, the folder lost a
-    permission) is "held", never "free", so `liveness` says "live" and nobody closes work that may be running:
-    `recover` leaves it open for its next call, the planner (`in_progress`, cadence) counts it, `run_state`
-    says running and `studio status` lists it as working.
+    Fails closed, with a bound: an `OSError` while looking at or opening the lock file (another program holds
+    it, the folder lost a permission) is "held", never "free", so `liveness` says "live" and nobody closes
+    work that may be running: `recover` leaves it open for its next call, the planner (`in_progress`, cadence)
+    counts it, `run_state` says running and `studio status` lists it as working. The bound is `_unprobed`: the
+    owner's process gone (its pid, from its record) after `UNPROBED_LIMIT` failed probes in a row means dead,
+    and while it is held for this reason the owner sees the coded note `NS-W117`.
     """
     path = lock_path(paths, owner_id)
+    key = (str(paths.home), owner_id)
     try:
         if not path.exists():  # no lock file: nobody ever held it
+            _UNPROBED.pop(key, None)
             return False
     except OSError:
-        return True
+        return _unprobed(paths, owner_id)
     probe = FileLock(path)
     try:
         _acquire(probe, PROBE_RETRY_WAITS_S)  # a file that cannot be opened for a moment is not "not held"
     except AlreadyRunning:
+        _UNPROBED.pop(key, None)
         return True
     except OSError:
-        return True  # could not look: assume the owner is alive (fail closed)
+        return _unprobed(paths, owner_id)  # could not look: held, within the bound
     probe.release()
+    _UNPROBED.pop(key, None)
     return False
 
 
@@ -1274,6 +1346,8 @@ def status_lines(paths: Paths, db: SqlDb, channel: str) -> list[str]:
         state = liveness(paths, job_id, rec)
         if state == "live":
             lines.append(f"  working: {live_description(paths, job_id)}")
+            if job_id in unprobed_owners(paths):
+                lines.append(f"  held: {unprobed_message(job_id)}")
         elif (
             state in ("dead", "interrupted")
             and job_info(paths, job_id)

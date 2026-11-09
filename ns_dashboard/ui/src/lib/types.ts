@@ -84,7 +84,7 @@ export interface ChannelValidation { ok: boolean; errors: string[]; warnings: st
 /** POST /uploads, PUT /uploads/{id} and POST /uploads/{id}/complete. */
 export interface UploadState { upload_id: string; source_id: string; filename: string; size: number; offset: number; status: "uploading" | "complete"; path: string | null; sha256: string | null; chunk_size?: number }
 /** POST /diagnostics and POST /settings/export: a zip that was written. */
-export interface FileMade { path: string; name: string; size: number | null; download_url: string }
+export interface FileMade { path: string; name: string; size: number | null; download_url: string; /** What `ns backup` left out on purpose (the keys file, on a drive without permissions, NS-W116), and the sentence that says why. */ left_out?: string[]; note?: string }
 /** POST /settings/import. */
 export interface SettingsImported { restored: boolean; file: string; lines: string[]; note: string; /** Lines about the keys file when a restore left it as it was (NS-W116 / NS-E120). */ left_out?: string[] }
 /** POST /library/series/{slug}/produce. */

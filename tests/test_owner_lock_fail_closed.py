@@ -10,7 +10,7 @@ answer:
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -50,6 +50,24 @@ class NoRows:
     def execute(self, sql: str, params: Sequence[Any] | Mapping[str, Any] = ()) -> Any:
         self.asked.append(sql)
         return None
+
+
+class Pids:
+    """Which pids are alive; `ownership._pid_alive` is replaced by this (no tasklist in a test)."""
+
+    def __init__(self) -> None:
+        self.alive: set[int] = {4242}
+
+    def __call__(self, pid: int) -> bool:
+        return pid in self.alive
+
+
+@pytest.fixture(autouse=True)
+def pids(monkeypatch: pytest.MonkeyPatch) -> Pids:
+    fake = Pids()
+    monkeypatch.setattr(ownership, "_pid_alive", fake)
+    ownership._UNPROBED.clear()  # noqa: SLF001 - per-process state of the bound
+    return fake
 
 
 @pytest.fixture
@@ -127,3 +145,75 @@ def test_a_run_whose_lock_cannot_be_probed_is_running_and_studio_status_lists_it
     assert ownership.run_state(paths, run_id, started, None, None) == ("running", "")
     lines = ownership.status_lines(paths, NoRows(), "c1")
     assert any(ln.startswith("  working:") for ln in lines), lines
+
+
+# --------------------------------------------------------------------- the bound (a Head decision on PR 193)
+def notes(paths: Paths) -> list[str]:
+    from ns_supervisor.notify import read_notes
+
+    return [str(n["message"]) for n in read_notes(paths)]
+
+
+def test_a_lock_that_cannot_be_probed_stays_held_while_its_process_is_alive_and_the_owner_is_told_once(
+    running_job: tuple[Paths, str], monkeypatch: pytest.MonkeyPatch, pids: Pids
+) -> None:
+    paths, job_id = running_job
+    monkeypatch.setattr(ownership, "FileLock", UnopenableLock)
+    for _ in range(ownership.UNPROBED_LIMIT * 4):  # far past the limit: a live process is a reason to wait
+        assert ownership.lock_held(paths, job_id) is True
+    assert ownership.liveness(paths, job_id) == "live"
+    [note] = notes(paths)  # once, not once per probe
+    assert note.startswith("NS-W117:") and job_id in note and "process 4242 is still running" in note, note
+    assert ownership.unprobed_owners(paths) == [job_id]
+    lines = ownership.status_lines(paths, NoRows(), "c1")
+    assert any(ln.startswith("  held: NS-W117") for ln in lines), lines
+    assert any(ln.startswith("  working:") for ln in lines), lines
+
+
+def test_a_lock_that_cannot_be_probed_is_dead_after_the_limit_when_its_process_is_gone(
+    running_job: tuple[Paths, str], monkeypatch: pytest.MonkeyPatch, pids: Pids
+) -> None:
+    paths, job_id = running_job
+    pids.alive.clear()  # pid 4242 is gone
+    monkeypatch.setattr(ownership, "FileLock", UnopenableLock)
+    for _ in range(ownership.UNPROBED_LIMIT - 1):  # a few failed probes in a row are not yet proof
+        assert ownership.lock_held(paths, job_id) is True
+    assert ownership.lock_held(paths, job_id) is False
+    assert ownership.liveness(paths, job_id) == "dead"
+    assert notes(paths) == [], "its process was gone from the start: nothing to explain, it settled by itself"
+    out = ownership.recover(paths, NoRows(), note=False)
+    rec = ownership.read_record(paths, job_id)
+    assert rec is not None and rec["state"] == "interrupted", "recover can now close it"
+    assert [j.job_id for j in out.jobs] == [job_id] or out.any
+
+
+def test_failed_probes_must_be_in_a_row_a_good_probe_starts_the_count_again(
+    running_job: tuple[Paths, str], monkeypatch: pytest.MonkeyPatch, pids: Pids
+) -> None:
+    paths, job_id = running_job
+    pids.alive.clear()
+    monkeypatch.setattr(ownership, "FileLock", UnopenableLock)
+    for _ in range(ownership.UNPROBED_LIMIT - 1):
+        assert ownership.lock_held(paths, job_id) is True
+    monkeypatch.undo()  # the file opens again: free (nobody holds it)
+    monkeypatch.setattr(ownership, "_pid_alive", pids)
+    assert ownership.lock_held(paths, job_id) is False
+    monkeypatch.setattr(ownership, "FileLock", UnopenableLock)
+    for _ in range(ownership.UNPROBED_LIMIT - 1):
+        assert ownership.lock_held(paths, job_id) is True, "the earlier failures do not count any more"
+
+
+def test_a_record_without_a_pid_is_held_for_an_hour_and_then_dead(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = Paths(tmp_path / "home")
+    monkeypatch.setattr(ownership, "FileLock", UnopenableLock)
+    young = datetime.now(UTC).isoformat()
+    old = (datetime.now(UTC) - timedelta(seconds=ownership.UNPROBED_UNKNOWN_PID_S + 60)).isoformat()
+    for owner, announced in (("j-young", young), ("j-old", old)):
+        ownership.write_record(
+            paths, owner, kind="job", state="running", channel="c1", announced_at=announced
+        )
+        ownership.lock_path(paths, owner).write_text("", encoding="utf-8")
+    assert ownership.lock_held(paths, "j-young") is True
+    assert ownership.lock_held(paths, "j-old") is False

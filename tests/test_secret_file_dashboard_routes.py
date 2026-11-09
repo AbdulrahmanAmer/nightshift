@@ -132,6 +132,8 @@ def test_the_settings_page_shows_the_keys_file_notices_and_does_not_toast_them_g
     # an import / export that left the keys file out says so in the toast, in the warn tone
     assert page.count('left_out?.length ? "warn" : "ok"') == 2
     assert 'r?.note ? `. ${r.note}` : ""' in page
+    # the export row keeps the note under the path (a toast is gone in seconds)
+    assert "{backup.note && " in page and "left_out?: string[]; note?: string" in page
     types = (UI / "lib" / "types.ts").read_text(encoding="utf-8")
     assert "key_warnings?: Record<string," in types and "left_out?: string[]" in types
 

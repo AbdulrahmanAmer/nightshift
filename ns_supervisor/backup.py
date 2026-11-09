@@ -118,6 +118,11 @@ def make_backup(
     entries: list[str] = []
     carries_keys = (paths.config / SECRETS_FILE).is_file()
     keys_out = carries_keys and not volume_keeps_permissions(target.parent)  # asked once for this backup
+    left_out = (
+        f"Warning {UNPROTECTED_CODE}: left out {SECRETS_ARC}: {NO_PERMISSIONS}, so the zip would hold "
+        "the keys for any account to read. The keys stay in Credential Manager and in this PC's own copy; "
+        "enter them again in Settings > Keys after a restore on another PC."
+    )
 
     def fill(z: zipfile.ZipFile) -> None:
         for tree in TREES:
@@ -137,7 +142,14 @@ def make_backup(
                 snapshot_db(paths.db_path, snap)
                 z.write(snap, "data/studio.db")
             entries.append("data/studio.db")
-        info = {"created": when.isoformat(timespec="seconds"), "version": __version__, "entries": entries}
+        info: dict[str, object] = {
+            "created": when.isoformat(timespec="seconds"),
+            "version": __version__,
+            "entries": entries,
+        }
+        if keys_out:  # the zip says what it does not hold, for whoever restores it
+            info["left_out"] = [SECRETS_ARC]
+            info["note"] = left_out
         z.writestr(MANIFEST, json.dumps(info, indent=2) + "\n")
 
     # The zip carries config/secrets.dpapi (machine-scope DPAPI, fixed entropy: any account on this PC
@@ -153,10 +165,7 @@ def make_backup(
             target.unlink(missing_ok=True)  # never leave the keys in a zip whose lock did not hold
             raise
     if keys_out and notes is not None:
-        notes.append(
-            f"left out {SECRETS_ARC} ({UNPROTECTED_CODE}: {NO_PERMISSIONS} in the zip; the keys stay in "
-            "Credential Manager and in this PC's own copy)"
-        )
+        notes.append(left_out)
     return target
 
 
