@@ -559,6 +559,11 @@ def test_runtime_flags_locked_until_unlocked(tmp_home: Path):
     s = dash.settings.get_settings()
     assert s["profile"] == "cpu-dev" and s["flags"]["video.encoder"] == "libx264"
     assert "profile" not in s["flags"] and "supervisor_port" not in s["flags"]
+    assert s["dev_mode"] is False and s["fake_footage"] is False and "fake_footage" not in s["flags"]
+    save_runtime(state.paths, Runtime.default("cpu-dev").model_copy(update={"fake_footage": True}))
+    s2 = dash.settings.get_settings()
+    assert s2["fake_footage"] is True and "fake_footage" not in s2["flags"]   # shown, never an editable flag
+    save_runtime(state.paths, Runtime.default("cpu-dev"))
     assert all(isinstance(v, str | int | float | bool) for v in s["flags"].values())
     change = {"flags": {"video": {"encoder": "libx264", "preset": "fast", "fps": 30}}}
     assert code_of(dash.settings.put_settings, change) == "runtime_locked"

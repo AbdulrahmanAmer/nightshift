@@ -333,6 +333,15 @@ def test_s01_pixabay_alone_is_enough_and_pexels_is_optional(tmp_path: Path):
     assert "No stock footage key yet" in ui3.text
 
 
+def test_s01_fake_footage_says_no_key_is_needed_instead_of_asking_for_one_later(tmp_path: Path):
+    """The engine test needs no stock-footage key, so the "add a Pixabay key later" notice would mislead."""
+    ctx = make_test_context(tmp_path, raw_answers=provided(tmp_path, fake_footage=True),
+                            ui=FakeUi(interactive=False), simulate=False, http=keyed_http(), dev_mode=False)
+    S01Questions().run(ctx)
+    assert "Engine test (fake_footage)" in ctx.ui.text
+    assert "No stock footage key yet" not in ctx.ui.text
+
+
 def test_s01_asks_for_missing_keys_and_retries_a_bad_paste(tmp_path: Path):
     ui = FakeUi({"Pexels API key": ["wrong", GOOD_PEXELS], "Pixabay API key": [GOOD_PIXABAY]})
     ctx = make_test_context(tmp_path, raw_answers=provided(tmp_path), ui=ui, simulate=False,

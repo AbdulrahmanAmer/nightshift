@@ -240,26 +240,33 @@ function Wait-NsPort {
 }
 
 function Sync-NsOpenCodePort {
-    # OpenCode talks straight to llama-server, and config\opencode.json bakes the address in when it is written
-    # at install time. If runtime.json llama.host/port changed since (ns tune, a hand edit), OpenCode would talk
-    # to the wrong port, so point the baseURL at the current one right before it starts. Only that one value
-    # changes; the file is left alone when it already matches or does not exist, and a problem here is a note,
-    # never a reason to stop the launcher.
+    # OpenCode talks straight to llama-server, and config\opencode.json bakes the address in when it is
+    # written at install time. If the llama address changed since (ns tune, a hand edit), OpenCode would talk
+    # to the wrong port, so point the baseURL at the current one right before it starts. -BaseUrl is the
+    # address the engine reported when it started llama-server; without it, runtime.json llama.host/port is
+    # used. Only that one value changes; the file is left alone when it already matches or does not exist,
+    # and a problem here is a note, never a reason to stop the launcher.
+    param([string]$BaseUrl = '')
     $file = Join-Path (Get-NsHome) 'config\opencode.json'
     try {
         if (-not (Test-Path -LiteralPath $file)) { return }
-        $hostName = '127.0.0.1'
-        $port = 8080
-        $runtime = Join-Path (Get-NsHome) 'config\runtime.json'
-        if (Test-Path -LiteralPath $runtime) {
-            $rt = Get-Content -LiteralPath $runtime -Raw -Encoding UTF8 | ConvertFrom-Json
-            if ($rt.PSObject.Properties.Name -contains 'llama') {
-                $llama = $rt.llama
-                if ($llama.PSObject.Properties.Name -contains 'host') { $hostName = [string]$llama.host }
-                if ($llama.PSObject.Properties.Name -contains 'port') { $port = [int]$llama.port }
-            }
+        if ($BaseUrl -match '^https?://') {
+            $url = $BaseUrl
         }
-        $url = 'http://' + $hostName + ':' + $port + '/v1'
+        else {
+            $hostName = '127.0.0.1'
+            $port = 8080
+            $runtime = Join-Path (Get-NsHome) 'config\runtime.json'
+            if (Test-Path -LiteralPath $runtime) {
+                $rt = Get-Content -LiteralPath $runtime -Raw -Encoding UTF8 | ConvertFrom-Json
+                if ($rt.PSObject.Properties.Name -contains 'llama') {
+                    $llama = $rt.llama
+                    if ($llama.PSObject.Properties.Name -contains 'host') { $hostName = [string]$llama.host }
+                    if ($llama.PSObject.Properties.Name -contains 'port') { $port = [int]$llama.port }
+                }
+            }
+            $url = 'http://' + $hostName + ':' + $port + '/v1'
+        }
         # -Encoding UTF8: Windows PowerShell 5.1 reads a BOM-less file as ANSI, which would double-encode any
         # non-ASCII text the owner put in the file when it is written back as UTF-8 below.
         $cfg = Get-Content -LiteralPath $file -Raw -Encoding UTF8 | ConvertFrom-Json

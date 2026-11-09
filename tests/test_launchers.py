@@ -151,6 +151,9 @@ def test_code_launcher_acquires_as_opencode_and_releases_in_finally() -> None:
     assert "finally" in text[text.index("OPENCODE_CONFIG") :]
     # the baseURL is refreshed from runtime.json after the model is up and before OpenCode starts
     assert text.index("/acquire") < text.index("Sync-NsOpenCodePort") < text.index("OPENCODE_CONFIG")
+    # the acquire result (the running llama-server's address) is kept and handed over, not thrown away
+    assert "$ep = Invoke-NsPost -Path '/acquire'" in text
+    assert "Sync-NsOpenCodePort -BaseUrl" in text and "'/v1'" in text
 
 
 OPENCODE_JSON = {
@@ -169,7 +172,9 @@ OPENCODE_JSON = {
 }
 
 
-def run_sync(tmp_path: Path, runtime: str | None, opencode: str | None) -> tuple[str, Path]:
+def run_sync(
+    tmp_path: Path, runtime: str | None, opencode: str | None, base_url: str | None = None
+) -> tuple[str, Path]:
     """Run Sync-NsOpenCodePort against a throwaway home; returns the helper's output and opencode.json."""
     import os
     import subprocess
@@ -183,7 +188,8 @@ def run_sync(tmp_path: Path, runtime: str | None, opencode: str | None) -> tuple
     target = home / "config" / "opencode.json"
     if opencode is not None:
         target.write_text(opencode, encoding="utf-8")
-    script = f". '{LAUNCHERS / '_common.ps1'}'\nSync-NsOpenCodePort\n"
+    call = "Sync-NsOpenCodePort" if base_url is None else f"Sync-NsOpenCodePort -BaseUrl '{base_url}'"
+    script = f". '{LAUNCHERS / '_common.ps1'}'\n{call}\n"
     env = {k: v for k, v in os.environ.items() if k.lower() != "psmodulepath"}
     env["NIGHTSHIFT_HOME"] = str(home)
     out = subprocess.run([exe, "-NoProfile", "-NonInteractive", "-Command", script], capture_output=True,
@@ -202,6 +208,21 @@ def test_sync_opencode_port_rewrites_only_the_base_url(tmp_path: Path) -> None:
     expected = json.loads(json.dumps(OPENCODE_JSON))
     expected["provider"]["local"]["options"]["baseURL"] = "http://127.0.0.1:9191/v1"
     assert got == expected  # nothing else changed (arrays stay arrays)
+
+
+@needs_powershell
+def test_sync_opencode_port_prefers_the_address_the_engine_reported(tmp_path: Path) -> None:
+    """/acquire returns the running llama-server's address; it wins over runtime.json, which may be stale."""
+    runtime = json.dumps({"llama": {"host": "127.0.0.1", "port": 9191}})
+    text = json.dumps(OPENCODE_JSON, indent=2) + "\n"
+    _out, target = run_sync(tmp_path / "a", runtime, text, base_url="http://127.0.0.1:7777/v1")
+    got = json.loads(target.read_text(encoding="utf-8"))
+    assert got["provider"]["local"]["options"]["baseURL"] == "http://127.0.0.1:7777/v1"
+    # an empty or non-http value (e.g. "inproc") falls back to runtime.json
+    for bad in ("", "inproc"):
+        _out, target = run_sync(tmp_path / f"b{bad}", runtime, text, base_url=bad)
+        got = json.loads(target.read_text(encoding="utf-8"))
+        assert got["provider"]["local"]["options"]["baseURL"] == "http://127.0.0.1:9191/v1"
 
 
 @needs_powershell

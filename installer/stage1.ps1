@@ -824,9 +824,14 @@ function Resolve-NsHome {
     if ($Forced) { return $Forced }
     $fromAnswers = [string](Get-Prop $AnswersObj 'home_path' '')
     if ($fromAnswers) { return $fromAnswers }
-    $existing = [Environment]::GetEnvironmentVariable('NIGHTSHIFT_HOME', 'User')
-    if ($existing) { return $existing }
-    if ($env:NIGHTSHIFT_HOME) { return $env:NIGHTSHIFT_HOME }
+    # A previous install's home (the user variable setup writes) wins, so a rerun lands in the same folder.
+    # Not under -FakeProbe: that is CI and the tests, which describe the machine themselves and must not see
+    # whatever install the developer's PC carries.
+    if (-not $FakeProbe) {
+        $existing = [Environment]::GetEnvironmentVariable('NIGHTSHIFT_HOME', 'User')
+        if ($existing) { return $existing }
+        if ($env:NIGHTSHIFT_HOME) { return $env:NIGHTSHIFT_HOME }
+    }
     $default = Select-DefaultHome -Drives $Drives -AppFolder $AppFolder
     if (-not $default) { $default = Join-Path (Get-DataDir) 'Home' }
     return $default

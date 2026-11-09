@@ -243,3 +243,20 @@ def test_a_dev_install_fetches_from_the_fake_source_without_a_key(tmp_home: Path
     dash2, state2, seen2 = make(tmp_home, {"pixabay_api_key": "pk"}, [stub])
     dash2.library.fetch_footage("fog")
     assert seen2 == [{"pixabay": "pk"}] and stub.downloads
+
+
+def test_fake_footage_fetches_from_the_fake_source_without_a_key_or_dev_mode(tmp_home: Path):
+    """The fake_footage engine test (docs/DEV_MODE.md): a real install with no key still gets
+    placeholder clips."""
+    if not shutil.which("ffmpeg"):
+        pytest.skip("ffmpeg is not installed")
+    dash, state, seen = make(tmp_home, {}, [])
+    state.paths.runtime_file.parent.mkdir(parents=True, exist_ok=True)
+    state.paths.runtime_file.write_text(json.dumps({"fake_footage": True}), encoding="utf-8")
+    out = dash.library.fetch_footage("fog", count=2)
+    assert len(out["clips"]) == 2 and all(c["source"] == "fake" for c in out["clips"]) and seen == []
+    # without the setting the same install still refuses
+    state.paths.runtime_file.write_text(json.dumps({"fake_footage": False}), encoding="utf-8")
+    with pytest.raises(ApiError) as ei:
+        dash.library.fetch_footage("fog")
+    assert ei.value.code == "NS-E502"
