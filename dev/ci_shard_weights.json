@@ -1,8 +1,8 @@
 {
  "about": "Seconds per test file for dev/ci_shards.py: the median over the JUnit reports of real CI runs. A file not listed is placed by hash and counts as the larger of the mean and the median of these. Refresh: python dev/ci_shards.py refresh --run latest (or --run <id>, or --junit <folder of report-shard-*.xml>)",
  "measured": {
-  "source": "run 42668170598 (the four tests/test_p01_* files: run of dbe70d6, from main)",
-  "files": 301
+  "source": "run 42668170598, plus 8 files not in it (the three newest test files, the four test_p10_* files and test_tiny_story_length.py) from run 42686504308 (main, f4f3948)",
+  "files": 309
  },
  "shard_extra_seconds": {
   "1": 15
@@ -189,11 +189,16 @@
   "tests/test_online_helper.py": 0.2,
   "tests/test_orchestrator.py": 0.8,
   "tests/test_outbox.py": 22.6,
+  "tests/test_owner_lock_file.py": 8.5,
   "tests/test_owner_overrides.py": 0.1,
   "tests/test_p01_p02_voice_regen.py": 0.4,
   "tests/test_p01_redraw_chapters.py": 0.3,
   "tests/test_p01_regen_drafts.py": 19.6,
   "tests/test_p01_regen_failures.py": 8.9,
+  "tests/test_p10_formats_core.py": 2.2,
+  "tests/test_p10_golden.py": 0.1,
+  "tests/test_p10_notice_and_channel.py": 2.8,
+  "tests/test_p10_shorts_format.py": 140.0,
   "tests/test_pacing.py": 1.9,
   "tests/test_paths.py": 0.1,
   "tests/test_pending_voice_job.py": 4.1,
@@ -243,6 +248,7 @@
   "tests/test_smart_app_control.py": 0.1,
   "tests/test_smoke_prep.py": 0.2,
   "tests/test_spec_installer_text.py": 0.1,
+  "tests/test_spec_operator_text.py": 0.8,
   "tests/test_spec_runtime_text.py": 0.1,
   "tests/test_stages.py": 1.6,
   "tests/test_state_files_cosmetic.py": 9.1,
@@ -265,6 +271,7 @@
   "tests/test_textstats.py": 0.1,
   "tests/test_thumbnails.py": 2.4,
   "tests/test_tiny_story.py": 8.2,
+  "tests/test_tiny_story_length.py": 250.7,
   "tests/test_tiny_story_switch.py": 3.8,
   "tests/test_toast_identity.py": 3.4,
   "tests/test_transcribe.py": 0.1,
@@ -283,6 +290,7 @@
   "tests/test_tts_voice_files.py": 0.1,
   "tests/test_tts_voices.py": 0.1,
   "tests/test_ui_single_entry_bundle.py": 0.1,
+  "tests/test_update_config_snapshot.py": 5.4,
   "tests/test_update_isolation.py": 0.7,
   "tests/test_update_job.py": 2.8,
   "tests/test_update_relaunch.py": 0.7,

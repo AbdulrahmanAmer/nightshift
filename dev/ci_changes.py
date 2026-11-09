@@ -70,6 +70,7 @@ DOC_TESTS: tuple[str, ...] = (
     "tests/test_installer_first_run.py",  # OPERATOR.md
     "tests/test_release_wiring.py",  # CHANGELOG.md, docs/REPO_SETTINGS.md, docs/HANDOFF.md
     "tests/test_spec_installer_text.py",  # BUILD_SPEC.md, docs/FEATURE_STATUS.md, OPERATOR.md
+    "tests/test_spec_operator_text.py",  # OPERATOR.md, README.md, BUILD_SPEC.md, docs/FEATURE_STATUS.md
     "tests/test_spec_runtime_text.py",  # BUILD_SPEC.md, docs/FEATURE_STATUS.md
     "tests/test_text_hygiene.py",  # control characters in every tracked text file (git ls-files)
     "tests/test_verification_inventory.py",  # docs/VERIFICATION_INVENTORY.md (dev/verification_inventory.py)
