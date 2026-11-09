@@ -22,7 +22,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from proofs._lib import db_rows, proof_channel, run_short, short, wait_job
+from proofs._lib import db_rows, pauses_proof_channels, proof_channel, run_short, short, wait_job
 
 PROOF = {
     "id": "f-c3-output-routes",
@@ -249,6 +249,7 @@ def _long_part(ctx: Any) -> None:
     )
 
 
+@pauses_proof_channels
 def run(ctx: Any) -> None:
     proof_channel(ctx, CHANNEL)
     oid = _new_short(ctx)

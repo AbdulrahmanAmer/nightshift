@@ -8,9 +8,16 @@ creates it and forgets the request, and the same on the Library > Voices page by
 (evidence log 2026-11-09, 0.1.12 and 0.1.14).
 
 The pending voice is the proof's OWN. Only setup queues one (installer s07 `queue_voice` writes
-config/pending_voice.json); the proof writes that file in the same format for a voice named `proof-...`, and
-only when the install holds no pending voice at all. When one is there (the setup voice, which F-E12 needs)
-the proof does not touch it: the pending part ends as skipped, after the parts that need no pending voice.
+config/pending_voice.json as {channel, mode, name, description}); the proof writes that file in the same shape
+for a voice named `proof-...` on its own channel `proof-voices`, and only when the install holds no pending
+voice at all. When one is there (the setup voice, which F-E12 needs) the proof does not touch it: the pending
+part ends as skipped, after the parts that need no pending voice.
+
+The product has no voice delete route, so the proof's voices are named from the install's version
+(`proof-design-0-1-15`, `proof-clone-...`, `proof-pending-...`, `proof-click-...`): at most four proof voices
+per version remain. A run on a version whose voice exists from an earlier run still checks what can be shown
+(the voice is listed, its files exist, a second design or clone answers 409 voice_exists, preview works),
+then ends as skipped, naming the voices it did not create, because making them is the thing to show.
 """
 
 from __future__ import annotations
@@ -19,6 +26,7 @@ import json
 import math
 import os
 import random
+import re
 import struct
 import uuid
 import wave
@@ -26,7 +34,7 @@ from hashlib import sha1
 from pathlib import Path
 from typing import Any
 
-from proofs._lib import db_rows, short, wait_job
+from proofs._lib import db_rows, pauses_proof_channels, proof_channel, short, wait_job
 
 PROOF = {
     "id": "f-c7-voice-routes",
@@ -38,6 +46,7 @@ PROOF = {
     "fakes": [],
 }
 
+CHANNEL = "proof-voices"  # the channel the proof's pending voice names (setup's request carries one)
 DESCRIPTION = "A calm, low, warm narrator voice."
 TEST_LINE = "The lamp was still burning when the boat arrived."
 
@@ -88,16 +97,20 @@ def _voice_dir(ctx: Any, name: str) -> Path:
     return ctx.home / "models" / "tts" / "voices" / name
 
 
-def _queue_pending(ctx: Any, name: str) -> Path:
-    """Write config/pending_voice.json as setup does (installer s07 queue_voice) for the proof's own voice."""
+def _queue_pending(ctx: Any, name: str, channel: str) -> Path:
+    """Write config/pending_voice.json as setup does (installer s07 `queue_voice`: channel, mode, name and,
+    for a designed voice, description; indent 2, a closing newline) for the proof's own voice and channel."""
     f = ctx.home / "config" / "pending_voice.json"
     tmp = f.with_name(f.name + ".proof-tmp")
-    tmp.write_text(f'{{"mode": "design", "name": "{name}", "description": "{DESCRIPTION}"}}\n', "utf-8")
+    request = {"channel": channel, "mode": "design", "name": name, "description": DESCRIPTION}
+    tmp.write_text(json.dumps(request, indent=2) + "\n", "utf-8")
     os.replace(tmp, f)
     ctx.step(
         "queued the proof's own pending voice (what setup's queue_voice writes)",
         voice=name,
+        channel=channel,
         file=str(f.relative_to(ctx.home)),
+        request=request,
     )
     return f
 
@@ -134,33 +147,45 @@ def _preview_part(ctx: Any, tag: str) -> None:
     )
 
 
-def _design_part(ctx: Any, tag: str) -> None:
+def _design_part(ctx: Any, tag: str, reused: list[str]) -> None:
     name = f"proof-design-{tag}"
-    code, made = ctx.api(
-        "POST",
-        "/api/voices/design",
-        {"name": name, "description": DESCRIPTION, "test_line": TEST_LINE},
-        timeout=300,
-    )
     preview = _voice_dir(ctx, name) / "preview.wav"
-    ctx.check(
-        code == 200
-        and made.get("voice_id") == name
-        and Path(str(made.get("preview_wav_path"))).name == "preview.wav",
-        "POST /api/voices/design answers the voice id and the preview path",
-        status=code,
-        answer=short(made),
-    )
-    ctx.check(
-        (_voice_dir(ctx, name) / "voice.json").is_file() and _is_wav(preview),
-        "the voice folder holds voice.json and a preview.wav (RIFF)",
-        preview_bytes=preview.stat().st_size if preview.exists() else None,
-    )
-    ctx.check(
-        _voices(ctx).get(name) == "design",
-        "GET /api/voices lists the new voice as a design voice",
-        voice=name,
-    )
+    if name in _voices(ctx):
+        reused.append(name)
+        ctx.step("this version's design voice exists from an earlier run: not made again", voice=name)
+        ctx.check(
+            _voices(ctx).get(name) == "design"
+            and (_voice_dir(ctx, name) / "voice.json").is_file()
+            and _is_wav(preview),
+            "GET /api/voices lists it as a design voice; voice.json and preview.wav (RIFF) exist",
+            voice=name,
+            preview_bytes=preview.stat().st_size if preview.exists() else None,
+        )
+    else:
+        code, made = ctx.api(
+            "POST",
+            "/api/voices/design",
+            {"name": name, "description": DESCRIPTION, "test_line": TEST_LINE},
+            timeout=300,
+        )
+        ctx.check(
+            code == 200
+            and made.get("voice_id") == name
+            and Path(str(made.get("preview_wav_path"))).name == "preview.wav",
+            "POST /api/voices/design answers the voice id and the preview path",
+            status=code,
+            answer=short(made),
+        )
+        ctx.check(
+            (_voice_dir(ctx, name) / "voice.json").is_file() and _is_wav(preview),
+            "the voice folder holds voice.json and a preview.wav (RIFF)",
+            preview_bytes=preview.stat().st_size if preview.exists() else None,
+        )
+        ctx.check(
+            _voices(ctx).get(name) == "design",
+            "GET /api/voices lists the new voice as a design voice",
+            voice=name,
+        )
     for what, body, status, code_name in (
         ("a name with a space and a mark", {"name": "bad name!"}, 422, "invalid_voice"),
         ("an empty description", {"name": f"proof-nodesc-{tag}", "description": " "}, 422, "invalid_voice"),
@@ -181,11 +206,12 @@ def _design_part(ctx: Any, tag: str) -> None:
     )
 
 
-def _clone_part(ctx: Any, tag: str) -> None:
+def _clone_part(ctx: Any, tag: str, reused: list[str]) -> None:
     name = f"proof-clone-{tag}"
+    refused = f"proof-clonebad-{tag}"  # the refusals use a name that is never made
     sample = _speech_wav(ctx.scratch / "sample-6s.wav", 6.0)
     short_wav = _speech_wav(ctx.scratch / "sample-1s.wav", 1.0)
-    base = {"name": name, "sample_path": str(sample), "test_line": TEST_LINE}
+    base = {"name": refused, "sample_path": str(sample), "test_line": TEST_LINE}
     code, answer = ctx.api("POST", "/api/voices/clone", {**base, "consent": False})
     err = _error(answer)
     ctx.check(
@@ -206,19 +232,39 @@ def _clone_part(ctx: Any, tag: str) -> None:
             status=code,
             answer=short(answer),
         )
-    ctx.check(not _voice_dir(ctx, name).exists(), "the refused clones left no voice folder")
-    code, made = ctx.api("POST", "/api/voices/clone", {**base, "consent": True}, timeout=300)
+    ctx.check(not _voice_dir(ctx, refused).exists(), "the refused clones left no voice folder")
     preview = _voice_dir(ctx, name) / "preview.wav"
+    if name in _voices(ctx):
+        reused.append(name)
+        ctx.step("this version's clone voice exists from an earlier run: not made again", voice=name)
+        ctx.check(
+            _voices(ctx).get(name) == "clone"
+            and (_voice_dir(ctx, name) / "voice.json").is_file()
+            and _is_wav(preview),
+            "GET /api/voices lists it as a clone; the folder holds voice.json and a preview.wav (RIFF)",
+            voice=name,
+            preview_bytes=preview.stat().st_size if preview.exists() else None,
+        )
+    else:
+        body = {**base, "name": name, "consent": True}
+        code, made = ctx.api("POST", "/api/voices/clone", body, timeout=300)
+        ctx.check(
+            code == 200 and made.get("voice_id") == name and _is_wav(preview),
+            "POST /api/voices/clone with consent answers the voice id and a preview.wav (RIFF) exists",
+            status=code,
+            answer=short(made),
+        )
+        ctx.check(
+            (_voice_dir(ctx, name) / "voice.json").is_file() and _voices(ctx).get(name) == "clone",
+            "voice.json exists and GET /api/voices lists the new voice as a clone",
+            voice=name,
+        )
+    code, answer = ctx.api("POST", "/api/voices/clone", {**base, "name": name, "consent": True})
     ctx.check(
-        code == 200 and made.get("voice_id") == name and _is_wav(preview),
-        "POST /api/voices/clone with consent answers the voice id and a preview.wav (RIFF) exists",
+        code == 409 and _error(answer).get("code") == "voice_exists",
+        "clone with the name of the voice just made answers 409 voice_exists",
         status=code,
-        answer=short(made),
-    )
-    ctx.check(
-        (_voice_dir(ctx, name) / "voice.json").is_file() and _voices(ctx).get(name) == "clone",
-        "voice.json exists and GET /api/voices lists the new voice as a clone",
-        voice=name,
+        answer=short(answer),
     )
 
 
@@ -226,9 +272,8 @@ def _apply_job_rows(ctx: Any) -> list[Any]:
     return db_rows(ctx, "select job_id, status from dashboard_jobs where kind='apply_voice' order by job_id")
 
 
-def _pending_route_part(ctx: Any, tag: str) -> None:
+def _pending_route_part(ctx: Any, name: str, channel: str) -> None:
     """Queue the proof's own pending voice and create it through GET pending + POST apply-pending."""
-    name = f"proof-pending-{tag}"
     before = _apply_job_rows(ctx)
     code, answer = ctx.api("POST", "/api/voices/apply-pending")
     ctx.check(
@@ -239,7 +284,7 @@ def _pending_route_part(ctx: Any, tag: str) -> None:
         status=code,
         answer=short(answer),
     )
-    pending_file = _queue_pending(ctx, name)
+    pending_file = _queue_pending(ctx, name, channel)
     try:
         code, answer = ctx.api("GET", "/api/voices/pending")
         pend = (answer or {}).get("pending") or {}
@@ -247,8 +292,9 @@ def _pending_route_part(ctx: Any, tag: str) -> None:
             code == 200
             and pend.get("name") == name
             and pend.get("mode") == "design"
+            and pend.get("channel") == channel
             and pend.get("description") == DESCRIPTION,
-            "GET /api/voices/pending shows the queued voice: name, mode and description",
+            "GET /api/voices/pending shows the queued voice: name, mode, channel and description",
             status=code,
             pending=short(pend),
         )
@@ -293,6 +339,8 @@ def _pending_route_part(ctx: Any, tag: str) -> None:
         )
         new_ids = sorted({r[0] for r in _apply_job_rows(ctx)} - {r[0] for r in before})
         ctx.check(new_ids == [job_id], "exactly one apply_voice job row was made", new_jobs=new_ids)
+        row = db_rows(ctx, "select channel from dashboard_jobs where job_id=?", (job_id,))
+        ctx.check(row == [(channel,)], "the apply_voice job is on the channel the request named", rows=row)
     finally:
         _drop_own(ctx, pending_file, name)
 
@@ -312,15 +360,16 @@ def _listed_without_card(page: Any, name: str) -> bool:
     return name in text and "Pending voice from setup" not in text
 
 
-def _click_part(ctx: Any, tag: str) -> None:
+def _click_part(ctx: Any, name: str, channel: str) -> None:
     """Library > Voices: the pending card names the proof's voice and Create it now makes it."""
-    name = f"proof-click-{tag}"
-    pending_file = _queue_pending(ctx, name)
+    pending_file = _queue_pending(ctx, name, channel)
     try:
         code, answer = ctx.api("GET", "/api/voices/pending")
         ctx.check(
-            code == 200 and ((answer or {}).get("pending") or {}).get("name") == name,
-            "the only pending voice is the proof's own (checked before the click)",
+            code == 200
+            and ((answer or {}).get("pending") or {}).get("name") == name
+            and ((answer or {}).get("pending") or {}).get("channel") == channel,
+            "the only pending voice is the proof's own, on its own channel (checked before the click)",
             answer=short(answer),
         )
         page = ctx.page()
@@ -373,21 +422,51 @@ def _click_part(ctx: Any, tag: str) -> None:
         _drop_own(ctx, pending_file, name)
 
 
+@pauses_proof_channels
 def run(ctx: Any) -> None:
-    tag = uuid.uuid4().hex[:6]
-    ctx.step("the proof makes its own voices, all named proof-*", tag=tag)
-    _preview_part(ctx, tag)
-    _design_part(ctx, tag)
-    _clone_part(ctx, tag)
+    tag = re.sub(r"[^A-Za-z0-9]+", "-", ctx.version).strip("-")  # 0.1.15 -> 0-1-15
+    ctx.step("the proof's voices are named proof-* from this version", version=ctx.version, tag=tag)
+    reused: list[str] = []
+    _preview_part(ctx, uuid.uuid4().hex[:6])  # a preview is cached by its text: a new text every run
+    _design_part(ctx, tag, reused)
+    _clone_part(ctx, tag, reused)
 
-    # the pending part: only on an install that holds no pending voice at all
-    code, answer = ctx.api("GET", "/api/voices/pending")
-    held = (answer or {}).get("pending")
-    stray = ctx.home / "config" / "pending_voice.json"
-    if code != 200 or held is not None or stray.exists():
-        ctx.skip(
-            "the install holds a pending voice that is not the proof's"
-            f" ({(held or {}).get('name')!r}); the proof never presses Create it now on setup's voice"
+    # the pending parts: only on an install that holds no pending voice at all
+    pending_name, click_name = f"proof-pending-{tag}", f"proof-click-{tag}"
+    todo: list[str] = []
+    for name in (pending_name, click_name):
+        if name in _voices(ctx):
+            reused.append(name)
+            ctx.check(
+                _voices(ctx).get(name) == "design" and (_voice_dir(ctx, name) / "voice.json").is_file(),
+                "this version's voice from an earlier run is listed as a design voice, voice.json exists",
+                voice=name,
+            )
+        else:
+            todo.append(name)
+    held_reason = ""
+    if todo:
+        code, answer = ctx.api("GET", "/api/voices/pending")
+        held = (answer or {}).get("pending")
+        stray = ctx.home / "config" / "pending_voice.json"
+        if code != 200 or held is not None or stray.exists():
+            held_reason = (
+                "the install holds a pending voice that is not the proof's"
+                f" ({(held or {}).get('name')!r}); the proof never presses Create it now on setup's voice"
+            )
+        else:
+            channel = proof_channel(ctx, CHANNEL)
+            if pending_name in todo:
+                _pending_route_part(ctx, pending_name, channel)
+            if click_name in todo:
+                _click_part(ctx, click_name, channel)
+    reasons: list[str] = []
+    if reused:
+        reasons.append(
+            f"creating {', '.join(reused)}: already created by an earlier run on this version; "
+            "the product has no voice delete route"
         )
-    _pending_route_part(ctx, tag)
-    _click_part(ctx, tag)
+    if held_reason:
+        reasons.append(held_reason)
+    if reasons:
+        ctx.skip("; ".join(reasons))

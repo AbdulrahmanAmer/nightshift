@@ -6,22 +6,31 @@ page reads them (the answers, /api/status and /api/channels), and where the prod
 file `config/channels/<slug>.yaml`, the `channels` row and the `incidents` rows of the pause and the resume.
 Ported from runs/qa/croutes/croutes.py box F-C2 (evidence log 2026-11-09, 0.1.14).
 
+The channel is created on the Channels page itself (Playwright): "Add a channel", the name, short id and
+subject typed, "Save channel". The proof reads the POST /api/channels request the page sent and checks its
+body is the page's blank profile (`BLANK` in Channels.tsx) plus the three typed fields, then that the page
+lists the channel. The route checks (201, 422, 409, GET and PUT, pause and resume, validate) go through
+`ctx.api`.
+
 The proof makes its own channel `proof-croutes` (the first free `proof-croutes-N` when an earlier run left
-one; there is no delete route) and leaves it paused, so a nightly run never picks it up.
+one: there is no delete route, and a create needs a slug that does not exist). Whatever happens, the run ends
+with a cleanup that pauses it through a call with no deadline, so a nightly run never picks it up.
 """
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Any
+from urllib.parse import urlparse
 
-from proofs._lib import db_rows, short
+from proofs._lib import api_no_deadline, db_rows, short
 
 PROOF = {
     "id": "f-c2-channel-routes",
     "boxes": ["F-C2"],
     "install": "dev",
-    "window": False,
+    "window": True,
     "needs": ["engine"],
     "timeout_s": 300,
     "fakes": [],
@@ -33,44 +42,54 @@ RESUME_NOTE = "proof F-C2: resume"
 FINAL_NOTE = "proof F-C2: left paused"
 
 
-def _body(slug: str, niche: str) -> dict[str, Any]:
-    """The profile the Channels page sends for a new channel (its blank object) with an id, name and niche."""
-    return {
-        "slug": slug,
-        "display_name": "Proof " + slug,
-        "status": "active",
-        "language": "en",
-        "niche": niche,
-        "seed_keywords": ["proof croutes", "route check"],
-        "voice_notes": "Plain and calm.",
-        "voice": {"mode": "preset", "speaker": "Ryan", "description": None, "name": None, "speed": 1},
-        "format": "master_first",
-        "masters_per_week": 1,
-        "long_minutes": [10, 14],
-        "shorts_per_master": [4, 6],
-        "shorts_per_day_max": 2,
-        "length_buckets": [35, 50, 75],
-        "publish_window": "18:00-21:00",
-        "audience": "general",
-        "made_for_kids": False,
-        "fiction_label": True,
-        "creator_note": "",
-        "critic_bar": 8,
-        "qc_pass_target": 0.9,
-        "pools": {
-            "hooks": ["cold_open", "question", "confession"],
-            "structures": ["twist", "reverse_reveal", "slow_burn"],
-            "pov_tones": ["first_person_intimate", "narrator_calm", "dry_wit"],
-            "pacings": ["standard", "measured", "brisk"],
-            "caption_styles": ["punch_yellow", "clean_white", "soft_shadow"],
-            "visual_treatments": ["dark_slowzoom", "handheld_grit", "still_life"],
-            "title_formulas": ["question", "statement_twist", "i_never"],
-        },
-        "avoid_topics": [],
-        "formats_allowed": [],
-        "captions": {"mask_profanity": False},
-        "created_at": None,
-    }
+# The Channels page's blank profile (BLANK in ns_dashboard/ui/src/pages/Channels.tsx, line 90). The page sends
+# it with the name, the short id and the subject the owner typed.
+BLANK: dict[str, Any] = {
+    "slug": "",
+    "display_name": "",
+    "status": "active",
+    "language": "en",
+    "niche": "",
+    "seed_keywords": [],
+    "voice_notes": "",
+    "voice": {"mode": "preset", "speaker": "Ryan", "description": None, "name": None, "speed": 1},
+    "format": "master_first",
+    "masters_per_week": 1,
+    "long_minutes": [10, 14],
+    "shorts_per_master": [4, 6],
+    "shorts_per_day_max": 2,
+    "length_buckets": [35, 50, 75],
+    "publish_window": "18:00-21:00",
+    "audience": "general",
+    "made_for_kids": False,
+    "fiction_label": True,
+    "creator_note": "",
+    "critic_bar": 8,
+    "qc_pass_target": 0.9,
+    "pools": {
+        "hooks": ["cold_open", "question", "confession"],
+        "structures": ["twist", "reverse_reveal", "slow_burn"],
+        "pov_tones": ["first_person_intimate", "narrator_calm"],
+        "pacings": ["standard", "measured"],
+        "caption_styles": ["punch_yellow", "clean_white"],
+        "visual_treatments": ["dark_slowzoom", "handheld_grit"],
+        "title_formulas": ["question", "statement_twist", "i_never"],
+    },
+    "avoid_topics": [],
+    "formats_allowed": [],
+    "captions": {"mask_profanity": False},
+    "created_at": None,
+}
+
+
+def _typed(slug: str, niche: str) -> dict[str, Any]:
+    """What the proof types into the page: the three fields the owner fills in."""
+    return {"slug": slug, "display_name": "Proof " + slug, "niche": niche}
+
+
+def _expected_body(slug: str, niche: str) -> dict[str, Any]:
+    """The body the page must send: its blank profile with the typed fields."""
+    return {**json.loads(json.dumps(BLANK)), **_typed(slug, niche)}
 
 
 def _error(answer: Any) -> dict[str, Any]:
@@ -110,10 +129,107 @@ def _free_slug(ctx: Any) -> str:
     return slug
 
 
+def _is_create(method: str, url: str) -> bool:
+    return method == "POST" and urlparse(url).path == "/api/channels"
+
+
+def _create_on_page(ctx: Any, slug: str, niche: str) -> dict[str, Any]:
+    """Create the channel on the Channels page; returns the body of the POST /api/channels the page sent."""
+    typed = _typed(slug, niche)
+    page = ctx.page()
+    sent: list[dict[str, Any]] = []
+    answered: list[int] = []
+    page.on(
+        "request",
+        lambda r: sent.append({"url": r.url, "body": r.post_data}) if _is_create(r.method, r.url) else None,
+    )
+    page.on(
+        "response",
+        lambda r: answered.append(r.status) if _is_create(r.request.method, r.url) else None,
+    )
+    page.goto(f"http://127.0.0.1:{ctx.ports['dashboard']}/#/channels", wait_until="load")
+    page.get_by_role("button", name="Add a channel").first.click(timeout=30000)
+    page.locator("#f-name").fill(typed["display_name"], timeout=30000)
+    page.locator("#f-slug").fill(typed["slug"])  # after the name: the page derives an id from the name
+    page.locator("#f-niche").fill(typed["niche"])
+    ctx.step("typed into the new-channel form", **typed)
+    page.get_by_role("button", name="Save channel").first.click(timeout=30000)
+    dialogs: list[str] = []
+
+    def posted() -> bool:
+        if sent and answered:
+            return True
+        # the page asks before saving when validate has a warning; "Save anyway" is its own button
+        again = page.get_by_role("button", name="Save anyway")
+        if again.count() and again.first.is_visible():
+            dialogs.append("Save anyway")
+            again.first.click()
+        stuck = page.get_by_role("button", name="Back to editing")
+        if stuck.count() and stuck.first.is_visible():
+            ctx.fail("the Channels page refused the new channel: " + page.inner_text("body")[:300])
+        return False
+
+    ctx.wait(posted, 60, every=1, what="the Channels page to send POST /api/channels")
+    body = json.loads(sent[0]["body"] or "null")
+    want = _expected_body(slug, niche)
+    differs = sorted(k for k in set(body) | set(want) if body.get(k) != want.get(k))
+    ctx.check(
+        len(sent) == 1 and body == want,
+        "the page sent POST /api/channels with its blank profile plus the typed name, short id and subject",
+        sent_body=body,
+        differs=differs,
+        typed=typed,
+        dialogs=dialogs,
+    )
+    ctx.check(answered == [201], "the page's POST /api/channels was answered 201", statuses=answered)
+    ctx.wait(
+        lambda: typed["display_name"] in page.inner_text("body"),
+        30,
+        every=1,
+        what="the Channels page to list the new channel",
+    )
+    text = page.inner_text("body")
+    ctx.check(
+        typed["display_name"] in text,
+        "the Channels page lists the new channel",
+        display_name=typed["display_name"],
+        page_text=text[:300].replace("\n", " / "),
+    )
+    page.screenshot(path=str(ctx.scratch / "channels-after-create.png"), full_page=True)
+    return body
+
+
+def _pause_leftover(ctx: Any, slug: str) -> None:
+    """Cleanup, pass or fail: the proof's channel ends paused. Calls with no deadline (ctx.api refuses once
+    the proof's time is used up), and the result is recorded in a step."""
+    try:
+        status, got = api_no_deadline(ctx, "GET", f"/api/channels/{slug}")
+        profile = (got.get("profile") or {}) if isinstance(got, dict) else {}
+        if status != 200:
+            ctx.step("cleanup: proof channel not found, nothing to pause", channel=slug, status=status)
+            return
+        if profile.get("status") == "paused":
+            ctx.step("cleanup: proof channel is paused", channel=slug)
+            return
+        status, answer = api_no_deadline(
+            ctx, "POST", f"/api/channels/{slug}/pause", {"note": "proof F-C2: paused by the cleanup"}
+        )
+        ctx.step("cleanup: proof channel paused", channel=slug, status=status, answer=short(answer))
+    except Exception as exc:  # noqa: BLE001  (a cleanup error must not hide the proof's own result)
+        ctx.step("cleanup: pausing the proof channel failed", channel=slug, error=str(exc))
+
+
 def run(ctx: Any) -> None:
     slug = _free_slug(ctx)
+    try:
+        _prove(ctx, slug)
+    finally:
+        _pause_leftover(ctx, slug)
+
+
+def _prove(ctx: Any, slug: str) -> None:
     niche = f"proof quiet lighthouse mysteries {slug}"
-    body = _body(slug, niche)
+    body = _expected_body(slug, niche)
     yaml_file = ctx.home / "config" / "channels" / f"{slug}.yaml"
 
     # ---- validate: a good draft, then a bad one that must name the niche
@@ -165,11 +281,12 @@ def run(ctx: Any) -> None:
 
     # ---- create: 201, then the effects
     ctx.check(_card_of(ctx, slug) is None, "before the create the channel is not in the list", channel=slug)
-    code, made = ctx.api("POST", "/api/channels", body)
+    _create_on_page(ctx, slug, niche)
+    code, made = ctx.api("GET", f"/api/channels/{slug}")
     profile = made.get("profile") or {}
     ctx.check(
-        code == 201 and profile.get("slug") == slug and profile.get("status") == "active",
-        "POST /api/channels answers 201 with the saved profile",
+        code == 200 and profile.get("slug") == slug and profile.get("status") == "active",
+        "the channel the page created is saved: GET answers its profile, active",
         status=code,
         slug=profile.get("slug"),
         profile_status=profile.get("status"),

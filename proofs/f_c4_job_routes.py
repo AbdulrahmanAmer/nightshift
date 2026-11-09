@@ -7,9 +7,14 @@
    sent, the status is "uploading", and the `.part` file on disk is that long; a resent chunk is refused 409
    offset_mismatch with the true offset; complete answers the stored path and the sha256 of the bytes sent; an
    unknown upload is 404 not_found.
-4. A finished clip job re-cut with POST /api/jobs/clip/rerun and another layout: the new clip job carries
-   `rerun_of`, ends done and its clip files exist; an unknown job is 404 not_found and an unknown layout is
-   422 invalid_options. Needs FFmpeg to make the source video; without it the part ends as skipped, last.
+4. A finished clip job (max_clips 1) re-cut with POST /api/jobs/clip/rerun (max_clips 2, layout center_crop):
+   the re-run is a different job that carries `rerun_of`, ends done, and its result names a clip output the
+   first job did not have. That clip's file exists at another path than the first clip's, has other bytes
+   (sha256) and a sidecar naming the layout; its `outputs` row belongs to the studio job the re-run ran in.
+   The product re-cuts inside the same studio job (the same job folder and the same output ids for a clip
+   that is cut again), so "new" means an output id the first job's result did not list. An unknown job is
+   404 not_found and an unknown layout is 422 invalid_options. Needs FFmpeg to make the source video;
+   without it the part ends as skipped, last.
 
 Ported from runs/qa/croutes/croutes.py box F-C4, runs/qa/fc4.py and runs/qa/fsettings.py (evidence log
 2026-11-09, 0.1.14).
@@ -30,7 +35,7 @@ import wave
 from pathlib import Path
 from typing import Any
 
-from proofs._lib import db_rows, ffmpeg_path, proof_channel, short, wait_job
+from proofs._lib import db_rows, ffmpeg_path, pauses_proof_channels, proof_channel, short, wait_job
 
 PROOF = {
     "id": "f-c4-job-routes",
@@ -305,6 +310,32 @@ def _make_source(ctx: Any, exe: str) -> Path:
     return out
 
 
+def _clip_rows(ctx: Any, ids: list[str]) -> list[dict[str, Any]]:
+    """The `outputs` rows of `ids` with the size and sha256 of the file each one points at (None when the
+    file is missing)."""
+    out: list[dict[str, Any]] = []
+    for oid in ids:
+        rows = db_rows(
+            ctx, "select output_id, job_id, channel, kind, path from outputs where output_id=?", (oid,)
+        )
+        if not rows:
+            continue
+        output_id, job_id, channel, kind, path = rows[0]
+        file = Path(str(path))
+        out.append(
+            {
+                "output_id": output_id,
+                "job_id": job_id,
+                "channel": channel,
+                "kind": kind,
+                "path": str(path),
+                "bytes": file.stat().st_size if file.is_file() else None,
+                "sha256": hashlib.sha256(file.read_bytes()).hexdigest() if file.is_file() else None,
+            }
+        )
+    return out
+
+
 def _rerun_part(ctx: Any) -> None:
     exe = ffmpeg_path()
     if not exe:
@@ -355,9 +386,19 @@ def _rerun_part(ctx: Any) -> None:
         answer=short(answer),
     )
 
+    ids_first = [str(i) for i in (first.get("result") or {}).get("output_ids") or []]
+    before = _clip_rows(ctx, ids_first)
+    ctx.check(
+        len(ids_first) == 1 and len(before) == 1 and Path(before[0]["path"]).is_file(),
+        "the first clip job (max_clips 1) made one clip whose file exists",
+        output_ids=ids_first,
+        rows=[{k: v for k, v in r.items() if k != "sha256"} for r in before],
+    )
+    studio_first = (first.get("result") or {}).get("studio_job_id")
+
     layout = "center_crop"
     status, rerun = ctx.api(
-        "POST", "/api/jobs/clip/rerun", {"job_id": first["job_id"], "template": layout, "max_clips": 1}
+        "POST", "/api/jobs/clip/rerun", {"job_id": first["job_id"], "template": layout, "max_clips": 2}
     )
     params = rerun.get("params") if isinstance(rerun, dict) else {}
     ctx.check(
@@ -365,22 +406,76 @@ def _rerun_part(ctx: Any) -> None:
         and rerun.get("kind") == "clip"
         and rerun.get("job_id") != first["job_id"]
         and (params or {}).get("rerun_of") == first["job_id"]
-        and (params or {}).get("template") == layout,
-        f"POST /api/jobs/clip/rerun with {layout}: 201, a new clip job with rerun_of the first",
+        and (params or {}).get("template") == layout
+        and (params or {}).get("max_clips") == 2,
+        f"POST /api/jobs/clip/rerun ({layout}, max_clips 2): 201, a new clip job with rerun_of the first",
         status=status,
         answer=short(rerun),
     )
     second = wait_job(ctx, str(rerun["job_id"]), timeout=600)
-    ctx.check(second.get("status") == "done", "the re-run clip job is done", message=second.get("message"))
-    ids = [str(i) for i in (second.get("result") or {}).get("output_ids") or []]
-    rows = [db_rows(ctx, "select kind, path from outputs where output_id=?", (i,)) for i in ids]
+    result = second.get("result") or {}
     ctx.check(
-        bool(ids) and all(r and r[0][0] == "clip" and Path(r[0][1]).is_file() for r in rows),
-        "the re-run left clip outputs whose files exist in the outbox",
-        output_ids=ids,
+        second.get("status") == "done",
+        "the re-run clip job is done",
+        job_id=second.get("job_id"),
+        first_job_id=first["job_id"],
+        message=second.get("message"),
+    )
+    ids_second = [str(i) for i in result.get("output_ids") or []]
+    new_ids = [i for i in ids_second if i not in ids_first]
+    ctx.check(
+        bool(new_ids),
+        "the re-run's result names a clip output the first job did not have",
+        first_output_ids=ids_first,
+        rerun_output_ids=ids_second,
+        new_output_ids=new_ids,
+    )
+    studio_second = result.get("studio_job_id")
+    rows = _clip_rows(ctx, new_ids)
+    old_paths = {r["path"] for r in before}
+    old_hashes = {r["sha256"] for r in before}
+    ctx.check(
+        len(rows) == len(new_ids)
+        and all(
+            r["kind"] == "clip"
+            and r["channel"] == CHANNEL
+            and r["job_id"] == studio_second
+            and (params or {}).get("studio_job_id") == r["job_id"]
+            and r["output_id"].startswith(f"{r['job_id']}/")
+            for r in rows
+        ),
+        "the outputs rows of the new clips belong to the studio job the re-run ran in",
+        rerun_studio_job=studio_second,
+        first_studio_job=studio_first,
+        rows=[{k: v for k, v in r.items() if k != "sha256"} for r in rows],
+    )
+    for r in rows:
+        sidecar = Path(r["path"]).with_suffix(".json")
+        meta = json.loads(sidecar.read_text(encoding="utf-8")) if sidecar.is_file() else {}
+        ctx.check(
+            r["sha256"] is not None
+            and r["path"] not in old_paths
+            and r["sha256"] not in old_hashes
+            and meta.get("template") == layout
+            and meta.get("job_id") == r["job_id"],
+            f"new clip {r['output_id']}: its file exists at another path, has other bytes, cut as {layout}",
+            path=r["path"],
+            first_paths=sorted(old_paths),
+            sha256=r["sha256"],
+            first_sha256=sorted(old_hashes),
+            bytes=r["bytes"],
+            sidecar_template=meta.get("template"),
+            sidecar_job_id=meta.get("job_id"),
+        )
+    kept = _clip_rows(ctx, ids_first)
+    ctx.step(
+        "the first clip after the re-run (the product keeps a clip it cuts again in place)",
+        rows=[{k: v for k, v in r.items() if k != "sha256"} for r in kept],
+        same_file_bytes=[r["sha256"] for r in kept] == [r["sha256"] for r in before],
     )
 
 
+@pauses_proof_channels
 def run(ctx: Any) -> None:
     _verify_route(ctx)
     _quick_check_click(ctx)
