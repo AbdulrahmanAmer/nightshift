@@ -32,6 +32,10 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+# Write-NsFileAtomic and Read-NsTextRetry: every file this host writes is read by another process (the
+# Dashboard launcher, stop-all, the engine, the installer), so it is swapped in whole and read with a retry.
+. (Join-Path $PSScriptRoot '_common.ps1')
+
 if (-not $AppPath) { $AppPath = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path }
 
 $ClientKey = '{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}'
@@ -60,18 +64,19 @@ function Reset-StaleHttpCache {
     try {
         $versionFile = Join-Path $AppDir 'VERSION'
         if (-not (Test-Path -LiteralPath $versionFile)) { return $false }
-        $current = ([string](Get-Content -LiteralPath $versionFile -Raw)).Trim()
+        $current = ([string](Read-NsTextRetry -Path $versionFile)).Trim()
         if (-not $current) { return $false }
         $stamp = Join-Path $ProfileDir 'ns-cache-version.txt'
         if (Test-Path -LiteralPath $stamp) {
-            if (([string](Get-Content -LiteralPath $stamp -Raw)).Trim() -eq $current) { return $false }
+            if (([string](Read-NsTextRetry -Path $stamp)).Trim() -eq $current) { return $false }
         }
         foreach ($name in @('Cache', 'Code Cache')) {
             $dir = Join-Path $ProfileDir "EBWebView\Default\$name"
             if (Test-Path -LiteralPath $dir) { Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction Stop }
         }
         [void](New-Item -ItemType Directory -Force -Path $ProfileDir)
-        Set-Content -LiteralPath $stamp -Value $current -Encoding ascii
+        # ASCII text plus CRLF, the bytes this stamp has always had
+        Write-NsFileAtomic -Path $stamp -Text ($current + "`r`n") -Encoding ([System.Text.Encoding]::ASCII)
         return $true
     }
     catch {
@@ -175,8 +180,9 @@ function Test-ProcessAlive {
 function Get-RunningHost {
     # {hwnd, pid} of a live host window, or $null (missing file, unreadable file, dead PID, dead window).
     try {
-        if (-not (Test-Path -LiteralPath $runFile)) { return $null }
-        $j = Get-Content -Raw -LiteralPath $runFile | ConvertFrom-Json
+        $text = Read-NsTextRetry -Path $runFile
+        if (-not $text) { return $null }
+        $j = $text | ConvertFrom-Json
         $names = $j.PSObject.Properties.Name
         if (-not (($names -contains 'hwnd') -and ($names -contains 'pid'))) { return $null }
         if (-not (Test-ProcessAlive -ProcessId ([int]$j.pid))) { return $null }
@@ -231,9 +237,8 @@ function Write-RunFile {
     # ready = WebView2 initialised and the page is loading: the Dashboard launcher waits for it, then ends.
     param([IntPtr]$Handle, [switch]$Ready)
     try {
-        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $runFile) | Out-Null
         $obj = [ordered]@{ hwnd = $Handle.ToInt64(); pid = $PID; ready = [bool]$Ready }
-        [IO.File]::WriteAllText($runFile, ($obj | ConvertTo-Json -Compress), (New-Object System.Text.UTF8Encoding($false)))
+        Write-NsFileAtomic -Path $runFile -Text ($obj | ConvertTo-Json -Compress)
     }
     catch {
         Write-Verbose 'the apphost state file could not be written'
@@ -281,8 +286,9 @@ try {
 
     function Read-WindowState {
         try {
-            if (-not (Test-Path -LiteralPath $stateFile)) { return $null }
-            $j = Get-Content -Raw -LiteralPath $stateFile | ConvertFrom-Json
+            $text = Read-NsTextRetry -Path $stateFile
+            if (-not $text) { return $null }
+            $j = $text | ConvertFrom-Json
             foreach ($k in @('left', 'top', 'width', 'height')) {
                 if (-not ($j.PSObject.Properties.Name -contains $k)) { return $null }
             }
@@ -303,8 +309,7 @@ try {
                 height    = [math]::Round($b.Height)
                 maximized = ($script:win.WindowState -eq [System.Windows.WindowState]::Maximized)
             }
-            New-Item -ItemType Directory -Force -Path (Split-Path -Parent $stateFile) | Out-Null
-            [IO.File]::WriteAllText($stateFile, ($obj | ConvertTo-Json -Compress), (New-Object System.Text.UTF8Encoding($false)))
+            Write-NsFileAtomic -Path $stateFile -Text ($obj | ConvertTo-Json -Compress)
         }
         catch {
             Write-Verbose 'window.json could not be written'

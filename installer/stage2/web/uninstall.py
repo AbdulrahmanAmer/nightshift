@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from installer.stage2.web.bootstrap import HOME_VAR, get_user_variable
+from ns_common.atomic import read_text_retry
 
 SIZE_BUDGET_S = 5.0
 NOTE_LABEL = "Windows' note of where Nightshift is installed"      # the NIGHTSHIFT_HOME variable
@@ -173,7 +174,9 @@ def host_pids(home: Path) -> list[int]:
     """Pids that may hold files under ``bin``: this server and the setup window host (if it recorded one)."""
     pids = [os.getpid()]
     try:
-        data = json.loads((home / "run" / "apphost-setup.json").read_text(encoding="utf-8-sig"))
+        # the host swaps its run file in whole, and for a few milliseconds Windows refuses an open of the
+        # name: retried, so a window that is open is not left out of the pids the removal waits for
+        data = json.loads(read_text_retry(home / "run" / "apphost-setup.json", encoding="utf-8-sig"))
         pids.append(int(data["pid"]))
     except (OSError, ValueError, KeyError, TypeError):
         pass
