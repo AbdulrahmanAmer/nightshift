@@ -400,6 +400,45 @@ def test_an_explicit_design_format_that_is_missing_or_unusable_falls_back_with_a
         assert entry["note"] == res.note and entry["id"] == "short_9x16"
 
 
+def test_a_library_card_is_valid_exactly_when_a_series_part_can_use_the_format(tmp_home: Path) -> None:
+    """Review of P10a: the editor's verdict and the job's pick agree on the same files, bad and good."""
+    from ns_dashboard.formats import list_formats
+
+    paths = Paths.from_env()
+    put(paths, "short_fine", **SMALL)
+    put(paths, "short_shots", **SMALL, shots={"min_s": 5, "max_s": 2})
+    off = copy.deepcopy(SMALL)
+    off["layout"]["regions"][0]["w"] = 5000
+    put(paths, "short_off", **off)
+    put(paths, "short_odd", canvas={"w": 721, "h": 1280}, layout=SMALL["layout"])
+    put(paths, "short_style", **SMALL, captions={"styles_allowed": ["no_such_style"]})
+    (paths.formats_dir / "short_nodata.yaml").write_text("id: short_nodata", encoding="utf-8")
+    # a hand-edited file whose id differs from its name: the studio refuses it, so the card must too
+    doc = put(paths, "short_wrongid", **SMALL)
+    doc["id"] = "short_other"
+    (paths.formats_dir / "short_wrongid.yaml").write_text(
+        yaml.safe_dump(doc, sort_keys=False), encoding="utf-8"
+    )
+    cards = {c["id"]: c for c in list_formats(paths)}
+    verdicts = {
+        "short_fine": True,
+        "short_shots": False,
+        "short_off": False,
+        "short_odd": False,
+        "short_style": False,
+        "short_nodata": False,
+        "short_wrongid": False,
+    }
+    for name, good in verdicts.items():
+        res, log = channel_roles(tmp_home, [], design=name)
+        assert cards[name]["valid"] is good, (name, cards[name]["errors"])
+        assert (res.id == name) is good, (name, res.id, res.note)
+        if not good:
+            assert "format_design_skipped" in log.names("warn"), name
+            assert res.note is not None and name in res.note, name
+    assert "must equal the file name" in " ".join(cards["short_wrongid"]["errors"])
+
+
 def test_a_series_design_with_a_valid_long_format_leaves_the_short_role_alone(tmp_home: Path) -> None:
     paths = Paths.from_env()
     put(paths, "long_copy", base="long_16x9")

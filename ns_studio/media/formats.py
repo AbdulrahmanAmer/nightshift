@@ -325,12 +325,13 @@ def clip_layout_problems(fmt: Format) -> list[str]:
     return out + format_problems(fmt, set(load_caption_styles()))
 
 
-def definition_problems(raw: Any) -> list[str]:
+def definition_problems(raw: Any, stem: str | None = None) -> list[str]:
     """Plain problems with a format mapping: the model first, then the studio's own rules for its kind.
 
     The model (`ns_common.models.Format`) is the single validator (Head decision D3): a field it refuses is
     named with its path. A story format must also be usable for the role its kind fills; a clip format as a
-    clip layout.
+    clip layout. `stem` is the name of the file the mapping was read from: the loader refuses a file whose
+    `id` is not its name, so a caller that read a file passes it.
     """
     if not isinstance(raw, dict):
         return ["a format must be a mapping of settings"]
@@ -338,6 +339,8 @@ def definition_problems(raw: Any) -> list[str]:
         fmt = Format.model_validate(raw)
     except ValidationError as e:
         return fields_problem(e).split("; ")
+    if stem is not None and fmt.id != stem:
+        return [f"id {fmt.id!r} must equal the file name"]
     return story_role_problems(fmt) if fmt.kind in STORY_KINDS else clip_layout_problems(fmt)
 
 

@@ -20,17 +20,18 @@ from ns_dashboard.errors import ApiError
 ID_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 
 
-def validate_format(definition: Any) -> list[str]:
+def validate_format(definition: Any, stem: str | None = None) -> list[str]:
     """Plain problems with a format definition (empty list = valid).
 
     The studio's own check (`ns_studio.media.formats.definition_problems`): the shared model first, then the
     rules a render applies for the format's kind (regions inside the canvas, one picture region for a Short
     or a full video, shot and duration ranges, known caption styles). The Formats editor therefore refuses
-    at save what the studio would refuse when a job chooses the format.
+    at save what the studio would refuse when a job chooses the format. `stem` is the file name a listed
+    definition was read from (its `id` must equal it, as the studio requires).
     """
     from ns_studio.media.formats import definition_problems
 
-    return definition_problems(definition)
+    return definition_problems(definition, stem)
 
 
 def builtin_dir() -> Path | None:
@@ -82,7 +83,7 @@ def list_formats(paths: Paths) -> list[dict[str, Any]]:
     out = []
     for fid, entry in sorted(found.items()):
         d = entry["definition"]
-        errors = validate_format(d)
+        errors = validate_format(d, fid)
         out.append(
             {
                 "id": fid,
