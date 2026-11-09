@@ -87,7 +87,8 @@ def test_the_test_shards_have_a_cap_well_under_the_old_forty_minutes_in_ci_and_r
 
 def test_the_0_1_5_to_0_1_1_changelog_entries_are_in_place():
     version = read("VERSION").strip()
-    assert version == "0.1.14"
+    # 0.1.14 or later, a candidate such as 0.1.15-rc1 included: the 0.1.14 entries stay in place below
+    assert tuple(int(p) for p in version.split("-rc", 1)[0].split(".")) >= (0, 1, 14), version
     text = read("CHANGELOG.md")
     assert re.search(r"^## \[0\.1\.14\] - 2026-11-09\s*$", text, re.MULTILINE)
     fourteen = re.search(r"(?ms)^## \[0\.1\.14\][^\r\n]*\r?\n(?P<body>.*?)(?=^## \[|\Z)", text)
