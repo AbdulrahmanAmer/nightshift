@@ -5,16 +5,23 @@ from pathlib import Path
 
 import yaml
 
+from ns_common import first_start
 from ns_common.atomic import BACKUP_SUFFIX, quarantine, read_text_retry, write_text_atomic
+from ns_common.config_compat import disk_dict
 from ns_common.errors import NsError
 from ns_common.models import Channel, EmbedCfg, InstallState, Manifest, Runtime
 from ns_common.paths import Paths, repo_root
 
 
+def _write_text(path: Path, text: str, *, keep_backup: bool = False) -> Path:
+    """Every settings file this module writes goes through here: the first start after an update an older
+    updater made takes the settings copy before anything changes (`first_start.guard`, F-10c)."""
+    first_start.guard(path)
+    return write_text_atomic(path, text, keep_backup=keep_backup)
+
+
 def _write_json(path: Path, data: dict, *, keep_backup: bool = False) -> Path:
-    return write_text_atomic(
-        path, json.dumps(data, indent=2, ensure_ascii=False) + "\n", keep_backup=keep_backup
-    )
+    return _write_text(path, json.dumps(data, indent=2, ensure_ascii=False) + "\n", keep_backup=keep_backup)
 
 
 def embed_server_args(cfg: EmbedCfg) -> list[str]:
@@ -33,7 +40,8 @@ def load_runtime(paths: Paths) -> Runtime:
 
 
 def save_runtime(paths: Paths, rt: Runtime) -> Path:
-    return _write_json(paths.runtime_file, rt.model_dump(mode="json"))
+    """A field added after 0.1.14 is written only when it is in use (`config_compat.disk_dict`)."""
+    return _write_json(paths.runtime_file, disk_dict(rt))
 
 
 def load_channel(paths: Paths, slug: str) -> Channel:
@@ -46,7 +54,7 @@ def load_channel(paths: Paths, slug: str) -> Channel:
 def save_channel(paths: Paths, ch: Channel) -> Path:
     f = paths.channel_file(ch.slug)
     f.parent.mkdir(parents=True, exist_ok=True)
-    write_text_atomic(f, yaml.safe_dump(ch.model_dump(mode="json"), sort_keys=False, allow_unicode=True))
+    _write_text(f, yaml.safe_dump(disk_dict(ch), sort_keys=False, allow_unicode=True))
     return f
 
 
@@ -70,6 +78,7 @@ def load_install_state(paths: Paths) -> InstallState:
         return InstallState.model_validate_json(read_text_retry(f, "utf-8-sig"))
     except ValueError:
         pass
+    first_start.guard(f)  # the torn file is moved aside: a change like any other (F-10c)
     quarantine(f)
     try:
         return InstallState.model_validate_json(
@@ -81,7 +90,7 @@ def load_install_state(paths: Paths) -> InstallState:
 
 def save_install_state(paths: Paths, st: InstallState) -> Path:
     """Atomic write; the previous file becomes the `.bak` the reader falls back to."""
-    return _write_json(paths.install_state_file, st.model_dump(mode="json"), keep_backup=True)
+    return _write_json(paths.install_state_file, disk_dict(st), keep_backup=True)
 
 
 def load_manifest(path: Path | None = None) -> Manifest:

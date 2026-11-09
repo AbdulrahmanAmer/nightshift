@@ -10,7 +10,7 @@ import zipfile
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 
-from ns_common import __version__
+from ns_common import __version__, first_start
 from ns_common.atomic import (
     PrepareFn,
     is_tmp_name,
@@ -172,6 +172,7 @@ def restore_backup(
                     for suffix in ("-wal", "-shm"):  # stale WAL files would corrupt the restored database
                         Path(str(dest) + suffix).unlink(missing_ok=True)
                 dest.parent.mkdir(parents=True, exist_ok=True)
+                first_start.guard(dest)  # a settings file: the copy for `ns update --rollback` first (F-10c)
                 _write_member(z, info, dest)
             except OSError as e:  # disk full, a locked database, no permission, a key file left unlocked
                 # (NS-E120): put everything back

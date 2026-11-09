@@ -112,6 +112,8 @@ def deferred_script(home: Path, wait_pids: list[int], local_root: Path | None = 
     # (app.prev-config.zip: the settings copy `ns update` keeps beside the program backup)
     targets = [home / "bin", home / "run", home / "app", home / "app.new", home / "app.prev"]
     targets += [home / "app.prev-config.zip", home / "app.prev-config.zip.unrestored"]
+    # (and the copy's lock file and the record of a rollback in progress: ns_common.rollback_intent)
+    targets += [home / "app.prev-config.zip.lock", home / "app.rollback-pending.json", home / "app.swap"]
     if local_root is not None:
         targets += [local_root / "browser", local_root / "webview2"]
     listed = ", ".join(f"'{ps_quote(str(t))}'" for t in targets)

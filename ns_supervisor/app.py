@@ -18,6 +18,7 @@ from fastapi import FastAPI  # pyright: ignore[reportMissingImports]
 from fastapi.responses import JSONResponse, StreamingResponse  # pyright: ignore[reportMissingImports]
 from pydantic import BaseModel
 
+from ns_common import first_start
 from ns_common.atomic import sweep_stale_tmp
 from ns_common.config import load_runtime
 from ns_common.errors import NsError
@@ -248,6 +249,9 @@ def relock_secret_files(paths: Paths, log: Any) -> int:
 def _serve(args: argparse.Namespace, paths: Paths) -> int:
     import uvicorn  # pyright: ignore[reportMissingImports]
 
+    # F-10c: before the engine reads a settings file, an interrupted rollback is finished or undone and the
+    # first start after an older updater takes the settings copy (both never raise)
+    first_start.ensure(paths.config)
     try:
         runtime = load_runtime(paths)
     except NsError:

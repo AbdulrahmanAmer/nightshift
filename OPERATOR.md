@@ -368,9 +368,36 @@ changed; running `ns update --rollback` a second time goes forward again with th
 latest update is kept this way (a second update replaces the first one's copy). The copy is made by the version
 that does the update, so it exists for an update made through `INSTALL.cmd` from a new zip, and for any update
 made by a Nightshift that already has this feature (0.1.15 or later). An update made BY an older version with
-`ns update <zip>`, `ns update --github` or Settings > Update (for example 0.1.14 going to 0.1.15) saves no copy,
-because the older updater is the one that runs: the rollback then swaps the program as before and says it could
-not restore the settings. A copy is replaced only together with the program it belongs to (an update replaces the
+`ns update <zip>`, `ns update --github` or Settings > Update (for example 0.1.14 going to 0.1.15) runs the older
+updater, which saves no copy; so the new version saves it itself the first time it starts, before it changes
+any settings file (it sees `<folder>.prev` with no copy that belongs to it). If that copy cannot be saved (a full
+disk, a locked file, or a copy of another version is in its place), Nightshift still starts and writes one line
+about it in `logs\first_start-<date>.jsonl`. Whenever `ns update --rollback` has no usable copy (none was saved,
+or it is damaged), it keeps your settings files as they are but takes out of them every setting added since 0.1.14
+that the older version does not know, and names each one (for example `runtime.json (tiny_story)`), so the older
+version can read them. Two limits: a file the rollback cannot change (it is in use or read-only) keeps those
+settings, and the rollback names it as one the older version may refuse (restore a backup with `ns restore` if
+that version then does not start); and going back to a version older than 0.1.14 checks only the settings added
+since 0.1.14. When there was simply no copy and nothing had to be taken out, the rollback says there was nothing
+to put back, not that something failed. And from 0.1.15 on, a setting that a newer version added is written to
+its file only when you use it: an install that never used a new feature keeps files the older version reads as
+its own. One kind of job file is not changed by a rollback: a job made with the engine-test tiny-story profile
+(a `plan.json` target under 9 minutes) cannot be resumed by 0.1.14; every other job can.
+A rollback is safe to interrupt (the PC loses power, the window is closed): it first writes
+`<folder>.rollback-pending.json`, then makes the settings files ones the older version reads, and only then puts
+the older version in place. Whichever version is in `<folder>` afterwards finds settings it can load (apart from
+a file the rollback could not change, which it names, as above); when the newer version starts again it puts the
+settings back as they were before the rollback, and finishes that even if it is interrupted itself (then run
+`ns update --rollback` again), and a later version that has this code finishes an interrupted rollback by itself.
+While the settings of an interrupted rollback are not back yet, `ns update`, `ns update --rollback` and
+`INSTALL.cmd` stop with a message and change nothing; start Nightshift once (or close the program that holds a
+settings file) and try again. If the older version stays in place and you later install a version again (even the
+same one), the record is dropped and the settings stay as the older version left them. Only if the power goes off
+in the instant between two folder renames can `<folder>` be missing with `<folder>.swap` beside it: rename
+`<folder>.swap` back to `<folder>` and start Nightshift. Close the Dashboard and Studio windows before
+`ns update --rollback`: a window that saves a setting while the rollback runs waits for it up to a minute and then
+saves anyway, into the settings the rollback is changing.
+A copy is replaced only together with the program it belongs to (an update replaces the
 program backup and its copy together, and a rollback swaps the pair). Two things are never done to a copy: it is never overwritten with settings
 that are not its program's, and a whole copy of a version that is not installed (it may be the only copy of that
 version's settings) is never deleted. If the settings could not be put back by a rollback (a file was in use), the

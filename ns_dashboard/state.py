@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from ns_common import first_start
 from ns_common.atomic import read_text_retry, write_text_atomic
 from ns_common.db import Db
 from ns_common.logging import NsLogger
@@ -187,6 +188,7 @@ def save_dashboard_settings(paths: Paths, data: Mapping[str, Any]) -> dict[str, 
     """Merge `data` into the stored settings and return the result."""
     merged = load_dashboard_settings(paths)
     merged.update({k: v for k, v in data.items() if k in DEFAULT_SETTINGS})
+    first_start.guard(settings_file(paths))
     write_text_atomic(settings_file(paths), json.dumps(merged, indent=2) + "\n")
     return merged
 
