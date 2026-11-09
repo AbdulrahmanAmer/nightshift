@@ -368,15 +368,15 @@ def done(out: str) -> Any:
     return subprocess.CompletedProcess(["powershell"], 0, out, "")
 
 
-def test_the_disabled_task_script_registers_then_disables(tmp_path: Path):
+def test_the_disabled_task_script_registers_the_task_disabled_in_one_step(tmp_path: Path):
     paths = Paths(tmp_path / "ns")
     plain = schedule.build_install_script(paths, "03:00", tmp_path)
     dev = schedule.build_install_script(paths, "03:00", tmp_path, disabled=True)
-    assert "Disable-ScheduledTask" not in plain
-    lines = dev.splitlines()
-    assert lines.index("Disable-ScheduledTask -TaskName 'Nightshift Daily' | Out-Null") > max(
-        i for i, ln in enumerate(lines) if "Register-ScheduledTask" in ln)
-    assert lines[-1].startswith("Write-Output ('registered:'")
+    assert "-Disable" not in plain
+    assert "Disable-ScheduledTask" not in dev  # no second call: no window in which the task can fire
+    settings = next(ln for ln in dev.splitlines() if ln.startswith("$settings"))
+    assert settings.endswith("-Disable")
+    assert dev.splitlines()[-1].startswith("Write-Output ('registered:'")
 
 
 def test_a_disabled_task_is_no_schedule_for_the_supervisor_or_the_dashboard(
@@ -397,7 +397,15 @@ def test_ns_schedule_install_takes_disabled(tmp_home: Path, monkeypatch: pytest.
 
     seen: list[bool] = []
 
-    def fake_install(paths: Paths, run_time: str | None, app_path: Path, *, disabled: bool = False) -> str:
+    def fake_install(
+        paths: Paths,
+        run_time: str | None,
+        app_path: Path,
+        *,
+        disabled: bool = False,
+        keep_state: bool = False,
+        enable: bool = False,
+    ) -> str:
         seen.append(disabled)
         return "registered"
 
@@ -511,4 +519,5 @@ def test_a_dev_install_keeps_its_task_disabled_when_anything_re_registers_it(
 
     monkeypatch.setattr(pwsh, "run_powershell", capture)
     schedule.install(paths, "05:00", tmp_path)          # no disabled=True: the Settings page does this
-    assert "Disable-ScheduledTask" in scripts[0] and read_schedule_mode(paths) == "disabled"
+    assert "-ExecutionTimeLimit (New-TimeSpan -Hours 6) -Disable" in scripts[0]
+    assert read_schedule_mode(paths) == "disabled"

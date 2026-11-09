@@ -176,7 +176,9 @@ def test_changing_the_run_time_reregisters_the_windows_task(tmp_home: Path, monk
     r = client.put("/api/settings", json={"schedule_time": "04:30"})
     assert r.status_code == 200, r.text
     assert r.json()["schedule_result"]["applied"] is True
-    assert len(scripts) == 1 and "Register-ScheduledTask" in scripts[0] and "'04:30'" in scripts[0]
+    # the task is read first (D-28: its state is kept), then replaced
+    assert len(scripts) == 2 and "Get-ScheduledTask" in scripts[0] and "Register-ScheduledTask" not in scripts[0]
+    assert "Register-ScheduledTask" in scripts[1] and "'04:30'" in scripts[1]
     assert read_run_time(Paths.from_env()) == "04:30"  # the supervisor's own copy of the time moved too
 
 

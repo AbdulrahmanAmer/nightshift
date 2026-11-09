@@ -1,5 +1,5 @@
 ---
-version: 1
+version: 2
 thinking: false
 schema: null
 ---
@@ -15,6 +15,8 @@ Study the craft (not the content) of these exemplars from the channel:
 {{ ex.text }}
 {% endfor %}
 {% endif %}
+Content rules:
+{{ policy_rules }}
 Beat sheet:
 {% for b in plan.beats %}
 {{ loop.index }}. {{ b.name }}: {{ b.summary }}
