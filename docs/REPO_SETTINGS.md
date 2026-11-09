@@ -7,7 +7,7 @@ Applied on 2026-11-01 with `gh api` using the owner's token; every command is re
 
 | Setting | Value | Why |
 |---|---|---|
-| Required status checks | `lint`, `types`, `test`, `ui-build`, `powershell-parse`, `scope-check` | The jobs of `.github/workflows/ci.yml` that decide merge safety (`scope-check` runs on pull requests only; `ui-build` rebuilds `ns_dashboard/ui` with node 20 and fails when the committed `ns_dashboard/static` differs). `bundle` reports but does not block. Names must equal the job ids in ci.yml. |
+| Required status checks | `lint`, `types`, `test`, `ui-build`, `powershell-parse`, `scope-check` | The jobs of `.github/workflows/ci.yml` that decide merge safety (`scope-check` runs on pull requests only; `ui-build` rebuilds `ns_dashboard/ui` with node 20 and fails when the committed `ns_dashboard/static` differs). `bundle` reports but does not block. Names must equal the job ids in ci.yml. `test` is the job that gathers the unit-test shards `test-shard (1/4)` to `(4/4)` and `test-collect` (they are not required themselves): it always runs, and fails when any of them failed, was skipped or was cancelled, or when the shards did not together run exactly the unsharded collection (`dev/ci_shards.py verify`). |
 | Require branches to be up to date | off | Builders on disjoint paths would otherwise rebase constantly. |
 | Force pushes | forbidden | History of published branches is never rewritten (ENGINEERING section 5). |
 | Branch deletion | forbidden | |
@@ -67,8 +67,8 @@ gh api -X PUT repos/AbdulrahmanAmer/nightshift/actions/permissions/workflow -f d
 
 | File | Trigger | What |
 |---|---|---|
-| `.github/workflows/ci.yml` | push, pull request | `lint`, `types`, `test`, `ui-build`, `powershell-parse`, `bundle`; `scope-check` on pull requests only |
-| `.github/workflows/release.yml` | tag `v*` | tests, UI build (node 20) and check, `dev/make_bundle.ps1`, GitHub Release (body from `dev/release_notes.md` plus the changelog entries) with `Nightshift-Setup-<ver>.zip`, `Nightshift-Update-<ver>.zip` and a `.sha256` for each (v0.1.0 and v0.1.1 used `Nightshift-<ver>.zip`, `.sha256`, `nightshift-app-<ver>.zip`) |
+| `.github/workflows/ci.yml` | pull request; push to `main` and to tags; nightly schedule | `lint`, `types`, `test` (gathers `test-shard (1/4)` to `(4/4)` and `test-collect`), `ui-build`, `powershell-parse`, `bundle`; `scope-check` on pull requests only. A pull request branch is tested by its `pull_request` run alone (a push to it starts nothing a second time); a branch with no pull request has no CI until one is opened, and a draft pull request runs it. |
+| `.github/workflows/release.yml` | tag `v*` | tests (the same four shards and the same proof, no marker filter: a full run), UI build (node 20) and check, `dev/make_bundle.ps1`, GitHub Release (body from `dev/release_notes.md` plus the changelog entries) with `Nightshift-Setup-<ver>.zip`, `Nightshift-Update-<ver>.zip` and a `.sha256` for each (v0.1.0 and v0.1.1 used `Nightshift-<ver>.zip`, `.sha256`, `nightshift-app-<ver>.zip`) |
 | `.github/workflows/build-qwentts.yml` | `workflow_dispatch`, tag `v*` | builds `Nightshift-VoiceEngine-win-cuda-x64.zip` (v0.1.0: `qwentts-win-cuda-x64.zip`) on `windows-2022` (see "qwentts build") |
 
 Cutting a release (orchestrator; the full loop including the qwentts pin is under "Release loop" below): move the `## [Unreleased]` entries in `CHANGELOG.md` under `## [x.y.z]`, set `VERSION`,
