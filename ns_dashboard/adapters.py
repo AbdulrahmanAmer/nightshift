@@ -306,6 +306,7 @@ class StudioAdapter:
         `ctl.extras["lease_owners"]`, and `release_leases` frees them all when the child is gone.
         """
         report = job_reporter(ctl)
+        ended = False  # set once the run is over: an owner announced after that is released on arrival
 
         def on_event(event: dict[str, Any]) -> None:
             name = event.get("ev")
@@ -323,6 +324,8 @@ class StudioAdapter:
                 if owner and owner not in owners:
                     owners.append(owner)
                     ctl.note(lease_owners=list(owners))  # written now, like the job ids
+                    if ended or ctl.cancelled():  # late: the job was cancelled before this arrived
+                        self._release_late(ctl, owner)
             elif name == "download":
                 ctl.download(float(event.get("percent", 0)))
             elif name == "job":
@@ -336,8 +339,18 @@ class StudioAdapter:
                 kind, full, on_event=on_event, check_cancel=ctl.check_cancel, on_cancel=on_cancel
             )
         except BaseException:
+            ended = True
             self.release_leases(ctl, full)  # the child is gone (stopped itself or killed): free its lease
             raise
+
+    def _release_late(self, ctl: JobControl, owner: str) -> None:
+        """Free `owner` at once: it was announced after its job was cancelled or had ended, so nothing else
+        would ever release it and the lease would sit there until it expired."""
+        NsLogger("dashboard", self.paths.logs).info(
+            "lease_owner_released_late", job_id=ctl.job_id, owner=owner
+        )
+        with contextlib.suppress(Exception):  # an engine that is down holds nothing
+            self.link.release_owner(owner)
 
     def release_leases(self, ctl: JobControl, args: dict[str, Any]) -> None:
         """Tell the supervisor that the studio owners of this job are gone, whatever they still held.

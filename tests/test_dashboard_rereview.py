@@ -77,6 +77,22 @@ def cancel_when_up(tmp_path: Path, store: JobStore, job_id: str) -> None:
     threading.Thread(target=go, daemon=True).start()
 
 
+def cancel_when_recorded(store: JobStore, job_id: str, owners: list[str]) -> None:
+    """Cancel only once the dashboard has written every announced owner to the job record (not merely once
+    the child printed them: the dashboard reads the child's stdout on its own thread, at its own pace)."""
+
+    def go() -> None:
+        end = time.monotonic() + 20
+        while time.monotonic() < end:
+            rec = store.get(job_id)
+            if rec is not None and (rec.result or {}).get("lease_owners") == owners:
+                break
+            time.sleep(0.02)
+        store.request_cancel(job_id)
+
+    threading.Thread(target=go, daemon=True).start()
+
+
 class RecordingLink(SupervisorLink):
     def __init__(self) -> None:
         super().__init__("http://127.0.0.1:9", timeout_s=0.2)
@@ -137,7 +153,7 @@ def test_cancel_frees_every_owner_the_child_took_not_only_the_studio_job_ids(
     monkeypatch.setenv("CHILD_OWNERS", "studio:voice-nova,dashboard:helper-1")
     paths = Paths.from_env()
     store, ctl = make_ctl(paths)
-    cancel_when_up(tmp_path, store, ctl.job_id)
+    cancel_when_recorded(store, ctl.job_id, ["studio:voice-nova", "dashboard:helper-1"])
     link = RecordingLink()
     adapter = RealRunAdapter(paths, link, runner=runner_for(child, tmp_path, grace_s=15))
     with pytest.raises(JobCancelled):
@@ -148,6 +164,43 @@ def test_cancel_frees_every_owner_the_child_took_not_only_the_studio_job_ids(
     rec = store.get(ctl.job_id)  # written as announced: a restart mid-job must not lose them
     assert rec is not None and rec.result is not None
     assert rec.result["lease_owners"] == ["studio:voice-nova", "dashboard:helper-1"]
+
+
+def test_owners_announced_after_the_cancel_was_asked_are_still_freed(
+    child: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    # the cancel is already there when the first line is read: check_cancel raises at once and the owner lines
+    # are still unread (this is the order the Windows runner produced)
+    monkeypatch.setenv("CHILD_OWNERS", "studio:voice-nova,dashboard:helper-1")
+    paths = Paths.from_env()
+    store, ctl = make_ctl(paths)
+    store.request_cancel(ctl.job_id)
+    link = RecordingLink()
+    adapter = RealRunAdapter(paths, link, runner=runner_for(child, tmp_path, grace_s=15))
+    with pytest.raises(JobCancelled):
+        adapter.run(ctl, "after-dark", "shorts_only", 1)
+    # a late owner is freed on arrival and again with the rest: freeing twice is harmless
+    assert set(link.released) == {
+        "dashboard:helper-1", "studio:after-dark-20261102-aaaa", "studio:voice-nova",
+    }
+
+
+def test_an_owner_announced_to_a_cancelled_job_is_released_on_arrival_and_logged(tmp_home: Path):
+    class LateRunner:
+        def run(self, kind: str, args: dict[str, Any], *, on_event: Any, **_kw: Any) -> dict[str, Any]:
+            on_event({"ev": "owner", "owner": "studio:voice-nova"})  # arrives after the cancel was asked
+            raise JobCancelled()
+
+    paths = Paths.from_env()
+    store, ctl = make_ctl(paths)
+    store.request_cancel(ctl.job_id)
+    link = RecordingLink()
+    adapter = RealRunAdapter(paths, link, runner=LateRunner())  # type: ignore[arg-type]
+    with pytest.raises(JobCancelled):
+        adapter.run(ctl, "after-dark", "shorts_only", 1)
+    assert link.released == ["studio:voice-nova", "studio:voice-nova"]  # on arrival, then with the rest
+    logged = "".join(p.read_text(encoding="utf-8") for p in paths.logs.glob("dashboard-*.jsonl"))
+    assert "lease_owner_released_late" in logged and "studio:voice-nova" in logged
 
 
 def test_a_failed_job_frees_every_owner_it_took_too(
