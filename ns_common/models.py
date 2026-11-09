@@ -182,6 +182,10 @@ class Runtime(Strict):
     # Pixabay so story jobs run without a stock-footage account. A real install never sets it except
     # through that answer.
     fake_footage: bool = False
+    # Engine test (answer `tiny_story`, docs/DEV_MODE.md): the story text stages use the thresholds a 1 to 2
+    # GB model can meet (`ns_studio.text.story_profile`). The answer needs `allow_cpu`; a real install never
+    # sets it, and the dashboard cannot.
+    tiny_story: bool = False
 
     @classmethod
     def default(cls, profile: Literal["gpu", "cpu-dev"]) -> Runtime:

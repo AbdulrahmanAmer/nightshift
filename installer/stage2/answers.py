@@ -39,6 +39,11 @@ class InstallerAnswers(Answers):
     # jobs run end to end without a stock-footage key (the footage is placeholder). runtime.json says
     # `fake_footage: true`. An answers.json setting only; the setup window never asks it.
     fake_footage: bool = False
+    # Engine test: the story text stages use the thresholds a 1 to 2 GB language model can meet (word budgets,
+    # chapter and beat counts, the length and reading-grade floors; `ns_studio.text.story_profile`), so a real
+    # tiny model can get a story past the text validators. runtime.json says `tiny_story: true`. Needs
+    # `allow_cpu`. An answers.json setting only: the setup window never asks it, the dashboard cannot set it.
+    tiny_story: bool = False
 
 
 def wants_voicedesign(ans: InstallerAnswers) -> bool:
@@ -125,6 +130,11 @@ def build_answers(raw: dict[str, Any], *, saved: bool = False) -> InstallerAnswe
         )
     if ans.voice.mode == "design" and not ans.voice.description:
         raise AnswersError("a designed voice needs voice.description")
+    if ans.tiny_story and not ans.allow_cpu:
+        raise AnswersError(
+            "tiny_story is for an engine test on a PC with no NVIDIA card: set allow_cpu to true as well, "
+            "or remove tiny_story"
+        )
     if ans.llm_custom is not None:
         problem = shape_problem(ans.llm_custom.repo, ans.llm_custom.file)
         if problem:

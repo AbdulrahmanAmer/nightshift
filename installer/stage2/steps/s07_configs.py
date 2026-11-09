@@ -56,10 +56,11 @@ def apply_engine_test(ctx: StepContext, rt: Runtime) -> None:
 
     ``build_runtime`` writes them only when runtime.json does not exist yet, so a re-run or an upgrade over an
     existing runtime.json would keep the old values and the answer would silently do nothing. The footage
-    switch follows the answer both ways; the fake voice engine is set only when asked, because without the
-    answer nothing here knows which real engine the earlier steps chose.
+    and tiny-story switches follow their answers both ways; the fake voice engine is set only when asked,
+    because without the answer nothing here knows which real engine the earlier steps chose.
     """
     rt.fake_footage = ctx.fake_footage
+    rt.tiny_story = ctx.tiny_story
     if ctx.fake_voice:
         rt.tts.engine = "fake"
 
