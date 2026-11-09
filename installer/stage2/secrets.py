@@ -2,14 +2,20 @@
 
 from __future__ import annotations
 
-import os
-import subprocess
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Protocol
 
 from ns_common.paths import Paths
-from ns_common.secret_file import delete_secret, dpapi_protect, dpapi_unprotect, load_secret, store_secret
+from ns_common.secret_file import (  # restrict_to_user lives with the file it protects; re-exported here
+    FILE_NAME,
+    delete_secret,
+    dpapi_protect,
+    dpapi_unprotect,
+    load_secret,
+    restrict_to_user,
+    store_secret,
+)
 from ns_common.secrets_names import KEY_NAMES, KEYRING_SERVICE, PEXELS_KEY, PIXABAY_KEY
 
 # One definition for the studio, the installer and Settings: ``ns_common.secrets_names``.
@@ -82,26 +88,15 @@ class MemoryStore:
         self.values.pop(name, None)
 
 
-def restrict_to_user(path: Path) -> None:
-    """Limit a file's ACL to the current user (and SYSTEM) with icacls. Best effort; never raises."""
-    user = os.environ.get("USERNAME")
-    if not user or os.name != "nt":
-        return
-    try:
-        subprocess.run(
-            ["icacls", str(path), "/inheritance:r", "/grant:r", f"{user}:F", "/grant:r", "*S-1-5-18:F"],
-            capture_output=True, check=False, timeout=30,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return
-
-
 class ResilientStore:
     """Credential Manager first, plus a DPAPI file the nightly run can read when Credential Manager cannot.
 
     The nightly task may run in a session without access to the user's Credential Manager (S4U). ``set``
     writes both places and only fails when neither accepted the value; ``get`` asks the keyring and falls back
-    to the file.
+    to the file. When only the file refused (its lock failed, ``NS-E120``, or the disk did), the key is in
+    Credential Manager and ``warn`` says so (setup shows, logs and keeps the line as a notice). The file keeps
+    what it had unless only the check after the swap failed: ``NS-E120`` then says "the new file is in place",
+    and the new key IS in the file.
     """
 
     def __init__(
@@ -112,12 +107,14 @@ class ResilientStore:
         protect: Callable[[bytes], bytes] = dpapi_protect,
         unprotect: Callable[[bytes], bytes] = dpapi_unprotect,
         lock_down: Callable[[Path], None] = restrict_to_user,
+        warn: Callable[[str], None] | None = None,
     ) -> None:
         self.primary = primary
         self.paths = paths
         self._protect = protect
         self._unprotect = unprotect
         self._lock_down = lock_down
+        self.warn: Callable[[str], None] = warn or (lambda line: None)
 
     def get(self, name: str) -> str | None:
         """The keyring value, else the file's, else None."""
@@ -129,26 +126,33 @@ class ResilientStore:
 
     def delete(self, name: str) -> None:
         """Forget the key in both places (a stored key the service rejected must not survive setup)."""
+        keyring_said = "was removed from Credential Manager"
         try:
             self.primary.delete(name)
-        except Exception:  # noqa: BLE001 - best effort, the file copy is still removed
-            pass
+        except Exception as e:  # noqa: BLE001 - best effort, the file copy is still removed
+            keyring_said = f"could not be removed from Credential Manager ({type(e).__name__})"
         try:
-            delete_secret(self.paths, name)
-        except OSError:
-            pass
+            delete_secret(self.paths, name, lock_down=self._lock_down)
+        except OSError as e:  # the file may still hold the key; the nightly fallback may still find it
+            self.warn(f"The {name} key {keyring_said}, and it was not removed from {FILE_NAME}: {e}")
 
     def set(self, name: str, value: str) -> None:
-        """Write the keyring and the file; raise only when both fail."""
+        """Write the keyring and the file; raise only when both fail (a file-only failure is warned)."""
         failures: list[str] = []
+        keyring_ok = True
         try:
             self.primary.set(name, value)
         except Exception as e:  # noqa: BLE001 - recorded, the file copy may still work
+            keyring_ok = False
             failures.append(f"keyring: {type(e).__name__}")
         try:
-            path = store_secret(self.paths, name, value, protect=self._protect)
-            self._lock_down(path)
+            store_secret(self.paths, name, value, protect=self._protect, lock_down=self._lock_down)
         except OSError as e:
             failures.append(f"file: {e}")
+            if keyring_ok:
+                self.warn(
+                    f"The {name} key is saved in Credential Manager, but saving its copy for nightly runs "
+                    f"that cannot reach Credential Manager ({FILE_NAME}) failed: {e}"
+                )
         if len(failures) == 2:
             raise OSError("could not store the key (" + "; ".join(failures) + ")")

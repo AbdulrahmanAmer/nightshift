@@ -36,7 +36,7 @@ def _series_delay(env: jobs.Env, job_id: str) -> int:
     """Days a series part waits after the nightly slot (`publish_not_before_days` of its design)."""
     f = env.paths.job_dir(job_id) / "series_context.json"
     try:
-        return max(0, int(json.loads(f.read_text(encoding="utf-8")).get("publish_not_before_days", 0) or 0))
+        return max(0, int(json.loads(read_text_retry(f)).get("publish_not_before_days", 0) or 0))
     except (OSError, ValueError, AttributeError):
         return 0
 

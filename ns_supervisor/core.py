@@ -63,6 +63,9 @@ LEASED_PREFIXES: tuple[str, ...] = ("studio:", "dashboard:assistant")
 ACTIVITY_PREFIXES: tuple[str, ...] = ("studio:", "dashboard:job")
 #: `/status` says `busy` for this long after the last acquire, release or warmup (a run between two stages).
 BUSY_RECENT_S = 120.0
+#: How long `write_state` waits for a program that holds `run\supervisor.json` open before it gives up
+#: (NS-E119 in the log; it never raises).
+STATE_WAIT_S = 2.0
 
 
 @dataclass
@@ -169,10 +172,17 @@ class Supervisor:
         """`run\\supervisor.json`: supervisor pid and child pids, used by `ns stop` when the API is down."""
         return self.paths.home / "run" / "supervisor.json"
 
-    def write_state(self) -> None:
-        """Record supervisor and child pids."""
+    def write_state(self) -> bool:
+        """Record supervisor and child pids; True when the file was written.
+
+        The file is advisory (`ns stop` and `ns status` fall back to the API without it), so a refused write
+        never raises: a failure here, right after a child was spawned, used to leave that child running and
+        unsupervised (`_start_locked` terminates it only inside its try), or to turn a healthy start into a
+        failure, or to hide the real start error behind `NS-E119`. It is a WARN in the log (`NS-E119`, the
+        file keeps its last whole content) and the next state change writes it again.
+        """
         if self.shutting_down:  # shutdown removes the file; a late start must not bring it back
-            return
+            return False
         children = {n: r.proc.pid for n, r in self.services.items() if r.proc is not None}
         data = {
             "pid": os.getpid(),
@@ -180,7 +190,14 @@ class Supervisor:
             "started_at": self.started_wall,
             "children": children,
         }
-        write_text_atomic(self.state_file, json.dumps(data, indent=2) + "\n")  # `ns stop` reads it
+        # `ns stop` and `ns status` read it. Called on the event loop, so a program that holds the file (they
+        # open it only briefly) costs STATE_WAIT_S at most, then the write is given up with NS-E119 (logged).
+        try:
+            write_text_atomic(self.state_file, json.dumps(data, indent=2) + "\n", wait_s=STATE_WAIT_S)
+        except OSError as e:  # FileInUseError (NS-E119) is one; a full disk or a locked folder is another
+            self.log.warn("state_file_not_written", str(e), path=str(self.state_file))
+            return False
+        return True
 
     def remove_state(self) -> None:
         """Delete the pid file (clean exit)."""

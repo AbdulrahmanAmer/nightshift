@@ -14,6 +14,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from ns_common.atomic import read_text_retry
 from ns_studio.context import JobContext
 from ns_studio.orchestrator import FORMAT_STAGES
 from ns_studio.stages import Tenant, register
@@ -69,7 +70,7 @@ def series_fixed(series: Mapping[str, Any]) -> dict[str, str]:
 def job_series_fixed(job_dir: Path) -> dict[str, str]:
     """`series_fixed` for the job directory of a series part (before its `JobContext` exists)."""
     try:
-        return series_fixed(json.loads((job_dir / "series_context.json").read_text(encoding="utf-8")))
+        return series_fixed(json.loads(read_text_retry(job_dir / "series_context.json")))
     except (OSError, ValueError, AttributeError):
         return {}
 

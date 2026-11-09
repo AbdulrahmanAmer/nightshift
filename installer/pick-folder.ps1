@@ -33,10 +33,17 @@ function Get-NearestFolder {
 function Write-NsFileSwap {
     # The result file is either absent or whole, never empty for a moment: the text goes to a temp file in the
     # same folder, is flushed, and is then swapped over -Path (File.Replace, or Move for a new file). A crash
-    # in the middle used to leave an empty file, which the setup server reads as "dialog cancelled". Same
-    # contract as Write-NsFileAtomic in launchers/_common.ps1 (this script does not load that file: it runs
-    # before the app is installed). UTF-8 without a BOM.
-    param([Parameter(Mandatory = $true)][string]$Path, [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Text)
+    # in the middle used to leave an empty file, which the setup server reads as "dialog cancelled". Windows
+    # refuses the swap for a moment while another process has -Path open without sharing delete (the setup
+    # server reading it, an antivirus scan): that is retried, as launchers/_common.ps1 Write-NsFileAtomic
+    # does (-Tries, a growing pause, the error thrown after the last try, the old file untouched). This
+    # script does not load that file (it runs before the app is installed) and swaps with File.Replace,
+    # not MoveFileEx. UTF-8 without a BOM.
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Text,
+        [int]$Tries = 20
+    )
     $full = [System.IO.Path]::GetFullPath($Path)
     $tmp = Join-Path ([System.IO.Path]::GetDirectoryName($full)) ('~ns' + $PID + '-0-' + (Get-Random -Maximum 2000000000) + '.tmp')
     try {
@@ -44,8 +51,18 @@ function Write-NsFileSwap {
         $fs = New-Object System.IO.FileStream($tmp, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
         try { $fs.Write($bytes, 0, $bytes.Length); $fs.Flush($true) }
         finally { $fs.Dispose() }
-        if ([System.IO.File]::Exists($full)) { [System.IO.File]::Replace($tmp, $full, [NullString]::Value) }
-        else { [System.IO.File]::Move($tmp, $full) }
+        for ($attempt = 1; ; $attempt++) {
+            try {
+                if ([System.IO.File]::Exists($full)) { [System.IO.File]::Replace($tmp, $full, [NullString]::Value) }
+                else { [System.IO.File]::Move($tmp, $full) }
+                break
+            }
+            catch [System.IO.IOException], [System.UnauthorizedAccessException] {
+                # a sharing or lock violation, or access denied while a reader has the target open
+                if ($attempt -ge $Tries) { throw }
+                Start-Sleep -Milliseconds ([Math]::Min(10 * $attempt, 100))
+            }
+        }
     }
     finally {
         try { if ([System.IO.File]::Exists($tmp)) { [System.IO.File]::Delete($tmp) } }
