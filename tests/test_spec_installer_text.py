@@ -303,7 +303,7 @@ def test_h_box_cites_its_section_13_row_and_is_not_ticked(box_id):
 
 
 FIXED_ROWS = {
-    "Welcome screen in the setup window": "built",
+    "Welcome screen in the setup window": "spec_dropped",
     "A.2 'You'll need ~40 GB free'": "built",
     "A.2 'two free stock-footage API keys": "spec_dropped",
     "A.3.2 Install Git": "spec_dropped",
@@ -320,3 +320,139 @@ FIXED_ROWS = {
 def test_audit_row_status_follows_the_spec_text(feature):
     cells = status_row(feature)
     assert cells[0] == FIXED_ROWS[feature]
+
+
+# ---------------------------------------------------------------------------------------------------------
+# P37 break-it round: sentences that said more than the code does
+# ---------------------------------------------------------------------------------------------------------
+def ps1_function(name: str) -> str:
+    """The body of a PowerShell function of stage1.ps1 (up to the next top-level function)."""
+    m = re.search(rf"^function {re.escape(name)} \{{.*?(?=^function |\Z)", STAGE1, re.S | re.M)
+    assert m, name
+    return m.group(0)
+
+
+def stage1_line() -> str:
+    return next(ln for ln in section("## 5. Installer").splitlines() if ln.startswith("**Stage 1"))
+
+
+def test_stage_1_installs_the_runtime_without_winget_and_the_spec_says_so():
+    """Stage 1 downloads the pinned runtime and runs it elevated; only the tools step tries winget."""
+    assert "winget" not in ps1_function("Install-VcRuntime").lower()
+    assert "Install-VcRuntime -Manifest" in STAGE1
+    step2 = numbered_line(section("### A.3"), 2)
+    vc_row = table_row(section("### 21.1"), "Visual C++ runtime")
+    for text in (step2, stage1_line(), vc_row):
+        assert "stage 1" in text.lower() and "pinned" in text
+    assert "winget first, then a pinned direct download for the runtime and FFmpeg" not in step2
+    assert "no winget" in stage1_line()
+    assert "FFmpeg" in step2 and "winget" in step2
+
+
+def test_no_key_notice_is_named_by_its_three_routes():
+    """D24: the console prints NO_KEY_NOTICE, the Done screen has the reminder, a resume shows a notice."""
+    from installer.stage2.web import controller
+
+    src = (ROOT / "installer" / "stage2" / "web" / "controller.py").read_text(encoding="utf-8")
+    # the window's notice is added only on a locked resume; the Done result carries the reminder
+    assert re.search(
+        r"if locked and not any\(self\._keys_stored\.values\(\)\):\s+"
+        r"state\[\"notices\"\]\.append\(dict\(NO_KEY_NOTICE\)\)",
+        src,
+    )
+    assert controller.NO_KEY_NOTICE["code"] == "no-stock-key"
+    assert '"stockKeyMissing": not self._stock_key_stored()' in src
+    done = (ROOT / "installer" / "ui" / "src" / "screens" / "Done.tsx").read_text(encoding="utf-8")
+    assert "stockKeyMissing" in done and "keyReminder" in done
+    row = decision("Stock-footage keys")
+    for needle in ("`NO_KEY_NOTICE`", "`stockKeyMissing`", "Done screen", "resume", "no-stock-key"):
+        assert needle in row
+    assert 'the window\'s "no-stock-key" notice)' not in row  # that wording named the wrong route
+
+
+def test_ns_update_git_hint_is_for_a_clone_without_git(tmp_path, monkeypatch):
+    """A zip install has no .git, so `ns update --git` says it is not a clone; the Git hint is for a clone."""
+    from ns_common.errors import NsError
+    from ns_common.paths import Paths
+    from ns_supervisor import update
+    from tests.test_ns_update import Env, make_app
+
+    monkeypatch.setattr(update.shutil, "which", lambda name: None)
+    zip_app = make_app(tmp_path / "zip")
+    (zip_app / ".git" / "HEAD").unlink()
+    (zip_app / ".git").rmdir()
+    with pytest.raises(NsError) as no_clone:
+        update.git_update(zip_app, Env().env(), paths=Paths(tmp_path / "ns1"), latest_tag=lambda: "v0.2.0")
+    assert no_clone.value.code == "NS-E702" and "not a git clone" in no_clone.value.detail
+    assert update.NO_GIT_HINT not in no_clone.value.detail
+    clone = make_app(tmp_path / "clone")
+    with pytest.raises(NsError) as no_git:
+        update.git_update(clone, Env().env(), paths=Paths(tmp_path / "ns2"), latest_tag=lambda: "v0.2.0")
+    assert no_git.value.detail == update.NO_GIT_HINT
+    para = next(ln for ln in section("## 5. Installer").splitlines() if ln.startswith("**`ns update`**"))
+    for text in (numbered_line(section("### A.3"), 2), para, decision("Git"), section("### 21.1")):
+        assert "clone" in text and "NS-E702" in text
+    assert "not a git clone" in decision("Git") and "not a git clone" in para
+
+
+def test_operator_guide_agrees_with_the_welcome_text():
+    """OPERATOR.md ships in the bundle: it names the tier disk amounts and the optional key, as A.2 does."""
+    guide = (ROOT / "OPERATOR.md").read_text(encoding="utf-8")
+    assert "Two free keys" not in guide and "the two stock footage keys" not in guide
+    assert "About 75 GB" not in guide
+    small, balanced, best = (sysinfo.required_free_gb(t) for t in ("small", "balanced", "best"))
+    need = guide.split("## What you need", 1)[1].split("## Install", 1)[0]
+    assert f"{small} GB" in need and f"{balanced} GB" in need and f"{best} GB" in need
+    assert "optional" in need.lower() and "Pixabay" in need
+
+
+def test_default_home_rules_include_the_drive_size_and_last_resort():
+    """D29 states Select-DefaultHome as it is: roomy drives first, SSD over HDD, a last resort."""
+    body = ps1_function("Select-DefaultHome")
+    assert "MinFreeGbRecommended" in body and "'SSD'" in body
+    assert "Join-Path (Get-DataDir) 'Home'" in STAGE1
+    row = decision("Default install folder")
+    assert "60 GB" in row and "SSD" in row and "LOCALAPPDATA" in row
+    assert "Nightshift\\Home" in row
+
+
+def test_headless_switches_are_all_named():
+    """A.2 and D26: -NoUi, NS_NONINTERACTIVE=1 or an answers.json go headless; -Ui overrides the file."""
+    headless = "$script:Headless = (($answersPath -and -not $Ui) -or [bool]$NoUi"
+    assert headless + " -or ($env:NS_NONINTERACTIVE -eq '1'))" in STAGE1
+    for text in (section("### A.2"), decision("Welcome")):
+        assert "NS_NONINTERACTIVE" in text and "`-Ui`" in text
+
+
+def test_disk_rows_say_a_resume_counts_what_setup_already_holds():
+    """1.2 and D23: on a locked resume the amber row counts the space setup already holds (held_gb)."""
+    import inspect
+
+    from installer.stage2.web import preflight
+
+    assert "held_gb" in inspect.signature(preflight.raw_disk_rows).parameters
+    for text in (table_row(section("### 1.2"), "Disk |"), decision("Free disk space")):
+        assert "resume" in text and "already holds" in text
+
+
+def test_counts_table_matches_the_rows_it_counts():
+    """The Counts table agrees with the audit rows for partial, missing and spec_dropped, per area."""
+    statuses = ("partial", "missing", "spec_dropped")
+    per_area: dict[str, dict[str, int]] = {}
+    area = ""
+    for ln in STATUS.splitlines():
+        if ln.startswith("## "):
+            area = ln
+        cells = [c.strip() for c in ln.strip().strip("|").split("|")]
+        if area and len(cells) >= 7 and cells[0] in statuses:
+            per_area.setdefault(area, dict.fromkeys(statuses, 0))[cells[0]] += 1
+    table = STATUS.split("## Counts", 1)[1].split("\n## ", 1)[0]
+    table_rows = [
+        [c.strip().strip("*") for c in ln.strip().strip("|").split("|")] for ln in table.splitlines()
+    ]
+    by_name = {r[0]: r for r in table_rows if len(r) == 6 and r[1].isdigit()}
+    installer = next(r for name, r in by_name.items() if name.startswith("Installer"))
+    mine = per_area["## Installer, install sources, uninstall, update (spec A, 5, 21, J1, J8)"]
+    assert [int(installer[i]) for i in (2, 3, 4)] == [mine[s] for s in statuses]
+    total = by_name["All"]
+    assert [int(total[i]) for i in (2, 3, 4)] == [sum(c[s] for c in per_area.values()) for s in statuses]

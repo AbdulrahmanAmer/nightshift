@@ -8,7 +8,7 @@ Every partial and missing row is a box in section H at the end; `dev/finalizatio
 
 | Area | built | partial | missing | spec_dropped | rows |
 |---|---|---|---|---|---|
-| Installer, install sources, uninstall, update | 83 | 26 | 2 | 0 | 111 |
+| Installer, install sources, uninstall, update | 86 | 16 | 2 | 7 | 111 |
 | Runtime, supervisor, services, launchers, CLI, logging, errors | 110 | 16 | 3 | 0 | 129 |
 | Studio pipeline: master-first, Shorts, formats, TTS chunking, captions, QC, SEO, publishing | 86 | 30 | 3 | 2 | 121 |
 | Variation, prompts, rubric, validators, calibration, presets, safety and growth playbook, governor, learning | 85 | 41 | 1 | 0 | 127 |
@@ -16,7 +16,7 @@ Every partial and missing row is a box in section H at the end; `dev/finalizatio
 | Dashboard pages, API, job worker | 108 | 26 | 3 | 2 | 139 |
 | Assistant and Series Workshop | 54 | 18 | 3 | 0 | 75 |
 | Setup window | 133 | 43 | 2 | 6 | 184 |
-| **All** | **734** | **214** | **20** | **14** | **982** |
+| **All** | **737** | **204** | **20** | **21** | **982** |
 
 ## Decisions the operator took where the spec contradicts itself (2026-11-09)
 
@@ -35,7 +35,7 @@ Judge's notes: I checked the cited code for every row whose evidence was in doub
 
 | Status | Feature | Spec | Evidence | Missing / note | Proof | Verified |
 |---|---|---|---|---|---|---|
-| built | Welcome screen in the setup window uses the A.2 text | A.2, J1 step 2 | installer/ui/src/copy.ts:91-100 welcome = {salutation 'Set up Nightshift', description 'Nightshift writes a story, narrates it and edits a long video and Shorts while you sleep.', three tiles} | Spec text changed to match the code (section 13 D26): A.2 and J1 step 2 say the window shows a short welcome and the headless console path prints welcome.txt. The window still never shows the A.2 paragraphs. | Double-click INSTALL.cmd without answers.json and compare the Welcome screen to BUILD_SPEC.md A.2 | unknown |
+| spec_dropped | Welcome screen in the setup window uses the A.2 text | A.2, J1 step 2 | installer/ui/src/copy.ts:91-100 welcome = {salutation 'Set up Nightshift', description 'Nightshift writes a story, narrates it and edits a long video and Shorts while you sleep.', three tiles} | Spec text changed to match the code (section 13 D26): A.2 and J1 step 2 say the window shows a short welcome and the headless console path prints welcome.txt. The window still never shows the A.2 paragraphs. | Double-click INSTALL.cmd without answers.json and compare the Welcome screen to BUILD_SPEC.md A.2 | unknown |
 | built | A.2 'You'll need ~40 GB free' agrees with what setup enforces | A.2, 1.2 | installer/welcome.txt:9 says ~40 GB; stage1.ps1:44 MinFreeGbHard=40, stage1.ps1:637 label 'Free disk space, 60 GB'; installer/stage2/web/plan.py:18,32-42 BASE_FREE_GB + TIER_EXTRA_GB (60/74/81) | Spec text changed to match the code (section 13 D23): A.2 and welcome.txt now say 60 GB, 74 GB with Balanced and 81 GB with Best. | Compare welcome.txt to the NS-E104 threshold at s01_questions.py:144-170 with 50 GB free | unknown |
 | spec_dropped | A.2 'two free stock-footage API keys (Pexels and Pixabay)' required, setup shows where to get them | A.2, A.5, 5 s01, 21.6 | installer/stage2/steps/s01_questions.py:44-46 PEXELS_URL/PIXABAY_URL, NO_KEY_NOTICE; 209-249 keys optional; installer/ui/src/screens/Choices.tsx:104 ('both stock-footage keys are optional'), 318-319 link buttons | Superseded by section 13 D24: both keys are optional, at least one recommended (Pexels stopped issuing keys); A.2, A.5, 5 s01, 21.6 and J1 step 4 now say so. | Run answers.json with both keys blank: setup completes with a yellow notice; tests/test_installer_devrun_fixes.py | V-dev |
 | spec_dropped | A.3.2 Install Git | A.3 step 2, 21.1 Git row, 5 stage 1, J1 step 3 | installer/stage2/web/bootstrap.py:35-41 TOOLS (vcruntime, ffmpeg, terminal; comment 'Git is not here'); stage1.ps1:683-684 comment 'Git is not installed at all'; tests/test_ns_update_git.py:128 test_setup_never_installs_git; docs/HANDOFF.md:29 (#62 'optional Git'); update.py:50-54 NO_GIT_HINT | Superseded by section 13 D25: Git is not installed by setup; A.3 step 2, 5 Stage 1, 21.1 and J1 step 3 say so, and 'ns update --git' is the optional developer path that stops with NS-E702 and a hint without Git. | grep TOOLS in bootstrap.py; run ns update --git without Git and read the NS-E702 hint | V-ci |
