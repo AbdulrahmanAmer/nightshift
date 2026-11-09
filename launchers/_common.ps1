@@ -3,6 +3,109 @@ $ErrorActionPreference = 'Stop'
 
 # Shared helpers for the Nightshift launchers (dot-sourced; not a shortcut target).
 
+# --- state files that other processes read -------------------------------------------------------------------
+# Every launcher that writes a file somebody else reads (the window host's run\apphost-<role>.json and
+# config\window.json, config\opencode.json, the cache stamp) writes it with Write-NsFileAtomic, and every
+# launcher that reads such a file reads it with Read-NsTextRetry. The Python side does the same through
+# ns_common.atomic. A file written in place is empty for a moment (the write truncates it first), so a reader
+# in that moment meets a torn file and takes it for "no host window", "stale", or "no saved window".
+
+function Write-NsFileAtomic {
+    # The file at -Path is either what it was or exactly the bytes asked for, never half written: the bytes
+    # go to a temp file in the SAME folder (a swap across drives is not atomic), are flushed to disk, and are
+    # then moved over the target with MoveFileEx(REPLACE_EXISTING), the call Python's os.replace makes.
+    # Windows refuses that move for a few milliseconds while another process has the target open without
+    # sharing delete (any Python reader, an editor, a sync client): that is retried (-Tries, a growing pause).
+    # The temp file is removed whatever happens; on an error the old file is untouched and the error is thrown.
+    # -Text is encoded with -Encoding (default UTF-8 WITHOUT a BOM; pass
+    # (New-Object System.Text.UTF8Encoding $true) for a BOM); line endings are written as given.
+    [CmdletBinding(DefaultParameterSetName = 'Text')]
+    param(
+        [Parameter(Mandatory = $true, Position = 0)][string]$Path,
+        [Parameter(Mandatory = $true, Position = 1, ParameterSetName = 'Text')][AllowEmptyString()][string]$Text,
+        [Parameter(ParameterSetName = 'Text')][System.Text.Encoding]$Encoding = (New-Object System.Text.UTF8Encoding $false),
+        [Parameter(Mandatory = $true, ParameterSetName = 'Bytes')][AllowEmptyCollection()][byte[]]$Bytes,
+        [int]$Tries = 20
+    )
+    if ($PSCmdlet.ParameterSetName -eq 'Text') {
+        $pre = $Encoding.GetPreamble()
+        $body = $Encoding.GetBytes($Text)
+        $payload = New-Object byte[] ($pre.Length + $body.Length)
+        [Array]::Copy($pre, 0, $payload, 0, $pre.Length)
+        [Array]::Copy($body, 0, $payload, $pre.Length, $body.Length)
+    }
+    else {
+        $payload = $Bytes
+    }
+    if ($null -eq ('NsCommon.AtomicFile' -as [type])) {
+        Add-Type -Namespace NsCommon -Name AtomicFile -MemberDefinition @'
+[System.Runtime.InteropServices.DllImport("kernel32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode, SetLastError = true)]
+private static extern bool MoveFileExW(string src, string dst, int flags);
+public static int Swap(string src, string dst) {
+    if (MoveFileExW(src, dst, 9)) { return 0; }   // MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH
+    return System.Runtime.InteropServices.Marshal.GetLastWin32Error();
+}
+'@
+    }
+    $full = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Path)
+    $dir = [System.IO.Path]::GetDirectoryName($full)
+    if (-not [System.IO.Directory]::Exists($dir)) { [void][System.IO.Directory]::CreateDirectory($dir) }
+    # ~ns<pid>-0-<n>.tmp: the name the Python side sweeps (ns_common.atomic.sweep_stale_tmp) if a crash leaves one
+    $tmp = Join-Path $dir ('~ns' + $PID + '-0-' + (Get-Random -Maximum 2000000000) + '.tmp')
+    try {
+        $fs = New-Object System.IO.FileStream($tmp, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+        try {
+            $fs.Write($payload, 0, $payload.Length)
+            $fs.Flush($true)
+        }
+        finally {
+            $fs.Dispose()
+        }
+        for ($attempt = 1; ; $attempt++) {
+            $err = [NsCommon.AtomicFile]::Swap($tmp, $full)
+            if ($err -eq 0) { break }
+            # 5 access denied, 32 sharing violation, 33 lock violation: a reader has the target open right now
+            if (($err -notin @(5, 32, 33)) -or $attempt -ge $Tries) {
+                throw (New-Object System.IO.IOException(('Could not replace ' + $full + ': ' + (New-Object System.ComponentModel.Win32Exception($err)).Message)))
+            }
+            Start-Sleep -Milliseconds ([Math]::Min(10 * $attempt, 100))
+        }
+    }
+    finally {
+        try { if ([System.IO.File]::Exists($tmp)) { [System.IO.File]::Delete($tmp) } }
+        catch { Write-Verbose ('temp file not removed: ' + $tmp) }
+    }
+}
+
+function Read-NsTextRetry {
+    # The text of a file another process may be swapping, or $null when there is no such file. The file is
+    # opened with sharing that lets the writer's swap through (read, write AND delete), and an open that is
+    # refused anyway is retried (-Tries, a growing pause) before the error is thrown: a refused open is never
+    # reported as "no file". Decodes UTF-8 with or without a BOM (Get-Content reads a BOM-less file as ANSI).
+    param([Parameter(Mandatory = $true)][string]$Path, [int]$Tries = 10)
+    $full = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Path)
+    for ($attempt = 1; ; $attempt++) {
+        try {
+            $share = [System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete
+            $fs = New-Object System.IO.FileStream($full, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, $share)
+            try {
+                $reader = New-Object System.IO.StreamReader($fs, (New-Object System.Text.UTF8Encoding $false), $true)
+                return $reader.ReadToEnd()
+            }
+            finally {
+                $fs.Dispose()
+            }
+        }
+        catch [System.IO.FileNotFoundException], [System.IO.DirectoryNotFoundException] {
+            return $null
+        }
+        catch {
+            if ($attempt -ge $Tries) { throw }
+            Start-Sleep -Milliseconds ([Math]::Min(20 * $attempt, 100))
+        }
+    }
+}
+
 function Test-NsHomeFolder {
     param([string]$Candidate)
     if (-not $Candidate) { return $false }
@@ -43,8 +146,11 @@ function Get-NsAppPath {
 
 function Get-NsSupervisorPort {
     $file = Join-Path (Get-NsHome) 'config\runtime.json'
-    if (Test-Path -LiteralPath $file) {
-        $json = Get-Content -LiteralPath $file -Raw | ConvertFrom-Json
+    # the engine rewrites runtime.json by swapping a new file in; a read that Windows refuses for a moment is
+    # retried, never taken for "no file" (that would send this launcher to the default port of another engine)
+    $text = Read-NsTextRetry -Path $file
+    if ($text) {
+        $json = $text | ConvertFrom-Json
         if ($json.PSObject.Properties.Name -contains 'supervisor_port') { return [int]$json.supervisor_port }
     }
     return 8099
@@ -121,8 +227,18 @@ function Close-NsHostWindows {
     foreach ($file in @(Get-ChildItem -LiteralPath $runDir -Filter 'apphost-*.json' -ErrorAction SilentlyContinue)) {
         $hostPid = 0
         $hwnd = [IntPtr]::Zero
+        # A file that cannot be read right now (the host is swapping it, Windows refuses the open past the
+        # retries) is neither stale nor proof of "no window": leave it, and the window, alone. Only a file
+        # that is gone or whose content is not a window record counts as stale.
+        $text = $null
+        try { $text = Read-NsTextRetry -Path $file.FullName }
+        catch {
+            Write-Host ('Could not read ' + $file.Name + ' (' + $_.Exception.Message + '); left alone.')
+            continue
+        }
+        if ($null -eq $text) { continue }
         try {
-            $j = Get-Content -Raw -LiteralPath $file.FullName | ConvertFrom-Json
+            $j = $text | ConvertFrom-Json
             $hostPid = [int]$j.pid
             $hwnd = [IntPtr][int64]$j.hwnd
         }
@@ -182,8 +298,9 @@ function Wait-NsHostReady {
     while ((Get-Date) -lt $deadline) {
         if ($Process.HasExited) { return [int]$Process.ExitCode }
         try {
-            if (Test-Path -LiteralPath $runFile) {
-                $state = Get-Content -Raw -LiteralPath $runFile | ConvertFrom-Json
+            $stateText = Read-NsTextRetry -Path $runFile
+            if ($stateText) {
+                $state = $stateText | ConvertFrom-Json
                 $names = $state.PSObject.Properties.Name
                 if (($names -contains 'pid') -and ($names -contains 'ready') -and [int]$state.pid -eq $Process.Id -and $state.ready) { return 0 }
             }
@@ -268,7 +385,7 @@ function Sync-NsOpenCodePort {
             $port = 8080
             $runtime = Join-Path (Get-NsHome) 'config\runtime.json'
             if (Test-Path -LiteralPath $runtime) {
-                $rt = Get-Content -LiteralPath $runtime -Raw -Encoding UTF8 | ConvertFrom-Json
+                $rt = (Read-NsTextRetry -Path $runtime) | ConvertFrom-Json
                 if ($rt.PSObject.Properties.Name -contains 'llama') {
                     $llama = $rt.llama
                     if ($llama.PSObject.Properties.Name -contains 'host') { $hostName = [string]$llama.host }
@@ -279,14 +396,14 @@ function Sync-NsOpenCodePort {
         }
         # -Encoding UTF8: Windows PowerShell 5.1 reads a BOM-less file as ANSI, which would double-encode any
         # non-ASCII text the owner put in the file when it is written back as UTF-8 below.
-        $cfg = Get-Content -LiteralPath $file -Raw -Encoding UTF8 | ConvertFrom-Json
+        $cfg = (Read-NsTextRetry -Path $file) | ConvertFrom-Json
         if (-not ($cfg.PSObject.Properties.Name -contains 'provider')) { return }
         if (-not ($cfg.provider.PSObject.Properties.Name -contains 'local')) { return }
         $options = $cfg.provider.local.options
         if ($options.baseURL -eq $url) { return }
         $options.baseURL = $url
         $json = ($cfg | ConvertTo-Json -Depth 20) + "`n"
-        [System.IO.File]::WriteAllText($file, $json, (New-Object System.Text.UTF8Encoding $false))
+        Write-NsFileAtomic -Path $file -Text $json
     }
     catch {
         Write-Host ('Could not update the port in ' + $file + ': ' + $_.Exception.Message)

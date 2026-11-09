@@ -169,11 +169,26 @@ def local_nightshift() -> Path | None:
     return Path(base) / "Nightshift" if base else None
 
 
+def _read_run_file(path: Path) -> str:
+    """Text of the setup host's run file. The host swaps the file in whole, and for a few milliseconds Windows
+    refuses an open of the name: that is retried, so a window that is open is not left out of the pids that
+    the removal waits for (same rule as ``ns_common.atomic.retry_busy``)."""
+    tries = 8
+    for attempt in range(tries):
+        try:
+            return path.read_text(encoding="utf-8-sig")
+        except PermissionError:
+            if attempt == tries - 1:
+                raise
+            time.sleep(min(0.01 * 2**attempt, 0.1))
+    raise AssertionError("unreachable")
+
+
 def host_pids(home: Path) -> list[int]:
     """Pids that may hold files under ``bin``: this server and the setup window host (if it recorded one)."""
     pids = [os.getpid()]
     try:
-        data = json.loads((home / "run" / "apphost-setup.json").read_text(encoding="utf-8-sig"))
+        data = json.loads(_read_run_file(home / "run" / "apphost-setup.json"))
         pids.append(int(data["pid"]))
     except (OSError, ValueError, KeyError, TypeError):
         pass
