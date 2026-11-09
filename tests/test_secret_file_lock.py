@@ -721,3 +721,14 @@ def test_a_backup_without_keys_needs_no_lock(tmp_path: Path, icacls: FakeIcacls)
     icacls.grant_exit = 1332
     backup.make_backup(paths, tmp_path / "plain.zip")
     assert icacls.calls == []
+
+
+def test_the_settings_page_draws_the_key_warning_and_the_built_bundle_has_it(repo_root: Path) -> None:
+    """A field the UI ignores is not a fix: Settings > Keys renders `key_warnings` (code and hint), typed in
+    the UI, and the committed bundle was rebuilt from those sources."""
+    ui = repo_root / "ns_dashboard" / "ui" / "src"
+    assert "key_warnings" in (ui / "lib" / "types.ts").read_text("utf-8")
+    page = (ui / "pages" / "Settings.tsx").read_text("utf-8")
+    assert "key_warnings" in page and "w.code" in page and "w.hint" in page
+    bundle = (repo_root / "ns_dashboard" / "static" / "app.js").read_text("utf-8")
+    assert "key-warning-" in bundle and "key_warnings" in bundle
