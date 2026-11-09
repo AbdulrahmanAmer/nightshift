@@ -18,7 +18,7 @@ The setup window opens on a short welcome of its own (what Nightshift makes, wha
 
 ### A.3 How it installs itself
 1. **Checks the PC**: Windows version, NVIDIA GPU, driver, RAM, free disk, internet, power settings. It tells you exactly what to fix if something is missing.
-2. **Installs free tools**: the Visual C++ runtime, FFmpeg, Windows Terminal and Python (via uv); winget first, then a pinned direct download for the runtime and FFmpeg. Everything it already finds is skipped. Git is not needed.
+2. **Installs free tools**: the Visual C++ runtime, FFmpeg, Windows Terminal and Python (via uv). The first console downloads the pinned Visual C++ runtime itself (no winget) and runs it with a Windows permission prompt; the setup window then installs what is still missing, trying winget first (FFmpeg, Windows Terminal, and the runtime if the console could not install it) and falling back to a pinned direct download for the runtime and FFmpeg. Everything it already finds is skipped. Git is not needed.
 3. **Asks you a few questions**: first channel name and niche, language, narrator voice (listen to samples), stock-footage keys, how many videos per week, what time to run, whether to install Nightshift Code.
 4. **Downloads the AI engine and models** from their official sources, verifying every file.
 5. **Tunes itself** to your exact hardware for maximum speed.
