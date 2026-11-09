@@ -44,13 +44,29 @@ def secret_path(paths: Paths) -> Path:
 
 
 def restrict_to_user(path: Path) -> None:
-    """Limit a file's ACL to the current user (and SYSTEM) with icacls. Best effort; never raises."""
+    """Limit a file's ACL to the current user (and SYSTEM) with icacls. Best effort; never raises.
+
+    Besides the inherited entries it removes the Administrators group and OWNER RIGHTS: a file created in a
+    folder that passes nothing down takes the creator's default ACL, which names both, and `/inheritance:r`
+    leaves those (they are explicit). The user keeps full control as the owner, so nothing shuts us out.
+    """
     user = os.environ.get("USERNAME")
     if not user or os.name != "nt":
         return
     try:
         subprocess.run(
-            ["icacls", str(path), "/inheritance:r", "/grant:r", f"{user}:F", "/grant:r", "*S-1-5-18:F"],
+            [
+                "icacls",
+                str(path),
+                "/inheritance:r",
+                "/grant:r",
+                f"{user}:F",
+                "/grant:r",
+                "*S-1-5-18:F",
+                "/remove:g",
+                "*S-1-5-32-544",
+                "*S-1-3-4",
+            ],
             capture_output=True,
             check=False,
             timeout=30,
@@ -79,8 +95,15 @@ def _crypt(data: bytes, *, protect: bool) -> bytes:
     blob_out = DataBlob()
     flags = CRYPTPROTECT_UI_FORBIDDEN | (CRYPTPROTECT_LOCAL_MACHINE if protect else 0)
     if protect:
-        ok = fn(ctypes.byref(blob_in), "Nightshift", ctypes.byref(entropy), None, None, flags,
-                ctypes.byref(blob_out))
+        ok = fn(
+            ctypes.byref(blob_in),
+            "Nightshift",
+            ctypes.byref(entropy),
+            None,
+            None,
+            flags,
+            ctypes.byref(blob_out),
+        )
     else:
         ok = fn(ctypes.byref(blob_in), None, ctypes.byref(entropy), None, None, flags, ctypes.byref(blob_out))
     if not ok:

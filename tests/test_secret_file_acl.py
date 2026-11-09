@@ -62,14 +62,43 @@ def paths_for(tmp_path: Path) -> Paths:
     return p
 
 
+def inheriting_folder(tmp_path: Path) -> Path:
+    """A folder whose ACL passes the Users group down to new files, as a home folder under a user profile does
+    (a CI runner's temp folder passes nothing down, so the premise is made here and not found)."""
+    folder = tmp_path / "inheriting"
+    folder.mkdir()
+    subprocess.run(
+        ["icacls", str(folder), "/grant", "*S-1-5-32-545:(OI)(CI)R"],
+        capture_output=True,
+        check=True,
+        timeout=30,
+    )
+    return folder
+
+
 def test_the_acl_check_tells_a_locked_file_from_an_ordinary_one(tmp_path: Path) -> None:
-    plain = tmp_path / "plain.txt"
+    plain = inheriting_folder(tmp_path) / "plain.txt"
     plain.write_text("x", encoding="utf-8")
     assert any("(I)" in rights for _, rights in acl(plain)), "a new file should inherit the folder's ACL"
     with pytest.raises(AssertionError):
         assert_user_only(plain)
     restrict_to_user(plain)
     assert_user_only(plain)
+
+
+def test_a_file_in_a_folder_that_passes_nothing_down_is_user_only_too(tmp_path: Path) -> None:
+    """Such a file takes its creator's default ACL (the user, SYSTEM, Administrators, OWNER RIGHTS), which
+    `/inheritance:r` alone leaves in place: the CI runner's temp folder is one."""
+    paths = paths_for(tmp_path)
+    subprocess.run(
+        ["icacls", str(paths.config), "/inheritance:r", "/grant:r", f"{os.environ['USERNAME']}:F"],
+        capture_output=True,
+        check=True,
+        timeout=30,
+    )
+    store_secret(paths, "pexels_api_key", "K1", protect=xor)
+    assert_user_only(secret_path(paths))
+    assert load_secret(paths, "pexels_api_key", unprotect=xor) == "K1"
 
 
 def test_storing_a_key_leaves_the_file_user_only_and_readable(tmp_path: Path) -> None:
