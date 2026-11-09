@@ -8,6 +8,9 @@ run. In bridge mode stdout carries nothing else: stray rich output goes to stder
 Events out: hello, step, say, table, plan, file, warn, failure, verify, sample, bundle, bye.
 Commands in: keys (always the first line), decision, pause, resume, stop.
 A ``file`` event is start, progress, retry (a stalled or failed transfer waits to be tried again) or finish.
+A retry with reason ``site`` also carries ``host``, ``status`` and ``leftS``: a download site that answers 5xx
+or 429 is waited out for ten minutes. A ``failure`` event carries ``host``, ``status`` and ``side`` when the
+error has them (NS-E105: ``side`` is ``site`` when the wait was used up).
 """
 
 from __future__ import annotations
@@ -93,6 +96,12 @@ class BridgeReporter:
         """A transfer failed (reason stall, network or hash) and is tried again after ``wait_s`` seconds."""
         self._ui.emit({"type": "file", "key": name, "event": "retry", "attempt": attempt, "reason": reason,
                        "waitS": wait_s, "of": self.tries})
+
+
+    def site_wait(self, name: str, host: str, status: int, wait_s: float, left_s: float) -> None:
+        """A download site answered 5xx or 429 and is waited for: host, status, time left."""
+        self._ui.emit({"type": "file", "key": name, "event": "retry", "attempt": 0, "reason": "site",
+                       "waitS": wait_s, "of": 0, "host": host, "status": status, "leftS": left_s})
 
 
 class BridgeUi(Ui):
@@ -243,9 +252,12 @@ class BridgeUi(Ui):
                 self._decisions.get_nowait()    # drop stale answers
             except queue.Empty:
                 break
+        extra = {k: v for k, v in dict(getattr(failure, "data", None) or {}).items()
+                 if k in ("host", "status", "side")}
         self.emit({
             "type": "failure", "step": step_id, "code": failure.code, "message": failure.message,
             "hint": failure.hint, "detail": failure.detail, "optional": optional, "attempt": attempt,
+            **extra,
         })
         while True:
             try:

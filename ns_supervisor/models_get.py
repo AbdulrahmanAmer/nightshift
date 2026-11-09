@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any
 
 from ns_common.config import load_manifest, load_runtime, save_runtime
 from ns_common.errors import NsError
+from ns_common.logging import NsLogger
 from ns_common.models import Manifest
 from ns_common.paths import Paths
 
@@ -119,6 +120,12 @@ class EchoReporter:
             self._last[name] = tenth
             self._echo(f"{name}: {tenth * 10}%")
 
+    def site_wait(self, name: str, host: str, status: int, wait_s: float, left_s: float) -> None:
+        """The download site answered 5xx or 429: say so, so a wait of minutes is not silence."""
+        from installer.stage2.downloader import site_wait_text
+
+        self._echo(f"{name}: {site_wait_text(host, status, wait_s, left_s)}")
+
     def finish(self, name: str, outcome: str) -> None:
         """A file ended."""
         self._echo(f"{name}: {outcome}")
@@ -147,7 +154,8 @@ def get_model(
     items = plan_items(kind, man, profile, paths, engine=engine, everything=everything, tree=tree)
     todo = [i for i in items if not downloader.is_done(i)]
     if todo:
-        (run_plan or downloader.run_plan)(todo, reporter=EchoReporter(echo))
+        log = NsLogger("models", paths.logs, echo=False)
+        (run_plan or downloader.run_plan)(todo, reporter=EchoReporter(echo), log=log)
     else:
         echo("Already downloaded and verified.")
     if kind == "story_llm":

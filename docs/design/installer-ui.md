@@ -1191,7 +1191,7 @@ in-window text says "press Retry", because the window replaces the rerun.
 | NS-E102 | No NVIDIA graphics card found | Install the NVIDIA driver from nvidia.com/drivers, restart, then press Check again |
 | NS-E103 | NVIDIA driver too old | Install the newest driver from the page that opened, restart, then press Check again |
 | NS-E104 | Not enough free disk space | Free 60 GB, or pick another drive |
-| NS-E105 | A download site cannot be reached | Check the internet, switch off any VPN or proxy, then press Retry |
+| NS-E105 | A download site cannot be reached | Check the internet, switch off any VPN or proxy, then press Retry. When the download site itself answered 5xx or 429 for ten minutes (D-13), the Failed screen is titled "<host> is not answering (<status>)" and says it is their side; Retry waits again |
 | NS-E108 | The graphics card libraries did not load | Press Copy diagnostics and send the zip. Nothing else to do |
 | NS-E109 | A downloaded file is damaged | Press Retry. Setup downloads that file again. If the same error comes back, send the diagnostics zip |
 | NS-E110 | A free tool did not install | Install "App Installer" from the Microsoft Store, then press Retry |

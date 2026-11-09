@@ -84,6 +84,15 @@ or **Pause**, or you close the Nightshift setup window.
   after 2, then 4 seconds (never more than 30), at most three tries; the row says *The connection dropped, trying
   again in 2 s (try 2 of 3)*. After the third try the row turns red with `NS-E105`: check the internet and press
   **Retry**, the file continues.
+- **When the download site is down.** The files that setup itself downloads in step 2 (the models and the model
+  programs: llama, cudart, qwentts and the rest of the download plan) wait out a site that answers 5xx, 408, 425
+  or 429 (GitHub's 504 incident) for up to ten minutes of continuous trouble. Between tries it waits 2, 4, 8 ... 60
+  seconds, or the site's own `Retry-After` when that is longer (at most 5 minutes). The row and the console say
+  *github.com answers 504 (their side). Trying again in 40 s, 7 min left*; `ns models get` and the dashboard's model
+  download print the same line. After that the file stops with `NS-E105` naming the site and the answer; run
+  INSTALL.cmd again later and it continues at the failed step. A 404 or 403 stops at once. Other downloads give up
+  as before: uv, FFmpeg and the Visual C++ runtime (stage 1 and the bootstrap), Python packages (uv and pip), the
+  Hugging Face file listing and `ns update`.
 - **A damaged file.** Every file is checked against the published SHA256 before it is kept. A file that fails is
   deleted and downloaded once more from the start; if it fails twice the row shows `NS-E109`.
 - **The disk is full.** Setup stops with `NS-E104` and names the free space at the install folder. Free some space
@@ -105,7 +114,7 @@ Every message has a code like `NS-E104`, a sentence and a "What to do". In the s
 | NS-W115 | The driver version could not be read | Nothing: setup uses the CUDA 12.4 build. If a video fails on the graphics card later, install the newest driver. |
 | NS-W404 | Captions will be slow: speech recognition runs on the processor, not the graphics card | Nothing blocks you; videos still work. Send the diagnostics zip if the captions step takes too long. |
 | NS-E104 | Not enough free disk space | Free 60 GB, or choose another drive when asked for the install folder. |
-| NS-E105 | A download site cannot be reached | Check the internet, switch off any VPN or proxy, run INSTALL.cmd again. |
+| NS-E105 | A download site cannot be reached | If the detail says the download site answered a 5xx, 408, 425 or 429 (the setup plan's file downloads wait up to 10 minutes for that, the other downloads do not), it is the site's side (for example GitHub having an outage): nothing on this PC is wrong, run INSTALL.cmd again later (or press Retry; for a model download from the dashboard or `ns models get`, start it again) and it continues where it stopped. Otherwise check the internet, switch off any VPN or proxy, run INSTALL.cmd again. |
 | NS-E109 | A downloaded file is damaged | Run INSTALL.cmd again. If it repeats, send the diagnostics zip. |
 | NS-E110 | FFmpeg could not be installed | Setup tries winget first and then downloads a fixed FFmpeg build itself. Press Retry once; if it repeats, install FFmpeg yourself (`winget install Gyan.FFmpeg`) and press Retry. Git is not needed. |
 | NS-E111 | winget (the Windows app installer) is not available | Nothing to do: setup downloads FFmpeg and the Visual C++ runtime directly. |
