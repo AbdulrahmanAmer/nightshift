@@ -63,7 +63,12 @@ class S10Summary(Step):
         schedule = ctx.flag("schedule")
         if ctx.dev_mode:
             ui.say(f"{BANNER}.", "yellow")
-        if schedule == "installed" and ctx.flag("schedule_mode") == "disabled":
+        if schedule == "installed" and ctx.flag("schedule_mode") == "disabled" and not ctx.dev_mode:
+            ui.say(
+                f"Nightly task: registered for {ans.run_time} but switched off in Task Scheduler "
+                "(kept as you had it); it does not run until you switch it on there."
+            )
+        elif schedule == "installed" and ctx.flag("schedule_mode") == "disabled":
             ui.say(f"Nightly task: registered for {ans.run_time} but DISABLED (dev mode); it never runs.")
         elif schedule == "installed":
             ui.say(f"Nightly run: every night at {ans.run_time} (the PC wakes itself).")
