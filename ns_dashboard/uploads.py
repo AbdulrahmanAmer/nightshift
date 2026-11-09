@@ -13,7 +13,7 @@ from pathlib import Path, PureWindowsPath
 from typing import Any
 
 from ns_common.atomic import read_text_retry, write_text_atomic
-from ns_common.db import new_job_id
+from ns_common.db import claim_dir, claim_job_id
 from ns_common.paths import Paths
 from ns_dashboard.errors import ApiError
 
@@ -117,9 +117,9 @@ class UploadManager:
             )
         if not isinstance(size, int) or size <= 0 or size > MAX_SIZE:
             raise ApiError(400, "bad_size", "The file size is missing or too large.")
-        source_id = new_job_id("src")
+        # the folder is the claim: an id that names another upload is drawn again, never written over (D-ids)
+        source_id = claim_job_id("src", claim_dir(lambda sid: clipper_dir(self.paths) / sid))
         d = clipper_dir(self.paths) / source_id
-        d.mkdir(parents=True, exist_ok=True)
         meta = {"source_id": source_id, "filename": name, "ext": ext, "size": size, "status": "uploading"}
         write_text_atomic(d / META, json.dumps(meta, indent=2))
         (d / f"source{ext}.part").write_bytes(b"")

@@ -22,7 +22,7 @@ from pydantic import ValidationError
 import ns_studio.series.schemas as _schemas  # noqa: F401  (registers the workshop JSON schemas)
 from ns_common.atomic import write_text_atomic
 from ns_common.config import load_channel, load_runtime
-from ns_common.db import Db, new_job_id
+from ns_common.db import Db, claim_dir, claim_job_id
 from ns_common.errors import NsError
 from ns_common.logging import NsLogger
 from ns_common.models import Channel, Combo, Runtime
@@ -1097,7 +1097,8 @@ class Workshop:
             title = f"{series.title} - Part {n:02d}"
             nxt = next((p for p in series.parts if p.n == n + 1), None)
             req = ProduceRequest(
-                job_id=new_job_id(ch.slug),
+                # the part takes its id by making its job folder (D-ids); `_prepare_job` fills it
+                job_id=claim_job_id(ch.slug, claim_dir(self.paths.job_dir)),
                 channel=ch.slug,
                 fmt="master_first",
                 plan="master_from_script",

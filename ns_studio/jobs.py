@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 from typing import Any, Literal, cast
 
 from ns_common.config import load_runtime
-from ns_common.db import Db, new_job_id
+from ns_common.db import Db, claim_dir, claim_job_id
 from ns_common.logging import NsLogger
 from ns_common.models import Channel, Combo, Runtime
 from ns_common.paths import Paths
@@ -216,7 +216,10 @@ def make_job(
         env.db, channel, rng=rng, now=now, fixed=fixed,
         on_repeat=lambda why: env.log.warn("variation_repeated", why, code="NS-W325", channel=channel.slug),
     )
-    job_id = new_job_id(channel.slug, now)
+    # The job takes its id by making its folder: an id that already names a job is drawn again, so a new job
+    # can never write into another job's folder or over its `job.json` (D-ids). The folder comes first; the
+    # owner file and the combos row are written for an id that is ours.
+    job_id = claim_job_id(channel.slug, claim_dir(env.paths.job_dir), now)
     item = "long" if fmt == "master_first" else "s1"
     if record:
         ownership.announce_job(
@@ -224,7 +227,6 @@ def make_job(
         )
         record_combo(env.db, channel.slug, job_id, item, combo, now)
     job_dir = env.paths.job_dir(job_id)
-    job_dir.mkdir(parents=True, exist_ok=True)
     ctx = JobContext(
         job_id=job_id,
         channel=channel,

@@ -6,17 +6,19 @@ import json
 import re
 from collections.abc import Callable
 from datetime import datetime, timedelta
+from functools import partial
 from pathlib import Path
 from typing import Any, BinaryIO
 
 from pydantic import ValidationError
 
-from ns_common.db import new_job_id
+from ns_common.db import claim_dir, claim_job_id, new_job_id
 from ns_common.devmode import fake_footage
 from ns_common.errors import NsError
 from ns_common.models import JobRunRequest
 from ns_common.paths import Paths
 from ns_common.secrets_names import SHORT_NAMES
+from ns_dashboard import studio_bridge
 from ns_dashboard.adapters import Adapters
 from ns_dashboard.common import KNOWN_FORMATS, now_iso, offered_formats
 from ns_dashboard.errors import AdapterUnavailable, ApiError, room_refusal
@@ -591,7 +593,12 @@ class JobsService:
         if url:
             if uploaded is not None or any(body.get(k) for k in ("path", "upload_id", "source_id")):
                 raise ApiError(422, "invalid_options", "Give either a link, a file, or a path, not several.")
-            source_id, source_path, rerun = new_job_id("src"), None, False
+            # A linked video is downloaded into a folder named by this id and that folder is deleted when the
+            # job ends, so the id is taken by making the folder: two links never share one (D-ids). A job that
+            # is refused below leaves an empty folder, which the next start sweeps (`sweep_downloads`).
+            folder = partial(studio_bridge.download_dir, self.s.paths)
+            source_id = claim_job_id("src", claim_dir(folder))
+            source_path, rerun = None, False
             params["url"] = url
         else:
             source_id, source_path, rerun = self._resolve_source(body, uploaded)
@@ -629,6 +636,8 @@ class JobsService:
             p = Path(str(raw)).expanduser()
             if not p.is_file() or p.suffix.lower() not in ALLOWED_EXT:
                 raise ApiError(400, "bad_path", f"'{raw}' is not a video file on this PC.")
+            # a label only: a file on this PC is imported under an id made from its content, and no folder is
+            # named by this one
             return new_job_id("src"), p, False
         raise ApiError(400, "no_source", "Choose a video: upload it, give a local path, or paste a link.")
 

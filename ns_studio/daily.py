@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import random
-import secrets
+import sqlite3
 import traceback
 from collections.abc import Callable
 from contextlib import AbstractContextManager, ExitStack
@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from ns_common.atomic import read_text_retry, write_text_atomic
+from ns_common.db import claim_job_id
 from ns_common.errors import NsError, describe
 from ns_common.keepawake import keep_awake
 from ns_common.models import Channel
@@ -178,6 +179,17 @@ def _no_room_to_resume(env: jobs.Env, report: dict, job_id: str, slug: str) -> b
     return False
 
 
+def _claim_run_id(env: jobs.Env, run_id: str) -> None:
+    """Refuse a run id that already names a night (`claim_job_id` then draws another one).
+
+    A night's id names its row in `runs` and its owner file. A second night on the same day (after a refusal,
+    a retry, a test) drew from the same 65536 ids, and an id drawn twice made the new night fail on its
+    `runs` row. This looks, it does not take: two nights cannot start together (the night's lock), and the
+    row itself still refuses a duplicate, loudly."""
+    if env.db.one("select 1 from runs where run_id=?", (run_id,)) or ownership.read_record(env.paths, run_id):
+        raise sqlite3.IntegrityError(f"run id {run_id} is taken")
+
+
 def run_daily(
     env: jobs.Env,
     *,
@@ -216,7 +228,7 @@ def _run_daily(
     now = now or datetime.now(UTC)
     rng = rng or random.Random()
     run = run_fn or _default_run
-    run_id = f"daily-{now:%Y%m%d}-{secrets.token_hex(2)}"
+    run_id = claim_job_id("daily", partial(_claim_run_id, env), now)
     report: dict = {"run_id": run_id, "started_at": now.isoformat(timespec="seconds"), "channels": [],
                     "jobs": [], "failures": [], "interrupted_jobs": [], "not_due": {}}
     unreadable = broken_channels(env.paths)  # the plan below skips them; the report and the CLI name them
