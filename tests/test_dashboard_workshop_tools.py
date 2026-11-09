@@ -77,4 +77,10 @@ def test_workshop_changes_never_run_without_a_card(tmp_home: Path, name: str):
     args = {k: ("A" if k == "letter" else 1 if k in ("n", "parts") else "x") for k in required}
     dash, _state, _ = make(tmp_home, ScriptedToolLlm([call(name, args), say("ok")]))
     events = run_chat(dash, "do it")
-    assert [e["kind"] for e in events if e["kind"] == "confirm"] == ["confirm"]
+    # these arguments name no story or draft, so since D-27 the check before the card refuses them (the card
+    # for valid ones is in test_assistant_validate_before_card.py); either way nothing ran without a Yes
+    assert not [e for e in events if e["kind"] == "tool_call"]
+    assert not (tmp_home / "stories").exists() or not any((tmp_home / "stories").iterdir())
+    shown = [e for e in events if e["kind"] == "confirm"]
+    refused = [e for e in events if e["kind"] == "tool_result" and not e["payload"]["ok"]]
+    assert len(shown) + len(refused) == 1
