@@ -28,12 +28,17 @@ HELD_KINDS = frozenset({"run", "series_part"})
 
 
 def paused_since(db: LockedDb, slug: str) -> str | None:
-    """The time of the channel's latest pause incident as local `Mon 09 Nov 21:30`, or None when unknown
-    (a profile edited by hand has no incident)."""
+    """The time of the channel's latest pause incident as local `Mon 09 Nov 21:30`, or None when unknown.
+
+    The pause incident counts only when it is the newest of the channel's pause and resume incidents: after a
+    resume, a profile set to paused by hand (or a pause that wrote no incident) has no time of its own, and
+    the old pause time would be untrue for it."""
     row = db.one(
-        "SELECT ts FROM incidents WHERE channel = ? AND kind = 'pause' ORDER BY rowid DESC LIMIT 1", (slug,)
+        "SELECT ts, kind FROM incidents WHERE channel = ? AND kind IN ('pause', 'resume')"
+        " ORDER BY rowid DESC LIMIT 1",
+        (slug,),
     )
-    if row is None:
+    if row is None or row["kind"] != "pause":
         return None
     try:
         when = datetime.fromisoformat(str(row["ts"]))
@@ -62,6 +67,10 @@ def make_channel_hold(paths: Paths, db: LockedDb) -> Hold:
             return None  # no profile to ask: the run itself reports it, as before
         if ch.status != "paused":
             return None
-        return hold_text(ch.display_name, paused_since(db, rec.channel))
+        try:
+            since = paused_since(db, rec.channel)
+        except Exception:  # the time is a courtesy: a channel known to be paused stays held without it
+            since = None
+        return hold_text(ch.display_name, since)
 
     return hold

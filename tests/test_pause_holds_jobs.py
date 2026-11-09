@@ -22,6 +22,7 @@ from typing import Any
 
 import pytest
 
+from ns_common.config import load_channel, save_channel
 from ns_common.db import Db
 from ns_common.paths import Paths
 from ns_dashboard.fakes import seed_channel
@@ -454,3 +455,46 @@ def test_a_stale_hold_never_overwrites_the_message_of_a_cancelled_job(tmp_home: 
     assert not now["message"].startswith("Paused")
 
 
+def test_a_channel_known_to_be_paused_stays_held_when_the_pause_time_cannot_be_read(
+    tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The hold must not fail open: if the incident query raises, the paused channel's job still waits,
+    with a reason that has no time in it."""
+    from ns_dashboard import channel_hold
+
+    client, state, runner, _ = setup(tmp_home)
+    job = queue_run(client)
+
+    def boom(*_a: Any) -> str:
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(channel_hold, "paused_since", boom)
+    pause(client)
+    assert state.worker.run_next() is False and runner.calls == []
+    now = job_of(client, job["job_id"])
+    assert now["status"] == "queued"
+    assert now["message"] == "Paused: After Dark is paused; resume it to release this job"
+    monkeypatch.undo()
+    resume(client)
+    assert state.worker.run_next() is True and runner.calls == [CH]
+
+
+def test_the_pause_time_is_left_out_when_the_profile_was_paused_by_hand_after_a_resume(tmp_home: Path):
+    """pause (incident), resume (incident), then the profile file is edited to `paused` by hand: there is no
+    incident for this pause, and the old pause time would be untrue."""
+    client, state, runner, _ = setup(tmp_home)
+    job = queue_run(client)
+    pause(client)
+    assert " since " in job_of(client, job["job_id"])["message"]
+    resume(client)
+    ch = load_channel(state.paths, CH)
+    ch.status = "paused"
+    save_channel(state.paths, ch)
+    assert state.worker.run_next() is False and runner.calls == []
+    assert job_of(client, job["job_id"])["message"] == (
+        "Paused: After Dark is paused; resume it to release this job"
+    )
+    # a real pause after that has its own incident and shows its own time again
+    resume(client)
+    pause(client)
+    assert " since " in job_of(client, job["job_id"])["message"]
