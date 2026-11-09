@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any
 
 import installer.stage2.devmode as devmode
+import ns_supervisor.config_snapshot as config_snapshot
 from installer.stage2.web import (
     answers_view,
     appcopy,
@@ -58,7 +59,6 @@ from ns_common.secrets_names import PEXELS_KEY, PIXABAY_KEY
 from ns_common.singleton import AlreadyRunning, FileLock
 from ns_common.uv import bootstrap_uv, find_uv
 from ns_common.vcruntime import missing as vcruntime_missing
-from ns_supervisor import config_snapshot
 
 LOG_KEEP = 50
 SAMPLE_TEXT = "This is how your channel will sound at night."
