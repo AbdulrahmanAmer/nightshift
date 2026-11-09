@@ -13,8 +13,17 @@ import datetime as dt
 import json
 import os
 import zipfile
+from functools import partial
 from pathlib import Path
 
+from ns_common.atomic import (
+    copy_atomic,
+    read_text_retry,
+    retry_busy,
+    sweep_stale_tmp,
+    write_text_atomic,
+    write_zip_atomic,
+)
 from ns_common.paths import Paths
 
 __all__ = ["write_console_install_report", "write_fallback_bundle"]
@@ -31,7 +40,7 @@ def write_console_install_report(
     """
     state_file = paths.config / "install_state.json"
     try:
-        state = json.loads(state_file.read_text(encoding="utf-8")) if state_file.is_file() else {}
+        state = json.loads(read_text_retry(state_file)) if state_file.is_file() else {}
     except (OSError, ValueError):
         state = {}
     steps = state.get("steps") if isinstance(state.get("steps"), dict) else {}
@@ -39,7 +48,7 @@ def write_console_install_report(
     answers: dict[str, object] = {}
     try:
         if answers_file.is_file():
-            raw = json.loads(answers_file.read_text(encoding="utf-8"))
+            raw = json.loads(read_text_retry(answers_file))
             if isinstance(raw, dict):
                 answers = {k: v for k, v in raw.items() if not str(k).endswith("_api_key")}
     except (OSError, ValueError):
@@ -63,7 +72,7 @@ def write_console_install_report(
     try:
         paths.logs.mkdir(parents=True, exist_ok=True)
         out = paths.logs / "install-report.json"
-        out.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        write_text_atomic(out, json.dumps(data, indent=2))
     except OSError:
         return None
     return out
@@ -98,16 +107,21 @@ def write_fallback_bundle(
             small = f.is_file() and f.stat().st_size < 2_000_000
             if small and f.suffix.lower() in (".json", ".jsonl", ".err", ".txt", ".log"):
                 members.append((f"bootstrap/{f.relative_to(boot).as_posix()}", f))
-    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
+
+    def fill(z: zipfile.ZipFile) -> None:
         for arc, f in members:
             try:
-                z.write(f, arc)
+                retry_busy(partial(z.write, f, arc))
             except OSError:
                 continue
+
+    sweep_stale_tmp(out.parent)  # a crash in an earlier build left its temporary zip behind
+    write_zip_atomic(out, fill)  # built beside the final name: nobody meets a zip that is half written
     home = desktop if desktop is not None else Path.home() / "Desktop"
     if home.is_dir():
+        sweep_stale_tmp(home)
         try:
-            (home / out.name).write_bytes(out.read_bytes())
+            copy_atomic(out, home / out.name)
         except OSError:
             pass
     return out

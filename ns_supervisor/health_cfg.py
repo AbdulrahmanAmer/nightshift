@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from ns_common.atomic import read_text_retry, write_text_atomic
 from ns_common.paths import Paths
 
 DEFAULT_HEALTH_TIMEOUT_S = 300.0
@@ -29,7 +30,7 @@ def timeout_for_drive(drive_type: str) -> float:
 def read_health_timeout(paths: Paths) -> float:
     """The configured wait in seconds; the default when the file is missing or unusable."""
     try:
-        value = float(json.loads(health_file(paths).read_text(encoding="utf-8"))["health_timeout_s"])
+        value = float(json.loads(read_text_retry(health_file(paths)))["health_timeout_s"])
     except (OSError, ValueError, KeyError, TypeError):
         return DEFAULT_HEALTH_TIMEOUT_S
     return value if 10.0 <= value <= 3600.0 else DEFAULT_HEALTH_TIMEOUT_S
@@ -37,6 +38,4 @@ def read_health_timeout(paths: Paths) -> float:
 
 def write_health_timeout(paths: Paths, seconds: float) -> None:
     """Persist the wait for the supervisor (and so for the nightly run) to read at start."""
-    f = health_file(paths)
-    f.parent.mkdir(parents=True, exist_ok=True)
-    f.write_text(json.dumps({"health_timeout_s": seconds}, indent=2) + "\n", "utf-8")
+    write_text_atomic(health_file(paths), json.dumps({"health_timeout_s": seconds}, indent=2) + "\n")

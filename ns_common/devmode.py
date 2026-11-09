@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from ns_common.atomic import read_text_retry
 from ns_common.paths import Paths
 
 #: The services `ns_studio.context.FAKEABLE` can replace with in-process fakes (a test keeps them equal).
@@ -26,7 +27,7 @@ def _runtime_flags(runtime_file: Path, *names: str) -> list[bool]:
     An unreadable or missing file means every answer is False.
     """
     try:
-        data = json.loads(runtime_file.read_text(encoding="utf-8-sig"))
+        data = json.loads(read_text_retry(runtime_file, "utf-8-sig"))
     except (OSError, ValueError):
         return [False] * len(names)
     if not isinstance(data, dict):

@@ -28,7 +28,7 @@ from typing import Any, Protocol, TextIO
 
 import psutil
 
-from ns_common.atomic import write_text_atomic
+from ns_common.atomic import read_text_retry, write_text_atomic
 from ns_common.errors import NsError
 from ns_common.paths import Paths
 from ns_supervisor import pwsh, updater_copy
@@ -114,7 +114,7 @@ def _final(
 def read_status(paths: Paths) -> dict[str, Any]:
     """The status file as a dict (empty when absent or unreadable)."""
     try:
-        data = json.loads(status_file(paths).read_text(encoding="utf-8"))
+        data = json.loads(read_text_retry(status_file(paths)))
     except (OSError, ValueError):
         return {}
     return data if isinstance(data, dict) else {}

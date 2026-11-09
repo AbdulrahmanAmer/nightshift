@@ -20,6 +20,7 @@ import yaml
 from pydantic import ValidationError
 
 import ns_studio.series.schemas as _schemas  # noqa: F401  (registers the workshop JSON schemas)
+from ns_common.atomic import write_text_atomic
 from ns_common.config import load_channel, load_runtime
 from ns_common.db import Db, new_job_id
 from ns_common.errors import NsError
@@ -1120,8 +1121,9 @@ class Workshop:
         d = self.paths.job_dir(req.job_id)
         d.mkdir(parents=True, exist_ok=True)
         source = {"kind": "script_import", **asdict(req)}
-        (d / "script_source.json").write_text(json.dumps(source, indent=2, ensure_ascii=False) + "\n",
-                                              encoding="utf-8")
+        write_text_atomic(
+            d / "script_source.json", json.dumps(source, indent=2, ensure_ascii=False) + "\n", newline=None
+        )
         context = {
             "series_slug": req.series_slug,
             "series_title": req.series_title,
@@ -1136,7 +1138,7 @@ class Workshop:
             "hook": req.hook_style,
             "design": req.design,
         }
-        (d / "series_context.json").write_text(json.dumps(context, indent=2) + "\n", encoding="utf-8")
+        write_text_atomic(d / "series_context.json", json.dumps(context, indent=2) + "\n", newline=None)
 
     def mark_published(self, slug: str, n: int) -> StatusDoc:
         """Record that part `n` was published (called by the learning loop or by hand)."""

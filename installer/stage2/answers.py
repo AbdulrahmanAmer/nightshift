@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from installer.stage2.web.modelcheck import MAX_BYTES, shape_problem, too_big_message
+from ns_common.atomic import read_text_retry, write_text_atomic
 from ns_common.models import VOICE_NAME_PATTERN, VOICE_NAME_RULE, Answers
 from ns_common.paths import Paths
 from ns_common.secrets_names import KEY_NAMES
@@ -60,7 +61,7 @@ def find_answers(app_path: Path, paths: Paths, explicit: Path | None = None) -> 
 def load_raw(path: Path) -> dict[str, Any]:
     """Read an answers file into a dict; blank strings become None. Raises AnswersError."""
     try:
-        data = json.loads(path.read_text(encoding="utf-8-sig"))
+        data = json.loads(read_text_retry(path, "utf-8-sig"))
     except (OSError, ValueError) as e:
         raise AnswersError(f"cannot read {path}: {e}") from e
     if not isinstance(data, dict):
@@ -144,7 +145,7 @@ def dump_blanked(ans: InstallerAnswers) -> dict[str, Any]:
 def write_answers(path: Path, ans: InstallerAnswers) -> Path:
     """Write answers with blank secrets."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(dump_blanked(ans), indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    write_text_atomic(path, json.dumps(dump_blanked(ans), indent=2, ensure_ascii=False) + "\n")
     return path
 
 
@@ -153,7 +154,7 @@ def blank_secrets_in_file(path: Path) -> bool:
     if not path.is_file():
         return False
     try:
-        data = json.loads(path.read_text(encoding="utf-8-sig"))
+        data = json.loads(read_text_retry(path, "utf-8-sig"))
     except (OSError, ValueError):
         return False
     if not isinstance(data, dict):
@@ -164,7 +165,7 @@ def blank_secrets_in_file(path: Path) -> bool:
             data[key] = ""
             changed = True
     if changed:
-        path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        write_text_atomic(path, json.dumps(data, indent=2, ensure_ascii=False) + "\n")
     return changed
 
 

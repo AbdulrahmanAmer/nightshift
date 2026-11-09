@@ -11,7 +11,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import shutil
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -21,6 +20,7 @@ from installer.stage2.web.modelcheck import MAX_BYTES, shape_problem, too_big_me
 from installer.stage2.web.pathcheck import DRIVE_PATH_RE as DRIVE_PATH_RE
 from installer.stage2.web.pathcheck import home_problem
 from installer.stage2.web.plan import required_free_gb
+from ns_common.atomic import copy_atomic, read_text_retry, write_text_atomic
 
 RUN_TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 MAX_HOME_LEN = 120
@@ -251,7 +251,7 @@ def answers_to_view(
 
 def read_answers(path: Path) -> dict[str, Any]:
     """Read an answers.json (UTF-8, with or without a BOM). Raises ValueError when it is not an object."""
-    data = json.loads(path.read_text(encoding="utf-8-sig"))
+    data = json.loads(read_text_retry(path, "utf-8-sig"))
     if not isinstance(data, dict):
         raise ValueError(f"{path} must contain a JSON object")
     return data
@@ -263,7 +263,7 @@ def write_answers(path: Path, data: dict[str, Any]) -> Path:
     clean["pexels_api_key"] = ""
     clean["pixabay_api_key"] = ""
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(clean, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    write_text_atomic(path, json.dumps(clean, indent=2, ensure_ascii=False) + "\n")
     return path
 
 
@@ -281,7 +281,7 @@ def keep_earlier_answers(target: Path) -> None:
     """
     kept = target.with_name(KEPT_NAME)
     if target.is_file() and not kept.exists():
-        shutil.copyfile(target, kept)
+        copy_atomic(target, kept)  # a copy torn by a crash would be the baseline for ever
 
 
 def keys_in(raw: dict[str, Any]) -> dict[str, str | None]:

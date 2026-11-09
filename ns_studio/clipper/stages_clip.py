@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from ns_common import ffmpeg
+from ns_common.atomic import write_text_atomic
 from ns_common.config import load_runtime
 from ns_common.db import Db, new_job_id
 from ns_common.errors import NsError
@@ -730,6 +731,15 @@ class QcStage:
             ctx.log.warn("clip_skipped", job_id=ctx.job_id, code="NS-E404", detail=line[:200])
 
 
+def write_clip_sidecars(json_path: Path, txt_path: Path, meta: ClipMetadata, video_name: str) -> None:
+    """The clip's metadata (`.json`) and upload sheet (`.txt`), each swapped in whole.
+
+    The nightly scheduler (`ns_studio.daily`), `retime_sheet` and a person with the Outbox open read them
+    while a re-run rewrites them."""
+    write_text_atomic(json_path, meta.model_dump_json(indent=2) + "\n", newline=None)
+    write_text_atomic(txt_path, clip_sheet_text(meta, video_name), newline=None)
+
+
 def clip_sheet_text(meta: ClipMetadata, video_name: str) -> str:
     """Plain-text upload sheet of a clip."""
     yes_no = {True: "Yes", False: "No"}
@@ -850,8 +860,7 @@ class OutboxStage:
             )
             mp4 = ob.copy_if_changed(Path(rinfo["path"]), dest_dir / f"{stem}.mp4")
             json_path, txt_path = dest_dir / f"{stem}.json", dest_dir / f"{stem}.txt"
-            json_path.write_text(meta.model_dump_json(indent=2) + "\n", encoding="utf-8")
-            txt_path.write_text(clip_sheet_text(meta, mp4.name), encoding="utf-8")
+            write_clip_sidecars(json_path, txt_path, meta, mp4.name)
             ctx.db.execute(
                 "INSERT INTO outputs(output_id, job_id, channel, kind, k, title, path, duration_s, combo_id,"
                 " status, source_id, created_at) VALUES (?,?,?,?,?,?,?,?,?,'pending',?,?)"

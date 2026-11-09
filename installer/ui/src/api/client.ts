@@ -93,7 +93,9 @@ const params = new URLSearchParams(window.location.search);
 export const wantsDemo = params.has("demo") || params.has("screen");
 export const demoScreen = params.get("screen");
 
-/** Loads the in-memory transport. Kept in its own chunk so the real client never carries the fixtures. */
+/** Loads the in-memory transport. Called for `?demo` / `?screen`, and also by useSetup.tsx when no server answers.
+ *  The build has no code splitting (one `app.js`, see vite.installer.config.ts), so the fixtures are inside the
+ *  bundle and this import resolves at once. */
 export async function loadDemoApi(): Promise<Api> {
   const m = await import("../demo/fakeApi");
   return m.createDemoApi({ screen: demoScreen });

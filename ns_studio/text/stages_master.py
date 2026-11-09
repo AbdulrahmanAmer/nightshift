@@ -8,6 +8,7 @@ from collections.abc import Sequence
 from difflib import SequenceMatcher
 from typing import Any
 
+from ns_common.atomic import write_text_atomic
 from ns_common.devmode import is_dev
 from ns_common.embed_client import embed_window, to_blob
 from ns_common.errors import NsError
@@ -190,9 +191,8 @@ class ChaptersDraftStage:
                     budget=chapter_budget(ch.word_budget, wpm),
                 )
                 draft = parse_model(ChapterDraft, raw, f"chapter_draft {ch.n}")
-                f.write_text(
-                    json.dumps({"plan_sha": plan_sha, "draft": draft.model_dump()}, ensure_ascii=False),
-                    encoding="utf-8",
+                write_text_atomic(
+                    f, json.dumps({"plan_sha": plan_sha, "draft": draft.model_dump()}, ensure_ascii=False)
                 )
             text = draft.text.strip()
             summaries.append({"n": ch.n, "title": ch.title, "summary": draft.summary.strip()})
