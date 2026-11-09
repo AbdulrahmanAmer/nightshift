@@ -14,7 +14,7 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import IO
@@ -27,6 +27,17 @@ from ns_supervisor.services import ServiceDef
 
 #: Tells `ns update` it runs below the engine, so it must detach from the engine's process tree.
 UNDER_ENGINE_ENV = "NIGHTSHIFT_UNDER_ENGINE"
+
+#: Variables only the dashboard launcher reads (the setup window sets one to skip the host window). No child
+#: the product builds an environment for may inherit them, or a later dashboard would never raise its window.
+LAUNCHER_ONLY_ENV = ("NS_DASHBOARD_NO_HOST",)
+
+
+def scrubbed(env: Mapping[str, str], also: Iterable[str] = ()) -> dict[str, str]:
+    """A copy of `env` without `LAUNCHER_ONLY_ENV` and the names in `also` (every child env goes through this)."""
+    drop = {*LAUNCHER_ONLY_ENV, *also}
+    return {k: v for k, v in env.items() if k not in drop}
+
 
 _NO_WINDOW: int = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
@@ -212,7 +223,7 @@ def start(service: ServiceDef, logs_dir: Path, *, job: JobObject | None = None) 
     """
     ports.ensure_free({service.name: service.port}, host=service.host)      # NS-E116: the port and its owner
     log = NsLogger(service.name, logs_dir, echo=False)
-    env = {**os.environ, **service.env, UNDER_ENGINE_ENV: "1"}
+    env = {**scrubbed(os.environ), **service.env, UNDER_ENGINE_ENV: "1"}
     try:
         popen = subprocess.Popen(
             service.cmd,
