@@ -498,3 +498,158 @@ def test_the_pause_time_is_left_out_when_the_profile_was_paused_by_hand_after_a_
     resume(client)
     pause(client)
     assert " since " in job_of(client, job["job_id"])["message"]
+
+
+# ------------------------------------------------------------------ a job that waits at the GPU gate
+#
+# The worker marks a job `running` before the GPU gate, and the gate can wait for hours (the nightly holds the
+# GPU). A pause that lands while the job waits there must still stop it: once the job holds the gate, the
+# worker asks the hold again, puts the job back to `queued` and starts nothing.
+
+
+def gate_that_pauses(client: TestClient, state: Any, *, pause_while_waiting: bool = True) -> list[str]:
+    """Install the real gate with a busy GPU for two polls; the pause (if any) lands during the first wait.
+
+    Returns the list of waits, so a test can see that the job really waited at the gate."""
+    from ns_dashboard.jobs import make_gpu_gate
+
+    waits: list[str] = []
+    polls = {"n": 0}
+
+    def status() -> dict[str, Any]:
+        polls["n"] += 1
+        return {"gpu_owner": "nightly" if polls["n"] <= 2 else None}
+
+    def sleeper(_s: float) -> None:
+        waits.append("waited")
+        if pause_while_waiting and len(waits) == 1:
+            pause(client)
+
+    state.worker.gpu_gate = make_gpu_gate(status, sleeper=sleeper, poll_s=0.0)
+    return waits
+
+
+def test_a_run_job_with_a_count_that_waited_at_the_gate_is_held_when_the_pause_landed_there(tmp_home: Path):
+    client, state, runner, _ = setup(tmp_home)
+    job = queue_run(client, count=3)
+    waits = gate_that_pauses(client, state)
+    state.worker.run_next()
+    assert len(waits) == 2, "the job did wait at the gate"
+    assert runner.calls == [], "no video may start: the channel was paused while the job waited"
+    now = job_of(client, job["job_id"])
+    assert now["status"] == "queued" and now["started_at"] is None and now["finished_at"] is None
+    assert now["message"].startswith("Paused: After Dark is paused since ")
+    assert state.worker.run_next() is False and runner.calls == []  # held, not looping
+    # resuming releases it, and it then runs
+    resume(client)
+    assert job_of(client, job["job_id"])["message"] == "Queued"
+    state.worker.gpu_gate = None
+    assert state.worker.run_next() is True and runner.calls == [CH]
+    assert job_of(client, job["job_id"])["status"] == "done"
+
+
+def test_a_job_that_waited_at_the_gate_still_runs_when_nobody_paused(tmp_home: Path):
+    """The control for the test above: the same wait, no pause, the job runs."""
+    client, state, runner, _ = setup(tmp_home)
+    job = queue_run(client, count=3)
+    waits = gate_that_pauses(client, state, pause_while_waiting=False)
+    assert state.worker.run_next() is True
+    assert len(waits) == 2 and runner.calls == [CH]
+    assert job_of(client, job["job_id"])["status"] == "done"
+
+
+def test_a_series_part_that_waited_at_the_gate_is_held_and_its_part_is_not_released(tmp_home: Path):
+    client, state, _, _ = setup(tmp_home)
+    made: list[str] = []
+    freed: list[str] = []
+    state.worker.handlers["series_part"] = lambda ctl: made.append(ctl.job_id) or {"output_ids": []}
+    state.worker.on_end = {"series_part": lambda rec: freed.append(rec.job_id)}
+    part = state.store.create("series_part", CH, {"channel": CH, "story_slug": "tale", "part_n": 1})
+    waits = gate_that_pauses(client, state)
+    state.worker.run_next()
+    assert len(waits) == 2 and made == [], "no video for the part after the pause"
+    now = job_of(client, part.job_id)
+    assert now["status"] == "queued" and now["message"].startswith("Paused: After Dark is paused")
+    assert freed == [], "the part stays with its job: it is waiting, not failed"
+    resume(client)
+    state.worker.gpu_gate = None
+    assert state.worker.run_next() is True and made == [part.job_id]
+    assert job_of(client, part.job_id)["status"] == "done"
+
+
+def test_cancel_still_wins_over_the_hold_for_a_job_at_the_gate(tmp_home: Path):
+    from ns_dashboard.jobs import make_gpu_gate
+
+    client, state, runner, _ = setup(tmp_home)
+    job = queue_run(client)
+
+    def status() -> dict[str, Any]:
+        pause(client)
+        state.worker.cancel(job["job_id"])  # Cancel pressed on the running job while it waits
+        return {"gpu_owner": None}
+
+    state.worker.gpu_gate = make_gpu_gate(status, poll_s=0.0)
+    state.worker.run_next()
+    assert runner.calls == [] and job_of(client, job["job_id"])["status"] == "cancelled"
+
+
+def test_a_clip_job_that_waited_at_the_gate_is_not_held(tmp_home: Path):
+    client, state, _, _ = setup(tmp_home)
+    got: list[str] = []
+    state.worker.handlers["clip"] = lambda ctl: got.append(str(ctl.params["channel"])) or {"output_ids": []}
+    body = {"channel": CH, "url": "https://example.com/talk.mp4", "rights_confirmed": True}
+    job = client.post("/api/jobs/clip", json=body).json()
+    gate_that_pauses(client, state)
+    state.worker.run_next()
+    assert got == [CH] and job_of(client, job["job_id"])["status"] == "done"
+
+
+# ------------------------------------------------------------------ the studio child: before every video
+
+
+def test_a_run_job_paused_before_its_first_video_makes_none_and_says_so(pausing_stage):
+    """The pause comes in the seconds between the worker's last look and the child's first video: the first
+    video is checked too (before, only the second and later videos were)."""
+    from ns_dashboard import studio_bridge
+    from ns_studio.context import FAKEABLE
+
+    env = jobs.open_env(FAKEABLE)
+    jobs.ensure_demo_channel(env)
+    review.pause(env.paths, env.db, "demo", "warning arrived before the first video")
+    seen: list[str] = []
+    with pytest.raises(studio_bridge.ChannelPaused, match="paused"):
+        studio_bridge.run_story_jobs(
+            "demo", "shorts_only", 3, lambda *_a: None, fake=tuple(FAKEABLE), seen=seen
+        )
+    assert PausingStage.made == 0, "no stage of any video may run"
+    assert seen == []
+
+
+def test_a_retry_paused_before_it_restarts_makes_no_stage_run(pausing_stage):
+    from ns_dashboard import studio_bridge
+
+    PausingStage.pause_at = 99
+    seen: list[str] = []
+    run_three(seen)  # one run job, three videos, nobody pauses
+    assert PausingStage.made == 3
+    paths = Paths.from_env()
+    review.pause(paths, Db(paths.db_path), "demo", "warning")
+    with pytest.raises(studio_bridge.ChannelPaused):
+        studio_bridge.run_story_jobs(
+            "demo", "shorts_only", None, lambda *_a: None, resume_job_id=seen[0], fake=("llm",)
+        )
+    assert PausingStage.made == 3
+
+
+def test_a_series_part_of_a_paused_channel_makes_no_video_and_no_job_folder(tmp_home: Path):
+    from ns_dashboard import studio_bridge
+    from ns_studio.context import FAKEABLE
+
+    env = jobs.open_env(FAKEABLE)
+    jobs.ensure_demo_channel(env)
+    review.pause(env.paths, env.db, "demo", "warning")
+    params = {"job_id": "series-p47-1", "channel": "demo", "story_slug": "tale", "part_n": 1}
+    with pytest.raises(studio_bridge.ChannelPaused):
+        studio_bridge.run_series_part(params, lambda *_a: None, fake=tuple(FAKEABLE))
+    assert not env.paths.job_dir("series-p47-1").exists()
+    assert env.db.query("select 1 from combos where job_id = ?", ("series-p47-1",)) == []

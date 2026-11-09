@@ -89,6 +89,13 @@ def output_ids(db: Db, job_id: str) -> list[str]:
     return [str(r["output_id"]) for r in rows]
 
 
+class ChannelPaused(Exception):
+    """The channel was paused before a story video started: nothing was made and the job stops (P47).
+
+    The dashboard's worker looks at the pause when it holds the GPU, so this only meets a pause that came in
+    the seconds after that look, while the studio process was starting."""
+
+
 def run_story_jobs(
     channel: str,
     fmt: str,
@@ -119,6 +126,7 @@ def run_story_jobs(
 
     env = open_env(fake, acquirer, paths=paths)
     if resume_job_id:
+        _require_not_paused(env, channel)
         ctx = jobs.load_job(env, resume_job_id)
         jobs.prepare_plan(ctx.fmt, None)
         names = [s.name for s in plan_job(plan_format(ctx.fmt, ctx.job_dir))]
@@ -135,8 +143,10 @@ def run_story_jobs(
     rng = random.Random()
     out: list[str] = []
     for i in range(n):
-        if i and paused_now(env, ch.slug):  # paused while video 1..i was made: no further video starts (P47)
+        if paused_now(env, ch.slug):  # before EVERY video, the first too: a pause stops all new work (P47)
             env.log.info("story_run_paused", channel=ch.slug, made=i, left=n - i)
+            if i == 0:  # nothing was made: say so, never report a job that made no video as done
+                raise ChannelPaused(_paused_text(ch.display_name))
             break
         if script is not None:
             ctx = jobs.make_script_job(env, ch, fmt, script, script_title, rng=rng)
@@ -148,6 +158,17 @@ def run_story_jobs(
         run_job_guarded(watched(ctx, names, i, n, report))
         out.extend(output_ids(env.db, ctx.job_id))
     return out
+
+
+def _paused_text(display_name: str) -> str:
+    return f"{display_name} was paused before the first video started; none was made. Resume it and run again"
+
+
+def _require_not_paused(env: Env, slug: str) -> None:
+    """`ChannelPaused` when the channel's profile says paused right now (an unreadable profile is not)."""
+    if paused_now(env, slug):
+        env.log.info("story_run_paused", channel=slug, made=0, left=1)
+        raise ChannelPaused(_paused_text(slug))
 
 
 def paused_now(env: Env, slug: str) -> bool:
@@ -418,6 +439,7 @@ def run_series_part(
     env = open_env(fake, acquirer, paths=paths)
     job_id = str(params["job_id"])
     channel = get_channel(env.paths, str(params["channel"]))
+    _require_not_paused(env, channel.slug)  # before a combo is drawn or a job folder made (P47)
     jobs.prepare_plan("master_first", None)
     job_dir = env.paths.job_dir(job_id)
     if (job_dir / "job.json").exists():

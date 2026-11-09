@@ -338,6 +338,18 @@ class JobStore:
         )
         return changed > 0
 
+    def requeue(self, job_id: str, message: str) -> bool:
+        """running -> queued with `message`, as if it had never started; False when it is no longer running.
+
+        Used for a job that waited at the GPU gate and found its channel paused when it got there (P47): its
+        place in the queue (insertion order) is kept, and nothing of the aborted start stays on the row."""
+        changed = self.db.execute(
+            "UPDATE dashboard_jobs SET status = 'queued', started_at = NULL, progress = 0.0, message = ?"
+            " WHERE job_id = ? AND status = 'running'",
+            (message, job_id),
+        )
+        return changed > 0
+
     def finish(self, job_id: str, status: str, message: str, result: dict[str, Any] | None = None) -> None:
         """Terminal state; merges `result` into `params_json`."""
         with self.db.tx():
@@ -720,16 +732,32 @@ class JobWorker:
         return self._running_id is None and self.store.next_queued(hold=self._held) is None
 
     # --- holding a paused channel's jobs ---
-    def _held(self, rec: JobRecord) -> str | None:
-        """Why `rec` must not start (None: it may). Keeps the job's message true: the reason while held,
-        the usual "Queued" / "Scheduled for ..." again once the reason is gone."""
+    def _hold_reason(self, rec: JobRecord) -> str | None:
+        """The hold's answer for `rec`; a hold that fails to answer is logged and counts as no hold."""
         if self.hold is None:
             return None
         try:
-            reason = self.hold(rec)
+            return self.hold(rec)
         except Exception as e:  # a profile that cannot be read must not stop the queue: run as before
             self.log.warn("hold_check_failed", str(e), job_id=rec.job_id)
-            reason = None
+            return None
+
+    def _requeue_if_held(self, rec: JobRecord, ctl: JobControl) -> bool:
+        """The job holds the GPU gate: ask the hold once more (the gate can wait for hours, and a pause may
+        have come meanwhile). When it says wait, the job goes back to `queued` with the reason and True is
+        returned: nothing of it runs. A Cancel pressed meanwhile still wins (it raises `JobCancelled`)."""
+        reason = self._hold_reason(rec)
+        if reason is None:
+            return False
+        ctl.check_cancel()
+        if self.store.requeue(rec.job_id, reason):
+            self.log.info("job_held_after_gate", job_id=rec.job_id, channel=rec.channel, reason=reason)
+        return True
+
+    def _held(self, rec: JobRecord) -> str | None:
+        """Why `rec` must not start (None: it may). Keeps the job's message true: the reason while held,
+        the usual "Queued" / "Scheduled for ..." again once the reason is gone."""
+        reason = self._hold_reason(rec)
         if reason is not None:
             if rec.message != reason and self.store.set_queued_message(rec.job_id, reason):
                 self.log.info("job_held", job_id=rec.job_id, channel=rec.channel, reason=reason)
@@ -823,6 +851,8 @@ class JobWorker:
                 raise RuntimeError(f"no handler for job kind {rec.kind!r}")
             if self.gpu_gate is not None and rec.kind in GPU_KINDS:
                 self.gpu_gate(ctl)
+            if self._requeue_if_held(rec, ctl):  # paused while it waited: no video, no hooks, back in line
+                return
             result = handler(ctl) or {}
             self.store.finish(rec.job_id, "done", "Done", result)
             self.log.info("job_done", job_id=rec.job_id, kind=rec.kind)
