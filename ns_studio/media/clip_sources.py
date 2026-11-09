@@ -22,7 +22,7 @@ import httpx
 from ns_common import ffmpeg as ff
 from ns_common.errors import NsError
 from ns_common.logging import NsLogger
-from ns_studio.media.diskfull import disk_full_error, is_disk_full
+from ns_studio.media.diskfull import classify_ffmpeg_error, disk_full_error, is_disk_full, remove_partial
 
 Orientation = Literal["landscape", "portrait"]
 PEXELS_URL = "https://api.pexels.com"
@@ -483,6 +483,18 @@ class FakeClipSource:
         idx = int(cand.id.rsplit("-", 1)[-1])
         w, h = (cand.width // 2, cand.height // 2)
         kind: Literal["testsrc2", "color"] = "testsrc2" if idx % 2 == 0 else "color"
-        return ff.make_test_clip(
-            dest, width=w, height=h, seconds=cand.duration, kind=kind, color=_PALETTE[idx % len(_PALETTE)]
-        )
+        try:
+            return ff.make_test_clip(
+                dest, width=w, height=h, seconds=cand.duration, kind=kind, color=_PALETTE[idx % len(_PALETTE)]
+            )
+        except NsError as e:
+            remove_partial(dest)  # no truncated clip stays in the cache
+            mapped = classify_ffmpeg_error(e, dest.parent)
+            if mapped is e:
+                raise
+            raise mapped from e
+        except OSError as e:
+            remove_partial(dest)
+            if is_disk_full(e):
+                raise disk_full_error(dest.parent) from e
+            raise

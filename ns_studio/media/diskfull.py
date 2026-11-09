@@ -82,14 +82,29 @@ def classify_ffmpeg_error(err: NsError, folder: Path, log: NsLogger | None = Non
     return err
 
 
+def remove_partial(path: Path | None, log: NsLogger | None = None) -> None:
+    """Delete a half-written output (a truncated mp4 or wav on a full volume is no use to anyone)."""
+    if path is None:
+        return
+    try:
+        path.unlink(missing_ok=True)
+    except OSError as e:  # locked or already gone: the NS-E104 the caller raises matters more
+        if log:
+            log.warn("partial_output_kept", path=str(path), error=type(e).__name__)
+
+
 def run_ffmpeg(
-    args: list[str], *, folder: Path, log: NsLogger | None = None
+    args: list[str], *, folder: Path, out: Path | None = None, log: NsLogger | None = None
 ) -> subprocess.CompletedProcess[str]:
-    """`ns_common.ffmpeg.run`, but a full output volume (`folder` is where FFmpeg writes) is NS-E104."""
+    """`ns_common.ffmpeg.run`, but a full output volume (`folder` is where FFmpeg writes) is NS-E104.
+
+    `out` is the file FFmpeg writes; when the failure is a full disk the truncated file is removed.
+    """
     try:
         return ff.run(args, log=log)
     except NsError as e:
         mapped = classify_ffmpeg_error(e, folder, log)
         if mapped is e:
             raise
+        remove_partial(out, log)
         raise mapped from e

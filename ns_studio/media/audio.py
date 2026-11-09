@@ -190,6 +190,7 @@ def loudnorm(
         run_ffmpeg(
             ["-i", str(in_wav), "-vn", "-ar", str(sr), "-ac", "1", "-c:a", "pcm_s16le", str(out_wav)],
             folder=out_wav.parent,
+            out=out_wav,
         )
         return
     pre = ""
@@ -208,6 +209,7 @@ def loudnorm(
          f"{pre + ',' if pre else ''}loudnorm={target}:{measured}:linear=true:print_format=summary",
          "-ar", str(sr), "-ac", "1", "-c:a", "pcm_s16le", str(out_wav)],
         folder=out_wav.parent,
+        out=out_wav,
     )
     got = measure_loudness(out_wav)
     if math.isfinite(got.lufs) and abs(got.lufs - i) > 0.5:
@@ -216,7 +218,7 @@ def loudnorm(
             gain = min(gain, tp - got.true_peak)
         tmp = out_wav.with_suffix(".fix.wav")
         run_ffmpeg(["-i", str(out_wav), "-af", f"volume={gain:.2f}dB", "-ar", str(sr), "-ac", "1",
-                    "-c:a", "pcm_s16le", str(tmp)], folder=tmp.parent)
+                    "-c:a", "pcm_s16le", str(tmp)], folder=tmp.parent, out=tmp)
         shutil.move(str(tmp), str(out_wav))
 
 
@@ -236,7 +238,7 @@ def assemble_audio(segments: Sequence[Path | float], out_wav: Path, *, sr: int =
     graph = ";".join(chains) + f";{joined}concat=n={len(segments)}:v=0:a=1[out]"
     out_wav.parent.mkdir(parents=True, exist_ok=True)
     run_ffmpeg([*args, "-filter_complex", graph, "-map", "[out]", "-ar", str(sr), "-ac", "1",
-                "-c:a", "pcm_s16le", str(out_wav)], folder=out_wav.parent)
+                "-c:a", "pcm_s16le", str(out_wav)], folder=out_wav.parent, out=out_wav)
     return out_wav
 
 

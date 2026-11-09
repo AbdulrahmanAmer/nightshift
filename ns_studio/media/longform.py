@@ -279,7 +279,7 @@ def render_segment(
         run_ffmpeg(
             [*inputs, "-filter_complex", graph, "-map", "[vout]", "-an",
              *encoder_args(video, force_cpu=force_cpu), "-r", str(fps), "-pix_fmt", "yuv420p", str(out)],
-            folder=out.parent, log=ctx.log,
+            folder=out.parent, out=out, log=ctx.log,
         )
 
     try:
@@ -340,7 +340,7 @@ class RenderMasterStage:
             ["-f", "concat", "-safe", "0", "-i", str(lst), "-i", str(audio), "-map", "0:v", "-map", "1:a",
              "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "1",
              "-movflags", "+faststart", str(master)],
-            folder=master.parent, log=ctx.log,
+            folder=master.parent, out=master, log=ctx.log,
         )
         total = timeline[-1].end
         ctx.write_json("long/chapters.json", chapters_json(timeline, total))

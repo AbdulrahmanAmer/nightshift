@@ -311,6 +311,51 @@ def test_d5_the_searcher_hands_the_job_log_to_the_sources(tmp_path: Path):
     assert events.count("footage_host_retry") == 3 and "footage_host_down" in events
 
 
+def test_d5_a_host_that_is_down_is_skipped_for_the_rest_of_the_job():
+    """One NS-E503 marks the source down: the next keywords do not cost another 22 s of backoff."""
+    from ns_studio.media.clips import Searcher
+
+    t = FakeTime()
+    calls = {"n": 0}
+    down = PixabaySource(
+        "K", Path("."), client=_client(_counting(calls, 503)), sleep=t.sleep, wall=t.clock
+    )
+    up_calls: list[str] = []
+
+    class Up:
+        name = "pexels"
+
+        def search(self, keyword, *, orientation, per_page=80):
+            up_calls.append(keyword)
+            return parse_pexels(_load("pexels_search.json"), orientation)
+
+        def download(self, cand, dest):
+            return dest
+
+    s = Searcher([down, Up()])
+    first = s.search("rain", "portrait")
+    slept_after_first, http_after_first = len(t.slept), calls["n"]
+    assert slept_after_first == 3 and http_after_first == 4  # three backoffs, four tries, once
+    assert len(first) == 3  # the other host still answers
+    for kw in ("fog", "street", "porch"):
+        assert len(s.search(kw, "portrait")) == 3
+    assert len(t.slept) == slept_after_first and calls["n"] == http_after_first
+    assert set(up_calls) == {"rain", "fog", "street", "porch"}
+    assert s.first_error() is not None and s.first_error().code == "NS-E503"
+
+
+def test_d5_a_key_error_does_not_mark_a_host_down():
+    from ns_studio.media.clips import Searcher
+
+    t = FakeTime()
+    calls = {"n": 0}
+    src = PexelsSource("K", Path("."), client=_client(_counting(calls, 401)), sleep=t.sleep, wall=t.clock)
+    s = Searcher([src])
+    s.search("a", "portrait")
+    s.search("b", "portrait")
+    assert calls["n"] == 2  # a bad key is asked again per keyword, as before
+
+
 def test_d5_a_download_503_is_an_outage_not_a_key_error(tmp_path: Path):
     src = PexelsSource("K", tmp_path, client=_client(lambda r: httpx.Response(503)))
     cand = parse_pexels(_load("pexels_search.json"), "portrait")[0]

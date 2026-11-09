@@ -204,6 +204,7 @@ def render_video(
              *encoder_args(video, force_cpu=force_cpu), "-r", str(video.fps), "-pix_fmt", "yuv420p",
              "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "1", "-movflags", "+faststart", str(out)],
             folder=out.parent,
+            out=out,
             log=log,
         )
 

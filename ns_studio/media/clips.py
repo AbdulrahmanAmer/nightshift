@@ -186,6 +186,7 @@ class Searcher:
         self.log = log
         give_log(self.sources, log)
         self._memo: dict[tuple[str, str, str], list[ClipCandidate]] = {}
+        self._down: set[str] = set()  # sources that gave NS-E503 once: not asked again this job
         self.errors: list[NsError] = []
 
     def search(self, keyword: str, orientation: Orientation) -> list[ClipCandidate]:
@@ -193,6 +194,8 @@ class Searcher:
         per_source: list[list[ClipCandidate]] = []
         for src in self.sources:
             key = (src.name, orientation, keyword)
+            if key not in self._memo and src.name in self._down:
+                self._memo[key] = []
             if key not in self._memo:
                 try:
                     self._memo[key] = src.search(keyword, orientation=orientation, per_page=self.per_page)
@@ -200,6 +203,8 @@ class Searcher:
                     if e.code not in _API_ERRORS:
                         raise
                     self.errors.append(e)
+                    if e.code == "NS-E503":  # an outage already cost its backoff; do not pay it per keyword
+                        self._down.add(src.name)
                     if self.log:
                         self.log.warn("clip_search_failed", source=src.name, keyword=keyword, code=e.code)
                     self._memo[key] = []

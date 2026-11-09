@@ -314,14 +314,16 @@ def render_clip_report(
     spec.out.parent.mkdir(parents=True, exist_ok=True)
     plan = plan_loudness(spec, log)
     try:
-        run_ffmpeg(build_args(spec, plan.measured, plan.pre), folder=spec.out.parent, log=log)
+        run_ffmpeg(build_args(spec, plan.measured, plan.pre), folder=spec.out.parent, out=spec.out, log=log)
     except NsError as e:
         if spec.encoder != "h264_nvenc" or e.code == "NS-E104":  # a full disk is not an encoder problem
             raise
         if log:
             log.warn("nvenc_fallback", "NVENC failed, retrying with libx264", code="NS-W401")
         fallback = RenderSpec(**{**spec.__dict__, "encoder": "libx264", "preset": "veryfast"})
-        run_ffmpeg(build_args(fallback, plan.measured, plan.pre), folder=spec.out.parent, log=log)
+        run_ffmpeg(
+            build_args(fallback, plan.measured, plan.pre), folder=spec.out.parent, out=spec.out, log=log
+        )
     return spec.out, plan.report()
 
 

@@ -164,3 +164,113 @@ def test_render_does_not_retry_with_libx264_when_the_disk_is_full(
             ass_path=None,
         )
     assert ei.value.code == "NS-E104" and len(calls) == 1
+
+
+def _truncating_run(tail: str, out: Path):
+    """An FFmpeg run that writes part of its output and then dies, like a volume that filled up."""
+
+    def run(args, *, log=None):
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_bytes(b"x" * 4096)
+        raise _e401(tail)
+
+    return run
+
+
+def test_run_ffmpeg_removes_the_half_written_output_on_a_full_disk(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    out = tmp_path / "out" / "short.mp4"
+    monkeypatch.setattr(ff, "run", _truncating_run(STDERR_NO_SPACE, out))
+    with pytest.raises(NsError) as ei:
+        run_ffmpeg(["-i", "x"], folder=out.parent, out=out)
+    assert ei.value.code == "NS-E104"
+    assert not out.exists()
+
+
+def test_run_ffmpeg_keeps_the_output_of_a_failure_that_is_not_a_full_disk(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setattr(diskfull, "_free_bytes", lambda folder: 500 * GB)
+    out = tmp_path / "short.mp4"
+    monkeypatch.setattr(ff, "run", _truncating_run(STDERR_BAD_FILTER, out))
+    with pytest.raises(NsError) as ei:
+        run_ffmpeg(["-i", "x"], folder=tmp_path, out=out)
+    assert ei.value.code == "NS-E401"
+    assert out.exists()  # only a full disk says the file is a casualty of the disk
+
+
+def test_render_video_on_a_full_disk_leaves_no_truncated_short(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from ns_common.models import VideoCfg
+    from ns_studio.media import render as render_mod
+    from ns_studio.media.presets import load_visual_treatments
+    from ns_studio.media.shotplan import Shot
+
+    out = tmp_path / "out" / "short.mp4"
+
+    def full(args, *, timeout_s=3600, log=None):
+        _truncating_run(STDERR_NO_SPACE, out)(args)
+
+    monkeypatch.setattr(ff, "run", full)
+    shot = Shot(0, 0.0, 2.0, "fake", "c", "c.mp4", 0.0, 1920, 1080, "p", "fake", "k")
+    with pytest.raises(NsError) as ei:
+        render_mod.render_video(
+            shots=[shot],
+            audio=tmp_path / "a.wav",
+            out=out,
+            size=(1080, 1920),
+            treatment=next(iter(load_visual_treatments().values())),
+            video=VideoCfg(encoder="h264_nvenc"),
+            ass_path=None,
+        )
+    assert ei.value.code == "NS-E104"
+    assert not out.exists()
+
+
+def test_extract_audio_on_a_full_disk_leaves_no_truncated_wav(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from ns_studio.clipper.source import extract_audio
+
+    wav = tmp_path / "work" / "a.wav"
+    monkeypatch.setattr(ff, "run", _truncating_run(STDERR_NO_SPACE, wav))
+    with pytest.raises(NsError) as ei:
+        extract_audio(tmp_path / "v.mp4", wav)
+    assert ei.value.code == "NS-E104"
+    assert not wav.exists()
+
+
+def test_the_fake_clip_source_on_a_full_disk_is_ns_e104_and_leaves_no_clip(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """QA's D-8 (a): the dev fake clip source died as NS-E401 and left a truncated porch-at-night clip."""
+    from ns_studio.media.clip_sources import FakeClipSource
+
+    dest = tmp_path / "cache" / "clips" / "fake" / "porch-at-night-58e889-4.mp4"
+    monkeypatch.setattr(diskfull, "_free_bytes", lambda folder: 40 * 1024 * 1024)
+    monkeypatch.setattr(ff, "run", _truncating_run(STDERR_QA_TAIL, dest))
+    src = FakeClipSource(tmp_path)
+    cand = src.search("porch at night", orientation="portrait")[4]
+    with pytest.raises(NsError) as ei:
+        src.download(cand, dest)
+    assert ei.value.code == "NS-E104"
+    assert str(dest.parent) in ei.value.detail
+    assert not dest.exists()
+
+
+def test_the_fake_clip_source_removes_a_clip_after_any_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from ns_studio.media.clip_sources import FakeClipSource
+
+    dest = tmp_path / "fake" / "a-1.mp4"
+    monkeypatch.setattr(diskfull, "_free_bytes", lambda folder: 500 * GB)
+    monkeypatch.setattr(ff, "run", _truncating_run(STDERR_BAD_FILTER, dest))
+    src = FakeClipSource(tmp_path)
+    cand = src.search("a", orientation="portrait")[1]
+    with pytest.raises(NsError) as ei:
+        src.download(cand, dest)
+    assert ei.value.code == "NS-E401"
+    assert not dest.exists()

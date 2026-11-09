@@ -212,6 +212,7 @@ def extract_audio(video: Path, out_wav: Path) -> Path:
             "-c:a", "pcm_s16le", str(out_wav),
         ],
         folder=out_wav.parent,
+        out=out_wav,
     )
     return out_wav
 
