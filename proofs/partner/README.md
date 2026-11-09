@@ -223,9 +223,9 @@ against the 120 ms gate.
    most 120 (`DRIFT_LIMIT_MS`, `captions.py:30` and `ns_studio/media/qc.py:24`). Recorded: max, median, and the
    margin to 120. That part can never fail by itself, because the product already rejects a Short over 120 ms
    (`captions.py:30`), so "well under 120" has its own threshold: pass when every Short's `drift_ms` is at most
-   60 ms (half the gate) and the median at most 40 ms. These two numbers are QA's proposal for the Head to
-   confirm or change before the kit ships; the evidence records the values either way, so a change of threshold
-   needs no new run.
+   60 ms and the median at most 40 ms (the Head's reading of "well under 120", 2026-11-10). The script holds
+   them as two named constants with that comment, so a later change is one line:
+   `DRIFT_EACH_MAX_MS = 60` and `DRIFT_MEDIAN_MAX_MS = 40`. The evidence records every value either way.
 
 **(c) Starts and stops.** Nothing. Reads only.
 
