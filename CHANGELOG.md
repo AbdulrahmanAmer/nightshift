@@ -10,8 +10,9 @@ All notable changes to Nightshift are recorded here. The format follows
 ## [0.1.13] - 2026-11-09
 
 The first round of the finalization lists (`docs/FINALIZATION.md`, `docs/FEATURE_STATUS.md`): fourteen code
-items from the plumbing map built by builder agents and reviewed before merge, the script-to-video path, the
-engine test with fake footage, and the GPU install path proven without a card. Send `Nightshift-Setup-0.1.13.zip`.
+items from the plumbing map (eleven builder pull requests and three orchestrator fixes), the script-to-video
+path, the engine test with fake footage, and the GPU install path proven without a card. Send
+`Nightshift-Setup-0.1.13.zip`.
 
 - Script to video: a story you wrote becomes a video. `POST /api/jobs/run` takes `script` and `script_title`,
   `studio run --script <file>` does the same, and the Assistant has `start_script_job` ("make a Short from this
@@ -24,8 +25,13 @@ engine test with fake footage, and the GPU install path proven without a card. S
   pipeline can be proven on a PC without a graphics card or a stock-footage key; setup says so, and the
   Settings payload shows `dev_mode` and `fake_footage`.
 - GPU path proven without a card: every CUDA pin downloaded and hash-checked, both llama.cpp builds start and
-  stop only at the driver, the whisper DLL set is complete; the driver row no longer blames a missing card on
-  an old driver, and the NS-W115 copy names the CUDA 13 build for an RTX 50-series card.
+  stop only at the driver, the whisper DLL set is complete. In the setup window's PC check, a PC with no
+  graphics card no longer shows the driver line as "The driver is older than RTX 50-series cards need" (the
+  line now says the driver was not checked, and the red graphics card row carries the fix), and an RTX
+  50-series card whose driver version cannot be read (`NS-W115`) is told it gets the CUDA 13 build, which is
+  what step 2 downloads. `BUILD_SPEC.md` 1.2 and 21 state the real driver rule (CUDA 12.4 for older cards,
+  CUDA 13 / driver 580 for RTX 50-series), and the stage 1 and supervisor tests gain an `nvidia-smi` fixture
+  for an RTX 5060 Ti.
 - Nightshift Code follows the language model's address: the launcher takes the endpoint the engine hands it
   (or the port in runtime.json) and rewrites `opencode.json` before OpenCode starts.
 - Supervisor events keep their kind through the dashboard relay (`update` and `run` arrive as themselves).
@@ -33,25 +39,20 @@ engine test with fake footage, and the GPU install path proven without a card. S
 - Loudness: the limiter reaches -14 LUFS in two measurement passes and narration is limited once, at the
   voice stage.
 - Clips: the clip-selection prompt asks for emphasis words and the captions use them; the dashboard's layout
-  list comes from the clip format presets (your edited formats included).
+  list comes from the clip format presets (your edited formats included; a format you add yourself is listed,
+  but the clipper cannot cut with it yet).
 - A studio child that stops on an uncoded exception reports NS-E327 with a hint instead of `code: null`.
-- After an update the Settings card shows the new version's release notes.
+- An update carries the new version's release notes: the result line of `ns update` and
+  `update_state.json` hold them as `release_notes`. The Settings card does not show them yet.
 - `studio dashboard [--port] [--open]` starts the engine and opens the dashboard.
-- `schedule_registered` means a usable task; `schedule_mode` names registered, interactive-only, disabled or
-  none.
+- `schedule_registered` means a usable task; `schedule_mode` in Settings names `registered`,
+  `interactive_only`, `disabled` or `none`.
 - Cancel and failure free every lease owner a job took, not only `studio:<job id>`.
 - Series workshop: the missing-story message points to Library > Series instead of a console command.
 - Assistant queue: a claim exactly as old as the stale limit can be taken over (a fast machine made the
   takeover test flaky).
 - Setup tests describe the PC through the fake probe only (the user-level home variable of an existing install
   no longer leaks into them).
-
-- Setup window, PC check: a PC with no graphics card no longer shows the driver line as "The driver is older than
-  RTX 50-series cards need ... driver 570" (a stale text; the line now says the driver was not checked, and the red
-  graphics card row carries the fix). An RTX 50-series card whose driver version cannot be read (`NS-W115`) is told
-  it gets the CUDA 13 build, which is what step 2 downloads, not "the CUDA 12.4 build". `BUILD_SPEC.md` 1.2 and 21
-  now state the real driver rule (CUDA 12.4 for older cards, CUDA 13 / driver 580 for RTX 50-series). Found by the
-  GPU path proof, which also adds an `nvidia-smi` fixture for an RTX 5060 Ti to the stage 1 and supervisor tests.
 
 ## [0.1.12] - 2026-11-09
 
