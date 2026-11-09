@@ -27,6 +27,7 @@ from ns_common.logging import NsLogger
 from ns_common.paths import Paths
 from ns_common.uv import find_uv, home_uv, uv_env
 from ns_common.venv_extras import NO_DEPS, extras_suffix
+from ns_supervisor.procs import scrubbed
 
 PRESERVE = (".git", "config", "answers.json")
 RENAME_TRIES = 20
@@ -444,9 +445,8 @@ def resync_venvs(
 
 def _run(cmd: list[str], env: dict[str, str] | None = None) -> tuple[int, str]:
     try:
-        r = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=1800, check=False, env={**os.environ, **(env or {})}
-        )
+        child_env = {**scrubbed(os.environ), **(env or {})}
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=1800, check=False, env=child_env)
     except (OSError, subprocess.SubprocessError) as e:
         return 1, str(e)
     return r.returncode, " | ".join((r.stderr or r.stdout).strip().splitlines()[-3:])

@@ -7,6 +7,8 @@ import os
 import shutil
 import subprocess
 
+from ns_supervisor.procs import scrubbed
+
 
 class PowerShellMissing(RuntimeError):
     """PowerShell is not on PATH (non-Windows machine or stripped image)."""
@@ -29,7 +31,7 @@ def run_powershell(
     exe = find_powershell()
     if exe is None:
         raise PowerShellMissing("powershell was not found on PATH")
-    env = {**os.environ, **(env_extra or {})}
+    env = {**scrubbed(os.environ), **(env_extra or {})}
     return subprocess.run(
         [exe, "-NoProfile", "-NonInteractive", "-EncodedCommand", encode(script)],
         capture_output=True,

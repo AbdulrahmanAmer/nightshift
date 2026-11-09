@@ -3,6 +3,7 @@ import subprocess
 import sys
 import types
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
@@ -245,3 +246,35 @@ def test_a_real_windowless_service_is_stopped_even_if_it_refuses_the_polite_requ
     assert wait_until(lambda: _healthy(d.health_url))
     procs.terminate(proc, grace_s=5)
     assert not proc.alive()
+
+
+# ------------------------------------------------------------ launcher-only variables stay out of children
+def test_scrubbed_drops_the_launcher_only_variables_and_keeps_the_rest() -> None:
+    env = {"NIGHTSHIFT_HOME": "C:/h", "NS_DASHBOARD_NO_HOST": "1", "PATH": "p", procs.UNDER_ENGINE_ENV: "1"}
+    out = procs.scrubbed(env)
+    assert out == {"NIGHTSHIFT_HOME": "C:/h", "PATH": "p", procs.UNDER_ENGINE_ENV: "1"}
+    assert "NS_DASHBOARD_NO_HOST" not in procs.scrubbed(env, also=(procs.UNDER_ENGINE_ENV,))
+    assert env["NS_DASHBOARD_NO_HOST"] == "1"      # the input is not modified
+
+
+def test_a_service_does_not_inherit_the_setup_windows_no_host_switch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: dict[str, Any] = {}
+
+    class Stop(Exception):
+        pass
+
+    def fake_popen(argv: list[str], **kw: Any) -> None:
+        seen.update(kw)
+        raise Stop
+
+    monkeypatch.setenv("NS_DASHBOARD_NO_HOST", "1")
+    monkeypatch.setenv("NIGHTSHIFT_HOME", str(tmp_path))
+    monkeypatch.setattr(procs.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(procs.ports, "ensure_free", lambda *a, **k: None)
+    d = ServiceDef(name="tts", cmd=["x"], host="127.0.0.1", port=1, gpu=False)
+    with pytest.raises(Stop):
+        procs.start(d, tmp_path / "logs")
+    assert "NS_DASHBOARD_NO_HOST" not in seen["env"]
+    assert seen["env"]["NIGHTSHIFT_HOME"] == str(tmp_path) and seen["env"][procs.UNDER_ENGINE_ENV] == "1"
