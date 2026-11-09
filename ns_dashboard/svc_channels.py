@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from typing import Any
 
 import yaml
@@ -14,6 +15,7 @@ from ns_dashboard.channels import validate_profile
 from ns_dashboard.common import now_iso, require_slug
 from ns_dashboard.errors import ApiError
 from ns_dashboard.state import AppState
+from ns_studio.media.formats import any_use_problems, forget_loaded_formats
 from ns_studio.media.job_formats import formats_in_use
 
 
@@ -116,8 +118,30 @@ class ChannelsService:
             (ch.slug, ch.display_name, ch.created_at or now_iso(), ch.status),
         )
 
+    def _format_problems(
+        self, listed: Collection[str], saved: Collection[str]
+    ) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+        """([(id, why)] new in this save, [(id, why)] already saved) for the listed formats nothing can use.
+
+        An id is no use when its file is missing or does not load, or the studio would refuse it (the check a
+        series design and the Formats editor use: `ns_studio.media.formats.kind_problems`). The ids the saved
+        profile already listed are kept: an old channel whose format was deleted must stay editable.
+        """
+        forget_loaded_formats()
+        new: list[tuple[str, str]] = []
+        old: list[tuple[str, str]] = []
+        for fid in dict.fromkeys(listed):
+            problems = any_use_problems(fid, paths=self.s.paths)
+            if problems:
+                (old if fid in saved else new).append((fid, "; ".join(problems)))
+        return new, old
+
     def _checked(
-        self, body: dict[str, Any], slug: str | None = None, before: Voice | None = None
+        self,
+        body: dict[str, Any],
+        slug: str | None = None,
+        before: Voice | None = None,
+        saved_formats: Collection[str] = (),
     ) -> tuple[Channel, list[dict[str, str]]]:
         others = [c for c in self.load_all() if c.slug != (slug or body.get("slug"))]
         check = validate_profile(body, others, before)
@@ -125,7 +149,28 @@ class ChannelsService:
             raise ApiError(
                 422, "invalid_profile", "Some channel settings need fixing.", details=check["errors"]
             )
-        return Channel.model_validate(body), check["warnings"]
+        ch = Channel.model_validate(body)
+        new, old = self._format_problems(ch.formats_allowed, saved_formats)
+        if new:
+            raise ApiError(
+                422,
+                "NS-E320",
+                "These allowed formats cannot be used: " + ", ".join(fid for fid, _why in new) + ".",
+                hint="Fix them in Library > Formats, or take them out of the list.",
+                details=[
+                    {"field": "formats_allowed", "message": f"{fid}: {why}", "code": "NS-E320"}
+                    for fid, why in new
+                ],
+            )
+        warnings = list(check["warnings"])
+        warnings += [
+            {
+                "field": "formats_allowed",
+                "message": f"{fid} is still listed but cannot be used ({why}); jobs skip it.",
+            }
+            for fid, why in old
+        ]
+        return ch, warnings
 
     def create(self, body: dict[str, Any]) -> dict[str, Any]:
         """New channel; 409 when the slug is taken."""
@@ -150,7 +195,7 @@ class ChannelsService:
             raise ApiError(422, "invalid_profile", "The channel id cannot be changed.",
                            details=[{"field": "slug", "message": "The channel id cannot be changed."}])
         draft = {**body, "slug": slug, "created_at": body.get("created_at") or old.created_at}
-        return self._checked(draft, slug, old.voice)
+        return self._checked(draft, slug, old.voice, old.formats_allowed)
 
     def update(self, slug: str, body: dict[str, Any]) -> dict[str, Any]:
         """Replace a profile; the slug cannot change."""
@@ -188,12 +233,20 @@ class ChannelsService:
         raw = {**raw, "slug": raw.get("slug") or slug}
         others = [c for c in self.load_all() if c.slug != raw["slug"]]
         check = validate_profile(raw, others, saved.voice if saved else None)
+        errors, warnings = list(check["errors"]), list(check["warnings"])
+        listed = [f for f in raw.get("formats_allowed") or [] if isinstance(f, str)]
+        new, old = self._format_problems(listed, saved.formats_allowed if saved else ())
+        errors += [{"field": "formats_allowed", "message": f"{fid}: {why}"} for fid, why in new]
+        warnings += [
+            {"field": "formats_allowed", "message": f"{fid} is still listed but cannot be used ({why})."}
+            for fid, why in old
+        ]
         return {
-            "ok": check["ok"],
-            "errors": [e["message"] for e in check["errors"]],
-            "warnings": [w["message"] for w in check["warnings"]],
-            "error_fields": check["errors"],
-            "warning_fields": check["warnings"],
+            "ok": check["ok"] and not new,
+            "errors": [e["message"] for e in errors],
+            "warnings": [w["message"] for w in warnings],
+            "error_fields": errors,
+            "warning_fields": warnings,
         }
 
 

@@ -30,7 +30,12 @@ from ns_common.paths import Paths
 from ns_common.textstats import split_sentences, word_count
 from ns_studio.context import FAKEABLE, JobContext, Services, build_services
 from ns_studio.errors import StudioError
-from ns_studio.media.formats import design_formats, ensure_allowed, formats_allowed
+from ns_studio.media.formats import (
+    design_formats,
+    ensure_allowed,
+    formats_allowed,
+    story_use_problems,
+)
 from ns_studio.media.presets import PRESETS_DIR
 from ns_studio.series.importer import build_artifacts
 from ns_studio.series.policy import is_standalone, text_gate
@@ -135,12 +140,14 @@ def chapter_count(target_words: int, profile: StoryProfile = NORMAL) -> int:
 
 
 def available_formats() -> list[str]:
-    """Format ids a design can pick: the short, long and square presets (else the three shipped ids).
+    """Format ids a design can pick: the short, long and square presets a part can be drawn from.
 
-    Per-clip layouts (`clip_*`) are chosen by the clipper, not by a series design.
+    A preset the studio would refuse for a story video (a region off the canvas, a shot range upside down)
+    is not offered; the Library lists it as invalid. Per-clip layouts (`clip_*`) are chosen by the clipper,
+    not by a series design. Else the three shipped ids.
     """
     try:
-        found = design_formats()
+        found = [f for f in design_formats() if not story_use_problems(f)]
     except StudioError:
         found = []
     return found or list(DEFAULT_FORMATS)
@@ -885,7 +892,9 @@ class Workshop:
 
         Fields: format, visual_treatment, caption_style, voice (speaker name or a Voice mapping),
         thumbnail_style, publish_cadence_days. `format` must be in the channel's `formats_allowed` (all
-        formats when the channel has no such list); styles must exist in the preset files.
+        formats when the channel has no such list) and must load and be drawable (NS-E320 otherwise): a long
+        or square format shapes each part's full video, a short format the part's Shorts. Styles must exist in
+        the preset files.
         """
         sd, _status, ch = self._open(slug)
         doc = self._design_doc(sd, ch, fields)
@@ -914,11 +923,25 @@ class Workshop:
             ensure_allowed(doc.format, formats_allowed(ch), channel=ch.slug)
         except StudioError as e:
             raise WorkshopError(f"{e.code}: {e.message} {e.detail}") from e
+        self._ensure_usable_format(doc.format)
         options = design_options(ch)
         for key, allowed in options.items():
             if getattr(doc, key) not in allowed:
                 raise WorkshopError(f"{key} {getattr(doc, key)!r} is not allowed; choose from {allowed}")
         return doc
+
+    def _ensure_usable_format(self, format_id: str) -> None:
+        """NS-E320 (as a WorkshopError) when the design's format is missing, does not load or cannot be drawn.
+
+        Run when the design is saved and again when a part is queued, so the owner hears it where the format
+        is chosen, not at render time. The studio keeps its own fallback for a format that breaks after that.
+        """
+        problems = story_use_problems(format_id, paths=self.paths)
+        if problems:
+            raise WorkshopError(
+                f"NS-E320: series design format {format_id!r} cannot be used ({'; '.join(problems)}). "
+                "Choose another format in the series design, or fix it in Library > Formats."
+            )
 
     # --- what each step refuses before it calls a model or writes a file -------------------------
     #
@@ -1002,6 +1025,7 @@ class Workshop:
             raise WorkshopError(
                 "no design yet: set the series design first (Library > Series, or ask the Assistant)"
             )
+        self._ensure_usable_format(design.format)
         return sd, status, ch, series, design, self._pick(status, series, which, ("approved",), "produce")
 
     def check(self, tool: str, args: dict[str, Any]) -> None:
