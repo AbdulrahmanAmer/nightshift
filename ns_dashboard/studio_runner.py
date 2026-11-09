@@ -80,13 +80,22 @@ def parse_event(line: str) -> Event | None:
     return data if isinstance(data, dict) and isinstance(data.get("ev"), str) else None
 
 
-def failure_error(event: Event) -> Exception:
-    """The exception for an `error` event: `NsError` for a known `NS-` code, else `RuntimeError`."""
+def failure_error(event: Event) -> NsError:
+    """The exception for an `error` event: `NsError` with the child's own code when it is a known one.
+
+    A failure without a code (a bug or a library error in the child) or with a code `errors.json` does not
+    know becomes NS-E327 with the exception type and message as detail, so the Queue card always shows a
+    code and the hint to open the log, never a bare `null`.
+    """
     code = event.get("code")
+    detail = str(event.get("detail") or "")
     if isinstance(code, str):
         with contextlib.suppress(KeyError):
-            return NsError(code, str(event.get("detail") or ""))
-    return RuntimeError(str(event.get("message") or "The studio process failed."))
+            return NsError(code, detail)
+    message = str(event.get("message") or "The studio process failed.")
+    if isinstance(code, str):
+        message = f"{message} (unknown code {code})"
+    return NsError("NS-E327", message)
 
 
 def _read_lines(stream: IO[str], out: queue.Queue[str | None]) -> None:
@@ -199,8 +208,9 @@ class StudioRunner:
         process tree is killed and the exception passes on.
         When `on_cancel()` is given it runs first and tells the child to stop by itself (the download kind
         cancels the Clipper `CancelToken`, which kills yt-dlp and removes its folder); the tree is killed once
-        `cancel_grace_s` has passed without the child ending. A failure in the child becomes `NsError` when it
-        carries an `NS-` code, else `RuntimeError`.
+        `cancel_grace_s` has passed without the child ending. A failure in the child becomes `NsError`: with
+        its own `NS-` code when it carries a known one, else NS-E327 (also when the child ends without a
+        `result` or an `error`).
         """
         args_file = self._args_file(kind, args)
         cancel_file = args_file.with_suffix(".cancel")
@@ -261,5 +271,5 @@ class StudioRunner:
             raise failure_error(failure)
         if result is None or proc.returncode != 0:
             last = " | ".join(list(tail)[-5:])
-            raise RuntimeError(f"The studio process stopped (exit {proc.returncode}). {last}".strip())
+            raise NsError("NS-E327", f"The studio process stopped (exit {proc.returncode}). {last}".strip())
         return {k: v for k, v in result.items() if k != "ev"}
