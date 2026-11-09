@@ -417,6 +417,43 @@ def test_dashboard_warmup_posts_to_a_running_headless_engine(
     assert eng.posts == [("/warmup", {"service": "dashboard"})]
 
 
+def test_code_launcher_sends_its_own_pid_in_the_acquire_body() -> None:
+    """F-H47: the supervisor frees the GPU when the console that holds it is gone (closed with X)."""
+    text = read("nightshift-code.ps1")
+    body = next(ln for ln in text.splitlines() if ln.strip().startswith("$body = @{"))
+    assert "owner = $owner" in body and "pid = $PID" in body, body
+    assert text.index("$body = @{") < text.index("$ep = Invoke-NsPost -Path '/acquire' -Body $body")
+    assert "finally" in text[text.index("OPENCODE_CONFIG") :]
+    assert text.rindex("finally") < text.rindex("/release")
+
+
+@needs_powershell
+def test_code_launcher_run_posts_its_pid_with_the_acquire_and_releases_after_opencode_exits(
+    engine: tuple[FakeEngine, dict[str, str]], tmp_path: Path
+) -> None:
+    """F-H47 under powershell.exe: the /acquire body carries the launcher's own $PID; /release follows."""
+    import os
+    import re
+    import shutil
+
+    eng, env = engine
+    opencode = tmp_path / "bin" / "opencode" / "opencode.exe"
+    opencode.parent.mkdir(parents=True)
+    system32 = Path(os.environ.get("SystemRoot", "C:/Windows")) / "System32"
+    shutil.copy(system32 / "hostname.exe", opencode)  # stands in for OpenCode: prints a line and exits
+    env = {**env, "USERPROFILE": str(tmp_path / "profile")}  # the launcher makes %USERPROFILE%\Projects
+    script = f"Write-Output ('launcher-pid=' + $PID)\n& '{LAUNCHERS / 'nightshift-code.ps1'}'\n"
+    r = pwsh.run_powershell(script, env_extra=env, timeout_s=90)
+    assert r.returncode == 0, r.stdout + r.stderr
+    found = re.search(r"launcher-pid=(\d+)", r.stdout)
+    assert found, r.stdout
+    assert [p for p, _ in eng.posts] == ["/acquire", "/release"], eng.posts
+    acquire = eng.posts[0][1]
+    assert isinstance(acquire, dict) and acquire["owner"] == "opencode" and acquire["model_alias"] == "code"
+    assert acquire.get("pid") == int(found.group(1)), acquire  # an integer, the console's own process
+    assert eng.posts[1][1] == {"service": "llama", "owner": "opencode"}
+
+
 @needs_powershell
 def test_wait_for_the_dashboard_port_is_true_when_served_and_false_when_not(
     engine: tuple[FakeEngine, dict[str, str]],
