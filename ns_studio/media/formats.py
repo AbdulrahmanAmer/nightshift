@@ -41,6 +41,15 @@ def _load_dir(directory: str) -> dict[str, Format]:
     return {p.stem: _load_file(p) for p in files}
 
 
+def forget_loaded_formats() -> None:
+    """Drop the folders read so far, so the next `load_formats` sees files saved since.
+
+    A studio process runs one job and never needs this; the dashboard stays up while the owner edits
+    formats in Library, and calls it before listing layouts.
+    """
+    _load_dir.cache_clear()
+
+
 def load_formats(directory: Path | None = None, *, paths: Paths | None = None) -> dict[str, Format]:
     """Every shipped preset keyed by id, overlaid with the owner's edited or new formats.
 

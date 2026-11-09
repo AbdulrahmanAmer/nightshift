@@ -1,113 +1,112 @@
+"""The Clipper's layout list comes from the `clip` format presets (and the owner's edits of them)."""
+
 from pathlib import Path
 
-import pytest
 import yaml
 
 from ns_common.paths import Paths
-from ns_dashboard import templates
-from ns_dashboard.templates import BUILTIN, load_templates, normalise_template
+from ns_dashboard.templates import load_templates
+from ns_studio.media.formats import FORMATS_DIR, load_formats
+
+SHIPPED = [
+    "gaming_facecam", "podcast_stacked", "podcast_single", "talking_head", "center_crop", "screen_plus_cam",
+]
 
 
-def test_builtin_has_the_six_spec_templates_plus_auto():
-    ids = [t["id"] for t in BUILTIN]
-    assert ids == [
-        "auto", "gaming_facecam", "podcast_stacked", "podcast_single", "talking_head", "center_crop",
-        "screen_plus_cam",
-    ]
-    for t in BUILTIN:
-        for r in t["regions"]:
-            assert 0 <= r["x"] and 0 <= r["y"]
-            assert r["x"] + r["w"] <= 1.001 and r["y"] + r["h"] <= 1.001
-        assert 0 < t["caption_y_pct"] <= 100
+def _owner_format(paths: Paths, fid: str, **changes: object) -> None:
+    """Write `<home>\\config\\formats\\<fid>.yaml` as Library > Formats does (the shipped file plus edits)."""
+    base = FORMATS_DIR / f"{fid}.yaml"
+    body = yaml.safe_load(base.read_text(encoding="utf-8")) if base.exists() else {}
+    body.update(changes)
+    paths.formats_dir.mkdir(parents=True, exist_ok=True)
+    (paths.formats_dir / f"{fid}.yaml").write_text(yaml.safe_dump(body), encoding="utf-8")
 
 
-def test_load_templates_keeps_the_regions(tmp_home: Path, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(templates, "yaml_path", lambda: None)
-    got = load_templates(Paths.from_env())
-    assert got[0]["id"] == "auto"
-
-
-def test_normalise_accepts_pixel_and_list_forms():
-    t = normalise_template(
-        "demo_layout",
-        {
-            "regions": {"cam": {"x": 0, "y": 0, "w": 1080, "h": 640}, "game": [0, 640, 1080, 1280]},
-            "caption": {"y_pct": 0.5},
-            "title_card": {"enabled": True},
+def _own_layout() -> dict[str, object]:
+    return {
+        "id": "clip_split_screen",
+        "name": "Clip: split screen",
+        "kind": "clip",
+        "canvas": {"w": 1080, "h": 1920, "fps": 30},
+        "duration": {"min_s": 15, "max_s": 90},
+        "captions": {"styles_allowed": ["clean_white"], "anchor_y_pct": 40, "words_on_screen": 3},
+        "layout": {
+            "seam_captions": False,
+            "regions": [
+                {"name": "left", "x": 0, "y": 0, "w": 540, "h": 1920, "source": "full"},
+                {"name": "right", "x": 540, "y": 0, "w": 540, "h": 1920, "source": "screen"},
+            ],
         },
-    )
-    assert t["label"] == "Demo Layout"
-    cam, game = t["regions"]
-    assert cam == {"name": "cam", "x": 0.0, "y": 0.0, "w": 1.0, "h": 0.3333}
-    assert game["name"] == "game" and game["y"] == 0.3333 and game["h"] == 0.6667
-    assert t["caption_y_pct"] == 50.0 and t["title_card"] is True
+    }
 
 
-def test_normalise_list_regions_and_bad_input():
-    t = normalise_template("x", {"regions": [{"name": "a", "x": 0, "y": 0, "w": 0.5, "h": 0.5}, "junk"]})
-    assert [r["name"] for r in t["regions"]] == ["a"]
-    assert normalise_template("y", {"regions": 5, "caption_y_pct": "n/a"})["caption_y_pct"] == 70.0
+def test_lists_auto_then_every_shipped_clip_layout(tmp_home: Path):
+    got = load_templates(Paths.from_env())
+    assert [t["id"] for t in got] == ["auto", *SHIPPED]
+    clip_formats = {i for i, f in load_formats().items() if f.kind == "clip"}
+    assert {f"clip_{i}" for i in SHIPPED} == clip_formats  # nothing is listed that is not a preset
 
 
-def test_yaml_overlays_builtin(tmp_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    f = tmp_path / "clip_templates.yaml"
-    f.write_text(
-        "templates:\n"
-        "  center_crop:\n"
-        "    label: Soft centre\n"
-        "  brand_new:\n"
-        "    label: Brand new\n"
-        "    regions:\n"
-        "      main: {x: 0, y: 0, w: 1, h: 1}\n",
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(templates, "yaml_path", lambda: f)
+def test_regions_and_caption_anchor_come_from_the_preset(tmp_home: Path):
     by_id = {t["id"]: t for t in load_templates(Paths.from_env())}
-    assert by_id["center_crop"]["label"] == "Soft centre"
-    assert by_id["center_crop"]["regions"], "regions fall back to the built-in layout"
-    assert by_id["brand_new"]["regions"][0]["name"] == "main"
-
-
-def test_broken_yaml_falls_back_to_builtin(tmp_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    f = tmp_path / "bad.yaml"
-    f.write_text("templates: [unclosed", encoding="utf-8")
-    monkeypatch.setattr(templates, "yaml_path", lambda: f)
-    assert len(load_templates(Paths.from_env())) == len(BUILTIN)
-
-
-def test_real_clip_templates_yaml_shape(tmp_home: Path, monkeypatch: pytest.MonkeyPatch):
-    from ns_common.models import ClipTemplate
-
-    f = tmp_home / "clip_templates.yaml"
-    f.write_text(
-        "gaming_facecam:\n"
-        "  layout: gaming\n"
-        "  description: Facecam on top.\n"
-        "  needs: facecam\n"
-        "  when: A facecam was found.\n"
-        "  regions:\n"
-        "    - {id: cam, x: 0, y: 0, w: 1080, h: auto, max_h: 640}\n"
-        "    - {id: game, x: 0, y: seam, w: 1080, h: rest}\n"
-        "  caption_anchor_y_pct: seam\n"
-        "podcast_stacked:\n"
-        "  layout: stacked\n"
-        "  description: Two speakers.\n"
-        "  regions:\n"
-        "    - {id: top, x: 0, y: 0, w: 1080, h: 960}\n"
-        "    - {id: bottom, x: 0, y: 960, w: 1080, h: 960}\n"
-        "  caption_anchor_y_pct: 75\n",
-        encoding="utf-8",
-    )
-    # the file is valid for the shared model, so C8 and the dashboard read the same thing
-    for name, raw in yaml.safe_load(f.read_text(encoding="utf-8")).items():
-        ClipTemplate.model_validate({"name": name, **raw})
-    monkeypatch.setattr(templates, "yaml_path", lambda: f)
-    by_id = {t["id"]: t for t in load_templates(Paths.from_env())}
+    stacked = by_id["podcast_stacked"]
+    assert [r["name"] for r in stacked["regions"]] == ["top", "bottom"]
+    assert stacked["regions"][1] == {"name": "bottom", "x": 0.0, "y": 0.5, "w": 1.0, "h": 0.5}
+    assert stacked["caption_y_pct"] == 75.0
     gaming = by_id["gaming_facecam"]
-    assert gaming["label"] == "Gameplay with face cam"  # built-in friendly label survives the overlay
-    cam, game = gaming["regions"]
-    assert (cam["name"], cam["y"], cam["h"]) == ("cam", 0.0, 0.3333)
-    assert (game["name"], game["y"], game["h"]) == ("game", 0.3333, 0.6667)
-    assert gaming["caption_y_pct"] == 33.3
-    assert by_id["podcast_stacked"]["caption_y_pct"] == 75.0
-    assert [r["name"] for r in by_id["podcast_stacked"]["regions"]] == ["top", "bottom"]
+    assert gaming["regions"][0]["h"] == 0.3333 and gaming["caption_y_pct"] == 33.3  # captions sit on the seam
+    assert by_id["auto"]["regions"] == []
+
+
+def test_every_entry_has_the_fields_the_ui_reads(tmp_home: Path):
+    for t in load_templates(Paths.from_env()):
+        assert t["label"] and t["description"]
+        assert isinstance(t["when"], str) and isinstance(t["title_card"], bool)
+        assert 0 < t["caption_y_pct"] <= 100
+        for r in t["regions"]:
+            assert r["x"] + r["w"] <= 1.001 and r["y"] + r["h"] <= 1.001
+
+
+def test_owner_edit_of_a_shipped_layout_shows_up(tmp_home: Path):
+    paths = Paths.from_env()
+    before = {t["id"]: t for t in load_templates(paths)}["center_crop"]
+    _owner_format(paths, "clip_center_crop", name="Clip: soft centre")
+    by_id = {t["id"]: t for t in load_templates(paths)}  # the dashboard stays up, so no restart is needed
+    assert before["label"] != by_id["center_crop"]["label"] == "Soft centre"
+    assert [t["id"] for t in load_templates(paths)] == ["auto", *SHIPPED]
+
+
+def test_owner_added_layout_is_listed_after_the_shipped_ones(tmp_home: Path):
+    paths = Paths.from_env()
+    paths.formats_dir.mkdir(parents=True)
+    (paths.formats_dir / "clip_split_screen.yaml").write_text(yaml.safe_dump(_own_layout()), encoding="utf-8")
+    got = load_templates(paths)
+    assert [t["id"] for t in got] == ["auto", *SHIPPED, "split_screen"]
+    mine = got[-1]
+    assert mine["label"] == "Split screen" and mine["caption_y_pct"] == 40.0
+    assert [r["name"] for r in mine["regions"]] == ["left", "right"]
+    assert mine["regions"][1]["x"] == 0.5 and mine["description"]
+
+
+def test_non_clip_formats_are_not_layouts(tmp_home: Path):
+    ids = {t["id"] for t in load_templates(Paths.from_env())}
+    assert not ids & {"short_9x16", "long_16x9", "square_1x1"}
+
+
+def test_a_broken_owner_file_does_not_take_the_list_down(tmp_home: Path):
+    paths = Paths.from_env()
+    paths.formats_dir.mkdir(parents=True)
+    (paths.formats_dir / "clip_broken.yaml").write_text("id: [unclosed", encoding="utf-8")
+    assert [t["id"] for t in load_templates(paths)] == ["auto", *SHIPPED]
+
+
+def test_api_returns_the_shipped_layouts_and_the_owners_edited_one(tmp_home: Path):
+    from tests.test_dashboard_api import make_env  # noqa: PLC0415
+
+    paths = Paths.from_env()
+    paths.formats_dir.mkdir(parents=True)
+    (paths.formats_dir / "clip_split_screen.yaml").write_text(yaml.safe_dump(_own_layout()), encoding="utf-8")
+    client, _ = make_env(tmp_home)
+    got = client.get("/api/templates").json()
+    assert [t["id"] for t in got] == ["auto", *SHIPPED, "split_screen"]
+    assert {"id", "label", "description", "when", "regions", "caption_y_pct", "title_card"} <= set(got[0])
