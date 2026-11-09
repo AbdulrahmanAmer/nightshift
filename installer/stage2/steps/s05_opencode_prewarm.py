@@ -47,8 +47,8 @@ class S05OpencodePrewarm(Step):
         return None if ctx.ensure_answers().install_code else "Nightshift Code was not selected"
 
     def check(self, ctx: StepContext) -> bool:
-        """True after a successful earlier run."""
-        return bool(ctx.flag("opencode_ok", False))
+        """True after a successful earlier run, while the program it ran is still there."""
+        return bool(ctx.flag("opencode_ok", False)) and (ctx.paths.bin_opencode / "opencode.exe").is_file()
 
     def run(self, ctx: StepContext) -> None:
         """Start the binary once."""

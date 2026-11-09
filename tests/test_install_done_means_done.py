@@ -437,3 +437,18 @@ def test_an_uninstall_that_left_the_flags_does_not_make_a_clean_reinstall_skip_s
     later = started_steps(home)[before:]
     assert "s04_venvs" in later and "s08_smoke" in later
     assert venv_loads_product(home, "studio") and venv_loads_product(home, "supervisor")
+
+
+# ---------------------------------------------------------------------------------------------- the audit
+def test_s05_is_not_done_when_the_program_it_ran_is_gone(tmp_path: Path):
+    """The flag says OpenCode ran; the effect is the program. An uninstall, or a scanner, can remove it."""
+    from installer.stage2.steps.s05_opencode_prewarm import S05OpencodePrewarm
+
+    ctx = resolved(tmp_path)
+    exe = ctx.paths.bin_opencode / "opencode.exe"
+    exe.write_bytes(b"")
+    step = S05OpencodePrewarm()
+    step.run(ctx)
+    assert step.check(ctx) is True
+    exe.unlink()
+    assert step.check(ctx) is False
