@@ -298,10 +298,10 @@ One job = **one story → one long-form master → 4–6 derived Shorts.** Write
 
 ### 7.0 Word and duration budgets (hard rules, in code)
 - `wpm` comes from the pacing option (§17) adjusted by the voice's measured speed (updated after each job from actual audio).
-- Master: `target_minutes` drawn from `long_minutes` → `target_words = target_minutes × wpm`. For 10–14 min at 155 wpm: **1,550–2,170 words**. Chapters: 5–7, each `target_words / n_chapters ± 20%` (≈ 300–450 words).
-- **Floor:** rendered master ≥ **8:30**. Planning floor is 9:00 (`min_words = 9 × wpm`) for buffer.
+- Master: `target_minutes` drawn from `long_minutes` (9–14) → `target_words` = the words whose speech **plus the silence the TTS service adds** fill `target_minutes` (`master_budget` in `ns_studio/text/budget.py`, `words_for_seconds` in `ns_common/pacing.py`). The silence is about 0.035 s per word (350 ms per sentence, 700 ms per paragraph), plus 1.2 s before each chapter's cliff line (instead of 0.35 s) and a 1.2 s title card between chapters. Plain `target_minutes × wpm` is **not** used: a 14-minute draw at that count rendered at 15:12. At 155 wpm, 10 min is **1,402 words** and 14 min is **1,970** (9 min = 1,259, 12 min = 1,686). Chapters: 5–7, each `target_words / n_chapters ± 20%`; at 155 wpm that is 5 chapters of about **252–394 words** over 9–14 min (decision D15, §13).
+- **Floor:** rendered master ≥ **8:30**. Planning floor is 9:00 for buffer: `min_words` is the pause-adjusted word count of 9 minutes (1,259 at 155 wpm).
 - After voicing (M10), measured duration < 9:00 → `expand.md` on the shortest chapter (+120–200 words), re-voice that chapter only, re-measure. Max 2 expansions, else the job fails `NS-E305`.
-- Shorts: `length_bucket` seconds → words = `seconds × wpm / 60` for the body **plus** the hook (≤ 12 words, spoken in ≤ 1.5 s at the front) and closing line (≤ 15 words). Validator checks measured audio against the bucket ±15%.
+- Shorts: the `length_bucket` is the whole Short. Hook (≤ 12 words, spoken in ≤ 1.5 s at the front) + body + closing line (≤ 15 words) **equal** the bucket's words; the hook and closing are subtracted from the bucket, not added on top (decision D16, §13). A `shorts_only` Short: `short_budget` counts the bucket's words pause-adjusted (`seconds / (60/wpm + 0.035)`), subtracts the hook and closing words, floors the body at 40 words, and narrows the ±15 % limits so a story at either edge stays within 12 % of the bucket in seconds. A master-derived Short: `short_body_words` = `bucket × wpm / 60` − 12 (hook) − 12 (closing), at least 20. Validator checks measured audio against the bucket ±15%.
 
 ### 7.1 Master (long-form) track
 | # | Stage | Owner | Tenant | Output |
@@ -317,8 +317,8 @@ One job = **one story → one long-form master → 4–6 derived Shorts.** Write
 | M9 | **Policy gate — text** (§18.8) on story + all metadata | H | `llama`, `embed` | `policy_text.json` |
 | M10 | Voice: narration per chapter (sentence-chunked, §7.5) + each Short's hook and closing line, one batch; measure duration; expansion loop (§7.0) | E | `tts` | `audio\` |
 | M11 | Captions: whisper word timestamps per chapter → align to script (§7.6) → `words\`, ASS for 16:9 and 9:16 | E | `whisper` | `words\`, `captions\` |
-| M11b | **Shorts timing**: resolve each Short's sentence span to `start_s/end_s` in the master audio from `words\`; snap to sentence boundaries | F | none | `shorts_plan.json` (updated) |
-| M12 | Clips: fetch per unique keyword, both orientations only for beats inside selected Shorts (parallel with M10–M11) | E | none | `clips\h\`, `clips\v\` |
+| M11b | **Shorts timing**: resolve each Short's sentence span to `start_s/end_s` in the master audio from `words\`; snap to sentence boundaries | F | none | `shorts_timing.json` (`shorts_plan.json` is left untouched, so a resume does not invalidate its own input; decision D17, §13) |
+| M12 | Clips: landscape clips for the master, fetched per unique keyword **after** voice and captions (the shot slots need the caption timings, so M12 is not parallel with M10–M11). Vertical clips for the beats inside the selected Shorts are fetched later, in `shorts_derive` (S1/S2) | E | none | `clips\shots.json` (master), `clips\shorts_shots.json` (Shorts) |
 | M13 | Render master 1920×1080 + chapter title cards ≤ 1.5 s; write final chapter timestamps + **mid-roll suggestions** at chapter breaks (none in first/last 2 min) | E | NVENC | `long\master.mp4`, `long\chapters.json` |
 | M14 | Thumbnails ×3 (frame pick + ≤ 4-word text via presets) | E | none | `long\thumb_[1-3].jpg` |
 
@@ -335,18 +335,18 @@ One job = **one story → one long-form master → 4–6 derived Shorts.** Write
 
 ### 7.3 Other formats (same engine)
 - `--format shorts_only`: story → parts → Shorts (Slice 1 path), for niches that don't suit 10+ minutes. Stages: ideas, plan, draft, critic/revise, split, hook, SEO, visual plan, policy text, voice, captions, clips, render, QC, policy final, outbox.
-- `--format series_compilation`: stitches an existing multi-part Shorts series into one long-form master (re-renders 16:9 from the parts' narration and new landscape clips; adds chapter cards). Deferred to after Slice 3 if time allows; the orchestrator accepts the flag from day one and errors `NS-E306 not implemented` until then.
+- `--format series_compilation`: **dropped from this slice** (decision D18, §13). It would stitch an existing multi-part Shorts series into one long-form master (re-render 16:9 from the parts' narration and new landscape clips, chapter cards). It has no stages: the orchestrator still accepts the flag and errors `NS-E306` (not implemented), and the dashboard does not offer it.
 
 ### 7.4 Clip budget and reuse (replaces v1 §17 clip rules)
 - **Master shot length:** 5–9 s (visual change at every beat or sentence, whichever is longer). 12 min ≈ **90–140 clips**.
 - **Shorts shot length:** 1.5–3 s; a 50 s Short ≈ 20 clips, drawn from the vertical pool fetched for its beats.
 - **Keyword dedupe:** `visual_plan` keywords are normalized (lowercase, lemmatized) and deduped per job; one API search (per source, per orientation) per unique keyword, page size 80. Typical job: **≤ 60 unique keywords → ≤ 240 API calls**, under Pexels' 200/hour when spread across the job (client enforces a token bucket: Pexels 180/h, Pixabay 90/min, and honours `429`).
 - **Cache:** every downloaded clip is kept in `cache\clips\<source>\<id>.mp4` with metadata (`source,id,url,license,duration,w,h,fetched_at,keywords[]`) for 90 days. Cache hits cost no API call. Pixabay search responses are cached 24 h as required.
-- **Reuse rules:** no clip twice in one video · no clip twice on one channel within **14 days** · no clip on two channels within **30 days** · a Short may use clips also used in its own master (different orientation anyway). Enforced from `clip_usage` in SQLite; a violation picks the next candidate, never fails the job unless the pool is empty (`NS-E402`, then the beat falls back to a mood-only keyword search).
+- **Reuse rules:** no clip twice in one video (unless the relaxation below applies) · no clip twice on one channel within **14 days** · no clip on two channels within **30 days** · a Short may use clips also used in its own master (different orientation anyway). Enforced from `clip_usage` in SQLite; a violation picks the next candidate, never fails the job unless the pool is empty (`NS-E402`, then the beat falls back to a mood-only keyword search). **Relaxation (decision D19, §13):** when every candidate for a beat is used or blocked, the picker first drops the 14/30-day windows ("earlier footage is reused"); if the pool is still too small it lets the same video repeat footage ("footage from this video is repeated"). Either way it logs `NS-W405` and marks those shots `relaxed` for the final gate, instead of failing the job after the writing and the voice are done. `NS-E402` is raised only when no relaxed pick exists.
 - **Selection:** prefer ≥ 1080 p, duration ≥ shot length + 1 s, no watermark flag, no faces when `mood` is `intimate`/`horror` (Pexels/Pixabay don't expose this; we skip clips whose title/tags include `person, portrait, face`). Landscape in a vertical edit → centre crop over a blurred fill; portrait in a landscape edit is never used.
 
 ### 7.5 TTS chunking (WP-C + WP-E)
-- Split narration into sentences (spaCy sentencizer); merge sentences shorter than 25 chars with the next; cap a chunk at 280 chars (split on clause punctuation when longer).
+- Split narration into sentences (`split_sentences` in `ns_common/textstats.py`: a regex on `. ! ?` and the Arabic, Devanagari and CJK full stops, plus an abbreviation list such as `Mr`, `Dr`, `e.g`; not spaCy, decision D20, §13); merge sentences shorter than 25 chars with the next; cap a chunk at 280 chars (split on clause punctuation when longer).
 - Batch all chunks of a job in one `/v1/audio/speech/batch` call; the server generates in order with a fixed seed per voice so timbre is stable.
 - Stitch with 350 ms silence between sentences, 700 ms at paragraph/chapter breaks, 1,200 ms before a cliff line (marked in `story.json`). Trim leading/trailing silence per chunk (−45 dBFS threshold).
 - Per chapter `loudnorm` to −16 LUFS integrated, −1.5 dBTP, then a whole-master pass to −14 LUFS.
@@ -478,6 +478,14 @@ Deferred to after Slice 9: `series_compilation`, API upload, non-English caption
 | D12 | Active-speaker framing for podcasts | v1: visual heuristic (largest face / mouth-region motion); audio diarization deferred | Avoids a diarization model; good enough for stacked two-speaker layouts |
 | D13 | Download size | **~20 GB default (owner decision 2026-11-02: Balanced is the recommended tier)**: Balanced LLM (14), TTS CustomVoice + Base Q8_0 GGUF + tokenizer (4.4), one whisper (1.5), small extras. **Small (~15 GB)** is the fallback, preselected when the PC has < 32 GB RAM; Best (~22.9 GB LLM) and a user-supplied custom GGUF (up to 15.5 GB) are opt-in; VoiceDesign (+2.1) on demand; `models_source` folder mode for offline/pre-downloaded installs | Egyptian bandwidth; quantized GGUF is already the compressed form, zipping gains ≤ 3 % |
 | D14 | TTS engine | `qwentts.cpp` (GGML, CUDA, no PyTorch) with PyTorch `qwen-tts` as automatic fallback | Removes ~2.5 GB of torch and ~6 GB of fp16 weights from the target |
+| D15 | Master word budget (§7.0) | `target_words` subtracts the TTS pauses and chapter cards: at 155 wpm 10 min = 1,402 words, 14 min = 1,970; chapters about 252–394 words (5 chapters) over 9–14 min. Not `minutes × wpm` | A 14-minute draw at `minutes × wpm` rendered 15:12, over QC's 15:00 ceiling |
+| D16 | Shorts word budget (§7.0) | Hook + body + closing = the bucket (pause-adjusted for `shorts_only`); hook and closing words are subtracted from the bucket, not added on top | Keeps Shorts inside the ±15 % QC duration band |
+| D17 | Shorts timing file (§7.1 M11b) | `shorts_timing.json` holds `start_s/end_s`; M11b does not rewrite `shorts_plan.json` (M10's `expand_chapter` does rewrite it, `ns_studio/text/stages_master.py`), so after M11b `ShortsPlanItem.start_s/end_s` stay empty | Resume safety: the stage's own input stays unchanged |
+| D18 | `series_compilation` (§7.3) | Dropped from this slice; `--format series_compilation` errors `NS-E306` and the dashboard hides it | No stages exist; the master-first and Shorts paths do not need it |
+| D19 | Footage reuse relaxation (§7.4) | When every candidate is used or blocked, reuse earlier footage, then repeat footage inside the same video, with `NS-W405` (not `NS-E402`) | The first dev nightly died at the clips stage after the writing and the voice (HANDOFF v0.1.10); a repeated clip is better than a lost video |
+| D20 | Sentence splitting (§7.5) | Regex plus abbreviation list (`ns_common.textstats.split_sentences`), shared by TTS chunking and `pause_plan`; not spaCy | One splitter for budget, voice and captions, no model load. spaCy is used only for the policy NER and keyword lemmas |
+| D21 | Tenant grouping (§15.8) | Per job: consecutive stages of one job share one acquisition; a daily run does not batch stages across jobs | Simple and resumable per job (`stage_state.json`); the next job acquires the tenants again |
+| D22 | Setup window: waits, install folder, wording | Setup window as shipped (`docs/design/installer-ui.md` is the detail): P1 gets 60 s to answer `/api/ping` (a "still waiting" note after 15 s, exit 14 after 60 s); the WebView2 host started with `-Role setup` is ready when `run/apphost-setup.json` is written, within 20 s; the install folder is printable ASCII only (`NS-E117`; llama.cpp and qwentts.cpp open files via the ANSI code page) and Downloads/OneDrive folders are refused; the hardware check has 11 rows (incl. "Visual C++ runtime"); the window and its dialogs call the console "Nightshift setup" | Spec text now matches the shipped behaviour (owner decision taken: keep the code) |
 
 ---
 
@@ -616,9 +624,9 @@ class Stage(Protocol):
     tenant: Literal["llama", "tts", "whisper", None]
     def run(self, ctx: JobContext) -> None: ...   # idempotent; skips if its outputs exist and inputs' hashes match
 ```
-`JobContext` carries `job_id, channel, combo, job_dir, db, llm, tts, embed, log, runtime`. The orchestrator groups runnable stages across jobs by tenant and acquires each tenant once per group.
+`JobContext` carries `job_id, channel, combo, job_dir, db, llm, tts, embed, log, runtime`. The orchestrator groups the consecutive stages of **one job** by tenant and acquires each tenant once per group (`run_job`); a daily run takes its jobs one after the other, so each job acquires `llama`, `tts` and `whisper` again in turn (decision D21, §13).
 
-Job dir `data\jobs\<job_id>\`: `idea.json plan.json story.json seo_long.json seo_shorts.json visual_plan.json shorts_plan.json policy_text.json policy_final.json audio\ words\ captions\ clips\h\ clips\v\ long\master.mp4 long\chapters.json long\thumb_[1-3].jpg shorts\s<k>\{audio.wav,short.mp4} qc\ stage_state.json`.
+Job dir `data\jobs\<job_id>\`: `idea.json plan.json story.json seo_long.json seo_shorts.json visual_plan.json shorts_plan.json shorts_timing.json policy_text.json policy_final.json audio\ words\ captions\ clips\shots.json clips\shorts_shots.json long\master.mp4 long\chapters.json long\thumb_[1-3].jpg shorts\s<k>\{audio.wav,short.mp4} qc\ stage_state.json`.
 Outbox `outbox\<slug>\<YYYY-MM-DD>\<job_id>\`: `long\master.mp4 + .json + .txt + thumb_*.jpg` and `shorts\s<k>.mp4 + .json + .txt`. `job_id`: `<slug>-<YYYYMMDD>-<4hex>`.
 
 ### 15.9 CLI, launchers, shortcuts, task

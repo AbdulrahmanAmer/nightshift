@@ -215,8 +215,9 @@ def test_default_home_is_largest_free_ssd(tmp_path: Path):
 
 
 def test_default_home_skips_ssd_that_is_too_small(tmp_path: Path):
-    drives = [{"letter": "C", "free_gb": 30, "type": "SSD"}, {"letter": "D", "free_gb": 900, "type": "HDD"}]
-    assert _summary(_run("-FakeProbe", str(_probe(tmp_path, drives=drives))))["home"] == "D:\\Nightshift"
+    # G: because a checkout under D:\NightShift has the extracted program in D:\Nightshift (the same folder)
+    drives = [{"letter": "C", "free_gb": 30, "type": "SSD"}, {"letter": "G", "free_gb": 900, "type": "HDD"}]
+    assert _summary(_run("-FakeProbe", str(_probe(tmp_path, drives=drives))))["home"] == "G:\\Nightshift"
 
 
 def test_answers_home_path_wins_and_means_unattended(tmp_path: Path):
@@ -373,7 +374,7 @@ def test_select_default_home_avoids_the_extracted_folder_and_treats_a_root_speci
         "$drives = @([pscustomobject]@{ letter = 'D'; free_gb = 900; type = 'SSD' },",
         "            [pscustomobject]@{ letter = 'E'; free_gb = 400; type = 'SSD' })",
         r"foreach ($app in @('D:', 'D:\', 'D:\Nightshift', 'D:\Nightshift-home', 'E:\Nightshift')) {",
-        "    '{0} => {1}' -f $app, (Select-DefaultHome -Drives $drives -AppFolder $app)",
+        "    '{0} => {1}' -f $app, (Select-DefaultHome -Drives $drives -AppFolder $app -IsTaken { $false })",
         "}",
     ]
     ps.write_text("\n".join(lines) + "\n", encoding="utf-8")
