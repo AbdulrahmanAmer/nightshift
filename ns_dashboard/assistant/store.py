@@ -189,14 +189,16 @@ class AssistantStore:
     def claim_queued(self, queue_id: int, by: str, *, stale_s: float = CLAIM_STALE_S) -> bool:
         """Take a saved request for answering, in one statement; False when another caller has it.
 
-        A claim older than `stale_s` belongs to a caller that died mid-answer and may be taken over.
+        A claim at least `stale_s` old belongs to a caller that died mid-answer and may be taken over (`<=`:
+        with `stale_s=0` a claim made in the same clock tick still counts as stale; `<` made the takeover test
+        fail on a fast machine).
         """
         now = datetime.now(UTC)
         cutoff = (now - timedelta(seconds=stale_s)).isoformat()
         with self._lock:
             cur = self.db.execute(
                 "UPDATE queued_messages SET claimed_at = ?, claimed_by = ? WHERE queue_id = ? AND status = 'queued'"
-                " AND (claimed_at IS NULL OR claimed_at < ?)",
+                " AND (claimed_at IS NULL OR claimed_at <= ?)",
                 (now.isoformat(), by, queue_id, cutoff),
             )
             return cur.rowcount == 1
