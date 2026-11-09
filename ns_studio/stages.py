@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
+from ns_common.atomic import read_text_retry, write_text_atomic
 from ns_studio.context import JobContext
 
 Tenant = Literal["llama", "tts", "whisper"] | None
@@ -38,11 +39,11 @@ class StageState:
     def load(cls, job_dir: Path) -> StageState:
         """Load the state file from `job_dir` (empty state when absent)."""
         f = job_dir / STATE_FILE
-        return cls(json.loads(f.read_text(encoding="utf-8"))) if f.exists() else cls()
+        return cls(json.loads(read_text_retry(f))) if f.exists() else cls()
 
     def save(self, job_dir: Path) -> None:
         """Write the state file into `job_dir`."""
-        (job_dir / STATE_FILE).write_text(json.dumps(self.entries, indent=2) + "\n", encoding="utf-8")
+        write_text_atomic(job_dir / STATE_FILE, json.dumps(self.entries, indent=2) + "\n")  # resume state
 
     def mark_done(self, name: str, h: str) -> None:
         """Record that stage `name` finished with inputs hash `h`."""

@@ -8,6 +8,7 @@ import re
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from ns_common.atomic import read_text_retry, write_text_atomic
 from ns_common.paths import Paths
 
 TASK_NAME = "Nightshift Daily"
@@ -31,7 +32,7 @@ def read_run_time(paths: Paths) -> str | None:
     """
     f = schedule_file(paths)
     try:
-        data = json.loads(f.read_text(encoding="utf-8"))
+        data = json.loads(read_text_retry(f))
         run_time = data["run_time"]
     except (OSError, ValueError, KeyError, TypeError):
         return None
@@ -47,10 +48,8 @@ def write_run_time(paths: Paths, run_time: str, mode: str = "registered") -> Non
     unattended mode, NS-W205: it runs only while the owner is signed in) or `disabled` (a dev install:
     the task exists but never fires, `read_run_time` answers None).
     """
-    f = schedule_file(paths)
-    f.parent.mkdir(parents=True, exist_ok=True)
     data = {"run_time": run_time, "task_name": TASK_NAME, "mode": mode}
-    f.write_text(json.dumps(data, indent=2) + "\n", "utf-8")
+    write_text_atomic(schedule_file(paths), json.dumps(data, indent=2) + "\n")
 
 
 def read_schedule_mode(paths: Paths) -> str:
@@ -60,7 +59,7 @@ def read_schedule_mode(paths: Paths) -> str:
     `mode` counts as `registered` (written before the mode existed).
     """
     try:
-        data = json.loads(schedule_file(paths).read_text(encoding="utf-8"))
+        data = json.loads(read_text_retry(schedule_file(paths)))
         run_time = data["run_time"]
         mode = data.get("mode")
     except (OSError, ValueError, KeyError, TypeError, AttributeError):

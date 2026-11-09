@@ -20,6 +20,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from ns_common.atomic import read_text_retry, write_text_atomic
 from ns_common.textstats import split_sentences
 
 if TYPE_CHECKING:
@@ -74,8 +75,7 @@ def save_rtf(paths: Paths, rtf: float, *, quick: bool) -> None:
         "measured_at": datetime.now(UTC).isoformat(timespec="seconds"),
     }
     try:
-        speed_path(paths).parent.mkdir(parents=True, exist_ok=True)
-        speed_path(paths).write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+        write_text_atomic(speed_path(paths), json.dumps(doc, indent=2) + "\n")
     except OSError:
         pass  # a limit that stays at the floor is no reason to fail a verify run
 
@@ -83,7 +83,7 @@ def save_rtf(paths: Paths, rtf: float, *, quick: bool) -> None:
 def load_rtf(paths: Paths) -> float | None:
     """The stored real-time factor, or None when no measurement exists or the file is unreadable."""
     try:
-        value = json.loads(speed_path(paths).read_text(encoding="utf-8-sig")).get("rtf")
+        value = json.loads(read_text_retry(speed_path(paths), "utf-8-sig")).get("rtf")
     except (OSError, ValueError, AttributeError):
         return None
     if isinstance(value, bool) or not isinstance(value, int | float):

@@ -8,9 +8,11 @@ import json
 import re
 import sqlite3
 import threading
+from collections.abc import Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, BinaryIO
 
+from ns_common.atomic import write_chunks_atomic
 from ns_common.devmode import fake_footage
 from ns_common.errors import NsError
 from ns_common.secrets_names import SHORT_NAMES
@@ -47,14 +49,16 @@ MAX_UPDATE_BYTES = 200 * 1024 * 1024  # the Update zip is a few MB; the bundle c
 def _save_upload(fh: BinaryIO, dest: Path, limit: int, too_big: str) -> int:
     """Write `fh` to `dest` in 1 MB blocks; more than `limit` bytes deletes the file and raises 413."""
     size = 0
-    with dest.open("wb") as out:
+
+    def blocks() -> Iterator[bytes]:
+        nonlocal size
         while block := fh.read(1024 * 1024):
             size += len(block)
             if size > limit:
-                out.close()
-                dest.unlink(missing_ok=True)
                 raise ApiError(413, "file_too_large", too_big)
-            out.write(block)
+            yield block
+
+    write_chunks_atomic(dest, blocks())  # an upload too big or cut short never shows under its name
     if size == 0:
         dest.unlink(missing_ok=True)
     return size
