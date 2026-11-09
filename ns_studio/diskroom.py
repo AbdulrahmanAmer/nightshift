@@ -18,6 +18,7 @@ from pathlib import Path
 
 from ns_common import diskneed
 from ns_common.devmode import fake_footage
+from ns_common.errors import NsError
 from ns_common.logging import NsLogger
 from ns_common.models import Channel
 from ns_common.paths import Paths
@@ -36,6 +37,8 @@ def done_stages(job_dir: Path) -> set[str]:
         entries = StageState.load(job_dir).entries
     except (OSError, ValueError):
         return set()
+    if not isinstance(entries, dict):  # valid JSON that is not an object: nothing is known to be done
+        return set()
     return {n for n, e in entries.items() if isinstance(e, dict) and e.get("status") == "done"}
 
 
@@ -48,10 +51,13 @@ def story_need(
     fake: Collection[str] = (),
     resume_dir: Path | None = None,
 ) -> diskneed.Need | None:
-    """What one story job of ``fmt`` for ``channel`` writes; None for a format with no estimate.
+    """What one story job of ``fmt`` for ``channel`` writes; None only for a format name nobody has.
 
-    The channel's own ranges set the size (the longest video it may draw). ``resume_dir`` (the folder of the
-    job being continued) shrinks the estimate to the stages that are not done.
+    Every format a job can have (``ns_studio.jobs.Fmt``: also ``master_from_script`` and ``clip``, which a
+    resume reads back from ``job.json``) has an estimate; a test walks the Literal so a new one cannot slip
+    through unchecked. The channel's own ranges set the size (the longest video it may draw). ``resume_dir``
+    (the folder of the job being continued) shrinks the estimate to the stages that are not done, and gives a
+    Clipper job its own clip count.
     """
     try:
         need = diskneed.format_need(
@@ -60,10 +66,23 @@ def story_need(
             shorts_per_master=channel.shorts_per_master,
             count=count,
             real_footage=real_footage(paths, fake),
+            max_clips=_clip_count(resume_dir) if fmt == "clip" else 6,
         )
     except ValueError:
         return None
     return need.remaining(done_stages(resume_dir)) if resume_dir is not None else need
+
+
+def _clip_count(job_dir: Path | None) -> int:
+    """How many clips a Clipper job asked for (``clip_params.json``); the default when it cannot be read."""
+    if job_dir is None:
+        return 6
+    from ns_studio.clipper.models import ClipParams
+
+    try:
+        return max(1, int(ClipParams.load(job_dir).max_clips))
+    except (NsError, OSError, ValueError, TypeError):
+        return 6
 
 
 def require_story_room(

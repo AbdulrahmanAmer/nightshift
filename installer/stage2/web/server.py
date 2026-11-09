@@ -42,6 +42,20 @@ MIME = {".js": "text/javascript", ".css": "text/css", ".html": "text/html", ".sv
 BUNDLE_FILES = ("app.js", "app.css")  # the fixed-name files index.html loads; see Handler._index
 
 
+def _custom_of(query: dict[str, list[str]]) -> dict[str, object] | None:
+    """The story model a ``/api/disk`` query names (``repo``, ``file``, ``size``), None unless all three are
+    usable: the window sends it so that the server, not the page, works out what that model needs."""
+    repo = query.get("repo", [""])[0].strip()
+    file = query.get("file", [""])[0].strip()
+    try:
+        size = int(query.get("size", [""])[0])
+    except ValueError:
+        return None
+    if not repo or not file or size <= 0:
+        return None
+    return {"repo": repo, "file": file, "size": size}
+
+
 class SetupHTTPServer(ThreadingHTTPServer):
     """A ThreadingHTTPServer that carries the things the handler needs."""
 
@@ -368,7 +382,7 @@ class Handler(BaseHTTPRequestHandler):
             self._json(HTTPStatus.OK, ctl.check_model(query.get("repo", [""])[0], query.get("file", [""])[0]))
         elif name == "disk" and method == "GET" and ctl is not None:
             self._json(HTTPStatus.OK, ctl.disk(query.get("path", [""])[0], query.get("tier", ["small"])[0],
-                                               query.get("source", ["0"])[0] == "1"))
+                                               query.get("source", ["0"])[0] == "1", _custom_of(query)))
         elif name == "pick-folder" and method == "POST" and getattr(ctl, "pick_folder", None) is not None:
             body = self._body()
             if body is not None:

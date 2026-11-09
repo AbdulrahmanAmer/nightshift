@@ -172,7 +172,9 @@ class S01Questions(Step):
                 home = ctx.paths.home
             else:
                 drives = drives_from_preflight(ctx.preflight) or local_drives()
-                need = ctx_need(ctx, ctx.paths.home, tier=tier, custom=custom)
+                # rank by a FIRST install (nothing in place): the home setup is running in may already hold
+                # the models, another drive does not; the folder that is picked is checked on its own below
+                need = ctx_need(ctx, diskneed.NO_HOME, tier=tier, custom=custom)
                 default = choose_default_home(drives, need.gb, lambda p: self._taken(ctx, p))
                 default = default or ctx.paths.home
                 free = free_bytes_of(ctx, default)

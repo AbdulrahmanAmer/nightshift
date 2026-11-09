@@ -21,7 +21,6 @@ from ns_dashboard.common import now_iso
 from ns_dashboard.errors import AdapterUnavailable, ApiError, room_refusal
 from ns_dashboard.state import AppState
 from ns_dashboard.svc_channels import ChannelsService
-from ns_studio import diskroom
 from ns_studio.footage_keys import NO_FOOTAGE_KEY
 
 #: The names `ns models get` takes: the VoiceDesign talker and the story LLM.
@@ -574,14 +573,12 @@ class LibraryService:
         """Queue the next approved part of `slug` as a `series_part` job and wake the worker."""
         if self.s.draining:
             raise ApiError(503, "shutting_down", "Nightshift is shutting down and not accepting new jobs.")
-        try:  # a master and its Shorts (D-33): refused before the part's job folder is made
-            diskroom.require_series_part_room(
-                self.s.paths, self.s.log, fake=("clips",) if self.s.fake_services else ())
+        try:  # NS-E104 comes from `Workshop.produce` (D-33), before any job folder or queue row is made
+            queued = self.s.adapters.series.queue_next(slug)
         except NsError as e:
             if e.code != "NS-E104":
                 raise
             raise room_refusal(e) from e
-        queued = self.s.adapters.series.queue_next(slug)
         for item in queued:
             self.s.worker.enqueue(str(item["job_id"]))
             rec = self.s.store.get(str(item["job_id"]))

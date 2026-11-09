@@ -323,15 +323,20 @@ def rerun_clip(
 
 @contextmanager
 def workshop_session(
-    *, acquirer: Acquirer | None = None, fake: Collection[str] = ()
+    *, acquirer: Acquirer | None = None, fake: Collection[str] = (), job_fake: Collection[str] | None = None
 ) -> Iterator[Workshop]:
     """A `Workshop` over `NIGHTSHIFT_HOME` (`ns_studio.series.workshop.default_workshop`), closed afterwards.
 
     Production rows go to `dashboard_jobs` as kind `series_part`; the supervisor is the GPU owner when given.
+    `fake` is what the session itself runs on (a read-only one fakes every service so that no model is
+    called); `job_fake` is what the part jobs it queues will run on, which the free-space check reads (the
+    dashboard's own services, not the session's). It defaults to `fake`.
     """
     from ns_studio.series.workshop import default_workshop
 
     ws = default_workshop(frozenset(fake))
+    if job_fake is not None:
+        ws.fake = frozenset(job_fake)
     if acquirer is not None:
         ws.services = replace(ws.services, acquirer=acquirer)
     try:
@@ -458,15 +463,16 @@ def run_series_part(
     return output_ids(env.db, job_id)
 
 
-def queue_next_part(slug: str) -> list[dict[str, Any]]:
+def queue_next_part(slug: str, fake: Collection[str] = ()) -> list[dict[str, Any]]:
     """Queue production of the lowest approved part of story `slug` (`Workshop.produce`); no model is called.
 
     Returns `[{part, job_id, title}]`. Raises `WorkshopError` when the story is unknown, has no design yet
-    or has no approved part.
+    or has no approved part, and `NsError` NS-E104 (nothing queued or written) when the home's volume cannot
+    hold the part. `fake` is what the part's job will run on: the free-space estimate reads its clip source.
     """
     from ns_studio.series.store import WorkshopError
 
-    with workshop_session(fake=READ_ONLY) as ws:
+    with workshop_session(fake=READ_ONLY, job_fake=fake) as ws:
         parts = ws.status(slug)["parts"]
         nxt = next((int(p["n"]) for p in parts if p["status"] == "approved"), None)
         if nxt is None:

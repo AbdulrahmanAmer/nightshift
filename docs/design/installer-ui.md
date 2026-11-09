@@ -553,8 +553,8 @@ Rows and their copy. There are 11 rows, in this order: os, gpu, driver, ram, dis
 | gpu, VRAM under 15 000 MB | no (warn) | The graphics card has less than 16 GB | Setup can continue, but only the Small model fits and videos take longer | none |
 | driver, `NS-E103` | yes under CUDA 12.4, warn under 12.8 | NVIDIA driver too old | Install the newest Game Ready or Studio driver, restart, then press Check again | "Open the driver page" |
 | ram | no (warn under 16 GB) | Less memory than recommended | Setup continues with the Small model only | none |
-| disk, `NS-E104` | yes under 40 GB | Not enough free disk space | Free 60 GB on this drive, or pick another drive below | "Pick another drive" |
-| disk, under 60 GB | no (warn) | Less free space than recommended | Setup fits, but leaves little room for videos. 60 GB keeps about a month of them | "Pick another drive" |
+| disk, `NS-E104` | yes when the free space is under what this install needs (worked out by `ns_common/diskneed.py`, 60 GB for a first Small install; the row value says the number, what it is made of and what the drive has) | Not enough free disk space | Free {need} GB on this drive, or pick another drive below | "Pick another drive" |
+| disk, a locked resume where the free space plus what setup already holds reaches the number | no (warn) | Less free space than recommended | Setup fits, but leaves little room for videos | "Pick another drive" |
 | disktype, `NS-W106` | no (warn) | The install drive is a hard disk | Models load slowly from a hard disk. Pick an SSD drive if you have one | "Pick another drive" |
 | network, `NS-E105` | yes when github.com, pypi.org or files.pythonhosted.org is unreachable. Warn when only huggingface.co is | A download site cannot be reached | Check the internet, switch off any VPN or proxy, then press Check again. If only Hugging Face is blocked: In the next step, choose "A folder on this PC" or "A zip from Google Drive" for the model files | "Check again" |
 | winget | no (warn) when FFmpeg or the Visual C++ runtime is also missing; `NS-E111` is not raised (§13 D27) | winget is not available | Nothing to do: setup downloads FFmpeg and the Visual C++ runtime directly instead | none |
@@ -651,7 +651,7 @@ Model cards. Everything but the "good for" line comes from `manifest.json` at ru
 
 - **Install folder.** `TextField label="Install folder"`, followed by the `/api/disk` result (debounced
   400 ms). For example `412 GB free on D: (SSD)` in muted, or
-  `Only 31 GB free on C:. Nightshift needs 60 GB` in danger. A web page cannot open a native folder
+  `Only 31 GB free on C:. This install needs about 60 GB (...)` in danger (the number is the server's `needGb`; the page has no rule of its own). A web page cannot open a native folder
   picker, so the path is typed. Under it,
   `SegmentedControl label="Drive" variant="plain" size="sm"` lists the drives from the preflight, and
   picking one fills `<letter>:\Nightshift`.
@@ -672,9 +672,9 @@ checks them again with pydantic:
 | `channel.displayName` | 1–60 characters after trimming | Give the channel a name |
 | `channel.niche` | 2–60 characters | Say in a few words what the channel is about |
 | `ownerName` | 0–40 characters | Use 40 characters or fewer |
-| `homePath` | absolute path on a fixed local drive, printable ASCII only (`NS-E117`), not in Downloads or OneDrive, no `%`, 120 characters at most, at least `required_free_gb(tier)` free | Pick a folder on a drive with {need} GB free. This one has {free} GB |
+| `homePath` | absolute path on a fixed local drive, printable ASCII only (`NS-E117`), not in Downloads or OneDrive, no `%`, 120 characters at most, at least the space this install needs there free (`needGb` of `/api/disk`, worked out by `ns_common/diskneed.py` from the manifest, the choices and what is already in the folder) | Pick a folder on a drive with {need} GB free. This one has {free} GB |
 | `llmTier` | allowed on this PC (not checked when `llmCustom` is set) | {Tier} needs 32 GB of memory. This PC has {ram} GB |
-| `llmCustom` | null, or `{repo, file, size}` with `owner/name`, a single `.gguf` file name and `0 < size <= 15.5 GB`; `required_free_gb` adds what the file is larger than 9 GB | Check the model file first; the reasons of `/api/model-check` |
+| `llmCustom` | null, or `{repo, file, size}` with `owner/name`, a single `.gguf` file name and `0 < size <= 15.5 GB`; the space needed is worked out for the file's size, which replaces the tier's story model (the page sends the file to `/api/disk` and shows the answer) | Check the model file first; the reasons of `/api/model-check` |
 | `modelsSource.path` | an existing folder when kind is `folder` or `drive-zip` | That folder was not found |
 | `runTime` | `^([01]\d\|2[0-3]):[0-5]\d$` | Use the 24 hour clock, for example 03:00 |
 | `pexelsKey`, `pixabayKey` | optional; a pasted key is checked live and a rejected one is a field error (NS-E501/NS-E502) | (none when empty; Settings takes a key later) |
@@ -1190,7 +1190,7 @@ in-window text says "press Retry", because the window replaces the rerun.
 | NS-E101 | This PC cannot run Nightshift | Nightshift needs 64-bit Windows 10 or 11. Tell the developer |
 | NS-E102 | No NVIDIA graphics card found | Install the NVIDIA driver from nvidia.com/drivers, restart, then press Check again |
 | NS-E103 | NVIDIA driver too old | Install the newest driver from the page that opened, restart, then press Check again |
-| NS-E104 | Not enough free disk space | Free 60 GB, or pick another drive |
+| NS-E104 | Not enough free disk space | Free some space (the message gives the amount it needs, when it knows), or pick another drive |
 | NS-E105 | A download site cannot be reached | Check the internet, switch off any VPN or proxy, then press Retry. When the download site itself answered 5xx or 429 for ten minutes (D-13), the Failed screen is titled "<host> is not answering (<status>)" and says it is their side; Retry waits again |
 | NS-E108 | The graphics card libraries did not load | Press Copy diagnostics and send the zip. Nothing else to do |
 | NS-E109 | A downloaded file is damaged | Press Retry. Setup downloads that file again. If the same error comes back, send the diagnostics zip |
@@ -1220,7 +1220,7 @@ in-window text says "press Retry", because the window replaces the rerun.
 |---|---|
 | No GPU | Stage1's first line is `[warn]`. On the Hardware check, the gpu row fails with `NS-E102` (blocking) and the driver row fails. With `allow_cpu: true` in answers.json both become warnings, the plan uses the `cpu-dev` profile, and the Welcome plan shows the 2.5 GB dev set |
 | Wrong GPU (not RTX, or under 16 GB) | Under 15 000 MB of VRAM: the warning row "The graphics card has less than 16 GB", the VRAM meter in `highlight` tone, and Balanced and Best disabled with the reason "Needs a 16 GB graphics card". CUDA under 12.4 (an old card or old driver) blocks with `NS-E103` |
-| Low disk | Under 40 GB on the default drive, `NS-E104` blocks, and the card offers the drive picker. Choices checks the folder against `required_free_gb(tier)` as it changes, and Install stays disabled until it fits. During downloads, P1 checks free space every 30 s. Under 2 GB free, it pauses all transfers and raises `NS-E104` as a failure with "Free some space, then press Retry" |
+| Low disk | When the default drive has less free space than this install needs, `NS-E104` blocks, and the card offers the drive picker. Choices checks the folder against the number the server works out (`needGb`) as it changes, and Install stays disabled until it fits. During downloads, P1 checks free space every 30 s. Under 2 GB free, it pauses all transfers and raises `NS-E104` as a failure with "Free some space, then press Retry" |
 | Offline with models_source | Hugging Face unreachable but GitHub and PyPI reachable: a warning, and the source in Choices defaults to "A folder on this PC". Files missing from the folder still need the internet. Their rows read "not in your folder, downloading", and if that fails they get `NS-E105` with "Put this file in your models folder, or connect to the internet, then press Retry". Fully offline (GitHub or PyPI unreachable) blocks, because Python packages and programs cannot come from a folder in this version |
 | Partial download resume | `.part` files and `.ok` markers survive. On restart, the Welcome resume variant shows "Still to do" with the bytes left, and rows read "will continue from 2.1 GB". HTTP `Range` resume is the downloader's existing behaviour. A server that ignores `Range` restarts the file (existing code), and the row says "restarted, the server did not allow resume" once |
 | Admin rights | A normal run may get a UAC prompt for each winget tool, so those rows read "installing, Windows may ask for permission". Long paths: `elevate-longpaths` runs `Start-Process powershell -Verb RunAs -ArgumentList '-NoProfile','-Command','Set-ItemProperty HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem LongPathsEnabled 1 -Type DWord'`. If the partner declines UAC, the card reads "Windows did not give permission. Setup works without it". If the partner ran setup as administrator, it still works, and Done adds the note "Setup ran as administrator. Shortcuts were made for {USERNAME}" |

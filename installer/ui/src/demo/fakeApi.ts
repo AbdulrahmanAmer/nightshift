@@ -5,7 +5,7 @@ import type { Api } from "../api/client";
 import type {
   ActionBody, ActionName, ActionResult, AnswersResult, ChoicesDraft, DiskCheck, DownloadRow, KeyCheck, ModelCheck, PickFolderResult, SetupState, StepId, UiStep, UninstallView, VerifyRow,
 } from "../api/types";
-import { checkRows, DRIVES, downloadRows, downloadsMid, fixture, isoNow, machine, overall, plan as makePlan, resultView, steps as makeSteps, verifyView, answers as answersView } from "./fixtures";
+import { checkRows, DRIVES, demoNeedGb, downloadRows, downloadsMid, fixture, isoNow, machine, overall, plan as makePlan, resultView, steps as makeSteps, verifyView, answers as answersView } from "./fixtures";
 
 const TICK_MS = 400;
 const SPEED = 11.4e6;
@@ -230,16 +230,16 @@ export function createDemoApi({ screen }: { screen: string | null }): Api {
     },
 
     // The demo has no dialog: it "picks" the next folder of a short list and then starts over (the real one is the Windows dialog).
-    async pickFolder(target, _start, tier): Promise<PickFolderResult> {
+    async pickFolder(target, _start, tier, custom): Promise<PickFolderResult> {
       await sleep(350);
       const folders = target === "models" ? ["D:\\Models", "E:\\Downloads\\Model files"] : ["E:\\Nightshift", "D:\\My Studio\\Nightshift"];
       const path = folders[pickCount++ % folders.length];
-      return { ok: true, path, cancelled: false, message: null, check: await api.disk(path, tier, target === "models") };
+      return { ok: true, path, cancelled: false, message: null, check: await api.disk(path, tier, target === "models", custom) };
     },
 
-    async disk(path, tier, source): Promise<DiskCheck> {
+    async disk(path, tier, source, custom): Promise<DiskCheck> {
       await sleep(180);
-      const need = makePlan(tier).needFreeGb;
+      const need = demoNeedGb(tier, custom ?? null);
       if (source) {
         const exists = !/missing|none/i.test(path) && path.trim().length > 2;
         return { path, exists, drive: null, freeGb: null, type: "Unknown", needGb: need, ok: exists, message: exists ? null : "That folder was not found", modelsFound: exists ? { files: 7, of: 9, bytes: 13.4e9 } : null };
@@ -247,7 +247,7 @@ export function createDemoApi({ screen }: { screen: string | null }): Api {
       const { letter, drive } = driveOf(path);
       if (!letter || !drive) return { path, exists: false, drive: null, freeGb: null, type: "Unknown", needGb: need, ok: false, message: "Type a full path on a local drive, for example D:\\Nightshift", modelsFound: null };
       const fit = drive.freeGb >= need;
-      return { path, exists: true, drive: letter, freeGb: drive.freeGb, type: drive.type, needGb: need, ok: fit, message: fit ? `${drive.freeGb} GB free on ${letter}: (${drive.type})` : `Only ${drive.freeGb} GB free on ${letter}:. Nightshift needs ${need} GB`, modelsFound: null };
+      return { path, exists: true, drive: letter, freeGb: drive.freeGb, type: drive.type, needGb: need, ok: fit, message: fit ? `${drive.freeGb} GB free on ${letter}: (${drive.type})` : `Only ${drive.freeGb} GB free on ${letter}:. This install needs about ${need} GB`, modelsFound: null };
     },
 
     async action(name: ActionName, body?: ActionBody): Promise<ActionResult> {

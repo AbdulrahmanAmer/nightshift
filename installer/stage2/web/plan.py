@@ -343,15 +343,22 @@ def build_plan(
     }
 
 
-def custom_entry(custom: dict[str, Any] | None) -> dict[str, Any] | None:
-    """The story model the owner named, as ``diskneed`` wants it (``repo``, ``file``, ``size``)."""
-    if not custom:
+def custom_entry(custom: Any) -> dict[str, Any] | None:
+    """The story model the owner named, as ``diskneed`` wants it (``repo``, ``file``, ``size``).
+
+    ``custom`` can be anything a draft or a query held: a shape it cannot use (not an object, no repo or file
+    name, a size that is not a positive whole number) is None, so the number is worked out for the tier
+    instead and the answers check reports the bad entry as a field error (it never raises).
+    """
+    if not isinstance(custom, dict):
         return None
-    return {
-        "repo": custom.get("repo", ""),
-        "file": custom.get("file", "custom.gguf"),
-        "size": int(custom["size"]),
-    }
+    size = custom.get("size")
+    if not isinstance(size, int) or isinstance(size, bool) or size <= 0:
+        return None
+    repo, file = custom.get("repo"), custom.get("file")
+    if not isinstance(repo, str) or not isinstance(file, str) or not repo.strip() or not file.strip():
+        return None
+    return {"repo": repo, "file": file, "size": size}
 
 
 def planned_sizes(

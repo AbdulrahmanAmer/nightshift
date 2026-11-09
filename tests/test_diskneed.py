@@ -103,6 +103,62 @@ def test_a_full_small_install_on_an_empty_home_comes_out_at_the_specs_60_gb(mani
     assert keys == {"download", "programs", "reserve"}
 
 
+def hand_sum(manifest: dict[str, Any], llm_key: str) -> int:
+    """The install of one tier added up by hand from the manifest, not through ``install_need``.
+
+    Models: the tier's story model, the embedder and the voice files at their manifest ``bytes``, whisper and
+    the face finder at the sizes ``diskneed`` states for them. Programs: what each downloads and unpacks.
+    Environments: the studio and supervisor venvs and the GPU wheels. Plus the stated reserve.
+    """
+    pm = manifest["profiles"]["gpu"]
+    models = pm[llm_key]["bytes"] + pm["embed"]["bytes"] + sum(f["bytes"] for f in pm["tts"])
+    models += diskneed.WHISPER_BYTES[pm["whisper_model"]] + diskneed.YUNET_BYTES
+    programs = 0
+    for key in ("llama_cuda13", "cudart13", "opencode", "yt_dlp", "webview2", "uv", "qwentts"):
+        download, unpacked = diskneed.PROGRAM_BYTES[key]
+        programs += download + unpacked
+    envs = sum(diskneed.VENV_BYTES.values()) + diskneed.GPU_WHEELS_BYTES
+    return models + programs + envs + diskneed.RESERVE_BYTES
+
+
+def test_the_three_tiers_come_out_at_60_64_and_72_from_the_manifests_own_bytes(manifest, tmp_path):
+    """The Head's order says the spec's 60 / 74 / 81 are "the full-tier results of the same sum".
+
+    They are not, and this test says what the sum really gives. Nothing is left out of a tier: each total here
+    is added up by hand from the manifest and equals ``install_need`` to the byte. A Balanced install
+    downloads ONE story model (14.3 GB, 5.3 GB more than Small's 9.0 GB), a Best one 22.9 GB (13.9 GB more),
+    and nothing else changes, so Balanced is 64 and Best 72. The old 74 and 81 are what you get by putting the
+    WHOLE Balanced or Best model on top of a total that already holds Small's 9 GB model (73 and 81): the
+    Small model counted a second time, and no step downloads two story models.
+    """
+    pm = manifest["profiles"]["gpu"]
+    got = {}
+    for tier, key in (("small", "llm"), ("balanced", "llm_balanced"), ("best", "llm_best")):
+        need = need_for(manifest, tmp_path / "empty", tier=tier)
+        assert need.total == hand_sum(manifest, key), tier
+        got[tier] = need.gb
+    assert got == {"small": 60, "balanced": 64, "best": 72}
+    # 74 and 81 would take a Balanced model 14 GB bigger than Small's and a Best one 21 GB bigger (5 and 14)
+    extra = {k: pm[k]["bytes"] - pm["llm"]["bytes"] for k in ("llm_balanced", "llm_best")}
+    assert extra["llm_balanced"] < 6e9 and extra["llm_best"] < 14e9
+    doubled = {k: (hand_sum(manifest, "llm") + pm[k]["bytes"]) / GIB for k in ("llm_balanced", "llm_best")}
+    assert 72 < doubled["llm_balanced"] < 73.5 and 80 < doubled["llm_best"] < 81  # the old figures, to a GB
+
+
+def test_the_spec_and_the_status_page_state_the_numbers_the_sum_gives(manifest, tmp_path):
+    """The figures in the docs are the computed ones: a manifest change that moves them fails here."""
+    small, balanced, best = (
+        need_for(manifest, tmp_path / "empty", tier=t).gb for t in ("small", "balanced", "best")
+    )
+    spec = (ROOT / "BUILD_SPEC.md").read_text(encoding="utf-8")
+    assert f"{small} GB for a first Small install on an empty drive (Balanced {balanced}, Best {best}" in spec
+    status = (ROOT / "docs" / "FEATURE_STATUS.md").read_text(encoding="utf-8")
+    sentence = f"A first Small install on an empty drive is {small} GB, Balanced {balanced}, Best {best}"
+    assert sentence in status
+    row = spec.split("| D23 |", 1)[1].split("\n", 1)[0]
+    assert "74 GB" in row and "81 GB" in row and "counted Small's 9 GB model a second time" in row
+
+
 def test_the_bigger_tiers_add_exactly_the_bigger_model_files(manifest, tmp_path):
     small = need_for(manifest, tmp_path / "a", tier="small")
     pm = manifest["profiles"]["gpu"]
@@ -192,18 +248,25 @@ def test_a_custom_one_gb_model_replaces_the_nine_gb_one(manifest, tmp_path):
     assert need_for(manifest, tmp_path / "a", custom=custom).total == need.total - 1_000_000_000
 
 
-def test_models_source_with_everything_is_a_copy_not_a_download(manifest, tmp_path):
-    """The files are copied into the home (copy_from_source), so they still take their bytes there."""
-    src = tmp_path / "usb"
+def source_names(manifest: dict[str, Any]) -> list[str]:
     pm = manifest["profiles"]["gpu"]
-    names = [
+    return [
         Path(pm["llm"]["file"]).name,
         Path(pm["embed"]["file"]).name,
         *[Path(f["file"]).name for f in pm["tts"]],
         "model.bin",
         "yunet.onnx",
     ]
-    for name in names:
+
+
+def test_models_source_with_everything_is_a_copy_not_a_download(manifest, tmp_path):
+    """The files are copied into the home (copy_from_source), so they still take their bytes there.
+
+    The order says "zero for files ... supplied by models_source"; the copy lands in the install folder, so
+    the number keeps the physical reading (the Head decides) and the line says what the bytes are.
+    """
+    src = tmp_path / "usb"
+    for name in source_names(manifest):
         (src / "models").mkdir(parents=True, exist_ok=True)
         (src / "models" / name).write_bytes(b"x")
     online = need_for(manifest, tmp_path / "home")
@@ -211,7 +274,22 @@ def test_models_source_with_everything_is_a_copy_not_a_download(manifest, tmp_pa
     assert offline.total == online.total
     keys = {p.key for p in offline.parts}
     assert "copy" in keys and "download" not in keys
-    assert "from your folder" in offline.makeup() and "to download" not in offline.makeup()
+    line = offline.makeup()
+    assert "to copy from your folder into the install folder" in line and "to download" not in line
+    assert offline.sentence(49 * GIB, "D:").count("\n") == 0
+
+
+def test_models_source_zips_are_found_too(manifest, tmp_path):
+    """A folder of zips (the Drive download) is a models folder: its files are copied out, not downloaded."""
+    import zipfile
+
+    src = tmp_path / "drive"
+    src.mkdir()
+    with zipfile.ZipFile(src / "models-1.zip", "w") as zf:
+        for name in source_names(manifest):
+            zf.writestr(f"models/{name}", b"x")
+    offline = need_for(manifest, tmp_path / "home", models_source=src)
+    assert {p.key for p in offline.parts} >= {"copy"} and "download" not in {p.key for p in offline.parts}
 
 
 def test_the_engine_test_shape_is_about_one_gb_of_files_plus_the_reserve(manifest, tmp_path):
@@ -346,6 +424,42 @@ def test_each_format_has_an_estimate_and_the_clip_job_depends_on_its_source():
         diskneed.format_need("no_such_format")
 
 
+def test_every_format_a_job_can_have_gets_an_estimate_so_a_resume_of_any_is_checked():
+    """`JobContext.fmt` reads back from `job.json`: master_from_script and clip are formats a job can have.
+
+    `format_need` used to refuse them, and the callers took the refusal for "no estimate, no check", so
+    `studio run --resume` and the nightly's resume let them through. A format added to the Literal without an
+    estimate fails here.
+    """
+    from typing import get_args, get_type_hints
+
+    from ns_studio import jobs
+    from ns_studio.context import JobContext
+
+    formats = set(get_args(jobs.Fmt))
+    assert formats == set(get_args(get_type_hints(JobContext)["fmt"]))
+    assert {"master_from_script", "clip"} <= formats
+    for fmt in sorted(formats):
+        need = diskneed.format_need(fmt)
+        assert need.total > 0 and need.parts, fmt
+    series = diskneed.format_need("series_part")
+    assert diskneed.format_need("master_from_script").total == series.total
+    assert diskneed.format_need("clip", max_clips=3).total < diskneed.format_need("clip").total
+    assert diskneed.format_need("clip", real_footage=False).total == diskneed.format_need("clip").total
+
+
+def test_a_resumed_clip_job_drops_the_stages_it_has_done():
+    full = diskneed.format_need("clip")
+    assert {p.key for p in full.parts} == {"scratch", "render"}
+    analysed = full.remaining({"clip_import", "clip_audio", "clip_analyze", "clip_transcribe", "clip_select"})
+    assert [p.key for p in analysed.parts] == ["render"] and analysed.total < full.total
+    rendered = full.remaining({"clip_audio", "clip_analyze", "clip_transcribe", "clip_render"})
+    assert 0 < rendered.total <= diskneed.MIN_RESUME_BYTES  # only the last files are left
+    assert full.remaining({"clip_audio"}).total == full.total  # a partly done analysis still needs all of it
+    linked = diskneed.clip_need(6, url_source=True).remaining({"clip_import"})
+    assert "source" not in {p.key for p in linked.parts}
+
+
 def test_fake_footage_makes_a_job_lighter_but_never_free():
     real = diskneed.short_need()
     fake = diskneed.short_need(real_footage=False)
@@ -380,6 +494,22 @@ def test_ns_e104_no_longer_quotes_the_installs_60_gb_rule_for_a_job():
     d = describe("NS-E104")
     assert "60 GB" not in d.hint and "80 GB" not in d.hint
     assert "message" in d.hint and "NIGHTSHIFT_HOME" in d.hint
+
+
+def test_the_ns_e104_hint_is_true_for_every_raiser():
+    """Not every raiser names a space to free: the downloader's disk-full, the uv cache check of s04 and the
+    FFmpeg full-disk detector say only what is free. The hint asks for "some space" and for the amount only
+    where the message gives one; the copies in stage 1 and the operator texts say the same."""
+    hint = describe("NS-E104").hint
+    assert "the space the message names" not in hint
+    assert hint.startswith("Free some space on the drive that holds NIGHTSHIFT_HOME")
+    assert "where the message gives the amount it needs" in hint
+    assert hint in (ROOT / "installer" / "stage1.ps1").read_text(encoding="utf-8")
+    web = ROOT / "installer" / "stage2" / "web"
+    copy = json.loads((web / "operator_copy.json").read_text(encoding="utf-8"))
+    assert "message names" not in copy["NS-E104"]["whatToDo"]
+    guide = (ROOT / "OPERATOR.md").read_text(encoding="utf-8").split("| NS-E104 |")[1][:400]
+    assert "the message names" not in guide
 
 
 def test_ns_w303_covers_the_start_up_sentence_case_too():

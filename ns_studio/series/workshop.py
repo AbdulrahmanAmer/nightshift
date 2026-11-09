@@ -29,6 +29,7 @@ from ns_common.models import Channel, Combo, Runtime
 from ns_common.paths import Paths
 from ns_common.textstats import split_sentences, word_count
 from ns_studio.context import FAKEABLE, JobContext, Services, build_services
+from ns_studio.diskroom import require_series_part_room
 from ns_studio.errors import StudioError
 from ns_studio.media.formats import design_formats, ensure_allowed, formats_allowed
 from ns_studio.media.presets import PRESETS_DIR
@@ -214,6 +215,7 @@ class Workshop:
         db: Db,
         log: NsLogger,
         enqueue: EnqueueFn | None = None,
+        fake: Collection[str] = (),
     ) -> None:
         self.paths = paths
         self.services = services
@@ -221,6 +223,10 @@ class Workshop:
         self.db = db
         self.log = log
         self.enqueue = enqueue
+        #: The services the part jobs this workshop queues will run on fakes (the room estimate reads
+        #: ``clips``: a fake clip source writes placeholder files). A read-only session fakes every service
+        #: so that no model is called; the dashboard then says what the queued job really runs on.
+        self.fake = frozenset(fake)
 
     # --- plumbing ---------------------------------------------------------------------------------
 
@@ -1009,11 +1015,11 @@ class Workshop:
 
         The Assistant calls this before it shows a confirm card, so the owner is never asked to say Yes to a
         step that stops at once (WorkshopError): unknown story or channel, a missing draft, a bad part number
-        for the map, a part in the wrong state, a missing design, a design value that is not allowed. Every
-        branch runs the `_pre_*` helper the step itself starts with, and `tests/test_series_workshop_check.py`
-        walks `check` against the real step in each state of a story, so a rule changed in one place cannot
-        leave the other behind. Not checked here: the policy gate on a premise or a concept, which needs the
-        model.
+        for the map, a part in the wrong state, a missing design, a design value that is not allowed, a drive
+        without room for a part (NS-E104). Every branch runs the `_pre_*` helper the step itself starts with,
+        and `tests/test_series_workshop_check.py` walks `check` against the real step in each state of a
+        story, so a rule changed in one place cannot leave the other behind. Not checked here: the policy
+        gate on a premise or a concept, which needs the model.
         """
         if tool == "workshop_start":
             self.channel(str(args["channel"]))
@@ -1035,6 +1041,7 @@ class Workshop:
             self._pre_approve(slug, args.get("part", "all"))
         elif tool == "workshop_produce":
             self._pre_produce(slug, args.get("part", "all"))
+            self._require_part_room()
         elif tool == "workshop_design":
             sd, _status, ch = self._open(slug)
             self._design_doc(sd, ch, {k: v for k, v in args.items() if k != "slug"})
@@ -1076,6 +1083,7 @@ class Workshop:
         `publish_cadence_days`. All files are validated before the first job is enqueued.
         """
         sd, status, ch, series, design, nums = self._pre_produce(slug, which)
+        self._require_part_room()  # before a job folder, a queue row or a "producing" mark exists
         fn = enqueue or self.enqueue or make_db_enqueue(self.db)
         pacing = ch.pools.pacings[0] if ch.pools.pacings else "standard"  # what `_ctx` wrote the scripts at
         hook_style = ch.pools.hooks[0] if ch.pools.hooks else "cold_open"  # as `_ctx` wrote the hooks
@@ -1115,6 +1123,16 @@ class Workshop:
             self._set_part(sd, status, n, "producing", job_id=req.job_id)
             results.append({"part": n, "job_id": req.job_id, "title": title})
         return results
+
+    def _require_part_room(self) -> None:
+        """NS-E104 (D-33) when the home's volume cannot hold one more part: a master and its Shorts.
+
+        The one refusal every route to a started series part shares (the Assistant's ``workshop_produce``,
+        ``studio series produce``, the dashboard's Produce next part). It asks for one part: the parts of an
+        "all" are run one after the other, and each is checked again when its job starts
+        (``run_series_part``).
+        """
+        require_series_part_room(self.paths, self.log, fake=self.fake)
 
     def _prepare_job(self, req: ProduceRequest) -> None:
         """Create the job directory with `script_source.json` and `series_context.json`."""
@@ -1242,7 +1260,8 @@ def default_workshop(fake: Collection[str] = (), *, enqueue: EnqueueFn | None = 
     if runtime.dev_mode:        # a dev install (docs/DEV_MODE.md) has no model: every service is its fake
         fakes = FAKEABLE
     services = build_services(runtime, fake=fakes, paths=paths)
-    return Workshop(paths, services, runtime, db, NsLogger("studio", paths.logs, echo=False), enqueue)
+    log = NsLogger("studio", paths.logs, echo=False)
+    return Workshop(paths, services, runtime, db, log, enqueue, fake=fakes)
 
 
 __all__ = [

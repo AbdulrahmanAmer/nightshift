@@ -16,7 +16,7 @@ import random
 import shutil
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, get_args
 
 import pytest
 from typer.testing import CliRunner
@@ -329,7 +329,8 @@ def test_studio_run_daily_prints_the_jobs_it_did_not_start(shorts_channel, monke
     free_space(monkeypatch, 20 * MIB)
     monkeypatch.setattr(notifications, "nightly_notifier", lambda p, log: None)
     res = runner.invoke(app, ["run", "--daily", "--fake-services", "--no-policy"])
-    assert res.exit_code == 0, res.output
+    # a scheduler reads the exit code: a night that made nothing for lack of room is not a success
+    assert res.exit_code == 1, res.output
     assert "NOT STARTED" in res.output and "has 20 MB free" in res.output
     assert nothing_written(paths, db)
 
@@ -409,20 +410,6 @@ def test_the_dashboards_clip_job_is_checked_too(
     assert long.value.code == "NS-E104"
 
 
-def test_the_series_part_is_checked_before_its_job_folder_is_made(
-    tmp_home: Path, monkeypatch: pytest.MonkeyPatch
-):
-    dash = make(tmp_home)
-    free_space(monkeypatch, 40 * MIB)
-    calls: list[str] = []
-    dash.state.adapters.series.queue_next = lambda slug: calls.append(slug) or []  # type: ignore[method-assign]
-    with pytest.raises(ApiError) as ei:
-        dash.library.produce_next_part("some-story")
-    assert ei.value.status == 507 and ei.value.code == "NS-E104" and calls == []
-    free_space(monkeypatch, 10 * GIB)
-    assert dash.library.produce_next_part("some-story")["queued"] == [] and calls == ["some-story"]
-
-
 def test_a_scheduled_or_batched_job_is_checked_again_when_it_starts(tmp_home: Path, monkeypatch):
     """The request was accepted with room; the drive filled up before the job began: NS-E104, no job made."""
     from ns_dashboard import studio_bridge
@@ -445,3 +432,171 @@ def test_room_checks_only_ever_raise_ns_e104(tmp_home: Path, monkeypatch: pytest
         diskroom.require_story_room(paths, None, ch, "shorts_only")
     assert ei.value.code == "NS-E104"
     assert diskroom.require_story_room(paths, None, ch, "no_such_format") is None
+
+
+# ------------------------------------- a resume of every format is checked (break-it finding 4)
+ALL_FORMATS = tuple(get_args(jobs.Fmt))
+
+
+def test_every_job_format_has_a_story_estimate(tmp_home: Path):
+    """`master_from_script` and `clip` used to come back as "no estimate", i.e. no check on a resume."""
+    paths = Paths.from_env()
+    ch = make_channel(format="master_first", long_minutes=(10, 14), shorts_per_master=(4, 6))
+    assert {"master_from_script", "clip"} <= set(ALL_FORMATS)
+    for fmt in ALL_FORMATS:
+        need = diskroom.story_need(paths, ch, fmt)
+        assert need is not None and need.total > 0, fmt
+    part = diskroom.story_need(paths, ch, "master_from_script")
+    assert part is not None and part.total == diskneed.format_need("series_part").total
+    assert diskroom.story_need(paths, ch, "no_such_format") is None  # only a name nobody has is unchecked
+
+
+@pytest.mark.parametrize("fmt", ["master_from_script", "clip"])
+def test_a_resume_of_a_master_from_script_or_clip_job_is_refused_for_room(
+    shorts_channel, monkeypatch: pytest.MonkeyPatch, fmt: str
+):
+    paths, db, ch = shorts_channel
+    env = jobs.open_env(light=True)
+    ctx = jobs.make_job(env, ch, "shorts_only", rng=random.Random(1))
+    info = json.loads((ctx.job_dir / "job.json").read_text(encoding="utf-8"))
+    (ctx.job_dir / "job.json").write_text(json.dumps({**info, "fmt": fmt}), encoding="utf-8")
+    ran: list[str] = []
+    monkeypatch.setattr("ns_studio.cli.run_job_guarded", lambda c, **kw: ran.append(c.job_id) or ["stage"])
+    free_space(monkeypatch, 5 * MIB)
+    res = runner.invoke(app, ["run", "--fake-services", "--no-policy", "--resume", ctx.job_id])
+    assert res.exit_code == 1 and "NS-E104" in res.output and "has 5 MB free" in res.output, res.output
+    assert ran == []
+    free_space(monkeypatch, 10 * GIB)
+    again = runner.invoke(app, ["run", "--fake-services", "--no-policy", "--resume", ctx.job_id])
+    assert again.exit_code == 0 and ran == [ctx.job_id]
+
+
+# ----------------------------- every series part start route is refused up front (break-it finding 3)
+def an_approved_story(tmp_home: Path):
+    from tests.test_series_workshop import Recorder, ready_to_produce
+
+    rec = Recorder()
+    ws, slug = ready_to_produce(tmp_home, rec)
+    return ws, slug, rec
+
+
+def part_statuses(ws: Any, slug: str) -> list[str]:
+    from ns_studio.series.store import StoryDir
+
+    st = StoryDir.open(ws.paths, slug).read_status()
+    return [st.parts[n].status for n in sorted(st.parts)]
+
+
+def test_workshop_produce_refuses_a_part_that_does_not_fit_and_writes_nothing(
+    tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The one place every route shares: `Workshop.produce` (Assistant, `studio series`, dashboard)."""
+    ws, slug, rec = an_approved_story(tmp_home)
+    free_space(monkeypatch, 40 * MIB)
+    with pytest.raises(NsError) as ei:
+        ws.produce(slug, "all")
+    assert ei.value.code == "NS-E104" and "has 40 MB free" in ei.value.detail
+    assert rec.requests == []  # nothing queued
+    assert nothing_written(ws.paths)  # no job folder, no script_source.json
+    assert part_statuses(ws, slug) == ["approved"] * 3  # no part marked producing
+    free_space(monkeypatch, 10 * GIB)
+    assert [r["part"] for r in ws.produce(slug, "all")] == [1, 2, 3]
+    assert part_statuses(ws, slug) == ["producing"] * 3
+
+
+def test_the_assistants_workshop_produce_tool_is_refused_up_front(
+    tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from ns_studio.series.tools import call_tool
+
+    ws, slug, rec = an_approved_story(tmp_home)
+    free_space(monkeypatch, 40 * MIB)
+    with pytest.raises(NsError) as ei:
+        call_tool(ws, "workshop_produce", {"slug": slug})
+    assert ei.value.code == "NS-E104" and rec.requests == [] and nothing_written(ws.paths)
+    with pytest.raises(NsError) as card:  # the confirm card is never offered for a step that stops at once
+        ws.check("workshop_produce", {"slug": slug})
+    assert card.value.code == "NS-E104"
+    free_space(monkeypatch, 10 * GIB)
+    ws.check("workshop_produce", {"slug": slug})  # with room the check passes
+
+
+def test_studio_series_produce_is_refused_up_front(tmp_home: Path, monkeypatch: pytest.MonkeyPatch):
+    from ns_studio.series.cli import app as series_app
+
+    ws, slug, _rec = an_approved_story(tmp_home)
+    free_space(monkeypatch, 40 * MIB)
+    res = runner.invoke(series_app, ["produce", slug, "--fake-services"])
+    assert res.exit_code == 1, res.output
+    assert "NS-E104" in res.output and "has 40 MB free" in res.output
+    assert nothing_written(ws.paths) and part_statuses(ws, slug) == ["approved"] * 3
+
+
+def test_the_series_part_estimate_follows_the_services_the_part_runs_on(
+    tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A read-only session fakes every service, but the part it queues runs on the dashboard's own."""
+    from ns_dashboard import studio_bridge
+
+    ws, slug, _rec = an_approved_story(tmp_home)
+    real = diskneed.format_need("series_part").total
+    fake = diskneed.format_need("series_part", real_footage=False).total
+    assert fake < real
+    free_space(monkeypatch, (real + fake) // 2)
+    with pytest.raises(NsError):  # real footage does not fit
+        studio_bridge.queue_next_part(slug, fake=())
+    assert part_statuses(ws, slug) == ["approved"] * 3
+    queued = studio_bridge.queue_next_part(slug, fake=studio_bridge.FAKE_ALL)  # fake footage does
+    assert [q["part"] for q in queued] == [1]
+
+
+def test_the_dashboards_produce_next_part_answers_507_through_the_real_adapter(
+    tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from ns_dashboard.adapters import RealSeriesAdapter
+    from ns_dashboard.supervisor_link import SupervisorLink
+
+    dash = make(tmp_home)
+    ws, slug, _rec = an_approved_story(tmp_home)
+    dash.state.adapters.series = RealSeriesAdapter(  # type: ignore[assignment]
+        dash.state.paths, SupervisorLink("http://127.0.0.1:9", timeout_s=0.2)
+    )
+    free_space(monkeypatch, 40 * MIB)
+    with pytest.raises(ApiError) as ei:
+        dash.library.produce_next_part(slug)
+    assert ei.value.status == 507 and ei.value.code == "NS-E104" and "has 40 MB free" in ei.value.message
+    assert nothing_written(ws.paths) and dash.state.store.next_queued() is None
+    free_space(monkeypatch, 10 * GIB)
+    assert [q["part"] for q in dash.library.produce_next_part(slug)["queued"]] == [1]
+
+
+# ------------------------------------------------ the nightly's result (break-it nit 3)
+def test_the_nightly_exit_code_is_non_zero_only_when_nothing_was_made_for_lack_of_room():
+    """Part of the night ran: the videos exist and the morning note names the rest."""
+    from ns_studio import cli as studio_cli
+
+    refused = [{"channel": "a", "jobs": 1, "format": "shorts_only", "message": "m"}]
+    made = [{"job_id": "j", "stages": 1, "channel": "a"}]
+    report: dict[str, Any] = {"channels": [], "jobs": made, "failures": [], "no_room": refused}
+    assert studio_cli.nightly_exit_code(report) == 0  # something was made, the rest is in the morning note
+    assert studio_cli.nightly_exit_code({**report, "jobs": []}) == 1  # nothing was made and room was why
+    assert studio_cli.nightly_exit_code({**report, "jobs": [], "no_room": []}) == 0  # nothing due is fine
+    assert studio_cli.nightly_exit_code({**report, "failures": [{"code": "x"}]}) == 1
+
+
+def test_the_last_night_card_shows_the_jobs_that_were_not_started():
+    """The dashboard reads `summary.no_room` of the newest run; the committed bundle must carry the card."""
+    root = Path(__file__).resolve().parents[1]
+    src = (root / "ns_dashboard" / "ui" / "src" / "pages" / "Queue.tsx").read_text(encoding="utf-8")
+    assert "no_room" in src and "not enough disk space" in src
+    bundle = (root / "ns_dashboard" / "static" / "app.js").read_text(encoding="utf-8")
+    assert "no_room" in bundle and "not enough disk space" in bundle
+
+
+# --------------------------------------------------------- a stage_state.json that is not an object
+def test_done_stages_survives_a_state_file_that_is_not_an_object(tmp_path: Path):
+    for text in ("[]", '"done"', "7", "null", '{"entries": []}', '{"entries": "x"}', "{broken"):
+        folder = tmp_path / "job"
+        folder.mkdir(exist_ok=True)
+        (folder / "stage_state.json").write_text(text, encoding="utf-8")
+        assert diskroom.done_stages(folder) == set(), text

@@ -296,3 +296,142 @@ def test_stage1_ranks_drives_by_the_number_stage_2_computes():
     assert roomy is not None and int(roomy.group(1)) == sysinfo.required_free_gb("small")
     assert "MinFreeGbRecommended" not in text and "60 GB recommended" not in text
     assert "Free disk space, 60 GB" not in text
+
+
+# ------------------------------------------------------ the break-it round (orchestrator/h6-disk-need)
+BAD_CUSTOMS: list[Any] = [
+    {"repo": "a/b", "file": "x.gguf"},  # no size: KeyError before
+    {"repo": "a/b", "file": "x.gguf", "size": "abc"},  # ValueError before
+    {"repo": "a/b", "file": "x.gguf", "size": None},  # TypeError before
+    {"repo": "a/b", "file": "x.gguf", "size": True},
+    {"repo": "a/b", "file": "x.gguf", "size": -5},
+    {"repo": "a/b", "file": 12, "size": 1_000_000_000},
+    {"file": "x.gguf", "size": 1_000_000_000},
+    {},
+    "not a dict",
+    ["a", "b"],
+    7,
+]
+
+
+@pytest.mark.parametrize("bad", BAD_CUSTOMS, ids=lambda b: repr(b)[:40])
+def test_a_malformed_custom_model_draft_is_a_field_error_not_a_crash(tmp_path, monkeypatch, bad):
+    """`submit_answers` worked the disk need out from the raw draft before it returned the errors."""
+    from tests.test_installer_web_controller import Setup, draft
+
+    s = Setup(tmp_path, monkeypatch)
+    result = s.ctl.submit_answers(draft(s.home, llmCustom=bad))
+    assert result["ok"] is False
+    assert [e["field"] for e in result["errors"]].count("llmCustom") == 1
+    assert s.snap()["answers"] is None
+    # the folder rows still follow the typed folder, as they did before the number was computed
+    assert any(c["id"] == "disk" for c in s.snap()["checks"])
+
+
+def test_custom_entry_gives_none_for_every_shape_it_cannot_use():
+    for bad in BAD_CUSTOMS:
+        assert plan.custom_entry(bad) is None, bad
+    good = plan.custom_entry({"repo": "a/b", "file": "x.gguf", "size": 5})
+    assert good == {"repo": "a/b", "file": "x.gguf", "size": 5}
+
+
+def test_the_folder_check_for_a_custom_model_is_the_servers_number(tmp_path, monkeypatch):
+    """The picker and the folder error quote the number the server worked out, not a rule of their own."""
+    from tests.test_installer_web_controller import Setup
+
+    s = Setup(tmp_path, monkeypatch)
+    custom = {"repo": "someone/tiny-gguf", "file": "tiny-1b-q4.gguf", "size": 1_000_000_000}
+    tier = s.ctl.disk(str(s.home), "small", False)
+    mine = s.ctl.disk(str(s.home), "small", False, custom)
+    manifest = plan.load_manifest(ROOT)
+    assert mine["needGb"] == plan.home_need(manifest, str(s.home), "small", custom=custom).gb
+    assert mine["needGb"] < tier["needGb"] - 7  # the old client rule said 60 for a model under 9 GB
+    assert tier["needGb"] == s.snap()["plan"]["tiers"]["small"]["needFreeGb"]
+    # a custom model left in the saved answers does not leak into a check that names none
+    s.accept(llmCustom=dict(custom))
+    assert s.ctl.disk(str(s.home), "small", False)["needGb"] == tier["needGb"]
+    assert s.ctl.disk(str(s.home), "small", False, custom)["needGb"] == mine["needGb"]
+
+
+def test_the_setup_window_no_longer_carries_a_need_rule_of_its_own():
+    """Source and bundle: the 60 + (size - 9 GB) rule is gone, the client sends the model and reads needGb."""
+    ui = ROOT / "installer" / "ui"
+    sources = "\n".join(p.read_text(encoding="utf-8") for p in (ui / "src").rglob("*.ts*"))
+    assert "customNeedFreeGb" not in sources
+    client = (ui / "src" / "api" / "client.ts").read_text(encoding="utf-8")
+    assert "&size=" in client and "&repo=" in client
+    bundle = (ui / "static" / "app.js").read_text(encoding="utf-8")
+    assert "&size=" in bundle and "/api/disk?path=" in bundle
+    compact = re.sub(r"\s+", "", bundle)
+    assert not re.search(r"60\+Math\.max\(0,Math\.ceil\([a-z]\/1e9\)-9\)", compact)
+
+
+def test_the_demo_fixtures_and_the_design_docs_do_not_quote_the_fixed_60_74_81():
+    ui = ROOT / "installer" / "ui" / "src" / "demo"
+    fixtures = (ui / "fixtures.ts").read_text(encoding="utf-8")
+    assert "Free 60 GB" not in fixtures and 'balanced", 74' not in fixtures and 'best", 81' not in fixtures
+    py = (ROOT / "installer" / "stage2" / "web" / "fixtures.py").read_text(encoding="utf-8")
+    assert "Free 60 GB" not in py
+    docs = (ROOT / "docs" / "design" / "installer-ui.md").read_text(encoding="utf-8")
+    assert "required_free_gb(tier)" not in docs and "Free 60 GB, or pick another drive" not in docs
+    status = (ROOT / "docs" / "FEATURE_STATUS.md").read_text(encoding="utf-8")
+    assert "Free 60 GB, or pick another drive" not in status
+
+
+def test_the_pc_check_row_says_models_from_your_folder_are_copied_into_the_install_folder(
+    raw, tmp_path, monkeypatch
+):
+    """models_source: the order says zero download; the copy still lands in the home, so it keeps its bytes
+    and the one line says what they are (the Head decides whether the number should be lower)."""
+    from tests.test_diskneed import source_names
+    from tests.test_installer_web_controller import Setup, draft
+
+    s = Setup(tmp_path, monkeypatch)
+    src = tmp_path / "usb"
+    for name in source_names(raw):
+        (src / "models").mkdir(parents=True, exist_ok=True)
+        (src / "models" / name).write_bytes(b"x")
+    online = s.ctl.submit_answers(draft(s.home))
+    assert online["ok"], online
+    online_row = next(c for c in s.snap()["checks"] if c["id"] == "disk")
+    assert "to download" in online_row["value"]
+    offline = s.ctl.submit_answers(draft(s.home, modelsSource={"kind": "folder", "path": str(src)}))
+    assert offline["ok"], offline
+    row = next(c for c in s.snap()["checks"] if c["id"] == "disk")["value"]
+    assert "to copy from your folder into the install folder" in row and "to download" not in row
+    assert "\n" not in row
+    assert s.snap()["plan"]["needFreeGb"] == online["plan"]["needFreeGb"]  # the copy takes the same room
+
+
+def test_the_default_folder_is_ranked_by_what_a_first_install_needs(raw, tmp_path):
+    """The home setup is running in may already hold the models; another drive does not.
+
+    Ranking the drives by the number for the current home (46 GB with the models in place) called a 50 GB SSD
+    roomy, picked it, and then refused it: a fresh install there needs 60 GB. The ranking asks the
+    first-install number instead.
+    """
+    place_models(raw, tmp_path / "home")  # the current home holds every model: its own need is smaller
+    assert plan.home_need(raw, str(tmp_path / "home"), "small").gb < 50 < plan.required_free_gb("small")
+    ctx = make_test_context(
+        tmp_path, raw_answers=example_answers(), ui=FakeUi(interactive=False), home_forced=False
+    )
+    ctx.preflight = {
+        **(ctx.preflight or {}),
+        "drives": [
+            {"letter": "X", "free_gb": 50.0, "type": "SSD"},
+            {"letter": "Y", "free_gb": 900.0, "type": "HDD"},
+        ],
+    }
+    ctx.free_gb_fn = lambda p: 900.0 if str(p).upper().startswith("Y") else 50.0
+    assert S01Questions()._pick_home(ctx, "small") == Path("Y:\\Nightshift")
+
+
+def test_the_blocking_checks_fixture_shows_the_row_the_real_check_gives(raw):
+    from installer.stage2.web import fixtures
+
+    rows = fixtures.build("checks-blocking")["checks"]
+    disk = next(r for r in rows if r["id"] == "disk")
+    need = plan.required_free_gb("small")
+    assert disk["value"].startswith(f"This install needs about {need} GB (")
+    assert disk["value"].endswith("C: has 31 GB free")
+    assert disk["whatToDo"] == f"Free {need} GB on this drive, or pick another drive below"

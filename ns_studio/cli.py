@@ -318,8 +318,21 @@ def _daily(env: jobs.Env, dry_run: bool, policy: bool | None) -> None:
     for bad_slug, problem in report.get("unreadable_profiles", []):
         typer.echo(f"channel {bad_slug} NOT RUN, its profile cannot be read: {problem}")
     typer.echo(f"backup: {report['backup']}")
-    if report["failures"]:
-        raise typer.Exit(1)
+    code = nightly_exit_code(report)
+    if code:
+        raise typer.Exit(code)
+
+
+def nightly_exit_code(report: dict[str, Any]) -> int:
+    """1 when a job failed, or when nothing was made and a lack of disk room is why (D-33), else 0.
+
+    The scheduled task's last result is this code. A night that refused every job for room made nothing and
+    must not read as a success; a night that made some videos and refused the rest exits 0 (the videos
+    exist) and says the rest in the morning note, the Last night card and the console.
+    """
+    if report.get("failures"):
+        return 1
+    return 1 if report.get("no_room") and not report.get("jobs") else 0
 
 
 

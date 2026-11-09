@@ -491,7 +491,7 @@ class RealSeriesAdapter(StudioAdapter):
         from ns_studio.series.store import WorkshopError
 
         try:
-            return studio_bridge.queue_next_part(slug)
+            return studio_bridge.queue_next_part(slug, self.fake)
         except WorkshopError as e:
             missing = str(e).startswith("no story")
             code = "not_found" if missing else "cannot_produce"

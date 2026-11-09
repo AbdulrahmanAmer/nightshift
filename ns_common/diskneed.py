@@ -23,6 +23,7 @@ import json
 import math
 import os
 import shutil
+import zipfile
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -202,18 +203,23 @@ class Need:
         """The part of a job a resume still writes, given the names of the stages already done.
 
         The voice and clip parts go with their stages, the render with ``render``, or with ``render_master``
-        and ``shorts_derive`` together, and the scratch files with ``outbox``. Never less than
-        ``MIN_RESUME_BYTES``: the last files still have to be written.
+        and ``shorts_derive`` together, and the scratch files with ``outbox``. A Clipper job (its stages are
+        ``clip_*``): the copied or downloaded video with ``clip_import``, the audio and analysis files with
+        the last of ``clip_audio``, ``clip_analyze``, ``clip_transcribe``, the renders with ``clip_render``.
+        Never less than ``MIN_RESUME_BYTES``: the last files still have to be written.
         """
         gone: set[str] = set()
         if "voice" in done:
             gone.add("voice")
         if "clips" in done:
             gone.add("clips")
-        if "render" in done or {"render_master", "shorts_derive"} <= set(done):
+        if "render" in done or "clip_render" in done or {"render_master", "shorts_derive"} <= set(done):
             gone.add("render")
-        if "outbox" in done:
+        analysed = {"clip_audio", "clip_analyze", "clip_transcribe"} <= set(done)
+        if "outbox" in done or "clip_outbox" in done or analysed:
             gone.add("scratch")
+        if "clip_import" in done:
+            gone.add("source")
         kept = tuple(p for p in self.parts if p.key not in gone)
         if sum(p.bytes for p in kept) < MIN_RESUME_BYTES:
             kept = (Part("resume", "to finish the last files", MIN_RESUME_BYTES),)
@@ -377,18 +383,26 @@ def format_need(
     shorts_per_master: tuple[int, int] = (4, 6),
     count: int = 1,
     real_footage: bool = True,
+    max_clips: int = 6,
 ) -> Need:
-    """What a story job of this format writes, at the top of the channel's ranges (the longest it may draw).
+    """What a job of this format writes, at the top of the channel's ranges (the longest it may draw).
 
-    ``shorts_only``: ``count`` Shorts. ``master_first``: the master and its Shorts. ``series_compilation`` and
-    a series part: a master of the channel's middle length with 5 Shorts (the part's own design is not read).
+    Every format a job can have (``ns_studio.jobs.Fmt``, read back from ``job.json`` on a resume) has an
+    estimate, so no resume goes unchecked; a name nobody has raises ``ValueError``.
+
+    ``shorts_only``: ``count`` Shorts. ``master_first``: the master and its Shorts. ``series_compilation``,
+    ``master_from_script`` and a series part: a master of the channel's middle length with 5 Shorts (the
+    part's own design is not read). ``clip``: a Clipper job of ``max_clips`` clips from a file already on the
+    drive.
     """
     if fmt == "shorts_only":
         return short_need(count, real_footage=real_footage)
     if fmt == "master_first":
         return long_need(long_minutes[1], shorts_per_master[1], real_footage=real_footage)
-    if fmt in ("series_compilation", "series_part"):
+    if fmt in ("series_compilation", "series_part", "master_from_script"):
         return long_need((long_minutes[0] + long_minutes[1]) / 2, 5, real_footage=real_footage)
+    if fmt == "clip":
+        return clip_need(max_clips, real_footage=real_footage)
     raise ValueError(f"no disk estimate for format {fmt!r}")
 
 
@@ -662,7 +676,8 @@ def _venv_ready(folder: Path | None) -> bool:
 
 
 def _source_names(folder: Path | str | None, wanted: Collection[str], max_depth: int = 4) -> set[str]:
-    """The wanted file names a models folder holds (the same depth the copy looks to)."""
+    """The wanted file names a models folder holds, also inside its ``*.zip`` files (the same depth the copy
+    looks to, and what the window's folder check counts)."""
     found: set[str] = set()
     if not folder or not Path(folder).is_dir():
         return found
@@ -671,6 +686,13 @@ def _source_names(folder: Path | str | None, wanted: Collection[str], max_depth:
         if len(Path(current).parts) - base >= max_depth:
             dirs[:] = []
         found.update(n for n in files if n in wanted)
+        for name in files:
+            if name.lower().endswith(".zip") and not found >= set(wanted):
+                try:
+                    with zipfile.ZipFile(Path(current) / name) as zf:
+                        found.update(leaf for i in zf.infolist() if (leaf := _name(i.filename)) in wanted)
+                except (OSError, zipfile.BadZipFile):
+                    continue
         if found >= set(wanted):
             break
     return found
@@ -698,8 +720,10 @@ def install_need(
     """The space this install will use on the volume of ``home``, given what is already there.
 
     * models: the bytes of each file that is not in place with a good mark (less what a ``.part`` holds).
-      A file the ``models_source`` folder has is copied, not downloaded, but it still lands in the home, so it
-      counts in full as "to copy";
+      A file the ``models_source`` folder has is copied, not downloaded, but the copy still lands in the home
+      and takes its bytes there, so it counts in full and is told as "to copy from your folder into the
+      install folder". (Head order H-6 says "zero for files ... supplied by models_source"; that is the
+      download. The reading here is the physical one, for the Head to confirm.)
     * programs and environments: the download and the unpacked size of each program not yet unpacked, and each
       environment not yet made;
     * the working reserve (``RESERVE_BYTES``) of a first install; a repair or update over a finished install
@@ -748,7 +772,7 @@ def install_need(
     if download:
         parts.append(Part("download", "of models to download", download))
     if copy:
-        parts.append(Part("copy", "of models to copy from your folder", copy))
+        parts.append(Part("copy", "of models to copy from your folder into the install folder", copy))
     if programs:
         parts.append(Part("programs", "of programs and environments", programs))
     if _installed(paths):
