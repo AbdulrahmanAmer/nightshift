@@ -852,7 +852,7 @@ Horror and dark themes are allowed **as fiction** with implied, not graphic, vio
 | `render_uniqueness` | final | Perceptual hash (pHash of 10 sampled frames) too close to any prior render on any channel. A Short may share narration with its parent master but must differ in visuals and include its new hook | E611 |
 | `long_runtime` | final | Master < 8:30, or a mid-roll suggestion in the first/last 2 min | E612 |
 | `clip_reuse` | final | Violates §7.4 rules | E613 |
-| `audio_only_voice` | final | Any non-voice audio track present (no music by design); checked by stream count and spectral flatness on silent stretches | E614 |
+| `audio_only_voice` | final | Any non-voice audio track present (no music by design); fails on the stream count and on a noise floor above -55 dBFS; spectral flatness of the quiet frames is measured and warned only (`qc/audio_flatness.json`, no code) until calibrated on real narration | E614 |
 | `disclosure_advice` | final | Always runs; writes the §18.7 answers | — |
 
 A failure moves the item to `rejected\` with the reason, regenerates once from the earliest affected stage, and logs the code. Second failure ends the job.

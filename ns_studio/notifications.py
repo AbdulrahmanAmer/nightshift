@@ -84,10 +84,46 @@ def nightly_message(report: dict[str, Any], masters: int, shorts: int) -> str | 
             parts.append(f"{_plural(len(failures), 'job', 'jobs')} failed ({codes})")
         else:
             parts.append(failure_message(codes))
+    parts.extend(_interrupted_parts(report.get("interrupted_jobs") or []))
     unreadable = report.get("unreadable_profiles", [])
     if unreadable:
         parts.append(f"{_plural(len(unreadable), 'channel', 'channels')} skipped, profile cannot be read")
     return "; ".join(parts) if parts else None
+
+
+def _fate(item: dict[str, Any]) -> str:
+    """What became of an interrupted job: `resumed`, `waiting` (the GPU was busy), or still needing a person:
+    `retry` (a Queue card stands for it) or `command` (it has none: `studio run --resume`)."""
+    fate = item.get("state") or ("resumed" if item.get("resumed") else "open")
+    if fate in ("resumed", "waiting"):
+        return str(fate)
+    return "retry" if item.get("has_card", True) else "command"
+
+
+def _interrupted_parts(items: Sequence[dict[str, Any]]) -> list[str]:
+    """What the toast says about an earlier night that was killed (power cut, crash)."""
+    out: list[str] = []
+    for fate, text in (
+        ("resumed", "an interrupted night was resumed (it had stopped at {at})"),
+        (
+            "waiting",
+            "an interrupted night waits for the GPU, the next night continues it (it stopped at {at})",
+        ),
+        ("retry", "an interrupted night needs Retry in the Queue (it stopped at {at})"),
+        (
+            "command",
+            "an interrupted night can be continued with studio run --resume {job} (it stopped at {at})",
+        ),
+    ):
+        mine = [i for i in items if _fate(i) == fate]
+        if fate == "command":  # `--resume` takes one job: one command per job, each one runnable as written
+            for i in mine:
+                at = str(i.get("stage") or "an unknown stage")
+                out.append(text.format(at=at, job=str(i.get("job_id") or "")))
+        elif mine:
+            stages = [str(i.get("stage") or "an unknown stage") for i in mine]
+            out.append(text.format(at=", ".join(dict.fromkeys(stages)), job=""))
+    return out
 
 
 def failure_message(code: str) -> str:

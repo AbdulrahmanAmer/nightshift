@@ -521,6 +521,7 @@ class JobWorker:
         on_end: dict[str, Callable[[JobRecord], None]] | None = None,
         on_done: dict[str, Callable[[JobRecord], None]] | None = None,
         sweep: Callable[[set[str], dict[str, str]], object] | None = None,
+        recover_studio: Callable[[], object] | None = None,
         idle_poll_s: float = 30.0,
         awake: Callable[[], AbstractContextManager[None]] = keep_awake,
         pulse: Callable[[], object] | None = None,
@@ -540,6 +541,9 @@ class JobWorker:
         self.on_done = on_done or {}
         #: Called once at start with the ids of the queued and running jobs, after interrupted ones failed.
         self.sweep = sweep
+        #: Called once at start: the studio runs and jobs whose process is gone (a nightly killed by a power
+        #: cut or a crash) are closed as interrupted and offered in the Queue with Retry (defect D-31).
+        self.recover_studio = recover_studio
         #: While nothing runs, `on_idle` is also called this often (a request saved during the nightly run,
         #: which is not a dashboard job, has no job end to wait for).
         self.idle_poll_s = idle_poll_s
@@ -586,6 +590,11 @@ class JobWorker:
                     hook(rec)
                 except Exception as e:  # recovery must never stop the worker from starting
                     self.log.warn("recover_failed", str(e), job_id=rec.job_id, kind=rec.kind)
+        if self.recover_studio is not None:
+            try:
+                self.recover_studio()
+            except Exception as e:  # recovery must never stop the worker from starting
+                self.log.warn("studio_recover_failed", str(e))
         if self.sweep is not None:
             try:
                 self.sweep(self.store.active_ids(), self.store.statuses_of("series_part"))

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import zlib
 from pathlib import Path
 
@@ -18,6 +19,7 @@ from ns_studio.context import JobContext
 from ns_studio.media.audio import VOICE_LUFS, VOICE_TP, loudnorm, measure_lufs
 from ns_studio.media.fake_voice import note_voice_engine
 from ns_studio.stages import Tenant
+from ns_studio.voice_wpm import record_voice_wpm
 
 __all__ = ["VoiceStage", "loudnorm", "measure_lufs", "narration_items", "synthesize"]
 
@@ -38,10 +40,28 @@ def job_speed(ctx: JobContext) -> float:
     return pacing_speed(job_voice(ctx).speed, ctx.combo.pacing)
 
 
+def _words(text: str) -> list[str]:
+    """Lower-case words of `text` without the punctuation around them (so a cut ending on a comma matches)."""
+    return [w for w in (re.sub(r"^\W+|\W+$", "", t).lower() for t in text.split()) if w]
+
+
+def hook_opens_body(hook: str, body: str) -> bool:
+    """True when the hook is the first words of the body (the whole first sentence or a cut of it): the body
+    already says them, so voicing the hook as well would play the same words twice."""
+    h = _words(hook)
+    return bool(h) and _words(body)[: len(h)] == h
+
+
 def narration_items(
-    parts: list[dict], voice_name: str, speed: float, language: str | None = None
+    parts: list[dict],
+    voice_name: str,
+    speed: float,
+    language: str | None = None,
+    closings: dict[str, str] | None = None,
 ) -> list[TtsItem]:
-    """One TTS item per part body (`p<n>`) plus `p<n>_hook` when the hook is not the first sentence.
+    """One TTS item per part body (`p<n>`) plus `p<n>_hook` when the hook does not open the body (so it is
+    neither the first sentence nor a cut of it) and `p<n>_close` for the part's closing line (`closings` maps
+    the part number as text to the line).
 
     `language` is the channel's ISO code; it travels with every item to `qwen-tts --lang`.
     """
@@ -51,9 +71,33 @@ def narration_items(
         cliff = (sentences[-1],) if p.get("cliffhanger") and sentences else ()
         items.append(TtsItem(f"p{p['n']}", p["text"], voice_name, speed, cliff, language))
         hook = (p.get("hook") or "").strip()
-        if hook and (not sentences or hook != sentences[0]):
+        if hook and not hook_opens_body(hook, p["text"]):
             items.append(TtsItem(f"p{p['n']}_hook", hook, voice_name, speed, language=language))
+        closing = ((closings or {}).get(str(p["n"])) or "").strip()
+        if closing:
+            items.append(TtsItem(f"p{p['n']}_close", closing, voice_name, speed, language=language))
     return items
+
+
+def tts_seed(ctx: JobContext) -> int | None:
+    """Seed sent with the batch: None on the first pass, so the TTS service uses the voice's own fixed seed
+    and the timbre stays the same from job to job (spec 7.5). After the policy gate sent the job back
+    (`ctx.attempt` > 0) a seed of that attempt, so the regenerated voice sounds different."""
+    if ctx.attempt == 0:
+        return None
+    return (zlib.crc32(ctx.job_id.encode()) + ctx.attempt) & 0x7FFFFFFF
+
+
+def read_closings(ctx: JobContext) -> dict[str, str] | None:
+    """`closings.json` as a dict, or None (no closing line) when the hooks stage did not run (an owner's
+    script, a job from before closing lines) or the file is damaged or not an object."""
+    if not ctx.file("closings.json").exists():
+        return None
+    try:
+        closings = ctx.read_json("closings.json")
+    except (OSError, ValueError):
+        return None
+    return closings if isinstance(closings, dict) else None
 
 
 def _signature(it: TtsItem, generation: int = 0) -> str:
@@ -67,7 +111,9 @@ def _signature(it: TtsItem, generation: int = 0) -> str:
     return hashlib.sha256(base.encode()).hexdigest()
 
 
-def _speak(ctx: JobContext, todo: list[TtsItem], raw_dir: Path, seed: int, limit: float) -> list[TtsFile]:
+def _speak(
+    ctx: JobContext, todo: list[TtsItem], raw_dir: Path, seed: int | None, limit: float
+) -> list[TtsFile]:
     """One batch; when the limit passes (NS-E310 after the client asked the service to cancel) one more try.
 
     The retry runs at twice the limit (at most 2 h) and `resume` makes the service keep the items it had
@@ -110,7 +156,7 @@ def synthesize(ctx: JobContext, items: list[TtsItem]) -> tuple[dict[str, dict], 
     raw_dir = ctx.subdir("audio/raw")
     manifest: dict[str, dict] = {it.id: prev[it.id] for it in items if it.id not in todo_ids}
     if todo:
-        seed = (zlib.crc32(ctx.job_id.encode()) + ctx.attempt) & 0x7FFFFFFF  # a retry sounds different
+        seed = tts_seed(ctx)
         rtf = load_rtf(ctx.paths)  # the speed `ns verify` measured on this PC (None: the default figures)
         limit = batch_timeout_s((it.text for it in todo), rtf)  # 120 s + 3 s or more per line, at most 2 h
         ctx.log.info("voice_batch", job_id=ctx.job_id, items=len(todo), timeout_s=round(limit), rtf=rtf)
@@ -130,6 +176,8 @@ def synthesize(ctx: JobContext, items: list[TtsItem]) -> tuple[dict[str, dict], 
                 "tp": tp,
                 "sig": _signature(by_id[f.id], generation),
             }
+    if items:
+        record_voice_wpm(ctx, items[0].voice, items, manifest)  # words per minute this voice really speaks
     return manifest, len(todo)
 
 
@@ -144,6 +192,7 @@ class VoiceStage:
     name: str = "voice"
     tenant: Tenant = "tts"
     inputs: tuple[str, ...] = ("parts.json", "story.json", "shorts_plan.json")
+    optional_inputs: tuple[str, ...] = ("closings.json",)  # absent in jobs from before closing lines
     outputs: tuple[str, ...] = ("audio/manifest.json",)
 
     def run(self, ctx: JobContext) -> None:
@@ -156,7 +205,8 @@ class VoiceStage:
         parts = ctx.read_json("parts.json")
         voice = job_voice(ctx)
         voice_name = voice.name or voice.speaker or "Ryan"
-        items = narration_items(parts, voice_name, job_speed(ctx), ctx.channel.language)
+        closings = read_closings(ctx)
+        items = narration_items(parts, voice_name, job_speed(ctx), ctx.channel.language, closings)
         manifest, synthesized = synthesize(ctx, items)
         # Measured seconds live in audio/manifest.json only: rewriting parts.json (an input of hooks, seo,
         # visual_plan and the policy gate) made `--resume` redo those LLM stages.
