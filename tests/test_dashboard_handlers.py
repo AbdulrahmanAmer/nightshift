@@ -1,5 +1,7 @@
 import io
 import json
+import threading
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -9,7 +11,7 @@ import pytest
 from ns_common.config import load_channel, load_runtime, save_runtime
 from ns_common.models import Runtime
 from ns_common.paths import Paths
-from ns_dashboard.errors import AdapterUnavailable, ApiError
+from ns_dashboard.errors import AdapterUnavailable, ApiError, SupervisorUnavailable
 from ns_dashboard.fakes import FakeSupervisor, seed_channel, seed_output
 from ns_dashboard.handlers import Dashboard, build_state
 from ns_dashboard.state import AppState
@@ -122,9 +124,14 @@ def test_engine_commands(tmp_home: Path):
         seed_channel(state.db, state.paths)
         job = dash.jobs.create_run({"channel": "after-dark", "format": "shorts_only"})
         state.store.mark_running(job["job_id"])
+        later: list[Any] = []
+        dash.engine.schedule = lambda _delay, fn: later.append(fn)
         out = dash.engine.shutdown(10)
         assert out == {"ok": True, "cancelled_job": job["job_id"]}
         assert state.draining and state.store.is_cancel_requested(job["job_id"])
+        assert not any(p == "/shutdown" for m, p, b in sup.calls if m == "POST")  # not before the reply
+        assert len(later) == 1
+        later[0]()
         assert ("/shutdown", {"grace_s": 10}) in [(p, b) for m, p, b in sup.calls if m == "POST"]
         run = {"channel": "after-dark", "format": "shorts_only"}
         assert code_of(dash.jobs.create_run, run) == "shutting_down"
@@ -136,6 +143,77 @@ def test_shutdown_with_engine_offline_keeps_accepting(tmp_home: Path):
     assert code_of(dash.engine.shutdown, 30) == "engine_offline"
     assert state.draining is False
     assert code_of(dash.engine.shutdown, 999) == "invalid_options"
+
+
+class RecordingLink(SupervisorLink):
+    """A link whose `shutdown` writes into a shared order list (and may fail)."""
+
+    def __init__(self, order: list[str], fail: Exception | None = None) -> None:
+        super().__init__("http://127.0.0.1:9", timeout_s=0.2)
+        self.order = order
+        self.fail = fail
+        self.done = threading.Event()
+
+    def status(self) -> dict[str, Any] | None:
+        return {"services": {}, "gpu_owner": None}
+
+    def shutdown(self, grace_s: int = 30) -> dict[str, Any]:
+        self.order.append(f"link.shutdown({grace_s})")
+        self.done.set()
+        if self.fail is not None:
+            raise self.fail
+        return {"ok": True}
+
+
+def test_shutdown_builds_the_reply_before_the_engine_stops(tmp_home: Path):
+    order: list[str] = []
+    link = RecordingLink(order)
+    dash, state = make(tmp_home, link)
+    later: list[Any] = []
+    dash.engine.schedule = lambda delay, fn: (order.append(f"scheduled@{delay}"), later.append(fn))
+    out = dash.engine.shutdown(7)
+    order.append("reply built")
+    assert out == {"ok": True, "cancelled_job": None}
+    assert state.draining is True
+    assert order == [f"scheduled@{dash.engine.shutdown_delay_s}", "reply built"]
+    later[0]()
+    assert order[-1] == "link.shutdown(7)"
+
+
+def test_shutdown_still_stops_the_engine_after_the_delay(tmp_home: Path):
+    link = RecordingLink([])
+    dash, _ = make(tmp_home, link)
+    dash.engine.shutdown_delay_s = 0.05
+    t0 = time.monotonic()
+    dash.engine.shutdown(5)
+    assert link.order == []  # the call returned before the supervisor call ran
+    assert link.done.wait(5.0)
+    assert time.monotonic() - t0 >= 0.04
+    assert link.order == ["link.shutdown(5)"]
+
+
+def test_shutdown_failure_is_logged_not_raised(tmp_home: Path):
+    link = RecordingLink([], fail=ApiError(502, "engine_error", "Engine answered 500 for /shutdown"))
+    dash, state = make(tmp_home, link)
+    later: list[Any] = []
+    dash.engine.schedule = lambda _delay, fn: later.append(fn)
+    assert dash.engine.shutdown(5)["ok"] is True
+    assert state.draining is True
+    later[0]()  # must not raise
+    assert state.draining is False  # the engine refused: the dashboard keeps accepting jobs
+    logged = "".join(f.read_text(encoding="utf-8") for f in state.paths.logs.glob("*.jsonl"))
+    assert '"event": "engine_shutdown_failed"' in logged and '"level": "ERROR"' in logged
+    assert '"event": "engine_shutdown"' in logged  # the route logged before the engine stopped
+
+
+def test_shutdown_connection_dropped_by_the_stopping_engine_is_a_warning(tmp_home: Path):
+    link = RecordingLink([], fail=SupervisorUnavailable("connection reset"))
+    dash, state = make(tmp_home, link)
+    later: list[Any] = []
+    dash.engine.schedule = lambda _delay, fn: later.append(fn)
+    dash.engine.shutdown(5)
+    later[0]()
+    assert state.draining is True  # the engine is going away; keep refusing new jobs
 
 
 def test_events_stream_frames(tmp_home: Path):

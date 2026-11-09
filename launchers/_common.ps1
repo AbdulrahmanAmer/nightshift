@@ -157,7 +157,17 @@ function Start-NsSupervisor {
     # blocks the folder swap of an update). The venv has the app as an editable install.
     Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue
     Remove-Item Env:NIGHTSHIFT_BOOTSTRAP_UV -ErrorAction SilentlyContinue
-    Start-Process -FilePath $py -ArgumentList $argList -WindowStyle $style -WorkingDirectory (Get-NsHome)
+    # NS_DASHBOARD_NO_HOST (set by the setup window) is for the dashboard launcher alone, which still reads it
+    # after this returns to decide on the host window: the engine and everything it starts must not inherit
+    # it, or a later dashboard would never raise its window. Hide it for the start only.
+    $noHost = $env:NS_DASHBOARD_NO_HOST
+    Remove-Item Env:NS_DASHBOARD_NO_HOST -ErrorAction SilentlyContinue
+    try {
+        Start-Process -FilePath $py -ArgumentList $argList -WindowStyle $style -WorkingDirectory (Get-NsHome)
+    }
+    finally {
+        if ($null -ne $noHost) { $env:NS_DASHBOARD_NO_HOST = $noHost }
+    }
 }
 
 function Wait-NsHostReady {

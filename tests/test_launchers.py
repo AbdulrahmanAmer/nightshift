@@ -257,6 +257,54 @@ def test_sync_opencode_port_never_stops_the_launcher(tmp_path: Path) -> None:
     assert "opencode.json" in out                                      # a plain note, no exception
 
 
+@needs_powershell
+def test_start_ns_supervisor_does_not_pass_the_setup_windows_no_host_switch_to_the_engine(
+    tmp_path: Path,
+) -> None:
+    """D-3 / F-D4: the engine started by a launcher keeps NIGHTSHIFT_HOME but not NS_DASHBOARD_NO_HOST."""
+    import os
+    import time
+
+    exe = pwsh.find_powershell()
+    assert exe is not None
+    home = tmp_path / "home"
+    (home / "config").mkdir(parents=True)
+    (home / "config" / "runtime.json").write_text("{}", encoding="utf-8")
+    out = tmp_path / "child-env.txt"
+    fake = tmp_path / "fake-engine.cmd"
+    fake.write_text(
+        f'@echo off\r\necho NO_HOST=[%NS_DASHBOARD_NO_HOST%]> "{out}.tmp"\r\n'
+        f'echo HOME=[%NIGHTSHIFT_HOME%]>> "{out}.tmp"\r\nmove /y "{out}.tmp" "{out}" > nul\r\n',
+        encoding="ascii",
+    )
+    script = (
+        f". '{LAUNCHERS / '_common.ps1'}'\n"
+        f"function Get-NsVenvExe {{ param([string]$Venv, [string]$Name) return '{fake}' }}\n"
+        "Start-NsSupervisor -Headless\n"
+        "Write-Output ('LAUNCHER=[' + $env:NS_DASHBOARD_NO_HOST + ']')\n"
+    )
+    env = {k: v for k, v in os.environ.items() if k.lower() != "psmodulepath"}
+    env.update({"NIGHTSHIFT_HOME": str(home), "NS_DASHBOARD_NO_HOST": "1"})
+    r = subprocess.run([exe, "-NoProfile", "-NonInteractive", "-Command", script], capture_output=True,
+                       text=True, timeout=60, env=env, check=False)
+    assert r.returncode == 0, r.stdout + r.stderr
+    # the launcher itself still sees the switch afterwards (the dashboard launcher reads it for the host)
+    assert "LAUNCHER=[1]" in r.stdout
+    deadline = time.monotonic() + 30
+    while not out.exists() and time.monotonic() < deadline:
+        time.sleep(0.2)
+    assert out.exists(), "the fake engine never ran"
+    lines = out.read_text(encoding="ascii").split()
+    assert lines == ["NO_HOST=[]", f"HOME=[{home}]"]
+
+
+def test_start_ns_supervisor_hides_the_switch_for_the_start_and_restores_it() -> None:
+    body = read("_common.ps1")
+    fn = body[body.index("function Start-NsSupervisor") : body.index("function Wait-NsHostReady")]
+    assert fn.index("Remove-Item Env:NS_DASHBOARD_NO_HOST") < fn.index("Start-Process")
+    assert fn.index("Start-Process") < fn.index("finally") < fn.rindex("$env:NS_DASHBOARD_NO_HOST = $noHost")
+
+
 def test_update_launcher_filters_release_zips_and_calls_ns_update() -> None:
     text = read("update.ps1")
     assert "Nightshift-*.zip" in text and "update $dlg.FileName" in text and "--detach" in text

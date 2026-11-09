@@ -21,7 +21,15 @@ from ns_studio.media.caption_plan import (
 from ns_studio.media.captions import _ass_color as ass_color
 from ns_studio.media.captions import _ass_time as ass_time
 from ns_studio.media.captions import build_ass, caption_band, ensure_contrast, shift_words
-from ns_studio.media.clips import ClipCache, Searcher, assign_clips, blocked_for_job, clip_seed, fallback_beat
+from ns_studio.media.clips import (
+    ClipCache,
+    Searcher,
+    assign_clips,
+    blocked_for_job,
+    clip_seed,
+    fallback_beat,
+    make_lemmatizer,
+)
 from ns_studio.media.master import (
     CARD_S,
     ChapterTiming,
@@ -131,7 +139,7 @@ def run_clips_master(ctx: JobContext) -> None:
     treatment = visual_treatment(ctx.combo.visual_treatment)
     cache = ClipCache(ctx.db, ctx.paths, ctx.services.clip_sources, log=ctx.log)
     cache.purge_expired()
-    searcher = Searcher(ctx.services.clip_sources, log=ctx.log)
+    searcher = Searcher(ctx.services.clip_sources, log=ctx.log, lemma=make_lemmatizer(ctx.paths))
     blocked = blocked_for_job(ctx, ("clips/shots.json",))
     used: set[tuple[str, str]] = set()
     shots: list[Shot] = []
@@ -144,6 +152,7 @@ def run_clips_master(ctx: JobContext) -> None:
         got = assign_clips(
             beats=beats, slots=slots, searcher=searcher, cache=cache, blocked=blocked, seed=seed,
             wanted="landscape", used=used, allow_other=False,
+            extra_keywords=ctx.channel.seed_keywords,
         )
         shots += [_shift(s, t.audio_start) for s in got]
         ctx.log.info("clips_selected", job_id=ctx.job_id, item="long", chapter=ch.n, shots=len(got))
@@ -260,6 +269,8 @@ def render_segment(
     fit_chapter_contrast(ctx, t, shots)
     card_path = None
     inputs: list[str] = []
+    # Same rule as `render_video`: graph in a script file, files named relative to the folder they share.
+    base = ff.common_dir([*(s.path for s in shots), out])
     if card_frames > 0:
         card_path = ctx.file(f"captions/card_c{t.n}.ass")
         card_path.write_text(card_ass(t.title, t.n, card), encoding="utf-8")
@@ -267,17 +278,21 @@ def render_segment(
                    f"color=c={card.background.replace('#', '0x')}:s=1920x1080:r={fps}"]
     for i, s in enumerate(shots):
         need = (edges[i + 1] - edges[i]) / fps + 0.5
-        inputs += ["-ss", f"{s.ss:.2f}", "-t", f"{need:.2f}", "-i", s.path]
+        inputs += ["-ss", f"{s.ss:.2f}", "-t", f"{need:.2f}", "-i", ff.relative_arg(s.path, base)]
     graph = build_segment_graph(
         shots, edges, card_frames, fps, treatment, ctx.file(f"captions/long_c{t.n}.ass"), card_path, FONTS_DIR
     )
     out.parent.mkdir(parents=True, exist_ok=True)
     video = ctx.runtime.video
+    script = ff.filter_complex_args(
+        graph, out.with_name(f"{out.stem}.filtergraph.txt"), log=ctx.log, base=base
+    )
 
     def attempt(force_cpu: bool) -> None:
-        ff.run([*inputs, "-filter_complex", graph, "-map", "[vout]", "-an",
-                *encoder_args(video, force_cpu=force_cpu), "-r", str(fps), "-pix_fmt", "yuv420p", str(out)],
-               log=ctx.log)
+        ff.run([*inputs, *script, "-map", "[vout]", "-an",
+                *encoder_args(video, force_cpu=force_cpu), "-r", str(fps), "-pix_fmt", "yuv420p",
+                ff.relative_arg(out, base)],
+               log=ctx.log, cwd=base)
 
     try:
         attempt(False)

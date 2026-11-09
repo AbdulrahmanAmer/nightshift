@@ -54,6 +54,17 @@ def test_the_worker_is_detached_broken_away_from_the_job_and_starts_in_the_home(
     assert call["cwd"] == str(tmp_path) and call["stdin"] == subprocess.DEVNULL
 
 
+def test_the_detached_worker_does_not_inherit_the_setup_windows_no_host_switch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("NS_DASHBOARD_NO_HOST", "1")
+    monkeypatch.setenv("NIGHTSHIFT_HOME", str(tmp_path))
+    popen = FakePopen()
+    update_job.spawn_detached(["ns", "update"], cwd=tmp_path, popen=popen)
+    env = popen.calls[0]["env"]
+    assert "NS_DASHBOARD_NO_HOST" not in env and env["NIGHTSHIFT_HOME"] == str(tmp_path)
+
+
 def test_a_job_that_forbids_breakaway_goes_through_wmi(tmp_path: Path) -> None:
     popen = FakePopen(fail=1)
     seen: list[tuple[list[str], Path]] = []

@@ -167,6 +167,28 @@ def download_dir(paths: Paths, source_id: str) -> Path:
     return paths.home / "imports" / "clipper" / DOWNLOADS / source_id
 
 
+def remove_download(paths: Paths, source_id: str) -> bool:
+    """Remove a linked video's download folder (retries; a failure is logged); True when it is gone."""
+    from ns_studio.clipper import download_cleanup
+
+    log = NsLogger("dashboard", paths.logs, echo=False)
+    return download_cleanup.remove_folder(download_dir(paths, source_id), log=log)
+
+
+def sweep_downloads(paths: Paths, live_source_ids: Collection[str], log: NsLogger | None = None) -> int:
+    """At start: remove `_downloads` folders that no queued or running job owns and nothing wrote to."""
+    from ns_studio.clipper import download_cleanup
+
+    log = log or NsLogger("dashboard", paths.logs, echo=False)
+    gone = download_cleanup.sweep_stale_downloads(
+        download_cleanup.downloads_root(paths), live_source_ids, log=log
+    )
+    if gone:
+        names = [p.name for p in gone]
+        log.info("downloads_swept", f"removed {len(names)} leftover download folder(s)", folders=names)
+    return len(gone)
+
+
 def download_source(
     paths: Paths,
     url: str,

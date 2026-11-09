@@ -32,6 +32,7 @@ from ns_common.atomic import write_text_atomic
 from ns_common.errors import NsError
 from ns_common.paths import Paths
 from ns_supervisor import pwsh, updater_copy
+from ns_supervisor.childenv import child_env
 from ns_supervisor.procs import UNDER_ENGINE_ENV
 
 CREATE_NEW_PROCESS_GROUP = 0x00000200
@@ -228,6 +229,7 @@ def spawn_detached(
         "stdout": subprocess.DEVNULL,
         "stderr": subprocess.DEVNULL,
         "close_fds": True,
+        "env": child_env(),  # D-3: the update worker never inherits NS_DASHBOARD_NO_HOST
     }
     try:
         return int(popen(argv, creationflags=DETACH_FLAGS | CREATE_BREAKAWAY_FROM_JOB, **common).pid)

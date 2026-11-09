@@ -8,6 +8,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+import yaml
 
 from ns_supervisor import pwsh
 
@@ -75,24 +76,26 @@ def test_repo_settings_describe_the_tag_to_pin_loop():
         assert needle in text, needle
 
 
-def test_the_test_job_has_a_forty_minute_cap_in_ci_and_release():
+def test_the_test_shards_have_a_cap_well_under_the_old_forty_minutes_in_ci_and_release():
+    # the single test job (40 minutes, about 28 used) became four shards of about 8 minutes of tests (H-3)
     for rel in (".github/workflows/ci.yml", ".github/workflows/release.yml"):
-        wf = read(rel)
-        job = wf[wf.index("\n  test:") :]
-        head = job[: job.index("steps:")]
-        assert "timeout-minutes: 40" in head, rel
+        jobs = yaml.safe_load(read(rel))["jobs"]
+        assert 15 <= jobs["test-shard"]["timeout-minutes"] < 40, rel
+        assert jobs["test"]["timeout-minutes"] <= 20, rel
 
 
 def test_the_0_1_5_to_0_1_1_changelog_entries_are_in_place():
     version = read("VERSION").strip()
-    assert version == "0.1.12"
+    assert version == "0.1.13"
     text = read("CHANGELOG.md")
+    assert re.search(r"^## \[0\.1\.13\] - 2026-11-09\s*$", text, re.MULTILINE)
+    thirteen = re.search(r"(?ms)^## \[0\.1\.13\][^\r\n]*\r?\n(?P<body>.*?)(?=^## \[|\Z)", text)
+    assert thirteen is not None
+    words = ("start_script_job", "fake_footage", "NS-W115", "opencode.json", "NS-E327", "schedule_mode",
+             "studio dashboard")
+    for word in words:
+        assert word in thirteen.group("body"), word
     assert re.search(r"^## \[0\.1\.12\] - 2026-11-09\s*$", text, re.MULTILINE)
-    twelve = re.search(r"(?ms)^## \[0\.1\.12\][^\r\n]*\r?\n(?P<body>.*?)(?=^## \[|\Z)", text)
-    assert twelve is not None
-    for word in ('fake_voice', 'Library > Formats', 'NS-W325', 'NS-E302', 'install_state.json', 'nvidia-smi'):
-        assert word in twelve.group("body"), word
-    assert re.search(r"^## \[0\.1\.11\] - 2026-11-05\s*$", text, re.MULTILINE)
     ten = re.search(r"(?ms)^## \[0\.1\.10\][^\r\n]*\r?\n(?P<body>.*?)(?=^## \[|\Z)", text)
     assert ten is not None
     for word in ("tool calls", "accepted the key", "Hide", "full video", "NS-W406", "NS-W405"):
@@ -127,7 +130,7 @@ def test_the_0_1_5_to_0_1_1_changelog_entries_are_in_place():
     assert re.search(r"^## \[0\.1\.3\] - 2026-11-03\s*$", text, re.MULTILINE)
     assert re.search(r"^## \[0\.1\.2\] - 2026-11-03\s*$", text, re.MULTILINE)
     assert re.search(r"^## \[0\.1\.1\] - 2026-11-03\s*$", text, re.MULTILINE)
-    unreleased = text[text.index("## [Unreleased]") : text.index("## [0.1.12]")]
+    unreleased = text[text.index("## [Unreleased]") : text.index("## [0.1.13]")]
     assert unreleased.startswith("## [Unreleased]")  # entries may accumulate here between releases
     first_run = re.search(r"(?ms)^## \[0\.1\.3\][^\r\n]*\r?\n(?P<body>.*?)(?=^## \[|\Z)", text)
     assert first_run is not None
@@ -151,7 +154,7 @@ def test_the_handoff_says_nothing_is_in_flight_and_points_at_the_first_partner_r
     assert "## In flight\n- None." in text
     assert "feat/release-0.1.0" not in text.split("## Next steps")[1]  # the old release-prep step is done
     steps = text.split("## Next steps for a fresh orchestrator")[1]
-    for needle in ("git tag v0.1.12", "Verified on the partner PC", "Nightshift-Setup-0.1.12.zip"):
+    for needle in ("git tag v0.1.13", "Verified on the partner PC", "Nightshift-Setup-0.1.13.zip"):
         assert needle in steps, needle
     merged = text.split("## Merged on main")[1].split("## UI direction")[0]
     for pr in ("#48", "#51", "feat/release-0.1.1-pretag"):

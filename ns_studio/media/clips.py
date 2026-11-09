@@ -33,6 +33,26 @@ OTHER_CHANNEL_DAYS = 30
 DARK_MOODS = frozenset({"intimate", "horror", "eerie", "creepy", "dread", "haunting"})
 FACE_WORDS = frozenset({"person", "people", "portrait", "face", "faces", "selfie"})
 _API_ERRORS = {"NS-E501", "NS-E502", "NS-E503"}
+# Titles and tags that mark stock footage with a burnt-in mark (spec 7.4 bullet 6); a word match on either.
+WATERMARK_WORDS = frozenset({"watermark", "watermarked", "watermarks", "logo", "logos"})
+WATERMARK_PHRASES = ("text overlay", "text overlays", "overlay text")
+# Words that carry no picture when a multi-word keyword is split up to widen a dry search.
+_FILLER_WORDS = frozenset({"the", "and", "with", "from", "into", "over", "under", "for", "that", "this"})
+# Moods that read the same on screen: tried (as search words) when the beat's own keywords ran dry.
+MOOD_ALTERNATES: dict[str, tuple[str, ...]] = {
+    "eerie": ("creepy", "fog", "dark"),
+    "creepy": ("eerie", "dark", "shadow"),
+    "horror": ("dark", "creepy", "night"),
+    "dread": ("dark", "storm", "night"),
+    "haunting": ("eerie", "fog", "empty"),
+    "intimate": ("candle", "quiet", "window"),
+    "calm": ("nature", "water", "sky"),
+    "tense": ("dark", "night", "storm"),
+    "sad": ("rain", "window", "empty"),
+    "lonely": ("empty", "night", "window"),
+}
+
+LemmaFn = Callable[[str], list[str]]
 
 
 def utcnow() -> datetime:
@@ -47,18 +67,51 @@ def _singular(w: str) -> str:
     return w
 
 
-def normalize_keyword(kw: str) -> str:
-    """Lowercase, trim, collapse whitespace and crudely singularize ("windows" -> "window")."""
+def make_lemmatizer(paths: Paths) -> LemmaFn | None:
+    """A phrase lemmatizer over the spaCy pipeline the policy NER already loads, or None without spaCy.
+
+    The returned function maps a lowercase phrase to its lemmas ("running mice" -> ["run", "mouse"]); an empty
+    list tells the caller to use the trailing-s rule instead.
+    """
+    from ns_studio.policy.text_checks import _spacy_nlp
+
+    nlp = _spacy_nlp(paths)
+    if nlp is None:
+        return None
+
+    def lemmatize(phrase: str) -> list[str]:
+        out: list[str] = []
+        for tok in nlp(phrase):
+            lemma = re.sub(r"[^a-z0-9]+", "", str(tok.lemma_).lower())
+            if lemma:
+                out.append(lemma)
+        return out
+
+    return lemmatize
+
+
+def normalize_keyword(kw: str, lemma: LemmaFn | None = None) -> str:
+    """Lowercase, trim, collapse whitespace and lemmatize ("mice" -> "mouse", "windows" -> "window").
+
+    `lemma` is the spaCy lemmatizer (`make_lemmatizer`); without it, or when it gives nothing usable for the
+    phrase, the old trailing-s rule applies.
+    """
     words = re.sub(r"[^a-z0-9 ]+", " ", kw.lower()).split()
-    out = [_singular(w) for w in words]
-    return " ".join(out)
+    if lemma is not None and words:
+        try:
+            lemmas = lemma(" ".join(words))
+        except Exception:  # a broken pipeline must not stop a video: fall back to the plain rule
+            lemmas = []
+        if len(lemmas) == len(words):
+            return " ".join(lemmas)
+    return " ".join(_singular(w) for w in words)
 
 
-def dedupe_keywords(keywords: Sequence[str]) -> list[str]:
+def dedupe_keywords(keywords: Sequence[str], lemma: LemmaFn | None = None) -> list[str]:
     """Normalized keywords, first occurrence order, duplicates removed."""
     seen: dict[str, None] = {}
     for k in keywords:
-        n = normalize_keyword(k)
+        n = normalize_keyword(k, lemma)
         if n:
             seen.setdefault(n, None)
     return list(seen)
@@ -178,11 +231,17 @@ class Searcher:
     """Search all sources with a per-job memo: one call per (source, orientation, keyword)."""
 
     def __init__(
-        self, sources: Sequence[ClipSource], *, per_page: int = 80, log: NsLogger | None = None
+        self,
+        sources: Sequence[ClipSource],
+        *,
+        per_page: int = 80,
+        log: NsLogger | None = None,
+        lemma: LemmaFn | None = None,
     ) -> None:
         self.sources = list(sources)
         self.per_page = per_page
         self.log = log
+        self.lemma = lemma  # spaCy lemmatizer for keyword dedupe; None = the trailing-s rule
         self._memo: dict[tuple[str, str, str], list[ClipCandidate]] = {}
         self.errors: list[NsError] = []
 
@@ -225,6 +284,29 @@ def has_face_hint(c: ClipCandidate) -> bool:
     return bool(words & FACE_WORDS)
 
 
+def has_watermark_hint(c: ClipCandidate) -> bool:
+    """True when the title or tags say the footage carries a watermark, a logo or overlaid text (spec 7.4)."""
+    text = " ".join([*c.tags, c.title]).lower().replace(",", " ")
+    return bool(set(text.split()) & WATERMARK_WORDS) or any(p in text for p in WATERMARK_PHRASES)
+
+
+def expansion_keywords(
+    keywords: Sequence[str], mood: str, extra: Sequence[str], lemma: LemmaFn | None = None
+) -> list[str]:
+    """More search words for a beat whose own keywords ran dry (spec 7.4: widen before reusing footage).
+
+    Order: the single words of the beat's multi-word keywords, then `extra` (other beats of the job and the
+    channel's seed keywords), then the moods that read alike. Words the beat already searched are left out.
+    """
+    own = set(dedupe_keywords(keywords, lemma))
+    words = [
+        w for k in keywords for w in re.sub(r"[^a-z0-9 ]+", " ", k.lower()).split()
+        if len(k.split()) > 1 and len(w) >= 4 and w not in _FILLER_WORDS
+    ]
+    alternates = MOOD_ALTERNATES.get(mood.lower(), ()) if mood else ()
+    return [k for k in dedupe_keywords([*words, *extra, *alternates], lemma) if k not in own]
+
+
 def pick_for_slots(
     pool: Sequence[ClipCandidate],
     slots: Sequence[ShotSlot],
@@ -236,8 +318,10 @@ def pick_for_slots(
 ) -> list[ClipCandidate] | None:
     """One distinct candidate per slot, or None when the pool cannot fill them all.
 
-    Order of preference: >= 1080p, wanted orientation, pool order (keyword priority). A clip must outlast its
-    slot by 1 s; if that leaves a slot empty the margin is dropped to 0.
+    Order of preference: >= 1080p, wanted orientation, pool order (keyword priority). Footage with a
+    watermark, logo or text overlay in its title or tags is never picked. A clip should outlast its slot by
+    1 s; a slot no such clip can fill takes the best clip that covers it with no margin, and the other slots
+    keep their margin.
     """
     ranked = sorted(
         enumerate(pool),
@@ -247,10 +331,11 @@ def pick_for_slots(
             ic[0],
         ),
     )
-    for margin in (1.0, 0.0):
-        taken: set[tuple[str, str]] = set()
-        chosen: list[ClipCandidate] = []
-        for slot in slots:
+    taken: set[tuple[str, str]] = set()
+    chosen: list[ClipCandidate] = []
+    for slot in slots:
+        hit: ClipCandidate | None = None
+        for margin in (1.0, 0.0):
             hit = next(
                 (
                     c
@@ -258,16 +343,17 @@ def pick_for_slots(
                     if (c.source, c.id) not in used | blocked | taken
                     and c.duration >= slot.length + margin
                     and not (dark and has_face_hint(c))
+                    and not has_watermark_hint(c)
                 ),
                 None,
             )
-            if hit is None:
+            if hit is not None:
                 break
-            taken.add((hit.source, hit.id))
-            chosen.append(hit)
-        else:
-            return chosen
-    return None
+        if hit is None:
+            return None
+        taken.add((hit.source, hit.id))
+        chosen.append(hit)
+    return chosen
 
 
 def select_for_beat(
@@ -280,18 +366,26 @@ def select_for_beat(
     blocked: set[tuple[str, str]],
     wanted: Orientation = "portrait",
     allow_other: bool = True,
+    extra_keywords: Sequence[str] = (),
+    relaxed: set[tuple[str, str]] | None = None,
 ) -> list[tuple[ClipCandidate, str]]:
     """Fill a beat's slots; widen the search in steps and finally fall back to the mood (spec §7.4).
 
-    Steps: keywords in the wanted orientation, then the other orientation, then the mood word in both.
-    Raises NsError NS-E402 when nothing suffices, or the first API error when every source failed.
+    Steps: keywords in the wanted orientation, then the other orientation, then the mood word in both, then
+    more words (the beat's keyword parts, `extra_keywords`, moods that read alike) in both. Only when all of
+    that finds nothing fresh are the reuse windows dropped (NS-W405); the clips picked that way are added to
+    `relaxed` so the final gate can tell them from a violation. Raises NsError NS-E402 when nothing suffices,
+    or the first API error when every source failed.
     """
     other: Orientation = "landscape" if wanted == "portrait" else "portrait"
     dark = mood.lower() in DARK_MOODS
-    kws = dedupe_keywords(keywords)
-    mood_kws = dedupe_keywords([mood]) if mood else []
+    lemma = searcher.lemma
+    kws = dedupe_keywords(keywords, lemma)
+    mood_kws = dedupe_keywords([mood], lemma) if mood else []
+    more_kws = [k for k in expansion_keywords(keywords, mood, extra_keywords, lemma) if k not in mood_kws]
     steps: list[tuple[Orientation, list[str]]] = [
-        (wanted, kws), (other, kws), (wanted, mood_kws), (other, mood_kws)
+        (wanted, kws), (other, kws), (wanted, mood_kws), (other, mood_kws), (wanted, more_kws),
+        (other, more_kws),
     ]
     if not allow_other:  # landscape edits never use portrait clips
         steps = [s for s in steps if s[0] == wanted]
@@ -315,21 +409,25 @@ def select_for_beat(
         # Every candidate was ruled out by the reuse rules (14 days on this channel, 30 across channels) or a
         # regeneration's previous picks: repeat footage with a warning rather than fail the whole video after
         # the writing and the voice (the first dev-mode nightly run died here: NS-E402 "24 candidates for 2
-        # slots"). Clips are still never repeated inside this video (`used`).
+        # slots"). Clips are still never repeated inside this video (`used`) unless even that cannot be met.
         candidates = [c for c, _k in pool]
-        relaxed = pick_for_slots(candidates, slots, used=used, blocked=set(), dark=dark, wanted=wanted)
+        relaxed_picks = pick_for_slots(candidates, slots, used=used, blocked=set(), dark=dark, wanted=wanted)
         how = "earlier footage is reused"
-        if relaxed is None:
+        if relaxed_picks is None:
             # the pool is smaller than the video (a master plus its Shorts on a niche with few clips): a clip
             # may appear twice in the video rather than lose it
-            relaxed = pick_for_slots(candidates, slots, used=set(), blocked=set(), dark=dark, wanted=wanted)
+            relaxed_picks = pick_for_slots(
+                candidates, slots, used=set(), blocked=set(), dark=dark, wanted=wanted
+            )
             how = "footage from this video is repeated"
-        if relaxed is not None:
+        if relaxed_picks is not None:
             if searcher.log:
                 searcher.log.warn("footage_reused", code="NS-W405", keywords=list(kws), mood=mood,
                                   msg=f"no fresh stock clip for this beat; {how}")
+            if relaxed is not None:
+                relaxed.update((c.source, c.id) for c in relaxed_picks)
             kw_of = {(c.source, c.id): k for c, k in pool}
-            return [(c, kw_of[(c.source, c.id)]) for c in relaxed]
+            return [(c, kw_of[(c.source, c.id)]) for c in relaxed_picks]
     raise NsError("NS-E402", f"keywords {kws} mood {mood!r}: {len(pool)} candidates for {len(slots)} slots")
 
 
@@ -344,8 +442,13 @@ def assign_clips(
     wanted: Orientation = "portrait",
     used: set[tuple[str, str]] | None = None,
     allow_other: bool = True,
+    extra_keywords: Sequence[str] = (),
 ) -> list[Shot]:
-    """Choose, download and time-place one clip per slot; clips are never repeated within the video."""
+    """Choose, download and time-place one clip per slot; clips are never repeated within the video.
+
+    `extra_keywords` (the channel's seed keywords) join the other beats' keywords as search words for a beat
+    whose own pool runs dry. A shot picked by the NS-W405 relaxation carries `relaxed=True`.
+    """
     rng = random.Random(seed)
     used = used if used is not None else set()
     shots: list[Shot] = []
@@ -353,9 +456,12 @@ def assign_clips(
         beat_slots = [s for s in slots if s.beat == bi]
         if not beat_slots:
             continue
+        elsewhere = [k for j, b in enumerate(beats) if j != bi for k in b["keywords"]]
+        relaxed: set[tuple[str, str]] = set()
         picks = select_for_beat(
             searcher, beat["keywords"], str(beat.get("mood", "")), beat_slots,
             used=used, blocked=blocked, wanted=wanted, allow_other=allow_other,
+            extra_keywords=[*elsewhere, *extra_keywords], relaxed=relaxed,
         )
         for slot, (cand, kw) in zip(beat_slots, picks, strict=True):
             used.add((cand.source, cand.id))
@@ -363,7 +469,7 @@ def assign_clips(
             ss = round(rng.uniform(0.0, max(0.0, cand.duration - slot.length - 0.2)), 2)
             shots.append(
                 Shot(bi, slot.start, slot.end, cand.source, cand.id, str(path), ss, cand.width, cand.height,
-                     cand.page_url, cand.license, kw)
+                     cand.page_url, cand.license, kw, (cand.source, cand.id) in relaxed)
             )
     return shots
 
@@ -397,7 +503,7 @@ class ClipsStage:
         treatment = visual_treatment(ctx.combo.visual_treatment)
         cache = ClipCache(ctx.db, ctx.paths, ctx.services.clip_sources, log=ctx.log)
         cache.purge_expired()
-        searcher = Searcher(ctx.services.clip_sources, log=ctx.log)
+        searcher = Searcher(ctx.services.clip_sources, log=ctx.log, lemma=make_lemmatizer(ctx.paths))
         blocked = blocked_for_job(ctx, ("clips/shots.json",))
         out: dict[str, Any] = {}
         for p in parts:
@@ -410,7 +516,8 @@ class ClipsStage:
             slots = plan_slots(spans, treatment.cut_range_s)
             seed = clip_seed(ctx, f"s{n}")
             shots = assign_clips(
-                beats=beats, slots=slots, searcher=searcher, cache=cache, blocked=blocked, seed=seed
+                beats=beats, slots=slots, searcher=searcher, cache=cache, blocked=blocked, seed=seed,
+                extra_keywords=ctx.channel.seed_keywords,
             )
             out[f"s{n}"] = {
                 "total_s": total_s,

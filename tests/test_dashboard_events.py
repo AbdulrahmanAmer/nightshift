@@ -51,14 +51,26 @@ def test_iter_sse_initial_status_event_then_status_and_limit():
     assert hub.subscriber_count == 0
 
 
-def test_iter_sse_update_and_run_events_only_refresh_status():
+def test_iter_sse_passes_update_and_run_events_through_with_their_kind():
+    """F-D2: the browser gets `update` and `run` frames as their own kind, each followed by a fresh status."""
     hub = EventHub()
     sub = hub.subscribe()
-    hub.publish("update", {"state": "ready"})
+    hub.publish("update", {"update_available": True, "latest": "0.2.0", "current": "0.1.0"})
     hub.publish("run", {"event": "finished"})
-    frames = list(iter_sse(sub, lambda: {"state": "idle"}, heartbeat_s=0.01, limit=4))
-    kinds = [json.loads(f.split("data: ", 1)[1])["kind"] for f in frames]
-    assert kinds == ["status"] * 4
+    frames = list(iter_sse(sub, lambda: {"state": "idle"}, heartbeat_s=0.01, limit=5))
+    decoded = [json.loads(f.split("data: ", 1)[1]) for f in frames]
+    assert [d["kind"] for d in decoded] == ["status", "update", "status", "run", "status"]
+    assert decoded[1]["payload"] == {"update_available": True, "latest": "0.2.0", "current": "0.1.0"}
+    assert decoded[3]["payload"] == {"event": "finished"}
+
+
+def test_iter_sse_still_turns_service_and_unknown_events_into_a_status_refresh():
+    hub = EventHub()
+    sub = hub.subscribe()
+    hub.publish("service", {"event": "ready"})
+    hub.publish("something_new", {"x": 1})
+    frames = list(iter_sse(sub, lambda: {"state": "idle"}, heartbeat_s=0.01, limit=3))
+    assert [json.loads(f.split("data: ", 1)[1])["kind"] for f in frames] == ["status"] * 3
 
 
 def test_iter_sse_heartbeat_when_idle():

@@ -19,8 +19,9 @@ from pathlib import Path
 from ns_common.errors import NsError
 from ns_common.paths import Paths
 from ns_supervisor import control, presence, pwsh
+from ns_supervisor.childenv import LAUNCHER_ONLY_ENV, scrubbed
 from ns_supervisor.client import SupervisorClient, ensure_running, spawn_supervisor
-from ns_supervisor.procs import LAUNCHER_ONLY_ENV, UNDER_ENGINE_ENV, scrubbed
+from ns_supervisor.procs import UNDER_ENGINE_ENV
 
 CREATE_NEW_PROCESS_GROUP = 0x00000200
 CREATE_NO_WINDOW = 0x08000000

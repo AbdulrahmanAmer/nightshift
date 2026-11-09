@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import threading
 import time
 from collections.abc import Callable, Iterator
 from datetime import datetime, timedelta
@@ -14,7 +15,7 @@ import ns_common
 from ns_common.config import load_install_state, load_runtime
 from ns_common.errors import NsError
 from ns_common.models import GpuStatus
-from ns_dashboard.errors import ApiError
+from ns_dashboard.errors import ApiError, SupervisorUnavailable
 from ns_dashboard.events import iter_sse
 from ns_dashboard.state import AppState, load_dashboard_settings, schedule_is_registered, status_schedule_mode
 from ns_dashboard.svc_channels import ChannelsService
@@ -51,6 +52,18 @@ def disk_info(home: Path) -> dict[str, Any]:
     }
 
 
+#: Seconds between the shutdown reply and the supervisor call, so the reply is written first.
+SHUTDOWN_DELAY_S = 0.5
+
+
+def run_later(delay_s: float, fn: Callable[[], None]) -> None:
+    """Run `fn` on a daemon timer thread after `delay_s`; the caller never waits for it."""
+    timer = threading.Timer(delay_s, fn)
+    timer.daemon = True
+    timer.name = "ns-dashboard-shutdown"
+    timer.start()
+
+
 class EngineService:
     """Composes supervisor state, dashboard jobs and schedule into the objects the UI shows."""
 
@@ -63,6 +76,8 @@ class EngineService:
         clock: Callable[[], datetime] = datetime.now,
         monotonic: Callable[[], float] = time.monotonic,
         heartbeat_s: float = 2.0,
+        shutdown_delay_s: float = SHUTDOWN_DELAY_S,
+        schedule: Callable[[float, Callable[[], None]], None] | None = None,
     ) -> None:
         self.s = state
         self.channels = channels
@@ -70,6 +85,8 @@ class EngineService:
         self.clock = clock
         self.monotonic = monotonic
         self.heartbeat_s = heartbeat_s
+        self.shutdown_delay_s = shutdown_delay_s
+        self.schedule = schedule or run_later
 
     # --- schedule ---
     def next_run(self) -> datetime | None:
@@ -267,16 +284,38 @@ class EngineService:
         return result
 
     def shutdown(self, grace_s: int | None) -> dict[str, Any]:
-        """Quit Nightshift: cancel the running job at its next stage boundary, then stop the engine."""
+        """Quit Nightshift: cancel the running job at its next stage boundary, answer, then stop the engine.
+
+        The supervisor stops this dashboard as part of its own shutdown, so stopping the engine inside the
+        request killed the connection before the reply (QA D-7). The route therefore logs, sets draining,
+        cancels the job and builds the reply first; `link.shutdown` runs `shutdown_delay_s` later on a
+        background timer, after the reply has been written. A failure of that call is logged, never raised.
+        """
         grace = int(grace_s) if grace_s is not None else 30
         if not 0 <= grace <= 300:
             raise ApiError(422, "invalid_options", "'grace_s' must be between 0 and 300.")
-        self.s.link.shutdown(grace)
+        if self.s.link.status() is None:
+            raise SupervisorUnavailable()  # nothing to stop: keep refusing with 503 `engine_offline`
         self.s.draining = True
         cancelled = self.s.worker.cancel_running()
         self.s.log.info("engine_shutdown", grace_s=grace, cancelled_job=cancelled)
         self.s.hub.publish("job", {"draining": True})
-        return {"ok": True, "cancelled_job": cancelled}
+        reply = {"ok": True, "cancelled_job": cancelled}
+        self.schedule(self.shutdown_delay_s, lambda: self._stop_engine(grace))
+        return reply
+
+    def _stop_engine(self, grace: int) -> None:
+        """The deferred half of `shutdown`: ask the supervisor to stop. Never raises."""
+        try:
+            self.s.link.shutdown(grace)
+        except SupervisorUnavailable as e:
+            # The supervisor can close the connection while it stops its children, dashboard included.
+            self.s.log.warn("engine_shutdown_unanswered", str(e), grace_s=grace)
+        except ApiError as e:
+            self.s.draining = False  # the engine refused: keep accepting jobs
+            self.s.log.error("engine_shutdown_failed", e.message, code=e.code, grace_s=grace)
+        except Exception as e:  # noqa: BLE001 - a background call must not die silently
+            self.s.log.error("engine_shutdown_failed", f"{type(e).__name__}: {e}", grace_s=grace)
 
     def release_gpu(self, owner: Any) -> dict[str, Any]:
         """Free the GPU from `owner` (shown as "GPU held by ..." when a job died without giving it back).
