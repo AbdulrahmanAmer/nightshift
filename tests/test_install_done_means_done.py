@@ -27,7 +27,7 @@ from installer.stage2.base import Step
 from installer.stage2.simulate import PRODUCT_DIST_INFO, SITE_PACKAGES, FakeRunner
 from installer.stage2.state import INSTALL_KEY, load_flags, reconcile_flag_file, save_flags
 from installer.stage2.steps import default_steps
-from installer.stage2.steps.s04_venvs import PROBE_CODE, S04Venvs
+from installer.stage2.steps.s04_venvs import PROBE_CODE, VENV_PROBES, S04Venvs
 from installer.stage2.steps.s08_smoke import S08Smoke
 from installer.stage2.testing import example_answers, make_test_context
 from installer.stage2.wizard import Wizard, main
@@ -255,6 +255,26 @@ def test_the_probe_runs_isolated_and_away_from_the_program_folder(tmp_path: Path
     assert "import:ns_studio" in studio and "find:spacy" in studio
     assert f"find:{ctx.manifest.spacy_model}" in studio
     assert "import:ns_dashboard" in runner.called("supervisor import check")[0].argv
+    # the module `ns` itself runs: a venv without typer, pydantic or psutil is not "the product loads"
+    assert "import:ns_supervisor.cli" in studio
+    assert "import:ns_supervisor.cli" in runner.called("supervisor import check")[0].argv
+
+
+def test_the_probe_fails_when_what_the_ns_command_needs_is_missing(monkeypatch: pytest.MonkeyPatch, capsys):
+    """A uv install killed after the editable install was linked but before typer landed: the top-level
+    packages import, ``ns`` does not. The probe asks for the module `ns` runs."""
+    for venv in ("studio", "supervisor"):
+        assert "import:ns_supervisor.cli" in VENV_PROBES[venv], venv
+    code = compile(PROBE_CODE, "<probe>", "exec")
+    monkeypatch.setattr(sys, "argv", ["-c", "import:ns_common", "import:ns_supervisor.cli"])
+    exec(code, {})  # typer, pydantic and the rest are in this interpreter: no exit
+
+    monkeypatch.delitem(sys.modules, "ns_supervisor.cli")  # imported afresh ...
+    monkeypatch.setitem(sys.modules, "typer", None)  # ... in an environment where typer never landed
+    with pytest.raises(SystemExit) as ei:
+        exec(code, {})
+    assert ei.value.code == 1
+    assert "ns_supervisor.cli" in capsys.readouterr().err
 
 
 def test_the_probe_names_what_cannot_be_loaded(monkeypatch: pytest.MonkeyPatch, capsys):
@@ -441,19 +461,38 @@ def test_a_killed_s04_after_the_real_uninstall_script_is_redone_and_smoke_tested
 
 
 def test_an_uninstall_that_left_the_flags_does_not_make_a_clean_reinstall_skip_s04_or_s08(
-    tmp_path: Path, ticking_clock
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ticking_clock
 ):
+    """``stage_start`` is logged for every pending step, so it cannot tell a skipped step from one that ran.
+    The effects can: the venvs are built and probed again, and ``ns verify`` ran after them."""
     answers = write_answers(tmp_path)
     home = tmp_path / "home"
     assert main(args(tmp_path, answers)) == 0
     uninstall_like_0_1_12(home)
     survived = load_flags(Paths(home))
     assert survived["venvs_installed"] is True and survived["smoke"] == "passed"
-    before = len(started_steps(home))
+    (home / "logs" / "verify-report.json").unlink(missing_ok=True)  # the earlier install's smoke report
+    assert not (home / "venvs").exists()
+
+    tags: list[str] = []
+
+    class RecordingRunner(FakeRunner):
+        def run(self, argv, **kw):
+            tags.append(str(kw.get("tag", "")))
+            return super().run(argv, **kw)
+
+    monkeypatch.setattr("installer.stage2.wizard.FakeRunner", RecordingRunner)
     assert main(args(tmp_path, answers)) == 0
-    later = started_steps(home)[before:]
-    assert "s04_venvs" in later and "s08_smoke" in later
+
+    for tag in ("uv pip install studio app", "uv pip install supervisor app"):
+        assert tag in tags, f"s04 did not rebuild the environments ({tag} never ran)"
+    asked_after_build = tags[tags.index("uv pip install supervisor app") :]
+    assert "studio import check" in asked_after_build and "supervisor import check" in asked_after_build
+    assert "ns verify --quick" in asked_after_build, "the smoke test did not run after the venvs were redone"
+    assert asked_after_build.index("supervisor import check") < asked_after_build.index("ns verify --quick")
+    assert (home / "logs" / "verify-report.json").is_file()  # written by the fake `ns verify` that just ran
     assert venv_loads_product(home, "studio") and venv_loads_product(home, "supervisor")
+    assert load_flags(Paths(home))["smoke"] == "passed"
 
 
 # ---------------------------------------------------------------------------------------------- the audit
