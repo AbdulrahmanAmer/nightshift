@@ -11,6 +11,7 @@ from pathlib import Path
 import numpy as np
 
 from ns_common import ffmpeg
+from ns_common.errors import describe
 from ns_common.models import PolicyAdvice, PolicyCheck
 from ns_studio.context import JobContext
 from ns_studio.policy import phash
@@ -248,8 +249,17 @@ class ClipReuse(Check):
                     )
         if problems:
             return fail("; ".join(sorted(problems)))
+        # a relaxed pick always tells the owner, even when no usage row matches it (a regeneration relaxes
+        # against the earlier attempt's picks, which have no row yet)
+        for source, clip_id, item, relaxed in uses:
+            if relaxed and not any(w.startswith(f"{source}/{clip_id} ") for w in warnings):
+                warnings.add(f"{source}/{clip_id} reused for {item}")
         if warnings:
-            detail = "NS-W405 warning, relaxed pick: " + "; ".join(sorted(warnings))
+            known = describe("NS-W405")
+            detail = (
+                f"{known.message} {known.hint} (NS-W405 warning, relaxed pick: "
+                + "; ".join(sorted(warnings)) + ")"
+            )
             ctx.log.warn("clip_reuse_relaxed", code="NS-W405", job_id=ctx.job_id, detail=detail)
             return ok(f"{len(uses)} clip uses checked; {detail}")
         return ok(f"{len(uses)} clip uses checked")
