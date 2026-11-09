@@ -90,7 +90,7 @@ def test_the_tiny_duration_numbers_follow_from_one_target():
     assert (t.master_minutes, t.master_chapters, t.mark) == (4, 5, "tiny_story")
     assert t.master_floor_s == target_s * t.master_floor_share == 120.0
     assert t.master_max_s == 2 * target_s == 480.0
-    assert t.master_qc_s == (t.master_floor_s - 10.0, t.master_max_s + 30.0) == (110.0, 510.0)
+    assert t.master_qc_s == (t.master_floor_s - 10.0, 900.0) == (110.0, 900.0)
     assert t.short_band == (0.35, 1.6)
 
 
@@ -243,7 +243,8 @@ def test_the_same_master_with_the_switch_off_is_expanded_and_then_stops_at_the_n
     ctx = duration_ctx(tmp_home, tiny=False, chapters=[120, 120, 120, 120, 120])
     with pytest.raises(NsError) as ei:
         run_duration_check(ctx, monkeypatch)
-    assert ei.value.code == "NS-E305" and "floor 540 s (9:00)" in ei.value.detail
+    assert ei.value.code == "NS-E305"
+    assert ei.value.detail.endswith("after 2 expansions (floor 540 s)")  # today's text, byte for byte
     assert ctx.read_json("duration_check.json")["floor_s"] == 540.0
 
 
@@ -254,7 +255,7 @@ def test_a_tiny_master_that_writes_far_less_still_fails_with_e305(
     with pytest.raises(NsError) as ei:
         run_duration_check(ctx, monkeypatch)
     assert ei.value.code == "NS-E305"
-    assert "after 2 expansions" in ei.value.detail and "floor 120 s (2:00)" in ei.value.detail
+    assert "after 2 expansions" in ei.value.detail and "(floor 120 s, 2:00)" in ei.value.detail
 
 
 def test_the_e305_text_does_not_promise_nine_minutes():
@@ -270,7 +271,7 @@ def test_an_owners_own_script_keeps_the_normal_floor_on_a_tiny_install(
     with pytest.raises(NsError) as ei:
         run_duration_check(ctx, monkeypatch)
     assert ei.value.code == "NS-E305" and "script too short" in ei.value.detail
-    assert "floor 540 s (9:00)" in ei.value.detail
+    assert ei.value.detail.endswith("the floor is 540 s: script too short")
 
 
 # ============================================================================= QC's duration window
@@ -278,13 +279,31 @@ def test_a_tiny_masters_qc_window_is_the_profiles_and_the_normal_one_is_todays()
     from ns_studio.media.qc import duration_check
 
     sp = profiles()
-    for d, ok in ((110.0, True), (300.0, True), (510.0, True), (109.0, False), (511.0, False)):
+    for d, ok in ((110.0, True), (300.0, True), (510.0, True), (109.0, False), (901.0, False)):
         assert duration_check(d, "long", None, profile=sp.TINY).passed is ok, d
-    assert duration_check(110.0, "long", None, profile=sp.TINY).limit == "110-510 s"
+    assert duration_check(110.0, "long", None, profile=sp.TINY).limit == "110-900 s"
     for d, ok in ((510.0, True), (900.0, True), (509.0, False), (901.0, False), (300.0, False)):
         assert duration_check(d, "long", None).passed is ok, d  # no profile: today
         assert duration_check(d, "long", None, profile=sp.NORMAL).passed is ok, d
     assert duration_check(600.0, "long", None).limit == "510-900 s"
+
+
+def test_a_tiny_job_planned_on_0_1_14_and_resumed_still_passes_qc_and_the_final_gate(tmp_home: Path):
+    """A 0.1.14 tiny job was planned 9:00 in 7 chapters with a 520 s floor, so its voiced master is 520 to
+    560 s. Resumed on this version it must not fail QC's duration window (a 510 s ceiling failed all three).
+    """
+    from ns_studio.media.qc import duration_check
+    from ns_studio.policy import final_checks as fc
+
+    sp = profiles()
+    for d in (520.0, 540.0, 560.0):
+        got = duration_check(d, "long", None, profile=sp.TINY)
+        assert got.passed, (d, got.limit)
+    ctx = make_ctx(tmp_home, fmt="master_first")
+    ctx.runtime = tiny_runtime(ctx.runtime)
+    ctx.file("long").mkdir(parents=True, exist_ok=True)
+    ctx.file("long/master.mp4").write_bytes(b"x")
+    assert fc.LongRuntime(lambda p: 540.0).run(ctx).passed
 
 
 def test_a_series_parts_own_ceiling_still_wins_on_a_tiny_install():
@@ -1069,6 +1088,32 @@ def test_the_queue_items_carry_the_profile_for_the_label(tmp_home: Path):
     assert dash.outputs.detail(tiny)["profile"] == "tiny_story"
 
 
+def test_an_approved_test_output_is_not_listed_as_a_video_waiting_for_its_link(tmp_home: Path):
+    """The Results page lists approved videos with no link yet. A test output can never get one (NS-E329)."""
+    from ns_dashboard.fakes import seed_channel, seed_output
+    from tests.test_dashboard_handlers import make
+
+    dash, state = make(tmp_home)
+    seed_channel(state.db, state.paths)
+    tiny = seed_output(state.db, state.paths, kind="short", k=1, title="Tiny", status="approved")
+    real = seed_output(state.db, state.paths, kind="short", k=2, title="Real", status="approved")
+    state.db.execute("UPDATE outputs SET profile='tiny_story' WHERE output_id=?", (tiny,))
+    assert dash.settings._unmatched_uploads() == [real]
+
+
+def test_the_queue_cards_label_a_test_output_and_do_not_offer_to_finish_posting_it():
+    """The Posted card and the posting calendar say `Test output`; the card has no `Finish posting` for it."""
+    root = Path(__file__).resolve().parent.parent / "ns_dashboard"
+    src = (root / "ui" / "src" / "pages" / "Queue.tsx").read_text(encoding="utf-8")
+    card = src[src.index("function ListView") : src.index("function Review")]
+    assert "x.profile ?" in card and "Test output" in card
+    assert card.index('x.status === "approved" && x.profile') < card.index("Finish posting")
+    calendar = src[src.index("function PostingCalendar") : src.index("function RenderJobs")]
+    assert "o.profile" in calendar and "Test output" in calendar
+    built = (root / "static" / "app.js").read_text(encoding="utf-8")
+    assert built.count("Test output") >= 3  # the built bundle was rebuilt from this source
+
+
 def test_the_publish_scheduler_leaves_a_test_output_unscheduled_and_does_not_count_its_slot(tmp_home: Path):
     from ns_studio import daily, jobs
     from tests.test_cadence import NOW, _channel, _env, _finished_job
@@ -1208,4 +1253,4 @@ def test_a_tiny_master_runs_through_render_qc_and_the_outbox(tmp_home: Path, mon
     monkeypatch.setattr(M, "load_expand_chapter", lambda: lambda _ctx, _n, _words: None)  # no model here
     with pytest.raises(NsError) as ei:
         run_job(off)
-    assert ei.value.code == "NS-E305" and "floor 540 s (9:00)" in ei.value.detail
+    assert ei.value.code == "NS-E305" and "(floor 540 s)" in ei.value.detail

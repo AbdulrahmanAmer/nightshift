@@ -31,10 +31,11 @@ A tiny master is therefore asked for what such a model writes: 4 minutes in the 
 allows (5), about 110 words each (549 words at 155 wpm: 549 x (60/155 + 0.035) s of speech and pauses plus 4
 x 2.05 s of cards and cliff pauses is 240 s). It is accepted from half of it, 2:00 (120 s, `master_floor_s`;
 half the words is `master_floor_share`), up to twice it, 8:00 (480 s, `master_max_s`: five chapters at the
-top of their band would be longer, and a runaway is still a failure). QC's window is those numbers less 10 s
-at the low end (the voice differs from the estimate by a few seconds) and plus 30 s at the high end, exactly
-the margins a normal master has (8:30 against 9:00, 15:00 against 14:30): 110 to 510 s. The 1.7B's 856 words
-are 6:09, inside all of them; a tenth of that is far under every floor. A Short is still asked for the words
+top of their band would be longer, and a runaway is still a failure). QC's window starts 10 s under the floor
+(the voice differs from the estimate by a few seconds), 110 s, and ends where a normal master's does, 15:00:
+the text ceiling above already stops a runaway, and a job planned on 0.1.14 (9:00 in 7 chapters, voiced 520 to
+560 s) and resumed on this version must still pass QC. The 1.7B's 856 words are 6:09, inside all of them; a
+tenth of that is far under every floor. A Short is still asked for the words
 that fill its length bucket; the text band is 0.35 to 1.6 times them, and QC measures the rendered Short
 against the same shares of its bucket (a Short at either edge of the text band, voiced with its 12 word
 hook, lands inside the window of every bucket and pace; `tests/test_tiny_story_length.py`).
@@ -129,7 +130,7 @@ TINY = StoryProfile(
     master_floor_share=0.5,
     master_floor_s=120.0,  # half the target: 2:00
     master_max_s=480.0,  # twice the target: 8:00
-    master_qc_s=(110.0, 510.0),  # the floor less 10 s, the ceiling plus 30 s
+    master_qc_s=(110.0, 900.0),  # the floor less 10 s; the ceiling of a normal master (see the docstring)
     master_short_share=0.5,
     moments_cap=2,
     expand_divisor=4,

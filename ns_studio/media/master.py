@@ -254,16 +254,13 @@ class DurationCheckStage:
             if ctx.owner_script:  # the owner's words are never extended with model text
                 self._write(ctx, total, expansions, floor)
                 raise NsError(
-                    "NS-E305",
-                    f"{total:.0f} s of narration, floor {floor:.0f} s ({clock(floor)}): script too short",
+                    "NS-E305", f"{total:.0f} s of narration, the floor is {floor:.0f} s: script too short"
                 )
             if len(expansions) >= MAX_EXPANSIONS:
                 self._write(ctx, total, expansions, floor)
-                raise NsError(
-                    "NS-E305",
-                    f"{total:.0f} s after {len(expansions)} expansions "
-                    f"(floor {floor:.0f} s ({clock(floor)}))",
-                )
+                # A normal install says what it always said; a profile with its own floor adds the m:ss.
+                shown = f"{floor:.0f} s" if floor == FLOOR_S else f"{floor:.0f} s, {clock(floor)}"
+                raise NsError("NS-E305", f"{total:.0f} s after {len(expansions)} expansions (floor {shown})")
             lengths = {t.n: t.end - t.audio_start for t in timeline}
             shortest = min(lengths, key=lambda n: lengths[n])
             deficit_words = math.ceil((floor - total) / 60.0 * wpm)

@@ -116,11 +116,12 @@ function ListView({ items, tab, onResume, channelName }: { items: Output[]; tab:
           <li key={x.output_id} className="flex gap-4 rounded-ds-lg bg-ds-surface p-3 shadow-[var(--ds-shadow-1),0_0_0_1px_var(--ds-border-subtle)]">
             <div className={cx("relative shrink-0 overflow-hidden rounded-ds-sm bg-ds-media", x.kind === "long" ? "h-[72px] w-[128px]" : "h-[112px] w-[64px]")}><Poster o={x} className="size-full" /></div>
             <div className="flex min-w-0 flex-1 flex-col gap-1 py-1">
-              <MetaItem icon={kindIcon(x.kind)}>{kindLabel(x.kind)}</MetaItem>
+              <span className="flex flex-wrap items-center gap-2"><MetaItem icon={kindIcon(x.kind)}>{kindLabel(x.kind)}</MetaItem>{x.profile ? <Badge tone="danger" variant="solid" size="xs">Test output</Badge> : null}</span>
               <p className="line-clamp-2 text-ds-sm leading-ds-snug font-semibold">{x.title}</p>
               <p className="text-ds-2xs text-ds-muted">{channelName(x.channel)} · {fmtDay(x.created_at)}</p>
               <div className="mt-auto flex items-center gap-2 pt-1 text-ds-xs">
                 {x.status === "uploaded" && x.url ? <LinkButton href={x.url} external variant="ghost" size="sm" leadingIcon="external" className="-ml-2">Posted on YouTube</LinkButton>
+                  : x.status === "approved" && x.profile ? <span className="text-ds-text-2">Test output: it cannot be posted</span>
                   : x.status === "approved" ? <><span className="text-ds-text-2">Not posted yet</span><Button size="sm" variant="soft" className="ml-auto" onClick={() => onResume(x.output_id)}>Finish posting</Button></>
                   : <span className="text-ds-text-2">{x.reason ? `Reason: ${x.reason}` : "No reason given"}</span>}
               </div>
@@ -402,7 +403,7 @@ function PostingCalendar({ chans, ready, className, onOpen }: { chans: ChannelSu
     return {
       time: (c.publish_window || "").replace("-", " – "),
       events: mine.length
-        ? mine.map((o) => ({ id: o.output_id, icon: kindIcon(o.kind), title: o.title, time: `${kindLabel(o.kind)} · ${fmtDur(o.duration_s)}`, tag: c.display_name, menu: [{ icon: "play" as const, label: "Open in the review card", onSelect: () => onOpen(o.output_id) }, { icon: "chat" as const, label: "Ask about it", onSelect: () => ask({ page: "queue", output_id: o.output_id }, `Tell me about "${o.title}"`) }] }))
+        ? mine.map((o) => ({ id: o.output_id, icon: kindIcon(o.kind), title: o.title, time: `${kindLabel(o.kind)} · ${fmtDur(o.duration_s)}${o.profile ? " · Test output, cannot be posted" : ""}`, tag: c.display_name, menu: [{ icon: "play" as const, label: "Open in the review card", onSelect: () => onOpen(o.output_id) }, { icon: "chat" as const, label: "Ask about it", onSelect: () => ask({ page: "queue", output_id: o.output_id }, `Tell me about "${o.title}"`) }] }))
         : [{ id: "window-" + c.slug, icon: "calendar" as IconName, title: "Posting window", time: `${c.masters_per_week ?? 1} full video${(c.masters_per_week ?? 1) === 1 ? "" : "s"} a week`, tag: c.display_name, tagTone: "success" as const, menu: [{ icon: "edit" as const, label: "Change the posting window", onSelect: () => go(`#/channels?edit=${encodeURIComponent(c.slug)}`) }] }],
     };
   });

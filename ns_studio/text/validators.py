@@ -45,7 +45,7 @@ def check_master_length(
 
     The estimate counts the TTS pauses (350 ms per sentence, 700 ms per paragraph, 1.2 s before each cliff
     line) and the 1.2 s title cards, not just the words. A profile with `master_max_s` (the engine test's
-    tiny model, 8:00 against a QC ceiling of 8:30) has its own ceiling.
+    tiny model, 8:00; QC's own window is wider, `master_qc_s`) has its own ceiling.
     """
     limit = MASTER_MAX_SECONDS if profile.master_max_s is None else profile.master_max_s
     seconds = master_seconds(chapters, wpm)

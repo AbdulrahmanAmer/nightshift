@@ -257,7 +257,8 @@ puts the text stages on the thresholds such a model can meet:
 - **Where it lives.** `ns_studio/text/story_profile.py` is the one place. `NORMAL` holds the numbers every install
   has always used; `TINY` holds the scaled ones. The budgets (`ns_studio/text/budget.py`), the validators
   (`validators.py`), the stages, the series workshop, the duration check and the prompts take the profile of the
-  job (`profile_of(ctx)`, read from `runtime.json`) and read its fields; nothing else knows the profile exists.
+  job (`profile_of(ctx)`, read from `runtime.json`) and read its fields. Since H-8b so do render, QC, the final
+  gate's runtime check and the outbox (`duration_profile`, `job_mark`); the quality checks do not read it.
 - **What moves** (tiny against normal). A chapter may have 0.5 to 2 times its word budget (0.8 to 1.2). A Short is
   still asked for the words that fill its length bucket, because QC measures the rendered Short against that
   bucket, but may have 0.35 to 1.6 times them (about 0.85 to 1.15); QC takes the same shares of the bucket. A
@@ -275,11 +276,12 @@ puts the text stages on the thresholds such a model can meet:
   measured chapter 1 at 120 after the critic's rewrite). At 155 wpm a word takes 60/155 s of speech plus 0.035 s of
   pauses, a chapter break 2.05 s of title card and cliff pause: five chapters of 110 words are 549 words, 240 s.
   That is the plan; the duration check (`NS-E305`) accepts a master from half of it, 120 s; the text estimate
-  stops one over 480 s; QC's window is 110 to 510 s (the floor less 10 s, the ceiling plus the 30 s a normal
-  master has), and the final policy gate's runtime check uses the same minimum. The 1.7B's 856 words are 6:09,
+  stops one over 480 s; QC's window is 110 to 900 s (the floor less 10 s; the normal 15:00 ceiling, so that
+  a tiny job planned on 0.1.14 at 9:00 and resumed on this version still passes QC), and the final policy gate's
+  runtime check uses the same minimum. The 1.7B's 856 words are 6:09,
   inside all of them; a tenth of that is under every floor and still fails (`NS-E303`, `NS-E305`, `NS-E404`).
   A Short is judged at 0.35 to 1.6 of its length bucket by the text band and by QC alike. The `NS-E305` detail
-  names the floor in effect (`floor 120 s (2:00)`).
+  names the floor in effect (`floor 120 s, 2:00`; a normal install's text is unchanged).
 - **What does not move.** Every validator still runs and can still fail: a chapter under 0.5 times its budget, a
   grade under -2, a banned phrase, a sentence over 35 words, a repeated opening and repeated cliffs all stop the
   job with `NS-E303`, as before. The reading-grade ceiling (8) is unchanged. The policy and safety gates (the
