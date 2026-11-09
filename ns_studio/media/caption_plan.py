@@ -166,7 +166,12 @@ class AssOptions:
         avoid regions, speakers, ...) is passed on and wins over what the format says.
         """
         variant = variant_for(fmt)
-        zones = (fmt.safe_margins.top, fmt.safe_margins.bottom)
+        # a file that writes no safe_margins keeps the platform zones of its variant, as before formats
+        zones = (
+            (fmt.safe_margins.top, fmt.safe_margins.bottom)
+            if written(fmt, "safe_margins")
+            else safe_zones_for(variant)
+        )
         if fmt.layout.seam_captions and len(fmt.layout.regions) > 1:
             anchor: float | None = caption_anchor_pct(fmt)
         else:

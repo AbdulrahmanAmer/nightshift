@@ -625,6 +625,18 @@ def test_ass_options_take_the_written_values_and_the_seam() -> None:
     assert seam.anchor_y_pct is not None and seam.anchor_y_pct == pytest.approx(100 * 640 / 1920)
 
 
+def test_a_format_that_writes_no_safe_margins_keeps_the_platform_zones_of_its_variant() -> None:
+    """Review nit: an owner file without `safe_margins` got no safe zones (today: 220/320, 54/54)."""
+    raw = shipped("short_9x16")
+    del raw["safe_margins"]
+    assert AssOptions.for_format(Format.model_validate(raw)).safe_zones == (220, 320)
+    wide = shipped("long_16x9")
+    del wide["safe_margins"]
+    assert AssOptions.for_format(Format.model_validate(wide)).safe_zones == (54, 54)
+    raw["safe_margins"] = {"top": 0, "bottom": 0}  # written as none: none
+    assert AssOptions.for_format(Format.model_validate(raw)).safe_zones is None
+
+
 def test_caption_geometry_scales_with_the_canvas() -> None:
     empty = Path(__file__).parent  # a folder without fonts is not needed: the fallback font is only a name
     base = build_ass(fixed_words(), "clean_white", fonts_dir=empty, anchor_y_pct=50)
