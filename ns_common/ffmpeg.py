@@ -90,6 +90,44 @@ def graph_to_script(
     return [*args[:at], *filter_complex_args(args[at + 1], script, log=log, base=base), *args[at + 2 :]]
 
 
+#: Most stock clips (`-ss S -t T -i FILE`, about 60 characters each) one FFmpeg command takes. A render with
+#: more clips is cut into parts of at most this many; every part is its own command, and the parts are joined
+#: through a list file (`concat_list_text`). The command line is therefore the same size for 16 clips and for
+#: 1,000 (H-5): Windows refuses one over 32,767 characters (WinError 206, NS-E327).
+MAX_CLIP_INPUTS = 12
+#: Most audio files (and silences) one FFmpeg command assembles; more are assembled in parts the same way.
+#: A master has at most 2 * MAX_CHAPTERS - 1 = 13 of them, so this only bounds what a longer plan would do.
+MAX_AUDIO_INPUTS = 24
+
+
+def group_ranges(count: int, size: int) -> list[tuple[int, int]]:
+    """`[start, stop)` of consecutive groups of at most `size` items that cover `range(count)`."""
+    if size < 1:
+        raise ValueError("a group holds at least one item")
+    return [(a, min(a + size, count)) for a in range(0, count, size)]
+
+
+def concat_list_text(paths: Iterable[Path | str], durations: Iterable[float] | None = None) -> str:
+    """Body of an FFmpeg concat-demuxer list file; a quote in a path is written close-escape-reopen.
+
+    Every name is absolute: the demuxer reads a relative one against the LIST's folder, not the process's.
+    With `durations` (seconds, one per file) each file gets a `duration` line, so the demuxer places the next
+    file by the length the caller knows (frames / fps) and not by one it measured and rounded.
+    """
+    quote = chr(39)
+    escaped = quote + chr(92) + quote + quote
+    lines: list[str] = []
+    names = [Path(os.path.abspath(p)).as_posix().replace(quote, escaped) for p in paths]
+    lengths = list(durations) if durations is not None else None
+    if lengths is not None and len(lengths) != len(names):
+        raise ValueError("one duration per file")
+    for i, name in enumerate(names):
+        lines.append(f"file {quote}{name}{quote}\n")
+        if lengths is not None:
+            lines.append(f"duration {lengths[i]:.6f}\n")
+    return "".join(lines)
+
+
 def common_dir(paths: Iterable[Path | str]) -> Path | None:
     """The deepest folder holding every path (None when they are on different drives)."""
     absolute = [os.path.abspath(p) for p in paths]

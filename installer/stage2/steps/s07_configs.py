@@ -189,6 +189,7 @@ class S07Configs(Step):
             value = getattr(ans, key)
             if value:
                 ctx.store.set(key, value)
+        self._keep_the_owners_copy(ctx)
         for f in answer_files(ctx):
             if blank_secrets_in_file(f):
                 ctx.ui.say(f"Removed the API keys from {f.name} (they are in the Windows keyring now).")
@@ -207,6 +208,27 @@ class S07Configs(Step):
                 f"Your {channel.voice.mode} voice '{channel.voice.name}' is created the first time "
                 "Nightshift runs. To make it now: studio voice apply-pending."
             )
+
+    @staticmethod
+    def _keep_the_owners_copy(ctx: StepContext) -> None:
+        """A key in an answers file that the key store does not hold is stored before the file is cleared.
+
+        s01 stores the keys of the answers in use. This is the safety net for any other way of getting here
+        (review of PR 136): clearing the file would otherwise delete the owner's only copy while saying it is
+        in the keyring.
+        """
+        for f in answer_files(ctx):
+            try:
+                data = json.loads(f.read_text(encoding="utf-8-sig")) if f.is_file() else None
+            except (OSError, ValueError):
+                continue
+            if not isinstance(data, dict):
+                continue
+            for key in KEY_NAMES:
+                value = data.get(key)
+                if isinstance(value, str) and value.strip() and not ctx.store.get(key):
+                    ctx.store.set(key, value)
+                    ctx.log.info("key_stored", name=key, source=f.name)
 
     def verify(self, ctx: StepContext) -> None:
         """Configs validate; keys are in the store; no answers file keeps a key."""

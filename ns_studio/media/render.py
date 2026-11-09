@@ -7,7 +7,8 @@ grain and burned-in ASS captions. Shorts are 1080x1920, masters 1920x1080, 30 fp
 from __future__ import annotations
 
 import os
-from collections.abc import Sequence
+import shutil
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -75,15 +76,19 @@ def zoom_filter(z: ZoomSpec, w: int, h: int, fps: int, index: int) -> str | None
     return None
 
 
-def shot_chain(i: int, shot: Shot, w: int, h: int, fps: int, frames: int, z: ZoomSpec) -> str:
+def shot_chain(
+    i: int, shot: Shot, w: int, h: int, fps: int, frames: int, z: ZoomSpec, *, phase: int | None = None
+) -> str:
     """Filter chain turning input `i` into `[v<i>]`: exactly `frames` frames of w x h video.
 
     Wide clips in a vertical edit are centre-cropped to 4:5 over a blurred fill of themselves (spec §7.4);
-    everything else is scaled to cover and cropped.
+    everything else is scaled to cover and cropped. `phase` (default `i`) is the shot's place in the whole
+    video: the handheld drift of shot k is the same whether it is drawn by the one graph or by the part
+    graph of a long render, where its input number is only its place in the part.
     """
     src = f"[{i}:v]fps={fps},setpts=PTS-STARTPTS"
     tail = f"tpad=stop_mode=clone:stop_duration=2,trim=end_frame={frames},setpts=PTS-STARTPTS"
-    zoom = zoom_filter(z, w, h, fps, i)
+    zoom = zoom_filter(z, w, h, fps, i if phase is None else phase)
     finish = (f",{zoom}" if zoom else "") + f",setsar=1,fps={fps}"
     wide = shot.width / max(1, shot.height) >= 1.2
     if h > w and wide:
@@ -99,8 +104,29 @@ def shot_chain(i: int, shot: Shot, w: int, h: int, fps: int, frames: int, z: Zoo
     return f"{src},scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h},{tail}{finish}[v{i}]"
 
 
-def post_chain(t: VisualTreatment, ass_path: Path | None, fonts_dir: Path | None) -> str:
-    """Colour, vignette, grain, captions and pixel format applied to the concatenated video."""
+def ass_filter(ass_path: Path, fonts_dir: Path | None, offset_s: float = 0.0) -> str:
+    """The `ass` captions filter; with `offset_s` the clock is moved forward by that many seconds for it.
+
+    A part of a long render starts its own clock at its first frame, while the captions file speaks in
+    whole-video time. The step is rounded to whole ticks of the stream's time base: `setpts` cuts a fraction
+    off, and a tick can be a whole frame.
+    """
+    sub = f"ass=filename={escape_filter_path(ass_path)}"
+    if fonts_dir is not None and fonts_dir.is_dir():
+        sub += f":fontsdir={escape_filter_path(fonts_dir)}"
+    if offset_s:
+        shift = f"round({offset_s:.6f}/TB)"
+        sub = f"setpts=PTS+{shift},{sub},setpts=PTS-{shift}"
+    return sub
+
+
+def post_chain(
+    t: VisualTreatment, ass_path: Path | None, fonts_dir: Path | None, *, ass_offset_s: float = 0.0
+) -> str:
+    """Colour, vignette, grain, captions and pixel format applied to the concatenated video.
+
+    `ass_offset_s` is for a part of a long render: where the part starts in whole-video time (`ass_filter`).
+    """
     parts: list[str] = []
     if t.eq:
         parts.append("eq=" + ":".join(f"{k}={v}" for k, v in t.eq.items()))
@@ -113,12 +139,35 @@ def post_chain(t: VisualTreatment, ass_path: Path | None, fonts_dir: Path | None
     if t.grain:
         parts.append(f"noise=alls={t.grain}:allf=t+u")
     if ass_path is not None:
-        sub = f"ass=filename={escape_filter_path(ass_path)}"
-        if fonts_dir is not None and fonts_dir.is_dir():
-            sub += f":fontsdir={escape_filter_path(fonts_dir)}"
-        parts.append(sub)
+        parts.append(ass_filter(ass_path, fonts_dir, ass_offset_s))
     parts.append("format=yuv420p")
     return ",".join(parts)
+
+
+def cat_chains(
+    shots: Sequence[Shot],
+    frames: Sequence[int],
+    size: tuple[int, int],
+    fps: int,
+    zoom: ZoomSpec,
+    *,
+    first_input: int = 0,
+    phase_start: int | None = None,
+) -> list[str]:
+    """The per-shot chains and the concat that joins them into `[cat]`.
+
+    `frames[k]` is the frame count of shot k; shot k is input `first_input + k` and, for the handheld drift,
+    place `phase_start + k` of the whole video (default: its input number).
+    """
+    w, h = size
+    phase0 = first_input if phase_start is None else phase_start
+    chains = [
+        shot_chain(first_input + k, s, w, h, fps, frames[k], zoom, phase=phase0 + k)
+        for k, s in enumerate(shots)
+    ]
+    joined = "".join(f"[v{first_input + k}]" for k in range(len(shots)))
+    chains.append(f"{joined}concat=n={len(shots)}:v=1:a=0[cat]")
+    return chains
 
 
 def build_graph(
@@ -131,12 +180,8 @@ def build_graph(
     fonts_dir: Path | None = None,
 ) -> str:
     """The complete filter_complex ending in `[vout]`; input k is the clip of shot k."""
-    w, h = size
-    chains = [
-        shot_chain(i, s, w, h, fps, edges[i + 1] - edges[i], treatment.zoom) for i, s in enumerate(shots)
-    ]
-    joined = "".join(f"[v{i}]" for i in range(len(shots)))
-    chains.append(f"{joined}concat=n={len(shots)}:v=1:a=0[cat]")
+    frames = [edges[i + 1] - edges[i] for i in range(len(shots))]
+    chains = cat_chains(shots, frames, size, fps, treatment.zoom)
     chains.append(f"[cat]{post_chain(treatment, ass_path, fonts_dir)}[vout]")
     return ";".join(chains)
 
@@ -174,6 +219,79 @@ def encoder_args(video: VideoCfg, *, force_cpu: bool = False) -> list[str]:
     return ["-c:v", "libx264", "-preset", preset, "-crf", "23", *cap]
 
 
+def clip_inputs(shots: Sequence[Shot], frames: Sequence[int], fps: int, base: Path | None) -> list[str]:
+    """`-ss S -t T -i FILE` for each shot: T is its frame count in seconds plus 0.5 s for the filter chain."""
+    args: list[str] = []
+    for s, n in zip(shots, frames, strict=True):
+        args += ["-ss", f"{s.ss:.2f}", "-t", f"{n / fps + 0.5:.2f}", "-i", ff.relative_arg(s.path, base)]
+    return args
+
+
+def with_cpu_fallback(video: VideoCfg, log: NsLogger | None, run: Callable[[bool], None]) -> None:
+    """`run(False)`; when NVENC fails, `run(True)` once more with libx264 and NS-W401 logged.
+
+    A full disk (NS-E104) is not an encoder problem and is not retried.
+    """
+    try:
+        run(False)
+    except NsError as e:
+        if video.encoder != "h264_nvenc" or e.code == "NS-E104":
+            raise
+        if log:
+            log.warn("nvenc_failed", code="NS-W401", msg="falling back to libx264")
+        run(True)
+
+
+def part_folder(out: Path) -> Path:
+    """Where the parts of a long render live: next to `out`, in the job's render folder."""
+    return out.with_name(f"{out.stem}.parts")
+
+
+def part_path(folder: Path, k: int) -> Path:
+    """Part `k`'s video; a fixed-width number keeps every part command the same size."""
+    return folder / f"part{k:04d}.mp4"
+
+
+def join_parts(
+    folder: Path,
+    parts: Sequence[Path],
+    lengths: Sequence[int],
+    fps: int,
+    extra: list[str],
+    out: Path,
+    *,
+    inputs_after: Sequence[Path] = (),
+    log: NsLogger | None = None,
+) -> None:
+    """Join `parts` into `out` by copying their video through the concat demuxer.
+
+    The list file (`parts.txt`, one `file` and one `duration` line per part, the duration being its frame
+    count / fps) is what carries the parts, so the command is the same size for 3 parts and for 300.
+    `inputs_after` are further inputs (the audio) named after the list; `extra` is everything between the
+    inputs and `out`.
+    """
+    lst = folder / "parts.txt"
+    lst.write_text(ff.concat_list_text(parts, [n / fps for n in lengths]), encoding="utf-8")
+    base = ff.common_dir([lst, *inputs_after, out])
+    after: list[str] = []
+    for path in inputs_after:
+        after += ["-i", ff.relative_arg(path, base)]
+    run_ffmpeg(
+        ["-f", "concat", "-safe", "0", "-i", ff.relative_arg(lst, base), *after, *extra,
+         ff.relative_arg(out, base)],
+        folder=out.parent, out=out, log=log, cwd=base,
+    )
+
+
+def clear_parts(folder: Path, *, keep_scripts: bool) -> None:
+    """Remove the part videos (the big files) and, after a good render, the rest of the parts folder."""
+    if not keep_scripts:
+        shutil.rmtree(folder, ignore_errors=True)
+        return
+    for video in folder.glob("part*.mp4"):
+        video.unlink(missing_ok=True)
+
+
 def render_video(
     *,
     shots: Sequence[Shot],
@@ -185,16 +303,25 @@ def render_video(
     ass_path: Path | None,
     fonts_dir: Path | None = None,
     log: NsLogger | None = None,
+    max_inputs: int = ff.MAX_CLIP_INPUTS,
 ) -> Path:
     """Render `shots` + `audio` into `out` (H.264/AAC, faststart); NS-E401 on failure.
 
-    When NVENC fails the render is retried once with libx264 and NS-W401 is logged.
+    When NVENC fails the render is retried once with libx264 and NS-W401 is logged. With more than
+    `max_inputs` shots the render is cut into parts of at most that many (`render_in_parts`); the command
+    line is then the same size however many shots there are.
     """
     if not shots:
         raise NsError("NS-E401", "render needs at least one shot")
     edges = frame_edges([s.end for s in shots], video.fps)
-    graph = build_graph(shots, edges, size, video.fps, treatment, ass_path, fonts_dir)
+    frames = [edges[i + 1] - edges[i] for i in range(len(shots))]
     out.parent.mkdir(parents=True, exist_ok=True)
+    if len(shots) > max_inputs:
+        return render_in_parts(
+            shots=shots, frames=frames, audio=audio, out=out, size=size, treatment=treatment, video=video,
+            ass_path=ass_path, fonts_dir=fonts_dir, log=log, max_inputs=max_inputs,
+        )
+    graph = build_graph(shots, edges, size, video.fps, treatment, ass_path, fonts_dir)
     # The command line stays short whatever the install path and the clip count: the graph goes into a script
     # file next to the video, and FFmpeg starts in the folder the files share and names them relative to it.
     base = ff.common_dir([*(s.path for s in shots), audio, out])
@@ -203,10 +330,7 @@ def render_video(
         return ff.relative_arg(path, base)
 
     script = ff.filter_complex_args(graph, out.with_name(f"{out.stem}.filtergraph.txt"), log=log, base=base)
-    inputs: list[str] = []
-    for i, s in enumerate(shots):
-        need = (edges[i + 1] - edges[i]) / video.fps + 0.5
-        inputs += ["-ss", f"{s.ss:.2f}", "-t", f"{need:.2f}", "-i", rel(s.path)]
+    inputs = clip_inputs(shots, frames, video.fps, base)
     audio_index = len(shots)
 
     def attempt(force_cpu: bool) -> None:
@@ -221,14 +345,76 @@ def render_video(
             cwd=base,
         )
 
+    with_cpu_fallback(video, log, attempt)
+    return out
+
+
+def render_in_parts(
+    *,
+    shots: Sequence[Shot],
+    frames: Sequence[int],
+    audio: Path,
+    out: Path,
+    size: tuple[int, int],
+    treatment: VisualTreatment,
+    video: VideoCfg,
+    ass_path: Path | None,
+    fonts_dir: Path | None,
+    log: NsLogger | None,
+    max_inputs: int,
+) -> Path:
+    """The same video as one command, rendered in parts of at most `max_inputs` shots and joined.
+
+    Each part is the whole pipeline over its shots (the same per-shot chains, concat, colour, grain and
+    captions), written as video only into `<out>.parts/`; the captions clock is moved by the part's start (see
+    `post_chain`). Then one command copies the parts together through a list file and adds the audio. Every
+    command carries at most `max_inputs` clips, so none grows with the total. A part that fails on NVENC sends
+    the whole render back to libx264: parts of two encoders cannot be joined by copying.
+    """
+    fps = video.fps
+    folder = part_folder(out)
+    folder.mkdir(parents=True, exist_ok=True)
+    ranges = ff.group_ranges(len(shots), max_inputs)
+    starts = [sum(frames[:a]) for a, _b in ranges]
+    lengths = [sum(frames[a:b]) for a, b in ranges]
+    if log:
+        log.info(
+            "render_parts", f"{len(shots)} clips in {len(ranges)} parts of at most {max_inputs}",
+            clips=len(shots), parts=len(ranges), max_inputs=max_inputs, folder=str(folder),
+        )
+
+    def attempt(force_cpu: bool) -> None:
+        parts: list[Path] = []
+        for k, (a, b) in enumerate(ranges):
+            part = part_path(folder, k)
+            mine = shots[a:b]
+            chains = cat_chains(mine, frames[a:b], size, fps, treatment.zoom, phase_start=a)
+            post = post_chain(treatment, ass_path, fonts_dir, ass_offset_s=starts[k] / fps)
+            chains.append(f"[cat]{post}[vout]")
+            base = ff.common_dir([*(s.path for s in mine), part])
+            script = ff.filter_complex_args(
+                ";".join(chains), part.with_name(f"{part.stem}.filtergraph.txt"), log=log, base=base
+            )
+            run_ffmpeg(
+                [*clip_inputs(mine, frames[a:b], fps, base), *script, "-map", "[vout]", "-an",
+                 *encoder_args(video, force_cpu=force_cpu), "-r", str(fps), "-pix_fmt", "yuv420p",
+                 ff.relative_arg(part, base)],
+                folder=folder, out=part, log=log, cwd=base,
+            )
+            parts.append(part)
+        join_parts(
+            folder, parts, lengths, fps,
+            ["-map", "0:v", "-map", "1:a", "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-ar", "48000",
+             "-ac", "1", "-movflags", "+faststart"],
+            out, inputs_after=[audio], log=log,
+        )
+
     try:
-        attempt(False)
-    except NsError as e:
-        if video.encoder != "h264_nvenc" or e.code == "NS-E104":  # a full disk is not an encoder problem
-            raise
-        if log:
-            log.warn("nvenc_failed", code="NS-W401", msg="falling back to libx264")
-        attempt(True)
+        with_cpu_fallback(video, log, attempt)
+    except BaseException:
+        clear_parts(folder, keep_scripts=True)  # the graphs stay: they are what a failure report needs
+        raise
+    clear_parts(folder, keep_scripts=False)
     return out
 
 
