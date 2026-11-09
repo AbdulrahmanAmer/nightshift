@@ -9,8 +9,9 @@ place, and the newer program, which can read both shapes, finishes or undoes the
 The order (`ns_supervisor.update.rollback_app`):
 
 1. This record, `<app>.rollback-pending.json`, is written FIRST: which program leaves and which comes back
-   (fingerprints), and the settings as they are now (a `config_snapshot` zip, the one that becomes the copy
-   for going forward). Stage `preparing`. Nothing has changed yet.
+   (fingerprints, and the install stamp of each: fingerprint plus the time its completion marker was
+   written, `config_snapshot.install_stamp`), and the settings as they are now (a `config_snapshot` zip,
+   the one that becomes the copy for going forward). Stage `preparing`. Nothing has changed yet.
 2. The settings the older program wrote are put back (or, without a usable copy, what it does not know is
    taken out) and checked (`update._readable_by`). The record is written again: stage `prepared`, with a
    digest of the settings as they are now and what is left to do after the swap.
@@ -21,13 +22,20 @@ The order (`ns_supervisor.update.rollback_app`):
 Interrupted, the next start of a program that has this code (`first_start`, which every settings writer and
 the engine's start call, and `ns update` / `ns update --rollback` themselves) calls `recover`:
 
-* the newer program is in `<app>` (the swap did not happen, or was put back): the settings go back to the ones
-  in the record and the rollback is undone; `ns update --rollback` can then be run again. When the record says
-  `prepared` but the settings have changed since (the older program ran, and something without this code
-  swapped the programs back), they are the older program's and stay; only the record goes.
-* the older program is in `<app>` (the swap went through; an older version with this code is running): the
-  last rename is finished if `<app>.swap` is still there, and step 4 is done.
-* anything else (a later update replaced the programs): the record is stale and is deleted.
+* the same install of the newer program is in `<app>` (the swap did not happen, or was put back): the record
+  is first written again as stage `undoing` (so an undo that is itself interrupted is resumed, never taken for
+  something else), the settings go back to the ones in the record and the rollback is undone;
+  `ns update --rollback` can then be run again.
+* the same install of the older program is in `<app>` (the swap went through; an older version with this code
+  is running): the last rename is finished if `<app>.swap` is still there, and step 4 is done.
+* anything else is a stale record and is deleted, the settings left as they are: a program put in place again
+  since (an updater, INSTALL.cmd or an older version's rollback write the marker again, so even the same build
+  has another install stamp) has run on the settings the rollback prepared, which the program then in
+  `<app>` reads.
+
+The setup window (INSTALL.cmd) does not undo: it finishes a rollback whose older program is in place, and
+refuses to replace the program while the newer one waits for its undo (`appcopy.install_app`). `ns update` and
+`ns update --rollback` refuse while a record could not be finished or undone (`Recovery.pending`).
 
 The settings are loadable by whichever program is in `<app>` at every point: before the swap the newer program
 is there and reads both shapes; from the second rename on the older program is there and its settings were
@@ -57,6 +65,7 @@ SWAP_SUFFIX = ".swap"
 FORMAT = 1
 PREPARING = "preparing"
 PREPARED = "prepared"
+UNDOING = "undoing"
 
 
 def path_for(app: Path) -> Path:
@@ -112,19 +121,27 @@ class Intent:
     to_version: str  # the program coming back from `<app>.prev`
     to_fingerprint: str
     #: the settings as they were before the rollback: a zip made by `config_snapshot` of them (version and
-    #: fingerprint of the leaving program, taken_by "rollback"), or None when they could not be read
+    #: fingerprint of the leaving program, taken_by "rollback"), or None (`live_problem` says why)
     live: bytes | None
     stage: str = PREPARING
-    prepared_digest: str = ""
+    prepared_digest: str = ""  # of the settings once prepared; empty when they could not be read then
     after: AfterSwap = field(default_factory=AfterSwap)
     created: str = ""
+    from_stamp: str = ""  # `config_snapshot.install_stamp` of the leaving program
+    to_stamp: str = ""  # of the program coming back, once its marker is written (stage prepared)
+    live_problem: str = ""  # why `live` is None
 
     def to_json(self, app: Path) -> str:
         data: dict[str, Any] = {
             "format": FORMAT,
             "stage": self.stage,
-            "from": {"version": self.from_version, "fingerprint": self.from_fingerprint},
-            "to": {"version": self.to_version, "fingerprint": self.to_fingerprint},
+            "from": {
+                "version": self.from_version,
+                "fingerprint": self.from_fingerprint,
+                "stamp": self.from_stamp,
+            },
+            "to": {"version": self.to_version, "fingerprint": self.to_fingerprint, "stamp": self.to_stamp},
+            "live_problem": self.live_problem,
             "created": self.created or datetime.now().isoformat(timespec="seconds"),
             "prepared_digest": self.prepared_digest,
             "after_swap": self.after.to_json(),
@@ -169,8 +186,11 @@ def read(app: Path) -> Intent | None:
             str(data.get("prepared_digest", "")),
             AfterSwap.from_json(data.get("after_swap")),
             str(data.get("created", "")),
+            str(data["from"].get("stamp", "")),
+            str(data["to"].get("stamp", "")),
+            str(data.get("live_problem", "")),
         )
-    except (KeyError, TypeError, ValueError) as e:
+    except (KeyError, TypeError, ValueError, AttributeError) as e:
         raise ValueError(f"{path_for(app).name} is damaged: {e}") from e
 
 
@@ -232,48 +252,81 @@ def finish(app: Path, config: Path, intent: Intent) -> Finished:
 
 def undo(app: Path, config: Path, intent: Intent) -> str:
     """Put the settings back as they were before the rollback (the newer program is in `<app>`) and delete
-    the record. Returns the sentence; `SnapshotError` (the record stays, the next start tries again) when they
-    cannot be put back."""
+    the record. The record is first written again as stage `undoing`, before any settings file changes, so
+    an undo that is interrupted is resumed by the next start. Returns the sentence; `SnapshotError` or
+    `OSError` (the record stays, the next start tries again) when they cannot be put back."""
+    back = f"A rollback to {intent.to_version} was interrupted before {intent.to_version} was put back"
     if intent.live is None:
         clear(app)
+        why = intent.live_problem or "they could not be read"
         return (
-            f"A rollback to {intent.to_version} was interrupted before {intent.to_version} was put back. The "
-            "settings as they were before it could not be read at the time, so they stay as they are now "
-            f"({intent.from_version} reads them). Run ns update --rollback again to go back."
+            f"{back}. The settings as they were before it were not saved at the time ({why}), so they stay "
+            f"as they are now ({intent.from_version} reads them). Run ns update --rollback again to go back."
         )
     try:
         files = config_snapshot.parse(intent.live).files
     except config_snapshot.SnapshotError as e:  # (written atomically; this is rot, not a crash)
         clear(app)
         return (
-            f"A rollback to {intent.to_version} was interrupted before {intent.to_version} was put back, and "
-            f"the settings saved before it cannot be used ({e}): they stay as they are now. Run ns update "
-            "--rollback again to go back."
+            f"{back}, and the settings saved before it cannot be used ({e}): they stay as they are now. Run "
+            "ns update --rollback again to go back."
         )
+    if intent.stage != UNDOING:
+        intent.stage = UNDOING
+        write(app, intent)  # before anything changes: an interrupted undo is resumed, not misread
+    changed = ""
+    if intent.prepared_digest:
+        try:
+            if settings_digest(config) != intent.prepared_digest:
+                changed = " (settings saved after the rollback was interrupted were replaced by them)"
+        except config_snapshot.SnapshotError:
+            pass
     config_snapshot.restore(config, files, live=config_snapshot.capture(config), remove_extra=True)
     clear(app)
     return (
-        f"A rollback to {intent.to_version} was interrupted before {intent.to_version} was put back: "
-        f"{intent.from_version} is still the program, and your settings files are back as they were before "
-        "the rollback. Run ns update --rollback again to go back."
+        f"{back}: {intent.from_version} is still the program, and your settings files are back as they were "
+        f"before the rollback{changed}. Run ns update --rollback again to go back."
     )
 
 
-def recover(app: Path, config: Path) -> str:
+@dataclass
+class Recovery:
+    """What `recover` did: `sentence` for the log or the result line, and `outcome`."""
+
+    sentence: str = ""
+    #: "" (no record), "undone", "finished", "stale", "failed" (the record stays: settings may be half put
+    #: back), "needs-undo" (asked not to undo, and the newer program waits for its undo)
+    outcome: str = ""
+
+    @property
+    def pending(self) -> bool:
+        """The record is still there and the settings are not in a finished state: do not go on."""
+        return self.outcome in ("failed", "needs-undo")
+
+
+def _same_install(stamp_now: str, recorded: str) -> bool:
+    return not recorded or stamp_now == recorded  # (a record without a stamp: the fingerprint decides)
+
+
+def recover(app: Path, config: Path, *, may_undo: bool = True) -> Recovery:
     """Finish or undo a rollback that `<app>.rollback-pending.json` says was interrupted (see the module
-    text). Returns a plain sentence of what was done, empty when there was nothing to do. The caller holds the
-    copy's lock (`config_snapshot.locked`). Raises nothing but `OSError` from deleting the record; a step that
-    fails leaves the record for the next start and says so."""
+    text). The caller holds the copy's lock (`config_snapshot.locked`). With `may_undo` False nothing is
+    undone: the outcome is then "needs-undo" when that is what the record needs. Never raises; a step that
+    fails leaves the record for the next start (outcome "failed") and says so."""
     try:
         intent = read(app)
     except ValueError as e:
-        clear(app)
-        return f"A record of an interrupted rollback could not be used and was removed ({e})."
+        return _cleared(app, f"A record of an interrupted rollback could not be used and was removed ({e}).")
     if intent is None:
-        return ""
+        return Recovery()
     running = config_snapshot.program_fingerprint(app)
+    stamp = config_snapshot.install_stamp(app)
     prev, swap = prev_for(app), swap_for(app)
-    if running == intent.to_fingerprint and intent.stage == PREPARED:
+    if (
+        running == intent.to_fingerprint
+        and intent.stage == PREPARED
+        and _same_install(stamp, intent.to_stamp)
+    ):
         # the older program is in place: the swap went through, its last rename perhaps not
         if (
             not prev.exists()
@@ -283,38 +336,48 @@ def recover(app: Path, config: Path) -> str:
             try:
                 swap.rename(prev)
             except OSError as e:
-                return (
+                return Recovery(
                     f"A rollback to {intent.to_version} stopped before it finished: {swap} could not be "
-                    f"renamed to {prev.name} ({e}); the next start tries again."
+                    f"renamed to {prev.name} ({e}); the next start tries again.",
+                    "failed",
                 )
         if config_snapshot.program_fingerprint(prev) == intent.from_fingerprint:
-            done = finish(app, config, intent)
-            tail = f" ({'; '.join(done.problems)})" if done.problems else ""
-            return (
-                f"A rollback to {intent.to_version} stopped after the programs were swapped; it was finished "
-                f"now{tail}."
-            )
-    elif running == intent.from_fingerprint:
-        if intent.stage == PREPARING or _unchanged_since(config, intent):
             try:
-                return undo(app, config, intent)
-            except config_snapshot.SnapshotError as e:
-                return (
-                    f"A rollback to {intent.to_version} was interrupted, and the settings files could not be "
-                    f"put back as they were before it ({e}); the next start tries again."
-                )
-        clear(app)
-        return (
-            f"A rollback to {intent.to_version} had been interrupted, and the settings files have changed "
-            f"since (a program ran on them): they stay as they are, and {intent.from_version} reads them."
-        )
-    clear(app)
-    return ""
+                done = finish(app, config, intent)
+            except OSError as e:
+                return Recovery(f"A rollback to {intent.to_version} could not be finished: {e}.", "failed")
+            tail = f" ({'; '.join(done.problems)})" if done.problems else ""
+            return Recovery(
+                f"A rollback to {intent.to_version} stopped after the programs were swapped; it was finished "
+                f"now{tail}.",
+                "finished",
+            )
+    elif running == intent.from_fingerprint and _same_install(stamp, intent.from_stamp):
+        if not may_undo:
+            return Recovery(
+                f"A rollback from {intent.from_version} to {intent.to_version} was interrupted before "
+                f"{intent.to_version} was put back, and the settings are not put back as they were yet.",
+                "needs-undo",
+            )
+        try:
+            return Recovery(undo(app, config, intent), "undone")
+        except (config_snapshot.SnapshotError, OSError) as e:
+            return Recovery(
+                f"A rollback to {intent.to_version} was interrupted, and the settings files could not be "
+                f"put back as they were before it ({e}); the next start tries again.",
+                "failed",
+            )
+    return _cleared(
+        app,
+        f"A record of a rollback from {intent.from_version} to {intent.to_version} (started "
+        f"{intent.created.replace('T', ' ')}) does not belong to the programs installed now (one was put in "
+        "place again since): it was removed, and the settings files were left as they are.",
+    )
 
 
-def _unchanged_since(config: Path, intent: Intent) -> bool:
-    """True when the settings are still exactly the ones the rollback prepared (nothing has run on them)."""
+def _cleared(app: Path, sentence: str) -> Recovery:
     try:
-        return bool(intent.prepared_digest) and settings_digest(config) == intent.prepared_digest
-    except config_snapshot.SnapshotError:
-        return False
+        clear(app)
+    except OSError as e:
+        return Recovery(f"{sentence[:-1]}, but it could not be deleted ({e}).", "failed")
+    return Recovery(sentence, "stale")

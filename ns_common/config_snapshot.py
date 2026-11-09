@@ -200,6 +200,24 @@ def program_fingerprint(folder: Path) -> str:
     return f"{program_version(folder)}|{manifest}|{project}"
 
 
+#: Written into a finished program folder by every updater, INSTALL.cmd and the rollback (update.APP_MARKER).
+APP_MARKER = ".ns-app.done"
+
+
+def install_stamp(program: Path) -> str:
+    """Which install of `program` this is: its fingerprint and when its completion marker was written.
+
+    Every updater, INSTALL.cmd and every rollback write the marker again, so a program folder put in place
+    again (a second try of a failed update, a roll forward by an older version's rollback, the same build
+    installed again) has a new stamp although its fingerprint is the same.
+    """
+    try:
+        written = str((program / APP_MARKER).stat().st_mtime_ns)
+    except OSError:
+        written = "0"
+    return f"{program_fingerprint(program)}@{written}"
+
+
 def valid_name(name: str) -> bool:
     """True for a name a copy may hold: a listed file or `<tree>/<file>.yaml` (nothing that leaves config)."""
     if not name or "\\" in name or ":" in name or name.startswith("/"):

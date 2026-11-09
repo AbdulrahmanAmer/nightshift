@@ -30,6 +30,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import ns_common.config_snapshot as config_snapshot
+import ns_common.rollback_intent as rollback_intent
 from ns_common.avblock import is_blocked_error
 
 APP_DIR = "app"
@@ -259,6 +260,33 @@ def _save_settings_copy(
     return True
 
 
+def _finish_interrupted_rollback(home: Path, dest: Path, say: Callable[[str], None]) -> None:
+    """Before the settings copy is saved: a rollback that was interrupted (`<app>.rollback-pending.json`,
+    `ns_common.rollback_intent`) is finished when the older program is already in place. When the newer
+    program is still in place, its settings are half way to the older version's and the record holds the
+    ones from before: the window does not undo it (it has already rewritten some settings files on opening)
+    and refuses, ``NS-E115``, so the copy is never made of those settings under the newer version's name."""
+    if not rollback_intent.path_for(dest).exists():
+        return
+    with config_snapshot.locked(config_snapshot.path_for(dest)) as held:
+        if not held:
+            raise AppCopyError(
+                "NS-E115",
+                "another Nightshift program is using the settings copy. Close every Nightshift window and "
+                "run INSTALL.cmd again. The program was not replaced.",
+            )
+        rec = rollback_intent.recover(dest, Path(home) / "config", may_undo=False)
+    if rec.pending:
+        raise AppCopyError(
+            "NS-E115",
+            f"{rec.sentence} The program was not replaced. Start Nightshift once (it puts your settings "
+            "back as they were before the rollback) or run ns update --rollback again, then run INSTALL.cmd "
+            "again.",
+        )
+    if rec.sentence:
+        say(rec.sentence)
+
+
 def _error(e: OSError, what: str) -> AppCopyError:
     if is_blocked_error(e):
         return AppCopyError("NS-E113", f"{what}: Windows Security blocked a file ({e})")
@@ -307,6 +335,7 @@ def install_app(
                 stop_engine()
             kept = _carry(dest, new)
             try:
+                _finish_interrupted_rollback(Path(home), dest, say)
                 wrote_copy = _save_settings_copy(Path(home), dest, old_version, settings_before, say)
             except AppCopyError:
                 shutil.rmtree(new, ignore_errors=True)

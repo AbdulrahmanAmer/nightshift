@@ -319,11 +319,18 @@ its own. One kind of job file is not changed by a rollback: a job made with the 
 (a `plan.json` target under 9 minutes) cannot be resumed by 0.1.14; every other job can.
 A rollback is safe to interrupt (the PC loses power, the window is closed): it first writes
 `<folder>.rollback-pending.json`, then makes the settings files ones the older version reads, and only then puts
-the older version in place. Whichever version is in `<folder>` afterwards finds settings it can load; when the
-newer version starts again it puts the settings back as they were before the rollback (run `ns update --rollback`
-again), and a later version that has this code finishes an interrupted rollback by itself. Only if the power goes
-off in the instant between two folder renames can `<folder>` be missing with `<folder>.swap` beside it: rename
-`<folder>.swap` back to `<folder>` and start Nightshift.
+the older version in place. Whichever version is in `<folder>` afterwards finds settings it can load (apart from
+a file the rollback could not change, which it names, as above); when the newer version starts again it puts the
+settings back as they were before the rollback, and finishes that even if it is interrupted itself (then run
+`ns update --rollback` again), and a later version that has this code finishes an interrupted rollback by itself.
+While the settings of an interrupted rollback are not back yet, `ns update`, `ns update --rollback` and
+`INSTALL.cmd` stop with a message and change nothing; start Nightshift once (or close the program that holds a
+settings file) and try again. If the older version stays in place and you later install a version again (even the
+same one), the record is dropped and the settings stay as the older version left them. Only if the power goes off
+in the instant between two folder renames can `<folder>` be missing with `<folder>.swap` beside it: rename
+`<folder>.swap` back to `<folder>` and start Nightshift. Close the Dashboard and Studio windows before
+`ns update --rollback`: a window that saves a setting while the rollback runs waits for it up to a minute and then
+saves anyway, into the settings the rollback is changing.
 A copy is replaced only together with the program it belongs to (an update replaces the
 program backup and its copy together, and a rollback swaps the pair). Two things are never done to a copy: it is never overwritten with settings
 that are not its program's, and a whole copy of a version that is not installed (it may be the only copy of that

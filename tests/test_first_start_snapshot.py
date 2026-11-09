@@ -1077,6 +1077,167 @@ def test_a_file_the_rollback_cannot_change_is_named_and_never_said_to_be_clean(i
     assert "0.1.14 may refuse them: runtime.json" in res.settings and "ns restore" in res.settings
 
 
+# ------------------------------------------------------------------------------- the record after a rollback
+RECORD = "app.rollback-pending.json"
+
+
+def _interrupted(inst: Install, monkeypatch: pytest.MonkeyPatch, arm: Arm) -> tuple[dict[str, bytes], ...]:
+    """0.1.14 -> 0.1.15 by the older updater, settings used, then a rollback stopped by `arm`."""
+    before, now = _installed(inst, True)
+    with monkeypatch.context() as m:
+        arm(inst, m)
+        with pytest.raises(Stop):
+            inst.rollback()
+    assert (inst.home / RECORD).is_file()
+    return before, now
+
+
+def test_a_record_left_by_an_earlier_install_of_the_same_build_is_stale_not_undone(
+    inst: Install, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Pass 2, item 1: the rollback stopped after the swap; 0.1.14 ran; the owner then updated to the SAME
+    0.1.15 build with 0.1.14's updater. The fingerprint matches the record's "from", but it is another
+    install: undoing would put back 0.1.15's old settings and the first start would then save them as
+    0.1.14's copy. The record is stale; the copy is of what 0.1.14 left."""
+    _interrupted(inst, monkeypatch, _stop_at_rename(3, after=True))
+    assert inst.version_now() == "0.1.14"
+    on_014 = read_config(inst.paths)  # 0.1.14 runs and changes nothing
+    left_by_014 = {n: b for n, b in on_014.items() if config_snapshot.valid_name(n)}
+    older_version_loads_everything(inst.paths)
+    built = config_snapshot.program_fingerprint(inst.home / "app.prev")
+
+    inst.old_updater("0.1.15")  # the same build again: same fingerprint, a new install
+    assert config_snapshot.program_fingerprint(inst.app) == built
+    inst.start()
+    first_start_writes(inst.paths)
+
+    assert not (inst.home / RECORD).exists()
+    snap = config_snapshot.read(inst.copy)
+    assert (snap.version, snap.taken_by) == ("0.1.14", "first-start")
+    assert snap.files == left_by_014  # what 0.1.14 left, not 0.1.15's settings from before the rollback
+    stale = [r for r in log_lines(inst.paths) if r["event"] == "rollback_recovered"]
+    assert len(stale) == 1 and "does not belong to the programs installed now" in stale[0]["msg"]
+    assert "is still the program" not in stale[0]["msg"]
+
+    res = inst.rollback()
+    assert inst.version_now() == "0.1.14" and read_config(inst.paths) == on_014
+    assert "back as 0.1.14 left them" in res.settings
+    older_version_loads_everything(inst.paths)
+
+
+def test_an_undo_that_is_itself_interrupted_is_resumed_by_the_next_start(
+    inst: Install, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Pass 2, item 2: the next start's undo stops after one file; the start after that must finish it, not
+    take the half-undone settings for a program having run on them."""
+    _, now = _interrupted(inst, monkeypatch, _stop_at_rename(1))
+    inst.start()
+    with monkeypatch.context() as m:
+        _stop_at_settings_write(2)(inst, m)
+        with pytest.raises(Stop):
+            first_start.ensure(inst.paths.config)
+    assert read_config(inst.paths) != now  # half undone
+
+    inst.start()
+    first_start.ensure(inst.paths.config)
+    assert not (inst.home / RECORD).exists()
+    assert read_config(inst.paths) == now
+
+
+def test_install_cmd_never_saves_a_copy_of_half_prepared_settings(
+    inst: Install, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Pass 2, item 3: the rollback stopped before the swap (0.1.15 in place, settings half way to 0.1.14's),
+    then INSTALL.cmd of 0.1.16. It refuses (nothing replaced, the record kept) until 0.1.15 has put the
+    settings back; then the copy it saves is 0.1.15's real settings."""
+    _, now = _interrupted(inst, monkeypatch, _stop_at_rename(1))
+    copy_before = inst.copy.read_bytes()
+    with pytest.raises(appcopy.AppCopyError) as ei:
+        appcopy.install_app(inst.source("0.1.16"), inst.home)
+    assert ei.value.code == "NS-E115" and "not replaced" in str(ei.value)
+    assert inst.version_now() == "0.1.15" and (inst.home / RECORD).is_file()
+    assert inst.copy.read_bytes() == copy_before and not (inst.home / "app.new").exists()
+
+    inst.start()
+    first_start.ensure(inst.paths.config)  # 0.1.15 starts once: settings back as they were
+    appcopy.install_app(inst.source("0.1.16"), inst.home)
+    assert inst.version_now() == "0.1.16"
+    snap = config_snapshot.read(inst.copy)
+    assert snap.version == "0.1.15"
+    assert snap.files == {n: b for n, b in now.items() if config_snapshot.valid_name(n)}
+
+
+def test_install_cmd_finishes_a_rollback_whose_older_program_is_in_place(
+    inst: Install, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _interrupted(inst, monkeypatch, _stop_at_rename(3, after=True))
+    on_014 = read_config(inst.paths)
+    said: list[str] = []
+    appcopy.install_app(inst.source("0.1.16"), inst.home, say=said.append)
+    assert not (inst.home / RECORD).exists() and any("finished" in s for s in said)
+    snap = config_snapshot.read(inst.copy)
+    assert snap.version == "0.1.14"
+    assert snap.files == {n: b for n, b in on_014.items() if config_snapshot.valid_name(n)}
+
+
+@pytest.mark.parametrize("command", ["ns update", "ns update --rollback"])
+def test_an_update_or_rollback_refuses_when_an_interrupted_rollback_cannot_be_undone(
+    inst: Install, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, command: str
+) -> None:
+    """Pass 2, item 4: the settings cannot be put back (a locked file): going on would save or overwrite
+    half-prepared settings, and the next version would drop the record. NS-E702, nothing changed."""
+    from tests.test_ns_update import make_zip
+
+    _interrupted(inst, monkeypatch, _stop_at_rename(1))
+    half = read_config(inst.paths)
+
+    def locked(*a: object, **k: object) -> object:
+        raise config_snapshot.SnapshotError("could not restore runtime.json: in use by another program")
+
+    e = Env()
+    with monkeypatch.context() as m:
+        m.setattr(config_snapshot, "restore", locked)
+        with pytest.raises(update.NsError) as ei:
+            if command == "ns update":
+                update.update_app(make_zip(tmp_path, "0.1.16"), inst.app, e.env(), paths=inst.paths)
+            else:
+                update.rollback_app(inst.app, e.env(), paths=inst.paths)
+    assert ei.value.code == "NS-E702" and "Nothing was changed" in ei.value.detail
+    assert "in use by another program" in ei.value.detail
+    assert inst.version_now() == "0.1.15" and read_config(inst.paths) == half
+    assert (inst.home / RECORD).is_file()  # kept for the next try
+    assert "sync" not in e.calls
+
+    inst.start()
+    first_start.ensure(inst.paths.config)  # the file is free again
+    assert not (inst.home / RECORD).exists()
+
+
+def test_the_undo_says_why_the_settings_were_not_saved(
+    inst: Install, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Pass 2, item 5: the settings were read but their copy could not be made; the undo must not say they
+    could not be read."""
+    _installed(inst, True)
+    real = config_snapshot.build
+
+    def no_copy(files: dict[str, bytes], **k: Any) -> bytes:
+        if k.get("taken_by") == "rollback":
+            raise config_snapshot.SnapshotError("the copy did not read back as it was written")
+        return real(files, **k)
+
+    with monkeypatch.context() as m:
+        m.setattr(config_snapshot, "build", no_copy)
+        _stop_at_rename(1)(inst, m)
+        with pytest.raises(Stop):
+            inst.rollback()
+    inst.start()
+    first_start.ensure(inst.paths.config)
+    said = [r["msg"] for r in log_lines(inst.paths) if r["event"] == "rollback_recovered"]
+    assert len(said) == 1 and "a copy of them could not be made" in said[0]
+    assert "could not be read" not in said[0]
+
+
 # ------------------------------------------------------------------------------------------ the writer scan
 PACKAGES = ("ns_common", "ns_supervisor", "ns_dashboard", "ns_studio", "ns_tts", "installer")
 SETTINGS_ATTRS = {"runtime_file", "install_state_file", "channel_file", "channels_dir", "formats_dir"}
@@ -1430,7 +1591,14 @@ def test_the_writers_that_learn_the_file_name_at_run_time_are_guarded_or_part_of
         and isinstance(n.func.value, ast.Name)
         and n.func.value.id == "rollback_intent"
     }
-    assert callers == {"ns_supervisor/update.py", "ns_common/first_start.py"}
+    # (INSTALL.cmd's window only finishes one, never undoes: `may_undo=False`)
+    assert callers == {
+        "ns_supervisor/update.py",
+        "ns_common/first_start.py",
+        "installer/stage2/web/appcopy.py",
+    }
+    appcopy_src = (ROOT / "installer" / "stage2" / "web" / "appcopy.py").read_text(encoding="utf-8")
+    assert 'rollback_intent.recover(dest, Path(home) / "config", may_undo=False)' in appcopy_src
     source = (ROOT / "ns_supervisor" / "update.py").read_text(encoding="utf-8")
     for entry in ("def update_app", "def rollback_app", "def git_update"):
         body = source.split(entry, 1)[1].split("\ndef ", 1)[0]

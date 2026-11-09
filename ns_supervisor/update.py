@@ -783,10 +783,24 @@ def _recover_rollback(app: Path, paths: Paths, log: NsLogger) -> str:
                 f"another Nightshift program is using the settings copy. Close Nightshift windows and try "
                 f"again. {NOTHING_CHANGED}",
             )
-        said = rollback_intent.recover(app, paths.config)
-    if said:
-        log.warn("rollback_recovered", said)
-    return said
+        rec = rollback_intent.recover(app, paths.config)
+    _refuse_if_pending(rec, log)
+    if rec.sentence:
+        log.warn("rollback_recovered", rec.sentence)
+    return rec.sentence
+
+
+def _refuse_if_pending(rec: rollback_intent.Recovery, log: NsLogger) -> None:
+    """`NS-E702` when an interrupted rollback could not be finished or undone: the settings may be half put
+    back, and an update or a new rollback from there would save or overwrite them (its record stays for the
+    next try)."""
+    if rec.pending:
+        log.error("rollback_recovery_failed", rec.sentence)
+        raise NsError(
+            "NS-E702",
+            f"{rec.sentence} {NOTHING_CHANGED} Close every Nightshift window (and anything that has a file "
+            "in the config folder open), then try again.",
+        )
 
 
 def update_app(zip_path: Path, app: Path, env: UpdateEnv, *, paths: Paths) -> UpdateResult:
@@ -904,9 +918,10 @@ def rollback_app(app: Path, env: UpdateEnv, *, paths: Paths) -> UpdateResult:
             )
         notes: list[str] = []
         earlier = rollback_intent.recover(app, paths.config)  # a rollback that was interrupted, if any
-        if earlier:
-            log.warn("rollback_recovered", earlier)
-            notes.append(earlier)
+        _refuse_if_pending(earlier, log)
+        if earlier.sentence:
+            log.warn("rollback_recovered", earlier.sentence)
+            notes.append(earlier.sentence)
         if not prev.is_dir():
             raise NsError("NS-E702", f"no previous version at {prev}")
         old_version, restored_version = current_version(app), current_version(prev)
@@ -914,6 +929,7 @@ def rollback_app(app: Path, env: UpdateEnv, *, paths: Paths) -> UpdateResult:
         copy, why_not, slot = _read_settings_copy(app, prev)
         live, live_error = _live_settings(paths, log)
         forward: bytes | None = None  # the settings now: kept for undoing, then the copy for going forward
+        live_problem = f"they could not be read: {live_error}" if live is None else ""
         if live is not None:
             try:
                 forward = config_snapshot.build(
@@ -922,8 +938,15 @@ def rollback_app(app: Path, env: UpdateEnv, *, paths: Paths) -> UpdateResult:
             except config_snapshot.SnapshotError as e:
                 log.warn("settings_copy_failed", str(e))
                 notes.append(f"could not keep a copy of the current settings for going forward again: {e}")
+                live_problem = f"they were read, but a copy of them could not be made: {e}"
         intent = rollback_intent.Intent(
-            old_version, left_fingerprint, restored_version, app_fingerprint(prev), forward
+            old_version,
+            left_fingerprint,
+            restored_version,
+            app_fingerprint(prev),
+            forward,
+            from_stamp=config_snapshot.install_stamp(app),
+            live_problem=live_problem,
         )
         try:
             rollback_intent.write(app, intent)  # FIRST: nothing has changed yet
@@ -940,8 +963,10 @@ def rollback_app(app: Path, env: UpdateEnv, *, paths: Paths) -> UpdateResult:
         intent.stage, intent.after = rollback_intent.PREPARED, prepared.after
         try:
             intent.prepared_digest = rollback_intent.settings_digest(paths.config)
-        except config_snapshot.SnapshotError as e:  # (then an interruption leaves these settings as they are)
+        except config_snapshot.SnapshotError as e:  # (only a sentence of a later undo uses it)
             log.warn("settings_read_failed", str(e))
+        write_app_marker(prev, log)  # (it becomes <app>: a later INSTALL.cmd trusts it)
+        intent.to_stamp = config_snapshot.install_stamp(prev)  # (the marker just written: this install)
         try:
             rollback_intent.write(app, intent)
         except OSError as e:
@@ -950,7 +975,6 @@ def rollback_app(app: Path, env: UpdateEnv, *, paths: Paths) -> UpdateResult:
                 "NS-E702",
                 f"could not record the rollback ({e}). {_undo_settings(app, paths, intent, log)}",
             ) from e
-        write_app_marker(prev, log)  # (it becomes <app>: a later INSTALL.cmd trusts it)
         tmp = _sibling(app, ".swap")
         try:
             _swap_programs(app, prev, tmp)
@@ -1000,8 +1024,8 @@ def _undo_settings(app: Path, paths: Paths, intent: rollback_intent.Intent, log:
     log.info("rollback_undone", said)
     if intent.live is None:
         return (
-            "The program was not changed. Your settings files could not be read before the rollback, so they "
-            "stay as they are now."
+            "The program was not changed. Your settings files were not saved before the rollback "
+            f"({intent.live_problem}), so they stay as they are now."
         )
     return "Nothing else was changed: the program and your settings files are as they were."
 

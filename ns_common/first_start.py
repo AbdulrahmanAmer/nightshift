@@ -64,7 +64,7 @@ TAKEN_BY = "first-start"
 #: In the program folder: an earlier start of this program could not make the copy (and went on anyway).
 STATE_NAME = ".ns-first-start.json"
 #: Written into a finished program folder by every updater, INSTALL.cmd and the rollback (update.APP_MARKER).
-APP_MARKER = ".ns-app.done"
+APP_MARKER = config_snapshot.APP_MARKER
 LOG_COMPONENT = "first_start"
 
 _decided: set[str] = set()
@@ -82,16 +82,8 @@ def backup_of(program: Path) -> Path:
 
 
 def install_stamp(program: Path) -> str:
-    """Which install of `program` this is: its fingerprint and when its completion marker was written.
-
-    Every updater, INSTALL.cmd and every rollback write the marker again, so a program folder put in place
-    again (a second try of a failed update, a roll forward by an older version's rollback) has a new stamp.
-    """
-    try:
-        written = str((program / APP_MARKER).stat().st_mtime_ns)
-    except OSError:
-        written = "0"
-    return f"{config_snapshot.program_fingerprint(program)}@{written}"
+    """Which install of `program` this is (`config_snapshot.install_stamp`: fingerprint and marker time)."""
+    return config_snapshot.install_stamp(program)
 
 
 def config_of(path: Path) -> Path | None:
@@ -180,12 +172,24 @@ def _first_start(config: Path) -> None:
                 "first_start_lock_busy",
                 "Another Nightshift program kept the settings copy busy for "
                 f"{config_snapshot.LOCK_WAIT_S:.0f} s (a rollback or another first start); this one did not "
-                "look at the copy and goes on.",
+                "look at the copy and goes on. If a rollback is running, this program's settings write lands "
+                "in the settings the rollback is changing: close Nightshift windows before ns update "
+                "--rollback.",
                 copy=str(zip_path),
             )
             return
         if pending:
-            said = rollback_intent.recover(program, config)
+            rec = rollback_intent.recover(program, config)
+            said = rec.sentence
+            if rec.pending:  # the settings may be half put back: no copy is taken of them
+                _say(
+                    config,
+                    "WARN",
+                    "rollback_recovery_failed",
+                    said,
+                    record=str(rollback_intent.path_for(program)),
+                )
+                return
             if said:
                 _say(
                     config, "WARN", "rollback_recovered", said, record=str(rollback_intent.path_for(program))
