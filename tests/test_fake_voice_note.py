@@ -215,3 +215,57 @@ def test_the_voice_stage_treats_the_windows_speaking_fake_like_real_engine_outpu
     assert man["p1"]["seconds"] > 5  # 28 words at the planner's pace: about 10 s
     record = json.loads(ctx.file(VOICE_ENGINE_FILE).read_text(encoding="utf-8"))
     assert record["mode"] == "sapi" and record["voice"] == "Microsoft David Desktop"
+
+
+# ---------------------------------------------------------------- CR-H7-1: the tone-burst warning has a code
+
+
+def test_the_job_log_and_voice_engine_json_carry_the_tone_burst_warning_code(tmp_home: Path):
+    from ns_common.errors import describe
+
+    ctx = engine_test_ctx(tmp_home)
+    health = {**TONES_HEALTH, "voice_warning_code": "NS-W303"}
+    info = note_voice_engine(ctx, lambda url: health)
+    assert info is not None and info["code"] == "NS-W303" and describe(info["code"]).hint
+    saved = json.loads(ctx.file(VOICE_ENGINE_FILE).read_text(encoding="utf-8"))
+    assert (
+        saved["code"] == "NS-W303"
+        and saved["mode"] == "tones"
+        and saved["warning"] == health["voice_warning"]
+    )
+    warns = [r for r in log_rows(ctx) if r["event"] == "fake_voice_tones_only"]
+    assert (
+        len(warns) == 1 and warns[0]["data"]["code"] == "NS-W303" and warns[0]["data"]["job_id"] == ctx.job_id
+    )
+
+
+def test_a_voice_service_that_predates_the_code_still_gets_it_in_the_job_log(tmp_home: Path):
+    ctx = engine_test_ctx(tmp_home)
+    info = note_voice_engine(ctx, lambda url: TONES_HEALTH)  # no voice_warning_code in /health
+    assert info is not None and info["code"] == "NS-W303"
+    warns = [r for r in log_rows(ctx) if r["event"] == "fake_voice_tones_only"]
+    assert len(warns) == 1 and warns[0]["data"]["code"] == "NS-W303"
+
+
+def test_a_windows_voice_or_a_silent_service_has_no_warning_code(tmp_home: Path):
+    for health in (SAPI_HEALTH, None):
+        ctx = engine_test_ctx(tmp_home)
+        info = note_voice_engine(ctx, lambda url, h=health: h)
+        assert info is not None and "code" not in info
+        assert not [r for r in log_rows(ctx) if r["level"] == "WARN"]
+
+
+def test_the_captions_detail_keeps_its_wording_with_the_code_in_the_record(tmp_home: Path):
+    ctx = engine_test_ctx(tmp_home)
+    note_voice_engine(ctx, lambda url: TONES_HEALTH)
+    assert captions_note(ctx) == (
+        "the voice is the fake one of this engine test and it made tone bursts, which speech recognition "
+        "cannot align (no Windows speech voice was available): this is the test voice, not a product fault"
+    )
+
+
+def test_the_two_copies_of_the_tones_code_are_the_registered_one():
+    from ns_studio.media.fake_voice import FAKE_VOICE_TONES_CODE as studio_code
+    from ns_tts.engine import FAKE_VOICE_TONES_CODE as tts_code
+
+    assert studio_code == tts_code == "NS-W303"
