@@ -11,9 +11,18 @@ from datetime import datetime
 from pathlib import Path, PurePosixPath
 
 from ns_common import __version__
-from ns_common.atomic import write_stream_atomic, write_zip_atomic
+from ns_common.atomic import (
+    PrepareFn,
+    is_tmp_name,
+    read_bytes_retry,
+    write_bytes_atomic,
+    write_stream_atomic,
+    write_zip_atomic,
+)
 from ns_common.errors import NsError
 from ns_common.paths import Paths
+from ns_common.secret_file import FILE_NAME as SECRETS_FILE
+from ns_common.secret_file import restrict_to_user
 from ns_supervisor.doctor import desktop_dir
 
 MANIFEST = "backup-manifest.json"
@@ -38,7 +47,42 @@ def snapshot_db(db: Path, dest: Path) -> None:
 
 
 def _wanted(f: Path) -> bool:
+    # a `~ns<pid>-<thread>-<n>.tmp` is a write a crash cut off (or one in flight), never content to restore
+    if is_tmp_name(f.name):
+        return False
     return f.is_file() and f.suffix.lower() not in BLOCK_SUFFIXES and f.stat().st_size <= MAX_FILE_BYTES
+
+
+def _lock_for(path: Path) -> PrepareFn | None:
+    """The lock for `config/secrets.dpapi` (`restrict_to_user`), None for every other file.
+
+    The file is machine-scope DPAPI with a fixed entropy, so its ACL is all that keeps another user's programs
+    from decrypting it. A file the restore creates (the restored one, the copy kept under
+    `data\\backup\\pre-restore-*`, and the one a roll back puts back) would take the folder's ACL, so each is
+    written through a temp file that is locked while still empty, then checked again under its final name. A
+    lock that fails raises `NS-E120` (a `PermissionError`): the restore stops, rolls back and says so in its
+    `NS-E703`. A key copy is never left under a broad ACL to let a restore go on.
+    """
+    return restrict_to_user if path.name == SECRETS_FILE else None
+
+
+def _write_member(z: zipfile.ZipFile, info: zipfile.ZipInfo, dest: Path) -> None:
+    lock = _lock_for(dest)
+    with z.open(info) as src:
+        write_stream_atomic(dest, src, prepare=lock)  # a restored file is whole, or still the old one
+    if lock is not None:
+        lock(dest)
+
+
+def _copy(src: Path, dst: Path) -> None:
+    """`shutil.copy2`, except for the secrets file: its copy is locked before the blob goes in."""
+    lock = _lock_for(dst)
+    if lock is None:
+        shutil.copy2(src, dst)
+        return
+    # not copy2: CopyFile2 makes the new file under the folder's ACL with the blob already in it
+    write_bytes_atomic(dst, read_bytes_retry(src), prepare=lock)
+    lock(dst)
 
 
 def make_backup(paths: Paths, out: Path | None = None, *, now: datetime | None = None) -> Path:
@@ -67,7 +111,19 @@ def make_backup(paths: Paths, out: Path | None = None, *, now: datetime | None =
         info = {"created": when.isoformat(timespec="seconds"), "version": __version__, "entries": entries}
         z.writestr(MANIFEST, json.dumps(info, indent=2) + "\n")
 
-    write_zip_atomic(target, fill)  # the Desktop never shows a backup that is still being written
+    # The zip carries config/secrets.dpapi (machine-scope DPAPI, fixed entropy: any account on this PC
+    # decrypts it), so the zip is locked like the file: while still empty, then once more under its final
+    # name. A folder that cannot take the lock (a USB stick, a share) fails the backup with NS-E120 and
+    # writes nothing.
+    carries_keys = (paths.config / SECRETS_FILE).is_file()
+    lock = restrict_to_user if carries_keys else None
+    write_zip_atomic(target, fill, prepare=lock)  # the Desktop never shows a half-written backup
+    if lock is not None and SECRETS_FILE in {Path(e).name for e in entries}:
+        try:
+            lock(target)
+        except OSError:
+            target.unlink(missing_ok=True)  # never leave the keys in a zip whose lock did not hold
+            raise
     return target
 
 
@@ -110,15 +166,15 @@ def restore_backup(
                 if dest.exists():
                     keep = saved / Path(*rel.parts)
                     keep.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(dest, keep)
+                    _copy(dest, keep)
                 touched.append((dest, keep))
                 if name == "data/studio.db":
                     for suffix in ("-wal", "-shm"):  # stale WAL files would corrupt the restored database
                         Path(str(dest) + suffix).unlink(missing_ok=True)
                 dest.parent.mkdir(parents=True, exist_ok=True)
-                with z.open(info) as src:
-                    write_stream_atomic(dest, src)  # a restored file is whole, or still the old one
-            except OSError as e:  # disk full, a locked database, no permission: put everything back
+                _write_member(z, info, dest)
+            except OSError as e:  # disk full, a locked database, no permission, a key file left unlocked
+                # (NS-E120): put everything back
                 undone = _roll_back(touched)
                 raise NsError(
                     "NS-E703", f"restoring {name} failed ({e}); {undone} file(s) put back from {saved.name}"
@@ -128,12 +184,16 @@ def restore_backup(
 
 
 def _roll_back(touched: list[tuple[Path, Path | None]]) -> int:
-    """Undo a half-done restore: copy each saved original back, delete files that did not exist before."""
+    """Undo a half-done restore: copy each saved original back, delete files that did not exist before.
+
+    A file that cannot be put back (the secrets file whose lock fails, too) is not counted: the NS-E703 says
+    how many were, and the saved original stays under `data\\backup\\pre-restore-*`.
+    """
     count = 0
     for dest, keep in reversed(touched):
         try:
             if keep is not None and keep.is_file():
-                shutil.copy2(keep, dest)
+                _copy(keep, dest)
             elif keep is None:
                 dest.unlink(missing_ok=True)
             count += 1

@@ -178,6 +178,7 @@ def run_uninstall(args: argparse.Namespace, cfg: Config) -> int:
 def main(argv: Sequence[str] | None = None) -> int:
     """Entry point."""
     args = parse_args(argv)
+    launch.sweep_leftover_tmp()  # a crash between "create" and "swap" left a ~ns*.tmp in %TEMP% or data dir
     app = app_path_of(args)
     cfg = Config(
         app_path=app,
