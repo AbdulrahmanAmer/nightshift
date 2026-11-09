@@ -19,6 +19,15 @@ A lock that fails leaves the old file as it was and no temporary file. The tempo
 `config/` are swept by the next write (and by the engine at start). A restore from a backup does the same for
 the restored file and for the copy it keeps of the old one (`ns_supervisor/backup.py`). Standard library
 only.
+
+A drive WITHOUT permissions (FAT, exFAT: `GetVolumeInformationW` does not report `FILE_PERSISTENT_ACLS`) has
+no ACL to set, so icacls can only fail there. `volume_keeps_permissions` is the one place that asks, once per
+write, and fails closed (a volume that cannot be asked counts as one that keeps permissions, so a lock that
+then fails is still `NS-E120`). On such a drive the keys file is saved without a lock (it is still DPAPI for
+this PC) and the owner is told ONCE (`NS-W116`): the first caller that can show it claims
+`config/keys_unprotected.json` (`claim_unprotected_notice`) and shows it; nobody shows it again, whatever the
+drive answers later. A restore skips the keys file there and a backup leaves it out
+(`ns_supervisor/backup.py`).
 """
 
 from __future__ import annotations
@@ -34,14 +43,21 @@ import subprocess
 import sys
 import tempfile
 from collections.abc import Callable
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from ns_common.atomic import read_text_retry, sweep_stale_tmp, write_text_atomic
-from ns_common.errors import NsError
+from ns_common.atomic import create_text_atomic, read_text_retry, sweep_stale_tmp, write_text_atomic
+from ns_common.errors import NsError, describe
 from ns_common.paths import Paths
 
 FILE_NAME = "secrets.dpapi"
+#: `GetVolumeInformationW`: the file system keeps per-file permissions (NTFS, ReFS; not FAT or exFAT)
+FILE_PERSISTENT_ACLS = 0x00000008
+#: the one-time warning for a keys file saved on a drive without permissions
+UNPROTECTED_CODE = "NS-W116"
+#: `config/<this>`: written (atomically, once) when that warning has been given
+NOTICE_FILE = "keys_unprotected.json"
 ENTROPY = b"Nightshift/api-keys/v1"
 CRYPTPROTECT_UI_FORBIDDEN = 0x1
 CRYPTPROTECT_LOCAL_MACHINE = 0x4
@@ -60,11 +76,100 @@ LockFn = Callable[[Path], None]
 #: Runs icacls with these arguments: (exit code, what it printed). May raise OSError / SubprocessError.
 IcaclsFn = Callable[[list[str]], tuple[int, str]]
 SidFn = Callable[[], str | None]
+#: Shows the one-time warning: (code, line). Setup's notice, Settings > Keys, the engine's morning note.
+NoticeFn = Callable[[str, str], None]
 
 
 def secret_path(paths: Paths) -> Path:
     """`config\\secrets.dpapi`."""
     return paths.config / FILE_NAME
+
+
+def notice_marker(paths: Paths) -> Path:
+    """`config\\keys_unprotected.json`: there once the `NS-W116` warning was given for this home."""
+    return paths.config / NOTICE_FILE
+
+
+def _volume_flags(path: Path) -> int:
+    """The file-system flags of the volume that holds `path` (`GetVolumeInformationW`). Raises `OSError`.
+
+    `path` need not exist yet: the volume is that of its nearest existing folder (`GetVolumePathNameW`, which
+    also follows a folder that is a mount point to the volume mounted there).
+    """
+    from ctypes import wintypes
+
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)  # own object: no shared `argtypes`
+    k32.GetVolumePathNameW.argtypes = [wintypes.LPCWSTR, wintypes.LPWSTR, wintypes.DWORD]
+    k32.GetVolumePathNameW.restype = wintypes.BOOL
+    k32.GetVolumeInformationW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.LPWSTR,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD),
+        ctypes.POINTER(wintypes.DWORD),
+        ctypes.POINTER(wintypes.DWORD),
+        wintypes.LPWSTR,
+        wintypes.DWORD,
+    ]
+    k32.GetVolumeInformationW.restype = wintypes.BOOL
+    probe = Path(os.path.abspath(path))
+    while not probe.exists() and probe.parent != probe:
+        probe = probe.parent
+    root = ctypes.create_unicode_buffer(1024)
+    if not k32.GetVolumePathNameW(str(probe), root, len(root)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    flags = wintypes.DWORD(0)
+    if not k32.GetVolumeInformationW(root.value, None, 0, None, None, ctypes.byref(flags), None, 0):
+        raise ctypes.WinError(ctypes.get_last_error())
+    return int(flags.value)
+
+
+def volume_keeps_permissions(path: Path) -> bool:
+    """False on a drive that keeps no file permissions (FAT, exFAT); True on NTFS and when it cannot be told.
+
+    Fails closed: when Windows cannot answer (a drive that went away, a call that fails, not Windows) the
+    drive counts as one that keeps permissions, so the lock is tried and a lock that fails is `NS-E120`. Each
+    write asks once and uses the answer for its temp file and its final name alike.
+    """
+    if sys.platform != "win32":
+        return True
+    try:
+        flags = _volume_flags(path)
+    except (OSError, ValueError, AttributeError):
+        return True
+    return bool(flags & FILE_PERSISTENT_ACLS)
+
+
+def unprotected_line(path: Path) -> str:
+    """`NS-W116: <message> (<path>: ...)`, the line every place that shows the one-time warning uses."""
+    why = f"{path}: the drive keeps no file permissions (FAT or exFAT), so it was saved without a lock"
+    try:
+        message = describe(UNPROTECTED_CODE).message
+    except (OSError, KeyError, ValueError):  # contracts/errors.json unreadable: say it plainly instead
+        message = "On this drive Windows cannot keep the file that holds your API keys private."
+    return f"{UNPROTECTED_CODE}: {message} ({why})"
+
+
+def claim_unprotected_notice(paths: Paths, *, now: datetime | None = None) -> bool:
+    """True when the caller is the one to give the `NS-W116` warning for this home: the first time only.
+
+    Writes `config\\keys_unprotected.json` atomically and only if it is not there (of two processes racing for
+    it, one wins). It is never removed, so a drive that answers "no permissions", then "permissions", then "no
+    permissions" again gets one warning, not one per flip. A marker that cannot be written at all (a folder
+    that refuses new files) answers True: the warning is given, and may come again, rather than never.
+    """
+    marker = notice_marker(paths)
+    if marker.exists():
+        return False
+    body = {
+        "code": UNPROTECTED_CODE,
+        "noticed_at": (now or datetime.now()).isoformat(timespec="seconds"),
+        "file": str(secret_path(paths)),
+    }
+    try:
+        return create_text_atomic(marker, json.dumps(body, indent=2) + "\n")
+    except OSError:
+        return True
 
 
 class SecretFileLockError(NsError, PermissionError):
@@ -427,6 +532,7 @@ def store_secret(
     *,
     protect: ProtectFn = dpapi_protect,
     lock_down: LockFn = restrict_to_user,
+    notice: NoticeFn | None = None,
 ) -> Path:
     """Add or replace one secret in `config\\secrets.dpapi`.
 
@@ -434,29 +540,42 @@ def store_secret(
     file, then the keys go in and it is swapped in whole; the final name is checked once more. A lock that
     fails on the temporary file raises (`NS-E120`) and leaves the old file as it was; the check on the final
     name failing raises too, saying that the new file is in place.
+
+    On a drive without permissions (`volume_keeps_permissions`) there is nothing to lock: the file is saved
+    without `lock_down`, and `notice(NS-W116, line)` is called the first time for this home (see
+    `claim_unprotected_notice`). Without a `notice` the one-time warning waits for a caller that can show it.
     """
     sweep_stale_tmp(paths.config)  # a crash between write and swap left every key blob in a ~ns*.tmp
     data = _read_all(paths)
     data[name] = base64.b64encode(protect(value.encode("utf-8"))).decode("ascii")
-    return _write(paths, data, lock_down)
+    return _write(paths, data, lock_down, notice)
 
 
-def delete_secret(paths: Paths, name: str, *, lock_down: LockFn = restrict_to_user) -> bool:
+def delete_secret(
+    paths: Paths, name: str, *, lock_down: LockFn = restrict_to_user, notice: NoticeFn | None = None
+) -> bool:
     """Remove one secret from `config\\secrets.dpapi`; True when it was there. No file: False.
 
-    Written like `store_secret`: a lock that fails raises (`NS-E120`) and the file keeps the key.
+    Written like `store_secret`: a lock that fails raises (`NS-E120`) and the file keeps the key; on a drive
+    without permissions it is written without a lock and `notice` may get the one-time `NS-W116`.
     """
     sweep_stale_tmp(paths.config)
     data = _read_all(paths)
     if name not in data:
         return False
     del data[name]
-    _write(paths, data, lock_down)
+    _write(paths, data, lock_down, notice)
     return True
 
 
-def _write(paths: Paths, data: dict[str, str], lock_down: LockFn) -> Path:
-    path = write_text_atomic(secret_path(paths), json.dumps(data, indent=2) + "\n", prepare=lock_down)
+def _write(paths: Paths, data: dict[str, str], lock_down: LockFn, notice: NoticeFn | None) -> Path:
+    text = json.dumps(data, indent=2) + "\n"
+    if not volume_keeps_permissions(paths.config):  # asked once: the temp file and the final name agree
+        path = write_text_atomic(secret_path(paths), text)
+        if notice is not None and claim_unprotected_notice(paths):
+            notice(UNPROTECTED_CODE, unprotected_line(path))
+        return path
+    path = write_text_atomic(secret_path(paths), text, prepare=lock_down)
     try:
         lock_down(path)  # a rename keeps the temp file's ACL: this checks that the final name has it
     except SecretFileLockError as e:
@@ -464,13 +583,18 @@ def _write(paths: Paths, data: dict[str, str], lock_down: LockFn) -> Path:
     return path
 
 
-def relock_existing(paths: Paths, *, lock_down: LockFn = restrict_to_user) -> list[tuple[Path, str]]:
+def relock_existing(
+    paths: Paths, *, lock_down: LockFn = restrict_to_user, notice: NoticeFn | None = None
+) -> list[tuple[Path, str]]:
     """Lock the key files that already exist; returns `(path, why)` for each one whose lock did not hold.
 
     A `config/secrets.dpapi` written by 0.1.0 to 0.1.14 (icacls could not map `%USERNAME%`, so it exited 1332
     and the file kept `Users` and `Authenticated Users`) stays readable by every local account until the next
     key save. So do the `data/backup/pre-restore-*/config/secrets.dpapi` copies a restore made with
     `shutil.copy2`. The engine calls this at start; it never raises (the caller logs each `NS-E120`).
+
+    A file on a drive without permissions is not a lock that failed: it is left alone, and `notice` gets the
+    one-time `NS-W116` when nobody has given it yet (a file that 0.1.14 or a save without a listener wrote).
     """
     found: list[Path] = []
     live = secret_path(paths)
@@ -481,13 +605,19 @@ def relock_existing(paths: Paths, *, lock_down: LockFn = restrict_to_user) -> li
     except OSError:
         pass
     problems: list[tuple[Path, str]] = []
+    unprotected: Path | None = None
     for path in found:
+        if not volume_keeps_permissions(path):
+            unprotected = unprotected or path
+            continue
         try:
             lock_down(path)
         except SecretFileLockError as e:
             problems.append((path, f"{e.code}: {e.why}"))
         except OSError as e:
             problems.append((path, f"NS-E120: {e}"))
+    if unprotected is not None and notice is not None and claim_unprotected_notice(paths):
+        notice(UNPROTECTED_CODE, unprotected_line(unprotected))
     return problems
 
 

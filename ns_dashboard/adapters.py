@@ -628,10 +628,17 @@ class RealKeyringAdapter:
         #: key name -> what is wrong with its nightly-run copy in `config/secrets.dpapi` (set by `set` and
         #: `delete` when the file refused, cleared when a later write reaches it)
         self._file_problems: dict[str, dict[str, str]] = {}
+        #: key name -> the one-time `NS-W116` (saved, but on a drive without permissions), from the write that
+        #: gave it until the next write of that key
+        self._file_notices: dict[str, dict[str, str]] = {}
 
     def file_problem(self, name: str) -> dict[str, str] | None:
         """`{code, message, hint, detail}` while the file copy of key `name` is out of step; else None."""
         return self._file_problems.get(name)
+
+    def file_notice(self, name: str) -> dict[str, str] | None:
+        """`{code, message, hint, detail}` when the last write of key `name` gave the one-time `NS-W116`."""
+        return self._file_notices.get(name)
 
     def file_problems(self) -> dict[str, dict[str, str]]:
         """Every key whose file copy is out of step (what Settings returns as `key_warnings`)."""
@@ -677,8 +684,10 @@ class RealKeyringAdapter:
         if self.paths is not None:
             from ns_common.secret_file import dpapi_protect, store_secret
 
+            self._file_notices.pop(name, None)
             try:
-                store_secret(self.paths, name, value, protect=self._protect or dpapi_protect)
+                protect = self._protect or dpapi_protect
+                store_secret(self.paths, name, value, protect=protect, notice=self._noticer(name))
             except OSError as e:
                 failures.append(f"file: {e}")
                 if len(failures) == 1:
@@ -697,12 +706,31 @@ class RealKeyringAdapter:
             pass
         if self.paths is not None:
             from ns_common.secret_file import delete_secret
+
+            self._file_notices.pop(name, None)
             try:
-                delete_secret(self.paths, name)
+                delete_secret(self.paths, name, notice=self._noticer(name))
             except OSError as e:  # the file may still hold the key (and `get` finds it there): say so
                 self._warn(name, f"may still be in its nightly-run copy (not removed): {e}", e)
             else:
                 self._file_problems.pop(name, None)
+
+    def _noticer(self, name: str) -> Callable[[str, str], None]:
+        """The `notice` for a write of key `name`: the one-time `NS-W116` (the key IS saved, on a drive that
+        keeps no permissions). Settings > Keys returns it beside the answer, and a WARN goes in the log."""
+
+        def notice(code: str, line: str) -> None:
+            try:
+                definition = describe_error(code)
+                message, hint = definition.message, definition.hint
+            except (KeyError, OSError, ValueError):
+                message, hint = line, ""
+            self._file_notices[name] = {"code": code, "message": message, "hint": hint, "detail": line[:400]}
+            if self.paths is not None:
+                log = NsLogger("dashboard", self.paths.logs, echo=False)
+                log.warn("secret_file_unprotected", line, name=name)
+
+        return notice
 
     def _warn(self, name: str, what: str, error: OSError) -> None:
         """The key file's copy failed (its NS-E120 lock, NS-E119, or the disk): a WARN line in the dashboard

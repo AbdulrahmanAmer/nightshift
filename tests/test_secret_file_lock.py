@@ -349,9 +349,10 @@ def backup_zip(tmp_path: Path, members: list[tuple[str, bytes]]) -> Path:
     return z
 
 
-def test_a_restore_that_cannot_lock_the_secrets_file_rolls_back_and_says_so(
+def test_a_restore_that_cannot_lock_the_secrets_file_skips_it_and_restores_the_rest(
     tmp_path: Path, icacls: FakeIcacls
 ) -> None:
+    """F-9 failed the whole restore here (NS-E703, everything put back); F-9b skips that one file."""
     from ns_supervisor import backup
 
     paths = paths_for(tmp_path)
@@ -362,12 +363,11 @@ def test_a_restore_that_cannot_lock_the_secrets_file_rolls_back_and_says_so(
     members = [("config/ui_prefs.json", b'{"theme": "new"}'), ("config/secrets.dpapi", b"{}\n")]
     z = backup_zip(tmp_path, members)
     icacls.grant_exit = 1332
-    with pytest.raises(NsError) as ei:
-        backup.restore_backup(paths, z)
-    assert ei.value.code == "NS-E703" and "NS-E120" in ei.value.detail, ei.value.detail
-    assert "put back" in ei.value.detail
+    lines = backup.restore_backup(paths, z)
+    assert "restored config/ui_prefs.json" in lines
+    assert any(ln.startswith("skipped config/secrets.dpapi (NS-E120") for ln in lines), lines
     assert secret_path(paths).read_bytes() == before
-    assert prefs.read_text(encoding="utf-8") == '{"theme": "old"}'
+    assert prefs.read_text(encoding="utf-8") == '{"theme": "new"}'
     assert config_names(paths) == ["secrets.dpapi", "ui_prefs.json"]
     # the copy a restore keeps of the old file was never written under the folder's ACL
     assert not [p for p in paths.backup_dir.rglob("*") if p.is_file() and p.name != "ui_prefs.json"]

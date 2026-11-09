@@ -174,17 +174,26 @@ def forget(paths: Paths, owner_id: str) -> None:
 
 # ---------------------------------------------------------------- is anybody there
 def lock_held(paths: Paths, owner_id: str) -> bool:
-    """True while some process (this one too) holds the lock of `owner_id`."""
+    """True while some process (this one too) holds the lock of `owner_id`, or when it cannot be probed.
+
+    Fails closed: an `OSError` while opening the lock file (another program holds it, the folder lost a
+    permission) is "held", never "free", so `liveness` says "live" and nobody closes work that may be running:
+    `recover` leaves it open for its next call, the planner (`in_progress`, cadence) counts it, `run_state`
+    says running and `studio status` lists it as working.
+    """
     path = lock_path(paths, owner_id)
-    if not path.exists():
-        return False
+    try:
+        if not path.exists():  # no lock file: nobody ever held it
+            return False
+    except OSError:
+        return True
     probe = FileLock(path)
     try:
         probe.acquire()
     except AlreadyRunning:
         return True
     except OSError:
-        return False
+        return True  # could not look: assume the owner is alive (fail closed)
     probe.release()
     return False
 

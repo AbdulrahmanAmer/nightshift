@@ -85,11 +85,17 @@ class SettingsService:
         ask: Any = getattr(self.s.adapters.keyring, "file_problem", None)
         return ask(full) if ask is not None else None
 
+    def _key_notice(self, full: str) -> dict[str, str] | None:
+        """The one-time `NS-W116` the last write of key `full` gave: saved, on a drive without permissions."""
+        ask: Any = getattr(self.s.adapters.keyring, "file_notice", None)
+        return ask(full) if ask is not None else None
+
     def _key_warnings(self) -> dict[str, dict[str, str]]:
-        """Short key name -> `{code, message, hint, detail}` for every key whose file copy is out of step."""
+        """Short key name -> `{code, message, hint, detail}` for every key whose file copy is out of step, or
+        whose last write gave the one-time `NS-W116`."""
         out: dict[str, dict[str, str]] = {}
         for short, full in KEY_ALIASES.items():
-            problem = self._key_problem(full)
+            problem = self._key_problem(full) or self._key_notice(full)
             if problem:
                 out[short] = problem
         return out
@@ -120,7 +126,8 @@ class SettingsService:
             "flags": flags,
             "keys": self._key_flags(),
             # a key whose copy for nightly runs (config/secrets.dpapi) could not be saved or locked, with the
-            # code (NS-E120 / NS-E119) and its hint: the night run reads the file, not Credential Manager
+            # code (NS-E120 / NS-E119) and its hint: the night run reads the file, not Credential Manager; or
+            # the one-time NS-W116 (saved on a drive without permissions) the last save of that key gave
             "key_warnings": self._key_warnings(),
             "notifications": bool(stored["notifications"]),
             "runtime_locked": True,
@@ -210,6 +217,12 @@ class SettingsService:
                     "name": full, "set": True, "warning": problem,
                     "message": f"{problem['code']}: the key is still stored for nightly runs. {problem['hint']}",
                 }
+            notice = self._key_notice(full)
+            if notice:  # cleared; the rest of the file was saved without a lock (once per home)
+                return {
+                    "name": full, "set": False, "warning": notice,
+                    "message": f"Key cleared. {notice['code']}: {notice['message']} {notice['hint']}",
+                }
             return {"name": full, "set": False}
         if len(secret) > 512:
             raise ApiError(400, "bad_key", "Paste the key without spaces (up to 512 characters).")
@@ -243,6 +256,13 @@ class SettingsService:
                 f"{problem['code']}: the copy of the {service} key that nightly runs read when Credential "
                 f"Manager is out of reach was not updated (it may still be an older key). {problem['hint']}"
             )
+            out["message"] = f"{out['message']}. {note}" if out.get("message") else f"Key saved. {note}"
+            return out
+        notice = self._key_notice(full)
+        if notice:
+            # saved in both places, but on a drive that keeps no permissions: said once per home
+            out["warning"] = notice
+            note = f"{notice['code']}: {notice['message']} {notice['hint']}"
             out["message"] = f"{out['message']}. {note}" if out.get("message") else f"Key saved. {note}"
         return out
 

@@ -124,6 +124,8 @@ Every message has a code like `NS-E104`, a sentence and a "What to do". In the s
 | NS-E117 | The install folder name has characters the model programs cannot open | Use a folder name with plain English letters, digits, spaces, - and _, then press Retry. |
 | NS-E115 | The program files could not be copied into the install folder | Make sure the install folder is not the folder you extracted the zip to, close any window that shows it, press Retry. |
 | NS-E113 | Antivirus blocked a file | Press **Open Protection history**, allow the Nightshift file there, then press Retry. Adding the install folder as an exclusion stops it happening again. If the message says Smart App Control: it blocks programs it does not know and cannot allow one file; turn it off in Windows Security > App & browser control > Smart App Control settings (it cannot be turned back on without reinstalling Windows), then press Retry. It is also the code when a downloaded program (`llama-server.exe`, `qwen-tts.exe`, `yt-dlp.exe`) is missing after it was unpacked: the scanner removed it. |
+| NS-E120 | The file that holds your API keys (`config\secrets.dpapi`) could not be limited to your Windows account | Press Retry (or save the key again in Settings). If the drive is FAT or exFAT Windows cannot keep it private: move NIGHTSHIFT_HOME to an NTFS drive. On an NTFS drive, check that your account owns the Nightshift folder and that no sync or backup tool changes its permissions, then send the diagnostics zip. The keys in Credential Manager are not affected. |
+| NS-W116 | On this drive Windows cannot keep the keys file private | The drive that holds NIGHTSHIFT_HOME is FAT or exFAT (no file permissions), so `config\secrets.dpapi` was saved without a lock: it still works and is useless on another PC, but any account on this PC could read it. To keep it private, move NIGHTSHIFT_HOME to an NTFS drive. Shown once. |
 | NS-E501 / NS-E502 | Pexels or Pixabay key rejected | Copy the key again from the website (no spaces) and paste it. |
 | NS-E108 / NS-E112 | Graphics card libraries not found | Press **Save a help file** and send that file. Nothing else to do. |
 
@@ -220,7 +222,9 @@ step is still to do.
 Your Pexels and Pixabay keys are kept in Windows Credential Manager. The night run may start in a Windows session that
 cannot read it, so setup also stores the keys in `config\secrets.dpapi`, a file Windows encrypts for this PC. The night run
 uses that file when Credential Manager has nothing. The file is useless on another PC and never goes into the
-diagnostics zip. If footage is missing after you moved to another PC, open **Settings > Stock footage keys** in the
+diagnostics zip. Nightshift limits the file to your Windows account; on a FAT or exFAT drive (no file
+permissions) it cannot, so the file is saved anyway and you are told once (`NS-W116`), a restore leaves the keys
+file as it was and a backup to such a drive leaves it out. If footage is missing after you moved to another PC, open **Settings > Stock footage keys** in the
 dashboard and save the keys again: it writes both places. Running INSTALL.cmd again does not ask for keys when
 the install is finished: the window then opens on **Nightshift is ready** (same version) or offers the update
 (newer zip).
