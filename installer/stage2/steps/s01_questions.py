@@ -36,6 +36,7 @@ from installer.stage2.sysinfo import (
     recommended_tier,
     required_free_gb,
 )
+from installer.stage2.web.pathcheck import FOLDER_FOREIGN, folder_kind, foreign_warning, layout_problem
 from installer.stage2.winenv import HOME_VAR, get_user_env, set_user_env
 from ns_common.errors import NsError
 from ns_common.pathrules import ascii_problem
@@ -142,6 +143,13 @@ class S01Questions(Step):
         return True
 
     # ---- home ----
+    @staticmethod
+    def _taken(ctx: StepContext, candidate: Path) -> bool:
+        """A default folder that must not be offered: someone's other files are in it, or the extracted
+        program (D-21). An earlier install or its kept data is offered: it is the way back to them."""
+        return (folder_kind(str(candidate)) == FOLDER_FOREIGN
+                or layout_problem(str(candidate), ctx.app_path) is not None)
+
     def _pick_home(self, ctx: StepContext, tier: str, custom_bytes: int | None = None) -> Path:
         need = MIN_FREE_GB if ctx.dev_mode else required_free_gb(tier, custom_bytes)
         provided = ctx.raw_answers.get("home_path")
@@ -152,7 +160,7 @@ class S01Questions(Step):
                 home = ctx.paths.home
             else:
                 drives = drives_from_preflight(ctx.preflight) or local_drives()
-                default = choose_default_home(drives, need) or ctx.paths.home
+                default = choose_default_home(drives, need, lambda p: self._taken(ctx, p)) or ctx.paths.home
                 free = ctx.free_gb_fn(default)
                 if ctx.ui.interactive:
                     reply = ctx.ui.ask(f"Install folder ({free:.0f} GB free there)", str(default))
@@ -164,6 +172,11 @@ class S01Questions(Step):
                     raise make_error("NS-E117", f"{home}: {problem}")
                 ctx.ui.say(f"{problem}. Pick another folder.", "red")
                 continue
+            if home != ctx.paths.home and folder_kind(str(home)) == FOLDER_FOREIGN:
+                ctx.ui.say(foreign_warning(str(home)), "yellow")        # D-21: no word, was the defect
+                typed = not (provided or ctx.home_forced) and ctx.ui.interactive
+                if typed and not ctx.ui.confirm("Install there anyway?", False):
+                    continue
             free = ctx.free_gb_fn(home)
             if free >= need:
                 return home

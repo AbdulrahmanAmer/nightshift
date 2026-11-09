@@ -306,6 +306,7 @@ class Effects:
     clipboard: Callable[[str], None] = copy_to_clipboard
     pick_folder: Callable[[str, str], str | None] = folderdialog.pick_folder      # (title, start) -> path
     drive_type: Callable[[str], int] = preflight.default_drive_type               # GetDriveTypeW of a letter
+    folder_kind: Callable[[str], str] = pathcheck.folder_kind                    # what is in a folder (D-21)
     vc_missing: Callable[[], list[str]] = vcruntime_missing                      # DLLs not in System32
     fetch_file: Callable[..., None] = bootstrap.download_file                    # pinned direct downloads
     run_elevated: Callable[..., bootstrap.CmdResult] = bootstrap.run_elevated_exe
@@ -806,7 +807,8 @@ class SetupController:
             return preflight.disk_check(path, tier, state["machine"]["drives"], self.fx.free_gb, models=found)
         return preflight.disk_check(path, tier, state["machine"]["drives"], self.fx.free_gb,
                                     drive_type_fn=self.fx.drive_type, layout_fn=self._layout_problem,
-                                    existing_fn=self._existing_install_note, dev=self.dev)
+                                    existing_fn=self._existing_install_note, kind_fn=self.fx.folder_kind,
+                                    dev=self.dev)
 
     def pick_folder(self, body: dict[str, Any]) -> dict[str, Any]:
         """``POST /api/pick-folder``: the Windows folder dialog, then the same check as typing the path.

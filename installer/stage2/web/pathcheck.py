@@ -12,7 +12,7 @@ from __future__ import annotations
 import ntpath
 import os
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 
 from ns_common.pathrules import NON_ASCII_PROBLEM, ascii_problem  # noqa: F401 - re-exported for callers
 
@@ -116,6 +116,10 @@ def layout_problem(
       cannot sit inside the folder it is copied from, and the extracted folder is meant to be deleted later.
       A zip extracted straight into a drive root is the exception: the root holds every folder of the drive,
       so only the root itself is refused and the other folders of that drive are fine;
+    * a folder that has the extracted folder inside it (D-21: ``D:\\NightShift`` around
+      ``D:\\NightShift\\runs\\dev-0.1.12``): setup would build its folders around the zip's files, and
+      deleting the zip afterwards would be deleting inside the install folder. ``<home>\\app`` is the
+      installed copy and is fine;
     * Downloads and OneDrive folders: Windows cleans or syncs them, and sync locks break the update swap.
     """
     h = _norm(home.strip())
@@ -127,6 +131,9 @@ def layout_problem(
                     "be deleted afterwards")
         if _inside(h, a) and not _is_drive_root(a):
             return "That folder is inside the folder you extracted Nightshift to. Pick a folder outside it"
+        if _inside(a, h) and a != _norm(h.rstrip("\\") + "\\app"):        # <home>\app is the installed copy
+            return ("That folder has the folder you extracted Nightshift to inside it. Pick a folder "
+                    f"outside it, such as {EXAMPLE}")
     why = "Windows cleans or syncs it and Nightshift's files get locked"
     for label, root in sync_roots(env):
         if _inside(h, root):
@@ -137,3 +144,91 @@ def layout_problem(
     if len(parts) >= 3 and parts[0] == "users" and parts[2] == "downloads":
         return f"Do not install into the Downloads folder: {why}. Pick a folder such as {EXAMPLE}"
     return None
+
+
+# ---------------------------------------------------------------------------------------------------------
+# what is already in the folder (D-21, D-22): one rule for Browse, a typed path and the default suggestion
+# ---------------------------------------------------------------------------------------------------------
+# Marker files as (folder, file). A running or finished install has the first group. An install that was
+# uninstalled "keeping my data" has only what the uninstaller leaves: it deletes config\install_state.json
+# and the program folder, and keeps the settings and the studio database. stage1.ps1 (Get-FolderKind) picks
+# the default folder before any Python exists and repeats these lists; a test keeps the two together.
+HOME_MARKERS = (("config", "install_state.json"), ("app", "VERSION"))
+KEPT_MARKERS = (("config", "answers.json"), ("config", "runtime.json"), ("data", "studio.db"))
+
+FOLDER_NEW = "new"              # does not exist (or cannot be read): used as given
+FOLDER_EMPTY = "empty"
+FOLDER_HOME = "home"            # a Nightshift install
+FOLDER_KEPT = "kept"            # an uninstalled Nightshift home that kept its data
+FOLDER_FOREIGN = "foreign"      # something else, with files in it
+
+
+def _join(path: str, *names: str) -> str:
+    return path.rstrip("\\") + "\\" + "\\".join(names)
+
+
+def _has_file(path: str, folder: str, name: str, listdir: Callable[[str], list[str]]) -> bool:
+    try:
+        return name.lower() in {n.lower() for n in listdir(_join(path, folder))}
+    except OSError:
+        return False
+
+
+def folder_kind(path: str, *, listdir: Callable[[str], list[str]] = os.listdir) -> str:
+    """What ``path`` is: new, empty, a Nightshift home, a kept-data home or a foreign folder."""
+    p = path.strip()
+    if len(p) == 2 and p[1] == ":":
+        p += "\\"
+    try:
+        names = listdir(p)
+    except OSError:
+        return FOLDER_NEW
+    if not names:
+        return FOLDER_EMPTY
+    if any(_has_file(p, f, n, listdir) for f, n in HOME_MARKERS):
+        return FOLDER_HOME
+    if any(_has_file(p, f, n, listdir) for f, n in KEPT_MARKERS):
+        return FOLDER_KEPT
+    return FOLDER_FOREIGN
+
+
+def suggest_new_folder(path: str, exists: Callable[[str], bool] = os.path.exists) -> str:
+    """A folder name next to ``path`` that is not taken yet: D:\\Nightshift gives D:\\Nightshift-2."""
+    base = path.strip().rstrip("\\")
+    if len(base) <= 2:
+        return f"{base[:2]}\\Nightshift"
+    for n in range(2, 100):
+        if not exists(f"{base}-{n}"):
+            return f"{base}-{n}"
+    return f"{base}-new"
+
+
+def foreign_warning(path: str, exists: Callable[[str], bool] = os.path.exists) -> str:
+    """The sentence the window shows for a folder that holds other files (D-21)."""
+    where = path.strip()
+    if len(where) > 3:
+        where = where.rstrip("\\")
+    return (f"{where} already has other files in it. Pick an empty folder or a new one, such as "
+            f"{suggest_new_folder(path, exists)}")
+
+
+def install_folder_for(picked: str, *, listdir: Callable[[str], list[str]] = os.listdir) -> str:
+    """The install folder to use for a folder picked with Browse.
+
+    A drive root (D:) or a foreign folder gets a ``Nightshift`` folder inside it: setup, update and uninstall
+    own everything in the install folder and must not touch someone's documents. An empty folder (also one
+    made with the dialog's "Make New Folder"), a Nightshift home and a kept-data home (D-22: the folder an
+    uninstall left with the owner's videos and settings, so a reinstall gets them back) are used as picked.
+    A typed path is not changed; it gets the same ``folder_kind`` and a warning.
+    """
+    path = picked.strip()
+    if len(path) == 2 and path[1] == ":":
+        path += "\\"
+    if not DRIVE_PATH_RE.match(path):
+        return path                                      # not a path on a drive: the validation says why
+    if len(path) == 3:
+        return path + "Nightshift"
+    path = path.rstrip("\\")
+    if folder_kind(path, listdir=listdir) == FOLDER_FOREIGN:
+        return path + "\\Nightshift"
+    return path

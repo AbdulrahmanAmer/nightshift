@@ -158,7 +158,8 @@ def fake_effects(base: Path, present: set[str] | None = None, **overrides: Any) 
         elevate_longpaths=lambda: True, console=lambda text, level: console.append(text),
         uv_path=lambda home: str(uv), clipboard=lambda text: None, fetch_uv=fetch_uv,
         pick_folder=lambda title, start: next_pick.pop(0) if next_pick else DEFAULT_PICK,
-        drive_type=lambda _letter: 3, vc_missing=cmd.vc_missing, fetch_file=fetch_file,
+        drive_type=lambda _letter: 3, folder_kind=lambda _path: "new", vc_missing=cmd.vc_missing,
+        fetch_file=fetch_file,
         run_elevated=run_elevated, add_user_path=add_user_path,
         set_execution_state=lambda flags: (awake.append(flags), 0)[1],
     )
