@@ -322,8 +322,8 @@ def test_push_runs_for_main_and_tags_only_and_a_pull_request_is_tested_by_its_ow
     assert set(on) == {"push", "pull_request", "schedule"}
 
 
-def test_a_newer_push_still_cancels_the_older_run_of_the_same_kind(ci: dict[str, Any]):
-    assert ci["concurrency"]["cancel-in-progress"] is True
+def test_a_newer_push_still_cancels_the_older_run_of_the_same_pull_request(ci: dict[str, Any]):
+    # H-12: only pull request runs are cancelled (the rest is tested at the end of this file)
     group = ci["concurrency"]["group"]
     assert "github.event_name" in group and "github.head_ref" in group
 
@@ -722,3 +722,78 @@ def test_every_script_the_workflows_call_exists():
         "dev/ci_shard_weights.json",
     ):
         assert (ROOT / rel).is_file(), rel
+
+
+# ---- H-12: a push to main is never cancelled, a pull request run is --------------------------------------
+def _concurrency_for(
+    ci: dict[str, Any], event: str, ref: str, head_ref: str = "", sha: str = ""
+) -> tuple[str, bool]:
+    """Evaluate ci.yml's concurrency group and cancel-in-progress for one event.
+
+    The two expressions use only `github.<field>`, `format()`, `==`, `&&`, `||` and quoted strings, which
+    Python reads the same way (GitHub's `&&`/`||` also return an operand), so they are evaluated here and
+    not pattern-matched."""
+    from types import SimpleNamespace
+
+    # `ref` is the short name; GitHub's github.ref is refs/tags/<name> for a v* tag and refs/heads/<name> else
+    full = f"refs/tags/{ref}" if re.match(r"v\d", ref) else f"refs/heads/{ref}"
+    github = SimpleNamespace(event_name=event, ref_name=ref, ref=full, head_ref=head_ref, sha=sha)
+
+    def value(expr: str) -> Any:
+        py = expr.replace("&&", " and ").replace("||", " or ")
+        # format('{0}-{1}', a, b) is GitHub's format(); Python's str.format reads the same template
+        return eval(py, {"__builtins__": {}}, {"github": github, "format": lambda t, *a: t.format(*a)})  # noqa: S307
+
+    conc = ci["concurrency"]
+    group = re.sub(r"\$\{\{(.*?)\}\}", lambda m: str(value(m.group(1).strip())), conc["group"])
+    cancel = conc["cancel-in-progress"]
+    if isinstance(cancel, str):
+        cancel = value(re.fullmatch(r"\$\{\{(.*)\}\}", cancel.strip()).group(1).strip())  # type: ignore[union-attr]
+    return group, cancel
+
+
+def test_a_push_to_main_is_never_cancelled_but_a_superseded_pull_request_run_is(ci: dict[str, Any]):
+    assert ci["concurrency"]["cancel-in-progress"] == "${{ github.event_name == 'pull_request' }}"
+    for event, ref in (("push", "main"), ("push", "v0.1.15-rc1"), ("schedule", "main")):
+        assert _concurrency_for(ci, event, ref, sha="a" * 40)[1] is False, (event, ref)
+    pr = _concurrency_for(ci, "pull_request", "190/merge", head_ref="orchestrator/h11-docs-fast-path")
+    assert pr[1] is True
+
+
+def test_every_push_to_main_has_its_own_concurrency_group(ci: dict[str, Any]):
+    # cancel-in-progress: false alone is not enough: GitHub keeps one running and ONE pending run per group
+    # and cancels an older pending run when a newer one arrives. Six pushes in a row would still lose the
+    # middle ones. So a push has the commit in its group name, and no two pushes share a group.
+    one = _concurrency_for(ci, "push", "main", sha="1" * 40)[0]
+    two = _concurrency_for(ci, "push", "main", sha="2" * 40)[0]
+    assert one != two
+    # a pull request keeps one group per branch, so a newer push to it replaces the older run
+    pr1 = _concurrency_for(ci, "pull_request", "190/merge", head_ref="feat/x", sha="1" * 40)[0]
+    pr2 = _concurrency_for(ci, "pull_request", "190/merge", head_ref="feat/x", sha="2" * 40)[0]
+    other = _concurrency_for(ci, "pull_request", "191/merge", head_ref="feat/y", sha="3" * 40)[0]
+    assert pr1 == pr2 and pr1 != other
+
+
+def test_a_tag_run_never_shares_a_group_with_the_main_push_or_another_tag_on_the_same_commit(
+    ci: dict[str, Any],
+):
+    # a release tag points at the commit the main push already ran on, and an rc and the final can be tagged
+    # on one commit. With only the sha in the group they would share a group, and the second would queue
+    # behind the first, and a third would replace the pending one. Each ref gets its own group.
+    sha = "c" * 40
+    refs = ("main", "v0.1.15-rc1", "v0.1.15-rc2", "v0.1.15")
+    groups = {_concurrency_for(ci, "push", ref, sha=sha)[0] for ref in refs}
+    assert len(groups) == 4, groups
+
+
+def test_the_ci_concurrency_group_cannot_cancel_another_workflow(ci: dict[str, Any], release: dict[str, Any]):
+    # group names are shared by every workflow of the repository: ci.yml's carry the `ci-` prefix and
+    # release.yml's and build-qwentts.yml's start with their own names, so a run of one never touches another
+    ci_groups = {
+        _concurrency_for(ci, event, "main", head_ref="main", sha="f" * 40)[0]
+        for event in ("push", "pull_request", "schedule")
+    }
+    assert all(g.startswith("ci-") for g in ci_groups), ci_groups
+    for other in ("release.yml", "build-qwentts.yml"):
+        group = str(load(other)["concurrency"]["group"])
+        assert not group.startswith("ci-"), (other, group)

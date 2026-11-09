@@ -51,6 +51,8 @@ def parse_version(text: str) -> tuple[int, int, int, int, str]:
     if not m:
         raise ValueError(f"not a version: {text!r}")
     pre = m.group(4) or ""
+    # numbers inside the prerelease part sort as numbers: rc2 is before rc10 (as text "rc10" < "rc2")
+    pre = re.sub(r"\d+", lambda d: d.group().zfill(9), pre)
     return int(m.group(1)), int(m.group(2)), int(m.group(3)), 0 if pre else 1, pre
 
 
@@ -98,8 +100,13 @@ def status_words(r: httpx.Response) -> str:
 
 
 def parse_release(data: dict[str, Any]) -> Release:
-    """A `Release` from the API's JSON. `NS-E701` when it has no usable tag."""
+    """A `Release` from the API's JSON. `NS-E701` when it has no usable tag or is a prerelease or a draft.
+
+    GitHub's `/releases/latest` never returns either, but the updater does not rely on that alone (H-12): a
+    release candidate (`v0.1.15-rc1`) must never be offered as the update, whatever the endpoint answers."""
     tag = str(data.get("tag_name") or "")
+    if data.get("prerelease") or data.get("draft"):
+        raise NsError("NS-E701", f"the latest release {tag!r} is a prerelease or a draft, not an update")
     try:
         parse_version(tag)
     except ValueError as e:
