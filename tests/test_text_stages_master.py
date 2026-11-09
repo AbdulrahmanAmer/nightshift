@@ -401,8 +401,8 @@ def test_local_models_enforce_spec_constraints():
     Plan(target_minutes=10, target_words=1550, chapters=chapters)
     with pytest.raises(ValidationError):
         Plan(target_minutes=10, target_words=1550, chapters=chapters[:4])
-    with pytest.raises(ValidationError):
-        Plan(target_minutes=8, target_words=1550, chapters=chapters)
+    with pytest.raises(ValidationError):  # H-8b: the engine test plans 4 minutes; no length is refused
+        Plan(target_minutes=0, target_words=1550, chapters=chapters)
     clips = json.loads((FIXTURES_LLM / "clip_select.json").read_text(encoding="utf-8"))["clips"]
     assert [ClipPlanItem.model_validate(c).k for c in clips] == [1, 2, 3]
     assert all(c["end_s"] - c["start_s"] >= 20 for c in clips)

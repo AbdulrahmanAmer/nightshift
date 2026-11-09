@@ -181,7 +181,8 @@ def match_rows(db: Db, rows: list[Row]) -> tuple[dict[str, Row], list[Row]]:
         if vid:
             by_id[vid] = u["output_id"]
     titles: dict[str, list[str]] = {}
-    for o in db.query("select output_id, title from outputs"):
+    # a test output (tiny_story) was never published: no analytics row is matched to it by title
+    for o in db.query("select output_id, title from outputs where profile is null"):
         titles.setdefault(o["title"].strip(), []).append(o["output_id"])
     matched: dict[str, Row] = {}
     unmatched: list[Row] = []
