@@ -41,8 +41,8 @@ def _stage_table_is_restored() -> Iterator[None]:
     """Put `FORMAT_STAGES` back after every test.
 
     `jobs.prepare_plan` writes the policy gates and the Short combos into the module-level stage table
-    (`policy/gate.py` `install_gates`, `variation/stages.py` `install_short_combos`), so a test that prepares a
-    plan left the table changed for every later test in the same process. Which tests share a process depends
+    (`policy/gate.py` `install_gates`, `variation/stages.py` `install_short_combos`), so a test that prepares
+    a plan left the table changed for every later test in the same process. Which tests share a process depends
     on the shard split: `test_job_disk_room` then `test_policy_p04` failed on PR 206 and passed on main. The
     product fix (card D-stages: the table is never written after the stage modules are loaded) is under way;
     until it lands this keeps one test from failing another.
