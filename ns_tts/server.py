@@ -17,9 +17,12 @@ import threading
 import time
 import wave
 import zlib
+from collections.abc import Iterator
+from contextlib import AbstractContextManager, contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
+import anyio
 import numpy as np
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
@@ -33,7 +36,7 @@ from ns_common.models import Runtime
 from ns_common.paths import Paths
 from ns_common.tts_timeout import TTS_TIMEOUT_CAP_S, tts_timeout_s
 from ns_tts.audio import chunk_text, stitch, trim_silence, wav_bytes, write_wav
-from ns_tts.engine import BatchInterrupted, Engine, design_model_message, select_engine
+from ns_tts.engine import BatchInterrupted, Engine, design_model_message, fake_speech_for, select_engine
 from ns_tts.voices import VoiceLibrary, VoiceSpec
 
 _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
@@ -126,6 +129,22 @@ def create_app(engine: Engine, library: VoiceLibrary, *, log: NsLogger | None = 
         if not engine.loaded:
             engine.load()
 
+    @contextmanager
+    def watching(request: Request) -> Iterator[None]:
+        """While the request runs, an engine that waits on purpose (the fake's developer delay) can ask
+        whether the client has gone away. The engine's thread is a worker thread of this app, so it may call
+        back into the event loop; with no such engine this does nothing."""
+        watch = getattr(engine, "watch_client", None)
+        if not callable(watch):
+            yield
+            return
+
+        def gone() -> bool:
+            return bool(anyio.from_thread.run(request.is_disconnected))
+
+        with cast("AbstractContextManager[None]", watch(gone)):
+            yield
+
     def get_voice(name: str) -> VoiceSpec:
         try:
             return library.get(name)
@@ -199,12 +218,19 @@ def create_app(engine: Engine, library: VoiceLibrary, *, log: NsLogger | None = 
     @app.get("/health")
     def health() -> dict[str, Any]:
         # engine_kind: "qwentts", "reference" (PyTorch fallback: `ns verify` reports NS-W301) or "fake"
-        return {
+        body: dict[str, Any] = {
             "ok": True,
             "engine": engine.name,
             "engine_kind": engine.name,
             "model_loaded": bool(engine.loaded),
         }
+        # The fake says how it speaks: voice_mode "sapi" (the text, in the Windows voice named by `voice`) or
+        # "tones" (bursts; `voice_fallback` and `voice_warning` when a SAPI voice was wanted but is missing).
+        describe = getattr(engine, "describe", None)
+        info = describe() if callable(describe) else None
+        if isinstance(info, dict):
+            body.update(info)
+        return body
 
     @app.get("/v1/voices")
     def voices() -> list[dict[str, str]]:
@@ -214,11 +240,11 @@ def create_app(engine: Engine, library: VoiceLibrary, *, log: NsLogger | None = 
         ]
 
     @app.post("/v1/audio/speech")
-    def speech(req: SpeechReq) -> Response:
+    def speech(req: SpeechReq, request: Request) -> Response:
         if req.response_format != "wav":
             raise HTTPException(400, "only response_format 'wav' is supported")
         voice = with_language(get_voice(req.voice), req.language)
-        with lock:
+        with lock, watching(request):
             x = render(req.input, voice, req.speed, req.seed, req.cliff_lines)
             sr = engine.sr
         return Response(content=wav_bytes(x, sr), media_type="audio/wav")
@@ -239,7 +265,7 @@ def create_app(engine: Engine, library: VoiceLibrary, *, log: NsLogger | None = 
         return None
 
     @app.post("/v1/audio/speech/batch")
-    def speech_batch(req: BatchReq) -> dict[str, Any]:
+    def speech_batch(req: BatchReq, request: Request) -> dict[str, Any]:
         ids = [it.id for it in req.items]
         if any(not _ID_RE.match(i) for i in ids) or len(set(ids)) != len(ids):
             raise HTTPException(400, "item ids must be unique and file-name safe (letters, digits, . _ -)")
@@ -248,7 +274,7 @@ def create_app(engine: Engine, library: VoiceLibrary, *, log: NsLogger | None = 
         found: dict[str, dict[str, Any]] = {}
         total = 0.0
         t0 = time.perf_counter()
-        with lock:
+        with lock, watching(request):
             entries = [
                 (it.input, with_language(voices_by_name[it.voice], it.language), it.speed, it.cliff_lines)
                 for it in req.items
@@ -309,7 +335,7 @@ def create_app(engine: Engine, library: VoiceLibrary, *, log: NsLogger | None = 
         return {"cancelled": stopped}
 
     @app.post("/v1/voices/design", response_model=None)
-    def design(req: DesignReq) -> Any:
+    def design(req: DesignReq, request: Request) -> Any:
         missing = engine.missing_model("design")
         if missing:  # the installer or `ns models get voicedesign` downloads it; nothing is fetched here
             return JSONResponse(
@@ -317,7 +343,7 @@ def create_app(engine: Engine, library: VoiceLibrary, *, log: NsLogger | None = 
                 content=missing_body(missing, "NS-E314", design_model_message(missing)),
             )
         try:
-            with lock:
+            with lock, watching(request):
                 ensure_loaded()
                 v = library.add_design(
                     req.name, req.description, engine=engine, language=language_name(req.language)
@@ -327,7 +353,7 @@ def create_app(engine: Engine, library: VoiceLibrary, *, log: NsLogger | None = 
         return {"name": v.name, "sample_path": str(library.sample_path(v.name))}
 
     @app.post("/v1/voices/clone", response_model=None)
-    def clone(req: CloneReq) -> Any:
+    def clone(req: CloneReq, request: Request) -> Any:
         if not req.rights_confirmed:
             raise HTTPException(400, "rights_confirmed must be true: you must be allowed to clone this voice")
         missing = engine.missing_model("clone")
@@ -341,7 +367,7 @@ def create_app(engine: Engine, library: VoiceLibrary, *, log: NsLogger | None = 
                 ),
             )
         try:
-            with lock:
+            with lock, watching(request):
                 ensure_loaded()
                 v = library.add_clone(
                     req.name,
@@ -393,7 +419,8 @@ def main() -> None:
             raise
         rt = Runtime()
     log = NsLogger("tts", paths.logs)
-    engine = select_engine(rt.tts, paths, args.engine)
+    speech = fake_speech_for(rt.tts, dev_mode=rt.dev_mode)  # "sapi" only on an engine-test install
+    engine = select_engine(rt.tts, paths, args.engine, fake_speech=speech)
     try:
         engine.load()
     except NsError as e:

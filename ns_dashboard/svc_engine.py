@@ -288,14 +288,38 @@ class EngineService:
         return {"ok": True}
 
     # --- commands ---
-    def warmup(self, service: str | None) -> dict[str, Any]:
-        """Start `service` (default `llama`) so the first job is fast."""
+    def check_warmup(self, service: str | None) -> str:
+        """The service `warmup` would start; refuses an unknown name and an engine that does not answer.
+
+        The Assistant runs this before it shows its confirm card (D-27). The engine check is one status
+        call: `link.warmup` needs the same engine, so a card for it would only be pressed into a refusal.
+        """
         name = service or "llama"
         if name not in SERVICE_LABELS:
             raise ApiError(422, "unknown_service", f"Unknown service '{name}'.")
+        if self.s.link.status() is None:
+            raise SupervisorUnavailable()
+        return name
+
+    def warmup(self, service: str | None) -> dict[str, Any]:
+        """Start `service` (default `llama`) so the first job is fast."""
+        name = self.check_warmup(service)
         result = self.s.link.warmup(name)
         self.s.log.info("engine_warmup", service=name)
         return result
+
+    def check_shutdown(self, grace_s: int | None) -> int:
+        """The grace period `shutdown` would use; refuses one out of range and an engine that does not answer.
+
+        `shutdown` starts with this and the Assistant runs it before it shows its confirm card (D-27), so the
+        card and the Yes cannot disagree.
+        """
+        grace = int(grace_s) if grace_s is not None else 30
+        if not 0 <= grace <= 300:
+            raise ApiError(422, "invalid_options", "'grace_s' must be between 0 and 300.")
+        if self.s.link.status() is None:
+            raise SupervisorUnavailable()  # nothing to stop: keep refusing with 503 `engine_offline`
+        return grace
 
     def shutdown(self, grace_s: int | None) -> dict[str, Any]:
         """Quit Nightshift: cancel the running job at its next stage boundary, answer, then stop the engine.
@@ -305,11 +329,7 @@ class EngineService:
         cancels the job and builds the reply first; `link.shutdown` runs `shutdown_delay_s` later on a
         background timer, after the reply has been written. A failure of that call is logged, never raised.
         """
-        grace = int(grace_s) if grace_s is not None else 30
-        if not 0 <= grace <= 300:
-            raise ApiError(422, "invalid_options", "'grace_s' must be between 0 and 300.")
-        if self.s.link.status() is None:
-            raise SupervisorUnavailable()  # nothing to stop: keep refusing with 503 `engine_offline`
+        grace = self.check_shutdown(grace_s)
         self.s.draining = True
         cancelled = self.s.worker.cancel_running()
         self.s.log.info("engine_shutdown", grace_s=grace, cancelled_job=cancelled)

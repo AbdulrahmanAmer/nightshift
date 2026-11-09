@@ -53,6 +53,7 @@ def test_health_reports_engine_and_lazy_load(tmp_path: Path):
     c = make_client(tmp_path, load=False)
     assert c.get("/health").json() == {
         "ok": True, "engine": "fake", "engine_kind": "fake", "model_loaded": False,
+        "voice_mode": "tones", "voice": None,  # H-7: the fake says how it speaks (tone bursts here)
     }  # fmt: skip
     speak(c, "hello there friend")
     assert c.get("/health").json()["model_loaded"] is True
