@@ -1,7 +1,7 @@
 name: ci
 
 # Owner: C10 (docs/ENGINEERING.md section 7). Required status checks on main: lint, types, test, ui-build, powershell-parse, scope-check.
-# `test` is the job that gathers the test shards (test-shard (1/5) ... (5/5)); see the comment above it.
+# `test` is the job that gathers the test shards (test-shard (1/6) ... (6/6)); see the comment above it.
 # A pull request that changes documents only (H-11, dev/ci_changes.py) runs the light path: the `changes` job decides,
 # `test-docs` runs the tests that read documents, types and ui-build say "not applicable", the shards, test-collect
 # and bundle do not run, and every required check still reports. Any doubt runs everything.
@@ -97,21 +97,22 @@ jobs:
         if: needs.changes.outputs.docs_only != 'true'
 
   # The unit tests run as a matrix of shards (H-3, H-3b): dev/ci_shards.py gives each shard whole test files, split
-  # by measured seconds (dev/ci_shard_weights.json, refreshed from real JUnit timings), so each shard runs about 9.5
-  # minutes of a suite of about 46. The required check `test` further down is the job that says whether all of them
-  # passed. On a docs-only change they do not run (`test` then gathers `test-docs` instead).
+  # by measured seconds (dev/ci_shard_weights.json, refreshed from real JUnit timings), so each shard runs about 8
+  # minutes of a suite of about 46 (SHARDS in dev/ci_shards.py is the count). The required check `test` further
+  # down is the job that says whether all of them passed. On a docs-only change they do not run (`test` then
+  # gathers `test-docs` instead).
   test-shard:
-    name: test-shard (${{ matrix.shard }}/5)
+    name: test-shard (${{ matrix.shard }}/6)
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.docs_only != 'true' }}
     runs-on: windows-latest
-    # Predicted: about 9.5 minutes of tests plus about 3 of setup (the slowest shard, dev/ci_shards.py plan), 12.5
-    # in all; tests/test_ci_workflow.py keeps the timeout at least twice the prediction of every shard.
+    # Predicted: about 8 minutes of tests plus about 3 of setup (the slowest shard, dev/ci_shards.py plan), 11 in
+    # all; tests/test_ci_workflow.py keeps the timeout at least twice the prediction of every shard.
     timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5]
+        shard: [1, 2, 3, 4, 5, 6]
     env:
       # Turns on the tests marked `network` (tests/test_downloader_network.py): real downloads from GitHub and
       # Hugging Face to prove pause/resume/Range/SHA256 against the real servers. Unset on a laptop = skipped.
@@ -170,7 +171,7 @@ jobs:
       - name: Unit tests (the files of this shard, everything but the real-network ones)
         if: ${{ !cancelled() }}
         shell: bash
-        run: python dev/ci_shards.py run --shard ${{ matrix.shard }} --of 5 -- -q -rs -m "not network" --junitxml=report-shard-${{ matrix.shard }}.xml
+        run: python dev/ci_shards.py run --shard ${{ matrix.shard }} --of 6 -- -q -rs -m "not network" --junitxml=report-shard-${{ matrix.shard }}.xml
       # The _online pin checks (tests/test_resolve_manifest.py) skip when a real host is in an outage that outlasts
       # three retries. Say how many did, as a warning; where NS_REQUIRE_ONLINE is set this step fails on any.
       # The final `test` job counts them again across all shards.
@@ -227,9 +228,11 @@ jobs:
           retention-days: 14
 
   # The docs-only path's tests (H-11): the test files that read documents (dev/ci_changes.py DOC_TESTS, one list;
-  # tests/test_ci_changes.py fails when a test file that names a document is missing from it). Not a required
-  # check: the final `test` job needs it and passes on the docs path only when it passed. No FFmpeg: no document
-  # test renders (an FFmpeg-guarded test in those files skips here and is counted as skipped).
+  # tests/test_ci_changes.py fails when a test file that reads a document, itself or through the repository's own
+  # imports, is missing from it). Not a required
+  # check: the final `test` job needs it and passes on the docs path only when it passed. No FFmpeg is installed
+  # here: the one FFmpeg render among those files (tests/test_captions.py, guarded by skipif) skips on this path
+  # and is counted as skipped; the shards run it on every code change.
   test-docs:
     name: test-docs
     needs: changes
@@ -257,9 +260,11 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
-  # THE required check `test` (branch protection names it; the shards are test-shard (1/5) ... (5/5)). It runs
-  # whatever happened before it (`always()`, also its first steps and the gate), and the gate takes one of two
-  # paths (dev/ci_changes.py gate):
+  # THE required check `test` (branch protection names it; the shards are test-shard (1/6) ... (6/6)). The job
+  # runs whatever happened before it (`always()`): a skipped required check would count as passed. Its steps
+  # run unless the run was cancelled (`!cancelled()`), so a superseded run costs one step, not a checkout, a
+  # Python and the gate; the last step then fails the job, so a cancelled run never shows a green `test`. The
+  # gate takes one of two paths (dev/ci_changes.py gate):
   # - code (every push, tag and nightly run, and every pull request that is not docs-only): it passes only when
   #   every shard and the collection job succeeded (a failed, skipped or cancelled shard fails it) AND the set of
   #   node ids the shards ran (from their JUnit reports) equals the set the unsharded collection found: no id
@@ -277,20 +282,20 @@ jobs:
       NS_REQUIRE_ONLINE: ${{ (github.event_name == 'schedule' || startsWith(github.ref, 'refs/tags/')) && '1' || '' }}
     steps:
       - uses: actions/checkout@v4
-        if: always()
+        if: ${{ !cancelled() }}
       - uses: actions/setup-python@v5
-        if: always()
+        if: ${{ !cancelled() }}
         with:
           python-version: "3.12"
       - name: Download the report of the document tests
-        if: ${{ always() && needs.changes.outputs.docs_only == 'true' }}
+        if: ${{ !cancelled() && needs.changes.outputs.docs_only == 'true' }}
         continue-on-error: true
         uses: actions/download-artifact@v4
         with:
           name: junit-report-docs
           path: docs-report
       - name: The run's path and its jobs must have succeeded (dev/ci_changes.py gate)
-        if: always()
+        if: ${{ !cancelled() }}
         shell: bash
         env:
           CHANGES_RESULT: ${{ needs.changes.result }}
@@ -315,11 +320,11 @@ jobs:
       - name: Predicted time per shard
         if: ${{ !cancelled() && needs.changes.outputs.docs_only != 'true' }}
         shell: bash
-        run: python dev/ci_shards.py plan --of 5 --limit 720 --summary
+        run: python dev/ci_shards.py plan --of 6 --limit 720 --summary
       - name: The node ids the shards ran are exactly the node ids collected unsharded
         if: ${{ !cancelled() && needs.changes.outputs.docs_only != 'true' }}
         shell: bash
-        run: python dev/ci_shards.py verify --of 5 --collected collected/collected.txt --reports reports --summary
+        run: python dev/ci_shards.py verify --of 6 --collected collected/collected.txt --reports reports --summary
       - name: Online checks skipped for an upstream outage (all shards)
         if: ${{ !cancelled() && needs.changes.outputs.docs_only != 'true' }}
         shell: bash
@@ -328,6 +333,14 @@ jobs:
         if: ${{ !cancelled() && needs.changes.outputs.docs_only != 'true' }}
         shell: bash
         run: python dev/ci_slowest.py --top 20 --summary reports/*.xml
+      # Last: a cancelled run (a newer push superseded it, or someone cancelled it) skipped every step above;
+      # without this one the job would end green. It runs only then, and fails.
+      - name: A cancelled run is not a result
+        if: cancelled()
+        shell: bash
+        run: |
+          echo "::error::this run was cancelled: the shards, the document tests and the gate did not all run"
+          exit 1
 
   # The dashboard front-end sources live in ns_dashboard/ui; the build output is committed in ns_dashboard/static
   # (the bundle is a git archive and the partner PC has no node). This job rebuilds it and fails on any difference.

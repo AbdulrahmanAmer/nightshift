@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import warnings
 from pathlib import Path
 
 import pytest
@@ -174,6 +175,31 @@ def test_a_deleted_code_file_is_a_code_change(repo: Path):
     d = cc.decide("pull_request", base, commit(repo), cwd=repo)
     assert d.docs_only is False
     assert "ns_x/old.py" in d.reason
+
+
+@pytest.mark.parametrize(
+    "machinery",
+    ["dev/ci_changes.py", "dev/ci_shards.py", "dev/ci_shard_weights.json", ".github/workflows/ci.yml"],
+)
+def test_a_change_to_the_ci_machinery_runs_everything_even_if_is_document_were_wrong(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, machinery: str
+):
+    """The pull request's own copy of this script decides. Even if a careless edit made is_document say
+    yes to everything, a pull request that touches the CI machinery still takes the full path."""
+    base = head(repo)
+    write(repo, "docs/guide.md", "guide, ticked\n")
+    write(repo, machinery, "changed\n")
+    tip = commit(repo)
+    monkeypatch.setattr(cc, "is_document", lambda path: True)
+    d = cc.decide("pull_request", base, tip, cwd=repo)
+    assert d.docs_only is False
+    assert "CI machinery" in d.reason and machinery in d.reason
+
+
+def test_the_ci_machinery_is_found_under_either_name_of_a_rename():
+    assert cc.touches_ci([("R100", ("dev/ci_changes.py", "docs/old.md"))]) == ["dev/ci_changes.py"]
+    assert cc.touches_ci([("A", (".github/actions/x/action.yml",))]) == [".github/actions/x/action.yml"]
+    assert cc.touches_ci([("M", ("docs/dev/ci_changes.py",)), ("M", ("README.md",))]) == []
 
 
 def test_an_empty_diff_runs_everything(repo: Path):
@@ -378,7 +404,111 @@ def test_the_scanner_finds_each_way_a_new_test_can_read_a_document(tmp_path: Pat
         "tests/test_imports_reader_dotted.py",
         "tests/test_loads_reader_by_path.py",
     }, readers
-    assert any("pkg.reader" in why for why in readers["tests/test_imports_reader.py"])
+    assert any("pkg/reader.py" in why for why in readers["tests/test_imports_reader.py"])
+
+
+def make_transitive_tree(root: Path) -> None:
+    """Tests that reach a document only through the repository's own modules, and one call-time reader."""
+    write(root, "docs/GUIDE.md", "guide\n")
+    write(root, "README.md", "readme\n")
+    write(root, "pkg/__init__.py", "")
+    write(root, "pkg/reader.py", 'from pathlib import Path\nTEXT = Path("README.md")\n')
+    write(root, "pkg/middle.py", "from pkg import reader\n")
+    write(root, "pkg/sub/__init__.py", "")
+    write(root, "pkg/sub/relative.py", "from .. import middle\n")
+    write(root, "pkg/runner.py", 'ARGS = ["python", "-m", "pkg.middle"]\n')
+    write(root, "pkg/lazy.py", 'def search():\n    return open("README.md").read()\n')
+    write(root, "pkg/hub.py", "from pkg import lazy\n")
+    write(root, "tests/helper_mod.py", "from pkg import middle\n")
+    write(root, "tests/sub/conftest.py", 'GUIDE = "docs/GUIDE.md"\n')
+    write(root, "tests/test_via_middle.py", "import pkg.middle\n")
+    write(root, "tests/test_via_relative.py", "from pkg.sub import relative\n")
+    write(root, "tests/test_runs_module.py", 'ARGS = ["python", "-m", "pkg.middle"]\n')
+    write(root, "tests/test_via_runner.py", "from pkg import runner\n")
+    write(root, "tests/test_runs_script.py", 'ARGS = ["python", "pkg/middle.py"]\n')
+    write(root, "tests/test_via_helper.py", "from tests import helper_mod\n")
+    write(root, "tests/sub/test_under_conftest.py", "X = 1\n")
+    write(root, "tests/test_hub_only.py", "from pkg import hub\n")
+    write(root, "tests/test_hub_and_search.py", "from pkg import hub\nfrom pkg.lazy import search\n")
+    # a test file that names a document in its own tests, and one that imports a helper from it
+    write(
+        root,
+        "tests/test_names_doc.py",
+        'from pathlib import Path\nNAME = "README.md"\ndef helper():\n    return 1\n',
+    )
+    write(root, "tests/test_imports_a_test.py", "from tests.test_names_doc import helper\n")
+    write(root, "tests/test_plain.py", "import json\nURL = 'https://example.com/api/docs/'\n")
+
+
+CALL_TIME = {"pkg/lazy.py": (("search",), "reads README.md only when search() is called; pkg.hub imports it")}
+
+
+def test_the_scanner_follows_the_repository_s_own_imports_paths_and_module_names(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    make_transitive_tree(tmp_path)
+    monkeypatch.setattr(cc, "CALL_TIME_READERS", CALL_TIME)
+    readers = cc.document_readers(tmp_path)
+    assert set(readers) == {
+        "tests/test_via_middle.py",  # import -> a module that imports the reader
+        "tests/test_via_relative.py",  # a relative import on the way
+        "tests/test_runs_module.py",  # python -m pkg.middle
+        "tests/test_via_runner.py",  # imports a module that runs pkg.middle as -m
+        "tests/test_runs_script.py",  # runs pkg/middle.py by path
+        "tests/test_via_helper.py",  # a helper under tests/
+        "tests/sub/test_under_conftest.py",  # the conftest.py pytest loads names a document
+        "tests/test_hub_and_search.py",  # calls the call-time reader's entry point
+        "tests/test_names_doc.py",  # names one itself
+    }, readers
+    assert any(
+        "pkg/reader.py <- pkg/middle.py <- tests/test_via_middle.py" in w
+        for w in readers["tests/test_via_middle.py"]
+    )
+    assert any(w.startswith("calls search of pkg/lazy.py") for w in readers["tests/test_hub_and_search.py"])
+    # not readers: reaching a call-time reader without calling it, importing a helper from a test file
+    # whose own tests name a document, and a URL that merely contains /docs/
+    for rel in ("tests/test_hub_only.py", "tests/test_imports_a_test.py", "tests/test_plain.py"):
+        assert rel not in readers, (rel, readers.get(rel))
+
+
+def test_without_the_call_time_exception_a_plain_import_of_the_reader_counts(tmp_path: Path):
+    make_transitive_tree(tmp_path)
+    readers = cc.document_readers(tmp_path)  # the repository's CALL_TIME_READERS do not name pkg/lazy.py
+    assert "tests/test_hub_only.py" in readers
+
+
+def test_the_list_check_fails_for_a_test_that_reads_docs_through_another_module(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    make_transitive_tree(tmp_path)
+    monkeypatch.setattr(cc, "CALL_TIME_READERS", CALL_TIME)
+    monkeypatch.setattr(cc, "DOC_TESTS", ("tests/test_names_doc.py",))
+    readers = cc.document_readers(tmp_path)
+    missing = [f for f in readers if f not in cc.DOC_TESTS and f not in cc.NOT_DOC_READERS]
+    assert "tests/test_via_middle.py" in missing and "tests/test_runs_module.py" in missing
+    assert "tests/test_names_doc.py" not in missing
+
+
+def test_the_scanner_prints_no_warning_for_a_file_python_warns_about(tmp_path: Path):
+    make_tree(tmp_path)
+    write(tmp_path, "pkg/escapes.py", 'PATTERN = "\\d+ files"\n')  # an invalid escape: a SyntaxWarning
+    with warnings.catch_warnings(record=True) as seen:
+        warnings.simplefilter("always")
+        cc.document_readers(tmp_path)
+        cc.document_modules(tmp_path)
+    assert [str(w.message) for w in seen] == []
+
+
+def test_every_call_time_reader_still_names_a_document_and_says_why(repo_readers: dict[str, list[str]]):
+    modules = cc.document_modules(ROOT, exempt=False)
+    for rel, (entries, why) in cc.CALL_TIME_READERS.items():
+        assert (ROOT / rel).is_file() and rel in modules, f"{rel} no longer names a document: drop it"
+        assert entries and len(why) > 20, rel
+    # the dashboard reaches docs_index through orientation and the tool registry; only the tests that search
+    # are readers (both on the list), the other dashboard tests are not
+    assert "tests/test_dashboard_api.py" not in repo_readers
+    for rel in ("tests/test_dashboard_assistant.py", "tests/test_assistant_eval.py"):
+        assert any("ns_dashboard/assistant/docs_index.py" in w for w in repo_readers[rel]), rel
 
 
 def test_the_list_check_fails_for_a_new_test_that_reads_docs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -531,7 +661,8 @@ def test_the_code_path_passes_when_every_shard_and_the_collection_succeeded(
 ):
     rc, summary = run_gate(tmp_path, monkeypatch, CODE_PATH, None)
     assert rc == 0, capsys.readouterr().out
-    assert "docs-only" not in summary
+    # nothing to say on a passing code path (the shard steps write their own summary): not even a heading
+    assert summary == ""
 
 
 @pytest.mark.parametrize("shard", ["skipped", "failure", "cancelled", ""])

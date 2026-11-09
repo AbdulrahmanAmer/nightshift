@@ -60,8 +60,11 @@ ROOT = Path(__file__).resolve().parents[1]
 WEIGHTS_PATH = ROOT / "dev" / "ci_shard_weights.json"
 TESTS_DIR = ROOT / "tests"
 
-#: The number of test shards (H-3b). The workflows' test-shard matrices say the same number.
-SHARDS = 5
+#: The number of test shards (H-3b). The workflows' test-shard matrices, check names and ``--of`` say the
+#: same number (tests/test_ci_workflow.py fails on any other). Six, not five: on the measured weights five
+#: shards are predicted at 558 to 567 s against the guard's 570 s (25 min / 2 - 180 s of setup), so one new
+#: test file in the wrong shard turns every pull request red; six leave about 100 s per shard.
+SHARDS = 6
 
 #: What to run when a shard is predicted over its budget (printed by the guards).
 REFRESH_COMMAND = "python dev/ci_shards.py refresh --run latest"
@@ -105,19 +108,59 @@ def load_weights(path: Path = WEIGHTS_PATH) -> Weights:
     )
 
 
-def over_budget_message(shard: int, shards: int, predicted_s: float, setup_s: float, why: str) -> str:
-    """What a guard says when a shard is predicted over its budget: which shard, by how much, what to run."""
+def raise_shards_text(shards: int) -> str:
+    """The last remedy of every guard message: one more shard, with the command that previews it."""
+    return (
+        f"raise SHARDS in dev/ci_shards.py and, to the same number, the test-shard matrices, check names and "
+        f"`--of` in .github/workflows/ci.yml and release.yml (tests/test_ci_workflow.py names every place); "
+        f"preview it first with `python dev/ci_shards.py plan --of {shards + 1}`"
+    )
+
+
+def over_budget_message(
+    shard: int,
+    shards: int,
+    predicted_s: float,
+    setup_s: float,
+    why: str,
+    unweighted: Sequence[str] = (),
+    default_s: float | None = None,
+) -> str:
+    """What a guard says when a shard is predicted over its budget: which shard, by how much, what to run.
+
+    ``unweighted`` are the shard's test files with no measured weight. They decide the first remedy: a refresh
+    re-measures only the files of the last green main run, so it cannot help a file a pull request adds (that
+    file counts at the default until the first refresh after it merges).
+    """
     total = predicted_s + setup_s
     amount = (
         f"{predicted_s:.0f} s of tests + {setup_s:.0f} s of setup = {total:.0f} s"
         if setup_s
         else f"{predicted_s:.0f} s of tests"
     )
+    head = f"shard {shard}/{shards} is predicted at {amount}: {why}."
+    if not unweighted:
+        return (
+            f"{head} Every file in it has a measured weight, so the table may be stale: refresh the weights "
+            f"from the last green main run with `{REFRESH_COMMAND}` (needs gh) and commit "
+            f"dev/ci_shard_weights.json. If the refreshed table still predicts it over, "
+            f"{raise_shards_text(shards)}."
+        )
+    each = f"{default_s:.1f} s" if default_s is not None else "the default weight"
+    names = ", ".join(unweighted[:LIST_LIMIT]) + (
+        f" and {len(unweighted) - LIST_LIMIT} more" if len(unweighted) > LIST_LIMIT else ""
+    )
     return (
-        f"shard {shard}/{shards} is predicted at {amount}: {why}. Refresh the weights from the last green "
-        f"main run with `{REFRESH_COMMAND}` (needs gh) and commit dev/ci_shard_weights.json; if the "
-        "refreshed table still predicts it over, raise SHARDS in dev/ci_shards.py and the test-shard "
-        "matrices in .github/workflows/ci.yml and release.yml (tests/test_ci_workflow.py names every place)."
+        f"{head} {len(unweighted)} of its test files have no measured weight and count as {each} each: "
+        f"{names}. `{REFRESH_COMMAND}` does not help them: it re-measures the files of the last green main "
+        "run, and a test file this pull request adds is in no main run; it counts at the default until the "
+        "first refresh after it merges. What helps: (1) measure them from this pull request's own CI run "
+        "(the shards upload their JUnit reports even when a test fails): `gh run list --workflow ci --branch "
+        "<this branch> --limit 1` for the run id, then `python dev/ci_shards.py refresh --run <run id>` and "
+        "commit dev/ci_shard_weights.json; (2) split or rename the new file: a file with no weight goes to "
+        f"the shard sha256(path) % {shards} names, so a new name moves it, and each part of a split counts "
+        f"{each} until it is measured; check with `python dev/ci_shards.py plan --of {shards}`; "
+        f"(3) {raise_shards_text(shards)}."
     )
 
 
@@ -567,7 +610,9 @@ def _cmd_plan(args: argparse.Namespace) -> int:
     over = [(s, load) for s, load in enumerate(loads, start=1) if load > args.limit]
     for s, load in over:
         why = f"over the limit of {args.limit:.0f} s"
-        print(f"::error::{over_budget_message(s, args.shards, load, 0, why)}")
+        new = [f for f in groups[s - 1] if f not in weights.files]
+        msg = over_budget_message(s, args.shards, load, 0, why, new, weights.default_seconds)
+        print(f"::error::{msg}")
     return 1 if over else 0
 
 

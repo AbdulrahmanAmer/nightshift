@@ -99,14 +99,15 @@ def test_the_final_test_job_in_ci_needs_every_path_always_runs_and_gates_with_th
     names = [s.get("name", s.get("uses", "")) for s in job["steps"]]
     gate = step(job, "dev/ci_changes.py gate")
     at = job["steps"].index(gate)
-    # checkout and python come first, and like the gate they run whatever happened before (always())
+    # checkout and python come first, and like the gate they run whatever happened before, unless the run was
+    # cancelled (then the last step fails the job: see the cancelled-run test below)
     assert [s.get("uses", "").split("@")[0] for s in job["steps"][:2]] == [
         "actions/checkout",
         "actions/setup-python",
     ], names
     for s in job["steps"][: at + 1]:
-        assert str(s.get("if", "")).startswith(("always()", "${{ always()")), s
-    assert gate["if"] == "always()" and "continue-on-error" not in gate
+        assert str(s.get("if", "")).startswith("${{ !cancelled()"), s
+    assert gate["if"] == "${{ !cancelled() }}" and "continue-on-error" not in gate
     assert gate["run"] == "python dev/ci_changes.py gate --doc-report docs-report/report-docs.xml --summary"
     env = gate["env"]
     assert env == {
@@ -121,12 +122,35 @@ def test_the_final_test_job_in_ci_needs_every_path_always_runs_and_gates_with_th
     assert job["steps"].index(fetch) < at
     assert fetch["with"]["name"] == "junit-report-docs" and fetch["with"]["path"] == "docs-report"
     assert (
-        fetch["if"] == f"${{{{ always() && {DOCS_ONLY} == 'true' }}}}" and fetch["continue-on-error"] is True
+        fetch["if"] == f"${{{{ !cancelled() && {DOCS_ONLY} == 'true' }}}}"
+        and fetch["continue-on-error"] is True
     )
-    # every later step is the code path's report: it runs after a failed gate (so the report is complete), but
-    # not when cancelled and not on the docs path, where there are no shard reports to read
-    later = job["steps"][at + 1 :]
+    # every later step but the last is the code path's report: it runs after a failed gate (so the report is
+    # complete), but not when cancelled and not on the docs path, where there are no shard reports to read
+    later, last = job["steps"][at + 1 : -1], job["steps"][-1]
     assert later and all(s["if"] == f"${{{{ !cancelled() && {DOCS_ONLY} != 'true' }}}}" for s in later)
+    assert last["if"] == "cancelled()" and "exit 1" in last["run"]
+
+
+def test_a_cancelled_run_costs_one_step_of_the_test_job_and_never_shows_it_green(ci: dict[str, Any]):
+    """A newer push cancels the older run (concurrency). The job itself must still run (`always()`): a skipped
+    required check counts as passed. Its steps must not (no checkout, no Python, no gate), except the last,
+    which fails; and on a run that was not cancelled that last step must not run."""
+    job = ci["jobs"]["test"]
+    assert job["if"] == "always()"
+    ctx = {"github.event_name": "pull_request", DOCS_ONLY: "true", "matrix.shard": "1"}
+    for docs_only in ("true", "false", ""):
+        ctx[DOCS_ONLY] = docs_only
+        cancelled = {"always()": True, "cancelled()": True, "success()": False, "failure()": False}
+        running = [s for s in job["steps"] if evaluate(str(s.get("if", "success()")), ctx, cancelled)]
+        assert running == [job["steps"][-1]], [s.get("name", s.get("uses")) for s in running]
+        (only,) = running
+        assert only["run"].rstrip().endswith("exit 1") and "continue-on-error" not in only
+        # a run that was not cancelled, whatever failed before: every step but the last may run
+        for success in (True, False):
+            normal = {"always()": True, "cancelled()": False, "success()": success, "failure()": not success}
+            assert not evaluate(str(job["steps"][-1]["if"]), ctx, normal)
+            assert evaluate(str(step(job, "dev/ci_changes.py gate")["if"]), ctx, normal)
 
 
 def test_the_final_test_job_in_release_yml_still_gates_every_shard(release: dict[str, Any]):
@@ -193,7 +217,7 @@ def test_the_shard_count_is_one_number_that_the_workflows_and_the_helper_agree_o
         text = (ROOT / ".github" / "workflows" / rel).read_text(encoding="utf-8")
         counts = {int(n) for n in re.findall(r"--of (\d+)", text)}
         counts |= {int(n) for n in re.findall(r"matrix\.shard \}\}/(\d+)\)", text)}
-        # comments and step names that spell the shards out, e.g. "test-shard (1/5) ... (5/5)"
+        # comments and step names that spell the shards out, e.g. "test-shard (1/N) ... (N/N)"
         counts |= {int(n) for n in re.findall(r"\((?:\d+|N)/(\d+)\)", text)}
         wf = yaml.safe_load(text)
         counts.add(len(wf["jobs"]["test-shard"]["strategy"]["matrix"]["shard"]))
@@ -216,6 +240,8 @@ def test_the_shard_timeout_is_twice_the_predicted_time_and_far_under_the_old_for
                 load,
                 SETUP_ALLOWANCE_S,
                 f"the {minutes}-minute shard timeout needs twice the prediction",
+                [f for f in groups[s - 1] if f not in weights.files],
+                weights.default_seconds,
             )
             for s, load in enumerate(loads, start=1)
             if minutes * 60 < 2 * (load + SETUP_ALLOWANCE_S)
@@ -227,10 +253,37 @@ def test_the_shard_timeout_is_twice_the_predicted_time_and_far_under_the_old_for
 
 
 def test_the_guard_message_names_the_shard_its_prediction_and_what_to_run():
+    # every file of the shard is measured: the table may be stale, so a refresh from main comes first
     msg = cs.over_budget_message(3, SHARDS, 612.4, SETUP_ALLOWANCE_S, "the 25-minute shard timeout")
     assert f"shard 3/{SHARDS}" in msg and "612 s" in msg and "792 s" in msg
     assert cs.REFRESH_COMMAND in msg and cs.REFRESH_COMMAND == "python dev/ci_shards.py refresh --run latest"
-    assert "SHARDS in dev/ci_shards.py" in msg
+    assert msg.index(cs.REFRESH_COMMAND) < msg.index("raise SHARDS")
+    assert "SHARDS in dev/ci_shards.py" in msg and f"python dev/ci_shards.py plan --of {SHARDS + 1}" in msg
+
+
+def test_the_guard_message_says_a_refresh_cannot_help_a_new_test_file_and_what_does():
+    """The common case: the pull request's own new test file has no weight. A refresh re-measures main's files
+    only, so the message must not send the builder there first; it names the files and the three remedies."""
+    new = ["tests/test_brand_new_a.py", "tests/test_brand_new_b.py"]
+    msg = cs.over_budget_message(4, SHARDS, 575.0, SETUP_ALLOWANCE_S, "the 25-minute shard timeout", new, 9.4)
+    assert f"shard 4/{SHARDS}" in msg and "2 of its test files have no measured weight" in msg
+    assert all(f in msg for f in new) and "9.4 s each" in msg
+    assert f"`{cs.REFRESH_COMMAND}` does not help them" in msg
+    assert "until the first refresh after it merges" in msg
+    # (1) measure from this pull request's own run, (2) split or rename, (3) more shards: each with a command
+    one, two, three = msg.index("(1)"), msg.index("(2)"), msg.index("(3)")
+    assert one < two < three
+    assert "gh run list --workflow ci --branch" in msg[one:two]
+    assert "python dev/ci_shards.py refresh --run <run id>" in msg[one:two]
+    assert (
+        "split or rename" in msg[two:three]
+        and f"python dev/ci_shards.py plan --of {SHARDS}`" in msg[two:three]
+    )
+    assert "raise SHARDS" in msg[three:] and f"python dev/ci_shards.py plan --of {SHARDS + 1}" in msg[three:]
+    # the preview it prints runs (refresh --run <id> is run against a fake gh in tests/test_ci_shards.py)
+    assert cs.main(["plan", "--of", str(SHARDS + 1)]) == 0
+    many = [f"tests/test_n{i:02d}.py" for i in range(cs.LIST_LIMIT + 3)]
+    assert "and 3 more" in cs.over_budget_message(1, SHARDS, 600.0, 0, "over", many, 9.4)
 
 
 def test_the_real_network_step_runs_in_shard_one_only_and_keeps_its_rules(ci: dict[str, Any]):
@@ -600,6 +653,63 @@ def test_the_tag_run_in_release_yml_is_a_full_run_of_everything_with_the_same_pr
     assert release["jobs"]["test"]["if"] == "always()"
     assert release["jobs"]["test-shard"]["strategy"]["matrix"]["shard"] == list(range(1, SHARDS + 1))
     assert "changes" not in release["jobs"] and "docs_only" not in str(release), "a tag run has no docs path"
+
+
+def shard_disagreements(ci: dict[str, Any], release: dict[str, Any]) -> list[str]:
+    """Where release.yml and ci.yml (and SHARDS) disagree on the shards or the completeness proof."""
+    a, b = ci["jobs"], release["jobs"]
+    out: list[str] = []
+    for key in ("name", "timeout-minutes", "strategy"):
+        if a["test-shard"].get(key) != b["test-shard"].get(key):
+            out.append(f"test-shard {key}: {a['test-shard'].get(key)!r} vs {b['test-shard'].get(key)!r}")
+    for name, wf in (("ci.yml", a), ("release.yml", b)):
+        if wf["test-shard"]["strategy"]["matrix"]["shard"] != list(range(1, SHARDS + 1)):
+            out.append(f"{name}: the matrix is not 1..{SHARDS}")
+        run = step(wf["test-shard"], "dev/ci_shards.py run")["run"].split(" -- ", 1)[0]
+        if run != f"python dev/ci_shards.py run --shard ${{{{ matrix.shard }}}} --of {SHARDS}":
+            out.append(f"{name}: the shard command is {run!r}")
+        verify = step(wf["test"], "dev/ci_shards.py verify")
+        want = (
+            f"python dev/ci_shards.py verify --of {SHARDS} --collected collected/collected.txt "
+            "--reports reports --summary"
+        )
+        if verify["run"] != want or "node ids" not in verify.get("name", ""):
+            out.append(f"{name}: the completeness proof is {verify['run']!r}")
+        fetched = {
+            s.get("with", {}).get("name") or s.get("with", {}).get("pattern") for s in wf["test"]["steps"]
+        }
+        if not {"junit-report-shard-*", "collected-tests"} <= fetched:
+            out.append(f"{name}: the final job does not fetch every shard report and the collection")
+        upload = step(wf["test-shard"], "Upload JUnit report")
+        if upload["with"]["name"] != "junit-report-shard-${{ matrix.shard }}" or upload["if"] != "always()":
+            out.append(f"{name}: the shard report upload changed")
+        if "--collect-only" not in steps_text(wf["test-collect"]):
+            out.append(f"{name}: test-collect collects nothing")
+    return out
+
+
+def test_release_yml_and_ci_yml_run_the_same_shards_and_the_same_completeness_proof(
+    ci: dict[str, Any], release: dict[str, Any]
+):
+    """A tag run must not disagree with ci.yml: the same SHARDS, matrix, check names, timeout, per-shard
+    command (but for ci's marker filter) and the same node-id proof in the final job."""
+    assert shard_disagreements(ci, release) == []
+
+
+@pytest.mark.parametrize("other", [SHARDS - 1, SHARDS + 1])
+def test_the_agreement_check_fails_when_release_yml_says_another_shard_count(ci: dict[str, Any], other: int):
+    text = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+    broken = text.replace(f"/{SHARDS})", f"/{other})").replace(f"--of {SHARDS}", f"--of {other}")
+    broken = broken.replace(
+        f"shard: [{', '.join(map(str, range(1, SHARDS + 1)))}]",
+        f"shard: [{', '.join(map(str, range(1, other + 1)))}]",
+    )
+    assert broken != text
+    problems = shard_disagreements(ci, yaml.safe_load(broken))
+    assert any("test-shard name" in p for p in problems), problems
+    assert any("the matrix is not" in p for p in problems) and any(
+        "completeness proof" in p for p in problems
+    )
 
 
 # ---- the helper files the workflows call exist ------------------------------------------------------

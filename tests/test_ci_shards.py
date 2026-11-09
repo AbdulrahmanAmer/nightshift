@@ -170,7 +170,13 @@ def test_the_slowest_shard_is_under_fifteen_minutes_by_the_measured_weights():
     assert len(groups) == SHARDS and all(groups), "every shard must have files"
     over = [
         cs.over_budget_message(
-            s, SHARDS, load, SETUP_ALLOWANCE_S, "the slowest shard must stay under 15 minutes"
+            s,
+            SHARDS,
+            load,
+            SETUP_ALLOWANCE_S,
+            "the slowest shard must stay under 15 minutes",
+            [f for f in groups[s - 1] if f not in w.files],
+            w.default_seconds,
         )
         for s, load in enumerate(loads, start=1)
         if load + SETUP_ALLOWANCE_S >= SLOWEST_SHARD_LIMIT_S
@@ -470,7 +476,7 @@ def test_verify_fails_when_one_shard_collects_nothing(tmp_path: Path):
 
 @pytest.mark.parametrize("shard", range(1, SHARDS + 1))
 def test_verify_compares_node_ids_across_every_one_of_the_shards(tmp_path: Path, shard: int):
-    """H-3b: with five shards the proof still sees every one, the new fifth included."""
+    """H-3b: with SHARDS shards the proof still sees every one, the last included."""
     w = cs.load_weights()
     ids = synthetic_node_ids(discovered_repo_files())
     rep = make_reports(tmp_path, ids, w)
@@ -586,6 +592,21 @@ def test_plan_fails_over_the_limit_naming_the_shard_its_prediction_and_the_comma
     assert len(errors) == SHARDS, out  # every shard is over 10 s, each is named once
     for s, line in enumerate(errors, start=1):
         assert f"shard {s}/{SHARDS} is predicted at" in line and cs.REFRESH_COMMAND in line, line
+
+
+def test_plan_over_the_limit_names_a_new_unweighted_file_and_does_not_send_it_to_a_refresh(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    real = cs.discover_test_files()
+    monkeypatch.setattr(cs, "discover_test_files", lambda *a, **k: [*real, "tests/test_brand_new_h11.py"])
+    owner = cs.hash_shard("tests/test_brand_new_h11.py", SHARDS)
+    assert cs.main(["plan", "--of", str(SHARDS), "--limit", "10"]) == 1
+    errors = [line for line in capsys.readouterr().out.splitlines() if line.startswith("::error::")]
+    mine = errors[owner - 1]
+    assert f"shard {owner}/{SHARDS}" in mine and "tests/test_brand_new_h11.py" in mine
+    assert f"`{cs.REFRESH_COMMAND}` does not help them" in mine and "raise SHARDS" in mine
+    others = [e for i, e in enumerate(errors, start=1) if i != owner and "no measured weight" not in e]
+    assert others and all(e.index(cs.REFRESH_COMMAND) < e.index("raise SHARDS") for e in others)
 
 
 def test_plan_reports_the_files_with_no_weight_and_their_default_in_the_job_summary(

@@ -28,6 +28,9 @@ Commands (``python dev/ci_changes.py <command> ...``)::
     gate --doc-report FILE [--summary]
                         the required check `test`: its docs path and its code path (env: see ``gate``)
 
+A pull request that changes the CI machinery itself (``CI_PATHS``: this script, dev/ci_shards.py, the
+weights, anything under .github/) is never docs-only, whatever else it changes.
+
 Standard library only, so the CI jobs that call it need no install.
 """
 
@@ -39,7 +42,9 @@ import os
 import re
 import subprocess
 import sys
+import warnings
 import xml.etree.ElementTree as ET
+from collections import Counter, deque
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -47,7 +52,8 @@ from pathlib import Path, PurePosixPath
 ROOT = Path(__file__).resolve().parents[1]
 
 #: The test files that read documents: the docs-only path runs exactly these. ``tests/test_ci_changes.py``
-#: fails when a test file that names a document is in neither this list nor ``NOT_DOC_READERS``.
+#: fails when a test file that reads a document (itself, or through the repository's own imports: see
+#: ``document_readers``) is in neither this list nor ``NOT_DOC_READERS``.
 DOC_TESTS: tuple[str, ...] = (
     "tests/test_assistant_eval.py",  # search_docs serves README.md and OPERATOR.md (docs_index)
     "tests/test_captions.py",  # BUILD_SPEC.md 7.6 and captions.drift_ms agree
@@ -94,6 +100,12 @@ SKIP_DIRS = frozenset(
 DOC_STATUSES = frozenset("AMDRC")
 
 SHA_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
+
+#: The CI's own machinery. A pull request that changes any of it runs everything, whatever else it changes:
+#: the decision is made by the pull request's own copy of this script, so a careless edit to ``is_document``
+#: or ``classify`` must not be able to send its own pull request down the docs path. Checked in ``decide``
+#: before (and independently of) ``is_document``. A folder ends in ``/``.
+CI_PATHS: tuple[str, ...] = ("dev/ci_changes.py", "dev/ci_shards.py", "dev/ci_shard_weights.json", ".github/")
 
 
 # ---- what a document is ---------------------------------------------------------------------------------
@@ -196,10 +208,76 @@ def decide(event: str, base: str, head: str, cwd: Path = ROOT) -> Decision:
         entries = parse_name_status(raw)
     except (OSError, subprocess.SubprocessError, RuntimeError, ValueError) as exc:
         return Decision(False, f"the diff failed ({exc}): everything runs")
+    machinery = touches_ci(entries)
+    if machinery:
+        paths = tuple(dict.fromkeys(normalize(p) for _, ps in entries for p in ps))
+        return Decision(
+            False, f"the CI machinery itself changed ({_capped(machinery)}): everything runs", paths
+        )
     return classify(entries)
 
 
+def touches_ci(entries: Sequence[tuple[str, tuple[str, ...]]]) -> list[str]:
+    """The changed paths that are CI machinery (``CI_PATHS``), old and new names of a rename alike."""
+    hits = []
+    for _, paths in entries:
+        for p in paths:
+            n = normalize(p)
+            if any(n.startswith(c) if c.endswith("/") else n == c for c in CI_PATHS):
+                hits.append(n)
+    return list(dict.fromkeys(hits))
+
+
 # ---- the tests that read documents -----------------------------------------------------------------------
+#
+# How the completeness check finds a test file that reads a document (``document_readers``), and why so.
+#
+# * A DOCUMENT MODULE is a Python file of this repository that is not itself a test file (a module of the
+#   product, a dev/ script, a helper or conftest.py under tests/) whose code names a document: a docs/ path,
+#   a document's file name, or ``git ls-files`` (every tracked file). ``NOT_DOC_READERS`` exempts the
+#   reviewed ones that name a document without reading this repository's copy.
+# * The check follows imports TRANSITIVELY, but only through this repository's own files. An edge is an
+#   import (relative imports resolved, parent packages included), a module named in a string as for
+#   ``python -m dotted.name``, a file named by its path (a script loaded or run by path), and the
+#   conftest.py files pytest loads for a test file. The standard library and installed packages are never
+#   opened. Each file is parsed once (about 600 files, a few seconds), so the walk is bounded by the
+#   repository. A test file is a reader when it names a document itself or a document module is in its
+#   closure; the reason names the chain.
+# * A test file that imports another test file reaches what that file imports, but the documents that the
+#   other file's own tests name do not count: importing a helper does not run those tests.
+# * The one exception is a CALL-TIME READER (``CALL_TIME_READERS``, reviewed, each with its reason): a
+#   module that opens its documents only when one of its entry points is called, and that much of the product
+#   imports. The dashboard is the case: ns_dashboard/assistant/docs_index.py indexes README.md and OPERATOR.md
+#   on the first search, and orientation.py, the tool registry, the handlers and ns_studio/cli.py import it,
+#   so a plain walk flags about fifty dashboard and CLI test files of which two search. For such a module a
+#   test file is a reader only when it names one of the entry points itself (a function, a class, or the
+#   tool name a scripted chat calls).
+#
+# Why not an allow-list of reading modules: it is kept by hand and misses a new reader by default. Why not
+# every import with no exception: it puts most of the dashboard tests on the light path for no document
+# read. The walk with few, explained exceptions catches a new reader by default. What it cannot see: a path
+# built at run time from pieces that are not a document's name, or a call-time reader's entry point called
+# by a helper in another file; DOC_TESTS takes such a file by hand.
+
+#: Modules that read a document only when one of the named entry points is called (see above): entry
+#: names (an identifier, ``module.attribute``, or a string such as a tool name) and the reason.
+CALL_TIME_READERS: dict[str, tuple[tuple[str, ...], str]] = {
+    "ns_dashboard/assistant/docs_index.py": (
+        (
+            "search_docs",
+            "find",
+            "orientation.find",
+            "orientation.docs",
+            "docs_index.get_index",
+            "get_index",
+            "DocsIndex",
+        ),
+        "indexes README.md and OPERATOR.md on the first search (the Assistant tools search_docs and find), "
+        "not on import; the dashboard, the tool registry and ns_studio/cli.py import it",
+    ),
+}
+
+
 def documents(root: Path) -> set[str]:
     found = {"contracts/CHANGE_REQUESTS.md"}
     docs = root / "docs"
@@ -210,30 +288,66 @@ def documents(root: Path) -> set[str]:
     return found
 
 
-def _strings(tree: ast.AST) -> list[str]:
-    """Every string constant in the code, docstrings left out (a citation in prose reads nothing)."""
+def _doc_names(root: Path) -> set[str]:
+    return {d.rsplit("/", 1)[-1].lower() for d in documents(root) if d.endswith(".md")}
+
+
+def _strings(nodes: Sequence[ast.AST]) -> list[str]:
+    """Every string constant among ``nodes`` (one ``ast.walk`` of a file), docstrings left out (a citation in
+    prose reads nothing)."""
     docstrings: set[int] = set()
-    for node in ast.walk(tree):
+    for node in nodes:
         if isinstance(node, ast.Module | ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef):
             body = node.body
             if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant):
                 docstrings.add(id(body[0].value))
     return [
         n.value
-        for n in ast.walk(tree)
+        for n in nodes
         if isinstance(n, ast.Constant) and isinstance(n.value, str) and id(n) not in docstrings
     ]
 
 
-def _imports(tree: ast.AST) -> set[str]:
+def _package_of(rel: str) -> str:
+    """The package a relative import in ``rel`` starts from."""
+    name = _module_name(rel)
+    return name if rel.endswith("__init__.py") else name.rpartition(".")[0]
+
+
+def _imports(nodes: Sequence[ast.AST], rel: str = "") -> set[str]:
+    """The dotted names a file imports; a relative import is resolved against ``rel``'s package."""
     names: set[str] = set()
-    for node in ast.walk(tree):
+    for node in nodes:
         if isinstance(node, ast.Import):
             names.update(a.name for a in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
-            names.add(node.module)
-            names.update(f"{node.module}.{a.name}" for a in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            if node.level:
+                if not rel:
+                    continue
+                parts = _package_of(rel).split(".") if _package_of(rel) else []
+                parts = parts[: len(parts) - (node.level - 1)] if node.level > 1 else parts
+                module = ".".join([*parts, module] if module else parts)
+            if not module:
+                continue
+            names.add(module)
+            names.update(f"{module}.{a.name}" for a in node.names)
     return names
+
+
+def _identifiers(nodes: Sequence[ast.AST]) -> set[str]:
+    """Names a file uses: ``name``, ``name.attribute``, and the names it imports."""
+    out: set[str] = set()
+    for node in nodes:
+        if isinstance(node, ast.Name):
+            out.add(node.id)
+        elif isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
+            out.add(f"{node.value.id}.{node.attr}")
+        elif isinstance(node, ast.alias):
+            out.add(node.name.rsplit(".", 1)[-1])
+            if node.asname:
+                out.add(node.asname)
+    return out
 
 
 def _names_documents(strings: Iterable[str], doc_names: set[str]) -> list[str]:
@@ -252,18 +366,22 @@ def _names_documents(strings: Iterable[str], doc_names: set[str]) -> list[str]:
     return hits
 
 
-def _parse(path: Path, needles: Iterable[str]) -> ast.AST | None:
+def _parse(path: Path, needles: Iterable[str] | None = None) -> ast.AST | None:
     """The syntax tree of a Python file, or None when it cannot be read or holds none of ``needles`` (a
-    cheap text test first: every string the rules above can match contains one of them)."""
+    cheap text test first: every string the rules above can match contains one of them). Warnings the
+    parser raises about the file (an invalid escape sequence) are not this script's to print."""
     try:
         text = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
         return None
-    lowered = text.lower()
-    if not any(n in lowered for n in needles):
-        return None
+    if needles is not None:
+        lowered = text.lower()
+        if not any(n in lowered for n in needles):
+            return None
     try:
-        return ast.parse(text)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            return ast.parse(text)
     except (SyntaxError, ValueError):
         return None
 
@@ -272,13 +390,14 @@ def _parse(path: Path, needles: Iterable[str]) -> ast.AST | None:
 DOC_NEEDLES = ("docs", ".md", "ls-files")
 
 
-def _python_files(root: Path, tests: bool) -> list[Path]:
+def _python_files(root: Path, tests: bool | None = None) -> list[Path]:
+    """The repository's Python files: under tests/ (``tests``), outside it (``not tests``), or all (None)."""
     out: list[Path] = []
     for dirpath, dirnames, filenames in os.walk(root):
         rel = Path(dirpath).relative_to(root)
         top = rel.parts[0] if rel.parts else ""
         dirnames[:] = sorted(d for d in dirnames if d not in SKIP_DIRS and not d.startswith("."))
-        if (top == "tests") != tests:
+        if tests is not None and (top == "tests") != tests:
             if not rel.parts:
                 continue  # the root itself: walk on into its folders
             dirnames[:] = []
@@ -287,19 +406,25 @@ def _python_files(root: Path, tests: bool) -> list[Path]:
     return out
 
 
+def is_test_file(rel: str) -> bool:
+    """A file pytest collects as tests (``test_*.py`` or ``*_test.py`` under tests/)."""
+    name = rel.rsplit("/", 1)[-1]
+    return rel.startswith("tests/") and (name.startswith("test_") or name.endswith("_test.py"))
+
+
 def document_modules(root: Path, exempt: bool = True) -> dict[str, list[str]]:
-    """Repository modules (outside tests/) that name a document, by path, with what they name.
+    """Repository files that are not test files and name a document, by path, with what they name.
 
     With ``exempt`` the modules in ``NOT_DOC_READERS`` are left out.
     """
-    doc_names = {d.rsplit("/", 1)[-1].lower() for d in documents(root) if d.endswith(".md")}
+    doc_names = _doc_names(root)
     found: dict[str, list[str]] = {}
-    for path in _python_files(root, tests=False):
+    for path in _python_files(root):
         rel = path.relative_to(root).as_posix()
-        if exempt and rel in NOT_DOC_READERS:
+        if is_test_file(rel) or (exempt and rel in NOT_DOC_READERS):
             continue
         tree = _parse(path, DOC_NEEDLES)
-        hits = _names_documents(_strings(tree), doc_names) if tree is not None else []
+        hits = _names_documents(_strings(list(ast.walk(tree))), doc_names) if tree is not None else []
         if hits:
             found[rel] = sorted(set(hits))
     return found
@@ -310,38 +435,123 @@ def _module_name(rel: str) -> str:
     return name[: -len(".__init__")] if name.endswith(".__init__") else name
 
 
-def document_readers(root: Path) -> dict[str, list[str]]:
-    """Test files that name a document, by path, with why: a docs/ path or a document's name in a string
-    (docstrings left out), ``git ls-files``, an import of a module that names a document, or that module's
-    file name (a script loaded by path). A test that reaches a document only through a module that does not
-    name one itself is not found: add it to ``DOC_TESTS`` by hand."""
-    doc_names = {d.rsplit("/", 1)[-1].lower() for d in documents(root) if d.endswith(".md")}
-    modules = document_modules(root)
-    by_name = {_module_name(rel): rel for rel in modules}
-    by_file = {rel.rsplit("/", 1)[-1]: rel for rel in modules}
-    # a module is imported by a name that ends in its last part, or loaded by its file name
-    needles = (
-        *DOC_NEEDLES,
-        *(name.rsplit(".", 1)[-1].lower() for name in by_name),
-        *(f.lower() for f in by_file),
-    )
-    readers: dict[str, list[str]] = {}
-    for path in _python_files(root, tests=True):
-        if not (path.name.startswith("test_") or path.name.endswith("_test.py")):
-            continue
-        tree = _parse(path, needles)
+@dataclass(frozen=True)
+class _Source:
+    strings: tuple[str, ...]
+    identifiers: frozenset[str]
+    imports: frozenset[str]
+
+
+def _scan(root: Path) -> dict[str, _Source]:
+    sources: dict[str, _Source] = {}
+    for path in _python_files(root):
+        rel = path.relative_to(root).as_posix()
+        tree = _parse(path)
         if tree is None:
+            sources[rel] = _Source((), frozenset(), frozenset())
             continue
-        strings = _strings(tree)
-        why = [f"names {h}" for h in sorted(set(_names_documents(strings, doc_names)))]
-        why += [f"imports {name} ({by_name[name]})" for name in sorted(_imports(tree)) if name in by_name]
-        why += [
-            f"loads {by_file[last]} by path"
-            for last in sorted({normalize(s).rsplit("/", 1)[-1] for s in strings})
-            if last in by_file
-        ]
+        nodes = list(ast.walk(tree))  # one walk per file: the walk is most of the cost
+        sources[rel] = _Source(
+            tuple(_strings(nodes)), frozenset(_identifiers(nodes)), frozenset(_imports(nodes, rel))
+        )
+    return sources
+
+
+def _edges(sources: Mapping[str, _Source]) -> dict[str, tuple[set[str], set[str]]]:
+    """File -> (the repository files it imports, the ones it names by ``-m`` name or by path).
+
+    The second set is what a file's code runs when called, so it is followed from a test file itself and
+    from every module, but not from a test file another test file imports (see the comment above).
+    """
+    by_name = {_module_name(rel): rel for rel in sources}
+    base_count = Counter(rel.rsplit("/", 1)[-1] for rel in sources)
+    by_file = {rel.rsplit("/", 1)[-1]: rel for rel in sources if base_count[rel.rsplit("/", 1)[-1]] == 1}
+    conftests = [rel for rel in sources if rel.rsplit("/", 1)[-1] == "conftest.py"]
+
+    def resolve(dotted: str) -> set[str]:
+        parts = dotted.split(".")
+        # the module and every package above it: importing a.b.c runs a/__init__.py and a/b/__init__.py too
+        prefixes = (".".join(parts[:k]) for k in range(1, len(parts) + 1))
+        return {by_name[p] for p in prefixes if p in by_name}
+
+    edges: dict[str, tuple[set[str], set[str]]] = {}
+    for rel, src in sources.items():
+        imported: set[str] = set()
+        named: set[str] = set()
+        for name in src.imports:
+            imported |= resolve(name)
+        for s in src.strings:
+            t = normalize(s.strip())
+            if t.endswith(".py"):
+                if t in sources:
+                    named.add(t)
+                elif t.rsplit("/", 1)[-1] in by_file:
+                    named.add(by_file[t.rsplit("/", 1)[-1]])
+            elif "." in t and t in by_name:
+                named |= resolve(t)  # python -m dotted.name, runpy, importlib.import_module
+        if is_test_file(rel):  # pytest loads every conftest.py from tests/ down to the file's folder
+            folder = rel.rpartition("/")[0]
+            imported |= {c for c in conftests if _covers(c.rpartition("/")[0], folder)}
+        imported.discard(rel)
+        named.discard(rel)
+        edges[rel] = (imported, named)
+    return edges
+
+
+def _covers(conftest_folder: str, folder: str) -> bool:
+    return folder == conftest_folder or folder.startswith(conftest_folder + "/")
+
+
+def _reach(start: str, edges: Mapping[str, tuple[set[str], set[str]]]) -> dict[str, str | None]:
+    """Every file reachable from ``start``, with the file it was reached from (breadth first: shortest)."""
+    parent: dict[str, str | None] = {start: None}
+    queue = deque([start])
+    while queue:
+        cur = queue.popleft()
+        imported, named = edges.get(cur, (set(), set()))
+        follow = imported | named if cur == start or not is_test_file(cur) else imported
+        for nxt in sorted(follow):
+            if nxt not in parent:
+                parent[nxt] = cur
+                queue.append(nxt)
+    return parent
+
+
+def _chain(target: str, parent: Mapping[str, str | None]) -> str:
+    links = [target]
+    while (up := parent[links[-1]]) is not None:
+        links.append(up)
+    return " <- ".join(links)
+
+
+def document_readers(root: Path) -> dict[str, list[str]]:
+    """Test files that read a document, by path, with why (see the comment above ``CALL_TIME_READERS``):
+    a document named in the file itself, a document module reached through the repository's own imports,
+    ``-m`` names and paths, or an entry point of a call-time reader named in the file itself."""
+    doc_names = _doc_names(root)
+    sources = _scan(root)
+    edges = _edges(sources)
+    doc_modules = {
+        rel
+        for rel, src in sources.items()
+        if not is_test_file(rel) and rel not in NOT_DOC_READERS and _names_documents(src.strings, doc_names)
+    }
+    readers: dict[str, list[str]] = {}
+    for rel, src in sources.items():
+        if not is_test_file(rel):
+            continue
+        why = [f"names {h}" for h in sorted(set(_names_documents(src.strings, doc_names)))]
+        parent = _reach(rel, edges)
+        for mod in sorted(m for m in parent if m in doc_modules):
+            gate = CALL_TIME_READERS.get(mod)
+            if gate is None:
+                why.append(f"reaches {_chain(mod, parent)}")
+                continue
+            called = sorted(n for n in gate[0] if n in src.identifiers or n in src.strings)
+            if called:
+                why.append(f"calls {', '.join(called)} of {_chain(mod, parent)}")
         if why:
-            readers[path.relative_to(root).as_posix()] = why
+            readers[rel] = why
     return readers
 
 
@@ -480,10 +690,11 @@ def _cmd_gate(args: argparse.Namespace) -> int:
             print(line)
     for p in problems:
         print(f"::error::{p}")
-    if args.summary:
-        _append("GITHUB_STEP_SUMMARY", "### test\n\n" + ("\n".join(summary) + "\n" if summary else ""))
-        if problems:
-            _append("GITHUB_STEP_SUMMARY", "".join(f"- {p}\n" for p in problems))
+    # nothing to say (the code path when it passes: the shard steps write their own summary): no heading
+    if args.summary and (summary or problems):
+        text = "### test\n\n" + "".join(f"{line}\n" for line in summary)
+        text += "".join(f"- {p}\n" for p in problems)
+        _append("GITHUB_STEP_SUMMARY", text)
     return 1 if problems else 0
 
 
