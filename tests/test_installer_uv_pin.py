@@ -16,8 +16,10 @@ from typing import Any
 
 import pytest
 
-from installer.stage2.web import bootstrap
+from installer.stage2.web import bootstrap, controller
 from installer.stage2.web.bootstrap import Boot, BootstrapError, CmdResult
+from ns_common import uv as uv_resolver
+from tests.test_installer_web_controller import Setup
 
 PINNED = "0.13.6"
 WINGET = "0.13.7"
@@ -227,3 +229,94 @@ def test_a_manifest_pin_without_a_version_still_accepts_a_uv_that_runs(tmp_path:
     boot = make_boot(tmp_path, path_uv(tmp_path, WINGET), cmd, net, pin)
     run_b02(boot)
     assert reported(boot, cmd) == WINGET and net.urls == []
+
+
+# --- the stage-1 hand-over: the pinned uv stage 1 put in the bootstrap folder is looked at before a download
+class Unreachable:
+    """GitHub is down: every download attempt is counted and fails the way ``download_uv`` fails."""
+
+    def __init__(self) -> None:
+        self.urls: list[str] = []
+
+    def __call__(self, url: str, sha256: str, dest: Path) -> None:
+        self.urls.append(url)
+        raise BootstrapError("NS-E105", f"could not download uv from {url}: timed out")
+
+
+def stage1_handover(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, version: str = PINNED) -> Path:
+    """What stage 1 leaves: a uv in the bootstrap folder, named in the hand-over env var."""
+    local = tmp_path / "lad"
+    exe = local / "Nightshift" / "bootstrap" / "uv" / "uv.exe"
+    exe.parent.mkdir(parents=True)
+    exe.write_bytes(uv_bytes(version) + b"\0" * (bootstrap.SHIM_MAX_BYTES + 1))
+    monkeypatch.setenv("LOCALAPPDATA", str(local))
+    monkeypatch.setenv(uv_resolver.BOOTSTRAP_ENV, str(exe))
+    return exe
+
+
+def controller_boot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cmd: VersionCmd, net: Any, version: str, stale: str
+) -> Boot:
+    """The ``Boot`` the setup controller makes: ``uv`` comes from the real ``default_uv_path`` -> ``find_uv``.
+
+    The install folder already holds a uv of version ``stale`` (QA's winget copy), so ``find_uv`` returns it.
+    """
+    exe = tmp_path / "home" / "bin" / "uv" / "uv.exe"
+    exe.parent.mkdir(parents=True)
+    exe.write_bytes(uv_bytes(stale) + b"\0" * (bootstrap.SHIM_MAX_BYTES + 1))
+    s = Setup(tmp_path, monkeypatch)
+    s.fx.uv_path = controller.default_uv_path
+    s.fx.handover_uv = uv_resolver.bootstrap_uv  # the real resolver, reading the environment
+    s.fx.cmd = cmd
+    s.fx.fetch_uv = net
+    s.ctl.manifest.setdefault("bins", {})["uv"] = pin_for(tmp_path, version)
+    boot = s.ctl._boot()
+    assert boot.uv == str(
+        boot.home / "bin" / "uv" / "uv.exe"
+    )  # find_uv answered with the install folder copy
+    return boot
+
+
+def test_the_stage1_pinned_uv_replaces_a_wrong_install_folder_copy_without_a_download(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """QA's machine: home bin/uv holds 0.13.7, stage 1 refused it and handed over 0.13.6; GitHub is down."""
+    handed = stage1_handover(tmp_path, monkeypatch)
+    cmd, net = VersionCmd(), Unreachable()
+    boot = controller_boot(tmp_path, monkeypatch, cmd, net, PINNED, stale=WINGET)
+    step = bootstrap.B02Home()
+    assert step._uv_is_pinned(boot) is False
+    step._place_uv(boot)
+    assert net.urls == []  # nothing was downloaded
+    assert reported(boot, cmd) == PINNED
+    assert home_uv(boot).read_bytes() == handed.read_bytes()
+
+
+def test_the_pin_is_downloaded_only_after_the_install_folder_and_the_stage1_uv_were_both_wrong(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stage1_handover(tmp_path, monkeypatch, version=WINGET)  # the hand-over is not the pin either
+    cmd, net = VersionCmd(), Unreachable()
+    boot = controller_boot(tmp_path, monkeypatch, cmd, net, PINNED, stale=WINGET)
+    with pytest.raises(BootstrapError) as err:
+        bootstrap.B02Home()._place_uv(boot)
+    assert err.value.code == "NS-E105" and "could not download" in err.value.detail
+    assert len(net.urls) == 1  # the pin was tried only after both local copies were found wrong
+
+
+def test_a_uv_that_cannot_be_deleted_is_a_clear_ns_e105_not_an_unexpected_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cmd, net = VersionCmd(), Transport()
+    boot = make_boot(tmp_path, path_uv(tmp_path, WINGET), cmd, net, pin_for(tmp_path))
+    target = home_uv(boot)
+    target.parent.mkdir(parents=True)
+    target.write_bytes(uv_bytes(WINGET))
+
+    def locked(self: Path, missing_ok: bool = False) -> None:
+        raise PermissionError(13, "The process cannot access the file because it is being used", str(self))
+
+    monkeypatch.setattr(Path, "unlink", locked)
+    with pytest.raises(BootstrapError) as err:
+        bootstrap.B02Home()._place_uv(boot)
+    assert err.value.code == "NS-E105" and "uv.exe" in err.value.detail and "in use" in err.value.detail

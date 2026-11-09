@@ -373,6 +373,10 @@ def ignore_text(text: str) -> None:
     """Default log callback: nothing listens."""
 
 
+def ignore_none() -> Path | None:
+    return None
+
+
 def ignore_call() -> None:
     """Default hook: nothing to do."""
 
@@ -394,6 +398,8 @@ class Boot:
     say: Callable[[str], None] = ignore_text
     write_answers: Callable[[], None] = ignore_call
     uv_pin: Mapping[str, str] = field(default_factory=dict)       # manifest bins.uv: url and sha256
+    # the uv stage 1 downloaded (``ns_common.uv.bootstrap_uv``): b02 looks at it when ``uv`` is wrong
+    handover_uv: Callable[[], Path | None] = ignore_none
     fetch_uv: Callable[[str, str, Path], None] = download_uv
     # pinned direct downloads behind winget (manifest bins.vcredist, bins.ffmpeg): url and sha256
     bin_pins: Mapping[str, Mapping[str, str]] = field(default_factory=dict)
@@ -638,7 +644,14 @@ class B02Home:
         """Delete the ``uv*.exe`` files of a copy that was refused, so no unpinned uv stays in the folder."""
         for item in dest_dir.glob("*.exe") if dest_dir.is_dir() else ():
             if item.is_file() and item.name.lower().startswith("uv"):
-                item.unlink(missing_ok=True)
+                try:
+                    item.unlink(missing_ok=True)
+                except OSError as e:
+                    raise BootstrapError(
+                        "NS-E105",
+                        f"{item} is not the pinned uv and could not be removed ({e}); it is probably in use. "
+                        "Close any running uv or Nightshift process and run setup again",
+                    ) from e
 
     @staticmethod
     def _copy_uv_family(src_dir: Path, dest_dir: Path) -> None:
@@ -650,34 +663,62 @@ class B02Home:
                     continue
                 shutil.copy2(item, there)
 
+    @staticmethod
+    def _uv_candidates(boot: Boot, target: Path) -> list[Path]:
+        """Where a uv may come from: ``boot.uv`` (the resolver's answer), then the stage-1 hand-over.
+
+        The resolver prefers the install folder's copy, so after a wrong-version copy the pinned uv that
+        stage 1 handed over would never be looked at. Each existing file is listed once.
+        """
+        found: list[Path] = []
+        for path in (Path(boot.uv), boot.handover_uv()):
+            if path is not None and path.is_file() and path not in found:
+                found.append(path)
+        return found
+
+    def _try_uv_source(
+        self, boot: Boot, source: Path, target: Path, want: str | None, problems: list[str]
+    ) -> bool:
+        """Copy the uv family of ``source`` into the install folder; True when that gave the pinned uv."""
+        if source.parent == target.parent:
+            problems.append(f"{source} {self._uv_mismatch(boot)}")      # already there and not the pin
+            return False
+        self._copy_uv_family(source.parent, target.parent)
+        if self._uv_is_pinned(boot):
+            boot.say(f"uv {want or 'found'} copied from {source}")
+            return True
+        problems.append(f"{source} {self._uv_mismatch(boot)}")
+        if is_shim(source):
+            real = shim_target(source) or self._self_where(boot, source)
+            if real is not None:
+                boot.say(f"uv at {source} is a shim; using {real}")
+                self._copy_uv_family(real.parent, target.parent)
+                if self._uv_is_pinned(boot):
+                    return True
+                problems.append(f"{real} {self._uv_mismatch(boot)}")
+        return False
+
     def _place_uv(self, boot: Boot) -> None:
         """Put the pinned uv at ``bin\\uv\\uv.exe``.
 
         A uv is accepted only when it runs from the install folder and reports ``bins.uv.version`` of the
         manifest (a uv from PATH, such as winget's, is another version and changes the resolver). Order: the
-        hand-over copy; when that is a shim, the real exe behind it; else a fresh download of the pinned
-        release (``bins.uv``: url and sha256).
+        resolver's uv (``boot.uv``); when that is a shim, the real exe behind it; the uv stage 1 handed over
+        (the resolver answers with the install folder's copy first, which may be the wrong version); else a
+        fresh download of the pinned release (``bins.uv``: url and sha256). A wrong copy in the install folder
+        is deleted only when none of these gave the pin.
         """
         target = boot.home / "bin" / "uv" / "uv.exe"
         source = Path(boot.uv)
         want = boot.uv_pin.get("version")
         problems: list[str] = []
-        if source.is_file():
-            self._copy_uv_family(source.parent, target.parent)
-            if self._uv_is_pinned(boot):
-                boot.say(f"uv {want or 'found'} copied from {source}")
+        for candidate in self._uv_candidates(boot, target):
+            if self._try_uv_source(boot, candidate, target, want, problems):
                 return
-            problems.append(f"{source} {self._uv_mismatch(boot)}")
-            if is_shim(source):
-                real = shim_target(source) or self._self_where(boot, source)
-                if real is not None:
-                    boot.say(f"uv at {source} is a shim; using {real}")
-                    self._copy_uv_family(real.parent, target.parent)
-                    if self._uv_is_pinned(boot):
-                        return
-                    problems.append(f"{real} {self._uv_mismatch(boot)}")
-            boot.say(f"Not using the uv at {source}: " + "; ".join(problems))
-            self._clear_uv_family(target.parent)
+        if problems:
+            boot.say("Not using the uv found so far: " + "; ".join(problems))
+        # a wrong copy is removed only now, when no pinned replacement is in hand
+        self._clear_uv_family(target.parent)
         url, digest = boot.uv_pin.get("url"), boot.uv_pin.get("sha256")
         if not url or not digest:
             if problems:

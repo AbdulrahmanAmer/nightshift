@@ -48,7 +48,7 @@ from ns_common.paths import Paths
 from ns_common.secret_file import stored_names
 from ns_common.secrets_names import PEXELS_KEY, PIXABAY_KEY
 from ns_common.singleton import AlreadyRunning, FileLock
-from ns_common.uv import find_uv
+from ns_common.uv import bootstrap_uv, find_uv
 from ns_common.vcruntime import missing as vcruntime_missing
 
 LOG_KEEP = 50
@@ -302,6 +302,7 @@ class Effects:
     elevate_longpaths: Callable[[], bool] = elevate_longpaths
     console: Callable[[str, str], None] = ignore_console
     uv_path: Callable[[Path], str] = default_uv_path
+    handover_uv: Callable[[], Path | None] = bootstrap_uv        # the uv stage 1 downloaded (D-19)
     fetch_uv: Callable[[str, str, Path], None] = bootstrap.download_uv
     clipboard: Callable[[str], None] = copy_to_clipboard
     pick_folder: Callable[[str, str], str | None] = folderdialog.pick_folder      # (title, start) -> path
@@ -1259,7 +1260,7 @@ class SetupController:
             python_version=str(self.manifest.get("python_version", "3.12")), cmd=fx.cmd, which=fx.which,
             refresh_path=fx.refresh_path, set_home_var=fx.set_home_var, get_home_var=fx.get_home_var,
             on_row=self._on_boot_row, say=lambda t: self.log("info", t), write_answers=self._write_answers,
-            gate=self._gate, stop=self._stop, fetch_uv=fx.fetch_uv,
+            gate=self._gate, stop=self._stop, fetch_uv=fx.fetch_uv, handover_uv=fx.handover_uv,
             uv_pin=(self.manifest.get("bins") or {}).get("uv") or {},
             bin_pins=self.manifest.get("bins") or {}, vc_missing=fx.vc_missing, fetch_file=fx.fetch_file,
             run_elevated=fx.run_elevated, add_user_path=fx.add_user_path, install_app=self.installs_app,
