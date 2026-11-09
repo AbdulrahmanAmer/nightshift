@@ -8,14 +8,14 @@ from __future__ import annotations
 
 import json
 import math
+from collections.abc import Callable
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from installer.stage2.devmode import MIN_FREE_GB, MIN_RAM_GB, STUB_BYTES
+from installer.stage2.devmode import MIN_RAM_GB, STUB_BYTES
 from installer.stage2.web.labels import GROUP_LABELS, llm_label
+from ns_common import diskneed
 
-BASE_FREE_GB = 60
-TIER_EXTRA_GB = {"small": 0, "balanced": 14, "best": 21}
 LINE_MBIT = 50.0
 CARD_GB = 16.0               # the graphics card the product is built for
 RUNTIME_GB = 0.6            # what the runtime itself keeps in video memory
@@ -29,16 +29,55 @@ def recommended_tier(ram_gb: float) -> str:
     return "balanced" if ram_gb >= 31 else "small"
 
 
-def required_free_gb(tier: str, custom_bytes: int | None = None, *, dev: bool = False) -> int:
-    """Free space the install needs on the home drive; a custom model adds its size above Small's 9 GB.
+def home_need(
+    manifest: dict[str, Any],
+    home: str | Path,
+    tier: str,
+    *,
+    custom: dict[str, Any] | None = None,
+    dev: bool = False,
+    profile: str = "gpu",
+    include_code: bool = True,
+    llama_pair: str | None = None,
+    cuda: str | None = None,
+    voice: bool = True,
+    voicedesign: bool = False,
+    models_source: str | None = None,
+) -> diskneed.Need:
+    """The space this install will use at ``home`` (H-6): the files it still has to download or copy, the
+    programs and environments it still has to make, and the working reserve for videos.
 
-    A dev install (docs/DEV_MODE.md) writes stubs for the models and needs 10 GB for the programs and venvs.
+    ``ns_common.diskneed`` does the sum from the manifest; what is already at ``home`` (files with a good
+    ``.ok`` mark, unpacked programs, working environments) costs nothing. A dev install is the fixed 10 GB.
+    ``custom`` is the story model the owner named (``repo``, ``file``, ``size``).
     """
     if dev:
-        return MIN_FREE_GB
-    if custom_bytes:
-        return BASE_FREE_GB + max(0, math.ceil(custom_bytes / 1e9) - 9)
-    return BASE_FREE_GB + TIER_EXTRA_GB.get(tier, 0)
+        return diskneed.install_need(manifest, home, profile="cpu-dev", dev=True)
+    if profile == "cpu-dev":
+        pair = None
+    else:
+        pair = llama_pair or llama_pair_for(cuda) or "cuda13"
+    return diskneed.install_need(
+        manifest, home, profile=profile, tier=tier, custom=custom, include_code=include_code, llama_pair=pair,
+        voice=voice, voicedesign=voicedesign, models_source=models_source,
+    )
+
+
+def required_free_gb(
+    tier: str,
+    custom_bytes: int | None = None,
+    *,
+    dev: bool = False,
+    manifest: dict[str, Any] | None = None,
+    home: str | Path | None = None,
+    **kw: Any,
+) -> int:
+    """Free space a first install needs on the home drive, whole GB (see ``home_need``)."""
+    custom = {"repo": "custom/custom", "file": "custom.gguf", "size": custom_bytes} if custom_bytes else None
+    return home_need(
+        manifest or diskneed.shipped_manifest(), home if home is not None else diskneed.NO_HOME, tier,
+        custom=custom, dev=dev, **kw,
+    ).gb
 
 
 def load_manifest(app_path: Path) -> dict[str, Any]:
@@ -207,11 +246,13 @@ def vram_left_gb(file_bytes: int | float) -> float:
 
 
 def tier_infos(
-    manifest: dict[str, Any], profile: str, *, ram_gb: float, vram_mb: int | None, dev: bool = False
+    manifest: dict[str, Any], profile: str, *, ram_gb: float, vram_mb: int | None, dev: bool = False,
+    need_for: Callable[[str], diskneed.Need] | None = None,
 ) -> dict[str, Any]:
     """The three Model size options with their sizes and whether this PC may pick them.
 
-    A dev install (``dev``) offers Small only, as a stub of ``STUB_BYTES``.
+    A dev install (``dev``) offers Small only, as a stub of ``STUB_BYTES``. ``need_for(tier)`` is the space
+    that tier's install needs (H-6); without it, a first install with every default.
     """
     pm = manifest["profiles"][profile]
     base_bytes = sum(r["bytes"] or 0 for r in model_rows(manifest, profile, "small", dev=dev)[1:])
@@ -238,7 +279,7 @@ def tier_infos(
             "recommended": tier == "balanced",
             "llmBytes": llm_bytes,
             "totalBytes": llm_bytes + base_bytes,
-            "needFreeGb": required_free_gb(tier, dev=dev),
+            "needFreeGb": need_for(tier).gb if need_for else required_free_gb(tier, dev=dev, profile=profile),
             "needsRamGb": (MIN_RAM_GB if dev else 16) if tier == "small" else 32,
             "allowed": allowed,
             "reason": reason,
@@ -258,10 +299,16 @@ def build_plan(
     custom: dict[str, Any] | None = None,
     llama_pair: str | None = None,
     dev: bool = False,
+    home: str | Path | None = None,
+    voice: bool = True,
+    voicedesign: bool = False,
+    models_source: str | None = None,
 ) -> dict[str, Any]:
     """The InstallPlan for the Welcome and Choices screens (``custom`` replaces the tier's story model).
 
     ``dev`` (docs/DEV_MODE.md): the CPU build of llama.cpp, no OpenCode, stub models of the Small tier.
+    ``home`` (the install folder), ``voice`` (False: the ``fake_voice`` engine test), ``voicedesign`` and
+    ``models_source`` say what the space the install needs (``needFreeGb``, in words ``needMakeup``) is for.
     """
     if dev:
         profile, tier, include_code, custom, llama_pair = "cpu-dev", "small", False, None, None
@@ -272,16 +319,38 @@ def build_plan(
     groups = [_group(gid, [r for r in rows if r["group"] == gid]) for gid in GROUP_ORDER]
     total = sum(r["bytes"] or 0 for r in rows)
     unknown = sum(1 for r in rows if r["bytes"] is None and r["via"] == "download")
+
+    def need_of(chosen: str, chosen_custom: dict[str, Any] | None = None) -> diskneed.Need:
+        return home_need(
+            manifest, home if home is not None else diskneed.NO_HOME, chosen,
+            custom=chosen_custom, dev=dev, profile=profile, include_code=include_code, llama_pair=pair,
+            cuda=cuda, voice=voice, voicedesign=voicedesign, models_source=models_source,
+        )
+
+    need = need_of(tier, custom_entry(custom))
     return {
         "tier": tier,
         "profile": profile,
         "groups": groups,
         "totalBytes": total,
         "unknownCount": unknown,
-        "needFreeGb": required_free_gb(tier, int(custom["size"]) if custom else None, dev=dev),
+        "needFreeGb": need.gb,
+        "needMakeup": need.makeup(),
         "estimate": estimate(total),
         "recommendedTier": "small" if dev else recommended_tier(ram_gb),
-        "tiers": tier_infos(manifest, profile, ram_gb=ram_gb, vram_mb=vram_mb, dev=dev),
+        "tiers": tier_infos(manifest, profile, ram_gb=ram_gb, vram_mb=vram_mb, dev=dev,
+                            need_for=lambda t: need_of(t)),
+    }
+
+
+def custom_entry(custom: dict[str, Any] | None) -> dict[str, Any] | None:
+    """The story model the owner named, as ``diskneed`` wants it (``repo``, ``file``, ``size``)."""
+    if not custom:
+        return None
+    return {
+        "repo": custom.get("repo", ""),
+        "file": custom.get("file", "custom.gguf"),
+        "size": int(custom["size"]),
     }
 
 

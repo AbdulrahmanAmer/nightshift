@@ -101,8 +101,11 @@ def test_all_green_fake_probe(tmp_path: Path):
         ({"nvidia_smi": False, "smi_text": "", "driver": ""}, "driver", "warn", "NS-W115"),
         ({"vram_mb": 0}, "gpu", "warn", ""),                                          # memory size not read
         ({"ram_gb": 8}, "ram", "warn", ""),
-        ({"drives": [{"letter": "C", "free_gb": 30, "type": "SSD"}]}, "disk", "fail", "NS-E104"),
-        ({"drives": [{"letter": "C", "free_gb": 50, "type": "SSD"}]}, "disk", "warn", ""),
+        # stage 1 cannot know what the install will use (stage 2 computes it from the manifest and the drive):
+        # it fails only a drive with no room for the setup tools, and says so for anything bigger
+        ({"drives": [{"letter": "C", "free_gb": 1.5, "type": "SSD"}]}, "disk", "fail", "NS-E104"),
+        ({"drives": [{"letter": "C", "free_gb": 30, "type": "SSD"}]}, "disk", "ok", ""),
+        ({"drives": [{"letter": "C", "free_gb": 50, "type": "SSD"}]}, "disk", "ok", ""),
         ({"drives": [{"letter": "C", "free_gb": 500, "type": "HDD"}]}, "disktype", "warn", "NS-W106"),
         ({"unreachable": ["huggingface.co"]}, "network", "warn", "NS-E105"),
         ({"unreachable": ["github.com"]}, "network", "fail", "NS-E105"),

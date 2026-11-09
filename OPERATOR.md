@@ -7,7 +7,8 @@ Keep this file next to `INSTALL.cmd`.
 
 - A Windows 10 or 11 PC with an NVIDIA RTX graphics card (16 GB) and 32 GB of memory for the recommended
   Balanced model. With less memory setup picks the smaller Small model for you.
-- About 75 GB of free disk space (60 GB with the Small model).
+- About 60 to 72 GB of free disk space on a first install (the setup window says the exact number for
+  your PC and your choices, and what it is made of; it asks for less when the models are already on the drive).
 - An internet connection: setup downloads about 20 GB with Balanced (about 15 GB with Small), or use a
   `models` folder you were given on Drive.
 - Two free keys for stock footage: Pexels and Pixabay. Setup shows you where to get them.
@@ -113,7 +114,7 @@ Every message has a code like `NS-E104`, a sentence and a "What to do". In the s
 | NS-E103 | NVIDIA driver too old (CUDA below 12.4) | Setup opens the driver page. Install the newest driver, restart, run INSTALL.cmd again. |
 | NS-W115 | The driver version could not be read | Nothing: setup uses the CUDA 12.4 build. If a video fails on the graphics card later, install the newest driver. |
 | NS-W404 | Captions will be slow: speech recognition runs on the processor, not the graphics card | Nothing blocks you; videos still work. Send the diagnostics zip if the captions step takes too long. |
-| NS-E104 | Not enough free disk space | Free 60 GB, or choose another drive when asked for the install folder. |
+| NS-E104 | Not enough free disk space | Free the space the message names (it says what this install or this video needs and what the drive has), or choose another drive when asked for the install folder. |
 | NS-E105 | A download site cannot be reached | If the detail says the download site answered a 5xx, 408, 425 or 429 (the setup plan's file downloads wait up to 10 minutes for that, the other downloads do not), it is the site's side (for example GitHub having an outage): nothing on this PC is wrong, run INSTALL.cmd again later (or press Retry; for a model download from the dashboard or `ns models get`, start it again) and it continues where it stopped. Otherwise check the internet, switch off any VPN or proxy, run INSTALL.cmd again. |
 | NS-E109 | A downloaded file is damaged | Run INSTALL.cmd again. If it repeats, send the diagnostics zip. |
 | NS-E110 | FFmpeg could not be installed | Setup tries winget first and then downloads a fixed FFmpeg build itself. Press Retry once; if it repeats, install FFmpeg yourself (`winget install Gyan.FFmpeg`) and press Retry. Git is not needed. |

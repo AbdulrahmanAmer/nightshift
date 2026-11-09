@@ -120,7 +120,7 @@ Therefore every heavy dependency sits behind an interface with a **fake** that p
 | GPU | RTX 5060 Ti 16 GB (Blackwell, **sm_120**) | `nvidia-smi`; block if no NVIDIA GPU (`NS-E102`); warn if VRAM < 16 GB |
 | Driver | `nvidia-smi` reports CUDA ≥ 13.0 (driver 580+; the llama.cpp CUDA 13.4 build, the only one with Blackwell code); a pre-Blackwell card with CUDA 12.4–12.x is accepted with the CUDA 12.4 build | Below 12.4, or an RTX 50-series / RTX PRO card below CUDA 13.0: open the NVIDIA driver page, pause, re-check (`NS-E103`) |
 | RAM | 32 GB recommended, 16 GB minimum | Selects the hardware profile (§3) |
-| Disk | ≥ 60 GB free for the default install (Balanced: about 20 GB of models + venvs + working space); 74 GB with Balanced, 60 GB with the Small fallback, 81 GB with Best (the installer checks the chosen tier); +20 GB two-model mode | Block if too small (`NS-E104`) |
+| Disk | Free space for THIS install, worked out by `ns_common/diskneed.py` from the manifest and from what is already on the drive (order H-6): the bytes of every file setup still has to download or copy (nothing for a file already in place with a good `.ok` mark), the unpacked size of the programs and environments it still has to make, and a working reserve of 38 GB for videos (twelve weeks of the default cadence, rounded up). A first install of the Small tier on an empty drive comes out at 60 GB (about 14 GB of models, 7 GB of programs and environments, the reserve); with today's manifest Balanced is 64 GB and Best 72 GB (each tier adds exactly its larger model); a custom model replaces the tier's story model with its own size; a rerun, repair or update over a finished install needs what is missing plus 2 GB; a dev install needs 10 GB; +20 GB two-model mode. The setup window, the PC check and `NS-E104` say the number, what it is made of in one line, and how much is free; jobs ask the same helper (a Short about 100 MB, a 14-minute video with its Shorts about 3 GB) | Block if too small (`NS-E104`) |
 | Disk type | NVMe/SSD for `NIGHTSHIFT_HOME` | Warn on HDD (`NS-W106`): load times will miss §14.6 |
 | Network | HF, GitHub, PyTorch, Pexels, Pixabay reachable | `NS-E105` |
 | Power | Scheduled task can wake the PC; sleep allowed, hibernate discouraged | Set task `WakeToRun`; warn if "wake timers" disabled (`NS-W107`) |
@@ -237,7 +237,7 @@ Work packages: **A** installer+launchers · **B** supervisor+tune+opencode · **
 | Step | Does |
 |---|---|
 | `s00_welcome` | Shows A.2 text + the hardware check summary (incl. disk type, wake timers) |
-| `s01_questions` | **Home folder** for models, venvs, config and videos (default: `<drive with most free space, SSD preferred>\Nightshift`, must pass the 60 GB check; written to the user environment variable `NIGHTSHIFT_HOME`, so every later shortcut, task and shell sees it) · Channel (name, niche, language) · voice (preview 4 presets / design / clone, with a rights confirmation for clones) · Pexels + Pixabay keys (validated live, with links to get them, §21.6) · masters/week (default 1 for a new channel, §18.6) · run time (default 03:00) · install Nightshift Code? (default yes) |
+| `s01_questions` | **Home folder** for models, venvs, config and videos (default: `<drive with most free space, SSD preferred>\Nightshift`, must pass the disk check of §1.2, the space that install needs; written to the user environment variable `NIGHTSHIFT_HOME`, so every later shortcut, task and shell sees it) · Channel (name, niche, language) · voice (preview 4 presets / design / clone, with a rights confirmation for clones) · Pexels + Pixabay keys (validated live, with links to get them, §21.6) · masters/week (default 1 for a new channel, §18.6) · run time (default 03:00) · install Nightshift Code? (default yes) |
 | `s02_download_bins` | llama.cpp + cudart, OpenCode (if chosen) |
 | `s03_download_models` | LLM GGUF (or the custom GGUF named in `llm_custom`, downloaded with no SHA256 and flagged `NS-W113`), embed GGUF, TTS GGUFs (CustomVoice, Base, tokenizer), faster-whisper `distil-large-v3`, YuNet, spaCy wheel (resumable, SHA256). **Local source mode:** if `answers.models_source` (or the wizard's "I have the model files" option) points at a folder, every file whose name and SHA256 match is copied from there instead of downloaded; the rest is downloaded. |
 | `s04_venvs` | `studio` (incl. spaCy, faster-whisper + cuBLAS/cuDNN wheels, OpenCV), `supervisor` (+ dashboard). No `tts` venv unless the PyTorch fallback is triggered (§2). |
@@ -1046,7 +1046,7 @@ All venvs are created from the same repo checkout (`install_state.app_path`), so
   rejected\  logs\
 <app_path>\                   the extracted repo (code only), e.g. D:\NightShift
 ```
-Disk budget: models ~20 GB (Balanced) + venvs ~1.5 GB + working space ≥ 20 GB → the 60 GB check in §1.2 (74 GB with Balanced, 81 GB with Best); two-model mode +20 GB; PyTorch fallback +10 GB.
+Disk budget (computed per install by `ns_common/diskneed.py`, §1.2): the models from the manifest (Small about 14 GB: story model 9, voice 4.4, speech recognition 1.5) + programs and environments about 7 GB (2.5 GB of that the GPU libraries) + the 38 GB working reserve → 60 GB for the Small tier on an empty drive (Balanced 64 GB, Best 72 GB); two-model mode +20 GB; PyTorch fallback +10 GB.
 
 ### 21.6 Accounts and keys the user needs
 | Key | Where to get it | Stored |
