@@ -318,13 +318,30 @@ def test_stage1_hands_the_uv_path_to_the_setup_server():
     assert "NIGHTSHIFT_BOOTSTRAP_UV=" in proc.stdout
 
 
-def _install_uv_harness(tmp_path: Path, winget: str) -> subprocess.CompletedProcess:
-    """Run the real Install-Uv from stage1.ps1 with a dead download URL and a chosen 'winget'."""
+PIN = "0.13.6"
+
+
+def _install_uv_harness(
+    tmp_path: Path, winget: str, path_uv: str | None = None, pin: str | None = PIN
+) -> subprocess.CompletedProcess:
+    """Run the real Install-Uv from stage1.ps1 with a dead download URL and a chosen 'winget'.
+
+    ``path_uv`` is the version the uv on PATH reports after winget ran (None: there is none); ``pin`` is
+    ``bins.uv.version`` of the manifest (None: the manifest pins no version). The winget stub writes its
+    arguments to ``winget-args.txt`` next to the harness.
+    """
+    args_file = tmp_path / "winget-args.txt"
     stubs = {
         "none": "function Test-Tool { param($Name) return $false }",
         "broken": "function Test-Tool { param($Name) return $true }\n"
                   "function winget.exe { throw 'winget exploded' }",
+        "ok": "function Test-Tool { param($Name) return $true }\n"
+              f"function winget.exe {{ Set-Content -LiteralPath '{args_file}' -Value ($args -join ' ') }}",
     }[winget]
+    on_path = (
+        "$null" if path_uv is None else "[pscustomobject]@{ Source = 'C:/fake/Links/uv.exe' }"
+    )
+    version = "" if pin is None else f"; version = '{pin}'"
     script = f"""
 $ErrorActionPreference = 'Stop'
 $ast = [System.Management.Automation.Language.Parser]::ParseFile('{STAGE1}', [ref]$null, [ref]$null)
@@ -333,15 +350,17 @@ $isFn = {{ param($n) $n -is $fnType -and $n.Name -eq 'Install-Uv' }}
 $fn = $ast.FindAll($isFn, $true)[0]
 . ([scriptblock]::Create($fn.Extent.Text))
 {stubs}
+function Get-Command {{ [CmdletBinding()] param([string]$Name) return {on_path} }}
+function Get-UvVersion {{ param([string]$Uv) return '{path_uv or "?"}' }}
 function Get-DataDir {{ return '{tmp_path}' }}
 function Join-Str {{ param($a, $b) return (Join-Path $a $b) }}
 function Update-SessionPath {{ }}
 function Set-Status {{ param($Index, $Tag, $Text) }}
 function Stop-Setup {{ param($Code, $Detail, $ExitCode) Write-Output "STOP:$Code|$Detail"; exit 13 }}
 $script:IsDry = $false
-$uv = [pscustomobject]@{{ url = 'http://127.0.0.1:9/uv.zip'; sha256 = '0' }}
+$uv = [pscustomobject]@{{ url = 'http://127.0.0.1:9/uv.zip'; sha256 = '0'{version} }}
 $manifest = [pscustomobject]@{{ bins = [pscustomobject]@{{ uv = $uv }} }}
-Install-Uv -Manifest $manifest
+Write-Output ('RESULT:' + (Install-Uv -Manifest $manifest))
 """
     f = tmp_path / "harness.ps1"
     f.write_text(script, encoding="utf-8")
@@ -360,6 +379,33 @@ def test_uv_download_failure_with_a_failing_winget_is_ns_e110(tmp_path: Path):
     proc = _install_uv_harness(tmp_path, "broken")
     assert proc.returncode == 13, proc.stdout + proc.stderr
     assert "STOP:NS-E110" in proc.stdout
+
+
+def test_uv_fallback_asks_winget_for_the_pinned_version(tmp_path: Path):
+    _install_uv_harness(tmp_path, "ok", path_uv=PIN)
+    args = (tmp_path / "winget-args.txt").read_text(encoding="utf-8")
+    assert "--id astral-sh.uv" in args and f"--version {PIN}" in args
+
+
+def test_uv_fallback_refuses_a_uv_of_another_version_that_stage_2_would_refuse(tmp_path: Path):
+    """D-19: stage 1 and stage 2 agree. winget's latest (or a PATH uv) of another version stops setup here
+    with the pin named, not late in b02 after Python and the VC++ prompt."""
+    proc = _install_uv_harness(tmp_path, "ok", path_uv="0.13.7")
+    assert proc.returncode == 13, proc.stdout + proc.stderr
+    assert "STOP:NS-E105" in proc.stdout and "RESULT:" not in proc.stdout
+    assert "0.13.7" in proc.stdout and PIN in proc.stdout and "http://127.0.0.1:9/uv.zip" in proc.stdout
+
+
+def test_uv_fallback_accepts_a_uv_of_the_pinned_version(tmp_path: Path):
+    proc = _install_uv_harness(tmp_path, "ok", path_uv=PIN)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "RESULT:C:/fake/Links/uv.exe" in proc.stdout
+
+
+def test_uv_fallback_without_a_manifest_version_takes_the_uv_that_runs(tmp_path: Path):
+    proc = _install_uv_harness(tmp_path, "ok", path_uv="0.13.7", pin=None)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "RESULT:C:/fake/Links/uv.exe" in proc.stdout
 
 
 def test_select_default_home_avoids_the_extracted_folder_and_treats_a_root_specially(tmp_path: Path):

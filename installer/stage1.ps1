@@ -918,7 +918,10 @@ function Install-Uv {
         $haveWinget = Test-Tool 'winget.exe'
         if ($haveWinget) {
             try {
-                $null = & winget.exe install --id astral-sh.uv -e --silent --accept-package-agreements --accept-source-agreements
+                # The pin's version, not winget's latest: stage 2 refuses any other uv (D-19).
+                $wingetArgs = @('install', '--id', 'astral-sh.uv', '-e', '--silent', '--accept-package-agreements', '--accept-source-agreements')
+                if ($pin.version) { $wingetArgs += @('--version', [string]$pin.version) }
+                $null = & winget.exe @wingetArgs
             }
             catch {
                 Write-Verbose "winget failed: $($_.Exception.Message)"
@@ -932,6 +935,15 @@ function Install-Uv {
                 Stop-Setup -Code 'NS-E110' -Detail "uv could not be installed (direct download: $downloadError; winget failed too)." -ExitCode 13
             }
             Stop-Setup -Code 'NS-E105' -Detail "uv could not be downloaded ($downloadError) and winget is not available." -ExitCode 13
+        }
+        # Stage 2 accepts only the pinned uv, so a uv of another version (winget's latest, an older one on
+        # PATH) is refused here, before Python and the VC++ prompt, not late in the "Home" step.
+        if ($pin.version) {
+            $found = Get-UvVersion -Uv $c.Source
+            if ($found -ne [string]$pin.version) {
+                Set-Status -Index 1 -Tag 'fail' -Text ('{0} found, {1} needed' -f $found, $pin.version)
+                Stop-Setup -Code 'NS-E105' -Detail "uv $($pin.version) could not be downloaded ($downloadError) and the uv at $($c.Source) is version $found. Download $($pin.url) when the site is reachable, then run INSTALL.cmd again." -ExitCode 13
+            }
         }
         return $c.Source
     }
