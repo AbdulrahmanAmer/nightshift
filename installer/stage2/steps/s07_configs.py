@@ -6,6 +6,7 @@ into the Windows keyring and are blanked in every answers.json.
 
 from __future__ import annotations
 
+import copy
 import json
 from datetime import UTC, datetime
 from pathlib import Path
@@ -36,6 +37,17 @@ OPENCODE_CONFIG: dict[str, Any] = {
     "autoupdate": False,
     "share": "disabled",
 }
+
+
+def opencode_config(host: str = "127.0.0.1", port: int = 8080) -> dict[str, Any]:
+    """OPENCODE_CONFIG pointed at the llama-server in runtime.json instead of the baked default.
+
+    OpenCode talks straight to llama-server, so a port changed by ns tune or by hand must reach its baseURL.
+    The launcher repeats this on every start (Sync-NsOpenCodePort); this keeps a fresh write correct too.
+    """
+    cfg = copy.deepcopy(OPENCODE_CONFIG)
+    cfg["provider"]["local"]["options"]["baseURL"] = f"http://{host}:{port}/v1"
+    return cfg
 
 
 def apply_engine_test(ctx: StepContext, rt: Runtime) -> None:
@@ -167,8 +179,10 @@ class S07Configs(Step):
         write_ui_prefs(ctx, ans)
 
         if ans.install_code:
+            llama = load_runtime(ctx.paths).llama
             ctx.paths.opencode_file.parent.mkdir(parents=True, exist_ok=True)
-            ctx.paths.opencode_file.write_text(json.dumps(OPENCODE_CONFIG, indent=2) + "\n", encoding="utf-8")
+            ctx.paths.opencode_file.write_text(
+                json.dumps(opencode_config(llama.host, llama.port), indent=2) + "\n", encoding="utf-8")
 
         for key in KEY_NAMES:
             value = getattr(ans, key)
