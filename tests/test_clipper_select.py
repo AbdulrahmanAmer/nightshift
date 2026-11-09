@@ -498,3 +498,28 @@ def test_align_caption_text_still_takes_digits_with_ordinary_punctuation() -> No
     words = _spoken("so we got twenty and then five more of them to the old house")
     got = sel.align_caption_text(words, "So, we got 20, and then 5 more of them to the old house.")
     assert got is not None and got[3] == "20," and got[6] == "5"
+
+
+@pytest.mark.parametrize(
+    ("spoken", "written", "sign"),
+    [
+        ("it was twenty degrees" + _TAIL, "It was -20 degrees" + _TAIL + ".", "-20"),
+        ("it was twenty degrees" + _TAIL, "It was \u201320 degrees" + _TAIL + ".", "\u201320"),
+        ("it was five degrees" + _TAIL, "It was .5 degrees" + _TAIL + ".", ".5"),
+        ("it was five degrees" + _TAIL, "It was ,5 degrees" + _TAIL + ".", ",5"),
+    ],
+)
+def test_align_caption_text_never_adds_a_sign_or_a_decimal_point_to_a_spoken_number(
+    spoken: str, written: str, sign: str
+) -> None:
+    words = _spoken(spoken)
+    got = sel.align_caption_text(words, written)
+    assert got is not None  # the rest of the text is still cleaned
+    assert sign not in got  # "-20" is negative twenty, ".5" is a half: neither was said
+    assert got[2] in ("twenty", "five")  # the recogniser's number word stays as it was heard
+
+
+def test_align_caption_text_takes_digits_after_an_opening_bracket_or_quote() -> None:
+    words = _spoken("so we got twenty and then five more of them to the old house")
+    got = sel.align_caption_text(words, 'So we got "20" and then (5) more of them to the old house.')
+    assert got is not None and got[3] == '"20"' and got[6] == "(5)"

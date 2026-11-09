@@ -466,7 +466,17 @@ _EMOJI = re.compile(
 _ORDINARY_PUNCT = frozenset(
     ".,!?;:'\"()[]{}-\u2010\u2011\u2013\u2014\u2026\u2018\u2019\u201c\u201d\u00ab\u00bb\u00bf\u00a1"
 )
-_DIGITS = re.compile(r"[0-9]+")
+# A number written in digits as it may be shown: an opening quote or bracket, the digits, then ordinary
+# punctuation. A leading "-", dash, "." or "," would be a sign or a decimal point nobody said ("-20", ".5").
+_OPENERS = "\"'([{\u2018\u201c\u00ab\u00bf\u00a1"
+_CLOSERS = ".,!?;:'\")]}-\u2010\u2011\u2013\u2014\u2026\u2019\u201d\u00bb"
+
+
+def _is_spoken_digits(shown: str) -> bool:
+    """True for digits with only an opening quote or bracket before and ordinary punctuation after."""
+    core = shown.lstrip(_OPENERS)
+    digits = core.rstrip(_CLOSERS)
+    return digits.isascii() and digits.isdigit()
 
 
 def _display(token: str) -> str | None:
@@ -509,7 +519,8 @@ def align_caption_text(words: list[Word], text: str | None) -> list[str] | None:
         shown = _display(tokens[j])
         if shown is None:  # "$20", "20%", "#1": a symbol the speaker did not say stays the recogniser's word
             continue
-        if _plain(shown) == _plain(words[i].w) or (framed(i, j) and _DIGITS.fullmatch(_plain(shown))):
+        same_letters = _plain(shown) == _plain(words[i].w)
+        if same_letters or (framed(i, j) and _is_spoken_digits(shown)):
             out[i] = shown
             taken.add(i)
     spoken = [i for i, w in enumerate(words) if _key(w.w) and not is_filler_word(w.w)]

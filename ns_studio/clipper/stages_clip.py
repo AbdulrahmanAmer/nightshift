@@ -330,7 +330,8 @@ def prompt_video_kind(p: ClipParams, an: Analysis) -> str:
 CAPTION_WORDS_FILE = "clip_caption_words.json"  # per clip: the model's cleaned spelling of each ASR word
 # The answer now holds the spoken text of every candidate besides the thinking, so it needs more room than the
 # 4096 tokens `complete_json` allows by default (a cut-off answer is NS-E302 and loses the whole window). The
-# llama server runs with at least 16K of context (`ns_supervisor.tune.min_ctx_for`).
+# llama server runs with at least 16K of context on the gpu profile and 8K on cpu-dev
+# (`ns_supervisor.tune.min_ctx_for`); a 720 s window prompt is about 4K tokens, so cpu-dev never reaches 8192.
 CLIP_SELECT_MAX_TOKENS = 8192
 
 
