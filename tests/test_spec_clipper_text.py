@@ -137,9 +137,9 @@ def test_c4_row_lists_the_filler_tokens_the_candidate_filter_counts():
 
 
 def test_c8_row_names_where_a_handle_is_caught():
-    """C8/D36: `@x` is caught at the start of a text or after a space, not inside `(@x)` or `a@b`."""
-    d36 = _decision(POLICY_QUESTION)[1]
-    assert "_HANDLE_OR_URL" in d36 and "after a space" in d36
+    """C8/D41: `@x` is caught at the start of a text or after a space, not inside `(@x)` or `a@b`."""
+    d41 = _decision(POLICY_QUESTION)[1]
+    assert "_HANDLE_OR_URL" in d41 and "after a space" in d41
     for text, caught in (("@x", True), ("hi @x", True), ("(@x)", False), ("a@b.com", False)):
         assert bool(clip_seo._HANDLE_OR_URL.search(text)) is caught, text
 
@@ -212,7 +212,7 @@ def test_remove_fillers_drops_the_hesitations_and_keeps_like_in_the_captions(tmp
 
 
 def test_the_spec_names_the_remove_fillers_failure_exactly_while_the_stage_fails(tmp_home: Path):
-    """17.2 and D35 must not state the setting works while CaptionsStage raises on a hesitation (and the
+    """17.2 and D40 must not state the setting works while CaptionsStage raises on a hesitation (and the
     reverse: when the product is fixed this test asks for the 'Known defect' sentences to go)."""
     try:
         _caption_words(tmp_home, SPOKEN, remove=True)
@@ -220,12 +220,12 @@ def test_the_spec_names_the_remove_fillers_failure_exactly_while_the_stage_fails
     except ValueError as e:
         assert "one entry per word" in str(e)
         fails = True
-    d35 = _decision(FILLER_QUESTION)[1]
-    for text in (_text_source(), d35):
+    d40 = _decision(FILLER_QUESTION)[1]
+    for text in (_text_source(), d40):
         assert ("Known defect" in text or "known defect" in text) is fails
     if fails:
         assert "fails" in _text_source() and "hesitation" in _text_source()
-        assert "speaker_plan" in d35 and "CaptionsStage.run" in d35 and "stages_clip.py" in d35
+        assert "speaker_plan" in d40 and "CaptionsStage.run" in d40 and "stages_clip.py" in d40
 
 
 def test_the_captions_keep_every_word_when_the_channel_does_not_ask(tmp_home: Path):
@@ -328,6 +328,6 @@ def test_audit_rows_follow_the_spec_text_and_the_boxes_stay_open():
     assert cells[0] == "partial" and f"13 D{n_fill}" in cells[2]
     assert "speaker_plan" in cells[4] and "stages_clip.py" in cells[3]
     for line in (_status_row("Captions 17.2: text source")[4], _box("F-H95")):
-        assert "), (" not in line and "restor" in line and "D35" in line  # no dangling comma
+        assert "), (" not in line and "restor" in line and f"D{n_fill}" in line  # no dangling comma
     for box_id, number in (("F-H125", n_cam), ("F-H127", n_fill), ("F-H128", n_pol)):
         assert f"Decision: section 13 D{number}." in _box(box_id), box_id  # open: QA ticks with evidence
