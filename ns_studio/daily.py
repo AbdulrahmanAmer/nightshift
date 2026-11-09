@@ -504,11 +504,11 @@ def _tonight(
     due = [dj for dj in due if dj.channel.slug not in failed_channels]
     report["not_due"] = why
     for dj in due:
+        if _paused_now(env, dj.channel.slug):  # paused after the plan was made: nothing of it starts
+            _hold_for_pause(env, report, why, dj.channel.slug, dj.count)  # also when the GPU stayed busy
+            continue
         if gpu_busy:  # J7: the GPU stayed busy for the whole wait; the other jobs wait for the next night
             report.setdefault("skipped", []).append({"channel": dj.channel.slug, "jobs": dj.count})
-            continue
-        if _paused_now(env, dj.channel.slug):  # paused after the plan was made: nothing of it starts
-            _hold_for_pause(env, report, why, dj.channel.slug, dj.count)
             continue
         ch = dj.channel
         bar = cadence.apply_quality_drop(env.paths, env.db, ch, dj.plan, now)
@@ -533,7 +533,11 @@ def _tonight(
                 break
 
 
-PAUSED_TONIGHT = "its channel was paused during the night; resume it and the next night continues"
+PAUSED_TONIGHT = (
+    "its channel was paused during the night; resume it and the next night continues "
+    f"(a half-made job that started more than {ownership.RESUME_WITHIN_DAYS} days before that night "
+    "needs Retry in the Queue)"
+)
 
 
 def _paused_now(env: jobs.Env, slug: str) -> bool:
@@ -558,7 +562,7 @@ def _hold_for_pause(
 
     `skipped` keeps its old meaning (an earlier job stopped, so the others wait), which the Queue page words
     as such; a pause has its own key. A half-made job (`job_id`) is left exactly as it was: still interrupted,
-    so the next night continues it once the channel is resumed."""
+    so the next night continues it once the channel is resumed, while it is under `RESUME_WITHIN_DAYS` old."""
     entry: dict[str, Any] = {"channel": slug, "jobs": jobs_left, "reason": PAUSED_TONIGHT}
     if job_id:
         entry["job_id"] = job_id

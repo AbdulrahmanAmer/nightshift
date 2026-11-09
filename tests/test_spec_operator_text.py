@@ -722,3 +722,25 @@ def test_the_when_control_is_called_by_its_label_and_the_window_may_be_a_browser
     assert "otherwise the default browser" in launcher and "Start-Process $url" in launcher
     for text in (first, _flat(spec_section("### J2")), _flat(decision("Dashboard home"))):
         assert "default browser" in text
+
+
+def test_the_half_made_job_of_a_paused_channel_is_promised_only_within_the_resume_age_limit():
+    """P47: the next night continues a half-made job after the resume only while it is under
+    RESUME_WITHIN_DAYS old (`ownership.resume_problem`); D38, the guides and the morning note say so."""
+    from ns_studio import ownership
+
+    days = ownership.RESUME_WITHIN_DAYS
+    words = {1: "one", 2: "two", 3: "three", 4: "four", 5: "five", 6: "six", 7: "seven"}
+    assert days in words, "RESUME_WITHIN_DAYS changed: name the new number in the guides"
+    assert f"it is more than {days} days old" in inspect.getsource(ownership.resume_problem).replace(
+        "{RESUME_WITHIN_DAYS}", str(days)
+    )
+    d = _flat(decision("Incident procedure"))
+    assert "the next night continues it after the resume, but only while" in d
+    assert f"`RESUME_WITHIN_DAYS` ({days}) days" in d and "ownership.resume_problem" in d
+    assert "press Retry in the Queue" in d
+    guide = _flat(doc_section(GUIDE, HEADING))
+    readme = _flat(doc_section(README, HEADING))
+    for text in (guide, readme):
+        assert f"no more than {words[days]} days before that night" in text
+        assert "Retry" in text.split("days before that night", 1)[1]

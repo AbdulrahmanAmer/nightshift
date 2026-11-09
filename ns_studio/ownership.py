@@ -1131,7 +1131,8 @@ def recovery_message(
         elif what == "paused":
             tail = (
                 "Its channel was paused during the night, so it waits; resume the channel and the next "
-                "nightly run continues it."
+                f"nightly run continues it, as long as the job started no more than {RESUME_WITHIN_DAYS} "
+                f"days before that run; an older one is not continued by the night, so {_way_back(j)}."
             )
         elif j.resumable:
             tail = f"It continues at the next nightly run, or {_way_back(j)}."

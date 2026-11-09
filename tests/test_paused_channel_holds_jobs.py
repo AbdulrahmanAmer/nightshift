@@ -301,7 +301,12 @@ def test_retry_of_a_job_whose_channel_profile_is_gone_keeps_its_old_answer(tmp_h
 NOW = datetime(2026, 11, 20, 3, 0, tzinfo=UTC)
 
 
-def night(tmp_home: Path, pause_after: int | None, slugs: tuple[str, ...] = (CH,)):
+def night(
+    tmp_home: Path,
+    pause_after: int | None,
+    slugs: tuple[str, ...] = (CH,),
+    on_run: Any = None,
+):
     """Run the real nightly planner, two Shorts owed per channel; pause the first after `pause_after` jobs."""
     paths = Paths.from_env()
     paths.ensure()
@@ -327,6 +332,8 @@ def night(tmp_home: Path, pause_after: int | None, slugs: tuple[str, ...] = (CH,
 
     def run_fn(ctx: Any) -> list[str]:
         ran.append(ctx.channel.slug)
+        if on_run is not None:
+            on_run(paths, db, ctx)
         if pause_after is not None and len(ran) == pause_after:
             review.pause(paths, db, slugs[0], "warning arrived during the night")
         return []
@@ -379,6 +386,24 @@ def test_only_the_paused_channel_stops_the_others_carry_on(tmp_home: Path):
     channels = [j["channel"] for j in report["jobs"]]
     assert channels.count(CH) == 1 and channels.count("tiny-mysteries") == 2
     assert [s["channel"] for s in report["paused"]] == [CH]
+
+
+def test_a_paused_channel_is_not_reported_as_skipped_when_the_gpu_stayed_busy(tmp_home: Path):
+    """The GPU stays busy (NS-E201) on the first channel's job; the second channel was paused meanwhile.
+
+    The first channel is `skipped` (an earlier job stopped); the paused one is `paused`, never `skipped`."""
+    from ns_common.errors import NsError
+
+    def busy_and_pause(paths: Paths, db: Db, ctx: Any) -> None:
+        review.pause(paths, db, "tiny-mysteries", "warning arrived during the night")
+        raise NsError("NS-E201", "held by another program")
+
+    report, ran, _, _ = night(tmp_home, None, slugs=(CH, "tiny-mysteries"), on_run=busy_and_pause)
+    assert len(ran) == 1, "after the busy GPU nothing else starts"
+    skipped = [s["channel"] for s in report.get("skipped", [])]
+    held = [s["channel"] for s in report.get("paused", [])]
+    assert "tiny-mysteries" in held and "tiny-mysteries" not in skipped
+    assert skipped and ran[0] in skipped
 
 
 # ------------------------------------------------------------------ break-it round (independent review)
@@ -733,3 +758,30 @@ def test_the_morning_note_says_the_job_of_a_paused_channel_waits():
     assert note is not None
     assert "channel was paused during the night" in note and "resume the channel" in note
     assert "It continues at the next nightly run" not in note
+
+
+def test_the_morning_note_for_a_held_half_made_job_names_the_age_limit_and_the_way_back():
+    """The night continues a held job only under RESUME_WITHIN_DAYS old: the note says so (P47 review)."""
+    from ns_studio import ownership
+
+    def note_for(has_card: bool) -> str:
+        job = ownership.Interrupted(
+            job_id="j1",
+            channel="after-dark",
+            fmt="master_first",
+            stage="d31_b",
+            origin="daily",
+            run_id=None,
+            owner="x",
+            resumable=True,
+            card_id="card1" if has_card else None,
+        )
+        out = ownership.recovery_message(ownership.Recovery(jobs=[job]), outcomes={"j1": ("paused", None)})
+        assert out is not None
+        return out
+
+    days = ownership.RESUME_WITHIN_DAYS
+    with_card = note_for(True)
+    assert f"no more than {days} days before that run" in with_card
+    assert "press Retry in the Queue" in with_card
+    assert "run studio run --resume j1" in note_for(False)
