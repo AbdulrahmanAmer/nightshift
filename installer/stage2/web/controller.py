@@ -1764,7 +1764,7 @@ class SetupController:
 
     def _encoder(self) -> str:
         try:
-            data = json.loads((self.home / "config" / "runtime.json").read_text(encoding="utf-8-sig"))
+            data = json.loads(read_text_retry(self.home / "config" / "runtime.json", "utf-8-sig"))
             enc = (data.get("video") or {}).get("encoder")
             return "libx264" if enc == "libx264" else "h264_nvenc"
         except (OSError, ValueError):

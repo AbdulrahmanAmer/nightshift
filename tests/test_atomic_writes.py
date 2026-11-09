@@ -17,6 +17,7 @@ that, the way the product's readers do.
 from __future__ import annotations
 
 import contextlib
+import io
 import json
 import os
 import shutil
@@ -625,3 +626,221 @@ def test_a_crash_in_the_swap_leaves_the_old_file_whole(
     after = target.read_bytes() if target.exists() else None
     assert after == before, f"{name}: the file changed although the swap never happened"
     assert not list(target.parent.rglob("*.tmp")), f"{name}: a temporary file was left behind"
+
+
+def _clip_sidecars(tmp_path: Path) -> tuple[Path, Callable[[], object]]:
+    from ns_studio.clipper.models import ClipMetadata
+    from ns_studio.clipper.stages_clip import write_clip_sidecars
+
+    def meta(title: str) -> ClipMetadata:
+        return ClipMetadata(
+            channel="after-dark",
+            job_id="after-dark-20261101-ab12",
+            k=1,
+            title=title,
+            description="D",
+            tags=["a"],
+            hashtags=["#Shorts"],
+            publish_after="2026-11-02T18:00",
+            source_video="v.mp4",
+            template="center_crop",
+        )
+
+    j, t = tmp_path / "out" / "c1.json", tmp_path / "out" / "c1.txt"
+    j.parent.mkdir()
+    write_clip_sidecars(j, t, meta("old"), "c1.mp4")
+    return j, lambda: write_clip_sidecars(j, t, meta("new"), "c1.mp4")
+
+
+WRITERS["clip sidecar (.json)"] = (_clip_sidecars, '"title": "old"')
+
+
+def test_a_clip_rewritten_in_the_outbox_has_both_sidecars_and_no_temp_file(tmp_path: Path) -> None:
+    j, rewrite = _clip_sidecars(tmp_path)
+    rewrite()
+    assert '"title": "new"' in j.read_text(encoding="utf-8")
+    assert "TITLE: new" in j.with_suffix(".txt").read_text(encoding="utf-8")
+    assert sorted(p.name for p in j.parent.iterdir()) == ["c1.json", "c1.txt"]
+
+
+# ------------------------------------------------------------------ a reader that holds the file open
+NEW = b"new content, longer than the old"
+
+
+def _copy(src: Path, dst: Path) -> None:
+    src.write_bytes(NEW)
+    atomic.copy_atomic(src, dst)
+
+
+def _text(src: Path, dst: Path) -> None:
+    atomic.write_text_atomic(dst, NEW.decode())
+
+
+def _bytes(src: Path, dst: Path) -> None:
+    atomic.write_bytes_atomic(dst, NEW)
+
+
+def _chunks(src: Path, dst: Path) -> None:
+    atomic.write_chunks_atomic(dst, iter([NEW[:5], NEW[5:]]))
+
+
+def _stream(src: Path, dst: Path) -> None:
+    atomic.write_stream_atomic(dst, io.BytesIO(NEW))
+
+
+def _outbox(src: Path, dst: Path) -> None:
+    from ns_studio.media.outbox import copy_if_changed
+
+    src.write_bytes(NEW)
+    copy_if_changed(src, dst)
+
+
+@pytest.mark.parametrize("write", [_copy, _text, _bytes, _chunks, _stream, _outbox])
+def test_a_file_another_program_holds_open_is_still_replaced(
+    write: Callable[[Path, Path], None], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Windows refuses `os.replace` over a file a reader has open (the dashboard playing an outbox video, a
+    mail client holding a zip). The write used to fail with a raw PermissionError after the retries; it now
+    falls back to writing the content over the old file, as every writer did before the swap existed."""
+    monkeypatch.setattr(atomic, "REPLACE_TRIES", 2)
+    dst = tmp_path / "v.mp4"
+    dst.write_bytes(b"old")
+    with dst.open("rb") as holder:
+        write(tmp_path / "src.bin", dst)
+        holder.read()  # the reader is still there, and still reading, when the writer is done
+    assert dst.read_bytes() == NEW
+    assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_a_zip_a_mail_client_holds_open_is_rebuilt_all_the_same(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(atomic, "REPLACE_TRIES", 2)
+    z = make_zip(tmp_path / "d.zip", **{"a.txt": "old"})
+    with z.open("rb"):
+        atomic.write_zip_atomic(z, lambda zf: zf.writestr("b.txt", "new"))
+    assert read_whole_zip(z) == ["b.txt"]
+    assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_a_file_that_really_cannot_be_written_still_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The fallback is for a reader holding the file, not a way to swallow every PermissionError."""
+    monkeypatch.setattr(atomic, "REPLACE_TRIES", 2)
+    dst = tmp_path / "v.mp4"
+    dst.write_bytes(b"old")
+    real_copyfile = shutil.copyfile
+
+    def no_replace(*a: Any, **k: Any) -> None:
+        raise PermissionError(13, "Access is denied")
+
+    def copyfile(src: Any, dst_: Any, **k: Any) -> Any:
+        if Path(dst_) == dst:
+            raise PermissionError(13, "Access is denied")
+        return real_copyfile(src, dst_, **k)
+
+    monkeypatch.setattr(atomic.os, "replace", no_replace)
+    monkeypatch.setattr(atomic.shutil, "copyfile", copyfile)
+    with pytest.raises(PermissionError):
+        atomic.write_bytes_atomic(dst, b"new")
+    assert dst.read_bytes() == b"old" and not list(tmp_path.glob("*.tmp"))
+
+
+# ------------------------------------------------------------------ leftovers of a crash
+def test_a_temporary_name_is_short_and_matches_no_sibling_glob(tmp_path: Path) -> None:
+    target = tmp_path / ("a-very-long-outbox-name-" * 6 + ".mp4")
+    tmp = atomic._tmp_for(target)  # noqa: SLF001
+    assert len(tmp.name) < 30 and tmp.parent == target.parent
+    assert tmp != atomic._tmp_for(target)  # noqa: SLF001 - two writers to one file never share a name
+    for pattern in (f"{target.stem}.*", "source.*", "*.mp4", "*.json", "*.zip", "*.yaml"):
+        assert not tmp.match(pattern), pattern
+
+
+def test_find_download_never_takes_a_temporary_file_for_the_video(tmp_path: Path) -> None:
+    from ns_studio.clipper.source import find_download
+
+    (tmp_path / "source.mkv.tmp").write_bytes(b"x" * 100)
+    assert find_download(tmp_path) is None
+
+
+def test_stale_temporary_files_are_swept_and_young_or_foreign_ones_are_not(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stale = atomic._tmp_for(tmp_path / "v.mp4")  # noqa: SLF001
+    stale.write_bytes(b"x" * 10)
+    mine = tmp_path / "notes.tmp"  # somebody else's file
+    mine.write_text("keep", encoding="utf-8")
+    assert atomic.sweep_stale_tmp(tmp_path) == 0 and stale.exists()  # a moment old is not stale
+    assert atomic.sweep_stale_tmp(tmp_path / "missing") == 0
+    monkeypatch.setattr(atomic, "STALE_TMP_S", -5.0)  # "an hour ago" is now in the future of every file
+    assert atomic.sweep_stale_tmp(tmp_path) == 1
+    assert not stale.exists() and mine.exists()
+
+
+def test_the_outbox_copy_sweeps_the_temporary_video_a_power_cut_left(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from ns_studio.media.outbox import copy_if_changed
+
+    out = tmp_path / "outbox"
+    out.mkdir()
+    left_over = atomic._tmp_for(out / "v.mp4")  # noqa: SLF001
+    left_over.write_bytes(b"x" * 1000)
+    src = tmp_path / "src.mp4"
+    src.write_bytes(b"video")
+    monkeypatch.setattr(atomic, "STALE_TMP_S", -5.0)
+    copy_if_changed(src, out / "v.mp4")
+    assert [p.name for p in out.iterdir()] == ["v.mp4"]
+
+
+def test_the_diagnostics_bundle_sweeps_the_temporary_zips_a_power_cut_left(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from installer.stage2 import diagzip
+
+    paths = _paths(tmp_path)
+    paths.logs.mkdir()
+    desktop = tmp_path / "Desktop"
+    desktop.mkdir()
+    left = [atomic._tmp_for(paths.logs / "x.zip"), atomic._tmp_for(desktop / "x.zip")]  # noqa: SLF001
+    for f in left:
+        f.write_bytes(b"PK half a zip")
+    monkeypatch.setattr(atomic, "STALE_TMP_S", -5.0)
+    out = diagzip.write_fallback_bundle(paths, desktop=desktop)
+    assert not any(f.exists() for f in left)
+    assert read_whole_zip(out) is not None and (desktop / out.name).is_file()
+
+
+def test_an_update_zip_that_stops_half_way_leaves_no_zip_and_no_temp_file(tmp_path: Path) -> None:
+    import httpx
+
+    from ns_common.errors import NsError
+    from ns_supervisor import releases
+    from tests.test_ns_update_github import client_for, release_json
+
+    data = release_json("0.2.0")
+    rel = releases.parse_release(data)
+
+    visible: list[bool] = []
+
+    class Cut(httpx.SyncByteStream):
+        def __iter__(self) -> Iterator[bytes]:
+            yield b"PK-half"
+            visible.append((tmp_path / rel.zip_name).exists())  # is the half zip under its final name now?
+            raise httpx.ReadError("connection lost")
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        if req.url.host == "api.github.com":
+            return httpx.Response(200, json=data)
+        return httpx.Response(200, stream=Cut())
+
+    cut = httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=True)
+    with pytest.raises(NsError):
+        releases.download(rel, tmp_path, cut)
+    assert visible == [False] and list(tmp_path.iterdir()) == []
+    z = releases.download(rel, tmp_path, client_for(data))  # and the whole download still works
+    assert z.read_bytes().startswith(b"PK") and sorted(p.name for p in tmp_path.iterdir()) == [
+        z.name,
+        z.name + ".sha256",
+    ]

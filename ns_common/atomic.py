@@ -13,12 +13,19 @@ either the old complete file or the new complete one, never a part of either.
 * Windows refuses `os.replace` while a reader has the target open (Python's `open` does not share delete),
   and refuses a reader's open for a few milliseconds while a replace is in flight. The writer retries the
   replace (`REPLACE_TRIES`); readers wrap the open in `retry_busy` / `read_text_retry` / `read_bytes_retry`.
+  When a reader keeps the target open for the whole retry time (a player on an outbox video, a mail client on
+  a zip) the content is written over the old file in place instead of failing: the pre-swap behaviour.
+* A crash leaves at most one `~ns<pid>-<thread>-<n>.tmp` beside the target (a short name no sibling glob such
+  as `v.*` matches); `sweep_stale_tmp` removes the ones older than an hour, and the outbox copy and the
+  diagnostics bundle call it before they write.
 """
 
 from __future__ import annotations
 
 import contextlib
+import itertools
 import os
+import re
 import shutil
 import threading
 import time
@@ -33,11 +40,39 @@ BAD_SUFFIX = ".bad"
 TMP_SUFFIX = ".tmp"
 REPLACE_TRIES = 12
 READ_TRIES = 6
+#: A temporary file nobody finished (a crash, a power cut) older than this is swept by the next writer.
+STALE_TMP_S = 3600.0
+#: Short on purpose (the path of a long outbox name must not grow) and never `<target>.*`, so a sibling glob
+#: such as `v.*` or `source.*` cannot mistake a temporary file for part of the target.
+_TMP_NAME = re.compile(r"^~ns\d+-\d+-\d+\.tmp$")
+_tmp_counter = itertools.count(1)
 
 
 def _tmp_for(path: Path) -> Path:
-    """A temporary name in the target's own folder, unique per process and thread."""
-    return path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}{TMP_SUFFIX}")
+    """A short temporary name in the target's own folder, unique per process, thread and call."""
+    return path.with_name(f"~ns{os.getpid()}-{threading.get_ident()}-{next(_tmp_counter)}{TMP_SUFFIX}")
+
+
+def sweep_stale_tmp(folder: Path, *, older_than_s: float | None = None) -> int:
+    """Delete the temporary files of ours that a crash left in `folder`; returns how many were removed.
+
+    Only a file older than `older_than_s` goes. A file still being written is young (a copy gets a fresh
+    creation time, not its source's) and, on Windows, open, so it is never taken for a leftover.
+    """
+    try:
+        entries = [e for e in os.scandir(folder) if _TMP_NAME.match(e.name)]
+    except OSError:
+        return 0
+    removed = 0
+    cutoff = time.time() - (STALE_TMP_S if older_than_s is None else older_than_s)
+    for entry in entries:
+        try:
+            if entry.stat().st_ctime < cutoff:
+                os.unlink(entry.path)
+                removed += 1
+        except OSError:
+            continue
+    return removed
 
 
 def _discard(tmp: Path) -> None:
@@ -70,9 +105,19 @@ def replace_atomic(src: Path, dst: Path) -> None:
 
 
 def _publish(tmp: Path, path: Path) -> None:
-    """Swap the finished temp file in; a temp file that could not be swapped in is removed."""
+    """Swap the finished temp file in; the temp file is removed whatever happens.
+
+    Windows refuses to replace a file another program holds open (the dashboard previewing an outbox video,
+    a mail or sync client holding a zip). After the retries the content is written over the old file in place
+    instead, which is what every writer did before this module and which an open reader does not block: the
+    writer does not fail, and only a reader that holds the file that long can meet it half written.
+    """
     try:
-        replace_atomic(tmp, path)
+        try:
+            replace_atomic(tmp, path)
+        except PermissionError:
+            shutil.copyfile(tmp, path)
+            _discard(tmp)
     except BaseException:
         _discard(tmp)
         raise
@@ -111,6 +156,22 @@ def write_bytes_atomic(path: Path, data: bytes) -> Path:
     try:
         with tmp.open("wb") as fh:
             fh.write(data)
+            _sync(fh)
+        _publish(tmp, path)
+    except BaseException:
+        _discard(tmp)
+        raise
+    return path
+
+
+def write_chunks_atomic(path: Path, chunks: Iterable[bytes]) -> Path:
+    """Write the blocks of a download to `path` through a temp file; `path` shows only when all arrived."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = _tmp_for(path)
+    try:
+        with tmp.open("wb") as fh:
+            for block in chunks:
+                fh.write(block)
             _sync(fh)
         _publish(tmp, path)
     except BaseException:

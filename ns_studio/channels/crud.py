@@ -10,6 +10,7 @@ from typing import Any
 import yaml
 from pydantic import ValidationError
 
+from ns_common.atomic import read_text_retry
 from ns_common.config import list_channels, load_channel, save_channel
 from ns_common.db import Db
 from ns_common.models import Channel, Pools
@@ -232,6 +233,6 @@ def edit_channel(paths: Paths, db: Db, slug: str, updates: dict[str, Any]) -> Ch
 def load_channel_yaml(path: Path) -> Channel:
     """Parse a channel YAML file given on the command line (`channel add --from-yaml`)."""
     try:
-        return Channel.model_validate(yaml.safe_load(path.read_text(encoding="utf-8")))
+        return Channel.model_validate(yaml.safe_load(read_text_retry(path)))
     except (ValidationError, OSError, yaml.YAMLError) as e:
         raise StudioError("NS-E320", f"{path}: {e}") from e

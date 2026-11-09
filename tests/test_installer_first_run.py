@@ -215,6 +215,7 @@ def test_a_finished_run_writes_the_report_and_adds_it_to_the_wizards_zip(tmp_pat
     assert data["outcome"] == "done" and data["failedStep"] is None
     assert all(v["status"] == "done" for v in data["steps"].values())
     assert data["statusLine"].startswith("Nightshift setup ") and "finished" in data["statusLine"]
+
     def names() -> list[str]:
         with zipfile.ZipFile(bundle) as zf:
             return zf.namelist()

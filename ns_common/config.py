@@ -96,7 +96,7 @@ def notifications_enabled(paths: Paths) -> bool:
     nightly run and by the supervisor's weekly update check before they show a toast.
     """
     try:
-        raw = json.loads((paths.config / "dashboard.json").read_text(encoding="utf-8"))
+        raw = json.loads(read_text_retry(paths.config / "dashboard.json"))
     except (OSError, ValueError):
         return True
     if isinstance(raw, dict) and isinstance(raw.get("notifications"), bool):

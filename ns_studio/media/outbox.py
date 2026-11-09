@@ -10,7 +10,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from ns_common.atomic import copy_atomic, read_text_retry, write_text_atomic
+from ns_common.atomic import copy_atomic, read_text_retry, sweep_stale_tmp, write_text_atomic
 from ns_common.models import Channel, ClipRef, Metadata, PolicyAdvice, PolicyResult, Seo
 from ns_common.paths import Paths
 from ns_studio.context import JobContext
@@ -282,6 +282,7 @@ def write_sheet_txt(
 def copy_if_changed(src: Path, dest: Path) -> Path:
     """Copy `src` to `dest` unless an identical-size file is already there."""
     dest.parent.mkdir(parents=True, exist_ok=True)
+    sweep_stale_tmp(dest.parent)  # a power cut during an earlier copy left a video-sized temporary file
     if not dest.exists() or dest.stat().st_size != src.stat().st_size:
         copy_atomic(src, dest)  # the finished video appears whole: a watcher never meets half of it
     return dest

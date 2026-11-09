@@ -226,7 +226,7 @@ DOWNLOAD_FAILED = "NS-E409"
 YTDLP_FORMAT = "bv*[height<=1080]+ba/b"
 _URL = re.compile(r"^https?://\S+$", re.IGNORECASE)
 _PERCENT = re.compile(r"\[download\]\s+([0-9]+(?:\.[0-9]+)?)%")
-_SKIP_SUFFIXES = (".json", ".part", ".ytdl", ".temp", ".txt", ".jpg", ".webp", ".png")
+_SKIP_SUFFIXES = (".json", ".part", ".ytdl", ".temp", ".tmp", ".txt", ".jpg", ".webp", ".png")
 
 
 def is_url(text: str) -> bool:

@@ -12,7 +12,7 @@ from datetime import UTC, date, datetime, timedelta, tzinfo
 from pathlib import Path
 from typing import Any
 
-from ns_common.atomic import write_text_atomic
+from ns_common.atomic import read_text_retry, write_text_atomic
 from ns_common.errors import NsError
 from ns_common.keepawake import keep_awake
 from ns_studio import jobs, notifications
@@ -62,7 +62,7 @@ def scheduled_shorts(
         if r["job_id"] in skip_jobs:
             continue
         try:
-            data = json.loads(Path(r["path"]).with_suffix(".json").read_text(encoding="utf-8"))
+            data = json.loads(read_text_retry(Path(r["path"]).with_suffix(".json")))
             day = datetime.fromisoformat(str(data["publish_after"])).date()
         except (OSError, ValueError, KeyError, TypeError):
             continue

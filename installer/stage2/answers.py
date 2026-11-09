@@ -61,7 +61,7 @@ def find_answers(app_path: Path, paths: Paths, explicit: Path | None = None) -> 
 def load_raw(path: Path) -> dict[str, Any]:
     """Read an answers file into a dict; blank strings become None. Raises AnswersError."""
     try:
-        data = json.loads(path.read_text(encoding="utf-8-sig"))
+        data = json.loads(read_text_retry(path, "utf-8-sig"))
     except (OSError, ValueError) as e:
         raise AnswersError(f"cannot read {path}: {e}") from e
     if not isinstance(data, dict):
