@@ -491,9 +491,14 @@ def _owner_text(words: int) -> str:
     return "\n\n".join(" ".join(sentences[i : i + 4]) for i in range(0, len(sentences), 4))
 
 
-def _job_through_voice(tmp_home: Path, monkeypatch: pytest.MonkeyPatch, script: str | None):
+def _job_through_voice(
+    tmp_home: Path, monkeypatch: pytest.MonkeyPatch, script: str | None, *, old_bucket: bool = False
+):
     """A fake-services job run up to and including the voice stage: a shorts_only job (`script` None) or a
-    Short made from the owner's `script`. Returns (ctx, the stage names it runs, run_job)."""
+    Short made from the owner's `script`. Returns (ctx, the stage names it runs, run_job).
+
+    `old_bucket` makes the job as it was before P02b: its `job.json` bucket is the body alone, with no room
+    for a closing line."""
     from ns_studio import jobs
     from ns_studio.context import FAKEABLE
     from ns_studio.orchestrator import FORMAT_STAGES, plan_format, run_job
@@ -506,6 +511,16 @@ def _job_through_voice(tmp_home: Path, monkeypatch: pytest.MonkeyPatch, script: 
         ctx = jobs.make_job(env, ch, "shorts_only")
     else:
         ctx = jobs.make_script_job(env, ch, "shorts_only", script)
+    if old_bucket:
+        from ns_studio.series.plain import plan_script
+
+        plan = plan_script(script or "", "shorts_only", [ctx.combo.pacing], None, ch.voice.speed)
+        job_json = ctx.file("job.json")
+        data = json.loads(job_json.read_text(encoding="utf-8"))
+        data["combo"]["length_bucket"] = max(1, round(plan.seconds))
+        job_json.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        ctx = jobs.load_job(env, ctx.job_id)
+        assert ctx.combo.length_bucket == max(1, round(plan.seconds)) < (plan.length_bucket or 0)
     key = plan_format(ctx.fmt, ctx.job_dir)
     names = list(FORMAT_STAGES[key])
     names = names[: names.index("voice") + 1]
@@ -626,3 +641,52 @@ def test_the_bucket_of_an_owner_script_holds_the_closing_line_the_short_will_get
     for words in (SHORT_MIN_CLOSING_WORDS, S.SHORT_CLOSING_WORDS):
         total = plan.seconds + CLOSE_GAP_S + words * (60.0 / wpm + PAUSE_PER_WORD_S)
         assert duration_check(total, "short", plan.length_bucket).passed, (words, total, plan.length_bucket)
+
+
+# ---- break-it round: a job made before the bucket held the closing line; the E604 restart ------------------
+
+
+def test_a_tiny_owner_short_made_before_the_closing_reserve_is_resumed_without_a_closing_line(
+    tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Its bucket is the body alone (about 11 s): a 1.9 s closing line would carry it to 13 s, over the
+    9.3-12.6 s band, and QC would drop the Short (NS-W406). No line fits, so the stage adds none."""
+    ctx, names, run_job = _job_through_voice(tmp_home, monkeypatch, OWNER_TINY, old_bucket=True)
+    assert run_job(ctx) == names
+    manifest = ctx.read_json("audio/manifest.json")
+    assert sorted(manifest) == ["p1"] and not ctx.file("closings.json").exists()
+    assert ctx.read_json("hooks_all.json") == [[S.split_sentences(OWNER_TINY)[0]]]
+    bucket = ctx.combo.length_bucket
+    assert bucket and duration_check(manifest["p1"]["seconds"], "short", bucket).passed
+    assert ctx.file("audio/p1.txt").read_text(encoding="utf-8").split() == OWNER_TINY.split()
+
+
+def test_a_longer_owner_short_made_before_the_closing_reserve_gets_its_closing_line_within_the_band(
+    tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+):
+    ctx, names, run_job = _job_through_voice(tmp_home, monkeypatch, _owner_text(100), old_bucket=True)
+    assert run_job(ctx) == names
+    _assert_every_short_is_closed(ctx)
+
+
+def test_fit_closing_without_room_is_no_line_for_an_owner_short_and_a_default_otherwise(tmp_home: Path):
+    ctx = make_ctx(tmp_home)
+    far_over = _part(1, _story(S.ideas_budget(ctx).max_words * 2), hook=DISTINCT_HOOK)
+    assert S.fit_closing(ctx, far_over, DISTINCT_HOOK, "Follow for more.", 1, must_fit=True) == ""
+    assert S.fit_closing(ctx, far_over, DISTINCT_HOOK, "Follow for more.", 1)  # not an owner's: a default
+
+
+def test_a_dishonest_hook_or_title_of_an_owner_short_is_redone_from_seo_not_from_the_closing_line():
+    from ns_studio.orchestrator import (
+        MASTER_FROM_OWNER_SCRIPT_STAGES,
+        SHORTS_FROM_OWNER_SCRIPT_STAGES,
+        SHORTS_ONLY_STAGES,
+    )
+    from ns_studio.policy.regen import earliest_stage
+
+    owner = list(SHORTS_FROM_OWNER_SCRIPT_STAGES)
+    assert "hooks" in owner
+    assert earliest_stage("NS-E604", owner, owner=True) == "seo"  # the hook is the owner's first sentence
+    assert earliest_stage("NS-E604", list(SHORTS_ONLY_STAGES), owner=False) == "hooks"
+    long_owner = list(MASTER_FROM_OWNER_SCRIPT_STAGES)
+    assert earliest_stage("NS-E604", long_owner, owner=True) == earliest_stage("NS-E604", long_owner)

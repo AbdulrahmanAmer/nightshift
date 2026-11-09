@@ -24,7 +24,8 @@ MAX_REGENERATIONS = 1
 # Candidate restart stages per code, earliest sensible first; the first one present in the plan wins. Each
 # tuple names the stages of every plan: shorts_only (`draft`, `hooks`, `seo`), master_first (`chapters_draft`,
 # `shorts_select`, `seo_long`, `seo_shorts`), master_from_script (`seo_long`, `seo_shorts`) and the owner
-# script plans (Short: `seo`, `visual_plan`; long: `shorts_select`, `seo_long`, `seo_shorts`). A name that is
+# script plans (Short: `hooks` (not a start there, see `earliest_stage`), `seo`, `visual_plan`; long:
+# `shorts_select`, `seo_long`, `seo_shorts`). A name that is
 # in no plan sends the job back to the first stage of its plan: an hour of LLM work for one disliked tag.
 # For an owner's own script that stage is only the import of the same text, so the job fails at once with
 # the original code.
@@ -68,9 +69,15 @@ _SMALL_FILES = (
 _MEDIA_DIRS = ("long", "shorts")
 
 
-def earliest_stage(code: str, names: list[str], check: str | None = None) -> str:
-    """The stage to restart from for `code` (and the failing `check`), else the first stage of the plan."""
+def earliest_stage(code: str, names: list[str], check: str | None = None, owner: bool = False) -> str:
+    """The stage to restart from for `code` (and the failing `check`), else the first stage of the plan.
+
+    For an owner's own script `hooks` is never the start: there it only adds the closing line, the hook is the
+    owner's first sentence, so a dishonest hook or title is fixed from `seo` on (the voice is not redone).
+    """
     for cand in (*REGEN_FROM_CHECK.get(check or "", ()), *REGEN_FROM.get(code, ())):
+        if owner and cand == "hooks":
+            continue
         if cand in names:
             return cand
     return names[0]
@@ -172,7 +179,7 @@ def _run_job_guarded(ctx: JobContext, *, resume: bool) -> list[str]:
             att = _attempts(ctx)
             n = int(att["regenerations"])
             names = [s.name for s in plan_job(plan_format(ctx.fmt, ctx.job_dir))]
-            start = earliest_stage(e.code, names, str(e.data.get("check") or "") or None)
+            start = earliest_stage(e.code, names, str(e.data.get("check") or "") or None, ctx.owner_script)
             if ctx.owner_script and start == names[0]:
                 # Only the import of the owner's own text would be redone: it would fail the same way.
                 att["history"].append({"code": e.code, "detail": e.detail, "rejected_to": None})

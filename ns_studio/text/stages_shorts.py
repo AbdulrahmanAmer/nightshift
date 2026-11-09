@@ -406,7 +406,15 @@ def closing_line(raw: Any, part_n: int, parts_total: int) -> str:
     return default_closing(part_n, parts_total)
 
 
-def fit_closing(ctx: JobContext, part: dict[str, Any], hook: str, closing: str, parts_total: int) -> str:
+def fit_closing(
+    ctx: JobContext,
+    part: dict[str, Any],
+    hook: str,
+    closing: str,
+    parts_total: int,
+    *,
+    must_fit: bool = False,
+) -> str:
     """`closing`, or a shorter line when it would carry the Short past QC's duration band.
 
     The budget reserves `SHORT_CLOSING_WORDS` for the closing line, but the model may write up to
@@ -414,7 +422,9 @@ def fit_closing(ctx: JobContext, part: dict[str, Any], hook: str, closing: str, 
     over the bucket by more than the 15 % QC allows (NS-W406, the Short is dropped). The hooks stage knows
     the body and the hook, so it estimates the seconds the model's line leaves and takes the first of the
     model's line, the part's default and the other defaults that stays within the budget's own +12 % margin;
-    when none does, the shortest default.
+    when none does, the shortest default. With `must_fit` (a Short made from the owner's own script, whose
+    words are never shortened) a line that still does not fit is no line: "" is returned, so a job planned
+    before its bucket held a closing line is not dropped by QC for the line it never had room for.
     """
     from ns_studio.media.captions import CLOSE_GAP_S, HOOK_GAP_S
     from ns_studio.media.voice import hook_opens_body
@@ -428,7 +438,7 @@ def fit_closing(ctx: JobContext, part: dict[str, Any], hook: str, closing: str, 
     for line in candidates:
         if word_count(line) <= room:
             return line
-    return min(candidates[1:], key=word_count)
+    return "" if must_fit else min(candidates[1:], key=word_count)
 
 
 class HooksStage:
@@ -438,7 +448,10 @@ class HooksStage:
     which the voice stage speaks as `p<n>_close` and the render appends to the part.
 
     For a Short made from the owner's own script the stage adds only the closing line: the text and the hook
-    (its first sentence) stay as the import wrote them and `hooks_all.json` holds that one hook.
+    (its first sentence) stay as the import wrote them and `hooks_all.json` holds that one hook. The model
+    is asked through the same `hook` prompt, whose five hook candidates are discarded: only its closing line
+    is used, and only when it fits the bucket (`fit_closing` with `must_fit`); a job planned before the
+    bucket held a closing line (its bucket is the body alone) that has no room for one gets none, as before.
     """
 
     name: str = "hooks"
@@ -473,7 +486,9 @@ class HooksStage:
                 # closing line is added after it (spec 7.0, D16). The model's hook candidates are not used.
                 first = cut_words(split_sentences(p["text"])[0], HOOK_MAX_WORDS)
                 hook = str(p.get("hook") or "").strip() or first
-                closings[str(p["n"])] = fit_closing(ctx, p, hook, wanted, len(parts))
+                line = fit_closing(ctx, p, hook, wanted, len(parts), must_fit=True)
+                if line:  # "": a job planned before the bucket held room for one keeps no closing line
+                    closings[str(p["n"])] = line
                 all_hooks.append([hook])
                 continue
             hooks = [str(h).strip() for h in out["hooks"] if 0 < len(str(h).split()) <= HOOK_MAX_WORDS]
@@ -489,7 +504,8 @@ class HooksStage:
             p["hook"] = hooks[idx]
             closings[str(p["n"])] = fit_closing(ctx, p, p["hook"], wanted, len(parts))
             all_hooks.append(hooks)
-        ctx.write_json(CLOSINGS_FILE, closings)
+        if closings or not owner:
+            ctx.write_json(CLOSINGS_FILE, closings)
         ctx.write_json("hooks_all.json", all_hooks)
         if not owner:
             ctx.write_json("parts.json", parts)  # an owner's parts.json stays as the import wrote it
