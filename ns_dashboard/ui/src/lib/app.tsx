@@ -52,11 +52,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 4200);
   }, []);
   // Supervisor events the dashboard stream keeps as their own kind (F-D2): the weekly update check found a newer version, the nightly run finished.
+  // The supervisor wraps every event as {ts, kind, data}, so the fields these toasts read sit under payload.data.
   const notifyUpdate = useCallback((p: { update_available?: boolean; latest?: string; current?: string } | null) => {
     if (p?.update_available && p.latest) toast(`Version ${p.latest} is available${p.current ? ` (you have ${p.current})` : ""}. Open Settings, Updates`, "ok");
   }, [toast]);
   const notifyRun = useCallback((p: { event?: string } | null) => {
-    if (p?.event === "finished") toast("The nightly run has finished. New videos wait in the Queue", "ok");
+    if (p?.event === "finished") toast("The nightly run has finished. See the Queue", "ok");
   }, [toast]);
   const confirm = useCallback((r: Omit<ConfirmReq, "resolve">) => new Promise<string | boolean | null>((resolve) => setConfirmReq({ ...r, resolve })), []);
   const closeConfirm = useCallback((v: string | boolean | null) => { setConfirmReq((c) => { c?.resolve(v); return null; }); }, []);
@@ -88,7 +89,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (stopped) return;
       fails = ok ? 0 : 1;
       if (!api.demo && "EventSource" in window) {
-        try { es = new EventSource("/api/events"); es.onmessage = (ev) => { try { const m = JSON.parse(ev.data); if (m.kind === "status") { publish(m.payload); setOffline(false); fails = 0; } else if (m.kind === "update") notifyUpdate(m.payload); else if (m.kind === "run") notifyRun(m.payload); } catch { /* ignore */ } }; } catch { /* polling covers it */ }
+        try { es = new EventSource("/api/events"); es.onmessage = (ev) => { try { const m = JSON.parse(ev.data); if (m.kind === "status") { publish(m.payload); setOffline(false); fails = 0; } else if (m.kind === "update") notifyUpdate(m.payload?.data); else if (m.kind === "run") notifyRun(m.payload?.data); } catch { /* ignore */ } }; } catch { /* polling covers it */ }
       }
       timer = window.setTimeout(tick, api.demo ? 1500 : fails ? 2000 : 10000);
     });
