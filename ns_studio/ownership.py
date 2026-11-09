@@ -67,12 +67,19 @@ KEEP_ENDED_DAYS = 30
 #: the lock for a few milliseconds and must not turn a start-up into a failure).
 ACQUIRE_TRIES = 6
 ACQUIRE_WAIT_S = 0.1
+#: `recover` waits this long for another process that is closing the same things (the engine and the nightly
+#: start together after a power cut), then scans again: the nightly must not plan before the job is closed.
+RECOVER_WAIT_S = 20.0
 OPEN_STATES = ("starting", "running")
 #: Whose dead jobs the Queue offers (a clip, a series part or a calibration has its own way back).
 STORY_ORIGINS = ("daily", "manual")
 OFFER_SOURCE = "nightly_recovery"
 
 Liveness = Literal["live", "dead", "interrupted", "ended", "unknown"]
+
+
+class JobBusy(StudioError):
+    """Another process really owns the job right now (a Retry from the Queue is running it): not a failure."""
 
 
 class SqlDb(Protocol):
@@ -271,9 +278,9 @@ _HELD: dict[tuple[str, str], int] = {}
 _HELD_GUARD = threading.Lock()
 
 
-def _take(paths: Paths, kind: str, owner_id: str) -> FileLock | None:
-    """The OS lock of `owner_id`; StudioError when another process really owns it, None when no lock file can
-    be made at all (a read-only home): then the run goes on with no owner known, as before this change."""
+def _take(paths: Paths, kind: str, owner_id: str) -> FileLock:
+    """The OS lock of `owner_id`; `JobBusy` when another process really owns it, StudioError when no lock file
+    can be made at all (a read-only home: refused, never run with no owner known)."""
     lock = FileLock(lock_path(paths, owner_id))
     for attempt in range(ACQUIRE_TRIES):
         try:
@@ -282,24 +289,30 @@ def _take(paths: Paths, kind: str, owner_id: str) -> FileLock | None:
         except AlreadyRunning as e:
             if attempt == ACQUIRE_TRIES - 1:
                 who = f" (process {e.owner})" if e.owner else ""
-                raise StudioError(
+                raise JobBusy(
                     UNEXPECTED, f"{kind} {owner_id} is already running in another process{who}"
                 ) from e
             time.sleep(ACQUIRE_WAIT_S)
-        except OSError:
-            return None
-    return None
+        except OSError as e:
+            # No lock file can be made: nobody could tell this work is alive, so a second start would close it
+            # as dead and continue it next to the live one. Refuse rather than run unowned.
+            raise StudioError(
+                UNEXPECTED, f"{kind} {owner_id} cannot be owned, its lock file cannot be made: {e}"
+            ) from e
+    raise StudioError(UNEXPECTED, f"{kind} {owner_id} cannot be owned")
 
 
 @contextlib.contextmanager
 def hold(paths: Paths, kind: str, owner_id: str, **fields: Any) -> Iterator[None]:
     """Own `owner_id` (a `run` or a `job`) for the length of the block.
 
-    Takes the OS lock, records `running` with this pid, and records how it ended: `done`, `failed` (an error
-    came out, the job is over and Retry-able, not interrupted) or `interrupted` (Ctrl+C, the process is going
-    down). A kill gives no chance to record anything: the record keeps saying `running` with no lock holder,
-    which is exactly what `liveness` calls dead. Re-entrant inside one process (the nightly holds the job and
-    `run_job_guarded` holds it again). Another process holding it raises StudioError (NS-E327, with the pid).
+    Takes the OS lock, records `running` with this pid, and records how it ended: `done` or `failed` (an error
+    came out, the job is over and Retry-able, not interrupted). A kill, and Ctrl+C or anything else that is
+    not an `Exception`, record nothing: the record keeps saying `running` with no lock holder, which is what
+    `liveness` calls dead, so `recover` closes it with its card, its stage and its note, the way it closes a
+    killed process. Re-entrant inside one process (the nightly holds the job and `run_job_guarded` holds it
+    again). Another process holding it raises `JobBusy` (NS-E327, with the pid); a lock that cannot be made at
+    all raises StudioError (NS-E327): work nobody could see as alive is never started.
     """
     key = (str(owners_dir(paths)), owner_id)
     with _HELD_GUARD:
@@ -315,9 +328,6 @@ def hold(paths: Paths, kind: str, owner_id: str, **fields: Any) -> Iterator[None
                     _HELD[key] = max(1, _HELD[key] - 1)
         return
     lock = _take(paths, kind, owner_id)
-    if lock is None:  # no lock file can be made here: run with no owner known, as before this change
-        yield
-        return
     with _HELD_GUARD:
         _HELD[key] = 1
     known = read_record(paths, owner_id) or {}
@@ -334,7 +344,7 @@ def hold(paths: Paths, kind: str, owner_id: str, **fields: Any) -> Iterator[None
         origin=origin,
         **extra,
     )
-    state: str = "done"
+    state: str | None = "done"
     error: str | None = None
     try:
         yield
@@ -342,12 +352,15 @@ def hold(paths: Paths, kind: str, owner_id: str, **fields: Any) -> Iterator[None
         state, error = "failed", getattr(e, "code", None)
         raise
     except BaseException:
-        state = "interrupted"
+        state = None  # Ctrl+C and the like: left `running` and unheld, so `recover` closes it in full
         raise
     finally:
         with _HELD_GUARD:
             _HELD.pop(key, None)
-        write_record(paths, owner_id, state=state, ended_at=_iso(), error=error)
+        if state is None:
+            write_record(paths, owner_id, pid=None)  # this process is not what ended it, and may live on
+        else:
+            write_record(paths, owner_id, state=state, ended_at=_iso(), error=error)
         lock.release()
         with contextlib.suppress(OSError):
             lock.path.unlink()
@@ -400,6 +413,67 @@ def note_run_job(paths: Paths, run_id: str, job_id: str, channel: str) -> None:
     write_record(paths, run_id, jobs=[*jobs, {"job_id": job_id, "channel": channel}])
 
 
+# ---------------------------------------------------------------- what became of an interrupted job
+#: The fates the Queue's "Last night" card words apart: still open (needs Retry), continued and finished,
+#: continued and stopped again, waiting for the GPU (the next night continues it).
+FATES = ("open", "resumed", "failed_again", "waiting")
+
+
+def interrupted_entry(
+    job_id: str, channel: str | None, stage: str | None, fate: str = "open", *, has_card: bool | None = None
+) -> dict[str, Any]:
+    """One `interrupted_jobs` entry of a run summary: which job, where it stopped and what became of it.
+
+    `state` is the fate (one of `FATES`); `resumed` is `state == "resumed"` (the key older readers know);
+    `has_card` says whether a Retry card in the Queue stands for the job (omitted when not known).
+    """
+    if fate not in FATES:
+        raise ValueError(f"unknown fate {fate!r}")
+    item: dict[str, Any] = {
+        "job_id": job_id,
+        "channel": channel,
+        "stage": stage,
+        "state": fate,
+        "resumed": fate == "resumed",
+    }
+    if has_card is not None:
+        item["has_card"] = has_card
+    return item
+
+
+def has_card(rec: Mapping[str, Any]) -> bool:
+    """Whether the Queue has a Retry card for this record's job: `make_job` announced it and a person (the
+    dashboard) or the nightly started it. A job known only through `hold` (a series part, a job reopened by
+    hand) has none: its way back is `studio run --resume`."""
+    return rec.get("origin") in STORY_ORIGINS and bool(rec.get("announced_at"))
+
+
+def current_interrupted(paths: Paths, db: SqlDb, items: Sequence[Any] | None) -> list[dict[str, Any]]:
+    """The `interrupted_jobs` of a run summary, as true when they are served.
+
+    A summary is written once, when the run is closed, and says what was true then. A job it lists as open may
+    since have been finished (Retry from the Queue, or a nightly that continued it): such an entry is served
+    as `resumed`, so the card never says "not finished" of a job that has its video. Entries from a version
+    that wrote no `state` read as `resumed` when they say so and as `open` otherwise.
+    """
+    out: list[dict[str, Any]] = []
+    for raw in items or []:
+        if not isinstance(raw, Mapping):
+            continue
+        item = dict(raw)
+        fate = item.get("state")
+        if fate not in FATES:
+            fate = "resumed" if item.get("resumed") is True else "open"
+        job_id = str(item.get("job_id") or "")
+        if fate != "resumed" and job_id:
+            fmt = (read_record(paths, job_id) or {}).get("fmt") or job_info(paths, job_id).get("fmt")
+            if job_info(paths, job_id) and job_finished(paths, db, job_id, fmt):
+                fate = "resumed"
+        item["state"], item["resumed"] = fate, fate == "resumed"
+        out.append(item)
+    return out
+
+
 # ---------------------------------------------------------------- the run row, as /api/status shows it
 def run_state(
     paths: Paths,
@@ -440,10 +514,12 @@ def run_state(
 
 # ---------------------------------------------------------------- the Queue card of an interrupted job
 def _rows_for(db: SqlDb, job_id: str) -> list[Any]:
+    """The `dashboard_jobs` rows that name `job_id` (`_` and `%` in an id are letters, not wildcards)."""
+    exact = job_id.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
     return list(
         db.query(
-            "select job_id, status, params_json from dashboard_jobs where params_json like ?",
-            (f"%{job_id}%",),
+            "select job_id, status, params_json from dashboard_jobs where params_json like ? escape '\\'",
+            (f"%{exact}%",),
         )
     )
 
@@ -742,7 +818,7 @@ def _close_job(paths: Paths, db: SqlDb, rec: dict[str, Any], now: datetime, owne
     )
     # Only a job `make_job` announced is a story job someone started; a series part or a job reopened by hand
     # (a record made by `hold` alone) has its own way back, so the Queue gets no second card for it.
-    if origin in STORY_ORIGINS and rec.get("announced_at"):
+    if has_card(closing):
         resume = "pending" if item.resumable else "needs_retry"
         created = _parse(info.get("created_at")) or now
         item.card_id = offer_job(
@@ -813,11 +889,13 @@ def _close_run(
         earlier = read_record(paths, job_id) or {}
         if item is not None:
             summary["interrupted_jobs"].append(
-                {"job_id": job_id, "channel": j.get("channel") or item.channel, "stage": item.stage}
+                interrupted_entry(
+                    job_id, j.get("channel") or item.channel, item.stage, has_card=item.has_card
+                )
             )
         elif earlier.get("state") == "interrupted":
             summary["interrupted_jobs"].append(
-                {"job_id": job_id, "channel": j.get("channel"), "stage": earlier.get("interrupted_at_stage")}
+                interrupted_entry(job_id, j.get("channel"), earlier.get("interrupted_at_stage"))
             )
         else:
             summary["jobs"].append({"job_id": job_id, "channel": j.get("channel")})
@@ -896,13 +974,11 @@ def _recover_legacy(
         started = _parse(row["started_at"])
         if started is None or now - started < timedelta(hours=LEGACY_IN_PROGRESS_H):
             continue  # may still be running under an older version
-        later = db.one("select min(started_at) s from runs where started_at > ?", (row["started_at"],))
-        end = _parse(later["s"]) if later is not None and later["s"] else None
         closed: dict[str, Interrupted] = {}
         listed: list[dict[str, Any]] = []
         stuck = False
         if row["mode"] == "daily":
-            for job_id, channel in _legacy_jobs(paths, db, started, end):
+            for job_id, channel in _legacy_jobs(paths, db, str(row["started_at"])):
                 rec = write_record(
                     paths,
                     job_id,
@@ -931,22 +1007,31 @@ def _recover_legacy(
         out.runs.append(_close_run(paths, db, run_id, started, listed, "unknown", closed, now))
 
 
-def _legacy_jobs(paths: Paths, db: SqlDb, started: datetime, end: datetime | None) -> list[tuple[str, str]]:
-    """Jobs a dead pre-0.1.15 nightly left half made: combos rows in its window, no video, a job folder."""
-    lower = (started - timedelta(minutes=5)).isoformat(timespec="seconds")
+def _legacy_jobs(paths: Paths, db: SqlDb, started_at: str) -> list[tuple[str, str]]:
+    """Jobs a dead pre-0.1.15 nightly left half made: its own combos rows, no video, a job folder.
+
+    "Its own" is decided by equality, never by a time window: a 0.1.14 nightly stamps its `runs.started_at`
+    and the `combos.created_at` of every job it makes with the same `now` (`daily._run_daily` -> `make_job`
+    -> `record_combo`). Only the nightly inserts a `runs` row, so a Run now, a `studio run` or a series part
+    made after the killed night has no row of its own and lies inside any window up to the next night: it is
+    not adopted (the nightly would continue it by itself, paid work nobody asked for). A job a dashboard card
+    already names (a Run now that started in the same second) is the dashboard's, not adopted either.
+
+    Known gap: a job that failed on its own earlier that night (QC fail, any error) is unfinished too, and a
+    0.1.x job folder keeps no failure marker (the report that listed it is written only when the night ends),
+    so it cannot be told from an interrupted one and is adopted. See the follow-up in the pull request.
+    """
     sql = (
-        "select job_id, channel, min(created_at) c from combos where created_at >= ?"
-        + (" and created_at < ?" if end is not None else "")
-        + " group by job_id, channel order by c"
+        "select job_id, channel, min(created_at) c from combos where created_at = ? group by job_id, channel"
     )
-    args: tuple[Any, ...] = (lower, end.isoformat(timespec="seconds")) if end is not None else (lower,)
     out: list[tuple[str, str]] = []
-    for r in db.query(sql, args):
+    for r in db.query(sql + " order by c", (started_at,)):
         job_id = str(r["job_id"])
         info = job_info(paths, job_id)
         if (
             read_record(paths, job_id) is not None
             or not info
+            or _rows_for(db, job_id)
             or job_finished(paths, db, job_id, info.get("fmt"))
         ):
             continue
@@ -967,7 +1052,8 @@ def recovery_message(
     """The morning note for what `recover` closed, or None when nobody needs telling.
 
     `outcomes` is what the nightly then did with a resumable job, by job id: `("resumed", None)`,
-    `("failed", <code>)` or `("waiting", None)` (the GPU was busy). Without an outcome the note never claims
+    `("failed", <code>)`, `("waiting", None)` (the GPU was busy) or `("busy", None)` (a Retry from the Queue
+    was already running it). Without an outcome the note never claims
     the job is being continued: it says when it will be, and how to continue it by hand.
     """
     outcomes = outcomes or {}
@@ -987,6 +1073,8 @@ def recovery_message(
             )
         elif what == "waiting":
             tail = f"The GPU was busy, so it waits for the next nightly run; or {_way_back(j)}."
+        elif what == "busy":
+            tail = "It is being continued right now from the Queue."
         elif j.resumable:
             tail = f"It continues at the next nightly run, or {_way_back(j)}."
         else:
@@ -1029,18 +1117,28 @@ def recover(
     """Close what a dead process left open: unfinished runs, half-made jobs; tell the owner once.
 
     Safe to call from anywhere, any number of times: a run or job with a live owner is left alone, and what
-    was closed is closed (a second call finds nothing). The nightly passes `note=False` and leaves its own
-    note after it has tried to continue the jobs (`leave_recovery_note`), so the note says what happened.
+    was closed is closed (a second call finds nothing). A call that meets another one at work waits for it
+    (`RECOVER_WAIT_S`) and then scans, so what it returns is what it closed itself, possibly nothing. The
+    nightly passes `note=False` and leaves its own note after it has tried to continue the jobs
+    (`leave_recovery_note`), so the note says what happened.
     """
     now = now or _now()
     out = Recovery()
     guard = FileLock(owners_dir(paths) / "recover.lock")  # the engine and the nightly may start together
-    try:
-        guard.acquire()
-    except AlreadyRunning:
-        return out  # another process is closing the same things right now
-    except OSError:
-        pass  # no lock file can be made here: carry on unguarded
+    deadline = time.monotonic() + RECOVER_WAIT_S
+    while True:
+        try:
+            guard.acquire()
+            break
+        except AlreadyRunning:
+            # Another process is closing the same things right now. Leaving at once would let the nightly plan
+            # before that process has written the job's record (it writes it last): the job would not be
+            # continued tonight and a second master would be started. Wait, then scan.
+            if time.monotonic() >= deadline:
+                return out
+            time.sleep(0.1)
+        except OSError:
+            break  # no lock file can be made here: carry on unguarded
     try:
         _recover_owned(paths, db, now, out, log)
         _recover_legacy(paths, db, now, out, log)
@@ -1121,8 +1219,13 @@ def status_lines(paths: Paths, db: SqlDb, channel: str) -> list[str]:
         ):
             stage = rec.get("interrupted_at_stage") or reached_stage(paths, job_id, rec.get("fmt"))
             at = f" at stage {stage}" if stage else ""
-            lines.append(
-                f"  interrupted: job {job_id} stopped{at}; press Retry in the Queue "
-                "or the next nightly run continues it"
-            )
+            # a card exists for a job `make_job` announced (see `_close_job`); only the nightly's own jobs are
+            # continued by the nightly
+            if has_card(rec):
+                way = "press Retry in the Queue"
+                if rec.get("origin") == "daily":
+                    way += " or the next nightly run continues it"
+            else:
+                way = f"continue it with studio run --resume {job_id}"
+            lines.append(f"  interrupted: job {job_id} stopped{at}; {way}")
     return lines

@@ -221,7 +221,7 @@ def _close_dead_work(env: jobs.Env, now: datetime, report: dict) -> ownership.Re
     for j in out.jobs:
         if not j.resumable and not j.dashboard_owned:
             report["interrupted_jobs"].append(
-                {"job_id": j.job_id, "channel": j.channel, "stage": j.stage, "resumed": False}
+                ownership.interrupted_entry(j.job_id, j.channel, j.stage, "open", has_card=j.has_card)
             )
     later = ownership.Recovery(jobs=[j for j in out.jobs if j.resumable])
     now_part = ownership.Recovery(
@@ -242,7 +242,8 @@ def _attempt(
     run_id: str,
     resumed: bool = False,
 ) -> str | None:
-    """Make (or reopen) one job and run it, owned for as long as it runs. Returns the error code on failure.
+    """Make (or reopen) one job and run it, owned for as long as it runs. Returns the error code on failure
+    (`BUSY` when another process is already running that job: not a failure, nothing is reported).
 
     A failure (coded or not) ends this job and is listed in the report, never the night.
     """
@@ -260,6 +261,11 @@ def _attempt(
             entry["resumed"] = True
         report["jobs"].append(entry)
         return None
+    except ownership.JobBusy as e:
+        # A Retry from the Queue is running this very job: not a failure of the night, and the job's card, the
+        # report and the toast stay as they are. The Retry finishes it (or fails it) on its own.
+        env.log.info("daily_job_busy", job_id=job_id, detail=str(e))
+        return BUSY
     except (NsError, StudioError) as e:
         code, detail = e.code, str(e)
     except Exception as e:  # an uncoded bug or corrupt file ends this job, never the night
@@ -271,6 +277,8 @@ def _attempt(
 
 
 Outcomes = dict[str, tuple[str, str | None]]
+#: What `_attempt` returns for a job another process is running (a Retry from the Queue): not an error code.
+BUSY = "busy"
 
 
 def _resume_interrupted(
@@ -295,13 +303,26 @@ def _resume_interrupted(
         env.log.info("daily_job_resume", job_id=job_id, channel=slug, stage=stage)
         reopen = partial(jobs.load_job, env, job_id)
         code = _attempt(env, run, report, reopen, slug, run_id=run_id, resumed=True)
+        has_card = ownership.has_card(rec)
+        if code == BUSY:  # a Retry runs it: leave the job, its card and the report alone
+            outcomes[job_id] = ("busy", None)
+            continue
         if code == "NS-E201":  # the GPU is busy: it stays interrupted, the next night tries again
             ownership.write_record(env.paths, job_id, state="interrupted")
-            report.setdefault("skipped", []).append({"channel": slug, "jobs": 1})
+            # It is waiting, not failed and not skipped: `_attempt` listed the NS-E201 as a failure, which the
+            # card and the toast must not repeat. Its interrupted entry says "waiting" instead.
+            report["failures"] = [
+                f for f in report["failures"] if not (f["job_id"] == job_id and f["code"] == "NS-E201")
+            ]
+            report["interrupted_jobs"].append(
+                ownership.interrupted_entry(job_id, slug, stage, "waiting", has_card=has_card)
+            )
             outcomes[job_id] = ("waiting", None)
             return True, failed_channels
-        item = {"job_id": job_id, "channel": slug, "stage": stage, "resumed": code is None}
-        report["interrupted_jobs"].append(item)
+        fate = "resumed" if code is None else "failed_again"
+        report["interrupted_jobs"].append(
+            ownership.interrupted_entry(job_id, slug, stage, fate, has_card=has_card)
+        )
         if code is None:
             rows = env.db.query("select output_id from outputs where job_id=?", (job_id,))
             ownership.settle_resumed(env.db, job_id, [r["output_id"] for r in rows])

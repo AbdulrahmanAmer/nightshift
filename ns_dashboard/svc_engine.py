@@ -255,6 +255,13 @@ class EngineService:
             except ValueError:
                 duration = None
         body = summary if isinstance(summary, dict) else {}
+        if isinstance(body.get("interrupted_jobs"), list):  # as true now, not as when the run was closed
+            body = {
+                **body,
+                "interrupted_jobs": ownership.current_interrupted(
+                    self.s.paths, self.s.db, body["interrupted_jobs"]
+                ),
+            }
         state, note = ownership.run_state(
             self.s.paths, row["run_id"], row["started_at"], row["finished_at"], body
         )

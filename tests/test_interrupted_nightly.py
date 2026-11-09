@@ -156,7 +156,14 @@ def test_a_killed_nightly_is_due_again_at_once_then_resumed_and_reported(
     dead, fresh = _runs(db)
     assert dead["finished_at"] and dead["summary"]["interrupted"] is True
     assert dead["summary"]["interrupted_jobs"] == [
-        {"job_id": killed, "channel": "after-dark", "stage": "d31_b"}
+        {
+            "job_id": killed,
+            "channel": "after-dark",
+            "stage": "d31_b",
+            "state": "open",  # as it was when the run was closed; it is served as resumed once it is finished
+            "resumed": False,
+            "has_card": True,
+        }
     ]
     assert dead["summary"]["jobs"] == [], (
         "nothing was made by the dead run: the Queue counts videos from here"
@@ -719,3 +726,334 @@ def test_nothing_due_still_names_a_profile_that_was_skipped_because_it_cannot_be
     assert "broken" in message and "cannot be read" in message
     assert "no channel is active" not in message, "a skipped profile is not an inactive channel"
     assert daily.nothing_due_message({"not_due": {}}) == "nothing due tonight: no channel is active"
+
+
+# ------------------------------------------------------------------ review round 1 (PR 168 at 5952129)
+def _served(tmp_home: Path) -> Dashboard:
+    """The dashboard of this home with no channel of its own (the nightly plans only the `_setup` one)."""
+    return Dashboard(
+        build_state(
+            Paths.from_env(), fake_services=True, link=SupervisorLink("http://127.0.0.1:9", timeout_s=0.2)
+        )
+    )
+
+
+def _lines(last: dict[str, Any]) -> list[tuple[str, str, bool]]:
+    return [(i["job_id"], i["state"], i["resumed"]) for i in last["summary"]["interrupted_jobs"]]
+
+
+@pytest.mark.parametrize(
+    ("case", "state", "made"),
+    [
+        ("open", "open", False),  # the job cannot be continued by the nightly (its channel is paused)
+        ("resumed", "resumed", True),  # continued and finished
+        ("failed_again", "failed_again", False),  # continued and stopped again
+        ("waiting", "waiting", False),  # the GPU was busy: it waits for the next night
+    ],
+)
+def test_the_last_night_card_data_is_true_for_every_fate_of_the_interrupted_job(
+    tmp_home: Path, monkeypatch: pytest.MonkeyPatch, case: str, state: str, made: bool
+) -> None:
+    """The card drew every `interrupted_jobs` entry as 'not finished', also the job the night rescued."""
+    from ns_common.errors import NsError
+
+    paths, db = _setup(tmp_home, status="paused" if case == "open" else "active")
+    driver.install(monkeypatch)
+    dead = _dead_daily_job(paths, db)
+    dash = _served(tmp_home)
+
+    def run_fn(ctx: Any) -> list[str]:
+        if case == "failed_again":
+            raise RuntimeError("a late stage breaks")
+        if case == "waiting":
+            raise NsError("NS-E201", "held by another program")
+        return ["d31_c"]
+
+    daily.run_daily(jobs.open_env(light=True), rng=random.Random(1), run_fn=run_fn)
+    (last,) = dash.engine.runs(1)  # the summary as the dashboard serves it to the Queue page
+    assert _lines(last) == [(dead, state, state == "resumed")], last["summary"]
+    assert last["summary"]["interrupted_jobs"][0]["stage"] == "d31_b"
+    assert [j["job_id"] for j in last["summary"]["jobs"]] == ([dead] if made else [])
+    assert last["state"] == "finished", "the night itself finished; only the job's fate differs"
+    failures = last["summary"]["failures"]
+    if case == "waiting":  # waiting is not a failure: no red NS-E201 line next to 'waiting for the GPU'
+        assert [f for f in failures if f["job_id"] == dead] == [] and failures == []
+    if case == "failed_again":
+        assert [f["job_id"] for f in failures] == [dead]
+
+
+def test_the_served_state_follows_the_job_when_it_is_finished_later_by_retry(
+    tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A dead run's summary says 'open' when closed; once Retry has finished the job the card must not."""
+    from ns_studio import ownership
+
+    paths, db = _setup(tmp_home)
+    driver.install(monkeypatch)
+    job = _dead_daily_job(paths, db, stage_done=("d31_a",))
+    db.execute("insert into runs(run_id, started_at, mode) values ('daily-x', ?, 'daily')", (_now_iso(),))
+    ownership.write_record(
+        paths,
+        "daily-x",
+        kind="run",
+        state="running",
+        pid=2**22,
+        origin="daily",
+        jobs=[{"job_id": job, "channel": "after-dark"}],
+    )
+    ownership.recover(paths, db)
+    dash = _served(tmp_home)
+    (last,) = dash.engine.runs(1)
+    assert last["state"] == "interrupted" and _lines(last) == [(job, "open", False)]
+    state = StageState()
+    for name in ("d31_a", "d31_b", "d31_c"):
+        state.mark_done(name, "h")
+    state.save(paths.job_dir(job))  # Retry ran the job to its end
+    (after,) = dash.engine.runs(1)
+    assert _lines(after) == [(job, "resumed", True)]
+
+
+def test_the_queue_page_words_each_state_of_an_interrupted_job() -> None:
+    queue = (REPO / "ns_dashboard" / "ui" / "src" / "pages" / "Queue.tsx").read_text(encoding="utf-8")
+    for state in ("open", "resumed", "failed_again", "waiting"):
+        assert f'"{state}"' in queue, state
+    assert "not finished" in queue and "and finished" in queue and "stopped again" in queue
+    assert "GPU" in queue
+
+
+def _manual_card(db: Db, job_id: str, *, created: str) -> None:
+    """A dashboard Queue card (failed) that names `job_id`: what a failed Run now leaves behind."""
+    payload = json.dumps({"params": {"channel": "after-dark"}, "result": {"studio_job_ids": [job_id]}})
+    db.execute(
+        "insert into dashboard_jobs(job_id, kind, channel, status, progress, message, created_at, started_at,"
+        " finished_at, params_json) values (?, 'run', 'after-dark', 'failed', 0, 'qc failed', ?, ?, ?, ?)",
+        (f"run-{job_id}", created, created, created, payload),
+    )
+
+
+def test_a_legacy_recovery_adopts_only_the_jobs_the_killed_nightly_made(tmp_home: Path) -> None:
+    """0.1.14 inserts a `runs` row only for the nightly: a manual job made after it must stay."""
+    from ns_studio import ownership
+
+    paths, db = _setup(tmp_home)
+    env = jobs.open_env(light=True)
+    ch = crud.get_channel(paths, "after-dark")
+    now = datetime.now(UTC)
+    killed_at = now - timedelta(hours=20)
+    db.execute(
+        "insert into runs(run_id, started_at, mode) values ('daily-old', ?, 'daily')",
+        (killed_at.isoformat(timespec="seconds"),),
+    )
+
+    def made(when: datetime) -> str:
+        ctx = jobs.make_job(env, ch, "master_first", now=when)
+        ownership.forget(paths, ctx.job_id)  # 0.1.14 wrote no owner file
+        state = StageState()
+        state.mark_done("ideas", "h")
+        state.save(ctx.job_dir)
+        return ctx.job_id
+
+    nightly = made(killed_at)  # the nightly stamps its row and its job with the same `now`
+    manual = made(killed_at + timedelta(hours=2))  # a Run now after the killed night, no runs row of its own
+    cli_run = made(killed_at + timedelta(hours=3))
+    carded = made(killed_at)  # the same second as the night (a Run now pressed as it started) ...
+    _manual_card(db, carded, created=killed_at.isoformat(timespec="seconds"))  # ... but it has its own card
+
+    out = ownership.recover(paths, db, now=now, note=False)
+
+    assert [j.job_id for j in out.jobs] == [nightly]
+    rec = ownership.read_record(paths, nightly)
+    assert rec is not None and rec["origin"] == "daily"
+    for other in (manual, cli_run, carded):
+        assert ownership.read_record(paths, other) is None, "a job the nightly did not make is left alone"
+    ours = [r["result"]["studio_job_ids"] for r in _queue_rows(db) if r["params"].get("source")]
+    assert ours == [[nightly]]
+    row = db.one("select summary_json from runs where run_id='daily-old'")
+    assert row is not None
+    assert [i["job_id"] for i in json.loads(row["summary_json"])["interrupted_jobs"]] == [nightly]
+    # and the next nightly continues the nightly's job only: no second master, no paid work nobody asked for
+    assert [r["id"] for r in ownership.pending_resumes(paths, db, now)] == [nightly]
+
+
+def test_a_second_start_waits_for_the_one_that_is_closing_things_then_scans_again(
+    tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Engine and nightly start together after a power cut: the nightly must not plan before J is closed."""
+    import threading
+
+    from ns_studio import ownership
+
+    paths, db = _setup(tmp_home)
+    driver.install(monkeypatch)
+    dead = _dead_daily_job(paths, db)
+    inside, release = threading.Event(), threading.Event()
+    real = ownership._close_job
+
+    def slow_close(*a: Any, **kw: Any) -> Any:
+        inside.set()  # the engine is in the middle of closing the job; its record is written last
+        release.wait(10)
+        return real(*a, **kw)
+
+    monkeypatch.setattr(ownership, "_close_job", slow_close)
+    engine = threading.Thread(target=lambda: ownership.recover(paths, Db(paths.db_path)), name="engine")
+    engine.start()
+    assert inside.wait(10)
+    timer = threading.Timer(0.6, release.set)
+    timer.start()
+    report = daily.run_daily(jobs.open_env(light=True), rng=random.Random(1))  # the nightly starts now
+    engine.join(10)
+    timer.cancel()
+
+    assert [j["job_id"] for j in report["jobs"]] == [dead] and report["jobs"][0]["resumed"] is True
+    assert _long_jobs(db) == [dead], "no second master was started while the first one was being closed"
+
+
+def test_a_resume_that_meets_a_retry_of_the_same_job_is_not_a_failure(
+    tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The dashboard's Retry runs the job: the nightly leaves it be, and the card and the toast alone."""
+    from ns_common.singleton import FileLock
+    from ns_studio import ownership
+
+    paths, db = _setup(tmp_home)
+    driver.install(monkeypatch)
+    dead = _dead_daily_job(paths, db)
+    retry = FileLock(ownership.lock_path(paths, dead))
+    real_load = jobs.load_job
+
+    def retry_takes_it_first(env: Any, job_id: str) -> Any:
+        ctx = real_load(env, job_id)
+        retry.acquire()  # the Retry of the same job starts between the closing and the attempt
+        ownership.write_record(paths, job_id, state="running", pid=os.getpid())  # as `hold` does
+        return ctx
+
+    monkeypatch.setattr(jobs, "load_job", retry_takes_it_first)
+    told: list[str] = []
+    try:
+        report = daily.run_daily(
+            jobs.open_env(light=True), rng=random.Random(1), notifier=lambda t, m: told.append(m) or True
+        )
+    finally:
+        retry.release()
+
+    assert report["failures"] == [] and report["jobs"] == [], "the retry owns the job: nothing failed"
+    assert all("failed" not in m for m in told), told
+    (card,) = _queue_rows(db)
+    assert "stopped again" not in card["message"] and card["result"]["interrupted"]["resume"] == "pending"
+    (note,) = _notes(tmp_home)
+    assert "stopped again" not in note["message"] and "being continued" in note["message"]
+
+
+def test_a_job_with_no_card_is_never_told_to_press_retry(tmp_home: Path) -> None:
+    from ns_studio import notifications, ownership
+    from ns_studio.cli import interrupted_line
+
+    paths, db = _setup(tmp_home)
+    no_card = {
+        "job_id": "j-1",
+        "channel": "after-dark",
+        "stage": "d31_b",
+        "state": "open",
+        "resumed": False,
+        "has_card": False,
+    }
+    with_card = {**no_card, "job_id": "j-2", "has_card": True}
+
+    def toast(item: dict[str, Any]) -> str:
+        text = notifications.nightly_message({"jobs": [], "failures": [], "interrupted_jobs": [item]}, 0, 0)
+        assert text is not None
+        return text
+
+    assert "Retry in the Queue" not in toast(no_card) and "studio run --resume j-1" in toast(no_card)
+    assert "Retry in the Queue" in toast(with_card)
+    assert "GPU" in toast({**with_card, "state": "waiting"})
+    assert "Retry in the Queue" not in toast({**with_card, "state": "waiting"})
+    two = {**no_card, "job_id": "j-3", "stage": "d31_c"}
+    text = notifications.nightly_message(
+        {"jobs": [], "failures": [], "interrupted_jobs": [no_card, two]}, 0, 0
+    )
+    assert text is not None
+    assert "studio run --resume j-1 (" in text and "studio run --resume j-3 (" in text, text
+    assert "j-1, j-3" not in text, "--resume takes one job: each command stands on its own"
+    assert "press Retry" not in interrupted_line(no_card) and "--resume j-1" in interrupted_line(no_card)
+    assert "press Retry in the Queue" in interrupted_line(with_card)
+    assert "None" not in interrupted_line({**with_card, "stage": None})
+    assert "finished" in interrupted_line({**with_card, "state": "resumed", "resumed": True})
+
+    # `studio status`: a job known only through `hold` has no card; the night never continues a manual job
+    hold_only = _dead_daily_job(paths, db)
+    ownership.write_record(paths, hold_only, origin="manual", announced_at=None)
+    manual = _dead_daily_job(paths, db)
+    ownership.write_record(paths, manual, origin="manual")
+    daily_job = _dead_daily_job(paths, db)
+    lines = {ln.split("job ")[1].split(" ")[0]: ln for ln in ownership.status_lines(paths, db, "after-dark")}
+    assert "Retry" not in lines[hold_only] and f"studio run --resume {hold_only}" in lines[hold_only]
+    assert "Retry in the Queue" in lines[manual] and "nightly" not in lines[manual]
+    assert "Retry in the Queue" in lines[daily_job] and "next nightly run continues it" in lines[daily_job]
+
+
+def test_the_run_command_names_the_whole_command_to_continue_a_dead_job(
+    tmp_home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`studio run` closes dead work first and tells it: the line must be a command that can be typed."""
+    from ns_studio import cli, ownership
+
+    paths, db = _setup(tmp_home)
+    job = _dead_daily_job(paths, db)
+    ownership.write_record(paths, job, origin="manual", announced_at=None)  # known only through `hold`
+    cli._close_dead_work(jobs.open_env(light=True))
+    out = capsys.readouterr().out
+    assert f"studio run --resume {job}" in out, out
+
+
+def test_a_ctrl_c_inside_a_job_leaves_it_to_be_closed_with_its_card_and_stage(tmp_home: Path) -> None:
+    """`hold` wrote `interrupted` itself on BaseException: `_close_job` never ran (no card, note, stage)."""
+    from ns_studio import ownership
+
+    paths, db = _setup(tmp_home)
+    ctx = jobs.make_job(
+        jobs.open_env(light=True), crud.get_channel(paths, "after-dark"), "master_first", origin="daily"
+    )
+    with pytest.raises(KeyboardInterrupt), ownership.hold_job(paths, ctx.job_id, channel="after-dark"):
+        raise KeyboardInterrupt
+    assert ownership.liveness(paths, ctx.job_id) == "dead", "nobody holds it any more"
+    out = ownership.recover(paths, db)
+    (item,) = out.jobs
+    assert item.job_id == ctx.job_id and item.card_id is not None and item.stage
+    assert len(_queue_rows(db)) == 1 and len(_notes(tmp_home)) == 1
+
+
+def test_a_lock_that_cannot_be_taken_refuses_the_job_instead_of_running_it_unowned(
+    tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from ns_studio import ownership
+    from ns_studio.errors import StudioError
+
+    paths = Paths.from_env()
+    paths.ensure()
+
+    class NoLockFiles:
+        def __init__(self, path: Path) -> None:
+            self.path = path
+
+        def acquire(self) -> None:
+            raise PermissionError("the owners folder is read-only")
+
+        def release(self) -> None:
+            pass
+
+    monkeypatch.setattr(ownership, "FileLock", NoLockFiles)
+    ran: list[str] = []
+    with pytest.raises(StudioError) as ei, ownership.hold_job(paths, "j-9"):
+        ran.append("ran")
+    assert ran == [] and "read-only" in str(ei.value)
+
+
+def test_the_card_lookup_does_not_treat_an_underscore_as_a_wildcard(tmp_home: Path) -> None:
+    from ns_studio import ownership
+
+    paths, db = _setup(tmp_home)
+    _manual_card(db, "x-20261109-abc1", created=_now_iso())
+    assert [r["job_id"] for r in ownership._rows_for(db, "x-20261109-abc1")] == ["run-x-20261109-abc1"]
+    assert ownership._rows_for(db, "x-20261109-ab_1") == [], "`_` matched any character"
+    assert ownership._rows_for(db, "x-20261109-ab%1") == [], "`%` matched anything"

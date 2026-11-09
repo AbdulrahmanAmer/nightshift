@@ -194,7 +194,25 @@ def _close_dead_work(env: jobs.Env) -> None:
     for j in recovered.jobs:
         if not j.dashboard_owned:
             way = "Retry it in the Queue or with" if j.has_card else "continue it with"
-            typer.echo(f"job {j.job_id} was interrupted at {j.stage}: {way} --resume {j.job_id}")
+            typer.echo(f"job {j.job_id} was interrupted{_at(j.stage)}: {way} studio run --resume {j.job_id}")
+
+
+def _at(stage: str | None) -> str:
+    return f" at {stage}" if stage else ""
+
+
+def interrupted_line(item: dict[str, Any]) -> str:
+    """The console line for one `interrupted_jobs` entry of the nightly report: what became of the job."""
+    job, at = item["job_id"], _at(item.get("stage"))
+    fate = item.get("state") or ("resumed" if item.get("resumed") else "open")
+    if fate == "resumed":
+        return f"job {job} was interrupted{at} and has been resumed and finished"
+    if fate == "waiting":
+        return f"job {job} was interrupted{at}: the GPU was busy, the next nightly run continues it"
+    again = "it was continued and stopped again" if fate == "failed_again" else "it was not continued"
+    if item.get("has_card", True):
+        return f"job {job} was interrupted{at} ({again}): press Retry in the Queue"
+    return f"job {job} was interrupted{at} ({again}): continue it with studio run --resume {job}"
 
 
 def _script_text(
@@ -280,10 +298,7 @@ def _daily(env: jobs.Env, dry_run: bool, policy: bool | None) -> None:
         notifications.send(env.paths, env.log, notifier, notifications.failure_message(e.code))
         raise
     for item in report.get("interrupted_jobs", []):
-        if item["resumed"]:
-            typer.echo(f"job {item['job_id']} was interrupted at {item['stage']} and has been resumed")
-        else:
-            typer.echo(f"job {item['job_id']} was interrupted at {item['stage']}: press Retry in the Queue")
+        typer.echo(interrupted_line(item))
     if not (report["channels"] or report["jobs"] or report["failures"]):
         typer.echo(nothing_due_message(report))
     for c in report["channels"]:
