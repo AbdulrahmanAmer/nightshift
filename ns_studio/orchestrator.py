@@ -8,7 +8,7 @@ from itertools import groupby
 from pathlib import Path
 
 from ns_common.errors import NsError
-from ns_studio.context import JobContext
+from ns_studio.context import JobContext, owner_script_of
 from ns_studio.stages import REGISTRY, Stage, Tenant, needs_embed, run_stage
 
 # Canonical stage order per format. Stage modules only `register()` their stages; the order lives here so
@@ -68,12 +68,12 @@ MASTER_FROM_SCRIPT_STAGES: tuple[str, ...] = (
     "qc",
     "outbox",
 )
-# A Short made from a script the owner wrote (JobRunRequest.script): `script_import` replaces ideas, plan,
-# draft and critic_revise; chosen by `plan_format` when a shorts_only job folder holds `script_source.json`.
-SHORTS_FROM_SCRIPT_STAGES: tuple[str, ...] = (
-    "script_import",
-    "split",
-    "hooks",
+# A story the owner wrote (JobRunRequest.script) is narrated as written: the import stage replaces everything
+# that writes or rewrites the story. A Short has no `split` and `hooks` (the import writes its one part and
+# the first sentence is its hook); a long video keeps `shorts_select`, which cuts Shorts from the chapters.
+# Chosen by `plan_format` when the job folder holds the owner's `script_source.json`.
+SHORTS_FROM_OWNER_SCRIPT_STAGES: tuple[str, ...] = (
+    "script_import_short",
     "seo",
     "visual_plan",
     "voice",
@@ -83,16 +83,37 @@ SHORTS_FROM_SCRIPT_STAGES: tuple[str, ...] = (
     "qc",
     "outbox",
 )
+MASTER_FROM_OWNER_SCRIPT_STAGES: tuple[str, ...] = (
+    "script_import_long",
+    "seo_long",
+    "shorts_select",
+    "visual_plan_long",
+    "seo_shorts",
+    "voice",
+    "duration_check",
+    "captions",
+    "shorts_timing",
+    "clips",
+    "render_master",
+    "thumbnails",
+    "shorts_derive",
+    "qc",
+    "outbox",
+)
 FORMAT_STAGES: dict[str, list[str]] = {
     "shorts_only": list(SHORTS_ONLY_STAGES),
     "master_first": list(MASTER_FIRST_STAGES),
     "master_from_script": list(MASTER_FROM_SCRIPT_STAGES),
-    "shorts_from_script": list(SHORTS_FROM_SCRIPT_STAGES),
+    "shorts_from_owner_script": list(SHORTS_FROM_OWNER_SCRIPT_STAGES),
+    "master_from_owner_script": list(MASTER_FROM_OWNER_SCRIPT_STAGES),
     "series_compilation": [],
     "clip": [],
 }
-# The plan a job of this format runs when its story comes from a script file (`plan_format`).
-SCRIPT_FORMATS: dict[str, str] = {"master_first": "master_from_script", "shorts_only": "shorts_from_script"}
+# The plan a job of this format runs when the owner's own script is its story (`plan_format`).
+OWNER_SCRIPT_FORMATS: dict[str, str] = {
+    "master_first": "master_from_owner_script",
+    "shorts_only": "shorts_from_owner_script",
+}
 
 
 def _tenant_of(stage: Stage) -> Tenant:
@@ -103,11 +124,13 @@ def _tenant_of(stage: Stage) -> Tenant:
 def plan_format(fmt: str, job_dir: Path) -> str:
     """The `FORMAT_STAGES` key a job runs: its format, or the script variant when it has a source script.
 
-    A job directory that holds `script_source.json` (a series part, or a story the owner wrote) skips the
-    stages that write the story.
+    A job folder that holds `script_source.json` skips the stages that write the story: a series part runs
+    `master_from_script`, a story the owner wrote (`owner_script_of`) the plan for its format.
     """
-    if (job_dir / "script_source.json").exists():
-        return SCRIPT_FORMATS.get(fmt, fmt)
+    if owner_script_of(job_dir):
+        return OWNER_SCRIPT_FORMATS.get(fmt, fmt)
+    if fmt == "master_first" and (job_dir / "script_source.json").exists():
+        return "master_from_script"
     return fmt
 
 

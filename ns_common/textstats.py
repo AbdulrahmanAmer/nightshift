@@ -124,20 +124,3 @@ def normalize_tokens(text: str) -> list[str]:
     text = re.sub(r"\b(\d{1,2})\b", lambda m: _num_words(int(m.group(1))), text)
     text = text.replace("'", "")
     return _NORM_TOKEN.findall(text)
-
-
-# A long video must reach 9:00 of narration. The duration check can add about 400 words by itself (two
-# expansions of 120 to 200 words); a script shorter than this would still end in NS-E305 after the voice
-# was already rendered, so both the dashboard and `studio run --script` refuse it up front.
-SCRIPT_LONG_MIN_WORDS = 1100
-
-
-def script_problem(text: str, fmt: str) -> str | None:
-    """Plain-words reason the owner's script cannot become a video of `fmt`, or None when it can."""
-    words = word_count(text)
-    if fmt == "master_first" and words < SCRIPT_LONG_MIN_WORDS:
-        return (
-            f"A long video needs a script of at least {SCRIPT_LONG_MIN_WORDS} words (about 8 minutes of "
-            f"narration); this one has {words}. Write a little more, or make a Short from it instead."
-        )
-    return None

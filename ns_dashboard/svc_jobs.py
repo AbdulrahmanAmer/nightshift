@@ -15,7 +15,6 @@ from ns_common.devmode import is_dev
 from ns_common.models import JobRunRequest
 from ns_common.paths import Paths
 from ns_common.secrets_names import SHORT_NAMES
-from ns_common.textstats import script_problem
 from ns_dashboard.adapters import Adapters
 from ns_dashboard.common import KNOWN_FORMATS, now_iso, offered_formats
 from ns_dashboard.errors import AdapterUnavailable, ApiError
@@ -25,6 +24,7 @@ from ns_dashboard.svc_channels import ChannelsService
 from ns_dashboard.templates import load_templates
 from ns_dashboard.uploads import ALLOWED_EXT, CHUNK, UploadInfo, UploadManager, find_source
 from ns_studio.footage_keys import NO_FOOTAGE_KEY
+from ns_studio.series.plain import script_problem
 
 CLIP_PARAM_KEYS = ("channel", "template", "max_clips", "min_s", "max_s", "caption_style", "rights_confirmed")
 MAX_CSV_BYTES = 20 * 1024 * 1024
@@ -263,6 +263,20 @@ class JobsService:
     def create_run(self, body: dict[str, Any]) -> dict[str, Any]:
         """Queue `studio run` for one channel; `schedule_at` (null = now) holds it until that time."""
         self._accepting()
+        slug, params = self._run_params(body)
+        self._require_footage_key()
+        return self._enqueue("run", slug, params, self._schedule(body))
+
+    def check_run(self, body: dict[str, Any]) -> None:
+        """Refuse a run request for what is wrong with it (channel, type, script) without queuing anything.
+
+        The Assistant calls this before it shows a confirm card, so the owner is never asked to say Yes to a
+        script that `create_run` would turn down.
+        """
+        self._run_params(body)
+
+    def _run_params(self, body: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+        """The channel slug and stored params of a run request; ApiError for anything that cannot run."""
         slug = str(body.get("channel") or "")
         ch = self.channels.load(slug)
         if ch.status == "paused":
@@ -276,15 +290,18 @@ class JobsService:
         n = _int(body, "count", 1, 1, 20) if count else None
         params: dict[str, Any] = {"channel": slug, "format": fmt, "count": n}
         if body.get("script") is not None:
-            params.update(self._script_params(body, fmt, n))
-        self._require_footage_key()
-        return self._enqueue("run", slug, params, self._schedule(body))
+            params.update(self._script_params(body, fmt, n, list(ch.pools.pacings)))
+        return slug, params
 
     @staticmethod
-    def _script_params(body: dict[str, Any], fmt: str, count: int | None) -> dict[str, Any]:
+    def _script_params(
+        body: dict[str, Any], fmt: str, count: int | None, pacings: list[str]
+    ) -> dict[str, Any]:
         """The story text of `JobRunRequest` (`script`, `script_title`), checked for a Short or a long video.
 
-        `JobRunRequest` is the one place that knows the length limits and the one-video rule.
+        `JobRunRequest` is the one place that knows the length limits and the one-video rule; `plan_script`
+        refuses what the pipeline would reject after the voice or the render (length at the channel's pace,
+        banned phrases, long sentences, chapter headings).
         """
         if fmt not in ("shorts_only", "master_first"):
             raise ApiError(422, "invalid_options", "A script becomes a Short or a long video, not that type.")
@@ -297,7 +314,7 @@ class JobsService:
             first = e.errors()[0]
             msg = str(first.get("msg", "")).removeprefix("Value error, ") or "That script cannot be used."
             raise ApiError(422, "invalid_options", msg) from e
-        problem = script_problem(str(req.script), fmt)
+        problem = script_problem(str(req.script), fmt, pacings, req.script_title)
         if problem:
             raise ApiError(422, "invalid_options", problem)
         return {"script": req.script, "script_title": req.script_title, "count": 1}

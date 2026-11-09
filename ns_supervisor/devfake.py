@@ -116,6 +116,7 @@ _TITLE = re.compile(r"\b([A-Z][a-z0-9]+(?:\s+[A-Z][a-z0-9]+)+)\b")
 _SCRIPT_CUE = re.compile(
     r"\b(?:from|using|use|of|out of|with)\s+(?:this|my|the following)\s+(?:script|text|story)\b", re.I
 )
+_SCRIPT_MIN_CHARS = 200  # `ns_common.models.SCRIPT_MIN_CHARS`; this module takes nothing from the packages
 _SCRIPT_TITLE = re.compile(r"\b(?:titled|called)\s+[\"“']?([^\"”'\n:,.]{2,80})", re.I)
 
 
@@ -192,7 +193,8 @@ def plan_tool_call(messages: list[dict[str, Any]], tools: Any) -> dict[str, Any]
         if re.search(r"\bshorts?\b", intro.lower()):
             fmt = "shorts_only"
         title = _SCRIPT_TITLE.search(intro)
-        if body:
+        # a real script is a whole story, not an idea or a note: a short body or the word "idea" is not one
+        if len(body) >= _SCRIPT_MIN_CHARS and not re.search(r"\bideas?\b", intro, re.I):
             return pick("start_script_job", channel=_channel(intro), format=fmt, script=body,
                         title=title.group(1).strip() if title else None)
     if re.search(r"\b(fetch|pull|download|grab|get)\b.*\b(clips?|footage|stock|videos?)\b", low):

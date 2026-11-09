@@ -99,6 +99,19 @@ def build_services(
     )
 
 
+def owner_script_of(job_dir: Path) -> bool:
+    """True when the job folder holds a story the owner wrote (`JobRunRequest.script`), not a series part.
+
+    `jobs.make_script_job` marks its `script_source.json` with `owner_script`. Such a story is narrated as
+    written: the stages never rewrite or extend it.
+    """
+    try:
+        data = json.loads((job_dir / "script_source.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(data, dict) and data.get("owner_script") is True
+
+
 @dataclass
 class JobContext:
     """Everything a stage needs: identity, paths, DB, services and the job directory helpers."""
@@ -147,6 +160,11 @@ class JobContext:
         except (OSError, ValueError):
             return {}
         return data if isinstance(data, dict) else {}
+
+    @property
+    def owner_script(self) -> bool:
+        """True for a job made from the owner's own script (`owner_script_of`)."""
+        return owner_script_of(self.job_dir)
 
     @property
     def attempt(self) -> int:

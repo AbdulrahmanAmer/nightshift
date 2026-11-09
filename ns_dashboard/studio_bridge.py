@@ -114,7 +114,7 @@ def run_story_jobs(
     """
     from ns_studio import jobs
     from ns_studio.channels.crud import get_channel
-    from ns_studio.orchestrator import SCRIPT_FORMATS, plan_format, plan_job
+    from ns_studio.orchestrator import plan_format, plan_job
     from ns_studio.policy.regen import run_job_guarded
 
     env = open_env(fake, acquirer, paths=paths)
@@ -132,12 +132,12 @@ def run_story_jobs(
     n = max(1, int(count or 1))
     if script is not None:
         n = 1
-        names = [s.name for s in plan_job(SCRIPT_FORMATS.get(fmt, fmt))]
     rng = random.Random()
     out: list[str] = []
     for i in range(n):
         if script is not None:
             ctx = jobs.make_script_job(env, ch, fmt, script, script_title, rng=rng)
+            names = [s.name for s in plan_job(plan_format(ctx.fmt, ctx.job_dir))]
         else:
             ctx = jobs.make_job(env, ch, fmt, rng=rng)
         if seen is not None:

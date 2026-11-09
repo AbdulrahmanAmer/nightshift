@@ -233,6 +233,11 @@ class DurationCheckStage:
             total = timeline[-1].end if timeline else 0.0
             if total >= FLOOR_S:
                 break
+            if ctx.owner_script:  # the owner's words are never extended with model text
+                self._write(ctx, total, expansions)
+                raise NsError(
+                    "NS-E305", f"{total:.0f} s of narration, the floor is {FLOOR_S:.0f} s: script too short"
+                )
             if len(expansions) >= MAX_EXPANSIONS:
                 self._write(ctx, total, expansions)
                 raise NsError(

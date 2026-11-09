@@ -26,7 +26,7 @@ from ns_studio.daily import run_daily
 from ns_studio.errors import UNEXPECTED, StudioError, describe_unexpected
 from ns_studio.footage_keys import require_footage_key
 from ns_studio.learn import importer, reweight, status
-from ns_studio.orchestrator import SCRIPT_FORMATS, plan_job, run_job
+from ns_studio.orchestrator import OWNER_SCRIPT_FORMATS, plan_job, run_job
 from ns_studio.policy.regen import run_job_guarded
 from ns_studio.series import cli as series_cli
 
@@ -149,7 +149,7 @@ def run_cmd(
     ] = None,
     script: Annotated[
         Path | None,
-        typer.Option("--script", help="Text file with the story to make into one video; nothing is written."),
+        typer.Option("--script", help="Text file with a story to narrate as one video, as written."),
     ] = None,
     title: Annotated[str | None, typer.Option("--title", help="Working title for --script.")] = None,
     fake_services: FakeOpt = None,
@@ -163,7 +163,9 @@ def run_cmd(
         jobs.load_stage_modules()
         if dry_run and resume is None and not daily:
             jobs.prepare_plan(fmt or "shorts_only", policy)
-            plan_fmt = SCRIPT_FORMATS.get(fmt or "shorts_only", "") if script_text else fmt or "shorts_only"
+            plan_fmt = fmt or "shorts_only"
+            if script_text:
+                plan_fmt = OWNER_SCRIPT_FORMATS[plan_fmt]
             names = [s.name for s in plan_job(plan_fmt)]
             typer.echo("plan: " + " -> ".join(names))
             return
@@ -195,6 +197,8 @@ def _script_text(
         return None
     if daily or resume is not None:
         raise typer.BadParameter("--script cannot be combined with --daily or --resume")
+    if fmt is not None and fmt not in OWNER_SCRIPT_FORMATS:
+        raise typer.BadParameter("--script needs --format shorts_only or master_first")
     try:
         text = script.read_text(encoding="utf-8-sig")
     except (OSError, UnicodeDecodeError) as e:
