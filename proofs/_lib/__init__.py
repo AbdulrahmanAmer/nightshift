@@ -175,6 +175,54 @@ def take_off_desktop(ctx: Any, src: Path, tag: str) -> Path:
     return kept
 
 
+class DesktopGuard:
+    """Around a POST or a click that makes the product write a zip to the Desktop (C:):
+
+        with DesktopGuard(ctx, "nightshift-diagnostics-*.zip", "api") as guard:
+            status, made = ctx.api("POST", "/api/diagnostics")
+            kept = guard.take(Path(made["path"]))
+
+    On the way out, pass or fail, every matching file that was not on the Desktop before moves into scratch,
+    so no failed check, timeout or crash leaves a product file on C:. Files that were there before are never
+    touched."""
+
+    def __init__(self, ctx: Any, pattern: str, tag: str) -> None:
+        self.ctx, self.pattern, self.tag = ctx, pattern, tag
+        self.before: set[str] = set()
+        self.taken: dict[str, Path] = {}
+
+    def __enter__(self) -> DesktopGuard:
+        self.before = {p.name for p in desktop().glob(self.pattern)}
+        return self
+
+    def take(self, src: Path) -> Path:
+        if src.name in self.before:
+            self.ctx.check(False, "the product's file is new, not an owner's file", path=str(src))
+        if src.name not in self.taken:
+            self.taken[src.name] = take_off_desktop(self.ctx, src, self.tag)
+        return self.taken[src.name]
+
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> bool:
+        left = [
+            p for p in desktop().glob(self.pattern) if p.name not in self.before and p.name not in self.taken
+        ]
+        problems = []
+        for p in left:
+            try:
+                self.take(p)
+            except Exception as err:  # noqa: BLE001  (a ProofFailed here must not hide the first error)
+                problems.append(f"{p}: {err}")
+        if left:
+            self.ctx.step(
+                "Desktop guard: product files moved off the Desktop on the way out",
+                files=[str(p) for p in left],
+                problems=problems,
+            )
+        if problems and exc_type is None:
+            self.ctx.check(False, "every product file left the Desktop", problems=problems)
+        return False
+
+
 def ffmpeg_path() -> str | None:
     return shutil.which("ffmpeg")
 
