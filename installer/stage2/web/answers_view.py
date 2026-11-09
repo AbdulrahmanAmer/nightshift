@@ -15,6 +15,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+import ns_common.first_start as first_start
 from installer.stage2.web.model import PRESET_VOICES, TIERS
 from installer.stage2.web.modelcheck import MAX_BYTES, shape_problem, too_big_message
 from installer.stage2.web.pathcheck import DRIVE_PATH_RE as DRIVE_PATH_RE
@@ -263,6 +264,7 @@ def write_answers(path: Path, data: dict[str, Any]) -> Path:
     clean["pexels_api_key"] = ""
     clean["pixabay_api_key"] = ""
     path.parent.mkdir(parents=True, exist_ok=True)
+    first_start.guard(path)
     write_text_atomic(path, json.dumps(clean, indent=2, ensure_ascii=False) + "\n")
     return path
 

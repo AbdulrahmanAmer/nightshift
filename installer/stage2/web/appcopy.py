@@ -10,7 +10,7 @@ task, the launchers and ``ns update`` all point at it. Setup therefore copies th
 * Re-run from a newer zip: the same swap ``ns update`` does. The old folder becomes ``<home>\\app.prev`` (the
   rollback target of ``ns update --rollback``), and ``.git``, ``config`` and ``answers.json`` of the old tree
   are carried into the new one. Before that, the settings files of ``<home>\\config`` are copied to
-  ``<home>\\app.prev-config.zip`` (``ns_supervisor.config_snapshot``, standard library only) so the
+  ``<home>\\app.prev-config.zip`` (``ns_common.config_snapshot``, standard library only) so the
   rollback can put them back with the program; when that copy cannot be made nothing is swapped
   (``NS-E115``).
 * Never copied: ``venvs`` and ``models`` (somebody extracted into the home), every ``bin`` folder except the
@@ -29,7 +29,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import ns_supervisor.config_snapshot as config_snapshot
+import ns_common.config_snapshot as config_snapshot
 from ns_common.avblock import is_blocked_error
 
 APP_DIR = "app"

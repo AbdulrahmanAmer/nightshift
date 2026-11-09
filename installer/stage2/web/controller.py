@@ -24,7 +24,8 @@ from pathlib import Path
 from typing import Any
 
 import installer.stage2.devmode as devmode
-import ns_supervisor.config_snapshot as config_snapshot
+import ns_common.config_snapshot as config_snapshot
+import ns_common.first_start as first_start
 from installer.stage2.web import (
     answers_view,
     appcopy,
@@ -362,6 +363,7 @@ def reset_install_times(home: Path) -> None:
     data["started_at"] = None
     data["completed_at"] = None
     target = home / "config" / "install_state.json"
+    first_start.guard(target)
     write_text_atomic(target, json.dumps(data, indent=2) + "\n", keep_backup=True)
 
 
@@ -380,6 +382,7 @@ def write_step(
     data.setdefault("started_at", now_iso())
     data.setdefault("completed_at", None)
     target = home / "config" / "install_state.json"
+    first_start.guard(target)
     write_text_atomic(target, json.dumps(data, indent=2) + "\n", keep_backup=True)
 
 

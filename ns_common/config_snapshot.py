@@ -19,7 +19,14 @@ both. A rollback swaps the pair like it swaps the programs: the settings as they
 become the copy for the program that goes to `<app>.prev`, so a second `ns update --rollback` (going forward)
 gets back exactly what the newer version had, including what the owner changed after the update.
 
+Who makes the copy: `ns update` (`taken_by` update), INSTALL.cmd's setup window (installer), a rollback (the
+copy for going forward again), and since F-10c the first start of a version that an OLDER updater installed
+(first-start, `ns_common.first_start`): 0.1.14's `ns update` takes no copy, so the new version takes it
+itself before it changes any settings file.
+
 Standard library plus `ns_common.atomic`, so the installer's bare Python can use it (`appcopy.install_app`).
+It lives in `ns_common` (F-10c; it was `ns_supervisor/config_snapshot.py` in F-10a) because every process
+that writes a settings file needs it, and `ns_common` cannot import `ns_supervisor`.
 """
 
 from __future__ import annotations
@@ -120,8 +127,11 @@ class Snapshot:
     files: dict[str, bytes]
     version: str  # the program the copy belongs to (the one in `<app>.prev`)
     fingerprint: str  # that program's version|manifest|pyproject fingerprint (what pairs the two)
-    taken_by: str  # update | rollback | installer
+    taken_by: str  # update | rollback | installer | first-start
     created: str
+    #: first-start copies only: `first_start.install_stamp` of the program that made it (which install of the
+    #: newer program saw the settings as the older one left them); empty for every other copy.
+    for_program: str = ""
 
 
 @dataclass
@@ -136,6 +146,31 @@ class Restored:
 def path_for(app: Path) -> Path:
     """`<app>.prev-config.zip`."""
     return app.with_name(app.name + SUFFIX)
+
+
+def _digest16(path: Path) -> str:
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()[:16]
+    except OSError:
+        return "-"
+
+
+def program_version(folder: Path) -> str:
+    """The `VERSION` file of a program folder, `-` when it has none."""
+    try:
+        return (folder / "VERSION").read_text(encoding="utf-8-sig").strip() or "-"
+    except OSError:
+        return "-"
+
+
+def program_fingerprint(folder: Path) -> str:
+    """Version plus short hashes of manifest.json and pyproject.toml: what pairs a copy with its program.
+
+    The same text as `ns_supervisor.update.app_fingerprint` and `installer.stage2.web.appcopy.fingerprint`
+    (a test keeps the three equal).
+    """
+    manifest, project = _digest16(folder / "manifest.json"), _digest16(folder / "pyproject.toml")
+    return f"{program_version(folder)}|{manifest}|{project}"
 
 
 def valid_name(name: str) -> bool:
@@ -185,10 +220,16 @@ def capture(config: Path, only: Iterable[str] | None = None) -> dict[str, bytes]
 
 
 def build(
-    files: dict[str, bytes], *, version: str, fingerprint: str, taken_by: str, now: datetime | None = None
+    files: dict[str, bytes],
+    *,
+    version: str,
+    fingerprint: str,
+    taken_by: str,
+    now: datetime | None = None,
+    for_program: str = "",
 ) -> bytes:
     """The zip for `files`, read back and checked before it is returned: only a good one can be published."""
-    manifest = {
+    manifest: dict[str, object] = {
         "format": FORMAT,
         "created": (now or datetime.now()).isoformat(timespec="seconds"),
         "taken_by": taken_by,
@@ -196,6 +237,8 @@ def build(
         "program_fingerprint": fingerprint,
         "files": {n: {"sha256": _sha(d), "size": len(d)} for n, d in files.items()},
     }
+    if for_program:
+        manifest["for_program"] = for_program
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
         for name, data in files.items():
@@ -239,6 +282,7 @@ def parse(data: bytes) -> Snapshot:
                 str(manifest["program_fingerprint"]),
                 str(manifest.get("taken_by", "")),
                 str(manifest.get("created", "")),
+                str(manifest.get("for_program", "")),
             )
     except SnapshotError:
         raise

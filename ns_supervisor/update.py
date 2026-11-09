@@ -8,6 +8,9 @@ failure after the swap restores `<app>.prev` and the settings files, and raises 
 
 `--rollback` swaps `<app>` and `<app>.prev` and puts the settings copy back with the program: the older
 version gets the files it wrote, not the ones a newer version saved with fields the older one rejects.
+Without a usable copy (an update made by an updater older than 0.1.15 whose first start could not take one,
+a copy missing or damaged) it takes out of the settings files every setting the older version does not know
+(`ns_common.config_compat`, F-10c) and says which, so the older version can always start.
 """
 
 from __future__ import annotations
@@ -27,7 +30,8 @@ from pathlib import Path, PurePosixPath
 
 import yaml
 
-from ns_common import __version__
+from ns_common import __version__, config_compat, config_snapshot, first_start
+from ns_common.atomic import read_text_retry, write_text_atomic
 from ns_common.devmode import is_dev
 from ns_common.errors import NsError
 from ns_common.logging import NsLogger
@@ -35,7 +39,6 @@ from ns_common.models import Channel, InstallState, Runtime
 from ns_common.paths import Paths
 from ns_common.uv import find_uv, home_uv, uv_env
 from ns_common.venv_extras import NO_DEPS, extras_suffix
-from ns_supervisor import config_snapshot
 from ns_supervisor.childenv import child_env
 
 PRESERVE = (".git", "config", "answers.json")
@@ -236,20 +239,10 @@ def _sibling(app: Path, suffix: str) -> Path:
     return app.with_name(app.name + suffix)
 
 
-def _digest(path: Path) -> str:
-    try:
-        return hashlib.sha256(path.read_bytes()).hexdigest()[:16]
-    except OSError:
-        return "-"
-
-
 def app_fingerprint(folder: Path) -> str:
-    """Version plus short hashes of manifest.json and pyproject.toml (same text as appcopy.fingerprint)."""
-    try:
-        version = (folder / "VERSION").read_text(encoding="utf-8-sig").strip() or "-"
-    except OSError:
-        version = "-"
-    return f"{version}|{_digest(folder / 'manifest.json')}|{_digest(folder / 'pyproject.toml')}"
+    """Version plus short hashes of manifest.json and pyproject.toml (same text as appcopy.fingerprint and
+    `config_snapshot.program_fingerprint`, which the first start compares with the settings copy)."""
+    return config_snapshot.program_fingerprint(folder)
 
 
 def write_app_marker(app: Path, log: NsLogger) -> None:
@@ -441,6 +434,66 @@ def _unreadable(config: Path, names: Iterable[str]) -> list[str]:
     return bad
 
 
+def _readable_by(config: Path, version: str, log: NsLogger) -> tuple[list[str], list[str]]:
+    """Take out of every settings file the settings `version` does not know (F-10c, `config_compat`).
+
+    The older version's models are strict: one key it never had makes it refuse the whole file, and
+    runtime.json refused means it cannot start. Returns (what was taken out, as `file (key, key)`, the files
+    that held such a setting and could not be written). A file that does not parse is left as it is.
+    """
+    dropped: list[str] = []
+    failed: list[str] = []
+    for name in config_snapshot.tracked_names(config):
+        if config_compat.model_for(name) is None:
+            continue
+        path = config.joinpath(*name.split("/"))
+        is_yaml = name.endswith(".yaml")
+        try:
+            text = read_text_retry(path, "utf-8-sig")
+            data = yaml.safe_load(text) if is_yaml else json.loads(text)
+        except (OSError, ValueError, yaml.YAMLError):
+            continue
+        keys = config_compat.for_version(name, data, version)
+        if not keys:
+            continue
+        out = (
+            yaml.safe_dump(data, sort_keys=False, allow_unicode=True)
+            if is_yaml
+            else json.dumps(data, indent=2, ensure_ascii=False) + "\n"
+        )
+        try:
+            write_text_atomic(path, out)
+        except OSError as e:
+            log.error("settings_unknown_to_older_not_removed", str(e), file=name, keys=keys)
+            failed.append(name)
+            continue
+        dropped.append(f"{name} ({', '.join(keys)})")
+    if dropped:
+        log.info("settings_unknown_to_older_removed", version=version, removed=dropped)
+    return dropped, failed
+
+
+def _for_older_sentence(version: str, dropped: list[str], failed: list[str], *, restored: bool) -> str:
+    """What the rollback did to make the files readable by `version` (empty when it had nothing to do)."""
+    parts: list[str] = []
+    if dropped:
+        where = "The copy held settings" if restored else "They held settings"
+        parts.append(
+            f"{where} that {version} does not know; they were removed (what you set in them is lost): "
+            f"{'; '.join(dropped)}."
+        )
+    if failed:
+        parts.append(
+            f"These hold settings {version} does not know and could not be changed, so {version} may refuse "
+            f"them: {_names(failed)}."
+        )
+    if (dropped or not restored) and config_compat.version_key(version) < config_compat.version_key(
+        config_compat.BASE_VERSION
+    ):
+        parts.append(f"(Only the settings added since {config_compat.BASE_VERSION} are checked.)")
+    return " ".join(parts)
+
+
 def _swap_settings(
     paths: Paths,
     app: Path,
@@ -488,18 +541,27 @@ def _swap_settings(
         keep_forward_copy()
         why = why_not if copy is None else live_error
         log.warn("settings_not_restored", why)
-        no = f"Your settings files could not be restored: {why}. They stay as they are now."
-        return f"{no} {SETTINGS_BACKUP_HINT}", notes
+        dropped, failed = _readable_by(paths.config, restored_version, log)
+        no = f"Your settings files could not be restored: {why}. They stay as they are now"
+        no += (
+            ", except for the settings below."
+            if dropped
+            else f" (none of them holds a setting {restored_version} does not know)."
+        )
+        older = _for_older_sentence(restored_version, dropped, failed, restored=False)
+        return " ".join(p for p in (no, older, SETTINGS_BACKUP_HINT) if p), notes
     try:
         done = config_snapshot.restore(paths.config, copy.files, live=live, remove_extra=False)
     except config_snapshot.SnapshotError as e:
         log.error("settings_restore_failed", str(e))
+        dropped, failed = _readable_by(paths.config, restored_version, log)
         no = f"Your settings files could not be restored: {e}. They stay as they are now."
         left = (
             f"The copy made for {restored_version} is still in {zip_path} "
             f"(a zip: the files in its config folder are what {restored_version} wrote)."
         )
-        return f"{no} {left} {SETTINGS_BACKUP_HINT}", notes
+        older = _for_older_sentence(restored_version, dropped, failed, restored=False)
+        return " ".join(p for p in (no, older, left, SETTINGS_BACKUP_HINT) if p), notes
     kept = keep_forward_copy()
     if kept:  # files the older version never had leave only now that they are saved for going forward
         done.removed, stayed = config_snapshot.set_aside(paths.config, copy.files, live=live)
@@ -527,6 +589,11 @@ def _swap_settings(
         )
     else:
         sentence += " None of them was different from the copy."
+    # A copy taken late (a first start whose earlier try failed) can hold a setting the older version lacks.
+    dropped, failed = _readable_by(paths.config, restored_version, log)
+    older = _for_older_sentence(restored_version, dropped, failed, restored=True)
+    if older:
+        sentence += " " + older
     if done.removed:
         notes.append(f"set aside, because {restored_version} never had them: {_names(done.removed)}")
     if kept:
@@ -550,6 +617,7 @@ def update_app(zip_path: Path, app: Path, env: UpdateEnv, *, paths: Paths) -> Up
     """Apply a release zip to `app`. `NS-E701` before any change, `NS-E702` (rolled back) after."""
     zip_path, app = zip_path.resolve(), app.absolute()
     log = NsLogger("update", paths.logs)
+    first_start.settled(paths.config)  # this process makes the settings copy itself
     leave_app(app, paths)
     new_version, prefix = verify_package(zip_path)
     old_version = current_version(app)
@@ -628,6 +696,7 @@ def rollback_app(app: Path, env: UpdateEnv, *, paths: Paths) -> UpdateResult:
     restored.
     """
     app = app.absolute()
+    first_start.settled(paths.config)  # the rollback puts the copy back itself (see first_start.settled)
     leave_app(app, paths)
     log = NsLogger("update", paths.logs)
     prev = _sibling(app, ".prev")
@@ -818,6 +887,7 @@ def git_update(
         raise NsError("NS-E702", NO_GIT_HINT)
     run = git or _git_run(app)
     log = NsLogger("update", paths.logs)
+    first_start.settled(paths.config)  # a failed git update puts the settings back itself
     old_version = current_version(app)
     code, head = run(["rev-parse", "HEAD"])
     if code != 0:

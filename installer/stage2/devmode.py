@@ -14,6 +14,7 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
+import ns_common.first_start as first_start
 from ns_common.atomic import write_text_atomic
 from ns_common.devmode import BANNER
 
@@ -158,6 +159,7 @@ def reset_for_mode_switch(home: Path, dev_mode: bool) -> bool:
     data["steps"] = {sid: s for sid, s in steps.items() if str(sid).startswith(keep)}
     data["dev_mode"] = dev_mode
     data["completed_at"] = None
+    first_start.guard(state_file)
     write_text_atomic(state_file, json.dumps(data, indent=2) + "\n", keep_backup=True)
     for name in ("wizard_flags.json", "runtime.json"):
         (home / "config" / name).unlink(missing_ok=True)

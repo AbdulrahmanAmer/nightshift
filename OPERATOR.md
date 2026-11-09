@@ -302,9 +302,15 @@ changed; running `ns update --rollback` a second time goes forward again with th
 latest update is kept this way (a second update replaces the first one's copy). The copy is made by the version
 that does the update, so it exists for an update made through `INSTALL.cmd` from a new zip, and for any update
 made by a Nightshift that already has this feature (0.1.15 or later). An update made BY an older version with
-`ns update <zip>`, `ns update --github` or Settings > Update (for example 0.1.14 going to 0.1.15) saves no copy,
-because the older updater is the one that runs: the rollback then swaps the program as before and says it could
-not restore the settings.
+`ns update <zip>`, `ns update --github` or Settings > Update (for example 0.1.14 going to 0.1.15) runs the older
+updater, which saves no copy; so the new version saves it itself the first time it starts, before it changes
+any settings file (it sees `<folder>.prev` with no copy that belongs to it). If that copy cannot be saved (a full
+disk, a locked file), Nightshift still starts and writes one line about it in `logs\first_start-<date>.jsonl`.
+Whenever `ns update --rollback` has no usable copy (none was saved, or it is damaged), it keeps your settings files
+as they are but takes out of them every setting the older version does not know, and names each one (for example
+`runtime.json (tiny_story)`), so the older version can always start. And from 0.1.15 on, a setting that a newer
+version added is written to its file only when you use it: an install that never used a new feature keeps files
+the older version reads as its own.
 
 ## Move your settings to another PC
 

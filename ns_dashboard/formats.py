@@ -14,7 +14,9 @@ from typing import Any
 import yaml
 from pydantic import ValidationError
 
+from ns_common import first_start
 from ns_common.atomic import write_text_atomic
+from ns_common.config_compat import disk_dict_of
 from ns_common.models import Format
 from ns_common.paths import Paths
 from ns_dashboard.errors import ApiError
@@ -105,8 +107,13 @@ def list_formats(paths: Paths) -> list[dict[str, Any]]:
 
 
 def _write(paths: Paths, fid: str, definition: dict[str, Any]) -> None:
-    text = yaml.safe_dump(definition, sort_keys=False, allow_unicode=True)
-    write_text_atomic(user_dir(paths) / f"{fid}.yaml", text)
+    """A Format field added after 0.1.14 is written only when it is in use (`config_compat`, F-10c)."""
+    text = yaml.safe_dump(
+        disk_dict_of(Format, copy.deepcopy(definition)), sort_keys=False, allow_unicode=True
+    )
+    target = user_dir(paths) / f"{fid}.yaml"
+    first_start.guard(target)
+    write_text_atomic(target, text)
 
 
 def merge_dicts(base: dict[str, Any], changes: dict[str, Any]) -> dict[str, Any]:

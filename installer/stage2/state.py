@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from ns_common import first_start
 from ns_common.atomic import read_text_retry, write_text_atomic
 from ns_common.config import load_install_state, save_install_state
 from ns_common.models import InstallState, StepState
@@ -93,6 +94,7 @@ def save_flags(paths: Paths, flags: dict[str, Any]) -> None:
     """Write wizard flags."""
     f = flags_path(paths)
     f.parent.mkdir(parents=True, exist_ok=True)
+    first_start.guard(f)
     write_text_atomic(f, json.dumps(flags, indent=2, sort_keys=True) + "\n")
 
 

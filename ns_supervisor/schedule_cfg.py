@@ -8,6 +8,7 @@ import re
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from ns_common import first_start
 from ns_common.atomic import read_text_retry, write_text_atomic
 from ns_common.paths import Paths
 
@@ -56,6 +57,7 @@ def write_run_time(paths: Paths, run_time: str, mode: str = "registered") -> Non
     it so, D-28). For both off modes `read_run_time` answers None, so no run is expected.
     """
     data = {"run_time": run_time, "task_name": TASK_NAME, "mode": mode}
+    first_start.guard(schedule_file(paths))
     write_text_atomic(schedule_file(paths), json.dumps(data, indent=2) + "\n")
 
 
@@ -78,6 +80,7 @@ def read_schedule_mode(paths: Paths) -> str:
 
 def clear_run_time(paths: Paths) -> None:
     """Remove schedule.json (task unregistered)."""
+    first_start.guard(schedule_file(paths))
     schedule_file(paths).unlink(missing_ok=True)
 
 

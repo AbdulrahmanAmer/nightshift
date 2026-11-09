@@ -77,7 +77,9 @@ def test_a_real_engine_test_install_writes_the_switch_into_runtime_json(tmp_path
     plain = engine_test_ctx(tmp_path / "p")
     assert plain.tiny_story is False and build_runtime(plain).tiny_story is False
     ensure_baseline(plain)
-    assert json.loads(plain.paths.runtime_file.read_text(encoding="utf-8"))["tiny_story"] is False
+    # off: the key stays out of the file, so 0.1.14 still reads it after a rollback (F-10c, config_compat)
+    assert "tiny_story" not in json.loads(plain.paths.runtime_file.read_text(encoding="utf-8"))
+    assert load_runtime(plain.paths).tiny_story is False
 
 
 def test_a_dev_install_ignores_the_answer_it_already_runs_on_a_fake_model(tmp_path: Path):
