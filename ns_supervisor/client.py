@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import subprocess
 import sys
 import time
@@ -17,7 +16,8 @@ from ns_common.acquire import Endpoint, Service
 from ns_common.errors import NsError, load_errors
 from ns_common.models import Runtime
 from ns_common.paths import Paths
-from ns_supervisor.procs import UNDER_ENGINE_ENV, scrubbed
+from ns_supervisor.childenv import child_env
+from ns_supervisor.procs import UNDER_ENGINE_ENV
 from ns_supervisor.services import venv_python
 
 DEFAULT_URL = "http://127.0.0.1:8099"
@@ -135,7 +135,7 @@ def spawn_supervisor(paths: Paths, *, headless: bool = True) -> None:
     if sys.platform == "win32":
         flags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS | 0x08000000
     # the engine is not below an engine, whatever started this command (the update worker may be)
-    env = scrubbed(os.environ, also=(UNDER_ENGINE_ENV,))
+    env = child_env(also=(UNDER_ENGINE_ENV,))
     # not the caller's directory: `ns verify --quick` runs with the app folder as cwd, and an engine (with its
     # llama-server and TTS children) that inherited it would block the folder rename of a rollback
     cwd = str(paths.home) if paths.home.is_dir() else None

@@ -1,8 +1,14 @@
 name: ci
 
 # Owner: C10 (docs/ENGINEERING.md section 7). Required status checks on main: lint, types, test, ui-build, powershell-parse, scope-check.
+# `test` is the job that gathers the test shards (test-shard (1/4) ... (4/4)); see the comment above it.
 on:
+  # A pull request branch is tested by its pull_request run alone: a push to it starts nothing a second time (H-3).
+  # push runs for main (the merge result is tested again where it lands) and for tags (the release gate). A branch
+  # that has no pull request has no CI at all until one is opened: open a draft pull request to run it.
   push:
+    branches: [main]
+    tags: ["**"]
   pull_request:
   # A daily run of the test job on main: the online pin checks (manifest URLs, hashes) must run for real here,
   # an upstream outage fails them instead of skipping them (NS_REQUIRE_ONLINE below). Tag pushes do the same.
@@ -50,9 +56,19 @@ jobs:
       - run: python -m pip install -e ".[dev]"
       - run: python -m pyright
 
-  test:
+  # The unit tests run as a matrix of shards (H-3): dev/ci_shards.py gives each shard whole test files, split by
+  # measured seconds (dev/ci_shard_weights.json), so each shard needs about 8 minutes of tests where the one
+  # job needed about 28. The required check `test` further down is the job that says whether all of them passed.
+  test-shard:
+    name: test-shard (${{ matrix.shard }}/4)
     runs-on: windows-latest
-    timeout-minutes: 40
+    # Predicted: about 8 minutes of tests plus about 3 of setup (the slowest shard, dev/ci_shards.py plan), 11 in
+    # all. Twice that is 22; 25 leaves room for a slow runner. The old single job needed 28 minutes of tests alone.
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     env:
       # Turns on the tests marked `network` (tests/test_downloader_network.py): real downloads from GitHub and
       # Hugging Face to prove pause/resume/Range/SHA256 against the real servers. Unset on a laptop = skipped.
@@ -72,12 +88,13 @@ jobs:
       - run: choco install ffmpeg -y --no-progress
       - run: python -m pip install -e ".[dev]"
       # The real-network resume tests run on their own so their evidence (bytes before the pause, the Range
-      # header, the final hash) is printed in the log. They must run: a skip fails the step, with ONE exception:
-      # a test skipped as "upstream outage: <host> <status>" (the host kept answering 5xx through every retry in
-      # tests/online.py). A GitHub incident can last hours, so on a push or pull request that is a visible
-      # warning and the step passes; on the nightly run and tag pushes (NS_REQUIRE_ONLINE=1) the test fails.
-      # A 4xx, a wrong size or a wrong hash fails on every kind of run.
+      # header, the final hash) is printed in the log. They run in shard 1 only. They must run: a skip fails the
+      # step, with ONE exception: a test skipped as "upstream outage: <host> <status>" (the host kept answering
+      # 5xx through every retry in tests/online.py). A GitHub incident can last hours, so on a push or pull
+      # request that is a visible warning and the step passes; on the nightly run and tag pushes
+      # (NS_REQUIRE_ONLINE=1) the test fails. A 4xx, a wrong size or a wrong hash fails on every kind of run.
       - name: Real-network download tests
+        if: matrix.shard == 1
         shell: bash
         timeout-minutes: 12
         run: |
@@ -103,25 +120,126 @@ jobs:
           assert tests >= 4, "the real-network tests must run in CI"
           assert skipped == outage, "the real-network tests must run in CI, not be skipped (except for an upstream outage)"
           EOF
-      - name: Unit tests (everything but the real-network ones)
-        if: always()
-        run: python -m pytest -q -rs -m "not network" --junitxml=report.xml
+      - name: Unit tests (the files of this shard, everything but the real-network ones)
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: python dev/ci_shards.py run --shard ${{ matrix.shard }} --of 4 -- -q -rs -m "not network" --junitxml=report-shard-${{ matrix.shard }}.xml
       # The _online pin checks (tests/test_resolve_manifest.py) skip when a real host is in an outage that outlasts
       # three retries. Say how many did, as a warning; where NS_REQUIRE_ONLINE is set this step fails on any.
+      # The final `test` job counts them again across all shards.
       - name: Online checks skipped for an upstream outage
-        if: always()
+        if: ${{ !cancelled() }}
         shell: bash
-        run: python dev/ci_outage_report.py report.xml
+        run: python dev/ci_outage_report.py report-shard-${{ matrix.shard }}.xml
       - name: Upload JUnit report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: junit-report
+          name: junit-report-shard-${{ matrix.shard }}
           path: |
-            report.xml
+            report-shard-${{ matrix.shard }}.xml
             report-network.xml
           if-no-files-found: ignore
           retention-days: 14
+
+  # Collects every test once, unsharded, with the same environment as the shards. The final `test` job compares
+  # this list, by node id, with what the shards were given and what they ran (dev/ci_shards.py verify).
+  test-collect:
+    name: test-collect
+    runs-on: windows-latest
+    timeout-minutes: 15
+    env:
+      NS_NETWORK_TESTS: "1"
+    steps:
+      - run: git config --global core.longpaths true
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - run: choco install ffmpeg -y --no-progress
+      - run: python -m pip install -e ".[dev]"
+      - name: Collect every test, unsharded
+        shell: bash
+        run: |
+          if ! python -m pytest --collect-only -q -o addopts= -m "not network" > collected.txt; then
+            tail -n 80 collected.txt
+            exit 1
+          fi
+          tail -n 2 collected.txt
+      - name: Upload the collection
+        uses: actions/upload-artifact@v4
+        with:
+          name: collected-tests
+          path: collected.txt
+          retention-days: 14
+
+  # THE required check `test` (branch protection names it; the shards are test-shard (1/4) ... (4/4)). It runs
+  # even when a shard failed or was skipped or cancelled (`always()`), and passes only when every shard and the
+  # collection job succeeded AND the shards together ran exactly the unsharded collection: no test in no shard,
+  # none in two. It also counts the upstream-outage skips over all shards and lists the twenty slowest tests.
+  test:
+    needs: [test-shard, test-collect]
+    if: always()
+    runs-on: windows-latest
+    timeout-minutes: 15
+    env:
+      NS_REQUIRE_ONLINE: ${{ (github.event_name == 'schedule' || startsWith(github.ref, 'refs/tags/')) && '1' || '' }}
+    steps:
+      - name: Every shard and the collection must have succeeded
+        shell: bash
+        env:
+          SHARD_RESULT: ${{ needs.test-shard.result }}
+          COLLECT_RESULT: ${{ needs.test-collect.result }}
+        run: |
+          echo "test-shard (all four): $SHARD_RESULT"
+          echo "test-collect: $COLLECT_RESULT"
+          status=0
+          if [ "$SHARD_RESULT" != "success" ]; then
+            echo "::error::the test shards did not all succeed (result: $SHARD_RESULT); a failed, skipped or cancelled shard fails the required check"
+            status=1
+          fi
+          if [ "$COLLECT_RESULT" != "success" ]; then
+            echo "::error::test-collect did not succeed (result: $COLLECT_RESULT)"
+            status=1
+          fi
+          exit "$status"
+      - uses: actions/checkout@v4
+        if: ${{ !cancelled() }}
+      - uses: actions/setup-python@v5
+        if: ${{ !cancelled() }}
+        with:
+          python-version: "3.12"
+      - name: Download the JUnit reports of all shards
+        if: ${{ !cancelled() }}
+        uses: actions/download-artifact@v4
+        with:
+          pattern: junit-report-shard-*
+          path: reports
+          merge-multiple: true
+      - name: Download the unsharded collection
+        if: ${{ !cancelled() }}
+        uses: actions/download-artifact@v4
+        with:
+          name: collected-tests
+          path: collected
+      - name: Predicted time per shard
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: python dev/ci_shards.py plan --of 4 --limit 720
+      - name: Every collected test ran in exactly one shard
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: python dev/ci_shards.py verify --of 4 --collected collected/collected.txt --reports reports --summary
+      - name: Online checks skipped for an upstream outage (all shards)
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: python dev/ci_outage_report.py reports/*.xml
+      - name: Twenty slowest tests
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: python dev/ci_slowest.py --top 20 --summary reports/*.xml
 
   # The dashboard front-end sources live in ns_dashboard/ui; the build output is committed in ns_dashboard/static
   # (the bundle is a git archive and the partner PC has no node). This job rebuilds it and fails on any difference.

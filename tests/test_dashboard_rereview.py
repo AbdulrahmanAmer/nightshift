@@ -32,9 +32,13 @@ def emit(ev, **data):
 
 mode = os.environ.get("CHILD_MODE", "polite")
 emit("job", job_id="after-dark-20261102-aaaa")
+for name in filter(None, os.environ.get("CHILD_OWNERS", "").split(",")):
+    emit("owner", owner=name)  # a lease owner that is not `studio:<job id>` (a setup voice, a helper)
 emit("stage", stage="voice", index=0, total=2, job_index=0, job_total=1)
 with open(os.environ["CHILD_UP"], "w", encoding="utf-8") as fh:
     fh.write("up")
+if mode == "crash":
+    sys.exit(3)  # dies without a result line
 flag = os.environ["NS_JOB_CANCEL_FILE"]
 end = time.time() + 120
 while time.time() < end:
@@ -68,6 +72,22 @@ def cancel_when_up(tmp_path: Path, store: JobStore, job_id: str) -> None:
         end = time.monotonic() + 20
         while not (tmp_path / "up").exists() and time.monotonic() < end:
             time.sleep(0.05)
+        store.request_cancel(job_id)
+
+    threading.Thread(target=go, daemon=True).start()
+
+
+def cancel_when_recorded(store: JobStore, job_id: str, owners: list[str]) -> None:
+    """Cancel only once the dashboard has written every announced owner to the job record (not merely once
+    the child printed them: the dashboard reads the child's stdout on its own thread, at its own pace)."""
+
+    def go() -> None:
+        end = time.monotonic() + 20
+        while time.monotonic() < end:
+            rec = store.get(job_id)
+            if rec is not None and (rec.result or {}).get("lease_owners") == owners:
+                break
+            time.sleep(0.02)
         store.request_cancel(job_id)
 
     threading.Thread(target=go, daemon=True).start()
@@ -127,6 +147,83 @@ def test_a_child_stuck_in_a_stage_is_killed_after_the_grace_and_its_lease_is_rel
     assert link.released == ["studio:after-dark-20261102-aaaa"]
 
 
+def test_cancel_frees_every_owner_the_child_took_not_only_the_studio_job_ids(
+    child: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setenv("CHILD_OWNERS", "studio:voice-nova,dashboard:helper-1")
+    paths = Paths.from_env()
+    store, ctl = make_ctl(paths)
+    cancel_when_recorded(store, ctl.job_id, ["studio:voice-nova", "dashboard:helper-1"])
+    link = RecordingLink()
+    adapter = RealRunAdapter(paths, link, runner=runner_for(child, tmp_path, grace_s=15))
+    with pytest.raises(JobCancelled):
+        adapter.run(ctl, "after-dark", "shorts_only", 1)
+    assert sorted(link.released) == [
+        "dashboard:helper-1", "studio:after-dark-20261102-aaaa", "studio:voice-nova",
+    ]
+    rec = store.get(ctl.job_id)  # written as announced: a restart mid-job must not lose them
+    assert rec is not None and rec.result is not None
+    assert rec.result["lease_owners"] == ["studio:voice-nova", "dashboard:helper-1"]
+
+
+def test_owners_announced_after_the_cancel_was_asked_are_still_freed(
+    child: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    # the cancel is already there when the first line is read: check_cancel raises at once and the owner lines
+    # are still unread (this is the order the Windows runner produced)
+    monkeypatch.setenv("CHILD_OWNERS", "studio:voice-nova,dashboard:helper-1")
+    paths = Paths.from_env()
+    store, ctl = make_ctl(paths)
+    store.request_cancel(ctl.job_id)
+    link = RecordingLink()
+    adapter = RealRunAdapter(paths, link, runner=runner_for(child, tmp_path, grace_s=15))
+    with pytest.raises(JobCancelled):
+        adapter.run(ctl, "after-dark", "shorts_only", 1)
+    # a late owner is freed on arrival and again with the rest: freeing twice is harmless
+    assert set(link.released) == {
+        "dashboard:helper-1", "studio:after-dark-20261102-aaaa", "studio:voice-nova",
+    }
+
+
+def test_an_owner_announced_to_a_cancelled_job_is_released_on_arrival_and_logged(tmp_home: Path):
+    class LateRunner:
+        def run(self, kind: str, args: dict[str, Any], *, on_event: Any, **_kw: Any) -> dict[str, Any]:
+            on_event({"ev": "owner", "owner": "studio:voice-nova"})  # arrives after the cancel was asked
+            raise JobCancelled()
+
+    paths = Paths.from_env()
+    store, ctl = make_ctl(paths)
+    store.request_cancel(ctl.job_id)
+    link = RecordingLink()
+    adapter = RealRunAdapter(paths, link, runner=LateRunner())  # type: ignore[arg-type]
+    with pytest.raises(JobCancelled):
+        adapter.run(ctl, "after-dark", "shorts_only", 1)
+    assert link.released == ["studio:voice-nova", "studio:voice-nova"]  # on arrival, then with the rest
+    logged = "".join(p.read_text(encoding="utf-8") for p in paths.logs.glob("dashboard-*.jsonl"))
+    assert "lease_owner_released_late" in logged and "studio:voice-nova" in logged
+
+
+def test_a_failed_job_frees_every_owner_it_took_too(
+    child: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    # announced twice, released once
+    monkeypatch.setenv("CHILD_OWNERS", "studio:voice-nova,studio:voice-nova")
+    monkeypatch.setenv("CHILD_MODE", "crash")
+    paths = Paths.from_env()
+    _store, ctl = make_ctl(paths)
+    link = RecordingLink()
+    adapter = RealRunAdapter(paths, link, runner=runner_for(child, tmp_path))
+    with pytest.raises(Exception):  # noqa: B017 - the child exits without a result: any NsError will do
+        adapter.run(ctl, "after-dark", "shorts_only", 1)
+    assert sorted(link.released) == ["studio:after-dark-20261102-aaaa", "studio:voice-nova"]
+
+
+def test_studio_owners_include_the_lease_owners_the_child_announced(tmp_home: Path):
+    _store, ctl = make_ctl(Paths.from_env())
+    ctl.extras["lease_owners"] = ["studio:voice-nova", "dashboard:helper-1"]
+    assert studio_owners(ctl, {}) == ["dashboard:helper-1", "studio:voice-nova"]
+
+
 def test_the_runner_hands_the_child_its_cancel_file_and_removes_it_afterwards(tmp_home: Path, tmp_path: Path):
     runner = StudioRunner(Paths.from_env(), python=[sys.executable], cwd=tmp_path)
     flag = tmp_path / "x.cancel"
@@ -170,6 +267,20 @@ def test_the_child_acquires_through_the_studio_acquirer_so_the_lease_is_renewed(
     assert studio_job._acquirer({}) is None
     acq = studio_job._acquirer({"supervisor_url": "http://127.0.0.1:9"})  # builds nothing that connects
     assert isinstance(acq, StudioAcquirer)
+
+
+def test_the_acquirer_announces_each_owner_as_an_owner_event_on_stdout(
+    tmp_home: Path, capsys: pytest.CaptureFixture[str]
+):
+    """The wiring between `StudioAcquirer.on_owner` and the `owner` protocol line the runner reads."""
+    acq = studio_job._acquirer({"supervisor_url": "http://127.0.0.1:9"})
+    capsys.readouterr()
+    acq._announce("studio:x")
+    acq._announce("studio:x")  # once per owner
+    acq._announce("voice:y")
+    lines = [ln for ln in capsys.readouterr().out.splitlines() if ln.startswith(studio_job.PREFIX)]
+    events = [json.loads(ln[len(studio_job.PREFIX):]) for ln in lines]
+    assert events == [{"ev": "owner", "owner": "studio:x"}, {"ev": "owner", "owner": "voice:y"}]
 
 
 def test_studio_owners_cover_run_clip_rerun_and_series(tmp_home: Path):

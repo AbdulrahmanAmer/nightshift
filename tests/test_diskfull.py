@@ -100,7 +100,7 @@ def test_non_e401_errors_pass_through(tmp_path: Path):
 
 
 def _fake_run(tail: str):
-    def run(args, *, log=None):
+    def run(args, *, log=None, cwd=None):
         raise _e401(tail)
 
     return run
@@ -131,7 +131,7 @@ def test_run_ffmpeg_leaves_other_failures_as_ns_e401(tmp_path: Path, monkeypatch
 
 def test_run_ffmpeg_passes_the_result_through(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     done = subprocess.CompletedProcess(["ffmpeg"], 0, "", "ok")
-    monkeypatch.setattr(ff, "run", lambda args, *, log=None: done)
+    monkeypatch.setattr(ff, "run", lambda args, *, log=None, cwd=None: done)
     assert run_ffmpeg(["-i", "x"], folder=tmp_path) is done
 
 
@@ -146,7 +146,7 @@ def test_render_does_not_retry_with_libx264_when_the_disk_is_full(
 
     calls: list[list[str]] = []
 
-    def full(args, *, timeout_s=3600, log=None):
+    def full(args, *, timeout_s=3600, log=None, cwd=None):
         calls.append(args)
         raise _e401(STDERR_NO_SPACE)
 
@@ -169,7 +169,7 @@ def test_render_does_not_retry_with_libx264_when_the_disk_is_full(
 def _truncating_run(tail: str, out: Path):
     """An FFmpeg run that writes part of its output and then dies, like a volume that filled up."""
 
-    def run(args, *, log=None):
+    def run(args, *, log=None, cwd=None):
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_bytes(b"x" * 4096)
         raise _e401(tail)
@@ -210,7 +210,7 @@ def test_render_video_on_a_full_disk_leaves_no_truncated_short(
 
     out = tmp_path / "out" / "short.mp4"
 
-    def full(args, *, timeout_s=3600, log=None):
+    def full(args, *, timeout_s=3600, log=None, cwd=None):
         _truncating_run(STDERR_NO_SPACE, out)(args)
 
     monkeypatch.setattr(ff, "run", full)

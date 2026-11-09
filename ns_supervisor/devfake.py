@@ -6,7 +6,8 @@ an answer in the shape the real clients read (`ns_common.llm_client`, `ns_common
 
     GET  /health               {"status": "ok", ...}
     POST /v1/chat/completions  the schema's own example (response_format json_schema) or a short text;
-                               with `tools`, one tool call picked from the owner's words (`plan_tool_call`)
+                               with `tools`, one tool call picked from the owner's words (`plan_tool_call`),
+                               or exactly the call named by the cue `tool: <name> {json args}`
     POST /completion           llama.cpp's native route with timings (the benchmark in `ns verify`)
     POST /v1/embeddings        a deterministic unit vector per text
 
@@ -163,6 +164,122 @@ def _channel(text: str) -> str | None:
     return re.sub(r"\s+", "-", t.group(1).lower()) if t else None
 
 
+# The explicit cue: the whole question is `tool: <name>` or `tool: <name> {json args}`. It makes any tool
+# reachable through the chat on a dev install (docs/DEV_MODE.md), whatever the phrasings below know. A tool
+# the router did not offer for that message is reached through `list_tools` (see `_discovery_step`).
+_TOOL_CUE = re.compile(r"\s*tool\s*:\s*([A-Za-z_][A-Za-z0-9_]*)\s*(.*)", re.I | re.S)
+_LIST_TOOLS = "list_tools"
+
+
+def _cue_parts(text: str) -> tuple[str, str] | None:
+    """(tool name, text after the name) when the whole text is a cue, else None."""
+    m = _TOOL_CUE.fullmatch(text)
+    if not m:
+        return None
+    rest = m.group(2).strip()
+    return m.group(1), ("" if re.fullmatch(r"[.!?]+", rest) else rest)  # "tool: status." ends in a full stop
+
+
+def _cue_args(name: str, rest: str) -> tuple[dict[str, Any] | None, str | None]:
+    """(arguments, None), or (None, plain reply) when `rest` is not one JSON object (or empty)."""
+    args: Any = {}
+    if rest:
+        try:
+            args = json.loads(rest)
+        except ValueError as exc:
+            return None, _bad_args(name, str(exc))
+    if not isinstance(args, dict):
+        return None, _bad_args(name, "it is not a JSON object")
+    return args, None
+
+
+def _tool_cue(text: str, names: set[str]) -> tuple[dict[str, Any] | None, str | None]:
+    """(call, None) for a valid cue, (None, plain reply) for a cue that cannot be followed, (None, None)
+    when the text is not a cue at all. A cued tool that is not offered is looked up with `list_tools` when
+    that is offered: the call returned is then `list_tools` and `_discovery_step` finishes the job."""
+    parts = _cue_parts(text)
+    if parts is None:
+        return None, None
+    name, rest = parts
+    lookup = _LIST_TOOLS in names and name != _LIST_TOOLS
+    if name not in names and not lookup:
+        return None, (f"The dev fake llama has no tool '{name}': it is not among the offered tools "
+                      f"({', '.join(sorted(names))}).")
+    args, problem = _cue_args(name, rest)
+    if args is None:
+        return None, problem
+    if name not in names:
+        return {"name": _LIST_TOOLS, "args": {}}, None
+    return {"name": name, "args": args}, None
+
+
+def _bad_args(name: str, why: str) -> str:
+    return (f"The dev fake llama could not read the arguments of '{name}': after the tool name it needs "
+            f"one JSON object, for example tool: {name} {{\"q\": \"fog\"}} ({why}).")
+
+
+def _listed_names(data: Any) -> set[str]:
+    """Tool names in a `list_tools` result: `tools_added` and the `{topic: [{name, ...}]}` listing."""
+    out: set[str] = set()
+    if not isinstance(data, dict):
+        return out
+    for key, value in data.items():
+        if not isinstance(value, list):
+            continue
+        for item in value:
+            if key == "tools_added" and isinstance(item, str):
+                out.add(item)
+            elif isinstance(item, dict) and isinstance(item.get("name"), str):
+                out.add(item["name"])
+    return out
+
+
+def _discovery_step(messages: list[dict[str, Any]]) -> tuple[dict[str, Any] | None, str | None]:
+    """The step after a `list_tools` result in a turn that began with a cue for a tool that was not offered.
+
+    The router offers tools by topic words and at most ten per topic, so `tool: system_map` or
+    `tool: edit_format` may name a tool that is not in the request. The cue then goes: `list_tools {}` (all
+    names by topic), `list_tools {"topic": T}` for the topic that holds the name, and the cued call. The
+    Assistant runs any registered tool, offered or not; a topic listing that holds the name is the proof that
+    it is one (`tools_added` alone would miss a tool past the ten slots of its topic)."""
+    parts = _cue_parts(_last_user(messages))
+    if parts is None or parts[0] == _LIST_TOOLS or messages[-1].get("name") != _LIST_TOOLS:
+        return None, None
+    name, rest = parts
+    args, problem = _cue_args(name, rest)
+    if args is None:
+        return None, problem
+    try:
+        data = json.loads(str(messages[-1].get("content") or ""))
+    except ValueError:
+        data = None
+    topics = data.get("topics") if isinstance(data, dict) else None
+    if isinstance(topics, dict):  # the names-only listing: ask for the topic that holds the cued name
+        for topic, listed in topics.items():
+            if isinstance(listed, list) and name in listed:
+                return {"name": _LIST_TOOLS, "args": {"topic": str(topic)}}, None
+    elif name in _listed_names(data):
+        return {"name": name, "args": args}, None
+    return None, f"The dev fake llama has no tool '{name}': list_tools does not list a tool of that name."
+
+
+def _plan(messages: list[dict[str, Any]], tools: Any) -> tuple[dict[str, Any] | None, str | None]:
+    """(call, None), (None, plain reply) for a cue that cannot be followed, or (None, None)."""
+    names = _tool_names(tools)
+    if not names or not messages:
+        return None, None
+    role = messages[-1].get("role")
+    if role == "tool":
+        return _discovery_step(messages)
+    if role != "user":
+        return None, None
+    text = _last_user(messages)
+    cued, problem = _tool_cue(text, names)
+    if cued is not None or problem is not None:  # a cue is never mixed with the phrasings below
+        return cued, problem
+    return _phrasing(text, names), None
+
+
 def plan_tool_call(messages: list[dict[str, Any]], tools: Any) -> dict[str, Any] | None:
     """One tool call for the owner's last message, picked by its words, or None for a plain text answer.
 
@@ -170,11 +287,17 @@ def plan_tool_call(messages: list[dict[str, Any]], tools: Any) -> dict[str, Any]
     whole path (confirm card, tool run, result shown) can be tried on a dev install: "fetch two clips of a
     dark hallway", "what is the status", "pause Dev Night Tales", "where is the footage cache", "make a
     Short for dev-night-tales". Only tools in `tools` are called; everything else gets the text reply.
+
+    The explicit cue `tool: <name> {json args}` (args optional) returns exactly that call when `<name>` is
+    offered. When it is not offered and `list_tools` is, the first call is `list_tools` and the cued call
+    follows its result (`_discovery_step`). An unknown name or arguments that are not one JSON object return
+    None here and `chat_message` answers in plain words.
     """
-    names = _tool_names(tools)
-    if not names or not messages or messages[-1].get("role") != "user":
-        return None
-    text = _last_user(messages)
+    return _plan(messages, tools)[0]
+
+
+def _phrasing(text: str, names: set[str]) -> dict[str, Any] | None:
+    """The tool picked by the words of `text` (see `plan_tool_call`)."""
     low = text.lower()
 
     def pick(name: str, **args: Any) -> dict[str, Any] | None:
@@ -246,18 +369,28 @@ def _after_tool(messages: list[dict[str, Any]]) -> str:
     return f"Done ({last.get('name') or 'tool'}). {gist}"
 
 
+def _turn_start(messages: list[dict[str, Any]]) -> int:
+    """Index of the owner's last message: what follows it belongs to this turn."""
+    return next((i for i in range(len(messages) - 1, -1, -1) if messages[i].get("role") == "user"), 0)
+
+
 def chat_message(body: dict[str, Any]) -> dict[str, Any]:
     """The whole assistant message for a chat request, with `tool_calls` when a tool fits."""
     raw = body.get("messages")
     messages: list[dict[str, Any]] = [m for m in raw if isinstance(m, dict)] if isinstance(raw, list) else []
     if body.get("tools"):
-        if messages and messages[-1].get("role") == "tool":
-            return {"role": "assistant", "content": _after_tool(messages)}
-        planned = plan_tool_call(messages, body.get("tools"))
+        planned, problem = _plan(messages, body.get("tools"))
+        if problem:
+            return {"role": "assistant", "content": problem}
         if planned:
-            call = {"id": f"call_dev_{planned['name']}", "type": "function",
+            # a second call in one turn (the cue's look-up with list_tools) gets its own id
+            made = sum(1 for m in messages[_turn_start(messages):] if m.get("role") == "tool")
+            call_id = f"call_dev_{planned['name']}" + (f"_{made + 1}" if made else "")
+            call = {"id": call_id, "type": "function",
                     "function": {"name": planned["name"], "arguments": json.dumps(planned["args"])}}
             return {"role": "assistant", "content": "", "tool_calls": [call]}
+        if messages and messages[-1].get("role") == "tool":
+            return {"role": "assistant", "content": _after_tool(messages)}
     return {"role": "assistant", "content": chat_reply(body)}
 
 

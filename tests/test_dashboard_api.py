@@ -2,6 +2,7 @@
 import hashlib
 import importlib.util
 import json
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +12,7 @@ from ns_common import ffmpeg
 from ns_common.paths import Paths
 from ns_dashboard.assistant.llm import ScriptedToolLlm, StaticProvider, call, say
 from ns_dashboard.assistant.tools import NO_TOOL, build_registry
+from ns_dashboard.errors import SupervisorUnavailable
 from ns_dashboard.fakes import FakeSupervisor, seed_channel, seed_output
 from ns_dashboard.handlers import build_state
 from ns_dashboard.state import AppState
@@ -393,10 +395,52 @@ def test_engine_commands_over_http(tmp_home: Path):
         st = client.get("/api/status").json()
         assert st["engine"]["state"] == "ready" and st["engine"]["vram_owner"] == "studio:j"
         assert st["services"]["llama"]["state"] == "ready"
-        assert client.post("/api/engine/shutdown", json={"grace_s": 30}).json()["ok"] is True
+        later: list[Any] = []
+        client.app.state.dashboard.engine.schedule = lambda _d, fn: later.append(fn)  # type: ignore[attr-defined]
+        r = client.post("/api/engine/shutdown", json={"grace_s": 30})
+        assert r.status_code == 200 and r.json() == {"ok": True, "cancelled_job": None}
         assert state.draining is True
+        assert not any(p == "/shutdown" for _m, p, _b in sup.calls)  # the reply came first
         assert client.get("/api/status").json()["engine"]["detail"] == "Shutting down..."
+        assert len(later) == 1
+        later[0]()
         assert any(p == "/shutdown" for _m, p, _b in sup.calls)
+
+
+def test_shutdown_route_answers_before_the_link_shutdown_runs(tmp_home: Path):
+    """D-7: the supervisor stops the dashboard when it shuts down, so the reply must be out first."""
+    order: list[str] = []
+
+    class OrderedLink(SupervisorLink):
+        def status(self) -> dict[str, Any] | None:
+            return {"services": {}, "gpu_owner": None}
+
+        def shutdown(self, grace_s: int = 30) -> dict[str, Any]:
+            order.append("link.shutdown")
+            raise SupervisorUnavailable("connection reset")  # failures never reach the caller
+
+    done = threading.Event()
+    link = OrderedLink("http://127.0.0.1:9", timeout_s=0.2)
+    client, _ = make_env(tmp_home, link)
+    engine = client.app.state.dashboard.engine  # type: ignore[attr-defined]
+    gate = threading.Event()  # opened once the test has seen the response
+
+    def background(_delay: float, fn: Any) -> None:
+        def run() -> None:
+            gate.wait(5.0)
+            fn()
+            done.set()
+
+        threading.Thread(target=run, daemon=True).start()
+
+    engine.schedule = background
+    r = client.post("/api/engine/shutdown", json={"grace_s": 30})
+    order.append("response")
+    assert r.status_code == 200 and r.json()["ok"] is True
+    assert order == ["response"]  # the 200 and its body arrived before the supervisor call
+    gate.set()
+    assert done.wait(5.0)  # and the engine is still stopped afterwards
+    assert order == ["response", "link.shutdown"]
 
 
 def test_engine_commands_when_engine_is_off(env):

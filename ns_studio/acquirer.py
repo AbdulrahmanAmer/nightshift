@@ -63,12 +63,17 @@ class StudioAcquirer:
         wait_cap_s: int = WAIT_CAP_S,
         beat_s: float = BEAT_S,
         log: NsLogger | None = None,
+        on_owner: Callable[[str], None] | None = None,
     ) -> None:
         self.runtime = runtime
         self.paths = paths
         self.wait_cap_s = wait_cap_s
         self.beat_s = beat_s
         self._held: set[tuple[str, str]] = set()
+        # Told about each owner the first time it asks for a service, before the lease can exist: the
+        # dashboard's child reports it so Cancel frees every owner of the job, not only `studio:<job id>`.
+        self._on_owner = on_owner
+        self._announced: set[str] = set()
         self._run_owner: str | None = None  # the owner that last acquired: it keeps beating between services
         self._beat: threading.Thread | None = None
         self._beat_mu = threading.Lock()
@@ -111,6 +116,7 @@ class StudioAcquirer:
         self, service: Service, owner: str, *, model_alias: str | None = None, timeout_s: int = WAIT_CAP_S
     ) -> Endpoint:
         """Hand `owner` the service; GPU services wait for a busy GPU for at most `wait_cap_s` seconds."""
+        self._announce(owner)
         client = self._connect()
         wait = max(1, min(int(timeout_s), self.wait_cap_s))
         try:
@@ -136,6 +142,14 @@ class StudioAcquirer:
         self._hold(service, owner)
         self.log.info("acquired", service=service, owner=owner)
         return ep
+
+    def _announce(self, owner: str) -> None:
+        """Call `on_owner` once per owner. It runs before the acquire: a child killed while it waits for the
+        lease would otherwise leave an owner nobody knows to release."""
+        if self._on_owner is None or owner in self._announced:
+            return
+        self._announced.add(owner)
+        self._on_owner(owner)
 
     @staticmethod
     def _acquire_once(

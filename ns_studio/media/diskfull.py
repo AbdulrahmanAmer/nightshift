@@ -94,14 +94,22 @@ def remove_partial(path: Path | None, log: NsLogger | None = None) -> None:
 
 
 def run_ffmpeg(
-    args: list[str], *, folder: Path, out: Path | None = None, log: NsLogger | None = None
+    args: list[str],
+    *,
+    folder: Path,
+    out: Path | None = None,
+    log: NsLogger | None = None,
+    cwd: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """`ns_common.ffmpeg.run`, but a full output volume (`folder` is where FFmpeg writes) is NS-E104.
 
-    `out` is the file FFmpeg writes; when the failure is a full disk the truncated file is removed.
+    `out` is the file FFmpeg writes (an absolute path, even when `args` name it relative to `cwd`); when the
+    failure is a full disk the truncated file is removed. `cwd` is passed through: FFmpeg starts there.
     """
     try:
-        return ff.run(args, log=log)
+        if cwd is None:
+            return ff.run(args, log=log)
+        return ff.run(args, log=log, cwd=cwd)
     except NsError as e:
         mapped = classify_ffmpeg_error(e, folder, log)
         if mapped is e:

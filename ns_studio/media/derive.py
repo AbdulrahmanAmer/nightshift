@@ -20,7 +20,15 @@ from ns_studio.media.caption_plan import (
     safe_zones_for,
 )
 from ns_studio.media.captions import first_event_start, shift_words
-from ns_studio.media.clips import ClipCache, Searcher, assign_clips, blocked_for_job, clip_seed, fallback_beat
+from ns_studio.media.clips import (
+    ClipCache,
+    Searcher,
+    assign_clips,
+    blocked_for_job,
+    clip_seed,
+    fallback_beat,
+    make_lemmatizer,
+)
 from ns_studio.media.master import ShortSpec, load_shorts, load_words
 from ns_studio.media.presets import FONTS_DIR, visual_treatment
 from ns_studio.media.render import FINAL_LUFS, FINAL_TP, VERTICAL, fit_caption_contrast, render_video
@@ -123,7 +131,7 @@ def derive_short(
     seed = clip_seed(ctx, item)
     shots = assign_clips(
         beats=beats, slots=slots, searcher=searcher, cache=cache, blocked=blocked, seed=seed,
-        wanted="portrait", used=used,
+        wanted="portrait", used=used, extra_keywords=ctx.channel.seed_keywords,
     )
     luma = fit_caption_contrast(
         words=words, style=style, opts=opts, shots=shots, total_s=total, size=VERTICAL, ass_path=ass,
@@ -166,7 +174,7 @@ class ShortsDeriveStage:
         captions_report = ctx.read_json("captions/report.json")
         plan = ctx.read_json("visual_plan.json")
         cache = ClipCache(ctx.db, ctx.paths, ctx.services.clip_sources, log=ctx.log)
-        searcher = Searcher(ctx.services.clip_sources, log=ctx.log)
+        searcher = Searcher(ctx.services.clip_sources, log=ctx.log, lemma=make_lemmatizer(ctx.paths))
         blocked = blocked_for_job(ctx, ("clips/shorts_shots.json",))
         used: set[tuple[str, str]] = set()  # one set for all Shorts: siblings never share a clip (NS-E611)
         report: dict[str, Any] = {}

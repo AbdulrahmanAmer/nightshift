@@ -16,6 +16,7 @@ from collections.abc import Callable
 from typing import Protocol
 
 from ns_common.models import GpuStatus
+from ns_supervisor.childenv import child_env
 
 QUERY = "name,utilization.gpu,memory.used,memory.total,temperature.gpu"
 _NO_WINDOW: int = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -70,6 +71,7 @@ def run_nvidia_smi() -> str | None:
             text=True,
             timeout=5,
             check=False,
+            env=child_env(),
             creationflags=_NO_WINDOW,
         )
     except (OSError, subprocess.SubprocessError):

@@ -18,7 +18,9 @@ from typing import Any
 from ns_common import ffmpeg
 from ns_common.db import Db
 from ns_common.errors import NsError
+from ns_common.logging import NsLogger
 from ns_common.paths import Paths
+from ns_studio.clipper import download_cleanup
 from ns_studio.media.diskfull import run_ffmpeg
 
 MAX_DURATION_S = 4 * 3600.0
@@ -300,13 +302,8 @@ class CancelToken:
 
 
 def _kill(proc: Any) -> None:
-    """Kill `proc` and reap it; never raises (the process may be gone already)."""
-    try:
-        if proc.poll() is None:
-            proc.kill()
-        proc.wait()
-    except OSError:
-        pass
+    """Kill `proc` with its whole tree (yt-dlp's worker, FFmpeg) and reap it; never raises."""
+    download_cleanup.kill_process_tree(proc)
 
 
 def import_url(
@@ -316,12 +313,15 @@ def import_url(
     *,
     exe: Path | None = None,
     cancel_token: CancelToken | None = None,
+    log: NsLogger | None = None,
 ) -> Path:
     """Download `url` with the pinned yt-dlp into `dest_dir` and return the video file.
 
     `progress_cb` gets the percentage (0-100) of every `[download] ...%` line and may raise to stop the
-    download. `cancel_token.cancel()` (from any thread) stops it too. Either way yt-dlp is killed and
-    reaped and the half-written folder removed, so a retry of the same link does not race an orphan.
+    download. `cancel_token.cancel()` (from any thread) stops it too. Either way the yt-dlp process tree is
+    killed and reaped, then the half-written folder is removed with retries (a file the tree still holds open
+    cannot be deleted on Windows), so a retry of the same link does not race an orphan. A folder that still
+    cannot be removed is logged through `log` (default: the studio log).
     The title is left in `dest_dir/source.info.json` (see `read_download_title`). Raises the
     download-failed error (CR-C8-10) when the link is not http(s), yt-dlp is missing, exits non-zero,
     was cancelled, or leaves no video behind.
@@ -360,15 +360,13 @@ def import_url(
                     break
         code = proc.wait()
     except BaseException:  # the progress callback raised (Cancel), or the thread is being torn down
-        _kill(proc)
-        shutil.rmtree(dest_dir, ignore_errors=True)
+        download_cleanup.discard_download(dest_dir, proc, log=log, kill=_kill)
         raise
     finally:
         if proc.stdout is not None and hasattr(proc.stdout, "close"):
             proc.stdout.close()
     if cancel_token is not None and cancel_token.cancelled:
-        _kill(proc)
-        shutil.rmtree(dest_dir, ignore_errors=True)
+        download_cleanup.discard_download(dest_dir, proc, log=log, kill=_kill)
         raise NsError(DOWNLOAD_FAILED, "cancelled")
     if code != 0:
         raise NsError(DOWNLOAD_FAILED, f"yt-dlp exit {code}: " + " | ".join(tail))

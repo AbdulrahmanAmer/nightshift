@@ -4,6 +4,8 @@ import json
 import os
 import shutil
 import subprocess
+from collections.abc import Iterable
+from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
@@ -48,14 +50,81 @@ def ffprobe_exe() -> str:
     return exe
 
 
-def run(
-    args: list[str], *, timeout_s: int = 3600, log: NsLogger | None = None
-) -> subprocess.CompletedProcess[str]:
-    cmd = [ffmpeg_exe(), "-hide_banner", "-y", "-nostdin", *args]
+@lru_cache(maxsize=8)
+def _reads_filter_script_option(exe: str) -> bool:
+    """Whether this FFmpeg still has `-filter_complex_script` (removed in FFmpeg 8; `-/filter_complex` is
+    the replacement since 7.0)."""
+    try:
+        help_text = subprocess.run(
+            [exe, "-hide_banner", "-h", "full"], capture_output=True, text=True, timeout=60,
+            encoding="utf-8", errors="replace",
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return "-filter_complex_script" in help_text
+
+
+def filter_complex_args(
+    graph: str, script: Path, *, log: NsLogger | None = None, base: Path | None = None
+) -> list[str]:
+    """Write `graph` to `script` and return the option pair that makes FFmpeg read it from there.
+
+    A filter graph for a Short with a few dozen clips is tens of thousands of characters, and Windows refuses
+    a command line over 32,767 (WinError 206). The graph text is the same as it would be on the command line.
+    """
+    script.parent.mkdir(parents=True, exist_ok=True)
+    script.write_text(graph, encoding="utf-8", newline="")
     if log:
-        log.debug("ffmpeg_run", cmd=" ".join(cmd))
+        log.info("ffmpeg_filter_script", f"filter graph in {script}", path=str(script), chars=len(graph))
+    option = "-filter_complex_script" if _reads_filter_script_option(ffmpeg_exe()) else "-/filter_complex"
+    return [option, relative_arg(script, base)]
+
+
+def graph_to_script(
+    args: list[str], script: Path, *, log: NsLogger | None = None, base: Path | None = None
+) -> list[str]:
+    """`args` with the value of `-filter_complex` moved into `script` (unchanged when it has none)."""
+    if "-filter_complex" not in args:
+        return list(args)
+    at = args.index("-filter_complex")
+    return [*args[:at], *filter_complex_args(args[at + 1], script, log=log, base=base), *args[at + 2 :]]
+
+
+def common_dir(paths: Iterable[Path | str]) -> Path | None:
+    """The deepest folder holding every path (None when they are on different drives)."""
+    absolute = [os.path.abspath(p) for p in paths]
+    try:
+        return Path(os.path.commonpath(absolute)) if absolute else None
+    except ValueError:
+        return None
+
+
+def relative_arg(path: Path | str, base: Path | None) -> str:
+    """`path` as a command-line argument for a process started in `base`: `./sub/file`, never a bare `-x`.
+
+    Without a `base`, or on another drive, the full path is kept.
+    """
+    if base is None:
+        return str(path)
+    try:
+        rel = os.path.relpath(path, base)
+    except ValueError:
+        return str(path)
+    rel = rel.replace("\\", "/")
+    return rel if rel.startswith("../") else f"./{rel}"
+
+
+def run(
+    args: list[str], *, timeout_s: int = 3600, log: NsLogger | None = None, cwd: Path | None = None
+) -> subprocess.CompletedProcess[str]:
+    """Run FFmpeg; with `cwd` the process starts in that folder, so `args` can name files relative to it."""
+    exe = ffmpeg_exe()
+    cmd = [os.path.abspath(exe) if cwd is not None else exe, "-hide_banner", "-y", "-nostdin", *args]
+    if log:
+        log.debug("ffmpeg_run", cmd=" ".join(cmd), cwd=str(cwd) if cwd is not None else None)
     proc = subprocess.run(
-        cmd, capture_output=True, text=True, timeout=timeout_s, encoding="utf-8", errors="replace"
+        cmd, capture_output=True, text=True, timeout=timeout_s, encoding="utf-8", errors="replace",
+        cwd=cwd,
     )
     if proc.returncode != 0:
         tail = "\n".join(proc.stderr.strip().splitlines()[-8:])

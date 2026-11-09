@@ -27,7 +27,7 @@ from ns_common.logging import NsLogger
 from ns_common.paths import Paths
 from ns_common.uv import find_uv, home_uv, uv_env
 from ns_common.venv_extras import NO_DEPS, extras_suffix
-from ns_supervisor.procs import scrubbed
+from ns_supervisor.childenv import child_env
 
 PRESERVE = (".git", "config", "answers.json")
 RELEASE_NOTES_MAX = 20000       # keeps the dashboard's state file small whatever a changelog holds
@@ -186,6 +186,7 @@ def git_untracked(app: Path) -> list[str]:
             text=True,
             timeout=60,
             check=False,
+            env=child_env(),
         )
     except (OSError, subprocess.SubprocessError):
         return []
@@ -473,8 +474,9 @@ def resync_venvs(
 
 def _run(cmd: list[str], env: dict[str, str] | None = None) -> tuple[int, str]:
     try:
-        child_env = {**scrubbed(os.environ), **(env or {})}
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=1800, check=False, env=child_env)
+        r = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=1800, check=False, env=child_env(env)
+        )
     except (OSError, subprocess.SubprocessError) as e:
         return 1, str(e)
     return r.returncode, " | ".join((r.stderr or r.stdout).strip().splitlines()[-3:])
@@ -488,7 +490,10 @@ def verify_quick(app: Path, python: str | None = None) -> bool:
     before the re-sync and would not see a dependency the new version added.
     """
     r = subprocess.run(
-        [python or sys.executable, "-m", "ns_supervisor.cli", "verify", "--quick"], cwd=str(app), check=False
+        [python or sys.executable, "-m", "ns_supervisor.cli", "verify", "--quick"],
+        cwd=str(app),
+        check=False,
+        env=child_env(),
     )
     return r.returncode == 0
 
@@ -508,7 +513,8 @@ def _git_run(app: Path) -> GitRun:
             return 127, "git was not found on PATH"
         try:
             r = subprocess.run(
-                [exe, "-C", str(app), *args], capture_output=True, text=True, timeout=900, check=False
+                [exe, "-C", str(app), *args], capture_output=True, text=True, timeout=900, check=False,
+                env=child_env(),
             )
         except (OSError, subprocess.SubprocessError) as e:
             return 1, str(e)

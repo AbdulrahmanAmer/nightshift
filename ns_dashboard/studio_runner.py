@@ -191,6 +191,21 @@ class StudioRunner:
                     proc.wait(timeout=grace)
         self._kill(proc)
 
+    @staticmethod
+    def _drain_announcements(lines: queue.Queue[str | None], on_event: Callable[[Event], None]) -> None:
+        """Hand over the lease owners and job ids the child announced that were still unread when the run
+        was cut short (a cancel is checked after every line; the child may also announce while it stops).
+        Stage and progress events are dropped: only what the caller must release or show is passed on."""
+        while True:
+            try:
+                line = lines.get_nowait()
+            except queue.Empty:
+                return
+            event = parse_event(line) if line is not None else None
+            if event is not None and event.get("ev") in ("owner", "job"):
+                with contextlib.suppress(Exception):
+                    on_event(event)
+
     # --- running ---
     def run(
         self,
@@ -262,6 +277,8 @@ class StudioRunner:
             proc.wait(timeout=60)
         except BaseException:
             self._stop(proc, cancel_file, on_cancel)
+            reader.join(timeout=5)
+            self._drain_announcements(lines, on_event)
             raise
         finally:
             reader.join(timeout=5)
