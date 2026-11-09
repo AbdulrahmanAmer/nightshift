@@ -13,6 +13,7 @@ from ns_common.errors import NsError
 from ns_common.models import Runtime
 from ns_common.paths import Paths, repo_root
 from ns_supervisor import procs
+from ns_supervisor.childenv import child_env
 from ns_supervisor.client import SupervisorClient
 
 
@@ -39,6 +40,7 @@ def image_name(pid: int) -> str | None:
             text=True,
             timeout=15,
             check=False,
+            env=child_env(),
         )
     except (OSError, subprocess.SubprocessError):
         return None
