@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 import sqlite3
 from pathlib import Path
 from typing import Any
 
 from ns_common import ffmpeg
+from ns_common.errors import NsError
 from ns_dashboard import media
 from ns_dashboard.common import OUTPUT_KINDS, OUTPUT_STATUSES, now_iso, output_item
 from ns_dashboard.errors import AdapterUnavailable, ApiError
@@ -191,12 +193,14 @@ class OutputsService:
 
     # --- actions ---
     def approve(self, output_id: str) -> dict[str, Any]:
-        """pending/rejected -> approved."""
+        """pending/rejected -> approved; a rejected video's files go back to the Outbox first."""
         row = self._row(output_id)
         if row["status"] == "uploaded":
             raise ApiError(409, "already_uploaded", "This video is already marked as uploaded.")
-        self.s.db.execute("UPDATE outputs SET status = 'approved' WHERE output_id = ?", (output_id,))
-        self.s.log.info("output_approved", output_id=output_id)
+        moved = self._move_back_to_outbox(output_id, row)  # raises NsError, the row stays rejected
+        if moved is None:
+            self.s.db.execute("UPDATE outputs SET status = 'approved' WHERE output_id = ?", (output_id,))
+        self.s.log.info("output_approved", output_id=output_id, moved_to=str(moved or ""))
         return output_item(self._row(output_id))
 
     def reject(self, output_id: str, reason: str | None) -> dict[str, Any]:
@@ -234,6 +238,62 @@ class OutputsService:
         except (OSError, StudioError) as e:
             self.s.log.warn("reject_move_failed", str(e), output_id=output_id)
             return None
+
+    def _move_back_to_outbox(self, output_id: str, row: sqlite3.Row) -> Path | None:
+        """The mirror of `_move_to_rejected`: put a rejected video's files back where they came from.
+
+        The video, its sheet and thumbnails go from `<home>\\rejected\\<rel>` to `<home>\\outbox\\<rel>` (the
+        same relative path the reject took them from), and the row is set to `approved` with the new path
+        in one step. None when the row's file is not under `rejected` (nothing to move, so approving a
+        pending or already approved video changes the status only). Running it again after a move that was
+        cut short finishes the move. A video that is gone from `rejected` (and not already back in the
+        Outbox), or an Outbox file that would be overwritten, is an `NsError` NS-E326 and nothing changes.
+        """
+        paths = self.s.paths
+        src = Path(row["path"])
+        if not is_within(paths.rejected, src) or src.resolve() == paths.rejected.resolve():
+            return None
+        dest = paths.outbox / src.resolve().relative_to(paths.rejected.resolve())
+        if not src.is_file() and not dest.is_file():
+            raise NsError(
+                "NS-E326",
+                f"the files of this video are no longer in the rejected folder ({src}), "
+                "so they cannot be moved back to the Outbox",
+            )
+        siblings = [p for p in src.parent.glob(f"{src.stem}.*") if p.is_file()]
+        if row["kind"] == "long":
+            siblings += [p for p in src.parent.glob("thumb_*.jpg") if p.is_file()]
+        for p in siblings:  # check everything first, so a conflict leaves all files where they are
+            target = dest.parent / p.name
+            if target.exists() and target.stat().st_size != p.stat().st_size:
+                raise NsError(
+                    "NS-E326",
+                    f"{target} is already in the Outbox and is a different file, "
+                    f"so {p.name} was not moved back",
+                )
+        try:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            for p in siblings:
+                target = dest.parent / p.name
+                if target.exists():  # the same file is already back (an earlier move was cut short)
+                    p.unlink()
+                else:
+                    shutil.move(str(p), str(target))
+            self.s.db.execute(
+                "UPDATE outputs SET status = 'approved', path = ? WHERE output_id = ?",
+                (str(dest), output_id),
+            )
+        except OSError as e:
+            raise NsError("NS-E326", f"the files could not be moved back to the Outbox: {e}") from e
+        parent = src.parent  # drop the folders the reject made, now they are empty
+        base = paths.rejected.resolve()
+        while parent.resolve() != base and base in parent.resolve().parents:
+            try:
+                parent.rmdir()
+            except OSError:
+                break
+            parent = parent.parent
+        return dest
 
     def mark_uploaded(self, output_id: str, url: str | None) -> dict[str, Any]:
         """Record the YouTube URL (so analytics can be matched later) and set status `uploaded`."""
