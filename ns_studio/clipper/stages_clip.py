@@ -510,14 +510,7 @@ def _crop_at(lay: ClipLayout, t: float) -> Any:
 
 def sentence_indices(words: list[Word]) -> list[int]:
     """Sentence number of every word (sentences as `select.sentence_spans` cuts them)."""
-    spans = select.sentence_spans(words)
-    out: list[int] = []
-    idx = 0
-    for w in words:
-        while idx < len(spans) - 1 and w.start > spans[idx][1] + 1e-6:
-            idx += 1
-        out.append(idx)
-    return out
+    return select.sentence_indices(words)
 
 
 def _backdrop_luma(
