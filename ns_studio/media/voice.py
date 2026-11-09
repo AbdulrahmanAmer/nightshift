@@ -16,6 +16,7 @@ from ns_common.tts_client import TtsFile, TtsItem
 from ns_common.tts_timeout import TTS_TIMEOUT_CAP_S, batch_timeout_s, load_rtf
 from ns_studio.context import JobContext
 from ns_studio.media.audio import VOICE_LUFS, VOICE_TP, loudnorm, measure_lufs
+from ns_studio.media.fake_voice import note_voice_engine
 from ns_studio.stages import Tenant
 
 __all__ = ["VoiceStage", "loudnorm", "measure_lufs", "narration_items", "synthesize"]
@@ -108,6 +109,7 @@ def synthesize(ctx: JobContext, items: list[TtsItem]) -> tuple[dict[str, dict], 
         limit = batch_timeout_s((it.text for it in todo), rtf)  # 120 s + 3 s or more per line, at most 2 h
         ctx.log.info("voice_batch", job_id=ctx.job_id, items=len(todo), timeout_s=round(limit), rtf=rtf)
         files = _speak(ctx, todo, raw_dir, seed, limit)
+        note_voice_engine(ctx)  # an engine test: how the fake voice spoke (job log, NS-E403 detail)
         by_id = {it.id: it for it in todo}
         for f in files:
             out = ctx.file(f"audio/{f.id}.wav")
