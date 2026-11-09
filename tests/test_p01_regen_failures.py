@@ -136,6 +136,38 @@ def test_an_ideas_stage_e304_is_not_an_idea_redraw(tmp_home: Path, monkeypatch: 
     assert counts["ideas"] == 2 and not ctx.file("ideas_failed.json").exists()
 
 
+def test_an_unrecorded_premise_cannot_make_the_redraw_loop_endless(
+    tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """No readable idea.json (or a repeated premise) leaves ideas_failed.json at the same length: the
+    redraws themselves are counted in policy_attempts.json, so three redraws still end in NS-E304."""
+    monkeypatch.setitem(orch.FORMAT_STAGES, "text_redraw", list(TEXT_PLAN))
+    ctx = make_ctx(tmp_home, fmt="text_redraw")
+    ctx.services.llm = FakeLlm(FIXTURES_LLM, overrides={"critic": BAD_CRITIC})
+    seen: list[int] = []
+
+    def never_recorded(c) -> int:
+        seen.append(1)
+        assert len(seen) < 10, "the redraw loop did not stop"
+        return 0
+
+    monkeypatch.setattr(regen, "record_failed_idea", never_recorded)
+    with pytest.raises(NsError) as ei:
+        regen.run_job_guarded(ctx)
+    assert ei.value.code == "NS-E304" and len(seen) == 3
+    att = json.loads(ctx.file(regen.ATTEMPTS_FILE).read_text(encoding="utf-8"))
+    assert len([h for h in att["history"] if "idea" in h]) == 3
+
+
+def test_a_corrupt_attempts_file_does_not_hide_the_failure(tmp_home: Path, monkeypatch: pytest.MonkeyPatch):
+    counts: dict[str, int] = {}
+    _plan(monkeypatch, "j3", J3_PLAN, counts, fail_stage="gate", code="NS-E403", times=1)
+    ctx = make_ctx(tmp_home, fmt="j3")
+    ctx.file(regen.ATTEMPTS_FILE).write_text('{"regenerations": 0, "hist', encoding="utf-8")
+    assert regen.run_job_guarded(ctx) == J3_PLAN  # one regeneration, not a JSONDecodeError
+    assert counts["gate"] == 2
+
+
 # ---------------------------------------------------------------- J3 step 2 (F-H77)
 class Counter:
     def __init__(self, name: str, counts: dict[str, int], fail=None) -> None:
@@ -334,6 +366,20 @@ def test_a_short_dropped_by_qc_is_copied_to_rejected_with_a_reason(
     assert (folder / "short.mp4").read_bytes() == b"video s2"  # a copy: the job keeps its own file
     assert ctx.file("shorts/s2/short.mp4").exists()
     assert json.loads((folder / "qc.json").read_text(encoding="utf-8"))["passed"] is False
+
+
+def test_a_failing_evidence_copy_does_not_stop_the_qc_stage(tmp_home: Path, monkeypatch: pytest.MonkeyPatch):
+    """The copy to rejected is evidence only: an OSError there must not fail the publish path."""
+    ctx = make_ctx(tmp_home)
+    monkeypatch.setattr(qcmod, "run_qc", _two_shorts(ctx, {"s2"}))
+
+    def disk_full(*a, **k):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(qcmod.shutil, "copy2", disk_full)
+    QcStage().run(ctx)  # no OSError
+    assert list(ctx.read_json("render/report.json")) == ["s1"]
+    assert ctx.read_json("qc/dropped.json") == {"s2": "caption_drift_ms"}
 
 
 def test_a_passing_short_is_never_copied_to_rejected(tmp_home: Path, monkeypatch: pytest.MonkeyPatch):

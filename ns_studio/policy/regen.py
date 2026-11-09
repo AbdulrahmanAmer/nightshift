@@ -150,7 +150,18 @@ def invalidate_only(ctx: JobContext, names: list[str], only: tuple[str, ...]) ->
 
 def _attempts(ctx: JobContext) -> dict:
     f = ctx.file(ATTEMPTS_FILE)
-    return json.loads(f.read_text(encoding="utf-8")) if f.exists() else {"regenerations": 0, "history": []}
+    fresh: dict = {"regenerations": 0, "history": []}
+    if not f.exists():
+        return fresh
+    try:
+        data = json.loads(f.read_text(encoding="utf-8"))
+        return (
+            {**fresh, **data}
+            if isinstance(data, dict) and isinstance(data.get("history", []), list)
+            else fresh
+        )
+    except (OSError, ValueError):  # a half-written file must not turn the failure being handled into a crash
+        return fresh
 
 
 def reject_artifacts(ctx: JobContext, err: NsError, attempt: int) -> Path:
@@ -183,12 +194,17 @@ def _redraw_idea(ctx: JobContext, err: NsError, att: dict, names: list[str]) -> 
     """A story missed the critic's bar: reject it and restart at `ideas` for the next idea (spec 16.2).
 
     Raises NS-E304 once `MAX_IDEAS` ideas have failed. The count is the length of `ideas_failed.json`,
-    which is why a resumed job does not get three new ideas.
+    which is why a resumed job does not get three new ideas. A second cap counts the redraws themselves (the
+    history entries of `policy_attempts.json` that carry an `idea` key): a premise that could not be recorded
+    (no readable `idea.json`, or a premise that failed before) would otherwise leave the first count at
+    zero and the loop without an end.
     """
     tried = record_failed_idea(ctx)
     dest = reject_artifacts(ctx, err, len(att["history"]) + 1)
     att["history"].append({"code": err.code, "detail": err.detail, "rejected_to": str(dest), "idea": tried})
     ctx.write_json(ATTEMPTS_FILE, att)
+    redraws = sum(1 for h in att["history"] if isinstance(h, dict) and "idea" in h)
+    tried = max(tried, redraws)
     if tried >= MAX_IDEAS:
         ctx.log.error("policy_fail_final", code=err.code, job_id=ctx.job_id, detail=err.detail)
         raise NsError("NS-E304", f"{tried} ideas failed the critic; last: {err.detail}") from err

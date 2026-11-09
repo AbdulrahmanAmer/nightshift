@@ -209,7 +209,16 @@ def drop_failed_items(
         ctx.log.warn("short_dropped", f"{item} failed QC ({reason}) and is left out; the rest is kept",
                      code="NS-W406", job_id=ctx.job_id, item=item, reason=reason)
     for item, reason in dropped.items():
-        copy_dropped_to_rejected(ctx, item, rendered[item], reason)
+        try:  # evidence only: a full disk or a locked file must not stop the publish of the other Shorts
+            copy_dropped_to_rejected(ctx, item, rendered[item], reason)
+        except OSError as e:
+            ctx.log.warn(
+                "short_dropped_copy_failed",
+                f"{item} could not be copied to rejected ({e})",
+                code="NS-W406",
+                job_id=ctx.job_id,
+                item=item,
+            )
     if dropped:
         kept = {item: info for item, info in rendered.items() if item not in dropped}
         ctx.write_json("render/report.json", kept)
