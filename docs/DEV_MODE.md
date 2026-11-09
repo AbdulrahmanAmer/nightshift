@@ -222,9 +222,10 @@ before.
   (`tests/test_fake_voice_note.py::test_the_voice_stage_treats_the_windows_speaking_fake_like_real_engine_output`).
 - **A PC with no SAPI voice** (a stripped Windows, a Windows without PowerShell, a non-Windows test runner) gets
   today's tone bursts and says so: `/health` has `voice_mode: tones`, `voice_fallback: true` and
-  `voice_warning` with the reason; the voice service log and the job log carry the warning `fake_voice_tones_only`
-  (uncoded: no existing NS-W code means this); the job keeps `audio\voice_engine.json` (`mode`, `voice`,
-  `warning`); and the NS-E403 of the captions stage ends with "the voice is the fake one of this engine test and
+  `voice_warning` with the reason and `voice_warning_code: NS-W303`; the voice service log and the job log carry
+  the warning `fake_voice_tones_only` with `code: NS-W303` ("The fake voice made tone bursts, which speech
+  recognition cannot align."); the job keeps `audio\voice_engine.json` (`mode`, `voice`, `warning`, and `code`
+  when the mode is `tones`); and the NS-E403 of the captions stage ends with "the voice is the fake one of this engine test and
   it made tone bursts ... this is the test voice, not a product fault". With a Windows voice the same sentence
   names the voice. A real engine never gets that sentence.
   The start-up check (voice list, one test sentence) is capped at 80 s in total so a hung PowerShell ends in

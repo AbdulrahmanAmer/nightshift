@@ -49,3 +49,13 @@ def test_studio_and_transcription_codes_exist():
 def test_clip_rights_and_unexpected_codes_exist():
     assert describe("NS-E410").kind == "error" and "right" in describe("NS-E410").message
     assert describe("NS-E327").kind == "error"
+
+
+def test_fake_voice_tone_burst_warning_has_its_own_code_next_to_the_other_voice_warnings():
+    d = describe("NS-W303")  # CR-H7-1: "the fake voice made tone bursts"
+    assert d.kind == "warning"
+    assert "tone bursts" in d.message and "speech recognition" in d.message
+    assert "Speech" in d.hint and "NS-E403" in d.hint and "test voice" in d.hint
+    # the 3xx family is the text-and-voice stages; NS-W301 and NS-W302 are the engine's own warnings and are
+    # not reused for this one
+    assert describe("NS-W301").message != d.message and describe("NS-W302").message != d.message
