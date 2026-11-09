@@ -577,18 +577,103 @@ def _audio_ctx(tmp_home: Path, monkeypatch: pytest.MonkeyPatch, samples: np.ndar
     return ctx
 
 
-def test_audio_check_fails_a_music_bed_quieter_than_the_floor_test(
+QC_FLATNESS = "qc/audio_flatness.json"
+
+
+def _bed() -> np.ndarray:
+    return _speechlike(_tone(-62) + _tone(-66, hz=660.0))
+
+
+def test_a_tonal_quiet_passage_is_a_warning_not_a_failure(tmp_home: Path, monkeypatch: pytest.MonkeyPatch):
+    """F-H116 is "measured, warning only": the value is not calibrated on qwen-tts, so it never stops a night."""
+    ctx = _audio_ctx(tmp_home, monkeypatch, _bed())
+    res = fc.AudioOnlyVoice().run(ctx)
+    assert res.passed, res.detail
+    assert "WARNING" in res.detail and "quiet_flatness" in res.detail
+    assert "NS-E614" not in res.detail
+
+
+def test_the_measured_flatness_is_in_the_qc_report_and_the_log_when_it_passes(
     tmp_home: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    bed = _speechlike(_tone(-62) + _tone(-66, hz=660.0))
-    res = fc.AudioOnlyVoice().run(_audio_ctx(tmp_home, monkeypatch, bed))
-    assert not res.passed and "tonal" in res.detail
+    ctx = _audio_ctx(tmp_home, monkeypatch, _speechlike(_noise(-62)))
+    res = fc.AudioOnlyVoice().run(ctx)
+    assert res.passed and "WARNING" not in res.detail
+    measured = fc.quiet_flatness(_speechlike(_noise(-62)))
+    assert measured is not None and measured > fc.TONAL_FLATNESS_MAX
+    entry = ctx.read_json(QC_FLATNESS)["items"]["long"]
+    assert entry["quiet_flatness"] == pytest.approx(measured, abs=1e-4) and entry["warned"] is False
+    assert ctx.read_json(QC_FLATNESS)["warn_below"] == fc.TONAL_FLATNESS_MAX
+    assert f"{measured:.3f}" in res.detail  # the gate's own report (policy_final.json) carries it too
+    logged = [r for r in _log_records(ctx) if r["event"] == "audio_flatness"]
+    assert logged and logged[-1]["level"] == "INFO"
+    assert logged[-1]["data"]["quiet_flatness"] == pytest.approx(measured, abs=1e-4)
+
+
+def test_the_measured_flatness_is_in_the_qc_report_and_the_log_when_over_the_threshold(
+    tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+):
+    ctx = _audio_ctx(tmp_home, monkeypatch, _bed())
+    res = fc.AudioOnlyVoice().run(ctx)
+    measured = fc.quiet_flatness(_bed())
+    assert measured is not None and measured < fc.TONAL_FLATNESS_MAX
+    entry = ctx.read_json(QC_FLATNESS)["items"]["long"]
+    assert entry["quiet_flatness"] == pytest.approx(measured, abs=1e-4) and entry["warned"] is True
+    assert f"{measured:.3f}" in res.detail
+    warned = [r for r in _log_records(ctx) if r["event"] == "audio_flatness_warning"]
+    assert warned and warned[-1]["level"] == "WARN" and "code" not in warned[-1]["data"]  # no NS-W code fits
+    assert warned[-1]["data"]["quiet_flatness"] == pytest.approx(measured, abs=1e-4)
+
+
+def test_flatness_with_nothing_to_measure_is_recorded_as_null(
+    tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+):
+    ctx = _audio_ctx(tmp_home, monkeypatch, _speechlike(np.zeros(SR // 2)))
+    res = fc.AudioOnlyVoice().run(ctx)
+    assert res.passed and "WARNING" not in res.detail
+    assert ctx.read_json(QC_FLATNESS)["items"]["long"]["quiet_flatness"] is None
+
+
+def test_the_threshold_is_one_constant(tmp_home: Path, monkeypatch: pytest.MonkeyPatch):
+    ctx = _audio_ctx(tmp_home, monkeypatch, _speechlike(_noise(-62)))
+    assert fc.AudioOnlyVoice().run(ctx).passed and "WARNING" not in fc.AudioOnlyVoice().run(ctx).detail
+    monkeypatch.setattr(fc, "TONAL_FLATNESS_MAX", 0.99)  # the only place the limit lives
+    res = fc.AudioOnlyVoice().run(ctx)
+    assert res.passed and "WARNING" in res.detail
+    assert ctx.read_json(QC_FLATNESS)["warn_below"] == 0.99
+
+
+def test_the_qc_file_does_not_disturb_the_channel_pass_rate(tmp_home: Path, monkeypatch: pytest.MonkeyPatch):
+    """channel_stats reads every qc/*.json that has a boolean `passed`: this file must not have one."""
+    ctx = _audio_ctx(tmp_home, monkeypatch, _bed())
+    fc.AudioOnlyVoice().run(ctx)
+    from ns_dashboard.channel_stats import _verdicts
+
+    assert _verdicts(ctx.file("qc")) == []
+
+
+def test_a_floor_failure_still_fails_and_still_measures_the_flatness(
+    tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The loud half (no silence anywhere, BED_FLOOR_DBFS) is unchanged: that one is a failure."""
+    loud_bed = _speechlike(_tone(-30) + _tone(-34, hz=660.0))
+    ctx = _audio_ctx(tmp_home, monkeypatch, loud_bed)
+    res = fc.AudioOnlyVoice().run(ctx)
+    assert not res.passed and "no silence anywhere" in res.detail
+    assert "quiet_flatness" in ctx.read_json(QC_FLATNESS)["items"]["long"]
 
 
 def test_audio_check_passes_room_tone_and_digital_silence(tmp_home: Path, monkeypatch: pytest.MonkeyPatch):
     for gap in (_noise(-62), np.zeros(SR // 2)):
         res = fc.AudioOnlyVoice().run(_audio_ctx(tmp_home, monkeypatch, _speechlike(gap)))
         assert res.passed, res.detail
+
+
+def _log_records(ctx: Any) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for f in sorted(ctx.paths.logs.glob("*.jsonl")):
+        out += [json.loads(line) for line in f.read_text(encoding="utf-8").splitlines() if line.strip()]
+    return out
 
 
 def test_a_failed_hook_check_restarts_the_run_at_the_voice_not_the_clips(
