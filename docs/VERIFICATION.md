@@ -112,7 +112,7 @@ L release and CI (ci.yml: lint, types, test, bundle, ui-build, powershell-parse,
 - [ ] Series workshop end to end (concepts → map → scripts → produce) (U)
 - [x] Review: approve, reject with note, mark uploaded, re-review: reject moves the files to rejected/, uploaded refused while rejected, approve then uploaded; card and `uploads` table agree (V-dev 0.1.12, 2026-11-09; the approved file stays under rejected/: defect D-6)
 - [x] Learn: a YouTube-Studio-style CSV naming two Shorts imported through `/api/learn/import`: 2 matched, weights moved in five pools, channel retention 61.5 % and a spark point (V-dev 2026-11-05); the Results page rendering those numbers is checked in the browser pass (U)
-- [ ] Calibrate (U)
+- [x] Calibrate: generate, human scores, spearman, bias and the critic_bar it writes (V-dev 0.1.12, 2026-11-09; D-10 refusal counting)
 
 ### F. Dashboard API
 - [x] 20 route groups answer; jobs, outputs, settings, keys, footage, assistant (V-dev)
@@ -122,8 +122,8 @@ L release and CI (ci.yml: lint, types, test, bundle, ui-build, powershell-parse,
 
 ### G. Dashboard UI
 - [x] Every page renders with data; Create wizard; Queue approve/reject; Library tabs; Settings keys; Hide (V-dev)
-- [ ] The WebView2 window's bridge: minimize, maximize, drag, close confirm (U)
-- [ ] Results page with imported analytics (U)
+- [x] The WebView2 window's bridge: minimize, maximize/restore, drag, close confirm while a job runs (V-dev 0.1.12, 2026-11-09, UI Automation; D-12 restore size)
+- [x] Results page with imported analytics: the import's numbers on the page (V-dev 0.1.12, 2026-11-09; D-11 chart and labels)
 
 ### H. Assistant
 - [x] Chat → tool call → confirm card → Yes → result on card (V-dev, fake routing)
