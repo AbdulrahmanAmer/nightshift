@@ -263,6 +263,14 @@ If one job of the night fails for a reason Nightshift did not expect, it is reco
 `logs\nightly-<date>.json` and the other jobs still run. A clip that fails its checks is left out of the Outbox
 (the reason is in `outbox\skipped.json` of its job folder) and the other clips are delivered.
 
+A night never runs without an owner mark: a small lock file in `data\owners` tells a restart that the run is alive. A
+file that is missing is simply made again, and a file that cannot be opened for a moment (an antivirus scan) is tried
+again for about a second. If it still cannot be made (the folder is read-only, full or blocked) or another Nightshift
+run really is running with the same name, the night does not start: **Last night** in the Queue shows a red
+"Something stopped" line, "The night: NS-E327." followed by the reason, and the Dashboard leaves a morning note with
+the same reason in plain words (unless notifications are off in Settings; the **Last night** line stays either way).
+The next nightly run tries again.
+
 ### Your own examples and prompts
 
 Put your own example stories in `exemplars\` (a `.md` or `.txt` file per story, or a folder named `horror`,
