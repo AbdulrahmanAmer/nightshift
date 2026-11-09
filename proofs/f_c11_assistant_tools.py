@@ -17,6 +17,7 @@ one honestly). Ported from runs/qa/fc11.py, fc11b.py and fc11c.py (evidence log 
 
 from __future__ import annotations
 
+import contextlib
 import json
 import math
 import shutil
@@ -29,12 +30,14 @@ from pathlib import Path
 from typing import Any
 
 from proofs._lib import (
+    DesktopGuard,
+    api_no_deadline,
     db_rows,
     ffmpeg_path,
     free_diag_minute,
+    pauses_proof_channels,
     proof_channel,
     short,
-    take_off_desktop,
     wait_job,
 )
 
@@ -548,18 +551,25 @@ def _verify_diag_import_part(ctx: Any, tag: str) -> None:
     job = _job(ctx, res["job_id"])
     ctx.check((job.get("result") or {}).get("passed") is True, "start_verify: the self-check passed")
 
-    # The zip is named by the minute: never let the product overwrite (and then move) an owner's zip.
-    free_diag_minute(ctx)
-    res = _write(ctx, "make_diagnostics", {})
-    src = Path(str(res["path"]))
-    # The zip the product just made goes into scratch BEFORE any check on it; the move fails the proof rather
-    # than leave it on the owner's Desktop (C:).
-    kept = take_off_desktop(ctx, src, "f-c11")
-    ctx.check(
-        kept.is_file() and kept.read_bytes()[:2] == b"PK",
-        "make_diagnostics: the zip the card names is a zip (read from scratch)",
-        bytes=kept.stat().st_size if kept.exists() else None,
-    )
+    # The product writes the zip to the Desktop (C:) when Yes is pressed. The guard opens just before that Yes
+    # (after the card is shown) and moves whatever the product wrote into scratch on the way out, pass or
+    # fail. The zip is named by the minute, so free_diag_minute runs inside the guard, immediately before the
+    # Yes: the product never overwrites (and the guard never moves) an owner's zip of that minute.
+    guards: list[DesktopGuard] = []
+    with contextlib.ExitStack() as stack:
+
+        def arm() -> None:
+            guards.append(stack.enter_context(DesktopGuard(ctx, "nightshift-diagnostics-*.zip", "f-c11")))
+            free_diag_minute(ctx)
+
+        res = _write(ctx, "make_diagnostics", {}, before=arm)
+        # The zip the product just made goes into scratch BEFORE any check on it.
+        kept = guards[0].take(Path(str(res["path"])))
+        ctx.check(
+            kept.is_file() and kept.read_bytes()[:2] == b"PK",
+            "make_diagnostics: the zip the card names is a zip (read from scratch)",
+            bytes=kept.stat().st_size if kept.exists() else None,
+        )
 
     csv = ctx.scratch / f"proof-fc11-analytics-{tag}.csv"
     csv.write_text(CSV, encoding="utf-8")
@@ -640,6 +650,7 @@ def _resume_part(ctx: Any, skipped: list[str]) -> None:
     skipped.append("resume_job (the install holds no failed story job of a proof channel to continue)")
 
 
+@pauses_proof_channels
 def run(ctx: Any) -> None:
     tag = uuid.uuid4().hex[:6]
     proof_channel(ctx, CHANNEL)
@@ -658,8 +669,13 @@ def run(ctx: Any) -> None:
         _resume_part(ctx, skipped)
     finally:
         if slug:
-            code, answer = ctx.api("POST", f"/api/channels/{slug}/pause", {"note": "proof FC11: left paused"})
-            ctx.step("the channel the Assistant made is left paused", channel=slug, status=code)
+            try:
+                code, _ = api_no_deadline(
+                    ctx, "POST", f"/api/channels/{slug}/pause", {"note": "proof FC11: left paused"}
+                )
+                ctx.step("the channel the Assistant made is left paused", channel=slug, status=code)
+            except Exception as exc:  # noqa: BLE001  (a cleanup error must not hide the proof's own result)
+                ctx.step("pausing the channel the Assistant made failed", channel=slug, error=str(exc))
     skipped += [
         "open_path and open_folder (each opens a Windows Explorer window the proof cannot close)",
         "set_schedule (Yes registers the shared 'Nightshift Daily' scheduled task, which a proof cannot "

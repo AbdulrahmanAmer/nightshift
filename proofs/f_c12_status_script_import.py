@@ -11,23 +11,29 @@ On the proof's own channel, through the install's own `studio` CLI:
    word in `story.json`, and the video reaches the outbox as an `outputs` row with its file.
 4. `studio status` after the job shows the new output.
 
-Ported from the F-C12 entries of runs/qa (evidence log 2026-11-09, 0.1.14). The `script_import` stage of a
-series part is shown by the F-B6 proof. `build-qwentts.yml` is shown by its effect on the install's own
-release: GitHub's release for the install's version (no token) lists the voice engine zip (more than 500 MB)
-with its .sha256 beside it. When GitHub cannot be reached, the proof ends as skipped for that part, after all
-other checks.
+5. The `script_import` stage of a series part: a minimal series (one part) goes through `studio series start,
+   concepts, choose, map, write, approve, design`, then `POST /api/library/series/{slug}/produce` queues the
+   part. When its `series_part` job is done, the job folder shows `script_import` as the first stage in
+   `stage_state.json` (no ideas, plan or draft stage) and `script_source.json` names the part's own approved
+   script.
+
+Ported from the F-C12 entries of runs/qa (evidence log 2026-11-09, 0.1.14). `build-qwentts.yml` is shown by
+its effect on the install's own release: GitHub's release for the install's version (no token) lists the
+voice engine zip (more than 500 MB) with its .sha256 beside it. When GitHub cannot be reached, the proof
+ends as skipped for that part, after all other checks.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import re
 import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any
 
-from proofs._lib import db_rows, proof_channel, short
+from proofs._lib import FINAL, api_no_deadline, db_rows, pauses_proof_channels, proof_channel, short, wait_job
 
 PROOF = {
     "id": "f-c12-status-script-import",
@@ -35,7 +41,7 @@ PROOF = {
     "install": "dev",
     "window": False,
     "needs": ["engine"],
-    "timeout_s": 900,
+    "timeout_s": 3600,
     "fakes": [],
 }
 
@@ -44,6 +50,9 @@ TITLE = "Proof Last Ferry"
 SCRIPT = Path(__file__).parent / "_fixtures" / "f_c12_script" / "script-ferry.txt"
 RUN_SCRIPT = ["studio", "run", "--script", str(SCRIPT), "--channel", CHANNEL, "--title", TITLE, "--format"]
 WRITING_STAGES = ("ideas", "plan", "draft", "critic_revise", "split", "hooks")
+PREMISE = "A ferry pilot keeps finding the same unsigned note in her coat on the last crossing of the night"
+PREFER = {"format": "long_16x9", "visual_treatment": "dark_slowzoom", "caption_style": "clean_white"}
+SERIES_NOT_WRITTEN = ("ideas", "long_plan", "chapters_draft", "chapters_critic", "continuity")
 
 
 def _words(text: str) -> list[str]:
@@ -64,6 +73,137 @@ def _status_line(out: str, label: str) -> str | None:
 def _job_dirs(ctx: Any) -> list[str]:
     root = ctx.home / "data" / "jobs"
     return sorted(p.name for p in root.iterdir() if p.is_dir() and p.name.startswith(f"{CHANNEL}-"))
+
+
+def _same(a: str | Path, b: str | Path) -> bool:
+    return os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b))
+
+
+def _series(ctx: Any, *args: str, timeout: float = 300) -> str:
+    """`studio series <args>` through the install's own CLI: exit 0 is checked; returns the printed text."""
+    done = ctx.cli(["studio", "series", *args], timeout=timeout)
+    ctx.check(
+        done.returncode == 0,
+        f"studio series {args[0]} exits 0",
+        exit_code=done.returncode,
+        stdout=short(done.stdout),
+        stderr=short(done.stderr),
+    )
+    return (done.stdout or "").strip()
+
+
+def _cancel_if_running(ctx: Any, job_id: str) -> None:
+    """After a timeout the job must not go on making a video on the proof channel: no-deadline calls."""
+    try:
+        _, now = api_no_deadline(ctx, "GET", f"/api/jobs/{job_id}")
+        if isinstance(now, dict) and now.get("status") in FINAL:
+            return
+        code, said = api_no_deadline(ctx, "POST", f"/api/jobs/{job_id}/cancel")
+        ctx.step(
+            "cleanup: the series_part job was still going and is cancelled", status=code, answer=short(said)
+        )
+    except Exception as exc:  # noqa: BLE001  (a cleanup error must not hide the proof's own result)
+        ctx.step("cleanup: the series_part job could not be checked", job_id=job_id, error=str(exc))
+
+
+def _series_part(ctx: Any) -> None:
+    """The box's series `script_import` stage: a one-part series on the proof's channel, produced through the
+    Library's route; the job folder shows the stage ran first on the part's own approved script."""
+    slug = _series(ctx, "start", CHANNEL, "--premise", PREMISE).splitlines()[-1].strip()
+    story_dir = ctx.home / "stories" / slug
+    ctx.check(
+        re.fullmatch(r"[a-z0-9][a-z0-9-]*", slug) is not None and (story_dir / "status.yaml").is_file(),
+        "series start prints the story slug and makes the story folder (the proof's own series)",
+        slug=slug,
+        channel=CHANNEL,
+        folder=str(story_dir),
+    )
+    _series(ctx, "concepts", slug, "--n", "3")
+    _series(ctx, "choose", slug, "A")
+    ctx.check((story_dir / "concept.md").is_file(), "choose A promoted a draft to concept.md")
+    _series(ctx, "map", slug, "--parts", "1", "--minutes", "12")
+    ctx.check((story_dir / "series.md").is_file(), "map wrote series.md (1 part, 12 minutes)")
+    _series(ctx, "write", slug, "1")
+    script_md = story_dir / "parts" / "part-01" / "full" / "script.md"
+    ctx.check(script_md.is_file(), "write 1 wrote the part script", file=str(script_md))
+    _series(ctx, "approve", slug, "all")
+    state = json.loads(_series(ctx, "status", slug))
+    ctx.check(
+        [p["status"] for p in state["parts"]] == ["approved"], "part 1 is approved", parts=state["parts"]
+    )
+    choices = json.loads(_series(ctx, "design", slug))
+    pick = {
+        key: PREFER[key] if PREFER[key] in choices[key] else choices[key][0]
+        for key in ("format", "visual_treatment", "caption_style")
+    }
+    ctx.step("design choices offered", choices={k: choices[k] for k in pick}, picked=pick)
+    _series(
+        ctx,
+        "design",
+        slug,
+        "--format",
+        pick["format"],
+        "--visual-treatment",
+        pick["visual_treatment"],
+        "--caption-style",
+        pick["caption_style"],
+        "--cadence-days",
+        "7",
+    )
+    design_file = story_dir / "design.yaml"
+    ctx.check(design_file.is_file(), "design.yaml is saved", file=str(design_file))
+
+    status, answer = ctx.api("POST", f"/api/library/series/{slug}/produce", {})
+    queued = answer.get("queued") if isinstance(answer, dict) else None
+    ctx.check(
+        status == 201 and isinstance(queued, list) and len(queued) == 1 and queued[0].get("part") == 1,
+        "POST /api/library/series/{slug}/produce answers 201 and queues part 1",
+        status=status,
+        answer=short(answer),
+    )
+    assert isinstance(queued, list)
+    job_id = str(queued[0]["job_id"])
+    rows = db_rows(ctx, "select kind, channel from dashboard_jobs where job_id=?", (job_id,))
+    ctx.check(
+        rows == [("series_part", CHANNEL)],
+        "the queued job is a series_part job on the proof channel",
+        rows=rows,
+    )
+    try:
+        job = wait_job(ctx, job_id, timeout=2400, every=10)
+    finally:
+        _cancel_if_running(ctx, job_id)
+    ctx.check(
+        job.get("status") == "done",
+        "the series_part job is done",
+        status=job.get("status"),
+        message=job.get("message"),
+        result=short(job.get("result")),
+    )
+
+    job_dir = ctx.home / "data" / "jobs" / job_id
+    stages = ctx.read_json(job_dir / "stage_state.json")
+    ctx.check(
+        next(iter(stages)) == "script_import"
+        and stages["script_import"].get("status") == "done"
+        and not set(stages) & set(SERIES_NOT_WRITTEN),
+        "script_import ran first and is done; no ideas, plan or draft stage wrote the story",
+        stages={k: v.get("status") for k, v in stages.items()},
+    )
+    source = ctx.read_json(job_dir / "script_source.json")
+    ctx.check(
+        source.get("kind") == "script_import" and _same(str(source.get("script", "")), script_md),
+        "script_source.json names the part's own approved script (script_import)",
+        kind=source.get("kind"),
+        script=source.get("script"),
+        part_script=str(script_md),
+    )
+    state = json.loads(_series(ctx, "status", slug))
+    ctx.check(
+        [(p["n"], p["status"], p["job_id"]) for p in state["parts"]] == [(1, "produced", job_id)],
+        "studio series status shows part 1 produced by that job",
+        parts=state["parts"],
+    )
 
 
 def _voice_engine_asset(ctx: Any) -> None:
@@ -107,6 +247,7 @@ def _voice_engine_asset(ctx: Any) -> None:
     )
 
 
+@pauses_proof_channels
 def run(ctx: Any) -> None:
     proof_channel(ctx, CHANNEL)
     text = SCRIPT.read_text(encoding="utf-8-sig")
@@ -236,5 +377,8 @@ def run(ctx: Any) -> None:
         table=_counts_line(ctx),
     )
 
-    # 5. build-qwentts.yml: its effect is the voice engine asset on the release of this install's version
+    # 5. the script_import stage of a series part
+    _series_part(ctx)
+
+    # 6. build-qwentts.yml: its effect is the voice engine asset on the release of this install's version
     _voice_engine_asset(ctx)

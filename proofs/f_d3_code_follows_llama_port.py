@@ -2,7 +2,8 @@
 
 Settings' engine-settings edit (PUT /api/settings?unlock=true {flags: {llama.port: N}}) must change the port
 the engine reads, `config/runtime.json` `llama.port`, and GET /api/settings must read the new port back. The
-proof sets another port, reads both, and puts the original port back the same way (also when a check fails).
+proof sets another port, reads both, and puts the original port back the same way (also when a check fails
+or the proof's time has run out: the restore is a call with no deadline).
 
 What the box is really about happens after that and cannot run from a proof file: the engine restarts, then
 the "Nightshift Code" launcher (launchers/nightshift-code.ps1) starts llama on the new port, rewrites
@@ -16,7 +17,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from proofs._lib import short
+from proofs._lib import api_no_deadline, short
 
 PROOF = {
     "id": "f-d3-code-follows-llama-port",
@@ -48,6 +49,24 @@ def _base_url(ctx: Any) -> str | None:
 
 def _put_port(ctx: Any, port: int) -> tuple[int, Any]:
     return ctx.api("PUT", "/api/settings?unlock=true", {"flags": {"llama.port": port}})
+
+
+def _restore_port(ctx: Any, original: int) -> None:
+    """Put the original flags back through a call with no deadline (ctx.api refuses once the proof's time is
+    used up, which would leave runtime.json on the proof's port)."""
+    try:
+        status, answer = api_no_deadline(
+            ctx, "PUT", "/api/settings?unlock=true", {"flags": {"llama.port": original}}
+        )
+        ctx.step(
+            "cleanup: original llama.port put back (no deadline)",
+            status=status,
+            original=original,
+            file_port=_runtime_port(ctx),
+            answer=short(answer),
+        )
+    except Exception as exc:  # noqa: BLE001  (a cleanup error must not hide the proof's own result)
+        ctx.step("cleanup: putting the original llama.port back failed", original=original, error=str(exc))
 
 
 def run(ctx: Any) -> None:
@@ -90,11 +109,10 @@ def run(ctx: Any) -> None:
             unchanged=_base_url(ctx) == url_before,
         )
     finally:
-        status, answer = _put_port(ctx, int(original) if isinstance(original, int) else 8080)
-        ctx.step("original llama.port put back", status=status, file_port=_runtime_port(ctx))
+        _restore_port(ctx, original)
     ctx.check(
         _runtime_port(ctx) == original,
-        "the original llama.port is back in runtime.json",
+        "the original llama.port is back in runtime.json (restored by a call with no deadline)",
         file_port=_runtime_port(ctx),
         original=original,
     )
