@@ -21,6 +21,8 @@ from ns_common.paths import contracts_dir
 from ns_common.textstats import CJK_RANGES, WORD_PATTERN, normalize_tokens, split_sentences
 from ns_studio.context import JobContext
 from ns_studio.media.fake_voice import e403_detail
+from ns_studio.media.formats import style_for_format
+from ns_studio.media.job_formats import job_format
 from ns_studio.media.presets import FONTS_DIR, CaptionStyle, CaptionVariant, caption_style
 from ns_studio.media.transcribe import Word
 from ns_studio.stages import Tenant
@@ -312,6 +314,32 @@ def choose_margin_v(
     return h_px - (e - pad)
 
 
+def canvas_geometry(
+    geo: CaptionVariant, variant: Variant, canvas: tuple[int, int] | None
+) -> tuple[CaptionVariant, int, int]:
+    """(geometry, width px, height px) of a style on `canvas`.
+
+    The styles' pixel sizes are written for 1080x1920 (vertical) and 1920x1080 (landscape). On another canvas
+    (a format with its own frame size) font size, side margin, outline and shadow scale with the width, and
+    the
+    height is the canvas's. None or the reference canvas returns `geo` unchanged.
+    """
+    ref_w, ref_h = (1080, 1920) if variant == "vertical" else (1920, 1080)
+    if canvas is None or (canvas[0], canvas[1]) == (ref_w, ref_h):
+        return geo, ref_w, ref_h
+    w_px, h_px = canvas
+    k = w_px / ref_w
+    scaled = geo.model_copy(
+        update={
+            "font_size": max(1, round(geo.font_size * k)),
+            "margin_lr": round(geo.margin_lr * k),
+            "outline": round(geo.outline * k, 1),
+            "shadow": round(geo.shadow * k, 1),
+        }
+    )
+    return scaled, w_px, h_px
+
+
 def caption_placement(
     geo: CaptionVariant,
     variant: Variant,
@@ -319,13 +347,15 @@ def caption_placement(
     avoid_regions: Sequence[Box] | None = None,
     safe_zones: tuple[int, int] | None = None,
     anchor_y_pct: float | None = None,
+    canvas: tuple[int, int] | None = None,
 ) -> tuple[int, int]:
     """(MarginV, block height) in canvas px of the caption block for a style geometry.
 
     The preferred place is the style's own `margin_v_pct`, or the text centred on `anchor_y_pct` of the
-    canvas height; with avoid regions or safe zones it moves to the largest free band (spec 17.2).
+    canvas height; with avoid regions or safe zones it moves to the largest free band (spec 17.2). `geo` is
+    the style's geometry as written; `canvas` (default: the variant's own size) scales it (`canvas_geometry`).
     """
-    w_px, h_px = (1080, 1920) if variant == "vertical" else (1920, 1080)
+    geo, w_px, h_px = canvas_geometry(geo, variant, canvas)
     if anchor_y_pct is None:
         margin_v = round(h_px * geo.margin_v_pct / 100.0)
     else:
@@ -346,13 +376,15 @@ def caption_band(
     avoid_regions: Sequence[Box] | None = None,
     safe_zones: tuple[int, int] | None = None,
     anchor_y_pct: float | None = None,
+    canvas: tuple[int, int] | None = None,
 ) -> Box:
     """The canvas rectangle the caption block occupies (what the contrast check samples behind)."""
     st = caption_style(style) if isinstance(style, str) else style
-    geo = st.vertical if variant == "vertical" else st.landscape
-    w_px, h_px = (1080, 1920) if variant == "vertical" else (1920, 1080)
+    raw_geo = st.vertical if variant == "vertical" else st.landscape
+    geo, w_px, h_px = canvas_geometry(raw_geo, variant, canvas)
     margin_v, block_h = caption_placement(
-        geo, variant, avoid_regions=avoid_regions, safe_zones=safe_zones, anchor_y_pct=anchor_y_pct
+        raw_geo, variant, avoid_regions=avoid_regions, safe_zones=safe_zones, anchor_y_pct=anchor_y_pct,
+        canvas=canvas,
     )
     top = min(max(0, h_px - margin_v - block_h), h_px - block_h)
     return Box(geo.margin_lr, top, w_px - 2 * geo.margin_lr, block_h)
@@ -542,6 +574,8 @@ def build_ass(
     backdrop_luma: Sequence[float] | None = None,
     mask_profanity: bool = False,
     anchor_y_pct: float | None = None,
+    canvas: tuple[int, int] | None = None,
+    max_words: int | None = None,
 ) -> str:
     """Build an ASS document: 2-4 words on screen, the active word in the style's highlight colour.
 
@@ -557,19 +591,26 @@ def build_ass(
     - `mask_profanity`: masks listed words (contracts/policy/profanity.txt) in the captions.
     - `anchor_y_pct`: the style's preferred place becomes "text centred on this % of the canvas height"
       (layouts with a caption anchor, spec 19.3); the free-band search above still applies.
+    - `canvas`: the frame size when it is not the variant's own (a format with another size); the script's
+      PlayRes is the canvas and the style's sizes scale with its width (`canvas_geometry`).
+    - `max_words`: at most this many words on screen at once (a format's `captions.words_on_screen`).
     """
     st = caption_style(style) if isinstance(style, str) else style
     if backdrop_luma:
         st = ensure_contrast(st, backdrop_luma)
-    geo = st.vertical if variant == "vertical" else st.landscape
-    w_px, h_px = (1080, 1920) if variant == "vertical" else (1920, 1080)
+    if max_words:
+        lo, hi = st.words_on_screen
+        st = st.model_copy(update={"words_on_screen": (min(lo, max_words), min(hi, max_words))})
+    raw_geo = st.vertical if variant == "vertical" else st.landscape
+    geo, w_px, h_px = canvas_geometry(raw_geo, variant, canvas)
     font = resolve_font(st, fonts_dir)
     border_style = 3 if st.box else 1
     outline_col = st.outline_color
     primary = st.active if st.animation == "karaoke" else st.primary
     secondary = st.primary
     margin_v, _block_h = caption_placement(
-        geo, variant, avoid_regions=avoid_regions, safe_zones=safe_zones, anchor_y_pct=anchor_y_pct
+        raw_geo, variant, avoid_regions=avoid_regions, safe_zones=safe_zones, anchor_y_pct=anchor_y_pct,
+        canvas=canvas,
     )
     header = [
         "[Script Info]",
@@ -732,9 +773,9 @@ class CaptionsStage:
             AssOptions,
             emphasis_from_beats,
             mask_profanity_setting,
-            safe_zones_for,
         )
 
+        fmt = job_format(ctx, "short")
         parts = ctx.read_json("parts.json")
         manifest = ctx.read_json("audio/manifest.json")
         plan_file = ctx.file("visual_plan.json")
@@ -788,10 +829,15 @@ class CaptionsStage:
                 drift = max(
                     drift, self._final_audio_drift(ctx, n, p, hook_entry, body, timeline, lang, close_entry)
                 )
-            style_name = ctx.combo.caption_style
-            opts = AssOptions(
-                variant="vertical", safe_zones=safe_zones_for("vertical"),
-                emphasis=emphasis_from_beats(beats, part=n), mask_profanity=mask,
+            style_name, swapped = style_for_format(fmt, ctx.combo.caption_style)
+            if swapped:
+                ctx.log.info(
+                    "caption_style_not_in_format",
+                    f"{ctx.combo.caption_style} is not allowed by {fmt.id}; {style_name} is used",
+                    format_id=fmt.id,
+                )
+            opts = AssOptions.for_format(
+                fmt, emphasis=emphasis_from_beats(beats, part=n), mask_profanity=mask,
             )
             ass = opts.build(timeline, style_name)
             ctx.file(f"captions/s{n}.ass").write_text(ass, encoding="utf-8")

@@ -69,6 +69,7 @@ NO_TOOL: dict[Route, str] = {
     ("GET", "/api/update/state"): "progress of the detached updater, polled by the Settings page",
     ("POST", "/api/models/get"): "never: model downloads are the owner's decision (Settings page)",
     ("GET", "/api/models/state"): "progress of a model download, polled by the Settings page",
+    ("GET", "/api/channels/{slug}/formats"): "the channel read tool's answer carries the same formats_in_use",
     ("GET", "/api/notes"): "notes for the bell and Last night (the owner reads them)",
     ("POST", "/api/notes/clear"): "the owner has read the notes",
     ("DELETE", "/api/library/footage/{source}/{clip_id}"): "never: deleting files is the owner's decision (Library page)",

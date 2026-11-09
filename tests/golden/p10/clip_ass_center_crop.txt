@@ -1,0 +1,26 @@
+[Script Info]
+ScriptType: v4.00+
+PlayResX: 1080
+PlayResY: 1920
+WrapStyle: 0
+ScaledBorderAndShadow: yes
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,Arial,74,&H00FFFFFF,&H00FFFFFF,&H00000000,&H64000000,-1,0,0,0,100,100,0,0,1,5.0,1.0,2,80,80,493,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:00.00,0:00:00.45,Default,,0,0,0,,{\c&HFFE38F&}Hello{\c&HFFFFFF&\fscx100\fscy100} there friend.
+Dialogue: 0,0:00:00.45,0:00:00.90,Default,,0,0,0,,Hello {\c&HFFE38F&}there{\c&HFFFFFF&\fscx100\fscy100} friend.
+Dialogue: 0,0:00:00.90,0:00:01.35,Default,,0,0,0,,Hello there {\c&HFFE38F&}friend.{\c&HFFFFFF&\fscx100\fscy100}
+Dialogue: 0,0:00:01.35,0:00:01.80,Default,,0,0,0,,{\c&HFFE38F&}This{\c&HFFFFFF&\fscx100\fscy100} is {\c&HFFE38F&\fscx115\fscy115}truly{\c&HFFFFFF&\fscx100\fscy100} great.
+Dialogue: 0,0:00:01.80,0:00:02.25,Default,,0,0,0,,This {\c&HFFE38F&}is{\c&HFFFFFF&\fscx100\fscy100} {\c&HFFE38F&\fscx115\fscy115}truly{\c&HFFFFFF&\fscx100\fscy100} great.
+Dialogue: 0,0:00:02.25,0:00:02.70,Default,,0,0,0,,This is {\c&HFFE38F&\fscx115\fscy115}truly{\c&HFFFFFF&\fscx100\fscy100} great.
+Dialogue: 0,0:00:02.70,0:00:03.15,Default,,0,0,0,,This is {\c&HFFE38F&\fscx115\fscy115}truly{\c&HFFFFFF&\fscx100\fscy100} {\c&HFFE38F&}great.{\c&HFFFFFF&\fscx100\fscy100}
+Dialogue: 0,0:00:03.15,0:00:03.60,Default,,0,0,0,,{\c&HFFE38F&}Now{\c&HFFFFFF&\fscx100\fscy100} we begin
+Dialogue: 0,0:00:03.60,0:00:04.05,Default,,0,0,0,,Now {\c&HFFE38F&}we{\c&HFFFFFF&\fscx100\fscy100} begin
+Dialogue: 0,0:00:04.05,0:00:04.50,Default,,0,0,0,,Now we {\c&HFFE38F&}begin{\c&HFFFFFF&\fscx100\fscy100}
+Dialogue: 0,0:00:04.50,0:00:04.95,Default,,0,0,0,,{\c&HFFE38F&}the{\c&HFFFFFF&\fscx100\fscy100} lesson today.
+Dialogue: 0,0:00:04.95,0:00:05.40,Default,,0,0,0,,the {\c&HFFE38F&}lesson{\c&HFFFFFF&\fscx100\fscy100} today.
+Dialogue: 0,0:00:05.40,0:00:06.15,Default,,0,0,0,,the lesson {\c&HFFE38F&}today.{\c&HFFFFFF&\fscx100\fscy100}

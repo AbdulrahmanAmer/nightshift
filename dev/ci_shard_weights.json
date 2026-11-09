@@ -144,6 +144,7 @@
   "tests/test_manifest_pins.py": 0.1,
   "tests/test_master.py": 25.1,
   "tests/test_master_pipeline.py": 111.5,
+  "tests/test_master_rules.py": 2.3,
   "tests/test_media_layout.py": 4.9,
   "tests/test_media_pipeline.py": 33.1,
   "tests/test_models.py": 0.1,
@@ -165,6 +166,10 @@
   "tests/test_orchestrator.py": 0.8,
   "tests/test_outbox.py": 1.2,
   "tests/test_owner_overrides.py": 0.1,
+  "tests/test_p01_p02_voice_regen.py": 0.4,
+  "tests/test_p01_redraw_chapters.py": 0.3,
+  "tests/test_p01_regen_drafts.py": 19.6,
+  "tests/test_p01_regen_failures.py": 8.9,
   "tests/test_pacing.py": 1.2,
   "tests/test_paths.py": 0.1,
   "tests/test_pending_voice_job.py": 4.3,
@@ -205,6 +210,7 @@
   "tests/test_series_store.py": 0.1,
   "tests/test_series_tools.py": 1.6,
   "tests/test_series_workshop.py": 11.2,
+  "tests/test_shorts_closing.py": 14.6,
   "tests/test_single_instance.py": 0.1,
   "tests/test_smart_app_control.py": 0.1,
   "tests/test_smoke_prep.py": 0.2,
@@ -255,6 +261,7 @@
   "tests/test_verify_downloads.py": 0.1,
   "tests/test_voice_setup.py": 8.8,
   "tests/test_voice_stage.py": 4.8,
+  "tests/test_voice_wpm.py": 7.1,
   "tests/test_webview2_bundle.py": 8.4,
   "tests/test_webview2_pin.py": 0.4,
   "tests/test_winenv_unicode.py": 0.8,
@@ -262,6 +269,7 @@
   "tests/test_wizard.py": 0.7,
   "tests/test_wizard_e2e.py": 4.7,
   "tests/test_wizard_steps.py": 2.5,
-  "tests/test_wizard_steps_late.py": 2.6
+  "tests/test_wizard_steps_late.py": 2.6,
+  "tests/test_word_floor_profiles.py": 2.4
  }
 }

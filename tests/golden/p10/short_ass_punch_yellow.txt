@@ -1,0 +1,24 @@
+[Script Info]
+ScriptType: v4.00+
+PlayResX: 1080
+PlayResY: 1920
+WrapStyle: 0
+ScaledBorderAndShadow: yes
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,Impact,92,&H00FFFFFF,&H00FFFFFF,&H00000000,&H64000000,0,0,0,0,100,100,0,0,1,6.0,2.0,2,70,70,576,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:00.00,0:00:01.80,Default,,0,0,0,,{\c&H00D4FF&\fscx118\fscy118\t(0,90,\fscx100\fscy100)}THE{\c&HFFFFFF&\fscx100\fscy100} {\c&H00D4FF&\fscx115\fscy115}DOORBELL{\c&HFFFFFF&\fscx100\fscy100} CAMERA
+Dialogue: 0,0:00:01.80,0:00:02.30,Default,,0,0,0,,THE {\c&H00D4FF&\fscx115\fscy115\fscx118\fscy118\t(0,90,\fscx100\fscy100)}DOORBELL{\c&HFFFFFF&\fscx100\fscy100} CAMERA
+Dialogue: 0,0:00:02.30,0:00:02.84,Default,,0,0,0,,THE {\c&H00D4FF&\fscx115\fscy115}DOORBELL{\c&HFFFFFF&\fscx100\fscy100} {\c&H00D4FF&\fscx118\fscy118\t(0,90,\fscx100\fscy100)}CAMERA{\c&HFFFFFF&\fscx100\fscy100}
+Dialogue: 0,0:00:02.80,0:00:03.20,Default,,0,0,0,,{\c&H00D4FF&\fscx118\fscy118\t(0,90,\fscx100\fscy100)}PINGS{\c&HFFFFFF&\fscx100\fscy100} EVERY NIGHT.
+Dialogue: 0,0:00:03.20,0:00:03.50,Default,,0,0,0,,PINGS {\c&H00D4FF&\fscx118\fscy118\t(0,90,\fscx100\fscy100)}EVERY{\c&HFFFFFF&\fscx100\fscy100} NIGHT.
+Dialogue: 0,0:00:03.50,0:00:04.45,Default,,0,0,0,,PINGS EVERY {\c&H00D4FF&\fscx118\fscy118\t(0,90,\fscx100\fscy100)}NIGHT.{\c&HFFFFFF&\fscx100\fscy100}
+Dialogue: 0,0:00:04.80,0:00:04.90,Default,,0,0,0,,{\c&H00D4FF&\fscx118\fscy118\t(0,90,\fscx100\fscy100)}I{\c&HFFFFFF&\fscx100\fscy100} STOPPED CHECKING
+Dialogue: 0,0:00:04.90,0:00:05.30,Default,,0,0,0,,I {\c&H00D4FF&\fscx118\fscy118\t(0,90,\fscx100\fscy100)}STOPPED{\c&HFFFFFF&\fscx100\fscy100} CHECKING
+Dialogue: 0,0:00:05.30,0:00:05.84,Default,,0,0,0,,I STOPPED {\c&H00D4FF&\fscx118\fscy118\t(0,90,\fscx100\fscy100)}CHECKING{\c&HFFFFFF&\fscx100\fscy100}
+Dialogue: 0,0:00:05.80,0:00:05.90,Default,,0,0,0,,{\c&H00D4FF&\fscx118\fscy118\t(0,90,\fscx100\fscy100)}THE{\c&HFFFFFF&\fscx100\fscy100} CLIPS.
+Dialogue: 0,0:00:05.90,0:00:06.85,Default,,0,0,0,,THE {\c&H00D4FF&\fscx118\fscy118\t(0,90,\fscx100\fscy100)}CLIPS.{\c&HFFFFFF&\fscx100\fscy100}

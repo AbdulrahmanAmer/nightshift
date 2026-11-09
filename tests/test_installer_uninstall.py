@@ -140,6 +140,17 @@ def test_the_console_uninstall_removes_the_program_folder_and_the_update_swap_fo
     assert _present(home) == set(ALL_DIRS) - {"venvs", "bin", "run", "state", "tmp"}
 
 
+def test_the_console_uninstall_removes_the_settings_copy_an_update_keeps_beside_app_prev(tmp_path: Path):
+    """F-10a: app.prev-config.zip holds the owner's settings files; it goes with the program backup."""
+    home = _make_home(tmp_path)
+    folders = _with_program_folders(home)
+    copy = home / "app.prev-config.zip"
+    copy.write_bytes(b"PK")
+    proc = _run(home, "-SkipSystem")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert not copy.exists() and not any(f.exists() for f in folders)
+
+
 def test_the_dry_run_lists_the_program_folders(tmp_path: Path):
     home = _make_home(tmp_path)
     folders = _with_program_folders(home)

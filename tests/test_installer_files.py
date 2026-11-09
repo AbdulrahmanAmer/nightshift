@@ -115,6 +115,10 @@ STDLIB_ONLY_NS_COMMON = {
     "ns_common.pathrules",
     "ns_common.uv", "ns_common.vcruntime", "ns_common.secret_file", "ns_common.secrets_names",
     "ns_common.singleton",
+    # F-10a: the settings copy `ns update` keeps, also made by the setup server when INSTALL.cmd updates an
+    # install (appcopy.install_app). It lives beside the updater, not in ns_common (protected), and is
+    # standard library plus ns_common.atomic like the rest of this list.
+    "ns_supervisor.config_snapshot",
 }
 # installer.stage2.devmode (dev mode numbers, stubs, mode switch) is stdlib-only too and shared by the setup
 # server and the wizard; the test below keeps it that way.

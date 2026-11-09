@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import json
 import math
 import re
+import shutil
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
 from ns_common import ffmpeg as ff
-from ns_common.errors import NsError
+from ns_common.errors import NsError, describe
 from ns_common.models import QcCheck, QcResult
 from ns_studio.context import JobContext
 from ns_studio.media.audio import Loudness, measure_loudness, speech_onset_s
@@ -131,11 +134,17 @@ def hook_check(video: Path, first_caption_s: float | None) -> QcCheck:
     )
 
 
-def aspect_check(video: Path, kind: Kind) -> QcCheck:
-    """1080x1920 for Shorts, 1920x1080 for masters."""
-    want = (1080, 1920) if kind == "short" else (1920, 1080)
+def aspect_check(video: Path, kind: Kind, want: tuple[int, int] | None = None) -> QcCheck:
+    """The frame size the video was rendered at (`want`), else 1080x1920 (Short) or 1920x1080 (master)."""
+    want = want or ((1080, 1920) if kind == "short" else (1920, 1080))
     got = ff.video_size(video)
     return QcCheck(passed=got == want, value=f"{got[0]}x{got[1]}", limit=f"{want[0]}x{want[1]}")
+
+
+def _canvas_of(info: dict[str, Any]) -> tuple[int, int] | None:
+    """The `canvas` a render report entry records; None for a report written before formats were read."""
+    c = info.get("canvas")
+    return (int(c[0]), int(c[1])) if isinstance(c, list | tuple) and len(c) == 2 else None
 
 
 def run_qc(
@@ -147,6 +156,7 @@ def run_qc(
     drift_ms: float | None = None,
     first_caption_s: float | None = None,
     long_max_s: float | None = None,
+    canvas: tuple[int, int] | None = None,
     profile: StoryProfile = NORMAL,
     mark: Mark | None = None,
 ) -> QcResult:
@@ -163,7 +173,7 @@ def run_qc(
         checks["black_frames"] = black_check(video)
         if kind == "short":
             checks["hook_first_1500ms"] = hook_check(video, first_caption_s)
-        checks["aspect"] = aspect_check(video, kind)
+        checks["aspect"] = aspect_check(video, kind, canvas)
     except NsError as e:
         checks["file_opens"] = QcCheck(passed=False, value=str(e.detail)[:120], limit="video opens")
     failed = [k for k, c in checks.items() if not c.passed]
@@ -210,6 +220,7 @@ class QcStage:
                 bucket_s=bucket,
                 drift_ms=cap.get("drift_ms"),
                 first_caption_s=cap.get("first_caption_s"),
+                canvas=_canvas_of(info),
                 profile=profile,
                 mark=mark,
             )
@@ -219,9 +230,9 @@ class QcStage:
                 failed.append(f"{item}: {result.reason}")
         ctx.write_json("qc/report.json", summary)
         ctx.log.info("qc_done", job_id=ctx.job_id, results=summary)
-        drop_failed_items(ctx, rendered, summary, must_keep=())
         if failed and len(failed) == len(rendered):
-            raise NsError("NS-E404", "; ".join(failed))
+            raise NsError("NS-E404", "; ".join(failed))  # nothing left to publish: the job fails whole
+        drop_failed_items(ctx, rendered, summary, must_keep=())
 
 
 def drop_failed_items(
@@ -233,17 +244,53 @@ def drop_failed_items(
     were rendered (the first dev-mode master: "s5: duration", 61 s for a 50 s bucket). The clipper already
     drops a failing clip (review row 9); story Shorts now do the same, with `NS-W406` per dropped item and
     the list in `qc/dropped.json`. Items in `must_keep` (the master) are never dropped: they raise instead.
+    Each dropped Short is also copied to `rejected\\<slug>\\<date>\\<job>\\dropped\\<item>\\` with a
+    `reason.json` (spec 7.7), so the owner can look at what was left out.
     """
     dropped = {item: str(summary[item].get("reason") or "qc") for item in rendered
                if item in summary and not summary[item]["passed"] and item not in must_keep}
     for item, reason in dropped.items():
         ctx.log.warn("short_dropped", f"{item} failed QC ({reason}) and is left out; the rest is kept",
                      code="NS-W406", job_id=ctx.job_id, item=item, reason=reason)
+    for item, reason in dropped.items():
+        try:  # evidence only: a full disk or a locked file must not stop the publish of the other Shorts
+            copy_dropped_to_rejected(ctx, item, rendered[item], reason)
+        except OSError as e:
+            ctx.log.warn(
+                "short_dropped_copy_failed",
+                f"{item} could not be copied to rejected ({e})",
+                code="NS-W406",
+                job_id=ctx.job_id,
+                item=item,
+            )
     if dropped:
         kept = {item: info for item, info in rendered.items() if item not in dropped}
         ctx.write_json("render/report.json", kept)
         ctx.write_json("qc/dropped.json", dropped)
+    else:  # a pass that drops nothing (after a regeneration) must not leave the list of the earlier pass
+        ctx.file("qc/dropped.json").unlink(missing_ok=True)
     return sorted(dropped)
+
+
+def copy_dropped_to_rejected(ctx: JobContext, item: str, info: dict[str, Any], reason: str) -> Path:
+    """Copy a Short that failed QC, its `qc/<item>.json` and a `reason.json` (NS-W406) into `rejected\\`."""
+    now = datetime.now(UTC)
+    dest = ctx.paths.rejected_dir(ctx.channel.slug, f"{now:%Y-%m-%d}", ctx.job_id) / "dropped" / item
+    dest.mkdir(parents=True, exist_ok=True)
+    video = Path(str(info.get("path", "")))
+    if video.is_file():
+        shutil.copy2(video, dest / video.name)
+    if ctx.file(f"qc/{item}.json").exists():
+        shutil.copy2(ctx.file(f"qc/{item}.json"), dest / "qc.json")
+    doc = {
+        "code": "NS-W406",
+        "message": describe("NS-W406").message,
+        "item": item,
+        "detail": reason,
+        "ts": now.isoformat(),
+    }
+    (dest / "reason.json").write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+    return dest
 
 
 # ---------------------------------------------------------------------------------------------------------
@@ -306,7 +353,7 @@ def run_qc_master(ctx: JobContext) -> None:
         bucket = buckets.get(item)
         results.append(run_qc(item, Path(info["path"]), "short", bucket_s=float(bucket) if bucket else None,
                               drift_ms=info.get("drift_ms"), first_caption_s=info.get("first_caption_s"),
-                              profile=profile, mark=mark))
+                              canvas=_canvas_of(info), profile=profile, mark=mark))
     summary: dict[str, Any] = {}
     failed: list[str] = []
     for r in results:
