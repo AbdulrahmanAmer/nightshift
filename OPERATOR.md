@@ -293,10 +293,13 @@ refuses to start a story video for it (the Clipper does not check whether the ch
 is already queued or scheduled (Create > **Pick a time**) does not start while the channel is paused: it stays
 waiting under **Working now**, also when its time comes, and starts by itself, in its turn, after you
 resume the channel. The job's status text says why ("Paused: <channel> is paused since <time>; resume it to release
-this job"); the Create page still prints "Waiting for the engine" for it. **Retry from where it stopped** (on a
+this job"); the Create and Queue pages do not print that text yet: Create says "Waiting for the engine" for it, or
+"Scheduled for <time>" while the time it was set for is still ahead, which is not the real reason. **Retry from where it stopped** (on a
 stopped card in **Create** and **Queue**) and the Assistant's resume are refused for a paused channel with
 "'<channel>' is paused. Resume it first.", the same answer as a new video. A pause does not stop a story video
-that is already being made: press **Cancel** on it under **Working now** if it must stop. Videos that are already
+that is already being made: press **Cancel** on it under **Working now** if it must stop. A Create request for
+several videos finishes the one it is making and does not start the next. A `studio run` typed by hand in a
+terminal (`--channel` or `--resume`) does not look at the pause, so do not type it for a paused channel. Videos that are already
 made stay in the Queue.
 
 Type the commands in a terminal opened after setup finished, with the full path of the studio program in the

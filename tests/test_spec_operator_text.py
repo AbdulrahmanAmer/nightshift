@@ -656,6 +656,17 @@ def test_a_pause_during_the_night_stops_the_nights_remaining_jobs_and_the_texts_
     assert "`_paused_now`" in d and "no further job that night" in d
 
 
+def test_the_texts_name_the_count_loop_the_hand_typed_run_and_the_wrong_scheduled_text():
+    """P47 review round: what a pause still does not reach is written down, not left to be found."""
+    guide = _flat(doc_section(GUIDE, HEADING))
+    assert "several videos" in guide and "does not start the next" in guide
+    assert "`studio run`" in guide and "does not look at the pause" in guide
+    assert "Scheduled for <time>" in guide
+    assert "several videos" in _flat(doc_section(README, HEADING))
+    d = _flat(decision("Incident procedure"))
+    assert "`paused_now`" in d and "`run_cmd`" in d and "Scheduled for <time>" in d
+
+
 def test_the_content_safety_checklist_is_not_narrower_than_18_3():
     rules = spec_section("### 18.3")
     first = next(ln for ln in rules.splitlines() if ln.startswith("- Real, named people"))
