@@ -6,7 +6,8 @@ an answer in the shape the real clients read (`ns_common.llm_client`, `ns_common
 
     GET  /health               {"status": "ok", ...}
     POST /v1/chat/completions  the schema's own example (response_format json_schema) or a short text;
-                               with `tools`, one tool call picked from the owner's words (`plan_tool_call`)
+                               with `tools`, one tool call picked from the owner's words (`plan_tool_call`),
+                               or exactly the call named by the cue `tool: <name> {json args}`
     POST /completion           llama.cpp's native route with timings (the benchmark in `ns verify`)
     POST /v1/embeddings        a deterministic unit vector per text
 
@@ -163,6 +164,44 @@ def _channel(text: str) -> str | None:
     return re.sub(r"\s+", "-", t.group(1).lower()) if t else None
 
 
+# The explicit cue: the whole question is `tool: <name>` or `tool: <name> {json args}`. It makes any offered
+# tool reachable through the chat on a dev install (docs/DEV_MODE.md), whatever the phrasings below know.
+_TOOL_CUE = re.compile(r"\s*tool\s*:\s*([A-Za-z_][A-Za-z0-9_.-]*)\s*(.*)", re.I | re.S)
+
+
+def _tool_cue(text: str, names: set[str]) -> tuple[dict[str, Any] | None, str | None]:
+    """(call, None) for a valid cue, (None, plain reply) for a cue that cannot be followed, (None, None)
+    when the text is not a cue at all."""
+    m = _TOOL_CUE.fullmatch(text)
+    if not m:
+        return None, None
+    name, rest = m.group(1), m.group(2).strip()
+    if name not in names:
+        return None, (f"The dev fake llama has no tool '{name}': it is not among the offered tools "
+                      f"({', '.join(sorted(names))}).")
+    args: Any = {}
+    if rest:
+        try:
+            args = json.loads(rest)
+        except ValueError as exc:
+            return None, _bad_args(name, str(exc))
+    if not isinstance(args, dict):
+        return None, _bad_args(name, "it is not a JSON object")
+    return {"name": name, "args": args}, None
+
+
+def _bad_args(name: str, why: str) -> str:
+    return (f"The dev fake llama could not read the arguments of '{name}': after the tool name it needs "
+            f"one JSON object, for example tool: {name} {{\"q\": \"fog\"}} ({why}).")
+
+
+def _cue_for(messages: list[dict[str, Any]], tools: Any) -> tuple[dict[str, Any] | None, str | None]:
+    names = _tool_names(tools)
+    if not names or not messages or messages[-1].get("role") != "user":
+        return None, None
+    return _tool_cue(_last_user(messages), names)
+
+
 def plan_tool_call(messages: list[dict[str, Any]], tools: Any) -> dict[str, Any] | None:
     """One tool call for the owner's last message, picked by its words, or None for a plain text answer.
 
@@ -170,11 +209,18 @@ def plan_tool_call(messages: list[dict[str, Any]], tools: Any) -> dict[str, Any]
     whole path (confirm card, tool run, result shown) can be tried on a dev install: "fetch two clips of a
     dark hallway", "what is the status", "pause Dev Night Tales", "where is the footage cache", "make a
     Short for dev-night-tales". Only tools in `tools` are called; everything else gets the text reply.
+
+    The explicit cue `tool: <name> {json args}` (args optional) returns exactly that call when `<name>` is
+    offered. An unknown name or arguments that are not one JSON object return None here and
+    `chat_message` answers in plain words (`_cue_for`).
     """
     names = _tool_names(tools)
     if not names or not messages or messages[-1].get("role") != "user":
         return None
     text = _last_user(messages)
+    cued, problem = _tool_cue(text, names)
+    if cued is not None or problem is not None:  # a cue is never mixed with the phrasings below
+        return cued
     low = text.lower()
 
     def pick(name: str, **args: Any) -> dict[str, Any] | None:
@@ -253,6 +299,9 @@ def chat_message(body: dict[str, Any]) -> dict[str, Any]:
     if body.get("tools"):
         if messages and messages[-1].get("role") == "tool":
             return {"role": "assistant", "content": _after_tool(messages)}
+        _call, problem = _cue_for(messages, body.get("tools"))
+        if problem:
+            return {"role": "assistant", "content": problem}
         planned = plan_tool_call(messages, body.get("tools"))
         if planned:
             call = {"id": f"call_dev_{planned['name']}", "type": "function",

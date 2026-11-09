@@ -157,7 +157,12 @@ real install:
 9. **The Assistant** runs on keyword routing in the fake llama (`ns_supervisor.devfake.plan_tool_call`): the
    confirm card, the tool run and the result are real, the wording and the choice of tool on a real model are
    not. Library > Footage and the Assistant's `fetch_footage` use the synthetic clip source unless a key is
-   stored in Settings; with a key they download from Pixabay or Pexels for real.
+   stored in Settings; with a key they download from Pixabay or Pexels for real. Any offered tool can also be
+   chosen with the explicit cue `tool: <name> {json args}` as the whole message (args optional, default `{}`),
+   for example `tool: get_output {"output_id": "dev-night-tales-20261109-ab12/s1"}`; the fake then calls exactly that
+   tool. An unknown or not-offered name, or arguments that are not one JSON object, get a plain reply that
+   says so. The Assistant offers at most 18 tools per turn, picked from the words of the question, so a tool
+   outside that set is answered with the "not among the offered tools" reply and its list.
 10. **Diagnostics.** `ns doctor` shows `nvidia-smi` as "not needed (dev mode)" and the bundle holds no GPU readout;
     the Settings page hides `dev_mode`.
 11. **Numbers.** Nothing here measures tokens per second, real-time factor, model load time, memory or video
