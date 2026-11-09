@@ -3,6 +3,7 @@ the whisper code, the embed server's view of the card, one slot."""
 
 from __future__ import annotations
 
+import hashlib
 import io
 from pathlib import Path
 from typing import Any
@@ -164,16 +165,21 @@ def update_dash(tmp_home: Path, state: str = "started") -> tuple[Dashboard, File
 ZIP = "Nightshift-Update-0.1.8.zip"
 
 
+def sha_of(data: bytes) -> bytes:
+    """The checksum file's text for `data`: the dashboard checks the zip against it before saving the zip."""
+    return hashlib.sha256(data).hexdigest().encode() + f"  {ZIP}\n".encode()
+
+
 def test_update_from_a_file_saves_both_files_side_by_side_and_calls_ns_update(tmp_home: Path):
     dash, fake = update_dash(tmp_home)
-    sidecar = io.BytesIO(b"ab" * 32 + f"  {ZIP}\n".encode())
+    sidecar = io.BytesIO(sha_of(b"PK\x03\x04zip"))
     res = dash.library.update_apply_file(ZIP, io.BytesIO(b"PK\x03\x04zip"), sidecar)
     assert res["state"] == "started"
     (zip_path,) = fake.files
     assert zip_path.name == ZIP and zip_path.parent == dash.state.paths.data / "updates"
     assert zip_path.read_bytes() == b"PK\x03\x04zip"
     side = zip_path.with_name(ZIP + ".sha256")  # where `ns update` looks for it
-    assert side.read_text(encoding="utf-8").startswith("ab" * 32)
+    assert side.read_text(encoding="utf-8").startswith(hashlib.sha256(b"PK\x03\x04zip").hexdigest())
 
 
 OTHER_FILES = ["Nightshift-Setup-0.1.8.zip", "notes.txt", "update.zip", "../Nightshift-Update-0.1.8.exe"]
@@ -200,8 +206,8 @@ def test_update_from_a_file_needs_the_checksum_file(tmp_home: Path):
 def test_update_from_a_file_passes_the_refusal_of_ns_update_on(tmp_home: Path):
     dash, _fake = update_dash(tmp_home, "error")
     with pytest.raises(ApiError) as ei:
-        dash.library.update_apply_file(ZIP, io.BytesIO(b"x"), io.BytesIO(b"c" * 64))
-    assert ei.value.status == 409 and "SHA256" in str(ei.value)
+        dash.library.update_apply_file(ZIP, io.BytesIO(b"x"), io.BytesIO(sha_of(b"x")))
+    assert ei.value.status == 409 and "SHA256" in str(ei.value) and "NS-E701" in str(ei.value)
 
 
 def test_update_from_a_file_waits_for_a_running_job(tmp_home: Path):
@@ -209,7 +215,7 @@ def test_update_from_a_file_waits_for_a_running_job(tmp_home: Path):
     rec = dash.state.store.create("verify", None, {})
     dash.state.store.mark_running(rec.job_id)
     with pytest.raises(ApiError) as ei:
-        dash.library.update_apply_file(ZIP, io.BytesIO(b"x"), io.BytesIO(b"c" * 64))
+        dash.library.update_apply_file(ZIP, io.BytesIO(b"x"), io.BytesIO(sha_of(b"x")))
     assert ei.value.code == "job_running" and fake.files == []
 
 
@@ -225,7 +231,7 @@ def test_the_route_takes_both_files(tmp_home: Path):
         "/api/update/file",
         files={
             "file": (ZIP, b"PK\x03\x04", "application/zip"),
-            "checksum": (ZIP + ".sha256", b"d" * 64, "text/plain"),
+            "checksum": (ZIP + ".sha256", sha_of(b"PK\x03\x04"), "text/plain"),
         },
     )
     assert r.status_code == 200 and r.json()["state"] == "started" and len(fake.files) == 1
