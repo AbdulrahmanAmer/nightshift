@@ -5,7 +5,7 @@ are kept between runs and maintained by the verification loop (docs/VERIFICATION
 starts as `U`; `tests/test_verification_inventory.py` fails when the code has an item this
 file does not list.
 
-Items: 260 (V-dev 152, V-ci 52, V-gpu 0, U 56).
+Items: 260 (V-dev 151, V-ci 52, V-gpu 0, U 57).
 
 | kind | id | status | evidence |
 |---|---|---|---|
@@ -38,7 +38,7 @@ Items: 260 (V-dev 152, V-ci 52, V-gpu 0, U 56).
 | api | `POST /api/jobs/run` | V-dev | test-loop-2026-11-05.md (Shorts jobs) |
 | api | `POST /api/jobs/verify` | V-dev | test-loop-2026-11-08.md 2026-11-09 08:50-08:58 (0.1.12 dev, runs/qa/croutes) |
 | api | `POST /api/jobs/clip` | V-dev | test-loop-2026-11-05.md (clip from a path and from an upload) |
-| api | `POST /api/jobs/clip/rerun` | V-dev | test-loop-2026-11-08.md 2026-11-09 09:50-09:52 (0.1.12 dev, re-cut from clip_captions in 9 s) |
+| api | `POST /api/jobs/clip/rerun` | U |  |
 | api | `GET /api/jobs` | V-dev | job polling in every job test |
 | api | `GET /api/jobs/{job_id}` | V-dev | job polling |
 | api | `POST /api/jobs/{job_id}/resume` | V-dev | test-loop-2026-11-05.md (interrupted job resumed) |
