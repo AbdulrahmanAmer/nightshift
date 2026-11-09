@@ -15,7 +15,7 @@ from ns_dashboard.channels import validate_profile
 from ns_dashboard.common import now_iso, require_slug
 from ns_dashboard.errors import ApiError
 from ns_dashboard.state import AppState
-from ns_studio.media.formats import any_use_problems, forget_loaded_formats
+from ns_studio.channels.crud import unusable_formats
 from ns_studio.media.job_formats import formats_in_use
 
 
@@ -127,14 +127,7 @@ class ChannelsService:
         series design and the Formats editor use: `ns_studio.media.formats.kind_problems`). The ids the saved
         profile already listed are kept: an old channel whose format was deleted must stay editable.
         """
-        forget_loaded_formats()
-        new: list[tuple[str, str]] = []
-        old: list[tuple[str, str]] = []
-        for fid in dict.fromkeys(listed):
-            problems = any_use_problems(fid, paths=self.s.paths)
-            if problems:
-                (old if fid in saved else new).append((fid, "; ".join(problems)))
-        return new, old
+        return unusable_formats(listed, saved, paths=self.s.paths)
 
     def _checked(
         self,

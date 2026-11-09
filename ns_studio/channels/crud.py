@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+from collections.abc import Collection
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -17,6 +18,7 @@ from ns_common.logging import NsLogger
 from ns_common.models import Channel, Pools, voice_name_problem
 from ns_common.paths import Paths
 from ns_studio.errors import StudioError
+from ns_studio.media.formats import any_use_problems, forget_loaded_formats
 
 MAX_CHANNELS = 3
 MIN_HOOKS = 3
@@ -35,6 +37,32 @@ _POOL_FIELDS = (
     "visual_treatments",
     "title_formulas",
 )
+
+
+def unusable_formats(
+    listed: Collection[str], saved: Collection[str], *, paths: Paths
+) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+    """([(id, why)] new in this save, [(id, why)] already saved) for the listed formats nothing can use.
+
+    An id is no use when its file is missing or does not load, or the studio would refuse it (the check a
+    series design and the Formats editor use: `ns_studio.media.formats.any_use_problems`). The ids the saved
+    profile already listed are kept so that an old channel whose format was deleted stays editable. Both the
+    dashboard and the command line save a channel through this one rule.
+    """
+    forget_loaded_formats()  # a format made or edited a moment ago counts
+    new: list[tuple[str, str]] = []
+    old: list[tuple[str, str]] = []
+    for fid in dict.fromkeys(listed):
+        problems = any_use_problems(fid, paths=paths)
+        if problems:
+            (old if fid in saved else new).append((fid, "; ".join(problems)))
+    return new, old
+
+
+def format_problems_on_save(ch: Channel, paths: Paths, saved: Collection[str] = ()) -> list[str]:
+    """One line per allowed format that is new in this save and that nothing can use (empty = fine)."""
+    new, _old = unusable_formats(ch.formats_allowed, saved, paths=paths)
+    return [f"formats_allowed: {fid}: {why}" for fid, why in new]
 
 
 def pool_problems(pools: Pools) -> list[str]:
@@ -216,6 +244,7 @@ def add_channel(paths: Paths, db: Db, ch: Channel, *, now: datetime | None = Non
         raise StudioError("NS-E320", f"at most {MAX_CHANNELS} channels per install")
     problems = pool_problems(ch.pools)
     problems += [p for p in [voice_name_problem(ch.voice)] if p]
+    problems += format_problems_on_save(ch, paths)
     if problems:
         raise StudioError("NS-E320", "; ".join(problems))
     clash = distinct_problems(ch, others)
@@ -257,6 +286,8 @@ def edit_channel(paths: Paths, db: Db, slug: str, updates: dict[str, Any]) -> Ch
     )
     # only a name this edit typed, or one a voice that was a preset now starts to use
     problems += [p for p in [voice_name_problem(edited.voice, current.voice)] if p]
+    # a format this edit adds must be usable; ids the saved channel already listed stay (as in the dashboard)
+    problems += format_problems_on_save(edited, paths, current.formats_allowed)
     if problems:
         raise StudioError("NS-E320", "; ".join(problems))
     save_channel(paths, edited)
