@@ -329,7 +329,9 @@ def test_readers_never_see_a_torn_file_while_the_helper_swaps_it_forty_times(tmp
     def python_reader() -> None:
         while not done.is_set():
             data = None
-            for _ in range(250):  # the retry a product reader has (ns_common.atomic)
+            # far more patient than a product reader (ns_common.atomic.retry_busy: 6 tries, about 125 ms in
+            # all): this test counts torn files, not how long a refusal can last
+            for _ in range(250):
                 try:
                     data = target.read_bytes()
                     break
@@ -698,6 +700,70 @@ finally {{ $fs.Dispose() }}
     assert (out / "empty.txt").read_bytes() == b"" and (out / "new.json").read_bytes() == b'{"a":1}'
     assert result.read_text() == "threw" and held.read_bytes() == b"OLD"
     assert leftovers(out, {"replaced.json", "empty.txt", "new.json", "held.json"}) == set()
+
+
+# `Start-Sleep` is shadowed so the test counts the pauses the swap takes between refused attempts and, on the
+# chosen pause, lets go of the file: "refused twice, then allowed" is exact, not a matter of timing.
+PS_COUNT_SLEEPS = """
+$global:slept = 0
+$global:releaseAt = {release_at}
+function Start-Sleep {{
+    param([int]$Milliseconds)
+    $global:slept++
+    if ($global:slept -eq $global:releaseAt -and $global:holder) {{
+        $global:holder.Dispose(); $global:holder = $null
+    }}
+}}
+"""
+
+
+@needs_powershell
+@pytest.mark.parametrize("script", ["stage1.ps1", "pick-folder.ps1"])
+def test_the_installer_swap_rides_out_a_target_that_is_refused_twice_then_allowed(
+    tmp_path: Path, script: str
+) -> None:
+    """A second setup run, an antivirus scan or the setup server reading the hand-over file keeps it open for
+    a moment; the swap is retried (bounded) instead of failing the whole preflight."""
+    held = tmp_path / "held.json"
+    held.write_bytes(b"OLD")
+    result = tmp_path / "result.txt"
+    body = f"""
+{cut_functions(["Write-NsFileSwap"], INSTALLER / script)}
+{PS_COUNT_SLEEPS.format(release_at=2)}
+$global:holder = [IO.File]::Open('{held}', [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None)
+try {{ Write-NsFileSwap -Path '{held}' -Text 'NEW'; $r = 'written' }}
+catch {{ $r = 'threw: ' + $_.Exception.Message }}
+finally {{ if ($global:holder) {{ $global:holder.Dispose() }} }}
+[IO.File]::WriteAllText('{result}', $r + '|' + $global:slept)
+"""
+    run_ps(tmp_path, body)
+    assert result.read_text() == "written|2"  # refused on try 1 and 2, swapped in on try 3
+    assert held.read_bytes() == b"NEW"
+    assert leftovers(tmp_path, {"held.json", "result.txt"}) == {p.name for p in tmp_path.glob("t*.ps1")}
+
+
+@needs_powershell
+@pytest.mark.parametrize("script", ["stage1.ps1", "pick-folder.ps1"])
+def test_the_installer_swap_gives_up_on_a_target_that_stays_shut_and_leaves_the_old_file(
+    tmp_path: Path, script: str
+) -> None:
+    held = tmp_path / "held.json"
+    held.write_bytes(b"OLD")
+    result = tmp_path / "result.txt"
+    body = f"""
+{cut_functions(["Write-NsFileSwap"], INSTALLER / script)}
+{PS_COUNT_SLEEPS.format(release_at=-1)}
+$global:holder = [IO.File]::Open('{held}', [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None)
+try {{ Write-NsFileSwap -Path '{held}' -Text 'NEW' -Tries 4; $r = 'written' }}
+catch {{ $r = 'threw ' + $_.Exception.GetType().Name }}
+finally {{ $global:holder.Dispose() }}
+[IO.File]::WriteAllText('{result}', $r + '|' + $global:slept)
+"""
+    run_ps(tmp_path, body)
+    assert result.read_text().endswith("|3")  # four tries, a pause between each, then the error
+    assert result.read_text().startswith("threw ") and "Binding" not in result.read_text()
+    assert held.read_bytes() == b"OLD"
+    assert leftovers(tmp_path, {"held.json", "result.txt"}) == {p.name for p in tmp_path.glob("t*.ps1")}
 
 
 # ----------------------------------------------------------------------------------------------------------

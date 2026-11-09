@@ -101,9 +101,13 @@ public static int Swap(string src, string dst) {
 
 function Read-NsTextRetry {
     # The text of a file another process may be swapping, or $null when there is no such file. The file is
-    # opened with sharing that lets the writer's swap through (read, write AND delete), and an open that is
-    # refused anyway is retried (-Tries, a growing pause) before the error is thrown: a refused open is never
-    # reported as "no file". Decodes UTF-8 with or without a BOM (Get-Content reads a BOM-less file as ANSI).
+    # opened with read, write AND delete sharing, so this open never fails because another reader or a
+    # writer has the file open, and an open that is refused anyway is retried (-Tries, a growing pause)
+    # before the error is thrown: a refused open is never reported as "no file". The sharing does NOT let a
+    # writer's MoveFileEx swap through while this stream is open (measured: Windows answers "access denied"
+    # even with Delete sharing); what gets the swap through is that this stream is closed straight after
+    # ReadToEnd and that Write-NsFileAtomic retries a refused swap (-Tries). Decodes UTF-8 with or without a
+    # BOM (Get-Content reads a BOM-less file as ANSI).
     param([Parameter(Mandatory = $true)][string]$Path, [int]$Tries = 10)
     $full = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Path)
     for ($attempt = 1; ; $attempt++) {

@@ -77,8 +77,25 @@ class SettingsService:
                 out[short] = False
         return out
 
+    def _key_problem(self, full: str) -> dict[str, str] | None:
+        """What is wrong with the nightly-run copy of key `full` (`NS-E120` lock, `NS-E119`, disk), if anything.
+
+        Only the real keyring adapter knows: the fakes have no file copy.
+        """
+        ask: Any = getattr(self.s.adapters.keyring, "file_problem", None)
+        return ask(full) if ask is not None else None
+
+    def _key_warnings(self) -> dict[str, dict[str, str]]:
+        """Short key name -> `{code, message, hint, detail}` for every key whose file copy is out of step."""
+        out: dict[str, dict[str, str]] = {}
+        for short, full in KEY_ALIASES.items():
+            problem = self._key_problem(full)
+            if problem:
+                out[short] = problem
+        return out
+
     def get_settings(self) -> dict[str, Any]:
-        """`{schedule_time, home, profile, flags, keys, notifications, ...}`."""
+        """`{schedule_time, home, profile, flags, keys, key_warnings, notifications, ...}`."""
         refresh_schedule_record(self.s.paths)
         stored = load_dashboard_settings(self.s.paths)
         runtime = self.engine.runtime_summary()
@@ -102,6 +119,9 @@ class SettingsService:
             "tiny_story": bool((runtime or {}).get("tiny_story")),
             "flags": flags,
             "keys": self._key_flags(),
+            # a key whose copy for nightly runs (config/secrets.dpapi) could not be saved or locked, with the
+            # code (NS-E120 / NS-E119) and its hint: the night run reads the file, not Credential Manager
+            "key_warnings": self._key_warnings(),
             "notifications": bool(stored["notifications"]),
             "runtime_locked": True,
             "install": self.engine.install_summary(),
@@ -183,6 +203,13 @@ class SettingsService:
             except AdapterUnavailable as e:
                 raise ApiError(501, "keyring_unavailable", str(e)) from e
             self.s.log.info("api_key_cleared", name=full)
+            problem = self._key_problem(full)
+            if problem:  # Credential Manager forgot it, the file still has it (and `get` reads it back)
+                self.s.log.warn("api_key_clear_incomplete", problem["detail"], name=full, code=problem["code"])
+                return {
+                    "name": full, "set": True, "warning": problem,
+                    "message": f"{problem['code']}: the key is still stored for nightly runs. {problem['hint']}",
+                }
             return {"name": full, "set": False}
         if len(secret) > 512:
             raise ApiError(400, "bad_key", "Paste the key without spaces (up to 512 characters).")
@@ -208,6 +235,15 @@ class SettingsService:
                 f"{service} accepted the key" if verdict.get("ok")
                 else f"Key saved, but {service} could not be reached to check it (no internet?)"
             )
+        problem = self._key_problem(full)
+        if problem:
+            # saved in Credential Manager, not in the file the night run reads: the old key stays there
+            out["warning"] = problem
+            note = (
+                f"{problem['code']}: the copy of the {service} key that nightly runs read when Credential "
+                f"Manager is out of reach was not updated (it may still be an older key). {problem['hint']}"
+            )
+            out["message"] = f"{out['message']}. {note}" if out.get("message") else f"Key saved. {note}"
         return out
 
     # --- diagnostics ---

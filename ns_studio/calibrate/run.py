@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import importlib
+import io
 import json
 import math
 import re
@@ -11,6 +12,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from ns_common.atomic import read_bytes_retry, write_text_atomic
 from ns_common.db import Db
 from ns_common.errors import NsError
 from ns_common.paths import Paths
@@ -235,29 +237,35 @@ def write_generation(paths: Paths, db: Db, slug: str, stories: Sequence[Calibrat
     """Write stories.csv, one .txt per story and the scores.csv template; fill the `calibration` table."""
     d = calibration_dir(paths, slug)
     d.mkdir(parents=True, exist_ok=True)
-    with (d / "stories.csv").open("w", newline="", encoding="utf-8") as fh:
-        w = csv.writer(fh)
-        w.writerow(["story_id", "words", "critic_avg", "refusal", "failed", "error_code", *RUBRIC, "note"])
-        for s in stories:
-            w.writerow(
-                [
-                    s.story_id,
-                    word_count(s.text),
-                    "" if s.critic_avg is None else f"{s.critic_avg:.3f}",
-                    int(s.refusal),
-                    int(s.failed),
-                    s.error_code,
-                    *(f"{s.scores[k]:g}" if k in s.scores else "" for k in RUBRIC),
-                    s.note,
-                ]
-            )
-    with (d / "scores.csv").open("w", newline="", encoding="utf-8") as fh:
-        w = csv.writer(fh)
-        w.writerow(["story_id", *RUBRIC])
-        for s in stories:
-            w.writerow([s.story_id, *([""] * len(RUBRIC))])
+    # Both CSVs are built whole in memory first, so a malformed row stops everything before any file changes;
+    # each file then appears under its name in one step (ns_common.atomic): a person or the dashboard opening
+    # the folder meanwhile meets the previous file or the new one, never a header and half the rows.
+    stories_csv = io.StringIO(newline="")
+    w = csv.writer(stories_csv)
+    w.writerow(["story_id", "words", "critic_avg", "refusal", "failed", "error_code", *RUBRIC, "note"])
     for s in stories:
-        (d / f"{s.story_id}.txt").write_text(s.text + "\n", encoding="utf-8")
+        w.writerow(
+            [
+                s.story_id,
+                word_count(s.text),
+                "" if s.critic_avg is None else f"{s.critic_avg:.3f}",
+                int(s.refusal),
+                int(s.failed),
+                s.error_code,
+                *(f"{s.scores[k]:g}" if k in s.scores else "" for k in RUBRIC),
+                s.note,
+            ]
+        )
+    scores_csv = io.StringIO(newline="")
+    w = csv.writer(scores_csv)
+    w.writerow(["story_id", *RUBRIC])
+    for s in stories:
+        w.writerow([s.story_id, *([""] * len(RUBRIC))])
+    write_text_atomic(d / "stories.csv", stories_csv.getvalue())  # csv's own CRLF, as written before
+    write_text_atomic(d / "scores.csv", scores_csv.getvalue())
+    for s in stories:
+        # newline=None: the platform's line ending, as Path.write_text gave (Notepad shows it in lines)
+        write_text_atomic(d / f"{s.story_id}.txt", s.text + "\n", newline=None)
         db.execute(
             "insert or replace into calibration(channel, story_id, critic_json, human_json) "
             "values (?,?,?, (select human_json from calibration where channel=? and story_id=?))",
@@ -306,8 +314,10 @@ class CalibrationReport:
 
 def _read_rows(path: Path) -> list[dict[str, str]]:
     try:
-        with path.open(newline="", encoding="utf-8-sig") as fh:
-            return list(csv.DictReader(fh))
+        # a refused open (the file is being swapped, or an editor has it) is retried for a moment first;
+        # io.StringIO(newline="") keeps the quoted line breaks exactly as `open(newline="")` did
+        text = read_bytes_retry(path).decode("utf-8-sig")
+        return list(csv.DictReader(io.StringIO(text, newline="")))
     except OSError as e:
         raise StudioError("NS-E324", f"{path}: {e}") from e
 
@@ -385,5 +395,6 @@ def score(paths: Paths, db: Db, slug: str, scores_csv: Path) -> CalibrationRepor
     bar = min(10.0, max(5.0, rec.bar))
     edit_channel(paths, db, slug, {"critic_bar": bar})
     text = json.dumps(report.as_dict(), indent=2) + "\n"
-    (d / "calibration_report.json").write_text(text, encoding="utf-8")
+    # swapped in whole; newline=None gives the platform line ending, as write_text did
+    write_text_atomic(d / "calibration_report.json", text, newline=None)
     return report

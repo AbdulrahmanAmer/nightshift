@@ -2,7 +2,7 @@
  "about": "Seconds per test file for dev/ci_shards.py: the median over the JUnit reports of real CI runs. A file not listed is placed by hash and counts as the larger of the mean and the median of these. Refresh: python dev/ci_shards.py refresh --run latest (or --run <id>, or --junit <folder of report-shard-*.xml>)",
  "measured": {
   "source": "run 42668170598, plus 8 files not in it (the three newest test files, the four test_p10_* files and test_tiny_story_length.py) from run 42686504308 (main, f4f3948)",
-  "files": 309
+  "files": 311
  },
  "shard_extra_seconds": {
   "1": 15
@@ -18,7 +18,7 @@
   "tests/test_assistant_router.py": 2.4,
   "tests/test_assistant_validate_before_card.py": 74.0,
   "tests/test_atomic_readers.py": 1.4,
-  "tests/test_atomic_writes.py": 8.7,
+  "tests/test_atomic_writes.py": 22.2,
   "tests/test_audio_loudnorm.py": 4.8,
   "tests/test_budget.py": 0.1,
   "tests/test_cadence.py": 3.5,
@@ -230,6 +230,8 @@
   "tests/test_schedule_mode.py": 12.9,
   "tests/test_script_job.py": 388.5,
   "tests/test_secret_fallback.py": 0.1,
+  "tests/test_secret_file_acl.py": 2.3,
+  "tests/test_secret_file_lock.py": 2.0,
   "tests/test_secret_names.py": 0.2,
   "tests/test_seo_long.py": 0.1,
   "tests/test_series_context.py": 0.5,
