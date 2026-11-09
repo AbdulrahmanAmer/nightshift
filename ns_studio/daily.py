@@ -12,6 +12,7 @@ from datetime import UTC, date, datetime, timedelta, tzinfo
 from pathlib import Path
 from typing import Any
 
+from ns_common.atomic import write_text_atomic
 from ns_common.errors import NsError
 from ns_common.keepawake import keep_awake
 from ns_studio import jobs, notifications
@@ -209,7 +210,7 @@ def _run_daily(
     )
     env.paths.logs.mkdir(parents=True, exist_ok=True)
     nightly = env.paths.logs / f"nightly-{now:%Y%m%d}.json"
-    nightly.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    write_text_atomic(nightly, json.dumps(report, indent=2) + "\n")
     env.log.info("daily_done", run_id=run_id, jobs=len(done), failures=len(report["failures"]))
     masters, shorts = notifications.output_counts(env.db, done)
     notifications.send(env.paths, env.log, notifier, notifications.nightly_message(report, masters, shorts))

@@ -5,7 +5,7 @@ from pathlib import Path
 
 import yaml
 
-from ns_common.atomic import BACKUP_SUFFIX, quarantine, write_text_atomic
+from ns_common.atomic import BACKUP_SUFFIX, quarantine, read_text_retry, write_text_atomic
 from ns_common.errors import NsError
 from ns_common.models import Channel, EmbedCfg, InstallState, Manifest, Runtime
 from ns_common.paths import Paths, repo_root
@@ -29,7 +29,7 @@ def embed_server_args(cfg: EmbedCfg) -> list[str]:
 def load_runtime(paths: Paths) -> Runtime:
     if not paths.runtime_file.exists():
         raise NsError("NS-E203", f"{paths.runtime_file} missing; run ns tune or the installer")
-    return Runtime.model_validate_json(paths.runtime_file.read_text(encoding="utf-8"))
+    return Runtime.model_validate_json(read_text_retry(paths.runtime_file))
 
 
 def save_runtime(paths: Paths, rt: Runtime) -> Path:
@@ -40,16 +40,13 @@ def load_channel(paths: Paths, slug: str) -> Channel:
     f = paths.channel_file(slug)
     if not f.exists():
         raise FileNotFoundError(f)
-    return Channel.model_validate(yaml.safe_load(f.read_text(encoding="utf-8")))
+    return Channel.model_validate(yaml.safe_load(read_text_retry(f)))
 
 
 def save_channel(paths: Paths, ch: Channel) -> Path:
     f = paths.channel_file(ch.slug)
     f.parent.mkdir(parents=True, exist_ok=True)
-    f.write_text(
-        yaml.safe_dump(ch.model_dump(mode="json"), sort_keys=False, allow_unicode=True),
-        encoding="utf-8",
-    )
+    write_text_atomic(f, yaml.safe_dump(ch.model_dump(mode="json"), sort_keys=False, allow_unicode=True))
     return f
 
 
@@ -70,7 +67,7 @@ def load_install_state(paths: Paths) -> InstallState:
     if not f.exists():
         return InstallState()
     try:
-        return InstallState.model_validate_json(f.read_text(encoding="utf-8-sig"))
+        return InstallState.model_validate_json(read_text_retry(f, "utf-8-sig"))
     except ValueError:
         pass
     quarantine(f)

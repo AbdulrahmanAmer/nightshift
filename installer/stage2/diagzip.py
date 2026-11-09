@@ -13,8 +13,10 @@ import datetime as dt
 import json
 import os
 import zipfile
+from functools import partial
 from pathlib import Path
 
+from ns_common.atomic import copy_atomic, retry_busy, write_text_atomic, write_zip_atomic
 from ns_common.paths import Paths
 
 __all__ = ["write_console_install_report", "write_fallback_bundle"]
@@ -63,7 +65,7 @@ def write_console_install_report(
     try:
         paths.logs.mkdir(parents=True, exist_ok=True)
         out = paths.logs / "install-report.json"
-        out.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        write_text_atomic(out, json.dumps(data, indent=2))
     except OSError:
         return None
     return out
@@ -98,16 +100,19 @@ def write_fallback_bundle(
             small = f.is_file() and f.stat().st_size < 2_000_000
             if small and f.suffix.lower() in (".json", ".jsonl", ".err", ".txt", ".log"):
                 members.append((f"bootstrap/{f.relative_to(boot).as_posix()}", f))
-    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
+
+    def fill(z: zipfile.ZipFile) -> None:
         for arc, f in members:
             try:
-                z.write(f, arc)
+                retry_busy(partial(z.write, f, arc))
             except OSError:
                 continue
+
+    write_zip_atomic(out, fill)  # built beside the final name: nobody meets a zip that is half written
     home = desktop if desktop is not None else Path.home() / "Desktop"
     if home.is_dir():
         try:
-            (home / out.name).write_bytes(out.read_bytes())
+            copy_atomic(out, home / out.name)
         except OSError:
             pass
     return out

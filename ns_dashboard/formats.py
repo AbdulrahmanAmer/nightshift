@@ -14,6 +14,7 @@ from typing import Any
 import yaml
 from pydantic import ValidationError
 
+from ns_common.atomic import write_text_atomic
 from ns_common.models import Format
 from ns_common.paths import Paths
 from ns_dashboard.errors import ApiError
@@ -104,10 +105,8 @@ def list_formats(paths: Paths) -> list[dict[str, Any]]:
 
 
 def _write(paths: Paths, fid: str, definition: dict[str, Any]) -> None:
-    d = user_dir(paths)
-    d.mkdir(parents=True, exist_ok=True)
     text = yaml.safe_dump(definition, sort_keys=False, allow_unicode=True)
-    (d / f"{fid}.yaml").write_text(text, encoding="utf-8")
+    write_text_atomic(user_dir(paths) / f"{fid}.yaml", text)
 
 
 def merge_dicts(base: dict[str, Any], changes: dict[str, Any]) -> dict[str, Any]:

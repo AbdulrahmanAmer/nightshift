@@ -19,6 +19,7 @@ import zipfile
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -43,7 +44,14 @@ from installer.stage2.web.engine import EngineProcess, wizard_argv, wizard_env
 from installer.stage2.web.keys import check_key
 from installer.stage2.web.model import BOOTSTRAP_STEPS, FILE_NAMES, STEP_ORDER, STEP_PHASE
 from installer.stage2.web.store import SetupStore
-from ns_common.atomic import BACKUP_SUFFIX, write_text_atomic
+from ns_common.atomic import (
+    BACKUP_SUFFIX,
+    append_to_zip_atomic,
+    read_text_retry,
+    retry_busy,
+    write_text_atomic,
+    write_zip_atomic,
+)
 from ns_common.paths import Paths
 from ns_common.secret_file import stored_names
 from ns_common.secrets_names import PEXELS_KEY, PIXABAY_KEY
@@ -323,7 +331,7 @@ def read_install_state(home: Path) -> dict[str, Any]:
     main = home / "config" / "install_state.json"
     for candidate in (main, main.with_name(main.name + BACKUP_SUFFIX)):
         try:
-            data = json.loads(candidate.read_text(encoding="utf-8-sig"))
+            data = json.loads(read_text_retry(candidate, "utf-8-sig"))
         except (OSError, ValueError):
             continue
         if isinstance(data, dict):
@@ -1056,7 +1064,7 @@ class SetupController:
 
     def _read_json(self, path: Path) -> dict[str, Any]:
         try:
-            data = json.loads(path.read_text(encoding="utf-8-sig"))
+            data = json.loads(read_text_retry(path, "utf-8-sig"))
         except (OSError, ValueError):
             return {}
         return data if isinstance(data, dict) else {}
@@ -1100,11 +1108,9 @@ class SetupController:
         if not zip_path or not Path(str(zip_path)).is_file() or not target.is_file():
             return
         try:
-            with zipfile.ZipFile(str(zip_path)) as zf:
-                if report.REPORT_NAME in zf.namelist():
-                    return
-            with zipfile.ZipFile(str(zip_path), "a", zipfile.ZIP_DEFLATED) as zf:
-                zf.write(target, report.REPORT_NAME)
+            # not "a" mode on the file itself: that overwrites the zip's central directory first, so anyone
+            # opening the zip meanwhile (or a power cut) finds it torn. The new zip is built beside it.
+            append_to_zip_atomic(Path(str(zip_path)), [(report.REPORT_NAME, target)])
         except (OSError, zipfile.BadZipFile):
             return
 
@@ -1150,21 +1156,26 @@ class SetupController:
         target = desktop / f"nightshift-diagnostics-{datetime.now():%Y-%m-%d-%H%M}.zip"
         try:
             desktop.mkdir(parents=True, exist_ok=True)
-            with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as zf:
+
+            def fill(zf: zipfile.ZipFile) -> None:
                 for folder in (self.home / "logs",):
                     if folder.is_dir():
                         for f in folder.rglob("*"):
                             if f.is_file():
-                                zf.write(f, "logs/" + f.relative_to(folder).as_posix())
+                                retry_busy(partial(zf.write, f, "logs/" + f.relative_to(folder).as_posix()))
                 for name in ("install_state.json", "runtime.json"):
                     src = self.home / "config" / name
                     if src.is_file():
-                        zf.write(src, name)
+                        retry_busy(partial(zf.write, src, name))
                 for arc, item in self.setup_evidence():
                     if isinstance(item, bytes):
                         zf.writestr(arc, item)
                     else:
-                        zf.write(item, arc)
+                        retry_busy(partial(zf.write, item, arc))
+
+            # built beside the final name and swapped in whole: the Desktop (often a OneDrive folder) and the
+            # partner never meet a zip that is still being written
+            write_zip_atomic(target, fill)
         except OSError:
             return None
         return target
@@ -1372,7 +1383,7 @@ class SetupController:
         self._prepare_models_source()
         out = self.cfg.data_dir / "bootstrap" / "preflight.json"
         out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(json.dumps(self.pf, indent=2), encoding="utf-8")
+        write_text_atomic(out, json.dumps(self.pf, indent=2))
         venv_py = self.home / "venvs" / "studio" / "Scripts" / "python.exe"
         python = self.cfg.python if self.cfg.simulate else str(venv_py)
         argv = wizard_argv(
@@ -1779,7 +1790,7 @@ class SetupController:
         answers = state.get("answers") or {}
         flags = {}
         try:
-            flags = json.loads((self.home / "config" / "wizard_flags.json").read_text(encoding="utf-8-sig"))
+            flags = json.loads(read_text_retry(self.home / "config" / "wizard_flags.json", "utf-8-sig"))
         except (OSError, ValueError):
             pass
         sizes = {g["id"]: g for g in state["plan"]["groups"]}
@@ -1891,7 +1902,7 @@ class SetupController:
             return 12 if e.code in ("NS-E110", "NS-E111") else 14
         out = self.cfg.data_dir / "bootstrap" / "preflight.json"
         out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(json.dumps(self.pf, indent=2), encoding="utf-8")
+        write_text_atomic(out, json.dumps(self.pf, indent=2))
         venv_python = self.home / "venvs" / "studio" / "Scripts" / "python.exe"
         python = self.cfg.python if self.cfg.simulate else str(venv_python)
         app = self.run_app_path

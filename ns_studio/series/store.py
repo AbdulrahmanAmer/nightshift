@@ -15,6 +15,7 @@ from typing import Any, Literal
 import yaml
 from pydantic import Field, ValidationError
 
+from ns_common.atomic import write_text_atomic
 from ns_common.errors import NsError
 from ns_common.models import SLUG_RE, Strict, Voice
 from ns_common.paths import Paths
@@ -63,11 +64,11 @@ def join_front_matter(meta: dict[str, Any], body: str) -> str:
 
 
 def write_text(path: Path, text: str) -> None:
-    """Write `text` as UTF-8 with LF endings through a temp file (no half-written files)."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_bytes(text.replace("\r\n", "\n").encode("utf-8"))
-    tmp.replace(path)
+    """Write `text` as UTF-8 with LF endings through a temp file (no half-written files).
+
+    `write_text_atomic` also rides out Windows refusing the swap while the dashboard has the file open.
+    """
+    write_text_atomic(path, text.replace("\r\n", "\n"))
 
 
 def read_text(path: Path) -> str:

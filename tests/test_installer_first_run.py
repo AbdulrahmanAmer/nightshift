@@ -11,6 +11,7 @@ from pathlib import Path
 
 from installer.stage2.web import report
 from installer.stage2.web.model import STEP_ORDER
+from ns_common.atomic import retry_busy
 from tests.test_installer_web_controller import (
     KEY_P,
     KEY_X,
@@ -214,8 +215,14 @@ def test_a_finished_run_writes_the_report_and_adds_it_to_the_wizards_zip(tmp_pat
     assert data["outcome"] == "done" and data["failedStep"] is None
     assert all(v["status"] == "done" for v in data["steps"].values())
     assert data["statusLine"].startswith("Nightshift setup ") and "finished" in data["statusLine"]
+    def names() -> list[str]:
+        with zipfile.ZipFile(bundle) as zf:
+            return zf.namelist()
+
     deadline = time.monotonic() + 10
-    while time.monotonic() < deadline and "install-report.json" not in zipfile.ZipFile(bundle).namelist():
+    # the report is added by swapping a finished zip in, so every poll reads a whole zip; Windows refuses an
+    # open for a moment while the swap is in flight, which a reader rides out (F-1)
+    while time.monotonic() < deadline and "install-report.json" not in retry_busy(names):
         time.sleep(0.02)
     with zipfile.ZipFile(bundle) as zf:
         assert "install-report.json" in zf.namelist()

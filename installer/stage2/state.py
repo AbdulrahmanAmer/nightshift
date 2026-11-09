@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from ns_common.atomic import read_text_retry, write_text_atomic
 from ns_common.config import load_install_state, save_install_state
 from ns_common.models import InstallState, StepState
 from ns_common.paths import Paths
@@ -82,7 +83,7 @@ def flags_path(paths: Paths) -> Path:
 def load_flags(paths: Paths) -> dict[str, Any]:
     """Read wizard flags (empty when absent or unreadable)."""
     try:
-        data = json.loads(flags_path(paths).read_text(encoding="utf-8"))
+        data = json.loads(read_text_retry(flags_path(paths)))
     except (OSError, ValueError):
         return {}
     return data if isinstance(data, dict) else {}
@@ -92,7 +93,7 @@ def save_flags(paths: Paths, flags: dict[str, Any]) -> None:
     """Write wizard flags."""
     f = flags_path(paths)
     f.parent.mkdir(parents=True, exist_ok=True)
-    f.write_text(json.dumps(flags, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    write_text_atomic(f, json.dumps(flags, indent=2, sort_keys=True) + "\n")
 
 
 def is_stale(flags: dict[str, Any], install_id: str | None) -> bool:

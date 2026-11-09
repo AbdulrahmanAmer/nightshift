@@ -40,6 +40,7 @@ from installer.stage2.context import StepContext
 from installer.stage2.runtime_cfg import build_runtime
 from installer.stage2.secrets import KEY_NAMES
 from installer.stage2.web.answers_view import KEPT_NAME
+from ns_common.atomic import write_text_atomic
 from ns_common.config import load_channel, load_runtime, save_channel, save_runtime
 from ns_common.models import Voice
 
@@ -435,7 +436,7 @@ def _prefs(ctx: StepContext, ans: InstallerAnswers, keys: set[str]) -> list[str]
         prefs["owner_name"] = ans.owner_name
     if "ui_theme" in keys:
         prefs["theme"] = ans.ui_theme
-    f.write_text(json.dumps(prefs, indent=2) + "\n", encoding="utf-8")
+    write_text_atomic(f, json.dumps(prefs, indent=2) + "\n")
     return ["Your name and theme in config\\ui_prefs.json follow your answers now."]
 
 
