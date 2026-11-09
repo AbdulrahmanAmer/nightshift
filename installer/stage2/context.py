@@ -16,7 +16,14 @@ from installer.stage2.downloader import DownloadItem, PlanResult, pending, run_p
 from installer.stage2.errors import describe_code, tail_lines
 from installer.stage2.runner import Runner, RunResult
 from installer.stage2.secrets import SecretStore
-from installer.stage2.state import StateStore, load_flags, save_flags
+from installer.stage2.state import (
+    INSTALL_KEY,
+    StateStore,
+    is_stale,
+    load_flags,
+    reconcile_flag_file,
+    save_flags,
+)
 from installer.stage2.sysinfo import free_gb
 from installer.stage2.ui import Ui
 from installer.stage2.winenv import HOME_VAR
@@ -76,15 +83,50 @@ class StepContext:
         self.ui.notice(code, detail)
 
     # ---- flags (wizard-internal, persisted in config/wizard_flags.json) ----
+    @property
+    def install_id(self) -> str | None:
+        """Names this install: when its setup started (``install_state.started_at``); None before ``begin``.
+
+        The uninstaller removes install_state.json, so a later setup gets a new id and the flags of the
+        install that was removed no longer apply to it (see ``state.reconcile_flag_file``).
+        """
+        return self.state.state.started_at
+
     def flag(self, name: str, default: Any = None) -> Any:
-        """Read a persisted flag."""
-        return load_flags(self.paths).get(name, default)
+        """Read a persisted flag; a flag written by another install reads as unset."""
+        flags = load_flags(self.paths)
+        if is_stale(flags, self.install_id):
+            return default
+        return flags.get(name, default)
 
     def set_flag(self, name: str, value: Any) -> None:
-        """Persist a flag."""
+        """Persist a flag, stamped with the install it describes."""
         flags = load_flags(self.paths)
+        if is_stale(flags, self.install_id):
+            flags = {}
         flags[name] = value
+        if self.install_id is not None:
+            flags[INSTALL_KEY] = self.install_id
         save_flags(self.paths, flags)
+
+    def clear_flags(self, *names: str) -> list[str]:
+        """Forget flags (a step does this before it starts work that makes them untrue). Returns the names
+        that were set."""
+        flags = load_flags(self.paths)
+        if is_stale(flags, self.install_id):
+            flags = {}
+        gone = [n for n in names if n in flags]
+        for n in gone:
+            del flags[n]
+        if gone:
+            save_flags(self.paths, flags)
+        return gone
+
+    def reconcile_flags(self) -> list[str]:
+        """At the start of a run: drop the flags of an install that is not this one. Returns their names."""
+        if self.install_id is None:
+            return []
+        return reconcile_flag_file(self.paths, self.install_id, resumed=self.resumed)
 
     # ---- answers ----
     def ensure_answers(self) -> InstallerAnswers:

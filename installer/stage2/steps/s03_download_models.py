@@ -33,6 +33,7 @@ class S03DownloadModels(Step):
 
     id = "s03_download_models"
     title = "Download AI models"
+    clears_on_run = ("smoke", "smoke_version")          # new models: the smoke test tested the old ones
 
     def _items(self, ctx: StepContext, *, with_fallback: bool = True) -> list[DownloadItem]:
         items = plan_models(

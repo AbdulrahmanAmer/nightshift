@@ -17,6 +17,8 @@ class S06Tune(Step):
 
     id = "s06_tune"
     title = "Tune for this PC"
+    # the baseline runtime.json is written first: a run killed during the sweep must not read as tuned
+    clears_on_run = ("tuned", "smoke", "smoke_version")
 
     def check(self, ctx: StepContext) -> bool:
         """True once tuning ran (or fell back to defaults) on an earlier run."""

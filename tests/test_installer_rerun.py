@@ -158,13 +158,7 @@ def test_an_update_through_install_cmd_makes_s04_and_s08_run_again(tmp_path: Pat
 
     ctx = context()
     assert ctx.manifest.version == "0.1.7"
-    for name in ("studio", "supervisor"):
-        python = ctx.venv_python(name)
-        python.parent.mkdir(parents=True, exist_ok=True)
-        python.write_text("MZ", encoding="utf-8")
-    ctx.set_flag("venvs_installed", True)
-    ctx.set_flag("venvs_version", ctx.manifest.version)
-    ctx.set_flag("venvs_app", str(ctx.app_path))
+    S04Venvs().run(ctx)                  # the venvs hold the product (an interpreter alone is not done)
     ctx.set_flag("smoke", "passed")
     ctx.set_flag("smoke_version", ctx.manifest.version)
     assert S04Venvs().check(ctx) is True and S08Smoke().check(ctx) is True        # nothing to do for 0.1.7

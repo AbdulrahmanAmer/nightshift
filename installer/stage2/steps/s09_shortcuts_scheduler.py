@@ -104,6 +104,7 @@ class S09ShortcutsScheduler(Step):
 
     id = "s09_shortcuts_scheduler"
     title = "Shortcuts and nightly task"
+    clears_on_run = ("schedule", "schedule_mode", "aumid", "shortcuts_app")
 
     def check(self, ctx: StepContext) -> bool:
         """Shortcuts exist and the task decision is recorded."""

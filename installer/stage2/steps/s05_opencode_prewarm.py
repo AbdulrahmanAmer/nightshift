@@ -38,6 +38,7 @@ class S05OpencodePrewarm(Step):
     id = "s05_opencode_prewarm"
     title = "Nightshift Code check"
     optional = True
+    clears_on_run = ("opencode_ok", "smoke", "smoke_version")
 
     def skip_reason(self, ctx: StepContext) -> str | None:
         """Only when the operator chose Nightshift Code (a dev install never does: no OpenCode download)."""
@@ -46,8 +47,8 @@ class S05OpencodePrewarm(Step):
         return None if ctx.ensure_answers().install_code else "Nightshift Code was not selected"
 
     def check(self, ctx: StepContext) -> bool:
-        """True after a successful earlier run."""
-        return bool(ctx.flag("opencode_ok", False))
+        """True after a successful earlier run, while the program it ran is still there."""
+        return bool(ctx.flag("opencode_ok", False)) and (ctx.paths.bin_opencode / "opencode.exe").is_file()
 
     def run(self, ctx: StepContext) -> None:
         """Start the binary once."""
