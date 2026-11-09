@@ -1,0 +1,7 @@
+story nvenc p4: -c:v h264_nvenc -preset p4 -rc vbr -cq 23 -b:v 0 -maxrate 12M -bufsize 24M
+story nvenc forced cpu: -c:v libx264 -preset veryfast -crf 23 -maxrate 12M -bufsize 24M
+story libx264 ultrafast: -c:v libx264 -preset veryfast -crf 23 -maxrate 12M -bufsize 24M
+story libx264 medium: -c:v libx264 -preset medium -crf 23 -maxrate 12M -bufsize 24M
+clip nvenc p4: -c:v h264_nvenc -preset p4 -rc vbr -cq 23 -b:v 0 -maxrate 12M -bufsize 24M
+clip libx264 ultrafast: -c:v libx264 -preset veryfast -crf 22 -maxrate 12M -bufsize 24M
+clip libx264 medium: -c:v libx264 -preset medium -crf 22 -maxrate 12M -bufsize 24M
