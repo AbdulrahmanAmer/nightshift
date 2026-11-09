@@ -19,6 +19,7 @@ import pytest
 
 from installer.stage2 import downloader as dl
 from ns_common.config import load_manifest
+from tests.online import RetryTransport, fail_on_outage
 
 pytestmark = [
     pytest.mark.network,
@@ -52,8 +53,12 @@ class Wire:
     client: httpx.Client = field(init=False)
 
     def __post_init__(self) -> None:
+        # RetryTransport: a 5xx, a timeout or a reset is retried before the downloader sees it; an outage that
+        # outlasts the retries fails the test as "upstream outage" (fail_on_outage), not as a byte count.
         self.client = httpx.Client(
-            follow_redirects=True, timeout=httpx.Timeout(30.0, read=dl.STALL_TIMEOUT_S),
+            transport=RetryTransport(),
+            follow_redirects=True,
+            timeout=httpx.Timeout(30.0, read=dl.STALL_TIMEOUT_S),
             event_hooks={"request": [self._on_request], "response": [self._on_response]},
         )
 
@@ -147,6 +152,7 @@ def interrupted_download(url: str, dest: Path, sha256: str | None, wire: Wire, p
 
 
 # ---------------------------------------------------------------------------------------------- (a) GitHub
+@fail_on_outage
 def test_github_release_asset_pause_resume_one_range_request_and_the_pinned_hash(tmp_path: Path, wire: Wire,
                                                                                 monkeypatch):
     pin = load_manifest().bins["yt_dlp"]
@@ -206,7 +212,7 @@ def pick_small_hf_file(manifest) -> tuple[str, str, str, int]:
 
     Returns ``(repo, revision, file, size)``. The size comes from ``x-linked-size`` on the redirect, exactly
     as the installer reads it."""
-    client = httpx.Client(follow_redirects=True, timeout=30.0)
+    client = httpx.Client(transport=RetryTransport(), follow_redirects=True, timeout=30.0)
     best: tuple[str, str, str, int] | None = None
     try:
         for pm in manifest.profiles.values():
@@ -221,6 +227,7 @@ def pick_small_hf_file(manifest) -> tuple[str, str, str, int]:
     return best
 
 
+@fail_on_outage
 def test_hugging_face_cdn_pause_resume_through_the_redirect_matches_a_straight_download(tmp_path: Path,
                                                                                          wire: Wire):
     repo, revision, fname, size = pick_small_hf_file(load_manifest())
@@ -267,6 +274,7 @@ class Crash(BaseException):
     """A killed installer: not an Exception, so no handler in the downloader may swallow it."""
 
 
+@fail_on_outage
 def test_hugging_face_part_truncated_by_hand_resumes_from_the_truncated_size(tmp_path: Path, wire: Wire):
     repo, revision, fname, size = pick_small_hf_file(load_manifest())
     url = dl.hf_url(repo, revision, fname)
@@ -298,6 +306,7 @@ def test_hugging_face_part_truncated_by_hand_resumes_from_the_truncated_size(tmp
              f"sha256 {final} == full download {reference_hash}: {final == reference_hash}")
 
 
+@fail_on_outage
 def test_the_real_servers_honour_the_head_size_the_downloader_trusts(wire: Wire):
     """HEAD on both sites gives the size the resume maths relies on (HF: the x-linked-size header)."""
     pin = load_manifest().bins["yt_dlp"]

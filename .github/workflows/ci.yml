@@ -4,6 +4,10 @@ name: ci
 on:
   push:
   pull_request:
+  # A daily run of the test job on main: the online pin checks (manifest URLs, hashes) must run for real here,
+  # an upstream outage fails them instead of skipping them (NS_REQUIRE_ONLINE below). Tag pushes do the same.
+  schedule:
+    - cron: "23 4 * * *"
 
 # One run per branch and event type; a newer push cancels the older run of the same kind.
 concurrency:
@@ -19,6 +23,7 @@ env:
 
 jobs:
   lint:
+    if: github.event_name != 'schedule'
     runs-on: windows-latest
     timeout-minutes: 10
     steps:
@@ -32,6 +37,7 @@ jobs:
       - run: python -m ruff check .
 
   types:
+    if: github.event_name != 'schedule'
     runs-on: windows-latest
     timeout-minutes: 10
     steps:
@@ -51,6 +57,10 @@ jobs:
       # Turns on the tests marked `network` (tests/test_downloader_network.py): real downloads from GitHub and
       # Hugging Face to prove pause/resume/Range/SHA256 against the real servers. Unset on a laptop = skipped.
       NS_NETWORK_TESTS: "1"
+      # Where an online check may not be skipped for an upstream outage (the nightly run and every tag push):
+      # an outage that outlasts the retries in tests/online.py then fails the test instead of skipping it. On a
+      # push or a pull request it is empty, an outage skips the online pin checks and the step below says so.
+      NS_REQUIRE_ONLINE: ${{ (github.event_name == 'schedule' || startsWith(github.ref, 'refs/tags/')) && '1' || '' }}
     steps:
       - run: git config --global core.longpaths true
       - uses: actions/checkout@v4
@@ -67,7 +77,14 @@ jobs:
         shell: bash
         timeout-minutes: 12
         run: |
+          set +e
           timeout 300 python -m pytest -o addopts= -v -s -m network tests/test_downloader_network.py --junitxml=report-network.xml --tb=short -o faulthandler_timeout=120
+          rc=$?
+          set -e
+          # An outage that outlasts the retries in tests/online.py fails a test with "upstream outage: <host> <status>";
+          # name it in the log so it is not read as a wrong pin.
+          python dev/ci_outage_report.py report-network.xml || true
+          if [ "$rc" -ne 0 ]; then exit "$rc"; fi
           python - <<'EOF'
           import xml.etree.ElementTree as ET
           root = ET.parse("report-network.xml").getroot()
@@ -78,7 +95,13 @@ jobs:
           EOF
       - name: Unit tests (everything but the real-network ones)
         if: always()
-        run: python -m pytest -q -m "not network" --junitxml=report.xml
+        run: python -m pytest -q -rs -m "not network" --junitxml=report.xml
+      # The _online pin checks (tests/test_resolve_manifest.py) skip when a real host is in an outage that outlasts
+      # three retries. Say how many did, as a warning; where NS_REQUIRE_ONLINE is set this step fails on any.
+      - name: Online checks skipped for an upstream outage
+        if: always()
+        shell: bash
+        run: python dev/ci_outage_report.py report.xml
       - name: Upload JUnit report
         if: always()
         uses: actions/upload-artifact@v4
@@ -93,6 +116,7 @@ jobs:
   # The dashboard front-end sources live in ns_dashboard/ui; the build output is committed in ns_dashboard/static
   # (the bundle is a git archive and the partner PC has no node). This job rebuilds it and fails on any difference.
   ui-build:
+    if: github.event_name != 'schedule'
     runs-on: windows-latest
     timeout-minutes: 10
     steps:
@@ -135,6 +159,7 @@ jobs:
           retention-days: 7
 
   powershell-parse:
+    if: github.event_name != 'schedule'
     runs-on: windows-latest
     timeout-minutes: 10
     steps:
@@ -196,6 +221,7 @@ jobs:
 
   # Builds the real zip with pwsh (the shell release.yml uses) so the release path is exercised on every push.
   bundle:
+    if: github.event_name != 'schedule'
     runs-on: windows-latest
     timeout-minutes: 10
     steps:
