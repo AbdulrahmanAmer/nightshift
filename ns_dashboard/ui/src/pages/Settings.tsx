@@ -32,7 +32,7 @@ export default function Settings() {
   const setKey = async (name: string) => {
     const v = await confirm({ title: `${name[0]!.toUpperCase() + name.slice(1)} key`, body: "Paste the free key from your account page. It is stored in Windows Credential Manager, never in a file", ok: "Save key", input: { label: "Key", placeholder: "Paste the key" } });
     if (typeof v !== "string" || !v.trim()) return;
-    try { const r = await api.post("/settings/keys", { name, value: v.trim() }); toast(r?.message || "Key saved", r?.checked === false ? "warn" : "ok"); st.reload(); } catch (e: any) { toast(e.message, "bad"); }
+    try { const r = await api.post("/settings/keys", { name, value: v.trim() }); toast(r?.message || "Key saved", r?.checked === false || r?.warning ? "warn" : "ok"); st.reload(); } catch (e: any) { toast(e.message, "bad"); }
   };
   const check = async () => { setChecking(true); try { setUpd(await api.get("/update/check")); } catch (e: any) { toast(e.message, "bad"); } setChecking(false); };
   // The updater runs detached and stops this very service, so the POST may never be answered. What is shown comes from the
@@ -181,6 +181,11 @@ export default function Settings() {
               <SettingRow key={k} title={k[0]!.toUpperCase() + k.slice(1)} sub={s?.keys?.[k] ? <span className="font-mono">••••••••••••••••</span> : "Missing. Stories may run short of footage"}>
                 <Button size="sm" variant={s?.keys?.[k] ? "soft" : "primary"} leadingIcon="key" onClick={() => setKey(k)}>{s?.keys?.[k] ? "Replace" : "Add key"}</Button>
               </SettingRow>
+            ))}
+            {Object.entries(s?.key_warnings || {}).map(([k, w]) => (
+              <p key={`w-${k}`} role="alert" className="mt-2 text-sm text-danger" data-testid={`key-warning-${k}`}>
+                <span className="font-mono">{w.code}</span> {k[0]!.toUpperCase() + k.slice(1)}: the copy of this key that nightly runs read was not saved or locked. {w.hint}
+              </p>
             ))}
           </Card>
 

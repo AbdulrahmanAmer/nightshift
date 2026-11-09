@@ -19,12 +19,14 @@ from fastapi.responses import JSONResponse, StreamingResponse  # pyright: ignore
 from pydantic import BaseModel
 
 from ns_common import first_start
+from ns_common.atomic import sweep_stale_tmp
 from ns_common.config import load_runtime
 from ns_common.errors import NsError
 from ns_common.models import Runtime
 from ns_common.paths import Paths
+from ns_common.secret_file import relock_existing
 from ns_common.singleton import AlreadyRunning, FileLock
-from ns_supervisor import update_check
+from ns_supervisor import tmpsweep, update_check
 from ns_supervisor.core import Supervisor, SupervisorConfig
 from ns_supervisor.health_cfg import read_health_timeout
 from ns_supervisor.scheduled import overdue_scheduled_jobs
@@ -90,6 +92,7 @@ def create_app(sup: Supervisor, *, start_dashboard: bool = False, run_monitor: b
 
     @contextlib.asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        tmpsweep.sweep_state_tmp(sup.paths)  # a crash between "create" and "swap" left a ~ns*.tmp behind
         sup.write_state()
         tasks: list[asyncio.Task[Any]] = []
         if run_monitor:
@@ -222,9 +225,25 @@ def main(argv: list[str] | None = None) -> int:
         sys.stderr.write(f"The Nightshift engine is already running{who}.\n")
         return 0
     try:
+        # a crash between a write and its swap leaves a ~ns*.tmp in config/ (with every key blob, for
+        # secrets.dpapi); the next key write sweeps them too, this catches the ones nothing writes again
+        sweep_stale_tmp(paths.config)
         return _serve(args, paths)
     finally:
         lock.release()
+
+
+def relock_secret_files(paths: Paths, log: Any) -> int:
+    """Lock the key files that exist now; a WARN `secret_file_unlocked` (`NS-E120`) for each that will not.
+
+    A `config/secrets.dpapi` written by 0.1.0 to 0.1.14 (or copied by an old restore into
+    `data/backup/pre-restore-*`) can still carry Users / Authenticated Users, and nothing else would lock it
+    before the next key save. The engine starts either way. Returns how many files would not lock.
+    """
+    problems = relock_existing(paths)
+    for path, why in problems:
+        log.warn("secret_file_unlocked", f"{path}: {why}", path=str(path))
+    return len(problems)
 
 
 def _serve(args: argparse.Namespace, paths: Paths) -> int:
@@ -245,6 +264,7 @@ def _serve(args: argparse.Namespace, paths: Paths) -> int:
 
     cfg = SupervisorConfig(health_timeout_s=read_health_timeout(paths))
     sup = Supervisor(paths, runtime, config=cfg, update_check=update_check.make_job(paths))
+    relock_secret_files(paths, sup.log)
     app = create_app(sup, start_dashboard=not args.headless)
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
 
