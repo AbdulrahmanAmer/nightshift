@@ -600,7 +600,10 @@ function Get-PreflightRows {
         $rows.Add((New-Row 'driver' $driverLabel 'warn' '' 'not checked (no NVIDIA graphics card found)'))
     }
     elseif ($null -eq $cuda) {
-        $rows.Add((New-Row 'driver' $driverLabel 'warn' 'NS-W115' 'driver version not reported; the CUDA 12.4 build will be used'))
+        # the same pair rule as below the preflight (and as s02 choose_pair): an RTX 50-series card gets CUDA 13
+        $unreadBuild = 'CUDA 12.4'
+        if ($blackwell) { $unreadBuild = 'CUDA 13' }
+        $rows.Add((New-Row 'driver' $driverLabel 'warn' 'NS-W115' "driver version not reported; the $unreadBuild build will be used"))
     }
     elseif ($cuda -lt $min) {
         $rows.Add((New-Row 'driver' $driverLabel 'fail' 'NS-E103' $cudaText))

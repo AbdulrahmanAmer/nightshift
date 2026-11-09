@@ -145,6 +145,30 @@ def test_gpu_memory_used_sums_gpus(monkeypatch: pytest.MonkeyPatch) -> None:
     assert procs.gpu_memory_used_mb() is None
 
 
+SMI_5060_TI = Path(__file__).parent / "fixtures" / "supervisor" / "nvidia-smi-rtx-5060-ti.txt"
+
+
+def test_rtx_5060_ti_readouts(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The partner's card: driver 580.88 / CUDA 13.0 / 16311 MiB, in nvidia-smi's own output formats."""
+    full = SMI_5060_TI.read_text(encoding="utf-8")
+    answers = {
+        "--query-gpu=name": "NVIDIA GeForce RTX 5060 Ti\n",
+        "--query-gpu=memory.used": "812\n",
+        "--query-compute-apps=pid,used_memory": "4242, 9100 MiB\n",
+    }
+
+    def fake(args: list[str]) -> str:
+        return answers[args[0]] if args else full
+
+    monkeypatch.setattr(procs, "_nvsmi", fake)
+    assert procs.gpu_name() == "NVIDIA GeForce RTX 5060 Ti"
+    assert procs.gpu_memory_used_mb() == 812
+    assert procs.vram_mb(4242) == 9100
+    assert procs.vram_mb(1234) == 0              # dwm.exe shows N/A under WDDM and is not a compute app
+    report = procs.nvidia_smi_report()
+    assert report is not None and "CUDA Version: 13.0" in report and "16311MiB" in report
+
+
 class FakePopen:
     """Records what terminate() does to a process; `exits_on` says which call makes it exit."""
 

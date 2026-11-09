@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from installer.stage2.devmode import MIN_FREE_GB, MIN_RAM_GB, relax_checks
+from installer.stage2.sysinfo import is_blackwell
 from installer.stage2.web.pathcheck import home_problem
 from installer.stage2.web.plan import pinned, required_free_gb
 
@@ -80,10 +81,12 @@ ROW_COPY: dict[tuple[str, str], tuple[str, str]] = {
         "The graphics card has less than 16 GB",
         "Setup can continue, but only the Small model fits and videos take longer",
     ),
+    # Stage 1 gives a driver warning without a code only when it did not look at the driver at all
+    # (no graphics card found, or the cpu-dev profile); a driver that is too old is NS-E103 and an unreadable
+    # one is NS-W115, each with its own copy.
     ("driver", "warn"): (
-        "The driver is older than RTX 50-series cards need",
-        "Setup works with the CUDA 12.4 build. RTX 50-series cards need driver 570 or newer: "
-        "update it from the page that opened",
+        "The driver was not checked",
+        "There is no NVIDIA graphics card to check a driver for. Fix the graphics card row first",
     ),
     ("ram", "warn"): ("Less memory than recommended", "Setup continues with the Small model only"),
     ("disk", "warn"): (
@@ -105,6 +108,10 @@ ROW_COPY: dict[tuple[str, str], tuple[str, str]] = {
         "Drive\" for the model files in the next step",
     ),
 }
+BLACKWELL_W115_TEXT = (
+    "Setup works and uses the CUDA 13 build, which RTX 50-series cards need. If a video fails on the "
+    "graphics card later, install the newest driver (580 or newer) from nvidia.com/drivers"
+)
 NETWORK_FAIL_TEXT = (
     "Check the internet, switch off any VPN or proxy, then press Check again. "
     "If only Hugging Face is blocked: "
@@ -207,6 +214,9 @@ def check_rows(
         if status != "ok":
             if code:
                 title, what = copy_for(code, hint=str(c.get("hint") or ""))
+                if code == "NS-W115" and is_blackwell(str((pf.get("gpu") or {}).get("name") or "")):
+                    # s02 choose_pair hands an RTX 50-series card the CUDA 13 build, never the 12.4 one
+                    what = BLACKWELL_W115_TEXT
                 if row_id == "network":
                     what = NETWORK_FAIL_TEXT if status == "fail" else ROW_COPY[("network", "warn")][1]
                 if row_id == "disk" and status == "fail":
