@@ -19,6 +19,7 @@ from typing import Any
 
 import httpx
 
+from ns_common.atomic import write_text_atomic
 from ns_common.errors import NsError
 from ns_common.logging import NsLogger
 from ns_common.models import Runtime
@@ -179,9 +180,7 @@ class Supervisor:
             "started_at": self.started_wall,
             "children": children,
         }
-        f = self.state_file
-        f.parent.mkdir(parents=True, exist_ok=True)
-        f.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+        write_text_atomic(self.state_file, json.dumps(data, indent=2) + "\n")  # `ns stop` reads it
 
     def remove_state(self) -> None:
         """Delete the pid file (clean exit)."""

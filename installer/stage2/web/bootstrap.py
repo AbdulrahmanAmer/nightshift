@@ -27,6 +27,7 @@ from typing import NamedTuple
 
 import ns_common.vcruntime as vcruntime
 from installer.stage2.web import appcopy, pathcheck
+from ns_common.atomic import copy_atomic, write_stream_atomic
 from ns_common.avblock import is_blocked_error, looks_blocked
 from ns_common.uv import looks_full, uv_env, venv_args
 
@@ -237,8 +238,8 @@ def download_uv(url: str, sha256: str, dest_dir: Path) -> None:
                     leaf = Path(info.filename).name.lower()
                     if info.is_dir() or not (leaf.startswith("uv") and leaf.endswith(".exe")):
                         continue
-                    with z.open(info) as src, (dest_dir / leaf).open("wb") as dst:
-                        shutil.copyfileobj(src, dst)
+                    with z.open(info) as src:
+                        write_stream_atomic(dest_dir / leaf, src)  # uv.exe is run next: never half of it
         except (zipfile.BadZipFile, OSError) as e:
             raise BootstrapError("NS-E105", f"the uv download could not be unpacked: {e}") from e
     finally:
@@ -662,7 +663,7 @@ class B02Home:
                 if there.exists() and there.samefile(item):
                     continue
                 try:
-                    shutil.copy2(item, there)
+                    copy_atomic(item, there)
                 except OSError as e:
                     raise BootstrapError(
                         "NS-E105",

@@ -13,6 +13,7 @@ from typing import Any, ClassVar, Literal
 
 from pydantic import Field
 
+from ns_common.atomic import write_text_atomic
 from ns_common.errors import NsError
 from ns_common.models import (
     CANVAS_H,
@@ -109,8 +110,7 @@ class ClipParams:
         """Write `clip_params.json`."""
         self.validate()
         p = job_dir / self.FILE
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(json.dumps(asdict(self), indent=2) + "\n", encoding="utf-8")
+        write_text_atomic(p, json.dumps(asdict(self), indent=2) + "\n")
         return p
 
     @classmethod

@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from ns_common import ffmpeg
+from ns_common.atomic import write_text_atomic
 from ns_common.db import Db
 from ns_common.errors import NsError
 from ns_common.logging import NsLogger
@@ -182,7 +183,7 @@ def import_source(
         sidecar=sidecar,
         origin=origin or str(video),
     )
-    (dest_dir / "source.json").write_text(json.dumps(asdict(info), indent=2) + "\n", encoding="utf-8")
+    write_text_atomic(dest_dir / "source.json", json.dumps(asdict(info), indent=2) + "\n")
     if db is not None:
         db.execute(
             "INSERT INTO sources(source_id, channel, path, duration_s, sha256, imported_at, template, status,"
@@ -225,7 +226,7 @@ DOWNLOAD_FAILED = "NS-E409"
 YTDLP_FORMAT = "bv*[height<=1080]+ba/b"
 _URL = re.compile(r"^https?://\S+$", re.IGNORECASE)
 _PERCENT = re.compile(r"\[download\]\s+([0-9]+(?:\.[0-9]+)?)%")
-_SKIP_SUFFIXES = (".json", ".part", ".ytdl", ".temp", ".txt", ".jpg", ".webp", ".png")
+_SKIP_SUFFIXES = (".json", ".part", ".ytdl", ".temp", ".tmp", ".txt", ".jpg", ".webp", ".png")
 
 
 def is_url(text: str) -> bool:

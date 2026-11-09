@@ -14,6 +14,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from ns_common.atomic import read_text_retry, write_text_atomic
 from ns_common.config import notifications_enabled
 from ns_common.errors import NsError
 from ns_common.logging import NsLogger
@@ -35,7 +36,7 @@ def state_file(paths: Paths) -> Path:
 def load_state(paths: Paths) -> dict[str, Any]:
     """The saved state; empty when the file is missing or unreadable."""
     try:
-        data = json.loads(state_file(paths).read_text(encoding="utf-8"))
+        data = json.loads(read_text_retry(state_file(paths)))
     except (OSError, ValueError):
         return {}
     return data if isinstance(data, dict) else {}
@@ -80,10 +81,8 @@ def run_check(
     except NsError as e:
         log.warn("update_check_failed", str(e))
         return None
-    f = state_file(paths)
-    f.parent.mkdir(parents=True, exist_ok=True)
     saved = {"last_checked": now.isoformat(timespec="seconds"), "latest": result["latest"]}
-    f.write_text(json.dumps(saved, indent=2) + "\n", encoding="utf-8")
+    write_text_atomic(state_file(paths), json.dumps(saved, indent=2) + "\n")
     log.info("update_check", current=here, latest=result["latest"], available=result["update_available"])
     if result["update_available"] and notifications_enabled(paths):
         (toaster or notify.toast_or_note)(TITLE, message(result))
