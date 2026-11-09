@@ -12,9 +12,12 @@ either the old complete file or the new complete one, never a part of either.
   `BadZipFile`, and a crash there loses the zip for good; this builds the new zip beside it instead.)
 * Windows refuses `os.replace` while a reader has the target open (Python's `open` does not share delete),
   and refuses a reader's open for a few milliseconds while a replace is in flight. The writer retries the
-  replace (`REPLACE_TRIES`); readers wrap the open in `retry_busy` / `read_text_retry` / `read_bytes_retry`.
-  When a reader keeps the target open for the whole retry time (a player on an outbox video, a mail client on
-  a zip) the content is written over the old file in place instead of failing: the pre-swap behaviour.
+  replace with a growing pause for at most `REPLACE_WAIT_S` (15 s: a virus scan, a sync client or a player can
+  hold a file that long); readers wrap the open in `retry_busy` / `read_text_retry` / `read_bytes_retry`.
+  When the program does not let go in time the write FAILS with `FileInUseError` (`NS-E119`, also a
+  `PermissionError`), the old file is left whole and the temp file is removed. The content is never written
+  over the old file in place: a reader (or a crash) would meet it torn, and a torn `install_state.json` is
+  moved to `.bad`, where a write that fails loudly would have left the file as it was.
 * A crash leaves at most one `~ns<pid>-<thread>-<n>.tmp` beside the target (a short name no sibling glob such
   as `v.*` matches); `sweep_stale_tmp` removes the ones older than an hour, and the outbox copy and the
   diagnostics bundle call it before they write.
@@ -27,6 +30,7 @@ import itertools
 import os
 import re
 import shutil
+import stat
 import threading
 import time
 import zipfile
@@ -35,10 +39,15 @@ from functools import partial
 from pathlib import Path
 from typing import IO, BinaryIO
 
+from ns_common.errors import NsError
+
 BACKUP_SUFFIX = ".bak"
 BAD_SUFFIX = ".bad"
 TMP_SUFFIX = ".tmp"
-REPLACE_TRIES = 12
+#: How long a refused swap is retried before the write fails (seconds, in total).
+REPLACE_WAIT_S = 15.0
+_PAUSE_FIRST_S = 0.01
+_PAUSE_MAX_S = 0.25
 READ_TRIES = 6
 #: A temporary file nobody finished (a crash, a power cut) older than this is swept by the next writer.
 STALE_TMP_S = 3600.0
@@ -75,9 +84,22 @@ def sweep_stale_tmp(folder: Path, *, older_than_s: float | None = None) -> int:
     return removed
 
 
+def is_tmp_name(name: str) -> bool:
+    """True for the name of a temporary file of ours (`~ns<pid>-<thread>-<n>.tmp`): never real content."""
+    return _TMP_NAME.match(name) is not None
+
+
 def _discard(tmp: Path) -> None:
-    with contextlib.suppress(OSError):
+    try:
         tmp.unlink()
+    except PermissionError:
+        # `copy2` carries a read-only source's READONLY attribute onto the temp file, and Windows will not
+        # delete such a file until the attribute is cleared
+        with contextlib.suppress(OSError):
+            os.chmod(tmp, stat.S_IWRITE)
+            tmp.unlink()
+    except OSError:
+        pass
 
 
 def _sync(fh: BinaryIO) -> None:
@@ -92,32 +114,65 @@ def _sync_path(path: Path) -> None:
         _sync(fh)
 
 
+class FileInUseError(NsError, PermissionError):
+    """`NS-E119`: another program kept `path` open for the whole wait, so the swap was refused every time.
+
+    The old file is untouched. It is a `PermissionError` (an `OSError`) as well as an `NsError`, so callers
+    that already catch `OSError` around a write (the updater's progress lines, a restore's roll back, the key
+    store) keep catching it, and the ones that do not show the coded message and its hint.
+    """
+
+    def __init__(self, path: Path, waited_s: float) -> None:
+        NsError.__init__(self, "NS-E119", f"{path}: still open in another program after {waited_s:.0f} s")
+
+
+def _in_use(path: Path, waited_s: float, cause: PermissionError) -> PermissionError:
+    try:
+        return FileInUseError(path, waited_s)
+    except (OSError, KeyError, ValueError):  # contracts/errors.json unreadable: say it plainly instead
+        return cause
+
+
+def _waiting_cannot_help(dst: Path) -> bool:
+    """A folder in the way or a read-only file is refused for good; only an open file lets go by itself."""
+    try:
+        return dst.is_dir() or (dst.exists() and not os.access(dst, os.W_OK))
+    except OSError:
+        return False
+
+
 def replace_atomic(src: Path, dst: Path) -> None:
-    """`os.replace(src, dst)`, retried while Windows refuses it because a reader has `dst` open."""
-    for attempt in range(REPLACE_TRIES):
+    """`os.replace(src, dst)`, retried while Windows refuses it because another program has `dst` open.
+
+    The pause starts at 10 ms and doubles up to 250 ms; after `REPLACE_WAIT_S` in all it raises
+    `FileInUseError` (`NS-E119`) and `dst` is as it was. A folder in the way or a read-only `dst` raises the
+    plain `PermissionError` at once: waiting does not change that.
+    """
+    started = time.monotonic()
+    pause = _PAUSE_FIRST_S
+    while True:
         try:
-            os.replace(src, dst)  # Windows: briefly refused while a reader has the target open
+            os.replace(src, dst)  # Windows: refused while a program has the target open
             return
-        except PermissionError:
-            if attempt == REPLACE_TRIES - 1:
+        except PermissionError as e:
+            if _waiting_cannot_help(dst):
                 raise
-            time.sleep(min(0.01 * 2**attempt, 0.1))
+            waited = time.monotonic() - started
+            if waited >= REPLACE_WAIT_S:
+                raise _in_use(dst, waited, e) from e
+            time.sleep(min(pause, REPLACE_WAIT_S - waited))
+            pause = min(pause * 2, _PAUSE_MAX_S)
 
 
 def _publish(tmp: Path, path: Path) -> None:
     """Swap the finished temp file in; the temp file is removed whatever happens.
 
-    Windows refuses to replace a file another program holds open (the dashboard previewing an outbox video,
-    a mail or sync client holding a zip). After the retries the content is written over the old file in place
-    instead, which is what every writer did before this module and which an open reader does not block: the
-    writer does not fail, and only a reader that holds the file that long can meet it half written.
+    When the swap stays refused for `REPLACE_WAIT_S` the write fails (`FileInUseError`) and `path` keeps its
+    old content. It is deliberately NOT copied over the old file in place: that is the torn write this module
+    exists to prevent, and a crash in the middle of it leaves the file half written.
     """
     try:
-        try:
-            replace_atomic(tmp, path)
-        except PermissionError:
-            shutil.copyfile(tmp, path)
-            _discard(tmp)
+        replace_atomic(tmp, path)
     except BaseException:
         _discard(tmp)
         raise
@@ -164,8 +219,14 @@ def write_bytes_atomic(path: Path, data: bytes) -> Path:
     return path
 
 
-def write_chunks_atomic(path: Path, chunks: Iterable[bytes]) -> Path:
-    """Write the blocks of a download to `path` through a temp file; `path` shows only when all arrived."""
+def write_chunks_atomic(
+    path: Path, chunks: Iterable[bytes], *, verify: Callable[[Path], None] | None = None
+) -> Path:
+    """Write the blocks of a download to `path` through a temp file; `path` shows only when all arrived.
+
+    `verify(temp file)` runs on the finished temporary file before it is swapped in (a digest check). When it
+    raises, the temp file is deleted and nothing was ever visible under `path`.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = _tmp_for(path)
     try:
@@ -173,6 +234,8 @@ def write_chunks_atomic(path: Path, chunks: Iterable[bytes]) -> Path:
             for block in chunks:
                 fh.write(block)
             _sync(fh)
+        if verify is not None:
+            verify(tmp)
         _publish(tmp, path)
     except BaseException:
         _discard(tmp)

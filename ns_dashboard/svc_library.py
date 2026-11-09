@@ -12,7 +12,7 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, BinaryIO
 
-from ns_common.atomic import write_chunks_atomic
+from ns_common.atomic import write_chunks_atomic, write_text_atomic
 from ns_common.devmode import fake_footage
 from ns_common.errors import NsError
 from ns_common.secrets_names import SHORT_NAMES
@@ -47,7 +47,10 @@ MAX_UPDATE_BYTES = 200 * 1024 * 1024  # the Update zip is a few MB; the bundle c
 
 
 def _save_upload(fh: BinaryIO, dest: Path, limit: int, too_big: str) -> int:
-    """Write `fh` to `dest` in 1 MB blocks; more than `limit` bytes deletes the file and raises 413."""
+    """Write `fh` to `dest` in 1 MB blocks (through a temp file, so `dest` shows only when all of it arrived).
+
+    More than `limit` bytes raises 413 and nothing is saved: a same-named earlier upload is kept as it was.
+    An empty upload also saves nothing and an earlier file of that name is removed."""
     size = 0
 
     def blocks() -> Iterator[bytes]:
@@ -555,7 +558,7 @@ class LibraryService:
         if not text:
             dest.unlink(missing_ok=True)
             raise ApiError(400, "empty_file", f"{name}.sha256 is empty.")
-        side.write_text(text.splitlines()[0] + "\n", encoding="utf-8")
+        write_text_atomic(side, text.splitlines()[0] + "\n", newline=None)  # `ns update` reads it next
         self.s.log.warn("update_apply_file", "update started from an uploaded file", file=name)
         res = self.s.adapters.update.apply_file(dest)
         if res.get("state") == "error":

@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
-import os
-import subprocess
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Protocol
 
 from ns_common.paths import Paths
-from ns_common.secret_file import delete_secret, dpapi_protect, dpapi_unprotect, load_secret, store_secret
+from ns_common.secret_file import (  # restrict_to_user lives with the file it protects; re-exported here
+    delete_secret,
+    dpapi_protect,
+    dpapi_unprotect,
+    load_secret,
+    restrict_to_user,
+    store_secret,
+)
 from ns_common.secrets_names import KEY_NAMES, KEYRING_SERVICE, PEXELS_KEY, PIXABAY_KEY
 
 # One definition for the studio, the installer and Settings: ``ns_common.secrets_names``.
@@ -82,20 +87,6 @@ class MemoryStore:
         self.values.pop(name, None)
 
 
-def restrict_to_user(path: Path) -> None:
-    """Limit a file's ACL to the current user (and SYSTEM) with icacls. Best effort; never raises."""
-    user = os.environ.get("USERNAME")
-    if not user or os.name != "nt":
-        return
-    try:
-        subprocess.run(
-            ["icacls", str(path), "/inheritance:r", "/grant:r", f"{user}:F", "/grant:r", "*S-1-5-18:F"],
-            capture_output=True, check=False, timeout=30,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return
-
-
 class ResilientStore:
     """Credential Manager first, plus a DPAPI file the nightly run can read when Credential Manager cannot.
 
@@ -134,7 +125,7 @@ class ResilientStore:
         except Exception:  # noqa: BLE001 - best effort, the file copy is still removed
             pass
         try:
-            delete_secret(self.paths, name)
+            delete_secret(self.paths, name, lock_down=self._lock_down)
         except OSError:
             pass
 
@@ -146,8 +137,7 @@ class ResilientStore:
         except Exception as e:  # noqa: BLE001 - recorded, the file copy may still work
             failures.append(f"keyring: {type(e).__name__}")
         try:
-            path = store_secret(self.paths, name, value, protect=self._protect)
-            self._lock_down(path)
+            store_secret(self.paths, name, value, protect=self._protect, lock_down=self._lock_down)
         except OSError as e:
             failures.append(f"file: {e}")
         if len(failures) == 2:

@@ -11,9 +11,11 @@ from datetime import datetime
 from pathlib import Path, PurePosixPath
 
 from ns_common import __version__
-from ns_common.atomic import write_stream_atomic, write_zip_atomic
+from ns_common.atomic import is_tmp_name, write_stream_atomic, write_zip_atomic
 from ns_common.errors import NsError
 from ns_common.paths import Paths
+from ns_common.secret_file import FILE_NAME as SECRETS_FILE
+from ns_common.secret_file import restrict_to_user
 from ns_supervisor.doctor import desktop_dir
 
 MANIFEST = "backup-manifest.json"
@@ -38,7 +40,21 @@ def snapshot_db(db: Path, dest: Path) -> None:
 
 
 def _wanted(f: Path) -> bool:
+    # a `~ns<pid>-<thread>-<n>.tmp` is a write a crash cut off (or one in flight), never content to restore
+    if is_tmp_name(f.name):
+        return False
     return f.is_file() and f.suffix.lower() not in BLOCK_SUFFIXES and f.stat().st_size <= MAX_FILE_BYTES
+
+
+def _lock_if_secret(path: Path) -> None:
+    """Give `config/secrets.dpapi` its user-only ACL back after the restore wrote or copied it.
+
+    The file is machine-scope DPAPI with a fixed entropy, so its ACL is all that keeps another user's programs
+    from decrypting it. A file the restore creates (the restored one, and the copy kept under
+    `data\\backup\\pre-restore-*`) takes the folder's inherited ACL instead.
+    """
+    if path.name == SECRETS_FILE:
+        restrict_to_user(path)
 
 
 def make_backup(paths: Paths, out: Path | None = None, *, now: datetime | None = None) -> Path:
@@ -111,6 +127,7 @@ def restore_backup(
                     keep = saved / Path(*rel.parts)
                     keep.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(dest, keep)
+                    _lock_if_secret(keep)
                 touched.append((dest, keep))
                 if name == "data/studio.db":
                     for suffix in ("-wal", "-shm"):  # stale WAL files would corrupt the restored database
@@ -118,6 +135,7 @@ def restore_backup(
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 with z.open(info) as src:
                     write_stream_atomic(dest, src)  # a restored file is whole, or still the old one
+                _lock_if_secret(dest)
             except OSError as e:  # disk full, a locked database, no permission: put everything back
                 undone = _roll_back(touched)
                 raise NsError(
@@ -134,6 +152,7 @@ def _roll_back(touched: list[tuple[Path, Path | None]]) -> int:
         try:
             if keep is not None and keep.is_file():
                 shutil.copy2(keep, dest)
+                _lock_if_secret(dest)
             elif keep is None:
                 dest.unlink(missing_ok=True)
             count += 1
