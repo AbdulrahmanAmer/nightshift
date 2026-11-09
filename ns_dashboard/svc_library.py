@@ -11,7 +11,7 @@ import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, BinaryIO
 
-from ns_common.devmode import is_dev
+from ns_common.devmode import fake_footage
 from ns_common.errors import NsError
 from ns_common.secrets_names import SHORT_NAMES
 from ns_dashboard import formats, updater
@@ -309,9 +309,10 @@ class LibraryService:
         keys = self._footage_keys()
         order = ("pixabay", "pexels") if which == "auto" else (which,)
         usable = {name: keys[name] for name in order if keys.get(name)}
-        if not usable and is_dev(self.s.paths):
-            # a dev install (docs/DEV_MODE.md) fetches from the same synthetic source its jobs use, so the
-            # Footage page and the Assistant's fetch_footage can be tried without a key; a stored key wins
+        if not usable and fake_footage(self.s.paths):
+            # a dev install or a fake_footage engine test (docs/DEV_MODE.md) fetches from the same synthetic
+            # source its jobs use, so the Footage page and the Assistant's fetch_footage can be tried without
+            # a key; a stored key wins
             from ns_studio.media.clip_sources import FakeClipSource
 
             usable = {"fake": "dev"}

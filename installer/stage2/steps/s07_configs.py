@@ -15,10 +15,10 @@ from installer.stage2.answers import InstallerAnswers, blank_secrets_in_file, sl
 from installer.stage2.base import Step
 from installer.stage2.context import StepContext
 from installer.stage2.errors import make_error
-from installer.stage2.runtime_cfg import ensure_baseline
+from installer.stage2.runtime_cfg import ensure_baseline, update_runtime
 from installer.stage2.secrets import KEY_NAMES
 from ns_common.config import load_channel, load_runtime, save_channel
-from ns_common.models import Channel, Voice
+from ns_common.models import Channel, Runtime, Voice
 
 OPENCODE_CONFIG: dict[str, Any] = {
     "$schema": "https://opencode.ai/config.json",
@@ -36,6 +36,19 @@ OPENCODE_CONFIG: dict[str, Any] = {
     "autoupdate": False,
     "share": "disabled",
 }
+
+
+def apply_engine_test(ctx: StepContext, rt: Runtime) -> None:
+    """Put the engine-test answers into ``rt`` on every run.
+
+    ``build_runtime`` writes them only when runtime.json does not exist yet, so a re-run or an upgrade over an
+    existing runtime.json would keep the old values and the answer would silently do nothing. The footage
+    switch follows the answer both ways; the fake voice engine is set only when asked, because without the
+    answer nothing here knows which real engine the earlier steps chose.
+    """
+    rt.fake_footage = ctx.fake_footage
+    if ctx.fake_voice:
+        rt.tts.engine = "fake"
 
 
 def channel_from_answers(ans: InstallerAnswers) -> Channel:
@@ -142,6 +155,7 @@ class S07Configs(Step):
         """Complete runtime.json, write opencode.json and the channel, store and blank the secrets."""
         ans = ctx.ensure_answers()
         ensure_baseline(ctx)
+        update_runtime(ctx, lambda rt: apply_engine_test(ctx, rt))
 
         channel = channel_from_answers(ans)
         if ctx.paths.channel_file(channel.slug).exists():
