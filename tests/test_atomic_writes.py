@@ -844,3 +844,16 @@ def test_an_update_zip_that_stops_half_way_leaves_no_zip_and_no_temp_file(tmp_pa
         z.name,
         z.name + ".sha256",
     ]
+
+
+def test_an_update_upload_that_is_too_big_or_empty_leaves_nothing_under_its_name(tmp_path: Path) -> None:
+    from ns_dashboard.errors import ApiError
+    from ns_dashboard.svc_library import _save_upload
+
+    dest = tmp_path / "Nightshift-Update-0.2.0.zip"
+    with pytest.raises(ApiError) as ei:
+        _save_upload(io.BytesIO(b"x" * 2_000_000), dest, 1_500_000, "too big")
+    assert ei.value.status == 413 and list(tmp_path.iterdir()) == []
+    assert _save_upload(io.BytesIO(b""), dest, 10, "too big") == 0 and list(tmp_path.iterdir()) == []
+    assert _save_upload(io.BytesIO(b"PK1234"), dest, 10, "too big") == 6
+    assert dest.read_bytes() == b"PK1234" and [p.name for p in tmp_path.iterdir()] == [dest.name]
