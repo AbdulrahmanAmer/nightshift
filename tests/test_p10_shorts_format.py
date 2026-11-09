@@ -209,7 +209,10 @@ def test_a_duplicated_short_format_shapes_the_captions_file(tmp_home: Path) -> N
     assert int(fields[2]) == round(92 * 720 / 1080)
     tl = ctx.read_json("captions/s1.json")
     assert tl["ass_opts"]["canvas"] == [720, 1280] and tl["ass_opts"]["anchor_y_pct"] == 50.0
-    assert tl["ass_opts"]["safe_zones"] == [150, 200]
+    assert tl["ass_opts"]["safe_zones"] == [
+        100,
+        133,
+    ]  # 150 and 200 px at 1080 wide, as pixels of a 720-wide frame (P10b)
     assert ctx.read_json("formats.json")["short"]["id"] == copy_id
 
 

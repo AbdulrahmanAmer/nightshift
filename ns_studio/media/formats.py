@@ -246,7 +246,11 @@ def format_problems(fmt: Format, known_styles: Collection[str]) -> list[str]:
         out.append("duration.min_s is larger than duration.max_s")
     if fmt.shots is not None and fmt.shots.min_s > fmt.shots.max_s:
         out.append("shots.min_s is larger than shots.max_s")
-    if fmt.safe_margins.top + fmt.safe_margins.bottom >= fmt.canvas.h:
+    variant = variant_for(fmt)
+    top, bottom = scaled_margins(
+        fmt.safe_margins.top, fmt.safe_margins.bottom, variant, (fmt.canvas.w, fmt.canvas.h)
+    )
+    if top + bottom >= fmt.canvas.h:
         out.append("safe margins leave no room for captions")
     unknown = [s for s in fmt.captions.styles_allowed if s not in known_styles]
     if unknown:
@@ -341,7 +345,56 @@ def definition_problems(raw: Any, stem: str | None = None) -> list[str]:
         return fields_problem(e).split("; ")
     if stem is not None and fmt.id != stem:
         return [f"id {fmt.id!r} must equal the file name"]
+    return kind_problems(fmt)
+
+
+def kind_problems(fmt: Format) -> list[str]:
+    """Why a loaded format cannot do what its kind is for (empty = it can).
+
+    A short, long or square format must be able to draw a story video; a clip format a clip layout.
+    """
     return story_role_problems(fmt) if fmt.kind in STORY_KINDS else clip_layout_problems(fmt)
+
+
+def story_use_problems(format_id: str, *, paths: Paths | None = None) -> list[str]:
+    """Why `format_id` cannot draw a Short or a full video (empty = it can).
+
+    The id is unknown, its file does not load (the file's own problem is named), or the studio refuses it
+    for a story video (a clip layout, a region off the canvas, a shot range that is upside down, ...). This is
+    what a series design is checked with when it is saved and when a part is queued.
+    """
+    try:
+        fmt = get_format(format_id, paths=paths)
+    except StudioError as e:
+        return [e.detail]
+    return story_role_problems(fmt)
+
+
+def any_use_problems(format_id: str, *, paths: Paths | None = None) -> list[str]:
+    """Why `format_id` is of no use to a channel (empty = a video or a clip layout can be drawn from it)."""
+    try:
+        fmt = get_format(format_id, paths=paths)
+    except StudioError as e:
+        return [e.detail]
+    return kind_problems(fmt)
+
+
+def declared_kind(format_id: str, *, paths: Paths | None = None) -> str | None:
+    """The `kind` a format's file says, even when the file does not load as a whole; None when it says none.
+
+    A series design that names a format whose file is broken still has a kind in mind (the design's `short`
+    format shapes the Shorts). Reading it lets the fallback choose a format of the same kind.
+    """
+    owner = (paths or Paths.from_env()).formats_dir
+    for folder in (owner, FORMATS_DIR):
+        path = folder / f"{format_id}.yaml"
+        try:
+            raw = yaml.safe_load(read_text_retry(path))
+        except (OSError, yaml.YAMLError):
+            continue
+        if isinstance(raw, dict) and isinstance(raw.get("kind"), str):
+            return raw["kind"]
+    return None
 
 
 # ---------- what a render takes from a format ----------
@@ -367,9 +420,37 @@ def variant_for(fmt: Format) -> Variant:
     return "vertical" if fmt.canvas.h >= fmt.canvas.w else "landscape"
 
 
+#: The frame the caption styles' pixel sizes and the platform safe zones are written for, per variant. This is
+#: the one place the two sizes are written: captions, safe margins, QC and the renderer's `VERTICAL` and
+#: `LANDSCAPE` all read it.
+REFERENCE_CANVAS: dict[Variant, tuple[int, int]] = {"vertical": (1080, 1920), "landscape": (1920, 1080)}
+
+
 def reference_canvas(variant: Variant) -> tuple[int, int]:
     """The canvas the caption styles' pixel geometry is written for."""
-    return (1080, 1920) if variant == "vertical" else (1920, 1080)
+    return REFERENCE_CANVAS[variant]
+
+
+def canvas_scale(variant: Variant, canvas: tuple[int, int] | None) -> float:
+    """How much larger a frame is than the reference frame of its variant (width over reference width).
+
+    Font sizes, side margins, outlines and the safe margins of a format are pixels at the reference size; on
+    a frame of another size they are multiplied by this. A frame without a size of its own (None) and the
+    reference frame itself give exactly 1.
+    """
+    if canvas is None:
+        return 1.0
+    return canvas[0] / REFERENCE_CANVAS[variant][0]
+
+
+def scaled_margins(
+    top: int, bottom: int, variant: Variant, canvas: tuple[int, int] | None
+) -> tuple[int, int]:
+    """(top, bottom) safe margins, written in pixels at the reference frame, as pixels of `canvas`."""
+    k = canvas_scale(variant, canvas)
+    if k == 1.0:
+        return top, bottom
+    return round(top * k), round(bottom * k)
 
 
 def footage_orientation(fmt: Format) -> Orientation:

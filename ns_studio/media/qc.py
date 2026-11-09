@@ -12,6 +12,7 @@ from ns_common.errors import NsError
 from ns_common.models import QcCheck, QcResult
 from ns_studio.context import JobContext
 from ns_studio.media.audio import Loudness, measure_loudness, speech_onset_s
+from ns_studio.media.formats import reference_canvas
 from ns_studio.stages import Tenant
 from ns_studio.text.story_profile import NORMAL, Mark, StoryProfile, duration_profile, job_mark
 
@@ -133,7 +134,7 @@ def hook_check(video: Path, first_caption_s: float | None) -> QcCheck:
 
 def aspect_check(video: Path, kind: Kind, want: tuple[int, int] | None = None) -> QcCheck:
     """The frame size the video was rendered at (`want`), else 1080x1920 (Short) or 1920x1080 (master)."""
-    want = want or ((1080, 1920) if kind == "short" else (1920, 1080))
+    want = want or reference_canvas("vertical" if kind == "short" else "landscape")
     got = ff.video_size(video)
     return QcCheck(passed=got == want, value=f"{got[0]}x{got[1]}", limit=f"{want[0]}x{want[1]}")
 
@@ -304,7 +305,7 @@ def run_qc_master(ctx: JobContext) -> None:
     profile, mark = duration_profile(ctx), job_mark(ctx)
     long_res = run_qc(
         "long", Path(long_info["path"]), "long",
-        drift_ms=drift, long_max_s=long_max, profile=profile, mark=mark,
+        drift_ms=drift, long_max_s=long_max, canvas=_canvas_of(long_info), profile=profile, mark=mark,
     )
     results = [with_checks(long_res, {"chapters": chapters_check(doc), "midroll": midroll_check(doc)})]
     has_report = ctx.file("render/report.json").exists()
