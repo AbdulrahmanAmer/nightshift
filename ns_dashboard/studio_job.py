@@ -238,11 +238,16 @@ def error_event(e: BaseException) -> dict[str, Any]:
     """Fields of the `error` event: the `NS-` code and detail of a coded condition, else the exception."""
     code = getattr(e, "code", None)
     coded = isinstance(code, str) and code.startswith("NS-")
-    return {
+    fields: dict[str, Any] = {
         "code": code if coded else None,
         "detail": str(getattr(e, "detail", "")) if coded else "",
         "message": f"{type(e).__name__}: {e}",
     }
+    data = getattr(e, "data", None)
+    hint = data.get("hint") if coded and isinstance(data, dict) else None
+    if isinstance(hint, str) and hint:  # a check's hint for this very job (D-25) must reach the Queue card
+        fields["hint"] = hint
+    return fields
 
 
 def main(argv: list[str] | None = None) -> int:

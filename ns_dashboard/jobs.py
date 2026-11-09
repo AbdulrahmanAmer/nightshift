@@ -21,6 +21,7 @@ from ns_common.textstats import word_count
 from ns_dashboard.errors import AdapterUnavailable
 from ns_dashboard.events import EventHub
 from ns_dashboard.state import LockedDb
+from ns_studio.errors import hint_of
 
 KINDS = ("run", "clip", "learn", "verify", "series_part", "apply_voice")
 STATUSES = ("queued", "running", "done", "failed", "cancelled")
@@ -760,7 +761,7 @@ class JobWorker:
             self.log.warn("job_unavailable", str(e), job_id=rec.job_id)
             self._end_hook(rec)
         except NsError as e:
-            self.store.finish(rec.job_id, "failed", str(e), self._failure(ctl, e.code, e.definition.hint))
+            self.store.finish(rec.job_id, "failed", str(e), self._failure(ctl, e.code, hint_of(e)))
             self.log.error("job_failed", str(e), job_id=rec.job_id, code=e.code)
             self._end_hook(rec)
         except Exception as e:  # the worker thread must survive any handler failure
