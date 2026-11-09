@@ -5,7 +5,7 @@ are kept between runs and maintained by the verification loop (docs/VERIFICATION
 starts as `U`; `tests/test_verification_inventory.py` fails when the code has an item this
 file does not list.
 
-Items: 260 (V-dev 151, V-ci 52, V-gpu 0, U 57).
+Items: 260 (V-dev 148, V-ci 52, V-gpu 0, U 60).
 
 | kind | id | status | evidence |
 |---|---|---|---|
@@ -45,7 +45,7 @@ Items: 260 (V-dev 151, V-ci 52, V-gpu 0, U 57).
 | api | `POST /api/jobs/{job_id}/cancel` | V-ci | tests/test_dashboard_jobs.py cancel tests |
 | api | `POST /api/jobs/{job_id}/dismiss` | V-dev | journey-2026-11-04.md (three failed cards hidden) |
 | api | `GET /api/notes` | V-dev | test-loop-2026-11-08.md 2026-11-09 08:50-08:58 (0.1.12 dev, runs/qa/croutes) |
-| api | `POST /api/notes/clear` | V-dev | test-loop-2026-11-08.md 2026-11-09 08:50-08:58 (0.1.12 dev, runs/qa/croutes) |
+| api | `POST /api/notes/clear` | U |  |
 | api | `GET /api/runs` | V-dev | test-loop-2026-11-05.md |
 | api | `GET /api/logs/tail` | V-dev | test-loop-2026-11-08.md 2026-11-09 08:50-08:58 (0.1.12 dev, runs/qa/croutes) |
 | api | `GET /api/logs/components` | V-dev | test-loop-2026-11-08.md 2026-11-09 08:50-08:58 (0.1.12 dev, runs/qa/croutes) |
@@ -64,7 +64,7 @@ Items: 260 (V-dev 151, V-ci 52, V-gpu 0, U 57).
 | api | `GET /api/voices` | V-dev | journey-2026-11-04.md |
 | api | `POST /api/voices/preview` | V-dev | test-loop-2026-11-08.md 2026-11-09 08:50-08:58 (0.1.12 dev, runs/qa/croutes) |
 | api | `GET /api/voices/pending` | V-dev | test-loop-2026-11-08.md 2026-11-09 08:50-08:58 (0.1.12 dev, runs/qa/croutes) |
-| api | `POST /api/voices/apply-pending` | V-dev | test-loop-2026-11-08.md 2026-11-09 08:50-08:58 (0.1.12 dev, runs/qa/croutes) |
+| api | `POST /api/voices/apply-pending` | U |  |
 | api | `POST /api/voices/design` | V-dev | test-loop-2026-11-08.md 2026-11-09 08:50-08:58 (0.1.12 dev, runs/qa/croutes) |
 | api | `POST /api/voices/clone` | V-dev | test-loop-2026-11-08.md 2026-11-09 08:50-08:58 (0.1.12 dev, runs/qa/croutes) |
 | api | `GET /api/library/ideas` | V-dev | journey-2026-11-04.md |
@@ -91,7 +91,7 @@ Items: 260 (V-dev 151, V-ci 52, V-gpu 0, U 57).
 | api | `GET /api/assistant/history` | V-ci | tests/test_dashboard_assistant_history.py |
 | api | `GET /api/assistant/conversations` | V-dev | test-loop-2026-11-08.md 2026-11-09 08:50-08:58 (0.1.12 dev, runs/qa/croutes) |
 | api | `GET /api/assistant/tools` | V-dev | journey-2026-11-04.md |
-| api | `POST /api/assistant/queue/run` | V-dev | test-loop-2026-11-08.md 2026-11-09 08:50-08:58 (0.1.12 dev, runs/qa/croutes) |
+| api | `POST /api/assistant/queue/run` | U |  |
 | cli | `ns stop` | V-dev | test-loop-2026-11-05.md |
 | cli | `ns doctor` | V-ci | tests/test_ns_doctor.py |
 | cli | `ns verify` | V-dev | test-loop-2026-11-05.md (--quick, all checks passed) |
