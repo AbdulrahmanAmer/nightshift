@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import dataclasses
-import os
 import zlib
 from collections.abc import Sequence
 from pathlib import Path
@@ -11,6 +10,7 @@ from typing import Any
 
 from ns_common import ffmpeg as ff
 from ns_common.errors import NsError
+from ns_common.ffmpeg import concat_list_text
 from ns_studio.context import JobContext
 from ns_studio.media.audio import assemble_audio, loudnorm
 from ns_studio.media.caption_plan import (
@@ -53,11 +53,18 @@ from ns_studio.media.render import (
     FINAL_LUFS,
     FINAL_TP,
     LANDSCAPE,
+    ass_filter,
     backdrop_luma,
+    cat_chains,
+    clear_parts,
+    clip_inputs,
     encoder_args,
     escape_filter_path,
+    join_parts,
+    part_folder,
+    part_path,
     post_chain,
-    shot_chain,
+    with_cpu_fallback,
 )
 from ns_studio.media.shotplan import Shot, beat_spans, plan_slots
 from ns_studio.stages import Tenant
@@ -188,19 +195,22 @@ def build_segment_graph(
     chapter_ass: Path | None,
     card_ass_path: Path | None,
     fonts_dir: Path | None = None,
+    *,
+    ass_offset_s: float = 0.0,
+    phase_start: int | None = None,
 ) -> str:
     """Filter graph of one chapter segment: optional title card, then its shots, then colour and captions.
 
-    With a card, input 0 is the colour source and shot k is input k+1.
+    With a card, input 0 is the colour source and shot k is input k+1. A part of a long chapter (see
+    `render_segment`) is the same graph over some of the chapter's shots: `ass_offset_s` is where the part
+    starts in chapter time (the chapter captions speak in chapter time), and `phase_start` the place of its
+    first shot in the chapter, which the handheld drift follows.
     """
-    w, h = LANDSCAPE
     off = 1 if card_frames > 0 else 0
-    chains = [
-        shot_chain(i + off, s, w, h, fps, edges[i + 1] - edges[i], treatment.zoom)
-        for i, s in enumerate(shots)
-    ]
-    labels = "".join(f"[v{i + off}]" for i in range(len(shots)))
-    chains.append(f"{labels}concat=n={len(shots)}:v=1:a=0[cat]")
+    frames = [edges[i + 1] - edges[i] for i in range(len(shots))]
+    chains = cat_chains(
+        shots, frames, LANDSCAPE, fps, treatment.zoom, first_input=off, phase_start=phase_start
+    )
     chains.append(f"[cat]{post_chain(treatment, None, None)}[vs]")  # colour/grain never touch the card
     last = "[vs]"
     if card_frames > 0:
@@ -213,10 +223,7 @@ def build_segment_graph(
         chains.append("[vc][vs]concat=n=2:v=1:a=0[cc]")
         last = "[cc]"
     if chapter_ass is not None:
-        sub = f"ass=filename={escape_filter_path(chapter_ass)}"
-        if fonts_dir is not None and fonts_dir.is_dir():
-            sub += f":fontsdir={escape_filter_path(fonts_dir)}"
-        chains.append(f"{last}{sub},format=yuv420p[vout]")
+        chains.append(f"{last}{ass_filter(chapter_ass, fonts_dir, ass_offset_s)},format=yuv420p[vout]")
     else:
         chains.append(f"{last}format=yuv420p[vout]")
     return ";".join(chains)
@@ -260,31 +267,41 @@ def render_segment(
     treatment: VisualTreatment,
     card: ChapterCard,
     out: Path,
+    *,
+    max_inputs: int = ff.MAX_CLIP_INPUTS,
 ) -> Path:
-    """Render one chapter (card + shots, captions burned in) to a video-only mp4."""
+    """Render one chapter (card + shots, captions burned in) to a video-only mp4.
+
+    A chapter has at least one shot per beat, so there is no upper bound on its shots. With more than
+    `max_inputs` of them the chapter is rendered in parts of at most that many and the parts are copied
+    together (`render_segment_in_parts`): the command line is the same size for 16 shots and for 1,000.
+    """
     fps = ctx.runtime.video.fps
     seg_f, aud_f, end_f = round(t.seg_start * fps), round(t.audio_start * fps), round(t.end * fps)
     card_frames, content = aud_f - seg_f, end_f - aud_f
     if not shots:
         raise NsError("NS-E401", f"chapter {t.n} has no shots")
     edges = segment_edges(shots, aud_f, content, fps)
+    frames = [edges[i + 1] - edges[i] for i in range(len(shots))]
     fit_chapter_contrast(ctx, t, shots)
     card_path = None
-    inputs: list[str] = []
-    # Same rule as `render_video`: graph in a script file, files named relative to the folder they share.
-    base = ff.common_dir([*(s.path for s in shots), out])
+    card_input: list[str] = []
     if card_frames > 0:
         card_path = ctx.file(f"captions/card_c{t.n}.ass")
         card_path.write_text(card_ass(t.title, t.n, card), encoding="utf-8")
-        inputs += ["-f", "lavfi", "-t", f"{card_frames / fps + 0.5:.2f}", "-i",
-                   f"color=c={card.background.replace('#', '0x')}:s=1920x1080:r={fps}"]
-    for i, s in enumerate(shots):
-        need = (edges[i + 1] - edges[i]) / fps + 0.5
-        inputs += ["-ss", f"{s.ss:.2f}", "-t", f"{need:.2f}", "-i", ff.relative_arg(s.path, base)]
+        card_input = ["-f", "lavfi", "-t", f"{card_frames / fps + 0.5:.2f}", "-i",
+                      f"color=c={card.background.replace('#', '0x')}:s=1920x1080:r={fps}"]
+    out.parent.mkdir(parents=True, exist_ok=True)
+    if len(shots) > max_inputs:
+        return render_segment_in_parts(
+            ctx, t, shots, edges, card_frames, card_path, card_input, treatment, out, max_inputs=max_inputs
+        )
+    # Same rule as `render_video`: graph in a script file, files named relative to the folder they share.
+    base = ff.common_dir([*(s.path for s in shots), out])
+    inputs = [*card_input, *clip_inputs(shots, frames, fps, base)]
     graph = build_segment_graph(
         shots, edges, card_frames, fps, treatment, ctx.file(f"captions/long_c{t.n}.ass"), card_path, FONTS_DIR
     )
-    out.parent.mkdir(parents=True, exist_ok=True)
     video = ctx.runtime.video
     script = ff.filter_complex_args(
         graph, out.with_name(f"{out.stem}.filtergraph.txt"), log=ctx.log, base=base
@@ -298,26 +315,78 @@ def render_segment(
             folder=out.parent, out=out, log=ctx.log, cwd=base,
         )
 
-    try:
-        attempt(False)
-    except NsError as e:
-        if video.encoder != "h264_nvenc" or e.code == "NS-E104":  # a full disk is not an encoder problem
-            raise
-        ctx.log.warn("nvenc_failed", code="NS-W401", msg="falling back to libx264")
-        attempt(True)
+    with_cpu_fallback(video, ctx.log, attempt)
     return out
 
 
-def concat_list_text(paths: Sequence[Path]) -> str:
-    """Body of an FFmpeg concat-demuxer list file; a quote in a path is written close-escape-reopen.
+def render_segment_in_parts(
+    ctx: JobContext,
+    t: ChapterTiming,
+    shots: Sequence[Shot],
+    edges: Sequence[int],
+    card_frames: int,
+    card_path: Path | None,
+    card_input: list[str],
+    treatment: VisualTreatment,
+    out: Path,
+    *,
+    max_inputs: int,
+) -> Path:
+    """The chapter of `render_segment`, rendered in parts of at most `max_inputs` shots and joined.
 
-    Every name is absolute: the demuxer reads a relative one against the LIST's folder, not the process's.
+    The first part carries the title card. Every part is the chapter graph over its own shots (same chains,
+    colour, grain, chapter captions); its captions clock is moved to where the part starts in chapter time,
+    and its handheld drift continues from the shot before it. The parts are copied together through a list
+    file into `out`, a video-only mp4 like the one command makes. A part that fails on NVENC sends the whole
+    chapter back to libx264: parts of two encoders cannot be joined by copying.
     """
-    quote = chr(39)
-    escaped = quote + chr(92) + quote + quote
-    return "".join(
-        f"file {quote}{Path(os.path.abspath(p)).as_posix().replace(quote, escaped)}{quote}\n" for p in paths
+    video = ctx.runtime.video
+    fps = video.fps
+    chapter_ass = ctx.file(f"captions/long_c{t.n}.ass")
+    frames = [edges[i + 1] - edges[i] for i in range(len(shots))]
+    folder = part_folder(out)
+    folder.mkdir(parents=True, exist_ok=True)
+    ranges = ff.group_ranges(len(shots), max_inputs)
+    on_card = 1 if card_frames > 0 else 0  # with a card, shot k is input k + 1 of the one command
+    ctx.log.info(
+        "render_parts", f"chapter {t.n}: {len(shots)} clips in {len(ranges)} parts of at most {max_inputs}",
+        chapter=t.n, clips=len(shots), parts=len(ranges), max_inputs=max_inputs, folder=str(folder),
     )
+
+    def attempt(force_cpu: bool) -> None:
+        parts: list[Path] = []
+        lengths: list[int] = []
+        for k, (a, b) in enumerate(ranges):
+            part = part_path(folder, k)
+            mine = shots[a:b]
+            first = k == 0
+            graph = build_segment_graph(
+                mine, edges[a : b + 1], card_frames if first else 0, fps, treatment, chapter_ass,
+                card_path if first else None, FONTS_DIR,
+                ass_offset_s=0.0 if first else (card_frames + edges[a]) / fps, phase_start=on_card + a,
+            )
+            base = ff.common_dir([*(s.path for s in mine), part])
+            script = ff.filter_complex_args(
+                graph, part.with_name(f"{part.stem}.filtergraph.txt"), log=ctx.log, base=base
+            )
+            inputs = [*(card_input if first else []), *clip_inputs(mine, frames[a:b], fps, base)]
+            run_ffmpeg(
+                [*inputs, *script, "-map", "[vout]", "-an",
+                 *encoder_args(video, force_cpu=force_cpu), "-r", str(fps), "-pix_fmt", "yuv420p",
+                 ff.relative_arg(part, base)],
+                folder=folder, out=part, log=ctx.log, cwd=base,
+            )
+            parts.append(part)
+            lengths.append(sum(frames[a:b]) + (card_frames if first else 0))
+        join_parts(folder, parts, lengths, fps, ["-map", "0:v", "-c:v", "copy", "-an"], out, log=ctx.log)
+
+    try:
+        with_cpu_fallback(video, ctx.log, attempt)
+    except BaseException:
+        clear_parts(folder, keep_scripts=True)  # the graphs stay: they are what a failure report needs
+        raise
+    clear_parts(folder, keep_scripts=False)
+    return out
 
 
 class RenderMasterStage:

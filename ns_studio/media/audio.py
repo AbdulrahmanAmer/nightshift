@@ -222,10 +222,18 @@ def loudnorm(
         shutil.move(str(tmp), str(out_wav))
 
 
-def assemble_audio(segments: Sequence[Path | float], out_wav: Path, *, sr: int = 48000) -> Path:
-    """Concatenate audio files (Path) and silences (float seconds) into one mono WAV at `sr` Hz."""
+def assemble_audio(
+    segments: Sequence[Path | float], out_wav: Path, *, sr: int = 48000, max_inputs: int = ff.MAX_AUDIO_INPUTS
+) -> Path:
+    """Concatenate audio files (Path) and silences (float seconds) into one mono WAV at `sr` Hz.
+
+    Each segment is one input of the command, so a long list is assembled in parts of at most `max_inputs`
+    (mono WAV at `sr`, so joining them by copy loses nothing) and the command stays the same size.
+    """
     if not segments:
         raise NsError("NS-E401", "nothing to assemble")
+    if len(segments) > max_inputs:
+        return _assemble_in_parts(segments, out_wav, sr=sr, max_inputs=max_inputs)
     args: list[str] = []
     chains: list[str] = []
     for k, seg in enumerate(segments):
@@ -239,6 +247,27 @@ def assemble_audio(segments: Sequence[Path | float], out_wav: Path, *, sr: int =
     out_wav.parent.mkdir(parents=True, exist_ok=True)
     run_ffmpeg([*args, "-filter_complex", graph, "-map", "[out]", "-ar", str(sr), "-ac", "1",
                 "-c:a", "pcm_s16le", str(out_wav)], folder=out_wav.parent, out=out_wav)
+    return out_wav
+
+
+def _assemble_in_parts(
+    segments: Sequence[Path | float], out_wav: Path, *, sr: int, max_inputs: int
+) -> Path:
+    """`assemble_audio` for more than `max_inputs` segments: parts of at most that many, joined by copy."""
+    folder = out_wav.with_name(f"{out_wav.stem}.parts")
+    folder.mkdir(parents=True, exist_ok=True)
+    try:
+        parts = [
+            assemble_audio(segments[a:b], folder / f"part{k:04d}.wav", sr=sr, max_inputs=max_inputs)
+            for k, (a, b) in enumerate(ff.group_ranges(len(segments), max_inputs))
+        ]
+        lst = folder / "parts.txt"
+        lst.write_text(ff.concat_list_text(parts), encoding="utf-8")
+        out_wav.parent.mkdir(parents=True, exist_ok=True)
+        run_ffmpeg(["-f", "concat", "-safe", "0", "-i", str(lst), "-c", "copy", str(out_wav)],
+                   folder=out_wav.parent, out=out_wav)
+    finally:
+        shutil.rmtree(folder, ignore_errors=True)
     return out_wav
 
 

@@ -17,7 +17,12 @@ from typing import Any
 
 from installer.stage2.devmode import MIN_FREE_GB, MIN_RAM_GB, relax_checks
 from installer.stage2.sysinfo import is_blackwell
-from installer.stage2.web.pathcheck import home_problem
+from installer.stage2.web.pathcheck import (
+    FOLDER_FOREIGN,
+    FOLDER_KEPT,
+    foreign_warning,
+    home_problem,
+)
 from installer.stage2.web.plan import pinned, required_free_gb
 
 COPY_FILE = Path(__file__).with_name("operator_copy.json")
@@ -402,6 +407,7 @@ def disk_check(
     isfile_fn: Callable[[str], bool] = os.path.isfile,
     layout_fn: Callable[[str], str | None] | None = None,
     existing_fn: Callable[[str], str | None] | None = None,
+    kind_fn: Callable[[str], str] | None = None,
     dev: bool = False,
 ) -> dict[str, Any]:
     """DiskCheck for an install folder (or, with ``models``, for a models folder).
@@ -412,11 +418,15 @@ def disk_check(
 
     ``layout_fn`` says why the folder clashes with where the program was extracted or lives in Downloads or
     OneDrive; ``existing_fn`` names an install that is already in the folder (setup then updates it).
+    ``kind_fn`` says what is in the folder (the setup window passes ``pathcheck.folder_kind``; without it the
+    folder is not looked at): ``folder`` carries the answer, and a foreign folder (other files, not
+    Nightshift) gets a ``warning`` the window shows and the person confirms (D-21). It stays ``ok``.
     """
     need = required_free_gb(tier, dev=dev)
     result: dict[str, Any] = {
         "path": path, "exists": os.path.exists(path), "drive": None, "freeGb": None, "type": "Unknown",
         "needGb": need, "ok": False, "message": None, "modelsFound": models,
+        "folder": None, "warning": None,
     }
     if models is not None:
         result["ok"] = models["files"] > 0
@@ -436,6 +446,7 @@ def disk_check(
     if isfile_fn(path):
         result["message"] = "That is a file, not a folder"
         return result
+    result["folder"] = what = kind_fn(path) if kind_fn else None
     known = next((d for d in drives if d["letter"] == letter), None)
     if known:
         result["freeGb"] = known["freeGb"]
@@ -457,6 +468,11 @@ def disk_check(
         existing = existing_fn(path) if existing_fn else None
         if existing:
             result["message"] += f". {existing}"
+        if what == FOLDER_FOREIGN:
+            result["warning"] = foreign_warning(path)
+            result["message"] += f". {result['warning']}"
+        elif what == FOLDER_KEPT:
+            result["message"] += ". The data an earlier Nightshift left here is kept and used"
     else:
         result["message"] = f"Only {free:.0f} GB free on {letter}:. Nightshift needs {need} GB"
     return result

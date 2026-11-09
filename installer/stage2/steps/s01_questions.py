@@ -13,6 +13,7 @@ from typing import Any
 
 import httpx
 
+from installer.stage2 import reinstall
 from installer.stage2.answers import (
     AnswersError,
     InstallerAnswers,
@@ -36,6 +37,7 @@ from installer.stage2.sysinfo import (
     recommended_tier,
     required_free_gb,
 )
+from installer.stage2.web.pathcheck import FOLDER_FOREIGN, folder_kind, foreign_warning, layout_problem
 from installer.stage2.winenv import HOME_VAR, get_user_env, set_user_env
 from ns_common.errors import NsError
 from ns_common.pathrules import ascii_problem
@@ -127,8 +129,11 @@ class S01Questions(Step):
             return ctx.ui.ask(prompt, default)
         return default
 
+    _ran = False        # run() did the work in this process (verify() then has the lines already)
+
     def check(self, ctx: StepContext) -> bool:
-        """True when a valid answers file from an earlier run exists and its secrets are stored."""
+        """True when a valid answers file from an earlier run exists, its secrets are stored and the answers
+        in use (``--answers``, next to INSTALL.cmd, the window's choices) do not change it (D-14)."""
         if ctx.ui.bridge and not ctx.state.is_done(self.id):
             return False        # the setup window writes a first answers.json before this step has run
         f = self._answers_file(ctx)
@@ -138,10 +143,25 @@ class S01Questions(Step):
             ans = build_answers(load_raw(f))
         except AnswersError:
             return False
+        earlier = reinstall.kept_answers(ctx)
+        if earlier is not None and reinstall.changes(ctx, earlier[0], ctx.raw_answers):
+            return False        # the new answers win; run() says so and rebuilds what comes from them
+        if reinstall.unfinished_choices(ctx):
+            return False  # a window's choices were saved, never applied; the file in use replaces them
+        if reinstall.new_keys(ctx):
+            return False  # a key the key store does not hold: run() checks and stores it (D-14)
+        reinstall.forget_kept(ctx)  # nothing differs: the window's copy of the earlier answers is used up
         ctx.answers = ctx.constrain(ans)
         return True
 
     # ---- home ----
+    @staticmethod
+    def _taken(ctx: StepContext, candidate: Path) -> bool:
+        """A default folder that must not be offered: someone's other files are in it, or the extracted
+        program (D-21). An earlier install or its kept data is offered: it is the way back to them."""
+        return (folder_kind(str(candidate)) == FOLDER_FOREIGN
+                or layout_problem(str(candidate), ctx.app_path) is not None)
+
     def _pick_home(self, ctx: StepContext, tier: str, custom_bytes: int | None = None) -> Path:
         need = MIN_FREE_GB if ctx.dev_mode else required_free_gb(tier, custom_bytes)
         provided = ctx.raw_answers.get("home_path")
@@ -152,7 +172,7 @@ class S01Questions(Step):
                 home = ctx.paths.home
             else:
                 drives = drives_from_preflight(ctx.preflight) or local_drives()
-                default = choose_default_home(drives, need) or ctx.paths.home
+                default = choose_default_home(drives, need, lambda p: self._taken(ctx, p)) or ctx.paths.home
                 free = ctx.free_gb_fn(default)
                 if ctx.ui.interactive:
                     reply = ctx.ui.ask(f"Install folder ({free:.0f} GB free there)", str(default))
@@ -164,6 +184,11 @@ class S01Questions(Step):
                     raise make_error("NS-E117", f"{home}: {problem}")
                 ctx.ui.say(f"{problem}. Pick another folder.", "red")
                 continue
+            if home != ctx.paths.home and folder_kind(str(home)) == FOLDER_FOREIGN:
+                ctx.ui.say(foreign_warning(str(home)), "yellow")        # D-21: no word, was the defect
+                typed = not (provided or ctx.home_forced) and ctx.ui.interactive
+                if typed and not ctx.ui.confirm("Install there anyway?", False):
+                    continue
             free = ctx.free_gb_fn(home)
             if free >= need:
                 return home
@@ -264,6 +289,28 @@ class S01Questions(Step):
     # ---- run ----
     def run(self, ctx: StepContext) -> None:
         """Resolve every answer, prepare the home folder and write config/answers.json (no secrets)."""
+        self._ran = True
+        earlier = reinstall.kept_answers(ctx)
+        diff = reinstall.changes(ctx, earlier[0], ctx.raw_answers) if earlier else []
+        if earlier and diff:
+            ctx.ui.say(f"{earlier[1]} differ from your earlier install's (config\\answers.json): "
+                       f"{'; '.join(c.text() for c in diff)}. They win for every choice they name; the "
+                       "choices they leave out stay as they were.", "yellow")
+            ctx.log.info("answers_changed", changes=[c.key for c in diff])
+        unfinished = reinstall.unfinished_choices(ctx)
+        if unfinished:
+            ctx.ui.say(f"The answers in {ctx.answers_path} replace choices saved by a setup window that did "
+                       f"not finish ({'; '.join(c.text() for c in unfinished)}); the install follows the "
+                       "answers in that file.", "yellow")
+            ctx.log.info("unfinished_choices_replaced", changes=[c.key for c in unfinished])
+        keys = reinstall.new_keys(ctx)
+        if keys:        # never the value: the name of the service only
+            ctx.ui.say("Your answers carry a " + " and a ".join(reinstall.KEY_LABELS.get(k, k) for k in keys)
+                       + " API key: it is checked and kept in the Windows keyring, and removed from the "
+                       "file afterwards.", "yellow")
+            ctx.log.info("answers_keys_new", names=keys)
+        if earlier:
+            reinstall.inherit(ctx, earlier[0])
         raw = ctx.raw_answers
         merged: dict[str, Any] = {k: v for k, v in raw.items() if k not in KEY_NAMES}
 
@@ -355,9 +402,15 @@ class S01Questions(Step):
         ctx.answers = ans
         if ans.voice.mode == "design" and ans.include_voicedesign is False:
             ctx.warn("NS-W114", ans.voice.name or ans.voice.description or "")
+        # What comes from the changed choices is applied BEFORE the answers are saved: when that fails, the
+        # saved file still says what the files were made from, and a rerun sees the same change again.
+        lines = reinstall.apply(ctx, earlier[0] if earlier else {}, ans, diff)
         write_answers(self._answers_file(ctx), ans)
         ctx.log.info("answers_saved", channel=slugify(ans.channel.display_name), tier=tier)
         self._summary(ctx, ans)
+        for line in lines:
+            ctx.ui.say(line)
+        reinstall.forget_kept(ctx)
 
     @staticmethod
     def _summary(ctx: StepContext, ans: InstallerAnswers) -> None:
@@ -387,3 +440,6 @@ class S01Questions(Step):
         if current != str(ctx.paths.home):
             raise make_error("NS-E104", f"NIGHTSHIFT_HOME is {current!r}, expected {str(ctx.paths.home)!r}")
         ctx.log.info("answers_verified", tier=ans.llm_tier, stock_key=any_key_stored(ctx.store))
+        if not self._ran:
+            for line in reinstall.kept_lines(ctx, ans):
+                ctx.ui.say(line)
