@@ -71,7 +71,7 @@ def earliest_stage(code: str, names: list[str]) -> str:
 
 #: Files a stage keeps as its own memo and returns early on; the retry would reproduce them unchanged.
 STAGE_MEMOS: dict[str, tuple[str, ...]] = {
-    "hooks": ("hooks_all.json", "closings.json"),  # HooksStage skips when hooks_all.json exists; a redo takes both
+    "hooks": ("hooks_all.json", "closings.json"),  # HooksStage skips on the first; a redo drops both
     "voice": ("audio/manifest.json",),  # synthesize() reuses every WAV with an unchanged signature
 }
 
