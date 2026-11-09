@@ -12,7 +12,8 @@ from ns_common.llm_client import FakeLlm
 from ns_common.models import Rect, Transcript
 from ns_studio.clipper import select
 from ns_studio.clipper import stages_clip as sc
-from ns_studio.clipper.models import Analysis, ClipParams
+from ns_studio.clipper.layout import plan_layout
+from ns_studio.clipper.models import Analysis, ClipLayout, ClipParams
 from ns_studio.context import JobContext
 from tests.fixtures.clipper.make_sample import build_transcript
 from tests.helpers import make_ctx
@@ -107,3 +108,69 @@ def test_a_model_without_caption_text_leaves_an_empty_sidecar(tmp_home: Path) ->
     ctx = _job(tmp_home, [_clip()])
     sc.SelectStage().run(ctx)
     assert ctx.read_json(sc.CAPTION_WORDS_FILE) == {}
+
+
+# ---------- break-it round ----------
+class _RecordingLlm(FakeLlm):
+    """A FakeLlm that also keeps the `max_tokens` each call asked for."""
+
+    def __init__(self, *a: Any, **kw: Any) -> None:
+        super().__init__(*a, **kw)
+        self.limits: dict[str, list[int]] = {}
+
+    def complete_json(self, **kw: Any) -> dict[str, Any]:
+        self.limits.setdefault(kw["prompt_name"], []).append(kw.get("max_tokens", 4096))
+        return super().complete_json(**kw)
+
+
+def test_the_selection_call_asks_for_room_for_the_spoken_text_of_every_candidate(tmp_home: Path) -> None:
+    ctx = _job(tmp_home, [_clip()])
+    llm = _RecordingLlm(
+        LLM_FIXTURES,
+        overrides={"clip_select": {"clips": [_clip()]}, "clip_judge": {"ok": True, "reasons": []}},
+    )
+    ctx.services.llm = llm
+    sc.SelectStage().run(ctx)
+    assert llm.limits["clip_select"] == [sc.CLIP_SELECT_MAX_TOKENS]
+    assert sc.CLIP_SELECT_MAX_TOKENS > 4096  # complete_json's default, which thinking and JSON share
+    assert llm.limits["clip_judge"] == [4096]  # the other prompts keep the client's default
+
+
+def test_cleaned_words_go_from_the_model_answer_through_both_stages_to_the_ass_file(tmp_home: Path) -> None:
+    tr = Transcript.model_validate(build_transcript())
+    heard = select.words_in(tr.words, 0.5, 50.0)
+    text = " ".join(f"{w.w.capitalize()}~" for w in heard)
+    ctx = _job(
+        tmp_home, [_clip(caption_text=text), _clip(k=2, start_s=64.0, end_s=118.0, title="Plain", score=0.8)]
+    )
+    sc.SelectStage().run(ctx)
+    plan = {c["title"]: c for c in ctx.read_json("clip_plan.json")}
+    k = plan["Mountain route"]["k"]
+    k_plain = plan["Plain"]["k"]
+    ctx.write_json(
+        "source.json",
+        {
+            "path": str(ctx.job_dir / "missing.mp4"),
+            "width": 1280,
+            "height": 720,
+            "duration_s": 90.0,
+            "fps": 30.0,
+            "source_id": "src-test",
+        },
+    )
+    base = ClipLayout(template="center_crop")
+    crops = plan_layout("center_crop", 1280, 720, base, t_start=0.0, t_end=90.0)
+    ctx.write_json(
+        "clip_layout.json",
+        ClipLayout(
+            template="center_crop",
+            crops=crops,
+            per_clip={str(k): "center_crop", str(k_plain): "center_crop"},
+        ).model_dump(mode="json"),
+    )
+    sc.CaptionsStage().run(ctx)
+    marked = ctx.file(f"captions/c{k}.ass").read_text(encoding="utf-8")
+    unmarked = ctx.file(f"captions/c{k_plain}.ass").read_text(encoding="utf-8")
+    assert "~" in marked and "~" not in unmarked  # the sidecar key is the clip's k in the plan
+    assert ctx.read_json("captions/report.json")[f"c{k}"]["cleaned"] is True
+    assert "cleaned" not in ctx.read_json("captions/report.json")[f"c{k_plain}"]

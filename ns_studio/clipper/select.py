@@ -441,7 +441,8 @@ def sentence_emphasis(words: list[Word], wanted: list[str]) -> list[str] | None:
     return [chosen.get(i, "") for i in range(max(chosen) + 1)]
 
 
-MIN_CLEANED_SHARE = 0.5  # fewer matching words than this and the model's caption text is not trusted
+MIN_CLEANED_SHARE = 0.8  # of the words actually spoken; fewer matching and the model's text is not trusted
+_NOT_ALNUM = re.compile(r"[\W_]+")
 
 
 def _key(token: str) -> str:
@@ -449,30 +450,47 @@ def _key(token: str) -> str:
     return " ".join(normalize_tokens(token))
 
 
+def _plain(token: str) -> str:
+    """Letters and digits of a token in lower case: "Friend!" is "friend", "20" is not "twenty"."""
+    return _NOT_ALNUM.sub("", token).lower()
+
+
 def align_caption_text(words: list[Word], text: str | None) -> list[str] | None:
     """The model's cleaned `text` laid over the clip's ASR words, one display string per word (spec 17.2).
 
-    Only a word the model kept (same spoken form, ignoring case, punctuation and digit-or-word numbers) takes
-    the model's spelling; a word the model dropped, added or rephrased stays as the recogniser heard it, so
-    the word count and every timing are unchanged and nothing is invented. None when the model gave no text,
-    when it matches fewer than half of the words, or when it changes nothing.
+    Only a word the model kept (same spoken form, ignoring case and punctuation) takes the model's spelling;
+    a word the model dropped, added or rephrased stays as the recogniser heard it, so the word count and every
+    timing are unchanged and nothing is invented. A number the model wrote another way ("$20" for "twenty",
+    "5%" for "five") is taken only when the words on both sides of it are the model's as well, because such a
+    symbol usually swallows the next word ("twenty dollars", "five percent") and taking it alone would show
+    "$20 dollars". None when the model gave no text, when it matches fewer than MIN_CLEANED_SHARE of the
+    spoken (not hesitation) words, which is also what a clip wider than the model's span after a merge or a
+    sentence snap looks like, or when it changes nothing.
     """
     if not words or not text or not text.strip():
         return None
     tokens = text.split()
     sm = difflib.SequenceMatcher(None, [_key(w.w) for w in words], [_key(t) for t in tokens], autojunk=False)
-    out = [w.w for w in words]
-    matched = 0
+    pairs: dict[int, int] = {}  # ASR word index -> index of the model's token that says the same
     for tag, i1, i2, j1, _ in sm.get_opcodes():
-        if tag != "equal":
-            continue
-        for off in range(i2 - i1):
-            if _key(words[i1 + off].w):
-                out[i1 + off] = tokens[j1 + off]
-                matched += 1
-    if matched < MIN_CLEANED_SHARE * len(words) or out == [w.w for w in words]:
+        if tag == "equal":
+            pairs.update({i1 + off: j1 + off for off in range(i2 - i1) if _key(words[i1 + off].w)})
+
+    def framed(i: int, j: int) -> bool:
+        before = j == 0 if i == 0 else pairs.get(i - 1) == j - 1
+        after = j == len(tokens) - 1 if i == len(words) - 1 else pairs.get(i + 1) == j + 1
+        return before and after
+
+    out = [w.w for w in words]
+    taken: set[int] = set()
+    for i, j in pairs.items():
+        if _plain(tokens[j]) == _plain(words[i].w) or framed(i, j):
+            out[i] = tokens[j]
+            taken.add(i)
+    spoken = [i for i, w in enumerate(words) if _key(w.w) and not is_filler_word(w.w)]
+    if not spoken or len(taken.intersection(spoken)) < MIN_CLEANED_SHARE * len(spoken):
         return None
-    return out
+    return out if out != [w.w for w in words] else None
 
 
 def _item(tr: Transcript, c: Cand, k: int, status: str, reasons: list[str]) -> ClipPlanItem:

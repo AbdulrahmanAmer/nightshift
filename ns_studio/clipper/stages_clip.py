@@ -328,6 +328,31 @@ def prompt_video_kind(p: ClipParams, an: Analysis) -> str:
 
 
 CAPTION_WORDS_FILE = "clip_caption_words.json"  # per clip: the model's cleaned spelling of each ASR word
+# The answer now holds the spoken text of every candidate besides the thinking, so it needs more room than the
+# 4096 tokens `complete_json` allows by default (a cut-off answer is NS-E302 and loses the whole window). The
+# llama server runs with at least 16K of context (`ns_supervisor.tune.min_ctx_for`).
+CLIP_SELECT_MAX_TOKENS = 8192
+
+
+def load_caption_words(ctx: JobContext) -> dict[str, list[str]]:
+    """`CAPTION_WORDS_FILE` as {k: display strings}; an absent, unreadable or odd file or entry is skipped.
+
+    The sidecar only improves spelling, so one bad file or value must not stop the job (the captions then
+    show the recogniser's words).
+    """
+    if not ctx.file(CAPTION_WORDS_FILE).exists():
+        return {}
+    try:
+        raw = ctx.read_json(CAPTION_WORDS_FILE)
+    except (OSError, ValueError) as e:
+        ctx.log.warn("caption_words_skipped", str(e)[:200], file=CAPTION_WORDS_FILE)
+        return {}
+    if not isinstance(raw, dict):
+        ctx.log.warn("caption_words_skipped", "not an object", file=CAPTION_WORDS_FILE)
+        return {}
+    return {
+        str(k): v for k, v in raw.items() if isinstance(v, list) and all(isinstance(x, str) for x in v)
+    }
 
 
 class SelectStage:
@@ -365,6 +390,7 @@ class SelectStage:
                 max_candidates=10,
                 video_kind=prompt_video_kind(p, an),
                 analysis=analyze.prompt_view(an, ws, we),
+                max_tokens=CLIP_SELECT_MAX_TOKENS,
             )
 
         judged = {"n": 0}
@@ -573,9 +599,7 @@ class CaptionsStage:
         mask = mask_profanity_setting(ctx.channel)
         picked = _picked_caption_style(ctx)  # the owner's choice on Create wins
         drop_fillers = ctx.channel.captions.remove_fillers
-        cleaned_words: dict[str, list[str]] = (
-            ctx.read_json(CAPTION_WORDS_FILE) if ctx.file(CAPTION_WORDS_FILE).exists() else {}
-        )
+        cleaned_words = load_caption_words(ctx)
         seg_speaker = {s.i: s.speaker for s in tr.segments}
         ctx.subdir("captions")
         report: dict[str, Any] = {}
@@ -622,12 +646,15 @@ class CaptionsStage:
                 "style": style,
                 "first_caption_s": caps.first_event_start(ass),
                 "drift_ms": 0.0,  # captions keep the ASR word timings
-                "cleaned": shown is not None,
                 "avoid_regions": len(avoid),
                 "speakers": len(set(speakers.values())),
                 "backdrop_luma": luma,
                 "boxed": bool(luma) and caps.ensure_contrast(caps.caption_style(style), luma).box,
             }
+            if shown is not None:
+                # only then: a job without cleaned words writes the same report bytes as before, so
+                # the render stage (which hashes this file) does not run again on a resumed older job
+                report[f"c{clip.k}"]["cleaned"] = True
         ctx.write_json("captions/report.json", report)
 
 

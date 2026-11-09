@@ -425,3 +425,34 @@ def test_plan_carries_the_cleaned_words_of_the_kept_clips_and_only_those() -> No
     assert all(s in (w.w, w.w.upper()) for s, w in zip(shown, heard, strict=True))
     assert sum(s != w.w for s, w in zip(shown, heard, strict=True)) >= len(heard) // 2
     assert sel.select_plan(tr, params(), Asker(raw)) == items
+
+
+# ---------- a partly applied rewrite never shows garbled text (break-it round) ----------
+def test_align_caption_text_does_not_take_a_symbol_that_swallows_the_next_word() -> None:
+    dollars = _spoken("so i paid twenty dollars for it and then we went home to the old house")
+    got = sel.align_caption_text(dollars, "So, I paid $20 for it and then we went home to the old house.")
+    assert got is not None and got[3:5] == ["twenty", "dollars"]  # not "$20 dollars"
+    assert got[:3] == ["So,", "I", "paid"] and got[-1] == "house."
+    percent = _spoken("yes it is five percent of the whole thing we did today")
+    got = sel.align_caption_text(percent, "Yes, it is 5%. Of the whole thing we did today.")
+    assert got is not None and got[:3] == ["Yes,", "it", "is"] and got[3:5] == ["five", "percent"]
+    assert "5%." not in got  # no token shows both the symbol and the word it replaced
+    assert sel.align_caption_text(_spoken("it is five percent"), "it is 5%.") is None
+
+
+def test_align_caption_text_takes_a_number_written_as_digits_when_its_neighbours_agree() -> None:
+    words = _spoken("i have twenty apples and five pears")
+    got = sel.align_caption_text(words, "I have 20 apples and 5 pears.")
+    assert got == ["I", "have", "20", "apples", "and", "5", "pears."]
+    edge = sel.align_caption_text(_spoken("we sold twenty"), "We sold 20.")
+    assert edge == ["We", "sold", "20."]
+
+
+def test_align_caption_text_leaves_a_clip_wider_than_the_models_span_in_the_recognisers_spelling() -> None:
+    # after a merge or a sentence snap the clip can run past the span the model wrote its text for
+    words = _spoken("one two three four five six seven eight nine ten")
+    narrow = "One, two, three, four, five, six."  # the first six words only
+    assert sel.align_caption_text(words, narrow) is None  # not half cleaned, half raw
+    near = "One, two, three, four, five, six, seven, eight, nine."  # nine of ten words
+    got = sel.align_caption_text(words, near)
+    assert got is not None and got[:2] == ["One,", "two,"] and got[-1] == "ten"

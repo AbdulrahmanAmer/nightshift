@@ -355,12 +355,14 @@ def call_json(
     *,
     fixture: str | None = None,
     schema_name: str | None = None,
+    max_tokens: int | None = None,
     **vars: Any,
 ) -> dict[str, Any]:
     """Render prompt `name`, call the LLM for JSON and record the prompt version on `ctx`.
 
     `fixture` is the `prompt_name` passed to the LLM (a fake serves `<fixture>.json`); `schema_name`
-    overrides the front-matter schema. Template variables go in `vars`.
+    overrides the front-matter schema; `max_tokens` replaces the client's default answer limit (thinking
+    and JSON together). Template variables go in `vars`.
     """
     p = load_prompt(name)
     schema_key = schema_name or p.schema
@@ -376,6 +378,7 @@ def call_json(
         schema=PROMPT_SCHEMAS[schema_key],
         thinking=p.thinking,
         **attempt_kwargs(ctx),
+        **({"max_tokens": max_tokens} if max_tokens else {}),
     )
 
 
