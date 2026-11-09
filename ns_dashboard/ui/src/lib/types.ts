@@ -56,7 +56,8 @@ export interface ChannelDetail { profile: ChannelProfile; warnings: string[]; wa
 /** GET /notes: what the nightly run could not show as a toast (run/morning_note.json). */
 export interface MorningNote { at: string; title: string; message: string }
 /** GET /update/state: what the detached updater writes to run/update_state.json (idle when it never ran). */
-export interface UpdateState { state: "idle" | "running" | "done" | "failed"; old: string | null; new: string | null; message: string | null; updated_at: string | null; /** The updater process is gone though the file still said running. */ stale?: boolean }
+export interface UpdateState { state: "idle" | "running" | "done" | "failed"; old: string | null; new: string | null; message: string | null; updated_at: string | null; /** The updater process is gone though the file still said running. */ stale?: boolean;
+  /** After an update: the new version's section of CHANGELOG.md (the `## [x.y.z] - date` heading line included). */ release_notes?: string }
 /** One entry of GET /assistant/tools: the registry the Assistant works from. */
 export interface ToolInfo { name: string; description: string; side_effect: boolean; topic: string }
 

@@ -73,6 +73,10 @@ class EventHub:
             return len(self._subs)
 
 
+# Hub kind -> the SSE frame kind the browser receives (everything else is only a reason to refresh `status`).
+PASSED_KINDS = {"dashboard_job": "job", "job": "job", "update": "update", "run": "run"}
+
+
 def sse_frame(kind: str, payload: Any) -> str:
     """One server-sent-events frame: a default `message` event whose data is `{kind, payload}`."""
     body = json.dumps({"kind": kind, "payload": payload}, ensure_ascii=False, default=str)
@@ -87,13 +91,14 @@ def iter_sse(
     limit: int | None = None,
     stop: threading.Event | None = None,
 ) -> Iterator[str]:
-    """Yield SSE frames of kind `status` (payload = the `/api/status` object) and `job`.
+    """Yield SSE frames of kind `status` (payload = the `/api/status` object), `job`, `update` and `run`.
 
     A `status` frame comes first, after every relayed event, and whenever `heartbeat_s` passes
-    without events. Hub kind `dashboard_job` and supervisor `job` events become `job` frames;
-    every other supervisor kind (`service`, `update`, `run`, anything new) only triggers a fresh
-    `status` frame, so a kind the UI has never heard of is harmless. Stops after `limit` frames
-    (tests) or when `stop` is set; always detaches the subscription.
+    without events. Hub kind `dashboard_job` and supervisor `job` events become `job` frames; the
+    supervisor's `update` (weekly check result) and `run` (nightly run finished) events keep their
+    own kind so the browser can show them; every other supervisor kind (`service`, anything new)
+    only triggers a fresh `status` frame, so a kind the UI has never heard of is harmless. Stops
+    after `limit` frames (tests) or when `stop` is set; always detaches the subscription.
     """
     stop = stop or threading.Event()
     sent = 0
@@ -102,8 +107,8 @@ def iter_sse(
         sent += 1
         while not stop.is_set() and (limit is None or sent < limit):
             item = sub.get(heartbeat_s)
-            if item is not None and item["kind"] in ("dashboard_job", "job"):
-                yield sse_frame("job", item["data"])
+            if item is not None and item["kind"] in PASSED_KINDS:
+                yield sse_frame(PASSED_KINDS[item["kind"]], item["data"])
                 sent += 1
                 if limit is not None and sent >= limit:
                     break
