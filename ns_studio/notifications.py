@@ -84,6 +84,9 @@ def nightly_message(report: dict[str, Any], masters: int, shorts: int) -> str | 
             parts.append(f"{_plural(len(failures), 'job', 'jobs')} failed ({codes})")
         else:
             parts.append(failure_message(codes))
+    unreadable = report.get("unreadable_profiles", [])
+    if unreadable:
+        parts.append(f"{_plural(len(unreadable), 'channel', 'channels')} skipped, profile cannot be read")
     return "; ".join(parts) if parts else None
 
 

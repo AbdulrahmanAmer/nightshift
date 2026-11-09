@@ -85,7 +85,7 @@ def plan_for_install(paths: Paths, app_path: Path | None = None) -> list[Downloa
     answers_file = paths.config / "answers.json"
     if not answers_file.is_file():
         raise AnswersError(f"{answers_file} does not exist: setup has not got as far as choosing the models")
-    answers = build_answers(load_raw(answers_file))
+    answers = build_answers(load_raw(answers_file), saved=True)
     manifest = load_manifest((app_path or repo_root()) / "manifest.json")
     state = load_install_state(paths)
     profile = state.profile or "gpu"

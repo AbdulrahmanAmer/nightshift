@@ -6,6 +6,7 @@ anything. Standard library only.
 
 from __future__ import annotations
 
+import json
 import shutil
 import sys
 import tempfile
@@ -22,6 +23,18 @@ TOOL_EXE = {
     "Microsoft.VCRedist.2015+.x64": "vcruntime", "Gyan.FFmpeg": "ffmpeg.exe",
     "Microsoft.WindowsTerminal": "wt.exe",
 }
+FALLBACK_UV_VERSION = "0.13.6"
+
+
+def pinned_uv_version() -> str:
+    """``bins.uv.version`` of the manifest next to the installer: what the fake uv reports as its version."""
+    try:
+        manifest = json.loads((Path(__file__).resolve().parents[3] / "manifest.json").read_text("utf-8"))
+        return str(manifest["bins"]["uv"]["version"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return FALLBACK_UV_VERSION
+
+
 DEFAULT_PRESENT = {"vcruntime", "ffmpeg.exe", "wt.exe", "winget.exe"}      # a PC with every tool
 
 
@@ -64,6 +77,7 @@ class FakeCmd:
         self.present = set(present or ())
         self.fail = dict(fail or {})
         self.calls: list[list[str]] = []
+        self.uv_version = pinned_uv_version()           # what every fake uv prints for --version
 
     def __call__(
         self, argv: Sequence[str], env: Any = None, cwd: Any = None, timeout: float | None = None
@@ -74,6 +88,8 @@ class FakeCmd:
             if needle in " ".join(args):
                 return result
         exe = Path(args[0]).name.lower()
+        if exe.startswith("uv") and args[1:] == ["--version"]:
+            return CmdResult(0, f"uv {self.uv_version} (fake 2025-01-01)", "")
         if exe.startswith("winget") and "install" in args:
             tool = TOOL_EXE.get(args[args.index("--id") + 1])
             if tool:
@@ -156,7 +172,8 @@ def fake_effects(base: Path, present: set[str] | None = None, **overrides: Any) 
         launch=lambda argv, env=None: launched.append(list(argv)),
         launch_captured=lambda argv, env=None, **kw: (launched.append(list(argv)), (0, ""))[1],
         elevate_longpaths=lambda: True, console=lambda text, level: console.append(text),
-        uv_path=lambda home: str(uv), clipboard=lambda text: None, fetch_uv=fetch_uv,
+        uv_path=lambda home: str(uv), handover_uv=lambda: None, clipboard=lambda text: None,
+        fetch_uv=fetch_uv,
         pick_folder=lambda title, start: next_pick.pop(0) if next_pick else DEFAULT_PICK,
         drive_type=lambda _letter: 3, folder_kind=lambda _path: "new", vc_missing=cmd.vc_missing,
         fetch_file=fetch_file,

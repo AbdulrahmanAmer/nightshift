@@ -3,11 +3,14 @@
 Every tool that changes something shows the owner a confirm card first. A card the owner can only confirm into
 a refusal ("That did not work: 'schedule_at' must be a date and time...") is worse than no card, so each such
 tool carries a `dry_run(ctx, args)` that makes the SAME checks the real run makes, through the service's own
-`check_*` function (the real run calls it too, so the two cannot drift apart), and raises `ApiError` for what
-is wrong. The loop turns that into a tool error that says in plain words what is missing, and shows no card.
+`check_*` function (the real run starts with it too, so the two cannot drift apart), and raises `ApiError` for
+what is wrong. The loop turns that into a tool error that says in plain words what is missing, and shows no card.
+For the Series Workshop the shared functions are `Workshop._pre_*`, and `tests/test_series_workshop_check.py`
+walks `Workshop.check` against each real step in every state of a story.
 
-A tool whose only arguments are enum or range values the JSON schema already checks has no `dry_run`; it is
-listed in `tools.SCHEMA_ONLY` with the reason, and a test fails for a new changing tool that is in neither place.
+A tool whose arguments are only enum or range values the JSON schema already checks, and whose run no state of
+the system can refuse, has no `dry_run`; it is listed in `tools.SCHEMA_ONLY` with the reason (none today), and a
+test fails for a new changing tool that is in neither place.
 """
 
 # Dense descriptor tables and long signatures: wrapping them hurts readability.
@@ -56,6 +59,21 @@ def check_clip(c: ToolContext, a: dict[str, Any]) -> None:
 def check_rerun(c: ToolContext, a: dict[str, Any]) -> None:
     """rerun_clips: a finished clip job and a layout the clipper can cut."""
     c.dash.jobs.check_clip_rerun(a)
+
+
+def check_warmup(c: ToolContext, a: dict[str, Any]) -> None:
+    """warmup_engine: a known service and an engine that answers."""
+    c.dash.engine.check_warmup(a.get("service"))
+
+
+def check_shutdown(c: ToolContext, a: dict[str, Any]) -> None:
+    """shutdown_engine: a grace period in range and an engine that answers (there is nothing to stop otherwise)."""
+    c.dash.engine.check_shutdown(a.get("grace_s"))
+
+
+def check_diagnostics(c: ToolContext, _a: dict[str, Any]) -> None:
+    """make_diagnostics: the doctor that writes the zip can be loaded."""
+    c.dash.settings.check_diagnostics()
 
 
 def check_verify(c: ToolContext, _a: dict[str, Any]) -> None:
