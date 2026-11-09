@@ -7,6 +7,7 @@ import math
 import re
 import shutil
 import string
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -128,14 +129,27 @@ def local_drives() -> list[Drive]:
     return out
 
 
-def choose_default_home(drives: list[Drive], min_free_gb: float = BASE_FREE_GB) -> Path | None:
-    """<drive with most free space, SSD preferred>\\Nightshift; drives under ``min_free_gb`` come last."""
+def choose_default_home(
+    drives: list[Drive], min_free_gb: float = BASE_FREE_GB, skip: Callable[[Path], bool] | None = None
+) -> Path | None:
+    """<drive with most free space, SSD preferred>\\Nightshift; drives under ``min_free_gb`` come last.
+
+    ``skip`` says a candidate folder cannot be offered (D-21: it exists and holds someone's other files, or
+    the extracted program). The next name on the same drive is tried (``Nightshift-home``), then the next
+    drive; None when nothing is left.
+    """
     if not drives:
         return None
     pool = [d for d in drives if d.free_gb >= min_free_gb] or list(drives)
-    ssd = [d for d in pool if d.type == "SSD"]
-    best = max(ssd or pool, key=lambda d: d.free_gb)
-    return Path(f"{best.letter}:\\Nightshift")
+    first = [d for d in pool if d.type == "SSD"] or pool
+    by_room = sorted(first, key=lambda d: d.free_gb, reverse=True)
+    ranked = by_room + sorted((d for d in drives if d not in by_room), key=lambda d: d.free_gb, reverse=True)
+    for drive in ranked:
+        for name in ("Nightshift", "Nightshift-home"):
+            candidate = Path(f"{drive.letter}:\\{name}")
+            if skip is None or not skip(candidate):
+                return candidate
+    return None
 
 
 def free_gb(path: Path) -> float:

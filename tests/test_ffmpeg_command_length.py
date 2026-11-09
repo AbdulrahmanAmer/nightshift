@@ -161,8 +161,9 @@ def test_short_render_command_is_short_under_a_deep_home_and_passes_qc(
     loudnorm(raw, audio, i=FINAL_LUFS, tp=FINAL_TP)
     out = out_dir / "short.mp4"
     commands.clear()
-    render_video(
+    render_video(  # one command: the parts path has its own tests (test_render_constant_command.py)
         shots=shots, audio=audio, out=out, size=VERTICAL, treatment=treatment, video=video, ass_path=ass,
+        max_inputs=CLIPS,
     )
     (cmd,) = commands
     assert _cmd_chars(cmd) < ARGV_LIMIT, _cmd_chars(cmd)

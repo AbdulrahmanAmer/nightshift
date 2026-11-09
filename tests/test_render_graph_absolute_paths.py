@@ -206,7 +206,8 @@ def test_the_longest_master_render_command_stays_bounded_under_a_200_character_h
     def started(args: list[str]) -> list[str]:
         return [os.path.abspath(str(exe)), "-hide_banner", "-y", "-nostdin", *args]  # what `ff.run` starts
 
-    # the whole master as ONE chapter is the largest single FFmpeg command the render makes
+    # the whole master as ONE chapter is the largest chapter the render can make: 174 clips (H-5: they are
+    # rendered in parts of at most ff.MAX_CLIP_INPUTS, so no command carries them all)
     t = ChapterTiming(1, "One", 0.0, 0.0, MASTER_S)
     render_segment(
         ctx,
@@ -216,9 +217,11 @@ def test_the_longest_master_render_command_stays_bounded_under_a_200_character_h
         chapter_card("midnight"),
         job / "long" / "seg_1.mp4",
     )
-    ((args, cwd),) = fake_ff.calls
-    assert cwd is not None and args.count("-i") == count == 174
-    chars = _cmd_chars(started(args))
+    calls = list(fake_ff.calls)
+    assert all(cwd is not None for _args, cwd in calls)
+    assert sum(args.count("-ss") for args, _cwd in calls) == count == 174
+    assert max(args.count("-ss") for args, _cwd in calls) == ff.MAX_CLIP_INPUTS
+    chars = max(_cmd_chars(started(args)) for args, _cwd in calls)
     assert chars < CMD_LIMIT, f"{count} clips under a {HOME_CHARS}-character home: {chars} characters"
     # the same clips through the Short renderer stay bounded as well
     fake_ff.calls.clear()
@@ -231,5 +234,4 @@ def test_the_longest_master_render_command_stays_bounded_under_a_200_character_h
         video=VideoCfg(encoder="libx264", preset="veryfast"),
         ass_path=None,
     )
-    ((short_args, _cwd),) = fake_ff.calls
-    assert _cmd_chars(started(short_args)) < CMD_LIMIT
+    assert max(_cmd_chars(started(args)) for args, _cwd in fake_ff.calls) < CMD_LIMIT
