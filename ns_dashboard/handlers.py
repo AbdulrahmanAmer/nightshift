@@ -102,8 +102,15 @@ def build_state(
             log.warn("download_sweep_failed", str(e))
         adapters.series.sweep(active_ids, part_statuses)
 
+    def recover_studio_work() -> None:
+        """Engine start: a run or job whose process is gone is closed as interrupted and offered (D-31)."""
+        from ns_studio import ownership
+
+        ownership.recover(paths, db, log=log)
+
     worker = JobWorker(
         store, build_handlers(adapters, paths), hub, log, gpu_gate=make_gpu_gate(link.status),
+        recover_studio=recover_studio_work,
         pulse=None if fake_services else (lambda: link.heartbeat(JOB_OWNER)),
         on_recover={"series_part": release_part_of},
         on_end={"series_part": release_part_of},
