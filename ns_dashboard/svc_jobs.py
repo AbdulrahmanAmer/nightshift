@@ -18,7 +18,7 @@ from ns_common.secrets_names import SHORT_NAMES
 from ns_dashboard.adapters import Adapters
 from ns_dashboard.common import KNOWN_FORMATS, now_iso, offered_formats
 from ns_dashboard.errors import AdapterUnavailable, ApiError
-from ns_dashboard.jobs import Handler, JobControl, JobRecord
+from ns_dashboard.jobs import Handler, JobControl, JobRecord, scheduled_text
 from ns_dashboard.state import AppState
 from ns_dashboard.svc_channels import ChannelsService
 from ns_dashboard.templates import clipper_can_run, load_templates
@@ -234,7 +234,7 @@ class JobsService:
             params = {**params, "schedule_at": schedule_at.isoformat(timespec="seconds")}
         rec = self.s.store.create(kind, channel, params)
         if schedule_at is not None:
-            self.s.store.update_progress(rec.job_id, 0.0, f"Scheduled for {schedule_at:%a %d %b %H:%M}")
+            self.s.store.update_progress(rec.job_id, 0.0, scheduled_text(schedule_at))
             rec = self.s.store.get(rec.job_id) or rec
         self.s.worker.enqueue(rec.job_id)
         self.s.hub.publish("dashboard_job", rec.to_dict())
@@ -283,8 +283,7 @@ class JobsService:
         """The channel slug and stored params of a run request; ApiError for anything that cannot run."""
         slug = str(body.get("channel") or "")
         ch = self.channels.load(slug)
-        if ch.status == "paused":
-            raise ApiError(409, "channel_paused", f"'{ch.display_name}' is paused. Resume it first.")
+        self._require_not_paused(ch.display_name, ch.status)
         fmt = str(body.get("format") or ch.format)
         if fmt not in offered_formats():
             if fmt in KNOWN_FORMATS:
@@ -296,6 +295,12 @@ class JobsService:
         if body.get("script") is not None:
             params.update(self._script_params(body, fmt, n, list(ch.pools.pacings), ch.voice.speed))
         return slug, params
+
+    @staticmethod
+    def _require_not_paused(display_name: str, status: str) -> None:
+        """Refuse story work for a paused channel: the one answer for a new run and for Retry (P47)."""
+        if status == "paused":
+            raise ApiError(409, "channel_paused", f"'{display_name}' is paused. Resume it first.")
 
     @staticmethod
     def _script_params(
@@ -346,6 +351,7 @@ class JobsService:
             raise ApiError(404, "not_found", "That story job was not found.")
         if rec.status != "failed":
             raise ApiError(409, "not_failed", "Only a job that stopped with an error can be continued.")
+        self._require_channel_not_paused(rec.channel or str(rec.params.get("channel") or ""))
         ids = [str(i) for i in (rec.result or {}).get("studio_job_ids") or [] if i]
         if not ids:
             raise ApiError(
@@ -368,6 +374,17 @@ class JobsService:
             "resume_job_id": studio_job, "resume_of": rec.job_id,
         }
         return channel, params
+
+    def _require_channel_not_paused(self, slug: str) -> None:
+        """Retry of a job of a paused channel is refused like a new run. A channel that is gone or whose
+        profile cannot be read is not a pause: that case keeps its old answer (the run reports it)."""
+        if not slug:
+            return
+        try:
+            ch = self.channels.load(slug)
+        except ApiError:
+            return
+        self._require_not_paused(ch.display_name, ch.status)
 
     def _clip_layout(self, template: str) -> str:
         """The layout id of a clip request, refused before anything is queued when the clipper cannot cut it.

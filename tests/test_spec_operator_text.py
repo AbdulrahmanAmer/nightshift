@@ -202,8 +202,10 @@ def test_resume_in_the_dashboard_shows_no_review_and_the_section_says_so():
 
 def test_only_story_runs_are_refused_for_a_paused_channel_and_the_texts_say_so():
     cls = svc_jobs.JobsService
-    assert "channel_paused" in inspect.getsource(cls._run_params)
+    assert "_require_not_paused" in inspect.getsource(cls._run_params)
+    assert "channel_paused" in inspect.getsource(cls._require_not_paused)
     assert "channel_paused" not in inspect.getsource(cls._clip_params)
+    # one answer for a new run and for Retry (P47)
     assert inspect.getsource(svc_jobs).count("channel_paused") == 1
     section = doc_section(GUIDE, HEADING)
     flat = " ".join(section.split())
@@ -213,7 +215,7 @@ def test_only_story_runs_are_refused_for_a_paused_channel_and_the_texts_say_so()
     d = decision("Incident procedure")
     assert "A story run request" in d and "`_clip_params`" in d and "Clipper" in d
     assert "A run request for a paused channel" not in d
-    assert "refuse" not in doc_section(README, HEADING)
+    assert "refuses to start" not in doc_section(README, HEADING)
 
 
 # ---------------------------------------------------------------------------------------------------------
@@ -592,22 +594,29 @@ def test_readme_names_the_full_path_of_the_studio_program():
     assert STUDIO_PATH in flat and "OPERATOR.md" in flat
 
 
-def test_a_pause_stops_new_work_only_and_the_guide_says_so():
-    """`ns_dashboard/jobs.py` runs a queued or scheduled job without looking at the channel's status."""
-    from ns_dashboard import jobs
+def test_a_pause_holds_queued_and_scheduled_story_jobs_and_the_texts_say_so():
+    """P47: the job worker asks `hold` before it starts a job; the texts say what a pause holds."""
+    from ns_dashboard import channel_hold, handlers, jobs
 
-    assert "paused" not in inspect.getsource(jobs), "jobs.py checks the channel now: update the guide and D38"
+    assert "hold" in inspect.getsource(jobs.JobWorker.run_next).replace("self.store.next_queued", "hold")
+    assert "make_channel_hold" in inspect.getsource(handlers.build_state)
+    assert channel_hold.HELD_KINDS == {"run", "series_part"}, "a Clipper job is not held: update the guide"
     flat = _flat(doc_section(GUIDE, HEADING))
-    assert "only new work" in flat and "Pick a time" in flat
-    assert "already queued or scheduled" in flat and "Cancel" in flat
-    assert "before it makes anything else" not in flat
+    assert "only new work" not in flat and "still runs after" not in flat
+    assert "already queued or scheduled" in flat and "Pick a time" in flat
+    assert "does not start while the channel is paused" in flat and "also when its time comes" in flat
+    assert "Cancel" in flat and "already being made" in flat
+    assert "Paused: <channel> is paused since <time>; resume it to release this job" in flat
+    readme = _flat(doc_section(README, HEADING))
+    assert "only new work" not in readme and "waits and starts by itself after the resume" in readme
     d = decision("Incident procedure")
-    assert "ns_dashboard/jobs.py" in d and "scheduled" in d
+    assert "channel_hold.py" in d and "JobWorker" in d and "scheduled" in d and "refresh_holds" in d
+    assert "has no channel-status check" not in d and "still runs after the pause" not in d
 
 
-def test_retry_from_where_it_stopped_ignores_a_pause_and_the_texts_say_so():
-    """A failed story card of a paused channel can be started again: Create and Queue show the button."""
-    from ns_dashboard import adapters, jobs, studio_bridge, studio_job, studio_runner
+def test_retry_from_where_it_stopped_is_refused_for_a_paused_channel_and_the_texts_say_so():
+    """A failed story card of a paused channel is refused like a new run: same code, same words (P47)."""
+    from ns_dashboard import adapters, studio_bridge, studio_job, studio_runner
 
     cls = svc_jobs.JobsService
     err = tsx("ui/JobError.tsx")
@@ -615,17 +624,14 @@ def test_retry_from_where_it_stopped_ignores_a_pause_and_the_texts_say_so():
     assert "<JobError" in tsx("pages/Create.tsx") and "<JobError" in tsx("pages/Queue.tsx")
     server = (ROOT / "ns_dashboard" / "server.py").read_text(encoding="utf-8")
     assert "dash.jobs.create_resume, job_id" in server
-    # the route reaches `_resume_params` (and the Assistant's gate `check_resume`): no look at the channel
+    # the route and the Assistant's gate both reach `_resume_params`, which looks at the channel
     assert "_resume_params" in inspect.getsource(cls.create_resume)
     assert "_resume_params" in inspect.getsource(cls.check_resume)
-    resume_src = inspect.getsource(cls._resume_params)
-    assert "paused" not in resume_src and "get_channel" not in resume_src, (
-        "the resume route checks the channel now: update the guide, the README and D38"
-    )
-    for mod in (jobs, adapters, studio_bridge, studio_job, studio_runner):
-        assert "paused" not in inspect.getsource(mod), (
-            f"{mod.__name__} checks the channel now: update the guide"
-        )
+    assert "_require_channel_not_paused" in inspect.getsource(cls._resume_params)
+    assert "_require_not_paused" in inspect.getsource(cls._require_channel_not_paused)
+    for mod in (adapters, studio_bridge, studio_job, studio_runner):
+        src = inspect.getsource(mod)
+        assert "paused" not in src, f"{mod.__name__} checks the channel now: update the guide"
     for name, text in (
         ("OPERATOR.md", doc_section(GUIDE, HEADING)),
         ("README.md", doc_section(README, HEADING)),
@@ -633,10 +639,20 @@ def test_retry_from_where_it_stopped_ignores_a_pause_and_the_texts_say_so():
     ):
         flat = _flat(text)
         assert "Retry from where it stopped" in flat, name
-        assert "stopped with an error" in flat or "failed" in flat, name
-    assert "does not refuse a paused channel" in _flat(doc_section(GUIDE, HEADING))
-    for text in (doc_section(GUIDE, HEADING), doc_section(README, HEADING)):
-        assert "do not press" in _flat(text)
+        assert "refused" in flat, name
+        assert "does not refuse a paused channel" not in flat and "do not press" not in flat, name
+    assert "the same answer as a new video" in _flat(doc_section(GUIDE, HEADING))
+
+
+def test_a_pause_during_the_night_stops_the_nights_remaining_jobs_and_the_texts_say_so():
+    from ns_studio import daily
+
+    assert "_paused_now" in inspect.getsource(daily._tonight)
+    guides = (("OPERATOR.md", doc_section(GUIDE, HEADING)), ("README.md", doc_section(README, HEADING)))
+    for name, text in guides:
+        assert "pause comes during the night" in _flat(text), name
+    d = _flat(decision("Incident procedure"))
+    assert "`_paused_now`" in d and "no further job that night" in d
 
 
 def test_the_content_safety_checklist_is_not_narrower_than_18_3():

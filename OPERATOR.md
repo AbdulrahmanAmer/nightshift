@@ -287,14 +287,17 @@ instead of ours. To change a prompt, copy its file from `ns_studio\prompts\` to 
 ## If YouTube sends a warning or strike
 
 If YouTube sends a warning, a strike or a monetization notice about a channel, stop that channel first and look at
-what it made. A pause stops only new work: the night run skips a paused channel and the Dashboard refuses to start
-a story video for it (the Clipper does not check whether the channel is paused). Videos that are already made
-stay in the Queue. A story video that is already queued or scheduled (Create > **Pick a time**) still runs after
-the pause, because the Dashboard does not look at the channel again when it starts a waiting job: open **Create**
-and press **Cancel** on every job of that channel under **Working now**. The same goes for a story video that
-stopped with an error: **Retry from where it stopped** (on its card in **Create** and **Queue**) does not refuse a
-paused channel and starts that video again, so do not press it on any stopped card of that channel until you
-resume the channel.
+what it made. A pause holds the channel's story videos that have not started: the night run skips a paused
+channel (and stops making that channel's remaining videos if the pause comes during the night), and the Dashboard
+refuses to start a story video for it (the Clipper does not check whether the channel is paused). A story video that
+is already queued or scheduled (Create > **Pick a time**) does not start while the channel is paused: it stays
+waiting under **Working now**, also when its time comes, and starts by itself, in its turn, after you
+resume the channel. The job's status text says why ("Paused: <channel> is paused since <time>; resume it to release
+this job"); the Create page still prints "Waiting for the engine" for it. **Retry from where it stopped** (on a
+stopped card in **Create** and **Queue**) and the Assistant's resume are refused for a paused channel with
+"'<channel>' is paused. Resume it first.", the same answer as a new video. A pause does not stop a story video
+that is already being made: press **Cancel** on it under **Working now** if it must stop. Videos that are already
+made stay in the Queue.
 
 Type the commands in a terminal opened after setup finished, with the full path of the studio program in the
 install folder. Windows Terminal opens PowerShell, and there the quoted path needs `&` in front of it, or

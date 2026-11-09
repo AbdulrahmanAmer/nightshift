@@ -14,6 +14,7 @@ from ns_dashboard.assistant.llm import LlmProvider, SupervisorLlmProvider
 from ns_dashboard.assistant.loop import Assistant
 from ns_dashboard.assistant.store import AssistantStore
 from ns_dashboard.assistant.tools import build_registry
+from ns_dashboard.channel_hold import make_channel_hold
 from ns_dashboard.events import EventHub
 from ns_dashboard.fakes import fake_adapters
 from ns_dashboard.jobs import JOB_OWNER, JobRecord, JobStore, JobWorker, make_gpu_gate
@@ -116,6 +117,7 @@ def build_state(
         on_end={"series_part": release_part_of},
         on_done={"series_part": finish_part_of},
         sweep=sweep_at_start,
+        hold=make_channel_hold(paths, db),
     )
     return AppState(
         paths=paths, db=db, log=log, hub=hub, link=link, adapters=adapters, store=store, worker=worker,

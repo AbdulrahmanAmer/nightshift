@@ -448,6 +448,9 @@ def _tonight(
         if gpu_busy:  # J7: the GPU stayed busy for the whole wait; the other jobs wait for the next night
             report.setdefault("skipped", []).append({"channel": dj.channel.slug, "jobs": dj.count})
             continue
+        if _paused_now(env, dj.channel.slug):  # paused after the plan was made: nothing of it starts
+            _hold_for_pause(env, report, why, dj.channel.slug, dj.count)
+            continue
         ch = dj.channel
         bar = cadence.apply_quality_drop(env.paths, env.db, ch, dj.plan, now)
         if bar is not None:
@@ -457,11 +460,33 @@ def _tonight(
              "reasons": dj.plan.reasons}
         )
         for n in range(dj.count):
+            if n and _paused_now(env, ch.slug):  # paused during the night: its remaining jobs are not started
+                _hold_for_pause(env, report, why, ch.slug, dj.count - n)
+                break
             make = partial(jobs.make_job, env, ch, dj.fmt, now=now, rng=rng, origin="daily", run_id=run_id)
             if _attempt(env, run, report, make, ch.slug, run_id=run_id) == "NS-E201":
                 gpu_busy = True
                 report.setdefault("skipped", []).append({"channel": ch.slug, "jobs": dj.count - n})
                 break
+
+
+PAUSED_TONIGHT = "its channel was paused during the night; resume it and the next night makes its video"
+
+
+def _paused_now(env: jobs.Env, slug: str) -> bool:
+    """True when the channel's profile says `paused` right now (read again: a pause can come at any time,
+    from the Dashboard, the Assistant or `studio pause` in another window). Unreadable means not paused."""
+    try:
+        return get_channel(env.paths, slug).status == "paused"
+    except StudioError:
+        return False
+
+
+def _hold_for_pause(env: jobs.Env, report: dict, why: dict[str, str], slug: str, jobs_left: int) -> None:
+    """A channel paused mid-night: its remaining jobs are listed as skipped, with the reason, not started."""
+    report.setdefault("skipped", []).append({"channel": slug, "jobs": jobs_left, "reason": PAUSED_TONIGHT})
+    why[slug] = PAUSED_TONIGHT
+    env.log.info("daily_channel_paused", channel=slug, jobs=jobs_left)
 
 
 def nothing_due_message(report: dict) -> str:
