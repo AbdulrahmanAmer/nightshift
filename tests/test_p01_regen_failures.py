@@ -168,6 +168,79 @@ def test_a_corrupt_attempts_file_does_not_hide_the_failure(tmp_home: Path, monke
     assert counts["gate"] == 2
 
 
+class _Idea:
+    """Stands for `ideas`: writes the idea of every pass (`payload(n)` for pass n) into idea.json."""
+
+    name, tenant, inputs, outputs = "ideas", None, (), ("idea.json",)
+
+    def __init__(self, payload) -> None:
+        self.payload, self.passes = payload, 0
+
+    def run(self, ctx) -> None:
+        self.passes += 1
+        ctx.write_json("idea.json", self.payload(self.passes))
+
+
+class _AlwaysFailsCritic:
+    name, tenant, inputs, outputs = "critic_revise", None, ("idea.json",), ("critic.json",)
+
+    def __init__(self) -> None:
+        self.runs = 0
+
+    def run(self, ctx) -> None:
+        self.runs += 1
+        assert self.runs < 10, "the redraw loop did not stop"
+        raise NsError("NS-E304", "critic avg 5.0 low 5 after 2 revisions")
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        pytest.param(lambda n: {"twist": f"twist {n}"}, id="no-premise-key"),
+        pytest.param(lambda n: {"premise": "   ", "twist": f"twist {n}"}, id="blank-premise"),
+        pytest.param(lambda n: {"premise": "The same premise", "twist": f"twist {n}"}, id="shared-premise"),
+    ],
+)
+def test_max_ideas_is_a_hard_bound_whatever_the_premise_looks_like(
+    tmp_home: Path, monkeypatch: pytest.MonkeyPatch, payload
+):
+    """The real counter: an idea without a premise, or banked ideas that share one, still end at three."""
+    ideas, critic = _Idea(payload), _AlwaysFailsCritic()
+    monkeypatch.setitem(REGISTRY, "ideas", ideas)
+    monkeypatch.setitem(REGISTRY, "critic_revise", critic)
+    monkeypatch.setitem(orch.FORMAT_STAGES, "bound", ["ideas", "critic_revise"])
+    ctx = make_ctx(tmp_home, fmt="bound")
+    with pytest.raises(NsError) as ei:
+        regen.run_job_guarded(ctx)
+    assert ei.value.code == "NS-E304" and "3 ideas" in ei.value.detail
+    assert (ideas.passes, critic.runs) == (3, 3)
+    att = json.loads(ctx.file(regen.ATTEMPTS_FILE).read_text(encoding="utf-8"))
+    assert len([h for h in att["history"] if "idea" in h]) == 3
+    assert ctx.generation == 3  # each redraw is a new pass for the cached drafts
+    if "premise" not in payload(1) or not payload(1)["premise"].strip():
+        assert len(ctx.read_json("ideas_failed.json")) == 3  # the list counts them too, under a placeholder
+
+
+def test_a_job_folder_from_before_the_redraw_still_loads_and_redraws(
+    tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """policy_attempts.json with a history entry that has no `idea` key, no ideas_failed.json."""
+    monkeypatch.setitem(orch.FORMAT_STAGES, "text_redraw", list(TEXT_PLAN))
+    ctx = make_ctx(tmp_home, fmt="text_redraw")
+    old = {"regenerations": 1, "history": [{"code": "NS-E606", "detail": "tag", "rejected_to": "somewhere"}]}
+    ctx.write_json(regen.ATTEMPTS_FILE, old)
+    assert not ctx.file("ideas_failed.json").exists()
+    assert (ctx.attempt, ctx.generation) == (1, 1)
+    ctx.services.llm = FakeLlm(
+        FIXTURES_LLM, overrides={"critic": [BAD_CRITIC, BAD_CRITIC, BAD_CRITIC, _good_critic()]}
+    )
+    assert regen.run_job_guarded(ctx) == TEXT_PLAN
+    att = ctx.read_json(regen.ATTEMPTS_FILE)
+    assert att["regenerations"] == 1 and [bool("idea" in h) for h in att["history"]] == [False, True]
+    assert ctx.read_json("ideas_failed.json") == [_fixture_premises()[0]]
+    assert ctx.generation == 2
+
+
 # ---------------------------------------------------------------- J3 step 2 (F-H77)
 class Counter:
     def __init__(self, name: str, counts: dict[str, int], fail=None) -> None:
@@ -323,6 +396,66 @@ def test_earliest_stage_reads_the_failed_qc_checks():
     assert regen.earliest_stage("NS-E999", ["first", "second"]) == "first"
 
 
+TOO_LONG = "s2: 71 s exceeds the 60 s Shorts limit"  # raised by media/derive.py while a Short is cut
+
+
+def test_a_derived_short_over_60_s_restarts_at_the_selection_not_at_the_voice():
+    """A new voice take cannot shorten the span the selection chose; only a new selection can."""
+    master = list(orch.MASTER_FIRST_STAGES)
+    assert regen.earliest_stage("NS-E404", master, TOO_LONG) == "shorts_select"
+    assert (
+        regen.earliest_stage("NS-E404", list(orch.MASTER_FROM_OWNER_SCRIPT_STAGES), TOO_LONG)
+        == "shorts_select"
+    )
+    assert (
+        regen.earliest_stage("NS-E404", master, "s2: duration") == "voice"
+    )  # a QC duration check is unchanged
+    series_part = list(
+        orch.MASTER_FROM_SCRIPT_STAGES
+    )  # its Shorts come with the script: nothing can change them
+    assert not regen.has_restart_stage("NS-E404", series_part, TOO_LONG)
+    assert regen.has_restart_stage("NS-E404", series_part, "s2: aspect")
+
+
+def test_a_derived_short_over_60_s_gets_one_regeneration_from_the_selection(
+    tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+):
+    counts: dict[str, int] = {}
+    names = ["ideas", "shorts_select", "voice", "shorts_derive"]
+    _plan(
+        monkeypatch,
+        "derive_j3",
+        names,
+        counts,
+        fail_stage="shorts_derive",
+        code="NS-E404",
+        times=1,
+        detail=TOO_LONG,
+    )
+    assert regen.run_job_guarded(make_ctx(tmp_home, fmt="derive_j3")) == names
+    assert counts == {"ideas": 1, "shorts_select": 2, "voice": 2, "shorts_derive": 2}
+
+
+def test_a_derived_short_over_60_s_in_a_plan_without_a_selection_fails_at_once(
+    tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+):
+    counts: dict[str, int] = {}
+    names = ["script_import", "voice", "shorts_derive"]
+    _plan(
+        monkeypatch,
+        "series_j3",
+        names,
+        counts,
+        fail_stage="shorts_derive",
+        code="NS-E404",
+        times=1,
+        detail=TOO_LONG,
+    )
+    with pytest.raises(NsError) as ei:
+        regen.run_job_guarded(make_ctx(tmp_home, fmt="series_j3"))
+    assert ei.value.code == "NS-E404" and counts == {"script_import": 1, "voice": 1, "shorts_derive": 1}
+
+
 # ---------------------------------------------------------------- QC rejects (F-H70)
 def _two_shorts(ctx, bad: set[str]):
     report = {}
@@ -380,6 +513,21 @@ def test_a_failing_evidence_copy_does_not_stop_the_qc_stage(tmp_home: Path, monk
     QcStage().run(ctx)  # no OSError
     assert list(ctx.read_json("render/report.json")) == ["s1"]
     assert ctx.read_json("qc/dropped.json") == {"s2": "caption_drift_ms"}
+
+
+def test_the_dropped_list_is_kept_until_qc_runs_again_and_drops_nothing(
+    tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """NS-W406 points at qc/dropped.json: a rejection that does not rerun QC (metadata only) must keep it."""
+    ctx = make_ctx(tmp_home)
+    monkeypatch.setattr(qcmod, "run_qc", _two_shorts(ctx, {"s2"}))
+    QcStage().run(ctx)
+    err = NsError("NS-E606", "a disliked tag")
+    regen.reject_artifacts(ctx, err, 1)
+    assert ctx.read_json("qc/dropped.json") == {"s2": "caption_drift_ms"}
+    monkeypatch.setattr(qcmod, "run_qc", _two_shorts(ctx, set()))
+    QcStage().run(ctx)  # the next pass drops nothing: the old list would be wrong now
+    assert not ctx.file("qc/dropped.json").exists()
 
 
 def test_a_passing_short_is_never_copied_to_rejected(tmp_home: Path, monkeypatch: pytest.MonkeyPatch):

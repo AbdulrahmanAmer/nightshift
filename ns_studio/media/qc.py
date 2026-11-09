@@ -223,6 +223,8 @@ def drop_failed_items(
         kept = {item: info for item, info in rendered.items() if item not in dropped}
         ctx.write_json("render/report.json", kept)
         ctx.write_json("qc/dropped.json", dropped)
+    else:  # a pass that drops nothing (after a regeneration) must not leave the list of the earlier pass
+        ctx.file("qc/dropped.json").unlink(missing_ok=True)
     return sorted(dropped)
 
 

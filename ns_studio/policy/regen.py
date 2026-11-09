@@ -67,12 +67,22 @@ QC_RESTART: dict[str, tuple[str, ...]] = {
     "black_frames": ("clips",),
     "aspect": ("render", "render_master"),
     "file_opens": ("render", "render_master"),
+    # `media/derive.py` cuts a Short from the master and raises "sN: 71 s exceeds the 60 s Shorts limit": a
+    # new voice take cannot shorten the span the selection chose, only a new selection can. A plan whose
+    # Shorts come with the script (a series part) has no such stage: nothing there can change them.
+    "Shorts limit": ("shorts_select",),
 }
 # Metadata failures are fixed by rewriting the metadata alone: only these stages are redone (everything after
 # them is gated on its input hashes and follows when the SEO files change), never the chapters.
 REGEN_ONLY: dict[str, tuple[str, ...]] = {
     "NS-E603": ("seo", "seo_long", "seo_shorts"),
     "NS-E606": ("seo", "seo_long", "seo_shorts"),
+}
+# Checks that share a code with another check but are fixed at a different stage: tried before REGEN_FROM.
+# `short_hook` (NS-E611) is a hook that was not voiced or captioned at the start of its Short: the footage
+# is fine, so the voice is redone (another TTS seed) instead of the clips.
+REGEN_FROM_CHECK: dict[str, tuple[str, ...]] = {
+    "short_hook": ("voice", "ideas"),
 }
 _SMALL_FILES = (
     "idea.json",
@@ -90,34 +100,45 @@ _MEDIA_DIRS = ("long", "shorts")
 _EVIDENCE_DIRS = ("qc",)  # small JSON that says why; copied, because the stage writes it again
 
 
-def earliest_stage(code: str, names: list[str], detail: str = "") -> str:
+def earliest_stage(code: str, names: list[str], detail: str = "", check: str | None = None) -> str:
     """The stage to restart from for `code`, falling back to the first stage of the plan.
 
-    For NS-E404 the failed checks named in `detail` decide (`QC_RESTART`); a detail that names none restarts
-    at the voice, the first stage of `REGEN_FROM`.
+    A failing `check` that shares its code with another one comes first (`REGEN_FROM_CHECK`). For NS-E404
+    the failed checks named in `detail` decide (`QC_RESTART`); a detail that names none restarts at the
+    voice, the first stage of `REGEN_FROM`.
     """
     if code == "NS-E404":
         found = [
             min(names.index(a) for a in alternatives if a in names)
-            for check, alternatives in QC_RESTART.items()
-            if check in detail and any(a in names for a in alternatives)
+            for check_name, alternatives in QC_RESTART.items()
+            if check_name in detail and any(a in names for a in alternatives)
         ]
         if found:
             return names[min(found)]
-    for cand in REGEN_FROM.get(code, ()):
+    for cand in (*REGEN_FROM_CHECK.get(check or "", ()), *REGEN_FROM.get(code, ())):
         if cand in names:
             return cand
     return names[0]
 
 
-def has_restart_stage(code: str, names: list[str]) -> bool:
-    """True when the plan has a stage that can redo the work behind `code` (always for the policy codes)."""
+def has_restart_stage(code: str, names: list[str], detail: str = "") -> bool:
+    """True when the plan has a stage that can redo the work behind `code` (always for the policy codes).
+
+    For NS-E404 whose `detail` names a failed check, a stage that can change that check must be in the plan.
+    """
+    if code == "NS-E404":
+        named = [alts for check, alts in QC_RESTART.items() if check in detail]
+        if named:
+            return any(a in names for alts in named for a in alts)
     return code not in J3_CODES or any(c in names for c in REGEN_FROM[code])
 
 
 #: Files a stage keeps as its own memo and returns early on; the retry would reproduce them unchanged.
+#: Deleted here for every stage a regeneration restarts. A memo that lives in a folder of its own is keyed on
+#: `JobContext.generation` instead (`drafts/ch<n>.json` of `chapters_draft`, the voice signature, the hooks
+#: memo): a regeneration changes the generation, a plain resume does not.
 STAGE_MEMOS: dict[str, tuple[str, ...]] = {
-    "hooks": ("hooks_all.json",),  # HooksStage skips when this exists
+    "hooks": ("hooks_all.json", "hooks_generation.json"),  # HooksStage skips when this exists
     "voice": ("audio/manifest.json",),  # synthesize() reuses every WAV with an unchanged signature
 }
 
@@ -186,7 +207,6 @@ def reject_artifacts(ctx: JobContext, err: NsError, attempt: int) -> Path:
     for d in _EVIDENCE_DIRS:
         if ctx.file(d).is_dir():
             shutil.copytree(ctx.file(d), dest / d, dirs_exist_ok=True)
-    ctx.file("qc/dropped.json").unlink(missing_ok=True)  # the list of the pass that was just rejected
     return dest
 
 
@@ -253,8 +273,9 @@ def run_job_guarded(ctx: JobContext, *, resume: bool = True) -> list[str]:
                 _redraw_idea(ctx, e, att, names)
                 first = False
                 continue
-            start = earliest_stage(e.code, names, e.detail)
-            if (ctx.owner_script and start == names[0]) or not has_restart_stage(e.code, names):
+            check = str(e.data.get("check") or "") or None
+            start = earliest_stage(e.code, names, e.detail, check)
+            if (ctx.owner_script and start == names[0]) or not has_restart_stage(e.code, names, e.detail):
                 # Only the import of the owner's own text would be redone: it would fail the same way.
                 att["history"].append({"code": e.code, "detail": e.detail, "rejected_to": None})
                 ctx.write_json(ATTEMPTS_FILE, att)

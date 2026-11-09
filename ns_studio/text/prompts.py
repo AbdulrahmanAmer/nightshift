@@ -40,6 +40,19 @@ SCORES: dict[str, Any] = {
     "required": list(RUBRIC_KEYS),
 }
 
+# What `policy_check.md` asks beyond the shared `PolicyCheckResult` (which lives in ns_common and is
+# shared with contracts/): how dark the story is and whether its setting is a real place. Studio-side keys.
+POLICY_STUDIO_KEYS = ("intensity", "real_setting")
+
+
+def _policy_check_schema() -> dict[str, Any]:
+    schema = PolicyCheckResult.model_json_schema()
+    schema["properties"]["intensity"] = {"type": "string", "enum": ["low", "medium", "high"]}
+    schema["properties"]["real_setting"] = {"anyOf": [{"type": "boolean"}, {"type": "null"}]}
+    schema["required"] = [*schema.get("required", []), *POLICY_STUDIO_KEYS]
+    return schema
+
+
 PROMPT_SCHEMAS: dict[str, dict[str, Any]] = {
     "ideas": {
         "type": "object",
@@ -190,7 +203,7 @@ PROMPT_SCHEMAS.update(
             "properties": {"hooks": _arr(_STR, minItems=5, maxItems=5), "closing_line": _STR},
             "required": ["hooks", "closing_line"],
         },
-        "policy_check": PolicyCheckResult.model_json_schema(),
+        "policy_check": _policy_check_schema(),
         "clip_judge": {
             "type": "object",
             "properties": {"ok": {"type": "boolean"}, "reasons": _arr(_STR)},
@@ -387,6 +400,13 @@ def call_text(ctx: JobContext, name: str, *, fixture: str | None = None, **vars:
             **attempt_kwargs(ctx),
         ),
     )
+
+
+def parse_policy_check(data: Any, what: str) -> PolicyCheckResult:
+    """Validate a `policy_check` answer as the shared model; the studio-side keys are set aside first."""
+    if isinstance(data, dict):
+        data = {k: v for k, v in data.items() if k not in POLICY_STUDIO_KEYS}
+    return parse_model(PolicyCheckResult, data, what)
 
 
 def parse_model[M: BaseModel](model: type[M], data: Any, what: str) -> M:
