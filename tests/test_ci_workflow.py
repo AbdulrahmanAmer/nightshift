@@ -23,6 +23,10 @@ from dev import ci_shards as cs
 ROOT = Path(__file__).resolve().parents[1]
 SHARDS = cs.SHARDS
 SETUP_ALLOWANCE_S = 180  # checkout, python, FFmpeg, pip: about 90 s measured, 180 s allowed
+# How many test files without a measured weight any ONE shard must be able to take before the timeout guard
+# fails. A pull request that adds tests does not edit the weights (they are refreshed from CI's own timings),
+# and several such pull requests merge between two refreshes.
+NEW_FILE_ROOM = 8
 
 #: The checks branch protection requires (docs/REPO_SETTINGS.md); the names are job ids and stay as they are.
 REQUIRED = ("lint", "types", "test", "ui-build", "powershell-parse", "scope-check")
@@ -250,6 +254,25 @@ def test_the_shard_timeout_is_twice_the_predicted_time_and_far_under_the_old_for
         assert minutes < 40
         for other in ("test-collect", "test"):
             assert 10 <= wf["jobs"][other]["timeout-minutes"] <= 20
+
+
+def test_every_shard_has_room_for_new_test_files_before_the_guard_fails(
+    ci: dict[str, Any], release: dict[str, Any]
+):
+    """The guard above failed on `main` three times in a day with 21 s or less to spare: a merged pull
+    request brought one unweighted test file and every open pull request went red. Room is by design."""
+    weights = cs.load_weights()
+    loads = cs.predicted_seconds(cs.split(cs.discover_test_files(), SHARDS, weights), weights)
+    need = NEW_FILE_ROOM * weights.default_seconds
+    for wf in (ci, release):
+        budget = wf["jobs"]["test-shard"]["timeout-minutes"] * 60 / 2 - SETUP_ALLOWANCE_S
+        tight = {s: round(budget - load) for s, load in enumerate(loads, start=1) if budget - load < need}
+        assert not tight, (
+            f"shards with less than {need:.0f} s of room ({NEW_FILE_ROOM} unweighted test files) before the"
+            f" timeout guard fails, seconds left per shard: {tight}. Refresh the weights"
+            f" ({cs.REFRESH_COMMAND}), make the slowest test files cheaper, or add a shard; do not wait"
+            " for the guard itself to go red."
+        )
 
 
 def test_the_guard_message_names_the_shard_its_prediction_and_what_to_run():
