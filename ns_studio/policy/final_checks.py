@@ -11,6 +11,7 @@ from pathlib import Path
 import numpy as np
 
 from ns_common import ffmpeg
+from ns_common.atomic import write_text_atomic
 from ns_common.errors import describe
 from ns_common.models import PolicyAdvice, PolicyCheck
 from ns_studio.context import JobContext
@@ -128,8 +129,7 @@ class RenderUniqueness(Check):
             ctx.db.execute(
                 "update outputs set phash=? where output_id=?", (phash.encode(hs), f"{ctx.job_id}/{item}")
             )
-        index_file.parent.mkdir(parents=True, exist_ok=True)
-        index_file.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
+        write_text_atomic(index_file, "\n".join(json.dumps(r) for r in rows) + "\n")
 
 
 # ---------------------------------------------------------------- runtime and mid-rolls

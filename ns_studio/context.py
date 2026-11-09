@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 from ns_common.acquire import Acquirer, DevAcquirer
+from ns_common.atomic import read_text_retry, write_text_atomic
 from ns_common.db import Db
 from ns_common.embed_client import Embed, EmbedClient, FakeEmbed
 from ns_common.llm_client import FakeLlm, Llm, LlmClient
@@ -183,13 +184,12 @@ class JobContext:
 
     def read_json(self, name: str) -> Any:
         """Read and parse a JSON file from the job directory."""
-        return json.loads(self.file(name).read_text(encoding="utf-8"))
+        return json.loads(read_text_retry(self.file(name)))
 
     def write_json(self, name: str, data: Any) -> Path:
         """Write `data` as pretty JSON into the job directory and return the path."""
         p = self.file(name)
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        write_text_atomic(p, json.dumps(data, indent=2, ensure_ascii=False) + "\n")
         return p
 
     def subdir(self, name: str) -> Path:

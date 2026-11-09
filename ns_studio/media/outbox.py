@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import random
 import re
-import shutil
 import zlib
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from ns_common.atomic import copy_atomic, read_text_retry, sweep_stale_tmp, write_text_atomic
 from ns_common.models import Channel, ClipRef, Metadata, PolicyAdvice, PolicyResult, Seo
 from ns_common.paths import Paths
 from ns_studio.context import JobContext
@@ -275,15 +275,16 @@ def write_sheet_txt(
     meta: Metadata, video_name: str, path: Path, *, related_title: str | None = None
 ) -> Path:
     """Write the upload sheet next to the video."""
-    path.write_text(sheet_text(meta, video_name, related_title=related_title), encoding="utf-8")
+    write_text_atomic(path, sheet_text(meta, video_name, related_title=related_title), newline=None)
     return path
 
 
 def copy_if_changed(src: Path, dest: Path) -> Path:
     """Copy `src` to `dest` unless an identical-size file is already there."""
     dest.parent.mkdir(parents=True, exist_ok=True)
+    sweep_stale_tmp(dest.parent)  # a power cut during an earlier copy left a video-sized temporary file
     if not dest.exists() or dest.stat().st_size != src.stat().st_size:
-        shutil.copy2(src, dest)
+        copy_atomic(src, dest)  # the finished video appears whole: a watcher never meets half of it
     return dest
 
 
@@ -327,12 +328,12 @@ def retime_sheet(entry: Mapping[str, str], publish_at: str) -> Metadata | None:
     """
     sheet = Path(entry["json"])
     try:
-        meta = Metadata.model_validate_json(sheet.read_text(encoding="utf-8"))
+        meta = Metadata.model_validate_json(read_text_retry(sheet))
     except (OSError, ValueError):
         return None
     meta = meta.model_copy(update={"publish_after": publish_at})
     related = (meta.related_video_instruction or "").removeprefix(RELATED_PREFIX) or None
-    sheet.write_text(meta.model_dump_json(indent=2) + "\n", encoding="utf-8")
+    write_text_atomic(sheet, meta.model_dump_json(indent=2) + "\n", newline=None)
     write_sheet_txt(meta, Path(entry["mp4"]).name, Path(entry["txt"]), related_title=related)
     return meta
 
@@ -379,9 +380,7 @@ class OutboxStage:
                 ),
             )
             mp4 = copy_if_changed(Path(info["path"]), outbox_target(ctx, "short", k))
-            mp4.with_suffix(".json").write_text(
-                meta.model_dump_json(indent=2) + "\n", encoding="utf-8"
-            )
+            write_text_atomic(mp4.with_suffix(".json"), meta.model_dump_json(indent=2) + "\n", newline=None)
             write_sheet_txt(meta, mp4.name, mp4.with_suffix(".txt"))
             record_output(
                 ctx, kind="short", k=k, item=item, meta=meta, path=mp4,
@@ -468,7 +467,7 @@ def run_outbox_master(ctx: JobContext) -> None:
     mp4 = copy_if_changed(Path(long_info["path"]), outbox_target(ctx, "long"))
     for t in thumbs:
         copy_if_changed(ctx.file(f"long/{t}"), mp4.parent / t)
-    mp4.with_suffix(".json").write_text(meta.model_dump_json(indent=2) + "\n", encoding="utf-8")
+    write_text_atomic(mp4.with_suffix(".json"), meta.model_dump_json(indent=2) + "\n", newline=None)
     write_sheet_txt(meta, mp4.name, mp4.with_suffix(".txt"))
     record_output(ctx, kind="long", k=None, item="long", meta=meta, path=mp4,
                   duration_s=float(long_info["duration_s"]), shots=long_shots)
@@ -500,7 +499,7 @@ def run_outbox_master(ctx: JobContext) -> None:
                    "parent_job_id": ctx.job_id},
         )
         smp4 = copy_if_changed(Path(info["path"]), outbox_target(ctx, "short", k))
-        smp4.with_suffix(".json").write_text(smeta.model_dump_json(indent=2) + "\n", encoding="utf-8")
+        write_text_atomic(smp4.with_suffix(".json"), smeta.model_dump_json(indent=2) + "\n", newline=None)
         write_sheet_txt(smeta, smp4.name, smp4.with_suffix(".txt"), related_title=long_seo.title)
         record_output(ctx, kind="short", k=k, item=item, meta=smeta, path=smp4,
                       duration_s=float(info["duration_s"]), shots=shots)

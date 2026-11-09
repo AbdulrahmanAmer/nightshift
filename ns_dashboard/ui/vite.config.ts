@@ -16,7 +16,9 @@ export default defineConfig({
     rollupOptions: {
       output: {
         entryFileNames: "app.js",
-        chunkFileNames: "assets/[name]-[hash].js",
+        // One script only. The server names the entry `app.js?v=<token>`; a chunk would import it as `../app.js`
+        // (another URL), so the bundle would load and run twice. A lazy import folds into app.js (F-6).
+        inlineDynamicImports: true,
         assetFileNames: (info) => (info.names?.[0] ?? info.name ?? "").endsWith(".css") ? "app.css" : "assets/[name]-[hash][extname]",
       },
     },

@@ -17,6 +17,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from ns_common.atomic import read_text_retry, write_text_atomic
+
 HOST_UNAVAILABLE = 3
 HOST_WAIT_S = 20.0
 WEBVIEW2_CORE_DLL = "Microsoft.Web.WebView2.Core.dll"
@@ -45,8 +47,8 @@ def write_server_files(
     }
     server = folder / SERVER_FILE
     address = folder / ADDRESS_FILE
-    server.write_text(json.dumps(info, indent=2) + "\n", encoding="utf-8")
-    address.write_text(url + "\n", encoding="utf-8")
+    write_text_atomic(server, json.dumps(info, indent=2) + "\n")
+    write_text_atomic(address, url + "\n")
     return server, address
 
 
@@ -58,7 +60,7 @@ def remove_server_files(folder: Path) -> None:
 def read_server_info(folder: Path) -> dict[str, Any] | None:
     """The running server's record, or None."""
     try:
-        data = json.loads((folder / SERVER_FILE).read_text(encoding="utf-8-sig"))
+        data = json.loads(read_text_retry(folder / SERVER_FILE, "utf-8-sig"))
     except (OSError, ValueError):
         return None
     return data if isinstance(data, dict) else None
@@ -206,6 +208,6 @@ def update_server_info(folder: Path, **values: Any) -> None:
     info = read_server_info(folder) or {}
     info.update(values)
     try:
-        (folder / SERVER_FILE).write_text(json.dumps(info, indent=2) + "\n", encoding="utf-8")
+        write_text_atomic(folder / SERVER_FILE, json.dumps(info, indent=2) + "\n")
     except OSError:
         pass

@@ -12,6 +12,7 @@ from typing import Any, BinaryIO
 
 from pydantic import ValidationError
 
+from ns_common.atomic import write_bytes_atomic
 from ns_common.config import save_runtime
 from ns_common.models import Runtime
 from ns_common.secrets_names import KEY_NAMES, SHORT_NAMES
@@ -264,8 +265,7 @@ class SettingsService:
             data = self.s.adapters.tts.preview(voice, text, speed)
         except AdapterUnavailable as e:
             raise ApiError(503, "tts_unavailable", str(e)) from e
-        cache.parent.mkdir(parents=True, exist_ok=True)
-        cache.write_bytes(data)
+        write_bytes_atomic(cache, data)  # a second preview request must not be served half a wav
         return data
 
     # --- logs ---

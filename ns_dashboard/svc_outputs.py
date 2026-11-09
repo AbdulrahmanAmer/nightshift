@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from ns_common import ffmpeg
+from ns_common.atomic import read_text_retry
 from ns_common.errors import NsError
 from ns_dashboard import media
 from ns_dashboard.common import OUTPUT_KINDS, OUTPUT_STATUSES, now_iso, output_item
@@ -31,7 +32,7 @@ OUTPUT_SELECT = (
 
 def _read_json(f: Path) -> Any:
     try:
-        return json.loads(f.read_text(encoding="utf-8"))
+        return json.loads(read_text_retry(f))
     except (OSError, ValueError):
         return None
 

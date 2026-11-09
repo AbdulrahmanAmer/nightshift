@@ -16,9 +16,11 @@ import tempfile
 import zipfile
 from collections.abc import Callable
 from datetime import datetime
+from functools import partial
 from pathlib import Path
 
 from ns_common import __version__, ffmpeg
+from ns_common.atomic import read_text_retry, retry_busy, write_zip_atomic
 from ns_common.config import load_install_state, load_runtime
 from ns_common.devmode import is_dev
 from ns_common.errors import NsError
@@ -84,7 +86,7 @@ def _add_file(z: zipfile.ZipFile, src: Path, arcname: str, skipped: list[str]) -
                 z.writestr(arcname, fh.read())
             skipped.append(f"{arcname}: truncated to last {MAX_LOG_BYTES} bytes")
         else:
-            z.write(src, arcname)
+            retry_busy(partial(z.write, src, arcname))
     except OSError as e:
         skipped.append(f"{arcname}: {e}")
 
@@ -105,7 +107,7 @@ def setup_data_dir() -> Path:
 def _scrubbed_answers(src: Path) -> str | None:
     """answers.json text without any `*_api_key` field; None when the file is missing or not an object."""
     try:
-        data = json.loads(src.read_text(encoding="utf-8-sig"))
+        data = json.loads(read_text_retry(src, "utf-8-sig"))
     except (OSError, ValueError):
         return None
     if not isinstance(data, dict):
@@ -170,7 +172,8 @@ def build_bundle(
     version_text = __version__
     if app is not None and (app / "VERSION").exists():
         version_text = (app / "VERSION").read_text(encoding="utf-8").strip()
-    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
+
+    def fill(z: zipfile.ZipFile) -> None:
         if paths.logs.exists():
             for f in sorted(paths.logs.rglob("*")):
                 if f.is_file():
@@ -203,6 +206,11 @@ def build_bundle(
         z.writestr("VERSION", version_text + "\n")
         info = {"created": when.isoformat(timespec="seconds"), "version": version_text, "notes": skipped}
         z.writestr("bundle-info.json", json.dumps(info, indent=2) + "\n")
+
+    # built beside the final name and swapped in whole: the Desktop copy (OneDrive, antivirus, the partner)
+    # never meets a zip that is still being written (the freeze steps take seconds), and a second bundle in
+    # the same minute does not tear the first
+    write_zip_atomic(out, fill)
     return out
 
 
