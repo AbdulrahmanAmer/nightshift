@@ -263,7 +263,7 @@ Rules: no test depends on wall-clock timing, GPU, the real home folder or the in
 
 ## 7. CI and release
 
-**Workflow `.github/workflows/ci.yml`** runs on `pull_request`, on `push` to `main` and to tags, and nightly (a pull request branch is tested by its `pull_request` run alone), on `windows-latest`, Python 3.12, FFmpeg via `choco install ffmpeg -y --no-progress`. The workflow from the foundations plan, Task 1, is a single `test` job running `ruff`, `pyright` and `pytest`; it stays as is. Plan `m0-c10-ci-bundle.md` splits and extends it:
+**Workflow `.github/workflows/ci.yml`** runs on `pull_request`, on `push` to `main` and to tags, and nightly (a pull request branch is tested by its `pull_request` run alone), on `windows-latest`, Python 3.12, FFmpeg from the composite action `.github/actions/install-ffmpeg` (H-9): the build `manifest.json` pins under `bins.ffmpeg` (the one the product itself falls back to), restored from the Actions cache or downloaded and checked against the manifest's sha256 by `dev/ci_install_ffmpeg.py`, Chocolatey only as a second source, and a final `ffmpeg -version` / `ffprobe -version` that fails the step with `FFmpeg could not be installed: <source> answered <status>` (and says `upstream outage` in the job summary when the host kept answering 5xx), so a missing FFmpeg never reaches pytest. The workflow from the foundations plan, Task 1, is a single `test` job running `ruff`, `pyright` and `pytest`; it stays as is. Plan `m0-c10-ci-bundle.md` splits and extends it:
 
 | Job | Steps | Required |
 |---|---|---|
