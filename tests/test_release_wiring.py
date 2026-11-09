@@ -8,6 +8,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+import yaml
 
 from ns_supervisor import pwsh
 
@@ -75,12 +76,12 @@ def test_repo_settings_describe_the_tag_to_pin_loop():
         assert needle in text, needle
 
 
-def test_the_test_job_has_a_forty_minute_cap_in_ci_and_release():
+def test_the_test_shards_have_a_cap_well_under_the_old_forty_minutes_in_ci_and_release():
+    # the single test job (40 minutes, about 28 used) became four shards of about 8 minutes of tests (H-3)
     for rel in (".github/workflows/ci.yml", ".github/workflows/release.yml"):
-        wf = read(rel)
-        job = wf[wf.index("\n  test:") :]
-        head = job[: job.index("steps:")]
-        assert "timeout-minutes: 40" in head, rel
+        jobs = yaml.safe_load(read(rel))["jobs"]
+        assert 15 <= jobs["test-shard"]["timeout-minutes"] < 40, rel
+        assert jobs["test"]["timeout-minutes"] <= 20, rel
 
 
 def test_the_0_1_5_to_0_1_1_changelog_entries_are_in_place():

@@ -18,9 +18,18 @@ env:
   PIP_DISABLE_PIP_VERSION_CHECK: "1"
 
 jobs:
-  test:
+  # The tag run is a FULL run of everything, as before, but the tests run as a matrix of shards (H-3); see the
+  # same three jobs in ci.yml. No `-m` filter here: the network-marked tests are collected and (without
+  # NS_NETWORK_TESTS) skipped exactly as they were in the single job; ci.yml's own tag run covers them.
+  test-shard:
+    name: test-shard (${{ matrix.shard }}/4)
     runs-on: windows-latest
-    timeout-minutes: 40
+    # About 8 minutes of tests plus about 3 of setup per shard; twice that is 22, 25 leaves room for a slow runner.
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     steps:
       - run: git config --global core.longpaths true
       - uses: actions/checkout@v4
@@ -31,7 +40,102 @@ jobs:
           cache-dependency-path: pyproject.toml
       - run: choco install ffmpeg -y --no-progress
       - run: python -m pip install -e ".[dev]"
-      - run: python -m pytest -q --junitxml=report.xml
+      - name: Tests (the files of this shard)
+        shell: bash
+        run: python dev/ci_shards.py run --shard ${{ matrix.shard }} --of 4 -- -q --junitxml=report-shard-${{ matrix.shard }}.xml
+      - name: Upload JUnit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-report-shard-${{ matrix.shard }}
+          path: report-shard-${{ matrix.shard }}.xml
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # Collects every test once, unsharded, in the same environment as the shards.
+  test-collect:
+    name: test-collect
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - run: git config --global core.longpaths true
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - run: choco install ffmpeg -y --no-progress
+      - run: python -m pip install -e ".[dev]"
+      - name: Collect every test, unsharded
+        shell: bash
+        run: |
+          if ! python -m pytest --collect-only -q -o addopts= > collected.txt; then
+            tail -n 80 collected.txt
+            exit 1
+          fi
+          tail -n 2 collected.txt
+      - name: Upload the collection
+        uses: actions/upload-artifact@v4
+        with:
+          name: collected-tests
+          path: collected.txt
+          retention-days: 14
+
+  # `release` needs this job. It passes only when every shard and the collection job succeeded AND the shards
+  # together ran exactly the unsharded collection (no test in no shard, none in two); `always()` keeps it from
+  # being skipped when a shard fails.
+  test:
+    needs: [test-shard, test-collect]
+    if: always()
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - name: Every shard and the collection must have succeeded
+        shell: bash
+        env:
+          SHARD_RESULT: ${{ needs.test-shard.result }}
+          COLLECT_RESULT: ${{ needs.test-collect.result }}
+        run: |
+          echo "test-shard (all four): $SHARD_RESULT"
+          echo "test-collect: $COLLECT_RESULT"
+          status=0
+          if [ "$SHARD_RESULT" != "success" ]; then
+            echo "::error::the test shards did not all succeed (result: $SHARD_RESULT); a failed, skipped or cancelled shard fails the release"
+            status=1
+          fi
+          if [ "$COLLECT_RESULT" != "success" ]; then
+            echo "::error::test-collect did not succeed (result: $COLLECT_RESULT)"
+            status=1
+          fi
+          exit "$status"
+      - uses: actions/checkout@v4
+        if: ${{ !cancelled() }}
+      - uses: actions/setup-python@v5
+        if: ${{ !cancelled() }}
+        with:
+          python-version: "3.12"
+      - name: Download the JUnit reports of all shards
+        if: ${{ !cancelled() }}
+        uses: actions/download-artifact@v4
+        with:
+          pattern: junit-report-shard-*
+          path: reports
+          merge-multiple: true
+      - name: Download the unsharded collection
+        if: ${{ !cancelled() }}
+        uses: actions/download-artifact@v4
+        with:
+          name: collected-tests
+          path: collected
+      - name: Every collected test ran in exactly one shard
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: python dev/ci_shards.py verify --of 4 --collected collected/collected.txt --reports reports --summary
+      - name: Twenty slowest tests
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: python dev/ci_slowest.py --top 20 --summary reports/*.xml
 
   release:
     needs: test

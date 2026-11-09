@@ -263,13 +263,13 @@ Rules: no test depends on wall-clock timing, GPU, the real home folder or the in
 
 ## 7. CI and release
 
-**Workflow `.github/workflows/ci.yml`** runs on `push` and `pull_request`, on `windows-latest`, Python 3.12, FFmpeg via `choco install ffmpeg -y --no-progress`. The workflow from the foundations plan, Task 1, is a single `test` job running `ruff`, `pyright` and `pytest`; it stays as is. Plan `m0-c10-ci-bundle.md` splits and extends it:
+**Workflow `.github/workflows/ci.yml`** runs on `pull_request`, on `push` to `main` and to tags, and nightly (a pull request branch is tested by its `pull_request` run alone), on `windows-latest`, Python 3.12, FFmpeg via `choco install ffmpeg -y --no-progress`. The workflow from the foundations plan, Task 1, is a single `test` job running `ruff`, `pyright` and `pytest`; it stays as is. Plan `m0-c10-ci-bundle.md` splits and extends it:
 
 | Job | Steps | Required |
 |---|---|---|
 | `lint` | `python -m ruff check .`; PSScriptAnalyzer `-Severity Error` over `*.ps1` | yes |
 | `types` | `python -m pyright` | yes |
-| `test` | `python -m pytest` (includes hygiene tests) | yes |
+| `test` | gathers the four `test-shard (N/4)` jobs, each `python -m pytest` over its share of the test files (`dev/ci_shards.py`, balanced by `dev/ci_shard_weights.json`; includes hygiene tests), and `test-collect`; passes only when all passed and together they ran the whole unsharded collection | yes |
 | `gate` | `python dev/gate_m<current>.py`; upload `logs/gate-*.json` as an artifact | yes on `main` |
 | `bundle` | On tags `v*` only: verify tag equals `pyproject` version and `ns_common.__version__`; run `dev/make_bundle.ps1`; content check (no venv, models or binaries; size < 25 MB); attach `Nightshift-<ver>.zip` and `Nightshift-<ver>.zip.sha256` to a GitHub Release with notes from `CHANGELOG.md` | on tags |
 
