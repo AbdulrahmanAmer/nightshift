@@ -566,7 +566,7 @@ Rows and their copy. There are 11 rows, in this order: os, gpu, driver, ram, dis
 `SegmentedControl label="Install drive" variant="plain" options={drives where freeGb >= need}`, with
 labels like `E: 412 GB free`. Picking a drive posts a draft with `homePath = "<letter>:\\Nightshift"`
 and P1 re-evaluates the disk rows. When no drive has room, the control is replaced by the line "No
-drive has 40 GB free. Free some space, then press Check again".
+drive has room for this install. Free some space, then press Check again".
 
 The `description` is "`{ok} of {n}` checks passed." followed by one of:
 

@@ -795,7 +795,7 @@ class B02Home:
         boot.say(f"Install folder: {boot.home}")
         self._install_app(boot)
         if not boot.set_home_var(HOME_VAR, str(boot.home)):
-            raise BootstrapError("NS-E120", "could not set the NIGHTSHIFT_HOME user variable")
+            raise BootstrapError("NS-E121", "could not set the NIGHTSHIFT_HOME user variable")
         os.environ[HOME_VAR] = str(boot.home)
         if not self._uv_is_pinned(boot):
             self._place_uv(boot)
@@ -805,9 +805,9 @@ class B02Home:
         """The tree and the variable exist, and the copied uv runs."""
         missing = [d for d in TOP_DIRS if not (boot.home / d).is_dir()]
         if missing:
-            raise BootstrapError("NS-E120", f"{boot.home} lacks {', '.join(missing)}")
+            raise BootstrapError("NS-E121", f"{boot.home} lacks {', '.join(missing)}")
         if boot.get_home_var(HOME_VAR) != str(boot.home):
-            raise BootstrapError("NS-E120", "NIGHTSHIFT_HOME does not point at the install folder")
+            raise BootstrapError("NS-E121", "NIGHTSHIFT_HOME does not point at the install folder")
         if not (boot.home / "bin" / "uv" / "uv.exe").is_file():
             raise BootstrapError("NS-E105", "uv was not copied into the install folder (bin/uv/uv.exe)")
         if not self._uv_runs(boot):

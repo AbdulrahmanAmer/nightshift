@@ -195,9 +195,11 @@ def test_the_window_custom_model_and_fake_voice_change_the_number(raw):
     assert quiet["needFreeGb"] < base - 4
 
 
-def pf_with(free_gb: float, **kw: Any) -> dict[str, Any]:
+def pf_with(free_gb: float, letter: str = "D", **kw: Any) -> dict[str, Any]:
+    """Stage 1's answer with one fake drive. ``letter`` is the drive of the home under test: a home made under
+    ``tmp_path`` is on whatever drive the runner's temp folder is on (C: in CI, D: on the laptop)."""
     pf: dict[str, Any] = {
-        "drives": [{"letter": "D", "free_gb": free_gb, "type": "SSD"}],
+        "drives": [{"letter": letter, "free_gb": free_gb, "type": "SSD"}],
         "checks": [],
         "profile": "gpu",
         "llama_pair": "cuda13",
@@ -222,10 +224,24 @@ def test_the_pc_check_row_follows_the_home_and_the_models_already_there(raw, tmp
     home = tmp_path / "home"
     place_models(raw, home)
     need = plan.home_need(raw, str(home), "small")
-    row = preflight.raw_disk_rows(pf_with(49.0), str(home), need=need)[0]
+    drive = pf_with(49.0, letter=str(home)[0].upper())  # the drive tmp_path is on, not a fixed letter
+    row = preflight.raw_disk_rows(drive, str(home), need=need)[0]
     assert row["status"] == "ok"  # 49 GB free is enough once the models are there
-    rows = preflight.check_rows(pf_with(49.0), str(home), need=need)
+    rows = preflight.check_rows(drive, str(home), need=need)
     assert next(r for r in rows if r["id"] == "disk")["status"] == "ok"
+
+
+@pytest.mark.parametrize("letter", ["C", "D", "E"])
+def test_the_disk_row_reads_the_drive_the_home_is_on_whatever_the_runner_uses(letter: str):
+    """The home made under ``tmp_path`` is on C: in CI and D: on the laptop; the row must follow it. A fake
+    drive of another letter is "not found" (the shard-4 failure of the first run), so the helper takes the
+    letter."""
+    home = letter + ":\\Nightshift"
+    row = preflight.raw_disk_rows(pf_with(200.0, letter=letter), home)[0]
+    assert row["status"] == "ok" and f"{letter}: has 200 GB free" in row["value"]
+    other = "E" if letter == "C" else "C"
+    missing = preflight.raw_disk_rows(pf_with(200.0, letter=other), home)[0]
+    assert missing["status"] == "fail" and "not found" in missing["value"]
 
 
 def test_the_pc_check_row_for_a_dev_install_keeps_ten_gb():
@@ -643,7 +659,7 @@ def test_the_setup_window_sends_its_draft_with_the_folder_check():
 
 # ------------------------------------------------ NS-E104 is for space only (nit 5 of the second round)
 def test_a_home_that_could_not_be_set_up_is_not_called_a_disk_space_problem(tmp_path, monkeypatch):
-    """NIGHTSHIFT_HOME not set or the folders not created is NS-E120; its hint is not "free some space"."""
+    """NIGHTSHIFT_HOME not set or the folders not created is NS-E121; its hint is not "free some space"."""
     from installer.stage2.web import bootstrap
     from ns_common.errors import describe
     from tests.test_installer_uv_pin import Transport, VersionCmd, make_boot, pin_for
@@ -653,27 +669,27 @@ def test_a_home_that_could_not_be_set_up_is_not_called_a_disk_space_problem(tmp_
     monkeypatch.setattr("installer.stage2.steps.s01_questions.set_user_env", lambda *a, **k: False)
     with pytest.raises(NsError) as ei:
         S01Questions().run(ctx)
-    assert ei.value.code == "NS-E120" and "NIGHTSHIFT_HOME" in ei.value.detail
+    assert ei.value.code == "NS-E121" and "NIGHTSHIFT_HOME" in ei.value.detail
 
     boot = make_boot(tmp_path, tmp_path / "uv.exe", VersionCmd(), Transport(), pin_for(tmp_path))
     step = bootstrap.B02Home()
     with pytest.raises(bootstrap.BootstrapError) as lacks:  # no folders yet
         step.verify(boot)
-    assert lacks.value.code == "NS-E120"
+    assert lacks.value.code == "NS-E121"
     for d in bootstrap.TOP_DIRS:
         (boot.home / d).mkdir(parents=True, exist_ok=True)
     with pytest.raises(bootstrap.BootstrapError) as unset:  # the variable was never set
         step.verify(boot)
-    assert unset.value.code == "NS-E120"
+    assert unset.value.code == "NS-E121"
 
-    hint = describe("NS-E120").hint
+    hint = describe("NS-E121").hint
     assert "Free some space" not in hint and "not about free space" in hint
     web = ROOT / "installer" / "stage2" / "web"
     import json
 
     copy = json.loads((web / "operator_copy.json").read_text(encoding="utf-8"))
-    assert copy["NS-E120"]["whatToDo"] and "Free some space" not in copy["NS-E120"]["whatToDo"]
-    assert "| NS-E120 |" in (ROOT / "OPERATOR.md").read_text(encoding="utf-8")
+    assert copy["NS-E121"]["whatToDo"] and "Free some space" not in copy["NS-E121"]["whatToDo"]
+    assert "| NS-E121 |" in (ROOT / "OPERATOR.md").read_text(encoding="utf-8")
 
 
 def test_the_picker_line_does_not_pair_the_tiers_download_with_another_need():

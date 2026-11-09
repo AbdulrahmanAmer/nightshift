@@ -143,6 +143,43 @@ def test_a_file_source_is_counted_unless_it_is_already_in_the_home(tmp_home: Pat
     assert diskroom.clip_need(paths, rerun=True, source=outside).total < diskroom.clip_need(paths).total
 
 
+def test_a_video_downloaded_for_the_job_is_copied_by_the_import_so_it_counts(tmp_home: Path):
+    """`ImportStage` is given the downloaded file's path (`link=False`): `import_source` copy2s it into the
+    clip's own folder before the download is deleted, so it is on the drive twice for a moment."""
+    paths = Paths.from_env()
+    paths.ensure()
+    download = paths.home / "imports" / "clipper" / "_downloads" / "dl-abc" / "video.mp4"
+    download.parent.mkdir(parents=True)
+    download.write_bytes(b"x" * 4096)
+    assert diskroom.source_copy_bytes(paths, download) == 4096
+    adopted = paths.home / "imports" / "clipper" / "src-abc" / "source.mp4"
+    adopted.parent.mkdir(parents=True)
+    adopted.write_bytes(b"x" * 4096)
+    assert diskroom.source_copy_bytes(paths, adopted) == 0  # an adopted upload is already in place
+
+
+def test_a_dashboard_clip_from_a_link_counts_the_copy_of_the_downloaded_video(
+    tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from ns_dashboard import studio_bridge
+
+    make(tmp_home)  # the channel
+    paths = Paths.from_env()
+    download = paths.home / "imports" / "clipper" / studio_bridge.DOWNLOADS / "dl-abc" / "video.mp4"
+    download.parent.mkdir(parents=True)
+    download.write_bytes(b"x" * 2048)
+    params = {"channel": "after-dark", "rights_confirmed": True, "max_clips": 6}
+    without_copy = diskroom.clip_need(paths, max_clips=6).total
+    # room for the clip job but not for the second copy of the video: refused, nothing created
+    free_space(monkeypatch, without_copy + 1024)
+    with pytest.raises(NsError) as ei:
+        studio_bridge.run_clip(download, params, lambda *a: None, paths=paths, fake=("clips",))
+    assert ei.value.code == "NS-E104"
+    assert ei.value.data["need_bytes"] == without_copy + 2048
+    assert not paths.jobs_dir.exists() or not list(paths.jobs_dir.iterdir())
+    assert download.exists()  # the refusal came before the download was touched
+
+
 def test_the_short_sentence_is_the_one_a_note_can_carry():
     need = diskneed.short_need()
     assert need.short_sentence(20 * MIB, "D:") == "needs about 100 MB; D: has 20 MB free"

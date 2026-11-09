@@ -103,12 +103,20 @@ def require_story_room(
 
 
 def source_copy_bytes(paths: Paths, source: Path | str | None) -> int:
-    """Bytes the Clipper's import copies into the home for a file: its size, 0 when it is already in there."""
+    """Bytes the Clipper's import copies into the home for a file: its size, 0 when it is already in there.
+
+    A file in the home's ``imports/clipper/<source id>`` folder (an upload that was adopted) is already where
+    the import wants it. A video in ``imports/clipper/_downloads`` is not: it was downloaded for the job, and
+    the import (``ImportStage`` with a file path, so ``link=False``) copies it to its own folder before the
+    download is deleted, so for a moment it is on the drive twice and the copy counts.
+    """
     if not source or str(source).lower().startswith(("http://", "https://")):
         return 0
     try:
         p = Path(source)
-        if p.resolve().is_relative_to((paths.home / "imports" / "clipper").resolve()):
+        clipper = (paths.home / "imports" / "clipper").resolve()
+        here = p.resolve()
+        if here.is_relative_to(clipper) and not here.is_relative_to(clipper / "_downloads"):
             return 0
         return p.stat().st_size
     except OSError:

@@ -261,10 +261,12 @@ def run_clip(
     channel = get_channel(home, str(params["channel"]))
     clip_params = clip_params_of(source_path, channel.slug, params)
     clip_params.validate()
-    # a linked video was downloaded for this job (already on the drive); a file is copied in by the import
+    # the import copies the video into the clip's own folder, a linked video that was downloaded for this job
+    # too (`ImportStage` gets a file path, so it copies; the download is deleted after the import): both
+    # are on the drive twice for a moment, so `source_path` is always counted
     diskroom.require_clip_room(
         home, NsLogger("dashboard", home.logs, echo=False), max_clips=clip_params.max_clips,
-        source=None if source_path.parent.parent.name == DOWNLOADS else source_path, fake=fake,
+        source=source_path, fake=fake,
     )
     ctx = with_acquirer(create_clip_job(home, channel, clip_params, fake=frozenset(fake)), acquirer)
     if seen is not None:
