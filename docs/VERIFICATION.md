@@ -65,7 +65,7 @@ L release and CI (ci.yml: lint, types, test, bundle, ui-build, powershell-parse,
 | Block | Static | Unit/contract | Dev integration | E2E journeys | Lifecycle | Operations | Resilience | Security | Perf | Docs | GPU-only |
 |---|---|---|---|---|---|---|---|---|---|---|---|
 | A stage 1 | V-ci | V-ci | V-dev (headless, dev flag; window run via its API) | partial (window run proven by API; clicks U) | V-dev | — | **U** (console closed mid-run) | V-ci | V-dev 258 s | V-dev | V-gpu |
-| B stage 2 | V-ci | V-ci | V-dev (dev install; engine test: real downloads with hash checks, `ns tune` and the smoke test on a real model, fake voice) | V-dev (wizard by clicking to Done, 0.1.12, 2026-11-09) | V-dev | — | **U** (network off, retry) | V-ci | V-dev | partial | V-gpu (downloads, smoke) |
+| B stage 2 | V-ci | V-ci | V-dev (dev install; engine test: real downloads with hash checks, `ns tune` and the smoke test on a real model, fake voice) | V-dev (wizard by clicking to Done, 0.1.12, 2026-11-09) | V-dev | — | V-dev (network loss simulated in a proxy: retry, Failed, Range resume) | V-ci | V-dev | partial | V-gpu (downloads, smoke) |
 | C launchers | V-ci | V-ci | V-dev (dashboard, host, stop-all, update) | V-dev | V-dev | V-dev | V-dev (dead server → window closes) | — | — | V-dev | V-gpu (host on a stock PC) |
 | D supervisor | V-ci | V-ci | V-dev (services, leases, verify) | — | V-dev | V-dev (task fired by hand: headless engine, master, engine left) / **U** keep-awake | V-dev (kill mid-job → NS-E328 at its stage, Retry continues; PR #86) / **U** lease TTL | V-ci | V-dev | partial | V-gpu (GPU gate, tune) |
 | E studio | V-ci | V-ci | V-dev (Shorts, master, clip, planner, QC; a clip job on real engines) | V-dev | — | — | partial (resume proven; kill mid-stage U) | V-ci | V-dev (Short 83 s) | partial | V-gpu (quality, timing) |
@@ -89,7 +89,7 @@ L release and CI (ci.yml: lint, types, test, bundle, ui-build, powershell-parse,
 
 ### B. Stage 2
 - [x] Wizard clicks: change a choice, Browse a folder, key screen with a rejected then a good key, through to Done (V-dev 0.1.12, 2026-11-09, page clicks on the setup server; Browse after an uninstall-keep-data returns a nested folder: defect D-22)
-- [ ] Network off during a download: retry note, Failed screen, Continue (U)
+- [x] Network lost during a download: retry note, Failed screen, Retry resumes the .part with Range and the hash passes (V-dev 0.1.12, 2026-11-09, simulated in the QA mirror proxy; s02 program downloads, same downloader as the models)
 - [x] answers.json headless, keys optional, rejected stored key forgotten (V-dev, V-ci)
 - [x] Steps b01-b03, s00-s10, v01 status in install-report.json (V-dev)
 
