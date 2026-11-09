@@ -131,10 +131,15 @@ def test_wizard_flags_claims_in_the_llama_pair_rejection_hold() -> None:
     assert 'flags.get("llama_pair")' in source("installer/stage2/web/report.py")
     cuda_read = re.compile(r"""(?<!\w)flags?(?:\.get)?\(\s*["']cuda["']|(?<!\w)flags\[\s*["']cuda["']\]""")
     assert [rel for rel, text in py_sources("installer").items() if cuda_read.search(text)] == []
-    # No `ns_*` package reads the pair or the CUDA version; only doctor.py touches the flags file.
+    # No `ns_*` package reads the pair or the CUDA version; only doctor.py (the diagnostics zip) and
+    # config_snapshot.py (F-10a: the settings copy for `ns update --rollback`) touch the flags file, and both
+    # only copy its bytes.
     ns = py_sources("ns_common", "ns_dashboard", "ns_studio", "ns_supervisor", "ns_tts")
     assert [rel for rel, text in ns.items() if "llama_pair" in text] == []
-    assert [rel for rel, text in ns.items() if "wizard_flags" in text] == ["ns_supervisor/doctor.py"]
+    assert [rel for rel, text in ns.items() if "wizard_flags" in text] == [
+        "ns_supervisor/config_snapshot.py",
+        "ns_supervisor/doctor.py",
+    ]
     assert '_add_file(z, flags, "setup/wizard_flags.json", skipped)' in ns["ns_supervisor/doctor.py"]
     from ns_common.models import InstallState
 
