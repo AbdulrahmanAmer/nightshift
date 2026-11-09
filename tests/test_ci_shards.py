@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import statistics
 import subprocess
 import sys
 from collections.abc import Sequence
@@ -19,7 +20,7 @@ import pytest
 from dev import ci_shards as cs
 
 ROOT = Path(__file__).resolve().parents[1]
-SHARDS = 4
+SHARDS = cs.SHARDS  # the one number (H-3b); tests/test_ci_workflow.py checks that the workflows agree
 
 # 15 minutes for the slowest shard, setup (checkout, python, FFmpeg, pip) included.
 SLOWEST_SHARD_LIMIT_S = 15 * 60
@@ -135,12 +136,26 @@ def discovered_repo_files() -> list[str]:
 
 def test_the_committed_weights_file_is_well_formed():
     raw = json.loads((ROOT / "dev" / "ci_shard_weights.json").read_text(encoding="utf-8"))
-    assert set(raw) >= {"files", "default_seconds", "shard_extra_seconds"}
-    assert raw["default_seconds"] > 0
+    assert set(raw) == {"about", "measured", "shard_extra_seconds", "files"}
+    assert "default_seconds" not in raw, "the default is computed from the table (load_weights), not stored"
+    assert cs.REFRESH_COMMAND in raw["about"]
+    assert raw["measured"]["source"] and raw["measured"]["files"] == len(raw["files"])
     assert raw["files"], "the weights file lists no test file"
+    assert list(raw["files"]) == sorted(raw["files"])
     for name, seconds in raw["files"].items():
         assert name.startswith("tests/") and name.endswith(".py") and "\\" not in name, name
         assert isinstance(seconds, (int, float)) and seconds > 0, name
+
+
+def test_a_file_with_no_weight_counts_as_the_larger_of_the_mean_and_the_median_not_less():
+    # a skewed suite: most files take a second, a few take minutes; the median would flatter a new file
+    assert cs.default_seconds({"a": 1.0, "b": 1.0, "c": 1.0, "d": 97.0}) == pytest.approx(25.0)
+    assert cs.default_seconds({"a": 1.0, "b": 10.0, "c": 10.0}) == pytest.approx(10.0)
+    assert cs.default_seconds({}) > 0
+    w = cs.load_weights()
+    measured = list(w.files.values())
+    assert w.default_seconds == pytest.approx(cs.default_seconds(w.files))
+    assert w.default_seconds >= statistics.median(measured) and w.default_seconds >= statistics.mean(measured)
 
 
 def test_the_slowest_shard_is_under_fifteen_minutes_by_the_measured_weights():
@@ -153,7 +168,14 @@ def test_the_slowest_shard_is_under_fifteen_minutes_by_the_measured_weights():
     print(cs.render_plan(groups, w))
     print(f"{len(unweighted)} of {len(files)} test files are not in dev/ci_shard_weights.json (hash-placed)")
     assert len(groups) == SHARDS and all(groups), "every shard must have files"
-    assert max(loads) + SETUP_ALLOWANCE_S < SLOWEST_SHARD_LIMIT_S, loads
+    over = [
+        cs.over_budget_message(
+            s, SHARDS, load, SETUP_ALLOWANCE_S, "the slowest shard must stay under 15 minutes"
+        )
+        for s, load in enumerate(loads, start=1)
+        if load + SETUP_ALLOWANCE_S >= SLOWEST_SHARD_LIMIT_S
+    ]
+    assert not over, "\n".join(over)
     # balanced: the slowest is within 15% of the mean (LPT over measured seconds)
     assert max(loads) <= 1.15 * (sum(loads) / len(loads)), loads
 
@@ -305,7 +327,7 @@ def test_verify_passes_when_the_shards_ran_exactly_the_collection(tmp_path: Path
     rep = make_reports(tmp_path, ids, w)
     verdict = cs.verify(ids, SHARDS, w, rep)
     assert verdict.problems == []
-    assert [r.shard for r in verdict.rows] == [1, 2, 3, 4]
+    assert [r.shard for r in verdict.rows] == list(range(1, SHARDS + 1))
     assert sum(r.tests for r in verdict.rows) == len(ids)
     assert sum(r.ran_seconds for r in verdict.rows) == pytest.approx(0.5 * len(ids))
 
@@ -446,6 +468,24 @@ def test_verify_fails_when_one_shard_collects_nothing(tmp_path: Path):
         assert any("in no shard" in p and node_id in p for p in problems), (node_id, problems)
 
 
+@pytest.mark.parametrize("shard", range(1, SHARDS + 1))
+def test_verify_compares_node_ids_across_every_one_of_the_shards(tmp_path: Path, shard: int):
+    """H-3b: with five shards the proof still sees every one, the new fifth included."""
+    w = cs.load_weights()
+    ids = synthetic_node_ids(discovered_repo_files())
+    rep = make_reports(tmp_path, ids, w)
+    whole = cs.verify(ids, SHARDS, w, rep)
+    assert whole.problems == [] and [r.shard for r in whole.rows] == list(range(1, SHARDS + 1))
+    lost = cs.select_node_ids(ids, shard, SHARDS, w)
+    assert lost, f"shard {shard} has no tests"
+    write_junit(rep / f"report-shard-{shard}.xml", junit_cases(lost[1:]))
+    problems = cs.verify(ids, SHARDS, w, rep).problems
+    assert any("in no shard" in p and lost[0] in p for p in problems), problems
+    (rep / f"report-shard-{shard}.xml").unlink()
+    problems = cs.verify(ids, SHARDS, w, rep).problems
+    assert any(f"shard {shard} produced no JUnit report" in p for p in problems), problems
+
+
 @pytest.mark.parametrize("break_it", ["drop-file", "file-twice", "empty-shard"])
 def test_the_verify_command_exits_1_on_a_broken_split_and_0_on_the_whole_one(
     break_it: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
@@ -456,7 +496,7 @@ def test_the_verify_command_exits_1_on_a_broken_split_and_0_on_the_whole_one(
     collected = tmp_path / "collected.txt"
     collected.write_text("\n".join(ids) + "\n", encoding="utf-8")
     rep = make_reports(tmp_path, ids, w)
-    args = ["verify", "--of", "4", "--collected", str(collected), "--reports", str(rep)]
+    args = ["verify", "--of", str(SHARDS), "--collected", str(collected), "--reports", str(rep)]
     assert cs.main(args) == 0
     capsys.readouterr()
 
@@ -470,7 +510,7 @@ def test_the_verify_command_exits_1_on_a_broken_split_and_0_on_the_whole_one(
     elif break_it == "file-twice":
         write_junit(rep / "report-shard-2.xml", junit_cases([*shard_ids[1], *shard_ids[0][:4]]))
     else:
-        write_junit(rep / "report-shard-4.xml", [])
+        write_junit(rep / f"report-shard-{SHARDS}.xml", [])
     assert cs.main(args) == 1
     out = capsys.readouterr().out
     assert "::error::" in out
@@ -486,17 +526,17 @@ def run_cli(*args: str, cwd: Path = ROOT) -> subprocess.CompletedProcess[bytes]:
 
 def test_files_prints_one_path_per_line_with_unix_line_endings():
     # bash splits `$(...)` on whitespace but keeps a trailing \r on the name: Windows text mode would break it
-    proc = run_cli("files", "--shard", "1", "--of", "4")
+    proc = run_cli("files", "--shard", "1", "--of", str(SHARDS))
     assert proc.returncode == 0, proc.stderr
     assert b"\r" not in proc.stdout
     lines = proc.stdout.decode().splitlines()
     assert lines and all(line.startswith("tests/") and line.endswith(".py") for line in lines)
 
 
-def test_the_four_shards_of_the_command_line_cover_the_repo_once():
+def test_every_shard_of_the_command_line_together_covers_the_repo_once():
     seen: list[str] = []
-    for s in range(1, 5):
-        proc = run_cli("files", "--shard", str(s), "--of", "4")
+    for s in range(1, SHARDS + 1):
+        proc = run_cli("files", "--shard", str(s), "--of", str(SHARDS))
         assert proc.returncode == 0, proc.stderr
         seen += proc.stdout.decode().splitlines()
     assert sorted(seen) == sorted(discovered_repo_files())
@@ -512,14 +552,15 @@ def test_run_hands_the_shard_files_to_pytest_after_the_given_arguments(
         returncode = 7
 
     monkeypatch.setattr(cs.subprocess, "run", lambda argv, **kw: (calls.append(list(argv)), Done())[1])
-    rc = cs.main(["run", "--shard", "2", "--of", "4", "--", "-q", "-m", "not network", "--junitxml=r.xml"])
+    args = ["run", "--shard", "2", "--of", str(SHARDS), "--", "-q", "-m", "not network", "--junitxml=r.xml"]
+    rc = cs.main(args)
     assert rc == 7  # pytest's own exit code goes through
     (argv,) = calls
     assert argv[:3] == [sys.executable, "-m", "pytest"]
     assert argv[3:7] == ["-q", "-m", "not network", "--junitxml=r.xml"]
     files = argv[7:]
-    assert files == cs.split(discovered_repo_files(), 4, cs.load_weights())[1]
-    assert "shard 2/4" in capsys.readouterr().out
+    assert files == cs.split(discovered_repo_files(), SHARDS, cs.load_weights())[1]
+    assert f"shard 2/{SHARDS}" in capsys.readouterr().out
 
 
 def test_run_refuses_to_start_pytest_on_a_shard_with_no_files(
@@ -529,20 +570,44 @@ def test_run_refuses_to_start_pytest_on_a_shard_with_no_files(
     calls: list[object] = []
     monkeypatch.setattr(cs.subprocess, "run", lambda *a, **k: calls.append(a))
     monkeypatch.setattr(cs, "discover_test_files", lambda *a, **k: [])
-    assert cs.main(["run", "--shard", "1", "--of", "4", "--", "-q"]) == 2
+    assert cs.main(["run", "--shard", "1", "--of", str(SHARDS), "--", "-q"]) == 2
     assert calls == []
     assert "no test files" in capsys.readouterr().out
 
 
-def test_plan_fails_when_the_slowest_shard_is_over_the_limit(capsys: pytest.CaptureFixture[str]):
-    assert cs.main(["plan", "--of", "4", "--limit", "100000"]) == 0
-    assert cs.main(["plan", "--of", "4", "--limit", "10"]) == 1
-    assert "shard 1" in capsys.readouterr().out
+def test_plan_fails_over_the_limit_naming_the_shard_its_prediction_and_the_command(
+    capsys: pytest.CaptureFixture[str],
+):
+    assert cs.main(["plan", "--of", str(SHARDS), "--limit", "100000"]) == 0
+    capsys.readouterr()
+    assert cs.main(["plan", "--of", str(SHARDS), "--limit", "10"]) == 1
+    out = capsys.readouterr().out
+    errors = [line for line in out.splitlines() if line.startswith("::error::")]
+    assert len(errors) == SHARDS, out  # every shard is over 10 s, each is named once
+    for s, line in enumerate(errors, start=1):
+        assert f"shard {s}/{SHARDS} is predicted at" in line and cs.REFRESH_COMMAND in line, line
+
+
+def test_plan_reports_the_files_with_no_weight_and_their_default_in_the_job_summary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    summary = tmp_path / "summary.md"
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    real = cs.discover_test_files()
+    monkeypatch.setattr(cs, "discover_test_files", lambda *a, **k: [*real, "tests/test_brand_new_h3b.py"])
+    assert cs.main(["plan", "--of", str(SHARDS), "--summary"]) == 0
+    text = summary.read_text(encoding="utf-8")
+    w = cs.load_weights()
+    assert "tests/test_brand_new_h3b.py" in text
+    assert f"{w.default_seconds:.1f} s" in text and "larger of the mean and the median" in text
+    assert cs.REFRESH_COMMAND in text
+    assert "| shard |" in text
+    assert "tests/test_brand_new_h3b.py" in capsys.readouterr().out
 
 
 def test_shard_numbers_outside_the_range_are_a_usage_error(capsys: pytest.CaptureFixture[str]):
-    assert cs.main(["files", "--shard", "5", "--of", "4"]) == 2
-    assert cs.main(["files", "--shard", "0", "--of", "4"]) == 2
+    assert cs.main(["files", "--shard", str(SHARDS + 1), "--of", str(SHARDS)]) == 2
+    assert cs.main(["files", "--shard", "0", "--of", str(SHARDS)]) == 2
 
 
 def test_verify_command_reads_the_collection_and_the_reports(
@@ -556,7 +621,7 @@ def test_verify_command_reads_the_collection_and_the_reports(
     collected = tmp_path / "collected.txt"
     collected.write_text("\n".join(ids) + "\n\n40 tests collected in 1s\n", encoding="utf-8")
     rep = make_reports(tmp_path, ids, w)
-    args = ["verify", "--of", "4", "--collected", str(collected), "--reports", str(rep), "--summary"]
+    args = ["verify", "--of", str(SHARDS), "--collected", str(collected), "--reports", str(rep), "--summary"]
     assert cs.main(args) == 0
     out = capsys.readouterr().out
     assert "no test is in no shard or in two" in out
@@ -586,9 +651,131 @@ def test_weights_are_the_median_seconds_per_file_across_reports(tmp_path: Path):
     assert weights == {"tests/test_a.py": 20.0, "tests/test_b.py": 2.0}  # test_gone is not a file any more
 
 
-def test_the_weights_command_keeps_the_extras_and_sorts_the_files(
+def make_run_reports(folder: Path) -> Path:
+    """What `gh run download <id> --pattern junit-report-shard-*` leaves: one folder per shard artifact."""
+    write_junit_dir = folder / "junit-report-shard-1"
+    write_junit_dir.mkdir(parents=True)
+    write_junit(write_junit_dir / "report-shard-1.xml", [("tests.test_ci_shards", "t", 5.0)])
+    # shard 1 also carries the real-network report: those tests are deselected in the unit step
+    write_junit(write_junit_dir / "report-network.xml", [("tests.test_downloader_network", "t", 3.0)])
+    (folder / "junit-report-shard-2").mkdir()
+    write_junit(
+        folder / "junit-report-shard-2" / "report-shard-2.xml",
+        [("tests.test_ci_outage_report", "t", 1.0), ("tests.test_ci_outage_report.TestK", "u", 0.5)],
+    )
+    return folder
+
+
+def test_refresh_from_junit_reports_weighs_every_file_the_shards_ran_and_keeps_the_extras(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+):
+    out = tmp_path / "weights.json"
+    out.write_text(
+        json.dumps(
+            {"default_seconds": 6.5, "shard_extra_seconds": {"1": 30}, "files": {"tests/test_x.py": 1}}
+        ),
+        encoding="utf-8",
+    )
+    reports = make_run_reports(tmp_path / "dl")
+    assert cs.main(["refresh", "--junit", str(reports), "--write", str(out)]) == 0
+    text = out.read_text(encoding="utf-8")
+    data = json.loads(text)
+    assert data["files"] == {
+        "tests/test_ci_outage_report.py": 1.5,
+        "tests/test_ci_shards.py": 5.0,
+        # network-only: it costs nothing in the unit step; its seconds are shard 1's extra
+        "tests/test_downloader_network.py": 0.1,
+    }
+    assert list(data["files"]) == sorted(data["files"])
+    assert data["shard_extra_seconds"] == {"1": 30}
+    assert "default_seconds" not in data
+    assert data["measured"] == {"source": f"JUnit reports in {reports}", "files": 3}
+    assert cs.REFRESH_COMMAND in data["about"]
+    assert text.endswith("\n") and "\r" not in text
+    printed = capsys.readouterr().out
+    assert "3 files" in printed and "not measured" in printed  # the repo's other test files are named
+
+
+class FakeGh:
+    """Stands in for the gh command line: `run list` answers one run, `run download` writes the reports."""
+
+    def __init__(self, run_id: int = 456, download: bool = True):
+        self.calls: list[list[str]] = []
+        self.dirs: list[Path] = []
+        self.run_id = run_id
+        self.download = download
+
+    def __call__(self, argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        self.calls.append(list(argv))
+        assert argv[0] == "gh", argv
+        if argv[1:3] == ["run", "list"]:
+            return subprocess.CompletedProcess(argv, 0, json.dumps([{"databaseId": self.run_id}]), "")
+        if argv[1:3] == ["run", "download"]:
+            target = Path(argv[argv.index("--dir") + 1])
+            self.dirs.append(target)
+            if self.download:
+                make_run_reports(target)
+            return subprocess.CompletedProcess(argv, 0, "", "")
+        raise AssertionError(argv)
+
+
+def test_refresh_from_a_run_downloads_its_junit_reports_with_gh(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
+    gh = FakeGh()
+    monkeypatch.setattr(cs.subprocess, "run", gh)
+    out = tmp_path / "weights.json"
+    assert cs.main(["refresh", "--run", "123", "--write", str(out)]) == 0
+    (download,) = gh.calls
+    assert download[:4] == ["gh", "run", "download", "123"]
+    assert download[download.index("--pattern") + 1] == "junit-report-shard-*"
+    data = json.loads(out.read_text(encoding="utf-8"))
+    assert data["measured"]["source"] == "run 123" and data["files"]["tests/test_ci_shards.py"] == 5.0
+    assert data["shard_extra_seconds"] == {"1": 15}, "a new table starts with the real-network step's 15 s"
+    assert gh.dirs and not gh.dirs[0].exists(), "the download folder is removed"
+
+
+def test_the_command_the_guard_prints_asks_gh_for_the_last_green_main_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    gh = FakeGh(run_id=789)
+    monkeypatch.setattr(cs.subprocess, "run", gh)
+    out = tmp_path / "weights.json"
+    argv = [*cs.REFRESH_COMMAND.split()[2:], "--write", str(out)]  # "refresh --run latest" from the message
+    assert cs.main(argv) == 0
+    listing, download = gh.calls
+    assert listing[:3] == ["gh", "run", "list"]
+    for flag, value in (
+        ("--workflow", "ci"),
+        ("--branch", "main"),
+        ("--event", "push"),
+        ("--status", "success"),
+        ("--limit", "1"),
+    ):
+        assert listing[listing.index(flag) + 1] == value, flag
+    assert download[:4] == ["gh", "run", "download", "789"]
+    assert json.loads(out.read_text(encoding="utf-8"))["measured"]["source"] == "run 789"
+
+
+def test_refresh_changes_nothing_when_no_report_arrives_or_gh_is_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    out = tmp_path / "weights.json"
+    out.write_text("{}\n", encoding="utf-8")
+    monkeypatch.setattr(cs.subprocess, "run", FakeGh(download=False))
+    assert cs.main(["refresh", "--run", "123", "--write", str(out)]) == 2
+    assert "no JUnit report" in capsys.readouterr().out
+
+    def no_gh(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        raise FileNotFoundError("gh")
+
+    monkeypatch.setattr(cs.subprocess, "run", no_gh)
+    assert cs.main(["refresh", "--run", "latest", "--write", str(out)]) == 2
+    assert "gh" in capsys.readouterr().out
+    assert out.read_text(encoding="utf-8") == "{}\n"
+
+
+def test_the_weights_command_still_writes_the_same_table_from_report_files(tmp_path: Path):
     out = tmp_path / "weights.json"
     out.write_text(
         json.dumps({"default_seconds": 9, "shard_extra_seconds": {"1": 30}, "files": {}}), encoding="utf-8"
@@ -600,4 +787,5 @@ def test_the_weights_command_keeps_the_extras_and_sorts_the_files(
     assert list(data["files"]) == sorted(data["files"])
     assert data["files"]["tests/test_ci_shards.py"] == 5.0
     assert data["shard_extra_seconds"] == {"1": 30}
+    assert "default_seconds" not in data
     assert out.read_text(encoding="utf-8").endswith("\n") and "\r" not in out.read_text(encoding="utf-8")

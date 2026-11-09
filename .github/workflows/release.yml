@@ -22,14 +22,15 @@ jobs:
   # same three jobs in ci.yml. No `-m` filter here: the network-marked tests are collected and (without
   # NS_NETWORK_TESTS) skipped exactly as they were in the single job; ci.yml's own tag run covers them.
   test-shard:
-    name: test-shard (${{ matrix.shard }}/4)
+    name: test-shard (${{ matrix.shard }}/5)
     runs-on: windows-latest
-    # About 8 minutes of tests plus about 3 of setup per shard; twice that is 22, 25 leaves room for a slow runner.
+    # About 9.5 minutes of tests plus about 3 of setup per shard (dev/ci_shards.py plan); the same timeout as ci.yml,
+    # which tests/test_ci_workflow.py keeps at least twice the prediction of every shard. SHARDS in dev/ci_shards.py.
     timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: [1, 2, 3, 4, 5]
     steps:
       - run: git config --global core.longpaths true
       - uses: actions/checkout@v4
@@ -44,7 +45,7 @@ jobs:
       - run: python -m pip install -e ".[dev]"
       - name: Tests (the files of this shard)
         shell: bash
-        run: python dev/ci_shards.py run --shard ${{ matrix.shard }} --of 4 -- -q --junitxml=report-shard-${{ matrix.shard }}.xml
+        run: python dev/ci_shards.py run --shard ${{ matrix.shard }} --of 5 -- -q --junitxml=report-shard-${{ matrix.shard }}.xml
       - name: Upload JUnit report
         if: always()
         uses: actions/upload-artifact@v4
@@ -100,7 +101,7 @@ jobs:
           SHARD_RESULT: ${{ needs.test-shard.result }}
           COLLECT_RESULT: ${{ needs.test-collect.result }}
         run: |
-          echo "test-shard (all four): $SHARD_RESULT"
+          echo "test-shard (all shards): $SHARD_RESULT"
           echo "test-collect: $COLLECT_RESULT"
           status=0
           if [ "$SHARD_RESULT" != "success" ]; then
@@ -134,7 +135,7 @@ jobs:
       - name: The node ids the shards ran are exactly the node ids collected unsharded
         if: ${{ !cancelled() }}
         shell: bash
-        run: python dev/ci_shards.py verify --of 4 --collected collected/collected.txt --reports reports --summary
+        run: python dev/ci_shards.py verify --of 5 --collected collected/collected.txt --reports reports --summary
       - name: Twenty slowest tests
         if: ${{ !cancelled() }}
         shell: bash
