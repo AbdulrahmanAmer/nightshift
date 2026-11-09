@@ -59,7 +59,10 @@ class FakeTaskScheduler:
         if "Register-ScheduledTask" in script:
             at = re.search(r"\[datetime\]'(\d\d:\d\d)'", script)
             assert at is not None
-            disabled = "Disable-ScheduledTask" in script
+            # D-28 round 2: a kept-off task is registered disabled in the one call; registering it enabled and
+            # disabling it afterwards leaves a window in which it can fire (and stays on if the disable fails)
+            assert "Disable-ScheduledTask" not in script
+            disabled = re.search(r"-Disable(?![-\w])", script) is not None
             self.task = {"state": "Disabled" if disabled else "Ready", "at": at.group(1)}
             self.registered += 1
             return done("registered:interactive\n" if self.refuse_s4u else "registered:s4u\n")
@@ -351,15 +354,54 @@ def test_installing_for_real_over_a_dev_install_registers_an_enabled_task(
     assert schedule.KEPT_OFF_MARK not in res.output and read_run_time(paths) == "03:00"
 
 
-def test_an_update_of_a_real_install_made_over_a_dev_one_registers_it_enabled(
+def test_an_update_of_a_real_install_whose_owner_ran_schedule_install_disabled_leaves_the_task_off(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
+    """D-28 round 2: `ns schedule install --disabled` on a real install is the owner pausing the nightly run.
+
+    On main the update did not look at a `disabled` record. The task is Disabled, schedule.json says
+    `disabled`, no runtime.json (a real install): after the update it is still Disabled at the same time and
+    nothing was registered, so no unattended run starts at 03:00. (Setup step s09 runs `ns schedule install
+    --time T`, which switches a dev install's task on: the test above.)
+    """
     paths = Paths(tmp_path / "ns")
-    write_run_time(paths, "03:00", "disabled")  # no runtime.json: not a dev install any more
+    write_run_time(paths, "03:00", "disabled")
     fake = install_fake(monkeypatch, ("Disabled", "03:00"))
-    notes = cli._reregister(paths, tmp_path)
-    assert fake.after == ("Ready", "03:00") and read_schedule_mode(paths) == "registered"
-    assert notes and "switched off" not in notes[0]
+    env = update.UpdateEnv(
+        stop=lambda: None,
+        sync=lambda a: None,
+        verify=lambda a: True,
+        reregister=lambda a: cli._reregister(paths, a),
+        settle=lambda: None,
+    )
+    update.update_app(make_zip(tmp_path), make_app(tmp_path), env, paths=paths)
+    assert fake.after == ("Disabled", "03:00") and fake.registered == 0 and fake.scripts == []
+    assert schedule_json(paths) == {"run_time": "03:00", "task_name": "Nightshift Daily", "mode": "disabled"}
+
+
+def test_a_disabled_record_is_left_alone_by_an_update_whatever_state_the_task_is_in(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The record says the owner chose `disabled`: even a task someone switched on or moved is not touched."""
+    paths = Paths(tmp_path / "ns")
+    write_run_time(paths, "04:15", "disabled")
+    fake = install_fake(monkeypatch, ("Ready", "05:00"))
+    assert cli._reregister(paths, tmp_path) == [] and fake.scripts == []
+    assert fake.after == ("Ready", "05:00") and read_schedule_mode(paths) == "disabled"
+
+
+def test_a_dev_install_still_registers_its_task_disabled_and_the_update_leaves_it_alone(
+    tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+):
+    paths = Paths.from_env()
+    save_runtime(paths, Runtime.default("cpu-dev").model_copy(update={"dev_mode": True}))
+    write_run_time(paths, "03:00", "disabled")
+    fake = install_fake(monkeypatch, None)
+    res = CliRunner().invoke(cli.app, ["schedule", "install", "--time", "03:00"])
+    assert res.exit_code == 0, res.output
+    assert fake.after == ("Disabled", "03:00") and read_schedule_mode(paths) == "disabled"
+    before = len(fake.scripts)
+    assert cli._reregister(paths, tmp_home) == [] and len(fake.scripts) == before
 
 
 # ------------------------------------------------------------------ break-it round: one way to switch it on
@@ -467,3 +509,87 @@ def test_the_record_is_left_alone_when_the_task_cannot_be_read_or_is_not_switche
     write_run_time(paths, "03:00", "registered")
     fake = install_fake(monkeypatch, ("Disabled", "03:00"))
     assert schedule.sync_record(paths) is False and fake.scripts == []  # only `switched_off` is checked
+
+
+# ------------------------------------------------- D-28 round 2: a read error is not "there is no task"
+def test_a_scheduler_error_other_than_not_found_is_refused_and_nothing_is_replaced(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """`Get-ScheduledTask -ErrorAction SilentlyContinue` hid access denied: read as 'no task', the task was
+    replaced enabled over the owner's. The read script now reports the error and the install refuses."""
+    paths = Paths(tmp_path / "ns")
+    write_run_time(paths, "03:00", "registered")
+    seen: list[str] = []
+
+    def denied(script: str, **kw: Any) -> subprocess.CompletedProcess[str]:
+        seen.append(script)
+        return done("error: PermissionDenied: Access is denied.\n")
+
+    monkeypatch.setattr(pwsh, "run_powershell", denied)
+    notes = cli._reregister(paths, tmp_path)
+    assert len(notes) == 1 and notes[0].startswith("scheduled task NOT re-registered")
+    assert "Access is denied" in notes[0]
+    assert len(seen) == 1 and "Register-ScheduledTask" not in seen[0]
+    assert read_run_time(paths) == "03:00" and read_schedule_mode(paths) == "registered"
+
+
+def test_ns_schedule_install_refuses_with_the_error_code_when_the_task_cannot_be_read(
+    tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+):
+    fake = FakeTaskScheduler(("Disabled", "04:15"))
+
+    def denied_read(script: str, **kw: Any) -> subprocess.CompletedProcess[str]:
+        if "Register-ScheduledTask" in script:
+            return fake(script, **kw)
+        return done("error: PermissionDenied: Access is denied.\n")
+
+    monkeypatch.setattr(pwsh, "run_powershell", denied_read)
+    res = CliRunner().invoke(cli.app, ["schedule", "install"])
+    assert res.exit_code != 0 and "NS-E204" in res.output and "Access is denied" in res.output
+    assert fake.registered == 0 and fake.after == ("Disabled", "04:15")
+
+
+def test_the_settings_page_run_time_change_is_refused_when_the_task_cannot_be_read(
+    tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from ns_dashboard.adapters import RealScheduleAdapter
+
+    monkeypatch.setattr(
+        pwsh, "run_powershell", lambda s, **kw: done("error: PermissionDenied: Access is denied.\n")
+    )
+    result = RealScheduleAdapter(Paths.from_env()).apply("05:00")
+    assert result["applied"] is False and "Access is denied" in result["note"]
+
+
+def test_no_such_task_is_still_read_as_no_task(monkeypatch: pytest.MonkeyPatch):
+    install_fake(monkeypatch, None)
+    assert schedule.read_task() is None
+
+
+def test_the_read_script_tells_not_found_from_other_errors():
+    script = schedule.build_read_script()
+    assert "-ErrorVariable" in script and "ObjectNotFound" in script and "'error: '" in script
+
+
+# ------------------------------------------ D-28 round 2: a kept-off task is registered disabled in one step
+def test_a_kept_off_task_is_registered_disabled_in_one_call_never_enabled_first(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    paths = Paths(tmp_path / "ns")
+    write_run_time(paths, "03:00", "registered")
+    fake = install_fake(monkeypatch, ("Disabled", "04:15"))
+    cli._reregister(paths, tmp_path)
+    registers = [s for s in fake.scripts if "Register-ScheduledTask" in s]
+    assert len(registers) == 1 and fake.after == ("Disabled", "04:15")
+    assert not any("Disable-ScheduledTask" in s for s in fake.scripts)  # no second call that turns it off
+    settings = next(ln for ln in registers[0].splitlines() if ln.startswith("$settings"))
+    assert settings.endswith("-Disable")  # born disabled, in the S4U and in the interactive attempt alike
+    assert registers[0].count("Register-ScheduledTask") == 2
+
+
+def test_an_enabled_task_is_registered_without_the_disable_switch(tmp_path: Path):
+    paths = Paths(tmp_path / "ns")
+    on = schedule.build_install_script(paths, "03:00", tmp_path)
+    off = schedule.build_install_script(paths, "03:00", tmp_path, disabled=True)
+    assert not re.search(r"-Disable(?![-\w])", on)
+    assert re.search(r"-Disable(?![-\w])", off) and "Disable-ScheduledTask" not in off

@@ -157,6 +157,7 @@ def test_generated_scripts_are_valid_powershell(tmp_path: Path) -> None:
         schedule.build_install_script(paths, "03:00", tmp_path / "app"),
         schedule.build_remove_script(),
         schedule.build_show_script(),
+        schedule.build_read_script(),
         notify.TOAST_SCRIPT,
     ):
         assert _parse_errors(script) == ""
@@ -175,7 +176,8 @@ $script:calls = @()
 function New-ScheduledTaskAction { param($Execute, $Argument, $WorkingDirectory) 'action' }
 function New-ScheduledTaskTrigger { param([switch]$Daily, $At) 'trigger' }
 function New-ScheduledTaskSettingsSet { param([switch]$WakeToRun, [switch]$StartWhenAvailable,
-    [switch]$AllowStartIfOnBatteries, [switch]$DontStopIfGoingOnBatteries, $ExecutionTimeLimit) 'settings' }
+    [switch]$AllowStartIfOnBatteries, [switch]$DontStopIfGoingOnBatteries, $ExecutionTimeLimit,
+    [switch]$Disable) 'settings' }
 function New-TimeSpan { param($Hours) 'span' }
 function New-ScheduledTaskPrincipal {
     param($UserId, $LogonType, $RunLevel)

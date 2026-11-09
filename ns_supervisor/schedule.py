@@ -61,8 +61,10 @@ def build_install_script(
     blocks the folder swap of an update (Windows refuses to rename it), and the 03:00 run keeps ``studio.exe``
     and its children alive for hours. The programs find the app through their editable installs.
 
-    `disabled` (a dev install, docs/DEV_MODE.md) registers the same task and then disables it, so it never
-    fires on the development PC; `ns schedule show` and the uninstall still find it by name.
+    `disabled` (a dev install, docs/DEV_MODE.md; a task kept off by an update) registers the task disabled in
+    the one call (`New-ScheduledTaskSettingsSet -Disable`): there is no moment in which it is enabled and can
+    fire, and no second call that can fail and leave it on. `ns schedule show` and the uninstall still find it
+    by name.
     """
     arguments = f'/d /s /c "set "NIGHTSHIFT_HOME={paths.home}" && "{studio_exe(paths)}" run --daily"'
     register = (
@@ -77,7 +79,7 @@ def build_install_script(
             f"$trigger = New-ScheduledTaskTrigger -Daily -At ([datetime]{_q(run_time)})",
             "$settings = New-ScheduledTaskSettingsSet -WakeToRun -StartWhenAvailable "
             "-AllowStartIfOnBatteries -DontStopIfGoingOnBatteries "
-            "-ExecutionTimeLimit (New-TimeSpan -Hours 6)",
+            "-ExecutionTimeLimit (New-TimeSpan -Hours 6)" + (" -Disable" if disabled else ""),
             "$user = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name",
             "$mode = 's4u'",
             "try {",
@@ -89,7 +91,6 @@ def build_install_script(
             "-RunLevel Limited",
             f"  {register}",
             "}",
-            *([f"Disable-ScheduledTask -TaskName {_q(task_name)} | Out-Null"] if disabled else []),
             "Write-Output ('registered:' + $mode)",
         ]
     )
@@ -165,12 +166,25 @@ _START = re.compile(r"(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(
 
 
 def build_read_script(task_name: str = TASK_NAME) -> str:
-    """PowerShell that prints the task's state and the start of its first trigger (nothing if no task)."""
+    """PowerShell that prints the task's state and the start of its first trigger.
+
+    `not registered` means Windows has no such task (error category ObjectNotFound). Any other failure of
+    `Get-ScheduledTask` (access denied, a corrupt task) prints `error: <category>: <message>` and is NOT read
+    as "no task": the caller refuses instead of replacing a task it could not look at.
+    """
     return "\n".join(
         [
             "$ErrorActionPreference = 'Stop'",
-            f"$t = Get-ScheduledTask -TaskName {_q(task_name)} -ErrorAction SilentlyContinue",
-            "if ($null -eq $t) { Write-Output 'not registered'; exit 0 }",
+            "$e = $null",
+            f"$t = Get-ScheduledTask -TaskName {_q(task_name)} -ErrorAction SilentlyContinue "
+            "-ErrorVariable e",
+            "if ($null -eq $t) {",
+            "  $bad = @($e) | Where-Object { $_ -and $_.CategoryInfo.Category -ne 'ObjectNotFound' } "
+            "| Select-Object -First 1",
+            "  if ($bad) { Write-Output ('error: ' + $bad.CategoryInfo.Category + ': ' + "
+            "$bad.Exception.Message); exit 0 }",
+            "  Write-Output 'not registered'; exit 0",
+            "}",
             "Write-Output ('state: ' + $t.State)",
             "$g = @($t.Triggers) | Select-Object -First 1",
             "if ($g -and $g.StartBoundary) { Write-Output ('start: ' + $g.StartBoundary) }",
@@ -201,11 +215,16 @@ def _local_clock(value: str, local_tz: tzinfo | None) -> str | None:
 
 
 def parse_task_state(out: str, local_tz: tzinfo | None = None) -> TaskState | None:
-    """The `TaskState` a `build_read_script` run printed; None when it says there is no task."""
+    """The `TaskState` a `build_read_script` run printed; None when it says there is no task.
+
+    `ScheduleError` when it says the task could not be read (an `error:` line): that is not "no task".
+    """
     state: str | None = None
     run_time: str | None = None
     for line in out.splitlines():
         key, _, value = line.partition(":")
+        if key.strip() == "error":
+            raise ScheduleError(f"the nightly task could not be read ({value.strip()}); nothing was changed")
         if key.strip() == "state":
             state = value.strip()
         elif key.strip() == "start":
@@ -246,7 +265,8 @@ def install(
     owner's explicit "switch it on" (`ns schedule install --enable`): the task is registered enabled whatever
     it was, except in a dev install. When there is no task the record in `schedule.json` is all there is: mode
     `switched_off` registers it off, anything else on, as a fresh install does. If the task cannot be read
-    nothing is replaced (`ScheduleError`).
+    nothing is replaced (`ScheduleError`): "no such task" is told apart from every other Task Scheduler error.
+    A kept-off task is registered disabled in the one call, never enabled first.
     """
     before = read_task() if keep_state else None
     recorded = read_run_time(paths, include_disabled=keep_state)

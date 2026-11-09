@@ -9,7 +9,6 @@ import typer
 
 from ns_common import __version__
 from ns_common.config import load_runtime
-from ns_common.devmode import is_dev
 from ns_common.errors import NsError
 from ns_common.logging import NsLogger
 from ns_common.paths import Paths
@@ -179,11 +178,14 @@ def _reregister(paths: Paths, app_dir: Path) -> list[str]:
     """Point the nightly task at the updated program, keeping what the owner set (D-28).
 
     The task's state (switched on or off) and run time are read before it is replaced and restored after; the
-    update log says what was kept. A dev install's disabled task is not touched by an update.
+    update log says what was kept. A task that `schedule.json` records as `disabled` is not touched by an
+    update, as before D-28: on a dev install it never fires by design, on a real install it is what the owner
+    asked for with `ns schedule install --disabled`. Only an explicit `ns schedule install` switches it on
+    again (`--enable`, or setup's `ns schedule install --time T` for a real install made over a dev one).
     """
     notes: list[str] = []
     mode = read_schedule_mode(paths)
-    if mode == "none" or (mode == MODE_DISABLED and is_dev(paths)):
+    if mode in ("none", MODE_DISABLED):
         return notes
     try:
         schedule.install(paths, None, app_dir, keep_state=True, log=NsLogger("update", paths.logs))
