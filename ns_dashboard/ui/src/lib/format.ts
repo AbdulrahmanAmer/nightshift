@@ -49,6 +49,28 @@ export const CLIP_STAGES = ["clip_import", "clip_audio", "clip_analyze", "clip_t
 /** The stage list of a job: clips, a series part, a one-Short story or a full video (the default). */
 export const stagesOf = (j: { kind: string; params?: { format?: string; [k: string]: any } }) => (j.kind === "clip" ? CLIP_STAGES : j.kind === "series_part" ? SERIES_STAGES : j.params?.format === "shorts_only" ? SHORTS_STAGES : MASTER_STAGES);
 
+/** A CHANGELOG section as blocks to show: its heading line (`## [0.2.0] - date`) is dropped, `### X` is a heading, `- ` starts a list item
+ *  (wrapped lines join it), any other run of lines is a paragraph. Plain reading, no markdown library. */
+export type NoteBlock = { kind: "heading" | "paragraph"; text: string } | { kind: "list"; items: string[] };
+export function parseReleaseNotes(text: string): NoteBlock[] {
+  const out: NoteBlock[] = []; let para: string[] = []; let list: string[] | null = null;
+  const flushPara = () => { if (para.length) out.push({ kind: "paragraph", text: para.join(" ") }); para = []; };
+  const flushList = () => { if (list) out.push({ kind: "list", items: list }); list = null; };
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trimEnd(); const t = line.trim();
+    if (/^##\s/.test(line) && !/^###/.test(line)) continue;
+    if (!t) { flushPara(); flushList(); continue; }
+    const h = /^#{3,6}\s+(.*)$/.exec(t);
+    if (h) { flushPara(); flushList(); out.push({ kind: "heading", text: h[1]! }); continue; }
+    const li = /^[-*]\s+(.*)$/.exec(line);
+    if (li) { flushPara(); (list ??= []).push(li[1]!); continue; }
+    if (list && /^\s/.test(line)) { list[list.length - 1] += " " + t; continue; }
+    flushList(); para.push(t);
+  }
+  flushPara(); flushList();
+  return out;
+}
+
 export const store = {
   get<T>(k: string, fb: T): T { try { const v = localStorage.getItem(k); return v == null ? fb : (JSON.parse(v) as T); } catch { return fb; } },
   set(k: string, v: unknown) { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* storage blocked: per-viewer convenience only */ } },

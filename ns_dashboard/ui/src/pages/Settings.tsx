@@ -5,7 +5,7 @@ import { useEffect, useState } from "react";
 import { useApp, useLoad } from "../lib/app";
 import { api, ApiError } from "../lib/api";
 import type { Job, LogLine, ModelsState, Settings as S, UpdateState } from "../lib/types";
-import { dayInline, interactiveOnly, NO_TASK, plural } from "../lib/format";
+import { dayInline, interactiveOnly, NO_TASK, parseReleaseNotes, plural } from "../lib/format";
 import { cx } from "../ui/kit";
 import { Lockup } from "../ui/Lockup";
 import { Badge, Button, Icon, Card, CardHeader, DashGrid, IconButton, Input, LinkButton, ProgressBar, SegmentedControl, Select, SettingRow, SPAN, StatusDot, Switch, type SegmentOption } from "../components/ref12";
@@ -44,6 +44,8 @@ export default function Settings() {
   // The 10 minutes count from the moment update_state.json stops saying "running" (or from the first lost connection when it never did),
   // not from the click: the worker downloads, installs into every venv and verifies first, which can take longer than that.
   const [updateNote, setUpdateNote] = useState<string | null>(null);
+  // After an update the updater's state file also carries the new version's CHANGELOG section (release_notes); the card shows it.
+  const [whatsNew, setWhatsNew] = useState<{ version: string | null; text: string } | null>(null);
   const follow = (fresh: boolean) => {
     setUpdating("Installing the update"); setUpdateNote(null); let seen = !fresh; const began = Date.now();
     let quietSince: number | null = null; let sawRunning = false;
@@ -70,6 +72,7 @@ export default function Settings() {
             const now = await api.get<{ version?: string }>("/status");
             if (u.new && now.version && now.version !== u.new) { setUpdating("Waiting for the new version to start"); return; }
             clearInterval(t); setUpdating(null); setUpd(null);
+            if (u.release_notes) setWhatsNew({ version: u.new, text: u.release_notes });
             toast(`Now on ${now.version || u.new || "the newest version"} (was ${u.old || "the old one"})`, "ok");
             // this page still holds the old version's scripts: load the new ones
             setTimeout(() => location.reload(), 2500);
@@ -83,7 +86,7 @@ export default function Settings() {
       }
     }, 3000);
   };
-  useEffect(() => { api.get<UpdateState>("/update/state").then((u) => { if (u.state === "running") follow(false); }).catch(() => undefined); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { api.get<UpdateState>("/update/state").then((u) => { if (u.state === "running") follow(false); else if (u.state === "done" && u.release_notes) setWhatsNew({ version: u.new, text: u.release_notes }); }).catch(() => undefined); }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const apply = async () => {
     const ok = await confirm({ title: "Install the update?", body: "Nightshift stops the engine, installs the new version and starts again. If anything fails it goes back to this version", ok: "Install" });
     if (!ok) return;
@@ -216,6 +219,14 @@ export default function Settings() {
                 : upd?.state === "available" ? <Button leadingIcon="download" onClick={apply}>Install {upd.latest}</Button>
                 : <Button variant="soft" leadingIcon="github" onClick={check} disabled={checking}>{checking ? "Checking" : "Check now"}</Button>}
             </SettingRow>
+            {whatsNew && (
+              <section aria-labelledby="s-whatsnew" className="mx-1 mb-2 max-h-72 overflow-y-auto rounded-ds-md bg-ds-accent-soft px-3 py-3 text-ds-sm">
+                <h3 id="s-whatsnew" className="mb-1 font-semibold">What is new in {whatsNew.version || "this version"}</h3>
+                {parseReleaseNotes(whatsNew.text).map((b, i) => b.kind === "heading" ? <h4 key={i} className="mt-2 font-semibold">{b.text}</h4>
+                  : b.kind === "list" ? <ul key={i} className="mt-1 list-disc space-y-1 pl-5">{b.items.map((it, j) => <li key={j}>{it}</li>)}</ul>
+                  : <p key={i} className="mt-1">{b.text}</p>)}
+              </section>
+            )}
             {updateNote && <p role="alert" className="mx-1 mb-2 rounded-ds-md bg-ds-danger-soft px-3 py-2 text-ds-sm">{updateNote}</p>}
             <SettingRow title="From a file" sub="A Nightshift-Update zip you were given (some updates still need the internet). Choose Nightshift-Update-<version>.zip and its .sha256 file together (hold Ctrl); the update is refused without the checksum file">
               <label className="ds-focus inline-flex h-9 cursor-pointer items-center gap-2 rounded-ds-md bg-ds-accent-soft px-4 text-ds-sm font-semibold shadow-ds-control hover:bg-ds-soft-hover focus-within:shadow-ds-focus">
