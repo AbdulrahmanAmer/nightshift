@@ -1,3 +1,4 @@
+import errno
 import json
 from pathlib import Path
 
@@ -6,6 +7,7 @@ import pytest
 
 from ns_common import ffmpeg as ff
 from ns_common.errors import NsError
+from ns_common.logging import NsLogger
 from ns_studio.media.clip_sources import (
     FakeClipSource,
     PexelsSource,
@@ -119,7 +121,7 @@ def test_pexels_gives_up_after_repeated_429_and_codes_errors():
         raise httpx.ConnectError("down")
 
     with pytest.raises(NsError) as ei3:
-        PexelsSource("K", Path("."), client=_client(boom)).search("x", orientation="portrait")
+        PexelsSource("K", Path("."), client=_client(boom), sleep=t.sleep).search("x", orientation="portrait")
     assert ei3.value.code == "NS-E503"
 
 
@@ -196,6 +198,246 @@ def test_pixabay_caches_responses_for_24h(tmp_path: Path):
     t.now += 2 * 3600
     src.search("rain", orientation="landscape")
     assert calls["n"] == 2
+
+
+def _log_events(logs_dir: Path) -> list[dict]:
+    return [
+        json.loads(line)
+        for f in sorted(logs_dir.glob("*.jsonl"))
+        for line in f.read_text(encoding="utf-8").splitlines()
+    ]
+
+
+def _counting(calls: dict, status: int):
+    def handler(req: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(status)
+
+    return handler
+
+
+def test_d5_pexels_503_503_200_succeeds_after_two_retries(tmp_path: Path):
+    t = FakeTime()
+    calls = {"n": 0}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] <= 2:
+            return httpx.Response(503)
+        return httpx.Response(200, json=_load("pexels_search.json"))
+
+    log = NsLogger("studio", tmp_path / "logs", echo=False)
+    src = PexelsSource("K", Path("."), client=_client(handler), sleep=t.sleep, wall=t.clock, log=log)
+    assert len(src.search("x", orientation="portrait")) == 3
+    assert calls["n"] == 3 and len(t.slept) == 2 and t.slept[0] < t.slept[1]  # backoff grows
+    retries = [e for e in _log_events(tmp_path / "logs") if e["event"] == "footage_host_retry"]
+    assert len(retries) == 2 and retries[0]["data"]["source"] == "pexels"
+    assert retries[0]["data"]["reason"] == "HTTP 503"
+
+
+def test_d5_repeated_503_is_an_outage_never_the_key_hint():
+    t = FakeTime()
+    for cls, host in ((PixabaySource, "Pixabay"), (PexelsSource, "Pexels")):
+        calls = {"n": 0}
+        src = cls("K", Path("."), client=_client(_counting(calls, 503)), sleep=t.sleep, wall=t.clock)
+        with pytest.raises(NsError) as ei:
+            src.search("x", orientation="portrait")
+        assert ei.value.code == "NS-E503"
+        assert f"{host} is not answering right now; Nightshift will try again" in ei.value.detail
+        assert "key" not in ei.value.detail.lower() and "key" not in ei.value.definition.hint.lower()
+        assert calls["n"] > 1
+
+
+def test_d5_timeouts_and_resets_are_retried():
+    t = FakeTime()
+    calls = {"n": 0}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise httpx.ReadTimeout("slow", request=req)
+        if calls["n"] == 2:
+            raise httpx.ReadError("connection reset", request=req)
+        return httpx.Response(200, json=_load("pexels_search.json"))
+
+    src = PexelsSource("K", Path("."), client=_client(handler), sleep=t.sleep, wall=t.clock)
+    assert len(src.search("x", orientation="portrait")) == 3 and calls["n"] == 3
+
+
+def test_d5_key_errors_stop_at_once_without_a_retry():
+    t = FakeTime()
+    for status, cls, code in (
+        (401, PexelsSource, "NS-E501"),
+        (403, PexelsSource, "NS-E501"),
+        (401, PixabaySource, "NS-E502"),
+        (400, PixabaySource, "NS-E502"),
+    ):
+        calls = {"n": 0}
+        src = cls("K", Path("."), client=_client(_counting(calls, status)), sleep=t.sleep, wall=t.clock)
+        with pytest.raises(NsError) as ei:
+            src.search("x", orientation="portrait")
+        assert ei.value.code == code and calls["n"] == 1 and t.slept == []
+
+
+def test_d5_the_429_wait_is_logged(tmp_path: Path):
+    t = FakeTime()
+    calls = {"n": 0}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return httpx.Response(429, headers={"Retry-After": "12"})
+        return httpx.Response(200, json=_load("pexels_search.json"))
+
+    log = NsLogger("studio", tmp_path / "logs", echo=False)
+    src = PexelsSource("K", Path("."), client=_client(handler), sleep=t.sleep, wall=t.clock, log=log)
+    src.search("x", orientation="portrait")
+    waits = [e for e in _log_events(tmp_path / "logs") if e["event"] == "footage_rate_limited"]
+    assert len(waits) == 1 and waits[0]["data"]["wait_s"] == 12.0 and waits[0]["data"]["source"] == "pexels"
+
+
+def test_d5_the_searcher_hands_the_job_log_to_the_sources(tmp_path: Path):
+    from ns_studio.media.clips import Searcher
+
+    t = FakeTime()
+    log = NsLogger("studio", tmp_path / "logs", echo=False)
+    src = PixabaySource(
+        "K", tmp_path, client=_client(lambda r: httpx.Response(503)), sleep=t.sleep, wall=t.clock
+    )
+    s = Searcher([src], log=log)
+    assert s.search("rain", "portrait") == []
+    assert s.first_error() is not None and s.first_error().code == "NS-E503"
+    events = [e["event"] for e in _log_events(tmp_path / "logs")]
+    assert events.count("footage_host_retry") == 3 and "footage_host_down" in events
+
+
+def test_d5_a_host_that_is_down_is_skipped_for_the_rest_of_the_job():
+    """One NS-E503 marks the source down: the next keywords do not cost another 22 s of backoff."""
+    from ns_studio.media.clips import Searcher
+
+    t = FakeTime()
+    calls = {"n": 0}
+    down = PixabaySource(
+        "K", Path("."), client=_client(_counting(calls, 503)), sleep=t.sleep, wall=t.clock
+    )
+    up_calls: list[str] = []
+
+    class Up:
+        name = "pexels"
+
+        def search(self, keyword, *, orientation, per_page=80):
+            up_calls.append(keyword)
+            return parse_pexels(_load("pexels_search.json"), orientation)
+
+        def download(self, cand, dest):
+            return dest
+
+    s = Searcher([down, Up()])
+    first = s.search("rain", "portrait")
+    slept_after_first, http_after_first = len(t.slept), calls["n"]
+    assert slept_after_first == 3 and http_after_first == 4  # three backoffs, four tries, once
+    assert len(first) == 3  # the other host still answers
+    for kw in ("fog", "street", "porch"):
+        assert len(s.search(kw, "portrait")) == 3
+    assert len(t.slept) == slept_after_first and calls["n"] == http_after_first
+    assert set(up_calls) == {"rain", "fog", "street", "porch"}
+    assert s.first_error() is not None and s.first_error().code == "NS-E503"
+
+
+def test_d5_a_key_error_does_not_mark_a_host_down():
+    from ns_studio.media.clips import Searcher
+
+    t = FakeTime()
+    calls = {"n": 0}
+    src = PexelsSource("K", Path("."), client=_client(_counting(calls, 401)), sleep=t.sleep, wall=t.clock)
+    s = Searcher([src])
+    s.search("a", "portrait")
+    s.search("b", "portrait")
+    assert calls["n"] == 2  # a bad key is asked again per keyword, as before
+
+
+def test_d5_a_download_503_is_an_outage_not_a_key_error(tmp_path: Path):
+    src = PexelsSource("K", tmp_path, client=_client(lambda r: httpx.Response(503)))
+    cand = parse_pexels(_load("pexels_search.json"), "portrait")[0]
+    with pytest.raises(NsError) as ei:
+        src.download(cand, tmp_path / "pexels" / "a.mp4")
+    assert ei.value.code == "NS-E503" and "not answering right now" in ei.value.detail
+    assert not list(tmp_path.rglob("*.part"))
+    bad = PexelsSource("K", tmp_path, client=_client(lambda r: httpx.Response(403)))
+    with pytest.raises(NsError) as ei2:
+        bad.download(cand, tmp_path / "pexels" / "b.mp4")
+    assert ei2.value.code == "NS-E501"
+
+
+def _enospc_open(real_open):
+    """A `Path.open` whose `.part` files take one chunk and then raise ENOSPC (no real full disk)."""
+
+    class FullFile:
+        def __init__(self, fh) -> None:
+            self._fh = fh
+            self._n = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc) -> None:
+            self._fh.close()
+
+        def write(self, data: bytes) -> int:
+            if self._n >= 1:
+                raise OSError(errno.ENOSPC, "No space left on device")
+            self._n += 1
+            return self._fh.write(data)
+
+    def fake_open(self: Path, *args, **kwargs):
+        fh = real_open(self, *args, **kwargs)
+        return FullFile(fh) if self.name.endswith(".part") else fh
+
+    return fake_open
+
+
+def test_d8_full_disk_during_a_download_is_ns_e104_naming_the_folder_and_leaves_no_part(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setattr(Path, "open", _enospc_open(Path.open))
+    src = PexelsSource("K", tmp_path, client=_client(lambda r: httpx.Response(200, content=b"x" * 300_000)))
+    cand = parse_pexels(_load("pexels_search.json"), "portrait")[0]
+    dest = tmp_path / "pexels" / "3571264.mp4"
+    with pytest.raises(NsError) as ei:
+        src.download(cand, dest)
+    assert ei.value.code == "NS-E104"
+    assert str(dest.parent) in ei.value.detail
+    assert not list(tmp_path.rglob("*.part")) and not dest.exists()
+
+
+def test_d8_winerror_112_counts_as_a_full_disk(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    real = Path.open
+
+    def fake_open(self: Path, *args, **kwargs):
+        if self.name.endswith(".part"):
+            raise OSError(0, "There is not enough space on the disk", None, 112)
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", fake_open)
+    src = PexelsSource("K", tmp_path, client=_client(lambda r: httpx.Response(200, content=b"x")))
+    cand = parse_pexels(_load("pexels_search.json"), "portrait")[0]
+    with pytest.raises(NsError) as ei:
+        src.download(cand, tmp_path / "pexels" / "a.mp4")
+    assert ei.value.code == "NS-E104"
+    assert not list(tmp_path.rglob("*.part"))
+
+
+def test_d8_any_other_failure_mid_download_also_removes_the_part(tmp_path: Path):
+    class Boom(httpx.SyncByteStream):
+        def __iter__(self):
+            yield b"x" * 70_000
+            raise RuntimeError("stream blew up")
+
+    src = PexelsSource("K", tmp_path, client=_client(lambda r: httpx.Response(200, stream=Boom())))
+    cand = parse_pexels(_load("pexels_search.json"), "portrait")[0]
+    with pytest.raises(RuntimeError):
+        src.download(cand, tmp_path / "pexels" / "a.mp4")
+    assert not list(tmp_path.rglob("*.part"))
 
 
 @pytest.mark.skipif(not ff.available(), reason="ffmpeg required")

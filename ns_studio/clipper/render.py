@@ -20,6 +20,7 @@ from ns_common.logging import NsLogger
 from ns_common.models import CANVAS_H, CANVAS_W, ClipTemplate, Crop, Format, Rect
 from ns_studio.clipper import layout
 from ns_studio.media import audio
+from ns_studio.media.diskfull import run_ffmpeg
 from ns_studio.media.layout import SourceSpec, build_regions_graph, fit_facecam_height
 from ns_studio.media.render import escape_filter_path
 
@@ -315,15 +316,15 @@ def render_clip_report(
     script = spec.out.with_name(f"{spec.out.stem}.filtergraph.txt")  # keeps the command line short
     try:
         args = ffmpeg.graph_to_script(build_args(spec, plan.measured, plan.pre), script, log=log)
-        ffmpeg.run(args, log=log)
-    except NsError:
-        if spec.encoder != "h264_nvenc":
+        run_ffmpeg(args, folder=spec.out.parent, out=spec.out, log=log)
+    except NsError as e:
+        if spec.encoder != "h264_nvenc" or e.code == "NS-E104":  # a full disk is not an encoder problem
             raise
         if log:
             log.warn("nvenc_fallback", "NVENC failed, retrying with libx264", code="NS-W401")
         fallback = RenderSpec(**{**spec.__dict__, "encoder": "libx264", "preset": "veryfast"})
         args = ffmpeg.graph_to_script(build_args(fallback, plan.measured, plan.pre), script, log=log)
-        ffmpeg.run(args, log=log)
+        run_ffmpeg(args, folder=spec.out.parent, out=spec.out, log=log)
     return spec.out, plan.report()
 
 
