@@ -351,3 +351,30 @@ def test_uninstall_mode_serves_its_own_endpoints(tmp_path: Path):
         assert client.call("GET", "/api/state")[0] == 404                       # no setup state in this mode
     finally:
         server.stop()
+
+
+def test_static_files_other_than_index_are_revalidated_not_reused_blindly(env):
+    """D-29: only `index.html` was marked; app.js and the others carried no rule at all."""
+    _, _, client, _ = env
+    for path in ("/app.js", "/app.css"):
+        status, headers, _ = client.call("GET", path)
+        assert status == 200 and headers["cache-control"] == "no-cache", path
+        assert headers["content-security-policy"] == CSP and headers["x-content-type-options"] == "nosniff"
+    assert client.call("GET", "/")[1]["cache-control"] == "no-store"
+
+
+def test_the_setup_page_names_the_bundle_with_a_version_token_that_follows_the_files(env):
+    """D-29: a profile that cached the old app.js under `./app.js` must be sent to a URL it has never seen."""
+    _, server, client, _ = env
+    static = server.static_dir
+    page = '<script type="module" src="./app.js"></script><link rel="stylesheet" href="./app.css">'
+    (static / "index.html").write_text(page, encoding="utf-8")
+    status, headers, body = client.call("GET", "/")
+    text = body.decode("utf-8")
+    assert status == 200 and headers["cache-control"] == "no-store"
+    assert '"./app.js?v=' in text and '"./app.css?v=' in text
+    token = text.split("app.js?v=")[1].split('"')[0]
+    assert token and client.call("GET", f"/app.js?v={token}")[2] == b"console.log(1)"  # the query is ignored
+    (static / "app.js").write_text("console.log('the new version')", encoding="utf-8")
+    again = client.call("GET", "/")[2].decode("utf-8").split("app.js?v=")[1].split('"')[0]
+    assert again and again != token

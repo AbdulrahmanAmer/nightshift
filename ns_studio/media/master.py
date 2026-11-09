@@ -36,6 +36,7 @@ from ns_studio.media.captions import (
     first_event_start,
     shift_words,
 )
+from ns_studio.media.fake_voice import e403_detail
 from ns_studio.media.transcribe import Word
 from ns_studio.media.voice import job_speed, job_voice, synthesize
 from ns_studio.stages import Tenant
@@ -359,7 +360,7 @@ def run_captions_master(ctx: JobContext) -> None:
                 failures.append(f"{ident}: drift {res.drift_ms:.0f} ms, matched {res.match_ratio:.0%}")
     ctx.write_json("captions/report.json", report)
     if failures:
-        raise NsError("NS-E403", "; ".join(failures))
+        raise NsError("NS-E403", e403_detail(ctx, failures))
 
 
 # ---------------------------------------------------------------------------------------------------------

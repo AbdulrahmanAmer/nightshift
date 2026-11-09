@@ -10,7 +10,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from ns_common.models import Channel
+from ns_common.models import Channel, Voice, voice_name_problem
 
 POOL_NAMES = (
     "hooks", "structures", "pov_tones", "pacings", "caption_styles", "visual_treatments", "title_formulas"
@@ -93,14 +93,20 @@ def _warnings(ch: Channel, others: list[Channel]) -> list[dict[str, str]]:
     return out
 
 
-def validate_profile(raw: dict[str, Any], others: list[Channel] | None = None) -> dict[str, Any]:
-    """`{ok, errors, warnings}` for a draft profile; `others` are the channels already saved."""
+def validate_profile(
+    raw: dict[str, Any], others: list[Channel] | None = None, before: Voice | None = None
+) -> dict[str, Any]:
+    """`{ok, errors, warnings}` for a draft profile; `others` are the channels already saved and `before`
+    is the voice the saved profile holds (a voice name it already holds is kept, see `voice_name_problem`)."""
     try:
         ch = Channel.model_validate(raw)
     except ValidationError as e:
         return {"ok": False, "errors": [_friendly(dict(x)) for x in e.errors()], "warnings": []}
     warnings = _warnings(ch, others or [])
     errors = [w for w in warnings if w["field"] == "publish_window" and w["message"].startswith("Use times")]
+    name_problem = voice_name_problem(ch.voice, before)
+    if name_problem:
+        errors.append({"field": "voice.name", "message": name_problem[0].upper() + name_problem[1:] + "."})
     if errors:
         return {"ok": False, "errors": errors, "warnings": [w for w in warnings if w not in errors]}
     return {"ok": True, "errors": [], "warnings": warnings}

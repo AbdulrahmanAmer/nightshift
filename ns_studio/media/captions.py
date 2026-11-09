@@ -20,6 +20,7 @@ from ns_common.errors import NsError
 from ns_common.paths import contracts_dir
 from ns_common.textstats import CJK_RANGES, WORD_PATTERN, normalize_tokens, split_sentences
 from ns_studio.context import JobContext
+from ns_studio.media.fake_voice import e403_detail
 from ns_studio.media.presets import FONTS_DIR, CaptionStyle, CaptionVariant, caption_style
 from ns_studio.media.transcribe import Word
 from ns_studio.stages import Tenant
@@ -781,4 +782,4 @@ class CaptionsStage:
                 failures.append(f"s{n}: drift {drift:.0f} ms, matched {ratio:.0%}")
         ctx.write_json("captions/report.json", report)
         if failures:
-            raise NsError("NS-E403", "; ".join(failures))
+            raise NsError("NS-E403", e403_detail(ctx, failures))

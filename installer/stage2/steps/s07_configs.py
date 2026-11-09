@@ -12,7 +12,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from installer.stage2.answers import InstallerAnswers, blank_secrets_in_file, slugify
+from installer.stage2.answers import InstallerAnswers, blank_secrets_in_file, default_voice_name, slugify
 from installer.stage2.base import Step
 from installer.stage2.context import StepContext
 from installer.stage2.errors import make_error
@@ -68,7 +68,7 @@ def channel_from_answers(ans: InstallerAnswers) -> Channel:
     """Channel profile for the first channel (spec 5 s07)."""
     voice = ans.voice
     if voice.mode != "preset" and not voice.name:
-        name = f"{slugify(ans.channel.display_name)}-voice"
+        name = default_voice_name(ans.channel.display_name)
         voice = Voice.model_validate(voice.model_dump() | {"name": name})
     return Channel(
         slug=slugify(ans.channel.display_name),

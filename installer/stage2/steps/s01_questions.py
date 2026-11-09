@@ -18,6 +18,7 @@ from installer.stage2.answers import (
     AnswersError,
     InstallerAnswers,
     build_answers,
+    default_voice_name,
     load_raw,
     slugify,
     wants_voicedesign,
@@ -140,7 +141,7 @@ class S01Questions(Step):
         if not f.is_file():
             return False
         try:
-            ans = build_answers(load_raw(f))
+            ans = build_answers(load_raw(f), saved=True)
         except AnswersError:
             return False
         earlier = reinstall.kept_answers(ctx)
@@ -212,7 +213,7 @@ class S01Questions(Step):
                 preview_voice(ctx, name)
             speaker = ctx.ui.choose("Which voice do you want?", list(PRESET_VOICES), default=PRESET_VOICES[0])
             return {"mode": "preset", "speaker": speaker}
-        name = f"{slugify(channel_name)}-voice"
+        name = default_voice_name(channel_name)
         if mode == "design":
             desc = ctx.ui.ask("Describe the narrator in a sentence (age, tone, pace)")
             return {"mode": "design", "speaker": None, "description": desc, "name": name}
@@ -287,6 +288,31 @@ class S01Questions(Step):
                 ctx.log.warn("no_stock_key", hint="add a Pixabay key in Settings before the first video")
 
     # ---- run ----
+    def _voice_carried(
+        self,
+        ctx: StepContext,
+        earlier: tuple[dict[str, Any], str] | None,
+        diff: list[reinstall.Change],
+        voice: dict[str, Any],
+    ) -> bool:
+        """True when the voice is the one an earlier install already had, so the name rule is not applied.
+
+        With kept answers (another file in use, or the window's copy) it is carried when the new answers do
+        not change it. Without them, the answers in use may be the saved ``config/answers.json`` itself (the
+        fallback of ``find_answers``; an update that only adds an API key): the voice is carried when it
+        equals the saved one. A window on a first install writes that same file with choices typed now, so
+        a window never counts.
+        """
+        if earlier:
+            return "voice" not in {c.key for c in diff}
+        saved = self._answers_file(ctx)
+        if ctx.ui.bridge or not saved.is_file():
+            return False
+        try:
+            return load_raw(saved).get("voice") == voice
+        except (AnswersError, OSError):
+            return False
+
     def run(self, ctx: StepContext) -> None:
         """Resolve every answer, prepare the home folder and write config/answers.json (no secrets)."""
         self._ran = True
@@ -395,7 +421,11 @@ class S01Questions(Step):
         for key in ("voice_ref_audio_path", "voice_ref_text", "voice_rights_confirmed"):
             if key in raw and key not in merged:
                 merged[key] = raw[key]
-        ans = build_answers({**merged, PEXELS_KEY: None, PIXABAY_KEY: None})
+        # The name rule is for a voice typed now. A voice the earlier install already had (inherited because
+        # the new answers leave it out, or named again unchanged) was accepted by 0.1.x, so it is read as
+        # saved answers; a voice the new answers change keeps the rule on (defect D-24).
+        carried = self._voice_carried(ctx, earlier, diff, merged["voice"])
+        ans = build_answers({**merged, PEXELS_KEY: None, PIXABAY_KEY: None}, saved=carried)
 
         self._keys(ctx)
         ans = ctx.constrain(ans)
