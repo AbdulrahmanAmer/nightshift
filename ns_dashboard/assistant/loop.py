@@ -76,6 +76,37 @@ def run_tool(td: ToolDef, ctx: ToolContext, args: dict[str, Any]) -> tuple[bool,
         return False, {"error": {"code": "tool_failed", "message": f"{type(e).__name__}: {e}"}}
 
 
+def refusal_text(e: ApiError) -> str:
+    """What an `ApiError` says in plain words: its message, then each field problem and the hint if it has them."""
+    parts = [e.message.strip()]
+    details = e.details if isinstance(e.details, list) else []
+    for d in details:
+        text = str(d.get("message") or "") if isinstance(d, dict) else str(d)
+        field = str(d.get("field") or "") if isinstance(d, dict) else ""
+        if text.strip():
+            parts.append(f"{field}: {text.strip()}" if field else text.strip())
+    if e.hint:
+        parts.append(e.hint.strip())
+    return " ".join(p if p.endswith((".", "!", "?")) else f"{p}." for p in parts if p)
+
+
+def dry_run_problem(td: ToolDef, ctx: ToolContext, args: dict[str, Any]) -> str | None:
+    """Run the tool's `dry_run`; the plain-words refusal if the action would not run, else None. Never raises."""
+    if td.dry_run is None:
+        return None
+    try:
+        td.dry_run(ctx, args)
+    except ApiError as e:
+        return refusal_text(e)
+    except NsError as e:
+        return f"{e} {e.definition.hint}".strip()
+    except AdapterUnavailable as e:
+        return str(e)
+    except Exception as e:  # a check that breaks must not turn into a card nobody can trust
+        return f"The request could not be checked ({type(e).__name__}: {e})."
+    return None
+
+
 def result_facts(result: Any) -> str:
     """The lines the owner wants to see on the card after a Yes: file paths, a job id, a note.
 
@@ -261,11 +292,12 @@ class Assistant:
             yield {"kind": "tool_result", "payload": {"tool": name, "ok": False, "error": problem}}
             return
         if td.spec.side_effect and td.dry_run is not None:
-            try:
-                td.dry_run(ctx, args)
-            except ApiError as e:  # the same refusal the action would meet after a Yes, said before the card
-                reply({"error": {"code": "bad_arguments", "message": e.message}})
-                yield {"kind": "tool_result", "payload": {"tool": name, "ok": False, "error": e.message}}
+            problem = dry_run_problem(td, ctx, args)
+            if problem:  # the same refusal the action would meet after a Yes, said before the card
+                reply({"error": {"code": "bad_arguments", "message": problem,
+                                 "note": "Nothing was shown to the owner and nothing happened. Ask the owner for what is "
+                                         "missing or wrong, or correct the argument, then call the tool again."}})
+                yield {"kind": "tool_result", "payload": {"tool": name, "ok": False, "error": problem}}
                 return
         if td.spec.side_effect:
             text = render_confirm(td.spec, args)
