@@ -55,6 +55,7 @@ class Cand:
     layout: str | None = None
     layout_reason: str | None = None
     caption_style: str | None = None  # chosen by the model among the channel's caption styles
+    emphasis: list[str] = field(default_factory=list)  # the model's 1-3 key words, not yet checked
 
     @property
     def duration(self) -> float:
@@ -127,6 +128,17 @@ def _num(d: dict[str, Any], *keys: str) -> float | None:
     return None
 
 
+MAX_EMPHASIS = 3
+
+
+def _emphasis_words(v: Any) -> list[str]:
+    """The model's `emphasis` as at most three single words (anything else in the list is ignored)."""
+    if not isinstance(v, list):
+        return []
+    words = [w.strip() for w in v if isinstance(w, str) and w.strip() and len(w.split()) == 1]
+    return words[:MAX_EMPHASIS]
+
+
 def _opt_str(v: Any) -> str | None:
     return v.strip() if isinstance(v, str) and v.strip() else None
 
@@ -157,6 +169,7 @@ def to_cand(d: dict[str, Any], duration_s: float) -> Cand | None:
         layout=_opt_str(d.get("layout")),
         layout_reason=_opt_str(d.get("layout_reason") or d.get("reason")),
         caption_style=_opt_str(d.get("caption_style")),
+        emphasis=_emphasis_words(d.get("emphasis")),
     )
 
 
@@ -203,6 +216,7 @@ def _merge_pair(a: Cand, b: Cand, max_s: float) -> Cand:
         layout=best.layout or other.layout,
         layout_reason=best.layout_reason or other.layout_reason,
         caption_style=best.caption_style or other.caption_style,
+        emphasis=best.emphasis or other.emphasis,
     )
 
 
@@ -381,11 +395,48 @@ def judge_loop(
     return kept, dropped
 
 
+def sentence_indices(words: list[Word]) -> list[int]:
+    """Sentence number of every word (sentences as `sentence_spans` cuts them)."""
+    spans = sentence_spans(words)
+    out: list[int] = []
+    idx = 0
+    for w in words:
+        while idx < len(spans) - 1 and w.start > spans[idx][1] + 1e-6:
+            idx += 1
+        out.append(idx)
+    return out
+
+
+def sentence_emphasis(words: list[Word], wanted: list[str]) -> list[str] | None:
+    """The model's emphasis words checked against the clip's own words, as the clip plan stores them.
+
+    The plan keeps one key word per sentence in order and "" for a sentence without one (spec 17.2), which
+    is what the caption builder reads. A word the clip does not contain is dropped; so is a second word for a
+    sentence that already has one. None when nothing is left, so a plan without emphasis stays unchanged.
+    """
+    if not words or not wanted:
+        return None
+    by_sentence = list(zip(sentence_indices(words), words, strict=True))
+    chosen: dict[int, str] = {}
+    for want in wanted[:MAX_EMPHASIS]:
+        target = _norm(want)
+        if not target:
+            continue
+        for si, w in by_sentence:
+            if si not in chosen and _norm(w.w) == target:
+                chosen[si] = w.w.strip(string.punctuation + " ")
+                break
+    if not chosen:
+        return None
+    return [chosen.get(i, "") for i in range(max(chosen) + 1)]
+
+
 def _item(tr: Transcript, c: Cand, k: int, status: str, reasons: list[str]) -> ClipPlanItem:
+    start, end = round(c.start, 3), round(c.end, 3)
     return ClipPlanItem(
         k=k,
-        start_s=round(c.start, 3),
-        end_s=round(c.end, 3),
+        start_s=start,
+        end_s=end,
         title=c.title,
         hook_line=c.hook_line,
         why=c.why,
@@ -395,6 +446,7 @@ def _item(tr: Transcript, c: Cand, k: int, status: str, reasons: list[str]) -> C
         layout=c.layout,
         layout_reason=c.layout_reason,
         caption_style=c.caption_style,
+        emphasis=sentence_emphasis(words_in(tr.words, start, end), c.emphasis),
         status="kept" if status == "kept" else "dropped",
         reasons=reasons,
     )

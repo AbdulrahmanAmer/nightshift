@@ -149,6 +149,112 @@ def test_code_launcher_acquires_as_opencode_and_releases_in_finally() -> None:
     assert "OPENCODE_CONFIG" in text and "opencode.json" in text
     assert text.index("/acquire") < text.index("OPENCODE_CONFIG") < text.rindex("/release")
     assert "finally" in text[text.index("OPENCODE_CONFIG") :]
+    # the baseURL is refreshed from runtime.json after the model is up and before OpenCode starts
+    assert text.index("/acquire") < text.index("Sync-NsOpenCodePort") < text.index("OPENCODE_CONFIG")
+    # the acquire result (the running llama-server's address) is kept and handed over, not thrown away
+    assert "$ep = Invoke-NsPost -Path '/acquire'" in text
+    assert "Sync-NsOpenCodePort -BaseUrl" in text and "'/v1'" in text
+
+
+OPENCODE_JSON = {
+    "$schema": "https://opencode.ai/config.json",
+    "enabled_providers": ["local"],
+    "provider": {"local": {
+        "npm": "@ai-sdk/openai-compatible",
+        "name": "Nightshift Local Qwen",
+        "options": {"baseURL": "http://127.0.0.1:8080/v1", "apiKey": "local"},
+        "models": {"code": {"name": "Qwen3.6 35B-A3B (local)"}},
+    }},
+    "model": "local/code",
+    "small_model": "local/code",
+    "autoupdate": False,
+    "share": "disabled",
+}
+
+
+def run_sync(
+    tmp_path: Path, runtime: str | None, opencode: str | None, base_url: str | None = None
+) -> tuple[str, Path]:
+    """Run Sync-NsOpenCodePort against a throwaway home; returns the helper's output and opencode.json."""
+    import os
+    import subprocess
+
+    exe = pwsh.find_powershell()
+    if exe is None:
+        pytest.skip("powershell not available")
+    home = tmp_path / "Night Home"
+    (home / "config").mkdir(parents=True)
+    (home / "config" / "runtime.json").write_text(runtime if runtime is not None else "{}", encoding="utf-8")
+    target = home / "config" / "opencode.json"
+    if opencode is not None:
+        target.write_text(opencode, encoding="utf-8")
+    call = "Sync-NsOpenCodePort" if base_url is None else f"Sync-NsOpenCodePort -BaseUrl '{base_url}'"
+    script = f". '{LAUNCHERS / '_common.ps1'}'\n{call}\n"
+    env = {k: v for k, v in os.environ.items() if k.lower() != "psmodulepath"}
+    env["NIGHTSHIFT_HOME"] = str(home)
+    out = subprocess.run([exe, "-NoProfile", "-NonInteractive", "-Command", script], capture_output=True,
+                         text=True, timeout=60, env=env, check=False)
+    assert out.returncode == 0, out.stdout + out.stderr
+    return out.stdout, target
+
+
+@needs_powershell
+def test_sync_opencode_port_rewrites_only_the_base_url(tmp_path: Path) -> None:
+    runtime = json.dumps({"llama": {"host": "127.0.0.1", "port": 9191}})
+    _out, target = run_sync(tmp_path, runtime, json.dumps(OPENCODE_JSON, indent=2) + "\n")
+    raw = target.read_bytes()
+    assert raw[:3] != bytes([0xEF, 0xBB, 0xBF])                       # no BOM
+    got = json.loads(raw.decode("utf-8"))
+    expected = json.loads(json.dumps(OPENCODE_JSON))
+    expected["provider"]["local"]["options"]["baseURL"] = "http://127.0.0.1:9191/v1"
+    assert got == expected  # nothing else changed (arrays stay arrays)
+
+
+@needs_powershell
+def test_sync_opencode_port_prefers_the_address_the_engine_reported(tmp_path: Path) -> None:
+    """/acquire returns the running llama-server's address; it wins over runtime.json, which may be stale."""
+    runtime = json.dumps({"llama": {"host": "127.0.0.1", "port": 9191}})
+    text = json.dumps(OPENCODE_JSON, indent=2) + "\n"
+    _out, target = run_sync(tmp_path / "a", runtime, text, base_url="http://127.0.0.1:7777/v1")
+    got = json.loads(target.read_text(encoding="utf-8"))
+    assert got["provider"]["local"]["options"]["baseURL"] == "http://127.0.0.1:7777/v1"
+    # an empty or non-http value (e.g. "inproc") falls back to runtime.json
+    for bad in ("", "inproc"):
+        _out, target = run_sync(tmp_path / f"b{bad}", runtime, text, base_url=bad)
+        got = json.loads(target.read_text(encoding="utf-8"))
+        assert got["provider"]["local"]["options"]["baseURL"] == "http://127.0.0.1:9191/v1"
+
+
+@needs_powershell
+def test_sync_opencode_port_keeps_non_ascii_text_intact(tmp_path: Path) -> None:
+    """Windows PowerShell 5.1 reads a BOM-less file as ANSI unless told UTF-8; edited text must survive."""
+    edited = json.loads(json.dumps(OPENCODE_JSON))
+    edited["provider"]["local"]["name"] = "Nightshift Local Qwen — café مرحبا"
+    runtime = json.dumps({"llama": {"host": "127.0.0.1", "port": 9191}})
+    text = json.dumps(edited, indent=2, ensure_ascii=False) + "\n"
+    assert "café" in text                                          # really raw UTF-8 on disk
+    _out, target = run_sync(tmp_path, runtime, text)
+    got = json.loads(target.read_bytes().decode("utf-8"))
+    edited["provider"]["local"]["options"]["baseURL"] = "http://127.0.0.1:9191/v1"
+    assert got == edited
+
+
+@needs_powershell
+def test_sync_opencode_port_leaves_a_matching_or_absent_file_alone(tmp_path: Path) -> None:
+    same = json.dumps(OPENCODE_JSON)
+    _out, target = run_sync(tmp_path / "a", json.dumps({"llama": {"port": 8080}}), same)
+    assert target.read_text(encoding="utf-8") == same                 # already right: not rewritten
+    _out, target = run_sync(tmp_path / "b", json.dumps({"llama": {"port": 9191}}), None)
+    assert not target.exists()  # no Nightshift Code config: nothing made
+    _out, target = run_sync(tmp_path / "c", "{}", same)  # no llama block: default 8080 stays
+    assert target.read_text(encoding="utf-8") == same
+
+
+@needs_powershell
+def test_sync_opencode_port_never_stops_the_launcher(tmp_path: Path) -> None:
+    out, target = run_sync(tmp_path, json.dumps({"llama": {"port": 9191}}), "{ not json")
+    assert target.read_text(encoding="utf-8") == "{ not json"
+    assert "opencode.json" in out                                      # a plain note, no exception
 
 
 def test_update_launcher_filters_release_zips_and_calls_ns_update() -> None:

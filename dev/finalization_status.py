@@ -1,4 +1,5 @@
-"""Count the boxes of docs/FINALIZATION.md per section; `--check` fails on a ticked box without evidence.
+"""Count the boxes of docs/FINALIZATION.md and docs/FEATURE_STATUS.md (section H) per section; `--check`
+fails on a ticked box without evidence.
 
     python dev/finalization_status.py          # a table: section, done, open, and the open ids
     python dev/finalization_status.py --check  # exit 1 when a ticked box has no `evidence:` or an id repeats
@@ -15,6 +16,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 DOC = Path(__file__).resolve().parents[1] / "docs" / "FINALIZATION.md"
+#: docs/FEATURE_STATUS.md carries section H (a box per partial or missing spec row); both files are one list.
+DOCS = (DOC, DOC.with_name("FEATURE_STATUS.md"))
 ITEM = re.compile(r"^- \[(?P<mark>[ xX])\] (?P<id>F-(?P<section>[A-Z])\d+) (?P<text>.+)$")
 HEADING = re.compile(r"^## (?P<section>[A-Z])\. ")
 
@@ -69,8 +72,20 @@ def table(items: list[Item]) -> str:
     return "\n".join(rows)
 
 
+def parse_all(docs: tuple[Path, ...] = DOCS) -> tuple[list[Item], list[str]]:
+    """Items and problems of every list file that exists."""
+    items: list[Item] = []
+    problems: list[str] = []
+    for doc in docs:
+        if doc.exists():
+            i, p = parse(doc.read_text(encoding="utf-8"))
+            items += i
+            problems += [f"{doc.name}: {x}" for x in p]
+    return items, problems
+
+
 def main(argv: list[str]) -> int:
-    items, problems = parse(DOC.read_text(encoding="utf-8"))
+    items, problems = parse_all()
     print(table(items))
     if problems:
         print("\n".join(problems))

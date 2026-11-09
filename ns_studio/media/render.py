@@ -15,7 +15,7 @@ from ns_common.errors import NsError
 from ns_common.logging import NsLogger
 from ns_common.models import VideoCfg
 from ns_studio.context import JobContext
-from ns_studio.media.audio import assemble_audio, loudnorm
+from ns_studio.media.audio import FINAL_LUFS, FINAL_TP, assemble_audio, loudnorm
 from ns_studio.media.caption_plan import AssOptions
 from ns_studio.media.captions import Box, caption_band, ensure_contrast, sample_luma
 from ns_studio.media.presets import (
@@ -32,8 +32,6 @@ from ns_studio.stages import Tenant
 
 VERTICAL = (1080, 1920)
 LANDSCAPE = (1920, 1080)
-FINAL_LUFS = -14.0
-FINAL_TP = -1.5
 X264_PRESETS = {
     "ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow",
 }
@@ -287,7 +285,11 @@ def fit_caption_contrast(
 def build_short_audio(
     hook: Path | None, body: Path, out_raw: Path, out_final: Path, gap_s: float, log: NsLogger | None = None
 ) -> Path:
-    """Hook + silence + body, loudness-normalized to -14 LUFS / -1.5 dBTP (spec S1)."""
+    """Hook + silence + body, loudness-normalized to -14 LUFS / -1.5 dBTP (spec S1).
+
+    The voice stage leaves narration at -16 LUFS with peaks at or under `VOICE_TP`, so this lift of 2 dB is
+    linear and adds no limiter of its own; audio from an older voice stage still gets one.
+    """
     segments: list[Path | float] = [hook, gap_s, body] if hook else [body]
     assemble_audio(segments, out_raw)
     loudnorm(out_raw, out_final, i=FINAL_LUFS, tp=FINAL_TP, log=log)

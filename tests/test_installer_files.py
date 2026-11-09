@@ -113,7 +113,7 @@ STDLIB_ONLY_NS_COMMON = {
 }
 # installer.stage2.devmode (dev mode numbers, stubs, mode switch) is stdlib-only too and shared by the setup
 # server and the wizard; the test below keeps it that way.
-STDLIB_ONLY_INSTALLER = {"installer.stage2.devmode"}
+STDLIB_ONLY_INSTALLER = {"installer.stage2.devmode", "installer.stage2.sysinfo"}
 
 
 def test_the_ns_common_modules_the_setup_server_uses_are_really_stdlib_only():

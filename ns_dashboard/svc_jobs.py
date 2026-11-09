@@ -11,7 +11,7 @@ from typing import Any, BinaryIO
 from pydantic import ValidationError
 
 from ns_common.db import new_job_id
-from ns_common.devmode import is_dev
+from ns_common.devmode import fake_footage
 from ns_common.models import JobRunRequest
 from ns_common.paths import Paths
 from ns_common.secrets_names import SHORT_NAMES
@@ -21,7 +21,7 @@ from ns_dashboard.errors import AdapterUnavailable, ApiError
 from ns_dashboard.jobs import Handler, JobControl
 from ns_dashboard.state import AppState
 from ns_dashboard.svc_channels import ChannelsService
-from ns_dashboard.templates import load_templates
+from ns_dashboard.templates import clipper_can_run, load_templates
 from ns_dashboard.uploads import ALLOWED_EXT, CHUNK, UploadInfo, UploadManager, find_source
 from ns_studio.footage_keys import NO_FOOTAGE_KEY
 from ns_studio.series.plain import script_problem
@@ -243,11 +243,12 @@ class JobsService:
     def _require_footage_key(self) -> None:
         """Refuse a story video when no stock-footage key is stored (gap L3): `clips` would fail an hour in.
 
-        Not checked with fake services (they bring their own footage) or when the keyring cannot be read at
-        all (then nothing is known, and the run itself reports what it finds).
+        Not checked with fake services, in dev mode or in the `fake_footage` engine test (docs/DEV_MODE.md):
+        they bring their own footage. Nor when the keyring cannot be read at all (then nothing is known, and
+        the run itself reports what it finds).
         """
-        if self.s.fake_services or is_dev(self.s.paths):
-            return                                     # fakes (and dev mode) bring their own footage
+        if self.s.fake_services or fake_footage(self.s.paths):
+            return              # fakes, dev mode and the fake_footage engine test bring their own footage
         for name in SHORT_NAMES:
             try:
                 if self.s.adapters.keyring.get(name):
@@ -355,6 +356,23 @@ class JobsService:
         }
         return self._enqueue("run", channel, params)
 
+    def _clip_layout(self, template: str) -> str:
+        """The layout id of a clip request, refused before anything is queued when the clipper cannot cut it.
+
+        The list offered on the Create page also holds layouts the owner added in Library > Formats; the
+        clipper cannot run those yet, and finding out in the Layout stage would waste the whole analysis.
+        """
+        known = {t["id"]: t for t in load_templates(self.s.paths)}
+        if template not in known:
+            raise ApiError(422, "invalid_options", f"Unknown layout '{template}'.")
+        if not clipper_can_run(template):
+            raise ApiError(
+                422, "invalid_options",
+                f"Nightshift cannot make clips with your own layout '{known[template]['label']}' yet. "
+                "Pick one of the shipped layouts.",
+            )
+        return template
+
     def create_clip_rerun(self, body: dict[str, Any]) -> dict[str, Any]:
         """Run the later stages of a finished clip job again with another template (no new transcription)."""
         self._accepting()
@@ -363,9 +381,7 @@ class JobsService:
             raise ApiError(404, "not_found", "That clip job was not found.")
         if rec.status != "done":
             raise ApiError(409, "not_finished", "Wait until that clip job has finished.")
-        template = str(body.get("template") or "")
-        if template not in {t["id"] for t in load_templates(self.s.paths)}:
-            raise ApiError(422, "invalid_options", f"Unknown layout '{template}'.")
+        template = self._clip_layout(str(body.get("template") or ""))
         studio_job_id = self._studio_job_id(rec.result or {})
         if studio_job_id is None:
             raise ApiError(
@@ -462,9 +478,7 @@ class JobsService:
         schedule_at = self._schedule(body)
         slug = str(body.get("channel") or "")
         self.channels.load(slug)
-        template = str(body.get("template") or "auto")
-        if template not in {t["id"] for t in load_templates(self.s.paths)}:
-            raise ApiError(422, "invalid_options", f"Unknown layout '{template}'.")
+        template = self._clip_layout(str(body.get("template") or "auto"))
         min_s = _int(body, "min_s", 20, 5, 178)
         max_s = _int(body, "max_s", 60, 6, 179)
         if max_s <= min_s:

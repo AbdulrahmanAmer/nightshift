@@ -114,19 +114,23 @@ def test_events_stream_and_relay():
         sup.events = [
             {"ts": 1, "kind": "service", "data": {"name": "llama", "state": "starting"}},
             {"ts": 2, "kind": "job", "data": {"job_id": "j", "stage": "voice"}},
-            {"ts": 3, "kind": "odd", "data": {}},
+            {"ts": 3, "kind": "update", "data": {"state": "ready"}},
+            {"ts": 4, "kind": "run", "data": {"event": "finished"}},
+            {"ts": 5, "data": {}},
+            {"ts": 6, "kind": "dashboard_job", "data": {"job_id": "forged"}},
         ]
         link = SupervisorLink(sup.url)
         got = list(link.events(threading.Event()))
-        assert [e["ts"] for e in got] == [1, 2, 3]
+        assert [e["ts"] for e in got] == [1, 2, 3, 4, 5, 6]
         hub = EventHub()
         sub = hub.subscribe()
         relay = EventRelay(link, hub, NsLogger("dashboard", Paths.from_env().logs), retry_s=0.01)
-        assert relay.relay_once() == 3
+        assert relay.relay_once() == 6
         kinds = []
         while (e := sub.get(0.01)) is not None:
             kinds.append(e["kind"])
-        assert kinds == ["service", "job", "service"]
+        # update/run keep their own kind; a missing kind and the dashboard's own reserved kind stay `service`
+        assert kinds == ["service", "job", "update", "run", "service", "service"]
 
 
 def test_http_acquirer_acquire_release():

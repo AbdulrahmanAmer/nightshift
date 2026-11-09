@@ -187,6 +187,14 @@ the shipped manifest is unchanged. What such a run proves that a dev pass does n
 model starts, answers JSON, `ns tune`), 3 (embeddings), 4 (speech recognition on the processor) and the
 download path with real hashes. It still proves nothing about the GPU, NVENC, the voice engine or quality.
 
+The twin answer is `"fake_footage": true`. A story job needs a Pixabay or Pexels key and stops with NS-E502
+without one, which blocks an engine test on a PC with no stock-footage account. With the answer, setup writes
+`fake_footage: true` into `runtime.json` and the studio, the nightly planner, `studio run`, the dashboard's
+job refusal and Library > Footage all use the synthetic clip source, as a dev install does, while the language
+model, embeddings and speech recognition stay real. The videos then carry placeholder footage, so the answer
+is for an engine test only and never for the partner's PC. Settings shows it as `fake_footage` next to
+`dev_mode` in the settings payload.
+
 ## Where the code is
 
 | What | Where |

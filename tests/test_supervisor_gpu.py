@@ -24,6 +24,13 @@ def test_parse_full_line() -> None:
     )
 
 
+def test_parse_rtx_5060_ti_line() -> None:
+    g = parse_nvidia_smi("NVIDIA GeForce RTX 5060 Ti, 2, 812, 16311, 38\n")
+    assert g == GpuStatus(
+        name="NVIDIA GeForce RTX 5060 Ti", load_pct=2.0, vram_used_mb=812, vram_total_mb=16311, temp_c=38.0
+    )
+
+
 def test_parse_not_supported_cells_become_none() -> None:
     g = parse_nvidia_smi("Quadro P1000, [N/A], 120, 4096, [Not Supported]\n")
     assert g is not None

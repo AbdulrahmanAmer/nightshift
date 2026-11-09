@@ -186,3 +186,17 @@ def test_the_engine_is_started_without_the_worker_markers(
     client_mod.spawn_supervisor(Paths(tmp_path / "home"), headless=False)
     assert "--headless" not in seen["argv"]
     assert UNDER_ENGINE_ENV not in seen["env"]
+
+
+def test_the_engine_does_not_inherit_the_setup_windows_no_host_switch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from ns_supervisor import client as client_mod
+
+    seen: dict[str, Any] = {}
+    monkeypatch.setenv("NS_DASHBOARD_NO_HOST", "1")
+    monkeypatch.setenv("NIGHTSHIFT_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(client_mod.subprocess, "Popen", lambda argv, **kw: seen.update(kw))
+    client_mod.spawn_supervisor(Paths(tmp_path / "home"))
+    assert "NS_DASHBOARD_NO_HOST" not in seen["env"]
+    assert seen["env"]["NIGHTSHIFT_HOME"] == str(tmp_path / "home")

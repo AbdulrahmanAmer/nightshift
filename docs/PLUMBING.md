@@ -846,13 +846,14 @@ File writers: installer/stage2/steps/s01_questions.py:352 (`write_answers`, keys
 | models_source_kind | internet/folder/drive_zip "internet" (225) | answers_view.py:185 | installer/stage2/web/answers_view.py:226 only (setup UI round trip); no installer step reads it, the behaviour is carried by `models_source` being None or a path | read (UI only; candidate: no behavioural reader) |
 | include_voicedesign (InstallerAnswers only, answers.py:32; not in models.py nor answers.schema.json) | bool or None, None | s01_questions.py:332-333; answers_view.py:204 | answers.py:37; s01_questions.py:350; s03_download_models.py:40; verify_downloads.py:99 | read |
 | fake_voice (InstallerAnswers only, answers.py:36, added during this survey; not in models.py nor answers.schema.json) | bool False | user answers.json only (setup window never asks) | installer/stage2/context.py:121-124; runtime_cfg.py:57-58; s02_download_bins.py:135; s03_download_models.py:41; verify_downloads.py:100 | read |
+| fake_footage (InstallerAnswers only, answers.py; not in models.py's Answers nor answers.schema.json; lands in `Runtime.fake_footage`) | bool False | user answers.json only (setup window never asks) | installer/stage2/context.py (`fake_footage`, false in dev mode); runtime_cfg.py (`build_runtime`); s01_questions.py (notice instead of the no-key warning); s07_configs.py (`apply_engine_test`, every run); ns_common/devmode.py `fake_footage(paths)` for the dashboard; ns_studio/context.py `build_services` | read |
 
-2c count: 28 Answers rows (counting voice.* x5 and llm_custom.* x3) + 2 InstallerAnswers-only rows = 30. NONE: none.
+2c count: 28 Answers rows (counting voice.* x5 and llm_custom.* x3) + 3 InstallerAnswers-only rows = 31. NONE: none.
 
 #### 2d. contracts/schemas/*.schema.json vs models.py
-- runtime.schema.json: all 33 leaf fields match models.py (defaults, enums incl. tts.engine with "fake"); nothing extra or missing.
+- runtime.schema.json: all 34 leaf fields match models.py (defaults, enums incl. tts.engine with "fake"); nothing extra or missing.
 - install_state.schema.json: matches models.py (version, app_path, profile, steps{status,error,finished_at}, started_at, completed_at, dev_mode).
-- answers.schema.json: matches Answers (required ["channel"]) but lacks `include_voicedesign` and `fake_voice` (InstallerAnswers-only fields, answers.py:32,36). Nothing validates against these json files at runtime (models.py:895-905 only exports them); models.py is the validator, so the drift is harmless but real.
+- answers.schema.json: matches Answers (required ["channel"]) but lacks `include_voicedesign`, `fake_voice` and `fake_footage` (InstallerAnswers-only fields). Nothing validates against these json files at runtime (models.py:895-905 only exports them); models.py is the validator, so the drift is harmless but real.
 
 #### 2e. Other files under config/ (paths.config) that code reads or writes
 

@@ -154,6 +154,10 @@ class Runtime(Strict):
     # Dev install (`INSTALL.cmd --dev`, docs/DEV_MODE.md): fake engines, stub model files. Consumers read it
     # through `ns_common.devmode`; a real install never sets it.
     dev_mode: bool = False
+    # Engine test (answer `fake_footage`, docs/DEV_MODE.md): the fake clip source stands in for Pexels and
+    # Pixabay so story jobs run without a stock-footage account. A real install never sets it except
+    # through that answer.
+    fake_footage: bool = False
 
     @classmethod
     def default(cls, profile: Literal["gpu", "cpu-dev"]) -> Runtime:

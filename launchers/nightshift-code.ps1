@@ -17,7 +17,15 @@ if (-not (Test-NsSupervisor)) {
 
 Write-Host 'Loading the coding model (a minute or two the first time)...'
 $body = @{ service = 'llama'; owner = $owner; model_alias = 'code'; wait = $true; timeout_s = 7200 }
-Invoke-NsPost -Path '/acquire' -Body $body -TimeoutSec 7500 | Out-Null
+$ep = Invoke-NsPost -Path '/acquire' -Body $body -TimeoutSec 7500
+
+# /acquire answers with the exact address of the llama-server it started; use it rather than guessing.
+$baseUrl = ''
+if ($null -ne $ep -and ($ep.PSObject.Properties.Name -contains 'endpoint')) {
+    $endpoint = [string]$ep.endpoint
+    if ($endpoint -match '^https?://') { $baseUrl = $endpoint.TrimEnd('/') + '/v1' }
+}
+Sync-NsOpenCodePort -BaseUrl $baseUrl
 
 try {
     $env:OPENCODE_CONFIG = Join-Path (Get-NsHome) 'config\opencode.json'

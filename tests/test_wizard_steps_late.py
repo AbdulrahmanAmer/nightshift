@@ -11,7 +11,7 @@ from installer.stage2.runtime_cfg import build_runtime, ensure_baseline
 from installer.stage2.simulate import FakeRunner
 from installer.stage2.steps import default_steps
 from installer.stage2.steps.s06_tune import S06Tune
-from installer.stage2.steps.s07_configs import OPENCODE_CONFIG, S07Configs
+from installer.stage2.steps.s07_configs import OPENCODE_CONFIG, S07Configs, opencode_config
 from installer.stage2.steps.s08_smoke import S08Smoke, parse_report
 from installer.stage2.steps.s09_shortcuts_scheduler import S09ShortcutsScheduler
 from installer.stage2.steps.s10_summary import S10Summary
@@ -128,6 +128,27 @@ def test_s07_writes_configs_moves_secrets_and_blanks_files(tmp_path: Path):
     assert OPENCODE_CONFIG["enabled_providers"] == ["local"] and OPENCODE_CONFIG["model"] == "local/code"
     assert load_runtime(ctx.paths).llama.model_path
     assert step.check(ctx) is True
+
+
+def test_opencode_config_takes_the_llama_host_and_port_from_runtime():
+    """The baked 8080 is only the default: a different llama port must reach OpenCode's baseURL."""
+    assert opencode_config() == OPENCODE_CONFIG
+    cfg = opencode_config(host="127.0.0.1", port=9191)
+    assert cfg["provider"]["local"]["options"]["baseURL"] == "http://127.0.0.1:9191/v1"
+    assert cfg["provider"]["local"]["options"]["apiKey"] == "local"
+    assert cfg["model"] == "local/code"
+    assert OPENCODE_CONFIG["provider"]["local"]["options"]["baseURL"] == "http://127.0.0.1:8080/v1"
+
+
+def test_s07_writes_opencode_baseurl_from_the_existing_runtime_port(tmp_path: Path):
+    ctx, _app = keyed_context(tmp_path)
+    ensure_baseline(ctx)
+    rt = load_runtime(ctx.paths)
+    rt.llama.port = 9191
+    save_runtime(ctx.paths, rt)
+    S07Configs().run(ctx)
+    written = json.loads(ctx.paths.opencode_file.read_text(encoding="utf-8"))
+    assert written["provider"]["local"]["options"]["baseURL"] == "http://127.0.0.1:9191/v1"
 
 
 def test_s07_is_idempotent_and_keeps_an_edited_channel(tmp_path: Path):

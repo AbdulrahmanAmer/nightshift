@@ -169,6 +169,25 @@ def test_the_hand_over_names_the_cuda_source_and_the_pair(tmp_path: Path, over: 
     assert s["profile"] == "gpu"
 
 
+def test_the_full_nvidia_smi_text_of_an_rtx_5060_ti_picks_the_cuda13_pair(tmp_path: Path):
+    """The whole banner nvidia-smi prints (driver 580.88, CUDA 13.0, 16311 MiB), not just its first line."""
+    fixture = ROOT / "tests" / "fixtures" / "supervisor" / "nvidia-smi-rtx-5060-ti.txt"
+    smi = fixture.read_text(encoding="utf-8")
+    s = _summary(_run("-FakeProbe", str(_probe(tmp_path, smi_text=smi, driver="580.88", vram_mb=16311))))
+    got = (s["profile"], s["llama_pair"], s["cuda"], s["cuda_source"])
+    assert got == ("gpu", "cuda13", "13.0", "nvidia-smi")
+    assert [r["status"] for r in s["checks"] if r["id"] in ("gpu", "driver")] == ["ok", "ok"]
+
+
+def test_an_unreadable_driver_names_the_build_that_will_really_be_used(tmp_path: Path):
+    blackwell = _summary(_run("-FakeProbe", str(_probe(tmp_path, smi_text="", driver=""))))
+    assert blackwell["llama_pair"] == "cuda13"
+    assert "CUDA 13 build" in _row(blackwell, "driver")["value"]
+    ada = _summary(_run("-FakeProbe", str(_probe(tmp_path, smi_text="", driver="", gpu_name=ADA))))
+    assert ada["llama_pair"] == "cuda12"
+    assert "CUDA 12.4 build" in _row(ada, "driver")["value"]
+
+
 def test_a_pc_without_any_nvidia_card_fails_the_gpu_row_only(tmp_path: Path):
     probe = _probe(tmp_path, nvidia_smi=False, gpu_name="", smi_text="", driver="")
     proc = _run("-FakeProbe", str(probe))
