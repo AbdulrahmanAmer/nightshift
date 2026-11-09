@@ -87,7 +87,7 @@ def next_unused_idea(ctx: JobContext) -> dict[str, Any] | None:
     had a banked idea): the stage draws as it always does.
     """
     from ns_studio.policy import idea_check
-    from ns_studio.text.stages_shorts import IDEA_SIMILARITY_LIMIT, now_iso
+    from ns_studio.text.stages_shorts import IDEA_SIMILARITY_LIMIT, now_iso, pick_idea
 
     failed = failed_premises(ctx)
     if not failed or not ctx.file("ideas_all.json").exists():
@@ -105,9 +105,15 @@ def next_unused_idea(ctx: JobContext) -> dict[str, Any] | None:
     )
     past = [from_blob(r["embedding"]) for r in rows if r["embedding"]]
     vecs = ctx.services.embed.embed([c["premise"] for c in candidates])
-    for idea, vec in zip(candidates, vecs, strict=True):
-        if past and max(cosine(vec, p) for p in past) >= IDEA_SIMILARITY_LIMIT:
-            continue
+    remaining = [
+        (idea, vec)
+        for idea, vec in zip(candidates, vecs, strict=True)
+        if not past or max(cosine(vec, p) for p in past) < IDEA_SIMILARITY_LIMIT
+    ]
+    while remaining:
+        # the same pick as a first draw: a master takes an idea with chapter potential while one is left
+        idea, vec = pick_idea(ctx, remaining)
+        remaining = [s for s in remaining if s[0] is not idea]
         why = idea_check.idea_problem(ctx, idea)  # the unsafe-topic gate (18.3) sees every idea that is used
         if why is not None:
             ctx.log.warn("idea_unsafe", job_id=ctx.job_id, premise=idea["premise"], detail=why)

@@ -457,7 +457,7 @@ class HooksStage:
         than picking new hooks (and redoing the voice and captions) on `--resume`.
 
         A regeneration that restarts at or before this stage deletes both memos (`regen.STAGE_MEMOS`), so the
-        hooks and closing lines of a regenerated text are new; a resume keeps the memos and with them the hooks.
+        hooks and closing lines of a regenerated text are new; a resume keeps the memos and the hooks.
         """
         if ctx.file("hooks_all.json").exists():
             return
