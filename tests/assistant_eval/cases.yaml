@@ -212,3 +212,46 @@ cases:
     gold:
       - say: "No. You post each video yourself and paste the link on the Queue page."
     no_tool_calls: true
+
+  # D-27: the two ways to ask for a video. The model must choose the tool that matches the request; a small model
+  # confused them on the engine test, so the eval pins both phrasings (the oracle shows what the right call is).
+  - id: 21
+    question: "Make a new After Dark Short for me at 12:54 tonight, you pick the story."
+    topics: [create]
+    tools_needed: [[start_story_job], [start_script_job]]
+    forbidden: [start_script_job]
+    # the first call carries the value the real Qwen3-1.7B wrote for the time (defect D-27): the check before the card
+    # refuses it, the model leaves the time out, and only the corrected call gets a card
+    refusals: ["'schedule_at' must be a date and time"]
+    gold:
+      - call: {tool: start_story_job, args: {channel: after-dark, format: shorts_only, schedule_at: "2026-11-09T12:54Z', "}}
+      - call: {tool: start_story_job, args: {channel: after-dark, format: shorts_only}}
+      - say: "I asked you to confirm a new After Dark Short; the story will be written for it."
+    confirm: [start_story_job]
+    confirm_text_has: ["after-dark"]
+
+  - id: 22
+    question: "Make a Short for After Dark from this script, titled The Porch: The porch light flickered twice before it died. I stood very still and counted the seconds, the way my grandmother taught me, because she always said the dark is only honest when it is quiet. Somewhere behind me the floorboards gave one long, patient creak. Then a voice I knew very well whispered my name from the empty kitchen."
+    topics: [create]
+    tools_needed: [[start_script_job], [start_story_job]]
+    forbidden: [start_story_job]
+    # the first call names the channel by its title, not its slug: refused before the card, then corrected
+    refusals: ["Unknown channel"]
+    gold:
+      - call:
+          tool: start_script_job
+          args:
+            channel: After Dark
+            format: shorts_only
+            title: The Porch
+            script: "The porch light flickered twice before it died. I stood very still and counted the seconds, the way my grandmother taught me, because she always said the dark is only honest when it is quiet. Somewhere behind me the floorboards gave one long, patient creak. Then a voice I knew very well whispered my name from the empty kitchen."
+      - call:
+          tool: start_script_job
+          args:
+            channel: after-dark
+            format: shorts_only
+            title: The Porch
+            script: "The porch light flickered twice before it died. I stood very still and counted the seconds, the way my grandmother taught me, because she always said the dark is only honest when it is quiet. Somewhere behind me the floorboards gave one long, patient creak. Then a voice I knew very well whispered my name from the empty kitchen."
+      - say: "I asked you to confirm making a Short from your script, narrated as you wrote it."
+    confirm: [start_script_job]
+    confirm_text_has: ["after-dark", "from the script you gave"]

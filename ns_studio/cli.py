@@ -23,7 +23,7 @@ from ns_studio.channels import cadence, crud
 from ns_studio.clipper import cli as clipper_cli
 from ns_studio.context import JobContext
 from ns_studio.daily import run_daily
-from ns_studio.errors import UNEXPECTED, StudioError, describe_unexpected
+from ns_studio.errors import UNEXPECTED, StudioError, describe_unexpected, hint_of
 from ns_studio.footage_keys import require_footage_key
 from ns_studio.learn import importer, reweight, status
 from ns_studio.orchestrator import OWNER_SCRIPT_FORMATS, plan_job, run_job
@@ -107,7 +107,7 @@ def guarded() -> Iterator[None]:
     try:
         yield
     except (NsError, StudioError) as e:
-        hint = e.definition.hint if isinstance(e, NsError) else e.hint
+        hint = hint_of(e) if isinstance(e, NsError) else e.hint
         typer.echo(f"error {e}", err=True)
         if hint:
             typer.echo(f"hint: {hint}", err=True)
@@ -269,6 +269,8 @@ def _daily(env: jobs.Env, dry_run: bool, policy: bool | None) -> None:
         typer.echo(f"job {j['job_id']} done: {j['stages']} stages ({j['channel']})")
     for f in report["failures"]:
         typer.echo(f"job {f['job_id']} FAILED {f['code']}: {f['error']}")
+    for bad_slug, problem in report.get("unreadable_profiles", []):
+        typer.echo(f"channel {bad_slug} NOT RUN, its profile cannot be read: {problem}")
     typer.echo(f"backup: {report['backup']}")
     if report["failures"]:
         raise typer.Exit(1)
@@ -329,12 +331,15 @@ def channel_list() -> None:
     with guarded():
         env = jobs.open_env(light=True)
         chans = crud.all_channels(env.paths)
-        if not chans:
+        broken = crud.broken_channels(env.paths)
+        if not chans and not broken:
             typer.echo("no channels configured")
             return
         for c in chans:
             pairs = len(c.pools.hooks) * len(c.pools.structures)
             typer.echo(f"{c.slug}\t{c.status}\t{c.format}\tpairs={pairs}\t{c.display_name}")
+        for slug, problem in broken:
+            typer.echo(f"{slug}\tUNREADABLE\t{problem}")
 
 
 @channel_app.command("edit")
@@ -367,6 +372,10 @@ def channel_validate(slug: Annotated[str | None, typer.Argument()] = None) -> No
         every = crud.all_channels(env.paths)
         targets = [crud.get_channel(env.paths, slug)] if slug else every
         failed = False
+        for broken_slug, problem in crud.broken_channels(env.paths):
+            if slug is None or slug == broken_slug:  # a profile that cannot be read is a failed check
+                typer.echo(f"{broken_slug}: PROBLEM {problem}")
+                failed = True
         for ch in targets:
             problems, warnings = crud.validate_channel(ch, [c for c in every if c.slug != ch.slug])
             for p in problems:

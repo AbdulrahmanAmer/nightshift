@@ -137,7 +137,7 @@ class StepContext:
             src = candidate if candidate.is_file() else found
             if src is None:
                 raise RuntimeError("answers are not available yet; step s01_questions has not completed")
-            self.answers = self.constrain(build_answers(load_raw(src)))
+            self.answers = self.constrain(build_answers(load_raw(src), saved=True))
         return self.answers
 
     def constrain(self, ans: InstallerAnswers) -> InstallerAnswers:
@@ -243,7 +243,7 @@ class StepContext:
             with self.ui.reporter(total_bytes(pending(items))) as rep:
                 return run_plan(
                     items, client=client, models_source=models_source, reporter=rep, sleep=self.sleep,
-                    fetch=fetch, gate=self.gate,
+                    fetch=fetch, gate=self.gate, log=self.log,
                 )
         finally:
             client.close()

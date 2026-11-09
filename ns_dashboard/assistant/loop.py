@@ -22,6 +22,7 @@ from ns_dashboard.assistant.redact import redact_obj, redact_text
 from ns_dashboard.assistant.registry import Registry, ToolContext, ToolDef, render_confirm
 from ns_dashboard.assistant.store import AssistantStore
 from ns_dashboard.errors import AdapterUnavailable, ApiError
+from ns_studio.errors import hint_of
 
 PROMPT_FILE = Path(__file__).resolve().parents[1] / "prompts" / "assistant.md"
 MAX_STEPS = 8
@@ -69,11 +70,47 @@ def run_tool(td: ToolDef, ctx: ToolContext, args: dict[str, Any]) -> tuple[bool,
     except ApiError as e:
         return False, {"error": {"code": e.code, "message": e.message, "hint": e.hint, "details": e.details}}
     except NsError as e:
-        return False, {"error": {"code": e.code, "message": str(e), "hint": e.definition.hint}}
+        return False, {"error": {"code": e.code, "message": str(e), "hint": hint_of(e)}}
     except AdapterUnavailable as e:
         return False, {"error": {"code": "unavailable", "message": str(e)}}
     except Exception as e:  # a tool bug must come back to the model as text, not crash the turn
         return False, {"error": {"code": "tool_failed", "message": f"{type(e).__name__}: {e}"}}
+
+
+def refusal_text(e: ApiError) -> str:
+    """What an `ApiError` says in plain words: its message, then each field problem and the hint if it has them."""
+    parts = [e.message.strip()]
+    details = e.details if isinstance(e.details, list) else []
+    for d in details:
+        text = str(d.get("message") or "") if isinstance(d, dict) else str(d)
+        field = str(d.get("field") or "") if isinstance(d, dict) else ""
+        if text.strip():
+            parts.append(f"{field}: {text.strip()}" if field else text.strip())
+    if e.hint:
+        parts.append(e.hint.strip())
+    return " ".join(p if p.endswith((".", "!", "?")) else f"{p}." for p in parts if p)
+
+
+def unanswered_note(problem: str) -> str:
+    """What the owner is told when a turn ends after a refusal and the model said nothing about it."""
+    return f"I could not set that up, so there is nothing to confirm. {problem}"
+
+
+def dry_run_problem(td: ToolDef, ctx: ToolContext, args: dict[str, Any]) -> str | None:
+    """Run the tool's `dry_run`; the plain-words refusal if the action would not run, else None. Never raises."""
+    if td.dry_run is None:
+        return None
+    try:
+        td.dry_run(ctx, args)
+    except ApiError as e:
+        return refusal_text(e)
+    except NsError as e:
+        return f"{e} {e.definition.hint}".strip()
+    except AdapterUnavailable as e:
+        return str(e)
+    except Exception as e:  # a check that breaks must not turn into a card nobody can trust
+        return f"The request could not be checked ({type(e).__name__}: {e})."
+    return None
 
 
 def result_facts(result: Any) -> str:
@@ -182,13 +219,13 @@ class Assistant:
             yield {"kind": "done", "payload": {"conversation_id": cid}}
             return
         except NsError as e:
-            yield {"kind": "error", "payload": {"code": e.code, "message": str(e), "hint": e.definition.hint}}
+            yield {"kind": "error", "payload": {"code": e.code, "message": str(e), "hint": hint_of(e)}}
             yield {"kind": "done", "payload": {"conversation_id": cid}}
             return
         try:
             yield from self._turn(llm, cid, context)
         except NsError as e:
-            yield {"kind": "error", "payload": {"code": e.code, "message": str(e), "hint": e.definition.hint}}
+            yield {"kind": "error", "payload": {"code": e.code, "message": str(e), "hint": hint_of(e)}}
         finally:
             self.provider.release()
         yield {"kind": "done", "payload": {"conversation_id": cid}}
@@ -212,6 +249,7 @@ class Assistant:
         budget = prompt.budget_for(self.context_tokens())
         system = self.system_prompt()
         block = prompt.build_context_block(self.dash, context, question, budget.context_block)  # once per turn
+        refused: list[str] = []  # what the checks before a card refused in this turn, newest last
         for _step in range(self.max_steps):
             tools = prompt.fit_tools(offer.specs(), offer.core_count, budget)
             messages, stats = prompt.assemble(system, self.store.messages(cid), block, tools, budget, self.summary_fields)
@@ -220,6 +258,9 @@ class Assistant:
             reply = llm.chat_tools(messages, tools, max_tokens=budget.output_reserve)
             calls = reply.get("tool_calls") or []
             content = (reply.get("content") or "").strip()
+            if not calls and not content and refused:
+                # The model gave up after a refusal and said nothing: the owner still hears why (D-27).
+                content = unanswered_note(refused[-1])
             self.store.add_message(cid, "assistant", content, tool_calls=calls or None)
             if not calls:
                 yield {"kind": "message", "payload": {"text": content or "I have nothing to add."}}
@@ -227,12 +268,15 @@ class Assistant:
             if content:
                 yield {"kind": "message", "payload": {"text": content, "partial": True}}
             for c in calls:
-                yield from self._run_call(cid, c, ctx, offer)
+                yield from self._run_call(cid, c, ctx, offer, refused)
         note = "I stopped after several steps without a final answer. Please ask again more simply."
+        if refused:
+            note = f"{note} {unanswered_note(refused[-1])}"
         self.store.add_message(cid, "assistant", note)
         yield {"kind": "message", "payload": {"text": note}}
 
-    def _run_call(self, cid: str, call: dict[str, Any], ctx: ToolContext, offer: router.ToolOffer | None = None) -> Iterator[Event]:
+    def _run_call(self, cid: str, call: dict[str, Any], ctx: ToolContext, offer: router.ToolOffer | None = None,
+                  refused: list[str] | None = None) -> Iterator[Event]:
         fn = call.get("function") or {}
         name = str(fn.get("name", ""))
         call_id = str(call.get("id") or name)
@@ -261,17 +305,22 @@ class Assistant:
             yield {"kind": "tool_result", "payload": {"tool": name, "ok": False, "error": problem}}
             return
         if td.spec.side_effect and td.dry_run is not None:
-            try:
-                td.dry_run(ctx, args)
-            except ApiError as e:  # the same refusal the action would meet after a Yes, said before the card
-                reply({"error": {"code": "bad_arguments", "message": e.message}})
-                yield {"kind": "tool_result", "payload": {"tool": name, "ok": False, "error": e.message}}
+            problem = dry_run_problem(td, ctx, args)
+            if problem:  # the same refusal the action would meet after a Yes, said before the card
+                if refused is not None:
+                    refused.append(problem)
+                reply({"error": {"code": "bad_arguments", "message": problem,
+                                 "note": "Nothing was shown to the owner and nothing happened. Ask the owner for what is "
+                                         "missing or wrong, or correct the argument, then call the tool again."}})
+                yield {"kind": "tool_result", "payload": {"tool": name, "ok": False, "error": problem}}
                 return
         if td.spec.side_effect:
             text = render_confirm(td.spec, args)
             aid = self.store.add_action(cid, name, args, text, ctx.context)
             reply({"status": "awaiting_owner_confirmation", "action_id": aid, "will_do": text,
                    "note": "Nothing has happened yet. Tell the owner what you asked them to confirm."})
+            if refused is not None:
+                refused.clear()  # a card is on screen now: an earlier refusal needs no repeating
             yield {"kind": "confirm", "payload": {"action_id": aid, "tool": name, "args": args, "text": text}}
             return
         yield {"kind": "tool_call", "payload": {"tool": name, "args": args}}

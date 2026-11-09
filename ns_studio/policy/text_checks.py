@@ -8,6 +8,7 @@ from collections.abc import Callable
 from typing import Any
 
 from ns_common.embed_client import cosine, embed_window, from_blob
+from ns_common.errors import NsError
 from ns_common.llm_client import FakeLlm
 from ns_common.models import PolicyCheck
 from ns_common.paths import Paths
@@ -184,24 +185,46 @@ class HookTitleHonesty(Check):
 
 
 class SelfSimilarity(Check):
-    """Embedding similarity to earlier stories: > 0.85 same channel, > 0.80 other channel (E605)."""
+    """Embedding similarity to earlier stories: > 0.85 same channel, > 0.80 other channel (E605).
+
+    Only a story whose video was made (the job has an `outputs` row the owner has not rejected) is in the
+    comparison set: a job that stopped at the voice stage left its story row behind but produced nothing to
+    repeat, and a rejected video was moved out of the outbox so the story may be made again (D-25).
+    """
 
     name = "self_similarity"
     gate = "text"
 
     def __init__(self, *, skip_when_fake: bool = True) -> None:
         self.skip_when_fake = skip_when_fake
+        self._match = ""  # job id of the finished video the last failing run was too close to
+
+    def hint(self, ctx: JobContext) -> str | None:
+        """For the owner's own script no idea is drawn: say what the owner can do instead."""
+        if not (ctx.owner_script and self._match):
+            return None
+        return (
+            f"This script is too close to the finished video of job {self._match}. "
+            "Change the script, or use that video instead of making a second one."
+        )
 
     def run(self, ctx: JobContext) -> PolicyCheck:
-        """Compare the story embedding with the `stories` table (this job excluded)."""
+        """Compare the story embedding with the finished stories (this job excluded)."""
+        self._match = ""
         if self.skip_when_fake and isinstance(ctx.services.llm, FakeLlm):
             return ok("skipped: fake LLM serves one fixture story to every job")
         text = story_text(ctx)
         if not text.strip():
             return ok("no story text")
         vec = ctx.services.embed.embed([embed_window(text, ctx.runtime.embed.batch_size)])[0]
+        return self.compare(ctx, vec)
+
+    def compare(self, ctx: JobContext, vec: list[float]) -> PolicyCheck:
+        """Compare the embedding `vec` of this job's story with the stories of finished videos."""
         rows = ctx.db.query(
-            "select job_id, channel, embedding from stories where job_id != ? and embedding is not null",
+            "select s.job_id, s.channel, s.embedding from stories s where s.job_id != ? "
+            "and s.embedding is not null and exists "
+            "(select 1 from outputs o where o.job_id = s.job_id and o.status != 'rejected')",
             (ctx.job_id,),
         )
         worst: tuple[float, str] = (0.0, "")
@@ -213,7 +236,37 @@ class SelfSimilarity(Check):
             limit = SAME_CHANNEL_SIMILARITY if r["channel"] == ctx.channel.slug else OTHER_CHANNEL_SIMILARITY
             if sim > limit and sim > worst[0]:
                 worst = (sim, f"{r['job_id']} ({r['channel']}) at {sim:.2f} > {limit:.2f}")
-        return fail(f"too similar to {worst[1]}") if worst[1] else ok(f"compared with {len(rows)} stories")
+                self._match = str(r["job_id"])
+        if not worst[1]:
+            return ok(f"compared with {len(rows)} stories")
+        if ctx.owner_script:
+            return fail(f"this script is too close to the finished video of {worst[1]}")
+        return fail(f"too similar to {worst[1]}")
+
+
+def recheck_ledger(ctx: JobContext, check: SelfSimilarity) -> None:
+    """Meet the repeat ledger again when a job is resumed; raises the same NS-E605 the text gate raises.
+
+    `run_stage` skips `policy_text` on a resume (its inputs are unchanged), but the ledger is not one of its
+    inputs: another job with the same story may have finished since. Without this, job A (failed at voice)
+    and job B (same script, finished meanwhile) would both end as a video of one story (D-25 review). Needs no
+    embed service: it compares the embedding the job stored with its story row. A job with no stored
+    embedding, or a fake LLM when `check` skips for one, has nothing to compare.
+    """
+    if check.skip_when_fake and isinstance(ctx.services.llm, FakeLlm):
+        return
+    own = ctx.db.query(
+        "select embedding from stories where job_id=? and embedding is not null", (ctx.job_id,)
+    )
+    if not own:
+        return
+    check._match = ""
+    res = check.compare(ctx, from_blob(own[0]["embedding"]))
+    if res.passed or not check.code:
+        return
+    hint = check.hint(ctx)
+    extra = {"hint": hint} if hint else {}
+    raise NsError(check.code, f"{check.name}: {res.detail}", check=check.name, **extra)
 
 
 class MetadataSpam(Check):

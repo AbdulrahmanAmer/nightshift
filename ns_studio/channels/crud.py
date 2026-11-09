@@ -13,7 +13,8 @@ from pydantic import ValidationError
 from ns_common.atomic import read_text_retry
 from ns_common.config import list_channels, load_channel, save_channel
 from ns_common.db import Db
-from ns_common.models import Channel, Pools
+from ns_common.logging import NsLogger
+from ns_common.models import Channel, Pools, voice_name_problem
 from ns_common.paths import Paths
 from ns_studio.errors import StudioError
 
@@ -146,15 +147,45 @@ def validate_channel(ch: Channel, others: list[Channel]) -> tuple[list[str], lis
     return pool_problems(ch.pools) + distinct_problems(ch, others), pool_warnings(ch.pools)
 
 
-def all_channels(paths: Paths) -> list[Channel]:
-    """Load every channel profile found in the channels directory, sorted by slug."""
-    out: list[Channel] = []
+# One WARN per broken profile per process: a night calls all_channels many times.
+_WARNED: set[tuple[str, str, str]] = set()
+
+
+def _load_each(paths: Paths) -> tuple[list[Channel], list[tuple[str, str]]]:
+    """Every channel profile that loads, and `(slug, problem)` for each one that does not."""
+    good: list[Channel] = []
+    bad: list[tuple[str, str]] = []
     for slug in list_channels(paths):
         try:
-            out.append(load_channel(paths, slug))
-        except (ValidationError, ValueError, OSError) as e:
-            raise StudioError("NS-E320", f"{slug}.yaml: {e}") from e
-    return out
+            good.append(load_channel(paths, slug))
+        except (ValidationError, ValueError, OSError, yaml.YAMLError) as e:
+            bad.append((slug, f"{slug}.yaml: {e}"))
+    return good, bad
+
+
+def broken_channels(paths: Paths) -> list[tuple[str, str]]:
+    """`(slug, problem)` for every channel profile that cannot be loaded (what `all_channels` skips)."""
+    return _load_each(paths)[1]
+
+
+def all_channels(paths: Paths) -> list[Channel]:
+    """Load every channel profile found in the channels directory, sorted by slug.
+
+    One unreadable profile never stops the others (the nightly runs for every channel that loads): it is
+    skipped with a WARN in the studio log, and `broken_channels` names it. When no profile loads at all, the
+    first problem is raised as NS-E320 so the owner is told why instead of "no active channel".
+    """
+    good, bad = _load_each(paths)
+    if bad and not good:
+        raise StudioError("NS-E320", bad[0][1])
+    fresh = [(slug, problem) for slug, problem in bad if (str(paths.home), slug, problem) not in _WARNED]
+    if fresh:
+        log = NsLogger("studio", paths.logs, echo=False)
+        for slug, problem in fresh:
+            _WARNED.add((str(paths.home), slug, problem))
+            msg = f"{problem} (skipped; the other channels still run)"
+            log.warn("channel_profile_skipped", msg, slug=slug)
+    return good
 
 
 def get_channel(paths: Paths, slug: str) -> Channel:
@@ -163,7 +194,7 @@ def get_channel(paths: Paths, slug: str) -> Channel:
         raise StudioError("NS-E322", slug)
     try:
         return load_channel(paths, slug)
-    except (ValidationError, ValueError) as e:
+    except (ValidationError, ValueError, yaml.YAMLError) as e:
         raise StudioError("NS-E320", f"{slug}.yaml: {e}") from e
 
 
@@ -184,6 +215,7 @@ def add_channel(paths: Paths, db: Db, ch: Channel, *, now: datetime | None = Non
     if len(others) >= MAX_CHANNELS:
         raise StudioError("NS-E320", f"at most {MAX_CHANNELS} channels per install")
     problems = pool_problems(ch.pools)
+    problems += [p for p in [voice_name_problem(ch.voice)] if p]
     if problems:
         raise StudioError("NS-E320", "; ".join(problems))
     clash = distinct_problems(ch, others)
@@ -223,6 +255,8 @@ def edit_channel(paths: Paths, db: Db, slug: str, updates: dict[str, Any]) -> Ch
     problems = pool_problems(edited.pools) + distinct_problems(
         edited, [c for c in all_channels(paths) if c.slug != slug]
     )
+    # only a name this edit typed, or one a voice that was a preset now starts to use
+    problems += [p for p in [voice_name_problem(edited.voice, current.voice)] if p]
     if problems:
         raise StudioError("NS-E320", "; ".join(problems))
     save_channel(paths, edited)

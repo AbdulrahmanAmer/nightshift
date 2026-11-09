@@ -8,7 +8,7 @@ import yaml
 from pydantic import ValidationError
 
 from ns_common.config import list_channels, load_channel, save_channel
-from ns_common.models import Channel
+from ns_common.models import Channel, Voice
 from ns_dashboard.channel_stats import channel_stats
 from ns_dashboard.channels import validate_profile
 from ns_dashboard.common import now_iso, require_slug
@@ -91,7 +91,7 @@ class ChannelsService:
     def get(self, slug: str) -> dict[str, Any]:
         """Profile plus warnings."""
         ch = self.load(slug)
-        check = validate_profile(ch.model_dump(mode="json"), self.load_all())
+        check = validate_profile(ch.model_dump(mode="json"), self.load_all(), ch.voice)
         return {"profile": ch.model_dump(mode="json"), **_flat_warnings(check["warnings"])}
 
     # --- writing ---
@@ -102,9 +102,11 @@ class ChannelsService:
             (ch.slug, ch.display_name, ch.created_at or now_iso(), ch.status),
         )
 
-    def _checked(self, body: dict[str, Any], slug: str | None = None) -> tuple[Channel, list[dict[str, str]]]:
+    def _checked(
+        self, body: dict[str, Any], slug: str | None = None, before: Voice | None = None
+    ) -> tuple[Channel, list[dict[str, str]]]:
         others = [c for c in self.load_all() if c.slug != (slug or body.get("slug"))]
-        check = validate_profile(body, others)
+        check = validate_profile(body, others, before)
         if not check["ok"]:
             raise ApiError(
                 422, "invalid_profile", "Some channel settings need fixing.", details=check["errors"]
@@ -113,24 +115,32 @@ class ChannelsService:
 
     def create(self, body: dict[str, Any]) -> dict[str, Any]:
         """New channel; 409 when the slug is taken."""
-        slug = str(body.get("slug", ""))
-        if slug and self.exists(slug):
-            raise ApiError(409, "channel_exists", f"A channel called '{slug}' already exists.")
-        ch, warnings = self._checked(body)
+        ch, warnings = self.check_create(body)
         ch = ch.model_copy(update={"created_at": ch.created_at or now_iso()})
         save_channel(self.s.paths, ch)
         self._mirror(ch)
         self.s.log.info("channel_created", slug=ch.slug)
         return {"profile": ch.model_dump(mode="json"), **_flat_warnings(warnings)}
 
-    def update(self, slug: str, body: dict[str, Any]) -> dict[str, Any]:
-        """Replace a profile; the slug cannot change."""
+    def check_create(self, body: dict[str, Any]) -> tuple[Channel, list[dict[str, str]]]:
+        """The channel `create` would save, or the ApiError it would raise (nothing is written)."""
+        slug = str(body.get("slug", ""))
+        if slug and self.exists(slug):
+            raise ApiError(409, "channel_exists", f"A channel called '{slug}' already exists.")
+        return self._checked(body)
+
+    def check_update(self, slug: str, body: dict[str, Any]) -> tuple[Channel, list[dict[str, str]]]:
+        """The channel `update` would save, or the ApiError it would raise (nothing is written)."""
         old = self.load(slug)
         if body.get("slug", slug) != slug:
             raise ApiError(422, "invalid_profile", "The channel id cannot be changed.",
                            details=[{"field": "slug", "message": "The channel id cannot be changed."}])
         draft = {**body, "slug": slug, "created_at": body.get("created_at") or old.created_at}
-        ch, warnings = self._checked(draft, slug)
+        return self._checked(draft, slug, old.voice)
+
+    def update(self, slug: str, body: dict[str, Any]) -> dict[str, Any]:
+        """Replace a profile; the slug cannot change."""
+        ch, warnings = self.check_update(slug, body)
         save_channel(self.s.paths, ch)
         self._mirror(ch)
         self.s.log.info("channel_updated", slug=slug)
@@ -159,10 +169,11 @@ class ChannelsService:
     def validate(self, slug: str, draft: dict[str, Any] | None) -> dict[str, Any]:
         """`{ok, errors, warnings}` for a draft, or for the saved profile when no draft is sent."""
         require_slug(slug)
-        raw = draft if draft else self.load(slug).model_dump(mode="json")
+        saved = self.load(slug) if (not draft or self.exists(slug)) else None  # a draft may be a new channel
+        raw = draft or (saved.model_dump(mode="json") if saved else {})
         raw = {**raw, "slug": raw.get("slug") or slug}
         others = [c for c in self.load_all() if c.slug != raw["slug"]]
-        check = validate_profile(raw, others)
+        check = validate_profile(raw, others, saved.voice if saved else None)
         return {
             "ok": check["ok"],
             "errors": [e["message"] for e in check["errors"]],

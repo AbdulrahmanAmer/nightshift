@@ -330,7 +330,7 @@ def test_retries_and_the_backoff_are_capped(tmp_path: Path, monkeypatch):
     def handler(request: httpx.Request) -> httpx.Response:
         if request.method == "HEAD":
             return httpx.Response(200, headers={"content-length": "5"})
-        return httpx.Response(500)
+        raise httpx.ConnectError("connection reset", request=request)
 
     client = httpx.Client(transport=httpx.MockTransport(handler))
     sleeps: list[float] = []

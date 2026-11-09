@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -12,6 +13,12 @@ SLUG_RE = r"^[a-z0-9]+(?:-[a-z0-9]+)*$"
 JOB_ID_RE = r"^[a-z0-9]+(?:-[a-z0-9]+)*-\d{8}-[0-9a-f]{4}$"
 
 
+# The one rule for the name of a designed or cloned voice (it is the folder name in the voice library).
+# Setup, the dashboard, `studio voice` and the TTS service all check against this; none keeps its own copy.
+VOICE_NAME_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_-]{0,39}$"
+VOICE_NAME_RULE = "voice names are 1 to 40 letters, digits, - or _, starting with a letter or digit"
+
+
 class Strict(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -21,8 +28,25 @@ class Voice(Strict):
     mode: Literal["preset", "design", "clone"] = "preset"
     speaker: str | None = "Ryan"
     description: str | None = None
-    name: str | None = None          # library name for design/clone voices
+    # Library name for design/clone voices. No pattern here: profiles written by 0.1.0 to 0.1.14 hold
+    # names the rule above refuses (over 40 characters, a space) and must keep loading. The rule is
+    # applied where a name is typed or created (setup answers, channel add/edit, the voice service).
+    name: str | None = None
     speed: float = Field(default=1.0, ge=0.7, le=1.3)
+
+
+def voice_name_problem(voice: Voice, before: Voice | None = None) -> str | None:
+    """Why the voice name of a profile being saved now is refused, else None.
+
+    A preset voice never uses the name, so a leftover one is not checked. `before` is the voice as stored:
+    a design or clone name unchanged from it is kept as it is (0.1.x profiles hold names the rule refuses
+    and must stay editable); a name is checked when it is new, or when the voice stops being a preset.
+    """
+    if voice.mode == "preset" or voice.name is None or re.fullmatch(VOICE_NAME_PATTERN, voice.name):
+        return None
+    if before is not None and before.mode != "preset" and before.name == voice.name:
+        return None
+    return f"the voice name {voice.name!r} cannot be used: {VOICE_NAME_RULE}"
 
 
 # Per-channel caption options (spec 17.2). A comment, not a docstring: pydantic would put it in the schema.

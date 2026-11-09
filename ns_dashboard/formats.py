@@ -122,6 +122,13 @@ def merge_dicts(base: dict[str, Any], changes: dict[str, Any]) -> dict[str, Any]
 
 def create_format(paths: Paths, body: dict[str, Any]) -> dict[str, Any]:
     """New format from `definition`, or a copy of `duplicate_of` (optionally with `changes`)."""
+    new_id, definition = check_create_format(paths, body)
+    _write(paths, new_id, definition)
+    return next(f for f in list_formats(paths) if f["id"] == new_id)
+
+
+def check_create_format(paths: Paths, body: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    """The id and definition `create_format` would write, or the ApiError it would raise (writes nothing)."""
     existing = {f["id"]: f for f in list_formats(paths)}
     source_id = body.get("duplicate_of")
     if source_id:
@@ -149,12 +156,18 @@ def create_format(paths: Paths, body: dict[str, Any]) -> dict[str, Any]:
     problems = validate_format(definition)
     if problems:
         raise ApiError(422, "invalid_format", "That format is not valid.", details=problems)
-    _write(paths, new_id, definition)
-    return next(f for f in list_formats(paths) if f["id"] == new_id)
+    return new_id, definition
 
 
 def update_format(paths: Paths, fid: str, body: dict[str, Any]) -> dict[str, Any]:
     """Replace (`definition`) or patch (`changes`) a format; editing a shipped one writes a user override."""
+    definition = check_update_format(paths, fid, body)
+    _write(paths, fid, definition)
+    return next(f for f in list_formats(paths) if f["id"] == fid)
+
+
+def check_update_format(paths: Paths, fid: str, body: dict[str, Any]) -> dict[str, Any]:
+    """The definition `update_format` would write, or the ApiError it would raise (nothing is written)."""
     existing = {f["id"]: f for f in list_formats(paths)}
     if fid not in existing:
         raise ApiError(404, "not_found", f"There is no format called '{fid}'.")
@@ -168,5 +181,4 @@ def update_format(paths: Paths, fid: str, body: dict[str, Any]) -> dict[str, Any
     problems = validate_format(definition)
     if problems:
         raise ApiError(422, "invalid_format", "That format is not valid.", details=problems)
-    _write(paths, fid, definition)
-    return next(f for f in list_formats(paths) if f["id"] == fid)
+    return definition

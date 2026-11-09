@@ -1,5 +1,6 @@
 # ruff: noqa: E501
-"""The offline Assistant evaluation: the partner's 20 questions on the scripted fake model, in ordinary pytest.
+"""The offline Assistant evaluation: the partner's 20 questions and the two ways to ask for a video (a story the
+model writes, a script the owner gives), on the scripted fake model, in ordinary pytest.
 
 For every case: topics and tools offered (router), what `search_docs` may serve (retrieval scope), the token
 budget of every request, and the confirm gate. See `ns_dashboard/assistant/eval.py` and
@@ -24,16 +25,23 @@ def home(tmp_home: Path) -> fixture_home.FixtureHome:
     return fixture_home.build(tmp_home)
 
 
-def test_the_cases_file_holds_the_twenty_questions(home: fixture_home.FixtureHome):
+def test_the_cases_file_holds_the_questions_and_both_video_phrasings(home: fixture_home.FixtureHome):
     cases = load_cases(CASES, home.ids, fixture_home.SECRET)
-    assert [c.id for c in cases] == list(range(1, 21))
+    assert [c.id for c in cases] == list(range(1, 23))
+    # D-27: a story request and a script request, each with the tool it must reach and the tool it must not
+    story = next(c for c in cases if c.id == 21)
+    script = next(c for c in cases if c.id == 22)
+    assert story.confirm == ["start_story_job"] and story.forbidden == ["start_script_job"]
+    assert script.confirm == ["start_script_job"] and script.forbidden == ["start_story_job"]
+    assert "script" in script.question.lower() and "script" not in story.question.lower()
+    assert story.refusals and script.refusals  # both phrasings first make the bad call the check must refuse
     assert all(c.gold and c.topics for c in cases)
     assert fixture_home.SECRET in next(c for c in cases if c.id == 3).question
     assert next(c for c in cases if c.id == 5).context["output_id"] == home.ids["review_id"]
 
 
 @pytest.mark.parametrize("ctx", [16384, 32768])
-def test_all_twenty_cases_pass_offline(home: fixture_home.FixtureHome, ctx: int):
+def test_all_cases_pass_offline(home: fixture_home.FixtureHome, ctx: int):
     results = [run_case(home.dash, c, ctx_tokens=ctx) for c in load_cases(CASES, home.ids, fixture_home.SECRET)]
     failed = [r for r in results if not r.ok]
     assert not failed, "\n" + render_markdown(results)
@@ -73,3 +81,17 @@ def test_budget_numbers_are_printed_for_the_record(home: fixture_home.FixtureHom
     assert worst["system"] <= plan.system, worst
     assert worst["tools"] <= plan.tools, worst
     assert worst["context_block"] <= plan.context_block, worst
+
+
+@pytest.mark.parametrize("case_id", [21, 22])
+def test_the_video_cases_fail_when_the_check_before_the_card_is_missing(home: fixture_home.FixtureHome, case_id: int):
+    """D-27: the two phrasings carry a bad first call. With the dry run switched off it gets a card, so the case fails."""
+    case = next(c for c in load_cases(CASES, home.ids, fixture_home.SECRET) if c.id == case_id)
+    assert run_case(home.dash, case).ok
+    tool = "start_story_job" if case_id == 21 else "start_script_job"
+    td = home.dash.registry.get(tool)
+    assert td is not None and td.dry_run is not None
+    object.__setattr__(td, "dry_run", None)
+    result = run_case(home.dash, case)
+    assert not result.ok
+    assert any("gate:" in f for f in result.failures), result.failures

@@ -891,6 +891,8 @@ function Find-Uv {
 function Install-Uv {
     param($Manifest)
     $pin = $Manifest.bins.uv
+    # Get-Prop, not $pin.version: under StrictMode a manifest pin without a version would throw here.
+    $pinVersion = [string](Get-Prop $pin 'version' '')
     $dir = Join-Str (Get-DataDir) 'bootstrap\uv'
     if ($script:IsDry) {
         Show-Action "download $($pin.url) (sha256 $($pin.sha256)) and extract to $dir"
@@ -918,13 +920,25 @@ function Install-Uv {
         $haveWinget = Test-Tool 'winget.exe'
         if ($haveWinget) {
             try {
-                $null = & winget.exe install --id astral-sh.uv -e --silent --accept-package-agreements --accept-source-agreements
+                # The pin's version, not winget's latest: stage 2 refuses any other uv (D-19).
+                $wingetArgs = @('install', '--id', 'astral-sh.uv', '-e', '--silent', '--accept-package-agreements', '--accept-source-agreements')
+                if ($pinVersion) { $wingetArgs += @('--version', $pinVersion) }
+                $null = & winget.exe @wingetArgs
             }
             catch {
                 Write-Verbose "winget failed: $($_.Exception.Message)"
             }
             Update-SessionPath
-            $c = Get-Command 'uv.exe' -ErrorAction SilentlyContinue
+            # An older uv earlier on PATH must not hide the pinned one winget just installed.
+            $candidates = @(Get-Command 'uv.exe' -All -ErrorAction SilentlyContinue)
+            if ($candidates.Count -gt 0) {
+                $c = $candidates[0]
+                if ($pinVersion) {
+                    foreach ($candidate in $candidates) {
+                        if ((Get-UvVersion -Uv $candidate.Source) -eq $pinVersion) { $c = $candidate; break }
+                    }
+                }
+            }
         }
         if ($null -eq $c) {
             Set-Status -Index 1 -Tag 'fail' -Text 'could not be downloaded or installed'
@@ -932,6 +946,15 @@ function Install-Uv {
                 Stop-Setup -Code 'NS-E110' -Detail "uv could not be installed (direct download: $downloadError; winget failed too)." -ExitCode 13
             }
             Stop-Setup -Code 'NS-E105' -Detail "uv could not be downloaded ($downloadError) and winget is not available." -ExitCode 13
+        }
+        # Stage 2 accepts only the pinned uv, so a uv of another version (winget's latest, an older one on
+        # PATH) is refused here, before Python and the VC++ prompt, not late in the "Home" step.
+        if ($pinVersion) {
+            $foundVersion = Get-UvVersion -Uv $c.Source
+            if ($foundVersion -ne $pinVersion) {
+                Set-Status -Index 1 -Tag 'fail' -Text ('{0} found, {1} needed' -f $foundVersion, $pinVersion)
+                Stop-Setup -Code 'NS-E105' -Detail "uv $pinVersion could not be downloaded ($downloadError) and the uv at $($c.Source) is version $foundVersion. Run INSTALL.cmd again when $($pin.url) is reachable." -ExitCode 13
+            }
         }
         return $c.Source
     }
@@ -1286,7 +1309,7 @@ if ($null -ne $uv) {
     else { Write-Host "  uv : already present, skipped ($uv)" }
 }
 else {
-    if ($showSplash) { Set-Status -Index 1 -Tag 'working' -Text ('{0}, downloading' -f $Manifest.bins.uv.version) }
+    if ($showSplash) { Set-Status -Index 1 -Tag 'working' -Text ('{0}, downloading' -f (Get-Prop $Manifest.bins.uv 'version' 'the pinned uv')) }
     $uv = Install-Uv -Manifest $Manifest
     if ($showSplash -and -not $script:IsDry) { Set-Status -Index 1 -Tag 'ok' -Text ('{0}, downloaded' -f (Get-UvVersion -Uv $uv)) }
 }

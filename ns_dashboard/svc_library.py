@@ -30,6 +30,7 @@ STATUS_ALIASES = {"dropped": "rejected"}  # the UI says "Dropped"; the shared sc
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from ns_common.models import Channel
     from ns_common.paths import Paths
     from ns_studio.media.clip_sources import ClipCandidate, ClipSource, Orientation
 
@@ -161,8 +162,12 @@ class LibraryService:
         )
         return [_idea(r) for r in rows]
 
-    def add_idea(self, body: dict[str, Any]) -> dict[str, Any]:
-        """Add an idea typed by the owner (or the Assistant) for a channel."""
+    def check_idea(self, body: dict[str, Any]) -> None:
+        """Refuse `add_idea` for what is wrong with the idea without saving it (the Assistant's card gate)."""
+        self._idea_fields(body)
+
+    def _idea_fields(self, body: dict[str, Any]) -> tuple[Channel, str, str, str]:
+        """The channel, premise, status and source of a new idea; ApiError for anything `add_idea` would refuse."""
         slug = str(body.get("channel") or "")
         ch = self.channels.load(slug)
         premise = str(body.get("premise") or "").strip()
@@ -174,6 +179,12 @@ class LibraryService:
         source = str(body.get("source") or "owner")
         if source not in IDEA_SOURCES:
             raise ApiError(422, "invalid_idea", f"'source' must be one of {', '.join(IDEA_SOURCES)}.")
+        return ch, premise, status, source
+
+    def add_idea(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Add an idea typed by the owner (or the Assistant) for a channel."""
+        ch, premise, status, source = self._idea_fields(body)
+        slug = ch.slug
         title = str(body.get("title") or "").strip()[:100] or premise[:60]
         now = now_iso()
         with self.s.db.tx() as db:
@@ -198,12 +209,17 @@ class LibraryService:
             raise ApiError(404, "not_found", "That idea was not found.")
         return _idea(row)
 
-    def set_idea_status(self, idea_id: int, status: str | None) -> dict[str, Any]:
-        """new | approved | used | rejected (`dropped` is accepted); approved ideas are drawn first."""
+    def check_idea_status(self, idea_id: int, status: str | None) -> str:
+        """The status `set_idea_status` would store, or the ApiError it would raise (nothing is changed)."""
         status = STATUS_ALIASES.get(status or "", status)
         if status not in IDEA_STATUSES:
             raise ApiError(422, "invalid_idea", f"Status must be one of {', '.join(IDEA_STATUSES)}.")
         self.get_idea(idea_id)
+        return str(status)
+
+    def set_idea_status(self, idea_id: int, status: str | None) -> dict[str, Any]:
+        """new | approved | used | rejected (`dropped` is accepted); approved ideas are drawn first."""
+        status = self.check_idea_status(idea_id, status)
         self.s.db.execute(
             "UPDATE ideas SET status = ?, used = ? WHERE idea_id = ?", (status, 1 if status == "used" else 0, idea_id)
         )
@@ -280,17 +296,13 @@ class LibraryService:
             )
         return out
 
-    def fetch_footage(
-        self, q: str | None, orientation: str | None = "landscape", count: Any = 1, source: str | None = "auto"
-    ) -> dict[str, Any]:
-        """Download up to `count` (1 to 5) stock clips for `q` into the footage cache and say where they are.
+    def check_footage(self, q: str | None, orientation: str | None, count: Any, source: str | None) -> None:
+        """Refuse `fetch_footage` for what is wrong with it (words, shape, source, missing key) before any download."""
+        self._footage_access(self._footage_request(q, orientation, count, source)[3])
 
-        A network download, not GPU work: no lease, no studio job. The files and `clips` rows are the ones the
-        studio's `ClipCache` writes, so later jobs reuse them and Library > Footage lists them. Clips that are
-        already cached are not downloaded again (they only fill the answer when fewer new ones were found).
-        """
-        from ns_studio.media.clips import ClipCache, Searcher, normalize_keyword
-
+    @staticmethod
+    def _footage_request(q: str | None, orientation: str | None, count: Any, source: str | None) -> tuple[str, str, int, str]:
+        """The cleaned search words, orientation, clip count and source of a footage request; ApiError if invalid."""
         query = str(q or "").strip()
         if not query or len(query) > 100:
             raise ApiError(422, "invalid_options", "Give a search word or phrase for the footage (up to 100 characters).")
@@ -306,6 +318,10 @@ class LibraryService:
             raise ApiError(422, "invalid_options", "count must be a whole number from 1 to 5.") from None
         want = max(1, min(want, FOOTAGE_MAX))
 
+        return query, orient, want, which
+
+    def _footage_access(self, which: str) -> tuple[dict[str, str], list[ClipSource]]:
+        """The usable keys and the fake source (dev installs) for `which`; ApiError when nothing can be searched."""
         keys = self._footage_keys()
         order = ("pixabay", "pexels") if which == "auto" else (which,)
         usable = {name: keys[name] for name in order if keys.get(name)}
@@ -325,6 +341,21 @@ class LibraryService:
                                hint="Keys are entered by the owner in Settings, not in chat.")
             raise ApiError(409, "NS-E502", NO_FOOTAGE_KEY,
                            hint="Keys are entered by the owner in Settings, not in chat. A Pexels key works too.")
+        return usable, sources
+
+    def fetch_footage(
+        self, q: str | None, orientation: str | None = "landscape", count: Any = 1, source: str | None = "auto"
+    ) -> dict[str, Any]:
+        """Download up to `count` (1 to 5) stock clips for `q` into the footage cache and say where they are.
+
+        A network download, not GPU work: no lease, no studio job. The files and `clips` rows are the ones the
+        studio's `ClipCache` writes, so later jobs reuse them and Library > Footage lists them. Clips that are
+        already cached are not downloaded again (they only fill the answer when fewer new ones were found).
+        """
+        from ns_studio.media.clips import ClipCache, Searcher, normalize_keyword
+
+        query, orient, want, which = self._footage_request(q, orientation, count, source)
+        usable, sources = self._footage_access(which)
         if not sources:
             sources = (self.footage_sources or _real_footage_sources)(usable, self.s.paths)
 
@@ -418,6 +449,13 @@ class LibraryService:
     def create_format(self, body: dict[str, Any]) -> dict[str, Any]:
         """New format or a duplicate of an existing one."""
         return formats.create_format(self.s.paths, body)
+
+    def check_format(self, fid: str | None, body: dict[str, Any]) -> None:
+        """Refuse `create_format` (no `fid`) or `update_format` for what is wrong with it, writing nothing."""
+        if fid is None:
+            formats.check_create_format(self.s.paths, body)
+        else:
+            formats.check_update_format(self.s.paths, fid, body)
 
     def update_format(self, fid: str, body: dict[str, Any]) -> dict[str, Any]:
         """Replace or patch a format."""

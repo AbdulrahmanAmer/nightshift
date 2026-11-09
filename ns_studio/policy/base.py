@@ -42,6 +42,13 @@ class Check(ABC):
     def run(self, ctx: JobContext) -> PolicyCheck:
         """Evaluate the check against the job directory and services in `ctx`."""
 
+    def hint(self, ctx: JobContext) -> str | None:
+        """A hint for this job that replaces the generic one of the code, or None to keep it.
+
+        Called by `run_gate` right after `run` failed, on the same instance.
+        """
+        return None
+
 
 def ok(detail: str = "") -> PolicyCheck:
     """A passing result."""

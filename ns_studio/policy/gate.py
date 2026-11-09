@@ -11,7 +11,7 @@ from ns_studio.orchestrator import FORMAT_STAGES
 from ns_studio.policy import judge
 from ns_studio.policy.base import Check, Gate
 from ns_studio.policy.final_checks import compute_advice, final_checks
-from ns_studio.policy.text_checks import text_checks
+from ns_studio.policy.text_checks import SelfSimilarity, recheck_ledger, text_checks
 from ns_studio.stages import Tenant, register
 
 TEXT_STAGE = "policy_text"
@@ -49,7 +49,9 @@ def run_gate(ctx: JobContext, gate: Gate, checks: Sequence[Check]) -> PolicyResu
     for chk in checks:
         res = results[chk.name]
         if not res.passed and chk.code:
-            raise NsError(chk.code, f"{chk.name}: {res.detail}", check=chk.name)
+            hint = chk.hint(ctx)
+            extra = {"hint": hint} if hint else {}
+            raise NsError(chk.code, f"{chk.name}: {res.detail}", check=chk.name, **extra)
     return result
 
 
@@ -77,6 +79,12 @@ class PolicyTextStage:
         """Evaluate the text checks."""
         run_gate(ctx, "text", self.checks)
 
+    def recheck_on_skip(self, ctx: JobContext) -> None:
+        """Called by `run_stage` when a resume skips this stage: a video of the same story may exist now."""
+        for chk in self.checks:
+            if isinstance(chk, SelfSimilarity):
+                recheck_ledger(ctx, chk)
+
 
 class PolicyFinalStage:
     """Final gate: runs after QC, before the outbox is written."""
@@ -91,7 +99,12 @@ class PolicyFinalStage:
 
     def run(self, ctx: JobContext) -> None:
         """Evaluate the final checks and write the disclosure advice."""
+        recheck_ledger(ctx, SelfSimilarity())  # last stop before the outbox: this story may be finished now
         run_gate(ctx, "final", self.checks)
+
+    def recheck_on_skip(self, ctx: JobContext) -> None:
+        """Called by `run_stage` when a resume skips this stage: the ledger is not one of its inputs."""
+        recheck_ledger(ctx, SelfSimilarity())
 
 
 def available() -> bool:

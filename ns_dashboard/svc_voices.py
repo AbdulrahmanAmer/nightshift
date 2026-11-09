@@ -16,12 +16,12 @@ from pathlib import Path
 from typing import Any
 
 from ns_common.errors import NsError, describe
-from ns_common.models import VoiceMakeResponse
+from ns_common.models import VOICE_NAME_PATTERN, VoiceMakeResponse
 from ns_dashboard.adapters import MadeVoice
 from ns_dashboard.errors import ApiError
 from ns_dashboard.state import AppState
 
-NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,39}$")
+NAME_RE = re.compile(VOICE_NAME_PATTERN)
 MAX_DESCRIPTION = 500
 MAX_TEST_LINE = 300
 
@@ -54,7 +54,7 @@ class VoicesService:
         from ns_tts.voices import PRESETS
 
         name = str(body.get("name") or "").strip()
-        if not NAME_RE.match(name):
+        if not NAME_RE.fullmatch(name):
             raise ApiError(
                 422,
                 "invalid_voice",
@@ -102,17 +102,31 @@ class VoicesService:
         self.s.log.info("voice_setup_queued", voice=pending["name"], job_id=rec.job_id)
         return {"created": None, "pending": pending, "job_id": rec.job_id}
 
-    def design(self, body: dict[str, Any]) -> dict[str, Any]:
-        """New voice from a plain-English description (VoiceDesign), previewed with `test_line`."""
+    def check_design(self, body: dict[str, Any]) -> None:
+        """Refuse `design` for what is wrong with the request, making no voice (the Assistant's card gate)."""
+        self._design_fields(body)
+
+    def _design_fields(self, body: dict[str, Any]) -> tuple[str, str, str]:
         self._accepting()
         name = self._new_name(body)
         description = _text(body, "description", "The description", MAX_DESCRIPTION)
         test_line = _text(body, "test_line", "The test line", MAX_TEST_LINE)
+        return name, description, test_line
+
+    def design(self, body: dict[str, Any]) -> dict[str, Any]:
+        """New voice from a plain-English description (VoiceDesign), previewed with `test_line`."""
+        name, description, test_line = self._design_fields(body)
         made = self.s.adapters.voice_maker.design(name, description, test_line)
         return self._answer("design", made)
 
-    def clone(self, body: dict[str, Any]) -> dict[str, Any]:
-        """New voice cloned from a recording on this PC; needs `consent: true`."""
+    def check_clone(self, body: dict[str, Any]) -> None:
+        """Refuse `clone` for what is wrong with the request, making no voice (the Assistant's card gate).
+
+        The recording is only looked for, not analysed: its length and noise are judged when it is used.
+        """
+        self._clone_fields(body)
+
+    def _clone_fields(self, body: dict[str, Any]) -> tuple[str, str, Path]:
         self._accepting()
         if body.get("consent") is not True:
             d = describe("NS-E313")
@@ -125,6 +139,11 @@ class VoicesService:
             raise ApiError(400, "no_sample", "Choose a recording of the voice.")
         if not sample.is_file():
             raise ApiError(400, "bad_path", f"'{raw}' is not a recording on this PC.")
+        return name, test_line, sample
+
+    def clone(self, body: dict[str, Any]) -> dict[str, Any]:
+        """New voice cloned from a recording on this PC; needs `consent: true`."""
+        name, test_line, sample = self._clone_fields(body)
         from ns_tts.sample import prepare_sample
 
         with tempfile.TemporaryDirectory(prefix="ns-voice-") as td:

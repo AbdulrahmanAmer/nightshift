@@ -13,6 +13,7 @@ from collections.abc import Callable, Collection, Iterator
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 import yaml
@@ -347,9 +348,7 @@ class Workshop:
         Every draft goes through the policy text gate before anything is written; the first rejection
         raises (NS-E601/E602/E603) and leaves the folder untouched.
         """
-        if not 1 <= n <= 6:
-            raise WorkshopError("n must be between 1 and 6")
-        sd, _status, ch = self._open(slug)
+        sd, _status, ch = self._pre_concepts(slug, n)
         start = sd.read_concept()
         old = [sd.read_concept(sd.draft(x)).title for x in sd.draft_letters()]
         with self._llm(slug):
@@ -370,13 +369,7 @@ class Workshop:
 
     def regenerate(self, slug: str, letter: str, feedback: str) -> str:
         """Rewrite one draft with the owner's notes; other drafts stay. Returns the letter."""
-        letter = letter.strip().upper()
-        if not feedback.strip():
-            raise WorkshopError("feedback is empty; say what should change")
-        sd, _status, ch = self._open(slug)
-        path = sd.draft(letter)
-        if not path.exists():
-            raise WorkshopError(f"story {slug!r} has no draft {letter}; drafts: {sd.draft_letters()}")
+        letter, sd, ch, path = self._pre_regenerate(slug, letter, feedback)
         cur = sd.read_concept(path)
         with self._llm(slug):
             ctx = self._ctx(ch, slug, "regenerate")
@@ -395,11 +388,7 @@ class Workshop:
 
     def choose(self, slug: str, letter: str) -> str:
         """Promote draft `letter` to `concept.md` (gated again: the owner may have edited it)."""
-        letter = letter.strip().upper()
-        sd, status, ch = self._open(slug)
-        path = sd.draft(letter)
-        if not path.exists():
-            raise WorkshopError(f"story {slug!r} has no draft {letter}; drafts: {sd.draft_letters()}")
+        letter, sd, status, ch, path = self._pre_choose(slug, letter)
         doc = sd.read_concept(path)
         with self._llm(slug):
             text_gate(self._ctx(ch, slug, "choose"), concept_text(doc), what=f"concept {letter}",
@@ -418,18 +407,7 @@ class Workshop:
         that the arc pays off; open problems are listed in `warnings`. Raises WorkshopError when the
         numbers are out of range or parts were already written.
         """
-        if not MIN_MINUTES <= minutes_per_part <= MAX_MINUTES:
-            raise WorkshopError(
-                f"minutes_per_part must be {MIN_MINUTES}-{MAX_MINUTES}, got {minutes_per_part}"
-            )
-        if not 1 <= parts <= MAX_PARTS:
-            raise WorkshopError(f"parts must be 1-{MAX_PARTS}, got {parts}")
-        sd, status, ch = self._open(slug)
-        concept = sd.read_concept()
-        if not concept.premise.strip() or concept.title == "Untitled":
-            raise WorkshopError("choose a concept first (Library > Series, or ask the Assistant to pick one)")
-        if any(p.status != "planned" for p in status.parts.values()):
-            raise WorkshopError("parts are already written; edit series.md by hand instead of re-mapping")
+        sd, status, ch, concept = self._pre_map(slug, parts, minutes_per_part)
         with self._llm(slug):
             ctx = self._ctx(ch, slug, "map")
             out = call_json(ctx, "workshop_map", concept=concept.model_dump(), parts=parts,
@@ -549,11 +527,7 @@ class Workshop:
         on the script (NS-E601/E602/E604), then Shorts selection (M7/M8 pieces). Nothing is written when a
         step fails. Returns a summary dict.
         """
-        sd, status, ch = self._open(slug)
-        series = sd.read_series()
-        entry = series.entry(n)
-        if status.parts.get(n, PartState()).status in ("producing", "produced", "published"):
-            raise WorkshopError(f"part {n} is already in production; it cannot be rewritten")
+        sd, status, ch, series, entry = self._pre_write_part(slug, n)
         concept = sd.read_concept()
         with self._llm(slug):
             ctx = self._ctx(ch, slug, f"part-{n:02d}")
@@ -808,13 +782,7 @@ class Workshop:
         Shorts keep their hooks; their spans follow the sentences that survive verbatim. The part goes back
         to `written` and needs approving again. The notes are appended to `notes.md`.
         """
-        feedback = feedback.strip()
-        if not feedback:
-            raise WorkshopError("feedback is empty; say what should change")
-        sd, status, ch = self._open(slug)
-        if status.parts.get(n, PartState()).status in ("producing", "produced", "published"):
-            raise WorkshopError(f"part {n} is already in production; it cannot be revised")
-        script = sd.read_script(n)
+        feedback, sd, status, ch, script = self._pre_revise_part(slug, n, feedback)
         old_flat = [t for _, _, t in script.sentences()]
         changed: list[int] = []
         with self._llm(slug):
@@ -898,9 +866,7 @@ class Workshop:
         The script goes through the policy gate again (the owner may have edited it) and the Shorts files
         are validated against it. Returns the new `status.yaml` content.
         """
-        sd, status, ch = self._open(slug)
-        series = sd.read_series()
-        nums = self._pick(status, series, which, ("written", "approved"), "approve")
+        sd, status, ch, _series, nums = self._pre_approve(slug, which)
         with self._llm(slug):
             ctx = self._ctx(ch, slug, "approve")
             wpm = PACING_WPM.get(ctx.combo.pacing, 155)
@@ -921,6 +887,12 @@ class Workshop:
         formats when the channel has no such list); styles must exist in the preset files.
         """
         sd, _status, ch = self._open(slug)
+        doc = self._design_doc(sd, ch, fields)
+        sd.write_design(doc)
+        return doc
+
+    def _design_doc(self, sd: StoryDir, ch: Channel, fields: dict[str, Any]) -> DesignDoc:
+        """`fields` merged into the saved design and validated; WorkshopError names what is wrong."""
         data = (sd.read_design() or DesignDoc()).model_dump()
         for key, value in fields.items():
             if value is None:
@@ -945,8 +917,147 @@ class Workshop:
         for key, allowed in options.items():
             if getattr(doc, key) not in allowed:
                 raise WorkshopError(f"{key} {getattr(doc, key)!r} is not allowed; choose from {allowed}")
-        sd.write_design(doc)
         return doc
+
+    # --- what each step refuses before it calls a model or writes a file -------------------------
+    #
+    # Each `_pre_*` is the first half of its step (the step calls it and goes on with what it returns) and
+    # also what `check` runs for the Assistant, so the card the owner sees and the Yes that follows cannot
+    # disagree: there is one copy of every rule. None of them writes.
+
+    def _pre_concepts(self, slug: str, n: int) -> tuple[StoryDir, StatusDoc, Channel]:
+        if not 1 <= n <= 6:
+            raise WorkshopError("n must be between 1 and 6")
+        return self._open(slug)
+
+    @staticmethod
+    def _need_feedback(feedback: str) -> str:
+        feedback = feedback.strip()
+        if not feedback:
+            raise WorkshopError("feedback is empty; say what should change")
+        return feedback
+
+    @staticmethod
+    def _need_draft(sd: StoryDir, slug: str, letter: str) -> Path:
+        path = sd.draft(letter)
+        if not path.exists():
+            raise WorkshopError(f"story {slug!r} has no draft {letter}; drafts: {sd.draft_letters()}")
+        return path
+
+    @staticmethod
+    def _not_in_production(status: StatusDoc, n: int, verb: str) -> None:
+        if status.parts.get(n, PartState()).status in ("producing", "produced", "published"):
+            raise WorkshopError(f"part {n} is already in production; it cannot be {verb}")
+
+    def _pre_regenerate(self, slug: str, letter: str, feedback: str) -> tuple[str, StoryDir, Channel, Path]:
+        letter = letter.strip().upper()
+        self._need_feedback(feedback)
+        sd, _status, ch = self._open(slug)
+        return letter, sd, ch, self._need_draft(sd, slug, letter)
+
+    def _pre_choose(self, slug: str, letter: str) -> tuple[str, StoryDir, StatusDoc, Channel, Path]:
+        letter = letter.strip().upper()
+        sd, status, ch = self._open(slug)
+        return letter, sd, status, ch, self._need_draft(sd, slug, letter)
+
+    def _pre_map(
+        self, slug: str, parts: int, minutes_per_part: int
+    ) -> tuple[StoryDir, StatusDoc, Channel, ConceptDoc]:
+        self._check_map_numbers(parts, minutes_per_part)
+        sd, status, ch = self._open(slug)
+        return sd, status, ch, self._check_map_state(sd, status)
+
+    def _pre_write_part(
+        self, slug: str, n: int
+    ) -> tuple[StoryDir, StatusDoc, Channel, SeriesDoc, PartEntry]:
+        sd, status, ch = self._open(slug)
+        series = sd.read_series()
+        entry = series.entry(n)
+        self._not_in_production(status, n, "rewritten")
+        return sd, status, ch, series, entry
+
+    def _pre_revise_part(
+        self, slug: str, n: int, feedback: str
+    ) -> tuple[str, StoryDir, StatusDoc, Channel, ScriptDoc]:
+        feedback = self._need_feedback(feedback)
+        sd, status, ch = self._open(slug)
+        self._not_in_production(status, n, "revised")
+        return feedback, sd, status, ch, sd.read_script(n)
+
+    def _pre_approve(
+        self, slug: str, which: int | str
+    ) -> tuple[StoryDir, StatusDoc, Channel, SeriesDoc, list[int]]:
+        sd, status, ch = self._open(slug)
+        series = sd.read_series()
+        return sd, status, ch, series, self._pick(status, series, which, ("written", "approved"), "approve")
+
+    def _pre_produce(
+        self, slug: str, which: int | str
+    ) -> tuple[StoryDir, StatusDoc, Channel, SeriesDoc, DesignDoc, list[int]]:
+        sd, status, ch = self._open(slug)
+        series = sd.read_series()
+        design = sd.read_design()
+        if design is None:
+            raise WorkshopError(
+                "no design yet: set the series design first (Library > Series, or ask the Assistant)"
+            )
+        return sd, status, ch, series, design, self._pick(status, series, which, ("approved",), "produce")
+
+    def check(self, tool: str, args: dict[str, Any]) -> None:
+        """Refuse what workshop tool `tool` would refuse before it calls a model or writes a file.
+
+        The Assistant calls this before it shows a confirm card, so the owner is never asked to say Yes to a
+        step that stops at once (WorkshopError): unknown story or channel, a missing draft, a bad part number
+        for the map, a part in the wrong state, a missing design, a design value that is not allowed. Every
+        branch runs the `_pre_*` helper the step itself starts with, and `tests/test_series_workshop_check.py`
+        walks `check` against the real step in each state of a story, so a rule changed in one place cannot
+        leave the other behind. Not checked here: the policy gate on a premise or a concept, which needs the
+        model.
+        """
+        if tool == "workshop_start":
+            self.channel(str(args["channel"]))
+            return
+        slug = str(args["slug"])
+        if tool == "workshop_concepts":
+            self._pre_concepts(slug, int(args.get("n", 3)))
+        elif tool == "workshop_regenerate":
+            self._pre_regenerate(slug, str(args["letter"]), str(args["feedback"]))
+        elif tool == "workshop_choose":
+            self._pre_choose(slug, str(args["letter"]))
+        elif tool == "workshop_map":
+            self._pre_map(slug, int(args["parts"]), int(args.get("minutes_per_part", DEFAULT_MINUTES)))
+        elif tool == "workshop_write_part":
+            self._pre_write_part(slug, int(args["n"]))
+        elif tool == "workshop_revise_part":
+            self._pre_revise_part(slug, int(args["n"]), str(args["feedback"]))
+        elif tool == "workshop_approve":
+            self._pre_approve(slug, args.get("part", "all"))
+        elif tool == "workshop_produce":
+            self._pre_produce(slug, args.get("part", "all"))
+        elif tool == "workshop_design":
+            sd, _status, ch = self._open(slug)
+            self._design_doc(sd, ch, {k: v for k, v in args.items() if k != "slug"})
+        else:
+            raise WorkshopError(f"unknown workshop tool {tool!r}")
+
+    @staticmethod
+    def _check_map_numbers(parts: int, minutes_per_part: int) -> None:
+        if not MIN_MINUTES <= minutes_per_part <= MAX_MINUTES:
+            raise WorkshopError(
+                f"minutes_per_part must be {MIN_MINUTES}-{MAX_MINUTES}, got {minutes_per_part}"
+            )
+        if not 1 <= parts <= MAX_PARTS:
+            raise WorkshopError(f"parts must be 1-{MAX_PARTS}, got {parts}")
+
+    @staticmethod
+    def _check_map_state(sd: StoryDir, status: StatusDoc) -> ConceptDoc:
+        """The chosen concept; WorkshopError when none is chosen yet or parts were already written."""
+        concept = sd.read_concept()
+        if not concept.premise.strip() or concept.title == "Untitled":
+            raise WorkshopError("choose a concept first (Library > Series, or ask the Assistant to pick one)")
+        if any(p.status != "planned" for p in status.parts.values()):
+            raise WorkshopError("parts are already written; edit series.md by hand instead of re-mapping")
+        return concept
 
     def design_choices(self, slug: str) -> dict[str, list[str]]:
         """The allowed values per design field for the story's channel."""
@@ -963,15 +1074,8 @@ class Workshop:
         `enqueue` callback is called with a `ProduceRequest`. Parts are spaced by the design's
         `publish_cadence_days`. All files are validated before the first job is enqueued.
         """
-        sd, status, ch = self._open(slug)
-        series = sd.read_series()
-        design = sd.read_design()
-        if design is None:
-            raise WorkshopError(
-                "no design yet: set the series design first (Library > Series, or ask the Assistant)"
-            )
+        sd, status, ch, series, design, nums = self._pre_produce(slug, which)
         fn = enqueue or self.enqueue or make_db_enqueue(self.db)
-        nums = self._pick(status, series, which, ("approved",), "produce")
         pacing = ch.pools.pacings[0] if ch.pools.pacings else "standard"  # what `_ctx` wrote the scripts at
         hook_style = ch.pools.hooks[0] if ch.pools.hooks else "cold_open"  # as `_ctx` wrote the hooks
         wpm = PACING_WPM.get(pacing, 155)

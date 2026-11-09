@@ -273,10 +273,10 @@ def downloader_client(statuses: list[int], data: bytes, seen: list[tuple[str, st
     return httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=True)
 
 
-def test_the_downloader_retries_a_504_like_the_tests_do_and_finishes(tmp_path: Path):
+def test_the_downloader_waits_out_a_504_like_the_tests_do_and_finishes(tmp_path: Path):
     data = b"payload" * 100
     seen: list[tuple[str, str | None]] = []
-    retries: list[tuple[int, str, float]] = []
+    waits: list[tuple[str, int, float]] = []
     dest = tmp_path / "f.bin"
     out = dl.download(
         "https://github.example.test/f.bin",
@@ -284,27 +284,28 @@ def test_the_downloader_retries_a_504_like_the_tests_do_and_finishes(tmp_path: P
         hashlib.sha256(data).hexdigest(),
         client=downloader_client([504, 504, 200], data, seen),
         sleep=lambda s: None,
-        on_retry=lambda a, reason, wait: retries.append((a, reason, wait)),
+        on_site_wait=lambda w: waits.append((w.host, w.status, w.wait_s)),
     )
     assert out == dest and dest.read_bytes() == data
     assert [m for m, _ in seen].count("GET") == 3  # 504, 504, then the file
-    assert [r[:2] for r in retries] == [(1, "network"), (2, "network")]
+    assert waits == [("github.example.test", 504, 2.0), ("github.example.test", 504, 4.0)]
 
 
-def test_the_downloader_gives_up_on_a_504_after_three_attempts_with_ns_e105(tmp_path: Path):
+def test_the_downloader_gives_up_on_a_504_after_the_ten_minute_window_with_ns_e105(tmp_path: Path):
     from ns_common.errors import NsError
 
     seen: list[tuple[str, str | None]] = []
+    sleeps: list[float] = []
     with pytest.raises(NsError) as ei:
         dl.download(
             "https://github.example.test/f.bin",
             tmp_path / "f.bin",
             None,
             client=downloader_client([504], b"x", seen),
-            sleep=lambda s: None,
+            sleep=sleeps.append,
         )
-    assert ei.value.code == "NS-E105" and "504" in str(ei.value)
-    assert [m for m, _ in seen].count("GET") == dl.DEFAULT_RETRIES == 3
+    assert ei.value.code == "NS-E105" and "504" in str(ei.value) and "github.example.test" in str(ei.value)
+    assert sum(sleeps) == dl.SITE_WINDOW_S == 600.0  # no attempt count: the window decides
 
 
 def test_the_downloader_does_not_retry_a_404(tmp_path: Path):

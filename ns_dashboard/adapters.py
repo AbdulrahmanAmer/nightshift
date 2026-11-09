@@ -86,6 +86,10 @@ class VerifyAdapter(Protocol):
 class DoctorAdapter(Protocol):
     """`ns doctor --bundle`: returns the path of the diagnostics zip."""
 
+    def available(self) -> None:
+        """Raise `AdapterUnavailable` when `bundle` could not run; writes nothing."""
+        ...
+
     def bundle(self) -> Path: ...
 
 
@@ -586,6 +590,11 @@ class RealDoctorAdapter:
         self.paths = paths
         self.out_dir = out_dir  # None: the Desktop, like the command line
         self.options = options or {}
+
+    def available(self) -> None:
+        """Load what `bundle` needs without running it."""
+        lazy("ns_supervisor.doctor", "build_bundle")
+        lazy("ns_supervisor.control", "app_path")
 
     def bundle(self) -> Path:
         """Create the diagnostics zip (logs, reports, settings without keys) and return its path."""

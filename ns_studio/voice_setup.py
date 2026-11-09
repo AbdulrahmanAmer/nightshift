@@ -20,17 +20,19 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+import yaml
 
 from ns_common.config import load_channel
 from ns_common.errors import NsError
 from ns_common.languages import qwen_language
+from ns_common.models import VOICE_NAME_PATTERN, VOICE_NAME_RULE
 from ns_common.paths import Paths
 from ns_studio.context import JobContext
 from ns_studio.errors import StudioError
 from ns_studio.jobs import Env
 
 PENDING_NAME = "pending_voice.json"
-NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,39}$")
+NAME_RE = re.compile(VOICE_NAME_PATTERN)
 Post = Callable[[str, str, dict[str, Any]], dict[str, Any]]
 
 
@@ -54,10 +56,8 @@ def read_pending(paths: Paths) -> dict[str, Any] | None:
 
 
 def _check_name(paths: Paths, name: str) -> None:
-    if not NAME_RE.match(name):
-        raise NsError(
-            "NS-E310", "voice names are 1 to 40 letters, digits, - or _, starting with a letter or digit"
-        )
+    if not NAME_RE.fullmatch(name):
+        raise NsError("NS-E310", VOICE_NAME_RULE)
     if voice_exists(paths, name):
         raise NsError("NS-E310", f"a voice called '{name}' already exists")
 
@@ -188,7 +188,7 @@ def _channel_language(env: Env, slug: object) -> str:
     """The language of the channel that queued the voice (setup writes no language), else English."""
     try:
         return load_channel(env.paths, str(slug)).language if slug else "en"
-    except (OSError, ValueError):
+    except (OSError, ValueError, yaml.YAMLError):
         return "en"
 
 

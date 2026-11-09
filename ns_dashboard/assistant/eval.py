@@ -11,7 +11,8 @@ everything around the model, for each of the partner's questions in a cases file
    changes only produce confirm cards (the action stays pending), forbidden tools never run, and a key pasted
    in the question reaches neither `assistant.db` nor the model.
 
-`tests/test_assistant_eval.py` runs the 20 cases from `tests/assistant_eval/cases.yaml` on every CI run.
+`tests/test_assistant_eval.py` runs the cases (the partner's 20 questions, then the story and the script phrasing of a
+video request) from `tests/assistant_eval/cases.yaml` on every CI run.
 """
 # Dense descriptor tables and long signatures: wrapping them hurts readability.
 # ruff: noqa: E501
@@ -47,6 +48,9 @@ class Case:
     forbidden: list[str] = field(default_factory=list)
     confirm: list[str] = field(default_factory=list)
     confirm_text_has: list[str] = field(default_factory=list)
+    #: A phrase for each call the gold script gets refused before its card (the check before the card, D-27); the
+    #: script then corrects the call. Without the check the bad call gets a card and the case fails.
+    refusals: list[str] = field(default_factory=list)
     must_retrieve: list[str] = field(default_factory=list)
     no_tool_calls: bool = False
     secret: str = ""
@@ -199,8 +203,12 @@ def run_case(dash: Any, case: Case, *, ctx_tokens: int = prompt.DEFAULT_CTX) -> 
                 if needle not in e["payload"]["text"]:
                     fails.append(f"gate: confirm text lacks {needle!r}: {e['payload']['text']}")
     results = [e["payload"] for e in events if e["kind"] == "tool_result"]
+    refused = [str(r.get("error") or "") for r in results if not r.get("ok")]
+    for needle in case.refusals:
+        if not any(needle in text for text in refused):
+            fails.append(f"gate: no call was refused with {needle!r} before its card (refused: {refused})")
     for r in results:
-        if not r.get("ok"):
+        if not r.get("ok") and not any(n in str(r.get("error") or "") for n in case.refusals):
             fails.append(f"run: tool {r.get('tool')} failed: {str(r.get('result') or r.get('error'))[:200]}")
     blob = json.dumps([r.get("result") for r in results], default=str).lower()
     for fact in case.facts:
