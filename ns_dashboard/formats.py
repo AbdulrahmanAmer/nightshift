@@ -12,10 +12,8 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import ValidationError
 
 from ns_common.atomic import write_text_atomic
-from ns_common.models import Format
 from ns_common.paths import Paths
 from ns_dashboard.errors import ApiError
 
@@ -23,28 +21,16 @@ ID_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 
 
 def validate_format(definition: Any) -> list[str]:
-    """Plain problems with a format definition (empty list = valid), checked by `ns_common.models.Format`."""
-    if not isinstance(definition, dict):
-        return ["a format must be a mapping"]
-    try:
-        Format.model_validate(definition)
-    except ValidationError as e:
-        out = []
-        for err in e.errors():
-            where = ".".join(str(p) for p in err["loc"]) or "format"
-            kind = err["type"]
-            if kind == "missing":
-                out.append(f"{where} is required")
-            elif kind == "extra_forbidden":
-                out.append(f"{where} is not a known setting")
-            else:
-                out.append(f"{where}: {err['msg']}")
-        return out
-    problems = []
-    dur = definition["duration"]
-    if dur["max_s"] < dur["min_s"]:
-        problems.append("duration.max_s must not be smaller than duration.min_s")
-    return problems
+    """Plain problems with a format definition (empty list = valid).
+
+    The studio's own check (`ns_studio.media.formats.definition_problems`): the shared model first, then the
+    rules a render applies for the format's kind (regions inside the canvas, one picture region for a Short
+    or a full video, shot and duration ranges, known caption styles). The Formats editor therefore refuses
+    at save what the studio would refuse when a job chooses the format.
+    """
+    from ns_studio.media.formats import definition_problems
+
+    return definition_problems(definition)
 
 
 def builtin_dir() -> Path | None:
