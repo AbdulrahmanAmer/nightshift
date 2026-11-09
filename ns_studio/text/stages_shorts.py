@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import random
+import re
 from datetime import UTC, datetime
 from typing import Any
 
@@ -11,24 +12,49 @@ from ns_common.devmode import is_dev
 from ns_common.embed_client import cosine, embed_window, from_blob, to_blob
 from ns_common.errors import NsError
 from ns_common.models import Idea, Part, Seo, VisualBeat
+from ns_common.pacing import PAUSE_PER_WORD_S, SHORT_QC_MARGIN
 from ns_common.textstats import est_seconds, split_sentences, word_count
 from ns_studio.context import JobContext
+from ns_studio.policy.meta import policy_list
 from ns_studio.stages import Tenant, register
-from ns_studio.text.budget import Budget, MasterBudget, master_as_budget, master_budget, short_budget
+from ns_studio.text.budget import (
+    CLOSING_MAX_WORDS,
+    HOOK_MAX_WORDS,
+    SHORT_MIN_CLOSING_WORDS,
+    SHORT_MIN_HOOK_WORDS,
+    Budget,
+    MasterBudget,
+    master_as_budget,
+    master_budget,
+    short_budget,
+)
 from ns_studio.text.prompts import RUBRIC_KEYS, call_json, call_text, parse_model
 from ns_studio.text.seo import finalize_seo
 from ns_studio.text.story_profile import profile_of
-from ns_studio.text.validators import load_banned, raise_if, validate_story
+from ns_studio.text.validators import check_banned, load_banned, raise_if, validate_story
+from ns_studio.voice_wpm import job_wpm
 
 __all__ = ["draw_banked_idea", "finalize_seo", "ideas_budget", "job_master_budget", "now_iso"]
 
 IDEA_SIMILARITY_LIMIT = 0.85
+SHORT_CLOSING_WORDS = 10  # the budget reserves this many words for the closing line (see `fit_closing`)
+CLOSINGS_FILE = "closings.json"
+DEFAULT_SHORT_CLOSINGS = (
+    "Follow for the next story.",
+    "More stories like this are on the channel.",
+    "If this stayed with you, the channel has more.",
+)
+NO_CHAPTER_POTENTIAL = {"", "n/a", "na", "none", "-"}
 
 
 def job_master_budget(ctx: JobContext) -> MasterBudget:
     """Master budget of this job; the target minutes are drawn from `long_minutes` seeded by the job id."""
     return master_budget(
-        ctx.channel.long_minutes, ctx.combo.pacing, rng=random.Random(ctx.job_id), profile=profile_of(ctx)
+        ctx.channel.long_minutes,
+        ctx.combo.pacing,
+        rng=random.Random(ctx.job_id),
+        wpm=job_wpm(ctx),
+        profile=profile_of(ctx),
     )
 
 
@@ -36,7 +62,58 @@ def ideas_budget(ctx: JobContext) -> Budget:
     """Word budget of the story: the master (master-first) or one part of `combo.length_bucket` (50 s)."""
     if ctx.fmt == "master_first":
         return master_as_budget(job_master_budget(ctx))
-    return short_budget(ctx.combo.length_bucket or 50, ctx.combo.pacing, parts=1, profile=profile_of(ctx))
+    return short_budget(
+        ctx.combo.length_bucket or 50,
+        ctx.combo.pacing,
+        parts=1,
+        hook_words=HOOK_MAX_WORDS,
+        closing_words=SHORT_CLOSING_WORDS,
+        min_hook_words=SHORT_MIN_HOOK_WORDS,
+        min_closing_words=SHORT_MIN_CLOSING_WORDS,
+        wpm=job_wpm(ctx),
+        profile=profile_of(ctx),
+    )
+
+
+def has_chapter_potential(idea: dict[str, Any]) -> bool:
+    """True when the idea says how it stretches to chapters (its `why_chapters` is not empty or "n/a")."""
+    return str(idea.get("why_chapters") or "").strip().lower().rstrip(".") not in NO_CHAPTER_POTENTIAL
+
+
+def pick_idea(ctx: JobContext, survivors: list[tuple[dict[str, Any], Any]]) -> tuple[dict[str, Any], Any]:
+    """The survivor the job continues with (spec 7.1 M1).
+
+    A master-first job drops the survivors without chapter potential, then lets a judge call choose among
+    the rest (no call for a single one). When none has potential the survivors stay as they were and a
+    warning says so: a story with no stretch is a weaker master, not a reason to lose the night's job.
+    A Shorts job takes the first survivor.
+    """
+    if ctx.fmt != "master_first":
+        return survivors[0]
+    staying = [s for s in survivors if has_chapter_potential(s[0])]
+    if not staying:
+        ctx.log.warn(
+            "idea_no_chapter_potential",
+            "no idea says how it stretches to chapters",
+            job_id=ctx.job_id,
+            ideas=len(survivors),
+        )
+        staying = survivors
+    if len(staying) == 1:
+        return staying[0]
+    options = [
+        f"{i['premise']} Twist: {i['twist']} Stretches to chapters: {i.get('why_chapters') or 'n/a'}"
+        for i, _v in staying
+    ]
+    j = call_json(
+        ctx,
+        "judge",
+        purpose="Pick the idea that can be told as five to seven escalating chapters of a long video "
+        "and still keeps its twist.",
+        constraints="The idea must carry a long story without padding. No overpromising.",
+        options=options,
+    )
+    return staying[max(0, min(int(j["index"]), len(staying) - 1))]
 
 
 def now_iso() -> str:
@@ -146,14 +223,17 @@ class IdeasStage:
         if not survivors:
             raise NsError("NS-E304", f"all {len(ideas)} ideas too similar to history")
         flagged: list[str] = []
-        chosen = None  # the first survivor the unsafe-topic classifier accepts (spec 18.3)
-        for cand in survivors:
+        chosen = None  # the pick (a master: with chapter potential) the unsafe-topic classifier accepts
+        remaining = list(survivors)
+        while remaining:
+            cand = pick_idea(ctx, remaining)
             why = idea_check.idea_problem(ctx, cand[0])
             if why is None:
                 chosen = cand
                 break
             flagged.append(why)
             ctx.log.warn("idea_unsafe", job_id=ctx.job_id, premise=cand[0]["premise"], detail=why)
+            remaining = [s for s in remaining if s is not cand]
         if chosen is None:
             raise NsError("NS-E601", f"all {len(survivors)} ideas were flagged as unsafe: {flagged[0]}")
         idea, vec = chosen
@@ -289,28 +369,103 @@ class SplitStage:
             parts.append(part.model_dump())
         parts[-1]["cliffhanger"] = False
         ctx.file("hooks_all.json").unlink(missing_ok=True)  # parts changed: hooks must be redone
+        ctx.file(CLOSINGS_FILE).unlink(missing_ok=True)  # ... and so are the closing lines
         ctx.write_json("parts.json", parts)
 
 
+def cut_words(text: str, limit: int) -> str:
+    """`text` cut to its first `limit` words (trailing commas and dashes dropped); unchanged when shorter."""
+    words = text.split()
+    if len(words) <= limit:
+        return text.strip()
+    return " ".join(words[:limit]).rstrip(",;:- ")
+
+
+def default_closing(part_n: int, parts_total: int) -> str:
+    """The closing line used when the model gives none or one over `CLOSING_MAX_WORDS` words."""
+    if part_n < parts_total:
+        return f"Part {part_n + 1} is up next."
+    return DEFAULT_SHORT_CLOSINGS[(part_n - 1) % len(DEFAULT_SHORT_CLOSINGS)]
+
+
+def closing_is_clean(text: str) -> bool:
+    """False when the closing line holds a banned phrase (`contracts/policy/banned_phrases.txt`) or a claim
+    that the story is real (`misleading_claims.txt`, the E603 list). The line is spoken, captioned and
+    published, and the policy gate reads only the metadata, so the stage that takes it checks it."""
+    if check_banned(text, load_banned()):
+        return False
+    low = text.lower()
+    return not any(re.search(rf"\b{re.escape(p)}\b", low) for p in policy_list("misleading_claims.txt"))
+
+
+def closing_line(raw: Any, part_n: int, parts_total: int) -> str:
+    """The model's closing line when it is 1-15 words and clean, else the default for this part."""
+    text = str(raw or "").strip()
+    if 0 < len(text.split()) <= CLOSING_MAX_WORDS and closing_is_clean(text):
+        return text
+    return default_closing(part_n, parts_total)
+
+
+def fit_closing(ctx: JobContext, part: dict[str, Any], hook: str, closing: str, parts_total: int) -> str:
+    """`closing`, or a shorter line when it would carry the Short past QC's duration band.
+
+    The budget reserves `SHORT_CLOSING_WORDS` for the closing line, but the model may write up to
+    `CLOSING_MAX_WORDS`, and a body at the top of its band plus a long hook plus a long closing line lands
+    over the bucket by more than the 15 % QC allows (NS-W406, the Short is dropped). The hooks stage knows
+    the body and the hook, so it estimates the seconds the model's line leaves and takes the first of the
+    model's line, the part's default and the other defaults that stays within the budget's own +12 % margin;
+    when none does, the shortest default.
+    """
+    from ns_studio.media.captions import CLOSE_GAP_S, HOOK_GAP_S
+    from ns_studio.media.voice import hook_opens_body
+
+    per_word_s = 60.0 / job_wpm(ctx) + PAUSE_PER_WORD_S
+    bucket_s = float(ctx.combo.length_bucket or 50)
+    voiced_hook = 0 if hook_opens_body(hook, part["text"]) else word_count(hook)
+    spent_s = (word_count(part["text"]) + voiced_hook) * per_word_s + HOOK_GAP_S + CLOSE_GAP_S
+    room = int((bucket_s * (1 + SHORT_QC_MARGIN) - spent_s) / per_word_s)
+    candidates = [closing, default_closing(int(part["n"]), parts_total), *DEFAULT_SHORT_CLOSINGS]
+    for line in candidates:
+        if word_count(line) <= room:
+            return line
+    return min(candidates[1:], key=word_count)
+
+
 class HooksStage:
-    """Shorts 6: five hooks per part, a judge picks one; all candidates go to `hooks_all.json`."""
+    """Shorts 6: five hooks per part, a judge picks one, plus a closing line per part (<= 15 words).
+
+    All hook candidates go to `hooks_all.json`; the closing lines to `closings.json` (`{"1": "...", ...}`),
+    which the voice stage speaks as `p<n>_close` and the render appends to the part.
+    """
 
     name: str = "hooks"
     tenant: Tenant = "llama"
     inputs: tuple[str, ...] = ("parts.json",)
+    # `closings.json` is written here but is not a declared output: a shorts_only job from before closing
+    # lines would otherwise count as missing an output and `--resume` would pick new hooks and redo the
+    # voice and captions. Such a job keeps the hooks it has and gets no closing line.
     outputs: tuple[str, ...] = ("parts.json", "hooks_all.json")
 
     def run(self, ctx: JobContext) -> None:
-        """Set `hook` on every part; skip when `hooks_all.json` already exists for these parts."""
+        """Set `hook` on every part and write its closing line; skip when `hooks_all.json` exists.
+
+        `closings.json` is written before `hooks_all.json`, so a job made by this code has both when it skips.
+        A job from before closing lines has only the hooks: it keeps them and gets no closing line, rather
+        than picking new hooks (and redoing the voice and captions) on `--resume`.
+        """
         if ctx.file("hooks_all.json").exists():
             return
         parts: list[dict[str, Any]] = ctx.read_json("parts.json")
         all_hooks: list[list[str]] = []
+        closings: dict[str, str] = {}
         for i, p in enumerate(parts):
             nxt = parts[i + 1]["text"] if i + 1 < len(parts) else None
-            raw = call_json(ctx, "hook", part_text=p["text"], next_part_text=nxt)["hooks"]
-            hooks = [str(h).strip() for h in raw if 0 < len(str(h).split()) <= 12]
-            hooks = hooks or [split_sentences(p["text"])[0]]
+            out = call_json(
+                ctx, "hook", part_text=p["text"], next_part_text=nxt, part_n=p["n"], parts_total=len(parts)
+            )
+            wanted = closing_line(out.get("closing_line"), p["n"], len(parts))
+            hooks = [str(h).strip() for h in out["hooks"] if 0 < len(str(h).split()) <= HOOK_MAX_WORDS]
+            hooks = hooks or [cut_words(split_sentences(p["text"])[0], HOOK_MAX_WORDS)]
             j = call_json(
                 ctx,
                 "judge",
@@ -320,7 +475,9 @@ class HooksStage:
             )
             idx = max(0, min(int(j["index"]), len(hooks) - 1))
             p["hook"] = hooks[idx]
+            closings[str(p["n"])] = fit_closing(ctx, p, p["hook"], wanted, len(parts))
             all_hooks.append(hooks)
+        ctx.write_json(CLOSINGS_FILE, closings)
         ctx.write_json("hooks_all.json", all_hooks)
         ctx.write_json("parts.json", parts)
 
