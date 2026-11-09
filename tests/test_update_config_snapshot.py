@@ -1,0 +1,618 @@
+"""F-10a: `ns update --rollback` puts the settings files back together with the program.
+
+`Runtime` (and `InstallState`, `Channel`, ...) are strict, and a newer version re-saves `runtime.json` with
+every field it knows. After a rollback the older program then meets a file with a key it has never heard of
+and refuses to load its own config. So the updater keeps a copy of the config files an update may rewrite
+(`ns_supervisor/config_snapshot.py`) beside the program backup, and the rollback restores both.
+
+Everything runs on fakes: a temporary home, a fake program folder, fake side effects (no engine, no uv, no
+network). The "older version" is `tests/frozen_models_0_1_14.py`, the 0.1.14 models as they were tagged.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+from pathlib import Path
+
+import pytest
+import yaml
+from pydantic import ValidationError
+
+from installer.stage2.web import appcopy
+from ns_common.config import load_channel, load_install_state, load_runtime
+from ns_common.errors import NsError
+from ns_common.models import Runtime
+from ns_common.paths import Paths
+from ns_supervisor import config_snapshot, update
+from tests.frozen_models_0_1_14 import Channel as OldChannel
+from tests.frozen_models_0_1_14 import InstallState as OldInstallState
+from tests.frozen_models_0_1_14 import Runtime as OldRuntime
+from tests.test_installer_app_copy import make_source
+from tests.test_ns_update import Env, make_app, make_zip
+from tests.test_ns_update_git import FakeGit
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+@pytest.fixture(autouse=True)
+def fast_retries(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(update, "RENAME_PAUSE_S", 0.01)
+
+
+# --------------------------------------------------------------------------------------- the fake install
+def seed_config(paths: Paths, *, dev: bool = False) -> dict[str, bytes]:
+    """The config folder as 0.1.14 left it (written with the 0.1.14 models); returns every file's bytes."""
+    cfg = paths.config
+    (cfg / "channels").mkdir(parents=True)
+    (cfg / "formats").mkdir()
+    runtime = OldRuntime(dev_mode=dev, profile="cpu-dev" if dev else "gpu")
+    state = OldInstallState(version="0.1.14", app_path="D:\\Nightshift\\app", dev_mode=dev)
+    channel = OldChannel(slug="demo", display_name="Demo", niche="true stories")
+    files: dict[str, str] = {
+        "runtime.json": json.dumps(runtime.model_dump(mode="json"), indent=2) + "\n",
+        "install_state.json": json.dumps(state.model_dump(mode="json"), indent=2) + "\n",
+        "install_state.json.bak": json.dumps(state.model_dump(mode="json")) + "\n",
+        "answers.json": json.dumps({"channel": {"display_name": "Demo", "niche": "true stories"}}) + "\n",
+        "wizard_flags.json": json.dumps({"tts_fallback": True, "install": "2026-11-01"}) + "\n",
+        "schedule.json": json.dumps(
+            {
+                "run_time": "03:00",
+                "task_name": "Nightshift Daily",
+                "mode": "disabled" if dev else "registered",
+            },
+            indent=2,
+        )
+        + "\n",
+        "dashboard.json": json.dumps({"notifications": True}) + "\n",
+        "channels/demo.yaml": yaml.safe_dump(channel.model_dump(mode="json"), sort_keys=False),
+        "formats/mine.yaml": yaml.safe_dump({"name": "Mine", "kind": "short"}, sort_keys=False),
+        # not settings the older version can choke on: never copied, never touched
+        "secrets.dpapi": "blob-of-keys",
+        "ui_prefs.json": json.dumps({"owner_name": "Sam"}),
+    }
+    for name, text in files.items():
+        (cfg / name).write_text(text, encoding="utf-8", newline="\n")
+    return read_config(paths)
+
+
+def read_config(paths: Paths) -> dict[str, bytes]:
+    """Every file under config/ by relative name (bytes), whatever its name."""
+    cfg = paths.config
+    return {p.relative_to(cfg).as_posix(): p.read_bytes() for p in sorted(cfg.rglob("*")) if p.is_file()}
+
+
+class NewVersion(Env):
+    """The new program starting up: it re-saves runtime.json with ITS models and re-registers the task."""
+
+    def __init__(self, paths: Paths, *, verify_ok: bool = True) -> None:
+        super().__init__(verify_ok=verify_ok)
+        self.paths = paths
+
+    def verify(self, app: Path) -> bool:
+        rt = Runtime.model_validate_json((self.paths.config / "runtime.json").read_text(encoding="utf-8"))
+        (self.paths.config / "runtime.json").write_text(
+            json.dumps(rt.model_dump(mode="json"), indent=2) + "\n", encoding="utf-8", newline="\n"
+        )
+        return super().verify(app)
+
+    def reregister(self, app: Path) -> list[str]:
+        sched = self.paths.config / "schedule.json"
+        if sched.exists():  # `schedule.install` writes the file again, compactly
+            sched.write_text(json.dumps(json.loads(sched.read_text(encoding="utf-8"))), encoding="utf-8")
+        return super().reregister(app)
+
+
+def owner_changes(paths: Paths) -> None:
+    """What the owner does on the new version before deciding to go back."""
+    (paths.config / "dashboard.json").write_text('{"notifications": false}\n', encoding="utf-8")
+    (paths.config / "channels" / "new-one.yaml").write_text("slug: new-one\n", encoding="utf-8")
+
+
+def snapshot_file(app: Path) -> Path:
+    return app.with_name(app.name + ".prev-config.zip")
+
+
+def old_models_load(paths: Paths) -> None:
+    """Load every config file with the 0.1.14 models (the rolled back program's) and the current ones."""
+    text = (paths.config / "runtime.json").read_text(encoding="utf-8")
+    OldRuntime.model_validate_json(text)
+    OldInstallState.model_validate_json((paths.config / "install_state.json").read_text(encoding="utf-8"))
+    for ch in sorted((paths.config / "channels").glob("*.yaml")):
+        OldChannel.model_validate(yaml.safe_load(ch.read_text(encoding="utf-8")))
+    load_runtime(paths)
+    load_install_state(paths)
+    load_channel(paths, "demo")
+
+
+# --------------------------------------------------------------------------------------- the main promise
+@pytest.mark.parametrize("dev", [False, True], ids=["real-install", "dev-install"])
+def test_update_then_rollback_restores_every_config_file_byte_for_byte(tmp_path: Path, dev: bool) -> None:
+    paths, app = Paths(tmp_path / "ns"), make_app(tmp_path)
+    before = seed_config(paths, dev=dev)
+    update.update_app(make_zip(tmp_path), app, NewVersion(paths).env(), paths=paths)
+    after_update = read_config(paths)
+    assert after_update != before  # the new program really rewrote files
+    with pytest.raises(ValidationError):  # the bug: 0.1.14 cannot load what 0.1.15 saved
+        OldRuntime.model_validate_json(after_update["runtime.json"])
+
+    res = update.rollback_app(app, Env().env(), paths=paths)
+
+    assert read_config(paths) == before  # byte-identical, including what must not move
+    old_models_load(paths)  # the older program loads its own config again
+    assert (app / "VERSION").read_text(encoding="utf-8").strip() == "0.1.0"
+    for name in ("runtime.json", "install_state.json", "schedule.json", "channels/demo.yaml"):
+        assert name in res.settings
+    assert "secrets.dpapi" not in res.settings  # keys are never copied
+
+
+def test_the_snapshot_is_taken_before_the_new_program_runs_and_lives_next_to_the_program_backup(
+    tmp_path: Path,
+) -> None:
+    paths, app = Paths(tmp_path / "ns"), make_app(tmp_path)
+    before = seed_config(paths)
+    seen: dict[str, bytes] = {}
+
+    class Spy(NewVersion):
+        def sync(self, a: Path) -> None:
+            snap = snapshot_file(app)
+            assert snap.is_file()  # already there when the new tree is synced
+            seen.update(config_snapshot.read(snap).files)
+            super().sync(a)
+
+    res = update.update_app(make_zip(tmp_path), app, Spy(paths).env(), paths=paths)
+    assert snapshot_file(app).parent == (tmp_path / "NightShift.prev").parent
+    assert seen == {n: b for n, b in before.items() if n in seen}  # the files as they were
+    assert {"runtime.json", "install_state.json", "channels/demo.yaml", "schedule.json"} <= set(seen)
+    assert "secrets.dpapi" not in seen and "ui_prefs.json" not in seen
+    assert any("rollback" in n and "runtime.json" in n for n in res.notes)
+
+
+def test_without_the_snapshot_the_old_failure_is_real(tmp_path: Path) -> None:
+    """The control: with the copy gone (an update by an older updater) the older models refuse the file."""
+    paths, app = Paths(tmp_path / "ns"), make_app(tmp_path)
+    seed_config(paths)
+    update.update_app(make_zip(tmp_path), app, NewVersion(paths).env(), paths=paths)
+    snapshot_file(app).unlink()
+    update.rollback_app(app, Env().env(), paths=paths)
+    with pytest.raises(ValidationError):
+        OldRuntime.model_validate_json((paths.config / "runtime.json").read_text(encoding="utf-8"))
+
+
+# --------------------------------------------------------------------------------------- owner changes
+def test_what_the_owner_changed_between_the_update_and_the_rollback_is_lost_and_the_message_says_so(
+    tmp_path: Path,
+) -> None:
+    paths, app = Paths(tmp_path / "ns"), make_app(tmp_path)
+    before = seed_config(paths)
+    update.update_app(make_zip(tmp_path), app, NewVersion(paths).env(), paths=paths)
+    owner_changes(paths)
+
+    res = update.rollback_app(app, Env().env(), paths=paths)
+
+    assert (paths.config / "dashboard.json").read_bytes() == before["dashboard.json"]  # the change is gone
+    assert not (paths.config / "channels" / "new-one.yaml").exists()  # a channel the 0.1.14 models never saw
+    assert "anything you changed in them is lost" in res.settings
+    assert "dashboard.json" in res.settings.split("lost")[-1]  # named, not just "some files"
+    notes = " ".join(res.notes)
+    assert "channels/new-one.yaml" in notes  # set aside, and said
+    assert read_config(paths) == before
+
+
+def test_a_second_rollback_goes_forward_with_the_settings_the_owner_had_just_before_going_back(
+    tmp_path: Path,
+) -> None:
+    paths, app = Paths(tmp_path / "ns"), make_app(tmp_path)
+    before = seed_config(paths)
+    update.update_app(make_zip(tmp_path), app, NewVersion(paths).env(), paths=paths)
+    owner_changes(paths)
+    just_before = read_config(paths)
+
+    update.rollback_app(app, Env().env(), paths=paths)
+    assert read_config(paths) == before  # back to what 0.1.0 wrote
+    res = update.rollback_app(app, Env().env(), paths=paths)  # forward again
+    assert (app / "VERSION").read_text(encoding="utf-8").strip() == "0.2.0"
+    assert read_config(paths) == just_before  # nothing the owner did is gone for good
+    assert "runtime.json" in res.settings
+    update.rollback_app(app, Env().env(), paths=paths)  # and back once more
+    assert read_config(paths) == before
+
+
+def test_a_home_without_settings_files_updates_and_rolls_back_without_complaint(tmp_path: Path) -> None:
+    paths, app = Paths(tmp_path / "ns"), make_app(tmp_path)  # no config folder at all
+    res = update.update_app(make_zip(tmp_path), app, Env().env(), paths=paths)
+    assert any("settings files saved" in n and "none" in n for n in res.notes)
+    back = update.rollback_app(app, Env().env(), paths=paths)
+    assert (app / "VERSION").read_text(encoding="utf-8").strip() == "0.1.0"
+    assert "none were restored" in back.settings and not paths.config.exists()
+
+
+# --------------------------------------------------------------------------------------- no / bad snapshot
+def test_a_rollback_without_a_snapshot_swaps_the_program_as_before_and_says_the_config_was_not_restored(
+    tmp_path: Path,
+) -> None:
+    paths, app = Paths(tmp_path / "ns"), make_app(tmp_path)
+    seed_config(paths)
+    update.update_app(make_zip(tmp_path), app, NewVersion(paths).env(), paths=paths)
+    for leftover in tmp_path.glob("NightShift.prev-*"):  # what an update by an older updater never made
+        leftover.unlink()
+    now = read_config(paths)
+
+    e = Env()
+    res = update.rollback_app(app, e.env(), paths=paths)
+
+    assert (app / "VERSION").read_text(encoding="utf-8").strip() == "0.1.0"
+    assert e.calls == ["stop", "sync"]
+    assert read_config(paths) == now  # untouched: nothing to restore from
+    assert "could not be restored" in res.settings and "no copy" in res.settings
+    assert "ns restore" in res.settings  # and what to do if the program will not start
+
+
+def test_a_damaged_snapshot_is_never_applied(tmp_path: Path) -> None:
+    paths, app = Paths(tmp_path / "ns"), make_app(tmp_path)
+    seed_config(paths)
+    update.update_app(make_zip(tmp_path), app, NewVersion(paths).env(), paths=paths)
+    now = read_config(paths)
+    snap = snapshot_file(app)
+    snap.write_bytes(snap.read_bytes()[:-40])  # a torn copy: the end of the zip is missing
+
+    res = update.rollback_app(app, Env().env(), paths=paths)
+
+    assert (app / "VERSION").read_text(encoding="utf-8").strip() == "0.1.0"
+    assert read_config(paths) == now
+    assert "could not be restored" in res.settings and "damaged" in res.settings
+
+
+def test_a_snapshot_whose_files_were_edited_inside_the_zip_is_damaged(tmp_path: Path) -> None:
+    import zipfile
+
+    paths, app = Paths(tmp_path / "ns"), make_app(tmp_path)
+    seed_config(paths)
+    update.update_app(make_zip(tmp_path), app, NewVersion(paths).env(), paths=paths)
+    snap = snapshot_file(app)
+    with zipfile.ZipFile(snap) as z:
+        members = {n: z.read(n) for n in z.namelist()}
+    members["config/runtime.json"] = b'{"profile": "cpu-dev"}\n'  # same name, other content
+    with zipfile.ZipFile(snap, "w") as z:
+        for n, data in members.items():
+            z.writestr(n, data)
+    with pytest.raises(config_snapshot.SnapshotError):
+        config_snapshot.read(snap)
+
+
+def test_a_snapshot_that_belongs_to_another_program_is_not_applied(tmp_path: Path) -> None:
+    """INSTALL.cmd of an older zip (or a hand swap) can replace <app>.prev behind the copy's back."""
+    paths, app = Paths(tmp_path / "ns"), make_app(tmp_path)
+    seed_config(paths)
+    update.update_app(make_zip(tmp_path), app, NewVersion(paths).env(), paths=paths)
+    now = read_config(paths)
+    (tmp_path / "NightShift.prev" / "VERSION").write_text("0.0.9\n", encoding="utf-8")
+
+    res = update.rollback_app(app, Env().env(), paths=paths)
+
+    assert (app / "VERSION").read_text(encoding="utf-8").strip() == "0.0.9"
+    assert read_config(paths) == now
+    assert "could not be restored" in res.settings and "belongs to 0.1.0" in res.settings
+
+
+# --------------------------------------------------------------------------------------- half-written copies
+def test_a_snapshot_that_cannot_be_written_never_replaces_a_good_one_and_stops_the_update(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths, app = Paths(tmp_path / "ns"), make_app(tmp_path)
+    before = seed_config(paths)
+    update.update_app(make_zip(tmp_path, "0.2.0"), app, NewVersion(paths).env(), paths=paths)
+    good = snapshot_file(app).read_bytes()
+    after_first = read_config(paths)
+    real = os.replace
+
+    def disk_full(src: str | Path, dst: str | Path) -> None:
+        if str(dst).endswith(".prev-config.zip"):  # the crash: the publish step of the copy fails
+            raise OSError(28, "No space left on device")
+        real(src, dst)
+
+    e = Env()
+    with monkeypatch.context() as m:
+        m.setattr(os, "replace", disk_full)
+        with pytest.raises(NsError) as ei:
+            update.update_app(make_zip(tmp_path, "0.3.0"), app, e.env(), paths=paths)
+
+    assert ei.value.code == "NS-E702"
+    assert "copy of your settings" in ei.value.detail and "Nothing was changed" in ei.value.detail
+    assert snapshot_file(app).read_bytes() == good  # the good copy is untouched
+    assert not list(tmp_path.glob("~ns*.tmp"))  # and no half file is left beside it
+    assert (app / "VERSION").read_text(encoding="utf-8").strip() == "0.2.0"  # the program was not touched
+    assert (tmp_path / "NightShift.prev" / "VERSION").read_text(encoding="utf-8").strip() == "0.1.0"
+    assert not (tmp_path / "NightShift.new").exists()
+    assert "sync" not in e.calls and "verify" not in e.calls
+    assert read_config(paths) == after_first
+    update.rollback_app(app, Env().env(), paths=paths)  # the pair still works
+    assert read_config(paths) == before
+
+
+def test_a_config_file_that_cannot_be_read_stops_the_update_before_anything_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths, app = Paths(tmp_path / "ns"), make_app(tmp_path)
+    seed_config(paths)
+    real = Path.read_bytes
+
+    def locked(self: Path) -> bytes:
+        if self.name == "answers.json":
+            raise PermissionError(13, "in use by another program")
+        return real(self)
+
+    with monkeypatch.context() as m:
+        m.setattr(Path, "read_bytes", locked)
+        with pytest.raises(NsError) as ei:
+            update.update_app(make_zip(tmp_path), app, Env().env(), paths=paths)
+    assert ei.value.code == "NS-E702" and "answers.json" in ei.value.detail
+    assert (app / "VERSION").read_text(encoding="utf-8").strip() == "0.1.0"
+    assert not (tmp_path / "NightShift.prev").exists() and not snapshot_file(app).exists()
+    assert not (tmp_path / "NightShift.new").exists()
+
+
+def test_a_crash_that_left_a_temporary_file_beside_the_copy_does_not_matter(tmp_path: Path) -> None:
+    paths, app = Paths(tmp_path / "ns"), make_app(tmp_path)
+    before = seed_config(paths)
+    (tmp_path / "~ns999-1-1.tmp").write_bytes(b"PK half a zip")
+    update.update_app(make_zip(tmp_path), app, NewVersion(paths).env(), paths=paths)
+    update.rollback_app(app, Env().env(), paths=paths)
+    assert read_config(paths) == before
+
+
+# --------------------------------------------------------------------------------------- a failed update
+def test_a_failed_update_puts_the_settings_back_with_the_program(tmp_path: Path) -> None:
+    paths, app = Paths(tmp_path / "ns"), make_app(tmp_path)
+    before = seed_config(paths)
+    with pytest.raises(NsError) as ei:
+        update.update_app(make_zip(tmp_path), app, NewVersion(paths, verify_ok=False).env(), paths=paths)
+    assert ei.value.code == "NS-E702" and "ns verify --quick failed" in ei.value.detail
+    assert (app / "VERSION").read_text(encoding="utf-8").strip() == "0.1.0"
+    assert read_config(paths) == before  # verify had re-saved runtime.json: it is back
+    old_models_load(paths)
+    assert "settings files were put back" in ei.value.detail
+    assert not snapshot_file(app).exists()  # no program backup is left, so no copy either
+
+
+def test_the_snapshot_survives_a_failed_update_whose_program_cannot_be_put_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """NS-E702 says to run `ns update --rollback`; that has to bring the settings back as well."""
+    monkeypatch.setattr(update, "RENAME_TRIES", 2)
+    paths, app = Paths(tmp_path / "ns"), make_app(tmp_path)
+    before = seed_config(paths)
+    real = Path.rename
+    state = {"armed": False}
+
+    class VerifyFails(NewVersion):
+        def verify(self, a: Path) -> bool:
+            super().verify(a)
+            state["armed"] = True  # from here on the new tree is "held" by a process
+            return False
+
+    def held(self: Path, target: Path) -> Path:
+        if state["armed"] and self == app:
+            raise PermissionError(32, "being used by another process")
+        return real(self, target)
+
+    monkeypatch.setattr(Path, "rename", held)
+    with pytest.raises(NsError) as ei:
+        update.update_app(make_zip(tmp_path), app, VerifyFails(paths).env(), paths=paths)
+    assert "ns update --rollback" in ei.value.detail
+    assert read_config(paths) != before and snapshot_file(app).is_file()
+    state["armed"] = False
+
+    update.rollback_app(app, Env().env(), paths=paths)
+
+    assert (app / "VERSION").read_text(encoding="utf-8").strip() == "0.1.0"
+    assert read_config(paths) == before
+
+
+# --------------------------------------------------------------------------------------- the latest pair only
+def test_a_second_update_before_any_rollback_keeps_only_the_latest_pair_and_says_so(tmp_path: Path) -> None:
+    paths, app = Paths(tmp_path / "ns"), make_app(tmp_path)
+    seed_config(paths)
+    update.update_app(make_zip(tmp_path, "0.2.0"), app, NewVersion(paths).env(), paths=paths)
+    (paths.config / "dashboard.json").write_text('{"notifications": false}\n', encoding="utf-8")
+    config_at_020 = read_config(paths)  # what 0.2.0 has when 0.3.0 is installed over it
+
+    res = update.update_app(make_zip(tmp_path, "0.3.0"), app, Env().env(), paths=paths)
+
+    assert any("0.1.0" in n and "replaced" in n and "0.2.0 only" in n for n in res.notes)
+    snap = config_snapshot.read(snapshot_file(app))
+    assert (snap.version, len(list(tmp_path.glob("NightShift.prev-config*")))) == ("0.2.0", 1)
+    update.rollback_app(app, Env().env(), paths=paths)
+    assert (app / "VERSION").read_text(encoding="utf-8").strip() == "0.2.0"
+    assert read_config(paths) == config_at_020  # the settings 0.2.0 had, not 0.1.0's
+
+
+# --------------------------------------------------------------------------------------- --git
+def test_a_failed_git_update_puts_the_settings_back(tmp_path: Path) -> None:
+    paths, app = Paths(tmp_path / "ns"), make_app(tmp_path)
+    before = seed_config(paths)
+    git = FakeGit()
+    with pytest.raises(NsError) as ei:
+        update.git_update(
+            app, NewVersion(paths, verify_ok=False).env(), paths=paths, latest_tag=lambda: "v0.2.0", git=git
+        )
+    assert "ns verify --quick failed" in ei.value.detail and "settings files were put back" in ei.value.detail
+    assert ["checkout", "--detach", "a" * 40] in git.calls  # the old commit is back
+    assert read_config(paths) == before
+    assert not list(tmp_path.glob("NightShift.prev-config*"))
+
+
+def test_a_git_update_leaves_the_program_backup_pair_alone(tmp_path: Path) -> None:
+    paths, app = Paths(tmp_path / "ns"), make_app(tmp_path)
+    seed_config(paths)
+    update.update_app(make_zip(tmp_path), app, NewVersion(paths).env(), paths=paths)
+    kept = snapshot_file(app).read_bytes()
+    res = update.git_update(app, Env().env(), paths=paths, latest_tag=lambda: "v0.3.0", git=FakeGit())
+    assert snapshot_file(app).read_bytes() == kept  # a git update has no program backup to pair with
+    assert "channel stable" in res.notes
+
+
+# --------------------------------------------------------------------------------------- the CLI line
+def test_the_rollback_result_the_dashboard_shows_carries_the_settings_sentence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from ns_supervisor import cli, control
+
+    paths, app = Paths(tmp_path / "ns"), make_app(tmp_path)
+    seed_config(paths)
+    update.update_app(make_zip(tmp_path), app, NewVersion(paths).env(), paths=paths)
+    monkeypatch.setattr(control, "app_path", lambda p: app)
+    monkeypatch.setattr(cli, "_stop_engine", lambda p: None)
+    monkeypatch.setattr(cli, "_sync", lambda p, a: None)
+    out = cli._apply_update(paths, None, True, False)
+    assert out.message.startswith("Now on 0.1.0 (was 0.2.0).")
+    assert "runtime.json" in out.message and "lost" in out.message
+
+
+# --------------------------------------------------------------------------------------- the installer swap
+def test_an_install_cmd_update_snapshots_the_settings_and_the_updater_can_roll_it_back(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    paths = Paths(home)
+    appcopy.install_app(make_source(tmp_path / "zip-014", "0.1.4"), home)
+    before = seed_config(paths)
+
+    appcopy.install_app(make_source(tmp_path / "zip-015", "0.1.5"), home)
+    # (what the setup steps do next: the new program re-saves runtime.json)
+    rt = Runtime.model_validate_json((paths.config / "runtime.json").read_text(encoding="utf-8"))
+    (paths.config / "runtime.json").write_text(json.dumps(rt.model_dump(mode="json")), encoding="utf-8")
+    assert read_config(paths) != before
+
+    res = update.rollback_app(home / "app", Env().env(), paths=paths)
+    assert (home / "app" / "VERSION").read_text(encoding="utf-8").strip() == "0.1.4"
+    assert read_config(paths) == before
+    assert "runtime.json" in res.settings
+
+
+def test_an_install_cmd_update_that_cannot_save_the_settings_changes_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home, paths = tmp_path / "home", Paths(tmp_path / "home")
+    appcopy.install_app(make_source(tmp_path / "zip-014", "0.1.4"), home)
+    seed_config(paths)
+    real = os.replace
+
+    def disk_full(src: str | Path, dst: str | Path) -> None:
+        if str(dst).endswith(".prev-config.zip"):
+            raise OSError(28, "No space left on device")
+        real(src, dst)
+
+    with monkeypatch.context() as m:
+        m.setattr(os, "replace", disk_full)
+        with pytest.raises(appcopy.AppCopyError) as ei:
+            appcopy.install_app(make_source(tmp_path / "zip-015", "0.1.5"), home)
+    assert "copy of your settings" in ei.value.detail and "Nothing was changed" in ei.value.detail
+    assert appcopy.installed_version(home) == "0.1.4"
+    assert not (home / "app.new").exists() and not (home / "app.prev").exists()
+
+
+def test_an_install_cmd_update_replaces_the_snapshot_of_an_earlier_update(tmp_path: Path) -> None:
+    """Two programs, one slot: the copy always belongs to the program in <app>.prev."""
+    home, paths = tmp_path / "home", Paths(tmp_path / "home")
+    appcopy.install_app(make_source(tmp_path / "zip-014", "0.1.4"), home)
+    seed_config(paths)
+    appcopy.install_app(make_source(tmp_path / "zip-015", "0.1.5"), home)
+    appcopy.install_app(make_source(tmp_path / "zip-016", "0.1.6"), home)
+    snap = config_snapshot.read(home / "app.prev-config.zip")
+    assert snap.version == "0.1.5" and snap.taken_by == "installer"
+    assert snap.fingerprint == update.app_fingerprint(home / "app.prev")
+
+
+# --------------------------------------------------------------------------------------- uninstall
+def test_the_uninstallers_remove_the_settings_copy_with_the_program_backup(tmp_path: Path) -> None:
+    """The copy holds the owner's settings: an uninstall must not leave it behind beside the backup."""
+    from installer.stage2.web import uninstall
+
+    script = uninstall.deferred_script(tmp_path / "ns", [1])
+    assert str(tmp_path / "ns" / "app.prev-config.zip").replace("'", "''") in script
+    ps1 = (ROOT / "installer" / "uninstall.ps1").read_text(encoding="utf-8")
+    assert "'app.prev-config.zip'" in ps1
+
+
+# --------------------------------------------------------------------------------------- the file list
+CONFIG_NAME = re.compile(r"""config["']?\s*/\s*["']([A-Za-z0-9_.-]+\.(?:json|yaml|dpapi|bak))["']""")
+
+
+def written_config_names() -> set[str]:
+    """File names under <home>/config that the product's code mentions (`... config / "x.json"`)."""
+    found: set[str] = set()
+    for folder in ("ns_common", "ns_supervisor", "ns_dashboard", "ns_studio", "ns_tts", "installer"):
+        for src in (ROOT / folder).rglob("*.py"):
+            found |= set(CONFIG_NAME.findall(src.read_text(encoding="utf-8", errors="replace")))
+    return found
+
+
+def test_every_config_file_the_code_names_is_either_snapshotted_or_left_alone_for_a_stated_reason() -> None:
+    """A new file under config/ must be decided here, in the release that adds it: that is the whole point."""
+    known = set(config_snapshot.FILES) | set(config_snapshot.LEFT_ALONE)
+    unknown = sorted(written_config_names() - known)
+    assert not unknown, (
+        f"{unknown} are named in the code but not in ns_supervisor/config_snapshot.py: add each to FILES "
+        "(a strict model or a file the update rewrites: the rollback must put it back) or to LEFT_ALONE "
+        "(with the reason the older version can read it as it is)."
+    )
+    assert not set(config_snapshot.FILES) & set(config_snapshot.LEFT_ALONE)
+    for name, why in {**config_snapshot.FILES, **config_snapshot.LEFT_ALONE}.items():
+        assert len(why) > 20, f"{name}: say why"
+    stale = sorted(
+        n for n in config_snapshot.FILES if not n.endswith(".bak") and n not in written_config_names()
+    )
+    assert not stale, f"{stale} are listed in FILES but no code writes them any more"
+
+
+def test_the_snapshot_covers_what_the_older_models_are_strict_about() -> None:
+    assert {"runtime.json", "install_state.json", "answers.json", "wizard_flags.json"} <= set(
+        config_snapshot.FILES
+    )
+    assert {"schedule.json", "dashboard.json"} <= set(config_snapshot.FILES)  # the update's own re-register
+    assert set(config_snapshot.TREES) == {"channels", "formats"}
+    assert "secrets.dpapi" in config_snapshot.LEFT_ALONE  # keys are never duplicated
+
+
+def test_names_in_a_snapshot_cannot_leave_the_config_folder() -> None:
+    for bad in (
+        "../x.json",
+        "channels/../../x.yaml",
+        "C:/x.json",
+        "channels\\x.yaml",
+        "runtime.json/x",
+        "x.txt",
+    ):
+        assert not config_snapshot.valid_name(bad), bad
+    for good in ("runtime.json", "channels/demo.yaml", "formats/mine.yaml", "install_state.json.bak"):
+        assert config_snapshot.valid_name(good), good
+
+
+def test_restore_undoes_a_half_done_restore(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """One file that cannot be written puts every file already written back to what it was."""
+    paths = Paths(tmp_path / "ns")
+    seed_config(paths)
+    snap_files = config_snapshot.capture(paths.config)
+    snap = config_snapshot.parse(
+        config_snapshot.build(snap_files, version="0.1.0", fingerprint="f", taken_by="update")
+    )
+    (paths.config / "runtime.json").write_text("{}", encoding="utf-8")
+    (paths.config / "schedule.json").write_text("{}", encoding="utf-8")
+    (paths.config / "channels" / "extra.yaml").write_text("slug: extra\n", encoding="utf-8")
+    live = config_snapshot.capture(paths.config)
+    real = config_snapshot.write_bytes_atomic
+    calls: list[str] = []
+
+    def failing(path: Path, data: bytes) -> Path:
+        calls.append(path.name)
+        if path.name == "wizard_flags.json" and calls.count("wizard_flags.json") == 1:
+            raise OSError(5, "access denied")
+        return real(path, data)
+
+    with monkeypatch.context() as m:
+        m.setattr(config_snapshot, "write_bytes_atomic", failing)
+        with pytest.raises(config_snapshot.SnapshotError):
+            config_snapshot.restore(paths.config, snap.files, live=live, remove_extra=True)
+    assert config_snapshot.capture(paths.config) == live  # every file is as it was before the attempt

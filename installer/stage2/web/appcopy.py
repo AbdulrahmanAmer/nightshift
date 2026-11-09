@@ -9,7 +9,10 @@ task, the launchers and ``ns update`` all point at it. Setup therefore copies th
   (the marker file is written last), so a crash never leaves a half program folder that looks finished.
 * Re-run from a newer zip: the same swap ``ns update`` does. The old folder becomes ``<home>\\app.prev`` (the
   rollback target of ``ns update --rollback``), and ``.git``, ``config`` and ``answers.json`` of the old tree
-  are carried into the new one.
+  are carried into the new one. Before that, the settings files of ``<home>\\config`` are copied to
+  ``<home>\\app.prev-config.zip`` (``ns_supervisor.config_snapshot``, standard library only) so the
+  rollback can put them back with the program; when that copy cannot be made nothing is swapped
+  (``NS-E115``).
 * Never copied: ``venvs`` and ``models`` (somebody extracted into the home), every ``bin`` folder except the
   bundle's ``bin\\webview2``, caches and ``node_modules``, and ``answers.json`` (the owner's input next to
   ``INSTALL.cmd``; it may hold API keys that setup moves to the keyring, so it is not duplicated).
@@ -26,6 +29,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import ns_supervisor.config_snapshot as config_snapshot
 from ns_common.avblock import is_blocked_error
 
 APP_DIR = "app"
@@ -191,6 +195,29 @@ def _carry(old: Path, new: Path) -> list[str]:
     return kept
 
 
+def _save_settings_copy(home: Path, dest: Path, old_version: str) -> None:
+    """Copy the settings files beside the program backup before the old program becomes ``app.prev``.
+
+    ``AppCopyError`` (``NS-E115``) when that cannot be done: the swap is not started, so nothing has changed.
+    A copy that is already there (the one for the program in ``app.prev``) stays whole.
+    """
+    try:
+        config_snapshot.save(
+            config_snapshot.path_for(dest),
+            config_snapshot.capture(home / "config"),
+            version=old_version,
+            fingerprint=fingerprint(dest),
+            taken_by="installer",
+        )
+    except config_snapshot.SnapshotError as e:
+        raise AppCopyError(
+            "NS-E115",
+            f"could not save a copy of your settings files before replacing the program ({e}). Nothing was "
+            "changed. Close programs that use the Nightshift folder, make room on the disk if it is full, "
+            "and run INSTALL.cmd again.",
+        ) from e
+
+
 def _error(e: OSError, what: str) -> AppCopyError:
     if is_blocked_error(e):
         return AppCopyError("NS-E113", f"{what}: Windows Security blocked a file ({e})")
@@ -234,6 +261,11 @@ def install_app(
             say(f"Updating the Nightshift in {dest} from {old_version} to {new_version}")
             if stop_engine is not None:
                 stop_engine()
+            try:
+                _save_settings_copy(Path(home), dest, old_version)
+            except AppCopyError:
+                shutil.rmtree(new, ignore_errors=True)
+                raise
             kept = _carry(dest, new)
             shutil.rmtree(prev, ignore_errors=True)
             _rename(dest, prev, sleep)

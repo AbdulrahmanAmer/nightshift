@@ -517,6 +517,7 @@ Searched and not found in product code: HF_*, HUGGINGFACE_*, TORCH*, PYTORCH_*, 
 | `.ns-qwentts.done` (inside `bin\qwentts\`) | installer download | `s08_smoke.py:110` | permanent |
 | `<model file>.dev-stub` marker next to 4 KB stub model files (dev install) | `installer/stage2/devmode.py:30` (`STUB_SUFFIX`), written by s03 in dev mode | `installer/stage2/verify_downloads.py` ("stub (dev)"); real installs never accept it (CHANGELOG.md:156) | permanent until a real install |
 | `<home>\app\` (`app.new`, `app.prev`, `app.old`) | `installer/stage2/web/appcopy.py`, `ns_supervisor/update.py:287,297-308,346` | launchers (`Get-NsAppPath`), shortcuts | permanent / transient during update |
+| `<home>\app.prev-config.zip` (the settings files `config\` held before the update, paired with `app.prev` by a fingerprint) | `ns_supervisor/config_snapshot.py`, written by `update.update_app` / `rollback_app` and `appcopy.install_app` | `update.rollback_app` (`ns update --rollback`); removed by the uninstallers | until the next update (one pair only) |
 | `backup zips`: `nightshift-backup-<date>.zip` with `backup-manifest.json` | `ns_supervisor/backup.py:18,51-62` (Desktop default `cli.py:322`) | `ns restore`, dashboard import `svc_settings.py:390` | owner-kept |
 | diagnostics zip with `bundle-info.json`, `nvidia-smi.txt` | `ns_supervisor/doctor.py:203,...` (Desktop) | the owner / support | owner-kept |
 
