@@ -650,7 +650,11 @@ class RealKeyringAdapter:
         return load_secret(self.paths, name, unprotect=self._unprotect or dpapi_unprotect)
 
     def set(self, name: str, value: str) -> None:
-        """Write Credential Manager and the DPAPI file; raise only when both refused."""
+        """Write Credential Manager and the DPAPI file; raise only when both refused.
+
+        When only the file refused (its lock failed, `NS-E120`, or the disk did), the key is in Credential
+        Manager, the file keeps what it had, and the dashboard log says so (WARN `secret_file_failed`).
+        """
         failures: list[str] = []
         try:
             self._module().set_password(KEYRING_SERVICE, name, value)
@@ -663,6 +667,8 @@ class RealKeyringAdapter:
                 store_secret(self.paths, name, value, protect=self._protect or dpapi_protect)
             except OSError as e:
                 failures.append(f"file: {e}")
+                if len(failures) == 1:
+                    self._warn(name, f"is in Credential Manager, but saving its nightly-run copy failed: {e}")
         if len(failures) == (2 if self.paths is not None else 1):
             raise AdapterUnavailable("the key could not be stored (" + "; ".join(failures) + ")")
 
@@ -677,8 +683,14 @@ class RealKeyringAdapter:
             from ns_common.secret_file import delete_secret
             try:
                 delete_secret(self.paths, name)
-            except OSError:
-                pass
+            except OSError as e:  # the file keeps the key; say so
+                self._warn(name, f"was removed from Credential Manager, not from its nightly copy: {e}")
+
+    def _warn(self, name: str, what: str) -> None:
+        """A WARN line in the dashboard log: the key file's copy failed (its NS-E120 lock, or the disk)."""
+        if self.paths is not None:
+            log = NsLogger("dashboard", self.paths.logs, echo=False)
+            log.warn("secret_file_failed", f"{name} {what}", name=name)
 
 
 def scan_voice_library(paths: Paths) -> list[dict[str, Any]]:

@@ -18,6 +18,7 @@ from fastapi import FastAPI  # pyright: ignore[reportMissingImports]
 from fastapi.responses import JSONResponse, StreamingResponse  # pyright: ignore[reportMissingImports]
 from pydantic import BaseModel
 
+from ns_common.atomic import sweep_stale_tmp
 from ns_common.config import load_runtime
 from ns_common.errors import NsError
 from ns_common.models import Runtime
@@ -221,6 +222,9 @@ def main(argv: list[str] | None = None) -> int:
         sys.stderr.write(f"The Nightshift engine is already running{who}.\n")
         return 0
     try:
+        # a crash between a write and its swap leaves a ~ns*.tmp in config/ (with every key blob, for
+        # secrets.dpapi); the next key write sweeps them too, this catches the ones nothing writes again
+        sweep_stale_tmp(paths.config)
         return _serve(args, paths)
     finally:
         lock.release()

@@ -19,8 +19,13 @@ either the old complete file or the new complete one, never a part of either.
   over the old file in place: a reader (or a crash) would meet it torn, and a torn `install_state.json` is
   moved to `.bad`, where a write that fails loudly would have left the file as it was.
 * A crash leaves at most one `~ns<pid>-<thread>-<n>.tmp` beside the target (a short name no sibling glob such
-  as `v.*` matches); `sweep_stale_tmp` removes the ones older than an hour, and the outbox copy and the
-  diagnostics bundle call it before they write.
+  as `v.*` matches); `sweep_stale_tmp` removes the ones older than an hour, and the outbox copy, the
+  diagnostics bundle, the key store (`config/`) and the engine's start call it.
+* `prepare(temp file)` (`write_text_atomic`, `write_bytes_atomic`, `write_stream_atomic`) runs on the temp
+  file while it is still EMPTY, before a byte of the content is in it: the key store locks its ACL there, so
+  the content never sits under the folder's ACL, not even in a temp file a crash leaves behind. Opening the
+  file for writing afterwards truncates it and keeps its ACL, and the swap (a rename) keeps it too. When
+  `prepare` raises, the temp file is removed and the old file is untouched.
 """
 
 from __future__ import annotations
@@ -179,6 +184,18 @@ def _publish(tmp: Path, path: Path, wait_s: float = REPLACE_WAIT_S) -> None:
         raise
 
 
+PrepareFn = Callable[[Path], None]
+
+
+def _prepare(tmp: Path, prepare: PrepareFn | None) -> None:
+    """Create the empty temp file and hand it to `prepare` (an ACL lock) before any content goes in."""
+    if prepare is None:
+        return
+    with tmp.open("xb"):
+        pass
+    prepare(tmp)
+
+
 def write_text_atomic(
     path: Path,
     text: str,
@@ -186,6 +203,7 @@ def write_text_atomic(
     keep_backup: bool = False,
     newline: str | None = "",
     wait_s: float = REPLACE_WAIT_S,
+    prepare: PrepareFn | None = None,
 ) -> Path:
     """Write `text` to `path` through a temp file and `os.replace`; optionally keep the old file as `.bak`.
 
@@ -193,10 +211,12 @@ def write_text_atomic(
     (which atomic writes prevent, but a disk can still fail) has the last copy that was written before it.
     `newline` is `open`'s: the default writes LF as it is; `None` gives `Path.write_text`'s CRLF on Windows
     for files a person reads in Notepad. `wait_s`: how long a refused swap is retried (`replace_atomic`).
+    `prepare(temp file)` runs on the empty temp file before the text goes in (see the module docstring).
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = _tmp_for(path)
     try:
+        _prepare(tmp, prepare)
         with tmp.open("w", encoding="utf-8", newline=newline) as fh:
             fh.write(text)
             fh.flush()
@@ -212,11 +232,12 @@ def write_text_atomic(
     return path
 
 
-def write_bytes_atomic(path: Path, data: bytes) -> Path:
-    """`write_bytes` that a reader never sees half done."""
+def write_bytes_atomic(path: Path, data: bytes, *, prepare: PrepareFn | None = None) -> Path:
+    """`write_bytes` that a reader never sees half done (`prepare`: as in `write_text_atomic`)."""
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = _tmp_for(path)
     try:
+        _prepare(tmp, prepare)
         with tmp.open("wb") as fh:
             fh.write(data)
             _sync(fh)
@@ -251,11 +272,17 @@ def write_chunks_atomic(
     return path
 
 
-def write_stream_atomic(path: Path, src: IO[bytes], *, chunk: int = 1024 * 1024) -> Path:
-    """Copy the open binary stream `src` (a zip member, an upload) to `path` through a temp file."""
+def write_stream_atomic(
+    path: Path, src: IO[bytes], *, chunk: int = 1024 * 1024, prepare: PrepareFn | None = None
+) -> Path:
+    """Copy the open binary stream `src` (a zip member, an upload) to `path` through a temp file.
+
+    `prepare`: as in `write_text_atomic`.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = _tmp_for(path)
     try:
+        _prepare(tmp, prepare)
         with tmp.open("wb") as fh:
             shutil.copyfileobj(src, fh, chunk)
             _sync(fh)

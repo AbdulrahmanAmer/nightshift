@@ -329,12 +329,19 @@ def build_context(args: argparse.Namespace, ui: Ui | None = None) -> StepContext
     if bridge and not isinstance(ui, BridgeUi):
         ui = BridgeUi()
     ui = ui or Ui(interactive=not non_interactive)
+    log = NsLogger("installer", paths.logs)
     if args.simulate_downloads:
         runner = FakeRunner(paths.home / "_simulated_desktop")
         store = MemoryStore()
     else:
         runner = SubprocessRunner(bridge=bridge)
-        store = ResilientStore(KeyringStore(), paths)
+        say = ui  # the window (or console) the setup is shown in
+
+        def warn(line: str) -> None:  # the key file's copy failed (NS-E120 lock, disk): show it and log it
+            log.warn("secret_file_failed", line)
+            say.say(line, "yellow")
+
+        store = ResilientStore(KeyringStore(), paths, warn=warn)
     dev = bool(getattr(args, "dev", False)) or env_enabled() or bool((preflight or {}).get("dev_mode"))
     if dev and preflight is not None:
         preflight = relax_checks(preflight)     # a graphics card is not a red row in a dev install
@@ -347,7 +354,7 @@ def build_context(args: argparse.Namespace, ui: Ui | None = None) -> StepContext
         runner=runner,
         store=store,
         manifest=load_manifest(app_path / "manifest.json"),
-        log=NsLogger("installer", paths.logs),
+        log=log,
         state=StateStore(paths, app_path),
         simulate=bool(args.simulate_downloads),
         dev_mode=dev,
