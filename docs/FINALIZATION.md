@@ -110,6 +110,7 @@ the first-run checklist with every line still open until the first real night; s
 - [ ] F-F11 Story quality and length on the Balanced model: a 10 to 14 minute master, word budgets met, no policy strikes; the 16K context fits. partner
 - [ ] F-F12 Update path on the GPU PC: `ns update --check`, update from the next release, rollback once. partner
 - [ ] F-F13 The twelve rows of `docs/design/system-gaps.md` "Verified on the partner PC" filled in after the first night. partner
+- [ ] F-F14 Return the `quiet_flatness` values of the first real night's videos (`qc/audio_flatness.json` in each job folder and the `audio_flatness` lines in `logs\studio-*.jsonl`, master and every Short) so the music-bed flatness check (F-H116, now "measured, warning only" against `TONAL_FLATNESS_MAX` 0.1) can be made a failure with a threshold measured on real qwen-tts narration. partner
 
 ## G. Programmatic gates (must all be green before "done")
 
