@@ -105,9 +105,10 @@ PROMPT_SCHEMAS: dict[str, dict[str, Any]] = {
 
 _STR = {"type": "string"}
 
-# clip_select also returns the layout (a format preset id) the model picked per candidate, and why (C8).
+# clip_select also returns the layout (a format preset id) the model picked per candidate, and why (C8), and
+# the cleaned caption text of the moment (spec 17.2; kept beside the plan, which has no field for it).
 _CLIP_ITEM = ClipPlanItem.model_json_schema()
-_CLIP_EXTRA = {"layout": _STR, "layout_reason": _STR, "caption_style": _STR}
+_CLIP_EXTRA = {"layout": _STR, "layout_reason": _STR, "caption_style": _STR, "caption_text": _STR}
 _CLIP_ITEM["properties"] = {**_CLIP_ITEM["properties"], **_CLIP_EXTRA}
 _INT = {"type": "integer"}
 _SEO_PROPS = Seo.model_json_schema()["properties"]

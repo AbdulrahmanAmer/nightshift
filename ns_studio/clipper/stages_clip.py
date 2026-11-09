@@ -317,6 +317,19 @@ def edge_sentences(words: list[Word]) -> tuple[str, str]:
     return first, last
 
 
+def prompt_video_kind(p: ClipParams, an: Analysis) -> str:
+    """The kind of video the selection prompt is told: the owner's pick, else a template they chose, else the
+    kind read from the analysis ("unknown" only when the analysis cannot tell)."""
+    if p.video_kind and p.video_kind != "unknown":
+        return p.video_kind
+    if p.template != "auto":
+        return p.template
+    return analyze.kind_of_video(an)
+
+
+CAPTION_WORDS_FILE = "clip_caption_words.json"  # per clip: the model's cleaned spelling of each ASR word
+
+
 class SelectStage:
     """Pick and judge the clips: `clip_plan.json` lists kept clips (k in score order) and dropped ones.
 
@@ -350,7 +363,7 @@ class SelectStage:
                 clip_min_s=p.min_s,
                 clip_max_s=p.max_s,
                 max_candidates=10,
-                video_kind=p.video_kind if p.template == "auto" else p.template,
+                video_kind=prompt_video_kind(p, an),
                 analysis=analyze.prompt_view(an, ws, we),
             )
 
@@ -381,9 +394,10 @@ class SelectStage:
             return bool(raw.get("ok")), [str(r) for r in raw.get("reasons", [])]
 
         try:
-            items = select.select_plan(tr, p, ask, cache, judge)
+            items, cleaned = select.select_plan_and_captions(tr, p, ask, cache, judge)
         finally:
             ctx.write_json("clip_candidates.json", cache)
+        ctx.write_json(CAPTION_WORDS_FILE, cleaned)
         ctx.write_json("clip_plan.json", [c.model_dump(mode="json") for c in items])
         select.ensure_some_kept(items)
 
@@ -547,7 +561,7 @@ class CaptionsStage:
 
     name: str = "clip_captions"
     tenant: Tenant = None
-    inputs: tuple[str, ...] = ("transcript.json", "clip_plan.json", "clip_layout.json")
+    inputs: tuple[str, ...] = ("transcript.json", "clip_plan.json", "clip_layout.json", CAPTION_WORDS_FILE)
     outputs: tuple[str, ...] = ("captions/report.json",)
 
     def run(self, ctx: JobContext) -> None:
@@ -559,15 +573,26 @@ class CaptionsStage:
         mask = mask_profanity_setting(ctx.channel)
         picked = _picked_caption_style(ctx)  # the owner's choice on Create wins
         drop_fillers = ctx.channel.captions.remove_fillers
+        cleaned_words: dict[str, list[str]] = (
+            ctx.read_json(CAPTION_WORDS_FILE) if ctx.file(CAPTION_WORDS_FILE).exists() else {}
+        )
         seg_speaker = {s.i: s.speaker for s in tr.segments}
         ctx.subdir("captions")
         report: dict[str, Any] = {}
         for clip in plan:
             dur = clip.end_s - clip.start_s
             src_words = select.words_in(tr.words, clip.start_s, clip.end_s)
+            shown = cleaned_words.get(str(clip.k))
+            if shown is not None and len(shown) != len(src_words):
+                shown = None  # written for another span of this clip: keep the recogniser's spelling
             words = [
-                tmod.Word(w.w, max(0.0, w.start - clip.start_s), min(dur, max(0.0, w.end - clip.start_s)), si)
-                for w, si in zip(src_words, sentence_indices(src_words), strict=True)
+                tmod.Word(
+                    shown[n] if shown else w.w,
+                    max(0.0, w.start - clip.start_s),
+                    min(dur, max(0.0, w.end - clip.start_s)),
+                    si,
+                )
+                for n, (w, si) in enumerate(zip(src_words, sentence_indices(src_words), strict=True))
                 if not (drop_fillers and select.is_filler_word(w.w))
             ]
             style = picked or (
@@ -596,7 +621,8 @@ class CaptionsStage:
                 "words": len(words),
                 "style": style,
                 "first_caption_s": caps.first_event_start(ass),
-                "drift_ms": 0.0,  # captions are the ASR words themselves
+                "drift_ms": 0.0,  # captions keep the ASR word timings
+                "cleaned": shown is not None,
                 "avoid_regions": len(avoid),
                 "speakers": len(set(speakers.values())),
                 "backdrop_luma": luma,

@@ -352,3 +352,76 @@ def test_plan_carries_validated_emphasis_and_none_when_the_model_gave_none() -> 
     assert with_em.emphasis is not None and with_em.emphasis[-1].lower() == word.lower()
     assert "zzzabsent" not in with_em.emphasis
     assert without.emphasis is None
+
+
+# ---------- title limit and cleaned caption text (spec 19.5, 17.2) ----------
+def test_to_cand_limits_the_title_to_70_characters_at_a_word_boundary() -> None:
+    long = " ".join(["ledge"] * 18)  # 107 characters
+    c = sel.to_cand({"start_s": 1, "end_s": 30, "title": long}, 100.0)
+    assert c is not None and 0 < len(c.title) <= 70
+    assert c.title.split() == ["ledge"] * len(c.title.split())  # no word cut in half
+    short = sel.to_cand({"start_s": 1, "end_s": 30, "title": "  Why the ledge forgives you  "}, 100.0)
+    assert short is not None and short.title == "Why the ledge forgives you"
+    assert sel.to_cand({"start_s": 1, "end_s": 30, "title": "   "}, 100.0).title == "Clip"  # type: ignore[union-attr]
+
+
+def test_plan_keeps_a_ninety_character_title_at_seventy_or_less() -> None:
+    title = "How a single forgotten ledge saves forty seconds on every run of the mountain level today"
+    assert len(title) >= 85
+    raw = {"clips": [{"k": 1, "start_s": 0.5, "end_s": 50.0, "title": title, "score": 0.9}]}
+    plan = sel.select_plan(sample(), params(), Asker(raw))
+    assert plan and all(0 < len(i.title) <= 70 for i in plan)
+    assert title.startswith(plan[0].title)
+
+
+def test_to_cand_reads_and_merge_keeps_the_caption_text() -> None:
+    c = sel.to_cand({"start_s": 1, "end_s": 30, "caption_text": "  Hello, world.  "}, 100.0)
+    assert c is not None and c.caption_text == "Hello, world."
+    for bad in (None, "", "   ", 7, ["Hello"]):
+        got = sel.to_cand({"start_s": 1, "end_s": 30, "caption_text": bad}, 100.0)
+        assert got is not None and got.caption_text is None
+    a = sel.Cand(10, 40, score=0.5, caption_text="old text")
+    b = sel.Cand(12, 42, score=0.9, caption_text="new text")
+    assert sel.merge_overlaps([a, b], max_s=60)[0].caption_text == "new text"
+    assert sel.merge_overlaps([a, sel.Cand(12, 42, score=0.9)], max_s=60)[0].caption_text == "old text"
+
+
+def test_align_caption_text_restores_case_and_punctuation_and_keeps_every_asr_word() -> None:
+    words = _spoken("hello there my friend today we have twenty items um left")
+    text = "Hello there, my friend! Today we have 20 items left."
+    got = sel.align_caption_text(words, text)
+    # numbers as spoken ("20" for "twenty" is accepted), the dropped "um" stays as heard, nothing is added
+    assert got == ["Hello", "there,", "my", "friend!", "Today", "we", "have", "20", "items", "um", "left."]
+    assert got is not None and len(got) == len(words)
+
+
+def test_align_caption_text_does_not_invent_or_trust_a_different_text() -> None:
+    words = _spoken("hello there my friend today we have twenty items left")
+    assert sel.align_caption_text(words, "Something else entirely, none of it said.") is None
+    assert sel.align_caption_text(words, "Hello there. A different ending follows right here.") is None
+    assert sel.align_caption_text(words, " ".join(w.w for w in words)) is None  # nothing to clean
+    assert sel.align_caption_text(words, None) is None and sel.align_caption_text(words, "  ") is None
+    assert sel.align_caption_text([], "Hello.") is None
+    # an extra word the model added is ignored; the recogniser's words and count stay
+    got = sel.align_caption_text(words, "Hello there, my dear friend! Today we have twenty items left.")
+    assert got is not None and len(got) == len(words) and "dear" not in got and got[1] == "there,"
+
+
+def test_plan_carries_the_cleaned_words_of_the_kept_clips_and_only_those() -> None:
+    tr = sample()
+    span = sel.words_in(tr.words, 0.5, 50.0)
+    raw = {"clips": [
+        {"k": 1, "start_s": 0.5, "end_s": 50.0, "title": "With", "score": 0.9,
+         "caption_text": " ".join(w.w.upper() for w in span)},
+        {"k": 2, "start_s": 64.0, "end_s": 118.0, "title": "Without", "score": 0.8},
+    ]}
+    items, captions = sel.select_plan_and_captions(tr, params(), Asker(raw))
+    with_text = next(i for i in items if i.title == "With")
+    without = next(i for i in items if i.title == "Without")
+    assert list(captions) == [str(with_text.k)] and str(without.k) not in captions
+    heard = sel.words_in(tr.words, with_text.start_s, with_text.end_s)
+    shown = captions[str(with_text.k)]
+    assert len(shown) == len(heard)  # one display string per ASR word: the word timings stay
+    assert all(s in (w.w, w.w.upper()) for s, w in zip(shown, heard, strict=True))
+    assert sum(s != w.w for s, w in zip(shown, heard, strict=True)) >= len(heard) // 2
+    assert sel.select_plan(tr, params(), Asker(raw)) == items

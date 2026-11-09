@@ -8,6 +8,7 @@ parameters; raw LLM answers are cached per window by the stage.
 """
 from __future__ import annotations
 
+import difflib
 import re
 import string
 from collections.abc import Callable
@@ -16,7 +17,9 @@ from typing import Any
 
 from ns_common.errors import NsError
 from ns_common.models import ClipPlanItem, Transcript, Word
+from ns_common.textstats import normalize_tokens
 from ns_studio.clipper.models import ClipParams
+from ns_studio.clipper.seo import shorten_title
 
 FILLER_TOKENS = frozenset({"um", "uh", "uhm", "umm", "er", "erm", "like"})
 # What `captions.remove_fillers` leaves out of the captions: hesitations only. "like" stays (it is a word).
@@ -56,6 +59,7 @@ class Cand:
     layout_reason: str | None = None
     caption_style: str | None = None  # chosen by the model among the channel's caption styles
     emphasis: list[str] = field(default_factory=list)  # the model's 1-3 key words, not yet checked
+    caption_text: str | None = None  # the model's cleaned words of the span (casing, punctuation), unchecked
 
     @property
     def duration(self) -> float:
@@ -129,6 +133,8 @@ def _num(d: dict[str, Any], *keys: str) -> float | None:
 
 
 MAX_EMPHASIS = 3
+MAX_TITLE_CHARS = 70  # spec 19.5: a candidate title is honest and at most 70 characters
+MAX_CAPTION_TEXT_CHARS = 6000
 
 
 def _emphasis_words(v: Any) -> list[str]:
@@ -139,8 +145,10 @@ def _emphasis_words(v: Any) -> list[str]:
     return words[:MAX_EMPHASIS]
 
 
-def _opt_str(v: Any) -> str | None:
-    return v.strip() if isinstance(v, str) and v.strip() else None
+def _opt_str(v: Any, limit: int | None = None) -> str | None:
+    if not isinstance(v, str) or not v.strip():
+        return None
+    return v.strip()[:limit]
 
 
 def to_cand(d: dict[str, Any], duration_s: float) -> Cand | None:
@@ -160,7 +168,7 @@ def to_cand(d: dict[str, Any], duration_s: float) -> Cand | None:
     return Cand(
         start=start,
         end=end,
-        title=str(d.get("title") or "Clip").strip()[:100] or "Clip",
+        title=shorten_title(str(d.get("title") or "Clip"), MAX_TITLE_CHARS) or "Clip",
         hook_line=str(hook).strip() if isinstance(hook, str) and hook.strip() else None,
         why=str(d.get("why") or "").strip(),
         score=min(1.0, max(0.0, 0.5 if score is None else score)),
@@ -170,6 +178,7 @@ def to_cand(d: dict[str, Any], duration_s: float) -> Cand | None:
         layout_reason=_opt_str(d.get("layout_reason") or d.get("reason")),
         caption_style=_opt_str(d.get("caption_style")),
         emphasis=_emphasis_words(d.get("emphasis")),
+        caption_text=_opt_str(d.get("caption_text"), MAX_CAPTION_TEXT_CHARS),
     )
 
 
@@ -217,6 +226,7 @@ def _merge_pair(a: Cand, b: Cand, max_s: float) -> Cand:
         layout_reason=best.layout_reason or other.layout_reason,
         caption_style=best.caption_style or other.caption_style,
         emphasis=best.emphasis or other.emphasis,
+        caption_text=best.caption_text or other.caption_text,
     )
 
 
@@ -431,6 +441,40 @@ def sentence_emphasis(words: list[Word], wanted: list[str]) -> list[str] | None:
     return [chosen.get(i, "") for i in range(max(chosen) + 1)]
 
 
+MIN_CLEANED_SHARE = 0.5  # fewer matching words than this and the model's caption text is not trusted
+
+
+def _key(token: str) -> str:
+    """Spoken form of a token (case, punctuation and digits ignored), so "20," matches "twenty"."""
+    return " ".join(normalize_tokens(token))
+
+
+def align_caption_text(words: list[Word], text: str | None) -> list[str] | None:
+    """The model's cleaned `text` laid over the clip's ASR words, one display string per word (spec 17.2).
+
+    Only a word the model kept (same spoken form, ignoring case, punctuation and digit-or-word numbers) takes
+    the model's spelling; a word the model dropped, added or rephrased stays as the recogniser heard it, so
+    the word count and every timing are unchanged and nothing is invented. None when the model gave no text,
+    when it matches fewer than half of the words, or when it changes nothing.
+    """
+    if not words or not text or not text.strip():
+        return None
+    tokens = text.split()
+    sm = difflib.SequenceMatcher(None, [_key(w.w) for w in words], [_key(t) for t in tokens], autojunk=False)
+    out = [w.w for w in words]
+    matched = 0
+    for tag, i1, i2, j1, _ in sm.get_opcodes():
+        if tag != "equal":
+            continue
+        for off in range(i2 - i1):
+            if _key(words[i1 + off].w):
+                out[i1 + off] = tokens[j1 + off]
+                matched += 1
+    if matched < MIN_CLEANED_SHARE * len(words) or out == [w.w for w in words]:
+        return None
+    return out
+
+
 def _item(tr: Transcript, c: Cand, k: int, status: str, reasons: list[str]) -> ClipPlanItem:
     start, end = round(c.start, 3), round(c.end, 3)
     return ClipPlanItem(
@@ -452,6 +496,32 @@ def _item(tr: Transcript, c: Cand, k: int, status: str, reasons: list[str]) -> C
     )
 
 
+def select_plan_and_captions(
+    tr: Transcript,
+    params: ClipParams,
+    ask: Callable[[float, float], Any],
+    cache: dict[str, Any] | None = None,
+    judge: Judge | None = None,
+) -> tuple[list[ClipPlanItem], dict[str, list[str]]]:
+    """`select_plan` plus the cleaned caption words of the kept clips.
+
+    The second value maps `str(k)` to one display string per ASR word of the clip (the words
+    `words_in(tr.words, start_s, end_s)` gives), only for clips whose model text changed something. The plan
+    schema has no field for it (it belongs to `ns_common`), so the stage writes it beside the plan.
+    """
+    ranked, filtered = prepare_candidates(tr, params, ask, cache)
+    kept, judged = judge_loop(ranked, params, judge)
+    items = [_item(tr, c, i, "kept", []) for i, c in enumerate(kept, start=1)]
+    extra = [*judged, *filtered]
+    items += [_item(tr, d.cand, len(kept) + j, "dropped", d.reasons) for j, d in enumerate(extra, start=1)]
+    captions: dict[str, list[str]] = {}
+    for item, c in zip(items, kept, strict=False):
+        cleaned = align_caption_text(words_in(tr.words, item.start_s, item.end_s), c.caption_text)
+        if cleaned is not None:
+            captions[str(item.k)] = cleaned
+    return items, captions
+
+
 def select_plan(
     tr: Transcript,
     params: ClipParams,
@@ -460,12 +530,7 @@ def select_plan(
     judge: Judge | None = None,
 ) -> list[ClipPlanItem]:
     """Full `clip_plan.json` content: kept clips (k from 1, score order), then dropped ones with reasons."""
-    ranked, filtered = prepare_candidates(tr, params, ask, cache)
-    kept, judged = judge_loop(ranked, params, judge)
-    items = [_item(tr, c, i, "kept", []) for i, c in enumerate(kept, start=1)]
-    extra = [*judged, *filtered]
-    items += [_item(tr, d.cand, len(kept) + j, "dropped", d.reasons) for j, d in enumerate(extra, start=1)]
-    return items
+    return select_plan_and_captions(tr, params, ask, cache, judge)[0]
 
 
 def ensure_some_kept(items: list[ClipPlanItem]) -> list[ClipPlanItem]:
