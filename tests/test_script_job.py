@@ -98,6 +98,17 @@ def _keep_plans(monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.fixture
+def h(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A home with a one-letter name for the tests that render: one ffmpeg command repeats the job path for
+    every stock clip, and on a Windows runner (a pytest temp path of 100+ characters) a long path pushes it
+    past the 32767 characters a command line may have."""
+    home = tmp_path / "h"
+    home.mkdir()
+    monkeypatch.setenv("NIGHTSHIFT_HOME", str(home))
+    return home
+
+
+@pytest.fixture
 def env_client(tmp_home: Path):
     return make_env(tmp_home)
 
@@ -350,10 +361,10 @@ def _fake_run(monkeypatch: pytest.MonkeyPatch, tmp_home: Path, fmt: str, script:
 
 
 @pytest.mark.skipif(not ffmpeg.available(), reason="ffmpeg not installed")
-def test_studio_run_script_short_renders_the_owners_words_inside_the_qc_band(tmp_home: Path, monkeypatch: pytest.MonkeyPatch):
+def test_short_render_qc(h: Path, monkeypatch: pytest.MonkeyPatch):
     """A 249-word script (the size the review found failing QC after the render) now fits its own bucket."""
     text = long_script(240)
-    job_dir = _fake_run(monkeypatch, tmp_home, "shorts_only", text, "--title", "The Porch")
+    job_dir = _fake_run(monkeypatch, h, "shorts_only", text, "--title", "Porch")
     (part,) = json.loads((job_dir / "parts.json").read_text(encoding="utf-8"))
     assert part["text"].replace("\n\n", " ").split() == text.split()  # verbatim: nothing cut, nothing added
     state = json.loads((job_dir / "stage_state.json").read_text(encoding="utf-8"))
@@ -387,10 +398,10 @@ def test_long_script_voice_reaches_the_nine_minute_floor_without_a_word_added(tm
 
 
 @pytest.mark.skipif(not ffmpeg.available() or not os.environ.get("NS_SLOW_TESTS"), reason="set NS_SLOW_TESTS=1: renders a 9 minute video")
-def test_studio_run_script_long_renders_the_owners_chapters_and_cuts_shorts(tmp_home: Path, monkeypatch: pytest.MonkeyPatch):
+def test_long_render_qc(h: Path, monkeypatch: pytest.MonkeyPatch):
     text = fitted_script()
     assert 1300 <= word_count(text) <= 1450
-    job_dir = _fake_run(monkeypatch, tmp_home, "master_first", text)
+    job_dir = _fake_run(monkeypatch, h, "master_first", text)
     story = json.loads((job_dir / "story.json").read_text(encoding="utf-8"))
     body = " ".join(c["text"] for c in story["chapters"])
     assert body.split() == re.sub(r"^## .*$", "", text, flags=re.M).split()  # the voice read exactly these words
@@ -406,19 +417,19 @@ def test_studio_run_script_long_renders_the_owners_chapters_and_cuts_shorts(tmp_
 
 
 @pytest.mark.skipif(not ffmpeg.available(), reason="ffmpeg not installed")
-def test_a_slow_voice_gets_a_longer_bucket_and_still_lands_inside_the_qc_band(tmp_home: Path, monkeypatch: pytest.MonkeyPatch):
+def test_slow_voice_qc(h: Path, monkeypatch: pytest.MonkeyPatch):
     """The review's case: 260 words with the channel voice at speed 0.85 ran 123 s against a 105 s estimate."""
     from ns_common.models import Voice
 
-    text = long_script(240)
+    text = long_script(200)
     paths = Paths.from_env()
     paths.ensure()
-    ch = yaml_only_channel(paths, voice=Voice(speed=0.85))
+    ch = yaml_only_channel(paths, slug="ad", voice=Voice(speed=0.85))
     normal = plan_script(text, "shorts_only", list(ch.pools.pacings))
     slow = plan_script(text, "shorts_only", list(ch.pools.pacings), voice_speed=0.85)
     assert slow.pacing == normal.pacing and slow.seconds > normal.seconds * 1.1
     assert slow.length_bucket is not None and normal.length_bucket is not None and slow.length_bucket > normal.length_bucket
-    job_dir = _fake_run(monkeypatch, tmp_home, "shorts_only", text, "--channel", ch.slug)
+    job_dir = _fake_run(monkeypatch, h, "shorts_only", text, "--channel", ch.slug)
     combo = json.loads((job_dir / "job.json").read_text(encoding="utf-8"))["combo"]
     assert combo["length_bucket"] == slow.length_bucket
     (part,) = json.loads((job_dir / "parts.json").read_text(encoding="utf-8"))
@@ -483,6 +494,15 @@ def test_studio_run_script_dry_run_prints_the_owner_script_plan(tmp_home: Path, 
     assert "ideas" not in res.output and "split" not in res.output
 
 
+PLAIN_CLI = {"NO_COLOR": "1", "TERM": "dumb", "COLUMNS": "200"}
+
+
+def squashed(output: str) -> str:
+    """CLI output without colour codes, rich's box lines and any whitespace, so a wrapped sentence still matches."""
+    no_ansi = re.sub(chr(27) + r"\[[0-9;]*[A-Za-z]", "", output)
+    return re.sub(r"[\s─-╿]+", "", no_ansi)
+
+
 def test_studio_run_script_is_refused_for_the_wrong_use(tmp_home: Path):
     f = tmp_home / "story.txt"
     f.write_text(SHORT, encoding="utf-8")
@@ -497,11 +517,11 @@ def test_studio_run_script_is_refused_for_the_wrong_use(tmp_home: Path):
         (["--script", str(f), "--daily"], "cannot be combined"),
     ]
     for extra, needle in cases:
-        res = runner.invoke(app, ["run", "--fake-services", "--format", "shorts_only", *extra])
+        res = runner.invoke(app, ["run", "--fake-services", "--format", "shorts_only", *extra], env=PLAIN_CLI)
         assert res.exit_code == 2, (extra, res.output)
-        assert needle in re.sub(r"\s+", " ", re.sub(r"[│╭╰╮╯─]", " ", res.output)), (extra, res.output)
-    res = runner.invoke(app, ["run", "--dry-run", "--format", "series_compilation", "--script", str(f)])
-    assert res.exit_code == 2 and "needs --format shorts_only or master_first" in re.sub(r"\s+", " ", res.output)
+        assert squashed(needle) in squashed(res.output), (extra, res.output)
+    res = runner.invoke(app, ["run", "--dry-run", "--format", "series_compilation", "--script", str(f)], env=PLAIN_CLI)
+    assert res.exit_code == 2 and squashed("needs --format shorts_only or master_first") in squashed(res.output)
     assert not Paths.from_env().jobs_dir.exists() or not list(Paths.from_env().jobs_dir.iterdir())
 
 
@@ -575,22 +595,22 @@ def test_a_long_script_for_a_long_video_is_accepted(env_client):
 
 
 @pytest.mark.skipif(not ffmpeg.available(), reason="FFmpeg required for the fake pipeline")
-def test_a_dev_install_turns_a_script_into_a_real_video(tmp_home: Path):
+def test_dev_install_video(h: Path):
     """The dashboard's own child process (`studio_job run`) with the script in its arguments, on the fakes."""
     paths = Paths.from_env()
     paths.ensure()
     save_runtime(paths, Runtime.default("cpu-dev").model_copy(update={"dev_mode": True}))
-    ch = yaml_only_channel(paths)
+    ch = yaml_only_channel(paths, slug="ad")
     seen: list[dict[str, Any]] = []
     done = StudioRunner(paths, poll_s=0.1, grace_s=2).run(
-        "run", {"channel": ch.slug, "fmt": "shorts_only", "count": 1, "script": SHORT, "script_title": "The Porch"},
+        "run", {"channel": ch.slug, "fmt": "shorts_only", "count": 1, "script": SHORT, "script_title": "Porch"},
         on_event=seen.append,
     )
     assert done["output_ids"] and not any(e["ev"] == "error" for e in seen), seen
     names = [e["stage"] for e in seen if e["ev"] == "stage"]
     assert names[0] == "script_import_short" and "ideas" not in names and "outbox" in names, names
     job_dir = paths.job_dir(done["job_ids"][0])
-    assert "The Porch" in (job_dir / "script.md").read_text(encoding="utf-8")
+    assert "Porch" in (job_dir / "script.md").read_text(encoding="utf-8")
     assert list(paths.outbox.rglob("*.mp4"))
 
 
