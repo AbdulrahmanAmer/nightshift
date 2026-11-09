@@ -35,6 +35,7 @@ from ns_studio.media.render import FINAL_LUFS, FINAL_TP, VERTICAL, fit_caption_c
 from ns_studio.media.shotplan import beat_spans, plan_slots
 from ns_studio.media.transcribe import Word
 from ns_studio.stages import Tenant
+from ns_studio.text.story_profile import with_mark
 
 HOOK_GAP_S = 0.15
 CLOSE_GAP_S = 0.35
@@ -187,4 +188,4 @@ class ShortsDeriveStage:
             ctx.log.info("render_done", job_id=ctx.job_id, item=item, duration_s=report[item]["duration_s"],
                          shots=report[item]["shots"])
         ctx.write_json("clips/shorts_shots.json", shots_out)
-        ctx.write_json("render/report.json", report)
+        ctx.write_json("render/report.json", with_mark(ctx, report))

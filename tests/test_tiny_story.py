@@ -36,7 +36,7 @@ from tests.helpers import make_channel, make_ctx
 
 RUBRIC = ("hook", "clarity", "pacing", "payoff", "cliffhangers", "originality", "voice_fit")
 GOOD_CRITIC = {"scores": {k: 9 for k in RUBRIC}, "fixes": []}
-TINY_MASTER_WORDS = words_for_seconds(9 * 60, 155, fixed_s=master_fixed_seconds(7))  # 9:00 in 7 chapters
+TINY_MASTER_WORDS = words_for_seconds(4 * 60, 155, fixed_s=master_fixed_seconds(5))  # 4:00 in 5 chapters
 
 
 def profiles() -> Any:
@@ -117,7 +117,7 @@ def story_text(sentences: int) -> str:
     return " ".join(body_sentences(3, sentences))
 
 
-def fake_story(chapters: int = 7) -> Story:
+def fake_story(chapters: int = 5) -> Story:
     return Story.model_validate(
         {
             "working_title": "The Pier Lamp",
@@ -169,9 +169,10 @@ def test_the_tiny_profile_is_a_scale_down_never_a_switch_off():
     assert t.chapter_band[0] < n.chapter_band[0] and t.chapter_band[1] > n.chapter_band[1]
     assert t.short_band is not None and 0 < t.short_band[0] < 1 < t.short_band[1]
     assert t.moments_min(4) == 2 and t.moments_min(1) == 1  # a cap, never a raise
-    assert t.master_floor_s is not None and t.master_floor_s >= 510.0  # never under QC's own 8:30
+    assert t.master_qc_s is not None and t.master_floor_s is not None and t.master_max_s is not None
+    assert t.master_qc_s[0] < t.master_floor_s < t.master_max_s < t.master_qc_s[1]  # QC is the outer window
     assert t.master_chapters is not None and 5 <= t.master_chapters <= 7  # the Plan model's own bounds
-    assert t.master_minutes is not None and t.master_minutes >= 9
+    assert t.master_minutes is not None and t.master_minutes * 60 < t.master_max_s
     assert t.part_hard_floor < n.part_hard_floor and t.part_chapter_words < n.part_chapter_words
 
 
@@ -223,18 +224,18 @@ def test_tiny_short_budget_asks_for_the_same_words_and_accepts_a_wider_band():
     assert (tiny.parts, tiny.wpm) == (normal.parts, normal.wpm)
 
 
-def test_tiny_master_budget_plans_the_shortest_master_in_the_most_chapters():
+def test_tiny_master_budget_plans_four_minutes_in_the_fewest_chapters():
     sp = profiles()
     mb = master_budget(14, "standard", profile=sp.TINY)
-    assert (mb.target_minutes, mb.chapters, mb.wpm) == (9, 7, 155)
-    assert mb.target_words == TINY_MASTER_WORDS
-    assert mb.chapter_budgets == distribute_words(TINY_MASTER_WORDS, 7)
+    assert (mb.target_minutes, mb.chapters, mb.wpm) == (4, 5, 155)
+    assert mb.target_words == TINY_MASTER_WORDS == 549
+    assert mb.chapter_budgets == distribute_words(TINY_MASTER_WORDS, 5)
     assert mb.min_words == round(mb.target_words * 0.5)  # the planning floor is scaled too
-    assert master_budget((10, 14), "brisk", profile=sp.TINY).target_minutes == 9
+    assert master_budget((10, 14), "brisk", profile=sp.TINY).target_minutes == 4
     with pytest.raises(ValueError):  # the input bounds are not the profile's
         master_budget(8, "standard", profile=sp.TINY)
     b = chapter_budget(178, 155, profile=sp.TINY)
-    assert (b.words, b.min_words, b.max_words) == (178, 89, 356)
+    assert (b.words, b.min_words, b.max_words) == (178, 89, 534)
 
 
 def test_tiny_reading_floor_and_length_band_still_fail_what_is_too_little():
@@ -282,7 +283,7 @@ def test_validate_story_and_chapter_take_the_profile():
 
 
 # ------------------------------------------------------------------------------ the master text stages
-def plan_answer(chapters: int = 7) -> dict[str, Any]:
+def plan_answer(chapters: int = 5) -> dict[str, Any]:
     return {
         "working_title": "The Pier Lamp",
         "chapters": [
@@ -313,8 +314,9 @@ def master_ctx(
     tiny: bool,
     texts: dict[int, str] | None = None,
     picked: tuple[int, ...] = (1, 3, 5),
+    sentences: int = 14,
 ):
-    """A master job whose fake model writes 7 chapters of about 138 words (a 1 to 2 GB model's size)."""
+    """A master job whose fake model writes 5 chapters of `sentences` sentences (14 are about 138 words)."""
     monkeypatch.setitem(FORMAT_STAGES, "master_first", list(M.MASTER_STAGES))
     ctx = make_ctx(
         tmp_home, fmt="master_first", channel=make_channel(format="master_first", long_minutes=(11, 11))
@@ -329,7 +331,7 @@ def master_ctx(
     }
     for n in range(1, 8):
         overrides[f"chapter_draft_{n}"] = {
-            "text": texts.get(n, chapter_text(n)),
+            "text": texts.get(n, chapter_text(n, sentences)),
             "summary": "Two plain facts.",
         }
     ctx.services.llm = FakeLlm(FIXTURES_LLM, overrides=overrides)
@@ -342,11 +344,11 @@ def test_a_model_at_the_tiny_scale_passes_every_text_stage(tmp_home: Path, monke
 
     plan = Plan.model_validate(ctx.read_json("plan.json"))
     mb = master_budget(11, "standard", profile=profiles().TINY)
-    assert (plan.target_minutes, plan.target_words, len(plan.chapters)) == (9, mb.target_words, 7)
+    assert (plan.target_minutes, plan.target_words, len(plan.chapters)) == (4, mb.target_words, 5)
     assert [c.word_budget for c in plan.chapters] == list(mb.chapter_budgets)
     assert ctx.read_json("plan_meta.json")["min_words"] == mb.min_words
     story = Story.model_validate(ctx.read_json("story.json"))
-    assert len(story.chapters) == 7
+    assert len(story.chapters) == 5
     assert all(130 <= c.word_count <= 150 for c in story.chapters)
     shorts = [ShortsPlanItem.model_validate(i) for i in ctx.read_json("shorts_plan.json")]
     assert [s.chapter for s in shorts] == [1, 3, 5]  # 3 of the 4 a normal install wants
@@ -361,7 +363,7 @@ def test_a_model_at_the_tiny_scale_passes_every_text_stage(tmp_home: Path, monke
 def test_a_model_that_writes_less_than_the_tiny_scale_still_fails_with_e303(
     tmp_home: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    little = chapter_text(3, 6)  # about 60 words: under half of a 178-word chapter
+    little = chapter_text(3, 3)  # about 30 words: under half of a 110-word chapter
     ctx = master_ctx(monkeypatch, tmp_home, tiny=True, texts={3: little})
     with pytest.raises(NsError) as ei:
         run_job(ctx)
@@ -392,13 +394,13 @@ def test_the_same_model_with_the_switch_off_fails_the_normal_thresholds(
         run_job(ctx)
     assert ei.value.code == "NS-E303"
     mb = master_budget(11, "standard")
-    b = chapter_budget(distribute_words(mb.target_words, 7)[0], 155)
+    b = chapter_budget(distribute_words(mb.target_words, 5)[0], 155)
     first = f"length: {word_count(chapter_text(1))} words, allowed {b.min_words}-{b.max_words}"
     assert first in ei.value.detail and "reading_level: grade" in ei.value.detail
 
 
 class ReviseLlm(FakeLlm):
-    """Answers `revise` with a chapter of 13 plain sentences (about 130 words), the scale a small model writes."""
+    """Answers `revise` with a chapter of 15 plain sentences (about 150 words), the scale a small model writes."""
 
     def complete_text(
         self,
@@ -412,7 +414,7 @@ class ReviseLlm(FakeLlm):
     ) -> str:
         if prompt_name == "revise":
             self._record(prompt_name=prompt_name, system=system, user=user, thinking=thinking)
-            return chapter_text(2, 13)
+            return chapter_text(2, 15)
         return super().complete_text(prompt_name=prompt_name, system=system, user=user, thinking=thinking)
 
 
@@ -430,14 +432,14 @@ def test_a_continuity_revision_of_a_tiny_chapter_is_validated_by_the_profile(
     """The continuity stage revises a chapter and validates the new text again: that call reads the profile."""
     ctx = master_ctx(monkeypatch, tmp_home, tiny=True)
     found = {"chapter": 2, "problem": "The lamp changes colour.", "fix": "Keep it red."}
-    answers = [{"ok": False, "issues": [found]}, *[{"ok": True, "issues": []}] * 5]  # six chapter pairs
+    answers = [{"ok": False, "issues": [found]}, *[{"ok": True, "issues": []}] * 3]  # four chapter pairs
     llm = ReviseLlm(FIXTURES_LLM, overrides={**ctx.services.llm.overrides, "continuity": answers})  # type: ignore[attr-defined]
     ctx.services.llm = llm
     assert run_job(ctx) == M.MASTER_STAGES
     revisions = [c for c in llm.calls if c["prompt_name"] == "revise"]
     assert len(revisions) == 1 and "Keep it red." in revisions[0]["user"]
     story = Story.model_validate(ctx.read_json("story.json"))
-    assert story.chapters[1].word_count == word_count(chapter_text(2, 13)) and story.revisions == 1
+    assert story.chapters[1].word_count == word_count(chapter_text(2, 15)) and story.revisions == 1
     assert ctx.read_json("continuity.json")["revised"] == [2]
 
     ctx.runtime = Runtime.default("cpu-dev")  # the same revision with the switch off is a normal install's
@@ -449,7 +451,7 @@ def test_a_continuity_revision_of_a_tiny_chapter_is_validated_by_the_profile(
 def test_the_story_is_short_warning_is_at_the_profiles_share_of_the_target(
     tmp_home: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    ctx = master_ctx(monkeypatch, tmp_home, tiny=True)
+    ctx = master_ctx(monkeypatch, tmp_home, tiny=True, sentences=8)  # five chapters of about 78 words
     run_job(ctx)
     plan = Plan.model_validate(ctx.read_json("plan.json"))
     words = sum(c.word_count for c in Story.model_validate(ctx.read_json("story.json")).chapters)
@@ -611,24 +613,24 @@ class Job:
     owner_script: bool = False
 
 
-def test_the_duration_floor_is_the_profiles_and_never_under_qc():
+def test_the_duration_floor_is_the_profiles_and_never_under_qcs_own_minimum():
     import ns_studio.media.master as MM
-    from ns_studio.media.qc import LONG_RANGE_S
+    from ns_studio.media.qc import duration_check
 
     sp = profiles()
     ctx = Job(Runtime.default("cpu-dev"))
     assert MM.floor_s(ctx) == MM.FLOOR_S == 540.0
     ctx.runtime = tiny_runtime()
-    # the 30 s planning margin goes, QC's 8:30 stays and a few seconds over it keep a master off QC's edge
-    assert MM.floor_s(ctx) == sp.TINY.master_floor_s
-    assert LONG_RANGE_S[0] + 5 <= MM.floor_s(ctx) < MM.FLOOR_S
+    # H-8b: half the 4:00 plan is the floor, and QC's window of the profile starts a few seconds under it
+    assert MM.floor_s(ctx) == sp.TINY.master_floor_s == 120.0
+    assert duration_check(MM.floor_s(ctx), "long", None, profile=sp.TINY).passed
 
 
 def test_an_owners_own_script_keeps_the_normal_floor_on_a_tiny_install():
     import ns_studio.media.master as MM
 
     ctx = Job(tiny_runtime(), owner_script=True)
-    assert MM.floor_s(ctx) == MM.FLOOR_S == 540.0  # not a model-size problem: 8:30 to 9:00 still fails
+    assert MM.floor_s(ctx) == MM.FLOOR_S == 540.0  # not a model-size problem: a short script still fails
 
 
 def test_series_parts_are_planned_in_more_and_smaller_chapters_when_tiny(tmp_home: Path):

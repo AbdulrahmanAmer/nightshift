@@ -225,6 +225,7 @@ function Review({ o, items, tab, onTab, onPick, onChanged, channelName }: { o: O
             </div>
             <div className="pointer-events-none absolute top-3 left-3 flex flex-wrap gap-2">
               <Badge tone="overlay" size="md">{kindLabel(o.kind)}{o.k ? ` ${o.k}` : ""}<span className="font-medium opacity-75 ds-num">{fmtDur(o.duration_s)}</span></Badge>
+              {o.profile ? <Badge tone="danger" variant="solid" size="md">Test output</Badge> : null}
             </div>
           </div>
         </div>

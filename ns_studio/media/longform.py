@@ -68,6 +68,7 @@ from ns_studio.media.render import (
 )
 from ns_studio.media.shotplan import Shot, beat_spans, plan_slots
 from ns_studio.stages import Tenant
+from ns_studio.text.story_profile import entry_with_mark
 
 MIDROLL_EDGE_S = 120.0
 
@@ -436,9 +437,9 @@ class RenderMasterStage:
         ctx.write_json("long/chapters.json", chapters_json(timeline, total))
         for p in segs:
             p.unlink(missing_ok=True)
-        ctx.write_json("render/long.json", {
+        ctx.write_json("render/long.json", entry_with_mark(ctx, {
             "path": str(master), "audio": str(audio), "duration_s": round(ff.duration_s(master), 3),
             "chapters": len(timeline), "shots": len(shots_all), "encoder": ctx.runtime.video.encoder,
-        })
+        }))
         ctx.log.info("render_done", job_id=ctx.job_id, item="long", duration_s=round(total, 2),
                      shots=len(shots_all))

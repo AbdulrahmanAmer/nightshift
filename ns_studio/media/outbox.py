@@ -17,6 +17,7 @@ from ns_studio.context import JobContext
 from ns_studio.media.master import load_shorts
 from ns_studio.media.shotplan import Shot
 from ns_studio.stages import Tenant
+from ns_studio.text.story_profile import job_mark
 
 JITTER_MIN = 45
 _JOB_DATE = re.compile(r"-(\d{8})-[0-9a-f]{4}$")
@@ -243,9 +244,18 @@ def publish_line(publish_after: str) -> str:
     return f"PUBLISH AFTER (local time): {publish_after.replace('T', ' ')}{suffix}"
 
 
+TEST_BANNER = (
+    "TEST OUTPUT ({mark}): made on an engine-test install with a tiny model, a short length and "
+    "placeholder footage. Do not upload."
+)
+
+
 def sheet_text(meta: Metadata, video_name: str, *, related_title: str | None = None) -> str:
-    """The plain-text upload sheet: everything to paste into YouTube Studio, in order."""
-    lines = [
+    """The plain-text upload sheet: everything to paste into YouTube Studio, in order.
+
+    The sheet of a video made on an engine-test install (`meta.profile`) opens with a line that says so."""
+    lines = [TEST_BANNER.format(mark=meta.profile), ""] if meta.profile else []
+    lines += [
         f"FILE: {video_name}",
         f"TITLE: {meta.title}",
         "",
@@ -298,16 +308,20 @@ def record_output(
     path: Path,
     duration_s: float,
     shots: Sequence[Shot],
+    profile: str | None = None,
 ) -> None:
-    """Upsert the `outputs` row (status preserved on re-run) and replace this item's `clip_usage` rows."""
+    """Upsert the `outputs` row (status preserved on re-run) and replace this item's `clip_usage` rows.
+
+    `profile` is `tiny_story` for a video made on an engine-test install and NULL for every other video: the
+    publish helpers and the Queue read it from the row."""
     now = datetime.now(UTC).isoformat()
     ctx.db.execute(
         "insert into outputs(output_id, job_id, channel, kind, k, title, path, duration_s, combo_id, status,"
-        " created_at) values (?,?,?,?,?,?,?,?,?,'pending',?) on conflict(output_id) do update set"
+        " profile, created_at) values (?,?,?,?,?,?,?,?,?,'pending',?,?) on conflict(output_id) do update set"
         " title=excluded.title, path=excluded.path, duration_s=excluded.duration_s,"
-        " combo_id=excluded.combo_id",
+        " combo_id=excluded.combo_id, profile=excluded.profile",
         (f"{ctx.job_id}/{item}", ctx.job_id, ctx.channel.slug, kind, k, meta.title, str(path), duration_s,
-         meta.combo_id, now),
+         meta.combo_id, profile, now),
     )
     ctx.db.execute("delete from clip_usage where job_id=? and item=?", (ctx.job_id, item))
     for c in meta.clips:
@@ -361,6 +375,7 @@ class OutboxStage:
         shots_all: dict[str, Any] = ctx.read_json("clips/shots.json")
         seos = [Seo.model_validate(s) for s in ctx.read_json("seo.json")]
         advice = load_advice(ctx)
+        mark = job_mark(ctx)
         manifest: dict[str, Any] = {}
         for item, info in rendered.items():
             k = int(item[1:])
@@ -378,13 +393,14 @@ class OutboxStage:
                 publish_at=publish_after(
                     ctx.channel, ctx.job_id, item, day_offset=short_day_offset(ctx.channel, k)
                 ),
+                extra={"profile": mark} if mark else None,
             )
             mp4 = copy_if_changed(Path(info["path"]), outbox_target(ctx, "short", k))
             write_text_atomic(mp4.with_suffix(".json"), meta.model_dump_json(indent=2) + "\n", newline=None)
             write_sheet_txt(meta, mp4.name, mp4.with_suffix(".txt"))
             record_output(
                 ctx, kind="short", k=k, item=item, meta=meta, path=mp4,
-                duration_s=float(info["duration_s"]), shots=shots,
+                duration_s=float(info["duration_s"]), shots=shots, profile=mark,
             )
             manifest[item] = {"mp4": str(mp4), "json": str(mp4.with_suffix(".json")),
                               "txt": str(mp4.with_suffix(".txt"))}
@@ -451,6 +467,8 @@ def run_outbox_master(ctx: JobContext) -> None:
         "hashtags": [h for h in long_seo.hashtags if h.lower() != "#shorts"][:5],
     })
     thumbs = [f"thumb_{i}.jpg" for i in (1, 2, 3) if ctx.file(f"long/thumb_{i}.jpg").exists()]
+    mark = job_mark(ctx)
+    marked: dict[str, Any] = {"profile": mark} if mark else {}
     manifest: dict[str, Any] = {}
 
     meta = build_metadata(
@@ -462,6 +480,7 @@ def run_outbox_master(ctx: JobContext) -> None:
                          for c in chapters],
             "midroll_suggestions_s": chapters_doc.get("midroll_suggestions_s", []),
             "thumbnails": thumbs,
+            **marked,
         },
     )
     mp4 = copy_if_changed(Path(long_info["path"]), outbox_target(ctx, "long"))
@@ -470,7 +489,7 @@ def run_outbox_master(ctx: JobContext) -> None:
     write_text_atomic(mp4.with_suffix(".json"), meta.model_dump_json(indent=2) + "\n", newline=None)
     write_sheet_txt(meta, mp4.name, mp4.with_suffix(".txt"))
     record_output(ctx, kind="long", k=None, item="long", meta=meta, path=mp4,
-                  duration_s=float(long_info["duration_s"]), shots=long_shots)
+                  duration_s=float(long_info["duration_s"]), shots=long_shots, profile=mark)
     manifest["long"] = {"mp4": str(mp4), "json": str(mp4.with_suffix(".json")),
                         "txt": str(mp4.with_suffix(".txt"))}
 
@@ -496,13 +515,13 @@ def run_outbox_master(ctx: JobContext) -> None:
                 day_offset=1 + short_day_offset(ctx.channel, k) + series_delay_days(ctx),
             ),
             extra={"related_video_instruction": f"Set Related video -> {long_seo.title}",
-                   "parent_job_id": ctx.job_id},
+                   "parent_job_id": ctx.job_id, **marked},
         )
         smp4 = copy_if_changed(Path(info["path"]), outbox_target(ctx, "short", k))
         write_text_atomic(smp4.with_suffix(".json"), smeta.model_dump_json(indent=2) + "\n", newline=None)
         write_sheet_txt(smeta, smp4.name, smp4.with_suffix(".txt"), related_title=long_seo.title)
         record_output(ctx, kind="short", k=k, item=item, meta=smeta, path=smp4,
-                      duration_s=float(info["duration_s"]), shots=shots)
+                      duration_s=float(info["duration_s"]), shots=shots, profile=mark)
         manifest[item] = {"mp4": str(smp4), "json": str(smp4.with_suffix(".json")),
                           "txt": str(smp4.with_suffix(".txt"))}
     ctx.write_json("outbox/manifest.json", manifest)

@@ -345,7 +345,9 @@ class ContinuityStage:
         full_text = "\n\n".join(c.text for c in built)
         total_words = sum(c.word_count for c in built)
         # Chapters may each run 20 % over; together they must still fit the 15:00 QC ceiling.
-        raise_if([v for v in [check_master_length([c.text for c in built], wpm)] if v is not None])
+        raise_if(
+            [v for v in [check_master_length([c.text for c in built], wpm, profile=profile)] if v is not None]
+        )
         if total_words < plan.target_words * profile.master_short_share:
             ctx.log.warn("story_short", words=total_words, target=plan.target_words, job_id=ctx.job_id)
         vec = ctx.services.embed.embed([embed_window(full_text, ctx.runtime.embed.batch_size)])[0]

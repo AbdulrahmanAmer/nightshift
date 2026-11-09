@@ -38,17 +38,19 @@ def check_length(text: str, budget: Budget) -> Violation | None:
     return None
 
 
-def check_master_length(chapters: Sequence[str], wpm: float) -> Violation | None:
+def check_master_length(
+    chapters: Sequence[str], wpm: float, *, profile: StoryProfile = NORMAL
+) -> Violation | None:
     """The chapters may add up to at most 14:30 of audio at `wpm`: QC fails anything over 15:00 (NS-E404).
 
     The estimate counts the TTS pauses (350 ms per sentence, 700 ms per paragraph, 1.2 s before each cliff
-    line) and the 1.2 s title cards, not just the words.
+    line) and the 1.2 s title cards, not just the words. A profile with `master_max_s` (the engine test's
+    tiny model, 8:00 against a QC ceiling of 8:30) has its own ceiling.
     """
+    limit = MASTER_MAX_SECONDS if profile.master_max_s is None else profile.master_max_s
     seconds = master_seconds(chapters, wpm)
-    if seconds > MASTER_MAX_SECONDS:
-        return Violation(
-            "master_length", f"about {seconds:.0f} s of audio at {wpm} wpm, at most {MASTER_MAX_SECONDS} s"
-        )
+    if seconds > limit:
+        return Violation("master_length", f"about {seconds:.0f} s of audio at {wpm} wpm, at most {limit:g} s")
     return None
 
 

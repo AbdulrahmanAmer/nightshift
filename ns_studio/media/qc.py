@@ -13,6 +13,7 @@ from ns_common.models import QcCheck, QcResult
 from ns_studio.context import JobContext
 from ns_studio.media.audio import Loudness, measure_loudness, speech_onset_s
 from ns_studio.stages import Tenant
+from ns_studio.text.story_profile import NORMAL, Mark, StoryProfile, duration_profile, job_mark
 
 SHORT_MAX_S = 179.0
 BUCKET_TOLERANCE = 0.15
@@ -35,17 +36,35 @@ def series_max_s(minutes: float) -> float:
     return min(SERIES_MAX_S, max(LONG_RANGE_S[1], minutes * 60.0 * SERIES_OVERRUN))
 
 
-def duration_check(d: float, kind: Kind, bucket_s: float | None, long_max_s: float | None = None) -> QcCheck:
-    """Shorts: within bucket +-15 % and <= 179 s. Masters: 8:30 to 15:00 (`long_max_s` for series parts)."""
+def duration_check(
+    d: float,
+    kind: Kind,
+    bucket_s: float | None,
+    long_max_s: float | None = None,
+    profile: StoryProfile = NORMAL,
+) -> QcCheck:
+    """Shorts: within bucket +-15 % and <= 179 s. Masters: 8:30 to 15:00 (`long_max_s` for series parts).
+
+    A profile with its own window (the engine test's tiny model, `ns_studio.text.story_profile`) replaces the
+    master's 8:30 to 15:00 and the Short's +-15 % of its bucket; the 179 s a Short may not pass is a platform
+    limit and stays, and a series part's own ceiling (`long_max_s`) still wins over the master's upper end.
+    """
     if kind == "long":
-        lo, hi = LONG_RANGE_S[0], long_max_s or LONG_RANGE_S[1]
+        window = profile.master_qc_s or LONG_RANGE_S
+        lo, hi = window[0], long_max_s or window[1]
         return QcCheck(passed=lo <= d <= hi, value=round(d, 2), limit=f"{lo:.0f}-{hi:.0f} s")
     ok = d <= SHORT_MAX_S
     limit = f"<= {SHORT_MAX_S:.0f} s"
     if bucket_s:
-        lo, hi = bucket_s * (1 - BUCKET_TOLERANCE), bucket_s * (1 + BUCKET_TOLERANCE)
+        share = profile.short_band
+        if share is None:
+            lo, hi = bucket_s * (1 - BUCKET_TOLERANCE), bucket_s * (1 + BUCKET_TOLERANCE)
+            band = "+-15 %"
+        else:
+            lo, hi = bucket_s * share[0], bucket_s * share[1]
+            band = f"{share[0]:g}-{share[1]:g} x for {profile.mark}"
         ok = ok and lo <= d <= hi
-        limit = f"{lo:.1f}-{min(hi, SHORT_MAX_S):.1f} s (bucket {bucket_s:.0f} +-15 %), {limit}"
+        limit = f"{lo:.1f}-{min(hi, SHORT_MAX_S):.1f} s (bucket {bucket_s:.0f} {band}), {limit}"
     return QcCheck(passed=ok, value=round(d, 2), limit=limit)
 
 
@@ -128,12 +147,17 @@ def run_qc(
     drift_ms: float | None = None,
     first_caption_s: float | None = None,
     long_max_s: float | None = None,
+    profile: StoryProfile = NORMAL,
+    mark: Mark | None = None,
 ) -> QcResult:
-    """All spec §7.7 checks for one video; `reason` lists the failed check names."""
+    """All spec §7.7 checks for one video; `reason` lists the failed check names.
+
+    `profile` moves the duration window only (`duration_check`); every other check is the same on every
+    install. `mark` is written into the result (`profile`) for a video made under the engine-test profile."""
     checks: dict[str, QcCheck] = {}
     checks["file_opens"] = opens_check(video)
     try:
-        checks["duration"] = duration_check(ff.duration_s(video), kind, bucket_s, long_max_s)
+        checks["duration"] = duration_check(ff.duration_s(video), kind, bucket_s, long_max_s, profile)
         checks["loudness"] = loudness_check(measure_loudness(video))
         checks["caption_drift_ms"] = drift_check(drift_ms)
         checks["black_frames"] = black_check(video)
@@ -143,7 +167,16 @@ def run_qc(
     except NsError as e:
         checks["file_opens"] = QcCheck(passed=False, value=str(e.detail)[:120], limit="video opens")
     failed = [k for k, c in checks.items() if not c.passed]
-    return QcResult(item=item, passed=not failed, checks=checks, reason=", ".join(failed) or None)
+    reason = ", ".join(failed) or None
+    return QcResult(item=item, passed=not failed, checks=checks, reason=reason, profile=mark)
+
+
+def summary_entry(result: QcResult) -> dict[str, Any]:
+    """The `qc/report.json` entry of one item: the verdict, and the marker of a test video (never `null`)."""
+    entry: dict[str, Any] = {"passed": result.passed, "reason": result.reason}
+    if result.profile is not None:
+        entry["profile"] = result.profile
+    return entry
 
 
 class QcStage:
@@ -165,6 +198,7 @@ class QcStage:
         rendered: dict[str, Any] = ctx.read_json("render/report.json")
         captions: dict[str, Any] = ctx.read_json("captions/report.json")
         bucket = float(ctx.combo.length_bucket) if ctx.combo.length_bucket else None
+        profile, mark = duration_profile(ctx), job_mark(ctx)
         summary: dict[str, Any] = {}
         failed: list[str] = []
         for item, info in rendered.items():
@@ -176,9 +210,11 @@ class QcStage:
                 bucket_s=bucket,
                 drift_ms=cap.get("drift_ms"),
                 first_caption_s=cap.get("first_caption_s"),
+                profile=profile,
+                mark=mark,
             )
             ctx.write_json(f"qc/{item}.json", result.model_dump(mode="json"))
-            summary[item] = {"passed": result.passed, "reason": result.reason}
+            summary[item] = summary_entry(result)
             if not result.passed:
                 failed.append(f"{item}: {result.reason}")
         ctx.write_json("qc/report.json", summary)
@@ -243,7 +279,8 @@ def with_checks(res: QcResult, extra: dict[str, QcCheck]) -> QcResult:
     """`res` plus extra checks, with `passed` and `reason` recomputed."""
     checks = {**res.checks, **extra}
     failed = [k for k, c in checks.items() if not c.passed]
-    return QcResult(item=res.item, passed=not failed, checks=checks, reason=", ".join(failed) or None)
+    reason = ", ".join(failed) or None
+    return QcResult(item=res.item, passed=not failed, checks=checks, reason=reason, profile=res.profile)
 
 
 def run_qc_master(ctx: JobContext) -> None:
@@ -256,7 +293,11 @@ def run_qc_master(ctx: JobContext) -> None:
     drift = captions.get("long", {}).get("drift_ms")
     minutes = ctx.series.get("minutes")  # a series part has its own runtime target (12-25 minutes)
     long_max = series_max_s(float(minutes)) if minutes else None
-    long_res = run_qc("long", Path(long_info["path"]), "long", drift_ms=drift, long_max_s=long_max)
+    profile, mark = duration_profile(ctx), job_mark(ctx)
+    long_res = run_qc(
+        "long", Path(long_info["path"]), "long",
+        drift_ms=drift, long_max_s=long_max, profile=profile, mark=mark,
+    )
     results = [with_checks(long_res, {"chapters": chapters_check(doc), "midroll": midroll_check(doc)})]
     has_report = ctx.file("render/report.json").exists()
     rendered: dict[str, Any] = ctx.read_json("render/report.json") if has_report else {}
@@ -264,12 +305,13 @@ def run_qc_master(ctx: JobContext) -> None:
     for item, info in rendered.items():
         bucket = buckets.get(item)
         results.append(run_qc(item, Path(info["path"]), "short", bucket_s=float(bucket) if bucket else None,
-                              drift_ms=info.get("drift_ms"), first_caption_s=info.get("first_caption_s")))
+                              drift_ms=info.get("drift_ms"), first_caption_s=info.get("first_caption_s"),
+                              profile=profile, mark=mark))
     summary: dict[str, Any] = {}
     failed: list[str] = []
     for r in results:
         ctx.write_json(f"qc/{r.item}.json", r.model_dump(mode="json"))
-        summary[r.item] = {"passed": r.passed, "reason": r.reason}
+        summary[r.item] = summary_entry(r)
         if not r.passed:
             failed.append(f"{r.item}: {r.reason}")
     ctx.write_json("qc/report.json", summary)
