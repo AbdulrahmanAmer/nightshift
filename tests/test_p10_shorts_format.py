@@ -26,6 +26,7 @@ from ns_studio.media import qc as Q
 from ns_studio.media import render as R
 from ns_studio.media import thumbnails as T
 from ns_studio.media.captions import CaptionsStage
+from ns_studio.media.layout import SourceSpec, build_regions_graph
 from ns_studio.media.presets import caption_style, visual_treatment
 from ns_studio.media.shotplan import Shot, frame_edges
 from ns_studio.media.stages_media import MASTER_MEDIA_STAGES, SHORTS_MEDIA_STAGES
@@ -154,6 +155,27 @@ def test_regions_graph_places_the_footage_region_on_the_canvas() -> None:
     graph2 = R.build_graph(s, edges, R.VERTICAL, 30, visual_treatment("dark_slowzoom"), None, None, inset)
     total = edges[-1] / 30
     assert f"color=c=black:s=1080x1920:r=30:d={total:.3f}[base]" in graph2
+
+
+def test_the_black_base_runs_at_the_rate_of_the_shots_not_the_models_default() -> None:
+    """Review nit: a canvas without `fps` in its file is 30 in the model, the shots follow Settings."""
+    raw = yaml.safe_load((F.FORMATS_DIR / "short_9x16.yaml").read_text(encoding="utf-8"))
+    raw["layout"]["regions"] = [{"name": "fg", "x": 40, "y": 300, "w": 1000, "h": 1320, "source": "full"}]
+    assert "fps" not in raw["canvas"]
+    inset = Format.model_validate(raw)
+    s = shots()
+    edges = frame_edges([x.end for x in s], 24)
+    graph = R.build_graph(s, edges, R.VERTICAL, 24, visual_treatment("dark_slowzoom"), None, None, inset)
+    total = edges[-1] / 24
+    assert f"color=c=black:s=1080x1920:r=24:d={total:.3f}[base]" in graph and ":r=30:" not in graph
+    # the layout engine alone (the clipper's call) still uses the format's own rate
+    assert any(
+        ":r=30" in f for f in build_regions_graph(inset, {"full": SourceSpec(1080, 1920, label="cat")})
+    )
+    assert any(
+        ":r=24" in f
+        for f in build_regions_graph(inset, {"full": SourceSpec(1080, 1920, label="cat")}, fps=24)
+    )
 
 
 def test_the_video_takes_the_frame_rate_and_preset_the_file_writes() -> None:

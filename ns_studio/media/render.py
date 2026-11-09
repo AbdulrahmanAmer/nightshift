@@ -225,7 +225,7 @@ def picture_chains(
     chains = cat_chains(shots, frames, (w, h), fps, zoom, first_input=first_input, phase_start=phase_start)
     picture = SourceSpec(w, h, label="cat")
     chains += build_regions_graph(
-        fmt, {"full": picture, "blur_fill": picture}, out_label="comp", duration_s=sum(frames) / fps
+        fmt, {"full": picture, "blur_fill": picture}, out_label="comp", duration_s=sum(frames) / fps, fps=fps
     )
     return chains, "comp"
 
