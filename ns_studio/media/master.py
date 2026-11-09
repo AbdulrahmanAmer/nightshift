@@ -18,7 +18,6 @@ from typing import Any
 
 from ns_common.acquire import Service
 from ns_common.errors import NsError
-from ns_common.pacing import PACING_WPM
 from ns_common.textstats import split_sentences
 from ns_common.tts_client import TtsItem
 from ns_studio.context import JobContext
@@ -40,6 +39,7 @@ from ns_studio.media.fake_voice import e403_detail
 from ns_studio.media.transcribe import Word
 from ns_studio.media.voice import job_speed, job_voice, synthesize
 from ns_studio.stages import Tenant
+from ns_studio.voice_wpm import job_wpm
 
 CARD_S = 1.2
 FLOOR_S = 540.0  # planning floor 9:00 (spec §7.0)
@@ -227,7 +227,7 @@ class DurationCheckStage:
 
     def run(self, ctx: JobContext) -> None:
         """Measure, expand and re-voice until the floor is met or the budget of expansions is spent."""
-        wpm = float(PACING_WPM.get(ctx.combo.pacing, 155))
+        wpm = float(job_wpm(ctx))
         expansions: list[dict[str, Any]] = []
         while True:
             timeline = timeline_from_manifest(ctx)

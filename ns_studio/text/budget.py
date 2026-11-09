@@ -32,18 +32,25 @@ class Budget:
 
 
 def short_budget(
-    length_bucket_s: int, pacing: str, *, parts: int = 1, hook_words: int = 12, closing_words: int = 0
+    length_bucket_s: int,
+    pacing: str,
+    *,
+    parts: int = 1,
+    hook_words: int = 12,
+    closing_words: int = 0,
+    wpm: int | None = None,
 ) -> Budget:
     """Body budget of a Short: the words that fill `length_bucket_s` per part, pauses included, minus hook and
     closing words (min 40).
 
-    `pacing` is a key of `PACING_WPM`. The TTS service leaves about 0.035 s of silence per word (350 ms per
+    `pacing` is a key of `PACING_WPM`; `wpm` replaces its figure with the pace measured for the job's voice
+    (`ns_studio.voice_wpm`, spec 7.0). The TTS service leaves about 0.035 s of silence per word (350 ms per
     sentence, 700 ms per paragraph), so the words are `seconds / (60/wpm + 0.035)`, not `seconds*wpm/60`.
     Limits are +-15 % of the target, narrowed so a story at either edge is still within 12 % of the bucket in
     seconds (hook and closing included): inside QC's +-15 % duration band with room for sentence-length
     variation.
     """
-    wpm = PACING_WPM[pacing]
+    wpm = wpm or PACING_WPM[pacing]
     total = words_for_seconds(length_bucket_s * parts, wpm)
     words = max(40, total - hook_words * parts - closing_words)
     voiced_extra_s = (hook_words * parts + closing_words) * (60.0 / wpm + PAUSE_PER_WORD_S)
@@ -84,7 +91,11 @@ def distribute_words(total: int, n: int) -> tuple[int, ...]:
 
 
 def master_budget(
-    long_minutes: int | tuple[int, int], pacing: str, *, rng: random.Random | None = None
+    long_minutes: int | tuple[int, int],
+    pacing: str,
+    *,
+    rng: random.Random | None = None,
+    wpm: int | None = None,
 ) -> MasterBudget:
     """Budget of a master: the words that fill `minutes` of audio, pauses and cards included; 5-7 chapters.
 
@@ -95,9 +106,10 @@ def master_budget(
 
     `long_minutes` is a fixed number of minutes or the channel's `(lo, hi)` range: with `rng` the target is
     drawn with `rng.randint(lo, hi)`, without it the rounded-up midpoint is used (deterministic).
+    `wpm` replaces the pacing table's figure with the pace measured for the job's voice (spec 7.0).
     Raises ValueError when the minutes are below the 9-minute planning floor.
     """
-    wpm = PACING_WPM[pacing]
+    wpm = wpm or PACING_WPM[pacing]
     if isinstance(long_minutes, tuple):
         lo, hi = long_minutes
         minutes = rng.randint(lo, hi) if rng is not None else (lo + hi + 1) // 2

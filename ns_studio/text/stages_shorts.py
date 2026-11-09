@@ -18,22 +18,73 @@ from ns_studio.text.budget import Budget, MasterBudget, master_as_budget, master
 from ns_studio.text.prompts import RUBRIC_KEYS, call_json, call_text, parse_model
 from ns_studio.text.seo import finalize_seo
 from ns_studio.text.validators import load_banned, raise_if, validate_story
+from ns_studio.voice_wpm import job_wpm
 
 __all__ = ["draw_banked_idea", "finalize_seo", "ideas_budget", "job_master_budget", "now_iso"]
 
 IDEA_SIMILARITY_LIMIT = 0.85
+HOOK_MAX_WORDS = 12  # spec 7.0: a hook is at most 12 words
+CLOSING_MAX_WORDS = 15  # spec 7.0: a closing line is at most 15 words
+CLOSINGS_FILE = "closings.json"
+DEFAULT_SHORT_CLOSINGS = (
+    "Follow for the next story.",
+    "More stories like this are on the channel.",
+    "If this stayed with you, the channel has more.",
+)
+NO_CHAPTER_POTENTIAL = {"", "n/a", "na", "none", "-"}
 
 
 def job_master_budget(ctx: JobContext) -> MasterBudget:
     """Master budget of this job; the target minutes are drawn from `long_minutes` seeded by the job id."""
-    return master_budget(ctx.channel.long_minutes, ctx.combo.pacing, rng=random.Random(ctx.job_id))
+    return master_budget(
+        ctx.channel.long_minutes, ctx.combo.pacing, rng=random.Random(ctx.job_id), wpm=job_wpm(ctx)
+    )
 
 
 def ideas_budget(ctx: JobContext) -> Budget:
     """Word budget of the story: the master (master-first) or one part of `combo.length_bucket` (50 s)."""
     if ctx.fmt == "master_first":
         return master_as_budget(job_master_budget(ctx))
-    return short_budget(ctx.combo.length_bucket or 50, ctx.combo.pacing, parts=1)
+    return short_budget(ctx.combo.length_bucket or 50, ctx.combo.pacing, parts=1, wpm=job_wpm(ctx))
+
+
+def has_chapter_potential(idea: dict[str, Any]) -> bool:
+    """True when the idea says how it stretches to chapters (its `why_chapters` is not empty or "n/a")."""
+    return str(idea.get("why_chapters") or "").strip().lower().rstrip(".") not in NO_CHAPTER_POTENTIAL
+
+
+def pick_idea(ctx: JobContext, survivors: list[tuple[dict[str, Any], Any]]) -> tuple[dict[str, Any], Any]:
+    """The survivor the job continues with (spec 7.1 M1).
+
+    A master-first job drops the survivors without chapter potential, then lets a judge call choose among
+    the rest (no call for a single one). When none has potential the survivors stay as they were and a
+    warning says so: a story with no stretch is a weaker master, not a reason to lose the night's job.
+    A Shorts job takes the first survivor.
+    """
+    if ctx.fmt != "master_first":
+        return survivors[0]
+    staying = [s for s in survivors if has_chapter_potential(s[0])]
+    if not staying:
+        ctx.log.warn(
+            "idea_no_chapter_potential", "no idea says how it stretches to chapters",
+            job_id=ctx.job_id, ideas=len(survivors),
+        )
+        staying = survivors
+    if len(staying) == 1:
+        return staying[0]
+    options = [
+        f"{i['premise']} Twist: {i['twist']} Stretches to chapters: {i.get('why_chapters') or 'n/a'}"
+        for i, _v in staying
+    ]
+    j = call_json(
+        ctx,
+        "judge",
+        purpose="Pick the idea that can be told as five to seven escalating chapters of a long video "
+        "and still keeps its twist.",
+        constraints="The idea must carry a long story without padding. No overpromising.",
+        options=options,
+    )
+    return staying[max(0, min(int(j["index"]), len(staying) - 1))]
 
 
 def now_iso() -> str:
@@ -139,7 +190,7 @@ class IdeasStage:
         ]
         if not survivors:
             raise NsError("NS-E304", f"all {len(ideas)} ideas too similar to history")
-        idea, vec = survivors[0]
+        idea, vec = pick_idea(ctx, survivors)
         ctx.db.execute(
             "insert into ideas(channel, job_id, premise, twist, embedding, created_at, used) "
             "values (?,?,?,?,?,?,1)",
@@ -268,28 +319,58 @@ class SplitStage:
             parts.append(part.model_dump())
         parts[-1]["cliffhanger"] = False
         ctx.file("hooks_all.json").unlink(missing_ok=True)  # parts changed: hooks must be redone
+        ctx.file(CLOSINGS_FILE).unlink(missing_ok=True)  # ... and so are the closing lines
         ctx.write_json("parts.json", parts)
 
 
+def cut_words(text: str, limit: int) -> str:
+    """`text` cut to its first `limit` words (trailing commas and dashes dropped); unchanged when shorter."""
+    words = text.split()
+    if len(words) <= limit:
+        return text.strip()
+    return " ".join(words[:limit]).rstrip(",;:- ")
+
+
+def default_closing(part_n: int, parts_total: int) -> str:
+    """The closing line used when the model gives none or one over `CLOSING_MAX_WORDS` words."""
+    if part_n < parts_total:
+        return f"Part {part_n + 1} is up next."
+    return DEFAULT_SHORT_CLOSINGS[(part_n - 1) % len(DEFAULT_SHORT_CLOSINGS)]
+
+
+def closing_line(raw: Any, part_n: int, parts_total: int) -> str:
+    """The model's closing line when it is 1-15 words, else the default for this part."""
+    text = str(raw or "").strip()
+    return text if 0 < len(text.split()) <= CLOSING_MAX_WORDS else default_closing(part_n, parts_total)
+
+
 class HooksStage:
-    """Shorts 6: five hooks per part, a judge picks one; all candidates go to `hooks_all.json`."""
+    """Shorts 6: five hooks per part, a judge picks one, plus a closing line per part (<= 15 words).
+
+    All hook candidates go to `hooks_all.json`; the closing lines to `closings.json` (`{"1": "...", ...}`),
+    which the voice stage speaks as `p<n>_close` and the render appends to the part.
+    """
 
     name: str = "hooks"
     tenant: Tenant = "llama"
     inputs: tuple[str, ...] = ("parts.json",)
-    outputs: tuple[str, ...] = ("parts.json", "hooks_all.json")
+    outputs: tuple[str, ...] = ("parts.json", "hooks_all.json", CLOSINGS_FILE)
 
     def run(self, ctx: JobContext) -> None:
-        """Set `hook` on every part; skip when `hooks_all.json` already exists for these parts."""
-        if ctx.file("hooks_all.json").exists():
+        """Set `hook` on every part and write its closing line; skip when both files exist for these parts."""
+        if ctx.file("hooks_all.json").exists() and ctx.file(CLOSINGS_FILE).exists():
             return
         parts: list[dict[str, Any]] = ctx.read_json("parts.json")
         all_hooks: list[list[str]] = []
+        closings: dict[str, str] = {}
         for i, p in enumerate(parts):
             nxt = parts[i + 1]["text"] if i + 1 < len(parts) else None
-            raw = call_json(ctx, "hook", part_text=p["text"], next_part_text=nxt)["hooks"]
-            hooks = [str(h).strip() for h in raw if 0 < len(str(h).split()) <= 12]
-            hooks = hooks or [split_sentences(p["text"])[0]]
+            out = call_json(
+                ctx, "hook", part_text=p["text"], next_part_text=nxt, part_n=p["n"], parts_total=len(parts)
+            )
+            closings[str(p["n"])] = closing_line(out.get("closing_line"), p["n"], len(parts))
+            hooks = [str(h).strip() for h in out["hooks"] if 0 < len(str(h).split()) <= HOOK_MAX_WORDS]
+            hooks = hooks or [cut_words(split_sentences(p["text"])[0], HOOK_MAX_WORDS)]
             j = call_json(
                 ctx,
                 "judge",
@@ -300,6 +381,7 @@ class HooksStage:
             idx = max(0, min(int(j["index"]), len(hooks) - 1))
             p["hook"] = hooks[idx]
             all_hooks.append(hooks)
+        ctx.write_json(CLOSINGS_FILE, closings)
         ctx.write_json("hooks_all.json", all_hooks)
         ctx.write_json("parts.json", parts)
 

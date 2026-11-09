@@ -26,7 +26,6 @@ from ns_common.textstats import split_sentences, word_count
 from ns_studio.context import JobContext
 from ns_studio.stages import Tenant, register
 from ns_studio.text.budget import (
-    PACING_WPM,
     SHORT_TOLERANCE,
     chapter_budget,
     distribute_words,
@@ -48,6 +47,7 @@ from ns_studio.text.validators import (
     validate_chapter,
 )
 from ns_studio.variation.short_draw import draw_short_combos, load_short_combos
+from ns_studio.voice_wpm import job_wpm
 
 __all__ = ["expand_chapter", "expansion_plan", "resolve_moments"]
 
@@ -75,7 +75,7 @@ DEFAULT_CLOSINGS = (
 
 
 def _wpm(ctx: JobContext) -> int:
-    return PACING_WPM[ctx.combo.pacing]
+    return job_wpm(ctx)  # the voice's measured pace when a job has measured it, else the pacing table
 
 
 def _kw(ctx: JobContext) -> str:
@@ -268,6 +268,37 @@ class ChaptersCriticStage:
         )
 
 
+FLOOR_MAX_EXPANSIONS = 3  # +120..200 words each, tried before the 9:00 floor fails the story
+
+
+def enforce_word_floor(ctx: JobContext, total_words: int) -> None:
+    """Spec 7.0: a story below `plan_meta.min_words` (the 9:00 planning floor) is lengthened, or refused.
+
+    The shortest chapter gets `expand_chapter` (+120..200 words, the llama tenant is already held by the
+    continuity stage), up to `FLOOR_MAX_EXPANSIONS` times; a story still below the floor raises NS-E303.
+    Without `plan_meta.json` (or a `min_words` in it) there is no floor to hold.
+    """
+    try:
+        floor = int(ctx.read_json("plan_meta.json")["min_words"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return
+    expansions = 0
+    while total_words < floor:
+        if ctx.owner_script or expansions >= FLOOR_MAX_EXPANSIONS:  # the owner's words are never extended
+            raise NsError(
+                "NS-E303",
+                f"story has {total_words} words after {expansions} expansions, 9:00 floor is {floor}",
+            )
+        chapter, add_words = expansion_plan(load_story(ctx), floor - total_words)
+        ctx.log.warn(
+            "story_below_floor", "story is below the 9:00 floor: expanding its shortest chapter",
+            job_id=ctx.job_id, words=total_words, floor=floor, chapter=chapter, add_words=add_words,
+        )
+        expand_chapter(ctx, chapter, add_words)
+        expansions += 1
+        total_words = sum(c.word_count for c in load_story(ctx).chapters)
+
+
 def pairwise_continuity(ctx: JobContext) -> bool:
     """True when continuity runs on chapter pairs: the `cpu-dev` profile or a context of 8K tokens or less."""
     return ctx.runtime.profile == "cpu-dev" or ctx.runtime.llama.flags.ctx <= 8192
@@ -279,7 +310,7 @@ class ContinuityStage:
     name: str = "continuity"
     tenant: Tenant = "llama"
     uses_embed: bool = True  # calls the embed service; the orchestrator leases it around run()
-    inputs: tuple[str, ...] = ("story_revised.json", "critic.json")
+    inputs: tuple[str, ...] = ("story_revised.json", "critic.json", "plan_meta.json")
     outputs: tuple[str, ...] = ("story.json", "continuity.json")
 
     def run(self, ctx: JobContext) -> None:
@@ -364,6 +395,7 @@ class ContinuityStage:
         )
         ctx.write_json("continuity.json", {"pairwise": pairwise, "issues": issues, "revised": sorted(fixes)})
         ctx.write_json("story.json", story.model_dump())
+        enforce_word_floor(ctx, total_words)  # may rewrite story.json and the stories row
 
 
 class SeoLongStage:

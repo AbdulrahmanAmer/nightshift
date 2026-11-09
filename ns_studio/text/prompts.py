@@ -69,8 +69,11 @@ PROMPT_SCHEMAS: dict[str, dict[str, Any]] = {
     },
     "hook": {
         "type": "object",
-        "properties": {"hooks": _arr({"type": "string"}, minItems=5, maxItems=5)},
-        "required": ["hooks"],
+        "properties": {
+            "hooks": _arr({"type": "string"}, minItems=5, maxItems=5),
+            "closing_line": {"type": "string"},
+        },
+        "required": ["hooks", "closing_line"],
     },
     "judge": {
         "type": "object",
