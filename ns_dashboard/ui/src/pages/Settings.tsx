@@ -182,6 +182,11 @@ export default function Settings() {
                 <Button size="sm" variant={s?.keys?.[k] ? "soft" : "primary"} leadingIcon="key" onClick={() => setKey(k)}>{s?.keys?.[k] ? "Replace" : "Add key"}</Button>
               </SettingRow>
             ))}
+            {Object.entries(s?.key_warnings || {}).map(([k, w]) => (
+              <p key={`w-${k}`} role="alert" className="mt-2 text-sm text-danger" data-testid={`key-warning-${k}`}>
+                <span className="font-mono">{w.code}</span> {k[0]!.toUpperCase() + k.slice(1)}: the copy of this key that nightly runs read was not saved or locked. {w.hint}
+              </p>
+            ))}
           </Card>
 
           <Card as="section" aria-labelledby="s-backup">

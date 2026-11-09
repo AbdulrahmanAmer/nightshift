@@ -117,7 +117,49 @@ def _channel_yaml(tmp_path: Path) -> tuple[str, Callable[[], object], object]:
     return f.name, lambda: crud.load_channel_yaml(f).slug, "after-dark"
 
 
+def _owner_script_flag(tmp_path: Path) -> tuple[str, Callable[[], object], object]:
+    from ns_studio.context import owner_script_of
+
+    d = tmp_path / "job"
+    d.mkdir()
+    (d / "script_source.json").write_text('{"owner_script": true, "script": "script.md"}', encoding="utf-8")
+    return "script_source.json", lambda: owner_script_of(d), True
+
+
+def _series_context(tmp_path: Path) -> tuple[str, Callable[[], object], object]:
+    from ns_studio.context import JobContext
+
+    d = tmp_path / "job"
+    d.mkdir()
+    (d / "series_context.json").write_text('{"series_slug": "night-bus", "part_n": 3}', encoding="utf-8")
+    fake_ctx = SimpleNamespace(job_dir=d)
+    return "series_context.json", lambda: JobContext.series.fget(fake_ctx).get("part_n"), 3  # type: ignore[attr-defined,arg-type]
+
+
+def _series_publish_delay(tmp_path: Path) -> tuple[str, Callable[[], object], object]:
+    from ns_studio import daily
+
+    d = tmp_path / "job"
+    d.mkdir()
+    (d / "series_context.json").write_text('{"publish_not_before_days": 14}', encoding="utf-8")
+    env = SimpleNamespace(paths=SimpleNamespace(job_dir=lambda job_id: d))
+    return "series_context.json", lambda: daily._series_delay(env, "j"), 14  # type: ignore[arg-type]
+
+
+def _series_pinned_styles(tmp_path: Path) -> tuple[str, Callable[[], object], object]:
+    from ns_studio.variation.stages import job_series_fixed
+
+    d = tmp_path / "job"
+    d.mkdir()
+    (d / "series_context.json").write_text('{"design": {"caption_style": "boxed_dark"}}', encoding="utf-8")
+    return "series_context.json", lambda: job_series_fixed(d), {"caption_style": "boxed_dark"}
+
+
 READERS = {
+    "script_source.json owner flag (owner_script_of)": _owner_script_flag,
+    "series_context.json (JobContext.series)": _series_context,
+    "series_context.json publish delay (daily)": _series_publish_delay,
+    "series_context.json pinned styles (variation)": _series_pinned_styles,
     "update status (ns update --follow)": _update_status,
     "runtime.json dev flag": _runtime_dev,
     "dashboard.json notifications": _notifications_off,
