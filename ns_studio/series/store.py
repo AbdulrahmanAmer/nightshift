@@ -567,7 +567,7 @@ class StoryDir:
         sd = cls(stories_dir(paths) / slug)
         if must_exist and not sd.root.is_dir():
             # an owner-facing message: the dashboard and the Assistant show it, so no CLI command here
-            raise WorkshopError(f"no story {slug!r}: Library > Series lists the stories, or ask the Assistant")
+            raise WorkshopError(f"no story {slug!r}: see Library > Series (or ask the Assistant)")
         return sd
 
     @property
