@@ -124,13 +124,20 @@ def recommend_bar(
 # ------------------------------------------------------------------ generation
 @dataclass
 class CalibrationStory:
-    """One generated story with its critic scores (empty when the output was a refusal)."""
+    """One generated story with its critic scores.
+
+    `refusal` is only for a real refusal (refusal-like or too-short text). A story that could not be made
+    because of an error (dedupe stop NS-E304, LLM timeout NS-E301, engine down, critic failure) is `failed`
+    with its `error_code`: it is not a refusal and stays out of the refusal rate.
+    """
 
     story_id: str
     text: str
     scores: dict[str, float] = field(default_factory=dict)
     critic_avg: float | None = None
     refusal: bool = False
+    failed: bool = False
+    error_code: str = ""
     note: str = ""
 
 
@@ -160,7 +167,7 @@ def generate(
     generator: GeneratorFn | None = None,
     critic: CriticFn | None = None,
 ) -> list[CalibrationStory]:
-    """Generate `n` stories and score each with the critic; refusals are flagged, never raised."""
+    """Generate `n` stories and score each with the critic; refusals and failures are flagged, not raised."""
     gen: GeneratorFn = generator or default_generator
     crit: CriticFn = critic or default_critic
     out: list[CalibrationStory] = []
@@ -170,7 +177,7 @@ def generate(
         try:
             story.text = gen(ctx).strip()
         except NsError as e:
-            story.refusal, story.note = True, str(e)
+            story.failed, story.error_code, story.note = True, e.code, str(e)
             out.append(story)
             continue
         if refusal_like(story.text):
@@ -181,12 +188,42 @@ def generate(
             critique = crit(ctx, story.text)
             story.scores = {k: float(critique["scores"][k]) for k in RUBRIC}
         except (NsError, KeyError, TypeError, ValueError) as e:
-            story.refusal, story.note = True, f"critic failed: {e}"
+            story.failed = True
+            story.error_code = e.code if isinstance(e, NsError) else "critic"
+            story.note = f"critic failed: {e}"
             out.append(story)
             continue
         story.critic_avg = sum(story.scores.values()) / len(RUBRIC)
         out.append(story)
     return out
+
+
+def refusal_rate(stories: Sequence[CalibrationStory]) -> float:
+    """Share of real refusals among the stories that could be judged (failed stories are left out)."""
+    judged = [s for s in stories if not s.failed]
+    return sum(1 for s in judged if s.refusal) / len(judged) if judged else 0.0
+
+
+def failure_summary(failed: int, codes: Sequence[str]) -> str:
+    """The line printed for stories that could not be made, or "" when there are none."""
+    if failed <= 0:
+        return ""
+    counts: dict[str, int] = {}
+    for code in codes:
+        counts[code or "unknown"] = counts.get(code or "unknown", 0) + 1
+    detail = ", ".join(f"{code} x{n}" for code, n in sorted(counts.items())) or "unknown"
+    noun = "story" if failed == 1 else "stories"
+    return f"{failed} {noun} could not be made: {detail} (not counted in the refusal rate)"
+
+
+def generation_report(stories: Sequence[CalibrationStory]) -> list[str]:
+    """The lines `studio calibrate` prints after generating: the refusal rate and any failed stories."""
+    lines = [f"refusal rate so far: {refusal_rate(stories):.1%}"]
+    failed = [s for s in stories if s.failed]
+    summary = failure_summary(len(failed), [s.error_code for s in failed])
+    if summary:
+        lines.append(summary)
+    return lines
 
 
 def calibration_dir(paths: Paths, slug: str) -> Path:
@@ -200,7 +237,7 @@ def write_generation(paths: Paths, db: Db, slug: str, stories: Sequence[Calibrat
     d.mkdir(parents=True, exist_ok=True)
     with (d / "stories.csv").open("w", newline="", encoding="utf-8") as fh:
         w = csv.writer(fh)
-        w.writerow(["story_id", "words", "critic_avg", "refusal", *RUBRIC, "note"])
+        w.writerow(["story_id", "words", "critic_avg", "refusal", "failed", "error_code", *RUBRIC, "note"])
         for s in stories:
             w.writerow(
                 [
@@ -208,6 +245,8 @@ def write_generation(paths: Paths, db: Db, slug: str, stories: Sequence[Calibrat
                     word_count(s.text),
                     "" if s.critic_avg is None else f"{s.critic_avg:.3f}",
                     int(s.refusal),
+                    int(s.failed),
+                    s.error_code,
                     *(f"{s.scores[k]:g}" if k in s.scores else "" for k in RUBRIC),
                     s.note,
                 ]
@@ -222,8 +261,21 @@ def write_generation(paths: Paths, db: Db, slug: str, stories: Sequence[Calibrat
         db.execute(
             "insert or replace into calibration(channel, story_id, critic_json, human_json) "
             "values (?,?,?, (select human_json from calibration where channel=? and story_id=?))",
-            (slug, s.story_id, json.dumps({"scores": s.scores, "avg": s.critic_avg, "refusal": s.refusal}),
-             slug, s.story_id),
+            (
+                slug,
+                s.story_id,
+                json.dumps(
+                    {
+                        "scores": s.scores,
+                        "avg": s.critic_avg,
+                        "refusal": s.refusal,
+                        "failed": s.failed,
+                        "error_code": s.error_code,
+                    }
+                ),
+                slug,
+                s.story_id,
+            ),
         )
     return d
 
@@ -244,6 +296,8 @@ class CalibrationReport:
     satisfied: bool
     refusal_rate: float
     two_model_recommended: bool
+    failed: int = 0
+    failed_codes: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict:
         """Plain dict for JSON output."""
@@ -276,8 +330,10 @@ def score(paths: Paths, db: Db, slug: str, scores_csv: Path) -> CalibrationRepor
     stories = {r["story_id"]: r for r in _read_rows(stories_file)} if stories_file.exists() else {}
     if not stories:
         raise StudioError("NS-E324", f"no stories.csv for channel {slug}; run 'studio calibrate' first")
-    refusals = sum(1 for r in stories.values() if r.get("refusal") == "1")
-    refusal_rate = refusals / len(stories)
+    failed_rows = [r for r in stories.values() if r.get("failed") == "1"]
+    judged = len(stories) - len(failed_rows)
+    refusals = sum(1 for r in stories.values() if r.get("refusal") == "1" and r.get("failed") != "1")
+    refusal_rate = refusals / judged if judged else 0.0
 
     critic: dict[str, list[float]] = {k: [] for k in RUBRIC}
     human: dict[str, list[float]] = {k: [] for k in RUBRIC}
@@ -287,7 +343,12 @@ def score(paths: Paths, db: Db, slug: str, scores_csv: Path) -> CalibrationRepor
     for row in _read_rows(scores_csv):
         sid = (row.get("story_id") or "").strip()
         st = stories.get(sid)
-        if st is None or st.get("refusal") == "1" or not (row.get(RUBRIC[0]) or "").strip():
+        if (
+            st is None
+            or st.get("refusal") == "1"
+            or st.get("failed") == "1"
+            or not (row.get(RUBRIC[0]) or "").strip()
+        ):
             continue
         h = {k: _num(row, k, sid) for k in RUBRIC}
         c = {k: float(st[k]) for k in RUBRIC}
@@ -318,6 +379,8 @@ def score(paths: Paths, db: Db, slug: str, scores_csv: Path) -> CalibrationRepor
         satisfied=rec.satisfied,
         refusal_rate=round(refusal_rate, 4),
         two_model_recommended=refusal_rate > REFUSAL_LIMIT,
+        failed=len(failed_rows),
+        failed_codes=[r.get("error_code") or "" for r in failed_rows],
     )
     bar = min(10.0, max(5.0, rec.bar))
     edit_channel(paths, db, slug, {"critic_bar": bar})

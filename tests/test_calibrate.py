@@ -87,9 +87,25 @@ def test_generate_flags_refusals_and_critic_failures(tmp_home: Path):
 
     stories = cal.generate(lambda i: make_ctx(tmp_home), 4, generator=gen, critic=crit)
     assert [s.story_id for s in stories] == ["cal-01", "cal-02", "cal-03", "cal-04"]
-    assert [s.refusal for s in stories] == [False, False, True, True]
+    assert [s.refusal for s in stories] == [False, False, True, False]
+    assert [s.failed for s in stories] == [False, False, False, True]
     assert stories[0].critic_avg == pytest.approx(8.0)
-    assert "NS-E302" in stories[3].note
+    assert "NS-E302" in stories[3].note and stories[3].error_code == "NS-E302"
+
+
+def test_generate_marks_generator_errors_failed_not_refused(tmp_home: Path):
+    """D-10: a dedupe stop (NS-E304) or an LLM timeout (NS-E301) is a failed story, never a refusal."""
+    errors = iter([NsError("NS-E304", "all 8 ideas too similar to history"), NsError("NS-E301", "timeout")])
+
+    def gen(ctx):
+        raise next(errors)
+
+    stories = cal.generate(lambda i: make_ctx(tmp_home), 2, generator=gen, critic=lambda c, t: _critique(8.0))
+    assert [(s.refusal, s.failed, s.error_code) for s in stories] == [
+        (False, True, "NS-E304"),
+        (False, True, "NS-E301"),
+    ]
+    assert cal.refusal_rate(stories) == 0.0
 
 
 def test_default_generator_without_c5_stages_is_e306(tmp_home: Path):
@@ -247,3 +263,70 @@ def test_cli_score_without_generation_fails(tmp_home: Path):
     assert add.exit_code == 0
     res = runner.invoke(app, ["calibrate", "--channel", "x-ch", "--score", str(tmp_home / "s.csv")])
     assert res.exit_code == 1 and "NS-E324" in res.output
+
+
+def _calibrate_with(monkeypatch: pytest.MonkeyPatch, gen) -> CliRunner:
+    monkeypatch.setattr(jobs, "STAGE_MODULES", ())
+    monkeypatch.setattr(cal, "default_generator", gen)
+    monkeypatch.setattr(cal, "default_critic", lambda ctx, text: _critique(9.0))
+    runner = CliRunner()
+    add = runner.invoke(app, ["channel", "add", "--slug", "after-dark", "--name", "AD", "--niche", "horror"])
+    assert add.exit_code == 0, add.output
+    return runner
+
+
+def test_cli_dedupe_stop_is_a_failed_story_not_a_refusal(tmp_home: Path, monkeypatch: pytest.MonkeyPatch):
+    """D-10: an NS-E304 generator prints a 0 % refusal rate and one failed story; stories.csv agrees."""
+
+    def gen(ctx):
+        raise NsError("NS-E304", "all 8 ideas too similar to history")
+
+    runner = _calibrate_with(monkeypatch, gen)
+    res = runner.invoke(app, ["calibrate", "--channel", "after-dark", "--n", "1", "--fake-services"])
+    assert res.exit_code == 0, res.output
+    assert "refusal rate so far: 0.0%" in res.output
+    assert "1 story could not be made: NS-E304 x1" in res.output
+    rows = _read_stories_csv(Paths.from_env().calibration_dir / "after-dark" / "stories.csv")
+    assert [(r["refusal"], r["failed"], r["error_code"]) for r in rows] == [("0", "1", "NS-E304")]
+
+
+def _read_stories_csv(path: Path) -> list[dict[str, str]]:
+    with path.open(newline="", encoding="utf-8") as fh:
+        return list(csv.DictReader(fh))
+
+
+def test_cli_refusal_rate_counts_only_real_refusals(tmp_home: Path, monkeypatch: pytest.MonkeyPatch):
+    """One refusal text, one NS-E304, two good stories: the rate is 1 of the 3 judged, plus 1 failed."""
+    texts = iter(["I'm sorry, I can't write that. " * 6, NsError("NS-E304", "x"), STORY, STORY])
+
+    def gen(ctx):
+        t = next(texts)
+        if isinstance(t, NsError):
+            raise t
+        return t
+
+    runner = _calibrate_with(monkeypatch, gen)
+    res = runner.invoke(app, ["calibrate", "--channel", "after-dark", "--n", "4", "--fake-services"])
+    assert res.exit_code == 0, res.output
+    assert "refusal rate so far: 33.3%" in res.output
+    assert "1 story could not be made: NS-E304 x1" in res.output
+
+
+def test_score_leaves_failed_stories_out_of_the_refusal_rate(tmp_home: Path):
+    """D-10: failed stories do not trigger the two-model advice and are not scored; the report names them."""
+    paths, db = _env(tmp_home)
+    stories = _make_stories([9.0, 6.0] * 5)
+    for i in (11, 12, 13):
+        stories.append(
+            cal.CalibrationStory(f"cal-{i}", "", failed=True, error_code="NS-E304", note="NS-E304: no story")
+        )
+    d = cal.write_generation(paths, db, "after-dark", stories)
+    scores = tmp_home / "human.csv"
+    _write_human(scores, d / "scores.csv", {f"cal-{i:02d}": (9.0 if i % 2 else 5.0) for i in range(1, 11)})
+    rep = cal.score(paths, db, "after-dark", scores)
+    assert rep.refusal_rate == 0.0 and not rep.two_model_recommended
+    assert rep.failed == 3 and rep.failed_codes == ["NS-E304"] * 3
+    res = CliRunner().invoke(app, ["calibrate", "--channel", "after-dark", "--score", str(scores)])
+    assert res.exit_code == 0, res.output
+    assert "refusal rate: 0.0%" in res.output and "switch to two-model mode" not in res.output
+    assert "3 stories could not be made: NS-E304 x3" in res.output
