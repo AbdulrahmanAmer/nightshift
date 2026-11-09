@@ -63,6 +63,7 @@ def output_item(row: sqlite3.Row) -> dict[str, Any]:
         "path": row["path"],
         "source_id": row["source_id"],
         "combo_id": row["combo_id"],
+        "profile": row["profile"] if "profile" in row.keys() else None,
         "created_at": row["created_at"],
         "media_url": media,
         "thumb_url": thumb,
