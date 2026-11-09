@@ -19,6 +19,7 @@ MASTER_MAX_MINUTES = 14  # the longest draw of `long_minutes`; the budget below 
 MASTER_MAX_SECONDS = 870  # a finished master may estimate up to 14:30 (QC fails over 15:00 after the render)
 HOOK_MAX_WORDS = 12  # spec 7.0: a hook is at most 12 words (the one definition, imported by the stages)
 CLOSING_MAX_WORDS = 15  # spec 7.0: a closing line is at most 15 words
+SHORT_CLOSING_WORDS = 10  # words a Short's budget (and an owner's script bucket) reserves for the closing
 SHORT_MIN_HOOK_WORDS = 6  # the shortest hook a Short plausibly gets: the lower word limit is sized with it
 SHORT_MIN_CLOSING_WORDS = 5  # the shortest default closing line ("Part 2 is up next.")
 

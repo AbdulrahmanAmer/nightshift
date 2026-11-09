@@ -136,9 +136,10 @@ class ScriptImportLongStage:
 class ScriptImportShortStage:
     """A Short from the owner's own script: one part holding the text exactly as given.
 
-    `parts.json` is written here, so the model's `split` and `hooks` stages are not in the plan and cannot cut
-    or reword the story. The first sentence is the part's hook: the voice stage speaks it once, as part of the
-    story, and nothing is invented in front of it.
+    `parts.json` is written here, so the model's `split` stage is not in the plan and cannot cut or reword the
+    story. The first sentence is the part's hook: the voice stage speaks it once, as part of the story, and
+    nothing is invented in front of it. The `hooks` stage that follows adds only the closing line every Short
+    has (spec 7.0, D16), after the owner's last word.
     """
 
     name: str = "script_import_short"

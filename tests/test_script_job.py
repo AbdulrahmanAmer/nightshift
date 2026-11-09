@@ -36,7 +36,14 @@ from ns_studio.cli import app
 from ns_studio.context import FAKEABLE
 from ns_studio.errors import StudioError
 from ns_studio.orchestrator import FORMAT_STAGES, plan_format, run_job
-from ns_studio.series.plain import ScriptRefused, plan_script, script_markdown, script_problem, spoken_wpm
+from ns_studio.series.plain import (
+    ScriptRefused,
+    closing_reserve_s,
+    plan_script,
+    script_markdown,
+    script_problem,
+    spoken_wpm,
+)
 from ns_studio.series.store import parse_script
 from ns_studio.stages import REGISTRY, run_stage
 from ns_supervisor import devfake
@@ -176,11 +183,14 @@ def test_text_with_chapter_headings_keeps_its_chapters():
 # ------------------------------------------------------------------ what the pipeline would reject later
 
 
-def test_a_short_gets_the_length_bucket_of_its_own_estimate():
+def test_a_short_gets_the_length_bucket_of_its_own_estimate_plus_its_closing_line():
+    """The closing line every Short gets (spec 7.0, D16) is counted in the bucket, the owner's words are not cut."""
     plan = plan_script(SHORT, "shorts_only", PACINGS)
-    assert plan.pacing == "standard" and plan.length_bucket == round(plan.seconds) and 10 < plan.seconds < 40
+    reserve = closing_reserve_s(spoken_wpm(plan.pacing))
+    assert plan.pacing == "standard" and 10 < plan.seconds < 40
+    assert plan.length_bucket == round(plan.seconds + reserve)
     mid = plan_script(long_script(300), "shorts_only", PACINGS)
-    assert mid.length_bucket == round(mid.seconds) and 100 < mid.seconds < 165
+    assert mid.length_bucket == round(mid.seconds + reserve) and 100 < mid.seconds < 165
 
 
 def test_a_short_over_two_minutes_forty_five_or_under_ten_seconds_is_refused_in_plain_words():
@@ -270,7 +280,8 @@ def test_the_owner_script_plans_have_no_stage_that_writes_or_rewrites_the_story(
     jobs.prepare_plan("master_first", True)
     short = run_job(jobs.make_script_job(env, ch, "shorts_only", SHORT), dry_run=True)
     assert short[0] == "script_import_short" and short[-1] == "outbox"
-    assert not {"ideas", "plan", "draft", "critic_revise", "split", "hooks"} & set(short), short
+    assert not {"ideas", "plan", "draft", "critic_revise", "split"} & set(short), short
+    assert short[1] == "hooks"  # adds only the closing line every Short has
     assert short.index("policy_text") > short.index("visual_plan") and "policy_final" in short
     long = run_job(jobs.make_script_job(env, ch, "master_first", long_script(1300)), dry_run=True)
     assert long[0] == "script_import_long" and long[-1] == "outbox"
@@ -368,8 +379,9 @@ def test_short_render_qc(h: Path, monkeypatch: pytest.MonkeyPatch):
     (part,) = json.loads((job_dir / "parts.json").read_text(encoding="utf-8"))
     assert part["text"].replace("\n\n", " ").split() == text.split()  # verbatim: nothing cut, nothing added
     state = json.loads((job_dir / "stage_state.json").read_text(encoding="utf-8"))
-    assert {"script_import_short", "seo", "voice", "render", "qc", "outbox"} <= set(state)
-    assert not {"ideas", "split", "hooks", "critic_revise"} & set(state)
+    assert {"script_import_short", "hooks", "seo", "voice", "render", "qc", "outbox"} <= set(state)
+    assert not {"ideas", "split", "critic_revise"} & set(state)  # hooks only adds the closing line
+    assert (job_dir / "audio" / "p1_close.txt").exists()  # the closing line is voiced after the owner's words
     assert not (job_dir / "ideas_all.json").exists() and not (job_dir / "critic.json").exists()
     assert json.loads((job_dir / "policy_text.json").read_text(encoding="utf-8"))["passed"] is True
     qc = json.loads((job_dir / "qc" / "report.json").read_text(encoding="utf-8"))
@@ -490,7 +502,7 @@ def test_studio_run_script_dry_run_prints_the_owner_script_plan(tmp_home: Path, 
     f = tmp_home / "story.txt"
     f.write_text(SHORT, encoding="utf-8")
     res = runner.invoke(app, ["run", "--dry-run", "--format", "shorts_only", "--script", str(f), "--fake-services"])
-    assert res.exit_code == 0 and res.output.startswith("plan: script_import_short -> seo -> visual_plan"), res.output
+    assert res.exit_code == 0 and res.output.startswith("plan: script_import_short -> hooks -> seo -> visual_plan"), res.output
     assert "ideas" not in res.output and "split" not in res.output
 
 

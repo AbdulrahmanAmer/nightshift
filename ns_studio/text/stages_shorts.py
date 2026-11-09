@@ -20,6 +20,7 @@ from ns_studio.stages import Tenant, register
 from ns_studio.text.budget import (
     CLOSING_MAX_WORDS,
     HOOK_MAX_WORDS,
+    SHORT_CLOSING_WORDS,
     SHORT_MIN_CLOSING_WORDS,
     SHORT_MIN_HOOK_WORDS,
     Budget,
@@ -37,7 +38,6 @@ from ns_studio.voice_wpm import job_wpm
 __all__ = ["draw_banked_idea", "finalize_seo", "ideas_budget", "job_master_budget", "now_iso"]
 
 IDEA_SIMILARITY_LIMIT = 0.85
-SHORT_CLOSING_WORDS = 10  # the budget reserves this many words for the closing line (see `fit_closing`)
 CLOSINGS_FILE = "closings.json"
 DEFAULT_SHORT_CLOSINGS = (
     "Follow for the next story.",
@@ -436,6 +436,9 @@ class HooksStage:
 
     All hook candidates go to `hooks_all.json`; the closing lines to `closings.json` (`{"1": "...", ...}`),
     which the voice stage speaks as `p<n>_close` and the render appends to the part.
+
+    For a Short made from the owner's own script the stage adds only the closing line: the text and the hook
+    (its first sentence) stay as the import wrote them and `hooks_all.json` holds that one hook.
     """
 
     name: str = "hooks"
@@ -458,12 +461,21 @@ class HooksStage:
         parts: list[dict[str, Any]] = ctx.read_json("parts.json")
         all_hooks: list[list[str]] = []
         closings: dict[str, str] = {}
+        owner = ctx.owner_script
         for i, p in enumerate(parts):
             nxt = parts[i + 1]["text"] if i + 1 < len(parts) else None
             out = call_json(
                 ctx, "hook", part_text=p["text"], next_part_text=nxt, part_n=p["n"], parts_total=len(parts)
             )
             wanted = closing_line(out.get("closing_line"), p["n"], len(parts))
+            if owner:
+                # The owner's story is narrated as written, with its first sentence as the hook: only the
+                # closing line is added after it (spec 7.0, D16). The model's hook candidates are not used.
+                first = cut_words(split_sentences(p["text"])[0], HOOK_MAX_WORDS)
+                hook = str(p.get("hook") or "").strip() or first
+                closings[str(p["n"])] = fit_closing(ctx, p, hook, wanted, len(parts))
+                all_hooks.append([hook])
+                continue
             hooks = [str(h).strip() for h in out["hooks"] if 0 < len(str(h).split()) <= HOOK_MAX_WORDS]
             hooks = hooks or [cut_words(split_sentences(p["text"])[0], HOOK_MAX_WORDS)]
             j = call_json(
@@ -479,7 +491,8 @@ class HooksStage:
             all_hooks.append(hooks)
         ctx.write_json(CLOSINGS_FILE, closings)
         ctx.write_json("hooks_all.json", all_hooks)
-        ctx.write_json("parts.json", parts)
+        if not owner:
+            ctx.write_json("parts.json", parts)  # an owner's parts.json stays as the import wrote it
 
 
 class SeoStage:
