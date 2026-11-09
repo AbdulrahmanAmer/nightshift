@@ -1,7 +1,7 @@
 {
  "about": "Seconds per test file for dev/ci_shards.py: the median over the JUnit reports of real CI runs. A file not listed is placed by hash and counts as the larger of the mean and the median of these. Refresh: python dev/ci_shards.py refresh --run latest (or --run <id>, or --junit <folder of report-shard-*.xml>)",
  "measured": {
-  "source": "run 42668170598, plus 8 files not in it (the three newest test files, the four test_p10_* files and test_tiny_story_length.py) from run 42686504308 (main, f4f3948)",
+  "source": "run 42668170598, plus 8 files not in it (the three newest test files, the four test_p10_* files and test_tiny_story_length.py) from run 42686504308 (main, f4f3948); tests/test_first_start_snapshot.py (36.9 s) and tests/test_config_compat.py (0.6 s) added by F-10c from a local run through nspytest.ps1 (JUnit sum of test times, rounded up), to be replaced by the next refresh from CI",
   "files": 309
  },
  "shard_extra_seconds": {
@@ -54,6 +54,7 @@
   "tests/test_clipper_url.py": 1.3,
   "tests/test_clips.py": 4.6,
   "tests/test_config.py": 0.1,
+  "tests/test_config_compat.py": 1.0,
   "tests/test_context.py": 2.5,
   "tests/test_contracts_ui.py": 1.2,
   "tests/test_dashboard_adapters.py": 5.5,
@@ -112,6 +113,7 @@
   "tests/test_ffmpeg.py": 0.3,
   "tests/test_ffmpeg_command_length.py": 23.0,
   "tests/test_finalization.py": 0.1,
+  "tests/test_first_start_snapshot.py": 40.0,
   "tests/test_formats.py": 0.4,
   "tests/test_gate_m0.py": 0.2,
   "tests/test_gpu_dlls.py": 0.1,
