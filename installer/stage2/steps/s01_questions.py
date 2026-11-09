@@ -141,7 +141,7 @@ class S01Questions(Step):
         if not f.is_file():
             return False
         try:
-            ans = build_answers(load_raw(f))
+            ans = build_answers(load_raw(f), saved=True)
         except AnswersError:
             return False
         earlier = reinstall.kept_answers(ctx)

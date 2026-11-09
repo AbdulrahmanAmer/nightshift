@@ -81,9 +81,12 @@ def _check_voice_name(raw: dict[str, Any]) -> None:
     """Refuse a voice name the voice service would refuse, here, where the answers are read (defect D-24).
 
     The name is never changed behind the owner's back: the message quotes what was typed and offers one.
+    A preset voice never uses the name, so a leftover one is not checked.
     """
     voice = raw.get("voice")
-    typed = voice.get("name") if isinstance(voice, dict) else None
+    if not isinstance(voice, dict) or voice.get("mode", "preset") == "preset":
+        return
+    typed = voice.get("name")
     if typed is None or (isinstance(typed, str) and re.fullmatch(VOICE_NAME_PATTERN, typed)):
         return
     shown = typed if isinstance(typed, str) else repr(typed)
@@ -96,9 +99,15 @@ def default_voice_name(display_name: str) -> str:
     return f"{slugify(display_name)[:34].strip('-')}-voice"
 
 
-def build_answers(raw: dict[str, Any]) -> InstallerAnswers:
-    """Validate a merged answers dict. Raises AnswersError with a readable message."""
-    _check_voice_name(raw)
+def build_answers(raw: dict[str, Any], *, saved: bool = False) -> InstallerAnswers:
+    """Validate a merged answers dict. Raises AnswersError with a readable message.
+
+    `saved` is True for the answers.json an earlier run wrote (a resume, repair, update or reinstall reads it
+    again): a voice name in it was accepted then, 0.1.x accepted names the rule now refuses, and the owner
+    typed nothing now, so the name rule is applied to answers typed or supplied in this run only.
+    """
+    if not saved:
+        _check_voice_name(raw)
     try:
         ans = InstallerAnswers.model_validate(raw)
     except ValueError as e:

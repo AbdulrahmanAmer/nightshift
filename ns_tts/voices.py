@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING, Any, Literal
 import numpy as np
 
 from ns_common.errors import NsError
-from ns_common.models import VOICE_NAME_PATTERN
+from ns_common.models import VOICE_NAME_PATTERN, VOICE_NAME_RULE
 from ns_tts.audio import write_wav
 
 if TYPE_CHECKING:
@@ -151,7 +151,7 @@ class VoiceLibrary:
     # ---- writing ----
     def _check_new(self, name: str) -> None:
         if not _NAME_RE.fullmatch(name):
-            raise ValueError("voice name: 1-40 letters, digits, _ or -, starting with a letter or digit")
+            raise ValueError(VOICE_NAME_RULE)
         taken = {p.lower() for p in PRESETS}
         if self.root.is_dir():
             taken |= {f.name.lower() for f in self.root.iterdir()}

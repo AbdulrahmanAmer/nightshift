@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -32,6 +33,20 @@ class Voice(Strict):
     # applied where a name is typed or created (setup answers, channel add/edit, the voice service).
     name: str | None = None
     speed: float = Field(default=1.0, ge=0.7, le=1.3)
+
+
+def voice_name_problem(voice: Voice, before: Voice | None = None) -> str | None:
+    """Why the voice name of a profile being saved now is refused, else None.
+
+    A preset voice never uses the name, so a leftover one is not checked. `before` is the voice as stored:
+    a design or clone name unchanged from it is kept as it is (0.1.x profiles hold names the rule refuses
+    and must stay editable); a name is checked when it is new, or when the voice stops being a preset.
+    """
+    if voice.mode == "preset" or voice.name is None or re.fullmatch(VOICE_NAME_PATTERN, voice.name):
+        return None
+    if before is not None and before.mode != "preset" and before.name == voice.name:
+        return None
+    return f"the voice name {voice.name!r} cannot be used: {VOICE_NAME_RULE}"
 
 
 # Per-channel caption options (spec 17.2). A comment, not a docstring: pydantic would put it in the schema.

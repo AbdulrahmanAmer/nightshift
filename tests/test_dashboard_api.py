@@ -250,6 +250,33 @@ def test_channels_over_http(env):
     assert broken.status_code == 400
 
 
+OLD_VOICE = {"mode": "design", "speaker": None, "description": "warm", "name": "x" * 57}
+
+
+def test_channel_routes_apply_the_voice_name_rule_to_names_typed_now(env):
+    """D-24: the API (and the assistant tools that call it) refuse a name the voice library would refuse."""
+    client, state = env
+    body = {"slug": "night-owl", "display_name": "Night Owl", "niche": "cosy mysteries"}
+    bad = client.post("/api/channels", json={**body, "voice": {**OLD_VOICE, "name": "Night Narrator"}})
+    assert bad.status_code == 422 and err(bad)["code"] == "invalid_profile"
+    assert any(d["field"] == "voice.name" and "1 to 40 letters" in d["message"] for d in err(bad)["details"])
+    assert not state.paths.channel_file("night-owl").exists()
+    ok = client.post("/api/channels", json={**body, "voice": {**OLD_VOICE, "name": "Night-Narrator"}})
+    assert ok.status_code == 201
+
+
+def test_channel_routes_keep_working_on_a_stored_name_the_rule_refuses(env):
+    client, state = env
+    seed_channel(state.db, state.paths, "old-timer", voice=OLD_VOICE)
+    saved = client.get("/api/channels/old-timer").json()["profile"]
+    same = client.put("/api/channels/old-timer", json={**saved, "niche": "calmer stories"})
+    assert same.status_code == 200 and same.json()["profile"]["voice"]["name"] == "x" * 57
+    assert client.post("/api/channels/old-timer/validate").json()["ok"] is True
+    typed = client.put("/api/channels/old-timer", json={**saved, "voice": {**OLD_VOICE, "name": "a b"}})
+    assert typed.status_code == 422
+    assert client.get("/api/channels/old-timer").json()["profile"]["voice"]["name"] == "x" * 57
+
+
 # ------------------------------------------------------------------ jobs
 
 

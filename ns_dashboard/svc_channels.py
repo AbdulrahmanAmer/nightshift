@@ -8,7 +8,7 @@ import yaml
 from pydantic import ValidationError
 
 from ns_common.config import list_channels, load_channel, save_channel
-from ns_common.models import Channel
+from ns_common.models import Channel, Voice
 from ns_dashboard.channel_stats import channel_stats
 from ns_dashboard.channels import validate_profile
 from ns_dashboard.common import now_iso, require_slug
@@ -91,7 +91,7 @@ class ChannelsService:
     def get(self, slug: str) -> dict[str, Any]:
         """Profile plus warnings."""
         ch = self.load(slug)
-        check = validate_profile(ch.model_dump(mode="json"), self.load_all())
+        check = validate_profile(ch.model_dump(mode="json"), self.load_all(), ch.voice)
         return {"profile": ch.model_dump(mode="json"), **_flat_warnings(check["warnings"])}
 
     # --- writing ---
@@ -102,9 +102,11 @@ class ChannelsService:
             (ch.slug, ch.display_name, ch.created_at or now_iso(), ch.status),
         )
 
-    def _checked(self, body: dict[str, Any], slug: str | None = None) -> tuple[Channel, list[dict[str, str]]]:
+    def _checked(
+        self, body: dict[str, Any], slug: str | None = None, before: Voice | None = None
+    ) -> tuple[Channel, list[dict[str, str]]]:
         others = [c for c in self.load_all() if c.slug != (slug or body.get("slug"))]
-        check = validate_profile(body, others)
+        check = validate_profile(body, others, before)
         if not check["ok"]:
             raise ApiError(
                 422, "invalid_profile", "Some channel settings need fixing.", details=check["errors"]
@@ -130,7 +132,7 @@ class ChannelsService:
             raise ApiError(422, "invalid_profile", "The channel id cannot be changed.",
                            details=[{"field": "slug", "message": "The channel id cannot be changed."}])
         draft = {**body, "slug": slug, "created_at": body.get("created_at") or old.created_at}
-        ch, warnings = self._checked(draft, slug)
+        ch, warnings = self._checked(draft, slug, old.voice)
         save_channel(self.s.paths, ch)
         self._mirror(ch)
         self.s.log.info("channel_updated", slug=slug)
@@ -159,10 +161,11 @@ class ChannelsService:
     def validate(self, slug: str, draft: dict[str, Any] | None) -> dict[str, Any]:
         """`{ok, errors, warnings}` for a draft, or for the saved profile when no draft is sent."""
         require_slug(slug)
-        raw = draft if draft else self.load(slug).model_dump(mode="json")
+        saved = self.load(slug) if (not draft or self.exists(slug)) else None  # a draft may be a new channel
+        raw = draft or (saved.model_dump(mode="json") if saved else {})
         raw = {**raw, "slug": raw.get("slug") or slug}
         others = [c for c in self.load_all() if c.slug != raw["slug"]]
-        check = validate_profile(raw, others)
+        check = validate_profile(raw, others, saved.voice if saved else None)
         return {
             "ok": check["ok"],
             "errors": [e["message"] for e in check["errors"]],

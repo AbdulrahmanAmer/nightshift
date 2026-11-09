@@ -123,3 +123,76 @@ def test_a_long_channel_name_still_queues_a_designed_voice(tmp_path: Path):
     )
     channel = channel_from_answers(ans)
     assert re.fullmatch(m.VOICE_NAME_PATTERN, channel.voice.name or "")
+
+
+# ---- a saved answers.json from an earlier install is read again, never refused (D-24 break-it round) ----
+
+OLD_LONG = "after-dark-tales-of-the-deep-north-woods-and-lakes-voice"  # 57 chars: the 0.1.x unbounded default
+OLD_SHAPES = {
+    "long design name": {"mode": "design", "description": "warm baritone", "name": OLD_LONG, "speaker": None},
+    "preset that kept a spaced name": {"mode": "preset", "speaker": "Ryan", "name": "Night Narrator"},
+}
+
+
+def _saved_answers(ctx, voice: dict[str, Any]) -> Path:
+    """config/answers.json the way an earlier setup left it."""
+    f = ctx.paths.config / "answers.json"
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text(json.dumps(example_answers(home_path=str(ctx.paths.home), voice=voice)), encoding="utf-8")
+    return f
+
+
+def test_a_preset_voice_with_a_leftover_name_is_not_refused():
+    ans = build_answers(example_answers(voice=OLD_SHAPES["preset that kept a spaced name"]))
+    assert ans.voice.mode == "preset" and ans.voice.speaker == "Ryan"
+
+
+def test_a_name_typed_now_is_still_refused_for_a_clone_voice():
+    voice = {"mode": "clone", "name": "my voice", "speaker": None}
+    raw = example_answers(
+        voice=voice, voice_ref_audio_path="a.wav", voice_ref_text="hi", voice_rights_confirmed=True
+    )
+    with pytest.raises(AnswersError, match="my voice"):
+        build_answers(raw)
+
+
+@pytest.mark.parametrize("shape", sorted(OLD_SHAPES))
+def test_a_resume_reads_the_saved_answers_of_an_older_install(tmp_path: Path, shape: str):
+    """ensure_answers is what s03, s07, s09, s10 and v01 call; the saved name is kept as it is."""
+    ctx = make_test_context(tmp_path, ui=FakeUi(interactive=False))
+    _saved_answers(ctx, OLD_SHAPES[shape])
+    ans = ctx.ensure_answers()
+    assert ans.voice.name == OLD_SHAPES[shape]["name"]
+
+
+@pytest.mark.parametrize("shape", sorted(OLD_SHAPES))
+def test_s01_check_accepts_the_saved_answers_of_an_older_install(tmp_path: Path, shape: str):
+    ctx = make_test_context(tmp_path, ui=FakeUi(interactive=False))
+    _saved_answers(ctx, OLD_SHAPES[shape])
+    assert S01Questions().check(ctx) is True
+    assert ctx.answers is not None and ctx.answers.voice.name == OLD_SHAPES[shape]["name"]
+
+
+@pytest.mark.parametrize("shape", sorted(OLD_SHAPES))
+def test_s07_check_and_the_download_plan_read_the_saved_answers_of_an_older_install(
+    tmp_path: Path, shape: str
+):
+    from installer.stage2 import verify_downloads
+    from installer.stage2.steps.s07_configs import S07Configs
+
+    ctx = make_test_context(tmp_path, ui=FakeUi(interactive=False))
+    _saved_answers(ctx, OLD_SHAPES[shape])
+    assert S07Configs().check(ctx) is False  # nothing is configured yet; it answers, it does not raise
+    items = verify_downloads.plan_for_install(ctx.paths, ctx.app_path)
+    assert items  # the models setup would fetch for these answers
+
+
+def test_the_same_old_name_given_to_setup_now_is_refused(tmp_path: Path):
+    """The window or --answers supplies it in this run: that is a name typed now."""
+    ctx = make_test_context(
+        tmp_path,
+        raw_answers=example_answers(home_path=str(tmp_path / "home"), voice=OLD_SHAPES["long design name"]),
+        ui=FakeUi(interactive=False),
+    )
+    with pytest.raises(AnswersError, match="cannot be used"):
+        S01Questions().run(ctx)
