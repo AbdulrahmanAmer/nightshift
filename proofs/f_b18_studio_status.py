@@ -23,8 +23,17 @@ def run(ctx):
         not_covered="nightshift-studio.ps1 / nightshift-code.ps1 launcher consoles",
     )
     channels_dir = ctx.home / "config" / "channels"
-    slugs = sorted(p.stem for p in channels_dir.glob("*.yaml")) if channels_dir.is_dir() else []
-    ctx.step("channel files on disk", channels=slugs)
+    on_disk = sorted(p.stem for p in channels_dir.glob("*.yaml")) if channels_dir.is_dir() else []
+    # `studio status` skips a profile that cannot be loaded (the others still print); the product's own
+    # `studio channel list` names those as UNREADABLE, so they are not expected in the status text.
+    listing = ctx.cli(["studio", "channel", "list"], 120)
+    unreadable = {
+        parts[0]
+        for parts in (line.split("\t") for line in (listing.stdout or "").splitlines())
+        if len(parts) > 1 and parts[1] == "UNREADABLE"
+    }
+    slugs = [s for s in on_disk if s not in unreadable]
+    ctx.step("channel files on disk", channels=on_disk, unreadable_profiles=sorted(unreadable))
 
     done = ctx.cli(["studio", "status"], 120)
     out = done.stdout or ""

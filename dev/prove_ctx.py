@@ -28,6 +28,7 @@ from typing import Any, NoReturn
 #: the only programs ``ctx.cli`` runs, and where each lives in an install (venv folder, executable name)
 CLI_PROGRAMS = {"ns": ("supervisor", "ns"), "studio": ("studio", "studio")}
 OUTPUT_LIMIT = 4000
+MAX_BODY = 4_000_000  # ctx.api reads at most this many bytes of one answer
 DEFAULT_PORTS = {"dashboard": 8100, "supervisor": 8099}
 
 
@@ -139,6 +140,7 @@ class Ctx:
         self._clock = clock
         self._sleep = sleep
         self._deadline = clock() + timeout_s
+        self._aborted = False
         self._timeout_s = timeout_s
         self._procs: list[subprocess.Popen[Any]] = []
         self._pw_factory = playwright_factory
@@ -174,7 +176,13 @@ class Ctx:
             raise ProofFailed(f"cannot read {p}: {exc}") from exc
 
     # ------------------------------------------------------------------ time
+    def abort(self) -> None:
+        """The runner gave up on this proof (it blocked outside ``ctx``): every later ctx call fails."""
+        self._aborted = True
+
     def _remaining(self) -> float:
+        if self._aborted:
+            raise ProofFailed("proof was stopped by the runner")
         left = self._deadline - self._clock()
         if left <= 0:
             raise ProofFailed(f"proof timed out after {self._timeout_s:g} s (PROOF['timeout_s'])")
@@ -211,9 +219,9 @@ class Ctx:
         limit = min(timeout, self._remaining())
         try:
             with opener.open(req, timeout=limit) as resp:
-                status, raw = resp.status, resp.read()
+                status, raw = resp.status, self._read_bounded(resp, limit, method, path)
         except urllib.error.HTTPError as exc:
-            status, raw = exc.code, exc.read()
+            status, raw = exc.code, self._read_bounded(exc, limit, method, path)
         except (urllib.error.URLError, OSError) as exc:
             raise ProofFailed(f"{method.upper()} {path}: no answer from the dashboard ({exc})") from exc
         text = raw.decode("utf-8", errors="replace")
@@ -223,6 +231,25 @@ class Ctx:
             parsed = text
         self.step(f"api {method.upper()} {path}", status=status, bytes=len(raw))
         return status, parsed
+
+    def _read_bounded(self, resp: Any, limit: float, method: str, path: str) -> bytes:
+        """Read an answer chunk by chunk against a wall clock, so a stream that never ends (an event stream
+        that ignores ``limit``) fails the proof instead of keeping the per-read socket timeout alive."""
+        end = self._clock() + limit
+        reader = getattr(resp, "read1", None) or resp.read
+        chunks: list[bytes] = []
+        size = 0
+        while True:
+            chunk = reader(8192)
+            if not chunk:
+                return b"".join(chunks)
+            chunks.append(chunk)
+            size += len(chunk)
+            if size > MAX_BODY:
+                raise ProofFailed(f"{method.upper()} {path}: the answer is longer than {MAX_BODY} bytes")
+            if self._clock() > end:
+                raise ProofFailed(f"{method.upper()} {path}: still sending after {limit:g} s (a stream?)")
+            self._remaining()
 
     # ------------------------------------------------------------------ the product's CLI
     def cli_program(self, name: str) -> Path:
@@ -277,6 +304,7 @@ class Ctx:
     ) -> subprocess.Popen[Any]:
         """A detached helper (a fake proxy, a watcher). Its pid is recorded; the runner kills exactly the pids
         spawned here when the proof ends, pass or fail. Output goes to a log in ``scratch``."""
+        self._remaining()  # a proof the runner has stopped starts nothing more
         label = name or Path(str(args[0])).stem
         log = self.scratch / f"{label}.log"
         child_env = dict(self._env)

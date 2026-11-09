@@ -18,14 +18,20 @@ A proof is ``proofs/<slug>.py`` (the folder is a package; every name that starts
 field is reported (``--list`` shows it, ``--all`` counts it as a failure); it never crashes the runner. The
 literal is read with ``ast`` and the module is imported as ``<package>.<stem>`` only when it runs.
 
-What the runner does, and only that: reads version, kind and ports from the install; checks the laptop lock
-for a laptop install; starts the engine with ``refs\\tools\\nsup.ps1`` when a proof needs it and it is not up,
-and brings it down with ``nsproc.ps1 -Down`` only if it started it; gives each proof a ``ctx`` (see
-``dev/prove_ctx.py``) and kills exactly the pids that proof spawned; writes
-``<runs>/proofs/<version>/<box>.json`` for every box of every proof it ran.
+What the runner does, and only that: reads version, kind and ports from the install; requires that the
+caller holds ``LAPTOP.lock`` (every run: it starts the product's own programs, and a proof may start a helper
+or a window); starts the engine with ``refs\\tools\\nsup.ps1`` when a proof needs it and it is not up (and
+refuses when ``nsproc.ps1`` lists processes it did not start), and brings it down with ``nsproc.ps1 -Down``
+only if it started it (that stop is nsproc's pattern kill for this home, not a pid kill); gives each proof a
+``ctx`` (see ``dev/prove_ctx.py``) under a hard deadline of ``timeout_s`` plus a grace, and kills exactly the
+pids that proof spawned; writes ``<runs>/proofs/<version>/<box>.json`` for every box of every proof it ran,
+as soon as each proof ends. Two proofs of one box share that file: it holds both records and a failure wins
+(``result`` is ``fail`` if any proof of the box failed, else ``pass``, else ``skipped``). A skip never
+replaces an earlier pass or fail of the same proof.
 
 Exit codes: 0 every proof passed or was skipped, 1 any proof failed, 2 usage or setup error (no install, lock
-not held, unknown box, no engine tool).
+not held, unknown box, no engine tool, a proof asked for by name that does not fit this install kind, other
+processes already running when the engine has to be started).
 
 Standard library only. Never global input, nothing on C:, one proof at a time.
 """
@@ -40,6 +46,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
 import traceback
 from collections.abc import Callable
@@ -71,6 +78,7 @@ ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 BOX_RE = re.compile(r"^[A-Za-z]+-[A-Za-z0-9]+$")
 DEFAULT_TIMEOUT_S = 300
 ENGINE_START_TIMEOUT_S = 300
+HARD_GRACE_S = 15  # how long past timeout_s a proof that blocks outside ctx is waited for
 
 
 # -------------------------------------------------- discovery
@@ -236,22 +244,12 @@ def lock_holder(lock_path: Path) -> str | None:
     return first.split("|")[0].strip() or None
 
 
-def is_laptop_install(home: Path, lock_path: Path) -> bool:
-    """A home under ``<NightShift root>\\installs`` (the root being three folders above the lock file)."""
-    try:
-        Path(os.path.abspath(home)).relative_to(Path(os.path.abspath(lock_path)).parents[2] / "installs")
-    except (ValueError, IndexError):
-        return False
-    return True
-
-
-def lock_problem(home: Path, lock_path: Path, dept: str) -> str | None:
-    """Why this run must not start, or None. A laptop install needs the caller to hold LAPTOP.lock."""
-    if not is_laptop_install(home, lock_path):
-        return None
+def lock_problem(lock_path: Path, dept: str) -> str | None:
+    """Why this run must not start, or None. The caller must hold LAPTOP.lock: the runner starts the
+    product's programs (and maybe an engine, helpers or a window) on this machine, wherever the home is."""
     holder = lock_holder(lock_path)
     if holder is None:
-        return f"{home} is a laptop install: take {lock_path} first (one line: <dept> | <what> | <time>)"
+        return f"take {lock_path} first (one line: <dept> | <what> | <time>); the runner starts programs here"
     if _dept_name(holder) != _dept_name(dept):
         return f"{lock_path} is held by '{holder}', not '{dept}': do not run; try later"
     return None
@@ -323,6 +321,7 @@ class Runner:
         probe: Callable[[InstallInfo], bool] = _default_probe,
         ctx_options: dict[str, Any] | None = None,
         out: Callable[[str], None] = print,
+        hard_grace_s: float = HARD_GRACE_S,
     ) -> None:
         self.home = Path(home)
         self.runs = Path(runs)
@@ -334,7 +333,7 @@ class Runner:
         self.info = read_install(self.home)
         self.ps, self.probe, self.out = ps, probe, out
         self.ctx_options = ctx_options or {}
-        self.laptop = is_laptop_install(self.home, self.lock_path)
+        self.hard_grace_s = hard_grace_s
         self.evidence_dir = self.runs / "proofs" / self.info.version
         self.lifecycle: dict[str, Any] = {}
 
@@ -348,6 +347,14 @@ class Runner:
         if self.probe(self.info):
             life["engine"] = "already up (not started by the runner)"
             return None
+        before = str(life.get("nsproc_before", ""))
+        if not before.lstrip().startswith("CLEAN"):
+            # nsproc -Down at the end is a pattern kill of everything that looks like Nightshift on this
+            # machine; it must not run when the listing shows processes that are not ours.
+            raise SetupError(
+                "other Nightshift processes are running (nsproc.ps1 does not say CLEAN); "
+                "the runner will not start an engine next to them: " + before[-300:]
+            )
         nsup = self.tools / "nsup.ps1"
         if not nsup.is_file():
             life["engine"] = "not up and not started"
@@ -390,8 +397,7 @@ class Runner:
             shutil.rmtree(scratch, ignore_errors=True)
         scratch.mkdir(parents=True, exist_ok=True)
         env = dict(os.environ)
-        if self.laptop:
-            env["NS_LAPTOP_LOCK_MINE"] = "1"
+        env["NS_LAPTOP_LOCK_MINE"] = "1"  # the caller holds LAPTOP.lock (checked before anything ran)
         ctx = Ctx(
             home=self.home,
             info=self.info,
@@ -401,18 +407,40 @@ class Runner:
             env=env,
             **self.ctx_options,
         )
+        outcome: dict[str, BaseException] = {}
+
+        def target() -> None:
+            try:
+                if "engine" in proof.needs and engine_error:
+                    raise ProofFailed(engine_error)
+                self._import(proof).run(ctx)
+            except BaseException as exc:  # ProofSkipped is a BaseException: hand every end to the runner
+                outcome["exc"] = exc
+
+        worker = threading.Thread(target=target, name=f"proof-{proof.id}", daemon=True)
         result, reason, tb = "pass", "", ""
         try:
-            if "engine" in proof.needs and engine_error:
-                raise ProofFailed(engine_error)
-            self._import(proof).run(ctx)
-        except ProofSkipped as skip:
-            result, reason = "skipped", str(skip) or "skipped"
-        except ProofFailed as exc:
-            result, reason, tb = "fail", str(exc), traceback.format_exc()
-        except Exception as exc:  # a crashing proof is a failed proof, never a crashed runner
-            result, reason, tb = "fail", f"{type(exc).__name__}: {exc}", traceback.format_exc()
+            worker.start()
+            # A proof that blocks outside ctx (its own sleep, a wait on a helper) cannot be interrupted;
+            # the runner stops waiting, closes what it spawned and records the failure. The thread is a
+            # daemon: it cannot keep the process alive.
+            worker.join(proof.timeout_s + self.hard_grace_s)
+            if worker.is_alive():
+                ctx.abort()
+                result = "fail"
+                reason = f"proof blocked outside ctx past {proof.timeout_s:g} s + {self.hard_grace_s:g} s"
+            else:
+                exc = outcome.get("exc")
+                if isinstance(exc, ProofSkipped):
+                    result, reason = "skipped", str(exc) or "skipped"
+                elif isinstance(exc, ProofFailed):
+                    result, reason = "fail", str(exc)
+                    tb = "".join(traceback.format_exception(exc))
+                elif exc is not None:  # a crashing proof is a failed proof, never a crashed runner
+                    result, reason = "fail", f"{type(exc).__name__}: {exc}"
+                    tb = "".join(traceback.format_exception(exc))
         finally:
+            ctx.abort()  # whatever ended it (Ctrl+C included), nothing more is recorded or called
             ctx.close()
         extra: dict[str, Any] = {
             "pids": ctx.pids,
@@ -421,12 +449,14 @@ class Runner:
         }
         if tb:
             extra["traceback"] = tb
-        return Result(proof, result, reason, ctx.steps, started, round(time.monotonic() - t0, 2), extra)
+        steps = list(ctx.steps)
+        return Result(proof, result, reason, steps, started, round(time.monotonic() - t0, 2), extra)
 
     # --------------------------------------------------------------------------------- many proofs
     def execute(self, proofs: list[Proof], *, quiet_skips: bool = False) -> list[Result]:
         results: list[Result] = []
         runnable: list[Proof] = []
+        self.lifecycle = {"started_by_runner": False}
         for p in proofs:
             if not p.valid:
                 results.append(
@@ -439,7 +469,7 @@ class Runner:
                 results.append(Result(p, "skipped", "window proof skipped by --no-window", [], now_iso()))
             else:
                 runnable.append(p)
-        self.lifecycle = {"started_by_runner": False}
+        self.write_evidence(results)  # the proofs that never ran (invalid, skipped) are on record at once
         if runnable:
             self.lifecycle["nsproc_before"] = self._nsproc()[1][-1500:]
         engine_error: str | None = None
@@ -451,7 +481,9 @@ class Runner:
                 engine_error = self._ensure_engine()
             for p in runnable:
                 self.out(f"running {p.id} ...")
-                results.append(self._run_one(p, engine_error))
+                done = self._run_one(p, engine_error)
+                results.append(done)
+                self.write_evidence([done])  # a later Ctrl+C or crash does not lose this proof's evidence
         finally:
             try:
                 if runnable:
@@ -460,7 +492,7 @@ class Runner:
                 self._purge_modules()
                 if added in sys.path:
                     sys.path.remove(added)
-        self.write_evidence(results)
+                self.write_evidence(results)  # again, with the engine's end of the lifecycle in it
         return results
 
     def _purge_modules(self) -> None:
@@ -469,34 +501,61 @@ class Runner:
             del sys.modules[name]
 
     # --------------------------------------------------------------------------------- evidence
+    def _record(self, r: Result, name: str) -> dict[str, Any]:
+        return {
+            "proof_id": r.proof.label,
+            "box": name,
+            "result": r.result,
+            "reason": r.reason,
+            "steps": r.steps,
+            "version": self.info.version,
+            "kind": self.info.kind,
+            "home": str(self.home),
+            "NIGHTSHIFT_HOME": str(self.home),
+            "started": r.started,
+            "duration_s": r.duration_s,
+            "runner_commit": self.commit,
+            "lifecycle": jsonable(self.lifecycle),
+            **jsonable(r.extra),
+        }
+
+    @staticmethod
+    def _stored(target: Path) -> list[dict[str, Any]]:
+        """The records an earlier run left in a box file (one, or the ``proofs`` list of several)."""
+        try:
+            old = json.loads(target.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return []
+        if not isinstance(old, dict):
+            return []
+        many = old.get("proofs")
+        return [r for r in many if isinstance(r, dict)] if isinstance(many, list) else [old]
+
     def write_evidence(self, results: list[Result]) -> list[Path]:
+        """One file per box. Proofs that share a box share the file: records are kept by proof id (a new
+        record replaces the old one of the same proof, except that a skip never replaces a pass or fail) and
+        the top level is the deciding record, so a failing proof cannot be hidden by a passing one."""
         written: list[Path] = []
         self.evidence_dir.mkdir(parents=True, exist_ok=True)
         for r in results:
-            if not r.proof.valid:
-                names = [f"_invalid-{r.proof.stem}"]
-            else:
-                names = list(r.proof.boxes)
+            names = [f"_invalid-{r.proof.stem}"] if not r.proof.valid else list(r.proof.boxes)
             for name in names:
-                record = {
-                    "proof_id": r.proof.label,
-                    "box": name,
-                    "result": r.result,
-                    "reason": r.reason,
-                    "steps": r.steps,
-                    "version": self.info.version,
-                    "kind": self.info.kind,
-                    "home": str(self.home),
-                    "NIGHTSHIFT_HOME": str(self.home),
-                    "started": r.started,
-                    "duration_s": r.duration_s,
-                    "runner_commit": self.commit,
-                    "lifecycle": jsonable(self.lifecycle),
-                    **jsonable(r.extra),
-                }
                 target = self.evidence_dir / f"{name}.json"
+                new = self._record(r, name)
+                kept: list[dict[str, Any]] = []
+                for old in self._stored(target):
+                    if old.get("proof_id") != new["proof_id"]:
+                        kept.append(old)
+                    elif new["result"] == "skipped" and old.get("result") in ("pass", "fail"):
+                        new = old  # the earlier evidence of this proof stays
+                records = [*kept, new]
+                rank = {"fail": 0, "pass": 1, "skipped": 2}
+                decider = min(records, key=lambda rec: rank.get(str(rec.get("result")), 3))
+                out = {k: v for k, v in decider.items() if k != "proofs"}
+                if len(records) > 1:
+                    out["proofs"] = [{k: v for k, v in rec.items() if k != "proofs"} for rec in records]
                 tmp = target.with_suffix(".json.tmp")
-                tmp.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+                tmp.write_text(json.dumps(out, indent=2) + "\n", encoding="utf-8")
                 os.replace(tmp, target)
                 written.append(target)
         return written
@@ -582,7 +641,7 @@ def main(argv: list[str] | None = None, *, runner_options: dict[str, Any] | None
     if not args.home.is_dir():
         print(f"prove.py: {args.home} is not a folder", file=sys.stderr)
         return 2
-    problem = lock_problem(args.home, args.lock_file, args.dept)
+    problem = lock_problem(args.lock_file, args.dept)
     if problem:
         print(f"prove.py: {problem}", file=sys.stderr)
         return 2
@@ -600,7 +659,19 @@ def main(argv: list[str] | None = None, *, runner_options: dict[str, Any] | None
     except SetupError as exc:
         print(f"prove.py: {exc}", file=sys.stderr)
         return 2
-    results = runner.execute(chosen, quiet_skips=args.everything and not (args.box or args.proof))
+    named, _ = select(proofs, args.box, args.proof, False)
+    wrong = [p.label for p in named if p.valid and p.install not in ("any", runner.info.kind)]
+    if wrong:  # only --all skips a proof that does not fit quietly; one asked for by name must run
+        print(
+            f"prove.py: {', '.join(wrong)} need(s) another install kind than this {runner.info.kind} home",
+            file=sys.stderr,
+        )
+        return 2
+    try:
+        results = runner.execute(chosen, quiet_skips=args.everything and not (args.box or args.proof))
+    except SetupError as exc:
+        print(f"prove.py: {exc}", file=sys.stderr)
+        return 2
     for r in results:
         tail = f"  {r.reason}" if r.reason else ""
         print(f"{r.result.upper():7} {r.proof.label} [{','.join(r.proof.boxes)}] {r.duration_s}s{tail}")

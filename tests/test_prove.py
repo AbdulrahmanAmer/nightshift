@@ -12,6 +12,7 @@ import sqlite3
 import subprocess
 import sys
 import textwrap
+import time
 import urllib.error
 from pathlib import Path
 from types import SimpleNamespace
@@ -21,9 +22,11 @@ import pytest
 
 from dev import prove, prove_ctx
 from dev.prove_ctx import Ctx, InstallInfo, ProofFailed, ProofSkipped
+from ns_studio.learn.status import ChannelStatus, format_status
 
 TEMPLATE = """
-PROOF = {{"id": "{id}", "boxes": {boxes}, "install": "{install}", "window": {window}, "needs": {needs}}}
+PROOF = {{"id": "{id}", "boxes": {boxes}, "install": "{install}", "window": {window},
+         "needs": {needs}{extra}}}
 
 def run(ctx):
 {body}
@@ -39,6 +42,7 @@ def write_proof(
     install="dev",
     window=False,
     needs=(),
+    timeout_s: float | None = None,
     body="ctx.step('ran')",
 ) -> Path:
     pdir.mkdir(parents=True, exist_ok=True)
@@ -51,6 +55,7 @@ def write_proof(
             install=install,
             window=window,
             needs=list(needs),
+            extra=f', "timeout_s": {timeout_s}' if timeout_s is not None else "",
             body=textwrap.indent(textwrap.dedent(body), "    "),
         ),
         encoding="utf-8",
@@ -75,12 +80,12 @@ def make_home(root: Path, *, dev: bool = True, version: str = "9.9.9", cli: bool
 class Tools:
     """Stands in for powershell + refs\\tools: records every call; `nsup` brings the fake engine up."""
 
-    def __init__(self, tmp: Path, *, up: bool = False, nsup_rc: int = 0) -> None:
+    def __init__(self, tmp: Path, *, up: bool = False, nsup_rc: int = 0, busy: bool = False) -> None:
         self.dir = tmp / "tools"
         self.dir.mkdir()
         (self.dir / "nsup.ps1").write_text("", encoding="utf-8")
         (self.dir / "nsproc.ps1").write_text("", encoding="utf-8")
-        self.up, self.nsup_rc, self.calls = up, nsup_rc, []
+        self.up, self.nsup_rc, self.calls, self.busy = up, nsup_rc, [], busy
 
     def ps(self, script: Path, args: list[str], timeout: float) -> tuple[int, str]:
         self.calls.append((script.name, list(args)))
@@ -92,6 +97,8 @@ class Tools:
             return 0, "CLEAN: no Nightshift test processes"
         if self.up:
             return 0, "  4242     90 MB  python ns_supervisor\n  4343     80 MB  python ns_dashboard"
+        if self.busy:  # someone else's engine, on another home
+            return 0, "  5151    120 MB  python ns_supervisor (not ours)"
         return 0, "CLEAN: no Nightshift test processes"
 
     def probe(self, info: InstallInfo) -> bool:
@@ -103,7 +110,11 @@ class Tools:
 
 @pytest.fixture
 def env(tmp_path: Path):
+    lock = tmp_path / "NightShift" / "refs" / "departments" / "LAPTOP.lock"
+    lock.parent.mkdir(parents=True)
+    lock.write_text("ns-qa | proofs | 22:00\n", encoding="utf-8")  # the caller (qa) holds the laptop lock
     return SimpleNamespace(
+        lock=lock,
         tmp=tmp_path,
         pdir=tmp_path / "proofs",
         home=make_home(tmp_path),
@@ -114,11 +125,10 @@ def env(tmp_path: Path):
 
 def run_main(env, *args: str, tools: Tools | None = None, home: Path | None = None) -> int:
     t = tools or env.tools
-    lock = env.tmp / "nolock" / "a" / "b" / "LAPTOP.lock"
     return prove.main(
         ["--home", str(home or env.home), "--runs", str(env.runs), "--proofs-dir", str(env.pdir)]
-        + ["--tools", str(t.dir), "--lock-file", str(lock), *args],
-        runner_options={"commit": "abc123", "ps": t.ps, "probe": t.probe},
+        + ["--tools", str(t.dir), "--lock-file", str(env.lock), "--dept", "qa", *args],
+        runner_options={"commit": "abc123", "ps": t.ps, "probe": t.probe, "hard_grace_s": 0.2},
     )
 
 
@@ -222,11 +232,22 @@ def test_proof_selects_by_id_and_all_runs_every_proof_the_install_kind_fits(env)
     assert evidence_files(env) == ["F-X1.json", "F-Y1.json"]  # the engine-only proof does not fit a dev home
 
 
-def test_a_box_asked_for_by_name_on_the_wrong_install_kind_is_skipped_with_evidence(env):
+def test_a_proof_asked_for_by_name_on_the_wrong_install_kind_is_a_usage_error_and_keeps_old_evidence(
+    env, capsys
+):
     write_proof(env.pdir, "engine_only", boxes=["F-Z1"], install="engine", body="raise AssertionError('ran')")
-    assert run_main(env, "--box", "F-Z1") == 0  # a skip is not a failure ...
-    ev = evidence(env, "F-Z1")
-    assert (ev["result"], ev["reason"]) == ("skipped", "wrong install kind")  # ... and not a pass either
+    write_proof(env.pdir, "dev_only", boxes=["F-Z1"], install="dev")
+    assert run_main(env, "--proof", "dev-only") == 0
+    before = (env.runs / "proofs" / "9.9.9" / "F-Z1.json").read_text(encoding="utf-8")
+    capsys.readouterr()
+    calls = list(env.tools.calls)
+    assert run_main(env, "--box", "F-Z1") == 2  # one of the two proofs of the box does not fit this home
+    err = capsys.readouterr().err
+    assert "engine-only" in err and "another install kind" in err
+    assert (env.runs / "proofs" / "9.9.9" / "F-Z1.json").read_text(encoding="utf-8") == before
+    assert env.tools.calls == calls  # nothing was started for the refused request
+    assert run_main(env, "--all") == 0  # --all still skips what does not fit, quietly
+    assert evidence(env, "F-Z1")["result"] == "pass"
 
 
 def test_no_window_skips_window_proofs(env):
@@ -444,39 +465,101 @@ def test_spawned_helpers_are_killed_by_pid_even_when_the_proof_raises(env, monke
 # --- the laptop lock -----------------------------------------------------------------------------------
 
 
-def lock_layout(tmp: Path) -> tuple[Path, Path]:
-    root = tmp / "NightShift"
-    lock = root / "refs" / "departments" / "LAPTOP.lock"
-    lock.parent.mkdir(parents=True)
-    return lock, make_home(root / "installs" / "dev_parent")
-
-
-def test_a_laptop_install_is_refused_without_the_callers_lock_and_runs_with_it(env, capsys):
-    lock, home = lock_layout(env.tmp)
+def test_every_run_needs_the_callers_lock_wherever_the_home_is(env, capsys):
+    home = make_home(env.tmp / "NightshiftDev3")  # a dev home that is not under installs\
     body = "ctx.step('env', mine=ctx._env.get('NS_LAPTOP_LOCK_MINE'))"
-    write_proof(env.pdir, "p", boxes=["F-K1"], body=body)
+    write_proof(env.pdir, "p", boxes=["F-K1"], needs=["engine"], body=body)
 
     def go(dept: str) -> int:
         argv = ["--home", str(home), "--all", "--runs", str(env.runs), "--proofs-dir", str(env.pdir)]
-        argv += ["--tools", str(env.tools.dir), "--lock-file", str(lock), "--dept", dept]
+        argv += ["--tools", str(env.tools.dir), "--lock-file", str(env.lock), "--dept", dept]
         return prove.main(argv, runner_options={"commit": "c", "ps": env.tools.ps, "probe": env.tools.probe})
 
+    env.lock.unlink()
     assert go("qa") == 2  # no lock file: take it first
     assert "take" in capsys.readouterr().err
-    lock.write_text("ns-packages | P10b render | 21:41\n", encoding="utf-8")
+    env.lock.write_text("ns-packages | P10b render | 21:41\n", encoding="utf-8")
     assert go("qa") == 2  # somebody else's lock
     assert "held by 'ns-packages'" in capsys.readouterr().err
-    assert evidence_files(env) == []
-    lock.write_text("ns-qa | proofs | 22:00\n", encoding="utf-8")
+    assert evidence_files(env) == [] and env.tools.calls == []  # nothing was started, not even nsup
+    env.lock.write_text("ns-qa | proofs | 22:00\n", encoding="utf-8")
     assert go("qa") == 0 and go("ns-qa") == 0  # the holder, with or without the prefix
     assert evidence(env, "F-K1")["steps"][0]["observed"] == {"mine": "1"}  # FFmpeg stays on its PATH
 
 
-def test_a_home_that_is_not_a_laptop_install_needs_no_lock(env):
-    body = "ctx.step('env', mine=ctx._env.get('NS_LAPTOP_LOCK_MINE'))"
-    write_proof(env.pdir, "p", boxes=["F-K2"], body=body)
+# --- boxes with several proofs, deadlines, interrupts ---------------------------------------------------
+
+
+def test_two_proofs_of_one_box_share_its_file_and_a_failure_wins_in_either_order(env):
+    fail = "ctx.check(False, 'broken', got=1)"
+    write_proof(env.pdir, "a1", boxes=["F-X1"])  # passes, sorts first
+    write_proof(env.pdir, "z1", boxes=["F-X1"], body=fail)  # fails, sorts last
+    write_proof(env.pdir, "a2", boxes=["F-X2"], body=fail)  # fails, sorts first
+    write_proof(env.pdir, "z2", boxes=["F-X2"])  # passes, sorts last
+    assert run_main(env, "--all") == 1
+    for box in ("F-X1", "F-X2"):
+        ev = evidence(env, box)
+        assert ev["result"] == "fail" and ev["reason"] == "broken"
+        assert sorted(r["proof_id"] for r in ev["proofs"]) == [f"a{box[-1]}", f"z{box[-1]}"]
+        assert {r["result"] for r in ev["proofs"]} == {"pass", "fail"}
+    # running only the passing proof again does not wipe the failing proof's record
+    assert run_main(env, "--proof", "a1") == 0
+    ev = evidence(env, "F-X1")
+    assert ev["result"] == "fail" and [r["proof_id"] for r in ev["proofs"]] == ["z1", "a1"]
+
+
+def test_a_skip_never_replaces_an_earlier_result_of_the_same_proof(env):
+    write_proof(env.pdir, "windowed", boxes=["F-W1"], window=True)
     assert run_main(env, "--all") == 0
-    assert evidence(env, "F-K2")["steps"][0]["observed"] == {"mine": None}
+    assert evidence(env, "F-W1")["result"] == "pass"
+    assert run_main(env, "--all", "--no-window") == 0
+    assert evidence(env, "F-W1")["result"] == "pass"  # the pass of this version stays on record
+
+
+def test_a_proof_that_blocks_outside_ctx_fails_at_its_deadline_and_the_engine_still_comes_down(env):
+    write_proof(
+        env.pdir,
+        "hang",
+        boxes=["F-T1"],
+        needs=["engine"],
+        timeout_s=0.2,
+        body="import time\ntime.sleep(2)",  # blocks without calling ctx, as a bare proc.wait() would
+    )
+    t0 = time.monotonic()
+    assert run_main(env, "--all") == 1
+    assert time.monotonic() - t0 < 1.5  # the runner did not wait for the sleep
+    ev = evidence(env, "F-T1")
+    assert ev["result"] == "fail" and "blocked outside ctx" in ev["reason"]
+    assert env.tools.names()[-1] == "nsproc.ps1 -Down" and env.tools.up is False
+
+
+def test_an_interrupt_keeps_the_evidence_of_finished_proofs_and_brings_the_engine_down(env, monkeypatch):
+    write_proof(env.pdir, "first", boxes=["F-I1"], needs=["engine"])
+    write_proof(env.pdir, "second", boxes=["F-I2"], needs=["engine"])
+    real = prove.Runner._run_one
+
+    def interrupt(self, proof, engine_error):
+        if proof.id == "second":
+            raise KeyboardInterrupt
+        return real(self, proof, engine_error)
+
+    monkeypatch.setattr(prove.Runner, "_run_one", interrupt)
+    with pytest.raises(KeyboardInterrupt):
+        run_main(env, "--all")
+    assert evidence(env, "F-I1")["result"] == "pass"
+    assert evidence_files(env) == ["F-I1.json"]
+    assert env.tools.names()[-1] == "nsproc.ps1 -Down" and env.tools.up is False
+
+
+def test_the_engine_is_not_started_next_to_processes_the_runner_did_not_start(env, capsys):
+    sub = env.tmp / "x"
+    sub.mkdir()
+    busy = Tools(sub, busy=True)
+    write_proof(env.pdir, "needs_engine", boxes=["F-N7"], needs=["engine"])
+    assert run_main(env, "--all", tools=busy) == 2
+    assert "not start an engine next to them" in capsys.readouterr().err
+    assert "nsup.ps1" not in busy.names() and "nsproc.ps1 -Down" not in busy.names()
+    assert evidence_files(env) == []
 
 
 # --- ctx -----------------------------------------------------------------------------------------------
@@ -549,8 +632,9 @@ class FakeResponse:
     def __init__(self, status: int, body: bytes) -> None:
         self.status, self._body = status, body
 
-    def read(self) -> bytes:
-        return self._body
+    def read(self, n: int = -1) -> bytes:
+        body, self._body = self._body, b""  # a second read finds the end of the answer
+        return body
 
     def __enter__(self):
         return self
@@ -596,6 +680,20 @@ def test_api_returns_an_error_status_and_fails_the_proof_when_nobody_answers(env
     assert ctx.api("GET", "/api/gone") == (404, {"error": "nope"})
     with pytest.raises(ProofFailed, match="no answer from the dashboard"):
         ctx.api("GET", "/api/other")
+
+
+def test_api_fails_a_stream_that_keeps_sending_instead_of_reading_it_forever(env, monkeypatch):
+    now = [0.0]
+
+    class Endless(FakeResponse):
+        def read1(self, n: int = -1) -> bytes:
+            now[0] += 2  # a frame every 2 s keeps a per-read socket timeout from ever firing
+            return b'data: {"kind": "status"}\n\n'
+
+    fake_opener(monkeypatch, lambda req: Endless(200, b""))
+    ctx = make_ctx(env, clock=lambda: now[0])
+    with pytest.raises(ProofFailed, match="still sending after 5 s"):
+        ctx.api("GET", "/api/events?limit=1", timeout=5)
 
 
 def test_wait_polls_until_true_and_names_what_it_timed_out_on(env):
@@ -706,12 +804,13 @@ def test_a_failing_helper_kill_does_not_stop_the_others(env, monkeypatch):
 # --- the two worked proofs, with stubs -----------------------------------------------------------------
 
 
-def stub_cli(monkeypatch, out: str, code: int = 0) -> list:
+def stub_cli(monkeypatch, out: str, code: int = 0, listing: str = "") -> list:
     seen = []
 
     def fake_run(cmd, **kw):
         seen.append(cmd)
-        return subprocess.CompletedProcess(cmd, code, stdout=out, stderr="")
+        text = listing if cmd[1:3] == ["channel", "list"] else out
+        return subprocess.CompletedProcess(cmd, code, stdout=text, stderr="")
 
     monkeypatch.setattr(prove_ctx.subprocess, "run", fake_run)
     return seen
@@ -736,12 +835,27 @@ def worked(name: str):
 
 def test_worked_cli_proof_passes_when_the_text_matches_the_files_and_rows(env, monkeypatch):
     seed_channel(env, "tales", [("approved", 2), ("pending", 1)])
-    stub_cli(monkeypatch, "channel tales [active]\n  cadence: x\n  outputs: approved=2, pending=1\n")
+    # the text is the product's own formatter's, so a wording change there breaks this test, not a real home
+    st = ChannelStatus(slug="tales", status="active", counts={"approved": 2, "pending": 1})
+    stub_cli(monkeypatch, "\n".join(format_status(st, "daily")) + "\n")
     ctx = make_ctx(env)
     worked("f_b18_studio_status").run(ctx)
     name = "channel tales: the printed outputs line equals the outputs table"
     assert any(s["name"] == name and s["ok"] for s in ctx.steps)
     assert ctx.steps[0]["name"] == "scope" and "launcher" in ctx.steps[0]["observed"]["not_covered"]
+
+
+def test_worked_cli_proof_does_not_expect_a_profile_the_product_cannot_load(env, monkeypatch):
+    seed_channel(env, "tales", [("approved", 1)])
+    (env.home / "config" / "channels" / "broken.yaml").write_text("not: [valid\n", encoding="utf-8")
+    st = ChannelStatus(slug="tales", status="active", counts={"approved": 1})
+    listing = "tales\tactive\tshorts\tpairs=1\tTales\nbroken\tUNREADABLE\tbroken.yaml: bad\n"
+    seen = stub_cli(monkeypatch, "\n".join(format_status(st)) + "\n", listing=listing)
+    ctx = make_ctx(env)
+    worked("f_b18_studio_status").run(ctx)  # `studio status` skips the broken file and prints the rest
+    assert ["channel", "list"] in [c[1:3] for c in seen]
+    listed = next(x for x in ctx.steps if x["name"] == "channel files on disk")
+    assert listed["observed"]["unreadable_profiles"] == ["broken"]
 
 
 def test_worked_cli_proof_fails_when_the_printed_counts_disagree_with_the_database(env, monkeypatch):

@@ -48,7 +48,7 @@ def run(ctx):
         on_disk=sorted(on_disk),
     )
 
-    code, stream = ctx.api("GET", "/api/events?limit=1")
+    code, stream = ctx.api("GET", "/api/events?limit=1", timeout=30)
     ctx.check(code == 200 and isinstance(stream, str), "GET /api/events answers a text stream", code=code)
     data = next(
         (line[len("data:") :].strip() for line in stream.splitlines() if line.startswith("data:")), ""
