@@ -110,3 +110,54 @@ def test_api_returns_the_shipped_layouts_and_the_owners_edited_one(tmp_home: Pat
     got = client.get("/api/templates").json()
     assert [t["id"] for t in got] == ["auto", *SHIPPED, "split_screen"]
     assert {"id", "label", "description", "when", "regions", "caption_y_pct", "title_card"} <= set(got[0])
+
+
+def _client_with_own_layout(tmp_home: Path):
+    from ns_dashboard.fakes import seed_channel  # noqa: PLC0415
+    from tests.test_dashboard_api import make_env  # noqa: PLC0415
+
+    paths = Paths.from_env()
+    paths.formats_dir.mkdir(parents=True)
+    (paths.formats_dir / "clip_split_screen.yaml").write_text(yaml.safe_dump(_own_layout()), encoding="utf-8")
+    client, state = make_env(tmp_home)
+    seed_channel(state.db, state.paths)
+    return client, state
+
+
+def test_a_new_clip_job_with_an_owner_added_layout_is_refused_before_it_is_queued(tmp_home: Path):
+    from tests.test_dashboard_api import clip_file  # noqa: PLC0415
+
+    client, state = _client_with_own_layout(tmp_home)
+    body = {
+        "path": str(clip_file(tmp_home)), "channel": "after-dark", "template": "split_screen",
+        "rights_confirmed": True,
+    }
+    r = client.post("/api/jobs/clip", json=body)
+    assert r.status_code == 422, r.text
+    err = r.json()["error"]
+    assert err["code"] == "invalid_options" and "Split screen" in err["message"]
+    assert "shipped layouts" in err["message"]
+    assert state.store.list_jobs(kind="clip") == []  # nothing was queued, so no GPU or LLM time is spent
+
+
+def test_a_clip_job_still_runs_with_auto_and_with_an_owner_edited_shipped_layout(tmp_home: Path):
+    from tests.test_dashboard_api import clip_file  # noqa: PLC0415
+
+    client, state = _client_with_own_layout(tmp_home)
+    _owner_format(Paths.from_env(), "clip_talking_head", name="Clip: my talking head")
+    video = clip_file(tmp_home)
+    for template in ("auto", "talking_head"):
+        body = {"path": str(video), "channel": "after-dark", "template": template, "rights_confirmed": True}
+        r = client.post("/api/jobs/clip", json=body)
+        assert r.status_code == 201, r.text
+    assert len(state.store.list_jobs(kind="clip")) == 2
+
+
+def test_a_clip_rerun_with_an_owner_added_layout_is_refused(tmp_home: Path):
+    client, state = _client_with_own_layout(tmp_home)
+    clip = state.store.create("clip", "after-dark", {})
+    state.store.finish(clip.job_id, "done", "Done", {"output_ids": []})
+    r = client.post("/api/jobs/clip/rerun", json={"job_id": clip.job_id, "template": "split_screen"})
+    assert r.status_code == 422, r.text
+    assert r.json()["error"]["code"] == "invalid_options"
+    assert "shipped layouts" in r.json()["error"]["message"]

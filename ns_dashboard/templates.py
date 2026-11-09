@@ -45,6 +45,16 @@ SHIPPED: dict[str, tuple[str, str]] = {
 }
 
 
+def clipper_can_run(layout_id: str) -> bool:
+    """True for `auto` and the shipped layout ids: the only ones `ns_studio.clipper` can lay out today.
+
+    A layout the owner added in Library > Formats is listed on the Create page, but the clipper
+    (`detect.TEMPLATE_NEEDS`) has no way to cut it, so a job for it would fail in the Layout stage after
+    minutes of GPU and LLM work. Owner edits of a shipped layout keep its id and are accepted.
+    """
+    return layout_id == AUTO["id"] or layout_id in SHIPPED
+
+
 def _label(fmt: Format) -> str:
     name = fmt.name.strip()
     name = name[len("Clip:"):].strip() if name.lower().startswith("clip:") else name
