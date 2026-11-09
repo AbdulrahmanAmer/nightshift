@@ -99,7 +99,12 @@ class PolicyFinalStage:
 
     def run(self, ctx: JobContext) -> None:
         """Evaluate the final checks and write the disclosure advice."""
+        recheck_ledger(ctx, SelfSimilarity())  # last stop before the outbox: this story may be finished now
         run_gate(ctx, "final", self.checks)
+
+    def recheck_on_skip(self, ctx: JobContext) -> None:
+        """Called by `run_stage` when a resume skips this stage: the ledger is not one of its inputs."""
+        recheck_ledger(ctx, SelfSimilarity())
 
 
 def available() -> bool:

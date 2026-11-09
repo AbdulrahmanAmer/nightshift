@@ -163,7 +163,9 @@ def test_metadata_spam_limits_and_judge(tmp_home: Path):
     assert not res.passed and "celebrity" in res.detail
 
 
-def _insert_story(ctx, job_id: str, channel: str, text: str, *, finished: bool = True) -> None:
+def _insert_story(
+    ctx, job_id: str, channel: str, text: str, *, finished: bool = True, status: str = "pending"
+) -> None:
     ctx.db.execute(
         "insert or ignore into channels(slug, display_name, created_at) values (?,?,?)",
         (channel, channel, "2026-11-01T00:00:00"),
@@ -175,7 +177,7 @@ def _insert_story(ctx, job_id: str, channel: str, text: str, *, finished: bool =
         (job_id, channel, "shorts_only", text, 10, text[:20], to_blob(vec), "2026-10-01T00:00:00"),
     )
     if finished:  # only a story whose video was made enters the comparison set (D-25)
-        add_output(ctx.db, job_id, "long", channel=channel)
+        add_output(ctx.db, job_id, "long", channel=channel, status=status)
 
 
 def test_self_similarity(tmp_home: Path):
@@ -357,14 +359,73 @@ def test_resumed_idea_job_is_blocked_with_the_idea_hint(tmp_home: Path):
     assert ei.value.code == "NS-E605" and "a new idea will be drawn" in hint_of(ei.value)
 
 
-def test_outbox_refuses_to_record_a_second_copy_of_a_finished_story(tmp_home: Path):
-    """The last stop before the outputs row: B finished while A was rendering."""
-    from ns_studio.media.outbox import OutboxStage
+def test_final_gate_refuses_a_second_copy_of_a_finished_story(tmp_home: Path):
+    """The last stop before the outbox: B finished while A was rendering (policy_final runs after render)."""
+    from ns_studio.policy.gate import PolicyFinalStage
 
     ctx = _script_ctx(tmp_home)
     _insert_story(ctx, ctx.job_id, "after-dark", STORY, finished=False)
     _insert_story(ctx, "engine-test-20261109-bbbb", "after-dark", STORY)
     with pytest.raises(NsError) as ei:
-        OutboxStage().run(ctx)
+        PolicyFinalStage([]).run(ctx)
     assert ei.value.code == "NS-E605" and "change the script" in hint_of(ei.value).lower()
     assert ctx.db.query("select 1 from outputs where job_id=?", (ctx.job_id,)) == []
+
+
+def test_final_gate_meets_the_ledger_again_when_a_resume_skips_it(tmp_home: Path):
+    from ns_studio.policy.gate import PolicyFinalStage
+    from ns_studio.stages import StageState, inputs_hash, run_stage
+
+    ctx = _script_ctx(tmp_home)
+    ctx.file("long").mkdir()
+    ctx.file("long/master.mp4").write_bytes(b"x")
+    _insert_story(ctx, ctx.job_id, "after-dark", STORY, finished=False)
+    stage = PolicyFinalStage([])
+    ctx.write_json("policy_text.json", {})
+    assert run_stage(ctx, stage) is True
+    assert StageState.load(ctx.job_dir).is_done("policy_final", inputs_hash(ctx, stage))
+    assert run_stage(ctx, stage) is False  # nothing finished meanwhile: skipped as before
+    _insert_story(ctx, "engine-test-20261109-bbbb", "after-dark", STORY)
+    with pytest.raises(NsError) as ei:
+        run_stage(ctx, stage)
+    assert ei.value.code == "NS-E605"
+
+
+def test_outbox_does_not_read_the_ledger_so_no_policy_runs_can_finish(tmp_home: Path):
+    """`studio run --no-policy` installs no gate stage: the outbox must not raise NS-E605 on its own."""
+    from ns_studio.media.outbox import OutboxStage
+
+    ctx = _script_ctx(tmp_home)
+    _insert_story(ctx, ctx.job_id, "after-dark", STORY, finished=False)
+    _insert_story(ctx, "engine-test-20261109-bbbb", "after-dark", STORY)  # a similar finished story
+    try:
+        OutboxStage().run(ctx)
+    except Exception as e:  # no render report in this fixture: any failure but the repeat refusal is fine
+        assert getattr(e, "code", None) != "NS-E605"
+
+
+def test_a_rejected_video_does_not_block_the_same_story(tmp_home: Path):
+    """Reject-and-redo: review.reject moved the files out of the outbox, so the story may be made again."""
+    ctx = _script_ctx(tmp_home)
+    _insert_story(ctx, "engine-test-20261109-576e", "after-dark", STORY, status="rejected")
+    res = tc.SelfSimilarity(skip_when_fake=False).run(ctx)
+    assert res.passed and "compared with 0 stories" in res.detail
+    assert run_gate(ctx, "text", [tc.SelfSimilarity(skip_when_fake=False)]).passed
+
+
+def test_a_story_with_one_rejected_and_one_kept_video_still_blocks(tmp_home: Path):
+    ctx = _script_ctx(tmp_home)
+    _insert_story(ctx, "engine-test-20261109-576e", "after-dark", STORY, status="rejected")
+    add_output(ctx.db, "engine-test-20261109-576e", "s1", channel="after-dark", status="approved")
+    assert not tc.SelfSimilarity(skip_when_fake=False).run(ctx).passed
+
+
+def test_a_resumed_job_is_not_blocked_by_a_rejected_copy(tmp_home: Path):
+    from ns_studio.stages import run_stage
+
+    ctx = _script_ctx(tmp_home)
+    _insert_story(ctx, ctx.job_id, "after-dark", STORY, finished=False)
+    stage = _text_stage()
+    assert run_stage(ctx, stage) is True
+    _insert_story(ctx, "engine-test-20261109-bbbb", "after-dark", STORY, status="rejected")
+    assert run_stage(ctx, stage) is False

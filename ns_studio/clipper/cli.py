@@ -21,6 +21,7 @@ from ns_studio.clipper.models import TEMPLATE_NAMES, ClipParams
 from ns_studio.clipper.source import is_url
 from ns_studio.clipper.stages_clip import create_clip_job, resume_clip_job
 from ns_studio.context import FAKEABLE
+from ns_studio.errors import hint_of
 from ns_studio.orchestrator import run_job
 
 
@@ -56,7 +57,7 @@ def guarded() -> Iterator[None]:
         yield
     except NsError as e:
         typer.echo(f"error {e}", err=True)
-        typer.echo(f"hint: {e.definition.hint}", err=True)
+        typer.echo(f"hint: {hint_of(e)}", err=True)
         raise typer.Exit(1) from e
     except FileNotFoundError as e:
         typer.echo(f"error file not found: {e.filename or e}", err=True)

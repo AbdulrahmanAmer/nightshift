@@ -16,7 +16,6 @@ from ns_common.paths import Paths
 from ns_studio.context import JobContext
 from ns_studio.media.master import load_shorts
 from ns_studio.media.shotplan import Shot
-from ns_studio.policy.text_checks import SelfSimilarity, recheck_ledger
 from ns_studio.stages import Tenant
 
 JITTER_MIN = 45
@@ -354,8 +353,6 @@ class OutboxStage:
 
     def run(self, ctx: JobContext) -> None:
         """Publish every item listed in `render/report.json` (master and Shorts in master-first jobs)."""
-        # last stop before the outputs row: has a video of this very story been finished meanwhile?
-        recheck_ledger(ctx, SelfSimilarity())
         if ctx.fmt == "master_first":
             run_outbox_master(ctx)
             return

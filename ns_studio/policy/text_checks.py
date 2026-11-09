@@ -187,8 +187,9 @@ class HookTitleHonesty(Check):
 class SelfSimilarity(Check):
     """Embedding similarity to earlier stories: > 0.85 same channel, > 0.80 other channel (E605).
 
-    Only a story whose video was made (the job has an `outputs` row) is in the comparison set: a job that
-    stopped at the voice stage left its story row behind but produced nothing to repeat (D-25).
+    Only a story whose video was made (the job has an `outputs` row the owner has not rejected) is in the
+    comparison set: a job that stopped at the voice stage left its story row behind but produced nothing to
+    repeat, and a rejected video was moved out of the outbox so the story may be made again (D-25).
     """
 
     name = "self_similarity"
@@ -222,7 +223,8 @@ class SelfSimilarity(Check):
         """Compare the embedding `vec` of this job's story with the stories of finished videos."""
         rows = ctx.db.query(
             "select s.job_id, s.channel, s.embedding from stories s where s.job_id != ? "
-            "and s.embedding is not null and exists (select 1 from outputs o where o.job_id = s.job_id)",
+            "and s.embedding is not null and exists "
+            "(select 1 from outputs o where o.job_id = s.job_id and o.status != 'rejected')",
             (ctx.job_id,),
         )
         worst: tuple[float, str] = (0.0, "")
@@ -238,7 +240,7 @@ class SelfSimilarity(Check):
         if not worst[1]:
             return ok(f"compared with {len(rows)} stories")
         if ctx.owner_script:
-            return fail(f"this script was already made into the finished video of {worst[1]}")
+            return fail(f"this script is too close to the finished video of {worst[1]}")
         return fail(f"too similar to {worst[1]}")
 
 
