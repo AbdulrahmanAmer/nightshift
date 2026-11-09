@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -189,7 +190,9 @@ def draft_to_answers(
             "display_name": _text(channel["displayName"]),
             "niche": _text(channel["niche"]),
             "language": _text(channel.get("language")) or "en",
-            "seed_keywords": [],
+            # no seed_keywords: the Choices screen has no such field, and a key the window writes is a choice
+            # it made (D-14): an empty list would wipe the earlier install's seeds and the owner's edits. The
+            # window's wizard never asks, so a first install starts with none
         },
         "voice": {"mode": "preset", "speaker": draft["voice"]["speaker"], "description": None, "name": None,
                   "speed": 1.0},
@@ -262,6 +265,23 @@ def write_answers(path: Path, data: dict[str, Any]) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(clean, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     return path
+
+
+#: The earlier install's ``config/answers.json``, kept by the window before it writes the new choices over it
+#: (D-14). The wizard compares the new answers with it, rebuilds what comes from the ones that changed, and
+#: deletes it (``installer/stage2/reinstall.py``).
+KEPT_NAME = "answers.kept.json"
+
+
+def keep_earlier_answers(target: Path) -> None:
+    """Before new choices replace ``target`` (config/answers.json) of an earlier install, keep that file.
+
+    The oldest copy is the one that counts: a setup that stopped before it applied the choices must still
+    compare the next ones with the answers the kept files were made from.
+    """
+    kept = target.with_name(KEPT_NAME)
+    if target.is_file() and not kept.exists():
+        shutil.copyfile(target, kept)
 
 
 def keys_in(raw: dict[str, Any]) -> dict[str, str | None]:
