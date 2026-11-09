@@ -18,17 +18,17 @@ before merge, plus the footage-reuse gate and a render fix for long install path
   reaches the outbox; until now the check read data that did not exist yet and always passed. When the fresh
   clips run out the picker first searches wider (the parts of multi-word keywords, the other scenes'
   keywords, the channel's seed keywords, similar moods) and only then reuses a clip; a video that had to reuse
-  one still passes, with the warning NS-W405, and the Review page shows that warning in plain words ("Warning:
-  clip reuse - ...") above the OK lines. Keywords that differ only in form (mice and mouse) are searched once,
-  and clips tagged or titled as watermark, logo or text overlay are never picked.
+  one still passes, with the warning NS-W405, and the video's review card in the Queue shows that warning in plain words
+  ("Warning: clip reuse - ...") above the OK lines. Where the spaCy model is installed, keywords that differ
+  only in form (mice and mouse) are searched once; clips tagged or titled as watermark, logo or text overlay are never picked.
 - A Short with many stock clips no longer fails to render with NS-E327 when the install folder path is long:
   FFmpeg now reads its filter graph from a file next to the video and names its inputs relative to their folder
-  (the Windows command line limit was exceeded at about 36,000 characters). Paths inside the graph are made
+  (Windows refuses a command line over 32,767 characters, and one Short reached about 36,000). Paths inside the graph are made
   absolute, so a render also works when `NIGHTSHIFT_HOME` is a relative path.
 - Settings > Updates shows "What is new in <version>" with the release notes after an update, also after the
   page reloads on the new version. The dashboard now shows two toasts it never showed: "Version X is available
   (you have Y). Open Settings, Updates" when the weekly check finds a newer release, and "The nightly run has
-  finished. New videos wait in the Queue".
+  finished. See the Queue".
 - Quit Nightshift answers before the engine stops, so the page no longer sees a dropped connection when you
   quit.
 - Approving a video you had rejected moves its files (video, sheets, long-video thumbnails) back from
@@ -37,22 +37,25 @@ before merge, plus the footage-reuse gate and a render fix for long install path
 - Cancelling a clip download from a link leaves no `source.mp4.part` and no folder behind; leftovers from a
   download that was killed are removed when the dashboard starts.
 - A stock-footage host that is down (HTTP 5xx, timeout, reset) is retried three times with a pause and then
-  reported as NS-E503 "... is not answering right now; Nightshift will try again", no longer as a wrong key. A
-  rejected key (401, 403, 400) still stops at once.
+  reported as NS-E503 "... is not answering right now", no longer as a wrong key; the retries apply to searches,
+  a failing download stops at once with NS-E503, and a source that answered NS-E503 is not asked again in that
+  job. A rejected key (401, 403, 400) still stops at once.
 - A full disk is reported as NS-E104 naming the full folder, for a footage download and for FFmpeg renders
   (video, long-form segments and master, audio), and the half-written file is removed instead of left behind.
-- Setup reports a step done only when its effect is there: step 4 (the Python environments) is done only when
-  every environment can load the product, the progress flags in `wizard_flags.json` belong to the install that
+- Setup step 4 (the Python environments) is done only when every environment can load the product, the progress flags in `wizard_flags.json` belong to the install that
   wrote them, and the uninstaller removes that file. A setup killed during the package install and run again,
   also after an uninstall that kept your data, redoes the packages and the smoke test instead of finishing
   with an engine that cannot start. A finished install also needs `opencode.exe` before the Nightshift Code
-  step counts as done.
+  step counts as done. Other steps (the configuration files, the scheduled task) are still counted done on
+  what they wrote last time; this change covers step 4, the flags, the uninstaller and `opencode.exe`.
 - The setup window's local server no longer resets the connection (WinError 10053) when it refuses a request
-  early; it reads the request first, so the browser or the health ping gets the answer.
+  early; it reads the rest of the request after answering, so the browser or the health ping gets the answer
+  (WinError 10053 or 10054).
 - `studio calibrate` leaves stories that could not be made (a dedupe stop NS-E304, an LLM timeout, a failed
   critic call) out of the refusal rate, prints them on their own line ("1 story could not be made: NS-E304 x1"),
-  and no longer advises two-model mode because of them.
-- The nightly toast depends only on Settings > Notifications, not on whether services are faked, so a dev or
+  and no longer advises two-model mode because of them. This holds for stories made on 0.1.14: an earlier
+  `stories.csv` still counts its errors as refusals until `studio calibrate` is run again.
+- The Windows toast after the nightly run depends only on Settings > Notifications, not on whether services are faked, so a dev or
   engine-test install shows it too; with notifications off the log says why it was skipped.
 - Cutting a clip job again when it failed or was cancelled now says that only a finished clip job can be cut
   again and points to the Create page, instead of telling you to wait for a job that had already stopped.
