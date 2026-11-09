@@ -30,6 +30,29 @@ function Get-NearestFolder {
     return ''
 }
 
+function Write-NsFileSwap {
+    # The result file is either absent or whole, never empty for a moment: the text goes to a temp file in the
+    # same folder, is flushed, and is then swapped over -Path (File.Replace, or Move for a new file). A crash
+    # in the middle used to leave an empty file, which the setup server reads as "dialog cancelled". Same
+    # contract as Write-NsFileAtomic in launchers/_common.ps1 (this script does not load that file: it runs
+    # before the app is installed). UTF-8 without a BOM.
+    param([Parameter(Mandatory = $true)][string]$Path, [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Text)
+    $full = [System.IO.Path]::GetFullPath($Path)
+    $tmp = Join-Path ([System.IO.Path]::GetDirectoryName($full)) ('~ns' + $PID + '-0-' + (Get-Random -Maximum 2000000000) + '.tmp')
+    try {
+        $bytes = (New-Object System.Text.UTF8Encoding($false)).GetBytes($Text)
+        $fs = New-Object System.IO.FileStream($tmp, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+        try { $fs.Write($bytes, 0, $bytes.Length); $fs.Flush($true) }
+        finally { $fs.Dispose() }
+        if ([System.IO.File]::Exists($full)) { [System.IO.File]::Replace($tmp, $full, [NullString]::Value) }
+        else { [System.IO.File]::Move($tmp, $full) }
+    }
+    finally {
+        try { if ([System.IO.File]::Exists($tmp)) { [System.IO.File]::Delete($tmp) } }
+        catch { Write-Verbose ('temp file not removed: ' + $tmp) }
+    }
+}
+
 Add-Type -AssemblyName System.Windows.Forms
 [System.Windows.Forms.Application]::EnableVisualStyles()
 
@@ -55,5 +78,5 @@ finally {
     $dlg.Dispose()
     $owner.Dispose()
 }
-[System.IO.File]::WriteAllText($Out, $chosen, (New-Object System.Text.UTF8Encoding($false)))
+Write-NsFileSwap -Path $Out -Text $chosen
 exit 0

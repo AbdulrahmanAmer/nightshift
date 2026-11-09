@@ -78,6 +78,29 @@ function Show-Action {
     Write-Host "[dry-run] $Text"
 }
 
+function Write-NsFileSwap {
+    # A hand-over file the setup server reads is either absent or whole: the text goes to a temp file in the
+    # same folder, is flushed, and is then swapped over -Path (File.Replace, or Move for a new file). A crash
+    # or a second setup run in the middle of an in-place write left an empty or half file that the server then
+    # parsed. Same contract as Write-NsFileAtomic in launchers/_common.ps1 (this script runs before the app is
+    # installed and does not load that file). UTF-8 without a BOM.
+    param([Parameter(Mandatory = $true)][string]$Path, [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Text)
+    $full = [System.IO.Path]::GetFullPath($Path)
+    $tmp = Join-Path ([System.IO.Path]::GetDirectoryName($full)) ('~ns' + $PID + '-0-' + (Get-Random -Maximum 2000000000) + '.tmp')
+    try {
+        $bytes = (New-Object System.Text.UTF8Encoding($false)).GetBytes($Text)
+        $fs = New-Object System.IO.FileStream($tmp, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+        try { $fs.Write($bytes, 0, $bytes.Length); $fs.Flush($true) }
+        finally { $fs.Dispose() }
+        if ([System.IO.File]::Exists($full)) { [System.IO.File]::Replace($tmp, $full, [NullString]::Value) }
+        else { [System.IO.File]::Move($tmp, $full) }
+    }
+    finally {
+        try { if ([System.IO.File]::Exists($tmp)) { [System.IO.File]::Delete($tmp) } }
+        catch { Write-Verbose ('temp file not removed: ' + $tmp) }
+    }
+}
+
 function Get-Prop {
     param($Obj, [string]$Name, $Default)
     if ($null -ne $Obj -and $null -ne $Obj.PSObject.Properties[$Name]) {
@@ -1262,7 +1285,7 @@ $handOver = Get-HandOver -Probe $probe -Rows $rows -App $App -NsHome $NsHome -Pr
 if ($ProbeOnly) {
     $outDir = Split-Path -Parent $Out
     if ($outDir -and -not (Test-Path -LiteralPath $outDir)) { New-Item -ItemType Directory -Force -Path $outDir | Out-Null }
-    [IO.File]::WriteAllText($Out, ($handOver | ConvertTo-Json -Depth 6), (New-Object System.Text.UTF8Encoding($false)))
+    Write-NsFileSwap -Path $Out -Text ($handOver | ConvertTo-Json -Depth 6)
     exit 0
 }
 
@@ -1366,7 +1389,7 @@ if ($script:IsDry) {
     Show-Action ('preflight-json: ' + ($handOver | ConvertTo-Json -Depth 6 -Compress))
 }
 else {
-    [IO.File]::WriteAllText($preflightFile, $handJson, (New-Object System.Text.UTF8Encoding($false)))
+    Write-NsFileSwap -Path $preflightFile -Text $handJson
 }
 
 # the setup server
