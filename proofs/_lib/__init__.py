@@ -10,11 +10,20 @@ import json
 import re
 import shutil
 import subprocess  # noqa: TID251  (proof helpers measure files with FFmpeg, like the tests and dev/ do)
+import sys
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 FINAL = ("done", "failed", "cancelled")
+# The voice every proof channel speaks with: a preset of the voice engine (ns_tts/voices.py PRESETS).
+PRESET_VOICE = {"mode": "preset", "speaker": "Ryan", "description": None, "name": None, "speed": 1.0}
+
+
+def db_rows(ctx: Any, sql: str, params: tuple[Any, ...] = ()) -> list[tuple[Any, ...]]:
+    """`ctx.db` rows as plain tuples: comparable with `==` and readable in the evidence."""
+    return [tuple(r) for r in ctx.db(sql, params)]
 
 
 def wait_job(ctx: Any, job_id: str, timeout: float = 600, every: float = 3) -> dict[str, Any]:
@@ -49,7 +58,8 @@ def proof_channel(ctx: Any, slug: str, **overrides: Any) -> str:
     if status == 200 and isinstance(existing, dict):
         ctx.step("proof channel exists", channel=slug)
         profile = dict(existing.get("profile") or {})
-        if overrides and any(profile.get(k) != v for k, v in overrides.items()):
+        overrides = {"voice": dict(PRESET_VOICE), **overrides}
+        if any(profile.get(k) != v for k, v in overrides.items()):
             profile.update(overrides)
             status, body = ctx.api("PUT", f"/api/channels/{slug}", profile)
             ctx.check(
@@ -78,7 +88,9 @@ def proof_channel(ctx: Any, slug: str, **overrides: Any) -> str:
         status=status,
     )
     body = {k: v for k, v in full["profile"].items() if k not in ("created_at", "updated_at")}
-    body.update({"slug": slug, "name": slug.replace("-", " ").title()})
+    # A preset voice, never the template's: the template may carry the setup's designed voice, which a proof
+    # must not use or consume (it may still be pending, and F-E12 needs it).
+    body.update({"slug": slug, "display_name": slug.replace("-", " ").title(), "voice": dict(PRESET_VOICE)})
     body.update(overrides)
     status, answer = ctx.api("POST", "/api/channels", body)
     ctx.check(
@@ -102,6 +114,65 @@ def run_short(ctx: Any, channel: str, timeout: float = 900, **extra: Any) -> dic
         answer=_short(job),
     )
     return wait_job(ctx, job["job_id"], timeout=timeout)
+
+
+DIAG_PREFIX = (
+    "nightshift-diagnostics-"  # ns_supervisor/doctor.py: Desktop\nightshift-diagnostics-<minute>.zip
+)
+
+
+def desktop() -> Path:
+    """Where the product writes bundles and backups: the user's Desktop (the lookup the product uses)."""
+    if sys.platform == "win32":
+        import winreg
+
+        try:
+            with winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders"
+            ) as key:
+                value, _ = winreg.QueryValueEx(key, "Desktop")
+            if isinstance(value, str) and value:
+                return Path(value)
+        except OSError:
+            pass
+    return Path.home() / "Desktop"
+
+
+def free_diag_minute(ctx: Any) -> None:
+    """A diagnostics zip is named by the minute; the product would overwrite an owner's zip of this minute.
+    Wait for the next minute rather than touch it."""
+
+    def free() -> bool:
+        return not (desktop() / f"{DIAG_PREFIX}{datetime.now():%Y-%m-%d-%H%M}.zip").exists()
+
+    if not free():
+        ctx.step("a diagnostics zip of this minute is on the Desktop (not the proof's): waiting for the next")
+        ctx.wait(free, 75, every=5, what="the minute of an existing diagnostics zip to pass")
+
+
+def take_off_desktop(ctx: Any, src: Path, tag: str) -> Path:
+    """Move a file the product just wrote to the Desktop (C:) into scratch, before any check on it.
+
+    Fails the proof when the file cannot be moved away: a proof never passes with its file left on C:."""
+    ctx.check(src.is_file(), "the product wrote the file it reported", path=str(src))
+    kept = ctx.scratch / f"{tag}-{src.name}"
+    error = ""
+    for _ in range(5):
+        try:
+            shutil.move(str(src), str(kept))
+        except OSError as exc:  # OneDrive or antivirus may hold a new file for a moment
+            error = str(exc)
+        if not src.exists():
+            break
+        time.sleep(1)
+    ctx.check(
+        not src.exists() and kept.is_file(),
+        "the file moved off the Desktop into scratch",
+        was=str(src),
+        now=str(kept),
+        error=error,
+    )
+    return kept
 
 
 def ffmpeg_path() -> str | None:

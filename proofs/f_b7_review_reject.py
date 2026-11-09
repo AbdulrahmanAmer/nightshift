@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from proofs._lib import files_under, proof_channel, run_short, short
+from proofs._lib import db_rows, files_under, proof_channel, run_short, short
 
 PROOF = {
     "id": "f-b7-review-reject",
@@ -58,7 +58,7 @@ def run(ctx: Any) -> None:
     ctx.check(
         status == 200, "reject with a note answers 200", output=oid, status=status, answer=short(answer)
     )
-    rows = ctx.db("select status, review_note from outputs where output_id=?", (oid,))
+    rows = db_rows(ctx, "select status, review_note from outputs where output_id=?", (oid,))
     ctx.check(rows == [("rejected", NOTE)], "outputs row: rejected with the note", rows=rows)
     status, card = ctx.api("GET", f"/api/outputs/{oid}")
     ctx.check(
@@ -75,13 +75,13 @@ def run(ctx: Any) -> None:
         status == 409, "mark uploaded while rejected is refused with 409", status=status, answer=short(answer)
     )
     ctx.check(
-        ctx.db("select count(*) from uploads where output_id=?", (oid,)) == [(0,)],
+        db_rows(ctx, "select count(*) from uploads where output_id=?", (oid,)) == [(0,)],
         "no uploads row after the refusal",
     )
 
     status, answer = ctx.api("POST", f"/api/outputs/{oid}/approve")
     ctx.check(status == 200, "re-review: approve answers 200", status=status, answer=short(answer))
-    rows = ctx.db("select status from outputs where output_id=?", (oid,))
+    rows = db_rows(ctx, "select status from outputs where output_id=?", (oid,))
     ctx.check(rows == [("approved",)], "outputs row: approved", rows=rows)
     status, card = ctx.api("GET", f"/api/outputs/{oid}")
     ctx.check(
@@ -98,8 +98,8 @@ def run(ctx: Any) -> None:
 
     status, answer = ctx.api("POST", f"/api/outputs/{oid}/uploaded", {"url": URL})
     ctx.check(status == 200, "mark uploaded after approve answers 200", status=status, answer=short(answer))
-    rows = ctx.db("select status from outputs where output_id=?", (oid,))
-    ups = ctx.db("select video_url from uploads where output_id=?", (oid,))
+    rows = db_rows(ctx, "select status from outputs where output_id=?", (oid,))
+    ups = db_rows(ctx, "select video_url from uploads where output_id=?", (oid,))
     status, card = ctx.api("GET", f"/api/outputs/{oid}")
     ctx.check(
         rows == [("uploaded",)] and ups == [(URL,)] and card.get("status") == "uploaded",
