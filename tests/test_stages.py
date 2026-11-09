@@ -110,3 +110,25 @@ def test_voice_leaves_parts_json_alone(tmp_home):
     before = ctx.file("parts.json").read_bytes()
     VoiceStage().run(ctx)
     assert ctx.file("parts.json").read_bytes() == before
+
+
+class WithOptional(Double):
+    name = "with_optional"
+    optional_inputs = ("extra.json",)
+
+
+def test_an_optional_input_adds_nothing_to_the_hash_until_it_exists(tmp_home: Path):
+    """A stage that learns to read a new file keeps the hash of the jobs made before the file existed."""
+    ctx = make_ctx(tmp_home)
+    ctx.write_json("a.json", {"v": 2})
+    plain, optional = Double(), WithOptional()
+    assert inputs_hash(ctx, optional) == inputs_hash(ctx, plain)
+    run_stage(ctx, plain)
+    state = StageState.load(ctx.job_dir)
+    assert state.is_done("double", inputs_hash(ctx, optional))  # the old stage_state still matches
+    ctx.write_json("extra.json", {"x": 1})
+    first = inputs_hash(ctx, optional)
+    assert first != inputs_hash(ctx, plain)
+    ctx.write_json("extra.json", {"x": 2})
+    assert inputs_hash(ctx, optional) != first  # once present, a change reruns the stage
+    assert inputs_hash(ctx, plain) == inputs_hash(ctx, plain)  # a stage without the attribute is unchanged

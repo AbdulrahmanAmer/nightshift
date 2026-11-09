@@ -332,7 +332,7 @@ class SettingsService:
     def _unmatched_uploads(self) -> list[str]:
         rows = self.s.db.query(
             "SELECT o.output_id FROM outputs o LEFT JOIN uploads u ON u.output_id = o.output_id"
-            " WHERE o.status = 'approved' AND u.output_id IS NULL ORDER BY o.created_at DESC LIMIT 50"
+            " WHERE o.status = 'approved' AND u.output_id IS NULL AND o.profile IS NULL ORDER BY o.created_at DESC LIMIT 50"
         )
         return [r["output_id"] for r in rows]
 
