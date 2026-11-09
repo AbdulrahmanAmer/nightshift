@@ -23,6 +23,7 @@ from typing import Any
 import psutil
 
 from ns_common.paths import Paths
+from ns_supervisor.childenv import child_env
 
 HOST_RUN_FILE = "apphost-dashboard.json"
 _NO_WINDOW: int = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -77,7 +78,7 @@ def netstat_text() -> str:
     try:
         r = subprocess.run(
             ["netstat", "-ano", "-p", "TCP"], capture_output=True, text=True, timeout=20, check=False,
-            creationflags=_NO_WINDOW,
+            env=child_env(), creationflags=_NO_WINDOW,
         )
     except (OSError, subprocess.SubprocessError):
         return ""

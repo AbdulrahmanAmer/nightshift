@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import base64
-import os
 import shutil
 import subprocess
 
-from ns_supervisor.procs import scrubbed
+from ns_supervisor.childenv import child_env
 
 
 class PowerShellMissing(RuntimeError):
@@ -31,7 +30,7 @@ def run_powershell(
     exe = find_powershell()
     if exe is None:
         raise PowerShellMissing("powershell was not found on PATH")
-    env = {**scrubbed(os.environ), **(env_extra or {})}
+    env = child_env(env_extra)
     return subprocess.run(
         [exe, "-NoProfile", "-NonInteractive", "-EncodedCommand", encode(script)],
         capture_output=True,
