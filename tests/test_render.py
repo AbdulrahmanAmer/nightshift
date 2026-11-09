@@ -184,3 +184,18 @@ def test_ffmpeg_reads_an_ass_file_from_a_folder_with_an_apostrophe(tmp_path: Pat
     ass.write_text(build_ass(words, "clean_white"), encoding="utf-8")
     graph = f"ass=filename={escape_filter_path(ass)}"
     ff.run(["-f", "lavfi", "-i", "color=c=black:s=320x240:d=0.5", "-vf", graph, "-f", "null", "-"])
+
+
+@needs_ffmpeg
+def test_build_short_audio_appends_the_closing_line_after_its_own_gap(tmp_path: Path):
+    hook = ff.make_tone_wav(tmp_path / "hook.wav", 1.0, sr=48000, freq=880.0)
+    body = ff.make_tone_wav(tmp_path / "body.wav", 4.0, sr=48000)
+    close = ff.make_tone_wav(tmp_path / "close.wav", 2.0, sr=48000, freq=660.0)
+    out = build_short_audio(
+        hook, body, tmp_path / "raw.wav", tmp_path / "final.wav", 0.15, close=close, close_gap_s=0.35
+    )
+    assert abs(ff.duration_s(out) - (1.0 + 0.15 + 4.0 + 0.35 + 2.0)) < 0.05
+    lufs, tp = measure_lufs(out)
+    assert abs(lufs - (-14.0)) <= 0.8 and tp <= -1.0
+    no_close = build_short_audio(hook, body, tmp_path / "raw2.wav", tmp_path / "final2.wav", 0.15)
+    assert abs(ff.duration_s(no_close) - 5.15) < 0.05

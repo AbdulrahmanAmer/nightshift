@@ -557,14 +557,24 @@ def fit_caption_contrast(
 
 
 def build_short_audio(
-    hook: Path | None, body: Path, out_raw: Path, out_final: Path, gap_s: float, log: NsLogger | None = None
+    hook: Path | None,
+    body: Path,
+    out_raw: Path,
+    out_final: Path,
+    gap_s: float,
+    log: NsLogger | None = None,
+    *,
+    close: Path | None = None,
+    close_gap_s: float = 0.0,
 ) -> Path:
-    """Hook + silence + body, loudness-normalized to -14 LUFS / -1.5 dBTP (spec S1).
+    """Hook + silence + body (+ silence + closing line), normalized to -14 LUFS / -1.5 dBTP (spec S1).
 
     The voice stage leaves narration at -16 LUFS with peaks at or under `VOICE_TP`, so this lift of 2 dB is
     linear and adds no limiter of its own; audio from an older voice stage still gets one.
     """
     segments: list[Path | float] = [hook, gap_s, body] if hook else [body]
+    if close:
+        segments += [close_gap_s, close]
     assemble_audio(segments, out_raw)
     loudnorm(out_raw, out_final, i=FINAL_LUFS, tp=FINAL_TP, log=log)
     return out_final
@@ -593,6 +603,8 @@ class RenderStage:
             timeline = ctx.read_json(f"captions/{item}.json")
             out_dir = ctx.subdir(f"shorts/{item}")
             hook_entry = manifest.get(f"p{n}_hook")
+            # the closing line the captions timed (the same gap): without it in the timeline it is not played
+            close_entry = manifest.get(f"p{n}_close") if float(timeline.get("close_s", 0.0)) > 0 else None
             audio = build_short_audio(
                 Path(hook_entry["path"]) if hook_entry else None,
                 Path(manifest[f"p{n}"]["path"]),
@@ -600,6 +612,8 @@ class RenderStage:
                 out_dir / "audio.wav",
                 float(timeline["body_offset_s"]) - float(timeline["hook_s"]),
                 ctx.log,
+                close=Path(close_entry["path"]) if close_entry else None,
+                close_gap_s=float(timeline.get("close_gap_s", 0.0)),
             )
             shots = [Shot.from_json(s) for s in entry["shots"]]
             ass_path = ctx.file(f"captions/{item}.ass")
