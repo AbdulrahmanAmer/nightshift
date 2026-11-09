@@ -241,6 +241,17 @@ def test_a_skipped_short_design_prefers_a_short_format_over_a_square(tmp_home: P
     assert res.id == "short_9x16"
 
 
+def test_the_declared_kind_reads_only_files_in_the_formats_folders(tmp_home: Path) -> None:
+    """Review nit: a design format id is a file name; an id with a path in it reads nothing outside."""
+    paths = Paths.from_env()
+    paths.formats_dir.parent.mkdir(parents=True, exist_ok=True)
+    (paths.formats_dir.parent / "outside.yaml").write_text("kind: long\n", encoding="utf-8")
+    put(paths, "short_inside")
+    assert F.declared_kind("short_inside", paths=paths) == "short"
+    for sneaky in ("../outside", "..\\outside", "sub/../../outside", "C:outside", ""):
+        assert F.declared_kind(sneaky, paths=paths) is None, sneaky
+
+
 def test_a_square_is_still_chosen_for_shorts_when_the_owner_allows_only_a_square(tmp_home: Path) -> None:
     res, _ = resolve(tmp_home, "short", ["square_1x1"], None)
     assert res.id == "square_1x1" and res.why == "first allowed square format"

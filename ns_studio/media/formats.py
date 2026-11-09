@@ -385,6 +385,8 @@ def declared_kind(format_id: str, *, paths: Paths | None = None) -> str | None:
     A series design that names a format whose file is broken still has a kind in mind (the design's `short`
     format shapes the Shorts). Reading it lets the fallback choose a format of the same kind.
     """
+    if not format_id or any(c in format_id for c in "/\\:") or ".." in format_id:
+        return None  # an id is a file name in the formats folder, never a path
     owner = (paths or Paths.from_env()).formats_dir
     for folder in (owner, FORMATS_DIR):
         path = folder / f"{format_id}.yaml"
