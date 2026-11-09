@@ -5,7 +5,7 @@ are kept between runs and maintained by the verification loop (docs/VERIFICATION
 starts as `U`; `tests/test_verification_inventory.py` fails when the code has an item this
 file does not list.
 
-Items: 260 (V-dev 148, V-ci 52, V-gpu 0, U 60).
+Items: 260 (V-dev 152, V-ci 52, V-gpu 0, U 56).
 
 | kind | id | status | evidence |
 |---|---|---|---|
@@ -29,7 +29,7 @@ Items: 260 (V-dev 148, V-ci 52, V-gpu 0, U 60).
 | api | `POST /api/outputs/{output_id:path}/uploaded` | V-dev | test-loop-2026-11-08.md 2026-11-09 08:50-08:58 (0.1.12 dev, runs/qa/croutes, out-0.1.12-c3) |
 | api | `POST /api/outputs/{output_id:path}/open-folder` | U |  |
 | api | `GET /api/outputs/{output_id:path}` | V-dev | test-loop-2026-11-08.md 2026-11-09 08:50-08:58 (0.1.12 dev, runs/qa/croutes, out-0.1.12-c3) |
-| api | `GET /api/thumbs/{n}/{output_id:path}` | U |  |
+| api | `GET /api/thumbs/{n}/{output_id:path}` | V-dev | test-loop-2026-11-08.md 2026-11-09 10:20-10:23 (0.1.12 dev, thumbs 1-3 of a master, 404 for 4) |
 | api | `GET /api/media/{output_id:path}/thumb.jpg` | V-dev | test-loop-2026-11-08.md 2026-11-09 08:50-08:58 (0.1.12 dev, runs/qa/croutes, out-0.1.12-c3) |
 | api | `POST /api/uploads` | V-dev | test-loop-2026-11-05.md |
 | api | `GET /api/uploads/{upload_id}` | V-dev | test-loop-2026-11-08.md 2026-11-09 08:50-08:58 (0.1.12 dev, runs/qa/croutes) |
@@ -38,14 +38,14 @@ Items: 260 (V-dev 148, V-ci 52, V-gpu 0, U 60).
 | api | `POST /api/jobs/run` | V-dev | test-loop-2026-11-05.md (Shorts jobs) |
 | api | `POST /api/jobs/verify` | V-dev | test-loop-2026-11-08.md 2026-11-09 08:50-08:58 (0.1.12 dev, runs/qa/croutes) |
 | api | `POST /api/jobs/clip` | V-dev | test-loop-2026-11-05.md (clip from a path and from an upload) |
-| api | `POST /api/jobs/clip/rerun` | U |  |
+| api | `POST /api/jobs/clip/rerun` | V-dev | test-loop-2026-11-08.md 2026-11-09 09:50-09:52 (0.1.12 dev, re-cut from clip_captions in 9 s) |
 | api | `GET /api/jobs` | V-dev | job polling in every job test |
 | api | `GET /api/jobs/{job_id}` | V-dev | job polling |
 | api | `POST /api/jobs/{job_id}/resume` | V-dev | test-loop-2026-11-05.md (interrupted job resumed) |
 | api | `POST /api/jobs/{job_id}/cancel` | V-ci | tests/test_dashboard_jobs.py cancel tests |
 | api | `POST /api/jobs/{job_id}/dismiss` | V-dev | journey-2026-11-04.md (three failed cards hidden) |
 | api | `GET /api/notes` | V-dev | test-loop-2026-11-08.md 2026-11-09 08:50-08:58 (0.1.12 dev, runs/qa/croutes) |
-| api | `POST /api/notes/clear` | U |  |
+| api | `POST /api/notes/clear` | V-dev | test-loop-2026-11-08.md 2026-11-09 09:54-09:56 (0.1.12 dev, a real morning note cleared) |
 | api | `GET /api/runs` | V-dev | test-loop-2026-11-05.md |
 | api | `GET /api/logs/tail` | V-dev | test-loop-2026-11-08.md 2026-11-09 08:50-08:58 (0.1.12 dev, runs/qa/croutes) |
 | api | `GET /api/logs/components` | V-dev | test-loop-2026-11-08.md 2026-11-09 08:50-08:58 (0.1.12 dev, runs/qa/croutes) |
@@ -64,7 +64,7 @@ Items: 260 (V-dev 148, V-ci 52, V-gpu 0, U 60).
 | api | `GET /api/voices` | V-dev | journey-2026-11-04.md |
 | api | `POST /api/voices/preview` | V-dev | test-loop-2026-11-08.md 2026-11-09 08:50-08:58 (0.1.12 dev, runs/qa/croutes) |
 | api | `GET /api/voices/pending` | V-dev | test-loop-2026-11-08.md 2026-11-09 08:50-08:58 (0.1.12 dev, runs/qa/croutes) |
-| api | `POST /api/voices/apply-pending` | U |  |
+| api | `POST /api/voices/apply-pending` | V-dev | test-loop-2026-11-08.md 2026-11-09 10:36-10:41 (0.1.12 dev, Create it now from a setup-pending voice) |
 | api | `POST /api/voices/design` | V-dev | test-loop-2026-11-08.md 2026-11-09 08:50-08:58 (0.1.12 dev, runs/qa/croutes) |
 | api | `POST /api/voices/clone` | V-dev | test-loop-2026-11-08.md 2026-11-09 08:50-08:58 (0.1.12 dev, runs/qa/croutes) |
 | api | `GET /api/library/ideas` | V-dev | journey-2026-11-04.md |

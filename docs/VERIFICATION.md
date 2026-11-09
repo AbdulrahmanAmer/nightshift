@@ -65,7 +65,7 @@ L release and CI (ci.yml: lint, types, test, bundle, ui-build, powershell-parse,
 | Block | Static | Unit/contract | Dev integration | E2E journeys | Lifecycle | Operations | Resilience | Security | Perf | Docs | GPU-only |
 |---|---|---|---|---|---|---|---|---|---|---|---|
 | A stage 1 | V-ci | V-ci | V-dev (headless, dev flag; window run via its API) | partial (window run proven by API; clicks U) | V-dev | — | **U** (console closed mid-run) | V-ci | V-dev 258 s | V-dev | V-gpu |
-| B stage 2 | V-ci | V-ci | V-dev (dev install; engine test: real downloads with hash checks, `ns tune` and the smoke test on a real model, fake voice) | **U** (wizard clicks) | V-dev | — | **U** (network off, retry) | V-ci | V-dev | partial | V-gpu (downloads, smoke) |
+| B stage 2 | V-ci | V-ci | V-dev (dev install; engine test: real downloads with hash checks, `ns tune` and the smoke test on a real model, fake voice) | V-dev (wizard by clicking to Done, 0.1.12, 2026-11-09) | V-dev | — | **U** (network off, retry) | V-ci | V-dev | partial | V-gpu (downloads, smoke) |
 | C launchers | V-ci | V-ci | V-dev (dashboard, host, stop-all, update) | V-dev | V-dev | V-dev | V-dev (dead server → window closes) | — | — | V-dev | V-gpu (host on a stock PC) |
 | D supervisor | V-ci | V-ci | V-dev (services, leases, verify) | — | V-dev | V-dev (task fired by hand: headless engine, master, engine left) / **U** keep-awake | V-dev (kill mid-job → NS-E328 at its stage, Retry continues; PR #86) / **U** lease TTL | V-ci | V-dev | partial | V-gpu (GPU gate, tune) |
 | E studio | V-ci | V-ci | V-dev (Shorts, master, clip, planner, QC; a clip job on real engines) | V-dev | — | — | partial (resume proven; kill mid-stage U) | V-ci | V-dev (Short 83 s) | partial | V-gpu (quality, timing) |
@@ -82,13 +82,13 @@ L release and CI (ci.yml: lint, types, test, bundle, ui-build, powershell-parse,
 ## 5. Block checklists (the items the loop works through; U items first)
 
 ### A. Stage 1
-- [x] The setup window (`-Ui`) in dev mode after an uninstall: Welcome (resume) → Continue → downloading → installing → verifying → Done in 290 s, every step done, read through the window's own API (V-dev 2026-11-05, PR #89 fixed Done-over-nothing and the 30,265 s duration); the screens' words by clicking are still U (the Chrome extension was down)
+- [x] The setup window (`-Ui`) in dev mode after an uninstall: Welcome (resume) → Continue → downloading → installing → verifying → Done in 290 s, every step done, read through the window's own API (V-dev 2026-11-05, PR #89 fixed Done-over-nothing and the 30,265 s duration); the screens by clicking were proven on 0.1.12 on 2026-11-09 (Welcome → This PC → Your choices → Install → Done, page clicks on the setup server)
 - [ ] Console closed mid-run resumes on the next INSTALL.cmd (U)
 - [x] Headless dev install from the official zip (V-dev 258 s)
 - [x] Preflight rows, Smart App Control, antivirus copy (V-ci)
 
 ### B. Stage 2
-- [ ] Wizard clicks: change a choice, Browse a folder, key screen with a rejected then a good key (U)
+- [x] Wizard clicks: change a choice, Browse a folder, key screen with a rejected then a good key, through to Done (V-dev 0.1.12, 2026-11-09, page clicks on the setup server; Browse after an uninstall-keep-data returns a nested folder: defect D-22)
 - [ ] Network off during a download: retry note, Failed screen, Continue (U)
 - [x] answers.json headless, keys optional, rejected stored key forgotten (V-dev, V-ci)
 - [x] Steps b01-b03, s00-s10, v01 status in install-report.json (V-dev)
@@ -112,7 +112,7 @@ L release and CI (ci.yml: lint, types, test, bundle, ui-build, powershell-parse,
 - [ ] Series workshop end to end (concepts → map → scripts → produce) (U)
 - [x] Review: approve, reject with note, mark uploaded, re-review: reject moves the files to rejected/, uploaded refused while rejected, approve then uploaded; card and `uploads` table agree (V-dev 0.1.12, 2026-11-09; the approved file stays under rejected/: defect D-6)
 - [x] Learn: a YouTube-Studio-style CSV naming two Shorts imported through `/api/learn/import`: 2 matched, weights moved in five pools, channel retention 61.5 % and a spark point (V-dev 2026-11-05); the Results page rendering those numbers is checked in the browser pass (U)
-- [ ] Calibrate (U)
+- [x] Calibrate: generate, human scores, spearman, bias and the critic_bar it writes (V-dev 0.1.12, 2026-11-09; D-10 refusal counting)
 
 ### F. Dashboard API
 - [x] 20 route groups answer; jobs, outputs, settings, keys, footage, assistant (V-dev)
@@ -122,8 +122,8 @@ L release and CI (ci.yml: lint, types, test, bundle, ui-build, powershell-parse,
 
 ### G. Dashboard UI
 - [x] Every page renders with data; Create wizard; Queue approve/reject; Library tabs; Settings keys; Hide (V-dev)
-- [ ] The WebView2 window's bridge: minimize, maximize, drag, close confirm (U)
-- [ ] Results page with imported analytics (U)
+- [x] The WebView2 window's bridge: minimize, maximize/restore, drag, close confirm while a job runs (V-dev 0.1.12, 2026-11-09, UI Automation; D-12 restore size)
+- [x] Results page with imported analytics: the import's numbers on the page (V-dev 0.1.12, 2026-11-09; D-11 chart and labels)
 
 ### H. Assistant
 - [x] Chat → tool call → confirm card → Yes → result on card (V-dev, fake routing)
