@@ -19,6 +19,7 @@ from ns_common.errors import NsError
 from ns_common.pacing import (
     NOMINAL_WPM,
     PACING_WPM,
+    PAUSE_PER_WORD_S,
     master_fixed_seconds,
     master_seconds,
     narration_seconds,
@@ -33,12 +34,19 @@ from ns_studio.series.store import (
     parse_script,
     split_front_matter,
 )
-from ns_studio.text.budget import CHAPTER_WORDS_MID, MASTER_MAX_SECONDS, MAX_CHAPTERS, MIN_CHAPTERS
+from ns_studio.text.budget import (
+    CHAPTER_WORDS_MID,
+    MASTER_MAX_SECONDS,
+    MAX_CHAPTERS,
+    MIN_CHAPTERS,
+    SHORT_CLOSING_WORDS,
+    SHORT_MIN_CLOSING_WORDS,
+)
 from ns_studio.text.validators import check_banned, check_master_length, check_sentence_length, load_banned
 
 TITLE_MAX_CHARS = 60
 SHORT_MIN_S = 10.0
-SHORT_MAX_S = 165.0       # QC allows 179 s; the rest is room for the real voice running a little slower
+SHORT_MAX_S = 165.0       # with its closing line; QC allows 179 s, the rest is room for a slower voice
 MASTER_MIN_S = 556.0      # the 9:00 floor of `duration_check` (540 s) plus 3 % for the real voice
 MAX_SENTENCE_WORDS = 35
 
@@ -66,6 +74,23 @@ def spoken_wpm(pacing: str, voice_speed: float = 1.0) -> float:
     15 % slower and a Short sized for the pace would come out longer than its QC band.
     """
     return NOMINAL_WPM * pacing_speed(voice_speed, pacing)
+
+
+def closing_reserve_s(wpm: float) -> float:
+    """Seconds a Short's bucket holds for its closing line: the gap before it and the middle of its words.
+
+    Every Short gets a closing line of at most 15 words, counted in the bucket (spec 7.0, D16), also a Short
+    made from the owner's own script: the owner's words are not shortened to make room, so the bucket of such
+    a Short is the body plus this reserve. The reserve is sized the way `short_budget` sizes a Short: between
+    the shortest line the stage takes (`SHORT_MIN_CLOSING_WORDS`) and the longest it reserves for
+    (`SHORT_CLOSING_WORDS`), so either one leaves the Short inside QC's band, also a Short of 10 to 12 seconds
+    where a full 10-word reserve left the shortest line under the band. The hooks stage then takes a line that
+    fits (`fit_closing`), refusing one that leaves the Short under the band.
+    """
+    from ns_studio.media.captions import CLOSE_GAP_S  # lazy: the caption module is heavy for a pure planner
+
+    words = (SHORT_CLOSING_WORDS + SHORT_MIN_CLOSING_WORDS) // 2
+    return CLOSE_GAP_S + words * (60.0 / wpm + PAUSE_PER_WORD_S)
 
 
 def _balanced(units: list[str], n: int) -> list[list[str]]:
@@ -148,17 +173,19 @@ def _short(text: str, title: str | None, pacings: list[str], speed: float) -> Sc
     _text_problems(doc)
     full = "\n\n".join(c.text for c in doc.chapters)
     estimates = {p: narration_seconds(full, spoken_wpm(p, speed)) for p in pacings}
+    reserves = {p: closing_reserve_s(spoken_wpm(p, speed)) for p in pacings}
     for pacing, seconds in estimates.items():
-        if SHORT_MIN_S <= seconds <= SHORT_MAX_S:
-            return ScriptPlan("shorts_only", markdown, doc, pacing, seconds, max(1, round(seconds)))
+        if SHORT_MIN_S <= seconds and seconds + reserves[pacing] <= SHORT_MAX_S:
+            bucket = max(1, round(seconds + reserves[pacing]))  # the closing line is counted in the bucket
+            return ScriptPlan("shorts_only", markdown, doc, pacing, seconds, bucket)
     first = pacings[0]
     seconds = estimates[first]
-    top = words_for_seconds(SHORT_MAX_S, spoken_wpm(first, speed))
-    if seconds > SHORT_MAX_S:
+    top = words_for_seconds(SHORT_MAX_S - reserves[first], spoken_wpm(first, speed))
+    if seconds + reserves[first] > SHORT_MAX_S:
         raise ScriptRefused(
-            f"This script would run about {_minutes(seconds)} as a Short. A Short can be about "
-            f"{_minutes(SHORT_MAX_S)} at most (around {top} words at this channel's pace). "
-            "Shorten it, or make a long video from it."
+            f"This script would run about {_minutes(seconds + reserves[first])} as a Short. A Short can be "
+            f"about {_minutes(SHORT_MAX_S)} at most (around {top} words of story, plus a closing line, at "
+            "this channel's pace). Shorten it, or make a long video from it."
         )
     raise ScriptRefused(
         f"This script would run only about {round(seconds)} seconds as a Short; a Short needs at least "

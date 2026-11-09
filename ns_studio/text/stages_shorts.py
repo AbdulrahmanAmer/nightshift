@@ -12,7 +12,7 @@ from ns_common.devmode import is_dev
 from ns_common.embed_client import cosine, embed_window, from_blob, to_blob
 from ns_common.errors import NsError
 from ns_common.models import Idea, Part, Seo, VisualBeat
-from ns_common.pacing import PAUSE_PER_WORD_S, SHORT_QC_MARGIN
+from ns_common.pacing import NOMINAL_WPM, PAUSE_PER_WORD_S, SHORT_QC_MARGIN, narration_seconds
 from ns_common.textstats import est_seconds, split_sentences, word_count
 from ns_studio.context import JobContext
 from ns_studio.policy.meta import policy_list
@@ -20,6 +20,7 @@ from ns_studio.stages import Tenant, register
 from ns_studio.text.budget import (
     CLOSING_MAX_WORDS,
     HOOK_MAX_WORDS,
+    SHORT_CLOSING_WORDS,
     SHORT_MIN_CLOSING_WORDS,
     SHORT_MIN_HOOK_WORDS,
     Budget,
@@ -38,7 +39,6 @@ from ns_studio.voice_wpm import job_wpm
 __all__ = ["draw_banked_idea", "finalize_seo", "ideas_budget", "job_master_budget", "now_iso"]
 
 IDEA_SIMILARITY_LIMIT = 0.85
-SHORT_CLOSING_WORDS = 10  # the budget reserves this many words for the closing line (see `fit_closing`)
 CLOSINGS_FILE = "closings.json"
 DEFAULT_SHORT_CLOSINGS = (
     "Follow for the next story.",
@@ -409,7 +409,15 @@ def closing_line(raw: Any, part_n: int, parts_total: int) -> str:
     return default_closing(part_n, parts_total)
 
 
-def fit_closing(ctx: JobContext, part: dict[str, Any], hook: str, closing: str, parts_total: int) -> str:
+def fit_closing(
+    ctx: JobContext,
+    part: dict[str, Any],
+    hook: str,
+    closing: str,
+    parts_total: int,
+    *,
+    must_fit: bool = False,
+) -> str:
     """`closing`, or a shorter line when it would carry the Short past QC's duration band.
 
     The budget reserves `SHORT_CLOSING_WORDS` for the closing line, but the model may write up to
@@ -417,17 +425,39 @@ def fit_closing(ctx: JobContext, part: dict[str, Any], hook: str, closing: str, 
     over the bucket by more than the 15 % QC allows (NS-W406, the Short is dropped). The hooks stage knows
     the body and the hook, so it estimates the seconds the model's line leaves and takes the first of the
     model's line, the part's default and the other defaults that stays within the budget's own +12 % margin;
-    when none does, the shortest default.
+    when none does, the shortest default. With `must_fit` (a Short made from the owner's own script, whose
+    words are never shortened) a line that still does not fit is no line: "" is returned, so a job planned
+    before its bucket held a closing line is not dropped by QC for the line it never had room for. The same
+    Short has no body to trim either, so a line must also not leave it UNDER the band (a one-word line after
+    a 10 s script is 12 % short of its bucket): the next candidate, a longer default, is taken instead. The
+    floor and the cap use the budget's 12 % margin on purpose, not QC's 15 %: 3 points stay for the voice. The
+    owner route measures the owner's text (its pauses and the voice's real pace) instead of estimating it.
     """
     from ns_studio.media.captions import CLOSE_GAP_S, HOOK_GAP_S
-    from ns_studio.media.voice import hook_opens_body
+    from ns_studio.media.voice import hook_opens_body, job_speed
 
-    per_word_s = 60.0 / job_wpm(ctx) + PAUSE_PER_WORD_S
+    candidates = [closing, default_closing(int(part["n"]), parts_total), *DEFAULT_SHORT_CLOSINGS]
     bucket_s = float(ctx.combo.length_bucket or 50)
     voiced_hook = 0 if hook_opens_body(hook, part["text"]) else word_count(hook)
+    if must_fit:
+        # A Short made from the owner's script was sized by the planner with the pace the voice really speaks
+        # at (`spoken_wpm`: the voice's speed scaled by the pacing) and with the pauses of the owner's own
+        # text (`narration_seconds`). Its parts.json already exists here, so `job_wpm` would pin the table
+        # pace and ignore a channel voice at another speed, and the typical-sentence pause estimate is wrong
+        # for a script of one long sentence or of many short ones: the floor and the cap would be off by a
+        # second or two, which is the whole width of a 10 s Short's band. The owner route measures the text.
+        wpm = NOMINAL_WPM * job_speed(ctx)
+        spent_s = narration_seconds(part["text"], wpm) + CLOSE_GAP_S
+        if voiced_hook:
+            spent_s += narration_seconds(hook, wpm) + HOOK_GAP_S
+        low, high = bucket_s * (1 - SHORT_QC_MARGIN), bucket_s * (1 + SHORT_QC_MARGIN)
+        for line in candidates:
+            if low <= spent_s + narration_seconds(line, wpm) <= high:
+                return line
+        return ""
+    per_word_s = 60.0 / job_wpm(ctx) + PAUSE_PER_WORD_S
     spent_s = (word_count(part["text"]) + voiced_hook) * per_word_s + HOOK_GAP_S + CLOSE_GAP_S
     room = int((bucket_s * (1 + SHORT_QC_MARGIN) - spent_s) / per_word_s)
-    candidates = [closing, default_closing(int(part["n"]), parts_total), *DEFAULT_SHORT_CLOSINGS]
     for line in candidates:
         if word_count(line) <= room:
             return line
@@ -439,6 +469,12 @@ class HooksStage:
 
     All hook candidates go to `hooks_all.json`; the closing lines to `closings.json` (`{"1": "...", ...}`),
     which the voice stage speaks as `p<n>_close` and the render appends to the part.
+
+    For a Short made from the owner's own script the stage adds only the closing line: the text and the hook
+    (its first sentence) stay as the import wrote them and `hooks_all.json` holds that one hook. The model
+    is asked through the same `hook` prompt, whose five hook candidates are discarded: only its closing line
+    is used, and only when it fits the bucket (`fit_closing` with `must_fit`); a job planned before the
+    bucket held a closing line (its bucket is the body alone) that has no room for one gets none, as before.
     """
 
     name: str = "hooks"
@@ -464,12 +500,23 @@ class HooksStage:
         parts: list[dict[str, Any]] = ctx.read_json("parts.json")
         all_hooks: list[list[str]] = []
         closings: dict[str, str] = {}
+        owner = ctx.owner_script
         for i, p in enumerate(parts):
             nxt = parts[i + 1]["text"] if i + 1 < len(parts) else None
             out = call_json(
                 ctx, "hook", part_text=p["text"], next_part_text=nxt, part_n=p["n"], parts_total=len(parts)
             )
             wanted = closing_line(out.get("closing_line"), p["n"], len(parts))
+            if owner:
+                # The owner's story is narrated as written, with its first sentence as the hook: only the
+                # closing line is added after it (spec 7.0, D16). The model's hook candidates are not used.
+                first = cut_words(split_sentences(p["text"])[0], HOOK_MAX_WORDS)
+                hook = str(p.get("hook") or "").strip() or first
+                line = fit_closing(ctx, p, hook, wanted, len(parts), must_fit=True)
+                if line:  # "": a job planned before the bucket held room for one keeps no closing line
+                    closings[str(p["n"])] = line
+                all_hooks.append([hook])
+                continue
             hooks = [str(h).strip() for h in out["hooks"] if 0 < len(str(h).split()) <= HOOK_MAX_WORDS]
             hooks = hooks or [cut_words(split_sentences(p["text"])[0], HOOK_MAX_WORDS)]
             j = call_json(
@@ -483,9 +530,11 @@ class HooksStage:
             p["hook"] = hooks[idx]
             closings[str(p["n"])] = fit_closing(ctx, p, p["hook"], wanted, len(parts))
             all_hooks.append(hooks)
-        ctx.write_json(CLOSINGS_FILE, closings)
+        if closings or not owner:
+            ctx.write_json(CLOSINGS_FILE, closings)
         ctx.write_json("hooks_all.json", all_hooks)
-        ctx.write_json("parts.json", parts)
+        if not owner:
+            ctx.write_json("parts.json", parts)  # an owner's parts.json stays as the import wrote it
 
 
 class SeoStage:

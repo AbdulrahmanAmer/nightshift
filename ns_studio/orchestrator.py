@@ -71,11 +71,13 @@ MASTER_FROM_SCRIPT_STAGES: tuple[str, ...] = (
     "outbox",
 )
 # A story the owner wrote (JobRunRequest.script) is narrated as written: the import stage replaces everything
-# that writes or rewrites the story. A Short has no `split` and `hooks` (the import writes its one part and
-# the first sentence is its hook); a long video keeps `shorts_select`, which cuts Shorts from the chapters.
-# Chosen by `plan_format` when the job folder holds the owner's `script_source.json`.
+# that writes or rewrites the story. A Short has no `split` (the import writes its one part and the first
+# sentence is its hook); `hooks` stays only for its closing line, which every Short gets (spec 7.0, D16) and
+# which it adds after the owner's words without touching them. A long video keeps `shorts_select`, which
+# cuts Shorts from the chapters. Chosen by `plan_format` when the job folder holds `script_source.json`.
 SHORTS_FROM_OWNER_SCRIPT_STAGES: tuple[str, ...] = (
     "script_import_short",
+    "hooks",
     "seo",
     "visual_plan",
     "voice",

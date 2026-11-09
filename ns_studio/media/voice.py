@@ -89,8 +89,9 @@ def tts_seed(ctx: JobContext) -> int | None:
 
 
 def read_closings(ctx: JobContext) -> dict[str, str] | None:
-    """`closings.json` as a dict, or None (no closing line) when the hooks stage did not run (an owner's
-    script, a job from before closing lines) or the file is damaged or not an object."""
+    """`closings.json` as a dict, or None (no closing line) when the hooks stage did not run (a job from
+    before closing lines) or left the Short without one (an owner's script whose bucket has no room for it),
+    or the file is damaged or not an object."""
     if not ctx.file("closings.json").exists():
         return None
     try:
