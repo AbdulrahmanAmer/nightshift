@@ -36,10 +36,12 @@ OTHER_CHANNEL_DAYS = 30
 BED_FLOOR_DBFS = -55.0
 # Spectral flatness (geometric over arithmetic mean of the power spectrum) of the quiet frames: noise and
 # room tone sit around 0.3 to 0.6, a held note or a pad is far below 0.1. UNCALIBRATED: 0.1 and
-# QUIET_MIN_DB were checked against synthetic noise and tones only, not against real TTS or AAC-encoded
-# narration (a decaying voiced tail or low hum in the quietest frames may read as tonal). Measure real
-# narration on the GPU target before trusting an NS-E614 from this check.
+# QUIET_MIN_DB were checked against synthetic noise and tones only, not against real qwen-tts or AAC-encoded
+# narration (a decaying voiced tail or low hum in the quietest frames may read as tonal), so a value under
+# this limit is a WARNING with the measured value recorded, never a failure. The one place the limit lives;
+# make the check a failure only with a threshold measured on real qwen-tts output (docs/FINALIZATION.md F).
 TONAL_FLATNESS_MAX = 0.1
+QC_FLATNESS_FILE = "qc/audio_flatness.json"
 QUIET_SHARE = 0.10  # the quietest tenth of the 50 ms frames
 QUIET_MIN_DB = -85.0  # below this a frame is digital silence: no bed, nothing to measure
 QUIET_MIN_FRAMES = 5
@@ -329,8 +331,19 @@ def _decode_audio(path: Path) -> np.ndarray:
     return np.frombuffer(data, dtype=np.int16).astype(np.float64) / 32768.0
 
 
+def _round4(value: float | bool | None) -> float | None:
+    """A measured flatness as stored in the QC file and the log (4 decimals); None stays None."""
+    return None if value is None else round(float(value), 4)
+
+
 class AudioOnlyVoice(Check):
-    """Exactly one audio stream and real silence between words, so no music bed (E614)."""
+    """Exactly one audio stream and real silence between words, so no music bed (E614).
+
+    Two halves. The floor half (`BED_FLOOR_DBFS`: no quiet frame anywhere) fails. The flatness half
+    (`quiet_flatness` against `TONAL_FLATNESS_MAX`) is "measured, warning only" until the value is calibrated
+    on real qwen-tts narration (F-H116): it records the measured value in `QC_FLATNESS_FILE` and in the job
+    log every time and only warns, because a false NS-E614 costs a full render, a regeneration and the night.
+    """
 
     name = "audio_only_voice"
     gate = "final"
@@ -341,6 +354,7 @@ class AudioOnlyVoice(Check):
         if not renders:
             return ok("no renders found")
         problems: list[str] = []
+        measured: dict[str, dict[str, float | bool | None]] = {}
         for item, path in renders:
             streams = ffmpeg.probe(path)["streams"]
             audio = [s for s in streams if s.get("codec_type") == "audio"]
@@ -348,16 +362,64 @@ class AudioOnlyVoice(Check):
                 problems.append(f"{item}: {len(audio)} audio streams (expected 1)")
                 continue
             samples = _decode_audio(path)
+            flatness = quiet_flatness(samples)
+            warned = flatness is not None and flatness < TONAL_FLATNESS_MAX
+            measured[item] = {"quiet_flatness": flatness, "warned": warned}
             floor = quiet_floor_db(samples)
             if floor > BED_FLOOR_DBFS:
                 problems.append(f"{item}: no silence anywhere (floor {floor:.0f} dBFS), possible music bed")
-                continue
-            flatness = quiet_flatness(samples)
-            if flatness is not None and flatness < TONAL_FLATNESS_MAX:
-                problems.append(
-                    f"{item}: tonal energy between the words (flatness {flatness:.2f}), possible music bed"
-                )
-        return fail("; ".join(problems)) if problems else ok(f"{len(renders)} renders carry narration only")
+        flat_note = self._record_flatness(ctx, measured)
+        if problems:
+            return fail("; ".join(problems))
+        return ok(f"{len(renders)} renders carry narration only{flat_note}")
+
+    @staticmethod
+    def _record_flatness(ctx: JobContext, measured: dict[str, dict[str, float | bool | None]]) -> str:
+        """Write the measured values to the QC report and the log; return the text for the check's detail.
+
+        `qc/audio_flatness.json` has no `passed` key on purpose: the channel pass rate counts the `qc/*.json`
+        files that have one.
+        """
+        if not measured:
+            # every render failed the stream count: an earlier pass's values would disagree with these renders
+            ctx.file(QC_FLATNESS_FILE).unlink(missing_ok=True)
+            return ""
+        rounded = {
+            item: {
+                "quiet_flatness": _round4(row["quiet_flatness"]),
+                "warned": row["warned"],
+            }
+            for item, row in measured.items()
+        }
+        ctx.write_json(
+            QC_FLATNESS_FILE,
+            {"warn_below": TONAL_FLATNESS_MAX, "mode": "warning only", "items": rounded},
+        )
+        shown: list[str] = []
+        warnings: list[str] = []
+        for item, row in measured.items():
+            value = row["quiet_flatness"]
+            text = "n/a" if value is None else f"{float(value):.3f}"
+            shown.append(f"{item}={text}")
+            if row["warned"]:
+                warnings.append(f"{item}={text}")
+            event = "audio_flatness_warning" if row["warned"] else "audio_flatness"
+            log = ctx.log.warn if row["warned"] else ctx.log.info
+            # no NS-W code in contracts/errors.json fits a tonal quiet passage: logged without one
+            log(
+                event,
+                job_id=ctx.job_id,
+                item=item,
+                quiet_flatness=_round4(value),
+                warn_below=TONAL_FLATNESS_MAX,
+            )
+        note = f"; quiet_flatness {', '.join(shown)} (warns under {TONAL_FLATNESS_MAX})"
+        if warnings:
+            note += (
+                f"; WARNING quiet_flatness under {TONAL_FLATNESS_MAX} for {', '.join(warnings)}: tonal "
+                "energy between the words, possible music bed (warning only, not calibrated on qwen-tts)"
+            )
+        return note
 
 
 # ---------------------------------------------------------------- unsafe topics, second look

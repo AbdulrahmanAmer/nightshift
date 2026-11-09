@@ -9,7 +9,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useApp, useLoad } from "../lib/app";
 import { api } from "../lib/api";
 import { dayInline, doneWords, MAKES_VIDEO, fmtClock, fmtDay, fmtDur, fmtWhen, kindLabel, plural, stageWords, stoppedAt, store } from "../lib/format";
-import type { ChannelSummary, Job, MorningNote, Output, OutputDetail, Run } from "../lib/types";
+import type { ChannelSummary, InterruptedJob, Job, MorningNote, Output, OutputDetail, Run } from "../lib/types";
 import { cx } from "../ui/kit";
 import { JobError } from "../ui/JobError";
 import { Scene } from "../visuals/Scene";
@@ -468,6 +468,18 @@ function MachineMeters({ className }: { className?: string }) {
     caption={gpuLine ? [gpuLine, diskLine].filter(Boolean).join(". ") : diskLine ? `${diskLine}. GPU load appears once the engine reports it` : "Readings appear once the engine answers"} />;
 }
 
+/** One line about a job the night left half made. The state is decided where the summary is served (`interrupted_jobs[].state`), so the words are true for every case: still open, rescued, stopped again, waiting. */
+function interruptedWords(u: InterruptedJob): string {
+  const at = u.stage ? ` at ${stageWords(u.stage).toLowerCase()}` : "";
+  switch (u.state ?? (u.resumed ? "resumed" : "open")) {
+    case "resumed": return `interrupted${at}, then continued and finished`;
+    case "failed_again": return `interrupted${at}, continued but stopped again`;
+    case "waiting": return `interrupted${at}, waiting for the GPU: the next night continues it`;
+    case "open": return `interrupted${at}, not finished`;
+    default: return `interrupted${at}, not finished`;
+  }
+}
+
 /** "Last night": what the newest nightly run made and what stopped, from GET /runs. Shown only after a run has happened. */
 function LastNight({ className, pending, onReview, channelName }: { className?: string; pending: number; onReview: () => void; channelName: (s?: string | null) => string }) {
   const runs = useLoad<Run[]>(() => api.get("/runs?limit=1"), [], []);
@@ -475,17 +487,21 @@ function LastNight({ className, pending, onReview, channelName }: { className?: 
   const r = runs.data[0];
   if (!r) return null;
   const made = r.summary?.jobs?.length ?? 0; const failed = r.summary?.failures ?? []; const skipped = r.summary?.skipped ?? [];
+  // A run that was killed (power cut, crash) has a finish time written by the recovery, but it did not finish: say so, and name the jobs it left half made.
+  const interrupted = r.state === "interrupted"; const live = r.state === "running"; const unfinished = r.summary?.interrupted_jobs ?? [];
   const took = r.duration_s ? (r.duration_s >= 3600 ? `${Math.floor(r.duration_s / 3600)} h ${Math.round((r.duration_s % 3600) / 60)} min` : `${Math.max(1, Math.round(r.duration_s / 60))} min`) : null;
   const when = r.mode === "daily" ? "Last night" : "Last run";
   return (
     <Card as="section" aria-labelledby="q-last" className={className}>
-      <CardHeader id="q-last" title={when} adornment={failed.length ? <StatusDot tone="danger" label="Something stopped" /> : <StatusDot tone="online" label="Finished" />}
+      <CardHeader id="q-last" title={when} adornment={failed.length ? <StatusDot tone="danger" label="Something stopped" /> : interrupted ? <StatusDot tone="attention" label="Interrupted" /> : live ? <StatusDot tone="accent" label="Running" /> : <StatusDot tone="online" label="Finished" />}
         actions={pending > 0 ? <Button size="sm" variant="soft" onClick={onReview}>Review {pending}</Button> : undefined} />
       <p className="text-ds-md leading-ds-normal">
         {made ? `${plural(made, "video")} made` : "Nothing was made"}{took ? `, in ${took}` : ""}, {fmtDay(r.started_at).toLowerCase()} at <span className="ds-num">{fmtClock(r.started_at)}</span>.
         {failed.length ? ` ${plural(failed.length, "job")} stopped.` : ""}
         {skipped.length ? ` ${plural(skipped.reduce((n, x) => n + x.jobs, 0), "job")} skipped.` : ""}
+        {interrupted ? ` ${r.note || "Interrupted: it never finished."}` : ""}
       </p>
+      {unfinished.length > 0 && <ul className="mt-2 flex flex-col gap-1 text-ds-xs text-ds-text-2">{unfinished.map((u) => <li key={u.job_id}>{channelName(u.channel)}: {interruptedWords(u)}</li>)}</ul>}
       {notes.data.length > 0 && <ul className="mt-2 flex flex-col gap-1 text-ds-xs text-ds-text-2">{notes.data.map((n, i) => <li key={i}>{n.message} <span className="text-ds-muted">({fmtClock(n.at)})</span></li>)}</ul>}
       {skipped.length > 0 && <ul className="mt-2 flex flex-col gap-1 text-ds-xs text-ds-text-2">{skipped.map((x) => <li key={x.channel}>{channelName(x.channel)}: {plural(x.jobs, "job")} skipped because an earlier one stopped</li>)}</ul>}
       {failed.length > 0 && <ul className="mt-2 flex flex-col gap-1 text-ds-xs text-ds-danger">{failed.slice(0, 3).map((f) => <li key={f.job_id}>{channelName(f.channel)}: {f.code ? `${f.code}. ` : ""}{f.error || "stopped"}</li>)}</ul>}

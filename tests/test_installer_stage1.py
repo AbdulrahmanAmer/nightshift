@@ -439,7 +439,7 @@ def test_select_default_home_avoids_the_extracted_folder_and_treats_a_root_speci
         f"$text = Get-Content -LiteralPath '{STAGE1}' -Raw",
         "$start = $text.IndexOf('function Test-PathInside')",
         "$end = $text.IndexOf('# Machine probes')",
-        "$script:MinFreeGbRecommended = 80",
+        "$script:RoomyGb = 80",
         "Invoke-Expression $text.Substring($start, $end - $start)",
         "$drives = @([pscustomobject]@{ letter = 'D'; free_gb = 900; type = 'SSD' },",
         "            [pscustomobject]@{ letter = 'E'; free_gb = 400; type = 'SSD' })",
