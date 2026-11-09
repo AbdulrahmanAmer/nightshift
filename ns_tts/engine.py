@@ -80,6 +80,7 @@ from ns_common.tts_timeout import tts_timeout_s
 from ns_tts.audio import read_wav, split_wav_stream, time_stretch, trim_silence, write_wav
 from ns_tts.sapi import (
     CALIBRATION_TEXT,
+    PROBE_SPEAK_TIMEOUT_S,
     PowerShellSapi,
     SapiBackend,
     SapiUnavailable,
@@ -279,6 +280,7 @@ class FakeEngine:
         self._probed = speech == "tones"
         self.voice_mode = "tones"  # what the engine really does: "sapi" or "tones"
         self.voice_name: str | None = None
+        self.voice_culture = ""  # e.g. "en-US": SAPI reads every line with this voice, whatever the language
         self.voice_wpm: float | None = None  # pace of the voice at SAPI Rate 0, measured at start-up
         self.voice_warning: str | None = None  # why a requested SAPI voice fell back to tone bursts
         self.delay_s = fake_delay_from_env(log)  # the developer delay, 0 unless NS_TTS_FAKE_DELAY_S is set
@@ -309,10 +311,11 @@ class FakeEngine:
                 self.voice_warning = f"{e}; the fake voice makes tone bursts, which recognition cannot align"
                 if self.log is not None:
                     self.log.warn("fake_voice_tones_only", self.voice_warning, requested="sapi")
-            except NsError as e:  # the test sentence itself failed to render
+            except (NsError, OSError) as e:  # the test sentence failed, or the scratch folder is unusable
+                detail = e.detail if isinstance(e, NsError) else str(e)
                 self.voice_mode, self.voice_name, self.voice_wpm = "tones", None, None
                 self.voice_warning = (
-                    f"Windows speech failed its start-up test ({e.detail}); "
+                    f"Windows speech failed its start-up test ({detail}); "
                     "the fake voice makes tone bursts, which speech recognition cannot align"
                 )
                 if self.log is not None:
@@ -324,13 +327,16 @@ class FakeEngine:
         voice = pick_voice(voices)
         if voice is None:
             raise SapiUnavailable("no Windows speech (SAPI) voice is installed on this PC")
-        heard = self._sapi.speak(voice.name, [CALIBRATION_TEXT], rate=0, sr=self.sr, timeout_s=120.0)
+        heard = self._sapi.speak(
+            voice.name, [CALIBRATION_TEXT], rate=0, sr=self.sr, timeout_s=PROBE_SPEAK_TIMEOUT_S
+        )
         spoken = trim_silence(heard[0], self.sr) if heard else EMPTY_AUDIO
         seconds = len(spoken) / self.sr
         wpm = word_count(CALIBRATION_TEXT) / seconds * 60.0 if seconds > 0.5 else 0.0
         if not 40.0 <= wpm <= 900.0:
             raise SapiUnavailable(f"Windows voice {voice.name!r} spoke the test text at {wpm:.0f} words/min")
         self.voice_mode, self.voice_name, self.voice_wpm = "sapi", voice.name, round(wpm, 1)
+        self.voice_culture = voice.culture
         if self.log is not None:
             self.log.info(
                 "fake_voice_sapi", f"the fake voice speaks with Windows voice {voice.name!r}",
@@ -416,8 +422,13 @@ class FakeEngine:
         self._probe()
         return self.voice_mode == "sapi"
 
-    def _speak(self, texts: Sequence[str], speed: float) -> list[np.ndarray]:
-        """The texts spoken by the SAPI voice (one process for all), at the pace `speed` asks for."""
+    def _speak(self, texts: Sequence[str], speed: float, language: str = "English") -> list[np.ndarray]:
+        """The texts spoken by the SAPI voice (one process for all), at the pace `speed` asks for.
+
+        A line the voice cannot speak (another script, only punctuation) comes back as no audio at all; that
+        is logged as `fake_voice_unspoken` so a silent clip is explained before the captions stage says
+        NS-E403.
+        """
         assert self.voice_name is not None and self.voice_wpm is not None
         lines = [" ".join(t.split()) for t in texts]
         todo = [i for i, line in enumerate(lines) if line]
@@ -435,7 +446,21 @@ class FakeEngine:
             raise NsError("NS-E310", f"Windows speech returned {len(heard)} clips for {len(todo)} lines")
         for i, x in zip(todo, heard, strict=True):
             out[i] = limit_peak(x)
+            if x.size == 0 or float(np.max(np.abs(x))) < 1e-4:
+                self._warn_unspoken(lines[i], language)
         return out
+
+    def _warn_unspoken(self, line: str, language: str) -> None:
+        wrong_language = not language.lower().startswith("en") and self.voice_culture.lower().startswith("en")
+        msg = (
+            f"Windows voice {self.voice_name!r} made no sound for the line {line[:60]!r}"
+            + (f"; it speaks English and the request is {language!r}" if wrong_language else "")
+            + "; the clip is silent, so the captions stage may fail with NS-E403"
+        )
+        if self.log is not None:
+            self.log.warn(
+                "fake_voice_unspoken", msg, voice=self.voice_name, language=language, chars=len(line)
+            )
 
     def _freq(self, voice: VoiceSpec) -> float:
         if voice.mode == "preset":
@@ -459,7 +484,7 @@ class FakeEngine:
     def _synth_spoken(self, texts: Sequence[str], voice: VoiceSpec, speed: float) -> list[np.ndarray]:
         self._freq(voice)  # the same NS-E311 for a voice without stored data as the tone engine gives
         self.languages.extend([voice.language] * len(texts))
-        return self._speak(texts, speed)
+        return self._speak(texts, speed, voice.language)
 
     def synth(
         self, text: str, voice: VoiceSpec, *, speed: float = 1.0, seed: int | None = None

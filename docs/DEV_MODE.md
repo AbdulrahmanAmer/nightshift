@@ -227,6 +227,12 @@ before.
   `warning`); and the NS-E403 of the captions stage ends with "the voice is the fake one of this engine test and
   it made tone bursts ... this is the test voice, not a product fault". With a Windows voice the same sentence
   names the voice. A real engine never gets that sentence.
+  The start-up check (voice list, one test sentence) is capped at 80 s in total so a hung PowerShell ends in
+  tone bursts and this warning, never in a service the supervisor kills for not answering.
+- **Lines the Windows voice cannot speak.** The one Windows voice is English: text in another script (Japanese,
+  for example) or only punctuation comes back as no sound. The clip is then silent and the voice service log
+  carries the warning `fake_voice_unspoken` (the line, and "it speaks English" when the request names another
+  language); the captions stage would stop with NS-E403 otherwise without saying why.
 - **Switches.** Only `tts.engine: fake` without `dev_mode` asks for Windows speech. A dev install, the test suite
   and CI (`NS_TTS_FAKE=1`) keep the tone bursts. `NS_TTS_FAKE_SPEECH=sapi` or `tones` forces either way, for a
   developer who wants to hear the dev install or to take the engine test back to tones.

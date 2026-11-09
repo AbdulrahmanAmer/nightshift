@@ -28,7 +28,8 @@ import shutil
 import subprocess  # noqa: TID251  (CR-H7-1: a ruff per-file ignore for this module, like ns_tts/engine.py)
 import sys
 import tempfile
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
@@ -42,6 +43,12 @@ from ns_tts.audio import read_wav
 RATE_MIN, RATE_MAX = -10, 10
 RATE_STEP = 1.115  # pace ratio of two neighbouring SAPI rates (1.107 to 1.123 measured on Microsoft David)
 PEAK_CEILING = 0.89  # about -1 dBFS: SAPI voices peak near full scale; the loudness stage lifts the level
+
+# The start-up probe (voice list, then one calibration sentence) runs before the service binds its port, and
+# the supervisor gives the service 120 s (`health_timeout_s`) to answer. These two caps add up to 80 s, so a
+# hung or very slow PowerShell ends in tone bursts and a warning, never in a killed service (NS-E203).
+PROBE_VOICES_TIMEOUT_S = 35.0
+PROBE_SPEAK_TIMEOUT_S = 45.0
 
 # Played once at start-up to measure the voice's pace at Rate 0 (two sentences with a comma: the usual shape).
 CALIBRATION_TEXT = (
@@ -165,11 +172,12 @@ class PowerShellSapi:
 
     def _run(self, job: dict[str, object], *, timeout_s: float) -> None:
         exe = self._powershell()
-        if self.tmp_dir is not None:
-            self.tmp_dir.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(prefix="ns-sapi-", dir=self.tmp_dir) as td:
-            job_file = Path(td) / "job.json"
-            job_file.write_text(json.dumps(job, ensure_ascii=False), encoding="utf-8")
+        with self._scratch() as td:
+            job_file = td / "job.json"
+            try:
+                job_file.write_text(json.dumps(job, ensure_ascii=False), encoding="utf-8")
+            except OSError as e:
+                raise SapiUnavailable(f"cannot write the speech job file: {e}") from e
             encoded = base64.b64encode(_SCRIPT.encode("utf-16-le")).decode("ascii")
             cmd = [
                 exe,
@@ -201,9 +209,9 @@ class PowerShellSapi:
 
     def voices(self) -> list[SapiVoice]:
         self._powershell()  # fail early (and cheaply) on a machine that cannot run it
-        with tempfile.TemporaryDirectory(prefix="ns-sapi-", dir=self._prepared_tmp()) as td:
-            result = Path(td) / "voices.json"
-            self._run({"mode": "voices", "result": str(result)}, timeout_s=90)
+        with self._scratch() as td:
+            result = td / "voices.json"
+            self._run({"mode": "voices", "result": str(result)}, timeout_s=PROBE_VOICES_TIMEOUT_S)
             try:
                 raw = json.loads(result.read_text(encoding="utf-8-sig") or "[]")
             except (OSError, ValueError) as e:
@@ -215,35 +223,43 @@ class PowerShellSapi:
             if isinstance(r, dict) and r.get("name")
         ]
 
-    def _prepared_tmp(self) -> Path | None:
-        if self.tmp_dir is not None:
-            self.tmp_dir.mkdir(parents=True, exist_ok=True)
-        return self.tmp_dir
+    @contextmanager
+    def _scratch(self) -> Iterator[Path]:
+        """A fresh scratch folder (in `tmp_dir` when given); one that cannot be made is `SapiUnavailable`."""
+        try:
+            if self.tmp_dir is not None:
+                self.tmp_dir.mkdir(parents=True, exist_ok=True)
+            td = tempfile.TemporaryDirectory(prefix="ns-sapi-", dir=self.tmp_dir)
+        except OSError as e:
+            raise SapiUnavailable(f"cannot make a scratch folder for Windows speech (SAPI): {e}") from e
+        with td:
+            yield Path(td.name)
 
     def speak(
         self, voice: str, lines: Sequence[str], *, rate: int, sr: int, timeout_s: float
     ) -> list[np.ndarray]:
         if not lines:
             return []
-        with tempfile.TemporaryDirectory(prefix="ns-sapi-", dir=self._prepared_tmp()) as td:
-            outs = [Path(td) / f"{i:05d}.wav" for i in range(len(lines))]
-            items = [{"text": text, "out": str(out)} for text, out in zip(lines, outs, strict=True)]
-            try:
+        try:
+            with self._scratch() as td:
+                outs = [td / f"{i:05d}.wav" for i in range(len(lines))]
+                items = [{"text": text, "out": str(out)} for text, out in zip(lines, outs, strict=True)]
                 self._run(
                     {"mode": "speak", "voice": voice, "rate": int(rate), "sr": sr, "items": items},
                     timeout_s=timeout_s,
                 )
-            except SapiUnavailable as e:
-                raise NsError("NS-E310", str(e)) from e
-            audio: list[np.ndarray] = []
-            for i, out in enumerate(outs):
-                if not out.is_file():
-                    raise NsError("NS-E310", f"Windows speech (SAPI) wrote no audio for line {i + 1}")
-                try:
-                    x, got = read_wav(out)
-                except ValueError as e:
-                    raise NsError("NS-E310", f"Windows speech (SAPI) wrote an unreadable WAV: {e}") from e
-                if got != sr:
-                    raise NsError("NS-E310", f"Windows speech (SAPI) wrote {got} Hz, expected {sr} Hz")
-                audio.append(x)
-            return audio
+                return [self._read_line(out, i, sr) for i, out in enumerate(outs)]
+        except SapiUnavailable as e:
+            raise NsError("NS-E310", str(e)) from e
+
+    @staticmethod
+    def _read_line(out: Path, i: int, sr: int) -> np.ndarray:
+        if not out.is_file():
+            raise NsError("NS-E310", f"Windows speech (SAPI) wrote no audio for line {i + 1}")
+        try:
+            x, got = read_wav(out)
+        except ValueError as e:
+            raise NsError("NS-E310", f"Windows speech (SAPI) wrote an unreadable WAV: {e}") from e
+        if got != sr:
+            raise NsError("NS-E310", f"Windows speech (SAPI) wrote {got} Hz, expected {sr} Hz")
+        return x

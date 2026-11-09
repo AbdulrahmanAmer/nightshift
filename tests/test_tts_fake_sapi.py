@@ -35,6 +35,8 @@ from ns_tts.audio import read_wav, trim_silence
 from ns_tts.engine import FakeEngine, fake_speech_for, select_engine
 from ns_tts.sapi import (
     PEAK_CEILING,
+    PROBE_SPEAK_TIMEOUT_S,
+    PROBE_VOICES_TIMEOUT_S,
     RATE_MAX,
     RATE_MIN,
     RATE_STEP,
@@ -51,7 +53,7 @@ pytest.importorskip("fastapi")  # fastapi is not in every minimal install
 from fastapi.testclient import TestClient  # noqa: E402
 
 from ns_tts.server import create_app  # noqa: E402
-from ns_tts.voices import VoiceLibrary  # noqa: E402
+from ns_tts.voices import VoiceLibrary, VoiceSpec  # noqa: E402
 
 SENTENCE = (
     "The lighthouse keeper climbed the stairs every evening, counting each step as his father taught him."
@@ -318,6 +320,148 @@ def test_a_voice_that_speaks_nonsense_at_start_up_is_not_trusted(tmp_path: Path)
     e = FakeEngine(speech="sapi", sapi=Mute(), log=NsLogger("tts", tmp_path / "logs"))
     e.load()
     assert e.describe()["voice_mode"] == "tones"
+
+
+# ---------------------------------------------------------------- the start-up probe never kills the service
+
+# The supervisor waits 120 s (ns_supervisor.core `health_timeout_s`) for /health and the probe runs before
+# the port is bound: its caps together must stay well under that.
+SUPERVISOR_HEALTH_TIMEOUT_S = 120.0
+
+
+def _fake_powershell(monkeypatch: pytest.MonkeyPatch, *, voices_ok: bool) -> list[tuple[str, float]]:
+    """PowerShell stand-in that hangs (TimeoutExpired); returns the (mode, timeout) of every run."""
+    monkeypatch.setattr(sapi_mod.shutil, "which", lambda name: "powershell.exe")
+    runs: list[tuple[str, float]] = []
+
+    def run(cmd: list[str], *, timeout: float, env: dict[str, str], **kw: Any) -> Any:
+        job = json.loads(Path(env["NS_SAPI_JOB"]).read_text(encoding="utf-8"))
+        runs.append((job["mode"], timeout))
+        if job["mode"] == "voices" and voices_ok:
+            Path(job["result"]).write_text(
+                json.dumps([{"name": DAVID.name, "culture": "en-US", "gender": "Male"}]), encoding="utf-8"
+            )
+            return type("Done", (), {"returncode": 0, "stdout": b"", "stderr": b""})()
+        raise sapi_mod.subprocess.TimeoutExpired(cmd, timeout)
+
+    monkeypatch.setattr(sapi_mod.subprocess, "run", run)
+    return runs
+
+
+def test_the_probe_caps_add_up_to_well_under_the_supervisors_health_timeout():
+    assert PROBE_VOICES_TIMEOUT_S + PROBE_SPEAK_TIMEOUT_S <= 0.75 * SUPERVISOR_HEALTH_TIMEOUT_S
+
+
+def test_a_hung_powershell_at_the_voice_list_falls_back_inside_the_cap(tmp_path: Path, monkeypatch):
+    runs = _fake_powershell(monkeypatch, voices_ok=False)
+    e = FakeEngine(
+        speech="sapi", sapi=PowerShellSapi(platform="win32"), log=NsLogger("tts", tmp_path / "logs")
+    )
+    e.load()
+    assert e.describe()["voice_mode"] == "tones" and "did not answer" in e.describe()["voice_warning"]
+    assert runs == [("voices", PROBE_VOICES_TIMEOUT_S)]
+
+
+def test_a_hung_powershell_at_the_calibration_falls_back_and_the_whole_probe_stays_capped(
+    tmp_path: Path, monkeypatch
+):
+    runs = _fake_powershell(monkeypatch, voices_ok=True)
+    e = FakeEngine(
+        speech="sapi", sapi=PowerShellSapi(platform="win32"), log=NsLogger("tts", tmp_path / "logs")
+    )
+    e.load()
+    d = e.describe()
+    assert d["voice_mode"] == "tones" and "start-up test" in d["voice_warning"]
+    assert [m for m, _ in runs] == ["voices", "speak"]
+    assert sum(t for _, t in runs) <= 0.75 * SUPERVISOR_HEALTH_TIMEOUT_S
+
+
+def test_an_unwritable_scratch_folder_falls_back_instead_of_killing_load(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(sapi_mod.shutil, "which", lambda name: "powershell.exe")
+    blocker = tmp_path / "cache-is-a-file"
+    blocker.write_text("not a folder", encoding="utf-8")
+
+    def boom(*a: Any, **k: Any) -> None:
+        raise AssertionError("PowerShell must not start without a scratch folder")
+
+    monkeypatch.setattr(sapi_mod.subprocess, "run", boom)
+    e = FakeEngine(
+        speech="sapi",
+        sapi=PowerShellSapi(tmp_dir=blocker / "tts-tmp", platform="win32"),
+        log=NsLogger("tts", tmp_path / "logs"),
+    )
+    e.load()  # used to raise OSError out of load() and out of main()
+    d = e.describe()
+    assert d["voice_mode"] == "tones" and "scratch folder" in d["voice_warning"]
+    assert [r for r in logged(tmp_path) if r["event"] == "fake_voice_tones_only"]
+
+
+def test_any_oserror_from_a_sapi_backend_at_start_up_falls_back(tmp_path: Path):
+    class Disk(StandInSapi):
+        def voices(self) -> list[SapiVoice]:
+            raise PermissionError("cache is read-only")
+
+    e = FakeEngine(speech="sapi", sapi=Disk(), log=NsLogger("tts", tmp_path / "logs"))
+    e.load()
+    d = e.describe()
+    assert d["voice_mode"] == "tones" and "read-only" in d["voice_warning"]
+
+
+def test_an_unwritable_scratch_folder_at_speak_time_is_ns_e310(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(sapi_mod.shutil, "which", lambda name: "powershell.exe")
+    blocker = tmp_path / "cache-is-a-file"
+    blocker.write_text("not a folder", encoding="utf-8")
+    backend = PowerShellSapi(tmp_dir=blocker / "tts-tmp", platform="win32")
+    with pytest.raises(NsError) as err:
+        backend.speak("x", ["hello"], rate=0, sr=SR, timeout_s=5)
+    assert err.value.code == "NS-E310"
+
+
+# ---------------------------------------------------------------- a line SAPI cannot speak is said aloud
+
+
+class DeafToJapanese(StandInSapi):
+    """Like the real David voice: text in a script it cannot read, or only dots, comes back as no audio."""
+
+    @staticmethod
+    def _say(line: str, wpm: float, sr: int) -> np.ndarray:
+        if not any(ch.isascii() and ch.isalpha() for ch in line):
+            return np.zeros(0, dtype=np.float32)
+        return StandInSapi._say(line, wpm, sr)
+
+
+def _unspoken(tmp_path: Path) -> list[dict[str, Any]]:
+    return [r for r in logged(tmp_path) if r["event"] == "fake_voice_unspoken"]
+
+
+def test_a_line_the_voice_cannot_speak_is_warned_about_and_the_others_are_unharmed(tmp_path: Path):
+    log = NsLogger("tts", tmp_path / "logs")
+    e = FakeEngine(speech="sapi", sapi=DeafToJapanese(), log=log)
+    e.load()
+    ja = VoiceSpec(name="Ryan", mode="preset", speaker="Ryan", language="Japanese")
+    clips = e.synth_batch(["日本語のテキストです", SENTENCE, "..."], ja)
+    assert len(clips[0]) == 0 and len(clips[1]) > SR and len(clips[2]) == 0
+    warns = _unspoken(tmp_path)
+    assert len(warns) == 2 and all(w["level"] == "WARN" for w in warns)
+    assert "日本語のテキストです" in warns[0]["msg"] and "NS-E403" in warns[0]["msg"]
+    assert "speaks English" in warns[0]["msg"] and "Japanese" in warns[0]["msg"]  # the wrong-language hint
+    assert "'...'" in warns[1]["msg"]
+
+
+def test_an_english_line_that_is_only_punctuation_is_warned_without_the_language_hint(tmp_path: Path):
+    e = FakeEngine(speech="sapi", sapi=DeafToJapanese(), log=NsLogger("tts", tmp_path / "logs"))
+    e.load()
+    e.synth("...", VoiceSpec(name="Ryan", mode="preset", speaker="Ryan"), speed=1.0)
+    warns = _unspoken(tmp_path)
+    assert len(warns) == 1 and "speaks English" not in warns[0]["msg"]
+
+
+def test_spoken_and_blank_lines_raise_no_unspoken_warning(tmp_path: Path):
+    c, e = make_app(tmp_path)
+    speak(c, SENTENCE)
+    blank = VoiceSpec(name="Ryan", mode="preset", speaker="Ryan")
+    e.synth_batch(["", "   "], blank)  # a blank line is not an "unspoken" one
+    assert _unspoken(tmp_path) == []
 
 
 # ---------------------------------------------------------------- the default stays as it was
