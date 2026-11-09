@@ -654,6 +654,22 @@ def test_a_pause_during_the_night_stops_the_nights_remaining_jobs_and_the_texts_
         assert "pause comes during the night" in _flat(text), name
     d = _flat(decision("Incident procedure"))
     assert "`_paused_now`" in d and "no further job that night" in d
+    # the reports keep `skipped` for "an earlier job stopped"; a pause has its own key (P47 review round)
+    assert "_hold_for_pause" in inspect.getsource(daily._tonight)
+    assert '"skipped"' not in inspect.getsource(daily._hold_for_pause)
+    assert "`paused`" in d and "not under `skipped`" in d and "_resume_interrupted" in d
+    assert "`paused`" in _flat(doc_section(GUIDE, HEADING))
+
+
+def test_a_job_that_waited_at_the_gate_is_asked_again_and_the_texts_say_so():
+    from ns_dashboard import jobs
+
+    assert "_requeue_if_held" in inspect.getsource(jobs.JobWorker._run_job)
+    d = _flat(decision("Incident procedure"))
+    assert "`JobWorker._requeue_if_held`" in d and "`ChannelPaused`" in d and "`run_series_part`" in d
+    flat = _flat(doc_section(GUIDE, HEADING))
+    assert "waiting for the engine" in flat and "puts the job back to waiting" in flat
+    assert "waiting for the engine while the night run used it" in _flat(doc_section(README, HEADING))
 
 
 def test_the_texts_name_the_count_loop_the_hand_typed_run_and_the_wrong_scheduled_text():

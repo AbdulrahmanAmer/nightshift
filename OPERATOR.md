@@ -288,11 +288,14 @@ instead of ours. To change a prompt, copy its file from `ns_studio\prompts\` to 
 
 If YouTube sends a warning, a strike or a monetization notice about a channel, stop that channel first and look at
 what it made. A pause holds the channel's story videos that have not started: the night run skips a paused
-channel (and stops making that channel's remaining videos if the pause comes during the night), and the Dashboard
+channel (and, if the pause comes during the night, it starts no further video of that channel, new or half-made
+from an earlier night; the morning report lists them under `paused`, not under `skipped`), and the Dashboard
 refuses to start a story video for it (the Clipper does not check whether the channel is paused). A story video that
 is already queued or scheduled (Create > **Pick a time**) does not start while the channel is paused: it stays
 waiting under **Working now**, also when its time comes, and starts by itself, in its turn, after you
-resume the channel. The job's status text says why ("Paused: <channel> is paused since <time>; resume it to release
+resume the channel. This holds also for a video that was already waiting for the engine because the night run was
+using it: when the engine becomes free the Dashboard looks at the channel again, makes no video and puts the job
+back to waiting (until then its card still reads "Waiting for GPU"). The job's status text says why ("Paused: <channel> is paused since <time>; resume it to release
 this job"); the Create and Queue pages do not print that text yet: Create says "Waiting for the engine" for it, or
 "Scheduled for <time>" while the time it was set for is still ahead, which is not the real reason. **Retry from where it stopped** (on a
 stopped card in **Create** and **Queue**) and the Assistant's resume are refused for a paused channel with
