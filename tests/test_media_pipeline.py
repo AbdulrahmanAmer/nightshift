@@ -70,3 +70,41 @@ def test_media_stages_produce_a_valid_outbox_short(tmp_home: Path, monkeypatch: 
     run_job(ctx)
     assert mp4.exists()
     assert ctx.db.one("select count(*) c from outputs")["c"] == 1
+
+
+def test_a_closing_line_is_voiced_timed_and_played_at_the_end_of_the_short(
+    tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """F-H54: `closings.json` (from the hooks stage) ends in the finished file, not only in a manifest."""
+    monkeypatch.setitem(FORMAT_STAGES, "media_only", [s.name for s in SHORTS_MEDIA_STAGES])
+    ctx = make_ctx(tmp_home, fmt="media_only", combo=make_combo(length_bucket=26))
+    hook = "My doorbell camera records someone every night."
+    ctx.write_json("parts.json", [{
+        "n": 1, "text": TEXT, "hook": hook, "word_count": len(TEXT.split()), "est_seconds": 19.0,
+        "cliffhanger": False,
+    }])
+    ctx.write_json("closings.json", {"1": "Follow the channel for the next story."})
+    ctx.write_json("visual_plan.json", [
+        {"part": 1, "beat": 0, "sentence_start": 0, "sentence_end": 4,
+         "keywords": ["doorbell", "dark porch"], "mood": "eerie", "need_vertical": True},
+    ])
+    ctx.write_json("seo.json", [{
+        "title": "Scary Story: The Doorbell Camera",
+        "description": "A camera records someone. Original fiction.",
+        "tags": [f"tag{i}" for i in range(10)], "keywords": [],
+        "hashtags": ["#Shorts", "#horror", "#scarystory"],
+    }])
+    run_job(ctx)
+
+    man = ctx.read_json("audio/manifest.json")
+    assert set(man) == {"p1", "p1_hook", "p1_close"}
+    tl = ctx.read_json("captions/s1.json")
+    spoken = man["p1_hook"]["seconds"] + 0.15 + man["p1"]["seconds"]
+    expected = spoken + tl["close_gap_s"] + man["p1_close"]["seconds"]
+    assert tl["close_s"] == man["p1_close"]["seconds"] and tl["audio_s"] == pytest.approx(expected, abs=0.01)
+    audio = ctx.file("shorts/s1/audio.wav")
+    assert ff.duration_s(audio) == pytest.approx(expected, abs=0.2)  # the closing line is in the audio played
+    video = Path(ctx.read_json("render/report.json")["s1"]["path"])
+    assert ff.duration_s(video) == pytest.approx(expected, abs=0.3)
+    closing_words = [w for w in tl["words"] if w["sentence_idx"] == -2]
+    assert closing_words and closing_words[-1]["end"] <= tl["audio_s"] + 0.01

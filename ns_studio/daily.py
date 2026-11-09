@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from ns_common.atomic import read_text_retry, write_text_atomic
-from ns_common.errors import NsError
+from ns_common.errors import NsError, describe
 from ns_common.keepawake import keep_awake
 from ns_common.models import Channel
 from ns_studio import jobs, notifications, ownership
@@ -57,7 +57,7 @@ def scheduled_shorts(
     since = (now - timedelta(days=SCHEDULE_LOOKBACK_DAYS)).isoformat()
     rows = env.db.query(
         "select job_id, path from outputs where channel=? and kind='short'"
-        " and status in ('pending', 'approved') and created_at >= ?",
+        " and status in ('pending', 'approved') and created_at >= ? and profile is null",
         (slug, since),
     )
     taken: dict[date, int] = {}
@@ -101,6 +101,10 @@ def apply_publish_times(
             except (OSError, KeyError, json.JSONDecodeError):
                 continue
             if not isinstance(data, dict) or "publish_after" not in data:
+                continue
+            if data.get("profile"):  # a test output (tiny_story) is never given a publish slot
+                refusal = describe("NS-E329").message
+                env.log.warn("publish_slot_refused", refusal, code="NS-E329", job_id=job_id, item=item)
                 continue
             kind = "long" if data.get("kind") == "long" else "short"
             release = cadence.ReleaseItem(f"{job_id}:{item}", job_id, kind)

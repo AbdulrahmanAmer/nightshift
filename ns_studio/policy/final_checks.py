@@ -27,6 +27,7 @@ from ns_studio.policy.meta import (
     unsafe_categories,
 )
 from ns_studio.policy.text_checks import NerFn, place_entities
+from ns_studio.text.story_profile import duration_profile
 
 MIN_MASTER_S = 510.0  # 8:30
 MIDROLL_MARGIN_S = 120.0
@@ -158,7 +159,10 @@ def _midrolls(ctx: JobContext) -> list[float]:
 
 
 class LongRuntime(Check):
-    """Master at least 8:30 and mid-roll suggestions outside the first and last 2 minutes (E612)."""
+    """Master at least 8:30 and mid-roll suggestions outside the first and last 2 minutes (E612).
+
+    The 8:30 is a length, like QC's: an engine-test install (`tiny_story`) takes QC's minimum of its profile
+    instead. The mid-roll margin is not a length of the story and stays."""
 
     name = "long_runtime"
     gate = "final"
@@ -173,8 +177,10 @@ class LongRuntime(Check):
             return ok("no master in this job")
         dur = self.duration_fn(master)
         problems: list[str] = []
-        if dur < MIN_MASTER_S:
-            problems.append(f"master is {dur:.0f} s (minimum {MIN_MASTER_S:.0f} s)")
+        window = duration_profile(ctx).master_qc_s
+        minimum = MIN_MASTER_S if window is None else window[0]
+        if dur < minimum:
+            problems.append(f"master is {dur:.0f} s (minimum {minimum:.0f} s)")
         for m in _midrolls(ctx):
             if m < MIDROLL_MARGIN_S or m > dur - MIDROLL_MARGIN_S:
                 problems.append(f"mid-roll at {m:.0f} s is inside the first or last 2 minutes")

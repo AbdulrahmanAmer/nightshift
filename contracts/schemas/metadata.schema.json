@@ -222,6 +222,19 @@
       ],
       "default": null,
       "title": "Template"
+    },
+    "profile": {
+      "anyOf": [
+        {
+          "const": "tiny_story",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Profile"
     }
   },
   "required": [

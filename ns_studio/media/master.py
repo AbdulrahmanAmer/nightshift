@@ -18,7 +18,6 @@ from typing import Any
 
 from ns_common.acquire import Service
 from ns_common.errors import NsError
-from ns_common.pacing import PACING_WPM
 from ns_common.textstats import split_sentences
 from ns_common.tts_client import TtsItem
 from ns_studio.context import JobContext
@@ -40,7 +39,8 @@ from ns_studio.media.fake_voice import e403_detail
 from ns_studio.media.transcribe import Word
 from ns_studio.media.voice import job_speed, job_voice, synthesize
 from ns_studio.stages import Tenant
-from ns_studio.text.story_profile import HasRuntime, profile_of
+from ns_studio.text.story_profile import HasRuntime, duration_profile
+from ns_studio.voice_wpm import job_wpm
 
 CARD_S = 1.2
 FLOOR_S = 540.0  # planning floor 9:00 (spec §7.0)
@@ -190,14 +190,18 @@ def run_voice_master(ctx: JobContext) -> None:
 
 
 def floor_s(ctx: HasRuntime) -> float:
-    """The master's planning floor in seconds: 9:00, or the story profile's own (the engine test's tiny model
-    plans down to 8:40, 10 s over QC's 8:30; QC and the policy check still hold the master to 8:30).
+    """The master's floor in seconds: 9:00, or the story profile's own (the engine test's tiny model is asked
+    for 4:00 and accepted from 2:00; QC and the final policy check use the same profile, 10 s lower).
 
     The owner's own script is not a model-size problem: it keeps the 9:00 floor on every install."""
-    if getattr(ctx, "owner_script", False) is True:
-        return FLOOR_S
-    own = profile_of(ctx).master_floor_s
+    own = duration_profile(ctx).master_floor_s
     return FLOOR_S if own is None else own
+
+
+def clock(seconds: float) -> str:
+    """`m:ss` of a number of seconds (the floor in a message: 540 s is 9:00)."""
+    whole = round(seconds)
+    return f"{whole // 60}:{whole % 60:02d}"
 
 
 def load_expand_chapter() -> Callable[[JobContext, int, int], None]:
@@ -239,7 +243,7 @@ class DurationCheckStage:
 
     def run(self, ctx: JobContext) -> None:
         """Measure, expand and re-voice until the floor is met or the budget of expansions is spent."""
-        wpm = float(PACING_WPM.get(ctx.combo.pacing, 155))
+        wpm = float(job_wpm(ctx))
         floor = floor_s(ctx)
         expansions: list[dict[str, Any]] = []
         while True:
@@ -254,9 +258,9 @@ class DurationCheckStage:
                 )
             if len(expansions) >= MAX_EXPANSIONS:
                 self._write(ctx, total, expansions, floor)
-                raise NsError(
-                    "NS-E305", f"{total:.0f} s after {len(expansions)} expansions (floor {floor:.0f} s)"
-                )
+                # A normal install says what it always said; a profile with its own floor adds the m:ss.
+                shown = f"{floor:.0f} s" if floor == FLOOR_S else f"{floor:.0f} s, {clock(floor)}"
+                raise NsError("NS-E305", f"{total:.0f} s after {len(expansions)} expansions (floor {shown})")
             lengths = {t.n: t.end - t.audio_start for t in timeline}
             shortest = min(lengths, key=lambda n: lengths[n])
             deficit_words = math.ceil((floor - total) / 60.0 * wpm)

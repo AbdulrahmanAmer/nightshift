@@ -257,23 +257,47 @@ puts the text stages on the thresholds such a model can meet:
 - **Where it lives.** `ns_studio/text/story_profile.py` is the one place. `NORMAL` holds the numbers every install
   has always used; `TINY` holds the scaled ones. The budgets (`ns_studio/text/budget.py`), the validators
   (`validators.py`), the stages, the series workshop, the duration check and the prompts take the profile of the
-  job (`profile_of(ctx)`, read from `runtime.json`) and read its fields; nothing else knows the profile exists.
+  job (`profile_of(ctx)`, read from `runtime.json`) and read its fields. Since H-8b so do render, QC, the final
+  gate's runtime check and the outbox (`duration_profile`, `job_mark`); the quality checks do not read it.
 - **What moves** (tiny against normal). A chapter may have 0.5 to 2 times its word budget (0.8 to 1.2). A Short is
   still asked for the words that fill its length bucket, because QC measures the rendered Short against that
-  bucket, but may have 0.35 to 1.6 times them (about 0.85 to 1.15). A master is planned as the shortest master the
-  pipeline accepts, 9 minutes, in 7 chapters (about 179 words each, 1,250 words), with a planning floor of half
-  its words, a "story is short" warning at half its target (80 %), and a duration-check floor of 8:40 (9:00, and 9:00 for
-  a script of the owner's own). The reading
+  bucket, but may have 0.35 to 1.6 times them (about 0.85 to 1.15); QC takes the same shares of the bucket. A
+  master is planned for what such a model writes (H-8b): 4 minutes in 5 chapters (about 110 words each, 549
+  words), with a planning floor of half its words, a "story is short" warning at half its target (80 %), a
+  duration-check floor of 2:00 (9:00, and 9:00 for a script of the owner's own), a text-estimate ceiling of 8:00
+  (14:30) and a chapter band of 0.5 to 3 times its budget (0.8 to 1.2). The reading
   grade floor is -2 (5); the prompts ask for grade 3-8 (5-8), 1 to 2 beats a chapter (2 to 4) and 3 to 4 beats a
   Short (4 to 7). A master must yield 2 Shorts (the channel's 4), an expansion must add a quarter of the words
   it asked for (half), and a series part uses chapters of about 190 words (350) and is rejected below 40 % of its
   word target (75 %).
+- **How long a tiny video is (H-8b).** The numbers are in `story_profile.py` and are derived there, not tuned
+  per stage. The only chapter sizes of the real Qwen3-1.7B in a log are the five of job
+  `engine-test-20261109-8071` (asked for 394 words each: 146, 99, 126, 162 and 323 words, 856 in all; the stage
+  measured chapter 1 at 120 after the critic's rewrite). At 155 wpm a word takes 60/155 s of speech plus 0.035 s of
+  pauses, a chapter break 2.05 s of title card and cliff pause: five chapters of 110 words are 549 words, 240 s.
+  That is the plan; the duration check (`NS-E305`) accepts a master from half of it, 120 s; the text estimate
+  stops one over 480 s; QC's window is 110 to 900 s (the floor less 10 s; the normal 15:00 ceiling, so that
+  a tiny job planned on 0.1.14 at 9:00 and resumed on this version still passes QC), and the final policy gate's
+  runtime check uses the same minimum. The 1.7B's 856 words are 6:09,
+  inside all of them; a tenth of that is under every floor and still fails (`NS-E303`, `NS-E305`, `NS-E404`).
+  A Short is judged at 0.35 to 1.6 of its length bucket by the text band and by QC alike. The `NS-E305` detail
+  names the floor in effect (`floor 120 s, 2:00`; a normal install's text is unchanged).
 - **What does not move.** Every validator still runs and can still fail: a chapter under 0.5 times its budget, a
-  grade under -2, a banned phrase, a sentence over 35 words, a repeated opening, repeated cliffs and a master over
-  14:30 all stop the job with `NS-E303`, as before. The reading-grade ceiling (8) is unchanged. The policy gates,
-  the safety checks, QC (a master of 8:30 to 15:00, a Short within 15 % of its bucket, loudness, drift) and the
-  banned phrases do not read the profile. A tiny model that writes a master shorter than 8:40 therefore gets past
-  the text stages and then stops, coded, at the duration check (`NS-E305`) or at QC (`NS-E404`).
+  grade under -2, a banned phrase, a sentence over 35 words, a repeated opening and repeated cliffs all stop the
+  job with `NS-E303`, as before. The reading-grade ceiling (8) is unchanged. The policy and safety gates (the
+  banned phrases, clip reuse, render uniqueness, the audio check, the mid-roll margin) do not read the profile,
+  and neither do QC's loudness and true peak, resolution, caption drift, black frames, hook and file checks:
+  each still fails the video that breaks it, with the profile on or off. The one gate number that moves is the
+  final gate's 8:30 minimum, which is a length like QC's.
+- **A test video says so (H-8b).** A video made while the switch is on carries `"profile": "tiny_story"` in its
+  `render/report.json` and `render/long.json`, its `qc/<item>.json` and `qc/report.json`, its outbox sidecar
+  (`.json`) and its `outputs` row; its `.txt` upload sheet opens with `TEST OUTPUT (tiny_story) ... Do not
+  upload`. The marker is sticky: a run of a job with the switch on leaves `profile.json` in the job folder, so a
+  job resumed after the switch was turned off stays marked (its numbers follow the install, so the strict ones
+  apply). A clip job is never marked. The Queue shows a "Test output" badge, and `studio mark-uploaded`, the
+  dashboard's "I posted it" route and the nightly scheduler's publish slots refuse it with `NS-E329`; a
+  reviewer may still approve or reject it. Reports and sidecars from before the marker have no `profile` key and
+  load as before, and a normal install writes no `profile` key at all.
 - **How to switch it on.** `answers.json` of a PC with no NVIDIA card: `"allow_cpu": true, "tiny_story": true`.
   Setup refuses the answer without `allow_cpu` (`tiny_story is for an engine test ...`), writes
   `"tiny_story": true` into `runtime.json`, and a dev install ignores it (it runs a fake model on fixtures). The
@@ -283,8 +307,11 @@ puts the text stages on the thresholds such a model can meet:
 - **Tests.** `tests/test_tiny_story.py` (a fake model that writes at the tiny scale passes all nine master text
   stages, one that writes less still fails with `NS-E303`, the same model fails on a normal install, and every
   normal-profile number is asserted as it was), `tests/test_tiny_story_switch.py` (refused without `allow_cpu`,
-  setup to `runtime.json`, the dashboard cannot set it) and one reinstall test in
-  `tests/test_installer_reinstall.py`.
+  setup to `runtime.json`, the dashboard cannot set it), one reinstall test in
+  `tests/test_installer_reinstall.py` and, for the lengths and the marker, `tests/test_tiny_story_length.py` (every
+  threshold with the profile on and off, each unchanged QC check failing under the profile, the markers in the
+  reports, the sidecar, the sheet and the row, the sticky note on resume, the refusals; one run through FFmpeg
+  that only CI makes).
 
 ## Developer switches
 

@@ -99,8 +99,9 @@ def test_plan_needs_five_to_seven_chapters():
     assert len(ok.chapters) == 5
     with pytest.raises(ValidationError):
         m.Plan.model_validate({"target_minutes": 10, "target_words": 1550, "chapters": five[:4]})
+    # H-8b: 4 minutes is a valid plan (the engine test's); only a plan of no length is refused
     with pytest.raises(ValidationError):
-        m.Plan.model_validate({"target_minutes": 8, "target_words": 1550, "chapters": five})
+        m.Plan.model_validate({"target_minutes": 0, "target_words": 1550, "chapters": five})
 
 
 def test_story_and_seo_long_and_shorts_plan():
