@@ -9,7 +9,9 @@ import typer
 
 from ns_common import __version__
 from ns_common.config import load_runtime
+from ns_common.devmode import is_dev
 from ns_common.errors import NsError
+from ns_common.logging import NsLogger
 from ns_common.paths import Paths
 from ns_supervisor import (
     backup,
@@ -27,7 +29,7 @@ from ns_supervisor import (
     verify,
 )
 from ns_supervisor.client import SupervisorClient, ensure_running
-from ns_supervisor.schedule_cfg import read_run_time
+from ns_supervisor.schedule_cfg import read_run_time, read_schedule_mode
 from ns_supervisor.services import venv_python
 
 app = typer.Typer(help="Nightshift runtime tools", add_completion=False)
@@ -174,13 +176,25 @@ def _sync(paths: Paths, app_dir: Path) -> None:
 
 
 def _reregister(paths: Paths, app_dir: Path) -> list[str]:
+    """Point the nightly task at the updated program, keeping what the owner set (D-28).
+
+    The task's state (switched on or off) and run time are read before it is replaced and restored after; the
+    update log says what was kept. A dev install's disabled task is not touched by an update.
+    """
     notes: list[str] = []
-    if read_run_time(paths) is not None:
-        try:
-            schedule.install(paths, None, app_dir)
-            notes.append("scheduled task re-registered")
-        except schedule.ScheduleError as e:
-            notes.append(f"scheduled task NOT re-registered: {e}")
+    mode = read_schedule_mode(paths)
+    if mode == "none" or (mode == "disabled" and is_dev(paths)):
+        return notes
+    try:
+        schedule.install(paths, None, app_dir, keep_state=True, log=NsLogger("update", paths.logs))
+    except schedule.ScheduleError as e:
+        return [f"scheduled task NOT re-registered: {e}"]
+    off = read_schedule_mode(paths) == "disabled"
+    when = read_run_time(paths, include_disabled=True)
+    notes.append(
+        f"scheduled task re-registered (still switched off, daily at {when})" if off
+        else f"scheduled task re-registered (daily at {when})"
+    )
     return notes
 
 
@@ -358,7 +372,7 @@ def _schedule_call(fn_name: str, time: str | None = None, disabled: bool = False
     paths = Paths.from_env()
     try:
         if fn_name == "install":
-            msg = schedule.install(paths, time, control.app_path(paths), disabled=disabled)
+            msg = schedule.install(paths, time, control.app_path(paths), disabled=disabled, keep_state=True)
         elif fn_name == "remove":
             msg = schedule.remove(paths)
         else:
@@ -375,7 +389,10 @@ def schedule_install(
         bool, typer.Option("--disabled", help="Register the task but switch it off (a dev install).")
     ] = False,
 ) -> None:
-    """Register the daily task (wake the PC, run whether logged on or not, stop after 6 h)."""
+    """Register the daily task (wake the PC, run whether logged on or not, stop after 6 h).
+
+    A task that already exists keeps its state (switched off stays off) and, without --time, its run time.
+    """
     _schedule_call("install", time, disabled)
 
 

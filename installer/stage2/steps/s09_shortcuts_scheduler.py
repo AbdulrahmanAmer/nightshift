@@ -26,7 +26,7 @@ from installer.stage2.winenv import (
 from ns_common.atomic import write_text_atomic
 from ns_common.paths import Paths
 from ns_supervisor.notify import AUMID
-from ns_supervisor.schedule import INTERACTIVE_MARK
+from ns_supervisor.schedule import INTERACTIVE_MARK, KEPT_OFF_MARK
 
 # The brand icon ships with the dashboard build; without it a shortcut keeps PowerShell's own icon.
 ICON_RELATIVE = Path("ns_dashboard") / "static" / "brand" / "nightshift.ico"
@@ -150,6 +150,14 @@ class S09ShortcutsScheduler(Step):
             ctx.set_flag("schedule_mode", "disabled")
             remember_run_time(ctx.paths, run_time)      # the chosen time stays a preference
             ctx.ui.say(f"Dev mode: nightly task 'Nightshift Daily' registered for {run_time} but DISABLED.")
+        elif res.ok and KEPT_OFF_MARK in res.text:
+            # D-28: a setup rerun or repair over a task the owner switched off in Task Scheduler keeps it off
+            ctx.set_flag("schedule", "installed")
+            ctx.set_flag("schedule_mode", "disabled")
+            ctx.ui.say(
+                f"Nightly task 'Nightshift Daily' registered for {run_time} but left SWITCHED OFF, "
+                "as you had it in Task Scheduler. Switch it on there when you want the nightly run."
+            )
         elif res.ok:
             ctx.set_flag("schedule", "installed")
             ctx.ui.say(f"Nightly task 'Nightshift Daily' registered for {run_time} (wakes the PC).")

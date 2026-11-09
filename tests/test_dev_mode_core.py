@@ -397,7 +397,9 @@ def test_ns_schedule_install_takes_disabled(tmp_home: Path, monkeypatch: pytest.
 
     seen: list[bool] = []
 
-    def fake_install(paths: Paths, run_time: str | None, app_path: Path, *, disabled: bool = False) -> str:
+    def fake_install(
+        paths: Paths, run_time: str | None, app_path: Path, *, disabled: bool = False, keep_state: bool = False
+    ) -> str:
         seen.append(disabled)
         return "registered"
 
