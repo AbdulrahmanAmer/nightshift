@@ -11,10 +11,9 @@ short backoff, and log through `NsLogger` when the folder still cannot be remove
 from __future__ import annotations
 
 import contextlib
+import importlib
 import os
 import shutil
-import subprocess
-import sys
 import time
 from collections.abc import Callable, Collection
 from pathlib import Path
@@ -31,8 +30,6 @@ BACKOFF_S = 0.2
 #: A leftover folder is only swept when nothing in it was written for this long.
 STALE_AFTER_S = 300.0
 
-_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-
 
 def downloads_root(paths: Paths) -> Path:
     """`<home>/imports/clipper/_downloads`."""
@@ -48,17 +45,17 @@ def _rmtree(folder: Path) -> None:
 
 
 def _taskkill(pid: int) -> None:
-    """Hard kill of `pid` and its descendants (Windows `taskkill /T /F`); a no-op elsewhere."""
-    if sys.platform != "win32":
+    """Hard kill of `pid` and its descendants through the supervisor's helper (`taskkill /T /F`).
+
+    `ns_supervisor` is imported inside the function (the studio reaches it lazily, like `acquirer.py`); where
+    it is missing the plain `proc.kill()` of `kill_process_tree` is all that runs.
+    """
+    try:
+        kill_tree = importlib.import_module("ns_supervisor.procs").kill_tree
+    except (ImportError, AttributeError):
         return
-    with contextlib.suppress(OSError, subprocess.SubprocessError):
-        subprocess.run(
-            ["taskkill", "/PID", str(pid), "/T", "/F"],
-            capture_output=True,
-            timeout=20,
-            check=False,
-            creationflags=_NO_WINDOW,
-        )
+    with contextlib.suppress(OSError):
+        kill_tree(pid)
 
 
 def kill_process_tree(proc: Any, *, taskkill: Callable[[int], None] = _taskkill) -> None:

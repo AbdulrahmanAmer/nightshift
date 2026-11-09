@@ -153,6 +153,15 @@ def test_kill_process_tree_kills_the_tree_first_then_the_process_then_reaps_it()
     assert order == ["tree:4242", "kill", "wait"]
 
 
+def test_the_tree_kill_goes_through_the_supervisors_helper(monkeypatch: pytest.MonkeyPatch) -> None:
+    from ns_supervisor import procs
+
+    pids: list[int] = []
+    monkeypatch.setattr(procs, "kill_tree", pids.append)
+    dc._taskkill(777)
+    assert pids == [777]
+
+
 def test_kill_process_tree_leaves_an_exited_process_alone() -> None:
     order: list[str] = []
 
