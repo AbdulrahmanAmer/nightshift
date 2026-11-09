@@ -347,6 +347,34 @@ def test_b02_refuses_the_extracted_folder_as_the_install_folder(tmp_path: Path) 
     assert not (src / "app").exists()
 
 
+@pytest.mark.parametrize("marker", ["config/install_state.json", "config/runtime.json"])
+def test_b02_repairs_an_install_made_at_the_old_default_folder_with_the_zip_inside_it(
+    tmp_path: Path, marker: str
+) -> None:
+    """Review round 1 of PR 136, finding 6: OPERATOR.md used to say to extract under D:\\NightShift and the
+    old default home was D:\\Nightshift (the same folder on NTFS). Running INSTALL.cmd again over that
+    install, or over the data it kept, must copy the program into <home>\\app, not stop with NS-E115."""
+    home = tmp_path / "Nightshift"
+    (home / marker).parent.mkdir(parents=True)
+    (home / marker).write_text("{}", encoding="utf-8")
+    src = make_source(home / "nightshift-0.1.12")
+    boot = make_boot(tmp_path, src, home=home)
+    run_b02(boot)
+    assert (home / "app" / "VERSION").is_file() and (src / "VERSION").is_file()  # the zip folder is untouched
+
+
+def test_b02_still_refuses_a_home_with_other_files_that_holds_the_zip(tmp_path: Path) -> None:
+    home = tmp_path / "Documents"
+    home.mkdir()
+    (home / "notes.txt").write_text("mine", encoding="utf-8")
+    src = make_source(home / "nightshift-0.1.12")
+    boot = make_boot(tmp_path, src, home=home)
+    with pytest.raises(BootstrapError) as ei:
+        bootstrap.B02Home().run(boot)
+    assert ei.value.code == "NS-E115" and "inside it" in ei.value.detail
+    assert not (home / "app").exists()
+
+
 def test_b02_refuses_a_home_in_downloads(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("USERPROFILE", str(tmp_path / "Bob"))
     src = make_source(tmp_path / "setup")

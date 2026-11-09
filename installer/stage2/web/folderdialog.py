@@ -14,7 +14,7 @@ import tempfile
 from collections.abc import Callable
 from pathlib import Path
 
-from installer.stage2.web.pathcheck import DRIVE_PATH_RE
+from installer.stage2.web import pathcheck
 
 SCRIPT = Path(__file__).resolve().parents[2] / "pick-folder.ps1"
 TIMEOUT_S = 900.0                       # a person is choosing; the dialog ends when they do
@@ -62,32 +62,7 @@ def pick_folder(
 
 
 def install_folder_for(picked: str, *, listdir: Callable[[str], list[str]] = os.listdir) -> str:
-    """The install folder to use for a picked folder.
-
-    A drive root (D:) or a folder that already holds other files gets a ``Nightshift`` folder inside it:
-    setup, update and uninstall own everything in the install folder and must not touch someone's documents.
-    An empty folder (also one made with the dialog's "Make New Folder") and an existing Nightshift install
-    (it has config/install_state.json) are used as picked.
-    """
-    path = picked.strip()
-    if len(path) == 2 and path[1] == ":":
-        path += "\\"
-    if not DRIVE_PATH_RE.match(path):
-        return path                                      # not a path on a drive: the validation says why
-    if len(path) == 3:
-        return path + "Nightshift"
-    path = path.rstrip("\\")
-    try:
-        names = listdir(path)
-    except OSError:
-        return path                                      # not readable or not there yet: used as given
-    if not names or _is_nightshift_home(path, listdir):
-        return path
-    return path + "\\Nightshift"
-
-
-def _is_nightshift_home(path: str, listdir: Callable[[str], list[str]]) -> bool:
-    try:
-        return "install_state.json" in {n.lower() for n in listdir(path + "\\config")}
-    except OSError:
-        return False
+    """The install folder to use for a picked folder: ``pathcheck.install_folder_for``, the one rule that
+    Browse and a typed path share (a drive root or a foreign folder gets a ``Nightshift`` folder inside it; an
+    empty folder, a Nightshift home and a kept-data home are used as picked)."""
+    return pathcheck.install_folder_for(picked, listdir=listdir)

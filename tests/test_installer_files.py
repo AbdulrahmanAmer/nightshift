@@ -175,13 +175,19 @@ def test_web_package_imports_only_the_standard_library():
     assert not offenders, "the setup server runs on the bare Python: " + ", ".join(offenders)
 
 
+ALLOWED_WEB_IMPORTS = (
+    "installer.stage2.web", "installer.stage2.web.samples", "installer.stage2.web.pathcheck",
+)
+
+
 def test_only_the_samples_helpers_are_shared_with_the_wizard():
-    # P2 may import installer.stage2.web.samples (stdlib only); the rest of the web package is P1's.
+    # P2 may import installer.stage2.web.samples and .pathcheck (stdlib only; pathcheck is the one rule for
+    # what a folder holds, D-21); the rest of the web package is P1's.
     wizard_side = [ROOT / "installer" / "stage2" / "wizard.py", ROOT / "installer" / "stage2" / "bridge.py",
                    *sorted((ROOT / "installer" / "stage2" / "steps").glob("*.py"))]
     for f in wizard_side:
         for m in re.findall(r"installer\.stage2\.web(?:\.\w+)?", f.read_text(encoding="utf-8")):
-            assert m in ("installer.stage2.web", "installer.stage2.web.samples"), f"{f.name} imports {m}"
+            assert m in ALLOWED_WEB_IMPORTS, f"{f.name} imports {m}"
 
 
 def test_operator_guide_covers_the_voice_fallback_the_design_model_and_the_keys_file():
