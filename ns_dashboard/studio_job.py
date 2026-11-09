@@ -7,6 +7,8 @@ module prints: one JSON object per line, each behind the prefix `NSJOB ` so a st
 cannot be mistaken for an event. The events are
 
 - `job`: a studio job was created (`job_id`),
+- `owner`: a GPU lease owner the child is about to use (`owner`), sent before the acquire so Cancel or a
+  failure can free it even if the child is killed while it waits for the lease,
 - `stage`: a stage starts (`stage`, `index`, `total`, `job_index`, `job_total`),
 - `download`: link download progress (`percent`),
 - `result`: the work is done (the payload, for example `output_ids`),

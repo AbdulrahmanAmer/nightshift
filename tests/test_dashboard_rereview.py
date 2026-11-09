@@ -212,6 +212,20 @@ def test_the_child_acquires_through_the_studio_acquirer_so_the_lease_is_renewed(
     assert isinstance(acq, StudioAcquirer)
 
 
+def test_the_acquirer_announces_each_owner_as_an_owner_event_on_stdout(
+    tmp_home: Path, capsys: pytest.CaptureFixture[str]
+):
+    """The wiring between `StudioAcquirer.on_owner` and the `owner` protocol line the runner reads."""
+    acq = studio_job._acquirer({"supervisor_url": "http://127.0.0.1:9"})
+    capsys.readouterr()
+    acq._announce("studio:x")
+    acq._announce("studio:x")  # once per owner
+    acq._announce("voice:y")
+    lines = [ln for ln in capsys.readouterr().out.splitlines() if ln.startswith(studio_job.PREFIX)]
+    events = [json.loads(ln[len(studio_job.PREFIX):]) for ln in lines]
+    assert events == [{"ev": "owner", "owner": "studio:x"}, {"ev": "owner", "owner": "voice:y"}]
+
+
 def test_studio_owners_cover_run_clip_rerun_and_series(tmp_home: Path):
     paths = Paths.from_env()
     _store, ctl = make_ctl(paths)
