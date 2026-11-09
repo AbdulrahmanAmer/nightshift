@@ -1305,6 +1305,24 @@ def test_a_download_whose_write_fails_removes_an_older_zip_of_that_name(
     assert not older.exists() and not list(tmp_path.glob("*.tmp"))
 
 
+def test_a_refused_download_takes_the_older_zips_checksum_file_with_it(tmp_path: Path) -> None:
+    """The `.sha256` vouches for the zip that was just discarded: it must not stay beside a name with no zip
+    (or, later, beside a zip it was never written for)."""
+    from ns_supervisor import releases
+    from tests.test_ns_update_github import client_for
+
+    rel, data, older = _good_download(tmp_path)
+    sidecar = older.with_name(older.name + ".sha256")
+    assert sidecar.is_file()
+    bad = {**data, "assets": [dict(a) for a in data["assets"]]}
+    bad["assets"][1]["digest"] = "sha256:" + "f" * 64
+    with pytest.raises(NsError) as ei:
+        releases.download(releases.parse_release(bad), tmp_path, client_for(bad))
+    assert ei.value.code == "NS-E701"
+    assert not older.exists() and not sidecar.exists()
+    assert not list(tmp_path.glob("*.tmp"))
+
+
 @windows_only
 def test_a_mismatch_says_so_even_when_the_older_zip_is_open_in_another_program(tmp_path: Path) -> None:
     """`unlink` of the older zip raised a bare PermissionError that hid the NS-E701 message."""
@@ -1372,14 +1390,49 @@ def test_the_supervisors_pid_file_does_not_block_its_event_loop_for_15_seconds(
     from ns_supervisor.core import STATE_WAIT_S
     from tests.test_supervisor_core import make
 
-    sup, _, _ = make(tmp_path)
-    sup.write_state()
+    sup, _, paths = make(tmp_path)
+    assert sup.write_state() is True
+    before = sup.state_file.read_bytes()
     refuse_every_swap(monkeypatch)
     clock = FakeClock()
     monkeypatch.setattr(atomic, "time", clock)
-    with pytest.raises(NsError) as ei:
-        sup.write_state()
+    assert sup.write_state() is False  # given up after STATE_WAIT_S; it never raises (see the start test)
     monkeypatch.undo()
-    assert ei.value.code == "NS-E119"
     assert 1.0 <= clock.slept <= STATE_WAIT_S + 0.01, f"write_state waited {clock.slept} s"
+    assert sup.state_file.read_bytes() == before and not list(sup.state_file.parent.glob("*.tmp"))
+    lines = [x for f in paths.logs.glob("supervisor-*.jsonl") for x in f.read_text("utf-8").splitlines()]
+    records = [json.loads(x) for x in lines]
+    assert [r for r in records if r["level"] == "WARN" and "NS-E119" in r["msg"]], records
     sup.close_job()
+
+
+def test_a_held_state_file_does_not_fail_a_healthy_start_or_orphan_the_child(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`write_state` raised NS-E119 right after the spawn, outside the try that terminates the child: a
+    program holding `run/supervisor.json` for more than STATE_WAIT_S left a running (GPU) child nobody
+    supervised and failed the acquire, or turned a healthy start into a failure after 'ready'."""
+    import asyncio
+
+    from tests.test_supervisor_core import make, running
+
+    sup, _, _ = make(tmp_path)
+    held = sup.state_file
+    real_replace = os.replace
+
+    def refuse_state(src: Any, dst: Any) -> None:
+        if Path(dst) == held:
+            raise PermissionError(13, "Access is denied")
+        real_replace(src, dst)
+
+    monkeypatch.setattr(atomic.os, "replace", refuse_state)
+    monkeypatch.setattr(atomic, "time", FakeClock())
+
+    async def main() -> None:
+        async with running(sup):
+            granted = await sup.acquire("llama", "A")  # NS-E119 here before the fix
+            assert granted["endpoint"].startswith("http://127.0.0.1:")
+            assert sup.status()["services"]["llama"]["state"] == "ready"
+            assert await sup.release("llama", "A") is True
+
+    asyncio.run(main())

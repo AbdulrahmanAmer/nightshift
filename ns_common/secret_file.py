@@ -464,6 +464,33 @@ def _write(paths: Paths, data: dict[str, str], lock_down: LockFn) -> Path:
     return path
 
 
+def relock_existing(paths: Paths, *, lock_down: LockFn = restrict_to_user) -> list[tuple[Path, str]]:
+    """Lock the key files that already exist; returns `(path, why)` for each one whose lock did not hold.
+
+    A `config/secrets.dpapi` written by 0.1.0 to 0.1.14 (icacls could not map `%USERNAME%`, so it exited 1332
+    and the file kept `Users` and `Authenticated Users`) stays readable by every local account until the next
+    key save. So do the `data/backup/pre-restore-*/config/secrets.dpapi` copies a restore made with
+    `shutil.copy2`. The engine calls this at start; it never raises (the caller logs each `NS-E120`).
+    """
+    found: list[Path] = []
+    live = secret_path(paths)
+    if live.is_file():
+        found.append(live)
+    try:
+        found += sorted(paths.backup_dir.glob(f"pre-restore-*/config/{FILE_NAME}"))
+    except OSError:
+        pass
+    problems: list[tuple[Path, str]] = []
+    for path in found:
+        try:
+            lock_down(path)
+        except SecretFileLockError as e:
+            problems.append((path, f"{e.code}: {e.why}"))
+        except OSError as e:
+            problems.append((path, f"NS-E120: {e}"))
+    return problems
+
+
 def load_secret(paths: Paths, name: str, *, unprotect: ProtectFn = dpapi_unprotect) -> str | None:
     """One secret from the file; None when it is absent or cannot be decrypted. Never raises."""
     raw = _read_all(paths).get(name)

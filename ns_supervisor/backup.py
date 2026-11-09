@@ -111,7 +111,19 @@ def make_backup(paths: Paths, out: Path | None = None, *, now: datetime | None =
         info = {"created": when.isoformat(timespec="seconds"), "version": __version__, "entries": entries}
         z.writestr(MANIFEST, json.dumps(info, indent=2) + "\n")
 
-    write_zip_atomic(target, fill)  # the Desktop never shows a backup that is still being written
+    # The zip carries config/secrets.dpapi (machine-scope DPAPI, fixed entropy: any account on this PC
+    # decrypts it), so the zip is locked like the file: while still empty, then once more under its final
+    # name. A folder that cannot take the lock (a USB stick, a share) fails the backup with NS-E120 and
+    # writes nothing.
+    carries_keys = (paths.config / SECRETS_FILE).is_file()
+    lock = restrict_to_user if carries_keys else None
+    write_zip_atomic(target, fill, prepare=lock)  # the Desktop never shows a half-written backup
+    if lock is not None and SECRETS_FILE in {Path(e).name for e in entries}:
+        try:
+            lock(target)
+        except OSError:
+            target.unlink(missing_ok=True)  # never leave the keys in a zip whose lock did not hold
+            raise
     return target
 
 

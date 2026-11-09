@@ -308,16 +308,22 @@ def copy_atomic(src: Path, dst: Path) -> Path:
 
 
 def write_zip_atomic(
-    path: Path, fill: Callable[[zipfile.ZipFile], None], *, compression: int = zipfile.ZIP_DEFLATED
+    path: Path,
+    fill: Callable[[zipfile.ZipFile], None],
+    *,
+    compression: int = zipfile.ZIP_DEFLATED,
+    prepare: PrepareFn | None = None,
 ) -> Path:
     """Build a zip with `fill(zipfile)` in a temp file beside `path`, then swap it in whole.
 
     Nothing is visible under the final name until the central directory is written; `fill` raising leaves
-    the old `path` (if any) untouched.
+    the old `path` (if any) untouched. `prepare`: as in `write_text_atomic` (an ACL lock on the empty temp
+    file, before any content goes in; a failure leaves nothing behind).
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = _tmp_for(path)
     try:
+        _prepare(tmp, prepare)
         with tmp.open("wb") as fh:
             with zipfile.ZipFile(fh, "w", compression) as zf:
                 fill(zf)

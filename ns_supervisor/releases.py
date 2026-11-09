@@ -176,9 +176,11 @@ def expected_digest(rel: Release, client: httpx.Client) -> str:
 
 
 def _forget(target: Path) -> None:
-    """Delete an older zip of the name; one that cannot be deleted (open elsewhere) hides no error."""
-    with contextlib.suppress(OSError):
-        target.unlink(missing_ok=True)
+    """Delete an older zip of the name and its `.sha256`; one that cannot be deleted (open elsewhere) hides no
+    error. The sidecar goes too: it vouches for the zip that was just refused, not for whatever comes next."""
+    for f in (target, target.with_name(target.name + ".sha256")):
+        with contextlib.suppress(OSError):
+            f.unlink(missing_ok=True)
 
 
 def download(rel: Release, dest_dir: Path, client: httpx.Client | None = None) -> Path:

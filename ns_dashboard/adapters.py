@@ -25,6 +25,7 @@ from ns_common.acquire import Acquirer, Service
 from ns_common.atomic import read_text_retry
 from ns_common.config import load_runtime
 from ns_common.errors import NsError
+from ns_common.errors import describe as describe_error
 from ns_common.logging import NsLogger
 from ns_common.paths import Paths
 from ns_common.secrets_names import KEYRING_SERVICE
@@ -624,6 +625,17 @@ class RealKeyringAdapter:
         self._keyring = keyring_module
         self._protect = protect
         self._unprotect = unprotect
+        #: key name -> what is wrong with its nightly-run copy in `config/secrets.dpapi` (set by `set` and
+        #: `delete` when the file refused, cleared when a later write reaches it)
+        self._file_problems: dict[str, dict[str, str]] = {}
+
+    def file_problem(self, name: str) -> dict[str, str] | None:
+        """`{code, message, hint, detail}` while the file copy of key `name` is out of step; else None."""
+        return self._file_problems.get(name)
+
+    def file_problems(self) -> dict[str, dict[str, str]]:
+        """Every key whose file copy is out of step (what Settings returns as `key_warnings`)."""
+        return dict(self._file_problems)
 
     def _module(self) -> Any:
         if self._keyring is not None:
@@ -653,7 +665,9 @@ class RealKeyringAdapter:
         """Write Credential Manager and the DPAPI file; raise only when both refused.
 
         When only the file refused (its lock failed, `NS-E120`, or the disk did), the key is in Credential
-        Manager, the file keeps what it had, and the dashboard log says so (WARN `secret_file_failed`).
+        Manager and the dashboard says so: a WARN `secret_file_failed` in its log, and `file_problem(name)`
+        (what Settings > Keys returns beside the answer, until a later save reaches the file). The file keeps
+        what it had unless only the check after the swap failed (`NS-E120`: "the new file is in place").
         """
         failures: list[str] = []
         try:
@@ -668,7 +682,9 @@ class RealKeyringAdapter:
             except OSError as e:
                 failures.append(f"file: {e}")
                 if len(failures) == 1:
-                    self._warn(name, f"is in Credential Manager, but saving its nightly-run copy failed: {e}")
+                    self._warn(name, f"is in Credential Manager, but its nightly-run copy failed: {e}", e)
+            else:
+                self._file_problems.pop(name, None)
         if len(failures) == (2 if self.paths is not None else 1):
             raise AdapterUnavailable("the key could not be stored (" + "; ".join(failures) + ")")
 
@@ -683,11 +699,23 @@ class RealKeyringAdapter:
             from ns_common.secret_file import delete_secret
             try:
                 delete_secret(self.paths, name)
-            except OSError as e:  # the file keeps the key; say so
-                self._warn(name, f"was removed from Credential Manager, not from its nightly copy: {e}")
+            except OSError as e:  # the file may still hold the key (and `get` finds it there): say so
+                self._warn(name, f"may still be in its nightly-run copy (not removed): {e}", e)
+            else:
+                self._file_problems.pop(name, None)
 
-    def _warn(self, name: str, what: str) -> None:
-        """A WARN line in the dashboard log: the key file's copy failed (its NS-E120 lock, or the disk)."""
+    def _warn(self, name: str, what: str, error: OSError) -> None:
+        """The key file's copy failed (its NS-E120 lock, NS-E119, or the disk): a WARN line in the dashboard
+        log, and a problem Settings > Keys returns until a later write reaches the file."""
+        code = error.code if isinstance(error, NsError) else "NS-E120"
+        try:
+            definition = describe_error(code)
+            message, hint = definition.message, definition.hint
+        except (KeyError, OSError, ValueError):
+            message, hint = "The nightly-run copy of the key could not be saved.", ""
+        self._file_problems[name] = {
+            "code": code, "message": message, "hint": hint, "detail": f"{name} {what}"[:400],
+        }
         if self.paths is not None:
             log = NsLogger("dashboard", self.paths.logs, echo=False)
             log.warn("secret_file_failed", f"{name} {what}", name=name)

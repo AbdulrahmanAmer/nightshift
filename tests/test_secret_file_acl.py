@@ -22,6 +22,7 @@ from pathlib import Path
 
 import pytest
 
+from ns_common import secret_file
 from ns_common.errors import NsError
 from ns_common.paths import Paths
 from ns_common.secret_file import delete_secret, load_secret, restrict_to_user, secret_path, store_secret
@@ -58,7 +59,8 @@ def acl(path: Path) -> tuple[str, list[tuple[str, str]]]:
     entries = []
     for ace in re.findall(r"\(([^()]*)\)", dacl):
         parts = ace.split(";")
-        entries.append((ALIASES.get(parts[5].upper(), parts[5].upper()), parts[1].upper()))
+        who = parts[5].upper()  # an alias icacls writes (SY, LA for the built-in Administrator, ...) or a SID
+        entries.append((ALIASES.get(who) or secret_file._sid_of(who), parts[1].upper()))  # noqa: SLF001
     return dacl[2:].split("(", 1)[0], entries
 
 

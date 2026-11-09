@@ -94,7 +94,9 @@ class ResilientStore:
     The nightly task may run in a session without access to the user's Credential Manager (S4U). ``set``
     writes both places and only fails when neither accepted the value; ``get`` asks the keyring and falls back
     to the file. When only the file refused (its lock failed, ``NS-E120``, or the disk did), the key is in
-    Credential Manager, the file keeps what it had, and ``warn`` says so (setup shows and logs the line).
+    Credential Manager and ``warn`` says so (setup shows, logs and keeps the line as a notice). The file keeps
+    what it had unless only the check after the swap failed: ``NS-E120`` then says "the new file is in place",
+    and the new key IS in the file.
     """
 
     def __init__(
@@ -124,14 +126,15 @@ class ResilientStore:
 
     def delete(self, name: str) -> None:
         """Forget the key in both places (a stored key the service rejected must not survive setup)."""
+        keyring_said = "was removed from Credential Manager"
         try:
             self.primary.delete(name)
-        except Exception:  # noqa: BLE001 - best effort, the file copy is still removed
-            pass
+        except Exception as e:  # noqa: BLE001 - best effort, the file copy is still removed
+            keyring_said = f"could not be removed from Credential Manager ({type(e).__name__})"
         try:
             delete_secret(self.paths, name, lock_down=self._lock_down)
-        except OSError as e:  # the file keeps the key; the nightly fallback may still find it
-            self.warn(f"The {name} key was removed from Credential Manager but not from {FILE_NAME}: {e}")
+        except OSError as e:  # the file may still hold the key; the nightly fallback may still find it
+            self.warn(f"The {name} key {keyring_said}, and it was not removed from {FILE_NAME}: {e}")
 
     def set(self, name: str, value: str) -> None:
         """Write the keyring and the file; raise only when both fail (a file-only failure is warned)."""

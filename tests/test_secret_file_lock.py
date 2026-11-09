@@ -514,3 +514,210 @@ def test_settings_keys_keep_the_keyring_copy_and_log_a_file_they_could_not_lock(
         records += [json.loads(line) for line in f.read_text(encoding="utf-8").splitlines()]
     warned = [r for r in records if r["level"] == "WARN" and "NS-E120" in r["msg"]]
     assert len(warned) == 2, records
+
+
+# ---------------------------------------- the failure is said where the person looks, and stays said
+class Keyring:
+    """A keyring module that works (Credential Manager took the key)."""
+
+    def __init__(self) -> None:
+        self.items: dict[str, str] = {}
+
+    def get_password(self, service: str, name: str) -> str | None:
+        return self.items.get(name)
+
+    def set_password(self, service: str, name: str, value: str) -> None:
+        self.items[name] = value
+
+    def delete_password(self, service: str, name: str) -> None:
+        self.items.pop(name, None)
+
+
+def test_a_key_file_setup_could_not_lock_stays_in_the_window_as_a_notice(
+    tmp_path: Path, repo_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The warning goes out of the wizard as a bridge event and is read by the setup window's controller. A
+    `say` line there is only the running step's detail (cut to 160 characters, replaced by the next line), so
+    the line must also be a notice: the window keeps it, with the code's message and hint."""
+    from installer.stage2.bridge import BridgeUi
+    from installer.stage2.wizard import build_context, parse_args
+    from tests.test_installer_web_controller import Setup, step_event
+
+    out = io.StringIO()
+    args = parse_args(
+        [
+            "--home",
+            str(tmp_path / "h"),
+            "--app-path",
+            str(repo_root),
+            "--non-interactive",
+            "--preflight",
+            str(tmp_path / "none.json"),
+            "--ui-bridge",
+            "stdio",
+        ]
+    )
+    ctx = build_context(args, ui=BridgeUi(out=out, inp=io.StringIO("")))
+    line = (
+        "The pexels_api_key key is saved in Credential Manager, but saving its copy for nightly runs that "
+        "cannot reach Credential Manager (secrets.dpapi) failed: NS-E120: The file that holds your API keys "
+        "could not be limited to your Windows account. (icacls exit 1332)"
+    )
+    ctx.store.warn(line)  # type: ignore[attr-defined]
+    window = Setup(tmp_path, monkeypatch)
+    for raw in out.getvalue().splitlines():
+        window.ctl._on_event(json.loads(raw))
+    # the setup goes on: the next line and the next step replace the running step's detail, not the notice
+    window.ctl._on_event(step_event("s06_tune", "running"))
+    window.ctl._on_event(
+        {"type": "say", "text": "Trying the story model at different settings", "style": None}
+    )
+    state = window.snap()
+    [notice] = [n for n in state["notices"] if n["code"] == "NS-E120"]
+    assert "API keys" in notice["title"] and "Try again" in notice["whatToDo"], notice
+    assert any("NS-E120" in entry["text"] for entry in state["log"]), "the cause is in the window's log"
+    assert ctx.warnings == [("NS-E120", line)], "the summary lists it too"
+
+
+def test_settings_keys_say_on_the_page_that_the_nightly_copy_was_not_updated(
+    tmp_home: Path, icacls: FakeIcacls
+) -> None:
+    """PUT used to answer `{set: true}` with nothing else: the owner replaced a revoked key and the nightly
+    run (which reads secrets.dpapi when Credential Manager is out of reach) kept the old key unnoticed."""
+    from ns_dashboard.adapters import RealKeyringAdapter
+    from tests.test_dashboard_api import make_env
+
+    client, state = make_env(tmp_home)
+    paths = Paths.from_env()
+    state.adapters.keyring = RealKeyringAdapter(  # type: ignore[assignment]
+        paths, keyring_module=Keyring(), protect=xor, unprotect=xor
+    )
+    ok = client.post("/api/settings/keys", json={"name": "pexels", "value": "OLD"})
+    assert ok.status_code == 200 and "warning" not in ok.json()
+    assert client.get("/api/settings").json()["key_warnings"] == {}
+
+    icacls.grant_exit = 1332
+    r = client.post("/api/settings/keys", json={"name": "pexels", "value": "NEW"})
+    body = r.json()
+    assert r.status_code == 200 and body["set"] is True and "NEW" not in r.text
+    assert body["warning"]["code"] == "NS-E120" and "Try again" in body["warning"]["hint"]
+    assert "NS-E120" in body["message"] and "not updated" in body["message"]
+    assert client.get("/api/settings").json()["key_warnings"]["pexels"]["code"] == "NS-E120", (
+        "the line persists"
+    )
+
+    icacls.grant_exit = 0  # the next save reaches the file: the line goes
+    again = client.post("/api/settings/keys", json={"name": "pexels", "value": "NEWER"})
+    assert "warning" not in again.json()
+    assert client.get("/api/settings").json()["key_warnings"] == {}
+
+
+def test_clearing_a_key_whose_file_copy_stays_does_not_say_it_is_gone(
+    tmp_home: Path, icacls: FakeIcacls
+) -> None:
+    """delete_secret failed, so `get` finds the key in the file again: `{set: false}` was a lie, and the next
+    page load showed the key as set."""
+    from ns_dashboard.adapters import RealKeyringAdapter
+    from tests.test_dashboard_api import make_env
+
+    client, state = make_env(tmp_home)
+    state.adapters.keyring = RealKeyringAdapter(  # type: ignore[assignment]
+        Paths.from_env(), keyring_module=Keyring(), protect=xor, unprotect=xor
+    )
+    client.post("/api/settings/keys", json={"name": "pixabay", "value": "KEY"})
+    icacls.grant_exit = 1332
+    r = client.post("/api/settings/keys", json={"name": "pixabay", "value": ""})
+    body = r.json()
+    assert r.status_code == 200 and body["set"] is True, body
+    assert body["warning"]["code"] == "NS-E120" and "NS-E120" in body["message"]
+    page = client.get("/api/settings").json()
+    assert page["keys"]["pixabay"] is True and page["key_warnings"]["pixabay"]["code"] == "NS-E120"
+
+
+# ------------------------------------------ a file an older version left open is locked at engine start
+def test_the_engine_locks_a_secrets_file_an_older_version_left_open(
+    tmp_path: Path, icacls: FakeIcacls
+) -> None:
+    """0.1.0 to 0.1.14 left `config/secrets.dpapi` with Users:(I)(R) when icacls exited 1332; so did
+    the `pre-restore-*` copies. Nothing else would lock them until the next key save."""
+    from ns_common.logging import NsLogger
+    from ns_supervisor.app import relock_secret_files
+
+    paths = paths_for(tmp_path)
+    store_secret(paths, "pexels_api_key", "OLD", protect=xor, lock_down=lambda p: None)
+    kept = paths.backup_dir / "pre-restore-20260101-000000" / "config"
+    kept.mkdir(parents=True)
+    (kept / "secrets.dpapi").write_bytes(b"{}\n")
+    log = NsLogger("supervisor", paths.logs, echo=False)
+
+    assert relock_secret_files(paths, log) == 0
+    assert {Path(g[0]) for g in icacls.grants} == {secret_path(paths), kept / "secrets.dpapi"}
+
+    icacls.grant_exit = 1332  # a lock that does not hold is a WARN with the code, not a silent pass
+    assert relock_secret_files(paths, log) == 2
+    records = [
+        json.loads(x)
+        for f in paths.logs.glob("supervisor-*.jsonl")
+        for x in f.read_text("utf-8").splitlines()
+    ]
+    warned = [r for r in records if r["level"] == "WARN" and "NS-E120" in r["msg"]]
+    assert len(warned) == 2 and all("secrets.dpapi" in r["msg"] for r in warned), records
+
+
+def test_the_engine_has_nothing_to_lock_without_a_secrets_file(tmp_path: Path, icacls: FakeIcacls) -> None:
+    assert secret_file.relock_existing(paths_for(tmp_path)) == []
+    assert icacls.calls == []
+
+
+def test_the_engine_start_calls_the_relock() -> None:
+    import inspect
+
+    from ns_supervisor import app
+
+    assert "relock_secret_files(paths, sup.log)" in inspect.getsource(app._serve)  # noqa: SLF001
+
+
+# ---------------------------------------------- a backup zip that carries the keys is locked like the file
+def test_a_backup_zip_that_carries_the_keys_is_locked_before_they_go_in(
+    tmp_path: Path, icacls: FakeIcacls
+) -> None:
+    from ns_supervisor import backup
+
+    paths = paths_for(tmp_path)
+    store_secret(paths, "pexels_api_key", "K", protect=xor, lock_down=lambda p: None)
+    out = tmp_path / "usb" / "b.zip"
+    backup.make_backup(paths, out)
+    locked = [Path(g[0]) for g in icacls.grants]
+    assert out in locked, "the zip is checked under its final name"
+    [first, *_] = locked
+    assert first.parent == out.parent and atomic.is_tmp_name(first.name), (
+        "and while it was still an empty temp file"
+    )
+    with zipfile.ZipFile(out) as z:
+        assert "config/secrets.dpapi" in z.namelist()
+    assert [p.name for p in out.parent.iterdir()] == ["b.zip"]
+
+
+def test_a_backup_that_cannot_lock_its_zip_fails_loudly_and_leaves_nothing(
+    tmp_path: Path, icacls: FakeIcacls
+) -> None:
+    from ns_supervisor import backup
+
+    paths = paths_for(tmp_path)
+    store_secret(paths, "pexels_api_key", "K", protect=xor, lock_down=lambda p: None)
+    icacls.grant_exit = 1332  # a USB stick or share that takes no ACL
+    out = tmp_path / "usb" / "b.zip"
+    with pytest.raises(NsError) as ei:
+        backup.make_backup(paths, out)
+    assert ei.value.code == "NS-E120"
+    assert list(out.parent.iterdir()) == [], "no zip, no temp file: the keys were never copied there"
+
+
+def test_a_backup_without_keys_needs_no_lock(tmp_path: Path, icacls: FakeIcacls) -> None:
+    from ns_supervisor import backup
+
+    paths = paths_for(tmp_path)
+    (paths.config / "notes.json").write_text("{}", encoding="utf-8")
+    icacls.grant_exit = 1332
+    backup.make_backup(paths, tmp_path / "plain.zip")
+    assert icacls.calls == []

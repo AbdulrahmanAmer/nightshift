@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import sys
 import tempfile
 import threading
@@ -330,6 +331,7 @@ def build_context(args: argparse.Namespace, ui: Ui | None = None) -> StepContext
         ui = BridgeUi()
     ui = ui or Ui(interactive=not non_interactive)
     log = NsLogger("installer", paths.logs)
+    warnings_sink: list[tuple[str, str]] = []  # the context's ``warnings`` (the store warns before it exists)
     if args.simulate_downloads:
         runner = FakeRunner(paths.home / "_simulated_desktop")
         store = MemoryStore()
@@ -337,9 +339,19 @@ def build_context(args: argparse.Namespace, ui: Ui | None = None) -> StepContext
         runner = SubprocessRunner(bridge=bridge)
         say = ui  # the window (or console) the setup is shown in
 
-        def warn(line: str) -> None:  # the key file's copy failed (NS-E120 lock, disk): show it and log it
+        def warn(line: str) -> None:
+            """The key file's copy failed (NS-E120 lock, NS-E119, disk): log it, say it, and keep it.
+
+            ``say`` alone is a log line: the setup window shows it as the running step's detail (cut to 160
+            characters) and the next line replaces it. ``notice`` is the persistent part: the window keeps a
+            setup notice with the code's message and hint, and the summary lists it (``ctx.warnings``).
+            """
             log.warn("secret_file_failed", line)
             say.say(line, "yellow")
+            found = re.search(r"NS-[EW]\d{3}", line)
+            code = found.group(0) if found else "NS-E120"
+            warnings_sink.append((code, line))
+            say.notice(code, line)
 
         store = ResilientStore(KeyringStore(), paths, warn=warn)
     dev = bool(getattr(args, "dev", False)) or env_enabled() or bool((preflight or {}).get("dev_mode"))
@@ -356,6 +368,7 @@ def build_context(args: argparse.Namespace, ui: Ui | None = None) -> StepContext
         manifest=load_manifest(app_path / "manifest.json"),
         log=log,
         state=StateStore(paths, app_path),
+        warnings=warnings_sink,
         simulate=bool(args.simulate_downloads),
         dev_mode=dev,
         unattended=unattended,
