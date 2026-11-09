@@ -109,13 +109,14 @@ def leftovers(folder: Path, expected: set[str]) -> set[str]:
     return {p.name for p in folder.rglob("*") if p.is_file()} - expected
 
 
-def cut_functions(names: list[str]) -> str:
-    """PowerShell that defines `names` from nightshift-host.ps1 in the caller's scope (nothing else runs)."""
+def cut_functions(names: list[str], script: Path = HOST) -> str:
+    """PowerShell that defines `names` from `script` (default nightshift-host.ps1) in the caller's scope;
+    nothing else in the script runs."""
     quoted = ", ".join(f"'{n}'" for n in names)
     return (
         "$errs = $null; $tokens = $null\n"
         "$lang = [System.Management.Automation.Language.Parser]\n"
-        f"$ast = $lang::ParseFile('{HOST}', [ref]$tokens, [ref]$errs)\n"
+        f"$ast = $lang::ParseFile('{script}', [ref]$tokens, [ref]$errs)\n"
         "$kind = [System.Management.Automation.Language.FunctionDefinitionAst]\n"
         f"$found = $ast.FindAll({{ param($n) $n -is $kind -and $n.Name -in @({quoted}) }}, $true)\n"
         "$src = ($found | ForEach-Object { $_.Extent.Text }) -join [Environment]::NewLine\n"
@@ -183,7 +184,9 @@ def test_a_failed_write_leaves_the_old_file_whole_and_no_temp_file(tmp_path: Pat
     body = f"""
 . '{COMMON}'
 $r = @()
-$fs = [IO.File]::Open('{held}', [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None)
+# the helper must exist and work first: without this a missing helper would make every call "throw"
+Write-NsFileAtomic -Path '{tmp_path}\\ok.json' -Text 'WORKS'
+$fs =[IO.File]::Open('{held}', [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None)
 try {{
     try {{ Write-NsFileAtomic -Path '{held}' -Text 'NEW' -Tries 3; $r += 'held:no error' }}
     catch {{ $r += 'held:threw' }}
@@ -195,11 +198,63 @@ catch {{ $r += 'dir:threw' }}
 """
     run_ps(tmp_path, body)
     assert result.read_text() == "held:threw,dir:threw"
+    assert (tmp_path / "ok.json").read_bytes() == b"WORKS"
     assert held.read_bytes() == b"OLD"
     assert (folder / "inside.txt").read_bytes() == b"x"
-    assert leftovers(tmp_path, {"held.json", "inside.txt", "result.txt"}) == {
+    assert leftovers(tmp_path, {"held.json", "inside.txt", "result.txt", "ok.json"}) == {
         p.name for p in tmp_path.glob("t*.ps1")
     }  # not one ~ns*.tmp left
+
+
+# a C# compiler that is blocked (security software, policy): the shadowing `Add-Type` below throws the way the
+# real one does, and the helper must still swap the file in whole instead of failing the launcher's write
+BLOCKED_COMPILER = "function Add-Type { throw 'compilation blocked by policy' }\n"
+
+
+@needs_powershell
+def test_the_helper_still_writes_when_the_swap_helper_cannot_be_compiled(tmp_path: Path) -> None:
+    replaced = tmp_path / "replaced.json"
+    replaced.write_bytes(b"an older and much longer content than the new one")
+    before = inode(replaced)
+    held = tmp_path / "held.json"
+    held.write_bytes(b"OLD")
+    result = tmp_path / "result.txt"
+    body = (
+        BLOCKED_COMPILER
+        + f"""
+. '{COMMON}'
+Write-NsFileAtomic -Path '{replaced}' -Text 'short'
+Write-NsFileAtomic -Path '{tmp_path}\\fresh\\new.json' -Text 'brand new'
+$fs = [IO.File]::Open('{held}', [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None)
+try {{
+    try {{ Write-NsFileAtomic -Path '{held}' -Text 'NEW' -Tries 3; $r = 'no error' }}
+    catch {{ $r = 'threw' }}
+}}
+finally {{ $fs.Dispose() }}
+[IO.File]::WriteAllText('{result}', $r)
+"""
+    )
+    run_ps(tmp_path, body)
+    assert (
+        replaced.read_bytes() == b"short" and inode(replaced) != before
+    )  # swapped in whole, not written over
+    assert (tmp_path / "fresh" / "new.json").read_bytes() == b"brand new"
+    assert result.read_text() == "threw" and held.read_bytes() == b"OLD"  # a real failure is still a failure
+    assert leftovers(tmp_path, {"replaced.json", "new.json", "held.json", "result.txt"}) == {
+        p.name for p in tmp_path.glob("t*.ps1")
+    }
+
+
+@needs_powershell
+def test_the_host_still_writes_its_run_file_when_the_swap_helper_cannot_be_compiled(tmp_path: Path) -> None:
+    run_file = tmp_path / "run" / "apphost-dashboard.json"
+    run_file.parent.mkdir()
+    body = (
+        BLOCKED_COMPILER + f". '{COMMON}'\n{cut_functions(['Write-RunFile'])}"
+        f"$runFile = '{run_file}'\nWrite-RunFile -Handle ([IntPtr]4660) -Ready\nWrite-Output $PID\n"
+    )
+    pid = int(run_ps(tmp_path, body).strip())
+    assert json.loads(run_file.read_bytes()) == {"hwnd": 4660, "pid": pid, "ready": True}
 
 
 @needs_powershell
@@ -511,15 +566,22 @@ def test_stop_all_still_closes_a_host_whose_run_file_is_being_swapped(tmp_path: 
     sleeper = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
     try:
         # the first call compiles the window helper; only then is the run file written and shut
+        # the script waits for the `shut` marker (written once the file exists AND is held) before its second
+        # call, so there is no fixed sleep for a loaded runner to overrun
+        shut = tmp_path / "shut"
         proc = start_ps(
             tmp_path,
             f". '{COMMON}'\nClose-NsHostWindows -GraceSec 1\n[IO.File]::WriteAllText('{warm}', 'go')\n"
-            "Start-Sleep -Milliseconds 400\nClose-NsHostWindows -GraceSec 1\n",
+            "$until = (Get-Date).AddSeconds(90)\n"
+            f"while (-not (Test-Path -LiteralPath '{shut}') -and (Get-Date) -lt $until)"
+            " { Start-Sleep -Milliseconds 20 }\n"
+            "Close-NsHostWindows -GraceSec 1\n",
             {"NIGHTSHIFT_HOME": str(tmp_path)},
         )
         hold_until_the_script_is_in_the_call(run_file, warm, 0)
         run_file.write_text(json.dumps({"hwnd": 0, "pid": sleeper.pid, "ready": True}), encoding="utf-8")
         hold = Hold(run_file)
+        shut.write_text("shut")
         time.sleep(0.7)
         hold.release()
         out = finish(proc)
@@ -556,17 +618,86 @@ def test_stop_all_leaves_a_run_file_it_cannot_read_alone(tmp_path: Path) -> None
         sleeper.wait(timeout=30)
 
 
+@needs_powershell
+def test_stop_all_still_treats_a_garbage_or_empty_run_file_as_stale(tmp_path: Path) -> None:
+    """The other half of the contract: a file that is readable but is not a window record is removed."""
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    garbage = run_dir / "apphost-dashboard.json"
+    empty = run_dir / "apphost-setup.json"
+    dead_pid = run_dir / "apphost-other.json"
+    garbage.write_bytes(b"not json at all {")
+    empty.write_bytes(b"")
+    dead_pid.write_text(json.dumps({"hwnd": 0, "pid": 2147483000}), encoding="utf-8")  # no such process
+    out = run_ps(
+        tmp_path, f". '{COMMON}'\nClose-NsHostWindows -GraceSec 1\n", {"NIGHTSHIFT_HOME": str(tmp_path)}
+    )
+    assert not garbage.exists() and not empty.exists() and not dead_pid.exists()
+    assert "Closed the Nightshift window" not in out and "Could not read" not in out
+
+
 # ----------------------------------------------------------------------------------------------------------
 # a guard for the next writer someone adds
 # ----------------------------------------------------------------------------------------------------------
+INSTALLER = ROOT / "installer"
+FORBIDDEN_WRITES = ("WriteAllText", "WriteAllBytes", "Set-Content", "Out-File", "Add-Content",
+                    "AppendAllText",
+                    "[IO.File]::Create", "[System.IO.File]::Create", "Tee-Object")  # fmt: skip
+
+
 def test_no_launcher_writes_a_file_except_through_the_helper() -> None:
-    forbidden = ("WriteAllText", "WriteAllBytes", "Set-Content", "Out-File", "Add-Content", "AppendAllText",
-                 "[IO.File]::Create", "[System.IO.File]::Create", "Tee-Object")  # fmt: skip
     for script in sorted(LAUNCHERS.glob("*.ps1")):
         text = script.read_text(encoding="ascii")
-        for needle in forbidden:
+        for needle in FORBIDDEN_WRITES:
             assert needle not in text, (script.name, needle)
     assert ". (Join-Path $PSScriptRoot '_common.ps1')" in HOST.read_text(encoding="ascii")
+
+
+def test_no_installer_script_writes_a_file_another_process_reads_in_place() -> None:
+    """stage1.ps1 (the hand-over files the setup server reads) and pick-folder.ps1 (the dialog's result file)
+    write through their own `Write-NsFileSwap`; the other installer scripts write nothing."""
+    for script in sorted(INSTALLER.glob("*.ps1")):
+        text = script.read_text(encoding="utf-8")
+        for needle in FORBIDDEN_WRITES:
+            assert needle not in text, (script.name, needle)
+    stage1 = (INSTALLER / "stage1.ps1").read_text(encoding="utf-8")
+    assert "Write-NsFileSwap -Path $Out " in stage1 and "Write-NsFileSwap -Path $preflightFile " in stage1
+    picker = (INSTALLER / "pick-folder.ps1").read_text(encoding="utf-8")
+    assert "Write-NsFileSwap -Path $Out -Text $chosen" in picker
+
+
+@needs_powershell
+@pytest.mark.parametrize("script", ["stage1.ps1", "pick-folder.ps1"])
+def test_the_installer_swap_writes_whole_files_and_leaves_the_old_one_on_failure(
+    tmp_path: Path, script: str
+) -> None:
+    out = tmp_path / "out"
+    out.mkdir()
+    replaced = out / "replaced.json"
+    replaced.write_bytes(b"an older and much longer content than the new one")
+    before = inode(replaced)
+    held = out / "held.json"
+    held.write_bytes(b"OLD")
+    result = tmp_path / "result.txt"
+    body = f"""
+{cut_functions(["Write-NsFileSwap"], INSTALLER / script)}
+$e = [string][char]0xE9
+Write-NsFileSwap -Path '{replaced}' -Text ('caf' + $e)
+Write-NsFileSwap -Path '{out}\\empty.txt' -Text ''
+Write-NsFileSwap -Path '{out}\\new.json' -Text '{{"a":1}}'
+$fs = [IO.File]::Open('{held}', [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None)
+try {{
+    try {{ Write-NsFileSwap -Path '{held}' -Text 'NEW'; $r = 'no error' }}
+    catch {{ $r = 'threw' }}
+}}
+finally {{ $fs.Dispose() }}
+[IO.File]::WriteAllText('{result}', $r)
+"""
+    run_ps(tmp_path, body)
+    assert replaced.read_bytes() == b"caf\xc3\xa9" and inode(replaced) != before  # no BOM, swapped in whole
+    assert (out / "empty.txt").read_bytes() == b"" and (out / "new.json").read_bytes() == b'{"a":1}'
+    assert result.read_text() == "threw" and held.read_bytes() == b"OLD"
+    assert leftovers(out, {"replaced.json", "empty.txt", "new.json", "held.json"}) == set()
 
 
 # ----------------------------------------------------------------------------------------------------------
@@ -598,3 +729,30 @@ def test_the_uninstaller_still_finds_the_setup_host_while_its_run_file_is_swappe
     hold = Hold(run_file)
     threading.Timer(0.1, hold.release).start()
     assert uninstall.host_pids(tmp_path) == [os.getpid(), 4242]
+
+
+def test_both_run_file_readers_use_the_shared_retry_reader(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One retry rule for every product reader (`ns_common.atomic.retry_busy`), not a private copy each."""
+    from installer.stage2.web import uninstall
+    from ns_common import atomic
+    from ns_common.paths import Paths
+    from ns_supervisor import presence
+
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "apphost-dashboard.json").write_bytes(b'\xef\xbb\xbf{"hwnd":1,"pid":4242}')
+    (run_dir / "apphost-setup.json").write_bytes(b'\xef\xbb\xbf{"hwnd":1,"pid":4343}')
+    seen: list[str] = []
+    real = atomic.retry_busy
+
+    def recording(fn, **kwargs):  # type: ignore[no-untyped-def]
+        seen.append("retry_busy")
+        return real(fn, **kwargs)
+
+    monkeypatch.setattr(atomic, "retry_busy", recording)
+    assert presence.host_window_open(Paths(tmp_path), image=lambda pid: "powershell.exe") is True
+    assert uninstall.host_pids(tmp_path) == [os.getpid(), 4343]  # a BOM does not hide the pid
+    assert seen == ["retry_busy", "retry_busy"]
+    assert not hasattr(presence, "_read_run_file") and not hasattr(uninstall, "_read_run_file")

@@ -37,8 +37,14 @@ function Write-NsFileAtomic {
     else {
         $payload = $Bytes
     }
-    if ($null -eq ('NsCommon.AtomicFile' -as [type])) {
-        Add-Type -Namespace NsCommon -Name AtomicFile -MemberDefinition @'
+    # The swap call is compiled once per process (about 400 ms). Where the compile is not possible (a C#
+    # compiler blocked by security software or policy, a TEMP that cannot be written) the helper falls back
+    # to [IO.File]::Replace / Move, which swap the same way; without the fallback a launcher would write no
+    # state file at all and the Dashboard launcher would wait out its host-ready timeout for nothing.
+    $native = $null -ne ('NsCommon.AtomicFile' -as [type])
+    if (-not $native) {
+        try {
+            Add-Type -Namespace NsCommon -Name AtomicFile -MemberDefinition @'
 [System.Runtime.InteropServices.DllImport("kernel32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode, SetLastError = true)]
 private static extern bool MoveFileExW(string src, string dst, int flags);
 public static int Swap(string src, string dst) {
@@ -46,6 +52,9 @@ public static int Swap(string src, string dst) {
     return System.Runtime.InteropServices.Marshal.GetLastWin32Error();
 }
 '@
+            $native = $true
+        }
+        catch { Write-Verbose ('swap helper not compiled, using File.Replace: ' + $_.Exception.Message) }
     }
     $full = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Path)
     $dir = [System.IO.Path]::GetDirectoryName($full)
@@ -62,11 +71,24 @@ public static int Swap(string src, string dst) {
             $fs.Dispose()
         }
         for ($attempt = 1; ; $attempt++) {
-            $err = [NsCommon.AtomicFile]::Swap($tmp, $full)
+            $err = 0
+            $detail = ''
+            if ($native) { $err = [NsCommon.AtomicFile]::Swap($tmp, $full) }
+            else {
+                try {
+                    if ([System.IO.File]::Exists($full)) { [System.IO.File]::Replace($tmp, $full, [NullString]::Value) }
+                    else { [System.IO.File]::Move($tmp, $full) }
+                }
+                catch [System.IO.IOException], [System.UnauthorizedAccessException] {
+                    $err = 32
+                    $detail = $_.Exception.Message
+                }
+            }
             if ($err -eq 0) { break }
             # 5 access denied, 32 sharing violation, 33 lock violation: a reader has the target open right now
             if (($err -notin @(5, 32, 33)) -or $attempt -ge $Tries) {
-                throw (New-Object System.IO.IOException(('Could not replace ' + $full + ': ' + (New-Object System.ComponentModel.Win32Exception($err)).Message)))
+                if (-not $detail) { $detail = (New-Object System.ComponentModel.Win32Exception($err)).Message }
+                throw (New-Object System.IO.IOException(('Could not replace ' + $full + ': ' + $detail)))
             }
             Start-Sleep -Milliseconds ([Math]::Min(10 * $attempt, 100))
         }

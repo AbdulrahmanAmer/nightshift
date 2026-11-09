@@ -17,34 +17,17 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
-import time
 from collections.abc import Callable, Iterable
-from pathlib import Path
 from typing import Any
 
 import psutil
 
+from ns_common import atomic
 from ns_common.paths import Paths
 from ns_supervisor.childenv import child_env
 
 HOST_RUN_FILE = "apphost-dashboard.json"
 _NO_WINDOW: int = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-_READ_TRIES = 8
-
-
-def _read_run_file(path: Path) -> str:
-    """Text of the host's run file. The host swaps the file in whole (launchers/_common.ps1
-    `Write-NsFileAtomic`), and for a few milliseconds Windows refuses an open of the name: that is retried
-    here, so a window that is open is not taken for "no window" (same rule as `ns_common.atomic.retry_busy`).
-    """
-    for attempt in range(_READ_TRIES):
-        try:
-            return path.read_text(encoding="utf-8-sig")
-        except PermissionError:
-            if attempt == _READ_TRIES - 1:
-                raise
-            time.sleep(min(0.01 * 2**attempt, 0.1))
-    raise AssertionError("unreachable")
 
 
 def host_window_open(paths: Paths, image: Callable[[int], str | None] | None = None) -> bool:
@@ -52,7 +35,9 @@ def host_window_open(paths: Paths, image: Callable[[int], str | None] | None = N
     if image is None:
         from ns_supervisor.control import image_name as image
     try:
-        data = json.loads(_read_run_file(paths.home / "run" / HOST_RUN_FILE))
+        # the host swaps its run file in whole (launchers/_common.ps1 Write-NsFileAtomic); for a few
+        # milliseconds Windows refuses an open of the name, and that must not read as "no window"
+        data = json.loads(atomic.read_text_retry(paths.home / "run" / HOST_RUN_FILE, encoding="utf-8-sig"))
         pid = int(data["pid"])
     except (OSError, ValueError, KeyError, TypeError):
         return False

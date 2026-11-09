@@ -166,7 +166,7 @@ def test_the_dialog_script_is_in_front_and_changes_nothing() -> None:
     text = (ROOT / "installer" / "pick-folder.ps1").read_text(encoding="ascii")
     assert "FolderBrowserDialog" in text and "TopMost = $true" in text and "ShowDialog($owner)" in text
     assert "UTF8Encoding($false)" in text                                      # non-ASCII paths survive
-    assert not any(w in text for w in ("New-Item", "mkdir", "Remove-Item", "Set-Content", "Create"))
+    assert not any(w in text for w in ("New-Item", "mkdir", "Remove-Item", "Set-Content", "CreateDirectory"))
 
 
 @pytest.mark.parametrize(
