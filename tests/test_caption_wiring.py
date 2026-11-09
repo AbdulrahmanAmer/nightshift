@@ -419,27 +419,26 @@ def test_clip_captions_survive_a_sidecar_that_is_corrupt_or_the_wrong_shape(
     assert "cleaned" not in ctx.read_json("captions/report.json")["c1"]
 
 
-def test_a_resumed_older_job_reruns_captions_once_and_leaves_the_render_inputs_unchanged(
-    tmp_home: Path,
-) -> None:
-    """A job finished before the sidecar existed: no `clip_caption_words.json`, a stage state written with
-    the old input list. Resuming re-runs only the cheap caption stage (the input list changed); its report
-    is the same bytes, so `clip_render` (which hashes it) does not render again."""
+def test_a_resumed_older_job_does_not_run_captions_again_and_a_new_sidecar_does(tmp_home: Path) -> None:
+    """A job finished before the sidecar existed has no `clip_caption_words.json` and a stage state written
+    with the old input list. The sidecar is an optional input, so the input hash is the old one and resuming
+    skips the caption stage (and, through its report, the render). A job whose selection wrote cleaned words
+    does run it."""
 
     class OldCaptions(sc.CaptionsStage):
         inputs = ("transcript.json", "clip_plan.json", "clip_layout.json")
+        optional_inputs = ()
 
     ctx = _clip_job(tmp_home)
+    assert not ctx.file(sc.CAPTION_WORDS_FILE).exists()
+    assert inputs_hash(ctx, sc.CaptionsStage()) == inputs_hash(ctx, OldCaptions())  # nothing new in the hash
     assert run_stage(ctx, OldCaptions()) is True
-    assert run_stage(ctx, OldCaptions()) is False  # finished, unchanged: skipped
-    old_report = {
-        k: {f: v for f, v in e.items() if f != "cleaned"}
-        for k, e in ctx.read_json("captions/report.json").items()
-    }
-    ctx.write_json("captions/report.json", old_report)  # the shape the report had before this change
     before = ctx.file("captions/report.json").read_bytes()
     render_before = inputs_hash(ctx, sc.RenderStage())
-    assert run_stage(ctx, sc.CaptionsStage()) is True  # the one-time re-run on resume
+    assert run_stage(ctx, sc.CaptionsStage()) is False  # the older job is not redone on resume
     assert ctx.file("captions/report.json").read_bytes() == before
-    assert inputs_hash(ctx, sc.RenderStage()) == render_before  # nothing downstream sees a change
+    assert inputs_hash(ctx, sc.RenderStage()) == render_before
+    # a re-select wrote cleaned words
+    ctx.write_json(sc.CAPTION_WORDS_FILE, {"1": ["Hello", "there", "damn", "friend."]})
+    assert run_stage(ctx, sc.CaptionsStage()) is True
     assert run_stage(ctx, sc.CaptionsStage()) is False

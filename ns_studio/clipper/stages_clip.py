@@ -367,6 +367,9 @@ class SelectStage:
     name: str = "clip_select"
     tenant: Tenant = "llama"
     inputs: tuple[str, ...] = ("transcript.json", "analysis.json", "clip_params.json")
+    # `clip_caption_words.json` is written beside the plan but is not listed: an older job has no such file,
+    # and a listed output that is missing would make `--resume` ask the model for the whole selection again.
+    # A missing sidecar is harmless, the captions then show the recogniser's words.
     outputs: tuple[str, ...] = ("clip_plan.json",)
 
     def run(self, ctx: JobContext) -> None:
@@ -587,7 +590,10 @@ class CaptionsStage:
 
     name: str = "clip_captions"
     tenant: Tenant = None
-    inputs: tuple[str, ...] = ("transcript.json", "clip_plan.json", "clip_layout.json", CAPTION_WORDS_FILE)
+    inputs: tuple[str, ...] = ("transcript.json", "clip_plan.json", "clip_layout.json")
+    # Absent in a job made before the cleaned words existed: a missing file adds nothing to the hash, so
+    # resuming an older job does not run this stage again (and render nothing again).
+    optional_inputs: tuple[str, ...] = (CAPTION_WORDS_FILE,)
     outputs: tuple[str, ...] = ("captions/report.json",)
 
     def run(self, ctx: JobContext) -> None:

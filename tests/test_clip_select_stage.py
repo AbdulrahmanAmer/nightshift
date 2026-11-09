@@ -174,3 +174,20 @@ def test_cleaned_words_go_from_the_model_answer_through_both_stages_to_the_ass_f
     assert "\u2026" in marked and "\u2026" not in unmarked  # the sidecar key is the clip's k in the plan
     assert ctx.read_json("captions/report.json")[f"c{k}"]["cleaned"] is True
     assert "cleaned" not in ctx.read_json("captions/report.json")[f"c{k_plain}"]
+
+
+def test_the_fixture_answer_carries_caption_text_and_the_stage_cleans_with_it(tmp_home: Path) -> None:
+    """The fake model's fixture (prompt v4) holds `caption_text`, so the fake path cleans like a real run."""
+    ctx = _job(tmp_home, [])
+    ctx.services.llm = FakeLlm(LLM_FIXTURES, overrides={"clip_judge": {"ok": True, "reasons": []}})
+    sc.SelectStage().run(ctx)
+    plan = {c["title"]: c for c in ctx.read_json("clip_plan.json")}
+    boss = plan["Beat the boss with four laps"]
+    cleaned = ctx.read_json(sc.CAPTION_WORDS_FILE)
+    assert list(cleaned) == [str(boss["k"])]  # the other fixture moments have no text: they are not listed
+    tr = Transcript.model_validate(build_transcript())
+    heard = select.words_in(tr.words, boss["start_s"], boss["end_s"])
+    shown = cleaned[str(boss["k"])]
+    assert len(shown) == len(heard)  # one string per ASR word
+    assert shown != [w.w for w in heard]  # "circles!" and "laps," differ from what the recogniser wrote
+    assert "circles!" in shown and "laps," in shown
