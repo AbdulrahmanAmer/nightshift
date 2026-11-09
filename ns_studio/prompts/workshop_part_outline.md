@@ -24,4 +24,4 @@ One-line recap a new viewer needs: {{ part.recap }}
 {% endif %}
 The part must end on this cliff: {{ part.cliff }}
 Length: about {{ budget.minutes }} minutes, {{ budget.words }} spoken words at {{ budget.wpm }} words per minute, in about {{ budget.chapters }} chapters of roughly {{ budget.chapter_words }} words each (never fewer than 5, never more than 12).
-Return working_title (the part title) and chapters. Each chapter: n (1-based), title (2 to 5 words), beats (2 to 4 concrete events), cliff (one sentence naming the cliff the chapter ends on).
+Return working_title (the part title) and chapters. Each chapter: n (1-based), title (2 to 5 words), beats ({{ story_profile.chapter_beats_lo }} to {{ story_profile.chapter_beats_hi }} concrete events), cliff (one sentence naming the cliff the chapter ends on).

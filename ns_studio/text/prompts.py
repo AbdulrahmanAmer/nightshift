@@ -17,12 +17,16 @@ from ns_common.paths import Paths, contracts_dir, repo_root
 from ns_studio.context import JobContext
 from ns_studio.text.exemplars import load_exemplars
 from ns_studio.text.llm_retry import retry_once
+from ns_studio.text.story_profile import NORMAL, profile_of
 
 PROMPTS_DIR = Path(__file__).resolve().parents[1] / "prompts"
 FIXTURES = repo_root() / "tests" / "fixtures" / "llm"
 _ENV = jinja2.Environment(
     undefined=jinja2.StrictUndefined, trim_blocks=True, lstrip_blocks=True, autoescape=False
 )
+# The thresholds a prompt names (reading grade, beats per chapter) come from the job's story profile
+# (`_common_vars`); a caller that renders a prompt without one says what the prompts always said.
+_ENV.globals["story_profile"] = NORMAL
 
 
 def _arr(item: dict[str, Any], **extra: Any) -> dict[str, Any]:
@@ -211,6 +215,8 @@ class Prompt:
     schema: str | None
     system: str
     user_template: jinja2.Template
+    # set only when the system text uses template syntax (it names a number the story profile owns)
+    system_template: jinja2.Template | None = None
 
 
 def _stamp(path: Path) -> tuple[int, int]:
@@ -243,13 +249,15 @@ def _parse_prompt(name: str, path: str, stamp: tuple[int, int]) -> Prompt:
     if not isinstance(meta, dict) or not {"version", "thinking", "schema"} <= set(meta):
         raise ValueError(f"prompt {name}: front-matter needs version, thinking, schema")
     system, _, user = parts[2].partition("---USER---")
+    system = system.strip()
     return Prompt(
         name=name,
         version=int(meta["version"]),
         thinking=bool(meta["thinking"]),
         schema=meta["schema"],
-        system=system.strip(),
+        system=system,
         user_template=_ENV.from_string(user.strip()),
+        system_template=_ENV.from_string(system) if "{{" in system or "{%" in system else None,
     )
 
 
@@ -288,6 +296,20 @@ def render(prompt: Prompt, **vars: Any) -> str:
     return prompt.user_template.render(**vars)
 
 
+def render_system(prompt: Prompt, **vars: Any) -> str:
+    """The system text of `prompt`: as written, or rendered when it names a number the story profile owns.
+
+    A system text with template syntax that does not render (an owner's override with a stray brace) is sent
+    as written: a broken override must not stop the nightly run.
+    """
+    if prompt.system_template is None:
+        return prompt.system
+    try:
+        return prompt.system_template.render(**vars)
+    except jinja2.TemplateError:
+        return prompt.system
+
+
 def _common_vars(ctx: JobContext) -> dict[str, Any]:
     return {
         "channel": ctx.channel,
@@ -295,6 +317,7 @@ def _common_vars(ctx: JobContext) -> dict[str, Any]:
         "policy_rules": policy_rules_text(),
         "categories": unsafe_categories(),
         "exemplars": load_exemplars(ctx.channel.niche),
+        "story_profile": profile_of(ctx),
     }
 
 
@@ -331,12 +354,14 @@ def call_json(
     if not schema_key:
         raise ValueError(f"prompt {name} has no schema")
     ctx.note_prompt(name, p.version)
-    user = render(p, **(_common_vars(ctx) | vars))
+    all_vars = _common_vars(ctx) | vars
+    user = render(p, **all_vars)
+    system = render_system(p, **all_vars)
     return retry_once(
         ctx,
         lambda: ctx.services.llm.complete_json(
             prompt_name=fixture or name,
-            system=p.system,
+            system=system,
             user=user,
             schema=PROMPT_SCHEMAS[schema_key],
             thinking=p.thinking,
@@ -349,12 +374,14 @@ def call_text(ctx: JobContext, name: str, *, fixture: str | None = None, **vars:
     """Render prompt `name` and return the LLM's plain-text answer; records the prompt version."""
     p = load_prompt(name)
     ctx.note_prompt(name, p.version)
-    user = render(p, **(_common_vars(ctx) | vars))
+    all_vars = _common_vars(ctx) | vars
+    user = render(p, **all_vars)
+    system = render_system(p, **all_vars)
     return retry_once(
         ctx,
         lambda: ctx.services.llm.complete_text(
             prompt_name=fixture or name,
-            system=p.system,
+            system=system,
             user=user,
             thinking=p.thinking,
             **attempt_kwargs(ctx),

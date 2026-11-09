@@ -10,8 +10,11 @@ from __future__ import annotations
 
 from typing import Any
 
+#: The switches of an install made for testing (docs/DEV_MODE.md). Settings shows them; only setup writes them
+#: (from `answers.json`), so no call from the dashboard may set one.
+TEST_SWITCHES = ("dev_mode", "fake_footage", "tiny_story")
 #: Top-level keys the page does not edit as engine flags.
-HIDDEN = ("profile", "supervisor_port", "dev_mode", "fake_footage")
+HIDDEN = ("profile", "supervisor_port", *TEST_SWITCHES)
 
 
 def flatten(data: dict[str, Any], prefix: str = "") -> dict[str, Any]:
@@ -50,7 +53,14 @@ def _coerce(value: Any, current: Any) -> Any:
 
 
 def apply_flags(current: dict[str, Any], flags: dict[str, Any]) -> dict[str, Any]:
-    """`current` with the dotted `flags` (or nested objects) written into a copy."""
+    """`current` with the dotted `flags` (or nested objects) written into a copy.
+
+    Raises ValueError naming the switch when `flags` mentions one of the `TEST_SWITCHES`, as a plain or a
+    dotted key.
+    """
+    for key in flags:
+        if key.split(".")[0] in TEST_SWITCHES:
+            raise ValueError(key.split(".")[0])
     merged = _copy(current)
     for key, value in flags.items():
         if isinstance(value, dict):  # a nested object: merge it key by key
