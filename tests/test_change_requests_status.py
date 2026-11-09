@@ -48,6 +48,12 @@ def test_dashboard_service_entry_lists_every_difference_from_the_request() -> No
     assert "`persistent`" in status
     assert "no `--port 8100`" in status
     assert DEFAULT_PORT == DASHBOARD_PORT == 8100
+    # `_dashboard` is the builder; the name in `SERVICES` is "dashboard".
+    from ns_supervisor.services import SERVICES, _dashboard  # noqa: F401  (the symbol the entry names)
+
+    assert "`SERVICES` has `dashboard`, built by `_dashboard`" in status
+    assert "`_dashboard` is in `SERVICES`" not in status
+    assert "dashboard" in SERVICES
 
 
 def test_engineering_doc_does_not_promise_a_dashboard_job_schema() -> None:
@@ -94,6 +100,25 @@ def test_llama_build_reason_says_the_field_exists_but_nothing_sets_it() -> None:
     for rel, text in py_sources(*RUNTIME_DIRS).items():
         assert not setter.search(text), f"{rel} sets a build field: the CR-C1-3 reason is out of date"
         assert not reader.search(text), f"{rel} reads Runtime.llama.build: the CR-C1-3 reason is out of date"
+        # An alias (`cfg = rt.llama`, `llama = load_runtime(p).llama`) must not read `.build` either, and no
+        # attribute named `build` is read anywhere (`opts.build(...)` is a method call, which is allowed).
+        for alias in re.findall(r"^\s*(\w+)\s*=\s*[^=\r\n]*\.llama\s*$", text, re.M):
+            alias_read = rf"(?<!\w){alias}\.build(?!\w)|getattr\(\s*{alias}\s*,\s*[\"']build[\"']"
+            assert not re.search(alias_read, text), (
+                f"{rel} reads {alias}.build through an alias of Runtime.llama"
+            )
+        assert not re.search(r"\.build(?!\w)(?!\s*\()", text), f"{rel} reads a `.build` attribute"
+
+
+def test_paths_claim_in_the_llama_build_entry_names_only_what_exists() -> None:
+    status = status_of("CR-C1-3")
+    assert "(plus `stories`, `assistant_db`)" not in status
+    assert "removed again in 93cd8c8" in status
+    from ns_common.paths import Paths
+
+    for name in ("bin_uv", "bin_qwentts", "models_cv", "assistant_db"):
+        assert isinstance(getattr(Paths, name, None), property), f"Paths.{name} is missing"
+    assert not hasattr(Paths, "stories")
 
 
 def test_wizard_flags_claims_in_the_llama_pair_rejection_hold() -> None:
@@ -119,7 +144,17 @@ def test_wizard_flags_claims_in_the_llama_pair_rejection_hold() -> None:
 def test_dashboard_integration_reason_says_the_calls_were_replaced_not_never_made() -> None:
     status = status_of("CR-C9-5")
     assert "never called these names" not in status
-    assert "no longer calls these names (PR 41 replaced PR 12's lazy calls)" in status
+    assert "no longer calls these names" not in status
+    assert "no longer calls five of these names" in status and "PR 41 replaced PR 12's lazy calls" in status
+    # It still uses three of the names, in the places the Status line gives.
+    assert 'lazy("ns_supervisor.client", "SupervisorClient")' in source("ns_dashboard/adapters.py")
+    assert 'lazy("ns_supervisor.verify", "run_verify")' in source("ns_dashboard/adapters.py")
+    assert "from ns_supervisor.client import SupervisorClient" in source("ns_dashboard/supervisor_link.py")
+    assert 'FORMAT_STAGES["clip"]' in source("ns_dashboard/studio_bridge.py")
+    for phrase in ("`SupervisorClient`", "`run_verify`", 'FORMAT_STAGES["clip"]', "`clip_stage_names`"):
+        assert phrase in status, phrase
+    assert "def make_acquirer" in source("ns_dashboard/supervisor_link.py")
+    assert "def clip_stage_names" in source("ns_dashboard/studio_bridge.py")
     # The effect: today's adapters do not make the lazy calls PR 12 made, and none of the names is defined.
     adapters = source("ns_dashboard/adapters.py")
     for module, attr in (
@@ -152,6 +187,27 @@ def test_dashboard_job_entry_gives_the_real_schedule_path() -> None:
     assert "reads `params_json.params.schedule_at`" in status
     assert "reads `params_json.schedule_at`" not in status
     assert '["params"]["schedule_at"]' in source("ns_supervisor/scheduled.py")
+
+
+def test_job_record_note_lists_what_to_dict_returns() -> None:
+    note = next(line for line in entry("CR-C9-2").splitlines() if line.startswith("- **Note:**"))
+    for phrase in ("`stage`", "`step`", "`steps`", "`public_params`", "`script_words`", "`result`",
+                   "`cancel_requested`", "`schedule_at`", "`dismissed_at`"):  # fmt: skip
+        assert phrase in note, phrase
+    jobs = source("ns_dashboard/jobs.py")
+    to_dict = jobs.split("def to_dict(self)")[1].split("\ndef ")[0]
+    for key in (
+        "stage",
+        "step",
+        "steps",
+        "params",
+        "result",
+        "cancel_requested",
+        "schedule_at",
+        "dismissed_at",
+    ):
+        assert f'"{key}":' in to_dict, key
+    assert "public_params(self.params)" in to_dict and '"script_words"' in jobs
 
 
 def test_first_gpu_dll_request_is_marked_partly_applied_with_what_remains() -> None:
@@ -224,3 +280,8 @@ def test_ui_prefs_reader_is_the_settings_route() -> None:
     assert "prefs = load_ui_prefs(self.s.paths)" in settings
     assert '"owner_name": prefs["owner_name"]' in settings and '"ui_theme": prefs["theme"]' in settings
     assert '@app.get("/api/settings")' in source("ns_dashboard/server.py")
+    # The effect: the page reads the route on start, shows the name, applies the theme if none is saved.
+    assert "`ns_dashboard/ui/src/lib/app.tsx`" in status and "`ns-theme`" in status
+    app = source("ns_dashboard/ui/src/lib/app.tsx")
+    assert 'api.get("/settings")' in app and "setOwnerName(s.owner_name)" in app
+    assert 'store.get<Theme | null>("ns-theme", null) === null) setTheme(s.ui_theme)' in app
