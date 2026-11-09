@@ -4,8 +4,9 @@ The PowerShell launchers (`launchers/_common.ps1` `Write-NsFileAtomic`) and the 
 (`ns_common.atomic`) put a new file in `~ns<pid>-<thread>-<n>.tmp` beside its target and swap it in. A crash
 or a power cut between the two leaves that temporary file behind. `run` (the window host's run files, the
 engine's state) and `config` (window.json, opencode.json, runtime.json) are written that way and no writer
-there ever comes back to clean up, so the engine does it once when it starts (every launch starts or reuses
-it).
+there ever comes back to clean up, so the engine does it once each time its process starts. A launch that
+reuses an engine already running does not sweep, and the WebView2 profile folder (`state/webview2`) is not
+swept at all.
 
 Only the product's own temp name goes (`ns_common.atomic.sweep_stale_tmp`) and only when it is older than an
 hour, so a file a launcher is writing right now is never touched.

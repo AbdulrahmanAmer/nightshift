@@ -399,7 +399,8 @@ def test_the_score_readers_ride_out_a_file_that_is_refused_for_a_moment(tmp_home
     paths, db = _env(tmp_home)
     d = cal.write_generation(paths, db, "after-dark", _make_stories([8.0, 7.0, 9.0]))
     hold = _Hold(d / "stories.csv")
-    threading.Timer(0.03, hold.release).start()
+    # released well inside the reader's retry window (about 125 ms in all), so a slow runner cannot flake it
+    threading.Timer(0.01, hold.release).start()
     try:
         rows = cal._read_rows(d / "stories.csv")  # the old code turned a refused open into NS-E324 at once
     finally:

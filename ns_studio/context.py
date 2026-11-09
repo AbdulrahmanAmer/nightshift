@@ -109,7 +109,7 @@ def owner_script_of(job_dir: Path) -> bool:
     written: the stages never rewrite or extend it.
     """
     try:
-        data = json.loads((job_dir / "script_source.json").read_text(encoding="utf-8"))
+        data = json.loads(read_text_retry(job_dir / "script_source.json"))
     except (OSError, ValueError):
         return False
     return isinstance(data, dict) and data.get("owner_script") is True
@@ -159,7 +159,7 @@ class JobContext:
         """`series_context.json` of a series part (title, part numbers, end card, design); empty otherwise."""
         f = self.job_dir / "series_context.json"
         try:
-            data = json.loads(f.read_text(encoding="utf-8"))
+            data = json.loads(read_text_retry(f))
         except (OSError, ValueError):
             return {}
         return data if isinstance(data, dict) else {}

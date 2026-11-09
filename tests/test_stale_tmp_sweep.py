@@ -3,8 +3,9 @@
 `ns_common.atomic` names every temporary file `~ns<pid>-<thread>-<n>.tmp` and sweeps the ones older than an
 hour (`sweep_stale_tmp`), but only where a writer called it. The PowerShell launchers and the installer
 scripts make the same names in `run` and `config` of the home and in `%TEMP%`; nothing visited those
-folders. The engine now sweeps `run` and `config` when it starts (every launch starts or reuses it), and the
-setup server sweeps `%TEMP%` and the `Nightshift` folder of `%LOCALAPPDATA%` when it starts.
+folders. The engine now sweeps `run` and `config` when its process starts (a launch that reuses a running
+engine does not sweep), and the setup server sweeps `%TEMP%` and the `Nightshift` folder of
+`%LOCALAPPDATA%` when it starts.
 
 "Old" is made the way `tests/test_atomic_writes.py` makes it: the age limit is moved, never the real TEMP.
 """
