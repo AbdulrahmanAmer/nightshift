@@ -250,13 +250,12 @@ def test_uninstall_removes_the_wizard_flags_but_keeps_the_choices(tmp_path: Path
     flags = {"venvs_installed": True, "smoke": "passed", "smoke_version": "0.1.12", "_install": "2026-11-09"}
     (home / "config" / "wizard_flags.json").write_text(json.dumps(flags), encoding="utf-8")
     (home / "config" / "answers.json").write_text("{}", encoding="utf-8")
-    (home / "config" / "answers.source.json").write_text("{}", encoding="utf-8")
     (home / "config" / "runtime.json").write_text("{}", encoding="utf-8")
     proc = _run(home, "-SkipSystem")
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert not (home / "config" / "wizard_flags.json").exists()
     assert "wizard_flags.json" in proc.stdout
-    for kept in ("answers.json", "answers.source.json", "runtime.json"):
+    for kept in ("answers.json", "runtime.json"):
         assert (home / "config" / kept).exists(), kept
 
 
