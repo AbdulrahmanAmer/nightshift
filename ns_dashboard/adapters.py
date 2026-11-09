@@ -22,6 +22,7 @@ from typing import Any, Protocol
 import httpx
 
 from ns_common.acquire import Acquirer, Service
+from ns_common.atomic import read_text_retry
 from ns_common.config import load_runtime
 from ns_common.errors import NsError
 from ns_common.logging import NsLogger
@@ -867,7 +868,7 @@ CLONE_NOTE = "Cloned from your recording"
 def read_pending_voice(paths: Paths) -> dict[str, Any] | None:
     """`config/pending_voice.json` as the page shows it; None when absent, unreadable or already made."""
     try:
-        raw = json.loads((paths.config / "pending_voice.json").read_text(encoding="utf-8"))
+        raw = json.loads(read_text_retry(paths.config / "pending_voice.json"))
     except (OSError, ValueError):
         return None
     name = raw.get("name") if isinstance(raw, dict) else None

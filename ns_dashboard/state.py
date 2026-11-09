@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from ns_common.atomic import read_text_retry, write_text_atomic
 from ns_common.db import Db
 from ns_common.logging import NsLogger
 from ns_common.paths import Paths
@@ -171,7 +172,7 @@ def load_dashboard_settings(paths: Paths) -> dict[str, Any]:
     f = settings_file(paths)
     if f.exists():
         try:
-            raw = json.loads(f.read_text(encoding="utf-8"))
+            raw = json.loads(read_text_retry(f))
         except (OSError, ValueError):
             raw = {}
         if isinstance(raw, dict):
@@ -186,9 +187,7 @@ def save_dashboard_settings(paths: Paths, data: Mapping[str, Any]) -> dict[str, 
     """Merge `data` into the stored settings and return the result."""
     merged = load_dashboard_settings(paths)
     merged.update({k: v for k, v in data.items() if k in DEFAULT_SETTINGS})
-    f = settings_file(paths)
-    f.parent.mkdir(parents=True, exist_ok=True)
-    f.write_text(json.dumps(merged, indent=2) + "\n", encoding="utf-8")
+    write_text_atomic(settings_file(paths), json.dumps(merged, indent=2) + "\n")
     return merged
 
 
@@ -229,7 +228,7 @@ def load_ui_prefs(paths: Paths) -> dict[str, Any]:
     """
     out: dict[str, Any] = {"owner_name": None, "theme": None}
     try:
-        raw = json.loads(ui_prefs_file(paths).read_text(encoding="utf-8"))
+        raw = json.loads(read_text_retry(ui_prefs_file(paths)))
     except (OSError, ValueError):
         return out
     if not isinstance(raw, dict):

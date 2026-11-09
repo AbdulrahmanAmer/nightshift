@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 import ns_common
+from ns_common.atomic import read_text_retry
 from ns_common.config import load_install_state, load_runtime
 from ns_common.errors import NsError
 from ns_common.models import GpuStatus
@@ -269,7 +270,7 @@ class EngineService:
     def notes(self) -> list[dict[str, Any]]:
         """Notes the nightly run left when no toast could show (`run/morning_note.json`), oldest first."""
         try:
-            raw = json.loads((self.s.paths.home / "run" / "morning_note.json").read_text(encoding="utf-8"))
+            raw = json.loads(read_text_retry(self.s.paths.home / "run" / "morning_note.json"))
         except (OSError, ValueError):
             return []
         items = raw.get("notes") if isinstance(raw, dict) else None
