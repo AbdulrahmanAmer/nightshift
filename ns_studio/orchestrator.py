@@ -9,6 +9,7 @@ from pathlib import Path
 
 from ns_common.errors import NsError
 from ns_studio.context import JobContext, owner_script_of
+from ns_studio.media.job_formats import prepare_job_formats
 from ns_studio.stages import REGISTRY, Stage, Tenant, needs_embed, run_stage
 
 # Canonical stage order per format. Stage modules only `register()` their stages; the order lives here so
@@ -171,6 +172,7 @@ def run_job(ctx: JobContext, *, resume: bool = True, dry_run: bool = False) -> l
     stages = plan_job(plan_format(ctx.fmt, ctx.job_dir))
     if dry_run:
         return [s.name for s in stages]
+    prepare_job_formats(ctx)  # which format each video is drawn from, chosen once, before the first stage
     owner = f"studio:{ctx.job_id}"
     ran: list[str] = []
     for tenant, group in groupby(stages, key=_tenant_of):

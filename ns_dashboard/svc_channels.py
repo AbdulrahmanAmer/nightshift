@@ -14,6 +14,7 @@ from ns_dashboard.channels import validate_profile
 from ns_dashboard.common import now_iso, require_slug
 from ns_dashboard.errors import ApiError
 from ns_dashboard.state import AppState
+from ns_studio.media.job_formats import formats_in_use
 
 
 class ChannelsService:
@@ -93,6 +94,15 @@ class ChannelsService:
         ch = self.load(slug)
         check = validate_profile(ch.model_dump(mode="json"), self.load_all(), ch.voice)
         return {"profile": ch.model_dump(mode="json"), **_flat_warnings(check["warnings"])}
+
+    def formats_in_use(self, slug: str) -> dict[str, Any]:
+        """The format a new job of this channel draws each kind of video from, and why (Head decision D1).
+
+        `{"short": {...}, "long": {...}}`; each entry has `id`, `name`, `why` ("first allowed of that kind",
+        "series design", "default ..."), `source` (shipped, edited, yours) and `applied` (False for a kind
+        whose renders do not draw from the format yet). A problem is reported in the entry, never raised.
+        """
+        return formats_in_use(self.load(slug), self.s.paths)
 
     # --- writing ---
     def _mirror(self, ch: Channel) -> None:

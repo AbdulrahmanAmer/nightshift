@@ -112,11 +112,17 @@ def hook_check(video: Path, first_caption_s: float | None) -> QcCheck:
     )
 
 
-def aspect_check(video: Path, kind: Kind) -> QcCheck:
-    """1080x1920 for Shorts, 1920x1080 for masters."""
-    want = (1080, 1920) if kind == "short" else (1920, 1080)
+def aspect_check(video: Path, kind: Kind, want: tuple[int, int] | None = None) -> QcCheck:
+    """The frame size the video was rendered at (`want`), else 1080x1920 (Short) or 1920x1080 (master)."""
+    want = want or ((1080, 1920) if kind == "short" else (1920, 1080))
     got = ff.video_size(video)
     return QcCheck(passed=got == want, value=f"{got[0]}x{got[1]}", limit=f"{want[0]}x{want[1]}")
+
+
+def _canvas_of(info: dict[str, Any]) -> tuple[int, int] | None:
+    """The `canvas` a render report entry records; None for a report written before formats were read."""
+    c = info.get("canvas")
+    return (int(c[0]), int(c[1])) if isinstance(c, list | tuple) and len(c) == 2 else None
 
 
 def run_qc(
@@ -128,6 +134,7 @@ def run_qc(
     drift_ms: float | None = None,
     first_caption_s: float | None = None,
     long_max_s: float | None = None,
+    canvas: tuple[int, int] | None = None,
 ) -> QcResult:
     """All spec §7.7 checks for one video; `reason` lists the failed check names."""
     checks: dict[str, QcCheck] = {}
@@ -139,7 +146,7 @@ def run_qc(
         checks["black_frames"] = black_check(video)
         if kind == "short":
             checks["hook_first_1500ms"] = hook_check(video, first_caption_s)
-        checks["aspect"] = aspect_check(video, kind)
+        checks["aspect"] = aspect_check(video, kind, canvas)
     except NsError as e:
         checks["file_opens"] = QcCheck(passed=False, value=str(e.detail)[:120], limit="video opens")
     failed = [k for k, c in checks.items() if not c.passed]
@@ -176,6 +183,7 @@ class QcStage:
                 bucket_s=bucket,
                 drift_ms=cap.get("drift_ms"),
                 first_caption_s=cap.get("first_caption_s"),
+                canvas=_canvas_of(info),
             )
             ctx.write_json(f"qc/{item}.json", result.model_dump(mode="json"))
             summary[item] = {"passed": result.passed, "reason": result.reason}
@@ -264,7 +272,8 @@ def run_qc_master(ctx: JobContext) -> None:
     for item, info in rendered.items():
         bucket = buckets.get(item)
         results.append(run_qc(item, Path(info["path"]), "short", bucket_s=float(bucket) if bucket else None,
-                              drift_ms=info.get("drift_ms"), first_caption_s=info.get("first_caption_s")))
+                              drift_ms=info.get("drift_ms"), first_caption_s=info.get("first_caption_s"),
+                              canvas=_canvas_of(info)))
     summary: dict[str, Any] = {}
     failed: list[str] = []
     for r in results:

@@ -70,6 +70,14 @@ def _load(file: Path) -> dict[str, Any] | None:
     return data if isinstance(data, dict) else None
 
 
+def _canvas_summary(canvas: Any) -> Any:
+    """The canvas for the format cards: a file that leaves `fps` out (the shipped presets since P10a) shows
+    the model's default, which is also what a render uses when Settings has no frame rate of its own."""
+    if isinstance(canvas, dict) and "fps" not in canvas:
+        return {**canvas, "fps": 30}
+    return canvas
+
+
 def list_formats(paths: Paths) -> list[dict[str, Any]]:
     """Every format (shipped and user) with its validation state; user files shadow shipped ones."""
     found: dict[str, dict[str, Any]] = {}
@@ -94,7 +102,7 @@ def list_formats(paths: Paths) -> list[dict[str, Any]]:
                 "id": fid,
                 "name": d.get("name") or fid.replace("_", " ").title(),
                 "kind": d.get("kind"),
-                "canvas": d.get("canvas"),
+                "canvas": _canvas_summary(d.get("canvas")),
                 "source": entry["source"],
                 "valid": not errors,
                 "errors": errors,

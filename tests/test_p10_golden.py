@@ -95,3 +95,71 @@ def test_a_one_character_change_in_a_golden_file_would_fail(built: dict[str, str
     assert built["story_graph_dark_slowzoom"] == text
     assert built["story_graph_dark_slowzoom"] != text.replace("1080x1920", "1080x1921", 1)
     assert Path(mg.GOLDEN_DIR / "make_golden.py").exists()
+
+
+# ---------- the same texts through the new route (P10a): the shipped format as the renders call it ----------
+@pytest.fixture(scope="module")
+def via_format(tmp_path_factory: pytest.TempPathFactory) -> Iterator[dict[str, str]]:
+    """The story Short graph and Short ASS built from `get_format("short_9x16")` as the renders do."""
+    import os
+
+    from ns_studio.media import render
+    from ns_studio.media.caption_plan import AssOptions
+    from ns_studio.media.captions import build_ass
+    from ns_studio.media.formats import get_format
+    from ns_studio.media.presets import (
+        FONTS_DIR,
+        load_caption_styles,
+        load_visual_treatments,
+        visual_treatment,
+    )
+    from ns_studio.media.shotplan import frame_edges
+
+    root = tmp_path_factory.mktemp("golden-format")
+    saved = os.environ.get("NIGHTSHIFT_HOME")
+    os.environ["NIGHTSHIFT_HOME"] = str(root / "home")
+    try:
+        fmt = get_format("short_9x16")
+        canvas = (fmt.canvas.w, fmt.canvas.h)
+        shots = mg.fixed_shots()
+        edges = frame_edges([s.end for s in shots], mg.FPS)
+        ass_path = root / "captions" / "s1.ass"
+        empty = root / "no-fonts"
+        empty.mkdir()
+        words = mg.fixed_words()
+        story_words = [w for w in words if w.sentence_idx >= 0]
+        out: dict[str, str] = {}
+        for name in sorted(load_visual_treatments()):
+            out[f"story_graph_{name}"] = render.build_graph(
+                shots, edges, canvas, mg.FPS, visual_treatment(name), ass_path, FONTS_DIR, fmt
+            )
+        story = AssOptions.for_format(fmt, emphasis={0: "doorbell"}, mask_profanity=False)
+        derived = AssOptions.for_format(fmt, emphasis={1: "clips"}, mask_profanity=True)
+        for st in sorted(load_caption_styles()):
+            out[f"short_ass_{st}"] = build_ass(story_words, st, fonts_dir=empty, **story.kwargs())
+            out[f"derived_short_ass_{st}"] = build_ass(words, st, fonts_dir=empty, **derived.kwargs())
+        yield {k: mg.normalise(v, root) for k, v in out.items()}
+    finally:
+        if saved is None:
+            os.environ.pop("NIGHTSHIFT_HOME", None)
+        else:
+            os.environ["NIGHTSHIFT_HOME"] = saved
+
+
+@pytest.mark.parametrize("stem", stems("story_graph_"))
+def test_story_short_graph_from_the_shipped_preset_matches_origin_main(
+    via_format: dict[str, str], stem: str
+) -> None:
+    assert via_format[stem] == golden(stem)
+
+
+@pytest.mark.parametrize("stem", stems("short_ass_"))
+def test_short_ass_from_the_shipped_preset_matches_origin_main(via_format: dict[str, str], stem: str) -> None:
+    assert via_format[stem] == golden(stem)
+
+
+@pytest.mark.parametrize("stem", stems("derived_short_ass_"))
+def test_derived_short_ass_from_the_shipped_preset_matches_origin_main(
+    via_format: dict[str, str], stem: str
+) -> None:
+    assert via_format[stem] == golden(stem)
