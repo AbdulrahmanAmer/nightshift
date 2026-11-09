@@ -212,6 +212,8 @@ def _check_clips(
     portrait = size[1] > size[0]
     original = _sha(footage.media_path(fake.folder, portrait))
     folder = ctx.home / "cache" / "clips" / source  # where the product downloads a source's clips
+    # Record every clip for the cleanup BEFORE any check, so a failed check never leaves a clip behind.
+    made.extend((c.get("source") or source, c.get("clip_id"), Path(str(c.get("path")))) for c in clips)
     ctx.check(
         answer.get("downloaded") == want and len(clips) == want and len(answer.get("paths") or []) == want,
         f"{want} {source} clip(s) downloaded",
@@ -221,7 +223,6 @@ def _check_clips(
     )
     for clip in clips:
         path = Path(clip["path"])
-        made.append((clip["source"], clip["clip_id"], path))
         found = db_rows(
             ctx,
             "select local_path, width, height, license from clips where source=? and clip_id=?",
@@ -294,7 +295,9 @@ def run(ctx: Any) -> None:
         _prove_b13(ctx, fake, base, tokens, made, stored)
         _prove_b14(ctx, fake, base, tokens, made)
     finally:
-        _cleanup(ctx, base, fake, stored, made)
+        # No key was stored before the run (checked above), so both are cleared whatever happened: a failed
+        # check never leaves GOODKEY in the key store, which would make every later run skip.
+        _cleanup(ctx, base, fake, ["pexels", "pixabay"], made)
 
     after = _stored_keys(ctx)
     marks = [f"%{t}%" for t in tokens.values()]
