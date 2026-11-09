@@ -255,7 +255,7 @@ def _daily(env: jobs.Env, dry_run: bool, policy: bool | None) -> None:
         for dj in due:
             typer.echo(f"{dj.channel.slug}: {dj.count} x {dj.fmt} ({dj.plan.describe()})")
         return
-    notifier = None if env.fake else notifications.default_notifier()
+    notifier = notifications.nightly_notifier(env.paths, env.log)
     try:
         report = run_daily(env, now=now, notifier=notifier)
     except (NsError, StudioError) as e:  # the night itself broke (not one job): say so before exiting
