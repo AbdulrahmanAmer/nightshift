@@ -62,6 +62,43 @@ def test_status_and_settings_carry_the_mode_and_the_contract_accepts_it(tmp_home
     assert Status.model_validate(body).schedule_mode == "interactive_only"  # the contract (and its schema)
 
 
+# F-E11: `schedule_registered` is "an enabled task exists", not "schedule.json exists"; interactive-only
+# is a task that exists (the UI keeps saying so) and `schedule_mode` carries the difference.
+SHAPES: list[tuple[str, object | None, str, bool]] = [
+    # (case, schedule.json content (dict is dumped, str written raw, None = no file), mode, registered)
+    ("no file", None, "none", False),
+    ("corrupt file", "{broken", "none", False),
+    ("old file without a mode", {"run_time": "03:00", "task_name": "x"}, "registered", True),
+    ("registered", {"run_time": "03:00", "task_name": "x", "mode": "registered"}, "registered", True),
+    ("s4u spelling", {"run_time": "03:00", "task_name": "x", "mode": "s4u"}, "registered", True),
+    ("interactive only", {"run_time": "03:00", "task_name": "x", "mode": "interactive_only"},
+     "interactive_only", True),
+    ("disabled (dev install)", {"run_time": "03:00", "task_name": "x", "mode": "disabled"},
+     "disabled", False),
+    ("bad time", {"run_time": "25:99", "task_name": "x", "mode": "registered"}, "none", False),
+]
+
+
+@pytest.mark.parametrize(("case", "content", "mode", "registered"), SHAPES, ids=[s[0] for s in SHAPES])
+def test_settings_report_a_task_as_registered_only_when_an_enabled_task_exists(
+    tmp_home: Path, case: str, content: object | None, mode: str, registered: bool
+):
+    client, state = make_env(tmp_home)
+    if content is not None:
+        state.paths.config.mkdir(parents=True, exist_ok=True)
+        text = content if isinstance(content, str) else json.dumps(content)
+        schedule_file(state.paths).write_text(text, encoding="utf-8")
+    settings = client.get("/api/settings").json()
+    assert settings["schedule_registered"] is registered
+    assert settings["schedule_mode"] == mode
+    assert read_schedule_mode(state.paths) == mode
+    status = client.get("/api/status").json()
+    assert status["schedule_registered"] is registered
+    # the Status contract has no `disabled`; a task that never fires reads as no task there
+    assert status["schedule_mode"] == ("none" if mode == "disabled" else mode)
+    assert Status.model_validate(status).schedule_registered is registered
+
+
 def test_the_contract_rejects_an_unknown_mode():
     with pytest.raises(ValueError, match="schedule_mode"):
         bad = {"engine": {"state": "idle", "detail": "", "reachable": True}, "schedule_mode": "x"}

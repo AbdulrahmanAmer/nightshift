@@ -12,6 +12,7 @@ from typing import Any
 
 import pytest
 
+from ns_common.errors import NsError
 from ns_common.paths import Paths
 from ns_dashboard import studio_job
 from ns_dashboard.adapters import RealRunAdapter, studio_owners
@@ -893,8 +894,9 @@ def test_a_failed_link_download_job_leaves_nothing_behind(tmp_home: Path, tmp_pa
     video.write_bytes(b"d" * 100)
     _store, ctl = make_ctl(paths, "clip")
     adapter = RealClipAdapter(paths, RecordingLink(), runner=runner_for(script, tmp_path))
-    with pytest.raises(RuntimeError):
+    with pytest.raises(NsError) as err:
         adapter.clip(ctl, video, "src-20261102-bbbb", {"template": "auto"})
+    assert err.value.code == "NS-E327"
     assert not folder.exists()
 
 

@@ -54,14 +54,20 @@ def write_run_time(paths: Paths, run_time: str, mode: str = "registered") -> Non
 
 
 def read_schedule_mode(paths: Paths) -> str:
-    """`registered`, `interactive_only` or `none` (no task). A file without `mode` counts as `registered`."""
-    if read_run_time(paths) is None:
-        return "none"
+    """`registered`, `interactive_only`, `disabled` or `none` (no task, or a file with no usable time).
+
+    Only `registered` is a task that wakes the PC and runs while the owner is away. A file without
+    `mode` counts as `registered` (written before the mode existed).
+    """
     try:
-        mode = json.loads(schedule_file(paths).read_text(encoding="utf-8")).get("mode")
-    except (OSError, ValueError, AttributeError):
-        return "registered"
-    return "interactive_only" if mode == "interactive_only" else "registered"
+        data = json.loads(schedule_file(paths).read_text(encoding="utf-8"))
+        run_time = data["run_time"]
+        mode = data.get("mode")
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return "none"
+    if not (isinstance(run_time, str) and valid_time(run_time)):
+        return "none"
+    return mode if mode in ("interactive_only", "disabled") else "registered"
 
 
 def clear_run_time(paths: Paths) -> None:

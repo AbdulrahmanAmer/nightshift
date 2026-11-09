@@ -19,14 +19,15 @@ from typing import Any
 
 import pytest
 
-from ns_common.errors import NsError
+from ns_common.errors import NsError, describe
+from ns_common.logging import NsLogger
 from ns_common.paths import Paths, repo_root
 from ns_dashboard import studio_job
 from ns_dashboard.adapters import RealClipAdapter, RealRunAdapter, RealSeriesAdapter, RealVoiceMaker
 from ns_dashboard.events import EventHub
-from ns_dashboard.jobs import JobCancelled, JobControl, JobStore
+from ns_dashboard.jobs import JobCancelled, JobControl, JobStore, JobWorker
 from ns_dashboard.state import open_db
-from ns_dashboard.studio_runner import ENTRY, StudioRunner, parse_event, studio_python
+from ns_dashboard.studio_runner import ENTRY, StudioRunner, failure_error, parse_event, studio_python
 from ns_dashboard.supervisor_link import SupervisorLink
 
 FAKE = r'''
@@ -61,6 +62,9 @@ elif mode == "text":
     emit("result", text="  this is what I said ")
 elif mode == "coded":
     emit("error", code="NS-E202", detail="whisper failed to load: No module named 'faster_whisper'", message="x")
+    sys.exit(1)
+elif mode == "uncoded":
+    emit("error", code=None, detail="", message="KeyError: 'voice'")
     sys.exit(1)
 elif mode == "crash":
     print("Traceback (most recent call last): boom", file=sys.stderr)
@@ -178,10 +182,24 @@ def test_a_coded_failure_in_the_child_is_an_ns_error(fake: Path, tmp_path: Path,
     assert err.value.code == "NS-E202" and "faster_whisper" in err.value.detail
 
 
-def test_a_crash_reports_the_exit_code_and_the_last_output(fake: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("FAKE_MODE", "crash")
-    with pytest.raises(RuntimeError, match=r"exit 3.*Traceback"):
+def test_an_uncoded_failure_in_the_child_becomes_ns_e327(fake: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("FAKE_MODE", "uncoded")
+    with pytest.raises(NsError) as err:
         runner_for(fake, tmp_path).run("run", {})
+    assert err.value.code == "NS-E327" and "KeyError: 'voice'" in err.value.detail
+    assert err.value.definition.hint  # the Queue card shows the errors.json hint
+
+
+def test_an_unknown_code_in_the_child_becomes_ns_e327_with_the_code_in_the_detail():
+    err = failure_error({"ev": "error", "code": "NS-E999", "detail": "x", "message": "Boom: x"})
+    assert isinstance(err, NsError) and err.code == "NS-E327" and "NS-E999" in err.detail
+
+
+def test_a_crash_becomes_ns_e327_with_the_exit_code_and_the_last_output(fake: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("FAKE_MODE", "crash")
+    with pytest.raises(NsError, match=r"exit 3.*Traceback") as err:
+        runner_for(fake, tmp_path).run("run", {})
+    assert err.value.code == "NS-E327"
 
 
 def test_a_missing_interpreter_is_a_plain_error(tmp_home: Path, tmp_path: Path):
@@ -253,6 +271,34 @@ def test_run_adapter_reports_stages_and_job_ids_through_the_job(fake: Path, tmp_
     args = recorded(tmp_path)["args"]
     assert args["channel"] == "after-dark" and args["fmt"] == "shorts_only" and args["count"] == 2
     assert args["fake"] == ["llm", "tts"] and args["supervisor_url"] == "http://127.0.0.1:8099"
+
+
+@pytest.mark.parametrize(
+    ("mode", "code"), [("uncoded", "NS-E327"), ("crash", "NS-E327"), ("coded", "NS-E202")]
+)
+def test_the_job_record_of_a_failed_child_carries_a_code_and_a_hint(
+    fake: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str, code: str
+):
+    """An uncoded child error is stored as NS-E327 with the errors.json hint; a coded one is untouched."""
+    monkeypatch.setenv("FAKE_MODE", mode)
+    paths = Paths.from_env()
+    store = JobStore(open_db(paths))
+    adapter = RealRunAdapter(
+        paths, SupervisorLink("http://127.0.0.1:9", timeout_s=0.2), runner=runner_for(fake, tmp_path)
+    )
+
+    def handler(ctl: JobControl) -> dict[str, Any]:
+        adapter.run(ctl, "after-dark", "shorts_only", 1)
+        return {}
+
+    worker = JobWorker(store, {"run": handler}, EventHub(), NsLogger("dashboard", paths.logs))
+    job = store.create("run", "after-dark", {})
+    assert worker.run_next()
+    rec = store.get(job.job_id)
+    assert rec is not None and rec.status == "failed" and rec.result is not None
+    assert rec.result["error"]["code"] == code
+    assert rec.result["error"]["hint"] == describe(code).hint
+    assert code in rec.message
 
 
 def test_run_adapter_stops_the_child_when_the_owner_cancels(fake: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):

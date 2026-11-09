@@ -10,12 +10,13 @@ from pathlib import Path
 from typing import Annotated, Any
 
 import typer
+from pydantic import ValidationError
 from typer.core import TyperGroup
 
 from ns_common import __version__
 from ns_common.errors import NsError
 from ns_common.keepawake import keep_awake
-from ns_common.models import Channel, Voice
+from ns_common.models import Channel, JobRunRequest, Voice
 from ns_studio import dashboard_cmd, jobs, notifications, review, voice_setup
 from ns_studio.calibrate import run as calibration
 from ns_studio.channels import cadence, crud
@@ -25,7 +26,7 @@ from ns_studio.daily import run_daily
 from ns_studio.errors import UNEXPECTED, StudioError, describe_unexpected
 from ns_studio.footage_keys import require_footage_key
 from ns_studio.learn import importer, reweight, status
-from ns_studio.orchestrator import plan_job, run_job
+from ns_studio.orchestrator import OWNER_SCRIPT_FORMATS, plan_job, run_job
 from ns_studio.policy.regen import run_job_guarded
 from ns_studio.series import cli as series_cli
 
@@ -146,17 +147,26 @@ def run_cmd(
     policy: Annotated[
         bool | None, typer.Option("--policy/--no-policy", help="Policy gates (default: on when available).")
     ] = None,
+    script: Annotated[
+        Path | None,
+        typer.Option("--script", help="Text file with a story to narrate as one video, as written."),
+    ] = None,
+    title: Annotated[str | None, typer.Option("--title", help="Working title for --script.")] = None,
     fake_services: FakeOpt = None,
 ) -> None:
     """Create and run jobs through the stage pipeline."""
     fake = fake_set(fake_services)
     if fmt is not None and fmt not in jobs.FORMATS:
         raise typer.BadParameter(f"--format must be one of {', '.join(jobs.FORMATS)}")
+    script_text = _script_text(script, title, count, daily=daily, resume=resume, fmt=fmt, channel=channel)
     with guarded():
         jobs.load_stage_modules()
         if dry_run and resume is None and not daily:
             jobs.prepare_plan(fmt or "shorts_only", policy)
-            names = [s.name for s in plan_job(fmt or "shorts_only")]
+            plan_fmt = fmt or "shorts_only"
+            if script_text:
+                plan_fmt = OWNER_SCRIPT_FORMATS[plan_fmt]
+            names = [s.name for s in plan_job(plan_fmt)]
             typer.echo("plan: " + " -> ".join(names))
             return
         env = jobs.open_env(fake)
@@ -167,13 +177,44 @@ def run_cmd(
             return
         with keep_awake():  # the PC must not sleep under a run (`run_daily` holds its own)
             _run_jobs(
-                env, fmt=fmt, channel=channel, count=count, dry_run=dry_run, resume=resume, policy=policy
+                env, fmt=fmt, channel=channel, count=count, dry_run=dry_run, resume=resume, policy=policy,
+                script=script_text, title=title,
             )
+
+
+def _script_text(
+    script: Path | None, title: str | None, count: int, *, daily: bool, resume: str | None, fmt: str | None,
+    channel: str | None,
+) -> str | None:
+    """The story of `--script <file>`, checked with `JobRunRequest` (the same rules as the dashboard).
+
+    Usage errors (exit 2): a title without a script, a script with `--daily` or `--resume`, a count other
+    than 1, a file that cannot be read, a text outside 200 to 30000 characters.
+    """
+    if script is None:
+        if title is not None:
+            raise typer.BadParameter("--title goes with --script")
+        return None
+    if daily or resume is not None:
+        raise typer.BadParameter("--script cannot be combined with --daily or --resume")
+    if fmt is not None and fmt not in OWNER_SCRIPT_FORMATS:
+        raise typer.BadParameter("--script needs --format shorts_only or master_first")
+    try:
+        text = script.read_text(encoding="utf-8-sig")
+    except (OSError, UnicodeDecodeError) as e:
+        raise typer.BadParameter(f"cannot read {script}: {e}") from e
+    try:
+        req = JobRunRequest(
+            channel=channel or "any", format=fmt, count=count, script=text, script_title=title
+        )
+    except ValidationError as e:
+        raise typer.BadParameter(str(e.errors()[0]["msg"]).removeprefix("Value error, ")) from e
+    return req.script
 
 
 def _run_jobs(
     env: jobs.Env, *, fmt: str | None, channel: str | None, count: int, dry_run: bool, resume: str | None,
-    policy: bool | None,
+    policy: bool | None, script: str | None = None, title: str | None = None,
 ) -> None:
     """The `--resume` and plain branches of `studio run`."""
     if resume is not None:
@@ -186,12 +227,18 @@ def _run_jobs(
         typer.echo(f"job {ctx.job_id} resumed: {len(ran)} stages visited")
         return
     rng = random.Random()
-    for ch in jobs.resolve_channels(env, channel):
+    channels = jobs.resolve_channels(env, channel)
+    if script is not None and len(channels) != 1:
+        raise typer.BadParameter("--script makes one video: name the channel with --channel")
+    for ch in channels:
         job_fmt = fmt or ch.format
         jobs.prepare_plan(job_fmt, policy)
         for _ in range(count):
             require_footage_key(env.services)  # before any GPU work: `clips` would fail an hour in
-            ctx = jobs.make_job(env, ch, job_fmt, rng=rng)
+            if script is not None:
+                ctx = jobs.make_script_job(env, ch, job_fmt, script, title, rng=rng)
+            else:
+                ctx = jobs.make_job(env, ch, job_fmt, rng=rng)
             ran = run_job_guarded(ctx)
             typer.echo(f"job {ctx.job_id} done: {len(ran)} stages ({ch.slug}, {ctx.fmt})")
 

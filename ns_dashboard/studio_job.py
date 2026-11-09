@@ -112,13 +112,18 @@ def _common(args: dict[str, Any]) -> dict[str, Any]:
 
 
 def do_run(args: dict[str, Any]) -> dict[str, Any]:
-    """`studio run --channel <channel> --format <fmt> --count <count>` (with the regenerate-once policy)."""
+    """`studio run --channel <channel> --format <fmt> --count <count>` (with the regenerate-once policy).
+
+    With `script` (the story text of a `JobRunRequest`) one job is made from it, as `studio run --script`.
+    """
     from ns_dashboard import studio_bridge
 
     seen = SeenJobs()
     ids = studio_bridge.run_story_jobs(
         str(args["channel"]), str(args["fmt"]), args.get("count"), report, seen=seen,
-        resume_job_id=str(args["resume_job_id"]) if args.get("resume_job_id") else None, **_common(args),
+        resume_job_id=str(args["resume_job_id"]) if args.get("resume_job_id") else None,
+        script=str(args["script"]) if args.get("script") else None,
+        script_title=str(args["script_title"]) if args.get("script_title") else None, **_common(args),
     )
     return {"output_ids": ids, "job_ids": list(seen)}
 

@@ -101,12 +101,29 @@ def scheduled_run_time(paths: Paths) -> str | None:
 
 
 def scheduled_mode(paths: Paths) -> str:
-    """`registered`, `interactive_only` (NS-W205: runs only while signed in) or `none` (no nightly task)."""
+    """`registered`, `interactive_only` (NS-W205: runs only while signed in), `disabled` (a dev install's
+    task that never fires) or `none` (no nightly task)."""
     try:
         from ns_supervisor.schedule_cfg import read_schedule_mode
     except ImportError:
         return "none"
     return read_schedule_mode(paths)
+
+
+def schedule_is_registered(paths: Paths) -> bool:
+    """True when Windows holds an enabled 'Nightshift Daily' task: `registered` or `interactive_only`.
+
+    `schedule.json` existing is not enough: a dev install's `disabled` task never fires, so the page must
+    not say a task exists. An `interactive_only` task (NS-W205) does exist and runs whenever the owner is
+    signed in, so it stays registered here and `schedule_mode` carries the difference.
+    """
+    return scheduled_mode(paths) in ("registered", "interactive_only")
+
+
+def status_schedule_mode(paths: Paths) -> str:
+    """`scheduled_mode` as the Status contract spells it: it has no `disabled`, so that reads as `none`."""
+    mode = scheduled_mode(paths)
+    return "none" if mode == "disabled" else mode
 
 
 def load_dashboard_settings(paths: Paths) -> dict[str, Any]:

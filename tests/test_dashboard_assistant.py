@@ -66,7 +66,8 @@ def test_every_descriptor_validates():
         fields = {f for _, f, _, _ in string.Formatter().parse(s.confirm_text) if f}
         if s.side_effect:
             assert s.confirm_text.strip(), f"{s.name} needs confirm_text"
-            assert fields <= set(props) | {"source"}, f"{s.name} confirm_text uses unknown fields {fields - set(props)}"
+            derived = {"source", "words"}  # `render_confirm` fills these from the url/path and from the script text
+            assert fields <= set(props) | derived, f"{s.name} confirm_text uses unknown fields {fields - set(props)}"
         else:
             assert s.confirm_text == "", f"{s.name} is read-only but has confirm_text"
 

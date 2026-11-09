@@ -43,6 +43,30 @@
       ],
       "default": null,
       "title": "Schedule At"
+    },
+    "script": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Script"
+    },
+    "script_title": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Script Title"
     }
   },
   "required": [
