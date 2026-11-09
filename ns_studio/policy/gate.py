@@ -11,7 +11,7 @@ from ns_studio.orchestrator import FORMAT_STAGES
 from ns_studio.policy import judge
 from ns_studio.policy.base import Check, Gate
 from ns_studio.policy.final_checks import compute_advice, final_checks
-from ns_studio.policy.text_checks import text_checks
+from ns_studio.policy.text_checks import SelfSimilarity, recheck_ledger, text_checks
 from ns_studio.stages import Tenant, register
 
 TEXT_STAGE = "policy_text"
@@ -78,6 +78,12 @@ class PolicyTextStage:
     def run(self, ctx: JobContext) -> None:
         """Evaluate the text checks."""
         run_gate(ctx, "text", self.checks)
+
+    def recheck_on_skip(self, ctx: JobContext) -> None:
+        """Called by `run_stage` when a resume skips this stage: a video of the same story may exist now."""
+        for chk in self.checks:
+            if isinstance(chk, SelfSimilarity):
+                recheck_ledger(ctx, chk)
 
 
 class PolicyFinalStage:

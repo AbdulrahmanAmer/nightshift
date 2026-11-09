@@ -306,3 +306,65 @@ def test_cli_prints_the_script_hint_not_the_idea_hint(capsys: pytest.CaptureFixt
         raise err
     out = capsys.readouterr().err
     assert "hint: Change the script, or use that video." in out and "new idea" not in out
+
+
+# ------------------------------------------------ D-25 review: a resumed job meets the ledger again
+def _text_stage():
+    from ns_studio.policy.gate import PolicyTextStage
+
+    return PolicyTextStage([tc.SelfSimilarity(skip_when_fake=False)])
+
+
+def test_job_resumed_after_the_same_script_finished_is_blocked_not_finished(tmp_home: Path):
+    """A fails after policy_text, B (same script) finishes, A is resumed: A must not make a second copy."""
+    from ns_studio.stages import StageState, inputs_hash, run_stage
+
+    ctx = _script_ctx(tmp_home)  # job A
+    _insert_story(ctx, ctx.job_id, "after-dark", STORY, finished=False)  # A's story row, no video
+    stage = _text_stage()
+    assert run_stage(ctx, stage) is True  # A passes the text gate and goes on to voice, where it fails
+    assert StageState.load(ctx.job_dir).is_done("policy_text", inputs_hash(ctx, stage))
+    _insert_story(ctx, "engine-test-20261109-bbbb", "after-dark", STORY)  # B finished: it has an outputs row
+    with pytest.raises(NsError) as ei:  # A is resumed: policy_text would be skipped
+        run_stage(ctx, stage)
+    err = ei.value
+    assert err.code == "NS-E605" and "engine-test-20261109-bbbb" in err.detail
+    assert "change the script" in hint_of(err).lower() and "new idea" not in hint_of(err)
+
+
+def test_resumed_job_is_not_blocked_while_the_other_copy_never_finished(tmp_home: Path):
+    from ns_studio.stages import run_stage
+
+    ctx = _script_ctx(tmp_home)
+    _insert_story(ctx, ctx.job_id, "after-dark", STORY, finished=False)
+    stage = _text_stage()
+    assert run_stage(ctx, stage) is True
+    _insert_story(ctx, "engine-test-20261109-bbbb", "after-dark", STORY, finished=False)
+    assert run_stage(ctx, stage) is False  # skipped as before: nothing finished, nothing to repeat
+
+
+def test_resumed_idea_job_is_blocked_with_the_idea_hint(tmp_home: Path):
+    from ns_studio.stages import run_stage
+
+    ctx = make_ctx(tmp_home, fake={"embed"})
+    _job(ctx)
+    _insert_story(ctx, ctx.job_id, "after-dark", STORY, finished=False)
+    stage = _text_stage()
+    assert run_stage(ctx, stage) is True
+    _insert_story(ctx, "other-20261001-aaaa", "after-dark", STORY)
+    with pytest.raises(NsError) as ei:
+        run_stage(ctx, stage)
+    assert ei.value.code == "NS-E605" and "a new idea will be drawn" in hint_of(ei.value)
+
+
+def test_outbox_refuses_to_record_a_second_copy_of_a_finished_story(tmp_home: Path):
+    """The last stop before the outputs row: B finished while A was rendering."""
+    from ns_studio.media.outbox import OutboxStage
+
+    ctx = _script_ctx(tmp_home)
+    _insert_story(ctx, ctx.job_id, "after-dark", STORY, finished=False)
+    _insert_story(ctx, "engine-test-20261109-bbbb", "after-dark", STORY)
+    with pytest.raises(NsError) as ei:
+        OutboxStage().run(ctx)
+    assert ei.value.code == "NS-E605" and "change the script" in hint_of(ei.value).lower()
+    assert ctx.db.query("select 1 from outputs where job_id=?", (ctx.job_id,)) == []

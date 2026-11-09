@@ -8,6 +8,7 @@ from collections.abc import Callable
 from typing import Any
 
 from ns_common.embed_client import cosine, embed_window, from_blob
+from ns_common.errors import NsError
 from ns_common.llm_client import FakeLlm
 from ns_common.models import PolicyCheck
 from ns_common.paths import Paths
@@ -215,6 +216,10 @@ class SelfSimilarity(Check):
         if not text.strip():
             return ok("no story text")
         vec = ctx.services.embed.embed([embed_window(text, ctx.runtime.embed.batch_size)])[0]
+        return self.compare(ctx, vec)
+
+    def compare(self, ctx: JobContext, vec: list[float]) -> PolicyCheck:
+        """Compare the embedding `vec` of this job's story with the stories of finished videos."""
         rows = ctx.db.query(
             "select s.job_id, s.channel, s.embedding from stories s where s.job_id != ? "
             "and s.embedding is not null and exists (select 1 from outputs o where o.job_id = s.job_id)",
@@ -235,6 +240,31 @@ class SelfSimilarity(Check):
         if ctx.owner_script:
             return fail(f"this script was already made into the finished video of {worst[1]}")
         return fail(f"too similar to {worst[1]}")
+
+
+def recheck_ledger(ctx: JobContext, check: SelfSimilarity) -> None:
+    """Meet the repeat ledger again when a job is resumed; raises the same NS-E605 the text gate raises.
+
+    `run_stage` skips `policy_text` on a resume (its inputs are unchanged), but the ledger is not one of its
+    inputs: another job with the same story may have finished since. Without this, job A (failed at voice)
+    and job B (same script, finished meanwhile) would both end as a video of one story (D-25 review). Needs no
+    embed service: it compares the embedding the job stored with its story row. A job with no stored
+    embedding, or a fake LLM when `check` skips for one, has nothing to compare.
+    """
+    if check.skip_when_fake and isinstance(ctx.services.llm, FakeLlm):
+        return
+    own = ctx.db.query(
+        "select embedding from stories where job_id=? and embedding is not null", (ctx.job_id,)
+    )
+    if not own:
+        return
+    check._match = ""
+    res = check.compare(ctx, from_blob(own[0]["embedding"]))
+    if res.passed or not check.code:
+        return
+    hint = check.hint(ctx)
+    extra = {"hint": hint} if hint else {}
+    raise NsError(check.code, f"{check.name}: {res.detail}", check=check.name, **extra)
 
 
 class MetadataSpam(Check):
