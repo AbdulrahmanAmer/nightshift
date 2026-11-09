@@ -23,13 +23,10 @@ from ns_dashboard.errors import ApiError
 Route = tuple[str, str]
 
 #: Changing tools without a `dry_run`: every argument they take is an enum or a range the JSON schema already
-#: checks, and nothing about the system's state can make the run refuse (the reason is the value). A changing tool
-#: is in `dryrun` or here, never neither (`tests/test_assistant_validate_before_card.py`).
-SCHEMA_ONLY: dict[str, str] = {
-    "warmup_engine": "the only argument is an enum of service names; loading a service has no precondition",
-    "shutdown_engine": "the only argument is a number of seconds in a range; shutting down has no precondition",
-    "make_diagnostics": "no arguments; writing the zip has no precondition",
-}
+#: checks AND nothing about the system's state can make the run refuse (the reason says why). Empty today:
+#: warmup_engine and shutdown_engine need an engine that answers, and make_diagnostics needs the doctor. A changing
+#: tool is in `dryrun` or here, never neither (`tests/test_assistant_validate_before_card.py`).
+SCHEMA_ONLY: dict[str, str] = {}
 
 # Routes that are deliberately not tools, with the reason (never-registered actions first).
 NO_TOOL: dict[Route, str] = {
@@ -190,11 +187,11 @@ def _tools() -> list[ToolDef]:
         _t("warmup_engine", "engine", "Start the language model now so the first job is fast.",
            lambda c, a: c.dash.engine.warmup(a.get("service")), route=("POST", "/api/engine/warmup"),
            props={"service": _s("service to start", enum=["llama", "tts", "whisper", "embed"])},
-           side=True, confirm="Load the language model now so the next job starts fast."),
+           side=True, dry_run=dryrun.check_warmup, confirm="Load the language model now so the next job starts fast."),
         _t("shutdown_engine", "engine", "Quit Nightshift: stop the engine after the current stage (up to 30 s).",
            lambda c, a: c.dash.engine.shutdown(a.get("grace_s")), route=("POST", "/api/engine/shutdown"),
            props={"grace_s": _i("seconds to wait for the running stage", minimum=0, maximum=300)},
-           side=True, confirm="Quit Nightshift. A running job is cancelled after its current stage."),
+           side=True, dry_run=dryrun.check_shutdown, confirm="Quit Nightshift. A running job is cancelled after its current stage."),
         # ------------------------------------------------ channels
         _t("list_channels", "channels", "All channels with status and how many videos wait for review.",
            lambda c, a: c.dash.channels.cards(), route=("GET", "/api/channels")),
@@ -314,7 +311,7 @@ def _tools() -> list[ToolDef]:
                   "n": _i("how many lines", minimum=1, maximum=200)}),
         _t("make_diagnostics", "diagnostics", "Create the diagnostics zip to send to the developer.",
            lambda c, a: c.dash.settings.diagnostics(), route=("POST", "/api/diagnostics"),
-           side=True, confirm="Create a diagnostics report (a zip of logs and settings, no keys)."),
+           side=True, dry_run=dryrun.check_diagnostics, confirm="Create a diagnostics report (a zip of logs and settings, no keys)."),
         _t("check_update", "settings", "Is a newer Nightshift version available on GitHub?",
            lambda c, a: c.dash.library.update_check(), route=("GET", "/api/update/check")),
         # ------------------------------------------------ lists
