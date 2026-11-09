@@ -810,10 +810,10 @@ def test_a_rollback_interrupted_anywhere_leaves_settings_the_program_in_place_lo
         with pytest.raises(Stop):
             inst.rollback()
 
-    # first what the next start meets: the program in <home>pp and settings it loads
+    # first what the next start meets: the program in <home>/app and settings it loads
     if point.settings_ready:  # the state 0.1.14 finds, whichever program is put in place by hand
         older_version_loads_everything(inst.paths)
-    if point.no_program:  # the instant between two renames (a power loss): no program in <home>pp
+    if point.no_program:  # the instant between two renames (a power loss): no program in <home>/app
         assert not inst.app.exists() and (inst.home / "app.swap").is_dir()
     elif point.older_in_place:
         assert inst.version_now() == "0.1.14"
