@@ -75,6 +75,7 @@ from ns_studio.text.stages_master import (
     span_text,
 )
 from ns_studio.text.stages_shorts import critic_numbers
+from ns_studio.text.story_profile import NORMAL, StoryProfile, profile_of
 from ns_studio.text.validators import (
     Violation,
     check_banned,
@@ -84,11 +85,9 @@ from ns_studio.text.validators import (
     load_banned,
 )
 
-CHAPTER_WORDS = 350  # target words per chapter: 20 minutes at 155 wpm gives 9 chapters (spec 23.3)
 MIN_CHAPTERS = 5
 MAX_CHAPTERS = 12
 MAX_PARTS = 40
-HARD_FLOOR = 0.75  # a part below this share of its word target is rejected (NS-E303)
 SOFT_BAND = 0.2  # outside +-20 % of the target is only reported in notes.md
 DEFAULT_FORMATS = ("short_9x16", "long_16x9", "square_1x1")
 FEEDBACK = "Owner feedback"
@@ -130,9 +129,9 @@ def slugify(text: str, fallback: str = "story") -> str:
     return "-".join(words[:5])[:40].strip("-") or fallback
 
 
-def chapter_count(target_words: int) -> int:
-    """Chapters for a part: about 350 words each, never fewer than 5 or more than 12."""
-    return max(MIN_CHAPTERS, min(MAX_CHAPTERS, round(target_words / CHAPTER_WORDS)))
+def chapter_count(target_words: int, profile: StoryProfile = NORMAL) -> int:
+    """Chapters for a part: about 350 words each (the profile's number), at least 5 and at most 12."""
+    return max(MIN_CHAPTERS, min(MAX_CHAPTERS, round(target_words / profile.part_chapter_words)))
 
 
 def available_formats() -> list[str]:
@@ -460,6 +459,7 @@ class Workshop:
         """M7 for a part: moments, five hooks and a judge each, a closing line; distinct hooks."""
         buckets = sorted(ctx.channel.length_buckets)
         cmin, cmax = ctx.channel.shorts_per_master
+        cmin = profile_of(ctx).moments_min(cmin)
         raw = call_json(
             ctx,
             "shorts_select",
@@ -538,7 +538,7 @@ class Workshop:
             drafted = self._draft(ctx, concept, series, entry, plan, wpm)
             self._continuity(ctx, drafted)
             total = sum(word_count(c["text"]) for c in drafted)
-            warnings = self._check_part(drafted, target, wpm, total)
+            warnings = self._check_part(drafted, target, wpm, total, profile_of(ctx))
             script = ScriptDoc(
                 part=n,
                 title=entry.title,
@@ -577,7 +577,7 @@ class Workshop:
     def _outline(
         self, ctx: JobContext, concept: ConceptDoc, series: SeriesDoc, entry: PartEntry, target: int, wpm: int
     ) -> list[dict[str, Any]]:
-        k = chapter_count(target)
+        k = chapter_count(target, profile_of(ctx))
         out = call_json(
             ctx,
             "workshop_part_outline",
@@ -638,7 +638,7 @@ class Workshop:
                 chapter=c,
                 summaries=summaries,
                 last_sentences=split_sentences(previous)[-2:] if previous else [],
-                budget=chapter_budget(c["word_budget"], wpm),
+                budget=chapter_budget(c["word_budget"], wpm, profile_of(ctx)),
             )
             draft = parse_model(ChapterDraft, raw, f"chapter_draft {c['n']}")
             text = normalize_text(draft.text)
@@ -703,7 +703,7 @@ class Workshop:
             c["continuity"] = [i for i in issues if i["chapter"] == c["n"]]
 
     def _check_part(
-        self, drafted: list[dict[str, Any]], target: int, wpm: int, total: int
+        self, drafted: list[dict[str, Any]], target: int, wpm: int, total: int, profile: StoryProfile = NORMAL
     ) -> list[str]:
         """Hard validators raise NS-E303; soft ones (reading level, lengths) are returned as notes."""
         warnings: list[str] = []
@@ -711,14 +711,14 @@ class Workshop:
             _fail_hard(c["n"], c["text"])
             soft = _violations(
                 [
-                    check_length(c["text"], chapter_budget(c["word_budget"], wpm)),
-                    check_reading_level(c["text"]),
+                    check_length(c["text"], chapter_budget(c["word_budget"], wpm, profile)),
+                    check_reading_level(c["text"], profile=profile),
                 ],
             )
             warnings += [f"chapter {c['n']}: {v.rule}: {v.detail}" for v in soft]
             if c["below_bar"]:
                 warnings.append(f"chapter {c['n']}: critic below the bar after 2 revisions ({c['avg']:.1f})")
-        if total < target * HARD_FLOOR:
+        if total < target * profile.part_hard_floor:
             raise NsError("NS-E303", f"part has {total} words, the target is {target}")
         if not target * (1 - SOFT_BAND) <= total <= target * (1 + SOFT_BAND):
             warnings.append(f"part length {total} words is outside +-20 % of the target {target}")
