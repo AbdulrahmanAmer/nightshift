@@ -76,6 +76,8 @@ LIMITER_HEADROOM_DB = OVERSHOOT_DB + 1.0   # The ceiling sits this far under `tp
 FIT_MARGIN_DB = 0.7         # `limit_to_linear` stops once the lifted peak is this far under `tp`.
 LIMITER_ATTACK_MS = 2.0
 LIMITER_RELEASE_MS = 120.0  # long enough not to ripple on low voices
+LIMITER_RATE_HZ = 192000    # the limiter works at this rate so it holds true peaks, not only sample peaks
+OUTPUT_RATE_HZ = 48000      # the rate every stored or delivered audio file is written at
 MAX_LIMITER_PASSES = 2      # each pass is a whole FFmpeg run over the audio; the second is the best guess
 MAX_BOOST_STEP_DB = 15.0
 AIM_PAST_DB = 0.3           # the second boost aims this far over the target; loudnorm then only trims
@@ -108,12 +110,14 @@ def boost_limiter(boost_db: float, tp: float) -> str:
     """Lift by `boost_db`, then hold the peaks at a fixed ceiling just under `tp`.
 
     The ceiling stays well inside alimiter's 0.0625..1 range whatever the clip's level, which a ceiling
-    placed relative to a very quiet clip would not.
+    placed relative to a very quiet clip would not. The limiter runs oversampled: it holds sample peaks, and
+    once the result is written at 48 kHz the true peak of real speech reads 1 to 2 dB above them, which put
+    narration back over the Short's limit and made the Short limit it a second time.
     """
     limit = 10 ** (limiter_ceiling_db(tp) / 20)
     return (
-        f"volume={boost_db:.2f}dB,alimiter=limit={limit:.4g}:attack={LIMITER_ATTACK_MS:g}"
-        f":release={LIMITER_RELEASE_MS:g}:level=0"
+        f"aresample={LIMITER_RATE_HZ},volume={boost_db:.2f}dB,alimiter=limit={limit:.4g}"
+        f":attack={LIMITER_ATTACK_MS:g}:release={LIMITER_RELEASE_MS:g}:level=0,aresample={OUTPUT_RATE_HZ}"
     )
 
 

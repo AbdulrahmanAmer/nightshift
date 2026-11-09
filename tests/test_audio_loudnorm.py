@@ -32,8 +32,8 @@ def test_linear_possible_uses_the_given_targets() -> None:
 def test_boost_limiter_ceiling_does_not_follow_the_clip() -> None:
     assert audio.limiter_ceiling_db(-1.5) == -3.5
     lim = "alimiter=limit=0.6683:attack=2:release=120:level=0"
-    assert audio.boost_limiter(6.4, -1.5) == f"volume=6.40dB,{lim}"
-    assert audio.boost_limiter(38.0, -1.5).split(",")[1] == audio.boost_limiter(6.4, -1.5).split(",")[1]
+    assert audio.boost_limiter(6.4, -1.5) == f"aresample=192000,volume=6.40dB,{lim},aresample=48000"
+    assert audio.boost_limiter(38.0, -1.5).split(",")[2] == audio.boost_limiter(6.4, -1.5).split(",")[2]
 
 
 def test_limit_to_linear_stops_at_the_first_fit_and_reports_the_boost_used() -> None:
@@ -48,7 +48,7 @@ def test_limit_to_linear_stops_at_the_first_fit_and_reports_the_boost_used() -> 
     # boost of -3.03 dB (-23.41 LUFS). From that knee to (6.38 dB, -17.0) the loudness climbs 0.68 LU per dB,
     # and the second boost aims 0.3 LU past the target: 6.38 + 3.3 / 0.68 = 11.22
     assert len(seen) == 2 and pre == seen[1] and got == _m(-14.2, -3.5)
-    assert boost == pytest.approx(11.22, abs=0.01) and pre.startswith("volume=11.22dB,")
+    assert boost == pytest.approx(11.22, abs=0.01) and pre.startswith("aresample=192000,volume=11.22dB,")
 
 
 def test_limit_to_linear_accepts_a_near_fit_on_the_first_try() -> None:
@@ -181,6 +181,68 @@ def test_narration_is_limited_once_and_the_short_adds_no_second_limiter(
     assert abs(got.lufs - audio.FINAL_LUFS) <= 0.5 and got.true_peak <= -1.0
     assert not any("alimiter" in a for args in runs for a in args)
     assert [r["event"] for r in _records(tmp_path)].count("loudness_limited") == 1     # the voice stage's
+
+
+def make_wideband_wav(path: Path) -> None:
+    """9 s mono 22.05 kHz, about -19 LUFS and -1.4 dBTP: a 220 Hz tone and 5 ms noise clicks up to Nyquist.
+
+    The shape of TTS speech at its native rate: the sample peaks a limiter holds are 1 to 3 dB under the true
+    peaks that appear once the file is resampled to 48 kHz.
+    """
+    graph = (
+        "[0:a]volume=0.6[s];"
+        "[1:a]lowpass=f=11000,aeval=exprs='val(0)*0.5*lt(mod(t,0.07),0.005)':c=same[c];"
+        "[s][c]amix=inputs=2:normalize=0,aformat=channel_layouts=mono[a]"
+    )
+    ffmpeg.run(
+        ["-f", "lavfi", "-i", "sine=frequency=220:sample_rate=22050:duration=9",
+         "-f", "lavfi", "-i", "anoisesrc=d=9:sample_rate=22050:amplitude=0.9:seed=7",
+         "-filter_complex", graph, "-map", "[a]", "-c:a", "pcm_s16le", str(path)]
+    )
+
+
+@needs_ffmpeg
+def test_boost_limiter_holds_true_peaks_not_only_sample_peaks(tmp_path: Path) -> None:
+    """Limited at the file's own rate, this clip's true peak ends about 3 dB over the ceiling at 48 kHz."""
+    src, out = tmp_path / "wide.wav", tmp_path / "limited.wav"
+    make_wideband_wav(src)
+    limiter = audio.boost_limiter(12.0, audio.VOICE_TP)
+    ffmpeg.run(["-i", str(src), "-af", limiter, "-c:a", "pcm_s16le", str(out)])
+    ceiling = audio.limiter_ceiling_db(audio.VOICE_TP)
+    assert audio.measure_loudness(out).true_peak <= ceiling + 0.3
+    plain = tmp_path / "plain.wav"
+    old_limit = 10 ** (ceiling / 20)
+    sample_rate_limiter = f"volume=12dB,alimiter=limit={old_limit:.4g}:attack=2:release=120:level=0"
+    ffmpeg.run(["-i", str(src), "-af", sample_rate_limiter, "-ar", "48000", "-c:a", "pcm_s16le", str(plain)])
+    assert audio.measure_loudness(plain).true_peak > ceiling + 1.0       # what the sample-rate limiter left
+
+
+@needs_ffmpeg
+def test_the_short_adds_no_second_limiter_to_wideband_speech(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Narration at a TTS rate keeps its true peak under `VOICE_TP`, so the Short only lifts it linearly."""
+    from ns_studio.media.render import build_short_audio
+
+    src, voice = tmp_path / "wide.wav", tmp_path / "voice.wav"
+    make_wideband_wav(src)
+    log = NsLogger("studio", tmp_path / "logs", echo=False)
+    audio.loudnorm(src, voice, i=audio.VOICE_LUFS, tp=audio.VOICE_TP, log=log)
+    narrated = audio.measure_loudness(voice)
+    assert abs(narrated.lufs - audio.VOICE_LUFS) <= 0.5 and narrated.true_peak <= audio.VOICE_TP + 0.1
+    runs: list[list[str]] = []
+    real = audio.ff.run
+
+    def counting(args: list[str], **kw: Any) -> Any:
+        runs.append(args)
+        return real(args, **kw)
+
+    monkeypatch.setattr(audio.ff, "run", counting)
+    final = build_short_audio(None, voice, tmp_path / "raw.wav", tmp_path / "final.wav", 0.15, log=log)
+    monkeypatch.undo()
+    got = audio.measure_loudness(final)
+    assert abs(got.lufs - audio.FINAL_LUFS) <= 0.5 and got.true_peak <= audio.FINAL_TP
+    assert not any("alimiter" in a for args in runs for a in args)
 
 
 @needs_ffmpeg

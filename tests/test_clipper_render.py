@@ -181,9 +181,11 @@ def test_linear_possible_decision() -> None:
 def test_boost_limiter_has_a_fixed_ceiling_inside_the_limiter_range() -> None:
     # the ceiling is TARGET_TP - 2 = -3.5 dBFS whatever the clip's level; only the boost follows the clip
     f = audio.boost_limiter(6.38, rd.TARGET_TP)
-    assert f == "volume=6.38dB,alimiter=limit=0.6683:attack=2:release=120:level=0"
+    assert f == (
+        "aresample=192000,volume=6.38dB,alimiter=limit=0.6683:attack=2:release=120:level=0,aresample=48000"
+    )
     quiet = audio.boost_limiter(31.7, rd.TARGET_TP)
-    assert quiet.split(",")[1] == f.split(",")[1]
+    assert quiet.split(",")[2] == f.split(",")[2]
     assert 0.0625 < float(quiet.split("limit=")[1].split(":")[0]) < 1.0
 
 
@@ -222,7 +224,7 @@ def test_plan_raises_the_boost_until_the_peak_fits(tmp_path: Path, monkeypatch: 
     plan = rd.plan_loudness(spec_for("center_crop", tmp_path / "o.mp4"))
     assert plan.mode == "limited" and len(seen) == 3
     assert [_boost(p) for p in seen[1:]] == pytest.approx([6.38, 11.22], abs=0.01)
-    assert seen[1].split(",")[1] == seen[2].split(",")[1]                  # the ceiling does not move
+    assert seen[1].split(",")[2] == seen[2].split(",")[2]                  # the ceiling does not move
     assert plan.pre == seen[2] and plan.measured == _m(-14.2, -3.5) and plan.source == _m(-20.38, -0.47)
     rep = plan.report()
     assert rep.pop("boost_db") == pytest.approx(11.22, abs=0.01)
