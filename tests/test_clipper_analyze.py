@@ -137,3 +137,23 @@ def test_audio_events_on_the_fixture(tmp_path: Path) -> None:
     assert lra is not None and lra >= 0.0
     loud = an.media_loudness(wav, lufs, lra)
     assert loud.integrated_lufs == lufs and all(isinstance(p, LoudPeak) for p in loud.peaks)
+
+
+# ---------- kind of video for the selection prompt (spec 19.5) ----------
+def _kind(**kw: object) -> str:
+    base: dict[str, object] = {"width": 1280, "height": 720, "aspect": 1.778, "duration_s": 90, "fps": 30}
+    return an.kind_of_video(Analysis(**{**base, **kw}))  # type: ignore[arg-type]
+
+
+def test_kind_of_video_is_read_from_the_analysis() -> None:
+    cam = Rect(x=944, y=16, w=320, h=180)
+    assert _kind(facecam=cam, n_stable_faces=1, faces_detected=True) == "stream with facecam"
+    assert _kind(n_stable_faces=2, faces_detected=True) == "podcast"
+    assert _kind(n_stable_faces=3, faces_detected=True) == "podcast"
+    assert _kind(n_stable_faces=1, faces_detected=True) == "talking head"
+    assert _kind(faces_detected=True, scene_cuts_per_min=6.0) == "screen recording or slides"
+
+
+def test_kind_of_video_stays_unknown_when_the_analysis_cannot_tell() -> None:
+    assert _kind(faces_detected=True, scene_cuts_per_min=0.5) == "unknown"  # no faces, few cuts
+    assert _kind(faces_detected=False, scene_cuts_per_min=9.0) == "unknown"  # the face detector did not run

@@ -11,6 +11,7 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable
 from functools import cache
+from typing import Any
 
 from ns_common.errors import NsError
 from ns_common.paths import contracts_dir
@@ -71,7 +72,7 @@ def text_gate(
     titles = list(titles)
     entities_gate("\n".join([text, *titles]), what=what)
     claims_gate(titles, what=what)
-    extra = {k: v for k, v in (("title", title), ("hook", hook)) if v}
+    extra: dict[str, Any] = {k: v for k, v in (("title", title), ("hook", hook)) if v}  # template variables
     res = parse_policy_check(call_json(ctx, "policy_check", story=text, **extra), "policy_check")
     if "real_people" in res.unsafe_categories:
         raise NsError("NS-E602", f"{what}: {res.notes}".strip())
