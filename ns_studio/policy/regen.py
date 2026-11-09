@@ -2,6 +2,10 @@
 
 A failure moves the item to `rejected\\` with the reason, regenerates once from the earliest
 affected stage, and logs the code. A second failure ends the job.
+
+Besides the policy codes NS-E601 to NS-E614 the same rule covers the other failures of J3 step 2: NS-E303,
+NS-E304 (the ideas stage), NS-E305, NS-E402, NS-E403 and NS-E404 (QC). A story that misses the critic's
+bar has its own rule (spec 16.2): the idea is discarded and the next one drawn, three ideas at most.
 """
 
 from __future__ import annotations
@@ -16,6 +20,7 @@ from ns_studio.context import JobContext
 from ns_studio.orchestrator import plan_format, plan_job, run_job
 from ns_studio.policy.base import POLICY_CODES
 from ns_studio.stages import StageState
+from ns_studio.text.idea_redraw import CRITIC_STAGES, MAX_IDEAS, record_failed_idea
 
 ATTEMPTS_FILE = "policy_attempts.json"
 MAX_REGENERATIONS = 1
@@ -39,6 +44,29 @@ REGEN_FROM: dict[str, tuple[str, ...]] = {
     "NS-E612": ("expand", "chapters_draft", "draft", "plan", "long_plan", "ideas"),
     "NS-E613": ("clips", "visual_plan", "ideas"),
     "NS-E614": ("voice", "render", "ideas"),
+    # J3 step 2 failures that are not policy gates. No candidate in the plan (the owner's own script, a series
+    # part) means the job fails at once: redoing the import or the voice of the same text would fail again.
+    "NS-E303": ("draft", "chapters_draft"),
+    "NS-E304": ("ideas",),
+    "NS-E305": ("chapters_draft", "long_plan"),
+    "NS-E402": ("clips", "visual_plan", "visual_plan_long"),
+    "NS-E403": ("voice", "captions"),
+    "NS-E404": ("voice", "render", "render_master"),
+}
+J3_CODES: frozenset[str] = frozenset({"NS-E303", "NS-E304", "NS-E305", "NS-E402", "NS-E403", "NS-E404"})
+# NS-E404 names the failed QC checks in its detail ("s2: duration, black_frames"). The earliest stage that can
+# change a check is redone: timing and loudness come from the voice, footage from the clips, the container and
+# the frame size from the render (each tuple lists alternatives; the one in the plan is used).
+QC_RESTART: dict[str, tuple[str, ...]] = {
+    "duration": ("voice",),
+    "loudness": ("voice",),
+    "caption_drift_ms": ("voice",),
+    "hook_first_1500ms": ("voice",),
+    "chapters": ("voice",),
+    "midroll": ("voice",),
+    "black_frames": ("clips",),
+    "aspect": ("render", "render_master"),
+    "file_opens": ("render", "render_master"),
 }
 # Metadata failures are fixed by rewriting the metadata alone: only these stages are redone (everything after
 # them is gated on its input hashes and follows when the SEO files change), never the chapters.
@@ -59,14 +87,32 @@ _SMALL_FILES = (
     "policy_notes.json",
 )
 _MEDIA_DIRS = ("long", "shorts")
+_EVIDENCE_DIRS = ("qc",)  # small JSON that says why; copied, because the stage writes it again
 
 
-def earliest_stage(code: str, names: list[str]) -> str:
-    """The stage to restart from for `code`, falling back to the first stage of the plan."""
+def earliest_stage(code: str, names: list[str], detail: str = "") -> str:
+    """The stage to restart from for `code`, falling back to the first stage of the plan.
+
+    For NS-E404 the failed checks named in `detail` decide (`QC_RESTART`); a detail that names none restarts
+    at the voice, the first stage of `REGEN_FROM`.
+    """
+    if code == "NS-E404":
+        found = [
+            min(names.index(a) for a in alternatives if a in names)
+            for check, alternatives in QC_RESTART.items()
+            if check in detail and any(a in names for a in alternatives)
+        ]
+        if found:
+            return names[min(found)]
     for cand in REGEN_FROM.get(code, ()):
         if cand in names:
             return cand
     return names[0]
+
+
+def has_restart_stage(code: str, names: list[str]) -> bool:
+    """True when the plan has a stage that can redo the work behind `code` (always for the policy codes)."""
+    return code not in J3_CODES or any(c in names for c in REGEN_FROM[code])
 
 
 #: Files a stage keeps as its own memo and returns early on; the retry would reproduce them unchanged.
@@ -126,11 +172,41 @@ def reject_artifacts(ctx: JobContext, err: NsError, attempt: int) -> Path:
         src = ctx.file(d)
         if src.is_dir():
             shutil.move(str(src), str(dest / d))
+    for d in _EVIDENCE_DIRS:
+        if ctx.file(d).is_dir():
+            shutil.copytree(ctx.file(d), dest / d, dirs_exist_ok=True)
+    ctx.file("qc/dropped.json").unlink(missing_ok=True)  # the list of the pass that was just rejected
     return dest
 
 
+def _redraw_idea(ctx: JobContext, err: NsError, att: dict, names: list[str]) -> None:
+    """A story missed the critic's bar: reject it and restart at `ideas` for the next idea (spec 16.2).
+
+    Raises NS-E304 once `MAX_IDEAS` ideas have failed. The count is the length of `ideas_failed.json`,
+    which is why a resumed job does not get three new ideas.
+    """
+    tried = record_failed_idea(ctx)
+    dest = reject_artifacts(ctx, err, len(att["history"]) + 1)
+    att["history"].append({"code": err.code, "detail": err.detail, "rejected_to": str(dest), "idea": tried})
+    ctx.write_json(ATTEMPTS_FILE, att)
+    if tried >= MAX_IDEAS:
+        ctx.log.error("policy_fail_final", code=err.code, job_id=ctx.job_id, detail=err.detail)
+        raise NsError("NS-E304", f"{tried} ideas failed the critic; last: {err.detail}") from err
+    ctx.log.warn("idea_redraw", code=err.code, tried=tried, job_id=ctx.job_id, detail=err.detail)
+    invalidate_from(ctx, names, "ideas")
+
+
+def _critic_failed(ctx: JobContext, names: list[str]) -> bool:
+    """True when the first stage of the plan that has not finished is a critic stage (the one that raised)."""
+    state = StageState.load(ctx.job_dir)
+    for n in names:
+        if state.entries.get(n, {}).get("status") != "done":
+            return n in CRITIC_STAGES and "ideas" in names
+    return False
+
+
 def run_job_guarded(ctx: JobContext, *, resume: bool = True) -> list[str]:
-    """`run_job` with regenerate-once handling of NS-E601 to NS-E614 policy failures.
+    """`run_job` with regenerate-once handling of NS-E601 to NS-E614 policy failures and the J3 failures.
 
     The voice setup queued (`config/pending_voice.json`) is created first, so every path that runs a job
     (`studio run`, the dashboard's Run now, a series part) has it before the voice stage asks for it.
@@ -152,19 +228,23 @@ def run_job_guarded(ctx: JobContext, *, resume: bool = True) -> list[str]:
         try:
             return run_job(ctx, resume=resume if first else True)
         except NsError as e:
-            if e.code not in POLICY_CODES:
+            if e.code not in POLICY_CODES and e.code not in J3_CODES:
                 raise
             att = _attempts(ctx)
             n = int(att["regenerations"])
             names = [s.name for s in plan_job(plan_format(ctx.fmt, ctx.job_dir))]
-            start = earliest_stage(e.code, names)
-            if ctx.owner_script and start == names[0]:
+            if e.code == "NS-E304" and _critic_failed(ctx, names):
+                _redraw_idea(ctx, e, att, names)
+                first = False
+                continue
+            start = earliest_stage(e.code, names, e.detail)
+            if (ctx.owner_script and start == names[0]) or not has_restart_stage(e.code, names):
                 # Only the import of the owner's own text would be redone: it would fail the same way.
                 att["history"].append({"code": e.code, "detail": e.detail, "rejected_to": None})
                 ctx.write_json(ATTEMPTS_FILE, att)
                 ctx.log.error("policy_fail_final", code=e.code, job_id=ctx.job_id, detail=e.detail)
                 raise
-            dest = reject_artifacts(ctx, e, n + 1)
+            dest = reject_artifacts(ctx, e, len(att["history"]) + 1)
             att["history"].append({"code": e.code, "detail": e.detail, "rejected_to": str(dest)})
             if n >= MAX_REGENERATIONS:
                 ctx.write_json(ATTEMPTS_FILE, att)

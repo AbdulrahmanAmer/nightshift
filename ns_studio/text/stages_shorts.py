@@ -15,6 +15,7 @@ from ns_common.textstats import est_seconds, split_sentences, word_count
 from ns_studio.context import JobContext
 from ns_studio.stages import Tenant, register
 from ns_studio.text.budget import Budget, MasterBudget, master_as_budget, master_budget, short_budget
+from ns_studio.text.idea_redraw import next_unused_idea
 from ns_studio.text.prompts import RUBRIC_KEYS, call_json, call_text, parse_model
 from ns_studio.text.seo import finalize_seo
 from ns_studio.text.validators import load_banned, raise_if, validate_story
@@ -116,6 +117,8 @@ class IdeasStage:
 
         Writes `ideas_all.json` and the chosen `idea.json`; an invented idea is recorded in the `ideas` table.
         """
+        if next_unused_idea(ctx) is not None:  # after a critic failure: next idea of the batch (16.2)
+            return
         banked = draw_banked_idea(ctx)
         if banked is not None:
             ctx.write_json("ideas_all.json", [banked])

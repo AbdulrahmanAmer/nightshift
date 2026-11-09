@@ -16,6 +16,7 @@ from ns_common.models import ClipPlanItem, Idea, Part, PolicyCheckResult, Seo, V
 from ns_common.paths import Paths, contracts_dir, repo_root
 from ns_studio.context import JobContext
 from ns_studio.text.exemplars import load_exemplars
+from ns_studio.text.llm_retry import retry_once
 
 PROMPTS_DIR = Path(__file__).resolve().parents[1] / "prompts"
 FIXTURES = repo_root() / "tests" / "fixtures" / "llm"
@@ -331,13 +332,16 @@ def call_json(
         raise ValueError(f"prompt {name} has no schema")
     ctx.note_prompt(name, p.version)
     user = render(p, **(_common_vars(ctx) | vars))
-    return ctx.services.llm.complete_json(
-        prompt_name=fixture or name,
-        system=p.system,
-        user=user,
-        schema=PROMPT_SCHEMAS[schema_key],
-        thinking=p.thinking,
-        **attempt_kwargs(ctx),
+    return retry_once(
+        ctx,
+        lambda: ctx.services.llm.complete_json(
+            prompt_name=fixture or name,
+            system=p.system,
+            user=user,
+            schema=PROMPT_SCHEMAS[schema_key],
+            thinking=p.thinking,
+            **attempt_kwargs(ctx),
+        ),
     )
 
 
@@ -346,8 +350,15 @@ def call_text(ctx: JobContext, name: str, *, fixture: str | None = None, **vars:
     p = load_prompt(name)
     ctx.note_prompt(name, p.version)
     user = render(p, **(_common_vars(ctx) | vars))
-    return ctx.services.llm.complete_text(
-        prompt_name=fixture or name, system=p.system, user=user, thinking=p.thinking, **attempt_kwargs(ctx)
+    return retry_once(
+        ctx,
+        lambda: ctx.services.llm.complete_text(
+            prompt_name=fixture or name,
+            system=p.system,
+            user=user,
+            thinking=p.thinking,
+            **attempt_kwargs(ctx),
+        ),
     )
 
 

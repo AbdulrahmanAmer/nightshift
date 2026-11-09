@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import json
 import math
 import re
+import shutil
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
 from ns_common import ffmpeg as ff
-from ns_common.errors import NsError
+from ns_common.errors import NsError, describe
 from ns_common.models import QcCheck, QcResult
 from ns_studio.context import JobContext
 from ns_studio.media.audio import Loudness, measure_loudness, speech_onset_s
@@ -183,9 +186,9 @@ class QcStage:
                 failed.append(f"{item}: {result.reason}")
         ctx.write_json("qc/report.json", summary)
         ctx.log.info("qc_done", job_id=ctx.job_id, results=summary)
-        drop_failed_items(ctx, rendered, summary, must_keep=())
         if failed and len(failed) == len(rendered):
-            raise NsError("NS-E404", "; ".join(failed))
+            raise NsError("NS-E404", "; ".join(failed))  # nothing left to publish: the job fails whole
+        drop_failed_items(ctx, rendered, summary, must_keep=())
 
 
 def drop_failed_items(
@@ -197,17 +200,42 @@ def drop_failed_items(
     were rendered (the first dev-mode master: "s5: duration", 61 s for a 50 s bucket). The clipper already
     drops a failing clip (review row 9); story Shorts now do the same, with `NS-W406` per dropped item and
     the list in `qc/dropped.json`. Items in `must_keep` (the master) are never dropped: they raise instead.
+    Each dropped Short is also copied to `rejected\\<slug>\\<date>\\<job>\\dropped\\<item>\\` with a
+    `reason.json` (spec 7.7), so the owner can look at what was left out.
     """
     dropped = {item: str(summary[item].get("reason") or "qc") for item in rendered
                if item in summary and not summary[item]["passed"] and item not in must_keep}
     for item, reason in dropped.items():
         ctx.log.warn("short_dropped", f"{item} failed QC ({reason}) and is left out; the rest is kept",
                      code="NS-W406", job_id=ctx.job_id, item=item, reason=reason)
+    for item, reason in dropped.items():
+        copy_dropped_to_rejected(ctx, item, rendered[item], reason)
     if dropped:
         kept = {item: info for item, info in rendered.items() if item not in dropped}
         ctx.write_json("render/report.json", kept)
         ctx.write_json("qc/dropped.json", dropped)
     return sorted(dropped)
+
+
+def copy_dropped_to_rejected(ctx: JobContext, item: str, info: dict[str, Any], reason: str) -> Path:
+    """Copy a Short that failed QC, its `qc/<item>.json` and a `reason.json` (NS-W406) into `rejected\\`."""
+    now = datetime.now(UTC)
+    dest = ctx.paths.rejected_dir(ctx.channel.slug, f"{now:%Y-%m-%d}", ctx.job_id) / "dropped" / item
+    dest.mkdir(parents=True, exist_ok=True)
+    video = Path(str(info.get("path", "")))
+    if video.is_file():
+        shutil.copy2(video, dest / video.name)
+    if ctx.file(f"qc/{item}.json").exists():
+        shutil.copy2(ctx.file(f"qc/{item}.json"), dest / "qc.json")
+    doc = {
+        "code": "NS-W406",
+        "message": describe("NS-W406").message,
+        "item": item,
+        "detail": reason,
+        "ts": now.isoformat(),
+    }
+    (dest / "reason.json").write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+    return dest
 
 
 # ---------------------------------------------------------------------------------------------------------
