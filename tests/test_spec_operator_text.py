@@ -1,10 +1,10 @@
-"""P41: the operator-facing text (README.md, OPERATOR.md, BUILD_SPEC.md J2, 8, 16.3, 18.6, 18.11, 13) says what
-the code does.
+"""P41: the operator-facing text (README.md, OPERATOR.md, BUILD_SPEC.md J2, 8, 16.3, 18.6, 18.11, 13) says
+what the code does.
 
 Boxes: F-H78 F-H79 F-H100 F-H119 F-H167 of docs/FEATURE_STATUS.md, plus the governor extras (F-H112) and the
-derived-Shorts pair rule (F-H82) that the package brief asked to be recorded. Each test reads the text and the
-code (a constant, a source line, or the command itself) so a change on either side that makes them disagree fails
-here. Nothing here ticks a box.
+derived-Shorts pair rule (F-H82) that the package brief asked to be recorded. Each test reads the text and
+the code (a constant, a source line, or the command itself) so a change on either side that makes them
+disagree fails here. Nothing here ticks a box.
 """
 
 from __future__ import annotations
@@ -75,9 +75,7 @@ def cites(text: str, ident: str) -> bool:
 
 
 def box(box_id: str) -> str:
-    return next(
-        ln for ln in STATUS.splitlines() if ln.startswith((f"- [ ] {box_id} ", f"- [x] {box_id} "))
-    )
+    return next(ln for ln in STATUS.splitlines() if ln.startswith((f"- [ ] {box_id} ", f"- [x] {box_id} ")))
 
 
 def audit_row(feature_start: str) -> list[str]:
@@ -121,7 +119,7 @@ def test_operator_guide_gives_the_full_path_of_the_studio_program():
 
 
 def test_operator_guide_says_the_studio_shortcut_cannot_take_a_notice_with_spaces():
-    """The shortcut splits what is typed at every space, so `--reason "two words"` arrives as four arguments."""
+    """The shortcut splits what is typed at every space: `--reason "two words"` arrives as four arguments."""
     launcher = (ROOT / "launchers" / "nightshift-studio.ps1").read_text(encoding="utf-8")
     assert "-split '\\s+'" in launcher
     body = doc_section(GUIDE, HEADING)
@@ -140,13 +138,20 @@ def _env(tmp_home: Path):
 def test_the_commands_of_the_section_do_what_it_says(tmp_home: Path):
     paths, db = _env(tmp_home)
     for i in range(12):  # twelve outputs; the list shows the last ten, newest first
-        add_output(db, f"after-dark-2026110{i % 9 + 1}-a{i:03d}", "s1", created_at=f"2026-10-{10 + i:02d}T10:00:00+00:00")
+        add_output(
+            db,
+            f"after-dark-2026110{i % 9 + 1}-a{i:03d}",
+            "s1",
+            created_at=f"2026-10-{10 + i:02d}T10:00:00+00:00",
+        )
     before = cadence.plan_daily(paths, db, datetime(2026, 11, 1, 12, 0, tzinfo=UTC))
     assert [j.channel.slug for j in before] == ["after-dark"]
 
     # step 1: a notice text is required, the channel is paused, `studio status` shows the incident
     assert "NS-E326" in runner.invoke(app, ["pause", "after-dark"]).output
-    assert runner.invoke(app, ["pause", "after-dark", "--reason", "Community Guidelines warning"]).exit_code == 0
+    assert (
+        runner.invoke(app, ["pause", "after-dark", "--reason", "Community Guidelines warning"]).exit_code == 0
+    )
     assert crud.get_channel(paths, "after-dark").status == "paused"
     assert "Community Guidelines warning" in runner.invoke(app, ["status"]).output
     assert cadence.plan_daily(paths, db, datetime(2026, 11, 1, 12, 0, tzinfo=UTC)) == []
@@ -170,14 +175,19 @@ def test_the_commands_of_the_section_do_what_it_says(tmp_home: Path):
 def test_the_dashboard_switch_sends_no_note_and_the_assistant_can():
     """The section must not promise a note field the Channels page does not have."""
     chans = tsx("pages/Channels.tsx")
-    call = re.search(r'api\.post\(`/channels/\$\{encodeURIComponent\(c\.slug\)\}/\$\{on \? "resume" : "pause"\}`(.*?)\)', chans)
-    assert call and call.group(1) == "", "the Channels switch sends a body now: say so in the incident section"
+    call = re.search(
+        r'api\.post\(`/channels/\$\{encodeURIComponent\(c\.slug\)\}/\$\{on \? "resume" : "pause"\}`(.*?)\)',
+        chans,
+    )
+    assert call and call.group(1) == "", (
+        "the Channels switch sends a body now: say so in the incident section"
+    )
     server = (ROOT / "ns_dashboard" / "server.py").read_text(encoding="utf-8")
     assert 'dash.channels.pause, slug, body.get("note")' in server
     tools = (ROOT / "ns_dashboard" / "assistant" / "tools.py").read_text(encoding="utf-8")
     assert re.search(r'_t\("pause_channel".*?"note": _s\("why"\)', tools, re.S)
-    body = doc_section(GUIDE, HEADING)
-    assert "no notice" in body.lower() or "records no" in body.lower()
+    body = " ".join(doc_section(GUIDE, HEADING).split())  # the guide wraps its lines
+    assert "records no notice text" in body
     assert "Assistant" in body
 
 
@@ -185,15 +195,21 @@ def test_resume_in_the_dashboard_shows_no_review_and_the_section_says_so():
     """`studio resume` is where the last 10 outputs are listed; the Channels switch resumes at once."""
     cli = (ROOT / "ns_studio" / "cli.py").read_text(encoding="utf-8")
     assert "Check these against spec sections 18.2-18.4; raise critic_bar or trim pools if needed." in cli
-    body = doc_section(GUIDE, HEADING)
-    assert "at once" in body or "straight away" in body or "immediately" in body
+    body = " ".join(doc_section(GUIDE, HEADING).split())  # the guide wraps its lines
+    assert "resumes at once" in body
 
 
 # ---------------------------------------------------------------------------------------------------------
 # OPERATOR.md leftovers of the P37 break-it round
 # ---------------------------------------------------------------------------------------------------------
 def test_operator_guide_has_no_two_key_or_75_gb_leftovers():
-    for stale in ("Two free keys", "the two stock footage keys", "paste the two", "About 75 GB", "about 75 GB"):
+    for stale in (
+        "Two free keys",
+        "the two stock footage keys",
+        "paste the two",
+        "About 75 GB",
+        "about 75 GB",
+    ):
         assert stale not in GUIDE, stale
     need = GUIDE.split("## What you need", 1)[1].split("## Install", 1)[0]
     for tier in ("small", "balanced", "best"):
@@ -226,7 +242,9 @@ def test_j2_wording_names_the_queue_the_buttons_and_the_stage_words():
 
 def test_j2_words_are_the_words_of_the_pages():
     fmt = tsx("lib/format.ts")
-    words = dict(re.findall(r'\b(draft|voice|captions|clips|render|qc): "([^"]+)"', fmt.split("STAGE_WORDS", 1)[1]))
+    words = dict(
+        re.findall(r'\b(draft|voice|captions|clips|render|qc): "([^"]+)"', fmt.split("STAGE_WORDS", 1)[1])
+    )
     assert {k: words[k] for k in STAGE_KEYS} == STAGE_KEYS
     create = tsx("pages/Create.tsx")
     assert 'label: "Full video + Shorts"' in create and 'label: "One Short"' in create
@@ -235,8 +253,12 @@ def test_j2_words_are_the_words_of_the_pages():
     app_ts = tsx("lib/app.tsx")
     assert 'ROUTES[n] ?? "queue"' in app_ts
     shell = tsx("shell/Shell.tsx")
-    for text in ('"Idle"', "Loading model", "Working: ", '"Ready"'):
+    for text in ('"Idle"', "Loading model", "Working: ", ", step ${e.step} of ${e.steps}", '"Ready"'):
         assert text in shell, text
+    adapters = (ROOT / "ns_dashboard" / "adapters.py").read_text(encoding="utf-8")
+    assert (
+        'f"{stage} ({index + 1}/{total})"' in adapters
+    )  # the progress message the bar shows after `Working: `
     engine = (ROOT / "ns_dashboard" / "svc_engine.py").read_text(encoding="utf-8")
     assert '"Services idle"' in engine
     queue = tsx("pages/Queue.tsx")
@@ -257,7 +279,15 @@ def test_operator_first_video_steps_use_the_dashboard_words():
     steps = doc_section(GUIDE, "## Make your first video")
     for gone in ("Run now", "shorts_only", "master_first", "voicing", "Mark uploaded"):
         assert gone not in steps, gone
-    for word in ("Create", "One Short", "Full video + Shorts", "Queue", "Approve", "Reject", *STAGE_KEYS.values()):
+    for word in (
+        "Create",
+        "One Short",
+        "Full video + Shorts",
+        "Queue",
+        "Approve",
+        "Reject",
+        *STAGE_KEYS.values(),
+    ):
         assert word in steps, word
     assert "arrives in a later release" not in steps
 
@@ -302,15 +332,20 @@ def test_governor_row_records_the_reviewed_minimum_and_the_weekly_raise():
 
 
 def test_governor_rule_behaves_as_the_row_says(tmp_home: Path):
-    """Four rejections out of four reviewed do not drop (fewer than 5); five of five do, and the bar rises once."""
+    """Four rejections of four do not drop (under 5 reviewed); five of five do, and the bar rises once."""
     paths, db = _env(tmp_home)
     ch = crud.get_channel(paths, "after-dark")
     now = datetime(2026, 11, 1, 12, 0, tzinfo=UTC)
 
     def reject(first: int, last: int) -> None:
         for i in range(first, last):
-            add_output(db, f"after-dark-20261001-r{i:03d}", "s1", status="rejected",
-                       created_at=f"2026-10-{10 + i:02d}T10:00:00+00:00")
+            add_output(
+                db,
+                f"after-dark-20261001-r{i:03d}",
+                "s1",
+                status="rejected",
+                created_at=f"2026-10-{10 + i:02d}T10:00:00+00:00",
+            )
 
     reject(0, 4)
     assert cadence.plan_channel(db, ch, now).quality_drop is False
@@ -318,10 +353,12 @@ def test_governor_rule_behaves_as_the_row_says(tmp_home: Path):
     plan = cadence.plan_channel(db, ch, now)
     assert plan.quality_drop is True and plan.reasons == ["owner rejected 5 of the last 5 outputs"]
     first = cadence.apply_quality_drop(paths, db, ch, plan, now)
-    assert first == round(ch.critic_bar + 0.5, 1)
+    assert first is not None and first == round(ch.critic_bar + 0.5, 1)
     again = crud.get_channel(paths, "after-dark")
     assert cadence.apply_quality_drop(paths, db, again, plan, now + timedelta(days=6)) is None
-    assert cadence.apply_quality_drop(paths, db, again, plan, now + timedelta(days=8)) == round(first + 0.5, 1)
+    assert cadence.apply_quality_drop(paths, db, again, plan, now + timedelta(days=8)) == round(
+        first + 0.5, 1
+    )
     kinds = [r["kind"] for r in db.query("select kind from incidents where channel='after-dark'")]
     assert kinds == ["warning", "warning"]
 
@@ -354,7 +391,9 @@ def test_section_8_states_the_derived_short_rule_and_the_code_does_it(tmp_home: 
     for k in range(1, 5):  # a master and four Shorts that share its structure: 4 hooks, 5 pairs
         when = now + timedelta(minutes=k)
         window = draw.recent_pairs(db, ch.slug, draw.ledger_window(ch.pools))
-        short = draw.draw_combo(db, ch, rng=rng, now=when, fixed={"structure": master.structure, "pov_tone": "p1"})
+        short = draw.draw_combo(
+            db, ch, rng=rng, now=when, fixed={"structure": master.structure, "pov_tone": "p1"}
+        )
         assert short.structure == master.structure
         inside = (short.hook, short.structure) in window
         assert inside == (k == 4), f"Short {k}: the window holds until every hook of the structure is used"
@@ -396,8 +435,13 @@ def test_new_decision_rows_follow_the_installer_and_runtime_rows():
     ]
     assert ids == sorted(ids) and len(set(ids)) == 5
     assert min(ids) > 33
-    for marker in ("Dashboard home", "Opening-line similarity", "Governor quality drop", "Derived Shorts",
-                   "Incident procedure"):
+    for marker in (
+        "Dashboard home",
+        "Opening-line similarity",
+        "Governor quality drop",
+        "Derived Shorts",
+        "Incident procedure",
+    ):
         assert len(decision(marker).split(" | ")) == 4, marker  # | # | Question | Default | Why |
 
 
