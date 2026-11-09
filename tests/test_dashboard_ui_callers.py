@@ -71,3 +71,9 @@ def test_f_e7_the_update_state_carries_the_release_notes_the_card_reads(tmp_home
     f.write_text(json.dumps(state), encoding="utf-8")
     got = updater.read_update_state(paths, alive=lambda _pid: False)
     assert got["state"] == "done" and got["new"] == "0.2.0" and got["release_notes"] == notes
+
+
+def test_f_d2_the_browser_shows_update_and_run_events():
+    """F-D2: the events stream keeps the `update` and `run` kinds and app.tsx turns them into toasts."""
+    assert 'm.kind === "update"' in APP
+    assert 'm.kind === "run"' in APP

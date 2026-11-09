@@ -51,6 +51,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const id = ++tid.current; setToasts((t) => [...t, { id, text, tone }]);
     setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 4200);
   }, []);
+  // Supervisor events the dashboard stream keeps as their own kind (F-D2): the weekly update check found a newer version, the nightly run finished.
+  const notifyUpdate = useCallback((p: { update_available?: boolean; latest?: string; current?: string } | null) => {
+    if (p?.update_available && p.latest) toast(`Version ${p.latest} is available${p.current ? ` (you have ${p.current})` : ""}. Open Settings, Updates`, "ok");
+  }, [toast]);
+  const notifyRun = useCallback((p: { event?: string } | null) => {
+    if (p?.event === "finished") toast("The nightly run has finished. New videos wait in the Queue", "ok");
+  }, [toast]);
   const confirm = useCallback((r: Omit<ConfirmReq, "resolve">) => new Promise<string | boolean | null>((resolve) => setConfirmReq({ ...r, resolve })), []);
   const closeConfirm = useCallback((v: string | boolean | null) => { setConfirmReq((c) => { c?.resolve(v); return null; }); }, []);
   const go = useCallback((hash: string) => { location.hash = hash; }, []);
@@ -81,12 +88,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (stopped) return;
       fails = ok ? 0 : 1;
       if (!api.demo && "EventSource" in window) {
-        try { es = new EventSource("/api/events"); es.onmessage = (ev) => { try { const m = JSON.parse(ev.data); if (m.kind === "status") { publish(m.payload); setOffline(false); fails = 0; } } catch { /* ignore */ } }; } catch { /* polling covers it */ }
+        try { es = new EventSource("/api/events"); es.onmessage = (ev) => { try { const m = JSON.parse(ev.data); if (m.kind === "status") { publish(m.payload); setOffline(false); fails = 0; } else if (m.kind === "update") notifyUpdate(m.payload); else if (m.kind === "run") notifyRun(m.payload); } catch { /* ignore */ } }; } catch { /* polling covers it */ }
       }
       timer = window.setTimeout(tick, api.demo ? 1500 : fails ? 2000 : 10000);
     });
     return () => { stopped = true; es?.close(); clearTimeout(timer); };
-  }, [poll, publish]);
+  }, [poll, publish, notifyUpdate, notifyRun]);
 
   const value = useMemo<AppCtx>(() => ({ status, demo, offline, refresh, toast, toasts, confirm, confirmReq, closeConfirm, route, go, askOpen, setAskOpen, askContext, ask, askPrompt, clearAskPrompt: () => setAskPrompt(null), theme, setTheme, channelName, ownerName }),
     [status, demo, offline, refresh, toast, toasts, confirm, confirmReq, closeConfirm, route, go, askOpen, askContext, ask, askPrompt, theme, setTheme, channelName, ownerName]);
