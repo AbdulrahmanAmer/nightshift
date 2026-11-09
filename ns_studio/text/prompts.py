@@ -109,9 +109,10 @@ PROMPT_SCHEMAS: dict[str, dict[str, Any]] = {
 
 _STR = {"type": "string"}
 
-# clip_select also returns the layout (a format preset id) the model picked per candidate, and why (C8).
+# clip_select also returns the layout (a format preset id) the model picked per candidate, and why (C8), and
+# the cleaned caption text of the moment (spec 17.2; kept beside the plan, which has no field for it).
 _CLIP_ITEM = ClipPlanItem.model_json_schema()
-_CLIP_EXTRA = {"layout": _STR, "layout_reason": _STR, "caption_style": _STR}
+_CLIP_EXTRA = {"layout": _STR, "layout_reason": _STR, "caption_style": _STR, "caption_text": _STR}
 _CLIP_ITEM["properties"] = {**_CLIP_ITEM["properties"], **_CLIP_EXTRA}
 _INT = {"type": "integer"}
 _SEO_PROPS = Seo.model_json_schema()["properties"]
@@ -358,12 +359,14 @@ def call_json(
     *,
     fixture: str | None = None,
     schema_name: str | None = None,
+    max_tokens: int | None = None,
     **vars: Any,
 ) -> dict[str, Any]:
     """Render prompt `name`, call the LLM for JSON and record the prompt version on `ctx`.
 
     `fixture` is the `prompt_name` passed to the LLM (a fake serves `<fixture>.json`); `schema_name`
-    overrides the front-matter schema. Template variables go in `vars`.
+    overrides the front-matter schema; `max_tokens` replaces the client's default answer limit (thinking
+    and JSON together). Template variables go in `vars`.
     """
     p = load_prompt(name)
     schema_key = schema_name or p.schema
@@ -382,6 +385,7 @@ def call_json(
             schema=PROMPT_SCHEMAS[schema_key],
             thinking=p.thinking,
             **attempt_kwargs(ctx),
+            **({"max_tokens": max_tokens} if max_tokens else {}),
         ),
     )
 
