@@ -116,8 +116,11 @@ class IdeasStage:
 
         Writes `ideas_all.json` and the chosen `idea.json`; an invented idea is recorded in the `ideas` table.
         """
+        from ns_studio.policy import idea_check
+
         banked = draw_banked_idea(ctx)
         if banked is not None:
+            idea_check.require_safe_idea(ctx, banked)
             ctx.write_json("ideas_all.json", [banked])
             ctx.write_json("idea.json", banked)
             return
@@ -139,7 +142,18 @@ class IdeasStage:
         ]
         if not survivors:
             raise NsError("NS-E304", f"all {len(ideas)} ideas too similar to history")
-        idea, vec = survivors[0]
+        flagged: list[str] = []
+        chosen = None  # the first survivor the unsafe-topic classifier accepts (spec 18.3)
+        for cand in survivors:
+            why = idea_check.idea_problem(ctx, cand[0])
+            if why is None:
+                chosen = cand
+                break
+            flagged.append(why)
+            ctx.log.warn("idea_unsafe", job_id=ctx.job_id, premise=cand[0]["premise"], detail=why)
+        if chosen is None:
+            raise NsError("NS-E601", f"all {len(survivors)} ideas were flagged as unsafe: {flagged[0]}")
+        idea, vec = chosen
         ctx.db.execute(
             "insert into ideas(channel, job_id, premise, twist, embedding, created_at, used) "
             "values (?,?,?,?,?,?,1)",

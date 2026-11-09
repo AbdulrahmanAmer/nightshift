@@ -20,6 +20,7 @@ CODES: dict[str, str] = {
     "metadata_spam": "NS-E606",
     "standalone_short": "NS-E607",
     "render_uniqueness": "NS-E611",
+    "short_hook": "NS-E611",  # the second half of render uniqueness: a Short opens with its new hook
     "long_runtime": "NS-E612",
     "clip_reuse": "NS-E613",
     "audio_only_voice": "NS-E614",

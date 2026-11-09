@@ -1,5 +1,5 @@
 ---
-version: 1
+version: 2
 thinking: false
 schema: chapter_draft
 ---
@@ -18,6 +18,8 @@ Chapter {{ s.n }}, {{ s.title }}: {{ s.summary }}
 The previous chapter ended with these sentences, verbatim (continue naturally from them, do not repeat them):
 {{ last_sentences | join(" ") }}
 {% endif %}
+Content rules:
+{{ policy_rules }}
 Now write chapter {{ chapter.n }} of {{ plan.chapters | length }}: "{{ chapter.title }}".
 Beats to cover:
 {% for b in chapter.beats %}

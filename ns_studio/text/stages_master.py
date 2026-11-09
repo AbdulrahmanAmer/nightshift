@@ -781,6 +781,10 @@ def expand_chapter(ctx: JobContext, chapter_n: int, add_words: int) -> StoryChap
         raise NsError("NS-E303", f"expansion of chapter {chapter_n} added {added} words, wanted {add_words}")
     checks = (check_banned(text, load_banned()), check_reading_level(text), check_sentence_length(text))
     raise_if([v for v in checks if v is not None])
+    if ctx.file("policy_text.json").exists():  # the text gate already ran: it never sees these new words
+        from ns_studio.policy.text_checks import check_added_text
+
+        check_added_text(ctx, text)
     is_last = idx == len(story.chapters) - 1
     new = build_chapter(old.n, old.title, text, old.summary, wpm=_wpm(ctx), is_last=is_last)
     mapping = sentence_index_map([s.text for s in old.sentences], [s.text for s in new.sentences])

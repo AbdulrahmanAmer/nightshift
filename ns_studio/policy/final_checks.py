@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import tempfile
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
@@ -16,7 +17,15 @@ from ns_common.models import PolicyAdvice, PolicyCheck
 from ns_studio.context import JobContext
 from ns_studio.policy import phash
 from ns_studio.policy.base import Check, fail, ok
-from ns_studio.policy.meta import collect_items, policy_list, story_text
+from ns_studio.policy.judge import JudgeFn, default_judge, record_notes, verdict_failed
+from ns_studio.policy.meta import (
+    collect_items,
+    policy_list,
+    short_moments,
+    story_text,
+    unsafe_categories,
+)
+from ns_studio.policy.text_checks import NerFn, place_entities
 
 MIN_MASTER_S = 510.0  # 8:30
 MIDROLL_MARGIN_S = 120.0
@@ -24,16 +33,17 @@ PHASH_MEAN_MAX = 8.0  # mean Hamming bits (of 64) at or under which two renders 
 SAME_CHANNEL_DAYS = 14
 OTHER_CHANNEL_DAYS = 30
 BED_FLOOR_DBFS = -55.0
+# Spectral flatness (geometric over arithmetic mean of the power spectrum) of the quiet frames: noise and
+# room tone sit around 0.3 to 0.6, a held note or a pad is far below 0.1.
+TONAL_FLATNESS_MAX = 0.1
+QUIET_SHARE = 0.10  # the quietest tenth of the 50 ms frames
+QUIET_MIN_DB = -85.0  # below this a frame is digital silence: no bed, nothing to measure
+QUIET_MIN_FRAMES = 5
+FFT_SIZE = 2048
 FRAME_S = 0.05
 SR = 16000
 INDEX_NAME = "phash_index.jsonl"
 
-# Larger countries, US states and cities that a story must not use as a real setting (disclosure advice).
-REAL_PLACES = frozenset(
-    "america canada mexico england london paris berlin tokyo china india russia australia ireland scotland "
-    "brazil texas california florida ohio nevada oregon alaska hawaii arizona colorado georgia michigan "
-    "virginia chicago boston seattle denver detroit houston dallas miami atlanta portland".split()
-)
 _FACTUAL_CLAIMS = ("this really happened", "this actually happened", "this is real", "i swear this is true")
 
 
@@ -284,6 +294,30 @@ def quiet_floor_db(samples: np.ndarray) -> float:
     return float(np.mean(np.sort(db)[:k]))
 
 
+def quiet_flatness(samples: np.ndarray) -> float | None:
+    """Median spectral flatness of the quiet 50 ms frames (the quietest tenth, above digital silence).
+
+    Narration has room tone or silence between words; a music bed under it stays tonal there even when it is
+    quieter than `BED_FLOOR_DBFS`. None when there are too few non-silent quiet frames to say anything.
+    """
+    n = int(SR * FRAME_S)
+    count = len(samples) // n
+    if count == 0:
+        return None
+    frames = samples[: count * n].reshape(count, n).astype(np.float64)
+    db = 20 * np.log10(np.maximum(np.sqrt(np.mean(frames**2, axis=1)), 1e-6))
+    order = np.argsort(db)[: max(1, int(count * QUIET_SHARE))]
+    picked = [i for i in order if db[i] > QUIET_MIN_DB]
+    if len(picked) < QUIET_MIN_FRAMES:
+        return None
+    window = np.hanning(n)
+    flat: list[float] = []
+    for i in picked:
+        power = np.abs(np.fft.rfft(frames[i] * window, FFT_SIZE)) ** 2 + 1e-20
+        flat.append(float(np.exp(np.mean(np.log(power))) / np.mean(power)))
+    return float(np.median(flat))
+
+
 def _decode_audio(path: Path) -> np.ndarray:
     with tempfile.TemporaryDirectory() as tmp:
         raw = Path(tmp) / "a.raw"
@@ -299,7 +333,7 @@ class AudioOnlyVoice(Check):
     gate = "final"
 
     def run(self, ctx: JobContext) -> PolicyCheck:
-        """Count audio streams with ffprobe and measure the noise floor of the quietest frames."""
+        """Count audio streams with ffprobe; measure the level and the tonality of the quietest frames."""
         renders = find_renders(ctx)
         if not renders:
             return ok("no renders found")
@@ -310,24 +344,125 @@ class AudioOnlyVoice(Check):
             if len(audio) != 1:
                 problems.append(f"{item}: {len(audio)} audio streams (expected 1)")
                 continue
-            floor = quiet_floor_db(_decode_audio(path))
+            samples = _decode_audio(path)
+            floor = quiet_floor_db(samples)
             if floor > BED_FLOOR_DBFS:
                 problems.append(f"{item}: no silence anywhere (floor {floor:.0f} dBFS), possible music bed")
+                continue
+            flatness = quiet_flatness(samples)
+            if flatness is not None and flatness < TONAL_FLATNESS_MAX:
+                problems.append(
+                    f"{item}: tonal energy between the words (flatness {flatness:.2f}), possible music bed"
+                )
         return fail("; ".join(problems)) if problems else ok(f"{len(renders)} renders carry narration only")
 
 
+# ---------------------------------------------------------------- unsafe topics, second look
+class FinalUnsafeTopics(Check):
+    """Spec 18.3 "both gates": the unsafe-topic classifier over the final script and metadata (E601).
+
+    The text gate judged the story as it was then; this reads what is about to be published: the script as
+    it stands after any expansion, plus titles, descriptions, tags and hooks. It also keeps the intensity
+    and real-setting notes the disclosure advice reads (never lowering them).
+    """
+
+    name = "unsafe_topics"
+    gate = "final"
+
+    def __init__(self, judge: JudgeFn | None = None) -> None:
+        self.judge = judge or default_judge
+
+    def run(self, ctx: JobContext) -> PolicyCheck:
+        """Fail when the judge flags any section 18.3 category in the script or the metadata."""
+        meta = [f"[{it.name}] " + " | ".join(t for t in it.texts() if t) for it in collect_items(ctx)]
+        metadata = "Metadata:\n" + "\n".join(meta) if meta else ""
+        text = "\n\n".join(p for p in (story_text(ctx), metadata) if p)
+        if not text.strip():
+            return ok("no script or metadata to re-check")
+        answer = self.judge(
+            ctx, "unsafe_topics", story=text, categories=list(unsafe_categories()),
+            audience=ctx.channel.audience,
+        )
+        notes = record_notes(ctx, answer, merge=True)
+        if verdict_failed(answer):
+            cats = ", ".join(str(f.get("category", "?")) for f in answer.get("flags", [])) or "unspecified"
+            return fail(f"flagged: {cats}; {answer.get('reason', '')}".strip())
+        return ok(f"script and metadata re-checked, intensity={notes['intensity']}")
+
+
+# ---------------------------------------------------------------- hook in the derived Short
+_WORD = re.compile(r"[a-z0-9']+")
+HOOK_MATCH_MIN = 0.75  # share of the hook's words found, in order, among the Short's opening words
+
+
+def _tokens(text: str) -> list[str]:
+    return _WORD.findall(text.lower())
+
+
+def hook_match(hook: str, spoken: list[str]) -> float:
+    """Share of the hook's words that open the Short (case, punctuation and plural endings are ignored)."""
+    want = _tokens(hook)
+    if not want:
+        return 1.0
+    got = [t for w in spoken for t in _tokens(w)][: len(want) + 2]
+    stem = [t.rstrip("s") for t in got]
+    hits, at = 0, 0
+    for t in (w.rstrip("s") for w in want):
+        if t in stem[at:]:
+            at += stem[at:].index(t) + 1
+            hits += 1
+    return hits / len(want)
+
+
+class ShortHookPresent(Check):
+    """Spec 18.8 render uniqueness, the second half: a derived Short opens with its own new hook (E611).
+
+    A Short may share its narration with the master but must differ from it by the hook it was given. The
+    hook is read from `shorts_plan.json` and compared with the first caption words of `captions/s<k>.json`
+    (aligned from the Short's own audio). This needs no footage, so dev runs are checked too.
+    """
+
+    name = "short_hook"
+    gate = "final"
+
+    def run(self, ctx: JobContext) -> PolicyCheck:
+        """Fail when a planned hook is missing from the opening words of its Short."""
+        moments = [m for m in short_moments(ctx) if str(m["hook"]).strip()]
+        if not moments:
+            return ok("no derived Shorts with a hook")
+        problems: list[str] = []
+        for m in moments:
+            item = f"s{m['k']}"
+            f = ctx.file(f"captions/{item}.json")
+            if not f.exists():
+                problems.append(f"{item}: no captions to find the hook in")
+                continue
+            words = [str(w.get("w", "")) for w in ctx.read_json(f"captions/{item}.json").get("words", [])]
+            share = hook_match(str(m["hook"]), words)
+            if share < HOOK_MATCH_MIN:
+                problems.append(f"{item}: opens with {' '.join(words[:8])!r}, not its hook {m['hook']!r}")
+        return fail("; ".join(problems)) if problems else ok(f"{len(moments)} Shorts open with their hook")
+
+
 # ---------------------------------------------------------------- disclosure
-def compute_advice(ctx: JobContext) -> PolicyAdvice:
-    """Spec 18.7: altered-content answer, made-for-kids and the age-restriction suggestion."""
+def compute_advice(ctx: JobContext, place_ner: NerFn | None = None) -> PolicyAdvice:
+    """Spec 18.7: altered-content answer, made-for-kids and the age-restriction suggestion.
+
+    Altered or synthetic content is "yes" when anything could pass as real footage and when in doubt: a
+    place spaCy recognises (GPE, LOC, FAC) in the script or metadata, a claim that the story is real, the
+    classifier's `real_setting` answer being yes, or that answer being missing or unclear.
+    """
     text = story_text(ctx)
-    blob = "\n".join([text, *(t for it in collect_items(ctx) for t in it.texts())]).lower()
-    words = set(blob.replace(",", " ").replace(".", " ").split())
-    real_place = bool(words & REAL_PLACES) or "new york" in blob
-    claims_real = any(p in blob for p in (*_FACTUAL_CLAIMS, *policy_list("misleading_claims.txt")))
+    blob = "\n".join([text, *(t for it in collect_items(ctx) for t in it.texts())])
+    lowered = blob.lower()
+    claims_real = any(p in lowered for p in (*_FACTUAL_CLAIMS, *policy_list("misleading_claims.txt")))
     notes = ctx.read_json("policy_notes.json") if ctx.file("policy_notes.json").exists() else {}
+    setting = notes.get("real_setting")
+    unclear_or_real = setting is not False  # True (a real place) or missing/None (the classifier did not say)
+    places = (place_ner or (lambda t: place_entities(ctx.paths, t)))(blob)
     intense = ctx.channel.audience == "mature" and notes.get("intensity") in ("medium", "high")
     return PolicyAdvice(
-        ai_disclosure="yes" if (real_place or claims_real) else "no",
+        ai_disclosure="yes" if (unclear_or_real or places or claims_real) else "no",
         made_for_kids=ctx.channel.made_for_kids,
         age_restrict_suggested=bool(intense),
     )
@@ -339,9 +474,12 @@ class DisclosureAdvice(Check):
     name = "disclosure_advice"
     gate = "final"
 
+    def __init__(self, place_ner: NerFn | None = None) -> None:
+        self.place_ner = place_ner
+
     def run(self, ctx: JobContext) -> PolicyCheck:
         """Summarise the section 18.7 answers."""
-        a = compute_advice(ctx)
+        a = compute_advice(ctx, self.place_ner)
         return ok(
             f"altered_content={a.ai_disclosure} made_for_kids={a.made_for_kids} "
             f"age_restrict={a.age_restrict_suggested}"
@@ -351,9 +489,11 @@ class DisclosureAdvice(Check):
 def final_checks() -> list[Check]:
     """The ordered final-gate check list."""
     return [
+        FinalUnsafeTopics(),
         RenderUniqueness(),
         LongRuntime(),
         ClipReuse(),
         AudioOnlyVoice(),
+        ShortHookPresent(),
         DisclosureAdvice(),
     ]

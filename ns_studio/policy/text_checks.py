@@ -14,7 +14,7 @@ from ns_common.models import PolicyCheck
 from ns_common.paths import Paths
 from ns_studio.context import JobContext
 from ns_studio.policy.base import Check, fail, ok
-from ns_studio.policy.judge import JudgeFn, default_judge, verdict_failed
+from ns_studio.policy.judge import JudgeFn, default_judge, record_notes, verdict_failed
 from ns_studio.policy.meta import (
     collect_items,
     policy_list,
@@ -32,6 +32,7 @@ MAX_TAGS = 20
 MAX_TAG_CHARS = 500
 MAX_HASHTAGS = 5
 SPACY_LABELS = frozenset({"PERSON", "ORG", "GPE", "EVENT"})
+PLACE_LABELS = frozenset({"GPE", "LOC", "FAC"})  # countries and cities, other places, buildings and roads
 _CAP_SEQ = re.compile(r"\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+\b")
 _NLP_CACHE: dict[str, Any] = {}
 
@@ -75,6 +76,18 @@ def make_ner(paths: Paths) -> NerFn:
     return ner
 
 
+def place_entities(paths: Paths, text: str) -> list[Entity]:
+    """Places spaCy finds in `text` (GPE, LOC, FAC); empty when spaCy is not installed.
+
+    The disclosure advice (spec 18.7) treats any of them as a possible real setting. Without spaCy the
+    classifier's `real_setting` answer is the only signal, and an unclear answer already means "yes".
+    """
+    nlp = _spacy_nlp(paths)
+    if nlp is None:
+        return []
+    return [(e.text, e.label_) for e in nlp(text).ents if e.label_ in PLACE_LABELS]
+
+
 def entity_problems(
     entities: list[Entity], text: str, block: tuple[str, ...], allow: tuple[str, ...]
 ) -> list[str]:
@@ -114,13 +127,43 @@ class UnsafeTopics(Check):
             categories=list(unsafe_categories()),
             audience=ctx.channel.audience,
         )
-        notes = ctx.read_json("policy_notes.json") if ctx.file("policy_notes.json").exists() else {}
-        notes["intensity"] = str(answer.get("intensity", "low"))
-        ctx.write_json("policy_notes.json", notes)
+        notes = record_notes(ctx, answer, merge=False)
         if verdict_failed(answer):
             cats = ", ".join(str(f.get("category", "?")) for f in answer.get("flags", [])) or "unspecified"
             return fail(f"flagged: {cats}; {answer.get('reason', '')}".strip())
         return ok(f"intensity={notes['intensity']}")
+
+
+def check_added_text(
+    ctx: JobContext, text: str, *, judge: JudgeFn | None = None, ner: NerFn | None = None
+) -> None:
+    """Run the text-gate checks on text that was added after `policy_text` ran; raises its NS-E6xx.
+
+    The duration check lengthens a chapter after the text gate has passed. The new words get the checks that
+    read story text: real people and brands (E602), claims that the story is real (E603) and the unsafe-topic
+    classifier (E601, which also raises the intensity and setting notes the disclosure advice reads).
+    """
+    problems = entity_problems(
+        (ner or make_ner(ctx.paths))(text),
+        text,
+        policy_list("real_entities_block.txt"),
+        policy_list("real_entities_allow.txt"),
+    )
+    if problems:
+        raise NsError("NS-E602", "real_entities: " + "; ".join(problems), check="real_entities")
+    lowered = text.lower()
+    claims = [p for p in policy_list("misleading_claims.txt") if re.search(rf"\b{re.escape(p)}\b", lowered)]
+    if claims:
+        said = ", ".join(repr(c) for c in claims)
+        raise NsError("NS-E603", f"misleading_claims: {said}", check="misleading_claims")
+    answer = (judge or default_judge)(
+        ctx, "unsafe_topics", story=text, categories=list(unsafe_categories()), audience=ctx.channel.audience
+    )
+    record_notes(ctx, answer, merge=True)
+    if verdict_failed(answer):
+        cats = ", ".join(str(f.get("category", "?")) for f in answer.get("flags", [])) or "unspecified"
+        why = f"unsafe_topics: flagged: {cats}; {answer.get('reason', '')}".strip()
+        raise NsError("NS-E601", why, check="unsafe_topics")
 
 
 class RealEntities(Check):
