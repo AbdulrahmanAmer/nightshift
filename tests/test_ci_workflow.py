@@ -105,6 +105,7 @@ def test_the_final_job_proves_nothing_fell_between_the_shards(ci: dict[str, Any]
         verify = step(job, "dev/ci_shards.py verify")["run"]
         assert f"--of {SHARDS}" in verify and "--collected collected/collected.txt" in verify
         assert "--reports reports" in verify
+        assert "node ids" in step(job, "dev/ci_shards.py verify")["name"]
         names = [s.get("with", {}).get("name") or s.get("with", {}).get("pattern") for s in job["steps"]]
         assert "junit-report-shard-*" in names and "collected-tests" in names
         assert step(job, "ci_slowest.py")["run"].startswith("python dev/ci_slowest.py --top 20 --summary")

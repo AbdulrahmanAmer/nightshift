@@ -128,7 +128,7 @@ jobs:
         with:
           name: collected-tests
           path: collected
-      - name: Every collected test ran in exactly one shard
+      - name: The node ids the shards ran are exactly the node ids collected unsharded
         if: ${{ !cancelled() }}
         shell: bash
         run: python dev/ci_shards.py verify --of 4 --collected collected/collected.txt --reports reports --summary

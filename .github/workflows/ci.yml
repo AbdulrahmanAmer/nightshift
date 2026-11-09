@@ -177,8 +177,9 @@ jobs:
 
   # THE required check `test` (branch protection names it; the shards are test-shard (1/4) ... (4/4)). It runs
   # even when a shard failed or was skipped or cancelled (`always()`), and passes only when every shard and the
-  # collection job succeeded AND the shards together ran exactly the unsharded collection: no test in no shard,
-  # none in two. It also counts the upstream-outage skips over all shards and lists the twenty slowest tests.
+  # collection job succeeded AND the set of node ids the shards ran (from their JUnit reports) equals the set the
+  # unsharded collection found: no id missing, none twice, none extra. It also counts the upstream-outage skips over all shards and lists the twenty
+  # slowest tests.
   test:
     needs: [test-shard, test-collect]
     if: always()
@@ -228,7 +229,7 @@ jobs:
         if: ${{ !cancelled() }}
         shell: bash
         run: python dev/ci_shards.py plan --of 4 --limit 720
-      - name: Every collected test ran in exactly one shard
+      - name: The node ids the shards ran are exactly the node ids collected unsharded
         if: ${{ !cancelled() }}
         shell: bash
         run: python dev/ci_shards.py verify --of 4 --collected collected/collected.txt --reports reports --summary

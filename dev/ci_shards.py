@@ -20,7 +20,8 @@ Commands (``python dev/ci_shards.py <command> ...``)::
     run     --shard N --of M -- <pytest args>  run pytest on the files of one shard
     plan    --of M [--limit SECONDS]         predicted seconds per shard; exit 1 over the limit
     verify  --of M --collected FILE --reports DIR [--summary]
-                                             the completeness proof (see ``verify``)
+                                             the completeness proof: the node ids the shards reported are
+                                             exactly the node ids the unsharded run collected
     weights REPORT.xml ... [--write FILE]    median seconds per test file from JUnit reports
 
 Standard library only, so the CI jobs that call it need no install.
@@ -37,7 +38,8 @@ import statistics
 import subprocess
 import sys
 import xml.etree.ElementTree as ET
-from collections.abc import Iterable, Sequence
+from collections import Counter
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
@@ -236,14 +238,66 @@ def _read_junit(path: Path) -> list[ET.Element]:
     return list(ET.parse(path).getroot().iter("testcase"))
 
 
+def _node_id_of_case(classname: str, name: str, modules: dict[str, str]) -> str | None:
+    """The pytest node id a JUnit ``<testcase>`` stands for, or None when its module is not a collected file.
+
+    pytest writes ``classname`` as the dotted module plus the classes and ``name`` as the test (parameters
+    included, even when they contain ``::`` or ``/``), so ``tests.test_a.TestX`` + ``test_y[1]`` is the
+    node id ``tests/test_a.py::TestX::test_y[1]``.
+    """
+    parts = classname.split(".")
+    for k in range(len(parts), 0, -1):
+        module = modules.get(".".join(parts[:k]))
+        if module:
+            return "::".join([module, *parts[k:], name])
+    return None
+
+
+def compare_node_ids(collected: Sequence[str], ran: Mapping[int, Sequence[str]]) -> list[str]:
+    """Problems if the node ids the shards ran are not exactly the unsharded collection.
+
+    ``collected`` is the node ids of the unsharded run (test-collect); ``ran`` maps a shard number to the node
+    ids that shard actually reported. The comparison is by node id and counts occurrences, so it fails on:
+
+    * a collected id that no shard ran (a dropped file, a shard that stopped or collected nothing);
+    * an id that ran more than once (a file in two shards, or twice in one);
+    * an id that ran but is not in the unsharded collection.
+
+    It does not depend on how the files were split: a different splitter, a hand-edited weights table or a
+    shard that ran something else all show up here.
+    """
+    expected = Counter(collected)
+    got: Counter[str] = Counter()
+    shards_of: dict[str, list[int]] = {}
+    for shard, ids in sorted(ran.items()):
+        for node_id in ids:
+            got[node_id] += 1
+            shards_of.setdefault(node_id, []).append(shard)
+
+    missing = [i for i in dict.fromkeys(collected) if got[i] == 0]
+    twice = [
+        f"{i} (ran {got[i]} times, expected {expected[i]}; shards {' and '.join(map(str, shards_of[i]))})"
+        for i in got
+        if i in expected and got[i] > expected[i]
+    ]
+    short = [f"{i} (ran {got[i]} times, expected {expected[i]})" for i in got if 0 < got[i] < expected[i]]
+    ghosts = [f"{i} (shard {shards_of[i][0]})" for i in got if i not in expected]
+    problems = [f"in no shard (collected, never ran): {m}" for m in _capped(missing)]
+    problems += [f"ran twice: {m}" for m in _capped(twice)]
+    problems += [f"ran fewer times than collected: {m}" for m in _capped(short)]
+    problems += [f"ran but not in the unsharded collection: {m}" for m in _capped(ghosts)]
+    return problems
+
+
 def verify(collected: Sequence[str], shards: int, weights: Weights, reports: Path) -> Verdict:
     """The completeness proof, from the unsharded collection and the JUnit reports of the shards.
 
-    1. the helper's shard selections, taken from the collected node ids, are exactly the collection: no test
-       in no shard, none in two (``check_partition``);
-    2. each shard wrote ``report-shard-N.xml``, and for every test file the number of tests it reports is the
-       number collected, in the shard the helper assigned and in no other. A test file the shards never ran, a
-       file that ran in two shards, a shard that stopped early and a collection failure each name themselves.
+    1. each shard wrote ``report-shard-N.xml`` and it holds tests (a shard that collected nothing fails);
+    2. the SET of node ids the shards reported is exactly the set the unsharded run collected: an id that
+       no shard ran, or that ran twice (in two shards or in one), or that ran without being collected, fails
+       (``compare_node_ids``). This is the proof; it does not use the helper's own split;
+    3. every test ran in the shard the helper assigned its file to (a plan the workflow did not follow
+       fails), and the helper's own selections are a clean partition (``check_partition``).
     """
     problems: list[str] = []
     if not collected:
@@ -251,13 +305,11 @@ def verify(collected: Sequence[str], shards: int, weights: Weights, reports: Pat
     selections = [select_node_ids(collected, s, shards, weights) for s in range(1, shards + 1)]
     problems += check_partition(collected, selections)
 
-    collected_per_file: dict[str, int] = {}
-    for node_id in collected:
-        collected_per_file[node_file(node_id)] = collected_per_file.get(node_file(node_id), 0) + 1
-    modules = _module_index(collected_per_file)
+    collected_files = sorted({node_file(i) for i in collected})
+    modules = _module_index(collected_files)
     table = weighted_table(weights, shards)
 
-    ran: dict[tuple[str, int], int] = {}  # (file, shard) -> tests reported
+    ran: dict[int, list[str]] = {}  # shard -> node ids reported
     rows: list[ShardRow] = []
     per_shard_files = [sorted({node_file(i) for i in sel}) for sel in selections]
     loads = predicted_seconds(per_shard_files, weights)
@@ -273,7 +325,7 @@ def verify(collected: Sequence[str], shards: int, weights: Weights, reports: Pat
             problems.append(f"shard {shard}: {report.name} is not readable XML ({exc})")
             rows.append(ShardRow(shard, len(per_shard_files[shard - 1]), 0, loads[shard - 1], 0.0))
             continue
-        tests = 0
+        ids: list[str] = []
         seconds = 0.0
         strangers: list[str] = []
         for case in cases:
@@ -284,25 +336,34 @@ def verify(collected: Sequence[str], shards: int, weights: Weights, reports: Pat
                 continue
             if skipped is not None and skipped.get("message", "") == "collection skipped":
                 continue  # a whole module skipped itself (importorskip): it has no tests to count
-            file = _file_of_classname(classname, modules)
-            tests += 1
             seconds += float(case.get("time") or 0)
-            if file is None:
+            node_id = _node_id_of_case(classname, name, modules)
+            if node_id is None:
                 strangers.append(f"{classname}::{name}")
             else:
-                ran[(file, shard)] = ran.get((file, shard), 0) + 1
+                ids.append(node_id)
         problems += [f"ran in shard {shard} but not collected: {s}" for s in _capped(strangers)]
-        rows.append(ShardRow(shard, len(per_shard_files[shard - 1]), tests, loads[shard - 1], seconds))
+        if not ids and not strangers:
+            problems.append(f"shard {shard} collected nothing: {report.name} reports no tests")
+        ran[shard] = ids
+        rows.append(
+            ShardRow(
+                shard, len(per_shard_files[shard - 1]), len(ids) + len(strangers), loads[shard - 1], seconds
+            )
+        )
 
-    for file, count in sorted(collected_per_file.items()):
-        owner = table.get(file) or hash_shard(file, shards)
-        elsewhere = sorted(s for (f, s) in ran if f == file and s != owner)
-        for s in elsewhere:
-            problems.append(f"{file} belongs to shard {owner} but ran in shard {s} ({ran[(file, s)]} tests)")
-        got = ran.get((file, owner), 0)
-        report_exists = (reports / f"report-shard-{owner}.xml").is_file()
-        if report_exists and got != count:
-            problems.append(f"{file} (shard {owner}): collected {count} tests, ran {got}")
+    problems += compare_node_ids(collected, ran)
+
+    wrong: dict[tuple[str, int, int], int] = {}  # (file, owner, shard it ran in) -> tests
+    for shard, ids in ran.items():
+        for node_id in ids:
+            file = node_file(node_id)
+            owner = table.get(file) or hash_shard(file, shards)
+            if owner != shard:
+                key = (file, owner, shard)
+                wrong[key] = wrong.get(key, 0) + 1
+    for (file, owner, shard), count in sorted(wrong.items()):
+        problems.append(f"{file} belongs to shard {owner} but ran in shard {shard} ({count} tests)")
     return Verdict(problems, rows)
 
 
@@ -442,7 +503,10 @@ def _cmd_verify(args: argparse.Namespace) -> int:
             print(f"::error::{p}")
         print("::error::the shards are not the whole suite: a test is in no shard or in two, or was not run")
     else:
-        print("ok: no test is in no shard or in two; every collected test ran in the shard it was given")
+        print(
+            "ok: the node ids the shards ran are exactly the node ids collected unsharded: "
+            "no test is in no shard or in two, and each ran in the shard it was given"
+        )
     summary = os.environ.get("GITHUB_STEP_SUMMARY")
     if args.summary and summary:
         with open(summary, "a", encoding="utf-8") as fh:

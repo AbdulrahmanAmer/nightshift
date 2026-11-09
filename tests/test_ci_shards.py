@@ -327,7 +327,8 @@ def test_verify_fails_when_a_shard_ran_fewer_tests_than_it_was_given(tmp_path: P
     cases = junit_cases(victim)[:-3]
     write_junit(rep / "report-shard-2.xml", cases)
     problems = cs.verify(ids, SHARDS, w, rep).problems
-    assert any("collected" in p and ", ran " in p and "(shard 2)" in p for p in problems), problems
+    for dropped in victim[-3:]:
+        assert any("in no shard" in p and dropped in p for p in problems), (dropped, problems)
 
 
 def test_verify_fails_when_a_file_ran_in_two_shards(tmp_path: Path):
@@ -339,6 +340,8 @@ def test_verify_fails_when_a_file_ran_in_two_shards(tmp_path: Path):
     write_junit(rep / "report-shard-4.xml", other)
     problems = cs.verify(ids, SHARDS, w, rep).problems
     assert any("belongs to shard 1" in p and "ran in shard 4" in p for p in problems), problems
+    for twice in stray:
+        assert any("ran twice" in p and twice in p for p in problems), (twice, problems)
 
 
 def test_verify_fails_on_a_test_from_a_file_that_was_never_collected(tmp_path: Path):
@@ -370,6 +373,108 @@ def test_verify_ignores_a_collection_skip_but_fails_a_collection_error(tmp_path:
 def test_verify_fails_on_an_empty_collection(tmp_path: Path):
     problems = cs.verify([], SHARDS, synthetic_weights(), tmp_path).problems
     assert any("collected no tests" in p for p in problems), problems
+
+
+# ---- the proof can fail: deliberately broken splits (H-4) ---------------------------------------------
+#
+# The unsharded run (test-collect) is `ids`. Each broken split below is what the four shard reports would
+# look like if the split lost a file, ran a file twice or left a shard empty. The proof must name the ids.
+def collected_ids() -> tuple[cs.Weights, list[str], list[str]]:
+    w = synthetic_weights()
+    files = [*w.files, "tests/test_unweighted_a.py", "tests/test_unweighted_b.py"]
+    return w, files, synthetic_node_ids(files)
+
+
+def ids_of_file(ids: list[str], file: str) -> list[str]:
+    return [i for i in ids if cs.node_file(i) == file]
+
+
+def test_the_node_id_comparison_passes_on_an_exact_split_and_names_every_kind_of_difference():
+    ids = synthetic_node_ids(["tests/test_a.py", "tests/test_b.py"])
+    exact = {1: ids[:4], 2: ids[4:]}
+    assert cs.compare_node_ids(ids, exact) == []
+    assert any("in no shard" in p for p in cs.compare_node_ids(ids, {1: ids[:4], 2: ids[4:-1]}))
+    assert any("ran twice" in p for p in cs.compare_node_ids(ids, {1: ids[:4], 2: [*ids[4:], ids[0]]}))
+    assert any("ran twice" in p for p in cs.compare_node_ids(ids, {1: [*ids[:4], ids[0]], 2: ids[4:]}))
+    ghost = cs.compare_node_ids(ids, {1: ids[:4], 2: [*ids[4:], "tests/test_a.py::test_other"]})
+    assert any("not in the unsharded collection" in p and "test_other" in p for p in ghost)
+
+
+def test_the_node_id_comparison_does_not_need_the_helper_split_at_all():
+    """Same count of tests, different ids: the old per-file count passed this, the id comparison must not."""
+    ids = ["tests/test_a.py::test_one", "tests/test_a.py::test_two"]
+    swapped = {1: ["tests/test_a.py::test_one", "tests/test_a.py::test_renamed"]}
+    problems = cs.compare_node_ids(ids, swapped)
+    assert any("in no shard" in p and "test_two" in p for p in problems), problems
+    assert any("not in the unsharded collection" in p and "test_renamed" in p for p in problems), problems
+
+
+def test_verify_fails_when_one_file_is_dropped_from_every_shard(tmp_path: Path):
+    w, files, ids = collected_ids()
+    rep = make_reports(tmp_path, ids, w)
+    victim_file = files[3]
+    owner = cs.shard_of(victim_file, SHARDS, w)
+    kept = [i for i in cs.select_node_ids(ids, owner, SHARDS, w) if cs.node_file(i) != victim_file]
+    write_junit(rep / f"report-shard-{owner}.xml", junit_cases(kept))
+    dropped = ids_of_file(ids, victim_file)
+    assert len(dropped) == 4
+    problems = cs.verify(ids, SHARDS, w, rep).problems
+    for node_id in dropped:
+        assert any("in no shard" in p and node_id in p for p in problems), (node_id, problems)
+
+
+def test_verify_fails_when_one_file_is_in_two_shards(tmp_path: Path):
+    w, files, ids = collected_ids()
+    rep = make_reports(tmp_path, ids, w)
+    victim_file = files[5]
+    owner = cs.shard_of(victim_file, SHARDS, w)
+    other = owner % SHARDS + 1
+    doubled = junit_cases(cs.select_node_ids(ids, other, SHARDS, w) + ids_of_file(ids, victim_file))
+    write_junit(rep / f"report-shard-{other}.xml", doubled)
+    problems = cs.verify(ids, SHARDS, w, rep).problems
+    for node_id in ids_of_file(ids, victim_file):
+        assert any("ran twice" in p and node_id in p for p in problems), (node_id, problems)
+
+
+def test_verify_fails_when_one_shard_collects_nothing(tmp_path: Path):
+    w, _files, ids = collected_ids()
+    rep = make_reports(tmp_path, ids, w)
+    write_junit(rep / "report-shard-3.xml", [])
+    problems = cs.verify(ids, SHARDS, w, rep).problems
+    assert any("shard 3 collected nothing" in p for p in problems), problems
+    for node_id in cs.select_node_ids(ids, 3, SHARDS, w)[:3]:
+        assert any("in no shard" in p and node_id in p for p in problems), (node_id, problems)
+
+
+@pytest.mark.parametrize("break_it", ["drop-file", "file-twice", "empty-shard"])
+def test_the_verify_command_exits_1_on_a_broken_split_and_0_on_the_whole_one(
+    break_it: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+):
+    w = cs.load_weights()
+    files = discovered_repo_files()
+    ids = synthetic_node_ids(files)
+    collected = tmp_path / "collected.txt"
+    collected.write_text("\n".join(ids) + "\n", encoding="utf-8")
+    rep = make_reports(tmp_path, ids, w)
+    args = ["verify", "--of", "4", "--collected", str(collected), "--reports", str(rep)]
+    assert cs.main(args) == 0
+    capsys.readouterr()
+
+    shard_ids = [cs.select_node_ids(ids, s, SHARDS, w) for s in range(1, SHARDS + 1)]
+    if break_it == "drop-file":
+        gone = cs.node_file(shard_ids[0][0])
+        write_junit(
+            rep / "report-shard-1.xml",
+            junit_cases([i for i in shard_ids[0] if cs.node_file(i) != gone]),
+        )
+    elif break_it == "file-twice":
+        write_junit(rep / "report-shard-2.xml", junit_cases([*shard_ids[1], *shard_ids[0][:4]]))
+    else:
+        write_junit(rep / "report-shard-4.xml", [])
+    assert cs.main(args) == 1
+    out = capsys.readouterr().out
+    assert "::error::" in out
+    assert "ok:" not in out
 
 
 # ---- the command line -------------------------------------------------------------------------------
