@@ -34,7 +34,10 @@ SAME_CHANNEL_DAYS = 14
 OTHER_CHANNEL_DAYS = 30
 BED_FLOOR_DBFS = -55.0
 # Spectral flatness (geometric over arithmetic mean of the power spectrum) of the quiet frames: noise and
-# room tone sit around 0.3 to 0.6, a held note or a pad is far below 0.1.
+# room tone sit around 0.3 to 0.6, a held note or a pad is far below 0.1. UNCALIBRATED: 0.1 and
+# QUIET_MIN_DB were checked against synthetic noise and tones only, not against real TTS or AAC-encoded
+# narration (a decaying voiced tail or low hum in the quietest frames may read as tonal). Measure real
+# narration on the GPU target before trusting an NS-E614 from this check.
 TONAL_FLATNESS_MAX = 0.1
 QUIET_SHARE = 0.10  # the quietest tenth of the 50 ms frames
 QUIET_MIN_DB = -85.0  # below this a frame is digital silence: no bed, nothing to measure
@@ -380,7 +383,10 @@ class FinalUnsafeTopics(Check):
         if not text.strip():
             return ok("no script or metadata to re-check")
         answer = self.judge(
-            ctx, "unsafe_topics", story=text, categories=list(unsafe_categories()),
+            ctx,
+            "unsafe_topics",
+            story=text,
+            categories=list(unsafe_categories()),
             audience=ctx.channel.audience,
         )
         notes = record_notes(ctx, answer, merge=True)
@@ -442,6 +448,13 @@ class ShortHookPresent(Check):
             if share < HOOK_MATCH_MIN:
                 problems.append(f"{item}: opens with {' '.join(words[:8])!r}, not its hook {m['hook']!r}")
         return fail("; ".join(problems)) if problems else ok(f"{len(moments)} Shorts open with their hook")
+
+    def hint(self, ctx: JobContext) -> str | None:
+        """NS-E611 is shared with render uniqueness: say what this failure is, and what is redone."""
+        return (
+            "A Short does not open with the hook that was written for it. "
+            "The narration is being voiced again so the hook leads the Short."
+        )
 
 
 # ---------------------------------------------------------------- disclosure

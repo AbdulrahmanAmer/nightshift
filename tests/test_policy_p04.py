@@ -105,6 +105,77 @@ def test_expanded_chapter_with_a_blocked_name_or_claim_is_refused(
     assert ctx.file("story.json").read_bytes() == before
 
 
+class KeepOldLlm(FakeLlm):
+    """FakeLlm whose `expand` answers with the chapter it was given plus `extra` (old sentences verbatim)."""
+
+    def __init__(self, old_text: str, extra: str, **kw: Any) -> None:
+        super().__init__(FIXTURES_LLM, **kw)
+        self.old_text, self.extra = old_text, extra
+
+    def complete_text(
+        self,
+        *,
+        prompt_name: str,
+        system: str,
+        user: str,
+        thinking: bool = False,
+        temperature: float = 0.8,
+        max_tokens: int = 2048,
+    ) -> str:
+        if prompt_name == "expand":
+            return f"{self.old_text} {self.extra}"
+        return super().complete_text(prompt_name=prompt_name, system=system, user=user, thinking=thinking)
+
+
+NEUTRAL_EXTRA = (
+    "The hallway stayed quiet for a long while. Nobody moved. The porch light flickered twice, and then it "
+    "held steady. She counted the steps to the stairs and listened for the floor to answer. Nothing did. "
+    "The kettle clicked off in the next room. He waited by the window and watched the street go dark. "
+    "A car passed slowly and its lights swept across the ceiling and were gone. The house settled around them."
+)
+
+
+def _with_old_phrase(ctx: Any, phrase: str) -> str:
+    """Put `phrase` into chapter 1 of the stored story (as if the text gate had passed it); returns its text."""
+    story = M.load_story(ctx)
+    old = story.chapters[0]
+    text = f"{phrase} {old.text}"
+    story.chapters[0] = M.build_chapter(
+        old.n, old.title, text, old.summary, wpm=M._wpm(ctx), is_last=len(story.chapters) == 1
+    )
+    ctx.write_json("story.json", story.model_dump())
+    return text
+
+
+def test_old_sentences_with_a_scanned_phrase_do_not_fail_an_expansion(
+    tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The text gate scans metadata for claim phrases, not the story: old sentences must not trip E603 later."""
+    ctx = _master_job(monkeypatch, tmp_home)
+    ctx.write_json("policy_text.json", {"stage": "text", "passed": True, "checks": {}, "advice": {}})
+    old_text = _with_old_phrase(
+        ctx,
+        "The ceiling leaked again. On the radio a news report droned. Nothing in real life felt this wrong.",
+    )
+    ctx.services.llm = KeepOldLlm(old_text, NEUTRAL_EXTRA)
+    new = M.expand_chapter(ctx, 1, 40)
+    assert "ceiling leaked again" in new.text and "porch light flickered twice, and then" in new.text
+
+
+def test_a_scanned_phrase_in_the_new_sentences_still_fails_an_expansion(
+    tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+):
+    ctx = _master_job(monkeypatch, tmp_home)
+    ctx.write_json("policy_text.json", {"stage": "text", "passed": True, "checks": {}, "advice": {}})
+    old_text = _with_old_phrase(ctx, "The ceiling leaked again.")
+    ctx.services.llm = KeepOldLlm(old_text, NEUTRAL_EXTRA + " It was caught on camera.")
+    with pytest.raises(NsError) as ei:
+        M.expand_chapter(ctx, 1, 40)
+    assert (
+        ei.value.code == "NS-E603" and "caught on camera" in str(ei.value) and "leaked" not in str(ei.value)
+    )
+
+
 def test_expanded_chapter_that_passes_is_kept_and_notes_merge(
     tmp_home: Path, monkeypatch: pytest.MonkeyPatch
 ):
@@ -420,6 +491,23 @@ def test_short_must_open_with_its_hook(tmp_home: Path):
     assert fc.ShortHookPresent().code == "NS-E611"
 
 
+def test_hook_failure_has_its_own_hint_and_restarts_at_the_voice(tmp_home: Path):
+    """short_hook shares NS-E611 with render_uniqueness: its hint must not say "visuals are being redrawn"."""
+    from ns_studio.policy import regen
+
+    ctx = make_ctx(tmp_home)
+    _short(ctx, 1, "The camera saw something it should not.", "The porch light flickered twice. It was cold.")
+    chk = fc.ShortHookPresent()
+    assert not chk.run(ctx).passed
+    hint = chk.hint(ctx) or ""
+    assert "hook" in hint and "similar" not in hint and "redrawn" not in hint
+    names = ["ideas", "hooks", "voice", "captions", "clips", "render", "qc"]
+    assert regen.earliest_stage("NS-E611", names) == "clips"  # render_uniqueness: new footage
+    assert (
+        regen.earliest_stage("NS-E611", names, check="short_hook") == "voice"
+    )  # a hook is voiced, not drawn
+
+
 def test_hook_match_ignores_case_and_punctuation_and_one_wrong_word(tmp_home: Path):
     ctx = make_ctx(tmp_home)
     _short(ctx, 1, "Nobody ever answers the door!", "nobody ever answer the door, the porch light flickered")
@@ -501,3 +589,29 @@ def test_audio_check_passes_room_tone_and_digital_silence(tmp_home: Path, monkey
     for gap in (_noise(-62), np.zeros(SR // 2)):
         res = fc.AudioOnlyVoice().run(_audio_ctx(tmp_home, monkeypatch, _speechlike(gap)))
         assert res.passed, res.detail
+
+
+def test_a_failed_hook_check_restarts_the_run_at_the_voice_not_the_clips(
+    tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """run_job_guarded reads the failing check from the error: short_hook redoes the voice, not the footage."""
+    from ns_studio import orchestrator as orch
+    from ns_studio.policy import regen
+    from tests.test_policy_gate import Counter, FlakyGate
+
+    class HookGate(FlakyGate):
+        def run(self, ctx: Any) -> None:
+            n = self.counts.get("gate_x", 0)
+            self.counts["gate_x"] = n + 1
+            if n < 1:
+                raise NsError("NS-E611", "short_hook: s1 opens with the wrong words", check="short_hook")
+            ctx.write_json("gate_x.json", {"ok": True})
+
+    counts: dict[str, int] = {}
+    plan = ["ideas", "voice", "clips", "gate_x"]
+    for name in plan[:3]:
+        monkeypatch.setitem(REGISTRY, name, Counter(name, "llama", counts))
+    monkeypatch.setitem(REGISTRY, "gate_x", HookGate("NS-E611", 1, counts))
+    monkeypatch.setitem(orch.FORMAT_STAGES, "rg", plan)
+    regen.run_job_guarded(make_ctx(tmp_home, fmt="rg"))
+    assert counts == {"ideas": 1, "voice": 2, "clips": 2, "gate_x": 2}

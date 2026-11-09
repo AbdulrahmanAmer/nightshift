@@ -12,6 +12,7 @@ from ns_common.errors import NsError
 from ns_common.llm_client import FakeLlm
 from ns_common.models import PolicyCheck
 from ns_common.paths import Paths
+from ns_common.textstats import split_sentences
 from ns_studio.context import JobContext
 from ns_studio.policy.base import Check, fail, ok
 from ns_studio.policy.judge import JudgeFn, default_judge, record_notes, verdict_failed
@@ -134,14 +135,22 @@ class UnsafeTopics(Check):
         return ok(f"intensity={notes['intensity']}")
 
 
+def new_sentences(text: str, old_text: str) -> str:
+    """The sentences of `text` that `old_text` does not already contain verbatim, joined by a space."""
+    seen = set(split_sentences(old_text))
+    return " ".join(s for s in split_sentences(text) if s not in seen)
+
+
 def check_added_text(
-    ctx: JobContext, text: str, *, judge: JudgeFn | None = None, ner: NerFn | None = None
+    ctx: JobContext, text: str, *, old_text: str = "", judge: JudgeFn | None = None, ner: NerFn | None = None
 ) -> None:
     """Run the text-gate checks on text that was added after `policy_text` ran; raises its NS-E6xx.
 
     The duration check lengthens a chapter after the text gate has passed. The new words get the checks that
     read story text: real people and brands (E602), claims that the story is real (E603) and the unsafe-topic
     classifier (E601, which also raises the intensity and setting notes the disclosure advice reads).
+    `old_text` is the chapter before the expansion: its sentences stay verbatim and passed the text gate
+    already, which scans the claim phrases in the metadata only, so the phrase scan reads the new sentences.
     """
     problems = entity_problems(
         (ner or make_ner(ctx.paths))(text),
@@ -151,7 +160,7 @@ def check_added_text(
     )
     if problems:
         raise NsError("NS-E602", "real_entities: " + "; ".join(problems), check="real_entities")
-    lowered = text.lower()
+    lowered = (new_sentences(text, old_text) if old_text else text).lower()
     claims = [p for p in policy_list("misleading_claims.txt") if re.search(rf"\b{re.escape(p)}\b", lowered)]
     if claims:
         said = ", ".join(repr(c) for c in claims)
