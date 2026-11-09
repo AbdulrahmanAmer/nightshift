@@ -22,6 +22,7 @@ from typing import Any
 
 import psutil
 
+from ns_common import atomic
 from ns_common.paths import Paths
 from ns_supervisor.childenv import child_env
 
@@ -34,7 +35,9 @@ def host_window_open(paths: Paths, image: Callable[[int], str | None] | None = N
     if image is None:
         from ns_supervisor.control import image_name as image
     try:
-        data = json.loads((paths.home / "run" / HOST_RUN_FILE).read_text(encoding="utf-8-sig"))
+        # the host swaps its run file in whole (launchers/_common.ps1 Write-NsFileAtomic); for a few
+        # milliseconds Windows refuses an open of the name, and that must not read as "no window"
+        data = json.loads(atomic.read_text_retry(paths.home / "run" / HOST_RUN_FILE, encoding="utf-8-sig"))
         pid = int(data["pid"])
     except (OSError, ValueError, KeyError, TypeError):
         return False

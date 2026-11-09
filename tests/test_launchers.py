@@ -644,7 +644,10 @@ def host_cache_reset(tmp_path: Path, version: str | None, profile: Path) -> str:
     app.mkdir(parents=True, exist_ok=True)
     if version is not None:
         (app / "VERSION").write_text(version + "\n", encoding="ascii")
-    script = f"{m.group(0)}\nWrite-Output (Reset-StaleHttpCache -ProfileDir '{profile}' -AppDir '{app}')\n"
+    # the host dot-sources _common.ps1 (Read-NsTextRetry, Write-NsFileAtomic) before it defines this function
+    common = LAUNCHERS / "_common.ps1"
+    call = f"Write-Output (Reset-StaleHttpCache -ProfileDir '{profile}' -AppDir '{app}')"
+    script = f". '{common}'\n{m.group(0)}\n{call}\n"
     r = pwsh.run_powershell(script, timeout_s=90)
     assert r.returncode == 0, r.stdout + r.stderr
     return r.stdout.strip().splitlines()[-1]
