@@ -120,6 +120,10 @@ STDLIB_ONLY_NS_COMMON = {
     "ns_common.config_snapshot",
     "ns_common.first_start",
     "ns_common.logging",
+    # F-10c: the record of a rollback in progress, finished or undone by the first-start check; and the table
+    # of settings fields added since 0.1.14, whose plain-dict rule the setup window's answers writer uses.
+    "ns_common.rollback_intent",
+    "ns_common.new_fields",
 }
 # installer.stage2.devmode (dev mode numbers, stubs, mode switch) is stdlib-only too and shared by the setup
 # server and the wizard; the test below keeps it that way.

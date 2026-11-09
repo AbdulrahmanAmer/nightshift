@@ -22,6 +22,7 @@ from installer.stage2.web.pathcheck import DRIVE_PATH_RE as DRIVE_PATH_RE
 from installer.stage2.web.pathcheck import home_problem
 from installer.stage2.web.plan import required_free_gb
 from ns_common.atomic import copy_atomic, read_text_retry, write_text_atomic
+from ns_common.new_fields import plain_disk_dict
 
 RUN_TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 MAX_HOME_LEN = 120
@@ -259,8 +260,10 @@ def read_answers(path: Path) -> dict[str, Any]:
 
 
 def write_answers(path: Path, data: dict[str, Any]) -> Path:
-    """Write an answers.json. The keys are always blank."""
-    clean = dict(data)
+    """Write an answers.json. The keys are always blank, and an answer added after 0.1.14 is written only
+    when it is in use (`ns_common.new_fields.plain_disk_dict`, the plain-dict form of
+    `config_compat.disk_dict`, F-10c), so an older setup can read the file after a rollback."""
+    clean = plain_disk_dict("answers.json", dict(data))
     clean["pexels_api_key"] = ""
     clean["pixabay_api_key"] = ""
     path.parent.mkdir(parents=True, exist_ok=True)

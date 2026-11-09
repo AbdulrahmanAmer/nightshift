@@ -18,6 +18,7 @@ import json
 import os
 import shutil
 import stat
+import threading
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -677,6 +678,405 @@ def test_the_three_fingerprints_agree(tmp_path: Path) -> None:
     assert config_snapshot.program_fingerprint(tmp_path / "missing") == "-|-|-"
 
 
+# ------------------------------------------------------------------------------- an interrupted rollback
+class Stop(BaseException):
+    """The process ends here (Ctrl+C, the window closed): not an Exception, so nothing in the product
+    catches it as an error."""
+
+
+def the_new_version_loads_everything(paths: Paths) -> None:
+    """The newer program (this code) loads every settings file: it reads both shapes."""
+    load_runtime(paths)
+    load_install_state(paths)
+    load_channel(paths, "demo")
+    build_answers(load_raw(paths.config / "answers.json"), saved=True)
+
+
+@dataclass
+class Point:
+    """Where a rollback is interrupted, and what the folders look like then."""
+
+    arm: Callable[[Install, pytest.MonkeyPatch], None]
+    settings_ready: bool  # the settings were already made readable by 0.1.14 at this point
+    older_in_place: bool  # 0.1.14 is in <home>\app afterwards
+    no_program: bool = False  # a hard stop with no program in <home>\app (the record's help says what to do)
+
+
+def _stop_at_the_start_of_the_settings(inst: Install, mp: pytest.MonkeyPatch) -> None:
+    def stop(*a: object, **k: object) -> object:
+        assert (inst.home / "app.rollback-pending.json").is_file()  # the record is already written
+        raise Stop
+
+    mp.setattr(update, "_prepare_settings", stop)
+
+
+def _stop_at_settings_write(n: int) -> Callable[[Install, pytest.MonkeyPatch], None]:
+    """Stop before the n-th write of a settings file (a restore, or taking out what 0.1.14 lacks)."""
+
+    def arm(inst: Install, mp: pytest.MonkeyPatch) -> None:
+        count = {"n": 0}
+        real_bytes, real_text = config_snapshot.write_bytes_atomic, update.write_text_atomic
+
+        def check(path: Path) -> None:
+            if inst.paths.config in Path(path).parents:
+                count["n"] += 1
+                if count["n"] == n:
+                    raise Stop
+
+        def wb(path: Path, data: bytes) -> Path:
+            check(path)
+            return real_bytes(path, data)
+
+        def wt(path: Path, text: str, *a: Any, **k: Any) -> Path:
+            check(path)
+            return real_text(path, text, *a, **k)
+
+        mp.setattr(config_snapshot, "write_bytes_atomic", wb)
+        mp.setattr(update, "write_text_atomic", wt)
+
+    return arm
+
+
+Arm = Callable[[Install, pytest.MonkeyPatch], None]
+
+
+def _stop_at_rename(n: int, *, after: bool = False, hard: bool = False) -> Arm:
+    """Stop at the n-th folder rename of the swap (before it, or right after it). `hard`: a power loss, so
+    the rollback's own clean-up of the folders does not run either."""
+
+    def arm(inst: Install, mp: pytest.MonkeyPatch) -> None:
+        count = {"n": 0}
+        real = update.rename_with_retry
+
+        def rename(src: Path, dst: Path, **k: Any) -> None:
+            count["n"] += 1
+            if count["n"] == n and not after:
+                raise Stop
+            real(src, dst, **k)
+            if count["n"] == n and after:
+                raise Stop
+
+        mp.setattr(update, "rename_with_retry", rename)
+        if hard:
+            mp.setattr(update, "_settle_folders", lambda *a: None)
+
+    return arm
+
+
+POINTS: dict[str, Point] = {
+    "1 after the record, before the settings": Point(_stop_at_the_start_of_the_settings, False, False),
+    "2 in the middle of the settings": Point(_stop_at_settings_write(2), False, False),
+    "3 after the settings, before the swap": Point(_stop_at_rename(1), True, False),
+    "4 after the first rename": Point(_stop_at_rename(2), True, False),
+    "4h power loss after the first rename": Point(
+        _stop_at_rename(2, hard=True), True, False, no_program=True
+    ),
+    "5 after the second rename": Point(_stop_at_rename(3), True, True),
+    "5h power loss after the second rename": Point(_stop_at_rename(3, hard=True), True, True),
+    "6 after the swap, before the copy for going forward": Point(_stop_at_rename(3, after=True), True, True),
+}
+
+
+def _installed(inst: Install, with_copy: bool) -> tuple[dict[str, bytes], dict[str, bytes]]:
+    """0.1.14 updated to 0.1.15 by the older updater; 0.1.15 started and the owner used a new setting.
+    Returns (the settings as 0.1.14 left them, the settings now)."""
+    before = seed(inst.paths)
+    inst.old_updater("0.1.15")
+    inst.start()
+    first_start_writes(inst.paths)
+    owner_uses_the_new_version(inst.paths)
+    if not with_copy:
+        inst.copy.unlink()
+    with pytest.raises(ValueError):  # the control: as they are now, 0.1.14 refuses them
+        older_version_loads_everything(inst.paths)
+    return before, read_config(inst.paths)
+
+
+@pytest.mark.parametrize("with_copy", [True, False], ids=["copy", "no-copy"])
+@pytest.mark.parametrize("where", sorted(POINTS))
+def test_a_rollback_interrupted_anywhere_leaves_settings_the_program_in_place_loads(
+    inst: Install, monkeypatch: pytest.MonkeyPatch, where: str, with_copy: bool
+) -> None:
+    """Head order F-10 / break pass finding 1: the rollback runs the newer code, but the next start is the
+    OLDER program's, which has no rollback code. At every point an interruption leaves either 0.1.14 in place
+    with settings 0.1.14 loads (checked with its frozen models), or 0.1.15 in place, whose next start puts
+    the settings back as they were; and either way `ns update --rollback` then completes."""
+    point = POINTS[where]
+    before, now = _installed(inst, with_copy)
+    record = inst.home / "app.rollback-pending.json"
+
+    with monkeypatch.context() as m:
+        point.arm(inst, m)
+        with pytest.raises(Stop):
+            inst.rollback()
+
+    # first what the next start meets: the program in <home>pp and settings it loads
+    if point.settings_ready:  # the state 0.1.14 finds, whichever program is put in place by hand
+        older_version_loads_everything(inst.paths)
+    if point.no_program:  # the instant between two renames (a power loss): no program in <home>pp
+        assert not inst.app.exists() and (inst.home / "app.swap").is_dir()
+    elif point.older_in_place:
+        assert inst.version_now() == "0.1.14"
+        older_version_loads_everything(inst.paths)  # 0.1.14 starts: it has no code to finish anything
+    else:
+        assert inst.version_now() == "0.1.15"
+        the_new_version_loads_everything(inst.paths)  # 0.1.15 is in place and reads what it finds
+    assert record.is_file()  # written first, still there: the next start knows
+    if point.no_program:  # the record says what to rename by hand
+        assert "rename app.swap back to app" in record.read_text(encoding="utf-8")
+        (inst.home / "app.swap").rename(inst.app)
+
+    if point.older_in_place:
+        # a later older version that has this code finishes the rollback at its first start
+        inst.start()
+        first_start.ensure(inst.paths.config)
+        assert not record.exists()
+        assert (inst.home / "app.prev" / "VERSION").read_text(encoding="utf-8").strip() == "0.1.15"
+        forward = config_snapshot.read(inst.copy)
+        assert (forward.version, forward.taken_by) == ("0.1.15", "rollback")
+        assert forward.files == {n: b for n, b in now.items() if config_snapshot.valid_name(n)}
+        older_version_loads_everything(inst.paths)
+        inst.rollback()  # and going forward again gives 0.1.15 the settings it had
+        assert inst.version_now() == "0.1.15" and read_config(inst.paths) == now
+        return
+
+    assert inst.version_now() == "0.1.15"
+    inst.start()  # its next start (the engine, the dashboard, a CLI) undoes the rollback
+    first_start.ensure(inst.paths.config)
+    assert not record.exists()
+    assert read_config(inst.paths) == now  # back exactly as before the rollback
+    said = [r for r in log_lines(inst.paths) if r["event"] == "rollback_recovered"]
+    assert len(said) == 1 and "ns update --rollback again" in said[0]["msg"]
+
+    res = inst.rollback()  # and the rollback run again completes
+    assert inst.version_now() == "0.1.14" and not record.exists()
+    older_version_loads_everything(inst.paths)
+    if with_copy:
+        assert read_config(inst.paths) == before
+    else:
+        assert "runtime.json (tiny_story)" in res.settings
+
+
+def test_the_rollback_finishes_an_interrupted_one_before_it_starts(
+    inst: Install, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`ns update --rollback` run again right after an interruption (no other start in between)."""
+    before, now = _installed(inst, True)
+    with monkeypatch.context() as m:
+        _stop_at_settings_write(3)(inst, m)
+        with pytest.raises(Stop):
+            inst.rollback()
+    res = inst.rollback()
+    assert inst.version_now() == "0.1.14" and read_config(inst.paths) == before
+    assert any("interrupted" in n for n in res.notes)
+    assert not (inst.home / "app.rollback-pending.json").exists()
+    inst.rollback()  # forward again: what 0.1.15 had before the first try
+    assert read_config(inst.paths) == now
+
+
+def test_a_rollback_whose_record_cannot_be_written_changes_nothing(
+    inst: Install, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _, now = _installed(inst, True)
+
+    def full(app: Path, intent: object) -> None:
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(update.rollback_intent, "write", full)
+    with pytest.raises(update.NsError) as ei:
+        inst.rollback()
+    assert ei.value.code == "NS-E702" and "Nothing was changed" in ei.value.detail
+    assert inst.version_now() == "0.1.15" and read_config(inst.paths) == now
+
+
+def test_the_engine_start_finishes_an_interrupted_rollback_before_it_reads_a_setting(
+    inst: Install, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import argparse
+    import sys
+    import types
+
+    from ns_supervisor import app as engine
+
+    _, now = _installed(inst, True)
+    with monkeypatch.context() as m:
+        _stop_at_rename(1)(inst, m)
+        with pytest.raises(Stop):
+            inst.rollback()
+    assert read_config(inst.paths) != now  # 0.1.14's settings, 0.1.15 in place
+
+    class Seen(Exception):
+        pass
+
+    seen: dict[str, object] = {}
+
+    def load(paths: Paths) -> object:
+        seen["record"] = (inst.home / "app.rollback-pending.json").exists()
+        seen["settings"] = read_config(paths)
+        raise Seen
+
+    inst.start()
+    monkeypatch.setitem(sys.modules, "uvicorn", types.ModuleType("uvicorn"))
+    monkeypatch.setattr(engine, "load_runtime", load)
+    with pytest.raises(Seen):
+        engine._serve(argparse.Namespace(port=None, headless=True), inst.paths)
+    assert seen == {"record": False, "settings": now}
+
+
+# --------------------------------------------------------------------------------- two processes at once
+def test_two_processes_starting_at_once_never_save_the_newer_settings_as_the_older_copy(
+    inst: Install, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Break pass finding 4: process B looks at the copy's place before A has published, A publishes and
+    changes a setting, and B then captures the changed settings and publishes them as 0.1.14's copy. With
+    the cross-process lock B waits, looks again, and leaves A's copy alone."""
+    before = seed(inst.paths)
+    inst.old_updater("0.1.15")
+    inst.start()
+    config = inst.paths.config
+    b_looked, a_changed = threading.Event(), threading.Event()
+    threads: list[threading.Thread] = []
+    errors: list[BaseException] = []
+    real_look, real_capture = config_snapshot.look, config_snapshot.capture
+    real_publish = config_snapshot.publish
+
+    def process_b() -> None:  # a second process: its own first-start check, nothing shared with A
+        try:
+            first_start._first_start(config)
+        except BaseException as e:  # pragma: no cover - reported below
+            errors.append(e)
+
+    def look(path: Path) -> config_snapshot.Slot:
+        slot = real_look(path)
+        if threading.current_thread().name == "B":
+            b_looked.set()
+        return slot
+
+    def capture(cfg: Path, only: object = None) -> dict[str, bytes]:
+        if threading.current_thread().name == "B":
+            a_changed.wait(5)  # B reads the settings after A changed them
+        return real_capture(cfg)
+
+    def publish(path: Path, data: bytes) -> config_snapshot.Snapshot:
+        if threading.current_thread().name == "A":
+            b = threading.Thread(target=process_b, name="B")
+            threads.append(b)
+            b.start()
+            b_looked.wait(1)  # without the lock, B looks at the empty place now
+        return real_publish(path, data)
+
+    def process_a() -> None:
+        try:
+            first_start._first_start(config)  # takes the copy
+            rt = json.loads((config / "runtime.json").read_text(encoding="utf-8"))
+            (config / "runtime.json").write_text(json.dumps({**rt, "tiny_story": True}), encoding="utf-8")
+            a_changed.set()
+        except BaseException as e:  # pragma: no cover - reported below
+            errors.append(e)
+
+    monkeypatch.setattr(config_snapshot, "look", look)
+    monkeypatch.setattr(config_snapshot, "capture", capture)
+    monkeypatch.setattr(config_snapshot, "publish", publish)
+    a = threading.Thread(target=process_a, name="A")
+    a.start()
+    a.join(30)
+    for t in threads:
+        t.join(30)
+    assert not errors
+
+    snap = config_snapshot.read(inst.copy)
+    assert snap.files == {n: b for n, b in before.items() if config_snapshot.valid_name(n)}  # as 0.1.14 left
+    assert b"tiny_story" not in snap.files["runtime.json"]
+
+
+# ------------------------------------------------------------------------------------- nowhere to record
+def test_when_neither_the_copy_nor_the_program_folder_can_be_written_no_later_start_takes_a_late_copy(
+    inst: Install, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Break pass finding 5: the first start could write neither the zip nor `<app>/.ns-first-start.json`.
+    The record goes to the settings folder instead, so the next start (disk fine again) takes no copy of
+    settings 0.1.15 already changed, and the rollback says it has none."""
+    seed(inst.paths)
+    inst.old_updater("0.1.15")
+    real = os.replace
+    in_program = inst.app / first_start.STATE_NAME
+
+    def refused(src: str | Path, dst: str | Path) -> None:
+        if str(dst).endswith(".prev-config.zip") or Path(dst) == in_program:
+            raise OSError(28, "No space left on device")
+        real(src, dst)
+
+    inst.start()
+    with monkeypatch.context() as m:
+        m.setattr(os, "replace", refused)
+        owner_uses_the_new_version(inst.paths)
+    assert not inst.copy.exists() and not in_program.exists()
+
+    inst.start()
+    save_runtime(inst.paths, load_runtime(inst.paths))
+    assert not inst.copy.exists()  # no late copy
+    res = inst.rollback()
+    assert "no copy" in res.settings and "runtime.json (tiny_story)" in res.settings
+    older_version_loads_everything(inst.paths)
+    failed = [r for r in log_lines(inst.paths) if r["event"] == "first_start_copy_failed"]
+    assert len(failed) == 1 and str(inst.paths.config / first_start.STATE_NAME) in failed[0]["msg"]
+
+
+def test_when_no_record_can_be_written_anywhere_the_log_line_still_stops_a_late_copy(
+    inst: Install, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seed(inst.paths)
+    inst.old_updater("0.1.15")
+    real = os.replace
+
+    def refused(src: str | Path, dst: str | Path) -> None:
+        if str(dst).endswith((".prev-config.zip", first_start.STATE_NAME)):
+            raise OSError(28, "No space left on device")
+        real(src, dst)
+
+    inst.start()
+    with monkeypatch.context() as m:
+        m.setattr(os, "replace", refused)
+        owner_uses_the_new_version(inst.paths)
+
+    inst.start()
+    save_runtime(inst.paths, load_runtime(inst.paths))
+    assert not inst.copy.exists()  # the log line alone stops the late copy
+    failed = [r for r in log_lines(inst.paths) if r["event"] == "first_start_copy_failed"]
+    assert len(failed) == 1 and "could not be recorded either" in failed[0]["msg"]
+    assert "a later start may save" in failed[0]["msg"]  # says plainly what happens without that line
+
+
+# --------------------------------------------------------------------------------------- honest messages
+def test_a_rollback_with_no_copy_and_nothing_to_take_out_does_not_say_something_failed(inst: Install) -> None:
+    """Break pass finding 6: rolled back before 0.1.15 saved anything: nothing needed restoring."""
+    before = seed(inst.paths)
+    inst.old_updater("0.1.15")
+    res = inst.rollback()
+    assert read_config(inst.paths) == before
+    assert "could not be restored" not in res.settings and "ns restore" not in res.settings
+    assert "There was no copy of your settings files to put back" in res.settings
+    assert "none of them holds a setting 0.1.14 does not know" in res.settings
+
+
+def test_a_file_the_rollback_cannot_change_is_named_and_never_said_to_be_clean(inst: Install) -> None:
+    seed(inst.paths)
+    inst.old_updater("0.1.15")
+    inst.start()
+    rt = load_runtime(inst.paths)
+    rt.tiny_story = True
+    save_runtime(inst.paths, rt)  # (the first start takes the copy here)
+    inst.copy.unlink()
+    runtime = inst.paths.config / "runtime.json"
+    os.chmod(runtime, stat.S_IREAD)
+    try:
+        res = inst.rollback()
+    finally:
+        os.chmod(runtime, stat.S_IREAD | stat.S_IWRITE)
+    assert "none of them holds a setting" not in res.settings
+    assert "0.1.14 may refuse them: runtime.json" in res.settings and "ns restore" in res.settings
+
+
 # ------------------------------------------------------------------------------------------ the writer scan
 PACKAGES = ("ns_common", "ns_supervisor", "ns_dashboard", "ns_studio", "ns_tts", "installer")
 SETTINGS_ATTRS = {"runtime_file", "install_state_file", "channel_file", "channels_dir", "formats_dir"}
@@ -1017,7 +1417,20 @@ def test_the_writers_that_learn_the_file_name_at_run_time_are_guarded_or_part_of
         and isinstance(n.func.value, ast.Name)
         and n.func.value.id == "config_snapshot"
     }
-    assert users == {"ns_supervisor/update.py"}
+    # (rollback_intent puts back or finishes an interrupted rollback: it is called by the rollback and the
+    # update themselves, and by the first-start check, before it looks at the copy)
+    assert users == {"ns_supervisor/update.py", "ns_common/rollback_intent.py"}
+    callers = {
+        m.rel
+        for m in product_modules().values()
+        for n in ast.walk(m.tree)
+        if isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Attribute)
+        and n.func.attr in ("recover", "undo", "finish")
+        and isinstance(n.func.value, ast.Name)
+        and n.func.value.id == "rollback_intent"
+    }
+    assert callers == {"ns_supervisor/update.py", "ns_common/first_start.py"}
     source = (ROOT / "ns_supervisor" / "update.py").read_text(encoding="utf-8")
     for entry in ("def update_app", "def rollback_app", "def git_update"):
         body = source.split(entry, 1)[1].split("\ndef ", 1)[0]

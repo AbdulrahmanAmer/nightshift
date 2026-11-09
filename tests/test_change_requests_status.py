@@ -126,6 +126,9 @@ def test_wizard_flags_claims_in_the_llama_pair_rejection_hold() -> None:
     assert "nothing reads the `cuda` flag" in status
     assert "`ns_supervisor/doctor.py` only copies the file" in status
     assert "`ns_common/config_snapshot.py`" in status and "only copies the file's bytes" in status
+    # Review asked that the audit name the module where F-10a put it, next to doctor.py; it moved in F-10c.
+    assert "`ns_supervisor/config_snapshot.py`" in status and "`ns_supervisor/doctor.py`" in status
+    assert not (ROOT / "ns_supervisor" / "config_snapshot.py").exists()
     s02 = source("installer/stage2/steps/s02_download_bins.py")
     assert 'ctx.set_flag("llama_pair"' in s02 and 'ctx.set_flag("cuda"' in s02
     assert 'flags.get("llama_pair")' in source("installer/stage2/verify_downloads.py")

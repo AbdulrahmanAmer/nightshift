@@ -6,63 +6,56 @@ a key it never had. So, from 0.1.15 on:
 * `disk_dict` is the ONE helper every writer of a strict settings model uses (`save_runtime`,
   `save_install_state`, `save_channel`, the installer's `write_answers`, the dashboard's formats): a field
   listed in `NEW_FIELDS` is written only when its value differs from its default. An install that never uses
-  a new feature keeps files the older version reads as its own.
+  a new feature keeps files the older version reads as its own. The setup window, which runs on the bare
+  Python and writes answers.json from a plain dict, uses the same rule through
+  `ns_common.new_fields.plain_disk_dict`.
 * `for_version` takes out of a settings file what a given older version does not know. `ns update
   --rollback` uses it when it has no copy of the settings to put back (an update made by an older updater, a
-  copy missing or damaged) and on the copy it restored, so the older version can always start.
+  copy missing or damaged) and on the copy it restored. Only the fields in `NEW_FIELDS` are taken out (the
+  ones added since 0.1.14): for a rollback to a version older than 0.1.14 nothing more is checked, and a file
+  that cannot be written keeps its new keys (the rollback names it as one the older version may refuse).
 
-`NEW_FIELDS` is the one list of fields the strict settings models have now and 0.1.14 did not (0.1.14 is the
-oldest version a rollback from 0.1.15 reaches; older ones are not checked). tests/test_config_compat.py
-compares the models with tests/frozen_models_0_1_14.py and tests/frozen_config_models_0_1_14.py class by
-class, nested models too, and FAILS when a model gains a field that is in neither 0.1.14 nor this list: the
-author of the field decides here, in the release that adds it.
+`NEW_FIELDS` (defined in `ns_common.new_fields`, standard library only, and re-exported here) is the one list
+of fields the strict settings models have now and 0.1.14 did not (0.1.14 is the oldest version a rollback from
+0.1.15 reaches). tests/test_config_compat.py compares the models with tests/frozen_models_0_1_14.py and
+tests/frozen_config_models_0_1_14.py class by class, nested models too, and FAILS when a model gains a field
+that is in neither 0.1.14 nor this list: the author of the field decides here, in the release that adds it.
 
-Job files (plan.json, the QC report, the outbox sidecars) are not settings: H-8b's `MarkedWhenTest` already
-leaves its `profile` out unless an engine-test install set it, which is the same rule.
+Job files (plan.json, the QC report, the outbox sidecars) are not settings and are not rewritten by a
+rollback. Decided for 0.1.15 (H-8b, PR 179):
+
+* `Metadata.profile` and `QcResult.profile` (`MarkedWhenTest`) are left out of the file unless an engine-test
+  install set them, which is the same rule as `disk_dict`: an ordinary job folder stays readable by 0.1.14.
+* `Plan.target_minutes` was relaxed from `ge=9` to `ge=1` for the tiny-story profile. A tiny-story job's
+  plan.json (target under 9 minutes, written only on an engine-test install with `tiny_story` on) is
+  therefore refused by 0.1.14 after a rollback: that one job fails to resume on 0.1.14, every other job and
+  every setting are unaffected. Accepted: such jobs are test output that cannot be published, and rewriting
+  job folders on a rollback would change owners' work to fit a version they are leaving.
 """
 
 from __future__ import annotations
 
-import re
 import types
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
 from typing import Any, Union, get_args, get_origin
 
 from pydantic import BaseModel
 from pydantic_core import to_jsonable_python
 
 from ns_common.models import Answers, Channel, Format, InstallState, Runtime
+from ns_common.new_fields import BASE_VERSION, NEW_FIELDS, NewField, version_key
 
-#: The release `NEW_FIELDS` starts from: every field of the strict settings models that 0.1.14 had is known
-#: to every version a rollback can reach, so it never needs taking out.
-BASE_VERSION = "0.1.14"
-
-
-@dataclass(frozen=True)
-class NewField:
-    """A field of a strict settings model that `BASE_VERSION` did not have."""
-
-    model: str  # the class that declares it (its name: `installer.stage2.answers` is not importable here)
-    field: str
-    since: str  # the first release that has it
-    why: str
-
-
-NEW_FIELDS: tuple[NewField, ...] = (
-    NewField(
-        "Runtime",
-        "tiny_story",
-        "0.1.15",
-        "H-8: the engine-test story profile switch in runtime.json; false in every normal install.",
-    ),
-    NewField(
-        "InstallerAnswers",
-        "tiny_story",
-        "0.1.15",
-        "H-8: the answers.json switch behind Runtime.tiny_story; false unless an engine test asks for it.",
-    ),
-)
+__all__ = [
+    "BASE_VERSION",
+    "FILE_MODELS",
+    "NEW_FIELDS",
+    "NewField",
+    "disk_dict",
+    "disk_dict_of",
+    "for_version",
+    "model_for",
+    "version_key",
+]
 
 #: The model each settings file holds (a `channels/` or `formats/` name stands for every yaml in that folder),
 #: with the class names whose fields it may also carry: answers.json is `installer.stage2.answers.
@@ -79,12 +72,6 @@ FILE_MODELS: dict[str, tuple[type[BaseModel], tuple[str, ...]]] = {
 _BY_MODEL: dict[str, dict[str, NewField]] = {}
 for _f in NEW_FIELDS:
     _BY_MODEL.setdefault(_f.model, {})[_f.field] = _f
-
-
-def version_key(text: str) -> tuple[int, ...]:
-    """`0.1.15` -> (0, 1, 15); a text with no leading number -> () (older than every release)."""
-    m = re.match(r"\s*v?(\d+(?:\.\d+)*)", text or "")
-    return tuple(int(x) for x in m.group(1).split(".")) if m else ()
 
 
 def model_for(name: str) -> tuple[type[BaseModel], tuple[str, ...]] | None:

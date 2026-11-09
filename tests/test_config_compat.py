@@ -14,10 +14,12 @@ from typing import Any
 import pytest
 import yaml
 from pydantic import BaseModel
+from pydantic_core import to_jsonable_python
 
 from installer.stage2.answers import InstallerAnswers, build_answers, load_raw, write_answers
 from installer.stage2.testing import example_answers
-from ns_common import config_compat
+from installer.stage2.web import answers_view
+from ns_common import config_compat, new_fields
 from ns_common.config import (
     load_channel,
     load_install_state,
@@ -110,6 +112,54 @@ def test_each_entry_says_when_and_why() -> None:
         assert len(f.why) > 20, f
 
 
+# ---------------------------------------------------------------------------------------- plain-dict writers
+#: Every class a NewField may name, by name (InstallerAnswers is not importable from ns_common).
+CLASSES: dict[str, type[BaseModel]] = {c.__name__: c for c, _ in PAIRS}
+
+
+def nested_classes(cls: type[BaseModel]) -> set[str]:
+    """The names of the models held inside `cls`, at any depth (not `cls` itself)."""
+    out: set[str] = set()
+    for info in cls.model_fields.values():
+        inner = config_compat._models_in(info.annotation)
+        if inner is not None and inner[1].__name__ not in out:
+            out |= {inner[1].__name__} | nested_classes(inner[1])
+    return out
+
+
+def test_each_entry_records_the_default_its_model_has() -> None:
+    """`plain_disk_dict` (the setup window, no pydantic) compares with `NewField.default`: it must be the
+    model's own default, or a plain-dict writer would keep (or drop) the wrong value."""
+    for f in NEW_FIELDS:
+        info = CLASSES[f.model].model_fields[f.field]
+        assert to_jsonable_python(info.get_default(call_default_factory=True)) == f.default, f
+
+
+def test_the_plain_dict_writers_see_the_same_models_and_no_nested_new_field() -> None:
+    """`new_fields.FILE_MODEL_NAMES` names the classes `config_compat.FILE_MODELS` gives each file, and no new
+    field sits deeper than the top level of a file a plain-dict writer saves (the helper only looks there):
+    a new nested field there must extend `plain_disk_dict` in the release that adds it."""
+    for name, models in new_fields.FILE_MODEL_NAMES.items():
+        cls, extra = config_compat.FILE_MODELS[name]
+        top = {c.__name__ for c in cls.__mro__ if isinstance(c, type) and issubclass(c, BaseModel)}
+        assert set(models) <= top | set(extra) and cls.__name__ in models and set(extra) <= set(models)
+        deep = set().union(*(nested_classes(CLASSES[m]) for m in models if m in CLASSES))
+        assert not {f.model for f in NEW_FIELDS} & deep, name
+
+
+def test_the_setup_window_writes_a_new_answer_only_when_it_is_in_use(tmp_path: Path) -> None:
+    """Finding 7: `answers_view.write_answers` (the setup window, a plain dict) goes through the same rule as
+    every other writer of a strict settings file, so 0.1.14 reads its answers.json after a rollback."""
+    target = tmp_path / "config" / "answers.json"
+    answers_view.write_answers(target, {**example_answers(), "tiny_story": False, "pexels_api_key": "k"})
+    data = json.loads(target.read_text(encoding="utf-8"))
+    assert "tiny_story" not in data and data["pexels_api_key"] == ""
+    old_cfg.InstallerAnswers.model_validate(data)  # 0.1.14's setup reads it
+    answers_view.write_answers(target, {**example_answers(), "tiny_story": True})
+    assert json.loads(target.read_text(encoding="utf-8"))["tiny_story"] is True  # in use: written
+    assert new_fields.plain_disk_dict("runtime.json", {"tiny_story": False}) == {"tiny_story": False}
+
+
 # ------------------------------------------------------------------------------------------ the writers
 def old_loads(paths: Paths) -> None:
     """Every settings file the writers made loads with 0.1.14's models."""
@@ -176,9 +226,9 @@ class Outer(Strict):
 @pytest.fixture
 def synthetic(monkeypatch: pytest.MonkeyPatch) -> None:
     fields = {
-        "Inner": {"added": NewField("Inner", "added", "0.1.16", "a synthetic nested field for this test")},
+        "Inner": {"added": NewField("Inner", "added", "0.1.16", "a synthetic nested field for this test", 0)},
         "Outer": {
-            "added_top": NewField("Outer", "added_top", "0.1.16", "a synthetic top field for this test")
+            "added_top": NewField("Outer", "added_top", "0.1.16", "a synthetic top field for this test", "x")
         },
     }
     monkeypatch.setattr(config_compat, "_BY_MODEL", fields)

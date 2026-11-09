@@ -1103,6 +1103,9 @@ def test_the_uninstallers_remove_the_settings_copy_with_the_program_backup(tmp_p
     assert str(tmp_path / "ns" / "app.prev-config.zip.unrestored").replace("'", "''") in script
     ps1 = (ROOT / "installer" / "uninstall.ps1").read_text(encoding="utf-8")
     assert "'app.prev-config.zip'" in ps1 and "'app.prev-config.zip.unrestored'" in ps1
+    # F-10c: the copy's lock file and the record of a rollback in progress go too
+    for name in ("app.prev-config.zip.lock", "app.rollback-pending.json"):
+        assert str(tmp_path / "ns" / name).replace("'", "''") in script and f"'{name}'" in ps1
 
 
 # --------------------------------------------------------------------------------------- the file list

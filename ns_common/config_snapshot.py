@@ -35,26 +35,35 @@ damaged one may be replaced, and the result says so. A fingerprint alone proves 
 normal rollback, or an older updater that ignores the zip, also leaves a copy that carries the fingerprint of
 the program now in `<app>`.
 
-Standard library plus `ns_common.atomic`, so the installer's bare Python can use it (`appcopy.install_app`).
+Standard library plus `ns_common.atomic` and `ns_common.singleton`, so the installer's bare Python can use it
+(`appcopy.install_app`).
 It lives in `ns_common` (F-10c; it was `ns_supervisor/config_snapshot.py` in F-10a) because every process
 that writes a settings file needs it, and `ns_common` cannot import `ns_supervisor`.
 """
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import io
 import json
+import time
 import zipfile
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 
 from ns_common.atomic import read_bytes_retry, sweep_stale_tmp, write_bytes_atomic
+from ns_common.singleton import AlreadyRunning, FileLock
 
 SUFFIX = ".prev-config.zip"
 UNRESTORED_SUFFIX = ".unrestored"  # `<app>.prev-config.zip.unrestored`: see mark_unrestored
+LOCK_SUFFIX = ".lock"  # `<app>.prev-config.zip.lock`: see locked
+#: How long a process waits for another one that holds the copy's lock (a first start saving the copy takes
+#: well under a second; a rollback holds it while it renames the program folders, with retries).
+LOCK_WAIT_S = 60.0
+LOCK_POLL_S = 0.05
 MANIFEST = "snapshot.json"
 MEMBER_ROOT = "config/"
 FORMAT = 1
@@ -121,6 +130,10 @@ LEFT_ALONE: dict[str, str] = {
     "ui_prefs.json": "Owner name and theme from the setup window, read as a plain dict (extra keys skipped).",
     "answers.kept.json": "The old answers a setup window keeps until the new choices are applied.",
     "pending_voice.json": "A voice setup queued for the first start; deleted once it is made.",
+    ".ns-first-start.json": (
+        "Where the first start records that it could not save the copy when the program folder cannot be "
+        "written (`first_start.write_state`); not a setting."
+    ),
 }
 
 
@@ -456,6 +469,36 @@ def is_unrestored(path: Path) -> bool:
         return bool(marked == _sha(read_bytes_retry(path)))
     except Exception:  # no marker, a torn one, an unreadable zip: nothing says the restore failed
         return False
+
+
+@contextlib.contextmanager
+def locked(path: Path, *, wait_s: float | None = None) -> Iterator[bool]:
+    """Hold `<path>.lock` (`path` is the copy's zip) across processes for the block: yields True when it is
+    held, False when another process kept it for `wait_s` seconds (the caller then does not touch the copy).
+
+    Two processes of a newer version can start at once (the engine and a CLI): without it, one could look at
+    the copy's place before the other published its first-start copy and then capture the settings after the
+    other had already changed them, publishing them as the older version's copy. Whoever holds the lock looks
+    at the copy again inside it. A rollback holds it from its record to its end (`rollback_intent`).
+    """
+    lock = FileLock(path.with_name(path.name + LOCK_SUFFIX))
+    deadline = time.monotonic() + (LOCK_WAIT_S if wait_s is None else wait_s)
+    while True:
+        try:
+            lock.acquire()
+            break
+        except AlreadyRunning:
+            if time.monotonic() >= deadline:
+                yield False
+                return
+            time.sleep(LOCK_POLL_S)
+        except OSError:  # the home cannot hold a lock file (read-only): nobody else can write the copy either
+            yield True
+            return
+    try:
+        yield True
+    finally:
+        lock.release()
 
 
 def discard(path: Path) -> None:
