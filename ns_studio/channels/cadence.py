@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import random
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 
 from ns_common.db import Db
 from ns_common.models import Channel
 from ns_common.paths import Paths
+from ns_studio import ownership
 from ns_studio.channels.crud import all_channels, edit_channel
 
 MAX_SHORTS_PER_DAY = 3
@@ -161,71 +162,130 @@ def apply_quality_drop(paths: Paths, db: Db, ch: Channel, plan: CadencePlan, now
     return new_bar
 
 
-def _count_since(db: Db, channel: str, item_is_long: bool, since: datetime) -> int:
-    op = "=" if item_is_long else "!="
-    r = db.one(
-        f"select count(*) n from combos where channel=? and item {op} 'long' and created_at >= ?",
+#: Rows no owner file exists for (written by 0.1.0 to 0.1.14) younger than this may still be running; for
+#: everything written since 0.1.15 "running" is decided by a live owner (`ownership`), never by age.
+IN_PROGRESS_H = ownership.LEGACY_IN_PROGRESS_H
+
+
+def _jobs_made(
+    db: Db, paths: Paths | None, channel: str, *, long: bool, since: datetime, now: datetime
+) -> list[tuple[str, datetime, bool]]:
+    """`(job_id, started, running)` of the jobs of `channel` whose combos row is newer than `since`.
+
+    `long` picks masters (`item = 'long'`) or Shorts. A job with a finished video of its own counts as made;
+    one without counts only while it is live work (or ended cleanly: `ownership.in_progress`). A job a power
+    cut or a crash killed counts for nothing, so its channel is due again at once; `running` is True for live
+    work, which is the reason `nothing due` gives.
+    """
+    op = "=" if long else "!="
+    kind = "o.kind = 'long'" if long else "o.kind != 'long'"
+    rows = db.query(
+        f"select c.job_id job_id, min(c.created_at) started, "
+        f"exists(select 1 from outputs o where o.job_id = c.job_id and {kind}) has_out "
+        f"from combos c where c.channel=? and c.item {op} 'long' and c.created_at >= ? group by c.job_id",
         (channel, since.isoformat(timespec="seconds")),
     )
-    return int(r["n"]) if r else 0
+    out: list[tuple[str, datetime, bool]] = []
+    for r in rows:
+        job_id, started = str(r["job_id"]), _parse(r["started"])
+        live = paths is not None and ownership.liveness(paths, job_id) == "live"
+        if r["has_out"] or live or ownership.in_progress(paths, job_id, started, now):
+            out.append((job_id, started, live))
+    return out
 
 
-#: A master's combo row is written at the start of its job; one older than this without a finished video
-#: is a failed (or abandoned) job, not a master that counts for the week.
-IN_PROGRESS_H = 12
-
-
-def _last_master_at(db: Db, channel: str, now: datetime) -> datetime | None:
-    """When the channel last got a master: the newest finished long video, or a long job started in the last
-    `IN_PROGRESS_H` hours (still running). A failed nightly master used to count through its combo row and
-    silenced the channel for the whole spacing (a week at one master a week): the first dev-mode nightly run
-    failed at clips and the retry planned nothing."""
+def _last_master_at(db: Db, channel: str, now: datetime, paths: Paths | None = None) -> datetime | None:
+    """When the channel last got a master: the newest finished long video, or the start of a long job that is
+    live work. A failed or killed master used to count through its combo row (for 12 hours, then for the whole
+    spacing): the first dev-mode nightly failed at clips and the retry planned nothing."""
     done = db.one("select max(created_at) c from outputs where channel=? and kind='long'", (channel,))
-    recent = db.one(
-        "select max(created_at) c from combos where channel=? and item='long' and created_at >= ?",
-        (channel, (now - timedelta(hours=IN_PROGRESS_H)).isoformat(timespec="seconds")),
-    )
-    stamps = [_parse(r["c"]) for r in (done, recent) if r and r["c"]]
+    started = [
+        s for _, s, _ in _jobs_made(db, paths, channel, long=True, since=now - timedelta(days=7), now=now)
+    ]
+    stamps = ([_parse(done["c"])] if done and done["c"] else []) + started
     return max(stamps) if stamps else None
 
 
-def _masters_since(db: Db, channel: str, since: datetime, now: datetime) -> int:
-    """Masters that count for the week: finished long videos since `since`, plus long jobs still running."""
-    done = db.one(
-        "select count(distinct job_id) n from outputs where channel=? and kind='long' and created_at >= ?",
+def _masters_since(db: Db, channel: str, since: datetime, now: datetime, paths: Paths | None = None) -> int:
+    """Masters that count for the week: finished long videos since `since` plus live long jobs."""
+    done = db.query(
+        "select distinct job_id from outputs where channel=? and kind='long' and created_at >= ?",
         (channel, since.isoformat(timespec="seconds")),
     )
-    running = db.one(
-        "select count(*) n from combos where channel=? and item='long' and created_at >= ?",
-        (channel, (now - timedelta(hours=IN_PROGRESS_H)).isoformat(timespec="seconds")),
-    )
-    return (int(done["n"]) if done else 0) + (int(running["n"]) if running else 0)
+    finished = {str(r["job_id"]) for r in done}
+    running = [j for j, _, _ in _jobs_made(db, paths, channel, long=True, since=since, now=now)]
+    return len(finished | set(running))
 
 
-def jobs_due_today(db: Db, ch: Channel, plan: CadencePlan, now: datetime) -> int:
-    """Number of jobs to create today for `ch` under `plan`."""
+def _busy_reason(paths: Paths | None, jobs: Sequence[tuple[str, datetime, bool]]) -> str | None:
+    """ "job X, at stage S, process P" for the live job among `jobs`, if any."""
+    if paths is None:
+        return None
+    for job_id, _, live in jobs:
+        if live:
+            return ownership.live_description(paths, job_id)
+    return None
+
+
+def jobs_due_today(
+    db: Db,
+    ch: Channel,
+    plan: CadencePlan,
+    now: datetime,
+    *,
+    paths: Paths | None = None,
+    why: list[str] | None = None,
+) -> int:
+    """Number of jobs to create today for `ch` under `plan`.
+
+    With `paths`, work is "running" only while a live process owns it. `why` receives, when nothing is due,
+    the true reason: a job still being made (with its stage and process), or the video the channel has.
+    """
     midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    def say(text: str) -> None:
+        if why is not None:
+            why.append(text)
+
     if ch.format == "shorts_only":
-        return max(0, plan.shorts_per_day - _count_since(db, ch.slug, False, midnight))
+        made = _jobs_made(db, paths, ch.slug, long=False, since=midnight, now=now)
+        due = max(0, plan.shorts_per_day - len(made))
+        if not due:
+            busy = _busy_reason(paths, made)
+            say(f"is still making today's Shorts ({busy})" if busy else "already has today's Shorts")
+        return due
     spacing = max(1, 7 // max(1, plan.masters_per_week))
-    last = _last_master_at(db, ch.slug, now)
+    last = _last_master_at(db, ch.slug, now, paths)
+    week = _jobs_made(db, paths, ch.slug, long=True, since=now - timedelta(days=7), now=now)
+    busy = _busy_reason(paths, week)
     if last is not None and now - last < timedelta(days=spacing) - timedelta(hours=6):
+        say(f"its full video is still being made ({busy})" if busy else "already has this week's full video")
         return 0
-    week_count = _masters_since(db, ch.slug, now - timedelta(days=7), now)
-    return 1 if week_count < plan.masters_per_week else 0
+    if _masters_since(db, ch.slug, now - timedelta(days=7), now, paths) >= plan.masters_per_week:
+        say(f"its full video is still being made ({busy})" if busy else "already has this week's full video")
+        return 0
+    return 1
 
 
-def plan_daily(paths: Paths, db: Db, now: datetime | None = None) -> list[DailyJob]:
-    """The nightly plan: one entry per active channel that is due today."""
+def plan_daily(
+    paths: Paths, db: Db, now: datetime | None = None, *, why: dict[str, str] | None = None
+) -> list[DailyJob]:
+    """The nightly plan: one entry per active channel that is due today.
+
+    `why` (when given) receives, per active channel that is not due, the reason in words.
+    """
     now = now or datetime.now(UTC)
     out: list[DailyJob] = []
     for ch in all_channels(paths):
         if ch.status != "active":
             continue
         plan = plan_channel(db, ch, now)
-        count = jobs_due_today(db, ch, plan, now)
+        reasons: list[str] = []
+        count = jobs_due_today(db, ch, plan, now, paths=paths, why=reasons)
         if count > 0:
             out.append(DailyJob(ch, ch.format, count, plan))
+        elif why is not None and reasons:
+            why[ch.slug] = reasons[0]
     return out
 
 

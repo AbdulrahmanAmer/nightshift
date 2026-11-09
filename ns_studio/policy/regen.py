@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from ns_common.errors import NsError
+from ns_studio import ownership
 from ns_studio.context import JobContext
 from ns_studio.orchestrator import plan_format, plan_job, run_job
 from ns_studio.policy.base import POLICY_CODES
@@ -46,6 +47,12 @@ REGEN_ONLY: dict[str, tuple[str, ...]] = {
     "NS-E603": ("seo", "seo_long", "seo_shorts"),
     "NS-E606": ("seo", "seo_long", "seo_shorts"),
 }
+# Checks that share a code with another check but are fixed at a different stage: tried before REGEN_FROM.
+# `short_hook` (NS-E611) is a hook that was not voiced or captioned at the start of its Short: the footage
+# is fine, so the voice is redone (another TTS seed) instead of the clips.
+REGEN_FROM_CHECK: dict[str, tuple[str, ...]] = {
+    "short_hook": ("voice", "ideas"),
+}
 _SMALL_FILES = (
     "idea.json",
     "story.json",
@@ -61,9 +68,9 @@ _SMALL_FILES = (
 _MEDIA_DIRS = ("long", "shorts")
 
 
-def earliest_stage(code: str, names: list[str]) -> str:
-    """The stage to restart from for `code`, falling back to the first stage of the plan."""
-    for cand in REGEN_FROM.get(code, ()):
+def earliest_stage(code: str, names: list[str], check: str | None = None) -> str:
+    """The stage to restart from for `code` (and the failing `check`), else the first stage of the plan."""
+    for cand in (*REGEN_FROM_CHECK.get(check or "", ()), *REGEN_FROM.get(code, ())):
         if cand in names:
             return cand
     return names[0]
@@ -134,7 +141,15 @@ def run_job_guarded(ctx: JobContext, *, resume: bool = True) -> list[str]:
 
     The voice setup queued (`config/pending_voice.json`) is created first, so every path that runs a job
     (`studio run`, the dashboard's Run now, a series part) has it before the voice stage asks for it.
+
+    The job is owned for as long as it runs (`ownership.hold_job`: an OS lock that dies with the process), so
+    a kill leaves a job the next start can tell is dead, and a second process cannot run the same job at once.
     """
+    with ownership.hold_job(ctx.paths, ctx.job_id, channel=ctx.channel.slug, fmt=str(ctx.fmt)):
+        return _run_job_guarded(ctx, resume=resume)
+
+
+def _run_job_guarded(ctx: JobContext, *, resume: bool) -> list[str]:
     from ns_studio.channels.crud import design_name_problems, pool_name_problems, sync_channel_row
     from ns_studio.errors import StudioError
     from ns_studio.voice_setup import apply_pending_voices
@@ -157,7 +172,7 @@ def run_job_guarded(ctx: JobContext, *, resume: bool = True) -> list[str]:
             att = _attempts(ctx)
             n = int(att["regenerations"])
             names = [s.name for s in plan_job(plan_format(ctx.fmt, ctx.job_dir))]
-            start = earliest_stage(e.code, names)
+            start = earliest_stage(e.code, names, str(e.data.get("check") or "") or None)
             if ctx.owner_script and start == names[0]:
                 # Only the import of the owner's own text would be redone: it would fail the same way.
                 att["history"].append({"code": e.code, "detail": e.detail, "rejected_to": None})

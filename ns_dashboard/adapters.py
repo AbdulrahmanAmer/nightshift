@@ -945,7 +945,11 @@ class RealFolderOpener:
 
 
 class RealScheduleAdapter:
-    """Re-registers the 'Nightshift Daily' task at the new time (`ns_supervisor.schedule.install`)."""
+    """Re-registers the 'Nightshift Daily' task at the new time (`ns_supervisor.schedule.install`).
+
+    A task the owner switched off in Task Scheduler gets the new time and stays switched off (D-28).
+    A task registered with `ns schedule install --disabled` (record mode `disabled`) is registered enabled.
+    """
 
     def __init__(self, paths: Paths) -> None:
         self.paths = paths
@@ -956,7 +960,7 @@ class RealScheduleAdapter:
         from ns_supervisor.schedule import ScheduleError, install
 
         try:
-            message = install(self.paths, run_time, app_path(self.paths))
+            message = install(self.paths, run_time, app_path(self.paths), keep_state=True)
         except ScheduleError as e:
             return {"applied": False, "note": f"Not saved: Windows refused to change the nightly task ({e})"}
         return {"applied": True, "note": f"Scheduled task updated. {message}"}

@@ -18,9 +18,17 @@ from ns_common.errors import NsError
 from ns_common.models import GpuStatus
 from ns_dashboard.errors import ApiError, SupervisorUnavailable
 from ns_dashboard.events import iter_sse
-from ns_dashboard.state import AppState, load_dashboard_settings, schedule_is_registered, status_schedule_mode
+from ns_dashboard.state import (
+    AppState,
+    load_dashboard_settings,
+    refresh_schedule_record,
+    schedule_is_registered,
+    scheduled_mode,
+    status_schedule_mode,
+)
 from ns_dashboard.svc_channels import ChannelsService
 from ns_dashboard.svc_outputs import OutputsService
+from ns_studio import ownership
 
 #: GPU owner names that are Nightshift's own (a foreign holder such as `opencode` has none of these prefixes).
 NIGHTSHIFT_OWNERS = ("studio:", "dashboard:", "workshop:")
@@ -91,8 +99,14 @@ class EngineService:
 
     # --- schedule ---
     def next_run(self) -> datetime | None:
-        """Next occurrence of the nightly run time (local time), or None without active channels."""
+        """Next occurrence of the nightly run time (local time), or None without active channels.
+
+        Also None while the owner has the task switched off (D-28): no run is coming, so the page must not
+        show one.
+        """
         if not any(c.status == "active" for c in self.channels.load_all()):
+            return None
+        if scheduled_mode(self.s.paths) == "switched_off":
             return None
         hh, mm = (int(x) for x in str(load_dashboard_settings(self.s.paths)["run_time"]).split(":"))
         now = self.clock()
@@ -146,6 +160,7 @@ class EngineService:
     # --- /api/status ---
     def status(self) -> dict[str, Any]:
         """The object behind `GET /api/status` and every `status` event."""
+        refresh_schedule_record(self.s.paths)
         st = self.s.link.status()
         engine = self.engine(st)
         cards = self.channels.load_all()
@@ -221,8 +236,10 @@ class EngineService:
             return "Paused - nothing will be made"
         return f"Makes {FORMAT_LABELS.get(fmt, fmt)} at {run_time}"
 
-    @staticmethod
-    def _run_row(row: Any) -> dict[str, Any]:
+    def _run_row(self, row: Any) -> dict[str, Any]:
+        """A `runs` row as the API shows it. `state` says whether it is `running` (a live owner), `finished`,
+        `failed` or `interrupted` (killed: no finish time and nobody holding it), so an unfinished run is
+        never shown as if it were a finished or a running one; `note` says why."""
         summary = None
         if row["summary_json"]:
             try:
@@ -237,13 +254,27 @@ class EngineService:
                 duration = round((b - a).total_seconds(), 1)
             except ValueError:
                 duration = None
+        body = summary if isinstance(summary, dict) else {}
+        if isinstance(body.get("interrupted_jobs"), list):  # as true now, not as when the run was closed
+            body = {
+                **body,
+                "interrupted_jobs": ownership.current_interrupted(
+                    self.s.paths, self.s.db, body["interrupted_jobs"]
+                ),
+            }
+        state, note = ownership.run_state(
+            self.s.paths, row["run_id"], row["started_at"], row["finished_at"], body
+        )
         return {
             "run_id": row["run_id"],
             "started_at": row["started_at"],
             "finished_at": row["finished_at"],
             "mode": row["mode"],
             "duration_s": duration,
-            "summary": summary if isinstance(summary, dict) else {},
+            "summary": body,
+            "state": state,
+            "interrupted": state == "interrupted",
+            "note": note,
         }
 
     def runs(self, limit: int = 30) -> list[dict[str, Any]]:

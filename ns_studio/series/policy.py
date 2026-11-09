@@ -13,10 +13,9 @@ from collections.abc import Iterable
 from functools import cache
 
 from ns_common.errors import NsError
-from ns_common.models import PolicyCheckResult
 from ns_common.paths import contracts_dir
 from ns_studio.context import JobContext
-from ns_studio.text.prompts import call_json, parse_model
+from ns_studio.text.prompts import call_json, parse_policy_check
 
 
 @cache
@@ -73,7 +72,7 @@ def text_gate(
     entities_gate("\n".join([text, *titles]), what=what)
     claims_gate(titles, what=what)
     extra = {k: v for k, v in (("title", title), ("hook", hook)) if v}
-    res = parse_model(PolicyCheckResult, call_json(ctx, "policy_check", story=text, **extra), "policy_check")
+    res = parse_policy_check(call_json(ctx, "policy_check", story=text, **extra), "policy_check")
     if "real_people" in res.unsafe_categories:
         raise NsError("NS-E602", f"{what}: {res.notes}".strip())
     if res.unsafe_categories:
@@ -84,9 +83,7 @@ def text_gate(
 
 def is_standalone(ctx: JobContext, *, story: str, moment: str) -> bool:
     """True unless the classifier says the selected moment needs outside context (spec 23.4)."""
-    res = parse_model(
-        PolicyCheckResult,
-        call_json(ctx, "policy_check", story=story, span_text=moment),
-        "policy_check standalone",
+    res = parse_policy_check(
+        call_json(ctx, "policy_check", story=story, span_text=moment), "policy_check standalone"
     )
     return res.standalone is not False
