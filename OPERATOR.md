@@ -162,7 +162,7 @@ If the same red error comes back after one retry, do not guess: press **Save a h
    video says Writing the chapters and Rendering the full video, and adds making thumbnails and cutting the Shorts.
 3. When it is done, open **Queue**, tab **Ready**. Watch the video, read the notes, press **Approve** or **Reject**
    (Reject asks for a short reason).
-4. The **Post it** list on the right follows YouTube's upload order: **Open** the video file, open YouTube Studio
+4. The **Post it** list next to the video follows YouTube's upload order: **Open** the video file, open YouTube Studio
    and drag it in, copy the title, description and tags, set the answers it shows for the audience ("made for
    kids") and "Altered content", and publish.
 5. Paste the YouTube link into the box at the end of the list and press **Done**.
