@@ -132,7 +132,7 @@ L release and CI (ci.yml: lint, types, test, bundle, ui-build, powershell-parse,
 
 ### I. Engines and clients
 - [x] Pixabay live: search, cache, download, key check (V-dev)
-- [x] Pexels with a key, mimicked: the QA fake Pexels/Pixabay endpoint (local TLS proxy, `D:/NightShift/runs/qa/fakefootage`) answered the product's own key check, search and download on the 0.1.12 dev install: bad key refused and the old key kept, good key accepted, 1080x1920 clips cached (V-dev 2026-11-09). The real service's answers stay as pinned by `tests/`
+- [x] Pexels with a key, mimicked: the QA fake Pexels/Pixabay endpoint (local TLS proxy, `D:/NightShift/runs/qa/fakefootage`) answered the product's own key check, search and download on the 0.1.12 dev install: bad key refused (422 NS-E501), good key accepted, 1080x1920 clips cached (V-dev 2026-11-09). The real service's answers stay as pinned by `tests/`
 - [x] 429 handling on an install: 3x429 with Retry-After 5 waited out in 15.1 s, then the download; endless 429 → coded NS-E501 after 4 attempts (V-dev 0.1.12 via the fake endpoint, 2026-11-09). A 5xx outage is not retried and is worded as a key problem: defect D-5
 
 ### K. Operations

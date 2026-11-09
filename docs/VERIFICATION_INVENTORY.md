@@ -15,7 +15,7 @@ Items: 260 (V-dev 151, V-ci 52, V-gpu 0, U 57).
 | api | `POST /api/engine/warmup` | V-dev | test-loop-2026-11-08.md 2026-11-09 08:50-08:58 (0.1.12 dev, runs/qa/croutes) |
 | api | `POST /api/engine/shutdown` | U |  |
 | api | `POST /api/engine/release_gpu` | U |  |
-| api | `POST /api/engine/stop_all` | V-dev | test-loop-2026-11-08.md 2026-11-09 08:50-08:58 (0.1.12 dev, runs/qa/croutes) |
+| api | `POST /api/engine/stop_all` | V-dev | test-loop-2026-11-08.md 2026-11-09 08:50-08:58 (0.1.12 dev, runs/qa/croutes, out-0.1.12-c1d) |
 | api | `GET /api/channels` | V-dev | test-loop-2026-11-05.md (stats after analytics import) |
 | api | `POST /api/channels` | V-dev | test-loop-2026-11-08.md 2026-11-09 08:50-08:58 (0.1.12 dev, runs/qa/croutes) |
 | api | `GET /api/channels/{slug}` | V-dev | test-loop-2026-11-08.md 2026-11-09 08:50-08:58 (0.1.12 dev, runs/qa/croutes) |
@@ -26,11 +26,11 @@ Items: 260 (V-dev 151, V-ci 52, V-gpu 0, U 57).
 | api | `GET /api/outputs` | V-dev | test-loop-2026-11-05.md |
 | api | `POST /api/outputs/{output_id:path}/approve` | V-dev | journey-2026-11-04.md (Queue approve and reject) |
 | api | `POST /api/outputs/{output_id:path}/reject` | V-dev | journey-2026-11-04.md (Queue approve and reject) |
-| api | `POST /api/outputs/{output_id:path}/uploaded` | V-dev | test-loop-2026-11-08.md 2026-11-09 08:50-08:58 (0.1.12 dev, runs/qa/croutes) |
+| api | `POST /api/outputs/{output_id:path}/uploaded` | V-dev | test-loop-2026-11-08.md 2026-11-09 08:50-08:58 (0.1.12 dev, runs/qa/croutes, out-0.1.12-c3) |
 | api | `POST /api/outputs/{output_id:path}/open-folder` | U |  |
-| api | `GET /api/outputs/{output_id:path}` | V-dev | test-loop-2026-11-08.md 2026-11-09 08:50-08:58 (0.1.12 dev, runs/qa/croutes) |
+| api | `GET /api/outputs/{output_id:path}` | V-dev | test-loop-2026-11-08.md 2026-11-09 08:50-08:58 (0.1.12 dev, runs/qa/croutes, out-0.1.12-c3) |
 | api | `GET /api/thumbs/{n}/{output_id:path}` | U |  |
-| api | `GET /api/media/{output_id:path}/thumb.jpg` | V-dev | test-loop-2026-11-08.md 2026-11-09 08:50-08:58 (0.1.12 dev, runs/qa/croutes) |
+| api | `GET /api/media/{output_id:path}/thumb.jpg` | V-dev | test-loop-2026-11-08.md 2026-11-09 08:50-08:58 (0.1.12 dev, runs/qa/croutes, out-0.1.12-c3) |
 | api | `POST /api/uploads` | V-dev | test-loop-2026-11-05.md |
 | api | `GET /api/uploads/{upload_id}` | V-dev | test-loop-2026-11-08.md 2026-11-09 08:50-08:58 (0.1.12 dev, runs/qa/croutes) |
 | api | `PUT /api/uploads/{upload_id}` | V-dev | test-loop-2026-11-05.md |
