@@ -207,30 +207,37 @@ def _save_settings_copy(
     ``before`` is what the setup window read of ``config_snapshot.SETUP_TOUCHES`` before it rewrote them on
     opening (it records the new version in ``install_state.json`` at once); those files go into the copy as
     they were then, every other file as it is now. ``AppCopyError`` (``NS-E115``) when the copy cannot be
-    made: the swap is not started, so nothing has changed. A copy that is already there (the one for the
-    program in ``app.prev``) stays whole.
+    made: the swap is not started, so the program is not replaced (the setup window may already have
+    rewritten ``SETUP_TOUCHES`` files; a retry in that window reuses what it read first). A copy that is
+    already there (the one for the program in ``app.prev``) stays whole.
 
-    The copy there is written over only together with its program (the one in ``app.prev``) or when it is
-    damaged. One that already belongs to the program in ``dest`` stays as its copy (its restore never
-    finished, so the settings files now may be a newer version's): returns False, nothing was written. One
-    of any other program is never written over: ``NS-E115``, nothing changed
-    (``config_snapshot.before_update``).
+    The copy there is written over only together with its program (the one in ``app.prev``), when it is
+    damaged, or when it is the old program's own and no rollback recorded that its restore failed. One a
+    rollback could not put back stays as the old program's copy (returns False, nothing was written: the
+    settings files now may be a newer version's). A whole copy of any other program is never written over: it
+    is left where it is and said so, and no copy is kept for this program backup (returns False). Only a zip
+    that cannot be read raises ``NS-E115`` (``config_snapshot.before_update``).
     """
     zip_path = config_snapshot.path_for(dest)
     prev = dest.with_name(dest.name + ".prev")
     leaving = fingerprint(dest)
+    backup = fingerprint(prev) if prev.is_dir() else None
     try:
-        save, slot = config_snapshot.before_update(
-            zip_path, leaving=leaving, backup=fingerprint(prev) if prev.is_dir() else None
-        )
+        action, slot = config_snapshot.before_update(zip_path, leaving=leaving, backup=backup)
     except config_snapshot.SnapshotError as e:
-        raise AppCopyError("NS-E115", f"{e}. Nothing was changed.") from e
-    if not save:
-        made = slot.copy.created.replace("T", " ") if slot.copy is not None else "?"
+        raise AppCopyError(
+            "NS-E115", f"{e}. The program was not replaced; run INSTALL.cmd again once the copy can be read."
+        ) from e
+    kept = slot.copy
+    if action == config_snapshot.KEEP and kept is not None:
         say(
-            f"The settings copy for {old_version} (made {made}) is kept in {zip_path} for ns update "
-            "--rollback: it was never put back, so the settings files now may be a newer version's"
+            f"The settings copy for {old_version} (made {kept.created.replace('T', ' ')}) is kept in "
+            f"{zip_path} for ns update --rollback: the last rollback could not put it back, so the settings "
+            "files now may be a newer version's"
         )
+        return False
+    if action == config_snapshot.FOREIGN and kept is not None:
+        say(config_snapshot.foreign_note(zip_path, kept, leaving=leaving, backup=backup))
         return False
     try:
         files = config_snapshot.capture(home / "config")
@@ -243,9 +250,9 @@ def _save_settings_copy(
     except config_snapshot.SnapshotError as e:
         raise AppCopyError(
             "NS-E115",
-            f"could not save a copy of your settings files before replacing the program ({e}). Nothing was "
-            "changed. Close programs that use the Nightshift folder, make room on the disk if it is full, "
-            "and run INSTALL.cmd again.",
+            f"could not save a copy of your settings files before replacing the program ({e}). The program "
+            "was not replaced. Close programs that use the Nightshift folder, make room on the disk if it is "
+            "full, and run INSTALL.cmd again.",
         ) from e
     if slot.damaged:
         say(f"A damaged settings copy in {zip_path} was replaced ({slot.problem})")

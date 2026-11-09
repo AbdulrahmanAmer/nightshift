@@ -304,10 +304,17 @@ that does the update, so it exists for an update made through `INSTALL.cmd` from
 made by a Nightshift that already has this feature (0.1.15 or later). An update made BY an older version with
 `ns update <zip>`, `ns update --github` or Settings > Update (for example 0.1.14 going to 0.1.15) saves no copy,
 because the older updater is the one that runs: the rollback then swaps the program as before and says it could
-not restore the settings. A copy that belongs to another version is never written over, since it may be the only
-copy of that version's settings: if the settings could not be put back (a file was in use), the copy stays for the
-next `ns update --rollback`, and if an update finds a copy of a version that is no longer installed it stops,
-changes nothing and says where the copy is, so you can move it out of the folder (or delete it) and update again.
+not restore the settings. A copy is replaced only together with the program it belongs to (an update replaces the
+program backup and its copy together, and a rollback swaps the pair). Two things are never done to a copy: it is never overwritten with settings
+that are not its program's, and a whole copy of a version that is not installed (it may be the only copy of that
+version's settings) is never deleted. If the settings could not be put back by a rollback (a file was in use), the
+copy stays for the next `ns update --rollback`, and the next update keeps it as it is. If an update finds a whole
+copy of a version that is neither the one running nor the program backup (for example after you deleted the
+`<folder>.prev` folder), it goes on, leaves that copy where it is, keeps no copy for its own program backup, and
+says whose copy it is and where; move `<folder>.prev-config.zip` out of the folder (or delete it) before the next
+update if you want a copy kept again. A damaged copy is replaced and the result says so. A copy that cannot be read
+at all (a program holds it open) stops the update before anything changes (`NS-E702`, or `NS-E115` from
+`INSTALL.cmd`); close the program and run the update again.
 
 ## Move your settings to another PC
 

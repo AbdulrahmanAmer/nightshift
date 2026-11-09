@@ -350,21 +350,22 @@ def _save_settings_copy(app: Path, prev: Path, paths: Paths, log: NsLogger) -> _
 
     An update that could not be undone completely is not started: `NS-E702`, nothing changed, and a copy that
     is already there is left whole. A copy is written over only together with its own program (the one in
-    `<app>.prev`) or when it is damaged; one that already belongs to the program leaving `<app>` stays as its
-    copy, and one of any other program is never written over (`config_snapshot.before_update`).
+    `<app>.prev`), when it is damaged, or when it is the leaving program's own and no rollback recorded that
+    its restore failed. A copy a rollback could not put back stays as the copy for the leaving program. A
+    whole copy of any other program is never written over: the update goes on, keeps no copy of its own and
+    says whose copy that is and where (`config_snapshot.before_update`).
     """
     zip_path = config_snapshot.path_for(app)
     leaving = app_fingerprint(app)
+    backup = app_fingerprint(prev) if prev.is_dir() else None
     try:
-        save, slot = config_snapshot.before_update(
-            zip_path, leaving=leaving, backup=app_fingerprint(prev) if prev.is_dir() else None
-        )
+        action, slot = config_snapshot.before_update(zip_path, leaving=leaving, backup=backup)
     except config_snapshot.SnapshotError as e:
         log.error("settings_copy_not_replaced", str(e))
         raise NsError("NS-E702", f"{e}. {NOTHING_CHANGED}") from e
     try:
         files = config_snapshot.capture(paths.config)
-        if save:
+        if action == config_snapshot.SAVE:
             config_snapshot.save(
                 zip_path, files, version=current_version(app), fingerprint=leaving, taken_by="update"
             )
@@ -374,21 +375,26 @@ def _save_settings_copy(app: Path, prev: Path, paths: Paths, log: NsLogger) -> _
             "NS-E702",
             f"could not save a copy of your settings files before the update ({e}). {SETTINGS_REFUSED}",
         ) from e
-    if not save:
-        kept = slot.copy
-        made = kept.created.replace("T", " ") if kept is not None else "?"
+    kept = slot.copy
+    if action == config_snapshot.KEEP and kept is not None:
+        made = kept.created.replace("T", " ")
         log.warn("settings_copy_kept", copy=str(zip_path), made=made)
         note = (
             f"the settings copy for {current_version(app)} (made {made}) is kept in {zip_path} for "
-            "ns update --rollback, not replaced by the settings files as they are now: it was never put "
-            "back, so those may be a newer version's"
+            "ns update --rollback, not replaced by the settings files as they are now: the last rollback "
+            "could not put it back, so those may be a newer version's"
         )
+        return _UpdateCopy(files, False, False, [note])
+    if action == config_snapshot.FOREIGN and kept is not None:
+        note = config_snapshot.foreign_note(zip_path, kept, leaving=leaving, backup=backup)
+        log.warn("settings_copy_foreign", copy=str(zip_path), belongs_to=kept.version)
         return _UpdateCopy(files, False, False, [note])
     log.info("settings_copy_saved", files=sorted(files), copy=str(zip_path))
     notes = [f"settings files saved for ns update --rollback: {_names(sorted(files))}"]
     if slot.damaged:
         notes.append(f"the damaged settings copy that was in {zip_path} was replaced ({slot.problem})")
-    return _UpdateCopy(files, True, slot.copy is not None, notes)
+    had_backup = kept is not None and backup is not None and kept.fingerprint == backup
+    return _UpdateCopy(files, True, had_backup, notes)
 
 
 def _put_settings_back(paths: Paths, files: dict[str, bytes], log: NsLogger, copy: Path | None) -> str:
@@ -549,8 +555,20 @@ def _swap_settings(
             return False
         return True
 
+    def mark_unrestored() -> None:
+        """The zip is the restored program's own copy and the live files are not: an update from here must
+        not save them over it (`config_snapshot.before_update`)."""
+        try:
+            config_snapshot.mark_unrestored(zip_path)
+        except config_snapshot.SnapshotError as e:
+            log.warn("settings_copy_failed", str(e))
+            notes.append(str(e))
+
     if copy is None or live is None:
-        if copy is None and slot.free:  # no copy there, or a damaged one: nothing in it to lose
+        own = slot.copy is not None and slot.copy.fingerprint == left_fingerprint
+        if copy is None and (slot.free or (own and not config_snapshot.is_unrestored(zip_path))):
+            # no copy there, a damaged one, or the leaving program's own copy that no failed restore holds
+            # (the live files are that program's): nothing in it to lose
             if keep_forward_copy() and slot.damaged:
                 notes.append(
                     f"the damaged settings copy in {zip_path} was replaced: ns update --rollback again goes "
@@ -558,6 +576,8 @@ def _swap_settings(
                 )
         elif copy is None:  # a whole copy of another program, or one that could not be read: never replaced
             notes.append(_copy_left_alone(slot, zip_path, left_fingerprint, left_version))
+        else:  # the live files could not be read: the copy is the restored program's and goes unused
+            mark_unrestored()
         why = why_not if copy is None else live_error
         log.warn("settings_not_restored", why)
         no = f"Your settings files could not be restored: {why}. They stay as they are now."
@@ -566,6 +586,7 @@ def _swap_settings(
         done = config_snapshot.restore(paths.config, copy.files, live=live, remove_extra=False)
     except config_snapshot.SnapshotError as e:
         log.error("settings_restore_failed", str(e))
+        mark_unrestored()
         no = f"Your settings files could not be restored: {e}. They stay as they are now."
         left = (
             f"The copy made for {restored_version} is still in {zip_path} "
