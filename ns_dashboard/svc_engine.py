@@ -16,7 +16,7 @@ from ns_common.errors import NsError
 from ns_common.models import GpuStatus
 from ns_dashboard.errors import ApiError
 from ns_dashboard.events import iter_sse
-from ns_dashboard.state import AppState, load_dashboard_settings, scheduled_mode, scheduled_run_time
+from ns_dashboard.state import AppState, load_dashboard_settings, schedule_is_registered, status_schedule_mode
 from ns_dashboard.svc_channels import ChannelsService
 from ns_dashboard.svc_outputs import OutputsService
 
@@ -155,8 +155,8 @@ class EngineService:
             "next_run": nxt.isoformat(timespec="minutes") if nxt else None,
             "next_run_in_s": int((nxt - self.clock()).total_seconds()) if nxt else None,
             "schedule_time": settings["run_time"],
-            "schedule_registered": scheduled_run_time(self.s.paths) is not None,
-            "schedule_mode": scheduled_mode(self.s.paths),
+            "schedule_registered": schedule_is_registered(self.s.paths),
+            "schedule_mode": status_schedule_mode(self.s.paths),
             "outbox": counts,
             "channels": [
                 {
