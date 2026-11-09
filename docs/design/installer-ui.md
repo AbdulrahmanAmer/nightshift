@@ -84,7 +84,7 @@ with a warning, `[FAIL]` stopped. Colours: ok green, warn yellow, FAIL red, ever
 | This PC | `<OS caption>, <GPU name> (<VRAM> GB), <RAM> GB memory`, or `[warn]` with `<OS caption>, no NVIDIA graphics card found, <RAM> GB memory` | `NS-E101` (not 64-bit Windows): print `NS-E101  This PC cannot run Nightshift. Tell the developer.` and exit 10. Every other check result is shown in the UI |
 | uv | `<version>, already here` or `<version>, downloaded` | uv cannot be downloaded or installed with winget: the code (`NS-E105` or `NS-E110`) and its OPERATOR.md "What to do" sentence, exit 13 |
 | Python | `3.12, already here` or `3.12, downloaded` | `uv python install` fails: `NS-E105` and its sentence, exit 13 |
-| Setup window | `opened`, `opened in Edge`, `opened in Chrome` or `opened in your browser`. If none worked: `[warn] open the address below in Edge or Chrome` | P1 does not answer `GET /api/ping` within 20 s: `[FAIL] Setup window: the setup program did not start`, then the last 20 lines of P1's stderr, then exit 14 |
+| Setup window | `opened`, `opened in Edge`, `opened in Chrome` or `opened in your browser`. If none worked: `[warn] open the address below in Edge or Chrome` | P1 does not answer `GET /api/ping` within 60 s: `[FAIL] Setup window: the setup program did not start`, then the last 20 lines of P1's stderr, then exit 14. The first start of a freshly installed Python can take a while (Defender scans it, slow disks), so after 15 s the line reads `starting the setup program, still waiting (the first start can take a minute)` |
 
 Directly under the fourth line, always, whichever window opened:
 
@@ -101,10 +101,14 @@ After that the console prints one line per server log event as `HH:MM:SS  <text>
 21:05:40  Choices saved for After Dark Tales
 21:05:41  Git: already here
 21:06:58  FFmpeg: installed with winget
-21:09:30  Qwen3-14B-Q4_K_M.gguf  2.1 of 9.0 GB  11.4 MB/s  10 min left
+21:09:30  Qwen3-14B-Q4_K_M.gguf  2.1 of 9.0 GB  11.4 MB/s  all files: about 24 min left at 12.1 MB/s
 ```
 
-Progress lines are printed at most once every 10 s per file, so the log stays readable.
+Progress lines are printed at most once every 10 s per file, so the log stays readable. A progress line reads
+`<file>  <done> of <total> GB  <file speed> MB/s` and then the time left for all files together:
+`all files: about <N> min left at <X> MB/s` (`about <H> h <MM> min left` from an hour). The speeds are measured,
+never assumed. While there is no estimate yet (the first seconds of an active file) the end of the line reads
+`measuring the speed`. The time left for a single file is shown in the window (§2.4), not in the console.
 
 ### 1.3 Stage1 changes (exact)
 
@@ -179,7 +183,7 @@ Endpoints (all JSON unless noted):
 | `POST /api/check-key` | `{service: "pexels" \| "pixabay", key}` | `KeyCheck`. A live request through `urllib`, using the same queries as `s01_questions.validate_*` |
 | `GET /api/model-check` | `?repo=owner/name&file=name.gguf` | `ModelCheck {ok, size, message, code}`. A `HEAD` request for `https://huggingface.co/<repo>/resolve/main/<file>` through `urllib` (`modelcheck.py`; the wizard side has the same logic in `downloader.head_info`). The size is the `x-linked-size` header of Hugging Face's redirect. Refused with a reason: a name that cannot be right, a split file, 404, a repository that needs a login, an unreachable site, an unknown size, and **a file over 15.5 GB**. In `--simulate` the head is `modelcheck.fake_head` (the size follows the quantization in the name) |
 | `GET /api/disk` | `?path=D:\Nightshift&tier=small[&source=1]` | `DiskCheck` |
-| `POST /api/pick-folder` | `{target: "install" or "models", start, tier}` | `{ok, path, cancelled, message, check}`. The server shows the Windows folder dialog (`installer/pick-folder.ps1`, `powershell.exe -STA`, a topmost owner window so it opens in front of the setup window) and answers with the chosen path and its `DiskCheck`. An install folder that is a drive root or already holds other files gets a `Nightshift` folder inside it; an empty folder or an existing Nightshift install is used as picked. Nothing is created. Rules for the install folder (`pathcheck.py`, mirrored by `homePathProblem` in `format.ts`): absolute path on a local fixed drive, no network paths, no removable drives, at most 120 characters, no characters Windows forbids; spaces and non-ASCII letters are fine. In `--simulate` the dialog is `fakes.DEFAULT_PICK` |
+| `POST /api/pick-folder` | `{target: "install" or "models", start, tier}` | `{ok, path, cancelled, message, check}`. The server shows the Windows folder dialog (`installer/pick-folder.ps1`, `powershell.exe -STA`, a topmost owner window so it opens in front of the setup window) and answers with the chosen path and its `DiskCheck`. An install folder that is a drive root or already holds other files gets a `Nightshift` folder inside it; an empty folder or an existing Nightshift install is used as picked. Nothing is created. Rules for the install folder (`pathcheck.py`, mirrored by `homePathProblem` in `format.ts`): absolute path on a local fixed drive, no network paths, no removable drives, at most 120 characters, no characters Windows forbids. Spaces are fine, but the path is **ASCII only**: it may hold only printable ASCII characters (space to `~`), and anything else is refused with `NS-E117`, because the model programs (llama.cpp, qwentts.cpp, CTranslate2) open their files through the ANSI code page and cannot open a folder named in Arabic or with accented letters. Folders inside **Downloads** and **OneDrive** (including `OneDrive - <name>`) are refused too, because Windows cleans or syncs them and sync locks break the update swap, and so is the folder the zip was extracted to, or a folder inside it (`layout_problem` in `pathcheck.py`). In `--simulate` the dialog is `fakes.DEFAULT_PICK` |
 | `POST /api/action/{name}` | `ActionBody` | `ActionResult` |
 | `GET /api/file/{name}` | | File bytes. Allowlist: `voice-sample.wav`, `render-test.mp4`, `render-test.jpg`, `verify-report.json`. Anything else is 404 |
 | `GET /api/uninstall` | | `UninstallView` (uninstall mode only, §2.10) |
@@ -362,6 +366,7 @@ Wizard changes (all additive):
 
    App mode uses `--app=<url> --window-size=1366,768 --user-data-dir=%LOCALAPPDATA%\Nightshift\browser`.
    The state records which one worked in `host`.
+   The WebView2 host is started as `powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File launchers\nightshift-host.ps1 -Url <url> -Title "Nightshift setup" -AppPath <App> -Role setup`. `-Role setup` keeps its single-instance mutex and state file apart from the dashboard window's. The host counts as ready when it has written `run\apphost-setup.json` (its window handle and pid), within 20 s; a host that exits with code 0 (it raised a window that was already open) counts as ready too. Exit code 3, any other exit, or silence for the whole 20 s falls through to the next launcher.
 3. If the window closes while setup is running, nothing stops. When the host exits with code 0 and
    `run` is `running`, the console prints
    `21:20:03  The setup window was closed. Setup keeps running. Run INSTALL.cmd to open it again.`
@@ -508,20 +513,20 @@ Purpose: show every check as a plain row, block only on what really blocks, and 
 ```
 ╭─ ☾ Nightshift setup · Checking this PC ─────────────────────────────────────────────────── — ▢ ✕ ─╮
 │▌  This PC                                                                     [Check again]         │
-│▌  8 of 10 checks passed. 2 warnings, nothing blocks setup.                                          │
+│▌  9 of 11 checks passed. 2 warnings, nothing blocks setup.                                          │
 │▌  ┌──────────────────────────────────────────────────────────────┐ ┌──────────────────────────────┐ │
-│▌  │ ● Windows 10/11, 64-bit   Windows 11 Pro 10.0.26200       OK │ │ Against what Nightshift needs│ │
-│▌  │ ● Graphics card           RTX 5060 Ti, 16 GB              OK │ │  100%     100%      71%      │ │
-│▌  │ ● NVIDIA driver           CUDA 13.0, driver 581.57        OK │ │  ▐█▌      ▐█▌       ▐▆▌      │ │
-│▌  │ ● Memory                  32 GB, all model sizes          OK │ │  ▐█▌      ▐█▌       ▐▆▌      │ │
-│▌  │ ● Free disk space         43 GB free on D:           Warning │ │  VRAM     Memory    Disk     │ │
-│▌  │ ● Disk type               D: SSD                          OK │ │  16/16    32/16     43/60 GB │ │
-│▌  │ ● Internet                all sites reachable             OK │ └──────────────────────────────┘ │
-│▌  │ ● winget (App Installer)  available                       OK │ ┌──────────────────────────────┐ │
-│▌  │ ● Long file paths         off                        Warning │ │ ⚠ NS-W112 Long file paths off│ │
-│▌  │ ● Wake timers             enabled                         OK │ │ Setup works. Press Fix it to │ │
-│▌  └──────────────────────────────────────────────────────────────┘ │ turn them on                 │ │
-│▌                                                                   │ [Fix it]                     │ │
+│▌  │ ● Windows 10/11, 64-bit            Windows 11 Pro         OK │ │ Against what Nightshift needs│ │
+│▌  │ ● Graphics card                    RTX 5060 Ti, 16 GB     OK │ │  100%     100%      71%      │ │
+│▌  │ ● NVIDIA driver                    CUDA 13.0, 581.57      OK │ │  ▐█▌      ▐█▌       ▐▆▌      │ │
+│▌  │ ● Memory                           32 GB, all sizes       OK │ │  ▐█▌      ▐█▌       ▐▆▌      │ │
+│▌  │ ● Free disk space                  43 GB free on D:  Warning │ │  VRAM     Memory    Disk     │ │
+│▌  │ ● Disk type                        D: SSD                 OK │ │  16/16    32/16     43/60 GB │ │
+│▌  │ ● Internet                         all reachable          OK │ └──────────────────────────────┘ │
+│▌  │ ● Windows app installer (optional) available              OK │ ┌──────────────────────────────┐ │
+│▌  │ ● Visual C++ runtime               installed              OK │ │ ⚠ NS-W112 Long file paths off│ │
+│▌  │ ● Very long file names             off               Warning │ │ Setup works. Press Fix it to │ │
+│▌  │ ● Wake timers                      enabled                OK │ │ turn them on                 │ │
+│▌  └──────────────────────────────────────────────────────────────┘ │ [Fix it]                     │ │
 │▌                                                                   └──────────────────────────────┘ │
 │▌  Checked 21:04                                                           [Back]  [Continue]        │
 ╰─────────────────────────────────────────────────────────────────────────────────────────────────────╯
@@ -539,7 +544,7 @@ scrolls when it holds more than two cards. Blocking cards come first.
 | cards | One `IssueCard` per row that is not ok |
 | `IssueCard` (installer component) | `Card elevation={2} padding="md" radius="lg"`. Title row: `Icon name={fail ? "error" : "warning"} size={18}`, then `Badge tone={fail ? "danger" : "neutral"} size="sm"` with the code, then the title in `text-ds-md font-semibold`. Body: `whatToDo` in `text-ds-sm text-ds-text-2`, max 44ch. Action: `row.fix` as a `Button` (`variant={fail ? "primary" : "soft"} size="md"`) |
 
-Rows and their copy. The blocking rules are `Get-PreflightRows`, unchanged except the network row:
+Rows and their copy. There are 11 rows, in this order: os, gpu, driver, ram, disk, disktype, network, winget, vcruntime, longpaths, waketimers (`CHECK_IDS` in `preflight.py`). The row labels are the ones in the wireframe: the winget row reads "Windows app installer (optional)" (the PC is fine without it), the long paths row reads "Very long file names", and the Visual C++ runtime row is the 11th. The blocking rules are `Get-PreflightRows`, unchanged except the network row:
 
 | Row | Blocks | Card title | What to do (shown) | Fix button |
 |---|---|---|---|---|
@@ -553,6 +558,7 @@ Rows and their copy. The blocking rules are `Get-PreflightRows`, unchanged excep
 | disktype, `NS-W106` | no (warn) | The install drive is a hard disk | Models load slowly from a hard disk. Pick an SSD drive if you have one | "Pick another drive" |
 | network, `NS-E105` | yes when github.com, pypi.org or files.pythonhosted.org is unreachable. Warn when only huggingface.co is | A download site cannot be reached | Check the internet, switch off any VPN or proxy, then press Check again. If only Hugging Face is blocked: In the next step, choose "A folder on this PC" or "A zip from Google Drive" for the model files | "Check again" |
 | winget, `NS-E111` | yes when Git or FFmpeg is missing | App Installer is missing | Install "App Installer" from the Microsoft Store, then press Check again | "Open the Microsoft Store" (`open-url`, `ms-windows-store://pdp/?ProductId=9NBLGGH4NNS1`) |
+| vcruntime | no (warn) | The Visual C++ runtime is missing | Setup installs it for you. Windows asks for permission once: click Yes | none |
 | longpaths, `NS-W112` | no (warn) | Long file paths are off | Setup works. Press Fix it to turn them on (Windows asks for permission) | "Fix it" (`elevate-longpaths`) |
 | waketimers, `NS-W107` | no (warn) | The PC cannot wake itself at night | Open Power Options, Change plan settings, Change advanced power settings, Sleep, Allow wake timers, and pick Enable | none |
 
@@ -585,7 +591,8 @@ Purpose: everything `s01_questions` asks, on one screen, next to the sizes that 
 ```
 ╭─ ☾ Nightshift setup · Your choices ─────────────────────────────────────────────────────── — ▢ ✕ ─╮
 │▌  Your choices                                                                                      │
-│▌  You can change the channel, voice and time later in the dashboard.                                │
+│▌  Channel, narrator, run time and keys can change later. The model size and install folder are      │
+│▌  final for this install.                                                                           │
 │▌  ┌───────────────────────────────┐ ┌───────────────────────────────┐ ┌───────────────────────────┐ │
 │▌  │ Channel                       │ │ Model size                    │ │ Night run                 │ │
 │▌  │ Channel name [After Dark Tales│ │ [ Small | Balanced | Best ]   │ │ ( 03 h )( 00 m )          │ │
@@ -607,13 +614,13 @@ Grid areas: `chan chan chan run run run` / `model model model model model model`
 
 | Region | Component and props |
 |---|---|
-| Header | `Greeting salutation="Your choices" question="" description="You can change the channel, voice and time later in the dashboard."` |
+| Header | `Greeting salutation="Your choices" question="" description="Channel, narrator, run time and keys can change later. The model size and install folder are final for this install."` |
 | chan | `Card padding="lg"` with `CardHeader title="Channel" level={2}` and three fields: `TextField label="Channel name" maxLength={60} required`; `TextField label="What it is about" placeholder="horror fiction" required`; `TextField label="Your name" placeholder="Shown on the dashboard" maxLength={40}` |
 | model | `Card padding="lg"`, `CardHeader title="Story model"`, then a `role="radiogroup"` of four option cards (`ModelPicker`, `installer\/ui\/src\/parts\/ModelPicker.tsx`; 2 columns, 4 from 1020 px). The first three are the tiers Small, Balanced and Best, read from `plan.tiers` (which the server builds from `manifest.json`); the fourth is **Other** (below). Every tier card shows: the **tier name** with a `Badge tone="accent"` "Recommended" on Balanced; the **model** (`file` without `.gguf` in mono, its Hugging Face `repo` under it in muted); the **download size** (`{llmBytes} GB download`); the **video memory it leaves for context on a 16 GB card** (`vramLeftGb`, computed as 16 GB minus the file size minus 0.6 GB of runtime, for example `6.4 GB of video memory left for context`; when the model fills the card, `No video memory left for context, part of the model runs from memory`); and a **one-line "good for"**. A tier with `allowed: false` stays selectable, shows its `reason` in `Badge tone="danger"` and disables Install. Under the cards: on a PC under 32 GB, "This PC has 16 GB of memory, so Small is selected. Balanced needs 32 GB", and always `Download {totalGb} GB, needs {needGb} GB free` for the selected card |
 | run | `Card padding="lg"`, `CardHeader title="Night run"`. `<p className="flex gap-2">` with `TimeChip value={hh} unit="h"` and `TimeChip value={mm} unit="m"` (ported, §5.2). Then `SegmentedControl label="Run time" options={["01:00", "03:00", "05:00", "other"]}`. "Other" reveals `TextField label="Time, 24 hour clock" inputMode="numeric" pattern="([01]\d\|2[0-3]):[0-5]\d"`. Caption in `text-ds-xs text-ds-muted`: "The PC wakes itself at this time, makes a video and goes back to sleep" |
 | voice | `Card padding="lg"` with `CardHeader title="Narrator"`, then `SegmentedControl label="Narrator voice" variant="plain" options={PRESET_VOICES.map(v => ({value: v, label: v}))}`, then the voice line for the selection, then the caption "You hear it in the test step. Designed and cloned voices are made later in the dashboard" |
 | src | `Card padding="lg"`, `CardHeader title="Model files come from"`, and a radio group of three `ChoiceRow`s. `ChoiceRow` (installer component) is a native `<input type="radio">` (or `checkbox`) styled as a 40 px row, `rounded-ds-md`, `bg-ds-sunken` when checked. The folder and Drive zip options reveal `TextField label="Folder"`, followed by the `DiskCheck` (`source=1`) result line: `Found 7 of 9 model files, 13.4 GB`, or the error |
-| keys | `Card padding="lg"` with `CardHeader title="Stock footage keys"`. Two fields, `TextField type="password" autoComplete="off" label="Pexels key"` and the same for `"Pixabay key"`, each checked on blur through `/api/check-key`. After each field: `Icon name="check"` with "Works" in `text-ds-success-ink`, or `Icon name="error"` with the message in `text-ds-danger`. Then `Button variant="ghost" size="sm" trailingIcon="external"` "Get free keys", which opens a two-line popover linking https://www.pexels.com/api/ and https://pixabay.com/api/docs/ (`open-url`) |
+| keys | `Card padding="lg"` with `CardHeader title="Stock footage keys (optional, can be added later in Settings)"` (the wireframe shows the short form; the keys are optional, see the validation table). Two fields, `TextField type="password" autoComplete="off" label="Pexels key (optional)"` and the same for `"Pixabay key (optional)"`, each checked on blur through `/api/check-key`. After each field: `Icon name="check"` with "Works" in `text-ds-success-ink`, or `Icon name="error"` with the message in `text-ds-danger`. Then `Button variant="ghost" size="sm" trailingIcon="external"` "Get free keys", which opens a two-line popover linking https://www.pexels.com/api/ and https://pixabay.com/api/docs/ (`open-url`) |
 | Footer left | `Install folder {homePath} · {freeGb} GB free`, then `Button variant="ghost" size="sm"` "More options" |
 | Footer right | `Button variant="soft"` "Back" and `Button variant="primary" disabled={!valid}` "Install" |
 
@@ -665,7 +672,7 @@ checks them again with pydantic:
 | `channel.displayName` | 1–60 characters after trimming | Give the channel a name |
 | `channel.niche` | 2–60 characters | Say in a few words what the channel is about |
 | `ownerName` | 0–40 characters | Use 40 characters or fewer |
-| `homePath` | absolute path on a fixed local drive, no `%`, 80 characters at most, at least `required_free_gb(tier)` free | Pick a folder on a drive with {need} GB free. This one has {free} GB |
+| `homePath` | absolute path on a fixed local drive, printable ASCII only (`NS-E117`), not in Downloads or OneDrive, no `%`, 120 characters at most, at least `required_free_gb(tier)` free | Pick a folder on a drive with {need} GB free. This one has {free} GB |
 | `llmTier` | allowed on this PC (not checked when `llmCustom` is set) | {Tier} needs 32 GB of memory. This PC has {ram} GB |
 | `llmCustom` | null, or `{repo, file, size}` with `owner/name`, a single `.gguf` file name and `0 < size <= 15.5 GB`; `required_free_gb` adds what the file is larger than 9 GB | Check the model file first; the reasons of `/api/model-check` |
 | `modelsSource.path` | an existing folder when kind is `folder` or `drive-zip` | That folder was not found |
@@ -695,7 +702,8 @@ Purpose: one row per file, honest speed and time left, pause and resume, and it 
 ```
 ╭─ ☾ Nightshift setup · Downloading ──────────────────────────────────────────────────────── — ▢ ✕ ─╮
 │▌  Downloading 17.3 GB                                                         [Pause]              │
-│▌  You can close this window. Keep the black setup window open, it is doing the work.                │
+│▌  You can close this window. Keep the window called Nightshift setup open: it does the work.        │
+│▌  The PC will not sleep until setup ends.                                                           │
 │▌  ┌───────────────────────────────────────────────────────────────────────────┐ ┌─────────────────┐ │
 │▌  │ Free tools                                                                │ │ Time left       │ │
 │▌  │ ● Git                      already here                             done  │ │ ( 00 h )( 41 m )│ │
@@ -719,7 +727,7 @@ card. Within each group, active rows are pinned to the top.
 
 | Region | Component and props |
 |---|---|
-| Header | `Greeting salutation={hero} question="" description="You can close this window. Keep the black setup window open, it is doing the work."`. Right: `Button variant="soft" leadingIcon={paused ? "play" : "pause"}`, reading "Pause" or "Resume". The hero is `Downloading 17.3 GB · about 41 min on this connection`: the time left comes from the running average speed (`overall.etaS`, rounded up to the whole minute, "about 1 h 05 min" from an hour); for the first 20 s of data it reads `Downloading 17.3 GB · estimating…`, and while paused `Downloading 17.3 GB · paused` |
+| Header | `Greeting salutation={hero} question="" description="You can close this window. Keep the window called Nightshift setup open: it does the work. The PC will not sleep until setup ends."` (that is the console: `INSTALL.cmd` titles it "Nightshift setup"). Right: `Button variant="soft" leadingIcon={paused ? "play" : "pause"}`, reading "Pause" or "Resume". The hero is `Downloading 17.3 GB · about 41 min on this connection`: the time left comes from the running average speed (`overall.etaS`, rounded up to the whole minute, "about 1 h 05 min" from an hour); for the first 20 s of data it reads `Downloading 17.3 GB · estimating…`, and while paused `Downloading 17.3 GB · paused` |
 | list | `Card padding="md"` with a heading per group, `CardHeader level={3}`: Free tools, Python packages, Programs, AI models. One `DownloadRow` per `downloads.items[]` |
 | `DownloadRow` (installer component) | 48 px tall, 64 px while active (it gains a second line). The row that is downloading (or paused) has a filled surface, `bg-ds-sunken`, so the eye lands on it. Contents, left to right: <br>• Status mark: `StatusDot` tone `online` while active, `success` when done, `danger` when failed. Other states show an empty 8 px ring in `border-ds-default`. <br>• Label in `text-ds-sm font-medium`, a 220 px column. <br>• File name in `text-ds-xs text-ds-muted font-mono truncate` (flexes). <br>• Size in `text-ds-xs ds-num`, like `2.1/9.0 GB`. <br>• `ProgressBar value={pct} label={`${label} progress`} maxTrack={120} tone={failed ? "danger" : "accent"}`. Rows with `via` `winget` or `uv` have no size and show the text "installing" instead of a bar. <br>Second line while active: `{speed} · {eta} left`, in `text-ds-2xs text-ds-text-2 ds-num`; while the file waits to retry after a stall (60 s without bytes) or a dropped connection it reads the `note`, for example `No data for 60 s, trying again in 2 s`, in `text-ds-text` medium. Second line when failed: `{code} {message}` in `text-ds-danger`, with `Button variant="ghost" size="sm" leadingIcon="retry"` "Retry" |
 | eta | `CountdownCard title="Time left" target={new Date(Date.now() + overall.etaS * 1000)} units={["h", "m"]}` (ported with the new `units` prop, §5.2), followed by two lines in `text-ds-sm ds-num`: `{done} of {total} GB` and `{speed}/s`. While `etaS` is null (the first 20 s, or while paused) it is a plain `Card padding="md"` titled "Time left", with "Measuring speed" or "Paused" in `text-ds-text-2` |
@@ -773,7 +781,8 @@ percentages.
 ```
 ╭─ ☾ Nightshift setup · Installing ───────────────────────────────────────────────────────── — ▢ ✕ ─╮
 │▌  Installing                                                                                        │
-│▌  Setting things up on this PC. This takes 5 to 15 minutes.                                         │
+│▌  Setting things up on this PC. Usually 5 to 15 minutes, longer on a slow connection (the Python    │
+│▌  packages are about 2.5 GB).                                                                       │
 │▌  ┌─────────────────────────────┐ ┌─────────────────────────────────────────────────────────────┐   │
 │▌  │ Steps                       │ │ ● Python environments            done · 3 min 12 s          │   │
 │▌  │                             │ │ ● Nightshift Code first start    done · 41 s                │   │
@@ -792,7 +801,7 @@ Grid areas: `stepper stepper list list list list` / `stepper stepper log log log
 
 | Region | Component and props |
 |---|---|
-| Header | `Greeting salutation="Installing" question="" description="Setting things up on this PC. This takes 5 to 15 minutes."` |
+| Header | `Greeting salutation="Installing" question="" description="Setting things up on this PC. Usually 5 to 15 minutes, longer on a slow connection (the Python packages are about 2.5 GB)."` |
 | stepper | `IntakeStepper title="Steps" value={doneCount} max={stepCount} unit="step" readOnly vessel="drive"` (ported with `readOnly` and `vessel`, §5.2). The drive fills as steps finish. `readOnly` hides the −/+ buttons |
 | list | `Card padding="md"` with one `StepItem` per step |
 | `StepItem` (installer component) | 44 px row. Mark: `StatusDot` `success` when done, `online` while running, `danger` when failed, an empty ring while waiting. Title in `text-ds-sm font-medium`. Status in `text-ds-xs text-ds-text-2 ds-num`: `done · 3 min 12 s`, `running · 1 min 05 s` (ticks every second), `waiting`, or `skipped, not chosen`. A running row adds a second line with P2's latest `say` text for that step |
@@ -1166,7 +1175,7 @@ renders `PageBackdrop`, which is the same fallback path, and the image stays out
 - **Screen readers.** One `aria-live="polite"` region announces phase changes and failures. Download
   progress is announced at most every 30 s, for example "23 percent, 10 minutes left".
 - **Connection banner.** After 6 s without an answer from the state endpoint, a
-  `Card elevation={3}` strip appears under the title bar: "Lost contact with setup. If the black setup
+  `Card elevation={3}` strip appears under the title bar: "Lost contact with setup. If the Nightshift setup
   window is closed, run INSTALL.cmd again". It hides on the next answer.
 
 ### 3.6 Plain text for every code the installer can show
@@ -1218,7 +1227,7 @@ in-window text says "press Retry", because the window replaces the rerun.
 | Antivirus blocking | The signs: a zip item's `expect` file missing right after extraction; `PermissionError`, or `OSError` with winerror 225, when starting a downloaded `.exe`; uv or Python disappearing between runs. P1 and P2 map all of these to `NS-E113`, with the file path as the detail. Retry extracts again. If the WebView2 host itself is blocked, the fallback chain opens the browser |
 | Browser or window not opening | The fallback order is in §1.9. In every case the console prints the address (§1.2) and `setup-address.txt` holds it. If every launcher fails, stage1 shows `[warn] open the address below in Edge or Chrome`, and setup waits on the Welcome screen |
 | Window closed mid-install | The install continues, since the console owns P1 and P2. `INSTALL.cmd` reopens the window (§1.9, step 4), and `/api/state` puts the UI back on the current screen |
-| Console closed mid-install | P1 and P2 end. `install_state.json` keeps the running step as `pending`, and the next `INSTALL.cmd` resumes. This is why the Download screen says to keep the black setup window open |
+| Console closed mid-install | P1 and P2 end. `install_state.json` keeps the running step as `pending`, and the next `INSTALL.cmd` resumes. This is why the Download screen says to keep the window called Nightshift setup open |
 | Two INSTALL.cmd at once | The second one finds a live `setup-server.json` and only reopens the window |
 | Sleep or reboot during download | Connections drop, and the downloader retries with `Range` (counted attempts). After a reboot, `INSTALL.cmd` resumes |
 | Keys rejected | Shown inline on Choices, and Install stays disabled until both keys work. A rate-limited key (HTTP 429) counts as working, as in `s01_questions` |
@@ -1988,9 +1997,10 @@ exit $script:exitCode
 ```
 
 P1 starts the host with
-`powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File launchers\nightshift-host.ps1 -Url <url> -Title "Nightshift setup" -AppPath <App>`.
-It then waits up to 8 s for one of two things. Exit code 3 means fall back to the next launcher. The
-window's first `GET /` request means success, and P1 sets `host: "webview2"`.
+`powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File launchers\nightshift-host.ps1 -Url <url> -Title "Nightshift setup" -AppPath <App> -Role setup`.
+It then waits up to 20 s for one of two things. Exit code 3 means fall back to the next launcher. The
+host writing `run\apphost-setup.json` (its window exists) means success, and P1 sets `host: "webview2"`. The
+window's first `GET /` request is not used as the signal.
 
 ### 6.3 Message protocol
 
@@ -2077,12 +2087,12 @@ What the UI does when the TitleBar close button is pressed or `close-requested` 
 |---|---|
 | `run` is `idle`, `stopped` or `finished` | Close straight away. When `run` is `finished`, or `idle` before Start, send `close-setup` first, so P1 exits and the console prints its closing line. Then `host.send({cmd: "close"})` |
 | `run` is `running`, `paused` or `waiting` | Send `host.send({cmd: "close-ack"})`, then show a `ConfirmDialog` (below) |
-| Uninstall running | The same dialog, without "Stop setup and close". Its body reads "Removal finishes in the black window." |
+| Uninstall running | The same dialog, without "Stop setup and close". Its body reads "Removal finishes in the Nightshift setup window." |
 
 The `ConfirmDialog` while setup is running:
 
 - Title: "Close the setup window?"
-- Body: "Setup keeps running in the black setup window. Run INSTALL.cmd to open this window again."
+- Body: "Setup keeps running in the Nightshift setup window. Run INSTALL.cmd to open this window again."
 - Buttons:
   - `Button variant="ghost"` "Stop setup and close": calls `cancel`, waits for `run = stopped`, then
     sends `close`
