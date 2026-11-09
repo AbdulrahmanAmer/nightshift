@@ -271,7 +271,7 @@ Work packages: **A** installer+launchers · **B** supervisor+tune+opencode · **
   - `tts`: `bin\qwentts\qwentts.exe` with the talker + tokenizer GGUFs in server mode on 8091; if the binary has no server mode, `ns_tts` (in the supervisor venv) is the server and spawns `qwentts` per batch.
   - `embed`: `llama-server.exe -m <embed.gguf> --embeddings --port 8081 -ngl 0` (CPU).
   - `whisper`: no process; the studio worker loads `WhisperModel(..., device="cuda")` under the GPU lock and drops it on release.
-- **`/acquire`**: FIFO `asyncio.Lock` for the GPU with timeout → if another GPU tenant is resident, terminate it first → `subprocess.Popen` with stdout/stderr to `logs\<service>-YYYYMMDD.jsonl` → poll `/health` every 500 ms until 200 or 120 s (`NS-E203`) → record pid, port, VRAM (`nvidia-smi --query-compute-apps`) → return endpoint.
+- **`/acquire`**: FIFO `asyncio.Lock` for the GPU with timeout → if another GPU tenant is resident, terminate it first → `subprocess.Popen` with stdout/stderr to `logs\<service>-YYYYMMDD.jsonl` → poll `/health` every 500 ms until 200 or the health wait (`NS-E203`): **300 s on an SSD, 600 s on an HDD or an unknown drive**, read from `config\supervisor.json` (`health_timeout_s`), which setup (step s08) writes before `ns verify`; 300 s when the file is missing or its value is outside 10 to 3600 s (D23) → record pid, port, VRAM (`nvidia-smi --query-compute-apps`) → return endpoint.
 - **`/release`**: lock released; idle timer armed; after 10 min without an owner the process gets `terminate()`, then `kill()` after 10 s.
 - **Crash policy**: child exit → restarted on next acquire; 3 crashes in 10 min → state `error`, jobs fail `NS-E202`.
 - **Guaranteed cleanup**: the supervisor creates a **Windows Job Object** with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` and assigns every child to it, so if the supervisor exits for any reason (quit, crash, log-off, shutdown) all model processes die with it. No orphaned VRAM.
@@ -286,7 +286,7 @@ Work packages: **A** installer+launchers · **B** supervisor+tune+opencode · **
 | **Nightly** | The scheduled task starts the supervisor headless (no window, no browser), runs `studio run --daily`, and the supervisor exits when the run ends. If the dashboard is opened during a run, it attaches to the running supervisor and shows progress. |
 | **OS shutdown / log-off** | Job Object kills children; a stage interrupted mid-way resumes from `stage_state.json` on the next run. |
 
-Supervisor API additions (§15.3): `POST /shutdown {grace_s:30}` · `POST /warmup {service}` · `GET /events` (server-sent events: service state changes, job progress) used by the dashboard status strip.
+Supervisor API additions (§15.3): `POST /shutdown {grace_s:30}` · `POST /warmup {service}` · `GET /events` (server-sent events: service state changes, the weekly update-check result and the end of the nightly run) which the dashboard relays to its status strip; job progress is not on this stream, it reaches the browser as `job` frames of the dashboard's own `GET /api/events` (§15.3, D24).
 
 ---
 
@@ -486,6 +486,9 @@ Deferred to after Slice 9: `series_compilation`, API upload, non-English caption
 | D20 | Sentence splitting (§7.5) | Regex plus abbreviation list (`ns_common.textstats.split_sentences`), shared by TTS chunking and `pause_plan`; not spaCy | One splitter for budget, voice and captions, no model load. spaCy is used only for the policy NER and keyword lemmas |
 | D21 | Tenant grouping (§15.8) | Per job: consecutive stages of one job share one acquisition; a daily run does not batch stages across jobs | Simple and resumable per job (`stage_state.json`); the next job acquires the tenants again |
 | D22 | Setup window: waits, install folder, wording | Setup window as shipped (`docs/design/installer-ui.md` is the detail): P1 gets 60 s to answer `/api/ping` (a "still waiting" note after 15 s, exit 14 after 60 s); the WebView2 host started with `-Role setup` is ready when `run/apphost-setup.json` is written, within 20 s; the install folder is printable ASCII only (`NS-E117`; llama.cpp and qwentts.cpp open files via the ANSI code page) and Downloads/OneDrive folders are refused; the hardware check has 11 rows (incl. "Visual C++ runtime"); the window and its dialogs call the console "Nightshift setup" | Spec text now matches the shipped behaviour (owner decision taken: keep the code) |
+| D23 | `/acquire` health wait (§6.1) | The engine polls `/health` until 300 s on an SSD and 600 s on an HDD or an unknown drive; the value is `health_timeout_s` in `config\supervisor.json`, written by setup (s08) before `ns verify`; 300 s without the file | A cold load of the 14 GB story model takes about 30 s from an SSD and several minutes from a hard disk, longer than the 120 s this section used to state (`ns_supervisor/health_cfg.py`); owner decision taken: keep the code |
+| D24 | Supervisor `/events` kinds (§6.2, §15.3) | The supervisor stream carries `service`, `update` and `run` frames; job progress reaches the browser as `job` frames of the dashboard's own `GET /api/events`, not from the supervisor | The dashboard owns the job store and publishes job records itself (`ns_dashboard/jobs.py`); no product code posts to `POST /events`; a browser consumer for the `job` frames is FINALIZATION F-B19; owner decision taken: keep the code |
+| D25 | Voice library files (§15.4) | A voice folder holds `voice.json`, `sample.wav` and the engine's speaker files, listed in `voice.json` `files`: `speaker.spk`, `speaker.rvq` and `ref.txt` for qwentts, `speaker.bin` for the reference and fake engines | CR-C4-6 (`contracts/CHANGE_REQUESTS.md`) added `files` when qwentts needed three files; a voice without `files` is read as `speaker.bin`; owner decision taken: keep the code |
 
 ---
 
@@ -569,9 +572,12 @@ llama **8080** · embed **8081** · TTS **8091** · supervisor **8099** · dashb
 | POST | `/stop_all` | → `{ok}` |
 | POST | `/shutdown` | `{grace_s:30}` → `{ok}`; stops children and exits the supervisor |
 | POST | `/warmup` | `{service}` → `{state}`; starts a service without an owner so the first job is fast |
-| GET | `/events` | server-sent events `{ts, kind:"service"|"job", data}` |
+| GET | `/events` | server-sent events `{ts, kind:"service"|"update"|"run", data}`; the first frame is a `service` snapshot (`data.event:"snapshot"` plus the `/status` body) and a `: keepalive` comment follows 15 s of silence; `service` frames carry service state changes and lock events, `update` the weekly update-check result, `run` `{event:"finished"}` when the nightly run ends |
+| POST | `/events` | `{kind:"job", data:{}}` → `{ok}`; publishes the frame to every subscriber, but no product code posts job progress (D24) |
 
 States: `stopped|starting|ready|stopping|error`. Owners: `opencode`, `studio:<job_id>`, `verify`, `gate`. `embed` acquisition always succeeds immediately (no lock). In two-model mode, acquiring `llama` with a different `model_alias` than the loaded one triggers a swap once the current owner releases.
+
+Job progress is not a supervisor event. The dashboard's own `GET /api/events` (port 8100) streams `{kind, payload}` frames: `status` (the `/api/status` object, first and after every event), `job` (a dashboard job record, from the dashboard's job store, or a supervisor event of kind `job` should one be posted), `update` and `run` (the supervisor's kinds, kept as they are). The browser (`ns_dashboard/ui/src/lib/app.tsx`) acts on `status`, `update` and `run` frames only; a consumer for the `job` frames is FINALIZATION F-B19.
 
 ### 15.4 TTS API (port 8091)
 | Method | Path | Body |
@@ -583,9 +589,9 @@ States: `stopped|starting|ready|stopping|error`. Owners: `opencode`, `studio:<jo
 | POST | `/v1/voices/design` | `{name, description}` → `{name, sample_path}` |
 | POST | `/v1/voices/clone` | `{name, ref_audio_path, ref_text, rights_confirmed:true}` → `{name, sample_path}` (400 if `rights_confirmed` false) |
 | GET | `/health` | → `{ok, engine:"qwentts"|"reference"|"fake", model_loaded}` |
-| GET | `/v1/voices/{name}/embedding` | → the stored speaker-embedding file (bytes) for backup/transfer between machines |
+| GET | `/v1/voices/{name}/embedding` | → the stored speaker file (bytes) for backup/transfer between machines; a voice with several speaker files comes as one zip, `<name>.voice.zip` |
 
-**Voice library = embeddings, not audio.** `models\tts\voices\<name>\{voice.json, speaker.bin, sample.wav}`: `speaker.bin` is the precomputed speaker prompt produced once (from a clone sample via Base, or from a VoiceDesign render that is immediately re-encoded through Base). Every later synthesis passes the stored prompt to the Base talker directly; nothing is re-derived. Presets need no embedding (CustomVoice talker). VoiceDesign is only needed at design time and may be deleted afterwards.
+**Voice library = embeddings, not audio.** `models\tts\voices\<name>\{voice.json, sample.wav, <speaker files>}`. The speaker files are the precomputed speaker prompt, produced once (from a clone sample, or from a VoiceDesign render that is immediately re-encoded), and depend on the engine that made the voice; `voice.json` names them in `files` and the engine in `engine`. **qwentts** stores `speaker.spk` (the speaker embedding), `speaker.rvq` (the reference codes) and `ref.txt` (the transcript), made by `qwen-codec`. The **reference** (PyTorch) and **fake** engines store one `speaker.bin`. A folder whose `voice.json` has no `files` (a voice made before the key existed) is read as `speaker.bin` (CR-C4-6, D25). Every later synthesis passes the stored prompt to the Base talker directly; nothing is re-derived. Presets need no embedding (CustomVoice talker). VoiceDesign is only needed at design time and may be deleted afterwards.
 
 ### 15.5 Embed API (port 8081)
 Standard llama-server `POST /v1/embeddings` `{input:[...]}` → OpenAI-shaped response. `ns_common.embed_client.embed(texts) -> list[list[float]]`, `cosine(a,b)`.
