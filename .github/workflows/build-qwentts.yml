@@ -142,6 +142,11 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           if ! gh release view "$TAG" >/dev/null 2>&1; then
-            gh release create "$TAG" --title "Nightshift $TAG" --generate-notes || gh release view "$TAG" >/dev/null
+            # a tag with a prerelease part (v0.1.15-rc1) is a release candidate: never "latest" (H-12, same rule as release.yml)
+            flags=()
+            case "$TAG" in
+              v*-*) flags=(--prerelease --latest=false) ;;
+            esac
+            gh release create "$TAG" --title "Nightshift $TAG" --generate-notes "${flags[@]}" || gh release view "$TAG" >/dev/null
           fi
           gh release upload "$TAG" dist/Nightshift-VoiceEngine-win-cuda-x64.zip dist/Nightshift-VoiceEngine-win-cuda-x64.zip.sha256 --clobber
