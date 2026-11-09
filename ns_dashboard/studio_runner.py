@@ -89,9 +89,11 @@ def failure_error(event: Event) -> NsError:
     """
     code = event.get("code")
     detail = str(event.get("detail") or "")
+    hint = event.get("hint")
+    extra = {"hint": hint} if isinstance(hint, str) and hint else {}  # the job's own hint (D-25)
     if isinstance(code, str):
         with contextlib.suppress(KeyError):
-            return NsError(code, detail)
+            return NsError(code, detail, **extra)
     message = str(event.get("message") or "The studio process failed.")
     if isinstance(code, str):
         message = f"{message} (unknown code {code})"

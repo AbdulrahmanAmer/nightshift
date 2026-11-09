@@ -565,3 +565,69 @@ def test_download_kind_cancels_the_real_cancel_token(tmp_path: Path, monkeypatch
     monkeypatch.setenv("NIGHTSHIFT_HOME", str(tmp_path / "home"))
     studio_job.do_download({"url": "https://example.com/v", "source_id": "s", "cancel_file": str(flag)})
     assert isinstance(got["token"], CancelToken) and got["cancelled"] is True
+
+
+# ------------------------------------------------ D-25: the hint a check attached crosses the process boundary
+REAL_CHILD = r'''
+import sys
+
+sys.path.insert(0, sys.argv[sys.argv.index("--repo") + 1])
+from ns_common.errors import NsError
+from ns_dashboard import studio_job
+
+
+def refuse(_args):
+    raise NsError("NS-E605", "self_similarity: finished video exists", hint="Change the script, or use that video.")
+
+
+studio_job.HANDLERS["run"] = refuse
+sys.exit(studio_job.main(["run", "--args", sys.argv[sys.argv.index("--args") + 1]]))
+'''
+
+
+def real_child_runner(tmp_path: Path) -> StudioRunner:
+    """A runner whose child is a real interpreter running the real `studio_job.main`, with one failing handler."""
+    script = tmp_path / "real_child.py"
+    script.write_text(REAL_CHILD, encoding="utf-8")
+    app = tmp_path / "app"
+    app.mkdir(exist_ok=True)
+    return StudioRunner(
+        Paths.from_env(), python=[sys.executable, str(script), "--repo", str(repo_root())], cwd=app, poll_s=0.05
+    )
+
+
+def test_a_hint_attached_by_a_check_survives_the_child_process(tmp_home: Path, tmp_path: Path):
+    from ns_studio.errors import hint_of
+
+    with pytest.raises(NsError) as err:
+        real_child_runner(tmp_path).run("run", {})
+    assert err.value.code == "NS-E605"
+    assert hint_of(err.value) == "Change the script, or use that video."
+    assert "new idea" in err.value.definition.hint  # errors.json is unchanged
+
+
+def test_the_failed_job_of_a_script_run_shows_the_script_hint_after_the_child(tmp_home: Path, tmp_path: Path):
+    """The Queue card: owner script refused by NS-E605 in the child; the job's stored hint is the script one."""
+    paths = Paths.from_env()
+    store = JobStore(open_db(paths))
+    adapter = RealRunAdapter(
+        paths, SupervisorLink("http://127.0.0.1:9", timeout_s=0.2), runner=real_child_runner(tmp_path)
+    )
+
+    def handler(ctl: JobControl) -> dict[str, Any]:
+        adapter.run(ctl, "after-dark", "shorts_only", 1)
+        return {}
+
+    worker = JobWorker(store, {"run": handler}, EventHub(), NsLogger("dashboard", paths.logs))
+    job = store.create("run", "after-dark", {})
+    assert worker.run_next()
+    rec = store.get(job.job_id)
+    assert rec is not None and rec.status == "failed" and rec.result is not None
+    assert rec.result["error"]["code"] == "NS-E605"
+    assert rec.result["error"]["hint"] == "Change the script, or use that video."
+    assert "new idea" not in rec.result["error"]["hint"]
+
+
+def test_a_coded_error_without_a_hint_keeps_the_errors_json_hint():
+    err = failure_error({"ev": "error", "code": "NS-E605", "detail": "x", "message": "m"})
+    assert err.code == "NS-E605" and "hint" not in err.data
