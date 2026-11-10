@@ -370,8 +370,17 @@ test install before a release exists, a test install can be aimed at a fake GitH
   no release server, the fake or GitHub; the weekly check writes the same code to `logs/supervisor-*.jsonl`
   (`update_check_failed`) and tries again at its next poll. `ns update --git` runs its `git fetch` from the
   clone's own remote first, as always, and then stops with the same code before it changes anything. The
-  install does not go to GitHub instead: remove the variable (for the user too, if it was set with `setx`)
-  and check again. Empty or blank counts as not set.
+  install does not go to GitHub instead. Empty or blank counts as not set.
+- **The owner is told.** A refusal does not clear by itself, so the weekly check tells the owner the first
+  time it meets one and then at most once a week while it lasts: a toast with the code, its message and its
+  hint, or a note the dashboard shows when there is no desktop, the toast fails or notifications are off
+  (`refused` in `config/update_check.json`; `update_refusal_told` in the log). A telling that could not be
+  delivered is tried again at the next poll, an hour later. The next check that works forgets the refusal.
+- **Getting rid of it.** Remove the variable wherever it is set: the user and the system environment variables
+  of Windows (`setx` writes the user's), the shell that started Nightshift, the scheduled task. Then restart
+  Nightshift (Stop All, then open the Dashboard): the engine and the dashboard keep the environment they
+  started with, and the Update button runs `ns update` with the dashboard's, so checking again without a
+  restart answers `NS-E704` again. A new shell is enough for `ns update --check` typed there.
 - **The loopback rule.** The value is the whole address of the releases answer, `http` or `https`, on
   `127.0.0.1`, `localhost` or `::1`, without a user name, for example
   `http://127.0.0.1:8765/repos/AbdulrahmanAmer/nightshift/releases/latest`. Anything else is `NS-E704` too.
@@ -384,9 +393,10 @@ test install before a release exists, a test install can be aimed at a fake GitH
   at the download: a release read from the fake is refused when the variable has gone or changed since
   (`NS-E701`). Each read from the fake leaves `test_release_source` in `logs/update-*.jsonl`.
 - **Where it is read.** One function, `release_source` in `ns_supervisor/releases.py`, in the process that
-  asks: set the variable in the shell that runs `ns update` and in the environment the engine starts from
-  (the dashboard and the update worker hand theirs to the `ns update` child). `ns update --rollback` and an
-  update from a zip file read no release and ignore it.
+  asks, from the environment that process started with: set the variable in the shell that runs `ns update`
+  and, before the engine starts, in the environment it starts from (the dashboard and the update worker hand
+  theirs to the `ns update` child). Setting or removing it later reaches a running engine or dashboard only
+  after a restart. `ns update --rollback` and an update from a zip file read no release and ignore it.
 - **The fake.** `python proofs/_fakes/github.py --dir <folder>` serves the newest
   `Nightshift-Update-<version>.zip` of the folder (what `dev/make_bundle.ps1` makes) as the latest release,
   with the `.sha256` beside it when there is one and a digest it computes otherwise. It listens on 127.0.0.1,

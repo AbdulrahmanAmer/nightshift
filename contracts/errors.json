@@ -80,7 +80,7 @@
   "NS-E701": {"message": "Update package failed verification.", "hint": "Re-download Nightshift-Update-<version>.zip and its .sha256 file."},
   "NS-E702": {"message": "Update failed; rolled back to the previous version.", "hint": "Run 'ns doctor --bundle' and send the diagnostics."},
   "NS-E703": {"message": "Restore from backup failed.", "hint": "Check that the zip was made by 'ns backup' and is not corrupted; nothing was changed."},
-  "NS-E704": {"message": "A test release source is set on an install that is not a test install.", "hint": "Remove the environment variable NS_RELEASE_SOURCE (it is for dev and engine-test installs, and only for an address on this PC), then check for updates again."},
+  "NS-E704": {"message": "A test release source is set on an install that is not a test install.", "hint": "NS_RELEASE_SOURCE is for dev and engine-test installs only. Remove it wherever it is set (the user and system environment variables of Windows, the shell or the scheduled task that starts Nightshift), then restart Nightshift (Stop All, then open the Dashboard), because a running engine and dashboard keep the environment they started with, and check for updates again."},
   "NS-E320": {"message": "The channel profile is invalid.", "hint": "Fix the listed rule in config/channels/<slug>.yaml or via 'studio channel edit'."},
   "NS-E321": {"message": "Channels are not distinct enough.", "hint": "Change the niche, voice, caption styles or visual treatments of one channel."},
   "NS-E322": {"message": "Unknown channel.", "hint": "Run 'studio channel list' to see the configured channels."},

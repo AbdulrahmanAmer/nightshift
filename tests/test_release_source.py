@@ -255,7 +255,8 @@ def test_a_normal_install_refuses_the_setting_with_ns_e704(tmp_path: Path, monke
     assert r.exit_code == 1 and "NS-E704" in r.output and VAR in r.output
     toaster = Toaster()
     assert update_check.run_check(paths, now=NOW, current="0.1.0", toaster=toaster) is None
-    assert not update_check.state_file(paths).exists() and toaster.shown == []
+    assert "last_checked" not in update_check.load_state(paths)  # no check is recorded
+    assert len(toaster.shown) == 1 and "NS-E704" in toaster.shown[0][1]  # ... and the owner is told
     log = "".join(p.read_text(encoding="utf-8") for p in paths.logs.glob("supervisor-*.jsonl"))
     assert "update_check_failed" in log and "NS-E704" in log
     assert net.seen == []
@@ -418,6 +419,113 @@ def test_an_unreachable_test_source_is_an_error_not_github(tmp_path: Path, monke
     with pytest.raises(NsError) as ei:
         releases.fetch_latest(net.client())
     assert ei.value.code == "NS-E118" and "127.0.0.1:8765" in ei.value.detail
+
+
+# ---------------------------------------------------------------- a refusal that lasts is told to the owner
+
+
+def test_a_refused_weekly_check_tells_the_owner_once_and_then_weekly(tmp_path: Path, monkeypatch: MP) -> None:
+    paths = install(tmp_path, monkeypatch, NORMAL)
+    net = Net()
+    net.everywhere(monkeypatch)
+    toaster = Toaster()
+
+    def poll(after: timedelta) -> dict[str, Any] | None:
+        return update_check.run_check(paths, now=NOW + after, current="0.1.0", toaster=toaster)
+
+    # first hit: one toast with the code, its message and what to do
+    assert poll(timedelta()) is None
+    assert len(toaster.shown) == 1
+    title, text = toaster.shown[0]
+    d = NsError("NS-E704").definition
+    assert title == "Nightshift" and "NS-E704" in text and d.message in text and d.hint in text
+    assert update_check.load_state(paths)["refused"]["code"] == "NS-E704"
+    # repeated hits (the check is asked every hour): nothing more within the week, then once again
+    for hours in (1, 2, 24, 7 * 24 - 1):
+        assert poll(timedelta(hours=hours)) is None
+    assert len(toaster.shown) == 1
+    assert poll(timedelta(days=7, minutes=1)) is None and len(toaster.shown) == 2
+    assert poll(timedelta(days=7, hours=2)) is None and len(toaster.shown) == 2
+    assert net.seen == []  # and no poll asked any server
+    # the variable removed and Nightshift restarted: the check works and the refusal is forgotten
+    monkeypatch.delenv(VAR)
+    res = poll(timedelta(days=7, hours=3))
+    assert res is not None and res["latest"] == GITHUB_V and "refused" not in update_check.load_state(paths)
+    assert len(toaster.shown) == 3 and GITHUB_V in toaster.shown[2][1]  # the ordinary "is available" toast
+    # ... so the variable coming back is told at once, not a week later
+    monkeypatch.setenv(VAR, SOURCE)
+    assert poll(timedelta(days=15)) is None and len(toaster.shown) == 4 and "NS-E704" in toaster.shown[3][1]
+    # a telling dated in the future (the clock was set back) or unreadable does not silence it
+    for told in ("2099-01-01T00:00:00+00:00", "yesterday"):
+        state = json.dumps({"refused": {"code": "NS-E704", "told": told}})
+        update_check.state_file(paths).write_text(state, encoding="utf-8")
+        before = len(toaster.shown)
+        assert poll(timedelta(days=16)) is None and len(toaster.shown) == before + 1, told
+
+
+def test_a_refusal_reaches_the_owner_without_a_toast_and_is_retried_when_it_cannot(
+    tmp_path: Path, monkeypatch: MP
+) -> None:
+    net = Net()
+    net.everywhere(monkeypatch)
+    words = getattr(update_check, "refusal_message", lambda _e: "(no such message before this change)")
+    refused = words(NsError("NS-E704"))
+
+    def notes(paths: Paths) -> list[str]:
+        return [n["message"] for n in update_check.notify.read_notes(paths)]
+
+    # notifications off (Settings): no toast, a note the dashboard shows; once
+    paths = install(tmp_path, monkeypatch, NORMAL, name="quiet")
+    (paths.config / "dashboard.json").write_text(json.dumps({"notifications": False}), encoding="utf-8")
+    toaster = Toaster()
+    for minutes in (0, 60, 120):
+        assert update_check.run_check(paths, now=NOW + timedelta(minutes=minutes), toaster=toaster) is None
+    assert toaster.shown == [] and notes(paths) == [refused]
+    # no desktop or a toast that fails (the toaster says False): the note, once, and not twice with the
+    # product's own toaster, which leaves the note itself
+    paths = install(tmp_path, monkeypatch, NORMAL, name="session0")
+    assert update_check.run_check(paths, now=NOW, toaster=lambda _t, _m: False) is None
+    assert notes(paths) == [refused]
+    paths = install(tmp_path, monkeypatch, NORMAL, name="own")
+    monkeypatch.setattr(update_check.notify, "toast", lambda _t, _m: False)  # the real toaster, no toast
+    job = update_check.make_job(paths)
+    assert job() is None and job() is None
+    assert notes(paths) == [refused]
+    # the telling itself fails (no toast, the note cannot be written): nothing is remembered, the check
+    # still answers, and the next poll tells
+    paths = install(tmp_path, monkeypatch, NORMAL, name="broken")
+    real_note = update_check.notify.leave_note
+
+    def no_note(*a: Any, **k: Any) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(update_check.notify, "leave_note", no_note)
+    assert update_check.run_check(paths, now=NOW, toaster=lambda _t, _m: False) is None
+    assert "refused" not in update_check.load_state(paths) and notes(paths) == []
+    log = "".join(p.read_text(encoding="utf-8") for p in paths.logs.glob("supervisor-*.jsonl"))
+    assert "update_refusal_not_told" in log
+
+    def boom(_t: str, _m: str) -> bool:
+        raise RuntimeError("toast host crashed")
+
+    assert update_check.run_check(paths, now=NOW + timedelta(hours=1), toaster=boom) is None
+    monkeypatch.setattr(update_check.notify, "leave_note", real_note)
+    toaster = Toaster()
+    assert update_check.run_check(paths, now=NOW + timedelta(hours=2), toaster=toaster) is None
+    assert len(toaster.shown) == 1 and update_check.load_state(paths)["refused"]["code"] == "NS-E704"
+    # an unreachable source is not a lasting refusal: nobody is told (it clears by itself)
+    paths = install(tmp_path, monkeypatch, DEV, name="offline")
+    net.down = True
+    toaster = Toaster()
+    assert update_check.run_check(paths, now=NOW, toaster=toaster) is None
+    assert toaster.shown == [] and notes(paths) == []
+
+
+def test_the_ns_e704_hint_says_where_the_variable_can_be_and_to_restart() -> None:
+    hint = NsError("NS-E704").definition.hint
+    for words in ("NS_RELEASE_SOURCE", "user and system", "scheduled task", "restart Nightshift", "Stop All"):
+        assert words in hint, words
+    assert hint.index("restart Nightshift") < hint.index("check for updates again")
 
 
 # ---------------------------------------------------------------- controls (pass before this change too)
