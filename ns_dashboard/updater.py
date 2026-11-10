@@ -127,8 +127,10 @@ class RealUpdateAdapter:
     def model_unavailable(self, name: str) -> str | None:
         """`ns_supervisor.models_get.unavailable` on this install's manifest and `runtime.json`.
 
-        Nothing is decided when either file cannot be read (None): the download then reports that itself,
-        as `ns models get` does (its no-install fallback is `models_get.get_model`'s, defect D-35).
+        Nothing is decided (None) when `runtime.json`, `install_state.json` or `manifest.json` is missing, torn
+        or invalid (NsError, OSError, or ValueError, which a pydantic ValidationError and a bad UTF-8 read
+        are): the request goes on and `ns models get` reports the problem itself, as before (its no-install
+        fallback is `models_get.get_model`'s, defect D-35).
         """
         from ns_common.config import load_manifest, load_runtime
         from ns_common.errors import NsError
@@ -138,7 +140,7 @@ class RealUpdateAdapter:
         try:
             manifest = load_manifest(app_path(self.paths) / "manifest.json")
             rt = load_runtime(self.paths)
-        except NsError:
+        except (NsError, OSError, ValueError):
             return None
         return models_get.unavailable(name, manifest, rt.profile, rt.tts.engine)
 

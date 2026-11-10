@@ -12,9 +12,9 @@ from typing import Any
 
 import pytest
 
-from ns_common.config import load_manifest, save_runtime
+from ns_common.config import load_manifest, save_install_state, save_runtime
 from ns_common.errors import NsError, describe
-from ns_common.models import Runtime
+from ns_common.models import InstallState, Runtime
 from ns_common.paths import Paths, repo_root
 from ns_dashboard.handlers import build_state
 from ns_dashboard.supervisor_link import SupervisorLink
@@ -90,7 +90,7 @@ def _client(tmp_home: Path) -> tuple[TestClient, RecordingUpdateAdapter]:
     adapter = RecordingUpdateAdapter(paths)
     state.adapters.update = adapter
     app = create_app(state=state, start_worker=False, static_dir=static, heartbeat_s=0.01)
-    return TestClient(app, base_url=BASE), adapter
+    return TestClient(app, base_url=BASE, raise_server_exceptions=False), adapter
 
 
 def test_the_route_refuses_before_any_download_starts(tmp_home: Path) -> None:
@@ -115,6 +115,36 @@ def test_the_route_still_starts_a_model_this_install_can_use(tmp_home: Path) -> 
     save_runtime(Paths.from_env(), Runtime.default("gpu"))
     r = client.post("/api/models/get", json={"name": "voicedesign"})
     assert r.status_code == 202 and r.json()["state"] == "running"
+
+
+def _goes_on_as_before(client: TestClient, adapter: RecordingUpdateAdapter) -> None:
+    """Nothing is decided: no 500, the request starts the download and `ns models get` says what is wrong."""
+    r = client.post("/api/models/get", json={"name": "voicedesign"})
+    assert r.status_code == 202, r.text
+    assert r.json()["state"] == "running"
+
+
+def test_a_torn_runtime_json_decides_nothing_and_the_request_goes_on(tmp_home: Path) -> None:
+    client, adapter = _client(tmp_home)
+    paths = Paths.from_env()
+    paths.runtime_file.write_text('{"profile": "cpu-dev", "tts": {"engi', encoding="utf-8")  # cut mid-write
+    _goes_on_as_before(client, adapter)
+    paths.runtime_file.write_text('{"profile": 7}', encoding="utf-8")  # valid JSON, invalid model
+    adapter.downloads.clear()
+    again = client.post("/api/models/get", json={"name": "story_llm"})
+    assert again.status_code == 202, again.text
+
+
+def test_a_missing_or_invalid_manifest_decides_nothing_and_the_request_goes_on(tmp_home: Path) -> None:
+    client, adapter = _client(tmp_home)
+    paths = Paths.from_env()
+    app_dir = tmp_home / "app"
+    app_dir.mkdir()
+    save_install_state(paths, InstallState(app_path=str(app_dir)))  # an app folder with no manifest.json
+    _goes_on_as_before(client, adapter)
+    (app_dir / "manifest.json").write_text("{not json", encoding="utf-8")
+    again = client.post("/api/models/get", json={"name": "story_llm"})
+    assert again.status_code == 202, again.text
 
 
 def test_ns_models_get_prints_ns_e122_and_exits_non_zero(
