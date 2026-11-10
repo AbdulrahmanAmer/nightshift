@@ -1207,9 +1207,16 @@ def test_the_update_reconnect_cap_starts_when_the_state_leaves_running_not_at_th
     # a lost connection after "running" was seen is the engine being stopped by the worker: no clock
     assert "if (!sawRunning) quietSince = quietSince ?? Date.now();" in follow
     assert "Nightshift is installing the update. This page reconnects by itself" in follow
-    # the give-up text for that case does not tell the owner to start a second copy
-    assert "Wait for its window to finish" in follow and "UPDATE_HARD_STOP_MS" in follow
+    # the give-up text for that case (the hard stop after "running" was seen) points to the progress window only
+    # where one is open (D-39a: from the dashboard the worker opens one only when the run ends unfinished), and
+    # otherwise to the shortcut ...
+    assert "UPDATE_HARD_STOP_MS" in follow and "Wait for its window to finish" not in follow
+    assert "If a window named Nightshift update is open, it shows the result and what to do. Otherwise open Nightshift from the shortcut on your desktop" in follow
     assert follow.count("from the shortcut on your desktop") == 2
+    # ... which does not start a second copy while the update still runs: the launch script holds every shortcut
+    # start while run\update.lock is held (D-39b, Test-BeforeStart) and says so
+    launch = (Path(__file__).resolve().parents[1] / "installer" / "launch.ps1").read_text(encoding="utf-8")
+    assert "An update, rollback or repair of Nightshift is running (progress: " in launch and "Nothing was started. Open Nightshift again when it has finished" in launch
 
 
 def test_adopt_upload_moves_a_dev_transcript_sidecar_along(tmp_home: Path):
