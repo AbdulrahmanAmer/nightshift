@@ -608,7 +608,9 @@ FILE_ROWS = ("ok", "bom", "utf16", "newer", "missing", "damaged")
 ANSWER_ROWS = ("unchanged", "tier", "dev_to_real", "real_to_dev", "engine")
 WHOLE = (
     "config\\runtime.json is built again from your answers (it was made for another kind of install). "
-    "Settings that were only in the old file are not carried over."
+    "The file as it was is kept as runtime.json.other. Settings that were only in it are not carried over: "
+    "a port or an engine you changed by hand or in Settings, and the tuned numbers. Set them again in "
+    "Settings, or copy them from that file."
 )
 
 
@@ -731,6 +733,8 @@ def test_cell_a_finished_install_run_again_ends_on_the_answers_and_the_kept_sett
     assert load_runtime(again.paths).dev_mode is dev
     # 2. what is kept aside: the original of a file that lost something, never anything else
     want_aside = {"newer": ["runtime.json.newer"], "damaged": ["runtime.json.bad"]}.get(state, [])
+    if has_settings and state != "newer" and change in ("dev_to_real", "real_to_dev"):
+        want_aside = ["runtime.json.other"]     # a readable file of another kind is rebuilt: kept too
     assert aside(again) == want_aside
     for name in want_aside:
         assert (again.paths.config / name).read_bytes() == raw
@@ -827,7 +831,11 @@ def test_cell_a_file_that_cannot_be_read_stops_setup_by_name_and_no_answer_is_lo
     retry, _ui, code = run_setup(tmp_path, answers, dev)
     assert code == EXIT_OK
     plain_and_final(retry, expected(retry, settings if how == "held" else None, change))
-    assert load_runtime(retry.paths).dev_mode is dev and aside(retry) == []
+    rebuilt = how == "held" and change in ("dev_to_real", "real_to_dev")
+    assert load_runtime(retry.paths).dev_mode is dev
+    assert aside(retry) == (["runtime.json.other"] if rebuilt else [])
+    if rebuilt:
+        assert (retry.paths.config / "runtime.json.other").read_bytes() == before
 
 
 # ------------------------------------------------------------------------------ vanishing mid-way x answers
@@ -859,7 +867,7 @@ def test_cell_a_file_that_vanishes_after_the_questions_is_a_fresh_file_of_the_an
     assert code == EXIT_OK
     plain_and_final(again, expected(again, None, change))   # what was owed to the old file is not owed now
     assert aside(again) == [] and row_of(ui, "s06_tune")[1:] == ("done", None)
-    assert "kept as" not in ui.text and WHOLE not in ui.text
+    assert "kept as" not in ui.text and "is built again from your answers (it was made" not in ui.text
 
 
 # ----------------------------------------------------------------- killed in the middle of the one rewrite
@@ -908,7 +916,7 @@ def test_kept_data_then_install_again_no_state_of_the_kept_file_hides_an_answer(
     """The reviewer's case first: a dev install whose runtime.json has a byte order mark (PowerShell 5.1's
     ``Set-Content -Encoding UTF8`` writes one), uninstalled keeping data, installed for real."""
     ctx, settings = first_install(tmp_path, change)
-    put_state(ctx, state)
+    raw = put_state(ctx, state)
     uninstalled_keeping_data(ctx)
     answers, dev = answers_of(change, second=True)
     again, ui, code = run_setup(tmp_path, answers, dev)
@@ -920,6 +928,9 @@ def test_kept_data_then_install_again_no_state_of_the_kept_file_hides_an_answer(
         assert "was made for another kind of install" in ui.text               # said by the questions step
         detail = row_of(ui, "s06_tune")[2] or ""
         assert row_of(ui, "s06_tune")[1] == "warning" and "made for another kind of install" in detail
+        name = "runtime.json.newer" if state == "newer" else "runtime.json.other"
+        assert aside(again) == [name] and f"kept as {name}" in detail      # the old file, never deleted
+        assert (again.paths.config / name).read_bytes() == raw
     if change == "tier":
         assert Path(final.llama.model_path).is_file() and final.llama.flags.n_gpu_layers != 33
         assert "Language model: your answers name" in ui.text                   # said by the questions step
@@ -931,7 +942,7 @@ def test_kept_data_then_install_again_no_state_of_the_kept_file_hides_an_answer(
     ("state", "said"),
     [("ok", "Kept config\\runtime.json (ports, tuning, engines)."),
      ("bom", "Kept config\\runtime.json (ports, engines). It was saved as UTF-8 with a byte order mark, so "
-             "setup writes it again as plain UTF-8 with the same settings, and tuning runs again."),
+             "setup writes it again as plain UTF-8 with the same settings.\n"),
      ("newer", "Kept config\\runtime.json (ports, engines), except settings this version does not know "
                "(llama.flags.future_flag, future_setting): setup removes them, keeps the file as it was next "
                "to it, and tuning runs again.")],
@@ -944,9 +955,29 @@ def test_kept_data_and_the_same_answers_the_questions_step_says_what_is_kept_tru
     uninstalled_keeping_data(ctx)
     answers, dev = answers_of("unchanged", second=True)
     again, ui, code = run_setup(tmp_path, answers, dev)
-    assert code == EXIT_OK and said in ui.text
+    assert code == EXIT_OK and said in ui.text + "\n"
     plain_and_final(again, expected(again, settings, "unchanged"))
-    assert tuned_calls(again) == 1      # a new install tunes; the sentence of a rewritten file says so
+    assert tuned_calls(again) == 1      # a new install tunes
+
+
+def test_a_file_another_step_wrote_plain_is_not_tuned_again_and_nothing_said_it_would_be(
+    tmp_path: Path,
+) -> None:
+    """Whether tuning runs again for a file with a byte order mark depends on which step rewrites it: when
+    s02 (the voice fallback) or s03 does, the tuning step finds a settled file. So the questions step's line
+    promises the rewrite only, and no line of the run speaks of tuning again."""
+    from installer.stage2.steps.s01_questions import S01Questions
+
+    ctx, settings = first_install(tmp_path, "unchanged")
+    put_state(ctx, "bom")
+    answers, dev = answers_of("unchanged", second=True)
+    again, ui, code = run_setup(tmp_path, answers, dev, [S01Questions(), S02Fallback(), S06Tune()])
+    assert code == EXIT_OK and tuned_calls(again) == 0
+    assert row_of(ui, "s06_tune")[1:] == ("done", "already complete")
+    assert "written again as plain UTF-8 (no setting changed)" in ui.text
+    assert "uning runs again" not in ui.text
+    want = {**settings, "tts": {**settings["tts"], "engine": "reference"}}
+    assert load_runtime(again.paths).model_dump() == want
 
 
 def test_the_whole_setup_dev_install_with_a_byte_order_mark_made_real_by_install_cmd(
@@ -1014,6 +1045,7 @@ def test_switching_the_mode_of_an_install_does_not_stop_on_a_file_it_cannot_dele
         reset = e
     assert reset is True, repr(reset)
     assert not (ctx.paths.config / "wizard_flags.json").exists() and path.is_dir()
+    assert aside(ctx) == []                                     # a folder is never moved
     answers, dev = answers_of("dev_to_real", second=True)
     again, _ui, code = run_setup(tmp_path, answers, dev)
     assert code == EXIT_FAILED
@@ -1058,3 +1090,24 @@ def test_a_model_that_never_arrived_is_said_on_the_row_and_stays_owed(tmp_path: 
     done, _ui, code = run_setup(tmp_path, answers, dev)                   # the models step runs this time
     assert code == EXIT_OK
     plain_and_final(done, expected(done, settings, "tier"))
+
+
+def test_switching_the_mode_keeps_the_old_file_as_other_and_never_over_an_earlier_one(tmp_path: Path) -> None:
+    """A normal mode switch (the state file says the other mode): the old runtime.json was deleted. It is
+    kept as runtime.json.other now, and a second switch keeps its file beside the first."""
+    from installer.stage2.devmode import reset_for_mode_switch
+
+    ctx, _settings = first_install(tmp_path, "dev_to_real")
+    dev_bytes = ctx.paths.runtime_file.read_bytes()
+    assert reset_for_mode_switch(ctx.paths.home, False) is True
+    assert aside(ctx) == ["runtime.json.other"]         # the base deleted the file: nothing was kept
+    assert (ctx.paths.config / "runtime.json.other").read_bytes() == dev_bytes
+    assert not ctx.paths.runtime_file.exists()
+    answers, dev = answers_of("dev_to_real", second=True)
+    real, _ui, code = run_setup(tmp_path, answers, dev)
+    assert code == EXIT_OK and load_runtime(real.paths).dev_mode is False
+    real_bytes = real.paths.runtime_file.read_bytes()
+    assert reset_for_mode_switch(real.paths.home, True) is True
+    assert aside(real) == ["runtime.json.other", "runtime.json.other.1"]
+    assert (real.paths.config / "runtime.json.other").read_bytes() == dev_bytes
+    assert (real.paths.config / "runtime.json.other.1").read_bytes() == real_bytes

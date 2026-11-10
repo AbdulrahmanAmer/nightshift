@@ -16,6 +16,7 @@ recode      the file (byte order mark, UTF-16)         the same settings as plai
 newer       the file without the unknown names         those settings; the original as ``.newer``
 missing     none                                       the baseline of the answers
 damaged     none                                       the baseline; the original as ``.bad``
+other kind  none (s06, once the model is there)        the baseline; the original as ``.other``
 unreadable  not known: NS-E125, nothing is guessed     nothing is changed
 ==========  =========================================  ==================================================
 
@@ -301,11 +302,23 @@ def newer_sentence(kept_as: str, removed: tuple[str, ...], *, whole: bool = Fals
     )
 
 
-#: Said (console, row, report) when s06 builds the file again because it was made for another kind of install.
-WHOLE_SENTENCE = (
-    "config\\runtime.json is built again from your answers (it was made for another kind of install). "
-    "Settings that were only in the old file are not carried over."
-)
+#: Where a runtime.json made for another kind of install is kept: ``runtime.json.other``, ``.other.1`` ...
+OTHER_NAME = ".other"
+
+
+def whole_sentence(kept_as: str | None) -> str:
+    """What the owner is told (console, row, report) when the file is built again because it was made for
+    another kind of install. ``kept_as``: the name the old file is kept under (None: it was gone by then)."""
+    start = (
+        "config\\runtime.json is built again from your answers (it was made for another kind of install). "
+    )
+    if kept_as is None:
+        return start + "Settings that were only in the old file are not carried over."
+    return start + (
+        f"The file as it was is kept as {kept_as}. Settings that were only in it are not carried over: a "
+        "port or an engine you changed by hand or in Settings, and the tuned numbers. Set them again in "
+        "Settings, or copy them from that file."
+    )
 
 
 def _refuse(path: Path, what: str, e: OSError) -> NsError:
@@ -356,9 +369,10 @@ def _set_aside(path: Path, why: str, suffix: str = BAD_NAME) -> Path | None:
     )
 
 
-def _keep_copy(path: Path, suffix: str) -> Path | None:
+def _keep_copy(path: Path, suffix: str, why: str = "was written by a newer Nightshift") -> Path | None:
     """Copy ``path`` to ``<name>.newer`` (``.newer.1`` ... when taken), never over an existing file. A copy
-    rather than a rename: the file stays whole until the stripped one replaces it in one step."""
+    rather than a rename: the file stays whole until the new one replaces it in one step. The same for a
+    file of another kind of install (``.other``); ``why`` is what an NS-E125 says about the file."""
     first_start.guard(path)
     for n in range(MAX_ASIDE):
         target = _free_name(path, suffix, n)
@@ -371,13 +385,13 @@ def _keep_copy(path: Path, suffix: str) -> Path | None:
         except FileNotFoundError:   # gone since it was read: no original to keep
             return None
         except OSError as e:
-            what = f"was written by a newer Nightshift and could not be copied to {target.name}"
+            what = f"{why} and could not be copied to {target.name}"
             raise _refuse(path, what, e) from e
         return target
     raise NsError(
         "NS-E125",
-        f"{path} was written by a newer Nightshift and {MAX_ASIDE} copies of it are already kept next to it. "
-        "Move the runtime.json.newer files out of the config folder, then choose Retry. "
+        f"{path} {why} and {MAX_ASIDE} copies of it are already kept next to it. "
+        f"Move the runtime.json{suffix} files out of the config folder, then choose Retry. "
         "The file has not been changed.",
     )
 
@@ -414,7 +428,7 @@ class _Follow:
     @property
     def applied(self) -> bool:
         """True when the settings were changed."""
-        return bool(self.lines)
+        return self.whole or bool(self.lines)
 
 
 def _follow(ctx: StepContext, rt: Runtime) -> _Follow:
@@ -446,7 +460,7 @@ def _follow(ctx: StepContext, rt: Runtime) -> _Follow:
             )
         return _Follow(rt, waiting=waiting, settled=False)
     if whole:
-        return _Follow(fresh, lines=(WHOLE_SENTENCE,), whole=True)
+        return _Follow(fresh, whole=True)
     out = rt.model_copy(deep=True)
     lines: list[str] = []
     changed: list[str] = []
@@ -524,12 +538,14 @@ def ensure_baseline(ctx: StepContext, *, follow_answers: bool = False) -> Runtim
         ctx.log.info("runtime_recoded", f"{path} was {found.why}; written again as plain UTF-8")
         same = "" if follow.applied else " (no setting changed)"
         ctx.ui.say(f"runtime.json was {found.why}; it is written again as plain UTF-8{same}.")
-    if follow.whole and found.state != "newer":     # the sentence of a newer file says it already
-        ctx.log.warn("runtime_rebuilt", f"{path}: made for another kind of install; built from the answers")
-        ctx.note_step(WHOLE_SENTENCE)
+    if follow.whole and found.state != "newer":     # a newer file is kept as .newer and its sentence says it
+        kept = _keep_copy(path, OTHER_NAME, "was made for another kind of install")
+        sentence = whole_sentence(kept.name if kept is not None else None)
+        ctx.log.warn("runtime_rebuilt", f"{path}: made for another kind of install; original at {kept}")
+        ctx.ui.say(sentence, "yellow")
+        ctx.note_step(sentence)
     for line in follow.lines:
-        if not (follow.whole and found.state == "newer"):
-            ctx.ui.say(line)
+        ctx.ui.say(line)
     new_settings = found.state == "newer" or follow.applied     # a plain re-encoding changes none
     write_runtime(ctx, follow.runtime, clears=FRESH_CLEARS if new_settings else ())
     if follow.settled:

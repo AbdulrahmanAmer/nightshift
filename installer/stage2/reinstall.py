@@ -305,7 +305,8 @@ def _runtime(ctx: StepContext, keys: set[str], compared: bool) -> list[str]:
         ctx.clear_flags("tuned")
         lines.append(
             "config\\runtime.json was made for another kind of install (real or dev, GPU or not); "
-            "it is built again from your answers once the models for this kind are downloaded."
+            "it is built again from your answers once the models for this kind are downloaded, and the "
+            "file as it is now is kept next to it as runtime.json.other."
         )
     else:
         # With no kept answers to compare (the saved file was deleted to start over) the model is the
@@ -332,7 +333,7 @@ def _runtime(ctx: StepContext, keys: set[str], compared: bool) -> list[str]:
     if found.state == "recode":
         return [
             f"Kept config\\runtime.json (ports, engines). It was saved as {found.why}, so setup writes it "
-            "again as plain UTF-8 with the same settings, and tuning runs again."
+            "again as plain UTF-8 with the same settings."
         ]
     if found.state == "newer":
         return [
