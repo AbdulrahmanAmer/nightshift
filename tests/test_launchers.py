@@ -282,8 +282,8 @@ def test_code_launcher_brings_an_old_opencode_json_up_to_the_budget(tmp_path: Pa
     code = got["provider"]["local"]["models"]["code"]
     assert code.get("limit") == {"context": 32768, "output": 4096}
     assert code.get("name") == "Qwen3-1.7B-Q8_0 (local)"
-    off = ("todowrite", "todoread", "webfetch", "task", "patch")
-    assert got.get("tools") == {name: False for name in off}
+    off = ("todowrite", "todoread", "webfetch", "task", "skill")
+    assert got.get("tools") == {name: False for name in off}    # no switch that removes edit or write
     assert got.get("agent", {}).get("build", {}).get("prompt", "").startswith("You are Nightshift Code")
     assert got["theme"] == "x"                                          # the owner's key stays
     assert got["enabled_providers"] == ["local"] and got["provider"]["local"]["options"]["apiKey"] == "local"
@@ -301,13 +301,156 @@ def test_code_launcher_keeps_what_the_owner_set_and_follows_a_changed_context(tm
     cfg["tools"]["webfetch"] = True                                     # the owner turned a tool back on
     cfg["agent"]["build"]["prompt"] = "my own prompt"
     cfg["provider"]["local"]["models"]["code"]["limit"] = {"context": 16384, "output": 2048}
-    del cfg["tools"]["patch"]                                           # a missing tool switch is added
+    del cfg["tools"]["task"]                                            # a missing tool switch is added
     runtime = json.dumps({"llama": {"flags": {"ctx": 8192}}})           # `ns tune` changed the context
     _out, target = run_sync(tmp_path, runtime, json.dumps(cfg, indent=2) + "\n")
     got = json.loads(target.read_text(encoding="utf-8"))
-    assert got["tools"]["webfetch"] is True and got["tools"]["patch"] is False
+    assert got["tools"]["webfetch"] is True and got["tools"]["task"] is False
     assert got["agent"]["build"]["prompt"] == "my own prompt"
     assert got["provider"]["local"]["models"]["code"]["limit"] == {"context": 8192, "output": 2048}
+
+
+# The build prompt an earlier build of 0.1.15 (block B before its install proof) wrote, with "patch": false.
+OPENCODE_PROMPT_EARLIER = """You are Nightshift Code, a coding assistant that runs entirely on this computer with a small local model. Nothing you read or write leaves this machine.
+
+Your context is small, so work in small steps and keep every answer short.
+
+Where you work
+- Start in the Projects folder of the person using you. Each folder in it is a project. Do not leave it unless you are asked to.
+- Never touch the Nightshift program folders or its settings unless you are asked to.
+
+How you work
+- Read before you edit. Open a file, look at the part that matters, and only then change it. Do not guess what a file contains.
+- Look at a few lines at a time. Search with grep or glob instead of opening whole files or whole folders.
+- Change the least you can. Make one edit, then say what you changed and why in a sentence or two.
+- Do not rewrite a file that only needs a small change. Do not add features nobody asked for.
+- Run a command only when it helps answer the question. Say what you ran and what it showed.
+- If a request is unclear, ask one short question before you start.
+- If you do not know something, say so. Do not invent file names, functions or results.
+
+How you answer
+- Plain, short sentences. No long introductions and no summaries of what you were just told.
+- Show code in small blocks, only the lines that matter.
+- When a task is done, say so and name the files you changed.
+- If a task is too big for the context you have, say so and offer the first small step instead of starting something you cannot finish."""  # noqa: E501
+EARLIER_TOOLS = ("todowrite", "todoread", "webfetch", "task", "patch")
+SYNC_RUNTIME = json.dumps({"llama": {"host": "127.0.0.1", "port": 8080, "flags": {"ctx": 16384}}})
+
+
+def earlier_opencode_json() -> dict:
+    """What the earlier build's setup wrote: the current shape, its five switches, its longer prompt."""
+    cfg = current_opencode_json()
+    cfg["tools"] = {name: False for name in EARLIER_TOOLS}
+    cfg["agent"]["build"]["prompt"] = OPENCODE_PROMPT_EARLIER
+    return cfg
+
+
+def test_the_earlier_prompt_fixture_is_the_text_the_sync_knows() -> None:
+    import hashlib
+
+    from installer.stage2.steps import s07_configs
+
+    digest = hashlib.sha256(OPENCODE_PROMPT_EARLIER.encode("utf-8")).hexdigest()
+    assert digest in getattr(s07_configs, "SUPERSEDED_PROMPT_SHA256", ())
+
+
+@needs_powershell
+def test_code_launcher_brings_the_earlier_builds_file_to_what_setup_writes_now(tmp_path: Path) -> None:
+    """Block B proof, defect 1: "patch": false removed OpenCode's edit and write tools. A file the earlier
+    build wrote ends exactly as a fresh one (edit and write back, the skill tool off, the shorter prompt), an
+    owner's key stays, the owner is told once, and a second start changes nothing and says nothing."""
+    old = earlier_opencode_json()
+    old["theme"] = "x"
+    out, target = run_sync(tmp_path / "a", SYNC_RUNTIME, json.dumps(old, indent=2) + "\n")
+    got = json.loads(target.read_text(encoding="utf-8"))
+    assert "patch" not in got["tools"]
+    expected = current_opencode_json() | {"theme": "x"}
+    assert got == expected
+    assert 'Removed "patch": false' in out and "edit and write" in out and '"edit": false' in out
+    first = target.read_bytes()
+    out2, target2 = run_sync(tmp_path / "b", SYNC_RUNTIME, first.decode("utf-8"))
+    assert target2.read_bytes() == first and out2.strip() == ""
+
+
+@needs_powershell
+def test_code_launcher_takes_back_its_patch_switch_in_a_hand_edited_file_and_keeps_the_rest(
+    tmp_path: Path,
+) -> None:
+    """The earlier sync added "patch": false to a file the owner had edited: the switch goes, the owner's
+    prompt, the tool the owner turned back on and the owner's own keys stay."""
+    cfg = earlier_opencode_json()
+    cfg["tools"]["webfetch"] = True
+    cfg["tools"]["bash"] = False                                      # an owner's switch, not Nightshift's
+    cfg["agent"]["build"]["prompt"] = "my own prompt"
+    cfg["agent"]["build"]["temperature"] = 0.2
+    cfg["theme"] = "x"
+    out, target = run_sync(tmp_path, SYNC_RUNTIME, json.dumps(cfg, indent=2) + "\n")
+    got = json.loads(target.read_text(encoding="utf-8"))
+    assert got["tools"] == {"todowrite": False, "todoread": False, "webfetch": True, "task": False,
+                            "bash": False, "skill": False}
+    assert got["agent"]["build"] == {"prompt": "my own prompt", "temperature": 0.2} and got["theme"] == "x"
+    assert 'Removed "patch": false' in out and "cannot change a file:" not in out
+
+
+@needs_powershell
+@pytest.mark.parametrize(("edit", "named"), [
+    ({"tools": {"edit": False}}, "tools.edit"),
+    ({"tools": {"write": False}}, "tools.write"),
+    ({"permission": {"edit": "deny"}}, "permission.edit"),
+    ({"agent_tools": {"patch": False}}, "agent.build.tools.patch"),
+], ids=["edit", "write", "permission", "agent"])
+def test_code_launcher_leaves_an_owners_read_only_choice_and_says_so_at_every_start(
+    tmp_path: Path, edit: dict, named: str,
+) -> None:
+    """The owner's own way of saying "read only" is a key Nightshift never wrote. Then "patch": false is not
+    Nightshift's to remove (editing is off either way), nothing of the owner's is lost, and every start says
+    which key keeps Nightshift Code from changing a file and how to bring editing back."""
+    cfg = earlier_opencode_json()
+    cfg["agent"]["build"]["prompt"] = "my own prompt"
+    cfg["tools"].update(edit.get("tools", {}))
+    if "permission" in edit:
+        cfg["permission"] = edit["permission"]
+    if "agent_tools" in edit:
+        cfg["agent"]["build"]["tools"] = edit["agent_tools"]
+    out, target = run_sync(tmp_path / "a", SYNC_RUNTIME, json.dumps(cfg, indent=2) + "\n")
+    got = json.loads(target.read_text(encoding="utf-8"))
+    expected = json.loads(json.dumps(cfg))
+    expected["tools"]["skill"] = False                                  # the one missing switch is added
+    assert got == expected and got["tools"]["patch"] is False
+    assert "Removed" not in out
+    assert "cannot change a file:" in out and named in out and "start Nightshift Code again" in out
+    first = target.read_bytes()
+    out2, target2 = run_sync(tmp_path / "b", SYNC_RUNTIME, first.decode("utf-8"))
+    assert target2.read_bytes() == first and named in out2             # told again, file untouched
+
+
+@needs_powershell
+def test_code_launcher_brings_a_file_with_empty_blocks_up_instead_of_failing(tmp_path: Path) -> None:
+    """A hand-edited file with `"tools": {}` or an empty build agent, and a runtime.json that is `{}`: under
+    strict mode Windows PowerShell 5.1 fails on the names of an object that has none, and the whole sync was
+    skipped with a note at every start. The blocks are filled like missing ones and nothing is said."""
+    cfg = earlier_opencode_json()
+    cfg["tools"] = {}
+    cfg["agent"] = {"build": {}}
+    cfg["provider"]["local"]["models"]["code"] = {}
+    out, target = run_sync(tmp_path / "a", "{}", json.dumps(cfg, indent=2) + "\n")
+    assert out.strip() == "", out
+    assert json.loads(target.read_text(encoding="utf-8")) == current_opencode_json()
+    first = target.read_bytes()
+    out2, target2 = run_sync(tmp_path / "b", "{}", first.decode("utf-8"))
+    assert target2.read_bytes() == first and out2.strip() == ""
+
+
+@needs_powershell
+def test_code_launcher_leaves_a_patch_switch_turned_on_and_a_fresh_file_alone(tmp_path: Path) -> None:
+    cfg = current_opencode_json()
+    cfg["tools"]["patch"] = True
+    text = json.dumps(cfg, indent=2) + "\n"
+    out, target = run_sync(tmp_path / "a", SYNC_RUNTIME, text)
+    assert target.read_text(encoding="utf-8") == text and out.strip() == ""
+    fresh = json.dumps(current_opencode_json(), indent=2) + "\n"
+    out, target = run_sync(tmp_path / "b", SYNC_RUNTIME, fresh)
+    assert target.read_text(encoding="utf-8") == fresh and out.strip() == ""
 
 
 @needs_powershell

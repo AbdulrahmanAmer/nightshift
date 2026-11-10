@@ -34,31 +34,33 @@ CODE_OUTPUT_TOKENS = 4096
 # OpenCode's own name for its default agent. A constant, so that no line here reads like a setter of
 # the runtime's unused llama build field (tests/test_change_requests_status.py searches the source for one).
 OPENCODE_AGENT = "build"
-TOOLS_OFF = ("todowrite", "todoread", "webfetch", "task", "patch")
+# What the pinned OpenCode (1.19.5) needs to change a file: `read` (its edit tool refuses a file it has
+# not read), `edit` and `write`. In that version a tool switch is a permission: `edit`, `write`, `patch`
+# and `multiedit` are ONE permission, so any of them set to false removes both edit and write (measured
+# in the block B install proof: with "patch": false the request carried bash, glob, grep, read, skill
+# and no edit or write). None of these may ever be in TOOLS_OFF.
+EDITING_TOOLS = ("read", "edit", "write")
+EDITING_SWITCHES = ("read", "edit", "write", "patch", "multiedit")
+# Off: the to-do, web fetch and sub-agent tools, and `skill` (695 characters of tool text plus the
+# skills list in the system prompt for a tool Nightshift ships no skill for).
+TOOLS_OFF = ("todowrite", "todoread", "webfetch", "task", "skill")
+# A switch an earlier build of this release wrote and this one takes back (see EDITING_SWITCHES).
+TOOLS_OFF_WITHDRAWN = ("patch",)
+# SHA-256 of every earlier Nightshift build prompt (LF line ends, UTF-8). The launcher replaces a prompt that
+# is exactly one of these with OPENCODE_PROMPT; any other text is the owner's and stays.
+SUPERSEDED_PROMPT_SHA256 = ("8090d0ea5ad3c9800117cf679e06ce23f841b4e744095e0a4d963e12af31f287",)
 LOCAL_MODEL_NAME = "Local model"    # when runtime.json names no model file
 
-OPENCODE_PROMPT = """You are Nightshift Code, a coding assistant that runs entirely on this computer with a small local model. Nothing you read or write leaves this machine.
+OPENCODE_PROMPT = """You are Nightshift Code, a coding assistant that runs on this computer with a small local model. Nothing you read or write leaves this machine. Your context is small: work in small steps and keep answers short.
 
-Your context is small, so work in small steps and keep every answer short.
-
-Where you work
-- Start in the Projects folder of the person using you. Each folder in it is a project. Do not leave it unless you are asked to.
-- Never touch the Nightshift program folders or its settings unless you are asked to.
-
-How you work
-- Read before you edit. Open a file, look at the part that matters, and only then change it. Do not guess what a file contains.
-- Look at a few lines at a time. Search with grep or glob instead of opening whole files or whole folders.
-- Change the least you can. Make one edit, then say what you changed and why in a sentence or two.
-- Do not rewrite a file that only needs a small change. Do not add features nobody asked for.
-- Run a command only when it helps answer the question. Say what you ran and what it showed.
-- If a request is unclear, ask one short question before you start.
-- If you do not know something, say so. Do not invent file names, functions or results.
-
-How you answer
-- Plain, short sentences. No long introductions and no summaries of what you were just told.
-- Show code in small blocks, only the lines that matter.
-- When a task is done, say so and name the files you changed.
-- If a task is too big for the context you have, say so and offer the first small step instead of starting something you cannot finish."""  # noqa: E501 (the prompt is plain text; its lines are not wrapped)
+- Work in the Projects folder you start in; each folder in it is a project. Leave it, or touch the Nightshift program folders and settings, only when asked.
+- Read before you edit: open the file, look at the part that matters, then change it. Never guess what a file contains.
+- Search with grep or glob and read a few lines at a time instead of whole files.
+- Change the least you can: one edit, then say in a sentence or two what you changed and why. Add nothing that was not asked for.
+- Run a command only when it helps, and say what it showed.
+- If the request is unclear, ask one short question first. If you do not know, say so; never invent file names, functions or results.
+- Answer in plain short sentences and show only the lines of code that matter.
+- When done, name the files you changed. If a task is too big for your context, say so and offer the first small step."""  # noqa: E501 (the prompt is plain text; its lines are not wrapped)
 
 OPENCODE_CONFIG: dict[str, Any] = {
     "$schema": "https://opencode.ai/config.json",

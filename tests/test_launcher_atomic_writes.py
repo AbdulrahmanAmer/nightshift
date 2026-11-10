@@ -558,6 +558,36 @@ def test_the_opencode_port_sync_swaps_the_file_and_keeps_it_whole_when_it_cannot
 
 
 @needs_powershell
+def test_a_patch_switch_that_could_not_be_removed_is_said_so_and_never_called_removed(tmp_path: Path) -> None:
+    """Block B proof, defect 1: the sync takes "patch": false back (it removes OpenCode's edit and write
+    tools). The file can be read but not replaced (another program has it open): the file stays whole, nothing
+    says "Removed", and the owner is told that Nightshift Code still cannot change a file and what to do."""
+    config = tmp_path / "config"
+    config.mkdir()
+    (config / "runtime.json").write_text("{}", encoding="utf-8")
+    target = config / "opencode.json"
+    cfg = {**OPENCODE, "tools": {"todowrite": False, "todoread": False, "webfetch": False, "task": False,
+                                 "patch": False}}
+    target.write_text(json.dumps(cfg), encoding="utf-8")
+    before = target.read_bytes()
+    # opened for reading, sharing reads only: the sync can read it, the swap is refused
+    handle = _k32.CreateFileW(str(target), 0x80000000, 0x1, None, 3, 0x80, None)
+    assert handle not in (None, ctypes.c_void_p(-1).value), ctypes.get_last_error()
+    env = {"NIGHTSHIFT_HOME": str(tmp_path)}
+    try:
+        out = run_ps(tmp_path, f". '{COMMON}'\nSync-NsOpenCodePort\n", env)
+    finally:
+        _k32.CloseHandle(handle)
+    assert target.read_bytes() == before and leftovers(config, {"runtime.json", "opencode.json"}) == set()
+    assert "Could not update the port" in out and "Removed" not in out
+    assert '"patch": false is still in that file' in out and "cannot change a file" in out
+    assert "start Nightshift Code again" in out
+    # the file is free again: the next start removes the switch and says so
+    out = run_ps(tmp_path, f". '{COMMON}'\nSync-NsOpenCodePort\n", env)
+    assert 'Removed "patch": false' in out and "patch" not in json.loads(target.read_bytes())["tools"]
+
+
+@needs_powershell
 def test_stop_all_still_closes_a_host_whose_run_file_is_being_swapped(tmp_path: Path) -> None:
     """The `nothing to stop` family: a refused read of apphost-*.json was taken for a stale file, so the file
     was deleted and the window host kept running."""
