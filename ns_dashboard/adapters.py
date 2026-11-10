@@ -1047,11 +1047,18 @@ class RealScheduleAdapter:
     def _set(self, on: bool | None, run_time: str | None) -> dict[str, Any]:
         from ns_common.errors import describe
         from ns_supervisor.control import app_path
-        from ns_supervisor.schedule import ScheduleError, set_automatic
+        from ns_supervisor.schedule import ScheduleError, ScheduleFileError, set_automatic
         from ns_supervisor.schedule_cfg import is_on
 
         try:
             out = set_automatic(self.paths, app_path(self.paths), on=on, run_time=run_time)
+        except ScheduleFileError as e:
+            # Nightshift's own lock or record, not Windows: the elevated-PowerShell hint would be untrue
+            shown = "on" if is_on(self.paths) else "off"
+            return {
+                "applied": False, "code": "NS-E204",
+                "note": f"Not saved (NS-E204): {e}. This page shows Automatic runs {shown}.",
+            }
         except ScheduleError as e:
             still = "on" if is_on(self.paths) else "off"
             hint = describe("NS-E204").hint

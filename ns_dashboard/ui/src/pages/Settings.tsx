@@ -26,6 +26,9 @@ export default function Settings() {
   const [upd, setUpd] = useState<{ current?: string; latest?: string; up_to_date?: boolean; notes?: string; state?: "up_to_date" | "available" | "unavailable" | "error" | "unknown"; message?: string } | null>(null);
   const [checking, setChecking] = useState(false);
   const logs = useLoad<LogLine[]>(() => api.get(`/logs/tail?n=200&level=${encodeURIComponent(level)}&component=${encodeURIComponent(component)}`), [level, component], []);
+  // The switch follows Windows as the top bar does: the look at the task runs in the background, and what it
+  // found arrives with the next status (poll or event). Loaded once, this page would keep the older state.
+  useEffect(() => { if (!demo && s && status && typeof status.schedule_registered === "boolean" && (status.schedule_registered !== s.schedule_registered || status.schedule_mode !== s.schedule_mode || (status.schedule_time || s.schedule_time) !== s.schedule_time)) st.setData({ ...s, schedule_registered: status.schedule_registered, schedule_mode: status.schedule_mode, schedule_time: status.schedule_time || s.schedule_time, next_run: status.next_run ?? null }); }, [status?.schedule_registered, status?.schedule_mode, status?.schedule_time]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { if (s) { setTime(s.schedule_time || "03:00"); setFlags(Object.fromEntries(Object.entries(s.flags || {}).map(([k, v]) => [k, String(v)]))); } }, [s]);
   useEffect(() => { const t = setInterval(() => document.visibilityState === "visible" && logs.reload(), 5000); return () => clearInterval(t); }, [level, component]); // eslint-disable-line react-hooks/exhaustive-deps
 

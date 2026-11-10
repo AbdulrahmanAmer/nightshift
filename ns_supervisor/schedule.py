@@ -52,6 +52,10 @@ class ScheduleBusy(ScheduleError):
     """Another change to the task holds `run/schedule.lock`; nothing was changed."""
 
 
+class ScheduleFileError(ScheduleError):
+    """A file of Nightshift's own (the lock, the record, the kept time) could not be opened or written."""
+
+
 class DevInstall(ScheduleError):
     """A dev install's task never runs (docs/DEV_MODE.md): Automatic runs cannot be switched on."""
 
@@ -291,8 +295,35 @@ def lock_file(paths: Paths) -> Path:
 
 
 @contextlib.contextmanager
+def _own_files() -> Iterator[None]:
+    """Turn an `OSError` from Nightshift's own files (the record, the kept time, a note) into
+    `ScheduleFileError`, so every caller that handles a refused change handles this too: the switch answers
+    NS-E204, an update notes it and stands, the look changes nothing. The words do not claim more than is
+    known: the write can fail after Windows already changed the task."""
+    try:
+        yield
+    except OSError as e:
+        raise ScheduleFileError(
+            f"a file Nightshift keeps about the nightly task could not be read or written ({e}); Windows may "
+            "already have the change, and the pages follow Windows once the Nightshift folders config and "
+            "run can be written again (an antivirus or backup program, a full disk, or their permissions)"
+        ) from e
+
+
+@contextlib.contextmanager
 def _locked(paths: Paths, wait_s: float | None = None) -> Iterator[None]:
-    """Hold the schedule lock; `ScheduleBusy` when it is still taken after `wait_s` (default LOCK_WAIT_S)."""
+    """Hold the schedule lock for one read-change-record sequence. Every way the lock can fail is a
+    `ScheduleError` raised BEFORE anything is read or changed:
+
+    - held by another change after `wait_s` (default LOCK_WAIT_S): `ScheduleBusy`;
+    - the lock file cannot be created or opened (`run` is read-only or is not a folder, an antivirus or
+      backup program holds the file, a lost permission): `ScheduleFileError`. Going ahead unlocked is not an
+      option here: two interleaved Register and Unregister calls are what the lock exists to prevent.
+
+    While it is held the file cannot vanish (the open handle keeps it); an error on release is swallowed,
+    since the change is done and Windows drops the lock with the handle. An `OSError` from the body is
+    `ScheduleFileError` too (`_own_files`).
+    """
     lock = FileLock(lock_file(paths))
     deadline = time.monotonic() + (LOCK_WAIT_S if wait_s is None else wait_s)
     while True:
@@ -306,10 +337,18 @@ def _locked(paths: Paths, wait_s: float | None = None) -> Iterator[None]:
                     "try again in a few seconds"
                 ) from None
             time.sleep(0.05)
+        except OSError as e:
+            raise ScheduleFileError(
+                f"the lock file {lock_file(paths)} could not be opened ({e}), so nothing was changed; make "
+                f"sure the folder {lock_file(paths).parent} can be written (an antivirus or backup program, "
+                "or its permissions), then try again"
+            ) from e
     try:
-        yield
+        with _own_files():
+            yield
     finally:
-        lock.release()
+        with contextlib.suppress(OSError):
+            lock.release()
 
 
 def _note_switched_off_outside(paths: Paths, log: NsLogger) -> None:
@@ -481,8 +520,9 @@ def set_automatic(
     goes to `dashboard.json`; a switch-off removes the task (record first, see `_forget`). On: the task is
     registered at `run_time` (else the task's, the kept one, 03:00); same state and time runs no script,
     unless the task runs only while signed in and `on` is asked again (then Windows is asked again).
-    `ScheduleError` with nothing changed when Windows refuses, the task cannot be read or another change is
-    still running (`ScheduleBusy`); `DevInstall` for the switch in a dev install.
+    `ScheduleError` with nothing changed when Windows refuses, the task cannot be read, another change is
+    still running (`ScheduleBusy`) or the lock file cannot be opened; `ScheduleFileError` also when the record
+    cannot be written (Windows may then have the change); `DevInstall` for the switch in a dev install.
     """
     if run_time and not valid_time(run_time):
         raise ScheduleError(f"time must be HH:MM (24 h), got {run_time!r}")
@@ -491,7 +531,8 @@ def set_automatic(
         if on:
             raise DevInstall("this is a dev install: its nightly task is registered disabled and never runs")
         if run_time:
-            remember_run_time(paths, run_time)
+            with _own_files():
+                remember_run_time(paths, run_time)
         return Outcome(False, MODE_DISABLED, run_time or remembered_run_time(paths), False)
     with _locked(paths):
         before = read_task()
@@ -530,8 +571,9 @@ def reregister(paths: Paths, app_path: Path, *, log: NsLogger | None = None) -> 
 
     No record (off) and a dev install's `disabled` record: Windows is not even asked. A record that says on:
     the task is read; enabled, it is registered again at its own time; disabled or deleted in Task Scheduler,
-    it is left exactly as it is and the record goes (off, NS-W207). `ScheduleError` when it cannot be read
-    or Windows refuses the registration: the task is as it was.
+    it is left exactly as it is and the record goes (off, NS-W207). `ScheduleError` when it cannot be read,
+    Windows refuses the registration or the lock file cannot be opened: the task is as it was, and the update
+    that called this stands (`cli._reregister` turns it into a note).
     """
     log = _logger(paths, log)
     if is_dev(paths) or read_schedule_mode(paths) in ("none", MODE_DISABLED):

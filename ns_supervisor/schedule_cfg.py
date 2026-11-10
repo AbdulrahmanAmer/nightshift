@@ -13,6 +13,7 @@ from pathlib import Path
 
 from ns_common import first_start
 from ns_common.atomic import read_text_retry, write_text_atomic
+from ns_common.logging import NsLogger
 from ns_common.paths import Paths
 from ns_common.singleton import AlreadyRunning, FileLock
 
@@ -109,7 +110,13 @@ def preferences_lock(paths: Paths) -> Iterator[None]:
     (`ns_dashboard.state.save_dashboard_settings`, any key) and `remember_run_time` (the kept time, also
     from the background look at Windows and from `ns schedule`, another process). Both read and write inside
     this lock, so neither writes back a stale copy of the other's key. Windows drops the lock with its
-    holder; after PREFERENCES_WAIT_S the write goes ahead unlocked rather than lose the owner's change.
+    holder.
+
+    The lock is a courtesy between two rare writers, never a reason to lose the owner's change: when it is
+    still held after PREFERENCES_WAIT_S, or its file cannot be created or opened at all (`run` read-only or
+    not a folder, an antivirus or backup program holding it, a lost permission), the write goes ahead
+    unlocked. Only the guard against that one interleaving is missing then, so the owner is not told; the
+    log gets one WARN per process (`preferences_lock_unavailable`). An error on release is swallowed.
     """
     lock = FileLock(paths.home / "run" / "dashboard-settings.lock")
     deadline = time.monotonic() + PREFERENCES_WAIT_S
@@ -121,10 +128,29 @@ def preferences_lock(paths: Paths) -> Iterator[None]:
             if time.monotonic() >= deadline:
                 break
             time.sleep(0.02)
+        except OSError as e:
+            _warn_lock_once(paths, e)
+            break
     try:
         yield
     finally:
-        lock.release()
+        with contextlib.suppress(OSError):
+            lock.release()
+
+
+_lock_warned: set[str] = set()
+
+
+def _warn_lock_once(paths: Paths, why: OSError) -> None:
+    key = str(paths.home)
+    if key in _lock_warned:
+        return
+    _lock_warned.add(key)
+    with contextlib.suppress(OSError):
+        NsLogger("schedule", paths.logs).warn(
+            "preferences_lock_unavailable",
+            f"run/dashboard-settings.lock could not be opened ({why}); dashboard.json is written without it",
+        )
 
 
 def remembered_run_time(paths: Paths) -> str | None:

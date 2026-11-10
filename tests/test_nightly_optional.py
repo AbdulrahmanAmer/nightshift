@@ -13,6 +13,7 @@ import hashlib
 import io
 import json
 import re
+import shutil
 import subprocess
 import threading
 import zipfile
@@ -28,16 +29,18 @@ from ns_common.config import save_runtime
 from ns_common.errors import describe
 from ns_common.models import Runtime
 from ns_common.paths import Paths
+from ns_common.singleton import FileLock
 from ns_dashboard import state as dash_state
 from ns_dashboard.adapters import RealScheduleAdapter
 from ns_dashboard.assistant import prompt
 from ns_dashboard.assistant.registry import ToolContext
 from ns_dashboard.fakes import seed_channel
 from ns_dashboard.handlers import Dashboard
-from ns_supervisor import backup, cli, notify, pwsh, schedule, verify
+from ns_supervisor import backup, cli, notify, pwsh, schedule, update, verify
 from ns_supervisor.schedule_cfg import read_run_time, read_schedule_mode, schedule_file, write_run_time
 from tests.test_dashboard_api import make_env
 from tests.test_ns_schedule import _parse_errors, needs_powershell
+from tests.test_ns_update import make_app, make_zip
 
 UI = Path(__file__).resolve().parents[1] / "ns_dashboard" / "ui" / "src"
 
@@ -677,3 +680,120 @@ def test_the_first_page_of_a_dashboard_does_not_wait_for_the_look_at_windows(
             t.join(10)
     after = client.get("/api/status").json()  # the next poll shows what the look found
     assert after["schedule_registered"] is False and after["next_run"] is None and len(w207_notes(paths)) == 1
+
+
+# ------------------------------------------------------------------------- review round 2 (6795816)
+# Every lock and file the item added, when it cannot be created, opened or written. A folder sitting where the
+# file should be is a file that really cannot be opened (PermissionError on Windows), by any process.
+def unopenable(path: Path) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.unlink(missing_ok=True)  # the lock file of an earlier change
+    path.mkdir()
+    return path
+
+
+@pytest.mark.parametrize("how", ["the lock file cannot be opened", "run is not a folder"])
+def test_the_switch_answers_ns_e204_when_the_schedule_lock_cannot_be_opened(
+    tmp_home: Path, windows: FakeWindows, how: str
+):
+    client, _state, paths = dashboard(tmp_home)
+    put(client, automatic_runs=True, schedule_time="04:30")
+    run = paths.home / "run"
+    if how == "run is not a folder":  # also what a read-only or lost `run` folder gives: nothing can be made in it
+        shutil.rmtree(run)
+        run.write_text("not a folder", encoding="utf-8")
+    else:
+        unopenable(run / "schedule.lock")
+
+    off = put(client, automatic_runs=False)
+    moved = put(client, schedule_time="05:00")
+
+    for body in (off, moved):
+        said = result(body)
+        assert said.get("applied") is False and said.get("code") == "NS-E204"
+        assert "schedule.lock could not be opened" in said["note"] and "nothing was changed" in said["note"]
+        assert "shows Automatic runs on" in said["note"] and "elevated" not in said["note"]  # true words only
+        assert body["schedule_registered"] is True and body["schedule_time"] == "04:30"
+    assert windows.changes() == ["register"] and windows.has == ("Ready", "04:30")  # Windows was never asked
+    # the look at Windows cannot take the lock either: it changes nothing and no page fails
+    windows.task = None
+    assert look_again(client)["schedule_registered"] is True and read_run_time(paths) == "04:30"
+    windows.task = {"state": "Ready", "at": "04:30", "logon": "S4U"}
+    # the way out the message names: the folder can be written again, then the same click works
+    if run.is_file():
+        run.unlink()
+    else:
+        (run / "schedule.lock").rmdir()
+    assert put(client, automatic_runs=False)["schedule_registered"] is False and windows.has is None
+
+
+def test_an_update_stands_when_the_schedule_lock_cannot_be_opened(tmp_path: Path, windows: FakeWindows):
+    paths = Paths(tmp_path / "ns")
+    write_run_time(paths, "03:00", "registered")
+    windows.task = {"state": "Ready", "at": "03:00", "logon": "S4U"}
+    unopenable(paths.home / "run" / "schedule.lock")
+    env = update.UpdateEnv(
+        stop=lambda: None, sync=lambda a: None, verify=lambda a: True,
+        reregister=lambda a: cli._reregister(paths, a), settle=lambda: None,
+    )
+    res = update.update_app(make_zip(tmp_path), make_app(tmp_path), env, paths=paths)  # no rollback
+    assert (res.old_version, res.new_version) == ("0.1.0", "0.2.0")
+    said = [n for n in res.notes if n.startswith("scheduled task NOT re-registered")]
+    assert len(said) == 1 and "schedule.lock could not be opened" in said[0] and "nothing was changed" in said[0]
+    # the owner's choice is as it was: the task was not even looked at
+    assert windows.calls == [] and windows.has == ("Ready", "03:00") and read_run_time(paths) == "03:00"
+
+
+def test_a_settings_save_goes_through_when_its_lock_file_cannot_be_opened(tmp_home: Path, windows: FakeWindows):
+    client, _state, paths = dashboard(tmp_home)
+    unopenable(paths.home / "run" / "dashboard-settings.lock")
+    body = put(client, notifications=False, schedule_time="05:15")
+    assert body["notifications"] is False and body["schedule_time"] == "05:15" and saved_time(paths) == "05:15"
+    remember_run_time(paths, "06:00")  # the other writer, the same way
+    kept = json.loads((paths.config / "dashboard.json").read_text(encoding="utf-8"))
+    assert kept == {"run_time": "06:00", "notifications": False}
+    warned = [
+        ln for f in paths.logs.glob("schedule*.jsonl") for ln in f.read_text(encoding="utf-8").splitlines()
+        if "preferences_lock_unavailable" in ln
+    ]
+    assert len(warned) == 1  # said once in the log, not once per save
+
+
+def test_a_record_that_cannot_be_written_is_ns_e204_and_never_reads_on(tmp_home: Path, windows: FakeWindows):
+    client, _state, paths = dashboard(tmp_home)
+    unopenable(schedule_file(paths))  # config/schedule.json cannot be replaced
+    body = put(client, automatic_runs=True, schedule_time="04:30")
+    said = result(body)
+    assert said.get("applied") is False and said.get("code") == "NS-E204"
+    assert "could not be read or written" in said["note"] and "Windows may already have the change" in said["note"]
+    assert "shows Automatic runs off" in said["note"] and "elevated" not in said["note"]
+    assert windows.has == ("Ready", "04:30")  # Windows did take the task; the page does not say on without a record
+    assert body["schedule_registered"] is False and body["next_run"] is None
+    assert look_again(client)["schedule_registered"] is False  # still unwritable: the look changes nothing, no error
+    schedule_file(paths).rmdir()
+    status = look_again(client)  # writable again: the page follows Windows
+    assert status["schedule_registered"] is True and status["next_run"][11:16] == "04:30"
+
+
+def test_a_lock_that_fails_on_release_does_not_undo_a_finished_change(
+    tmp_home: Path, windows: FakeWindows, monkeypatch: pytest.MonkeyPatch
+):
+    client, _state, paths = dashboard(tmp_home)
+    real = FileLock.release
+
+    def release(self: FileLock) -> None:
+        real(self)
+        raise OSError(5, "the lock file went away")
+
+    monkeypatch.setattr(FileLock, "release", release)
+    body = put(client, automatic_runs=True, schedule_time="04:30")
+    assert result(body)["applied"] is True and body["schedule_registered"] is True
+    assert put(client, notifications=False)["notifications"] is False and read_run_time(paths) == "04:30"
+
+
+def test_the_settings_switch_takes_the_fresh_state_when_the_status_brings_it():
+    """The look at Windows answers after the page loaded; Settings must not keep the older switch."""
+    page = (UI / "pages" / "Settings.tsx").read_text(encoding="utf-8")
+    assert "status.schedule_registered !== s.schedule_registered" in page
+    assert "[status?.schedule_registered, status?.schedule_mode, status?.schedule_time]" in page
+    assert "schedule_registered: status.schedule_registered" in page
