@@ -529,7 +529,7 @@ def fake_uv(folder: Path, refuse_mirror: bool = False, fail: bool = False) -> Pa
 
 @needs_ps
 def test_stage1_takes_uv_and_python_from_the_files_folder(tmp_path: Path):
-    app, files = tmp_path / "bundle", tmp_path / "bundle" / "files"
+    app, files = tmp_path / "my bundle", tmp_path / "my bundle" / "files"     # a space: file:///...my%20bundle...
     (files / "python" / "20261026").mkdir(parents=True)
     uv_zip, vc = zip_bytes({"uv.exe": b"MZ uv stand-in", "uvx.exe": b"MZ uvx"}), b"MZ vc_redist stand-in"
     (files / "uv-x86_64-pc-windows-msvc.zip").write_bytes(uv_zip)
@@ -560,6 +560,7 @@ if (Get-Command Install-ManagedPython -ErrorAction SilentlyContinue) {{
     # Python: the mirror is the files\python folder for the one `uv python install` call and gone after it
     calls = (uv.parent / "uv-calls.txt").read_text(encoding="ascii").splitlines()
     assert calls == [f"MIRROR=[{(files / 'python').as_uri()}] ARGS=[python install 3.12]"]
+    assert "my%20bundle/files/python]" in calls[0]
     assert "PY=[from the files folder] AFTER=[]" in out
     # the Visual C++ runtime: the installer that was started is the pinned file from the folder
     assert f"ELEVATED:{sha(vc)}" in out and "VC=[True]" in out
@@ -643,6 +644,148 @@ def test_a_dry_run_of_stage1_names_the_files_folder_and_hands_it_to_every_step(t
                  "Install-ManagedPython -Uv $uv -Version $pyVersion -FilesDir $filesDir",
                  "Install-VcRuntime -Manifest $Manifest -FilesDir $filesDir"):
         assert call in main, call
+
+
+# ------------------------------------------------------------------- the preflight network row
+GITHUB_FILES = ("uv", "yt_dlp", "yunet", "llama_cuda13", "cudart13", "ffmpeg", "qwentts", "opencode")
+COVERS = "github.com does not answer; setup takes the pinned programs from files\\ (SHA256 checked)"
+
+
+def github_bundle(tmp_path: Path) -> tuple[Path, Path, dict[str, str]]:
+    """A bundle (in a folder with a space) whose files folder holds a stand-in, with its SHA256 pinned in the
+    bundle's manifest.json, for every file the fake PC (RTX 50-series, CUDA 13, no FFmpeg) takes from
+    GitHub."""
+    app = tmp_path / "my bundle"
+    files = app / "files"
+    (files / "python" / "20261026").mkdir(parents=True)
+    manifest = json.loads((ROOT / "manifest.json").read_text(encoding="utf-8"))
+    names: dict[str, str] = {}
+    pins = [(k, manifest["bins"][k]) for k in GITHUB_FILES] + [("spacy", manifest["python"]["spacy_wheel"])]
+    for key, pin in pins:
+        assert urlsplit(pin["url"]).hostname == "github.com", key
+        blob = f"stand-in for {key}".encode()
+        pin["sha256"] = sha(blob)
+        names[key] = leaf(pin["url"])
+        (files / names[key]).write_bytes(blob)
+    archive = "cpython-3.12.16+20261026-x86_64-pc-windows-msvc-install_only_stripped.tar.gz"
+    (files / "python" / "20261026" / archive).write_bytes(b"stand-in")
+    (app / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    shutil.copytree(ROOT / "contracts", app / "contracts")           # errors.json: the real hints
+    return app, files, names
+
+
+def stage1_probe(
+    tmp_path: Path, app: Path, unreachable: list[str], *, dry: bool = False, answers: Path | None = None,
+) -> tuple[dict, str]:
+    """stage1.ps1 on a fake PC whose listed sites give no answer. Default: -ProbeOnly, the hand-over JSON the
+    setup window reads (also on Check again); with ``dry`` the console of the headless run."""
+    probe = tmp_path / "probe.json"
+    probe.write_text(json.dumps({
+        "smi_text": "CUDA Version: 13.0", "unreachable": unreachable, "tools": {"ffmpeg": False},
+        "drives": [{"letter": "C", "free_gb": 500, "type": "SSD"}]}), encoding="utf-8")
+    out = tmp_path / "handover.json"
+    mode = ["-DryRun"] if dry else ["-ProbeOnly", "-Out", str(out)]
+    if answers is not None:
+        mode += ["-Answers", str(answers)]
+    env = {k: v for k, v in os.environ.items() if k != "NIGHTSHIFT_HOME"}
+    env["NS_NONINTERACTIVE"] = "1"
+    argv = [str(PS), "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(STAGE1), "-AppPath", str(app),
+            "-FakeProbe", str(probe), *mode]
+    proc = subprocess.run(argv, capture_output=True, text=True, timeout=300, env=env)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    if dry:
+        line = next(x for x in proc.stdout.splitlines() if x.startswith("[dry-run] preflight-json: "))
+        return json.loads(line.split("preflight-json: ", 1)[1]), proc.stdout
+    return json.loads(out.read_text(encoding="utf-8-sig")), proc.stdout
+
+
+def network_rows(handover: dict) -> tuple[dict, dict]:
+    """The network row as stage 1 wrote it and as the setup window shows it."""
+    from installer.stage2.web import preflight
+
+    raw = next(r for r in handover["checks"] if r["id"] == "network")
+    shown = next(r for r in preflight.check_rows(handover) if r["id"] == "network")
+    return raw, shown
+
+
+@needs_ps
+def test_github_unreachable_with_a_complete_files_folder_does_not_stop_setup(tmp_path: Path):
+    """The day the item exists for: github.com gives no HTTP answer and the folder holds everything."""
+    app, _files, _names = github_bundle(tmp_path)
+    # headless stage 1: a warning that names the folder, and nothing blocks
+    handover, console = stage1_probe(tmp_path, app, ["github.com", "api.github.com"], dry=True)
+    raw, shown = network_rows(handover)
+    assert raw["status"] == "warn", raw
+    assert raw["value"] == COVERS + "; also unreachable: api.github.com" and raw["files"] == "covers"
+    assert "would block" not in console and COVERS in console
+    assert "[dry-run] take the pinned programs from" in console
+    # the window (the same JSON, also after Check again): the Install button is not held
+    handover, _ = stage1_probe(tmp_path, app, ["github.com", "huggingface.co"])
+    raw, shown = network_rows(handover)
+    assert raw["status"] == "warn" and shown["blocking"] is False
+    assert shown["title"] == "GitHub cannot be reached" and shown["value"].startswith(COVERS)
+    assert "files folder next to INSTALL.cmd" in shown["whatToDo"]
+    assert "A folder on this PC" in shown["whatToDo"]
+    assert shown["fix"]["kind"] == "recheck" and "NS-" not in shown["whatToDo"]
+
+
+@needs_ps
+def test_github_unreachable_with_an_incomplete_files_folder_stays_red_and_names_the_files(tmp_path: Path):
+    app, files, names = github_bundle(tmp_path)
+    (files / names["llama_cuda13"]).unlink()                                   # missing
+    (files / names["yt_dlp"]).write_bytes(b"other bytes")                      # wrong bytes: the same
+    shutil.rmtree(files / "python")
+    handover, console = stage1_probe(tmp_path, app, ["github.com"], dry=True)
+    raw, shown = network_rows(handover)
+    assert raw["status"] == "fail" and raw["files"] == "lacks" and "would block" in console
+    assert raw["value"].startswith("unreachable: github.com; the files folder lacks: ")
+    lacking = raw["value"].split("lacks: ", 1)[1]
+    assert names["llama_cuda13"] in lacking and names["yt_dlp"] in lacking and "cpython-3.12" in lacking
+    assert names["uv"] not in lacking and names["cudart13"] not in lacking     # only what is really missing
+    assert "tools\\make-files-kit.ps1" in raw["hint"] and "run INSTALL.cmd again" in raw["hint"]
+    assert shown["blocking"] is True and "tools\\make-files-kit.ps1" in shown["whatToDo"]
+    assert "press Check again" in shown["whatToDo"]
+    # OpenCode is not needed when the answers say so, and FFmpeg is not when the PC has it: not asked for
+    (files / names["opencode"]).unlink()
+    (files / names["llama_cuda13"]).write_bytes(b"stand-in for llama_cuda13")
+    (files / names["yt_dlp"]).write_bytes(b"stand-in for yt_dlp")
+    (files / "python" / "20261026").mkdir(parents=True)
+    (files / "python" / "20261026" / "cpython-3.12.16+20261026-x.tar.gz").write_bytes(b"x")
+    answers = tmp_path / "answers.json"
+    answers.write_text(json.dumps({"install_code": False}), encoding="utf-8")
+    handover, _ = stage1_probe(tmp_path, app, ["github.com"], answers=answers)
+    assert network_rows(handover)[0]["status"] == "warn"
+
+
+@needs_ps
+@pytest.mark.parametrize(
+    ("unreachable", "folder", "status", "value", "files", "kit"),
+    [
+        # no folder: the row of the previous release; GitHub alone also names the kit
+        (["github.com"], False, "fail", "unreachable: github.com", "none", True),
+        (["github.com", "pypi.org"], False, "fail", "unreachable: github.com, pypi.org", None, False),
+        # no internet at all, a complete folder: red, and it says up front why setup cannot start
+        (["huggingface.co", "github.com", "pypi.org", "files.pythonhosted.org"], True, "fail",
+         "unreachable: huggingface.co, github.com, pypi.org, files.pythonhosted.org; the files folder covers "
+         "GitHub, but the Python packages need pypi.org and files.pythonhosted.org, so setup cannot start",
+         "pypi", False),
+        # the other sites are untouched by the folder: PyPI blocks, Hugging Face and the rest only warn
+        (["pypi.org"], True, "fail", "unreachable: pypi.org", None, False),
+        (["huggingface.co", "api.nuget.org"], True, "warn", "unreachable: huggingface.co, api.nuget.org",
+         None, False),
+    ],
+)
+def test_the_network_row_for_every_other_state(tmp_path, unreachable, folder, status, value, files, kit):
+    app, files_dir, _names = github_bundle(tmp_path)
+    if not folder:
+        shutil.rmtree(files_dir)
+    handover, _ = stage1_probe(tmp_path, app, unreachable)
+    raw, shown = network_rows(handover)
+    assert (raw["status"], raw["value"], raw.get("files")) == (status, value, files)
+    assert ("make-files-kit" in raw["hint"]) is kit and ("make-files-kit" in shown["whatToDo"]) is kit
+    assert shown["blocking"] is (status == "fail") and raw["hint"].startswith("Check the internet")
+    if files == "pypi":
+        assert "no folder replaces them" in shown["whatToDo"]
 
 
 # ------------------------------------------------------------------------------------------- the kit

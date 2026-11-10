@@ -137,6 +137,36 @@ What setup does with it:
 - The folder is read where it is. It is not copied into the install folder; delete it after setup if you like.
 - Not in the folder: the Python packages (PyPI), the models (Hugging Face: use **Model files come from**),
   Windows Terminal, and a voice engine that `manifest.json` does not pin.
+- **Where the folder goes when you repair an install.** `files` is looked for next to the `INSTALL.cmd` you
+  run. For a new install or an update that is the folder you extracted. If you run the `INSTALL.cmd` inside the
+  install itself (`<install folder>/app/INSTALL.cmd`), put it there: `<install folder>/app/files`. An update
+  replaces `app`, so keep your own copy of the folder somewhere else.
+
+**What the PC check says about the internet** (the *Internet* row; the same in the setup window, in a run without
+a window, when you press **Check again** and when you run INSTALL.cmd again). A site that answers with an error
+(a 504, a rate limit) counts as reachable: the downloads wait for it as described above. The table is about a
+site that gives no answer at all (its name does not resolve, a firewall drops it, the connection times out
+after 10 seconds).
+
+| Site with no answer | No `files` folder | `files` holds everything this PC takes from GitHub | `files` holds only some of it |
+|---|---|---|---|
+| github.com only | red, and the row names the kit steps | **warning, setup goes on**: *github.com does not answer; setup takes the pinned programs from files\ (SHA256 checked)* | red: *the files folder lacks:* and the names of the missing files; run the kit again and press **Check again** |
+| pypi.org or files.pythonhosted.org (with or without GitHub) | red | red: *the files folder covers GitHub, but the Python packages need pypi.org and files.pythonhosted.org, so setup cannot start* | red |
+| huggingface.co, download.pytorch.org, api.github.com, api.nuget.org, the Microsoft download site, Pexels, Pixabay | warning, as before | warning, as before | warning, as before |
+
+- "Everything this PC takes from GitHub" is: uv, the llama.cpp build for this PC's driver and its CUDA runtime,
+  yt-dlp, the face finder, the spaCy language model, FFmpeg unless it is already installed, the voice engine,
+  OpenCode unless your answers switch Nightshift Code off, and a Python build under `files/python`. Each file is
+  hashed for this check, so with a large folder on a slow stick the check takes a little longer.
+- **With no internet at all setup does not start**, whatever the folder holds: the Python packages come from
+  PyPI and nothing replaces them. The row says so before anything is installed. With GitHub alone gone, setup
+  runs to the end as long as PyPI and the model source (Hugging Face, or your models folder) answer.
+- If a site that was only a warning is needed after all (a file is missing from the folder although the check
+  passed, or you took the folder away), that step tries for a bounded time and then stops with `NS-E105`, naming
+  the file and the kit steps: stage 1 (uv, the Visual C++ runtime) waits at most 100 seconds for the site to
+  start answering; the tools step tries three times with 120 seconds each; a program download makes three
+  tries and waits up to two minutes for the network before each counts, about eight minutes for one file. It
+  never waits forever. Add the file and run INSTALL.cmd again.
 
 ## If a row is red or a message shows an error code
 

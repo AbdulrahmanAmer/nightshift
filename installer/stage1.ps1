@@ -615,7 +615,9 @@ function New-Row {
 function Get-PreflightRows {
     # $DevMode (docs/DEV_MODE.md): the graphics card, driver and video memory are information rows, the memory
     # row asks for 4 GB and the disk row for 10 GB; everything else is checked as usual.
-    param($Probe, [string]$NsHome, [bool]$AllowCpu, [bool]$DevMode = $false)
+    # $FilesState (D-17), worked out only when github.com gives no answer: 'covers' (the files folder beside
+    # INSTALL.cmd holds every GitHub file this install needs), 'lacks' ($FilesMissing names them) or '' (no folder).
+    param($Probe, [string]$NsHome, [bool]$AllowCpu, [bool]$DevMode = $false, [string]$FilesState = '', [string[]]$FilesMissing = @())
     $rows = New-Object System.Collections.Generic.List[object]
 
     # os
@@ -743,18 +745,49 @@ function Get-PreflightRows {
         }
     }
 
-    # network: GitHub, PyPI and the PyPI file host block setup; any other unreachable site is a warning
+    # network: GitHub, PyPI and the PyPI file host block setup; any other unreachable site is a warning.
+    # The one exception (D-17): github.com is the ONLY blocking site that gives no answer and the files folder
+    # covers everything this install takes from it. Then the row is a warning that says so and setup goes on.
+    # PyPI is never covered (the folder holds no Python packages), so with no internet at all the row stays red
+    # and says that up front. The row's extra field "files" tells the setup window which sentence to show.
+    $netLabel = 'Internet (Hugging Face, GitHub, PyPI, PyTorch, Pexels, Pixabay)'
     $unreachable = @($Probe.unreachable)
     $blocked = @($unreachable | Where-Object { $script:CriticalHosts -contains $_ })
+    $githubDown = $unreachable -contains 'github.com'
+    $githubOnly = $githubDown -and (@($blocked | Where-Object { $_ -ne 'github.com' }).Count -eq 0)
+    $netRow = $null
+    $netFiles = ''
     if ($unreachable.Count -eq 0) {
-        $rows.Add((New-Row 'network' 'Internet (Hugging Face, GitHub, PyPI, PyTorch, Pexels, Pixabay)' 'ok' '' 'all reachable'))
+        $netRow = New-Row 'network' $netLabel 'ok' '' 'all reachable'
+    }
+    elseif ($githubOnly -and $FilesState -eq 'covers') {
+        $netFiles = 'covers'
+        $value = 'github.com does not answer; setup takes the pinned programs from files\ (SHA256 checked)'
+        $others = @($unreachable | Where-Object { $_ -ne 'github.com' })
+        if ($others.Count -gt 0) { $value += '; also unreachable: ' + ($others -join ', ') }
+        $netRow = New-Row 'network' $netLabel 'warn' 'NS-E105' $value
+        $netRow.hint = 'Nothing to do. A program that turns out to be missing from the folder stops its step with NS-E105, which names the file and how to add it.'
     }
     elseif ($blocked.Count -gt 0) {
-        $rows.Add((New-Row 'network' 'Internet (Hugging Face, GitHub, PyPI, PyTorch, Pexels, Pixabay)' 'fail' 'NS-E105' ('unreachable: ' + ($unreachable -join ', '))))
+        $value = 'unreachable: ' + ($unreachable -join ', ')
+        if ($githubDown -and $FilesState -eq 'lacks') {
+            $netFiles = 'lacks'
+            $value += '; the files folder lacks: ' + ($FilesMissing -join ', ')
+        }
+        elseif ($githubDown -and $FilesState -eq 'covers') {
+            $netFiles = 'pypi'
+            $value += '; the files folder covers GitHub, but the Python packages need pypi.org and files.pythonhosted.org, so setup cannot start'
+        }
+        elseif ($githubOnly) { $netFiles = 'none' }
+        $netRow = New-Row 'network' $netLabel 'fail' 'NS-E105' $value
+        # the kit is a way out only when GitHub is the one blocking site
+        if ($githubOnly) { $netRow.hint = ($netRow.hint + ' ' + (Get-KitHint)).Trim() }
     }
     else {
-        $rows.Add((New-Row 'network' 'Internet (Hugging Face, GitHub, PyPI, PyTorch, Pexels, Pixabay)' 'warn' 'NS-E105' ('unreachable: ' + ($unreachable -join ', '))))
+        $netRow = New-Row 'network' $netLabel 'warn' 'NS-E105' ('unreachable: ' + ($unreachable -join ', '))
     }
+    if ($netFiles) { $netRow | Add-Member -NotePropertyName 'files' -NotePropertyValue $netFiles }
+    $rows.Add($netRow)
 
     # winget: setup tries it first for FFmpeg and the Visual C++ runtime, then downloads a pinned copy itself,
     # so a PC without a working winget is only a warning (Git is not installed at all)
@@ -972,6 +1005,62 @@ function Copy-PinnedFile {
     return $false
 }
 
+function Find-PinnedFile {
+    # A LOOK for the preflight, not a use: the path of a file called -Name in the files folder (or up to four
+    # folders below it) whose SHA256 is the pin, or ''. Whoever uses the file later checks it again
+    # (Copy-PinnedFile here, filesdir.copy_checked in stage 2).
+    param([string]$FilesDir, [string]$Name, [string]$Sha256)
+    if (-not $FilesDir -or -not $Name -or $Sha256 -notmatch '^[0-9A-Fa-f]{64}$') { return '' }
+    $found = @(Get-ChildItem -LiteralPath $FilesDir -File -Recurse -Depth 4 -ErrorAction SilentlyContinue | Where-Object { $_.Name -eq $Name })
+    foreach ($f in $found) {
+        try {
+            if ((Get-FileHash -Algorithm SHA256 -LiteralPath $f.FullName).Hash -eq $Sha256) { return $f.FullName }
+        }
+        catch { Write-Verbose "could not hash $($f.FullName): $($_.Exception.Message)" }
+    }
+    return ''
+}
+
+function Get-GitHubFilesGap {
+    # The files this install would fetch from GitHub that the files folder does NOT hold with the pinned SHA256
+    # (an empty list: the folder covers GitHub). The list is what this PC installs: uv, the llama.cpp build of
+    # its profile and driver (with its CUDA runtime), yt-dlp, the face finder, the spaCy wheel, FFmpeg unless it
+    # is already on this PC, the voice engine on a real install with a graphics card, OpenCode unless the answers
+    # say no (the window has not asked yet, so it counts), and a Python archive under files\python (uv checks
+    # that one itself). Only pins whose URL is on github.com count; a pin without a real SHA256 cannot come from
+    # the folder and is not listed (its step fails or falls back as it always did).
+    param($Manifest, $Probe, [string]$FilesDir, [string]$ProfileName, [string]$LlamaPair, [bool]$DevMode = $false, [bool]$InstallCode = $true)
+    $keys = @('uv', 'yt_dlp', 'yunet')
+    if ($ProfileName -eq 'cpu-dev') { $keys += 'llama_cpu' }
+    elseif ($LlamaPair -eq 'cuda13') { $keys += @('llama_cuda13', 'cudart13') }
+    else { $keys += @('llama_cuda', 'cudart') }
+    if (-not [bool](Get-Prop (Get-Prop $Probe 'tools' $null) 'ffmpeg' $false)) { $keys += 'ffmpeg' }
+    if (-not $DevMode -and $ProfileName -eq 'gpu') { $keys += 'qwentts' }
+    if (-not $DevMode -and $InstallCode) { $keys += 'opencode' }
+    $bins = Get-Prop $Manifest 'bins' $null
+    $pins = @($keys | ForEach-Object { Get-Prop $bins $_ $null })
+    $pins += (Get-Prop (Get-Prop $Manifest 'python' $null) 'spacy_wheel' $null)
+    $missing = @()
+    foreach ($pin in $pins) {
+        if ($null -eq $pin) { continue }
+        $url = [string](Get-Prop $pin 'url' '')
+        $sha = [string](Get-Prop $pin 'sha256' '')
+        $site = ''
+        try { $site = ([System.Uri]$url).Host } catch { Write-Verbose "not a URL: $url" }
+        if ($site -notmatch '(^|\.)github\.com$' -or $sha -notmatch '^[0-9A-Fa-f]{64}$') { continue }
+        $name = Get-UrlLeaf $url
+        if (-not (Find-PinnedFile -FilesDir $FilesDir -Name $name -Sha256 $sha)) { $missing += $name }
+    }
+    $pyVersion = [string](Get-Prop $Manifest 'python_version' '3.12')
+    $pyDir = Join-Path $FilesDir 'python'
+    $archives = @()
+    if (Test-Path -LiteralPath $pyDir -PathType Container) {
+        $archives = @(Get-ChildItem -LiteralPath $pyDir -File -Recurse -Depth 2 -ErrorAction SilentlyContinue | Where-Object { $_.Name -like "cpython-$pyVersion.*" })
+    }
+    if ($archives.Count -eq 0) { $missing += "python\<build>\cpython-$pyVersion.x (make it with -Only python)" }
+    return $missing
+}
+
 function Find-Uv {
     # The pinned uv (manifest.json bins.uv) is preferred: setup relies on flags (`uv venv --clear`,
     # `--require-hashes` with a direct URL, UV_CACHE_DIR) that an older uv on PATH does not have. A copy
@@ -1011,7 +1100,9 @@ function Install-Uv {
             $script:UvFrom = 'from the files folder'
         }
         else {
-            Invoke-WebRequest -Uri $pin.url -OutFile $zip -UseBasicParsing
+            # -TimeoutSec: a site that gives no answer is given up after 100 s (Windows PowerShell 5.1 applies
+            # it to the wait for the answer, not to the length of the download)
+            Invoke-WebRequest -Uri $pin.url -OutFile $zip -UseBasicParsing -TimeoutSec 100
             $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $zip).Hash.ToLower()
             if ($actual -ne ([string]$pin.sha256).ToLower()) { throw "SHA256 mismatch for the uv download ($actual)" }
         }
@@ -1094,7 +1185,7 @@ function Install-VcRuntime {
     Write-Host 'The Microsoft Visual C++ runtime is not installed on this PC. Nightshift needs it (about 25 MB).'
     try {
         if (-not (Copy-PinnedFile -FilesDir $FilesDir -Name (Get-UrlLeaf ([string]$pin.url)) -Sha256 ([string]$pin.sha256) -Dest $exe)) {
-            Invoke-WebRequest -Uri $pin.url -OutFile $exe -UseBasicParsing
+            Invoke-WebRequest -Uri $pin.url -OutFile $exe -UseBasicParsing -TimeoutSec 100
             $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $exe).Hash.ToLower()
             if ($actual -ne ([string]$pin.sha256).ToLower()) { throw "SHA256 mismatch for the download ($actual)" }
         }
@@ -1400,7 +1491,6 @@ if ($FakeProbe) { $probe = Get-FakeProbe -Path $FakeProbe } else { $probe = Get-
 $NsHome = Resolve-NsHome -Drives @($probe.drives) -AnswersObj $answersObj -Forced $HomePath -AppFolder $App
 if ($script:IsDry -and -not $ProbeOnly) { Show-Action "use NIGHTSHIFT_HOME = $NsHome" }
 
-$rows = Get-PreflightRows -Probe $probe -NsHome $NsHome -AllowCpu $allowCpu -DevMode $script:DevMode
 $cudaInfo = Resolve-CudaVersion -Probe $probe
 $cuda = $cudaInfo.version
 $llamaPair = Get-LlamaPair -Cuda $cuda -GpuName ([string]$probe.gpu_name)
@@ -1415,6 +1505,15 @@ if ($null -eq $cuda -and $profileName -eq 'gpu') {
 }
 $cudaString = ''
 if ($null -ne $cuda) { $cudaString = [string]$cuda }
+# github.com gives no answer and there is a files folder: does it hold everything this install takes from GitHub?
+# (hashes each of those files once; skipped whenever github.com answers, so a normal run pays nothing)
+$filesState = ''
+$filesMissing = @()
+if ($filesDir -and (@($probe.unreachable) -contains 'github.com')) {
+    $filesMissing = @(Get-GitHubFilesGap -Manifest $Manifest -Probe $probe -FilesDir $filesDir -ProfileName $profileName -LlamaPair $llamaPair -DevMode $script:DevMode -InstallCode ([bool](Get-Prop $answersObj 'install_code' $true)))
+    if ($filesMissing.Count -eq 0) { $filesState = 'covers' } else { $filesState = 'lacks' }
+}
+$rows = Get-PreflightRows -Probe $probe -NsHome $NsHome -AllowCpu $allowCpu -DevMode $script:DevMode -FilesState $filesState -FilesMissing $filesMissing
 $handOver = Get-HandOver -Probe $probe -Rows $rows -App $App -NsHome $NsHome -ProfileName $profileName -LlamaPair $llamaPair -CudaString $cudaString -CudaSource $cudaInfo.source -DevMode $script:DevMode
 
 if ($ProbeOnly) {
@@ -1510,7 +1609,7 @@ if (-not [bool]$probe.vc_runtime) {
     if (Install-VcRuntime -Manifest $Manifest -FilesDir $filesDir) {
         $probe.vc_runtime = $true
         $probe.tools.vcruntime = $true
-        $rows = Get-PreflightRows -Probe $probe -NsHome $NsHome -AllowCpu $allowCpu -DevMode $script:DevMode
+        $rows = Get-PreflightRows -Probe $probe -NsHome $NsHome -AllowCpu $allowCpu -DevMode $script:DevMode -FilesState $filesState -FilesMissing $filesMissing
         $handOver = Get-HandOver -Probe $probe -Rows $rows -App $App -NsHome $NsHome -ProfileName $profileName -LlamaPair $llamaPair -CudaString $cudaString -CudaSource $cudaInfo.source -DevMode $script:DevMode
     }
 }
