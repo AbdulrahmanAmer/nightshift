@@ -147,8 +147,48 @@ public static class NsLink
         }
         finally { Marshal.ReleaseComObject(link); }
     }
+
+    public static void Update(string lnk, string args, string workdir, string icon)
+    {
+        IShellLinkW link = (IShellLinkW)new ShellLinkObject();
+        try
+        {
+            ((IPersistFile)link).Load(lnk, 2);
+            link.SetArguments(args);
+            if (!string.IsNullOrEmpty(workdir)) { link.SetWorkingDirectory(workdir); }
+            if (!string.IsNullOrEmpty(icon)) { link.SetIconLocation(icon, 0); }
+            ((IPersistFile)link).Save(lnk, true);
+        }
+        finally { Marshal.ReleaseComObject(link); }
+    }
 }
 """
+
+
+def update_shortcut(
+    runner: Runner, lnk: Path, arguments: str, *, workdir: Path | None = None, icon: Path | None = None
+) -> RunResult:
+    """Change the arguments of an existing .lnk (and its working folder and icon when given); everything
+    else it holds stays: its name, target, description and toast identity. The result says why not.
+
+    Only through IShellLinkW: WScript.Shell goes through the ANSI code page and would save a path with other
+    characters wrong, which is worse than leaving the shortcut as it is.
+    """
+    script = "\n".join([
+        "$ErrorActionPreference = 'Stop'",
+        "Add-Type -TypeDefinition @'",
+        _SHELL_LINK_CSHARP,
+        "'@",
+        f"[NsLink]::Update('{ps_quote(str(lnk))}', '{ps_quote(arguments)}', "
+        f"'{ps_quote(str(workdir)) if workdir is not None else ''}', "
+        f"'{ps_quote(str(icon)) if icon is not None else ''}')",
+    ])
+    meta = {"lnk": str(lnk), "arguments": arguments}
+    if workdir is not None:
+        meta["workdir"] = str(workdir)
+    if icon is not None:
+        meta["icon"] = str(icon)
+    return run_ps(runner, script, tag="ps:shortcut-update", meta=meta, timeout=120)
 
 
 def create_shortcut(

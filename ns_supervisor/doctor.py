@@ -26,7 +26,7 @@ from ns_common.devmode import is_dev
 from ns_common.errors import NsError
 from ns_common.paths import Paths, repo_root
 from ns_common.uv import find_uv
-from ns_supervisor import procs
+from ns_supervisor import launch_reach, procs
 from ns_supervisor.childenv import child_env
 from ns_supervisor.client import SupervisorClient
 
@@ -243,6 +243,7 @@ def diagnose(
         rows.append(("nvidia-smi", smi is not None, "ok" if smi is not None else "no NVIDIA driver found"))
     have_ffmpeg = ffmpeg.available()
     rows.append(("ffmpeg", have_ffmpeg, "on PATH" if have_ffmpeg else "ffmpeg/ffprobe not found"))
+    rows.append(launch_reach.doctor_row(paths))
     rows.append(program_folders(paths, Path(st.app_path) if st.app_path else repo_root(), on_wait))
     return rows
 
