@@ -42,6 +42,7 @@ from ns_common.atomic import REPLACE_WAIT_S, read_text_retry, write_text_atomic
 from ns_common.commandline import ps_formatter
 from ns_common.errors import NsError
 from ns_common.paths import Paths
+from ns_common.psquote import ps_literal
 from ns_common.singleton import AlreadyRunning, FileLock
 from ns_supervisor import pwsh, updater_copy
 from ns_supervisor.childenv import child_env
@@ -495,13 +496,18 @@ def _echo_new(log: Path, offset: int, echo: Callable[[str], None]) -> int:
 
 
 WAIT_PREFIX = "update-wait-"
+BOM = "\ufeff"  # the utf-8 encoder writes it as EF BB BF: how PowerShell 5.1 knows a .ps1 is UTF-8
 
 
 def write_wait_script(paths: Paths, pid: int, log: Path) -> Path | None:
     """`run\\update-wait-<stamp>.ps1`: the follower as a file, for a script that needs the result of an
     update it started with `--detach` from the install's own `ns` (which cannot wait itself):
     `powershell -NoProfile -ExecutionPolicy Bypass -File <it>` prints the log and the result and exits 0
-    (done) or 1. Scripts of earlier runs are removed. None when it could not be written."""
+    (done) or 1. Scripts of earlier runs are removed. None when it could not be written.
+
+    Written as UTF-8 WITH a byte order mark: Windows PowerShell 5.1 reads a `-File` script without one in the
+    ANSI code page, where a byte of a non-ASCII home (the 0x91 of a Cyrillic letter, in cp1252) becomes a
+    quote character that ends a literal early (FN-5 review). With the mark it reads every path as written."""
     folder = paths.home / "run"
     target = folder / (WAIT_PREFIX + log.stem.replace("update-", "") + ".ps1")
     try:
@@ -509,17 +515,13 @@ def write_wait_script(paths: Paths, pid: int, log: Path) -> Path | None:
         for old in folder.glob(WAIT_PREFIX + "*.ps1"):
             old.unlink(missing_ok=True)
         script = follower_script(status_file(paths), log, pid, wait=False, home=paths.home)
-        write_text_atomic(target, script + "\n")
+        write_text_atomic(target, BOM + script + "\n")
     except OSError:
         return None
     return target
 
 
 # ----------------------------------------------------------------- the progress window (a terminal's route)
-def _ps(text: object) -> str:
-    return "'" + str(text).replace("'", "''") + "'"
-
-
 def follower_script(status: Path, log: Path, pid: int, *, wait: bool = True, home: Path | None = None) -> str:
     """PowerShell 5.1 (pure ASCII) that shows the worker's log, then its result, and returns 0 or 1.
 
@@ -531,11 +533,11 @@ def follower_script(status: Path, log: Path, pid: int, *, wait: bool = True, hom
     the install `home` (`commandline.ps_formatter`: the files hold the plain words, FN-3)."""
     return "\n".join([
         *ps_formatter().splitlines(),
-        f"$nsHome = {_ps(home or '')}",
+        f"$nsHome = {ps_literal(str(home or ''))}",
         "$ErrorActionPreference = 'Continue'",
-        f"try {{ $Host.UI.RawUI.WindowTitle = {_ps(WINDOW_TITLE)} }} catch {{ }}",
-        f"$statusFile = {_ps(status)}",
-        f"$logFile = {_ps(log)}",
+        f"try {{ $Host.UI.RawUI.WindowTitle = {ps_literal(WINDOW_TITLE)} }} catch {{ }}",
+        f"$statusFile = {ps_literal(str(status))}",
+        f"$logFile = {ps_literal(str(log))}",
         f"$startPid = {int(pid)}",
         "$seen = 0; $code = -1; $quiet = 0; $ticks = 0",
         "function Show-NewLines {",

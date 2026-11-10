@@ -56,6 +56,32 @@ def read_run_time(paths: Paths, *, include_disabled: bool = False) -> str | None
     return run_time if isinstance(run_time, str) and valid_time(run_time) else None
 
 
+#: The way to write `schedule.json` again: the command, or the dashboard's switch.
+RECORD_WAY_OUT = "'ns schedule install --time HH:MM' (or Settings > Automatic runs) writes it"
+
+
+def record_note(paths: Paths) -> str | None:
+    """What `ns schedule show` adds about the record itself: None when it holds a valid time, else a line
+    naming the file and the way out. A missing file is not damage (Automatic runs are off, or were never set,
+    `_forget`), and the line says so; one that cannot be read or holds no valid time is said as such
+    (`read_run_time` treats both as "no schedule" and says nothing)."""
+    f = schedule_file(paths)
+    try:
+        data = json.loads(read_text_retry(f))
+    except FileNotFoundError:
+        return (f"{f} does not exist: no nightly time is recorded (Automatic runs are off or were never "
+                f"set); {RECORD_WAY_OUT}.")
+    except OSError as e:
+        return (f"{f} could not be read ({type(e).__name__}: {e}); if another program holds it, close "
+                "that program and run 'ns schedule show' again.")
+    except ValueError as e:
+        return f"{f} could not be read (not valid JSON: {e}); {RECORD_WAY_OUT} again."
+    run_time = data.get("run_time") if isinstance(data, dict) else None
+    if not (isinstance(run_time, str) and valid_time(run_time)):
+        return f"{f} holds no valid nightly time (run_time {run_time!r}); {RECORD_WAY_OUT} again."
+    return None
+
+
 def write_run_time(paths: Paths, run_time: str, mode: str = "registered") -> None:
     """Persist the schedule so the supervisor knows when the next run is due.
 

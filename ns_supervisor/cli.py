@@ -10,7 +10,6 @@ import typer
 
 from ns_common import __version__
 from ns_common.commandline import render
-from ns_common.config import load_runtime
 from ns_common.errors import NsError
 from ns_common.logging import NsLogger
 from ns_common.paths import Paths, home_env
@@ -95,8 +94,14 @@ def cmd_doctor(
     `ns update --rollback` and says what it did in the row "program folders"."""
     paths = Paths.from_env()
     if bundle:
-        out = doctor.build_bundle(paths, out_dir=out_dir, app=control.app_path(paths))
+        try:
+            app: Path | None = control.app_path(paths)
+        except OSError:     # install_state.json cannot be opened: the zip is still written (bundle_notes)
+            app = None
+        out = doctor.build_bundle(paths, out_dir=out_dir, app=app)
         echo(f"Diagnostics written to {out}")
+        for line in doctor.bundle_notes(paths):
+            echo(line)
         return
     bad = 0
     def waiting() -> None:  # (the start check waits up to 60 s behind an update or a rollback)
@@ -145,7 +150,10 @@ def cmd_verify(
         from installer.stage2 import verify_downloads
 
         raise typer.Exit(verify_downloads.run(paths, control.app_path(paths), echo))
-    rt = control.runtime_or_default(paths)
+    try:        # nothing is started on settings that cannot be read: NS-E125 names the file and the way out
+        rt = control.read_runtime(paths)
+    except NsError as e:
+        raise _die(e) from e
     client = _client(paths)
     try:        # D-39b: refused before anything is written (no report, no schedule change)
         start_gate(paths, client)
@@ -184,7 +192,7 @@ def cmd_tune(
     """Find the fastest llama-server flags for this PC and save them to runtime.json."""
     paths = Paths.from_env()
     try:
-        rt = load_runtime(paths)
+        rt = control.read_runtime(paths)
     except NsError as e:
         raise _die(e) from e
     if dry_run:
@@ -203,6 +211,8 @@ def cmd_tune(
     if not outcome.ok or outcome.flags is None:
         raise _die("tune: no configuration loaded; runtime.json was left unchanged. See logs\\tune-*.json.")
     echo(f"Best: {outcome.tok_s:.1f} tok/s with {outcome.flags.model_dump_json()}")
+    if outcome.context_note:
+        echo(outcome.context_note)
     echo("Saved to runtime.json.")
 
 

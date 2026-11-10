@@ -35,6 +35,7 @@ from ns_common.atomic import (
 from ns_common.commandline import render
 from ns_common.logging import NsLogger
 from ns_common.paths import Paths
+from ns_common.psquote import ps_literal
 from ns_common.singleton import AlreadyRunning, FileLock
 from ns_common.testguard import RealMachineUnderTest
 from ns_supervisor import pwsh
@@ -56,7 +57,7 @@ TOAST_SCRIPT = "\n".join(
         "[void]$text.Item(0).AppendChild($tpl.CreateTextNode($env:NS_TOAST_TITLE))",
         "[void]$text.Item(1).AppendChild($tpl.CreateTextNode($env:NS_TOAST_MESSAGE))",
         "$toast = [Windows.UI.Notifications.ToastNotification]::new($tpl)",
-        f"[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('{AUMID}').Show($toast)",
+        f"[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier({ps_literal(AUMID)}).Show($toast)",
     ]
 )
 

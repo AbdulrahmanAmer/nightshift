@@ -24,6 +24,7 @@ from ns_common.devmode import is_dev
 from ns_common.errors import describe
 from ns_common.logging import NsLogger
 from ns_common.paths import Paths
+from ns_common.psquote import ps_literal
 from ns_common.singleton import AlreadyRunning, FileLock
 from ns_supervisor import notify, pwsh
 from ns_supervisor.schedule_cfg import (
@@ -33,6 +34,7 @@ from ns_supervisor.schedule_cfg import (
     clear_run_time,
     read_run_time,
     read_schedule_mode,
+    record_note,
     remember_run_time,
     remembered_run_time,
     schedule_file,
@@ -95,11 +97,6 @@ class DevInstall(ScheduleError):
     """A dev install's task never runs (docs/DEV_MODE.md): Automatic runs cannot be switched on."""
 
 
-def _q(text: str) -> str:
-    """Single-quote a value for a PowerShell literal string."""
-    return "'" + text.replace("'", "''") + "'"
-
-
 def studio_exe(paths: Paths) -> str:
     """`studio.exe` of the studio venv, or plain `studio` (PATH) when the venv is missing."""
     exe = paths.venvs / "studio" / "Scripts" / "studio.exe"
@@ -149,15 +146,15 @@ def build_install_script(
     """
     arguments = action_arguments(paths)
     register = (
-        f"Register-ScheduledTask -TaskName {_q(task_name)} -Action $action -Trigger $trigger "
+        f"Register-ScheduledTask -TaskName {ps_literal(task_name)} -Action $action -Trigger $trigger "
         "-Settings $settings -Principal $principal -Description 'Nightshift nightly run' -Force | Out-Null"
     )
     return "\n".join(
         [
             "$ErrorActionPreference = 'Stop'",
-            f"$action = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument {_q(arguments)} "
-            f"-WorkingDirectory {_q(str(paths.home))}",
-            f"$trigger = New-ScheduledTaskTrigger -Daily -At ([datetime]{_q(run_time)})",
+            f"$action = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument {ps_literal(arguments)} "
+            f"-WorkingDirectory {ps_literal(str(paths.home))}",
+            f"$trigger = New-ScheduledTaskTrigger -Daily -At ([datetime]{ps_literal(run_time)})",
             "$settings = New-ScheduledTaskSettingsSet -WakeToRun -StartWhenAvailable "
             "-AllowStartIfOnBatteries -DontStopIfGoingOnBatteries "
             "-ExecutionTimeLimit (New-TimeSpan -Hours 6)" + (" -Disable" if disabled else ""),
@@ -184,9 +181,10 @@ def build_action_script(paths: Paths, task_name: str = TASK_NAME) -> str:
     return "\n".join(
         [
             "$ErrorActionPreference = 'Stop'",
-            f"$action = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument {_q(action_arguments(paths))} "
-            f"-WorkingDirectory {_q(str(paths.home))}",
-            f"Set-ScheduledTask -TaskName {_q(task_name)} -Action $action | Out-Null",
+            "$action = New-ScheduledTaskAction -Execute 'cmd.exe' "
+            f"-Argument {ps_literal(action_arguments(paths))} "
+            f"-WorkingDirectory {ps_literal(str(paths.home))}",
+            f"Set-ScheduledTask -TaskName {ps_literal(task_name)} -Action $action | Out-Null",
             "Write-Output 'action set'",
         ]
     )
@@ -197,8 +195,8 @@ def build_remove_script(task_name: str = TASK_NAME) -> str:
     return "\n".join(
         [
             "$ErrorActionPreference = 'Stop'",
-            f"if (Get-ScheduledTask -TaskName {_q(task_name)} -ErrorAction SilentlyContinue) {{",
-            f"  Unregister-ScheduledTask -TaskName {_q(task_name)} -Confirm:$false",
+            f"if (Get-ScheduledTask -TaskName {ps_literal(task_name)} -ErrorAction SilentlyContinue) {{",
+            f"  Unregister-ScheduledTask -TaskName {ps_literal(task_name)} -Confirm:$false",
             "  Write-Output 'removed'",
             "} else {",
             "  Write-Output 'not registered'",
@@ -212,9 +210,9 @@ def build_show_script(task_name: str = TASK_NAME) -> str:
     return "\n".join(
         [
             "$ErrorActionPreference = 'Stop'",
-            f"$t = Get-ScheduledTask -TaskName {_q(task_name)} -ErrorAction SilentlyContinue",
+            f"$t = Get-ScheduledTask -TaskName {ps_literal(task_name)} -ErrorAction SilentlyContinue",
             "if ($null -eq $t) { Write-Output 'not registered'; exit 0 }",
-            f"$i = Get-ScheduledTaskInfo -TaskName {_q(task_name)}",
+            f"$i = Get-ScheduledTaskInfo -TaskName {ps_literal(task_name)}",
             "Write-Output ('state: ' + $t.State)",
             "Write-Output ('next run: ' + $i.NextRunTime)",
             "Write-Output ('last run: ' + $i.LastRunTime)",
@@ -298,7 +296,7 @@ def build_read_script(task_name: str = TASK_NAME) -> str:
         [
             "$ErrorActionPreference = 'Stop'",
             "$e = $null",
-            f"$t = Get-ScheduledTask -TaskName {_q(task_name)} -ErrorAction SilentlyContinue "
+            f"$t = Get-ScheduledTask -TaskName {ps_literal(task_name)} -ErrorAction SilentlyContinue "
             "-ErrorVariable e",
             "if ($null -eq $t) {",
             "  $bad = @($e) | Where-Object { $_ -and $_.CategoryInfo.Category -ne 'ObjectNotFound' } "
@@ -1219,4 +1217,5 @@ def show(paths: Paths) -> str:
     """Human-readable task status."""
     saved = read_run_time(paths)
     out = _run(build_show_script())
-    return out + (f"\nconfigured time: {saved}" if saved else "")
+    note = record_note(paths)
+    return out + (f"\nconfigured time: {saved}" if saved else "") + (f"\n{note}" if note else "")

@@ -1,7 +1,8 @@
 """Windows integration through PowerShell (component C1): user environment variable, desktop, shortcuts.
 
 This is the only module that names the home environment variable literally. Scripts are passed with
-``-EncodedCommand`` so no quoting can go wrong.
+``-EncodedCommand`` (no command-line quoting) and every value inside one is written by
+``ns_common.psquote.ps_literal`` (no string quoting that PowerShell can read differently).
 """
 
 from __future__ import annotations
@@ -15,13 +16,9 @@ from pathlib import Path
 import ns_common.testguard as testguard
 from installer.stage2 import commands
 from installer.stage2.runner import Runner, RunResult, SubprocessRunner
+from ns_common.psquote import ps_literal
 
 HOME_VAR = "NIGHTSHIFT_HOME"
-
-
-def ps_quote(value: str) -> str:
-    """Escape a value for a single-quoted PowerShell string."""
-    return value.replace("'", "''")
 
 
 def run_ps(
@@ -35,7 +32,7 @@ def run_ps(
 
 def set_user_env(runner: Runner, name: str, value: str) -> bool:
     """Set a user-level environment variable. True on success."""
-    script = f"[Environment]::SetEnvironmentVariable('{ps_quote(name)}', '{ps_quote(value)}', 'User')"
+    script = f"[Environment]::SetEnvironmentVariable({ps_literal(name)}, {ps_literal(value)}, 'User')"
     return run_ps(runner, script, tag="ps:set-env", meta={"name": name, "value": value}).ok
 
 
@@ -72,10 +69,15 @@ def eval_ps_text(
     return decode_utf8_b64(res.stdout) if res.ok else None
 
 
+def user_env_expression(name: str) -> str:
+    """The PowerShell expression that reads the user-level environment variable `name` (the one text every
+    reader of it uses)."""
+    return f"[Environment]::GetEnvironmentVariable({ps_literal(name)}, 'User')"
+
+
 def get_user_env(runner: Runner, name: str) -> str | None:
     """Read a user-level environment variable (None when unset)."""
-    expr = f"[Environment]::GetEnvironmentVariable('{ps_quote(name)}', 'User')"
-    value = eval_ps_text(runner, expr, tag="ps:get-env", meta={"name": name})
+    value = eval_ps_text(runner, user_env_expression(name), tag="ps:get-env", meta={"name": name})
     return value or None
 
 
@@ -307,9 +309,9 @@ def update_shortcut(
         "Add-Type -TypeDefinition @'",
         _SHELL_LINK_CSHARP,
         "'@",
-        f"[NsLink]::Update('{ps_quote(str(lnk))}', '{ps_quote(arguments)}', "
-        f"'{ps_quote(str(workdir)) if workdir is not None else ''}', "
-        f"'{ps_quote(str(icon)) if icon is not None else ''}')",
+        f"[NsLink]::Update({ps_literal(str(lnk))}, {ps_literal(arguments)}, "
+        f"{ps_literal(str(workdir) if workdir is not None else '')}, "
+        f"{ps_literal(str(icon) if icon is not None else '')})",
     ])
     meta = {"lnk": str(lnk), "arguments": arguments}
     if workdir is not None:
@@ -328,24 +330,24 @@ def create_shortcut(
     Unicode-safe through IShellLinkW; falls back to WScript.Shell when the compiled helper is unavailable.
     """
     testguard.refuse_real_shortcut(lnk)     # a test run writes no shortcut into a real Desktop or Start menu
-    icon_arg = ps_quote(str(icon)) if icon is not None else ""
-    icon_part = f"$s.IconLocation = '{ps_quote(str(icon))},0'; " if icon is not None else ""
+    icon_arg = ps_literal(str(icon) if icon is not None else "")
+    icon_part = f"$s.IconLocation = {ps_literal(str(icon) + ',0')}; " if icon is not None else ""
     script = "\n".join([
         "$ErrorActionPreference = 'Stop'",
         "try {",
         "  Add-Type -TypeDefinition @'",
         _SHELL_LINK_CSHARP,
         "'@",
-        f"  [NsLink]::Create('{ps_quote(str(lnk))}', '{ps_quote(target)}', '{ps_quote(arguments)}', "
-        f"'{ps_quote(str(workdir))}', '{ps_quote(description)}', "
-        f"'{icon_arg}')",
+        f"  [NsLink]::Create({ps_literal(str(lnk))}, {ps_literal(target)}, {ps_literal(arguments)}, "
+        f"{ps_literal(str(workdir))}, {ps_literal(description)}, "
+        f"{icon_arg})",
         "} catch {",
         "  $s = (New-Object -ComObject WScript.Shell).CreateShortcut("
-        f"'{ps_quote(str(lnk))}'); "
-        f"$s.TargetPath = '{ps_quote(target)}'; "
-        f"$s.Arguments = '{ps_quote(arguments)}'; "
-        f"$s.WorkingDirectory = '{ps_quote(str(workdir))}'; "
-        f"$s.Description = '{ps_quote(description)}'; "
+        f"{ps_literal(str(lnk))}); "
+        f"$s.TargetPath = {ps_literal(target)}; "
+        f"$s.Arguments = {ps_literal(arguments)}; "
+        f"$s.WorkingDirectory = {ps_literal(str(workdir))}; "
+        f"$s.Description = {ps_literal(description)}; "
         f"{icon_part}"
         "$s.Save()",
         "}",
@@ -471,11 +473,11 @@ def register_aumid_script(
     """
     lines = [
         "$ErrorActionPreference = 'Stop'",
-        f"$k = '{ps_quote(AUMID_KEY_PARENT)}' + [char]92 + '{ps_quote(aumid)}'",
+        f"$k = {ps_literal(AUMID_KEY_PARENT)} + [char]92 + {ps_literal(aumid)}",
     ]
     if keep_other:
         own = [str(icon)] if icon is not None else []
-        mine = ", ".join(f"'{ps_quote(p)}'" for p in [*own, *also_mine]) or "''"
+        mine = ", ".join(ps_literal(p) for p in [*own, *also_mine]) or ps_literal("")
         lines += [
             "$old = $null",
             "if (Test-Path -LiteralPath $k) { $old = [string](Get-ItemProperty -LiteralPath $k -Name "
@@ -485,12 +487,12 @@ def register_aumid_script(
         ]
     lines += [
         "New-Item -Path $k -Force | Out-Null",
-        f"New-ItemProperty -Path $k -Name 'DisplayName' -Value '{ps_quote(display_name)}' "
+        f"New-ItemProperty -Path $k -Name 'DisplayName' -Value {ps_literal(display_name)} "
         "-PropertyType String -Force | Out-Null",
     ]
     if icon is not None:
         lines.append(
-            f"New-ItemProperty -Path $k -Name 'IconUri' -Value '{ps_quote(str(icon))}' "
+            f"New-ItemProperty -Path $k -Name 'IconUri' -Value {ps_literal(str(icon))} "
             "-PropertyType String -Force | Out-Null"
         )
     return "\n".join(lines)
@@ -522,7 +524,7 @@ def unregister_aumid(runner: Runner, aumid: str) -> bool:
     """Remove the AppUserModelId registry key. True on success (also when it was not there)."""
     script = (
         "$ErrorActionPreference = 'Stop'\n"
-        f"$k = '{ps_quote(AUMID_KEY_PARENT)}' + [char]92 + '{ps_quote(aumid)}'\n"
+        f"$k = {ps_literal(AUMID_KEY_PARENT)} + [char]92 + {ps_literal(aumid)}\n"
         "if (Test-Path -LiteralPath $k) { Remove-Item -LiteralPath $k -Recurse -Force }"
     )
     return run_ps(runner, script, tag="ps:aumid-unregister", meta={"aumid": aumid}).ok
@@ -535,7 +537,7 @@ def set_shortcut_aumid_script(lnk: Path, aumid: str) -> str:
         "Add-Type -TypeDefinition @'\n"
         f"{_PROPERTY_STORE_CSHARP}\n"
         "'@\n"
-        f"[NsAumid]::Set('{ps_quote(str(lnk))}', '{ps_quote(aumid)}')"
+        f"[NsAumid]::Set({ps_literal(str(lnk))}, {ps_literal(aumid)})"
     )
 
 
@@ -546,7 +548,7 @@ def get_shortcut_aumid_script(lnk: Path) -> str:
         "Add-Type -TypeDefinition @'\n"
         f"{_PROPERTY_STORE_CSHARP}\n"
         "'@\n"
-        f"[NsAumid]::Get('{ps_quote(str(lnk))}')"
+        f"[NsAumid]::Get({ps_literal(str(lnk))})"
     )
 
 

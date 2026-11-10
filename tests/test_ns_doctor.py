@@ -5,8 +5,11 @@ from datetime import datetime
 from pathlib import Path
 
 import httpx
+import pytest
 
 from ns_common import __version__
+from ns_common.config import save_runtime
+from ns_common.models import Runtime
 from ns_common.paths import Paths
 from ns_supervisor import doctor
 from ns_supervisor.client import SupervisorClient
@@ -122,7 +125,9 @@ def test_diagnose_reports_missing_pieces(tmp_path: Path) -> None:
     client = SupervisorClient("http://sup", client=httpx.Client(transport=httpx.MockTransport(refuse)))
     rows = doctor.diagnose(Paths(tmp_path / "ns"), client)
     by = {name: (ok, detail) for name, ok, detail in rows}
-    assert by["runtime.json"][0] is False and "NS-E203" in by["runtime.json"][1]
+    # NS-E125 naming the missing file and its way out, not NS-E203 "health check timed out" (FN-5/D-44 small3)
+    assert by["runtime.json"][0] is False and "NS-E125" in by["runtime.json"][1]
+    assert "does not exist" in by["runtime.json"][1] and "NS-E203" not in by["runtime.json"][1]
     assert by["supervisor"][0] is False
     assert by["venv studio"][0] is False
 
@@ -173,3 +178,100 @@ def test_two_bundles_on_one_day_do_not_overwrite_each_other(tmp_path: Path) -> N
     second = doctor.build_bundle(paths, out_dir=tmp_path / "desk", now=datetime(2026, 11, 1, 9, 6),
                                  freeze=lambda p, v: None, smi=lambda: None)
     assert first.name == "nightshift-diagnostics-2026-11-01-0905.zip" and first != second and first.is_file()
+
+
+# ---------------------------------------------------------------------------------------------- D-44
+# The row "nvidia-smi" asks for an NVIDIA driver only of an install that uses a graphics card. A dev install
+# (docs/DEV_MODE.md) and an install that runs on the processor (profile cpu-dev: the engine test, a PC with no
+# NVIDIA card) have none to ask; they say so, whether or not the PC happens to have a driver.
+class Down:
+    base_url = "http://127.0.0.1:1"
+
+    def is_up(self) -> bool:
+        return False
+
+
+def smi_row(paths: Paths, monkeypatch: pytest.MonkeyPatch, report: str | None) -> tuple[bool, str]:
+    from ns_supervisor import procs
+
+    monkeypatch.setattr(procs, "nvidia_smi_report", lambda: report)
+    rows = {name: (ok, detail) for name, ok, detail in doctor.diagnose(paths, Down())}  # type: ignore[arg-type]
+    return rows["nvidia-smi"]
+
+
+CPU_SAYS = "not needed (this install runs on the processor: profile cpu-dev)"
+
+
+def test_a_cpu_install_does_not_need_nvidia_smi(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    paths = Paths(tmp_path / "ns")
+    save_runtime(paths, Runtime.default("cpu-dev"))
+    assert smi_row(paths, monkeypatch, None) == (True, CPU_SAYS)
+    # a PC that has a driver anyway: the sentence is still true (this install does not use it)
+    assert smi_row(paths, monkeypatch, "NVIDIA-SMI 570") == (True, CPU_SAYS)
+
+
+def test_a_gpu_install_without_the_driver_still_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = Paths(tmp_path / "ns")
+    save_runtime(paths, Runtime.default("gpu"))
+    assert smi_row(paths, monkeypatch, None) == (False, "no NVIDIA driver found")
+    assert smi_row(paths, monkeypatch, "NVIDIA-SMI 570") == (True, "ok")
+
+
+def test_an_unreadable_runtime_keeps_the_probe(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """No runtime.json (setup has not finished): the kind of install is unknown, so the probe decides, as
+    before D-44. (A runtime.json that is not valid JSON makes `diagnose` raise today: see the report.)"""
+    paths = Paths(tmp_path / "ns")
+    assert smi_row(paths, monkeypatch, None) == (False, "no NVIDIA driver found")
+    assert smi_row(paths, monkeypatch, "NVIDIA-SMI 570") == (True, "ok")
+
+
+def test_a_dev_install_keeps_its_own_words_even_on_the_cpu_profile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = Paths(tmp_path / "ns")
+    rt = Runtime.default("cpu-dev")
+    rt.dev_mode = True
+    save_runtime(paths, rt)
+    assert smi_row(paths, monkeypatch, None) == (True, "not needed (dev mode)")
+
+
+def test_ns_doctor_exits_0_on_a_cpu_install_when_the_rest_is_ok(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The engine-test install of QA: profile cpu-dev, no NVIDIA card, the engine up: `ns doctor` is clean."""
+    from typer.testing import CliRunner
+
+    import ns_supervisor.cli as ns_cli
+    from ns_common.config import save_install_state
+    from ns_common.models import InstallState
+    from ns_supervisor import procs
+
+    home = tmp_path / "ns"
+    paths = Paths(home)
+    rt = Runtime.default("cpu-dev")
+    for name in ("llm.gguf", "embed.gguf"):
+        (tmp_path / name).write_bytes(b"gguf")
+    rt.llama.model_path, rt.embed.model_path = str(tmp_path / "llm.gguf"), str(tmp_path / "embed.gguf")
+    save_runtime(paths, rt)
+    app = tmp_path / "app"
+    (app / "ns_common").mkdir(parents=True)
+    save_install_state(paths, InstallState(app_path=str(app)))
+    for venv in ("studio", "supervisor"):
+        py = paths.venvs / venv / "Scripts" / "python.exe"
+        py.parent.mkdir(parents=True)
+        py.write_bytes(b"MZ")
+    monkeypatch.setattr(procs, "nvidia_smi_report", lambda: None)
+    monkeypatch.setattr(doctor.ffmpeg, "available", lambda: True)  # (the PC's FFmpeg is not what is tested)
+    up = SupervisorClient("http://sup", client=httpx.Client(
+        transport=httpx.MockTransport(lambda req: httpx.Response(200, json={"ok": True}))))
+    monkeypatch.setattr(ns_cli, "_client", lambda p: up)
+    res = CliRunner().invoke(ns_cli.app, ["doctor"], env={"NIGHTSHIFT_HOME": str(home)})
+    assert f"[ok] nvidia-smi: {CPU_SAYS}" in res.output, res.output
+    assert "[FAIL]" not in res.output and res.exit_code == 0, res.output
+    # and the same install on the GPU profile, with no driver, fails on that row alone
+    save_runtime(paths, Runtime.default("gpu").model_copy(update={"llama": rt.llama, "embed": rt.embed}))
+    res = CliRunner().invoke(ns_cli.app, ["doctor"], env={"NIGHTSHIFT_HOME": str(home)})
+    assert "[FAIL] nvidia-smi: no NVIDIA driver found" in res.output and res.exit_code == 1, res.output
+    assert res.output.count("[FAIL]") == 1, res.output

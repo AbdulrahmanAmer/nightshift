@@ -25,6 +25,7 @@ from datetime import datetime
 from pathlib import Path
 
 from ns_common.paths import Paths
+from ns_common.psquote import ps_literal
 
 COPY_PREFIX = "venv-"
 
@@ -93,10 +94,6 @@ def own_copy(paths: Paths, python: str | None = None) -> Path | None:
     return root / first if first.startswith(COPY_PREFIX) else None
 
 
-def _quote(text: str) -> str:
-    return text.replace("'", "''")
-
-
 def cleanup_script(folder: Path, pid: int) -> str:
     """PowerShell that waits for process `pid` to exit, then removes `folder` (retried: the files of a
     process that just ended can stay locked for a moment)."""
@@ -104,7 +101,7 @@ def cleanup_script(folder: Path, pid: int) -> str:
         [
             "$ErrorActionPreference = 'SilentlyContinue'",
             f"Wait-Process -Id {int(pid)} -Timeout 300",
-            f"$t = '{_quote(str(folder))}'",
+            f"$t = {ps_literal(str(folder))}",
             "for ($i = 0; $i -lt 60; $i++) {",
             "    if (-not (Test-Path -LiteralPath $t)) { break }",
             "    Remove-Item -LiteralPath $t -Recurse -Force",

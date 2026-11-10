@@ -29,7 +29,7 @@ def test_matrix_for_moe_and_cpu_dev() -> None:
     moe = tune.plan_matrix(rt_for("C:/m/Qwen3.6-35B-A3B-Q4.gguf"))
     assert moe["n_cpu_moe"] == [0, 4, 8, 12, 16]
     cpu = tune.plan_matrix(rt_for(profile="cpu-dev"))
-    assert cpu["ngl"] == [0] and (8192, "f16") in cpu["ctx_kv"] and len(cpu["ctx_kv"]) == 6
+    assert cpu["ngl"] == [0] and cpu["ctx_kv"][0] == (16384, "f16") and len(cpu["ctx_kv"]) == 4
 
 
 def test_dry_run_lines_list_every_stage() -> None:
@@ -186,3 +186,128 @@ def test_two_model_mode_warns_that_only_the_code_model_is_tuned(tmp_path: Path) 
     rt.llama.story_model_path = "C:/m/story.gguf"
     out = tune.tune(paths, rt, Fake())
     assert out.ok and any("two-model" in w for w in out.warnings)
+
+
+# ---------------------------------------------------------------------------------------------- D-44
+# A PC that runs on the processor holds the context's memory (the KV cache) for the whole night: the tune
+# measures speed on an empty prompt, where a larger context costs nothing, so among equal results the smallest
+# context that does the work wins there (the card's decision). Nightshift Code refuses below 16384 (D-34).
+class Flat:
+    """A runner whose speed does not depend on the context (the tune's own probe: an empty prompt)."""
+
+    def __init__(self, factor: dict[int, float] | None = None, fail_ctx: tuple[int, ...] = ()) -> None:
+        self.calls: list[LlamaFlags] = []
+        self.factor = factor or {}
+        self.fail_ctx = fail_ctx
+
+    def __call__(self, rt: Runtime) -> tuple[float, float]:
+        f = rt.llama.flags
+        self.calls.append(f)
+        if f.ctx in self.fail_ctx:
+            raise NsError("NS-E202", "out of memory")
+        return 50.0 * self.factor.get(f.ctx, 1.0), 5.0
+
+
+def install(tmp_path: Path, profile: str, code: bool | str | None) -> tuple[Paths, Runtime]:
+    """An install on `profile`; `code` is what answers.json says about Nightshift Code (None: no file)."""
+    paths = Paths(tmp_path / "ns")
+    rt = rt_for(profile=profile)
+    save_runtime(paths, rt)
+    if code is not None:
+        (paths.config / "answers.json").write_text(json.dumps({"install_code": code}), encoding="utf-8")
+    return paths, rt
+
+
+@pytest.mark.parametrize(
+    ("code", "ctx"), [(False, 16384), (True, 16384), (None, 16384), ("{not json", 16384)]
+)
+def test_on_the_cpu_profile_the_smallest_context_that_does_the_work_wins(
+    tmp_path: Path, code: bool | str | None, ctx: int
+) -> None:
+    """One floor whatever answers.json says about Nightshift Code (D-44): the night's context does not depend
+    on an optional tool, and a damaged answers file changes nothing."""
+    paths, rt = install(tmp_path, "cpu-dev", code)
+    runner = Flat()
+    out = tune.tune(paths, rt, runner)
+    assert out.ok and out.flags is not None
+    assert (out.flags.ctx, out.flags.kv_type) == (ctx, "q8_0")       # q8_0 before f16 among equals
+    assert min(f.ctx for f in runner.calls) == ctx                    # nothing below the floor is ever tried
+    assert load_runtime(paths).llama.flags == out.flags
+    again = tune.tune(paths, load_runtime(paths), Flat())             # the second run chooses the same
+    assert again.flags is not None and (again.flags.ctx, again.flags.kv_type) == (ctx, "q8_0")
+
+
+def test_on_the_gpu_profile_the_roomier_context_still_wins_among_equals(tmp_path: Path) -> None:
+    for code in (False, True, None):
+        paths, rt = install(tmp_path / str(code), "gpu", code)
+        out = tune.tune(paths, rt, Flat())
+        assert out.flags is not None and (out.flags.ctx, out.flags.kv_type) == (32768, "f16")
+
+
+def test_a_slower_floor_or_a_bigger_size_that_does_not_load_is_decided_by_the_numbers(tmp_path: Path) -> None:
+    paths, rt = install(tmp_path / "a", "cpu-dev", False)
+    out = tune.tune(paths, rt, Flat(factor={16384: 0.8}))               # the floor is more than 5 % slower
+    assert out.flags is not None and out.flags.ctx == 32768
+    paths, rt = install(tmp_path / "b", "cpu-dev", False)
+    out = tune.tune(paths, rt, Flat(fail_ctx=(32768,)))                 # a bigger one that does not load
+    assert out.flags is not None and out.flags.ctx == 16384
+
+
+def down_client(paths: Paths):  # type: ignore[no-untyped-def]
+    import httpx
+
+    from ns_supervisor.client import SupervisorClient
+
+    def refuse(req: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("refused")
+
+    return SupervisorClient("http://sup", client=httpx.Client(transport=httpx.MockTransport(refuse)))
+
+
+def ns_tune(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, runner: Flat, profile: str, code: bool | None
+) -> str:
+    """What `ns tune` prints (the command, as the owner types it and as setup runs it)."""
+    from typer.testing import CliRunner
+
+    from ns_supervisor import cli
+
+    paths, _ = install(tmp_path, profile, code)
+    monkeypatch.setattr(cli, "_client", down_client)
+    monkeypatch.setattr(tune, "ProcessRunner", lambda p: runner)
+    res = CliRunner().invoke(cli.app, ["tune"], env={"NIGHTSHIFT_HOME": str(paths.home)})
+    assert res.exit_code == 0, res.output
+    return res.output
+
+
+WHY = "a larger one would take memory this PC needs for the jobs."
+FITS = "every use of the language model fits in (the largest, Nightshift Code, needs up to 16384)"
+
+
+def test_the_tune_line_says_the_context_and_why_on_the_cpu_profile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    said = ""
+    for i, code in enumerate((False, True)):
+        said = ns_tune(tmp_path / str(i), monkeypatch, Flat(), "cpu-dev", code)
+        assert f"context 16384 tokens: the smallest that {FITS}; {WHY}" in said
+    # setup shows the last eight lines of `ns tune`: the line is among them, before the closing one
+    lines = said.strip().splitlines()
+    assert lines[-2].startswith("context 16384 tokens") and lines[-1] == "Saved to runtime.json."
+
+
+def test_the_tune_line_is_true_when_the_smallest_context_was_slower_or_did_not_load(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    said = ns_tune(tmp_path / "a", monkeypatch, Flat(factor={16384: 0.8}), "cpu-dev", False)
+    assert f"context 32768 tokens: the smallest that {FITS} is 16384" in said
+    assert "more than 5 % slower or did not load" in said
+    assert f"smallest that {FITS};" not in said
+
+
+def test_the_gpu_profile_says_nothing_new_about_the_context(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    said = ns_tune(tmp_path, monkeypatch, Flat(), "gpu", True)
+    assert "memory this PC needs" not in said and "context 32768 tokens" not in said
+    assert said.rstrip().splitlines()[-1] == "Saved to runtime.json."

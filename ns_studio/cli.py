@@ -19,6 +19,7 @@ from ns_common.commandline import render
 from ns_common.errors import NsError
 from ns_common.keepawake import keep_awake
 from ns_common.models import Channel, JobRunRequest, Voice
+from ns_common.paths import Paths
 from ns_studio import dashboard_cmd, jobs, notifications, ownership, review, voice_setup
 from ns_studio.calibrate import run as calibration
 from ns_studio.channels import cadence, crud
@@ -740,7 +741,10 @@ def status_cmd(
 ) -> None:
     """Per-channel status, performers, rejections, incidents, or the go/no-go verdict."""
     with guarded():
+        made_new = jobs.db_is_new(Paths.from_env())
         env = jobs.open_env(light=True)
+        if made_new:
+            echo(jobs.NEW_DB_NOTE.format(db=env.paths.db_path))
         chans = [crud.get_channel(env.paths, channel)] if channel else crud.all_channels(env.paths)
         if not chans:
             echo("no channels configured")

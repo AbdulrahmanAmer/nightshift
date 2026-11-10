@@ -1092,16 +1092,17 @@ def test_an_install_cmd_update_through_the_setup_window_keeps_the_state_file_the
 def test_the_uninstallers_remove_the_settings_copy_with_the_program_backup(tmp_path: Path) -> None:
     """The copy holds the owner's settings: an uninstall must not leave it behind beside the backup."""
     from installer.stage2.web import uninstall
+    from ns_common.psquote import ps_literal
 
     script = uninstall.deferred_script(tmp_path / "ns", [1])
-    assert str(tmp_path / "ns" / "app.prev-config.zip").replace("'", "''") in script
+    assert ps_literal(str(tmp_path / "ns" / "app.prev-config.zip")) in script
     # (and the marker a failed restore leaves beside it)
-    assert str(tmp_path / "ns" / "app.prev-config.zip.unrestored").replace("'", "''") in script
+    assert ps_literal(str(tmp_path / "ns" / "app.prev-config.zip.unrestored")) in script
     ps1 = (ROOT / "installer" / "uninstall.ps1").read_text(encoding="utf-8")
     assert "'app.prev-config.zip'" in ps1 and "'app.prev-config.zip.unrestored'" in ps1
     # F-10c: the copy's lock file and the record of a rollback in progress go too
     for name in ("app.prev-config.zip.lock", "app.rollback-pending.json"):
-        assert str(tmp_path / "ns" / name).replace("'", "''") in script and f"'{name}'" in ps1
+        assert ps_literal(str(tmp_path / "ns" / name)) in script and f"'{name}'" in ps1
 
 
 # --------------------------------------------------------------------------------------- the file list

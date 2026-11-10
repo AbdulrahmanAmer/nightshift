@@ -3,11 +3,13 @@ cleaned caption words beside the plan (spec 19.5, 17.2). Synthetic job files, fa
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from ns_common.errors import NsError
 from ns_common.llm_client import FakeLlm
 from ns_common.models import Rect, Transcript
 from ns_studio.clipper import select
@@ -191,3 +193,88 @@ def test_the_fixture_answer_carries_caption_text_and_the_stage_cleans_with_it(tm
     assert len(shown) == len(heard)  # one string per ASR word
     assert shown != [w.w for w in heard]  # "circles!" and "laps," differ from what the recogniser wrote
     assert "circles!" in shown and "laps," in shown
+
+
+# ---------- D-44: a window whose answer is cut is asked again as two halves ----------
+SPEECH = "We took the long way round the mountain and it paid off in the end."
+
+
+def _long_transcript(seconds: float) -> dict[str, Any]:
+    """Nonstop speech for `seconds`: a segment every 6 s, its words spread over it."""
+    segments: list[dict[str, Any]] = []
+    words: list[dict[str, Any]] = []
+    tokens = SPEECH.split()
+    for i in range(int(seconds / 6.0)):
+        start = i * 6.0
+        slot = 5.8 / len(tokens)
+        for j, tok in enumerate(tokens):
+            w_start = round(start + j * slot, 3)
+            words.append({"w": tok, "start": w_start, "end": round(start + (j + 0.8) * slot, 3), "seg": i})
+        segments.append({"i": i, "start": start, "end": words[-1]["end"], "text": SPEECH})
+    return {"source": "long.mp4", "duration_s": seconds, "segments": segments, "words": words}
+
+
+class _CutsLongWindows(FakeLlm):
+    """`clip_select` answers are cut (NS-E302, as `complete_json` raises after its repair) for any window
+    longer than `limit_s`; a shorter one gets one moment inside it."""
+
+    def __init__(self, limit_s: float) -> None:
+        super().__init__(LLM_FIXTURES, overrides={"clip_judge": {"ok": True, "reasons": []}})
+        self.limit_s = limit_s
+        self.windows: list[tuple[float, float]] = []
+
+    def complete_json(self, **kw: Any) -> dict[str, Any]:
+        if kw["prompt_name"] != "clip_select":
+            return super().complete_json(**kw)
+        import re
+
+        found = re.search(r"Window: ([\d.]+) s to ([\d.]+) s", kw["user"])
+        assert found is not None
+        ws, we = float(found.group(1)), float(found.group(2))
+        self.windows.append((ws, we))
+        if we - ws > self.limit_s:
+            raise NsError("NS-E302", f"clip_select: {{\"clips\": [{{\"k\": 1, \"start_s\": {ws}")
+        return {"clips": [_clip(start_s=ws + 30.0, end_s=ws + 80.0, title=f"At {ws:.0f}")]}
+
+
+def _long_job(tmp_home: Path, llm: FakeLlm, seconds: float = 720.0) -> JobContext:
+    ctx = make_ctx(tmp_home, fmt="clip")
+    ctx.write_json("transcript.json", _long_transcript(seconds))
+    base = {"width": 1280, "height": 720, "aspect": 1.778, "duration_s": seconds, "fps": 30.0}
+    ctx.write_json("analysis.json", Analysis.model_validate(base).model_dump(mode="json"))
+    ClipParams(source="long.mp4", channel=ctx.channel.slug, rights_confirmed=True).save(ctx.job_dir)
+    ctx.services.llm = llm
+    return ctx
+
+
+def test_a_window_whose_answer_is_cut_is_asked_again_as_two_halves(tmp_home: Path) -> None:
+    llm = _CutsLongWindows(limit_s=sc.select.WINDOW_S - 1)
+    ctx = _long_job(tmp_home, llm)
+    try:
+        sc.SelectStage().run(ctx)
+        lost = ""
+    except NsError as e:
+        lost = e.code
+    assert lost == "", f"the window was lost with {lost}"
+    assert llm.windows == [(0.0, 720.0), (0.0, 420.0), (300.0, 720.0)]
+    assert sc.split_window(0.0, 720.0) == [(0.0, 420.0), (300.0, 720.0)]
+    titles = {c["title"] for c in ctx.read_json("clip_plan.json") if c["status"] == "kept"}
+    assert titles == {"At 0", "At 300"}  # the window is not lost: both halves' moments are in the plan
+    cached = json.loads(ctx.file("clip_candidates.json").read_text(encoding="utf-8"))
+    assert [len(v["clips"]) for v in cached.values()] == [2]  # the halves are cached as the window's answer
+    sc.SelectStage().run(ctx)  # a second run reads the cache: nothing is asked again
+    assert len(llm.windows) == 3
+
+
+def test_a_half_that_is_cut_again_fails_the_stage_and_a_short_window_is_not_split(tmp_home: Path) -> None:
+    llm = _CutsLongWindows(limit_s=100.0)
+    ctx = _long_job(tmp_home, llm)
+    with pytest.raises(NsError) as e:
+        sc.SelectStage().run(ctx)
+    assert e.value.code == "NS-E302"
+    assert llm.windows == [(0.0, 720.0), (0.0, 420.0)]  # one split only; the first half fails it
+    short = _CutsLongWindows(limit_s=100.0)
+    ctx2 = _long_job(tmp_home, short, seconds=sc.SPLIT_MIN_S)
+    with pytest.raises(NsError):
+        sc.SelectStage().run(ctx2)
+    assert short.windows == [(0.0, sc.SPLIT_MIN_S)]  # at or below SPLIT_MIN_S the window is not split

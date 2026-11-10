@@ -40,7 +40,11 @@ Keep this file next to `INSTALL.cmd`.
    your channel, narrator, model and night run time (Balanced is
    preselected; on a PC with less than 32 GB of memory Small is, and the window says why), paste a stock footage key if you have one (optional), and press **Install**.
    Setup then downloads the AI models (you see every file, the speed and the time left; **Pause** and **Resume**
-   work), installs, tunes itself for 1 to 3 minutes and plays you a test voice and a short test video.
+   work), installs, tunes itself for 1 to 3 minutes and plays you a test voice and a short test video. On a PC that
+   runs on the processor (no NVIDIA card: the engine test) the tune keeps the context small, 16384 tokens (the
+   smallest that every use of the language model fits in, with or without Nightshift Code), so the jobs keep their
+   memory; an install tuned by an earlier version keeps its settings until `ns tune` is run again, then restart
+   Nightshift (the running engine reads the context when it starts).
 8. At the end the window says **Nightshift is ready**, shows the **next three steps** (open the dashboard, press
    **Create it now** once while nothing else uses the graphics card, read tomorrow morning's note and check the
    schedule) and names a **help file** (a zip) on your Desktop. Send it back (see below). **Open dashboard** starts

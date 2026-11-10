@@ -84,11 +84,11 @@ from installer.stage2.winenv import (
     create_shortcut,
     desktop_dir,
     eval_ps_text,
-    ps_quote,
     put_commands_on_path,
     register_aumid_keeping,
     set_shortcut_aumid,
     set_user_env,
+    user_env_expression,
     user_path,
 )
 from ns_common.commandline import render
@@ -196,8 +196,7 @@ def own_folder(ctx: StepContext) -> Path:
 def home_var_now(ctx: StepContext) -> tuple[str, str | None]:
     """Whose NIGHTSHIFT_HOME (the user variable) is, seen from this install: (`mine` | `none` | `gone` |
     `other` | `unreachable` | `unread`, the folder it names). `unread`: Windows did not answer."""
-    expr = f"[Environment]::GetEnvironmentVariable('{ps_quote(HOME_VAR)}', 'User')"
-    named = eval_ps_text(ctx.runner, expr, tag="ps:get-env", meta={"name": HOME_VAR})
+    named = eval_ps_text(ctx.runner, user_env_expression(HOME_VAR), tag="ps:get-env", meta={"name": HOME_VAR})
     if named is None:
         return "unread", None
     if not named.strip():
