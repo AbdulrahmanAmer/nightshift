@@ -329,6 +329,7 @@ service, so set them before starting the engine, and restart the engine to chang
 | `NS_TTS_FAKE=1` | voice service | use the fake engine whatever `runtime.json` says (the test suite, CI); tone bursts |
 | `NS_TTS_FAKE_SPEECH=sapi` or `tones` | fake engine | force Windows speech or tone bursts for the fake voice (see "What the fake voice is") |
 | `NS_TTS_FAKE_DELAY_S=<seconds>` | fake engine | make design, clone and speech wait that long before they answer (below); default 0, at most 120 |
+| `NS_RELEASE_SOURCE=<address on this PC>` | updater | a dev or engine-test install reads its releases from a fake GitHub on this PC (below); every other install refuses it with NS-E704 |
 
 ### `NS_TTS_FAKE_DELAY_S`: a slow fake voice engine
 
@@ -354,6 +355,55 @@ speech request:
 - **Only the fake.** The qwentts and PyTorch engines never read the variable; with a real engine it does
   nothing.
 
+### `NS_RELEASE_SOURCE`: a fake GitHub for the updater
+
+`ns update --check` and `--github`, the Update button and the weekly check read the newest release from
+api.github.com, which never offers a release candidate. So that an update and a rollback can be proven on a
+test install before a release exists, a test install can be aimed at a fake GitHub that runs on the same PC.
+
+- **Who may use it.** A dev install (`dev_mode`) and an engine-test install: `fake_footage` or `tiny_story` is
+  `true` in `config/runtime.json`, or the voice engine there is `fake` (answer `fake_voice`). Setup writes those
+  switches; no setting and no dashboard call turns one on. A `runtime.json` that cannot be read is not a test
+  install.
+- **Every other install refuses it.** With the variable set, `ns update --check`, `--github` and the Update
+  button answer `NS-E704` ("A test release source is set on an install that is not a test install.") and ask
+  no release server, the fake or GitHub; the weekly check writes the same code to `logs/supervisor-*.jsonl`
+  (`update_check_failed`) and tries again at its next poll. `ns update --git` runs its `git fetch` from the
+  clone's own remote first, as always, and then stops with the same code before it changes anything. The
+  install does not go to GitHub instead. Empty or blank counts as not set.
+- **The owner is told.** A refusal does not clear by itself, so the weekly check tells the owner the first
+  time it meets one and then at most once a week while it lasts: a toast with the code, its message and its
+  hint, or a note the dashboard shows when there is no desktop, the toast fails or notifications are off
+  (`refused` in `config/update_check.json`; `update_refusal_told` in the log). A telling that could not be
+  delivered is tried again at the next poll, an hour later. The next check that works forgets the refusal.
+- **Getting rid of it.** Remove the variable wherever it is set: the user and the system environment variables
+  of Windows (`setx` writes the user's), the shell that started Nightshift, the scheduled task. Then restart
+  Nightshift (Stop All, then open the Dashboard): the engine and the dashboard keep the environment they
+  started with, and the Update button runs `ns update` with the dashboard's, so checking again without a
+  restart answers `NS-E704` again. A new shell is enough for `ns update --check` typed there.
+- **The loopback rule.** The value is the whole address of the releases answer, `http` or `https`, on
+  `127.0.0.1`, `localhost` or `::1`, without a user name, for example
+  `http://127.0.0.1:8765/repos/AbdulrahmanAmer/nightshift/releases/latest`. Anything else is `NS-E704` too.
+  The package and its checksum must be on the same scheme, host and port as that address: an asset anywhere
+  else (GitHub included) is not picked, and a redirect to another host is `NS-E701`. The client for a test
+  source ignores the proxy settings of the PC.
+- **Nothing else changes.** The release must still be a published one (a prerelease or a draft is `NS-E701`),
+  the zip must still match its SHA256 before it gets its name, and an unreachable fake is `NS-E105` or
+  `NS-E118` naming `test release source <host>:<port>`, never a quiet try at GitHub. The variable is read again
+  at the download: a release read from the fake is refused when the variable has gone or changed since
+  (`NS-E701`). Each read from the fake leaves `test_release_source` in `logs/update-*.jsonl`.
+- **Where it is read.** One function, `release_source` in `ns_supervisor/releases.py`, in the process that
+  asks, from the environment that process started with: set the variable in the shell that runs `ns update`
+  and, before the engine starts, in the environment it starts from (the dashboard and the update worker hand
+  theirs to the `ns update` child). Setting or removing it later reaches a running engine or dashboard only
+  after a restart. `ns update --rollback` and an update from a zip file read no release and ignore it.
+- **The fake.** `python proofs/_fakes/github.py --dir <folder>` serves the newest
+  `Nightshift-Update-<version>.zip` of the folder (what `dev/make_bundle.ps1` makes) as the latest release,
+  with the `.sha256` beside it when there is one and a digest it computes otherwise. It listens on 127.0.0.1,
+  writes `ready.json` (`port`, `pid`, `url`: the value for the variable) and `requests.jsonl` into the folder,
+  and is stopped by that pid. `--prerelease` marks the release a prerelease, to see the refusal.
+- **Tests.** `tests/test_release_source.py`.
+
 ## Where the code is
 
 | What | Where |
@@ -366,4 +416,5 @@ speech request:
 | the fake voice | `ns_tts/engine.py` (`FakeEngine`), `ns_tts/sapi.py` (Windows speech), `ns_studio/media/fake_voice.py` (job log, NS-E403 note) |
 | fake jobs | `ns_studio/jobs.py`, `ns_studio/series/workshop.py`, `ns_dashboard/studio_job.py` |
 | disabled task | `ns_supervisor/schedule.py` (`disabled=True`), `schedule_cfg.py` |
+| the test release source | `ns_supervisor/releases.py` (`release_source`), `proofs/_fakes/github.py` |
 | contracts | `Runtime.dev_mode`, `InstallState.dev_mode`, `GateReport.dev_mode` and their schemas |
