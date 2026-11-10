@@ -49,8 +49,10 @@ Runner = Callable[[list[str], float], "subprocess.CompletedProcess[str]"]
 
 
 def run_real(args: list[str], timeout_s: float) -> subprocess.CompletedProcess[str]:
-    """Run the real `nvidia-smi` (found on PATH, else left to Windows to find) with `args`."""
-    exe = shutil.which(SMI) or SMI
+    """Run the real `nvidia-smi` found on PATH with `args`; not on PATH: FileNotFoundError, no spawn."""
+    exe = shutil.which(SMI)
+    if exe is None:
+        raise FileNotFoundError(2, "nvidia-smi is not on PATH", SMI)
     return subprocess.run(
         [exe, *args],
         capture_output=True,
@@ -74,12 +76,33 @@ class SmiSource:
     def query(self, args: Sequence[str], timeout_s: float = QUERY_TIMEOUT_S) -> str | None:
         try:
             r = self.runner(list(args), timeout_s)
-        except (OSError, subprocess.SubprocessError):
+        except (OSError, subprocess.SubprocessError, UnicodeDecodeError):  # (a name the code page cannot read)
             return None
         return r.stdout if r.returncode == 0 else None
 
 
 REAL_SMI = SmiSource()
+
+#: The words every reader of the card's numbers puts beside them when they come from the simulated card.
+SIMULATED = "simulated (fake_gpu)"
+
+
+def simulated_mark(source: SmiSource | None) -> str | None:
+    """THE mark of a simulated reading (H-10): `"simulated (fake_gpu)"` when `source` is the simulated card,
+    None for the real tool. Every reader of the card's state (the status probe, `ns doctor` and its zip,
+    `ns verify`, any report or ledger written from these numbers) asks this one function and either puts the
+    mark beside what it shows or refuses to give the number as evidence (tests/test_fake_gpu.py fails on a
+    module that asks `smi_source` without it)."""
+    return SIMULATED if source is not None and source.simulated else None
+
+
+#: What a check that would measure the card gives instead on the simulated one (it is no evidence).
+SIMULATED_EVIDENCE = "simulated graphics card (fake_gpu)"
+
+
+def labelled(mark: str | None, value: str | None) -> str | None:
+    """`value` with the mark in front when it comes from the simulated card: `simulated (fake_gpu): ...`."""
+    return f"{mark}: {value}" if mark is not None and value is not None else value
 
 
 class GpuProbe(Protocol):
@@ -161,7 +184,8 @@ class NvidiaSmiGpuProbe:
 def source_probe(source: SmiSource) -> NvidiaSmiGpuProbe:
     """The status probe that asks `source` (the real tool, or the simulated card)."""
     return NvidiaSmiGpuProbe(
-        runner=lambda: source.query(PROBE_ARGS, PROBE_TIMEOUT_S), simulated=source.simulated
+        runner=lambda: source.query(PROBE_ARGS, PROBE_TIMEOUT_S),
+        simulated=simulated_mark(source) is not None,
     )
 
 
@@ -176,6 +200,9 @@ class NullGpuProbe:
 SIMULATED_NAME = "Simulated GPU (fake_gpu)"
 DEFAULT_TOTAL_MB = 16311            # the RTX 5060 Ti of the GPU PC (tests/fixtures/supervisor)
 SERVICE_OVERHEAD_MB = 500           # a tenant without its own number: its model file plus this
+DEFAULT_BASE_MB = 800               # the GPU PC with nothing of ours loaded used 812 MiB (the fixture)
+PER_PROCESS = ("na", "mb")
+PROC_TYPES = ("C", "G", "C+G")
 #: The services that are tenants of the simulated card and run a process (whisper runs in the studio).
 TENANTS: tuple[str, ...] = ("llama", "tts")
 #: What nvidia-smi prints (exit code 9) when it cannot reach the driver.
@@ -184,6 +211,7 @@ DRIVER_ERROR = (
     "NVIDIA driver is installed and running.\n\n"
 )
 FAILS = ("missing", "hang", "driver")
+NA = "[N/A]"                        # a CSV cell the driver does not report
 _IMAGE = {"llama": "llama-server.exe", "tts": "python.exe"}
 _UNIT = {"memory.used": "MiB", "memory.total": "MiB", "memory.free": "MiB", "utilization.gpu": "%",
          "used_memory": "MiB"}  # fmt: skip
@@ -195,12 +223,14 @@ class Card:
 
     name: str = SIMULATED_NAME
     total_mb: int = DEFAULT_TOTAL_MB
-    load_pct: float = 0.0
-    temp_c: float = 40.0
+    base_mb: int = DEFAULT_BASE_MB      # in use with nothing of ours loaded (the desktop, the driver)
+    load_pct: float | None = 0.0        # None: the driver reports `[N/A]`
+    temp_c: float | None = 40.0
     driver: str = "580.88"
     cuda: str = "13.0"
-    others: list[tuple[int, str, int]] = field(default_factory=list)   # pid, process name, MiB
-    services: dict[str, int] = field(default_factory=dict)              # tenant -> MiB
+    per_process: str = "na"             # "na": `[N/A]` per process, as under WDDM (the GPU PC); "mb": MiB
+    others: list[tuple[int, str, str, int]] = field(default_factory=list)  # pid, type, process name, MiB
+    services: dict[str, int] = field(default_factory=dict)                 # tenant -> MiB
     fail: str | None = None
     delay_s: float = 0.0
     problems: list[str] = field(default_factory=list)
@@ -236,10 +266,17 @@ def read_card(data: object) -> Card:
     for key, lo, hi in (("load_pct", 0.0, 100.0), ("temp_c", 0.0, 120.0), ("delay_s", 0.0, 600.0)):
         if key in data:
             v = _real(data[key])
-            if v is not None and lo <= v <= hi:
+            if data[key] is None and key != "delay_s":
+                setattr(card, key, None)        # the driver does not report it: `[N/A]`
+            elif v is not None and lo <= v <= hi:
                 setattr(card, key, v)
             else:
                 bad(key)
+    if "per_process" in data:
+        if data["per_process"] in PER_PROCESS:
+            card.per_process = str(data["per_process"])
+        else:
+            bad("per_process")
     for key in ("driver", "cuda"):
         if key in data:
             if isinstance(data[key], str) and data[key].strip():
@@ -261,6 +298,8 @@ def read_card(data: object) -> Card:
             bad(what)
         return max(0, min(n, card.total_mb))
 
+    if "base_mb" in data:
+        card.base_mb = mb(data["base_mb"], "base_mb")
     others = data.get("others", [])
     if not isinstance(others, list):
         bad("others")
@@ -271,7 +310,11 @@ def read_card(data: object) -> Card:
             bad(f"others[{i}]")
             continue
         name = o.get("name") if isinstance(o.get("name"), str) and o.get("name") else "app.exe"
-        card.others.append((pid, str(name), mb(o.get("mb"), f"others[{i}].mb")))
+        kind = o.get("type", "C")
+        if kind not in PROC_TYPES:
+            bad(f"others[{i}].type")
+            kind = "C"
+        card.others.append((pid, str(kind), str(name), mb(o.get("mb", 0), f"others[{i}].mb")))
     services = data.get("services", {})
     if not isinstance(services, dict):
         bad("services")
@@ -292,7 +335,12 @@ class FakeSmi:
     for what is wrong, and one WARN `fake_gpu_file` per content. The engine's own tenants (`tenants()`: pid ->
     service, else the children in `run\\supervisor.json`) use the MiB the file gives each service, by default
     the size of the model file plus 500 (llama) or 500 (the voice service); the file's `others` are
-    programs that are not Nightshift's. `fail` makes it fail as the real tool does: `missing` (not found),
+    programs that are not Nightshift's (`type` C, G or C+G as the table prints it; only C is a compute app).
+    memory.used is `base_mb` (800, the GPU PC's idle 812 MiB) plus every program's MiB. Per process the
+    default is what the GPU PC prints under WDDM: `[N/A]` (the table: N/A), so `procs.vram_mb` is None there
+    as on the target; `per_process: "mb"` gives the MiB instead (a TCC or Linux driver; not the GPU PC).
+    For the GPU PC's recorded state the table is byte for byte the recording (tests/test_fake_gpu.py).
+    `fail` makes it fail as the real tool does: `missing` (not found),
     `hang` (no answer within the caller's timeout), `driver` (exit code 9 and the driver error line).
     `delay_s` answers that much later (a delay at or past the timeout is a hang).
     """
@@ -373,14 +421,21 @@ class FakeSmi:
             size = 0
         return size // (1024 * 1024) + SERVICE_OVERHEAD_MB
 
-    def processes(self, card: Card) -> list[tuple[int, str, int]]:
-        """(pid, process name, MiB) of every program on the card: the engine's tenants, then the others."""
+    def processes(self, card: Card) -> list[tuple[int, str, str, int]]:
+        """(pid, type, process name, MiB) of every program on the card: the engine's tenants (compute, `C`),
+        then the others."""
         ours = [
-            (pid, _IMAGE.get(svc, "python.exe"),
+            (pid, "C", _IMAGE.get(svc, "python.exe"),
              min(card.services.get(svc, self._model_mb(svc)), card.total_mb))
             for pid, svc in sorted(self._tenants().items())
         ]  # fmt: skip
         return ours + card.others
+
+    @staticmethod
+    def used_mb(card: Card, procs: list[tuple[int, str, str, int]]) -> int:
+        """memory.used: what is in use with nothing of ours loaded, plus every program's MiB (whether or not
+        the driver reports them per process), held to the card's total."""
+        return min(card.total_mb, card.base_mb + sum(p[3] for p in procs))
 
     # ------------------------------------------------------------------ the tool
     def __call__(self, args: list[str], timeout_s: float) -> subprocess.CompletedProcess[str]:
@@ -411,17 +466,23 @@ class FakeSmi:
         fields = [f.strip() for f in names.split(",")]
         units = "nounits" not in fmt
         procs = self.processes(card)
-        used = min(card.total_mb, sum(mb for _, _, mb in procs))
+        used = self.used_mb(card, procs)
         if kind == "--query-gpu":
             values = {
-                "name": card.name, "utilization.gpu": round(card.load_pct), "memory.used": used,
+                "name": card.name, "memory.used": used,
+                "utilization.gpu": NA if card.load_pct is None else round(card.load_pct),
                 "memory.total": card.total_mb, "memory.free": card.total_mb - used,
-                "temperature.gpu": round(card.temp_c), "driver_version": card.driver,
+                "temperature.gpu": NA if card.temp_c is None else round(card.temp_c),
+                "driver_version": card.driver,
             }  # fmt: skip
             rows: list[list[Any]] = [[values.get(f) for f in fields]]
         else:
-            values_of = {"pid": 0, "process_name": 1, "name": 1, "used_memory": 2}
-            rows = [[p[values_of[f]] if f in values_of else None for f in fields] for p in procs]
+            # compute processes only (a C+G or G program such as dwm.exe is not listed); under WDDM the
+            # driver gives no per-process memory: `[N/A]`, which is what the GPU PC prints
+            compute = [p for p in procs if p[1] == "C"]
+            per = {"pid": lambda p: p[0], "process_name": lambda p: p[2], "name": lambda p: p[2],
+                   "used_memory": lambda p: p[3] if card.per_process == "mb" else NA}  # fmt: skip
+            rows = [[per[f](p) if f in per else None for f in fields] for p in compute]
         bad = next((f for f, v in zip(fields, rows[0] if rows else [], strict=False) if v is None), None)
         if bad is None and kind == "--query-compute-apps":
             bad = next((f for f in fields if f not in ("pid", "process_name", "name", "used_memory")), None)
@@ -435,12 +496,15 @@ class FakeSmi:
     def _report(self, card: Card) -> str:
         """The plain `nvidia-smi` table, laid out as the real one (tests/fixtures/supervisor)."""
         procs = self.processes(card)
-        used = min(card.total_mb, sum(mb for _, _, mb in procs))
+        used = self.used_mb(card, procs)
         bar = "+-----------------------------------------------------------------------------------------+"
         cells = "+-----------------------------------------+------------------------+----------------------+"
         top = f"NVIDIA-SMI {card.driver:<23}Driver Version: {card.driver:<15}CUDA Version: {card.cuda:<9}"
+        when = self.now()
+        temp = "N/A" if card.temp_c is None else f"{round(card.temp_c)}C"
+        load = "N/A" if card.load_pct is None else f"{round(card.load_pct)}%"
         out = [
-            self.now().strftime("%a %b %d %H:%M:%S %Y"),
+            f"{when:%a %b} {when.day:>2} {when:%H:%M:%S %Y}",  # nvidia-smi pads the day with a space
             bar,
             f"| {top}|",
             "|-----------------------------------------+------------------------+----------------------+",
@@ -449,8 +513,8 @@ class FakeSmi:
             "|                                         |                        |               MIG M. |",
             "|=========================================+========================+======================|",
             f"| {'  0  ' + card.name[:26]:<34}WDDM  |   00000000:01:00.0  On |                  N/A |",
-            f"|  30%   {round(card.temp_c):>2}C    P8              9W /  180W | "
-            f"{f'{used}MiB /  {card.total_mb}MiB':>22} | {f'{round(card.load_pct)}%':>7}      Default |",
+            f"|  30%  {temp:>4}    P8              9W /  180W | "
+            f"{f'{used}MiB /  {card.total_mb}MiB':>22} | {load:>7}      Default |",
             "|                                         |                        |                  N/A |",
             cells,
             "",
@@ -461,9 +525,10 @@ class FakeSmi:
             "|=========================================================================================|",
         ]
         if not procs:
-            out.append(f"| {'No running processes found':<87} |")
-        for pid, name, mb in procs:
-            out.append(f"|    0   N/A  N/A    {pid:>12}      C   {name[:34]:<34}{f'{mb}MiB':>10}      |")
+            out.append(f"|  {'No running processes found':<86} |")
+        for pid, kind, name, mb in procs:
+            mem = f"{mb}MiB" if card.per_process == "mb" else "N/A"
+            out.append(f"|    0   N/A  N/A{pid:>16}{kind:>7}   {_proc_name(name):<25}{mem:>19}      |")
         out += [bar, ""]
         return "\n".join(out)
 
@@ -475,7 +540,12 @@ def _head(f: str) -> str:
 
 def _cell(f: str, v: Any, units: bool) -> str:
     unit = _UNIT.get(f)
-    return f"{v} {unit}" if units and unit else str(v)
+    return f"{v} {unit}" if units and unit and v != NA else str(v)
+
+
+def _proc_name(name: str) -> str:
+    """The process name as the table prints it: 25 characters, a longer one cut at the front with `...`."""
+    return name if len(name) <= 25 else "..." + name[-22:]
 
 
 def smi_source(

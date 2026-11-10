@@ -352,8 +352,9 @@ or `tiny_story`, or a dev install), setup writes `fake_gpu: true` into `config\r
   every question (the status caches 2 s):
 
   ```json
-  {"name": "Simulated GPU (fake_gpu)", "total_mb": 16311, "load_pct": 0, "temp_c": 40,
-   "others": [{"pid": 4242, "name": "game.exe", "mb": 9000}],
+  {"name": "Simulated GPU (fake_gpu)", "total_mb": 16311, "base_mb": 800, "load_pct": 0, "temp_c": 40,
+   "per_process": "na",
+   "others": [{"pid": 4242, "type": "C", "name": "game.exe", "mb": 9000}],
    "services": {"llama": 6000, "tts": 500},
    "fail": null, "delay_s": 0}
   ```
@@ -361,7 +362,13 @@ or `tiny_story`, or a dev install), setup writes `fake_gpu: true` into `config\r
   Every key may be left out (missing file: these defaults, no other programs). `services` sets the MiB a running
   llama or voice service uses; without it, llama uses the size of its model file plus 500 and the voice service
   500. `others` are programs that are not Nightshift's (a game holding 9000 MiB is a card with less free memory
-  than a model asks). MiB values are held to 0..`total_mb`. `fail` makes nvidia-smi fail as the real one does:
+  than a model asks; `type` is C, G or C+G as the table prints it, and only C is listed as a compute app).
+  memory.used is `base_mb` (what is in use with nothing of ours loaded; the GPU PC showed 812 MiB) plus every
+  program's MiB. Per process the default `per_process: "na"` is what the GPU PC prints under WDDM: `[N/A]` (the
+  table says N/A), so the memory one service uses is unknown there as it is on the target; `"mb"` gives the MiB
+  instead (a TCC or Linux driver, not the GPU PC). `load_pct` or `temp_c` set to null is `[N/A]`. For the GPU
+  PC's recorded state the table is byte for byte its recording (tests/fixtures/supervisor). MiB values are held
+  to 0..`total_mb`. `fail` makes nvidia-smi fail as the real one does:
   `missing` (the tool is not there), `hang` (no answer within the caller's 5 s or 20 s), `driver` (exit code 9
   and "NVIDIA-SMI has failed because it couldn't communicate with the NVIDIA driver"); `delay_s` answers that much
   later. A file that cannot be read, or a value of the wrong kind, gives the defaults for what is wrong and one
@@ -370,8 +377,11 @@ or `tiny_story`, or a dev install), setup writes `fake_gpu: true` into `config\r
   is absent on a real card, so a real install's answer is unchanged); the Dashboard header shows a
   "Simulated card" chip and the Queue page's meters say "Simulated card (fake_gpu)"; Settings lists `fake_gpu`
   with the other test switches; `ns doctor` has a row `fake_gpu` (on, and where the numbers come from) and its
-  `nvidia-smi` row says "simulated (fake_gpu)"; the diagnostics zip's `nvidia-smi.txt` starts with "SIMULATED
-  (fake_gpu)"; the engine log says `fake_gpu_on` at every start.
+  `nvidia-smi` row says "simulated (fake_gpu)"; the diagnostics zip's `nvidia-smi.txt` starts with "simulated
+  (fake_gpu): not a real graphics card"; `ns verify` gives its idle-VRAM check as "n/a: simulated graphics card
+  (fake_gpu)" (never a number) and its report's `machine.gpu` as "simulated (fake_gpu): <name>"; the engine log
+  says `fake_gpu_on` at every start and a service's `vram_mb` line carries `card: simulated (fake_gpu)`. Every one
+  of them takes the words from one function, `ns_supervisor/gpu.py:simulated_mark`.
 - **The lease time for a proof.** `NS_FAKE_GPU_LEASE_S` in the environment of the process that starts the engine
   (read once, when the engine starts: restart the engine to change it) sets how long a silent `studio:` or
   Assistant lease is kept: a whole number of seconds from 30 to 600. Anything else keeps 600 s and logs WARN
@@ -382,8 +392,8 @@ or `tiny_story`, or a dev install), setup writes `fake_gpu: true` into `config\r
   it off. The way out: remove `fake_gpu` from `answers.json` and `config\runtime.json`, then restart Nightshift
   (Stop All, then open the Dashboard). The dashboard can never set it (`PUT /api/settings` refuses it with
   `test_switch`).
-- **What it does not prove.** The driver freeing memory when a process ends; nvidia-smi's real output under
-  WDDM (per process `[N/A]`); real load times and real CUDA out-of-memory text; NVENC; how fast the Assistant
+- **What it does not prove.** The driver freeing memory when a process ends; the real values nvidia-smi
+  prints on the GPU PC (only their shape is copied); real load times and real CUDA out-of-memory text; NVENC; how fast the Assistant
   and a job contend for a real card; anything a VRAM measurement decides. Those need the GPU PC. A dev
   install's studio runs its fakes in process (it takes no lease), so the nightly's lease is shown on an
   engine-test install.

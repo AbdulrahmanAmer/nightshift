@@ -28,7 +28,7 @@ from ns_common.logging import NsLogger
 from ns_common.models import Runtime
 from ns_common.paths import Paths
 from ns_supervisor import notify, presence, procs
-from ns_supervisor.gpu import GpuProbe, NullGpuProbe, SmiSource, smi_source, source_probe
+from ns_supervisor.gpu import GpuProbe, NullGpuProbe, SmiSource, simulated_mark, smi_source, source_probe
 from ns_supervisor.lock import GpuLock
 from ns_supervisor.schedule_cfg import read_run_time, seconds_until_next_run
 from ns_supervisor.services import SERVICES, ServiceDef, build_service
@@ -401,8 +401,10 @@ class Supervisor:
         rt.starting_since = None
         rt.vram_mb = await asyncio.to_thread(procs.vram_mb, proc.pid, self.smi)
         self.write_state()
-        self.log.info("service_ready", service=rt.name, pid=proc.pid, vram_mb=rt.vram_mb)
-        self._emit(rt, "ready", pid=proc.pid, vram_mb=rt.vram_mb)
+        mark = simulated_mark(self.smi)  # a simulated card's number says so wherever it is written (H-10)
+        card = {} if mark is None else {"card": mark}
+        self.log.info("service_ready", service=rt.name, pid=proc.pid, vram_mb=rt.vram_mb, **card)
+        self._emit(rt, "ready", pid=proc.pid, vram_mb=rt.vram_mb, **card)
 
     async def _ensure(self, rt: ServiceRuntime, d: ServiceDef, owner: str | None = None) -> None:
         """Make `rt` ready with definition `d`: reuse, restart on variant change, or start."""

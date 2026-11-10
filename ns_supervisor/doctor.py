@@ -41,7 +41,7 @@ from ns_common.uv import find_uv
 from ns_supervisor import launch_reach, procs
 from ns_supervisor.childenv import child_env, window_flags
 from ns_supervisor.client import SupervisorClient
-from ns_supervisor.gpu import smi_source
+from ns_supervisor.gpu import simulated_mark, smi_source
 
 MEDIA_SUFFIXES = frozenset(
     {".mp4", ".mkv", ".mov", ".webm", ".avi", ".wav", ".mp3", ".flac", ".m4a", ".aac", ".ogg"}
@@ -210,8 +210,9 @@ def build_bundle(
         else:  # this install's nvidia-smi: the simulated card says so on its first line (H-10)
             source = smi_source(paths)
             report = procs.nvidia_smi_report(source)
-            if report is not None and source.simulated:
-                report = SIMULATED_HEADER + report
+            mark = simulated_mark(source)
+            if report is not None and mark is not None:
+                report = simulated_header(mark) + report
         z.writestr("nvidia-smi.txt", report if report is not None else "nvidia-smi is not available\n")
         for venv in VENVS:
             text = freeze(paths, venv)
@@ -257,11 +258,12 @@ def diagnose(
     where = client.base_url if up else "not running (opening the Dashboard starts it)"
     rows.append(("supervisor", up, where))
     source = smi_source(paths)
-    if source.simulated:    # H-10: the simulated graphics card answers, and the row says it is one
+    mark = simulated_mark(source)
+    if mark is not None:    # H-10: the simulated graphics card answers, and the row says it is one
         name = procs.gpu_name(source)
         rows.append(("nvidia-smi", name is not None,
-                     f"simulated (fake_gpu): {name}" if name is not None
-                     else "simulated (fake_gpu): run\\fake_gpu.json makes it fail (\"fail\")"))  # fmt: skip
+                     f"{mark}: {name}" if name is not None
+                     else f"{mark}: run\\fake_gpu.json makes it fail (\"fail\")"))  # fmt: skip
     elif is_dev(paths):     # docs/DEV_MODE.md: a dev install has no graphics card to ask
         rows.append(("nvidia-smi", True, "not needed (dev mode)"))
     else:
@@ -281,10 +283,12 @@ def diagnose(
 
 
 #: The first line of `nvidia-smi.txt` in a diagnostics zip made on the simulated graphics card.
-SIMULATED_HEADER = (
-    "SIMULATED (fake_gpu): not a real graphics card. These numbers come from run\\fake_gpu.json "
-    "(docs/DEV_MODE.md, 'A simulated graphics card').\n"
-)
+def simulated_header(mark: str) -> str:
+    """The first line of `nvidia-smi.txt` in a diagnostics zip made on the simulated graphics card."""
+    return (
+        f"{mark}: not a real graphics card. These numbers come from run\\fake_gpu.json "
+        "(docs/DEV_MODE.md, 'A simulated graphics card').\n"
+    )
 
 
 def fake_gpu_row(paths: Paths) -> tuple[str, bool, str] | None:

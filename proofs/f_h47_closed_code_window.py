@@ -1,13 +1,16 @@
-"""Engine worked proof (H-10, box F-H47 through F-E30): a Nightshift Code console that holds the graphics
-card and is closed gives the card back within one monitor pass, and the next nightly job gets it at once.
+"""Engine worked proof (H-10, box F-E30): with the simulated graphics card, the engine frees the card within
+one monitor pass when the process whose pid was given at `/acquire` ends, and grants the next job at once.
 
 Run on an engine-test install with `fake_gpu` in effect (docs/DEV_MODE.md, "A simulated graphics card"), so
-the engine treats llama as a GPU tenant with the real lock, holder probe and release code. The holder is a
-stand-in for the console (`proofs/_fakes/console_holder.py`): it is acquired for with its pid in the same body
-`launchers/nightshift-code.ps1` sends (`/acquire llama owner opencode pid`), and ended by that pid, which is
-what the engine sees when the console is closed with X. The effect is what the engine answers on `/status`
-(`gpu_owner`), and the next owner's grant without waiting. The launcher's own window and OpenCode are not
-exercised here (the scope step says so).
+the engine treats llama as a GPU tenant with the GPU PC's lock, guard, holder probe and lease code. The holder
+is a stand-in process (`proofs/_fakes/console_holder.py`): it is acquired for with its pid in the same body
+`launchers/nightshift-code.ps1` sends (`/acquire llama owner opencode pid`), and ended by that pid
+(TerminateProcess). The effect is what the engine answers on `/status` (`gpu_owner`), and the next owner's
+grant without waiting.
+
+NOT shown, so box F-H47 is not claimed here: that closing the REAL Nightshift Code window with X ends the
+pid the launcher sent, in time. The launcher, its console window and OpenCode are not run; that half stays
+open for the GPU PC (F-H47 in docs/FEATURE_STATUS.md).
 """
 
 import json
@@ -19,7 +22,7 @@ from pathlib import Path
 
 PROOF = {
     "id": "f-h47-closed-code-window",
-    "boxes": ["F-H47", "F-E30"],
+    "boxes": ["F-E30"],  # not F-H47: no real launcher or window here (that is the GPU PC's open half)
     "install": "engine",
     "window": False,
     "needs": ["engine"],
@@ -75,8 +78,9 @@ def run(ctx):
         "scope",
         covers="POST /acquire llama owner opencode with the holder's pid, the holder ended by that pid, "
         "GET /status gpu_owner, the next owner's grant without waiting",
-        not_covered="the launcher's console window and OpenCode itself (the /acquire body is pinned by "
-        "tests/test_launchers.py), a real graphics card (docs/DEV_MODE.md: what fake_gpu does not prove)",
+        not_covered="box F-H47: closing the real Nightshift Code window with X (the launcher, its console "
+        "and OpenCode are not run; the /acquire body is pinned by tests/test_launchers.py), a real graphics card "
+        "(docs/DEV_MODE.md: what fake_gpu does not prove)",
     )
     cfg = ctx.read_json(Path(ctx.home) / "config" / "runtime.json")
     if not (isinstance(cfg, dict) and cfg.get("fake_gpu") is True):

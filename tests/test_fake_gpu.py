@@ -465,35 +465,48 @@ def test_nvidia_smi_is_answered_from_the_fake_file(tmp_path: Path, monkeypatch: 
     sup = engine(paths)
     st = sup.status()["gpu"]
     assert st is not None, "the simulated card gives no reading"
-    assert st == {"name": "Simulated GPU (fake_gpu)", "load_pct": 0.0, "vram_used_mb": 0, "vram_total_mb": 16311,
-                  "temp_c": 40.0, "simulated": True}  # fmt: skip  # no file: the defaults
-    fake_file(paths).write_text(json.dumps({
-        "name": "Simulated RTX", "total_mb": 16311, "services": {"llama": 3000},
-        "others": [{"pid": 4242, "name": "game.exe", "mb": 9000}],
-    }), encoding="utf-8")  # fmt: skip
+    assert st == {"name": "Simulated GPU (fake_gpu)", "load_pct": 0.0, "vram_used_mb": 800, "vram_total_mb": 16311,
+                  "temp_c": 40.0, "simulated": True}  # fmt: skip  # no file: the defaults (800 MiB base in use)
+    others = [{"pid": 4242, "name": "game.exe", "mb": 9000}]
 
     async def main() -> None:
         try:
+            # the default: per-process memory is [N/A], as the GPU PC prints under WDDM
+            fake_file(paths).write_text(json.dumps({"name": "Simulated RTX", "services": {"llama": 3000},
+                                                    "others": others}), encoding="utf-8")  # fmt: skip
+            await sup.acquire("llama", "opencode", "code")
+            pid = sup.services["llama"].proc.pid  # type: ignore[union-attr]
+            smi = smi_of(sup)
+            assert sup.services["llama"].vram_mb is None  # unknown, as on the target
+            assert procs.vram_mb(pid, *smi) is None and procs.vram_mb(4242, *smi) is None
+            assert procs.gpu_memory_used_mb(*smi) == 12800  # the base, llama and the game, per process or not
+            await sup.release("llama", "opencode")
+            await sup.stop_all()
+            # "mb": the MiB per process (a TCC or Linux driver; never the GPU PC)
+            fake_file(paths).write_text(json.dumps({
+                "name": "Simulated RTX", "total_mb": 16311, "per_process": "mb", "services": {"llama": 3000},
+                "others": others,
+            }), encoding="utf-8")  # fmt: skip
             await sup.acquire("llama", "opencode", "code")
             pid = sup.services["llama"].proc.pid  # type: ignore[union-attr]
             assert sup.services["llama"].vram_mb == 3000  # the ready step's sample
-            smi = smi_of(sup)
             assert procs.vram_mb(pid, *smi) == 3000 and procs.vram_mb(4242, *smi) == 9000
             assert procs.vram_mb(1, *smi) == 0
-            assert procs.gpu_memory_used_mb(*smi) == 12000 and procs.gpu_name(*smi) == "Simulated RTX"
+            assert procs.gpu_memory_used_mb(*smi) == 12800 and procs.gpu_name(*smi) == "Simulated RTX"
             report = procs.nvidia_smi_report(*smi)
-            assert report is not None and "game.exe" in report and "12000MiB /  16311MiB" in report
+            assert report is not None and "game.exe" in report and "12800MiB /  16311MiB" in report
             sup.gpu_probe = gpu.source_probe(sup.smi)  # a fresh probe: no 2 s cache in the way
-            assert sup.status()["gpu"] == {"name": "Simulated RTX", "load_pct": 0.0, "vram_used_mb": 12000,
+            assert sup.status()["gpu"] == {"name": "Simulated RTX", "load_pct": 0.0, "vram_used_mb": 12800,
                                            "vram_total_mb": 16311, "temp_c": 40.0, "simulated": True}  # fmt: skip
+            ready = [r for r in log_records(paths, "service_ready") if r["data"].get("vram_mb") == 3000]
+            assert ready and ready[-1]["data"].get("card") == "simulated (fake_gpu)"  # the number says so
         finally:
             await close(sup)
 
     asyncio.run(main())
     assert asked == [], "the real nvidia-smi was run while the switch is in effect"
-    # without the file: the defaults (llama's model file is missing here: 0 MB + 500)
     fake_file(paths).unlink()
-    assert procs.gpu_memory_used_mb(*smi_of(sup)) == 0  # nothing of ours runs any more
+    assert procs.gpu_memory_used_mb(*smi_of(sup)) == 800  # without the file: the base, nothing of ours runs
 
 
 def test_the_simulated_card_answers_in_nvidia_smis_own_shapes(tmp_path: Path) -> None:
@@ -504,12 +517,17 @@ def test_the_simulated_card_answers_in_nvidia_smis_own_shapes(tmp_path: Path) ->
     slept: list[float] = []
     fake = gpu.FakeSmi(paths, tenants=lambda: {4242: "llama"}, sleep=slept.append)
     src = gpu.SmiSource(fake, simulated=True)
-    real = FIXTURE.read_text(encoding="utf-8").splitlines()
     mine = (src.query([]) or "").splitlines()
-    assert [len(x) for x in mine[1:12]] == [len(x) for x in real[1:12]]  # the same table, line for line
     assert "CUDA Version: 13.0" in mine[2] and "16311MiB" in mine[9]
-    assert re.fullmatch(r"4242, \d+ MiB\n", src.query(["--query-compute-apps=pid,used_memory",
-                                                        "--format=csv,noheader"]) or "")  # fmt: skip
+    assert "llama-server.exe" in mine[18] and mine[18].rstrip().endswith("N/A      |")  # WDDM: N/A
+    compute = ["--query-compute-apps=pid,used_memory", "--format=csv,noheader"]
+    assert src.query(compute) == "4242, [N/A]\n"  # what the GPU PC prints for a compute app under WDDM
+    fake_file(paths).write_text('{"per_process": "mb"}', encoding="utf-8")
+    assert re.fullmatch(r"4242, \d+ MiB\n", src.query(compute) or "")
+    fake_file(paths).write_text('{"load_pct": null, "temp_c": null}', encoding="utf-8")
+    assert src.query(["--query-gpu=utilization.gpu,temperature.gpu", "--format=csv,noheader"]) == "[N/A], [N/A]\n"
+    assert (gpu.parse_nvidia_smi(src.query(gpu.PROBE_ARGS) or "") or GpuStatus(name="-")).load_pct is None
+    fake_file(paths).unlink()
     assert gpu.parse_nvidia_smi(src.query(gpu.PROBE_ARGS) or "") is not None
     assert src.query(["--query-gpu=bogus", "--format=csv,noheader"]) is None  # exit code 2, as the real one
     for fail, waited in (("missing", []), ("driver", []), ("hang", [5.0])):
@@ -528,6 +546,101 @@ def test_the_simulated_card_answers_in_nvidia_smis_own_shapes(tmp_path: Path) ->
     fake_file(paths).write_text("{not json", encoding="utf-8")
     assert fake2.query(["--query-gpu=name", "--format=csv,noheader"]) == "Simulated GPU (fake_gpu)\n"
     assert len(log_records(paths, "fake_gpu_file")) == 2  # two contents, one WARN each
+
+
+#: The GPU PC's state in the recording (tests/fixtures/supervisor/nvidia-smi-rtx-5060-ti.txt): one RTX 5060 Ti,
+#: driver 580.88 / CUDA 13.0, 812 of 16311 MiB in use, 2 %, 38 C, and dwm.exe (C+G, N/A) on it.
+RECORDED_STATE = {
+    "name": "NVIDIA GeForce RTX 5060 Ti", "base_mb": 812, "load_pct": 2, "temp_c": 38,
+    "others": [{"pid": 1234, "type": "C+G", "name": "C:\\Windows\\System32\\dwm.exe"}],
+}  # fmt: skip
+
+
+def test_for_the_recorded_state_the_fake_prints_the_recording_and_parses_the_same(tmp_path: Path) -> None:
+    """Faithfulness (review of fc689b8): the GPU PC's own nvidia-smi output and the fake's output for the same
+    state are the same bytes, and every parser of the product reads the same from both."""
+    from datetime import datetime
+
+    assert hasattr(gpu, "FakeSmi"), "there is no simulated card"
+    paths = engine_test_home(tmp_path)
+    fake_file(paths).write_text(json.dumps(RECORDED_STATE), encoding="utf-8")
+    src = gpu.SmiSource(
+        gpu.FakeSmi(paths, tenants=dict, now=lambda: datetime(2026, 11, 9, 3, 30, 11)), simulated=True
+    )
+    recorded = FIXTURE.read_text(encoding="utf-8")
+    assert src.query([]) == recorded  # the whole table, byte for byte (date, padding, N/A, widths)
+    # the numbers the table shows, read the same way out of both
+    cells = re.compile(r"(\d+)C\s+P\d.*?\|\s+(\d+)MiB /\s+(\d+)MiB \|\s+(\d+)%")
+    assert cells.search(recorded) is not None
+    assert cells.findall(src.query([]) or "") == cells.findall(recorded) == [("38", "812", "16311", "2")]
+    # the parsers, fed the recorded line shapes and the fake's answers for the same state
+    probe = gpu.parse_nvidia_smi(src.query(gpu.PROBE_ARGS) or "")
+    assert probe == gpu.parse_nvidia_smi(LINE_5060) == GpuStatus(
+        name="NVIDIA GeForce RTX 5060 Ti", load_pct=2.0, vram_used_mb=812, vram_total_mb=16311, temp_c=38.0
+    )
+
+    def answers(text: dict[str, str]) -> Callable[..., str | None]:
+        return lambda args, smi=None: text[args[0]] if args else recorded
+
+    real = answers({  # the recorded shapes: test_supervisor_procs.py and the fixture
+        "--query-gpu=name": "NVIDIA GeForce RTX 5060 Ti\n", "--query-gpu=memory.used": "812\n",
+        "--query-compute-apps=pid,used_memory": "",  # dwm.exe is C+G, not a compute app
+    })  # fmt: skip
+    for fn, args in ((procs.gpu_name, ()), (procs.gpu_memory_used_mb, ()), (procs.vram_mb, (1234,))):
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(procs, "_nvsmi", real)
+            from_real = fn(*args)  # type: ignore[operator]
+        assert fn(*args, src) == from_real, fn.__name__  # type: ignore[operator]
+    # a compute app under WDDM: the recorded "77, [N/A]" and the fake's default give the same unknown
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(procs, "_nvsmi", lambda args, smi=None: "77, [N/A]\n")
+        assert procs.vram_mb(77) is None
+    on_card = gpu.SmiSource(gpu.FakeSmi(paths, tenants=lambda: {77: "llama"}), simulated=True)
+    assert procs.vram_mb(77, on_card) is None
+
+
+def test_ns_verify_never_gives_a_simulated_number_as_evidence(tmp_path: Path) -> None:
+    """Review blocker 2: on a GPU-profile test install with the switch, `ns verify`'s idle-VRAM check is
+    "n/a: simulated graphics card (fake_gpu)" (no benchmark), and `machine.gpu` carries the mark."""
+    from ns_supervisor import verify
+    from ns_supervisor.testing import StubTable, SyncSupervisor
+
+    paths = Paths(tmp_path / "ns")
+    rt = Runtime.default("gpu").model_copy(update={"fake_footage": True, **({"fake_gpu": True} if SWITCH else {})})
+    save_runtime(paths, rt)
+    sync = SyncSupervisor(paths, rt, resolver=StubTable())
+    try:
+        deps = verify.Deps(whisper=lambda p, r: 1.5, nvenc=lambda: None, job=lambda p: 3.0, ram=lambda: 32.0,
+                           sleep=lambda s: None)  # fmt: skip
+        report = verify.run_verify(paths, rt, sync, deps=deps)
+    finally:
+        sync.close()
+    idle = next(c for c in report.checks if c.name == "vram.idle")
+    assert idle.value == "n/a: simulated graphics card (fake_gpu)", idle
+    assert "idle_vram_mb" not in report.benchmarks
+    assert report.machine["gpu"] == "simulated (fake_gpu): Simulated GPU (fake_gpu)"
+
+
+def test_every_reader_of_the_card_marks_a_simulated_reading() -> None:
+    """Review blocker 2, the class: a module that asks the card (`smi_source`, or a `procs` reader given a
+    source) must take the mark from `gpu.simulated_mark` (directly, or through `gpu.source_probe`). A new
+    reader that does not fails here."""
+    root = repo_root()
+    asks = re.compile(r"\bsmi_source\(|procs\.(?:vram_mb|gpu_memory_used_mb|nvidia_smi_report|gpu_name)\(")
+    out = subprocess.run(["git", "ls-files", "ns_*/*.py", "ns_*/**/*.py", "installer/*.py", "installer/**/*.py",
+                          "dev/*.py", "proofs/*.py"], cwd=root, capture_output=True, text=True,
+                         check=True).stdout.split()  # fmt: skip
+    readers = {}
+    for rel in sorted(set(out)):
+        if rel in ("ns_supervisor/gpu.py", "ns_supervisor/procs.py"):
+            continue
+        text = (root / rel).read_text(encoding="utf-8")
+        if asks.search(text):
+            readers[rel] = "simulated_mark(" in text or "source_probe(" in text
+    assert readers, "no reader of the card found: the pattern is stale"
+    assert set(readers) >= {"ns_supervisor/core.py", "ns_supervisor/doctor.py", "ns_supervisor/verify.py"}
+    unmarked = sorted(rel for rel, ok in readers.items() if not ok)
+    assert not unmarked, f"these read the card but never ask gpu.simulated_mark: {unmarked}"
 
 
 # ----------------------------------------------------------------- 6. simulated, and only then
