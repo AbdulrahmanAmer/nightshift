@@ -815,6 +815,15 @@ def _work(
         sys.stderr.write(f"{e}\nHint: {e.definition.hint}\n")
         message = f"{e.code}: {e.detail}"
         left = [str(v) for v in e.data.get("venvs_left") or []]
+        if e.data.get("record_left"):   # the repair record would refuse the start: none is tried
+            applied = bool(e.data.get("updated"))
+            if applied:
+                _tell(paths, log, watched, message, title=APPLIED_TITLE)
+            else:
+                _tell(paths, log, watched, message)
+            _final(paths, "failed", message, exit_code=1, record_left=True, relaunched=False,
+                   updated=applied, **base)
+            return 1
     except Exception as e:  # a worker has nobody to show a traceback to: log it, report failure
         sys.stderr.write(f"{type(e).__name__}: {e}\n")
         message = f"{type(e).__name__}: {e}"

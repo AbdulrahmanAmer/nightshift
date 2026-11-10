@@ -5,7 +5,8 @@ param(
     [string]$Studio = '',
     [string]$DesktopDir = '',
     [switch]$Cleanup,
-    [int]$UpdateWaitSeconds = 1800
+    [int]$UpdateWaitSeconds = 1800,
+    [int]$ClearWaitSeconds = 15
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -39,8 +40,13 @@ $ErrorActionPreference = 'Stop'
 #       power cut) is told once: its state becomes 'failed' with the sentence it left, and a morning note.
 #   S1-S4  <home>\run\venv-repair.json (written by the update before it changed anything) is replayed: its
 #       uv command lines, with its environment, then it is deleted and a morning note says so. A record of
-#       another program is stale and deleted; one that cannot be read, or a uv that fails, keeps the record
-#       and starts nothing (NS-W210, with the way out).
+#       another program is stale and deleted; one that cannot be read (read again for 2 s first: it may be
+#       held or swapped at that instant), or a uv that fails, keeps the record and starts nothing (NS-W210,
+#       with the way out). A delete that Windows refuses is retried for -ClearWaitSeconds (15), then the
+#       record is marked FINISHED by the sibling venv-repair.done, which names its id (a program that holds
+#       the record open blocks its delete, not a new file beside it); every reader takes a finished record
+#       as nothing pending (installer/stage2/web/venvrepair.py, the same rule). Only when neither works is
+#       it said, and nothing starts.
 #   S5  without a record, an environment that holds another Nightshift than the program (an older updater
 #       was interrupted) is said once, with INSTALL.cmd's Repair; the start goes on.
 $nsHome = $PSScriptRoot
@@ -54,6 +60,7 @@ $missedFile = Join-Path $runDir 'launch-missed.json'
 $lockFile = Join-Path $runDir 'update.lock'
 $stateFile = Join-Path $runDir 'update_state.json'
 $repairFile = Join-Path $runDir 'venv-repair.json'
+$doneFile = Join-Path $runDir 'venv-repair.done'
 $mixedTold = Join-Path $runDir 'venv-mixed-told.txt'
 $noteName = 'Nightshift did not run.txt'
 $noteStart = 'Nightshift could not start its nightly run on '
@@ -532,17 +539,94 @@ function Test-RecordFor {
     return ([bool][string]$Record.version -and (Get-VersionKey (Get-AppVersion)) -eq (Get-VersionKey ([string]$Record.version)))
 }
 
-function Invoke-Repair {
-    # S1 to S4. '' when nothing is left to do (no record, a stale one, or the replay worked); else the words.
-    if (-not (Test-Path -LiteralPath $repairFile -PathType Leaf)) { return '' }
+function Read-RepairRecord {
+    # S1: the record; $null when there is none. It is read with every share mode (this read never blocks a
+    # delete), and read again for up to 2 s while it cannot be read at this instant (held without read
+    # sharing, swapped right then); after that it throws: an unreadable record counts as unfinished.
+    $deadline = [DateTime]::UtcNow.AddSeconds(2)
+    while ($true) {
+        if (-not (Test-Path -LiteralPath $repairFile -PathType Leaf)) { return $null }
+        try {
+            $fs = New-Object System.IO.FileStream($repairFile, [IO.FileMode]::Open, [IO.FileAccess]::Read, ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
+            try { $text = (New-Object System.IO.StreamReader($fs, $utf8)).ReadToEnd() } finally { $fs.Dispose() }
+            $record = $text | ConvertFrom-Json
+            if ($null -eq $record -or $null -eq $record.PSObject.Properties['commands']) { throw 'it is not a repair record' }
+            if (@($record.commands).Count -eq 0) { throw 'it holds no command' }
+            return $record
+        } catch [System.IO.FileNotFoundException], [System.IO.DirectoryNotFoundException] {
+            return $null
+        } catch {
+            if ([DateTime]::UtcNow -ge $deadline) { throw }
+            Start-Sleep -Milliseconds 100
+        }
+    }
+}
+
+function Test-RecordFinished {
+    # The sibling venv-repair.done names this record's id: its replay or sync finished and only its delete
+    # was refused. A record without an id is never finished this way.
+    param($Record)
+    $rid = ''
+    if ($Record.PSObject.Properties['id']) { $rid = [string]$Record.id }
+    if (-not $rid) { return $false }
+    try { $done = [IO.File]::ReadAllText($doneFile) | ConvertFrom-Json } catch { return $false }
+    return ($null -ne $done -and $null -ne $done.PSObject.Properties['id'] -and [string]$done.id -ceq $rid)
+}
+
+function Test-RecordPending {
+    # A record that waits: there, and not finished (or there and unreadable).
+    try { $r = Read-RepairRecord } catch { return $true }
+    return ($null -ne $r -and -not (Test-RecordFinished $r))
+}
+
+function Remove-RepairRecord {
+    # S4 (this script holds run\update.lock): the record goes. The delete is retried for -ClearWaitSeconds
+    # while Windows refuses it; still refused, venv-repair.done gets its id (finished). '' when one of them
+    # worked; else why neither did (then nothing may start: every Python start would refuse the record).
+    param($Record)
+    $deadline = [DateTime]::UtcNow.AddSeconds([Math]::Max(0, $ClearWaitSeconds))
+    $pause = 10
+    $why = ''
+    while ($true) {
+        try {
+            if (Test-Path -LiteralPath $repairFile -PathType Leaf) { [IO.File]::Delete($repairFile) }
+            try { if (Test-Path -LiteralPath $doneFile -PathType Leaf) { [IO.File]::Delete($doneFile) } } catch { Write-Verbose 'the finished-marker of an older record is left' }
+            return ''
+        } catch {
+            $why = $_.Exception.Message
+            if ([DateTime]::UtcNow -ge $deadline) { break }
+            Start-Sleep -Milliseconds $pause
+            $pause = [Math]::Min($pause * 2, 250)
+        }
+    }
+    $rid = ''
+    if ($null -ne $Record -and $Record.PSObject.Properties['id']) { $rid = [string]$Record.id }
+    if (-not $rid) { return ('it could not be deleted (' + $why + ') and has no id to mark it finished') }
     try {
-        $record = [IO.File]::ReadAllText($repairFile) | ConvertFrom-Json
-        $commands = @($record.commands)
-        if ($commands.Count -eq 0) { throw 'it holds no command' }
-    } catch { return (Get-RepairWords ('the record ' + $repairFile + ' cannot be read (' + $_.Exception.Message + ')') '') }
+        Write-NsFileSwap -Path $doneFile -Text (ConvertTo-Json -Compress -InputObject ([ordered]@{ id = $rid; finished = [DateTime]::Now.ToString('s', $inv); delete_refused = $why }))
+    } catch { return ('it could not be deleted (' + $why + ') nor marked finished (' + $_.Exception.Message + ')') }
+    Write-LaunchLog 'WARN' 'venv_record_marked_finished' ('its delete was refused: ' + $why) $null
+    return ''
+}
+
+function Invoke-Repair {
+    # S1 to S4. '' when nothing is left to do (no record, a finished or stale one, or the replay worked);
+    # else the words.
+    try { $record = Read-RepairRecord }
+    catch { return (Get-RepairWords ('the record ' + $repairFile + ' cannot be read (' + $_.Exception.Message + ')') '') }
+    if ($null -eq $record) { return '' }
+    $commands = @($record.commands)
+    if (Test-RecordFinished $record) {
+        # finished; only its delete was refused earlier: the two files go now if they can
+        try { [IO.File]::Delete($repairFile); [IO.File]::Delete($doneFile) } catch { Write-Verbose 'the finished record is still held' }
+        return ''
+    }
     if (-not (Test-RecordFor $record)) {
-        Remove-Item -LiteralPath $repairFile -Force
-        Write-LaunchLog 'INFO' 'venv_record_stale' ('deleted: written for ' + [string]$record.version + ' at ' + [string]$record.app) $null
+        # (the Python gates ignore a stale record too: one that cannot be deleted now stops nothing)
+        try {
+            Remove-Item -LiteralPath $repairFile -Force
+            Write-LaunchLog 'INFO' 'venv_record_stale' ('deleted: written for ' + [string]$record.version + ' at ' + [string]$record.app) $null
+        } catch { Write-LaunchLog 'WARN' 'venv_record_stale' ('not deleted: ' + $_.Exception.Message) $null }
         return ''
     }
     $names = @()
@@ -577,7 +661,12 @@ function Invoke-Repair {
         $ErrorActionPreference = 'Stop'
         foreach ($k in $saved.Keys) { [Environment]::SetEnvironmentVariable($k, $saved[$k], 'Process') }
     }
-    Remove-Item -LiteralPath $repairFile -Force
+    $left = Remove-RepairRecord $record
+    if ($left) {
+        $what = 'its Python environments ' + $quoted + ' were refreshed, but the record ' + $repairFile + ' could not be removed: ' + $left + ', and every start of Nightshift refuses while it is there'
+        Write-LaunchLog 'WARN' 'venv_record_left' $what ([ordered]@{ code = 'NS-W210' })
+        return (Get-RepairWords $what '')
+    }
     $version = Get-AppVersion
     if ($names.Count -eq 1) { $now = "the Python environment " + $quoted + ' now matches' } else { $now = 'the Python environments ' + $quoted + ' now match' }
     $said = 'An interrupted update was finished on ' + $today + ': ' + $now + ' Nightshift ' + $version + '.'
@@ -650,7 +739,7 @@ function Test-BeforeStart {
     } catch {
         # nothing starts on a record that is still there, whatever went wrong while it was replayed
         Write-LaunchLog 'WARN' 'start_check_failed' $_.Exception.Message $null
-        if (Test-Path -LiteralPath $repairFile -PathType Leaf) {
+        if (Test-RecordPending) {
             return @{ what = 'repair'; text = (Get-RepairWords ('the repair stopped: ' + $_.Exception.Message) '') }
         }
     } finally { Unlock-Update $held }
@@ -707,7 +796,7 @@ if (Test-Path -LiteralPath $Launcher -PathType Leaf) {
         Write-Host $stop.text
         if ($stop.what -eq 'repair') {
             Write-Host ''
-            Write-Host 'The Diagnostics shortcut still works (it makes the diagnostics zip and does not start Nightshift), and so does the Outbox shortcut.'
+            Write-Host 'The Diagnostics shortcut still opens: it makes a diagnostics zip on the Desktop (a smaller one without Python when the full one cannot be made) and says which one it made. It does not start Nightshift. The Outbox shortcut opens too.'
         }
         Write-Host ''
         Read-Host 'Press Enter to close' | Out-Null
@@ -715,7 +804,8 @@ if (Test-Path -LiteralPath $Launcher -PathType Leaf) {
     }
     [void](Restore-AfterMiss $false)
     $global:LASTEXITCODE = 0
-    & $Launcher
+    if ($DesktopDir -and [IO.Path]::GetFileName($Launcher) -ieq 'diagnostics.ps1') { & $Launcher -DesktopDir $DesktopDir }
+    else { & $Launcher }
     exit $LASTEXITCODE
 }
 

@@ -531,7 +531,10 @@ until the next one. The commands such a message names are the `--detach` forms, 
 you type is the older version's, and from 0.1.14 to 0.1.15-rc3 only its `--detach` form works; for a version that
 has no `--detach` it names INSTALL.cmd. A failed update or rollback never says more than what is on the disk.
 Before it changes the program, an update or rollback writes `run/venv-repair.json` (the uv commands that fill the
-environments); it deletes it after the last one. If it stops in between (a program held a file, the packages were
+environments); it deletes it after the last one. When a program holds that file open at that moment and Windows
+keeps refusing the delete for 15 seconds, `run/venv-repair.done` marks it finished instead and every start reads it
+as done; only when neither can be written does the update stop before its check and say so, with Repair as the way
+out, keeping the program it put in place (it is not rolled back for that). If it stops in between (a program held a file, the packages were
 unreachable, the power went off), the next start from a Desktop shortcut or the nightly task runs those commands
 first and starts Nightshift only when they worked (a note on the Queue page says so); otherwise it says why
 (`NS-W210`) and starts nothing. Nothing starts from a shortcut while an update runs, and the nightly task waits up
@@ -541,8 +544,13 @@ the same lock as the update and refuse while a program runs from the environment
 an unattended setup (an answers.json beside INSTALL.cmd, or `-NoUi`) prints the same message and exits with 15
 when an update, rollback or repair holds the lock, and with 14 when programs still run from the environments or
 the running programs could not be listed (setup then refuses rather than guess). Every other start refuses as long
-as the record waits: `studio run`, `studio dashboard`, `ns verify` and a launcher started without its shortcut
-print `NS-W210` with the same way out and start no engine.
+as the record waits: `studio run`, the `studio voice` commands, `studio dashboard`, `ns verify` and a launcher
+started without its shortcut print `NS-W210` with the same way out before they write anything and start no engine;
+while an update is running they say that instead. After a repair that failed, the Diagnostics shortcut still opens:
+it makes the full diagnostics zip with `ns doctor --bundle`, and when that fails (the environment it runs from is
+the half-filled one) a smaller zip made without Python (the logs folder, `config/install_state.json`, `VERSION`,
+`run/venv-repair.json`, `run/update_state.json`; no settings and no keys), and says which one it made, or that none
+was made and which folder to send instead.
 From 0.1.14 and the 0.1.15 candidates up to rc3, update or go back with Settings > Updates, the Update shortcut or
 `ns update ... --detach`: their own `ns update` typed in a terminal without `--detach` fails on its own `ns.exe`
 (0.1.14's `ns update <zip>` then puts 0.1.14 back; rc3's `ns update --rollback` leaves one environment on the newer

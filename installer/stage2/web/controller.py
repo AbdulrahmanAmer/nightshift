@@ -1435,7 +1435,8 @@ class SetupController:
                             f"from Nightshift's Python environments, which it has to refresh ({why[:200]}). "
                             "Nothing was changed. Close every Nightshift window (Studio, terminals, "
                             "Nightshift Code, a Python prompt), then press Retry (or run INSTALL.cmd "
-                            "again)." + ENGINE_ASKED,
+                            "again). If it keeps failing, restart the PC, then press Retry (or run "
+                            "INSTALL.cmd again)." + ENGINE_ASKED,
                         )
                     raise bootstrap.BootstrapError(
                         "NS-E706",

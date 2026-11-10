@@ -174,6 +174,19 @@ def _program(paths: Paths) -> Path:
     return Path(st.app_path) if st.app_path else repo_root()
 
 
+def start_gate(paths: Paths, client: SupervisorClient | None = None) -> None:
+    """`NS-W210` when Nightshift may not start the engine now (`venvrepair.start_refusal`: a repair record
+    waits for the program in place, or an update is refreshing the environments). With `client`, an engine
+    that already answers lets it through, as `ensure_running` does. The CLI entries that will need the
+    engine (`studio run`, the voice commands, `ns verify`) call it first, so a refusal leaves nothing behind
+    (no job folder, no ledger row, no report)."""
+    if client is not None and client.is_up():
+        return
+    why = venvrepair.start_refusal(paths.home, _program(paths))
+    if why is not None:
+        raise NsError("NS-W210", why)
+
+
 def ensure_running(
     client: SupervisorClient,
     paths: Paths,
@@ -191,9 +204,7 @@ def ensure_running(
     refused then."""
     if client.is_up():
         return
-    why = venvrepair.start_refusal(paths.home, _program(paths))
-    if why is not None:
-        raise NsError("NS-W210", why)
+    start_gate(paths)
     if spawn is None and (port := urlsplit(client.base_url).port):
         ports.ensure_free({"supervisor": port})          # a foreign program holds it: say so
     (spawn or (lambda: spawn_supervisor(paths, headless=headless)))()

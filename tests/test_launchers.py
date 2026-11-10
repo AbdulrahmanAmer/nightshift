@@ -42,11 +42,13 @@ def test_script_hygiene(script: Path) -> None:
     raw.decode("ascii")  # ASCII only (also guards against a BOM)
     text = raw.decode("ascii")
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
-    if script.name == "nightshift-host.ps1":
+    if script.name == "nightshift-host.ps1" or lines[0].startswith("param("):
         # A script with a param() block must start with it; the two guard lines follow the block.
         start = lines.index("Set-StrictMode -Version Latest")
         assert lines[start + 1] == "$ErrorActionPreference = 'Stop'"
-        assert "[CmdletBinding()]" in lines[:start] and "param(" in lines[:start]
+        assert any(ln.startswith("param(") for ln in lines[:start])
+        if script.name == "nightshift-host.ps1":
+            assert "[CmdletBinding()]" in lines[:start] and "param(" in lines[:start]
     else:
         assert lines[0] == "Set-StrictMode -Version Latest"
         assert lines[1] == "$ErrorActionPreference = 'Stop'"
@@ -1565,7 +1567,7 @@ def test_after_a_failed_repair_the_diagnostics_and_outbox_shortcuts_still_open(t
         (launcher.parent / name).write_text(body, encoding="ascii")
     proc = _stub(home, "-Launcher", launcher)
     assert proc.returncode == 1 and _starts(launcher) == 0
-    assert "The Diagnostics shortcut still works" in _words(proc.stdout)
+    assert "The Diagnostics shortcut still opens" in _words(proc.stdout)
     for name in ("diagnostics.ps1", "open-outbox.ps1"):
         proc = _stub(home, "-Launcher", launcher.parent / name)
         assert proc.returncode == 0, proc.stdout + proc.stderr
@@ -1580,3 +1582,127 @@ def test_after_a_failed_repair_the_diagnostics_and_outbox_shortcuts_still_open(t
     finally:
         sleeper.kill()
         sleeper.wait(timeout=30)
+
+# ---- D-39b review @ e2d2bb0: the record's last step in the launch script, and the Diagnostics shortcut ----
+@needs_powershell
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows file sharing")
+def test_a_replayed_record_held_open_at_its_delete_is_marked_finished_and_nightshift_starts(
+    tmp_path: Path,
+) -> None:
+    from installer.stage2.web import venvrepair
+    from tests.test_venv_repair import _hold, _stop
+
+    home, launcher = _program_home(tmp_path)
+    record = _record(home, _uv(tmp_path), id="0123456789abcdef")
+    done = home / "run" / "venv-repair.done"
+    holder = _hold(record, 120)            # a reader (Python's open: no delete sharing) for the whole start
+    try:
+        proc = _stub(home, "-Launcher", launcher, "-ClearWaitSeconds", 1)
+        assert proc.returncode == 0 and _starts(launcher) == 1, proc.stdout + proc.stderr
+        assert record.exists()
+        assert json.loads(done.read_text(encoding="utf-8-sig"))["id"] == "0123456789abcdef"
+        assert venvrepair.read(home) is None and venvrepair.start_refusal(home, home / "app") is None
+        assert "venv_record_marked_finished" in [x["event"] for x in _lines(home)]
+        # the next start: finished, so no replay; the two files go once nothing holds them
+        proc = _stub(home, "-Launcher", launcher, "-ClearWaitSeconds", 1)
+        assert proc.returncode == 0 and _starts(launcher) == 2 and len(_ran(tmp_path)) == 2
+    finally:
+        _stop([holder])
+    assert _stub(home, "-Launcher", launcher).returncode == 0 and _starts(launcher) == 3
+    assert not record.exists() and not done.exists() and len(_ran(tmp_path)) == 2
+    # a record with no id cannot be marked: said, and nothing starts (every Python start would refuse it)
+    record = _record(home, _uv(tmp_path))
+    holder = _hold(record, 120)
+    try:
+        proc = _stub(home, "-Launcher", launcher, "-ClearWaitSeconds", 1)
+    finally:
+        _stop([holder])
+    said = _words(proc.stdout)
+    assert proc.returncode == 1 and _starts(launcher) == 3
+    assert "(NS-W210): its Python environments 'studio', 'supervisor' were refreshed, but the record" in said
+    assert "could not be removed" in said and "(Repair)" in said
+
+
+def _diagnostics_home(tmp_path: Path, doctor: str | None) -> tuple[Path, Path, Path]:
+    """A home whose replay fails (so the stub lets only Diagnostics and Outbox through), with the real
+    Diagnostics launcher and an `ns.exe` stand-in: a copy of this venv's python.exe launcher that runs the
+    file `doctor` from the working folder (`doctor` None: no ns.exe at all)."""
+    home, launcher = _program_home(tmp_path)
+    _record(home, _uv(tmp_path, fail=True))
+    for name in ("diagnostics.ps1", "_common.ps1"):
+        shutil.copy(LAUNCHERS / name, launcher.parent / name)
+    (home / "config" / "runtime.json").write_text("{}", encoding="ascii")
+    (home / "config" / "install_state.json").write_text('{"version": "0.2.0"}', encoding="ascii")
+    (home / "config" / "answers.json").write_text('{"pexels_api_key": "SECRET"}', encoding="ascii")
+    (home / "run" / "update_state.json").write_text('{"state": "failed"}', encoding="ascii")
+    (home / "logs" / "update-x.log").write_bytes(b"the update log\n")
+    work = tmp_path / "work"
+    work.mkdir()
+    if doctor is not None:
+        sup = home / "venvs" / "supervisor"
+        shutil.copy(Path(sys.executable), sup / "Scripts" / "ns.exe")
+        shutil.copy(Path(sys.prefix) / "pyvenv.cfg", sup / "pyvenv.cfg")
+        (work / "doctor").write_text(doctor, encoding="ascii")
+    return home, launcher.parent / "diagnostics.ps1", work
+
+
+def _stub_in(work: Path, home: Path, *args: object) -> "subprocess.CompletedProcess[str]":
+    exe = pwsh.find_powershell()
+    assert exe is not None
+    argv = [exe, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(home / "nightshift-launch.ps1"),
+            *(str(a) for a in args)]
+    return subprocess.run(argv, input="\n", capture_output=True, text=True, timeout=180, cwd=str(work),
+                          env={**os.environ, "NIGHTSHIFT_HOME": str(home)})
+
+
+DIES = "import sys\nsys.stderr.write(\"ModuleNotFoundError: No module named 'pydantic'\n\")\nsys.exit(1)\n"
+WORKS = (
+    "import sys, zipfile\nfrom pathlib import Path\n"
+    "out = Path(sys.argv[sys.argv.index('--out-dir') + 1]) / 'nightshift-diagnostics-2026-11-10-0300.zip'\n"
+    "with zipfile.ZipFile(out, 'w') as z:\n    z.writestr('VERSION', '0.2.0')\n"
+    "print(f'Diagnostics written to {out}')\n"
+)
+
+
+@needs_powershell
+@pytest.mark.skipif(sys.platform != "win32", reason="a venv launcher as the ns.exe stand-in")
+def test_the_diagnostics_shortcut_says_which_zip_it_made(tmp_path: Path) -> None:
+    import zipfile
+
+    # the supervisor environment is half-filled: ns.exe dies at import. A smaller zip, made without Python
+    home, diag, work = _diagnostics_home(tmp_path / "dies", DIES)
+    desk = tmp_path / "dies" / "Desk"
+    desk.mkdir()
+    proc = _stub_in(work, home, "-Launcher", diag, "-DesktopDir", desk)
+    said = _words(proc.stdout)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "(NS-W210)" in said and "The diagnostics zip is on your Desktop" not in said
+    assert "The full diagnostics zip could not be made (ns doctor --bundle ended with exit code 1" in said
+    (small,) = list(desk.glob("nightshift-diagnostics-small-*.zip"))
+    assert f"A smaller diagnostics zip was made without Python instead: {small}" in said
+    with zipfile.ZipFile(small) as z:
+        names = {n.replace("\\", "/") for n in z.namelist()}
+        assert {"logs/update-x.log", "install_state.json", "VERSION", "run/venv-repair.json",
+                "run/update_state.json", "bundle-notes.txt"} <= names, names
+        assert not any("answers" in n or "secrets" in n for n in names)
+        assert z.read([n for n in z.namelist() if n.endswith("update-x.log")][0]) == b"the update log\n"
+    assert not list((home / "run").glob("diagnostics-*")), "the staging folder was left"
+    # ns doctor --bundle works: its zip, named as it is
+    home, diag, work = _diagnostics_home(tmp_path / "works", WORKS)
+    desk = tmp_path / "works" / "Desk"
+    desk.mkdir()
+    proc = _stub_in(work, home, "-Launcher", diag, "-DesktopDir", desk)
+    said = _words(proc.stdout)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    full = desk / "nightshift-diagnostics-2026-11-10-0300.zip"
+    assert f"The diagnostics zip is on your Desktop: {full}" in said
+    assert not list(desk.glob("nightshift-diagnostics-small-*.zip"))
+    # neither can be made (the Desktop folder is gone): said plainly, with what to send instead
+    home, diag, work = _diagnostics_home(tmp_path / "none", DIES)
+    gone = tmp_path / "none" / "Desk"
+    proc = _stub_in(work, home, "-Launcher", diag, "-DesktopDir", gone)
+    said = _words(proc.stdout)
+    assert proc.returncode == 1 and not gone.exists()
+    assert "No diagnostics zip was made: the smaller zip without Python failed too" in said
+    assert "Instead, send the folder " in said and "venv-repair.json" in said
+    assert "zip is on your Desktop" not in said and "was made without Python instead" not in said

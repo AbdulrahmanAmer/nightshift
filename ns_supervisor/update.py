@@ -1239,7 +1239,7 @@ def _update_app(zip_path: Path, app: Path, env: UpdateEnv, *, paths: Paths) -> U
         if saved is not None and saved.wrote:
             config_snapshot.discard(config_snapshot.path_for(app))
         if recorded:          # (the new program never got to <app>: its record would be stale)
-            clear_record(paths, log)
+            drop_record(paths, log)
 
     try:
         shutil.rmtree(new, ignore_errors=True)
@@ -1291,13 +1291,17 @@ def _update_app(zip_path: Path, app: Path, env: UpdateEnv, *, paths: Paths) -> U
     at = "the refresh of the Python environments"
     try:
         env.sync(app)
-        clear_record(paths, log)    # W7: every venv holds the new program
+        clear_record(paths, app, log)    # W7: every venv holds the new program
         at = "the check of the new version"
         if not env.verify(app):
             raise NsError("NS-E702", "ns verify --quick failed on the new version")
         at = "the re-registration of the nightly task"
         notes += env.reregister(app)
         notes += _voice_notes(paths)
+    except RecordLeft as e:     # the update itself is good: it is not rolled back, and nothing is started
+        raise record_left_error(
+            f"The update to {new_version} was applied (was {old_version}). ", e, updated=True
+        ) from e
     except Exception as e:  # any step failing after the swap puts the previous version back
         log.error("update_failed", str(e))
         detail = e.detail if isinstance(e, NsError) else f"{type(e).__name__}: {e}"
@@ -1318,7 +1322,11 @@ def _update_app(zip_path: Path, app: Path, env: UpdateEnv, *, paths: Paths) -> U
         failed = f"The update to {new_version} failed at {at}: {_sentence(detail)}{put_back} "
         try:
             env.sync(app)
-            clear_record(paths, log)
+            clear_record(paths, app, log)
+        except RecordLeft as e2:
+            raise record_left_error(
+                f"{failed}{old_version}'s program is in place again. ", e2, updated=False
+            ) from e
         except Exception as e2:  # the program is back, an environment is not: said, and nothing is started
             log.error("rollback_sync_failed", str(e2))
             raise _unfinished(
@@ -1423,7 +1431,12 @@ def _rollback_app(app: Path, env: UpdateEnv, *, paths: Paths) -> UpdateResult:
             )
             try:
                 env.sync(app)
-                clear_record(paths, log)
+                clear_record(paths, app, log)
+            except RecordLeft as e:
+                raise record_left_error(
+                    f"An interrupted rollback had put {here}'s program in place, and it was finished now. ",
+                    e, updated=False,
+                ) from e
             except Exception as e:
                 log.error("rollback_sync_failed", str(e))
                 raise _unfinished(
@@ -1523,7 +1536,7 @@ def _rollback_app(app: Path, env: UpdateEnv, *, paths: Paths) -> UpdateResult:
             _swap_programs(app, prev, tmp)
         except OSError as e:
             if app.is_dir() and app_fingerprint(app) == left_fingerprint:  # the folders are as they were
-                clear_record(paths, log)
+                drop_record(paths, log)
                 raise NsError(
                     "NS-E702",
                     f"could not swap directories: {e}. {BUSY_HINT} {_undo_settings(app, paths, intent, log)}",
@@ -1557,7 +1570,12 @@ def _rollback_app(app: Path, env: UpdateEnv, *, paths: Paths) -> UpdateResult:
     )
     try:
         env.sync(app)
-        clear_record(paths, log)
+        clear_record(paths, app, log)
+    except RecordLeft as e:
+        raise record_left_error(
+            f"The rollback to {now} was applied. {prepared.sentence} {now}'s program is in place. ",
+            e, updated=True,
+        ) from e
     except Exception as e:  # the older program and its settings are in place: finish forward, never swap back
         log.error("rollback_sync_failed", str(e))
         raise _unfinished(
@@ -1704,13 +1722,46 @@ def write_record(
     return True
 
 
-def clear_record(paths: Paths, log: NsLogger) -> None:
-    """W7: every venv is filled for the program in place, so the record goes. A delete that fails is only
-    logged: the launch script replays a record whose commands find nothing to do."""
+class RecordLeft(OSError):
+    """W7 could not end the record: its delete stayed refused and marking it finished failed too. Every
+    start refuses while it is there, so the run stops here (before any check that starts the engine), and
+    `sentence` says so with the way out."""
+
+    def __init__(self, sentence: str) -> None:
+        super().__init__(sentence)
+        self.sentence = sentence
+
+
+def clear_record(paths: Paths, app: Path, log: NsLogger) -> None:
+    """W7: every venv is filled for the program in place, so the record goes (`venvrepair.clear`: the delete
+    retried, then marked finished). `RecordLeft` when neither worked: the caller must not go on to
+    `ns verify --quick` (refused by the record) as if it were gone, and must not take it for a failed
+    sync either (that would roll a good update back)."""
+    try:
+        how = venvrepair.clear(paths.home)
+    except OSError as e:
+        log.error("venv_record_left", str(e), record=str(venvrepair.record_path(paths.home)))
+        raise RecordLeft(venvrepair.left_sentence(paths.home, app, str(e))) from e
+    if how == "marked":
+        log.warn("venv_record_marked_finished", "its delete was refused; marked finished",
+                 record=str(venvrepair.record_path(paths.home)))
+
+
+def drop_record(paths: Paths, log: NsLogger) -> None:
+    """The record of a program that never got to `<app>` (a swap that failed back) is stale: the gates
+    ignore it, and the next writer replaces it. A clear that fails is only logged."""
     try:
         venvrepair.clear(paths.home)
     except OSError as e:
-        log.warn("venv_record_left", str(e), record=str(venvrepair.record_path(paths.home)))
+        log.warn("venv_record_stale", f"not deleted: {e}")
+
+
+def record_left_error(lead: str, e: RecordLeft, *, updated: bool) -> NsError:
+    """The NS-E702 of a run whose program and environments are in place but whose record could not be
+    ended: nothing was checked or started (`record_left` keeps the worker from a start that would be
+    refused). `updated`: the program in place is the one this run went to."""
+    return NsError("NS-E702", f"{lead}{e.sentence} {update_job.NOT_STARTED}", where=e.sentence,
+                   record_left=True, updated=updated)
 
 
 def drop_stale_record(paths: Paths, app: Path, log: NsLogger) -> None:
@@ -1966,12 +2017,16 @@ def _git_update(
     at = "the refresh of the Python environments"
     try:
         env.sync(app)
-        clear_record(paths, log)
+        clear_record(paths, app, log)
         at = "the check of the new version"
         if not env.verify(app):
             raise NsError("NS-E702", "ns verify --quick failed on the new version")
         at = "the re-registration of the nightly task"
         notes = env.reregister(app) + _voice_notes(paths)
+    except RecordLeft as e:     # the commit and its environments are good: not undone, nothing started
+        raise record_left_error(
+            f"The update to {current_version(app)} was applied (was {old_version}). ", e, updated=True
+        ) from e
     except Exception as e:  # any step failing after the move goes back to the previous commit
         log.error("git_update_failed", str(e))
         run(["checkout", "--detach", head])
@@ -1985,7 +2040,11 @@ def _git_update(
         failed = f"The update failed at {at}: {_sentence(detail)}{put_back} "
         try:
             env.sync(app)
-            clear_record(paths, log)
+            clear_record(paths, app, log)
+        except RecordLeft as e2:
+            raise record_left_error(
+                f"{failed}The previous commit ({old_version}) is checked out again. ", e2, updated=False
+            ) from e
         except Exception as e2:  # the commit is back, an environment is not: said, and nothing is started
             log.error("rollback_sync_failed", str(e2))
             raise _unfinished(

@@ -286,11 +286,19 @@ class S04Venvs(Step):
         if ctx.flag("tts_fallback", False):
             ensure_tts_venv(ctx)
         # D-39b: every venv now holds this program, so a repair record (this program's, or a stale one of
-        # another) has nothing left to do; a delete that fails is replayed harmlessly at the next start
+        # another) has nothing left to do. Its delete is retried; still refused, it is marked finished
+        # (venvrepair.clear). When neither can be done the record would refuse every start: the step fails
+        # with that sentence (Retry), and the done-state below is not written.
         try:
-            venvrepair.clear(ctx.paths.home)
+            how = venvrepair.clear(ctx.paths.home)
         except OSError as e:
-            ctx.log.warn("venv_record_left", str(e))
+            ctx.log.error("venv_record_left", str(e))
+            raise make_error(
+                "NS-W210", venvrepair.left_sentence(ctx.paths.home, ctx.app_path, str(e))
+                + " Or press Retry once the program that holds it has ended.",
+            ) from e
+        if how == "marked":
+            ctx.log.warn("venv_record_marked_finished", str(venvrepair.record_path(ctx.paths.home)))
         # the done-state is written last, after every venv was filled (the wizard cleared it before the work)
         ctx.set_flag("venvs_installed", True)
         ctx.set_flag("venvs_version", ctx.manifest.version)

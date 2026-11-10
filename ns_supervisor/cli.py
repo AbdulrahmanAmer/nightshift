@@ -29,7 +29,7 @@ from ns_supervisor import (
     updater_copy,
     verify,
 )
-from ns_supervisor.client import SupervisorClient, ensure_running
+from ns_supervisor.client import SupervisorClient, ensure_running, start_gate
 from ns_supervisor.schedule_cfg import read_run_time
 from ns_supervisor.services import venv_python
 
@@ -133,9 +133,15 @@ def cmd_verify(
 
         raise typer.Exit(verify_downloads.run(paths, control.app_path(paths), typer.echo))
     rt = control.runtime_or_default(paths)
+    client = _client(paths)
+    try:        # D-39b: refused before anything is written (no report, no schedule change)
+        start_gate(paths, client)
+    except NsError as e:
+        typer.echo(f"Could not start the engine: {e}", err=True)
+        typer.echo(f"Hint: {e.definition.hint}", err=True)
+        raise typer.Exit(1) from e
     if quick:
         _settle_schedule(paths)
-    client = _client(paths)
     started_here = not client.is_up()
     try:
         ensure_running(client, paths, headless=True)

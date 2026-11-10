@@ -17,6 +17,28 @@ found by what it holds (``mixed``): the version of its ``nightshift-*.dist-info`
 VERSION, or two such folders. Its commands are not known, so it is said, with INSTALL.cmd's Repair as the way
 out (``ns doctor``, setup's checks, the launch script).
 
+The record's life (D-39b review @ e2d2bb0, blocker 1). It gates every start, so a record left behind by a
+clear that failed would refuse every start, the update's own ``ns verify --quick`` included, and a good
+update would be rolled back. Every writer and clearer holds ``run/update.lock`` (the update worker, setup's
+s04, the launch script), so no two of them act at once; readers take no lock.
+
+* write (``write``): a temp file swapped in (``write_text_atomic``): a reader sees the old record, the new
+  one or none, never a part. Each record carries a fresh ``id``.
+* clear (``clear``): the delete is retried for up to ``CLEAR_WAIT_S`` while Windows refuses it. What refuses
+  a delete is a program that has the file open without delete sharing (Python's ``open``, PowerShell's
+  ``ReadAllText``, a virus scanner), a read-only attribute, or an access rule on the file. None of those
+  stops a NEW file beside it, so a delete that still fails writes the sibling ``venv-repair.done`` holding
+  the record's ``id``: the record is then FINISHED, and every reader takes it as "nothing pending". (Writing
+  the finished state INTO the record would be refused by the same open file: a swap needs delete access to
+  the target.) Only when that write fails too (a read-only ``run`` folder, a full disk) does ``clear`` raise,
+  and the caller stops with a sentence that names the file and the way out. Killed between the failed delete
+  and the marker: the record stays unfinished, which is the state of a sync killed just before its clear
+  (the next start replays it: uv finds nothing to do).
+* read (``read``): a record that cannot be read at this instant (held without read sharing, replaced right
+  then) is read again for up to ``READ_WAIT_S`` before it counts as unreadable; a finished record and a
+  record deleted between the look and the read are None. A leftover marker never matches a newer record
+  (another ``id``), and the next writer removes it.
+
 Standard library only: the setup server and the wizard read it too.
 """
 
@@ -25,6 +47,8 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
+import uuid
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import datetime
 from pathlib import Path
@@ -35,6 +59,12 @@ from installer.stage2.web.deplock import version_key
 from ns_common.atomic import read_text_retry, write_text_atomic
 
 RECORD_NAME = "venv-repair.json"
+#: The sibling that says the record of this ``id`` is finished (its delete was refused).
+DONE_NAME = "venv-repair.done"
+#: How long a refused delete of the record is retried (a scanner or a reader lets go within seconds).
+CLEAR_WAIT_S = 15.0
+#: How long a record that cannot be read at this instant is read again before it counts as unreadable.
+READ_WAIT_S = 2.0
 SCHEMA = 1
 #: The launch script format that replays a record (``installer/launch.ps1``: ``# STUB_SCHEMA``).
 REPLAY_SCHEMA = 5
@@ -52,34 +82,165 @@ def write(
     home: Path, *, app: Path, for_app: str, version: str, uv: str, env: Mapping[str, str],
     commands: Sequence[tuple[str, Sequence[str]]], by: str, match: str = "marker",
 ) -> None:
-    """Write the record atomically (``OSError`` when it cannot be: the caller refuses before any change)."""
+    """Write the record atomically with a fresh ``id`` (``OSError`` when it cannot be: the caller refuses
+    before any change). A finished-marker of an earlier record is removed after it (it names another id, so
+    it never matched this one: a removal that fails changes nothing)."""
     data: dict[str, Any] = {
-        "schema": SCHEMA, "app": str(app), "match": match, "for_app": for_app, "version": version, "by": by,
+        "schema": SCHEMA, "id": uuid.uuid4().hex, "app": str(app), "match": match, "for_app": for_app,
+        "version": version, "by": by,
         "written": datetime.now().isoformat(timespec="seconds"), "uv": uv, "env": dict(env),
         "commands": [{"venv": venv, "argv": [str(a) for a in argv]} for venv, argv in commands],
     }
     target = record_path(home)
     target.parent.mkdir(parents=True, exist_ok=True)
     write_text_atomic(target, json.dumps(data, indent=2) + "\n")
+    _forget_done(home)
 
 
-def read(home: Path) -> dict[str, Any] | None:
-    """The record; None when there is none. ``ValueError`` when it is there and cannot be read whole."""
+def done_path(home: Path) -> Path:
+    """``<home>/run/venv-repair.done``: the id of a record that is finished, delete refused."""
+    return Path(home) / "run" / DONE_NAME
+
+
+def _forget_done(home: Path) -> None:
+    try:
+        done_path(home).unlink(missing_ok=True)
+    except OSError:
+        pass        # (it names an id no record will have again)
+
+
+def _read_json(path: Path, wait_s: float) -> Any:
+    """The JSON in ``path``, read again for up to ``wait_s`` while it cannot be read at this instant (held,
+    swapped right then). ``FileNotFoundError`` when it is gone; the last ``OSError``/``ValueError`` after
+    the wait."""
+    deadline = time.monotonic() + wait_s
+    while True:
+        try:
+            return json.loads(read_text_retry(path))
+        except FileNotFoundError:
+            raise
+        except (OSError, ValueError):
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.1)
+
+
+def finished(home: Path, record: Mapping[str, Any]) -> bool:
+    """True when the sibling ``venv-repair.done`` names this record's ``id``: its sync was finished and only
+    its delete was refused. A record without an id is never finished this way."""
+    rid = str(record.get("id") or "")
+    if not rid:
+        return False
+    try:
+        done = _read_json(done_path(home), READ_WAIT_S)
+    except (OSError, ValueError):
+        return False
+    return isinstance(done, dict) and str(done.get("id") or "") == rid
+
+
+def read_raw(home: Path, wait_s: float = READ_WAIT_S) -> dict[str, Any] | None:
+    """The record as it is on disk, finished or not; None when there is none. ``ValueError`` when it is
+    there and still cannot be read whole after ``wait_s``."""
     path = record_path(home)
     if not path.is_file():
         return None
     try:
-        data = json.loads(read_text_retry(path))
-    except OSError as e:
+        data = _read_json(path, wait_s)
+    except FileNotFoundError:
+        return None         # deleted between the look and the read: nothing waits
+    except (OSError, ValueError) as e:
         raise ValueError(f"{path} cannot be read ({e})") from e
     if not isinstance(data, dict) or not isinstance(data.get("commands"), list):
         raise ValueError(f"{path} is not a repair record")
     return data
 
 
-def clear(home: Path) -> None:
-    """Delete the record (``OSError`` when it is there and cannot be deleted)."""
-    record_path(home).unlink(missing_ok=True)
+def read(home: Path) -> dict[str, Any] | None:
+    """The record that still waits; None when there is none or it is finished (``finished``). ``ValueError``
+    when it is there and cannot be read whole, even after ``READ_WAIT_S``. Every Python reader comes here
+    (the start gate, setup's checks, ``ns doctor``, the updater)."""
+    data = read_raw(home)
+    if data is None or finished(home, data):
+        return None
+    return data
+
+
+def _unlink_waiting(path: Path, wait_s: float) -> None:
+    """Delete ``path`` (gone already counts), retried while Windows refuses it, for up to ``wait_s``."""
+    deadline = time.monotonic() + wait_s
+    pause = 0.01
+    while True:
+        try:
+            path.unlink(missing_ok=True)
+            return
+        except PermissionError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(pause)
+            pause = min(pause * 2, 0.25)
+
+
+def clear(home: Path, wait_s: float | None = None) -> str:
+    """The record goes: ``"deleted"`` (or there was none), or ``"marked"`` when its delete stayed refused
+    for ``wait_s`` (default ``CLEAR_WAIT_S``) and ``venv-repair.done`` now says it is finished. ``OSError``
+    when neither could be done: the record still waits, and the caller must not go on as if it did not
+    (see the module docstring: the record's life)."""
+    path = record_path(home)
+    try:
+        raw: dict[str, Any] | None = read_raw(home)
+    except ValueError:
+        raw = None          # (no id to mark: only the delete can end it)
+    try:
+        _unlink_waiting(path, CLEAR_WAIT_S if wait_s is None else wait_s)
+    except OSError as e:
+        rid = str((raw or {}).get("id") or "")
+        if not rid:
+            raise OSError(f"{path} could not be deleted ({e}), and it has no id to mark it finished") from e
+        try:
+            write_text_atomic(
+                done_path(home),
+                json.dumps({"id": rid, "finished": datetime.now().isoformat(timespec="seconds"),
+                            "delete_refused": str(e)}, indent=2) + "\n",
+            )
+        except OSError as e2:
+            raise OSError(
+                f"{path} could not be deleted ({e}) nor marked finished in {done_path(home)} ({e2})"
+            ) from e2
+        return "marked"
+    _forget_done(home)
+    return "deleted"
+
+
+def left_sentence(home: Path, app: Path, problem: str) -> str:
+    """What the owner reads when a finished record could neither be deleted nor marked finished: every
+    start refuses until it is gone, so it is named, with the way out."""
+    shortcut = (
+        "open Nightshift from a Desktop shortcut: it removes the record first. If that does not work, "
+        if stub_ready(home) else ""
+    )
+    return (
+        f"Its Python environments are filled, but the repair record {record_path(home)} could not be "
+        f"removed ({problem}), and every start of Nightshift refuses while it is there ({CODE}). Close every "
+        f"Nightshift window, then {shortcut}restart the PC and run INSTALL.cmd from the Nightshift "
+        f"{program_version(app) or 'unknown version'} zip and choose this folder (Repair)."
+    )
+
+
+def update_running(home: Path) -> bool:
+    """True while another process holds ``run/update.lock`` (an update, rollback, setup or the launch
+    script's replay): byte 0 is locked then, and reading it is refused. It only looks: taking the lock, even
+    for a moment, could make a starting update refuse itself. Off Windows: False (nothing to look at)."""
+    lock = Path(home) / "run" / "update.lock"
+    if sys.platform != "win32":
+        return False
+    try:
+        with open(lock, "rb") as fh:
+            fh.read(1)
+    except PermissionError:
+        return True         # (a lock violation: another process holds byte 0)
+    except OSError:
+        return False
+    return False
 
 
 def program_version(app: Path) -> str:
@@ -215,7 +376,27 @@ def start_refusal(home: Path, app: Path) -> str | None:
         if record is None or not matches(record, app):
             return None
         why = pending_sentence(home, app, record)
+    if update_running(home):    # (review note: a live update is not an interrupted one: other words)
+        why = running_sentence(home)
     return "Nightshift was not started: " + why.replace(f" ({CODE})", "", 1)
+
+
+def running_sentence(home: Path) -> str:
+    """While an update, rollback or repair holds ``run/update.lock`` and is refreshing the environments."""
+    state = Path(home) / "run" / "update_state.json"
+    progress = str(state)
+    try:
+        data = json.loads(read_text_retry(state))
+        log = data.get("log") if data.get("state") == "running" else None
+        if isinstance(log, str) and log:
+            progress = log      # (the running worker's own log)
+    except (OSError, ValueError, AttributeError):
+        pass
+    return (
+        "an update, rollback or repair of Nightshift is running now and is refreshing its Python "
+        f"environments ({CODE}). Start Nightshift again when it has finished: its window 'Nightshift update' "
+        f"shows the result, and so does {progress}; an update starts Nightshift by itself when it is done."
+    )
 
 
 def main(argv: Sequence[str]) -> int:

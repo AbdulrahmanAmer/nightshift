@@ -10,6 +10,7 @@ every test fails at an assertion.
 from __future__ import annotations
 
 import base64
+import contextlib
 import importlib
 import json
 import os
@@ -531,4 +532,229 @@ def test_unattended_setup_refuses_with_15_beside_an_update_and_14_when_it_cannot
     assert s.ctl.run_headless() == 14
     told = " ".join(" ".join(s.fx.console_lines).split())
     assert "NS-E706" in told and "could not list the running programs" in told and "Access denied" in told
+    assert "If it keeps failing, restart the PC, then press Retry" in told
     assert not any(len(c) > 1 and c[1] in ("venv", "pip") for c in s.cmd.calls), "a venv was changed"
+
+
+# --------------------------------- D-39b review @ e2d2bb0, blocker 1: the record's life, with a real holder
+HOLD = (
+    "import ctypes, sys, time\n"
+    "path, seconds, share = sys.argv[1], float(sys.argv[2]), int(sys.argv[3])\n"
+    "k = ctypes.windll.kernel32\n"
+    "k.CreateFileW.restype = ctypes.c_void_p\n"
+    "k.CreateFileW.argtypes = [ctypes.c_wchar_p, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p,\n"
+    "                          ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p]\n"
+    "h = k.CreateFileW(path, 0x80000000, share, None, 3, 0x80, None)\n"
+    "if h in (None, ctypes.c_void_p(-1).value): sys.exit(9)\n"
+    "print('held', flush=True)\n"
+    "time.sleep(seconds)\n"
+    "k.CloseHandle(ctypes.c_void_p(h))\n"
+)
+#: FILE_SHARE_READ | FILE_SHARE_WRITE, no FILE_SHARE_DELETE: how Python's `open` (a `studio` or `ns doctor`
+#: reading the record) and many scanners hold a file. 0: no sharing at all (nobody can even read it).
+LIKE_PYTHON_OPEN, EXCLUSIVE = 3, 0
+needs_windows = pytest.mark.skipif(sys.platform != "win32", reason="Windows file sharing")
+
+
+def _hold(path: Path, seconds: float, share: int = LIKE_PYTHON_OPEN) -> subprocess.Popen[str]:
+    """Another process that holds `path` open for `seconds`; returns once it holds it."""
+    proc = subprocess.Popen([sys.executable, "-c", HOLD, str(path), str(seconds), str(share)],
+                            stdout=subprocess.PIPE, text=True)
+    assert proc.stdout is not None and proc.stdout.readline().strip() == "held", proc.poll()
+    return proc
+
+
+def _stop(procs: list[subprocess.Popen[str]]) -> None:
+    for proc in procs:          # (each by the pid it was started with)
+        if proc.poll() is None:
+            subprocess.run(["taskkill", "/F", "/PID", str(proc.pid)], capture_output=True, check=False)
+        proc.wait(timeout=30)
+
+
+def _two_venvs(tmp_path: Path) -> tuple[Path, Paths]:
+    app, paths = program(tmp_path), Paths(tmp_path / "ns")
+    for name in ("studio", "supervisor"):
+        fill(paths, name, "0.1.0")
+    return app, paths
+
+
+@needs_windows
+def test_a_record_held_open_at_its_delete_never_rolls_a_good_update_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    vr = venvrepair()
+    assert vr is not None
+    held: list[subprocess.Popen[str]] = []
+    gate: list[str | None] = []
+    try:
+        for case, seconds, wait in (("half-second", 0.5, 15.0), ("whole-run", 120.0, 0.5)):
+            base = tmp_path / case
+            base.mkdir()
+            app, paths = _two_venvs(base)
+            monkeypatch.setattr(vr, "CLEAR_WAIT_S", wait)
+            uv = Uv(paths)
+
+            def sync(a: Path, uv: Uv = uv, paths: Paths = paths, seconds: float = seconds) -> None:
+                uv.sync(a)      # every venv filled; then a reader opens the record as the clear comes
+                held.append(_hold(record_file(paths), seconds))
+
+            def verify(a: Path, paths: Paths = paths) -> bool:     # what `ns verify --quick` passes first
+                gate.append(vr.start_refusal(paths.home, a))
+                return gate[-1] is None
+
+            result = update.update_app(make_zip(base), app, env_of(Env(), sync=sync, verify=verify),
+                                       paths=paths)
+            assert result.new_version == "0.2.0"
+            assert (app / "VERSION").read_text(encoding="utf-8").strip() == "0.2.0"
+            assert gate[-1] is None, f"{case}: the update's own check was refused: {gate[-1]}"
+            if case == "half-second":       # the retry outlasted the reader: gone, no marker
+                assert record_file(paths).exists() is False and not vr.done_path(paths.home).exists()
+                continue
+            # held for the whole run: still there, but marked finished, and every reader takes it so
+            rec = json.loads(record_file(paths).read_text(encoding="utf-8"))
+            assert json.loads(vr.done_path(paths.home).read_text(encoding="utf-8"))["id"] == rec["id"]
+            assert vr.read(paths.home) is None and vr.unfinished(paths.home, app) is None
+            assert vr.start_refusal(paths.home, app) is None
+            point_home_at(paths, app)
+            assert doctor.python_environments(paths, app)[1] is True
+            lines = "".join(f.read_text(encoding="utf-8") for f in paths.logs.glob("update-*.jsonl"))
+            assert '"venv_record_marked_finished"' in lines
+            # the reader lets go: a later run's record (another id) is not taken for finished by the marker
+            _stop(held)
+            vr.write(paths.home, app=app, for_app="x", version="0.2.0", uv="uv", env={},
+                     commands=[("studio", ["uv"])], by="update", match="version")
+            assert vr.read(paths.home) is not None and not vr.done_path(paths.home).exists()
+    finally:
+        _stop(held)
+
+
+@needs_windows
+def test_a_record_that_can_be_neither_deleted_nor_marked_stops_before_the_check_and_says_so(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    vr = venvrepair()
+    assert vr is not None
+    app, paths = _two_venvs(tmp_path)
+    monkeypatch.setattr(vr, "CLEAR_WAIT_S", 0.3)
+    real_write = vr.write_text_atomic
+
+    def full_disk(path: Path, text: str, **kw: Any) -> Path:
+        if path.name == "venv-repair.done":
+            raise OSError(28, "There is not enough space on the disk")
+        return real_write(path, text, **kw)
+
+    monkeypatch.setattr(vr, "write_text_atomic", full_disk)
+    e = Env()
+    uv = Uv(paths)
+    held: list[subprocess.Popen[str]] = []
+
+    def sync(a: Path) -> None:
+        uv.sync(a)
+        held.append(_hold(record_file(paths), 120))
+
+    try:
+        out = update_job.run_worker(
+            paths, lambda: update_job.Outcome(  # (never reached: the body raises)
+                str(update.update_app(make_zip(tmp_path), app, env_of(e, sync=sync), paths=paths)), "", ""),
+            log=paths.logs / "update-x.log", relaunch=FailingRestart(), watched=True,
+        )
+    finally:
+        _stop(held)
+    assert out == 1 and "verify" not in e.calls, "the check ran (and was refused) on a record that waits"
+    assert (app / "VERSION").read_text(encoding="utf-8").strip() == "0.2.0", "a good update was rolled back"
+    assert update.installed(paths) == {"studio": ["0.2.0"], "supervisor": ["0.2.0"]}
+    st = update_job.read_status(paths)
+    assert st["state"] == "failed" and st["record_left"] is True and st["relaunched"] is False
+    assert st["updated"] is True
+    said = " ".join(st["message"].split())
+    assert said.startswith("NS-E702: The update to 0.2.0 was applied (was 0.1.0).")
+    assert f"the repair record {record_file(paths)} could not be removed" in said
+    assert "not enough space" in said and "INSTALL.cmd from the Nightshift 0.2.0 zip" in said
+    assert "(Repair)" in said and said.endswith("Nightshift was not started.")
+    (note,) = notify.read_notes(paths)
+    assert note["title"] == update_job.APPLIED_TITLE
+    # the way out: once nothing holds it, the next clear (the launch script, setup's s04) ends it
+    assert vr.clear(paths.home) == "deleted" and vr.start_refusal(paths.home, app) is None
+
+
+@needs_windows
+def test_a_reader_rides_out_a_record_held_at_that_instant(tmp_path: Path) -> None:
+    app, paths = _unfinished_install(tmp_path)
+    vr = venvrepair()
+    assert vr is not None
+    holder = _hold(record_file(paths), 0.5, EXCLUSIVE)     # not even readable for half a second
+    try:
+        t0 = time.monotonic()
+        why = vr.start_refusal(paths.home, app)
+        assert why is not None and SAID in why and "cannot be read" not in why, why
+        assert time.monotonic() - t0 >= 0.3
+    finally:
+        _stop([holder])
+    # held past the bound: unreadable counts as unfinished (said as that), never as "nothing pending"
+    holder = _hold(record_file(paths), 120, EXCLUSIVE)
+    try:
+        why = vr.start_refusal(paths.home, app)
+        assert why is not None and "cannot be read" in why
+    finally:
+        _stop([holder])
+
+
+# ------------------------------------------------------- review notes: the CLI entries, a live update
+def test_studio_run_is_refused_before_it_writes_anything(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from typer.testing import CliRunner
+
+    from ns_studio import cli as studio_cli
+
+    from ns_common.config import save_runtime
+
+    app, paths = _unfinished_install(tmp_path)
+    save_runtime(paths, update.Runtime.default("gpu"))      # an install with models (dev mode fakes them all)
+    monkeypatch.setenv("NIGHTSHIFT_HOME", str(paths.home))
+    spawns = Spawns(monkeypatch)
+    made: list[str] = []
+    monkeypatch.setattr(studio_cli, "_setup_voice", lambda env: made.append("voice"))
+    monkeypatch.setattr(studio_cli, "_close_dead_work", lambda env: made.append("dead work"))
+    monkeypatch.setattr(studio_cli, "_run_jobs", lambda *a, **k: made.append("job"))
+    monkeypatch.setattr(studio_cli, "_daily", lambda *a, **k: made.append("night"))
+    monkeypatch.setattr(studio_cli, "keep_awake", contextlib.nullcontext)
+    home_env = {"NIGHTSHIFT_HOME": str(paths.home)}
+    for argv in (["run"], ["run", "--daily"], ["voice", "list"], ["voice", "preview", "x"]):
+        r = CliRunner().invoke(studio_cli.app, argv, env=home_env)
+        said = " ".join(r.output.split())
+        assert r.exit_code == 1 and "NS-W210" in said and SAID in said, (argv, r.output)
+    assert made == [] and spawns.calls == []
+    assert not paths.jobs_dir.exists() or not any(paths.jobs_dir.iterdir())
+    assert not (paths.data / "voice_preview.wav").exists()
+    # faked services need no engine: not refused
+    r = CliRunner().invoke(studio_cli.app, ["run", "--fake-services"], env=home_env)
+    assert r.exit_code == 0, r.output
+    assert made == ["voice", "dead work", "job"] and spawns.calls == []
+
+
+@needs_windows
+def test_a_start_during_a_live_update_says_an_update_is_running(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from ns_supervisor import client
+
+    app, paths = _unfinished_install(tmp_path)
+    Spawns(monkeypatch)
+    log = paths.logs / "update-live.log"
+    update_job.write_status(paths, "running", "Updating.", log=str(log), pid=os.getpid(), old="0.1.0")
+    holder = _hold_lock(paths.home / "run" / "update.lock")       # the worker, mid-sync
+    try:
+        err = raised(lambda: client.ensure_running(client.SupervisorClient("http://127.0.0.1:9"), paths,
+                                                   wait_s=0.1))
+        assert err is not None and err.code == "NS-W210"
+        said = " ".join(err.detail.split())
+        assert "an update, rollback or repair of Nightshift is running now" in said, said
+        assert str(log) in said and "interrupted" not in said and "INSTALL.cmd" not in said
+    finally:
+        holder.kill()
+        holder.wait(timeout=30)
+    # the update ended (killed: the OS dropped its lock): the words for an interrupted one again
+    down = client.SupervisorClient("http://127.0.0.1:9")
+    err = raised(lambda: client.ensure_running(down, paths, wait_s=0.1))
+    assert err is not None and SAID in err.detail and "INSTALL.cmd" in err.detail
