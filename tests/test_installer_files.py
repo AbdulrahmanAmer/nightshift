@@ -116,10 +116,16 @@ STDLIB_ONLY_NS_COMMON = {
     "ns_common.uv", "ns_common.vcruntime", "ns_common.secret_file", "ns_common.secrets_names",
     "ns_common.singleton",
     "ns_common.diskneed",     # H-6: the space an install needs (diskneed raises NsError)
-    # F-10a: the settings copy `ns update` keeps, also made by the setup server when INSTALL.cmd updates an
-    # install (appcopy.install_app). It lives beside the updater, not in ns_common (protected), and is
-    # standard library plus ns_common.atomic like the rest of this list.
-    "ns_supervisor.config_snapshot",
+    # F-10a/F-10c: the settings copy `ns update` keeps, also made by the setup server when INSTALL.cmd updates
+    # an install (appcopy.install_app), and the first-start guard every settings writer calls (the setup
+    # window's own writers too); the guard logs through ns_common.logging (standard library plus paths).
+    "ns_common.config_snapshot",
+    "ns_common.first_start",
+    "ns_common.logging",
+    # F-10c: the record of a rollback in progress, finished or undone by the first-start check; and the table
+    # of settings fields added since 0.1.14, whose plain-dict rule the setup window's answers writer uses.
+    "ns_common.rollback_intent",
+    "ns_common.new_fields",
 }
 # installer.stage2.devmode (dev mode numbers, stubs, mode switch) is stdlib-only too and shared by the setup
 # server and the wizard; the test below keeps it that way.

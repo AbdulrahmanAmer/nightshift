@@ -125,6 +125,10 @@ def test_wizard_flags_claims_in_the_llama_pair_rejection_hold() -> None:
     status = status_of("CR-C1-3")
     assert "nothing reads the `cuda` flag" in status
     assert "`ns_supervisor/doctor.py` only copies the file" in status
+    assert "`ns_common/config_snapshot.py`" in status and "only copies the file's bytes" in status
+    # Review asked that the audit name the module where F-10a put it, next to doctor.py; it moved in F-10c.
+    assert "`ns_supervisor/config_snapshot.py`" in status and "`ns_supervisor/doctor.py`" in status
+    assert not (ROOT / "ns_supervisor" / "config_snapshot.py").exists()
     s02 = source("installer/stage2/steps/s02_download_bins.py")
     assert 'ctx.set_flag("llama_pair"' in s02 and 'ctx.set_flag("cuda"' in s02
     assert 'flags.get("llama_pair")' in source("installer/stage2/verify_downloads.py")
@@ -132,16 +136,16 @@ def test_wizard_flags_claims_in_the_llama_pair_rejection_hold() -> None:
     cuda_read = re.compile(r"""(?<!\w)flags?(?:\.get)?\(\s*["']cuda["']|(?<!\w)flags\[\s*["']cuda["']\]""")
     assert [rel for rel, text in py_sources("installer").items() if cuda_read.search(text)] == []
     # No `ns_*` package reads the pair or the CUDA version; only doctor.py (the diagnostics zip) and
-    # config_snapshot.py (F-10a: the settings copy for `ns update --rollback`) touch the flags file, and both
-    # only copy its bytes.
+    # config_snapshot.py (F-10a, moved to ns_common by F-10c: the settings copy for `ns update --rollback`)
+    # touch the flags file, and both only copy its bytes.
     ns = py_sources("ns_common", "ns_dashboard", "ns_studio", "ns_supervisor", "ns_tts")
     # ns_common/diskneed.py (H-6) takes the pair as an ARGUMENT, from the setup plan that chose it, to size
     # the llama build; it never reads the flags file.
     assert [rel for rel, text in ns.items() if "llama_pair" in text] == ["ns_common/diskneed.py"]
     source_text = ns["ns_common/diskneed.py"]
     assert "wizard_flags" not in source_text and "flags.json" not in source_text
-    assert [rel for rel, text in ns.items() if "wizard_flags" in text] == [
-        "ns_supervisor/config_snapshot.py",
+    assert sorted(rel for rel, text in ns.items() if "wizard_flags" in text) == [
+        "ns_common/config_snapshot.py",
         "ns_supervisor/doctor.py",
     ]
     assert '_add_file(z, flags, "setup/wizard_flags.json", skipped)' in ns["ns_supervisor/doctor.py"]

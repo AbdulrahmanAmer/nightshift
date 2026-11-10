@@ -7,6 +7,7 @@ Used by the tests, by `dev/gate_m3_dashboard.py` and by `python -m ns_dashboard.
 
 from __future__ import annotations
 
+import itertools
 import json
 import shutil
 import tempfile
@@ -21,7 +22,6 @@ from typing import Any
 import yaml
 
 from ns_common import ffmpeg
-from ns_common.db import new_job_id
 from ns_common.paths import Paths
 from ns_common.tts_client import FakeTts
 from ns_dashboard.adapters import Adapters, MadeVoice, scan_voice_library
@@ -30,6 +30,19 @@ from ns_dashboard.state import LockedDb
 
 DEFAULT_CLIP_STAGES = ["import", "audio", "transcribe", "select", "detect", "captions", "render", "seo", "qc"]
 DEFAULT_RUN_STAGES = ["ideas", "story", "voice", "captions", "clips", "render", "qc"]
+
+_FAKE_IDS = itertools.count(1)
+
+
+def fake_job_id(slug: str, when: datetime | None = None) -> str:
+    """An id of the product's form (`<slug>-<yyyymmdd>-<4 hex>`) that cannot repeat in one process.
+
+    The product draws the four hex digits at random and takes the id by making the job's folder
+    (`ns_common.db.claim_job_id`). The fakes make no folder to claim with, and a random draw gave two seeded
+    outputs the same id about once in 300 runs of a 20-output test. A counter does not repeat (65535 ids per
+    process, far more than any test seeds)."""
+    when = when or datetime.now(UTC)
+    return f"{slug}-{when:%Y%m%d}-{next(_FAKE_IDS) % 0x10000:04x}"
 
 
 def clip_stage_names() -> list[str]:
@@ -137,7 +150,7 @@ class FakeRunAdapter:
         self.last_stages = list(stages)
         for _ in ctl.stages(stages):
             pass
-        job_id = new_job_id(channel)
+        job_id = fake_job_id(channel)
         ids: list[str] = []
         for k in range(1, (count or 1) + 1):
             title = f"Fake short {k} for {channel}"
@@ -188,7 +201,7 @@ class FakeClipAdapter:
             (source_id, channel, str(source_path), 1.0, now, params.get("template"),
              1 if params.get("rights_confirmed") else 0, source_path.stem),
         )
-        job_id = new_job_id(channel)
+        job_id = fake_job_id(channel)
         ctl.extras["studio_job_id"] = job_id
         ids: list[str] = []
         for k in range(1, max(1, min(int(params.get("max_clips") or 2), 2)) + 1):
@@ -513,7 +526,7 @@ class FakeSeriesAdapter:
         from ns_studio import diskroom
 
         diskroom.require_series_part_room(self.paths, None, fake=("clips",))
-        job_id = new_job_id(str(story["channel"]))
+        job_id = fake_job_id(str(story["channel"]))
         title = f"{story['title']} - Part {part['n']:02d}"
         self.db.execute(
             "INSERT INTO dashboard_jobs(job_id, kind, channel, status, message, created_at, params_json)"
@@ -553,11 +566,15 @@ class FakeBackupAdapter:
         self.restored: list[Path] = []
         self.fail_restore = False
         self.on_restore: Callable[[], None] | None = None  # tests look at the dashboard while the restore runs
+        self.last_notes: list[str] = []  # what the last export left out on purpose (like `RealBackupAdapter`)
+        self.leave_out: list[str] = []  # lines the next exports report as left out (a keys file, NS-W116)
+        self.restore_lines: list[str] = []  # extra result lines of a restore, e.g. a skipped keys file
 
     def export(self) -> Path:
         """Create `exports/nightshift-backup-<ts>.zip`."""
         stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
         out = self.paths.home / "exports" / f"nightshift-backup-{stamp}.zip"
+        self.last_notes = list(self.leave_out)
         out.parent.mkdir(parents=True, exist_ok=True)
         with zipfile.ZipFile(out, "w") as z:
             z.writestr("manifest.json", "{}")
@@ -572,7 +589,7 @@ class FakeBackupAdapter:
         if self.fail_restore:
             raise ApiError(422, "restore_failed", "That file could not be restored.", hint="not a backup")
         self.restored.append(zip_path)
-        return [f"restored {zip_path.name}"]
+        return [f"restored {zip_path.name}", *self.restore_lines]
 
     def uninstall_path(self) -> Path:
         """A path under the temp home."""
@@ -635,7 +652,7 @@ def seed_output(
     with_files: bool = True,
 ) -> str:
     """Insert an `outputs` row (and a video plus sheet in the outbox); returns the output id."""
-    job_id = job_id or new_job_id(channel)
+    job_id = job_id or fake_job_id(channel)
     title = title or f"Seeded {kind} {k}"
     if kind == "clip":
         path = fake_clip_path(paths, channel, f"source {job_id[-4:]}", k, title)

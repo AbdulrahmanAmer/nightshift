@@ -26,6 +26,7 @@ from installer.stage2.bridge import BridgeUi, SetupStopped
 from installer.stage2.context import StepContext
 from installer.stage2.devmode import BANNER, env_enabled, relax_checks, reset_for_mode_switch
 from installer.stage2.diagzip import write_console_install_report, write_fallback_bundle
+from installer.stage2.errors import describe_code
 from installer.stage2.runner import SubprocessRunner
 from installer.stage2.secrets import KEY_NAMES, KeyringStore, MemoryStore, ResilientStore
 from installer.stage2.simulate import FakeRunner
@@ -340,17 +341,23 @@ def build_context(args: argparse.Namespace, ui: Ui | None = None) -> StepContext
         say = ui  # the window (or console) the setup is shown in
 
         def warn(line: str) -> None:
-            """The key file's copy failed (NS-E120 lock, NS-E119, disk): log it, say it, and keep it.
+            """The key file's copy failed (NS-E120 lock, NS-E119, disk), or was saved on a drive without
+            permissions (NS-W116, once): log it, say it, and keep it.
 
             ``say`` alone is a log line: the setup window shows it as the running step's detail (cut to 160
             characters) and the next line replaces it. ``notice`` is the persistent part: the window keeps a
             setup notice with the code's message and hint, and the summary lists it (``ctx.warnings``).
             """
-            log.warn("secret_file_failed", line)
-            say.say(line, "yellow")
             found = re.search(r"NS-[EW]\d{3}", line)
             code = found.group(0) if found else "NS-E120"
-            warnings_sink.append((code, line))
+            log.warn("secret_file_unprotected" if code == "NS-W116" else "secret_file_failed", line)
+            say.say(line, "yellow")
+            if not bridge:  # the console has no notice card: the hint is printed as `ctx.warn` prints it
+                hint = describe_code(code).hint
+                if hint:
+                    say.say(f"    {hint}", "dim")
+            # the summary lists `<code> <detail>`: the line starts with the code, so it is not said twice
+            warnings_sink.append((code, re.sub(rf"^{code}:\s*", "", line)))
             say.notice(code, line)
 
         store = ResilientStore(KeyringStore(), paths, warn=warn)

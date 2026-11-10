@@ -243,7 +243,7 @@ else {
     # it, so the deferred cleanup of the window removes these.
     # app.failed and app.swap are what an interrupted `ns update` leaves beside the program folder;
     # app.prev-config.zip is the copy of the settings files an update keeps for `ns update --rollback`
-    foreach ($leaf in @('app', 'app.new', 'app.prev', 'app.prev-config.zip', 'app.prev-config.zip.unrestored', 'app.failed', 'app.swap')) { Remove-Tree -Path (Join-Path $nsHome $leaf) }
+    foreach ($leaf in @('app', 'app.new', 'app.prev', 'app.prev-config.zip', 'app.prev-config.zip.unrestored', 'app.prev-config.zip.lock', 'app.rollback-pending.json', 'app.failed', 'app.swap')) { Remove-Tree -Path (Join-Path $nsHome $leaf) }
 }
 if ($wipeModels) { Remove-Tree -Path (Join-Path $nsHome 'models') }
 if (-not $SkipSystem) {

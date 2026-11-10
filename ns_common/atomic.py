@@ -7,6 +7,7 @@ swap never crosses a volume), flushes it to disk and swaps it in with `os.replac
 either the old complete file or the new complete one, never a part of either.
 
 * `write_text_atomic`, `write_bytes_atomic`, `copy_atomic`, `write_stream_atomic`: a whole file at once.
+  `create_text_atomic`: the same, only when the file does not exist yet (a one-time flag; one writer wins).
 * `write_zip_atomic`: a zip built by a callback; `append_to_zip_atomic`: members added to a finished zip.
   (`ZipFile(path, "a")` overwrites the old central directory first, so a reader in that millisecond gets
   `BadZipFile`, and a crash there loses the zip for good; this builds the new zip beside it instead.)
@@ -230,6 +231,34 @@ def write_text_atomic(
         _discard(tmp)
         raise
     return path
+
+
+def create_text_atomic(path: Path, text: str) -> bool:
+    """Write `text` to `path` only when `path` does not exist yet; True when this call created it.
+
+    The whole file appears at once (a finished temp file is renamed in WITHOUT replacing), and of two writers
+    racing for the same name exactly one wins: a one-time flag (`config/keys_unprotected.json`) is claimed
+    once. On Windows `os.rename` refuses an existing target; elsewhere a hard link does (a rename would
+    replace it). Raises `OSError` when the file cannot be written at all; the temp file is removed either way.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = _tmp_for(path)
+    try:
+        with tmp.open("w", encoding="utf-8", newline="") as fh:
+            fh.write(text)
+            fh.flush()
+            with contextlib.suppress(OSError):
+                os.fsync(fh.fileno())
+        try:
+            if os.name == "nt":
+                os.rename(tmp, path)  # never replaces: FileExistsError when the name is taken
+            else:
+                os.link(tmp, path)
+        except FileExistsError:
+            return False
+        return True
+    finally:
+        _discard(tmp)  # gone after a rename (the unlink's FileNotFoundError is ignored); a link leaves it
 
 
 def write_bytes_atomic(path: Path, data: bytes, *, prepare: PrepareFn | None = None) -> Path:

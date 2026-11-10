@@ -23,6 +23,7 @@ from installer.stage2.winenv import (
     register_aumid,
     set_shortcut_aumid,
 )
+from ns_common import first_start
 from ns_common.atomic import write_text_atomic
 from ns_common.paths import Paths
 from ns_supervisor.notify import AUMID
@@ -88,6 +89,7 @@ def remember_run_time(paths: Paths, run_time: str) -> None:
     if not isinstance(data, dict):
         data = {}
     data["run_time"] = run_time
+    first_start.guard(target)
     write_text_atomic(target, json.dumps(data, indent=2) + "\n")
 
 

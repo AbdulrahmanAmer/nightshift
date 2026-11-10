@@ -110,13 +110,13 @@ export default function Settings() {
   };
   const [report, setReport] = useState<{ path?: string; name?: string; download_url?: string } | null>(null);
   const diag = async () => { try { const r = await api.post("/diagnostics"); setReport(r); toast(`Report saved to ${r?.path || "your Desktop"}`, "ok"); } catch (e: any) { toast(e.message, "bad"); } };
-  const [backup, setBackup] = useState<{ path?: string; name?: string; download_url?: string } | null>(null);
-  const exportSettings = async () => { try { const r = await api.post("/settings/export"); setBackup(r); toast(`Settings saved to ${r?.path || "your Desktop"}`, "ok"); } catch (e: any) { toast(e.message, "bad"); } };
+  const [backup, setBackup] = useState<{ path?: string; name?: string; download_url?: string; left_out?: string[]; note?: string } | null>(null);
+  const exportSettings = async () => { try { const r = await api.post("/settings/export"); setBackup(r); toast(`Settings saved to ${r?.path || "your Desktop"}${r?.note ? `. ${r.note}` : ""}`, r?.left_out?.length ? "warn" : "ok"); } catch (e: any) { toast(e.message, "bad"); } };
   const importSettings = async (f: File) => {
     const ok = await confirm({ title: "Restore these settings?", body: `${f.name} replaces your channels, voices and settings. What it replaces is kept in a backup folder first`, ok: "Restore" });
     if (!ok) return;
     const fd = new FormData(); fd.append("file", f);
-    try { const r = await api.upload("/settings/import", fd, () => {}); toast(r?.note || "Settings restored", "ok"); st.reload(); } catch (e: any) { toast(e.message, "bad"); }
+    try { const r = await api.upload("/settings/import", fd, () => {}); toast(r?.note || "Settings restored", r?.left_out?.length ? "warn" : "ok"); st.reload(); } catch (e: any) { toast(e.message, "bad"); }
   };
   const models = useLoad<ModelsState>(() => api.get("/models/state"), [], {});
   // Where UNINSTALL.cmd really is (<install folder>\app), so the row names the folder instead of "the Nightshift folder".
@@ -178,7 +178,7 @@ export default function Settings() {
           <Card as="section" aria-labelledby="s-keys">
             <CardHeader id="s-keys" title="Stock footage keys" className="!mb-1" />
             {["pexels", "pixabay"].map((k) => (
-              <SettingRow key={k} title={k[0]!.toUpperCase() + k.slice(1)} sub={s?.keys?.[k] ? <span className="font-mono">••••••••••••••••</span> : "Missing. Stories may run short of footage"}>
+              <SettingRow key={k} title={k[0]!.toUpperCase() + k.slice(1)} sub={<>{s?.keys?.[k] ? <span className="font-mono">••••••••••••••••</span> : "Missing. Stories may run short of footage"}{s?.key_warnings?.[k] && <span role="status" className="mt-1 block text-ds-danger">{s.key_warnings[k].code}: {s.key_warnings[k].message} {s.key_warnings[k].hint}</span>}</>}>
                 <Button size="sm" variant={s?.keys?.[k] ? "soft" : "primary"} leadingIcon="key" onClick={() => setKey(k)}>{s?.keys?.[k] ? "Replace" : "Add key"}</Button>
               </SettingRow>
             ))}
@@ -191,7 +191,7 @@ export default function Settings() {
 
           <Card as="section" aria-labelledby="s-backup">
             <CardHeader id="s-backup" title="Your settings" className="!mb-1" />
-            <SettingRow title="Export settings" sub={backup?.path ? <>Saved as <span className="font-mono break-all">{backup.path}</span></> : "A zip with your channels, voices, schedule and learned weights. Models and videos are not included"}>
+            <SettingRow title="Export settings" sub={backup?.path ? <>Saved as <span className="font-mono break-all">{backup.path}</span>{backup.note && <span role="status" className="mt-1 block text-ds-danger">{backup.note}</span>}</> : "A zip with your channels, voices, schedule and learned weights. Models and videos are not included"}>
               <Button variant="soft" leadingIcon="archive" onClick={exportSettings}>Export</Button>
               {backup?.download_url && <LinkButton href={backup.download_url} download={backup.name} variant="soft" leadingIcon="download">Download</LinkButton>}
             </SettingRow>

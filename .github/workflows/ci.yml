@@ -113,8 +113,10 @@ jobs:
     if: ${{ !cancelled() && needs.changes.outputs.docs_only != 'true' }}
     runs-on: windows-latest
     # Predicted: about 8 minutes of tests plus about 3 of setup (the slowest shard, dev/ci_shards.py plan), 11 in
-    # all; tests/test_ci_workflow.py keeps the timeout at least twice the prediction of every shard.
-    timeout-minutes: 25
+    # all; tests/test_ci_workflow.py keeps the timeout at least twice the prediction of every shard, with room for
+    # NEW_FILE_ROOM test files that have no measured weight yet (at 25 minutes one new test file turned every pull
+    # request red, three times on 2026-11-09 and 2026-11-10).
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
