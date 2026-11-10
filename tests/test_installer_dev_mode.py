@@ -355,7 +355,13 @@ def test_reset_for_mode_switch_redoes_the_later_steps_only(tmp_path: Path):
     assert devmode.reset_for_mode_switch(home, False) is True
     st = load_install_state(Paths(home))
     assert sorted(st.steps) == ["b01_tools", "s01_questions"] and st.dev_mode is False
-    assert not (home / "config" / "wizard_flags.json").exists() and not (home / "config" / "runtime.json").exists()
+    # The old mode's settings file is set aside, never deleted (setup-torn-runtime), and the old flags, `tuned`
+    # among them, are gone: the one flag left is the note that names the kept file for the tuning step's row.
+    config = home / "config"
+    assert not (config / "runtime.json").exists() and (config / "runtime.json.other").is_file()
+    flags = json.loads((config / "wizard_flags.json").read_text(encoding="utf-8"))
+    assert flags.get(devmode.OTHER_FLAG) == "runtime.json.other" and "tuned" not in flags
+    assert set(flags) <= {"_install", devmode.OTHER_FLAG}
     assert devmode.reset_for_mode_switch(home, True) is False             # nothing past the questions is done
     assert devmode.reset_for_mode_switch(tmp_path / "nowhere", True) is False
 
