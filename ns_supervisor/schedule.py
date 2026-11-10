@@ -8,6 +8,7 @@ user is logged on (S4U, no stored password) when Windows allows it, else only wh
 from __future__ import annotations
 
 import contextlib
+import os
 import re
 import subprocess
 import time
@@ -207,12 +208,14 @@ SIGNED_IN_ONLY_LOGONS = frozenset({"interactive", "group"})
 
 @dataclass(frozen=True)
 class TaskState:
-    """What Windows has for the task now: switched on or off, the clock time of its daily trigger, and
-    whether it runs only while the owner is signed in (None when Windows did not say)."""
+    """What Windows has for the task now: switched on or off, the clock time of its daily trigger, whether
+    it runs only while the owner is signed in (None when Windows did not say), and the install folder its
+    action names (`home`; None when the action does not say, as in a task made by hand)."""
 
     enabled: bool
     run_time: str | None
     interactive: bool | None = None
+    home: str | None = None
 
 
 #: `2026-11-09T04:15:00`; `Z` or `+02:00` follows the seconds when the trigger synchronizes across time zones.
@@ -243,6 +246,8 @@ def build_read_script(task_name: str = TASK_NAME) -> str:
             "$g = @($t.Triggers) | Select-Object -First 1",
             "if ($g -and $g.StartBoundary) { Write-Output ('start: ' + $g.StartBoundary) }",
             "if ($t.Principal) { Write-Output ('logon: ' + $t.Principal.LogonType) }",
+            "$a = @($t.Actions) | Select-Object -First 1",
+            "if ($a -and $a.Arguments) { Write-Output ('args: ' + $a.Arguments) }",
         ]
     )
 
@@ -277,6 +282,7 @@ def parse_task_state(out: str, local_tz: tzinfo | None = None) -> TaskState | No
     state: str | None = None
     run_time: str | None = None
     interactive: bool | None = None
+    home: str | None = None
     for line in out.splitlines():
         key, _, value = line.partition(":")
         if key.strip() == "error":
@@ -287,9 +293,50 @@ def parse_task_state(out: str, local_tz: tzinfo | None = None) -> TaskState | No
             run_time = _local_clock(value, local_tz)
         elif key.strip() == "logon" and value.strip():
             interactive = value.strip().lower() in SIGNED_IN_ONLY_LOGONS
+        elif key.strip() == "args":
+            named = _ACTION_HOME.search(value)
+            home = named.group(1).strip() if named else None
     if not state:
         return None
-    return TaskState(enabled=state.lower() != "disabled", run_time=run_time, interactive=interactive)
+    return TaskState(state.lower() != "disabled", run_time, interactive, home or None)
+
+
+#: The install folder inside the action `build_install_script` writes (0.1.14 wrote it the same way).
+_ACTION_HOME = re.compile(r'NIGHTSHIFT_HOME=([^"]+)"')
+
+#: Whose task it is, seen from one install (`task_owner`). A PC has ONE 'Nightshift Daily' task and can
+#: have several Nightshift folders: the task runs the install its action names.
+MINE, GONE, OTHER, UNKNOWN = "mine", "gone", "other", "unknown"
+
+
+def task_owner(paths: Paths, task: TaskState) -> str:
+    """`mine`: the task runs this install. `gone`: it names a folder that is no longer there (its Nightshift
+    was deleted by hand; the task starts nothing). `other`: it runs another Nightshift folder that exists.
+    `unknown`: its action names no folder (made or edited by hand)."""
+    if not task.home:
+        return UNKNOWN
+    try:
+        if os.path.samefile(task.home, paths.home):
+            return MINE
+    except OSError:
+        pass
+    same = os.path.normcase(os.path.abspath(task.home)) == os.path.normcase(os.path.abspath(paths.home))
+    if same:
+        return MINE
+    return OTHER if os.path.isdir(task.home) else GONE
+
+
+def on_here(paths: Paths, task: TaskState | None) -> bool:
+    """Automatic runs are on for THIS install: an enabled task that runs it (or does not say what it runs:
+    such a task was always read as on). An enabled task of another Nightshift, or of a deleted one, is not."""
+    return task is not None and task.enabled and task_owner(paths, task) in (MINE, UNKNOWN)
+
+
+def _elsewhere(paths: Paths, task: TaskState | None) -> str | None:
+    """The other, existing Nightshift folder an enabled task runs; None when there is no such task."""
+    if task is not None and task.enabled and task.home and task_owner(paths, task) == OTHER:
+        return task.home
+    return None
 
 
 def read_task(task_name: str = TASK_NAME, *, timeout_s: float | None = None) -> TaskState | None:
@@ -312,6 +359,9 @@ def read_task(task_name: str = TASK_NAME, *, timeout_s: float | None = None) -> 
 #      runs something the pages do not show (NS-W208);
 #   5. setup changes the choice only on a first install, or for a window answer made against the state Windows
 #      still has (`setup_apply`); a Repair and a reinstall over an install leave it as Windows has it.
+#   6. the PC has one task and may have several installs: "on" for an install means the task runs THAT install
+#      (`on_here`). Another install's task is never removed, moved or re-registered without the owner's yes
+#      (the switch, `ns schedule install`, setup's yes), and a yes that takes it over says so.
 # Every change runs under `run/schedule.lock`, so two dashboards, `ns schedule` and an update take turns.
 # --------------------------------------------------------------------------------------------------------
 def lock_file(paths: Paths) -> Path:
@@ -376,13 +426,20 @@ def _locked(paths: Paths, wait_s: float | None = None) -> Iterator[None]:
             lock.release()
 
 
-def _note_switched_off_outside(paths: Paths, log: NsLogger) -> None:
+def _note_switched_off_outside(paths: Paths, log: NsLogger, other: str | None = None) -> None:
     """NS-W207, once: a WARN in the log and a note the dashboard shows on its next page load. A note that
     still waits is not repeated (a pass killed after the note and before the record went must not say it
-    twice); after the record is gone no later pass has anything to say."""
+    twice); after the record is gone no later pass has anything to say. `other`: the task was not removed
+    but now runs the Nightshift in that folder, and the note says that instead of the code's own hint."""
     try:
         d = describe("NS-W207")
         text = f"NS-W207: {d.message} {d.hint}"
+        if other:
+            text = (
+                f"NS-W207: {d.message} This PC has one nightly task and it now runs the Nightshift at "
+                f"{other} (Automatic runs were switched on there), so this one does not run by itself. "
+                "Switch Automatic runs on in this one's Settings to move the task back."
+            )
     except (KeyError, OSError, ValueError):
         text = "NS-W207: Automatic runs were switched off outside Nightshift."
     log.warn("automatic_runs_off_outside", text, code="NS-W207")
@@ -396,13 +453,14 @@ def _note_switched_off_outside(paths: Paths, log: NsLogger) -> None:
 def _record(paths: Paths, task: TaskState | None, log: NsLogger, *, by_owner: bool = False) -> str:
     """Make `schedule.json` say what Windows has (`task` was just read): the mode it now records.
 
-    Enabled task: the record is on, at the task's own time, `interactive_only` when its logon is not S4U.
-    No task, or one disabled in Task Scheduler: no record; the time moves to `dashboard.json` first, so a kill
-    between the two leaves a record the next pass removes again. When the record said on and this was not
-    the owner's own change here (`by_owner`), the owner is told once (NS-W207).
+    Enabled task that runs this install (`on_here`): the record is on, at the task's own time,
+    `interactive_only` when its logon is not S4U. No task, one disabled in Task Scheduler, or one that runs
+    another Nightshift folder: no record; the time moves to `dashboard.json` first, so a kill between the two
+    leaves a record the next pass removes again. When the record said on and this was not the owner's own
+    change here (`by_owner`), the owner is told once (NS-W207).
     """
     mode, when = read_schedule_mode(paths), read_run_time(paths, include_disabled=True)
-    if task is not None and task.enabled:
+    if task is not None and on_here(paths, task):
         at = task.run_time or when or remembered_run_time(paths) or DEFAULT_TIME
         signed_in_only = mode == "interactive_only" if task.interactive is None else task.interactive
         now = "interactive_only" if signed_in_only else "registered"
@@ -410,11 +468,12 @@ def _record(paths: Paths, task: TaskState | None, log: NsLogger, *, by_owner: bo
             write_run_time(paths, at, now)
         return now
     if schedule_file(paths).exists():
-        kept = (task.run_time if task is not None else None) or when
+        ours = task is not None and task_owner(paths, task) in (MINE, UNKNOWN)   # its time is this install's
+        kept = (task.run_time if task is not None and ours else None) or when
         if kept:
             remember_run_time(paths, kept)
         if mode in ON_MODES and not by_owner:
-            _note_switched_off_outside(paths, log)
+            _note_switched_off_outside(paths, log, _elsewhere(paths, task))
         clear_run_time(paths)
     return "none"
 
@@ -483,16 +542,18 @@ def _undo(
     try:
         if isinstance(before, _Unread):
             raise ScheduleError("the task was not read before the change")
-        if before is None:
-            _run(build_remove_script())
+        if before is None or (before.enabled and task_owner(paths, before) == GONE):
+            _run(build_remove_script())     # nothing to give back: no task, or one whose Nightshift is gone
         else:
             old = before.run_time or read_run_time(paths, include_disabled=True) or at
-            _run(build_install_script(paths, old, app_path, disabled=not before.enabled))
+            theirs = _elsewhere(paths, before)      # another install's task goes back to that install
+            owner = Paths(Path(theirs)) if theirs else paths
+            _run(build_install_script(owner, old, app_path, disabled=not before.enabled))
         after, known = read_task(), True
     except ScheduleError as e:
         log.warn("schedule_undo_failed", _one_line(e))
-    runs_at = after.run_time if after is not None and after.enabled else None
-    runs = after is not None and after.enabled
+    runs = on_here(paths, after)
+    runs_at = after.run_time if runs and after is not None else None
     recorded = record_says_on(paths)
     agree = known and ((recorded and read_run_time(paths) == runs_at) if runs else not recorded)
     if agree:
@@ -619,6 +680,7 @@ class Outcome:
     mode: str
     run_time: str | None
     changed: bool
+    took_from: str | None = None    # the other Nightshift folder whose task this change moved here
 
 
 def set_automatic(
@@ -656,7 +718,7 @@ def _set_locked(
 ) -> Outcome:
     """`set_automatic` once the lock is held and the task was read (`before`). `quiet` is setup's use: a
     record Windows no longer backs goes without the NS-W207 note."""
-    is_on = before is not None and before.enabled
+    is_on = on_here(paths, before)      # another install's task is not "on" here, and is never removed
     if not (is_on if on is None else on):
         if before is not None and is_on:
             _forget(paths, run_time or before.run_time)
@@ -682,8 +744,11 @@ def _set_locked(
     again = on is True and before is not None and before.interactive is True
     if before is not None and is_on and before.run_time == when and not again:
         return Outcome(True, _record(paths, before, log, by_owner=quiet), when, False)
+    theirs = _elsewhere(paths, before)
     task = _switch_on(paths, when, app_path, log, before)
-    return Outcome(True, read_schedule_mode(paths), task.run_time or when, True)
+    if theirs:
+        log.warn("schedule_task_moved", f"'{TASK_NAME}' ran the Nightshift at {theirs}; it now runs this one")
+    return Outcome(True, read_schedule_mode(paths), task.run_time or when, True, took_from=theirs)
 
 
 @dataclass(frozen=True)
@@ -707,6 +772,10 @@ class SetupResult:
     time_kept: str | None = None  # the time the answers name, which was not used
     seen: str | None = None
     reason: str = ""
+    removed_old: bool = False       # a first install without a yes removed a task left by an earlier install
+    other_home: str | None = None   # off here: the PC's task runs the Nightshift in this other folder (kept)
+    took_from: str | None = None    # on here: the task ran the Nightshift in this other folder until now
+    owner_unknown: bool = False     # the task found does not say which Nightshift it runs
 
 
 def setup_apply(
@@ -718,8 +787,12 @@ def setup_apply(
     The rule: Automatic runs change only by an owner's action made against the state the owner saw.
 
     - `first` (no install decided here before): `nightly` True switches them on at `run_time`; anything else
-      registers nothing and keeps `run_time` for the switch. An enabled task that is there anyway (its record
-      was lost) is kept as it is.
+      registers nothing and keeps `run_time` for the switch. An enabled task that is there anyway is nobody's
+      choice in this install. Without a yes: one that runs this folder, or a folder that no longer exists (the
+      Nightshift was deleted by hand), is removed and its time kept; one that runs ANOTHER Nightshift folder
+      is left exactly as it is (off here, `other_home` names it); one that does not say what it runs is left
+      as it is and read on, as it always was (`owner_unknown`). With a yes the task is registered for this
+      install, and `took_from` / `owner_unknown` say whose it was.
     - otherwise the window's answer (`nightly` with `seen`, the state the window showed) is applied only when
       Windows still has that state; an answer without `seen` (an answers file, which may be months old) and
       an answer against another state change nothing. A kept enabled task is registered again at its own
@@ -757,14 +830,19 @@ def _setup_locked(
     paths: Paths, app_path: Path, before: TaskState | None, first: bool, nightly: bool | None,
     seen: str | None, run_time: str, was: str | None, log: NsLogger,
 ) -> SetupResult:
-    on_now = before is not None and before.enabled
+    there = before is not None and before.enabled           # some enabled task is in Windows
+    owner = task_owner(paths, before) if there and before is not None else None
+    on_now = on_here(paths, before)                          # ... and it is this install's
+    theirs = _elsewhere(paths, before)
+    unknown = owner == UNKNOWN
     now_time = (before.run_time or read_run_time(paths)) if on_now and before is not None else None
     only = bool(before.interactive) if on_now and before is not None else False
     answered = nightly is not None and seen is not None
     same = seen == f"on@{now_time}" if on_now else seen in ("off", "new")
     new_time = was is not None and run_time != was
     time_kept: str | None = None
-    if first and (nightly or not on_now):
+    leftover = first and not nightly and owner in (MINE, GONE)   # an earlier install's: nobody's choice
+    if first and (nightly or not on_now or leftover):
         case, want_on, when = "first", bool(nightly), run_time
     elif not first and answered and same:
         case, want_on = "applied", bool(nightly)
@@ -777,24 +855,48 @@ def _setup_locked(
         when = run_time if moves or base is None else base
         time_kept = run_time if new_time and not moves and base != run_time else None
     try:
-        if case == "kept" and on_now:
+        if leftover and before is not None:
+            # first install, no yes, and the task of an earlier install of this folder (or of a deleted one)
+            keep = before.run_time or run_time      # its time waits for the Settings switch
+            with contextlib.suppress(OSError):
+                _forget(paths, keep)
+            _run(build_remove_script())
+            left = read_task()
+            if left is not None and left.enabled:
+                raise ScheduleError(f"Windows did not remove the task '{TASK_NAME}'")
+            with contextlib.suppress(OSError):
+                _record(paths, left, log, by_owner=True)
+            log.warn("schedule_leftover_removed", f"'{TASK_NAME}' of an earlier install: {before.home}")
+            return SetupResult(case, False, keep, removed_old=True, seen=seen)
+        if case == "kept" and on_now and not (first and unknown):
             task = _switch_on(paths, when, app_path, log, before)
             return SetupResult(
                 case, True, task.run_time or when, bool(task.interactive), time_kept=time_kept, seen=seen
             )
-        if case == "stale" or not (want_on or on_now):
+        if case == "stale" or not (want_on or on_now) or (case == "kept" and on_now):
             # nothing to change in Windows: the record follows what was read, quietly (a record an uninstall
-            # or a dev install left goes), and the time waits in dashboard.json for the switch
+            # or a dev install left goes), and the time waits in dashboard.json for the switch. Also a first
+            # install without a yes over a task that does not say whose it is: left exactly as it is.
             with contextlib.suppress(OSError):
                 _record(paths, before, log, by_owner=True)
             if not on_now and when != remembered_run_time(paths):
                 with contextlib.suppress(OSError):
                     remember_run_time(paths, when)
             at = now_time if on_now else when
-            return SetupResult(case, on_now, at, only, time_kept=time_kept, seen=seen)
+            return SetupResult(
+                case, on_now, at, only, time_kept=time_kept, seen=seen, other_home=theirs,
+                owner_unknown=on_now and unknown and first,
+            )
+        if want_on and on_now and unknown:
+            # a yes over a task that does not say what it runs: registered for this install, whatever it ran
+            task = _switch_on(paths, when, app_path, log, before)
+            return SetupResult(
+                case, True, task.run_time or when, bool(task.interactive), seen=seen, owner_unknown=True
+            )
         out = _set_locked(paths, app_path, before, want_on, when, log, quiet=True)
         return SetupResult(
-            case, out.on, out.run_time, out.mode == "interactive_only", time_kept=time_kept, seen=seen
+            case, out.on, out.run_time, out.mode == "interactive_only", time_kept=time_kept, seen=seen,
+            took_from=out.took_from, other_home=None if out.on else theirs,
         )
     except ScheduleFileError:
         raise
@@ -802,9 +904,11 @@ def _setup_locked(
         if not on_now:
             with contextlib.suppress(OSError):
                 remember_run_time(paths, run_time)
+        still = on_now or leftover          # an enabled task is still there
+        at = now_time if on_now else (before.run_time if leftover and before is not None else run_time)
         return SetupResult(
-            "refused", on_now, now_time if on_now else run_time, only, wanted_on=want_on and not on_now,
-            wanted_off=on_now and not want_on, reason=_one_line(e), seen=seen,
+            "refused", still, at, only, wanted_on=want_on and not on_now, wanted_off=still and not want_on,
+            reason=_one_line(e), seen=seen, other_home=None if want_on else theirs,
         )
 
 
@@ -822,7 +926,7 @@ def reregister(paths: Paths, app_path: Path, *, log: NsLogger | None = None) -> 
         return None
     with _locked(paths):
         before = read_task()
-        if before is None or not before.enabled:
+        if before is None or not on_here(paths, before):
             _record(paths, before, log)
             return (
                 "Automatic runs are off (the nightly task was switched off or removed in Task Scheduler); "

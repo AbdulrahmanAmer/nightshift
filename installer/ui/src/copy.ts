@@ -358,6 +358,8 @@ export const done = {
   ],
   stepsNoTask: "Check the schedule in Settings. The nightly task is not set up, so start each video from the dashboard.",
   stepsOff: "Start each video from the dashboard. For a video every night, switch Automatic runs on in Settings, Schedule.",
+  descriptionUnrecorded: (time: string) => `Make your first video now. Windows runs the nightly task at ${time}, but Nightshift could not record it, so its pages say Automatic runs are off until it can`,
+  stepsUnrecorded: "Read the notice below about the nightly task: Windows runs it, and Nightshift's pages do not show it yet.",
   keyReminder: "Add a Pixabay key in Settings before the first video",
   installedTitle: "What was installed",
   outTitle: "Your videos land here",

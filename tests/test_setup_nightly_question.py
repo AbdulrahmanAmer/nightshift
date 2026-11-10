@@ -35,6 +35,7 @@ from tests import frozen_config_models_0_1_14 as old
 from tests.test_nightly_optional import (
     FakeWindows,
     dashboard,
+    look_again,
     put,
     record,
     result,
@@ -414,6 +415,18 @@ def test_when_the_undo_fails_too_every_route_says_windows_runs_it_with_ns_w208(t
     assert any(code == "NS-W208" for code, _ in ctx.warnings)
     line = summary(said_setup)
     assert "NS-W208" in line and "Windows runs the nightly task at 04:30" in line and "Task Scheduler" in line
+    # the headline of the Done screen follows: not "does not run by itself" while Windows runs it
+    from installer.stage2.web import nightly_view
+
+    flags = {name: ctx.flag(name) for name in ("schedule", "schedule_mode", "nightly_line", "nightly_state", "nightly_time")}
+    end = nightly_view.summary(ctx.paths.home, flags)
+    assert (end["state"], end["time"]) == ("unrecorded", "04:30") and end["line"] == line
+    done_page = (ROOT / "installer" / "ui" / "src" / "screens" / "Done.tsx").read_text(encoding="utf-8")
+    words = (ROOT / "installer" / "ui" / "src" / "copy.ts").read_text(encoding="utf-8")
+    assert 'nightly === "unrecorded" ? t.descriptionUnrecorded(r.runTime)' in done_page
+    assert "Windows runs the nightly task at ${time}, but Nightshift could not record it" in words
+    schedule_file(ctx.paths).rmdir()  # config can be written again: the record follows Windows, and so does the end
+    assert schedule.sync_record(ctx.paths) is True and nightly_view.summary(ctx.paths.home, flags)["state"] == "on"
 
 
 # ----------------------------------------------------------------- data written by the previous release
@@ -492,3 +505,131 @@ def test_uninstall_removes_the_record_with_the_task():
     script = (ROOT / "installer" / "uninstall.ps1").read_text(encoding="utf-8")
     block = script[script.index("Unregister-ScheduledTask"):script.index("AppUserModelId")]
     assert "schedule.json" in block and "Remove-Item" in block
+
+
+# ------------------------------------------------- review round 1 (1739ea3): a task that is already there
+# A PC has ONE 'Nightshift Daily' task and can have several Nightshift folders; the task's action names the
+# folder it runs. A first install finds such a task when the owner deleted a Nightshift folder by hand (no
+# uninstall), or when another Nightshift is installed on the same PC.
+def first_setup(tmp_path: Path, route: str, yes: bool) -> tuple[Any, str]:
+    """A first install over the empty home `tmp_path/home`, answered through one of setup's three routes."""
+    raw = example_answers(run_time="04:30")
+    if route == "file":
+        ctx = context(tmp_path, {**raw, **({"nightly": True} if yes else {})}, file=True)
+    elif route == "console":
+        ctx = context(tmp_path, raw, ui=FakeUi({"every night": "y" if yes else "n"}, interactive=True))
+    else:
+        opened = context(tmp_path, raw)
+        view = shown(raw, opened.paths.home)
+        assert (view["nightly"], view["nightlySeen"]) == (False, "new")  # the window shows the switch off
+        ctx = window_writes(opened, window_answers(opened, view, nightly=yes))
+        ctx.ui.bridge = True  # the wizard the window starts: s01 runs, and asks nothing at the console
+    return ctx, setup(ctx)
+
+
+def old_task(home: Path | None) -> dict[str, str]:
+    task = {"state": "Ready", "at": "02:00", "logon": "S4U"}
+    return {**task, "home": str(home)} if home is not None else task
+
+
+@pytest.mark.parametrize("route", ["file", "console", "window"])
+def test_a_first_install_meets_a_nightly_task_that_is_already_on_the_pc(tmp_path: Path, windows: FakeWindows, route: str):
+    # (a) it runs THIS folder (the folder was deleted by hand and is installed again), no yes: removed
+    windows.task = old_task(tmp_path / "same" / "home")
+    ctx, said = first_setup(tmp_path / "same", route, yes=False)
+    assert windows.has is None and windows.changes() == ["unregister"] and record(ctx.paths) is None
+    line = summary(said)
+    assert line.startswith("Automatic runs: off. An older Nightshift's nightly task was found and removed")
+    assert "Settings > Schedule" in line and saved_time(ctx.paths) == "02:00"  # its time waits for the switch
+    assert (ctx.flag("schedule"), ctx.flag("schedule_mode")) == ("installed", "off")
+    # (a) it runs a folder that no longer exists: the same
+    windows.task, windows.calls = old_task(tmp_path / "deleted" / "home"), []
+    ctx, said = first_setup(tmp_path / "gone", route, yes=False)
+    assert windows.has is None and "was found and removed" in summary(said) and record(ctx.paths) is None
+    # (b) it runs ANOTHER Nightshift folder that exists, no yes: not removed, not moved, and said
+    other = tmp_path / "other-nightshift"
+    other.mkdir()
+    windows.task, windows.calls = old_task(other), []
+    ctx, said = first_setup(tmp_path / "second", route, yes=False)
+    assert windows.task == old_task(other) and windows.changes() == [] and record(ctx.paths) is None
+    line = summary(said)
+    assert line.startswith("Automatic runs: off.") and f"Another Nightshift at {other} owns this PC's nightly task" in line
+    assert "this one does not run by itself" in line and "moves the task here" in line
+    # (b) with a yes: the task now runs this install, and the line says whose it was
+    windows.calls = []
+    ctx, said = first_setup(tmp_path / "third", route, yes=True)
+    assert windows.task is not None and windows.task["home"] == str(ctx.paths.home) and windows.has == ("Ready", "04:30")
+    line = summary(said)
+    assert line.startswith("Automatic runs: on at 04:30") and f"no longer the one at {other}" in line
+    assert "whose Settings will show Automatic runs off" in line
+    # (c) it does not say which Nightshift it runs, no yes: left exactly as it is, and the line says why
+    windows.task, windows.calls = old_task(None), []
+    ctx, said = first_setup(tmp_path / "fourth", route, yes=False)
+    assert windows.task == old_task(None) and windows.changes() == []
+    line = summary(said)
+    assert line.startswith("Automatic runs: on at 02:00.") and "could not tell which Nightshift it belongs to" in line
+    assert "left as it is" in line and "switch it off in Settings > Schedule" in line
+    assert record(ctx.paths) is not None  # this install's pages say on too: the line and the pages agree
+
+
+def test_the_switch_of_each_install_shows_and_moves_only_its_own_task(tmp_home: Path, tmp_path: Path, windows: FakeWindows):
+    """Two Nightshift folders on one PC: "on" means the task runs THIS one."""
+    client, _state, paths = dashboard(tmp_home)
+    other = Paths(tmp_path / "other-nightshift")
+    other.ensure()
+    write_run_time(other, "02:00", "registered")
+    windows.task = old_task(other.home)  # the other install has Automatic runs on
+    assert look_again(client)["schedule_registered"] is False  # not on for this install
+    assert put(client, automatic_runs=False)["schedule_registered"] is False
+    assert windows.task == old_task(other.home) and windows.changes() == []  # its task is not removed from here
+    body = put(client, automatic_runs=True, schedule_time="04:30")  # the owner's yes, here
+    assert windows.task is not None and windows.task["home"] == str(paths.home) and body["schedule_registered"] is True
+    assert f"no longer the one at {other.home}" in result(body)["note"]
+    # the other install's look: off now, told once, with the true reason and the way back
+    assert schedule.sync_record(other) is True and record(other) is None
+    notes = w207_notes(other)
+    assert len(notes) == 1 and str(paths.home) in notes[0] and "move the task back" in notes[0]
+    assert schedule.sync_record(other) is False and len(w207_notes(other)) == 1
+
+
+def test_setup_says_only_what_it_knows_when_ns_gives_no_answer_on_a_repair(tmp_path: Path, windows: FakeWindows):
+    first = context(tmp_path, example_answers(run_time="04:30", nightly=True), file=True)
+    setup(first)
+    assert windows.has == ("Ready", "04:30")
+    repair = context(tmp_path, saved_answers(first.paths), app=moved_app(tmp_path, "app2"))
+    repair.runner.results["ns schedule install --time 04:30 --setup again --was 04:30"] = RunResult(1, "", "boom")
+    line = summary(setup(repair))
+    assert line == "Automatic runs: not checked (boom), left as they were; Settings shows them."
+    assert repair.warnings == [] and repair.flag("schedule") == "installed"  # not "not switched on (NS-W206)"
+    assert windows.has == ("Ready", "04:30")
+
+
+def test_a_kill_between_the_flags_and_the_consume_does_not_deny_setups_own_change(tmp_path: Path, windows: FakeWindows, monkeypatch: pytest.MonkeyPatch):
+    from installer.stage2.steps import s09_shortcuts_scheduler as s09
+
+    first = context(tmp_path, example_answers(run_time="03:00"))
+    setup(first)  # installed, off
+    view = shown(saved_answers(first.paths), first.paths.home)
+    wizard = window_writes(first, window_answers(first, view, nightly=True))  # the owner switches it on
+
+    def die(path: Path) -> bool:
+        raise KeyboardInterrupt  # the process is gone after the flags, before the answers are removed
+
+    monkeypatch.setattr(s09, "forget_setup_input", die)
+    with pytest.raises(KeyboardInterrupt):
+        setup(wizard)
+    monkeypatch.undo()
+    assert windows.has == ("Ready", "03:00") and saved_answers(wizard.paths)["nightly_seen"] == "off"
+    said_then = summary(wizard.ui.text)
+    assert said_then == "Automatic runs: on at 03:00, as you chose in setup."
+
+    rerun = context(tmp_path, saved_answers(wizard.paths), app=wizard.app_path)
+    line = summary(setup(rerun))
+    assert line == said_then and "setup changed nothing" not in line  # the same sentence, not a denial
+    assert windows.has == ("Ready", "03:00") and "nightly" not in saved_answers(rerun.paths)
+    assert rerun.flag("nightly_done") is None
+    # the mark is no licence to skip a later answer: the same answer against a state that changed is judged anew
+    settings(rerun, on=False)
+    rerun.set_flag("nightly_done", {"nightly": True, "seen": "off", "state": "on@03:00"})  # a kill left it behind
+    again = window_writes(rerun, window_answers(rerun, shown(saved_answers(rerun.paths), rerun.paths.home), nightly=True))
+    assert summary(setup(again)) == "Automatic runs: on at 03:00, as you chose in setup." and windows.has == ("Ready", "03:00")

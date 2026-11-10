@@ -88,6 +88,9 @@ class FakeWindows:
             logon = "Interactive" if self.refuse_s4u else "S4U"
             if not self.lose:
                 self.task = {"state": "Disabled" if off else "Ready", "at": at.group(1), "logon": logon}
+                home = re.search(r'NIGHTSHIFT_HOME=([^"]+)"', script)  # the install the action runs
+                if home is not None:
+                    self.task["home"] = home.group(1)
             return done(f"registered:{logon.lower()}\n")
         if "Unregister-ScheduledTask" in script:
             self.calls.append("unregister")
@@ -102,7 +105,8 @@ class FakeWindows:
         if self.task is None:
             return done("not registered\n")
         t = self.task
-        return done(f"state: {t['state']}\nstart: 2026-11-09T{t['at']}:00\nlogon: {t['logon']}\n")
+        args = f'args: /d /s /c "set "NIGHTSHIFT_HOME={t["home"]}" && "studio" run --daily"\n' if t.get("home") else ""
+        return done(f"state: {t['state']}\nstart: 2026-11-09T{t['at']}:00\nlogon: {t['logon']}\n{args}")
 
     @property
     def has(self) -> tuple[str, str] | None:

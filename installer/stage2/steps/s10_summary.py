@@ -22,7 +22,7 @@ DEV_NEXT_STEPS = (
     "and renders a real video into the outbox. Nothing is scheduled."
 )
 #: The flags the sentence about Automatic runs is made from (`nightly_view.summary`).
-NIGHTLY_FLAGS = ("schedule", "nightly_line", "nightly_state")
+NIGHTLY_FLAGS = ("schedule", "schedule_mode", "nightly_line", "nightly_state", "nightly_time")
 
 
 def newest_bundle(folder: Path | None) -> Path | None:

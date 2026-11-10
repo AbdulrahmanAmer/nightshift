@@ -521,11 +521,13 @@ def test_s09_missing_schedule_command_is_a_warning_not_a_failure(tmp_path: Path)
 
 def test_s09_a_refused_scheduler_never_blocks_the_install(tmp_path: Path):
     app = launcher_app(tmp_path, [])
+    # a first install that said yes: the one case in which a failing `ns` means "not switched on" (NS-W206)
     runner = FakeRunner(tmp_path / "desktop", results={
-        "ns schedule install --time 03:00 --setup again": RunResult(1, "", "access denied")})
+        "ns schedule install --time 03:00 --setup first --nightly yes": RunResult(1, "", "access denied")})
     ctx = make_test_context(
-        tmp_path, raw_answers=example_answers(), resolve=True, app_path=app, runner=runner
+        tmp_path, raw_answers=example_answers(nightly=True), resolve=True, app_path=app, runner=runner
     )
+    ctx.set_flag("first_install", True)
     step = S09ShortcutsScheduler()
     step.run(ctx)                                        # does not raise
     step.verify(ctx)

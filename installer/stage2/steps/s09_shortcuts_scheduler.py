@@ -15,7 +15,12 @@ this order, so a run killed at any point is repeated safely:
 2. the flags, ``schedule`` first: the decision is recorded, ``first_install`` becomes False. Killed after it:
    the rerun is no first install any more and keeps what step 1 made.
 3. the answers ``nightly`` and ``nightly_seen`` are removed from ``config/answers.json``: they were about
-   this run and are never read again.
+   this run and are never read again. Killed between 2 and 3: step 2 also wrote down which answer it acted on
+   and the state that made (flag ``nightly_done``); the rerun finds its answer there with that state still in
+   place, so it does not present the answer to Windows a second time (the window's answer would no longer
+   match the state it was made against, and the last line would deny setup's own change) and says the first
+   run's sentence. The flag goes after step 3; left behind by a kill there, it is dropped by the next run
+   that has no answer, and it never matches an answer made against another state.
 
 Toasts: ``ns_supervisor.notify`` sends them as AppUserModelID ``Nightshift``, which Windows ignores unless
 it is registered. This step writes the registry key (DisplayName and IconUri) and, best effort, stamps the
@@ -158,6 +163,7 @@ class S09ShortcutsScheduler(Step):
         if forget_setup_input(ctx.paths.config / "answers.json"):
             ctx.log.info("setup_input_consumed", keys=["nightly", "nightly_seen"])
         ctx.answers = ans.model_copy(update={"nightly": None, "nightly_seen": None})
+        ctx.clear_flags("nightly_done")
 
     @staticmethod
     def _dev_task(ctx: StepContext, run_time: str) -> None:
@@ -199,6 +205,16 @@ class S09ShortcutsScheduler(Step):
         it)."""
         first = ctx.flag("first_install") is True
         was = ctx.flag("schedule_time")
+        answer = {"nightly": nightly, "seen": seen}
+        done = ctx.flag("nightly_done")
+        acted = (
+            nightly is not None and isinstance(done, dict) and not first
+            and {k: done.get(k) for k in answer} == answer
+            and done.get("state") == nightly_view.state_word(ctx.paths.home)
+        )
+        earlier_line = ctx.flag("nightly_line") if acted else None
+        if acted:           # an earlier run of this step already acted on this answer and was killed after it
+            nightly = seen = None
         argv = ["schedule", "install", "--time", run_time, "--setup", "first" if first else "again"]
         if nightly is not None:
             argv += ["--nightly", "yes" if nightly else "no"]
@@ -216,16 +232,22 @@ class S09ShortcutsScheduler(Step):
             )
             ctx.log.warn("schedule_unavailable", res.text[-200:])
         elif out is None:
-            # Never block the install on the task: the owner can switch Automatic runs on in Settings.
-            ctx.set_flag("schedule", "failed")
+            # Never block the install on the task: the owner can switch Automatic runs on in Settings. Only
+            # what is known is said: a first install's yes was not carried out (NS-W206); in every other case
+            # nothing was asked of Windows, so what it had is unchanged, whatever that is.
+            wanted = first and nightly is True
+            ctx.set_flag("schedule", "failed" if wanted else "installed")
             ctx.log.warn("schedule_failed", f"exit {res.returncode}: {res.text[-300:]}")
-            remember_run_time(ctx.paths, run_time)       # a preference only: no schedule.json without a task
             detail = res.text.strip()[-200:] or "ns schedule install gave no answer"
-            ctx.warn("NS-W206", detail)
-            line = nightly_view.outcome_line({"case": "unread", "wanted_on": True, "reason": detail})
+            if wanted:
+                remember_run_time(ctx.paths, run_time)   # a preference only: no schedule.json without a task
+                ctx.warn("NS-W206", detail)
+            line = nightly_view.outcome_line({"case": "unread", "wanted_on": wanted, "reason": detail})
         else:
             line = nightly_view.outcome_line(out)
             case, on = out["case"], out.get("on") is True
+            if acted and case == "kept" and isinstance(earlier_line, str) and earlier_line:
+                line = earlier_line         # the sentence of the run that made this state
             wanted_on = bool(out.get("wanted_on"))
             ctx.set_flag("schedule", "failed" if wanted_on and case in ("refused", "unread") else "installed")
             only = on and bool(out.get("signed_in_only"))
@@ -245,6 +267,9 @@ class S09ShortcutsScheduler(Step):
                 ctx.warn("NS-W205", f"registered for {out.get('run_time')}")
         ctx.set_flag("nightly_line", line)
         ctx.set_flag("nightly_state", nightly_view.state_word(ctx.paths.home))
+        ctx.set_flag("nightly_time", (out or {}).get("run_time"))
+        if answer["nightly"] is not None:   # which answer was acted on, and the state that made
+            ctx.set_flag("nightly_done", {**answer, "state": nightly_view.state_word(ctx.paths.home)})
         ctx.ui.say(line)
 
     @staticmethod

@@ -218,7 +218,7 @@ export interface ResultView {
   shortcuts: string[];               // "Nightshift Dashboard", ...
   runTime: string;                   // the time Automatic runs have when they are on, else the chosen time
   scheduled: boolean;                // Automatic runs are on (the record of the Windows task says so)
-  nightly?: "on" | "off" | "failed"; // off is a choice; failed: setup tried to switch them on and Windows refused
+  nightly?: "on" | "off" | "failed" | "unrecorded"; // off is a choice; failed: setup tried to switch them on and Windows refused; unrecorded: Windows runs the task and Nightshift could not record it (NS-W208)
   nightlyLine?: string | null;       // the sentence the end of setup says about Automatic runs
   diagnosticsZip: string | null;
   stockKeyMissing: boolean;          // neither a Pexels nor a Pixabay key is stored

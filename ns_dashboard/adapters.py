@@ -1092,13 +1092,18 @@ class RealScheduleAdapter:
             if run_time:
                 note += f". {run_time} is kept for when you switch them on"
             return {"applied": True, "note": note}
+        # the PC has one nightly task: switching on here while it ran another Nightshift folder moves it
+        moved = (
+            f". This PC has one nightly task: it now runs this Nightshift and no longer the one at "
+            f"{out.took_from}, whose Settings will show Automatic runs off"
+        ) if out.took_from else ""
         if out.mode == "interactive_only":
             w = describe("NS-W205")
             return {
                 "applied": True, "code": "NS-W205",
-                "note": f"Automatic runs are on at {out.run_time}. NS-W205: {w.message} {w.hint}",
+                "note": f"Automatic runs are on at {out.run_time}. NS-W205: {w.message} {w.hint}{moved}",
             }
-        return {"applied": True, "note": f"Automatic runs are on: every night at {out.run_time}"}
+        return {"applied": True, "note": f"Automatic runs are on: every night at {out.run_time}{moved}"}
 
 
 def real_adapters(paths: Paths, link: SupervisorLink, log: NsLogger) -> Adapters:

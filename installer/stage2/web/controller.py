@@ -1943,7 +1943,7 @@ class SetupController:
             {"label": "Voices: presets and your own", "detail": gb(voices)},
             {"label": "Captions, memory, faces", "detail": gb(rest)},
             {"label": "Nightshift Code", "detail": "yes" if answers.get("installCode", True) else "no"},
-            {"label": "Night run", "detail": night["time"] if night["state"] == "on" else "off"},
+            {"label": "Night run", "detail": self._night_detail(night)},
             {"label": "Everything else", "detail": str(self.home)},
         ]
         if self.dev:        # docs/DEV_MODE.md: stubs and fakes, no Nightshift Code, a disabled night task
@@ -1984,6 +1984,15 @@ class SetupController:
             "diagnosticsZip": self._bundle or flags.get("bundle"),
             "durationS": duration, "warnings": warnings, "stockKeyMissing": not self._stock_key_stored(),
         }
+
+    @staticmethod
+    def _night_detail(night: dict[str, Any]) -> str:
+        """The "Night run" row of the Done screen: the time, off, or NS-W208's two-sided state."""
+        if night["state"] == "on":
+            return str(night["time"])
+        if night["state"] == "unrecorded":
+            return f"{night['time']} in Windows, not recorded (NS-W208)"
+        return "off"
 
     def _stock_key_stored(self) -> bool:
         """True when a stock footage key was typed in this session or is in the encrypted file from s07."""

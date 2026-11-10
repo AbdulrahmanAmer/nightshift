@@ -277,6 +277,13 @@ there only if Automatic runs still are what the window showed under it ("Now: ..
 changes nothing and its last line says so. "Uninstall, keep my data" removes the task, so the setup after it asks
 again. The last line of setup, and the Done screen, say what Automatic runs are.
 
+A PC has one "Nightshift Daily" task, and it runs the Nightshift folder it was switched on in. If a first install
+finds such a task and you did not say yes: a task left by an earlier Nightshift in the same folder, or in a folder
+that no longer exists, is removed (its time is kept for the switch); a task that runs another Nightshift folder on
+this PC is left alone, and setup names that folder and says this one does not run by itself. Switching Automatic
+runs on in one Nightshift (or saying yes in its setup) moves the task to it; the message says so, and the other
+Nightshift then shows Automatic runs off and tells you once (`NS-W207`).
+
 If Nightshift cannot write `config/schedule.json` after Windows took the task, it puts the task back as it was and
 says so (`NS-E204`, "the change was undone"). Only if that fails too it says `NS-W208`: Windows then runs the task
 while the pages still say off (or the old time) until the folder `config` can be written again; to stop the run

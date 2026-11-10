@@ -24,9 +24,9 @@ export function Done() {
   const warnings = [...r.warnings.map((w) => ({ key: w.code + w.title, title: w.title, what: w.whatToDo })), ...(state.machine.isAdmin ? [{ key: "admin", title: t.adminNote, what: "" }] : [])];
   // Automatic runs: on, off by choice (the default), or failed (setup tried to switch them on and Windows refused).
   const nightly = r.nightly ?? (r.scheduled ? "on" : "failed");
-  const steps = [t.steps[0], t.steps[1], nightly === "on" ? t.steps[2] : nightly === "off" ? t.stepsOff : t.stepsNoTask];
+  const steps = [t.steps[0], t.steps[1], nightly === "on" ? t.steps[2] : nightly === "off" ? t.stepsOff : nightly === "unrecorded" ? t.stepsUnrecorded : t.stepsNoTask];
   return (
-    <Screen name="done" salutation={t.salutation} description={nightly === "on" ? t.description(r.runTime) : nightly === "off" ? t.descriptionOff : t.descriptionNoTask}
+    <Screen name="done" salutation={t.salutation} description={nightly === "on" ? t.description(r.runTime) : nightly === "off" ? t.descriptionOff : nightly === "unrecorded" ? t.descriptionUnrecorded(r.runTime) : t.descriptionNoTask}
       footerLeft={opening ? t.opening : t.footer(duration(r.durationS))}
       footerRight={
         <>

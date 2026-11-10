@@ -80,6 +80,27 @@ def _why(reason: Any) -> str:
     return text[:200] or "no reason given"
 
 
+def _owner_words(o: dict[str, Any], on: bool) -> str:
+    """What must be said when the PC's one nightly task belongs, or belonged, to another Nightshift folder."""
+    other, took = o.get("other_home"), o.get("took_from")
+    if not on and other:
+        return (
+            f" Another Nightshift at {other} owns this PC's nightly task (a PC has one), so this one does "
+            f"not run by itself; switching Automatic runs on in this one's {WHERE} moves the task here."
+        )
+    if on and took:
+        return (
+            f" This PC has one nightly task: it now runs this Nightshift and no longer the one at {took}, "
+            "whose Settings will show Automatic runs off."
+        )
+    if on and o.get("owner_unknown") and o.get("case") != "kept":
+        return (
+            " A nightly task was already on this PC and setup could not tell which Nightshift it belonged "
+            "to; it now runs this one."
+        )
+    return ""
+
+
 def kept_line(on: bool, when: str | None, signed_in_only: bool = False) -> str:
     """The sentence for a state setup did not change."""
     if not on:
@@ -129,8 +150,19 @@ def outcome_line(o: dict[str, Any]) -> str:
         return (
             f"Automatic runs: left {now}. The setup window showed them {_seen_words(o.get('seen'))} when you "
             f"answered, and they are not that now, so setup changed nothing; {WHERE} changes them."
+        ) + _owner_words(o, bool(on))
+    if o.get("removed_old"):
+        line = (
+            "Automatic runs: off. An older Nightshift's nightly task was found and removed; switch them on "
+            f"in {WHERE} when you want the nightly run."
         )
-    if case == "kept":
+    elif case == "kept" and on and o.get("owner_unknown"):
+        line = (
+            f"Automatic runs: on at {when}. A nightly task was already on this PC and setup could not tell "
+            f"which Nightshift it belongs to, so it was left as it is; switch it off in {WHERE} if you do "
+            "not want it."
+        )
+    elif case == "kept":
         line = kept_line(bool(on), when, only)
     elif on:
         how = "every night (the PC wakes itself for it)" if case == "first" else "as you chose in setup"
@@ -144,6 +176,7 @@ def outcome_line(o: dict[str, Any]) -> str:
         )
     else:
         line = "Automatic runs: off, as you chose in setup."
+    line += _owner_words(o, bool(on))
     asked = o.get("time_kept")
     if asked:
         stays = when if when else "as it was"
@@ -155,7 +188,11 @@ def outcome_line(o: dict[str, Any]) -> str:
 
 
 def summary(home: Path, flags: dict[str, Any]) -> dict[str, Any]:
-    """What the end of setup says: ``{"state": on|off|failed, "time", "line"}``.
+    """What the end of setup says: ``{"state": on|off|failed|unrecorded, "time", "line"}``.
+
+    ``unrecorded`` is NS-W208 (the scheduler step's ``schedule_mode``): Windows runs the task at ``time`` and
+    the record could not be written, so the record's "off" must not be the headline. It holds while the
+    record still is what that step left; once the record follows Windows, the state is read from it again.
 
     The scheduler step leaves its sentence in the flag ``nightly_line`` with the record's state at that
     moment (``nightly_state``). A run in which that step had nothing to do (a Repair with nothing changed)
@@ -169,4 +206,8 @@ def summary(home: Path, flags: dict[str, Any]) -> dict[str, Any]:
         undecided = flags.get("schedule") is None and not on
         line = outcome_line({"case": "first", "on": False}) if undecided else kept_line(on, when, only)
     failed = flags.get("schedule") == "failed" and not on
-    return {"state": "on" if on else "failed" if failed else "off", "time": when, "line": line}
+    state = "on" if on else "failed" if failed else "off"
+    if flags.get("schedule_mode") == "unrecorded" and flags.get("nightly_state") == state_word(home):
+        ran_at = flags.get("nightly_time")
+        return {"state": "unrecorded", "time": ran_at if isinstance(ran_at, str) else when, "line": line}
+    return {"state": state, "time": when, "line": line}
