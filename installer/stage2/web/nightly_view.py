@@ -83,6 +83,16 @@ def _why(reason: Any) -> str:
 def _owner_words(o: dict[str, Any], on: bool) -> str:
     """What must be said when the PC's one nightly task belongs, or belonged, to another Nightshift folder."""
     other, took = o.get("other_home"), o.get("took_from")
+    if not on and other and o.get("other_off") and o.get("unreachable"):
+        return (
+            f" A switched-off nightly task names the Nightshift at {other}, which cannot be reached now (its "
+            "drive is not there); it was left as it is."
+        )
+    if not on and other and o.get("other_off"):
+        return (
+            f" A switched-off nightly task of the Nightshift at {other} is in Task Scheduler; it was left as "
+            "it is. Switching Automatic runs on in this one's Settings moves it here."
+        )
     if not on and other and o.get("unreachable"):
         return (
             f" The nightly task runs the Nightshift at {other}, which cannot be reached now (its drive is "
@@ -92,6 +102,11 @@ def _owner_words(o: dict[str, Any], on: bool) -> str:
         return (
             f" Another Nightshift at {other} owns this PC's nightly task (a PC has one), so this one does "
             f"not run by itself; switching Automatic runs on in this one's {WHERE} moves the task here."
+        )
+    if on and took and o.get("took_off"):
+        return (
+            f" This PC has one nightly task: the switched-off one of the Nightshift at {took} now runs this "
+            "Nightshift, and that one's Settings still show Automatic runs off."
         )
     if on and took:
         return (
@@ -119,12 +134,23 @@ def outcome_line(o: dict[str, Any]) -> str:
     Every sentence is true of the state it names and says where the owner changes it."""
     case, on, when = o.get("case"), o.get("on"), o.get("run_time")
     only, reason = bool(o.get("signed_in_only")), _why(o.get("reason"))
-    gone = o.get("gone_home")
+    gone, was_off = o.get("gone_home"), bool(o.get("was_off"))
+    if gone and case == "refused" and was_off:
+        return (
+            f"Automatic runs: off. A switched-off nightly task left by a deleted Nightshift ({gone}) could "
+            f"not be removed ({reason}); it is switched off, so it starts nothing. Delete 'Nightshift "
+            f"Daily' in Task Scheduler, or switch Automatic runs on in {WHERE} to run this one every night."
+        )
     if gone and case == "refused":
         return (
             f"Automatic runs: off. A nightly task left by a deleted Nightshift ({gone}) could not be removed "
             f"({reason}); it still wakes this PC for nothing. Delete 'Nightshift Daily' in Task Scheduler, "
             f"or switch Automatic runs on in {WHERE} to run this one every night."
+        )
+    if gone and was_off:
+        return (
+            f"Automatic runs: off. A switched-off nightly task left by a deleted Nightshift ({gone}) was "
+            f"removed. Switch Automatic runs on in {WHERE} to run this one every night."
         )
     if gone:
         return (
@@ -158,6 +184,12 @@ def outcome_line(o: dict[str, Any]) -> str:
                 f"Automatic runs: still on at {when}. Windows refused to remove the nightly task ({reason}); "
                 f"switch them off in {WHERE}, or delete 'Nightshift Daily' in Task Scheduler."
             )
+        if o.get("was_off"):
+            return (
+                "Automatic runs: off. A switched-off nightly task of an earlier install of this folder could "
+                f"not be removed ({reason}); it is switched off, so it starts nothing. Delete 'Nightshift "
+                f"Daily' in Task Scheduler, or switch Automatic runs on in {WHERE}."
+            )
         return (
             f"Automatic runs: on at {when}, kept as set in Settings. Windows refused to register the task "
             f"again ({reason}); the task is as it was."
@@ -169,8 +201,9 @@ def outcome_line(o: dict[str, Any]) -> str:
             f"answered, and they are not that now, so setup changed nothing; {WHERE} changes them."
         ) + _owner_words(o, bool(on))
     if o.get("removed_old"):
+        found = "switched-off nightly task" if o.get("was_off") else "nightly task"
         line = (
-            "Automatic runs: off. An older Nightshift's nightly task was found and removed; switch them on "
+            f"Automatic runs: off. An older Nightshift's {found} was found and removed; switch them on "
             f"in {WHERE} when you want the nightly run."
         )
     elif case == "kept" and on and o.get("owner_unknown"):

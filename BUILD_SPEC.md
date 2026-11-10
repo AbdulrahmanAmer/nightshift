@@ -229,7 +229,7 @@ Work packages: **A** installer+launchers · **B** supervisor+tune+opencode · **
 
 ## 5. Installer / wizard (WP-A, Slice 5)
 
-**Stage 0 — `INSTALL.cmd`:** `powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0installer\stage1.ps1" -AppPath "%~dp0."` and pauses on exit so the window stays readable.
+**Stage 0 — `INSTALL.cmd`:** `powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0installer\stage1.ps1" -AppPath "%~dp0."` and pauses on exit so the window stays readable; it does not pause in a run that says nobody is at the keyboard (`-NoUi`, `NS_NONINTERACTIVE=1`, or `-Answers` without `-Ui`), so a script that starts it never waits for a key (D-40).
 
 **Stage 1 — `stage1.ps1`:** preflight (§1.2) → uv → Python 3.12 → Visual C++ runtime (stage 1 downloads the pinned build and runs it elevated, no winget) → setup server, whose tools step installs what is still missing (the runtime if stage 1 could not, FFmpeg, Windows Terminal: winget first, then a pinned direct download for the runtime and FFmpeg; Git is not installed, §13 D25) → create `NIGHTSHIFT_HOME` tree → bootstrap venv `venvs\studio` with `uv sync --locked --extra studio` from the repo → run `wizard.py [--answers <path>]`.
 

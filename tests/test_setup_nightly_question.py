@@ -652,3 +652,64 @@ def test_a_kill_between_the_flags_and_the_consume_does_not_deny_setups_own_chang
     rerun.set_flag("nightly_done", {"nightly": True, "seen": "off", "state": "on@03:00"})  # a kill left it behind
     again = window_writes(rerun, window_answers(rerun, shown(saved_answers(rerun.paths), rerun.paths.home), nightly=True))
     assert summary(setup(again)) == "Automatic runs: on at 03:00, as you chose in setup." and windows.has == ("Ready", "03:00")
+
+
+# ------------------------------------------------- D-41: a nightly task that is switched off in Task Scheduler
+# The same three routes and a Repair: one `setup_apply`, the words of `nightly_view.outcome_line`, and the Done
+# screen's line (`nightly_view.summary`) that must be the same words.
+def off_task(home: Path | None) -> dict[str, str]:
+    return {**old_task(home), "state": "Disabled"}
+
+
+def done_screen(ctx: Any) -> str:
+    from installer.stage2.web import nightly_view
+
+    flags = {n: ctx.flag(n) for n in ("schedule", "schedule_mode", "nightly_line", "nightly_state", "nightly_time")}
+    return nightly_view.summary(ctx.paths.home, flags)["line"]
+
+
+@pytest.mark.parametrize("route", ["file", "console", "window"])
+def test_a_first_install_meets_a_switched_off_nightly_task(tmp_path: Path, windows: FakeWindows, route: str):
+    # it names THIS folder (installed again after the task was switched off): removed, its time kept, said
+    windows.task = off_task(tmp_path / "same" / "home")
+    ctx, said = first_setup(tmp_path / "same", route, yes=False)
+    assert windows.has is None and windows.changes() == ["unregister"] and record(ctx.paths) is None
+    line = summary(said)
+    assert line.startswith("Automatic runs: off. An older Nightshift's switched-off nightly task was found and removed")
+    assert saved_time(ctx.paths) == "02:00" and done_screen(ctx) == line
+    # it names a folder that no longer exists: removed too
+    windows.task, windows.calls = off_task(tmp_path / "deleted" / "home"), []
+    ctx, said = first_setup(tmp_path / "gone", route, yes=False)
+    assert windows.has is None and windows.changes() == ["unregister"] and record(ctx.paths) is None
+    line = summary(said)
+    assert "A switched-off nightly task left by a deleted Nightshift" in line and "wakes" not in line and "woke" not in line
+    assert done_screen(ctx) == line
+    # it names ANOTHER Nightshift that exists: not removed, not moved, named, with the way to move it here
+    other = tmp_path / "other-nightshift"
+    (other / "app").mkdir(parents=True)
+    (other / "app" / "VERSION").write_text("0.1.15\n", encoding="ascii")
+    windows.task, windows.calls = off_task(other), []
+    ctx, said = first_setup(tmp_path / "second", route, yes=False)
+    assert windows.task == off_task(other) and windows.changes() == [] and record(ctx.paths) is None
+    line = summary(said)
+    assert line.startswith("Automatic runs: off.")
+    assert f"A switched-off nightly task of the Nightshift at {other} is in Task Scheduler; it was left as it is." in line
+    assert "Switching Automatic runs on in this one's Settings moves it here." in line
+    assert (ctx.flag("schedule"), ctx.flag("schedule_mode")) == ("installed", "off") and done_screen(ctx) == line
+    # a Repair of that install: the same words, still nothing changed
+    repair = context(tmp_path / "second", saved_answers(ctx.paths), app=moved_app(tmp_path, "app2"))
+    line = summary(setup(repair))
+    assert windows.task == off_task(other) and windows.changes() == []
+    assert f"A switched-off nightly task of the Nightshift at {other} is in Task Scheduler" in line
+    assert line.startswith("Automatic runs: off, kept as set in Settings")
+    # with a yes: this install takes it, and the line says whose it was (and that it was switched off)
+    ctx, said = first_setup(tmp_path / "third", route, yes=True)
+    assert windows.task is not None and windows.task["home"] == str(ctx.paths.home) and windows.has == ("Ready", "04:30")
+    line = summary(said)
+    assert line.startswith("Automatic runs: on at 04:30") and f"the switched-off one of the Nightshift at {other} now runs" in line
+    assert done_screen(ctx) == line
+    # it names nothing: left exactly as it is, and nothing is said about it
+    windows.task, windows.calls = off_task(None), []
+    ctx, said = first_setup(tmp_path / "fourth", route, yes=False)
+    assert windows.task == off_task(None) and windows.changes() == []
+    assert summary(said).startswith("Automatic runs: off. Nothing runs by itself") and "Task Scheduler" not in summary(said)
