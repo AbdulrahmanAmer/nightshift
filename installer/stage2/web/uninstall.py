@@ -297,7 +297,7 @@ class UninstallApp:
             for line in proc.stdout:
                 if line.strip():
                     self._log(line.rstrip())
-                if line.startswith(LEFT):
+                if line.startswith(LEFT) or line.startswith("Another Nightshift is still installed"):
                     self._left.append(line.strip())
             code = proc.wait()
             if code:
@@ -332,7 +332,7 @@ class UninstallApp:
                 # (its own sentence is shown under "kept")
                 if not any(line.startswith(LEFT + "'Nightshift Daily'") for line in self._left):
                     removed.append("The nightly task")
-                if not any("Desktop shortcut" in line for line in self._left):
+                if not any(line.startswith(LEFT) and "Desktop shortcut" in line for line in self._left):
                     removed.append("Desktop shortcuts")
                 if named is None:
                     removed.append(NOTE_LABEL)
@@ -342,7 +342,8 @@ class UninstallApp:
         programs = "Programs and Python environments"
         if (home / "bin").exists():
             # The window itself holds bin\webview2 DLLs: hand the last deletion to a detached PowerShell.
-            shared = bool(self._left) and self._deferred is spawn_deferred
+            # only a line that names another Nightshift folder means the program kept setup's shared files
+            shared = self._deferred is spawn_deferred and any("the Nightshift at " in ln for ln in self._left)
             if spawn_deferred(home, keep_local=True) if shared else self._deferred(home):
                 removed.append(
                     f"{programs} (the last files go as soon as every Nightshift window is closed; "

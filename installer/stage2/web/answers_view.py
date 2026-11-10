@@ -245,13 +245,16 @@ def draft_to_answers(
 NO_OTHER_INSTALL: dict[str, Any] = {"state": "mine", "path": None, "line": None}
 
 
-def folder_now(home: Path, app_path: Path | None, desktop: Path | None) -> dict[str, Any]:
+def folder_now(
+    home: Path, app_path: Path | None, desktop: Path | None, home_var: str | None = None
+) -> dict[str, Any]:
     """What the window shows for the install folder `home`: Automatic runs there (``nightlySeen``) and whose
     the Desktop shortcuts are seen from there (``shortcutsNow``). Both belong to the FOLDER, so the window
     reads them again for every folder the owner picks (the folder check carries them), not once at load."""
     return {
         "nightlySeen": nightly_view.current_choice(Path(home)),
-        "shortcutsNow": shortcuts_view.for_window(Path(home), app_path, desktop),
+        # (`home_var`: what the user variable NIGHTSHIFT_HOME holds; the same yes moves it)
+        "shortcutsNow": shortcuts_view.for_window(Path(home), app_path, desktop, home_var),
     }
 
 

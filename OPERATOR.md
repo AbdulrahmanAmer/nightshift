@@ -602,9 +602,14 @@ without your yes:
   later repair of either install does not move them again. Shortcuts of a Nightshift folder that was deleted are
   taken without a question, and setup says which folder they opened. A file under one of those names that
   Nightshift did not make is left alone.
-- **NIGHTSHIFT_HOME.** It decides which install `ns` and `studio` use when you type them in a terminal. It follows
-  the same yes as the shortcuts. After it moved, open a new terminal: programs that are already open keep the old
-  value. The shortcuts and the nightly task name their own folder and do not depend on it.
+- **NIGHTSHIFT_HOME.** It is only the default for a command typed in a terminal that belongs to no install. A
+  program that is inside an install uses that install: the shortcuts, the nightly task, INSTALL.cmd and
+  UNINSTALL.cmd started from an install's `app` folder, and `ns` or `studio` started from an install's own
+  `venvs` folder. When such a program finds the variable naming another folder it uses its own install and says so
+  in one line ("Nightshift: using the install in ..."). The variable follows the same yes as the shortcuts, and
+  the switch (or the console question) is offered while either the shortcuts or the variable are another
+  install's; its line says what it moves. After it moved, open a new terminal: programs that are already open
+  keep the old value.
 - **The nightly task.** As described under "Every night": it runs one install, and switching Automatic runs on in
   another install's Settings moves it there. A dev install never takes another install's task.
 - **Notifications.** Both installs share the one registration; the second leaves it as it is unless you said yes.
@@ -614,7 +619,14 @@ that open it, `NIGHTSHIFT_HOME` when it names it, and its own `Shortcuts` folder
 left, and each line that starts with "Left" says what and for which folder; the notification registration and the
 stored stock footage keys stay while another install is found. A shortcut or a task that does not say which
 Nightshift it belongs to is left too, and named. UNINSTALL.cmd started from an install's own program folder
-(`app` inside the install folder) removes that install, whatever `NIGHTSHIFT_HOME` names.
+(`app` inside the install folder) removes that install, whatever `NIGHTSHIFT_HOME` names. Started from anywhere
+else (a repository, an extracted zip) it follows the variable only to an install that runs that copy of the
+program; otherwise it changes nothing and tells you to run the install's own UNINSTALL.cmd or to pass `-HomeDir`.
+When the other install held none of the shared things (you never said yes for it), the uninstall still knows it
+from the list setup keeps (`installs.txt` in `%LOCALAPPDATA%\Nightshift`): it keeps the notification
+registration and the stored keys, and its last lines say "Another Nightshift is still installed at ..." with what
+to run there (its INSTALL.cmd, Repair) so that `NIGHTSHIFT_HOME`, the Desktop shortcuts and the notification icon
+become its own. An install made by a version before this one is not in that list until its setup runs once.
 
 ## Uninstall
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,6 +17,57 @@ def repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
+def _same_folder(a: str | Path, b: str | Path) -> bool:
+    try:
+        if os.path.samefile(a, b):
+            return True
+    except OSError:
+        pass
+    return os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b))
+
+
+def home_of_place(program: Path | None = None, executable: str | None = None) -> Path | None:
+    r"""The install this process belongs to, told from WHERE IT IS and from nothing else: the folder above
+    its program folder when that is `<home>\app`, else the home of the venv its interpreter runs from
+    (`<home>\venvs\<name>\Scripts`). None for a program that is in no install (a checkout run by a Python
+    of its own; the update worker's private copy under `run`, which is handed its home).
+
+    A folder counts as an install only when it holds `config/runtime.json` (what the launchers ask too), so
+    a setup that is still making the folder is not told apart from its own answers.
+    """
+    app = repo_root() if program is None else Path(program)
+    exe = Path(sys.executable if executable is None else executable)
+    found: list[Path] = []
+    if app.name.lower() == "app":
+        found.append(app.parent)
+    if exe.parent.name.lower() in ("scripts", "bin") and exe.parent.parent.parent.name.lower() == "venvs":
+        found.append(exe.parent.parent.parent.parent)
+    for home in found:
+        try:
+            if (home / "config" / "runtime.json").is_file():
+                return home
+        except OSError:
+            continue
+    return None
+
+
+#: One line per process when the place and the variable disagree (`Paths.from_env`).
+_said_place: list[str] = []
+
+
+def _say_place(place: Path, named: str) -> None:
+    if _said_place:
+        return
+    _said_place.append(named)
+    try:
+        sys.stderr.write(
+            f"Nightshift: using the install in {place} (this program is in it); NIGHTSHIFT_HOME names "
+            f"{named}, which is another folder.\n"
+        )
+    except (OSError, ValueError, AttributeError):       # no stderr (pythonw, a closed pipe): nothing to tell
+        pass
+
+
 def contracts_dir() -> Path:
     return repo_root() / "contracts"
 
@@ -28,7 +80,15 @@ class Paths:
     def from_env(cls, env: Mapping[str, str] | None = None) -> Paths:
         e = os.environ if env is None else env
         raw = e.get("NIGHTSHIFT_HOME")
-        if raw:
+        # A PC can hold several Nightshift folders and has ONE NIGHTSHIFT_HOME, which may name another of
+        # them (card second-install-takeover). A program that is inside an install belongs to that install:
+        # when the variable names a different folder the place wins, and one line says which was used. With
+        # no variable nothing changes here (`ns_supervisor.homecheck` answers that case).
+        place = home_of_place() if env is None and raw else None
+        if place is not None and raw and not _same_folder(raw, place):
+            _say_place(place, raw)
+            home = place
+        elif raw:
             home = Path(raw)
         else:
             local = e.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")

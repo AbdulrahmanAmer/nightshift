@@ -183,6 +183,38 @@ def read_owner(lnk: Path, home: Path, app: Path | None = None) -> tuple[str, str
         return FOREIGN, None
 
 
+#: The Nightshift folders setup ran in, one per line, in `%LOCALAPPDATA%/Nightshift`: how the uninstaller
+#: of one install learns of another that holds none of the things a PC has one of (it then keeps the toast
+#: registration and the stored keys, and says the other is still there).
+LIST_NAME = "installs.txt"
+
+
+def default_list() -> Path | None:
+    base = os.environ.get("LOCALAPPDATA")
+    return Path(base) / "Nightshift" / LIST_NAME if base else None
+
+
+def record_home(home: Path, listing: Path | None) -> bool:
+    """Add `home` to the list of installs unless it is there. True when the file was written. Best effort:
+    a list that cannot be read or written is left (the uninstaller then knows one install fewer)."""
+    if listing is None:
+        return False
+    try:
+        lines = [ln.strip() for ln in listing.read_text(encoding="utf-8-sig").splitlines() if ln.strip()]
+    except (OSError, ValueError):
+        lines = []
+    if any(_same(ln, home) for ln in lines):
+        return False
+    try:
+        listing.parent.mkdir(parents=True, exist_ok=True)
+        tmp = listing.with_name(f"~ns{os.getpid()}-installs.tmp")
+        tmp.write_text("\n".join([*lines, str(home)]) + "\n", encoding="utf-8")
+        os.replace(tmp, listing)
+    except OSError:
+        return False
+    return True
+
+
 def is_stub_form(arguments: str, home: Path) -> bool:
     """True when the shortcut starts its launcher through the launch script of `home`."""
     found = parse(arguments)

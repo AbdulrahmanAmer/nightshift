@@ -14,8 +14,10 @@
     another Nightshift folder uses (one that exists, or whose drive is not there now) is left, and a line
     starting with "Left" says so. A shortcut or a task it cannot read exactly is left too.
 
-    -HomeDir     folder to clean (default: the folder this script is installed in, <home>\app\installer;
-                 then NIGHTSHIFT_HOME, then %LOCALAPPDATA%\Nightshift).
+    -HomeDir     folder to clean. Default: the install this script is in (<home>\app\installer). Started
+                 from anywhere else (a repository, an extracted zip) it takes the install NIGHTSHIFT_HOME names
+                 (then %LOCALAPPDATA%\Nightshift) only when that install runs THIS program folder; otherwise it
+                 changes nothing and asks for -HomeDir: the variable may name another Nightshift folder.
     -DesktopDir  the Desktop folder to look in, instead of this user's and the public one.
     -StateFile   with -DryRun only: a JSON file {task: {arguments} or null, userHome, toastKey} that stands in
                  for what Windows has, so a dry run reads nothing of this PC (the tests use it).
@@ -88,6 +90,43 @@ function Get-TaskArguments {
     $action = @($task.Actions) | Select-Object -First 1
     if ($null -eq $action) { return '' }
     return [string]$action.Arguments
+}
+
+function Test-UnderFolder {
+    # True when the file $Path is inside $Folder, by whole path segments: D:\Nightshift2\x.exe is NOT inside
+    # D:\Nightshift.
+    param([string]$Path, [string]$Folder)
+    if (-not $Path -or -not $Folder) { return $false }
+    return $Path.StartsWith(($Folder.TrimEnd('\') + '\'), [StringComparison]::OrdinalIgnoreCase)
+}
+
+function Test-RunsThisProgram {
+    # True when the install in $Folder runs the program folder this script is in: its own <folder>\app, or the
+    # folder its setup recorded (config\wizard_flags.json, shortcuts_app: a dev install runs a repository, an
+    # older install the extracted zip).
+    param([string]$Folder)
+    if (-not $Folder) { return $false }
+    $program = (Split-Path -Parent $PSScriptRoot).TrimEnd('\')
+    if ((Join-Path $Folder 'app').TrimEnd('\') -ieq $program) { return $true }
+    try {
+        $flagFile = Join-Path (Join-Path $Folder 'config') 'wizard_flags.json'
+        $flags = (Get-Content -LiteralPath $flagFile -Raw -Encoding UTF8 -ErrorAction Stop) | ConvertFrom-Json
+        $made = $flags.PSObject.Properties['shortcuts_app']
+        return (($null -ne $made) -and (([string]$made.Value).TrimEnd('\') -ieq $program))
+    }
+    catch {
+        Write-Verbose "no setup record in ${Folder}: $($_.Exception.Message)"
+        return $false
+    }
+}
+
+function Get-KnownInstalls {
+    # The Nightshift folders setup recorded on this PC (%LOCALAPPDATA%\Nightshift\installs.txt, one per line):
+    # how an uninstall learns of another install that holds none of the shared things.
+    if ($null -ne $machine) { return @(Get-MachineValue 'installs' | Where-Object { $_ } | ForEach-Object { [string]$_ }) }
+    $listFile = Join-Path (Join-Path $env:LOCALAPPDATA 'Nightshift') 'installs.txt'
+    if (-not (Test-Path -LiteralPath $listFile -PathType Leaf)) { return @() }
+    return @(Get-Content -LiteralPath $listFile -Encoding UTF8 -ErrorAction SilentlyContinue | ForEach-Object { ([string]$_).Trim() } | Where-Object { $_ })
 }
 
 function Read-LinkArguments {
@@ -246,9 +285,28 @@ if (-not $nsHome) {
         if ($above -and (Test-Path -LiteralPath (Join-Path $above 'config') -PathType Container)) { $nsHome = $above }
     }
 }
-if (-not $nsHome) { $nsHome = Get-UserHomeVariable }
-if (-not $nsHome) { $nsHome = $env:NIGHTSHIFT_HOME }
-if (-not $nsHome) { $nsHome = Join-Path $env:LOCALAPPDATA 'Nightshift' }
+if (-not $nsHome) {
+    # Not inside an install (a repository, an extracted zip): the variable is only a hint. It is followed when
+    # the install it names runs THIS program folder; an install of another program folder is never offered.
+    $named = @(Get-UserHomeVariable)
+    if ($null -eq $machine) { $named += @([string]$env:NIGHTSHIFT_HOME, (Join-Path $env:LOCALAPPDATA 'Nightshift')) }
+    $named = @($named | Where-Object { $_ })
+    foreach ($candidate in $named) {
+        if (Test-RunsThisProgram $candidate) { $nsHome = $candidate; break }
+    }
+    if (-not $nsHome) {
+        Write-Host ''
+        Write-Host 'Nightshift uninstall: nothing was changed.' -ForegroundColor Yellow
+        Write-Host "This copy of the program ($(Split-Path -Parent $PSScriptRoot)) is not inside an install."
+        if ($named.Count -gt 0) {
+            Write-Host "NIGHTSHIFT_HOME names $($named[0]), and that Nightshift does not run this copy, so it is not removed from here."
+            Write-Host "To remove that one, run UNINSTALL.cmd from its own program folder: $(Join-Path $named[0] 'app')"
+        }
+        Write-Host 'To remove another install, name its folder:'
+        Write-Host "  `"$(Join-Path (Split-Path -Parent $PSScriptRoot) 'UNINSTALL.cmd')`" -HomeDir <its folder>"
+        exit 2
+    }
+}
 
 Write-Host ''
 Write-Host 'Nightshift uninstall' -ForegroundColor Cyan
@@ -299,7 +357,7 @@ if (Test-Path -LiteralPath $nsHome) {
         foreach ($p in @(Get-Process -ErrorAction SilentlyContinue)) {
             try {
                 $exe = [string]$p.Path
-                if ($exe -and $exe.StartsWith($nsHome, [StringComparison]::OrdinalIgnoreCase)) {
+                if (Test-UnderFolder -Path $exe -Folder $nsHome) {
                     Write-Host "  stopping $($p.ProcessName)"
                     Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
                 }
@@ -317,7 +375,14 @@ if (Test-Path -LiteralPath $nsHome) {
 $others = New-Object System.Collections.Generic.List[string]
 $varState = 'none'
 $userHome = ''
+$stillHere = New-Object System.Collections.Generic.List[string]     # other installs setup recorded on this PC
 if (-not $SkipSystem) {
+    foreach ($known in @(Get-KnownInstalls)) {
+        if ((Get-FolderState $known) -ne 'other') { continue }
+        if (-not (Test-Path -LiteralPath (Join-Path (Join-Path $known 'config') 'runtime.json') -PathType Leaf)) { continue }
+        if (-not $stillHere.Contains($known)) { $stillHere.Add($known) }
+        if (-not $others.Contains($known)) { $others.Add($known) }
+    }
     $taskArgs = Get-TaskArguments
     if ($null -ne $taskArgs) {
         $named = [regex]::Match($taskArgs, 'NIGHTSHIFT_HOME=([^"]+)"')
@@ -517,6 +582,20 @@ if (-not $SkipSystem) {
     }
     elseif ($varState -ne 'none') {
         Write-Host "Left NIGHTSHIFT_HOME: it names the Nightshift at $userHome."
+    }
+    # Another install that held none of the shared things: say that it is there and what it needs now.
+    foreach ($known in $stillHere) {
+        if ($known.TrimEnd('\') -ieq $userHome.TrimEnd('\')) { continue }
+        Write-Host "Another Nightshift is still installed at ${known}. NIGHTSHIFT_HOME does not name it, so 'ns' and 'studio' typed in a terminal do not find it; its shortcuts in $(Join-Path $known 'Shortcuts') work. To make the Desktop shortcuts, NIGHTSHIFT_HOME and the notification icon its own, run INSTALL.cmd in $(Join-Path $known 'app') (or from its zip), choose that folder and Repair."
+    }
+    if ($stillHere.Count -eq 0 -and $others.Count -eq 0 -and ($varState -eq 'mine' -or $varState -eq 'gone')) {
+        Write-Host 'If another Nightshift folder is on this PC (one installed by an older version is not listed), run its INSTALL.cmd and choose Repair once: that registers its notifications, its stock-footage keys and NIGHTSHIFT_HOME again.'
+    }
+    # this folder leaves the PC's list of installs
+    $listFile = Join-Path (Join-Path $env:LOCALAPPDATA 'Nightshift') 'installs.txt'
+    if (-not $script:IsDry -and $null -eq $machine -and (Test-Path -LiteralPath $listFile -PathType Leaf)) {
+        $rest = @(Get-Content -LiteralPath $listFile -Encoding UTF8 -ErrorAction SilentlyContinue | Where-Object { $_ -and ((Get-FolderState ([string]$_).Trim()) -ne 'mine') })
+        Set-Content -LiteralPath $listFile -Value $rest -Encoding UTF8 -ErrorAction SilentlyContinue
     }
 }
 

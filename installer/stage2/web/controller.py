@@ -475,7 +475,7 @@ class SetupController:
         """Automatic runs and the Desktop shortcuts as they are for the install folder `home` (the window
         shows both under their switches, for the folder picked: `answers_view.folder_now`)."""
         app = appcopy.app_dir(home) if self.installs_app else self.cfg.app_path
-        return answers_view.folder_now(home, app, self.fx.desktop())
+        return answers_view.folder_now(home, app, self.fx.desktop(), self.fx.get_home_var(bootstrap.HOME_VAR))
 
     # ---- construction ----
     def _read_settings_before(self) -> dict[str, bytes] | None:
@@ -517,6 +517,11 @@ class SetupController:
         prefill = self._prefill_raw()
         if prefill and prefill.get("home_path"):
             return Path(str(prefill["home_path"]))
+        # INSTALL.cmd started from an install's own program folder (<home>/app) opens on THAT install: the
+        # variable may name another Nightshift folder on this PC (stage 1's Resolve-NsHome: the same rule)
+        app = self.cfg.app_path
+        if app.name.lower() == "app" and (app.parent / "config").is_dir():
+            return app.parent
         if env_home:
             return Path(env_home)
         return Path(str(self.pf.get("home") or r"C:\Nightshift"))

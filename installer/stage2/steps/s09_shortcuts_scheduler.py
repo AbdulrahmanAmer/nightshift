@@ -66,6 +66,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+import ns_common.testguard as testguard
 from installer.stage2 import shortcut_owner
 from installer.stage2.answers import forget_setup_input
 from installer.stage2.base import Step
@@ -168,6 +169,14 @@ def desktop(ctx: StepContext) -> Path:
 #: nightly task running another Nightshift folder and left it.
 SCHEDULE_FLAGS = ("installed", "unavailable", "failed", "other")
 _DEV_LEFT = re.compile(re.escape(schedule.DEV_LEFT) + r"([^;\r\n]+);")
+
+
+def installs_list(ctx: StepContext) -> Path | None:
+    """Where this setup records its home for the uninstaller of another install. A test run writes nothing
+    under this PC's LOCALAPPDATA: it records only into a list the test hands in."""
+    if ctx.installs_list is not None:
+        return ctx.installs_list
+    return None if testguard.under_test() else shortcut_owner.default_list()
 
 
 def own_folder(ctx: StepContext) -> Path:
@@ -278,6 +287,7 @@ class S09ShortcutsScheduler(Step):
         ctx.set_flag("shortcuts_names", names)
         ctx.set_flag("home_var_line", var_line)
         ctx.set_flag("shortcuts_app", str(ctx.app_path))     # the app folder the shortcuts and the task use
+        shortcut_owner.record_home(ctx.paths.home, installs_list(ctx))   # the PC's list of installs
         ctx.set_flag("first_install", False)                 # setup has decided: later runs keep the choice
         # last: the answers were about this run. A kill before this line repeats the step with them.
         if forget_setup_input(ctx.paths.config / "answers.json"):

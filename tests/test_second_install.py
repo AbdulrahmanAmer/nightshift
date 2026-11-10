@@ -183,6 +183,7 @@ def test_a_yes_moves_the_shortcuts_and_says_from_where(tmp_path: Path, windows: 
         now = answers_view.folder_now(home, ROOT, desktop)
         view = answers_view.answers_to_view(raw, nightly_now=now["nightlySeen"], shortcuts_now=now["shortcutsNow"])
         assert view["shortcutsHere"] is False and view["shortcutsNow"]["state"] == "other"  # shown, off
+        assert view["shortcutsNow"]["path"] == str(a)
         assert view["shortcutsNow"]["line"] == f"Now they open the Nightshift at {a}"
         draft = {**{k: v for k, v in view.items() if not k.endswith("KeySet")}, "homePath": str(home), "shortcutsHere": True}
         raw = {**answers_view.draft_to_answers(draft), "install_code": False}
@@ -650,6 +651,195 @@ def test_the_state_file_is_for_a_dry_run_only(tmp_path: Path):
     argv = [exe, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(UNINSTALL), "-SkipSystem", "-HomeDir", str(b), "-StateFile", str(state)]
     proc = subprocess.run(argv, capture_output=True, text=True, timeout=120, env={**os.environ, "NS_NONINTERACTIVE": "1"})
     assert proc.returncode == 2 and "-StateFile" in proc.stdout and (b / "app" / "VERSION").is_file()  # refused before anything
+
+
+def powershell(script: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+    exe = pwsh.find_powershell()
+    assert exe is not None
+    return subprocess.run([exe, "-NoProfile", "-NonInteractive", "-Command", script], capture_output=True, text=True, timeout=120, env=env)
+
+
+def cut(text: str, start: str, end: str) -> str:
+    return text[text.index(start):text.index(end)]
+
+
+@needs_powershell
+def test_the_uninstaller_outside_an_install_follows_the_variable_only_to_an_install_of_this_program(tmp_path: Path):
+    """The repository's UNINSTALL.cmd (a dev install's way) beside a real install A that the variable names."""
+    a = install_at(tmp_path / "A")
+    (a / "config" / "wizard_flags.json").write_text(json.dumps({"shortcuts_app": str(a / "app")}), encoding="utf-8")
+    dev = install_at(tmp_path / "dev")
+    (dev / "config" / "wizard_flags.json").write_text(json.dumps({"shortcuts_app": str(ROOT)}), encoding="utf-8")
+    desktop = tmp_path / "desktop"
+    desktop.mkdir()
+    proc = uninstall_dry(a, desktop, {"task": None, "userHome": str(a), "toastKey": False}, home_arg=False)
+    out = proc.stdout
+    assert proc.returncode == 2, out + proc.stderr  # A is not offered: it does not run this program folder
+    assert "nothing was changed" in out and f"Install folder: {a}" not in out and "[dry-run]" not in out
+    assert f"UNINSTALL.cmd from its own program folder: {a / 'app'}" in out and "-HomeDir <its folder>" in out
+    proc = uninstall_dry(dev, desktop, {"task": None, "userHome": str(dev), "toastKey": False}, home_arg=False)
+    assert proc.returncode == 0 and f"Install folder: {dev}" in proc.stdout  # the dev install of this repository
+    proc = uninstall_dry(a, desktop, {"task": None, "userHome": None, "toastKey": False}, home_arg=False)
+    assert proc.returncode == 2 and "nothing was changed" in proc.stdout  # no variable: never a guess
+
+
+@needs_powershell
+def test_install_cmd_in_a_program_folder_repairs_that_install_not_the_one_the_variable_names(tmp_path: Path):
+    b = install_at(tmp_path / "B")
+    text = (ROOT / "installer" / "stage1.ps1").read_text(encoding="ascii")
+    body = cut(text, "function Resolve-NsHome {", "function Get-KitHint")
+    assert body.index("-ieq 'app'") < body.index("GetEnvironmentVariable('NIGHTSHIFT_HOME'")  # the place is asked first
+    stubs = "\n".join([
+        "$FakeProbe = 'described'",  # as in every test: the PC's own variable is not read
+        "function Get-Prop { param($o, $n, $d) return $d }",
+        "function Select-DefaultHome { return 'Z:\\Elsewhere' }",
+        "function Get-DataDir { return 'Z:\\Data' }",
+    ])
+    inside = powershell(f"{stubs}\n{body}\nWrite-Output (Resolve-NsHome -Drives @() -AnswersObj $null -Forced '' -AppFolder '{b / 'app'}')")
+    assert inside.returncode == 0 and inside.stdout.strip() == str(b), inside.stdout + inside.stderr
+    outside = powershell(f"{stubs}\n{body}\nWrite-Output (Resolve-NsHome -Drives @() -AnswersObj $null -Forced '' -AppFolder '{tmp_path}')")
+    assert outside.stdout.strip() == "Z:\\Elsewhere"  # an extracted zip: as before
+    forced = powershell(f"{stubs}\n{body}\nWrite-Output (Resolve-NsHome -Drives @() -AnswersObj $null -Forced 'Q:\\Asked' -AppFolder '{b / 'app'}')")
+    assert forced.stdout.strip() == "Q:\\Asked"  # what the owner names still wins
+
+
+@needs_powershell
+def test_a_launcher_inside_an_install_runs_it_and_says_so_when_the_variable_names_another(tmp_path: Path):
+    import shutil
+
+    a = install_at(tmp_path / "A")
+    b = install_at(tmp_path / "B")
+    common = b / "app" / "launchers" / "_common.ps1"
+    shutil.copy(ROOT / "launchers" / "_common.ps1", common)
+    env = {k: v for k, v in os.environ.items() if k.lower() != "psmodulepath"}
+    env[HOME_VAR] = str(a)
+    done = powershell(f". '{common}'\nWrite-Output (Get-NsHome)\nWrite-Output (Get-NsHome)\nWrite-Output $env:NIGHTSHIFT_HOME", env)
+    lines = [ln for ln in done.stdout.splitlines() if ln.strip()]
+    assert done.returncode == 0, done.stdout + done.stderr
+    said = f"Nightshift: using the install in {b} (this launcher is in it); NIGHTSHIFT_HOME names {a}, which is another folder."
+    assert lines == [said, str(b), str(b), str(b)]  # said once; every child inherits this install's folder
+
+
+def test_a_program_inside_an_install_uses_it_whatever_the_variable_names(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]):
+    import ns_common.paths as paths_mod
+
+    assert hasattr(paths_mod, "home_of_place"), "the base knows its home from the variable only"
+    a = install_at(tmp_path / "A")
+    b = install_at(tmp_path / "B")
+    assert paths_mod.home_of_place(b / "app", "C:/Python/python.exe") == b  # the folder above `app`
+    venv_python = str(b / "venvs" / "studio" / "Scripts" / "python.exe")
+    assert paths_mod.home_of_place(ROOT, venv_python) == b  # a dev install: the venv's home
+    assert paths_mod.home_of_place(ROOT, "C:/Python/python.exe") is None  # a checkout: the variable decides
+    assert paths_mod.home_of_place(b / "run" / "updater" / "app", str(b / "run" / "updater" / "supervisor" / "Scripts" / "python.exe")) is None
+    assert paths_mod.home_of_place(tmp_path / "new" / "app", "C:/Python/python.exe") is None  # no runtime.json yet
+    monkeypatch.setattr(paths_mod, "repo_root", lambda: b / "app")
+    monkeypatch.setattr(paths_mod, "_said_place", [])
+    monkeypatch.setenv(HOME_VAR, str(a))
+    assert Paths.from_env().home == b and Paths.from_env().home == b
+    err = capsys.readouterr().err
+    assert err.count(f"Nightshift: using the install in {b} (this program is in it); NIGHTSHIFT_HOME names {a}") == 1
+    monkeypatch.setenv(HOME_VAR, str(b))
+    assert Paths.from_env().home == b and capsys.readouterr().err == ""  # they agree: nothing to say
+    assert Paths.from_env({HOME_VAR: str(a)}).home == a  # an environment handed in is somebody else's process
+
+
+@needs_powershell
+def test_the_uninstaller_stops_only_processes_inside_the_folder_it_removes():
+    text = UNINSTALL.read_text(encoding="ascii")
+    fn = cut(text, "function Test-UnderFolder {", "function Test-RunsThisProgram {")
+    assert "Test-UnderFolder -Path $exe -Folder $nsHome" in text and "$exe.StartsWith($nsHome" not in text
+    asks = [("D:\\Nightshift\\venvs\\s\\python.exe", "D:\\Nightshift", "True"), ("D:\\Nightshift2\\venvs\\s\\python.exe", "D:\\Nightshift", "False"),
+            ("d:\\nightshift\\bin\\x.exe", "D:\\Nightshift\\", "True"), ("D:\\Nightshift", "D:\\Nightshift", "False"), ("", "D:\\Nightshift", "False")]
+    calls = "\n".join(f"Write-Output (Test-UnderFolder -Path '{p}' -Folder '{f}')" for p, f, _ in asks)
+    done = powershell(f"{fn}\n{calls}")
+    assert done.stdout.split() == [want for _, _, want in asks], done.stdout + done.stderr
+
+
+@needs_powershell
+def test_uninstalling_the_first_install_says_the_second_is_still_there_and_keeps_what_it_uses(tmp_path: Path, windows: FakeWindows):
+    """B holds none of the shared things (its owner never said yes): A's uninstaller learns of it from the PC's
+    list of installs, which every setup of this version writes."""
+    a, desktop, _ = two(tmp_path)
+    ctx = second(tmp_path)
+    listing = tmp_path / "local" / "Nightshift" / "installs.txt"
+    ctx.installs_list = listing
+    setup(ctx)
+    b = ctx.paths.home
+    (b / "config" / "runtime.json").write_text("{}", encoding="utf-8")
+    assert listing.read_text(encoding="utf-8").split("\n")[:1] == [str(b)]
+    again = second(tmp_path, saved_answers(ctx.paths))
+    again.installs_list = listing
+    setup(again)  # a second run adds nothing
+    assert listing.read_text(encoding="utf-8").count(str(b)) == 1
+    known = [ln for ln in listing.read_text(encoding="utf-8").splitlines() if ln]
+    machine = {"task": {"arguments": schedule.action_arguments(Paths(a))}, "userHome": str(a), "toastKey": True, "installs": [str(a), *known, str(tmp_path / "deleted")]}
+    out = uninstall_dry(a, desktop, machine).stdout
+    assert "[dry-run] remove scheduled task" in out and "[dry-run] remove user environment variable NIGHTSHIFT_HOME" in out
+    assert "remove toast registration" not in out and "forget the Pexels" not in out  # B uses them
+    assert f"Left the stock-footage keys in Credential Manager: the Nightshift at {b} uses them." in out
+    assert f"Another Nightshift is still installed at {b}." in out and f"run INSTALL.cmd in {b / 'app'}" in out
+    assert str(tmp_path / "deleted") not in out
+    # the window shows that sentence too, and still reports the Desktop shortcuts as removed
+    app = web_uninstall.UninstallApp(ROOT, a, popen=lambda *_a, **_k: Script([ln for ln in out.splitlines() if ln.startswith(("Left ", "Another "))]), deferred=lambda _h: True, env_var=lambda _n: None)
+    app._work(False, False)
+    result = app.view()["result"]
+    assert any(k["label"].startswith(f"Another Nightshift is still installed at {b}.") for k in result["kept"])
+    assert "Desktop shortcuts" in result["removed"] and "The nightly task" in result["removed"]
+
+
+def test_the_yes_is_offered_when_only_the_variable_is_another_installs(tmp_path: Path, windows: FakeWindows):
+    assert shortcuts_view is not None
+    a = install_at(tmp_path / "A")
+    desktop = tmp_path / "k" / "desktop"
+    first = second(tmp_path / "k")  # B alone on the Desktop ...
+    first.runner.user_env[HOME_VAR] = str(a)  # ... while the variable names A (QA's D-42 end state)
+    first.runner._save_user_env()
+    text = setup(first)
+    b = first.paths.home
+    assert desktop_opens(desktop) == {str(b)} and first.runner.user_env[HOME_VAR] == str(a)
+    kept = said(text, "NIGHTSHIFT_HOME:")
+    assert "switch 'Make the Desktop shortcuts open this install' on" in kept and '"shortcuts_here": true' in kept
+    assert "that yes moves NIGHTSHIFT_HOME and the Desktop shortcuts here" in kept  # exactly what it moves
+    # the window: the switch is there for the variable alone, and its line says what on does
+    now = answers_view.folder_now(b, ROOT, desktop, str(a))["shortcutsNow"]
+    assert now["state"] == "other" and now["path"] == str(a)
+    assert f"NIGHTSHIFT_HOME names the Nightshift at {a}" in now["line"] and "on makes it name this install" in now["line"]
+    both = answers_view.folder_now(tmp_path / "c" / "home", ROOT, desktop, str(a))["shortcutsNow"]  # a third folder
+    assert both["line"] == f"Now they open the Nightshift at {b}, and NIGHTSHIFT_HOME names the Nightshift at {a}; on moves both here"
+    assert answers_view.folder_now(b, ROOT, desktop, str(b))["shortcutsNow"]["state"] == "mine"  # nothing to ask
+    view = answers_view.answers_to_view({**saved_answers(first.paths), "shortcuts_here": True}, shortcuts_now=now)
+    assert view["shortcutsHere"] is True  # and a yes for it reaches the answers
+    # the console asks about the variable alone, and a yes moves it
+    ui = FakeUi({"Make it name this install instead": "y"}, interactive=True)
+    other = second(tmp_path / "y", ui=ui)
+    other.runner.user_env[HOME_VAR] = str(a)
+    other.runner._save_user_env()
+    text = setup(other)
+    assert f"NIGHTSHIFT_HOME names the Nightshift at {a} ('ns' typed in a terminal runs that one). Make it name this install instead?" in ui.asked
+    assert other.runner.user_env[HOME_VAR] == str(other.paths.home)
+    assert said(text, "NIGHTSHIFT_HOME:").startswith(f"NIGHTSHIFT_HOME: it named the Nightshift at {a}; now it names this install, as you chose.")
+
+
+def test_the_setup_window_opens_on_the_install_its_program_is_in(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    from installer.stage2.web.controller import SetupController
+
+    a = install_at(tmp_path / "A")
+    b = install_at(tmp_path / "B")
+    monkeypatch.setenv(HOME_VAR, str(a))
+
+    class Window:
+        """`_initial_home` reads the program folder, the variable and stage 1's pick: nothing else."""
+
+        fx = type("Fx", (), {"get_home_var": staticmethod(lambda _n: str(a))})()
+        pf: dict[str, Any] = {"home": "C:/Elsewhere"}
+
+        def __init__(self, app: Path) -> None:
+            self.cfg = type("Cfg", (), {"home": None, "app_path": app, "answers": None})()
+
+        _prefill_raw = SetupController._prefill_raw
+
+    assert SetupController._initial_home(Window(b / "app")) == b  # <B>/app/INSTALL.cmd: B, not the variable's A
+    assert SetupController._initial_home(Window(tmp_path / "zip")) == a  # an extracted zip: the variable, as before
 
 
 class Script:

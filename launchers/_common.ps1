@@ -147,9 +147,20 @@ function Get-NsHome {
     # The resolved home is exported to this process so every child (engine, dashboard, studio job) that reads
     # NIGHTSHIFT_HOME (ns_common.paths.Paths.from_env) uses the same folder; without that the engine ran with
     # %LOCALAPPDATA%\Nightshift as its home (no channels, wrong disk, version 0.1.0 in Settings).
+    # A PC can hold several Nightshift folders and has one NIGHTSHIFT_HOME, which may name another of them: a
+    # launcher that is inside an install (<home>\app\launchers) runs THAT install, whatever the variable names,
+    # and says so once when the variable names another install. Only a launcher that is in no install (a dev install's, in a
+    # repository) follows the variable, which its launch script sets to the install it was started for.
     $fromEnv = $env:NIGHTSHIFT_HOME
-    if (Test-NsHomeFolder $fromEnv) { return $fromEnv }
     $fromHere = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+    if ((Split-Path -Leaf (Split-Path -Parent $PSScriptRoot)) -ieq 'app' -and (Test-NsHomeFolder $fromHere)) {
+        if ((Test-NsHomeFolder $fromEnv) -and ($fromEnv.TrimEnd('\') -ine $fromHere.TrimEnd('\'))) {
+            Write-Host "Nightshift: using the install in $fromHere (this launcher is in it); NIGHTSHIFT_HOME names $fromEnv, which is another folder."
+        }
+        $env:NIGHTSHIFT_HOME = $fromHere
+        return $fromHere
+    }
+    if (Test-NsHomeFolder $fromEnv) { return $fromEnv }
     if (Test-NsHomeFolder $fromHere) { $env:NIGHTSHIFT_HOME = $fromHere; return $fromHere }
     if ($fromEnv) { return $fromEnv }
     return (Join-Path $env:LOCALAPPDATA 'Nightshift')
