@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import datetime
 from pathlib import Path
@@ -226,7 +227,7 @@ def main(argv: Sequence[str]) -> int:
     why = start_refusal(Path(argv[1]), Path(argv[0]))
     if why is None:
         return 0
-    print(f"{CODE}: {why}")
+    sys.stdout.write(f"{CODE}: {why}\n")
     return REFUSED_EXIT
 
 
