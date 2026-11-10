@@ -83,3 +83,16 @@ def test_fake_voice_tone_burst_warning_has_its_own_code_next_to_the_other_voice_
     # the 3xx family is the text-and-voice stages; NS-W301 and NS-W302 are the engine's own warnings and are
     # not reused for this one
     assert describe("NS-W301").message != d.message and describe("NS-W302").message != d.message
+
+
+def test_ns_e702_claims_no_outcome():
+    """D-39: NS-E702 is raised by refusals that changed nothing and by a rollback that did not finish, so its
+    fixed message names no outcome; the detail says which version is in place. The codes of the one-at-a-time
+    rule and of the half-filled environment exist."""
+    d = describe("NS-E702")
+    assert "rolled back" not in d.message and "previous version" not in d.message
+    assert "which version is in place" in d.hint and "ns doctor --bundle" in d.hint
+    known = load_errors()
+    assert "Another update, rollback or repair" in known["NS-E705"].message
+    assert "Nothing was changed" in known["NS-E705"].hint and "Nothing was changed" in known["NS-E706"].hint
+    assert "Python environments" in known["NS-E706"].message and known["NS-W210"].kind == "warning"

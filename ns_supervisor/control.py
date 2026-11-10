@@ -8,6 +8,8 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
+import psutil
+
 from ns_common.atomic import read_text_retry
 from ns_common.config import load_install_state, load_runtime
 from ns_common.errors import NsError
@@ -68,6 +70,39 @@ def wait_down(
     return True
 
 
+#: After `/status` went quiet, how long `stop` waits for the engine's recorded processes to be gone.
+ENGINE_EXIT_WAIT_S = 20.0
+
+
+def engine_pids(paths: Paths) -> list[int]:
+    """The supervisor's pid and its children's, as `run/supervisor.json` records them (empty: no record)."""
+    try:
+        data = json.loads(read_text_retry(paths.home / "run" / "supervisor.json"))
+        return [int(data["pid"]), *(int(v) for v in dict(data.get("children", {})).values())]
+    except (OSError, ValueError, KeyError, TypeError):
+        return []
+
+
+def wait_gone(
+    pids: list[int],
+    wait_s: float = ENGINE_EXIT_WAIT_S,
+    *,
+    alive: Callable[[int], bool] = psutil.pid_exists,
+    sleep: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.monotonic,
+) -> list[int]:
+    """Wait until none of `pids` exists any more; returns the ones still there after `wait_s`.
+
+    An engine that stopped answering `/status` has not ended yet: its venv interpreters stay loaded for a
+    moment, and an update that goes on at once finds their files in use (D-39)."""
+    deadline = clock() + wait_s
+    left = [p for p in pids if alive(p)]
+    while left and clock() < deadline:
+        sleep(0.25)
+        left = [p for p in left if alive(p)]
+    return left
+
+
 def stop(
     paths: Paths,
     client: SupervisorClient,
@@ -75,15 +110,22 @@ def stop(
     kill: Callable[[int], None] = procs.kill_tree,
     identify: Callable[[int], str | None] = image_name,
     wait_s: float = 45,
+    exit_wait_s: float = ENGINE_EXIT_WAIT_S,
 ) -> list[str]:
     """Stop the engine: `POST /shutdown` if it answers, else kill the pids recorded in run/supervisor.json.
 
-    Returns report lines for the console.
+    After a shutdown through the API it also waits (`exit_wait_s`) until the recorded processes are gone,
+    not only until `/status` is quiet. Returns report lines for the console.
     """
     if client.is_up():
+        recorded = engine_pids(paths)
         client.shutdown(30)
         wait_down(client, wait_s)
-        return ["Engine stopped through the supervisor API."]
+        left = wait_gone(recorded, exit_wait_s)
+        lines = ["Engine stopped through the supervisor API."]
+        if left:
+            lines.append(f"{len(left)} of its processes had not ended after {exit_wait_s:g} s.")
+        return lines
     state_file = paths.home / "run" / "supervisor.json"
     if not state_file.exists():
         return ["The engine is not running."]
