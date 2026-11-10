@@ -251,6 +251,7 @@ Nightshift wakes the PC at the time you chose (default 03:00), makes a video, sa
 may go back to sleep. In the morning open the Dashboard and review. If the PC was off, it runs when you switch
 it on. Do not use Nightshift Code while a night run is due: the graphics card can serve only one at a time.
 Closing the Nightshift Code window any way (its X, Task Manager, signing out) gives the graphics card back within a few seconds.
+Nightshift Code needs a context of at least 16384 tokens (`llama.flags.ctx` in `config/runtime.json`). Its OpenCode setup is trimmed (the to-do, web fetch, task and patch tools are off and a short Nightshift prompt replaces OpenCode's long one) so that a one-line question is meant to use at most half of that context, which leaves the rest for files and the answer. With less context it does not start: it says "Nightshift Code needs 16384 tokens of context; this install has N" before it takes the graphics card. Every start brings `config/opencode.json` up to this setup and sets the model's context and name from the installed model; keys you added yourself stay.
 If the graphics card is busy at that time, the run waits up to 2 hours and then skips the night (code `NS-E201`);
 it tries again the next night.
 

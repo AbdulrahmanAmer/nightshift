@@ -392,42 +392,171 @@ function Wait-NsPort {
     return $false
 }
 
+function Get-NsJsonProp {
+    # The value of property -Name of a parsed JSON object, or $null when it is not there (or -Object is not an
+    # object). Safe under strict mode.
+    param($Object, [string]$Name)
+    if ($null -eq $Object) { return $null }
+    if ($Object -isnot [System.Management.Automation.PSCustomObject]) { return $null }
+    if ($Object.PSObject.Properties.Name -contains $Name) { return $Object.$Name }
+    return $null
+}
+
+function Set-NsJsonProp {
+    # Puts -Value in property -Name of the parsed JSON object -Object; true when the object changed. With
+    # -OnlyIfMissing a property that is already there (whatever its value) stays as the owner set it.
+    param($Object, [string]$Name, $Value, [switch]$OnlyIfMissing)
+    if ($Object.PSObject.Properties.Name -contains $Name) {
+        if ($OnlyIfMissing) { return $false }
+        if ($Object.$Name -ceq $Value) { return $false }
+        $Object.$Name = $Value
+        return $true
+    }
+    Add-Member -InputObject $Object -NotePropertyName $Name -NotePropertyValue $Value
+    return $true
+}
+
+function Read-NsLlamaConfig {
+    # What the launchers need from config\runtime.json: Host, Port, Ctx (llama.flags.ctx) and ModelPath, each
+    # with the value Python's Runtime model gives it when the file does not write it. $null when there is no
+    # runtime.json; throws when it cannot be read as JSON.
+    $runtime = Join-Path (Get-NsHome) 'config\runtime.json'
+    if (-not (Test-Path -LiteralPath $runtime)) { return $null }
+    $rt = (Read-NsTextRetry -Path $runtime) | ConvertFrom-Json
+    $llama = Get-NsJsonProp $rt 'llama'
+    $flags = Get-NsJsonProp $llama 'flags'
+    $hostName = Get-NsJsonProp $llama 'host'
+    $port = Get-NsJsonProp $llama 'port'
+    $ctx = Get-NsJsonProp $flags 'ctx'
+    $modelPath = Get-NsJsonProp $llama 'model_path'
+    return [pscustomobject]@{
+        Host      = $(if ($null -ne $hostName) { [string]$hostName } else { '127.0.0.1' })
+        Port      = $(if ($null -ne $port) { [int]$port } else { 8080 })
+        Ctx       = $(if ($null -ne $ctx) { [int]$ctx } else { 16384 })
+        ModelPath = $(if ($null -ne $modelPath) { [string]$modelPath } else { '' })
+    }
+}
+
+# D-34: OpenCode's own prompt and tools come to about 15,300 tokens; the first request of a one-line question
+# must stay at most half of the context. These are the values installer\stage2\steps\s07_configs.py writes
+# (OPENCODE_PROMPT, TOOLS_OFF, CODE_OUTPUT_TOKENS); tests\test_opencode_budget.py keeps the prompt equal.
+$script:NsOpenCodeToolsOff = @('todowrite', 'todoread', 'webfetch', 'task', 'patch')
+$script:NsOpenCodePrompt = @'
+You are Nightshift Code, a coding assistant that runs entirely on this computer with a small local model. Nothing you read or write leaves this machine.
+
+Your context is small, so work in small steps and keep every answer short.
+
+Where you work
+- Start in the Projects folder of the person using you. Each folder in it is a project. Do not leave it unless you are asked to.
+- Never touch the Nightshift program folders or its settings unless you are asked to.
+
+How you work
+- Read before you edit. Open a file, look at the part that matters, and only then change it. Do not guess what a file contains.
+- Look at a few lines at a time. Search with grep or glob instead of opening whole files or whole folders.
+- Change the least you can. Make one edit, then say what you changed and why in a sentence or two.
+- Do not rewrite a file that only needs a small change. Do not add features nobody asked for.
+- Run a command only when it helps answer the question. Say what you ran and what it showed.
+- If a request is unclear, ask one short question before you start.
+- If you do not know something, say so. Do not invent file names, functions or results.
+
+How you answer
+- Plain, short sentences. No long introductions and no summaries of what you were just told.
+- Show code in small blocks, only the lines that matter.
+- When a task is done, say so and name the files you changed.
+- If a task is too big for the context you have, say so and offer the first small step instead of starting something you cannot finish.
+'@
+
 function Sync-NsOpenCodePort {
     # OpenCode talks straight to llama-server, and config\opencode.json bakes the address in when it is
     # written at install time. If the llama address changed since (ns tune, a hand edit), OpenCode would talk
     # to the wrong port, so point the baseURL at the current one right before it starts. -BaseUrl is the
     # address the engine reported when it started llama-server; without it, runtime.json llama.host/port is
-    # used. Only that one value changes; the file is left alone when it already matches or does not exist,
-    # and a problem here is a note, never a reason to stop the launcher.
+    # used.
+    # The same pass brings the file up to the budget of D-34 (a file written by 0.1.14 has none): the model's
+    # limit.context follows runtime.json llama.flags.ctx, its name follows llama.model_path, and the tool
+    # switches and the short build prompt are added when they are missing. Only those values are Nightshift's:
+    # baseURL, limit.context and the model name are set; every other key, including a limit.output, a tool
+    # switch or a prompt the owner changed, stays as it is. The file is left alone when everything matches or
+    # when it does not exist, and a problem here is a note, never a reason to stop the launcher.
     param([string]$BaseUrl = '')
     $file = Join-Path (Get-NsHome) 'config\opencode.json'
     try {
         if (-not (Test-Path -LiteralPath $file)) { return }
+        $llama = $null
+        try { $llama = Read-NsLlamaConfig }
+        catch {
+            if ($BaseUrl -notmatch '^https?://') { throw }
+            Write-Host ('Could not read runtime.json (' + $_.Exception.Message + '); the context and model name in ' + $file + ' are left as they are.')
+        }
         if ($BaseUrl -match '^https?://') {
             $url = $BaseUrl
         }
+        elseif ($null -ne $llama) {
+            $url = 'http://' + $llama.Host + ':' + $llama.Port + '/v1'
+        }
         else {
-            $hostName = '127.0.0.1'
-            $port = 8080
-            $runtime = Join-Path (Get-NsHome) 'config\runtime.json'
-            if (Test-Path -LiteralPath $runtime) {
-                $rt = (Read-NsTextRetry -Path $runtime) | ConvertFrom-Json
-                if ($rt.PSObject.Properties.Name -contains 'llama') {
-                    $llama = $rt.llama
-                    if ($llama.PSObject.Properties.Name -contains 'host') { $hostName = [string]$llama.host }
-                    if ($llama.PSObject.Properties.Name -contains 'port') { $port = [int]$llama.port }
-                }
-            }
-            $url = 'http://' + $hostName + ':' + $port + '/v1'
+            $url = 'http://127.0.0.1:8080/v1'
         }
         # -Encoding UTF8: Windows PowerShell 5.1 reads a BOM-less file as ANSI, which would double-encode any
         # non-ASCII text the owner put in the file when it is written back as UTF-8 below.
         $cfg = (Read-NsTextRetry -Path $file) | ConvertFrom-Json
-        if (-not ($cfg.PSObject.Properties.Name -contains 'provider')) { return }
-        if (-not ($cfg.provider.PSObject.Properties.Name -contains 'local')) { return }
-        $options = $cfg.provider.local.options
-        if ($options.baseURL -eq $url) { return }
-        $options.baseURL = $url
+        $local = Get-NsJsonProp (Get-NsJsonProp $cfg 'provider') 'local'
+        if ($null -eq $local) { return }
+        $changed = $false
+        $options = Get-NsJsonProp $local 'options'
+        if ($null -ne $options -and (Set-NsJsonProp $options 'baseURL' $url)) { $changed = $true }
+
+        $code = Get-NsJsonProp (Get-NsJsonProp $local 'models') 'code'
+        if ($null -ne $code -and $null -ne $llama) {
+            $name = 'Local model'
+            if ($llama.ModelPath) {
+                $stem = [System.IO.Path]::GetFileNameWithoutExtension($llama.ModelPath)
+                if ($stem) { $name = $stem + ' (local)' }
+            }
+            if (Set-NsJsonProp $code 'name' $name) { $changed = $true }
+            $limit = Get-NsJsonProp $code 'limit'
+            if ($limit -is [System.Management.Automation.PSCustomObject]) {
+                if (Set-NsJsonProp $limit 'context' $llama.Ctx) { $changed = $true }
+                if (Set-NsJsonProp $limit 'output' 4096 -OnlyIfMissing) { $changed = $true }
+            }
+            elseif ($null -eq $limit -and (Set-NsJsonProp $code 'limit' ([pscustomobject][ordered]@{ context = $llama.Ctx; output = 4096 }) -OnlyIfMissing)) {
+                $changed = $true
+            }
+        }
+
+        $switches = [ordered]@{}
+        foreach ($tool in $script:NsOpenCodeToolsOff) { $switches[$tool] = $false }
+        if (Set-NsJsonProp $cfg 'tools' ([pscustomobject]$switches) -OnlyIfMissing) {
+            $changed = $true
+        }
+        else {
+            $tools = Get-NsJsonProp $cfg 'tools'
+            if ($null -ne $tools) {
+                foreach ($tool in $script:NsOpenCodeToolsOff) {
+                    if (Set-NsJsonProp $tools $tool $false -OnlyIfMissing) { $changed = $true }
+                }
+            }
+        }
+
+        $prompt = $script:NsOpenCodePrompt.Replace("`r`n", "`n")
+        $buildAgent = [pscustomobject][ordered]@{ prompt = $prompt }
+        if (Set-NsJsonProp $cfg 'agent' ([pscustomobject][ordered]@{ build = $buildAgent }) -OnlyIfMissing) {
+            $changed = $true
+        }
+        else {
+            $agent = Get-NsJsonProp $cfg 'agent'
+            if ($null -ne $agent) {
+                if (Set-NsJsonProp $agent 'build' $buildAgent -OnlyIfMissing) {
+                    $changed = $true
+                }
+                else {
+                    $build = Get-NsJsonProp $agent 'build'
+                    if ($null -ne $build -and (Set-NsJsonProp $build 'prompt' $prompt -OnlyIfMissing)) { $changed = $true }
+                }
+            }
+        }
+
+        if (-not $changed) { return }
         $json = ($cfg | ConvertTo-Json -Depth 20) + "`n"
         Write-NsFileAtomic -Path $file -Text $json
     }

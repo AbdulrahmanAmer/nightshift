@@ -124,7 +124,9 @@ def test_s07_writes_configs_moves_secrets_and_blanks_files(tmp_path: Path):
     ch = load_channel(ctx.paths, "after-dark-tales")
     assert (ch.display_name, ch.niche, ch.masters_per_week, ch.voice.speaker) == (
         "After Dark Tales", "horror fiction", 1, "Ryan")
-    assert json.loads(ctx.paths.opencode_file.read_text(encoding="utf-8")) == OPENCODE_CONFIG
+    llama = load_runtime(ctx.paths).llama   # the port, the context and the model name follow runtime.json
+    assert json.loads(ctx.paths.opencode_file.read_text(encoding="utf-8")) == opencode_config(
+        llama.host, llama.port, llama.flags.ctx, llama.model_path)
     assert OPENCODE_CONFIG["enabled_providers"] == ["local"] and OPENCODE_CONFIG["model"] == "local/code"
     assert load_runtime(ctx.paths).llama.model_path
     assert step.check(ctx) is True

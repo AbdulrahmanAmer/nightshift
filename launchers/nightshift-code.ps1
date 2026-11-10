@@ -10,6 +10,16 @@ if (-not (Test-Path -LiteralPath $opencode)) {
     Exit-NsWithPause ('OpenCode is not installed (missing ' + $opencode + '). Re-run INSTALL.cmd with Nightshift Code enabled.')
 }
 
+# D-34: OpenCode's first request is about half of a 16384-token context (installer s07_configs MIN_CODE_CONTEXT).
+# With less, the first question would fail after the model has been loaded, so say so now and take nothing.
+$minCtx = 16384
+$llamaCfg = $null
+try { $llamaCfg = Read-NsLlamaConfig }
+catch { Write-Host ('Could not read runtime.json to check the context: ' + $_.Exception.Message) }
+if ($null -ne $llamaCfg -and $llamaCfg.Ctx -lt $minCtx) {
+    Exit-NsWithPause ('Nightshift Code needs ' + $minCtx + ' tokens of context; this install has ' + $llamaCfg.Ctx + '. Set llama.flags.ctx in config\runtime.json to 16384 or more (it needs more memory), then start Nightshift Code again.')
+}
+
 if (-not (Test-NsSupervisor)) {
     Start-NsSupervisor -Headless
     if (-not (Wait-NsSupervisor -TimeoutSec 90)) { Exit-NsWithPause 'The Nightshift engine did not start.' }
