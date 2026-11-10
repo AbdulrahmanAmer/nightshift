@@ -52,6 +52,7 @@ ENDLESS_TRIES = 4  # the product gives up after this many 429s
 SLACK_S = 0.5
 KEYS = ("pexels", "pixabay")
 _NO_PROXY = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+Made = list[tuple[str, str, Path]]  # what the proof fetched, for the cleanup: (source, clip_id, file)
 _LETTERS = string.ascii_lowercase.replace("s", "")  # no "s": the keyword is stored without a trailing "s"
 
 
@@ -123,11 +124,12 @@ class _Fake:
         return dict(self.ctl("stats=1").get("counts", {}).get(host, {}))
 
 
-def _start_fake(ctx: Any) -> _Fake:
+def _start_fake(ctx: Any, ffmpeg: str) -> _Fake:
     folder = ctx.scratch / "footage-fake"
     folder.mkdir(parents=True, exist_ok=True)
     proc = ctx.spawn(
-        [sys.executable, str(Path(footage.__file__).resolve()), "--dir", str(folder), "--good-key", GOOD],
+        [sys.executable, str(Path(footage.__file__).resolve()), "--dir", str(folder), "--good-key", GOOD]
+        + ["--ffmpeg", ffmpeg],
         name="footage-fake",
     )
     ready = folder / "ready.json"
@@ -205,7 +207,13 @@ def _fetch(ctx: Any, base: str, q: str, orientation: str, count: int, source: st
 
 
 def _check_clips(
-    ctx: Any, fake: _Fake, answer: dict[str, Any], source: str, size: tuple[int, int], want: int, made: list
+    ctx: Any,
+    fake: _Fake,
+    answer: dict[str, Any],
+    source: str,
+    size: tuple[int, int],
+    want: int,
+    made: Made,
 ) -> None:
     """The fetch answer, the files on disk and the `clips` rows agree, and the files are the fake's bytes."""
     clips = answer.get("clips") or []
@@ -251,7 +259,7 @@ def _check_clips(
         )
 
 
-def _cleanup(ctx: Any, base: str, fake: _Fake | None, stored: list[str], made: list) -> None:
+def _cleanup(ctx: Any, base: str, fake: _Fake | None, stored: list[str], made: Made) -> None:
     """Remove what the proof made: its clips (DELETE route), its keys (empty value clears), the fake mode."""
     for source, clip_id, _path in made:
         try:
@@ -273,8 +281,12 @@ def _cleanup(ctx: Any, base: str, fake: _Fake | None, stored: list[str], made: l
 
 
 def run(ctx: Any) -> None:
-    if ffmpeg_path() is None:
-        ctx.skip("FFmpeg is not on PATH: the fake endpoint cannot make its clips (hold the laptop lock)")
+    ffmpeg = ffmpeg_path(ctx.home)  # where the product finds it: NS_FFMPEG, PATH, <home>/bin/ffmpeg
+    if ffmpeg is None:
+        ctx.skip(
+            "FFmpeg is not on PATH, not named by NS_FFMPEG and not under <home>/bin/ffmpeg: the fake "
+            "endpoint cannot make its clips (hold the laptop lock)"
+        )
     problem = footage.cert_tool_problem()
     if problem:
         ctx.skip(problem)
@@ -286,10 +298,11 @@ def run(ctx: Any) -> None:
         ctx.skip(f"a stock footage key is already stored ({before}); the proof never replaces a real key")
     ctx.step("no Pexels or Pixabay key is stored yet", keys=before)
 
-    fake = _start_fake(ctx)
+    assert ffmpeg is not None  # ctx.skip has raised otherwise
+    fake = _start_fake(ctx, ffmpeg)
     base = _start_dashboard(ctx, fake, python)
     tokens = {name: _token() for name in ("forest", "street", "harbor", "road")}
-    made: list[tuple[str, str, Path]] = []
+    made: Made = []
     stored: list[str] = []
     try:
         _prove_b13(ctx, fake, base, tokens, made, stored)
@@ -314,7 +327,7 @@ def run(ctx: Any) -> None:
 
 
 def _prove_b13(
-    ctx: Any, fake: _Fake, base: str, tokens: dict[str, str], made: list, stored: list[str]
+    ctx: Any, fake: _Fake, base: str, tokens: dict[str, str], made: Made, stored: list[str]
 ) -> None:
     fake.ctl("reset=1&mode=normal")
     # --- Settings > Stock footage keys: a wrong key is refused, a right one accepted
@@ -393,7 +406,7 @@ def _prove_b13(
     _check_clips(ctx, fake, answer, "pixabay", (1920, 1080), 1, made)
 
     status, listed = ctx.api("GET", f"/api/library/footage?q={tokens['forest']}&limit=20")
-    mine = {c["clip_id"] for s, c, _ in made if s == "pexels"}
+    mine = {cid for source, cid, _ in made if source == "pexels"}
     rows = listed if isinstance(listed, list) else []
     shown = [c for c in rows if isinstance(c, dict) and c.get("source") == "pexels"]
     ctx.check(
@@ -406,7 +419,7 @@ def _prove_b13(
     )
 
 
-def _prove_b14(ctx: Any, fake: _Fake, base: str, tokens: dict[str, str], made: list) -> None:
+def _prove_b14(ctx: Any, fake: _Fake, base: str, tokens: dict[str, str], made: Made) -> None:
     # --- a burst of 429 with Retry-After is waited out, then the clip downloads
     q = f"proof harbor {tokens['harbor']}"
     fake.ctl(f"reset=1&mode=burst429&n={BURST}&retry_after={BURST_WAIT_S}")

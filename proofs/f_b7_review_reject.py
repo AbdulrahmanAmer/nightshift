@@ -4,6 +4,11 @@ Reject with a note, "uploaded" refused while rejected, re-review (approve), mark
 (GET /api/outputs/{id}, what the Queue page reads), the `outputs` and `uploads` rows and the files on disk
 must agree
 at every step. Ported from runs/qa/fb7b.py (evidence log 2026-11-09, 0.1.14).
+
+The files are found from the output's own `outputs.path` row (what the Queue reads), never by looking for the
+job id in a path: the product names a story's folder and files after its title
+(`ns_studio/media/outbox.py:outbox_target`). The video's sheets sit beside it with the same stem; they move
+with it (reject) and come back with it (approve).
 """
 
 from __future__ import annotations
@@ -11,7 +16,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from proofs._lib import db_rows, files_under, pauses_proof_channels, proof_channel, run_short, short
+from ns_common.paths import Paths
+from ns_studio.media.outbox import rejected_path
+from proofs._lib import db_rows, pauses_proof_channels, proof_channel, run_short, short
 
 PROOF = {
     "id": "f-b7-review-reject",
@@ -42,6 +49,22 @@ def _output_of(ctx: Any, job: dict[str, Any]) -> str:
     return str(mine[0]["output_id"])
 
 
+def _row_path(ctx: Any, oid: str) -> Path:
+    """`outputs.path` of the output: the file the Queue shows."""
+    return Path(db_rows(ctx, "select path from outputs where output_id=?", (oid,))[0][0])
+
+
+def _group(video: Path) -> list[str]:
+    """The names of the video and the files beside it that carry its stem (sheets, thumbnails): the files that
+    move together."""
+    return sorted(p.name for p in video.parent.glob(f"{video.stem}.*") if p.is_file())
+
+
+def _place(video: Path, names: list[str]) -> list[str]:
+    """Those of `names` that are files in the folder of `video`."""
+    return [n for n in names if (video.parent / n).is_file()]
+
+
 @pauses_proof_channels
 def run(ctx: Any) -> None:
     proof_channel(ctx, CHANNEL)
@@ -54,15 +77,18 @@ def run(ctx: Any) -> None:
         message=job.get("message"),
     )
     oid = _output_of(ctx, job)
-    stem = oid.split("/")[0]
-    path0 = Path(db_rows(ctx, "select path from outputs where output_id=?", (oid,))[0][0])
-    outbox0 = files_under(ctx.home / "outbox", stem)
+    outbox, rejected = ctx.home / "outbox", ctx.home / "rejected"
+    path0 = _row_path(ctx, oid)
+    group = _group(path0)
     ctx.check(
-        path0.is_file() and path0.is_relative_to(ctx.home / "outbox") and bool(outbox0),
+        path0.is_file() and path0.is_relative_to(outbox) and path0.name in group,
         "before review: the output's file is in outbox/",
         path=str(path0),
-        outbox=outbox0[:12],
+        files=group,
     )
+    ctx.check(len(group) >= 2, "before review: the video has its upload sheet beside it", files=group)
+    # where the product puts a rejected file: `rejected/` mirrors the Outbox tree
+    away = rejected_path(Paths(ctx.home), path0)
 
     status, answer = ctx.api("POST", f"/api/outputs/{oid}/reject", {"reason": NOTE})
     ctx.check(
@@ -77,19 +103,21 @@ def run(ctx: Any) -> None:
         card_status=card.get("status"),
         note=card.get("review_note"),
     )
-    rejected = files_under(ctx.home / "rejected", stem)
-    left = files_under(ctx.home / "outbox", stem)
-    path1 = Path(db_rows(ctx, "select path from outputs where output_id=?", (oid,))[0][0])
+    path1 = _row_path(ctx, oid)
+    in_rejected = _place(away, group)
+    left = _place(path0, group)
     ctx.check(
-        bool(rejected)
+        in_rejected == group
         and not left
+        and path1 == away
         and path1.is_file()
-        and path1.is_relative_to(ctx.home / "rejected")
+        and path1.is_relative_to(rejected)
         and not path0.exists()
         and card.get("path") == str(path1),
         "the files MOVED to rejected/: none left in outbox/, outputs.path and the card point under rejected/",
-        rejected=rejected[:12],
-        left_in_outbox=left[:12],
+        rejected=in_rejected,
+        left_in_outbox=left,
+        expected=str(away),
         path=str(path1),
         card_path=card.get("path"),
     )
@@ -113,16 +141,19 @@ def run(ctx: Any) -> None:
         "Queue card: approved",
         card_status=card.get("status"),
     )
-    outbox = files_under(ctx.home / "outbox", stem)
-    path2 = Path(db_rows(ctx, "select path from outputs where output_id=?", (oid,))[0][0])
+    path2 = _row_path(ctx, oid)
+    back = _place(path0, group)
+    still_away = _place(away, group)
     ctx.check(
-        bool(outbox)
-        and not files_under(ctx.home / "rejected", stem)
+        back == group
+        and not still_away
+        and path2 == path0
         and path2.is_file()
-        and path2.is_relative_to(ctx.home / "outbox")
+        and path2.is_relative_to(outbox)
         and not path1.exists(),
         "the files are back in outbox/ and gone from rejected/, outputs.path follows (D-6)",
-        outbox=outbox[:12],
+        outbox=back,
+        left_in_rejected=still_away,
         path=str(path2),
     )
 

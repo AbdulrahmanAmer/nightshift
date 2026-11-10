@@ -93,4 +93,4 @@ select = ["E", "F", "I", "B", "UP", "TID251"]
 [tool.pyright]
 pythonVersion = "3.12"
 typeCheckingMode = "standard"
-include = ["ns_common", "ns_studio", "ns_tts", "ns_supervisor", "ns_dashboard", "tools"]
+include = ["ns_common", "ns_studio", "ns_tts", "ns_supervisor", "ns_dashboard", "tools", "proofs"]
