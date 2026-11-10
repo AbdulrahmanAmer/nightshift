@@ -176,6 +176,15 @@ def test_a_first_install_windows_refuses_stays_off_with_ns_w206(tmp_path: Path, 
     assert any(code == "NS-W206" and "Access is denied" in detail for code, detail in ctx.warnings)
     assert summary(said).startswith("Automatic runs: off") and "NS-W206" in summary(said)
     assert ctx.flag("schedule") == "failed"
+    # Windows does not answer at all: the same code, nothing registered, and the line says where to switch on
+    windows.refuse_all, windows.hang = False, True
+    blind = context(tmp_path / "hang", example_answers(nightly=True), file=True)
+    line = summary(setup(blind))
+    windows.hang = False
+    assert line.startswith("Automatic runs: not switched on (NS-W206: Windows did not answer:")
+    assert "Settings > Schedule" in line and windows.has is None
+    assert blind.flag("schedule") == "failed" and blind.flag("first_install") is False
+    assert any(code == "NS-W206" for code, _ in blind.warnings)
 
 
 def test_the_console_asks_once_on_a_first_install_only(tmp_path: Path, windows: FakeWindows):
