@@ -437,6 +437,7 @@ def test_a_second_run_resumes_what_the_first_one_finished(tmp_path, monkeypatch)
     cfg_dir.mkdir(parents=True)
     saved = answers_view.draft_to_answers(draft(first.home))
     answers_view.write_answers(cfg_dir / "answers.json", saved)
+    written = (cfg_dir / "answers.json").read_text(encoding="utf-8")     # as the file is on disk (F-10c form)
     (cfg_dir / "install_state.json").write_text(json.dumps({
         "version": "0.1.0", "app_path": str(ROOT), "profile": "gpu", "started_at": "2026-11-02T21:00:00",
         "completed_at": None,
@@ -465,7 +466,9 @@ def test_a_second_run_resumes_what_the_first_one_finished(tmp_path, monkeypatch)
     assert second.ctl.do_action("start")[0] == 200                   # no new answers needed
     state = second.until(lambda st: st["run"] == "finished")
     assert state["phase"] == "done"
-    assert json.loads((cfg_dir / "answers.json").read_text(encoding="utf-8")) == saved      # left alone
+    # left alone, byte for byte (`saved` holds `nightly: None` and `nightly_seen: None`, which the writer
+    # leaves out of the file since F-10c, so the dict is not what is on disk)
+    assert (cfg_dir / "answers.json").read_text(encoding="utf-8") == written
 
 
 # ------------------------------------------------------------------- INSTALL.cmd over a finished install
