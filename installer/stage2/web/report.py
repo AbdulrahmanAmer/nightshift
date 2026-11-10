@@ -200,7 +200,9 @@ def build_install_report(
             "scheduleMode": flags.get("schedule_mode"),
             "smoke": flags.get("smoke"),
         },
-        "warnings": [n.get("code") for n in state.get("notices") or []],
+        "warnings": [n.get("code") for n in state.get("notices") or [] if n.get("code")],
+        # designed or cloned voices that did not speak in the setup test (s08): the voice, why, the way out
+        "voiceWarnings": [str(w) for w in flags.get("voice_warnings") or []],
         "steps": step_table(state),
         "answers": scrub_answers(answers) if answers else None,
         "statusLine": status_line(state, last_error, when),

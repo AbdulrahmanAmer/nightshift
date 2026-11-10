@@ -142,9 +142,9 @@ export default function Settings() {
   const lastCheck = selfCheck.data[0]; const checkBusy = lastCheck?.status === "queued" || lastCheck?.status === "running";
   useEffect(() => { if (!checkBusy) return; const t = setInterval(selfCheck.reload, 2500); return () => clearInterval(t); }, [checkBusy]); // eslint-disable-line react-hooks/exhaustive-deps
   const runCheck = async (quick: boolean) => { try { await api.post("/jobs/verify", { quick }); toast(quick ? "Quick self-check started" : "Full self-check started. It takes several minutes", "ok"); selfCheck.reload(); } catch (e: any) { toast(e.message, "bad"); } };
-  const res = lastCheck?.result as { passed?: boolean; checks?: { passed: boolean }[] } | null | undefined;
+  const res = lastCheck?.result as { passed?: boolean; checks?: { passed: boolean }[]; warnings?: string[] } | null | undefined;
   const bad = res?.checks?.filter((c) => !c.passed).length ?? 0;
-  const checkSub = !lastCheck ? "Checks the models, the voice and the video encoder, and writes a report" : checkBusy ? `Running. ${lastCheck.message || ""}` : lastCheck.status === "failed" ? `The check could not run. ${lastCheck.message || ""}` : lastCheck.status === "cancelled" ? "Cancelled" : res?.passed ? `Passed ${dayInline(lastCheck.created_at)}. Everything answered` : `${plural(bad, "item")} need attention. The report is in the logs folder`;
+  const checkSub = !lastCheck ? "Checks the models, the voice and the video encoder, and writes a report" : checkBusy ? `Running. ${lastCheck.message || ""}` : lastCheck.status === "failed" ? `The check could not run. ${lastCheck.message || ""}` : lastCheck.status === "cancelled" ? "Cancelled" : res?.passed ? `Passed ${dayInline(lastCheck.created_at)}. ${res.warnings?.length ? `One thing to look at: ${res.warnings.join(" ")}` : "Everything answered"}` : `${plural(bad, "item")} need attention. The report is in the logs folder`;
   const copy = async (t: string) => { try { await navigator.clipboard.writeText(t); toast("Path copied", "ok"); } catch { toast("Copy was blocked", "warn"); } };
   const home = s?.home || status?.disk?.home || "";
   const version = s?.version || status?.version || upd?.current;

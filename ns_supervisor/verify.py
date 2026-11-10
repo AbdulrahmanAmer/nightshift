@@ -39,6 +39,86 @@ from ns_supervisor.childenv import child_env, window_flags
 OWNER = "verify"
 TTS_SENTENCE = "Nightshift verification sentence. The quick brown fox jumps over the lazy dog."
 NOT_MEASURED = "short_job_s,master_job_s,nightly_run_s"
+#: How long the first talker (the preset: the engine check, which carries the cold load of the voice engine)
+#: may take to answer, as it always had, and how long each further talker may take. Up to three talkers are
+#: spoken one after the other, and 0.1.14's updater runs `ns verify --quick` with no timeout of its own while
+#: setup's s08 gives it 3600 s. A further talker (a designed or a cloned voice) only needs its own model
+#: loaded: a 1.7 B model in Q8 is about 2 GB, 20 to 45 s from a hard disk at 40 to 100 MB/s, so 180 s is four
+#: times the slowest load and a hung engine costs 2 * 180 s = 6 minutes on top of the first talker, not tens.
+#: 1800 + 2 * 180 stays well under s08's 3600 s.
+FIRST_TALKER_TIMEOUT_S = 1800.0
+LATER_TALKER_TIMEOUT_S = 180.0
+#: What the owner is told, in every sentence about a voice that did not speak: a voice cannot be mended in
+#: place (a new voice may not take an old name: `ns_tts.voices.VoiceLibrary._check_new`), so the way out is a
+#: new voice, or another narrator for the channels that use it (`Channels > Edit channel`, the Narrator
+#: choice, `Save channel`; `Library > Voices` makes the new voice).
+TALKER_WAY_OUT = (
+    "Make the voice again under another name (Library > Voices), then choose it as the narrator under "
+    "Channels > Edit channel and press Save channel, or choose another narrator there."
+)
+
+
+def talker_warning(mode: str, voice: str, reason: str) -> GateCheck:
+    """The row of a designed or cloned voice that did not speak: visible, never a failure of the run.
+
+    It is `passed` (the report, the exit code of `ns verify` and so an update and setup go on) and carries
+    `value == names.TALKER_WARNING_VALUE` and the sentence the owner reads, in `log`.
+    """
+    return GateCheck(
+        name=names.tts_mode(mode), passed=True, value=names.TALKER_WARNING_VALUE,
+        log=(
+            f"The {mode} voice {voice!r} did not speak a test sentence ({reason}). Nightshift went on "
+            f"without it; a channel that narrates with it cannot make videos until it has another voice. "
+            f"{TALKER_WAY_OUT}"
+        ),
+    )
+
+
+def talker_warnings(checks: list[GateCheck]) -> list[str]:
+    """The sentences of the voices that did not speak, from a report's checks (see `talker_warning`)."""
+    return [
+        str(c.log) for c in checks
+        if c.passed and c.value == names.TALKER_WARNING_VALUE
+        and c.name.startswith(names.TTS_MODE_PREFIX) and c.log
+    ]
+
+
+def talker_key(sentence: str) -> str:
+    """Which voice a sentence is about: its start, up to the reason ("The clone voice 'Cleo' did not speak").
+
+    The reason carries an error detail that can change from run to run; a note is the same note when the
+    mode and the voice are the same.
+    """
+    return sentence.partition(" did not speak")[0]
+
+
+def leave_voice_notes(paths: Paths, checks: list[GateCheck]) -> list[str]:
+    """Leave each voice sentence of `checks` as a morning note unless one about that mode and voice waits.
+
+    Returns the sentences. Best effort: a note is a courtesy; the report file and the result carry them too.
+    """
+    sentences = talker_warnings(checks)
+    try:
+        from ns_supervisor import notify
+
+        waiting = {talker_key(str(n.get("message", ""))) for n in notify.read_notes(paths)}
+        for sentence in sentences:
+            if talker_key(sentence) not in waiting:
+                notify.leave_note(paths, "Nightshift", sentence)
+                waiting.add(talker_key(sentence))
+    except Exception:
+        pass
+    return sentences
+
+
+def read_talker_warnings(paths: Paths) -> list[str]:
+    """The same sentences from `logs/verify-report.json` (what an update reads after its verify step)."""
+    try:
+        data = json.loads(report_path(paths).read_text(encoding="utf-8-sig"))
+        checks = [GateCheck.model_validate(c) for c in data["checks"]]
+    except (OSError, ValueError, KeyError, TypeError):
+        return []
+    return talker_warnings(checks)
 
 
 class Controller(Protocol):
@@ -283,9 +363,13 @@ def _need(ep: Endpoint | None, service: str) -> Endpoint:
 
 
 def run_verify(
-    paths: Paths, rt: Runtime, ctl: Controller, *, quick: bool = False, deps: Deps | None = None
+    paths: Paths, rt: Runtime, ctl: Controller, *, quick: bool = False, deps: Deps | None = None,
+    progress: Callable[[str], None] | None = None,
 ) -> GateReport:
-    """Run all checks against the supervisor `ctl` and return the report (not yet written)."""
+    """Run all checks against the supervisor `ctl` and return the report (not yet written).
+
+    `progress` gets one line as each talker starts: the voice test can take minutes and nothing else shows it.
+    """
     d = deps or Deps()
     rec = _Recorder(NsLogger("verify", paths.logs))
     ram = d.ram()
@@ -391,7 +475,9 @@ def run_verify(
     rec.run(names.TTS_START, tts_start, "NS-E203")
 
     def tts_modes() -> Out:
-        client = TtsClient(_need(tts[0] if tts else None, "tts").base_url)
+        base_url = _need(tts[0] if tts else None, "tts").base_url
+        client = TtsClient(base_url, timeout_s=FIRST_TALKER_TIMEOUT_S)
+        later = TtsClient(base_url, timeout_s=LATER_TALKER_TIMEOUT_S)
         voices = client.voices()
         by_mode: dict[str, str] = {}
         for v in voices:
@@ -401,30 +487,66 @@ def run_verify(
         order = ["preset", "design", "clone"]
         picked = [(m, by_mode[m]) for m in order if m in by_mode]
         picked = picked or list(by_mode.items())[:1]
-        if quick:
-            picked = picked[:1]
+        # One sentence with every installed talker, quick or not (the Base talker of clone voices and
+        # VoiceDesign are tested at install, not at the first video); only the RTF bench is left out of
+        # quick. The first talker (the preset) is the engine check: when it does not speak its row fails, as
+        # it always did. A designed or cloned voice that does not speak is a WARNING row naming the mode and
+        # the voice (`talker_warning`): the run, an update and setup go on, and the next talker is still
+        # spoken.
+        say = progress or (lambda line: None)
         rtfs: list[float] = []
-        with tempfile.TemporaryDirectory(prefix="ns-verify-") as tmp:
-            for mode, voice in picked:
-                t0 = time.perf_counter()
-                audio_s = client.speak(TTS_SENTENCE, voice, 1.0, Path(tmp) / f"{mode}.wav")
-                rtf = (time.perf_counter() - t0) / audio_s if audio_s > 0 else float("inf")
-                rtfs.append(rtf)
-                ok = audio_s > 0 and (quick or rtf <= tg.rtf)
-                rec.checks.append(
-                    GateCheck(
-                        name=names.tts_mode(mode),
-                        passed=ok,
-                        value=round(rtf, 3),
-                        limit=f"<= {tg.rtf} RTF" if not quick else None,
-                        log=f"voice={voice} audio_s={audio_s}",
+        failed: list[str] = []
+        try:
+            with tempfile.TemporaryDirectory(prefix="ns-verify-") as tmp:
+                for i, (mode, voice) in enumerate(picked):
+                    line = f"speaking a test sentence with the {mode} voice {voice} ..."
+                    say(line)
+                    rec.log.info("speaking", mode=mode, voice=voice)
+                    t0 = time.perf_counter()
+                    try:
+                        audio_s = (client if i == 0 else later).speak(
+                            TTS_SENTENCE, voice, 1.0, Path(tmp) / f"{mode}.wav"
+                        )
+                    except Exception as e:  # tolerant by design: one talker failing must not hide the others
+                        err = e if isinstance(e, NsError) else NsError("NS-E310", f"{type(e).__name__}: {e}")
+                        failed.append(mode)
+                        rec.log.warn(
+                            "talker_failed", mode=mode, voice=voice, code=err.code, detail=err.detail
+                        )
+                        if i == 0:
+                            rec.checks.append(GateCheck(
+                                name=names.tts_mode(mode), passed=False,
+                                log=f"{mode} voice {voice!r} did not speak: {explain(err)}",
+                            ))
+                        else:
+                            rec.checks.append(talker_warning(mode, voice, f"{err.code}: {err.detail}"))
+                        continue
+                    if i > 0 and audio_s <= 0:
+                        failed.append(mode)
+                        rec.checks.append(talker_warning(mode, voice, "the answer had no sound"))
+                        continue
+                    rtf = (time.perf_counter() - t0) / audio_s if audio_s > 0 else float("inf")
+                    rtfs.append(rtf)
+                    ok = audio_s > 0 and (quick or rtf <= tg.rtf)
+                    rec.checks.append(
+                        GateCheck(
+                            name=names.tts_mode(mode),
+                            passed=ok,
+                            value=round(rtf, 3),
+                            limit=f"<= {tg.rtf} RTF" if not quick else None,
+                            log=f"voice={voice} audio_s={audio_s}",
+                        )
                     )
-                )
-        worst = max(rtfs)
-        save_rtf(paths, worst, quick=quick)  # the voice stage sizes its batch time limit from it (gap L4)
-        if not quick:
-            rec.bench("tts_rtf", round(worst, 3), f"<= {tg.rtf}", worst <= tg.rtf)
-        return Out(True, ",".join(m for m, _ in picked), log="modes exercised")
+        finally:
+            client.client.close()
+            later.client.close()
+        if rtfs:
+            worst = max(rtfs)
+            save_rtf(paths, worst, quick=quick)  # the voice stage sizes its batch time limit from it (gap L4)
+            if not quick:
+                rec.bench("tts_rtf", round(worst, 3), f"<= {tg.rtf}", worst <= tg.rtf)
+        note = "modes exercised" if not failed else f"modes exercised; did not speak: {', '.join(failed)}"
+        return Out(True, ",".join(m for m, _ in picked), log=note)
 
     rec.run(names.TTS_VOICES, tts_modes, "NS-E202")
     if tts:
@@ -523,16 +645,22 @@ def write_report(paths: Paths, report: GateReport) -> Path:
 
 
 def format_lines(report: GateReport) -> list[str]:
-    """Console table: one line per check, failures with their code and hint."""
+    """Console table: one line per check, failures and warnings with their reason (and the way out)."""
     lines = []
+    warned = 0
     for c in report.checks:
-        mark = "PASS" if c.passed else "FAIL"
+        warn = c.passed and c.value == names.TALKER_WARNING_VALUE and c.name.startswith(names.TTS_MODE_PREFIX)
+        warned += warn
+        mark = "WARN" if warn else ("PASS" if c.passed else "FAIL")
         val = "" if c.value is None else f" = {c.value}"
         lim = f"  [{c.limit}]" if c.limit else ""
         lines.append(f"[{mark}] {c.name}{val}{lim}")
-        if c.log and (not c.passed or c.log.startswith("NS-W")):
+        if c.log and (not c.passed or warn or c.log.startswith("NS-W")):
             lines.append(f"       {c.log}")
-    lines.append("Result: " + ("ALL CHECKS PASSED" if report.passed else "SOME CHECKS FAILED"))
+    result = "ALL CHECKS PASSED" if report.passed else "SOME CHECKS FAILED"
+    if report.passed and warned:
+        result += " (a voice did not speak: see the WARN lines above)"
+    lines.append("Result: " + result)
     return lines
 
 

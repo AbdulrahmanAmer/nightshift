@@ -264,7 +264,7 @@ class FakeVerifyAdapter:
         """Return fixed checks."""
         for _ in ctl.stages(["encoder", "tts", "llm"]):
             pass
-        return {"checks": [{"name": "fake", "passed": True}], "quick": quick}
+        return {"checks": [{"name": "fake", "passed": True}], "warnings": [], "quick": quick}
 
 
 class FakeDoctorAdapter:
