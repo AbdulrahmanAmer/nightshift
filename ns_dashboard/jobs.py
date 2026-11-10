@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import re
 import sqlite3
@@ -784,11 +785,12 @@ class JobWorker:
             self.log.info("job_held_after_gate", job_id=rec.job_id, channel=rec.channel, reason=reason)
         return True
 
-    def _requeue_paused(self, rec: JobRecord, ctl: JobControl) -> bool:
+    def _requeue_paused(self, rec: JobRecord, ctl: JobControl, owed: dict[str, Any]) -> bool:
         """The studio stopped the job with NS-E330 (its channel was paused while it ran): put it back in line,
-        held, to continue where it stopped after the resume; True when it was put back (or is no longer
-        running). False, and the job fails with NS-E330 as before, when there is nothing to continue (a run
-        job that made no studio job yet: its card says none was made) or when the worker does not see the
+        held, to continue where it stopped after the resume with everything the request still owes (`owed`:
+        the half-made studio job and the videos left after it); True when it was put back (or is no longer
+        running). False, and the job fails with NS-E330 as before, when there is nothing to continue (a stop
+        that names nothing owed, from a job that made no studio job) or when the worker does not see the
         pause itself (resumed meanwhile, a profile it cannot read, no hold): then it would start again at
         once, so a job can never go round in a loop. The kind's end hook is not called: a series part stays
         with its job and its job folder."""
@@ -797,14 +799,22 @@ class JobWorker:
             return False
         update: dict[str, Any] = {}
         if rec.kind == "run":
-            ids = [str(i) for i in ctl.extras.get("studio_job_ids") or [] if i]
-            if not ids and rec.params.get("resume_job_id"):
-                ids = [str(rec.params["resume_job_id"])]
-            if not ids:
-                return False
-            update = {"resume_job_id": ids[-1], "count": 1}  # the video it was making, as Retry continues it
+            left, half = owed.get("left"), owed.get("half_made")
+            if isinstance(left, int) and not isinstance(left, bool) and (half or left > 0):
+                # nothing the person asked for is lost: the half-made video (continued from its stage) and
+                # every video the request still owes (`studio_bridge.run_story_jobs` with `resume_job_id`)
+                update = {"resume_job_id": str(half) if half else None, "count": left + (1 if half else 0)}
+            else:  # a stop that says nothing of the request: continue the video it was making, as Retry does
+                ids = [str(i) for i in ctl.extras.get("studio_job_ids") or [] if i]
+                if not ids and rec.params.get("resume_job_id"):
+                    ids = [str(rec.params["resume_job_id"])]
+                if not ids:
+                    return False
+                update = {"resume_job_id": ids[-1], "count": 1}
         elif rec.kind != "series_part":
             return False
+        if update:  # the message says what the held request still owes, from its new params
+            reason = self._hold_reason(dataclasses.replace(rec, params={**rec.params, **update})) or reason
         if self.store.requeue_paused(rec.job_id, reason, update):
             self.log.info("job_held_mid_way", job_id=rec.job_id, channel=rec.channel, reason=reason, **update)
         return True
@@ -921,7 +931,7 @@ class JobWorker:
             self.log.warn("job_unavailable", str(e), job_id=rec.job_id)
             self._end_hook(rec)
         except NsError as e:
-            if e.code == PAUSED_CODE and self._requeue_paused(rec, ctl):
+            if e.code == PAUSED_CODE and self._requeue_paused(rec, ctl, e.data):
                 return  # stopped by a pause between two stages: held, it continues after the resume
             self.store.finish(rec.job_id, "failed", str(e), self._failure(ctl, e.code, hint_of(e)))
             self.log.error("job_failed", str(e), job_id=rec.job_id, code=e.code)

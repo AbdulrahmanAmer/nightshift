@@ -190,14 +190,15 @@ def run_job(ctx: JobContext, *, resume: bool = True, dry_run: bool = False) -> l
 
     for tenant, group in groupby(stages, key=_tenant_of):
         group_list = list(group)
-        not_paused(group_list[0].name)  # before the GPU is taken for the group
         if tenant is not None:
             ctx.services.acquirer.acquire(tenant, owner, model_alias="story" if tenant == "llama" else None)
         try:
-            for i, st in enumerate(group_list):
-                if i:
-                    not_paused(st.name)  # before every stage: a pause waits for the stage under way only
+            for st in group_list:
                 with embed_lease(ctx, st, owner):
+                    # The one check: immediately before EVERY stage, after any wait for the GPU or the embed
+                    # lease (up to hours); a pause waits for the stage under way only. Raising here releases
+                    # the tenant in the `finally` below, so a held job keeps no lease.
+                    not_paused(st.name)
                     run_stage(ctx, st, force=not resume)
                 ran.append(st.name)
         finally:

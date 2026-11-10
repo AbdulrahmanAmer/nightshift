@@ -434,10 +434,12 @@ function RenderJobs({ jobs, chans, channelName, className }: { jobs: Job[]; chan
   const rows = [...ordered, ...jobs.filter((j) => !live.includes(j))].slice(0, 4);
   const tasks: Task[] = rows.map((j) => {
     const running = j.status === "running" || j.status === "queued"; const failed = j.status === "failed"; const sched = held(j);
+    // held by its channel's pause (P47): the server's own words, with the videos the request still owes
+    const paused = j.status === "queued" && (j.message || "").startsWith("Paused: ");
     const title = jobTitle(j, channelName);
     return {
-      id: j.job_id, title, date: sched ? `Scheduled for ${fmtWhen(j.schedule_at)}` : running ? `Started ${fmtWhen(j.created_at)}` : fmtWhen(j.created_at),
-      metricLabel: sched ? "Starts" : "Stage", metric: sched ? fmtWhen(j.schedule_at) : j.status === "queued" ? "Waiting" : running ? stageWords(j.stage) : failed ? "Stopped" : j.status === "cancelled" ? "Cancelled" : "Done",
+      id: j.job_id, title, date: paused ? j.message.slice("Paused: ".length) : sched ? `Scheduled for ${fmtWhen(j.schedule_at)}` : running ? `Started ${fmtWhen(j.created_at)}` : fmtWhen(j.created_at),
+      metricLabel: sched && !paused ? "Starts" : "Stage", metric: paused ? "Paused" : sched ? fmtWhen(j.schedule_at) : j.status === "queued" ? "Waiting" : running ? stageWords(j.stage) : failed ? "Stopped" : j.status === "cancelled" ? "Cancelled" : "Done",
       progress: j.progress ?? (j.status === "done" ? 100 : 0), progressLabel: `${title} progress`, tone: failed ? "danger" : j.status === "done" ? "success" : "accent",
       meta: [{ icon: "clock", value: j.step && j.steps ? `${j.step}/${j.steps}` : "–", label: "steps" }, { icon: "film", value: MAKES_VIDEO.includes(j.kind) ? (j.result?.output_ids?.length ?? 0) : "–", label: "videos" }],
     };

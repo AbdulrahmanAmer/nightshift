@@ -567,15 +567,19 @@ def note(line):
         fh.write(line + "\n")
 
 
+def maybe_pause(ctx, stage):
+    flag = os.environ["P47_PAUSED_ONCE"]
+    if os.environ.get("P47_PAUSE_STAGE", "a") == stage and not os.path.exists(flag):
+        open(flag, "w").close()  # the warning arrives while this stage runs, once
+        review.pause(ctx.paths, ctx.db, ctx.channel.slug, "a warning arrived while the video was made")
+
+
 class A:
     name, tenant, inputs, outputs = "p47c_a", None, (), ("a.json",)
 
     def run(self, ctx):
         note(f"a:{ctx.job_id}")
-        flag = os.environ["P47_PAUSED_ONCE"]
-        if not os.path.exists(flag):  # the warning arrives while this stage runs, once
-            open(flag, "w").close()
-            review.pause(ctx.paths, ctx.db, ctx.channel.slug, "a warning arrived while the video was made")
+        maybe_pause(ctx, "a")
         ctx.write_json("a.json", {"n": 1})
 
 
@@ -584,6 +588,7 @@ class B:
 
     def run(self, ctx):
         note(f"b:{ctx.job_id}")
+        maybe_pause(ctx, "b")
         ctx.write_json("b.json", {"n": 2})
 
 
@@ -758,3 +763,121 @@ def test_a_nightly_job_paused_between_two_stages_waits_and_the_first_night_after
     again = night(now + timedelta(days=1))
     assert JOB_CALLS.count(f"a:{first}") == 1 and JOB_CALLS.count(f"b:{first}") == 1, "continued, not redone"
     assert any(j["job_id"] == first and j.get("resumed") for j in again["jobs"])
+
+
+# --- review round (P47 @ 6d42a9f): the check sits after every wait; nothing a person asked for is lost
+
+
+def test_a_pause_during_the_wait_for_the_gpu_starts_no_stage_of_that_group(
+    two_channels: tuple[Paths, Db], monkeypatch: pytest.MonkeyPatch
+):
+    """The acquire blocks (the GPU is busy elsewhere) while the owner pauses the channel; when the GPU comes,
+    no stage of that group may start, and the tenant goes straight back."""
+    import threading
+    from dataclasses import replace
+
+    from ns_studio.orchestrator import FORMAT_STAGES, run_job
+    from ns_studio.stages import REGISTRY
+
+    paths, db = two_channels
+    events: list[str] = []
+    waiting, granted = threading.Event(), threading.Event()
+
+    class BlockingGpu:
+        def acquire(self, tenant: str, owner: str, **_kw: Any) -> None:
+            waiting.set()
+            assert granted.wait(30), "the test never granted the GPU"
+            events.append(f"acquire {tenant}")
+
+        def release(self, tenant: str, owner: str) -> None:
+            events.append(f"release {tenant}")
+
+    class OnGpu(StubB):
+        name = "p47f_on_gpu"
+        tenant = "tts"
+
+    monkeypatch.setitem(REGISTRY, OnGpu.name, OnGpu())
+    monkeypatch.setitem(FORMAT_STAGES, "shorts_only", [StubA.name, OnGpu.name])
+    env = jobs.open_env(frozenset({"llm", "tts", "whisper", "embed", "clips"}))
+    ctx = jobs.make_job(env, crud.get_channel(paths, CH), "shorts_only")
+    ctx = replace(ctx, services=replace(ctx.services, acquirer=BlockingGpu()))
+    outcome: list[BaseException | None] = []
+
+    def job() -> None:
+        try:
+            run_job(ctx)
+            outcome.append(None)
+        except BaseException as e:  # noqa: BLE001 - handed to the test thread
+            outcome.append(e)
+
+    worker = threading.Thread(target=job)
+    worker.start()
+    assert waiting.wait(30), "the job never asked for the GPU"
+    review.pause(paths, db, CH, "a strike notice arrived while the job waited for the graphics card")
+    granted.set()
+    worker.join(30)
+    (err,) = outcome
+    assert getattr(err, "code", None) == PAUSED_CODE, err
+    assert CALLS == [f"a:{CH}"], "no stage of the group whose wait ended after the pause"
+    assert events == ["acquire tts", "release tts"], "the tenant goes straight back"
+
+
+@pytest.mark.parametrize(("stage", "owed_text"), [
+    ("a", "(3 videos still to make, the first one half made)"),  # inside the first video
+    ("b", "(2 videos still to make)"),  # in its last stage: the pause falls between video 1 and 2
+])
+def test_a_request_for_three_videos_paused_during_the_first_makes_all_three_after_the_resume(
+    tmp_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stage: str, owed_text: str
+):
+    pytest.importorskip("fastapi")
+    from types import SimpleNamespace
+    from typing import cast
+
+    from ns_dashboard.adapters import RealRunAdapter
+    from ns_dashboard.studio_runner import StudioRunner
+    from ns_dashboard.supervisor_link import SupervisorLink
+    from ns_dashboard.svc_jobs import build_handlers
+    from ns_studio.context import FAKEABLE
+    from tests.test_dashboard_api import make_env
+
+    ran = tmp_path / "ran.txt"
+    monkeypatch.setenv("P47_RAN", str(ran))
+    monkeypatch.setenv("P47_PAUSED_ONCE", str(tmp_path / "paused-once"))
+    monkeypatch.setenv("P47_PAUSE_STAGE", stage)
+    script = tmp_path / "child.py"
+    script.write_text(CHILD_WITH_STAGES, encoding="utf-8")
+    (tmp_path / "app").mkdir()
+    client, state = make_env(tmp_home)
+    seed_channel(state.db, state.paths, CH)
+    runner = StudioRunner(
+        state.paths, python=[sys.executable, str(script), "--repo", str(repo_root())], cwd=tmp_path / "app",
+        poll_s=0.05,
+    )
+    adapter = RealRunAdapter(
+        state.paths, SupervisorLink("http://127.0.0.1:9", timeout_s=0.2), fake=tuple(sorted(FAKEABLE)),
+        runner=runner,
+    )
+    state.worker.handlers["run"] = build_handlers(cast(Any, SimpleNamespace(run=adapter)))["run"]
+    r = client.post("/api/jobs/run", json={"channel": CH, "format": "shorts_only", "count": 3})
+    assert r.status_code == 201, r.text
+    job_id = r.json()["job_id"]
+
+    def lines() -> list[str]:
+        return ran.read_text(encoding="utf-8").split() if ran.exists() else []
+
+    assert state.worker.run_next() is True
+    held = client.get(f"/api/jobs/{job_id}").json()
+    assert held["status"] == "queued" and held["message"].startswith("Paused: "), held["message"]
+    assert held["message"].endswith(owed_text), "the held request says what it still owes"
+    assert state.worker.run_next() is False
+    assert client.post(f"/api/channels/{CH}/resume").status_code == 200
+    assert state.worker.run_next() is True
+    done = client.get(f"/api/jobs/{job_id}").json()
+    assert done["status"] == "done", done["message"]
+    calls = lines()
+    videos = list(dict.fromkeys(c.split(":", 1)[1] for c in calls))
+    assert len(videos) == 3, f"all three videos: {calls}"
+    for v in videos:
+        assert calls.count(f"a:{v}") == 1 and calls.count(f"b:{v}") == 1, f"none twice: {calls}"
+        assert (state.paths.job_dir(v) / "b.json").exists()
+    assert state.worker.run_next() is False

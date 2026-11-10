@@ -49,10 +49,27 @@ def paused_since(db: LockedDb, slug: str) -> str | None:
     return f"{when.astimezone():%a %d %b %H:%M}"
 
 
-def hold_text(display_name: str, since: str | None) -> str:
-    """The message of a held job."""
+def hold_text(display_name: str, since: str | None, owed: int = 1, half_made: bool = False) -> str:
+    """The message of a held job; a request for several videos says how many it still owes (none is lost)."""
     when = f" since {since}" if since else ""
-    return f"{HELD_PREFIX}{display_name} is paused{when}; resume it to release this job"
+    text = f"{HELD_PREFIX}{display_name} is paused{when}; resume it to release this job"
+    if owed > 1:
+        text += f" ({owed} videos still to make{', the first one half made' if half_made else ''})"
+    elif half_made:
+        text += " (its video is half made and continues from where it stopped)"
+    return text
+
+
+def owed_of(rec: JobRecord) -> tuple[int, bool]:
+    """How many videos a held story job still has to make, and whether the first is half made."""
+    if rec.kind != "run":
+        return 1, False
+    try:
+        owed = max(1, int(rec.params.get("count") or 1))
+    except (TypeError, ValueError):
+        owed = 1
+    return (1 if rec.params.get("script") and not rec.params.get("resume_job_id") else owed,
+            bool(rec.params.get("resume_job_id")))
 
 
 def make_channel_hold(paths: Paths, db: LockedDb) -> Hold:
@@ -71,6 +88,6 @@ def make_channel_hold(paths: Paths, db: LockedDb) -> Hold:
             since = paused_since(db, rec.channel)
         except Exception:  # the time is a courtesy: a channel known to be paused stays held without it
             since = None
-        return hold_text(ch.display_name, since)
+        return hold_text(ch.display_name, since, *owed_of(rec))
 
     return hold

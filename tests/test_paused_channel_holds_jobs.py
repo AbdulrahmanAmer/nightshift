@@ -454,8 +454,12 @@ def run_three(seen: list[str]) -> list[str]:
 def test_a_run_job_with_a_count_makes_no_further_video_after_the_pause(pausing_stage):
     """A dashboard run job with count 3 is one worker job that makes 3 videos in a loop: a pause after the
     first one must stop the loop (the worker's hold only gates the start of a queued job)."""
+    from ns_dashboard import studio_bridge
+
     seen: list[str] = []
-    run_three(seen)
+    with pytest.raises(studio_bridge.ChannelPaused) as ei:  # the request keeps the 2 videos it still owes
+        run_three(seen)
+    assert ei.value.data["left"] == 2 and "after 1 of 3 videos" in str(ei.value)
     assert PausingStage.made == 1, "videos 2 and 3 must not start after the pause"
     assert len(seen) == 1
     assert crud.get_channel(Paths.from_env(), "demo").status == "paused"

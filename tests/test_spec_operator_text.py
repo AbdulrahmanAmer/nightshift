@@ -718,13 +718,18 @@ def test_a_pause_stops_a_running_job_before_its_next_stage_and_the_texts_say_so(
     assert "`require_not_paused`" in d and "`JobWorker._requeue_paused`" in d
     assert "`daily._paused_mid_job`" in d
     assert "A running job is not stopped by a pause" not in d and "the video being made is finished" not in d
-    assert "never taken" in d and "`RESUME_WITHIN_DAYS` (3)" in d
+    assert "immediately before every stage, after any wait" in d and "no stage of it runs" in d
+    assert "`RESUME_WITHIN_DAYS` (3)" in d and "`studio_bridge._owed_on_pause`" in d and "none twice" in d
     texts = (("OPERATOR.md", doc_section(GUIDE, HEADING)), ("README.md", doc_section(README, HEADING)))
     for name, text in texts:
         flat = _flat(text)
         assert "stops before its next step" in flat, name
         assert "A pause does not stop a story video" not in flat and "is not stopped" not in flat, name
-    assert "holds no part of the graphics card" in _flat(doc_section(GUIDE, HEADING))
+    guide = _flat(doc_section(GUIDE, HEADING))
+    assert "holds no part of the graphics card" in guide and "Nothing you asked for is lost" in guide
+    assert "recorded as failed with NS-E330" in guide and "`studio run --resume <job id>`" in guide
+    assert "stops it before its next video" not in guide
+    assert "continues only the video it was making" not in guide
 
 
 def test_the_content_safety_checklist_is_not_narrower_than_18_3():

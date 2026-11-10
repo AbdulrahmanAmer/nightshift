@@ -100,8 +100,8 @@ class ChannelPaused(NsError):
     the seconds after that look, while the studio process was starting. It is coded (NS-E330), so the studio
     child reports it with its code and hint and the job card does not read NS-E327 ("unexpected problem")."""
 
-    def __init__(self, detail: str) -> None:
-        super().__init__(PAUSED_CODE, detail)
+    def __init__(self, detail: str, **owed: Any) -> None:
+        super().__init__(PAUSED_CODE, detail, **owed)
 
 
 def run_story_jobs(
@@ -133,8 +133,11 @@ def run_story_jobs(
     from ns_studio.policy.regen import run_job_guarded
 
     env = open_env(fake, acquirer, paths=paths)
-    if resume_job_id:
-        _require_not_paused(env, channel)
+    n = 1 if script is not None else max(1, int(count or 1))
+    out: list[str] = []
+    start = 0
+    if resume_job_id:  # Retry (count 1), or a request held by a pause: its half-made video, then the rest
+        _require_not_paused(env, channel, left=n - 1, half_made=resume_job_id)
         ctx = jobs.load_job(env, resume_job_id)
         # NS-E104 before the job runs again, for the stages it has left (a drive that filled up meanwhile)
         diskroom.require_story_room(
@@ -143,22 +146,21 @@ def run_story_jobs(
         names = [s.name for s in plan_job(plan_format(ctx.fmt, ctx.job_dir))]
         if seen is not None:
             seen.append(ctx.job_id)
-        run_job_guarded(watched(ctx, names, 0, 1, report), resume=True)
-        return output_ids(env.db, ctx.job_id)
+        with _owed_on_pause(ctx.job_id, n - 1):
+            run_job_guarded(watched(ctx, names, 0, n, report), resume=True)
+        out.extend(output_ids(env.db, ctx.job_id))
+        if n == 1:
+            return out
+        start = 1
     ch = get_channel(env.paths, channel)
     jobs.prepare_plan(fmt, None)
     names = [s.name for s in plan_job(fmt)]
-    n = max(1, int(count or 1))
-    if script is not None:
-        n = 1
     rng = random.Random()
-    out: list[str] = []
-    for i in range(n):
+    for i in range(start, n):
         if paused_now(env, ch.slug):  # before EVERY video, the first too: a pause stops all new work (P47)
             env.log.info("story_run_paused", channel=ch.slug, made=i, left=n - i)
-            if i == 0:  # nothing was made: say so, never report a job that made no video as done
-                raise ChannelPaused(_paused_text(ch.display_name))
-            break
+            # nothing a person asked for is lost: the videos still owed (`left`) wait for the resume
+            raise ChannelPaused(_paused_text(ch.display_name, i, n), left=n - i)
         # every job of a batch, a scheduled one too: the drive may have filled up since the request was made
         diskroom.require_story_room(env.paths, env.log, ch, fmt, fake=fake)
         if script is not None:
@@ -168,20 +170,38 @@ def run_story_jobs(
             ctx = jobs.make_job(env, ch, fmt, rng=rng)
         if seen is not None:
             seen.append(ctx.job_id)
-        run_job_guarded(watched(ctx, names, i, n, report))
+        with _owed_on_pause(ctx.job_id, n - i - 1):
+            run_job_guarded(watched(ctx, names, i, n, report))
         out.extend(output_ids(env.db, ctx.job_id))
     return out
 
 
-def _paused_text(display_name: str) -> str:
-    return f"{display_name} was paused before the first video started; none was made. Resume it and run again"
+@contextmanager
+def _owed_on_pause(job_id: str, left: int) -> Iterator[None]:
+    """A pause that stops `job_id` between two stages (NS-E330 from `ns_studio.pause`) says which video is
+    half made and how many more the request still owes, so the dashboard keeps the whole request (P47)."""
+    try:
+        yield
+    except NsError as e:
+        if e.code == PAUSED_CODE:
+            e.data.setdefault("half_made", job_id)
+            e.data.setdefault("left", left)
+        raise
 
 
-def _require_not_paused(env: Env, slug: str) -> None:
-    """`ChannelPaused` when the channel's profile says paused right now (an unreadable profile is not)."""
+def _paused_text(display_name: str, made: int = 0, of: int = 1) -> str:
+    if not made:
+        return (f"{display_name} was paused before the first video started; none was made. Resume it and run"
+                " again")
+    return f"{display_name} was paused after {made} of {of} videos; the other {of - made} wait for the resume"
+
+
+def _require_not_paused(env: Env, slug: str, **owed: Any) -> None:
+    """`ChannelPaused` when the channel's profile says paused right now (an unreadable profile is not);
+    `owed` (`left`, `half_made`) says what the request still has to make."""
     if paused_now(env, slug):
         env.log.info("story_run_paused", channel=slug, made=0, left=1)
-        raise ChannelPaused(_paused_text(slug))
+        raise ChannelPaused(_paused_text(slug), **owed)
 
 
 def paused_now(env: Env, slug: str) -> bool:
