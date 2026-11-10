@@ -7,6 +7,266 @@ All notable changes to Nightshift are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.1.15] - 2026-11-10
+
+This is release candidate 0.1.15-rc1, published for testing. It is a prerelease: it is not offered as an update to a
+PC on 0.1.14, and you install it by hand (`Nightshift-Setup-0.1.15-rc1.zip` for a first install, or
+`Nightshift-Update-0.1.15-rc1.zip` through Settings > Updates > From a file). The final 0.1.15 will also contain
+what is still open: the setup disk-need check (pull request 189), the keys-file follow-up (pull request 193) and
+the first-start config snapshot (F-10c). Below is everything merged since 0.1.14; each "Not covered" line is a
+limit the change shipped with.
+
+### Setup and install
+
+- Setting up again after "uninstall, keep my data" now follows the answers you give the second time. The answers
+  from `--answers`, from the file next to INSTALL.cmd or from the setup window win for every choice they name
+  (choices they leave out stay as before), and setup lists each difference on screen. A tier named without
+  `llm_custom` drops the earlier custom model. A new language model is switched in only after its file is downloaded
+  and checked: until then `config/runtime.json` keeps naming the old model, so a nightly run in between still finds
+  one. Ports, encoder and whisper device in `runtime.json` are kept, and setup says so. Only the channel fields your
+  answers changed are rewritten (a new channel name makes a new channel and the old one keeps running), and a
+  Pexels or Pixabay key in the answers is checked and stored in the Windows keyring before it is removed from the
+  file. Not covered: the Choices screen is not pre-filled from the kept answers, so a kept designed or cloned
+  voice is replaced by the first preset if you press Install unchanged; `install_code` and a new voice recording
+  under the same voice name are not compared; a run time changed on an install finished before 0.1.15 is picked
+  up only after an uninstall.
+- Install folder: Browse to the folder an earlier "keep my data" uninstall left (or to an existing Nightshift
+  folder) uses it as picked and no longer adds `Nightshift` inside it. A folder that already holds other files is
+  no longer the default home (`D:/NightShift` and `D:/Nightshift` are one folder on NTFS); setup offers the next
+  free name or drive. A typed folder with other files is still accepted, with a warning that it already has other
+  files in it. Not covered: the setup window does not yet ask you to confirm before Install.
+- When a download site has an outage (HTTP 5xx, 408, 425 or 429), setup waits it out for up to 10 minutes of
+  continuous trouble instead of giving up after about 2.5 minutes, retrying after 2, 4, 8 ... 60 seconds (or the
+  site's `Retry-After`, at most 300 s), and shows the wait ("github.com answers 504 (their side). Trying again in
+  40 s, 7 min left") in the console, the setup window and the log. `ns models get` and the dashboard model download
+  wait the same way. After the 10 minutes the error is NS-E105 naming the host and saying it is the download
+  site's side, not this PC, and that what is downloaded is kept; any other 4xx (401, 403, 410) still stops at once.
+  Not covered: downloads outside the setup plan (uv, FFmpeg, the Visual C++ runtime, `ns update`) keep their old
+  short retries.
+- Setup accepts only the uv version the manifest pins (0.13.6). Before, a uv found on PATH (winget's 0.13.7 was
+  one) could end up in `<home>/bin/uv` and stay there on a rerun. Now a uv in the install folder is used only if
+  `uv --version` run from there reports the pin; a wrong copy is replaced by stage 1's uv or the pinned download
+  (SHA256 checked). A download of another version, or a uv that cannot be replaced because it is in use, ends with
+  NS-E105. Stage 1 asks winget for the pinned version and stops with NS-E105 if no uv reports it. Not covered:
+  `ns update`, `ns doctor` and the console wizard still use whatever uv they find first.
+- One rule for the name of a designed or cloned voice, enforced where the name is typed: 1 to 40 letters, digits,
+  `-` or `_`, starting with a letter or digit. Setup refuses a name such as "Night Narrator" and offers one
+  ("Night-Narrator") instead of writing it and failing every first run with NS-E310; the dashboard channel routes,
+  `studio channel add/edit`, the Assistant voice tools and the voice service use the same rule. Channels and
+  answers already on disk with an old name still load. A channel profile that cannot be read is skipped, not
+  fatal: `studio channel list` marks it UNREADABLE, `studio channel validate` prints PROBLEM and exits 1,
+  `studio run --daily` prints "channel X NOT RUN, its profile cannot be read" and the nightly toast adds "N channel
+  skipped, profile cannot be read". Not covered: a saved voice whose old name the rule refuses is kept, and
+  creating it still fails with NS-E310; nothing renames it for you (an install that hit this must rename the voice
+  in its answers file).
+- The welcome text of the console (headless) setup, `OPERATOR.md` and `README.md` now say what the installer
+  already checked: at least 60 GB of free disk space (they said about 40 GB), and stock-footage keys are optional.
+  Text only; no installer behaviour changed. Not covered: the setup disk-need check (pull request 189) is still
+  open, and the figures per model tier (74 GB Balanced, 81 GB Best) these documents also give are not final.
+
+### Updates, files and safety
+
+- After an update the dashboard window shows the new interface, not the old one kept in its cache. The page,
+  `app.js` and `app.css` are sent with `Cache-Control: no-cache`; only content-hashed files under `/assets/` are
+  cached, and the page names its two files with a version token (`app.js?v=...`). The window host clears the
+  WebView2 HTTP cache once per app version (stamp `ns-cache-version.txt` in `state/webview2`), keeping cookies
+  and settings. Not covered: never tried in a real WebView2 window; if another window holds the profile open the
+  clearing is skipped and retried at the next start, so that first start can still show the old page.
+- An update no longer switches the nightly task back on. Before it re-registers "Nightshift Daily" (`ns update`,
+  Settings > Updates, a run-time change in Settings, `ns schedule install`) Nightshift reads the task as Windows
+  has it and puts back its enabled state and run time. A task you switched off in Task Scheduler stays off (the
+  update notes say "scheduled task re-registered (still switched off, daily at HH:MM)") and the top bar shows
+  "Automatic runs off"; `ns schedule install --enable` switches it on. If the task cannot be read nothing is
+  replaced. Not covered: only the enabled flag and the first trigger's time are kept (extra or weekly triggers
+  are replaced); the Settings row still says the PC wakes at that time for a task kept off; the first update
+  after this release still runs the old re-registration; not tried on a real Task Scheduler.
+- An update saves a copy of the settings files it may rewrite (engine settings, setup answers, install state, the
+  nightly time, dashboard settings, channels, formats) as `<folder>.prev-config.zip`, and `ns update --rollback`
+  puts them back with the old program. Settings changed after the update are lost on rollback and the result
+  names the files; a second rollback goes forward with them. A copy that cannot be saved or read stops the update
+  (NS-E702, NS-E115 from INSTALL.cmd). Not covered: the hop 0.1.14 to 0.1.15 by `ns update`, `--github` or Settings
+  > Updates saves no copy (the old updater runs); the first-start snapshot (F-10c) and tolerant loading of
+  unknown keys are not in; a rollback as a whole is not atomic, and `secrets.dpapi` is never copied.
+- A file Nightshift saves is no longer written over in place while another program reads it: the diagnostics
+  zips, the backup zip and restored files, the config and state files, the job `stage_state.json` and the outbox
+  videos and sheets are written beside the file and swapped in whole, and readers retry while Windows refuses an
+  open. If a player, sync client or virus scan keeps the file open for 15 s, the save fails with NS-E119 and the
+  old file stays whole. In 0.1.14 these were written in place, with no swap at
+  all: the zips (diagnostics, backup), restored files, the outbox videos and sheets and the job
+  `stage_state.json`, so a reader or a power cut could meet a half-written file. Not covered:
+  some readers (`svc_outputs`, formats, the clip layout, the Settings preview) and writers (`ns_supervisor/tune.py`,
+  `policy/regen.py`, `clip_sources.py`, the outbox folder marker) are not converted; stale `~ns*.tmp` files are
+  swept only in the outbox, diagnostics, `config/`, `run/`, `%TEMP%` and the setup data folder (at engine and
+  setup-server start, and when those folders are written to), nowhere else; text files written through the
+  default call now get LF line endings where Windows wrote CRLF (the job, stage, schedule and state JSON files), while the outbox
+  sheets and sidecars, the clip sheets, the workshop files, the calibrate story texts and report and the `.sha256`
+  files keep the platform's CRLF; the pull request notes that a job resumed across the update may therefore run a
+  later stage once more.
+- The launchers and the setup's hand-over files are swapped in whole too, so a reader never meets an empty file:
+  the window host's run file in `run/`, `config/window.json`, `config/opencode.json`, the WebView2 cache stamp,
+  the setup preflight and folder-dialog files and the calibrate outputs (`stories.csv`, `scores.csv`, story texts,
+  `calibration_report.json`). Stop-all no longer deletes the run file of a live window, and an interrupted second
+  `studio calibrate` no longer truncates `stories.csv`. Leftover `~ns*.tmp` files older than an hour are swept from
+  `run/`, `config/`, `%TEMP%` and the setup data folder at engine and setup-server start. Not covered: the
+  WebView2 profile folder is not swept; after the retries (about 0.1 s) a refused open still reads as "no window";
+  `studio calibrate` replaces its files one by one, not as a set.
+- The file that holds your stock-footage keys for the night run (`config/secrets.dpapi`) now really stays
+  readable by you and SYSTEM only. Any account on the PC can decrypt that file, so its permissions are its only
+  lock; 0.1.14 asked icacls for "<USERNAME>:F", ignored the answer, and on an account icacls could not map (an
+  Entra ID account, for example) left the file open to Users with no message. Now your account's SID is granted,
+  the empty temp file is locked before any key goes in, the result is read back, and a lock that fails stops the
+  save with NS-E120 (old file untouched; the key stays in Credential Manager). At engine start a `secrets.dpapi`
+  an older version left open is locked. Setup shows a failed lock as a notice and in its summary, and Settings >
+  Stock footage keys shows the code and hint under the keys. `ns backup` and Settings > Export lock the zip when
+  it holds the keys file (a failing lock raises NS-E120 and leaves no zip), and a restore writes the keys file
+  through the same lock (NS-E703 names NS-E120 and the restore rolls back). Not covered: on a drive that takes no
+  permissions (FAT, exFAT) or where AppLocker blocks icacls, every key save and any restore of a backup holding the
+  keys file now fails, and `ns backup` fails with NS-E120, with no switch to leave the keys out (pull request 193
+  is the follow-up and is not in this candidate); the warning under the keys is kept in the dashboard's memory and
+  is gone after a restart.
+- An update zip is checked before it is put under its name. `ns update --github` and the dashboard download the
+  zip to a temp file, hash it against the release's SHA256 and move it to `data/updates` only when it matches; a
+  mismatch is NS-E701 and nothing is saved. Settings > Updates > From a file does the same: an empty `.sha256`,
+  one that is not 64 hex digits and an empty zip are refused, and a zip that does not match is refused with
+  "NS-E701: SHA256 mismatch for <zip>: expected ..., got ...; the file was not saved." The older pair of that
+  name is left as it was. Not covered: if a program holds the old zip open, it and its checksum stay (NS-E119).
+- Release candidates: a tag like `v0.1.15-rc1` is published on GitHub as a prerelease and never as "latest", and
+  the updater refuses any release whose data says prerelease or draft (NS-E701), so no PC is offered a candidate
+  as an update; `rc2` sorts before `rc10`. The release workflow accepts only `vX.Y.Z` or `vX.Y.Z-rcN` (N from 1).
+  Not covered: a candidate install fetches the voice engine from the previous final release, and "What is new"
+  finds no notes for a candidate (it looks for a heading with the candidate's own number).
+- A nightly killed by a power cut or crash is closed as interrupted, resumed, and no longer silences its channel.
+  Runs and jobs hold a lock file in `data/owners`; engine start, `studio run` and the nightly close any whose
+  owner is gone. The half-made job shows in the Queue as a failed card with NS-E328 (Retry continues it), the next
+  nightly continues it before planning, a morning note says what became of it, and the "Last night" card shows
+  "Interrupted". A lock file that cannot be made (5 tries in about 1 s) refuses the
+  night with NS-E327 ("Something stopped" on the card) and a note. Not covered: a 0.1.14 nightly job that failed
+  before the kill is resumed once; the refusal has no code of its own.
+
+### Videos and stories
+
+- A Short or a master chapter with many clips no longer builds an FFmpeg command that grows with the clip count.
+  More than 12 clips are rendered in parts of at most 12 (video only, in a `<video>.parts` folder removed after a
+  good render), then one more call joins the parts and adds the audio. The longest command stays at about 1,100
+  to 1,200 characters (200-character home) for 16, 200 and 1,000 clips (53,587 before at 1,000), so a clip list
+  cannot reach the Windows limit behind NS-E327. Not covered: the grain of the dark_slowzoom, handheld_grit and
+  cinematic_teal looks restarts in every part and each seam is a separate encode, so such a video is not
+  frame-for-frame what 0.1.14 made; peak disk use is about twice the video while parts and output coexist.
+- The repeat check NS-E605 compares a story only with videos that were really made: a job that failed (at the
+  voice stage, for example) or a video you rejected no longer blocks the same script. A script still too close
+  (0.85 on the same channel, 0.80 on another) to a finished video fails with "This script is too close to the
+  finished video of job <id>. Change the script, or use that video instead of making a second one."; the hint
+  reaches the dashboard job and the command line. A job you resume meets the repeat check again, and fails with
+  NS-E605 if the same story was finished meanwhile. Not covered: the hint does not name the stage the old job
+  stopped at; the opening-line repeat check still reads every story, finished or not.
+- The policy gates close six gaps. Words the duration check adds to a chapter are now checked (NS-E602, NS-E603,
+  and the unsafe-topic classifier NS-E601); the chosen or banked idea is classified before planning, and the
+  finished script and metadata get a final unsafe-topic re-check. The altered-content advice is "yes" for any
+  place spaCy recognises, a real-setting answer or an unclear one, and an intense story on a mature channel sets
+  "Age restriction suggested". A Short cut from a master that does not open with its own hook fails NS-E611 and is voiced again.
+  Tonal audio in quiet passages is only measured and warned (`qc/audio_flatness.json`, `audio_flatness_warning`
+  in the job log), never failed; the -55 dBFS noise floor still fails. Not covered: the flatness limit is not yet
+  measured on real qwen-tts narration (the partner's first night is asked for its values); `intensity` is kept in
+  `policy_notes.json`, not on the shared policy result; almost every story gets "yes" for altered content; the
+  classifier now runs 3 to 4 times per job, so a false positive can cost a full render; the NS-E611 message still
+  reads "render too similar to a previous video" for a missing hook; the words the duration check adds are
+  scanned against `misleading_claims.txt`, a list written for titles and tags, so ordinary story prose ("happened
+  to me", "real life") can fail the video with NS-E603, and the regeneration that follows redoes only the metadata,
+  which cannot change the prose.
+- Story length follows the voice. The word budget uses the pace each voice really spoke in its last jobs
+  (`config/voice_wpm.json`, mean of the last 12 jobs; a job under 120 words is not counted) instead of a fixed
+  table. A story under the 9:00 floor has its shortest chapter lengthened up to three times, then fails NS-E303
+  (the NS-E305 hint still says "twice"). The voice keeps its own seed on the first pass; only a regeneration gets a
+  new seed. Not covered: the series workshop still plans with the table pace; the figure is keyed by voice name
+  only; the 35 s Short word window is narrower (61 to 70 words), so more drafts may miss it and be redone.
+- Every Short ends with a spoken, captioned closing line of at most 15 words ("Part 2 is up next." when another
+  part follows). A fallback hook is cut to 12 words and not voiced twice, and the Short's length budget leaves
+  room for hook and closing so QC (NS-W406) drops fewer. A long-video-first job picks the idea with chapter
+  potential. Not covered: owner-script Shorts get no closing line; a single-part loop-back story gets a closing
+  that breaks the loop; the policy gate does not scan the closing line.
+- A story that misses the critic's bar (NS-E304 from the critic) is no longer a dead end: it is moved to
+  `rejected/<channel>/<date>/<job>/attempt<N>` with a `reason.json`, and the job restarts at the ideas stage with
+  another idea; three ideas at most (counted in `ideas_failed.json`, so a resume does not get three more), then
+  NS-E304. A job that fails NS-E303, NS-E304 (ideas), NS-E305, NS-E402, NS-E403 or NS-E404 gets one regeneration,
+  and it really redraws: chapter drafts and the voice take are keyed to the regeneration, so the second try writes
+  new chapters (the earlier NS-E602 and NS-E612 regeneration reused the saved drafts and changed nothing; fixed
+  too). A plain resume still reuses its drafts. Not covered: an owner script, a series part, a clipper NS-E404 and
+  an NS-E303 before the job exists fail at once; policy and these regenerations share one count; a Short outside
+  the length limit restarts at `shorts_select` and voices the whole master again.
+- A Short that QC drops (NS-W406) is kept for review: its video, `qc.json` and a `reason.json` are copied to
+  `rejected/<channel>/<date>/<job>/dropped/<item>`; the master and the other Shorts are delivered as before. A
+  language-model call that fails with NS-E301 on a server error (5xx), a refused or reset connection or an unusable
+  answer is tried once more after 3 seconds; a timeout or a 4xx is not retried. Not covered: a single dropped Short
+  is not regenerated, the NS-W406 hint still points only to `qc/dropped.json`, and the Dashboard assistant raises
+  NS-E301 without a retry.
+- Shorts and Shorts cut from a full video draw from their format in Library > Formats: frame size, caption
+  position and words on screen, shot lengths, frame rate and encoder preset, so a duplicated or edited Short
+  format changes the video. The format comes from the series design, else the first allowed one of that kind in
+  the channel's `formats_allowed`, else the default; the job records it in `formats.json` and the render report.
+  The first job a studio process starts after the update leaves one morning note naming the edited or added
+  formats that differ from the shipped ones (when there are any). The Formats editor now refuses at save what the
+  studio refuses (shot range reversed, region off the canvas, odd canvas size, unknown caption style), and a
+  hand-edited format file that is broken is flagged as not valid in the formats list and left out while the others
+  still load. Owner copies of `short_9x16` or `square_1x1` made before this update hold the old values
+  (`anchor_y_pct` 72, `words_on_screen` 3, fps 30, preset p4); those values now apply, and the morning note does
+  not mention them. Not covered: full videos, the square master,
+  clip layouts and the Anton font still ignore formats; a series design format that is skipped is reported only in
+  the log and the render report; a channel whose `formats_allowed` lists `square_1x1` but no Short format now
+  gets 1080x1080 Shorts where it got 9:16; the editor has no fields for region, caption style or canvas.
+
+### Clips and the Assistant
+
+- Clips from a long video: the clip-picking prompt (v4) also asks the model for the moment's spoken text with
+  capitals, commas, full stops and question marks put back; that text is laid over the recogniser's words, so the
+  number of words and every timing stay as they were (written to `clip_caption_words.json` beside
+  `clip_plan.json`). A word the model dropped, added or reworded, or a symbol nobody said ($20, 20%, #1), keeps the
+  recogniser's spelling, emoji are stripped, and a clip the model text covers less than 80% of stays as
+  recognised. The prompt is now told the kind of video (stream with facecam, podcast, talking head, screen
+  recording or slides) instead of "unknown", and a clip's title is cut at a word boundary to 70 characters (it was
+  100). Not covered: "like" is not removed (the filler setting `captions.remove_fillers` handles um/uh/er only); no
+  real model has run the v4 prompt; jobs made with fake services never show cleaned captions.
+- The Assistant checks a changing action's arguments before it shows the confirm card, with the checks the real
+  action runs. A call that would fail (an unreadable or over-31-day `schedule_at`, a paused channel, a missing
+  footage key, a story step the story's state does not allow, warm-up or shut-down with the engine offline,
+  diagnostics with the doctor missing) gets no card; the model is told what is wrong, so it can ask or correct
+  itself. When a turn ends with no answer after such a refusal you read "I could not set that up, so there is
+  nothing to confirm." Not covered: `clone_voice` checks that the recording exists, not its length;
+  `import_analytics` checks the file name and size, not the CSV columns; the `start_story_job` card still prints
+  the raw format id (`shorts_only`).
+
+### Engine-test installs and developer switches
+
+- Engine-test installs (`fake_voice: true`): the fake voice speaks the real text with the Windows speech voice
+  (SAPI) instead of tone bursts, so speech recognition can align it; before, story, master and script jobs stopped
+  at captions with NS-E403. One Windows voice stands in for every voice and language; the voice service's
+  `GET /health` shows `voice_mode`. With no Windows voice it falls back to tone bursts and warns with NS-W303 ("The
+  fake voice made tone bursts, which speech recognition cannot align."; in `/health`, the job log and
+  `audio/voice_engine.json`), and the NS-E403 detail then says it is the test voice. Dev installs and CI keep tone
+  bursts; `NS_TTS_FAKE_SPEECH=sapi` or `tones` forces either. A developer switch `NS_TTS_FAKE_DELAY_S` (default 0,
+  at most 120) makes the fake voice engine wait before answering, so a Cancel or the voice lease can be tested.
+  Not covered: that real whisper aligns this voice is still QA's proof.
+- Engine-test switch `tiny_story` (an answer in `answers.json`, copied to `runtime.json`) for an install with a 1
+  to 2 GB language model, so such a model can finish a story. Setup refuses it without `allow_cpu`. It scales
+  length only: a master is planned at 4 minutes in 5 chapters and accepted from 2:00 to 8:00 (QC window 110 s to
+  15:00), a Short may have 0.35 to 1.6 times its words; every validator and the policy gates still run. A video
+  made under it is marked `profile: tiny_story`, its sheet opens with "TEST OUTPUT", the Queue shows a "Test
+  output" badge, and marking it posted is refused with NS-E329. Not covered: never run end to end with the real
+  1.7B model; a tiny master can still stop at NS-E305 or a Short at NS-E404 if the model writes far less than the
+  target; cadence and notifications still count test outputs; a `runtime.json` saved by this version cannot be loaded
+  by 0.1.14 (every one carries the `tiny_story` field), and the hop from 0.1.14 saves no settings copy; the dashboard cannot set the switch (it appears only in the
+  settings data).
+
+### Behind the scenes
+
+- Tests and CI: a docs-only pull request no longer runs the whole suite and the suite runs in six shards weighed
+  from real timings; CI's FFmpeg install cannot fail silently; a push to `main` is never cancelled by a newer
+  one; a test fails on stray control characters in tracked text files; the dashboard and setup window now each
+  load one script file (`app.js`), so the versioned entry cannot load twice.
+- Documents: the pipeline, setup-window, runtime and installer specs and the operator documents (the incident
+  procedure and first-run wording in `OPERATOR.md`) and the Clipper spec text were brought in line with the code;
+  change requests that were applied elsewhere were marked closed, stale ones rejected, and CR-H106-1 filed; the finalization lists carry the boxes ticked on the 0.1.14
+  installs. No product behaviour.
+
 ## [0.1.14] - 2026-11-09
 
 The defects the first proofs on the 0.1.12 and 0.1.13 installs found, fixed by builder agents and reviewed
